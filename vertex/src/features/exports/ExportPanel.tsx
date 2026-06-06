@@ -1,22 +1,48 @@
-import { Download, FileCode2, Lock } from "lucide-react";
-import { useState } from "react";
+import { CheckCircle2, Download, FileCode2, Lock, TriangleAlert } from "lucide-react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { exportDesign } from "@/features/exports/export-service";
+import { getKernel } from "@/lib/chili3d";
 import { useAuthStore } from "@/stores/auth-store";
+import { useDesignStore } from "@/stores/design-store";
+import { cn } from "@/lib/utils";
 import type { Side } from "@/types";
+
+const INSOLE_LENGTH_MM = 260;
+const INSOLE_WIDTH_MM = 95;
 
 export function ExportPanel() {
     const { user, license } = useAuthStore();
+    const { design } = useDesignStore();
     const [status, setStatus] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
     const [side, setSide] = useState<Side>("left");
 
     const stlCheck = canExport(user, license, "stl");
     const gcodeCheck = canExport(user, license, "gcode");
 
-    const handleStl = () => {
-        const res = exportDesign("stl", side);
-        setStatus(res.ok ? `Exported ${res.filename} (-${TOKEN_COST.stl} token)` : (res.reason ?? "Export failed"));
+    // Real-time solid validation for the selected side.
+    const solid = useMemo(
+        () =>
+            getKernel().buildInsoleSolid({
+                side,
+                lengthMm: INSOLE_LENGTH_MM,
+                widthMm: INSOLE_WIDTH_MM,
+                thicknessMm: design.thicknessMm,
+                corrections: design.corrections[side],
+            }),
+        [side, design.thicknessMm, design.corrections],
+    );
+
+    const handleStl = async () => {
+        setBusy(true);
+        try {
+            const res = await exportDesign("stl", side);
+            setStatus(res.ok ? `Exported ${res.filename} (-${TOKEN_COST.stl} token)` : (res.reason ?? "Export failed"));
+        } finally {
+            setBusy(false);
+        }
     };
 
     return (
@@ -40,7 +66,15 @@ export function ExportPanel() {
                 ))}
             </div>
 
-            <Button className="w-full" disabled={!stlCheck.ok} onClick={handleStl}>
+            <div className={cn("flex items-center justify-between rounded-md border px-2 py-1.5 text-xs", solid.manifold.isWatertight ? "border-emerald-500/40 text-emerald-400" : "border-amber-500/40 text-amber-400")}>
+                <span className="flex items-center gap-1.5">
+                    {solid.manifold.isWatertight ? <CheckCircle2 className="h-3.5 w-3.5" /> : <TriangleAlert className="h-3.5 w-3.5" />}
+                    {solid.manifold.isWatertight ? "Watertight solid" : `${solid.manifold.openEdges} open edges`}
+                </span>
+                <span className="tabular-nums text-muted-foreground">{solid.manifold.triangleCount.toLocaleString()} tris</span>
+            </div>
+
+            <Button className="w-full" disabled={!stlCheck.ok || busy} onClick={handleStl}>
                 {stlCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                 Export STL · {TOKEN_COST.stl} token
             </Button>

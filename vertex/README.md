@@ -22,12 +22,22 @@ element addition, solid/shell generation, TPU printing (incl. belt printers) and
 cd vertex
 npm install
 cp .env.example .env   # optional — runs offline without it
-npm run dev            # http://localhost:5180
+npm run dev            # frontend  → http://localhost:5180
+npm run dev:server     # tRPC API  → http://localhost:5181 (optional)
 ```
 
 Without Supabase credentials the app runs in **offline dev mode** with a local
 `super_admin` user (100 export tokens, active license) so the full workspace is
 usable.
+
+### Export modes
+
+- **Server-authoritative** (`VITE_API_URL` + `SUPABASE_*` set): `export.authorize`
+  validates the license and **atomically** deducts tokens, recording an `Export`,
+  a `TokenTransaction` and an `AuditLog` row in one DB transaction. The file is
+  generated client-side only after the server returns `ok`.
+- **Offline fallback** (no API): client-side license/token gate with optimistic
+  local deduction.
 
 ### Database
 
@@ -48,6 +58,7 @@ src/
   types/        shared domain types
 prisma/         complete schema (users, licenses, tokens, clients, designs,
                 scans, corrections, elements, productions, audit_logs)
+server/         Node + tRPC API (context/auth, export.authorize, user.me)
 ```
 
 ## Phases
@@ -56,7 +67,9 @@ prisma/         complete schema (users, licenses, tokens, clients, designs,
   insole geometry + STL export, full Prisma schema, Supabase Auth foundation,
   dark UI shell (TopNav / sidebar / Base·Design·Printing·Export panels),
   token-gated export flow, Super Admin Portal scaffold.
-- **Phase 1:** STL/OBJ import, refined corrections, server-authoritative export.
+- **Phase 1 (done):** STL/OBJ import (welded + manifold-analyzed), kernel
+  watertight-solid validation, real-time solid status, tRPC server with
+  server-authoritative token-gated export (atomic deduct + audit).
 - **Phase 2:** full corrections engine + elements drag/scale + real-time solids.
 - **Phase 3:** Kiri:Moto slicing (belt 45°) + 3-axis CNC + printer presets.
 - **Phase 4:** UI polish, client/design management, Super Admin Portal, full
