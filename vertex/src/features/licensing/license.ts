@@ -21,6 +21,9 @@ export const TOKEN_COST: Record<"stl" | "gcode", number> = {
     gcode: 2,
 };
 
+/** Token cost for saving a custom GLB to the personal library. */
+export const SAVE_CUSTOM_TOKEN_COST = 1;
+
 export function canExport(
     user: UserProfile | null,
     license: License | null,
@@ -31,6 +34,16 @@ export function canExport(
     if (!user) return { ok: false, reason: "Not signed in" };
     if (user.tokenBalance < TOKEN_COST[format]) {
         return { ok: false, reason: "Insufficient export tokens" };
+    }
+    return { ok: true };
+}
+
+export function canSaveCustom(user: UserProfile | null, license: License | null): LicenseCheck {
+    const lic = isLicenseValid(license);
+    if (!lic.ok) return lic;
+    if (!user) return { ok: false, reason: "Not signed in" };
+    if (user.tokenBalance < SAVE_CUSTOM_TOKEN_COST) {
+        return { ok: false, reason: "Insufficient tokens to save custom asset" };
     }
     return { ok: true };
 }

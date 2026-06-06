@@ -40,6 +40,7 @@ export function elementHeightAt(
     let sum = 0;
 
     for (const el of elements) {
+        if (el.kind === "custom") continue;
         const cx = centerX + el.position.x;
         const cy = el.position.y;
         const dx = xMm - cx;

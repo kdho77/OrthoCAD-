@@ -1,13 +1,16 @@
 import { Grid, OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
-import { Box, Eye, EyeOff, Layers, Maximize2, Move, Rotate3d, Scale3d, X } from "lucide-react";
+import { Box, Eye, EyeOff, Layers, Maximize2, Move, PenTool, Rotate3d, Scale3d, Scissors, X } from "lucide-react";
 import { Suspense, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { useDesignStore } from "@/stores/design-store";
+import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { cn } from "@/lib/utils";
+import { CustomPrefabMesh } from "./CustomPrefabMesh";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
+import { MeshEditTools } from "./MeshEditTools";
 import { ScanMeshes } from "./ScanMeshes";
 
 type ViewName = "front" | "back" | "left" | "right" | "top" | "iso";
@@ -25,6 +28,10 @@ export function Viewer3D() {
     const controls = useRef<OrbitControlsImpl>(null);
     const { design, viewer, setViewer, selectedElementId, transformMode, setTransformMode, selectElement } =
         useDesignStore();
+    const editMode = useMeshEditStore((s) => s.editMode);
+    const setEditMode = useMeshEditStore((s) => s.setEditMode);
+    const setTarget = useMeshEditStore((s) => s.setTarget);
+    const showCustomPrefab = Boolean(design.customPrefabId);
 
     const setView = (pos: [number, number, number]) => {
         const c = controls.current;
@@ -48,13 +55,26 @@ export function Viewer3D() {
 
                 <Suspense fallback={null}>
                     {viewer.showLeft ? (
-                        <InsoleMesh side="left" design={design} transparent={viewer.transparent} heightmap={viewer.heightmap} />
+                        <>
+                            {!showCustomPrefab ? (
+                                <InsoleMesh side="left" design={design} transparent={viewer.transparent} heightmap={viewer.heightmap} />
+                            ) : (
+                                <CustomPrefabMesh side="left" transparent={viewer.transparent} />
+                            )}
+                        </>
                     ) : null}
                     {viewer.showRight ? (
-                        <InsoleMesh side="right" design={design} transparent={viewer.transparent} heightmap={viewer.heightmap} />
+                        <>
+                            {!showCustomPrefab ? (
+                                <InsoleMesh side="right" design={design} transparent={viewer.transparent} heightmap={viewer.heightmap} />
+                            ) : (
+                                <CustomPrefabMesh side="right" transparent={viewer.transparent} />
+                            )}
+                        </>
                     ) : null}
                     <ScanMeshes transparent={viewer.transparent} />
                     <ElementMarkers />
+                    <MeshEditTools />
                 </Suspense>
 
                 <Grid
@@ -89,17 +109,24 @@ export function Viewer3D() {
                 <ToggleButton active={viewer.showRight} onClick={() => setViewer({ showRight: !viewer.showRight })} icon={viewer.showRight ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />} label="Right" />
             </div>
 
-            {/* Element transform toolbar */}
+            {/* Element / mesh edit toolbar */}
             {selectedElementId ? (
                 <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
-                    <ModeButton active={transformMode === "translate"} onClick={() => setTransformMode("translate")} icon={<Move className="h-3.5 w-3.5" />} label="Move" />
-                    <ModeButton active={transformMode === "rotate"} onClick={() => setTransformMode("rotate")} icon={<Rotate3d className="h-3.5 w-3.5" />} label="Rotate" />
-                    <ModeButton active={transformMode === "scale"} onClick={() => setTransformMode("scale")} icon={<Scale3d className="h-3.5 w-3.5" />} label="Scale" />
+                    <ModeButton active={editMode === "transform" && transformMode === "translate"} onClick={() => { setEditMode("transform"); setTransformMode("translate"); }} icon={<Move className="h-3.5 w-3.5" />} label="Move" />
+                    <ModeButton active={editMode === "transform" && transformMode === "rotate"} onClick={() => { setEditMode("transform"); setTransformMode("rotate"); }} icon={<Rotate3d className="h-3.5 w-3.5" />} label="Rotate" />
+                    <ModeButton active={editMode === "transform" && transformMode === "scale"} onClick={() => { setEditMode("transform"); setTransformMode("scale"); }} icon={<Scale3d className="h-3.5 w-3.5" />} label="Scale" />
+                    <ModeButton active={editMode === "trim"} onClick={() => { setEditMode("trim"); setTarget({ type: "element", id: selectedElementId }); }} icon={<Scissors className="h-3.5 w-3.5" />} label="Trim" />
+                    <ModeButton active={editMode === "vertex"} onClick={() => { setEditMode("vertex"); setTarget({ type: "element", id: selectedElementId }); }} icon={<PenTool className="h-3.5 w-3.5" />} label="Vertex" />
                     <Button size="sm" variant="ghost" className="h-7" onClick={() => selectElement(null)}>
                         <X className="h-3.5 w-3.5" />
                     </Button>
                 </div>
-            ) : null}
+            ) : (
+                <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
+                    <ModeButton active={editMode === "trim"} onClick={() => { setEditMode("trim"); setTarget({ type: "insole", side: "left" }); }} icon={<Scissors className="h-3.5 w-3.5" />} label="Trim" />
+                    <ModeButton active={editMode === "vertex"} onClick={() => { setEditMode("vertex"); setTarget({ type: "insole", side: "left" }); }} icon={<PenTool className="h-3.5 w-3.5" />} label="Vertex" />
+                </div>
+            )}
 
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="h-3.5 w-3.5" />

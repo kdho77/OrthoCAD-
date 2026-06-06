@@ -10,7 +10,8 @@ export type AuditAction =
     | "tokens_granted"
     | "license_renewed"
     | "license_revoked"
-    | "design_saved";
+    | "design_saved"
+    | "custom_library_saved";
 
 export interface AuditEntry {
     id: string;

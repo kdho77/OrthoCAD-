@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import type * as THREE from "three";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import { useDesignStore } from "@/stores/design-store";
+import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { PlacedElement } from "@/types";
 
 const CENTER_X = INSOLE_LENGTH_MM / 2;
@@ -28,6 +29,7 @@ function ElementMarker({ element }: { element: PlacedElement }) {
     const [node, setNode] = useState<THREE.Group | null>(null);
     const selectedId = useDesignStore((s) => s.selectedElementId);
     const mode = useDesignStore((s) => s.transformMode);
+    const editMode = useMeshEditStore((s) => s.editMode);
     const selectElement = useDesignStore((s) => s.selectElement);
     const updateElement = useDesignStore((s) => s.updateElement);
 
@@ -80,7 +82,7 @@ function ElementMarker({ element }: { element: PlacedElement }) {
                     </group>
                 </group>
             </group>
-            {selected && node ? (
+            {selected && node && editMode === "transform" ? (
                 <TransformControls
                     object={node}
                     mode={mode}

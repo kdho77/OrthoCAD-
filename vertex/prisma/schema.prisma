@@ -80,6 +80,7 @@ enum AuditAction {
     design_updated
     export_generated
     ai_prescription_parsed
+    custom_library_saved
 }
 
 // --- Identity & Access ------------------------------------------------------
@@ -103,6 +104,8 @@ model User {
     exports         Export[]
     prescriptions   Prescription[]
     auditLogs       AuditLog[]
+    customElements  CustomElement[]
+    customPrefabs   CustomPrefab[]
 
     @@index([role])
     @@map("users")
@@ -333,6 +336,40 @@ model Prescription {
 
     @@index([userId])
     @@map("prescriptions")
+}
+
+// --- Custom library (user-owned GLB assets) ---------------------------------
+
+// A user-saved custom element mesh derived from a stock element or prior edit.
+model CustomElement {
+    id            String   @id @default(uuid()) @db.Uuid
+    userId        String   @db.Uuid
+    name          String
+    category      String // met_pad | wedge | extension | sink | other
+    glbPath       String // object storage key (S3-compatible / Supabase Storage)
+    parentStockId String? // stock ElementKind id this was derived from
+    createdAt     DateTime @default(now())
+
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@index([userId])
+    @@map("custom_elements")
+}
+
+// A user-saved custom prefab (insole shell / scan-derived base) as a GLB asset.
+model CustomPrefab {
+    id            String   @id @default(uuid()) @db.Uuid
+    userId        String   @db.Uuid
+    name          String
+    category      String // insole | shell | scan | other
+    glbPath       String
+    parentStockId String? // stock ScanPattern or prefab id
+    createdAt     DateTime @default(now())
+
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@index([userId])
+    @@map("custom_prefabs")
 }
 
 // --- Audit ------------------------------------------------------------------

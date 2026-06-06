@@ -11,6 +11,11 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase: SupabaseClient | null =
     supabaseUrl && supabaseServiceKey ? createClient(supabaseUrl, supabaseServiceKey) : null;
 
+/** Service-role Supabase client for storage operations. */
+export function getSupabaseAdmin(): SupabaseClient | null {
+    return supabase;
+}
+
 export interface AuthedUser {
     id: string;
     email: string;

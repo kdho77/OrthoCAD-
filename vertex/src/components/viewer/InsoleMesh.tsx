@@ -1,7 +1,9 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { buildInsoleGeometry } from "@/lib/geometry/insole";
+import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, Side } from "@/types";
 
 interface InsoleMeshProps {
@@ -12,23 +14,32 @@ interface InsoleMeshProps {
 }
 
 export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshProps) {
+    const trimLines = useMeshEditStore((s) => s.trimLines);
+    const vertexOverrides = useMeshEditStore((s) => s.vertexOverrides);
+    const target = useMeshEditStore((s) => s.target);
+
     const sideElements = useMemo(
         () => design.elements.filter((e) => e.side === side),
         [design.elements, side],
     );
 
-    const geometry = useMemo(
-        () =>
-            buildInsoleGeometry({
-                side,
-                lengthMm: INSOLE_LENGTH_MM,
-                widthMm: INSOLE_WIDTH_MM,
-                thicknessMm: design.thicknessMm,
-                corrections: design.corrections[side],
-                elements: sideElements,
-            }),
-        [side, design.thicknessMm, design.corrections, sideElements],
-    );
+    const applyEdits = target?.type === "insole" && target.side === side;
+
+    const geometry = useMemo(() => {
+        let g = buildInsoleGeometry({
+            side,
+            lengthMm: INSOLE_LENGTH_MM,
+            widthMm: INSOLE_WIDTH_MM,
+            thicknessMm: design.thicknessMm,
+            corrections: design.corrections[side],
+            elements: sideElements,
+        });
+        if (applyEdits) {
+            g = applyTrimLines(g, trimLines);
+            g = applyVertexOverrides(g, vertexOverrides);
+        }
+        return g;
+    }, [side, design.thicknessMm, design.corrections, sideElements, trimLines, vertexOverrides, applyEdits]);
 
     // Color the surface by height when the heightmap toggle is on.
     const material = useMemo(() => {

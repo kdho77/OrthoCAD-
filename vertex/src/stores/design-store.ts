@@ -71,10 +71,12 @@ export interface DesignStore {
     ) => void;
 
     addElement: (kind: ElementKind, side: Side) => void;
+    addCustomElement: (customElementId: string, customName: string, side: Side) => void;
     updateElement: (id: string, patch: Partial<PlacedElement>) => void;
     removeElement: (id: string) => void;
     selectElement: (id: string | null) => void;
     setTransformMode: (mode: TransformMode) => void;
+    setCustomPrefab: (customPrefabId: string, customPrefabName: string) => void;
 
     /** Atomically apply an AI-parsed prescription to the design. */
     applyPrescription: (result: PrescriptionParseResult) => void;
@@ -132,6 +134,32 @@ export const useDesignStore = create<DesignStore>((set) => ({
             };
             return { design: { ...s.design, elements: [...s.design.elements, el] }, selectedElementId: el.id };
         }),
+
+    addCustomElement: (customElementId, customName, side) =>
+        set((s) => {
+            const el: PlacedElement = {
+                id: crypto.randomUUID(),
+                kind: "custom",
+                customElementId,
+                customName,
+                side,
+                position: { x: 0, y: 0 },
+                rotationDeg: 0,
+                scale: { x: 1, y: 1 },
+                heightMm: 4,
+            };
+            return { design: { ...s.design, elements: [...s.design.elements, el] }, selectedElementId: el.id };
+        }),
+
+    setCustomPrefab: (customPrefabId, customPrefabName) =>
+        set((s) => ({
+            design: {
+                ...s.design,
+                pattern: "custom",
+                customPrefabId,
+                customPrefabName,
+            },
+        })),
 
     updateElement: (id, patch) =>
         set((s) => ({

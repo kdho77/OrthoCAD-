@@ -82,7 +82,10 @@ export type ElementKind =
 
 export interface PlacedElement {
     id: string;
-    kind: ElementKind;
+    kind: ElementKind | "custom";
+    /** When kind is "custom", references the user's library item id. */
+    customElementId?: string;
+    customName?: string;
     side: Side;
     /** Position on the insole surface in mm (x along length, y across width). */
     position: { x: number; y: number };
@@ -93,10 +96,25 @@ export interface PlacedElement {
 
 export interface DesignState {
     pattern: ScanPattern;
+    /** When pattern is driven by a user custom prefab. */
+    customPrefabId?: string;
+    customPrefabName?: string;
     method: ProductionMethod;
     thicknessMm: number;
     corrections: Corrections;
     elements: PlacedElement[];
+}
+
+// --- Custom library (user-owned GLB assets) --------------------------------
+
+export interface CustomLibraryItem {
+    id: string;
+    name: string;
+    category: string;
+    glbPath: string;
+    parentStockId: string | null;
+    createdAt: string;
+    url?: string | null;
 }
 
 // --- AI prescription parsing ------------------------------------------------

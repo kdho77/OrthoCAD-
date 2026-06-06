@@ -12,6 +12,8 @@ production seam.
 | Design management (save/open) | ✅ | `SaveControl`, `client-store`, `server/routers/design` |
 | 3D scan / prefab import (STL/OBJ) | ✅ | `lib/geometry/import`, `features/scans` |
 | Pattern selection | ✅ | `LeftSidebar` (full contact, prefab 3D, flat, custom) |
+| Custom GLB library | ✅ | `features/library`, `custom_elements` / `custom_prefabs`, Supabase Storage |
+| Trim / vertex mesh editing | ✅ | `MeshEditTools`, `mesh-edit-store` |
 | Production methods | ✅ | printing solid / shell, 3-axis milling |
 | Parametric corrections | ✅ | `features/corrections`, `lib/geometry/insole` |
 | — Pronation/Supination L/R, fore/rear, mm/deg | ✅ | independent + linkable, unit toggle |

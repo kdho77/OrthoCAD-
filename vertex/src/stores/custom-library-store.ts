@@ -1,0 +1,104 @@
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import type { LibraryElementItem, LibraryPrefabItem } from "@/lib/library/manifest";
+
+export interface LocalGlbAsset {
+    id: string;
+    name: string;
+    category: string;
+    parentStockId?: string | null;
+    /** Base64 GLB for offline persistence. */
+    glbBase64: string;
+    createdAt: string;
+}
+
+export interface CustomLibraryStore {
+    customElements: LibraryElementItem[];
+    customPrefabs: LibraryPrefabItem[];
+    /** Offline GLB blobs keyed by custom item id. */
+    localGlbs: Record<string, LocalGlbAsset>;
+    loading: boolean;
+
+    setCustomElements: (items: LibraryElementItem[]) => void;
+    setCustomPrefabs: (items: LibraryPrefabItem[]) => void;
+    addCustomElement: (item: LibraryElementItem, glbBase64?: string) => void;
+    addCustomPrefab: (item: LibraryPrefabItem, glbBase64?: string) => void;
+    removeCustomElement: (id: string) => void;
+    removeCustomPrefab: (id: string) => void;
+    setLoading: (loading: boolean) => void;
+    getLocalGlb: (id: string) => LocalGlbAsset | undefined;
+}
+
+export const useCustomLibraryStore = create<CustomLibraryStore>()(
+    persist(
+        (set, get) => ({
+            customElements: [],
+            customPrefabs: [],
+            localGlbs: {},
+            loading: false,
+
+            setCustomElements: (customElements) => set({ customElements }),
+            setCustomPrefabs: (customPrefabs) => set({ customPrefabs }),
+
+            addCustomElement: (item, glbBase64) =>
+                set((s) => {
+                    const next = { ...s.localGlbs };
+                    if (glbBase64) {
+                        next[item.id] = {
+                            id: item.id,
+                            name: item.name,
+                            category: item.category,
+                            parentStockId: item.parentStockId,
+                            glbBase64,
+                            createdAt: item.createdAt ?? new Date().toISOString(),
+                        };
+                    }
+                    return {
+                        customElements: [item, ...s.customElements.filter((e) => e.id !== item.id)],
+                        localGlbs: next,
+                    };
+                }),
+
+            addCustomPrefab: (item, glbBase64) =>
+                set((s) => {
+                    const next = { ...s.localGlbs };
+                    if (glbBase64) {
+                        next[item.id] = {
+                            id: item.id,
+                            name: item.name,
+                            category: item.category,
+                            parentStockId: item.parentStockId,
+                            glbBase64,
+                            createdAt: item.createdAt ?? new Date().toISOString(),
+                        };
+                    }
+                    return {
+                        customPrefabs: [item, ...s.customPrefabs.filter((e) => e.id !== item.id)],
+                        localGlbs: next,
+                    };
+                }),
+
+            removeCustomElement: (id) =>
+                set((s) => {
+                    const { [id]: _, ...localGlbs } = s.localGlbs;
+                    return {
+                        customElements: s.customElements.filter((e) => e.id !== id),
+                        localGlbs,
+                    };
+                }),
+
+            removeCustomPrefab: (id) =>
+                set((s) => {
+                    const { [id]: _, ...localGlbs } = s.localGlbs;
+                    return {
+                        customPrefabs: s.customPrefabs.filter((e) => e.id !== id),
+                        localGlbs,
+                    };
+                }),
+
+            setLoading: (loading) => set({ loading }),
+            getLocalGlb: (id) => get().localGlbs[id],
+        }),
+        { name: "vertex-custom-library" },
+    ),
+);

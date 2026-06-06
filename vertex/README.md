@@ -85,6 +85,10 @@ server/         Node + tRPC API (auth ctx, export.authorize, user.me, ai.parsePr
 - **Phase 5 (done):** Supabase auth enforcement + login/sign-out, comprehensive
   audit logs, input clamping, vendor code-splitting + drag throttling, and a
   Render Blueprint. See `VALIDATION.md`.
+- **Phase 6 (done):** user custom GLB creation and personal library — trim/vertex
+  mesh editing, GLTFExporter export, Supabase Storage upload, `custom_elements` /
+  `custom_prefabs` Prisma tables, token-gated save, and "My Custom Library" in the
+  Elements panel and pattern selector.
 
 ## Deployment
 
