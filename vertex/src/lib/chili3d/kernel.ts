@@ -10,10 +10,20 @@ export interface SolidResult {
 }
 
 // Geometry kernel abstraction — procedural Three.js fallback or OpenCascade WASM.
+//
+// Two tiers coexist behind one interface (see docs/hybrid-geometry-architecture.md):
+//   - "preview"        fast procedural mesh, used for real-time editing.
+//   - "authoritative"  watertight OCCT BRep solid, used on Confirm / Export.
+// Callers branch on `tier` (not on `name`) when they need to know whether the
+// kernel can produce a true manufacturing-grade solid.
+
+export type GeometryTier = "preview" | "authoritative";
 
 export interface IGeometryKernel {
     readonly name: string;
     readonly ready: boolean;
+    /** Quality tier of geometry this kernel produces. */
+    readonly tier: GeometryTier;
 
     buildInsole(params: InsoleParams): BufferGeometry;
     /** Builds the insole and reports whether the result is a watertight solid. */
@@ -24,6 +34,7 @@ export interface IGeometryKernel {
 class ThreeKernel implements IGeometryKernel {
     readonly name = "three-procedural";
     readonly ready = true;
+    readonly tier: GeometryTier = "preview";
 
     buildInsole(params: InsoleParams): BufferGeometry {
         return buildInsoleGeometry(params);
@@ -48,6 +59,11 @@ let occtLoadAttempted = false;
 
 export function getKernel(): IGeometryKernel {
     return kernel;
+}
+
+/** True when the active kernel can produce authoritative (watertight OCCT) solids. */
+export function isAuthoritativeKernel(): boolean {
+    return kernel.tier === "authoritative";
 }
 
 /**

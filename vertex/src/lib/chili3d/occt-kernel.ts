@@ -1,7 +1,7 @@
 import { shapesToStl, type IShape } from "@chili3d/core";
 import { ShapeFactory } from "@chili3d/wasm";
 import type { BufferGeometry } from "three";
-import type { IGeometryKernel, SolidResult } from "@/lib/chili3d/kernel";
+import type { GeometryTier, IGeometryKernel, SolidResult } from "@/lib/chili3d/kernel";
 import { buildInsoleGeometry, type InsoleParams } from "@/lib/geometry/insole";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { shapeToBufferGeometry } from "@/lib/geometry/mesh-bridge";
@@ -14,6 +14,7 @@ const shapeByGeometry = new WeakMap<BufferGeometry, IShape>();
 export class OcctKernel implements IGeometryKernel {
     readonly name = "opencascade-wasm";
     readonly ready = true;
+    readonly tier: GeometryTier = "authoritative";
 
     private readonly factory = new ShapeFactory();
 
