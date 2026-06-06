@@ -2,7 +2,7 @@ import { Cpu, Download, Lock, Printer, Play } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
-import { buildInsoleGeometry } from "@/lib/geometry/insole";
+import { getKernel } from "@/lib/chili3d";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { type CamOverrides, type CamResult, generateGcode, presetsForMethod } from "@/lib/kiri";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
@@ -41,7 +41,7 @@ export function PrintingPanel() {
         : { layerHeightMm: layerHeight, infillDensity: infill / 100 };
 
     const buildGeom = () =>
-        buildInsoleGeometry({
+        getKernel().buildInsole({
             side,
             lengthMm: INSOLE_LENGTH_MM,
             widthMm: INSOLE_WIDTH_MM,

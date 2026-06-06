@@ -1,9 +1,8 @@
+import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/chili3d";
-import { buildInsoleGeometry } from "@/lib/geometry/insole";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
-import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -19,7 +18,7 @@ export interface ExportOutcome {
 
 function buildSideGeometry(side: Side) {
     const { design } = useDesignStore.getState();
-    return buildInsoleGeometry({
+    return getKernel().buildInsole({
         side,
         lengthMm: INSOLE_LENGTH_MM,
         widthMm: INSOLE_WIDTH_MM,
@@ -30,7 +29,11 @@ function buildSideGeometry(side: Side) {
 }
 
 /** Server-authoritative token gate shared by STL and G-code exports. */
-async function authorize(format: ExportFormat, side: Side, fileName: string): Promise<{ ok: boolean; reason?: string }> {
+async function authorize(
+    format: ExportFormat,
+    side: Side,
+    fileName: string,
+): Promise<{ ok: boolean; reason?: string }> {
     const { user, license, deductTokens, setUser } = useAuthStore.getState();
     if (isApiConfigured()) {
         try {
@@ -101,7 +104,9 @@ export async function exportGcode(
     const { gcode, stats } = generateGcode(geometry, preset, overrides);
     const blob = new Blob([gcode], { type: "text/plain" });
     downloadBlob(blob, filename);
-    useAuditStore.getState().record("export_generated", `G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
+    useAuditStore
+        .getState()
+        .record("export_generated", `G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
 
     return { ok: true, filename, blob, stats };
 }

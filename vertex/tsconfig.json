@@ -19,7 +19,9 @@
         "noFallthroughCasesInSwitch": true,
         "baseUrl": ".",
         "paths": {
-            "@/*": ["./src/*"]
+            "@/*": ["./src/*"],
+            "@chili3d/core": ["./src/types/chili3d-shims.d.ts"],
+            "@chili3d/wasm": ["./src/types/chili3d-shims.d.ts"]
         }
     },
     "include": ["src", "vite.config.ts"]

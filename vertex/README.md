@@ -8,7 +8,7 @@ element addition, solid/shell generation, TPU printing (incl. belt printers) and
 ## Tech stack
 
 - **Frontend:** React 18 + Vite + TypeScript + TailwindCSS + shadcn-style UI + React Three Fiber
-- **3D kernel:** Forked Chili3D (OpenCascade WASM) — abstracted behind `IGeometryKernel`; Phase 0 ships a Three.js procedural kernel
+- **3D kernel:** Forked Chili3D (OpenCascade WASM) via `IGeometryKernel` — auto-loads OCCT at boot with procedural fallback
 - **Slicing / CAM:** Kiri:Moto (Phase 3)
 - **State:** Zustand
 - **Backend:** Node.js + tRPC (type-safe)
@@ -85,6 +85,10 @@ server/         Node + tRPC API (auth ctx, export.authorize, user.me, ai.parsePr
 - **Phase 5 (done):** Supabase auth enforcement + login/sign-out, comprehensive
   audit logs, input clamping, vendor code-splitting + drag throttling, and a
   Render Blueprint. See `VALIDATION.md`.
+- **Phase 6 (done):** full OpenCascade WASM kernel — lofted correction solids,
+  boolean element pads/sinks, heel skive cuts, watertight validation + repair,
+  OCCT STL export. Build WASM from repo root: `npm run setup:wasm && npm run
+  build:wasm`; Vertex copies binaries via `npm run prepare:wasm`.
 
 ## Deployment
 
