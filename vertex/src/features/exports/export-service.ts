@@ -1,5 +1,7 @@
 import { getKernel } from "@/lib/chili3d";
 import { buildInsoleGeometry } from "@/lib/geometry/insole";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { useAuthStore } from "@/stores/auth-store";
@@ -11,10 +13,39 @@ export interface ExportOutcome {
     reason?: string;
     filename?: string;
     blob?: Blob;
+    stats?: CamResult["stats"];
 }
 
-const INSOLE_LENGTH_MM = 260;
-const INSOLE_WIDTH_MM = 95;
+function buildSideGeometry(side: Side) {
+    const { design } = useDesignStore.getState();
+    return buildInsoleGeometry({
+        side,
+        lengthMm: INSOLE_LENGTH_MM,
+        widthMm: INSOLE_WIDTH_MM,
+        thicknessMm: design.thicknessMm,
+        corrections: design.corrections[side],
+        elements: design.elements.filter((e) => e.side === side),
+    });
+}
+
+/** Server-authoritative token gate shared by STL and G-code exports. */
+async function authorize(format: ExportFormat, side: Side, fileName: string): Promise<{ ok: boolean; reason?: string }> {
+    const { user, license, deductTokens, setUser } = useAuthStore.getState();
+    if (isApiConfigured()) {
+        try {
+            const res = await trpc.export.authorize.mutate({ format, side, fileName });
+            if (!res.ok) return { ok: false, reason: "Authorization denied" };
+            if (user) setUser({ ...user, tokenBalance: res.balance });
+            return { ok: true };
+        } catch (e) {
+            return { ok: false, reason: e instanceof Error ? e.message : "Export authorization failed" };
+        }
+    }
+    const check = canExport(user, license, format);
+    if (!check.ok) return { ok: false, reason: check.reason };
+    deductTokens(TOKEN_COST[format]);
+    return { ok: true };
+}
 
 function downloadBlob(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob);
@@ -36,41 +67,38 @@ function downloadBlob(blob: Blob, filename: string) {
  */
 export async function exportDesign(format: ExportFormat, side: Side = "left"): Promise<ExportOutcome> {
     if (format === "gcode") {
-        return { ok: false, reason: "G-code export is enabled in Phase 3 (Kiri:Moto)" };
+        return { ok: false, reason: "Use Generate + Export G-code in the Printing tab" };
     }
-
-    const { user, license, deductTokens, setUser } = useAuthStore.getState();
-    const { design } = useDesignStore.getState();
 
     const filename = `insole-${side}-${Date.now()}.stl`;
+    const auth = await authorize("stl", side, filename);
+    if (!auth.ok) return { ok: false, reason: auth.reason };
 
-    if (isApiConfigured()) {
-        try {
-            const res = await trpc.export.authorize.mutate({ format: "stl", side, fileName: filename });
-            if (!res.ok) return { ok: false, reason: "Authorization denied" };
-            // Sync authoritative balance from the server.
-            if (user) setUser({ ...user, tokenBalance: res.balance });
-        } catch (e) {
-            const message = e instanceof Error ? e.message : "Export authorization failed";
-            return { ok: false, reason: message };
-        }
-    } else {
-        const check = canExport(user, license, "stl");
-        if (!check.ok) return { ok: false, reason: check.reason };
-        deductTokens(TOKEN_COST.stl);
-    }
-
-    const geometry = buildInsoleGeometry({
-        side,
-        lengthMm: INSOLE_LENGTH_MM,
-        widthMm: INSOLE_WIDTH_MM,
-        thicknessMm: design.thicknessMm,
-        corrections: design.corrections[side],
-        elements: design.elements.filter((e) => e.side === side),
-    });
+    const geometry = buildSideGeometry(side);
     const stl = getKernel().exportSTL(geometry);
     const blob = new Blob([stl], { type: "model/stl" });
     downloadBlob(blob, filename);
 
     return { ok: true, filename, blob };
+}
+
+/**
+ * Token-protected G-code export. Slices/CAMs the side's solid with the chosen
+ * printer/mill preset, then (after server authorization) downloads the G-code.
+ */
+export async function exportGcode(
+    side: Side,
+    preset: PrinterPreset,
+    overrides: CamOverrides = {},
+): Promise<ExportOutcome> {
+    const filename = `insole-${side}-${preset.id}-${Date.now()}.gcode`;
+    const auth = await authorize("gcode", side, filename);
+    if (!auth.ok) return { ok: false, reason: auth.reason };
+
+    const geometry = buildSideGeometry(side);
+    const { gcode, stats } = generateGcode(geometry, preset, overrides);
+    const blob = new Blob([gcode], { type: "text/plain" });
+    downloadBlob(blob, filename);
+
+    return { ok: true, filename, blob, stats };
 }

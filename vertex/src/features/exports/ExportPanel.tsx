@@ -20,7 +20,6 @@ export function ExportPanel() {
     const [side, setSide] = useState<Side>("left");
 
     const stlCheck = canExport(user, license, "stl");
-    const gcodeCheck = canExport(user, license, "gcode");
 
     // Real-time solid validation for the selected side.
     const solid = useMemo(
@@ -81,13 +80,10 @@ export function ExportPanel() {
             </Button>
             {!stlCheck.ok ? <p className="text-xs text-amber-400">{stlCheck.reason}</p> : null}
 
-            <Button className="w-full" variant="secondary" disabled title="Phase 3">
+            <div className="flex items-center gap-2 rounded-md border border-border px-2 py-2 text-xs text-muted-foreground">
                 <FileCode2 className="h-4 w-4" />
-                Export G-code · {TOKEN_COST.gcode} tokens
-            </Button>
-            <p className="text-xs text-muted-foreground">
-                {gcodeCheck.ok ? "Slicing & G-code arrive in Phase 3 (Kiri:Moto)." : `G-code locked: ${gcodeCheck.reason}`}
-            </p>
+                G-code (slicing / CNC) is in the <span className="text-foreground">Printing</span> tab · {TOKEN_COST.gcode} tokens
+            </div>
 
             {status ? <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p> : null}
         </div>
