@@ -1,3 +1,4 @@
+import path from "node:path";
 import { DefinePlugin } from "@rspack/core";
 import { defineConfig } from "@rstest/core";
 import packages from "./package.json";
@@ -25,6 +26,13 @@ export default defineConfig({
                     __IS_PRODUCTION__: JSON.stringify(process.env.NODE_ENV === "production"),
                 }),
             ],
+        },
+    },
+    resolve: {
+        alias: {
+            "@": path.resolve(__dirname, "vertex/src"),
+            "@chili3d/core": path.resolve(__dirname, "packages/core/src/index.ts"),
+            "@chili3d/wasm": path.resolve(__dirname, "packages/wasm/src/index.ts"),
         },
     },
     source: {

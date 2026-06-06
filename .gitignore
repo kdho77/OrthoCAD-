@@ -1,6 +1,7 @@
 node_modules
 build
 dist
+vertex/public/chili-wasm/
 coverage
 .VSCodeCounter
 .DS_Store

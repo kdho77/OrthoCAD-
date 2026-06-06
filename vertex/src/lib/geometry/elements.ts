@@ -5,14 +5,14 @@ import type { ElementKind, PlacedElement } from "@/types";
 // into the insole surface — the procedural-kernel equivalent of a boolean union
 // (positive) or cut (negative). Keeps the resulting solid watertight.
 
-interface ElementProfile {
+export interface ElementProfile {
     /** Base radii in mm along (length, width) before per-element scale. */
     rxMm: number;
     ryMm: number;
     sign: 1 | -1;
 }
 
-const PROFILES: Record<ElementKind, ElementProfile> = {
+export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
     met_pad: { rxMm: 16, ryMm: 13, sign: 1 },
     met_bar: { rxMm: 11, ryMm: 34, sign: 1 },
     cluffy_wedge: { rxMm: 14, ryMm: 12, sign: 1 },
@@ -51,7 +51,7 @@ export function elementHeightAt(
         const lx = dx * Math.cos(a) - dy * Math.sin(a);
         const ly = dx * Math.sin(a) + dy * Math.cos(a);
 
-        const p = PROFILES[el.kind];
+        const p = ELEMENT_PROFILES[el.kind];
         const rx = Math.max(2, p.rxMm * el.scale.x);
         const ry = Math.max(2, p.ryMm * el.scale.y);
         const t = Math.hypot(lx / rx, ly / ry);
