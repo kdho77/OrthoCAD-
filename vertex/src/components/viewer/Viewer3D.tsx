@@ -1,32 +1,55 @@
 import { Grid, OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
-import { Activity, Box, Eye, EyeOff, Layers, Maximize2, Move, PenTool, PencilLine, Rotate3d, Scale3d, Scissors, X } from "lucide-react";
+import {
+    Activity,
+    Box,
+    Eye,
+    EyeOff,
+    Layers,
+    Maximize2,
+    Move,
+    PencilLine,
+    PenTool,
+    Rotate3d,
+    Scale3d,
+    Scissors,
+    X,
+} from "lucide-react";
 import { Suspense, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
-import { useDesignStore } from "@/stores/design-store";
+import { cn } from "@/lib/utils";
+import { type CameraView, useDesignStore } from "@/stores/design-store";
+import { useKernelStore } from "@/stores/kernel-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
-import { useKernelStore } from "@/stores/kernel-store";
-import { cn } from "@/lib/utils";
 import { CustomPrefabMesh } from "./CustomPrefabMesh";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
-import { TrimlineEditTools } from "./TrimlineEditTools";
 import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
 import { ScanMeshes } from "./ScanMeshes";
+import { TrimlineEditTools } from "./TrimlineEditTools";
 
-type ViewName = "front" | "back" | "left" | "right" | "top" | "iso";
-
-const VIEWS: { name: ViewName; label: string; pos: [number, number, number] }[] = [
+const VIEWS: { name: CameraView; label: string; pos: [number, number, number] }[] = [
     { name: "iso", label: "Orbit", pos: [220, 200, 260] },
     { name: "front", label: "Front", pos: [0, 40, 360] },
     { name: "back", label: "Back", pos: [0, 40, -360] },
     { name: "left", label: "Left", pos: [-360, 40, 0] },
     { name: "right", label: "Right", pos: [360, 40, 0] },
-    { name: "top", label: "Top", pos: [0, 380, 0.001] },
+    { name: "top", label: "Top", pos: [0, 400, 0.001] },
+    { name: "bottom", label: "Bottom", pos: [0, -400, 0.001] },
 ];
+
+const VIEW_LABELS: Record<CameraView, string> = {
+    iso: "Orbit",
+    front: "Front",
+    back: "Back",
+    left: "Left",
+    right: "Right",
+    top: "Top",
+    bottom: "Bottom",
+};
 
 export function Viewer3D() {
     const controls = useRef<OrbitControlsImpl>(null);
@@ -45,12 +68,15 @@ export function Viewer3D() {
     const setShowPerf = usePerformanceStore((s) => s.setShowPerformanceMonitor);
     const interacting = usePerformanceStore((s) => s.interacting);
 
-    const setView = (pos: [number, number, number]) => {
+    const setView = (name: CameraView, pos: [number, number, number]) => {
         const c = controls.current;
-        if (!c) return;
-        c.object.position.set(...pos);
-        c.target.set(0, 0, 0);
-        c.update();
+        if (c) {
+            c.object.position.set(...pos);
+            c.target.set(0, 0, 0);
+            c.object.up.set(0, 1, 0);
+            c.update();
+        }
+        setViewer({ view: name });
     };
 
     return (
@@ -77,7 +103,12 @@ export function Viewer3D() {
                     {viewer.showLeft ? (
                         <>
                             {!showCustomPrefab ? (
-                                <InsoleMesh side="left" design={design} transparent={viewer.transparent} heightmap={viewer.heightmap} />
+                                <InsoleMesh
+                                    side="left"
+                                    design={design}
+                                    transparent={viewer.transparent}
+                                    heightmap={viewer.heightmap}
+                                />
                             ) : (
                                 <CustomPrefabMesh side="left" transparent={viewer.transparent} />
                             )}
@@ -86,7 +117,12 @@ export function Viewer3D() {
                     {viewer.showRight ? (
                         <>
                             {!showCustomPrefab ? (
-                                <InsoleMesh side="right" design={design} transparent={viewer.transparent} heightmap={viewer.heightmap} />
+                                <InsoleMesh
+                                    side="right"
+                                    design={design}
+                                    transparent={viewer.transparent}
+                                    heightmap={viewer.heightmap}
+                                />
                             ) : (
                                 <CustomPrefabMesh side="right" transparent={viewer.transparent} />
                             )}
@@ -121,31 +157,123 @@ export function Viewer3D() {
             </Canvas>
 
             {/* View buttons */}
-            <div className="absolute left-3 top-3 flex flex-wrap gap-1">
+            <div className="absolute left-3 top-3 flex max-w-[220px] flex-wrap gap-1">
                 {VIEWS.map((v) => (
-                    <Button key={v.name} size="sm" variant="secondary" className="h-7" onClick={() => setView(v.pos)}>
+                    <Button
+                        key={v.name}
+                        size="sm"
+                        variant={viewer.view === v.name ? "default" : "secondary"}
+                        className="h-7"
+                        onClick={() => setView(v.name, v.pos)}
+                    >
                         {v.label}
                     </Button>
                 ))}
             </div>
 
+            {/* Active view + edit-mode indicator */}
+            <div className="pointer-events-none absolute left-3 top-12 flex flex-col gap-1">
+                <span className="w-fit rounded bg-panel/80 px-2 py-0.5 text-[11px] font-medium text-foreground shadow backdrop-blur">
+                    {VIEW_LABELS[viewer.view]} view
+                </span>
+                {editMode === "edit-trimline" && trimlineEdit ? (
+                    <span className="w-fit rounded bg-orange-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Editing trimline · {trimlineEdit.side}
+                        {viewer.view !== "iso" ? " · plane-locked" : ""}
+                    </span>
+                ) : null}
+            </div>
+
             {/* Display toggles */}
             <div className="absolute right-3 top-3 flex flex-col gap-1">
-                <ToggleButton active={viewer.transparent} onClick={() => setViewer({ transparent: !viewer.transparent })} icon={<Maximize2 className="h-3.5 w-3.5" />} label="Transparent" />
-                <ToggleButton active={viewer.heightmap} onClick={() => setViewer({ heightmap: !viewer.heightmap })} icon={<Layers className="h-3.5 w-3.5" />} label="Heightmap" />
-                <ToggleButton active={viewer.showLeft} onClick={() => setViewer({ showLeft: !viewer.showLeft })} icon={viewer.showLeft ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />} label="Left" />
-                <ToggleButton active={viewer.showRight} onClick={() => setViewer({ showRight: !viewer.showRight })} icon={viewer.showRight ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />} label="Right" />
-                <ToggleButton active={showPerf} onClick={() => setShowPerf(!showPerf)} icon={<Activity className="h-3.5 w-3.5" />} label="FPS Monitor" />
+                <ToggleButton
+                    active={viewer.transparent}
+                    onClick={() => setViewer({ transparent: !viewer.transparent })}
+                    icon={<Maximize2 className="h-3.5 w-3.5" />}
+                    label="Transparent"
+                />
+                <ToggleButton
+                    active={viewer.heightmap}
+                    onClick={() => setViewer({ heightmap: !viewer.heightmap })}
+                    icon={<Layers className="h-3.5 w-3.5" />}
+                    label="Heightmap"
+                />
+                <ToggleButton
+                    active={viewer.showLeft}
+                    onClick={() => setViewer({ showLeft: !viewer.showLeft })}
+                    icon={
+                        viewer.showLeft ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
+                    }
+                    label="Left"
+                />
+                <ToggleButton
+                    active={viewer.showRight}
+                    onClick={() => setViewer({ showRight: !viewer.showRight })}
+                    icon={
+                        viewer.showRight ? (
+                            <Eye className="h-3.5 w-3.5" />
+                        ) : (
+                            <EyeOff className="h-3.5 w-3.5" />
+                        )
+                    }
+                    label="Right"
+                />
+                <ToggleButton
+                    active={showPerf}
+                    onClick={() => setShowPerf(!showPerf)}
+                    icon={<Activity className="h-3.5 w-3.5" />}
+                    label="FPS Monitor"
+                />
             </div>
 
             {/* Element / mesh edit toolbar */}
             {selectedElementId ? (
                 <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
-                    <ModeButton active={editMode === "transform" && transformMode === "translate"} onClick={() => { setEditMode("transform"); setTransformMode("translate"); }} icon={<Move className="h-3.5 w-3.5" />} label="Move" />
-                    <ModeButton active={editMode === "transform" && transformMode === "rotate"} onClick={() => { setEditMode("transform"); setTransformMode("rotate"); }} icon={<Rotate3d className="h-3.5 w-3.5" />} label="Rotate" />
-                    <ModeButton active={editMode === "transform" && transformMode === "scale"} onClick={() => { setEditMode("transform"); setTransformMode("scale"); }} icon={<Scale3d className="h-3.5 w-3.5" />} label="Scale" />
-                    <ModeButton active={editMode === "trim"} onClick={() => { setEditMode("trim"); setTarget({ type: "element", id: selectedElementId }); }} icon={<Scissors className="h-3.5 w-3.5" />} label="Trim" />
-                    <ModeButton active={editMode === "vertex"} onClick={() => { setEditMode("vertex"); setTarget({ type: "element", id: selectedElementId }); }} icon={<PenTool className="h-3.5 w-3.5" />} label="Vertex" />
+                    <ModeButton
+                        active={editMode === "transform" && transformMode === "translate"}
+                        onClick={() => {
+                            setEditMode("transform");
+                            setTransformMode("translate");
+                        }}
+                        icon={<Move className="h-3.5 w-3.5" />}
+                        label="Move"
+                    />
+                    <ModeButton
+                        active={editMode === "transform" && transformMode === "rotate"}
+                        onClick={() => {
+                            setEditMode("transform");
+                            setTransformMode("rotate");
+                        }}
+                        icon={<Rotate3d className="h-3.5 w-3.5" />}
+                        label="Rotate"
+                    />
+                    <ModeButton
+                        active={editMode === "transform" && transformMode === "scale"}
+                        onClick={() => {
+                            setEditMode("transform");
+                            setTransformMode("scale");
+                        }}
+                        icon={<Scale3d className="h-3.5 w-3.5" />}
+                        label="Scale"
+                    />
+                    <ModeButton
+                        active={editMode === "trim"}
+                        onClick={() => {
+                            setEditMode("trim");
+                            setTarget({ type: "element", id: selectedElementId });
+                        }}
+                        icon={<Scissors className="h-3.5 w-3.5" />}
+                        label="Trim"
+                    />
+                    <ModeButton
+                        active={editMode === "vertex"}
+                        onClick={() => {
+                            setEditMode("vertex");
+                            setTarget({ type: "element", id: selectedElementId });
+                        }}
+                        icon={<PenTool className="h-3.5 w-3.5" />}
+                        label="Vertex"
+                    />
                     <Button size="sm" variant="ghost" className="h-7" onClick={() => selectElement(null)}>
                         <X className="h-3.5 w-3.5" />
                     </Button>
@@ -158,14 +286,40 @@ export function Viewer3D() {
                         icon={<PencilLine className="h-3.5 w-3.5" />}
                         label="Edit trimline"
                     />
-                    <ModeButton active={editMode === "trim"} onClick={() => { setEditMode("trim"); setTarget({ type: "insole", side: viewer.showLeft ? "left" : "right" }); }} icon={<Scissors className="h-3.5 w-3.5" />} label="Trim" />
-                    <ModeButton active={editMode === "vertex"} onClick={() => { setEditMode("vertex"); setTarget({ type: "insole", side: viewer.showLeft ? "left" : "right" }); }} icon={<PenTool className="h-3.5 w-3.5" />} label="Vertex" />
+                    <ModeButton
+                        active={editMode === "trim"}
+                        onClick={() => {
+                            setEditMode("trim");
+                            setTarget({ type: "insole", side: viewer.showLeft ? "left" : "right" });
+                        }}
+                        icon={<Scissors className="h-3.5 w-3.5" />}
+                        label="Trim"
+                    />
+                    <ModeButton
+                        active={editMode === "vertex"}
+                        onClick={() => {
+                            setEditMode("vertex");
+                            setTarget({ type: "insole", side: viewer.showLeft ? "left" : "right" });
+                        }}
+                        icon={<PenTool className="h-3.5 w-3.5" />}
+                        label="Vertex"
+                    />
                     {editMode === "edit-trimline" && trimlineEdit ? (
                         <>
-                            <Button size="sm" variant="default" className="h-7 text-[11px]" onClick={confirmTrimlineEdit}>
+                            <Button
+                                size="sm"
+                                variant="default"
+                                className="h-7 text-[11px]"
+                                onClick={confirmTrimlineEdit}
+                            >
                                 Confirm
                             </Button>
-                            <Button size="sm" variant="ghost" className="h-7 text-[11px]" onClick={cancelTrimlineEdit}>
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-[11px]"
+                                onClick={cancelTrimlineEdit}
+                            >
                                 Cancel
                             </Button>
                         </>
@@ -176,7 +330,8 @@ export function Viewer3D() {
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="h-3.5 w-3.5" />
                 {interacting ? "Preview mesh · " : ""}
-                {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural worker"} kernel · ⌘P Rx · ⌘E export · T transparent · Esc deselect
+                {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural worker"} kernel · ⌘P Rx
+                · ⌘E export · T transparent · Esc deselect
             </div>
         </div>
     );

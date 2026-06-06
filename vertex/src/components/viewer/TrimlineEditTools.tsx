@@ -14,8 +14,8 @@ import {
     sampleDefaultOutline,
     TRIMLINE_PICK_RADIUS_EDIT,
     TRIMLINE_PICK_RADIUS_IDLE,
-    trimlineToCurve,
     type TrimlineCurve,
+    trimlineToCurve,
 } from "@/lib/geometry/trimline";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -23,6 +23,7 @@ import { usePerformanceStore } from "@/stores/performance-store";
 import type { Side } from "@/types";
 
 const CENTER_X = INSOLE_LENGTH_MM / 2;
+const INFLUENCE_RADIUS = 12;
 
 /** Interactive trimline picking, drag-to-reshape, and preview overlays. */
 export function TrimlineEditTools() {
@@ -43,7 +44,7 @@ export function TrimlineEditTools() {
                 const isEditing = editMode === "edit-trimline" && trimlineEdit?.side === side;
                 const curve = isEditing
                     ? trimlineEdit!.draft
-                    : getDesignTrimline(design, side) ?? getTrimlineForSide(side);
+                    : (getDesignTrimline(design, side) ?? getTrimlineForSide(side));
 
                 return (
                     <TrimlineSideOverlay
@@ -79,12 +80,19 @@ function TrimlineSideOverlay({
     const setTrimlineDraft = useMeshEditStore((s) => s.setTrimlineDraft);
     const setTrimlineDragAnchor = useMeshEditStore((s) => s.setTrimlineDragAnchor);
     const setTrimlineDragging = useMeshEditStore((s) => s.setTrimlineDragging);
-    const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const setInteracting = usePerformanceStore((s) => s.setInteracting);
 
     const groupRef = useRef<THREE.Group>(null);
-    const dragLocalRef = useRef<THREE.Vector3 | null>(null);
-    const { gl } = useThree();
+    const { gl, camera, raycaster } = useThree();
+
+    // Drag session refs — kept off React state so the rAF loop never re-renders mid-drag.
+    const dragPlaneRef = useRef(new THREE.Plane());
+    const anchorWorldRef = useRef(new THREE.Vector3());
+    const worldToLocalRef = useRef(new THREE.Matrix4());
+    const basePointsRef = useRef<THREE.Vector3[]>([]);
+    const anchorIndexRef = useRef<number>(0);
+    const pendingDeltaRef = useRef<THREE.Vector3 | null>(null);
+    const rafRef = useRef<number | null>(null);
 
     const pickRadius = isEditing ? TRIMLINE_PICK_RADIUS_EDIT : TRIMLINE_PICK_RADIUS_IDLE;
 
@@ -108,17 +116,129 @@ function TrimlineSideOverlay({
         return m;
     }, [offsetY]);
 
+    /** Apply the latest pending delta to the draft (one update per animation frame). */
+    const flushDraft = useCallback(() => {
+        rafRef.current = null;
+        const delta = pendingDeltaRef.current;
+        if (!delta) return;
+        const deformed = deformTrimlineSection(
+            basePointsRef.current,
+            anchorIndexRef.current,
+            delta,
+            INFLUENCE_RADIUS,
+        );
+        setTrimlineDraft(deformed);
+    }, [setTrimlineDraft]);
+
+    /** Compute the constrained footprint delta for a screen pointer position. */
+    const computeLocalDelta = useCallback(
+        (clientX: number, clientY: number): THREE.Vector3 | null => {
+            const rect = gl.domElement.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return null;
+            const ndc = new THREE.Vector2(
+                ((clientX - rect.left) / rect.width) * 2 - 1,
+                -((clientY - rect.top) / rect.height) * 2 + 1,
+            );
+            raycaster.setFromCamera(ndc, camera);
+            const worldHit = new THREE.Vector3();
+            if (!raycaster.ray.intersectPlane(dragPlaneRef.current, worldHit)) return null;
+
+            // Convert both anchor and hit into local footprint space, then diff.
+            // The translation cancels, leaving a pure in-plane displacement (no twist).
+            const wl = worldToLocalRef.current;
+            const aLocal = anchorWorldRef.current.clone().applyMatrix4(wl);
+            const pLocal = worldHit.applyMatrix4(wl);
+            return pLocal.sub(aLocal);
+        },
+        [camera, gl.domElement, raycaster],
+    );
+
+    const handleWindowMove = useCallback(
+        (ev: PointerEvent) => {
+            const delta = computeLocalDelta(ev.clientX, ev.clientY);
+            if (!delta) return;
+            pendingDeltaRef.current = delta;
+            if (rafRef.current === null) rafRef.current = requestAnimationFrame(flushDraft);
+        },
+        [computeLocalDelta, flushDraft],
+    );
+
+    const endDrag = useCallback(
+        (ev?: PointerEvent) => {
+            window.removeEventListener("pointermove", handleWindowMove);
+            window.removeEventListener("pointerup", endDrag);
+            window.removeEventListener("pointercancel", endDrag);
+            if (rafRef.current !== null) {
+                cancelAnimationFrame(rafRef.current);
+                rafRef.current = null;
+            }
+            // Commit the final pointer position before tearing the session down.
+            flushDraft();
+            pendingDeltaRef.current = null;
+            setTrimlineDragging(false);
+            setTrimlineDragAnchor(null, null);
+            setInteracting(false);
+            if (ev) {
+                try {
+                    gl.domElement.releasePointerCapture(ev.pointerId);
+                } catch {
+                    // pointer may already be released
+                }
+            }
+        },
+        [
+            flushDraft,
+            gl.domElement,
+            handleWindowMove,
+            setInteracting,
+            setTrimlineDragAnchor,
+            setTrimlineDragging,
+        ],
+    );
+
     const startDrag = useCallback(
         (e: ThreeEvent<PointerEvent>, anchorIndex: number) => {
-            const local = projectToFootprintPlane(e.point, getWorldMatrix());
-            dragLocalRef.current = local.clone();
-            setTrimlineDragAnchor(anchorIndex, local);
+            const worldMatrix = getWorldMatrix();
+            worldToLocalRef.current = worldMatrix.clone().invert();
+            anchorWorldRef.current.copy(e.point);
+            basePointsRef.current = curve.points.map((p) => p.clone());
+            anchorIndexRef.current = anchorIndex;
+            pendingDeltaRef.current = null;
+
+            // Constraint plane faces the camera and passes through the anchor.
+            // The camera-forward axis (depth) is locked → drag stays in the view plane.
+            const normal = camera.getWorldDirection(new THREE.Vector3());
+            dragPlaneRef.current.setFromNormalAndCoplanarPoint(normal, e.point);
+
+            const startLocal = projectToFootprintPlane(e.point, worldMatrix);
+            setTrimlineDragAnchor(anchorIndex, startLocal);
             setTrimlineDragging(true);
             setInteracting(true, "trimline");
-            gl.domElement.setPointerCapture(e.nativeEvent.pointerId);
+
+            try {
+                gl.domElement.setPointerCapture(e.nativeEvent.pointerId);
+            } catch {
+                // capture is best-effort; window listeners still track the drag
+            }
+            window.addEventListener("pointermove", handleWindowMove);
+            window.addEventListener("pointerup", endDrag);
+            window.addEventListener("pointercancel", endDrag);
         },
-        [getWorldMatrix, gl.domElement, setInteracting, setTrimlineDragAnchor, setTrimlineDragging],
+        [
+            camera,
+            curve.points,
+            endDrag,
+            getWorldMatrix,
+            gl.domElement,
+            handleWindowMove,
+            setInteracting,
+            setTrimlineDragAnchor,
+            setTrimlineDragging,
+        ],
     );
+
+    // Tear down listeners if the component unmounts mid-drag.
+    useEffect(() => endDrag, [endDrag]);
 
     const onPointerDownHandle = useCallback(
         (e: ThreeEvent<PointerEvent>, pointIndex: number) => {
@@ -132,39 +252,6 @@ function TrimlineSideOverlay({
         [isEditing, onOutlineClick, startDrag],
     );
 
-    const onPointerMove = useCallback(
-        (e: ThreeEvent<PointerEvent>) => {
-            if (!isEditing || !trimlineEdit?.isDragging || trimlineEdit.dragAnchorIndex === null) return;
-            e.stopPropagation();
-
-            const local = projectToFootprintPlane(e.point, getWorldMatrix());
-            const start = dragLocalRef.current ?? trimlineEdit.dragStartLocal;
-            if (!start) return;
-
-            const delta = local.clone().sub(start);
-            const deformed = deformTrimlineSection(curve.points, trimlineEdit.dragAnchorIndex, delta, 12);
-            setTrimlineDraft(deformed);
-        },
-        [curve.points, getWorldMatrix, isEditing, setTrimlineDraft, trimlineEdit],
-    );
-
-    const onPointerUp = useCallback(
-        (e: ThreeEvent<PointerEvent>) => {
-            if (!isEditing || !trimlineEdit?.isDragging) return;
-            e.stopPropagation();
-            setTrimlineDragging(false);
-            setTrimlineDragAnchor(null, null);
-            dragLocalRef.current = null;
-            setInteracting(false);
-            try {
-                gl.domElement.releasePointerCapture(e.nativeEvent.pointerId);
-            } catch {
-                // pointer may already be released
-            }
-        },
-        [gl.domElement, isEditing, setInteracting, setTrimlineDragAnchor, setTrimlineDragging, trimlineEdit?.isDragging],
-    );
-
     const onPickPointerDown = useCallback(
         (e: ThreeEvent<PointerEvent>) => {
             e.stopPropagation();
@@ -172,61 +259,31 @@ function TrimlineSideOverlay({
                 onOutlineClick();
                 return;
             }
-
             const local = projectToFootprintPlane(e.point, getWorldMatrix());
             startDrag(e, pickTrimlineAnchorIndex(local, curve));
         },
         [curve, getWorldMatrix, isEditing, onOutlineClick, startDrag],
     );
 
-    const catmull = useMemo(() => trimlineToCurve(displayPoints, true), [displayPoints]);
+    // Pick-tube geometry is only needed to start a drag, so freeze it while dragging
+    // to avoid rebuilding a TubeGeometry on every preview frame.
+    const frozenPickPointsRef = useRef(displayPoints);
+    if (!isDragging) frozenPickPointsRef.current = displayPoints;
+    const pickPoints = isDragging ? frozenPickPointsRef.current : displayPoints;
+
+    const pickCatmull = useMemo(() => trimlineToCurve(pickPoints, true), [pickPoints]);
 
     const pickTubeGeo = useMemo(
-        () => new THREE.TubeGeometry(catmull, Math.max(64, curve.points.length * 2), pickRadius, 10, true),
-        [catmull, curve.points.length, pickRadius],
+        () => new THREE.TubeGeometry(pickCatmull, Math.max(48, pickPoints.length), pickRadius, 8, true),
+        [pickCatmull, pickPoints.length, pickRadius],
     );
 
-    const widePickTubeGeo = useMemo(
-        () =>
-            new THREE.TubeGeometry(
-                catmull,
-                Math.max(64, curve.points.length * 2),
-                pickRadius * 1.35,
-                8,
-                true,
-            ),
-        [catmull, curve.points.length, pickRadius],
-    );
-
-    useEffect(
-        () => () => {
-            pickTubeGeo.dispose();
-            widePickTubeGeo.dispose();
-        },
-        [pickTubeGeo, widePickTubeGeo],
-    );
+    useEffect(() => () => pickTubeGeo.dispose(), [pickTubeGeo]);
 
     return (
         <group ref={groupRef} position={[-CENTER_X, offsetY, 0]}>
-            {/* Primary pick tube — generous radius, always hittable above the insole mesh */}
-            <mesh
-                renderOrder={100}
-                geometry={pickTubeGeo}
-                onPointerDown={onPickPointerDown}
-                onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
-            >
-                <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
-            </mesh>
-
-            {/* Secondary wider shell for oblique views / near-miss clicks */}
-            <mesh
-                renderOrder={99}
-                geometry={widePickTubeGeo}
-                onPointerDown={onPickPointerDown}
-                onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
-            >
+            {/* Pick tube — generous radius, always hittable above the insole mesh */}
+            <mesh renderOrder={100} geometry={pickTubeGeo} onPointerDown={onPickPointerDown}>
                 <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
             </mesh>
 
@@ -235,20 +292,15 @@ function TrimlineSideOverlay({
             {isEditing
                 ? curve.points.map((p, i) => (
                       <mesh
+                          // biome-ignore lint/suspicious/noArrayIndexKey: control points are a fixed-order ring; index is their stable identity
                           key={i}
                           position={[p.x + CENTER_X, p.y, p.z + 2.5]}
                           renderOrder={101}
                           onPointerDown={(e) => onPointerDownHandle(e, i)}
-                          onPointerMove={onPointerMove}
-                          onPointerUp={onPointerUp}
                       >
                           <sphereGeometry args={[2.2, 10, 10]} />
                           <meshBasicMaterial
-                              color={
-                                  trimlineEdit?.dragAnchorIndex === i && trimlineEdit.isDragging
-                                      ? "#ef4444"
-                                      : "#fbbf24"
-                              }
+                              color={anchorIndexRef.current === i && isDragging ? "#ef4444" : "#fbbf24"}
                               depthTest={false}
                           />
                       </mesh>
@@ -273,9 +325,16 @@ function TrimlineVisual({
     tubeRadius?: number;
     dashed?: boolean;
 }) {
-    if (points.length < 2) return null;
+    const curve = useMemo(
+        () =>
+            new THREE.CatmullRomCurve3(
+                points.map((p) => p.clone()),
+                true,
+            ),
+        [points],
+    );
 
-    const curve = useMemo(() => new THREE.CatmullRomCurve3(points.map((p) => p.clone()), true), [points]);
+    if (points.length < 2) return null;
 
     return (
         <mesh renderOrder={10}>
