@@ -94,6 +94,19 @@ export interface PlacedElement {
     heightMm: number;
 }
 
+/** Serializable trimline control points stored in design state. */
+export interface TrimlinePoint {
+    x: number;
+    y: number;
+    z: number;
+}
+
+/** Per-side custom insole perimeter curves (local footprint mm). */
+export interface DesignTrimlines {
+    left?: TrimlinePoint[];
+    right?: TrimlinePoint[];
+}
+
 export interface DesignState {
     pattern: ScanPattern;
     /** When pattern is driven by a user custom prefab. */
@@ -103,6 +116,8 @@ export interface DesignState {
     thicknessMm: number;
     corrections: Corrections;
     elements: PlacedElement[];
+    /** User-edited insole outline curves — persisted with the design. */
+    trimlines?: DesignTrimlines;
 }
 
 // --- Custom library (user-owned GLB assets) --------------------------------

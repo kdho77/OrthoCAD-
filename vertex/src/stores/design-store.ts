@@ -1,4 +1,7 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
+import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type {
     Corrections,
@@ -82,11 +85,18 @@ export interface DesignStore {
     /** Replace the entire design (used when opening a saved design). */
     loadDesign: (design: DesignState) => void;
 
+    /** Persist a confirmed trimline curve for one foot side. */
+    setSideTrimline: (side: Side, curve: TrimlineCurve | null) => void;
+    /** Remove custom trimline for one side (revert to parametric outline). */
+    clearSideTrimline: (side: Side) => void;
+
     setViewer: (patch: Partial<ViewerSettings>) => void;
     reset: () => void;
 }
 
-export const useDesignStore = create<DesignStore>((set) => ({
+export const useDesignStore = create<DesignStore>()(
+    persist(
+        (set) => ({
     design: defaultDesign(),
     viewer: { transparent: false, heightmap: false, showLeft: true, showRight: true },
     selectedElementId: null,
@@ -220,12 +230,50 @@ export const useDesignStore = create<DesignStore>((set) => ({
 
     loadDesign: (design) => {
         usePerformanceStore.getState().clearAllPreviews();
+        useMeshEditStore.getState().cancelTrimlineEdit();
         set({ design, selectedElementId: null });
     },
+
+    setSideTrimline: (side, curve) =>
+        set((s) => {
+            const trimlines = { ...s.design.trimlines };
+            if (curve && curve.points.length >= 4) {
+                trimlines[side] = serializeTrimlineCurve(curve);
+            } else {
+                delete trimlines[side];
+            }
+            return {
+                design: {
+                    ...s.design,
+                    trimlines: Object.keys(trimlines).length > 0 ? trimlines : undefined,
+                },
+            };
+        }),
+
+    clearSideTrimline: (side) =>
+        set((s) => {
+            if (!s.design.trimlines?.[side]) return s;
+            const trimlines = { ...s.design.trimlines };
+            delete trimlines[side];
+            return {
+                design: {
+                    ...s.design,
+                    trimlines: Object.keys(trimlines).length > 0 ? trimlines : undefined,
+                },
+            };
+        }),
 
     setViewer: (patch) => set((s) => ({ viewer: { ...s.viewer, ...patch } })),
     reset: () => {
         usePerformanceStore.getState().clearAllPreviews();
+        useMeshEditStore.getState().cancelTrimlineEdit();
         set({ design: defaultDesign(), selectedElementId: null });
     },
-}));
+        }),
+        {
+            name: "vertex-design-session",
+            /** Keep live design (incl. trimlines) across page refresh before explicit Save. */
+            partialize: (state) => ({ design: state.design }),
+        },
+    ),
+);

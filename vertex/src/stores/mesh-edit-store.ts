@@ -2,7 +2,13 @@ import { create } from "zustand";
 import * as THREE from "three";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
-import { cloneTrimline, sampleDefaultOutline, type TrimlineCurve } from "@/lib/geometry/trimline";
+import {
+    cloneTrimline,
+    getDesignTrimline,
+    sampleDefaultOutline,
+    type TrimlineCurve,
+} from "@/lib/geometry/trimline";
+import { useDesignStore } from "@/stores/design-store";
 import type { Side } from "@/types";
 
 export type MeshEditMode = "transform" | "trim" | "vertex" | "edit-trimline";
@@ -20,7 +26,7 @@ export interface TrimlineEditSession {
     snapshot: TrimlineCurve;
     /** Control point index where the current drag started. */
     dragAnchorIndex: number | null;
-    /** World-space point where drag started (for delta computation). */
+    /** Local footprint point where drag started (for delta computation). */
     dragStartLocal: THREE.Vector3 | null;
     isDragging: boolean;
 }
@@ -31,8 +37,6 @@ export interface MeshEditStore {
     /** Active trim polyline being drawn (cut tool). */
     activeTrimPoints: THREE.Vector3[];
     trimLines: TrimLine[];
-    /** Committed insole perimeter curves per side — persisted for export/save. */
-    trimlineBySide: Partial<Record<Side, TrimlineCurve>>;
     /** Active trimline reshape session (draft vs committed). */
     trimlineEdit: TrimlineEditSession | null;
 
@@ -50,7 +54,7 @@ export interface MeshEditStore {
 
     /** Enter interactive trimline editing for a foot side. */
     beginTrimlineEdit: (side: Side) => void;
-    /** Commit draft trimline to the side store and exit edit mode. */
+    /** Commit draft trimline to design store and exit edit mode. */
     confirmTrimlineEdit: () => void;
     /** Revert draft to session snapshot and exit edit mode. */
     cancelTrimlineEdit: () => void;
@@ -59,11 +63,12 @@ export interface MeshEditStore {
     setTrimlineDragAnchor: (index: number | null, startLocal?: THREE.Vector3 | null) => void;
     setTrimlineDragging: (dragging: boolean) => void;
     getTrimlineForSide: (side: Side) => TrimlineCurve;
-    getActiveTrimline: (side: Side) => TrimlineCurve | null;
+    getCommittedTrimline: (side: Side) => TrimlineCurve | null;
 }
 
-function defaultTrimlineForSide(side: Side, committed: Partial<Record<Side, TrimlineCurve>>): TrimlineCurve {
-    return committed[side] ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
+function committedOrDefault(side: Side): TrimlineCurve {
+    const design = useDesignStore.getState().design;
+    return getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
 }
 
 export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
@@ -71,7 +76,6 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
     target: null,
     activeTrimPoints: [],
     trimLines: [],
-    trimlineBySide: {},
     trimlineEdit: null,
     vertexOverrides: new Map(),
     selectedVertex: null,
@@ -121,7 +125,6 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
         set({
             activeTrimPoints: [],
             trimLines: [],
-            trimlineBySide: {},
             trimlineEdit: null,
             vertexOverrides: new Map(),
             selectedVertex: null,
@@ -129,7 +132,7 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
         }),
 
     beginTrimlineEdit: (side) => {
-        const base = defaultTrimlineForSide(side, get().trimlineBySide);
+        const base = committedOrDefault(side);
         const snapshot = cloneTrimline(base);
         const draft = cloneTrimline(base);
         set({
@@ -149,26 +152,12 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
     confirmTrimlineEdit: () => {
         const session = get().trimlineEdit;
         if (!session) return;
-        set((s) => ({
-            trimlineBySide: {
-                ...s.trimlineBySide,
-                [session.side]: cloneTrimline(session.draft),
-            },
-            trimlineEdit: null,
-            editMode: "transform",
-        }));
+        useDesignStore.getState().setSideTrimline(session.side, session.draft);
+        set({ trimlineEdit: null, editMode: "transform" });
     },
 
     cancelTrimlineEdit: () => {
-        const session = get().trimlineEdit;
-        if (!session) {
-            set({ trimlineEdit: null, editMode: "transform" });
-            return;
-        }
-        set({
-            trimlineEdit: null,
-            editMode: "transform",
-        });
+        set({ trimlineEdit: null, editMode: "transform" });
     },
 
     setTrimlineDraft: (points) =>
@@ -200,11 +189,7 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
             return { trimlineEdit: { ...s.trimlineEdit, isDragging } };
         }),
 
-    getTrimlineForSide: (side) => defaultTrimlineForSide(side, get().trimlineBySide),
+    getTrimlineForSide: (side) => committedOrDefault(side),
 
-    getActiveTrimline: (side) => {
-        const session = get().trimlineEdit;
-        if (session?.side === side) return session.draft;
-        return get().trimlineBySide[side] ?? null;
-    },
+    getCommittedTrimline: (side) => getDesignTrimline(useDesignStore.getState().design, side),
 }));

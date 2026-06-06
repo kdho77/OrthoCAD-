@@ -27,6 +27,19 @@ const placedElement = z.object({
     heightMm: z.number(),
 });
 
+const trimlinePoint = z.object({
+    x: z.number(),
+    y: z.number(),
+    z: z.number(),
+});
+
+const designTrimlines = z
+    .object({
+        left: z.array(trimlinePoint).optional(),
+        right: z.array(trimlinePoint).optional(),
+    })
+    .optional();
+
 export const designStateSchema = z.object({
     pattern: z.enum(SCAN_PATTERNS),
     method: z.enum(PRODUCTION_METHODS),
@@ -38,6 +51,7 @@ export const designStateSchema = z.object({
         right: sideCorrection,
     }),
     elements: z.array(placedElement),
+    trimlines: designTrimlines,
 });
 
 export type DesignStatePayload = z.infer<typeof designStateSchema>;
