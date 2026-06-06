@@ -96,6 +96,9 @@ server/         Node + tRPC API (auth ctx, export.authorize, user.me, ai.parsePr
 - **Phase 7 (done):** high-performance optimization — Web Worker geometry pipeline,
   preview/full mesh quality, debounced slider + gizmo preview/commit, instanced
   element markers, worker-offloaded manifold checks, optional FPS monitor.
+- **Phase 8 (done):** full OpenCascade WASM kernel integration — unified
+  `IGeometryKernel` routing, OCCT booleans/skives/shelling/repair, production
+  validation with topology checks, worker preview fallback, `npm run build:wasm`.
 
 ## Deployment
 

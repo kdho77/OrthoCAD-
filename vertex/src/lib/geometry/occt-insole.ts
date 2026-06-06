@@ -210,8 +210,52 @@ function applySkives(
 }
 
 /**
+ * Hollows a closed solid for shell printing. Tries OCCT offset/join first, then
+ * boolean-cuts an inward offset core when join alone does not yield a closed BRep.
+ */
+function applyShelling(factory: IShapeFactory, solid: ISolid, wallThicknessMm: number): ISolid {
+    if (wallThicknessMm <= 0) return solid;
+
+    const outer = solid.clone() as ISolid;
+
+    const tryClosed = (shape: IShape): ISolid | null => {
+        const repaired = repairOcctSolid(factory, shape);
+        if (repaired.isClosed()) return repaired as ISolid;
+        return null;
+    };
+
+    const offsetAttempts = [-wallThicknessMm, wallThicknessMm] as const;
+    for (const offset of offsetAttempts) {
+        try {
+            const shelled = factory.makeThickSolidByJoin(outer, [], offset);
+            if (!shelled.isOk) continue;
+            const closed = tryClosed(shelled.value);
+            if (closed) return closed;
+        } catch {
+            // try next offset sign
+        }
+    }
+
+    try {
+        const inner = factory.makeThickSolidByJoin(outer, [], -wallThicknessMm);
+        if (inner.isOk) {
+            const hollow = factory.booleanCut([outer], [inner.value]);
+            if (hollow.isOk) {
+                const closed = tryClosed(hollow.value);
+                if (closed) return closed;
+            }
+        }
+    } catch (error) {
+        console.warn("[occt-insole] hollow boolean failed:", error);
+    }
+
+    console.warn("[occt-insole] shelling could not produce a closed solid; using uncut solid");
+    return solid;
+}
+
+/**
  * Builds a watertight insole solid with OpenCascade: lofted correction shell,
- * boolean element pads/sinks, heel skive cuts, then topology repair.
+ * boolean element pads/sinks, heel skive cuts, optional wall shelling, then repair.
  */
 export function buildOcctInsoleSolid(factory: IShapeFactory, params: InsoleParams): ISolid {
     let solid = buildBaseShell(factory, params);
@@ -233,6 +277,10 @@ export function buildOcctInsoleSolid(factory: IShapeFactory, params: InsoleParam
         } catch (error) {
             console.warn("[occt-insole] element boolean pass failed:", error);
         }
+    }
+
+    if (params.method === "printing_shell") {
+        solid = applyShelling(factory, solid, params.thicknessMm);
     }
 
     return ensureSolid(factory, solid);

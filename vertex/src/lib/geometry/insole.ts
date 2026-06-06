@@ -1,6 +1,6 @@
 import { BufferAttribute, BufferGeometry } from "three";
 import { heightAt, outlineHalfWidth, type HeightFieldParams } from "@/lib/geometry/height-field";
-import type { PlacedElement, Side, SideCorrections } from "@/types";
+import type { PlacedElement, ProductionMethod, Side, SideCorrections } from "@/types";
 
 // Generates a parametric orthotic insole mesh from correction parameters.
 // Procedural fallback when the OpenCascade WASM kernel is unavailable.
@@ -14,6 +14,8 @@ export interface InsoleParams {
     elements?: PlacedElement[];
     segmentsX?: number;
     segmentsY?: number;
+    /** Production method — `printing_shell` triggers OCCT wall shelling when WASM is active. */
+    method?: ProductionMethod;
 }
 
 export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {

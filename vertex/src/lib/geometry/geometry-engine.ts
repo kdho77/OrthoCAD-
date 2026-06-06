@@ -1,8 +1,11 @@
-import { BufferGeometry } from "three";
+import { BufferGeometry, Vector3 } from "three";
+import { getKernel } from "@/lib/chili3d";
 import { buildInsoleGeometry } from "@/lib/geometry/insole";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import { geometryToPayload, payloadToGeometry } from "@/lib/geometry/geometry-buffer";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
+import { isOcctKernelActive, scheduleMainThread } from "@/lib/geometry/kernel-build";
+import type { SolidValidation } from "@/lib/geometry/repair";
 import { segmentsForQuality, type GeometryQuality } from "@/lib/geometry/quality";
 import { serializeTrimLines, serializeVertexOverrides } from "@/lib/geometry/mesh-edit-serialize";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
@@ -14,6 +17,8 @@ export interface BuildInsoleOptions {
     quality?: GeometryQuality;
     trimLines?: TrimLine[];
     vertexOverrides?: Map<number, { x: number; y: number; z: number }>;
+    /** When true and OCCT is loaded, build on main thread via IGeometryKernel. */
+    preferKernel?: boolean;
 }
 
 interface PendingRequest {
@@ -78,14 +83,35 @@ class GeometryEngine {
     }
 
     async buildInsole(options: BuildInsoleOptions): Promise<BufferGeometry> {
-        const { params, quality = "full", trimLines = [], vertexOverrides = new Map() } = options;
+        const {
+            params,
+            quality = "full",
+            trimLines = [],
+            vertexOverrides = new Map(),
+            preferKernel = false,
+        } = options;
         const segments = segmentsForQuality(quality);
         const fullParams: InsoleParams = { ...params, ...segments };
+        const hasEdits = trimLines.length > 0 || vertexOverrides.size > 0;
+
+        // OCCT production path — procedural worker remains the interactive preview fallback.
+        if (preferKernel && isOcctKernelActive() && quality === "full") {
+            return scheduleMainThread(() => {
+                let geometry = getKernel().buildInsole(fullParams);
+                if (hasEdits) {
+                    geometry = applyTrimLines(geometry, trimLines);
+                    const vecMap = new Map<number, Vector3>();
+                    for (const [idx, v] of vertexOverrides) vecMap.set(idx, new Vector3(v.x, v.y, v.z));
+                    geometry = applyVertexOverrides(geometry, vecMap);
+                }
+                return geometry;
+            });
+        }
+
         const requestId = ++this.nextId;
         const buildGeneration = ++this.latestBuildId;
 
         const worker = this.ensureWorker();
-        const hasEdits = trimLines.length > 0 || vertexOverrides.size > 0;
 
         if (worker) {
             return new Promise((resolve, reject) => {
@@ -114,13 +140,26 @@ class GeometryEngine {
             });
         }
 
-        // Main-thread fallback.
+        // Main-thread procedural fallback.
         let geometry = buildInsoleGeometry(fullParams);
         if (hasEdits) {
             geometry = applyTrimLines(geometry, trimLines);
-            geometry = applyVertexOverrides(geometry, vertexOverrides);
+            const vecMap = new Map<number, Vector3>();
+            for (const [idx, v] of vertexOverrides) vecMap.set(idx, new Vector3(v.x, v.y, v.z));
+            geometry = applyVertexOverrides(geometry, vecMap);
         }
         return geometry;
+    }
+
+    /** Validates a production solid — uses OCCT topology when the kernel provides it. */
+    async validateProductionSolid(params: InsoleParams): Promise<SolidValidation> {
+        if (isOcctKernelActive()) {
+            const result = await scheduleMainThread(() => getKernel().buildInsoleSolid(params));
+            return result.manifold;
+        }
+        const geometry = await this.buildInsole({ params, quality: "full", preferKernel: false });
+        const mesh = await this.analyzeManifold(geometry);
+        return { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight };
     }
 
     async analyzeManifold(geometry: BufferGeometry): Promise<ManifoldReport> {

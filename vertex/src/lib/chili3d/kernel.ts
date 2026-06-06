@@ -59,16 +59,22 @@ export async function loadOcctKernel(): Promise<boolean> {
     if (occtLoadAttempted) return kernel.name !== "three-procedural";
     occtLoadAttempted = true;
 
+    const { setLoadState, notifyKernelChanged } = useKernelStore.getState();
+    setLoadState("loading");
+
     try {
         const { initVertexOcct } = await import("@/lib/chili3d/occt-loader");
         const { OcctKernel } = await import("@/lib/chili3d/occt-kernel");
         await initVertexOcct();
         kernel = new OcctKernel();
-        useKernelStore.getState().notifyKernelChanged();
+        notifyKernelChanged();
+        setLoadState("ready");
         return true;
     } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
         console.warn("[loadOcctKernel] WASM unavailable, using procedural kernel:", error);
         kernel = new ThreeKernel();
+        setLoadState("failed", message);
         return false;
     }
 }

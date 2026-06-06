@@ -6,6 +6,8 @@
     "description": "Vertex Orthopedic — browser-based orthotic insole CAD (Phase 0 foundation)",
     "scripts": {
         "prepare:wasm": "mkdir -p public/chili-wasm && cp -f ../packages/wasm/lib/chili-wasm.js ../packages/wasm/lib/chili-wasm.wasm public/chili-wasm/",
+        "setup:wasm": "cd .. && npm run setup:wasm",
+        "build:wasm": "cd .. && npm run build:wasm && npm run prepare:wasm",
         "dev": "npm run prepare:wasm && vite",
         "build": "npm run prepare:wasm && vite build",
         "preview": "vite preview",

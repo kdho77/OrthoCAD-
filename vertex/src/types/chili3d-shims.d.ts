@@ -31,6 +31,7 @@ declare module "@chili3d/core" {
             readonly faces?: { position: ArrayLike<number>; index: ArrayLike<number> };
         };
         isClosed(): boolean;
+        clone(): IShape;
         findSubShapes(subshapeType: string): IShape[];
     }
 
@@ -54,6 +55,8 @@ declare module "@chili3d/core" {
         booleanCut(a: IShape[], b: IShape[]): Result<IShape>;
         simplifyShape(shape: IShape, removeEdges: boolean, removeFaces: boolean, keep: IShape[]): Result<IShape>;
         sewing(a: IShape, b: IShape): Result<IShape>;
+        makeThickSolidBySimple(shape: IShape, thickness: number): Result<IShape>;
+        makeThickSolidByJoin(shape: IShape, closingFaces: IShape[], thickness: number): Result<IShape>;
     }
 
     export function shapesToStl(shapes: IShape[], options?: { binary?: boolean }): Uint8Array;
@@ -100,6 +103,15 @@ declare module "@chili3d/wasm" {
         sewing(
             a: import("@chili3d/core").IShape,
             b: import("@chili3d/core").IShape,
+        ): import("@chili3d/core").Result<import("@chili3d/core").IShape>;
+        makeThickSolidBySimple(
+            shape: import("@chili3d/core").IShape,
+            thickness: number,
+        ): import("@chili3d/core").Result<import("@chili3d/core").IShape>;
+        makeThickSolidByJoin(
+            shape: import("@chili3d/core").IShape,
+            closingFaces: import("@chili3d/core").IShape[],
+            thickness: number,
         ): import("@chili3d/core").Result<import("@chili3d/core").IShape>;
     }
 }

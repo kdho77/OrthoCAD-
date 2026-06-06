@@ -1,6 +1,6 @@
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/chili3d";
-import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuditStore } from "@/stores/audit-store";
@@ -18,14 +18,7 @@ export interface ExportOutcome {
 
 function buildSideGeometry(side: Side) {
     const { design } = useDesignStore.getState();
-    return getKernel().buildInsole({
-        side,
-        lengthMm: INSOLE_LENGTH_MM,
-        widthMm: INSOLE_WIDTH_MM,
-        thicknessMm: design.thicknessMm,
-        corrections: design.corrections[side],
-        elements: design.elements.filter((e) => e.side === side),
-    });
+    return getKernel().buildInsole(insoleParamsFromDesign(design, side, "full"));
 }
 
 /** Server-authoritative token gate shared by STL and G-code exports. */

@@ -24,8 +24,8 @@ production seam.
 | Elements library | ✅ | met pad/bar, Cluffy, Morton's, reverse Morton's, kinetic wedge, sinks |
 | — clickable add, drag / scale / reshape | ✅ | `ElementMarkers` + TransformControls |
 | Real-time 3D updates | ✅ | reactive Zustand → memoized geometry rebuild |
-| Solid / shell generation | ✅ | watertight heightmap solid; shell = 0% infill |
-| Watertight validation | ✅ | `lib/geometry/manifold` |
+| Solid / shell generation | ✅ | OCCT loft + booleans; `printing_shell` → `makeThickSolidByJoin` |
+| Watertight validation | ✅ | OCCT `isClosed()` + mesh edge analysis (`repair.ts`) |
 | TPU printing incl. 45° belt | ✅ | `lib/kiri` slicer + belt transform, Apex Belt V2 preset |
 | 3-axis CNC toolpaths + G-code | ✅ | `lib/kiri/cnc` |
 | AI prescription upload (text/image) | ✅ | `server/routers/ai`, `features/ai-prescription` |
@@ -50,7 +50,7 @@ production seam.
 
 | Seam | Current | Production |
 | --- | --- | --- |
-| Geometry kernel | ◑ OpenCascade WASM (`OcctKernel`) with procedural fallback (`ThreeKernel`) | `loadOcctKernel()` + `cpp/` + `packages/wasm` build |
+| Geometry kernel | ✅ OpenCascade WASM (`OcctKernel`) + procedural worker fallback | `loadOcctKernel()`, `lib/geometry/occt-insole`, `kernel-build` |
 | CAM engine | In-house slicer/CAM (`lib/kiri`) | Hosted Kiri:Moto engine behind the same `generateGcode` interface |
 | Client/design/admin data | Local-first (localStorage) | tRPC routers + Supabase Postgres (wire repositories in deployment) |
 

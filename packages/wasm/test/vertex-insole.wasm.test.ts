@@ -3,6 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import type { ISolid } from "@chili3d/core";
 import { shapesToStl } from "@chili3d/core";
 import { initWasm, ShapeFactory } from "@chili3d/wasm";
 import { describe, expect, test } from "@rstest/core";
@@ -56,7 +57,7 @@ describe("Vertex OCCT insole kernel", () => {
         await initWasm({ wasmBinary: WASM_BINARY });
         const factory = new ShapeFactory();
 
-        let solid;
+        let solid: ISolid;
         try {
             solid = buildOcctInsoleSolid(factory, BASE_PARAMS);
         } catch (error) {
@@ -71,5 +72,24 @@ describe("Vertex OCCT insole kernel", () => {
 
         const stl = shapesToStl([solid], { binary: true });
         expect(stl.byteLength).toBeGreaterThan(500);
+    });
+
+    test("shell mode keeps a closed solid (hollow when OCCT offset succeeds)", async () => {
+        await initWasm({ wasmBinary: WASM_BINARY });
+        const factory = new ShapeFactory();
+
+        const shellParams: InsoleParams = {
+            ...BASE_PARAMS,
+            elements: [],
+            corrections: { ...BASE_PARAMS.corrections, medialSkiveMm: 0, lateralSkiveMm: 0 },
+            method: "printing_shell",
+        };
+
+        const solid = buildOcctInsoleSolid(factory, shellParams);
+        expect(solid.isClosed()).toBe(true);
+        const geometry = shapeToBufferGeometry(solid);
+        const report = validateSolid(solid, geometry);
+        expect(report.triangleCount).toBeGreaterThan(100);
+        expect(report.occtClosed).toBe(true);
     });
 });
