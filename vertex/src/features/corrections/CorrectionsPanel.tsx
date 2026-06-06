@@ -1,6 +1,9 @@
 import { Link2, Unlink } from "lucide-react";
+import { useMemo } from "react";
 import { SliderField } from "@/components/ui/slider-field";
+import { rafThrottle } from "@/lib/performance/throttle";
 import { useDesignStore } from "@/stores/design-store";
+import { mergeCorrections, usePerformanceStore } from "@/stores/performance-store";
 import { cn } from "@/lib/utils";
 import type { Side, SideCorrections } from "@/types";
 
@@ -20,10 +23,28 @@ const FIELDS: { key: keyof SideCorrections; label: string; min: number; max: num
 
 const GROUPS = ["Pronation / Supination", "Skive", "Arch", "Heel", "Apex & Wedges"];
 
+const previewCorrection = rafThrottle((side: Side, patch: Partial<SideCorrections>) => {
+    usePerformanceStore.getState().setCorrectionPreview(side, patch);
+});
+
 export function CorrectionsPanel() {
     const { design, updateCorrection, setUnit, setLinked, setThickness } = useDesignStore();
     const { corrections } = design;
+    const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
+    const setThicknessPreview = usePerformanceStore((s) => s.setThicknessPreview);
+    const clearCorrectionPreview = usePerformanceStore((s) => s.clearCorrectionPreview);
+    const correctionPreview = usePerformanceStore((s) => s.correctionPreview);
     const degField = (key: keyof SideCorrections) => key.endsWith("Deg");
+
+    const displayThickness = thicknessPreview ?? design.thicknessMm;
+
+    const sideValues = useMemo(
+        () => ({
+            left: mergeCorrections("left", corrections.left),
+            right: mergeCorrections("right", corrections.right),
+        }),
+        [corrections, correctionPreview],
+    );
 
     return (
         <div className="space-y-3">
@@ -55,12 +76,16 @@ export function CorrectionsPanel() {
 
             <SliderField
                 label="Shell thickness"
-                value={design.thicknessMm}
+                value={displayThickness}
                 min={1.5}
                 max={8}
                 step={0.1}
                 unit="mm"
-                onChange={setThickness}
+                onPreview={(v) => setThicknessPreview(v)}
+                onChange={(v) => {
+                    setThickness(v);
+                    setThicknessPreview(null);
+                }}
             />
 
             {GROUPS.map((group) => (
@@ -74,12 +99,16 @@ export function CorrectionsPanel() {
                                     <SliderField
                                         key={`${side}-${f.key}`}
                                         label={f.label}
-                                        value={corrections[side][f.key]}
+                                        value={sideValues[side][f.key]}
                                         min={f.min}
                                         max={f.max}
                                         step={degField(f.key) ? 0.5 : 0.5}
                                         unit={degField(f.key) ? "°" : "mm"}
-                                        onChange={(v) => updateCorrection(side, { [f.key]: v } as Partial<SideCorrections>)}
+                                        onPreview={(v) => previewCorrection(side, { [f.key]: v } as Partial<SideCorrections>)}
+                                        onChange={(v) => {
+                                            updateCorrection(side, { [f.key]: v } as Partial<SideCorrections>);
+                                            clearCorrectionPreview();
+                                        }}
                                     />
                                 ))}
                             </div>

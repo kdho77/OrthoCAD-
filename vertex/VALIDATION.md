@@ -14,6 +14,7 @@ production seam.
 | Pattern selection | ✅ | `LeftSidebar` (full contact, prefab 3D, flat, custom) |
 | Custom GLB library | ✅ | `features/library`, `custom_elements` / `custom_prefabs`, Supabase Storage |
 | Trim / vertex mesh editing | ✅ | `MeshEditTools`, `mesh-edit-store` |
+| Performance (60fps CAD) | ✅ | `geometry-engine` worker, preview mesh, instanced markers, FPS toggle |
 | Production methods | ✅ | printing solid / shell, 3-axis milling |
 | Parametric corrections | ✅ | `features/corrections`, `lib/geometry/insole` |
 | — Pronation/Supination L/R, fore/rear, mm/deg | ✅ | independent + linkable, unit toggle |

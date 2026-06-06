@@ -1,16 +1,17 @@
 import { CheckCircle2, Download, FileCode2, Lock, TriangleAlert } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { exportDesign } from "@/features/exports/export-service";
-import { getKernel } from "@/lib/chili3d";
+import { useManifoldAnalysis } from "@/hooks/useManifoldAnalysis";
+import { geometryEngine } from "@/lib/geometry/geometry-engine";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
 import { cn } from "@/lib/utils";
+import type { BufferGeometry } from "three";
 import type { Side } from "@/types";
-
-const INSOLE_LENGTH_MM = 260;
-const INSOLE_WIDTH_MM = 95;
 
 export function ExportPanel() {
     const { user, license } = useAuthStore();
@@ -18,22 +19,45 @@ export function ExportPanel() {
     const [status, setStatus] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [side, setSide] = useState<Side>("left");
+    const [geometry, setGeometry] = useState<BufferGeometry | null>(null);
 
     const stlCheck = canExport(user, license, "stl");
 
-    // Real-time solid validation for the selected side.
-    const solid = useMemo(
-        () =>
-            getKernel().buildInsoleSolid({
-                side,
-                lengthMm: INSOLE_LENGTH_MM,
-                widthMm: INSOLE_WIDTH_MM,
-                thicknessMm: design.thicknessMm,
-                corrections: design.corrections[side],
-                elements: design.elements.filter((e) => e.side === side),
-            }),
-        [side, design.thicknessMm, design.corrections, design.elements],
-    );
+    // Build full-quality geometry in worker when design changes (debounced by effect cleanup).
+    useEffect(() => {
+        let cancelled = false;
+
+        void geometryEngine
+            .buildInsole({
+                params: {
+                    side,
+                    lengthMm: INSOLE_LENGTH_MM,
+                    widthMm: INSOLE_WIDTH_MM,
+                    thicknessMm: design.thicknessMm,
+                    corrections: mergeCorrections(side, design.corrections[side]),
+                    elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
+                },
+                quality: "full",
+            })
+            .then((g) => {
+                if (cancelled) {
+                    g.dispose();
+                    return;
+                }
+                setGeometry((prev) => {
+                    prev?.dispose();
+                    return g;
+                });
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [side, design.thicknessMm, design.corrections, design.elements]);
+
+    useEffect(() => () => geometry?.dispose(), [geometry]);
+
+    const manifold = useManifoldAnalysis(geometry, 400);
 
     const handleStl = async () => {
         setBusy(true);
@@ -66,12 +90,14 @@ export function ExportPanel() {
                 ))}
             </div>
 
-            <div className={cn("flex items-center justify-between rounded-md border px-2 py-1.5 text-xs", solid.manifold.isWatertight ? "border-emerald-500/40 text-emerald-400" : "border-amber-500/40 text-amber-400")}>
+            <div className={cn("flex items-center justify-between rounded-md border px-2 py-1.5 text-xs", manifold.isWatertight ? "border-emerald-500/40 text-emerald-400" : "border-amber-500/40 text-amber-400")}>
                 <span className="flex items-center gap-1.5">
-                    {solid.manifold.isWatertight ? <CheckCircle2 className="h-3.5 w-3.5" /> : <TriangleAlert className="h-3.5 w-3.5" />}
-                    {solid.manifold.isWatertight ? "Watertight solid" : `${solid.manifold.openEdges} open edges`}
+                    {manifold.isWatertight ? <CheckCircle2 className="h-3.5 w-3.5" /> : <TriangleAlert className="h-3.5 w-3.5" />}
+                    {geometry ? (manifold.isWatertight ? "Watertight solid" : `${manifold.openEdges} open edges`) : "Analyzing…"}
                 </span>
-                <span className="tabular-nums text-muted-foreground">{solid.manifold.triangleCount.toLocaleString()} tris</span>
+                <span className="tabular-nums text-muted-foreground">
+                    {manifold.triangleCount > 0 ? `${manifold.triangleCount.toLocaleString()} tris` : "—"}
+                </span>
             </div>
 
             <Button className="w-full" disabled={!stlCheck.ok || busy} onClick={handleStl}>

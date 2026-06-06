@@ -89,6 +89,9 @@ server/         Node + tRPC API (auth ctx, export.authorize, user.me, ai.parsePr
   mesh editing, GLTFExporter export, Supabase Storage upload, `custom_elements` /
   `custom_prefabs` Prisma tables, token-gated save, and "My Custom Library" in the
   Elements panel and pattern selector.
+- **Phase 7 (done):** high-performance optimization — Web Worker geometry pipeline,
+  preview/full mesh quality, debounced slider + gizmo preview/commit, instanced
+  element markers, worker-offloaded manifold checks, optional FPS monitor.
 
 ## Deployment
 

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { usePerformanceStore } from "@/stores/performance-store";
 import type {
     Corrections,
     DesignState,
@@ -178,7 +179,8 @@ export const useDesignStore = create<DesignStore>((set) => ({
     selectElement: (selectedElementId) => set({ selectedElementId }),
     setTransformMode: (transformMode) => set({ transformMode }),
 
-    applyPrescription: (result) =>
+    applyPrescription: (result) => {
+        usePerformanceStore.getState().setInteracting(true, "ai");
         set((s) => {
             const corrections: Corrections = {
                 ...s.design.corrections,
@@ -205,10 +207,18 @@ export const useDesignStore = create<DesignStore>((set) => ({
                     elements: [...s.design.elements, ...elements],
                 },
             };
-        }),
+        });
+        requestAnimationFrame(() => usePerformanceStore.getState().setInteracting(false));
+    },
 
-    loadDesign: (design) => set({ design, selectedElementId: null }),
+    loadDesign: (design) => {
+        usePerformanceStore.getState().clearAllPreviews();
+        set({ design, selectedElementId: null });
+    },
 
     setViewer: (patch) => set((s) => ({ viewer: { ...s.viewer, ...patch } })),
-    reset: () => set({ design: defaultDesign(), selectedElementId: null }),
+    reset: () => {
+        usePerformanceStore.getState().clearAllPreviews();
+        set({ design: defaultDesign(), selectedElementId: null });
+    },
 }));

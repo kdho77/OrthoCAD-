@@ -1,9 +1,8 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
-import { buildInsoleGeometry } from "@/lib/geometry/insole";
-import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
-import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { useInsoleGeometry } from "@/hooks/useInsoleGeometry";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import type { DesignState, Side } from "@/types";
 
 interface InsoleMeshProps {
@@ -13,48 +12,37 @@ interface InsoleMeshProps {
     heightmap: boolean;
 }
 
+const sideColors: Record<Side, string> = {
+    left: "#38bdf8",
+    right: "#22d3ee",
+};
+
 export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshProps) {
     const trimLines = useMeshEditStore((s) => s.trimLines);
     const vertexOverrides = useMeshEditStore((s) => s.vertexOverrides);
     const target = useMeshEditStore((s) => s.target);
-
-    const sideElements = useMemo(
-        () => design.elements.filter((e) => e.side === side),
-        [design.elements, side],
-    );
-
     const applyEdits = target?.type === "insole" && target.side === side;
 
-    const geometry = useMemo(() => {
-        let g = buildInsoleGeometry({
-            side,
-            lengthMm: INSOLE_LENGTH_MM,
-            widthMm: INSOLE_WIDTH_MM,
-            thicknessMm: design.thicknessMm,
-            corrections: design.corrections[side],
-            elements: sideElements,
-        });
-        if (applyEdits) {
-            g = applyTrimLines(g, trimLines);
-            g = applyVertexOverrides(g, vertexOverrides);
-        }
-        return g;
-    }, [side, design.thicknessMm, design.corrections, sideElements, trimLines, vertexOverrides, applyEdits]);
+    const { geometry, building } = useInsoleGeometry({
+        side,
+        design,
+        trimLines,
+        vertexOverrides,
+        applyEdits,
+    });
 
-    // Color the surface by height when the heightmap toggle is on.
     const material = useMemo(() => {
         if (heightmap) {
-            const mat = new THREE.MeshStandardMaterial({
+            return new THREE.MeshStandardMaterial({
                 vertexColors: true,
                 metalness: 0.1,
                 roughness: 0.85,
                 transparent,
                 opacity: transparent ? 0.55 : 1,
             });
-            return mat;
         }
         return new THREE.MeshStandardMaterial({
-            color: side === "left" ? "#38bdf8" : "#22d3ee",
+            color: sideColors[side],
             metalness: 0.15,
             roughness: 0.7,
             transparent,
@@ -63,11 +51,10 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
         });
     }, [heightmap, transparent, side]);
 
-    // Dispose superseded geometry to avoid GPU memory growth during real-time edits.
-    useEffect(() => () => geometry.dispose(), [geometry]);
+    useEffect(() => () => material.dispose(), [material]);
 
     const coloredGeometry = useMemo(() => {
-        if (!heightmap) return geometry;
+        if (!geometry || !heightmap) return geometry;
         const g = geometry.clone();
         const pos = g.getAttribute("position");
         const colors = new Float32Array(pos.count * 3);
@@ -88,22 +75,30 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
     useEffect(() => {
         const c = coloredGeometry;
         return () => {
-            if (c !== geometry) c.dispose();
+            if (c && c !== geometry) c.dispose();
         };
     }, [coloredGeometry, geometry]);
 
-    // Lay left/right side by side, centered, lying flat (rotate so length = X, height = Y).
     const offsetX = sideOffsetX(side);
+    const displayGeo = coloredGeometry ?? geometry;
+
+    if (!displayGeo) return null;
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             <mesh
-                geometry={coloredGeometry}
+                geometry={displayGeo}
                 material={material}
                 position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}
                 castShadow
                 receiveShadow
             />
+            {building ? (
+                <mesh position={[-INSOLE_LENGTH_MM / 2, offsetX, 0.5]}>
+                    <boxGeometry args={[INSOLE_LENGTH_MM, 90, 0.2]} />
+                    <meshBasicMaterial color="#334155" transparent opacity={0.15} wireframe />
+                </mesh>
+            ) : null}
         </group>
     );
 }
