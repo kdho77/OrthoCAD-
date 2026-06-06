@@ -47,7 +47,7 @@ production seam.
 
 | Seam | Current | Production |
 | --- | --- | --- |
-| Geometry kernel | Three.js procedural (`ThreeKernel`) | Forked Chili3D OpenCascade WASM via `loadOcctKernel()` — `cpp/` + `packages/wasm` build |
+| Geometry kernel | ◑ OpenCascade WASM (`OcctKernel`) with procedural fallback (`ThreeKernel`) | `loadOcctKernel()` + `cpp/` + `packages/wasm` build |
 | CAM engine | In-house slicer/CAM (`lib/kiri`) | Hosted Kiri:Moto engine behind the same `generateGcode` interface |
 | Client/design/admin data | Local-first (localStorage) | tRPC routers + Supabase Postgres (wire repositories in deployment) |
 

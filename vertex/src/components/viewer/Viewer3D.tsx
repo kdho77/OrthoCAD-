@@ -5,6 +5,7 @@ import { Suspense, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { useDesignStore } from "@/stores/design-store";
+import { useKernelStore } from "@/stores/kernel-store";
 import { cn } from "@/lib/utils";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
@@ -23,6 +24,7 @@ const VIEWS: { name: ViewName; label: string; pos: [number, number, number] }[] 
 
 export function Viewer3D() {
     const controls = useRef<OrbitControlsImpl>(null);
+    const kernelName = useKernelStore((s) => s.name);
     const { design, viewer, setViewer, selectedElementId, transformMode, setTransformMode, selectElement } =
         useDesignStore();
 
@@ -103,7 +105,7 @@ export function Viewer3D() {
 
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="h-3.5 w-3.5" />
-                Procedural kernel · Orbit: drag · Pan: shift+drag · Zoom: scroll
+                {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural"} kernel · Orbit: drag · Pan: shift+drag · Zoom: scroll
             </div>
         </div>
     );

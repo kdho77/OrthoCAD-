@@ -5,8 +5,9 @@
     "type": "module",
     "description": "Vertex Orthopedic — browser-based orthotic insole CAD (Phase 0 foundation)",
     "scripts": {
-        "dev": "vite",
-        "build": "tsc --noEmit && vite build",
+        "prepare:wasm": "mkdir -p public/chili-wasm && cp -f ../packages/wasm/lib/chili-wasm.js ../packages/wasm/lib/chili-wasm.wasm public/chili-wasm/",
+        "dev": "npm run prepare:wasm && vite",
+        "build": "npm run prepare:wasm && vite build",
         "preview": "vite preview",
         "typecheck": "tsc --noEmit",
         "typecheck:server": "tsc --noEmit -p server/tsconfig.json",
@@ -17,6 +18,8 @@
         "prisma:studio": "prisma studio"
     },
     "dependencies": {
+        "@chili3d/core": "file:../packages/core",
+        "@chili3d/wasm": "file:../packages/wasm",
         "@prisma/client": "^5.22.0",
         "@radix-ui/react-dialog": "^1.1.6",
         "@radix-ui/react-slot": "^1.1.2",

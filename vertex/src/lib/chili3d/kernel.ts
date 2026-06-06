@@ -1,19 +1,16 @@
 import type { BufferGeometry } from "three";
 import { buildInsoleGeometry, type InsoleParams } from "@/lib/geometry/insole";
-import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
+import { analyzeManifold } from "@/lib/geometry/manifold";
+import type { SolidValidation } from "@/lib/geometry/repair";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
+import { useKernelStore } from "@/stores/kernel-store";
 
 export interface SolidResult {
     geometry: BufferGeometry;
-    manifold: ManifoldReport;
+    manifold: SolidValidation;
 }
 
-// Geometry kernel abstraction.
-//
-// Phase 0 ships a Three.js-backed kernel that produces parametric insole meshes
-// and exports binary STL. The interface is designed so a forked Chili3D /
-// OpenCascade (OCCT) WASM kernel can be dropped in later for watertight solids,
-// boolean operations and shelling without touching the UI or stores.
+// Geometry kernel abstraction — procedural Three.js fallback or OpenCascade WASM.
 
 export interface IGeometryKernel {
     readonly name: string;
@@ -35,7 +32,11 @@ class ThreeKernel implements IGeometryKernel {
 
     buildInsoleSolid(params: InsoleParams): SolidResult {
         const geometry = buildInsoleGeometry(params);
-        return { geometry, manifold: analyzeManifold(geometry) };
+        const mesh = analyzeManifold(geometry);
+        return {
+            geometry,
+            manifold: { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight },
+        };
     }
 
     exportSTL(geometry: BufferGeometry): ArrayBuffer {
@@ -44,6 +45,7 @@ class ThreeKernel implements IGeometryKernel {
 }
 
 let kernel: IGeometryKernel = new ThreeKernel();
+let occtLoadAttempted = false;
 
 export function getKernel(): IGeometryKernel {
     return kernel;
@@ -52,20 +54,20 @@ export function getKernel(): IGeometryKernel {
 /**
  * Attempts to load the Chili3D OpenCascade WASM kernel. Resolves to `true` when
  * the OCCT kernel is active, `false` when falling back to the procedural kernel.
- *
- * The OCCT kernel build is integrated in a later phase; this loader keeps the
- * call-site stable so swapping in the real kernel requires no UI changes.
  */
 export async function loadOcctKernel(): Promise<boolean> {
+    if (occtLoadAttempted) return kernel.name !== "three-procedural";
+    occtLoadAttempted = true;
+
     try {
-        // Dynamic import is intentionally guarded: the WASM package may not be
-        // built/available in every environment (CI, preview, tests).
-        // const { initWasm } = await import("@chili3d/wasm");
-        // await initWasm();
-        // kernel = new OcctKernel();
-        // return true;
-        return false;
-    } catch {
+        const { initVertexOcct } = await import("@/lib/chili3d/occt-loader");
+        const { OcctKernel } = await import("@/lib/chili3d/occt-kernel");
+        await initVertexOcct();
+        kernel = new OcctKernel();
+        useKernelStore.getState().notifyKernelChanged();
+        return true;
+    } catch (error) {
+        console.warn("[loadOcctKernel] WASM unavailable, using procedural kernel:", error);
         kernel = new ThreeKernel();
         return false;
     }

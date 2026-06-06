@@ -1,7 +1,8 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
-import { buildInsoleGeometry } from "@/lib/geometry/insole";
+import { getKernel } from "@/lib/chili3d";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { useKernelStore } from "@/stores/kernel-store";
 import type { DesignState, Side } from "@/types";
 
 interface InsoleMeshProps {
@@ -12,6 +13,7 @@ interface InsoleMeshProps {
 }
 
 export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshProps) {
+    const kernelVersion = useKernelStore((s) => s.version);
     const sideElements = useMemo(
         () => design.elements.filter((e) => e.side === side),
         [design.elements, side],
@@ -19,7 +21,7 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
 
     const geometry = useMemo(
         () =>
-            buildInsoleGeometry({
+            getKernel().buildInsole({
                 side,
                 lengthMm: INSOLE_LENGTH_MM,
                 widthMm: INSOLE_WIDTH_MM,
@@ -27,7 +29,7 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
                 corrections: design.corrections[side],
                 elements: sideElements,
             }),
-        [side, design.thicknessMm, design.corrections, sideElements],
+        [side, design.thicknessMm, design.corrections, sideElements, kernelVersion],
     );
 
     // Color the surface by height when the heightmap toggle is on.
