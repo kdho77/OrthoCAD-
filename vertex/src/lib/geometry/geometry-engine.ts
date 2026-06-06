@@ -9,6 +9,11 @@ import { occtWorkerEngine } from "@/lib/geometry/occt-worker-engine";
 import type { SolidValidation } from "@/lib/geometry/repair";
 import { segmentsForQuality, type GeometryQuality } from "@/lib/geometry/quality";
 import { serializeTrimLines, serializeVertexOverrides } from "@/lib/geometry/mesh-edit-serialize";
+import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
+import {
+    buildTrimlineInsoleMesh,
+    type TrimlineMeshOptions,
+} from "@/lib/geometry/trimline-mesh";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
 import type { InsoleParams } from "@/lib/geometry/insole";
 import type { WorkerRequest, WorkerResponse } from "@/workers/geometry.worker";
@@ -162,6 +167,48 @@ class GeometryEngine {
             geometry = applyVertexOverrides(geometry, vecMap);
         }
         return geometry;
+    }
+
+    /**
+     * Build a watertight tapered insole mesh (top + bottom + side walls) from a
+     * trimline curve. Heavy mesh generation is offloaded to the Web Worker when
+     * available; otherwise we fall back to a synchronous main-thread build so
+     * the caller always gets a usable geometry.
+     */
+    async buildTrimlineMesh(
+        options: Omit<TrimlineMeshOptions, "trimline"> & { trimline: TrimlineCurve },
+    ): Promise<BufferGeometry> {
+        const worker = this.ensureWorker();
+        const requestId = ++this.nextId;
+
+        if (worker) {
+            return new Promise<BufferGeometry>((resolve, reject) => {
+                this.pending.set(requestId, {
+                    resolve,
+                    reject,
+                });
+                const msg: WorkerRequest = {
+                    id: requestId,
+                    type: "buildTrimlineMesh",
+                    payload: {
+                        trimline: serializeTrimlineCurve(options.trimline),
+                        field: { ...options.field, trimline: null },
+                        perimeterSamples: options.perimeterSamples,
+                        topRings: options.topRings,
+                        bottomRings: options.bottomRings,
+                        bottomInsetMm: options.bottomInsetMm,
+                        minWallThicknessMm: options.minWallThicknessMm,
+                        bottomZ: options.bottomZ,
+                    },
+                };
+                worker.postMessage(msg);
+            });
+        }
+
+        return buildTrimlineInsoleMesh({
+            ...options,
+            field: { ...options.field, trimline: options.trimline },
+        });
     }
 
     /** Validates a production solid — uses OCCT topology when the kernel provides it. */

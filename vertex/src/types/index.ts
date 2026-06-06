@@ -23,7 +23,7 @@ export type ScanPattern =
     | "flat"
     | "custom";
 
-export type ExportFormat = "stl" | "gcode";
+export type ExportFormat = "stl" | "gcode" | "glb";
 
 export interface UserProfile {
     id: string;

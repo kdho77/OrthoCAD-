@@ -15,10 +15,15 @@ export function isLicenseValid(license: License | null): LicenseCheck {
     return { ok: true };
 }
 
-/** Token cost per export format. Mirrors the server-side schedule. */
-export const TOKEN_COST: Record<"stl" | "gcode", number> = {
+/**
+ * Token cost per export format. Mirrors the server-side schedule. GLB is the
+ * watertight CAD preview/printable asset — it is gated by license validity but
+ * does not consume tokens (mirrors the server: only STL/G-code are token-tracked).
+ */
+export const TOKEN_COST: Record<"stl" | "gcode" | "glb", number> = {
     stl: 1,
     gcode: 2,
+    glb: 0,
 };
 
 /** Token cost for saving a custom GLB to the personal library. */
@@ -27,7 +32,7 @@ export const SAVE_CUSTOM_TOKEN_COST = 1;
 export function canExport(
     user: UserProfile | null,
     license: License | null,
-    format: "stl" | "gcode",
+    format: "stl" | "gcode" | "glb",
 ): LicenseCheck {
     const lic = isLicenseValid(license);
     if (!lic.ok) return lic;
