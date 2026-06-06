@@ -16,6 +16,7 @@ import {
     type HeightFieldParams,
     heightAt,
     outlineHalfWidth,
+    resolveOutlineHalfWidth,
 } from "@/lib/geometry/height-field";
 import { repairOcctSolid } from "@/lib/geometry/repair";
 import { getCustomElementBounds } from "@/lib/geometry/custom-element-bounds";
@@ -66,7 +67,7 @@ function sectionWire(
 ): IWire {
     const { lengthMm, widthMm } = params;
     const halfW = widthMm / 2;
-    const hw = outlineHalfWidth(u) * halfW;
+    const hw = resolveOutlineHalfWidth(u, params) * halfW;
     const x = u * lengthMm;
     const medial = heightAt(u, -1, params);
     const lateral = heightAt(u, 1, params);
@@ -88,6 +89,7 @@ export function buildBaseShell(factory: IShapeFactory, params: InsoleParams): IS
         corrections: params.corrections,
         includeSkives: true,
         includeElements: false,
+        trimline: params.trimline,
     };
 
     const nx = 32;

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { PlacedElement, Side, SideCorrections } from "@/types";
 
-export type InteractionSource = "slider" | "gizmo" | "ai" | null;
+export type InteractionSource = "slider" | "gizmo" | "ai" | "trimline" | null;
 
 /** Transient preview state — merged at geometry-build time, committed on pointer-up. */
 export interface ElementPreview {

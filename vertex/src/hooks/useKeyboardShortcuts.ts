@@ -3,6 +3,7 @@
 
 import { useEffect } from "react";
 import { useDesignStore } from "@/stores/design-store";
+import { useMeshEditStore } from "@/stores/mesh-edit-store";
 
 export interface KeyboardShortcutHandlers {
     onSave?: () => void;
@@ -44,6 +45,11 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
                 return;
             }
             if (e.key === "Escape") {
+                const meshEdit = useMeshEditStore.getState();
+                if (meshEdit.editMode === "edit-trimline" && meshEdit.trimlineEdit) {
+                    meshEdit.cancelTrimlineEdit();
+                    return;
+                }
                 selectElement(null);
             }
         };

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useInsoleGeometry } from "@/hooks/useInsoleGeometry";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { getDesignTrimline } from "@/lib/geometry/trimline";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, Side } from "@/types";
 
@@ -21,12 +22,21 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
     const trimLines = useMeshEditStore((s) => s.trimLines);
     const vertexOverrides = useMeshEditStore((s) => s.vertexOverrides);
     const target = useMeshEditStore((s) => s.target);
+    const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const applyEdits = target?.type === "insole" && target.side === side;
+
+    const trimline = useMemo(() => {
+        const committed = getDesignTrimline(design, side);
+        if (trimlineEdit?.side === side && trimlineEdit.isDragging) return committed;
+        if (trimlineEdit?.side === side) return trimlineEdit.draft;
+        return committed;
+    }, [design, trimlineEdit, side]);
 
     const { geometry, building } = useInsoleGeometry({
         side,
         design,
         trimLines,
+        trimline,
         vertexOverrides,
         applyEdits,
     });

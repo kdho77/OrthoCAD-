@@ -4,6 +4,7 @@ import { getKernel } from "@/lib/chili3d/kernel";
 import { boundsFromObject, registerCustomElementBounds } from "@/lib/geometry/custom-element-bounds";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
+import { getDesignTrimline } from "@/lib/geometry/trimline";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuditStore } from "@/stores/audit-store";
@@ -92,7 +93,10 @@ export function buildExportMesh(input: SaveCustomInput): THREE.Mesh {
 
     if (input.kind === "prefab") {
         const side = input.side ?? "left";
-        const params = insoleParamsFromDesign(design, side, "full");
+        const params = {
+            ...insoleParamsFromDesign(design, side, "full"),
+            trimline: getDesignTrimline(design, side),
+        };
         let geometry = getKernel().buildInsole(params);
         geometry = applyTrimLines(geometry, trimLines);
         const vecMap = new Map<number, THREE.Vector3>();

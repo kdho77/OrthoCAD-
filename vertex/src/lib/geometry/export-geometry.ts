@@ -4,6 +4,7 @@
 import type { BufferGeometry } from "three";
 import * as THREE from "three";
 import { getKernel } from "@/lib/chili3d/kernel";
+import { getDesignTrimline } from "@/lib/geometry/trimline";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { extractPrimaryGeometry, loadGlbFromBuffer, loadGlbFromUrl } from "@/lib/library/loaders";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
@@ -44,7 +45,10 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
         }
     }
 
-    return getKernel().buildInsole(insoleParamsFromDesign(design, side, "full"));
+    return getKernel().buildInsole({
+        ...insoleParamsFromDesign(design, side, "full"),
+        trimline: getDesignTrimline(design, side),
+    });
 }
 
 /** Export STL bytes for the active design side. */
