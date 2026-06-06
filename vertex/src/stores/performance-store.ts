@@ -1,6 +1,5 @@
 import { create } from "zustand";
-import type { Side, SideCorrections } from "@/types";
-import type { PlacedElement } from "@/types";
+import type { PlacedElement, Side, SideCorrections } from "@/types";
 
 export type InteractionSource = "slider" | "gizmo" | "ai" | null;
 
@@ -75,8 +74,7 @@ export const usePerformanceStore = create<PerformanceStore>((set) => ({
             return { elementPreviews: rest };
         }),
 
-    clearAllPreviews: () =>
-        set({ correctionPreview: {}, thicknessPreview: null, elementPreviews: {} }),
+    clearAllPreviews: () => set({ correctionPreview: {}, thicknessPreview: null, elementPreviews: {} }),
 }));
 
 /** Merge design-store elements with live gizmo previews. */
@@ -97,10 +95,7 @@ export function mergeElementPreviews(elements: PlacedElement[]): PlacedElement[]
 }
 
 /** Merge committed corrections with slider preview patches. */
-export function mergeCorrections(
-    side: Side,
-    committed: SideCorrections,
-): SideCorrections {
+export function mergeCorrections(side: Side, committed: SideCorrections): SideCorrections {
     const preview = usePerformanceStore.getState().correctionPreview[side];
     return preview ? { ...committed, ...preview } : committed;
 }

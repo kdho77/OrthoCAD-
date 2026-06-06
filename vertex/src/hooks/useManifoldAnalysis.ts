@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
-import { debounce } from "@/lib/performance/throttle";
 import type { ManifoldReport } from "@/lib/geometry/manifold";
+import { debounce } from "@/lib/performance/throttle";
 
 const EMPTY_REPORT: ManifoldReport = {
     triangleCount: 0,
@@ -22,7 +22,10 @@ export function useManifoldAnalysis(geometry: BufferGeometry | null, debounceMs 
 
     if (!debouncedRef.current) {
         debouncedRef.current = debounce((geo: BufferGeometry) => {
-            void geometryEngine.analyzeManifold(geo).then(setReport).catch(() => setReport(EMPTY_REPORT));
+            void geometryEngine
+                .analyzeManifold(geo)
+                .then(setReport)
+                .catch(() => setReport(EMPTY_REPORT));
         }, debounceMs);
     }
 

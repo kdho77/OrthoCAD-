@@ -1,8 +1,8 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { useInsoleGeometry } from "@/hooks/useInsoleGeometry";
-import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, Side } from "@/types";
 
 interface InsoleMeshProps {

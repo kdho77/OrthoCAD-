@@ -1,8 +1,8 @@
-import { buildInsoleGeometry } from "@/lib/geometry/insole";
 import { geometryToPayload } from "@/lib/geometry/geometry-buffer";
+import type { InsoleParams } from "@/lib/geometry/insole";
+import { buildInsoleGeometry } from "@/lib/geometry/insole";
 import { analyzeManifoldBuffers } from "@/lib/geometry/manifold-core";
 import { applyEditsToPayload } from "@/lib/geometry/mesh-edit-core";
-import type { InsoleParams } from "@/lib/geometry/insole";
 import type { SerializedTrimLine, SerializedVertexOverride } from "@/lib/geometry/mesh-edit-serialize";
 
 export type WorkerRequest =
