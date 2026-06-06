@@ -3,7 +3,7 @@
 
 import type { BufferGeometry } from "three";
 import * as THREE from "three";
-import { getKernel } from "@/lib/chili3d/kernel";
+import { getKernel, isAuthoritativeKernel } from "@/lib/chili3d/kernel";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
@@ -70,12 +70,14 @@ export async function buildExportStl(side: Side): Promise<ArrayBuffer> {
 /**
  * Build the watertight tapered insole geometry intended for GLB export.
  *
- * Priority order:
+ * Priority order (see docs/hybrid-geometry-architecture.md):
  *   1. Custom-prefab GLB asset assigned to the design (unchanged behaviour).
- *   2. Trimline-driven mesh generator using the user's confirmed trimline (or
+ *   2. OCCT authoritative solid when the WASM kernel is active and it yields a
+ *      closed (watertight) BRep — the high-quality manufacturing path.
+ *   3. Trimline-driven mesh generator using the user's confirmed trimline (or
  *      the default parametric outline). Produces top + bottom + tapered side
  *      walls in one watertight, manifold mesh.
- *   3. OCCT/kernel-built solid as a final fallback so existing flows still
+ *   4. OCCT/kernel-built solid as a final fallback so existing flows still
  *      work even if the trimline generator throws (e.g. degenerate inputs).
  */
 export async function buildExportSolid(side: Side): Promise<BufferGeometry> {
@@ -90,6 +92,22 @@ export async function buildExportSolid(side: Side): Promise<BufferGeometry> {
 
     const params = insoleParamsFromDesign(design, side, "full");
     const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
+
+    // Authoritative OCCT solid first when available — use it only when OCCT
+    // confirms a closed solid, otherwise fall through to the procedural mesh.
+    if (isAuthoritativeKernel()) {
+        try {
+            const solid = getKernel().buildInsoleSolid({ ...params, trimline });
+            if (solid.manifold.occtClosed || solid.manifold.isWatertight) {
+                return solid.geometry;
+            }
+            solid.geometry.dispose();
+        } catch (err) {
+            if (typeof console !== "undefined") {
+                console.warn("[export-geometry] OCCT solid unavailable, using trimline mesh:", err);
+            }
+        }
+    }
 
     try {
         return await geometryEngine.buildTrimlineMesh({
