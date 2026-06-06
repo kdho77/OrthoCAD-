@@ -1,5 +1,6 @@
 import { BufferAttribute, BufferGeometry } from "three";
-import type { Side, SideCorrections } from "@/types";
+import { elementHeightAt } from "@/lib/geometry/elements";
+import type { PlacedElement, Side, SideCorrections } from "@/types";
 
 // Generates a parametric orthotic insole mesh from correction parameters.
 // This is a procedural heightmap shell sufficient for the Phase 0/1 viewer and
@@ -12,6 +13,8 @@ export interface InsoleParams {
     widthMm: number; // medial-lateral
     thicknessMm: number;
     corrections: SideCorrections;
+    /** Additive/subtractive elements for this foot. */
+    elements?: PlacedElement[];
     /** Mesh resolution along length / width. */
     segmentsX?: number;
     segmentsY?: number;
@@ -43,8 +46,9 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         widthMm,
         thicknessMm,
         corrections: c,
-        segmentsX = 80,
-        segmentsY = 40,
+        elements = [],
+        segmentsX = 96,
+        segmentsY = 48,
     } = params;
 
     const nx = segmentsX;
@@ -56,17 +60,19 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
 
     const heightAt = (u: number, vSigned: number): number => {
         // vSigned in [-1, 1], positive toward lateral.
+        const av = Math.abs(vSigned);
         const medial = vSigned * medialSign < 0; // medial side
         let h = thicknessMm;
 
-        // Medial longitudinal arch — peaks around midfoot.
-        const arch = bump(u, 0.42, 0.32);
-        if (medial) h += (c.archHeightMm + c.archFillMm) * arch * (0.4 + 0.6 * Math.abs(vSigned));
+        // Medial longitudinal arch — peaks around midfoot, apex shifted by apexMove.
+        const apexCenter = 0.42 + c.apexMoveMm / lengthMm;
+        const arch = bump(u, apexCenter, 0.32);
+        if (medial) h += (c.archHeightMm + c.archFillMm) * arch * (0.4 + 0.6 * av);
 
         // Heel cup — raised rim around the heel.
         const heel = bump(u, 0.1, 0.16);
-        h += c.heelCupHeightMm * heel * Math.pow(Math.abs(vSigned), 1.5);
-        h += c.heelCupDepthMm * heel * (1 - Math.abs(vSigned)) * 0.5;
+        h += c.heelCupHeightMm * heel * Math.pow(av, 1.5);
+        h += c.heelCupDepthMm * heel * (1 - av) * 0.5;
 
         // Rearfoot posting (varus/valgus wedge) — linear across width at the heel.
         h += Math.tan(c.rearfootPostingDeg * DEG) * (vSigned * medialSign) * halfW * heel;
@@ -76,8 +82,17 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         h += Math.tan(c.forefootPostingDeg * DEG) * (vSigned * medialSign) * halfW * fore;
 
         // Skives carve material from heel medial/lateral.
-        if (medial) h -= c.medialSkiveMm * heel * Math.abs(vSigned);
-        else h -= c.lateralSkiveMm * heel * Math.abs(vSigned);
+        if (medial) h -= c.medialSkiveMm * heel * av;
+        else h -= c.lateralSkiveMm * heel * av;
+
+        // Flanges — raised walls along the medial/lateral edge through the midfoot.
+        const edge = Math.max(0, (av - 0.6) / 0.4);
+        const flangeRegion = bump(u, 0.45, 0.4);
+        h += (medial ? c.medialFlangeMm : c.lateralFlangeMm) * flangeRegion * edge;
+
+        // Elements (met pads/bars, wedges, extensions, sinks).
+        const hw = outlineHalfWidth(u) * halfW;
+        h += elementHeightAt(elements, u * lengthMm, vSigned * hw, lengthMm);
 
         return Math.max(0.8, h);
     };

@@ -4,6 +4,7 @@ import type {
     DesignState,
     ElementKind,
     PlacedElement,
+    PrescriptionParseResult,
     ProductionMethod,
     ScanPattern,
     Side,
@@ -49,10 +50,13 @@ export interface ViewerSettings {
     showRight: boolean;
 }
 
+export type TransformMode = "translate" | "rotate" | "scale";
+
 export interface DesignStore {
     design: DesignState;
     viewer: ViewerSettings;
     selectedElementId: string | null;
+    transformMode: TransformMode;
 
     setPattern: (pattern: ScanPattern) => void;
     setMethod: (method: ProductionMethod) => void;
@@ -70,6 +74,10 @@ export interface DesignStore {
     updateElement: (id: string, patch: Partial<PlacedElement>) => void;
     removeElement: (id: string) => void;
     selectElement: (id: string | null) => void;
+    setTransformMode: (mode: TransformMode) => void;
+
+    /** Atomically apply an AI-parsed prescription to the design. */
+    applyPrescription: (result: PrescriptionParseResult) => void;
 
     setViewer: (patch: Partial<ViewerSettings>) => void;
     reset: () => void;
@@ -79,6 +87,7 @@ export const useDesignStore = create<DesignStore>((set) => ({
     design: defaultDesign(),
     viewer: { transparent: false, heightmap: false, showLeft: true, showRight: true },
     selectedElementId: null,
+    transformMode: "translate",
 
     setPattern: (pattern) =>
         set((s) => ({ design: { ...s.design, pattern } })),
@@ -136,6 +145,36 @@ export const useDesignStore = create<DesignStore>((set) => ({
         })),
 
     selectElement: (selectedElementId) => set({ selectedElementId }),
+    setTransformMode: (transformMode) => set({ transformMode }),
+
+    applyPrescription: (result) =>
+        set((s) => {
+            const corrections: Corrections = {
+                ...s.design.corrections,
+                unit: result.unit ?? s.design.corrections.unit,
+                left: { ...s.design.corrections.left, ...(result.corrections.left ?? {}) },
+                right: { ...s.design.corrections.right, ...(result.corrections.right ?? {}) },
+            };
+            const elements: PlacedElement[] = result.elements.map((e) => ({
+                id: crypto.randomUUID(),
+                kind: e.kind,
+                side: e.side,
+                position: { x: 0, y: 0 },
+                rotationDeg: 0,
+                scale: { x: 1, y: 1 },
+                heightMm: 4,
+            }));
+            return {
+                design: {
+                    ...s.design,
+                    pattern: result.pattern ?? s.design.pattern,
+                    method: result.method ?? s.design.method,
+                    thicknessMm: result.thicknessMm ?? s.design.thicknessMm,
+                    corrections,
+                    elements: [...s.design.elements, ...elements],
+                },
+            };
+        }),
 
     setViewer: (patch) => set((s) => ({ viewer: { ...s.viewer, ...patch } })),
     reset: () => set({ design: defaultDesign(), selectedElementId: null }),

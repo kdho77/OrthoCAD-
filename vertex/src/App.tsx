@@ -8,12 +8,14 @@ import { Viewer3D } from "@/components/viewer/Viewer3D";
 import { ClientsView } from "@/features/clients/ClientsView";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
 import { loadOcctKernel } from "@/lib/chili3d";
+import { useDesignStore } from "@/stores/design-store";
 
 export default function App() {
     useAuthBootstrap();
     const [nav, setNav] = useState<NavItem>("Production");
     const [adminOpen, setAdminOpen] = useState(false);
     const [rxOpen, setRxOpen] = useState(false);
+    const applyPrescription = useDesignStore((s) => s.applyPrescription);
 
     useEffect(() => {
         // Attempt to upgrade to the OCCT kernel; silently keeps the procedural
@@ -44,8 +46,15 @@ export default function App() {
             </div>
 
             <AdminPortal open={adminOpen} onClose={() => setAdminOpen(false)} />
-            {/* Phase 1: parse + preview only. Auto-apply (onApply) lands in Phase 2. */}
-            <PrescriptionUpload open={rxOpen} onClose={() => setRxOpen(false)} />
+            <PrescriptionUpload
+                open={rxOpen}
+                onClose={() => setRxOpen(false)}
+                onApply={(result) => {
+                    applyPrescription(result);
+                    setNav("Production");
+                    setRxOpen(false);
+                }}
+            />
         </div>
     );
 }

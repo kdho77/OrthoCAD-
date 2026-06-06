@@ -1,11 +1,8 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { buildInsoleGeometry } from "@/lib/geometry/insole";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import type { DesignState, Side } from "@/types";
-
-const INSOLE_LENGTH_MM = 260;
-const INSOLE_WIDTH_MM = 95;
-const GAP_MM = 30;
 
 interface InsoleMeshProps {
     side: Side;
@@ -15,6 +12,11 @@ interface InsoleMeshProps {
 }
 
 export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshProps) {
+    const sideElements = useMemo(
+        () => design.elements.filter((e) => e.side === side),
+        [design.elements, side],
+    );
+
     const geometry = useMemo(
         () =>
             buildInsoleGeometry({
@@ -23,8 +25,9 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
                 widthMm: INSOLE_WIDTH_MM,
                 thicknessMm: design.thicknessMm,
                 corrections: design.corrections[side],
+                elements: sideElements,
             }),
-        [side, design.thicknessMm, design.corrections],
+        [side, design.thicknessMm, design.corrections, sideElements],
     );
 
     // Color the surface by height when the heightmap toggle is on.
@@ -49,6 +52,9 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
         });
     }, [heightmap, transparent, side]);
 
+    // Dispose superseded geometry to avoid GPU memory growth during real-time edits.
+    useEffect(() => () => geometry.dispose(), [geometry]);
+
     const coloredGeometry = useMemo(() => {
         if (!heightmap) return geometry;
         const g = geometry.clone();
@@ -68,8 +74,15 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
         return g;
     }, [geometry, heightmap]);
 
+    useEffect(() => {
+        const c = coloredGeometry;
+        return () => {
+            if (c !== geometry) c.dispose();
+        };
+    }, [coloredGeometry, geometry]);
+
     // Lay left/right side by side, centered, lying flat (rotate so length = X, height = Y).
-    const offsetX = side === "left" ? -(INSOLE_WIDTH_MM + GAP_MM) / 2 : (INSOLE_WIDTH_MM + GAP_MM) / 2;
+    const offsetX = sideOffsetX(side);
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>

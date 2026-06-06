@@ -66,6 +66,7 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         widthMm: INSOLE_WIDTH_MM,
         thicknessMm: design.thicknessMm,
         corrections: design.corrections[side],
+        elements: design.elements.filter((e) => e.side === side),
     });
     const stl = getKernel().exportSTL(geometry);
     const blob = new Blob([stl], { type: "model/stl" });

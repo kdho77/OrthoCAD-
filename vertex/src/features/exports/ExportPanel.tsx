@@ -31,8 +31,9 @@ export function ExportPanel() {
                 widthMm: INSOLE_WIDTH_MM,
                 thicknessMm: design.thicknessMm,
                 corrections: design.corrections[side],
+                elements: design.elements.filter((e) => e.side === side),
             }),
-        [side, design.thicknessMm, design.corrections],
+        [side, design.thicknessMm, design.corrections, design.elements],
     );
 
     const handleStl = async () => {

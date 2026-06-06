@@ -1,11 +1,12 @@
 import { Grid, OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
-import { Box, Eye, EyeOff, Layers, Maximize2 } from "lucide-react";
+import { Box, Eye, EyeOff, Layers, Maximize2, Move, Rotate3d, Scale3d, X } from "lucide-react";
 import { Suspense, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { useDesignStore } from "@/stores/design-store";
 import { cn } from "@/lib/utils";
+import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { ScanMeshes } from "./ScanMeshes";
 
@@ -22,7 +23,8 @@ const VIEWS: { name: ViewName; label: string; pos: [number, number, number] }[] 
 
 export function Viewer3D() {
     const controls = useRef<OrbitControlsImpl>(null);
-    const { design, viewer, setViewer } = useDesignStore();
+    const { design, viewer, setViewer, selectedElementId, transformMode, setTransformMode, selectElement } =
+        useDesignStore();
 
     const setView = (pos: [number, number, number]) => {
         const c = controls.current;
@@ -34,7 +36,11 @@ export function Viewer3D() {
 
     return (
         <div className="relative h-full w-full bg-[hsl(222_28%_7%)]">
-            <Canvas shadows camera={{ position: [220, 200, 260], fov: 40, near: 1, far: 5000 }}>
+            <Canvas
+                shadows
+                camera={{ position: [220, 200, 260], fov: 40, near: 1, far: 5000 }}
+                onPointerMissed={() => selectElement(null)}
+            >
                 <color attach="background" args={["#0c111b"]} />
                 <ambientLight intensity={0.6} />
                 <directionalLight position={[150, 300, 200]} intensity={1.1} castShadow />
@@ -48,6 +54,7 @@ export function Viewer3D() {
                         <InsoleMesh side="right" design={design} transparent={viewer.transparent} heightmap={viewer.heightmap} />
                     ) : null}
                     <ScanMeshes transparent={viewer.transparent} />
+                    <ElementMarkers />
                 </Suspense>
 
                 <Grid
@@ -82,11 +89,42 @@ export function Viewer3D() {
                 <ToggleButton active={viewer.showRight} onClick={() => setViewer({ showRight: !viewer.showRight })} icon={viewer.showRight ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />} label="Right" />
             </div>
 
+            {/* Element transform toolbar */}
+            {selectedElementId ? (
+                <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
+                    <ModeButton active={transformMode === "translate"} onClick={() => setTransformMode("translate")} icon={<Move className="h-3.5 w-3.5" />} label="Move" />
+                    <ModeButton active={transformMode === "rotate"} onClick={() => setTransformMode("rotate")} icon={<Rotate3d className="h-3.5 w-3.5" />} label="Rotate" />
+                    <ModeButton active={transformMode === "scale"} onClick={() => setTransformMode("scale")} icon={<Scale3d className="h-3.5 w-3.5" />} label="Scale" />
+                    <Button size="sm" variant="ghost" className="h-7" onClick={() => selectElement(null)}>
+                        <X className="h-3.5 w-3.5" />
+                    </Button>
+                </div>
+            ) : null}
+
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="h-3.5 w-3.5" />
                 Procedural kernel · Orbit: drag · Pan: shift+drag · Zoom: scroll
             </div>
         </div>
+    );
+}
+
+function ModeButton({
+    active,
+    onClick,
+    icon,
+    label,
+}: {
+    active: boolean;
+    onClick: () => void;
+    icon: React.ReactNode;
+    label: string;
+}) {
+    return (
+        <Button size="sm" variant={active ? "default" : "ghost"} className="h-7" onClick={onClick}>
+            {icon}
+            {label}
+        </Button>
     );
 }
 

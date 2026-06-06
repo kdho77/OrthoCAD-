@@ -1,9 +1,7 @@
 import { useMemo } from "react";
 import * as THREE from "three";
+import { sideOffsetX } from "@/lib/geometry/layout";
 import { useScanStore } from "@/stores/scan-store";
-
-const GAP_MM = 30;
-const INSOLE_WIDTH_MM = 95;
 
 // Renders imported STL/OBJ scans next to the parametric insoles, positioned by
 // assigned side so they can be visually compared / aligned (Phase 1).
@@ -28,7 +26,7 @@ export function ScanMeshes({ transparent }: { transparent: boolean }) {
             {scans
                 .filter((s) => s.visible)
                 .map((s) => {
-                    const offsetX = s.side === "left" ? -(INSOLE_WIDTH_MM + GAP_MM) / 2 : (INSOLE_WIDTH_MM + GAP_MM) / 2;
+                    const offsetX = sideOffsetX(s.side);
                     return (
                         <mesh key={s.id} geometry={s.geometry} material={material} position={[0, offsetX, 0]} castShadow receiveShadow />
                     );
