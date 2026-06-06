@@ -6,6 +6,7 @@ import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import { useKernelStore } from "@/stores/kernel-store";
 import { cn } from "@/lib/utils";
 import { CustomPrefabMesh } from "./CustomPrefabMesh";
 import { ElementMarkers } from "./ElementMarkers";
@@ -26,6 +27,7 @@ const VIEWS: { name: ViewName; label: string; pos: [number, number, number] }[] 
 
 export function Viewer3D() {
     const controls = useRef<OrbitControlsImpl>(null);
+    const kernelName = useKernelStore((s) => s.name);
     const { design, viewer, setViewer, selectedElementId, transformMode, setTransformMode, selectElement } =
         useDesignStore();
     const editMode = useMeshEditStore((s) => s.editMode);
@@ -130,7 +132,7 @@ export function Viewer3D() {
 
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="h-3.5 w-3.5" />
-                Procedural kernel · Orbit: drag · Pan: shift+drag · Zoom: scroll
+                {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural"} kernel · Orbit: drag · Pan: shift+drag · Zoom: scroll
             </div>
         </div>
     );

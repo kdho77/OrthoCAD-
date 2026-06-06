@@ -1,8 +1,9 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
-import { buildInsoleGeometry } from "@/lib/geometry/insole";
+import { getKernel } from "@/lib/chili3d/kernel";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { useKernelStore } from "@/stores/kernel-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, Side } from "@/types";
 
@@ -14,6 +15,7 @@ interface InsoleMeshProps {
 }
 
 export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshProps) {
+    const kernelVersion = useKernelStore((s) => s.version);
     const trimLines = useMeshEditStore((s) => s.trimLines);
     const vertexOverrides = useMeshEditStore((s) => s.vertexOverrides);
     const target = useMeshEditStore((s) => s.target);
@@ -26,7 +28,7 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
     const applyEdits = target?.type === "insole" && target.side === side;
 
     const geometry = useMemo(() => {
-        let g = buildInsoleGeometry({
+        let g = getKernel().buildInsole({
             side,
             lengthMm: INSOLE_LENGTH_MM,
             widthMm: INSOLE_WIDTH_MM,
@@ -39,7 +41,16 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
             g = applyVertexOverrides(g, vertexOverrides);
         }
         return g;
-    }, [side, design.thicknessMm, design.corrections, sideElements, trimLines, vertexOverrides, applyEdits]);
+    }, [
+        side,
+        design.thicknessMm,
+        design.corrections,
+        sideElements,
+        kernelVersion,
+        trimLines,
+        vertexOverrides,
+        applyEdits,
+    ]);
 
     // Color the surface by height when the heightmap toggle is on.
     const material = useMemo(() => {

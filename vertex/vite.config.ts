@@ -7,11 +7,17 @@ export default defineConfig({
     resolve: {
         alias: {
             "@": path.resolve(__dirname, "./src"),
+            "@chili3d/core": path.resolve(__dirname, "../packages/core/src/index.ts"),
+            "@chili3d/wasm": path.resolve(__dirname, "../packages/wasm/src/index.ts"),
         },
     },
     server: {
         port: 5180,
+        fs: {
+            allow: [path.resolve(__dirname, "..")],
+        },
     },
+    assetsInclude: ["**/*.wasm"],
     // OpenCascade WASM is large; keep it out of the eager bundle.
     optimizeDeps: {
         exclude: ["@chili3d/wasm"],
