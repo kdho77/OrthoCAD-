@@ -3,5 +3,6 @@ dist
 .env
 .env.local
 *.local
+*.tsbuildinfo
 .DS_Store
 prisma/migrations/dev.db*
