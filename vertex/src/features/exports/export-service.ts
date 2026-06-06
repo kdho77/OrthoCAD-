@@ -1,5 +1,5 @@
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
-import { buildExportGeometry, buildExportStl } from "@/lib/geometry/export-geometry";
+import { buildExportGeometry, buildExportGlb, buildExportStl } from "@/lib/geometry/export-geometry";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuditStore } from "@/stores/audit-store";
@@ -20,7 +20,7 @@ function buildSideGeometry(side: Side) {
 
 /** Server-authoritative token gate shared by STL and G-code exports. */
 async function authorize(
-    format: ExportFormat,
+    format: "stl" | "gcode",
     side: Side,
     fileName: string,
 ): Promise<{ ok: boolean; reason?: string }> {
@@ -64,6 +64,10 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         return { ok: false, reason: "Use Generate + Export G-code in the Printing tab" };
     }
 
+    if (format === "glb") {
+        return exportGlb(side);
+    }
+
     const filename = `insole-${side}-${Date.now()}.stl`;
     const auth = await authorize("stl", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
@@ -74,6 +78,33 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
 
     return { ok: true, filename, blob };
+}
+
+/**
+ * Production-quality GLB export. Builds a watertight tapered insole mesh from
+ * the user's confirmed trimline (with parametric fallback) — top surface +
+ * tapered side walls + flat bottom — entirely in a Web Worker so the UI stays
+ * responsive. The exported file contains a single mesh ready for slicing.
+ *
+ * GLB is license-gated client-side but does not consume export tokens (the
+ * server `export.authorize` endpoint is unchanged; GLB is treated as a CAD
+ * preview asset rather than a manufacturing artefact).
+ */
+export async function exportGlb(side: Side): Promise<ExportOutcome> {
+    const { user, license } = useAuthStore.getState();
+    const check = canExport(user, license, "glb");
+    if (!check.ok) return { ok: false, reason: check.reason };
+
+    const filename = `insole-${side}-${Date.now()}.glb`;
+    try {
+        const arrayBuffer = await buildExportGlb(side);
+        const blob = new Blob([arrayBuffer], { type: "model/gltf-binary" });
+        downloadBlob(blob, filename);
+        useAuditStore.getState().record("export_generated", `GLB ${side}`);
+        return { ok: true, filename, blob };
+    } catch (e) {
+        return { ok: false, reason: e instanceof Error ? e.message : "GLB export failed" };
+    }
 }
 
 /**
