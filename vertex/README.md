@@ -11,9 +11,10 @@ element addition, solid/shell generation, TPU printing (incl. belt printers) and
 - **3D kernel:** Forked Chili3D (OpenCascade WASM) — abstracted behind `IGeometryKernel`; Phase 0 ships a Three.js procedural kernel
 - **Slicing / CAM:** Kiri:Moto (Phase 3)
 - **State:** Zustand
-- **Backend:** Node.js + tRPC (Phase 4)
+- **Backend:** Node.js + tRPC (type-safe)
 - **DB:** Prisma + PostgreSQL (Supabase)
 - **Auth:** Supabase Auth
+- **AI:** Server-side prescription parsing via Anthropic (Claude) or xAI (Grok)
 - **Storage:** Local-first + S3-compatible
 
 ## Getting started
@@ -50,15 +51,15 @@ npm run prisma:migrate    # requires DATABASE_URL / DIRECT_URL
 
 ```
 src/
-  components/   UI panels, layout, viewer, admin, shadcn primitives
-  features/     clients, designs, corrections, elements, licensing, exports
-  lib/          chili3d kernel wrapper, kiri integration, geometry utils
-  stores/       zustand stores (design, auth)
+  components/   UI panels, layout, viewer, admin, prescription-upload, primitives
+  features/     clients, corrections, elements, scans, licensing, exports, ai-prescription
+  lib/          chili3d kernel wrapper, kiri integration, geometry utils, trpc, supabase
+  stores/       zustand stores (design, auth, scan)
   hooks/        auth bootstrap
   types/        shared domain types
-prisma/         complete schema (users, licenses, tokens, clients, designs,
-                scans, corrections, elements, productions, audit_logs)
-server/         Node + tRPC API (context/auth, export.authorize, user.me)
+prisma/         complete schema (users, licenses, tokens, clients, designs, scans,
+                corrections, elements, productions, exports, prescriptions, audit_logs)
+server/         Node + tRPC API (auth ctx, export.authorize, user.me, ai.parsePrescription)
 ```
 
 ## Phases
@@ -69,8 +70,11 @@ server/         Node + tRPC API (context/auth, export.authorize, user.me)
   token-gated export flow, Super Admin Portal scaffold.
 - **Phase 1 (done):** STL/OBJ import (welded + manifold-analyzed), kernel
   watertight-solid validation, real-time solid status, tRPC server with
-  server-authoritative token-gated export (atomic deduct + audit).
-- **Phase 2:** full corrections engine + elements drag/scale + real-time solids.
+  server-authoritative token-gated export (atomic deduct + audit), and
+  **AI prescription upload** (text/image → structured params via Anthropic/xAI,
+  token-consuming, with an offline heuristic fallback).
+- **Phase 2:** full corrections engine + elements drag/scale + real-time solids +
+  AI auto-apply of parsed prescriptions to the 3D model.
 - **Phase 3:** Kiri:Moto slicing (belt 45°) + 3-axis CNC + printer presets.
 - **Phase 4:** UI polish, client/design management, Super Admin Portal, full
   licensing & token system over tRPC.

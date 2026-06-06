@@ -1,4 +1,4 @@
-import { Coins, ShieldCheck, Users } from "lucide-react";
+import { Coins, ShieldCheck, Sparkles, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
@@ -10,9 +10,10 @@ interface TopNavProps {
     active: NavItem;
     onNavigate: (item: NavItem) => void;
     onOpenAdmin: () => void;
+    onOpenPrescription: () => void;
 }
 
-export function TopNav({ active, onNavigate, onOpenAdmin }: TopNavProps) {
+export function TopNav({ active, onNavigate, onOpenAdmin, onOpenPrescription }: TopNavProps) {
     const { user, license } = useAuthStore();
 
     return (
@@ -42,6 +43,9 @@ export function TopNav({ active, onNavigate, onOpenAdmin }: TopNavProps) {
             </div>
 
             <div className="flex items-center gap-3">
+                <Button size="sm" variant="outline" onClick={onOpenPrescription}>
+                    <Sparkles className="h-3.5 w-3.5 text-primary" /> AI Rx
+                </Button>
                 <div className="flex items-center gap-1.5 rounded-md bg-muted px-2.5 py-1 text-xs">
                     <Coins className="h-3.5 w-3.5 text-primary" />
                     <span className="tabular-nums">{user?.tokenBalance ?? 0}</span>
