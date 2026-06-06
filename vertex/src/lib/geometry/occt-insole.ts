@@ -59,7 +59,25 @@ function ensureSolid(factory: IShapeFactory, shape: IShape): ISolid {
     }
 }
 
-/** Closed medial→top→lateral→bottom profile at one length station. */
+/** Cross-width samples used to capture the clinical top contour at each station. */
+const CROSS_SECTION_SAMPLES = 16;
+/** Longitudinal loft stations from heel to toe. */
+const LOFT_STATIONS = 40;
+
+/**
+ * Closed cross-section profile at one length station `u`.
+ *
+ * The medial/lateral footprint extent is driven by the (optionally user-edited)
+ * trimline via `resolveOutlineHalfWidth`, so the lofted solid's outline matches
+ * what the user drew. Unlike a flat ruled top, the upper edge of the profile is
+ * sampled across the width from the shared height field (`heightAt`), so the
+ * lofted top surface follows the real arch dome / heel cup / posting contour.
+ *
+ * Point order (simple, planar polygon at constant x — auto-closed by `polygon`):
+ *   bottom-medial → top medial→lateral (sampled) → bottom-lateral → (close along bottom)
+ *
+ * Every station emits the same point count so the sections loft cleanly.
+ */
 function sectionWire(
     factory: IShapeFactory,
     u: number,
@@ -69,14 +87,15 @@ function sectionWire(
     const halfW = widthMm / 2;
     const hw = resolveOutlineHalfWidth(u, params) * halfW;
     const x = u * lengthMm;
-    const medial = heightAt(u, -1, params);
-    const lateral = heightAt(u, 1, params);
-    return wireFromPoints(factory, [
-        { x, y: -hw, z: 0 },
-        { x, y: -hw, z: medial },
-        { x, y: hw, z: lateral },
-        { x, y: hw, z: 0 },
-    ]);
+
+    const points: GridPoint[] = [{ x, y: -hw, z: 0 }];
+    for (let k = 0; k <= CROSS_SECTION_SAMPLES; k++) {
+        const vSigned = -1 + (2 * k) / CROSS_SECTION_SAMPLES;
+        points.push({ x, y: vSigned * hw, z: heightAt(u, vSigned, params) });
+    }
+    points.push({ x, y: hw, z: 0 });
+
+    return wireFromPoints(factory, points);
 }
 
 /** @internal Exported for WASM integration tests. */
@@ -92,7 +111,7 @@ export function buildBaseShell(factory: IShapeFactory, params: InsoleParams): IS
         trimline: params.trimline,
     };
 
-    const nx = 32;
+    const nx = LOFT_STATIONS;
     const sections: IWire[] = [];
     for (let i = 0; i <= nx; i++) {
         sections.push(sectionWire(factory, i / nx, field));
