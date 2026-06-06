@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useDesignStore } from "@/stores/design-store";
 import { cn } from "@/lib/utils";
 import { InsoleMesh } from "./InsoleMesh";
+import { ScanMeshes } from "./ScanMeshes";
 
 type ViewName = "front" | "back" | "left" | "right" | "top" | "iso";
 
@@ -46,6 +47,7 @@ export function Viewer3D() {
                     {viewer.showRight ? (
                         <InsoleMesh side="right" design={design} transparent={viewer.transparent} heightmap={viewer.heightmap} />
                     ) : null}
+                    <ScanMeshes transparent={viewer.transparent} />
                 </Suspense>
 
                 <Grid

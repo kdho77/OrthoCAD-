@@ -31,7 +31,8 @@ function outlineHalfWidth(u: number): number {
     // Narrow heel, wide forefoot, rounded toe — classic insole footprint.
     const heel = 0.55 + 0.25 * bump(u, 0.08, 0.18);
     const waist = 0.78 + 0.18 * Math.sin(Math.PI * Math.min(1, u * 1.05));
-    const toe = u > 0.9 ? 1 - (u - 0.9) / 0.1 : 1;
+    // Rounded toe — taper but never pinch to zero width (keeps the solid watertight).
+    const toe = u > 0.88 ? Math.max(0.45, 1 - (u - 0.88) / 0.12) : 1;
     return Math.min(1, heel * waist) * (0.4 + 0.6 * toe);
 }
 

@@ -1,6 +1,12 @@
 import type { BufferGeometry } from "three";
 import { buildInsoleGeometry, type InsoleParams } from "@/lib/geometry/insole";
+import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
+
+export interface SolidResult {
+    geometry: BufferGeometry;
+    manifold: ManifoldReport;
+}
 
 // Geometry kernel abstraction.
 //
@@ -14,6 +20,8 @@ export interface IGeometryKernel {
     readonly ready: boolean;
 
     buildInsole(params: InsoleParams): BufferGeometry;
+    /** Builds the insole and reports whether the result is a watertight solid. */
+    buildInsoleSolid(params: InsoleParams): SolidResult;
     exportSTL(geometry: BufferGeometry): ArrayBuffer;
 }
 
@@ -23,6 +31,11 @@ class ThreeKernel implements IGeometryKernel {
 
     buildInsole(params: InsoleParams): BufferGeometry {
         return buildInsoleGeometry(params);
+    }
+
+    buildInsoleSolid(params: InsoleParams): SolidResult {
+        const geometry = buildInsoleGeometry(params);
+        return { geometry, manifold: analyzeManifold(geometry) };
     }
 
     exportSTL(geometry: BufferGeometry): ArrayBuffer {

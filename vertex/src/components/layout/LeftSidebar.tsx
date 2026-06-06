@@ -1,4 +1,5 @@
-import { FileBox, Footprints, Layers3, Wrench } from "lucide-react";
+import { FileBox, Footprints, Layers3 } from "lucide-react";
+import { ScanImport } from "@/features/scans/ScanImport";
 import { useDesignStore } from "@/stores/design-store";
 import { cn } from "@/lib/utils";
 import type { ProductionMethod, ScanPattern } from "@/types";
@@ -20,7 +21,7 @@ export function LeftSidebar() {
     const { design, setPattern, setMethod } = useDesignStore();
 
     return (
-        <aside className="flex w-56 flex-col gap-4 border-r border-border bg-panel p-3">
+        <aside className="flex w-56 flex-col gap-4 overflow-y-auto border-r border-border bg-panel p-3">
             <Section icon={<Footprints className="h-3.5 w-3.5" />} title="Pattern">
                 <div className="grid grid-cols-2 gap-1.5">
                     {PATTERNS.map((p) => (
@@ -62,12 +63,7 @@ export function LeftSidebar() {
             </Section>
 
             <Section icon={<FileBox className="h-3.5 w-3.5" />} title="Import">
-                <button
-                    type="button"
-                    className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-border bg-background px-2 py-4 text-xs text-muted-foreground hover:border-primary/50"
-                >
-                    <Wrench className="h-3.5 w-3.5" /> STL / OBJ (Phase 1)
-                </button>
+                <ScanImport />
             </Section>
         </aside>
     );
