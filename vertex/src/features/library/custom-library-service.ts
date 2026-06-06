@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { canSaveCustom, SAVE_CUSTOM_TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/chili3d";
+import { boundsFromObject, registerCustomElementBounds } from "@/lib/geometry/custom-element-bounds";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
@@ -138,6 +139,7 @@ export async function saveCustomAsset(input: SaveCustomInput): Promise<SaveCusto
         if (scanMesh) mesh = scanMesh;
     }
 
+    const elementBounds = input.kind === "element" ? boundsFromObject(mesh) : null;
     const { base64 } = await exportObjectToGlb(mesh);
     mesh.geometry.dispose();
     (mesh.material as THREE.Material).dispose();
@@ -176,6 +178,7 @@ export async function saveCustomAsset(input: SaveCustomInput): Promise<SaveCusto
 
             if (input.kind === "element") {
                 useCustomLibraryStore.getState().addCustomElement(item, base64);
+                if (elementBounds) registerCustomElementBounds(res.item.id, elementBounds);
             } else {
                 useCustomLibraryStore.getState().addCustomPrefab(item, base64);
             }
@@ -199,6 +202,7 @@ export async function saveCustomAsset(input: SaveCustomInput): Promise<SaveCusto
 
     if (input.kind === "element") {
         useCustomLibraryStore.getState().addCustomElement(item, base64);
+        if (elementBounds) registerCustomElementBounds(offlineId, elementBounds);
     } else {
         useCustomLibraryStore.getState().addCustomPrefab(item, base64);
     }

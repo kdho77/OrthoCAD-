@@ -1,11 +1,9 @@
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
-import { getKernel } from "@/lib/chili3d";
-import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
+import { buildExportGeometry, buildExportStl } from "@/lib/geometry/export-geometry";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
-import { useDesignStore } from "@/stores/design-store";
 import type { ExportFormat, Side } from "@/types";
 
 export interface ExportOutcome {
@@ -17,8 +15,7 @@ export interface ExportOutcome {
 }
 
 function buildSideGeometry(side: Side) {
-    const { design } = useDesignStore.getState();
-    return getKernel().buildInsole(insoleParamsFromDesign(design, side, "full"));
+    return buildExportGeometry(side);
 }
 
 /** Server-authoritative token gate shared by STL and G-code exports. */
@@ -71,8 +68,7 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     const auth = await authorize("stl", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
 
-    const geometry = buildSideGeometry(side);
-    const stl = getKernel().exportSTL(geometry);
+    const stl = await buildExportStl(side);
     const blob = new Blob([stl], { type: "model/stl" });
     downloadBlob(blob, filename);
     useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
@@ -93,8 +89,9 @@ export async function exportGcode(
     const auth = await authorize("gcode", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
 
-    const geometry = buildSideGeometry(side);
+    const geometry = await buildSideGeometry(side);
     const { gcode, stats } = generateGcode(geometry, preset, overrides);
+    geometry.dispose();
     const blob = new Blob([gcode], { type: "text/plain" });
     downloadBlob(blob, filename);
     useAuditStore

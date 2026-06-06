@@ -29,7 +29,7 @@ services:
       rootDir: vertex
       plan: starter
       buildCommand: npm install --include=dev && npm run prisma:generate
-      startCommand: npm run start:server
+      startCommand: npm run prisma:generate && npx prisma migrate deploy && npm run start:server
       healthCheckPath: /user.health
       envVars:
           - key: PORT

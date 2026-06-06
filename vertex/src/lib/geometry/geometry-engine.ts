@@ -5,6 +5,7 @@ import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import { geometryToPayload, payloadToGeometry } from "@/lib/geometry/geometry-buffer";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import { isOcctKernelActive, scheduleMainThread } from "@/lib/geometry/kernel-build";
+import { occtWorkerEngine } from "@/lib/geometry/occt-worker-engine";
 import type { SolidValidation } from "@/lib/geometry/repair";
 import { segmentsForQuality, type GeometryQuality } from "@/lib/geometry/quality";
 import { serializeTrimLines, serializeVertexOverrides } from "@/lib/geometry/mesh-edit-serialize";
@@ -94,10 +95,10 @@ class GeometryEngine {
         const fullParams: InsoleParams = { ...params, ...segments };
         const hasEdits = trimLines.length > 0 || vertexOverrides.size > 0;
 
-        // OCCT production path — procedural worker remains the interactive preview fallback.
+        // OCCT production path — worker when available, else rAF main thread.
         if (preferKernel && isOcctKernelActive() && quality === "full") {
-            return scheduleMainThread(() => {
-                let geometry = getKernel().buildInsole(fullParams);
+            try {
+                let geometry = await occtWorkerEngine.buildInsole(fullParams);
                 if (hasEdits) {
                     geometry = applyTrimLines(geometry, trimLines);
                     const vecMap = new Map<number, Vector3>();
@@ -105,7 +106,19 @@ class GeometryEngine {
                     geometry = applyVertexOverrides(geometry, vecMap);
                 }
                 return geometry;
-            });
+            } catch (workerErr) {
+                console.warn("[geometry-engine] OCCT worker failed, using main thread:", workerErr);
+                return scheduleMainThread(() => {
+                    let geometry = getKernel().buildInsole(fullParams);
+                    if (hasEdits) {
+                        geometry = applyTrimLines(geometry, trimLines);
+                        const vecMap = new Map<number, Vector3>();
+                        for (const [idx, v] of vertexOverrides) vecMap.set(idx, new Vector3(v.x, v.y, v.z));
+                        geometry = applyVertexOverrides(geometry, vecMap);
+                    }
+                    return geometry;
+                });
+            }
         }
 
         const requestId = ++this.nextId;

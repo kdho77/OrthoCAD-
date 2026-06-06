@@ -60,7 +60,14 @@ export function Viewer3D() {
                 <directionalLight position={[150, 300, 200]} intensity={1.1} castShadow />
                 <directionalLight position={[-150, 100, -100]} intensity={0.4} />
 
-                <Suspense fallback={null}>
+                <Suspense
+                    fallback={
+                        <mesh>
+                            <boxGeometry args={[1, 1, 1]} />
+                            <meshBasicMaterial color="#334155" wireframe />
+                        </mesh>
+                    }
+                >
                     {viewer.showLeft ? (
                         <>
                             {!showCustomPrefab ? (
@@ -140,7 +147,7 @@ export function Viewer3D() {
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="h-3.5 w-3.5" />
                 {interacting ? "Preview mesh · " : ""}
-                {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural worker"} kernel · Orbit: drag · Pan: shift+drag · Zoom: scroll
+                {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural worker"} kernel · ⌘P Rx · ⌘E export · T transparent · Esc deselect
             </div>
         </div>
     );

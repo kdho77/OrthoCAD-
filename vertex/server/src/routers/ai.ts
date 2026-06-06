@@ -1,7 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getAiConfig, parsePrescriptionWithAi } from "../lib/ai-provider";
-import { protectedProcedure, router } from "../trpc";
+import { RATE_LIMITS } from "../lib/rate-limit";
+import { rateLimitedProcedure, router } from "../trpc";
 
 // Token cost for an AI prescription parse / generation.
 const AI_TOKEN_COST = 3;
@@ -10,7 +11,7 @@ export const aiRouter = router({
     // Parses a free-text / image prescription into structured corrections and
     // elements. Server-authoritative: validates license, calls the AI provider,
     // then atomically deducts tokens and records the prescription + audit log.
-    parsePrescription: protectedProcedure
+    parsePrescription: rateLimitedProcedure(RATE_LIMITS.ai, "ai:parsePrescription")
         .input(
             z
                 .object({
@@ -61,7 +62,10 @@ export const aiRouter = router({
                     data: { tokenBalance: { decrement: AI_TOKEN_COST } },
                 });
                 if (dec.count === 0) {
-                    throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient tokens for AI generation" });
+                    throw new TRPCError({
+                        code: "FORBIDDEN",
+                        message: "Insufficient tokens for AI generation",
+                    });
                 }
                 const user = await tx.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
 

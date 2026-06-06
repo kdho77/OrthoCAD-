@@ -18,6 +18,7 @@ import {
     outlineHalfWidth,
 } from "@/lib/geometry/height-field";
 import { repairOcctSolid } from "@/lib/geometry/repair";
+import { getCustomElementBounds } from "@/lib/geometry/custom-element-bounds";
 import type { InsoleParams } from "@/lib/geometry/insole";
 import type { PlacedElement, SideCorrections } from "@/types";
 
@@ -100,7 +101,9 @@ export function buildBaseShell(factory: IShapeFactory, params: InsoleParams): IS
 }
 
 function buildElementTool(factory: IShapeFactory, el: PlacedElement, lengthMm: number): ISolid | null {
-    if (el.kind === "custom") return null;
+    if (el.kind === "custom") {
+        return buildCustomElementTool(factory, el, lengthMm);
+    }
     const profile = ELEMENT_PROFILES[el.kind];
     const rx = Math.max(2, profile.rxMm * el.scale.x);
     const ry = Math.max(2, profile.ryMm * el.scale.y);
@@ -120,14 +123,34 @@ function buildElementTool(factory: IShapeFactory, el: PlacedElement, lengthMm: n
     return box.value;
 }
 
+/** OCCT boolean tool for user custom GLB elements — oriented box from saved bounds. */
+function buildCustomElementTool(factory: IShapeFactory, el: PlacedElement, lengthMm: number): ISolid | null {
+    const bounds = getCustomElementBounds(el.customElementId);
+    const sx = bounds.sizeX * el.scale.x;
+    const sy = bounds.sizeY * el.scale.y;
+    const h = Math.max(0.5, bounds.sizeZ * (el.heightMm / 4));
+    const centerX = lengthMm / 2 + el.position.x;
+    const centerY = el.position.y;
+    const angleRad = (el.rotationDeg * Math.PI) / 180;
+    const xvec = new XYZ({ x: Math.cos(angleRad), y: Math.sin(angleRad), z: 0 });
+    const yvec = new XYZ({ x: -Math.sin(angleRad), y: Math.cos(angleRad), z: 0 });
+    const origin = new XYZ({ x: centerX, y: centerY, z: 0 })
+        .add(xvec.multiply(sx * -0.5))
+        .add(yvec.multiply(sy * -0.5));
+
+    const plane = new Plane({ origin, normal: XYZ.unitZ, xvec });
+    const box = factory.box(plane, sx, sy, h);
+    if (!box.isOk) return null;
+    return box.value;
+}
+
 function applyElements(factory: IShapeFactory, solid: ISolid, elements: PlacedElement[], lengthMm: number): ISolid {
     let current: IShape = solid;
     for (const el of elements) {
-        if (el.kind === "custom") continue;
         try {
             const tool = buildElementTool(factory, el, lengthMm);
             if (!tool) continue;
-            const profile = ELEMENT_PROFILES[el.kind];
+            const profile = el.kind === "custom" ? { sign: 1 } : ELEMENT_PROFILES[el.kind];
             const result =
                 profile.sign > 0
                     ? factory.booleanFuse([current], [tool], true)

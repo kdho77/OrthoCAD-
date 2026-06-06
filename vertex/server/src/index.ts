@@ -1,6 +1,9 @@
 import { createHTTPServer } from "@trpc/server/adapters/standalone";
 import { createContext } from "./context";
+import { validateServerEnv } from "./lib/env";
 import { appRouter } from "./routers";
+
+validateServerEnv();
 
 const PORT = Number(process.env.PORT ?? 5181);
 const ORIGIN = process.env.CORS_ORIGIN ?? "*";
