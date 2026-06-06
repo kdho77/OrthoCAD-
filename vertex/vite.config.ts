@@ -18,6 +18,9 @@ export default defineConfig({
         },
     },
     assetsInclude: ["**/*.wasm"],
+    worker: {
+        format: "es",
+    },
     // OpenCascade WASM is large; keep it out of the eager bundle.
     optimizeDeps: {
         exclude: ["@chili3d/wasm"],

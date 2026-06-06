@@ -52,6 +52,7 @@ export function Viewer3D() {
         <div className="relative h-full w-full bg-[hsl(222_28%_7%)]">
             <Canvas
                 shadows
+                dpr={[1, 1.5]}
                 camera={{ position: [220, 200, 260], fov: 40, near: 1, far: 5000 }}
                 onPointerMissed={() => selectElement(null)}
             >

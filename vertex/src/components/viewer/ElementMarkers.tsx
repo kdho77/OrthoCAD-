@@ -1,8 +1,14 @@
 import { TransformControls } from "@react-three/drei";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useThree } from "@react-three/fiber";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type * as THREE_NS from "three";
+import type {
+    OrbitControls as OrbitControlsImpl,
+    TransformControls as TransformControlsImpl,
+} from "three-stdlib";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { rafThrottle } from "@/lib/performance/throttle";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
@@ -91,6 +97,7 @@ function InstancedMarkersSide({
 
 function SelectedElementMarker({ element }: { element: PlacedElement }) {
     const [node, setNode] = useState<THREE_NS.Group | null>(null);
+    const controlsRef = useRef<TransformControlsImpl>(null);
     const mode = useDesignStore((s) => s.transformMode);
     const editMode = useMeshEditStore((s) => s.editMode);
     const selectElement = useDesignStore((s) => s.selectElement);
@@ -98,10 +105,11 @@ function SelectedElementMarker({ element }: { element: PlacedElement }) {
     const setInteracting = usePerformanceStore((s) => s.setInteracting);
     const setElementPreview = usePerformanceStore((s) => s.setElementPreview);
     const clearElementPreview = usePerformanceStore((s) => s.clearElementPreview);
+    const orbitControls = useThree((s) => s.controls);
 
     const zTop = element.heightMm + 4;
 
-    const commitTransform = () => {
+    const commitTransform = useCallback(() => {
         const m = node;
         if (!m) return;
         updateElement(element.id, {
@@ -110,18 +118,47 @@ function SelectedElementMarker({ element }: { element: PlacedElement }) {
             scale: { x: Math.max(0.25, m.scale.x), y: Math.max(0.25, m.scale.y) },
         });
         clearElementPreview(element.id);
-    };
+    }, [node, element.id, updateElement, clearElementPreview]);
 
-    const previewTransform = () => {
-        const m = node;
-        if (!m) return;
-        setElementPreview(element.id, {
-            id: element.id,
-            position: { x: m.position.x - CENTER_X, y: m.position.y },
-            rotationDeg: (m.rotation.z * 180) / Math.PI,
-            scale: { x: Math.max(0.25, m.scale.x), y: Math.max(0.25, m.scale.y) },
-        });
-    };
+    const previewTransform = useMemo(
+        () =>
+            rafThrottle(() => {
+                const m = node;
+                if (!m) return;
+                setElementPreview(element.id, {
+                    id: element.id,
+                    position: { x: m.position.x - CENTER_X, y: m.position.y },
+                    rotationDeg: (m.rotation.z * 180) / Math.PI,
+                    scale: { x: Math.max(0.25, m.scale.x), y: Math.max(0.25, m.scale.y) },
+                });
+            }),
+        [node, element.id, setElementPreview],
+    );
+
+    const onDraggingChanged = useCallback(
+        (dragging: boolean) => {
+            if (orbitControls) {
+                (orbitControls as OrbitControlsImpl).enabled = !dragging;
+            }
+            setInteracting(dragging, "gizmo");
+            if (!dragging) commitTransform();
+        },
+        [orbitControls, setInteracting, commitTransform],
+    );
+
+    useEffect(() => {
+        const tc = controlsRef.current;
+        if (!tc) return;
+        const handler = (event: { value?: boolean }) => {
+            onDraggingChanged(Boolean(event.value));
+        };
+        const emitter = tc as unknown as {
+            addEventListener(type: string, listener: (event: { value?: boolean }) => void): void;
+            removeEventListener(type: string, listener: (event: { value?: boolean }) => void): void;
+        };
+        emitter.addEventListener("dragging-changed", handler);
+        return () => emitter.removeEventListener("dragging-changed", handler);
+    }, [onDraggingChanged, node]);
 
     return (
         <>
@@ -154,16 +191,12 @@ function SelectedElementMarker({ element }: { element: PlacedElement }) {
             </group>
             {node && editMode === "transform" ? (
                 <TransformControls
+                    ref={controlsRef}
                     object={node}
                     mode={mode}
                     space="local"
                     size={0.6}
                     showZ={mode !== "translate"}
-                    onMouseDown={() => setInteracting(true, "gizmo")}
-                    onMouseUp={() => {
-                        setInteracting(false);
-                        commitTransform();
-                    }}
                     onObjectChange={previewTransform}
                 />
             ) : null}
