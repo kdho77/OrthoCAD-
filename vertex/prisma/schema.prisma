@@ -1,0 +1,354 @@
+// Vertex Orthopedic — Insole CAD
+// Prisma schema (PostgreSQL / Supabase). Phase 0: complete data model for
+// users, licensing, tokens, clients, designs, scans, corrections, elements,
+// productions and audit logs.
+
+generator client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider  = "postgresql"
+    url       = env("DATABASE_URL")
+    directUrl = env("DIRECT_URL")
+}
+
+// --- Enums ------------------------------------------------------------------
+
+enum Role {
+    super_admin
+    admin
+    clinician
+}
+
+enum LicenseType {
+    monthly
+    yearly
+    per_seat
+}
+
+enum LicenseStatus {
+    active
+    expired
+    revoked
+}
+
+enum ProductionMethod {
+    printing_solid
+    printing_shell
+    milling_3axis
+}
+
+enum ScanPattern {
+    full_contact
+    prefab_3d
+    flat
+    custom
+}
+
+enum Side {
+    left
+    right
+}
+
+enum Unit {
+    mm
+    deg
+}
+
+enum ExportFormat {
+    stl
+    gcode
+}
+
+enum TokenTxnType {
+    grant
+    deduct
+    refund
+    adjustment
+}
+
+enum AuditAction {
+    user_signin
+    user_signout
+    license_created
+    license_renewed
+    license_revoked
+    tokens_granted
+    tokens_deducted
+    design_created
+    design_updated
+    export_generated
+    ai_prescription_parsed
+}
+
+// --- Identity & Access ------------------------------------------------------
+
+// Mirrors Supabase auth.users (same UUID). Application-level profile + role.
+model User {
+    id           String   @id @db.Uuid
+    email        String   @unique
+    fullName     String?
+    role         Role     @default(clinician)
+    tokenBalance Int      @default(0)
+    isActive     Boolean  @default(true)
+    createdAt    DateTime @default(now())
+    updatedAt    DateTime @updatedAt
+
+    licensesOwned   License[]      @relation("LicenseOwner")
+    seats           LicenseSeat[]
+    clients         Client[]
+    designs         Design[]
+    tokenTxns       TokenTransaction[]
+    exports         Export[]
+    prescriptions   Prescription[]
+    auditLogs       AuditLog[]
+
+    @@index([role])
+    @@map("users")
+}
+
+model License {
+    id        String        @id @default(uuid()) @db.Uuid
+    type      LicenseType
+    status    LicenseStatus @default(active)
+    seats     Int           @default(1)
+    startsAt  DateTime      @default(now())
+    expiresAt DateTime?
+    notes     String?
+    createdAt DateTime      @default(now())
+    updatedAt DateTime      @updatedAt
+
+    ownerId String        @db.Uuid
+    owner   User          @relation("LicenseOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+    seatList LicenseSeat[]
+
+    @@index([ownerId])
+    @@index([status])
+    @@map("licenses")
+}
+
+// Per-seat assignment of a license to a user.
+model LicenseSeat {
+    id         String   @id @default(uuid()) @db.Uuid
+    licenseId  String   @db.Uuid
+    userId     String   @db.Uuid
+    assignedAt DateTime @default(now())
+
+    license License @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+    user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@unique([licenseId, userId])
+    @@map("license_seats")
+}
+
+// --- Tokens -----------------------------------------------------------------
+
+model TokenTransaction {
+    id        String       @id @default(uuid()) @db.Uuid
+    userId    String       @db.Uuid
+    type      TokenTxnType
+    amount    Int // positive for grants, negative for deductions
+    balance   Int // resulting balance snapshot
+    reason    String?
+    exportId  String?      @db.Uuid
+    createdAt DateTime     @default(now())
+
+    user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+    export Export? @relation(fields: [exportId], references: [id], onDelete: SetNull)
+
+    @@index([userId])
+    @@map("token_transactions")
+}
+
+// --- Clinical data ----------------------------------------------------------
+
+model Client {
+    id        String   @id @default(uuid()) @db.Uuid
+    reference String?
+    firstName String
+    lastName  String
+    email     String?
+    phone     String?
+    notes     String?
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    ownerId String   @db.Uuid
+    owner   User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+    designs Design[]
+
+    @@index([ownerId])
+    @@map("clients")
+}
+
+model Design {
+    id          String           @id @default(uuid()) @db.Uuid
+    name        String
+    pattern     ScanPattern      @default(full_contact)
+    method      ProductionMethod @default(printing_solid)
+    thicknessMm Float            @default(3)
+    linked      Boolean          @default(true)
+    unit        Unit             @default(mm)
+    createdAt   DateTime         @default(now())
+    updatedAt   DateTime         @updatedAt
+
+    clientId String @db.Uuid
+    client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+    ownerId  String @db.Uuid
+    owner    User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+    scans         Scan[]
+    corrections   Correction[]
+    elements      Element[]
+    productions   Production[]
+    exports       Export[]
+    prescriptions Prescription[]
+
+    @@index([clientId])
+    @@index([ownerId])
+    @@map("designs")
+}
+
+// Imported 3D scan or prefab (STL/OBJ), stored in S3-compatible storage.
+model Scan {
+    id          String   @id @default(uuid()) @db.Uuid
+    designId    String   @db.Uuid
+    side        Side
+    fileName    String
+    storageKey  String // object storage key (S3-compatible)
+    format      String // stl | obj
+    sizeBytes   Int?
+    createdAt   DateTime @default(now())
+
+    design Design @relation(fields: [designId], references: [id], onDelete: Cascade)
+
+    @@index([designId])
+    @@map("scans")
+}
+
+// Parametric corrections, one row per side per design.
+model Correction {
+    id       String @id @default(uuid()) @db.Uuid
+    designId String @db.Uuid
+    side     Side
+
+    forefootPostingDeg Float @default(0)
+    rearfootPostingDeg Float @default(0)
+    medialSkiveMm      Float @default(0)
+    lateralSkiveMm     Float @default(0)
+    archFillMm         Float @default(0)
+    archHeightMm       Float @default(0)
+    heelCupDepthMm     Float @default(0)
+    heelCupHeightMm    Float @default(0)
+    apexMoveMm         Float @default(0)
+    medialFlangeMm     Float @default(0)
+    lateralFlangeMm    Float @default(0)
+
+    design Design @relation(fields: [designId], references: [id], onDelete: Cascade)
+
+    @@unique([designId, side])
+    @@map("corrections")
+}
+
+// Additive elements (met pads, wedges, extensions, sinks, ...).
+model Element {
+    id          String   @id @default(uuid()) @db.Uuid
+    designId    String   @db.Uuid
+    side        Side
+    kind        String // ElementKind union (met_pad, cluffy_wedge, ...)
+    posX        Float    @default(0)
+    posY        Float    @default(0)
+    rotationDeg Float    @default(0)
+    scaleX      Float    @default(1)
+    scaleY      Float    @default(1)
+    heightMm    Float    @default(4)
+    createdAt   DateTime @default(now())
+
+    design Design @relation(fields: [designId], references: [id], onDelete: Cascade)
+
+    @@index([designId])
+    @@map("elements")
+}
+
+// A manufacturing run: slicing/CAM settings + generated artifact references.
+model Production {
+    id              String           @id @default(uuid()) @db.Uuid
+    designId        String           @db.Uuid
+    method          ProductionMethod
+    presetId        String // printer/mill preset id (e.g. apex-belt-v2)
+    beltAngleDeg    Float?
+    layerHeightMm   Float?
+    material        String?
+    gcodeStorageKey String?
+    createdAt       DateTime         @default(now())
+
+    design Design @relation(fields: [designId], references: [id], onDelete: Cascade)
+
+    @@index([designId])
+    @@map("productions")
+}
+
+// A token-consuming export of an STL or G-code artifact.
+model Export {
+    id         String       @id @default(uuid()) @db.Uuid
+    designId   String?      @db.Uuid
+    userId     String       @db.Uuid
+    format     ExportFormat
+    side       Side?
+    tokenCost  Int
+    storageKey String?
+    fileName   String?
+    createdAt  DateTime     @default(now())
+
+    design    Design?            @relation(fields: [designId], references: [id], onDelete: Cascade)
+    user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+    tokenTxns TokenTransaction[]
+
+    @@index([designId])
+    @@index([userId])
+    @@map("exports")
+}
+
+// --- AI prescription --------------------------------------------------------
+
+// An AI-parsed prescription upload (text and/or image). `parsed` holds the
+// structured corrections/elements payload returned to the client. Consumes
+// tokens like exports.
+model Prescription {
+    id            String   @id @default(uuid()) @db.Uuid
+    userId        String   @db.Uuid
+    designId      String?  @db.Uuid
+    inputText     String?
+    inputImageKey String? // object storage key for an uploaded image
+    parsed        Json
+    provider      String? // anthropic | xai | heuristic
+    model         String?
+    confidence    Float?
+    tokenCost     Int
+    createdAt     DateTime @default(now())
+
+    user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+    design Design? @relation(fields: [designId], references: [id], onDelete: SetNull)
+
+    @@index([userId])
+    @@map("prescriptions")
+}
+
+// --- Audit ------------------------------------------------------------------
+
+model AuditLog {
+    id        String      @id @default(uuid()) @db.Uuid
+    userId    String?     @db.Uuid
+    action    AuditAction
+    targetId  String?     @db.Uuid
+    metadata  Json?
+    ipAddress String?
+    createdAt DateTime    @default(now())
+
+    user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+    @@index([userId])
+    @@index([action])
+    @@map("audit_logs")
+}

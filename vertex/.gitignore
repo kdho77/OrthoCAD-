@@ -1,0 +1,12 @@
+node_modules
+dist
+
+# The monorepo root ignores any dir named "types"; re-include this app's source types.
+!src/types
+!src/types/**
+.env
+.env.local
+*.local
+*.tsbuildinfo
+.DS_Store
+prisma/migrations/dev.db*

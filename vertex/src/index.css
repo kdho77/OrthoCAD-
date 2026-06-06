@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Dark professional CAD theme — slate/cyan palette to match the Vertex workflow. */
+@layer base {
+    :root {
+        --background: 222 24% 9%;
+        --foreground: 210 20% 92%;
+
+        --panel: 222 20% 12%;
+        --panel-foreground: 210 20% 90%;
+
+        --muted: 218 16% 18%;
+        --muted-foreground: 215 14% 60%;
+
+        --primary: 199 89% 48%;
+        --primary-foreground: 222 47% 11%;
+
+        --secondary: 217 19% 20%;
+        --secondary-foreground: 210 20% 92%;
+
+        --accent: 199 89% 48%;
+        --accent-foreground: 222 47% 11%;
+
+        --destructive: 0 72% 51%;
+        --destructive-foreground: 210 20% 98%;
+
+        --border: 217 19% 22%;
+        --input: 217 19% 22%;
+        --ring: 199 89% 48%;
+
+        --radius: 0.5rem;
+    }
+
+    * {
+        @apply border-border;
+    }
+
+    html,
+    body,
+    #root {
+        height: 100%;
+    }
+
+    body {
+        @apply bg-background text-foreground antialiased;
+        font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    }
+}
