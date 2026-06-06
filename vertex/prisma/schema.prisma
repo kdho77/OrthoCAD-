@@ -79,6 +79,7 @@ enum AuditAction {
     design_created
     design_updated
     export_generated
+    ai_prescription_parsed
 }
 
 // --- Identity & Access ------------------------------------------------------
@@ -100,6 +101,7 @@ model User {
     designs         Design[]
     tokenTxns       TokenTransaction[]
     exports         Export[]
+    prescriptions   Prescription[]
     auditLogs       AuditLog[]
 
     @@index([role])
@@ -196,11 +198,12 @@ model Design {
     ownerId  String @db.Uuid
     owner    User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
-    scans       Scan[]
-    corrections Correction[]
-    elements    Element[]
-    productions Production[]
-    exports     Export[]
+    scans         Scan[]
+    corrections   Correction[]
+    elements      Element[]
+    productions   Production[]
+    exports       Export[]
+    prescriptions Prescription[]
 
     @@index([clientId])
     @@index([ownerId])
@@ -305,6 +308,31 @@ model Export {
     @@index([designId])
     @@index([userId])
     @@map("exports")
+}
+
+// --- AI prescription --------------------------------------------------------
+
+// An AI-parsed prescription upload (text and/or image). `parsed` holds the
+// structured corrections/elements payload returned to the client. Consumes
+// tokens like exports.
+model Prescription {
+    id            String   @id @default(uuid()) @db.Uuid
+    userId        String   @db.Uuid
+    designId      String?  @db.Uuid
+    inputText     String?
+    inputImageKey String? // object storage key for an uploaded image
+    parsed        Json
+    provider      String? // anthropic | xai | heuristic
+    model         String?
+    confidence    Float?
+    tokenCost     Int
+    createdAt     DateTime @default(now())
+
+    user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+    design Design? @relation(fields: [designId], references: [id], onDelete: SetNull)
+
+    @@index([userId])
+    @@map("prescriptions")
 }
 
 // --- Audit ------------------------------------------------------------------
