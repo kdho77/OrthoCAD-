@@ -73,9 +73,23 @@ server/         Node + tRPC API (auth ctx, export.authorize, user.me, ai.parsePr
   server-authoritative token-gated export (atomic deduct + audit), and
   **AI prescription upload** (text/image → structured params via Anthropic/xAI,
   token-consuming, with an offline heuristic fallback).
-- **Phase 2:** full corrections engine + elements drag/scale + real-time solids +
-  AI auto-apply of parsed prescriptions to the 3D model.
-- **Phase 3:** Kiri:Moto slicing (belt 45°) + 3-axis CNC + printer presets.
-- **Phase 4:** UI polish, client/design management, Super Admin Portal, full
-  licensing & token system over tRPC.
-- **Phase 5:** auth enforcement, audit logs, validation, deployment.
+- **Phase 2 (done):** full corrections engine (apex/flanges), elements library
+  with 3D drag/scale/rotate gizmos welded into the solid, real-time updates, and
+  AI auto-apply of parsed prescriptions.
+- **Phase 3 (done):** in-house CAM engine behind the Kiri:Moto seam — FDM contour
+  slicer with 45° belt transform, 3-axis CNC raster toolpaths, printer presets
+  (Apex Belt V2), token-protected G-code export.
+- **Phase 4 (done):** client/design management (master-detail, local-first +
+  tRPC routers), functional Super Admin Portal (tokens/licenses/audit), save
+  control, status bar.
+- **Phase 5 (done):** Supabase auth enforcement + login/sign-out, comprehensive
+  audit logs, input clamping, vendor code-splitting + drag throttling, and a
+  Render Blueprint. See `VALIDATION.md`.
+
+## Deployment
+
+A Render Blueprint is provided at the repo root (`render.yaml`): a static SPA
+(`vertex-web`) on the CDN plus a Node + tRPC web service (`vertex-api`) with a
+`/user.health` health check. Set the secrets (`DATABASE_URL`, `DIRECT_URL`,
+`SUPABASE_*`, `AI_API_KEY`, `VITE_API_URL`, `CORS_ORIGIN`) in the Render
+dashboard, then deploy the Blueprint.

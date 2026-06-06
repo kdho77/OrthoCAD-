@@ -7,8 +7,11 @@ import { TopNav, type NavItem } from "@/components/layout/TopNav";
 import { PrescriptionUpload } from "@/components/prescription-upload/PrescriptionUpload";
 import { Viewer3D } from "@/components/viewer/Viewer3D";
 import { ClientsView } from "@/features/clients/ClientsView";
+import { LoginScreen } from "@/features/auth/LoginScreen";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
 import { loadOcctKernel } from "@/lib/chili3d";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
 
 export default function App() {
@@ -17,12 +20,21 @@ export default function App() {
     const [adminOpen, setAdminOpen] = useState(false);
     const [rxOpen, setRxOpen] = useState(false);
     const applyPrescription = useDesignStore((s) => s.applyPrescription);
+    const { user, loading } = useAuthStore();
 
     useEffect(() => {
         // Attempt to upgrade to the OCCT kernel; silently keeps the procedural
         // kernel if unavailable.
         void loadOcctKernel();
     }, []);
+
+    // Auth enforcement: when Supabase is configured, require a signed-in user.
+    if (isSupabaseConfigured()) {
+        if (loading) {
+            return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading…</div>;
+        }
+        if (!user) return <LoginScreen />;
+    }
 
     return (
         <div className="flex h-full flex-col">

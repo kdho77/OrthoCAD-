@@ -1,5 +1,5 @@
 import { TransformControls } from "@react-three/drei";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type * as THREE from "three";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import { useDesignStore } from "@/stores/design-store";
@@ -34,13 +34,20 @@ function ElementMarker({ element }: { element: PlacedElement }) {
     const selected = selectedId === element.id;
     const zTop = element.heightMm + 4;
 
+    // Coalesce high-frequency gizmo callbacks to one store write per frame so
+    // the solid rebuild stays smooth during drags.
+    const rafRef = useRef<number | null>(null);
     const commit = () => {
-        const m = node;
-        if (!m) return;
-        updateElement(element.id, {
-            position: { x: m.position.x - CENTER_X, y: m.position.y },
-            rotationDeg: (m.rotation.z * 180) / Math.PI,
-            scale: { x: Math.max(0.25, m.scale.x), y: Math.max(0.25, m.scale.y) },
+        if (rafRef.current !== null) return;
+        rafRef.current = requestAnimationFrame(() => {
+            rafRef.current = null;
+            const m = node;
+            if (!m) return;
+            updateElement(element.id, {
+                position: { x: m.position.x - CENTER_X, y: m.position.y },
+                rotationDeg: (m.rotation.z * 180) / Math.PI,
+                scale: { x: Math.max(0.25, m.scale.x), y: Math.max(0.25, m.scale.y) },
+            });
         });
     };
 

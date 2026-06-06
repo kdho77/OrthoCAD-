@@ -1,6 +1,7 @@
-import { Coins, ShieldCheck, Sparkles, Users } from "lucide-react";
+import { Coins, LogOut, ShieldCheck, Sparkles, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SaveControl } from "@/features/designs/SaveControl";
+import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
 
@@ -65,6 +66,11 @@ export function TopNav({ active, onNavigate, onOpenAdmin, onOpenPrescription }: 
                 <div className="flex h-7 w-7 items-center justify-center rounded-full bg-secondary text-xs font-medium">
                     {user?.fullName?.[0]?.toUpperCase() ?? user?.email?.[0]?.toUpperCase() ?? "?"}
                 </div>
+                {isSupabaseConfigured() ? (
+                    <Button size="icon" variant="ghost" title="Sign out" onClick={() => getSupabase()?.auth.signOut()}>
+                        <LogOut className="h-3.5 w-3.5" />
+                    </Button>
+                ) : null}
             </div>
         </header>
     );

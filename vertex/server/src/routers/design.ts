@@ -28,9 +28,13 @@ export const designRouter = router({
                 where: { id: input.clientId, ownerId: ctx.user.id },
             });
             if (!client) throw new TRPCError({ code: "NOT_FOUND", message: "Client not found" });
-            return ctx.prisma.design.create({
+            const design = await ctx.prisma.design.create({
                 data: { clientId: input.clientId, ownerId: ctx.user.id, name: input.name },
             });
+            await ctx.prisma.auditLog.create({
+                data: { userId: ctx.user.id, action: "design_created", targetId: design.id, ipAddress: ctx.ip },
+            });
+            return design;
         }),
 
     // Persists the full design: header fields + relational corrections + elements.
@@ -77,6 +81,9 @@ export const designRouter = router({
                         })),
                     });
                 }
+                await tx.auditLog.create({
+                    data: { userId: ctx.user.id, action: "design_updated", targetId: input.id, ipAddress: ctx.ip },
+                });
                 return { ok: true };
             });
         }),

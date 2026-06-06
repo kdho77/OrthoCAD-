@@ -52,25 +52,31 @@ export function useAuthBootstrap() {
                 return;
             }
 
-            const { data } = await supabase.auth.getSession();
-            if (!active) return;
-
-            if (data.session?.user) {
-                const u = data.session.user;
-                const role = (u.app_metadata?.role as Role) ?? "clinician";
+            const hydrate = (u: {
+                id: string;
+                email?: string;
+                app_metadata?: Record<string, unknown>;
+                user_metadata?: Record<string, unknown>;
+            }) => {
                 setUser({
                     id: u.id,
                     email: u.email ?? "",
                     fullName: (u.user_metadata?.full_name as string) ?? null,
-                    role,
-                    // Token balance + license are loaded from the DB via tRPC later.
+                    role: (u.app_metadata?.role as Role) ?? "clinician",
+                    // Authoritative token balance + license are loaded via user.me.
                     tokenBalance: 0,
                 });
-            }
+            };
+
+            const { data } = await supabase.auth.getSession();
+            if (!active) return;
+            if (data.session?.user) hydrate(data.session.user);
             setLoading(false);
 
             supabase.auth.onAuthStateChange((_event, session) => {
-                if (!session?.user) {
+                if (session?.user) {
+                    hydrate(session.user);
+                } else {
                     setUser(null);
                     setLicense(null);
                 }

@@ -1,0 +1,53 @@
+# Render Blueprint for the Vertex Orthopedic Insole CAD app (in /vertex).
+# Frontend: static SPA on the CDN. Backend: Node + tRPC web service.
+# Database: Supabase Postgres (set DATABASE_URL / DIRECT_URL as secrets).
+
+services:
+    - type: web
+      name: vertex-web
+      runtime: static
+      rootDir: vertex
+      buildCommand: npm install --include=dev && npm run build
+      staticPublishPath: dist
+      pullRequestPreviewsEnabled: true
+      envVars:
+          - key: VITE_SUPABASE_URL
+            sync: false
+          - key: VITE_SUPABASE_ANON_KEY
+            sync: false
+          # Full root URL of vertex-api, e.g. https://vertex-api.onrender.com
+          - key: VITE_API_URL
+            sync: false
+      routes:
+          - type: rewrite
+            source: /*
+            destination: /index.html
+
+    - type: web
+      name: vertex-api
+      runtime: node
+      rootDir: vertex
+      plan: starter
+      buildCommand: npm install --include=dev && npm run prisma:generate
+      startCommand: npm run start:server
+      healthCheckPath: /user.health
+      envVars:
+          - key: PORT
+            value: "5181"
+          - key: DATABASE_URL
+            sync: false
+          - key: DIRECT_URL
+            sync: false
+          - key: SUPABASE_URL
+            sync: false
+          - key: SUPABASE_SERVICE_ROLE_KEY
+            sync: false
+          - key: AI_PROVIDER
+            value: anthropic
+          - key: AI_API_KEY
+            sync: false
+          - key: AI_MODEL
+            sync: false
+          # Full origin of vertex-web, e.g. https://vertex-web.onrender.com
+          - key: CORS_ORIGIN
+            sync: false

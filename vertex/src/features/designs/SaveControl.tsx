@@ -1,6 +1,7 @@
 import { Check, Save } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useAuditStore } from "@/stores/audit-store";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
 
@@ -27,6 +28,7 @@ export function SaveControl() {
             if (!clientId) clientId = addClient({ firstName: "Quick", lastName: "Client" });
             designId = addDesign(clientId, "Untitled design", design);
         }
+        useAuditStore.getState().record("design_saved", record?.name ?? "Untitled design");
         setSaved(true);
         setTimeout(() => setSaved(false), 1500);
     };

@@ -1,6 +1,9 @@
-import { protectedProcedure, router } from "../trpc";
+import { protectedProcedure, publicProcedure, router } from "../trpc";
 
 export const userRouter = router({
+    // Public health check for load balancers / Render health checks.
+    health: publicProcedure.query(() => ({ ok: true, ts: Date.now() })),
+
     // Returns the authenticated user's profile, token balance and active license.
     me: protectedProcedure.query(async ({ ctx }) => {
         const now = new Date();
