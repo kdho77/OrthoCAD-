@@ -2,8 +2,8 @@ import { Cpu, Download, Lock, Printer, Play } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
-import { getKernel } from "@/lib/chili3d";
-import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import { getKernel } from "@/lib/chili3d/kernel";
+import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { type CamOverrides, type CamResult, generateGcode, presetsForMethod } from "@/lib/kiri";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { exportGcode } from "@/features/exports/export-service";
@@ -40,15 +40,7 @@ export function PrintingPanel() {
         ? { toolDiameterMm: toolDia }
         : { layerHeightMm: layerHeight, infillDensity: infill / 100 };
 
-    const buildGeom = () =>
-        getKernel().buildInsole({
-            side,
-            lengthMm: INSOLE_LENGTH_MM,
-            widthMm: INSOLE_WIDTH_MM,
-            thicknessMm: design.thicknessMm,
-            corrections: design.corrections[side],
-            elements: design.elements.filter((e) => e.side === side),
-        });
+    const buildGeom = () => getKernel().buildInsole(insoleParamsFromDesign(design, side, "full"));
 
     const onPreview = () => {
         if (!preset) return;

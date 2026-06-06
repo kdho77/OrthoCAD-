@@ -1,17 +1,19 @@
 import { Grid, OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
-import { Box, Eye, EyeOff, Layers, Maximize2, Move, PenTool, Rotate3d, Scale3d, Scissors, X } from "lucide-react";
+import { Activity, Box, Eye, EyeOff, Layers, Maximize2, Move, PenTool, Rotate3d, Scale3d, Scissors, X } from "lucide-react";
 import { Suspense, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import { usePerformanceStore } from "@/stores/performance-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import { cn } from "@/lib/utils";
 import { CustomPrefabMesh } from "./CustomPrefabMesh";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
+import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
 import { ScanMeshes } from "./ScanMeshes";
 
 type ViewName = "front" | "back" | "left" | "right" | "top" | "iso";
@@ -34,6 +36,9 @@ export function Viewer3D() {
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
     const showCustomPrefab = Boolean(design.customPrefabId);
+    const showPerf = usePerformanceStore((s) => s.showPerformanceMonitor);
+    const setShowPerf = usePerformanceStore((s) => s.setShowPerformanceMonitor);
+    const interacting = usePerformanceStore((s) => s.interacting);
 
     const setView = (pos: [number, number, number]) => {
         const c = controls.current;
@@ -55,7 +60,14 @@ export function Viewer3D() {
                 <directionalLight position={[150, 300, 200]} intensity={1.1} castShadow />
                 <directionalLight position={[-150, 100, -100]} intensity={0.4} />
 
-                <Suspense fallback={null}>
+                <Suspense
+                    fallback={
+                        <mesh>
+                            <boxGeometry args={[1, 1, 1]} />
+                            <meshBasicMaterial color="#334155" wireframe />
+                        </mesh>
+                    }
+                >
                     {viewer.showLeft ? (
                         <>
                             {!showCustomPrefab ? (
@@ -77,6 +89,7 @@ export function Viewer3D() {
                     <ScanMeshes transparent={viewer.transparent} />
                     <ElementMarkers />
                     <MeshEditTools />
+                    <PerformanceMonitorOverlay />
                 </Suspense>
 
                 <Grid
@@ -109,6 +122,7 @@ export function Viewer3D() {
                 <ToggleButton active={viewer.heightmap} onClick={() => setViewer({ heightmap: !viewer.heightmap })} icon={<Layers className="h-3.5 w-3.5" />} label="Heightmap" />
                 <ToggleButton active={viewer.showLeft} onClick={() => setViewer({ showLeft: !viewer.showLeft })} icon={viewer.showLeft ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />} label="Left" />
                 <ToggleButton active={viewer.showRight} onClick={() => setViewer({ showRight: !viewer.showRight })} icon={viewer.showRight ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />} label="Right" />
+                <ToggleButton active={showPerf} onClick={() => setShowPerf(!showPerf)} icon={<Activity className="h-3.5 w-3.5" />} label="FPS Monitor" />
             </div>
 
             {/* Element / mesh edit toolbar */}
@@ -132,7 +146,8 @@ export function Viewer3D() {
 
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="h-3.5 w-3.5" />
-                {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural"} kernel · Orbit: drag · Pan: shift+drag · Zoom: scroll
+                {interacting ? "Preview mesh · " : ""}
+                {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural worker"} kernel · ⌘P Rx · ⌘E export · T transparent · Esc deselect
             </div>
         </div>
     );

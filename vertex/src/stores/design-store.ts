@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { usePerformanceStore } from "@/stores/performance-store";
 import type {
     Corrections,
     DesignState,
@@ -65,10 +66,7 @@ export interface DesignStore {
     setLinked: (linked: boolean) => void;
 
     /** Patch corrections for a side. When linked, mirrors to the other side. */
-    updateCorrection: (
-        side: Side,
-        patch: Partial<SideCorrections>,
-    ) => void;
+    updateCorrection: (side: Side, patch: Partial<SideCorrections>) => void;
 
     addElement: (kind: ElementKind, side: Side) => void;
     addCustomElement: (customElementId: string, customName: string, side: Side) => void;
@@ -95,11 +93,15 @@ export const useDesignStore = create<DesignStore>((set) => ({
     transformMode: "translate",
 
     setPattern: (pattern) =>
-        set((s) => ({ design: { ...s.design, pattern } })),
-    setMethod: (method) =>
-        set((s) => ({ design: { ...s.design, method } })),
-    setThickness: (thicknessMm) =>
-        set((s) => ({ design: { ...s.design, thicknessMm } })),
+        set((s) => ({
+            design: {
+                ...s.design,
+                pattern,
+                ...(pattern === "custom" ? {} : { customPrefabId: undefined, customPrefabName: undefined }),
+            },
+        })),
+    setMethod: (method) => set((s) => ({ design: { ...s.design, method } })),
+    setThickness: (thicknessMm) => set((s) => ({ design: { ...s.design, thicknessMm } })),
 
     setUnit: (unit) =>
         set((s) => ({
@@ -132,7 +134,10 @@ export const useDesignStore = create<DesignStore>((set) => ({
                 scale: { x: 1, y: 1 },
                 heightMm: 4,
             };
-            return { design: { ...s.design, elements: [...s.design.elements, el] }, selectedElementId: el.id };
+            return {
+                design: { ...s.design, elements: [...s.design.elements, el] },
+                selectedElementId: el.id,
+            };
         }),
 
     addCustomElement: (customElementId, customName, side) =>
@@ -148,7 +153,10 @@ export const useDesignStore = create<DesignStore>((set) => ({
                 scale: { x: 1, y: 1 },
                 heightMm: 4,
             };
-            return { design: { ...s.design, elements: [...s.design.elements, el] }, selectedElementId: el.id };
+            return {
+                design: { ...s.design, elements: [...s.design.elements, el] },
+                selectedElementId: el.id,
+            };
         }),
 
     setCustomPrefab: (customPrefabId, customPrefabName) =>
@@ -178,7 +186,8 @@ export const useDesignStore = create<DesignStore>((set) => ({
     selectElement: (selectedElementId) => set({ selectedElementId }),
     setTransformMode: (transformMode) => set({ transformMode }),
 
-    applyPrescription: (result) =>
+    applyPrescription: (result) => {
+        usePerformanceStore.getState().setInteracting(true, "ai");
         set((s) => {
             const corrections: Corrections = {
                 ...s.design.corrections,
@@ -205,10 +214,18 @@ export const useDesignStore = create<DesignStore>((set) => ({
                     elements: [...s.design.elements, ...elements],
                 },
             };
-        }),
+        });
+        requestAnimationFrame(() => usePerformanceStore.getState().setInteracting(false));
+    },
 
-    loadDesign: (design) => set({ design, selectedElementId: null }),
+    loadDesign: (design) => {
+        usePerformanceStore.getState().clearAllPreviews();
+        set({ design, selectedElementId: null });
+    },
 
     setViewer: (patch) => set((s) => ({ viewer: { ...s.viewer, ...patch } })),
-    reset: () => set({ design: defaultDesign(), selectedElementId: null }),
+    reset: () => {
+        usePerformanceStore.getState().clearAllPreviews();
+        set({ design: defaultDesign(), selectedElementId: null });
+    },
 }));

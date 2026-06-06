@@ -6,6 +6,8 @@
     "description": "Vertex Orthopedic — browser-based orthotic insole CAD (Phase 0 foundation)",
     "scripts": {
         "prepare:wasm": "mkdir -p public/chili-wasm && cp -f ../packages/wasm/lib/chili-wasm.js ../packages/wasm/lib/chili-wasm.wasm public/chili-wasm/",
+        "setup:wasm": "cd .. && npm run setup:wasm",
+        "build:wasm": "cd .. && npm run build:wasm && npm run prepare:wasm",
         "dev": "npm run prepare:wasm && vite",
         "build": "npm run prepare:wasm && vite build",
         "preview": "vite preview",
@@ -39,9 +41,13 @@
         "superjson": "^2.2.1",
         "tailwind-merge": "^2.5.4",
         "three": "^0.169.0",
+        "three-mesh-bvh": "0.8.0",
         "tsx": "^4.19.2",
         "zod": "^3.23.8",
         "zustand": "^5.0.1"
+    },
+    "overrides": {
+        "three-mesh-bvh": "0.8.0"
     },
     "devDependencies": {
         "@types/node": "^22.9.0",

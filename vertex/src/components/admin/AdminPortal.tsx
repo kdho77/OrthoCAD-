@@ -1,5 +1,5 @@
 import { Coins, KeyRound, ScrollText, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -149,19 +149,54 @@ function LicensesTab() {
 }
 
 function AuditTab() {
-    const entries = useAuditStore((s) => s.entries);
+    const sessionEntries = useAuditStore((s) => s.entries);
+    const [serverEntries, setServerEntries] = useState<
+        Array<{ id: string; action: string; detail: string; at: string }>
+    >([]);
+    const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+        if (!isApiConfigured()) return;
+        setLoading(true);
+        void trpc.admin.listAuditLogs
+            .query({ limit: 50 })
+            .then((rows) => {
+                setServerEntries(
+                    rows.map((r) => ({
+                        id: r.id,
+                        action: r.action,
+                        detail: `${r.user?.email ?? "user"} · ${JSON.stringify(r.metadata ?? {})}`,
+                        at: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+                    })),
+                );
+            })
+            .catch(() => setServerEntries([]))
+            .finally(() => setLoading(false));
+    }, []);
+
+    const entries =
+        serverEntries.length > 0
+            ? serverEntries
+            : sessionEntries.map((e) => ({
+                  id: e.id,
+                  action: e.action,
+                  detail: e.detail,
+                  at: e.at,
+              }));
+
     return (
         <div className="space-y-1">
+            {loading ? <p className="text-xs text-muted-foreground">Loading server audit log…</p> : null}
             {entries.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No session activity yet.</p>
+                <p className="text-xs text-muted-foreground">No activity yet.</p>
             ) : (
                 entries.map((e) => (
                     <div key={e.id} className="flex items-center justify-between rounded border border-border/50 px-2 py-1.5 text-xs">
                         <span className="flex items-center gap-2">
                             <span className="rounded bg-muted px-1.5 py-0.5 text-[10px]">{e.action}</span>
-                            {e.detail}
+                            <span className="truncate text-muted-foreground">{e.detail}</span>
                         </span>
-                        <span className="text-muted-foreground">{new Date(e.at).toLocaleTimeString()}</span>
+                        <span className="shrink-0 text-muted-foreground">{new Date(e.at).toLocaleString()}</span>
                     </div>
                 ))
             )}

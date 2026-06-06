@@ -1,39 +1,27 @@
 import { CheckCircle2, Download, FileCode2, Lock, TriangleAlert } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { exportDesign } from "@/features/exports/export-service";
-import { getKernel } from "@/lib/chili3d";
+import { useSolidValidation } from "@/hooks/useSolidValidation";
+import { isOcctKernelActive } from "@/lib/geometry/kernel-build";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
+import { useKernelStore } from "@/stores/kernel-store";
 import { cn } from "@/lib/utils";
 import type { Side } from "@/types";
-
-const INSOLE_LENGTH_MM = 260;
-const INSOLE_WIDTH_MM = 95;
 
 export function ExportPanel() {
     const { user, license } = useAuthStore();
     const { design } = useDesignStore();
+    const kernelName = useKernelStore((s) => s.name);
     const [status, setStatus] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [side, setSide] = useState<Side>("left");
 
     const stlCheck = canExport(user, license, "stl");
-
-    // Real-time solid validation for the selected side.
-    const solid = useMemo(
-        () =>
-            getKernel().buildInsoleSolid({
-                side,
-                lengthMm: INSOLE_LENGTH_MM,
-                widthMm: INSOLE_WIDTH_MM,
-                thicknessMm: design.thicknessMm,
-                corrections: design.corrections[side],
-                elements: design.elements.filter((e) => e.side === side),
-            }),
-        [side, design.thicknessMm, design.corrections, design.elements],
-    );
+    const validation = useSolidValidation(design, side);
+    const occtActive = isOcctKernelActive();
 
     const handleStl = async () => {
         setBusy(true);
@@ -44,6 +32,14 @@ export function ExportPanel() {
             setBusy(false);
         }
     };
+
+    const watertightLabel = validation.isWatertight
+        ? occtActive && validation.occtClosed
+            ? "OCCT watertight solid"
+            : "Watertight solid"
+        : validation.triangleCount > 0
+          ? `${validation.openEdges} open edges`
+          : "Analyzing…";
 
     return (
         <div className="space-y-3">
@@ -56,6 +52,10 @@ export function ExportPanel() {
                     <span className="text-muted-foreground">License</span>
                     <span>{license?.status ?? "none"}</span>
                 </div>
+                <div className="mt-1 flex justify-between">
+                    <span className="text-muted-foreground">Kernel</span>
+                    <span className="capitalize">{kernelName.replace(/-/g, " ")}</span>
+                </div>
             </div>
 
             <div className="flex gap-1">
@@ -66,12 +66,14 @@ export function ExportPanel() {
                 ))}
             </div>
 
-            <div className={cn("flex items-center justify-between rounded-md border px-2 py-1.5 text-xs", solid.manifold.isWatertight ? "border-emerald-500/40 text-emerald-400" : "border-amber-500/40 text-amber-400")}>
+            <div className={cn("flex items-center justify-between rounded-md border px-2 py-1.5 text-xs", validation.isWatertight ? "border-emerald-500/40 text-emerald-400" : "border-amber-500/40 text-amber-400")}>
                 <span className="flex items-center gap-1.5">
-                    {solid.manifold.isWatertight ? <CheckCircle2 className="h-3.5 w-3.5" /> : <TriangleAlert className="h-3.5 w-3.5" />}
-                    {solid.manifold.isWatertight ? "Watertight solid" : `${solid.manifold.openEdges} open edges`}
+                    {validation.isWatertight ? <CheckCircle2 className="h-3.5 w-3.5" /> : <TriangleAlert className="h-3.5 w-3.5" />}
+                    {watertightLabel}
                 </span>
-                <span className="tabular-nums text-muted-foreground">{solid.manifold.triangleCount.toLocaleString()} tris</span>
+                <span className="tabular-nums text-muted-foreground">
+                    {validation.triangleCount > 0 ? `${validation.triangleCount.toLocaleString()} tris` : "—"}
+                </span>
             </div>
 
             <Button className="w-full" disabled={!stlCheck.ok || busy} onClick={handleStl}>

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { AdminPortal } from "@/components/admin/AdminPortal";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { KernelLoadingBanner } from "@/components/layout/KernelLoadingBanner";
 import { LeftSidebar } from "@/components/layout/LeftSidebar";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { StatusBar } from "@/components/layout/StatusBar";
@@ -8,7 +10,9 @@ import { PrescriptionUpload } from "@/components/prescription-upload/Prescriptio
 import { Viewer3D } from "@/components/viewer/Viewer3D";
 import { ClientsView } from "@/features/clients/ClientsView";
 import { LoginScreen } from "@/features/auth/LoginScreen";
+import { exportDesign } from "@/features/exports/export-service";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { loadOcctKernel } from "@/lib/chili3d";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
@@ -23,10 +27,19 @@ export default function App() {
     const { user, loading } = useAuthStore();
 
     useEffect(() => {
-        // Attempt to upgrade to the OCCT kernel; silently keeps the procedural
-        // kernel if unavailable.
         void loadOcctKernel();
     }, []);
+
+    useKeyboardShortcuts({
+        onPrescription: () => setRxOpen(true),
+        onToggleTransparent: () => {
+            const v = useDesignStore.getState().viewer;
+            useDesignStore.getState().setViewer({ transparent: !v.transparent });
+        },
+        onExport: () => {
+            void exportDesign("stl", "left");
+        },
+    });
 
     // Auth enforcement: when Supabase is configured, require a signed-in user.
     if (isSupabaseConfigured()) {
@@ -37,8 +50,10 @@ export default function App() {
     }
 
     return (
-        <div className="flex h-full flex-col">
-            <TopNav active={nav} onNavigate={setNav} onOpenAdmin={() => setAdminOpen(true)} onOpenPrescription={() => setRxOpen(true)} />
+        <ErrorBoundary>
+            <div className="flex h-full flex-col">
+                <KernelLoadingBanner />
+                <TopNav active={nav} onNavigate={setNav} onOpenAdmin={() => setAdminOpen(true)} onOpenPrescription={() => setRxOpen(true)} />
 
             <div className="flex min-h-0 flex-1">
                 {nav === "Production" ? (
@@ -72,5 +87,6 @@ export default function App() {
                 }}
             />
         </div>
+        </ErrorBoundary>
     );
 }

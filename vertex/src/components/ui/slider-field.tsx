@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { usePerformanceStore } from "@/stores/performance-store";
 
 interface SliderFieldProps {
     label: string;
@@ -8,10 +9,16 @@ interface SliderFieldProps {
     step?: number;
     unit?: string;
     onChange: (value: number) => void;
+    /** Live preview during drag — does not commit to design store until pointer-up. */
+    onPreview?: (value: number) => void;
     className?: string;
 }
 
-// Compact labeled slider + numeric input used throughout the corrections panel.
+/**
+ * Compact labeled slider with preview/commit split for smooth CAD interaction.
+ * During pointer drag, only `onPreview` fires (rAF-throttled via caller).
+ * On pointer-up, `onChange` commits the final value.
+ */
 export function SliderField({
     label,
     value,
@@ -20,10 +27,25 @@ export function SliderField({
     step = 0.5,
     unit,
     onChange,
+    onPreview,
     className,
 }: SliderFieldProps) {
-    // Clamp to the medically valid range even when typed directly.
+    const setInteracting = usePerformanceStore((s) => s.setInteracting);
     const clamp = (v: number) => Math.min(max, Math.max(min, Number.isFinite(v) ? v : min));
+
+    const handlePreview = (v: number) => {
+        const c = clamp(v);
+        if (onPreview) onPreview(c);
+        else onChange(c);
+    };
+
+    const handleCommit = (v: number) => {
+        setInteracting(false);
+        onChange(clamp(v));
+    };
+
+    const onPointerDown = () => setInteracting(true, "slider");
+
     return (
         <div className={cn("space-y-1", className)}>
             <div className="flex items-center justify-between">
@@ -35,7 +57,7 @@ export function SliderField({
                         min={min}
                         max={max}
                         step={step}
-                        onChange={(e) => onChange(clamp(Number(e.target.value)))}
+                        onChange={(e) => handleCommit(Number(e.target.value))}
                         className="h-6 w-16 rounded border border-input bg-background px-1 text-right text-xs tabular-nums focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     />
                     {unit ? <span className="w-5 text-xs text-muted-foreground">{unit}</span> : null}
@@ -47,7 +69,9 @@ export function SliderField({
                 min={min}
                 max={max}
                 step={step}
-                onChange={(e) => onChange(clamp(Number(e.target.value)))}
+                onPointerDown={onPointerDown}
+                onPointerUp={(e) => handleCommit(Number(e.currentTarget.value))}
+                onChange={(e) => handlePreview(Number(e.target.value))}
                 className="h-1 w-full cursor-pointer appearance-none rounded bg-muted accent-primary"
             />
         </div>

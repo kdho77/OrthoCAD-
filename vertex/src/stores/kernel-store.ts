@@ -1,19 +1,26 @@
 import { create } from "zustand";
-import { getKernel } from "@/lib/chili3d";
+
+export type KernelLoadState = "idle" | "loading" | "ready" | "failed";
 
 interface KernelStore {
-    /** Bumped when the active geometry kernel changes (e.g. OCCT WASM load). */
     version: number;
     name: string;
-    notifyKernelChanged: () => void;
+    loadState: KernelLoadState;
+    loadError: string | null;
+    notifyKernelChanged: (kernelName: string) => void;
+    setLoadState: (state: KernelLoadState, error?: string | null) => void;
 }
 
 export const useKernelStore = create<KernelStore>((set) => ({
     version: 0,
-    name: getKernel().name,
-    notifyKernelChanged: () =>
+    name: "three-procedural",
+    loadState: "idle",
+    loadError: null,
+    notifyKernelChanged: (kernelName) =>
         set((s) => ({
             version: s.version + 1,
-            name: getKernel().name,
+            name: kernelName,
+            loadState: kernelName === "opencascade-wasm" ? "ready" : s.loadState,
         })),
+    setLoadState: (loadState, loadError = null) => set({ loadState, loadError }),
 }));

@@ -1,11 +1,14 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import type { Prisma } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { buildGlbKey, deleteAsset, signedDownloadUrl, uploadAsset } from "../lib/storage";
-import { protectedProcedure, router } from "../trpc";
 import { getSupabaseAdmin } from "../context";
+import { validateGlbBase64 } from "../lib/glb-validation";
+import { RATE_LIMITS } from "../lib/rate-limit";
+import { buildGlbKey, deleteAsset, signedDownloadUrl, uploadAsset } from "../lib/storage";
+import { protectedProcedure, rateLimitedProcedure, router } from "../trpc";
 
 // Token cost for saving a custom GLB to the personal library.
 const SAVE_TOKEN_COST = 1;
@@ -18,7 +21,11 @@ const saveInput = z.object({
     glbBase64: z.string().min(1),
 });
 
-async function authorizeSave(ctx: { prisma: typeof import("../context").prisma; user: { id: string }; ip: string | null }) {
+async function authorizeSave(ctx: {
+    prisma: typeof import("../context").prisma;
+    user: { id: string };
+    ip: string | null;
+}) {
     const now = new Date();
     const license = await ctx.prisma.license.findFirst({
         where: {
@@ -31,8 +38,22 @@ async function authorizeSave(ctx: { prisma: typeof import("../context").prisma; 
         throw new TRPCError({ code: "FORBIDDEN", message: "No valid license" });
     }
 
+    const pre = await ctx.prisma.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
+    if (pre.tokenBalance < SAVE_TOKEN_COST) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient tokens to save custom asset" });
+    }
+
+    return { cost: SAVE_TOKEN_COST };
+}
+
+async function deductSaveTokens(
+    ctx: { prisma: typeof import("../context").prisma; user: { id: string }; ip: string | null },
+    reason: string,
+    targetId: string,
+    metadata: Prisma.InputJsonValue,
+) {
     const cost = SAVE_TOKEN_COST;
-    const result = await ctx.prisma.$transaction(async (tx) => {
+    return ctx.prisma.$transaction(async (tx) => {
         const dec = await tx.user.updateMany({
             where: { id: ctx.user.id, tokenBalance: { gte: cost } },
             data: { tokenBalance: { decrement: cost } },
@@ -41,10 +62,29 @@ async function authorizeSave(ctx: { prisma: typeof import("../context").prisma; 
             throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient tokens to save custom asset" });
         }
         const user = await tx.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
+
+        await tx.tokenTransaction.create({
+            data: {
+                userId: ctx.user.id,
+                type: "deduct",
+                amount: -cost,
+                balance: user.tokenBalance,
+                reason,
+            },
+        });
+
+        await tx.auditLog.create({
+            data: {
+                userId: ctx.user.id,
+                action: "custom_library_saved",
+                targetId,
+                metadata,
+                ipAddress: ctx.ip,
+            },
+        });
+
         return { balance: user.tokenBalance };
     });
-
-    return { cost, balance: result.balance };
 }
 
 export const libraryRouter = router({
@@ -86,119 +126,103 @@ export const libraryRouter = router({
         );
     }),
 
-    saveElement: protectedProcedure.input(saveInput).mutation(async ({ ctx, input }) => {
-        const { balance } = await authorizeSave(ctx);
-        const supabase = getSupabaseAdmin();
-        if (!supabase) {
-            throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage not configured" });
-        }
+    saveElement: rateLimitedProcedure(RATE_LIMITS.librarySave, "library:saveElement")
+        .input(saveInput)
+        .mutation(async ({ ctx, input }) => {
+            await authorizeSave(ctx);
+            const validated = validateGlbBase64(input.glbBase64);
+            if (!validated.ok) {
+                throw new TRPCError({ code: "BAD_REQUEST", message: validated.reason });
+            }
 
-        const buf = Buffer.from(input.glbBase64, "base64");
-        const key = buildGlbKey(ctx.user.id, "element", input.name);
-        await uploadAsset(supabase, key, buf, "model/gltf-binary");
+            const supabase = getSupabaseAdmin();
+            if (!supabase) {
+                throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage not configured" });
+            }
 
-        const row = await ctx.prisma.customElement.create({
-            data: {
-                userId: ctx.user.id,
+            const key = buildGlbKey(ctx.user.id, "element", input.name);
+            await uploadAsset(supabase, key, validated.bytes, "model/gltf-binary");
+
+            const row = await ctx.prisma.customElement.create({
+                data: {
+                    userId: ctx.user.id,
+                    name: input.name,
+                    category: input.category,
+                    glbPath: key,
+                    parentStockId: input.parentStockId ?? null,
+                },
+            });
+
+            const { balance } = await deductSaveTokens(ctx, "custom_library:element", row.id, {
+                kind: "element",
                 name: input.name,
-                category: input.category,
-                glbPath: key,
                 parentStockId: input.parentStockId ?? null,
-            },
-        });
+            });
 
-        await ctx.prisma.tokenTransaction.create({
-            data: {
-                userId: ctx.user.id,
-                type: "deduct",
-                amount: -SAVE_TOKEN_COST,
+            const url = await signedDownloadUrl(supabase, key);
+            return {
+                ok: true as const,
                 balance,
-                reason: "custom_library:element",
-            },
-        });
+                item: {
+                    id: row.id,
+                    name: row.name,
+                    category: row.category,
+                    glbPath: row.glbPath,
+                    parentStockId: row.parentStockId,
+                    createdAt: row.createdAt.toISOString(),
+                    url,
+                },
+            };
+        }),
 
-        await ctx.prisma.auditLog.create({
-            data: {
-                userId: ctx.user.id,
-                action: "custom_library_saved",
-                targetId: row.id,
-                metadata: { kind: "element", name: input.name, parentStockId: input.parentStockId ?? null },
-                ipAddress: ctx.ip,
-            },
-        });
+    savePrefab: rateLimitedProcedure(RATE_LIMITS.librarySave, "library:savePrefab")
+        .input(saveInput)
+        .mutation(async ({ ctx, input }) => {
+            await authorizeSave(ctx);
+            const validated = validateGlbBase64(input.glbBase64);
+            if (!validated.ok) {
+                throw new TRPCError({ code: "BAD_REQUEST", message: validated.reason });
+            }
 
-        const url = await signedDownloadUrl(supabase, key);
-        return {
-            ok: true as const,
-            balance,
-            item: {
-                id: row.id,
-                name: row.name,
-                category: row.category,
-                glbPath: row.glbPath,
-                parentStockId: row.parentStockId,
-                createdAt: row.createdAt.toISOString(),
-                url,
-            },
-        };
-    }),
+            const supabase = getSupabaseAdmin();
+            if (!supabase) {
+                throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage not configured" });
+            }
 
-    savePrefab: protectedProcedure.input(saveInput).mutation(async ({ ctx, input }) => {
-        const { balance } = await authorizeSave(ctx);
-        const supabase = getSupabaseAdmin();
-        if (!supabase) {
-            throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage not configured" });
-        }
+            const key = buildGlbKey(ctx.user.id, "prefab", input.name);
+            await uploadAsset(supabase, key, validated.bytes, "model/gltf-binary");
 
-        const buf = Buffer.from(input.glbBase64, "base64");
-        const key = buildGlbKey(ctx.user.id, "prefab", input.name);
-        await uploadAsset(supabase, key, buf, "model/gltf-binary");
+            const row = await ctx.prisma.customPrefab.create({
+                data: {
+                    userId: ctx.user.id,
+                    name: input.name,
+                    category: input.category,
+                    glbPath: key,
+                    parentStockId: input.parentStockId ?? null,
+                },
+            });
 
-        const row = await ctx.prisma.customPrefab.create({
-            data: {
-                userId: ctx.user.id,
+            const { balance } = await deductSaveTokens(ctx, "custom_library:prefab", row.id, {
+                kind: "prefab",
                 name: input.name,
-                category: input.category,
-                glbPath: key,
                 parentStockId: input.parentStockId ?? null,
-            },
-        });
+            });
 
-        await ctx.prisma.tokenTransaction.create({
-            data: {
-                userId: ctx.user.id,
-                type: "deduct",
-                amount: -SAVE_TOKEN_COST,
+            const url = await signedDownloadUrl(supabase, key);
+            return {
+                ok: true as const,
                 balance,
-                reason: "custom_library:prefab",
-            },
-        });
-
-        await ctx.prisma.auditLog.create({
-            data: {
-                userId: ctx.user.id,
-                action: "custom_library_saved",
-                targetId: row.id,
-                metadata: { kind: "prefab", name: input.name, parentStockId: input.parentStockId ?? null },
-                ipAddress: ctx.ip,
-            },
-        });
-
-        const url = await signedDownloadUrl(supabase, key);
-        return {
-            ok: true as const,
-            balance,
-            item: {
-                id: row.id,
-                name: row.name,
-                category: row.category,
-                glbPath: row.glbPath,
-                parentStockId: row.parentStockId,
-                createdAt: row.createdAt.toISOString(),
-                url,
-            },
-        };
-    }),
+                item: {
+                    id: row.id,
+                    name: row.name,
+                    category: row.category,
+                    glbPath: row.glbPath,
+                    parentStockId: row.parentStockId,
+                    createdAt: row.createdAt.toISOString(),
+                    url,
+                },
+            };
+        }),
 
     deleteElement: protectedProcedure
         .input(z.object({ id: z.string().uuid() }))

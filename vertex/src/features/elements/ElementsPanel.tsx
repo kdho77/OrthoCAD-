@@ -1,11 +1,13 @@
 import { BookmarkPlus, Plus, Save, Scissors, Trash2, PenTool } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { SliderField } from "@/components/ui/slider-field";
 import { Button } from "@/components/ui/button";
+import { rafThrottle } from "@/lib/performance/throttle";
 import { useDesignStore } from "@/stores/design-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import { usePerformanceStore } from "@/stores/performance-store";
 import { cn } from "@/lib/utils";
 import {
     STOCK_ELEMENTS,
@@ -29,6 +31,28 @@ export function ElementsPanel() {
     const clearTrimLines = useMeshEditStore((s) => s.clearTrimLines);
 
     const selected = design.elements.find((e) => e.id === selectedElementId) ?? null;
+    const elementPreview = usePerformanceStore((s) =>
+        selectedElementId ? s.elementPreviews[selectedElementId] : undefined,
+    );
+    const setElementPreview = usePerformanceStore((s) => s.setElementPreview);
+    const clearElementPreview = usePerformanceStore((s) => s.clearElementPreview);
+
+    const displaySelected = useMemo(() => {
+        if (!selected) return null;
+        if (!elementPreview) return selected;
+        return {
+            ...selected,
+            ...(elementPreview.position ? { position: elementPreview.position } : {}),
+            ...(elementPreview.rotationDeg !== undefined ? { rotationDeg: elementPreview.rotationDeg } : {}),
+            ...(elementPreview.scale ? { scale: elementPreview.scale } : {}),
+            ...(elementPreview.heightMm !== undefined ? { heightMm: elementPreview.heightMm } : {}),
+        };
+    }, [selected, elementPreview]);
+
+    const previewElementPatch = rafThrottle((id: string, patch: Parameters<typeof setElementPreview>[1]) => {
+        setElementPreview(id, patch);
+    });
+
     const [saveOpen, setSaveOpen] = useState(false);
 
     useEffect(() => {
@@ -135,11 +159,11 @@ export function ElementsPanel() {
                 )}
             </div>
 
-            {selected ? (
+            {displaySelected ? (
                 <div className="space-y-2 rounded-md border border-border bg-background/50 p-2">
                     <div className="flex items-center justify-between">
                         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                            Edit · {elementDisplayName(selected.kind, selected.customName)}
+                            Edit · {elementDisplayName(displaySelected.kind, displaySelected.customName)}
                         </div>
                         <Button size="sm" variant="secondary" className="h-7 gap-1 text-[11px]" onClick={() => setSaveOpen(true)}>
                             <Save className="h-3 w-3" />
@@ -154,7 +178,7 @@ export function ElementsPanel() {
                             className="h-7 flex-1 gap-1 text-[11px]"
                             onClick={() => {
                                 setEditMode("trim");
-                                setTarget({ type: "element", id: selected.id });
+                                setTarget({ type: "element", id: displaySelected.id });
                             }}
                         >
                             <Scissors className="h-3 w-3" />
@@ -166,7 +190,7 @@ export function ElementsPanel() {
                             className="h-7 flex-1 gap-1 text-[11px]"
                             onClick={() => {
                                 setEditMode("vertex");
-                                setTarget({ type: "element", id: selected.id });
+                                setTarget({ type: "element", id: displaySelected.id });
                             }}
                         >
                             <PenTool className="h-3 w-3" />
@@ -189,20 +213,23 @@ export function ElementsPanel() {
                             <Button
                                 key={s}
                                 size="sm"
-                                variant={selected.side === s ? "default" : "secondary"}
+                                variant={displaySelected.side === s ? "default" : "secondary"}
                                 className="h-7 flex-1"
-                                onClick={() => updateElement(selected.id, { side: s })}
+                                onClick={() => {
+                                    updateElement(displaySelected.id, { side: s });
+                                    clearElementPreview(displaySelected.id);
+                                }}
                             >
                                 {s}
                             </Button>
                         ))}
                     </div>
-                    <SliderField label="Position X" value={selected.position.x} min={-100} max={100} onChange={(v) => updateElement(selected.id, { position: { ...selected.position, x: v } })} unit="mm" />
-                    <SliderField label="Position Y" value={selected.position.y} min={-50} max={50} onChange={(v) => updateElement(selected.id, { position: { ...selected.position, y: v } })} unit="mm" />
-                    <SliderField label="Height" value={selected.heightMm} min={0} max={15} step={0.5} onChange={(v) => updateElement(selected.id, { heightMm: v })} unit="mm" />
-                    <SliderField label="Rotation" value={selected.rotationDeg} min={-90} max={90} onChange={(v) => updateElement(selected.id, { rotationDeg: v })} unit="°" />
-                    <SliderField label="Scale X" value={selected.scale.x} min={0.25} max={3} step={0.05} onChange={(v) => updateElement(selected.id, { scale: { ...selected.scale, x: v } })} />
-                    <SliderField label="Scale Y" value={selected.scale.y} min={0.25} max={3} step={0.05} onChange={(v) => updateElement(selected.id, { scale: { ...selected.scale, y: v } })} />
+                    <SliderField label="Position X" value={displaySelected.position.x} min={-100} max={100} onPreview={(v) => previewElementPatch(displaySelected.id, { id: displaySelected.id, position: { ...displaySelected.position, x: v } })} onChange={(v) => { updateElement(displaySelected.id, { position: { ...displaySelected.position, x: v } }); clearElementPreview(displaySelected.id); }} unit="mm" />
+                    <SliderField label="Position Y" value={displaySelected.position.y} min={-50} max={50} onPreview={(v) => previewElementPatch(displaySelected.id, { id: displaySelected.id, position: { ...displaySelected.position, y: v } })} onChange={(v) => { updateElement(displaySelected.id, { position: { ...displaySelected.position, y: v } }); clearElementPreview(displaySelected.id); }} unit="mm" />
+                    <SliderField label="Height" value={displaySelected.heightMm} min={0} max={15} step={0.5} onPreview={(v) => previewElementPatch(displaySelected.id, { id: displaySelected.id, heightMm: v })} onChange={(v) => { updateElement(displaySelected.id, { heightMm: v }); clearElementPreview(displaySelected.id); }} unit="mm" />
+                    <SliderField label="Rotation" value={displaySelected.rotationDeg} min={-90} max={90} onPreview={(v) => previewElementPatch(displaySelected.id, { id: displaySelected.id, rotationDeg: v })} onChange={(v) => { updateElement(displaySelected.id, { rotationDeg: v }); clearElementPreview(displaySelected.id); }} unit="°" />
+                    <SliderField label="Scale X" value={displaySelected.scale.x} min={0.25} max={3} step={0.05} onPreview={(v) => previewElementPatch(displaySelected.id, { id: displaySelected.id, scale: { ...displaySelected.scale, x: v } })} onChange={(v) => { updateElement(displaySelected.id, { scale: { ...displaySelected.scale, x: v } }); clearElementPreview(displaySelected.id); }} />
+                    <SliderField label="Scale Y" value={displaySelected.scale.y} min={0.25} max={3} step={0.05} onPreview={(v) => previewElementPatch(displaySelected.id, { id: displaySelected.id, scale: { ...displaySelected.scale, y: v } })} onChange={(v) => { updateElement(displaySelected.id, { scale: { ...displaySelected.scale, y: v } }); clearElementPreview(displaySelected.id); }} />
 
                     {editMode === "vertex" && selectedVertex !== null ? (
                         <SliderField
@@ -228,11 +255,11 @@ export function ElementsPanel() {
                 open={saveOpen}
                 onClose={() => setSaveOpen(false)}
                 kind="element"
-                defaultName={selected ? `${elementDisplayName(selected.kind, selected.customName)} Custom` : "Custom Element"}
-                defaultCategory={selected?.kind === "custom" ? "other" : (selected?.kind ?? "other")}
-                parentStockId={selected?.kind !== "custom" ? selected?.kind : selected?.customElementId}
-                sourceId={selected?.id}
-                side={selected?.side}
+                defaultName={displaySelected ? `${elementDisplayName(displaySelected.kind, displaySelected.customName)} Custom` : "Custom Element"}
+                defaultCategory={displaySelected?.kind === "custom" ? "other" : (displaySelected?.kind ?? "other")}
+                parentStockId={displaySelected?.kind !== "custom" ? displaySelected?.kind : displaySelected?.customElementId}
+                sourceId={displaySelected?.id}
+                side={displaySelected?.side}
             />
         </div>
     );

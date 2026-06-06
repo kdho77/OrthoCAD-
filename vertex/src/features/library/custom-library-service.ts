@@ -1,9 +1,11 @@
-import { buildInsoleGeometry } from "@/lib/geometry/insole";
-import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
-import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
-import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
-import { isApiConfigured, trpc } from "@/lib/trpc";
+import * as THREE from "three";
 import { canSaveCustom, SAVE_CUSTOM_TOKEN_COST } from "@/features/licensing/license";
+import { getKernel } from "@/lib/chili3d/kernel";
+import { boundsFromObject, registerCustomElementBounds } from "@/lib/geometry/custom-element-bounds";
+import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
+import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
+import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
+import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
@@ -11,7 +13,6 @@ import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { ElementKind, Side } from "@/types";
-import * as THREE from "three";
 
 export type SaveTargetKind = "element" | "prefab";
 
@@ -91,16 +92,12 @@ export function buildExportMesh(input: SaveCustomInput): THREE.Mesh {
 
     if (input.kind === "prefab") {
         const side = input.side ?? "left";
-        let geometry = buildInsoleGeometry({
-            side,
-            lengthMm: INSOLE_LENGTH_MM,
-            widthMm: INSOLE_WIDTH_MM,
-            thicknessMm: design.thicknessMm,
-            corrections: design.corrections[side],
-            elements: design.elements.filter((e) => e.side === side),
-        });
+        const params = insoleParamsFromDesign(design, side, "full");
+        let geometry = getKernel().buildInsole(params);
         geometry = applyTrimLines(geometry, trimLines);
-        geometry = applyVertexOverrides(geometry, vertexOverrides);
+        const vecMap = new Map<number, THREE.Vector3>();
+        for (const [idx, v] of vertexOverrides) vecMap.set(idx, new THREE.Vector3(v.x, v.y, v.z));
+        geometry = applyVertexOverrides(geometry, vecMap);
         return meshFromGeometry(geometry, side === "left" ? "#38bdf8" : "#22d3ee");
     }
 
@@ -142,6 +139,7 @@ export async function saveCustomAsset(input: SaveCustomInput): Promise<SaveCusto
         if (scanMesh) mesh = scanMesh;
     }
 
+    const elementBounds = input.kind === "element" ? boundsFromObject(mesh) : null;
     const { base64 } = await exportObjectToGlb(mesh);
     mesh.geometry.dispose();
     (mesh.material as THREE.Material).dispose();
@@ -180,6 +178,7 @@ export async function saveCustomAsset(input: SaveCustomInput): Promise<SaveCusto
 
             if (input.kind === "element") {
                 useCustomLibraryStore.getState().addCustomElement(item, base64);
+                if (elementBounds) registerCustomElementBounds(res.item.id, elementBounds);
             } else {
                 useCustomLibraryStore.getState().addCustomPrefab(item, base64);
             }
@@ -203,6 +202,7 @@ export async function saveCustomAsset(input: SaveCustomInput): Promise<SaveCusto
 
     if (input.kind === "element") {
         useCustomLibraryStore.getState().addCustomElement(item, base64);
+        if (elementBounds) registerCustomElementBounds(offlineId, elementBounds);
     } else {
         useCustomLibraryStore.getState().addCustomPrefab(item, base64);
     }

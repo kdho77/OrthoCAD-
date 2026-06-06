@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { protectedProcedure, router } from "../trpc";
+import { RATE_LIMITS } from "../lib/rate-limit";
+import { rateLimitedProcedure, router } from "../trpc";
 
 // Server-side token cost schedule. Authoritative — the client mirror is for UX
 // only.
@@ -11,7 +12,7 @@ export const exportRouter = router({
     // deducts tokens, records the export, the token transaction and an audit
     // log entry inside a single transaction. The actual file bytes are produced
     // client-side only after this returns `ok`.
-    authorize: protectedProcedure
+    authorize: rateLimitedProcedure(RATE_LIMITS.export, "export:authorize")
         .input(
             z.object({
                 format: z.enum(["stl", "gcode"]),
