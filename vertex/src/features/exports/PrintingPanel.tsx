@@ -1,15 +1,15 @@
-import { Cpu, Download, Lock, Printer, Play } from "lucide-react";
+import { Cpu, Download, Lock, Play, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
+import { exportGcode } from "@/features/exports/export-service";
+import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/chili3d";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { type CamOverrides, type CamResult, generateGcode, presetsForMethod } from "@/lib/kiri";
-import { canExport, TOKEN_COST } from "@/features/licensing/license";
-import { exportGcode } from "@/features/exports/export-service";
+import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
-import { cn } from "@/lib/utils";
 import type { Side } from "@/types";
 
 function fmtTime(sec: number): string {
@@ -67,7 +67,11 @@ export function PrintingPanel() {
         if (!preset) return;
         setBusy(true);
         const res = await exportGcode(side, preset, overrides);
-        setStatus(res.ok ? `Exported ${res.filename} (-${TOKEN_COST.gcode} tokens)` : (res.reason ?? "Export failed"));
+        setStatus(
+            res.ok
+                ? `Exported ${res.filename} (-${TOKEN_COST.gcode} tokens)`
+                : (res.reason ?? "Export failed"),
+        );
         if (res.ok && res.stats) setResult((r) => (r ? r : { gcode: "", stats: res.stats!, moveCount: 0 }));
         setBusy(false);
     };
@@ -76,7 +80,13 @@ export function PrintingPanel() {
         <div className="space-y-3">
             <div className="flex gap-1">
                 {(["left", "right"] as Side[]).map((s) => (
-                    <Button key={s} size="sm" variant={side === s ? "default" : "secondary"} className="h-8 flex-1" onClick={() => setSide(s)}>
+                    <Button
+                        key={s}
+                        size="sm"
+                        variant={side === s ? "default" : "secondary"}
+                        className="h-8 flex-1"
+                        onClick={() => setSide(s)}
+                    >
                         {s} insole
                     </Button>
                 ))}
@@ -93,22 +103,52 @@ export function PrintingPanel() {
                         onClick={() => setPresetId(p.id)}
                         className={cn(
                             "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left text-xs",
-                            presetId === p.id ? "border-primary bg-primary/10 text-foreground" : "border-border bg-background text-muted-foreground",
+                            presetId === p.id
+                                ? "border-primary bg-primary/10 text-foreground"
+                                : "border-border bg-background text-muted-foreground",
                         )}
                     >
                         {isCnc ? <Cpu className="h-3.5 w-3.5" /> : <Printer className="h-3.5 w-3.5" />}
                         {p.name}
-                        {p.beltAngleDeg ? <span className="ml-auto rounded bg-muted px-1 text-[10px]">belt {p.beltAngleDeg}°</span> : null}
+                        {p.beltAngleDeg ? (
+                            <span className="ml-auto rounded bg-muted px-1 text-[10px]">
+                                belt {p.beltAngleDeg}°
+                            </span>
+                        ) : null}
                     </button>
                 ))}
             </div>
 
             {isCnc ? (
-                <SliderField label="Tool diameter" value={toolDia} min={1} max={12} step={0.5} unit="mm" onChange={setToolDia} />
+                <SliderField
+                    label="Tool diameter"
+                    value={toolDia}
+                    min={1}
+                    max={12}
+                    step={0.5}
+                    unit="mm"
+                    onChange={setToolDia}
+                />
             ) : (
                 <>
-                    <SliderField label="Layer height" value={layerHeight} min={0.1} max={0.6} step={0.05} unit="mm" onChange={setLayerHeight} />
-                    <SliderField label="Infill" value={infill} min={0} max={100} step={5} unit="%" onChange={setInfill} />
+                    <SliderField
+                        label="Layer height"
+                        value={layerHeight}
+                        min={0.1}
+                        max={0.6}
+                        step={0.05}
+                        unit="mm"
+                        onChange={setLayerHeight}
+                    />
+                    <SliderField
+                        label="Infill"
+                        value={infill}
+                        min={0}
+                        max={100}
+                        step={5}
+                        unit="%"
+                        onChange={setInfill}
+                    />
                 </>
             )}
 
@@ -120,8 +160,16 @@ export function PrintingPanel() {
                 <div className="space-y-1 rounded-md border border-border bg-background/50 p-2 text-xs">
                     <Row label="Moves" value={result.moveCount.toLocaleString()} />
                     <Row label="Est. time" value={fmtTime(result.stats.estimatedTimeSec)} />
-                    {!isCnc ? <Row label="Material" value={`${(result.stats.estimatedMaterialMm3 / 1000).toFixed(1)} cm³`} /> : null}
-                    <Row label="Path length" value={`${((result.stats.extrudeDistanceMm + result.stats.travelDistanceMm) / 1000).toFixed(1)} m`} />
+                    {!isCnc ? (
+                        <Row
+                            label="Material"
+                            value={`${(result.stats.estimatedMaterialMm3 / 1000).toFixed(1)} cm³`}
+                        />
+                    ) : null}
+                    <Row
+                        label="Path length"
+                        value={`${((result.stats.extrudeDistanceMm + result.stats.travelDistanceMm) / 1000).toFixed(1)} m`}
+                    />
                 </div>
             ) : null}
 

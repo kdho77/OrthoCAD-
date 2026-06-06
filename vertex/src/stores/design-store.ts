@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { usePerformanceStore } from "@/stores/performance-store";
 import type {
     Corrections,
     DesignState,
@@ -48,6 +49,7 @@ export interface ViewerSettings {
     heightmap: boolean;
     showLeft: boolean;
     showRight: boolean;
+    showPerfMonitor: boolean;
 }
 
 export type TransformMode = "translate" | "rotate" | "scale";
@@ -65,10 +67,7 @@ export interface DesignStore {
     setLinked: (linked: boolean) => void;
 
     /** Patch corrections for a side. When linked, mirrors to the other side. */
-    updateCorrection: (
-        side: Side,
-        patch: Partial<SideCorrections>,
-    ) => void;
+    updateCorrection: (side: Side, patch: Partial<SideCorrections>) => void;
 
     addElement: (kind: ElementKind, side: Side) => void;
     updateElement: (id: string, patch: Partial<PlacedElement>) => void;
@@ -88,16 +87,13 @@ export interface DesignStore {
 
 export const useDesignStore = create<DesignStore>((set) => ({
     design: defaultDesign(),
-    viewer: { transparent: false, heightmap: false, showLeft: true, showRight: true },
+    viewer: { transparent: false, heightmap: false, showLeft: true, showRight: true, showPerfMonitor: false },
     selectedElementId: null,
     transformMode: "translate",
 
-    setPattern: (pattern) =>
-        set((s) => ({ design: { ...s.design, pattern } })),
-    setMethod: (method) =>
-        set((s) => ({ design: { ...s.design, method } })),
-    setThickness: (thicknessMm) =>
-        set((s) => ({ design: { ...s.design, thicknessMm } })),
+    setPattern: (pattern) => set((s) => ({ design: { ...s.design, pattern } })),
+    setMethod: (method) => set((s) => ({ design: { ...s.design, method } })),
+    setThickness: (thicknessMm) => set((s) => ({ design: { ...s.design, thicknessMm } })),
 
     setUnit: (unit) =>
         set((s) => ({
@@ -130,7 +126,10 @@ export const useDesignStore = create<DesignStore>((set) => ({
                 scale: { x: 1, y: 1 },
                 heightMm: 4,
             };
-            return { design: { ...s.design, elements: [...s.design.elements, el] }, selectedElementId: el.id };
+            return {
+                design: { ...s.design, elements: [...s.design.elements, el] },
+                selectedElementId: el.id,
+            };
         }),
 
     updateElement: (id, patch) =>
@@ -150,7 +149,8 @@ export const useDesignStore = create<DesignStore>((set) => ({
     selectElement: (selectedElementId) => set({ selectedElementId }),
     setTransformMode: (transformMode) => set({ transformMode }),
 
-    applyPrescription: (result) =>
+    applyPrescription: (result) => {
+        usePerformanceStore.getState().setInteractionMode("batch");
         set((s) => {
             const corrections: Corrections = {
                 ...s.design.corrections,
@@ -177,7 +177,9 @@ export const useDesignStore = create<DesignStore>((set) => ({
                     elements: [...s.design.elements, ...elements],
                 },
             };
-        }),
+        });
+        window.setTimeout(() => usePerformanceStore.getState().setInteractionMode("idle"), 200);
+    },
 
     loadDesign: (design) => set({ design, selectedElementId: null }),
 

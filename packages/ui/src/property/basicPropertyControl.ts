@@ -7,11 +7,7 @@ import { ColorProperty } from "./colorProperty";
 import { InputProperty } from "./input";
 import { MaterialProperty } from "./materialProperty";
 
-export function basicPropertyControl(
-    document: IDocument,
-    objs: any[],
-    prop: Property
-) {
+export function basicPropertyControl(document: IDocument, objs: any[], prop: Property) {
     if (prop === undefined || objs.length === 0) return "";
 
     if (prop.type === "color") {

@@ -35,14 +35,20 @@ import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import { Constants } from "./constants";
 import type { IHighlightable } from "./highlightable";
-import { defaultEdgeMaterial, highlightFaceMaterial, hilightEdgeMaterial, lockFaceMaterial, lockLineMaterial } from "./materials";
+import {
+    defaultEdgeMaterial,
+    highlightFaceMaterial,
+    hilightEdgeMaterial,
+    lockFaceMaterial,
+    lockLineMaterial,
+} from "./materials";
 import { ThreeGeometryFactory } from "./threeGeometryFactory";
 import { ThreeHelper } from "./threeHelper";
 import type { ThreeVisualContext } from "./threeVisualContext";
 
 function setLocked(obj: Object3D, isLocked: boolean) {
     if (isLocked) {
-        obj.traverse(x => {
+        obj.traverse((x) => {
             if (x instanceof LineSegments2 || x instanceof Line2) {
                 x.userData["oldMaterial"] = x.material;
                 x.material = lockLineMaterial;
@@ -52,9 +58,9 @@ function setLocked(obj: Object3D, isLocked: boolean) {
             }
         });
     } else {
-        obj.traverse(x => {
+        obj.traverse((x) => {
             if (!x.userData["oldMaterial"]) return;
-            (x as any).material = x.userData["oldMaterial"]
+            (x as any).material = x.userData["oldMaterial"];
             delete x.userData["oldMaterial"];
         });
     }

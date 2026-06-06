@@ -7,8 +7,8 @@ import {
     type HtmlTextOptions,
     type IDisposable,
     type IDocument,
-    IFace,
-    INode,
+    type IFace,
+    type INode,
     type INodeFilter,
     type IShape,
     type IShapeFilter,
@@ -48,7 +48,7 @@ import {
     type Scene,
     Vector2,
     Vector3,
-    WebGLRenderer
+    WebGLRenderer,
 } from "three";
 import { SelectionBox } from "three/examples/jsm/interactive/SelectionBox.js";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
@@ -74,7 +74,7 @@ export class ThreeView extends Observable implements IView {
     private readonly _workplane: Plane;
     private readonly _gizmo: IViewGizmo;
     private readonly _resizeObserver: ResizeObserver;
-    private _isolatedNodes?: INode[]
+    private _isolatedNodes?: INode[];
 
     readonly cameraController: CameraController;
     readonly dynamicLight = new DirectionalLight(0xffffff, 2);
@@ -231,13 +231,13 @@ export class ThreeView extends Observable implements IView {
             options?.hideDelete === true
                 ? ""
                 : svg({
-                    className: style.delete,
-                    icon: "icon-times",
-                    onclick: (e) => {
-                        e.stopPropagation();
-                        dispose();
-                    },
-                }),
+                      className: style.delete,
+                      icon: "icon-times",
+                      onclick: (e) => {
+                          e.stopPropagation();
+                          dispose();
+                      },
+                  }),
         );
     }
 
@@ -351,7 +351,9 @@ export class ThreeView extends Observable implements IView {
     }
 
     isolate(nodes: INode[]) {
-        const visuals = nodes.map((x) => this.content.getVisual(x)).filter((x) => x !== undefined) as IVisualObject[];
+        const visuals = nodes
+            .map((x) => this.content.getVisual(x))
+            .filter((x) => x !== undefined) as IVisualObject[];
         for (const shape of visuals) {
             if (shape instanceof Object3D) {
                 shape.layers.set(Constants.Layers.Isolation);
@@ -375,19 +377,26 @@ export class ThreeView extends Observable implements IView {
     unisolate() {
         if (!this._isolatedNodes) return;
 
-        const shapes = this._isolatedNodes.map((x) => this.content.getVisual(x)).filter((x) => x !== undefined) as IVisualObject[];
+        const shapes = this._isolatedNodes
+            .map((x) => this.content.getVisual(x))
+            .filter((x) => x !== undefined) as IVisualObject[];
         for (const shape of shapes) {
             if (shape instanceof Object3D) {
                 shape.layers.set(Constants.Layers.Default);
                 shape.children.forEach((x) => {
-                    if (x instanceof LineSegments2 || x instanceof Line2 || x instanceof Line || x instanceof LineSegments) {
+                    if (
+                        x instanceof LineSegments2 ||
+                        x instanceof Line2 ||
+                        x instanceof Line ||
+                        x instanceof LineSegments
+                    ) {
                         x.layers.set(Constants.Layers.Wireframe);
                     } else if (x instanceof Mesh) {
                         x.layers.set(Constants.Layers.Solid);
                     } else {
                         console.error("Unsupported object type: " + x);
                     }
-                })
+                });
             }
         }
 
@@ -527,11 +536,12 @@ export class ThreeView extends Observable implements IView {
         }
         const subs = this.detectSubShapes(shapeType, intersections, shapeFilter, nodeFilter);
         if (subs.length > 1 && subs[0].shape.shapeType === ShapeTypes.face) {
-            const i = subs.findIndex(x => x.shape.shapeType === ShapeTypes.edge);
+            const i = subs.findIndex((x) => x.shape.shapeType === ShapeTypes.edge);
             if (i < 0) return subs;
 
             const nearest = (subs[0].shape as IFace).surface().nearestPoint(subs[i].point!);
-            if (nearest![0].distanceTo(subs[i].point!) < 0.001) { // edge on face
+            if (nearest![0].distanceTo(subs[i].point!) < 0.001) {
+                // edge on face
                 const v = subs.splice(i, 1);
                 subs.splice(0, 0, ...v);
             }

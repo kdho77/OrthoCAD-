@@ -3,11 +3,11 @@ import { AdminPortal } from "@/components/admin/AdminPortal";
 import { LeftSidebar } from "@/components/layout/LeftSidebar";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { StatusBar } from "@/components/layout/StatusBar";
-import { TopNav, type NavItem } from "@/components/layout/TopNav";
+import { type NavItem, TopNav } from "@/components/layout/TopNav";
 import { PrescriptionUpload } from "@/components/prescription-upload/PrescriptionUpload";
 import { Viewer3D } from "@/components/viewer/Viewer3D";
-import { ClientsView } from "@/features/clients/ClientsView";
 import { LoginScreen } from "@/features/auth/LoginScreen";
+import { ClientsView } from "@/features/clients/ClientsView";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
 import { loadOcctKernel } from "@/lib/chili3d";
 import { isSupabaseConfigured } from "@/lib/supabase";
@@ -31,14 +31,23 @@ export default function App() {
     // Auth enforcement: when Supabase is configured, require a signed-in user.
     if (isSupabaseConfigured()) {
         if (loading) {
-            return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading…</div>;
+            return (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    Loading…
+                </div>
+            );
         }
         if (!user) return <LoginScreen />;
     }
 
     return (
         <div className="flex h-full flex-col">
-            <TopNav active={nav} onNavigate={setNav} onOpenAdmin={() => setAdminOpen(true)} onOpenPrescription={() => setRxOpen(true)} />
+            <TopNav
+                active={nav}
+                onNavigate={setNav}
+                onOpenAdmin={() => setAdminOpen(true)}
+                onOpenPrescription={() => setRxOpen(true)}
+            />
 
             <div className="flex min-h-0 flex-1">
                 {nav === "Production" ? (

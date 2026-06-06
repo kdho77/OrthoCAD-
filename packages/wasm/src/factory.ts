@@ -256,7 +256,9 @@ export class ShapeFactory implements IShapeFactory {
         if (vec.length() === 0) {
             return Result.err(`The vector length is 0, the prism cannot be created.`);
         }
-        return convertShapeResult(wasm.ShapeFactory.pushPull(ensureOccShape(shape)[0], ensureOccShape(face)[0], vec));
+        return convertShapeResult(
+            wasm.ShapeFactory.pushPull(ensureOccShape(shape)[0], ensureOccShape(face)[0], vec),
+        );
     }
     fuse(bottom: IShape, top: IShape): Result<IShape> {
         return convertShapeResult(wasm.ShapeFactory.booleanFuse(ensureOccShape(bottom), ensureOccShape(top)));
@@ -293,7 +295,7 @@ export class ShapeFactory implements IShapeFactory {
         if (!fused.isOk) {
             return Result.err(fused.error);
         }
-        
+
         if (!simplifyShape) {
             return convertShapeResult(fused);
         }
@@ -355,9 +357,19 @@ export class ShapeFactory implements IShapeFactory {
             ),
         );
     }
-    simplifyShape(shape: IShape, removeEdges: boolean, removeFaces: boolean, keepShapes: IShape[]): Result<IShape> {
+    simplifyShape(
+        shape: IShape,
+        removeEdges: boolean,
+        removeFaces: boolean,
+        keepShapes: IShape[],
+    ): Result<IShape> {
         return convertShapeResult(
-            wasm.ShapeFactory.simplifyShape(ensureOccShape(shape)[0], removeEdges, removeFaces, ensureOccShape(keepShapes)),
+            wasm.ShapeFactory.simplifyShape(
+                ensureOccShape(shape)[0],
+                removeEdges,
+                removeFaces,
+                ensureOccShape(keepShapes),
+            ),
         );
     }
 }

@@ -23,7 +23,7 @@ import {
     type ShapeType,
     ShapeTypes,
     type XYZ,
-    type XYZLike
+    type XYZLike,
 } from "@chili3d/core";
 
 export class TestEdge implements IEdge {

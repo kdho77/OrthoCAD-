@@ -18,13 +18,13 @@ import {
     type IWindow,
     Logger,
     Material,
+    Observable,
     ObservableCollection,
     PLUGIN_FILE_EXTENSION,
     Plane,
     PubSub,
     type Serialized,
     setCurrentApplication,
-    Observable,
 } from "@chili3d/core";
 import { Document } from "./document";
 import { PluginManager } from "./pluginManager";

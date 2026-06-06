@@ -1,7 +1,7 @@
 import { FileBox, Footprints, Layers3 } from "lucide-react";
 import { ScanImport } from "@/features/scans/ScanImport";
-import { useDesignStore } from "@/stores/design-store";
 import { cn } from "@/lib/utils";
+import { useDesignStore } from "@/stores/design-store";
 import type { ProductionMethod, ScanPattern } from "@/types";
 
 const PATTERNS: { id: ScanPattern; label: string }[] = [
@@ -69,7 +69,15 @@ export function LeftSidebar() {
     );
 }
 
-function Section({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
+function Section({
+    icon,
+    title,
+    children,
+}: {
+    icon: React.ReactNode;
+    title: string;
+    children: React.ReactNode;
+}) {
     return (
         <div className="space-y-2">
             <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">

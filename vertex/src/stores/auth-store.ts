@@ -23,8 +23,6 @@ export const useAuthStore = create<AuthStore>((set) => ({
     setLoading: (loading) => set({ loading }),
     deductTokens: (n) =>
         set((s) =>
-            s.user
-                ? { user: { ...s.user, tokenBalance: Math.max(0, s.user.tokenBalance - n) } }
-                : {},
+            s.user ? { user: { ...s.user, tokenBalance: Math.max(0, s.user.tokenBalance - n) } } : {},
         ),
 }));

@@ -3,9 +3,9 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { defaultDesign, useDesignStore } from "@/stores/design-store";
-import { type ClientInput, useClientStore } from "@/stores/client-store";
 import { cn } from "@/lib/utils";
+import { type ClientInput, useClientStore } from "@/stores/client-store";
+import { defaultDesign, useDesignStore } from "@/stores/design-store";
 
 interface ClientsViewProps {
     onOpenDesign: () => void;
@@ -15,8 +15,17 @@ interface ClientsViewProps {
 // left, the selected client's designs on the right. Designs load into the live
 // design store and open the 3D workspace.
 export function ClientsView({ onOpenDesign }: ClientsViewProps) {
-    const { clients, designs, activeClientId, setActiveClient, addClient, removeClient, addDesign, removeDesign, setActiveDesign } =
-        useClientStore();
+    const {
+        clients,
+        designs,
+        activeClientId,
+        setActiveClient,
+        addClient,
+        removeClient,
+        addDesign,
+        removeDesign,
+        setActiveDesign,
+    } = useClientStore();
     const { loadDesign } = useDesignStore();
     const activeClient = clients.find((c) => c.id === activeClientId) ?? null;
     const clientDesigns = designs.filter((d) => d.clientId === activeClientId);
@@ -44,7 +53,9 @@ export function ClientsView({ onOpenDesign }: ClientsViewProps) {
                 </div>
                 <div className="flex-1 overflow-y-auto">
                     {clients.length === 0 ? (
-                        <p className="p-4 text-xs text-muted-foreground">No clients yet. Create one to begin.</p>
+                        <p className="p-4 text-xs text-muted-foreground">
+                            No clients yet. Create one to begin.
+                        </p>
                     ) : (
                         clients.map((c) => (
                             <button
@@ -59,9 +70,15 @@ export function ClientsView({ onOpenDesign }: ClientsViewProps) {
                                 <User className="h-4 w-4 text-muted-foreground" />
                                 <span className="flex-1 truncate">
                                     {c.firstName} {c.lastName}
-                                    {c.reference ? <span className="ml-1 text-xs text-muted-foreground">· {c.reference}</span> : null}
+                                    {c.reference ? (
+                                        <span className="ml-1 text-xs text-muted-foreground">
+                                            · {c.reference}
+                                        </span>
+                                    ) : null}
                                 </span>
-                                <span className="text-xs text-muted-foreground">{designs.filter((d) => d.clientId === c.id).length}</span>
+                                <span className="text-xs text-muted-foreground">
+                                    {designs.filter((d) => d.clientId === c.id).length}
+                                </span>
                                 <Trash2
                                     className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive"
                                     onClick={(e) => {
@@ -83,7 +100,9 @@ export function ClientsView({ onOpenDesign }: ClientsViewProps) {
                                 <h2 className="text-sm font-semibold">
                                     {activeClient.firstName} {activeClient.lastName}
                                 </h2>
-                                <p className="text-xs text-muted-foreground">{activeClient.email ?? activeClient.reference ?? "—"}</p>
+                                <p className="text-xs text-muted-foreground">
+                                    {activeClient.email ?? activeClient.reference ?? "—"}
+                                </p>
                             </div>
                             <Button size="sm" onClick={newDesign}>
                                 <Plus className="h-4 w-4" /> New design
@@ -95,19 +114,32 @@ export function ClientsView({ onOpenDesign }: ClientsViewProps) {
                             ) : (
                                 <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
                                     {clientDesigns.map((d) => (
-                                        <div key={d.id} className="rounded-lg border border-border bg-panel p-3">
+                                        <div
+                                            key={d.id}
+                                            className="rounded-lg border border-border bg-panel p-3"
+                                        >
                                             <div className="mb-2 flex items-center gap-2">
                                                 <FileText className="h-4 w-4 text-primary" />
                                                 <span className="flex-1 truncate text-sm">{d.name}</span>
                                             </div>
                                             <p className="mb-3 text-[11px] text-muted-foreground">
-                                                {d.state.method.replace("_", " ")} · {new Date(d.updatedAt).toLocaleDateString()}
+                                                {d.state.method.replace("_", " ")} ·{" "}
+                                                {new Date(d.updatedAt).toLocaleDateString()}
                                             </p>
                                             <div className="flex gap-1">
-                                                <Button size="sm" className="h-7 flex-1" onClick={() => openDesign(d.id)}>
+                                                <Button
+                                                    size="sm"
+                                                    className="h-7 flex-1"
+                                                    onClick={() => openDesign(d.id)}
+                                                >
                                                     <FolderOpen className="h-3.5 w-3.5" /> Open
                                                 </Button>
-                                                <Button size="sm" variant="ghost" className="h-7" onClick={() => removeDesign(d.id)}>
+                                                <Button
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    className="h-7"
+                                                    onClick={() => removeDesign(d.id)}
+                                                >
                                                     <Trash2 className="h-3.5 w-3.5" />
                                                 </Button>
                                             </div>
@@ -151,11 +183,27 @@ function NewClientDialog({ onCreate }: { onCreate: (input: ClientInput) => void 
                 </DialogHeader>
                 <div className="space-y-2">
                     <div className="grid grid-cols-2 gap-2">
-                        <Input placeholder="First name" value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} />
-                        <Input placeholder="Last name" value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} />
+                        <Input
+                            placeholder="First name"
+                            value={form.firstName}
+                            onChange={(e) => setForm({ ...form, firstName: e.target.value })}
+                        />
+                        <Input
+                            placeholder="Last name"
+                            value={form.lastName}
+                            onChange={(e) => setForm({ ...form, lastName: e.target.value })}
+                        />
                     </div>
-                    <Input placeholder="Reference (optional)" value={form.reference ?? ""} onChange={(e) => setForm({ ...form, reference: e.target.value })} />
-                    <Input placeholder="Email (optional)" value={form.email ?? ""} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+                    <Input
+                        placeholder="Reference (optional)"
+                        value={form.reference ?? ""}
+                        onChange={(e) => setForm({ ...form, reference: e.target.value })}
+                    />
+                    <Input
+                        placeholder="Email (optional)"
+                        value={form.email ?? ""}
+                        onChange={(e) => setForm({ ...form, email: e.target.value })}
+                    />
                     <Button className="w-full" onClick={submit}>
                         Create client
                     </Button>

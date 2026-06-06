@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { usePerformanceStore } from "@/stores/performance-store";
 
 interface SliderFieldProps {
     label: string;
@@ -22,8 +23,13 @@ export function SliderField({
     onChange,
     className,
 }: SliderFieldProps) {
-    // Clamp to the medically valid range even when typed directly.
+    const setInteractionMode = usePerformanceStore((s) => s.setInteractionMode);
+
     const clamp = (v: number) => Math.min(max, Math.max(min, Number.isFinite(v) ? v : min));
+
+    const onAdjustStart = () => setInteractionMode("slider");
+    const onAdjustEnd = () => setInteractionMode("idle");
+
     return (
         <div className={cn("space-y-1", className)}>
             <div className="flex items-center justify-between">
@@ -36,6 +42,9 @@ export function SliderField({
                         max={max}
                         step={step}
                         onChange={(e) => onChange(clamp(Number(e.target.value)))}
+                        onPointerDown={onAdjustStart}
+                        onPointerUp={onAdjustEnd}
+                        onBlur={onAdjustEnd}
                         className="h-6 w-16 rounded border border-input bg-background px-1 text-right text-xs tabular-nums focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     />
                     {unit ? <span className="w-5 text-xs text-muted-foreground">{unit}</span> : null}
@@ -48,6 +57,9 @@ export function SliderField({
                 max={max}
                 step={step}
                 onChange={(e) => onChange(clamp(Number(e.target.value)))}
+                onPointerDown={onAdjustStart}
+                onPointerUp={onAdjustEnd}
+                onLostPointerCapture={onAdjustEnd}
                 className="h-1 w-full cursor-pointer appearance-none rounded bg-muted accent-primary"
             />
         </div>

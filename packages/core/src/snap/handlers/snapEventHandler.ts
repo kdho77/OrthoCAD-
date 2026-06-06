@@ -124,7 +124,7 @@ export abstract class SnapEventHandler<D extends SnapData = SnapData> implements
                 point: featurePoint.point,
                 info: featurePoint.prompt,
                 shapes: [],
-                type: "feature"
+                type: "feature",
             };
         } else {
             const detected = this.detectShapes(shapeType, view, event);
@@ -245,7 +245,7 @@ export abstract class SnapEventHandler<D extends SnapData = SnapData> implements
         this.data.onKeyDown?.(event, () => {
             this.removeTempShapes();
             this.showTempShape(this._snaped?.point);
-            view.document.visual.update()
+            view.document.visual.update();
         });
 
         switch (event.key) {

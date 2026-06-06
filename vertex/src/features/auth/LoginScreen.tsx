@@ -26,7 +26,9 @@ export function LoginScreen() {
         <div className="flex h-full items-center justify-center bg-background">
             <div className="w-full max-w-sm rounded-xl border border-border bg-panel p-6 shadow-2xl">
                 <div className="mb-5 flex items-center gap-2">
-                    <div className="flex h-8 w-8 items-center justify-center rounded bg-primary text-sm font-bold text-primary-foreground">V</div>
+                    <div className="flex h-8 w-8 items-center justify-center rounded bg-primary text-sm font-bold text-primary-foreground">
+                        V
+                    </div>
                     <div>
                         <div className="text-sm font-semibold">Vertex Orthopedic</div>
                         <div className="text-xs text-muted-foreground">Insole CAD</div>
@@ -39,8 +41,20 @@ export function LoginScreen() {
                         void signIn();
                     }}
                 >
-                    <Input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-                    <Input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+                    <Input
+                        type="email"
+                        placeholder="Email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        required
+                    />
+                    <Input
+                        type="password"
+                        placeholder="Password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                    />
                     {error ? <p className="text-xs text-destructive">{error}</p> : null}
                     <Button type="submit" className="w-full" disabled={busy}>
                         <LogIn className="h-4 w-4" /> {busy ? "Signing in…" : "Sign in"}

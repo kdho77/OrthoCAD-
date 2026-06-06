@@ -1,12 +1,12 @@
-import { CheckCircle2, Download, FileCode2, Lock, TriangleAlert } from "lucide-react";
+import { CheckCircle2, Download, FileCode2, Loader2, Lock, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { exportDesign } from "@/features/exports/export-service";
-import { getKernel } from "@/lib/chili3d";
+import { canExport, TOKEN_COST } from "@/features/licensing/license";
+import { useInsoleSolid } from "@/hooks/useInsoleSolid";
+import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
-import { cn } from "@/lib/utils";
 import type { Side } from "@/types";
 
 const INSOLE_LENGTH_MM = 260;
@@ -21,29 +21,36 @@ export function ExportPanel() {
 
     const stlCheck = canExport(user, license, "stl");
 
-    // Real-time solid validation for the selected side.
-    const solid = useMemo(
-        () =>
-            getKernel().buildInsoleSolid({
-                side,
-                lengthMm: INSOLE_LENGTH_MM,
-                widthMm: INSOLE_WIDTH_MM,
-                thicknessMm: design.thicknessMm,
-                corrections: design.corrections[side],
-                elements: design.elements.filter((e) => e.side === side),
-            }),
+    const solidParams = useMemo(
+        () => ({
+            side,
+            lengthMm: INSOLE_LENGTH_MM,
+            widthMm: INSOLE_WIDTH_MM,
+            thicknessMm: design.thicknessMm,
+            corrections: design.corrections[side],
+            elements: design.elements.filter((e) => e.side === side),
+        }),
         [side, design.thicknessMm, design.corrections, design.elements],
     );
+
+    const { manifold, building } = useInsoleSolid(solidParams);
 
     const handleStl = async () => {
         setBusy(true);
         try {
             const res = await exportDesign("stl", side);
-            setStatus(res.ok ? `Exported ${res.filename} (-${TOKEN_COST.stl} token)` : (res.reason ?? "Export failed"));
+            setStatus(
+                res.ok
+                    ? `Exported ${res.filename} (-${TOKEN_COST.stl} token)`
+                    : (res.reason ?? "Export failed"),
+            );
         } finally {
             setBusy(false);
         }
     };
+
+    const watertight = manifold?.isWatertight;
+    const triangleLabel = manifold ? manifold.triangleCount.toLocaleString() : "—";
 
     return (
         <div className="space-y-3">
@@ -60,18 +67,47 @@ export function ExportPanel() {
 
             <div className="flex gap-1">
                 {(["left", "right"] as Side[]).map((s) => (
-                    <Button key={s} size="sm" variant={side === s ? "default" : "secondary"} className="h-8 flex-1" onClick={() => setSide(s)}>
+                    <Button
+                        key={s}
+                        size="sm"
+                        variant={side === s ? "default" : "secondary"}
+                        className="h-8 flex-1"
+                        onClick={() => setSide(s)}
+                    >
                         {s} insole
                     </Button>
                 ))}
             </div>
 
-            <div className={cn("flex items-center justify-between rounded-md border px-2 py-1.5 text-xs", solid.manifold.isWatertight ? "border-emerald-500/40 text-emerald-400" : "border-amber-500/40 text-amber-400")}>
+            <div
+                className={cn(
+                    "flex items-center justify-between rounded-md border px-2 py-1.5 text-xs",
+                    building
+                        ? "border-border text-muted-foreground"
+                        : watertight
+                          ? "border-emerald-500/40 text-emerald-400"
+                          : "border-amber-500/40 text-amber-400",
+                )}
+            >
                 <span className="flex items-center gap-1.5">
-                    {solid.manifold.isWatertight ? <CheckCircle2 className="h-3.5 w-3.5" /> : <TriangleAlert className="h-3.5 w-3.5" />}
-                    {solid.manifold.isWatertight ? "Watertight solid" : `${solid.manifold.openEdges} open edges`}
+                    {building ? (
+                        <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            Validating solid…
+                        </>
+                    ) : watertight ? (
+                        <>
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Watertight solid
+                        </>
+                    ) : (
+                        <>
+                            <TriangleAlert className="h-3.5 w-3.5" />
+                            {manifold ? `${manifold.openEdges} open edges` : "Pending validation"}
+                        </>
+                    )}
                 </span>
-                <span className="tabular-nums text-muted-foreground">{solid.manifold.triangleCount.toLocaleString()} tris</span>
+                <span className="tabular-nums text-muted-foreground">{triangleLabel} tris</span>
             </div>
 
             <Button className="w-full" disabled={!stlCheck.ok || busy} onClick={handleStl}>
@@ -82,7 +118,8 @@ export function ExportPanel() {
 
             <div className="flex items-center gap-2 rounded-md border border-border px-2 py-2 text-xs text-muted-foreground">
                 <FileCode2 className="h-4 w-4" />
-                G-code (slicing / CNC) is in the <span className="text-foreground">Printing</span> tab · {TOKEN_COST.gcode} tokens
+                G-code (slicing / CNC) is in the <span className="text-foreground">Printing</span> tab ·{" "}
+                {TOKEN_COST.gcode} tokens
             </div>
 
             {status ? <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p> : null}

@@ -14,7 +14,7 @@ import {
     type IVisualFactory,
     type IWindow,
     type Locale,
-    Logger
+    Logger,
 } from "@chili3d/core";
 import { DefaultDataExchange } from "./defaultDataExchange";
 
@@ -167,9 +167,6 @@ export class AppBuilder {
     }
 
     protected getServices(): IService[] {
-        return [
-            new CommandService(),
-            new HotkeyService(),
-        ];
+        return [new CommandService(), new HotkeyService()];
     }
 }

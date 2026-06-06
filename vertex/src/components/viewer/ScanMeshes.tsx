@@ -28,7 +28,14 @@ export function ScanMeshes({ transparent }: { transparent: boolean }) {
                 .map((s) => {
                     const offsetX = sideOffsetX(s.side);
                     return (
-                        <mesh key={s.id} geometry={s.geometry} material={material} position={[0, offsetX, 0]} castShadow receiveShadow />
+                        <mesh
+                            key={s.id}
+                            geometry={s.geometry}
+                            material={material}
+                            position={[0, offsetX, 0]}
+                            castShadow
+                            receiveShadow
+                        />
                     );
                 })}
         </group>

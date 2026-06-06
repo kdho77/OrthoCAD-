@@ -1,14 +1,16 @@
 import { Grid, OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
-import { Box, Eye, EyeOff, Layers, Maximize2, Move, Rotate3d, Scale3d, X } from "lucide-react";
+import { Activity, Box, Eye, EyeOff, Layers, Maximize2, Move, Rotate3d, Scale3d, X } from "lucide-react";
 import { Suspense, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
-import { cn } from "@/lib/utils";
+import { usePreviewQuality } from "@/stores/performance-store";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
+import { PerfMonitor } from "./PerfMonitor";
 import { ScanMeshes } from "./ScanMeshes";
 
 type ViewName = "front" | "back" | "left" | "right" | "top" | "iso";
@@ -25,7 +27,8 @@ const VIEWS: { name: ViewName; label: string; pos: [number, number, number] }[] 
 export function Viewer3D() {
     const controls = useRef<OrbitControlsImpl>(null);
     const kernelName = useKernelStore((s) => s.name);
-    const { design, viewer, setViewer, selectedElementId, transformMode, setTransformMode, selectElement } =
+    const preview = usePreviewQuality();
+    const { viewer, setViewer, selectedElementId, transformMode, setTransformMode, selectElement } =
         useDesignStore();
 
     const setView = (pos: [number, number, number]) => {
@@ -40,6 +43,8 @@ export function Viewer3D() {
         <div className="relative h-full w-full bg-[hsl(222_28%_7%)]">
             <Canvas
                 shadows
+                dpr={[1, 1.5]}
+                performance={{ min: 0.5 }}
                 camera={{ position: [220, 200, 260], fov: 40, near: 1, far: 5000 }}
                 onPointerMissed={() => selectElement(null)}
             >
@@ -50,13 +55,22 @@ export function Viewer3D() {
 
                 <Suspense fallback={null}>
                     {viewer.showLeft ? (
-                        <InsoleMesh side="left" design={design} transparent={viewer.transparent} heightmap={viewer.heightmap} />
+                        <InsoleMesh
+                            side="left"
+                            transparent={viewer.transparent}
+                            heightmap={viewer.heightmap}
+                        />
                     ) : null}
                     {viewer.showRight ? (
-                        <InsoleMesh side="right" design={design} transparent={viewer.transparent} heightmap={viewer.heightmap} />
+                        <InsoleMesh
+                            side="right"
+                            transparent={viewer.transparent}
+                            heightmap={viewer.heightmap}
+                        />
                     ) : null}
                     <ScanMeshes transparent={viewer.transparent} />
                     <ElementMarkers />
+                    {viewer.showPerfMonitor ? <PerfMonitor /> : null}
                 </Suspense>
 
                 <Grid
@@ -77,7 +91,13 @@ export function Viewer3D() {
             {/* View buttons */}
             <div className="absolute left-3 top-3 flex flex-wrap gap-1">
                 {VIEWS.map((v) => (
-                    <Button key={v.name} size="sm" variant="secondary" className="h-7" onClick={() => setView(v.pos)}>
+                    <Button
+                        key={v.name}
+                        size="sm"
+                        variant="secondary"
+                        className="h-7"
+                        onClick={() => setView(v.pos)}
+                    >
                         {v.label}
                     </Button>
                 ))}
@@ -85,18 +105,67 @@ export function Viewer3D() {
 
             {/* Display toggles */}
             <div className="absolute right-3 top-3 flex flex-col gap-1">
-                <ToggleButton active={viewer.transparent} onClick={() => setViewer({ transparent: !viewer.transparent })} icon={<Maximize2 className="h-3.5 w-3.5" />} label="Transparent" />
-                <ToggleButton active={viewer.heightmap} onClick={() => setViewer({ heightmap: !viewer.heightmap })} icon={<Layers className="h-3.5 w-3.5" />} label="Heightmap" />
-                <ToggleButton active={viewer.showLeft} onClick={() => setViewer({ showLeft: !viewer.showLeft })} icon={viewer.showLeft ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />} label="Left" />
-                <ToggleButton active={viewer.showRight} onClick={() => setViewer({ showRight: !viewer.showRight })} icon={viewer.showRight ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />} label="Right" />
+                <ToggleButton
+                    active={viewer.transparent}
+                    onClick={() => setViewer({ transparent: !viewer.transparent })}
+                    icon={<Maximize2 className="h-3.5 w-3.5" />}
+                    label="Transparent"
+                />
+                <ToggleButton
+                    active={viewer.heightmap}
+                    onClick={() => setViewer({ heightmap: !viewer.heightmap })}
+                    icon={<Layers className="h-3.5 w-3.5" />}
+                    label="Heightmap"
+                />
+                <ToggleButton
+                    active={viewer.showLeft}
+                    onClick={() => setViewer({ showLeft: !viewer.showLeft })}
+                    icon={
+                        viewer.showLeft ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
+                    }
+                    label="Left"
+                />
+                <ToggleButton
+                    active={viewer.showRight}
+                    onClick={() => setViewer({ showRight: !viewer.showRight })}
+                    icon={
+                        viewer.showRight ? (
+                            <Eye className="h-3.5 w-3.5" />
+                        ) : (
+                            <EyeOff className="h-3.5 w-3.5" />
+                        )
+                    }
+                    label="Right"
+                />
+                <ToggleButton
+                    active={viewer.showPerfMonitor}
+                    onClick={() => setViewer({ showPerfMonitor: !viewer.showPerfMonitor })}
+                    icon={<Activity className="h-3.5 w-3.5" />}
+                    label="FPS"
+                />
             </div>
 
             {/* Element transform toolbar */}
             {selectedElementId ? (
                 <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
-                    <ModeButton active={transformMode === "translate"} onClick={() => setTransformMode("translate")} icon={<Move className="h-3.5 w-3.5" />} label="Move" />
-                    <ModeButton active={transformMode === "rotate"} onClick={() => setTransformMode("rotate")} icon={<Rotate3d className="h-3.5 w-3.5" />} label="Rotate" />
-                    <ModeButton active={transformMode === "scale"} onClick={() => setTransformMode("scale")} icon={<Scale3d className="h-3.5 w-3.5" />} label="Scale" />
+                    <ModeButton
+                        active={transformMode === "translate"}
+                        onClick={() => setTransformMode("translate")}
+                        icon={<Move className="h-3.5 w-3.5" />}
+                        label="Move"
+                    />
+                    <ModeButton
+                        active={transformMode === "rotate"}
+                        onClick={() => setTransformMode("rotate")}
+                        icon={<Rotate3d className="h-3.5 w-3.5" />}
+                        label="Rotate"
+                    />
+                    <ModeButton
+                        active={transformMode === "scale"}
+                        onClick={() => setTransformMode("scale")}
+                        icon={<Scale3d className="h-3.5 w-3.5" />}
+                        label="Scale"
+                    />
                     <Button size="sm" variant="ghost" className="h-7" onClick={() => selectElement(null)}>
                         <X className="h-3.5 w-3.5" />
                     </Button>
@@ -105,7 +174,8 @@ export function Viewer3D() {
 
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="h-3.5 w-3.5" />
-                {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural"} kernel · Orbit: drag · Pan: shift+drag · Zoom: scroll
+                {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural"} kernel
+                {preview ? " · preview" : ""} · Orbit: drag · Pan: shift+drag · Zoom: scroll
             </div>
         </div>
     );

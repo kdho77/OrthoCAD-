@@ -2,8 +2,8 @@ import { CheckCircle2, Eye, EyeOff, Trash2, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 import { importScanFile } from "@/lib/geometry/import";
 import { analyzeManifold } from "@/lib/geometry/manifold";
-import { useScanStore } from "@/stores/scan-store";
 import { cn } from "@/lib/utils";
+import { useScanStore } from "@/stores/scan-store";
 
 export function ScanImport() {
     const inputRef = useRef<HTMLInputElement>(null);
@@ -58,14 +58,25 @@ export function ScanImport() {
             {error ? <p className="text-xs text-destructive">{error}</p> : null}
 
             {scans.map((s) => (
-                <div key={s.id} className="space-y-1 rounded-md border border-border bg-background p-2 text-xs">
+                <div
+                    key={s.id}
+                    className="space-y-1 rounded-md border border-border bg-background p-2 text-xs"
+                >
                     <div className="flex items-center justify-between gap-1">
                         <span className="truncate" title={s.name}>
                             {s.name}
                         </span>
                         <div className="flex items-center gap-1">
-                            <button type="button" onClick={() => toggleVisible(s.id)} title="Toggle visibility">
-                                {s.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />}
+                            <button
+                                type="button"
+                                onClick={() => toggleVisible(s.id)}
+                                title="Toggle visibility"
+                            >
+                                {s.visible ? (
+                                    <Eye className="h-3.5 w-3.5" />
+                                ) : (
+                                    <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
+                                )}
                             </button>
                             <button type="button" onClick={() => removeScan(s.id)} title="Remove">
                                 <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
@@ -76,7 +87,12 @@ export function ScanImport() {
                         <span>
                             {s.format.toUpperCase()} · {s.triangleCount.toLocaleString()} tris
                         </span>
-                        <span className={cn("flex items-center gap-1", s.manifold.isWatertight ? "text-emerald-400" : "text-amber-400")}>
+                        <span
+                            className={cn(
+                                "flex items-center gap-1",
+                                s.manifold.isWatertight ? "text-emerald-400" : "text-amber-400",
+                            )}
+                        >
                             {s.manifold.isWatertight ? <CheckCircle2 className="h-3 w-3" /> : null}
                             {s.manifold.isWatertight ? "watertight" : `${s.manifold.openEdges} open`}
                         </span>
@@ -89,7 +105,9 @@ export function ScanImport() {
                                 onClick={() => setSide(s.id, side)}
                                 className={cn(
                                     "flex-1 rounded px-2 py-1 text-[11px]",
-                                    s.side === side ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground",
+                                    s.side === side
+                                        ? "bg-primary text-primary-foreground"
+                                        : "bg-muted text-muted-foreground",
                                 )}
                             >
                                 {side}

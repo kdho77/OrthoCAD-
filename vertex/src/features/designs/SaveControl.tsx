@@ -35,9 +35,15 @@ export function SaveControl() {
 
     return (
         <div className="flex items-center gap-2">
-            {record ? <span className="max-w-[140px] truncate text-xs text-muted-foreground">{record.name}</span> : null}
+            {record ? (
+                <span className="max-w-[140px] truncate text-xs text-muted-foreground">{record.name}</span>
+            ) : null}
             <Button size="sm" variant="outline" onClick={onSave}>
-                {saved ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Save className="h-3.5 w-3.5" />}
+                {saved ? (
+                    <Check className="h-3.5 w-3.5 text-emerald-400" />
+                ) : (
+                    <Save className="h-3.5 w-3.5" />
+                )}
                 {saved ? "Saved" : "Save"}
             </Button>
         </div>

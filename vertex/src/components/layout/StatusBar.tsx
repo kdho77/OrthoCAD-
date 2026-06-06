@@ -1,8 +1,8 @@
 import { Box, Coins, ShieldCheck } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
-import { cn } from "@/lib/utils";
 
 // Bottom status bar — mirrors the dense, professional CAD layout from the
 // reference screenshots.
@@ -21,10 +21,17 @@ export function StatusBar() {
                     <Box className="h-3 w-3" /> {record?.name ?? "Unsaved design"}
                 </span>
                 <span className="capitalize">{method.replace("_", " ")}</span>
-                <span>{elements} element{elements === 1 ? "" : "s"}</span>
+                <span>
+                    {elements} element{elements === 1 ? "" : "s"}
+                </span>
             </div>
             <div className="flex items-center gap-4">
-                <span className={cn("flex items-center gap-1", license?.status === "active" ? "text-emerald-400" : "text-amber-400")}>
+                <span
+                    className={cn(
+                        "flex items-center gap-1",
+                        license?.status === "active" ? "text-emerald-400" : "text-amber-400",
+                    )}
+                >
                     <ShieldCheck className="h-3 w-3" /> {license?.status ?? "no license"}
                 </span>
                 <span className="flex items-center gap-1">

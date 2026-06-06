@@ -22,9 +22,7 @@ export const clientRouter = router({
                 notes: z.string().max(2000).optional(),
             }),
         )
-        .mutation(({ ctx, input }) =>
-            ctx.prisma.client.create({ data: { ...input, ownerId: ctx.user.id } }),
-        ),
+        .mutation(({ ctx, input }) => ctx.prisma.client.create({ data: { ...input, ownerId: ctx.user.id } })),
 
     update: protectedProcedure
         .input(

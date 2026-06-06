@@ -8,17 +8,35 @@ export const adminRouter = router({
         .query(({ ctx, input }) =>
             ctx.prisma.user.findMany({
                 where: input?.search
-                    ? { OR: [{ email: { contains: input.search, mode: "insensitive" } }, { fullName: { contains: input.search, mode: "insensitive" } }] }
+                    ? {
+                          OR: [
+                              { email: { contains: input.search, mode: "insensitive" } },
+                              { fullName: { contains: input.search, mode: "insensitive" } },
+                          ],
+                      }
                     : undefined,
                 orderBy: { createdAt: "desc" },
-                select: { id: true, email: true, fullName: true, role: true, tokenBalance: true, isActive: true },
+                select: {
+                    id: true,
+                    email: true,
+                    fullName: true,
+                    role: true,
+                    tokenBalance: true,
+                    isActive: true,
+                },
                 take: 200,
             }),
         ),
 
     // Grant (or remove, if negative) tokens in bulk, recording a transaction + audit.
     grantTokens: superAdminProcedure
-        .input(z.object({ userId: z.string().uuid(), amount: z.number().int(), reason: z.string().max(200).optional() }))
+        .input(
+            z.object({
+                userId: z.string().uuid(),
+                amount: z.number().int(),
+                reason: z.string().max(200).optional(),
+            }),
+        )
         .mutation(async ({ ctx, input }) =>
             ctx.prisma.$transaction(async (tx) => {
                 const user = await tx.user.update({
@@ -75,7 +93,12 @@ export const adminRouter = router({
                 },
             });
             await ctx.prisma.auditLog.create({
-                data: { userId: ctx.user.id, action: "license_created", targetId: license.id, ipAddress: ctx.ip },
+                data: {
+                    userId: ctx.user.id,
+                    action: "license_created",
+                    targetId: license.id,
+                    ipAddress: ctx.ip,
+                },
             });
             return license;
         }),
@@ -88,7 +111,12 @@ export const adminRouter = router({
                 data: { status: "active", expiresAt: new Date(input.expiresAt) },
             });
             await ctx.prisma.auditLog.create({
-                data: { userId: ctx.user.id, action: "license_renewed", targetId: input.id, ipAddress: ctx.ip },
+                data: {
+                    userId: ctx.user.id,
+                    action: "license_renewed",
+                    targetId: input.id,
+                    ipAddress: ctx.ip,
+                },
             });
             return license;
         }),
@@ -96,9 +124,17 @@ export const adminRouter = router({
     revokeLicense: superAdminProcedure
         .input(z.object({ id: z.string().uuid() }))
         .mutation(async ({ ctx, input }) => {
-            const license = await ctx.prisma.license.update({ where: { id: input.id }, data: { status: "revoked" } });
+            const license = await ctx.prisma.license.update({
+                where: { id: input.id },
+                data: { status: "revoked" },
+            });
             await ctx.prisma.auditLog.create({
-                data: { userId: ctx.user.id, action: "license_revoked", targetId: input.id, ipAddress: ctx.ip },
+                data: {
+                    userId: ctx.user.id,
+                    action: "license_revoked",
+                    targetId: input.id,
+                    ipAddress: ctx.ip,
+                },
             });
             return license;
         }),

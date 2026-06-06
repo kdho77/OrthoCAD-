@@ -105,7 +105,7 @@ export abstract class MultistepCommand extends CancelableCommand {
         }
 
         return ViewUtils.raycastClosestPlane(view, origin, point);
-    };
+    }
 
     protected transformdFirstShape(step: SnapResult, shouldDispose = true) {
         const shape = step.shapes[0].shape.transformedMul(step.shapes[0].transform);

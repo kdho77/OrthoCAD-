@@ -53,8 +53,12 @@ production seam.
 
 ## Performance
 
-- Memoized geometry rebuilds; superseded geometry disposed (no GPU leak).
-- Element drag coalesced to one store write per animation frame.
+- Heavy geometry (OCCT booleans, manifold checks) runs in a dedicated Web Worker.
+- Preview mode (36×18 procedural) during slider/gizmo/batch edits; full-quality rebuild debounced when idle.
+- Memoized geometry rebuilds; superseded BufferGeometries disposed (no GPU leak).
+- Element drag coalesced to one store write per animation frame; orbit disabled during gizmo drag.
+- Heightmap colors reuse a single color attribute (no geometry clone per frame).
+- Optional FPS overlay (viewer **FPS** toggle).
 - Vendor code-split (three / r3f / react / trpc) for faster first paint.
 - Correction inputs clamped to medically valid ranges.
 

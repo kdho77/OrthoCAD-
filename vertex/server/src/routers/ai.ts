@@ -61,7 +61,10 @@ export const aiRouter = router({
                     data: { tokenBalance: { decrement: AI_TOKEN_COST } },
                 });
                 if (dec.count === 0) {
-                    throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient tokens for AI generation" });
+                    throw new TRPCError({
+                        code: "FORBIDDEN",
+                        message: "Insufficient tokens for AI generation",
+                    });
                 }
                 const user = await tx.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
 

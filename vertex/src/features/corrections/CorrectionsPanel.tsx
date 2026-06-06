@@ -1,12 +1,24 @@
 import { Link2, Unlink } from "lucide-react";
 import { SliderField } from "@/components/ui/slider-field";
-import { useDesignStore } from "@/stores/design-store";
 import { cn } from "@/lib/utils";
+import { useDesignStore } from "@/stores/design-store";
 import type { Side, SideCorrections } from "@/types";
 
 const FIELDS: { key: keyof SideCorrections; label: string; min: number; max: number; group: string }[] = [
-    { key: "forefootPostingDeg", label: "Forefoot posting", min: -15, max: 15, group: "Pronation / Supination" },
-    { key: "rearfootPostingDeg", label: "Rearfoot posting", min: -15, max: 15, group: "Pronation / Supination" },
+    {
+        key: "forefootPostingDeg",
+        label: "Forefoot posting",
+        min: -15,
+        max: 15,
+        group: "Pronation / Supination",
+    },
+    {
+        key: "rearfootPostingDeg",
+        label: "Rearfoot posting",
+        min: -15,
+        max: 15,
+        group: "Pronation / Supination",
+    },
     { key: "medialSkiveMm", label: "Medial skive", min: 0, max: 8, group: "Skive" },
     { key: "lateralSkiveMm", label: "Lateral skive", min: 0, max: 8, group: "Skive" },
     { key: "archHeightMm", label: "Arch height", min: 0, max: 25, group: "Arch" },
@@ -36,7 +48,11 @@ export function CorrectionsPanel() {
                         corrections.linked ? "bg-primary text-primary-foreground" : "text-muted-foreground",
                     )}
                 >
-                    {corrections.linked ? <Link2 className="h-3.5 w-3.5" /> : <Unlink className="h-3.5 w-3.5" />}
+                    {corrections.linked ? (
+                        <Link2 className="h-3.5 w-3.5" />
+                    ) : (
+                        <Unlink className="h-3.5 w-3.5" />
+                    )}
                     {corrections.linked ? "L+R linked" : "Independent"}
                 </button>
                 <div className="flex items-center gap-1 text-xs">
@@ -45,7 +61,12 @@ export function CorrectionsPanel() {
                             key={u}
                             type="button"
                             onClick={() => setUnit(u)}
-                            className={cn("rounded px-2 py-1", corrections.unit === u ? "bg-secondary text-foreground" : "text-muted-foreground")}
+                            className={cn(
+                                "rounded px-2 py-1",
+                                corrections.unit === u
+                                    ? "bg-secondary text-foreground"
+                                    : "text-muted-foreground",
+                            )}
                         >
                             {u}
                         </button>
@@ -65,7 +86,9 @@ export function CorrectionsPanel() {
 
             {GROUPS.map((group) => (
                 <div key={group} className="space-y-2 rounded-md border border-border bg-background/50 p-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{group}</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        {group}
+                    </div>
                     <div className="grid grid-cols-2 gap-x-3">
                         {(["left", "right"] as Side[]).map((side) => (
                             <div key={side} className="space-y-2">
@@ -79,7 +102,9 @@ export function CorrectionsPanel() {
                                         max={f.max}
                                         step={degField(f.key) ? 0.5 : 0.5}
                                         unit={degField(f.key) ? "°" : "mm"}
-                                        onChange={(v) => updateCorrection(side, { [f.key]: v } as Partial<SideCorrections>)}
+                                        onChange={(v) =>
+                                            updateCorrection(side, { [f.key]: v } as Partial<SideCorrections>)
+                                        }
                                     />
                                 ))}
                             </div>

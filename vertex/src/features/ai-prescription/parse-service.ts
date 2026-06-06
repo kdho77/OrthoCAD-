@@ -30,7 +30,9 @@ export async function parsePrescription(input: PrescriptionInput): Promise<Parse
             });
             const { user, setUser } = useAuthStore.getState();
             if (user && typeof res.balance === "number") setUser({ ...user, tokenBalance: res.balance });
-            useAuditStore.getState().record("ai_prescription_parsed", `AI parse (${res.provider}, -${res.tokenCost})`);
+            useAuditStore
+                .getState()
+                .record("ai_prescription_parsed", `AI parse (${res.provider}, -${res.tokenCost})`);
             return { ok: true, result: res as PrescriptionParseResult };
         } catch (e) {
             return { ok: false, reason: e instanceof Error ? e.message : "AI parsing failed" };

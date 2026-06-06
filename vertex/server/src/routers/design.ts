@@ -32,16 +32,25 @@ export const designRouter = router({
                 data: { clientId: input.clientId, ownerId: ctx.user.id, name: input.name },
             });
             await ctx.prisma.auditLog.create({
-                data: { userId: ctx.user.id, action: "design_created", targetId: design.id, ipAddress: ctx.ip },
+                data: {
+                    userId: ctx.user.id,
+                    action: "design_created",
+                    targetId: design.id,
+                    ipAddress: ctx.ip,
+                },
             });
             return design;
         }),
 
     // Persists the full design: header fields + relational corrections + elements.
     save: protectedProcedure
-        .input(z.object({ id: z.string().uuid(), name: z.string().min(1).max(120), state: designStateSchema }))
+        .input(
+            z.object({ id: z.string().uuid(), name: z.string().min(1).max(120), state: designStateSchema }),
+        )
         .mutation(async ({ ctx, input }) => {
-            const owned = await ctx.prisma.design.findFirst({ where: { id: input.id, ownerId: ctx.user.id } });
+            const owned = await ctx.prisma.design.findFirst({
+                where: { id: input.id, ownerId: ctx.user.id },
+            });
             if (!owned) throw new TRPCError({ code: "NOT_FOUND" });
             const { state } = input;
 
@@ -82,7 +91,12 @@ export const designRouter = router({
                     });
                 }
                 await tx.auditLog.create({
-                    data: { userId: ctx.user.id, action: "design_updated", targetId: input.id, ipAddress: ctx.ip },
+                    data: {
+                        userId: ctx.user.id,
+                        action: "design_updated",
+                        targetId: input.id,
+                        ipAddress: ctx.ip,
+                    },
                 });
                 return { ok: true };
             });

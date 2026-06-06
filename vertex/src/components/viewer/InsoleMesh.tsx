@@ -1,99 +1,106 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
-import { getKernel } from "@/lib/chili3d";
+import { useInsoleGeometry } from "@/hooks/useInsoleGeometry";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM, sideOffsetX } from "@/lib/geometry/layout";
-import { useKernelStore } from "@/stores/kernel-store";
-import type { DesignState, Side } from "@/types";
+import { useDesignStore } from "@/stores/design-store";
+import { usePreviewQuality } from "@/stores/performance-store";
+import type { Side } from "@/types";
 
 interface InsoleMeshProps {
     side: Side;
-    design: DesignState;
     transparent: boolean;
     heightmap: boolean;
 }
 
-export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshProps) {
-    const kernelVersion = useKernelStore((s) => s.version);
-    const sideElements = useMemo(
-        () => design.elements.filter((e) => e.side === side),
-        [design.elements, side],
+export function InsoleMesh({ side, transparent, heightmap }: InsoleMeshProps) {
+    const thicknessMm = useDesignStore((s) => s.design.thicknessMm);
+    const corrections = useDesignStore((s) => s.design.corrections[side]);
+    const elements = useDesignStore((s) => s.design.elements);
+    const preview = usePreviewQuality();
+
+    const sideElements = useMemo(() => elements.filter((e) => e.side === side), [elements, side]);
+
+    const params = useMemo(
+        () => ({
+            side,
+            lengthMm: INSOLE_LENGTH_MM,
+            widthMm: INSOLE_WIDTH_MM,
+            thicknessMm,
+            corrections,
+            elements: sideElements,
+        }),
+        [side, thicknessMm, corrections, sideElements],
     );
 
-    const geometry = useMemo(
-        () =>
-            getKernel().buildInsole({
-                side,
-                lengthMm: INSOLE_LENGTH_MM,
-                widthMm: INSOLE_WIDTH_MM,
-                thicknessMm: design.thicknessMm,
-                corrections: design.corrections[side],
-                elements: sideElements,
-            }),
-        [side, design.thicknessMm, design.corrections, sideElements, kernelVersion],
-    );
+    const { geometry, building } = useInsoleGeometry({ params, preview });
 
-    // Color the surface by height when the heightmap toggle is on.
     const material = useMemo(() => {
+        const buildingOpacity = building ? 0.72 : 1;
         if (heightmap) {
-            const mat = new THREE.MeshStandardMaterial({
+            return new THREE.MeshStandardMaterial({
                 vertexColors: true,
                 metalness: 0.1,
                 roughness: 0.85,
-                transparent,
-                opacity: transparent ? 0.55 : 1,
+                transparent: true,
+                opacity: (transparent ? 0.55 : 1) * buildingOpacity,
             });
-            return mat;
         }
         return new THREE.MeshStandardMaterial({
             color: side === "left" ? "#38bdf8" : "#22d3ee",
             metalness: 0.15,
             roughness: 0.7,
-            transparent,
-            opacity: transparent ? 0.5 : 1,
+            transparent: true,
+            opacity: (transparent ? 0.5 : 1) * buildingOpacity,
             side: THREE.DoubleSide,
         });
-    }, [heightmap, transparent, side]);
+    }, [heightmap, transparent, side, building]);
 
-    // Dispose superseded geometry to avoid GPU memory growth during real-time edits.
-    useEffect(() => () => geometry.dispose(), [geometry]);
+    useEffect(() => () => material.dispose(), [material]);
 
-    const coloredGeometry = useMemo(() => {
+    const colorAttrRef = useRef<THREE.BufferAttribute | null>(null);
+
+    const displayGeometry = useMemo(() => {
+        if (!geometry) return null;
         if (!heightmap) return geometry;
-        const g = geometry.clone();
+
+        const g = geometry;
         const pos = g.getAttribute("position");
-        const colors = new Float32Array(pos.count * 3);
+        if (!colorAttrRef.current || colorAttrRef.current.count !== pos.count) {
+            colorAttrRef.current = new THREE.BufferAttribute(new Float32Array(pos.count * 3), 3);
+        }
+        const colors = colorAttrRef.current;
         const color = new THREE.Color();
         let maxZ = 0;
         for (let i = 0; i < pos.count; i++) maxZ = Math.max(maxZ, pos.getZ(i));
         for (let i = 0; i < pos.count; i++) {
             const t = maxZ > 0 ? pos.getZ(i) / maxZ : 0;
             color.setHSL(0.66 - 0.66 * t, 0.85, 0.5);
-            colors[i * 3] = color.r;
-            colors[i * 3 + 1] = color.g;
-            colors[i * 3 + 2] = color.b;
+            colors.setXYZ(i, color.r, color.g, color.b);
         }
-        g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+        g.setAttribute("color", colors);
         return g;
     }, [geometry, heightmap]);
 
-    useEffect(() => {
-        const c = coloredGeometry;
-        return () => {
-            if (c !== geometry) c.dispose();
-        };
-    }, [coloredGeometry, geometry]);
+    useEffect(
+        () => () => {
+            colorAttrRef.current = null;
+        },
+        [],
+    );
 
-    // Lay left/right side by side, centered, lying flat (rotate so length = X, height = Y).
     const offsetX = sideOffsetX(side);
+
+    if (!displayGeometry) return null;
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             <mesh
-                geometry={coloredGeometry}
+                geometry={displayGeometry}
                 material={material}
                 position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}
-                castShadow
+                castShadow={!preview && !building}
                 receiveShadow
+                frustumCulled
             />
         </group>
     );

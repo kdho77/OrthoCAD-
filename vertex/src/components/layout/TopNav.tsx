@@ -2,8 +2,8 @@ import { Coins, LogOut, ShieldCheck, Sparkles, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SaveControl } from "@/features/designs/SaveControl";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
-import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/auth-store";
 
 const NAV = ["Clients", "Production", "Orders"] as const;
 type NavItem = (typeof NAV)[number];
@@ -22,7 +22,9 @@ export function TopNav({ active, onNavigate, onOpenAdmin, onOpenPrescription }: 
         <header className="flex h-12 items-center justify-between border-b border-border bg-panel px-3">
             <div className="flex items-center gap-4">
                 <div className="flex items-center gap-2 pr-2">
-                    <div className="flex h-6 w-6 items-center justify-center rounded bg-primary text-xs font-bold text-primary-foreground">V</div>
+                    <div className="flex h-6 w-6 items-center justify-center rounded bg-primary text-xs font-bold text-primary-foreground">
+                        V
+                    </div>
                     <span className="text-sm font-semibold tracking-tight">Vertex Orthopedic</span>
                 </div>
                 <nav className="flex items-center gap-1">
@@ -55,7 +57,12 @@ export function TopNav({ active, onNavigate, onOpenAdmin, onOpenPrescription }: 
                     <span className="text-muted-foreground">tokens</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <ShieldCheck className={cn("h-3.5 w-3.5", license?.status === "active" ? "text-emerald-400" : "text-amber-400")} />
+                    <ShieldCheck
+                        className={cn(
+                            "h-3.5 w-3.5",
+                            license?.status === "active" ? "text-emerald-400" : "text-amber-400",
+                        )}
+                    />
                     {license?.status ?? "no license"}
                 </div>
                 {user?.role === "super_admin" ? (
@@ -67,7 +74,12 @@ export function TopNav({ active, onNavigate, onOpenAdmin, onOpenPrescription }: 
                     {user?.fullName?.[0]?.toUpperCase() ?? user?.email?.[0]?.toUpperCase() ?? "?"}
                 </div>
                 {isSupabaseConfigured() ? (
-                    <Button size="icon" variant="ghost" title="Sign out" onClick={() => getSupabase()?.auth.signOut()}>
+                    <Button
+                        size="icon"
+                        variant="ghost"
+                        title="Sign out"
+                        onClick={() => getSupabase()?.auth.signOut()}
+                    >
                         <LogOut className="h-3.5 w-3.5" />
                     </Button>
                 ) : null}

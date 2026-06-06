@@ -69,10 +69,18 @@ export function PrescriptionUpload({ open, onClose, onApply }: PrescriptionUploa
                         <textarea
                             value={text}
                             onChange={(e) => setText(e.target.value)}
-                            placeholder={"e.g. Bilateral 4° rearfoot varus posting, 4mm medial heel skive left, met pads bilaterally, deep heel cup, high arch."}
+                            placeholder={
+                                "e.g. Bilateral 4° rearfoot varus posting, 4mm medial heel skive left, met pads bilaterally, deep heel cup, high arch."
+                            }
                             className="flex-1 resize-none rounded-md border border-input bg-background p-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         />
-                        <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onImage(e.target.files?.[0])} />
+                        <input
+                            ref={fileRef}
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => void onImage(e.target.files?.[0])}
+                        />
                         <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()}>
                             <ImageIcon className="h-3.5 w-3.5" /> {imageName ?? "Attach prescription image"}
                         </Button>
@@ -87,14 +95,22 @@ export function PrescriptionUpload({ open, onClose, onApply }: PrescriptionUploa
                             Structured result
                         </div>
                         <div className="flex-1 overflow-y-auto p-3 text-xs">
-                            {result ? <ResultView result={result} /> : <p className="text-muted-foreground">Run a parse to see structured corrections and elements.</p>}
+                            {result ? (
+                                <ResultView result={result} />
+                            ) : (
+                                <p className="text-muted-foreground">
+                                    Run a parse to see structured corrections and elements.
+                                </p>
+                            )}
                         </div>
                         {result ? (
                             <div className="border-t border-border p-2">
                                 <Button
                                     className="w-full"
                                     disabled={!onApply}
-                                    title={onApply ? "Apply to the 3D model" : "Auto-apply arrives in Phase 2"}
+                                    title={
+                                        onApply ? "Apply to the 3D model" : "Auto-apply arrives in Phase 2"
+                                    }
                                     onClick={() => onApply?.(result)}
                                 >
                                     {onApply ? "Apply to model" : "Apply to model (Phase 2)"}

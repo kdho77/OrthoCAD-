@@ -1,7 +1,7 @@
 import type { BufferGeometry } from "three";
 import { create } from "zustand";
-import type { ManifoldReport } from "@/lib/geometry/manifold";
 import type { ImportFormat } from "@/lib/geometry/import";
+import type { ManifoldReport } from "@/lib/geometry/manifold";
 import type { Side } from "@/types";
 
 export interface ImportedScan {

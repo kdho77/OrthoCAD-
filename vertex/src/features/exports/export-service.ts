@@ -1,5 +1,6 @@
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/chili3d";
+import { buildInsoleAsync } from "@/lib/geometry/geometry-pool";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
@@ -16,16 +17,20 @@ export interface ExportOutcome {
     stats?: CamResult["stats"];
 }
 
-function buildSideGeometry(side: Side) {
+async function buildSideGeometry(side: Side) {
     const { design } = useDesignStore.getState();
-    return getKernel().buildInsole({
-        side,
-        lengthMm: INSOLE_LENGTH_MM,
-        widthMm: INSOLE_WIDTH_MM,
-        thicknessMm: design.thicknessMm,
-        corrections: design.corrections[side],
-        elements: design.elements.filter((e) => e.side === side),
+    const result = await buildInsoleAsync({
+        params: {
+            side,
+            lengthMm: INSOLE_LENGTH_MM,
+            widthMm: INSOLE_WIDTH_MM,
+            thicknessMm: design.thicknessMm,
+            corrections: design.corrections[side],
+            elements: design.elements.filter((e) => e.side === side),
+        },
+        quality: "full",
     });
+    return result.geometry;
 }
 
 /** Server-authoritative token gate shared by STL and G-code exports. */
@@ -78,8 +83,9 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     const auth = await authorize("stl", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
 
-    const geometry = buildSideGeometry(side);
+    const geometry = await buildSideGeometry(side);
     const stl = getKernel().exportSTL(geometry);
+    geometry.dispose();
     const blob = new Blob([stl], { type: "model/stl" });
     downloadBlob(blob, filename);
     useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
@@ -100,8 +106,9 @@ export async function exportGcode(
     const auth = await authorize("gcode", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
 
-    const geometry = buildSideGeometry(side);
+    const geometry = await buildSideGeometry(side);
     const { gcode, stats } = generateGcode(geometry, preset, overrides);
+    geometry.dispose();
     const blob = new Blob([gcode], { type: "text/plain" });
     downloadBlob(blob, filename);
     useAuditStore

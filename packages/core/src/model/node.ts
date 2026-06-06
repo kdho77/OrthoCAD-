@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import type { IDocument } from "../document";
-import { HistoryObservable, type IDisposable, type IPropertyChanged, Id } from "../foundation";
+import { HistoryObservable, type IDisposable, Id, type IPropertyChanged } from "../foundation";
 import { property } from "../property";
 import { type Serialized, Serializer, serialize } from "../serialize";
 
