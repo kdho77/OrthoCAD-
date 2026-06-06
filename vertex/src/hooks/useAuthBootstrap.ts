@@ -1,7 +1,13 @@
 import { useEffect } from "react";
+import {
+    DEV_SUPER_ADMIN,
+    isLocalDevServer,
+    offlineLicense,
+    offlineUserProfile,
+    resolveDevRole,
+} from "@/lib/dev-auth";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
-import type { License, Role, UserProfile } from "@/types";
 
 // Phase 0 auth foundation.
 //
@@ -11,27 +17,6 @@ import type { License, Role, UserProfile } from "@/types";
 // usable. Server-authoritative role, license and token checks are wired through
 // tRPC in later phases.
 
-function offlineUser(): UserProfile {
-    return {
-        id: "local-dev",
-        email: "dev@vertex.local",
-        fullName: "Local Developer",
-        role: "super_admin",
-        tokenBalance: 100,
-    };
-}
-
-function offlineLicense(): License {
-    return {
-        id: "local-license",
-        type: "yearly",
-        status: "active",
-        seats: 1,
-        startsAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 365 * 864e5).toISOString(),
-    };
-}
-
 export function useAuthBootstrap() {
     const { setUser, setLicense, setLoading } = useAuthStore();
 
@@ -40,7 +25,7 @@ export function useAuthBootstrap() {
 
         async function bootstrap() {
             if (!isSupabaseConfigured()) {
-                setUser(offlineUser());
+                setUser(offlineUserProfile());
                 setLicense(offlineLicense());
                 setLoading(false);
                 return;
@@ -62,7 +47,7 @@ export function useAuthBootstrap() {
                     id: u.id,
                     email: u.email ?? "",
                     fullName: (u.user_metadata?.full_name as string) ?? null,
-                    role: (u.app_metadata?.role as Role) ?? "clinician",
+                    role: resolveDevRole(u.email, u.app_metadata?.role),
                     // Authoritative token balance + license are loaded via user.me.
                     tokenBalance: 0,
                 });
@@ -70,7 +55,14 @@ export function useAuthBootstrap() {
 
             const { data } = await supabase.auth.getSession();
             if (!active) return;
-            if (data.session?.user) hydrate(data.session.user);
+            if (data.session?.user) {
+                hydrate(data.session.user);
+            } else if (isLocalDevServer()) {
+                await supabase.auth.signInWithPassword({
+                    email: DEV_SUPER_ADMIN.email,
+                    password: DEV_SUPER_ADMIN.password,
+                });
+            }
             setLoading(false);
 
             supabase.auth.onAuthStateChange((_event, session) => {

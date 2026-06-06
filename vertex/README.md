@@ -55,9 +55,9 @@ cd .. && npm run setup:wasm && npm run build:wasm
 cd vertex && npm run prepare:wasm
 ```
 
-Without Supabase credentials the app runs in **offline dev mode** with a local
-`super_admin` user (100 export tokens, active license) so the full workspace is
-usable.
+Without Supabase credentials the app runs in **offline dev mode** with the default
+`super_admin` test account (`kdho@vertexorthopedic.com`, 100 export tokens, active
+license) so the full workspace is usable.
 
 ### Keyboard shortcuts
 

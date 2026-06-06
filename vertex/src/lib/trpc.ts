@@ -1,7 +1,8 @@
 import { createTRPCClient, httpBatchLink } from "@trpc/client";
 import superjson from "superjson";
 import type { AppRouter } from "../../server/src/routers";
-import { getSupabase } from "./supabase";
+import { devAuthHeaderValue } from "./dev-auth";
+import { getSupabase, isSupabaseConfigured } from "./supabase";
 
 const apiUrl = import.meta.env.VITE_API_URL as string | undefined;
 
@@ -18,10 +19,15 @@ export const trpc = createTRPCClient<AppRouter>({
             transformer: superjson,
             async headers() {
                 const supabase = getSupabase();
-                if (!supabase) return {};
-                const { data } = await supabase.auth.getSession();
-                const token = data.session?.access_token;
-                return token ? { authorization: `Bearer ${token}` } : {};
+                if (supabase) {
+                    const { data } = await supabase.auth.getSession();
+                    const token = data.session?.access_token;
+                    if (token) return { authorization: `Bearer ${token}` };
+                }
+                if (!isSupabaseConfigured()) {
+                    return { authorization: `Bearer ${devAuthHeaderValue()}` };
+                }
+                return {};
             },
         }),
     ],

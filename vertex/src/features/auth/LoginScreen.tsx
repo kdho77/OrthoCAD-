@@ -2,13 +2,14 @@ import { LogIn } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DEV_SUPER_ADMIN, isLocalDevServer } from "@/lib/dev-auth";
 import { getSupabase } from "@/lib/supabase";
 
 // Email/password sign-in shown when Supabase is configured and there is no
 // active session. Offline/dev mode bypasses this entirely.
 export function LoginScreen() {
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
+    const [email, setEmail] = useState<string>(DEV_SUPER_ADMIN.email);
+    const [password, setPassword] = useState<string>(DEV_SUPER_ADMIN.password);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
 
@@ -47,7 +48,9 @@ export function LoginScreen() {
                     </Button>
                 </form>
                 <p className="mt-4 text-center text-[11px] text-muted-foreground">
-                    Roles: super_admin · admin · clinician · Managed in Supabase Auth.
+                    {isLocalDevServer()
+                        ? `Dev super_admin: ${DEV_SUPER_ADMIN.email} · Roles managed in Supabase Auth.`
+                        : "Roles: super_admin · admin · clinician · Managed in Supabase Auth."}
                 </p>
             </div>
         </div>
