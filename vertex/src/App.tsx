@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AdminPortal } from "@/components/admin/AdminPortal";
 import { LeftSidebar } from "@/components/layout/LeftSidebar";
 import { RightPanel } from "@/components/layout/RightPanel";
+import { StatusBar } from "@/components/layout/StatusBar";
 import { TopNav, type NavItem } from "@/components/layout/TopNav";
 import { PrescriptionUpload } from "@/components/prescription-upload/PrescriptionUpload";
 import { Viewer3D } from "@/components/viewer/Viewer3D";
@@ -37,13 +38,16 @@ export default function App() {
                         <RightPanel />
                     </>
                 ) : nav === "Clients" ? (
-                    <ClientsView />
+                    <ClientsView onOpenDesign={() => setNav("Production")} />
                 ) : (
-                    <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-                        Orders management arrives in Phase 4.
+                    <div className="flex flex-1 flex-col items-center justify-center gap-1 text-sm text-muted-foreground">
+                        <span className="text-foreground">Orders</span>
+                        <span className="text-xs">Production queue &amp; fulfilment tracking.</span>
                     </div>
                 )}
             </div>
+
+            <StatusBar />
 
             <AdminPortal open={adminOpen} onClose={() => setAdminOpen(false)} />
             <PrescriptionUpload

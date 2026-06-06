@@ -4,6 +4,7 @@ import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
+import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
 import type { ExportFormat, Side } from "@/types";
@@ -78,6 +79,7 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     const stl = getKernel().exportSTL(geometry);
     const blob = new Blob([stl], { type: "model/stl" });
     downloadBlob(blob, filename);
+    useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
 
     return { ok: true, filename, blob };
 }
@@ -99,6 +101,7 @@ export async function exportGcode(
     const { gcode, stats } = generateGcode(geometry, preset, overrides);
     const blob = new Blob([gcode], { type: "text/plain" });
     downloadBlob(blob, filename);
+    useAuditStore.getState().record("export_generated", `G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
 
     return { ok: true, filename, blob, stats };
 }

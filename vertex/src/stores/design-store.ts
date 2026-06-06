@@ -79,6 +79,9 @@ export interface DesignStore {
     /** Atomically apply an AI-parsed prescription to the design. */
     applyPrescription: (result: PrescriptionParseResult) => void;
 
+    /** Replace the entire design (used when opening a saved design). */
+    loadDesign: (design: DesignState) => void;
+
     setViewer: (patch: Partial<ViewerSettings>) => void;
     reset: () => void;
 }
@@ -175,6 +178,8 @@ export const useDesignStore = create<DesignStore>((set) => ({
                 },
             };
         }),
+
+    loadDesign: (design) => set({ design, selectedElementId: null }),
 
     setViewer: (patch) => set((s) => ({ viewer: { ...s.viewer, ...patch } })),
     reset: () => set({ design: defaultDesign(), selectedElementId: null }),

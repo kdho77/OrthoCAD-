@@ -1,5 +1,6 @@
 import { Coins, ShieldCheck, Sparkles, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SaveControl } from "@/features/designs/SaveControl";
 import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
 
@@ -43,6 +44,7 @@ export function TopNav({ active, onNavigate, onOpenAdmin, onOpenPrescription }: 
             </div>
 
             <div className="flex items-center gap-3">
+                <SaveControl />
                 <Button size="sm" variant="outline" onClick={onOpenPrescription}>
                     <Sparkles className="h-3.5 w-3.5 text-primary" /> AI Rx
                 </Button>
