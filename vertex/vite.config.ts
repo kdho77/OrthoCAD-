@@ -1,9 +1,18 @@
 import path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import rootPackage from "../package.json";
+
+const isProduction = process.env.NODE_ENV === "production";
 
 export default defineConfig({
     plugins: [react()],
+    define: {
+        // Chili3D core/wasm packages expect these rspack-style compile-time globals.
+        __IS_PRODUCTION__: JSON.stringify(isProduction),
+        __APP_VERSION__: JSON.stringify(rootPackage.version),
+        __DOCUMENT_VERSION__: JSON.stringify(rootPackage.documentVersion),
+    },
     resolve: {
         alias: {
             "@": path.resolve(__dirname, "./src"),

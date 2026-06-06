@@ -12,6 +12,9 @@ export function KernelLoadingBanner() {
     if (loadState === "ready" || loadState === "idle") return null;
 
     if (loadState === "failed") {
+        // Production should load the real OCCT kernel; keep fallback diagnostics dev-only.
+        if (import.meta.env.PROD) return null;
+
         return (
             <div className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-center text-xs text-amber-200">
                 OCCT kernel unavailable — using procedural fallback
