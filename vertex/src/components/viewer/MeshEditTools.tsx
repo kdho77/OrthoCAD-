@@ -22,7 +22,7 @@ export function MeshEditTools() {
     const selectedVertex = useMeshEditStore((s) => s.selectedVertex);
     const design = useDesignStore((s) => s.design);
 
-    if (editMode === "transform" || !target) return null;
+    if (editMode === "transform" || editMode === "edit-trimline" || !target) return null;
 
     const side: Side = target.type === "insole" ? target.side : target.type === "element"
         ? (design.elements.find((e) => e.id === target.id)?.side ?? "left")

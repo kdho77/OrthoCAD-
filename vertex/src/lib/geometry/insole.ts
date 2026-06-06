@@ -1,5 +1,6 @@
 import { BufferAttribute, BufferGeometry } from "three";
-import { heightAt, outlineHalfWidth, type HeightFieldParams } from "@/lib/geometry/height-field";
+import { heightAt, resolveOutlineHalfWidth, type HeightFieldParams } from "@/lib/geometry/height-field";
+import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import type { PlacedElement, ProductionMethod, Side, SideCorrections } from "@/types";
 
 // Generates a parametric orthotic insole mesh from correction parameters.
@@ -16,6 +17,8 @@ export interface InsoleParams {
     segmentsY?: number;
     /** Production method — `printing_shell` triggers OCCT wall shelling when WASM is active. */
     method?: ProductionMethod;
+    /** User-edited perimeter override for this side. */
+    trimline?: TrimlineCurve | null;
 }
 
 export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
@@ -28,6 +31,7 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         elements = [],
         segmentsX = 96,
         segmentsY = 48,
+        trimline = null,
     } = params;
 
     const field: HeightFieldParams = {
@@ -39,6 +43,7 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         elements,
         includeSkives: true,
         includeElements: true,
+        trimline,
     };
 
     const nx = segmentsX;
@@ -51,7 +56,7 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
 
     for (let i = 0; i <= nx; i++) {
         const u = i / nx;
-        const hw = outlineHalfWidth(u) * halfW;
+        const hw = resolveOutlineHalfWidth(u, field) * halfW;
         const row: number[] = [];
         for (let j = 0; j <= ny; j++) {
             const vSigned = (j / ny) * 2 - 1;
@@ -67,7 +72,7 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
     const bottomGrid: number[][] = [];
     for (let i = 0; i <= nx; i++) {
         const u = i / nx;
-        const hw = outlineHalfWidth(u) * halfW;
+        const hw = resolveOutlineHalfWidth(u, field) * halfW;
         const row: number[] = [];
         for (let j = 0; j <= ny; j++) {
             const vSigned = (j / ny) * 2 - 1;

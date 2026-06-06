@@ -3,6 +3,7 @@ import type { BufferGeometry } from "three";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
+import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import type { GeometryQuality } from "@/lib/geometry/quality";
 import { useKernelStore } from "@/stores/kernel-store";
 import { mergeCorrections, mergeElementPreviews, usePerformanceStore } from "@/stores/performance-store";
@@ -12,6 +13,7 @@ export interface UseInsoleGeometryOptions {
     side: Side;
     design: DesignState;
     trimLines: TrimLine[];
+    trimline?: TrimlineCurve | null;
     vertexOverrides: Map<number, { x: number; y: number; z: number }>;
     applyEdits: boolean;
 }
@@ -26,7 +28,7 @@ export interface InsoleGeometryState {
  * Async insole geometry — worker preview while interacting, OCCT kernel when idle.
  */
 export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeometryState {
-    const { side, design, trimLines, vertexOverrides, applyEdits } = options;
+    const { side, design, trimLines, trimline, vertexOverrides, applyEdits } = options;
     const interacting = usePerformanceStore((s) => s.interacting);
     const correctionPreview = usePerformanceStore((s) => s.correctionPreview);
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
@@ -59,6 +61,7 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
             ...insoleParamsFromDesign({ ...design, thicknessMm }, side, quality),
             corrections: mergeCorrections(side, design.corrections[side]),
             elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
+            trimline: trimline ?? null,
         };
 
         void geometryEngine
@@ -93,6 +96,7 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         design.corrections,
         design.elements,
         trimLines,
+        trimline,
         vertexOverrides,
         applyEdits,
         quality,

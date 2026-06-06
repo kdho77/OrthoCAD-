@@ -1,6 +1,6 @@
 import { Grid, OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
-import { Activity, Box, Eye, EyeOff, Layers, Maximize2, Move, PenTool, Rotate3d, Scale3d, Scissors, X } from "lucide-react";
+import { Activity, Box, Eye, EyeOff, Layers, Maximize2, Move, PenTool, PencilLine, Rotate3d, Scale3d, Scissors, X } from "lucide-react";
 import { Suspense, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { CustomPrefabMesh } from "./CustomPrefabMesh";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
+import { TrimlineEditTools } from "./TrimlineEditTools";
 import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
 import { ScanMeshes } from "./ScanMeshes";
 
@@ -35,6 +36,10 @@ export function Viewer3D() {
     const editMode = useMeshEditStore((s) => s.editMode);
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
+    const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
+    const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
+    const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
+    const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
     const showCustomPrefab = Boolean(design.customPrefabId);
     const showPerf = usePerformanceStore((s) => s.showPerformanceMonitor);
     const setShowPerf = usePerformanceStore((s) => s.setShowPerformanceMonitor);
@@ -90,6 +95,7 @@ export function Viewer3D() {
                     <ScanMeshes transparent={viewer.transparent} />
                     <ElementMarkers />
                     <MeshEditTools />
+                    <TrimlineEditTools />
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
@@ -105,7 +111,13 @@ export function Viewer3D() {
                     infiniteGrid
                     position={[0, -0.1, 0]}
                 />
-                <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.1} />
+                <OrbitControls
+                    ref={controls}
+                    makeDefault
+                    enableDamping
+                    dampingFactor={0.1}
+                    enabled={!trimlineEdit?.isDragging}
+                />
             </Canvas>
 
             {/* View buttons */}
@@ -140,8 +152,24 @@ export function Viewer3D() {
                 </div>
             ) : (
                 <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
-                    <ModeButton active={editMode === "trim"} onClick={() => { setEditMode("trim"); setTarget({ type: "insole", side: "left" }); }} icon={<Scissors className="h-3.5 w-3.5" />} label="Trim" />
-                    <ModeButton active={editMode === "vertex"} onClick={() => { setEditMode("vertex"); setTarget({ type: "insole", side: "left" }); }} icon={<PenTool className="h-3.5 w-3.5" />} label="Vertex" />
+                    <ModeButton
+                        active={editMode === "edit-trimline"}
+                        onClick={() => beginTrimlineEdit(viewer.showLeft ? "left" : "right")}
+                        icon={<PencilLine className="h-3.5 w-3.5" />}
+                        label="Edit trimline"
+                    />
+                    <ModeButton active={editMode === "trim"} onClick={() => { setEditMode("trim"); setTarget({ type: "insole", side: viewer.showLeft ? "left" : "right" }); }} icon={<Scissors className="h-3.5 w-3.5" />} label="Trim" />
+                    <ModeButton active={editMode === "vertex"} onClick={() => { setEditMode("vertex"); setTarget({ type: "insole", side: viewer.showLeft ? "left" : "right" }); }} icon={<PenTool className="h-3.5 w-3.5" />} label="Vertex" />
+                    {editMode === "edit-trimline" && trimlineEdit ? (
+                        <>
+                            <Button size="sm" variant="default" className="h-7 text-[11px]" onClick={confirmTrimlineEdit}>
+                                Confirm
+                            </Button>
+                            <Button size="sm" variant="ghost" className="h-7 text-[11px]" onClick={cancelTrimlineEdit}>
+                                Cancel
+                            </Button>
+                        </>
+                    ) : null}
                 </div>
             )}
 

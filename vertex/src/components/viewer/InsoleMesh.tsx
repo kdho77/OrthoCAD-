@@ -21,12 +21,24 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
     const trimLines = useMeshEditStore((s) => s.trimLines);
     const vertexOverrides = useMeshEditStore((s) => s.vertexOverrides);
     const target = useMeshEditStore((s) => s.target);
+    const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
+    const trimlineBySide = useMeshEditStore((s) => s.trimlineBySide);
     const applyEdits = target?.type === "insole" && target.side === side;
+
+    // During drag use lightweight red overlay only; rebuild mesh when drag ends or on confirm.
+    const trimline = useMemo(() => {
+        if (trimlineEdit?.side === side && trimlineEdit.isDragging) {
+            return trimlineBySide[side] ?? null;
+        }
+        if (trimlineEdit?.side === side) return trimlineEdit.draft;
+        return trimlineBySide[side] ?? null;
+    }, [trimlineEdit, trimlineBySide, side]);
 
     const { geometry, building } = useInsoleGeometry({
         side,
         design,
         trimLines,
+        trimline,
         vertexOverrides,
         applyEdits,
     });

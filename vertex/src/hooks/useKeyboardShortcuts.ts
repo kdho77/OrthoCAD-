@@ -3,6 +3,7 @@
 
 import { useEffect } from "react";
 import { useDesignStore } from "@/stores/design-store";
+import { useMeshEditStore } from "@/stores/mesh-edit-store";
 
 export interface KeyboardShortcutHandlers {
     onSave?: () => void;

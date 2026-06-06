@@ -1,5 +1,6 @@
 import type { PlacedElement, Side, SideCorrections } from "@/types";
 import { elementHeightAt } from "@/lib/geometry/elements";
+import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 
 // Shared parametric height field for insole surfaces. Used by both the procedural
 // Three.js mesher and the OpenCascade solid builder so corrections stay aligned.
@@ -15,6 +16,8 @@ export interface HeightFieldParams {
     includeSkives?: boolean;
     /** When false, elements are omitted (applied later as OCCT booleans). */
     includeElements?: boolean;
+    /** Optional user-edited insole perimeter override. */
+    trimline?: TrimlineCurve | null;
 }
 
 const DEG = Math.PI / 180;
@@ -26,12 +29,17 @@ export function bump(t: number, c: number, r: number): number {
     return 0.5 * (1 + Math.cos(Math.PI * d));
 }
 
-/** Outline half-width (0..1) as a function of normalized length u (0 heel → 1 toe). */
+/** Parametric outline half-width (0..1) at normalized length u (0 heel → 1 toe). */
 export function outlineHalfWidth(u: number): number {
     const heel = 0.55 + 0.25 * bump(u, 0.08, 0.18);
     const waist = 0.78 + 0.18 * Math.sin(Math.PI * Math.min(1, u * 1.05));
     const toe = u > 0.88 ? Math.max(0.45, 1 - (u - 0.88) / 0.12) : 1;
     return Math.min(1, heel * waist) * (0.4 + 0.6 * toe);
+}
+
+/** Outline half-width for mesh generation — uses trimline override when present. */
+export function resolveOutlineHalfWidth(u: number, params: HeightFieldParams): number {
+    return effectiveOutlineHalfWidth(u, params.lengthMm, params.widthMm, params.trimline);
 }
 
 /** Surface height in mm at normalized footprint coordinates (u along length, vSigned across width). */
@@ -68,7 +76,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
 
     const includeElements = params.includeElements ?? true;
     if (includeElements) {
-        const hw = outlineHalfWidth(u) * halfW;
+        const hw = resolveOutlineHalfWidth(u, params) * halfW;
         h += elementHeightAt(elements, u * lengthMm, vSigned * hw, lengthMm);
     }
 
@@ -97,7 +105,7 @@ export function sampleInsoleGrid(params: HeightFieldParams, nx = 48, ny = 24): I
 
     for (let i = 0; i <= nx; i++) {
         const u = i / nx;
-        const hw = outlineHalfWidth(u) * halfW;
+        const hw = resolveOutlineHalfWidth(u, params) * halfW;
         const topRow: GridPoint[] = [];
         const bottomRow: GridPoint[] = [];
         for (let j = 0; j <= ny; j++) {
