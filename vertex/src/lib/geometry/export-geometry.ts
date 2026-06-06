@@ -3,7 +3,7 @@
 
 import type { BufferGeometry } from "three";
 import * as THREE from "three";
-import { getKernel } from "@/lib/chili3d";
+import { getKernel } from "@/lib/chili3d/kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { extractPrimaryGeometry, loadGlbFromBuffer, loadGlbFromUrl } from "@/lib/library/loaders";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";

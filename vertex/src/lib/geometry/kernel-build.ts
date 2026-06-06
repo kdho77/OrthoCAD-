@@ -1,5 +1,5 @@
 import type { BufferGeometry } from "three";
-import { getKernel } from "@/lib/chili3d";
+import { getKernel } from "@/lib/chili3d/kernel";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import type { InsoleParams } from "@/lib/geometry/insole";

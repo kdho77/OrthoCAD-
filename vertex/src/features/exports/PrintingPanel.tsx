@@ -2,7 +2,7 @@ import { Cpu, Download, Lock, Printer, Play } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
-import { getKernel } from "@/lib/chili3d";
+import { getKernel } from "@/lib/chili3d/kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { type CamOverrides, type CamResult, generateGcode, presetsForMethod } from "@/lib/kiri";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";

@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import { getKernel } from "@/lib/chili3d";
 
 export type KernelLoadState = "idle" | "loading" | "ready" | "failed";
 
@@ -8,20 +7,20 @@ interface KernelStore {
     name: string;
     loadState: KernelLoadState;
     loadError: string | null;
-    notifyKernelChanged: () => void;
+    notifyKernelChanged: (kernelName: string) => void;
     setLoadState: (state: KernelLoadState, error?: string | null) => void;
 }
 
 export const useKernelStore = create<KernelStore>((set) => ({
     version: 0,
-    name: getKernel().name,
+    name: "three-procedural",
     loadState: "idle",
     loadError: null,
-    notifyKernelChanged: () =>
+    notifyKernelChanged: (kernelName) =>
         set((s) => ({
             version: s.version + 1,
-            name: getKernel().name,
-            loadState: getKernel().name === "opencascade-wasm" ? "ready" : s.loadState,
+            name: kernelName,
+            loadState: kernelName === "opencascade-wasm" ? "ready" : s.loadState,
         })),
     setLoadState: (loadState, loadError = null) => set({ loadState, loadError }),
 }));

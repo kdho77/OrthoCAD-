@@ -3,7 +3,6 @@ import { buildInsoleGeometry, type InsoleParams } from "@/lib/geometry/insole";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SolidValidation } from "@/lib/geometry/repair";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
-import { useKernelStore } from "@/stores/kernel-store";
 
 export interface SolidResult {
     geometry: BufferGeometry;
@@ -59,6 +58,7 @@ export async function loadOcctKernel(): Promise<boolean> {
     if (occtLoadAttempted) return kernel.name !== "three-procedural";
     occtLoadAttempted = true;
 
+    const { useKernelStore } = await import("@/stores/kernel-store");
     const { setLoadState, notifyKernelChanged } = useKernelStore.getState();
     setLoadState("loading");
 
@@ -67,13 +67,14 @@ export async function loadOcctKernel(): Promise<boolean> {
         const { OcctKernel } = await import("@/lib/chili3d/occt-kernel");
         await initVertexOcct();
         kernel = new OcctKernel();
-        notifyKernelChanged();
+        notifyKernelChanged("opencascade-wasm");
         setLoadState("ready");
         return true;
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.warn("[loadOcctKernel] WASM unavailable, using procedural kernel:", error);
         kernel = new ThreeKernel();
+        notifyKernelChanged("three-procedural");
         setLoadState("failed", message);
         return false;
     }

@@ -1,5 +1,5 @@
 import { BufferGeometry, Vector3 } from "three";
-import { getKernel } from "@/lib/chili3d";
+import { getKernel } from "@/lib/chili3d/kernel";
 import { buildInsoleGeometry } from "@/lib/geometry/insole";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import { geometryToPayload, payloadToGeometry } from "@/lib/geometry/geometry-buffer";
