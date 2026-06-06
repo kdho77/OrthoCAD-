@@ -45,6 +45,11 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
                 return;
             }
             if (e.key === "Escape") {
+                const meshEdit = useMeshEditStore.getState();
+                if (meshEdit.editMode === "edit-trimline" && meshEdit.trimlineEdit) {
+                    meshEdit.cancelTrimlineEdit();
+                    return;
+                }
                 selectElement(null);
             }
         };
