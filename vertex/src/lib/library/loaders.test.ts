@@ -17,6 +17,32 @@ function makeGroup(meshes: { name: string; geo: THREE.BufferGeometry; position?:
     return group;
 }
 
+/**
+ * Re-pack a geometry's position + normal into a single interleaved buffer, the
+ * layout GLB exporters (e.g. Rhino) commonly emit. `mergeGeometries` cannot
+ * merge these, so this exercises the de-interleaving merge path.
+ */
+function toInterleaved(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+    const src = geo.index ? geo.toNonIndexed() : geo.clone();
+    const pos = src.getAttribute("position");
+    const nor = src.getAttribute("normal") ?? (src.computeVertexNormals(), src.getAttribute("normal"));
+    const count = pos.count;
+    const data = new Float32Array(count * 6);
+    for (let i = 0; i < count; i++) {
+        data[i * 6] = pos.getX(i);
+        data[i * 6 + 1] = pos.getY(i);
+        data[i * 6 + 2] = pos.getZ(i);
+        data[i * 6 + 3] = nor.getX(i);
+        data[i * 6 + 4] = nor.getY(i);
+        data[i * 6 + 5] = nor.getZ(i);
+    }
+    const buffer = new THREE.InterleavedBuffer(data, 6);
+    const out = new THREE.BufferGeometry();
+    out.setAttribute("position", new THREE.InterleavedBufferAttribute(buffer, 3, 0));
+    out.setAttribute("normal", new THREE.InterleavedBufferAttribute(buffer, 3, 3));
+    return out;
+}
+
 describe("GLB loaders — multi-mesh base support", () => {
     test("merges separate Top + Bottom meshes into one base geometry", () => {
         const group = makeGroup([
@@ -70,5 +96,31 @@ describe("GLB loaders — multi-mesh base support", () => {
 
     test("empty group returns null", () => {
         expect(extractMergedGeometry(new THREE.Group())).toBeNull();
+    });
+
+    test("merges interleaved-attribute meshes without dropping any sub-mesh", () => {
+        // Real GLBs store position/normal interleaved; the previous mergeGeometries
+        // path failed on these and silently kept only the first mesh.
+        const top = toInterleaved(new THREE.BoxGeometry(90, 260, 5));
+        const bottom = toInterleaved(new THREE.BoxGeometry(90, 260, 5));
+        const group = makeGroup([
+            { name: "Top", geo: top, position: [0, 0, 10] },
+            { name: "Bottom", geo: bottom, position: [0, 0, 0] },
+        ]);
+
+        const merged = extractMergedGeometry(group);
+        expect(merged).not.toBeNull();
+        expect(merged!.meshCount).toBe(2);
+
+        // Bounds must span BOTH meshes — proof the bottom mesh was not dropped.
+        merged!.geometry.computeBoundingBox();
+        const box = merged!.geometry.boundingBox!;
+        expect(box.max.z).toBeGreaterThan(box.min.z + 10);
+        expect(merged!.geometry.getAttribute("position").count).toBeGreaterThan(0);
+        // Result is plain (de-interleaved) BufferAttributes, not interleaved.
+        expect(
+            (merged!.geometry.getAttribute("position") as THREE.InterleavedBufferAttribute)
+                .isInterleavedBufferAttribute,
+        ).toBeFalsy();
     });
 });
