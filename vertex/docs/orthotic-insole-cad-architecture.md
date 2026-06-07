@@ -1,9 +1,9 @@
 # Orthotic Insole CAD — System Architecture
 
-**Status:** Architecture specification (v2.0)  
+**Status:** Architecture specification (v2.1)  
 **Audience:** Engineering, clinical product, manufacturing  
 **Platform:** Vertex (web orthotic CAD) on Chili3D (browser OCCT B-rep kernel)  
-**Changelog:** v2.0 strengthens trimline editing on bases, displacement/boolean decision framework, undo/redo design, clinical constraints layer, GLB base long-term vision, and unified user mental model.
+**Changelog:** v2.1 refines the trimline hybrid model (width-envelope during drag, clip on confirm, boolean on export), formalizes Core Principles and operator policy, adds `ClinicalSpec`, and elevates undo/redo to Phase 3A with mandatory coalescing.
 
 This document defines the target architecture for a modern web-based orthotic insole CAD system that replaces legacy Rhino workflows. It unifies **direct / freeform editing** and **automated clinical corrections** on the same geometry, producing watertight output suitable for 3D printing and CNC milling.
 
@@ -29,7 +29,7 @@ Direct editing (trimline drag, element move) and automated corrections (arch rai
 
 **v2.0 architectural commitments:**
 
-1. **Trimline editing uses a hybrid clip + boolean model** — never freeform vertex sculpting of the perimeter.
+1. **Trimline editing uses a three-tier hybrid model** — width-envelope + visual offset during drag, `clipGeometryToOutline` on confirm, boolean prism on export; true perimeter vertex sculpting is **rejected**.
 2. **Displacement vs boolean is decided by operator metadata**, not ad hoc per feature.
 3. **Undo/redo is a Phase 3A requirement**, not deferred to Phase 4.
 4. **Clinical constraints live in a dedicated validation layer** with operator-level defaults.
@@ -134,22 +134,64 @@ Both modes share identical correction / trimline / element parameters. Only the 
 
 ---
 
-## 4. Direct Trimline / Outline Editing
+## 4. Direct Trimline / Outline Editing on Loaded Bases
 
-This section defines exactly how trimline manipulation affects visible geometry in real time, and how preview differs from authoritative output.
+This section defines exactly how trimline manipulation affects visible geometry in real time, how preview differs from authoritative output, and how parametric and loaded-GLB modes differ.
 
-### 4.1 Core principle: trimline is a boundary operator, not a sculpt brush
+### 4.1 Rejected approach: perimeter vertex sculpting
 
-Trimline editing **never** moves individual mesh vertices along the perimeter. The trimline is stored as a **closed 2D curve** in footprint coordinates `(x_length, y_width)`. Geometry responds through one of two mechanisms depending on mode:
+**True perimeter vertex sculpting is rejected.** The system must never move individual mesh vertices along the outer boundary in response to trimline edits. That approach would:
 
-| Mode | Preview mechanism | Authoritative mechanism |
-|------|-------------------|-------------------------|
-| **Parametric** | Rebuild mesh with `effectiveOutlineHalfWidth(u)` from trimline | OCCT loft bounded by trimline stations + optional `applyTrimlineCut` boolean |
-| **Loaded GLB base** | `applyBaseModifiers` then `clipGeometryToOutline` | Sew base → B-rep → `applyTrimlineCut` boolean (Phase 3) |
+- Bake topology into the mesh and break non-destructive undo
+- Destroy the neutral base template (loaded GLB detail would be lost)
+- Produce inconsistent results between preview and export
+- Make clinical corrections non-recomputable from design state
 
-**Why not deform?** Perimeter sculpting (moving boundary vertices) would bake topology into the mesh, break undo, and destroy the neutral base template. **Why not boolean during drag?** OCCT booleans are too slow for 60 fps interaction. **Why hybrid clip + boolean?** Clip gives instant visual truth on bases; boolean gives manufacturing truth on export.
+All trimline edits are stored as a **closed 2D curve** (`TrimlinePoint[]`) in footprint coordinates `(x_length, y_width)`. Geometry is derived from that curve through the hybrid pipeline below — never by sculpting boundary vertices.
 
-### 4.2 Trimline edit pipeline (both modes)
+### 4.2 Hybrid trimline model (three tiers)
+
+Trimline editing uses a **three-tier hybrid model** that trades speed during interaction for accuracy on commit and manufacturing truth on export:
+
+| Tier | When | Mechanism | Purpose |
+|------|------|-----------|---------|
+| **1 — Drag preview** | Active trimline drag frames | Lightweight **width-envelope clipping** + **visual boundary offset** | < 16 ms feedback; mesh boundary follows draft curve |
+| **2 — Confirm clip** | `confirmTrimlineEdit()` | Full **`clipGeometryToOutline`** on displaced base mesh | Accurate preview mesh; committed to design state |
+| **3 — Authoritative cut** | Idle debounce, Confirm, Export | OCCT **`applyTrimlineCut`** boolean prism | Watertight perimeter; manufacturing-grade |
+
+```
+                    TRIMLINE EDIT LIFECYCLE (loaded GLB base)
+                    ─────────────────────────────────────────
+
+  beginTrimlineEdit          drag frames                    confirmTrimlineEdit
+        │                         │                                  │
+        ▼                         ▼                                  ▼
+  snapshot + draft          Tier 1: width-envelope          Tier 2: clipGeometryToOutline
+  curve in session          + visual boundary offset        (full centroid clip)
+                            + draft → useBaseInsoleGeometry              │
+                            (Phase 3A — required)                      ▼
+                                                                   push undo frame
+                                                                         │
+                                                                         ▼
+                                                              Tier 3: applyTrimlineCut
+                                                              (OCCT boolean on export)
+```
+
+**Why not boolean during drag?** OCCT booleans are too slow for 60 fps interaction (see R5, §5.1).  
+**Why not sculpt?** See §4.1.  
+**Why three tiers?** Width-envelope gives instant visual feedback; centroid clip gives an accurate committed preview; boolean gives watertight export.
+
+### 4.3 Mode comparison: parametric vs loaded GLB
+
+| Aspect | Parametric (no base) | Loaded GLB base |
+|--------|---------------------|-----------------|
+| **Tier 1 (drag)** | Grid rebuild via `effectiveOutlineHalfWidth(u)` from draft | `applyBaseModifiers` → width-envelope clip from draft + visual boundary offset |
+| **Tier 2 (confirm)** | Trimline committed to design state; grid rebuild at full quality | `clipGeometryToOutline(modified, committed)` |
+| **Tier 3 (export)** | OCCT loft + `applyTrimlineCut` boolean prism | Sew base → B-rep → `applyTrimlineCut` boolean prism (Phase 3B) |
+| **Corrections during edit** | Evaluated in `heightAt`; boundary via width envelope | Evaluated as vertical δ on top; XY unchanged until clip |
+| **Bottom surface** | Flat bottom plane in grid | Bottom vertices fixed (`topFactor ≈ 0`) — never clipped or moved |
+
+### 4.4 Trimline edit session pipeline
 
 ```
 ┌──────────────┐     beginTrimlineEdit()      ┌─────────────────────┐
@@ -179,7 +221,7 @@ Trimline editing **never** moves individual mesh vertices along the perimeter. T
 
 **Control point deformation** (`deformTrimlineSection`) applies Gaussian falloff along the polyline so dragging one point does not create kinks. This is **curve smoothing**, not surface sculpting.
 
-### 4.3 Parametric mode: width-envelope rebuild
+### 4.5 Parametric mode: width-envelope rebuild
 
 When no base GLB is loaded, the procedural mesher (`buildInsoleGeometry`) samples the top surface on a structured grid. At each longitudinal station `u`:
 
@@ -191,7 +233,7 @@ For each grid row, `v_signed ∈ [-1, 1]` maps to `y = v_signed × halfWidth(u) 
 
 **During trimline drag:**
 
-1. `InsoleMesh` passes `trimlineEdit.draft` to `useInsoleGeometry` (when not mid-drag-anchor; see §4.6).
+1. `InsoleMesh` passes `trimlineEdit.draft` to `useInsoleGeometry` for Tier 1 width-envelope rebuild.
 2. Worker rebuilds grid mesh at preview quality with new width envelope.
 3. Triangles outside the envelope are never created — boundary is implicit in the grid.
 
@@ -201,28 +243,44 @@ For each grid row, `v_signed ∈ [-1, 1]` maps to `y = v_signed × halfWidth(u) 
 2. Optional `useBooleanTrimline`: vertical prism from closed curve → `solid ∩ prism` for exact perimeter cut.
 3. Any preview/export gap at complex curves (e.g. sharp medial notch) is closed by the boolean pass.
 
-### 4.4 Loaded GLB base mode: displacement then clip
+### 4.6 Loaded GLB base mode: displacement, envelope, clip, boolean
 
-Base-mode trimline editing follows a **strict two-stage preview pipeline** (implemented in `useBaseInsoleGeometry.ts`):
+Base-mode trimline editing follows the three-tier hybrid model. The underlying pipeline in `useBaseInsoleGeometry.ts` is:
 
 ```
-raw GLB  →  applyBaseModifiers(raw, field)  →  clipGeometryToOutline(modified, trimline)  →  display
-            (vertical Δz only, XY unchanged)     (drop exterior triangles by centroid test)
+raw GLB
+  → applyBaseModifiers(raw, field)     // Tier 0: vertical δ only; bottom fixed
+  → [Tier 1 or 2 trimline operation]   // see below
+  → display
 ```
 
-**Stage 1 — Modifier displacement (`applyBaseModifiers`):**
+**Tier 0 — Modifier displacement (`applyBaseModifiers`), always first:**
 
 - Samples `correctionDeltaAt(u, v)` from the height field.
 - Applies `Δz × topFactor` along the detected up axis.
 - **Does not modify XY** — trimline shape is independent of correction displacement.
-- Bottom vertices (topFactor ≈ 0) remain fixed — clinical base bottom is preserved.
+- **Bottom vertices remain fixed** (`topFactor ≈ 0`) — the plantar surface of the loaded base is never moved, clipped, or boolean-cut.
 
-**Stage 2 — Outline clip (`clipGeometryToOutline`):**
+**Tier 1 — During active drag (lightweight preview):**
 
-- Closed trimline polygon in footprint XY plane.
-- Each triangle kept iff its **centroid** is inside the polygon (even-odd test).
+- Derive a **width-envelope** from `trimlineEdit.draft` using `effectiveOutlineHalfWidth(u)` sampled at each longitudinal station — O(stations), not O(triangles).
+- Drop or fade triangles whose footprint centroid maps outside the envelope (fast approximate clip).
+- Render a **visual boundary offset**: the draft trimline curve overlaid on the mesh (tube/line in `TrimlineEditTools`) so the user sees the exact intended perimeter even when the mesh clip is approximate.
+- Corrections and edge feathering continue to evaluate against the draft envelope.
+
+**Tier 2 — On confirm (`clipGeometryToOutline`):**
+
+- Run full **centroid-based** `clipGeometryToOutline(modified, committedTrimline)`.
+- Each triangle kept iff its centroid is inside the closed polygon (even-odd test).
 - Polygon inflated by `marginMm` (default 1.5 mm) about centroid so an unedited auto-outline does not shave the silhouette.
-- Produces a new `BufferGeometry` with an **open boundary** along the cut — acceptable for preview, not for manufacturing.
+- Produces a `BufferGeometry` with an open boundary — accurate committed preview, still not manufacturing-grade.
+- Trimline persisted to `design.trimlines`; one undo frame pushed (§6).
+
+**Tier 3 — On authoritative export (`applyTrimlineCut`):**
+
+- Sew base into B-rep (Phase 3B) or loft from height field (parametric path).
+- Build vertical prism from closed trimline curve → `solid ∩ prism`.
+- Watertight vertical side walls; passes `isClosed()`.
 
 **Trimline initialization on base load:**
 
@@ -230,34 +288,49 @@ raw GLB  →  applyBaseModifiers(raw, field)  →  clipGeometryToOutline(modifie
 2. `beginTrimlineEdit` starts from extracted outline (not parametric default).
 3. User edits are relative to the **actual base boundary**.
 
-### 4.5 Preview vs authoritative: trimline comparison
+### 4.7 Phase 3A requirement: draft trimline wiring (documented gap)
 
-| Aspect | Preview (interactive) | Authoritative (idle / export) |
-|--------|----------------------|-------------------------------|
-| **Parametric** | Grid rebuild via width function | Loft + boolean prism cut |
-| **Base GLB** | Centroid clip after displacement | B-rep sew + boolean prism cut (Phase 3) |
-| **Boundary quality** | Open / jagged cut mesh | Watertight vertical side walls |
-| **Corrections at edge** | Feathered via `edgeFeather` in height field | Same field + exact perimeter |
-| **Performance** | < 16 ms target | 0.3–10 s |
-| **Watertight** | No | Required (`isClosed()`) |
+**Current behavior (gap):** `useBaseInsoleGeometry` reads only the **committed** trimline from design state. During an active `trimlineEdit` session the base mesh does not update until `confirmTrimlineEdit()` — the user sees a static mesh while dragging the trimline overlay.
 
-### 4.6 Known gap and required fix (implementation)
-
-**Current behavior:** `useBaseInsoleGeometry` clips against the **committed** trimline only. During an active `trimlineEdit` session, the base mesh does not update until `confirmTrimlineEdit()`.
-
-**Required behavior (Phase 3A):**
+**Required fix (Phase 3A):** Draft trimline edits **must** be passed to `useBaseInsoleGeometry` and drive preview clipping for the active side:
 
 ```typescript
+// useBaseInsoleGeometry.ts — required Phase 3A change
+import { useMeshEditStore } from "@/stores/mesh-edit-store";
+
+const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
+
 const activeTrimline =
     trimlineEdit?.side === side
         ? trimlineEdit.draft
         : getDesignTrimline(design, side);
-if (activeTrimline) display = clipGeometryToOutline(modified, activeTrimline);
+
+let display = modified;
+if (activeTrimline) {
+    if (trimlineEdit?.isDragging) {
+        // Tier 1: lightweight width-envelope clip from draft
+        display = clipByWidthEnvelope(modified, activeTrimline);
+    } else {
+        // Tier 2: full centroid clip (also between drag strokes within session)
+        display = clipGeometryToOutline(modified, activeTrimline);
+    }
+}
 ```
 
-This aligns base-mode live trimline feedback with parametric mode (which already passes draft to `useInsoleGeometry`).
+This aligns base-mode live feedback with parametric mode (which already passes `trimlineEdit.draft` to `useInsoleGeometry`). Without this wiring, Tier 1 and Tier 2 cannot function on loaded bases.
 
-### 4.7 Edge feathering during trimline manipulation
+### 4.8 Preview vs authoritative: trimline comparison
+
+| Aspect | Tier 1 (drag) | Tier 2 (confirm) | Tier 3 (export) |
+|--------|---------------|------------------|-----------------|
+| **Parametric** | Width-envelope grid rebuild | Full-quality grid rebuild | Loft + boolean prism cut |
+| **Base GLB** | Width-envelope + visual boundary offset | `clipGeometryToOutline` | B-rep sew + boolean prism cut |
+| **Boundary quality** | Approximate; overlay shows exact curve | Open centroid-cut mesh | Watertight vertical side walls |
+| **Corrections at edge** | Feathered via `edgeFeather` (Layer A) | Same + rim blend (Layer B, Phase 3B) | Same field + exact perimeter |
+| **Performance** | < 16 ms | < 50 ms | 0.3–10 s |
+| **Watertight** | No | No | Required (`isClosed()`) |
+
+### 4.9 Edge feathering during trimline manipulation
 
 Edge feathering operates in **two independent layers** that must not be conflated:
 
@@ -293,35 +366,36 @@ When the user pulls the trimline inward under an arch dome or heel cup:
 3. Posting at the heel edge re-evaluates at the new medial/lateral extents.
 4. Elements whose centroid falls outside the new trimline → **orphan warning** (see §10).
 
-### 4.8 Trimline editing decision diagram
+### 4.10 Trimline editing decision diagram
 
 ```mermaid
 flowchart TD
     A[User drags trimline control point] --> B{Design has base GLB?}
     B -->|No| C[Update draft curve in session]
-    C --> D[Rebuild parametric grid with effectiveOutlineHalfWidth]
+    C --> D[Tier 1: width-envelope grid rebuild from draft]
     B -->|Yes| E[Update draft curve in session]
     E --> F[applyBaseModifiers on raw GLB]
-    F --> G[clipGeometryToOutline with draft]
+    F --> G[Tier 1: width-envelope clip + visual boundary offset]
+    G --> G2[draft → useBaseInsoleGeometry Phase 3A]
     D --> H[Display preview mesh]
-    G --> H
+    G2 --> H
     H --> I{User confirms?}
-    I -->|Yes| J[Commit trimline to design state]
+    I -->|Yes| J[Tier 2: clipGeometryToOutline + commit to design]
     I -->|Cancel| K[Restore session snapshot]
     J --> L[Push undo frame]
-    J --> M[Schedule authoritative rebuild]
+    J --> M[Schedule Tier 3 authoritative rebuild]
     M --> N{OCCT available?}
-    N -->|Yes| O[applyTrimlineCut boolean]
-    N -->|No| P[Keep clip mesh for export fallback]
+    N -->|Yes| O[applyTrimlineCut boolean prism]
+    N -->|No| P[Keep Tier 2 clip mesh for export fallback]
 ```
 
 ---
 
 ## 5. Displacement vs Boolean Decision Framework
 
-### 5.1 Decision principles
+### 5.1 Core principles
 
-Every modification operator carries metadata:
+Every modification operator carries metadata describing how it is realized at each geometry tier:
 
 ```typescript
 interface OperatorGeometryPolicy {
@@ -336,7 +410,7 @@ interface OperatorGeometryPolicy {
 }
 ```
 
-**Global rules:**
+**Core principles (global rules):**
 
 | Rule | Statement |
 |------|-----------|
@@ -344,11 +418,11 @@ interface OperatorGeometryPolicy {
 | **R2** | If the modification **changes topology** (genus, boundary loop, footprint area), use **clip in preview** and **boolean in authoritative**. |
 | **R3** | If the modification requires **exact volume** for milling accountability, use field in preview and **boolean fuse/cut** in authoritative. |
 | **R4** | If the modification requires a **sharp clinical edge** (skive, deep cut), use field approximation in preview and **boolean** in authoritative. |
-| **R5** | **Never** run OCCT booleans during active drag. Schedule on idle debounce, Confirm, or Export. |
+| **R5** | **Never** run OCCT booleans during active drag **or slider scrubbing**. Booleans are scheduled only on idle debounce (≥ 300 ms after last interaction), Confirm, or Export. |
 | **R6** | Booleans **fail soft** — on error, keep the last valid solid (deformation-only result). |
 | **R7** | Preview must be **monotonic** with authoritative: preview should never show a correction that authoritative would remove, and vice versa for enabled operators. |
 
-### 5.2 Operator policy table
+### 5.2 Operator policy table (full)
 
 | Operator | Preview | Authoritative | Policy reason |
 |----------|---------|---------------|---------------|
@@ -359,7 +433,7 @@ interface OperatorGeometryPolicy {
 | **Rearfoot posting (deg)** | Field (planar tilt) | Field in loft | R1 — continuous incline |
 | **Rearfoot posting (mm wedge)** | Field (medial taper) | Field + optional boolean wedge if > 4 mm | R1 + R4 for large posts |
 | **Forefoot posting (deg)** | Field | Field in loft | R1 |
-| **Supination wedge (mm)** | Field (`medialBlend` taper) | Field; boolean if steep (> 6 mm over < 25 mm width) | R1 default; R4 if slope > 14° |
+| **Supination wedge (mm)** | Field (`medialBlend` taper) | Field by default; **boolean wedge when slope > ~14°** (e.g. 4 mm rise over < 25 mm width) | R1 default; R4 when steep |
 | **Pronation wedge (mm)** | Field (lateral taper) | Same as supination | R1 / R4 |
 | **Medial / lateral skive** | Field subtract | Boolean box wedge (`applySkives`) | R4 — sharp heel shelf |
 | **Medial / lateral flange** | Field | Field in loft | R1 — wall raise |
@@ -379,9 +453,9 @@ interface OperatorGeometryPolicy {
 ├──────────────┬──────────────────────┬───────────────────────────────────┤
 │ Phase        │ Geometry tier        │ Operators applied                  │
 ├──────────────┼──────────────────────┼───────────────────────────────────┤
-│ Drag frame   │ Preview              │ Field + clip only (R5)            │
-│ Slider scrub │ Preview              │ Field only (live patch)           │
-│ Slider release│ Preview (full grid) │ Field only                        │
+│ Drag frame   │ Preview              │ Field + clip only; no booleans (R5) │
+│ Slider scrub │ Preview              │ Field only; no booleans (R5)      │
+│ Slider release│ Preview (full grid) │ Field only; no booleans (R5)      │
 │ Idle 300ms   │ Authoritative start  │ Field in loft + booleans queued   │
 │ Idle 3s      │ Authoritative done   │ All R2–R4 booleans applied        │
 │ Confirm      │ Authoritative freeze │ Full pipeline + validation        │
@@ -404,7 +478,7 @@ interface OperatorGeometryPolicy {
 
 **Clinical request:** 4 mm medial rearfoot supination wedge, 0 mm lateral.
 
-**Preview (field path):**
+**Preview (field path only — R5 prohibits booleans during drag/scrub):**
 
 ```
 heel_env = bump(u; 0.1, 0.18)
@@ -414,18 +488,20 @@ medial_w = medialBlend × smoothstep(0.1, 0.85, av)
 
 **Authoritative (field path, default):**
 
-Same `heightAt` evaluation in loft cross-sections — sufficient for slopes ≤ ~12°.
+Same `heightAt` evaluation in loft cross-sections — sufficient when the effective heel surface slope is ≤ ~14°.
 
-**Authoritative (boolean path, when triggered):**
+**Authoritative (boolean path — when slope exceeds ~14°):**
 
-Condition: `wedge_mm ≥ 4 && wedge_width < 30 mm` (steep slope).
+A 4 mm medial wedge that tapers to 0 mm lateral over a heel width of < 25 mm produces a slope of `arctan(4/12.5) ≈ 17.7°` — above the ~14° threshold. The operator policy switches from field-only to field + boolean:
 
 ```
-buildSkiveWedge(factory, { side: "medial", depthMm: 4, ... })
-solid = booleanCut(solid, wedge)
+effective_slope_deg = arctan(wedge_mm / taper_width_mm) × (180 / π)
+if effective_slope_deg > 14:
+    buildSkiveWedge(factory, { side: "medial", depthMm: 4, ... })
+    solid = booleanCut(solid, wedge)
 ```
 
-The boolean runs **after** the lofted field-based solid is built, refining the heel shelf to a planar cut surface suitable for CNC.
+The boolean runs **after** the lofted field-based solid is built (idle / Confirm / Export only), refining the heel shelf to a planar cut surface suitable for CNC. During drag and slider scrub, only the field approximation is shown.
 
 ---
 
@@ -508,9 +584,9 @@ undo() during active session:
 
 Corrections are **scalar fields in design state**, not baked mesh changes. Undo restores the entire `DesignState` including all correction values, trimlines, and elements. There is no "baked correction" layer to conflict with undo.
 
-**Coalescing (optional optimization):**
+**Coalescing (required, 300 ms window):**
 
-For rapid slider micro-adjustments, coalesce frames within 300 ms window into a single undo step. Implementation: on `pushSnapshot`, if `Date.now() - lastPush < 300ms` and same field key, replace `frames[index]` instead of appending.
+Rapid slider micro-adjustments must coalesce into a single undo step. On `pushSnapshot`, if `Date.now() - lastPush < 300 ms` and the same field key (e.g. `corrections.left.archHeightMm`), **replace** `frames[index]` instead of appending a new frame. This prevents the undo stack from filling with imperceptible intermediate slider positions while preserving one undo step per deliberate slider gesture.
 
 ### 6.5 Performance on undo/redo
 
@@ -538,30 +614,39 @@ undo():
 
 ## 7. Clinical Constraints and Intelligence Layer
 
-### 7.1 Layer placement
+Clinical knowledge and safety guardrails are enforced through a **dedicated three-tier layer** — not scattered across UI widgets or geometry code alone.
 
-Clinical knowledge is split across **three tiers** (not embedded only in UI):
+### 7.1 Three-tier structure
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Tier 1: clinical-constraints.ts (domain constants)          │
-│  Safe ranges, default feathering, STA parameters, min wall   │
+│  Tier 1: clinical-constraints.ts                             │
+│  Domain constants, safe numeric ranges, STA parameters,        │
+│  min wall thickness, rim blend minimums, apex u bounds         │
 └──────────────────────────┬──────────────────────────────────┘
                            │ imported by
 ┌──────────────────────────▼──────────────────────────────────┐
-│  Tier 2: Operator definitions (height-field, elements)       │
-│  Each operator declares ClinicalSpec: range, default, blend   │
+│  Tier 2: Operator definitions (height-field.ts, elements.ts) │
+│  Each operator declares a ClinicalSpec: range, default, blend  │
 └──────────────────────────┬──────────────────────────────────┘
                            │ validated by
 ┌──────────────────────────▼──────────────────────────────────┐
-│  Tier 3: Command / export gates (interaction layer)          │
-│  Soft warn in UI · hard block on export · expert bypass flag   │
+│  Tier 3: Command and Export gates (interaction layer)        │
+│  Soft warnings in UI · hard blocks on export · expert bypass   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Why three tiers?** Constants change with evidence updates (Tier 1). Operator math changes with geometry (Tier 2). Enforcement policy changes with product mode (Tier 3).
+| Tier | Location | Responsibility | Changes when |
+|------|----------|----------------|--------------|
+| **1** | `vertex/src/lib/clinical/constraints.ts` | Evidence-based constants and ranges | Clinical evidence or lab policy updates |
+| **2** | Operator modules | Per-operator defaults, blend rules, STA zones | Geometry or operator math changes |
+| **3** | Commands, sliders, export pipeline | Enforcement policy (warn vs block) | Product mode or regulatory requirements |
 
-### 7.2 Clinical constraint catalog (initial)
+**Why three tiers?** Constants change with evidence updates (Tier 1). Operator math changes with geometry (Tier 2). Enforcement policy changes with product mode (Tier 3). Keeping them separate allows expert users to bypass UI warnings (Tier 3) without weakening export hard blocks, while clinical ranges remain centralized (Tier 1).
+
+### 7.2 Tier 1 — `clinical-constraints.ts` (constants and ranges)
+
+Initial concrete limits:
 
 ```typescript
 // vertex/src/lib/clinical/constraints.ts (proposed)
@@ -577,44 +662,77 @@ export const CLINICAL_LIMITS = {
   medialSkiveMm:       { min: 0,  max: 6,  default: 0, warn: 4 },
   elementHeightMm:     { min: 0.5, max: 12, default: 3, warn: 8 },
   minWallThicknessMm:  0.8,
-  rimBlendMm:          2.0,
+  rimBlendMm:          2.0,    // minimum rim blend at clip boundary (Layer B, §4.9)
+  apexUMin:            0.30,   // arch apex must remain in load-bearing midfoot
+  apexUMax:            0.55,
+  postingSlopeWarnDeg: 14,     // switch to boolean wedge above this (§5.5)
 } as const;
+
+/** Arch apex u-coordinate after shift: 0.42 + apexMoveMm / L ∈ [apexUMin, apexUMax] */
+export function apexUAfterShift(apexMoveMm: number, lengthMm: number): number {
+  return 0.42 + apexMoveMm / lengthMm;
+}
 ```
 
-### 7.3 Biomechanical rules (embedded in operators)
+### 7.3 Tier 2 — `ClinicalSpec` interface (declared by each operator)
 
-**Rearfoot posting and subtalar joint (STA):**
+Every correction operator and element kind declares a `ClinicalSpec` that ties its geometry behavior to Tier 1 constants:
 
-- Default: planar posting tilt about medial-lateral axis (current `heightAt` implementation).
-- STA-aware mode (Phase 4): posting rotates about an axis from calcaneal contact (~15% length) to navicular (~45% length, ~25% width medial).
-- STA influence zone: `u < 0.35` — posting outside this zone is attenuated by `smoothstep(0.35, 0.25, u)`.
+```typescript
+// vertex/src/lib/clinical/clinical-spec.ts (proposed)
 
-**Arch apex movement:**
+export interface ClinicalSpec {
+    /** Key into CLINICAL_LIMITS or operator-specific bounds. */
+    paramKey: string;
+    /** Recommended range (soft warn outside this). */
+    range: { min: number; max: number };
+    /** Value applied when operator is first enabled. */
+    default: number;
+    /** Soft-warning threshold (amber UI). */
+    warn?: number;
+    /** Hard block threshold — export gate rejects beyond this. */
+    hardMax?: number;
+    /** Whether posting/feather rules apply (additive vs planar). */
+    feathered: boolean;
+    /** Optional STA influence zone (normalized u range). */
+    staZone?: { uMin: number; uMax: number };
+}
 
-- Apex should remain in midfoot load-bearing zone: `u ∈ [0.30, 0.55]` after shift.
-- Constraint: `0.42 + apexMoveMm/L ∈ [0.30, 0.55]` — warn if violated.
+/** Example: arch height operator spec */
+export const ARCH_HEIGHT_SPEC: ClinicalSpec = {
+    paramKey: "archHeightMm",
+    range: { min: CLINICAL_LIMITS.archHeightMm.min, max: CLINICAL_LIMITS.archHeightMm.max },
+    default: 0,
+    warn: CLINICAL_LIMITS.archHeightMm.warn,
+    feathered: true,
+};
 
-**Supination / pronation wedge taper:**
+/** Example: rearfoot posting — never feathered, STA zone in heel */
+export const REARFOOT_POSTING_SPEC: ClinicalSpec = {
+    paramKey: "rearfootPostingDeg",
+    range: { min: -8, max: 8 },
+    default: 0,
+    warn: 6,
+    hardMax: 8,
+    feathered: false,
+    staZone: { uMin: 0, uMax: 0.35 },
+};
+```
 
-- Medial-to-lateral transition must span ≥ 60% of heel width (no step edges).
-- Enforced by `smoothstep(0.1, 0.85, av)` minimum span — not configurable below 0.6 without expert flag.
+Operators in `height-field.ts` and `elements.ts` import their `ClinicalSpec` for default values and blend behavior. The height field does not hard-code clinical ranges — it reads them from Tier 1 via the operator spec.
 
-**Edge feathering:**
+### 7.4 Tier 3 — Command and Export gates
 
-- Additive corrections: `edgeFeather` at `av > 0.86` — fixed clinical constant.
-- Posting: **never feathered** — full strength at perimeter.
-- Rationale: posting must be measurable at the heel seat interface; feathering would under-correct.
-
-**Tissue stress heuristic (advisory, Phase 4):**
-
-- Flag if `archHeightMm + heelCupHeightMm > 18 mm` in the same midfoot zone (potential focal peak pressure).
-- Flag if net skive + posting creates > 10° effective heel surface slope.
-
-### 7.4 Expert mode vs guardrails
+| Gate type | When | Behavior |
+|-----------|------|----------|
+| **Soft warning** | Slider moved outside `warn` threshold | Amber indicator; value accepted; logged |
+| **Hard block (UI)** | Slider at hard limit | Clamp or block further increase |
+| **Hard block (export)** | Any param outside `hardMax` or `range` | Export rejected with message |
+| **Expert bypass** | `userPreferences.expertMode === true` | Soft warnings suppressed; hard export blocks remain |
 
 ```typescript
 interface UserPreferences {
-    expertMode: boolean;   // bypass soft warnings, not hard export minimums
+    expertMode: boolean;   // bypass soft warnings only — not hard export minimums
 }
 ```
 
@@ -624,8 +742,41 @@ interface UserPreferences {
 | Out of hard limit | Clamp or block slider | Allow slider | **Block** with message |
 | Below min wall thickness | Auto floor via `softFloor` | Same | **Block** |
 | Orphan element outside trimline | Warn | Warn | **Block** unless repositioned |
+| Apex u outside [0.30, 0.55] | Soft warn | Silent | Allow with log |
 
-### 7.5 AI prescription integration
+### 7.5 Biomechanical rules (embedded in operators via ClinicalSpec)
+
+**Subtalar joint (STA) axis influence zone:**
+
+- Default posting: planar tilt about medial-lateral axis (current `heightAt` implementation).
+- STA influence zone: `u ∈ [0, 0.35]` (rearfoot). Posting contribution outside this zone is attenuated: `× smoothstep(0.35, 0.25, u)`.
+- STA-aware rotation (Phase 4): posting rotates about an axis from calcaneal contact (~15% length) to navicular (~45% length, ~25% width medial), declared in `REARFOOT_POSTING_SPEC.staZone`.
+
+**Arch apex movement:**
+
+- Apex must remain in the midfoot load-bearing zone: `apexUAfterShift(apexMoveMm, L) ∈ [0.30, 0.55]` (Tier 1 constants `apexUMin` / `apexUMax`).
+- Violation surfaces as Tier 3 soft warning; never auto-corrected.
+
+**Supination / pronation wedge taper:**
+
+- Medial-to-lateral transition must span ≥ 60% of heel width (no step edges).
+- Enforced by `smoothstep(0.1, 0.85, av)` minimum span — not configurable below 0.6 without expert flag.
+
+**Edge feathering (linked to §4.9 Layer A):**
+
+- Additive corrections: `edgeFeather` at `av > 0.86` — fixed clinical constant (`feathered: true` in `ClinicalSpec`).
+- Posting: **never feathered** (`feathered: false`) — full strength at perimeter.
+- Rationale: posting must be measurable at the heel seat interface; feathering would under-correct.
+
+**Tissue stress advisory heuristics (Phase 4, Tier 3 soft warnings):**
+
+- Flag if `archHeightMm + heelCupHeightMm > 18 mm` in the same midfoot zone (potential focal peak pressure).
+- Flag if net skive + posting creates > 10° effective heel surface slope.
+- Flag if `rearfootWedgeMm > 6` combined with `medialSkiveMm > 3` (excessive heel material removal under post).
+
+These heuristics are **advisory only** — they surface as soft warnings, never auto-adjust correction values.
+
+### 7.6 AI prescription integration
 
 AI-parsed prescriptions pass through the same `clinical-constraints.ts` validator before applying:
 
@@ -637,7 +788,7 @@ Clamped values include a `wasClamped: true` flag for transparency in the UI.
 
 ---
 
-## 8. Loaded GLB Base Integration (Long-Term Vision)
+## 8. Loaded GLB Base Integration and Direct Editing Interaction
 
 ### 8.1 Base asset anatomy
 
@@ -673,14 +824,20 @@ No OCCT on base       Validation gates        Shell offset on base     Scan regi
 4. Committed trimline clips mesh by centroid test.
 5. Export: `buildFromBase` with deformation + smoothing; OCCT booleans on parametric loft path only.
 
-**Detail preservation:**
+**Detail preservation formula:**
 
 ```
 δ(u,v) = heightAt(corrected) − heightAt(neutral)
-z' = z_base + δ × topFactor(v)
+z' = z_base + δ(u,v) × topFactor(v)
 ```
 
-The base's intrinsic surface detail (carves, texture, subtle curves) lives in `z_base` and is **never overwritten** — only vertically offset. This is the critical guarantee for loaded Rhino templates.
+- `z_base` — original vertex height from the loaded GLB (intrinsic template detail: carves, texture, subtle curves).
+- `δ(u,v)` — pure modifier contribution from the shared height field (corrections + elements).
+- `topFactor(v)` — 0 at bottom vertices, 1 at top vertices, blended on side walls (from `classifyBaseTopFactors`).
+
+The base's intrinsic surface detail lives in `z_base` and is **never overwritten** — only vertically offset. **Bottom vertices must remain fixed** (`topFactor ≈ 0`): the plantar surface of the imported base is never moved by corrections, trimline clipping, or thickness changes. Thickness expands **upward** from this stable bottom.
+
+This is the critical guarantee for loaded Rhino templates and the foundation for all direct editing on bases.
 
 ### 8.4 Stage 1 — Multi-mesh awareness (Phase 3A)
 
@@ -740,18 +897,38 @@ interface RegionalModifierMask {
 
 Enables: "raise arch on this base but leave the forefoot template untouched."
 
-### 8.7 Direct editing on loaded bases — unified rules
+### 8.7 Direct editing on loaded bases — rules and constraints
 
-| Edit type | Effect on base detail | Bottom preserved |
-|-----------|----------------------|------------------|
-| Arch raise | Top surface domes via δ field | Yes |
-| Trimline inward | Clip removes perimeter triangles | Yes (bottom unchanged) |
-| Trimline outward | Cannot add material beyond base — **warn user** | Yes |
-| Element pad | Bump on top surface | Yes |
-| Thickness increase | Top lifts via thickness delta | Yes (bottom anchored) |
-| Skive | Field subtract on top; boolean on export | Yes |
+Direct editing (trimline reshape, element move, correction sliders) and automated corrections interact with loaded GLB bases through the detail preservation formula (§8.3). The rules below apply to all edit types.
 
-**Trimline outward expansion:** A loaded base has finite extent. Moving the trimline outside the base silhouette cannot create material. Preview shows the request; UI warns: *"Outline extends beyond base — switch to parametric mode or enlarge base template."*
+| Edit type | Effect on `z_base` detail | `topFactor` / bottom | Trimline tier used |
+|-----------|--------------------------|----------------------|-------------------|
+| Arch raise | Dome via δ field on top | Bottom fixed | N/A |
+| Apex shift | Longitudinal bump shift via δ | Bottom fixed | N/A |
+| Posting wedge | Planar tilt via δ (not feathered) | Bottom fixed | N/A |
+| Trimline inward | Removes perimeter triangles (clip/boolean) | Bottom never clipped | Tier 1 → 2 → 3 |
+| Trimline outward beyond base | **Cannot add material** — see below | Bottom fixed | Visual only |
+| Element pad | Bump via δ on top surface | Bottom fixed | N/A |
+| Element move | Repositions δ contribution | Bottom fixed | Orphan check vs trimline |
+| Thickness increase | Top lifts via thickness δ | Bottom anchored | N/A |
+| Skive | Field subtract on top; boolean on export | Bottom fixed | N/A |
+
+**Editing beyond the original imported outline:**
+
+A loaded base has **finite extent** defined by its mesh silhouette. The system distinguishes three cases:
+
+1. **Trimline inward (shrinking footprint):** Fully supported. Tier 1 width-envelope during drag → Tier 2 `clipGeometryToOutline` on confirm → Tier 3 boolean on export. Corrections re-evaluate within the smaller envelope; edge feathering (Layer A, §4.9) thins additive features at the new boundary.
+
+2. **Trimline outward within base silhouette:** Supported when the expanded outline remains inside the original `extractMeshOutline` bounds. No new material is created — previously clipped triangles are simply no longer clipped. The base mesh already contains this geometry.
+
+3. **Trimline outward beyond base silhouette:** **Not supported on base mode.** The system cannot invent material outside the imported mesh. Behavior:
+   - Preview shows the trimline overlay (visual boundary offset) but the mesh does not extend.
+   - UI warns: *"Outline extends beyond base — switch to parametric mode, enlarge the base template, or use parametric forefoot extension (Phase 4)."*
+   - Export blocked until the trimline is within base bounds or the user switches to parametric generation.
+
+**Corrections after direct trimline edit:** Scalar correction values are **never auto-adjusted** when the trimline changes. The arch is still `archHeightMm = 3` even if the trimline shrinks — but the dome is evaluated only within the new envelope and feathers at the new edge.
+
+**Direct edit after automated correction:** Fully supported. Moving a met pad after raising the arch applies both operators at rebuild time. Order of user actions does not matter — final state is always `Bake(base, currentDesignState)`.
 
 ---
 
@@ -919,9 +1096,10 @@ buildOcctInsoleSolid() / buildFromBase():
 
 | Decision | Choice | Trade-off |
 |----------|--------|-----------|
-| Trimline on base (preview) | Centroid clip | Fast; open boundary; not watertight |
-| Trimline (authoritative) | Boolean prism | Exact; slow; requires OCCT |
-| Trimline on parametric | Width envelope rebuild | Clean grid; approximates complex curves |
+| Trimline on base (Tier 1 drag) | Width-envelope + visual offset | Fast; approximate boundary |
+| Trimline on base (Tier 2 confirm) | `clipGeometryToOutline` | Accurate; open boundary |
+| Trimline (Tier 3 export) | Boolean prism | Watertight; requires OCCT |
+| Trimline on parametric | Width envelope → loft + boolean | Clean grid; exact on export |
 | Corrections | Height field displacement | Cannot express all shapes without booleans |
 | Base detail | δ field on top factor | Preserves template; needs orientation detection |
 | Booleans | Fail-soft on export | Never worse than deformation-only |
@@ -943,10 +1121,10 @@ buildOcctInsoleSolid() / buildFromBase():
 
 ### Phase 3A — Production editing (next priority)
 
-- [ ] **Global undo/redo** (`HistoryStore` + keyboard shortcuts)
-- [ ] **Live draft trimline clip on base** (`useBaseInsoleGeometry` fix)
-- [ ] **Clinical constraints module** (`clinical-constraints.ts` + UI warnings)
-- [ ] Edit session ↔ undo integration (§6.3)
+- [ ] **Global undo/redo** — `HistoryStore` with `structuredClone(design)` snapshots, `Ctrl+Z` / `Ctrl+Y`, 300 ms slider coalescing (§6)
+- [ ] **Draft trimline wiring** — pass `trimlineEdit.draft` to `useBaseInsoleGeometry`; Tier 1 width-envelope during drag, `clipGeometryToOutline` on confirm (§4.7)
+- [ ] **Clinical constraints module** — `clinical-constraints.ts`, `ClinicalSpec` per operator, Tier 3 UI warnings (§7)
+- [ ] Edit session ↔ undo integration — `beginTrimlineEdit` captures snapshot; `confirmTrimlineEdit` pushes undo frame (§6.3)
 - [ ] Orphan element detection on trimline change
 
 ### Phase 3B — Base path parity
@@ -1007,18 +1185,18 @@ buildOcctInsoleSolid() / buildFromBase():
 
 ## 17. Summary
 
-The v2.0 architecture makes the hard decisions explicit:
+The v2.1 architecture makes the hard decisions explicit:
 
-1. **Trimline editing** is a boundary operator using **width-envelope rebuild** (parametric) or **displacement-then-clip** (base) in preview, and **boolean prism cut** in authoritative — never perimeter vertex sculpting.
+1. **Trimline editing** uses a **three-tier hybrid model**: Tier 1 width-envelope clipping + visual boundary offset during drag; Tier 2 `clipGeometryToOutline` on confirm; Tier 3 boolean prism cut on export. **Perimeter vertex sculpting is rejected.** Phase 3A must wire draft trimline into `useBaseInsoleGeometry`.
 
-2. **Displacement vs boolean** is governed by a **formal operator policy table** (§5) with seven global rules and clear tier transition points.
+2. **Displacement vs boolean** is governed by **Core Principles R1–R7** (§5.1) and the **full operator policy table** (§5.2). OCCT booleans **never** run during drag or slider scrubbing. A 4 mm supination wedge switches from field to boolean when slope exceeds ~14°.
 
-3. **Undo/redo** is a **Phase 3A requirement** with defined granularity, session integration, and snapshot strategy.
+3. **Undo/redo** is a **Phase 3A requirement**: `HistoryStore` with `structuredClone(design)` snapshots, one frame per trimline confirm / slider release / element commit, session integration via `beginTrimlineEdit` / `confirmTrimlineEdit`, and **300 ms coalescing** for rapid slider changes.
 
-4. **Clinical constraints** live in a **three-tier system** (constants, operators, gates) balancing expert flexibility with manufacturing safety.
+4. **Clinical constraints** use a **three-tier layer** (§7): `clinical-constraints.ts` constants, `ClinicalSpec` per operator, and command/export gates with soft warnings and hard blocks. Includes rearfoot posting ±8°, apex u ∈ [0.30, 0.55], minimum rim blend 2.0 mm, STA influence zones, and tissue stress advisories.
 
-5. **Loaded GLB bases** evolve through **four stages** from displacement-on-merged-mesh to sewn multi-body B-rep with regional blend weights — always preserving bottom stability and top detail via the δ field.
+5. **Loaded GLB bases** preserve detail via `z' = z_base + δ(u,v) × topFactor` with **bottom vertices fixed**. Editing beyond the imported outline cannot add material; outward trimline beyond base bounds is blocked with UI warning. Four-stage evolution toward sewn multi-body B-rep (§8.2).
 
-6. **Direct editing and automated corrections** are unified through a single design state with explicit interaction rules (§9) — one tool, one insole, one undo stack.
+6. **Direct editing and automated corrections** are unified through a single design state (§9) — one tool, one insole, one undo stack. Corrections are never auto-adjusted when the trimline changes; operators always re-evaluate at final state.
 
 The implementation team can proceed from this document without re-designing core behaviors for trimline editing, operator evaluation, or clinical guardrails.
