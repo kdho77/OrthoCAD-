@@ -1,11 +1,14 @@
 import * as THREE from "three";
 import { canSaveCustom, SAVE_CUSTOM_TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/chili3d/kernel";
+import { baseModifierField, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
+import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import { boundsFromObject, registerCustomElementBounds } from "@/lib/geometry/custom-element-bounds";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
-import { getDesignTrimline } from "@/lib/geometry/trimline";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
+import { getDesignTrimline } from "@/lib/geometry/trimline";
+import { countMeshes, loadGlbFromBuffer } from "@/lib/library/loaders";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
@@ -118,6 +121,32 @@ export function buildExportMesh(input: SaveCustomInput): THREE.Mesh {
     return mesh;
 }
 
+/**
+ * Build an export mesh for a prefab that has an active base template by applying
+ * the current modifiers (corrections / elements / thickness) to the loaded base
+ * mesh, then layering trimline + vertex edits. Returns `null` when the design has
+ * no base or the base GLB can't be resolved, so callers fall back to parametric.
+ */
+async function buildBasePrefabMesh(side: Side): Promise<THREE.Mesh | null> {
+    const { design } = useDesignStore.getState();
+    const base = getDesignBase(design);
+    if (!base) return null;
+
+    const raw = await loadBaseGeometry(base);
+    if (!raw) return null;
+
+    const field = baseModifierField(design, side, design.thicknessMm);
+    let geometry = applyBaseModifiers(raw, field, 1);
+    raw.dispose();
+
+    const { trimLines, vertexOverrides } = useMeshEditStore.getState();
+    geometry = applyTrimLines(geometry, trimLines);
+    const vecMap = new Map<number, THREE.Vector3>();
+    for (const [idx, v] of vertexOverrides) vecMap.set(idx, new THREE.Vector3(v.x, v.y, v.z));
+    geometry = applyVertexOverrides(geometry, vecMap);
+    return meshFromGeometry(geometry, "#a855f7");
+}
+
 /** Export scan mesh when saving from an imported scan prefab. */
 export function buildScanExportMesh(scanId: string): THREE.Mesh | null {
     const scan = useScanStore.getState().scans.find((s) => s.id === scanId);
@@ -141,6 +170,15 @@ export async function saveCustomAsset(input: SaveCustomInput): Promise<SaveCusto
     if (input.kind === "prefab" && input.sourceId?.startsWith("scan:")) {
         const scanMesh = buildScanExportMesh(input.sourceId.slice(5));
         if (scanMesh) mesh = scanMesh;
+    } else if (input.kind === "prefab" && getDesignBase(useDesignStore.getState().design)) {
+        // Saving a modified base: capture the deformed base surface (not the
+        // parametric mesh) so the new library item reflects the edited base.
+        const baseMesh = await buildBasePrefabMesh(input.side ?? "left");
+        if (baseMesh) {
+            mesh.geometry.dispose();
+            (mesh.material as THREE.Material).dispose();
+            mesh = baseMesh;
+        }
     }
 
     const elementBounds = input.kind === "element" ? boundsFromObject(mesh) : null;
@@ -213,6 +251,89 @@ export async function saveCustomAsset(input: SaveCustomInput): Promise<SaveCusto
 
     useAuditStore.getState().record("custom_library_saved", `${input.kind}: ${input.name} (offline)`);
     return { ok: true, itemId: offlineId };
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+}
+
+export interface UploadBaseOutcome {
+    ok: boolean;
+    reason?: string;
+    itemId?: string;
+    meshCount?: number;
+    meshNames?: string[];
+}
+
+/**
+ * Import an external `.glb` file as a reusable base in the user's custom library.
+ * The GLB is parsed to count its meshes (a multi-mesh base such as Top + Bottom
+ * is supported and merged at load time), then persisted locally as a custom
+ * prefab so it can be loaded as a Base + Modifier template. No token cost — the
+ * user supplies their own asset.
+ */
+export async function uploadBaseGlb(
+    file: File,
+    opts?: { name?: string; category?: string },
+): Promise<UploadBaseOutcome> {
+    if (!/\.glb$/i.test(file.name)) {
+        return { ok: false, reason: "Only .glb files are supported" };
+    }
+
+    let buffer: ArrayBuffer;
+    try {
+        buffer = await file.arrayBuffer();
+    } catch (e) {
+        return { ok: false, reason: e instanceof Error ? e.message : "Could not read file" };
+    }
+
+    let meshCount = 0;
+    let meshNames: string[] = [];
+    try {
+        const group = await loadGlbFromBuffer(buffer.slice(0));
+        const info = countMeshes(group);
+        meshCount = info.count;
+        meshNames = info.names;
+    } catch (e) {
+        return { ok: false, reason: e instanceof Error ? e.message : "Invalid GLB file" };
+    }
+    if (meshCount === 0) {
+        return { ok: false, reason: "GLB contains no mesh geometry" };
+    }
+
+    const base64 = arrayBufferToBase64(buffer);
+    const id = crypto.randomUUID();
+    const name = (opts?.name ?? file.name.replace(/\.glb$/i, "")).trim() || "Uploaded Base";
+    const item = {
+        id,
+        name,
+        category: opts?.category ?? "base",
+        stock: false as const,
+        parentStockId: null,
+        createdAt: new Date().toISOString(),
+        uploaded: true,
+        meshCount,
+    };
+
+    useCustomLibraryStore.getState().addCustomPrefab(item, base64);
+    useAuditStore
+        .getState()
+        .record("custom_library_uploaded", `base: ${name} (${meshCount} mesh${meshCount === 1 ? "" : "es"})`);
+    return { ok: true, itemId: id, meshCount, meshNames };
+}
+
+/** Rename a custom library item (local; server rename is a no-op for now). */
+export function renameCustomAsset(kind: SaveTargetKind, id: string, name: string): void {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (kind === "element") useCustomLibraryStore.getState().renameCustomElement(id, trimmed);
+    else useCustomLibraryStore.getState().renameCustomPrefab(id, trimmed);
 }
 
 /** Delete a custom library item (server + local). */

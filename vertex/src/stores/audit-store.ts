@@ -11,7 +11,8 @@ export type AuditAction =
     | "license_renewed"
     | "license_revoked"
     | "design_saved"
-    | "custom_library_saved";
+    | "custom_library_saved"
+    | "custom_library_uploaded";
 
 export interface AuditEntry {
     id: string;

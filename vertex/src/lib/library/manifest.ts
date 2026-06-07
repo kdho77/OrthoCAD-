@@ -37,6 +37,10 @@ export interface LibraryPrefabItem {
     url?: string | null;
     glbPath?: string;
     createdAt?: string;
+    /** True when the prefab was imported from an external GLB upload. */
+    uploaded?: boolean;
+    /** Number of source meshes in the GLB (e.g. Top + Bottom ⇒ 2). */
+    meshCount?: number;
 }
 
 export const STOCK_ELEMENTS: StockElementEntry[] = [
