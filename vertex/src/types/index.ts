@@ -65,6 +65,18 @@ export interface SideCorrections {
     archHeightMm: number;
     heelCupDepthMm: number;
     heelCupHeightMm: number;
+    /**
+     * Medial/lateral breadth of the heel cup walls. Positive values tighten the
+     * cup (walls move inboard to hug the heel more); 0 = baseline cup breadth.
+     */
+    heelCupWidthMm: number;
+    /**
+     * Heel lift (longitudinal raise). A value of N mm raises the plantar surface
+     * under the center/back of the heel by N mm and tapers linearly to 0 under
+     * the metatarsal heads (~75% of insole length). Bottom surface stays flat
+     * (z = 0), so the lift is bottom-stable on solid prints. See {@link heelLiftDeltaAt}.
+     */
+    heelLiftMm: number;
     apexMoveMm: number;
     medialFlangeMm: number;
     lateralFlangeMm: number;

@@ -56,6 +56,10 @@ export const CLINICAL_LIMITS = {
     archFillMm: { min: 0, max: 12.0 },
     heelCupHeightMm: { min: 0, max: 12.0 },
     heelCupDepthMm: { min: 0, max: 10.0 },
+    heelCupWidthMm: { min: 0, max: 10.0 },
+    // Heel lift raises the heel region; capped so the rearfoot does not become a
+    // rigid stilt and the longitudinal ramp angle stays printable/grindable.
+    heelLiftMm: { min: 0, max: 20.0 },
     apexMoveMm: { min: -12, max: 12 },
     medialFlangeMm: { min: 0, max: 8.0 },
     lateralFlangeMm: { min: 0, max: 8.0 },
@@ -141,6 +145,8 @@ export function constrainSideCorrections(
         ["archFillMm", CLINICAL_LIMITS.archFillMm],
         ["heelCupHeightMm", CLINICAL_LIMITS.heelCupHeightMm],
         ["heelCupDepthMm", CLINICAL_LIMITS.heelCupDepthMm],
+        ["heelCupWidthMm", CLINICAL_LIMITS.heelCupWidthMm],
+        ["heelLiftMm", CLINICAL_LIMITS.heelLiftMm],
         ["apexMoveMm", CLINICAL_LIMITS.apexMoveMm],
         ["medialFlangeMm", CLINICAL_LIMITS.medialFlangeMm],
         ["lateralFlangeMm", CLINICAL_LIMITS.lateralFlangeMm],

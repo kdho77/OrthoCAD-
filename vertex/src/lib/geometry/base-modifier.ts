@@ -29,6 +29,8 @@ const ZERO_CORRECTIONS: SideCorrections = {
     archHeightMm: 0,
     heelCupDepthMm: 0,
     heelCupHeightMm: 0,
+    heelCupWidthMm: 0,
+    heelLiftMm: 0,
     apexMoveMm: 0,
     medialFlangeMm: 0,
     lateralFlangeMm: 0,
