@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
 import { baseModifierField, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
 
@@ -51,6 +53,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     return;
                 }
                 baseGeoRef.current = geo;
+                // Publish an outline that follows the real mesh boundary so the
+                // trimline tools start from the loaded base, not the parametric default.
+                if (geo && ref.assetId && !useBaseOutlineStore.getState().getOutline(ref.assetId)) {
+                    const outline = extractMeshOutline(geo);
+                    if (outline) useBaseOutlineStore.getState().setOutline(ref.assetId, outline);
+                }
             })
             .catch(() => {
                 if (!cancelled) baseGeoRef.current = null;
@@ -72,9 +80,17 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         const field = baseModifierField(design, side, thicknessMm);
         // Skip smoothing while dragging for responsiveness; relax once when idle.
         const modified = applyBaseModifiers(raw, field, interacting ? 0 : 1);
+        // A confirmed trimline reshapes the visible base by clipping to its
+        // footprint. Vertical corrections never move XY, so this stays aligned.
+        const committed = getDesignTrimline(design, side);
+        let display = modified;
+        if (committed) {
+            display = clipGeometryToOutline(modified, committed);
+            modified.dispose();
+        }
         outRef.current?.dispose();
-        outRef.current = modified;
-        setGeometry(modified);
+        outRef.current = display;
+        setGeometry(display);
     }, [
         assetId,
         side,

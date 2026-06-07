@@ -59,6 +59,186 @@ export function sampleDefaultOutline(
     return { points };
 }
 
+/**
+ * Build a closed footprint outline that follows the outer boundary of a loaded
+ * base mesh, expressed in the mesh's own raw coordinate frame so it lines up
+ * exactly with how `BaseInsoleMesh` renders the geometry (x = rendered length,
+ * y = rendered width, z ≈ footprint plane).
+ *
+ * The base is rendered flat with its raw Z as the up/thickness axis, so the
+ * silhouette is read on the raw XY plane: stations are taken along the longer
+ * horizontal extent (length) and, at each station, the min / max of the shorter
+ * extent (width) trace the medial and lateral edges. The two edges are joined
+ * into a single closed ring ordered medial→toe→lateral→heel, matching the
+ * structure of `sampleDefaultOutline` so the editing / deform logic behaves the
+ * same on a base as on the parametric outline.
+ *
+ * Returns `null` for degenerate input so callers fall back to the parametric
+ * outline.
+ */
+export function extractMeshOutline(geometry: THREE.BufferGeometry, stations = 32): TrimlineCurve | null {
+    const pos = geometry.getAttribute("position");
+    if (!pos || pos.count < 3) return null;
+
+    const count = pos.count;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let i = 0; i < count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        const z = pos.getZ(i);
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+    }
+
+    const extentX = maxX - minX;
+    const extentY = maxY - minY;
+    if (extentX <= 0 && extentY <= 0) return null;
+
+    // Length runs along the longer horizontal extent; width along the shorter.
+    const lengthIsX = extentX >= extentY;
+    const lenMin = lengthIsX ? minX : minY;
+    const lenSize = (lengthIsX ? extentX : extentY) || 1;
+    const n = Math.max(8, stations);
+
+    // Per-station min / max of the width coordinate (the medial / lateral edge).
+    const lo = new Array<number>(n).fill(Number.POSITIVE_INFINITY);
+    const hi = new Array<number>(n).fill(Number.NEGATIVE_INFINITY);
+    for (let i = 0; i < count; i++) {
+        const lenCoord = lengthIsX ? pos.getX(i) : pos.getY(i);
+        const widCoord = lengthIsX ? pos.getY(i) : pos.getX(i);
+        let s = Math.round(((lenCoord - lenMin) / lenSize) * (n - 1));
+        if (s < 0) s = 0;
+        else if (s > n - 1) s = n - 1;
+        if (widCoord < lo[s]!) lo[s] = widCoord;
+        if (widCoord > hi[s]!) hi[s] = widCoord;
+    }
+
+    // Collect filled stations (dense base meshes fill every bin; guard anyway).
+    const filled: { len: number; lo: number; hi: number }[] = [];
+    for (let s = 0; s < n; s++) {
+        if (lo[s]! === Number.POSITIVE_INFINITY) continue;
+        filled.push({ len: lenMin + (s / (n - 1)) * lenSize, lo: lo[s]!, hi: hi[s]! });
+    }
+    if (filled.length < 3) return null;
+
+    // Light smoothing of the edges so per-bin noise does not produce a jagged ring.
+    const smooth = (key: "lo" | "hi") => {
+        const out = filled.map((f) => f[key]);
+        for (let pass = 0; pass < 2; pass++) {
+            for (let i = 1; i < out.length - 1; i++) {
+                out[i] = out[i - 1]! * 0.25 + out[i]! * 0.5 + out[i + 1]! * 0.25;
+            }
+        }
+        return out;
+    };
+    const loS = smooth("lo");
+    const hiS = smooth("hi");
+
+    const footZ = minZ;
+    const toPoint = (len: number, wid: number): THREE.Vector3 =>
+        lengthIsX ? new THREE.Vector3(len, wid, footZ) : new THREE.Vector3(wid, len, footZ);
+
+    const points: THREE.Vector3[] = [];
+    // Lower edge heel → toe.
+    for (let i = 0; i < filled.length; i++) points.push(toPoint(filled[i]!.len, loS[i]!));
+    // Upper edge toe → heel (closes the loop).
+    for (let i = filled.length - 1; i >= 0; i--) points.push(toPoint(filled[i]!.len, hiS[i]!));
+
+    return { points };
+}
+
+/** Even-odd point-in-polygon test on the XY plane. */
+function pointInPolygonXY(x: number, y: number, poly: THREE.Vector3[]): boolean {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i]!.x;
+        const yi = poly[i]!.y;
+        const xj = poly[j]!.x;
+        const yj = poly[j]!.y;
+        const intersects = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+        if (intersects) inside = !inside;
+    }
+    return inside;
+}
+
+/**
+ * Clip a base mesh to a trimline footprint: triangles whose centroid falls
+ * outside the (closed) trimline polygon in the XY plane are dropped, so a base
+ * edited inward visibly reshapes to the new outline. The polygon is inflated
+ * slightly about its centroid so confirming an unedited auto-outline does not
+ * shave off a sliver of the original silhouette. Vertical (thickness) corrections
+ * never touch XY, so this stays valid after `applyBaseModifiers`.
+ *
+ * Returns a new non-indexed geometry of the kept triangles; the input is left
+ * untouched. Falls back to a clone when the trimline is too small to be useful.
+ */
+export function clipGeometryToOutline(
+    geometry: THREE.BufferGeometry,
+    curve: TrimlineCurve,
+    marginMm = 1.5,
+): THREE.BufferGeometry {
+    const pos = geometry.getAttribute("position");
+    if (!pos || curve.points.length < 4) return geometry.clone();
+
+    // Inflate the polygon outward from its centroid by `marginMm`.
+    let cx = 0;
+    let cy = 0;
+    for (const p of curve.points) {
+        cx += p.x;
+        cy += p.y;
+    }
+    cx /= curve.points.length;
+    cy /= curve.points.length;
+    const poly = curve.points.map((p) => {
+        const dx = p.x - cx;
+        const dy = p.y - cy;
+        const len = Math.hypot(dx, dy) || 1;
+        const k = (len + marginMm) / len;
+        return new THREE.Vector3(cx + dx * k, cy + dy * k, 0);
+    });
+
+    const index = geometry.getIndex();
+    const triCount = index ? index.count / 3 : pos.count / 3;
+    const kept: number[] = [];
+    const triIndex = (t: number, c: number): number =>
+        index ? index.getX(t * 3 + c) : t * 3 + c;
+
+    for (let t = 0; t < triCount; t++) {
+        const a = triIndex(t, 0);
+        const b = triIndex(t, 1);
+        const c = triIndex(t, 2);
+        const mx = (pos.getX(a) + pos.getX(b) + pos.getX(c)) / 3;
+        const my = (pos.getY(a) + pos.getY(b) + pos.getY(c)) / 3;
+        if (pointInPolygonXY(mx, my, poly)) kept.push(a, b, c);
+    }
+
+    // Nothing inside (degenerate trimline) ⇒ keep the original surface.
+    if (kept.length === 0) return geometry.clone();
+
+    const positions = new Float32Array(kept.length * 3);
+    for (let i = 0; i < kept.length; i++) {
+        const v = kept[i]!;
+        positions[i * 3] = pos.getX(v);
+        positions[i * 3 + 1] = pos.getY(v);
+        positions[i * 3 + 2] = pos.getZ(v);
+    }
+    const out = new THREE.BufferGeometry();
+    out.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    out.computeVertexNormals();
+    out.computeBoundingBox();
+    out.computeBoundingSphere();
+    return out;
+}
+
 /** Half-width multiplier (0..1) at normalized length u from a custom trimline. */
 export function trimlineHalfWidthAtU(
     u: number,

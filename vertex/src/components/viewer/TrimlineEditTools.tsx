@@ -4,6 +4,7 @@
 import { type ThreeEvent, useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
+import { getDesignBase } from "@/lib/geometry/base-asset";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import {
     cloneTrimline,
@@ -17,6 +18,7 @@ import {
     type TrimlineCurve,
     trimlineToCurve,
 } from "@/lib/geometry/trimline";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
@@ -34,6 +36,11 @@ export function TrimlineEditTools() {
     const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
     const getTrimlineForSide = useMeshEditStore((s) => s.getTrimlineForSide);
 
+    // Subscribe to the loaded base's outline so the overlay re-renders (and picks
+    // up the mesh-derived default) as soon as the base GLB finishes loading.
+    const baseAssetId = getDesignBase(design)?.assetId ?? null;
+    const baseOutline = useBaseOutlineStore((s) => (baseAssetId ? (s.outlines[baseAssetId] ?? null) : null));
+
     const sides: Side[] = [];
     if (viewer.showLeft) sides.push("left");
     if (viewer.showRight) sides.push("right");
@@ -44,7 +51,7 @@ export function TrimlineEditTools() {
                 const isEditing = editMode === "edit-trimline" && trimlineEdit?.side === side;
                 const curve = isEditing
                     ? trimlineEdit!.draft
-                    : (getDesignTrimline(design, side) ?? getTrimlineForSide(side));
+                    : (getDesignTrimline(design, side) ?? baseOutline ?? getTrimlineForSide(side));
 
                 return (
                     <TrimlineSideOverlay
@@ -96,8 +103,13 @@ function TrimlineSideOverlay({
 
     const pickRadius = isEditing ? TRIMLINE_PICK_RADIUS_EDIT : TRIMLINE_PICK_RADIUS_IDLE;
 
+    // Points are stored in the geometry's own footprint frame (x along length,
+    // y across width) — the same frame `InsoleMesh` / `BaseInsoleMesh` render
+    // their geometry in. The overlay group below applies the identical
+    // `-CENTER_X` / side offset as those meshes, so points map straight through
+    // (no extra centering shift) and the trimline stays glued to the surface.
     const displayPoints = useMemo(
-        () => curve.points.map((p) => new THREE.Vector3(p.x + CENTER_X, p.y, p.z + 1.5)),
+        () => curve.points.map((p) => new THREE.Vector3(p.x, p.y, p.z + 1.5)),
         [curve.points],
     );
 
@@ -294,7 +306,7 @@ function TrimlineSideOverlay({
                       <mesh
                           // biome-ignore lint/suspicious/noArrayIndexKey: control points are a fixed-order ring; index is their stable identity
                           key={i}
-                          position={[p.x + CENTER_X, p.y, p.z + 2.5]}
+                          position={[p.x, p.y, p.z + 2.5]}
                           renderOrder={101}
                           onPointerDown={(e) => onPointerDownHandle(e, i)}
                       >
