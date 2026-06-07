@@ -134,15 +134,44 @@ whole pass is skipped when the OCCT WASM kernel is not loaded. Wiring these
 booleans into the *base* path (`buildFromBase`) — so a loaded base GLB is sewn
 into a BRep solid and trimmed/cut exactly — is the remaining Phase 3 seam.
 
-### Coordinate convention
+### Top-modification on a stable bottom
 
-Bases are interpreted in **footprint mm space**: `x ∈ [0, length]` heel→toe,
-`y` across width centred on 0, `z` up. This matches what the app already exports
-via `buildExportGlb`, so a previously-saved insole loads back as a valid base.
-`applyBaseModifiers` normalises any base via its bounding box (`x→u`, `y→vSigned`)
-and weights the vertical displacement by normalised height so the flat bottom is
-preserved and only the top surface lifts. Bases should be authored as **neutral
-templates** (no corrections baked in) to avoid double-applying.
+A real clinical base (e.g. a Rhino STL) has a distinct contoured **top surface**
+and a defined **bottom surface**, and the user expects edits to reshape the top
+and sides while the bottom stays faithful to the original. `applyBaseModifiers`
+enforces this:
+
+1. **Orientation-robust axes.** The length / width / thickness axes are detected
+   from the base's extents (thickness = smallest extent = up; length = largest;
+   width = the remainder) rather than assuming `x = length`. This handles bases
+   authored in any orientation — e.g. the sample Rhino insole whose length runs
+   along **Y** (X≈90 mm, Y≈266 mm, Z≈25 mm).
+2. **Top / bottom classification** (`classifyBaseTopFactors`). Every vertex gets
+   a 0..1 *top factor* from its **vertex normal** along the up axis (so the
+   contoured top — whose height varies a lot — is recognised regardless of `z`)
+   plus a thin **bottom-band guard** that anchors the genuine bottom face.
+   Normal orientation is auto-detected (inverted-normal STLs are flipped). The
+   result is cached per base mesh (the base is stable across edits).
+   - top sheet → factor 1 (free to move), bottom sheet → 0 (held fixed),
+     side walls (near-horizontal normals) → blended so they stretch cleanly.
+3. **Weighted displacement.** The modifier delta is applied along the up axis
+   scaled by the top factor, so corrections / posting / skives / flanges reshape
+   the top and walls while the **original bottom contour is preserved**.
+4. **Directional thickness.** The neutral baseline is evaluated at a fixed
+   reference thickness (`BASE_REFERENCE_THICKNESS_MM`), so the thickness slider
+   produces a real upward delta on the top (weighted by the top factor) instead
+   of cancelling out — thickness **expands upward from the fixed bottom** rather
+   than squashing the whole mesh.
+
+**Fallback (requirement 7):** if no recognisable bottom surface is found (e.g.
+an open shell, `< 1%` downward-facing area), classification returns `null` and
+the deformation falls back to a plain normalised-height weight — never worse
+than the previous behaviour, never throws.
+
+Bases should still be authored as **neutral templates** (no corrections baked
+in) to avoid double-applying. Trimline *cutting* of a base (true perimeter
+removal) remains a Confirm/Export boolean (the Phase 3 seam); interactive
+trimline/correction edits are bottom-safe deformations.
 
 ## Preview vs. authoritative
 
@@ -191,10 +220,12 @@ viewer uses these to make the mode obvious:
   instead of passing it through raw. *Success criterion: loading a base GLB and
   adjusting corrections visibly deforms it.*
 - **Phase 2 (done):** clinical surface-quality pass on the shared height field +
-  optional Laplacian smoothing of the displacement; OCCT boolean modifiers
-  (`base-modifier-booleans.ts`: trimline cut, element fuse/cut, skive wedges)
-  in the authoritative loft with soft fallback; visual base-vs-parametric mode
-  clarity (badge + base outline).
+  optional Laplacian smoothing of the displacement; **top-modification on a
+  stable bottom** (orientation-robust axes, normal-based top/bottom
+  classification, directional thickness, height-weight fallback); OCCT boolean
+  modifiers (`base-modifier-booleans.ts`: trimline cut, element fuse/cut, skive
+  wedges) in the authoritative loft with soft fallback; visual base-vs-parametric
+  mode clarity (badge + base outline).
 - **Phase 3:** sew arbitrary base GLBs into OCCT BRep solids and apply the
   trimline/element/skive booleans directly to the *base* path (`buildFromBase`);
   graded thickness and shell offset on the base; posting wedges as first-class
