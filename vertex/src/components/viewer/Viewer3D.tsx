@@ -18,6 +18,7 @@ import {
 import { Suspense, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
+import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { cn } from "@/lib/utils";
 import { type CameraView, useDesignStore } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
@@ -63,7 +64,9 @@ export function Viewer3D() {
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
-    const showCustomPrefab = Boolean(design.customPrefabId);
+    const designMode = resolveDesignMode(design);
+    const showBase = designMode.mode === "base";
+    const modifiersActive = hasActiveModifiers(design);
     const showPerf = usePerformanceStore((s) => s.showPerformanceMonitor);
     const setShowPerf = usePerformanceStore((s) => s.setShowPerformanceMonitor);
     const interacting = usePerformanceStore((s) => s.interacting);
@@ -102,7 +105,7 @@ export function Viewer3D() {
                 >
                     {viewer.showLeft ? (
                         <>
-                            {!showCustomPrefab ? (
+                            {!showBase ? (
                                 <InsoleMesh
                                     side="left"
                                     design={design}
@@ -116,7 +119,7 @@ export function Viewer3D() {
                     ) : null}
                     {viewer.showRight ? (
                         <>
-                            {!showCustomPrefab ? (
+                            {!showBase ? (
                                 <InsoleMesh
                                     side="right"
                                     design={design}
@@ -176,6 +179,19 @@ export function Viewer3D() {
                 <span className="w-fit rounded bg-panel/80 px-2 py-0.5 text-[11px] font-medium text-foreground shadow backdrop-blur">
                     {VIEW_LABELS[viewer.view]} view
                 </span>
+                {/* Base vs parametric mode — makes it clear the user is modifying a base. */}
+                {designMode.mode === "base" ? (
+                    <span className="flex w-fit items-center gap-1 rounded bg-violet-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        <Layers className="h-3 w-3" />
+                        Base: {designMode.baseName ?? "custom GLB"}
+                        {modifiersActive ? " · modifiers applied" : ""}
+                    </span>
+                ) : (
+                    <span className="flex w-fit items-center gap-1 rounded bg-sky-500/85 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        <PenTool className="h-3 w-3" />
+                        Parametric mode
+                    </span>
+                )}
                 {editMode === "edit-trimline" && trimlineEdit ? (
                     <span className="w-fit rounded bg-orange-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Editing trimline · {trimlineEdit.side}

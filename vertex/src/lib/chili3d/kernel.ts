@@ -33,9 +33,10 @@ export interface IGeometryKernel {
     /**
      * Apply design modifiers (corrections / elements) onto a base template mesh
      * (Base + Modifier model). Returns the modified geometry plus a manifold
-     * report. See docs/base-modifier-architecture.md.
+     * report. `smoothingIterations` relaxes the displacement field for a smooth
+     * top (0 = interactive, 1–2 = idle/export). See docs/base-modifier-architecture.md.
      */
-    buildFromBase(base: BufferGeometry, field: HeightFieldParams): SolidResult;
+    buildFromBase(base: BufferGeometry, field: HeightFieldParams, smoothingIterations?: number): SolidResult;
     exportSTL(geometry: BufferGeometry): ArrayBuffer;
 }
 
@@ -57,8 +58,8 @@ class ThreeKernel implements IGeometryKernel {
         };
     }
 
-    buildFromBase(base: BufferGeometry, field: HeightFieldParams): SolidResult {
-        return modifiedBaseResult(base, field);
+    buildFromBase(base: BufferGeometry, field: HeightFieldParams, smoothingIterations = 0): SolidResult {
+        return modifiedBaseResult(base, field, smoothingIterations);
     }
 
     exportSTL(geometry: BufferGeometry): ArrayBuffer {

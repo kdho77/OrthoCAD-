@@ -19,6 +19,12 @@ export interface InsoleParams {
     method?: ProductionMethod;
     /** User-edited perimeter override for this side. */
     trimline?: TrimlineCurve | null;
+    /**
+     * When true (OCCT only), apply the trimline as a clean boolean cut on top of
+     * the lofted base instead of relying solely on per-station width sampling.
+     * Reserved for Confirm / Export; falls back to the lofted footprint on error.
+     */
+    useBooleanTrimline?: boolean;
 }
 
 export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {

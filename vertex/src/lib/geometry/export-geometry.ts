@@ -26,7 +26,8 @@ async function buildModifiedBaseGeometry(design: DesignState, side: Side): Promi
     if (!raw) return null;
     try {
         const field = baseModifierField(design, side, design.thicknessMm);
-        const result = getKernel().buildFromBase(raw, field);
+        // Extra smoothing for a clean manufacturing surface on export.
+        const result = getKernel().buildFromBase(raw, field, 2);
         return result.geometry;
     } finally {
         raw.dispose();

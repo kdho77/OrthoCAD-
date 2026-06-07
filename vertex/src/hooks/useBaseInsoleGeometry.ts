@@ -21,6 +21,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const correctionPreview = usePerformanceStore((s) => s.correctionPreview);
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
     const elementPreviews = usePerformanceStore((s) => s.elementPreviews);
+    const interacting = usePerformanceStore((s) => s.interacting);
 
     const base = getDesignBase(design);
     const assetId = base?.assetId ?? null;
@@ -69,7 +70,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         if (!assetId || !raw) return;
         const thicknessMm = thicknessPreview ?? design.thicknessMm;
         const field = baseModifierField(design, side, thicknessMm);
-        const modified = applyBaseModifiers(raw, field);
+        // Skip smoothing while dragging for responsiveness; relax once when idle.
+        const modified = applyBaseModifiers(raw, field, interacting ? 0 : 1);
         outRef.current?.dispose();
         outRef.current = modified;
         setGeometry(modified);
@@ -83,6 +85,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         correctionPreview,
         thicknessPreview,
         elementPreviews,
+        interacting,
         building,
     ]);
 

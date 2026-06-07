@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { DefinePlugin } from "@rspack/core";
 import { defineConfig } from "@rstest/core";
 import packages from "./package.json";
@@ -21,6 +22,9 @@ export default defineConfig({
     resolve: {
         alias: {
             "./viewGizmo": "./packages/three/test/viewGizmo.ts",
+            // Vertex app uses the "@/" path alias (see vertex/tsconfig.json) so
+            // its unit tests resolve internal imports under the monorepo runner.
+            "@": resolve("vertex/src"),
         },
     },
     source: {

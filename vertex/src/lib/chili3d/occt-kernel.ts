@@ -46,8 +46,8 @@ export class OcctKernel implements IGeometryKernel {
      * procedural kernel). This is the seam where OCCT boolean refinement of the
      * base (trimline cut, exact element fuse/cut) lands in later phases.
      */
-    buildFromBase(base: BufferGeometry, field: HeightFieldParams): SolidResult {
-        return modifiedBaseResult(base, field);
+    buildFromBase(base: BufferGeometry, field: HeightFieldParams, smoothingIterations = 0): SolidResult {
+        return modifiedBaseResult(base, field, smoothingIterations);
     }
 
     exportSTL(geometry: BufferGeometry): ArrayBuffer {

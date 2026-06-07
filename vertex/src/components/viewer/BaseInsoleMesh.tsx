@@ -47,6 +47,11 @@ export function BaseInsoleMesh({ side, transparent }: { side: Side; transparent:
                 castShadow={!building}
                 receiveShadow
             />
+            {/* Base outline overlay — a clear visual cue that this is a loaded base. */}
+            <lineSegments position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}>
+                <edgesGeometry args={[geometry, 35]} />
+                <lineBasicMaterial color={sideColors[side]} transparent opacity={0.35} />
+            </lineSegments>
         </group>
     );
 }
