@@ -4,6 +4,12 @@ import { ELEMENT_KINDS, PRODUCTION_METHODS, SCAN_PATTERNS } from "./prescription
 // Zod schema for a full design payload, used by design.save. Mirrors the
 // client `DesignState` type.
 
+const wedgeCorrection = z.object({
+    side: z.enum(["medial", "lateral"]),
+    value: z.number(),
+    unit: z.enum(["mm", "deg"]),
+});
+
 const sideCorrection = z.object({
     forefootPostingDeg: z.number(),
     rearfootPostingDeg: z.number(),
@@ -13,9 +19,14 @@ const sideCorrection = z.object({
     archHeightMm: z.number(),
     heelCupDepthMm: z.number(),
     heelCupHeightMm: z.number(),
+    // Newer fields are optional so previously-saved designs still validate.
+    heelCupWidthMm: z.number().optional(),
+    heelLiftMm: z.number().optional(),
     apexMoveMm: z.number(),
     medialFlangeMm: z.number(),
     lateralFlangeMm: z.number(),
+    rearfootWedge: wedgeCorrection.optional(),
+    forefootWedge: wedgeCorrection.optional(),
 });
 
 const placedElement = z.object({
