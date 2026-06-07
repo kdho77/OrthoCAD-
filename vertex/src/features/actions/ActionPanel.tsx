@@ -1,9 +1,10 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { Check, PencilLine, RotateCcw, X } from "lucide-react";
+import { AlertTriangle, Check, PencilLine, RotateCcw, Undo2, Redo2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useDesignStore } from "@/stores/design-store";
+import { useIssuesStore } from "@/stores/issues-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { cn } from "@/lib/utils";
 import type { Side } from "@/types";
@@ -126,6 +127,75 @@ export function ActionPanel() {
                         No active edit session. Click the outline in the 3D view for the fastest start.
                     </p>
                 )}
+            </div>
+
+            {/* Phase 3A: Production undo/redo + issues (constraints + orphans) surface */}
+            <div className="space-y-2 rounded-md border border-border bg-background/50 p-2">
+                <div className="flex items-center justify-between text-xs font-medium text-foreground">
+                    <span>History</span>
+                    <div className="flex gap-1">
+                        <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 gap-1 px-1.5 text-[11px]"
+                            onClick={() => useDesignStore.getState().undo()}
+                            disabled={!useDesignStore.getState().canUndo()}
+                            title="Undo (⌘Z)"
+                        >
+                            <Undo2 className="h-3.5 w-3.5" />
+                            Undo
+                        </Button>
+                        <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 gap-1 px-1.5 text-[11px]"
+                            onClick={() => useDesignStore.getState().redo()}
+                            disabled={!useDesignStore.getState().canRedo()}
+                            title="Redo (⌘⇧Z)"
+                        >
+                            <Redo2 className="h-3.5 w-3.5" />
+                            Redo
+                        </Button>
+                    </div>
+                </div>
+
+                {(() => {
+                    const orphans = useIssuesStore((s) => s.orphans);
+                    const violations = useDesignStore((s) => s.getActiveViolations());
+                    const hasIssues = orphans.length > 0 || violations.length > 0;
+                    if (!hasIssues) return <p className="text-[10px] text-muted-foreground">No production issues detected.</p>;
+                    return (
+                        <div className="space-y-1 text-[10px]">
+                            {violations.length > 0 && (
+                                <div className="flex items-start gap-1.5 rounded bg-amber-500/10 p-1.5 text-amber-600">
+                                    <AlertTriangle className="mt-0.5 h-3 w-3 flex-shrink-0" />
+                                    <div>
+                                        <div className="font-medium">Clinical limits applied</div>
+                                        <ul className="list-disc pl-3">
+                                            {violations.slice(0, 3).map((vi, i) => (
+                                                <li key={i}>{vi.message}</li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                </div>
+                            )}
+                            {orphans.length > 0 && (
+                                <div className="flex items-start gap-1.5 rounded bg-orange-500/10 p-1.5 text-orange-600">
+                                    <AlertTriangle className="mt-0.5 h-3 w-3 flex-shrink-0" />
+                                    <div>
+                                        <div className="font-medium">Orphans / dead features ({orphans.length})</div>
+                                        <ul className="list-disc pl-3">
+                                            {orphans.slice(0, 2).map((o, i) => (
+                                                <li key={i}>{o.label}</li>
+                                            ))}
+                                            {orphans.length > 2 && <li>+{orphans.length - 2} more</li>}
+                                        </ul>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    );
+                })()}
             </div>
         </div>
     );

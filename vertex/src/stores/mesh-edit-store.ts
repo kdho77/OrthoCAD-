@@ -9,8 +9,10 @@ import {
     sampleDefaultOutline,
     type TrimlineCurve,
 } from "@/lib/geometry/trimline";
+import { buildEffectiveTrimlines } from "@/stores/issues-store";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
+import { useIssuesStore } from "@/stores/issues-store";
 import type { Side } from "@/types";
 
 export type MeshEditMode = "transform" | "trim" | "vertex" | "edit-trimline";
@@ -66,6 +68,8 @@ export interface MeshEditStore {
     setTrimlineDragging: (dragging: boolean) => void;
     getTrimlineForSide: (side: Side) => TrimlineCurve;
     getCommittedTrimline: (side: Side) => TrimlineCurve | null;
+    /** Returns the live draft if an edit-trimline session is active for the side, else null. */
+    getActiveDraftTrimline: (side: Side) => TrimlineCurve | null;
 }
 
 function committedOrDefault(side: Side): TrimlineCurve {
@@ -142,6 +146,9 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
         }),
 
     beginTrimlineEdit: (side) => {
+        // Phase 3A: checkpoint before entering a long-running edit session so that
+        // cancel (or later undo) reliably restores the pre-edit design state.
+        useDesignStore.getState().checkpoint("trimline-edit-begin");
         const base = committedOrDefault(side);
         const snapshot = cloneTrimline(base);
         const draft = cloneTrimline(base);
@@ -162,7 +169,14 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
     confirmTrimlineEdit: () => {
         const session = get().trimlineEdit;
         if (!session) return;
+        // Checkpoint the post-trim state as its own history entry (the begin checkpoint
+        // captured the pre-trim state, so undo after confirm steps back across the whole edit).
+        useDesignStore.getState().checkpoint("trimline-edit-confirm");
         useDesignStore.getState().setSideTrimline(session.side, session.draft);
+        // Phase 3A: after committing a new footprint, surface any now-orphaned elements or correction regions.
+        const design = useDesignStore.getState().design;
+        const effective = { [session.side]: session.draft } as Partial<Record<Side, TrimlineCurve>>;
+        useIssuesStore.getState().recompute(design, effective);
         set({ trimlineEdit: null, editMode: "transform" });
     },
 
@@ -202,4 +216,10 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
     getTrimlineForSide: (side) => committedOrDefault(side),
 
     getCommittedTrimline: (side) => getDesignTrimline(useDesignStore.getState().design, side),
+
+    getActiveDraftTrimline: (side) => {
+        const session = get().trimlineEdit;
+        if (session && session.side === side) return cloneTrimline(session.draft);
+        return null;
+    },
 }));

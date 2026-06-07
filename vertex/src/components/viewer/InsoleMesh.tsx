@@ -26,10 +26,12 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
     const applyEdits = target?.type === "insole" && target.side === side;
 
     const trimline = useMemo(() => {
-        const committed = getDesignTrimline(design, side);
-        if (trimlineEdit?.side === side && trimlineEdit.isDragging) return committed;
+        // Phase 3A production editing: wire the live draft (including during active drag)
+        // into the parametric preview so the user sees the footprint deform in real time.
+        // The TrimlineEditTools already rate-limits draft commits via rAF + interacting=true
+        // keeps the geometry engine on "preview" quality, so live updates are safe and responsive.
         if (trimlineEdit?.side === side) return trimlineEdit.draft;
-        return committed;
+        return getDesignTrimline(design, side);
     }, [design, trimlineEdit, side]);
 
     const { geometry, building } = useInsoleGeometry({

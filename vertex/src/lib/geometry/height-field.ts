@@ -1,5 +1,6 @@
 import type { PlacedElement, Side, SideCorrections } from "@/types";
 import { elementHeightAt } from "@/lib/geometry/elements";
+import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 
 // Shared parametric height field for insole surfaces. Used by both the procedural
@@ -18,6 +19,8 @@ export interface HeightFieldParams {
     includeElements?: boolean;
     /** Optional user-edited insole perimeter override. */
     trimline?: TrimlineCurve | null;
+    /** Phase 4 operator graph (additive clinical operators). When present its delta is added. */
+    graph?: OperatorGraph | null;
 }
 
 const DEG = Math.PI / 180;
@@ -163,7 +166,17 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const fore = bump(u, 0.82, 0.24);
     posting += Math.tan(c.forefootPostingDeg * DEG) * post * fore;
 
-    return softFloor(thicknessMm + baseline + shaped + posting, 0.8);
+    let h = softFloor(thicknessMm + baseline + shaped + posting, 0.8);
+
+    // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).
+    // The graph is the new clinical source of truth when present; the flat
+    // corrections above remain for backward compatibility and as a summary.
+    if (params.graph) {
+        const graphDelta = evaluateGraph(params.graph, u, vSigned);
+        h += graphDelta;
+    }
+
+    return h;
 }
 
 export interface GridPoint {

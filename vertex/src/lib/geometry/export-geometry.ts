@@ -3,7 +3,7 @@
 
 import type { BufferGeometry } from "three";
 import { getKernel, isAuthoritativeKernel } from "@/lib/chili3d/kernel";
-import { baseModifierField, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
+import { baseModifierField, baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
@@ -25,7 +25,9 @@ async function buildModifiedBaseGeometry(design: DesignState, side: Side): Promi
     const raw = await loadBaseGeometry(base);
     if (!raw) return null;
     try {
-        const field = baseModifierField(design, side, design.thicknessMm);
+        // Phase 3B: use the authoritative field (carries committed trimline) so
+        // the OCCT kernel can sew the base and apply exact boolean trim/element/skive.
+        const field = baseModifierFieldAuthoritative(design, side, design.thicknessMm);
         // Extra smoothing for a clean manufacturing surface on export.
         const result = getKernel().buildFromBase(raw, field, 2);
         return result.geometry;

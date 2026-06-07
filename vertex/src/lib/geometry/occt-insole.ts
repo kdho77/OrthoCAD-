@@ -216,6 +216,41 @@ export function buildOcctInsoleSolid(factory: IShapeFactory, params: InsoleParam
     return ensureSolid(factory, solid);
 }
 
+/**
+ * Phase 4 clinical depth — B-spline loft (hybrid top rebuild).
+ *
+ * This is the entry point for replacing the ruled station loft with a true
+ * skinned B-spline surface for the clinical top. When `useBSplineTop` is true
+ * on InsoleParams (or the design carries an operator graph), the top profile
+ * at each station is still sampled from the (graph-aware) height field, but
+ * the longitudinal + cross curves are skinned with higher continuity.
+ *
+ * For the initial 4 implementation we keep the station wires (so the rest of
+ * the solid construction, capping, booleans, and shelling continue to work)
+ * and simply document that a future pass can feed these wires (or a 2D grid
+ * of points) into factory.bsplineSurface or a GeomFill_BSplineCurves style
+ * surface and then build the solid from that top + bottom + ruled walls.
+ *
+ * The hybrid aspect: when a base is present the sampled heights are deltas
+ * (see hybridTopHeight in operator-graph) rather than absolute, preserving
+ * the imported base character while still allowing B-spline-smoothed corrections.
+ */
+export function buildBSplineTopSections(
+    factory: IShapeFactory,
+    params: HeightFieldParams & { useBSplineTop?: boolean },
+): IWire[] {
+    // For now return the same clinical sections the classic loft uses.
+    // Callers that care about the B-spline flag can switch to a skinned
+    // surface builder in a follow-up without changing the public contract.
+    const sections: IWire[] = [];
+    const nx = LOFT_STATIONS;
+    for (let i = 0; i <= nx; i++) {
+        const u = i / nx;
+        sections.push(sectionWire(factory, u, params));
+    }
+    return sections;
+}
+
 /** Exposed for tests — verifies the height field matches between kernels. */
 export function correctionHeightSample(u: number, v: number, params: InsoleParams): number {
     return heightAt(u, v, {

@@ -4,6 +4,7 @@
 import type { BufferGeometry } from "three";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
+import { getDesignTrimline } from "@/lib/geometry/trimline";
 import { extractMergedGeometry, loadGlbFromBuffer, loadGlbFromUrl } from "@/lib/library/loaders";
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
@@ -70,6 +71,18 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
         includeSkives: true,
         includeElements: true,
-        trimline: null,
+        trimline: null, // preview path deliberately ignores trimline (clip happens in hook)
     };
+}
+
+/**
+ * Authoritative field for the sewn OCCT base path (Phase 3B). Includes the
+ * committed trimline so that applyTrimlineCut etc. can run as exact booleans
+ * on the sewn solid. Only used for idle/Confirm/Export builds.
+ */
+export function baseModifierFieldAuthoritative(design: DesignState, side: Side, thicknessMm: number): HeightFieldParams {
+    const f = baseModifierField(design, side, thicknessMm);
+    // Pull the committed (not draft) trimline for manufacturing.
+    const committed = getDesignTrimline(design, side); // local import below to avoid cycle in some builds
+    return { ...f, trimline: committed };
 }

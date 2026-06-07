@@ -2,8 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
 import { baseModifierField, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
+import { useBaseBoundsStore } from "@/stores/base-bounds-store";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
+import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
 
@@ -53,11 +56,17 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     return;
                 }
                 baseGeoRef.current = geo;
-                // Publish an outline that follows the real mesh boundary so the
-                // trimline tools start from the loaded base, not the parametric default.
-                if (geo && ref.assetId && !useBaseOutlineStore.getState().getOutline(ref.assetId)) {
-                    const outline = extractMeshOutline(geo);
-                    if (outline) useBaseOutlineStore.getState().setOutline(ref.assetId, outline);
+                // Publish an outline (legacy) and the richer BaseBounds (Phase 3A production editing).
+                if (geo && ref.assetId) {
+                    if (!useBaseOutlineStore.getState().getOutline(ref.assetId)) {
+                        const outline = extractMeshOutline(geo);
+                        if (outline) useBaseOutlineStore.getState().setOutline(ref.assetId, outline);
+                    }
+                    if (!useBaseBoundsStore.getState().getBounds(ref.assetId)) {
+                        // computeBaseBounds is cached internally and also stores outline + zones + safe margins.
+                        const b = computeBaseBounds(geo, ref.assetId);
+                        useBaseBoundsStore.getState().setBounds(ref.assetId, b);
+                    }
                 }
             })
             .catch(() => {
@@ -72,7 +81,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     }, [assetId]);
 
     // Re-apply modifiers whenever corrections / elements / thickness change.
-    // biome-ignore lint/correctness/useExhaustiveDependencies: preview patches are intentional triggers
+    // biome-ignore lint/correctness/useExhaustiveDependencies: preview patches + live draft trimline are intentional triggers
     useEffect(() => {
         const raw = baseGeoRef.current;
         if (!assetId || !raw) return;
@@ -80,12 +89,15 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         const field = baseModifierField(design, side, thicknessMm);
         // Skip smoothing while dragging for responsiveness; relax once when idle.
         const modified = applyBaseModifiers(raw, field, interacting ? 0 : 1);
-        // A confirmed trimline reshapes the visible base by clipping to its
-        // footprint. Vertical corrections never move XY, so this stays aligned.
+        // Phase 3A: prefer the *live draft* trimline while a trimline edit session
+        // is active for this side. This wires the deforming perimeter into the
+        // rendered base mesh during drag (production editing requirement).
+        const draft = useMeshEditStore.getState().getActiveDraftTrimline(side);
         const committed = getDesignTrimline(design, side);
+        const activeForClip = draft ?? committed;
         let display = modified;
-        if (committed) {
-            display = clipGeometryToOutline(modified, committed);
+        if (activeForClip) {
+            display = clipGeometryToOutline(modified, activeForClip);
             modified.dispose();
         }
         outRef.current?.dispose();

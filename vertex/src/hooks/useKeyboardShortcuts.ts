@@ -52,6 +52,28 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
                 }
                 selectElement(null);
             }
+
+            // Phase 3A production undo/redo (Cmd/Ctrl+Z, Shift for redo).
+            if (mod && e.key.toLowerCase() === "z") {
+                e.preventDefault();
+                const ds = useDesignStore.getState();
+                if (e.shiftKey) {
+                    if (ds.canRedo()) ds.redo();
+                } else {
+                    if (ds.canUndo()) ds.undo();
+                }
+                return;
+            }
+
+            // Confirm active trimline edit session with Enter (production editing convenience).
+            if (e.key === "Enter") {
+                const meshEdit = useMeshEditStore.getState();
+                if (meshEdit.editMode === "edit-trimline" && meshEdit.trimlineEdit) {
+                    e.preventDefault();
+                    meshEdit.confirmTrimlineEdit();
+                    return;
+                }
+            }
         };
 
         window.addEventListener("keydown", onKeyDown);

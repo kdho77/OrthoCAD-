@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import {
+    constrainSideCorrections,
+    type ConstraintViolation,
+} from "@/lib/geometry/clinical-constraints";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
+import { buildEffectiveTrimlines } from "@/stores/issues-store";
+import { useIssuesStore } from "@/stores/issues-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type {
@@ -68,6 +74,11 @@ export interface DesignStore {
     selectedElementId: string | null;
     transformMode: TransformMode;
 
+    /** Undo stack (most recent first). Session-only, not persisted to localStorage. */
+    history: DesignState[];
+    /** Redo stack. Cleared on new mutations. */
+    future: DesignState[];
+
     setPattern: (pattern: ScanPattern) => void;
     setMethod: (method: ProductionMethod) => void;
     setThickness: (mm: number) => void;
@@ -76,6 +87,9 @@ export interface DesignStore {
 
     /** Patch corrections for a side. When linked, mirrors to the other side. */
     updateCorrection: (side: Side, patch: Partial<SideCorrections>) => void;
+
+    /** Live production constraint violations for the current design (derived). */
+    getActiveViolations: () => ConstraintViolation[];
 
     addElement: (kind: ElementKind, side: Side) => void;
     addCustomElement: (customElementId: string, customName: string, side: Side) => void;
@@ -103,15 +117,26 @@ export interface DesignStore {
 
     setViewer: (patch: Partial<ViewerSettings>) => void;
     reset: () => void;
+
+    /** Push a snapshot of the current design onto the undo stack (clears future). */
+    checkpoint: (label?: string) => void;
+    undo: () => void;
+    redo: () => void;
+    canUndo: () => boolean;
+    canRedo: () => boolean;
+    /** Clear history (call after explicit server Save or when starting a brand new clinical case). */
+    clearHistory: () => void;
 }
 
 export const useDesignStore = create<DesignStore>()(
     persist(
-        (set) => ({
+        (set, get) => ({
             design: defaultDesign(),
             viewer: { transparent: false, heightmap: false, showLeft: true, showRight: true, view: "iso" },
             selectedElementId: null,
             transformMode: "translate",
+            history: [],
+            future: [],
 
             setPattern: (pattern) =>
                 set((s) => ({
@@ -124,7 +149,31 @@ export const useDesignStore = create<DesignStore>()(
                     },
                 })),
             setMethod: (method) => set((s) => ({ design: { ...s.design, method } })),
-            setThickness: (thicknessMm) => set((s) => ({ design: { ...s.design, thicknessMm } })),
+            setThickness: (thicknessMm) =>
+                set((s) => {
+                    const left = s.design.corrections.left;
+                    const right = s.design.corrections.right;
+                    const linked = s.design.corrections.linked;
+                    // Use constrain on a representative side for thickness decision, then re-apply full.
+                    const rep = constrainSideCorrections(left, thicknessMm);
+                    const safeThickness = rep.thicknessMm;
+                    // Re-clamp both sides against the (possibly reduced) thickness.
+                    const r1 = constrainSideCorrections(left, safeThickness);
+                    const r2 = constrainSideCorrections(right, safeThickness);
+                    const nextLeft = r1.constrained;
+                    const nextRight = linked ? r1.constrained : r2.constrained;
+                    return {
+                        design: {
+                            ...s.design,
+                            thicknessMm: safeThickness,
+                            corrections: {
+                                ...s.design.corrections,
+                                left: nextLeft,
+                                right: nextRight,
+                            },
+                        },
+                    };
+                }),
 
             setUnit: (unit) =>
                 set((s) => ({
@@ -143,10 +192,29 @@ export const useDesignStore = create<DesignStore>()(
                         const other: Side = side === "left" ? "right" : "left";
                         corrections[other] = { ...corrections[other], ...patch };
                     }
-                    return { design: { ...s.design, corrections } };
+                    // Apply clinical constraints (clamps + combined wall/arch guards).
+                    const { constrained: safeLeft, thicknessMm: t1 } = constrainSideCorrections(
+                        corrections.left,
+                        s.design.thicknessMm,
+                    );
+                    const { constrained: safeRight } = constrainSideCorrections(corrections.right, t1);
+                    const finalLeft = safeLeft;
+                    const finalRight = corrections.linked ? safeLeft : safeRight;
+                    return {
+                        design: {
+                            ...s.design,
+                            thicknessMm: t1,
+                            corrections: {
+                                ...corrections,
+                                left: finalLeft,
+                                right: finalRight,
+                            },
+                        },
+                    };
                 }),
 
-            addElement: (kind, side) =>
+            addElement: (kind, side) => {
+                get().checkpoint("add-element");
                 set((s) => {
                     const el: PlacedElement = {
                         id: crypto.randomUUID(),
@@ -157,13 +225,15 @@ export const useDesignStore = create<DesignStore>()(
                         scale: { x: 1, y: 1 },
                         heightMm: 4,
                     };
-                    return {
-                        design: { ...s.design, elements: [...s.design.elements, el] },
-                        selectedElementId: el.id,
-                    };
-                }),
+                    const next = { ...s.design, elements: [...s.design.elements, el] };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next, selectedElementId: el.id };
+                });
+            },
 
-            addCustomElement: (customElementId, customName, side) =>
+            addCustomElement: (customElementId, customName, side) => {
+                get().checkpoint("add-custom-element");
                 set((s) => {
                     const el: PlacedElement = {
                         id: crypto.randomUUID(),
@@ -176,11 +246,12 @@ export const useDesignStore = create<DesignStore>()(
                         scale: { x: 1, y: 1 },
                         heightMm: 4,
                     };
-                    return {
-                        design: { ...s.design, elements: [...s.design.elements, el] },
-                        selectedElementId: el.id,
-                    };
-                }),
+                    const next = { ...s.design, elements: [...s.design.elements, el] };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next, selectedElementId: el.id };
+                });
+            },
 
             setCustomPrefab: (customPrefabId, customPrefabName) =>
                 set((s) => ({
@@ -194,7 +265,8 @@ export const useDesignStore = create<DesignStore>()(
                     },
                 })),
 
-            setBase: (base) =>
+            setBase: (base) => {
+                const snap = get().design;
                 set((s) => ({
                     design: {
                         ...s.design,
@@ -203,9 +275,13 @@ export const useDesignStore = create<DesignStore>()(
                         customPrefabId: base.assetId,
                         customPrefabName: base.name,
                     },
-                })),
+                }));
+                // Only checkpoint if something actually changed (base switch is a big clinical action).
+                if (snap.base?.assetId !== base.assetId) get().checkpoint("set-base");
+            },
 
-            clearBase: () =>
+            clearBase: () => {
+                const hadBase = !!get().design.base;
                 set((s) => ({
                     design: {
                         ...s.design,
@@ -214,21 +290,33 @@ export const useDesignStore = create<DesignStore>()(
                         customPrefabId: undefined,
                         customPrefabName: undefined,
                     },
-                })),
+                }));
+                if (hadBase) get().checkpoint("clear-base");
+            },
 
             updateElement: (id, patch) =>
-                set((s) => ({
-                    design: {
-                        ...s.design,
-                        elements: s.design.elements.map((e) => (e.id === id ? { ...e, ...patch } : e)),
-                    },
-                })),
+                set((s) => {
+                    const nextElements = s.design.elements.map((e) => (e.id === id ? { ...e, ...patch } : e));
+                    const next = { ...s.design, elements: nextElements };
+                    // Recompute orphans when an element moves/scales (common source of "outside trimline").
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
+                }),
 
-            removeElement: (id) =>
-                set((s) => ({
-                    design: { ...s.design, elements: s.design.elements.filter((e) => e.id !== id) },
-                    selectedElementId: s.selectedElementId === id ? null : s.selectedElementId,
-                })),
+            removeElement: (id) => {
+                get().checkpoint("remove-element");
+                set((s) => {
+                    const nextElements = s.design.elements.filter((e) => e.id !== id);
+                    const next = { ...s.design, elements: nextElements };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return {
+                        design: next,
+                        selectedElementId: s.selectedElementId === id ? null : s.selectedElementId,
+                    };
+                });
+            },
 
             selectElement: (selectedElementId) => set({ selectedElementId }),
             setTransformMode: (transformMode) => set({ transformMode }),
@@ -236,11 +324,17 @@ export const useDesignStore = create<DesignStore>()(
             applyPrescription: (result) => {
                 usePerformanceStore.getState().setInteracting(true, "ai");
                 set((s) => {
+                    const baseThickness = result.thicknessMm ?? s.design.thicknessMm;
+                    const baseLeft = { ...s.design.corrections.left, ...(result.corrections.left ?? {}) };
+                    const baseRight = { ...s.design.corrections.right, ...(result.corrections.right ?? {}) };
+                    // Clamp AI output immediately — parsed prescriptions can be aggressive.
+                    const r1 = constrainSideCorrections(baseLeft, baseThickness);
+                    const r2 = constrainSideCorrections(baseRight, r1.thicknessMm);
                     const corrections: Corrections = {
                         ...s.design.corrections,
                         unit: result.unit ?? s.design.corrections.unit,
-                        left: { ...s.design.corrections.left, ...(result.corrections.left ?? {}) },
-                        right: { ...s.design.corrections.right, ...(result.corrections.right ?? {}) },
+                        left: r1.constrained,
+                        right: s.design.corrections.linked ? r1.constrained : r2.constrained,
                     };
                     const elements: PlacedElement[] = result.elements.map((e) => ({
                         id: crypto.randomUUID(),
@@ -256,7 +350,7 @@ export const useDesignStore = create<DesignStore>()(
                             ...s.design,
                             pattern: result.pattern ?? s.design.pattern,
                             method: result.method ?? s.design.method,
-                            thicknessMm: result.thicknessMm ?? s.design.thicknessMm,
+                            thicknessMm: r1.thicknessMm,
                             corrections,
                             elements: [...s.design.elements, ...elements],
                         },
@@ -265,13 +359,30 @@ export const useDesignStore = create<DesignStore>()(
                 requestAnimationFrame(() => usePerformanceStore.getState().setInteracting(false));
             },
 
-            loadDesign: (design) => {
+            loadDesign: (incoming) => {
                 usePerformanceStore.getState().clearAllPreviews();
                 useMeshEditStore.getState().cancelTrimlineEdit();
-                set({ design, selectedElementId: null });
+                useIssuesStore.getState().clear();
+                get().clearHistory(); // Loaded design becomes the new undo root.
+                // Sanitize on load so persisted or imported designs are always valid.
+                const r = constrainSideCorrections(incoming.corrections.left, incoming.thicknessMm);
+                const r2 = constrainSideCorrections(incoming.corrections.right, r.thicknessMm);
+                const safeDesign: DesignState = {
+                    ...incoming,
+                    thicknessMm: r.thicknessMm,
+                    corrections: {
+                        ...incoming.corrections,
+                        left: r.constrained,
+                        right: incoming.corrections.linked ? r.constrained : r2.constrained,
+                    },
+                };
+                const eff = buildEffectiveTrimlines(safeDesign);
+                useIssuesStore.getState().recompute(safeDesign, eff);
+                set({ design: safeDesign, selectedElementId: null });
             },
 
-            setSideTrimline: (side, curve) =>
+            setSideTrimline: (side, curve) => {
+                get().checkpoint("set-trimline");
                 set((s) => {
                     const trimlines = { ...s.design.trimlines };
                     if (curve && curve.points.length >= 4) {
@@ -285,9 +396,12 @@ export const useDesignStore = create<DesignStore>()(
                             trimlines: Object.keys(trimlines).length > 0 ? trimlines : undefined,
                         },
                     };
-                }),
+                });
+            },
 
-            clearSideTrimline: (side) =>
+            clearSideTrimline: (side) => {
+                if (!get().design.trimlines?.[side]) return;
+                get().checkpoint("clear-trimline");
                 set((s) => {
                     if (!s.design.trimlines?.[side]) return s;
                     const trimlines = { ...s.design.trimlines };
@@ -298,14 +412,94 @@ export const useDesignStore = create<DesignStore>()(
                             trimlines: Object.keys(trimlines).length > 0 ? trimlines : undefined,
                         },
                     };
-                }),
+                });
+            },
 
             setViewer: (patch) => set((s) => ({ viewer: { ...s.viewer, ...patch } })),
             reset: () => {
                 usePerformanceStore.getState().clearAllPreviews();
                 useMeshEditStore.getState().cancelTrimlineEdit();
-                set({ design: defaultDesign(), selectedElementId: null });
+                useIssuesStore.getState().clear();
+                get().clearHistory();
+                const d = defaultDesign();
+                set({ design: d, selectedElementId: null });
+                // No orphans on a fresh default.
             },
+
+            getActiveViolations: () => {
+                const d = useDesignStore.getState().design;
+                const r1 = constrainSideCorrections(d.corrections.left, d.thicknessMm);
+                const r2 = constrainSideCorrections(d.corrections.right, r1.thicknessMm);
+                // Dedup combined messages for UI brevity.
+                const seen = new Set<string>();
+                const all = [...r1.violations, ...r2.violations].filter((vi) => {
+                    const key = `${vi.field}:${vi.message}`;
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                });
+                return all;
+            },
+
+            checkpoint: (label?: string) => {
+                const current = get().design;
+                const snap: DesignState = JSON.parse(JSON.stringify(current));
+                // Phase 5: bump a simple design version for audit/versioned history.
+                (snap as any).designVersion = ((snap as any).designVersion ?? 0) + 1;
+                set((s) => ({
+                    history: [snap, ...s.history].slice(0, 40),
+                    future: [],
+                }));
+                // Also record in the client audit trail (pairs with server audit_logs in Phase 5).
+                try {
+                    // Lazy to avoid circular import at module top level.
+                    import("@/stores/audit-store").then(({ useAuditStore }) => {
+                        useAuditStore.getState().record("design_saved", `checkpoint${label ? ":" + label : ""} v${(snap as any).designVersion}`);
+                    });
+                } catch {}
+            },
+
+            undo: () => {
+                const s = get();
+                if (s.history.length === 0) return;
+                const [prev, ...rest] = s.history;
+                const currentSnap: DesignState = JSON.parse(JSON.stringify(s.design));
+                // Restore previous and push current onto future for redo.
+                usePerformanceStore.getState().clearAllPreviews();
+                useMeshEditStore.getState().cancelTrimlineEdit();
+                useIssuesStore.getState().clear();
+                const eff = buildEffectiveTrimlines(prev);
+                useIssuesStore.getState().recompute(prev, eff);
+                set({
+                    design: prev,
+                    history: rest,
+                    future: [currentSnap, ...s.future].slice(0, 40),
+                    selectedElementId: null,
+                });
+            },
+
+            redo: () => {
+                const s = get();
+                if (s.future.length === 0) return;
+                const [next, ...restFuture] = s.future;
+                const currentSnap: DesignState = JSON.parse(JSON.stringify(s.design));
+                usePerformanceStore.getState().clearAllPreviews();
+                useMeshEditStore.getState().cancelTrimlineEdit();
+                useIssuesStore.getState().clear();
+                const eff = buildEffectiveTrimlines(next);
+                useIssuesStore.getState().recompute(next, eff);
+                set({
+                    design: next,
+                    history: [currentSnap, ...s.history].slice(0, 40),
+                    future: restFuture,
+                    selectedElementId: null,
+                });
+            },
+
+            canUndo: () => get().history.length > 0,
+            canRedo: () => get().future.length > 0,
+
+            clearHistory: () => set({ history: [], future: [] }),
         }),
         {
             name: "vertex-design-session",
