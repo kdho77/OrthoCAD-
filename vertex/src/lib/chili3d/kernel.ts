@@ -1,4 +1,6 @@
 import type { BufferGeometry } from "three";
+import { modifiedBaseResult } from "@/lib/geometry/base-modifier";
+import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { buildInsoleGeometry, type InsoleParams } from "@/lib/geometry/insole";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SolidValidation } from "@/lib/geometry/repair";
@@ -28,6 +30,13 @@ export interface IGeometryKernel {
     buildInsole(params: InsoleParams): BufferGeometry;
     /** Builds the insole and reports whether the result is a watertight solid. */
     buildInsoleSolid(params: InsoleParams): SolidResult;
+    /**
+     * Apply design modifiers (corrections / elements) onto a base template mesh
+     * (Base + Modifier model). Returns the modified geometry plus a manifold
+     * report. `smoothingIterations` relaxes the displacement field for a smooth
+     * top (0 = interactive, 1–2 = idle/export). See docs/base-modifier-architecture.md.
+     */
+    buildFromBase(base: BufferGeometry, field: HeightFieldParams, smoothingIterations?: number): SolidResult;
     exportSTL(geometry: BufferGeometry): ArrayBuffer;
 }
 
@@ -47,6 +56,10 @@ class ThreeKernel implements IGeometryKernel {
             geometry,
             manifold: { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight },
         };
+    }
+
+    buildFromBase(base: BufferGeometry, field: HeightFieldParams, smoothingIterations = 0): SolidResult {
+        return modifiedBaseResult(base, field, smoothingIterations);
     }
 
     exportSTL(geometry: BufferGeometry): ArrayBuffer {

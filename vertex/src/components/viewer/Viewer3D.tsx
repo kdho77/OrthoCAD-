@@ -24,7 +24,7 @@ import { type CameraView, useDesignStore } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
-import { CustomPrefabMesh } from "./CustomPrefabMesh";
+import { BaseInsoleMesh } from "./BaseInsoleMesh";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
@@ -64,8 +64,8 @@ export function Viewer3D() {
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
-    const showCustomPrefab = Boolean(design.customPrefabId);
     const designMode = resolveDesignMode(design);
+    const showBase = designMode.mode === "base";
     const modifiersActive = hasActiveModifiers(design);
     const showPerf = usePerformanceStore((s) => s.showPerformanceMonitor);
     const setShowPerf = usePerformanceStore((s) => s.setShowPerformanceMonitor);
@@ -105,7 +105,7 @@ export function Viewer3D() {
                 >
                     {viewer.showLeft ? (
                         <>
-                            {!showCustomPrefab ? (
+                            {!showBase ? (
                                 <InsoleMesh
                                     side="left"
                                     design={design}
@@ -113,13 +113,13 @@ export function Viewer3D() {
                                     heightmap={viewer.heightmap}
                                 />
                             ) : (
-                                <CustomPrefabMesh side="left" transparent={viewer.transparent} />
+                                <BaseInsoleMesh side="left" transparent={viewer.transparent} />
                             )}
                         </>
                     ) : null}
                     {viewer.showRight ? (
                         <>
-                            {!showCustomPrefab ? (
+                            {!showBase ? (
                                 <InsoleMesh
                                     side="right"
                                     design={design}
@@ -127,7 +127,7 @@ export function Viewer3D() {
                                     heightmap={viewer.heightmap}
                                 />
                             ) : (
-                                <CustomPrefabMesh side="right" transparent={viewer.transparent} />
+                                <BaseInsoleMesh side="right" transparent={viewer.transparent} />
                             )}
                         </>
                     ) : null}

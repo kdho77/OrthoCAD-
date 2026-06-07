@@ -2,6 +2,8 @@ import { shapesToStl, type IShape } from "@chili3d/core";
 import { ShapeFactory } from "@chili3d/wasm";
 import type { BufferGeometry } from "three";
 import type { GeometryTier, IGeometryKernel, SolidResult } from "@/lib/chili3d/kernel";
+import { modifiedBaseResult } from "@/lib/geometry/base-modifier";
+import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { buildInsoleGeometry, type InsoleParams } from "@/lib/geometry/insole";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { shapeToBufferGeometry } from "@/lib/geometry/mesh-bridge";
@@ -37,6 +39,15 @@ export class OcctKernel implements IGeometryKernel {
                 manifold: { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight },
             };
         }
+    }
+
+    /**
+     * Phase 1 applies modifiers to the base as a deformation (shared with the
+     * procedural kernel). This is the seam where OCCT boolean refinement of the
+     * base (trimline cut, exact element fuse/cut) lands in later phases.
+     */
+    buildFromBase(base: BufferGeometry, field: HeightFieldParams, smoothingIterations = 0): SolidResult {
+        return modifiedBaseResult(base, field, smoothingIterations);
     }
 
     exportSTL(geometry: BufferGeometry): ArrayBuffer {

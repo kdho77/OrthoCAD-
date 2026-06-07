@@ -1,138 +1,210 @@
-# Base + Modifier Architecture
+# Base + Modifier Geometry Architecture
 
-Vertex builds an orthotic two ways that share **one** clinical definition
-(corrections · trimline · elements):
+This extends the hybrid pipeline (see `hybrid-geometry-architecture.md`) from
+"generate everything from scratch" to a **Template / Base + Modifier** model
+used by real orthotic labs: start from a good base shape, then layer
+modifications on top.
 
-- **Parametric mode** — the whole insole is generated from the shared height
-  field (`height-field.ts`). There is no external base; the surface *is* the
-  corrections.
-- **Base mode** — an externally authored surface (a loaded **GLB base**, e.g. a
-  scanned/prefab insole) is the starting point, and the same clinical
-  corrections / elements / trimline are applied on top of it as **modifiers**.
-
-A *modifier* is anything that changes the base. Modifiers come in two classes,
-chosen by what the operation actually needs to do:
-
-| Modifier class            | Engine                          | When it runs            | Examples                                   |
-| ------------------------- | ------------------------------- | ----------------------- | ------------------------------------------ |
-| **Vertical deformation**  | shared height field (THREE)     | every interactive frame | arch dome, heel cup, posting tilt, met pads, sinks |
-| **OCCT boolean**          | OpenCascade kernel (WASM)       | Confirm / Export / idle | clean trimline cut, discrete elements, skive/posting wedges |
+## Concept
 
 ```
-                ┌──────────────────────────────────────────────┐
-                │   Design state (corrections·trimline·elements) │
-                └───────────────┬───────────────────┬────────────┘
-        base mode?              │                   │
-   ┌───────────────────────────▼──┐        ┌────────▼─────────────────────┐
-   │  BASE: loaded GLB surface      │        │  PARAMETRIC: no base          │
-   └───────────────┬────────────────┘        └────────┬─────────────────────┘
-                   │ deformBaseGeometry()              │ buildInsoleGeometry() / OCCT loft
-                   ▼                                   ▼
-        ┌──────────────────────┐            ┌──────────────────────┐
-        │  Vertical deformation │  (shared height field, < 16 ms)   │
-        └───────────┬───────────┘            └───────────┬──────────┘
-                    │  Confirm / Export                  │
-                    ▼                                     ▼
-        ┌─────────────────────────────────────────────────────────┐
-        │  OCCT boolean modifiers (base-modifier-booleans.ts)        │
-        │  trimline cut · elements · skive/posting wedges            │
-        │  → falls back to deformation-only when OCCT is unavailable │
-        └─────────────────────────────────────────────────────────┘
+  ┌──────────────┐        ┌──────────────────────────────────────────────┐
+  │   BASE        │        │            MODIFIERS (design state)           │
+  │  (optional)   │        │  trimline · corrections · posting · skives ·  │
+  │  stock / user │   +    │  elements · thickness                         │
+  │  GLB template │        │                                               │
+  └──────┬───────┘        └───────────────────┬──────────────────────────┘
+         │                                     │
+         │   no base ⇒ pure parametric         │  applied as deformation
+         │   (full generation, unchanged)      │  and/or boolean ops
+         ▼                                     ▼
+   ┌────────────────────────────────────────────────────────────────────┐
+   │                       Resolved insole geometry                       │
+   │   preview (fast deform)  ·  authoritative (OCCT booleans on Confirm) │
+   └────────────────────────────────────────────────────────────────────┘
 ```
 
-## Modules
+Two workflows are supported by the **same** design state:
 
-| Module                                   | Responsibility                                                                 |
-| ---------------------------------------- | ------------------------------------------------------------------------------ |
-| `src/lib/geometry/height-field.ts`       | The single source of clinical surface shape (`heightAt`). Shared by every path. |
-| `src/lib/geometry/base-modifier.ts`      | Mode resolution + **vertical deformation** of a base mesh (the real-time path). |
-| `src/lib/geometry/base-modifier-booleans.ts` | **OCCT boolean** modifiers (trimline cut, elements, skives) — Confirm/Export.  |
-| `src/lib/geometry/occt-insole.ts`        | Authoritative parametric loft; delegates its boolean passes to the module above. |
-| `src/components/viewer/CustomPrefabMesh.tsx` | Renders + live-deforms the base GLB, with base-mode tint/outline.            |
+1. **Start from base** — `design.base` references a library GLB (stock template
+   or a previously saved custom insole). Modifiers deform / cut / add onto it.
+2. **Full parametric** — `design.base` is absent. The existing procedural +
+   OCCT generation path runs exactly as before (the fallback / default).
 
-## 1. Deformation quality & clinical realism
+The modifiers (corrections, trimline, elements, thickness, method) are the
+*same fields* that already drive parametric generation. There is no second set
+of parameters — only a different way of *applying* them when a base is present.
 
-`heightAt(u, vSigned, params)` returns the **top** surface height (mm); the
-bottom is always the flat `z = 0` plane, so it stays a clean print/contact
-surface and thickness `= heightAt(...)`. The field was reworked for clinical
-realism while staying pure-math fast (no extra passes in the hot loop):
+## Data model
 
-- **No centerline crease.** Medial/lateral contributions (arch dome, heel cup,
-  skive, flange) are blended with `smoothstep` across the centerline instead of
-  a hard `medial ? a : 0`, so the longitudinal arch no longer steps at `v = 0`.
-- **Heel ↔ arch transition.** The heel cup uses a `smoothstep` rim (not `pow`)
-  and a wider longitudinal bell so the rearfoot flows into the midfoot like a
-  vacuum-formed shell rather than meeting it at a ridge.
-- **Natural thickness / feathered edge.** Additive shaping is feathered toward
-  the trimline (`edgeFeather`) so the perimeter thins to a clinical edge, while
-  the **posting wedge is exempt** (a planar tilt must stay full-strength at the
-  edge) and the base wall is preserved.
-- **Soft floor.** Minimum wall thickness is enforced with `softFloor` (a
-  blended lower bound) instead of `Math.max`, removing the clamp crease.
+```ts
+// types/index.ts
+export interface DesignBase {
+    /** Library / custom asset id that provides the base mesh. */
+    assetId: string;
+    name?: string;
+    /** Where to resolve the GLB from. */
+    source: "custom" | "stock";
+}
 
-For **base mode**, `deformBaseGeometry()` samples this field at every base-mesh
-vertex and lifts vertices toward the top in proportion to how high up the wall
-they sit (`topness`), so:
+export interface DesignState {
+    // ...existing fields (corrections, trimlines, elements, thickness, method)
+    /** Optional base template. Absent ⇒ full parametric generation. */
+    base?: DesignBase;
+}
+```
 
-- the **flat bottom is preserved** (bottom vertices, `topness = 0`, never move);
-- only the *additive* clinical shaping is applied — flat regions of the base are
-  left untouched because the base's measured thickness is the field baseline;
-- an optional **Laplacian smoothing** pass over the sampled displacement field
-  gives a smooth top independent of the base's tessellation. It is **skipped
-  while dragging** (`smoothingIterations = 0`) and enabled when idle/exporting
-  (`1`–`2`) to keep real-time editing responsive.
+The existing `customPrefabId` / `customPrefabName` fields are kept for backward
+compatibility. `getDesignBase(design)` resolves the effective base:
 
-Convention: bases are laid out `X = length, Y = width, Z = thickness (up)`,
-matching the parametric pipeline and app-exported GLBs.
+```ts
+design.base ?? (design.customPrefabId
+    ? { assetId: design.customPrefabId, name: design.customPrefabName, source: "custom" }
+    : null)
+```
 
-## 2. OCCT boolean operations (Phase 2)
+So **existing saved designs migrate transparently**: a design that used a custom
+prefab now behaves as a base template with modifiers, while designs with no
+prefab stay parametric.
 
-`base-modifier-booleans.ts` performs topology-changing modifiers with the OCCT
-kernel, reserved for Confirm / Export / idle so live editing never blocks:
+## How modifiers are applied
 
-- **Trimline cutting** — `applyTrimlineCut()` builds a vertical prism from the
-  closed trimline and computes `solid − (boundingBox − prism)`, a clean
-  perimeter cut that is more robust than a direct intersection. Opt-in via
-  `InsoleParams.useBooleanTrimline` (the parametric loft already honours the
-  trimline by width sampling, so this is for cases needing an exact cut).
-- **Discrete elements** — `applyElements()` fuses additive tools (met pad/bar,
-  Cluffy/Morton's extensions) and cuts subtractive ones (sinks, kinetic/reverse
-  wedges).
-- **Skives / posting wedges** — `applySkives()` cuts heel skive wedges.
+The shared height field (`height-field.ts`) defines, for every footprint point,
+the surface height contributed by each correction/element. The Base + Modifier
+model reuses it as a **displacement field** rather than an absolute surface:
+
+```
+delta(u, v) = heightAt(u, v, withCorrections) − heightAt(u, v, neutral)
+```
+
+`neutral` zeroes all corrections and elements, so `delta` is purely the *change*
+the modifiers introduce (arch dome, heel cup, posting tilt, skive cut, element
+pads/sinks). Adding `delta` to the base preserves the base's intrinsic shape.
+
+### Clinical surface quality (Phase 2)
+
+The shared height field was reworked for clinical realism (`height-field.ts`),
+so both parametric generation *and* base deformation inherit a smoother surface:
+
+- medial/lateral contributions are blended across the centerline with
+  `smoothstep` (no crease at `v = 0`);
+- a `smoothstep` heel-cup rim flows forward into a wider arch bell;
+- additive shaping is feathered toward the trimline for a natural thinning edge,
+  while the planar posting tilt stays full-strength at the edge;
+- a `softFloor` smooth-max enforces the minimum wall without a clamp crease.
+
+`applyBaseModifiers(base, field, smoothingIterations)` additionally supports an
+optional **Laplacian relaxation** of the sampled displacement field over the
+mesh topology, giving a clinically smooth top independent of the base's
+tessellation. `0` (interactive drags) keeps editing responsive; `1` when idle
+and `2` on export.
+
+### Deformation vs. boolean — the rule
+
+| Modifier                                   | Application      | Why                                                      |
+| ------------------------------------------ | ---------------- | -------------------------------------------------------- |
+| Arch height / fill, heel cup, posting tilt | **Deformation**  | Smooth, continuous surface change; preserves base detail; fast enough for live preview. |
+| Thickness                                  | Deformation      | Uniform/graded offset of the surface.                    |
+| Trimline                                   | **Boolean cut**  | Changes the footprint outline — a topology change.       |
+| Elements (pads = add, sinks = cut)         | Deformation (preview) → **Boolean** (authoritative) | Pads/sinks read as smooth bumps live; baked as exact OCCT fuse/cut on Confirm/Export. |
+| Skives                                     | Boolean cut      | Sharp wedge removal near the heel.                       |
+
+**Recommendation:** use vertex **deformation** for everything that is a smooth
+surface change (it is cheap, keeps the mesh watertight, and never fails), and
+reserve **boolean** operations for topology-changing features (trim, discrete
+add/subtract), running them only on Confirm/Export through the OCCT kernel.
+
+### OCCT boolean modifiers (`base-modifier-booleans.ts`)
+
+The topology-changing booleans are implemented in `base-modifier-booleans.ts`
+and run inside the authoritative OCCT loft (`buildOcctInsoleSolid`), reserved
+for Confirm / Export / idle:
+
+- **Trimline cutting** — `applyTrimlineCut` builds a vertical prism from the
+  closed trimline and computes `solid − (boundingBox − prism)` for a clean
+  perimeter cut. Opt-in via `InsoleParams.useBooleanTrimline` (the loft already
+  honours the trimline by width sampling, so this is for exact cuts).
+- **Discrete elements** — `applyElements` fuses additive tools (met pad/bar,
+  Cluffy/Morton's) and cuts subtractive ones (sinks, kinetic/reverse wedges).
+- **Skives / posting wedges** — `applySkives` cuts heel skive wedges.
 
 Every pass **fails soft**: on any boolean error the previous valid solid is
-kept, so the export never regresses below the deformation-only result. When the
-OCCT WASM kernel is not loaded, the booleans are simply not run and the
-deformation result (which already bakes skives/elements into the height field)
-is used as-is.
+kept, so the result never regresses below the deformation-only output, and the
+whole pass is skipped when the OCCT WASM kernel is not loaded. Wiring these
+booleans into the *base* path (`buildFromBase`) — so a loaded base GLB is sewn
+into a BRep solid and trimmed/cut exactly — is the remaining Phase 3 seam.
 
-### Scheduling / performance contract
+### Coordinate convention
 
-- Interactive frames only ever run the height-field deformation (preview tier).
-- OCCT booleans run inside the authoritative kernel build, which the geometry
-  engine schedules on the OCCT worker (or a `requestAnimationFrame` main-thread
-  fallback) on Confirm/Export/idle — never on a drag frame.
-- `geometryEngine.cancelStaleBuilds()` drops superseded drag builds.
+Bases are interpreted in **footprint mm space**: `x ∈ [0, length]` heel→toe,
+`y` across width centred on 0, `z` up. This matches what the app already exports
+via `buildExportGlb`, so a previously-saved insole loads back as a valid base.
+`applyBaseModifiers` normalises any base via its bounding box (`x→u`, `y→vSigned`)
+and weights the vertical displacement by normalised height so the flat bottom is
+preserved and only the top surface lifts. Bases should be authored as **neutral
+templates** (no corrections baked in) to avoid double-applying.
 
-## 3. Visual feedback & mode clarity
+## Preview vs. authoritative
 
-- `resolveDesignMode(design)` reports `"base"` (with the base name/id) vs
-  `"parametric"`; `hasActiveModifiers(design)` reports whether any
-  correction/element/trimline modifier is shaping the design.
-- The viewer shows a **mode badge**: a violet `Base: <name> · modifiers applied`
-  pill in base mode, or a sky `Parametric mode` pill otherwise.
-- `CustomPrefabMesh` renders the base with a **distinct violet tint and a base
-  outline overlay**, so it is obvious the user is modifying a loaded base rather
-  than a parametric shell, and that modifiers are deforming it live.
+- **Preview (interactive):** `applyBaseModifiers(baseGeometry, field)` — a pure
+  buffer-space vertical displacement. O(vertices), runs on demand, no topology
+  change, never blocks. Drives the live viewport (`BaseInsoleMesh`).
+- **Authoritative (Confirm / Export):** `IGeometryKernel.buildFromBase(base,
+  field)` returns a validated `SolidResult`. Phase 1 reuses the deformation and
+  reports manifold/topology stats; later phases sew the base into an OCCT solid
+  and apply trimline/element/skive booleans for an exact watertight result.
 
-## Fallback summary
+## Kernel interface change
 
-1. **OCCT available** → deformation preview while editing; authoritative OCCT
-   solid with boolean modifiers on Confirm/Export.
-2. **OCCT unavailable** → height-field deformation everywhere (skives/elements
-   baked into the field); watertight trimline mesh for export.
-3. **Degenerate base** (no usable extent) → `deformBaseGeometry` returns the base
-   unchanged, so the pipeline never throws.
+```ts
+export interface IGeometryKernel {
+    // ...existing
+    /** Apply design modifiers (corrections/elements) onto a base mesh. */
+    buildFromBase(base: BufferGeometry, field: HeightFieldParams, smoothingIterations?: number): SolidResult;
+}
+```
 
-All pure-parametric flows are unchanged: base mode only engages when a design
-references a custom prefab (`design.customPrefabId`).
+Implemented in both `ThreeKernel` (preview tier) and `OcctKernel`
+(authoritative tier). Both currently share the deformation implementation; the
+OCCT kernel is the seam where boolean refinement of the base lands in later
+phases. `smoothingIterations` lets callers trade smoothness for speed
+(interactive `0` vs export `2`).
+
+## Visual feedback & mode clarity
+
+`resolveDesignMode(design)` (via `getDesignBase`) reports `"base"` (with the
+base name/id) vs `"parametric"`, and `hasActiveModifiers(design)` reports
+whether any correction / element / trimline modifier is shaping the design. The
+viewer uses these to make the mode obvious:
+
+- a **mode badge** — violet `Base: <name> · modifiers applied` in base mode, or
+  a sky `Parametric mode` pill otherwise;
+- `BaseInsoleMesh` renders the base with a **distinct violet tint and a base
+  outline overlay**, so it is clear the user is modifying a loaded base and that
+  modifiers are deforming it live.
+
+## Phased rollout
+
+- **Phase 1 (done):** data model + store actions + migration; the deformation
+  modifier; `buildFromBase` on both kernels; `BaseInsoleMesh` renders a base
+  with corrections/elements applied live; export applies modifiers to the base
+  instead of passing it through raw. *Success criterion: loading a base GLB and
+  adjusting corrections visibly deforms it.*
+- **Phase 2 (done):** clinical surface-quality pass on the shared height field +
+  optional Laplacian smoothing of the displacement; OCCT boolean modifiers
+  (`base-modifier-booleans.ts`: trimline cut, element fuse/cut, skive wedges)
+  in the authoritative loft with soft fallback; visual base-vs-parametric mode
+  clarity (badge + base outline).
+- **Phase 3:** sew arbitrary base GLBs into OCCT BRep solids and apply the
+  trimline/element/skive booleans directly to the *base* path (`buildFromBase`);
+  graded thickness and shell offset on the base; posting wedges as first-class
+  boolean tools.
+- **Phase 4:** library of curated clinical base templates; per-region blend
+  weights so modifiers can be localised (e.g. medial arch only).
+
+## Migration / fallback guarantees
+
+- No base ⇒ identical to the current parametric pipeline.
+- Legacy `customPrefabId` designs resolve to a base automatically.
+- If a base fails to load or the modifier throws, the pipeline falls back to the
+  raw base mesh and then to parametric generation, so exports never hard-fail.

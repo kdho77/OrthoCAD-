@@ -107,11 +107,27 @@ export interface DesignTrimlines {
     right?: TrimlinePoint[];
 }
 
+/**
+ * Optional base template a design starts from (Base + Modifier model — see
+ * docs/base-modifier-architecture.md). When absent, the design is generated
+ * purely parametrically. When present, corrections / trimline / elements /
+ * thickness act as modifiers applied on top of this base mesh.
+ */
+export interface DesignBase {
+    /** Library / custom asset id that provides the base mesh. */
+    assetId: string;
+    name?: string;
+    /** Where to resolve the GLB from. */
+    source: "custom" | "stock";
+}
+
 export interface DesignState {
     pattern: ScanPattern;
     /** When pattern is driven by a user custom prefab. */
     customPrefabId?: string;
     customPrefabName?: string;
+    /** Optional base template; absent ⇒ full parametric generation. */
+    base?: DesignBase;
     method: ProductionMethod;
     thicknessMm: number;
     corrections: Corrections;

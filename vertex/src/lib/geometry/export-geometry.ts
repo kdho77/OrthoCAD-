@@ -2,66 +2,44 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
-import * as THREE from "three";
 import { getKernel, isAuthoritativeKernel } from "@/lib/chili3d/kernel";
-import { deformBaseForDesign } from "@/lib/geometry/base-modifier";
+import { baseModifierField, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
-import { extractPrimaryGeometry, loadGlbFromBuffer, loadGlbFromUrl } from "@/lib/library/loaders";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
-import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
-import type { Side } from "@/types";
-
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return bytes.buffer;
-}
+import type { DesignState, Side } from "@/types";
 
 /**
- * Apply the clinical modifiers (corrections / elements / trimline) to a base
- * GLB geometry as a vertical deformation for export. Uses extra smoothing for a
- * clean manufacturing surface. The input geometry is disposed.
+ * Build the base template geometry for a side with the design's modifiers
+ * (corrections / elements) applied via the active kernel. Returns `null` when
+ * the design has no base or the base mesh cannot be loaded, so callers fall
+ * back to parametric generation.
  */
-function deformBaseForExport(geo: BufferGeometry, side: Side): BufferGeometry {
-    const { design } = useDesignStore.getState();
-    const corrections = design.corrections[side];
-    const elements = design.elements.filter((e) => e.side === side);
-    const deformed = deformBaseForDesign(geo, design, side, corrections, elements, 2);
-    if (deformed !== geo) geo.dispose();
-    return deformed;
+async function buildModifiedBaseGeometry(design: DesignState, side: Side): Promise<BufferGeometry | null> {
+    const base = getDesignBase(design);
+    if (!base) return null;
+    const raw = await loadBaseGeometry(base);
+    if (!raw) return null;
+    try {
+        const field = baseModifierField(design, side, design.thicknessMm);
+        // Extra smoothing for a clean manufacturing surface on export.
+        const result = getKernel().buildFromBase(raw, field, 2);
+        return result.geometry;
+    } finally {
+        raw.dispose();
+    }
 }
 
-/** Builds export geometry for a side — deformed custom prefab base or kernel insole solid. */
+/** Builds export geometry for a side — base+modifiers or kernel insole solid. */
 export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
 
-    if (design.customPrefabId) {
-        const store = useCustomLibraryStore.getState();
-        const local = store.getLocalGlb(design.customPrefabId);
-        if (local) {
-            const group = await loadGlbFromBuffer(base64ToArrayBuffer(local.glbBase64));
-            const geo = extractPrimaryGeometry(group);
-            group.traverse((child) => {
-                if (child instanceof THREE.Mesh) {
-                    child.geometry?.dispose();
-                    (child.material as { dispose?: () => void })?.dispose?.();
-                }
-            });
-            if (geo) return deformBaseForExport(geo, side);
-        }
-        const prefab = store.customPrefabs.find((p) => p.id === design.customPrefabId);
-        if (prefab?.url) {
-            const group = await loadGlbFromUrl(prefab.url);
-            const geo = extractPrimaryGeometry(group);
-            if (geo) return deformBaseForExport(geo, side);
-        }
-    }
+    const modifiedBase = await buildModifiedBaseGeometry(design, side);
+    if (modifiedBase) return modifiedBase;
 
     return getKernel().buildInsole({
         ...insoleParamsFromDesign(design, side, "full"),
@@ -98,12 +76,11 @@ export async function buildExportStl(side: Side): Promise<ArrayBuffer> {
 export async function buildExportSolid(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
 
-    if (design.customPrefabId) {
-        // Custom prefab path is identical to the STL export — we honour the
-        // user's chosen GLB asset rather than rebuilding from the trimline.
-        const custom = await buildExportGeometry(side);
-        return custom;
-    }
+    // Base + Modifier path: honour the user's base template, with the design's
+    // corrections / elements applied on top (rather than rebuilding from the
+    // trimline). Falls through to parametric generation when there is no base.
+    const modifiedBase = await buildModifiedBaseGeometry(design, side);
+    if (modifiedBase) return modifiedBase;
 
     const params = insoleParamsFromDesign(design, side, "full");
     const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);

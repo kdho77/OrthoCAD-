@@ -1,94 +1,59 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import * as THREE from "three";
-import { heightAt, type HeightFieldParams } from "@/lib/geometry/height-field";
-import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
-import { getDesignTrimline, type TrimlineCurve } from "@/lib/geometry/trimline";
-import type { DesignState, PlacedElement, Side } from "@/types";
+import { BufferGeometry } from "three";
+import type { SolidResult } from "@/lib/chili3d/kernel";
+import { getDesignBase } from "@/lib/geometry/base-asset";
+import { type HeightFieldParams, heightAt } from "@/lib/geometry/height-field";
+import { analyzeManifold } from "@/lib/geometry/manifold";
+import type { DesignState, Side, SideCorrections } from "@/types";
 
-/**
- * Base + Modifier — deformation core.
- *
- * A *base* is an externally authored surface (a loaded GLB prefab), and the
- * clinical corrections / elements / trimline are *modifiers* applied on top of
- * it. This module owns the fast, real-time **vertical deformation** path that
- * shapes a base mesh with the shared height field (`height-field.ts`).
- *
- * Topology-changing modifiers (clean trimline cuts, discrete boolean elements,
- * posting/skive wedges) are handled separately by the OCCT boolean pipeline in
- * `base-modifier-booleans.ts`, which is reserved for Confirm / Export so live
- * editing stays responsive. See docs/base-modifier-architecture.md.
- */
+// Base + Modifier deformation core (see docs/base-modifier-architecture.md).
+//
+// Modifiers (corrections, elements) are applied to a base mesh as a vertical
+// *displacement field* derived from the shared height field, rather than as an
+// absolute surface. This preserves the base's intrinsic shape while layering on
+// the change introduced by the current corrections — fast, watertight-preserving
+// and identical between preview and the procedural authoritative path.
+//
+// Phase 2 adds: optional Laplacian smoothing of the displacement field for a
+// clinically smooth top, and mode helpers (`resolveDesignMode` /
+// `hasActiveModifiers`) that drive the viewer's base-vs-parametric feedback.
 
-export type DesignMode = "base" | "parametric";
+const ZERO_CORRECTIONS: SideCorrections = {
+    forefootPostingDeg: 0,
+    rearfootPostingDeg: 0,
+    medialSkiveMm: 0,
+    lateralSkiveMm: 0,
+    archFillMm: 0,
+    archHeightMm: 0,
+    heelCupDepthMm: 0,
+    heelCupHeightMm: 0,
+    apexMoveMm: 0,
+    medialFlangeMm: 0,
+    lateralFlangeMm: 0,
+};
 
-export interface DesignModeInfo {
-    mode: DesignMode;
-    /** Human-readable label for the active base, when in base mode. */
-    baseName?: string;
-    /** Custom prefab id backing the base, when in base mode. */
-    baseId?: string;
-}
-
-/** Resolve whether a design is modifying a loaded base GLB or is pure parametric. */
-export function resolveDesignMode(design: DesignState): DesignModeInfo {
-    if (design.customPrefabId) {
-        return { mode: "base", baseName: design.customPrefabName, baseId: design.customPrefabId };
-    }
-    return { mode: "parametric" };
-}
-
-/** True when any clinical modifier is actively shaping the design. */
-export function hasActiveModifiers(design: DesignState, side?: Side): boolean {
-    const sides: Side[] = side ? [side] : ["left", "right"];
-    for (const s of sides) {
-        const c = design.corrections[s];
-        const anyCorrection = Object.values(c).some((v) => typeof v === "number" && Math.abs(v) > 1e-3);
-        if (anyCorrection) return true;
-        if (design.elements.some((e) => e.side === s)) return true;
-        if (design.trimlines?.[s] && design.trimlines[s]!.length >= 4) return true;
-    }
-    return false;
-}
-
-export interface BaseDeformOptions {
-    side: Side;
-    corrections: HeightFieldParams["corrections"];
-    elements?: PlacedElement[];
-    trimline?: TrimlineCurve | null;
-    /**
-     * Laplacian smoothing iterations over the sampled displacement field. 0 keeps
-     * the deformation cheap for interactive drags; 1–2 yields a clinically smooth
-     * top surface for idle / confirm previews.
-     */
-    smoothingIterations?: number;
-    /** Global scale on the applied correction height (0..1). Defaults to 1. */
-    intensity?: number;
-}
-
-/**
- * Build the height field used to deform a base mesh. The base's *measured*
- * thickness becomes the field baseline, so flat regions of the base are left
- * untouched and only the clinical corrections are added on top.
- */
-function deformField(
-    options: BaseDeformOptions,
-    lengthMm: number,
-    widthMm: number,
-    baseThicknessMm: number,
-): HeightFieldParams {
+/** Neutral field (no corrections, no elements) used as the displacement baseline. */
+function neutralField(field: HeightFieldParams): HeightFieldParams {
     return {
-        side: options.side,
-        lengthMm,
-        widthMm,
-        thicknessMm: baseThicknessMm,
-        corrections: options.corrections,
-        elements: options.elements ?? [],
+        ...field,
+        corrections: ZERO_CORRECTIONS,
+        elements: [],
+        includeElements: false,
         includeSkives: true,
-        includeElements: true,
-        trimline: options.trimline ?? null,
+        trimline: null,
     };
+}
+
+/** Pure modifier contribution (mm) at a normalized footprint coordinate. */
+export function correctionDeltaAt(
+    u: number,
+    vSigned: number,
+    field: HeightFieldParams,
+    neutral: HeightFieldParams,
+): number {
+    return heightAt(u, vSigned, field) - heightAt(u, vSigned, neutral);
 }
 
 /** Adjacency list from an indexed geometry, used for Laplacian smoothing. */
@@ -106,64 +71,58 @@ function buildAdjacency(index: ArrayLike<number>, vertexCount: number): number[]
 }
 
 /**
- * Applies the shared clinical height field to a base mesh as a **vertical
- * deformation**, preserving the flat bottom.
+ * Apply the current design modifiers to a base mesh as a vertical deformation.
  *
- * Convention (matches the parametric pipeline and app-exported GLBs): the base
- * is laid out with X = length, Y = width, Z = thickness (up). The bottom of the
- * base (min-Z) stays planar; vertices are lifted toward the top in proportion
- * to how high up the wall they sit, so the bottom remains a flat print/contact
- * surface while the top takes on the arch dome, heel cup, posting and elements.
+ * The base is normalised through its bounding box (`x→u`, `y→vSigned`) and each
+ * vertex is lifted by the modifier delta, weighted by normalised height so the
+ * flat bottom is preserved and only the top surface moves. Returns a new
+ * geometry; the input is left untouched.
  *
- * Returns a new geometry; the input is not mutated. Falls back to a clone of the
- * input when the base is degenerate (no usable extent on an axis).
+ * `smoothingIterations` relaxes the sampled displacement field over the mesh
+ * topology (Laplacian) for a clinically smooth top surface independent of the
+ * base's tessellation. Pass `0` while dragging to keep editing responsive, and
+ * `1`–`2` when idle / exporting.
  */
-export function deformBaseGeometry(
-    geometry: THREE.BufferGeometry,
-    options: BaseDeformOptions,
-): THREE.BufferGeometry {
-    const out = geometry.clone();
-    const posAttr = out.getAttribute("position") as THREE.BufferAttribute | undefined;
-    if (!posAttr || posAttr.count === 0) return out;
+export function applyBaseModifiers(
+    base: BufferGeometry,
+    field: HeightFieldParams,
+    smoothingIterations = 0,
+): BufferGeometry {
+    const geometry = base.clone();
+    const pos = geometry.getAttribute("position");
+    if (!pos) return geometry;
 
-    out.computeBoundingBox();
-    const bb = out.boundingBox;
-    if (!bb) return out;
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    if (!box) return geometry;
 
-    const size = new THREE.Vector3();
-    bb.getSize(size);
-    const lenExtent = size.x;
-    const widthExtent = size.y;
-    const thickExtent = size.z;
+    const sizeX = box.max.x - box.min.x || 1;
+    const minY = box.min.y;
+    const maxY = box.max.y;
+    const cy = (minY + maxY) / 2;
+    const halfY = (maxY - minY) / 2 || 1;
+    const minZ = box.min.z;
+    const sizeZ = box.max.z - box.min.z || 1;
 
-    // Degenerate base — nothing meaningful to deform along.
-    if (lenExtent < 1e-3 || widthExtent < 1e-3 || thickExtent < 1e-3) return out;
+    const neutral = neutralField(field);
+    const array = pos.array as Float32Array;
+    const count = pos.count;
 
-    const lengthMm = lenExtent;
-    const widthMm = widthExtent;
-    const field = deformField(options, lengthMm, widthMm, thickExtent);
-    const intensity = options.intensity ?? 1;
-    const count = posAttr.count;
-
-    // 1) Sample the additive correction height at every vertex's footprint (u,v).
+    // 1) Sample the pure modifier delta at every vertex's footprint (u, vSigned).
     const delta = new Float32Array(count);
     for (let i = 0; i < count; i++) {
-        const x = posAttr.getX(i);
-        const y = posAttr.getY(i);
-        const u = (x - bb.min.x) / lenExtent;
-        const vSigned = ((y - bb.min.y) / widthExtent) * 2 - 1;
-        // heightAt returns baseThickness + corrections; subtract baseline to get
-        // the pure additive clinical shaping (0 where the base is unmodified).
-        delta[i] = heightAt(u, vSigned, field) - thickExtent;
+        const x = array[i * 3]!;
+        const y = array[i * 3 + 1]!;
+        const u = Math.max(0, Math.min(1, (x - box.min.x) / sizeX));
+        const vSigned = Math.max(-1, Math.min(1, (y - cy) / halfY));
+        delta[i] = correctionDeltaAt(u, vSigned, field, neutral);
     }
 
-    // 2) Optional Laplacian smoothing of the displacement field for clinical
-    //    smoothness independent of the base's tessellation quality.
-    const iterations = options.smoothingIterations ?? 0;
-    if (iterations > 0 && out.index) {
-        const adj = buildAdjacency(out.index.array, count);
+    // 2) Optional Laplacian relaxation of the displacement field.
+    if (smoothingIterations > 0 && geometry.index) {
+        const adj = buildAdjacency(geometry.index.array, count);
         let current = delta;
-        for (let it = 0; it < iterations; it++) {
+        for (let it = 0; it < smoothingIterations; it++) {
             const next = new Float32Array(count);
             for (let i = 0; i < count; i++) {
                 const neighbors = adj[i]!;
@@ -173,7 +132,7 @@ export function deformBaseGeometry(
                 }
                 let sum = 0;
                 for (const n of neighbors) sum += current[n]!;
-                // Blend toward the neighbour average (0.5 weight = gentle relaxation).
+                // Gentle relaxation: blend halfway toward the neighbour average.
                 next[i] = current[i]! * 0.5 + (sum / neighbors.length) * 0.5;
             }
             current = next;
@@ -181,42 +140,63 @@ export function deformBaseGeometry(
         delta.set(current);
     }
 
-    // 3) Apply the displacement along +Z, scaled by how high the vertex sits on
-    //    the base wall (topness). The flat bottom (topness = 0) is preserved.
+    // 3) Apply the displacement along +Z, weighted by height above the bottom
+    //    plane so the base footprint / flat bottom stays put.
     for (let i = 0; i < count; i++) {
-        const z = posAttr.getZ(i);
-        const topness = (z - bb.min.z) / thickExtent;
-        posAttr.setZ(i, z + delta[i]! * topness * intensity);
+        const z = array[i * 3 + 2]!;
+        const w = Math.max(0, Math.min(1, (z - minZ) / sizeZ));
+        array[i * 3 + 2] = z + delta[i]! * w;
     }
 
-    posAttr.needsUpdate = true;
-    out.computeVertexNormals();
-    out.computeBoundingBox();
-    out.computeBoundingSphere();
-    return out;
+    pos.needsUpdate = true;
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    return geometry;
 }
 
-/**
- * Convenience wrapper that pulls the modifier inputs for one side straight from
- * a design + live correction set, including the committed trimline.
- */
-export function deformBaseForDesign(
-    geometry: THREE.BufferGeometry,
-    design: DesignState,
-    side: Side,
-    corrections: HeightFieldParams["corrections"],
-    elements: PlacedElement[],
+/** Authoritative-tier result: modified base geometry + manifold/topology report. */
+export function modifiedBaseResult(
+    base: BufferGeometry,
+    field: HeightFieldParams,
     smoothingIterations = 0,
-): THREE.BufferGeometry {
-    return deformBaseGeometry(geometry, {
-        side,
-        corrections,
-        elements,
-        trimline: getDesignTrimline(design, side),
-        smoothingIterations,
-    });
+): SolidResult {
+    const geometry = applyBaseModifiers(base, field, smoothingIterations);
+    const mesh = analyzeManifold(geometry);
+    return {
+        geometry,
+        manifold: { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight },
+    };
 }
 
-/** Reference footprint extent used when a caller needs nominal base dimensions. */
-export const NOMINAL_BASE_LENGTH_MM = INSOLE_LENGTH_MM;
-export const NOMINAL_BASE_WIDTH_MM = INSOLE_WIDTH_MM;
+// --- Mode resolution (drives viewer base-vs-parametric feedback) -----------
+
+export type DesignMode = "base" | "parametric";
+
+export interface DesignModeInfo {
+    mode: DesignMode;
+    /** Human-readable label for the active base, when in base mode. */
+    baseName?: string;
+    /** Asset id backing the base, when in base mode. */
+    baseId?: string;
+}
+
+/** Resolve whether a design is modifying a loaded base template or pure parametric. */
+export function resolveDesignMode(design: DesignState): DesignModeInfo {
+    const base = getDesignBase(design);
+    if (base) return { mode: "base", baseName: base.name, baseId: base.assetId };
+    return { mode: "parametric" };
+}
+
+/** True when any clinical modifier is actively shaping the design. */
+export function hasActiveModifiers(design: DesignState, side?: Side): boolean {
+    const sides: Side[] = side ? [side] : ["left", "right"];
+    for (const s of sides) {
+        const c = design.corrections[s];
+        const anyCorrection = Object.values(c).some((v) => typeof v === "number" && Math.abs(v) > 1e-3);
+        if (anyCorrection) return true;
+        if (design.elements.some((e) => e.side === s)) return true;
+        if (design.trimlines?.[s] && design.trimlines[s]!.length >= 4) return true;
+    }
+    return false;
+}
