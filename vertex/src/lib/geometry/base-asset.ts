@@ -4,7 +4,7 @@
 import type { BufferGeometry } from "three";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
-import { extractPrimaryGeometry, loadGlbFromBuffer, loadGlbFromUrl } from "@/lib/library/loaders";
+import { extractMergedGeometry, loadGlbFromBuffer, loadGlbFromUrl } from "@/lib/library/loaders";
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import type { DesignBase, DesignState, Side } from "@/types";
@@ -44,15 +44,15 @@ export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry
     const local = store.getLocalGlb(base.assetId);
     if (local) {
         const group = await loadGlbFromBuffer(base64ToArrayBuffer(local.glbBase64));
-        const geo = extractPrimaryGeometry(group);
-        if (geo) return geo;
+        const merged = extractMergedGeometry(group);
+        if (merged) return merged.geometry;
     }
 
     const prefab = store.customPrefabs.find((p) => p.id === base.assetId);
     if (prefab?.url) {
         const group = await loadGlbFromUrl(prefab.url);
-        const geo = extractPrimaryGeometry(group);
-        if (geo) return geo;
+        const merged = extractMergedGeometry(group);
+        if (merged) return merged.geometry;
     }
 
     return null;

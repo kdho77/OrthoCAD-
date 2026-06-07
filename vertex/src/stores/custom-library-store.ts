@@ -10,6 +10,10 @@ export interface LocalGlbAsset {
     /** Base64 GLB for offline persistence. */
     glbBase64: string;
     createdAt: string;
+    /** True when imported from an external GLB upload (vs a saved modification). */
+    uploaded?: boolean;
+    /** Number of source meshes in the GLB (e.g. Top + Bottom ⇒ 2). */
+    meshCount?: number;
 }
 
 export interface CustomLibraryStore {
@@ -25,6 +29,8 @@ export interface CustomLibraryStore {
     addCustomPrefab: (item: LibraryPrefabItem, glbBase64?: string) => void;
     removeCustomElement: (id: string) => void;
     removeCustomPrefab: (id: string) => void;
+    renameCustomElement: (id: string, name: string) => void;
+    renameCustomPrefab: (id: string, name: string) => void;
     setLoading: (loading: boolean) => void;
     getLocalGlb: (id: string) => LocalGlbAsset | undefined;
 }
@@ -70,6 +76,8 @@ export const useCustomLibraryStore = create<CustomLibraryStore>()(
                             parentStockId: item.parentStockId,
                             glbBase64,
                             createdAt: item.createdAt ?? new Date().toISOString(),
+                            uploaded: item.uploaded,
+                            meshCount: item.meshCount,
                         };
                     }
                     return {
@@ -93,6 +101,24 @@ export const useCustomLibraryStore = create<CustomLibraryStore>()(
                     return {
                         customPrefabs: s.customPrefabs.filter((e) => e.id !== id),
                         localGlbs,
+                    };
+                }),
+
+            renameCustomElement: (id, name) =>
+                set((s) => {
+                    const local = s.localGlbs[id];
+                    return {
+                        customElements: s.customElements.map((e) => (e.id === id ? { ...e, name } : e)),
+                        localGlbs: local ? { ...s.localGlbs, [id]: { ...local, name } } : s.localGlbs,
+                    };
+                }),
+
+            renameCustomPrefab: (id, name) =>
+                set((s) => {
+                    const local = s.localGlbs[id];
+                    return {
+                        customPrefabs: s.customPrefabs.map((e) => (e.id === id ? { ...e, name } : e)),
+                        localGlbs: local ? { ...s.localGlbs, [id]: { ...local, name } } : s.localGlbs,
                     };
                 }),
 
