@@ -5,11 +5,9 @@ import {
     type IShapeFactory,
     type IWire,
     type Result,
-    Plane,
     ShapeTypes,
-    XYZ,
 } from "@chili3d/core";
-import { ELEMENT_PROFILES } from "@/lib/geometry/elements";
+import { applyElements, applySkives, applyTrimlineCut } from "@/lib/geometry/base-modifier-booleans";
 import {
     bump,
     type GridPoint,
@@ -19,9 +17,7 @@ import {
     resolveOutlineHalfWidth,
 } from "@/lib/geometry/height-field";
 import { repairOcctSolid } from "@/lib/geometry/repair";
-import { getCustomElementBounds } from "@/lib/geometry/custom-element-bounds";
 import type { InsoleParams } from "@/lib/geometry/insole";
-import type { PlacedElement, SideCorrections } from "@/types";
 
 function unwrap<T>(result: Result<T, string>, context: string): T {
     if (!result.isOk) throw new Error(`${context}: ${result.error}`);
@@ -121,138 +117,6 @@ export function buildBaseShell(factory: IShapeFactory, params: InsoleParams): IS
     return asSolid(factory, lofted);
 }
 
-function buildElementTool(factory: IShapeFactory, el: PlacedElement, lengthMm: number): ISolid | null {
-    if (el.kind === "custom") {
-        return buildCustomElementTool(factory, el, lengthMm);
-    }
-    const profile = ELEMENT_PROFILES[el.kind];
-    const rx = Math.max(2, profile.rxMm * el.scale.x);
-    const ry = Math.max(2, profile.ryMm * el.scale.y);
-    const h = Math.max(0.5, el.heightMm);
-    const centerX = lengthMm / 2 + el.position.x;
-    const centerY = el.position.y;
-    const angleRad = (el.rotationDeg * Math.PI) / 180;
-    const xvec = new XYZ({ x: Math.cos(angleRad), y: Math.sin(angleRad), z: 0 });
-    const yvec = new XYZ({ x: -Math.sin(angleRad), y: Math.cos(angleRad), z: 0 });
-    const origin = new XYZ({ x: centerX, y: centerY, z: 0 })
-        .add(xvec.multiply(rx * -1))
-        .add(yvec.multiply(ry * -1));
-
-    const plane = new Plane({ origin, normal: XYZ.unitZ, xvec });
-    const box = factory.box(plane, rx * 2, ry * 2, h);
-    if (!box.isOk) return null;
-    return box.value;
-}
-
-/** OCCT boolean tool for user custom GLB elements — oriented box from saved bounds. */
-function buildCustomElementTool(factory: IShapeFactory, el: PlacedElement, lengthMm: number): ISolid | null {
-    const bounds = getCustomElementBounds(el.customElementId);
-    const sx = bounds.sizeX * el.scale.x;
-    const sy = bounds.sizeY * el.scale.y;
-    const h = Math.max(0.5, bounds.sizeZ * (el.heightMm / 4));
-    const centerX = lengthMm / 2 + el.position.x;
-    const centerY = el.position.y;
-    const angleRad = (el.rotationDeg * Math.PI) / 180;
-    const xvec = new XYZ({ x: Math.cos(angleRad), y: Math.sin(angleRad), z: 0 });
-    const yvec = new XYZ({ x: -Math.sin(angleRad), y: Math.cos(angleRad), z: 0 });
-    const origin = new XYZ({ x: centerX, y: centerY, z: 0 })
-        .add(xvec.multiply(sx * -0.5))
-        .add(yvec.multiply(sy * -0.5));
-
-    const plane = new Plane({ origin, normal: XYZ.unitZ, xvec });
-    const box = factory.box(plane, sx, sy, h);
-    if (!box.isOk) return null;
-    return box.value;
-}
-
-function applyElements(factory: IShapeFactory, solid: ISolid, elements: PlacedElement[], lengthMm: number): ISolid {
-    let current: IShape = solid;
-    for (const el of elements) {
-        try {
-            const tool = buildElementTool(factory, el, lengthMm);
-            if (!tool) continue;
-            const profile = el.kind === "custom" ? { sign: 1 } : ELEMENT_PROFILES[el.kind];
-            const result =
-                profile.sign > 0
-                    ? factory.booleanFuse([current], [tool], true)
-                    : factory.booleanCut([current], [tool]);
-            if (!result.isOk) {
-                console.warn(`[occt-insole] element boolean skipped (${el.kind}): ${result.error}`);
-                continue;
-            }
-            current = repairOcctSolid(factory, result.value);
-        } catch (error) {
-            console.warn(`[occt-insole] element boolean failed (${el.kind}):`, error);
-        }
-    }
-    return current as ISolid;
-}
-
-function buildSkiveWedge(
-    factory: IShapeFactory,
-    params: {
-        lengthMm: number;
-        widthMm: number;
-        depthMm: number;
-        medial: boolean;
-        side: InsoleParams["side"];
-    },
-): ISolid | null {
-    const { lengthMm, widthMm, depthMm, medial, side } = params;
-    if (depthMm <= 0) return null;
-
-    const halfW = widthMm / 2;
-    const heelCenterX = 0.1 * lengthMm;
-    const medialSign = side === "left" ? -1 : 1;
-    const yCenter = medial ? -halfW * 0.55 * medialSign : halfW * 0.55 * medialSign;
-    const wedgeWidth = halfW * 0.45;
-    const wedgeLength = lengthMm * 0.22;
-    const wedgeHeight = depthMm + 6;
-
-    const origin = new XYZ({
-        x: heelCenterX - wedgeLength / 2,
-        y: yCenter - wedgeWidth / 2,
-        z: -1,
-    });
-    const plane = new Plane({ origin, normal: XYZ.unitZ, xvec: XYZ.unitX });
-    return unwrap(factory.box(plane, wedgeLength, wedgeWidth, wedgeHeight), "skive wedge");
-}
-
-function applySkives(
-    factory: IShapeFactory,
-    solid: ISolid,
-    corrections: SideCorrections,
-    params: Pick<InsoleParams, "lengthMm" | "widthMm" | "side">,
-): ISolid {
-    let current: IShape = solid;
-
-    for (const [depthMm, medial] of [
-        [corrections.medialSkiveMm, true],
-        [corrections.lateralSkiveMm, false],
-    ] as const) {
-        const wedge = buildSkiveWedge(factory, {
-            lengthMm: params.lengthMm,
-            widthMm: params.widthMm,
-            depthMm,
-            medial,
-            side: params.side,
-        });
-        if (!wedge) continue;
-        try {
-            const cut = factory.booleanCut([current], [wedge]);
-            if (!cut.isOk) {
-                console.warn(`[occt-insole] skive boolean skipped: ${cut.error}`);
-                continue;
-            }
-            current = cut.value;
-        } catch (error) {
-            console.warn("[occt-insole] skive boolean failed:", error);
-        }
-    }
-
-    return current as ISolid;
-}
-
 /**
  * Hollows a closed solid for shell printing. Tries OCCT offset/join first, then
  * boolean-cuts an inward offset core when join alone does not yield a closed BRep.
@@ -304,6 +168,22 @@ function applyShelling(factory: IShapeFactory, solid: ISolid, wallThicknessMm: n
 export function buildOcctInsoleSolid(factory: IShapeFactory, params: InsoleParams): ISolid {
     let solid = buildBaseShell(factory, params);
 
+    // Optional clean boolean trimline cut. The lofted base already honours the
+    // trimline via per-station width sampling, so this is opt-in (mainly for
+    // bases whose footprint must be trimmed exactly) and falls back to the
+    // lofted footprint if the boolean cannot produce a valid solid.
+    if (params.useBooleanTrimline && params.trimline) {
+        try {
+            solid = applyTrimlineCut(factory, solid, params.trimline, {
+                lengthMm: params.lengthMm,
+                widthMm: params.widthMm,
+            });
+            solid = repairOcctSolid(factory, solid) as ISolid;
+        } catch (error) {
+            console.warn("[occt-insole] trimline boolean cut failed, using lofted footprint:", error);
+        }
+    }
+
     // Skives are baked into the lofted height field; optional boolean wedges refine heel cuts.
     if (params.corrections.medialSkiveMm > 0 || params.corrections.lateralSkiveMm > 0) {
         try {
@@ -316,7 +196,13 @@ export function buildOcctInsoleSolid(factory: IShapeFactory, params: InsoleParam
 
     if ((params.elements?.length ?? 0) > 0) {
         try {
-            solid = applyElements(factory, solid, params.elements ?? [], params.lengthMm);
+            solid = applyElements(
+                factory,
+                solid,
+                params.elements ?? [],
+                params.lengthMm,
+                (shape) => repairOcctSolid(factory, shape),
+            );
             solid = repairOcctSolid(factory, solid) as ISolid;
         } catch (error) {
             console.warn("[occt-insole] element boolean pass failed:", error);
