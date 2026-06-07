@@ -1,0 +1,75 @@
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
+import type { BufferGeometry } from "three";
+import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
+import { extractPrimaryGeometry, loadGlbFromBuffer, loadGlbFromUrl } from "@/lib/library/loaders";
+import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
+import { useCustomLibraryStore } from "@/stores/custom-library-store";
+import type { DesignBase, DesignState, Side } from "@/types";
+
+// Base resolution + loading for the Base + Modifier model.
+// Centralises how a design's optional base template is discovered and turned
+// into a Three.js geometry, so the viewer hook and the export pipeline agree.
+
+/**
+ * Resolve the effective base template for a design. Prefers the explicit
+ * `design.base`, falling back to the legacy `customPrefabId` so existing saved
+ * designs migrate transparently. Returns `null` for pure parametric designs.
+ */
+export function getDesignBase(design: DesignState): DesignBase | null {
+    if (design.base) return design.base;
+    if (design.customPrefabId) {
+        return { assetId: design.customPrefabId, name: design.customPrefabName, source: "custom" };
+    }
+    return null;
+}
+
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+}
+
+/**
+ * Load the raw base mesh geometry for a design base from the custom library
+ * (local GLB blob preferred, remote URL fallback). Returns `null` when the
+ * asset cannot be resolved.
+ */
+export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry | null> {
+    const store = useCustomLibraryStore.getState();
+
+    const local = store.getLocalGlb(base.assetId);
+    if (local) {
+        const group = await loadGlbFromBuffer(base64ToArrayBuffer(local.glbBase64));
+        const geo = extractPrimaryGeometry(group);
+        if (geo) return geo;
+    }
+
+    const prefab = store.customPrefabs.find((p) => p.id === base.assetId);
+    if (prefab?.url) {
+        const group = await loadGlbFromUrl(prefab.url);
+        const geo = extractPrimaryGeometry(group);
+        if (geo) return geo;
+    }
+
+    return null;
+}
+
+/** Height field (with live correction/element previews) for modifier application. */
+export function baseModifierField(design: DesignState, side: Side, thicknessMm: number): HeightFieldParams {
+    const params = insoleParamsFromDesign({ ...design, thicknessMm }, side, "full");
+    return {
+        side,
+        lengthMm: params.lengthMm,
+        widthMm: params.widthMm,
+        thicknessMm,
+        corrections: mergeCorrections(side, design.corrections[side]),
+        elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
+        includeSkives: true,
+        includeElements: true,
+        trimline: null,
+    };
+}
