@@ -130,3 +130,8 @@ The foundation here lets each correction/element flow into the OCCT solid:
   smoother tops, build the trimline as an exact OCCT wire (instead of
   per-station width sampling), and add posting wedges / forefoot extensions as
   first-class boolean tools.
+
+See [`base-modifier-architecture.md`](./base-modifier-architecture.md) for the
+Base + Modifier system built on top of this foundation: loading a GLB **base**
+and applying corrections as a real-time **vertical deformation**, plus the
+Phase 2 **OCCT boolean** modifiers (trimline cut, discrete elements, skives).
