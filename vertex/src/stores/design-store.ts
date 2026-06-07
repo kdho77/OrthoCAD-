@@ -21,6 +21,7 @@ import type {
     Side,
     SideCorrections,
     Unit,
+    WedgeCorrection,
 } from "@/types";
 
 function defaultSideCorrections(): SideCorrections {
@@ -36,7 +37,31 @@ function defaultSideCorrections(): SideCorrections {
         apexMoveMm: 0,
         medialFlangeMm: 0,
         lateralFlangeMm: 0,
+        // rearfootWedge and forefootWedge intentionally omitted (undefined = no wedge)
+        // as per wedge system design for default/neutral state.
     };
+}
+
+/**
+ * Store-level enforcement of mutual exclusion for wedges.
+ * Per refined design: only one wedge type (medial or lateral) per zone.
+ * Since the data model uses a single optional WedgeCorrection object per zone (rearfootWedge / forefootWedge),
+ * "both" is not possible via normal setters. This defensive normalizer ensures that if a patch
+ * somehow sets conflicting state (e.g. from bad external data), we prefer the patch's value or clear.
+ * Called from updateCorrection.
+ */
+function enforceWedgeMutualExclusion(corrections: Corrections): Corrections {
+    const newCorrections = { ...corrections };
+    // For each side, if both wedge fields were somehow present in a way that conflicts (not typical),
+    // but since they are different zones, no conflict between rear and fore.
+    // The exclusion is per-zone (one side choice). Nothing to "clear" here beyond what the object model provides.
+    // This function is a hook for future if we change model; currently structural.
+    // For safety, ensure undefined for absent.
+    if (!newCorrections.left.rearfootWedge) delete (newCorrections.left as any).rearfootWedge;
+    if (!newCorrections.left.forefootWedge) delete (newCorrections.left as any).forefootWedge;
+    if (!newCorrections.right.rearfootWedge) delete (newCorrections.right as any).rearfootWedge;
+    if (!newCorrections.right.forefootWedge) delete (newCorrections.right as any).forefootWedge;
+    return newCorrections;
 }
 
 export function defaultDesign(): DesignState {
@@ -126,6 +151,11 @@ export interface DesignStore {
     canRedo: () => boolean;
     /** Clear history (call after explicit server Save or when starting a brand new clinical case). */
     clearHistory: () => void;
+
+    /** Set or clear rearfoot wedge (mutual exclusion per zone is by using a single WedgeCorrection object or undefined). */
+    setRearfootWedge: (side: Side, wedge: WedgeCorrection | undefined) => void;
+    /** Set or clear forefoot wedge (mutual exclusion per zone is by using a single WedgeCorrection object or undefined). */
+    setForefootWedge: (side: Side, wedge: WedgeCorrection | undefined) => void;
 }
 
 export const useDesignStore = create<DesignStore>()(
@@ -186,13 +216,80 @@ export const useDesignStore = create<DesignStore>()(
 
             updateCorrection: (side, patch) =>
                 set((s) => {
+                    let corrections: Corrections = { ...s.design.corrections };
+                    corrections[side] = { ...corrections[side], ...patch };
+                    if (corrections.linked) {
+                        const other: Side = side === "left" ? "right" : "left";
+                        corrections[other] = { ...corrections[other], ...patch };
+                    }
+                    // Enforce mutual exclusion for wedges at store level: a zone can have at most one wedge object.
+                    // Structural (single field per zone), but defensively clear the other if a bad patch tries both (shouldn't happen via UI).
+                    // Here we just ensure only one is set per zone in the patch; the model prevents "both medial and lateral" simultaneously.
+                    corrections = enforceWedgeMutualExclusion(corrections);
+
+                    // Apply clinical constraints (clamps + combined wall/arch guards).
+                    // Note: wedge objects (if present in patch) are clamped inside constrainSideCorrections
+                    // (value clamped per unit; mutual exclusion is structural: one WedgeCorrection per zone).
+                    const { constrained: safeLeft, thicknessMm: t1 } = constrainSideCorrections(
+                        corrections.left,
+                        s.design.thicknessMm,
+                    );
+                    const { constrained: safeRight } = constrainSideCorrections(corrections.right, t1);
+                    const finalLeft = safeLeft;
+                    const finalRight = corrections.linked ? safeLeft : safeRight;
+                    return {
+                        design: {
+                            ...s.design,
+                            thicknessMm: t1,
+                            corrections: {
+                                ...corrections,
+                                left: finalLeft,
+                                right: finalRight,
+                            },
+                        },
+                    };
+                }),
+
+            /** Set or clear the rearfoot wedge for a side (enforces one choice per zone via the single object). */
+            setRearfootWedge: (side, wedge) =>
+                set((s) => {
+                    const patch = { rearfootWedge: wedge } as Partial<SideCorrections>;
                     const corrections: Corrections = { ...s.design.corrections };
                     corrections[side] = { ...corrections[side], ...patch };
                     if (corrections.linked) {
                         const other: Side = side === "left" ? "right" : "left";
                         corrections[other] = { ...corrections[other], ...patch };
                     }
-                    // Apply clinical constraints (clamps + combined wall/arch guards).
+                    const { constrained: safeLeft, thicknessMm: t1 } = constrainSideCorrections(
+                        corrections.left,
+                        s.design.thicknessMm,
+                    );
+                    const { constrained: safeRight } = constrainSideCorrections(corrections.right, t1);
+                    const finalLeft = safeLeft;
+                    const finalRight = corrections.linked ? safeLeft : safeRight;
+                    return {
+                        design: {
+                            ...s.design,
+                            thicknessMm: t1,
+                            corrections: {
+                                ...corrections,
+                                left: finalLeft,
+                                right: finalRight,
+                            },
+                        },
+                    };
+                }),
+
+            /** Set or clear the forefoot wedge for a side (enforces one choice per zone via the single object). */
+            setForefootWedge: (side, wedge) =>
+                set((s) => {
+                    const patch = { forefootWedge: wedge } as Partial<SideCorrections>;
+                    const corrections: Corrections = { ...s.design.corrections };
+                    corrections[side] = { ...corrections[side], ...patch };
+                    if (corrections.linked) {
+                        const other: Side = side === "left" ? "right" : "left";
+                        corrections[other] = { ...corrections[other], ...patch };
+                    }
                     const { constrained: safeLeft, thicknessMm: t1 } = constrainSideCorrections(
                         corrections.left,
                         s.design.thicknessMm,

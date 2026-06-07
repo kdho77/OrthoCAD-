@@ -32,6 +32,8 @@ const ZERO_CORRECTIONS: SideCorrections = {
     apexMoveMm: 0,
     medialFlangeMm: 0,
     lateralFlangeMm: 0,
+    // wedge fields intentionally absent (undefined) for neutral / baseline
+    // calculations — see neutralField and wedge system design.
 };
 
 /**
@@ -50,7 +52,14 @@ function neutralField(field: HeightFieldParams): HeightFieldParams {
         // Fixed baseline thickness so the thickness slider produces a real delta
         // (top lifts upward) instead of cancelling out in `correctionDeltaAt`.
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
-        corrections: ZERO_CORRECTIONS,
+        // Explicitly strip wedge fields so wedgeDeltaAt returns 0 for neutral.
+        // (Wedges are surface corrections; their absence in neutral ensures
+        // they contribute fully to the delta applied on top of a base.)
+        corrections: {
+            ...ZERO_CORRECTIONS,
+            rearfootWedge: undefined,
+            forefootWedge: undefined,
+        },
         elements: [],
         includeElements: false,
         includeSkives: true,
@@ -301,12 +310,16 @@ export function detectArchSideSign(base: BufferGeometry): number {
 /**
  * Apply the current design modifiers to a base mesh as a vertical deformation.
  *
- * Vertices are classified into a top sheet / bottom sheet / side walls (via
- * `classifyBaseTopFactors`) and lifted by the modifier delta weighted by their
- * top factor, so the **original bottom surface is preserved** while only the top
- * and side walls respond to corrections / trimline / thickness. When the base
- * has no recognisable bottom, it falls back to a plain normalised-height weight
- * (the previous behaviour). Returns a new geometry; the input is untouched.
+ * The modifier delta (from the shared height field) is sampled per-vertex using
+ * footprint (u, v) coordinates derived from the geometry's extents (orientation
+ * robust). The same delta is added to *all* vertices along the detected up axis.
+ * This preserves exact relative alignment/separation between layers in multi-mesh
+ * "Top" + "Bottom" GLB bases (and the overall shell shape for single-mesh bases).
+ *
+ * `classifyBaseTopFactors` is still used for arch-side inference and validation.
+ * Laplacian smoothing (if requested) operates on the full displacement field.
+ *
+ * Returns a new geometry; the input is untouched.
  *
  * `smoothingIterations` relaxes the sampled displacement field over the mesh
  * topology (Laplacian) for a clinically smooth top surface independent of the
@@ -349,6 +362,12 @@ export function applyBaseModifiers(
     // back to a normalised-height weight when no bottom can be identified.
     const topFactors = classifyBaseTopFactors(base);
 
+    // For explicit multi-mesh bases ("Top" + "Bottom" sub-meshes from GLB), we
+    // want the *authored relative positions* (separation/alignment between the
+    // two layers) to be preserved exactly. Use uniform (w=1) delta for every
+    // vertex. The classification is still useful for other inferences.
+    const isMultiMesh = !!(base as any).userData?.isMultiMeshBase;
+
     // Orient the footprint width so the medial arch lands on the anatomically
     // medial side for this foot (instead of assuming the bbox +width is medial).
     const medialSign = field.side === "left" ? -1 : 1;
@@ -387,12 +406,20 @@ export function applyBaseModifiers(
         delta.set(current);
     }
 
-    // 3) Apply the displacement along the thickness (up) axis, weighted by the
-    //    per-vertex top factor (or normalised height as a fallback), so the
-    //    bottom sheet stays put and only the top surface / side walls move.
+    // 3) Apply the displacement along the thickness (up) axis, weighted by top
+    //    factor *except* for explicit multi-mesh bases (see flag set in
+    //    extractMergedGeometry). For Top+Bottom GLBs we use uniform delta so the
+    //    two layers keep their exact authored relative alignment/separation.
+    //
+    //    Note on wedges: wedge deltas (computed inside heightAt / correctionDeltaAt)
+    //    are part of the total `delta` array. Therefore they are subject to the
+    //    same `isMultiMeshBase` uniform rule. This means surface wedges are applied
+    //    to the entire imported template (both layers) when a multi-mesh base is
+    //    loaded — preserving the template's own Top/Bottom separation while still
+    //    delivering the wedge as an additive plantar surface feature.
     for (let i = 0; i < count; i++) {
         const t = array[i * 3 + thickAxis]!;
-        const w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
+        const w = isMultiMesh ? 1 : (topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize)));
         array[i * 3 + thickAxis] = t + delta[i]! * w;
     }
 

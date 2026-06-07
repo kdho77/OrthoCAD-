@@ -165,6 +165,16 @@ export function extractMergedGeometry(group: THREE.Group): MergedGlbGeometry | n
     geometry.computeVertexNormals();
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
+
+    // Mark multi-mesh bases so that applyBaseModifiers can preserve exact
+    // relative alignment between "Top" and "Bottom" layers (uniform delta
+    // instead of topFactor-weighted, which would anchor one layer).
+    if (meshCount > 1) {
+        geometry.userData = geometry.userData || {};
+        (geometry.userData as any).isMultiMeshBase = true;
+        (geometry.userData as any).sourceMeshNames = meshNames;
+    }
+
     return { geometry, meshCount, meshNames };
 }
 

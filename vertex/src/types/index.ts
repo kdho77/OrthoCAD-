@@ -25,6 +25,16 @@ export type ScanPattern =
 
 export type ExportFormat = "stl" | "gcode" | "glb";
 
+/** Wedge correction specification for rearfoot or forefoot zone. */
+export interface WedgeCorrection {
+    /** Which edge to raise. */
+    side: "medial" | "lateral";
+    /** Positive user-entered value. */
+    value: number;
+    /** Raw unit. Degrees are resolved against current local width at eval time. */
+    unit: "mm" | "deg";
+}
+
 export interface UserProfile {
     id: string;
     email: string;
@@ -58,6 +68,14 @@ export interface SideCorrections {
     apexMoveMm: number;
     medialFlangeMm: number;
     lateralFlangeMm: number;
+
+    /**
+     * New medial/lateral wedge system (surface modifications on the plantar/top).
+     * Only one wedge (medial or lateral) per zone is allowed (enforced by UI + single object).
+     * Stored as raw user input; resolution (esp. for degrees) happens at evaluation time.
+     */
+    rearfootWedge?: WedgeCorrection;
+    forefootWedge?: WedgeCorrection;
 }
 
 export interface Corrections {

@@ -1,7 +1,37 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import type { SideCorrections } from "@/types";
+import type { SideCorrections, WedgeCorrection } from "@/types";
+
+/**
+ * ClinicalSpec for structured clinical rules (added for wedge system completeness).
+ * Allows future expansion for per-field rules, unit-aware limits, and export validation.
+ */
+export interface ClinicalSpec {
+  min: number;
+  max: number;
+  unit?: "mm" | "deg" | "mixed";
+  description: string;
+  isCritical?: boolean; // if true, blocks export
+}
+
+// Example ClinicalSpec entries for wedges (per refined design)
+export const WEDGE_CLINICAL_SPECS: Record<string, ClinicalSpec> = {
+  rearfootWedge: {
+    min: 0,
+    max: 10,
+    unit: "mixed", // mm or deg (value interpretation depends on unit in object)
+    description: "Rearfoot medial/lateral wedge (surface raise on plantar side)",
+    isCritical: false, // soft warning; hard clamp only
+  },
+  forefootWedge: {
+    min: 0,
+    max: 10,
+    unit: "mixed",
+    description: "Forefoot medial/lateral wedge (surface raise on plantar side)",
+    isCritical: false,
+  },
+};
 
 /**
  * Clinical production constraints for orthotic insole design.
@@ -29,6 +59,12 @@ export const CLINICAL_LIMITS = {
     apexMoveMm: { min: -12, max: 12 },
     medialFlangeMm: { min: 0, max: 8.0 },
     lateralFlangeMm: { min: 0, max: 8.0 },
+    // Wedge limits (per the wedge design). Applied to the .value inside the wedge object.
+    // mm: absolute raise on the edge. deg: angle (converted internally for clamping).
+    rearfootWedgeMm: { min: 0, max: 10 },
+    rearfootWedgeDeg: { min: 0, max: 12 },
+    forefootWedgeMm: { min: 0, max: 10 },
+    forefootWedgeDeg: { min: 0, max: 12 },
 } as const;
 
 export const MIN_WALL_MM = 1.6; // absolute production minimum wall after all shaping
@@ -178,6 +214,38 @@ export function constrainSideCorrections(
         });
     }
 
+    // --- Wedge clamps (object fields per design) ---
+    // Wedges are {side, value, unit}. We clamp the .value using unit-specific limits from CLINICAL_LIMITS.
+    // mm = absolute edge raise on the chosen side (tapers linearly to 0 opposite).
+    // deg = angle; maxRaise computed at runtime in wedgeDeltaAt using current local width.
+    // We clamp the input 'value' here (deg value or mm value).
+    // No combined wall adjustment for wedges (they raise one side and taper to 0; they do not "eat" material).
+    // Uses ClinicalSpec for documentation and future hard/soft classification.
+    const wedgeKeys: Array<keyof SideCorrections> = ["rearfootWedge", "forefootWedge"];
+    for (const key of wedgeKeys) {
+        const w = (c as any)[key] as WedgeCorrection | undefined;
+        if (!w) continue;
+
+        const spec = WEDGE_CLINICAL_SPECS[key as string] || { min: 0, max: 10, description: String(key) };
+        const limKey = w.unit === "mm" 
+            ? (key === "rearfootWedge" ? "rearfootWedgeMm" : "forefootWedgeMm")
+            : (key === "rearfootWedge" ? "rearfootWedgeDeg" : "forefootWedgeDeg");
+        const lim = (CLINICAL_LIMITS as any)[limKey] || { min: 0, max: 10 };
+
+        const rawVal = w.value;
+        const res = clamp(rawVal, lim.min, lim.max, key);
+        if (res.value !== rawVal) {
+            (c as any)[key] = { ...w, value: res.value };
+            const isCritical = spec.isCritical;
+            v.push({
+                field: key,
+                message: `${isCritical ? "Hard limit" : "Soft warning"}: Clamped ${key} (${w.side}, ${w.unit}) to ${res.value} (${spec.description})`,
+                requested: rawVal,
+                applied: res.value,
+            });
+        }
+    }
+
     return { constrained: c, thicknessMm: t, violations: v };
 }
 
@@ -192,12 +260,19 @@ export function constrainDesignCorrections(
     let r2 = constrainSideCorrections(right, r1.thicknessMm);
     if (linked) {
         // When linked, force symmetry after individual clamping (use the more restrictive result).
+        // For wedges (objects), mirror the left wedge exactly (same side/ value/ unit) rather than averaging,
+        // since wedges are directional surface features and mutual exclusion is per-zone.
+        const leftWedge = r1.constrained.rearfootWedge;
+        const rightWedge = r1.constrained.forefootWedge; // use left's for symmetry
         const merged = constrainSideCorrections(
             {
                 ...r1.constrained,
-                // average extremes slightly toward safety
+                // average extremes slightly toward safety for scalar postings
                 forefootPostingDeg: (r1.constrained.forefootPostingDeg + r2.constrained.forefootPostingDeg) / 2,
                 rearfootPostingDeg: (r1.constrained.rearfootPostingDeg + r2.constrained.rearfootPostingDeg) / 2,
+                // Mirror wedges for linked symmetry (do not average objects)
+                rearfootWedge: leftWedge,
+                forefootWedge: rightWedge,
             },
             r2.thicknessMm,
         );
@@ -220,4 +295,9 @@ export function constrainDesignCorrections(
 /** Quick boolean for UI "is this state production-viable". */
 export function hasCriticalViolations(violations: ConstraintViolation[]): boolean {
     return violations.some((vi) => vi.field === "combined" || vi.field === "thickness");
+}
+
+/** Soft warnings for wedge values approaching limits (non-blocking but shown in UI). */
+export function hasWedgeViolations(violations: ConstraintViolation[]): boolean {
+    return violations.some((vi) => vi.field === "rearfootWedge" || vi.field === "forefootWedge");
 }

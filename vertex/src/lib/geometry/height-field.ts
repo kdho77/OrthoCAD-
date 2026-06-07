@@ -2,6 +2,7 @@ import type { PlacedElement, Side, SideCorrections } from "@/types";
 import { elementHeightAt } from "@/lib/geometry/elements";
 import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
+import { wedgeDeltaAt } from "@/lib/geometry/wedge";
 
 // Shared parametric height field for insole surfaces. Used by both the procedural
 // Three.js mesher and the OpenCascade solid builder so corrections stay aligned.
@@ -127,13 +128,54 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const archAcross = medialBlend * (0.45 + 0.55 * smoothstep(0.05, 0.9, av));
     shaped += (c.archHeightMm + c.archFillMm) * arch * archAcross;
 
-    // --- Heel cup --------------------------------------------------------------
-    // Smooth rim (smoothstep, not pow) that flows forward into the arch region.
-    const heel = bump(u, 0.1, 0.18);
+    const heel = bump(u, 0.1, 0.18); // longitudinal heel region (used by cup + skives)
+
+    // --- Heel cup (U-shaped 3D cup) -------------------------------------------
+    // Redesigned to produce a true U-shaped raised rim around the heel:
+    // medial wall + posterior (back) wall + lateral wall.
+    // This creates an enclosed depression so the heel sits cradled in a deeper cup
+    // rather than just a medial-lateral channel.
+    //
+    // - heelCupDepthMm controls the rim raise (additive height on the U walls).
+    //   Per requirements, this value represents (controls) the height from the
+    //   print surface / bottom (z=0) to the top of the cup rim in the final contour.
+    //   The actual final thickness at rim is thickness + baseline + shaped_rim + ...
+    //   The param provides the clinical "cup depth" raise on top of base.
+    // - The cup floor (center/back seat) is relieved (lowered z) relative to the rim
+    //   for "deeper" enclosure.
+    // - Smooth blending (bump + smoothstep) with no hard edges or ridges.
+    // - Blends forward into the arch (heel factor fades).
+    // - Works for both parametric height field and Base+Modifier (the delta from
+    //   heightAt is applied only to high topFactor vertices on imported bases,
+    //   preserving the base's bottom sheet).
+    // - Bottom surface remains flat (z=0) by design of the height field model.
+    // - Interacts with rearfoot posting (planar tilt applied after, on top of cup)
+    //   and new rearfoot wedges (additional side raise on top of cup walls).
+    // - Robust to trimline (av and resolve are always w.r.t. current outline edges).
+
+    // Legacy side rim raise using heelCupHeightMm (kept for backward compat / extra control).
     const rim = smoothstep(0.18, 0.95, av);
     shaped += c.heelCupHeightMm * heel * rim;
-    // Slight centre relief so the heel seats into a cup.
-    shaped += c.heelCupDepthMm * heel * (1 - smoothstep(0, 0.7, av)) * 0.5;
+
+    // Medial + lateral walls (the legs of the U) — raised on the current edges
+    // within the heel region (main U contribution from depth).
+    const sideWall = smoothstep(0.55, 0.92, av); // 0 near center line → 1 at edges
+    shaped += c.heelCupDepthMm * heel * sideWall * 0.65;
+
+    // Posterior wall (the bottom of the U / back lip) — raised at the very heel end
+    // (low u), wrapping across the width to connect the side walls and enclose the back.
+    // High across most of the heel width at the posterior, fading at extreme edges
+    // (sides already covered by sideWall).
+    const posteriorWall = smoothstep(0.07, 0.0, u) * (1 - smoothstep(0.7, 0.95, av));
+    shaped += c.heelCupDepthMm * posteriorWall * 0.85;
+
+    // Cup floor relief — lowers the central seat area (slightly forward of the
+    // posterior wall, around u=0.12, v~0) to create the actual depression/"deeper"
+    // cup. The floor sits lower than the rim by a fraction of the depth param.
+    // This, combined with the raised U, produces the enclosed 3D cup.
+    const floorSeat = bump(u, 0.13, 0.12); // location of the heel seat
+    const floorCenter = 1 - smoothstep(0.35, 0.75, av); // high near v=0 (center line)
+    shaped -= c.heelCupDepthMm * 0.35 * floorSeat * floorCenter;
 
     // --- Skives (medial/lateral heel) -----------------------------------------
     const includeSkives = params.includeSkives ?? true;
@@ -166,7 +208,18 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const fore = bump(u, 0.82, 0.24);
     posting += Math.tan(c.forefootPostingDeg * DEG) * post * fore;
 
-    let h = softFloor(thicknessMm + baseline + shaped + posting, 0.8);
+    // --- Medial / Lateral surface wedges (new system) -------------------------
+    // Applied after posting/flanges (so they are surface features on the already
+    // tilted/posted shell) but before discrete elements. Uses the current
+    // trimline-aware outline for both the cross position and (for degrees) the
+    // local width used to convert angle → physical raise.
+    const wedge = wedgeDeltaAt(u, vSigned, side, c, {
+        lengthMm,
+        widthMm,
+        trimline: params.trimline,
+    });
+
+    let h = softFloor(thicknessMm + baseline + shaped + posting + wedge, 0.8);
 
     // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).
     // The graph is the new clinical source of truth when present; the flat

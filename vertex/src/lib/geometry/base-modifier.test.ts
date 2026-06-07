@@ -11,7 +11,9 @@ import {
     validateBaseResult,
 } from "./base-modifier";
 import type { HeightFieldParams } from "./height-field";
+import { heightAt } from "./height-field";
 import type { Side, SideCorrections } from "@/types";
+import { wedgeDeltaAt, getRearfootFactor, getForefootFactor } from "./wedge";
 
 // --- Synthetic base mesh -----------------------------------------------------
 // A closed (watertight) insole-like slab: flat bottom at thickness 0, a domed
@@ -124,6 +126,7 @@ function corrections(): SideCorrections {
         apexMoveMm: 0,
         medialFlangeMm: 0,
         lateralFlangeMm: 0,
+        // wedge fields omitted (optional) — wedges not exercised in these base tests
     };
 }
 
@@ -207,5 +210,130 @@ describe("base-modifier medial/lateral inference", () => {
         const modified = applyBaseModifiers(base, field("right"), 0);
         const metrics = validateBaseResult(base, modified);
         expect(metrics.maxBottomDeltaMm).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM);
+    });
+});
+
+describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
+    const baseParams = (overrides: Partial<HeightFieldParams> = {}): HeightFieldParams => ({
+        side: "right",
+        lengthMm: 260,
+        widthMm: 90,
+        thicknessMm: 3,
+        corrections: {
+            forefootPostingDeg: 0,
+            rearfootPostingDeg: 0,
+            medialSkiveMm: 0,
+            lateralSkiveMm: 0,
+            archFillMm: 0,
+            archHeightMm: 0,
+            heelCupDepthMm: 0,
+            heelCupHeightMm: 0,
+            apexMoveMm: 0,
+            medialFlangeMm: 0,
+            lateralFlangeMm: 0,
+        },
+        ...overrides,
+    });
+
+    test("mm medial rearfoot: raises medial edge, tapers to 0 lateral, zone limited", () => {
+        const w = { side: "medial" as const, value: 5, unit: "mm" as const };
+        const p = baseParams({ corrections: { ...baseParams().corrections, rearfootWedge: w } });
+        // At heel u=0.05, v medial (m~1 for right? adjust sign), expect ~5 * zoneFactor(~1)
+        const atMedialHeel = wedgeDeltaAt(0.05, -0.9, "right", p.corrections, p); // vSigned negative for medial on right? use consistent
+        expect(atMedialHeel).toBeGreaterThan(4.5);
+        // Lateral side should be near 0
+        const atLateralHeel = wedgeDeltaAt(0.05, 0.9, "right", p.corrections, p);
+        expect(atLateralHeel).toBeLessThan(0.5);
+        // Midfoot fade
+        const atMid = wedgeDeltaAt(0.4, -0.5, "right", p.corrections, p);
+        expect(atMid).toBeLessThan(2);
+    });
+
+    test("degrees forefoot lateral: raise scales with local width (trimline aware)", () => {
+        const w = { side: "lateral" as const, value: 5, unit: "deg" as const };
+        const fullP = baseParams({ corrections: { ...baseParams().corrections, forefootWedge: w } });
+        const fullAtFore = wedgeDeltaAt(0.8, 0.8, "right", fullP.corrections, fullP); // approx lateral for right
+        // With trimline that halves width at forefoot
+        const narrowTrim: any = [{ x: 200, y: 20, z: 0 }, { x: 220, y: -20, z: 0 }]; // minimal for test
+        const narrowP = baseParams({ 
+            corrections: { ...baseParams().corrections, forefootWedge: w },
+            trimline: narrowTrim,
+            widthMm: 90,
+        });
+        const narrowAtFore = wedgeDeltaAt(0.8, 0.8, "right", narrowP.corrections, narrowP);
+        // Narrow should have significantly smaller raise (tan(5°) * smaller width)
+        expect(narrowAtFore).toBeLessThan(fullAtFore * 0.6);
+        expect(narrowAtFore).toBeGreaterThan(0);
+    });
+
+    test("zero/negative value or out of zone -> 0", () => {
+        const neg = { side: "medial" as const, value: -3, unit: "mm" as const };
+        const p = baseParams({ corrections: { ...baseParams().corrections, rearfootWedge: neg } });
+        expect(wedgeDeltaAt(0.1, 0, "left", p.corrections, p)).toBe(0);
+
+        const zeroW = { side: "lateral" as const, value: 0, unit: "deg" as const };
+        const p2 = baseParams({ corrections: { ...baseParams().corrections, forefootWedge: zeroW } });
+        expect(wedgeDeltaAt(0.7, 0, "right", p2.corrections, p2)).toBe(0);
+
+        // Out of zone (u=0.5 mid)
+        const p3 = baseParams({ corrections: { ...baseParams().corrections, rearfootWedge: {side:"medial", value:4, unit:"mm"} } });
+        expect(wedgeDeltaAt(0.5, 0, "right", p3.corrections, p3)).toBeLessThan(1);
+    });
+
+    test("composes additively with arch (no interference)", () => {
+        const w = { side: "medial" as const, value: 4, unit: "mm" as const };
+        const p = baseParams({ 
+            corrections: { 
+                ...baseParams().corrections, 
+                rearfootWedge: w,
+                archHeightMm: 6,
+            } 
+        });
+        const h = heightAt(0.1, -0.7, p); // medial rear
+        // Should be > arch alone (wedge adds on top)
+        const pNoW = { ...p, corrections: { ...p.corrections, rearfootWedge: undefined } };
+        const hNoW = heightAt(0.1, -0.7, pNoW);
+        expect(h).toBeGreaterThan(hNoW + 3);
+    });
+
+    test("factors exported for test/debug", () => {
+        expect(getRearfootFactor(0.1)).toBeGreaterThan(0.9);
+        expect(getForefootFactor(0.9)).toBeGreaterThan(0.9);
+        expect(getRearfootFactor(0.5)).toBeLessThan(0.5);
+    });
+
+    test("wedge delta flows through heightAt and applyBaseModifiers (single-mesh weighted, multi-mesh uniform)", () => {
+        const w = { side: "medial" as const, value: 5, unit: "mm" as const };
+        const p = baseParams({ 
+            corrections: { 
+                ...baseParams().corrections, 
+                rearfootWedge: w 
+            } 
+        });
+
+        // Direct delta
+        const delta = wedgeDeltaAt(0.1, -0.8, "right", p.corrections, p);
+        expect(delta).toBeGreaterThan(4);
+
+        // Through heightAt (adds to base height)
+        const hWith = heightAt(0.1, -0.8, p);
+        const pNoWedge = { ...p, corrections: { ...p.corrections, rearfootWedge: undefined } };
+        const hNo = heightAt(0.1, -0.8, pNoWedge);
+        expect(hWith).toBeGreaterThan(hNo + 4);
+
+        // Apply on single-mesh (uses topFactors, wedge should affect high-factor "top" more)
+        const base = makeBase();
+        const modifiedSingle = applyBaseModifiers(base, p, 0);
+        const metricsSingle = validateBaseResult(base, modifiedSingle);
+        // Bottom (low factor) movement small even with wedge (weighted)
+        expect(metricsSingle.maxBottomDeltaMm).toBeLessThan(2); // wedge affects but weighted for single
+
+        // Multi-mesh: set flag, wedge delta applied uniformly (full move on "bottom" layer too, preserving alignment)
+        const multiBase = makeBase();
+        (multiBase as any).userData = { isMultiMeshBase: true };
+        const modifiedMulti = applyBaseModifiers(multiBase, p, 0);
+        // In multi, bottom layer gets full delta (including wedge), so maxBottom larger
+        const metricsMulti = validateBaseResult(multiBase, modifiedMulti);
+        expect(metricsMulti.maxBottomDeltaMm).toBeGreaterThan(3); // full wedge applied
     });
 });
