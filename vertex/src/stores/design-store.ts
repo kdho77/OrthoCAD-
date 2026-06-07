@@ -5,6 +5,7 @@ import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type {
     Corrections,
+    DesignBase,
     DesignState,
     ElementKind,
     PlacedElement,
@@ -84,6 +85,11 @@ export interface DesignStore {
     setTransformMode: (mode: TransformMode) => void;
     setCustomPrefab: (customPrefabId: string, customPrefabName: string) => void;
 
+    /** Set the base template the design starts from (Base + Modifier model). */
+    setBase: (base: DesignBase) => void;
+    /** Remove the base template and revert to full parametric generation. */
+    clearBase: () => void;
+
     /** Atomically apply an AI-parsed prescription to the design. */
     applyPrescription: (result: PrescriptionParseResult) => void;
 
@@ -114,7 +120,7 @@ export const useDesignStore = create<DesignStore>()(
                         pattern,
                         ...(pattern === "custom"
                             ? {}
-                            : { customPrefabId: undefined, customPrefabName: undefined }),
+                            : { customPrefabId: undefined, customPrefabName: undefined, base: undefined }),
                     },
                 })),
             setMethod: (method) => set((s) => ({ design: { ...s.design, method } })),
@@ -183,6 +189,30 @@ export const useDesignStore = create<DesignStore>()(
                         pattern: "custom",
                         customPrefabId,
                         customPrefabName,
+                        // Keep the canonical base in sync so modifiers apply to it.
+                        base: { assetId: customPrefabId, name: customPrefabName, source: "custom" },
+                    },
+                })),
+
+            setBase: (base) =>
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        pattern: "custom",
+                        base,
+                        customPrefabId: base.assetId,
+                        customPrefabName: base.name,
+                    },
+                })),
+
+            clearBase: () =>
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        pattern: s.design.pattern === "custom" ? "full_contact" : s.design.pattern,
+                        base: undefined,
+                        customPrefabId: undefined,
+                        customPrefabName: undefined,
                     },
                 })),
 
