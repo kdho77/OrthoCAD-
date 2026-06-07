@@ -1,42 +1,77 @@
 import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
-import { loadGlbFromBuffer, loadGlbFromUrl } from "@/lib/library/loaders";
+import { deformBaseForDesign } from "@/lib/geometry/base-modifier";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { extractPrimaryGeometry, loadGlbFromBuffer, loadGlbFromUrl } from "@/lib/library/loaders";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
+import { mergeCorrections, mergeElementPreviews, usePerformanceStore } from "@/stores/performance-store";
 import type { Side } from "@/types";
 
-/** Renders a user custom prefab GLB when selected as the active pattern. */
+/** Base-mode highlight tints so users can see they are modifying a loaded base. */
+const baseTint: Record<Side, string> = {
+    left: "#a78bfa",
+    right: "#c084fc",
+};
+
+/**
+ * Renders a user custom prefab GLB as the active **base**, with clinical
+ * corrections / elements / trimline applied as a real-time vertical deformation
+ * (see base-modifier.ts). A distinct tint + outline marks base mode so the user
+ * can tell they are modifying an existing base rather than a parametric shell.
+ */
 export function CustomPrefabMesh({ side, transparent }: { side: Side; transparent: boolean }) {
-    const customPrefabId = useDesignStore((s) => s.design.customPrefabId);
+    const design = useDesignStore((s) => s.design);
+    const { customPrefabId } = design;
     const customPrefabs = useCustomLibraryStore((s) => s.customPrefabs);
     const getLocalGlb = useCustomLibraryStore((s) => s.getLocalGlb);
-    const [group, setGroup] = useState<THREE.Group | null>(null);
+    const interacting = usePerformanceStore((s) => s.interacting);
+    const correctionPreview = usePerformanceStore((s) => s.correctionPreview);
+    const elementPreviews = usePerformanceStore((s) => s.elementPreviews);
+    const [baseGeometry, setBaseGeometry] = useState<THREE.BufferGeometry | null>(null);
 
     const prefab = customPrefabs.find((p) => p.id === customPrefabId);
 
     useEffect(() => {
         if (!customPrefabId || !prefab) {
-            setGroup(null);
+            setBaseGeometry(null);
             return;
         }
 
         let cancelled = false;
+        const disposeGroup = (g: THREE.Group) =>
+            g.traverse((obj) => {
+                if (obj instanceof THREE.Mesh) {
+                    obj.geometry?.dispose();
+                    (obj.material as { dispose?: () => void })?.dispose?.();
+                }
+            });
+
         const load = async () => {
             try {
+                let group: THREE.Group | null = null;
                 if (prefab.url) {
-                    const g = await loadGlbFromUrl(prefab.url);
-                    if (!cancelled) setGroup(g);
+                    group = await loadGlbFromUrl(prefab.url);
+                } else {
+                    const local = getLocalGlb(customPrefabId);
+                    if (local) {
+                        const binary = Uint8Array.from(atob(local.glbBase64), (c) => c.charCodeAt(0));
+                        group = await loadGlbFromBuffer(binary.buffer);
+                    }
+                }
+                if (!group) {
+                    if (!cancelled) setBaseGeometry(null);
                     return;
                 }
-                const local = getLocalGlb(customPrefabId);
-                if (local) {
-                    const binary = Uint8Array.from(atob(local.glbBase64), (c) => c.charCodeAt(0));
-                    const g = await loadGlbFromBuffer(binary.buffer);
-                    if (!cancelled) setGroup(g);
+                const geo = extractPrimaryGeometry(group);
+                disposeGroup(group);
+                if (cancelled) {
+                    geo?.dispose();
+                    return;
                 }
+                setBaseGeometry(geo);
             } catch {
-                if (!cancelled) setGroup(null);
+                if (!cancelled) setBaseGeometry(null);
             }
         };
         void load();
@@ -45,25 +80,63 @@ export function CustomPrefabMesh({ side, transparent }: { side: Side; transparen
         };
     }, [customPrefabId, prefab, getLocalGlb]);
 
-    const clone = useMemo(() => {
-        if (!group) return null;
-        const g = group.clone(true);
-        g.traverse((obj) => {
-            if (obj instanceof THREE.Mesh && obj.material instanceof THREE.Material) {
-                obj.material = obj.material.clone();
-                obj.material.transparent = transparent;
-                obj.material.opacity = transparent ? 0.55 : 1;
-            }
-        });
-        return g;
-    }, [group, transparent]);
+    // Re-deform the base whenever the modifiers change. Smoothing is skipped
+    // during active drags so real-time editing stays responsive; an extra
+    // relaxation pass runs when idle for a clinically smooth top surface.
+    const corrections = mergeCorrections(side, design.corrections[side]);
+    const elements = mergeElementPreviews(design.elements.filter((e) => e.side === side));
+    const correctionsKey = JSON.stringify(corrections);
+    const elementsKey = JSON.stringify(elements);
+    // Live preview maps are read inside via merge*; correctionPreview /
+    // elementPreviews are listed as triggers so a drag rebuilds the base.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: serialized keys + preview triggers cover all inputs
+    const deformed = useMemo(() => {
+        if (!baseGeometry) return null;
+        return deformBaseForDesign(baseGeometry, design, side, corrections, elements, interacting ? 0 : 1);
+    }, [
+        baseGeometry,
+        side,
+        design.trimlines,
+        correctionsKey,
+        elementsKey,
+        interacting,
+        correctionPreview,
+        elementPreviews,
+    ]);
 
-    if (!clone) return null;
+    useEffect(() => () => deformed?.dispose(), [deformed]);
+
+    const material = useMemo(
+        () =>
+            new THREE.MeshStandardMaterial({
+                color: baseTint[side],
+                metalness: 0.15,
+                roughness: 0.65,
+                transparent,
+                opacity: transparent ? 0.55 : 1,
+                side: THREE.DoubleSide,
+            }),
+        [side, transparent],
+    );
+    useEffect(() => () => material.dispose(), [material]);
+
+    if (!deformed) return null;
 
     const offsetX = sideOffsetX(side);
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
-            <primitive object={clone} position={[-INSOLE_LENGTH_MM / 2, offsetX, 2]} scale={[1, 1, 1]} />
+            <mesh
+                geometry={deformed}
+                material={material}
+                position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}
+                castShadow
+                receiveShadow
+            />
+            {/* Base outline overlay — a clear visual cue that this is a loaded base. */}
+            <lineSegments position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}>
+                <edgesGeometry args={[deformed, 35]} />
+                <lineBasicMaterial color={baseTint[side]} transparent opacity={0.35} />
+            </lineSegments>
         </group>
     );
 }

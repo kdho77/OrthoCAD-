@@ -4,6 +4,7 @@
 import type { BufferGeometry } from "three";
 import * as THREE from "three";
 import { getKernel, isAuthoritativeKernel } from "@/lib/chili3d/kernel";
+import { deformBaseForDesign } from "@/lib/geometry/base-modifier";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
@@ -22,7 +23,21 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
     return bytes.buffer;
 }
 
-/** Builds export geometry for a side — custom prefab GLB or kernel insole solid. */
+/**
+ * Apply the clinical modifiers (corrections / elements / trimline) to a base
+ * GLB geometry as a vertical deformation for export. Uses extra smoothing for a
+ * clean manufacturing surface. The input geometry is disposed.
+ */
+function deformBaseForExport(geo: BufferGeometry, side: Side): BufferGeometry {
+    const { design } = useDesignStore.getState();
+    const corrections = design.corrections[side];
+    const elements = design.elements.filter((e) => e.side === side);
+    const deformed = deformBaseForDesign(geo, design, side, corrections, elements, 2);
+    if (deformed !== geo) geo.dispose();
+    return deformed;
+}
+
+/** Builds export geometry for a side — deformed custom prefab base or kernel insole solid. */
 export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
 
@@ -38,13 +53,13 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
                     (child.material as { dispose?: () => void })?.dispose?.();
                 }
             });
-            if (geo) return geo;
+            if (geo) return deformBaseForExport(geo, side);
         }
         const prefab = store.customPrefabs.find((p) => p.id === design.customPrefabId);
         if (prefab?.url) {
             const group = await loadGlbFromUrl(prefab.url);
             const geo = extractPrimaryGeometry(group);
-            if (geo) return geo;
+            if (geo) return deformBaseForExport(geo, side);
         }
     }
 
