@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
-import { countMeshes, extractMergedGeometry, extractPrimaryGeometry } from "./loaders";
+import { countMeshes, extractMergedGeometry, extractPrimaryGeometry, mirrorGeometry } from "./loaders";
 
 /** Build a GLB-like group with separately-named meshes (mirrors Top/Bottom bases). */
 function makeGroup(meshes: { name: string; geo: THREE.BufferGeometry; position?: [number, number, number] }[]) {
@@ -122,5 +122,44 @@ describe("GLB loaders — multi-mesh base support", () => {
             (merged!.geometry.getAttribute("position") as THREE.InterleavedBufferAttribute)
                 .isInterleavedBufferAttribute,
         ).toBeFalsy();
+    });
+});
+
+describe("GLB loaders — base mirroring", () => {
+    test("reflects geometry across the width axis (sagittal plane)", () => {
+        // Length on Y (largest), width on X (middle), thickness on Z (smallest):
+        // matches the Base + Modifier axis convention.
+        const merged = extractMergedGeometry(
+            makeGroup([{ name: "Base", geo: new THREE.BoxGeometry(90, 260, 20) }]),
+        )!.geometry;
+
+        // Shift it off-centre on the width (X) axis so a reflection is observable.
+        merged.translate(30, 0, 0);
+        merged.computeBoundingBox();
+        const before = merged.boundingBox!.clone();
+
+        const mirrored = mirrorGeometry(merged);
+        mirrored.computeBoundingBox();
+        const after = mirrored.boundingBox!;
+
+        // Width-axis (X) centre is reflected about itself ⇒ same span, flipped offset.
+        const beforeCenterX = (before.min.x + before.max.x) / 2;
+        const afterCenterX = (after.min.x + after.max.x) / 2;
+        expect(afterCenterX).toBeCloseTo(beforeCenterX, 5);
+        expect(after.max.x - after.min.x).toBeCloseTo(before.max.x - before.min.x, 5);
+        // Other axes are untouched.
+        expect(after.max.y).toBeCloseTo(before.max.y, 5);
+        expect(after.max.z).toBeCloseTo(before.max.z, 5);
+    });
+
+    test("preserves vertex count and produces valid normals", () => {
+        const merged = extractMergedGeometry(
+            makeGroup([{ name: "Base", geo: new THREE.BoxGeometry(90, 260, 20) }]),
+        )!.geometry;
+        const mirrored = mirrorGeometry(merged);
+        expect(mirrored.getAttribute("position").count).toBe(merged.getAttribute("position").count);
+        const n = mirrored.getAttribute("normal");
+        expect(n).toBeTruthy();
+        expect(n.count).toBe(mirrored.getAttribute("position").count);
     });
 });

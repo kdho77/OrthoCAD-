@@ -2,6 +2,7 @@ import {
     BookmarkPlus,
     Check,
     FileBox,
+    FlipHorizontal,
     Footprints,
     Layers3,
     Pencil,
@@ -15,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
     deleteCustomAsset,
+    mirrorBaseGlb,
     refreshCustomLibrary,
     renameCustomAsset,
     selectCustomPrefab,
@@ -49,6 +51,7 @@ export function LeftSidebar() {
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [renamingId, setRenamingId] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
+    const [mirroringId, setMirroringId] = useState<string | null>(null);
 
     useEffect(() => {
         void refreshCustomLibrary();
@@ -79,6 +82,18 @@ export function LeftSidebar() {
     const commitRename = (id: string) => {
         renameCustomAsset("prefab", id, renameValue);
         setRenamingId(null);
+    };
+
+    const onMirror = async (id: string) => {
+        setMirroringId(id);
+        setUploadError(null);
+        try {
+            const res = await mirrorBaseGlb(id);
+            if (!res.ok) setUploadError(res.reason ?? "Mirror failed");
+            else if (res.itemId) onPattern(res.itemId, false);
+        } finally {
+            setMirroringId(null);
+        }
     };
 
     const onPattern = (id: string, stock: boolean) => {
@@ -215,6 +230,15 @@ export function LeftSidebar() {
                                                 </span>
                                             ) : null}
                                         </span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="text-muted-foreground hover:text-foreground disabled:opacity-40"
+                                        disabled={mirroringId === p.id}
+                                        onClick={() => void onMirror(p.id)}
+                                        title="Mirror base (Left ↔ Right)"
+                                    >
+                                        <FlipHorizontal className="h-3 w-3" />
                                     </button>
                                     <button
                                         type="button"

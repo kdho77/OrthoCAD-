@@ -168,6 +168,67 @@ export function extractMergedGeometry(group: THREE.Group): MergedGlbGeometry | n
     return { geometry, meshCount, meshNames };
 }
 
+/**
+ * Mirror a base geometry across its sagittal plane (Left ↔ Right). The width
+ * axis (medial↔lateral) is detected from the geometry's extents — the middle of
+ * its three bounding-box dimensions, matching the Base + Modifier axis
+ * resolution — and every vertex is reflected about the width-axis centre. The
+ * reflection inverts triangle winding, so the index order is reversed and
+ * normals recomputed to keep the surface facing outward. The result stays a
+ * clean, single, welded base that the deformation pipeline can consume directly.
+ */
+export function mirrorGeometry(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+    const g = geometry.clone();
+    g.computeBoundingBox();
+    const box = g.boundingBox;
+    if (!box) return g;
+
+    const sizes: [number, number][] = [
+        [0, box.max.x - box.min.x],
+        [1, box.max.y - box.min.y],
+        [2, box.max.z - box.min.z],
+    ];
+    sizes.sort((a, b) => a[1] - b[1]);
+    const widthAxis = sizes[1]![0];
+    const minByAxis = [box.min.x, box.min.y, box.min.z];
+    const maxByAxis = [box.max.x, box.max.y, box.max.z];
+    const center = (minByAxis[widthAxis]! + maxByAxis[widthAxis]!) / 2;
+
+    const pos = g.getAttribute("position");
+    for (let i = 0; i < pos.count; i++) {
+        const v = pos.getComponent(i, widthAxis);
+        pos.setComponent(i, widthAxis, 2 * center - v);
+    }
+    pos.needsUpdate = true;
+
+    // A reflection flips orientation: reverse winding so faces stay outward.
+    if (g.index) {
+        const idx = g.index.array;
+        for (let i = 0; i < idx.length; i += 3) {
+            const tmp = idx[i + 1]!;
+            (idx as Uint32Array | Uint16Array)[i + 1] = idx[i + 2]!;
+            (idx as Uint32Array | Uint16Array)[i + 2] = tmp;
+        }
+        g.index.needsUpdate = true;
+    } else {
+        const arr = pos.array as Float32Array;
+        for (let i = 0; i < pos.count; i += 3) {
+            for (let c = 0; c < 3; c++) {
+                const a = (i + 1) * 3 + c;
+                const b = (i + 2) * 3 + c;
+                const tmp = arr[a]!;
+                arr[a] = arr[b]!;
+                arr[b] = tmp;
+            }
+        }
+    }
+
+    g.computeVertexNormals();
+    g.computeBoundingBox();
+    g.computeBoundingSphere();
+    return g;
+}
+
 /** Count the meshes in a loaded GLB group (for upload validation / UI hints). */
 export function countMeshes(group: THREE.Group): { count: number; names: string[] } {
     const names: string[] = [];
