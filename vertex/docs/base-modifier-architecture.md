@@ -162,11 +162,39 @@ enforces this:
    produces a real upward delta on the top (weighted by the top factor) instead
    of cancelling out — thickness **expands upward from the fixed bottom** rather
    than squashing the whole mesh.
+5. **Medial-side orientation** (`detectArchSideSign`). The medial arch must land
+   on the anatomically medial side regardless of how the base was modelled. The
+   arch side is inferred *from the geometry* — in the midfoot band the medial
+   side carries the taller top surface — and the footprint width coordinate is
+   adjusted (`widthSign = −(archSideSign · medialSign)`) so the dome/posting/
+   skive always land medial. The mesh vertices are **not** mirrored (the bottom
+   is never moved); only the sampling coordinate is flipped. Symmetric bases and
+   negligible asymmetry no-op. Cached per base mesh.
 
 **Fallback (requirement 7):** if no recognisable bottom surface is found (e.g.
 an open shell, `< 1%` downward-facing area), classification returns `null` and
 the deformation falls back to a plain normalised-height weight — never worse
 than the previous behaviour, never throws.
+
+### Automated validation metrics
+
+`validateBaseResult(base, modified, topFactors?)` compares the deformed result
+against the original base (read-only — it does not change the deformation) and
+returns:
+
+- `maxBottomDeltaMm` — max |Δ| along the up axis over **bottom-sheet** vertices
+  (top factor `< 0.1`). Good GLB output keeps this `< BASE_BOTTOM_DELTA_TOLERANCE_MM`
+  (0.05 mm).
+- `avgTopLiftMm` — mean Δ over **top-sheet** vertices (top factor `> 0.9`).
+- `manifold` / `isWatertight` / `normalsConsistent` — basic topology checks
+  (two-manifold ⇒ consistent winding/normals).
+- `bottomStable`, `ok` — pass flags.
+
+`modifiedBaseResult(base, field, smoothing, validate=true)` runs it after a
+deformation and warns if the bottom moved beyond tolerance. The unit test
+(`base-modifier.test.ts`) builds synthetic insole bases (including a Y-length
+base like the sample STL, and symmetric/asymmetric arches) and asserts these
+metrics.
 
 Bases should still be authored as **neutral templates** (no corrections baked
 in) to avoid double-applying. Trimline *cutting* of a base (true perimeter

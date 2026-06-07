@@ -5,7 +5,7 @@ import { BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { getDesignBase } from "@/lib/geometry/base-asset";
 import { type HeightFieldParams, heightAt, smoothstep } from "@/lib/geometry/height-field";
-import { analyzeManifold } from "@/lib/geometry/manifold";
+import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
 // Base + Modifier deformation core (see docs/base-modifier-architecture.md).
@@ -212,6 +212,92 @@ export function classifyBaseTopFactors(base: BufferGeometry): Float32Array | nul
     return factors;
 }
 
+// --- Medial / lateral orientation ------------------------------------------
+// The clinical height field expects the medial longitudinal arch on the medial
+// side (derived from foot side). A loaded base can be authored with either
+// width edge as medial, so we infer the arch side directly from the geometry —
+// in the midfoot the medial side carries the taller top surface — and adjust
+// the sampling coordinate so the arch always lands medial. We adjust the
+// footprint coordinate rather than moving vertices, so the base mesh (and its
+// preserved bottom) is never physically mirrored.
+
+/** Midfoot band (normalized length) used to read the arch asymmetry. */
+const MIDFOOT_U_MIN = 0.32;
+const MIDFOOT_U_MAX = 0.62;
+
+const baseArchSideCache = new WeakMap<BufferGeometry, number>();
+
+/**
+ * Detect which width half of a base carries the medial arch. Returns `+1` when
+ * the arch is on the `+width` half, `-1` on the `−width` half, and `+1` (no-op)
+ * for symmetric bases where the asymmetry is negligible. Cached per base mesh.
+ */
+export function detectArchSideSign(base: BufferGeometry): number {
+    const cached = baseArchSideCache.get(base);
+    if (cached !== undefined) return cached;
+
+    const pos = base.getAttribute("position");
+    if (!pos) {
+        baseArchSideCache.set(base, 1);
+        return 1;
+    }
+
+    const posArr = pos.array as ArrayLike<number>;
+    const count = pos.count;
+    const min: [number, number, number] = [Infinity, Infinity, Infinity];
+    const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < count; i++) {
+        for (let a = 0; a < 3; a++) {
+            const c = posArr[i * 3 + a]!;
+            if (c < min[a]!) min[a] = c;
+            if (c > max[a]!) max[a] = c;
+        }
+    }
+    const { lengthAxis, widthAxis, thickAxis } = resolveBaseAxes(
+        max[0] - min[0],
+        max[1] - min[1],
+        max[2] - min[2],
+    );
+    const lenMin = min[lengthAxis];
+    const lenSize = max[lengthAxis] - lenMin || 1;
+    const widSize = max[widthAxis] - min[widthAxis] || 1;
+    const widCenter = min[widthAxis] + widSize / 2;
+    const thickMin = min[thickAxis];
+    const thickSize = max[thickAxis] - thickMin || 1;
+    const factors = classifyBaseTopFactors(base);
+
+    // Average top-surface height on each width half within the midfoot band.
+    let posSum = 0;
+    let posN = 0;
+    let negSum = 0;
+    let negN = 0;
+    for (let i = 0; i < count; i++) {
+        const u = (posArr[i * 3 + lengthAxis]! - lenMin) / lenSize;
+        if (u < MIDFOOT_U_MIN || u > MIDFOOT_U_MAX) continue;
+        const w = factors ? factors[i]! : (posArr[i * 3 + thickAxis]! - thickMin) / thickSize;
+        if (w < 0.5) continue; // top-sheet vertices only
+        const n = posArr[i * 3 + widthAxis]! - widCenter;
+        const h = posArr[i * 3 + thickAxis]! - thickMin;
+        if (n > widSize * 0.05) {
+            posSum += h;
+            posN++;
+        } else if (n < -widSize * 0.05) {
+            negSum += h;
+            negN++;
+        }
+    }
+
+    let sign = 1;
+    if (posN > 0 && negN > 0) {
+        const diff = posSum / posN - negSum / negN;
+        // Require a real asymmetry (>2% of thickness) so symmetric bases no-op.
+        if (Math.abs(diff) > thickSize * 0.02) sign = diff > 0 ? 1 : -1;
+    }
+
+    baseArchSideCache.set(base, sign);
+    return sign;
+}
+
 /**
  * Apply the current design modifiers to a base mesh as a vertical deformation.
  *
@@ -263,6 +349,11 @@ export function applyBaseModifiers(
     // back to a normalised-height weight when no bottom can be identified.
     const topFactors = classifyBaseTopFactors(base);
 
+    // Orient the footprint width so the medial arch lands on the anatomically
+    // medial side for this foot (instead of assuming the bbox +width is medial).
+    const medialSign = field.side === "left" ? -1 : 1;
+    const widthSign = -(detectArchSideSign(base) * medialSign);
+
     // 1) Sample the pure modifier delta at every vertex's footprint (u, vSigned),
     //    mapping length/width from the detected base axes (orientation-robust).
     const delta = new Float32Array(count);
@@ -270,7 +361,7 @@ export function applyBaseModifiers(
         const lenCoord = array[i * 3 + lengthAxis]!;
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
-        const vSigned = Math.max(-1, Math.min(1, (widCoord - widCenter) / (widSize / 2)));
+        const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
         delta[i] = correctionDeltaAt(u, vSigned, field, neutral);
     }
 
@@ -312,14 +403,126 @@ export function applyBaseModifiers(
     return geometry;
 }
 
+// --- Automated validation metrics ------------------------------------------
+// After a base deformation we can quantify how faithfully the bottom was held
+// and how much the top moved, so callers/tests can assert the bottom is stable.
+
+/** Max allowed bottom-surface movement for a "good" base output. */
+export const BASE_BOTTOM_DELTA_TOLERANCE_MM = 0.05;
+/** Vertices with top factor below this are considered bottom-sheet. */
+const BOTTOM_FACTOR_THRESHOLD = 0.1;
+/** Vertices with top factor above this are considered top-sheet. */
+const TOP_FACTOR_THRESHOLD = 0.9;
+
+export interface BaseValidation {
+    /** Max |Δ| along the up axis over bottom-sheet vertices (topFactor < 0.1). */
+    maxBottomDeltaMm: number;
+    /** Mean Δ along the up axis over top-sheet vertices (topFactor > 0.9). */
+    avgTopLiftMm: number;
+    bottomVertexCount: number;
+    topVertexCount: number;
+    manifold: ManifoldReport;
+    isWatertight: boolean;
+    /** Two-manifold (every edge shared by ≤ 2 triangles) ⇒ consistent normals. */
+    normalsConsistent: boolean;
+    /** Bottom held within tolerance. */
+    bottomStable: boolean;
+    /** Overall pass: bottom stable and topology consistent. */
+    ok: boolean;
+}
+
+/**
+ * Validate a base deformation by comparing the modified geometry against the
+ * original base. Computes the max bottom-vertex movement, the average top lift,
+ * and basic manifold / normal-consistency checks. Returns the metrics so a
+ * caller (or test) can assert `maxBottomDeltaMm < BASE_BOTTOM_DELTA_TOLERANCE_MM`.
+ *
+ * Read-only: does not modify either geometry or the deformation logic.
+ */
+export function validateBaseResult(
+    base: BufferGeometry,
+    modified: BufferGeometry,
+    topFactors?: Float32Array | null,
+    options?: { bottomDeltaToleranceMm?: number },
+): BaseValidation {
+    const tol = options?.bottomDeltaToleranceMm ?? BASE_BOTTOM_DELTA_TOLERANCE_MM;
+    const manifold = analyzeManifold(modified);
+    const factors = topFactors ?? classifyBaseTopFactors(base);
+
+    const basePos = base.getAttribute("position");
+    const modPos = modified.getAttribute("position");
+
+    let maxBottomDeltaMm = 0;
+    let bottomVertexCount = 0;
+    let topLiftSum = 0;
+    let topVertexCount = 0;
+
+    if (basePos && modPos && basePos.count === modPos.count) {
+        const count = basePos.count;
+        const baseArr = basePos.array as ArrayLike<number>;
+        const modArr = modPos.array as ArrayLike<number>;
+        // Deformation only moves vertices along the up axis; derive it from extents.
+        const min: [number, number, number] = [Infinity, Infinity, Infinity];
+        const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+        for (let i = 0; i < count; i++) {
+            for (let a = 0; a < 3; a++) {
+                const c = baseArr[i * 3 + a]!;
+                if (c < min[a]!) min[a] = c;
+                if (c > max[a]!) max[a] = c;
+            }
+        }
+        const { thickAxis } = resolveBaseAxes(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+
+        for (let i = 0; i < count; i++) {
+            const f = factors ? factors[i]! : 1;
+            const d = modArr[i * 3 + thickAxis]! - baseArr[i * 3 + thickAxis]!;
+            if (f < BOTTOM_FACTOR_THRESHOLD) {
+                maxBottomDeltaMm = Math.max(maxBottomDeltaMm, Math.abs(d));
+                bottomVertexCount++;
+            }
+            if (f > TOP_FACTOR_THRESHOLD) {
+                topLiftSum += d;
+                topVertexCount++;
+            }
+        }
+    }
+
+    const avgTopLiftMm = topVertexCount > 0 ? topLiftSum / topVertexCount : 0;
+    const normalsConsistent = manifold.nonManifoldEdges === 0;
+    const bottomStable = maxBottomDeltaMm <= tol;
+
+    return {
+        maxBottomDeltaMm,
+        avgTopLiftMm,
+        bottomVertexCount,
+        topVertexCount,
+        manifold,
+        isWatertight: manifold.isWatertight,
+        normalsConsistent,
+        bottomStable,
+        ok: bottomStable && normalsConsistent,
+    };
+}
+
 /** Authoritative-tier result: modified base geometry + manifold/topology report. */
 export function modifiedBaseResult(
     base: BufferGeometry,
     field: HeightFieldParams,
     smoothingIterations = 0,
+    validate = false,
 ): SolidResult {
     const geometry = applyBaseModifiers(base, field, smoothingIterations);
     const mesh = analyzeManifold(geometry);
+    if (validate) {
+        const metrics = validateBaseResult(base, geometry, classifyBaseTopFactors(base));
+        if (!metrics.bottomStable && typeof console !== "undefined") {
+            console.warn(
+                `[base-modifier] bottom delta ${metrics.maxBottomDeltaMm.toFixed(4)}mm exceeds ` +
+                    `${BASE_BOTTOM_DELTA_TOLERANCE_MM}mm tolerance (avg top lift ` +
+                    `${metrics.avgTopLiftMm.toFixed(3)}mm)`,
+            );
+        }
+    }
     return {
         geometry,
         manifold: { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight },
