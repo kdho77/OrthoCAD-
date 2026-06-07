@@ -23,7 +23,7 @@ import { type CameraView, useDesignStore } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
-import { CustomPrefabMesh } from "./CustomPrefabMesh";
+import { BaseInsoleMesh } from "./BaseInsoleMesh";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
@@ -110,7 +110,7 @@ export function Viewer3D() {
                                     heightmap={viewer.heightmap}
                                 />
                             ) : (
-                                <CustomPrefabMesh side="left" transparent={viewer.transparent} />
+                                <BaseInsoleMesh side="left" transparent={viewer.transparent} />
                             )}
                         </>
                     ) : null}
@@ -124,7 +124,7 @@ export function Viewer3D() {
                                     heightmap={viewer.heightmap}
                                 />
                             ) : (
-                                <CustomPrefabMesh side="right" transparent={viewer.transparent} />
+                                <BaseInsoleMesh side="right" transparent={viewer.transparent} />
                             )}
                         </>
                     ) : null}
