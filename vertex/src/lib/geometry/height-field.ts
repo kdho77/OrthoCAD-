@@ -93,6 +93,24 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const medialBlend = smoothstep(-0.2, 0.45, m);
     const lateralBlend = smoothstep(-0.2, 0.45, -m);
 
+    // --- Baseline anatomical shell (present with zero corrections) -------------
+    // Without this every insole is a uniform `thicknessMm` slab — a flat block.
+    // This is the inherent foot-bed contour of a full-contact orthotic: a cupped
+    // heel, a medial longitudinal arch, a lower lateral column and a toe spring,
+    // formed as a dished centre with raised perimeter walls. It depends only on
+    // footprint geometry (not corrections), so it cancels out of the Base +
+    // Modifier delta and leaves loaded bases untouched, while clinical
+    // corrections below still add on top of it. Added after the correction edge
+    // feather so the cup/arch rim walls survive at the trimline edge.
+    const heelEnv = smoothstep(0.26, 0.04, u); // 1 at heel → 0 by midfoot
+    const archEnv = bump(u, 0.4, 0.32); // medial longitudinal arch span
+    const toeEnv = smoothstep(0.7, 1.0, u); // forefoot curl toward the toe
+    const dish = smoothstep(0.12, 1.0, av); // raised edges, dished centre
+    const medialRim = 12 * heelEnv + 16 * archEnv;
+    const lateralRim = 12 * heelEnv + 5 * archEnv;
+    const baseline =
+        dish * (medialRim * medialBlend + lateralRim * lateralBlend) + 4 * toeEnv;
+
     // Shaping that should feather toward the trimline edge (dome/cup/flange/
     // elements) accumulates in `shaped`; the planar posting tilt — which must
     // remain full-strength at the edge — accumulates separately in `posting`.
@@ -145,7 +163,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const fore = bump(u, 0.82, 0.24);
     posting += Math.tan(c.forefootPostingDeg * DEG) * post * fore;
 
-    return softFloor(thicknessMm + shaped + posting, 0.8);
+    return softFloor(thicknessMm + baseline + shaped + posting, 0.8);
 }
 
 export interface GridPoint {
