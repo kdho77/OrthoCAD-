@@ -1,5 +1,6 @@
+import type * as THREE from "three";
 import { create } from "zustand";
-import * as THREE from "three";
+import { getDesignBase } from "@/lib/geometry/base-asset";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
 import {
@@ -8,6 +9,7 @@ import {
     sampleDefaultOutline,
     type TrimlineCurve,
 } from "@/lib/geometry/trimline";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
 import type { Side } from "@/types";
 
@@ -68,7 +70,16 @@ export interface MeshEditStore {
 
 function committedOrDefault(side: Side): TrimlineCurve {
     const design = useDesignStore.getState().design;
-    return getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
+    const committed = getDesignTrimline(design, side);
+    if (committed) return committed;
+    // On a loaded base, start from an outline that follows the real mesh boundary
+    // (published once the base GLB loads) instead of the parametric default.
+    const base = getDesignBase(design);
+    if (base) {
+        const outline = useBaseOutlineStore.getState().getOutline(base.assetId);
+        if (outline) return cloneTrimline(outline);
+    }
+    return sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
 }
 
 export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
@@ -97,8 +108,7 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
             selectedVertex: null,
         }),
 
-    addTrimPoint: (point) =>
-        set((s) => ({ activeTrimPoints: [...s.activeTrimPoints, point.clone()] })),
+    addTrimPoint: (point) => set((s) => ({ activeTrimPoints: [...s.activeTrimPoints, point.clone()] })),
 
     finishTrimLine: () =>
         set((s) => {
