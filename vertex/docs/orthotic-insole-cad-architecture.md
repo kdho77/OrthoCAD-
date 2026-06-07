@@ -27,7 +27,7 @@ Two geometry tiers serve two UX needs:
 
 Direct editing (trimline drag, element move) and automated corrections (arch raise, posting wedge) both mutate the same design state. The shared **height field** (`heightAt`) ensures preview and authoritative geometry stay clinically aligned.
 
-**v2.0 architectural commitments:**
+**v2.2 architectural commitments:**
 
 1. **Trimline editing uses a three-tier hybrid model** — width-envelope + visual offset during drag, `clipGeometryToOutline` on confirm, boolean prism on export; true perimeter vertex sculpting is **rejected**.
 2. **Displacement vs boolean is decided by operator metadata**, not ad hoc per feature.
