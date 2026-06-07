@@ -8,7 +8,7 @@ import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import { getDesignTrimline } from "@/lib/geometry/trimline";
-import { countMeshes, loadGlbFromBuffer } from "@/lib/library/loaders";
+import { countMeshes, extractMergedGeometry, loadGlbFromBuffer, mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
@@ -253,6 +253,13 @@ export async function saveCustomAsset(input: SaveCustomInput): Promise<SaveCusto
     return { ok: true, itemId: offlineId };
 }
 
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
     const bytes = new Uint8Array(buffer);
     let binary = "";
@@ -326,6 +333,56 @@ export async function uploadBaseGlb(
         .getState()
         .record("custom_library_uploaded", `base: ${name} (${meshCount} mesh${meshCount === 1 ? "" : "es"})`);
     return { ok: true, itemId: id, meshCount, meshNames };
+}
+
+/**
+ * Mirror an existing custom base GLB across the sagittal plane (Left ↔ Right)
+ * and save the result as a **new** custom prefab. Most orthotic work is
+ * symmetric, so a left base can be reused as a right base (or vice versa). The
+ * mirrored base preserves any baked modifiers/corrections present in the source
+ * geometry and remains a clean single surface usable by the Base + Modifier and
+ * trimline tools. No token cost — it is derived from the user's own asset.
+ */
+export async function mirrorBaseGlb(id: string, opts?: { name?: string }): Promise<UploadBaseOutcome> {
+    const store = useCustomLibraryStore.getState();
+    const local = store.getLocalGlb(id);
+    if (!local) return { ok: false, reason: "Base not available locally to mirror" };
+
+    let mesh: THREE.Mesh;
+    try {
+        const group = await loadGlbFromBuffer(base64ToArrayBuffer(local.glbBase64));
+        const merged = extractMergedGeometry(group);
+        if (!merged) return { ok: false, reason: "Base GLB contains no mesh geometry" };
+        const mirrored = mirrorGeometry(merged.geometry);
+        merged.geometry.dispose();
+        mesh = meshFromGeometry(mirrored, "#a855f7");
+        mirrored.dispose();
+    } catch (e) {
+        return { ok: false, reason: e instanceof Error ? e.message : "Could not mirror base" };
+    }
+
+    const { base64 } = await exportObjectToGlb(mesh);
+    mesh.geometry.dispose();
+    (mesh.material as THREE.Material).dispose();
+
+    const source = store.customPrefabs.find((p) => p.id === id);
+    const baseName = (source?.name ?? local.name).replace(/\s*\(mirror(ed)?\)\s*$/i, "");
+    const name = (opts?.name ?? `${baseName} (Mirrored)`).trim() || "Mirrored Base";
+    const newId = crypto.randomUUID();
+    const item = {
+        id: newId,
+        name,
+        category: source?.category ?? local.category ?? "base",
+        stock: false as const,
+        parentStockId: null,
+        createdAt: new Date().toISOString(),
+        uploaded: true,
+        meshCount: 1,
+    };
+
+    store.addCustomPrefab(item, base64);
+    useAuditStore.getState().record("custom_library_mirrored", `base: ${name}`);
+    return { ok: true, itemId: newId, meshCount: 1 };
 }
 
 /** Rename a custom library item (local; server rename is a no-op for now). */

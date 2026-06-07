@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
-import { countMeshes, extractMergedGeometry, extractPrimaryGeometry } from "./loaders";
+import { countMeshes, extractMergedGeometry, extractPrimaryGeometry, mirrorGeometry } from "./loaders";
 
 /** Build a GLB-like group with separately-named meshes (mirrors Top/Bottom bases). */
 function makeGroup(meshes: { name: string; geo: THREE.BufferGeometry; position?: [number, number, number] }[]) {
@@ -15,6 +15,32 @@ function makeGroup(meshes: { name: string; geo: THREE.BufferGeometry; position?:
         group.add(mesh);
     }
     return group;
+}
+
+/**
+ * Re-pack a geometry's position + normal into a single interleaved buffer, the
+ * layout GLB exporters (e.g. Rhino) commonly emit. `mergeGeometries` cannot
+ * merge these, so this exercises the de-interleaving merge path.
+ */
+function toInterleaved(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+    const src = geo.index ? geo.toNonIndexed() : geo.clone();
+    const pos = src.getAttribute("position");
+    const nor = src.getAttribute("normal") ?? (src.computeVertexNormals(), src.getAttribute("normal"));
+    const count = pos.count;
+    const data = new Float32Array(count * 6);
+    for (let i = 0; i < count; i++) {
+        data[i * 6] = pos.getX(i);
+        data[i * 6 + 1] = pos.getY(i);
+        data[i * 6 + 2] = pos.getZ(i);
+        data[i * 6 + 3] = nor.getX(i);
+        data[i * 6 + 4] = nor.getY(i);
+        data[i * 6 + 5] = nor.getZ(i);
+    }
+    const buffer = new THREE.InterleavedBuffer(data, 6);
+    const out = new THREE.BufferGeometry();
+    out.setAttribute("position", new THREE.InterleavedBufferAttribute(buffer, 3, 0));
+    out.setAttribute("normal", new THREE.InterleavedBufferAttribute(buffer, 3, 3));
+    return out;
 }
 
 describe("GLB loaders — multi-mesh base support", () => {
@@ -70,5 +96,70 @@ describe("GLB loaders — multi-mesh base support", () => {
 
     test("empty group returns null", () => {
         expect(extractMergedGeometry(new THREE.Group())).toBeNull();
+    });
+
+    test("merges interleaved-attribute meshes without dropping any sub-mesh", () => {
+        // Real GLBs store position/normal interleaved; the previous mergeGeometries
+        // path failed on these and silently kept only the first mesh.
+        const top = toInterleaved(new THREE.BoxGeometry(90, 260, 5));
+        const bottom = toInterleaved(new THREE.BoxGeometry(90, 260, 5));
+        const group = makeGroup([
+            { name: "Top", geo: top, position: [0, 0, 10] },
+            { name: "Bottom", geo: bottom, position: [0, 0, 0] },
+        ]);
+
+        const merged = extractMergedGeometry(group);
+        expect(merged).not.toBeNull();
+        expect(merged!.meshCount).toBe(2);
+
+        // Bounds must span BOTH meshes — proof the bottom mesh was not dropped.
+        merged!.geometry.computeBoundingBox();
+        const box = merged!.geometry.boundingBox!;
+        expect(box.max.z).toBeGreaterThan(box.min.z + 10);
+        expect(merged!.geometry.getAttribute("position").count).toBeGreaterThan(0);
+        // Result is plain (de-interleaved) BufferAttributes, not interleaved.
+        expect(
+            (merged!.geometry.getAttribute("position") as THREE.InterleavedBufferAttribute)
+                .isInterleavedBufferAttribute,
+        ).toBeFalsy();
+    });
+});
+
+describe("GLB loaders — base mirroring", () => {
+    test("reflects geometry across the width axis (sagittal plane)", () => {
+        // Length on Y (largest), width on X (middle), thickness on Z (smallest):
+        // matches the Base + Modifier axis convention.
+        const merged = extractMergedGeometry(
+            makeGroup([{ name: "Base", geo: new THREE.BoxGeometry(90, 260, 20) }]),
+        )!.geometry;
+
+        // Shift it off-centre on the width (X) axis so a reflection is observable.
+        merged.translate(30, 0, 0);
+        merged.computeBoundingBox();
+        const before = merged.boundingBox!.clone();
+
+        const mirrored = mirrorGeometry(merged);
+        mirrored.computeBoundingBox();
+        const after = mirrored.boundingBox!;
+
+        // Width-axis (X) centre is reflected about itself ⇒ same span, flipped offset.
+        const beforeCenterX = (before.min.x + before.max.x) / 2;
+        const afterCenterX = (after.min.x + after.max.x) / 2;
+        expect(afterCenterX).toBeCloseTo(beforeCenterX, 5);
+        expect(after.max.x - after.min.x).toBeCloseTo(before.max.x - before.min.x, 5);
+        // Other axes are untouched.
+        expect(after.max.y).toBeCloseTo(before.max.y, 5);
+        expect(after.max.z).toBeCloseTo(before.max.z, 5);
+    });
+
+    test("preserves vertex count and produces valid normals", () => {
+        const merged = extractMergedGeometry(
+            makeGroup([{ name: "Base", geo: new THREE.BoxGeometry(90, 260, 20) }]),
+        )!.geometry;
+        const mirrored = mirrorGeometry(merged);
+        expect(mirrored.getAttribute("position").count).toBe(merged.getAttribute("position").count);
+        const n = mirrored.getAttribute("normal");
+        expect(n).toBeTruthy();
+        expect(n.count).toBe(mirrored.getAttribute("position").count);
     });
 });

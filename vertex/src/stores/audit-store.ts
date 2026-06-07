@@ -12,7 +12,8 @@ export type AuditAction =
     | "license_revoked"
     | "design_saved"
     | "custom_library_saved"
-    | "custom_library_uploaded";
+    | "custom_library_uploaded"
+    | "custom_library_mirrored";
 
 export interface AuditEntry {
     id: string;
