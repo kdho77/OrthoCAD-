@@ -1,9 +1,9 @@
 # Orthotic Insole CAD — System Architecture
 
-**Status:** Architecture specification (v2.1)  
+**Status:** Architecture specification (v2.2)  
 **Audience:** Engineering, clinical product, manufacturing  
 **Platform:** Vertex (web orthotic CAD) on Chili3D (browser OCCT B-rep kernel)  
-**Changelog:** v2.1 refines the trimline hybrid model (width-envelope during drag, clip on confirm, boolean on export), formalizes Core Principles and operator policy, adds `ClinicalSpec`, and elevates undo/redo to Phase 3A with mandatory coalescing.
+**Changelog:** v2.2 strengthens trimline drag UX contracts, operator composition rules, biomechanical grounding (STA, sagittal facilitation, tissue stress), loaded-GLB edge cases, and implementation-ready interfaces (`TrimlinePreviewContract`, `OperatorStack`, `BaseBounds`).
 
 This document defines the target architecture for a modern web-based orthotic insole CAD system that replaces legacy Rhino workflows. It unifies **direct / freeform editing** and **automated clinical corrections** on the same geometry, producing watertight output suitable for 3D printing and CNC milling.
 
@@ -389,6 +389,173 @@ flowchart TD
     N -->|No| P[Keep Tier 2 clip mesh for export fallback]
 ```
 
+### 4.11 Direct-manipulation UX contract: "grab and reshape the outer edge"
+
+The clinician must experience trimline editing as **grabbing the visible outer edge of the insole and pulling it** — even though the implementation never sculpts boundary vertices. The architecture achieves this through coordinated **geometry response** (mesh boundary moves) and **visual affordance** (handle on the edge).
+
+**Interaction sequence (loaded GLB base):**
+
+| Step | User action | System response | What user sees |
+|------|-------------|-----------------|----------------|
+| 1 | Click **Edit Trimline** | `beginTrimlineEdit(side)`; draft = committed outline | Trimline tube appears on footprint; handles at control points |
+| 2 | Hover edge handle | Raycast on trimline curve (`pickTrimline`) | Handle highlights; cursor = grab |
+| 3 | **Pointer down** on handle | `setTrimlineDragAnchor(i)`; `isDragging = true` | Handle enlarges |
+| 4 | **Pointer move** (drag) | `deformTrimlineSection(draft, anchor, delta)` → `setTrimlineDraft` → rebuild | **Mesh perimeter moves inward/outward** (Tier 1 clip); **colored tube** tracks exact draft curve |
+| 5 | **Pointer up** | `isDragging = false`; optional Tier 1.5 clip between strokes | Mesh holds last envelope; tube remains editable |
+| 6 | **Confirm** (Enter / button) | Tier 2 `clipGeometryToOutline` + commit + undo frame | Crisp mesh boundary matches tube |
+| 7 | **Cancel** (Escape) | Restore `session.snapshot`; no design change | Mesh reverts to pre-session state |
+
+**UX invariant:** During step 4, the mesh boundary must move in the **same direction** as the dragged handle within one frame budget (< 16 ms). If geometry lags the handle, the edit feels broken — this is why Phase 3A draft wiring is mandatory.
+
+**Parametric mode difference:** The mesh boundary is implicit in the grid (stations shrink/expand). There is no pre-existing triangle soup to clip — the entire shell rebuilds to the new width envelope each frame. The visual tube still renders so parametric and base modes feel identical to the user.
+
+### 4.12 Visual boundary offset vs actual geometry change
+
+These are **two distinct layers** that must not be conflated:
+
+| Layer | What it is | Stored in design state? | Affects export? | Purpose |
+|-------|------------|-------------------------|-----------------|---------|
+| **Visual boundary offset** | R3F overlay: `TrimlineEditTools` tube + handles along `trimlineEdit.draft` | No (session only until confirm) | No | Shows **exact** intended perimeter when Tier 1 mesh clip is approximate |
+| **Actual geometry change** | Modified `BufferGeometry` from width-envelope clip or centroid clip | Indirectly (via committed trimline) | Yes (after confirm → export) | The insole mesh the user is manufacturing |
+
+**During Tier 1 drag on loaded GLB:**
+
+- **Geometry change:** `clipByWidthEnvelope(modified, draft)` removes/fades triangles outside the width envelope derived from draft. The mesh silhouette **does** change — this is not overlay-only.
+- **Visual boundary offset:** The trimline tube renders **on top** of the mesh at the exact draft curve. When the envelope clip is coarser than the curve (e.g. sharp medial notch), the tube may extend slightly inside or outside the mesh edge by ≤ 2 mm. The tube is the **authority for user intent**; the mesh is the **best-effort preview**.
+
+**Rule V1:** Never show visual-only perimeter change without also attempting geometry change (except Case 3 outward-beyond-base, §8.8).
+
+**Rule V2:** The visual tube must always use `trimlineEdit.draft`, never the committed trimline, during an active session.
+
+**Rule V3:** On confirm, geometry must converge to the tube within tessellation tolerance (Tier 2 centroid clip or Tier 3 boolean).
+
+### 4.13 Real-time mesh response during drag (Tier 1 specification)
+
+**`clipByWidthEnvelope` algorithm (to implement in `trimline.ts`):**
+
+```typescript
+export interface ClipByWidthEnvelopeOptions {
+    lengthMm: number;
+    widthMm: number;
+    /** Fade triangles in border band instead of hard drop (smoother preview). */
+    fadeBandMm?: number;  // default 1.5
+}
+
+/**
+ * Fast approximate clip: keep triangle iff centroid maps inside width envelope.
+ * O(triangles) but envelope lookup is O(1) per triangle via precomputed station table.
+ */
+export function clipByWidthEnvelope(
+    geometry: BufferGeometry,
+    curve: TrimlineCurve,
+    opts: ClipByWidthEnvelopeOptions,
+): BufferGeometry;
+```
+
+**Per-frame pipeline (`useBaseInsoleGeometry`, when `trimlineEdit?.isDragging`):**
+
+```
+1. modified = applyBaseModifiers(raw, fieldWithDraftTrimline, smoothing=0)
+2. display  = clipByWidthEnvelope(modified, trimlineEdit.draft)
+3. dispose previous display buffer if replaced
+4. setGeometry(display)  → R3F re-render
+```
+
+**`fieldWithDraftTrimline`:** `baseModifierField(design, side)` must pass `trimline: trimlineEdit.draft` (not committed) so `heightAt` edge feather and posting evaluate against the **draft** envelope during drag.
+
+**Parametric Tier 1:** `useInsoleGeometry` passes `trimline: trimlineEdit.draft` → worker calls `buildInsoleGeometry` with `effectiveOutlineHalfWidth(u, draft)` → grid never creates exterior triangles.
+
+**Performance budget:**
+
+| Operation | Target | Max stations / triangles |
+|-----------|--------|--------------------------|
+| `applyBaseModifiers` | < 8 ms | Full base mesh |
+| `clipByWidthEnvelope` | < 6 ms | Precompute 32 station envelope |
+| R3F tube update | < 2 ms | Catmull-Rom resample only |
+| **Total drag frame** | **< 16 ms** | Cancel stale if superseded |
+
+### 4.14 Correction behavior during active trimline drag
+
+Corrections remain **fully active** during trimline drag. Scalar values in `design.corrections` do not change. What changes is the **effective evaluation domain** — driven by the draft trimline passed into `HeightFieldParams`.
+
+| Correction | During drag — evaluation rule | Visual effect when shrinking trimline |
+|------------|------------------------------|--------------------------------------|
+| **Arch height / fill** | `heightAt` uses draft envelope; `edgeFeather` thins dome at new edge | Arch dome visible only inside draft; thins naturally at perimeter |
+| **Arch apex shift** | `apexCenter` unchanged; dome position fixed longitudinally | Apex may approach new edge → Tier 3 soft warn if crowding |
+| **Heel cup** | Evaluated inside draft envelope | Cup rim clips with trimline |
+| **Rearfoot posting** | **Not feathered**; full tilt at draft medial/lateral edge positions | Posting plane re-evaluates at new edge coords each frame |
+| **Forefoot posting** | Same as rearfoot in forefoot zone | Toe posting follows new toe line |
+| **Skives** | Field subtract active; boolean deferred (R5) | Skive depth visible in preview |
+| **Flanges** | Feathered additive; attenuates at draft edge | Flange thins at new boundary |
+| **Elements** | `elementHeightAt` active; orphan check uses **draft** polygon | Elements outside draft → amber ghost + tooltip (not removed until confirm) |
+| **Thickness** | Thickness δ applied before clip | Top lifts; bottom fixed |
+
+**Posting-specific rule during drag:** Posting magnitude is **never** auto-scaled when the trimline shrinks. If 4° rearfoot posting was set, it remains 4° — but the medial/lateral edge positions move with the draft curve, so the **effective wedge width** may narrow. If `effective_slope_deg > postingSlopeWarnDeg` after trimline change, surface Tier 3 advisory (not blocking during drag).
+
+**Arch-specific rule during drag:** `archHeightMm` is not reduced. If the draft trimline excludes the arch apex (`apexUAfterShift` outside draft width at apex station), show advisory: *"Arch apex near or outside new outline — consider apex shift or trimline adjustment."*
+
+### 4.15 `TrimlinePreviewContract` — draft ↔ geometry wiring
+
+This interface is the **mandatory contract** between the edit session store and geometry hooks (Phase 3A):
+
+```typescript
+// vertex/src/lib/geometry/trimline-preview-contract.ts (proposed)
+
+export type TrimlinePreviewTier = "drag" | "session_idle" | "committed";
+
+export interface TrimlinePreviewInput {
+    side: Side;
+    design: DesignState;
+    /** null when no active session. */
+    trimlineEdit: TrimlineEditSession | null;
+}
+
+export interface TrimlinePreviewOutput {
+    /** Curve used for height-field envelope and clipping. */
+    activeTrimline: TrimlineCurve | null;
+    tier: TrimlinePreviewTier;
+}
+
+/**
+ * Single resolver — both useBaseInsoleGeometry and useInsoleGeometry MUST use this.
+ */
+export function resolveTrimlinePreview(input: TrimlinePreviewInput): TrimlinePreviewOutput {
+    const committed = getDesignTrimline(input.design, input.side);
+    const edit = input.trimlineEdit;
+
+    if (edit?.side === input.side) {
+        return {
+            activeTrimline: edit.draft,
+            tier: edit.isDragging ? "drag" : "session_idle",
+        };
+    }
+    return {
+        activeTrimline: committed,
+        tier: "committed",
+    };
+}
+```
+
+**Tier → clip function mapping (loaded GLB):**
+
+| `TrimlinePreviewTier` | Clip function | `smoothingIterations` |
+|-----------------------|---------------|----------------------|
+| `drag` | `clipByWidthEnvelope` | 0 |
+| `session_idle` | `clipGeometryToOutline` | 0 |
+| `committed` | `clipGeometryToOutline` | 1 (idle) / 2 (export) |
+
+**Height field:** Always pass `activeTrimline` into `HeightFieldParams.trimline` for the active side during any tier.
+
+### 4.16 Outward-beyond-base visual-only exception
+
+When draft trimline extends outside `BaseBounds.silhouette` (§8.8), Tier 1 geometry clip **cannot** add material. Behavior:
+
+- Mesh: clip to intersection of draft envelope ∩ base silhouette (no growth).
+- Visual tube: renders full draft curve (including out-of-base segment) in **warning color** (amber).
+- Tooltip: *"Outline extends beyond base — geometry cannot be added."*
+
+This is the **only** case where visual boundary and mesh boundary intentionally diverge.
+
 ---
 
 ## 5. Displacement vs Boolean Decision Framework
@@ -502,6 +669,63 @@ if effective_slope_deg > 14:
 ```
 
 The boolean runs **after** the lofted field-based solid is built (idle / Confirm / Export only), refining the heel shelf to a planar cut surface suitable for CNC. During drag and slider scrub, only the field approximation is shown.
+
+### 5.6 Operator composition and evaluation order
+
+Operators do not form an arbitrary DAG today — they compile to a **fixed evaluation stack** in `heightAt`. User action order does not matter; **evaluation order is always the same** at rebuild time.
+
+```typescript
+// vertex/src/lib/geometry/operator-stack.ts (proposed)
+
+export const OPERATOR_EVAL_ORDER = [
+    "baseline_anatomy",      // inherent shell contour
+    "thickness_floor",       // softFloor minimum wall
+    "arch_dome",             // archHeight + archFill
+    "apex_shift",            // encoded in arch bump center
+    "heel_cup",              // height + depth
+    "skive_subtract",        // medial/lateral (field)
+    "flange",                // medial/lateral walls
+    "element_sum",           // all placed elements
+    "edge_feather_apply",    // shaped *= feather (additive only)
+    "posting_planar",        // rearfoot + forefoot (NOT feathered)
+] as const;
+```
+
+**Composition rules:**
+
+| Rule | Statement |
+|------|-----------|
+| **C1 — Order is fixed** | Rebuild always evaluates operators in `OPERATOR_EVAL_ORDER`. User edit order does not change evaluation order. |
+| **C2 — Same domain → sum** | Two operators affecting the same `(u,v)` contribute algebraically unless a spec declares `combine: "max"` or `"override"`. |
+| **C3 — Posting last among surfaces** | Posting is applied after edge feather so tilt reaches full strength at the perimeter. |
+| **C4 — Trimline is a mask, not an operator** | Trimline does not change correction scalars; it restricts the domain via envelope / clip / boolean. |
+| **C5 — Elements are independent instances** | Each `PlacedElement` sums; overlapping elements add (warn if net > 12 mm local height). |
+| **C6 — Boolean is post-stack** | OCCT booleans run on the lofted/displaced solid after the full field stack is evaluated. |
+
+**Overlap resolution table:**
+
+| Overlap | Resolution | UI |
+|---------|------------|-----|
+| Arch + heel cup (same u band) | Sum in `shaped`; longitudinal cross-fade already in `heightAt` | None |
+| Posting + skive (heel) | Algebraic sum; skive subtracts after posting in stack | Warn if net heel height < 0 |
+| Met pad on arch dome | Sum | None |
+| Two met pads overlapping | Sum heights | Soft warn if combined > 8 mm |
+| Medial skive + medial flange | Sum; warn if net < 0 | Amber |
+| Trimline shrinks under arch | Arch still full magnitude; feather thins at edge | Advisory if apex near edge |
+
+### 5.7 Wedge field → boolean transition (decision table)
+
+| Condition | Preview (all tiers) | Authoritative |
+|-----------|---------------------|---------------|
+| `effective_slope_deg ≤ 14` | Field taper only | Field in loft |
+| `effective_slope_deg > 14` AND `wedge_mm < 4` | Field taper | Field + optional boolean if CNC mode |
+| `effective_slope_deg > 14` AND `wedge_mm ≥ 4` | Field taper | **Field + boolean wedge** (`applySkives`) |
+| `wedge_mm ≥ 6` AND `taper_width < 20 mm` | Field taper | **Boolean required** (hard for milling export) |
+
+```
+effective_slope_deg = arctan(wedge_mm / taper_width_mm) × (180 / π)
+taper_width_mm = distance from medial edge to lateral zero-crossing at heel station
+```
 
 ---
 
@@ -744,37 +968,105 @@ interface UserPreferences {
 | Orphan element outside trimline | Warn | Warn | **Block** unless repositioned |
 | Apex u outside [0.30, 0.55] | Soft warn | Silent | Allow with log |
 
-### 7.5 Biomechanical rules (embedded in operators via ClinicalSpec)
+### 7.5 Biomechanical theory grounding
 
-**Subtalar joint (STA) axis influence zone:**
+The clinical layer encodes three biomechanical frameworks. Phase 3A implements **constants and soft warnings**; Phase 4 adds **STA-aware posting math**.
 
-- Default posting: planar tilt about medial-lateral axis (current `heightAt` implementation).
-- STA influence zone: `u ∈ [0, 0.35]` (rearfoot). Posting contribution outside this zone is attenuated: `× smoothstep(0.35, 0.25, u)`.
-- STA-aware rotation (Phase 4): posting rotates about an axis from calcaneal contact (~15% length) to navicular (~45% length, ~25% width medial), declared in `REARFOOT_POSTING_SPEC.staZone`.
+#### 7.5.1 Subtalar Joint Axis (STA) Theory
 
-**Arch apex movement:**
+The subtalar joint axis runs from the plantar surface of the calcaneus posterolaterally to the superomedial aspect of the talar neck. Rearfoot posting aims to rotate the subtalar joint about this axis — not simply tilt a flat plane.
 
-- Apex must remain in the midfoot load-bearing zone: `apexUAfterShift(apexMoveMm, L) ∈ [0.30, 0.55]` (Tier 1 constants `apexUMin` / `apexUMax`).
-- Violation surfaces as Tier 3 soft warning; never auto-corrected.
+**Default model (Phase 3A) — planar posting with STA zone gate:**
 
-**Supination / pronation wedge taper:**
+```
+staGate(u) = smoothstep(0.35, 0.25, u)   // 1 in rearfoot, 0 by midfoot
+Δz_posting_planar = tan(postingDeg) × post_mm × heel_env × staGate(u)
+```
 
-- Medial-to-lateral transition must span ≥ 60% of heel width (no step edges).
-- Enforced by `smoothstep(0.1, 0.85, av)` minimum span — not configurable below 0.6 without expert flag.
+**STA-aware model (Phase 4) — rotation about anatomical axis:**
 
-**Edge feathering (linked to §4.9 Layer A):**
+```typescript
+export interface SubtalarAxis {
+    /** Calcaneal contact (heel strike point). */
+    origin: { u: number; v: number };   // default { u: 0.15, v: -0.3 } left foot
+    /** Talar/navicular direction (unit vector in footprint plane + vertical). */
+    axis: { du: number; dv: number; dz: number };
+}
 
-- Additive corrections: `edgeFeather` at `av > 0.86` — fixed clinical constant (`feathered: true` in `ClinicalSpec`).
-- Posting: **never feathered** (`feathered: false`) — full strength at perimeter.
-- Rationale: posting must be measurable at the heel seat interface; feathering would under-correct.
+/** Apply small rotation about STA; project to vertical displacement for printing. */
+export function postingDisplacementSTA(
+    u: number, v: number, postingDeg: number, axis: SubtalarAxis,
+): number;
+```
 
-**Tissue stress advisory heuristics (Phase 4, Tier 3 soft warnings):**
+Posting degrees map to rotation about the STA, then project to `Δz` for the printable surface. This replaces pure medial-lateral planar tilt in the heel zone when `userPreferences.staAwarePosting === true`.
 
-- Flag if `archHeightMm + heelCupHeightMm > 18 mm` in the same midfoot zone (potential focal peak pressure).
-- Flag if net skive + posting creates > 10° effective heel surface slope.
-- Flag if `rearfootWedgeMm > 6` combined with `medialSkiveMm > 3` (excessive heel material removal under post).
+**STA influence zone:** `u ∈ [0, 0.35]`. Posting outside this zone is zeroed — forefoot posting uses a separate `forefoot_env` bump, not STA rotation.
 
-These heuristics are **advisory only** — they surface as soft warnings, never auto-adjust correction values.
+#### 7.5.2 Sagittal Plane Facilitation (SPF)
+
+SPF concerns sagittal alignment of the forefoot relative to the rearfoot (first metatarsal declination, forefoot-to-rearfoot relationship). In the architecture:
+
+- **Forefoot posting** (`forefootPostingDeg`) is the primary SPF control — applied at `u ≈ 0.82` via `fore` bump.
+- **Apex shift** (`apexMoveMm`) indirectly affects sagittal load path — moving the apex distal shifts peak pressure distally.
+- **Heel cup depth** affects rearfoot stability in the sagittal plane.
+
+**SPF advisory (Tier 3):**
+
+| Condition | Advisory |
+|-----------|----------|
+| `forefootPostingDeg > 4` AND `rearfootPostingDeg < -2` (opposing signs, large) | *"Forefoot and rearfoot posting oppose — verify SPF intent"* |
+| `apexMoveMm > 15 mm distal` AND `archHeightMm > 10 mm` | *"High distal arch — check first metatarsal loading"* |
+
+#### 7.5.3 Tissue Stress Theory (TST)
+
+TST heuristic: peak plantar pressure scales with local surface curvature and correction magnitude. The system uses **proxy metrics** (not FEA):
+
+```typescript
+export interface TissueStressAdvisory {
+    id: string;
+    severity: "info" | "warn";
+    message: string;
+}
+
+export function evaluateTissueStress(c: SideCorrections, elements: PlacedElement[]): TissueStressAdvisory[];
+```
+
+| Heuristic ID | Trigger | Severity | Message |
+|--------------|---------|----------|---------|
+| `TST_ARCH_CUP_STACK` | `archHeightMm + heelCupHeightMm > 18` in midfoot zone | warn | Focal peak pressure risk |
+| `TST_HEEL_SLOPE` | net heel slope > 10° from posting + skive | warn | Aggressive heel interface |
+| `TST_WEDGE_SKIVE` | `rearfootWedgeMm > 6` AND `medialSkiveMm > 3` | warn | Excessive heel material removal |
+| `TST_ELEMENT_STACK` | two pads overlapping with combined height > 8 mm | info | Localized pressure concentration |
+
+All TST outputs are **advisory** — never auto-adjust scalars.
+
+#### 7.5.4 Arch apex, wedge taper, and edge feathering
+
+**Arch apex:** `apexUAfterShift(apexMoveMm, L) ∈ [0.30, 0.55]`. Soft warn outside; never auto-correct.
+
+**Wedge taper:** Medial-to-lateral zero crossing must span ≥ 60% of local heel width. Enforced by `smoothstep(0.1, 0.85, av)` — minimum 75% of half-width. Not configurable below 60% without `expertMode`.
+
+**Edge feathering:** Additive corrections use `edgeFeather` at `av > 0.86`. Posting is **never feathered** — measurable at heel seat.
+
+### 7.7 Clinical scenario responses
+
+| Scenario | Corrections | Architecture response |
+|----------|-------------|----------------------|
+| **High arch (12 mm) + aggressive medial wedge (6 mm)** | `archHeightMm=12`, `rearfootWedgeMm=6` | TST warnings; if `effective_slope > 14°` → boolean wedge on export; arch dome feathers at trimline; posting not feathered |
+| **Shrink trimline under high arch** | Trimline inward, arch unchanged | Dome thins at edge via `edgeFeather`; advisory if apex within 5 mm of edge; export allowed |
+| **4° rearfoot post + 4 mm medial skive** | Opposing heel modifications | `TST_HEEL_SLOPE` check; net height algebraic sum; boolean skive on export |
+| **Met pad at arch apex + raise arch 5 mm** | Overlapping operators | Heights sum; `TST_ELEMENT_STACK` if combined > 8 mm; boolean fuse on export |
+| **Base mode + outward trimline 10 mm beyond silhouette** | Draft extends past `BaseBounds` | Mesh does not grow; amber tube; export **blocked**; suggest parametric extension |
+| **Linked L/R + raise left arch** | `corrections.linked=true` | Right mirrors scalar; trimlines do **not** mirror (default) |
+
+### 7.8 Posting relative to STA — implementation summary
+
+| Phase | Posting model | When to use |
+|-------|---------------|-------------|
+| 3A | Planar tilt × `staGate(u)` | Default for all users |
+| 4 | `postingDisplacementSTA()` | `userPreferences.staAwarePosting` or expert mode |
+| 4 | Planar only in forefoot | `u > 0.35` always uses forefoot posting bump |
 
 ### 7.6 AI prescription integration
 
@@ -930,6 +1222,90 @@ A loaded base has **finite extent** defined by its mesh silhouette. The system d
 
 **Direct edit after automated correction:** Fully supported. Moving a met pad after raising the arch applies both operators at rebuild time. Order of user actions does not matter — final state is always `Bake(base, currentDesignState)`.
 
+### 8.8 `BaseBounds` — silhouette authority for outward trimline checks
+
+```typescript
+// vertex/src/lib/geometry/base-bounds.ts (proposed)
+
+export interface BaseBounds {
+    /** Closed polygon from extractMeshOutline — maximum manufacturable footprint. */
+    silhouette: TrimlineCurve;
+    /** Axis-aligned bbox in footprint mm. */
+    bbox: { minX: number; maxX: number; minY: number; maxY: number };
+    /** Cached per assetId; invalidated on base reload. */
+    assetId: string;
+}
+
+/** Signed distance: negative = outside silhouette. */
+export function signedDistanceToSilhouette(x: number, y: number, bounds: BaseBounds): number;
+
+export type TrimlineExtentClass = "inside" | "within_silhouette" | "beyond_silhouette";
+
+/** Classify each draft control point. */
+export function classifyTrimlineExtent(draft: TrimlineCurve, bounds: BaseBounds): TrimlineExtentClass;
+```
+
+### 8.9 Trim inward / expand within / expand beyond — precise behavior
+
+| Class | Definition | Geometry during drag | On confirm | Export |
+|-------|------------|---------------------|------------|--------|
+| **Inward** | All draft points inside committed trimline (area shrinks) | Tier 1 envelope clip removes perimeter triangles | Tier 2 centroid clip; undo frame | Tier 3 boolean |
+| **Within silhouette** | Some draft points outside committed but inside `BaseBounds.silhouette` | Triangles previously clipped reappear — **no new vertices** | Tier 2 clip to draft | Tier 3 boolean |
+| **Beyond silhouette** | Any draft point outside `BaseBounds.silhouette` | Mesh clipped to silhouette ∩ draft; amber tube shows full draft | Confirm **allowed** but export **blocked** until resolved | Blocked |
+
+**Inward trim algorithm:** Standard Tier 1 → 2 → 3. `z_base` on removed triangles is discarded (not moved). Bottom unchanged.
+
+**Within-silhouette expand:** No `z_base` modification — only clip mask changes. Micro-detail on re-exposed triangles is **fully preserved** because `z_base` was never altered.
+
+**Beyond-silhouette:** System cannot synthesize `z_base` outside the import. Alternatives offered:
+
+1. Switch to parametric mode (generate extension)
+2. Load larger base template
+3. Phase 4: parametric forefoot extension patch (hybrid)
+
+### 8.10 Micro-detail preservation and degradation
+
+**Preservation score (validation metric):**
+
+```typescript
+export interface BaseDetailReport {
+    /** Fraction of top vertices where |z' − z_base| < 0.05 mm (unchanged). */
+    preservedFraction: number;
+    /** Max |z' − z_base| on top vertices (mm). */
+    maxTopDeltaMm: number;
+    /** Bottom stability (from validateBaseResult). */
+    maxBottomDeltaMm: number;
+}
+```
+
+| Edit intensity | Expected `preservedFraction` | Notes |
+|----------------|------------------------------|-------|
+| Corrections only (no trimline) | > 0.95 | δ field only; micro-detail intact |
+| Trimline inward < 10% area | > 0.85 | Perimeter triangles dropped; interior preserved |
+| Trimline inward > 25% area | > 0.70 | More perimeter lost; advise user |
+| Heavy correction + inward trim | > 0.65 | δ large on remaining surface; detail still in `z_base` component |
+
+**Degradation rule:** The system never **re-samples** or **re-meshes** the base during editing (Stage 0–1). Degradation comes only from **triangle removal** (clip) — not from smoothing or remeshing. Laplacian smoothing applies to **δ field only**, not `z_base`.
+
+### 8.11 Adding material outside imported mesh — hard prohibition
+
+```
+IF any draft point outside BaseBounds.silhouette:
+    preview.mesh = clip(modified, silhouette ∩ draft_envelope)
+    preview.tube = full_draft_curve (amber on out-of-bounds segments)
+    export.allowed = false
+    export.blockReason = "TRIMLINE_BEYOND_BASE"
+```
+
+No operator — including parametric extension of `heightAt` — may invent `z_base` outside the imported mesh in base mode. Parametric extension is a **mode switch**, not an in-place base edit.
+
+### 8.12 Side-wall stretch on inward trim (Phase 3B)
+
+When Tier 2 clip cuts through side-wall triangles, expose a vertical cut surface. Until Phase 3B boolean:
+
+- Preview shows open boundary (acceptable).
+- Export uses OCCT boolean for watertight vertical wall.
+
 ---
 
 ## 9. Direct Editing ↔ Automated Corrections — Interaction Rules
@@ -974,6 +1350,73 @@ The architecture has no "modes." The UI may show:
 - **Trimline edit overlay** when session is active.
 
 These are **indicators**, not separate pipelines.
+
+### 9.5 Operator order does not follow user action order
+
+The system is **commutative at the design-state level**: final geometry is always `Evaluate(designState)`, not a sequence of baked operations. Implementation:
+
+```
+final_height(u,v) = heightAt(u, v, {
+    corrections: design.corrections[side],  // scalars unchanged by edit order
+    trimline: activeTrimline,               // current committed or draft
+    elements: design.elements.filter(side),
+})
+```
+
+User action order affects **undo frames**, not evaluation order (§5.6).
+
+### 9.6 Trimline change → correction effective area
+
+Trimline acts as a **domain mask** on the footprint. Corrections are evaluated everywhere in the mask; outside the mask, geometry is clipped away — not zeroed in state.
+
+```typescript
+/** True if footprint point (xMm, yMm) is inside active trimline polygon. */
+export function isInsideTrimline(xMm: number, yMm: number, curve: TrimlineCurve): boolean;
+
+/** For arch: fraction of arch bump support inside trimline (0..1). */
+export function archSupportFraction(draft: TrimlineCurve, apexU: number, lengthMm: number): number;
+```
+
+| `archSupportFraction` | UI | Export |
+|-----------------------|-----|--------|
+| ≥ 0.85 | None | Allow |
+| 0.5 – 0.85 | Info: *"Arch partially clipped by outline"* | Allow |
+| < 0.5 | Warn: *"Arch mostly outside outline"* | Allow with log |
+| Apex center outside polygon | Warn: *"Arch apex outside outline"* | Allow; advisory only |
+
+**Scalars never change** — only the visible result of `heightAt` within the mask changes.
+
+### 9.7 Element response to trimline changes
+
+```typescript
+export type ElementTrimlineStatus = "inside" | "partial" | "orphan";
+
+export function elementTrimlineStatus(el: PlacedElement, curve: TrimlineCurve): ElementTrimlineStatus;
+```
+
+| Status | Definition | During drag | On confirm | Export |
+|--------|------------|-------------|------------|--------|
+| `inside` | Centroid inside polygon | Normal render | Normal | Allow |
+| `partial` | Centroid inside; > 30% volume outside | Normal + faint outline | Normal | Allow |
+| `orphan` | Centroid outside polygon | Amber ghost at last valid position | Warn toast | **Block** |
+
+**Rules:**
+
+- Elements are **not auto-deleted** when trimline excludes them.
+- Elements are **not auto-moved** toward the interior.
+- User must reposition or delete orphan elements before export.
+- During drag, use **draft** trimline for status (live feedback).
+
+### 9.8 Conflict resolution when direct edit follows automated correction
+
+| Situation | Resolution |
+|-----------|------------|
+| User raises arch then shrinks trimline | Arch scalar unchanged; visible dome shrinks with mask; see §9.6 |
+| User shrinks trimline then raises arch | Identical final state to above |
+| User places pad then moves trimline over pad | Pad becomes orphan; block export |
+| User edits trimline during active element drag | Disallow — one edit session at a time (§6.3) |
+| User changes base template | Trimline reset to new `extractMeshOutline`; corrections preserved; one undo frame |
+| AI batch prescription then manual trimline | Prescription scalars preserved; trimline edits apply on top |
 
 ---
 
@@ -1122,10 +1565,12 @@ buildOcctInsoleSolid() / buildFromBase():
 ### Phase 3A — Production editing (next priority)
 
 - [ ] **Global undo/redo** — `HistoryStore` with `structuredClone(design)` snapshots, `Ctrl+Z` / `Ctrl+Y`, 300 ms slider coalescing (§6)
-- [ ] **Draft trimline wiring** — pass `trimlineEdit.draft` to `useBaseInsoleGeometry`; Tier 1 width-envelope during drag, `clipGeometryToOutline` on confirm (§4.7)
-- [ ] **Clinical constraints module** — `clinical-constraints.ts`, `ClinicalSpec` per operator, Tier 3 UI warnings (§7)
-- [ ] Edit session ↔ undo integration — `beginTrimlineEdit` captures snapshot; `confirmTrimlineEdit` pushes undo frame (§6.3)
-- [ ] Orphan element detection on trimline change
+- [ ] **`resolveTrimlinePreview` + `clipByWidthEnvelope`** — unified draft wiring for `useBaseInsoleGeometry` / `useInsoleGeometry` (§4.15)
+- [ ] **Trimline drag UX** — mesh moves with handle per §4.11–4.13; draft trimline in `HeightFieldParams` during drag
+- [ ] **Clinical constraints module** — `clinical-constraints.ts`, `ClinicalSpec`, STA zone gate, TST advisories (§7)
+- [ ] **`elementTrimlineStatus` + orphan export block** (§9.7)
+- [ ] **`BaseBounds` cache + beyond-silhouette export block** (§8.8–8.11)
+- [ ] Edit session ↔ undo integration (§6.3)
 
 ### Phase 3B — Base path parity
 
@@ -1185,18 +1630,30 @@ buildOcctInsoleSolid() / buildFromBase():
 
 ## 17. Summary
 
-The v2.1 architecture makes the hard decisions explicit:
+The v2.2 architecture makes the hard decisions explicit and implementation-ready:
 
-1. **Trimline editing** uses a **three-tier hybrid model**: Tier 1 width-envelope clipping + visual boundary offset during drag; Tier 2 `clipGeometryToOutline` on confirm; Tier 3 boolean prism cut on export. **Perimeter vertex sculpting is rejected.** Phase 3A must wire draft trimline into `useBaseInsoleGeometry`.
+1. **Trimline editing** feels like grabbing the outer edge (§4.11) via coordinated Tier 1 mesh clip + visual tube. `resolveTrimlinePreview` (§4.15) is the single contract for draft → geometry. Visual offset vs geometry change are distinct layers (§4.12). Corrections stay active during drag with draft envelope (§4.14).
 
-2. **Displacement vs boolean** is governed by **Core Principles R1–R7** (§5.1) and the **full operator policy table** (§5.2). OCCT booleans **never** run during drag or slider scrubbing. A 4 mm supination wedge switches from field to boolean when slope exceeds ~14°.
+2. **Displacement vs boolean** — Core Principles R1–R7, operator policy table, fixed evaluation stack (§5.6), wedge transition table (§5.7). Booleans never during drag/scrub.
 
-3. **Undo/redo** is a **Phase 3A requirement**: `HistoryStore` with `structuredClone(design)` snapshots, one frame per trimline confirm / slider release / element commit, session integration via `beginTrimlineEdit` / `confirmTrimlineEdit`, and **300 ms coalescing** for rapid slider changes.
+3. **Undo/redo** — Phase 3A: `HistoryStore`, session integration, 300 ms coalescing.
 
-4. **Clinical constraints** use a **three-tier layer** (§7): `clinical-constraints.ts` constants, `ClinicalSpec` per operator, and command/export gates with soft warnings and hard blocks. Includes rearfoot posting ±8°, apex u ∈ [0.30, 0.55], minimum rim blend 2.0 mm, STA influence zones, and tissue stress advisories.
+4. **Clinical constraints** — Three-tier layer with STA zone gate, SPF advisories, TST heuristics (§7.5), and clinical scenario table (§7.7). STA-aware posting in Phase 4.
 
-5. **Loaded GLB bases** preserve detail via `z' = z_base + δ(u,v) × topFactor` with **bottom vertices fixed**. Editing beyond the imported outline cannot add material; outward trimline beyond base bounds is blocked with UI warning. Four-stage evolution toward sewn multi-body B-rep (§8.2).
+5. **Loaded GLB bases** — `BaseBounds` silhouette authority (§8.8); inward / within / beyond behavior (§8.9); micro-detail via `z_base` preservation (§8.10); no material synthesis outside import (§8.11).
 
-6. **Direct editing and automated corrections** are unified through a single design state (§9) — one tool, one insole, one undo stack. Corrections are never auto-adjusted when the trimline changes; operators always re-evaluate at final state.
+6. **Operator composition** — Fixed evaluation order; user action order irrelevant (§9.5–9.8). Trimline masks domain; elements get `inside | partial | orphan` status.
 
-The implementation team can proceed from this document without re-designing core behaviors for trimline editing, operator evaluation, or clinical guardrails.
+The implementation team can implement core behaviors from this document without additional architectural decisions.
+
+### Implementation checklist (Phase 3A)
+
+| Component | File | Section |
+|-----------|------|---------|
+| `resolveTrimlinePreview` | `trimline-preview-contract.ts` | §4.15 |
+| `clipByWidthEnvelope` | `trimline.ts` | §4.13 |
+| `OPERATOR_EVAL_ORDER` | `operator-stack.ts` | §5.6 |
+| `evaluateTissueStress` | `clinical/tissue-stress.ts` | §7.5.3 |
+| `BaseBounds` + `classifyTrimlineExtent` | `base-bounds.ts` | §8.8 |
+| `elementTrimlineStatus` | `elements.ts` | §9.7 |
+| `HistoryStore` | `history-store.ts` | §6 |
