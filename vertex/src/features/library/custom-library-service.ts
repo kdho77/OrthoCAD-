@@ -129,7 +129,7 @@ export function buildExportMesh(input: SaveCustomInput): THREE.Mesh {
  */
 async function buildBasePrefabMesh(side: Side): Promise<THREE.Mesh | null> {
     const { design } = useDesignStore.getState();
-    const base = getDesignBase(design);
+    const base = getDesignBase(design, 'left'); // legacy single; for paired use per side
     if (!base) return null;
 
     const raw = await loadBaseGeometry(base);
@@ -408,9 +408,29 @@ export function placeCustomElement(customId: string, customName: string, side: S
     useDesignStore.getState().addCustomElement(customId, customName, side);
 }
 
-/** Apply a custom prefab as the active pattern reference. */
-export function selectCustomPrefab(customId: string, customName: string): void {
-    useDesignStore.getState().setCustomPrefab(customId, customName);
+/** Apply a custom prefab as the active pattern reference.
+ * For GLB bases, automatically creates paired left+right workspace with mirrored opposite side.
+ */
+export async function selectCustomPrefab(customId: string, customName: string): Promise<void> {
+    const store = useDesignStore.getState();
+    // For paired workspace feature: load as left, auto mirror for right
+    // Create mirrored version (reuses existing mirror which saves to library)
+    let rightId = customId;
+    let rightName = customName;
+    try {
+        const mirrorRes = await mirrorBaseGlb(customId, { name: `${customName} (Right)` });
+        if (mirrorRes.ok && mirrorRes.itemId) {
+            rightId = mirrorRes.itemId;
+            rightName = `${customName} (Mirrored)`;
+        }
+    } catch (e) {
+        // fallback to same if mirror fails; still set paired with same for demo
+    }
+    const leftBase: DesignBase = { assetId: customId, name: customName, source: "custom" };
+    const rightBase: DesignBase = { assetId: rightId, name: rightName, source: "custom" };
+    store.setPairedBases(leftBase, rightBase);
+    // also set legacy for compat
+    store.setCustomPrefab(customId, customName);
 }
 
 /** Infer parent stock id from a placed stock element kind. */

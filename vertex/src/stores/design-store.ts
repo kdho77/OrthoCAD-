@@ -76,6 +76,7 @@ export function defaultDesign(): DesignState {
             right: defaultSideCorrections(),
         },
         elements: [],
+        // paired remains undefined for legacy/single side designs
     };
 }
 
@@ -156,6 +157,9 @@ export interface DesignStore {
     setRearfootWedge: (side: Side, wedge: WedgeCorrection | undefined) => void;
     /** Set or clear forefoot wedge (mutual exclusion per zone is by using a single WedgeCorrection object or undefined). */
     setForefootWedge: (side: Side, wedge: WedgeCorrection | undefined) => void;
+
+    /** Set paired left/right bases for dual-view workspace. Sets per-side bases, defaults per-side thickness/method from legacy or defaults, sets paired.linked = false for independence. */
+    setPairedBases: (left?: DesignBase, right?: DesignBase) => void;
 }
 
 export const useDesignStore = create<DesignStore>()(
@@ -181,9 +185,26 @@ export const useDesignStore = create<DesignStore>()(
             setMethod: (method) => set((s) => ({ design: { ...s.design, method } })),
             setThickness: (thicknessMm) =>
                 set((s) => {
+                    const isPaired = !!s.design.paired;
+                    const linked = isPaired ? s.design.paired!.linked : s.design.corrections.linked;
+                    if (isPaired && s.design.paired) {
+                        // Per-side thickness for paired workspace
+                        const safe = constrainSideCorrections(s.design.paired.left.corrections || defaultSideCorrections(), thicknessMm).thicknessMm; // approximate
+                        const next = {
+                            ...s.design.paired,
+                            leftThicknessMm: linked ? safe : thicknessMm, // simplistic
+                            rightThicknessMm: linked ? safe : thicknessMm,
+                        };
+                        return {
+                            design: {
+                                ...s.design,
+                                thicknessMm: safe, // legacy compat
+                                paired: next as any,
+                            },
+                        };
+                    }
                     const left = s.design.corrections.left;
                     const right = s.design.corrections.right;
-                    const linked = s.design.corrections.linked;
                     // Use constrain on a representative side for thickness decision, then re-apply full.
                     const rep = constrainSideCorrections(left, thicknessMm);
                     const safeThickness = rep.thicknessMm;
@@ -211,7 +232,11 @@ export const useDesignStore = create<DesignStore>()(
                 })),
             setLinked: (linked) =>
                 set((s) => ({
-                    design: { ...s.design, corrections: { ...s.design.corrections, linked } },
+                    design: { 
+                        ...s.design, 
+                        corrections: { ...s.design.corrections, linked },
+                        paired: s.design.paired ? { ...s.design.paired, linked } : undefined,
+                    },
                 })),
 
             updateCorrection: (side, patch) =>
@@ -306,6 +331,31 @@ export const useDesignStore = create<DesignStore>()(
                                 left: finalLeft,
                                 right: finalRight,
                             },
+                        },
+                    };
+                }),
+
+            setPairedBases: (left, right) =>
+                set((s) => {
+                    const currentThickness = s.design.thicknessMm || 3;
+                    const currentMethod = s.design.method || "printing_solid";
+                    const newPaired = {
+                        leftBase: left,
+                        rightBase: right,
+                        leftThicknessMm: currentThickness,
+                        rightThicknessMm: currentThickness,
+                        leftMethod: currentMethod,
+                        rightMethod: currentMethod,
+                        linked: false, // default independence for paired workspace
+                        rightMetadata: right ? { mirroredFrom: left?.assetId } : undefined,
+                    };
+                    return {
+                        design: {
+                            ...s.design,
+                            // keep legacy base for compat if single
+                            paired: newPaired,
+                            // if setting paired, also set legacy base to left for hooks that don't yet support paired
+                            base: left || s.design.base,
                         },
                     };
                 }),

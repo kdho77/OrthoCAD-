@@ -78,7 +78,7 @@ function committedOrDefault(side: Side): TrimlineCurve {
     if (committed) return committed;
     // On a loaded base, start from an outline that follows the real mesh boundary
     // (published once the base GLB loads) instead of the parametric default.
-    const base = getDesignBase(design);
+    const base = getDesignBase(design, side);
     if (base) {
         const outline = useBaseOutlineStore.getState().getOutline(base.assetId);
         if (outline) return cloneTrimline(outline);

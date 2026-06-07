@@ -82,13 +82,24 @@ export function Viewer3D() {
         setViewer({ view: name });
     };
 
-    return (
-        <div className="relative h-full w-full bg-[hsl(222_28%_7%)]">
+    // Dual-view for paired workspace: independent OrbitControls and editing per side.
+    // When paired (design.paired && !design.paired.linked), show two side-by-side canvases.
+    // Each has own controls for true independence.
+    const isPaired = !!design.paired;
+    const showDual = isPaired && viewer.showLeft && viewer.showRight;
+
+    const renderSide = (side: Side, isLeft: boolean) => (
+        <div className={`relative ${showDual ? 'flex-1' : 'h-full w-full'}`} style={showDual ? {} : {}}>
             <Canvas
+                key={side}
                 shadows
                 dpr={[1, 1.5]}
-                camera={{ position: [220, 200, 260], fov: 40, near: 1, far: 5000 }}
-                onPointerMissed={() => selectElement(null)}
+                camera={{ position: isLeft ? [220, 200, 260] : [-220, 200, 260], fov: 40, near: 1, far: 5000 }}
+                onPointerMissed={() => {
+                    selectElement(null);
+                    setTarget({ type: "insole", side });
+                }}
+                onClick={() => setTarget({ type: "insole", side })}
             >
                 <color attach="background" args={["#0c111b"]} />
                 <ambientLight intensity={0.6} />

@@ -56,9 +56,9 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         setBuilding(true);
         geometryEngine.cancelStaleBuilds();
 
-        const thicknessMm = thicknessPreview ?? design.thicknessMm;
+        const thicknessMm = thicknessPreview ?? (design.paired ? (side === 'left' ? design.paired.leftThicknessMm : design.paired.rightThicknessMm) : design.thicknessMm);
         const params = {
-            ...insoleParamsFromDesign({ ...design, thicknessMm }, side, quality),
+            ...insoleParamsFromDesign(design, side, quality),
             corrections: mergeCorrections(side, design.corrections[side]),
             elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
             trimline: trimline ?? null,

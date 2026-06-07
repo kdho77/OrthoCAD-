@@ -570,7 +570,7 @@ export interface DesignModeInfo {
 
 /** Resolve whether a design is modifying a loaded base template or pure parametric. */
 export function resolveDesignMode(design: DesignState): DesignModeInfo {
-    const base = getDesignBase(design);
+    const base = getDesignBase(design, side); // side from context or param if available; fallback for legacy
     if (base) return { mode: "base", baseName: base.name, baseId: base.assetId };
     return { mode: "parametric" };
 }

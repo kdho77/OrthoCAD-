@@ -28,7 +28,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const elementPreviews = usePerformanceStore((s) => s.elementPreviews);
     const interacting = usePerformanceStore((s) => s.interacting);
 
-    const base = getDesignBase(design);
+    const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
 
     const baseGeoRef = useRef<BufferGeometry | null>(null);
@@ -43,7 +43,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         let cancelled = false;
         baseGeoRef.current?.dispose();
         baseGeoRef.current = null;
-        const ref = getDesignBase(design);
+        const ref = getDesignBase(design, side);
         if (!ref) {
             setGeometry(null);
             return;

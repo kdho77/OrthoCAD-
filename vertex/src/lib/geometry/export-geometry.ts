@@ -20,14 +20,15 @@ import type { DesignState, Side } from "@/types";
  * back to parametric generation.
  */
 async function buildModifiedBaseGeometry(design: DesignState, side: Side): Promise<BufferGeometry | null> {
-    const base = getDesignBase(design);
+    const base = getDesignBase(design, side);
     if (!base) return null;
     const raw = await loadBaseGeometry(base);
     if (!raw) return null;
     try {
         // Phase 3B: use the authoritative field (carries committed trimline) so
         // the OCCT kernel can sew the base and apply exact boolean trim/element/skive.
-        const field = baseModifierFieldAuthoritative(design, side, design.thicknessMm);
+        const effThickness = design.paired ? (side === 'left' ? design.paired.leftThicknessMm : design.paired.rightThicknessMm) : design.thicknessMm;
+        const field = baseModifierFieldAuthoritative(design, side, effThickness);
         // Extra smoothing for a clean manufacturing surface on export.
         const result = getKernel().buildFromBase(raw, field, 2);
         return result.geometry;

@@ -38,7 +38,7 @@ export function TrimlineEditTools() {
 
     // Subscribe to the loaded base's outline so the overlay re-renders (and picks
     // up the mesh-derived default) as soon as the base GLB finishes loading.
-    const baseAssetId = getDesignBase(design)?.assetId ?? null;
+    const baseAssetId = getDesignBase(design, side)?.assetId ?? null;
     const baseOutline = useBaseOutlineStore((s) => (baseAssetId ? (s.outlines[baseAssetId] ?? null) : null));
 
     const sides: Side[] = [];

@@ -15,20 +15,26 @@ export function isOcctKernelActive(): boolean {
     return getKernel().name === "opencascade-wasm";
 }
 
-/** Build canonical insole params from the live design store + optional preview merges. */
+/** Build canonical insole params from the live design store + optional preview merges.
+ * Supports paired workspace: uses per-side thickness/method/base from design.paired if present.
+ */
 export function insoleParamsFromDesign(
     design: DesignState,
     side: Side,
     quality: GeometryQuality = "full",
 ): InsoleParams {
+    const isPaired = !!design.paired;
+    const sideData = isPaired ? (side === 'left' ? design.paired!.left : design.paired!.right) : null;
+    const thickness = sideData ? sideData.thicknessMm : design.thicknessMm;
+    const method = sideData ? sideData.method : design.method;
     return {
         side,
         lengthMm: INSOLE_LENGTH_MM,
         widthMm: INSOLE_WIDTH_MM,
-        thicknessMm: design.thicknessMm,
+        thicknessMm: thickness,
         corrections: mergeCorrections(side, design.corrections[side]),
         elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
-        method: design.method,
+        method: method,
         ...segmentsForQuality(quality),
     };
 }

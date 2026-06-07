@@ -15,11 +15,16 @@ import type { DesignBase, DesignState, Side } from "@/types";
 // into a Three.js geometry, so the viewer hook and the export pipeline agree.
 
 /**
- * Resolve the effective base template for a design. Prefers the explicit
- * `design.base`, falling back to the legacy `customPrefabId` so existing saved
- * designs migrate transparently. Returns `null` for pure parametric designs.
+ * Resolve the effective base template for a design.
+ * Supports paired left/right workspace: if design.paired and side provided, returns the side-specific base.
+ * Falls back to legacy single base / customPrefabId.
+ * Returns `null` for pure parametric designs.
  */
-export function getDesignBase(design: DesignState): DesignBase | null {
+export function getDesignBase(design: DesignState, side?: Side): DesignBase | null {
+    if (side && design.paired) {
+        const sideBase = side === 'left' ? design.paired.leftBase : design.paired.rightBase;
+        if (sideBase) return sideBase;
+    }
     if (design.base) return design.base;
     if (design.customPrefabId) {
         return { assetId: design.customPrefabId, name: design.customPrefabName, source: "custom" };
@@ -61,12 +66,12 @@ export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry
 
 /** Height field (with live correction/element previews) for modifier application. */
 export function baseModifierField(design: DesignState, side: Side, thicknessMm: number): HeightFieldParams {
-    const params = insoleParamsFromDesign({ ...design, thicknessMm }, side, "full");
+    const params = insoleParamsFromDesign(design, side, "full");
     return {
         side,
         lengthMm: params.lengthMm,
         widthMm: params.widthMm,
-        thicknessMm,
+        thicknessMm: params.thicknessMm,
         corrections: mergeCorrections(side, design.corrections[side]),
         elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
         includeSkives: true,

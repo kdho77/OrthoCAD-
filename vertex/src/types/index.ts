@@ -152,6 +152,27 @@ export interface DesignState {
     elements: PlacedElement[];
     /** User-edited insole outline curves — persisted with the design. */
     trimlines?: DesignTrimlines;
+
+    /**
+     * Paired Left + Right dual-view workspace support.
+     * When present, left and right sides are independent (linked=false by default).
+     * Each side has its own base, thickness, method, etc.
+     * Corrections/trimlines/elements remain in top-level with per-side keys for compat.
+     */
+    paired?: {
+      leftBase?: DesignBase;
+      rightBase?: DesignBase;
+      leftThicknessMm: number;
+      rightThicknessMm: number;
+      leftMethod: ProductionMethod;
+      rightMethod: ProductionMethod;
+      /** Workspace-level linked flag (default false for independence). */
+      linked: boolean;
+      /** Optional metadata for mirrored side. */
+      rightMetadata?: {
+        mirroredFrom?: string; // assetId of left
+      };
+    };
 }
 
 // --- Custom library (user-owned GLB assets) --------------------------------

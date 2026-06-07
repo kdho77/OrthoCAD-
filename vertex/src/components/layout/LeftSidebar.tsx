@@ -72,7 +72,7 @@ export function LeftSidebar() {
                 }
             }
             // Load the most recently uploaded base immediately so the user can edit it.
-            if (lastId) onPattern(lastId, false);
+            if (lastId) void onPattern(lastId, false);
         } finally {
             setUploadBusy(false);
             if (uploadRef.current) uploadRef.current.value = "";
@@ -90,18 +90,18 @@ export function LeftSidebar() {
         try {
             const res = await mirrorBaseGlb(id);
             if (!res.ok) setUploadError(res.reason ?? "Mirror failed");
-            else if (res.itemId) onPattern(res.itemId, false);
+            else if (res.itemId) void onPattern(res.itemId, false);
         } finally {
             setMirroringId(null);
         }
     };
 
-    const onPattern = (id: string, stock: boolean) => {
+    const onPattern = async (id: string, stock: boolean) => {
         if (stock) {
             setPattern(id as ScanPattern);
             setTarget({ type: "insole", side: "left" });
         } else {
-            selectCustomPrefab(id, customPrefabs.find((p) => p.id === id)?.name ?? "Custom Prefab");
+            await selectCustomPrefab(id, customPrefabs.find((p) => p.id === id)?.name ?? "Custom Prefab");
             setTarget({ type: "insole", side: "left" });
         }
         setEditMode("transform");
@@ -115,7 +115,7 @@ export function LeftSidebar() {
                         <button
                             key={p.id}
                             type="button"
-                            onClick={() => onPattern(p.id, p.stock)}
+                            onClick={() => void onPattern(p.id, p.stock)}
                             className={cn(
                                 "rounded-md border px-2 py-2 text-xs transition-colors",
                                 (p.stock && design.pattern === p.id) ||

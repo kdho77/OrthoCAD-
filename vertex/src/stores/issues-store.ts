@@ -22,7 +22,7 @@ export const useIssuesStore = create<IssuesStore>((set) => ({
         const baseOutlines: Partial<Record<Side, TrimlineCurve>> = {};
         // Best-effort: if a base is active, try to attach its outline for base-feature-orphan checks.
         // Callers that have the assetId can pre-populate; here we read the outline store.
-        const baseId = (design.base?.assetId ?? design.customPrefabId) || null;
+        const baseId = (design.paired?.leftBase?.assetId ?? design.base?.assetId ?? design.customPrefabId) || null;
         if (baseId) {
             const o = useBaseOutlineStore.getState().getOutline(baseId);
             if (o) {
