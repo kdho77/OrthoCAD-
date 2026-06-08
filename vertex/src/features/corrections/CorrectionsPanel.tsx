@@ -4,7 +4,7 @@
 import { AlertTriangle, Link2, Unlink } from "lucide-react";
 import { useMemo } from "react";
 import { SliderField } from "@/components/ui/slider-field";
-import { hasWedgeViolations } from "@/lib/geometry/clinical-constraints";
+import { constrainDesignCorrections, hasWedgeViolations } from "@/lib/geometry/clinical-constraints";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
@@ -43,8 +43,13 @@ const previewCorrection = rafThrottle((side: Side, patch: Partial<SideCorrection
 });
 
 export function CorrectionsPanel() {
-    const { design, updateCorrection, setUnit, setLinked, setThickness, setRearfootWedge, setForefootWedge } =
-        useDesignStore();
+    const design = useDesignStore((s) => s.design);
+    const updateCorrection = useDesignStore((s) => s.updateCorrection);
+    const setUnit = useDesignStore((s) => s.setUnit);
+    const setLinked = useDesignStore((s) => s.setLinked);
+    const setThickness = useDesignStore((s) => s.setThickness);
+    const setRearfootWedge = useDesignStore((s) => s.setRearfootWedge);
+    const setForefootWedge = useDesignStore((s) => s.setForefootWedge);
     const { corrections } = design;
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
     const setThicknessPreview = usePerformanceStore((s) => s.setThicknessPreview);
@@ -63,8 +68,17 @@ export function CorrectionsPanel() {
     );
 
     // Soft clinical warnings for wedges approaching their limits (non-blocking).
-    const activeViolations = useDesignStore((s) => s.getActiveViolations());
-    const showWedgeWarning = hasWedgeViolations(activeViolations);
+    // Derived in useMemo — never select getActiveViolations() directly (returns a new
+    // array each call and triggers React useSyncExternalStore infinite loop / #185).
+    const showWedgeWarning = useMemo(() => {
+        const { violations } = constrainDesignCorrections(
+            corrections.left,
+            corrections.right,
+            design.thicknessMm,
+            corrections.linked,
+        );
+        return hasWedgeViolations(violations);
+    }, [corrections, design.thicknessMm]);
 
     return (
         <div className="space-y-3">
