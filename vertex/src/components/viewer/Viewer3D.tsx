@@ -20,10 +20,11 @@ import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { cn } from "@/lib/utils";
-import { type CameraView, useDesignStore } from "@/stores/design-store";
+import { type CameraView, type ViewerSettings, useDesignStore } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
-import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
+import type { Side } from "@/types";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
@@ -52,6 +53,14 @@ const VIEW_LABELS: Record<CameraView, string> = {
     bottom: "Bottom",
 };
 
+/** Active insole side for mesh edits when both feet are visible in the single workspace. */
+function resolveDefaultEditSide(viewer: ViewerSettings, target: MeshEditTarget | null): Side {
+    if (target?.type === "insole") return target.side;
+    if (viewer.showLeft && !viewer.showRight) return "left";
+    if (viewer.showRight && !viewer.showLeft) return "right";
+    return "left";
+}
+
 export function Viewer3D() {
     const controls = useRef<OrbitControlsImpl>(null);
     const kernelName = useKernelStore((s) => s.name);
@@ -61,9 +70,11 @@ export function Viewer3D() {
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
     const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
+    const target = useMeshEditStore((s) => s.target);
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
+    const editSide = resolveDefaultEditSide(viewer, target);
     const designMode = resolveDesignMode(design);
     const showBase = designMode.mode === "base";
     const modifiersActive = hasActiveModifiers(design);
@@ -82,24 +93,22 @@ export function Viewer3D() {
         setViewer({ view: name });
     };
 
-    // Dual-view for paired workspace: independent OrbitControls and editing per side.
-    // When paired (design.paired && !design.paired.linked), show two side-by-side canvases.
-    // Each has own controls for true independence.
-    const isPaired = !!design.paired;
-    const showDual = isPaired && viewer.showLeft && viewer.showRight;
-
-    const renderSide = (side: Side, isLeft: boolean) => (
-        <div className={`relative ${showDual ? 'flex-1' : 'h-full w-full'}`} style={showDual ? {} : {}}>
+    return (
+        <div className="relative h-full w-full bg-[hsl(222_28%_7%)]">
             <Canvas
-                key={side}
                 shadows
                 dpr={[1, 1.5]}
-                camera={{ position: isLeft ? [220, 200, 260] : [-220, 200, 260], fov: 40, near: 1, far: 5000 }}
+                camera={{
+                    position: [220, 200, 260],
+                    fov: 40,
+                    near: 1,
+                    far: 5000,
+                }}
                 onPointerMissed={() => {
                     selectElement(null);
-                    setTarget({ type: "insole", side });
+                    setTarget({ type: "insole", side: editSide });
                 }}
-                onClick={() => setTarget({ type: "insole", side })}
+                onClick={() => setTarget({ type: "insole", side: editSide })}
             >
                 <color attach="background" args={["#0c111b"]} />
                 <ambientLight intensity={0.6} />
@@ -309,7 +318,7 @@ export function Viewer3D() {
                 <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
                     <ModeButton
                         active={editMode === "edit-trimline"}
-                        onClick={() => beginTrimlineEdit(viewer.showLeft ? "left" : "right")}
+                        onClick={() => beginTrimlineEdit(editSide)}
                         icon={<PencilLine className="h-3.5 w-3.5" />}
                         label="Edit trimline"
                     />
@@ -317,7 +326,7 @@ export function Viewer3D() {
                         active={editMode === "trim"}
                         onClick={() => {
                             setEditMode("trim");
-                            setTarget({ type: "insole", side: viewer.showLeft ? "left" : "right" });
+                            setTarget({ type: "insole", side: editSide });
                         }}
                         icon={<Scissors className="h-3.5 w-3.5" />}
                         label="Trim"
@@ -326,7 +335,7 @@ export function Viewer3D() {
                         active={editMode === "vertex"}
                         onClick={() => {
                             setEditMode("vertex");
-                            setTarget({ type: "insole", side: viewer.showLeft ? "left" : "right" });
+                            setTarget({ type: "insole", side: editSide });
                         }}
                         icon={<PenTool className="h-3.5 w-3.5" />}
                         label="Vertex"

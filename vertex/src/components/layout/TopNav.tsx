@@ -21,9 +21,12 @@ export function TopNav({ active, onNavigate, onOpenAdmin, onOpenPrescription }: 
     return (
         <header className="flex h-12 items-center justify-between border-b border-border bg-panel px-3">
             <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2 pr-2">
-                    <div className="flex h-6 w-6 items-center justify-center rounded bg-primary text-xs font-bold text-primary-foreground">V</div>
-                    <span className="text-sm font-semibold tracking-tight">Vertex Orthopedic</span>
+                <div className="flex items-center pr-2">
+                    <img
+                        src="/orthocad-logo.webp"
+                        alt="Vertex Orthopedic"
+                        className="h-7 w-auto object-contain"
+                    />
                 </div>
                 <nav className="flex items-center gap-1">
                     {NAV.map((item) => (

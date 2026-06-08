@@ -1,12 +1,14 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { AlertTriangle, Check, PencilLine, RotateCcw, Undo2, Redo2, X } from "lucide-react";
+import { AlertTriangle, Check, PencilLine, Redo2, RotateCcw, Undo2, X } from "lucide-react";
+import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
+import { constrainDesignCorrections } from "@/lib/geometry/clinical-constraints";
+import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
 import { useIssuesStore } from "@/stores/issues-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
-import { cn } from "@/lib/utils";
 import type { Side } from "@/types";
 
 /**
@@ -22,6 +24,23 @@ export function ActionPanel() {
     const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
+    const orphans = useIssuesStore((s) => s.orphans);
+    const design = useDesignStore((s) => s.design);
+    const violations = useMemo(() => {
+        const { violations: all } = constrainDesignCorrections(
+            design.corrections.left,
+            design.corrections.right,
+            design.thicknessMm,
+            design.corrections.linked,
+        );
+        const seen = new Set<string>();
+        return all.filter((vi) => {
+            const key = `${vi.field}:${vi.message}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }, [design.corrections, design.thicknessMm]);
 
     const isEditing = editMode === "edit-trimline" && trimlineEdit !== null;
     const activeSide = trimlineEdit?.side ?? "left";
@@ -39,8 +58,8 @@ export function ActionPanel() {
                     Edit actions
                 </div>
                 <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground">
-                    Click anywhere on the insole outline in the viewer, or pick a side below.
-                    Confirmed trimlines are saved with the design and included in STL export.
+                    Click anywhere on the insole outline in the viewer, or pick a side below. Confirmed
+                    trimlines are saved with the design and included in STL export.
                 </p>
             </div>
 
@@ -159,43 +178,41 @@ export function ActionPanel() {
                     </div>
                 </div>
 
-                {(() => {
-                    const orphans = useIssuesStore((s) => s.orphans);
-                    const violations = useDesignStore((s) => s.getActiveViolations());
-                    const hasIssues = orphans.length > 0 || violations.length > 0;
-                    if (!hasIssues) return <p className="text-[10px] text-muted-foreground">No production issues detected.</p>;
-                    return (
-                        <div className="space-y-1 text-[10px]">
-                            {violations.length > 0 && (
-                                <div className="flex items-start gap-1.5 rounded bg-amber-500/10 p-1.5 text-amber-600">
-                                    <AlertTriangle className="mt-0.5 h-3 w-3 flex-shrink-0" />
-                                    <div>
-                                        <div className="font-medium">Clinical limits applied</div>
-                                        <ul className="list-disc pl-3">
-                                            {violations.slice(0, 3).map((vi, i) => (
-                                                <li key={i}>{vi.message}</li>
-                                            ))}
-                                        </ul>
-                                    </div>
+                {orphans.length === 0 && violations.length === 0 ? (
+                    <p className="text-[10px] text-muted-foreground">No production issues detected.</p>
+                ) : (
+                    <div className="space-y-1 text-[10px]">
+                        {violations.length > 0 && (
+                            <div className="flex items-start gap-1.5 rounded bg-amber-500/10 p-1.5 text-amber-600">
+                                <AlertTriangle className="mt-0.5 h-3 w-3 flex-shrink-0" />
+                                <div>
+                                    <div className="font-medium">Clinical limits applied</div>
+                                    <ul className="list-disc pl-3">
+                                        {violations.slice(0, 3).map((vi, i) => (
+                                            <li key={i}>{vi.message}</li>
+                                        ))}
+                                    </ul>
                                 </div>
-                            )}
-                            {orphans.length > 0 && (
-                                <div className="flex items-start gap-1.5 rounded bg-orange-500/10 p-1.5 text-orange-600">
-                                    <AlertTriangle className="mt-0.5 h-3 w-3 flex-shrink-0" />
-                                    <div>
-                                        <div className="font-medium">Orphans / dead features ({orphans.length})</div>
-                                        <ul className="list-disc pl-3">
-                                            {orphans.slice(0, 2).map((o, i) => (
-                                                <li key={i}>{o.label}</li>
-                                            ))}
-                                            {orphans.length > 2 && <li>+{orphans.length - 2} more</li>}
-                                        </ul>
+                            </div>
+                        )}
+                        {orphans.length > 0 && (
+                            <div className="flex items-start gap-1.5 rounded bg-orange-500/10 p-1.5 text-orange-600">
+                                <AlertTriangle className="mt-0.5 h-3 w-3 flex-shrink-0" />
+                                <div>
+                                    <div className="font-medium">
+                                        Orphans / dead features ({orphans.length})
                                     </div>
+                                    <ul className="list-disc pl-3">
+                                        {orphans.slice(0, 2).map((o, i) => (
+                                            <li key={i}>{o.label}</li>
+                                        ))}
+                                        {orphans.length > 2 && <li>+{orphans.length - 2} more</li>}
+                                    </ul>
                                 </div>
-                            )}
-                        </div>
-                    );
-                })()}
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );
