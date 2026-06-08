@@ -2,7 +2,9 @@
 // See LICENSE file in the project root for full license information.
 
 import { AlertTriangle, Check, PencilLine, Redo2, RotateCcw, Undo2, X } from "lucide-react";
+import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
+import { constrainDesignCorrections } from "@/lib/geometry/clinical-constraints";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
 import { useIssuesStore } from "@/stores/issues-store";
@@ -23,7 +25,22 @@ export function ActionPanel() {
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
     const orphans = useIssuesStore((s) => s.orphans);
-    const violations = useDesignStore((s) => s.getActiveViolations());
+    const design = useDesignStore((s) => s.design);
+    const violations = useMemo(() => {
+        const { violations: all } = constrainDesignCorrections(
+            design.corrections.left,
+            design.corrections.right,
+            design.thicknessMm,
+            design.corrections.linked,
+        );
+        const seen = new Set<string>();
+        return all.filter((vi) => {
+            const key = `${vi.field}:${vi.message}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }, [design.corrections, design.thicknessMm]);
 
     const isEditing = editMode === "edit-trimline" && trimlineEdit !== null;
     const activeSide = trimlineEdit?.side ?? "left";
