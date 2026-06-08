@@ -24,6 +24,7 @@ import { type CameraView, useDesignStore } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
+import type { Side } from "@/types";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
@@ -89,12 +90,17 @@ export function Viewer3D() {
     const showDual = isPaired && viewer.showLeft && viewer.showRight;
 
     const renderSide = (side: Side, isLeft: boolean) => (
-        <div className={`relative ${showDual ? 'flex-1' : 'h-full w-full'}`} style={showDual ? {} : {}}>
+        <div className={`relative ${showDual ? "flex-1" : "h-full w-full"}`} style={showDual ? {} : {}}>
             <Canvas
                 key={side}
                 shadows
                 dpr={[1, 1.5]}
-                camera={{ position: isLeft ? [220, 200, 260] : [-220, 200, 260], fov: 40, near: 1, far: 5000 }}
+                camera={{
+                    position: isLeft ? [220, 200, 260] : [-220, 200, 260],
+                    fov: 40,
+                    near: 1,
+                    far: 5000,
+                }}
                 onPointerMissed={() => {
                     selectElement(null);
                     setTarget({ type: "insole", side });
@@ -360,6 +366,19 @@ export function Viewer3D() {
                 {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural worker"} kernel · ⌘P Rx
                 · ⌘E export · T transparent · Esc deselect
             </div>
+        </div>
+    );
+
+    return (
+        <div className={cn("relative h-full w-full bg-[hsl(222_28%_7%)]", showDual && "flex")}>
+            {showDual ? (
+                <>
+                    {viewer.showLeft ? renderSide("left", true) : null}
+                    {viewer.showRight ? renderSide("right", false) : null}
+                </>
+            ) : (
+                renderSide(viewer.showLeft ? "left" : "right", viewer.showLeft)
+            )}
         </div>
     );
 }
