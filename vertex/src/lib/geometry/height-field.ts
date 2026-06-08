@@ -1,6 +1,7 @@
 import type { PlacedElement, Side, SideCorrections } from "@/types";
 import { elementHeightAt } from "@/lib/geometry/elements";
 import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
+import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
 
@@ -159,8 +160,14 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
 
     // Medial + lateral walls (the legs of the U) — raised on the current edges
     // within the heel region (main U contribution from depth).
-    const sideWall = smoothstep(0.55, 0.92, av); // 0 near center line → 1 at edges
+    // Heel cup *width* tightens the cup: a higher value starts the side walls
+    // further inboard (hugging the heel) and adds an independent wall raise, so
+    // the breadth control has a visible effect even with zero cup depth.
+    const widthFrac = Math.max(0, Math.min(1, c.heelCupWidthMm / 10));
+    const wallInner = 0.55 - 0.3 * widthFrac; // walls move toward the center as width grows
+    const sideWall = smoothstep(wallInner, 0.92, av); // 0 near center line → 1 at edges
     shaped += c.heelCupDepthMm * heel * sideWall * 0.65;
+    shaped += c.heelCupWidthMm * heel * sideWall * 0.35;
 
     // Posterior wall (the bottom of the U / back lip) — raised at the very heel end
     // (low u), wrapping across the width to connect the side walls and enclose the back.
@@ -219,7 +226,14 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
         trimline: params.trimline,
     });
 
-    let h = softFloor(thicknessMm + baseline + shaped + posting + wedge, 0.8);
+    // --- Heel lift (longitudinal ramp) ----------------------------------------
+    // Full-width raise under the heel that tapers linearly to 0 by the met heads.
+    // Added at full strength (not edge-feathered, like posting) since it is a
+    // structural raise of the whole rearfoot, and additive on the top surface so
+    // the flat z = 0 bottom stays stable on solid prints.
+    const heelLift = heelLiftDeltaAt(u, c.heelLiftMm);
+
+    let h = softFloor(thicknessMm + baseline + shaped + posting + wedge + heelLift, 0.8);
 
     // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).
     // The graph is the new clinical source of truth when present; the flat
