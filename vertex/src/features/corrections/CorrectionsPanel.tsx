@@ -2,14 +2,14 @@
 // See LICENSE file in the project root for full license information.
 
 import { AlertTriangle, Link2, Unlink } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { SliderField } from "@/components/ui/slider-field";
 import { constrainDesignCorrections, hasWedgeViolations } from "@/lib/geometry/clinical-constraints";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
 import { mergeCorrections, usePerformanceStore } from "@/stores/performance-store";
-import type { Side, SideCorrections, Unit, WedgeCorrection } from "@/types";
+import type { Side, SideCorrections, WedgeCorrection } from "@/types";
 
 /**
  * Scalar correction sliders grouped into clinical sections. Pronation/supination
@@ -47,93 +47,135 @@ const previewCorrection = rafThrottle((side: Side, patch: Partial<SideCorrection
     usePerformanceStore.getState().setCorrectionPreview(side, patch);
 });
 
+type WedgeEdge = "lateral" | "medial";
+
+interface WedgeColumnProps {
+    edge: WedgeEdge;
+    value: number;
+    selected: boolean;
+    onSelect: () => void;
+    onPreview: (value: number) => void;
+    onCommit: (value: number) => void;
+}
+
+/** One Lateral or Medial column: radio, label, and always-visible amount input. */
+function WedgeColumn({ edge, value, selected, onSelect, onPreview, onCommit }: WedgeColumnProps) {
+    const unit = edge === "lateral" ? "deg" : "mm";
+    const max = edge === "lateral" ? 12 : 10;
+    const unitLabel = edge === "lateral" ? "°" : "mm";
+
+    return (
+        <div className="space-y-1">
+            <button
+                type="button"
+                onClick={onSelect}
+                className="flex w-full items-center justify-center"
+                aria-label={`Select ${edge} wedge`}
+            >
+                <span
+                    className={cn(
+                        "h-2.5 w-2.5 rounded-full border-2",
+                        selected ? "border-primary bg-primary" : "border-muted-foreground bg-transparent",
+                    )}
+                />
+            </button>
+            <button
+                type="button"
+                onClick={onSelect}
+                className={cn(
+                    "w-full rounded border px-1 py-0.5 text-center text-[10px] capitalize",
+                    selected
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border text-muted-foreground hover:bg-muted",
+                )}
+            >
+                {edge}
+            </button>
+            <SliderField
+                label=""
+                value={value}
+                min={0}
+                max={max}
+                step={0.5}
+                unit={unitLabel}
+                onPreview={onPreview}
+                onChange={onCommit}
+            />
+            <div className="text-center text-[9px] uppercase text-muted-foreground">{unit}</div>
+        </div>
+    );
+}
+
 interface WedgeSideControlProps {
     side: Side;
     wedge: WedgeCorrection | undefined;
-    defaultUnit: Unit;
     onPreview: (wedge: WedgeCorrection | undefined) => void;
     onCommit: (wedge: WedgeCorrection | undefined) => void;
 }
 
-/** One foot column: None / Medial / Lateral choice plus value + mm/deg when active. */
-function WedgeSideControl({ side, wedge, defaultUnit, onPreview, onCommit }: WedgeSideControlProps) {
-    const isActive = !!wedge;
-    const currentSide = wedge?.side ?? "medial";
-    const currentUnit = wedge?.unit ?? defaultUnit;
-    const currentValue = wedge?.value ?? 3;
+function wedgeFromEdge(edge: WedgeEdge, value: number): WedgeCorrection | undefined {
+    if (value <= 0) return undefined;
+    return edge === "lateral"
+        ? { side: "lateral", value, unit: "deg" }
+        : { side: "medial", value, unit: "mm" };
+}
 
-    const commit = (newW: WedgeCorrection | undefined) => onCommit(newW);
+/** One foot column: Lateral (deg) and Medial (mm) side-by-side with radio selection. */
+function WedgeSideControl({ side, wedge, onPreview, onCommit }: WedgeSideControlProps) {
+    const [draftLateralDeg, setDraftLateralDeg] = useState(0);
+    const [draftMedialMm, setDraftMedialMm] = useState(0);
+
+    const activeEdge = wedge?.side ?? null;
+    const lateralDeg = activeEdge === "lateral" ? (wedge?.value ?? 0) : draftLateralDeg;
+    const medialMm = activeEdge === "medial" ? (wedge?.value ?? 0) : draftMedialMm;
+
+    const commitEdge = (edge: WedgeEdge, value: number) => {
+        onCommit(wedgeFromEdge(edge, value));
+    };
+
+    const previewEdge = (edge: WedgeEdge, value: number) => {
+        onPreview(wedgeFromEdge(edge, value));
+    };
+
+    const selectEdge = (edge: WedgeEdge) => {
+        const value = edge === "lateral" ? lateralDeg : medialMm;
+        commitEdge(edge, value);
+    };
+
+    const updateEdge = (edge: WedgeEdge, value: number, commit: boolean) => {
+        if (edge === "lateral") {
+            setDraftLateralDeg(value);
+        } else {
+            setDraftMedialMm(value);
+        }
+        if (commit) {
+            commitEdge(edge, value);
+        } else {
+            previewEdge(edge, value);
+        }
+    };
 
     return (
         <div className="space-y-1.5">
             <div className="text-[10px] font-medium uppercase text-primary/80">{SIDE_LABELS[side]}</div>
-
-            <div className="flex gap-1 text-[10px]">
-                {(["none", "medial", "lateral"] as const).map((choice) => {
-                    const selected =
-                        (choice === "none" && !isActive) ||
-                        (choice !== "none" && isActive && currentSide === choice);
-                    return (
-                        <button
-                            key={choice}
-                            type="button"
-                            onClick={() => {
-                                if (choice === "none") {
-                                    commit(undefined);
-                                } else {
-                                    commit({ side: choice, value: currentValue, unit: currentUnit });
-                                }
-                            }}
-                            className={cn(
-                                "flex-1 rounded border px-1.5 py-0.5 capitalize",
-                                selected
-                                    ? "border-primary bg-primary text-primary-foreground"
-                                    : "border-border bg-background text-muted-foreground hover:bg-muted",
-                            )}
-                        >
-                            {choice}
-                        </button>
-                    );
-                })}
+            <div className="grid grid-cols-2 gap-2">
+                <WedgeColumn
+                    edge="lateral"
+                    value={lateralDeg}
+                    selected={activeEdge === "lateral"}
+                    onSelect={() => selectEdge("lateral")}
+                    onPreview={(v) => updateEdge("lateral", v, false)}
+                    onChange={(v) => updateEdge("lateral", v, true)}
+                />
+                <WedgeColumn
+                    edge="medial"
+                    value={medialMm}
+                    selected={activeEdge === "medial"}
+                    onSelect={() => selectEdge("medial")}
+                    onPreview={(v) => updateEdge("medial", v, false)}
+                    onChange={(v) => updateEdge("medial", v, true)}
+                />
             </div>
-
-            {isActive && (
-                <div className="flex items-center gap-2">
-                    <div className="min-w-0 flex-1">
-                        <SliderField
-                            label=""
-                            value={currentValue}
-                            min={0}
-                            max={currentUnit === "mm" ? 10 : 12}
-                            step={0.5}
-                            unit={currentUnit === "mm" ? "mm" : "°"}
-                            onPreview={(v) =>
-                                onPreview({ side: currentSide, value: v, unit: currentUnit })
-                            }
-                            onChange={(v) => commit({ side: currentSide, value: v, unit: currentUnit })}
-                        />
-                    </div>
-                    <div className="flex shrink-0 overflow-hidden rounded border border-border text-[10px]">
-                        {(["mm", "deg"] as const).map((u) => (
-                            <button
-                                key={u}
-                                type="button"
-                                onClick={() =>
-                                    commit({ side: currentSide, value: currentValue, unit: u })
-                                }
-                                className={cn(
-                                    "px-1.5 py-0.5",
-                                    currentUnit === u
-                                        ? "bg-primary text-primary-foreground"
-                                        : "text-muted-foreground hover:bg-muted",
-                                )}
-                            >
-                                {u}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-            )}
         </div>
     );
 }
@@ -141,7 +183,6 @@ function WedgeSideControl({ side, wedge, defaultUnit, onPreview, onCommit }: Wed
 export function CorrectionsPanel() {
     const design = useDesignStore((s) => s.design);
     const updateCorrection = useDesignStore((s) => s.updateCorrection);
-    const setUnit = useDesignStore((s) => s.setUnit);
     const setLinked = useDesignStore((s) => s.setLinked);
     const setThickness = useDesignStore((s) => s.setThickness);
     const setRearfootWedge = useDesignStore((s) => s.setRearfootWedge);
@@ -175,24 +216,9 @@ export function CorrectionsPanel() {
         return hasWedgeViolations(violations);
     }, [corrections, design.thicknessMm]);
 
-    const syncWedgeUnits = (unit: Unit) => {
-        setUnit(unit);
-        const sides: Side[] = corrections.linked ? ["left"] : ["left", "right"];
-        for (const side of sides) {
-            const rearfoot = corrections[side].rearfootWedge;
-            const forefoot = corrections[side].forefootWedge;
-            if (rearfoot && rearfoot.unit !== unit) {
-                setRearfootWedge(side, { ...rearfoot, unit });
-            }
-            if (forefoot && forefoot.unit !== unit) {
-                setForefootWedge(side, { ...forefoot, unit });
-            }
-        }
-    };
-
     return (
         <div className="space-y-3">
-            <div className="flex items-center justify-between rounded-md bg-muted px-2 py-1.5">
+            <div className="flex items-center rounded-md bg-muted px-2 py-1.5">
                 <button
                     type="button"
                     onClick={() => setLinked(!corrections.linked)}
@@ -201,24 +227,13 @@ export function CorrectionsPanel() {
                         corrections.linked ? "bg-primary text-primary-foreground" : "text-muted-foreground",
                     )}
                 >
-                    {corrections.linked ? <Link2 className="h-3.5 w-3.5" /> : <Unlink className="h-3.5 w-3.5" />}
+                    {corrections.linked ? (
+                        <Link2 className="h-3.5 w-3.5" />
+                    ) : (
+                        <Unlink className="h-3.5 w-3.5" />
+                    )}
                     {corrections.linked ? "L+R linked" : "Independent"}
                 </button>
-                <div className="flex items-center gap-1 text-xs">
-                    {(["mm", "deg"] as const).map((u) => (
-                        <button
-                            key={u}
-                            type="button"
-                            onClick={() => syncWedgeUnits(u)}
-                            className={cn(
-                                "rounded px-2 py-1",
-                                corrections.unit === u ? "bg-secondary text-foreground" : "text-muted-foreground",
-                            )}
-                        >
-                            {u}
-                        </button>
-                    ))}
-                </div>
             </div>
 
             <SliderField
@@ -243,8 +258,8 @@ export function CorrectionsPanel() {
                     <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
                         <AlertTriangle className="h-3 w-3 flex-shrink-0" />
                         <span>
-                            Wedge value near clinical limit (clamped on change). Check the preview for its effect on
-                            wall thickness.
+                            Wedge value near clinical limit (clamped on change). Check the preview for its
+                            effect on wall thickness.
                         </span>
                     </div>
                 )}
@@ -264,7 +279,6 @@ export function CorrectionsPanel() {
                                         key={side}
                                         side={side}
                                         wedge={sideValues[side][wedgeKey] as WedgeCorrection | undefined}
-                                        defaultUnit={corrections.unit}
                                         onPreview={(newW) =>
                                             previewCorrection(side, {
                                                 [wedgeKey]: newW,
@@ -301,10 +315,14 @@ export function CorrectionsPanel() {
                                         step={0.5}
                                         unit="mm"
                                         onPreview={(v) =>
-                                            previewCorrection(side, { [f.key]: v } as Partial<SideCorrections>)
+                                            previewCorrection(side, {
+                                                [f.key]: v,
+                                            } as Partial<SideCorrections>)
                                         }
                                         onChange={(v) => {
-                                            updateCorrection(side, { [f.key]: v } as Partial<SideCorrections>);
+                                            updateCorrection(side, {
+                                                [f.key]: v,
+                                            } as Partial<SideCorrections>);
                                             clearCorrectionPreview();
                                         }}
                                     />
