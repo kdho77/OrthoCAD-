@@ -8,8 +8,10 @@ import {
     BASE_BOTTOM_DELTA_TOLERANCE_MM,
     classifyBaseTopFactors,
     detectArchSideSign,
+    resolveDesignMode,
     validateBaseResult,
 } from "./base-modifier";
+import { defaultDesign } from "@/stores/design-store";
 import type { HeightFieldParams } from "./height-field";
 import { heightAt } from "./height-field";
 import type { Side, SideCorrections } from "@/types";
@@ -339,5 +341,46 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         // In multi, bottom layer gets full delta (including wedge), so maxBottom larger
         const metricsMulti = validateBaseResult(multiBase, modifiedMulti);
         expect(metricsMulti.maxBottomDeltaMm).toBeGreaterThan(3); // full wedge applied
+    });
+});
+
+describe("resolveDesignMode", () => {
+    test("returns parametric when no base is configured", () => {
+        expect(resolveDesignMode(defaultDesign())).toEqual({ mode: "parametric" });
+    });
+
+    test("returns base mode for legacy and paired side-specific bases", () => {
+        const legacy = {
+            ...defaultDesign(),
+            base: { assetId: "stock-a", name: "Stock A", source: "stock" as const },
+        };
+        expect(resolveDesignMode(legacy)).toEqual({
+            mode: "base",
+            baseName: "Stock A",
+            baseId: "stock-a",
+        });
+
+        const paired = {
+            ...defaultDesign(),
+            paired: {
+                linked: false,
+                leftBase: { assetId: "left-a", name: "Left A", source: "custom" as const },
+                rightBase: undefined,
+                leftThicknessMm: 3,
+                rightThicknessMm: 3,
+                leftMethod: "printing_solid" as const,
+                rightMethod: "printing_solid" as const,
+            },
+        };
+        expect(resolveDesignMode(paired, "left")).toEqual({
+            mode: "base",
+            baseName: "Left A",
+            baseId: "left-a",
+        });
+        expect(resolveDesignMode(paired)).toEqual({
+            mode: "base",
+            baseName: "Left A",
+            baseId: "left-a",
+        });
     });
 });
