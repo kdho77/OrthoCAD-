@@ -107,7 +107,6 @@ function WedgeSideControl({ side, zoneLabel, wedge, onPreview, onCommit }: Wedge
     const activeValue = wedge?.value ?? draftValue;
     const max = wedgeMaxForUnit(activeUnit);
     const unitLabel = activeUnit === "deg" ? "°" : "mm";
-    const isActive = activeValue > 0;
 
     const update = (edge: WedgeEdge, value: number, unit: WedgeUnit, commit: boolean) => {
         setDraftEdge(edge);
@@ -123,17 +122,8 @@ function WedgeSideControl({ side, zoneLabel, wedge, onPreview, onCommit }: Wedge
 
     return (
         <div className="space-y-1.5">
-            <div className="flex items-center gap-1.5">
-                <span
-                    className={cn(
-                        "h-2.5 w-2.5 flex-shrink-0 rounded-full border-2",
-                        isActive ? "border-primary bg-primary" : "border-muted-foreground bg-transparent",
-                    )}
-                    aria-hidden
-                />
-                <div className="text-[10px] font-medium text-primary/80">
-                    {SIDE_LABELS[side]} {zoneLabel}
-                </div>
+            <div className="text-[10px] font-medium text-primary/80">
+                {SIDE_LABELS[side]} {zoneLabel}
             </div>
             <TogglePair
                 ariaLabel={`${SIDE_LABELS[side]} ${zoneLabel} wedge edge`}
