@@ -25,6 +25,14 @@ export type ScanPattern =
 
 export type ExportFormat = "stl" | "gcode" | "glb";
 
+export type GrindingStyleType = "straight" | "rounded";
+
+export interface GrindingStyle {
+    type: GrindingStyleType;
+    angle_degrees?: number;
+    radius_mm?: number;
+}
+
 /** Wedge correction specification for rearfoot or forefoot zone. */
 export interface WedgeCorrection {
     /** Which edge to raise. */
