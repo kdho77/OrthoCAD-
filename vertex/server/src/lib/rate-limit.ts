@@ -41,4 +41,5 @@ export const RATE_LIMITS = {
     export: { limit: 30, windowMs: 60_000 },
     ai: { limit: 10, windowMs: 60_000 },
     librarySave: { limit: 20, windowMs: 60_000 },
+    manufacturing: { limit: 20, windowMs: 60_000 },
 } as const satisfies Record<string, RateLimitConfig>;
