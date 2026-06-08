@@ -36,37 +36,64 @@ export function TrimlineEditTools() {
     const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
     const getTrimlineForSide = useMeshEditStore((s) => s.getTrimlineForSide);
 
-    // Subscribe to the loaded base's outline so the overlay re-renders (and picks
-    // up the mesh-derived default) as soon as the base GLB finishes loading.
-    const baseAssetId = getDesignBase(design, side)?.assetId ?? null;
-    const baseOutline = useBaseOutlineStore((s) => (baseAssetId ? (s.outlines[baseAssetId] ?? null) : null));
-
     const sides: Side[] = [];
     if (viewer.showLeft) sides.push("left");
     if (viewer.showRight) sides.push("right");
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
-            {sides.map((side) => {
-                const isEditing = editMode === "edit-trimline" && trimlineEdit?.side === side;
-                const curve = isEditing
-                    ? trimlineEdit!.draft
-                    : (getDesignTrimline(design, side) ?? baseOutline ?? getTrimlineForSide(side));
-
-                return (
-                    <TrimlineSideOverlay
-                        key={side}
-                        side={side}
-                        curve={curve}
-                        isEditing={isEditing}
-                        isDragging={isEditing && trimlineEdit!.isDragging}
-                        onOutlineClick={() => {
-                            if (editMode !== "edit-trimline") beginTrimlineEdit(side);
-                        }}
-                    />
-                );
-            })}
+            {sides.map((side) => (
+                <TrimlineSideRow
+                    key={side}
+                    side={side}
+                    design={design}
+                    editMode={editMode}
+                    trimlineEdit={trimlineEdit}
+                    beginTrimlineEdit={beginTrimlineEdit}
+                    getTrimlineForSide={getTrimlineForSide}
+                />
+            ))}
         </group>
+    );
+}
+
+/** Per-side trimline row — hooks must live here (not in a map callback). */
+function TrimlineSideRow({
+    side,
+    design,
+    editMode,
+    trimlineEdit,
+    beginTrimlineEdit,
+    getTrimlineForSide,
+}: {
+    side: Side;
+    design: ReturnType<typeof useDesignStore.getState>["design"];
+    editMode: ReturnType<typeof useMeshEditStore.getState>["editMode"];
+    trimlineEdit: ReturnType<typeof useMeshEditStore.getState>["trimlineEdit"];
+    beginTrimlineEdit: ReturnType<typeof useMeshEditStore.getState>["beginTrimlineEdit"];
+    getTrimlineForSide: ReturnType<typeof useMeshEditStore.getState>["getTrimlineForSide"];
+}) {
+    // Subscribe to the loaded base's outline so the overlay re-renders (and picks
+    // up the mesh-derived default) as soon as the base GLB finishes loading.
+    const baseAssetId = getDesignBase(design, side)?.assetId ?? null;
+    const baseOutline = useBaseOutlineStore((s) => (baseAssetId ? (s.outlines[baseAssetId] ?? null) : null));
+
+    const isEditing = editMode === "edit-trimline" && trimlineEdit?.side === side;
+    const curve =
+        isEditing && trimlineEdit
+            ? trimlineEdit.draft
+            : (getDesignTrimline(design, side) ?? baseOutline ?? getTrimlineForSide(side));
+
+    return (
+        <TrimlineSideOverlay
+            side={side}
+            curve={curve}
+            isEditing={isEditing}
+            isDragging={isEditing && (trimlineEdit?.isDragging ?? false)}
+            onOutlineClick={() => {
+                if (editMode !== "edit-trimline") beginTrimlineEdit(side);
+            }}
+        />
     );
 }
 
@@ -249,8 +276,12 @@ function TrimlineSideOverlay({
         ],
     );
 
-    // Tear down listeners if the component unmounts mid-drag.
-    useEffect(() => endDrag, [endDrag]);
+    // Tear down listeners if the component unmounts mid-drag. Use a ref so
+    // changing endDrag identity does not re-run cleanup (which would call
+    // setState and trigger React error #185 — maximum update depth exceeded).
+    const endDragRef = useRef(endDrag);
+    endDragRef.current = endDrag;
+    useEffect(() => () => endDragRef.current(), []);
 
     const onPointerDownHandle = useCallback(
         (e: ThreeEvent<PointerEvent>, pointIndex: number) => {
