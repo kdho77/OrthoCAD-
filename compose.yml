@@ -5,3 +5,16 @@ services:
     restart: unless-stopped
     ports:
       - "8080:80"
+
+  # Phase 1+ hybrid manufacturing Python service (solid + belt + slicing)
+  python-manufacturing:
+    build:
+      context: ./python-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONUNBUFFERED=1
+    # In production you would add healthchecks, resource limits, and network isolation
+    # so only the Node server can reach it.
