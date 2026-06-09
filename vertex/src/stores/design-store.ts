@@ -9,6 +9,7 @@ import {
     sanitizeDesignStockBases,
     StockBaseResolutionError,
 } from "@/lib/geometry/base-asset";
+import { stockDebug } from "@/lib/geometry/stock-debug";
 import { isApiConfigured } from "@/lib/trpc";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
@@ -99,6 +100,13 @@ export function createDesignWithStockPlaceholder(design?: DesignState): DesignSt
     if (designHasBase(d)) return d;
 
     const { left, right } = createDefaultStockPairedBases();
+    stockDebug("createDesignWithStockPlaceholder()", {
+        leftAssetId: left.assetId,
+        rightAssetId: right.assetId,
+        leftGlbPath: left.glbPath,
+        hasUrl: Boolean(left.url),
+        apiConfigured: isApiConfigured(),
+    });
     return {
         ...d,
         pattern: "custom",
@@ -120,17 +128,28 @@ export function createDesignWithStockPlaceholder(design?: DesignState): DesignSt
 let stockBaseUpgradeInFlight: Promise<void> | null = null;
 
 /** Fire-and-forget server resolution for stock bases missing an authoritative URL. */
-function upgradeStockBaseAsync(apply: () => Promise<void>): void {
-    if (stockBaseUpgradeInFlight) return;
+function upgradeStockBaseAsync(apply: () => Promise<void>, reason: string): void {
+    if (stockBaseUpgradeInFlight) {
+        stockDebug("upgradeStockBaseAsync() skipped — already in flight", { reason });
+        return;
+    }
 
+    stockDebug("upgradeStockBaseAsync() start", { reason });
     useDesignStore.setState({ stockBaseLoading: true, stockBaseError: null });
     stockBaseUpgradeInFlight = apply()
+        .then(() => {
+            stockDebug("upgradeStockBaseAsync() success", { reason });
+        })
         .catch((e) => {
             const msg =
                 e instanceof StockBaseResolutionError
                     ? e.message
                     : "Failed to load the default stock base. Check server configuration.";
             useDesignStore.setState({ stockBaseError: msg });
+            stockDebug("upgradeStockBaseAsync() failed", {
+                reason,
+                error: msg,
+            });
             console.error("[design-store] Default stock base resolution failed:", e);
         })
         .finally(() => {
@@ -144,9 +163,14 @@ function upgradeStockBaseAsync(apply: () => Promise<void>): void {
  * Safe to call repeatedly — dedupes in-flight requests and re-runs after auth is ready.
  */
 export function ensureDefaultStockBaseResolved(): void {
-    if (!isApiConfigured()) return;
-    if (!designNeedsDefaultStockResolution(useDesignStore.getState().design)) return;
-    upgradeStockBaseAsync(() => useDesignStore.getState().applyDefaultStockBase());
+    if (!isApiConfigured()) {
+        stockDebug("ensureDefaultStockBaseResolved() skipped — API not configured");
+        return;
+    }
+    const needs = designNeedsDefaultStockResolution(useDesignStore.getState().design);
+    stockDebug("ensureDefaultStockBaseResolved()", { needsResolution: needs });
+    if (!needs) return;
+    upgradeStockBaseAsync(() => useDesignStore.getState().applyDefaultStockBase(), "ensureDefaultStockBaseResolved");
 }
 
 /** Await server resolution (used on new design creation when possible). */
@@ -533,9 +557,17 @@ export const useDesignStore = create<DesignStore>()(
 
             applyDefaultStockBase: async () => {
                 try {
+                    stockDebug("applyDefaultStockBase() start");
                     set({ stockBaseError: null, stockBaseLoading: true });
                     const resolved = await resolveDefaultStockBase();
                     const { left, right } = createDefaultStockPairedBases(resolved);
+                    stockDebug("applyDefaultStockBase() applying paired bases", {
+                        resolvedId: resolved.assetId,
+                        resolvedGlbPath: resolved.glbPath,
+                        leftName: left.name,
+                        rightName: right.name,
+                        hasUrl: Boolean(resolved.url),
+                    });
                     const snap = get().design;
                     set((s) => ({
                         design: {
@@ -564,6 +596,7 @@ export const useDesignStore = create<DesignStore>()(
                         e instanceof StockBaseResolutionError
                             ? e.message
                             : "Failed to load the default stock base. Check server configuration.";
+                    stockDebug("applyDefaultStockBase() error", { error: msg });
                     set({ stockBaseError: msg, stockBaseLoading: false });
                     throw e;
                 }
@@ -665,7 +698,7 @@ export const useDesignStore = create<DesignStore>()(
 
                 // Resolve server stock base when missing or still on a local/sync placeholder.
                 if (!hadBase || designNeedsDefaultStockResolution(safeDesign)) {
-                    upgradeStockBaseAsync(() => get().applyDefaultStockBase());
+                    upgradeStockBaseAsync(() => get().applyDefaultStockBase(), "loadDesign");
                 }
             },
 
@@ -711,7 +744,7 @@ export const useDesignStore = create<DesignStore>()(
                 get().clearHistory();
                 const withStock = createDesignWithStockPlaceholder(defaultDesign());
                 set({ design: withStock, selectedElementId: null, stockBaseError: null });
-                upgradeStockBaseAsync(() => get().applyDefaultStockBase());
+                upgradeStockBaseAsync(() => get().applyDefaultStockBase(), "reset");
             },
 
             getActiveViolations: () => {
@@ -805,6 +838,14 @@ export const useDesignStore = create<DesignStore>()(
                     design = createDesignWithStockPlaceholder(design);
                 }
                 const needsResolution = designNeedsDefaultStockResolution(design);
+                stockDebug("persist onRehydrate", {
+                    needsResolution,
+                    supabaseConfigured: isSupabaseConfigured(),
+                    apiConfigured: isApiConfigured(),
+                    baseAssetId: design.base?.assetId,
+                    baseGlbPath: design.base?.glbPath,
+                    hasUrl: Boolean(design.base?.url),
+                });
                 useDesignStore.setState({
                     design,
                     stockBaseError: null,
@@ -812,7 +853,12 @@ export const useDesignStore = create<DesignStore>()(
                 });
                 // When Supabase auth is required, App.tsx resolves after the session is ready.
                 if (needsResolution && (!isSupabaseConfigured() || !isApiConfigured())) {
-                    upgradeStockBaseAsync(() => useDesignStore.getState().applyDefaultStockBase());
+                    upgradeStockBaseAsync(
+                        () => useDesignStore.getState().applyDefaultStockBase(),
+                        "persist-rehydrate-no-supabase",
+                    );
+                } else if (needsResolution && isSupabaseConfigured()) {
+                    stockDebug("persist onRehydrate deferring to App.tsx until auth is ready");
                 }
             },
         },

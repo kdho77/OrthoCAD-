@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
 import { baseModifierField, getBaseCacheKey, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
+import { stockDebug } from "@/lib/geometry/stock-debug";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import { computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
@@ -52,6 +53,13 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             return;
         }
         setBuilding(true);
+        stockDebug("useBaseInsoleGeometry load effect", {
+            side,
+            assetId: ref.assetId,
+            loadKey,
+            hasUrl: Boolean(ref.url),
+            glbPath: ref.glbPath,
+        });
         void loadBaseGeometry(ref)
             .then((geo) => {
                 if (cancelled) {
