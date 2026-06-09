@@ -66,22 +66,7 @@ export default function App() {
 
         stockGlbLog("App stock bootstrap — calling ensureDefaultStockBaseResolved()");
         ensureDefaultStockBaseResolved();
-
-        // If the first attempt raced auth/session hydration, retry once after a short delay.
-        const retry = window.setTimeout(() => {
-            const retryDesign = useDesignStore.getState().design;
-            const retryBase = retryDesign.paired?.rightBase ?? retryDesign.base;
-            const stillNeeds = designNeedsDefaultStockResolution(retryDesign);
-            stockGlbLog(
-                `App stock bootstrap retry check — stillNeeds=${stillNeeds} url="${retryBase?.url ?? "(pending)"}" glb_path="${retryBase?.glbPath ?? "(none)"}"`,
-            );
-            stockDebug("App stock bootstrap retry check", { stillNeeds, url: retryBase?.url, glbPath: retryBase?.glbPath });
-            if (stillNeeds) {
-                ensureDefaultStockBaseResolved();
-            }
-        }, 750);
-        return () => window.clearTimeout(retry);
-    }, [authLoading, user]);
+    }, [authLoading, user?.id]);
 
     useKeyboardShortcuts({
         onPrescription: () => setRxOpen(true),

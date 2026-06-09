@@ -8,6 +8,7 @@ export {
     defaultDesign,
     ensureDefaultStockBaseResolved,
     resolveDefaultStockBaseForDesign,
+    retryStockBaseResolution,
     useDesignStore,
 } from "./design-store";
 export type { ImportedScan } from "./scan-store";

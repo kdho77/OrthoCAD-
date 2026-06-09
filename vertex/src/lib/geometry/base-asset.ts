@@ -9,7 +9,7 @@ import { extractMergedGeometry, loadGlbFromBuffer, loadGlbFromUrl, mirrorGeometr
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { isApiConfigured, trpc } from "@/lib/trpc";
-import { classifyStockUrl, formatStockUrlLog, stockDebug, stockGlbLog } from "@/lib/geometry/stock-debug";
+import { classifyStockUrl, formatStockUrlLog, stockDebug, stockFixLog, stockGlbLog } from "@/lib/geometry/stock-debug";
 import type { DesignBase, DesignState, Side } from "@/types";
 
 // Base resolution + loading for the Base + Modifier model.
@@ -76,6 +76,8 @@ export function isOfflineStockPlaceholder(base: DesignBase | null | undefined): 
  */
 export function stockBaseNeedsServerResolution(base: DesignBase): boolean {
     if (base.source !== "stock") return false;
+    if (base.resolutionFallback) return false;
+    if (base.offlinePlaceholder && base.glbPath && isLocalPlaceholderGlbPath(base.glbPath)) return false;
     if (base.offlinePlaceholder) return true;
     if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
     if (isLocalPlaceholderGlbPath(base.glbPath)) return true;
@@ -95,6 +97,7 @@ export function designNeedsDefaultStockResolution(design: DesignState): boolean 
 
     for (const base of bases) {
         if (!base || base.source !== "stock") continue;
+        if (base.resolutionFallback) continue;
         const key = `${base.assetId}:${base.mirrored ? "m" : "p"}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -157,18 +160,56 @@ export function sanitizeDesignStockBases(design: DesignState): DesignState {
  */
 export function getDefaultStockBaseSync(): DesignBase {
     if (!isApiConfigured()) {
-        return {
-            assetId: BUILTIN_DEFAULT_STOCK.id,
-            name: BUILTIN_DEFAULT_STOCK.name,
-            source: "stock",
-            glbPath: BUILTIN_DEFAULT_STOCK.glbPath,
-            offlinePlaceholder: true,
-        };
+        return getOfflineFallbackStockBase();
     }
     return {
         assetId: DEFAULT_STOCK_BASE_ID,
         name: "Default Stock Base",
         source: "stock",
+    };
+}
+
+/**
+ * Local emergency fallback when the server cannot resolve the default stock base.
+ * Uses the bundled public/Templates/Default.glb path (offline dev / degraded mode).
+ */
+export function getOfflineFallbackStockBase(): DesignBase {
+    return {
+        assetId: BUILTIN_DEFAULT_STOCK.id,
+        name: BUILTIN_DEFAULT_STOCK.name,
+        source: "stock",
+        glbPath: BUILTIN_DEFAULT_STOCK.glbPath,
+        offlinePlaceholder: true,
+        primarySide: "right",
+        resolutionFallback: true,
+    };
+}
+
+/** Build a design patch with paired L/R bases from the offline fallback (Right + mirrored Left). */
+export function createFallbackStockDesignPatch(design: DesignState): Pick<DesignState, "pattern" | "base" | "customPrefabId" | "customPrefabName" | "paired"> {
+    const fallback = getOfflineFallbackStockBase();
+    const { left, right } = createDefaultStockPairedBases(fallback);
+    const leftBase: DesignBase = { ...left, resolutionFallback: true, offlinePlaceholder: true };
+    const rightBase: DesignBase = { ...right, resolutionFallback: true, offlinePlaceholder: true };
+    stockFixLog("createFallbackStockDesignPatch() — applying offline paired bases", {
+        leftName: leftBase.name,
+        rightName: rightBase.name,
+        glbPath: fallback.glbPath,
+    });
+    return {
+        pattern: "custom",
+        base: leftBase,
+        customPrefabId: leftBase.assetId,
+        customPrefabName: leftBase.name,
+        paired: {
+            leftBase,
+            rightBase,
+            leftThicknessMm: design.paired?.leftThicknessMm ?? design.thicknessMm ?? 3,
+            rightThicknessMm: design.paired?.rightThicknessMm ?? design.thicknessMm ?? 3,
+            leftMethod: design.paired?.leftMethod ?? design.method,
+            rightMethod: design.paired?.rightMethod ?? design.method,
+            linked: design.paired?.linked ?? false,
+        },
     };
 }
 
@@ -199,6 +240,10 @@ export class StockGlbLoadError extends Error {
  * When the API is configured, failure to resolve a default row is a hard error.
  */
 export async function resolveDefaultStockBase(): Promise<DesignBase> {
+    stockFixLog("resolveDefaultStockBase() start", {
+        apiConfigured: isApiConfigured(),
+        apiUrl: import.meta.env.VITE_API_URL ?? "/trpc (same-origin)",
+    });
     stockDebug("resolveDefaultStockBase() start", {
         apiConfigured: isApiConfigured(),
         apiUrl: import.meta.env.VITE_API_URL ?? "/trpc (same-origin)",
@@ -265,19 +310,25 @@ export async function resolveDefaultStockBase(): Promise<DesignBase> {
             const probeUrl = apiBase.startsWith("http")
                 ? `${apiBase}/stock.getDefaultStockBase`
                 : `${origin}${apiBase}/stock.getDefaultStockBase`;
+            stockFixLog("tRPC returned HTML instead of JSON — server route misconfigured or unreachable", {
+                apiBase,
+                probeUrl,
+            });
             console.error(
-                "[base-asset] stock.getDefaultStockBase returned HTML instead of JSON.\n" +
+                "[STOCK_FIX] stock.getDefaultStockBase returned HTML instead of JSON.\n" +
                     "  Cause: Vercel served the SPA index.html instead of the tRPC serverless handler.\n" +
                     "  Common fixes:\n" +
                     "    • Ensure api/trpc/[[...trpc]].ts is deployed (repo root or vertex/ root).\n" +
                     "    • vercel.json must rewrite /trpc → /api/trpc before the SPA fallback.\n" +
+                    "    • Set VITE_API_URL to the full …/trpc URL if using a separate API host.\n" +
                     "    • Run prisma generate during build; set DATABASE_URL on Vercel.\n" +
                     `  Request target: ${apiBase}\n` +
                     `  Probe in browser (expect JSON, not HTML): ${probeUrl}`,
                 e,
             );
         } else {
-            console.error("[base-asset] stock.getDefaultStockBase failed:", e);
+            stockFixLog("stock.getDefaultStockBase failed", { detail });
+            console.error("[STOCK_FIX] stock.getDefaultStockBase failed:", e);
         }
         stockDebug("resolveDefaultStockBase() failed", { detail, looksLikeHtml });
         throw new StockBaseResolutionError(
@@ -317,6 +368,7 @@ export function createDefaultStockPairedBases(
         ...(source.url ? { url: source.url } : {}),
         ...(source.primarySide !== undefined ? { primarySide: source.primarySide } : {}),
         ...(source.offlinePlaceholder ? { offlinePlaceholder: true } : {}),
+        ...(source.resolutionFallback ? { resolutionFallback: true } : {}),
     };
 
     const left: DesignBase = {
@@ -329,6 +381,7 @@ export function createDefaultStockPairedBases(
         ...(source.url ? { url: source.url } : {}),
         ...(source.primarySide !== undefined ? { primarySide: source.primarySide } : {}),
         ...(source.offlinePlaceholder ? { offlinePlaceholder: true } : {}),
+        ...(source.resolutionFallback ? { resolutionFallback: true } : {}),
     };
 
     if (primarySide?.toLowerCase() === "left") {
@@ -376,6 +429,14 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 async function resolveStockFetchUrl(base: DesignBase): Promise<string | null> {
     const dbGlbPath = base.glbPath ?? "(none on design base)";
     stockGlbLog(`resolveStockFetchUrl() DB glb_path = "${dbGlbPath}" (assetId=${base.assetId})`);
+
+    if (base.resolutionFallback && isLocalPlaceholderGlbPath(base.glbPath)) {
+        const gp = base.glbPath ?? BUILTIN_DEFAULT_STOCK.glbPath;
+        const local = gp.startsWith("/") ? gp : `/${gp}`;
+        stockFixLog("resolveStockFetchUrl() using resolution fallback local path", { local });
+        stockGlbLog(formatStockUrlLog("local", local));
+        return local;
+    }
 
     if (!isApiConfigured()) {
         if (hasAuthoritativeStockUrl(base)) {
@@ -461,13 +522,10 @@ export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry
         });
 
         if (isApiConfigured() && stockBaseNeedsServerResolution(base)) {
+            stockFixLog("loadBaseGeometry() waiting for server resolution", { assetId: base.assetId });
             stockDebug("loadBaseGeometry() waiting for server resolution — not using local placeholder", {
                 assetId: base.assetId,
             });
-            console.warn(
-                "[base-asset] Stock base not yet resolved from server — skipping local placeholder",
-                base.assetId,
-            );
             return null;
         }
 
