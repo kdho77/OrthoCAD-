@@ -98,6 +98,7 @@ export function LeftSidebar() {
 
     const onPattern = async (id: string, stock: boolean) => {
         if (stock) {
+            // Scan pattern only — the mandatory GLB stock base is never cleared here.
             setPattern(id as ScanPattern);
             setTarget({ type: "insole", side: "left" });
         } else {
@@ -107,9 +108,17 @@ export function LeftSidebar() {
         setEditMode("transform");
     };
 
+    const usingStockBase =
+        design.paired?.leftBase?.source === "stock" || design.paired?.rightBase?.source === "stock" || design.base?.source === "stock";
+
     return (
         <aside className="flex w-56 flex-col gap-4 overflow-y-auto border-r border-border bg-panel p-3">
             <Section icon={<Footprints className="h-3.5 w-3.5" />} title="Pattern">
+                {usingStockBase ? (
+                    <p className="mb-1.5 text-[10px] text-muted-foreground">
+                        Base: {design.paired?.rightBase?.name ?? design.base?.name ?? "Stock GLB"} · patterns adjust scan metadata only
+                    </p>
+                ) : null}
                 <div className="grid grid-cols-2 gap-1.5">
                     {merged.map((p) => (
                         <button

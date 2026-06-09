@@ -1,13 +1,14 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
-    constrainSideCorrections,
-    type ConstraintViolation,
-} from "@/lib/geometry/clinical-constraints";
+    createDefaultStockPairedBases,
+    designHasBase,
+    resolveDefaultStockBase,
+    StockBaseResolutionError,
+} from "@/lib/geometry/base-asset";
+import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
-import { createDefaultStockPairedBases, resolveDefaultStockBase } from "@/lib/geometry/base-asset";
-import { buildEffectiveTrimlines } from "@/stores/issues-store";
-import { useIssuesStore } from "@/stores/issues-store";
+import { buildEffectiveTrimlines, useIssuesStore } from "@/stores/issues-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type {
@@ -83,6 +84,46 @@ export function defaultDesign(): DesignState {
     };
 }
 
+/**
+ * Every new design must start from the default stock GLB (Base + Modifier model).
+ * Injects a synchronous stock placeholder pair so the viewer can render immediately;
+ * applyDefaultStockBase() upgrades it to the server row (real UUID + storage URL).
+ */
+export function createDesignWithStockPlaceholder(design?: DesignState): DesignState {
+    const d = design ?? defaultDesign();
+    if (designHasBase(d)) return d;
+
+    const { left, right } = createDefaultStockPairedBases();
+    return {
+        ...d,
+        pattern: "custom",
+        base: left,
+        customPrefabId: left.assetId,
+        customPrefabName: left.name,
+        paired: {
+            leftBase: left,
+            rightBase: right,
+            leftThicknessMm: d.thicknessMm ?? 3,
+            rightThicknessMm: d.thicknessMm ?? 3,
+            leftMethod: d.method,
+            rightMethod: d.method,
+            linked: false,
+        },
+    };
+}
+
+/** Fire-and-forget upgrade of the sync stock placeholder to the server default row. */
+function upgradeStockBaseAsync(apply: () => Promise<void>): void {
+    void apply().catch((e) => {
+        const msg =
+            e instanceof StockBaseResolutionError
+                ? e.message
+                : "Failed to load the default stock base. Check server configuration.";
+        useDesignStore.setState({ stockBaseError: msg });
+        console.error("[design-store] Default stock base resolution failed:", e);
+    });
+}
+
 /** Named camera viewpoints. Orthographic-style views drive trimline planar constraint. */
 export type CameraView = "iso" | "front" | "back" | "left" | "right" | "top" | "bottom";
 
@@ -99,6 +140,8 @@ export type TransformMode = "translate" | "rotate" | "scale";
 
 export interface DesignStore {
     design: DesignState;
+    /** Set when the mandatory default stock base cannot be loaded from the server. */
+    stockBaseError: string | null;
     viewer: ViewerSettings;
     selectedElementId: string | null;
     transformMode: TransformMode;
@@ -140,6 +183,9 @@ export interface DesignStore {
      */
     applyDefaultStockBase: () => Promise<void>;
 
+    /** Clear the stock base load error banner after the user dismisses it. */
+    clearStockBaseError: () => void;
+
     /** Atomically apply an AI-parsed prescription to the design. */
     applyPrescription: (result: PrescriptionParseResult) => void;
 
@@ -175,7 +221,8 @@ export interface DesignStore {
 export const useDesignStore = create<DesignStore>()(
     persist(
         (set, get) => ({
-            design: defaultDesign(),
+            design: createDesignWithStockPlaceholder(),
+            stockBaseError: null,
             viewer: { transparent: false, heightmap: false, showLeft: true, showRight: true, view: "iso" },
             selectedElementId: null,
             transformMode: "translate",
@@ -184,13 +231,8 @@ export const useDesignStore = create<DesignStore>()(
 
             setPattern: (pattern) =>
                 set((s) => ({
-                    design: {
-                        ...s.design,
-                        pattern,
-                        ...(pattern === "custom"
-                            ? {}
-                            : { customPrefabId: undefined, customPrefabName: undefined, base: undefined, paired: undefined }),
-                    },
+                    // Scan pattern is metadata only — never clears the mandatory GLB base.
+                    design: { ...s.design, pattern },
                 })),
             setMethod: (method) => set((s) => ({ design: { ...s.design, method } })),
             setThickness: (thicknessMm) =>
@@ -199,7 +241,10 @@ export const useDesignStore = create<DesignStore>()(
                     const linked = isPaired ? s.design.paired!.linked : s.design.corrections.linked;
                     if (isPaired && s.design.paired) {
                         // Per-side thickness for paired workspace
-                        const safe = constrainSideCorrections(s.design.paired.left.corrections || defaultSideCorrections(), thicknessMm).thicknessMm; // approximate
+                        const safe = constrainSideCorrections(
+                            s.design.paired.left.corrections || defaultSideCorrections(),
+                            thicknessMm,
+                        ).thicknessMm; // approximate
                         const next = {
                             ...s.design.paired,
                             leftThicknessMm: linked ? safe : thicknessMm, // simplistic
@@ -242,8 +287,8 @@ export const useDesignStore = create<DesignStore>()(
                 })),
             setLinked: (linked) =>
                 set((s) => ({
-                    design: { 
-                        ...s.design, 
+                    design: {
+                        ...s.design,
                         corrections: { ...s.design.corrections, linked },
                         paired: s.design.paired ? { ...s.design.paired, linked } : undefined,
                     },
@@ -453,17 +498,26 @@ export const useDesignStore = create<DesignStore>()(
             },
 
             applyDefaultStockBase: async () => {
-                // Phase 2+: Use the server-authoritative resolver (trpc.stock.getDefaultStockBase).
-                // The resolved base carries the real DB id, glbPath, and (when available) a
-                // ready-to-use URL from storage + primarySide for mirroring decisions.
-                const resolved = await resolveDefaultStockBase();
-                const { left, right } = createDefaultStockPairedBases(resolved);
-                const snap = get().design;
-                get().setPairedBases(left, right);
-                if (snap.base?.assetId !== left.assetId && snap.base?.assetId !== right.assetId) {
-                    get().checkpoint("default-stock-base");
+                try {
+                    set({ stockBaseError: null });
+                    const resolved = await resolveDefaultStockBase();
+                    const { left, right } = createDefaultStockPairedBases(resolved);
+                    const snap = get().design;
+                    get().setPairedBases(left, right);
+                    if (snap.base?.assetId !== left.assetId && snap.base?.assetId !== right.assetId) {
+                        get().checkpoint("default-stock-base");
+                    }
+                } catch (e) {
+                    const msg =
+                        e instanceof StockBaseResolutionError
+                            ? e.message
+                            : "Failed to load the default stock base. Check server configuration.";
+                    set({ stockBaseError: msg });
+                    throw e;
                 }
             },
+
+            clearStockBaseError: () => set({ stockBaseError: null }),
 
             updateElement: (id, patch) =>
                 set((s) => {
@@ -547,41 +601,18 @@ export const useDesignStore = create<DesignStore>()(
                         right: incoming.corrections.linked ? r.constrained : r2.constrained,
                     },
                 };
-                // If the loaded design has no base selected (legacy or paired), inject the default stock base
-                // (placeholder synchronously here; upgraded asynchronously to server record with proper URL + primarySide).
-                // Real paired or user bases are never overwritten.
-                const hasBase = !!safeDesign.base || !!safeDesign.customPrefabId || !!safeDesign.paired?.leftBase || !!safeDesign.paired?.rightBase;
-                if (!hasBase) {
-                    const { left, right } = createDefaultStockPairedBases();
-                    safeDesign = {
-                        ...safeDesign,
-                        pattern: "custom",
-                        base: left,
-                        customPrefabId: left.assetId,
-                        customPrefabName: left.name,
-                        paired: {
-                            leftBase: left,
-                            rightBase: right,
-                            leftThicknessMm: safeDesign.thicknessMm ?? 3,
-                            rightThicknessMm: safeDesign.thicknessMm ?? 3,
-                            leftMethod: safeDesign.method,
-                            rightMethod: safeDesign.method,
-                            linked: false,
-                        },
-                    };
+                // Legacy or parametric-only saved designs: inject the mandatory stock GLB base.
+                const hadBase = designHasBase(safeDesign);
+                if (!hadBase) {
+                    safeDesign = createDesignWithStockPlaceholder(safeDesign);
                 }
                 const eff = buildEffectiveTrimlines(safeDesign);
                 useIssuesStore.getState().recompute(safeDesign, eff);
-                set({ design: safeDesign, selectedElementId: null });
+                set({ design: safeDesign, selectedElementId: null, stockBaseError: null });
 
-                // If we injected the default stock placeholder above, upgrade it asynchronously
-                // with the real server record (correct assetId, storage URL, primarySide metadata).
-                if (!hasBase) {
-                    void (async () => {
-                        try {
-                            await get().applyDefaultStockBase?.();
-                        } catch {}
-                    })();
+                // Upgrade sync placeholder to server stock row (real UUID + storage URL + primarySide).
+                if (!hadBase) {
+                    upgradeStockBaseAsync(() => get().applyDefaultStockBase());
                 }
             },
 
@@ -625,34 +656,9 @@ export const useDesignStore = create<DesignStore>()(
                 useMeshEditStore.getState().cancelTrimlineEdit();
                 useIssuesStore.getState().clear();
                 get().clearHistory();
-                const d = defaultDesign();
-                // Synchronous placeholder (local builtin). Immediately upgraded via applyDefaultStockBase()
-                // which talks to the server for the real stock_bases row + storage URL.
-                const { left, right } = createDefaultStockPairedBases();
-                const withStock: DesignState = {
-                    ...d,
-                    pattern: "custom",
-                    base: left, // legacy compat (mirrored left); per-side resolution uses paired
-                    customPrefabId: left.assetId,
-                    customPrefabName: left.name,
-                    paired: {
-                        leftBase: left,
-                        rightBase: right,
-                        leftThicknessMm: d.thicknessMm ?? 3,
-                        rightThicknessMm: d.thicknessMm ?? 3,
-                        leftMethod: d.method,
-                        rightMethod: d.method,
-                        linked: false,
-                    },
-                };
-                set({ design: withStock, selectedElementId: null });
-                // No orphans on a fresh default.
-                // Fire-and-forget upgrade to server stock base (real id + authoritative storage URL + primarySide).
-                void (async () => {
-                    try {
-                        await get().applyDefaultStockBase?.();
-                    } catch {}
-                })();
+                const withStock = createDesignWithStockPlaceholder(defaultDesign());
+                set({ design: withStock, selectedElementId: null, stockBaseError: null });
+                upgradeStockBaseAsync(() => get().applyDefaultStockBase());
             },
 
             getActiveViolations: () => {
@@ -683,7 +689,12 @@ export const useDesignStore = create<DesignStore>()(
                 try {
                     // Lazy to avoid circular import at module top level.
                     import("@/stores/audit-store").then(({ useAuditStore }) => {
-                        useAuditStore.getState().record("design_saved", `checkpoint${label ? ":" + label : ""} v${(snap as any).designVersion}`);
+                        useAuditStore
+                            .getState()
+                            .record(
+                                "design_saved",
+                                `checkpoint${label ? ":" + label : ""} v${(snap as any).designVersion}`,
+                            );
                     });
                 } catch {}
             },
@@ -734,6 +745,15 @@ export const useDesignStore = create<DesignStore>()(
             name: "vertex-design-session",
             /** Keep live design (incl. trimlines) across page refresh before explicit Save. */
             partialize: (state) => ({ design: state.design }),
+            onRehydrateStorage: () => (state) => {
+                if (!state?.design) return;
+                // Persisted parametric-only sessions must be upgraded to stock GLB base.
+                if (!designHasBase(state.design)) {
+                    const upgraded = createDesignWithStockPlaceholder(state.design);
+                    useDesignStore.setState({ design: upgraded, stockBaseError: null });
+                    upgradeStockBaseAsync(() => useDesignStore.getState().applyDefaultStockBase());
+                }
+            },
         },
     ),
 );

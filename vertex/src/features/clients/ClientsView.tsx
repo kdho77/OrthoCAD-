@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { defaultDesign, useDesignStore } from "@/stores/design-store";
+import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
 import { type ClientInput, useClientStore } from "@/stores/client-store";
 import { cn } from "@/lib/utils";
 
@@ -31,7 +31,7 @@ export function ClientsView({ onOpenDesign }: ClientsViewProps) {
 
     const newDesign = () => {
         if (!activeClientId) return;
-        const id = addDesign(activeClientId, `Design ${clientDesigns.length + 1}`, defaultDesign());
+        const id = addDesign(activeClientId, `Design ${clientDesigns.length + 1}`, createDesignWithStockPlaceholder());
         openDesign(id);
     };
 
