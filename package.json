@@ -5,6 +5,9 @@
     "documentVersion": "0.7.1",
     "author": "仙阁",
     "type": "module",
+    "engines": {
+        "node": "20.x"
+    },
     "scripts": {
         "build": "rspack build",
         "build:wasm": "cd cpp && cmake --preset release && cmake --build --preset release",

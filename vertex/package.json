@@ -3,6 +3,9 @@
     "private": true,
     "version": "0.1.0",
     "type": "module",
+    "engines": {
+        "node": "20.x"
+    },
     "description": "Vertex Orthopedic — browser-based orthotic insole CAD (Phase 0 foundation)",
     "scripts": {
         "prepare:wasm": "mkdir -p public/chili-wasm && cp -f ../packages/wasm/lib/chili-wasm.js ../packages/wasm/lib/chili-wasm.wasm public/chili-wasm/",

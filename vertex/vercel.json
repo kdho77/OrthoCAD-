@@ -6,7 +6,6 @@
     "framework": "vite",
     "functions": {
         "api/trpc/**/*.ts": {
-            "runtime": "nodejs20.x",
             "includeFiles": "node_modules/.prisma/**"
         }
     },
