@@ -81,6 +81,10 @@ enum AuditAction {
     export_generated
     ai_prescription_parsed
     custom_library_saved
+    stock_base_created
+    stock_base_updated
+    stock_base_deleted
+    stock_base_resolved
 }
 
 // --- Identity & Access ------------------------------------------------------
@@ -388,4 +392,32 @@ model AuditLog {
     @@index([userId])
     @@index([action])
     @@map("audit_logs")
+}
+
+// --- Stock bases (system-provided GLB foot/insole blanks, e.g. Templates/Default.glb) ---
+// Populated by admin upload flows (not user custom library). glbPath points to storage key
+// (typically under the "stock-bases" or main bucket with "stock/" prefix).
+// 
+// Access control:
+// - Application level: reads via protectedProcedure (any authenticated user), writes via adminProcedure.
+// - Database (recommended): 
+//   - SELECT policy: allow for authenticated users (USING (auth.role() = 'authenticated') or true for service role).
+//   - INSERT/UPDATE/DELETE: restricted to service role + application-level admin check, or a policy
+//     checking a custom claim / security definer function for admin role.
+// Because the backend uses the Supabase service role for Prisma, the tRPC procedures (especially
+// adminProcedure) are the primary enforcement point. RLS is defense-in-depth.
+model StockBase {
+    id            String   @id @default(uuid()) @db.Uuid
+    name          String
+    glbPath       String   // e.g. "Templates/Default.glb" or "stock/..." storage key
+    primarySide   String?  // "left" | "right" when the asset is single-sided (drives auto-mirror decision)
+    isDefault     Boolean  @default(false)
+    isActive      Boolean  @default(true)
+    metadata      Json?    // e.g. { mirroredAvailable: true, description: "Right foot only" }
+    createdAt     DateTime @default(now())
+    updatedAt     DateTime @updatedAt
+
+    @@index([isDefault])
+    @@index([isActive])
+    @@map("stock_bases")
 }

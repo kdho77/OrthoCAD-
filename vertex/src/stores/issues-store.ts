@@ -4,7 +4,9 @@
 import { create } from "zustand";
 import { detectAllOrphans, type Orphan } from "@/lib/geometry/orphan-detection";
 import { getDesignTrimline, type TrimlineCurve } from "@/lib/geometry/trimline";
+import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
+import type { Side } from "@/types";
 import type { DesignState, PlacedElement, Side } from "@/types";
 
 export interface IssuesStore {
@@ -21,13 +23,14 @@ export const useIssuesStore = create<IssuesStore>((set) => ({
     recompute: (design, effectiveTrimlines) => {
         const baseOutlines: Partial<Record<Side, TrimlineCurve>> = {};
         // Best-effort: if a base is active, try to attach its outline for base-feature-orphan checks.
-        // Callers that have the assetId can pre-populate; here we read the outline store.
-        const baseId = (design.paired?.leftBase?.assetId ?? design.base?.assetId ?? design.customPrefabId) || null;
-        if (baseId) {
-            const o = useBaseOutlineStore.getState().getOutline(baseId);
-            if (o) {
-                baseOutlines.left = o;
-                baseOutlines.right = o; // outline is side-agnostic in raw frame
+        // Use per-side getDesignBase + getBaseCacheKey so that mirrored stock Left (Phase 2) gets the
+        // correct mirrored outline while Right gets the source outline. Falls back gracefully for legacy.
+        for (const side of ["left", "right"] as Side[]) {
+            const b = getDesignBase(design, side);
+            const key = getBaseCacheKey(b) ?? b?.assetId ?? null;
+            if (key) {
+                const o = useBaseOutlineStore.getState().getOutline(key);
+                if (o) baseOutlines[side] = o;
             }
         }
         const orphans = detectAllOrphans(design.elements, effectiveTrimlines, baseOutlines);

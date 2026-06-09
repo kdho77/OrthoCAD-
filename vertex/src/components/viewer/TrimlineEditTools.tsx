@@ -4,7 +4,7 @@
 import { type ThreeEvent, useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
-import { getDesignBase } from "@/lib/geometry/base-asset";
+import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import {
     cloneTrimline,
@@ -75,8 +75,9 @@ function TrimlineSideRow({
 }) {
     // Subscribe to the loaded base's outline so the overlay re-renders (and picks
     // up the mesh-derived default) as soon as the base GLB finishes loading.
-    const baseAssetId = getDesignBase(design, side)?.assetId ?? null;
-    const baseOutline = useBaseOutlineStore((s) => (baseAssetId ? (s.outlines[baseAssetId] ?? null) : null));
+    const baseForSide = getDesignBase(design, side);
+    const baseKey = getBaseCacheKey(baseForSide) ?? baseForSide?.assetId ?? null;
+    const baseOutline = useBaseOutlineStore((s) => (baseKey ? (s.outlines[baseKey] ?? null) : null));
 
     const isEditing = editMode === "edit-trimline" && trimlineEdit?.side === side;
     const curve =

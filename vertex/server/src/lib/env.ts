@@ -14,4 +14,7 @@ export function validateServerEnv(): void {
     if (process.env.CORS_ORIGIN === "*" && process.env.NODE_ENV === "production") {
         console.warn("[vertex] CORS_ORIGIN is * in production — set to your SPA origin");
     }
+    if (!process.env.MANUFACTURING_SERVICE_URL) {
+        console.warn("[vertex] MANUFACTURING_SERVICE_URL not set — manufacturing.generateSolid will fail");
+    }
 }

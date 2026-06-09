@@ -572,11 +572,20 @@ export interface DesignModeInfo {
 
 /** Resolve whether a design is modifying a loaded base template or pure parametric. */
 export function resolveDesignMode(design: DesignState, side?: Side): DesignModeInfo {
-    const base =
+    // Prefer explicit side, then a non-mirrored base (for stock default paired: show the source Right name),
+    // then left, right, legacy. This keeps the badge label sensible for auto-mirrored stock Left+Right.
+    let base =
         getDesignBase(design, side) ??
-        getDesignBase(design, "left") ??
         getDesignBase(design, "right") ??
+        getDesignBase(design, "left") ??
         getDesignBase(design);
+    // If the chosen one is mirrored but its source sibling exists, prefer the source for the display name.
+    if (base?.mirrored && design.paired) {
+        const right = design.paired.rightBase;
+        const left = design.paired.leftBase;
+        if (right && right.mirrored !== true) base = right;
+        else if (left && left.mirrored !== true) base = left;
+    }
     if (base) return { mode: "base", baseName: base.name, baseId: base.assetId };
     return { mode: "parametric" };
 }
