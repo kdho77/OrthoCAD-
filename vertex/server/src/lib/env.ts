@@ -11,6 +11,9 @@ export function validateServerEnv(): void {
     if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
         console.warn("[vertex] Supabase service credentials unset — auth/storage disabled");
     }
+    if (!process.env.MANUFACTURING_SERVICE_URL || !process.env.MANUFACTURING_INTERNAL_API_KEY) {
+        console.warn("[vertex] Manufacturing service unset — manufacturing.generateSolid will fail");
+    }
     if (process.env.CORS_ORIGIN === "*" && process.env.NODE_ENV === "production") {
         console.warn("[vertex] CORS_ORIGIN is * in production — set to your SPA origin");
     }

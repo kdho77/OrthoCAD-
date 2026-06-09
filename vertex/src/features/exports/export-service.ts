@@ -6,8 +6,20 @@ import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
+import { canExport, TOKEN_COST } from "@/features/licensing/license";
+import { buildExportGeometry, buildExportGlb, buildExportStl } from "@/lib/geometry/export-geometry";
+import { getDesignBase } from "@/lib/geometry/base-asset";
+import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
+import { isApiConfigured, trpc } from "@/lib/trpc";
+import { useAuditStore } from "@/stores/audit-store";
+import { useAuthStore } from "@/stores/auth-store";
+import { useClientStore } from "@/stores/client-store";
+import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
-import type { ExportFormat, Side } from "@/types";
+import type { ExportFormat, GrindingStyle, Side } from "@/types";
+
+// Re-export for convenience in UI components
+export type GrindingStyleInput = GrindingStyle;
 
 export interface ExportOutcome {
     ok: boolean;
@@ -15,13 +27,13 @@ export interface ExportOutcome {
     filename?: string;
     blob?: Blob;
     stats?: CamResult["stats"];
+    productionId?: string;
 }
 
 function buildSideGeometry(side: Side) {
     return buildExportGeometry(side);
 }
 
-/** Server-authoritative token gate shared by STL and G-code exports. */
 async function authorize(
     format: "stl" | "gcode",
     side: Side,
@@ -53,51 +65,27 @@ function downloadBlob(blob: Blob, filename: string) {
     URL.revokeObjectURL(url);
 }
 
-/**
- * Export flow:
- *   1. Server-authoritative path (when the API is configured): the server
- *      validates the license, atomically deducts tokens and records an audit
- *      entry via `export.authorize`. The file is generated only after the
- *      server returns `ok`.
- *   2. Offline fallback (no API): client-side license/token gate + optimistic
- *      local deduction so the workspace is usable in dev/preview.
- */
 export async function exportDesign(format: ExportFormat, side: Side = "left"): Promise<ExportOutcome> {
     if (format === "gcode") {
         return { ok: false, reason: "Use Generate + Export G-code in the Printing tab" };
     }
-
     if (format === "glb") {
         return exportGlb(side);
     }
-
     const filename = `insole-${side}-${Date.now()}.stl`;
     const auth = await authorize("stl", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
-
     const stl = await buildExportStl(side);
     const blob = new Blob([stl], { type: "model/stl" });
     downloadBlob(blob, filename);
     useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
-
     return { ok: true, filename, blob };
 }
 
-/**
- * Production-quality GLB export. Builds a watertight tapered insole mesh from
- * the user's confirmed trimline (with parametric fallback) — top surface +
- * tapered side walls + flat bottom — entirely in a Web Worker so the UI stays
- * responsive. The exported file contains a single mesh ready for slicing.
- *
- * GLB is license-gated client-side but does not consume export tokens (the
- * server `export.authorize` endpoint is unchanged; GLB is treated as a CAD
- * preview asset rather than a manufacturing artefact).
- */
 export async function exportGlb(side: Side): Promise<ExportOutcome> {
     const { user, license } = useAuthStore.getState();
     const check = canExport(user, license, "glb");
     if (!check.ok) return { ok: false, reason: check.reason };
-
     const filename = `insole-${side}-${Date.now()}.glb`;
     try {
         const arrayBuffer = await buildExportGlb(side);
@@ -110,10 +98,6 @@ export async function exportGlb(side: Side): Promise<ExportOutcome> {
     }
 }
 
-/**
- * Token-protected G-code export. Slices/CAMs the side's solid with the chosen
- * printer/mill preset, then (after server authorization) downloads the G-code.
- */
 export async function exportGcode(
     side: Side,
     preset: PrinterPreset,
@@ -122,106 +106,135 @@ export async function exportGcode(
     const filename = `insole-${side}-${preset.id}-${Date.now()}.gcode`;
     const auth = await authorize("gcode", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
-
     const geometry = await buildSideGeometry(side);
     const { gcode, stats } = generateGcode(geometry, preset, overrides);
     geometry.dispose();
     const blob = new Blob([gcode], { type: "text/plain" });
     downloadBlob(blob, filename);
-    useAuditStore
-        .getState()
-        .record("export_generated", `G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
-
+    useAuditStore.getState().record("export_generated", `G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
     return { ok: true, filename, blob, stats };
 }
 
 /**
- * Hybrid / server-authoritative G-code generation path (for loaded stock bases or
- * high-fidelity OCCT solid + CAM).
- *
- * When the API is configured, this calls the server `manufacturing.generateSolid`
- * (or equivalent authoritative solid generator) and includes the current `designId`
- * (from the persisted client design record) when available.
- *
- * The `designId` gives the server the ability to:
- *  - Resolve the full persisted design state authoritatively (instead of only
- *    trusting the payload the client sends).
- *  - Record precise audit / production context linking the generated artefact
- *    back to a specific clinical design.
- *
- * We also forward rich data from the current design state (baseAssetId for stock/custom,
- * corrections, trimlines, thickness etc.) so the server can build a complete payload for
- * the Python solid + belt + slicer pipeline.
- *
- * The designId (and extra fields) are optional for backward compatibility.
- *
- * Response from server includes gcode (for direct download) + stats + optional productionId.
+ * Server-side hybrid manufacturing G-code (solid + Grinding Style sides + belt transform + slicing).
+ * Uses the new manufacturing.generateSolid procedure.
  */
 export async function generateHybridGcode(
     side: Side,
     preset: PrinterPreset,
+    grindingStyle: GrindingStyleInput,
     overrides: CamOverrides = {},
 ): Promise<ExportOutcome> {
-    const filename = `insole-${side}-${preset.id}-${Date.now()}.gcode`;
+    const { design } = useDesignStore.getState();
+    const activeDesignId = useClientStore.getState().activeDesignId;
+    const filename = `hybrid-${side}-${preset.id}-${Date.now()}.gcode`;
 
-    // Pull the server-side design id (if a design has been loaded/saved via the
-    // client store). This may be undefined for brand-new unsaved or fully offline sessions.
-    const activeDesignId = useClientStore.getState().activeDesignId ?? undefined;
+    const sideCorrections = design.corrections[side];
+    const trimlineForSide = design.trimlines?.[side] ?? [];
+
+    let baseGlbUrl: string | undefined;
+    const base = design.base ?? (side === "left" ? design.paired?.leftBase : design.paired?.rightBase);
+    const baseAssetId = base?.assetId;
+
+    if (baseAssetId) {
+        const lib = useCustomLibraryStore.getState();
+        const prefab = lib.customPrefabs.find((p) => p.id === baseAssetId);
+        if (prefab?.url) {
+            baseGlbUrl = prefab.url;
+        }
+    }
+
+    const correctionsDict: Record<string, any> = { ...sideCorrections };
+    if (sideCorrections.heelCupWidthMm != null) correctionsDict.heelCupWidthMm = sideCorrections.heelCupWidthMm;
+    if (sideCorrections.heelLiftMm != null) correctionsDict.heelLiftMm = sideCorrections.heelLiftMm;
+
+    const trimlinesDict: Record<string, any> = {
+        points: trimlineForSide.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 })),
+    };
 
     if (isApiConfigured()) {
         try {
-            // Pull current design state so we can pass corrections, trimlines, base etc.
-            // This allows the server to forward a complete payload to the Python pipeline
-            // (designId is still sent for authoritative lookup + audit context).
-            const design = useDesignStore.getState().design;
-            const baseForSide = getDesignBase(design, side);
-
-            // The server procedure is expected to accept designId optionally.
             const res = await trpc.manufacturing.generateSolid.mutate({
+                designId: activeDesignId || undefined,
                 side,
                 presetId: preset.id,
-                overrides,
-                designId: activeDesignId,
-                // Pass what the Python solid generator + CAM needs (base for stock/custom, trimlines, corrections, thickness etc.)
-                baseAssetId: baseForSide?.assetId,
-                corrections: design.corrections,
-                trimlines: design.trimlines,
+                beltAngleDeg: preset.beltAngleDeg ?? 45,
+                corrections: correctionsDict,
+                trimlines: trimlinesDict,
                 thicknessMm: design.thicknessMm,
-                // grindingStyle or other can come from overrides or preset
+                heelLiftMm: sideCorrections.heelLiftMm ?? 0,
+                heelCupWidthMm: sideCorrections.heelCupWidthMm ?? 0,
+                grindingStyle,
+                baseGlbUrl,
+                ...(baseAssetId ? { baseAssetId } : {}),
+                fileName: filename,
             });
 
-            if (!res?.ok) {
-                return { ok: false, reason: res?.reason ?? "Server solid generation denied" };
+            if (!res?.ok || (!res.gcode && !res.gcodeDownloadUrl && !res.productionId)) {
+                return { ok: false, reason: res?.note || "Server did not return G-code reference" };
             }
 
-            // In the real implementation the server would return the gcode (or a
-            // storage key). For now we surface a successful shape; the caller
-            // (PrintingPanel or future hybrid button) can decide how to present it.
-            const blob = new Blob([res.gcode ?? ""], { type: "text/plain" });
-            downloadBlob(blob, filename);
+            let blob: Blob | undefined;
 
-            useAuditStore
-                .getState()
-                .record("export_generated", `Hybrid G-code ${side} · ${preset.name} (design ${activeDesignId ?? "unknown"})`);
+            if (res.gcodeDownloadUrl) {
+                try {
+                    const textResp = await fetch(res.gcodeDownloadUrl);
+                    if (!textResp.ok) throw new Error(`Download failed with status ${textResp.status}`);
+                    const gcodeText = await textResp.text();
+                    blob = new Blob([gcodeText], { type: "text/plain" });
+                    downloadBlob(blob, filename);
+                } catch (dlErr: any) {
+                    return {
+                        ok: false,
+                        reason: `G-code generated (productionId=${res.productionId}) but client download failed: ${dlErr?.message || dlErr}`,
+                    };
+                }
+            } else if (res.gcode) {
+                blob = new Blob([res.gcode], { type: "text/plain" });
+                downloadBlob(blob, filename);
+            }
 
-            return { ok: true, filename, blob, stats: res.stats };
+            useAuditStore.getState().record(
+                "export_generated",
+                `Hybrid G-code ${side} · ${preset.name} (${grindingStyle.type}) (productionId=${res.productionId || 'n/a'})`,
+            );
+
+            return { ok: true, filename, blob, productionId: res.productionId };
         } catch (e) {
             return {
                 ok: false,
-                reason: e instanceof Error ? e.message : "Hybrid solid generation failed",
+                reason: e instanceof Error ? e.message : "Hybrid G-code generation failed (server)",
             };
         }
     }
 
-    // Offline fallback: fall back to local CAM (same as exportGcode today).
-    const geometry = await buildSideGeometry(side);
-    const { gcode, stats } = generateGcode(geometry, preset, overrides);
-    geometry.dispose();
-    const blob = new Blob([gcode], { type: "text/plain" });
-    downloadBlob(blob, filename);
-    useAuditStore
-        .getState()
-        .record("export_generated", `G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode}) (local fallback)`);
+    // Offline fallback
+    return exportGcode(side, preset, overrides);
+}
 
-    return { ok: true, filename, blob, stats };
+export async function downloadGcodeByProductionId(productionId: string): Promise<ExportOutcome> {
+    if (!isApiConfigured()) {
+        return { ok: false, reason: "API not configured; server G-code download requires backend" };
+    }
+    try {
+        const res = await trpc.manufacturing.getGcodeDownloadUrl.query({ productionId });
+        if (!res?.downloadUrl) {
+            return { ok: false, reason: "No download URL returned for production" };
+        }
+        const textResp = await fetch(res.downloadUrl);
+        if (!textResp.ok) {
+            throw new Error(`Failed to fetch G-code (status ${textResp.status})`);
+        }
+        const gcodeText = await textResp.text();
+        const filename = `hybrid-${productionId}.gcode`;
+        const blob = new Blob([gcodeText], { type: "text/plain" });
+        downloadBlob(blob, filename);
+        useAuditStore.getState().record("export_generated", `Hybrid G-code re-download via productionId ${productionId}`);
+        return { ok: true, filename, blob, productionId };
+    } catch (e) {
+        return {
+            ok: false,
+            reason: e instanceof Error ? e.message : "G-code download by productionId failed",
+        };
+    }
 }

@@ -1,70 +1,42 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
-
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { protectedProcedure, router } from "../trpc";
+import { RATE_LIMITS } from "../lib/rate-limit";
+import { protectedProcedure, rateLimitedProcedure, router } from "../trpc";
+import { getSupabaseAdmin } from "../context";
+import { signedDownloadUrl, uploadAsset } from "../lib/storage";
 
-/**
- * Manufacturing / authoritative solid + CAM router.
- *
- * This is the server-side home for high-fidelity "hybrid" generation paths
- * (e.g. loaded stock base + OCCT solid + CAM) that benefit from having the
- * full persisted design state and being able to record precise audit context.
- */
+const HYBRID_GCODE_COST = 3;
+
+const grindingStyleSchema = z.object({
+    type: z.enum(["straight", "rounded"]),
+    angle_degrees: z.number().optional(),
+    radius_mm: z.number().optional(),
+});
+
+const manufactureInputSchema = z.object({
+    designId: z.string().uuid().optional(),
+    side: z.enum(["left", "right"]).optional(),
+    presetId: z.string().min(1),
+    beltAngleDeg: z.number().min(10).max(80).default(45),
+    corrections: z.record(z.any()),
+    trimlines: z.record(z.any()),
+    thicknessMm: z.number(),
+    heelLiftMm: z.number().default(0),
+    heelCupWidthMm: z.number().default(0),
+    grindingStyle: grindingStyleSchema,
+    baseGlbUrl: z.string().url().optional(),
+    baseAssetId: z.string().optional(),
+    fileName: z.string().max(200).optional(),
+});
+
 export const manufacturingRouter = router({
-    /**
-     * Server-authoritative solid generation / hybrid CAM entry point.
-     *
-     * Node (this tRPC procedure) responsibilities (orchestrator):
-     *  - License / balance pre-check (before expensive Python work).
-     *  - Enrich/load authoritative data from DB using designId (corrections, elements, method, thickness).
-     *  - Forward rich payload (including client-sent baseAssetId, trimlines, corrections, overrides) to Python.
-     *  - On Python success ONLY: guarded token deduct + create Production, Export, TokenTransaction, rich AuditLog.
-     *  - Return G-code directly (for client download) + stats + productionId.
-     *
-     * Python service responsibilities (geometry/CAM engine):
-     *  - solid_generator (Base + Modifier or stock base + modifiers) → watertight solid.
-     *  - belt_transformer (if belt preset).
-     *  - slicer → G-code + stats.
-     *
-     * Response shape decision: Return { ok, gcode, stats, designId, productionId? }.
-     * - G-code directly (not just productionId) for immediate compatibility with the client
-     *   generateHybridGcode helper (which does `new Blob([res.gcode ?? ""])` and attaches stats).
-     * - productionId included so callers can track the manufacturing run (Production row).
-     * - This matches "return G-code directly for now" while allowing evolution (e.g. store gcode in bucket and return key later).
-     *
-     * `designId` (when provided) + baseAssetId allow server to resolve full context (stock bases,
-     * live trimlines/corrections) and produce correct audit linkage.
-     *
-     * The designId field (and extra payload fields) are optional in the schema for backward
-     * compatibility with any clients or internal calls that have not yet been updated.
-     */
-    generateSolid: protectedProcedure
-        .input(
-            z.object({
-                side: z.enum(["left", "right"]).optional(),
-                presetId: z.string().optional(),
-                overrides: z.record(z.unknown()).optional(),
-                /** Server design id for authoritative state resolution and audit linking. */
-                designId: z.string().uuid().optional(),
-                // Additional data the client may send for the Python payload (base, trimlines etc.)
-                baseAssetId: z.string().optional(),
-                corrections: z.any().optional(),
-                trimlines: z.any().optional(),
-                thicknessMm: z.number().optional(),
-                grindingStyle: z.string().optional(),
-            }),
-        )
+    generateSolid: rateLimitedProcedure(RATE_LIMITS.export, "manufacturing:generateSolid")
+        .input(manufactureInputSchema)
         .mutation(async ({ ctx, input }) => {
-            // === Phase 1: Connect to Python manufacturing service ===
-            // Node is the orchestrator: auth, license, pre-checks, data enrichment from DB,
-            // audit, tokens (on success). Python is the pure geometry/CAM engine.
+            const pythonUrl = process.env.PYTHON_MANUFACTURING_URL || "http://localhost:8001";
 
-            const cost = 2; // gcode / solid manufacturing cost, same as export gcode
+            // License validation
             const now = new Date();
-
-            // License pre-check (no deduct yet — see Phase 3 for success-only deduct)
             const license = await ctx.prisma.license.findFirst({
                 where: {
                     status: "active",
@@ -76,143 +48,151 @@ export const manufacturingRouter = router({
                 throw new TRPCError({ code: "FORBIDDEN", message: "No valid license" });
             }
 
-            // Check balance for pre-check (do not deduct here)
-            const user = await ctx.prisma.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
-            if (user.tokenBalance < cost) {
-                throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient tokens for manufacturing" });
+            if (!input.presetId || !input.corrections || typeof input.thicknessMm !== "number") {
+                throw new TRPCError({ code: "BAD_REQUEST", message: "Missing required manufacturing parameters" });
             }
 
-            // Enrich data using designId when available (authoritative DB state for corrections/elements/method etc.)
-            let loadedCorrections: any = input.corrections;
-            let loadedElements: any = null;
-            let loadedMethod: string | undefined;
-            let loadedThickness: number | undefined;
-            let baseAssetId = input.baseAssetId;
+            const cost = HYBRID_GCODE_COST;
+            const user = await ctx.prisma.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
+            if ((user.tokenBalance ?? 0) < cost) {
+                throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
+            }
 
             if (input.designId) {
-                try {
-                    const design = await ctx.prisma.design.findFirst({
-                        where: { id: input.designId, ownerId: ctx.user.id },
-                        include: { corrections: true, elements: true },
-                    });
-                    if (design) {
-                        loadedMethod = design.method;
-                        loadedThickness = design.thicknessMm;
-                        if (!loadedCorrections && design.corrections?.length) {
-                            loadedCorrections = {
-                                left: design.corrections.find((c: any) => c.side === "left"),
-                                right: design.corrections.find((c: any) => c.side === "right"),
-                            };
-                        }
-                        if (design.elements?.length) {
-                            loadedElements = design.elements;
-                        }
-                        // baseAssetId may come from client payload for stock/custom bases (not stored relationally in Design)
-                    }
-                } catch {
-                    // best effort enrichment; continue with what client sent
+                const design = await ctx.prisma.design.findFirst({
+                    where: { id: input.designId, ownerId: ctx.user.id },
+                });
+                if (!design) {
+                    throw new TRPCError({ code: "FORBIDDEN", message: "Design not found or access denied" });
                 }
             }
 
-            // Construct payload for Python service.
-            // The Python side (solid_generator + belt + slicer) expects the clinical + base + trim data.
-            const payload: any = {
-                designId: input.designId ?? null,
-                side: input.side ?? "left",
-                baseAssetId: baseAssetId ?? null,
-                corrections: loadedCorrections ?? input.corrections,
-                elements: loadedElements,
+            let baseGlbUrl = input.baseGlbUrl;
+            let baseSource: 'server' | 'client' | 'synthetic' = input.baseAssetId ? 'server' : (input.baseGlbUrl ? 'client' : 'synthetic');
+            let baseResolvedServerSide = baseSource === 'server';
+
+            if (input.baseAssetId) {
+                const supabase = getSupabaseAdmin();
+                if (supabase) {
+                    const prefab = await ctx.prisma.customPrefab.findFirst({
+                        where: { id: input.baseAssetId, userId: ctx.user.id },
+                    });
+                    if (prefab && prefab.glbPath) {
+                        try {
+                            baseGlbUrl = await signedDownloadUrl(supabase, prefab.glbPath);
+                            baseResolvedServerSide = true;
+                            baseSource = 'server';
+                        } catch {
+                            if (!input.baseGlbUrl) {
+                                throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to generate signed URL for base GLB" });
+                            }
+                            baseSource = 'client';
+                        }
+                    } else {
+                        if (!input.baseGlbUrl) {
+                            throw new TRPCError({ code: "FORBIDDEN", message: "Base GLB asset not found or access denied" });
+                        }
+                        baseSource = 'client';
+                    }
+                } else {
+                    if (!input.baseGlbUrl) {
+                        throw new TRPCError({ code: "BAD_REQUEST", message: "Server cannot resolve base GLB" });
+                    }
+                    baseSource = 'client';
+                }
+            }
+
+            const pythonPayload = {
+                job_id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                design_id: input.designId ?? "unknown",
+                preset_id: input.presetId,
+                base_glb_url: baseGlbUrl ?? "file://synthetic",
+                corrections: input.corrections,
                 trimlines: input.trimlines,
-                method: loadedMethod ?? "printing_solid",
-                thicknessMm: input.thicknessMm ?? loadedThickness ?? 3,
-                grindingStyle: input.grindingStyle,
-                presetId: input.presetId,
-                overrides: input.overrides || {},
-                // heelLift etc are typically inside corrections or overrides
+                heel_lift_mm: input.heelLiftMm,
+                heel_cup_width_mm: input.heelCupWidthMm,
+                grinding_style: input.grindingStyle,
+                thickness_mm: input.thicknessMm,
+                belt_angle_deg: input.beltAngleDeg,
+                side: input.side ?? null,
             };
 
-            const serviceUrl = process.env.MANUFACTURING_SERVICE_URL || "http://localhost:8000";
-            const headers: Record<string, string> = {
-                "content-type": "application/json",
-            };
-            const internalKey = process.env.MANUFACTURING_INTERNAL_API_KEY;
-            if (internalKey) {
-                headers["x-internal-api-key"] = internalKey;
-            }
-
-            let pyRes: any;
+            let pythonResult: any;
             try {
-                pyRes = await fetch(`${serviceUrl.replace(/\/$/, "")}/api/v1/manufacturing/generate-solid`, {
+                const resp = await fetch(`${pythonUrl}/manufacture`, {
                     method: "POST",
-                    headers,
-                    body: JSON.stringify(payload),
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(pythonPayload),
                 });
-            } catch (e: any) {
+                if (!resp.ok) {
+                    const text = await resp.text().catch(() => "");
+                    throw new Error(`Python service error (${resp.status}): ${text || resp.statusText}`);
+                }
+                pythonResult = await resp.json();
+            } catch (err: any) {
                 throw new TRPCError({
                     code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to reach manufacturing service: ${e?.message || e}`,
+                    message: `Hybrid manufacturing failed: ${err?.message ?? err}`,
                 });
             }
 
-            if (!pyRes.ok) {
-                const text = await pyRes.text().catch(() => "");
-                throw new TRPCError({
-                    code: "BAD_REQUEST",
-                    message: `Manufacturing service error (${pyRes.status}): ${text || "unknown"}`,
-                });
-            }
-
-            const data = (await pyRes.json()) as { ok?: boolean; gcode?: string; stats?: any; reason?: string; productionId?: string };
-
-            if (!data?.ok) {
+            if (!pythonResult?.ok || !pythonResult?.gcode) {
                 throw new TRPCError({
                     code: "INTERNAL_SERVER_ERROR",
-                    message: data?.reason || "Manufacturing pipeline failed",
+                    message: pythonResult?.error || "Python service did not return valid G-code",
                 });
             }
 
-            // === Phase 3: Success-only token deduction + records (inside tx) ===
-            // Only deduct and persist if Python succeeded. Follows export.authorize pattern exactly
-            // (guarded updateMany for deduct, then create records, then audit).
-            // Python call (expensive pipeline) has already succeeded at this point.
-            const finalDesignId = input.designId ?? null;
-            const finalBaseAssetId = baseAssetId ?? input.baseAssetId ?? null;
+            let gcodeStorageKey: string | null = null;
+            let gcodeDownloadUrl: string | undefined;
+
+            const supabase = getSupabaseAdmin();
+            if (supabase && pythonResult.gcode) {
+                try {
+                    const gcodeBytes = Buffer.from(pythonResult.gcode, 'utf-8');
+                    const safeName = (input.fileName || `hybrid-${input.presetId || 'print'}.gcode`).replace(/[^a-zA-Z0-9_.-]/g, '_');
+                    const key = `gcode/${input.designId || 'adhoc'}/${Date.now()}-${safeName}`;
+                    const uploadRes = await uploadAsset(supabase, key, gcodeBytes, 'text/plain');
+                    gcodeStorageKey = uploadRes.key;
+                    gcodeDownloadUrl = await signedDownloadUrl(supabase, gcodeStorageKey, 3600);
+                } catch (uploadErr: any) {
+                    throw new TRPCError({
+                        code: "INTERNAL_SERVER_ERROR",
+                        message: `Failed to store generated G-code: ${uploadErr?.message || uploadErr}`,
+                    });
+                }
+            }
 
             const result = await ctx.prisma.$transaction(async (tx) => {
-                // Guarded decrement (re-check in tx for safety)
                 const dec = await tx.user.updateMany({
                     where: { id: ctx.user.id, tokenBalance: { gte: cost } },
                     data: { tokenBalance: { decrement: cost } },
                 });
                 if (dec.count === 0) {
-                    throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient tokens for manufacturing (race)" });
+                    throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
                 }
-
                 const updatedUser = await tx.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
 
-                // Create Production record for the manufacturing run (slicing/CAM + artifact)
                 const production = await tx.production.create({
                     data: {
-                        designId: finalDesignId,
-                        method: (loadedMethod as any) || "printing_solid",
-                        presetId: input.presetId || "unknown",
-                        beltAngleDeg: (input.overrides as any)?.beltAngleDeg ?? null,
-                        layerHeightMm: (input.overrides as any)?.layerHeightMm ?? null,
-                        material: (input.overrides as any)?.material ?? null,
-                        gcodeStorageKey: null, // gcode returned directly in response for client download; no server storage for now
+                        designId: input.designId ?? null,
+                        method: "hybrid_belt",
+                        presetId: input.presetId,
+                        beltAngleDeg: input.beltAngleDeg,
+                        layerHeightMm: 0.3,
+                        material: "TPU",
+                        gcodeStorageKey,
                     },
                 });
 
-                // Also create an Export record (for token/audit traceability, similar to gcode export)
                 const exp = await tx.export.create({
                     data: {
-                        designId: finalDesignId,
+                        designId: input.designId ?? null,
                         userId: ctx.user.id,
                         format: "gcode",
-                        side: (input.side as any) || null,
+                        side: input.side ?? null,
                         tokenCost: cost,
-                        storageKey: null,
-                        fileName: `manufacturing-${input.side || "side"}-${Date.now()}.gcode`,
+                        fileName: input.fileName ?? `hybrid-${input.presetId}.gcode`,
                     },
                 });
 
@@ -222,44 +202,58 @@ export const manufacturingRouter = router({
                         type: "deduct",
                         amount: -cost,
                         balance: updatedUser.tokenBalance,
-                        reason: "manufacturing:generate-solid",
+                        reason: "manufacturing:hybrid_gcode",
                         exportId: exp.id,
                     },
                 });
 
-                // Rich audit on success
                 await tx.auditLog.create({
                     data: {
                         userId: ctx.user.id,
-                        action: "export_generated", // could be manufacturing_solid_generated when enum extended
+                        action: "manufacturing_generated",
                         targetId: production.id,
                         metadata: {
-                            kind: "manufacturing_solid_generation_success",
-                            designId: finalDesignId,
-                            baseAssetId: finalBaseAssetId,
+                            presetId: input.presetId,
+                            beltAngleDeg: input.beltAngleDeg,
+                            grindingStyle: input.grindingStyle.type,
                             side: input.side ?? null,
-                            presetId: input.presetId ?? null,
-                            method: loadedMethod,
-                            stockResolved: !!finalBaseAssetId,
-                            grindingStyle: input.grindingStyle,
-                            beltAngle: (input.overrides as any)?.beltAngleDeg,
-                            // add more as needed (heel lift etc from corrections if desired)
+                            baseResolvedServerSide,
+                            baseSource,
                         },
                         ipAddress: ctx.ip,
                     },
                 });
 
-                return { productionId: production.id, exportId: exp.id, balance: updatedUser.tokenBalance };
+                return {
+                    productionId: production.id,
+                    exportId: exp.id,
+                    balance: updatedUser.tokenBalance,
+                    jobId: pythonResult.job_id,
+                    gcodeDownloadUrl,
+                };
             });
 
-            // Return gcode directly (client downloads it) + metadata for UI / future production tracking.
-            // Shape chosen for backward compat with generateHybridGcode (expects res.gcode + res.stats).
-            return {
-                ok: true as const,
-                designId: finalDesignId,
-                gcode: data.gcode || "",
-                stats: data.stats || null,
-                productionId: result.productionId,
-            };
+            return { ok: true as const, ...result };
+        }),
+
+    getGcodeDownloadUrl: protectedProcedure
+        .input(z.object({ productionId: z.string().uuid() }))
+        .query(async ({ ctx, input }) => {
+            const production = await ctx.prisma.production.findFirst({
+                where: { id: input.productionId },
+                include: { design: true },
+            });
+            if (!production || !production.design || production.design.ownerId !== ctx.user.id) {
+                throw new TRPCError({ code: "FORBIDDEN", message: "Production not found or access denied" });
+            }
+            if (!production.gcodeStorageKey) {
+                throw new TRPCError({ code: "NOT_FOUND", message: "No G-code file stored for this production" });
+            }
+            const supabase = getSupabaseAdmin();
+            if (!supabase) {
+                throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
+            }
+            const downloadUrl = await signedDownloadUrl(supabase, production.gcodeStorageKey, 3600);
+            return { downloadUrl, productionId: production.id };
         }),
 });
