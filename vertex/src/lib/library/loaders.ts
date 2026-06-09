@@ -239,6 +239,74 @@ export function mirrorGeometry(geometry: THREE.BufferGeometry): THREE.BufferGeom
     return g;
 }
 
+/**
+ * Reorient + recenter a base GLB into the canonical footprint frame used by the
+ * parametric pipeline, the viewer, element markers and trimline overlay:
+ *   X = length (heel→toe, 0..len),  Y = width (medial↔lateral, centered on 0),
+ *   Z = height (0..thick).
+ *
+ * Base GLBs are authored in arbitrary orientations — the default stock GLB runs
+ * its length along Y and width along X (X≈92, Y≈272, Z≈25). The viewer applies
+ * the per-side `sideOffsetX` separation along the Y axis assuming Y is width, so
+ * without this the two feet are pushed apart along their length and overlap. Axes
+ * are detected from extents (length = largest, width = middle, thickness =
+ * smallest), making this robust to any source orientation. When the axis remap
+ * is a reflection (odd permutation) the triangle winding is reversed so normals
+ * stay outward.
+ */
+export function reorientToFootprintFrame(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+    const indexed = geometry.index ? geometry : geometry.clone().toNonIndexed();
+    const working = geometry.index ? geometry : indexed;
+    working.computeBoundingBox();
+    const box = working.boundingBox;
+    const src = working.getAttribute("position");
+    if (!box || !src) return geometry;
+
+    const min = [box.min.x, box.min.y, box.min.z];
+    const max = [box.max.x, box.max.y, box.max.z];
+    const size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+
+    // Sort axes by extent: [thickness (smallest), width (middle), length (largest)].
+    const byExtent = [0, 1, 2].sort((a, b) => size[a]! - size[b]!);
+    const thickAxis = byExtent[0]!;
+    const widthAxis = byExtent[1]!;
+    const lengthAxis = byExtent[2]!;
+    const widthCenter = min[widthAxis]! + size[widthAxis]! / 2;
+
+    const count = src.count;
+    const out = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+        out[i * 3] = src.getComponent(i, lengthAxis) - min[lengthAxis]!; // X = length, 0..len
+        out[i * 3 + 1] = src.getComponent(i, widthAxis) - widthCenter; // Y = width, centered
+        out[i * 3 + 2] = src.getComponent(i, thickAxis) - min[thickAxis]!; // Z = height, 0..thick
+    }
+
+    const result = new THREE.BufferGeometry();
+    result.setAttribute("position", new THREE.BufferAttribute(out, 3));
+    if (working.index) result.setIndex(working.index.clone());
+    if (geometry.userData) result.userData = { ...geometry.userData };
+
+    // Axis remap parity: reverse winding when it is a reflection (det < 0).
+    const parity =
+        Math.sign(widthAxis - lengthAxis) *
+        Math.sign(thickAxis - lengthAxis) *
+        Math.sign(thickAxis - widthAxis);
+    if (parity < 0 && result.index) {
+        const idx = result.index.array as Uint32Array | Uint16Array;
+        for (let i = 0; i < idx.length; i += 3) {
+            const tmp = idx[i + 1]!;
+            idx[i + 1] = idx[i + 2]!;
+            idx[i + 2] = tmp;
+        }
+        result.index.needsUpdate = true;
+    }
+
+    result.computeVertexNormals();
+    result.computeBoundingBox();
+    result.computeBoundingSphere();
+    return result;
+}
+
 /** Count the meshes in a loaded GLB group (for upload validation / UI hints). */
 export function countMeshes(group: THREE.Group): { count: number; names: string[] } {
     const names: string[] = [];

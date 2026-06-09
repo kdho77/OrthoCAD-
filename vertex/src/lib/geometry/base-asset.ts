@@ -5,7 +5,13 @@ import type { BufferGeometry } from "three";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { getDesignTrimline } from "@/lib/geometry/trimline";
-import { extractMergedGeometry, loadGlbFromBuffer, loadGlbFromUrl, mirrorGeometry } from "@/lib/library/loaders";
+import {
+    extractMergedGeometry,
+    loadGlbFromBuffer,
+    loadGlbFromUrl,
+    mirrorGeometry,
+    reorientToFootprintFrame,
+} from "@/lib/library/loaders";
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import {
@@ -554,6 +560,10 @@ export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry
                 stockGlbLog(`GLTFLoader error: ${msg} (url="${fetchUrl}")`);
                 throw new StockGlbLoadError(fetchUrl, new Error(msg));
             }
+            // Normalize into the canonical footprint frame (X=length, Y=width
+            // centered, Z=height) so the viewer's per-side sideOffsetX separates
+            // the feet across width (side by side) instead of along their length.
+            geo = reorientToFootprintFrame(geo);
             stockGlbLog(`GLTFLoader success — meshCount=${merged?.meshCount ?? 0} url="${fetchUrl}"`);
             stockDebug("loadBaseGeometry() GLB loaded", {
                 assetId: base.assetId,
