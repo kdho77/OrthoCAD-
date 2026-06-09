@@ -9,7 +9,7 @@ import {
     sanitizeDesignStockBases,
     StockBaseResolutionError,
 } from "@/lib/geometry/base-asset";
-import { stockDebug } from "@/lib/geometry/stock-debug";
+import { stockDebug, stockGlbLog } from "@/lib/geometry/stock-debug";
 import { isApiConfigured } from "@/lib/trpc";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
@@ -100,11 +100,14 @@ export function createDesignWithStockPlaceholder(design?: DesignState): DesignSt
     if (designHasBase(d)) return d;
 
     const { left, right } = createDefaultStockPairedBases();
+    stockGlbLog(
+        `createDesignWithStockPlaceholder() injected placeholder — left="${left.name}" right="${right.name}" url="${left.url ?? "(pending resolution)"}" glb_path="${left.glbPath ?? "(none)"}"`,
+    );
     stockDebug("createDesignWithStockPlaceholder()", {
         leftAssetId: left.assetId,
         rightAssetId: right.assetId,
         leftGlbPath: left.glbPath,
-        hasUrl: Boolean(left.url),
+        leftUrl: left.url ?? null,
         apiConfigured: isApiConfigured(),
     });
     return {
@@ -138,7 +141,12 @@ function upgradeStockBaseAsync(apply: () => Promise<void>, reason: string): void
     useDesignStore.setState({ stockBaseLoading: true, stockBaseError: null });
     stockBaseUpgradeInFlight = apply()
         .then(() => {
-            stockDebug("upgradeStockBaseAsync() success", { reason });
+            const d = useDesignStore.getState().design;
+            const injected = d.paired?.rightBase ?? d.base;
+            stockGlbLog(
+                `upgradeStockBaseAsync() success (${reason}) — injected url="${injected?.url ?? "(none)"}" glb_path="${injected?.glbPath ?? "(none)"}" name="${injected?.name ?? "(none)"}"`,
+            );
+            stockDebug("upgradeStockBaseAsync() success", { reason, url: injected?.url, glbPath: injected?.glbPath });
         })
         .catch((e) => {
             const msg =
@@ -561,12 +569,15 @@ export const useDesignStore = create<DesignStore>()(
                     set({ stockBaseError: null, stockBaseLoading: true });
                     const resolved = await resolveDefaultStockBase();
                     const { left, right } = createDefaultStockPairedBases(resolved);
+                    stockGlbLog(
+                        `applyDefaultStockBase() injecting stock base — url="${resolved.url ?? "(none)"}" glb_path="${resolved.glbPath ?? "(none)"}" left="${left.name}" right="${right.name}"`,
+                    );
                     stockDebug("applyDefaultStockBase() applying paired bases", {
                         resolvedId: resolved.assetId,
                         resolvedGlbPath: resolved.glbPath,
+                        resolvedUrl: resolved.url ?? null,
                         leftName: left.name,
                         rightName: right.name,
-                        hasUrl: Boolean(resolved.url),
                     });
                     const snap = get().design;
                     set((s) => ({

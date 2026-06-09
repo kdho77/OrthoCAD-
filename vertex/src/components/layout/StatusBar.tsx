@@ -32,11 +32,11 @@ export function StatusBar() {
             <div className="flex min-w-0 flex-1 items-center gap-4">
                 {stockBaseError ? (
                     <span
-                        className="flex min-w-0 max-w-[min(70vw,640px)] items-center gap-1.5 rounded border border-red-500/40 bg-red-950/50 px-2 py-0.5 text-red-300"
+                        className="flex min-w-0 max-w-[min(85vw,960px)] items-start gap-1.5 rounded border border-red-500/50 bg-red-950/70 px-2 py-1 text-red-200"
                         role="alert"
                     >
-                        <ShieldAlert className="h-3 w-3 shrink-0" />
-                        <span className="truncate font-medium">{stockBaseError}</span>
+                        <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span className="break-all font-medium leading-snug">{stockBaseError}</span>
                         <button
                             type="button"
                             className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide hover:bg-red-900/60"

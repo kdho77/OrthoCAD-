@@ -9,7 +9,7 @@ import { extractMergedGeometry, loadGlbFromBuffer, loadGlbFromUrl, mirrorGeometr
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { isApiConfigured, trpc } from "@/lib/trpc";
-import { stockDebug } from "@/lib/geometry/stock-debug";
+import { classifyStockUrl, formatStockUrlLog, stockDebug, stockGlbLog } from "@/lib/geometry/stock-debug";
 import type { DesignBase, DesignState, Side } from "@/types";
 
 // Base resolution + loading for the Base + Modifier model.
@@ -180,6 +180,18 @@ export class StockBaseResolutionError extends Error {
     }
 }
 
+/** Thrown when GLTFLoader cannot fetch/parse a stock base GLB. */
+export class StockGlbLoadError extends Error {
+    readonly failedUrl: string;
+
+    constructor(failedUrl: string, cause: unknown) {
+        const detail = cause instanceof Error ? cause.message : String(cause);
+        super(`Failed to load stock base GLB from ${failedUrl}: ${detail}`);
+        this.name = "StockGlbLoadError";
+        this.failedUrl = failedUrl;
+    }
+}
+
 /**
  * PRIMARY (and server-authoritative) async resolver for the default stock base.
  *
@@ -205,15 +217,23 @@ export async function resolveDefaultStockBase(): Promise<DesignBase> {
     try {
         stockDebug("resolveDefaultStockBase() calling trpc.stock.getDefaultStockBase");
         const item = await trpc.stock.getDefaultStockBase.query();
-        stockDebug("resolveDefaultStockBase() server response", {
-            found: Boolean(item),
-            id: item?.id,
-            name: item?.name,
-            glbPath: item?.glbPath,
-            url: item?.url ? `${item.url.slice(0, 80)}…` : null,
-            primarySide: item?.primarySide,
-        });
         if (item) {
+            stockGlbLog(`DB glb_path = "${item.glbPath}"`);
+            if (item.url) {
+                const urlKind = classifyStockUrl(item.url);
+                stockGlbLog(formatStockUrlLog(urlKind, item.url));
+            } else {
+                stockGlbLog('Final URL = "(missing — server returned no downloadable URL)"');
+            }
+            stockDebug("resolveDefaultStockBase() server response", {
+                found: true,
+                id: item.id,
+                name: item.name,
+                glbPath: item.glbPath,
+                url: item.url ?? null,
+                urlKind: item.url ? classifyStockUrl(item.url) : null,
+                primarySide: item.primarySide,
+            });
             const base: DesignBase = {
                 assetId: item.id,
                 name: item.name,
@@ -223,25 +243,10 @@ export async function resolveDefaultStockBase(): Promise<DesignBase> {
                 ...(item.primarySide ? { primarySide: item.primarySide } : {}),
             };
             if (!base.url) {
-                stockDebug("resolveDefaultStockBase() missing URL on server row", {
-                    id: item.id,
-                    glbPath: item.glbPath,
-                });
                 throw new StockBaseResolutionError(
-                    `Default stock base "${item.name}" has no downloadable URL. Check Supabase storage configuration.`,
+                    `Default stock base "${item.name}" (glb_path="${item.glbPath}") has no downloadable URL. Check Supabase storage configuration.`,
                 );
             }
-            stockDebug("resolveDefaultStockBase() resolved", {
-                assetId: base.assetId,
-                glbPath: base.glbPath,
-                urlHost: (() => {
-                    try {
-                        return new URL(base.url!).host;
-                    } catch {
-                        return "invalid-url";
-                    }
-                })(),
-            });
             return base;
         }
         stockDebug("resolveDefaultStockBase() no default row in stock_bases");
@@ -369,14 +374,22 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
  * - Offline dev: local public/ path for the builtin placeholder only.
  */
 async function resolveStockFetchUrl(base: DesignBase): Promise<string | null> {
+    const dbGlbPath = base.glbPath ?? "(none on design base)";
+    stockGlbLog(`resolveStockFetchUrl() DB glb_path = "${dbGlbPath}" (assetId=${base.assetId})`);
+
     if (!isApiConfigured()) {
-        if (hasAuthoritativeStockUrl(base)) return base.url!;
+        if (hasAuthoritativeStockUrl(base)) {
+            const urlKind = classifyStockUrl(base.url!);
+            stockGlbLog(formatStockUrlLog(urlKind, base.url!));
+            return base.url!;
+        }
         if (isOfflineStockPlaceholder(base)) {
             const gp = base.glbPath ?? BUILTIN_DEFAULT_STOCK.glbPath;
             const local = gp.startsWith("/") ? gp : `/${gp}`;
-            stockDebug("resolveStockFetchUrl() local placeholder", { assetId: base.assetId, local });
+            stockGlbLog(formatStockUrlLog("local", local));
             return local;
         }
+        stockGlbLog('Final URL = "(none — offline, no placeholder)"');
         return null;
     }
 
@@ -385,39 +398,45 @@ async function resolveStockFetchUrl(base: DesignBase): Promise<string | null> {
         if (UUID_RE.test(base.assetId)) {
             stockDebug("resolveStockFetchUrl() fetching by UUID", { assetId: base.assetId });
             const item = await trpc.stock.getStockBase.query({ id: base.assetId });
+            stockGlbLog(`DB glb_path = "${item.glbPath}"`);
             if (item.url) {
-                stockDebug("resolveStockFetchUrl() got URL from getStockBase", {
-                    assetId: base.assetId,
-                    glbPath: item.glbPath,
-                });
+                const urlKind = classifyStockUrl(item.url);
+                stockGlbLog(formatStockUrlLog(urlKind, item.url));
                 return item.url;
             }
+            stockGlbLog('Final URL = "(missing — getStockBase returned no url)"');
         } else if (base.assetId === DEFAULT_STOCK_BASE_ID || isLocalPlaceholderGlbPath(base.glbPath)) {
             stockDebug("resolveStockFetchUrl() fetching default stock base");
             const item = await trpc.stock.getDefaultStockBase.query();
-            if (item?.url) {
-                stockDebug("resolveStockFetchUrl() got URL from getDefaultStockBase", {
-                    id: item.id,
-                    glbPath: item.glbPath,
-                });
-                return item.url;
+            if (item) {
+                stockGlbLog(`DB glb_path = "${item.glbPath}"`);
+                if (item.url) {
+                    const urlKind = classifyStockUrl(item.url);
+                    stockGlbLog(formatStockUrlLog(urlKind, item.url));
+                    return item.url;
+                }
+                stockGlbLog('Final URL = "(missing — getDefaultStockBase returned no url)"');
+            } else {
+                stockGlbLog('Final URL = "(missing — no default stock row)"');
             }
         }
     } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        stockGlbLog(`resolveStockFetchUrl() server lookup error: ${detail}`);
         stockDebug("resolveStockFetchUrl() server lookup failed", {
             assetId: base.assetId,
-            error: e instanceof Error ? e.message : String(e),
+            error: detail,
         });
-        console.warn("[base-asset] Failed to resolve stock base URL from server:", e);
+        console.error("[STOCK_GLB_DEBUG] resolveStockFetchUrl() server lookup failed:", e);
     }
 
     if (hasAuthoritativeStockUrl(base)) {
-        stockDebug("resolveStockFetchUrl() using cached design URL (server lookup missed)", {
-            assetId: base.assetId,
-        });
+        const urlKind = classifyStockUrl(base.url!);
+        stockGlbLog(`Using cached design ${formatStockUrlLog(urlKind, base.url!)}`);
         return base.url!;
     }
 
+    stockGlbLog('Final URL = "(none — could not resolve)"');
     return null;
 }
 
@@ -454,38 +473,42 @@ export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry
 
         const fetchUrl = await resolveStockFetchUrl(base);
         if (!fetchUrl) {
-            stockDebug("loadBaseGeometry() no fetch URL", { assetId: base.assetId, apiConfigured: isApiConfigured() });
-            if (isApiConfigured()) {
-                console.warn(
-                    "[base-asset] Stock base has no server URL — waiting for applyDefaultStockBase or check server config",
-                    base.assetId,
-                );
-            }
-            return null;
+            const glbPath = base.glbPath ?? "(none)";
+            const msg = `No fetchable URL for stock base (assetId=${base.assetId}, glb_path="${glbPath}")`;
+            stockGlbLog(msg);
+            throw new StockGlbLoadError("(no URL resolved)", new Error(msg));
         }
 
+        stockGlbLog(`GLTFLoader loading URL = "${fetchUrl}"`);
         stockDebug("loadBaseGeometry() loading GLB", {
             assetId: base.assetId,
-            fetchUrl: fetchUrl.startsWith("http") ? `${fetchUrl.slice(0, 80)}…` : fetchUrl,
+            glbPath: base.glbPath,
+            fetchUrl,
+            urlKind: classifyStockUrl(fetchUrl),
         });
 
         try {
             const group = await loadGlbFromUrl(fetchUrl);
             const merged = extractMergedGeometry(group);
             geo = merged?.geometry ?? null;
+            if (!geo) {
+                const msg = "GLTF loaded but no mesh geometry was found in the file";
+                stockGlbLog(`GLTFLoader error: ${msg} (url="${fetchUrl}")`);
+                throw new StockGlbLoadError(fetchUrl, new Error(msg));
+            }
+            stockGlbLog(`GLTFLoader success — meshCount=${merged?.meshCount ?? 0} url="${fetchUrl}"`);
             stockDebug("loadBaseGeometry() GLB loaded", {
                 assetId: base.assetId,
                 meshCount: merged?.meshCount ?? 0,
-                hasGeometry: Boolean(geo),
+                hasGeometry: true,
+                fetchUrl,
             });
         } catch (e) {
-            stockDebug("loadBaseGeometry() GLB load failed", {
-                assetId: base.assetId,
-                fetchUrl: fetchUrl.startsWith("http") ? `${fetchUrl.slice(0, 80)}…` : fetchUrl,
-                error: e instanceof Error ? e.message : String(e),
-            });
-            console.warn("[base-asset] Failed to load stock base GLB from", fetchUrl, e);
-            geo = null;
+            if (e instanceof StockGlbLoadError) throw e;
+            const detail = e instanceof Error ? e.message : String(e);
+            stockGlbLog(`GLTFLoader error: ${detail} (url="${fetchUrl}")`);
+            console.error("[STOCK_GLB_DEBUG] GLTFLoader error:", detail, { url: fetchUrl, error: e });
+            throw new StockGlbLoadError(fetchUrl, e);
         }
     } else {
         const local = store.getLocalGlb(base.assetId);
