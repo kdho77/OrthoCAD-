@@ -25,6 +25,13 @@ export default defineConfig({
         fs: {
             allow: [path.resolve(__dirname, "..")],
         },
+        // Same-origin /trpc when VITE_API_URL is omitted (e.g. Supabase-only dev).
+        proxy: {
+            "/trpc": {
+                target: "http://localhost:5181",
+                changeOrigin: true,
+            },
+        },
     },
     assetsInclude: ["**/*.wasm"],
     worker: {

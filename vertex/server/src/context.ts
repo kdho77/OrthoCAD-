@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { FetchCreateContextFnOptions } from "@trpc/server/adapters/fetch";
 import type { CreateHTTPContextOptions } from "@trpc/server/adapters/standalone";
 import { isDevAuthAllowed, resolveDevBearerUser, resolveDevRole } from "./lib/dev-auth";
 
@@ -46,6 +47,15 @@ async function resolveUser(authHeader?: string): Promise<AuthedUser | null> {
 export async function createContext({ req }: CreateHTTPContextOptions) {
     const user = await resolveUser(req.headers.authorization);
     return { prisma, user, ip: req.socket.remoteAddress ?? null };
+}
+
+/** Fetch adapter context (Vercel serverless / edge). */
+export async function createFetchContext({ req }: FetchCreateContextFnOptions) {
+    const authHeader = req.headers.get("authorization");
+    const forwarded = req.headers.get("x-forwarded-for");
+    const ip = forwarded?.split(",")[0]?.trim() ?? req.headers.get("x-real-ip") ?? null;
+    const user = await resolveUser(authHeader ?? undefined);
+    return { prisma, user, ip };
 }
 
 export type Context = Awaited<ReturnType<typeof createContext>>;

@@ -4,7 +4,11 @@
     "buildCommand": "npm run build --prefix vertex",
     "outputDirectory": "vertex/dist",
     "framework": "vite",
-    "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+    "rewrites": [
+        { "source": "/trpc", "destination": "/api/trpc" },
+        { "source": "/trpc/:path*", "destination": "/api/trpc/:path*" },
+        { "source": "/(.*)", "destination": "/index.html" }
+    ],
     "headers": [
         {
             "source": "/chili-wasm/(.*)",
