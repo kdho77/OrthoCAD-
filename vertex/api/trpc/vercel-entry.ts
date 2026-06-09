@@ -7,7 +7,7 @@ import { handleTrpcRequest } from "./handler";
 // Prisma requires the Node.js runtime (not Edge). Disable body parsing so tRPC
 // receives the raw JSON payload from httpBatchLink.
 export const config = {
-    runtime: "nodejs",
+    runtime: "nodejs20.x",
     api: {
         bodyParser: false,
     },

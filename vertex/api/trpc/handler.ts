@@ -31,11 +31,18 @@ function withCors(response: Response): Response {
 }
 
 export async function handleTrpcRequest(request: Request): Promise<Response> {
+    const pathname = new URL(request.url).pathname;
+    console.log("[STOCK_DEBUG] tRPC handler", {
+        method: request.method,
+        pathname,
+        endpoint: resolveTrpcEndpoint(pathname),
+    });
+
     if (request.method === "OPTIONS") {
         return withCors(new Response(null, { status: 204 }));
     }
 
-    const endpoint = resolveTrpcEndpoint(new URL(request.url).pathname);
+    const endpoint = resolveTrpcEndpoint(pathname);
 
     const response = await fetchRequestHandler({
         endpoint,

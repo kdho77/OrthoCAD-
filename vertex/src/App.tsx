@@ -18,6 +18,7 @@ import { isSupabaseConfigured } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
 import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
 import { designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
+import { stockDebug } from "@/lib/geometry/stock-debug";
 import { isApiConfigured } from "@/lib/trpc";
 
 export default function App() {
@@ -35,15 +36,34 @@ export default function App() {
     // Resolve the default stock base from the server once auth is ready.
     // Single authoritative bootstrap path for Supabase deployments — avoids the rehydrate/auth race.
     useEffect(() => {
-        if (authLoading) return;
-        if (!isApiConfigured()) return;
-        if (isSupabaseConfigured() && !user) return;
+        stockDebug("App stock bootstrap effect", {
+            authLoading,
+            hasUser: Boolean(user),
+            supabaseConfigured: isSupabaseConfigured(),
+            apiConfigured: isApiConfigured(),
+            needsResolution: designNeedsDefaultStockResolution(useDesignStore.getState().design),
+        });
+
+        if (authLoading) {
+            stockDebug("App stock bootstrap waiting for auth");
+            return;
+        }
+        if (!isApiConfigured()) {
+            stockDebug("App stock bootstrap skipped — API not configured");
+            return;
+        }
+        if (isSupabaseConfigured() && !user) {
+            stockDebug("App stock bootstrap waiting for signed-in user");
+            return;
+        }
 
         ensureDefaultStockBaseResolved();
 
         // If the first attempt raced auth/session hydration, retry once after a short delay.
         const retry = window.setTimeout(() => {
-            if (designNeedsDefaultStockResolution(useDesignStore.getState().design)) {
+            const stillNeeds = designNeedsDefaultStockResolution(useDesignStore.getState().design);
+            stockDebug("App stock bootstrap retry check", { stillNeeds });
+            if (stillNeeds) {
                 ensureDefaultStockBaseResolved();
             }
         }, 750);
