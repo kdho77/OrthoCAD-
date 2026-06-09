@@ -165,6 +165,11 @@ export interface DesignBase {
     primarySide?: string | null;
     /** True only for the local offline dev placeholder — never set on server-resolved stock bases. */
     offlinePlaceholder?: boolean;
+    /**
+     * Server resolution was attempted and failed; use local/offline loading and do not
+     * auto-retry tRPC resolution (prevents infinite retry loops).
+     */
+    resolutionFallback?: boolean;
     /** If true, the geometry loader will mirror the loaded mesh across the sagittal plane (used for auto Left from Right-only stock). */
     mirrored?: boolean;
     /** Asset id of the source this mirror was derived from (for labeling and "reset to mirrored" future use). */

@@ -4,7 +4,18 @@ import type { AppRouter } from "../../server/src/routers";
 import { devAuthHeaderValue } from "./dev-auth";
 import { getSupabase, isSupabaseConfigured } from "./supabase";
 
-const apiUrl = import.meta.env.VITE_API_URL as string | undefined;
+const rawApiUrl = import.meta.env.VITE_API_URL as string | undefined;
+
+/** Normalize VITE_API_URL so httpBatchLink always targets the tRPC mount (…/trpc). */
+function normalizeApiUrl(url: string | undefined): string | undefined {
+    if (!url) return undefined;
+    const trimmed = url.trim().replace(/\/+$/, "");
+    if (!trimmed) return undefined;
+    if (trimmed.endsWith("/trpc")) return trimmed;
+    return `${trimmed}/trpc`;
+}
+
+const apiUrl = normalizeApiUrl(rawApiUrl);
 
 /**
  * True when the client should treat the tRPC server as authoritative (production /

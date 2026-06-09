@@ -2,6 +2,16 @@
 // See LICENSE file in the project root for full license information.
 
 const PREFIX = "[STOCK_GLB_DEBUG]";
+const FIX_PREFIX = "[STOCK_FIX]";
+
+/** Console logging for stock base resolution fixes (grep: STOCK_FIX). */
+export function stockFixLog(message: string, data?: Record<string, unknown>): void {
+    if (data !== undefined) {
+        console.log(`${FIX_PREFIX} ${message}`, data);
+    } else {
+        console.log(`${FIX_PREFIX} ${message}`);
+    }
+}
 
 /** Aggressive console logging for stock GLB resolution and loading (grep: STOCK_GLB_DEBUG). */
 export function stockDebug(message: string, data?: Record<string, unknown>): void {

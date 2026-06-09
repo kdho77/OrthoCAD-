@@ -3,7 +3,7 @@ import { isOfflineStockPlaceholder } from "@/lib/geometry/base-asset";
 import { isApiConfigured } from "@/lib/trpc";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
-import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
+import { retryStockBaseResolution, useDesignStore } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import { cn } from "@/lib/utils";
 
@@ -42,7 +42,7 @@ export function StatusBar() {
                             className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide hover:bg-red-900/60"
                             onClick={() => {
                                 clearStockBaseError();
-                                ensureDefaultStockBaseResolved();
+                                retryStockBaseResolution();
                             }}
                         >
                             Retry
