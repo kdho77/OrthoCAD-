@@ -152,11 +152,17 @@ export interface DesignTrimlines {
  * thickness act as modifiers applied on top of this base mesh.
  */
 export interface DesignBase {
-    /** Library / custom asset id that provides the base mesh. */
+    /** Library / custom asset id that provides the base mesh. For stock this is the stock_bases id or stable key (e.g. "stock-default"). */
     assetId: string;
     name?: string;
     /** Where to resolve the GLB from. */
     source: "custom" | "stock";
+    /** For stock bases (or any that carry their own path), the glb_path from stock_bases table / storage key. Used by loadBaseGeometry. */
+    glbPath?: string;
+    /** If true, the geometry loader will mirror the loaded mesh across the sagittal plane (used for auto Left from Right-only stock). */
+    mirrored?: boolean;
+    /** Asset id of the source this mirror was derived from (for labeling and "reset to mirrored" future use). */
+    mirroredFrom?: string;
 }
 
 export interface DesignState {

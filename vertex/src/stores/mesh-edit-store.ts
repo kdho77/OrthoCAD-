@@ -10,6 +10,7 @@ import {
     type TrimlineCurve,
 } from "@/lib/geometry/trimline";
 import { buildEffectiveTrimlines } from "@/stores/issues-store";
+import { getBaseCacheKey } from "@/lib/geometry/base-asset";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useIssuesStore } from "@/stores/issues-store";
@@ -80,7 +81,8 @@ function committedOrDefault(side: Side): TrimlineCurve {
     // (published once the base GLB loads) instead of the parametric default.
     const base = getDesignBase(design, side);
     if (base) {
-        const outline = useBaseOutlineStore.getState().getOutline(base.assetId);
+        const key = getBaseCacheKey(base) ?? base.assetId;
+        const outline = useBaseOutlineStore.getState().getOutline(key);
         if (outline) return cloneTrimline(outline);
     }
     return sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);

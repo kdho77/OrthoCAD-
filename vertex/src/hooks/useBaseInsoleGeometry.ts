@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
-import { baseModifierField, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
+import { baseModifierField, getBaseCacheKey, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import { computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
@@ -30,15 +30,18 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
 
     const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
+    const isMirroredForLoad = !!base?.mirrored;
 
     const baseGeoRef = useRef<BufferGeometry | null>(null);
     const outRef = useRef<BufferGeometry | null>(null);
     const [geometry, setGeometry] = useState<BufferGeometry | null>(null);
     const [building, setBuilding] = useState(false);
 
-    // Load the raw base mesh whenever the referenced asset changes. `assetId`
-    // is the stable identity of the base; `base` is derived from it each render.
-    // biome-ignore lint/correctness/useExhaustiveDependencies: assetId is the load key
+    // Load the raw base mesh whenever the referenced asset (or its mirrored variant) changes.
+    // assetId is logical stock/custom id; we include mirror flag so Left (mirrored stock) and Right
+    // trigger independent loads (the load fn itself applies mirrorGeometry when base.mirrored).
+    const loadKey = assetId ? `${assetId}:${isMirroredForLoad ? "m" : "p"}` : null;
+    // biome-ignore lint/correctness/useExhaustiveDependencies: loadKey captures asset + mirror variant
     useEffect(() => {
         let cancelled = false;
         baseGeoRef.current?.dispose();
@@ -57,15 +60,19 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 }
                 baseGeoRef.current = geo;
                 // Publish an outline (legacy) and the richer BaseBounds (Phase 3A production editing).
-                if (geo && ref.assetId) {
-                    if (!useBaseOutlineStore.getState().getOutline(ref.assetId)) {
+                // Use cacheKey (includes :mirrored suffix for auto-mirrored stock Left) so mirrored variant
+                // gets its own shape-specific outline/bounds instead of colliding with the source assetId.
+                const cacheKey = getBaseCacheKey(ref);
+                const lookupKey = cacheKey ?? ref?.assetId ?? null;
+                if (geo && lookupKey) {
+                    if (!useBaseOutlineStore.getState().getOutline(lookupKey)) {
                         const outline = extractMeshOutline(geo);
-                        if (outline) useBaseOutlineStore.getState().setOutline(ref.assetId, outline);
+                        if (outline) useBaseOutlineStore.getState().setOutline(lookupKey, outline);
                     }
-                    if (!useBaseBoundsStore.getState().getBounds(ref.assetId)) {
+                    if (!useBaseBoundsStore.getState().getBounds(lookupKey)) {
                         // computeBaseBounds is cached internally and also stores outline + zones + safe margins.
-                        const b = computeBaseBounds(geo, ref.assetId);
-                        useBaseBoundsStore.getState().setBounds(ref.assetId, b);
+                        const b = computeBaseBounds(geo, lookupKey);
+                        useBaseBoundsStore.getState().setBounds(lookupKey, b);
                     }
                 }
             })
@@ -78,7 +85,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         return () => {
             cancelled = true;
         };
-    }, [assetId]);
+    }, [loadKey]);
 
     // Re-apply modifiers whenever corrections / elements / thickness change.
     // biome-ignore lint/correctness/useExhaustiveDependencies: preview patches + live draft trimline are intentional triggers
