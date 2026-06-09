@@ -106,10 +106,14 @@ export function isOfflineStockPlaceholder(base: DesignBase | null | undefined): 
 export function stockBaseNeedsServerResolution(base: DesignBase): boolean {
     if (!isStockDesignBase(base)) return false;
     if (base.resolutionFallback) return false;
+    // A stock base that already carries a real storage glbPath AND an authoritative
+    // (signed/public https) URL is fully resolved — even when glbPath is literally
+    // "Templates/Default.glb". The Supabase Storage key can legitimately match the
+    // bundled placeholder name, so the path string alone must NOT mark it as local.
+    if (!base.offlinePlaceholder && base.glbPath && hasAuthoritativeStockUrl(base)) return false;
     if (base.offlinePlaceholder && base.glbPath && isLocalPlaceholderGlbPath(base.glbPath)) return false;
     if (base.offlinePlaceholder) return true;
     if (base.assetId === DEFAULT_STOCK_BASE_ID || base.assetId.startsWith("stock-")) return true;
-    if (isLocalPlaceholderGlbPath(base.glbPath)) return true;
     if (!base.glbPath) return true;
     if (!hasAuthoritativeStockUrl(base)) return true;
     return false;
@@ -354,7 +358,20 @@ async function resolveStockBaseViaSupabase(assetId: string): Promise<DesignBase>
 
     stockResolveLog("resolveStockBaseViaSupabase() start", { assetId, useDefault });
 
-    const row = await queryStockBaseRow(assetId, useDefault);
+    let row: StockBaseRow;
+    try {
+        row = await queryStockBaseRow(assetId, useDefault);
+    } catch (e) {
+        // A persisted/stale assetId (e.g. a UUID whose stock_bases row was removed)
+        // must not strand the design. Fall back to the active default stock base.
+        if (useDefault) throw e;
+        stockResolveLog("resolveStockBaseViaSupabase() by-id lookup failed — falling back to default", {
+            assetId,
+            error: e instanceof Error ? e.message : String(e),
+        });
+        row = await queryStockBaseRow(DEFAULT_STOCK_BASE_ID, true);
+    }
+
     const glbPath = row.glbPath?.trim();
     if (!glbPath) {
         stockResolveLog("resolveStockBaseViaSupabase() missing glbPath on row", { assetId: row.id });

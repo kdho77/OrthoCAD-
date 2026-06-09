@@ -69,10 +69,13 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
 
         const isStock = isStockDesignBase(ref);
         const hasUrl = Boolean(ref.url && /^https?:\/\//i.test(ref.url));
+        // An authoritative (signed/public https) URL means the glbPath is a real
+        // storage key — even when it is literally "Templates/Default.glb". Without a
+        // URL we keep the bundled-placeholder guard so server mode never fetches public/.
         const hasRealGlbPath =
             typeof ref.glbPath === "string" &&
             ref.glbPath.length > 0 &&
-            (!isApiConfigured() || !isLocalPlaceholderGlbPath(ref.glbPath));
+            (hasUrl || !isApiConfigured() || !isLocalPlaceholderGlbPath(ref.glbPath));
         const awaitingResolution =
             isStock && (stockBaseNeedsServerResolution(ref) || !hasUrl || !hasRealGlbPath);
 
