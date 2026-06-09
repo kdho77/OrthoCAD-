@@ -1,4 +1,4 @@
-import { Box, Coins, Cpu, ShieldCheck } from "lucide-react";
+import { Box, Coins, Cpu, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -10,6 +10,8 @@ import { cn } from "@/lib/utils";
 export function StatusBar() {
     const method = useDesignStore((s) => s.design.method);
     const elements = useDesignStore((s) => s.design.elements.length);
+    const stockBaseError = useDesignStore((s) => s.stockBaseError);
+    const clearStockBaseError = useDesignStore((s) => s.clearStockBaseError);
     const activeDesignId = useClientStore((s) => s.activeDesignId);
     const designs = useClientStore((s) => s.designs);
     const { user, license } = useAuthStore();
@@ -19,8 +21,22 @@ export function StatusBar() {
 
     return (
         <footer className="flex h-7 items-center justify-between border-t border-border bg-panel px-3 text-[11px] text-muted-foreground">
-            <div className="flex items-center gap-4">
-                <span className="flex items-center gap-1">
+            <div className="flex min-w-0 flex-1 items-center gap-4">
+                {stockBaseError ? (
+                    <span className="flex min-w-0 items-center gap-1.5 text-amber-400">
+                        <ShieldAlert className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{stockBaseError}</span>
+                        <button
+                            type="button"
+                            className="shrink-0 rounded p-0.5 hover:bg-secondary/60"
+                            aria-label="Dismiss stock base error"
+                            onClick={() => clearStockBaseError()}
+                        >
+                            <X className="h-3 w-3" />
+                        </button>
+                    </span>
+                ) : null}
+                <span className="flex shrink-0 items-center gap-1">
                     <Box className="h-3 w-3" /> {record?.name ?? "Unsaved design"}
                 </span>
                 <span className="capitalize">{method.replace("_", " ")}</span>

@@ -81,6 +81,14 @@ export function getDefaultStockBaseSync(): DesignBase {
     };
 }
 
+/** Thrown when the server cannot supply the mandatory default stock base. */
+export class StockBaseResolutionError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "StockBaseResolutionError";
+    }
+}
+
 /**
  * PRIMARY (and server-authoritative) async resolver for the default stock base.
  *
@@ -91,10 +99,10 @@ export function getDefaultStockBaseSync(): DesignBase {
  *   - `url` (public preferred from STOCK_BUCKET / "stock-bases", signed fallback)
  *   - `primarySide` (drives auto-mirroring decision on the client)
  *
- * This completely replaces the old hardcoded fallbacks for connected clients.
- *
- * Graceful degradation (only for offline / misconfigured / no-default-row cases):
- *   Falls back to the local BUILTIN placeholder (see warning on that constant).
+ * When the API is configured, failure to resolve a default row is treated as a hard
+ * error — new designs must never silently degrade to parametric mode. The synchronous
+ * BUILTIN placeholder (getDefaultStockBaseSync) is only used for immediate UI paint
+ * before this async call completes, or when the API is not configured (pure offline dev).
  */
 export async function resolveDefaultStockBase(): Promise<DesignBase> {
     if (!isApiConfigured()) {
@@ -114,12 +122,26 @@ export async function resolveDefaultStockBase(): Promise<DesignBase> {
             };
             return base;
         }
+        throw new StockBaseResolutionError(
+            "No default stock base is configured on the server. Ask an admin to seed stock_bases (isDefault=true).",
+        );
     } catch (e) {
-        console.warn("[base-asset] Server stock base resolution failed, using local fallback", e);
+        if (e instanceof StockBaseResolutionError) throw e;
+        const detail = e instanceof Error ? e.message : String(e);
+        throw new StockBaseResolutionError(
+            `Failed to load the default stock base from the server: ${detail}`,
+        );
     }
+}
 
-    // Server said no default or call failed — last resort builtin (still marks as stock).
-    return getDefaultStockBaseSync();
+/** True when the design already references a GLB base (stock or custom). */
+export function designHasBase(design: DesignState): boolean {
+    return !!(
+        design.base ||
+        design.customPrefabId ||
+        design.paired?.leftBase ||
+        design.paired?.rightBase
+    );
 }
 
 /**

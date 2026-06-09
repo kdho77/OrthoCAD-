@@ -14,6 +14,7 @@ import { exportDesign } from "@/features/exports/export-service";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { loadOcctKernel } from "@/lib/chili3d";
+import { DEFAULT_STOCK_BASE_ID } from "@/lib/geometry/base-asset";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -28,6 +29,17 @@ export default function App() {
 
     useEffect(() => {
         void loadOcctKernel();
+    }, []);
+
+    // Upgrade the sync stock placeholder to the server default row on first load.
+    useEffect(() => {
+        const { design, applyDefaultStockBase } = useDesignStore.getState();
+        const stockBase = design.paired?.rightBase ?? design.base;
+        if (stockBase?.source === "stock" && stockBase.assetId === DEFAULT_STOCK_BASE_ID) {
+            void applyDefaultStockBase().catch(() => {
+                /* stockBaseError is set inside applyDefaultStockBase / upgradeStockBaseAsync */
+            });
+        }
     }, []);
 
     useKeyboardShortcuts({
