@@ -4,16 +4,20 @@
     "buildCommand": "npm run prisma:generate --prefix vertex && npm run build --prefix vertex",
     "outputDirectory": "vertex/dist",
     "framework": "vite",
+
     "functions": {
-        "api/trpc/**/*.ts": {
+        "api/trpc/[[...trpc]].ts": {
+            "runtime": "nodejs20.x",
             "includeFiles": "vertex/node_modules/.prisma/**"
         }
     },
+
     "rewrites": [
+        { "source": "/trpc/(.*)", "destination": "/api/trpc/$1" },
         { "source": "/trpc", "destination": "/api/trpc" },
-        { "source": "/trpc/:path*", "destination": "/api/trpc/:path*" },
         { "source": "/(.*)", "destination": "/index.html" }
     ],
+
     "headers": [
         {
             "source": "/chili-wasm/(.*)",
