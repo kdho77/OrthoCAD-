@@ -31,6 +31,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
     const isMirroredForLoad = !!base?.mirrored;
+    const baseUrl = base?.url ?? null;
 
     const baseGeoRef = useRef<BufferGeometry | null>(null);
     const outRef = useRef<BufferGeometry | null>(null);
@@ -38,9 +39,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const [building, setBuilding] = useState(false);
 
     // Load the raw base mesh whenever the referenced asset (or its mirrored variant) changes.
-    // assetId is logical stock/custom id; we include mirror flag so Left (mirrored stock) and Right
-    // trigger independent loads (the load fn itself applies mirrorGeometry when base.mirrored).
-    const loadKey = assetId ? `${assetId}:${isMirroredForLoad ? "m" : "p"}` : null;
+    // Include url so stock bases upgrade from the sync stub to the server row re-trigger load.
+    const loadKey = assetId ? `${assetId}:${isMirroredForLoad ? "m" : "p"}:${baseUrl ?? ""}` : null;
     // biome-ignore lint/correctness/useExhaustiveDependencies: loadKey captures asset + mirror variant
     useEffect(() => {
         let cancelled = false;

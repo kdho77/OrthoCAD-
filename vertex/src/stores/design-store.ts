@@ -4,8 +4,10 @@ import {
     createDefaultStockPairedBases,
     designHasBase,
     resolveDefaultStockBase,
+    stockBaseNeedsServerResolution,
     StockBaseResolutionError,
 } from "@/lib/geometry/base-asset";
+import { isApiConfigured } from "@/lib/trpc";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { buildEffectiveTrimlines, useIssuesStore } from "@/stores/issues-store";
@@ -86,8 +88,8 @@ export function defaultDesign(): DesignState {
 
 /**
  * Every new design must start from the default stock GLB (Base + Modifier model).
- * Injects a synchronous stock placeholder pair so the viewer can render immediately;
- * applyDefaultStockBase() upgrades it to the server row (real UUID + storage URL).
+ * When the API is configured, injects a non-loadable pending stub; applyDefaultStockBase()
+ * must run (after auth) to fetch the real Supabase GLB. Offline dev uses the local placeholder.
  */
 export function createDesignWithStockPlaceholder(design?: DesignState): DesignState {
     const d = design ?? defaultDesign();
@@ -112,16 +114,27 @@ export function createDesignWithStockPlaceholder(design?: DesignState): DesignSt
     };
 }
 
-/** Fire-and-forget upgrade of the sync stock placeholder to the server default row. */
+/** Fire-and-forget server resolution for stock bases missing an authoritative URL. */
 function upgradeStockBaseAsync(apply: () => Promise<void>): void {
-    void apply().catch((e) => {
-        const msg =
-            e instanceof StockBaseResolutionError
-                ? e.message
-                : "Failed to load the default stock base. Check server configuration.";
-        useDesignStore.setState({ stockBaseError: msg });
-        console.error("[design-store] Default stock base resolution failed:", e);
-    });
+    useDesignStore.setState({ stockBaseLoading: true, stockBaseError: null });
+    void apply()
+        .catch((e) => {
+            const msg =
+                e instanceof StockBaseResolutionError
+                    ? e.message
+                    : "Failed to load the default stock base. Check server configuration.";
+            useDesignStore.setState({ stockBaseError: msg });
+            console.error("[design-store] Default stock base resolution failed:", e);
+        })
+        .finally(() => {
+            useDesignStore.setState({ stockBaseLoading: false });
+        });
+}
+
+/** Resolve the default stock base from the server when required (API configured + no URL yet). */
+export function ensureDefaultStockBaseResolved(): void {
+    if (!stockBaseNeedsServerResolution(useDesignStore.getState().design)) return;
+    upgradeStockBaseAsync(() => useDesignStore.getState().applyDefaultStockBase());
 }
 
 /** Named camera viewpoints. Orthographic-style views drive trimline planar constraint. */
@@ -142,6 +155,8 @@ export interface DesignStore {
     design: DesignState;
     /** Set when the mandatory default stock base cannot be loaded from the server. */
     stockBaseError: string | null;
+    /** True while fetching the default stock base from the server. */
+    stockBaseLoading: boolean;
     viewer: ViewerSettings;
     selectedElementId: string | null;
     transformMode: TransformMode;
@@ -223,6 +238,7 @@ export const useDesignStore = create<DesignStore>()(
         (set, get) => ({
             design: createDesignWithStockPlaceholder(),
             stockBaseError: null,
+            stockBaseLoading: isApiConfigured(),
             viewer: { transparent: false, heightmap: false, showLeft: true, showRight: true, view: "iso" },
             selectedElementId: null,
             transformMode: "translate",
@@ -499,11 +515,29 @@ export const useDesignStore = create<DesignStore>()(
 
             applyDefaultStockBase: async () => {
                 try {
-                    set({ stockBaseError: null });
+                    set({ stockBaseError: null, stockBaseLoading: true });
                     const resolved = await resolveDefaultStockBase();
                     const { left, right } = createDefaultStockPairedBases(resolved);
                     const snap = get().design;
-                    get().setPairedBases(left, right);
+                    set((s) => ({
+                        design: {
+                            ...s.design,
+                            pattern: "custom",
+                            base: left,
+                            customPrefabId: left.assetId,
+                            customPrefabName: left.name,
+                            paired: {
+                                leftBase: left,
+                                rightBase: right,
+                                leftThicknessMm: s.design.paired?.leftThicknessMm ?? s.design.thicknessMm ?? 3,
+                                rightThicknessMm: s.design.paired?.rightThicknessMm ?? s.design.thicknessMm ?? 3,
+                                leftMethod: s.design.paired?.leftMethod ?? s.design.method,
+                                rightMethod: s.design.paired?.rightMethod ?? s.design.method,
+                                linked: s.design.paired?.linked ?? false,
+                            },
+                        },
+                        stockBaseLoading: false,
+                    }));
                     if (snap.base?.assetId !== left.assetId && snap.base?.assetId !== right.assetId) {
                         get().checkpoint("default-stock-base");
                     }
@@ -512,7 +546,7 @@ export const useDesignStore = create<DesignStore>()(
                         e instanceof StockBaseResolutionError
                             ? e.message
                             : "Failed to load the default stock base. Check server configuration.";
-                    set({ stockBaseError: msg });
+                    set({ stockBaseError: msg, stockBaseLoading: false });
                     throw e;
                 }
             },
@@ -610,8 +644,8 @@ export const useDesignStore = create<DesignStore>()(
                 useIssuesStore.getState().recompute(safeDesign, eff);
                 set({ design: safeDesign, selectedElementId: null, stockBaseError: null });
 
-                // Upgrade sync placeholder to server stock row (real UUID + storage URL + primarySide).
-                if (!hadBase) {
+                // Resolve server stock base when missing or still on the sync placeholder stub.
+                if (!hadBase || stockBaseNeedsServerResolution(safeDesign)) {
                     upgradeStockBaseAsync(() => get().applyDefaultStockBase());
                 }
             },
@@ -747,10 +781,12 @@ export const useDesignStore = create<DesignStore>()(
             partialize: (state) => ({ design: state.design }),
             onRehydrateStorage: () => (state) => {
                 if (!state?.design) return;
-                // Persisted parametric-only sessions must be upgraded to stock GLB base.
-                if (!designHasBase(state.design)) {
-                    const upgraded = createDesignWithStockPlaceholder(state.design);
-                    useDesignStore.setState({ design: upgraded, stockBaseError: null });
+                let design = state.design;
+                if (!designHasBase(design)) {
+                    design = createDesignWithStockPlaceholder(design);
+                    useDesignStore.setState({ design, stockBaseError: null });
+                }
+                if (stockBaseNeedsServerResolution(design)) {
                     upgradeStockBaseAsync(() => useDesignStore.getState().applyDefaultStockBase());
                 }
             },

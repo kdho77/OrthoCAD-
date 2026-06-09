@@ -23,7 +23,7 @@ import type { DesignBase, DesignState, Side } from "@/types";
  */
 export function getDesignBase(design: DesignState, side?: Side): DesignBase | null {
     if (side && design.paired) {
-        const sideBase = side === 'left' ? design.paired.leftBase : design.paired.rightBase;
+        const sideBase = side === "left" ? design.paired.leftBase : design.paired.rightBase;
         if (sideBase) return sideBase;
     }
     if (design.base) return design.base;
@@ -36,48 +36,73 @@ export function getDesignBase(design: DesignState, side?: Side): DesignBase | nu
 // --- Stock base resolution (server-authoritative) -------------------------------------
 // The single source of truth for the default stock base is the server
 // (trpc.stock.getDefaultStockBase / listStockBases / getStockBase).
-// We retain a tiny synchronous builtin placeholder **strictly** as last-resort
-// for completely offline/dev scenarios and for the earliest synchronous store
-// paths (reset / loadDesign). It is always upgraded when the async resolver runs.
-//
-// Server responses include a ready-to-use `url` (signed or public) which
-// loadBaseGeometry prefers over client-side path guessing. This enables proper
-// Supabase storage ("stock-bases" bucket or shared bucket under stock/ prefix).
+// A tiny synchronous builtin placeholder exists **only** for completely offline
+// dev scenarios (API not configured). When the API is configured, stock geometry
+// must come from the server-provided URL — never from public/Templates/Default.glb.
 
 export const DEFAULT_STOCK_BASE_ID = "stock-default";
 
-/**
- * LAST RESORT ONLY — local placeholder.
- *
- * This is used exclusively when:
- *   - The API is not configured (pure offline / certain dev modes), or
- *   - The server call to trpc.stock.getDefaultStockBase fails, or
- *   - No row with isDefault=true exists in the stock_bases table.
- *
- * Normal connected operation **always** goes through resolveDefaultStockBase() which
- * calls the server and returns a real StockBase row (with authoritative storage URL
- * and primarySide).
- *
- * Never rely on this for production behavior or for new stock bases.
- */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Local offline dev placeholder metadata (public/Templates/Default.glb). */
 export const BUILTIN_DEFAULT_STOCK: { id: string; name: string; glbPath: string } = {
     id: DEFAULT_STOCK_BASE_ID,
-    name: "Default Stock Base",
+    name: "Default Stock Base (offline)",
     glbPath: "Templates/Default.glb",
 };
 
+function hasAuthoritativeStockUrl(base: DesignBase): boolean {
+    return Boolean(base.url && /^https?:\/\//i.test(base.url));
+}
+
+/** True when the base is the local offline placeholder (not a server row). */
+export function isOfflineStockPlaceholder(base: DesignBase | null | undefined): boolean {
+    if (!base || base.source !== "stock") return false;
+    if (base.offlinePlaceholder) return true;
+    return !isApiConfigured() && base.assetId === DEFAULT_STOCK_BASE_ID;
+}
+
 /**
- * Synchronous placeholder (LAST RESORT — see BUILTIN_DEFAULT_STOCK).
- * Only for the earliest synchronous paths inside the design store (reset/loadDesign)
- * so the UI has something to render immediately. It is upgraded as soon as the
- * async server resolution in applyDefaultStockBase / resolveDefaultStockBase completes.
+ * True when the design's stock base still needs server resolution (no authoritative URL).
+ * Used to trigger applyDefaultStockBase after auth, on new designs, and on rehydrate.
+ */
+export function stockBaseNeedsServerResolution(design: DesignState): boolean {
+    if (!isApiConfigured()) return false;
+
+    const seen = new Set<string>();
+    const bases: (DesignBase | undefined)[] = [design.base, design.paired?.leftBase, design.paired?.rightBase];
+
+    for (const base of bases) {
+        if (!base || base.source !== "stock") continue;
+        const key = `${base.assetId}:${base.mirrored ? "m" : "p"}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
+        if (!hasAuthoritativeStockUrl(base)) return true;
+    }
+    return false;
+}
+
+/**
+ * Synchronous placeholder — **offline dev only** when API is not configured.
+ * When the API is configured, returns a non-loadable pending stub (no glbPath/url)
+ * so loadBaseGeometry does not fetch public/Templates/Default.glb.
  */
 export function getDefaultStockBaseSync(): DesignBase {
+    if (!isApiConfigured()) {
+        return {
+            assetId: BUILTIN_DEFAULT_STOCK.id,
+            name: BUILTIN_DEFAULT_STOCK.name,
+            source: "stock",
+            glbPath: BUILTIN_DEFAULT_STOCK.glbPath,
+            offlinePlaceholder: true,
+        };
+    }
     return {
-        assetId: BUILTIN_DEFAULT_STOCK.id,
-        name: BUILTIN_DEFAULT_STOCK.name,
+        assetId: DEFAULT_STOCK_BASE_ID,
+        name: "Default Stock Base",
         source: "stock",
-        glbPath: BUILTIN_DEFAULT_STOCK.glbPath,
     };
 }
 
@@ -93,16 +118,7 @@ export class StockBaseResolutionError extends Error {
  * PRIMARY (and server-authoritative) async resolver for the default stock base.
  *
  * Calls `trpc.stock.getDefaultStockBase` which queries the real `stock_bases` table.
- * The returned object includes:
- *   - Real DB id (UUID)
- *   - glbPath (storage key)
- *   - `url` (public preferred from STOCK_BUCKET / "stock-bases", signed fallback)
- *   - `primarySide` (drives auto-mirroring decision on the client)
- *
- * When the API is configured, failure to resolve a default row is treated as a hard
- * error — new designs must never silently degrade to parametric mode. The synchronous
- * BUILTIN placeholder (getDefaultStockBaseSync) is only used for immediate UI paint
- * before this async call completes, or when the API is not configured (pure offline dev).
+ * When the API is configured, failure to resolve a default row is a hard error.
  */
 export async function resolveDefaultStockBase(): Promise<DesignBase> {
     if (!isApiConfigured()) {
@@ -112,7 +128,7 @@ export async function resolveDefaultStockBase(): Promise<DesignBase> {
     try {
         const item = await trpc.stock.getDefaultStockBase.query();
         if (item) {
-            const base: DesignBase & { url?: string; primarySide?: string | null } = {
+            const base: DesignBase = {
                 assetId: item.id,
                 name: item.name,
                 source: "stock",
@@ -120,6 +136,11 @@ export async function resolveDefaultStockBase(): Promise<DesignBase> {
                 ...(item.url ? { url: item.url } : {}),
                 ...(item.primarySide ? { primarySide: item.primarySide } : {}),
             };
+            if (!base.url) {
+                throw new StockBaseResolutionError(
+                    `Default stock base "${item.name}" has no downloadable URL. Check Supabase storage configuration.`,
+                );
+            }
             return base;
         }
         throw new StockBaseResolutionError(
@@ -146,19 +167,14 @@ export function designHasBase(design: DesignState): boolean {
 
 /**
  * Create the Left + Right pair for a (usually Right-only) stock base.
- * When `override` is provided (the result of resolveDefaultStockBase), we use its
- * assetId / glbPath / name and honor `primarySide` for deciding the authoritative side.
- * The mirrored side receives the `mirrored: true` + `mirroredFrom` tags so the rest
- * of the system (load, cache keys, future "reset to mirror") can treat it correctly.
+ * Pass the result of resolveDefaultStockBase() — never rely on the sync stub in production.
  */
 export function createDefaultStockPairedBases(
     override?: DesignBase,
 ): { left: DesignBase; right: DesignBase } {
     const source = override ?? getDefaultStockBaseSync();
-    const primarySide = (source as any).primarySide as string | undefined | null;
+    const primarySide = source.primarySide;
 
-    // Determine authoritative side from server data when available.
-    // Current production asset (Default) is Right-foot only.
     const sourceIsRight = !primarySide || primarySide.toLowerCase() === "right";
     const authoritativeName = source.name ?? "Stock Base";
 
@@ -167,7 +183,9 @@ export function createDefaultStockPairedBases(
         name: `${authoritativeName} (Right)`,
         source: "stock",
         glbPath: source.glbPath,
-        ...( (source as any).url ? { url: (source as any).url } : {} ),
+        ...(source.url ? { url: source.url } : {}),
+        ...(source.primarySide !== undefined ? { primarySide: source.primarySide } : {}),
+        ...(source.offlinePlaceholder ? { offlinePlaceholder: true } : {}),
     };
 
     const left: DesignBase = {
@@ -177,12 +195,13 @@ export function createDefaultStockPairedBases(
         glbPath: source.glbPath,
         mirrored: true,
         mirroredFrom: source.assetId,
-        ...( (source as any).url ? { url: (source as any).url } : {} ),
+        ...(source.url ? { url: source.url } : {}),
+        ...(source.primarySide !== undefined ? { primarySide: source.primarySide } : {}),
+        ...(source.offlinePlaceholder ? { offlinePlaceholder: true } : {}),
     };
 
-    // If the stock record ever declares itself Left-primary, swap roles.
     if (primarySide?.toLowerCase() === "left") {
-        return { left: right, right: left }; // the "right" var is actually the mirrored one in this case
+        return { left: right, right: left };
     }
 
     return { left, right: sourceIsRight ? right : left };
@@ -190,32 +209,21 @@ export function createDefaultStockPairedBases(
 
 /**
  * Stable cache key for per-base derived data (outlines, bounds, zones).
- * For mirrored stock bases (auto Left from Right-only), appends ":mirrored" so that
- * the left side gets its own outline/bounds computed from the mirrored geometry,
- * rather than sharing (and getting wrong) data cached under the plain assetId.
  */
 export function getBaseCacheKey(base: DesignBase | null | undefined): string | null {
     if (!base) return null;
     return base.mirrored ? `${base.assetId}:mirrored` : base.assetId;
 }
 
-/**
- * Clear predicate (server data preferred) to decide whether a stock base needs
- * an automatically generated mirrored opposite side.
- * Uses `primarySide` when the resolved base came from the server stock_bases row.
- * Falls back to ID / glbPath heuristics only for the local builtin placeholder.
- */
+/** Decide whether a stock base needs an automatically generated mirrored opposite side. */
 export function stockBaseRequiresAutoMirror(base: DesignBase | null): boolean {
     if (!base || base.source !== "stock" || base.mirrored) return false;
 
-    const primary = (base as any).primarySide as string | undefined | null;
+    const primary = base.primarySide;
     if (primary) {
-        // If server explicitly says the stock is single-sided, we mirror the opposite.
-        // (For a future paired stock base, primarySide would be null or "both".)
         return primary.toLowerCase() === "right" || primary.toLowerCase() === "left";
     }
 
-    // Local builtin / pre-server fallback heuristics (only for the known Default).
     if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
     if (base.glbPath && /default/i.test(base.glbPath)) return true;
 
@@ -230,19 +238,42 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 }
 
 /**
+ * Resolve a fetchable URL for a stock base.
+ * - Production (API configured): server URL only — fetches fresh signed/public URL when missing.
+ * - Offline dev: local public/ path for the builtin placeholder only.
+ */
+async function resolveStockFetchUrl(base: DesignBase): Promise<string | null> {
+    if (hasAuthoritativeStockUrl(base)) return base.url!;
+
+    if (!isApiConfigured()) {
+        if (isOfflineStockPlaceholder(base)) {
+            const gp = base.glbPath ?? BUILTIN_DEFAULT_STOCK.glbPath;
+            return gp.startsWith("/") ? gp : `/${gp}`;
+        }
+        return null;
+    }
+
+    // API configured — never use glbPath as a local static path.
+    try {
+        if (UUID_RE.test(base.assetId)) {
+            const item = await trpc.stock.getStockBase.query({ id: base.assetId });
+            if (item.url) return item.url;
+        } else if (base.assetId === DEFAULT_STOCK_BASE_ID) {
+            const item = await trpc.stock.getDefaultStockBase.query();
+            if (item?.url) return item.url;
+        }
+    } catch (e) {
+        console.warn("[base-asset] Failed to resolve stock base URL from server:", e);
+    }
+
+    return null;
+}
+
+/**
  * Load the raw base mesh geometry for a design base.
  *
- * - For source "stock": 
- *     • Prefers the full `url` (signed or public) returned by `trpc.stock.getDefaultStockBase`
- *       / list (Phase 2+ server-authoritative path, works with Supabase stock-bases bucket).
- *     • Falls back to glbPath as a root-relative static URL (for the local BUILTIN
- *       placeholder used in completely offline/dev scenarios).
- * - For source "custom": local IndexedDB/base64 blob first (uploaded or saved), then
- *   remote URL from the user's custom library.
- *
- * If the DesignBase has `mirrored: true`, the loaded geometry is mirrored across the
- * sagittal plane after fetch (supports Phase 2 auto Left from Right-only stock without
- * duplicating the asset bytes).
+ * Stock bases (API configured): load exclusively from the server-provided URL.
+ * Offline dev: load the local builtin placeholder from public/.
  */
 export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry | null> {
     const store = useCustomLibraryStore.getState();
@@ -250,37 +281,26 @@ export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry
     let geo: BufferGeometry | null = null;
 
     if (base.source === "stock") {
-        // === STOCK vs CUSTOM DISTINCTION (important for long-term maintainability) ===
-        // Stock bases:
-        //   - Come from the global stock_bases table (server).
-        //   - Server response usually includes a ready `url` (public preferred from STOCK_BUCKET / "stock-bases",
-        //     signed as fallback). We use the full URL directly.
-        //   - Fallback only for the local BUILTIN placeholder (public/ path served by Vite for pure dev).
-        // Custom / user bases:
-        //   - Resolved via useCustomLibraryStore (local base64 blob or the `url` stored on the customPrefab row).
-        //   - Never mixed with stock resolution path.
-        const directUrl = (base as any).url as string | undefined;
-        const gp = base.glbPath ?? (base.assetId === DEFAULT_STOCK_BASE_ID || base.assetId.includes("default") ? BUILTIN_DEFAULT_STOCK.glbPath : null);
-
-        let fetchUrl: string | null = null;
-        if (directUrl && /^https?:\/\//i.test(directUrl)) {
-            fetchUrl = directUrl; // authoritative from server (Supabase signed/public, possibly stock-bases bucket)
-        } else if (gp) {
-            fetchUrl = gp.startsWith("/") ? gp : `/${gp}`;
+        const fetchUrl = await resolveStockFetchUrl(base);
+        if (!fetchUrl) {
+            if (isApiConfigured()) {
+                console.warn(
+                    "[base-asset] Stock base has no server URL — waiting for applyDefaultStockBase or check server config",
+                    base.assetId,
+                );
+            }
+            return null;
         }
 
-        if (fetchUrl) {
-            try {
-                const group = await loadGlbFromUrl(fetchUrl);
-                const merged = extractMergedGeometry(group);
-                geo = merged?.geometry ?? null;
-            } catch (e) {
-                console.warn("[base-asset] Failed to load stock base GLB from", fetchUrl, e);
-                geo = null;
-            }
+        try {
+            const group = await loadGlbFromUrl(fetchUrl);
+            const merged = extractMergedGeometry(group);
+            geo = merged?.geometry ?? null;
+        } catch (e) {
+            console.warn("[base-asset] Failed to load stock base GLB from", fetchUrl, e);
+            geo = null;
         }
     } else {
-        // Custom / user library path (existing behavior)
         const local = store.getLocalGlb(base.assetId);
         if (local) {
             const group = await loadGlbFromBuffer(base64ToArrayBuffer(local.glbBase64));
@@ -319,18 +339,13 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
         includeSkives: true,
         includeElements: true,
-        trimline: null, // preview path deliberately ignores trimline (clip happens in hook)
+        trimline: null,
     };
 }
 
-/**
- * Authoritative field for the sewn OCCT base path (Phase 3B). Includes the
- * committed trimline so that applyTrimlineCut etc. can run as exact booleans
- * on the sewn solid. Only used for idle/Confirm/Export builds.
- */
+/** Authoritative field for the sewn OCCT base path (Phase 3B). */
 export function baseModifierFieldAuthoritative(design: DesignState, side: Side, thicknessMm: number): HeightFieldParams {
     const f = baseModifierField(design, side, thicknessMm);
-    // Pull the committed (not draft) trimline for manufacturing.
-    const committed = getDesignTrimline(design, side); // local import below to avoid cycle in some builds
+    const committed = getDesignTrimline(design, side);
     return { ...f, trimline: committed };
 }
