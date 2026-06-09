@@ -6,8 +6,13 @@ import { getSupabase, isSupabaseConfigured } from "./supabase";
 
 const apiUrl = import.meta.env.VITE_API_URL as string | undefined;
 
+/**
+ * True when the client should treat the tRPC server as authoritative (production /
+ * connected mode). Supabase-backed deployments always resolve stock bases from the
+ * server even when VITE_API_URL is omitted and the app uses the same-origin /trpc proxy.
+ */
 export function isApiConfigured(): boolean {
-    return Boolean(apiUrl);
+    return Boolean(apiUrl) || isSupabaseConfigured();
 }
 
 // Type-safe tRPC client. Attaches the Supabase access token so the server can

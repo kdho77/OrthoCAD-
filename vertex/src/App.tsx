@@ -17,6 +17,8 @@ import { loadOcctKernel } from "@/lib/chili3d";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
 import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
+import { designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
+import { isApiConfigured } from "@/lib/trpc";
 
 export default function App() {
     useAuthBootstrap();
@@ -31,11 +33,21 @@ export default function App() {
     }, []);
 
     // Resolve the default stock base from the server once auth is ready.
-    // Runs on app load and whenever the user signs in — never uses the local placeholder in production.
+    // Single authoritative bootstrap path for Supabase deployments — avoids the rehydrate/auth race.
     useEffect(() => {
         if (authLoading) return;
+        if (!isApiConfigured()) return;
         if (isSupabaseConfigured() && !user) return;
+
         ensureDefaultStockBaseResolved();
+
+        // If the first attempt raced auth/session hydration, retry once after a short delay.
+        const retry = window.setTimeout(() => {
+            if (designNeedsDefaultStockResolution(useDesignStore.getState().design)) {
+                ensureDefaultStockBaseResolved();
+            }
+        }, 750);
+        return () => window.clearTimeout(retry);
     }, [authLoading, user]);
 
     useKeyboardShortcuts({

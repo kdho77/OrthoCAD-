@@ -7,6 +7,7 @@ export {
     createDesignWithStockPlaceholder,
     defaultDesign,
     ensureDefaultStockBaseResolved,
+    resolveDefaultStockBaseForDesign,
     useDesignStore,
 } from "./design-store";
 export type { ImportedScan } from "./scan-store";
