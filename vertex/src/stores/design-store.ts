@@ -177,6 +177,19 @@ function upgradeStockBaseAsync(apply: () => Promise<void>, reason: string): void
         .then(() => {
             const d = useDesignStore.getState().design;
             const injected = d.paired?.rightBase ?? d.base;
+            if (!designStockBasesAreResolved(d)) {
+                const msg =
+                    "Stock base resolution finished without glbPath and a valid download URL on both feet.";
+                stockResolveLog("upgradeStockBaseAsync() incomplete — not marking resolved", {
+                    reason,
+                    leftGlbPath: d.paired?.leftBase?.glbPath ?? null,
+                    rightGlbPath: d.paired?.rightBase?.glbPath ?? null,
+                    leftUrl: d.paired?.leftBase?.url ?? null,
+                    rightUrl: d.paired?.rightBase?.url ?? null,
+                });
+                markStockBaseFailed(msg);
+                return;
+            }
             markStockBaseResolved();
             stockFixLog(`upgradeStockBaseAsync() success (${reason})`, {
                 url: injected?.url ?? null,
@@ -237,12 +250,16 @@ export function ensureDefaultStockBaseResolved(): void {
         assetId: getDesignStockAssetId(design),
     });
     if (!needs) {
-        if (resolved) {
+        if (resolved && designStockBasesAreResolved(design)) {
+            stockResolveLog("ensureDefaultStockBaseResolved() — already fully resolved", {
+                assetId: getDesignStockAssetId(design),
+                glbPath: design.paired?.rightBase?.glbPath ?? design.base?.glbPath ?? null,
+                hasUrl: Boolean(design.paired?.rightBase?.url ?? design.base?.url),
+            });
             markStockBaseResolved();
-        } else {
-            stockResolveLog("ensureDefaultStockBaseResolved() — bases present but missing glbPath/url, resolving");
+            return;
         }
-        if (resolved) return;
+        stockResolveLog("ensureDefaultStockBaseResolved() — bases present but missing glbPath/url, resolving");
     }
     upgradeStockBaseAsync(() => useDesignStore.getState().applyDefaultStockBase(), "ensureDefaultStockBaseResolved");
 }
@@ -707,17 +724,28 @@ export const useDesignStore = create<DesignStore>()(
                             ? e.message
                             : "Failed to load the default stock base. Check server configuration.";
                     stockResolveLog("applyDefaultStockBase() error", { error: msg });
-                    stockFixLog("applyDefaultStockBase() error — applying offline fallback", { error: msg });
+                    stockFixLog("applyDefaultStockBase() error", {
+                        error: msg,
+                        supabaseConfigured: isSupabaseConfigured(),
+                    });
                     stockDebug("applyDefaultStockBase() error", { error: msg });
-                    const snap = get().design;
-                    const fallbackPatch = createFallbackStockDesignPatch(snap);
                     stockBaseAutoRetryBlocked = true;
-                    set((s) => ({
-                        design: { ...s.design, ...fallbackPatch },
-                        stockBaseError: msg,
-                        stockBaseLoading: false,
-                        stockBaseResolutionState: "failed",
-                    }));
+                    if (isSupabaseConfigured()) {
+                        set({
+                            stockBaseError: msg,
+                            stockBaseLoading: false,
+                            stockBaseResolutionState: "failed",
+                        });
+                    } else {
+                        const snap = get().design;
+                        const fallbackPatch = createFallbackStockDesignPatch(snap);
+                        set((s) => ({
+                            design: { ...s.design, ...fallbackPatch },
+                            stockBaseError: msg,
+                            stockBaseLoading: false,
+                            stockBaseResolutionState: "failed",
+                        }));
+                    }
                     throw e;
                 }
             },

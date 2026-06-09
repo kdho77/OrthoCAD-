@@ -4,11 +4,13 @@ import {
     baseModifierField,
     getBaseCacheKey,
     getDesignBase,
+    isLocalPlaceholderGlbPath,
     isStockDesignBase,
     loadBaseGeometry,
     stockBaseNeedsServerResolution,
     StockGlbLoadError,
 } from "@/lib/geometry/base-asset";
+import { isApiConfigured } from "@/lib/trpc";
 import { useDesignStore } from "@/stores/design-store";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
@@ -67,15 +69,19 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
 
         const isStock = isStockDesignBase(ref);
         const hasUrl = Boolean(ref.url && /^https?:\/\//i.test(ref.url));
-        const hasGlbPath = Boolean(ref.glbPath);
+        const hasRealGlbPath =
+            typeof ref.glbPath === "string" &&
+            ref.glbPath.length > 0 &&
+            (!isApiConfigured() || !isLocalPlaceholderGlbPath(ref.glbPath));
         const awaitingResolution =
-            isStock && (stockBaseNeedsServerResolution(ref) || !hasUrl || !hasGlbPath);
+            isStock && (stockBaseNeedsServerResolution(ref) || !hasUrl || !hasRealGlbPath);
 
         if (awaitingResolution) {
             stockResolveLog("useBaseInsoleGeometry waiting for stock resolution", {
                 side,
                 assetId: ref.assetId,
                 hasUrl,
+                hasRealGlbPath,
                 glbPath: ref.glbPath ?? null,
                 stockBaseLoading,
                 stockBaseResolutionState,

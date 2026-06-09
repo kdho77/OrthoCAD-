@@ -8,7 +8,6 @@ import { getDesignTrimline } from "@/lib/geometry/trimline";
 import { extractMergedGeometry, loadGlbFromBuffer, loadGlbFromUrl, mirrorGeometry } from "@/lib/library/loaders";
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
-import { isApiConfigured, trpc } from "@/lib/trpc";
 import {
     classifyStockUrl,
     formatStockUrlLog,
@@ -17,6 +16,12 @@ import {
     stockGlbLog,
     stockResolveLog,
 } from "@/lib/geometry/stock-debug";
+import {
+    createStockBaseDownloadUrl,
+    queryStockBaseRow,
+} from "@/lib/geometry/stock-resolve-supabase";
+import { isApiConfigured, trpc } from "@/lib/trpc";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import type { DesignBase, DesignState, Side } from "@/types";
 
 // Base resolution + loading for the Base + Modifier model.
@@ -343,12 +348,88 @@ function logStockResolveFailure(procedure: string, e: unknown): never {
     throw new StockBaseResolutionError(`Failed to resolve stock base from the server: ${detail}`);
 }
 
+async function resolveStockBaseViaSupabase(assetId: string): Promise<DesignBase> {
+    const useDefault =
+        assetId === DEFAULT_STOCK_BASE_ID || assetId.startsWith("stock-") || !UUID_RE.test(assetId);
+
+    stockResolveLog("resolveStockBaseViaSupabase() start", { assetId, useDefault });
+
+    const row = await queryStockBaseRow(assetId, useDefault);
+    const glbPath = row.glbPath?.trim();
+    if (!glbPath) {
+        stockResolveLog("resolveStockBaseViaSupabase() missing glbPath on row", { assetId: row.id });
+        throw new StockBaseResolutionError(
+            `resolveStockBaseViaSupabase(): stock base "${row.name}" has no glbPath in stock_bases.`,
+        );
+    }
+
+    stockGlbLog(`DB glb_path = "${glbPath}"`);
+
+    let url: string;
+    try {
+        url = await createStockBaseDownloadUrl(glbPath);
+    } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        stockResolveLog("resolveStockBaseViaSupabase() signed URL error", {
+            assetId: row.id,
+            glbPath,
+            error: detail,
+        });
+        throw new StockBaseResolutionError(
+            `resolveStockBaseViaSupabase(): could not sign URL for glbPath="${glbPath}": ${detail}`,
+        );
+    }
+
+    const base = assertStockBaseResolved(
+        stockRowToDesignBase({ ...row, glbPath, url }),
+        "resolveStockBaseViaSupabase()",
+    );
+    stockResolveLog("resolveStockBaseViaSupabase() success", {
+        assetId: base.assetId,
+        glbPath: base.glbPath,
+        hasUrl: Boolean(base.url),
+    });
+    return base;
+}
+
+async function resolveStockBaseViaTrpc(assetId: string): Promise<DesignBase> {
+    const useDefault =
+        assetId === DEFAULT_STOCK_BASE_ID || assetId.startsWith("stock-") || !UUID_RE.test(assetId);
+
+    const item = useDefault
+        ? await trpc.stock.getDefaultStockBase.query()
+        : await trpc.stock.getStockBase.query({ id: assetId });
+
+    if (!item) {
+        stockResolveLog("resolveStockBaseViaTrpc() no row found", { assetId, usedDefault: useDefault });
+        throw new StockBaseResolutionError(
+            useDefault
+                ? "No default stock base is configured on the server. Ask an admin to seed stock_bases (isDefault=true)."
+                : `Stock base not found for assetId=${assetId}`,
+        );
+    }
+
+    stockGlbLog(`DB glb_path = "${item.glbPath}"`);
+    if (item.url) {
+        stockGlbLog(formatStockUrlLog(classifyStockUrl(item.url), item.url));
+    } else {
+        stockGlbLog('Final URL = "(missing — server returned no downloadable URL)"');
+    }
+
+    return assertStockBaseResolved(stockRowToDesignBase(item), "resolveStockBaseViaTrpc()");
+}
+
 /**
- * Resolve a stock base by assetId: looks up `stock_bases`, reads `glb_path`, and returns a signed/public URL.
+ * Resolve a stock base by assetId: looks up `stock_bases`, reads `glbPath`, and returns a signed/public URL.
+ * Prefers direct Supabase (table + Storage) when configured; falls back to tRPC.
  */
 export async function resolveStockBase(assetId: string): Promise<DesignBase> {
     stockResolveLog("resolveStockBase() start", { assetId });
-    stockFixLog("resolveStockBase() start", { assetId, apiConfigured: isApiConfigured() });
+    stockFixLog("resolveStockBase() start", {
+        assetId,
+        apiConfigured: isApiConfigured(),
+        supabaseConfigured: isSupabaseConfigured(),
+    });
     stockDebug("resolveStockBase() start", { assetId, apiConfigured: isApiConfigured() });
 
     if (!isApiConfigured()) {
@@ -364,34 +445,34 @@ export async function resolveStockBase(assetId: string): Promise<DesignBase> {
     const useDefault =
         assetId === DEFAULT_STOCK_BASE_ID || assetId.startsWith("stock-") || !UUID_RE.test(assetId);
 
+    if (isSupabaseConfigured()) {
+        try {
+            const base = await resolveStockBaseViaSupabase(assetId);
+            stockDebug("resolveStockBase() Supabase response", {
+                requestedAssetId: assetId,
+                id: base.assetId,
+                name: base.name,
+                glbPath: base.glbPath,
+                url: base.url ?? null,
+                primarySide: base.primarySide,
+            });
+            return base;
+        } catch (e) {
+            if (e instanceof StockBaseResolutionError) throw e;
+            const detail = e instanceof Error ? e.message : String(e);
+            stockResolveLog("resolveStockBase() Supabase error", { assetId, error: detail });
+            throw new StockBaseResolutionError(`Failed to resolve stock base from Supabase: ${detail}`);
+        }
+    }
+
     try {
-        const item = useDefault
-            ? await trpc.stock.getDefaultStockBase.query()
-            : await trpc.stock.getStockBase.query({ id: assetId });
-
-        if (!item) {
-            stockResolveLog("resolveStockBase() no row found", { assetId, usedDefault: useDefault });
-            throw new StockBaseResolutionError(
-                useDefault
-                    ? "No default stock base is configured on the server. Ask an admin to seed stock_bases (isDefault=true)."
-                    : `Stock base not found for assetId=${assetId}`,
-            );
-        }
-
-        stockGlbLog(`DB glb_path = "${item.glbPath}"`);
-        if (item.url) {
-            stockGlbLog(formatStockUrlLog(classifyStockUrl(item.url), item.url));
-        } else {
-            stockGlbLog('Final URL = "(missing — server returned no downloadable URL)"');
-        }
-
-        const base = assertStockBaseResolved(stockRowToDesignBase(item), "resolveStockBase()");
+        const base = await resolveStockBaseViaTrpc(assetId);
         stockResolveLog("resolveStockBase() success", {
             assetId: base.assetId,
             glbPath: base.glbPath,
             hasUrl: Boolean(base.url),
         });
-        stockDebug("resolveStockBase() server response", {
+        stockDebug("resolveStockBase() tRPC response", {
             requestedAssetId: assetId,
             id: base.assetId,
             name: base.name,
@@ -550,9 +631,25 @@ async function resolveStockFetchUrl(base: DesignBase): Promise<string | null> {
         return null;
     }
 
-    // API configured — always prefer a fresh server URL (signed URLs expire).
+    // API configured — refresh signed/public URL (signed URLs expire).
     try {
-        if (UUID_RE.test(base.assetId)) {
+        if (isSupabaseConfigured()) {
+            const glbPath =
+                base.glbPath ??
+                (await queryStockBaseRow(
+                    base.assetId,
+                    base.assetId === DEFAULT_STOCK_BASE_ID ||
+                        base.assetId.startsWith("stock-") ||
+                        !UUID_RE.test(base.assetId),
+                ).then((row) => row.glbPath));
+
+            if (glbPath) {
+                stockGlbLog(`DB glb_path = "${glbPath}"`);
+                const url = await createStockBaseDownloadUrl(glbPath);
+                stockGlbLog(formatStockUrlLog(classifyStockUrl(url), url));
+                return url;
+            }
+        } else if (UUID_RE.test(base.assetId)) {
             stockDebug("resolveStockFetchUrl() fetching by UUID", { assetId: base.assetId });
             const item = await trpc.stock.getStockBase.query({ id: base.assetId });
             stockGlbLog(`DB glb_path = "${item.glbPath}"`);
