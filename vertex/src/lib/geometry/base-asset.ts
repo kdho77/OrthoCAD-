@@ -55,18 +55,38 @@ function hasAuthoritativeStockUrl(base: DesignBase): boolean {
     return Boolean(base.url && /^https?:\/\//i.test(base.url));
 }
 
+/** True when glbPath points at the bundled public/ placeholder (not Supabase storage). */
+export function isLocalPlaceholderGlbPath(glbPath?: string | null): boolean {
+    if (!glbPath) return false;
+    const normalized = glbPath.replace(/^\//, "");
+    return normalized === BUILTIN_DEFAULT_STOCK.glbPath || normalized.startsWith("Templates/");
+}
+
 /** True when the base is the local offline placeholder (not a server row). */
 export function isOfflineStockPlaceholder(base: DesignBase | null | undefined): boolean {
     if (!base || base.source !== "stock") return false;
     if (base.offlinePlaceholder) return true;
+    if (isLocalPlaceholderGlbPath(base.glbPath)) return true;
     return !isApiConfigured() && base.assetId === DEFAULT_STOCK_BASE_ID;
 }
 
 /**
- * True when the design's stock base still needs server resolution (no authoritative URL).
+ * True when a stock base still needs server resolution (no authoritative URL, or stale local path).
+ */
+export function stockBaseNeedsServerResolution(base: DesignBase): boolean {
+    if (base.source !== "stock") return false;
+    if (base.offlinePlaceholder) return true;
+    if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
+    if (isLocalPlaceholderGlbPath(base.glbPath)) return true;
+    if (!hasAuthoritativeStockUrl(base)) return true;
+    return false;
+}
+
+/**
+ * True when the design's stock base still needs server resolution.
  * Used to trigger applyDefaultStockBase after auth, on new designs, and on rehydrate.
  */
-export function stockBaseNeedsServerResolution(design: DesignState): boolean {
+export function designNeedsDefaultStockResolution(design: DesignState): boolean {
     if (!isApiConfigured()) return false;
 
     const seen = new Set<string>();
@@ -77,11 +97,56 @@ export function stockBaseNeedsServerResolution(design: DesignState): boolean {
         const key = `${base.assetId}:${base.mirrored ? "m" : "p"}`;
         if (seen.has(key)) continue;
         seen.add(key);
-
-        if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
-        if (!hasAuthoritativeStockUrl(base)) return true;
+        if (stockBaseNeedsServerResolution(base)) return true;
     }
     return false;
+}
+
+/**
+ * Strip local placeholder paths from persisted stock bases so loadBaseGeometry never
+ * fetches public/Templates/Default.glb in server mode.
+ */
+export function sanitizeStockBaseForServerMode(base: DesignBase): DesignBase {
+    if (!isApiConfigured() || base.source !== "stock") return base;
+    if (!stockBaseNeedsServerResolution(base)) return base;
+
+    const { glbPath: _gp, url: _url, offlinePlaceholder: _op, ...rest } = base;
+    return {
+        ...rest,
+        assetId: base.assetId === DEFAULT_STOCK_BASE_ID || isLocalPlaceholderGlbPath(base.glbPath)
+            ? DEFAULT_STOCK_BASE_ID
+            : base.assetId,
+    };
+}
+
+/** Sanitize all stock bases on a design after localStorage rehydrate. */
+export function sanitizeDesignStockBases(design: DesignState): DesignState {
+    if (!isApiConfigured()) return design;
+
+    let next = design;
+    const sanitize = (base: DesignBase | undefined): DesignBase | undefined =>
+        base ? sanitizeStockBaseForServerMode(base) : undefined;
+
+    const base = sanitize(design.base);
+    const leftBase = sanitize(design.paired?.leftBase);
+    const rightBase = sanitize(design.paired?.rightBase);
+
+    if (base !== design.base || leftBase !== design.paired?.leftBase || rightBase !== design.paired?.rightBase) {
+        next = {
+            ...design,
+            ...(base ? { base, customPrefabId: base.assetId, customPrefabName: base.name } : {}),
+            ...(design.paired
+                ? {
+                      paired: {
+                          ...design.paired,
+                          ...(leftBase ? { leftBase } : {}),
+                          ...(rightBase ? { rightBase } : {}),
+                      },
+                  }
+                : {}),
+        };
+    }
+    return next;
 }
 
 /**
@@ -225,7 +290,7 @@ export function stockBaseRequiresAutoMirror(base: DesignBase | null): boolean {
     }
 
     if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
-    if (base.glbPath && /default/i.test(base.glbPath)) return true;
+    if (base.glbPath && /default/i.test(base.glbPath) && !isLocalPlaceholderGlbPath(base.glbPath)) return true;
 
     return false;
 }
@@ -258,7 +323,7 @@ async function resolveStockFetchUrl(base: DesignBase): Promise<string | null> {
         if (UUID_RE.test(base.assetId)) {
             const item = await trpc.stock.getStockBase.query({ id: base.assetId });
             if (item.url) return item.url;
-        } else if (base.assetId === DEFAULT_STOCK_BASE_ID) {
+        } else if (base.assetId === DEFAULT_STOCK_BASE_ID || isLocalPlaceholderGlbPath(base.glbPath)) {
             const item = await trpc.stock.getDefaultStockBase.query();
             if (item?.url) return item.url;
         }
@@ -281,6 +346,14 @@ export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry
     let geo: BufferGeometry | null = null;
 
     if (base.source === "stock") {
+        if (isApiConfigured() && stockBaseNeedsServerResolution(base)) {
+            console.warn(
+                "[base-asset] Stock base not yet resolved from server — skipping local placeholder",
+                base.assetId,
+            );
+            return null;
+        }
+
         const fetchUrl = await resolveStockFetchUrl(base);
         if (!fetchUrl) {
             if (isApiConfigured()) {

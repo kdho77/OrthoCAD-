@@ -3,11 +3,14 @@ import { persist } from "zustand/middleware";
 import {
     createDefaultStockPairedBases,
     designHasBase,
+    designNeedsDefaultStockResolution,
+    isOfflineStockPlaceholder,
     resolveDefaultStockBase,
-    stockBaseNeedsServerResolution,
+    sanitizeDesignStockBases,
     StockBaseResolutionError,
 } from "@/lib/geometry/base-asset";
 import { isApiConfigured } from "@/lib/trpc";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { buildEffectiveTrimlines, useIssuesStore } from "@/stores/issues-store";
@@ -114,10 +117,14 @@ export function createDesignWithStockPlaceholder(design?: DesignState): DesignSt
     };
 }
 
+let stockBaseUpgradeInFlight: Promise<void> | null = null;
+
 /** Fire-and-forget server resolution for stock bases missing an authoritative URL. */
 function upgradeStockBaseAsync(apply: () => Promise<void>): void {
+    if (stockBaseUpgradeInFlight) return;
+
     useDesignStore.setState({ stockBaseLoading: true, stockBaseError: null });
-    void apply()
+    stockBaseUpgradeInFlight = apply()
         .catch((e) => {
             const msg =
                 e instanceof StockBaseResolutionError
@@ -127,14 +134,25 @@ function upgradeStockBaseAsync(apply: () => Promise<void>): void {
             console.error("[design-store] Default stock base resolution failed:", e);
         })
         .finally(() => {
+            stockBaseUpgradeInFlight = null;
             useDesignStore.setState({ stockBaseLoading: false });
         });
 }
 
-/** Resolve the default stock base from the server when required (API configured + no URL yet). */
+/**
+ * Resolve the default stock base from the server when required.
+ * Safe to call repeatedly — dedupes in-flight requests and re-runs after auth is ready.
+ */
 export function ensureDefaultStockBaseResolved(): void {
-    if (!stockBaseNeedsServerResolution(useDesignStore.getState().design)) return;
+    if (!isApiConfigured()) return;
+    if (!designNeedsDefaultStockResolution(useDesignStore.getState().design)) return;
     upgradeStockBaseAsync(() => useDesignStore.getState().applyDefaultStockBase());
+}
+
+/** Await server resolution (used on new design creation when possible). */
+export async function resolveDefaultStockBaseForDesign(): Promise<void> {
+    if (!isApiConfigured()) return;
+    await useDesignStore.getState().applyDefaultStockBase();
 }
 
 /** Named camera viewpoints. Orthographic-style views drive trimline planar constraint. */
@@ -640,12 +658,13 @@ export const useDesignStore = create<DesignStore>()(
                 if (!hadBase) {
                     safeDesign = createDesignWithStockPlaceholder(safeDesign);
                 }
+                safeDesign = sanitizeDesignStockBases(safeDesign);
                 const eff = buildEffectiveTrimlines(safeDesign);
                 useIssuesStore.getState().recompute(safeDesign, eff);
                 set({ design: safeDesign, selectedElementId: null, stockBaseError: null });
 
-                // Resolve server stock base when missing or still on the sync placeholder stub.
-                if (!hadBase || stockBaseNeedsServerResolution(safeDesign)) {
+                // Resolve server stock base when missing or still on a local/sync placeholder.
+                if (!hadBase || designNeedsDefaultStockResolution(safeDesign)) {
                     upgradeStockBaseAsync(() => get().applyDefaultStockBase());
                 }
             },
@@ -781,12 +800,18 @@ export const useDesignStore = create<DesignStore>()(
             partialize: (state) => ({ design: state.design }),
             onRehydrateStorage: () => (state) => {
                 if (!state?.design) return;
-                let design = state.design;
+                let design = sanitizeDesignStockBases(state.design);
                 if (!designHasBase(design)) {
                     design = createDesignWithStockPlaceholder(design);
-                    useDesignStore.setState({ design, stockBaseError: null });
                 }
-                if (stockBaseNeedsServerResolution(design)) {
+                const needsResolution = designNeedsDefaultStockResolution(design);
+                useDesignStore.setState({
+                    design,
+                    stockBaseError: null,
+                    stockBaseLoading: needsResolution && isApiConfigured(),
+                });
+                // When Supabase auth is required, App.tsx resolves after the session is ready.
+                if (needsResolution && (!isSupabaseConfigured() || !isApiConfigured())) {
                     upgradeStockBaseAsync(() => useDesignStore.getState().applyDefaultStockBase());
                 }
             },
