@@ -214,6 +214,18 @@ export async function resolveDefaultStockBase(): Promise<DesignBase> {
     } catch (e) {
         if (e instanceof StockBaseResolutionError) throw e;
         const detail = e instanceof Error ? e.message : String(e);
+        const looksLikeHtml =
+            /unexpected token\s*['"]?</i.test(detail) || /not valid json/i.test(detail);
+        if (looksLikeHtml) {
+            console.error(
+                "[base-asset] stock.getDefaultStockBase returned HTML instead of JSON — " +
+                    "the /trpc route is likely missing or stockRouter is not mounted. " +
+                    `Request target: ${import.meta.env.VITE_API_URL ?? "/trpc (same-origin)"}`,
+                e,
+            );
+        } else {
+            console.error("[base-asset] stock.getDefaultStockBase failed:", e);
+        }
         throw new StockBaseResolutionError(
             `Failed to load the default stock base from the server: ${detail}`,
         );
