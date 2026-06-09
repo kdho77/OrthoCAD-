@@ -159,6 +159,12 @@ export interface DesignBase {
     source: "custom" | "stock";
     /** For stock bases (or any that carry their own path), the glb_path from stock_bases table / storage key. Used by loadBaseGeometry. */
     glbPath?: string;
+    /** Authoritative download URL from the server (Supabase public/signed). Required for stock bases when the API is configured. */
+    url?: string;
+    /** Server stock_bases.primarySide — drives auto-mirroring for single-sided assets. */
+    primarySide?: string | null;
+    /** True only for the local offline dev placeholder — never set on server-resolved stock bases. */
+    offlinePlaceholder?: boolean;
     /** If true, the geometry loader will mirror the loaded mesh across the sagittal plane (used for auto Left from Right-only stock). */
     mirrored?: boolean;
     /** Asset id of the source this mirror was derived from (for labeling and "reset to mirrored" future use). */

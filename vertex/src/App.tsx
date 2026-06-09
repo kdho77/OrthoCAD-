@@ -14,10 +14,9 @@ import { exportDesign } from "@/features/exports/export-service";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { loadOcctKernel } from "@/lib/chili3d";
-import { DEFAULT_STOCK_BASE_ID } from "@/lib/geometry/base-asset";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
-import { useDesignStore } from "@/stores/design-store";
+import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
 
 export default function App() {
     useAuthBootstrap();
@@ -25,22 +24,19 @@ export default function App() {
     const [adminOpen, setAdminOpen] = useState(false);
     const [rxOpen, setRxOpen] = useState(false);
     const applyPrescription = useDesignStore((s) => s.applyPrescription);
-    const { user, loading } = useAuthStore();
+    const { user, loading: authLoading } = useAuthStore();
 
     useEffect(() => {
         void loadOcctKernel();
     }, []);
 
-    // Upgrade the sync stock placeholder to the server default row on first load.
+    // Resolve the default stock base from the server once auth is ready.
+    // Runs on app load and whenever the user signs in — never uses the local placeholder in production.
     useEffect(() => {
-        const { design, applyDefaultStockBase } = useDesignStore.getState();
-        const stockBase = design.paired?.rightBase ?? design.base;
-        if (stockBase?.source === "stock" && stockBase.assetId === DEFAULT_STOCK_BASE_ID) {
-            void applyDefaultStockBase().catch(() => {
-                /* stockBaseError is set inside applyDefaultStockBase / upgradeStockBaseAsync */
-            });
-        }
-    }, []);
+        if (authLoading) return;
+        if (isSupabaseConfigured() && !user) return;
+        ensureDefaultStockBaseResolved();
+    }, [authLoading, user]);
 
     useKeyboardShortcuts({
         onPrescription: () => setRxOpen(true),
@@ -55,7 +51,7 @@ export default function App() {
 
     // Auth enforcement: when Supabase is configured, require a signed-in user.
     if (isSupabaseConfigured()) {
-        if (loading) {
+        if (authLoading) {
             return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading…</div>;
         }
         if (!user) return <LoginScreen />;

@@ -1,4 +1,4 @@
-import { Box, Coins, Cpu, ShieldAlert, ShieldCheck, X } from "lucide-react";
+import { Box, Coins, Cpu, Loader2, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -11,6 +11,7 @@ export function StatusBar() {
     const method = useDesignStore((s) => s.design.method);
     const elements = useDesignStore((s) => s.design.elements.length);
     const stockBaseError = useDesignStore((s) => s.stockBaseError);
+    const stockBaseLoading = useDesignStore((s) => s.stockBaseLoading);
     const clearStockBaseError = useDesignStore((s) => s.clearStockBaseError);
     const activeDesignId = useClientStore((s) => s.activeDesignId);
     const designs = useClientStore((s) => s.designs);
@@ -23,17 +24,25 @@ export function StatusBar() {
         <footer className="flex h-7 items-center justify-between border-t border-border bg-panel px-3 text-[11px] text-muted-foreground">
             <div className="flex min-w-0 flex-1 items-center gap-4">
                 {stockBaseError ? (
-                    <span className="flex min-w-0 items-center gap-1.5 text-amber-400">
+                    <span
+                        className="flex min-w-0 max-w-[min(60vw,520px)] items-center gap-1.5 rounded border border-red-500/40 bg-red-950/50 px-2 py-0.5 text-red-300"
+                        role="alert"
+                    >
                         <ShieldAlert className="h-3 w-3 shrink-0" />
-                        <span className="truncate">{stockBaseError}</span>
+                        <span className="truncate font-medium">Stock base: {stockBaseError}</span>
                         <button
                             type="button"
-                            className="shrink-0 rounded p-0.5 hover:bg-secondary/60"
+                            className="shrink-0 rounded p-0.5 hover:bg-red-900/60"
                             aria-label="Dismiss stock base error"
                             onClick={() => clearStockBaseError()}
                         >
                             <X className="h-3 w-3" />
                         </button>
+                    </span>
+                ) : stockBaseLoading ? (
+                    <span className="flex shrink-0 items-center gap-1.5 text-cyan-400/90">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Loading stock base from server…
                     </span>
                 ) : null}
                 <span className="flex shrink-0 items-center gap-1">
