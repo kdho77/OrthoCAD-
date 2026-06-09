@@ -9,7 +9,14 @@ import { extractMergedGeometry, loadGlbFromBuffer, loadGlbFromUrl, mirrorGeometr
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { isApiConfigured, trpc } from "@/lib/trpc";
-import { classifyStockUrl, formatStockUrlLog, stockDebug, stockFixLog, stockGlbLog } from "@/lib/geometry/stock-debug";
+import {
+    classifyStockUrl,
+    formatStockUrlLog,
+    stockDebug,
+    stockFixLog,
+    stockGlbLog,
+    stockResolveLog,
+} from "@/lib/geometry/stock-debug";
 import type { DesignBase, DesignState, Side } from "@/types";
 
 // Base resolution + loading for the Base + Modifier model.
@@ -56,6 +63,23 @@ function hasAuthoritativeStockUrl(base: DesignBase): boolean {
     return Boolean(base.url && /^https?:\/\//i.test(base.url));
 }
 
+/** True when a design base references a stock template (even if `source` was lost on persist). */
+export function isStockDesignBase(base: DesignBase | null | undefined): boolean {
+    if (!base) return false;
+    if (base.source === "stock") return true;
+    if (base.assetId === DEFAULT_STOCK_BASE_ID || base.assetId.startsWith("stock-")) return true;
+    if (base.mirrored !== undefined || base.mirroredFrom) return true;
+    if (base.primarySide !== undefined) return true;
+    return false;
+}
+
+/** True when a stock base has both glbPath and a fetchable URL from the server. */
+export function stockBaseIsFullyResolved(base: DesignBase): boolean {
+    if (!isStockDesignBase(base)) return true;
+    if (base.resolutionFallback) return true;
+    return Boolean(base.glbPath && hasAuthoritativeStockUrl(base));
+}
+
 /** True when glbPath points at the bundled public/ placeholder (not Supabase storage). */
 export function isLocalPlaceholderGlbPath(glbPath?: string | null): boolean {
     if (!glbPath) return false;
@@ -75,12 +99,13 @@ export function isOfflineStockPlaceholder(base: DesignBase | null | undefined): 
  * True when a stock base still needs server resolution (no authoritative URL, or stale local path).
  */
 export function stockBaseNeedsServerResolution(base: DesignBase): boolean {
-    if (base.source !== "stock") return false;
+    if (!isStockDesignBase(base)) return false;
     if (base.resolutionFallback) return false;
     if (base.offlinePlaceholder && base.glbPath && isLocalPlaceholderGlbPath(base.glbPath)) return false;
     if (base.offlinePlaceholder) return true;
-    if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
+    if (base.assetId === DEFAULT_STOCK_BASE_ID || base.assetId.startsWith("stock-")) return true;
     if (isLocalPlaceholderGlbPath(base.glbPath)) return true;
+    if (!base.glbPath) return true;
     if (!hasAuthoritativeStockUrl(base)) return true;
     return false;
 }
@@ -96,7 +121,7 @@ export function designNeedsDefaultStockResolution(design: DesignState): boolean 
     const bases: (DesignBase | undefined)[] = [design.base, design.paired?.leftBase, design.paired?.rightBase];
 
     for (const base of bases) {
-        if (!base || base.source !== "stock") continue;
+        if (!base || !isStockDesignBase(base)) continue;
         if (base.resolutionFallback) continue;
         const key = `${base.assetId}:${base.mirrored ? "m" : "p"}`;
         if (seen.has(key)) continue;
@@ -106,12 +131,30 @@ export function designNeedsDefaultStockResolution(design: DesignState): boolean 
     return false;
 }
 
+/** True when every stock base on the design has glbPath + authoritative URL. */
+export function designStockBasesAreResolved(design: DesignState): boolean {
+    if (!isApiConfigured()) return true;
+
+    const seen = new Set<string>();
+    const bases: (DesignBase | undefined)[] = [design.base, design.paired?.leftBase, design.paired?.rightBase];
+
+    for (const base of bases) {
+        if (!base || !isStockDesignBase(base)) continue;
+        if (base.resolutionFallback) continue;
+        const key = `${base.assetId}:${base.mirrored ? "m" : "p"}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (!stockBaseIsFullyResolved(base)) return false;
+    }
+    return true;
+}
+
 /**
  * Strip local placeholder paths from persisted stock bases so loadBaseGeometry never
  * fetches public/Templates/Default.glb in server mode.
  */
 export function sanitizeStockBaseForServerMode(base: DesignBase): DesignBase {
-    if (!isApiConfigured() || base.source !== "stock") return base;
+    if (!isApiConfigured() || !isStockDesignBase(base)) return base;
     if (!stockBaseNeedsServerResolution(base)) return base;
 
     const { glbPath: _gp, url: _url, offlinePlaceholder: _op, ...rest } = base;
@@ -233,6 +276,149 @@ export class StockGlbLoadError extends Error {
     }
 }
 
+type StockBaseRow = {
+    id: string;
+    name: string;
+    glbPath: string;
+    url?: string | null;
+    primarySide?: string | null;
+};
+
+function stockRowToDesignBase(item: StockBaseRow): DesignBase {
+    return {
+        assetId: item.id,
+        name: item.name,
+        source: "stock",
+        glbPath: item.glbPath,
+        ...(item.url ? { url: item.url } : {}),
+        ...(item.primarySide ? { primarySide: item.primarySide } : {}),
+    };
+}
+
+function assertStockBaseResolved(base: DesignBase, context: string): DesignBase {
+    if (!base.glbPath) {
+        throw new StockBaseResolutionError(
+            `${context}: stock base "${base.name ?? base.assetId}" has no glb_path in stock_bases.`,
+        );
+    }
+    if (!base.url) {
+        throw new StockBaseResolutionError(
+            `${context}: stock base "${base.name ?? base.assetId}" (glb_path="${base.glbPath}") has no downloadable URL. Check Supabase storage configuration.`,
+        );
+    }
+    return base;
+}
+
+function logStockResolveFailure(procedure: string, e: unknown): never {
+    if (e instanceof StockBaseResolutionError) throw e;
+    const detail = e instanceof Error ? e.message : String(e);
+    const looksLikeHtml = /unexpected token\s*['"]?</i.test(detail) || /not valid json/i.test(detail);
+    if (looksLikeHtml) {
+        const apiBase = import.meta.env.VITE_API_URL ?? "/trpc";
+        const origin = typeof globalThis.location !== "undefined" ? globalThis.location.origin : "";
+        const probeUrl = apiBase.startsWith("http")
+            ? `${apiBase}/stock.${procedure}`
+            : `${origin}${apiBase}/stock.${procedure}`;
+        stockFixLog("tRPC returned HTML instead of JSON — server route misconfigured or unreachable", {
+            apiBase,
+            probeUrl,
+        });
+        console.error(
+            `[STOCK_FIX] stock.${procedure} returned HTML instead of JSON.\n` +
+                "  Cause: Vercel served the SPA index.html instead of the tRPC serverless handler.\n" +
+                "  Common fixes:\n" +
+                "    • Ensure api/trpc/[[...trpc]].ts is deployed (repo root or vertex/ root).\n" +
+                "    • vercel.json must rewrite /trpc → /api/trpc before the SPA fallback.\n" +
+                "    • Set VITE_API_URL to the full …/trpc URL if using a separate API host.\n" +
+                "    • Run prisma generate during build; set DATABASE_URL on Vercel.\n" +
+                `  Request target: ${apiBase}\n` +
+                `  Probe in browser (expect JSON, not HTML): ${probeUrl}`,
+            e,
+        );
+    } else {
+        stockFixLog(`stock.${procedure} failed`, { detail });
+        console.error(`[STOCK_FIX] stock.${procedure} failed:`, e);
+    }
+    stockResolveLog(`resolveStockBase() error from stock.${procedure}`, { detail, looksLikeHtml });
+    throw new StockBaseResolutionError(`Failed to resolve stock base from the server: ${detail}`);
+}
+
+/**
+ * Resolve a stock base by assetId: looks up `stock_bases`, reads `glb_path`, and returns a signed/public URL.
+ */
+export async function resolveStockBase(assetId: string): Promise<DesignBase> {
+    stockResolveLog("resolveStockBase() start", { assetId });
+    stockFixLog("resolveStockBase() start", { assetId, apiConfigured: isApiConfigured() });
+    stockDebug("resolveStockBase() start", { assetId, apiConfigured: isApiConfigured() });
+
+    if (!isApiConfigured()) {
+        const offline = getDefaultStockBaseSync();
+        stockResolveLog("resolveStockBase() offline fallback", {
+            assetId: offline.assetId,
+            glbPath: offline.glbPath ?? null,
+            hasUrl: Boolean(offline.url),
+        });
+        return offline;
+    }
+
+    const useDefault =
+        assetId === DEFAULT_STOCK_BASE_ID || assetId.startsWith("stock-") || !UUID_RE.test(assetId);
+
+    try {
+        const item = useDefault
+            ? await trpc.stock.getDefaultStockBase.query()
+            : await trpc.stock.getStockBase.query({ id: assetId });
+
+        if (!item) {
+            stockResolveLog("resolveStockBase() no row found", { assetId, usedDefault: useDefault });
+            throw new StockBaseResolutionError(
+                useDefault
+                    ? "No default stock base is configured on the server. Ask an admin to seed stock_bases (isDefault=true)."
+                    : `Stock base not found for assetId=${assetId}`,
+            );
+        }
+
+        stockGlbLog(`DB glb_path = "${item.glbPath}"`);
+        if (item.url) {
+            stockGlbLog(formatStockUrlLog(classifyStockUrl(item.url), item.url));
+        } else {
+            stockGlbLog('Final URL = "(missing — server returned no downloadable URL)"');
+        }
+
+        const base = assertStockBaseResolved(stockRowToDesignBase(item), "resolveStockBase()");
+        stockResolveLog("resolveStockBase() success", {
+            assetId: base.assetId,
+            glbPath: base.glbPath,
+            hasUrl: Boolean(base.url),
+        });
+        stockDebug("resolveStockBase() server response", {
+            requestedAssetId: assetId,
+            id: base.assetId,
+            name: base.name,
+            glbPath: base.glbPath,
+            url: base.url ?? null,
+            primarySide: base.primarySide,
+        });
+        return base;
+    } catch (e) {
+        logStockResolveFailure(useDefault ? "getDefaultStockBase" : "getStockBase", e);
+    }
+}
+
+/** Pick the primary stock assetId already referenced on a design (falls back to default key). */
+export function getDesignStockAssetId(design: DesignState): string {
+    const candidates = [
+        design.paired?.rightBase,
+        design.paired?.leftBase,
+        design.base,
+    ].filter((b): b is DesignBase => Boolean(b && isStockDesignBase(b)));
+
+    const primary = candidates.find((b) => !b.mirrored) ?? candidates[0];
+    if (primary?.assetId && UUID_RE.test(primary.assetId)) return primary.assetId;
+    if (primary?.assetId) return primary.assetId;
+    return DEFAULT_STOCK_BASE_ID;
+}
+
 /**
  * PRIMARY (and server-authoritative) async resolver for the default stock base.
  *
@@ -244,97 +430,7 @@ export async function resolveDefaultStockBase(): Promise<DesignBase> {
         apiConfigured: isApiConfigured(),
         apiUrl: import.meta.env.VITE_API_URL ?? "/trpc (same-origin)",
     });
-    stockDebug("resolveDefaultStockBase() start", {
-        apiConfigured: isApiConfigured(),
-        apiUrl: import.meta.env.VITE_API_URL ?? "/trpc (same-origin)",
-    });
-
-    if (!isApiConfigured()) {
-        const offline = getDefaultStockBaseSync();
-        stockDebug("resolveDefaultStockBase() offline fallback", {
-            assetId: offline.assetId,
-            glbPath: offline.glbPath,
-            offlinePlaceholder: offline.offlinePlaceholder,
-        });
-        return offline;
-    }
-
-    try {
-        stockDebug("resolveDefaultStockBase() calling trpc.stock.getDefaultStockBase");
-        const item = await trpc.stock.getDefaultStockBase.query();
-        if (item) {
-            stockGlbLog(`DB glb_path = "${item.glbPath}"`);
-            if (item.url) {
-                const urlKind = classifyStockUrl(item.url);
-                stockGlbLog(formatStockUrlLog(urlKind, item.url));
-            } else {
-                stockGlbLog('Final URL = "(missing — server returned no downloadable URL)"');
-            }
-            stockDebug("resolveDefaultStockBase() server response", {
-                found: true,
-                id: item.id,
-                name: item.name,
-                glbPath: item.glbPath,
-                url: item.url ?? null,
-                urlKind: item.url ? classifyStockUrl(item.url) : null,
-                primarySide: item.primarySide,
-            });
-            const base: DesignBase = {
-                assetId: item.id,
-                name: item.name,
-                source: "stock",
-                glbPath: item.glbPath,
-                ...(item.url ? { url: item.url } : {}),
-                ...(item.primarySide ? { primarySide: item.primarySide } : {}),
-            };
-            if (!base.url) {
-                throw new StockBaseResolutionError(
-                    `Default stock base "${item.name}" (glb_path="${item.glbPath}") has no downloadable URL. Check Supabase storage configuration.`,
-                );
-            }
-            return base;
-        }
-        stockDebug("resolveDefaultStockBase() no default row in stock_bases");
-        throw new StockBaseResolutionError(
-            "No default stock base is configured on the server. Ask an admin to seed stock_bases (isDefault=true).",
-        );
-    } catch (e) {
-        if (e instanceof StockBaseResolutionError) throw e;
-        const detail = e instanceof Error ? e.message : String(e);
-        const looksLikeHtml =
-            /unexpected token\s*['"]?</i.test(detail) || /not valid json/i.test(detail);
-        if (looksLikeHtml) {
-            const apiBase = import.meta.env.VITE_API_URL ?? "/trpc";
-            const origin =
-                typeof globalThis.location !== "undefined" ? globalThis.location.origin : "";
-            const probeUrl = apiBase.startsWith("http")
-                ? `${apiBase}/stock.getDefaultStockBase`
-                : `${origin}${apiBase}/stock.getDefaultStockBase`;
-            stockFixLog("tRPC returned HTML instead of JSON — server route misconfigured or unreachable", {
-                apiBase,
-                probeUrl,
-            });
-            console.error(
-                "[STOCK_FIX] stock.getDefaultStockBase returned HTML instead of JSON.\n" +
-                    "  Cause: Vercel served the SPA index.html instead of the tRPC serverless handler.\n" +
-                    "  Common fixes:\n" +
-                    "    • Ensure api/trpc/[[...trpc]].ts is deployed (repo root or vertex/ root).\n" +
-                    "    • vercel.json must rewrite /trpc → /api/trpc before the SPA fallback.\n" +
-                    "    • Set VITE_API_URL to the full …/trpc URL if using a separate API host.\n" +
-                    "    • Run prisma generate during build; set DATABASE_URL on Vercel.\n" +
-                    `  Request target: ${apiBase}\n` +
-                    `  Probe in browser (expect JSON, not HTML): ${probeUrl}`,
-                e,
-            );
-        } else {
-            stockFixLog("stock.getDefaultStockBase failed", { detail });
-            console.error("[STOCK_FIX] stock.getDefaultStockBase failed:", e);
-        }
-        stockDebug("resolveDefaultStockBase() failed", { detail, looksLikeHtml });
-        throw new StockBaseResolutionError(
-            `Failed to load the default stock base from the server: ${detail}`,
-        );
-    }
+    return resolveStockBase(DEFAULT_STOCK_BASE_ID);
 }
 
 /** True when the design already references a GLB base (stock or custom). */

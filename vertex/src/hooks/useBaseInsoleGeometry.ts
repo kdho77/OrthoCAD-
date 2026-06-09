@@ -4,11 +4,13 @@ import {
     baseModifierField,
     getBaseCacheKey,
     getDesignBase,
+    isStockDesignBase,
     loadBaseGeometry,
+    stockBaseNeedsServerResolution,
     StockGlbLoadError,
 } from "@/lib/geometry/base-asset";
 import { useDesignStore } from "@/stores/design-store";
-import { stockDebug } from "@/lib/geometry/stock-debug";
+import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import { computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
@@ -35,6 +37,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
     const elementPreviews = usePerformanceStore((s) => s.elementPreviews);
     const interacting = usePerformanceStore((s) => s.interacting);
+    const stockBaseLoading = useDesignStore((s) => s.stockBaseLoading);
+    const stockBaseResolutionState = useDesignStore((s) => s.stockBaseResolutionState);
 
     const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
@@ -57,14 +61,48 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         const ref = getDesignBase(design, side);
         if (!ref) {
             setGeometry(null);
+            setBuilding(false);
             return;
         }
+
+        const isStock = isStockDesignBase(ref);
+        const hasUrl = Boolean(ref.url && /^https?:\/\//i.test(ref.url));
+        const hasGlbPath = Boolean(ref.glbPath);
+        const awaitingResolution =
+            isStock && (stockBaseNeedsServerResolution(ref) || !hasUrl || !hasGlbPath);
+
+        if (awaitingResolution) {
+            stockResolveLog("useBaseInsoleGeometry waiting for stock resolution", {
+                side,
+                assetId: ref.assetId,
+                hasUrl,
+                glbPath: ref.glbPath ?? null,
+                stockBaseLoading,
+                stockBaseResolutionState,
+            });
+            stockDebug("useBaseInsoleGeometry skipped load — stock base not yet resolved", {
+                side,
+                assetId: ref.assetId,
+                hasUrl,
+                glbPath: ref.glbPath,
+            });
+            setGeometry(null);
+            setBuilding(stockBaseLoading || stockBaseResolutionState === "loading");
+            return;
+        }
+
         setBuilding(true);
+        stockResolveLog("useBaseInsoleGeometry loading resolved stock base", {
+            side,
+            assetId: ref.assetId,
+            hasUrl,
+            glbPath: ref.glbPath ?? null,
+        });
         stockDebug("useBaseInsoleGeometry load effect", {
             side,
             assetId: ref.assetId,
             loadKey,
-            hasUrl: Boolean(ref.url),
+            hasUrl,
             glbPath: ref.glbPath,
         });
         void loadBaseGeometry(ref)
@@ -104,7 +142,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         return () => {
             cancelled = true;
         };
-    }, [loadKey]);
+    }, [loadKey, stockBaseLoading, stockBaseResolutionState]);
 
     // Re-apply modifiers whenever corrections / elements / thickness change.
     // biome-ignore lint/correctness/useExhaustiveDependencies: preview patches + live draft trimline are intentional triggers

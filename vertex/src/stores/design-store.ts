@@ -5,11 +5,13 @@ import {
     createFallbackStockDesignPatch,
     designHasBase,
     designNeedsDefaultStockResolution,
-    resolveDefaultStockBase,
+    designStockBasesAreResolved,
+    getDesignStockAssetId,
+    resolveStockBase,
     sanitizeDesignStockBases,
     StockBaseResolutionError,
 } from "@/lib/geometry/base-asset";
-import { stockDebug, stockFixLog, stockGlbLog } from "@/lib/geometry/stock-debug";
+import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { isApiConfigured } from "@/lib/trpc";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
@@ -226,11 +228,21 @@ export function ensureDefaultStockBaseResolved(): void {
     }
     const design = useDesignStore.getState().design;
     const needs = designNeedsDefaultStockResolution(design);
-    stockFixLog("ensureDefaultStockBaseResolved()", { needsResolution: needs });
-    stockDebug("ensureDefaultStockBaseResolved()", { needsResolution: needs });
+    const resolved = designStockBasesAreResolved(design);
+    stockFixLog("ensureDefaultStockBaseResolved()", { needsResolution: needs, fullyResolved: resolved });
+    stockDebug("ensureDefaultStockBaseResolved()", { needsResolution: needs, fullyResolved: resolved });
+    stockResolveLog("ensureDefaultStockBaseResolved()", {
+        needsResolution: needs,
+        fullyResolved: resolved,
+        assetId: getDesignStockAssetId(design),
+    });
     if (!needs) {
-        markStockBaseResolved();
-        return;
+        if (resolved) {
+            markStockBaseResolved();
+        } else {
+            stockResolveLog("ensureDefaultStockBaseResolved() — bases present but missing glbPath/url, resolving");
+        }
+        if (resolved) return;
     }
     upgradeStockBaseAsync(() => useDesignStore.getState().applyDefaultStockBase(), "ensureDefaultStockBaseResolved");
 }
@@ -635,11 +647,19 @@ export const useDesignStore = create<DesignStore>()(
 
             applyDefaultStockBase: async () => {
                 try {
-                    stockFixLog("applyDefaultStockBase() start");
-                    stockDebug("applyDefaultStockBase() start");
+                    const snap = get().design;
+                    const assetId = getDesignStockAssetId(snap);
+                    stockFixLog("applyDefaultStockBase() start", { assetId });
+                    stockDebug("applyDefaultStockBase() start", { assetId });
+                    stockResolveLog("applyDefaultStockBase() start", { assetId });
                     set({ stockBaseError: null, stockBaseLoading: true, stockBaseResolutionState: "loading" });
-                    const resolved = await resolveDefaultStockBase();
+                    const resolved = await resolveStockBase(assetId);
                     const { left, right } = createDefaultStockPairedBases(resolved);
+                    stockResolveLog("applyDefaultStockBase() resolved — injecting mirrored L+R pair", {
+                        resolvedId: resolved.assetId,
+                        glbPath: resolved.glbPath ?? null,
+                        hasUrl: Boolean(resolved.url),
+                    });
                     stockFixLog("applyDefaultStockBase() server success — injecting mirrored L+R pair", {
                         resolvedId: resolved.assetId,
                         glbPath: resolved.glbPath,
@@ -657,7 +677,6 @@ export const useDesignStore = create<DesignStore>()(
                         leftName: left.name,
                         rightName: right.name,
                     });
-                    const snap = get().design;
                     set((s) => ({
                         design: {
                             ...s.design,
@@ -687,6 +706,7 @@ export const useDesignStore = create<DesignStore>()(
                         e instanceof StockBaseResolutionError
                             ? e.message
                             : "Failed to load the default stock base. Check server configuration.";
+                    stockResolveLog("applyDefaultStockBase() error", { error: msg });
                     stockFixLog("applyDefaultStockBase() error — applying offline fallback", { error: msg });
                     stockDebug("applyDefaultStockBase() error", { error: msg });
                     const snap = get().design;
