@@ -120,42 +120,44 @@ export function stockBaseNeedsServerResolution(base: DesignBase): boolean {
 }
 
 /**
+ * True when a base is NOT a usable, loadable base and must be (re)resolved from
+ * the default stock record. This is intentionally inclusive so that legacy /
+ * corrupted persisted bases — which lost their `source`, `glbPath` and `url`
+ * (e.g. `{ assetId: "<uuid>" }` with nothing else) — are healed instead of being
+ * silently skipped (which previously left the app stuck with no geometry).
+ */
+function baseRequiresDefaultStockResolution(base: DesignBase): boolean {
+    // A user custom-library prefab loads via the library store — never override it.
+    if (base.source === "custom") return false;
+    // Offline fallback bases are intentionally local — leave them alone.
+    if (base.resolutionFallback) return false;
+    // A stock base carrying a real storage key + authoritative (https) URL is done.
+    if (base.glbPath && hasAuthoritativeStockUrl(base)) return false;
+    // Pending stock placeholders AND legacy/corrupted bases (no source / no url /
+    // no glbPath) all need the default stock base resolved and applied.
+    return true;
+}
+
+/**
  * True when the design's stock base still needs server resolution.
  * Used to trigger applyDefaultStockBase after auth, on new designs, and on rehydrate.
  */
 export function designNeedsDefaultStockResolution(design: DesignState): boolean {
     if (!isApiConfigured()) return false;
 
-    const seen = new Set<string>();
-    const bases: (DesignBase | undefined)[] = [design.base, design.paired?.leftBase, design.paired?.rightBase];
+    const bases = [design.base, design.paired?.leftBase, design.paired?.rightBase].filter(
+        (b): b is DesignBase => Boolean(b),
+    );
 
     for (const base of bases) {
-        if (!base || !isStockDesignBase(base)) continue;
-        if (base.resolutionFallback) continue;
-        const key = `${base.assetId}:${base.mirrored ? "m" : "p"}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        if (stockBaseNeedsServerResolution(base)) return true;
+        if (baseRequiresDefaultStockResolution(base)) return true;
     }
     return false;
 }
 
-/** True when every stock base on the design has glbPath + authoritative URL. */
+/** True when every base on the design is a loadable custom prefab or a fully resolved stock base. */
 export function designStockBasesAreResolved(design: DesignState): boolean {
-    if (!isApiConfigured()) return true;
-
-    const seen = new Set<string>();
-    const bases: (DesignBase | undefined)[] = [design.base, design.paired?.leftBase, design.paired?.rightBase];
-
-    for (const base of bases) {
-        if (!base || !isStockDesignBase(base)) continue;
-        if (base.resolutionFallback) continue;
-        const key = `${base.assetId}:${base.mirrored ? "m" : "p"}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        if (!stockBaseIsFullyResolved(base)) return false;
-    }
-    return true;
+    return !designNeedsDefaultStockResolution(design);
 }
 
 /**
