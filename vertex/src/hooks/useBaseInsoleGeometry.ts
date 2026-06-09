@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
-import { baseModifierField, getBaseCacheKey, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
+import {
+    baseModifierField,
+    getBaseCacheKey,
+    getDesignBase,
+    loadBaseGeometry,
+    StockGlbLoadError,
+} from "@/lib/geometry/base-asset";
+import { useDesignStore } from "@/stores/design-store";
 import { stockDebug } from "@/lib/geometry/stock-debug";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import { computeBaseBounds } from "@/lib/geometry/base-bounds";
@@ -84,8 +91,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     }
                 }
             })
-            .catch(() => {
-                if (!cancelled) baseGeoRef.current = null;
+            .catch((e) => {
+                if (cancelled) return;
+                baseGeoRef.current = null;
+                if (e instanceof StockGlbLoadError) {
+                    useDesignStore.setState({ stockBaseError: e.message });
+                }
             })
             .finally(() => {
                 if (!cancelled) setBuilding(false);

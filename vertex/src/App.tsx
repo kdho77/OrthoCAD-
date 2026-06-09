@@ -18,7 +18,7 @@ import { isSupabaseConfigured } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
 import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
 import { designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
-import { stockDebug } from "@/lib/geometry/stock-debug";
+import { stockDebug, stockGlbLog } from "@/lib/geometry/stock-debug";
 import { isApiConfigured } from "@/lib/trpc";
 
 export default function App() {
@@ -36,12 +36,19 @@ export default function App() {
     // Resolve the default stock base from the server once auth is ready.
     // Single authoritative bootstrap path for Supabase deployments — avoids the rehydrate/auth race.
     useEffect(() => {
+        const bootstrapDesign = useDesignStore.getState().design;
+        const bootstrapBase = bootstrapDesign.paired?.rightBase ?? bootstrapDesign.base;
+        stockGlbLog(
+            `App stock bootstrap effect — url="${bootstrapBase?.url ?? "(pending)"}" glb_path="${bootstrapBase?.glbPath ?? "(none)"}" needsResolution=${designNeedsDefaultStockResolution(bootstrapDesign)}`,
+        );
         stockDebug("App stock bootstrap effect", {
             authLoading,
             hasUser: Boolean(user),
             supabaseConfigured: isSupabaseConfigured(),
             apiConfigured: isApiConfigured(),
-            needsResolution: designNeedsDefaultStockResolution(useDesignStore.getState().design),
+            needsResolution: designNeedsDefaultStockResolution(bootstrapDesign),
+            stockUrl: bootstrapBase?.url ?? null,
+            glbPath: bootstrapBase?.glbPath ?? null,
         });
 
         if (authLoading) {
@@ -57,12 +64,18 @@ export default function App() {
             return;
         }
 
+        stockGlbLog("App stock bootstrap — calling ensureDefaultStockBaseResolved()");
         ensureDefaultStockBaseResolved();
 
         // If the first attempt raced auth/session hydration, retry once after a short delay.
         const retry = window.setTimeout(() => {
-            const stillNeeds = designNeedsDefaultStockResolution(useDesignStore.getState().design);
-            stockDebug("App stock bootstrap retry check", { stillNeeds });
+            const retryDesign = useDesignStore.getState().design;
+            const retryBase = retryDesign.paired?.rightBase ?? retryDesign.base;
+            const stillNeeds = designNeedsDefaultStockResolution(retryDesign);
+            stockGlbLog(
+                `App stock bootstrap retry check — stillNeeds=${stillNeeds} url="${retryBase?.url ?? "(pending)"}" glb_path="${retryBase?.glbPath ?? "(none)"}"`,
+            );
+            stockDebug("App stock bootstrap retry check", { stillNeeds, url: retryBase?.url, glbPath: retryBase?.glbPath });
             if (stillNeeds) {
                 ensureDefaultStockBaseResolved();
             }
