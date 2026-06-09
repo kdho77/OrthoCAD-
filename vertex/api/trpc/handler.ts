@@ -8,12 +8,15 @@ import { appRouter } from "../../server/src/routers";
 
 validateServerEnv();
 
-// Prisma requires the Node.js runtime (not Edge).
-export const config = {
-    runtime: "nodejs",
-};
-
 const corsOrigin = process.env.CORS_ORIGIN ?? "*";
+
+/** Match the URL prefix tRPC sees after Vercel rewrites (/trpc or /api/trpc). */
+export function resolveTrpcEndpoint(pathname: string): string {
+    const normalized = pathname.replace(/\/+$/, "") || "/";
+    if (normalized.startsWith("/api/trpc")) return "/api/trpc";
+    if (normalized.startsWith("/trpc")) return "/trpc";
+    return "/trpc";
+}
 
 function withCors(response: Response): Response {
     const headers = new Headers(response.headers);
@@ -27,13 +30,15 @@ function withCors(response: Response): Response {
     });
 }
 
-async function handler(request: Request): Promise<Response> {
+export async function handleTrpcRequest(request: Request): Promise<Response> {
     if (request.method === "OPTIONS") {
         return withCors(new Response(null, { status: 204 }));
     }
 
+    const endpoint = resolveTrpcEndpoint(new URL(request.url).pathname);
+
     const response = await fetchRequestHandler({
-        endpoint: "/trpc",
+        endpoint,
         req: request,
         router: appRouter,
         createContext: createFetchContext,
@@ -41,5 +46,3 @@ async function handler(request: Request): Promise<Response> {
 
     return withCors(response);
 }
-
-export default handler;

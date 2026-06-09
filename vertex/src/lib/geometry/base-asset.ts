@@ -217,10 +217,21 @@ export async function resolveDefaultStockBase(): Promise<DesignBase> {
         const looksLikeHtml =
             /unexpected token\s*['"]?</i.test(detail) || /not valid json/i.test(detail);
         if (looksLikeHtml) {
+            const apiBase = import.meta.env.VITE_API_URL ?? "/trpc";
+            const origin =
+                typeof globalThis.location !== "undefined" ? globalThis.location.origin : "";
+            const probeUrl = apiBase.startsWith("http")
+                ? `${apiBase}/stock.getDefaultStockBase`
+                : `${origin}${apiBase}/stock.getDefaultStockBase`;
             console.error(
-                "[base-asset] stock.getDefaultStockBase returned HTML instead of JSON — " +
-                    "the /trpc route is likely missing or stockRouter is not mounted. " +
-                    `Request target: ${import.meta.env.VITE_API_URL ?? "/trpc (same-origin)"}`,
+                "[base-asset] stock.getDefaultStockBase returned HTML instead of JSON.\n" +
+                    "  Cause: Vercel served the SPA index.html instead of the tRPC serverless handler.\n" +
+                    "  Common fixes:\n" +
+                    "    • Ensure api/trpc/[[...trpc]].ts is deployed (repo root or vertex/ root).\n" +
+                    "    • vercel.json must rewrite /trpc → /api/trpc before the SPA fallback.\n" +
+                    "    • Run prisma generate during build; set DATABASE_URL on Vercel.\n" +
+                    `  Request target: ${apiBase}\n` +
+                    `  Probe in browser (expect JSON, not HTML): ${probeUrl}`,
                 e,
             );
         } else {

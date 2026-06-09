@@ -1,9 +1,14 @@
 {
     "$schema": "https://openapi.vercel.sh/vercel.json",
     "installCommand": "npm install --prefix vertex --include=dev",
-    "buildCommand": "npm run build --prefix vertex",
+    "buildCommand": "npm run prisma:generate --prefix vertex && npm run build --prefix vertex",
     "outputDirectory": "vertex/dist",
     "framework": "vite",
+    "functions": {
+        "api/trpc/**/*.ts": {
+            "runtime": "nodejs20.x"
+        }
+    },
     "rewrites": [
         { "source": "/trpc", "destination": "/api/trpc" },
         { "source": "/trpc/:path*", "destination": "/api/trpc/:path*" },
