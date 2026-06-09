@@ -13,7 +13,52 @@ import { getSupabase } from "@/lib/supabase";
 export const STOCK_BASES_BUCKET =
     (import.meta.env.VITE_STOCK_STORAGE_BUCKET as string | undefined)?.trim() || "stock-bases";
 
-const SIGNED_URL_TTL_SEC = 3600 * 4;
+/**
+ * Last-resort public URL for the default stock base GLB. The `stock-bases` bucket
+ * is public, so this URL is directly fetchable without auth, signing, or tRPC.
+ * Used only when neither the Supabase client nor VITE_SUPABASE_URL is available.
+ */
+export const DEFAULT_STOCK_PUBLIC_URL =
+    "https://wstneucimlemaokoyjwh.supabase.co/storage/v1/object/public/stock-bases/Templates/Default.glb";
+
+function supabaseProjectUrl(): string | null {
+    const raw = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim().replace(/\/+$/, "");
+    return raw || null;
+}
+
+/**
+ * Build the PUBLIC storage URL for a stock base GLB. The `stock-bases` bucket is
+ * public, so this needs no auth, no signing, and no tRPC — it is deterministic.
+ * Prefers the Supabase client, then derives from VITE_SUPABASE_URL, and finally
+ * falls back to the known default URL for the default GLB path.
+ */
+export function getStockBasePublicUrl(glbPath: string): string | null {
+    const key = glbPath.replace(/^\/+/, "");
+
+    const supabase = getSupabase();
+    if (supabase) {
+        const { data } = supabase.storage.from(STOCK_BASES_BUCKET).getPublicUrl(key);
+        if (data?.publicUrl) {
+            stockResolveLog("getStockBasePublicUrl() via client", { glbPath: key, url: data.publicUrl });
+            return data.publicUrl;
+        }
+    }
+
+    const projectUrl = supabaseProjectUrl();
+    if (projectUrl) {
+        const url = `${projectUrl}/storage/v1/object/public/${STOCK_BASES_BUCKET}/${key}`;
+        stockResolveLog("getStockBasePublicUrl() via env", { glbPath: key, url });
+        return url;
+    }
+
+    if (key === "Templates/Default.glb") {
+        stockResolveLog("getStockBasePublicUrl() via hardcoded default", { glbPath: key });
+        return DEFAULT_STOCK_PUBLIC_URL;
+    }
+
+    stockResolveLog("getStockBasePublicUrl() failed — no Supabase URL available", { glbPath: key });
+    return null;
+}
 
 export type StockBaseDbRow = {
     id: string;
@@ -89,48 +134,18 @@ export async function queryStockBaseRow(assetId: string, useDefault: boolean): P
 }
 
 /**
- * Generate a signed download URL for a stock base GLB in the `stock-bases` bucket.
- * Falls back to a public URL only when signing is unavailable.
+ * Resolve a fetchable download URL for a stock base GLB in the public
+ * `stock-bases` bucket. Returns the deterministic PUBLIC URL — no signing, no
+ * auth, no tRPC. (The bucket is public, so signed URLs are unnecessary and only
+ * add an auth/RLS dependency that frequently breaks on deploys.)
  */
 export async function createStockBaseDownloadUrl(glbPath: string): Promise<string> {
-    const supabase = getSupabase();
-    if (!supabase) {
-        throw new Error("Supabase is not configured");
+    const url = getStockBasePublicUrl(glbPath);
+    if (!url) {
+        throw new Error(
+            `Cannot build a public URL for stock base "${glbPath}": Supabase is not configured (VITE_SUPABASE_URL missing).`,
+        );
     }
-
-    stockResolveLog("createSignedUrl start", { glbPath, bucket: STOCK_BASES_BUCKET });
-
-    const { data, error } = await supabase.storage
-        .from(STOCK_BASES_BUCKET)
-        .createSignedUrl(glbPath, SIGNED_URL_TTL_SEC);
-
-    if (!error && data?.signedUrl) {
-        stockResolveLog("signed URL generated", {
-            glbPath,
-            bucket: STOCK_BASES_BUCKET,
-            success: true,
-            urlKind: classifyStockUrl(data.signedUrl),
-        });
-        stockGlbLog(formatStockUrlLog(classifyStockUrl(data.signedUrl), data.signedUrl));
-        return data.signedUrl;
-    }
-
-    const { data: pub } = supabase.storage.from(STOCK_BASES_BUCKET).getPublicUrl(glbPath);
-    if (pub?.publicUrl) {
-        stockResolveLog("signed URL failed — using public URL", {
-            glbPath,
-            signedError: error?.message ?? null,
-            success: true,
-        });
-        stockGlbLog(formatStockUrlLog("public", pub.publicUrl));
-        return pub.publicUrl;
-    }
-
-    stockResolveLog("signed URL generation failed", {
-        glbPath,
-        bucket: STOCK_BASES_BUCKET,
-        error: error?.message ?? "no signed URL returned",
-        success: false,
-    });
-    throw new Error(error?.message ?? "Failed to generate signed URL for stock base GLB");
+    stockGlbLog(formatStockUrlLog(classifyStockUrl(url), url));
+    return url;
 }
