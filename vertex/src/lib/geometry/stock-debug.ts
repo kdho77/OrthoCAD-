@@ -3,6 +3,16 @@
 
 const PREFIX = "[STOCK_GLB_DEBUG]";
 const FIX_PREFIX = "[STOCK_FIX]";
+const RESOLVE_PREFIX = "[STOCK_RESOLVE]";
+
+/** Console logging for stock base assetId → glbPath/url resolution (grep: STOCK_RESOLVE). */
+export function stockResolveLog(message: string, data?: Record<string, unknown>): void {
+    if (data !== undefined) {
+        console.log(`${RESOLVE_PREFIX} ${message}`, data);
+    } else {
+        console.log(`${RESOLVE_PREFIX} ${message}`);
+    }
+}
 
 /** Console logging for stock base resolution fixes (grep: STOCK_FIX). */
 export function stockFixLog(message: string, data?: Record<string, unknown>): void {
