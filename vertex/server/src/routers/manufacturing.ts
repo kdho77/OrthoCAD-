@@ -1,9 +1,10 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { RATE_LIMITS } from "../lib/rate-limit";
-import { protectedProcedure, rateLimitedProcedure, router } from "../trpc";
 import { getSupabaseAdmin } from "../context";
+import { callManufacture } from "../lib/manufacturing-client";
+import { RATE_LIMITS } from "../lib/rate-limit";
 import { signedDownloadUrl, uploadAsset } from "../lib/storage";
+import { protectedProcedure, rateLimitedProcedure, router } from "../trpc";
 
 const HYBRID_GCODE_COST = 3;
 
@@ -33,7 +34,16 @@ export const manufacturingRouter = router({
     generateSolid: rateLimitedProcedure(RATE_LIMITS.export, "manufacturing:generateSolid")
         .input(manufactureInputSchema)
         .mutation(async ({ ctx, input }) => {
-            const pythonUrl = process.env.PYTHON_MANUFACTURING_URL || "http://localhost:8001";
+            console.log("[manufacturing] generateSolid request", {
+                userId: ctx.user.id,
+                designId: input.designId ?? null,
+                side: input.side ?? null,
+                presetId: input.presetId,
+                beltAngleDeg: input.beltAngleDeg,
+                grindingStyle: input.grindingStyle.type,
+                hasBaseGlbUrl: Boolean(input.baseGlbUrl),
+                baseAssetId: input.baseAssetId ?? null,
+            });
 
             // License validation
             const now = new Date();
@@ -49,7 +59,10 @@ export const manufacturingRouter = router({
             }
 
             if (!input.presetId || !input.corrections || typeof input.thicknessMm !== "number") {
-                throw new TRPCError({ code: "BAD_REQUEST", message: "Missing required manufacturing parameters" });
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: "Missing required manufacturing parameters",
+                });
             }
 
             const cost = HYBRID_GCODE_COST;
@@ -68,8 +81,12 @@ export const manufacturingRouter = router({
             }
 
             let baseGlbUrl = input.baseGlbUrl;
-            let baseSource: 'server' | 'client' | 'synthetic' = input.baseAssetId ? 'server' : (input.baseGlbUrl ? 'client' : 'synthetic');
-            let baseResolvedServerSide = baseSource === 'server';
+            let baseSource: "server" | "client" | "synthetic" = input.baseAssetId
+                ? "server"
+                : input.baseGlbUrl
+                  ? "client"
+                  : "synthetic";
+            let baseResolvedServerSide = baseSource === "server";
 
             if (input.baseAssetId) {
                 const supabase = getSupabaseAdmin();
@@ -81,32 +98,52 @@ export const manufacturingRouter = router({
                         try {
                             baseGlbUrl = await signedDownloadUrl(supabase, prefab.glbPath);
                             baseResolvedServerSide = true;
-                            baseSource = 'server';
+                            baseSource = "server";
                         } catch {
                             if (!input.baseGlbUrl) {
-                                throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to generate signed URL for base GLB" });
+                                throw new TRPCError({
+                                    code: "INTERNAL_SERVER_ERROR",
+                                    message: "Failed to generate signed URL for base GLB",
+                                });
                             }
-                            baseSource = 'client';
+                            baseSource = "client";
                         }
                     } else {
                         if (!input.baseGlbUrl) {
-                            throw new TRPCError({ code: "FORBIDDEN", message: "Base GLB asset not found or access denied" });
+                            throw new TRPCError({
+                                code: "FORBIDDEN",
+                                message: "Base GLB asset not found or access denied",
+                            });
                         }
-                        baseSource = 'client';
+                        baseSource = "client";
                     }
                 } else {
                     if (!input.baseGlbUrl) {
-                        throw new TRPCError({ code: "BAD_REQUEST", message: "Server cannot resolve base GLB" });
+                        throw new TRPCError({
+                            code: "BAD_REQUEST",
+                            message: "Server cannot resolve base GLB",
+                        });
                     }
-                    baseSource = 'client';
+                    baseSource = "client";
                 }
             }
 
-            const pythonPayload = {
+            if (!baseGlbUrl) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                        "No base GLB URL available. Select a stock or custom base before generating hybrid G-code.",
+                });
+            }
+
+            // Run the authoritative pipeline on the Python microservice:
+            // watertight solid (Grinding Style sides) + belt pre-transform + slicing.
+            // Throws on any failure so tokens are NOT deducted below.
+            const pythonResult = await callManufacture({
                 job_id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                design_id: input.designId ?? "unknown",
+                design_id: input.designId ?? "adhoc",
                 preset_id: input.presetId,
-                base_glb_url: baseGlbUrl ?? "file://synthetic",
+                base_glb_url: baseGlbUrl,
                 corrections: input.corrections,
                 trimlines: input.trimlines,
                 heel_lift_mm: input.heelLiftMm,
@@ -115,33 +152,7 @@ export const manufacturingRouter = router({
                 thickness_mm: input.thicknessMm,
                 belt_angle_deg: input.beltAngleDeg,
                 side: input.side ?? null,
-            };
-
-            let pythonResult: any;
-            try {
-                const resp = await fetch(`${pythonUrl}/manufacture`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(pythonPayload),
-                });
-                if (!resp.ok) {
-                    const text = await resp.text().catch(() => "");
-                    throw new Error(`Python service error (${resp.status}): ${text || resp.statusText}`);
-                }
-                pythonResult = await resp.json();
-            } catch (err: any) {
-                throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: `Hybrid manufacturing failed: ${err?.message ?? err}`,
-                });
-            }
-
-            if (!pythonResult?.ok || !pythonResult?.gcode) {
-                throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: pythonResult?.error || "Python service did not return valid G-code",
-                });
-            }
+            });
 
             let gcodeStorageKey: string | null = null;
             let gcodeDownloadUrl: string | undefined;
@@ -149,10 +160,13 @@ export const manufacturingRouter = router({
             const supabase = getSupabaseAdmin();
             if (supabase && pythonResult.gcode) {
                 try {
-                    const gcodeBytes = Buffer.from(pythonResult.gcode, 'utf-8');
-                    const safeName = (input.fileName || `hybrid-${input.presetId || 'print'}.gcode`).replace(/[^a-zA-Z0-9_.-]/g, '_');
-                    const key = `gcode/${input.designId || 'adhoc'}/${Date.now()}-${safeName}`;
-                    const uploadRes = await uploadAsset(supabase, key, gcodeBytes, 'text/plain');
+                    const gcodeBytes = Buffer.from(pythonResult.gcode, "utf-8");
+                    const safeName = (input.fileName || `hybrid-${input.presetId || "print"}.gcode`).replace(
+                        /[^a-zA-Z0-9_.-]/g,
+                        "_",
+                    );
+                    const key = `gcode/${input.designId || "adhoc"}/${Date.now()}-${safeName}`;
+                    const uploadRes = await uploadAsset(supabase, key, gcodeBytes, "text/plain");
                     gcodeStorageKey = uploadRes.key;
                     gcodeDownloadUrl = await signedDownloadUrl(supabase, gcodeStorageKey, 3600);
                 } catch (uploadErr: any) {
@@ -173,17 +187,24 @@ export const manufacturingRouter = router({
                 }
                 const updatedUser = await tx.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
 
-                const production = await tx.production.create({
-                    data: {
-                        designId: input.designId ?? null,
-                        method: "hybrid_belt",
-                        presetId: input.presetId,
-                        beltAngleDeg: input.beltAngleDeg,
-                        layerHeightMm: 0.3,
-                        material: "TPU",
-                        gcodeStorageKey,
-                    },
-                });
+                // Production rows require a real design FK (productions.designId is
+                // non-nullable). Ad-hoc generations (no persisted design) skip the
+                // Production row but still record the Export + token transaction.
+                let productionId: string | null = null;
+                if (input.designId) {
+                    const production = await tx.production.create({
+                        data: {
+                            designId: input.designId,
+                            method: "printing_solid",
+                            presetId: input.presetId,
+                            beltAngleDeg: input.beltAngleDeg,
+                            layerHeightMm: 0.3,
+                            material: "TPU",
+                            gcodeStorageKey,
+                        },
+                    });
+                    productionId = production.id;
+                }
 
                 const exp = await tx.export.create({
                     data: {
@@ -192,6 +213,7 @@ export const manufacturingRouter = router({
                         format: "gcode",
                         side: input.side ?? null,
                         tokenCost: cost,
+                        storageKey: gcodeStorageKey,
                         fileName: input.fileName ?? `hybrid-${input.presetId}.gcode`,
                     },
                 });
@@ -210,9 +232,10 @@ export const manufacturingRouter = router({
                 await tx.auditLog.create({
                     data: {
                         userId: ctx.user.id,
-                        action: "manufacturing_generated",
-                        targetId: production.id,
+                        action: "export_generated",
+                        targetId: productionId ?? exp.id,
                         metadata: {
+                            kind: "manufacturing_hybrid_gcode",
                             presetId: input.presetId,
                             beltAngleDeg: input.beltAngleDeg,
                             grindingStyle: input.grindingStyle.type,
@@ -225,7 +248,7 @@ export const manufacturingRouter = router({
                 });
 
                 return {
-                    productionId: production.id,
+                    productionId,
                     exportId: exp.id,
                     balance: updatedUser.tokenBalance,
                     jobId: pythonResult.job_id,
@@ -233,7 +256,21 @@ export const manufacturingRouter = router({
                 };
             });
 
-            return { ok: true as const, ...result };
+            console.log("[manufacturing] generateSolid success", {
+                userId: ctx.user.id,
+                productionId: result.productionId,
+                exportId: result.exportId,
+                balance: result.balance,
+                stored: Boolean(gcodeDownloadUrl),
+            });
+
+            // When object storage is unavailable, return the raw G-code so the
+            // client can still download it (no persisted download URL).
+            return {
+                ok: true as const,
+                ...result,
+                gcode: gcodeDownloadUrl ? undefined : pythonResult.gcode,
+            };
         }),
 
     getGcodeDownloadUrl: protectedProcedure
@@ -247,7 +284,10 @@ export const manufacturingRouter = router({
                 throw new TRPCError({ code: "FORBIDDEN", message: "Production not found or access denied" });
             }
             if (!production.gcodeStorageKey) {
-                throw new TRPCError({ code: "NOT_FOUND", message: "No G-code file stored for this production" });
+                throw new TRPCError({
+                    code: "NOT_FOUND",
+                    message: "No G-code file stored for this production",
+                });
             }
             const supabase = getSupabaseAdmin();
             if (!supabase) {

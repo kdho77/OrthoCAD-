@@ -9,7 +9,8 @@ export interface GrindingStylePayload {
     radius_mm?: number;
 }
 
-export interface GenerateSolidPayload {
+/** Payload sent to the Python `/manufacture` endpoint (snake_case by contract). */
+export interface ManufacturePayload {
     job_id: string;
     design_id: string;
     preset_id: string;
@@ -20,56 +21,107 @@ export interface GenerateSolidPayload {
     heel_cup_width_mm: number;
     grinding_style: GrindingStylePayload;
     thickness_mm: number;
+    belt_angle_deg: number;
+    side: string | null;
 }
 
-export interface GenerateSolidResult {
-    job_id: string;
-    solid_stl_base64: string | null;
-    solid_url: string | null;
-    metadata: Record<string, unknown>;
+/** Shape returned by the Python `/manufacture` endpoint on success. */
+export interface ManufactureResult {
+    ok: boolean;
+    job_id?: string;
+    design_id?: string;
+    preset_id?: string;
+    belt_angle_deg?: number;
+    grinding_style?: string;
+    gcode?: string;
+    error?: string;
 }
 
-export function getManufacturingConfig(): { baseUrl: string; apiKey: string } | null {
-    const baseUrl = process.env.MANUFACTURING_SERVICE_URL?.trim();
-    const apiKey = process.env.MANUFACTURING_INTERNAL_API_KEY?.trim();
-    if (!baseUrl || !apiKey) return null;
-    return { baseUrl: baseUrl.replace(/\/$/, ""), apiKey };
+/**
+ * Resolve the manufacturing microservice config.
+ *
+ * `MANUFACTURING_SERVICE_URL` is the canonical var (matches render.yaml). We also
+ * accept the legacy `PYTHON_MANUFACTURING_URL` and fall back to the local docker
+ * default so `npm run dev:server` + `docker compose up` works out of the box.
+ *
+ * `MANUFACTURING_INTERNAL_API_KEY` is optional: when set, it is sent as a Bearer
+ * token and the Python service enforces it.
+ */
+export function getManufacturingConfig(): { baseUrl: string; apiKey: string | null } {
+    const baseUrl = (
+        process.env.MANUFACTURING_SERVICE_URL ||
+        process.env.PYTHON_MANUFACTURING_URL ||
+        "http://localhost:8001"
+    ).trim();
+    const apiKey = process.env.MANUFACTURING_INTERNAL_API_KEY?.trim() || null;
+    return { baseUrl: baseUrl.replace(/\/+$/, ""), apiKey };
 }
 
-export async function callGenerateSolid(payload: GenerateSolidPayload): Promise<GenerateSolidResult> {
-    const cfg = getManufacturingConfig();
-    if (!cfg) {
-        throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: "Manufacturing service not configured (set MANUFACTURING_SERVICE_URL and MANUFACTURING_INTERNAL_API_KEY)",
-        });
-    }
+/**
+ * Call the Python hybrid-manufacturing service.
+ *
+ * Runs the full pipeline server-side: watertight solid generation (with the
+ * requested Grinding Style sides) + belt pre-transform + slicing → G-code.
+ *
+ * Throws a `TRPCError` on any transport or service failure so the caller can
+ * avoid token deduction (deduct only on success).
+ */
+export async function callManufacture(payload: ManufacturePayload): Promise<ManufactureResult> {
+    const { baseUrl, apiKey } = getManufacturingConfig();
+    const endpoint = `${baseUrl}/manufacture`;
 
-    const response = await fetch(`${cfg.baseUrl}/api/v1/manufacturing/generate-solid`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${cfg.apiKey}`,
-        },
-        body: JSON.stringify(payload),
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+    console.log("[manufacturing] -> Python /manufacture", {
+        endpoint,
+        jobId: payload.job_id,
+        presetId: payload.preset_id,
+        beltAngleDeg: payload.belt_angle_deg,
+        grindingStyle: payload.grinding_style.type,
+        side: payload.side,
+        hasBaseUrl: Boolean(payload.base_glb_url && !payload.base_glb_url.startsWith("file://")),
+        authenticated: Boolean(apiKey),
     });
 
-    const body = (await response.json().catch(() => null)) as
-        | GenerateSolidResult
-        | { detail?: string }
-        | null;
-
-    if (!response.ok) {
-        const detail = body && "detail" in body ? body.detail : `Manufacturing service error (${response.status})`;
+    let response: Response;
+    try {
+        response = await fetch(endpoint, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+        });
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[manufacturing] transport error reaching Python service", { endpoint, message });
         throw new TRPCError({
-            code: response.status === 401 ? "UNAUTHORIZED" : "BAD_REQUEST",
-            message: detail ?? "Manufacturing service request failed",
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Could not reach manufacturing service (${endpoint}): ${message}`,
         });
     }
 
-    if (!body || !("job_id" in body)) {
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Invalid manufacturing service response" });
+    if (!response.ok) {
+        // FastAPI errors come back as { detail: "..." }.
+        const body = (await response.json().catch(() => null)) as { detail?: string } | null;
+        const detail = body?.detail || (await response.text().catch(() => "")) || response.statusText;
+        console.error("[manufacturing] Python service returned error", { endpoint, status: response.status, detail });
+        throw new TRPCError({
+            code: response.status === 401 || response.status === 403 ? "UNAUTHORIZED" : "INTERNAL_SERVER_ERROR",
+            message: `Manufacturing service error (${response.status}): ${detail}`,
+        });
     }
 
-    return body;
+    const result = (await response.json().catch(() => null)) as ManufactureResult | null;
+    if (!result || !result.ok || !result.gcode) {
+        const message = result?.error || "Manufacturing service did not return valid G-code";
+        console.error("[manufacturing] invalid Python service response", { endpoint, message });
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
+    }
+
+    console.log("[manufacturing] <- Python /manufacture OK", {
+        jobId: result.job_id,
+        gcodeBytes: result.gcode.length,
+    });
+
+    return result;
 }
