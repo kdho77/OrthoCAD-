@@ -15,7 +15,7 @@
     "rewrites": [
         { "source": "/trpc", "destination": "/api/trpc" },
         { "source": "/trpc/:path*", "destination": "/api/trpc/:path*" },
-        { "source": "/(.*)", "destination": "/index.html" }
+        { "source": "/((?!api/|trpc/).*)", "destination": "/index.html" }
     ],
 
     "headers": [
