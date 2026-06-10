@@ -4,8 +4,17 @@ import type { FetchCreateContextFnOptions } from "@trpc/server/adapters/fetch";
 import type { CreateHTTPContextOptions } from "@trpc/server/adapters/standalone";
 import { isDevAuthAllowed, resolveDevBearerUser, resolveDevRole } from "./lib/dev-auth.js";
 
+// Prefer DATABASE_URL (schema.prisma) but fall back to the variables the
+// Supabase Vercel integration provisions, so previews work without manual
+// env duplication. POSTGRES_PRISMA_URL is the pooled (pgbouncer) string.
+const databaseUrl =
+    process.env.DATABASE_URL?.trim() ||
+    process.env.POSTGRES_PRISMA_URL?.trim() ||
+    process.env.POSTGRES_URL?.trim() ||
+    undefined;
+
 // Singletons reused across requests.
-export const prisma = new PrismaClient();
+export const prisma = databaseUrl ? new PrismaClient({ datasourceUrl: databaseUrl }) : new PrismaClient();
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
