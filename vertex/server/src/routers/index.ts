@@ -1,13 +1,13 @@
-import { router } from "../trpc";
-import { adminRouter } from "./admin";
-import { aiRouter } from "./ai";
-import { clientRouter } from "./client";
-import { designRouter } from "./design";
-import { exportRouter } from "./export";
-import { libraryRouter } from "./library";
-import { manufacturingRouter } from "./manufacturing";
-import { stockRouter } from "./stock";
-import { userRouter } from "./user";
+import { router } from "../trpc.js";
+import { adminRouter } from "./admin.js";
+import { aiRouter } from "./ai.js";
+import { clientRouter } from "./client.js";
+import { designRouter } from "./design.js";
+import { exportRouter } from "./export.js";
+import { libraryRouter } from "./library.js";
+import { manufacturingRouter } from "./manufacturing.js";
+import { stockRouter } from "./stock.js";
+import { userRouter } from "./user.js";
 
 export const appRouter = router({
     user: userRouter,

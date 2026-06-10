@@ -3,23 +3,27 @@
 
 // Self-contained Vercel Serverless Function for the tRPC API.
 //
-// IMPORTANT — keep this the ONLY module inside api/:
-// Vercel deploys every non-underscore file under api/ as its own function and
-// compiles ESM output with extensionless relative imports, so a sibling module
-// (the old ./handler.ts) produced ERR_MODULE_NOT_FOUND at runtime. All request
-// handling is therefore inlined here. The ../../server/src imports below are
-// application source that Vercel bundles into this function at build time;
-// only node_modules packages remain external (and are traced automatically,
-// including the Prisma query engines — no `functions` config is needed).
+// IMPORTANT — relative imports MUST keep their .js extension:
+// @vercel/node compiles each TS file individually to ESM (package.json has
+// "type": "module") and keeps import specifiers verbatim. Node's ESM loader
+// rejects extensionless relative imports, so `from "../../server/src/context"`
+// crashes the function at cold start with ERR_MODULE_NOT_FOUND and Vercel
+// serves its plain-text "A server error has occurred" page (the cause of the
+// persistent /trpc 500s). The same rule applies to every file under
+// server/src/. Verify with `npx vercel build` + booting
+// .vercel/output/functions/api/trpc/[[...trpc]].func/api/trpc/[[...trpc]].js.
+// Also keep this the ONLY module inside api/ (Vercel deploys every
+// non-underscore file under api/ as its own function). node_modules are traced
+// automatically, including Prisma query engines — no `functions` config needed.
 //
 // Routing: the client calls /trpc (see src/lib/trpc.ts); rewrites in
 // vertex/vercel.json map /trpc/* to /api/trpc/* so this catch-all handles it.
 
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { createFetchContext } from "../../server/src/context";
-import { validateServerEnv } from "../../server/src/lib/env";
-import { appRouter } from "../../server/src/routers";
+import { createFetchContext } from "../../server/src/context.js";
+import { validateServerEnv } from "../../server/src/lib/env.js";
+import { appRouter } from "../../server/src/routers/index.js";
 
 validateServerEnv();
 

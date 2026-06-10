@@ -1,4 +1,4 @@
-import { prescriptionParseSchema, type PrescriptionParse } from "./prescription-schema";
+import { prescriptionParseSchema, type PrescriptionParse } from "./prescription-schema.js";
 
 // Server-side AI provider abstraction. Calls Anthropic (Claude) or xAI (Grok)
 // to parse a free-text / image orthotic prescription into structured

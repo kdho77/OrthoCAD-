@@ -1,10 +1,10 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { getSupabaseAdmin } from "../context";
-import { callManufacture } from "../lib/manufacturing-client";
-import { RATE_LIMITS } from "../lib/rate-limit";
-import { signedDownloadUrl, uploadAsset } from "../lib/storage";
-import { protectedProcedure, rateLimitedProcedure, router } from "../trpc";
+import { getSupabaseAdmin } from "../context.js";
+import { callManufacture } from "../lib/manufacturing-client.js";
+import { RATE_LIMITS } from "../lib/rate-limit.js";
+import { signedDownloadUrl, uploadAsset } from "../lib/storage.js";
+import { protectedProcedure, rateLimitedProcedure, router } from "../trpc.js";
 
 const HYBRID_GCODE_COST = 3;
 

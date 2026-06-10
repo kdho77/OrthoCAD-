@@ -1,4 +1,4 @@
-import { protectedProcedure, publicProcedure, router } from "../trpc";
+import { protectedProcedure, publicProcedure, router } from "../trpc.js";
 
 export const userRouter = router({
     // Public health check for load balancers / Render health checks.

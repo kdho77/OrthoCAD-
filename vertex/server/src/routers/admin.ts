@@ -1,7 +1,7 @@
 import type { Role } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { adminProcedure, router, superAdminProcedure } from "../trpc";
+import { adminProcedure, router, superAdminProcedure } from "../trpc.js";
 
 const VALID_ROLES: readonly string[] = ["super_admin", "admin", "clinician"];
 

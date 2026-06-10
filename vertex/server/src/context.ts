@@ -2,7 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { FetchCreateContextFnOptions } from "@trpc/server/adapters/fetch";
 import type { CreateHTTPContextOptions } from "@trpc/server/adapters/standalone";
-import { isDevAuthAllowed, resolveDevBearerUser, resolveDevRole } from "./lib/dev-auth";
+import { isDevAuthAllowed, resolveDevBearerUser, resolveDevRole } from "./lib/dev-auth.js";
 
 // Singletons reused across requests.
 export const prisma = new PrismaClient();
