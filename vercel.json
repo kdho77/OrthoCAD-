@@ -8,7 +8,7 @@
     "functions": {
         "vertex/api/trpc/[[...trpc]].ts": {
             "runtime": "nodejs20.x",
-            "includeFiles": "vertex/node_modules/.prisma/**"
+            "includeFiles": ["vertex/api/trpc/handler.ts", "vertex/node_modules/.prisma/**"]
         }
     },
 
