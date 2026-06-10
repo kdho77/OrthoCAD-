@@ -11,8 +11,23 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabaseConfigured = Boolean(supabaseUrl && supabaseServiceKey);
 
-const supabase: SupabaseClient | null =
-    supabaseConfigured ? createClient(supabaseUrl as string, supabaseServiceKey as string) : null;
+// Never let Supabase client construction kill the whole API at cold start:
+// supabase-js eagerly builds a RealtimeClient, which throws on runtimes
+// without native WebSocket (e.g. Node 20). Degrade to auth/storage disabled
+// instead of crashing every endpoint.
+function buildSupabaseClient(): SupabaseClient | null {
+    if (!supabaseConfigured) return null;
+    try {
+        return createClient(supabaseUrl as string, supabaseServiceKey as string);
+    } catch (err) {
+        console.error("[vertex] Supabase client init failed — auth/storage disabled", {
+            error: err instanceof Error ? err.message : String(err),
+        });
+        return null;
+    }
+}
+
+const supabase: SupabaseClient | null = buildSupabaseClient();
 
 /** Service-role Supabase client for storage operations. */
 export function getSupabaseAdmin(): SupabaseClient | null {
