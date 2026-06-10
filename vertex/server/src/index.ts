@@ -1,3 +1,4 @@
+import "./load-env.js";
 import { createHTTPServer } from "@trpc/server/adapters/standalone";
 import { createContext } from "./context.js";
 import { validateServerEnv } from "./lib/env.js";
