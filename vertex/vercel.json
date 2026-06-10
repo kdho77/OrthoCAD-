@@ -5,9 +5,7 @@
     "outputDirectory": "dist",
     "framework": "vite",
     "functions": {
-        "api/trpc/**/*.ts": {
-            "includeFiles": "node_modules/.prisma/**"
-        }
+        "api/trpc/**/*.ts": {}
     },
     "rewrites": [
         { "source": "/trpc", "destination": "/api/trpc" },

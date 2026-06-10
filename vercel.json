@@ -7,8 +7,7 @@
 
     "functions": {
         "vertex/api/trpc/[[...trpc]].ts": {
-            "runtime": "nodejs20.x",
-            "includeFiles": "vertex/node_modules/.prisma/**"
+            "runtime": "nodejs20.x"
         }
     },
 
