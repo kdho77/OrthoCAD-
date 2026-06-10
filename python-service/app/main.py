@@ -16,12 +16,13 @@ The geometry functions remain untouched and reusable (CLI, tests, future jobs).
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.models.requests import GenerateSolidRequest, GrindingStyle
@@ -30,11 +31,30 @@ from app.services.presets import get_preset
 from app.services.slicer import generate_gcode_from_solid
 from app.services.solid_generator import generate_final_solid
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("manufacturing")
+
 app = FastAPI(
     title="OrthoCAD Hybrid Manufacturing Service",
     version="0.1.0",
-    description="Authoritative solid generation + belt transform + (future) slicing for orthotic manufacturing.",
+    description="Authoritative solid generation + belt transform + slicing for orthotic manufacturing.",
 )
+
+
+def verify_internal_key(authorization: str | None = Header(default=None)) -> None:
+    """Optional internal-service auth.
+
+    When MANUFACTURING_INTERNAL_API_KEY is set, every /manufacture call must send
+    `Authorization: Bearer <key>`. When it is unset (local/dev), auth is skipped.
+    """
+    expected = os.environ.get("MANUFACTURING_INTERNAL_API_KEY", "").strip()
+    if not expected:
+        return
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing internal service credentials")
+    token = authorization.split(" ", 1)[1].strip()
+    if token != expected:
+        raise HTTPException(status_code=401, detail="Invalid internal service credentials")
 
 # In production this would come from a real job queue / object storage.
 # For now we keep everything in-memory for the response (G-code can be large but acceptable for MVP).
@@ -78,7 +98,7 @@ async def health() -> dict[str, str]:
 
 
 @app.post("/manufacture")
-async def manufacture(req: GenerateSolidRequest) -> JSONResponse:
+async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_internal_key)) -> JSONResponse:
     """
     Main entry point for the hybrid pipeline (Phase 1 wiring).
 
@@ -93,6 +113,11 @@ async def manufacture(req: GenerateSolidRequest) -> JSONResponse:
     """
     # Belt angle comes from the caller (Node resolves from preset / printer profile).
     belt_angle = float(getattr(req, "belt_angle_deg", 45.0) or 45.0)
+
+    logger.info(
+        "manufacture start job=%s design=%s preset=%s belt=%.1f grinding=%s side=%s",
+        req.job_id, req.design_id, req.preset_id, belt_angle, req.grinding_style.type, req.side,
+    )
 
     # 1. Resolve base
     local_glb = _download_to_temp(req.base_glb_url)
@@ -133,6 +158,8 @@ async def manufacture(req: GenerateSolidRequest) -> JSONResponse:
             except Exception:
                 pass
 
+        logger.info("manufacture ok job=%s gcode_bytes=%d", req.job_id, len(gcode))
+
         return JSONResponse(
             {
                 "ok": True,
@@ -147,6 +174,7 @@ async def manufacture(req: GenerateSolidRequest) -> JSONResponse:
 
     except Exception as e:
         # Important: do NOT let the Node deduct tokens on failure.
+        logger.exception("manufacture failed job=%s: %s", req.job_id, e)
         if req.base_glb_url.startswith(("http://", "https://")):
             try:
                 os.unlink(local_glb)

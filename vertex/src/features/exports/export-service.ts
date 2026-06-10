@@ -1,14 +1,6 @@
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
-import { buildExportGeometry, buildExportGlb, buildExportStl } from "@/lib/geometry/export-geometry";
 import { getDesignBase } from "@/lib/geometry/base-asset";
-import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
-import { isApiConfigured, trpc } from "@/lib/trpc";
-import { useAuditStore } from "@/stores/audit-store";
-import { useAuthStore } from "@/stores/auth-store";
-import { useClientStore } from "@/stores/client-store";
-import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { buildExportGeometry, buildExportGlb, buildExportStl } from "@/lib/geometry/export-geometry";
-import { getDesignBase } from "@/lib/geometry/base-asset";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuditStore } from "@/stores/audit-store";
@@ -111,7 +103,9 @@ export async function exportGcode(
     geometry.dispose();
     const blob = new Blob([gcode], { type: "text/plain" });
     downloadBlob(blob, filename);
-    useAuditStore.getState().record("export_generated", `G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
+    useAuditStore
+        .getState()
+        .record("export_generated", `G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
     return { ok: true, filename, blob, stats };
 }
 
@@ -132,20 +126,35 @@ export async function generateHybridGcode(
     const sideCorrections = design.corrections[side];
     const trimlineForSide = design.trimlines?.[side] ?? [];
 
-    let baseGlbUrl: string | undefined;
-    const base = design.base ?? (side === "left" ? design.paired?.leftBase : design.paired?.rightBase);
-    const baseAssetId = base?.assetId;
+    // Resolve the side-correct base (handles paired left/right and legacy single base).
+    const base = getDesignBase(design, side);
 
-    if (baseAssetId) {
-        const lib = useCustomLibraryStore.getState();
-        const prefab = lib.customPrefabs.find((p) => p.id === baseAssetId);
-        if (prefab?.url) {
-            baseGlbUrl = prefab.url;
+    let baseGlbUrl: string | undefined;
+    // Only forward a customPrefab assetId for server-side signed-URL resolution.
+    // Stock bases are resolved entirely from their authoritative public/signed URL.
+    let customPrefabAssetId: string | undefined;
+
+    if (base) {
+        if (base.source === "stock") {
+            // Stock bases carry an authoritative public/signed Supabase URL that the
+            // Python service can download directly (no server lookup required).
+            if (base.url && /^https?:\/\//i.test(base.url)) {
+                baseGlbUrl = base.url;
+            }
+        } else {
+            // Custom prefab: let the server resolve a signed URL from the stored
+            // glbPath, and also pass any already-known public URL as a fallback.
+            customPrefabAssetId = base.assetId;
+            const prefab = useCustomLibraryStore.getState().customPrefabs.find((p) => p.id === base.assetId);
+            if (prefab?.url) {
+                baseGlbUrl = prefab.url;
+            }
         }
     }
 
     const correctionsDict: Record<string, any> = { ...sideCorrections };
-    if (sideCorrections.heelCupWidthMm != null) correctionsDict.heelCupWidthMm = sideCorrections.heelCupWidthMm;
+    if (sideCorrections.heelCupWidthMm != null)
+        correctionsDict.heelCupWidthMm = sideCorrections.heelCupWidthMm;
     if (sideCorrections.heelLiftMm != null) correctionsDict.heelLiftMm = sideCorrections.heelLiftMm;
 
     const trimlinesDict: Record<string, any> = {
@@ -166,12 +175,12 @@ export async function generateHybridGcode(
                 heelCupWidthMm: sideCorrections.heelCupWidthMm ?? 0,
                 grindingStyle,
                 baseGlbUrl,
-                ...(baseAssetId ? { baseAssetId } : {}),
+                ...(customPrefabAssetId ? { baseAssetId: customPrefabAssetId } : {}),
                 fileName: filename,
             });
 
             if (!res?.ok || (!res.gcode && !res.gcodeDownloadUrl && !res.productionId)) {
-                return { ok: false, reason: res?.note || "Server did not return G-code reference" };
+                return { ok: false, reason: "Server did not return a G-code reference" };
             }
 
             let blob: Blob | undefined;
@@ -194,12 +203,14 @@ export async function generateHybridGcode(
                 downloadBlob(blob, filename);
             }
 
-            useAuditStore.getState().record(
-                "export_generated",
-                `Hybrid G-code ${side} · ${preset.name} (${grindingStyle.type}) (productionId=${res.productionId || 'n/a'})`,
-            );
+            useAuditStore
+                .getState()
+                .record(
+                    "export_generated",
+                    `Hybrid G-code ${side} · ${preset.name} (${grindingStyle.type}) (productionId=${res.productionId || "n/a"})`,
+                );
 
-            return { ok: true, filename, blob, productionId: res.productionId };
+            return { ok: true, filename, blob, productionId: res.productionId ?? undefined };
         } catch (e) {
             return {
                 ok: false,
@@ -229,7 +240,9 @@ export async function downloadGcodeByProductionId(productionId: string): Promise
         const filename = `hybrid-${productionId}.gcode`;
         const blob = new Blob([gcodeText], { type: "text/plain" });
         downloadBlob(blob, filename);
-        useAuditStore.getState().record("export_generated", `Hybrid G-code re-download via productionId ${productionId}`);
+        useAuditStore
+            .getState()
+            .record("export_generated", `Hybrid G-code re-download via productionId ${productionId}`);
         return { ok: true, filename, blob, productionId };
     } catch (e) {
         return {

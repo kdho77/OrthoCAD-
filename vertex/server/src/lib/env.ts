@@ -11,13 +11,21 @@ export function validateServerEnv(): void {
     if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
         console.warn("[vertex] Supabase service credentials unset — auth/storage disabled");
     }
-    if (!process.env.MANUFACTURING_SERVICE_URL || !process.env.MANUFACTURING_INTERNAL_API_KEY) {
-        console.warn("[vertex] Manufacturing service unset — manufacturing.generateSolid will fail");
+    if (!process.env.MANUFACTURING_SERVICE_URL && !process.env.PYTHON_MANUFACTURING_URL) {
+        console.warn(
+            "[vertex] MANUFACTURING_SERVICE_URL not set — manufacturing.generateSolid will fall back to " +
+                "http://localhost:8001 and fail in production. Point it at the Python manufacturing service.",
+        );
+    }
+    if (
+        (process.env.MANUFACTURING_SERVICE_URL || process.env.PYTHON_MANUFACTURING_URL) &&
+        !process.env.MANUFACTURING_INTERNAL_API_KEY
+    ) {
+        console.warn(
+            "[vertex] MANUFACTURING_INTERNAL_API_KEY not set — calls to the manufacturing service will be unauthenticated.",
+        );
     }
     if (process.env.CORS_ORIGIN === "*" && process.env.NODE_ENV === "production") {
         console.warn("[vertex] CORS_ORIGIN is * in production — set to your SPA origin");
-    }
-    if (!process.env.MANUFACTURING_SERVICE_URL) {
-        console.warn("[vertex] MANUFACTURING_SERVICE_URL not set — manufacturing.generateSolid will fail");
     }
 }
