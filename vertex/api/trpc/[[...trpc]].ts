@@ -1,6 +1,14 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+// Vercel Serverless Function entry point for the self-contained tRPC API.
+// This file (and only this file) is registered as a Node.js function.
+// - Must export BOTH `config` (for bodyParser: false) AND a `default` handler.
+// - Prisma engine/client files are included via vertex/vercel.json "functions" entry
+//   using this exact filename (never use a broad glob like "api/trpc/**/*.ts").
+// - The client calls /trpc (see src/lib/trpc.ts); rewrites in vercel.json map it
+//   to /api/trpc so this catch-all file-based route handles it.
+
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { handleTrpcRequest } from "./handler";
 

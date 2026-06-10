@@ -112,15 +112,20 @@ See `VALIDATION.md` for the full clinical workflow checklist.
 
 ## Deployment
 
-### Vercel (recommended for SPA)
+### Vercel (recommended for SPA + optional self-contained tRPC)
 
-Root `vercel.json` builds `vertex/` and serves the Vite SPA with WASM asset caching.
-Set environment variables in the Vercel dashboard:
+The Vertex project is deployed with Root Directory set to `vertex` (see `.vercel/project.json` and Vercel dashboard Project Settings).
+All Vercel-specific configuration lives in `vertex/vercel.json` (build commands, rewrites for `/trpc` → `/api/trpc`, WASM cache headers, and the serverless function registration for the tRPC handler).
 
+- For a fully self-contained deploy (SPA + tRPC on Vercel, no separate API): omit `VITE_API_URL` (or set it to a same-origin value). The client defaults to `/trpc`; `vertex/vercel.json` rewrites it to the `api/trpc/[[...trpc]].ts` Serverless Function (which shares the same router as the standalone server).
+- For a split deploy (Vercel SPA only, tRPC on Render/other): set `VITE_API_URL` to the external tRPC origin (it will be normalized to end in `/trpc`).
+
+Required environment variables (Vercel dashboard):
 - `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
-- `VITE_API_URL` → your tRPC backend URL
+- `DATABASE_URL`, `DIRECT_URL` (for Prisma in the tRPC function)
+- `SUPABASE_SERVICE_ROLE_KEY`, `AI_API_KEY`, `CORS_ORIGIN` (for the tRPC function when self-contained)
 
-Deploy the API separately (Render or any Node host) with `DATABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `AI_API_KEY`, and `CORS_ORIGIN` set to your Vercel domain.
+See `vertex/vercel.json` and `vertex/api/trpc/[[...trpc]].ts` (the inlined Vercel handler) for implementation details. The function config uses an exact path + `includeFiles` for Prisma engines (never broad globs).
 
 ### Render (full stack)
 
