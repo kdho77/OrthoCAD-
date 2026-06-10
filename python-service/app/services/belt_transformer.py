@@ -25,11 +25,14 @@ preserves watertightness and manifoldness for well-formed input.
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
 import numpy as np
 import trimesh
+
+logger = logging.getLogger("manufacturing.belt")
 
 
 def apply_belt_transform(
@@ -44,6 +47,7 @@ def apply_belt_transform(
     if solid is None or len(solid.vertices) == 0:
         raise ValueError("apply_belt_transform: empty or None solid")
 
+    input_watertight = bool(solid.is_watertight)
     angle = float(angle_degrees)
     if not (5.0 < angle < 80.0):
         raise ValueError(f"Unsupported belt angle {angle}° (expected ~30 or 45)")
@@ -82,13 +86,22 @@ def apply_belt_transform(
         pass
 
     if not out.is_watertight:
-        # Non-fatal for some degenerate input, but we want to surface it.
-        # Many downstream slicers tolerate tiny leaks; we keep the mesh but warn via exception
-        # only if the original was watertight (contract).
-        raise ValueError(
-            f"apply_belt_transform({angle}°): output is not watertight "
-            f"(input was watertight={solid.is_watertight}). "
-            "Check for near-degenerate faces or extreme aspect ratio before transform."
+        # The belt transform is a linear shear+scale in YZ: it preserves topology
+        # and therefore cannot turn a watertight solid into a leaky one. So a
+        # non-watertight result here only matters if the INPUT was watertight —
+        # that would signal numerical degeneracy introduced by the transform.
+        if input_watertight:
+            raise ValueError(
+                f"apply_belt_transform({angle}°): a watertight solid became non-watertight "
+                "after the transform. Check for near-degenerate faces or extreme aspect ratio."
+            )
+        # Input was already non-watertight (e.g. best-effort solid from a
+        # low-resolution/synthetic base). The planar slicer tolerates small leaks
+        # via trimesh.section, so proceed instead of failing the whole job.
+        logger.warning(
+            "apply_belt_transform(%.1f°): input solid was not watertight; proceeding with "
+            "best-effort transformed mesh (slicing tolerates minor leaks).",
+            angle,
         )
 
     return out
