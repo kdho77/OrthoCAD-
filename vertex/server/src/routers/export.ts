@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { RATE_LIMITS } from "../lib/rate-limit";
-import { rateLimitedProcedure, router } from "../trpc";
+import { RATE_LIMITS } from "../lib/rate-limit.js";
+import { rateLimitedProcedure, router } from "../trpc.js";
 
 // Server-side token cost schedule. Authoritative — the client mirror is for UX
 // only.

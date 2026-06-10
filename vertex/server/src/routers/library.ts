@@ -4,11 +4,11 @@
 import type { Prisma } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { getSupabaseAdmin } from "../context";
-import { validateGlbBase64 } from "../lib/glb-validation";
-import { RATE_LIMITS } from "../lib/rate-limit";
-import { buildGlbKey, deleteAsset, signedDownloadUrl, uploadAsset } from "../lib/storage";
-import { protectedProcedure, rateLimitedProcedure, router } from "../trpc";
+import { getSupabaseAdmin } from "../context.js";
+import { validateGlbBase64 } from "../lib/glb-validation.js";
+import { RATE_LIMITS } from "../lib/rate-limit.js";
+import { buildGlbKey, deleteAsset, signedDownloadUrl, uploadAsset } from "../lib/storage.js";
+import { protectedProcedure, rateLimitedProcedure, router } from "../trpc.js";
 
 // Token cost for saving a custom GLB to the personal library.
 const SAVE_TOKEN_COST = 1;

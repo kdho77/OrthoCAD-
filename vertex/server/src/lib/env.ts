@@ -3,10 +3,15 @@
 
 /** Warns when production-critical env vars are missing (does not throw in dev). */
 export function validateServerEnv(): void {
-    const required = ["DATABASE_URL"] as const;
-    const missing = required.filter((k) => !process.env[k]?.trim());
-    if (missing.length > 0) {
-        console.warn(`[vertex] Missing env: ${missing.join(", ")} — DB routes will fail`);
+    const dbConfigured = ["DATABASE_URL", "POSTGRES_PRISMA_URL", "POSTGRES_URL"].some((k) =>
+        process.env[k]?.trim(),
+    );
+    if (!dbConfigured) {
+        console.warn(
+            "[vertex] DATABASE_URL not set (no POSTGRES_PRISMA_URL/POSTGRES_URL fallback either) — " +
+                "every DB-backed route will fail. Add it in Vercel > Settings > Environment Variables " +
+                "for Production AND Preview.",
+        );
     }
     if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
         console.warn("[vertex] Supabase service credentials unset — auth/storage disabled");

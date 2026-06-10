@@ -1,8 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { getAiConfig, parsePrescriptionWithAi } from "../lib/ai-provider";
-import { RATE_LIMITS } from "../lib/rate-limit";
-import { rateLimitedProcedure, router } from "../trpc";
+import { getAiConfig, parsePrescriptionWithAi } from "../lib/ai-provider.js";
+import { RATE_LIMITS } from "../lib/rate-limit.js";
+import { rateLimitedProcedure, router } from "../trpc.js";
 
 // Token cost for an AI prescription parse / generation.
 const AI_TOKEN_COST = 3;

@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { designStateSchema } from "../lib/design-schema";
-import { protectedProcedure, router } from "../trpc";
+import { designStateSchema } from "../lib/design-schema.js";
+import { protectedProcedure, router } from "../trpc.js";
 
 export const designRouter = router({
     list: protectedProcedure.input(z.object({ clientId: z.string().uuid() })).query(({ ctx, input }) =>

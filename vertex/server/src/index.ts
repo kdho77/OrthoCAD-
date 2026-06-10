@@ -1,7 +1,7 @@
 import { createHTTPServer } from "@trpc/server/adapters/standalone";
-import { createContext } from "./context";
-import { validateServerEnv } from "./lib/env";
-import { appRouter } from "./routers";
+import { createContext } from "./context.js";
+import { validateServerEnv } from "./lib/env.js";
+import { appRouter } from "./routers/index.js";
 
 validateServerEnv();
 

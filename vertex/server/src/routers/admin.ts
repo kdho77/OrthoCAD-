@@ -1,7 +1,7 @@
 import type { Role } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { adminProcedure, router, superAdminProcedure } from "../trpc";
+import { adminProcedure, router, superAdminProcedure } from "../trpc.js";
 
 const VALID_ROLES: readonly string[] = ["super_admin", "admin", "clinician"];
 
@@ -12,17 +12,35 @@ export const adminRouter = router({
         .query(({ ctx, input }) =>
             ctx.prisma.user.findMany({
                 where: input?.search
-                    ? { OR: [{ email: { contains: input.search, mode: "insensitive" } }, { fullName: { contains: input.search, mode: "insensitive" } }] }
+                    ? {
+                          OR: [
+                              { email: { contains: input.search, mode: "insensitive" } },
+                              { fullName: { contains: input.search, mode: "insensitive" } },
+                          ],
+                      }
                     : undefined,
                 orderBy: { createdAt: "desc" },
-                select: { id: true, email: true, fullName: true, role: true, tokenBalance: true, isActive: true },
+                select: {
+                    id: true,
+                    email: true,
+                    fullName: true,
+                    role: true,
+                    tokenBalance: true,
+                    isActive: true,
+                },
                 take: 200,
             }),
         ),
 
     // Grant (or remove, if negative) tokens in bulk, recording a transaction + audit.
     grantTokens: superAdminProcedure
-        .input(z.object({ userId: z.string().uuid(), amount: z.number().int(), reason: z.string().max(200).optional() }))
+        .input(
+            z.object({
+                userId: z.string().uuid(),
+                amount: z.number().int(),
+                reason: z.string().max(200).optional(),
+            }),
+        )
         .mutation(async ({ ctx, input }) => {
             console.log("[admin] grantTokens request", {
                 actorId: ctx.user.id,
@@ -46,10 +64,13 @@ export const adminRouter = router({
             // and returning a 500 (an HTML crash page on Vercel). Lazily provision
             // the acting user so these foreign keys resolve.
             const actorRole = (VALID_ROLES.includes(ctx.user.role) ? ctx.user.role : "clinician") as Role;
+            // users.email is unique — never insert an empty string (P2002 on the
+            // second email-less actor); fall back to a per-id placeholder.
+            const actorEmail = ctx.user.email.trim() || `${ctx.user.id}@placeholder.invalid`;
             await ctx.prisma.user.upsert({
                 where: { id: ctx.user.id },
                 update: {},
-                create: { id: ctx.user.id, email: ctx.user.email, role: actorRole },
+                create: { id: ctx.user.id, email: actorEmail, role: actorRole },
             });
             console.log("[admin] grantTokens actor provisioned", { actorId: ctx.user.id });
 
@@ -152,7 +173,12 @@ export const adminRouter = router({
                 },
             });
             await ctx.prisma.auditLog.create({
-                data: { userId: ctx.user.id, action: "license_created", targetId: license.id, ipAddress: ctx.ip },
+                data: {
+                    userId: ctx.user.id,
+                    action: "license_created",
+                    targetId: license.id,
+                    ipAddress: ctx.ip,
+                },
             });
             return license;
         }),
@@ -165,7 +191,12 @@ export const adminRouter = router({
                 data: { status: "active", expiresAt: new Date(input.expiresAt) },
             });
             await ctx.prisma.auditLog.create({
-                data: { userId: ctx.user.id, action: "license_renewed", targetId: input.id, ipAddress: ctx.ip },
+                data: {
+                    userId: ctx.user.id,
+                    action: "license_renewed",
+                    targetId: input.id,
+                    ipAddress: ctx.ip,
+                },
             });
             return license;
         }),
@@ -173,9 +204,17 @@ export const adminRouter = router({
     revokeLicense: superAdminProcedure
         .input(z.object({ id: z.string().uuid() }))
         .mutation(async ({ ctx, input }) => {
-            const license = await ctx.prisma.license.update({ where: { id: input.id }, data: { status: "revoked" } });
+            const license = await ctx.prisma.license.update({
+                where: { id: input.id },
+                data: { status: "revoked" },
+            });
             await ctx.prisma.auditLog.create({
-                data: { userId: ctx.user.id, action: "license_revoked", targetId: input.id, ipAddress: ctx.ip },
+                data: {
+                    userId: ctx.user.id,
+                    action: "license_revoked",
+                    targetId: input.id,
+                    ipAddress: ctx.ip,
+                },
             });
             return license;
         }),

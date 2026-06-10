@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ELEMENT_KINDS, PRODUCTION_METHODS, SCAN_PATTERNS } from "./prescription-schema";
+import { ELEMENT_KINDS, PRODUCTION_METHODS, SCAN_PATTERNS } from "./prescription-schema.js";
 
 // Zod schema for a full design payload, used by design.save. Mirrors the
 // client `DesignState` type.

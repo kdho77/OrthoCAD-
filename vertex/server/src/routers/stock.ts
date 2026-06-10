@@ -3,10 +3,10 @@
 
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { getSupabaseAdmin } from "../context";
-import { validateGlbBase64 } from "../lib/glb-validation";
-import { buildStockGlbKey, deleteAsset, getPublicUrl, signedDownloadUrl, STOCK_BUCKET, uploadAsset } from "../lib/storage";
-import { adminProcedure, protectedProcedure, router } from "../trpc";
+import { getSupabaseAdmin } from "../context.js";
+import { validateGlbBase64 } from "../lib/glb-validation.js";
+import { buildStockGlbKey, deleteAsset, getPublicUrl, signedDownloadUrl, STOCK_BUCKET, uploadAsset } from "../lib/storage.js";
+import { adminProcedure, protectedProcedure, router } from "../trpc.js";
 
 /**
  * Server-authoritative procedures for system stock bases (global GLB templates

@@ -2,17 +2,41 @@ import { PrismaClient } from "@prisma/client";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { FetchCreateContextFnOptions } from "@trpc/server/adapters/fetch";
 import type { CreateHTTPContextOptions } from "@trpc/server/adapters/standalone";
-import { isDevAuthAllowed, resolveDevBearerUser, resolveDevRole } from "./lib/dev-auth";
+import { isDevAuthAllowed, resolveDevBearerUser, resolveDevRole } from "./lib/dev-auth.js";
+
+// Prefer DATABASE_URL (schema.prisma) but fall back to the variables the
+// Supabase Vercel integration provisions, so previews work without manual
+// env duplication. POSTGRES_PRISMA_URL is the pooled (pgbouncer) string.
+const databaseUrl =
+    process.env.DATABASE_URL?.trim() ||
+    process.env.POSTGRES_PRISMA_URL?.trim() ||
+    process.env.POSTGRES_URL?.trim() ||
+    undefined;
 
 // Singletons reused across requests.
-export const prisma = new PrismaClient();
+export const prisma = databaseUrl ? new PrismaClient({ datasourceUrl: databaseUrl }) : new PrismaClient();
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabaseConfigured = Boolean(supabaseUrl && supabaseServiceKey);
 
-const supabase: SupabaseClient | null =
-    supabaseConfigured ? createClient(supabaseUrl as string, supabaseServiceKey as string) : null;
+// Never let Supabase client construction kill the whole API at cold start:
+// supabase-js eagerly builds a RealtimeClient, which throws on runtimes
+// without native WebSocket (e.g. Node 20). Degrade to auth/storage disabled
+// instead of crashing every endpoint.
+function buildSupabaseClient(): SupabaseClient | null {
+    if (!supabaseConfigured) return null;
+    try {
+        return createClient(supabaseUrl as string, supabaseServiceKey as string);
+    } catch (err) {
+        console.error("[vertex] Supabase client init failed — auth/storage disabled", {
+            error: err instanceof Error ? err.message : String(err),
+        });
+        return null;
+    }
+}
+
+const supabase: SupabaseClient | null = buildSupabaseClient();
 
 /** Service-role Supabase client for storage operations. */
 export function getSupabaseAdmin(): SupabaseClient | null {

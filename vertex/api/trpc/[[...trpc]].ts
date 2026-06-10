@@ -1,24 +1,120 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-// Vercel Serverless Function entry point for the self-contained tRPC API.
-// This file (and only this file) is registered as a Node.js function.
-// - Must export BOTH `config` (for bodyParser: false) AND a `default` handler.
-// - Prisma engine/client files are included via vertex/vercel.json "functions" entry
-//   using this exact filename (never use a broad glob like "api/trpc/**/*.ts").
-// - The client calls /trpc (see src/lib/trpc.ts); rewrites in vercel.json map it
-//   to /api/trpc so this catch-all file-based route handles it.
+// Self-contained Vercel Serverless Function for the tRPC API.
+//
+// IMPORTANT — relative imports MUST keep their .js extension:
+// @vercel/node compiles each TS file individually to ESM (package.json has
+// "type": "module") and keeps import specifiers verbatim. Node's ESM loader
+// rejects extensionless relative imports, so `from "../../server/src/context"`
+// crashes the function at cold start with ERR_MODULE_NOT_FOUND and Vercel
+// serves its plain-text "A server error has occurred" page (the cause of the
+// persistent /trpc 500s). The same rule applies to every file under
+// server/src/. Verify with `npx vercel build` + booting
+// .vercel/output/functions/api/trpc/[[...trpc]].func/api/trpc/[[...trpc]].js.
+// Also keep this the ONLY module inside api/ (Vercel deploys every
+// non-underscore file under api/ as its own function). node_modules are traced
+// automatically, including Prisma query engines — no `functions` config needed.
+//
+// Routing: the client calls /trpc (see src/lib/trpc.ts); rewrites in
+// vertex/vercel.json map /trpc/* to /api/trpc/* so this catch-all handles it.
 
+import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { handleTrpcRequest } from "./handler";
+import { createFetchContext } from "../../server/src/context.js";
+import { validateServerEnv } from "../../server/src/lib/env.js";
+import { appRouter } from "../../server/src/routers/index.js";
 
-// Node.js version is set via package.json engines (20.x). Disable body parsing so
-// tRPC receives the raw JSON payload from httpBatchLink.
+validateServerEnv();
+
+const corsOrigin = process.env.CORS_ORIGIN ?? "*";
+
+// Disable body parsing so tRPC receives the raw JSON payload from httpBatchLink.
 export const config = {
     api: {
         bodyParser: false,
     },
 };
+
+// ---------------------------------------------------------------------------
+// tRPC fetch handling (inlined — do not extract into a sibling api/ module)
+// ---------------------------------------------------------------------------
+
+/** Match the URL prefix tRPC sees after Vercel rewrites (/trpc or /api/trpc). */
+function resolveTrpcEndpoint(pathname: string): string {
+    const normalized = pathname.replace(/\/+$/, "") || "/";
+    if (normalized.startsWith("/api/trpc")) return "/api/trpc";
+    if (normalized.startsWith("/trpc")) return "/trpc";
+    return "/trpc";
+}
+
+function withCors(response: Response): Response {
+    const headers = new Headers(response.headers);
+    headers.set("Access-Control-Allow-Origin", corsOrigin);
+    headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    headers.set("Access-Control-Allow-Headers", "Content-Type,Authorization");
+    return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+    });
+}
+
+/** tRPC-shaped JSON error so the browser client can always parse the body. */
+function trpcErrorBody(message: string): string {
+    return JSON.stringify({
+        error: {
+            message,
+            code: -32603,
+            data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500 },
+        },
+    });
+}
+
+async function handleTrpcRequest(request: Request): Promise<Response> {
+    const pathname = new URL(request.url).pathname;
+
+    if (request.method === "OPTIONS") {
+        return withCors(new Response(null, { status: 204 }));
+    }
+
+    try {
+        const response = await fetchRequestHandler({
+            endpoint: resolveTrpcEndpoint(pathname),
+            req: request,
+            router: appRouter,
+            createContext: createFetchContext,
+            onError({ error, path, type }) {
+                console.error("[trpc] procedure error", {
+                    path: path ?? "<unknown>",
+                    type,
+                    code: error.code,
+                    message: error.message,
+                    cause: error.cause instanceof Error ? error.cause.message : undefined,
+                });
+            },
+        });
+        return withCors(response);
+    } catch (error) {
+        // fetchRequestHandler formats procedure/context errors as JSON itself,
+        // so reaching here means something lower-level failed (e.g. Prisma
+        // engine init). Log it and return JSON so the client never sees HTML.
+        console.error("[trpc] fatal handler error", {
+            pathname,
+            error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+        });
+        return withCors(
+            new Response(trpcErrorBody(error instanceof Error ? error.message : "Internal Server Error"), {
+                status: 500,
+                headers: { "Content-Type": "application/json" },
+            }),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Node (VercelRequest/VercelResponse) <-> Fetch API bridging
+// ---------------------------------------------------------------------------
 
 function readRawBody(req: VercelRequest): Promise<Buffer> {
     return new Promise((resolve, reject) => {
@@ -43,27 +139,21 @@ async function toFetchRequest(req: VercelRequest): Promise<Request> {
         headers.set(key, Array.isArray(value) ? value.join(", ") : String(value));
     }
 
-    let body: Buffer | undefined;
+    let body: Uint8Array<ArrayBuffer> | undefined;
     if (req.method !== "GET" && req.method !== "HEAD") {
         const raw = await readRawBody(req);
-        if (raw.length > 0) body = raw;
+        if (raw.length > 0) {
+            // Copy into a plain ArrayBuffer-backed Uint8Array: Buffer (ArrayBufferLike)
+            // does not satisfy the BodyInit type.
+            body = new Uint8Array(raw.length);
+            body.set(raw);
+        }
     }
 
     return new Request(url, {
         method: req.method,
         headers,
         body,
-    });
-}
-
-/** tRPC-shaped JSON error so the browser client can always parse the body. */
-function trpcErrorBody(message: string) {
-    return JSON.stringify({
-        error: {
-            message,
-            code: -32603,
-            data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500 },
-        },
     });
 }
 
@@ -90,7 +180,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         console.error("[vercel] tRPC function crashed", {
             url: req.url,
             method: req.method,
-            error: err instanceof Error ? err.stack ?? err.message : String(err),
+            error: err instanceof Error ? (err.stack ?? err.message) : String(err),
         });
         if (res.headersSent) {
             res.end();
@@ -98,7 +188,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         }
         res.status(500);
         res.setHeader("Content-Type", "application/json");
-        res.setHeader("Access-Control-Allow-Origin", process.env.CORS_ORIGIN ?? "*");
+        res.setHeader("Access-Control-Allow-Origin", corsOrigin);
         res.end(trpcErrorBody(err instanceof Error ? err.message : "Internal Server Error"));
     }
 }

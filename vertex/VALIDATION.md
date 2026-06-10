@@ -44,7 +44,7 @@ production readiness requirements. ✅ = implemented, ◑ = partial / documented
 
 | Platform | Status | Notes |
 | --- | --- | --- |
-| Vercel SPA + self-contained tRPC | ✅ | `vertex/vercel.json` (rootDirectory=vertex), exact `api/trpc/[[...trpc]].ts` function + Prisma includeFiles, WASM headers |
+| Vercel SPA + self-contained tRPC | ✅ | `vertex/vercel.json` (rootDirectory=vertex), single self-contained `api/trpc/[[...trpc]].ts` function (no `functions` config), WASM headers |
 | Render Blueprint | ✅ | `render.yaml` web + API, `prisma migrate deploy` |
 | OCCT WASM bundle | ✅ | ~16 MB, lazy-loaded, worker offload |
 

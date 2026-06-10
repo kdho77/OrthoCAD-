@@ -125,7 +125,7 @@ Required environment variables (Vercel dashboard):
 - `DATABASE_URL`, `DIRECT_URL` (for Prisma in the tRPC function)
 - `SUPABASE_SERVICE_ROLE_KEY`, `AI_API_KEY`, `CORS_ORIGIN` (for the tRPC function when self-contained)
 
-See `vertex/vercel.json` and `vertex/api/trpc/[[...trpc]].ts` (the inlined Vercel handler) for implementation details. The function config uses an exact path + `includeFiles` for Prisma engines (never broad globs).
+See `vertex/vercel.json` and `vertex/api/trpc/[[...trpc]].ts` (the fully self-contained Vercel handler) for implementation details. There is no `functions` config: Vercel traces node_modules (including Prisma engines) automatically, and `[[...trpc]].ts` must remain the only file under `api/`.
 
 ### Render (full stack)
 
