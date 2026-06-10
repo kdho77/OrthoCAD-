@@ -44,12 +44,43 @@ export async function handleTrpcRequest(request: Request): Promise<Response> {
 
     const endpoint = resolveTrpcEndpoint(pathname);
 
-    const response = await fetchRequestHandler({
-        endpoint,
-        req: request,
-        router: appRouter,
-        createContext: createFetchContext,
-    });
+    try {
+        const response = await fetchRequestHandler({
+            endpoint,
+            req: request,
+            router: appRouter,
+            createContext: createFetchContext,
+            onError({ error, path, type }) {
+                console.error("[trpc] procedure error", {
+                    path: path ?? "<unknown>",
+                    type,
+                    code: error.code,
+                    message: error.message,
+                    cause: error.cause instanceof Error ? error.cause.message : undefined,
+                });
+            },
+        });
 
-    return withCors(response);
+        return withCors(response);
+    } catch (error) {
+        // fetchRequestHandler normally formats procedure/context errors as JSON,
+        // so reaching here means something lower-level failed (e.g. Prisma engine
+        // init). Log it and return JSON so the client never sees an HTML 500.
+        console.error("[trpc] fatal handler error", {
+            pathname,
+            error: error instanceof Error ? error.stack ?? error.message : String(error),
+        });
+        return withCors(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: error instanceof Error ? error.message : "Internal Server Error",
+                        code: -32603,
+                        data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500 },
+                    },
+                }),
+                { status: 500, headers: { "Content-Type": "application/json" } },
+            ),
+        );
+    }
 }

@@ -16,6 +16,15 @@ const server = createHTTPServer({
     router: appRouter,
     createContext,
     basePath: "/trpc/",
+    onError({ error, path, type }) {
+        console.error("[trpc] procedure error", {
+            path: path ?? "<unknown>",
+            type,
+            code: error.code,
+            message: error.message,
+            cause: error.cause instanceof Error ? error.cause.message : undefined,
+        });
+    },
     middleware: (req, res, next) => {
         res.setHeader("Access-Control-Allow-Origin", ORIGIN);
         res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");

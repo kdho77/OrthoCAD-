@@ -5,6 +5,12 @@
 
 generator client {
     provider = "prisma-client-js"
+    // Generate query-engine binaries for both the local dev platform ("native")
+    // and Vercel's serverless runtime. Without the RHEL targets the engine is
+    // missing in the Lambda bundle and every DB-backed tRPC procedure crashes
+    // the function (Vercel returns the plain-text "A server error has occurred"
+    // page instead of a tRPC JSON error). openssl 1.0.x covers AL2, 3.0.x AL2023.
+    binaryTargets = ["native", "rhel-openssl-1.0.x", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
