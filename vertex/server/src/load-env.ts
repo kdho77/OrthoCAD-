@@ -2,8 +2,9 @@
 // See LICENSE file in the project root for full license information.
 
 // tsx does not auto-load .env files; import this module before context.ts so Prisma
-// sees DATABASE_URL at module init. Vercel/Render inject env at runtime — dotenv never
-// overrides existing variables, and a missing dotenv package is ignored in production.
+// sees DATABASE_URL at module init. Also used by npm run db:push (server/src/prisma-cli.ts).
+// Vercel/Render inject env at runtime — dotenv never overrides existing variables, and a
+// missing dotenv package is ignored in production.
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 

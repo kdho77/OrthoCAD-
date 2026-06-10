@@ -48,6 +48,18 @@ npm run dev              # frontend  → http://localhost:5180
 npm run dev:server       # tRPC API  → http://localhost:5181 (optional)
 ```
 
+### Database setup (one-time, Supabase)
+
+To use the real database locally (instead of offline dev mode):
+
+1. Copy `.env.example` → `.env`
+2. Paste `DATABASE_URL` and `DIRECT_URL` from the Vercel project (Settings → Environment Variables). Use the **pooled** URL for `DATABASE_URL` and the **direct** URL for `DIRECT_URL`.
+3. Sync the full schema: `npm run db:push`
+
+`prisma db push` applies `prisma/schema.prisma` directly to Postgres — the recommended way to initialize a fresh or empty database. Do **not** paste manual SQL; the repo migrations are incremental only and do not create the base tables (`users`, `custom_elements`, etc.) on their own.
+
+`db:push` loads `vertex/.env` via the same `load-env.ts` helper used by `dev:server`, so `DATABASE_URL` is available before Prisma runs. For production deploys, use `prisma migrate deploy` (see Render blueprint).
+
 Build OCCT WASM from repo root (first time or after C++ changes):
 
 ```bash
@@ -77,11 +89,12 @@ license) so the full workspace is usable.
 - **Offline fallback** (no API): client-side license/token gate with optimistic
   local deduction.
 
-### Database
+### Database commands
 
 ```bash
 npm run prisma:generate
-npm run prisma:migrate    # requires DATABASE_URL / DIRECT_URL
+npm run db:push           # one-time / dev: sync full schema from schema.prisma
+npm run prisma:migrate    # create/apply tracked migrations (requires DATABASE_URL / DIRECT_URL)
 ```
 
 ## Project structure

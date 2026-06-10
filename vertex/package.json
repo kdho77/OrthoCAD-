@@ -20,7 +20,8 @@
         "start:server": "tsx server/src/index.ts",
         "prisma:generate": "prisma generate",
         "prisma:migrate": "prisma migrate dev",
-        "prisma:studio": "prisma studio"
+        "prisma:studio": "prisma studio",
+        "db:push": "tsx server/src/prisma-cli.ts db push"
     },
     "dependencies": {
         "@chili3d/core": "file:../packages/core",
