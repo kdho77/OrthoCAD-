@@ -1,6 +1,9 @@
+import type { Role } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { adminProcedure, router, superAdminProcedure } from "../trpc";
+
+const VALID_ROLES: readonly string[] = ["super_admin", "admin", "clinician"];
 
 // Super Admin Portal API: user/token/license administration and audit access.
 export const adminRouter = router({
@@ -33,9 +36,26 @@ export const adminRouter = router({
                 throw new TRPCError({ code: "BAD_REQUEST", message: "Grant amount must be non-zero" });
             }
 
-            // Confirm the target user exists up front so a missing record yields a
-            // clear 404 instead of an opaque Prisma P2025 (which surfaces in the
-            // browser as "Unexpected end of JSON input").
+            // ROOT CAUSE of the production 500: Supabase-authenticated users are
+            // never mirrored into the app `users` table (no signup/sign-in sync
+            // anywhere in the codebase). The Super Admin Portal grants to the
+            // logged-in user themselves (userId === ctx.user.id), so BOTH the
+            // update target AND the AuditLog actor FK (userId) pointed at a row
+            // that does not exist. `user.update` then threw Prisma P2025 and the
+            // audit insert would have thrown P2003 — rolling the transaction back
+            // and returning a 500 (an HTML crash page on Vercel). Lazily provision
+            // the acting user so these foreign keys resolve.
+            const actorRole = (VALID_ROLES.includes(ctx.user.role) ? ctx.user.role : "clinician") as Role;
+            await ctx.prisma.user.upsert({
+                where: { id: ctx.user.id },
+                update: {},
+                create: { id: ctx.user.id, email: ctx.user.email, role: actorRole },
+            });
+            console.log("[admin] grantTokens actor provisioned", { actorId: ctx.user.id });
+
+            // Resolve the target. For self-grants (the portal's path) it now exists
+            // because we just provisioned it above; for an explicit other userId a
+            // missing record yields a clear 404 instead of an opaque Prisma error.
             const target = await ctx.prisma.user.findUnique({
                 where: { id: input.userId },
                 select: { id: true, email: true, tokenBalance: true },
@@ -88,16 +108,18 @@ export const adminRouter = router({
                 });
                 return result;
             } catch (err) {
+                const prismaCode = (err as { code?: string })?.code;
                 console.error("[admin] grantTokens failed", {
                     actorId: ctx.user.id,
                     targetUserId: input.userId,
                     amount: input.amount,
+                    prismaCode,
                     error: err instanceof Error ? err.message : String(err),
                 });
                 if (err instanceof TRPCError) throw err;
                 throw new TRPCError({
                     code: "INTERNAL_SERVER_ERROR",
-                    message: "Failed to grant tokens",
+                    message: `Failed to grant tokens${prismaCode ? ` (${prismaCode})` : ""}`,
                 });
             }
         }),
