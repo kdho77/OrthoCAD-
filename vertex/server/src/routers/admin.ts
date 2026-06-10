@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { adminProcedure, router, superAdminProcedure } from "../trpc";
 
@@ -19,33 +20,87 @@ export const adminRouter = router({
     // Grant (or remove, if negative) tokens in bulk, recording a transaction + audit.
     grantTokens: superAdminProcedure
         .input(z.object({ userId: z.string().uuid(), amount: z.number().int(), reason: z.string().max(200).optional() }))
-        .mutation(async ({ ctx, input }) =>
-            ctx.prisma.$transaction(async (tx) => {
-                const user = await tx.user.update({
-                    where: { id: input.userId },
-                    data: { tokenBalance: { increment: input.amount } },
+        .mutation(async ({ ctx, input }) => {
+            console.log("[admin] grantTokens request", {
+                actorId: ctx.user.id,
+                actorRole: ctx.user.role,
+                targetUserId: input.userId,
+                amount: input.amount,
+                reason: input.reason ?? null,
+            });
+
+            if (input.amount === 0) {
+                throw new TRPCError({ code: "BAD_REQUEST", message: "Grant amount must be non-zero" });
+            }
+
+            // Confirm the target user exists up front so a missing record yields a
+            // clear 404 instead of an opaque Prisma P2025 (which surfaces in the
+            // browser as "Unexpected end of JSON input").
+            const target = await ctx.prisma.user.findUnique({
+                where: { id: input.userId },
+                select: { id: true, email: true, tokenBalance: true },
+            });
+            if (!target) {
+                console.warn("[admin] grantTokens target user not found", { targetUserId: input.userId });
+                throw new TRPCError({ code: "NOT_FOUND", message: "Target user not found" });
+            }
+
+            // Token balances are non-negative; reject removals that would underflow.
+            if (input.amount < 0 && target.tokenBalance + input.amount < 0) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: `Cannot remove ${-input.amount} tokens — user only has ${target.tokenBalance}`,
                 });
-                await tx.tokenTransaction.create({
-                    data: {
-                        userId: input.userId,
-                        type: input.amount >= 0 ? "grant" : "adjustment",
-                        amount: input.amount,
-                        balance: user.tokenBalance,
-                        reason: input.reason ?? "admin grant",
-                    },
+            }
+
+            try {
+                const result = await ctx.prisma.$transaction(async (tx) => {
+                    const user = await tx.user.update({
+                        where: { id: input.userId },
+                        data: { tokenBalance: { increment: input.amount } },
+                    });
+                    await tx.tokenTransaction.create({
+                        data: {
+                            userId: input.userId,
+                            type: input.amount >= 0 ? "grant" : "adjustment",
+                            amount: input.amount,
+                            balance: user.tokenBalance,
+                            reason: input.reason ?? "admin grant",
+                        },
+                    });
+                    await tx.auditLog.create({
+                        data: {
+                            userId: ctx.user.id,
+                            action: "tokens_granted",
+                            targetId: input.userId,
+                            metadata: { amount: input.amount, balance: user.tokenBalance },
+                            ipAddress: ctx.ip,
+                        },
+                    });
+                    return { ok: true, balance: user.tokenBalance };
                 });
-                await tx.auditLog.create({
-                    data: {
-                        userId: ctx.user.id,
-                        action: "tokens_granted",
-                        targetId: input.userId,
-                        metadata: { amount: input.amount },
-                        ipAddress: ctx.ip,
-                    },
+
+                console.log("[admin] grantTokens success", {
+                    actorId: ctx.user.id,
+                    targetUserId: input.userId,
+                    amount: input.amount,
+                    newBalance: result.balance,
                 });
-                return { ok: true, balance: user.tokenBalance };
-            }),
-        ),
+                return result;
+            } catch (err) {
+                console.error("[admin] grantTokens failed", {
+                    actorId: ctx.user.id,
+                    targetUserId: input.userId,
+                    amount: input.amount,
+                    error: err instanceof Error ? err.message : String(err),
+                });
+                if (err instanceof TRPCError) throw err;
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: "Failed to grant tokens",
+                });
+            }
+        }),
 
     listLicenses: adminProcedure.query(({ ctx }) =>
         ctx.prisma.license.findMany({
