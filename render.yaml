@@ -30,7 +30,8 @@ services:
       plan: starter
       buildCommand: npm install --include=dev && npm run prisma:generate
       startCommand: npm run prisma:generate && npx prisma migrate deploy && npm run start:server
-      healthCheckPath: /user.health
+      # tRPC is mounted under /trpc (see server/src/index.ts basePath).
+      healthCheckPath: /trpc/user.health
       envVars:
           - key: PORT
             value: "5181"
@@ -51,3 +52,33 @@ services:
           # Full origin of vertex-web, e.g. https://vertex-web.onrender.com
           - key: CORS_ORIGIN
             sync: false
+          # Full root URL of the Python hybrid-manufacturing service, e.g.
+          # https://vertex-manufacturing.onrender.com (no trailing slash).
+          - key: MANUFACTURING_SERVICE_URL
+            sync: false
+          # Shared secret used to authenticate Node -> Python calls. Pulled from
+          # the manufacturing service so both sides always agree.
+          - key: MANUFACTURING_INTERNAL_API_KEY
+            fromService:
+                type: web
+                name: vertex-manufacturing
+                envVarKey: MANUFACTURING_INTERNAL_API_KEY
+
+    # Python hybrid-manufacturing microservice: authoritative watertight solid
+    # generation (Grinding Style sides) + belt pre-transform + slicing -> G-code.
+    - type: web
+      name: vertex-manufacturing
+      runtime: docker
+      rootDir: python-service
+      dockerfilePath: ./Dockerfile
+      plan: starter
+      healthCheckPath: /health
+      envVars:
+          - key: PORT
+            value: "8001"
+          - key: PYTHONUNBUFFERED
+            value: "1"
+          # Internal API key enforced on /manufacture. Generated once and shared
+          # with vertex-api above via fromService.
+          - key: MANUFACTURING_INTERNAL_API_KEY
+            generateValue: true
