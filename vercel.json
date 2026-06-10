@@ -5,13 +5,6 @@
     "outputDirectory": "vertex/dist",
     "framework": "vite",
 
-    "functions": {
-        "vertex/api/trpc/[[...trpc]].ts": {
-            "runtime": "nodejs20.x",
-            "includeFiles": "vertex/node_modules/.prisma/**"
-        }
-    },
-
     "rewrites": [
         { "source": "/trpc", "destination": "/api/trpc" },
         { "source": "/trpc/:path*", "destination": "/api/trpc/:path*" },
