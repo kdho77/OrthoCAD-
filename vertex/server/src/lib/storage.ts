@@ -77,6 +77,11 @@ export function getPublicUrl(
     return data?.publicUrl ?? null;
 }
 
+/** Build a temporary storage key for a manufacturing STL upload. */
+export function buildManufacturingStlKey(userId: string, side: string, stamp = Date.now()): string {
+    return `manufacturing/${userId}/${side}-${stamp}.stl`;
+}
+
 /** Build a unique storage key for a user's custom GLB asset. */
 export function buildGlbKey(userId: string, kind: "element" | "prefab", name: string): string {
     const safe = name

@@ -29,7 +29,7 @@ from typing import Any, Iterable
 import numpy as np
 import trimesh
 
-from app.services.belt_transformer import apply_belt_transform  # only for type reference
+from app.services.geometry_utils import ensure_watertight
 
 # ---------------------------------------------------------------------------
 # Basic types mirroring the spirit of the TS kiri code
@@ -130,7 +130,12 @@ def slice_solid(
     - Returns data ready for high-quality emit_gcode (per-preset temps/speeds etc).
     """
     if not solid.is_watertight:
-        pass
+        solid = ensure_watertight(solid, label="slice_input")
+    if not solid.is_watertight:
+        raise ValueError(
+            "Cannot slice: mesh is not watertight after repair "
+            f"(faces={len(solid.faces)}, verts={len(solid.vertices)})"
+        )
 
     bounds = solid.bounds
     min_z = float(bounds[0][2])
@@ -298,6 +303,28 @@ def emit_gcode(
 
 
 # Public API used by the manufacturing endpoint
+def build_slice_overrides(
+    preset: dict[str, Any],
+    *,
+    layer_height_mm: float | None = None,
+    infill_density: float | None = None,
+    perimeters: int | None = None,
+) -> dict[str, Any]:
+    """Merge request overrides on top of preset defaults (request wins)."""
+    overrides: dict[str, Any] = {
+        "layerHeightMm": preset.get("layerHeightMm", 0.30),
+        "perimeters": preset.get("perimeters", 3),
+        "infillDensity": preset.get("infillDensity", 0.15),
+    }
+    if layer_height_mm is not None:
+        overrides["layerHeightMm"] = layer_height_mm
+    if infill_density is not None:
+        overrides["infillDensity"] = infill_density
+    if perimeters is not None:
+        overrides["perimeters"] = perimeters
+    return overrides
+
+
 def generate_gcode_from_solid(
     transformed_solid: trimesh.Trimesh,
     preset: dict[str, Any],
@@ -308,6 +335,8 @@ def generate_gcode_from_solid(
     Now consumes richer preset (TPU temps/speeds/perimeters/solids/angle) for quality.
     """
     o = overrides or {}
+    if not transformed_solid.is_watertight:
+        transformed_solid = ensure_watertight(transformed_solid, label="gcode_input")
     layers = slice_solid(
         transformed_solid,
         layer_height_mm=float(o.get("layerHeightMm", preset.get("layerHeightMm", 0.3))),

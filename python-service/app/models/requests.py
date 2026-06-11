@@ -2,35 +2,33 @@
 # See LICENSE file in the project root for full license information.
 
 """
-Minimal Pydantic models for the Phase 1 solid generation pipeline.
-Bootstrap only — consumed internally by solid_generator / belt_transformer.
-No HTTP surface or routers.
+Pydantic models for the hybrid manufacturing pipeline (STL-in → G-code or STL-out).
 """
 
-from pydantic import BaseModel
-from typing import Literal, Optional, Any
+from typing import Literal, Optional
+
+from pydantic import BaseModel, Field
 
 
 class GrindingStyle(BaseModel):
-    """Grinding style specification for side wall generation."""
+    """Optional metadata carried for audit; geometry is supplied as STL."""
+
     type: Literal["straight", "rounded"]
-    angle_degrees: Optional[float] = None  # required/used only for type == "straight"
-    radius_mm: Optional[float] = None      # required/used only for type == "rounded"
+    angle_degrees: Optional[float] = None
+    radius_mm: Optional[float] = None
 
 
 class GenerateSolidRequest(BaseModel):
-    """Internal request shape for final solid generation (manufacturing path)."""
+    """Manufacturing request: finished STL from the client viewer."""
+
     job_id: str
     design_id: str
     preset_id: str
-    base_glb_url: str
-    corrections: dict[str, Any]           # See correction fidelity requirement in prompt
-    trimlines: dict[str, Any]             # Per-side (or current side) closed polyline data
-    heel_lift_mm: float = 0.0
-    heel_cup_width_mm: float = 0.0
-    grinding_style: GrindingStyle
-    thickness_mm: float
-
-    # Extension fields for full manufacturing (belt angle comes from preset on the Node side)
+    stl_url: str
+    output_type: Literal["gcode", "stl"] = "gcode"
     belt_angle_deg: float = 45.0
-    side: str | None = None  # "left" | "right" - used for medialSign in height field if needed
+    side: str | None = None  # "left" | "right"
+    layer_height_mm: float | None = None
+    infill_density: float | None = None
+    perimeters: int | None = None
+    grinding_style: GrindingStyle | None = None

@@ -11,7 +11,10 @@ vertex/src/lib/kiri/presets.ts, focused on the belt-printer use cases
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 BELT_PRESETS: dict[str, dict[str, Any]] = {
     "apex-belt-v2-45": {
@@ -21,17 +24,16 @@ BELT_PRESETS: dict[str, dict[str, Any]] = {
         "beltAngleDeg": 45,
         "material": "TPU",
         "infillDensity": 0.15,
-        # TPU on belt (continuous print) — typical values; tune per machine/filament
         "nozzleTempC": 235,
-        "bedTempC": 0,  # many belt setups run bed off or very low
+        "bedTempC": 0,
         "printSpeedMmS": 35,
         "travelSpeedMmS": 80,
-        "retractEnable": False,  # TPU often prints better with minimal/no retraction
+        "retractEnable": False,
         "retractDistanceMm": 0.5,
         "retractSpeedMmS": 20,
-        "coolingFanSpeed": 0.2,  # low to avoid layer adhesion issues on TPU
+        "coolingFanSpeed": 0.2,
         "perimeters": 3,
-        "solidLayers": 3,  # top + bottom solid for better surface/strength on insoles
+        "solidLayers": 3,
         "infillAngleDeg": 45,
     },
     "layerloop-30": {
@@ -55,8 +57,35 @@ BELT_PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Map client preset IDs (vertex/src/lib/kiri/presets.ts) to server keys.
+PRESET_ID_ALIASES: dict[str, str] = {
+    "apex-belt-v2": "apex-belt-v2-45",
+    "apex-belt-v2-shell": "apex-belt-v2-45",
+    "desktop-fdm": "apex-belt-v2-45",
+}
+
 DEFAULT_PRESET = BELT_PRESETS["apex-belt-v2-45"]
 
 
+def is_known_preset(preset_id: str) -> bool:
+    """Return True when preset_id resolves to a known Vertex belt/FDM profile."""
+    return normalize_preset_id(preset_id) in BELT_PRESETS
+
+
+def normalize_preset_id(preset_id: str) -> str:
+    """Resolve client preset IDs to server keys; log when falling back."""
+    if preset_id in BELT_PRESETS:
+        return preset_id
+    if preset_id in PRESET_ID_ALIASES:
+        return PRESET_ID_ALIASES[preset_id]
+    logger.warning(
+        "Unknown preset_id %r — no explicit alias; using default %s",
+        preset_id,
+        DEFAULT_PRESET["name"],
+    )
+    return "apex-belt-v2-45"
+
+
 def get_preset(preset_id: str) -> dict[str, Any]:
-    return BELT_PRESETS.get(preset_id, DEFAULT_PRESET).copy()
+    key = normalize_preset_id(preset_id)
+    return BELT_PRESETS.get(key, DEFAULT_PRESET).copy()
