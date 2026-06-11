@@ -177,7 +177,9 @@ export const manufacturingRouter = router({
                 }
             }
 
-            const result = await ctx.prisma.$transaction(async (tx) => {
+            // Interactive transactions use prepared statements; route them through the
+            // direct Postgres client to avoid PgBouncer "prepared statement already exists".
+            const result = await ctx.prismaDirect.$transaction(async (tx) => {
                 const dec = await tx.user.updateMany({
                     where: { id: ctx.user.id, tokenBalance: { gte: cost } },
                     data: { tokenBalance: { decrement: cost } },
