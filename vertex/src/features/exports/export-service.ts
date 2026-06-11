@@ -164,6 +164,7 @@ export async function generateHybridGcode(
                 side,
                 presetId: preset.id,
                 stlUrl: upload.stlUrl,
+                stlStorageKey: upload.storageKey,
                 outputType,
                 beltAngleDeg: preset.beltAngleDeg ?? 45,
                 layerHeightMm: overrides.layerHeightMm,

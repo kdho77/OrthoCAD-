@@ -2,8 +2,17 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSupabaseAdmin } from "../context.js";
 import { callManufacture } from "../lib/manufacturing-client.js";
+import {
+    archiveManufacturingSourceStl,
+    deleteManufacturingTempBestEffort,
+} from "../lib/manufacturing-stl-lifecycle.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
-import { buildManufacturingStlKey, signedDownloadUrl, uploadAsset } from "../lib/storage.js";
+import {
+    assertManufacturingTempKeyForUser,
+    buildManufacturingTempStlKey,
+    signedDownloadUrl,
+    uploadAsset,
+} from "../lib/storage.js";
 import { protectedProcedure, rateLimitedProcedure, router } from "../trpc.js";
 
 const HYBRID_GCODE_COST = 3;
@@ -20,6 +29,7 @@ const manufactureInputSchema = z.object({
     side: z.enum(["left", "right"]).optional(),
     presetId: z.string().min(1),
     stlUrl: z.string().url(),
+    stlStorageKey: z.string().min(1),
     outputType: z.enum(["gcode", "stl"]),
     beltAngleDeg: z.number().min(10).max(80).default(45),
     layerHeightMm: z.number().min(0.05).max(1).optional(),
@@ -35,12 +45,11 @@ const uploadStlInputSchema = z.object({
     fileName: z.string().max(200).optional(),
 });
 
-async function assertActiveLicense(
-    prisma: typeof import("../context").prisma,
-    userId: string,
-): Promise<void> {
+type LicenseReader = Pick<typeof import("../context").prisma, "license">;
+
+async function assertActiveLicense(db: LicenseReader, userId: string): Promise<void> {
     const now = new Date();
-    const license = await prisma.license.findFirst({
+    const license = await db.license.findFirst({
         where: {
             status: "active",
             OR: [{ ownerId: userId }, { seatList: { some: { userId } } }],
@@ -79,7 +88,7 @@ export const manufacturingRouter = router({
                 });
             }
 
-            const key = buildManufacturingStlKey(ctx.user.id, input.side);
+            const key = buildManufacturingTempStlKey(ctx.user.id);
             await uploadAsset(supabase, key, bytes, "model/stl");
             const stlUrl = await signedDownloadUrl(supabase, key, 3600);
 
@@ -96,153 +105,170 @@ export const manufacturingRouter = router({
                 presetId: input.presetId,
                 outputType: input.outputType,
                 beltAngleDeg: input.beltAngleDeg,
-                hasStlUrl: Boolean(input.stlUrl),
+                stlStorageKey: input.stlStorageKey,
             });
 
-            if (!input.presetId || !input.stlUrl) {
+            if (!input.presetId || !input.stlUrl || !input.stlStorageKey) {
                 throw new TRPCError({
                     code: "BAD_REQUEST",
-                    message: "Missing required manufacturing parameters (stlUrl, presetId)",
+                    message: "Missing required manufacturing parameters (stlUrl, stlStorageKey, presetId)",
                 });
             }
 
-            await assertActiveLicense(ctx.prisma, ctx.user.id);
-
-            const cost = HYBRID_GCODE_COST;
-
-            if (input.designId) {
-                const design = await ctx.prisma.design.findFirst({
-                    where: { id: input.designId, ownerId: ctx.user.id },
-                });
-                if (!design) {
-                    throw new TRPCError({ code: "FORBIDDEN", message: "Design not found or access denied" });
-                }
-            }
-
-            const user = await ctx.prisma.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
-            if ((user.tokenBalance ?? 0) < cost) {
-                throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
-            }
-
-            const pythonResult = await callManufacture({
-                job_id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                design_id: input.designId ?? "adhoc",
-                preset_id: input.presetId,
-                stl_url: input.stlUrl,
-                output_type: input.outputType,
-                belt_angle_deg: input.beltAngleDeg,
-                side: input.side ?? null,
-                layer_height_mm: input.layerHeightMm,
-                infill_density: input.infillDensity,
-                perimeters: input.perimeters,
-                grinding_style: input.grindingStyle,
-            });
-
-            const outputType = pythonResult.output_type ?? input.outputType;
-            const isGcode = outputType === "gcode";
-            const exportFormat = isGcode ? "gcode" : "stl";
-
-            const outputBytes = isGcode
-                ? Buffer.from(pythonResult.gcode ?? "", "utf-8")
-                : Buffer.from(pythonResult.stl_base64 ?? "", "base64");
-
-            if (outputBytes.length === 0) {
+            try {
+                assertManufacturingTempKeyForUser(input.stlStorageKey, ctx.user.id);
+            } catch {
                 throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: "Manufacturing service returned empty output",
+                    code: "BAD_REQUEST",
+                    message: "Invalid manufacturing STL storage key",
                 });
             }
 
-            const defaultName = isGcode ? `hybrid-${input.presetId}.gcode` : `hybrid-${input.presetId}.stl`;
-            const safeName = (input.fileName || defaultName).replace(/[^a-zA-Z0-9_.-]/g, "_");
-            const storagePrefix = isGcode ? "gcode" : "manufacturing-output";
-            const storageKey = `${storagePrefix}/${input.designId || "adhoc"}/${Date.now()}-${safeName}`;
-            const contentType = isGcode ? "text/plain" : "model/stl";
+            const tempStlKey = input.stlStorageKey;
+            const supabase = getSupabaseAdmin();
 
-            // License re-check + token deduction happen inside the transaction BEFORE storage upload.
-            const result = await ctx.prismaDirect.$transaction(async (tx) => {
-                await assertActiveLicense(tx, ctx.user.id);
+            try {
+                await assertActiveLicense(ctx.prisma, ctx.user.id);
 
-                const dec = await tx.user.updateMany({
-                    where: { id: ctx.user.id, tokenBalance: { gte: cost } },
-                    data: { tokenBalance: { decrement: cost } },
-                });
-                if (dec.count === 0) {
+                const cost = HYBRID_GCODE_COST;
+
+                if (input.designId) {
+                    const design = await ctx.prisma.design.findFirst({
+                        where: { id: input.designId, ownerId: ctx.user.id },
+                    });
+                    if (!design) {
+                        throw new TRPCError({
+                            code: "FORBIDDEN",
+                            message: "Design not found or access denied",
+                        });
+                    }
+                }
+
+                const user = await ctx.prisma.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
+                if ((user.tokenBalance ?? 0) < cost) {
                     throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
                 }
-                const updatedUser = await tx.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
 
-                let productionId: string | null = null;
-                if (input.designId) {
-                    const production = await tx.production.create({
-                        data: {
-                            designId: input.designId,
-                            method: "printing_solid",
-                            presetId: input.presetId,
-                            beltAngleDeg: input.beltAngleDeg,
-                            layerHeightMm: input.layerHeightMm ?? 0.3,
-                            material: "TPU",
-                            gcodeStorageKey: isGcode ? storageKey : null,
-                        },
+                const pythonResult = await callManufacture({
+                    job_id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                    design_id: input.designId ?? "adhoc",
+                    preset_id: input.presetId,
+                    stl_url: input.stlUrl,
+                    output_type: input.outputType,
+                    belt_angle_deg: input.beltAngleDeg,
+                    side: input.side ?? null,
+                    layer_height_mm: input.layerHeightMm,
+                    infill_density: input.infillDensity,
+                    perimeters: input.perimeters,
+                    grinding_style: input.grindingStyle,
+                });
+
+                const outputType = pythonResult.output_type ?? input.outputType;
+                const isGcode = outputType === "gcode";
+                const exportFormat = isGcode ? "gcode" : "stl";
+
+                const outputBytes = isGcode
+                    ? Buffer.from(pythonResult.gcode ?? "", "utf-8")
+                    : Buffer.from(pythonResult.stl_base64 ?? "", "base64");
+
+                if (outputBytes.length === 0) {
+                    throw new TRPCError({
+                        code: "INTERNAL_SERVER_ERROR",
+                        message: "Manufacturing service returned empty output",
                     });
-                    productionId = production.id;
                 }
 
-                const exp = await tx.export.create({
-                    data: {
-                        designId: input.designId ?? null,
-                        userId: ctx.user.id,
-                        format: exportFormat,
-                        side: input.side ?? null,
-                        tokenCost: cost,
-                        storageKey: null,
-                        fileName: safeName,
-                    },
-                });
+                const defaultName = isGcode
+                    ? `hybrid-${input.presetId}.gcode`
+                    : `hybrid-${input.presetId}.stl`;
+                const safeName = (input.fileName || defaultName).replace(/[^a-zA-Z0-9_.-]/g, "_");
+                const storagePrefix = isGcode ? "gcode" : "manufacturing-output";
+                const storageKey = `${storagePrefix}/${input.designId || "adhoc"}/${Date.now()}-${safeName}`;
+                const contentType = isGcode ? "text/plain" : "model/stl";
 
-                await tx.tokenTransaction.create({
-                    data: {
-                        userId: ctx.user.id,
-                        type: "deduct",
-                        amount: -cost,
-                        balance: updatedUser.tokenBalance,
-                        reason: "manufacturing:hybrid_gcode",
-                        exportId: exp.id,
-                    },
-                });
+                // License re-check + token deduction happen inside the transaction BEFORE output upload.
+                const result = await ctx.prismaDirect.$transaction(async (tx) => {
+                    await assertActiveLicense(tx, ctx.user.id);
 
-                await tx.auditLog.create({
-                    data: {
-                        userId: ctx.user.id,
-                        action: "export_generated",
-                        targetId: productionId ?? exp.id,
-                        metadata: {
-                            kind: "manufacturing_hybrid",
-                            outputType,
-                            presetId: input.presetId,
-                            beltAngleDeg: input.beltAngleDeg,
-                            grindingStyle: input.grindingStyle?.type ?? null,
+                    const dec = await tx.user.updateMany({
+                        where: { id: ctx.user.id, tokenBalance: { gte: cost } },
+                        data: { tokenBalance: { decrement: cost } },
+                    });
+                    if (dec.count === 0) {
+                        throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
+                    }
+                    const updatedUser = await tx.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
+
+                    let productionId: string | null = null;
+                    if (input.designId) {
+                        const production = await tx.production.create({
+                            data: {
+                                designId: input.designId,
+                                method: "printing_solid",
+                                presetId: input.presetId,
+                                beltAngleDeg: input.beltAngleDeg,
+                                layerHeightMm: input.layerHeightMm ?? 0.3,
+                                material: "TPU",
+                                gcodeStorageKey: isGcode ? storageKey : null,
+                            },
+                        });
+                        productionId = production.id;
+                    }
+
+                    const exp = await tx.export.create({
+                        data: {
+                            designId: input.designId ?? null,
+                            userId: ctx.user.id,
+                            format: exportFormat,
                             side: input.side ?? null,
-                            layerHeightMm: input.layerHeightMm ?? null,
-                            infillDensity: input.infillDensity ?? null,
-                            perimeters: input.perimeters ?? null,
+                            tokenCost: cost,
+                            storageKey: null,
+                            fileName: safeName,
                         },
-                        ipAddress: ctx.ip,
-                    },
+                    });
+
+                    await tx.tokenTransaction.create({
+                        data: {
+                            userId: ctx.user.id,
+                            type: "deduct",
+                            amount: -cost,
+                            balance: updatedUser.tokenBalance,
+                            reason: "manufacturing:hybrid_gcode",
+                            exportId: exp.id,
+                        },
+                    });
+
+                    await tx.auditLog.create({
+                        data: {
+                            userId: ctx.user.id,
+                            action: "export_generated",
+                            targetId: productionId ?? exp.id,
+                            metadata: {
+                                kind: "manufacturing_hybrid",
+                                outputType,
+                                presetId: input.presetId,
+                                beltAngleDeg: input.beltAngleDeg,
+                                grindingStyle: input.grindingStyle?.type ?? null,
+                                side: input.side ?? null,
+                                layerHeightMm: input.layerHeightMm ?? null,
+                                infillDensity: input.infillDensity ?? null,
+                                perimeters: input.perimeters ?? null,
+                                sourceStlTempKey: tempStlKey,
+                            },
+                            ipAddress: ctx.ip,
+                        },
+                    });
+
+                    return {
+                        productionId,
+                        exportId: exp.id,
+                        balance: updatedUser.tokenBalance,
+                        jobId: pythonResult.job_id,
+                    };
                 });
 
-                return {
-                    productionId,
-                    exportId: exp.id,
-                    balance: updatedUser.tokenBalance,
-                    jobId: pythonResult.job_id,
-                };
-            });
-
-            let downloadUrl: string | undefined;
-            const supabase = getSupabaseAdmin();
-            if (supabase) {
-                try {
+                let downloadUrl: string | undefined;
+                if (supabase) {
                     await uploadAsset(supabase, storageKey, outputBytes, contentType);
                     downloadUrl = await signedDownloadUrl(supabase, storageKey, 3600);
                     await ctx.prisma.export.update({
@@ -255,33 +281,38 @@ export const manufacturingRouter = router({
                             data: { gcodeStorageKey: storageKey },
                         });
                     }
-                } catch (uploadErr: unknown) {
-                    const message = uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
-                    throw new TRPCError({
-                        code: "INTERNAL_SERVER_ERROR",
-                        message: `Failed to store generated ${exportFormat}: ${message}`,
+                }
+
+                if (supabase) {
+                    await archiveManufacturingSourceStl(supabase, ctx.prisma, {
+                        userId: ctx.user.id,
+                        exportId: result.exportId,
+                        tempStlKey,
                     });
                 }
+
+                console.log("[manufacturing] generateSolid success", {
+                    userId: ctx.user.id,
+                    productionId: result.productionId,
+                    exportId: result.exportId,
+                    balance: result.balance,
+                    outputType,
+                    stored: Boolean(downloadUrl),
+                });
+
+                return {
+                    ok: true as const,
+                    outputType,
+                    ...result,
+                    downloadUrl,
+                    gcode: isGcode && !downloadUrl ? pythonResult.gcode : undefined,
+                    stlBase64: !isGcode && !downloadUrl ? pythonResult.stl_base64 : undefined,
+                    gcodeDownloadUrl: isGcode ? downloadUrl : undefined,
+                };
+            } catch (err) {
+                deleteManufacturingTempBestEffort(supabase, tempStlKey);
+                throw err;
             }
-
-            console.log("[manufacturing] generateSolid success", {
-                userId: ctx.user.id,
-                productionId: result.productionId,
-                exportId: result.exportId,
-                balance: result.balance,
-                outputType,
-                stored: Boolean(downloadUrl),
-            });
-
-            return {
-                ok: true as const,
-                outputType,
-                ...result,
-                downloadUrl,
-                gcode: isGcode && !downloadUrl ? pythonResult.gcode : undefined,
-                stlBase64: !isGcode && !downloadUrl ? pythonResult.stl_base64 : undefined,
-                gcodeDownloadUrl: isGcode ? downloadUrl : undefined,
-            };
         }),
 
     getGcodeDownloadUrl: protectedProcedure
@@ -291,7 +322,7 @@ export const manufacturingRouter = router({
                 where: { id: input.productionId },
                 include: { design: true },
             });
-            if (!production || !production.design || production.design.ownerId !== ctx.user.id) {
+            if (!production?.design || production.design.ownerId !== ctx.user.id) {
                 throw new TRPCError({ code: "FORBIDDEN", message: "Production not found or access denied" });
             }
             if (!production.gcodeStorageKey) {

@@ -310,9 +310,10 @@ model Export {
     format     ExportFormat
     side       Side?
     tokenCost  Int
-    storageKey String?
-    fileName   String?
-    createdAt  DateTime     @default(now())
+    storageKey     String?
+    sourceStlPath  String?
+    fileName       String?
+    createdAt      DateTime     @default(now())
 
     design    Design?            @relation(fields: [designId], references: [id], onDelete: Cascade)
     user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
