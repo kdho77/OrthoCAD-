@@ -2,42 +2,35 @@
 # See LICENSE file in the project root for full license information.
 
 """
-Minimal FastAPI orchestration layer for the OrthoCAD hybrid manufacturing service.
+FastAPI orchestration layer for the OrthoCAD hybrid manufacturing service.
 
-This is a thin service layer:
-- Validates incoming requests (via Pydantic models).
-- Resolves/downloads the base GLB (supports http(s) signed URLs or local paths).
-- Calls the pure geometry modules (solid_generator + belt_transformer).
-- For Phase 1: returns a stub G-code after solid + belt (real Kiri:Moto slicing added in Phase 2).
-- Clean error responses.
-
-The geometry functions remain untouched and reusable (CLI, tests, future jobs).
+Accepts a finished STL exported from the client viewer, validates watertightness,
+then dispatches to G-code slicing (known Vertex belt profiles) or returns the STL
+as-is for external printers (SLS, SLA, etc.).
 """
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
-import tempfile
-from typing import Any
 
-import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 
-from app.models.requests import GenerateSolidRequest, GrindingStyle
+from app.models.requests import GenerateSolidRequest
 from app.services.belt_transformer import apply_belt_transform
-from app.services.presets import get_preset
-from app.services.slicer import generate_gcode_from_solid
-from app.services.solid_generator import generate_final_solid
+from app.services.presets import get_preset, is_known_preset
+from app.services.slicer import build_slice_overrides, generate_gcode_from_solid
+from app.services.stl_loader import download_stl_to_temp, load_watertight_stl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("manufacturing")
 
 app = FastAPI(
     title="OrthoCAD Hybrid Manufacturing Service",
-    version="0.1.0",
-    description="Authoritative solid generation + belt transform + slicing for orthotic manufacturing.",
+    version="0.2.0",
+    description="Finished STL validation + belt transform + slicing for orthotic manufacturing.",
 )
 
 
@@ -56,41 +49,6 @@ def verify_internal_key(authorization: str | None = Header(default=None)) -> Non
     if token != expected:
         raise HTTPException(status_code=401, detail="Invalid internal service credentials")
 
-# In production this would come from a real job queue / object storage.
-# For now we keep everything in-memory for the response (G-code can be large but acceptable for MVP).
-
-
-def _download_to_temp(url_or_path: str) -> str:
-    """Download http(s) URL to a temp file or return the path if already local."""
-    if url_or_path.startswith(("http://", "https://")):
-        with tempfile.NamedTemporaryFile(suffix=".glb", delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            with httpx.stream("GET", url_or_path, follow_redirects=True, timeout=60) as resp:
-                resp.raise_for_status()
-                with open(tmp_path, "wb") as f:
-                    for chunk in resp.iter_bytes():
-                        f.write(chunk)
-            return tmp_path
-        except Exception as e:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-            raise HTTPException(status_code=400, detail=f"Failed to download base_glb_url: {e}") from e
-    else:
-        if not os.path.exists(url_or_path):
-            raise HTTPException(status_code=400, detail=f"base_glb_path does not exist: {url_or_path}")
-        return url_or_path
-
-
-def _build_grinding_style_dict(style: GrindingStyle) -> dict[str, Any]:
-    return {
-        "type": style.type,
-        "angle_degrees": style.angle_degrees,
-        "radius_mm": style.radius_mm,
-    }
-
 
 @app.get("/health")
 async def health() -> dict[str, str]:
@@ -100,87 +58,103 @@ async def health() -> dict[str, str]:
 @app.post("/manufacture")
 async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_internal_key)) -> JSONResponse:
     """
-    Main entry point for the hybrid pipeline (Phase 1 wiring).
+    Main entry point for the hybrid pipeline.
 
-    Currently performs:
-      1. Resolve base GLB (download if URL).
-      2. generate_final_solid (corrections + trimlines + grinding sides).
-      3. apply_belt_transform (using belt angle from preset or default 45).
-      4. Return a minimal G-code stub (real slicing in Phase 2).
-
-    On any geometry or processing failure we raise a clean HTTP error so the
-    Node orchestrator can avoid token deduction.
+    1. Download finished STL from client upload URL.
+    2. Validate / repair watertightness (fail loudly if still leaky).
+    3. Dispatch on output_type:
+       - gcode: belt transform (when applicable) + slice
+       - stl: return validated (possibly repaired) STL bytes
     """
-    # Belt angle comes from the caller (Node resolves from preset / printer profile).
-    belt_angle = float(getattr(req, "belt_angle_deg", 45.0) or 45.0)
+    belt_angle = float(req.belt_angle_deg or 45.0)
+    output_type = req.output_type
+
+    # Unknown presets default to STL passthrough (external printers).
+    if output_type == "gcode" and not is_known_preset(req.preset_id):
+        logger.warning(
+            "preset_id %r is not a known Vertex profile — returning STL instead of G-code",
+            req.preset_id,
+        )
+        output_type = "stl"
+
+    grinding_label = req.grinding_style.type if req.grinding_style else None
 
     logger.info(
-        "manufacture start job=%s design=%s preset=%s belt=%.1f grinding=%s side=%s",
-        req.job_id, req.design_id, req.preset_id, belt_angle, req.grinding_style.type, req.side,
+        "manufacture start job=%s design=%s preset=%s output=%s belt=%.1f side=%s",
+        req.job_id,
+        req.design_id,
+        req.preset_id,
+        output_type,
+        belt_angle,
+        req.side,
     )
 
-    # 1. Resolve base
-    local_glb = _download_to_temp(req.base_glb_url)
+    local_stl = download_stl_to_temp(req.stl_url)
+    downloaded = req.stl_url.startswith(("http://", "https://"))
 
     try:
-        # 2. Solid
-        solid = generate_final_solid(
-            base_glb_path=local_glb,
-            corrections=req.corrections,
-            trimlines=req.trimlines,
-            heel_lift_mm=req.heel_lift_mm,
-            heel_cup_width_mm=req.heel_cup_width_mm,
-            grinding_style=_build_grinding_style_dict(req.grinding_style),
-            thickness_mm=req.thickness_mm,
-        )
-
-        # 3. Belt transform
-        transformed = apply_belt_transform(solid, belt_angle)
-
-        # 4. Improved Kiri-style slicing (perimeters, solid layers, TPU/belt profiles) on the
-        # already belt-transformed solid. Node (not Python) owns storage of the resulting gcode
-        # and returns only a productionId + download reference to the client.
+        solid = load_watertight_stl(local_stl)
         preset = get_preset(req.preset_id)
-        # Override with values coming from the request (authoritative for this job)
         preset["beltAngleDeg"] = belt_angle
-        overrides: dict[str, Any] = {
-            "layerHeightMm": preset.get("layerHeightMm", 0.30),
-            "perimeters": preset.get("perimeters", 3),
-            "infillDensity": preset.get("infillDensity", 0.15),
-        }
 
+        if output_type == "stl":
+            stl_bytes = solid.export(file_type="stl")
+            logger.info("manufacture ok job=%s output=stl bytes=%d", req.job_id, len(stl_bytes))
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "job_id": req.job_id,
+                    "design_id": req.design_id,
+                    "preset_id": req.preset_id,
+                    "output_type": "stl",
+                    "belt_angle_deg": belt_angle,
+                    "grinding_style": grinding_label,
+                    "stl_base64": base64.b64encode(stl_bytes).decode("ascii"),
+                    "metadata": {"side": req.side, "faces": len(solid.faces)},
+                }
+            )
+
+        # G-code path: belt transform then slice with UI overrides on preset defaults.
+        transformed = apply_belt_transform(solid, belt_angle)
+        overrides = build_slice_overrides(
+            preset,
+            layer_height_mm=req.layer_height_mm,
+            infill_density=req.infill_density,
+            perimeters=req.perimeters,
+        )
         gcode = generate_gcode_from_solid(transformed, preset, overrides)
 
-        # Clean up temp if we downloaded
-        if req.base_glb_url.startswith(("http://", "https://")):
-            try:
-                os.unlink(local_glb)
-            except Exception:
-                pass
-
-        logger.info("manufacture ok job=%s gcode_bytes=%d", req.job_id, len(gcode))
-
+        logger.info("manufacture ok job=%s output=gcode bytes=%d", req.job_id, len(gcode))
         return JSONResponse(
             {
                 "ok": True,
                 "job_id": req.job_id,
                 "design_id": req.design_id,
                 "preset_id": req.preset_id,
+                "output_type": "gcode",
                 "belt_angle_deg": belt_angle,
-                "grinding_style": req.grinding_style.type,
+                "grinding_style": grinding_label,
                 "gcode": gcode,
+                "metadata": {
+                    "side": req.side,
+                    "layerHeightMm": overrides["layerHeightMm"],
+                    "infillDensity": overrides["infillDensity"],
+                    "perimeters": overrides["perimeters"],
+                },
             }
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        # Important: do NOT let the Node deduct tokens on failure.
         logger.exception("manufacture failed job=%s: %s", req.job_id, e)
-        if req.base_glb_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=500, detail=f"Manufacturing failed: {str(e)}") from e
+    finally:
+        if downloaded:
             try:
-                os.unlink(local_glb)
+                os.unlink(local_stl)
             except Exception:
                 pass
-        raise HTTPException(status_code=500, detail=f"Manufacturing failed: {str(e)}") from e
 
 
 if __name__ == "__main__":

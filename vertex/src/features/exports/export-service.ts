@@ -1,13 +1,17 @@
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
-import { getDesignBase } from "@/lib/geometry/base-asset";
-import { buildExportGeometry, buildExportGlb, buildExportStl } from "@/lib/geometry/export-geometry";
+import { getKernel } from "@/lib/chili3d/kernel";
+import {
+    buildExportGeometry,
+    buildExportGlb,
+    buildExportSolid,
+    buildExportStl,
+} from "@/lib/geometry/export-geometry";
+import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
-import { useCustomLibraryStore } from "@/stores/custom-library-store";
-import { useDesignStore } from "@/stores/design-store";
 import type { ExportFormat, GrindingStyle, Side } from "@/types";
 
 // Re-export for convenience in UI components
@@ -24,6 +28,28 @@ export interface ExportOutcome {
 
 function buildSideGeometry(side: Side) {
     return buildExportGeometry(side);
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+}
+
+/** Export the finalized viewer solid as binary STL (OCCT/kernel — not re-derived from parameters). */
+async function buildManufacturingStl(side: Side): Promise<ArrayBuffer> {
+    const geometry = await buildExportSolid(side);
+    const kernel = getKernel();
+    try {
+        return kernel.exportSTL(geometry);
+    } catch {
+        return geometryToBinarySTL(geometry);
+    } finally {
+        geometry.dispose();
+    }
 }
 
 async function authorize(
@@ -110,8 +136,8 @@ export async function exportGcode(
 }
 
 /**
- * Server-side hybrid manufacturing G-code (solid + Grinding Style sides + belt transform + slicing).
- * Uses the new manufacturing.generateSolid procedure.
+ * Server-side hybrid manufacturing: upload the finished viewer STL, then slice (belt) or
+ * return validated STL (external printers).
  */
 export async function generateHybridGcode(
     side: Side,
@@ -119,108 +145,80 @@ export async function generateHybridGcode(
     grindingStyle: GrindingStyleInput,
     overrides: CamOverrides = {},
 ): Promise<ExportOutcome> {
-    const { design } = useDesignStore.getState();
     const activeDesignId = useClientStore.getState().activeDesignId;
-    const filename = `hybrid-${side}-${preset.id}-${Date.now()}.gcode`;
-
-    const sideCorrections = design.corrections[side];
-    const trimlineForSide = design.trimlines?.[side] ?? [];
-
-    // Resolve the side-correct base (handles paired left/right and legacy single base).
-    const base = getDesignBase(design, side);
-
-    let baseGlbUrl: string | undefined;
-    // Only forward a customPrefab assetId for server-side signed-URL resolution.
-    // Stock bases are resolved entirely from their authoritative public/signed URL.
-    let customPrefabAssetId: string | undefined;
-
-    if (base) {
-        if (base.source === "stock") {
-            // Stock bases carry an authoritative public/signed Supabase URL that the
-            // Python service can download directly (no server lookup required).
-            if (base.url && /^https?:\/\//i.test(base.url)) {
-                baseGlbUrl = base.url;
-            }
-        } else {
-            // Custom prefab: let the server resolve a signed URL from the stored
-            // glbPath, and also pass any already-known public URL as a fallback.
-            customPrefabAssetId = base.assetId;
-            const prefab = useCustomLibraryStore.getState().customPrefabs.find((p) => p.id === base.assetId);
-            if (prefab?.url) {
-                baseGlbUrl = prefab.url;
-            }
-        }
-    }
-
-    const correctionsDict: Record<string, any> = { ...sideCorrections };
-    if (sideCorrections.heelCupWidthMm != null)
-        correctionsDict.heelCupWidthMm = sideCorrections.heelCupWidthMm;
-    if (sideCorrections.heelLiftMm != null) correctionsDict.heelLiftMm = sideCorrections.heelLiftMm;
-
-    const trimlinesDict: Record<string, any> = {
-        points: trimlineForSide.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 })),
-    };
+    const outputType = preset.beltAngleDeg ? "gcode" : "stl";
+    const ext = outputType === "gcode" ? "gcode" : "stl";
+    const filename = `hybrid-${side}-${preset.id}-${Date.now()}.${ext}`;
 
     if (isApiConfigured()) {
         try {
+            const stlBuffer = await buildManufacturingStl(side);
+            const upload = await trpc.manufacturing.uploadManufacturingStl.mutate({
+                side,
+                stlBase64: arrayBufferToBase64(stlBuffer),
+                fileName: `manufacturing-${side}.stl`,
+            });
+
             const res = await trpc.manufacturing.generateSolid.mutate({
                 designId: activeDesignId || undefined,
                 side,
                 presetId: preset.id,
+                stlUrl: upload.stlUrl,
+                outputType,
                 beltAngleDeg: preset.beltAngleDeg ?? 45,
-                corrections: correctionsDict,
-                trimlines: trimlinesDict,
-                thicknessMm: design.thicknessMm,
-                heelLiftMm: sideCorrections.heelLiftMm ?? 0,
-                heelCupWidthMm: sideCorrections.heelCupWidthMm ?? 0,
+                layerHeightMm: overrides.layerHeightMm,
+                infillDensity: overrides.infillDensity,
+                perimeters: overrides.perimeters,
                 grindingStyle,
-                baseGlbUrl,
-                ...(customPrefabAssetId ? { baseAssetId: customPrefabAssetId } : {}),
                 fileName: filename,
             });
 
-            if (!res?.ok || (!res.gcode && !res.gcodeDownloadUrl && !res.productionId)) {
-                return { ok: false, reason: "Server did not return a G-code reference" };
+            if (!res?.ok) {
+                return { ok: false, reason: "Server manufacturing request failed" };
             }
 
             let blob: Blob | undefined;
+            const downloadUrl = res.downloadUrl ?? res.gcodeDownloadUrl;
 
-            if (res.gcodeDownloadUrl) {
-                try {
-                    const textResp = await fetch(res.gcodeDownloadUrl);
-                    if (!textResp.ok) throw new Error(`Download failed with status ${textResp.status}`);
-                    const gcodeText = await textResp.text();
-                    blob = new Blob([gcodeText], { type: "text/plain" });
-                    downloadBlob(blob, filename);
-                } catch (dlErr: any) {
-                    return {
-                        ok: false,
-                        reason: `G-code generated (productionId=${res.productionId}) but client download failed: ${dlErr?.message || dlErr}`,
-                    };
-                }
-            } else if (res.gcode) {
+            if (downloadUrl) {
+                const resp = await fetch(downloadUrl);
+                if (!resp.ok) throw new Error(`Download failed with status ${resp.status}`);
+                const data = await resp.arrayBuffer();
+                const mime = outputType === "gcode" ? "text/plain" : "model/stl";
+                blob = new Blob([data], { type: mime });
+                downloadBlob(blob, filename);
+            } else if (outputType === "gcode" && res.gcode) {
                 blob = new Blob([res.gcode], { type: "text/plain" });
                 downloadBlob(blob, filename);
+            } else if (outputType === "stl" && res.stlBase64) {
+                const bytes = Uint8Array.from(atob(res.stlBase64), (c) => c.charCodeAt(0));
+                blob = new Blob([bytes], { type: "model/stl" });
+                downloadBlob(blob, filename);
+            } else {
+                return { ok: false, reason: "Server did not return a downloadable output file" };
             }
 
             useAuditStore
                 .getState()
                 .record(
                     "export_generated",
-                    `Hybrid G-code ${side} · ${preset.name} (${grindingStyle.type}) (productionId=${res.productionId || "n/a"})`,
+                    `Hybrid ${outputType.toUpperCase()} ${side} · ${preset.name} (${grindingStyle.type}) (productionId=${res.productionId || "n/a"})`,
                 );
 
             return { ok: true, filename, blob, productionId: res.productionId ?? undefined };
         } catch (e) {
             return {
                 ok: false,
-                reason: e instanceof Error ? e.message : "Hybrid G-code generation failed (server)",
+                reason: e instanceof Error ? e.message : "Hybrid manufacturing failed (server)",
             };
         }
     }
 
-    // Offline fallback
-    return exportGcode(side, preset, overrides);
+    // Offline fallback — client-side G-code only
+    if (outputType === "gcode") {
+        return exportGcode(side, preset, overrides);
+    }
+    return exportDesign("stl", side);
 }
 
 export async function downloadGcodeByProductionId(productionId: string): Promise<ExportOutcome> {

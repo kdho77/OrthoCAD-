@@ -14,15 +14,14 @@ export interface ManufacturePayload {
     job_id: string;
     design_id: string;
     preset_id: string;
-    base_glb_url: string;
-    corrections: Record<string, unknown>;
-    trimlines: Record<string, unknown>;
-    heel_lift_mm: number;
-    heel_cup_width_mm: number;
-    grinding_style: GrindingStylePayload;
-    thickness_mm: number;
+    stl_url: string;
+    output_type: "gcode" | "stl";
     belt_angle_deg: number;
     side: string | null;
+    layer_height_mm?: number;
+    infill_density?: number;
+    perimeters?: number;
+    grinding_style?: GrindingStylePayload;
 }
 
 /** Shape returned by the Python `/manufacture` endpoint on success. */
@@ -31,9 +30,11 @@ export interface ManufactureResult {
     job_id?: string;
     design_id?: string;
     preset_id?: string;
+    output_type?: "gcode" | "stl";
     belt_angle_deg?: number;
     grinding_style?: string;
     gcode?: string;
+    stl_base64?: string;
     error?: string;
 }
 
@@ -60,11 +61,8 @@ export function getManufacturingConfig(): { baseUrl: string; apiKey: string | nu
 /**
  * Call the Python hybrid-manufacturing service.
  *
- * Runs the full pipeline server-side: watertight solid generation (with the
- * requested Grinding Style sides) + belt pre-transform + slicing → G-code.
- *
- * Throws a `TRPCError` on any transport or service failure so the caller can
- * avoid token deduction (deduct only on success).
+ * Validates the finished STL, then returns G-code (belt profiles) or STL bytes.
+ * Throws a `TRPCError` on any transport or service failure.
  */
 export async function callManufacture(payload: ManufacturePayload): Promise<ManufactureResult> {
     const { baseUrl, apiKey } = getManufacturingConfig();
@@ -77,10 +75,10 @@ export async function callManufacture(payload: ManufacturePayload): Promise<Manu
         endpoint,
         jobId: payload.job_id,
         presetId: payload.preset_id,
+        outputType: payload.output_type,
         beltAngleDeg: payload.belt_angle_deg,
-        grindingStyle: payload.grinding_style.type,
         side: payload.side,
-        hasBaseUrl: Boolean(payload.base_glb_url && !payload.base_glb_url.startsWith("file://")),
+        hasStlUrl: Boolean(payload.stl_url && !payload.stl_url.startsWith("file://")),
         authenticated: Boolean(apiKey),
     });
 
@@ -101,7 +99,6 @@ export async function callManufacture(payload: ManufacturePayload): Promise<Manu
     }
 
     if (!response.ok) {
-        // FastAPI errors come back as { detail: "..." }.
         const body = (await response.json().catch(() => null)) as { detail?: string } | null;
         const detail = body?.detail || (await response.text().catch(() => "")) || response.statusText;
         console.error("[manufacturing] Python service returned error", { endpoint, status: response.status, detail });
@@ -112,15 +109,20 @@ export async function callManufacture(payload: ManufacturePayload): Promise<Manu
     }
 
     const result = (await response.json().catch(() => null)) as ManufactureResult | null;
-    if (!result || !result.ok || !result.gcode) {
-        const message = result?.error || "Manufacturing service did not return valid G-code";
-        console.error("[manufacturing] invalid Python service response", { endpoint, message });
+    const outputType = result?.output_type ?? payload.output_type;
+    const hasGcode = Boolean(result?.gcode);
+    const hasStl = Boolean(result?.stl_base64);
+
+    if (!result || !result.ok || (outputType === "gcode" && !hasGcode) || (outputType === "stl" && !hasStl)) {
+        const message = result?.error || "Manufacturing service did not return valid output";
+        console.error("[manufacturing] invalid Python service response", { endpoint, message, outputType });
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
     }
 
     console.log("[manufacturing] <- Python /manufacture OK", {
         jobId: result.job_id,
-        gcodeBytes: result.gcode.length,
+        outputType,
+        bytes: outputType === "gcode" ? result.gcode?.length : result.stl_base64?.length,
     });
 
     return result;

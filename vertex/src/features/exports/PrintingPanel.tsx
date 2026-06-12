@@ -1,15 +1,15 @@
-import { Cpu, Download, Lock, Printer, Play } from "lucide-react";
+import { Cpu, Download, Lock, Play, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
+import { exportGcode, type GrindingStyleInput, generateHybridGcode } from "@/features/exports/export-service";
+import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/chili3d/kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { type CamOverrides, type CamResult, generateGcode, presetsForMethod } from "@/lib/kiri";
-import { canExport, TOKEN_COST } from "@/features/licensing/license";
-import { exportGcode, generateHybridGcode, type GrindingStyleInput } from "@/features/exports/export-service";
+import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
-import { cn } from "@/lib/utils";
 import type { Side } from "@/types";
 
 function fmtTime(sec: number): string {
@@ -30,7 +30,10 @@ export function PrintingPanel() {
     const [busy, setBusy] = useState(false);
 
     // Hybrid manufacturing (server-side solid + G-code) controls
-    const [grindingStyle, setGrindingStyle] = useState<GrindingStyleInput>({ type: "straight", angle_degrees: 8 });
+    const [grindingStyle, setGrindingStyle] = useState<GrindingStyleInput>({
+        type: "straight",
+        angle_degrees: 8,
+    });
 
     const presets = useMemo(() => presetsForMethod(design.method), [design.method]);
     const [presetId, setPresetId] = useState(presets[0]?.id ?? "");
@@ -64,7 +67,11 @@ export function PrintingPanel() {
         if (!preset) return;
         setBusy(true);
         const res = await exportGcode(side, preset, overrides);
-        setStatus(res.ok ? `Exported ${res.filename} (-${TOKEN_COST.gcode} tokens)` : (res.reason ?? "Export failed"));
+        setStatus(
+            res.ok
+                ? `Exported ${res.filename} (-${TOKEN_COST.gcode} tokens)`
+                : (res.reason ?? "Export failed"),
+        );
         if (res.ok && res.stats) setResult((r) => (r ? r : { gcode: "", stats: res.stats!, moveCount: 0 }));
         setBusy(false);
     };
@@ -72,7 +79,7 @@ export function PrintingPanel() {
     const onHybridGenerate = async () => {
         if (!preset || !isBeltPreset) return;
         setBusy(true);
-        setStatus("Generating hybrid G-code on server (authoritative solid + belt transform + slicing)…");
+        setStatus("Exporting finished solid and generating G-code on server…");
         setResult(null);
         try {
             // The helper (generateHybridGcode) derives baseAssetId (and baseGlbUrl) internally
@@ -83,8 +90,10 @@ export function PrintingPanel() {
             // designId is also passed when an active persisted design exists.
             const res = await generateHybridGcode(side, preset, grindingStyle, overrides);
             if (res.ok) {
-                const idPart = res.productionId ? ` [production ${res.productionId}]` : '';
-                setStatus(`Hybrid G-code exported ${res.filename || 'file'}${idPart} (server-side generation; tokens deducted on success)`);
+                const idPart = res.productionId ? ` [production ${res.productionId}]` : "";
+                setStatus(
+                    `Server G-code exported ${res.filename || "file"}${idPart} (tokens deducted on success)`,
+                );
             } else {
                 setStatus(res.reason ?? "Hybrid generation failed");
             }
@@ -101,7 +110,13 @@ export function PrintingPanel() {
         <div className="space-y-3">
             <div className="flex gap-1">
                 {(["left", "right"] as Side[]).map((s) => (
-                    <Button key={s} size="sm" variant={side === s ? "default" : "secondary"} className="h-8 flex-1" onClick={() => setSide(s)}>
+                    <Button
+                        key={s}
+                        size="sm"
+                        variant={side === s ? "default" : "secondary"}
+                        className="h-8 flex-1"
+                        onClick={() => setSide(s)}
+                    >
                         {s} insole
                     </Button>
                 ))}
@@ -118,12 +133,18 @@ export function PrintingPanel() {
                         onClick={() => setPresetId(p.id)}
                         className={cn(
                             "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left text-xs",
-                            presetId === p.id ? "border-primary bg-primary/10 text-foreground" : "border-border bg-background text-muted-foreground",
+                            presetId === p.id
+                                ? "border-primary bg-primary/10 text-foreground"
+                                : "border-border bg-background text-muted-foreground",
                         )}
                     >
                         {isCnc ? <Cpu className="h-3.5 w-3.5" /> : <Printer className="h-3.5 w-3.5" />}
                         {p.name}
-                        {p.beltAngleDeg ? <span className="ml-auto rounded bg-muted px-1 text-[10px]">belt {p.beltAngleDeg}°</span> : null}
+                        {p.beltAngleDeg ? (
+                            <span className="ml-auto rounded bg-muted px-1 text-[10px]">
+                                belt {p.beltAngleDeg}°
+                            </span>
+                        ) : null}
                     </button>
                 ))}
             </div>
@@ -165,11 +186,35 @@ export function PrintingPanel() {
             )}
 
             {isCnc ? (
-                <SliderField label="Tool diameter" value={toolDia} min={1} max={12} step={0.5} unit="mm" onChange={setToolDia} />
+                <SliderField
+                    label="Tool diameter"
+                    value={toolDia}
+                    min={1}
+                    max={12}
+                    step={0.5}
+                    unit="mm"
+                    onChange={setToolDia}
+                />
             ) : (
                 <>
-                    <SliderField label="Layer height" value={layerHeight} min={0.1} max={0.6} step={0.05} unit="mm" onChange={setLayerHeight} />
-                    <SliderField label="Infill" value={infill} min={0} max={100} step={5} unit="%" onChange={setInfill} />
+                    <SliderField
+                        label="Layer height"
+                        value={layerHeight}
+                        min={0.1}
+                        max={0.6}
+                        step={0.05}
+                        unit="mm"
+                        onChange={setLayerHeight}
+                    />
+                    <SliderField
+                        label="Infill"
+                        value={infill}
+                        min={0}
+                        max={100}
+                        step={5}
+                        unit="%"
+                        onChange={setInfill}
+                    />
                 </>
             )}
 
@@ -181,8 +226,16 @@ export function PrintingPanel() {
                 <div className="space-y-1 rounded-md border border-border bg-background/50 p-2 text-xs">
                     <Row label="Moves" value={result.moveCount.toLocaleString()} />
                     <Row label="Est. time" value={fmtTime(result.stats.estimatedTimeSec)} />
-                    {!isCnc ? <Row label="Material" value={`${(result.stats.estimatedMaterialMm3 / 1000).toFixed(1)} cm³`} /> : null}
-                    <Row label="Path length" value={`${((result.stats.extrudeDistanceMm + result.stats.travelDistanceMm) / 1000).toFixed(1)} m`} />
+                    {!isCnc ? (
+                        <Row
+                            label="Material"
+                            value={`${(result.stats.estimatedMaterialMm3 / 1000).toFixed(1)} cm³`}
+                        />
+                    ) : null}
+                    <Row
+                        label="Path length"
+                        value={`${((result.stats.extrudeDistanceMm + result.stats.travelDistanceMm) / 1000).toFixed(1)} m`}
+                    />
                 </div>
             ) : null}
 
@@ -195,11 +248,12 @@ export function PrintingPanel() {
                 <Button
                     variant="default"
                     className="w-full"
-                    disabled={busy || !preset}
+                    disabled={busy || !preset || !gcodeCheck.ok}
                     onClick={onHybridGenerate}
-                    title="Uses server-side authoritative solid (Grinding Style sides) + belt pre-transform + slicing"
+                    title="Exports the finished viewer solid as STL, uploads to server, then slices with belt transform"
                 >
-                    <Download className="h-4 w-4" /> Generate Hybrid G-code (Server) — {grindingStyle.type}
+                    {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                    Generate G-code (Server) — {grindingStyle.type}
                 </Button>
             )}
 
@@ -208,7 +262,7 @@ export function PrintingPanel() {
 
             <p className="text-xs text-muted-foreground">
                 {preset?.beltAngleDeg
-                    ? `Belt presets support client preview or server hybrid (Grinding Style + authoritative solid).`
+                    ? `Belt presets support client preview or server G-code from the finished viewer solid.`
                     : "In-house CAM engine (Kiri:Moto-compatible seam)."}
             </p>
         </div>
