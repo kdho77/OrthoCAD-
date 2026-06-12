@@ -7,6 +7,7 @@ import {
     copyStorageObject,
     deleteAsset,
     deleteManufacturingTempBestEffort,
+    MANUFACTURING_BUCKET,
     MANUFACTURING_TEMP_PREFIX,
 } from "./storage.js";
 
@@ -23,12 +24,12 @@ export async function archiveManufacturingSourceStl(
 ): Promise<void> {
     const archiveKey = buildManufacturingArchiveStlKey(opts.userId, opts.exportId);
     try {
-        await copyStorageObject(supabase, opts.tempStlKey, archiveKey, "model/stl");
+        await copyStorageObject(supabase, opts.tempStlKey, archiveKey, "model/stl", MANUFACTURING_BUCKET);
         await prisma.export.update({
             where: { id: opts.exportId },
             data: { sourceStlPath: archiveKey },
         });
-        await deleteAsset(supabase, opts.tempStlKey);
+        await deleteAsset(supabase, opts.tempStlKey, MANUFACTURING_BUCKET);
         console.log("[manufacturing] archived source STL", {
             exportId: opts.exportId,
             archiveKey,
@@ -58,7 +59,7 @@ const MS_PER_HOUR = 60 * 60 * 1000;
 export async function cleanupManufacturingTempObjects(
     supabase: SupabaseClient,
     maxAgeHours = 48,
-    bucket = process.env.STORAGE_BUCKET ?? "vertex-assets",
+    bucket = MANUFACTURING_BUCKET,
 ): Promise<ManufacturingTempCleanupSummary> {
     const summary: ManufacturingTempCleanupSummary = { scanned: 0, deleted: 0, errors: [] };
     const cutoff = Date.now() - maxAgeHours * MS_PER_HOUR;

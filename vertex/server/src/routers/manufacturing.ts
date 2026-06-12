@@ -10,6 +10,7 @@ import { RATE_LIMITS } from "../lib/rate-limit.js";
 import {
     assertManufacturingTempKeyForUser,
     buildManufacturingTempStlKey,
+    MANUFACTURING_BUCKET,
     signedDownloadUrl,
     uploadAsset,
 } from "../lib/storage.js";
@@ -89,8 +90,8 @@ export const manufacturingRouter = router({
             }
 
             const key = buildManufacturingTempStlKey(ctx.user.id);
-            await uploadAsset(supabase, key, bytes, "model/stl");
-            const stlUrl = await signedDownloadUrl(supabase, key, 3600);
+            await uploadAsset(supabase, key, bytes, "model/stl", MANUFACTURING_BUCKET);
+            const stlUrl = await signedDownloadUrl(supabase, key, 3600, MANUFACTURING_BUCKET);
 
             return { ok: true as const, stlUrl, storageKey: key };
         }),
@@ -269,8 +270,8 @@ export const manufacturingRouter = router({
 
                 let downloadUrl: string | undefined;
                 if (supabase) {
-                    await uploadAsset(supabase, storageKey, outputBytes, contentType);
-                    downloadUrl = await signedDownloadUrl(supabase, storageKey, 3600);
+                    await uploadAsset(supabase, storageKey, outputBytes, contentType, MANUFACTURING_BUCKET);
+                    downloadUrl = await signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET);
                     await ctx.prisma.export.update({
                         where: { id: result.exportId },
                         data: { storageKey },
@@ -335,7 +336,12 @@ export const manufacturingRouter = router({
             if (!supabase) {
                 throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
             }
-            const downloadUrl = await signedDownloadUrl(supabase, production.gcodeStorageKey, 3600);
+            const downloadUrl = await signedDownloadUrl(
+                supabase,
+                production.gcodeStorageKey,
+                3600,
+                MANUFACTURING_BUCKET,
+            );
             return { downloadUrl, productionId: production.id };
         }),
 });

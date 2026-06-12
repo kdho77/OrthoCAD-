@@ -7,6 +7,13 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const MAIN_BUCKET = process.env.STORAGE_BUCKET ?? "vertex-assets";
 
+/** Private bucket for manufacturing STL uploads, archives, and G-code output. */
+export const MANUFACTURING_BUCKET = process.env.MANUFACTURING_BUCKET ?? "vertex-manufacturing";
+
+if (process.env.MANUFACTURING_BUCKET === undefined) {
+    console.warn("WARNING: MANUFACTURING_BUCKET env var not set, defaulting to vertex-manufacturing");
+}
+
 /**
  * Dedicated (or shared) bucket for system stock bases.
  * You can set STOCK_STORAGE_BUCKET=stock-bases to isolate public stock assets
@@ -128,7 +135,7 @@ export function deleteManufacturingTempBestEffort(
     key: string | undefined,
 ): void {
     if (!supabase || !key || !isManufacturingTempKey(key)) return;
-    void deleteAsset(supabase, key).catch((err: unknown) => {
+    void deleteAsset(supabase, key, MANUFACTURING_BUCKET).catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         console.error("[manufacturing] failed to delete temp STL", { key, message });
     });
