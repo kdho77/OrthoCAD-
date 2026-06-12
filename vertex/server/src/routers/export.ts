@@ -36,7 +36,7 @@ export const exportRouter = router({
                 throw new TRPCError({ code: "FORBIDDEN", message: "No valid license" });
             }
 
-            const result = await ctx.prisma.$transaction(async (tx) => {
+            const result = await ctx.prismaDirect.$transaction(async (tx) => {
                 // Guarded decrement: only succeeds if balance is sufficient.
                 const dec = await tx.user.updateMany({
                     where: { id: ctx.user.id, tokenBalance: { gte: cost } },

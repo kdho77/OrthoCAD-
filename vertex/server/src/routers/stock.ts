@@ -5,7 +5,14 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSupabaseAdmin } from "../context.js";
 import { validateGlbBase64 } from "../lib/glb-validation.js";
-import { buildStockGlbKey, deleteAsset, getPublicUrl, signedDownloadUrl, STOCK_BUCKET, uploadAsset } from "../lib/storage.js";
+import {
+    buildStockGlbKey,
+    deleteAsset,
+    getPublicUrl,
+    STOCK_BUCKET,
+    signedDownloadUrl,
+    uploadAsset,
+} from "../lib/storage.js";
 import { adminProcedure, protectedProcedure, router } from "../trpc.js";
 
 /**
@@ -194,7 +201,7 @@ export const stockRouter = router({
             }
 
             // Atomic: clear other defaults if needed, then create
-            const row = await ctx.prisma.$transaction(async (tx) => {
+            const row = await ctx.prismaDirect.$transaction(async (tx) => {
                 if (isDef) {
                     await tx.stockBase.updateMany({
                         where: { isDefault: true },
@@ -277,12 +284,11 @@ export const stockRouter = router({
                 }
             }
 
-            const row = await ctx.prisma.$transaction(async (tx) => {
+            const row = await ctx.prismaDirect.$transaction(async (tx) => {
                 // If we are turning OFF the default (isActive=false on a currently-default row, or explicitly isDefault=false),
                 // auto-promote another active stock so the system keeps a designated default.
                 const turningOffDefault =
-                    (existing.isDefault && isAct === false) ||
-                    (existing.isDefault && isDef === false);
+                    (existing.isDefault && isAct === false) || (existing.isDefault && isDef === false);
 
                 if (turningOffDefault) {
                     const replacement = await tx.stockBase.findFirst({
@@ -324,7 +330,9 @@ export const stockRouter = router({
                         ...(input.primarySide !== undefined ? { primarySide: input.primarySide } : {}),
                         ...(isDef !== undefined ? { isDefault: isDef } : {}),
                         ...(isAct !== undefined ? { isActive: isAct } : {}),
-                        ...(input.metadata !== undefined || input.category !== undefined || input.description !== undefined
+                        ...(input.metadata !== undefined ||
+                        input.category !== undefined ||
+                        input.description !== undefined
                             ? { metadata: nextMeta }
                             : {}),
                     },
@@ -360,7 +368,7 @@ export const stockRouter = router({
      * Delete a stock base.
      *
      * **Delete strategy (hard delete)**: The DB row is removed and the GLB bytes are
-     * deleted from storage (best-effort). 
+     * deleted from storage (best-effort).
      *
      * Rationale (documented per requirements):
      * - Stock bases are *system templates*, not user-owned clinical data.
@@ -389,7 +397,7 @@ export const stockRouter = router({
 
             // Hard delete chosen (see JSDoc below). If this was the active default, auto-promote
             // another active stock base so that new designs continue to have a server default.
-            await ctx.prisma.$transaction(async (tx) => {
+            await ctx.prismaDirect.$transaction(async (tx) => {
                 if (wasDefault) {
                     const replacement = await tx.stockBase.findFirst({
                         where: { isActive: true, id: { not: input.id } },
@@ -453,18 +461,20 @@ export const stockRouter = router({
      */
     ensureDefaultStockBase: adminProcedure
         .input(
-            z.object({
-                /** Optional override name for the system default row. */
-                name: z.string().min(1).max(120).optional(),
-                /** If you want to (re)upload the GLB bytes as part of seeding. */
-                glbBase64: z.string().min(1).optional(),
-                /** Conventional glbPath to use when no bytes are supplied. */
-                glbPath: z.string().min(1).optional(),
-                primarySide: z.enum(["left", "right"]).nullish(),
-                category: z.string().min(1).max(60).optional(),
-                description: z.string().max(500).optional(),
-                metadata: z.record(z.unknown()).optional(),
-            }).optional(),
+            z
+                .object({
+                    /** Optional override name for the system default row. */
+                    name: z.string().min(1).max(120).optional(),
+                    /** If you want to (re)upload the GLB bytes as part of seeding. */
+                    glbBase64: z.string().min(1).optional(),
+                    /** Conventional glbPath to use when no bytes are supplied. */
+                    glbPath: z.string().min(1).optional(),
+                    primarySide: z.enum(["left", "right"]).nullish(),
+                    category: z.string().min(1).max(60).optional(),
+                    description: z.string().max(500).optional(),
+                    metadata: z.record(z.unknown()).optional(),
+                })
+                .optional(),
         )
         .mutation(async ({ ctx, input }) => {
             const desiredName = input?.name ?? "Default Stock Base";
@@ -473,15 +483,14 @@ export const stockRouter = router({
             // Reuse the existing create path when we need to upload bytes (it already
             // handles key generation + single-default enforcement).
             if (input?.glbBase64) {
-                const res = await (ctx as any /* reuse the mutation implementation shape */)
-                    .$call // not real, we just call the same business logic
-                    // For cleanliness we directly do the work here but still go through
-                    // the single-default logic that createStockBase uses internally.
-                    null; // fall through to the upsert path below
+                const res = await (ctx as any) /* reuse the mutation implementation shape */.$call; // not real, we just call the same business logic
+                // For cleanliness we directly do the work here but still go through
+                // the single-default logic that createStockBase uses internally.
+                null; // fall through to the upsert path below
             }
 
             // Idempotent upsert of the system default row.
-            const row = await ctx.prisma.$transaction(async (tx) => {
+            const row = await ctx.prismaDirect.$transaction(async (tx) => {
                 // Make sure no other row is the default while we set this one.
                 await tx.stockBase.updateMany({
                     where: { isDefault: true },
@@ -507,7 +516,9 @@ export const stockRouter = router({
                         data: {
                             isDefault: true,
                             isActive: true,
-                            glbPath: input?.glbBase64 ? (/* will be overwritten by caller if bytes */ existing.glbPath) : desiredGlbPath,
+                            glbPath: input?.glbBase64
+                                ? /* will be overwritten by caller if bytes */ existing.glbPath
+                                : desiredGlbPath,
                             primarySide: input?.primarySide ?? existing.primarySide,
                             metadata: meta,
                         },

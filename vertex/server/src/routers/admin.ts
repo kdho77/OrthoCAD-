@@ -1,9 +1,6 @@
-import type { Role } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { adminProcedure, router, superAdminProcedure } from "../trpc.js";
-
-const VALID_ROLES: readonly string[] = ["super_admin", "admin", "clinician"];
 
 // Super Admin Portal API: user/token/license administration and audit access.
 export const adminRouter = router({
@@ -63,16 +60,7 @@ export const adminRouter = router({
             // audit insert would have thrown P2003 — rolling the transaction back
             // and returning a 500 (an HTML crash page on Vercel). Lazily provision
             // the acting user so these foreign keys resolve.
-            const actorRole = (VALID_ROLES.includes(ctx.user.role) ? ctx.user.role : "clinician") as Role;
-            // users.email is unique — never insert an empty string (P2002 on the
-            // second email-less actor); fall back to a per-id placeholder.
-            const actorEmail = ctx.user.email.trim() || `${ctx.user.id}@placeholder.invalid`;
-            await ctx.prisma.user.upsert({
-                where: { id: ctx.user.id },
-                update: {},
-                create: { id: ctx.user.id, email: actorEmail, role: actorRole },
-            });
-            console.log("[admin] grantTokens actor provisioned", { actorId: ctx.user.id });
+            // Actor is provisioned by protectedProcedure middleware before we get here.
 
             // Resolve the target. For self-grants (the portal's path) it now exists
             // because we just provisioned it above; for an explicit other userId a
@@ -95,7 +83,7 @@ export const adminRouter = router({
             }
 
             try {
-                const result = await ctx.prisma.$transaction(async (tx) => {
+                const result = await ctx.prismaDirect.$transaction(async (tx) => {
                     const user = await tx.user.update({
                         where: { id: input.userId },
                         data: { tokenBalance: { increment: input.amount } },

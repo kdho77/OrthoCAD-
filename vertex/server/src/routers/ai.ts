@@ -56,7 +56,7 @@ export const aiRouter = router({
 
             const parsed = await parsePrescriptionWithAi(cfg, { text: input.text, image: input.image });
 
-            const result = await ctx.prisma.$transaction(async (tx) => {
+            const result = await ctx.prismaDirect.$transaction(async (tx) => {
                 const dec = await tx.user.updateMany({
                     where: { id: ctx.user.id, tokenBalance: { gte: AI_TOKEN_COST } },
                     data: { tokenBalance: { decrement: AI_TOKEN_COST } },
