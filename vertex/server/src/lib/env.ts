@@ -1,16 +1,24 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { resolveDatabaseUrl, resolveDirectUrl } from "./prisma.js";
+
 /** Warns when production-critical env vars are missing (does not throw in dev). */
 export function validateServerEnv(): void {
-    const dbConfigured = ["DATABASE_URL", "POSTGRES_PRISMA_URL", "POSTGRES_URL"].some((k) =>
-        process.env[k]?.trim(),
-    );
+    const dbConfigured =
+        Boolean(resolveDatabaseUrl()) ||
+        ["POSTGRES_HOST", "POSTGRES_PASSWORD"].every((k) => process.env[k]?.trim());
     if (!dbConfigured) {
         console.warn(
-            "[vertex] DATABASE_URL not set (no POSTGRES_PRISMA_URL/POSTGRES_URL fallback either) — " +
-                "every DB-backed route will fail. Add it in Vercel > Settings > Environment Variables " +
-                "for Production AND Preview.",
+            "[vertex] No usable Postgres connection URL — set DATABASE_URL (pooled) and DIRECT_URL " +
+                "(direct), or ensure the Supabase Vercel integration vars (POSTGRES_PRISMA_URL, " +
+                "POSTGRES_URL, POSTGRES_HOST, POSTGRES_PASSWORD, SUPABASE_URL) are present for " +
+                "Production AND Preview.",
+        );
+    } else if (!resolveDirectUrl()) {
+        console.warn(
+            "[vertex] DIRECT_URL not set — interactive transactions will use the pooled URL and may " +
+                "fail with 'prepared statement already exists' on Supabase PgBouncer.",
         );
     }
     if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {

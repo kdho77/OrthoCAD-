@@ -180,7 +180,7 @@ export function buildStockGlbKey(name: string, opts?: { category?: string }): st
  * Supabase client's getPublicUrl() and the STOCK_BUCKET / MAIN_BUCKET constants.
  * Kept for backward compatibility during transition.
  */
-export function getPublicStockUrl(key: string): string | null {
+export function getPublicStockUrl(_key: string): string | null {
     // This old helper doesn't have the client; callers should migrate to getPublicUrl.
     return null;
 }

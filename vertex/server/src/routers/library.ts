@@ -47,13 +47,17 @@ async function authorizeSave(ctx: {
 }
 
 async function deductSaveTokens(
-    ctx: { prisma: typeof import("../context").prisma; user: { id: string }; ip: string | null },
+    ctx: {
+        prismaDirect: typeof import("../context").prismaDirect;
+        user: { id: string };
+        ip: string | null;
+    },
     reason: string,
     targetId: string,
     metadata: Prisma.InputJsonValue,
 ) {
     const cost = SAVE_TOKEN_COST;
-    return ctx.prisma.$transaction(async (tx) => {
+    return ctx.prismaDirect.$transaction(async (tx) => {
         const dec = await tx.user.updateMany({
             where: { id: ctx.user.id, tokenBalance: { gte: cost } },
             data: { tokenBalance: { decrement: cost } },

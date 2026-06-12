@@ -1,6 +1,7 @@
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { Context } from "./context.js";
+import { ensureAppUser } from "./lib/ensure-user.js";
 import { checkRateLimit, type RateLimitConfig } from "./lib/rate-limit.js";
 
 const t = initTRPC.context<Context>().create({ transformer: superjson });
@@ -8,11 +9,12 @@ const t = initTRPC.context<Context>().create({ transformer: superjson });
 export const router = t.router;
 export const publicProcedure = t.procedure;
 
-// Requires an authenticated Supabase user.
-export const protectedProcedure = t.procedure.use(({ ctx, next }) => {
+// Requires an authenticated Supabase user (mirrored into app `users` on first request).
+export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
     if (!ctx.user) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required" });
     }
+    await ensureAppUser(ctx.prismaDirect, ctx.user);
     return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
