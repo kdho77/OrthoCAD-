@@ -1,6 +1,8 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { randomUUID } from "node:crypto";
+
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const MAIN_BUCKET = process.env.STORAGE_BUCKET ?? "vertex-assets";
@@ -11,6 +13,12 @@ export const MAIN_BUCKET = process.env.STORAGE_BUCKET ?? "vertex-assets";
  * from user custom uploads (recommended for RLS / public policy simplicity).
  */
 export const STOCK_BUCKET = process.env.STOCK_STORAGE_BUCKET ?? MAIN_BUCKET;
+
+/** Ephemeral manufacturing STL uploads (TTL-cleaned). Only `uploadManufacturingStl` may write here. */
+export const MANUFACTURING_TEMP_PREFIX = "manufacturing-temp/";
+
+/** Permanent submitted-geometry archive for successful manufacturing jobs. */
+export const MANUFACTURING_ARCHIVE_PREFIX = "manufacturing-archive/";
 
 export interface StorageUploadResult {
     key: string;
@@ -78,8 +86,52 @@ export function getPublicUrl(
 }
 
 /** Build a temporary storage key for a manufacturing STL upload. */
-export function buildManufacturingStlKey(userId: string, side: string, stamp = Date.now()): string {
-    return `manufacturing/${userId}/${side}-${stamp}.stl`;
+export function buildManufacturingTempStlKey(userId: string, stamp = Date.now(), id = randomUUID()): string {
+    return `${MANUFACTURING_TEMP_PREFIX}${userId}/${stamp}-${id}.stl`;
+}
+
+/** Permanent archive path for a successful manufacturing export. */
+export function buildManufacturingArchiveStlKey(userId: string, exportId: string): string {
+    return `${MANUFACTURING_ARCHIVE_PREFIX}${userId}/${exportId}.stl`;
+}
+
+export function isManufacturingTempKey(key: string): boolean {
+    return key.startsWith(MANUFACTURING_TEMP_PREFIX);
+}
+
+export function assertManufacturingTempKeyForUser(key: string, userId: string): void {
+    const expectedPrefix = `${MANUFACTURING_TEMP_PREFIX}${userId}/`;
+    if (!key.startsWith(expectedPrefix) || !key.endsWith(".stl")) {
+        throw new Error(`Invalid manufacturing temp STL key for user: ${key}`);
+    }
+}
+
+/** Copy an object within the same bucket (download → re-upload). */
+export async function copyStorageObject(
+    supabase: SupabaseClient,
+    sourceKey: string,
+    destKey: string,
+    contentType: string,
+    bucket = MAIN_BUCKET,
+): Promise<void> {
+    const { data, error } = await supabase.storage.from(bucket).download(sourceKey);
+    if (error || !data) {
+        throw new Error(`Storage download failed for copy: ${error?.message ?? "no data"}`);
+    }
+    const buffer = Buffer.from(await data.arrayBuffer());
+    await uploadAsset(supabase, destKey, buffer, contentType, bucket);
+}
+
+/** Best-effort delete of a temp manufacturing STL; never throws. */
+export function deleteManufacturingTempBestEffort(
+    supabase: SupabaseClient | null | undefined,
+    key: string | undefined,
+): void {
+    if (!supabase || !key || !isManufacturingTempKey(key)) return;
+    void deleteAsset(supabase, key).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[manufacturing] failed to delete temp STL", { key, message });
+    });
 }
 
 /** Build a unique storage key for a user's custom GLB asset. */

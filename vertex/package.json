@@ -21,7 +21,8 @@
         "prisma:generate": "prisma generate",
         "prisma:migrate": "prisma migrate dev",
         "prisma:studio": "prisma studio",
-        "db:push": "tsx server/src/prisma-cli.ts db push"
+        "db:push": "tsx server/src/prisma-cli.ts db push",
+        "cleanup:manufacturing-temp": "tsx scripts/cleanup-manufacturing-temp.ts"
     },
     "dependencies": {
         "@chili3d/core": "file:../packages/core",
