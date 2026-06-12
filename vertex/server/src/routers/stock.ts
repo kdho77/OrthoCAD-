@@ -1,6 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { Prisma } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSupabaseAdmin } from "../context.js";
@@ -216,7 +217,7 @@ export const stockRouter = router({
                         primarySide: input.primarySide ?? null,
                         isDefault: isDef,
                         isActive: isAct,
-                        metadata: Object.keys(meta).length > 0 ? meta : null,
+                        metadata: Object.keys(meta).length > 0 ? (meta as Prisma.InputJsonValue) : undefined,
                     },
                 });
                 return created;
@@ -311,17 +312,21 @@ export const stockRouter = router({
                 }
 
                 // Merge metadata if provided
-                let nextMeta = existing.metadata ?? {};
+                let nextMeta: Prisma.InputJsonValue = (existing.metadata as Prisma.InputJsonValue) ?? {};
                 if (input.metadata) {
-                    nextMeta = { ...(nextMeta as any), ...input.metadata };
+                    nextMeta = {
+                        ...(nextMeta as Prisma.JsonObject),
+                        ...(input.metadata as Prisma.JsonObject),
+                    };
                 }
                 if (input.category !== undefined) {
-                    (nextMeta as any).category = input.category;
+                    nextMeta = { ...(nextMeta as Prisma.JsonObject), category: input.category };
                 }
                 if (input.description !== undefined) {
-                    (nextMeta as any).description = input.description;
+                    nextMeta = { ...(nextMeta as Prisma.JsonObject), description: input.description };
                 }
-                if (Object.keys(nextMeta as any).length === 0) nextMeta = null;
+                const metadataValue: Prisma.NullableJsonNullValueInput | Prisma.InputJsonValue =
+                    Object.keys(nextMeta as Prisma.JsonObject).length > 0 ? nextMeta : Prisma.JsonNull;
 
                 const updated = await tx.stockBase.update({
                     where: { id: input.id },
@@ -333,7 +338,7 @@ export const stockRouter = router({
                         ...(input.metadata !== undefined ||
                         input.category !== undefined ||
                         input.description !== undefined
-                            ? { metadata: nextMeta }
+                            ? { metadata: metadataValue }
                             : {}),
                     },
                 });
@@ -479,15 +484,6 @@ export const stockRouter = router({
         .mutation(async ({ ctx, input }) => {
             const desiredName = input?.name ?? "Default Stock Base";
             const desiredGlbPath = input?.glbPath ?? "stock/standard/Default.glb";
-
-            // Reuse the existing create path when we need to upload bytes (it already
-            // handles key generation + single-default enforcement).
-            if (input?.glbBase64) {
-                const res = await (ctx as any) /* reuse the mutation implementation shape */.$call; // not real, we just call the same business logic
-                // For cleanliness we directly do the work here but still go through
-                // the single-default logic that createStockBase uses internally.
-                null; // fall through to the upsert path below
-            }
 
             // Idempotent upsert of the system default row.
             const row = await ctx.prismaDirect.$transaction(async (tx) => {
