@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { getSupabaseAdmin } from "../context.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
 import { rateLimitedProcedure, router } from "../trpc.js";
 
@@ -36,53 +37,35 @@ export const exportRouter = router({
                 throw new TRPCError({ code: "FORBIDDEN", message: "No valid license" });
             }
 
-            const result = await ctx.prismaDirect.$transaction(async (tx) => {
-                // Guarded decrement: only succeeds if balance is sufficient.
-                const dec = await tx.user.updateMany({
-                    where: { id: ctx.user.id, tokenBalance: { gte: cost } },
-                    data: { tokenBalance: { decrement: cost } },
+            const supabase = getSupabaseAdmin();
+            if (!supabase) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: "Supabase admin client not configured",
                 });
-                if (dec.count === 0) {
-                    throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
-                }
+            }
 
-                const user = await tx.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
-
-                const exp = await tx.export.create({
-                    data: {
-                        designId: input.designId ?? null,
-                        userId: ctx.user.id,
-                        format: input.format,
-                        side: input.side ?? null,
-                        tokenCost: cost,
-                        fileName: input.fileName ?? null,
-                    },
-                });
-
-                await tx.tokenTransaction.create({
-                    data: {
-                        userId: ctx.user.id,
-                        type: "deduct",
-                        amount: -cost,
-                        balance: user.tokenBalance,
-                        reason: `export:${input.format}`,
-                        exportId: exp.id,
-                    },
-                });
-
-                await tx.auditLog.create({
-                    data: {
-                        userId: ctx.user.id,
-                        action: "export_generated",
-                        targetId: exp.id,
-                        metadata: { format: input.format, side: input.side ?? null },
-                        ipAddress: ctx.ip,
-                    },
-                });
-
-                return { exportId: exp.id, balance: user.tokenBalance };
+            const { data, error } = await supabase.rpc("vertex_authorize_export", {
+                p_user_id: ctx.user.id,
+                p_cost: cost,
+                p_design_id: input.designId ?? null,
+                p_format: input.format,
+                p_side: input.side ?? null,
+                p_file_name: input.fileName ?? null,
+                p_ip: ctx.ip,
             });
 
-            return { ok: true as const, ...result };
+            if (error) {
+                if (error.message.includes("INSUFFICIENT_TOKENS")) {
+                    throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
+                }
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Export authorization failed: ${error.message}`,
+                });
+            }
+
+            const result = data as { exportId: string; balance: number };
+            return { ok: true as const, exportId: result.exportId, balance: result.balance };
         }),
 });
