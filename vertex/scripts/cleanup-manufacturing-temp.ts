@@ -20,6 +20,7 @@
 
 import { getSupabaseAdmin } from "../server/src/context";
 import { cleanupManufacturingTempObjects } from "../server/src/lib/manufacturing-stl-lifecycle";
+import { MANUFACTURING_BUCKET } from "../server/src/lib/storage";
 
 async function main() {
     const maxAgeHours = Number(process.env.MANUFACTURING_TEMP_MAX_AGE_HOURS ?? "48");
@@ -29,8 +30,10 @@ async function main() {
         process.exit(1);
     }
 
-    console.log(`[cleanup-manufacturing-temp] scanning manufacturing-temp/ (max age ${maxAgeHours}h)`);
-    const summary = await cleanupManufacturingTempObjects(supabase, maxAgeHours);
+    console.log(
+        `[cleanup-manufacturing-temp] scanning manufacturing-temp/ in ${MANUFACTURING_BUCKET} (max age ${maxAgeHours}h)`,
+    );
+    const summary = await cleanupManufacturingTempObjects(supabase, maxAgeHours, MANUFACTURING_BUCKET);
     console.log("[cleanup-manufacturing-temp] done", summary);
     if (summary.errors.length > 0) {
         process.exitCode = 1;
