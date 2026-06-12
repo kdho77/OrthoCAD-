@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { getSupabaseAdmin } from "../context.js";
 import { adminProcedure, router, superAdminProcedure } from "../trpc.js";
 
 // Super Admin Portal API: user/token/license administration and audit access.
@@ -51,84 +52,102 @@ export const adminRouter = router({
                 throw new TRPCError({ code: "BAD_REQUEST", message: "Grant amount must be non-zero" });
             }
 
-            // ROOT CAUSE of the production 500: Supabase-authenticated users are
-            // never mirrored into the app `users` table (no signup/sign-in sync
-            // anywhere in the codebase). The Super Admin Portal grants to the
-            // logged-in user themselves (userId === ctx.user.id), so BOTH the
-            // update target AND the AuditLog actor FK (userId) pointed at a row
-            // that does not exist. `user.update` then threw Prisma P2025 and the
-            // audit insert would have thrown P2003 — rolling the transaction back
-            // and returning a 500 (an HTML crash page on Vercel). Lazily provision
-            // the acting user so these foreign keys resolve.
-            // Actor is provisioned by protectedProcedure middleware before we get here.
-
-            // Resolve the target. For self-grants (the portal's path) it now exists
-            // because we just provisioned it above; for an explicit other userId a
-            // missing record yields a clear 404 instead of an opaque Prisma error.
-            const target = await ctx.prisma.user.findUnique({
-                where: { id: input.userId },
-                select: { id: true, email: true, tokenBalance: true },
-            });
-            if (!target) {
-                console.warn("[admin] grantTokens target user not found", { targetUserId: input.userId });
-                throw new TRPCError({ code: "NOT_FOUND", message: "Target user not found" });
+            const supabase = getSupabaseAdmin();
+            if (!supabase) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: "Supabase admin client not configured",
+                });
             }
 
-            // Token balances are non-negative; reject removals that would underflow.
-            if (input.amount < 0 && target.tokenBalance + input.amount < 0) {
-                throw new TRPCError({
-                    code: "BAD_REQUEST",
-                    message: `Cannot remove ${-input.amount} tokens — user only has ${target.tokenBalance}`,
-                });
+            let email: string;
+            if (input.userId === ctx.user.id) {
+                email = ctx.user.email.trim() || `${ctx.user.id}@placeholder.invalid`;
+            } else {
+                const { data: target, error: targetError } = await supabase
+                    .from("users")
+                    .select("email")
+                    .eq("id", input.userId)
+                    .single();
+                if (targetError || !target) {
+                    console.warn("[admin] grantTokens target user not found", { targetUserId: input.userId });
+                    throw new TRPCError({ code: "NOT_FOUND", message: "Target user not found" });
+                }
+                email = target.email;
             }
 
             try {
-                const result = await ctx.prismaDirect.$transaction(async (tx) => {
-                    const user = await tx.user.update({
-                        where: { id: input.userId },
-                        data: { tokenBalance: { increment: input.amount } },
-                    });
-                    await tx.tokenTransaction.create({
-                        data: {
-                            userId: input.userId,
-                            type: input.amount >= 0 ? "grant" : "adjustment",
-                            amount: input.amount,
-                            balance: user.tokenBalance,
-                            reason: input.reason ?? "admin grant",
+                const { data: user, error } = await supabase
+                    .from("users")
+                    .upsert(
+                        {
+                            email,
+                            role: "super_admin",
+                            tokenBalance: 0,
+                            isActive: true,
                         },
+                        { onConflict: "email", ignoreDuplicates: false },
+                    )
+                    .select("id, email, role, tokenBalance, isActive")
+                    .single();
+
+                if (error) throw new Error(`User upsert failed: ${error.message}`);
+
+                if (input.amount < 0 && (user.tokenBalance || 0) + input.amount < 0) {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message: `Cannot remove ${-input.amount} tokens — user only has ${user.tokenBalance || 0}`,
                     });
-                    await tx.auditLog.create({
-                        data: {
-                            userId: ctx.user.id,
-                            action: "tokens_granted",
-                            targetId: input.userId,
-                            metadata: { amount: input.amount, balance: user.tokenBalance },
-                            ipAddress: ctx.ip,
-                        },
-                    });
-                    return { ok: true, balance: user.tokenBalance };
+                }
+
+                const newBalance = (user.tokenBalance || 0) + input.amount;
+
+                const { error: updateError } = await supabase
+                    .from("users")
+                    .update({
+                        tokenBalance: newBalance,
+                        updatedAt: new Date().toISOString(),
+                    })
+                    .eq("email", email);
+
+                if (updateError) throw new Error(`Token grant failed: ${updateError.message}`);
+
+                const { error: txnError } = await supabase.from("token_transactions").insert({
+                    userId: user.id,
+                    type: input.amount >= 0 ? "grant" : "adjustment",
+                    amount: input.amount,
+                    balance: newBalance,
+                    reason: input.reason ?? "admin grant",
                 });
+                if (txnError) throw new Error(`Token transaction failed: ${txnError.message}`);
+
+                const { error: auditError } = await supabase.from("audit_logs").insert({
+                    userId: ctx.user.id,
+                    action: "tokens_granted",
+                    targetId: user.id,
+                    metadata: { amount: input.amount, balance: newBalance },
+                    ipAddress: ctx.ip,
+                });
+                if (auditError) throw new Error(`Audit log failed: ${auditError.message}`);
 
                 console.log("[admin] grantTokens success", {
                     actorId: ctx.user.id,
-                    targetUserId: input.userId,
+                    targetUserId: user.id,
                     amount: input.amount,
-                    newBalance: result.balance,
+                    newBalance,
                 });
-                return result;
+                return { ok: true, balance: newBalance };
             } catch (err) {
-                const prismaCode = (err as { code?: string })?.code;
                 console.error("[admin] grantTokens failed", {
                     actorId: ctx.user.id,
                     targetUserId: input.userId,
                     amount: input.amount,
-                    prismaCode,
                     error: err instanceof Error ? err.message : String(err),
                 });
                 if (err instanceof TRPCError) throw err;
                 throw new TRPCError({
                     code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to grant tokens${prismaCode ? ` (${prismaCode})` : ""}`,
+                    message: err instanceof Error ? err.message : "Failed to grant tokens",
                 });
             }
         }),
