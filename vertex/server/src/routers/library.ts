@@ -48,7 +48,6 @@ async function authorizeSave(ctx: {
 
 async function deductSaveTokens(
     ctx: {
-        prismaDirect: typeof import("../context").prismaDirect;
         user: { id: string };
         ip: string | null;
     },
@@ -56,39 +55,32 @@ async function deductSaveTokens(
     targetId: string,
     metadata: Prisma.InputJsonValue,
 ) {
-    const cost = SAVE_TOKEN_COST;
-    return ctx.prismaDirect.$transaction(async (tx) => {
-        const dec = await tx.user.updateMany({
-            where: { id: ctx.user.id, tokenBalance: { gte: cost } },
-            data: { tokenBalance: { decrement: cost } },
-        });
-        if (dec.count === 0) {
+    const supabase = getSupabaseAdmin();
+    if (!supabase) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage not configured" });
+    }
+
+    const { data, error } = await supabase.rpc("vertex_charge_library_save", {
+        p_user_id: ctx.user.id,
+        p_cost: SAVE_TOKEN_COST,
+        p_reason: reason,
+        p_target_id: targetId,
+        p_metadata: metadata,
+        p_ip: ctx.ip,
+    });
+
+    if (error) {
+        if (error.message.includes("INSUFFICIENT_TOKENS")) {
             throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient tokens to save custom asset" });
         }
-        const user = await tx.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
-
-        await tx.tokenTransaction.create({
-            data: {
-                userId: ctx.user.id,
-                type: "deduct",
-                amount: -cost,
-                balance: user.tokenBalance,
-                reason,
-            },
+        throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Library save charge failed: ${error.message}`,
         });
+    }
 
-        await tx.auditLog.create({
-            data: {
-                userId: ctx.user.id,
-                action: "custom_library_saved",
-                targetId,
-                metadata,
-                ipAddress: ctx.ip,
-            },
-        });
-
-        return { balance: user.tokenBalance };
-    });
+    const result = data as { balance: number };
+    return { balance: result.balance };
 }
 
 export const libraryRouter = router({
