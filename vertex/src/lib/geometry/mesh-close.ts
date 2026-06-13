@@ -207,6 +207,20 @@ function vertexIndexForQuantKey(geometry: BufferGeometry, key: string): number {
     return -1;
 }
 
+/** Quant-key lookup restricted to a half-open vertex index range [rangeStart, rangeEnd). */
+function vertexIndexForQuantKeyInRange(
+    geometry: BufferGeometry,
+    key: string,
+    rangeStart: number,
+    rangeEnd: number,
+): number {
+    const pos = geometry.getAttribute("position");
+    for (let i = rangeStart; i < rangeEnd; i++) {
+        if (quantKey(pos.getX(i), pos.getY(i), pos.getZ(i)) === key) return i;
+    }
+    return -1;
+}
+
 /** Same loop selection as extractOrderedBoundaryLoop, with mesh vertex indices per point. */
 export function extractOrderedBoundaryLoopWithIndices(geometry: BufferGeometry): {
     positions: Vector3[];
@@ -229,17 +243,22 @@ export function extractOrderedBoundaryLoopWithIndices(geometry: BufferGeometry):
     return { positions: best, indices };
 }
 
-/** Map a boundary loop's positions to vertex indices in `geometry` (quant-key exact match). */
-function boundaryLoopVertexIndices(geometry: BufferGeometry, loop: Vector3[]): number[] {
+/** Map a boundary loop's positions to LOCAL vertex indices within [rangeStart, rangeEnd). */
+function boundaryLoopVertexIndicesLocal(
+    geometry: BufferGeometry,
+    loop: Vector3[],
+    rangeStart: number,
+    rangeEnd: number,
+): number[] {
     return loop.map((p) => {
-        const vi = vertexIndexForQuantKey(geometry, quantKey(p.x, p.y, p.z));
+        const vi = vertexIndexForQuantKeyInRange(geometry, quantKey(p.x, p.y, p.z), rangeStart, rangeEnd);
         if (vi < 0) {
             throw new MeshNotWatertightError(
-                `Boundary loop vertex not found in mesh at (${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)})`,
+                `Boundary loop vertex not found in mesh range [${rangeStart},${rangeEnd}) at (${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)})`,
                 validateManifold(geometry),
             );
         }
-        return vi;
+        return vi - rangeStart;
     });
 }
 
@@ -703,7 +722,54 @@ function buildRimContactIndices(
     return { rawIndices, newRimVertices };
 }
 
-function mergeGeometriesWithWeldedBridge(
+function assertRimContactIndicesInRange(
+    rimTop: number[],
+    rimBottom: number[],
+    totalVerts: number,
+    topVertexCount: number,
+    bottomVertexCount: number,
+): void {
+    const all = [...rimTop, ...rimBottom];
+    for (const idx of all) {
+        if (idx < 0 || idx >= totalVerts) {
+            throw new Error(
+                `Index out of range: ${idx} not in [0, ${totalVerts}). topVertCount=${topVertexCount} bottomVertCount=${bottomVertexCount}`,
+            );
+        }
+    }
+}
+
+/** Infer top-shell vertex count from the highest-Z triangle component when userData lacks it. */
+function inferTopVertexCount(geometry: BufferGeometry): number {
+    const components = splitTriangleComponents(geometry);
+    if (components.length < 2) return geometry.getAttribute("position").count;
+
+    const scored = components.map((tris) => {
+        const pos = geometry.getAttribute("position");
+        let meanZ = 0;
+        let count = 0;
+        for (const t of tris) {
+            for (let k = 0; k < 3; k++) {
+                meanZ += pos.getZ(idx(geometry, t, k));
+                count++;
+            }
+        }
+        return { tris, meanZ: meanZ / Math.max(1, count) };
+    });
+    scored.sort((a, b) => b.meanZ - a.meanZ);
+    const topTris = new Set(scored[0]!.tris);
+    const used = new Set<number>();
+    const triN = triangleCount(geometry);
+    for (let t = 0; t < triN; t++) {
+        if (!topTris.has(t)) continue;
+        for (let k = 0; k < 3; k++) used.add(idx(geometry, t, k));
+    }
+    if (used.size === 0) return geometry.getAttribute("position").count;
+    return Math.max(...used) + 1;
+}
+
+/** @internal Regression tests verify bridge rim indices are globally offset. */
+export function mergeGeometriesWithWeldedBridge(
     body: BufferGeometry,
     topLoop: Vector3[],
     bottomLoop: Vector3[],
@@ -712,6 +778,8 @@ function mergeGeometriesWithWeldedBridge(
     sourceBottomLoop: Vector3[],
     sourceTopIndices: number[],
     sourceBottomIndices: number[],
+    topVertexCount: number,
+    bottomVertexCount: number,
 ): { geometry: BufferGeometry; rimTopIndices: number[]; rimBottomIndices: number[] } {
     // MERGED VERTEX BUFFER LAYOUT
     // [0 .. topVertCount-1]                              → top body mesh vertices (copied as-is)
@@ -729,7 +797,7 @@ function mergeGeometriesWithWeldedBridge(
         bottomLoop,
         sourceBottomLoop,
         sourceBottomIndices,
-        0,
+        topVertexCount,
     );
 
     const newRimPositions: number[] = [];
@@ -766,6 +834,13 @@ function mergeGeometriesWithWeldedBridge(
     }
 
     const bufferSize = bodyCount + newRimPositions.length / 3;
+    assertRimContactIndicesInRange(
+        topBodyIdx,
+        bottomBodyIdx,
+        bufferSize,
+        topVertexCount,
+        bottomVertexCount,
+    );
     for (let i = 0; i < topBodyIdx.length; i++) {
         const ti = topBodyIdx[i]!;
         const bi = bottomBodyIdx[i]!;
@@ -1267,8 +1342,21 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
         }
     }
 
-    const sourceTopIndices = boundaryLoopVertexIndices(working, pair.top);
-    const sourceBottomIndices = boundaryLoopVertexIndices(working, pair.bottom);
+    const bodyVertexCount = working.getAttribute("position").count;
+    const storedTop = (working.userData as { topVertexCount?: number }).topVertexCount;
+    const topVertexCount =
+        storedTop && storedTop > 0 && storedTop < bodyVertexCount
+            ? storedTop
+            : inferTopVertexCount(working);
+    const bottomVertexCount = bodyVertexCount - topVertexCount;
+
+    const sourceTopIndices = boundaryLoopVertexIndicesLocal(working, pair.top, 0, topVertexCount);
+    const sourceBottomIndices = boundaryLoopVertexIndicesLocal(
+        working,
+        pair.bottom,
+        topVertexCount,
+        bodyVertexCount,
+    );
 
     const bridge = generateBridgeStrip(topLoop, bottomLoop);
     smoothBridgeStrip(
@@ -1290,6 +1378,8 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
             pair.bottom,
             sourceTopIndices,
             sourceBottomIndices,
+            topVertexCount,
+            bottomVertexCount,
         );
     if (disposed) working.dispose();
     const seamTopIndices = orderSeamRingIndices(

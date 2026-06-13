@@ -8,9 +8,12 @@ import {
     bridgeWeldRingIsAdjacent,
     closeMeshPerimeter,
     ensureWatertightForExport,
+    generateBridgeStrip,
     maxBridgeMidpointDistanceFromPerimeterMm,
     maxSeamVertexNormalDiscontinuityDeg,
+    mergeGeometriesWithWeldedBridge,
     MeshNotWatertightError,
+    resampleLoopToCount,
     SMOOTH_INWARD_LIMIT_MM,
     validateManifold,
 } from "@/lib/geometry/mesh-close";
@@ -89,7 +92,7 @@ function mergeTopBottomShells(top: BufferGeometry, bottom: BufferGeometry): Buff
     const out = new BufferGeometry();
     out.setAttribute("position", new BufferAttribute(positions, 3));
     out.setIndex([...topIdx, ...botIdx]);
-    out.userData = { isMultiMeshBase: true, sourceMeshNames: ["Top", "Bottom"] };
+    out.userData = { isMultiMeshBase: true, sourceMeshNames: ["Top", "Bottom"], topVertexCount: topPos.count };
     return out;
 }
 
@@ -281,9 +284,52 @@ describe("mesh-close — realistic orthotic integration", () => {
         expect(result!.report.isWatertight).toBe(true);
         expect(result!.report.openEdges).toBe(0);
         assertRimContactIndicesValid(result!, bodyVertexCount);
+        expect(result!.weldBottomIndices.every((i) => i >= 16)).toBe(true);
 
         raw.dispose();
         result!.geometry.dispose();
+    });
+
+    test("bottom mesh indices are globally offset in merged buffer", () => {
+        const circle = (n: number): Vector3[] =>
+            Array.from({ length: n }, (_, i) => {
+                const a = (i / n) * Math.PI * 2;
+                return new Vector3(Math.cos(a) * 50, Math.sin(a) * 50, 0);
+            });
+        const outline10 = circle(10);
+        const outline12 = circle(12);
+        const outline10z = outline10.map((p) => new Vector3(p.x, p.y, 12));
+        const outline12z = outline12.map((p) => new Vector3(p.x, p.y, 0));
+
+        const top = buildCoarseOpenShell(outline10, 12);
+        const bottom = buildCoarseOpenShell(outline12, 0);
+        const raw = mergeTopBottomShells(top, bottom);
+
+        const topLoop = resampleLoopToCount(outline10z, 8);
+        const bottomLoop = resampleLoopToCount(outline12z, 8);
+        const bridge = generateBridgeStrip(topLoop, bottomLoop);
+        const { geometry: merged, rimBottomIndices } = mergeGeometriesWithWeldedBridge(
+            raw,
+            topLoop,
+            bottomLoop,
+            bridge,
+            outline10z,
+            outline12z,
+            outline10.map((_, i) => i),
+            outline12.map((_, i) => i),
+            10,
+            12,
+        );
+
+        const totalVerts = merged.getAttribute("position").count;
+        for (const vi of rimBottomIndices) {
+            expect(vi).toBeGreaterThanOrEqual(10);
+            expect(vi).toBeLessThan(totalVerts);
+        }
+        expect(rimBottomIndices[0]).toBeGreaterThanOrEqual(10);
+
+        raw.dispose();
+        merged.dispose();
     });
 
     // PRODUCTION BASELINE (recorded 2026-06-13 commit 100611f6)
