@@ -5,16 +5,17 @@ import { describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry, Shape, ShapeGeometry, Vector2, Vector3 } from "three";
 import {
     bridgeNormalsPointOutward,
+    bridgeWeldRingIsAdjacent,
     closeMeshPerimeter,
     ensureWatertightForExport,
     maxBridgeMidpointDistanceFromPerimeterMm,
+    maxWeldVertexLoopDistanceMm,
     maxSeamVertexNormalDiscontinuityDeg,
     SMOOTH_INWARD_LIMIT_MM,
     validateManifold,
 } from "@/lib/geometry/mesh-close";
 
 const LENGTH_MM = 260;
-const WIDTH_MM = 80;
 
 /** Non-convex foot-like closed outline (~260 mm L × ~80 mm W). */
 function footOutlinePoints(samples = 64): Vector3[] {
@@ -94,7 +95,49 @@ function mergeTopBottomShells(top: BufferGeometry, bottom: BufferGeometry): Buff
 function buildRealisticOrthoticPair(): BufferGeometry {
     const outline = footOutlinePoints(64);
     const bottom = buildOpenShell(outline, () => 0);
-    const top = buildOpenShell(outline, (x, _y, u) => heightAtU(u) + 3);
+    const top = buildOpenShell(outline, (_x, _y, u) => heightAtU(u) + 3);
+    return mergeTopBottomShells(top, bottom);
+}
+
+/** Kidney-bean outline with 20 mm medial arch notch (strong concavity). */
+function kidneyBeanOutline(samples = 80): Vector3[] {
+    const ctrl: Array<[number, number]> = [
+        [0, 30],
+        [40, 38],
+        [90, 40],
+        [130, 20],
+        [145, -2],
+        [155, 20],
+        [200, 38],
+        [255, 28],
+        [262, 0],
+        [255, -28],
+        [200, -38],
+        [130, -40],
+        [60, -36],
+        [0, -30],
+    ];
+    const pts: Vector3[] = [];
+    for (let i = 0; i < samples; i++) {
+        const t = i / samples;
+        const seg = t * ctrl.length;
+        const idx = Math.floor(seg) % ctrl.length;
+        const frac = seg - Math.floor(seg);
+        const a = ctrl[idx]!;
+        const b = ctrl[(idx + 1) % ctrl.length]!;
+        pts.push(new Vector3(a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac, 0));
+    }
+    return pts;
+}
+
+function rimHeightAtU(u: number): number {
+    return 8 - 7.5 * u;
+}
+
+function buildConcaveOrthoticPair(): BufferGeometry {
+    const outline = kidneyBeanOutline(80);
+    const bottom = buildOpenShell(outline, () => 0);
+    const top = buildOpenShell(outline, (_x, _y, u) => rimHeightAtU(u) + 3);
     return mergeTopBottomShells(top, bottom);
 }
 
@@ -129,6 +172,24 @@ describe("mesh-close — realistic orthotic integration", () => {
 
         const maxDisc = maxSeamVertexNormalDiscontinuityDeg(geo, result.seamTopIndices);
         expect(maxDisc).toBeLessThan(15);
+
+        raw.dispose();
+        geo.dispose();
+    });
+
+    test("concave kidney-bean perimeter: no chord-snap weld jumps or crossing bridge edges", () => {
+        const raw = buildConcaveOrthoticPair();
+        const result = closeMeshPerimeter(raw);
+        const geo = result.geometry;
+
+        expect(result.report.eulerCharacteristic).toBe(2);
+        expect(result.report.openEdges).toBe(0);
+        expect(result.report.isWatertight).toBe(true);
+
+        expect(bridgeWeldRingIsAdjacent(geo, result.weldTopIndices)).toBe(true);
+        expect(maxWeldVertexLoopDistanceMm(geo, result.topLoop, result.weldTopIndices)).toBeLessThanOrEqual(0.5);
+        expect(maxWeldVertexLoopDistanceMm(geo, result.bottomLoop, result.weldBottomIndices)).toBeLessThanOrEqual(0.5);
+        expect(bridgeNormalsPointOutward(geo, result.topLoop, result.bottomLoop)).toBe(true);
 
         raw.dispose();
         geo.dispose();

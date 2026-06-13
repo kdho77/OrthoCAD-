@@ -25,6 +25,8 @@ export const RIM_HEIGHT_ADAPTIVE_THRESHOLD_MM = 2.0;
 export const RIM_HEIGHT_MIN_WARNING_MM = 1.0;
 /** Radius around the bridge within which vertex normals are recomputed after merge. */
 export const NORMAL_RECOMPUTE_RADIUS_MM = 3.0;
+/** Maximum snap distance when welding resampled rim points to boundary loop vertices. */
+export const WELD_SNAP_TOLERANCE_MM = 1.0;
 /** Maximum inward distance from the perimeter that smoothing may affect (clinical guard). */
 export const SMOOTH_INWARD_LIMIT_MM = 3.0;
 
@@ -68,6 +70,8 @@ export interface CloseMeshResult {
     topLoop: Vector3[];
     bottomLoop: Vector3[];
     seamTopIndices: number[];
+    weldTopIndices: number[];
+    weldBottomIndices: number[];
 }
 
 const QUANT = 1e4;
@@ -572,16 +576,43 @@ function smoothSeamVertexNormals(geometry: BufferGeometry, ring: number[], itera
     nor.needsUpdate = true;
 }
 
-function findVertexByPosition(geometry: BufferGeometry, target: Vector3, toleranceMm = 0.05): number {
+/** Vertex indices that lie on mesh boundary edges (half-edge count = 1). */
+function collectBoundaryVertexIndices(geometry: BufferGeometry): number[] {
+    const { edgeCount, edgeVerts } = buildEdgeUsage(geometry);
+    const boundaryKeys = new Set<string>();
+    for (const [ek, count] of edgeCount) {
+        if (count !== 1) continue;
+        const pair = edgeVerts.get(ek);
+        if (pair) {
+            boundaryKeys.add(pair[0]);
+            boundaryKeys.add(pair[1]);
+        }
+    }
+    const pos = geometry.getAttribute("position");
+    const out: number[] = [];
+    for (let i = 0; i < pos.count; i++) {
+        const key = quantKey(pos.getX(i), pos.getY(i), pos.getZ(i));
+        if (boundaryKeys.has(key)) out.push(i);
+    }
+    return out;
+}
+
+/** Nearest vertex search restricted to a candidate set (boundary loop members only). */
+function findVertexAmongCandidates(
+    geometry: BufferGeometry,
+    target: Vector3,
+    candidates: number[],
+    toleranceMm = WELD_SNAP_TOLERANCE_MM,
+): number {
     const pos = geometry.getAttribute("position");
     const key = quantKey(target.x, target.y, target.z);
-    for (let i = 0; i < pos.count; i++) {
+    for (const i of candidates) {
         if (quantKey(pos.getX(i), pos.getY(i), pos.getZ(i)) === key) return i;
     }
     const tol2 = toleranceMm * toleranceMm;
     let best = -1;
     let bestD2 = tol2;
-    for (let i = 0; i < pos.count; i++) {
+    for (const i of candidates) {
         const dx = pos.getX(i) - target.x;
         const dy = pos.getY(i) - target.y;
         const dz = pos.getZ(i) - target.z;
@@ -594,31 +625,118 @@ function findVertexByPosition(geometry: BufferGeometry, target: Vector3, toleran
     return best;
 }
 
+/** Map source loop points to body vertex indices on the boundary only. */
+function collectBoundaryLoopCandidates(geometry: BufferGeometry, sourceLoop: Vector3[]): number[] {
+    const boundaryVerts = collectBoundaryVertexIndices(geometry);
+    const set = new Set<number>();
+    for (const p of sourceLoop) {
+        const vi = findVertexAmongCandidates(geometry, p, boundaryVerts, WELD_SNAP_TOLERANCE_MM);
+        if (vi >= 0) set.add(vi);
+    }
+    return Array.from(set);
+}
+
+function closestPointOnLoopSegment(
+    p: Vector3,
+    loop: Vector3[],
+): { seg: number; point: Vector3; dist: number } {
+    let bestSeg = 0;
+    let bestPoint = loop[0]!;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ab = new Vector3().subVectors(b, a);
+        const len2 = ab.lengthSq();
+        if (len2 < 1e-12) continue;
+        const t = Math.max(0, Math.min(1, new Vector3().subVectors(p, a).dot(ab) / len2));
+        const proj = new Vector3().copy(a).addScaledVector(ab, t);
+        const d = p.distanceTo(proj);
+        if (d < bestDist) {
+            bestDist = d;
+            bestSeg = i;
+            bestPoint = proj;
+        }
+    }
+    return { seg: bestSeg, point: bestPoint, dist: bestDist };
+}
+
+/**
+ * Weld resampled rim points to boundary vertices on the containing source-loop
+ * segment — prevents chord-snaps across concave notches.
+ */
+function resolveSegmentAwareWeldIndices(
+    geometry: BufferGeometry,
+    resampledLoop: Vector3[],
+    sourceLoop: Vector3[],
+    boundaryCandidates: number[],
+): number[] {
+    const sourceIdx = sourceLoop.map((p) =>
+        findVertexAmongCandidates(geometry, p, boundaryCandidates, WELD_SNAP_TOLERANCE_MM),
+    );
+    const out: number[] = [];
+    for (const p of resampledLoop) {
+        const { seg, point } = closestPointOnLoopSegment(p, sourceLoop);
+        const i0 = sourceIdx[seg]!;
+        const i1 = sourceIdx[(seg + 1) % sourceLoop.length]!;
+        if (i0 < 0 && i1 < 0) {
+            out.push(-1);
+            continue;
+        }
+        if (i0 < 0) {
+            out.push(i1);
+            continue;
+        }
+        if (i1 < 0) {
+            out.push(i0);
+            continue;
+        }
+        const p0 = sourceLoop[seg]!;
+        const p1 = sourceLoop[(seg + 1) % sourceLoop.length]!;
+        const d0 = point.distanceTo(p0);
+        const d1 = point.distanceTo(p1);
+        out.push(d0 <= d1 ? i0 : i1);
+    }
+    return out;
+}
+
 function mergeGeometriesWithWeldedBridge(
     body: BufferGeometry,
     topLoop: Vector3[],
     bottomLoop: Vector3[],
     bridge: BridgeStripResult,
+    topBoundaryCandidates: number[],
+    bottomBoundaryCandidates: number[],
+    sourceTopLoop: Vector3[],
+    sourceBottomLoop: Vector3[],
 ): BufferGeometry {
     const indexed = toIndexed(body);
     const posAttr = indexed.getAttribute("position");
     const bodyCount = posAttr.count;
     const triN = triangleCount(indexed);
 
-    const topBodyIdx: number[] = [];
-    const bottomBodyIdx: number[] = [];
+    const topBodyIdx = resolveSegmentAwareWeldIndices(
+        indexed,
+        topLoop,
+        sourceTopLoop,
+        topBoundaryCandidates,
+    );
+    const bottomBodyIdx = resolveSegmentAwareWeldIndices(
+        indexed,
+        bottomLoop,
+        sourceBottomLoop,
+        bottomBoundaryCandidates,
+    );
     for (let i = 0; i < topLoop.length; i++) {
-        const ti = findVertexByPosition(indexed, topLoop[i]!, 5.0);
-        const bi = findVertexByPosition(indexed, bottomLoop[i]!, 5.0);
+        const ti = topBodyIdx[i]!;
+        const bi = bottomBodyIdx[i]!;
         if (ti < 0 || bi < 0) {
             if (indexed !== body) indexed.dispose();
             throw new MeshNotWatertightError(
-                `Bridge weld failed at sample ${i}: top=${ti} bottom=${bi}`,
+                `Bridge weld failed at sample ${i}: top=${ti} bottom=${bi} (boundary-only search, tol=${WELD_SNAP_TOLERANCE_MM}mm)`,
                 validateManifold(indexed),
             );
         }
-        topBodyIdx.push(ti);
-        bottomBodyIdx.push(bi);
     }
 
     const newVertexStart = bodyCount;
@@ -1032,6 +1150,8 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
             topLoop: [],
             bottomLoop: [],
             seamTopIndices: [],
+            weldTopIndices: [],
+            weldBottomIndices: [],
         };
     }
 
@@ -1072,6 +1192,9 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
         }
     }
 
+    const topBoundaryCandidates = collectBoundaryLoopCandidates(working, pair.top);
+    const bottomBoundaryCandidates = collectBoundaryLoopCandidates(working, pair.bottom);
+
     const bridge = generateBridgeStrip(topLoop, bottomLoop);
     smoothBridgeStrip(
         bridge.positions,
@@ -1082,11 +1205,32 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
         BRIDGE_SMOOTH_STRENGTH,
     );
 
-    const merged = mergeGeometriesWithWeldedBridge(working, topLoop, bottomLoop, bridge);
+    const merged = mergeGeometriesWithWeldedBridge(
+        working,
+        topLoop,
+        bottomLoop,
+        bridge,
+        topBoundaryCandidates,
+        bottomBoundaryCandidates,
+        pair.top,
+        pair.bottom,
+    );
     if (disposed) working.dispose();
+    const weldTopIndices = resolveSegmentAwareWeldIndices(
+        merged,
+        topLoop,
+        pair.top,
+        topBoundaryCandidates,
+    );
+    const weldBottomIndices = resolveSegmentAwareWeldIndices(
+        merged,
+        bottomLoop,
+        pair.bottom,
+        bottomBoundaryCandidates,
+    );
     const seamTopIndices = orderSeamRingIndices(
         merged,
-        topLoop.map((p) => findVertexByPosition(merged, p, 5.0)).filter((i) => i >= 0),
+        Array.from(new Set(weldTopIndices.filter((i) => i >= 0))),
     );
     merged.computeVertexNormals();
     recomputeNormalsNearSeam(merged, topLoop, bottomLoop);
@@ -1117,6 +1261,8 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
         topLoop,
         bottomLoop,
         seamTopIndices,
+        weldTopIndices,
+        weldBottomIndices,
     };
 }
 
@@ -1229,4 +1375,32 @@ export function bridgeNormalsPointOutward(geometry: BufferGeometry, topLoop: Vec
         if (n.dot(outward) <= 0) return false;
     }
     return true;
+}
+
+/** True when consecutive welded seam vertices are mesh-adjacent (no chord-snap jumps). */
+export function bridgeWeldRingIsAdjacent(geometry: BufferGeometry, seamTopIndices: number[]): boolean {
+    if (seamTopIndices.length < 2) return true;
+    const adj = buildVertexAdjacency(geometry);
+    for (let i = 0; i < seamTopIndices.length; i++) {
+        const a = seamTopIndices[i]!;
+        const b = seamTopIndices[(i + 1) % seamTopIndices.length]!;
+        if (a === b) continue;
+        if (!adj[a]!.includes(b)) return false;
+    }
+    return true;
+}
+
+/** Max distance from welded rim vertex positions to their loop polyline. */
+export function maxWeldVertexLoopDistanceMm(
+    geometry: BufferGeometry,
+    loop: Vector3[],
+    weldIndices: number[],
+): number {
+    const pos = geometry.getAttribute("position");
+    let maxD = 0;
+    for (const vi of new Set(weldIndices.filter((i) => i >= 0))) {
+        const p = new Vector3(pos.getX(vi), pos.getY(vi), pos.getZ(vi));
+        maxD = Math.max(maxD, distancePointToLoop(p, loop));
+    }
+    return maxD;
 }
