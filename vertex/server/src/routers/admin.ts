@@ -1,6 +1,5 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { getSupabaseAdmin } from "../context.js";
 import { requireSupabaseAdmin } from "../lib/supabase-db.js";
 import { adminProcedure, router, superAdminProcedure } from "../trpc.js";
 
@@ -55,40 +54,7 @@ export const adminRouter = router({
             }
 
             const supabase = requireSupabaseAdmin();
-            const { data: target, error: targetError } = await supabase
-                .from("users")
-                .select("id, email, tokenBalance")
-                .eq("id", input.userId)
-                .maybeSingle();
-
-            if (targetError) {
-                throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to load target user: ${targetError.message}`,
-                });
-            }
-            if (!target) {
-                console.warn("[admin] grantTokens target user not found", { targetUserId: input.userId });
-                throw new TRPCError({ code: "NOT_FOUND", message: "Target user not found" });
-            }
-
-            // Token balances are non-negative; reject removals that would underflow.
-            if (input.amount < 0 && target.tokenBalance + input.amount < 0) {
-                throw new TRPCError({
-                    code: "BAD_REQUEST",
-                    message: `Cannot remove ${-input.amount} tokens — user only has ${target.tokenBalance}`,
-                });
-            }
-
-            const adminClient = getSupabaseAdmin();
-            if (!adminClient) {
-                throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: "Supabase admin client not configured",
-                });
-            }
-
-            const { data, error } = await adminClient.rpc("vertex_grant_admin_tokens", {
+            const { data, error } = await supabase.rpc("vertex_grant_admin_tokens", {
                 p_actor_user_id: ctx.user.id,
                 p_target_user_id: input.userId,
                 p_amount: input.amount,

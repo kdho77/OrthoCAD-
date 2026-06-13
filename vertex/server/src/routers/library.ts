@@ -8,7 +8,6 @@ import { validateGlbBase64 } from "../lib/glb-validation.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
 import {
     assertActiveLicense,
-    getUserTokenBalance,
     requireSupabaseAdmin,
 } from "../lib/supabase-db.js";
 import { buildGlbKey, deleteAsset, signedDownloadUrl, uploadAsset } from "../lib/storage.js";
@@ -41,12 +40,6 @@ function toIsoDate(value: string | Date): string {
 async function authorizeSave(ctx: { user: { id: string } }) {
     const supabase = requireSupabaseAdmin();
     await assertActiveLicense(supabase, ctx.user.id);
-
-    const balance = await getUserTokenBalance(supabase, ctx.user.id);
-    if (balance < SAVE_TOKEN_COST) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient tokens to save custom asset" });
-    }
-
     return { cost: SAVE_TOKEN_COST };
 }
 
