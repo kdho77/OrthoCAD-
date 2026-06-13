@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getAiConfig, parsePrescriptionWithAi } from "../lib/ai-provider.js";
+import { getSupabaseAdmin } from "../context.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
 import { rateLimitedProcedure, router } from "../trpc.js";
 
@@ -56,55 +57,40 @@ export const aiRouter = router({
 
             const parsed = await parsePrescriptionWithAi(cfg, { text: input.text, image: input.image });
 
-            const result = await ctx.prismaDirect.$transaction(async (tx) => {
-                const dec = await tx.user.updateMany({
-                    where: { id: ctx.user.id, tokenBalance: { gte: AI_TOKEN_COST } },
-                    data: { tokenBalance: { decrement: AI_TOKEN_COST } },
+            const supabase = getSupabaseAdmin();
+            if (!supabase) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: "Supabase admin client not configured",
                 });
-                if (dec.count === 0) {
+            }
+
+            const { data, error } = await supabase.rpc("vertex_charge_ai_prescription", {
+                p_user_id: ctx.user.id,
+                p_cost: AI_TOKEN_COST,
+                p_design_id: input.designId ?? null,
+                p_input_text: input.text ?? null,
+                p_parsed: parsed,
+                p_provider: cfg.provider,
+                p_model: cfg.model,
+                p_confidence: parsed.confidence ?? null,
+                p_ip: ctx.ip,
+            });
+
+            if (error) {
+                if (error.message.includes("INSUFFICIENT_TOKENS")) {
                     throw new TRPCError({
                         code: "FORBIDDEN",
                         message: "Insufficient tokens for AI generation",
                     });
                 }
-                const user = await tx.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
-
-                const rx = await tx.prescription.create({
-                    data: {
-                        userId: ctx.user.id,
-                        designId: input.designId ?? null,
-                        inputText: input.text ?? null,
-                        parsed,
-                        provider: cfg.provider,
-                        model: cfg.model,
-                        confidence: parsed.confidence,
-                        tokenCost: AI_TOKEN_COST,
-                    },
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `AI prescription charge failed: ${error.message}`,
                 });
+            }
 
-                await tx.tokenTransaction.create({
-                    data: {
-                        userId: ctx.user.id,
-                        type: "deduct",
-                        amount: -AI_TOKEN_COST,
-                        balance: user.tokenBalance,
-                        reason: "ai:prescription",
-                        exportId: null,
-                    },
-                });
-
-                await tx.auditLog.create({
-                    data: {
-                        userId: ctx.user.id,
-                        action: "ai_prescription_parsed",
-                        targetId: rx.id,
-                        metadata: { provider: cfg.provider, model: cfg.model, confidence: parsed.confidence },
-                        ipAddress: ctx.ip,
-                    },
-                });
-
-                return { balance: user.tokenBalance };
-            });
+            const result = data as { balance: number };
 
             return {
                 ...parsed,
