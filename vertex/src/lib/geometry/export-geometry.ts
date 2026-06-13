@@ -7,6 +7,7 @@ import { baseModifierField, baseModifierFieldAuthoritative, getDesignBase, loadB
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
+import { ensureWatertightForExport } from "@/lib/geometry/mesh-close";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
@@ -52,12 +53,15 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
 
 /** Export STL bytes for the active design side. */
 export async function buildExportStl(side: Side): Promise<ArrayBuffer> {
-    const geometry = await buildExportGeometry(side);
-    const kernel = getKernel();
+    let geometry = await buildExportGeometry(side);
     try {
-        return kernel.exportSTL(geometry);
-    } catch {
-        return geometryToBinarySTL(geometry);
+        geometry = ensureWatertightForExport(geometry);
+        const kernel = getKernel();
+        try {
+            return kernel.exportSTL(geometry);
+        } catch {
+            return geometryToBinarySTL(geometry);
+        }
     } finally {
         geometry.dispose();
     }
@@ -83,7 +87,7 @@ export async function buildExportSolid(side: Side): Promise<BufferGeometry> {
     // corrections / elements applied on top (rather than rebuilding from the
     // trimline). Falls through to parametric generation when there is no base.
     const modifiedBase = await buildModifiedBaseGeometry(design, side);
-    if (modifiedBase) return modifiedBase;
+    if (modifiedBase) return ensureWatertightForExport(modifiedBase);
 
     const params = insoleParamsFromDesign(design, side, "full");
     const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
