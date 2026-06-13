@@ -1,6 +1,7 @@
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import * as THREE from "three";
+import { healShellInternalBoundaries } from "@/lib/geometry/mesh-close";
 
 const loader = new GLTFLoader();
 
@@ -133,13 +134,17 @@ function concatIndexedWeldedParts(parts: THREE.BufferGeometry[]): {
     topVertexCount: number;
 } {
     const welded: THREE.BufferGeometry[] = [];
-    for (const p of parts) {
+    for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+        const p = parts[partIndex]!;
         try {
             const w = mergeVertices(p);
             welded.push(w === p ? p : w);
             if (w !== p) p.dispose();
         } catch {
             welded.push(p);
+        }
+        if (parts.length > 1 && partIndex > 0) {
+            healShellInternalBoundaries(welded[partIndex]!);
         }
     }
 
@@ -175,6 +180,31 @@ function concatIndexedWeldedParts(parts: THREE.BufferGeometry[]): {
     return { geometry: out, topVertexCount: welded[0]!.getAttribute("position").count };
 }
 
+/** Sort baked parts so "Top" precedes "Bottom" in the merged vertex buffer layout. */
+function orderMultiMeshParts(
+    parts: THREE.BufferGeometry[],
+    meshNames: string[],
+): { parts: THREE.BufferGeometry[]; meshNames: string[] } {
+    if (parts.length < 2) return { parts, meshNames };
+
+    const indexed = parts.map((geo, i) => {
+        const name = (meshNames[i] ?? "").toLowerCase();
+        let rank = 1;
+        if (name.includes("top")) rank = 0;
+        else if (name.includes("bottom")) rank = 2;
+        let meanZ = 0;
+        const pos = geo.getAttribute("position");
+        for (let v = 0; v < pos.count; v++) meanZ += pos.getZ(v);
+        meanZ /= Math.max(1, pos.count);
+        return { geo, name: meshNames[i] ?? `mesh_${i}`, rank, meanZ };
+    });
+    indexed.sort((a, b) => a.rank - b.rank || b.meanZ - a.meanZ);
+    return {
+        parts: indexed.map((e) => e.geo),
+        meshNames: indexed.map((e) => e.name),
+    };
+}
+
 /**
  * Merge every mesh inside a loaded GLB group into a single geometry, baking each
  * mesh's world transform. Bases authored as separate "Top" / "Bottom" meshes are
@@ -204,6 +234,12 @@ export function extractMergedGeometry(group: THREE.Group): MergedGlbGeometry | n
     const meshCount = parts.length;
     let geometry: THREE.BufferGeometry;
     let topVertexCount = 0;
+
+    if (meshCount > 1) {
+        const ordered = orderMultiMeshParts(parts, meshNames);
+        parts.splice(0, parts.length, ...ordered.parts);
+        meshNames.splice(0, meshNames.length, ...ordered.meshNames);
+    }
 
     if (meshCount === 1) {
         const single = parts[0]!;
