@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { getSupabaseAdmin } from "../context.js";
 import { adminProcedure, router, superAdminProcedure } from "../trpc.js";
 
 // Super Admin Portal API: user/token/license administration and audit access.
@@ -82,55 +83,46 @@ export const adminRouter = router({
                 });
             }
 
-            try {
-                const result = await ctx.prismaDirect.$transaction(async (tx) => {
-                    const user = await tx.user.update({
-                        where: { id: input.userId },
-                        data: { tokenBalance: { increment: input.amount } },
-                    });
-                    await tx.tokenTransaction.create({
-                        data: {
-                            userId: input.userId,
-                            type: input.amount >= 0 ? "grant" : "adjustment",
-                            amount: input.amount,
-                            balance: user.tokenBalance,
-                            reason: input.reason ?? "admin grant",
-                        },
-                    });
-                    await tx.auditLog.create({
-                        data: {
-                            userId: ctx.user.id,
-                            action: "tokens_granted",
-                            targetId: input.userId,
-                            metadata: { amount: input.amount, balance: user.tokenBalance },
-                            ipAddress: ctx.ip,
-                        },
-                    });
-                    return { ok: true, balance: user.tokenBalance };
+            const supabase = getSupabaseAdmin();
+            if (!supabase) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: "Supabase admin client not configured",
                 });
+            }
 
-                console.log("[admin] grantTokens success", {
-                    actorId: ctx.user.id,
-                    targetUserId: input.userId,
-                    amount: input.amount,
-                    newBalance: result.balance,
-                });
-                return result;
-            } catch (err) {
-                const prismaCode = (err as { code?: string })?.code;
+            const { data, error } = await supabase.rpc("vertex_grant_admin_tokens", {
+                p_actor_user_id: ctx.user.id,
+                p_target_user_id: input.userId,
+                p_amount: input.amount,
+                p_reason: input.reason ?? null,
+                p_ip: ctx.ip,
+            });
+
+            if (error) {
                 console.error("[admin] grantTokens failed", {
                     actorId: ctx.user.id,
                     targetUserId: input.userId,
                     amount: input.amount,
-                    prismaCode,
-                    error: err instanceof Error ? err.message : String(err),
+                    error: error.message,
                 });
-                if (err instanceof TRPCError) throw err;
+                if (error.message.includes("NOT_FOUND")) {
+                    throw new TRPCError({ code: "NOT_FOUND", message: "Target user not found" });
+                }
                 throw new TRPCError({
                     code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to grant tokens${prismaCode ? ` (${prismaCode})` : ""}`,
+                    message: `Failed to grant tokens: ${error.message}`,
                 });
             }
+
+            const result = data as { ok: true; balance: number };
+            console.log("[admin] grantTokens success", {
+                actorId: ctx.user.id,
+                targetUserId: input.userId,
+                amount: input.amount,
+                newBalance: result.balance,
+            });
+            return result;
         }),
 
     listLicenses: adminProcedure.query(({ ctx }) =>
