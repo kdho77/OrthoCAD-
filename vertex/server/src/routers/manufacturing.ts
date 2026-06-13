@@ -187,86 +187,64 @@ export const manufacturingRouter = router({
                 const storageKey = `${storagePrefix}/${input.designId || "adhoc"}/${Date.now()}-${safeName}`;
                 const contentType = isGcode ? "text/plain" : "model/stl";
 
-                // License re-check + token deduction happen inside the transaction BEFORE output upload.
-                const result = await ctx.prismaDirect.$transaction(async (tx) => {
-                    await assertActiveLicense(tx, ctx.user.id);
-
-                    const dec = await tx.user.updateMany({
-                        where: { id: ctx.user.id, tokenBalance: { gte: cost } },
-                        data: { tokenBalance: { decrement: cost } },
+                // License re-check + token deduction happen atomically via RPC BEFORE output upload.
+                if (!supabase) {
+                    throw new TRPCError({
+                        code: "INTERNAL_SERVER_ERROR",
+                        message: "Supabase admin client not configured",
                     });
-                    if (dec.count === 0) {
+                }
+
+                const { data: chargeData, error: chargeError } = await supabase.rpc(
+                    "vertex_charge_manufacturing_hybrid",
+                    {
+                        p_user_id: ctx.user.id,
+                        p_cost: cost,
+                        p_design_id: input.designId ?? null,
+                        p_export_format: exportFormat,
+                        p_side: input.side ?? null,
+                        p_file_name: safeName,
+                        p_preset_id: input.presetId,
+                        p_belt_angle_deg: input.beltAngleDeg,
+                        p_layer_height_mm: input.layerHeightMm ?? null,
+                        p_is_gcode: isGcode,
+                        p_storage_key: isGcode ? storageKey : null,
+                        p_job_id: pythonResult.job_id,
+                        p_ip: ctx.ip,
+                        p_metadata: {
+                            kind: "manufacturing_hybrid",
+                            outputType,
+                            presetId: input.presetId,
+                            beltAngleDeg: input.beltAngleDeg,
+                            grindingStyle: input.grindingStyle?.type ?? null,
+                            side: input.side ?? null,
+                            layerHeightMm: input.layerHeightMm ?? null,
+                            infillDensity: input.infillDensity ?? null,
+                            perimeters: input.perimeters ?? null,
+                            sourceStlTempKey: tempStlKey,
+                        },
+                    },
+                );
+
+                if (chargeError) {
+                    if (chargeError.message.includes("INSUFFICIENT_TOKENS")) {
                         throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
                     }
-                    const updatedUser = await tx.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
-
-                    let productionId: string | null = null;
-                    if (input.designId) {
-                        const production = await tx.production.create({
-                            data: {
-                                designId: input.designId,
-                                method: "printing_solid",
-                                presetId: input.presetId,
-                                beltAngleDeg: input.beltAngleDeg,
-                                layerHeightMm: input.layerHeightMm ?? 0.3,
-                                material: "TPU",
-                                gcodeStorageKey: isGcode ? storageKey : null,
-                            },
-                        });
-                        productionId = production.id;
+                    if (chargeError.message.includes("NO_VALID_LICENSE")) {
+                        throw new TRPCError({ code: "FORBIDDEN", message: "No valid license" });
                     }
-
-                    const exp = await tx.export.create({
-                        data: {
-                            designId: input.designId ?? null,
-                            userId: ctx.user.id,
-                            format: exportFormat,
-                            side: input.side ?? null,
-                            tokenCost: cost,
-                            storageKey: null,
-                            fileName: safeName,
-                        },
+                    throw new TRPCError({
+                        code: "INTERNAL_SERVER_ERROR",
+                        message: `Manufacturing charge failed: ${chargeError.message}`,
                     });
+                }
 
-                    await tx.tokenTransaction.create({
-                        data: {
-                            userId: ctx.user.id,
-                            type: "deduct",
-                            amount: -cost,
-                            balance: updatedUser.tokenBalance,
-                            reason: "manufacturing:hybrid_gcode",
-                            exportId: exp.id,
-                        },
-                    });
-
-                    await tx.auditLog.create({
-                        data: {
-                            userId: ctx.user.id,
-                            action: "export_generated",
-                            targetId: productionId ?? exp.id,
-                            metadata: {
-                                kind: "manufacturing_hybrid",
-                                outputType,
-                                presetId: input.presetId,
-                                beltAngleDeg: input.beltAngleDeg,
-                                grindingStyle: input.grindingStyle?.type ?? null,
-                                side: input.side ?? null,
-                                layerHeightMm: input.layerHeightMm ?? null,
-                                infillDensity: input.infillDensity ?? null,
-                                perimeters: input.perimeters ?? null,
-                                sourceStlTempKey: tempStlKey,
-                            },
-                            ipAddress: ctx.ip,
-                        },
-                    });
-
-                    return {
-                        productionId,
-                        exportId: exp.id,
-                        balance: updatedUser.tokenBalance,
-                        jobId: pythonResult.job_id,
-                    };
-                });
+                const result = chargeData as {
+                    productionId: string | null;
+                    exportId: string;
+                    balance: number;
+                    jobId: string;
+                };
 
                 let downloadUrl: string | undefined;
                 if (supabase) {
