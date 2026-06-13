@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { getSupabaseAdmin } from "../context.js";
 import { designStateSchema } from "../lib/design-schema.js";
 import { protectedProcedure, router } from "../trpc.js";
 
@@ -54,52 +55,39 @@ export const designRouter = router({
             if (!owned) throw new TRPCError({ code: "NOT_FOUND" });
             const { state } = input;
 
-            return ctx.prismaDirect.$transaction(async (tx) => {
-                await tx.design.update({
-                    where: { id: input.id },
-                    data: {
-                        name: input.name,
-                        pattern: state.pattern,
-                        method: state.method,
-                        thicknessMm: state.thicknessMm,
-                        unit: state.corrections.unit,
-                        linked: state.corrections.linked,
-                    },
+            const supabase = getSupabaseAdmin();
+            if (!supabase) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: "Supabase admin client not configured",
                 });
-                await tx.correction.deleteMany({ where: { designId: input.id } });
-                await tx.element.deleteMany({ where: { designId: input.id } });
-                await tx.correction.createMany({
-                    data: (["left", "right"] as const).map((side) => ({
-                        designId: input.id,
-                        side,
-                        ...state.corrections[side],
-                    })),
-                });
-                if (state.elements.length > 0) {
-                    await tx.element.createMany({
-                        data: state.elements.map((e) => ({
-                            designId: input.id,
-                            side: e.side,
-                            kind: e.kind,
-                            posX: e.position.x,
-                            posY: e.position.y,
-                            rotationDeg: e.rotationDeg,
-                            scaleX: e.scale.x,
-                            scaleY: e.scale.y,
-                            heightMm: e.heightMm,
-                        })),
-                    });
-                }
-                await tx.auditLog.create({
-                    data: {
-                        userId: ctx.user.id,
-                        action: "design_updated",
-                        targetId: input.id,
-                        ipAddress: ctx.ip,
-                    },
-                });
-                return { ok: true };
+            }
+
+            const { data, error } = await supabase.rpc("vertex_save_design", {
+                p_user_id: ctx.user.id,
+                p_design_id: input.id,
+                p_name: input.name,
+                p_pattern: state.pattern,
+                p_method: state.method,
+                p_thickness_mm: state.thicknessMm,
+                p_unit: state.corrections.unit,
+                p_linked: state.corrections.linked,
+                p_corrections: {
+                    left: state.corrections.left,
+                    right: state.corrections.right,
+                },
+                p_elements: state.elements,
+                p_ip: ctx.ip,
             });
+
+            if (error) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Design save failed: ${error.message}`,
+                });
+            }
+
+            return data as { ok: true };
         }),
 
     delete: protectedProcedure.input(z.object({ id: z.string().uuid() })).mutation(async ({ ctx, input }) => {

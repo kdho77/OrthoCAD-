@@ -16,6 +16,43 @@ import {
 } from "../lib/storage.js";
 import { adminProcedure, protectedProcedure, router } from "../trpc.js";
 
+type StockBaseRpcRow = {
+    id: string;
+    name: string;
+    glbPath: string;
+    primarySide: string | null;
+    isDefault: boolean;
+    isActive: boolean;
+    metadata: unknown;
+    createdAt: string;
+    updatedAt: string;
+};
+
+function stockBaseFromRpc(row: StockBaseRpcRow) {
+    return {
+        id: row.id,
+        name: row.name,
+        glbPath: row.glbPath,
+        primarySide: row.primarySide,
+        isDefault: row.isDefault,
+        isActive: row.isActive,
+        metadata: row.metadata,
+        createdAt: new Date(row.createdAt),
+        updatedAt: new Date(row.updatedAt),
+    };
+}
+
+async function requireSupabaseAdmin() {
+    const supabase = getSupabaseAdmin();
+    if (!supabase) {
+        throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Storage not configured",
+        });
+    }
+    return supabase;
+}
+
 /**
  * Server-authoritative procedures for system stock bases (global GLB templates
  * such as the default Right foot last uploaded as Templates/Default.glb).
@@ -202,26 +239,29 @@ export const stockRouter = router({
             }
 
             // Atomic: clear other defaults if needed, then create
-            const row = await ctx.prismaDirect.$transaction(async (tx) => {
-                if (isDef) {
-                    await tx.stockBase.updateMany({
-                        where: { isDefault: true },
-                        data: { isDefault: false },
+            const { data, error } = await supabase.rpc("vertex_create_stock_base", {
+                p_name: input.name,
+                p_glb_path: finalGlbPath,
+                p_primary_side: input.primarySide ?? null,
+                p_is_default: isDef,
+                p_is_active: isAct,
+                p_metadata: Object.keys(meta).length > 0 ? meta : null,
+            });
+
+            if (error) {
+                if (error.message.includes("CANNOT_DEFAULT_INACTIVE")) {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message: "Cannot set isDefault=true on an inactive stock base",
                     });
                 }
-
-                const created = await tx.stockBase.create({
-                    data: {
-                        name: input.name,
-                        glbPath: finalGlbPath,
-                        primarySide: input.primarySide ?? null,
-                        isDefault: isDef,
-                        isActive: isAct,
-                        metadata: Object.keys(meta).length > 0 ? (meta as Prisma.InputJsonValue) : undefined,
-                    },
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Create stock base failed: ${error.message}`,
                 });
-                return created;
-            });
+            }
+
+            const row = stockBaseFromRpc(data as StockBaseRpcRow);
 
             // Audit
             try {
@@ -285,65 +325,38 @@ export const stockRouter = router({
                 }
             }
 
-            const row = await ctx.prismaDirect.$transaction(async (tx) => {
-                // If we are turning OFF the default (isActive=false on a currently-default row, or explicitly isDefault=false),
-                // auto-promote another active stock so the system keeps a designated default.
-                const turningOffDefault =
-                    (existing.isDefault && isAct === false) || (existing.isDefault && isDef === false);
-
-                if (turningOffDefault) {
-                    const replacement = await tx.stockBase.findFirst({
-                        where: { isActive: true, id: { not: input.id } },
-                        orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-                    });
-                    if (replacement) {
-                        await tx.stockBase.update({
-                            where: { id: replacement.id },
-                            data: { isDefault: true },
-                        });
-                    }
-                }
-
-                if (isDef === true) {
-                    await tx.stockBase.updateMany({
-                        where: { isDefault: true, id: { not: input.id } },
-                        data: { isDefault: false },
-                    });
-                }
-
-                // Merge metadata if provided
-                let nextMeta: Prisma.InputJsonValue = (existing.metadata as Prisma.InputJsonValue) ?? {};
-                if (input.metadata) {
-                    nextMeta = {
-                        ...(nextMeta as Prisma.JsonObject),
-                        ...(input.metadata as Prisma.JsonObject),
-                    };
-                }
-                if (input.category !== undefined) {
-                    nextMeta = { ...(nextMeta as Prisma.JsonObject), category: input.category };
-                }
-                if (input.description !== undefined) {
-                    nextMeta = { ...(nextMeta as Prisma.JsonObject), description: input.description };
-                }
-                const metadataValue: Prisma.NullableJsonNullValueInput | Prisma.InputJsonValue =
-                    Object.keys(nextMeta as Prisma.JsonObject).length > 0 ? nextMeta : Prisma.JsonNull;
-
-                const updated = await tx.stockBase.update({
-                    where: { id: input.id },
-                    data: {
-                        ...(input.name !== undefined ? { name: input.name } : {}),
-                        ...(input.primarySide !== undefined ? { primarySide: input.primarySide } : {}),
-                        ...(isDef !== undefined ? { isDefault: isDef } : {}),
-                        ...(isAct !== undefined ? { isActive: isAct } : {}),
-                        ...(input.metadata !== undefined ||
-                        input.category !== undefined ||
-                        input.description !== undefined
-                            ? { metadata: metadataValue }
-                            : {}),
-                    },
-                });
-                return updated;
+            const supabase = await requireSupabaseAdmin();
+            const { data, error } = await supabase.rpc("vertex_update_stock_base", {
+                p_id: input.id,
+                p_existing_is_default: existing.isDefault,
+                p_existing_is_active: existing.isActive,
+                p_existing_metadata: (existing.metadata as Prisma.InputJsonValue) ?? null,
+                p_name: input.name ?? null,
+                p_primary_side: input.primarySide ?? null,
+                p_is_default: isDef ?? null,
+                p_is_active: isAct ?? null,
+                p_metadata_patch: input.metadata ? (input.metadata as Prisma.InputJsonValue) : null,
+                p_category: input.category ?? null,
+                p_description: input.description ?? null,
             });
+
+            if (error) {
+                if (error.message.includes("CANNOT_DEFAULT_INACTIVE")) {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message: "Cannot set isDefault=true on an inactive stock base",
+                    });
+                }
+                if (error.message.includes("NOT_FOUND")) {
+                    throw new TRPCError({ code: "NOT_FOUND", message: "Stock base not found" });
+                }
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Update stock base failed: ${error.message}`,
+                });
+            }
+
+            const row = stockBaseFromRpc(data as StockBaseRpcRow);
 
             // Audit
             try {
@@ -400,30 +413,19 @@ export const stockRouter = router({
 
             const wasDefault = row.isDefault;
 
-            // Hard delete chosen (see JSDoc below). If this was the active default, auto-promote
-            // another active stock base so that new designs continue to have a server default.
-            await ctx.prismaDirect.$transaction(async (tx) => {
-                if (wasDefault) {
-                    const replacement = await tx.stockBase.findFirst({
-                        where: { isActive: true, id: { not: input.id } },
-                        orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-                    });
-                    if (replacement) {
-                        await tx.stockBase.update({
-                            where: { id: replacement.id },
-                            data: { isDefault: true },
-                        });
-                    }
-                    // If no replacement, getDefaultStockBase will return null → client falls back to builtin.
-                }
+            const supabase = await requireSupabaseAdmin();
+            await deleteAsset(supabase, row.glbPath, STOCK_BUCKET).catch(() => undefined);
 
-                const supabase = getSupabaseAdmin();
-                if (supabase) {
-                    await deleteAsset(supabase, row.glbPath, STOCK_BUCKET).catch(() => undefined);
+            const { error } = await supabase.rpc("vertex_delete_stock_base", { p_id: input.id });
+            if (error) {
+                if (error.message.includes("NOT_FOUND")) {
+                    throw new TRPCError({ code: "NOT_FOUND", message: "Stock base not found" });
                 }
-
-                await tx.stockBase.delete({ where: { id: input.id } });
-            });
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Delete stock base failed: ${error.message}`,
+                });
+            }
 
             try {
                 await ctx.prisma.auditLog.create({
@@ -485,63 +487,36 @@ export const stockRouter = router({
             const desiredName = input?.name ?? "Default Stock Base";
             const desiredGlbPath = input?.glbPath ?? "stock/standard/Default.glb";
 
-            // Idempotent upsert of the system default row.
-            const row = await ctx.prismaDirect.$transaction(async (tx) => {
-                // Make sure no other row is the default while we set this one.
-                await tx.stockBase.updateMany({
-                    where: { isDefault: true },
-                    data: { isDefault: false },
-                });
+            const existing = await ctx.prisma.stockBase.findFirst({
+                where: { name: desiredName },
+            });
+            const rpcGlbPath = input?.glbBase64 && existing ? existing.glbPath : desiredGlbPath;
 
-                // Try to find an existing row by conventional name (or create).
-                const existing = await tx.stockBase.findFirst({
-                    where: { name: desiredName },
-                });
+            const meta = {
+                ...(input?.metadata ?? {}),
+                isSystemDefault: true,
+                seededAt: new Date().toISOString(),
+            };
+            if (input?.category) (meta as Record<string, unknown>).category = input.category;
+            if (input?.description) (meta as Record<string, unknown>).description = input.description;
 
-                const meta = {
-                    ...(input?.metadata ?? {}),
-                    isSystemDefault: true,
-                    seededAt: new Date().toISOString(),
-                };
-                if (input?.category) (meta as any).category = input.category;
-                if (input?.description) (meta as any).description = input.description;
-
-                if (existing) {
-                    return tx.stockBase.update({
-                        where: { id: existing.id },
-                        data: {
-                            isDefault: true,
-                            isActive: true,
-                            glbPath: input?.glbBase64
-                                ? /* will be overwritten by caller if bytes */ existing.glbPath
-                                : desiredGlbPath,
-                            primarySide: input?.primarySide ?? existing.primarySide,
-                            metadata: meta,
-                        },
-                    });
-                }
-
-                // Create fresh (single-default already cleared above).
-                return tx.stockBase.create({
-                    data: {
-                        name: desiredName,
-                        glbPath: desiredGlbPath,
-                        primarySide: input?.primarySide ?? "right",
-                        isDefault: true,
-                        isActive: true,
-                        metadata: meta,
-                    },
-                });
+            const supabase = await requireSupabaseAdmin();
+            const { data, error } = await supabase.rpc("vertex_ensure_default_stock_base", {
+                p_name: desiredName,
+                p_glb_path: rpcGlbPath,
+                p_primary_side: input?.primarySide ?? null,
+                p_metadata: meta,
             });
 
-            // If bytes were supplied, perform the upload and patch the glbPath
-            // (after the default flip tx to keep things simple and safe).
-            let finalRow = row;
+            if (error) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Ensure default stock base failed: ${error.message}`,
+                });
+            }
+
+            let finalRow = stockBaseFromRpc(data as StockBaseRpcRow);
             if (input?.glbBase64) {
-                const supabase = getSupabaseAdmin();
-                if (!supabase) {
-                    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage not configured" });
-                }
                 const validated = validateGlbBase64(input.glbBase64);
                 if (!validated.ok) {
                     throw new TRPCError({ code: "BAD_REQUEST", message: validated.reason });
@@ -550,7 +525,7 @@ export const stockRouter = router({
                 await uploadAsset(supabase, key, validated.bytes, "model/gltf-binary", STOCK_BUCKET);
 
                 finalRow = await ctx.prisma.stockBase.update({
-                    where: { id: row.id },
+                    where: { id: finalRow.id },
                     data: { glbPath: key },
                 });
             }
