@@ -1,4 +1,5 @@
 import { protectedProcedure, publicProcedure, router } from "../trpc.js";
+import { findActiveLicense, getUserProfile, requireSupabaseAdmin } from "../lib/supabase-db.js";
 
 export const userRouter = router({
     // Public health check for load balancers / Render health checks.
@@ -6,15 +7,9 @@ export const userRouter = router({
 
     // Returns the authenticated user's profile, token balance and active license.
     me: protectedProcedure.query(async ({ ctx }) => {
-        const now = new Date();
-        const profile = await ctx.prisma.user.findUnique({ where: { id: ctx.user.id } });
-        const license = await ctx.prisma.license.findFirst({
-            where: {
-                status: "active",
-                OR: [{ ownerId: ctx.user.id }, { seatList: { some: { userId: ctx.user.id } } }],
-                AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }],
-            },
-        });
+        const supabase = requireSupabaseAdmin();
+        const profile = await getUserProfile(supabase, ctx.user.id).catch(() => null);
+        const license = await findActiveLicense(supabase, ctx.user.id);
 
         return {
             id: ctx.user.id,
@@ -28,8 +23,8 @@ export const userRouter = router({
                       type: license.type,
                       status: license.status,
                       seats: license.seats,
-                      startsAt: license.startsAt.toISOString(),
-                      expiresAt: license.expiresAt?.toISOString() ?? null,
+                      startsAt: license.startsAt,
+                      expiresAt: license.expiresAt,
                   }
                 : null,
         };

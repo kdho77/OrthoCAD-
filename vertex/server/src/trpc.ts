@@ -14,7 +14,7 @@ export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
     if (!ctx.user) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required" });
     }
-    await ensureAppUser(ctx.prismaDirect, ctx.user);
+    await ensureAppUser(ctx.user);
     return next({ ctx: { ...ctx, user: ctx.user } });
 });
 

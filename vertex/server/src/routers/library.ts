@@ -1,12 +1,16 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import type { Prisma } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSupabaseAdmin } from "../context.js";
 import { validateGlbBase64 } from "../lib/glb-validation.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
+import {
+    assertActiveLicense,
+    getUserTokenBalance,
+    requireSupabaseAdmin,
+} from "../lib/supabase-db.js";
 import { buildGlbKey, deleteAsset, signedDownloadUrl, uploadAsset } from "../lib/storage.js";
 import { protectedProcedure, rateLimitedProcedure, router } from "../trpc.js";
 
@@ -21,25 +25,25 @@ const saveInput = z.object({
     glbBase64: z.string().min(1),
 });
 
-async function authorizeSave(ctx: {
-    prisma: typeof import("../context").prisma;
-    user: { id: string };
-    ip: string | null;
-}) {
-    const now = new Date();
-    const license = await ctx.prisma.license.findFirst({
-        where: {
-            status: "active",
-            OR: [{ ownerId: ctx.user.id }, { seatList: { some: { userId: ctx.user.id } } }],
-            AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }],
-        },
-    });
-    if (!license) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "No valid license" });
-    }
+type CustomLibraryRow = {
+    id: string;
+    name: string;
+    category: string;
+    glbPath: string;
+    parentStockId: string | null;
+    createdAt: string;
+};
 
-    const pre = await ctx.prisma.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
-    if (pre.tokenBalance < SAVE_TOKEN_COST) {
+function toIsoDate(value: string | Date): string {
+    return typeof value === "string" ? value : value.toISOString();
+}
+
+async function authorizeSave(ctx: { user: { id: string } }) {
+    const supabase = requireSupabaseAdmin();
+    await assertActiveLicense(supabase, ctx.user.id);
+
+    const balance = await getUserTokenBalance(supabase, ctx.user.id);
+    if (balance < SAVE_TOKEN_COST) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient tokens to save custom asset" });
     }
 
@@ -53,7 +57,7 @@ async function deductSaveTokens(
     },
     reason: string,
     targetId: string,
-    metadata: Prisma.InputJsonValue,
+    metadata: Record<string, unknown>,
 ) {
     const supabase = getSupabaseAdmin();
     if (!supabase) {
@@ -85,38 +89,56 @@ async function deductSaveTokens(
 
 export const libraryRouter = router({
     listElements: protectedProcedure.query(async ({ ctx }) => {
-        const rows = await ctx.prisma.customElement.findMany({
-            where: { userId: ctx.user.id },
-            orderBy: { createdAt: "desc" },
-        });
-        const supabase = getSupabaseAdmin();
+        const supabase = requireSupabaseAdmin();
+        const { data: rows, error } = await supabase
+            .from("custom_elements")
+            .select("id, name, category, glbPath, parentStockId, createdAt")
+            .eq("userId", ctx.user.id)
+            .order("createdAt", { ascending: false });
+
+        if (error) {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: `Failed to list custom elements: ${error.message}`,
+            });
+        }
+
         return Promise.all(
-            rows.map(async (r) => ({
+            (rows ?? []).map(async (r: CustomLibraryRow) => ({
                 id: r.id,
                 name: r.name,
                 category: r.category,
                 glbPath: r.glbPath,
                 parentStockId: r.parentStockId,
-                createdAt: r.createdAt.toISOString(),
+                createdAt: toIsoDate(r.createdAt),
                 url: supabase ? await signedDownloadUrl(supabase, r.glbPath).catch(() => null) : null,
             })),
         );
     }),
 
     listPrefabs: protectedProcedure.query(async ({ ctx }) => {
-        const rows = await ctx.prisma.customPrefab.findMany({
-            where: { userId: ctx.user.id },
-            orderBy: { createdAt: "desc" },
-        });
-        const supabase = getSupabaseAdmin();
+        const supabase = requireSupabaseAdmin();
+        const { data: rows, error } = await supabase
+            .from("custom_prefabs")
+            .select("id, name, category, glbPath, parentStockId, createdAt")
+            .eq("userId", ctx.user.id)
+            .order("createdAt", { ascending: false });
+
+        if (error) {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: `Failed to list custom prefabs: ${error.message}`,
+            });
+        }
+
         return Promise.all(
-            rows.map(async (r) => ({
+            (rows ?? []).map(async (r: CustomLibraryRow) => ({
                 id: r.id,
                 name: r.name,
                 category: r.category,
                 glbPath: r.glbPath,
                 parentStockId: r.parentStockId,
-                createdAt: r.createdAt.toISOString(),
+                createdAt: toIsoDate(r.createdAt),
                 url: supabase ? await signedDownloadUrl(supabase, r.glbPath).catch(() => null) : null,
             })),
         );
@@ -139,15 +161,24 @@ export const libraryRouter = router({
             const key = buildGlbKey(ctx.user.id, "element", input.name);
             await uploadAsset(supabase, key, validated.bytes, "model/gltf-binary");
 
-            const row = await ctx.prisma.customElement.create({
-                data: {
+            const { data: row, error: insertError } = await supabase
+                .from("custom_elements")
+                .insert({
                     userId: ctx.user.id,
                     name: input.name,
                     category: input.category,
                     glbPath: key,
                     parentStockId: input.parentStockId ?? null,
-                },
-            });
+                })
+                .select("id, name, category, glbPath, parentStockId, createdAt")
+                .single();
+
+            if (insertError || !row) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to save custom element: ${insertError?.message ?? "unknown error"}`,
+                });
+            }
 
             const { balance } = await deductSaveTokens(ctx, "custom_library:element", row.id, {
                 kind: "element",
@@ -165,7 +196,7 @@ export const libraryRouter = router({
                     category: row.category,
                     glbPath: row.glbPath,
                     parentStockId: row.parentStockId,
-                    createdAt: row.createdAt.toISOString(),
+                    createdAt: toIsoDate(row.createdAt),
                     url,
                 },
             };
@@ -188,15 +219,24 @@ export const libraryRouter = router({
             const key = buildGlbKey(ctx.user.id, "prefab", input.name);
             await uploadAsset(supabase, key, validated.bytes, "model/gltf-binary");
 
-            const row = await ctx.prisma.customPrefab.create({
-                data: {
+            const { data: row, error: insertError } = await supabase
+                .from("custom_prefabs")
+                .insert({
                     userId: ctx.user.id,
                     name: input.name,
                     category: input.category,
                     glbPath: key,
                     parentStockId: input.parentStockId ?? null,
-                },
-            });
+                })
+                .select("id, name, category, glbPath, parentStockId, createdAt")
+                .single();
+
+            if (insertError || !row) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to save custom prefab: ${insertError?.message ?? "unknown error"}`,
+                });
+            }
 
             const { balance } = await deductSaveTokens(ctx, "custom_library:prefab", row.id, {
                 kind: "prefab",
@@ -214,7 +254,7 @@ export const libraryRouter = router({
                     category: row.category,
                     glbPath: row.glbPath,
                     parentStockId: row.parentStockId,
-                    createdAt: row.createdAt.toISOString(),
+                    createdAt: toIsoDate(row.createdAt),
                     url,
                 },
             };
@@ -223,26 +263,64 @@ export const libraryRouter = router({
     deleteElement: protectedProcedure
         .input(z.object({ id: z.string().uuid() }))
         .mutation(async ({ ctx, input }) => {
-            const row = await ctx.prisma.customElement.findFirst({
-                where: { id: input.id, userId: ctx.user.id },
-            });
+            const supabase = requireSupabaseAdmin();
+            const { data: row, error } = await supabase
+                .from("custom_elements")
+                .select("id, glbPath")
+                .eq("id", input.id)
+                .eq("userId", ctx.user.id)
+                .maybeSingle();
+
+            if (error) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to load custom element: ${error.message}`,
+                });
+            }
             if (!row) throw new TRPCError({ code: "NOT_FOUND" });
-            const supabase = getSupabaseAdmin();
-            if (supabase) await deleteAsset(supabase, row.glbPath).catch(() => undefined);
-            await ctx.prisma.customElement.delete({ where: { id: row.id } });
+
+            await deleteAsset(supabase, row.glbPath).catch(() => undefined);
+
+            const { error: deleteError } = await supabase.from("custom_elements").delete().eq("id", row.id);
+            if (deleteError) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to delete custom element: ${deleteError.message}`,
+                });
+            }
+
             return { ok: true as const };
         }),
 
     deletePrefab: protectedProcedure
         .input(z.object({ id: z.string().uuid() }))
         .mutation(async ({ ctx, input }) => {
-            const row = await ctx.prisma.customPrefab.findFirst({
-                where: { id: input.id, userId: ctx.user.id },
-            });
+            const supabase = requireSupabaseAdmin();
+            const { data: row, error } = await supabase
+                .from("custom_prefabs")
+                .select("id, glbPath")
+                .eq("id", input.id)
+                .eq("userId", ctx.user.id)
+                .maybeSingle();
+
+            if (error) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to load custom prefab: ${error.message}`,
+                });
+            }
             if (!row) throw new TRPCError({ code: "NOT_FOUND" });
-            const supabase = getSupabaseAdmin();
-            if (supabase) await deleteAsset(supabase, row.glbPath).catch(() => undefined);
-            await ctx.prisma.customPrefab.delete({ where: { id: row.id } });
+
+            await deleteAsset(supabase, row.glbPath).catch(() => undefined);
+
+            const { error: deleteError } = await supabase.from("custom_prefabs").delete().eq("id", row.id);
+            if (deleteError) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to delete custom prefab: ${deleteError.message}`,
+                });
+            }
+
             return { ok: true as const };
         }),
 });

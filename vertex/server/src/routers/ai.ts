@@ -3,6 +3,11 @@ import { z } from "zod";
 import { getAiConfig, parsePrescriptionWithAi } from "../lib/ai-provider.js";
 import { getSupabaseAdmin } from "../context.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
+import {
+    assertActiveLicense,
+    getUserTokenBalance,
+    requireSupabaseAdmin,
+} from "../lib/supabase-db.js";
 import { rateLimitedProcedure, router } from "../trpc.js";
 
 // Token cost for an AI prescription parse / generation.
@@ -38,34 +43,27 @@ export const aiRouter = router({
                 });
             }
 
-            const now = new Date();
-            const license = await ctx.prisma.license.findFirst({
-                where: {
-                    status: "active",
-                    OR: [{ ownerId: ctx.user.id }, { seatList: { some: { userId: ctx.user.id } } }],
-                    AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }],
-                },
-            });
-            if (!license) throw new TRPCError({ code: "FORBIDDEN", message: "No valid license" });
+            const supabase = requireSupabaseAdmin();
+            await assertActiveLicense(supabase, ctx.user.id);
 
             // Pre-check balance so we don't call the AI provider for a user who
             // can't pay; the guarded decrement below is the real safeguard.
-            const pre = await ctx.prisma.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
-            if (pre.tokenBalance < AI_TOKEN_COST) {
+            const balance = await getUserTokenBalance(supabase, ctx.user.id);
+            if (balance < AI_TOKEN_COST) {
                 throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient tokens for AI generation" });
             }
 
             const parsed = await parsePrescriptionWithAi(cfg, { text: input.text, image: input.image });
 
-            const supabase = getSupabaseAdmin();
-            if (!supabase) {
+            const adminClient = getSupabaseAdmin();
+            if (!adminClient) {
                 throw new TRPCError({
                     code: "INTERNAL_SERVER_ERROR",
                     message: "Supabase admin client not configured",
                 });
             }
 
-            const { data, error } = await supabase.rpc("vertex_charge_ai_prescription", {
+            const { data, error } = await adminClient.rpc("vertex_charge_ai_prescription", {
                 p_user_id: ctx.user.id,
                 p_cost: AI_TOKEN_COST,
                 p_design_id: input.designId ?? null,
