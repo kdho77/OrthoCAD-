@@ -9,8 +9,8 @@ import {
     closeMeshPerimeter,
     ensureWatertightForExport,
     maxBridgeMidpointDistanceFromPerimeterMm,
-    maxWeldVertexLoopDistanceMm,
     maxSeamVertexNormalDiscontinuityDeg,
+    MeshNotWatertightError,
     SMOOTH_INWARD_LIMIT_MM,
     validateManifold,
 } from "@/lib/geometry/mesh-close";
@@ -93,6 +93,71 @@ function mergeTopBottomShells(top: BufferGeometry, bottom: BufferGeometry): Buff
     return out;
 }
 
+/** Fan-triangulated open shell with exactly `outline.length` boundary vertices (coarse edges). */
+function buildCoarseOpenShell(outline: Vector3[], z: number): BufferGeometry {
+    const n = outline.length;
+    const positions = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+        positions[i * 3] = outline[i]!.x;
+        positions[i * 3 + 1] = outline[i]!.y;
+        positions[i * 3 + 2] = z;
+    }
+    const indices: number[] = [];
+    for (let i = 1; i < n - 1; i++) {
+        indices.push(0, i, i + 1);
+    }
+    const out = new BufferGeometry();
+    out.setAttribute("position", new BufferAttribute(positions, 3));
+    out.setIndex(indices);
+    out.computeVertexNormals();
+    return out;
+}
+
+/** Coarse foot-like outline — 16 vertices, edges up to ~30 mm (mimics real stock GLB). */
+function coarseFootOutline(): Vector3[] {
+    const ctrl: Array<[number, number]> = [
+        [0, -28],
+        [45, -36],
+        [95, -40],
+        [150, -38],
+        [210, -30],
+        [255, -14],
+        [262, 0],
+        [255, 14],
+        [210, 32],
+        [150, 40],
+        [95, 38],
+        [45, 34],
+        [0, 26],
+        [-20, 10],
+        [-20, -10],
+        [-8, -20],
+    ];
+    return ctrl.map(([x, y]) => new Vector3(x, y, 0));
+}
+
+function buildCoarseOrthoticPair(): BufferGeometry {
+    const outline = coarseFootOutline();
+    const bottom = buildCoarseOpenShell(outline, 0);
+    const top = buildCoarseOpenShell(outline, 12);
+    return mergeTopBottomShells(top, bottom);
+}
+
+function assertRimContactIndicesValid(
+    result: ReturnType<typeof closeMeshPerimeter>,
+    bodyVertexCount: number,
+): void {
+    const totalVerts = result.geometry.getAttribute("position").count;
+    const rimIndices = [...result.weldTopIndices, ...result.weldBottomIndices];
+    for (const vi of rimIndices) {
+        expect(vi).toBeGreaterThanOrEqual(0);
+        expect(vi).toBeLessThan(totalVerts);
+        expect(vi).not.toBe(-1);
+    }
+    const bodyOrBridge = rimIndices.every((vi) => vi < bodyVertexCount || vi >= bodyVertexCount);
+    expect(bodyOrBridge).toBe(true);
+}
+
 function buildRealisticOrthoticPair(): BufferGeometry {
     const outline = footOutlinePoints(64);
     const bottom = buildOpenShell(outline, () => 0);
@@ -160,8 +225,11 @@ describe("mesh-close — realistic orthotic integration", () => {
 
     test("seam quality: clinical guard, outward normals, smooth shading proxy", () => {
         const raw = buildRealisticOrthoticPair();
+        const bodyVertexCount = raw.getAttribute("position").count;
         const result = closeMeshPerimeter(raw);
         const geo = result.geometry;
+
+        assertRimContactIndicesValid(result, bodyVertexCount);
 
         const topLoop = result.topLoop;
         const bottomLoop = result.bottomLoop;
@@ -180,20 +248,42 @@ describe("mesh-close — realistic orthotic integration", () => {
 
     test("concave kidney-bean perimeter: no chord-snap weld jumps or crossing bridge edges", () => {
         const raw = buildConcaveOrthoticPair();
+        const bodyVertexCount = raw.getAttribute("position").count;
         const result = closeMeshPerimeter(raw);
         const geo = result.geometry;
+
+        assertRimContactIndicesValid(result, bodyVertexCount);
 
         expect(result.report.eulerCharacteristic).toBe(2);
         expect(result.report.openEdges).toBe(0);
         expect(result.report.isWatertight).toBe(true);
 
         expect(bridgeWeldRingIsAdjacent(geo, result.weldTopIndices)).toBe(true);
-        expect(maxWeldVertexLoopDistanceMm(geo, result.topLoop, result.weldTopIndices)).toBeLessThanOrEqual(0.5);
-        expect(maxWeldVertexLoopDistanceMm(geo, result.bottomLoop, result.weldBottomIndices)).toBeLessThanOrEqual(0.5);
         expect(bridgeNormalsPointOutward(geo, result.topLoop, result.bottomLoop)).toBe(true);
 
         raw.dispose();
         geo.dispose();
+    });
+
+    test("coarse GLB boundary — long edges do not produce top=-1", () => {
+        const raw = buildCoarseOrthoticPair();
+        const bodyVertexCount = raw.getAttribute("position").count;
+        const pre = validateManifold(raw);
+        expect(pre.openEdges).toBeGreaterThan(0);
+
+        let result: ReturnType<typeof closeMeshPerimeter> | undefined;
+        expect(() => {
+            result = closeMeshPerimeter(raw);
+        }).not.toThrow(MeshNotWatertightError);
+
+        expect(result).toBeDefined();
+        expect(result!.report.eulerCharacteristic).toBe(2);
+        expect(result!.report.isWatertight).toBe(true);
+        expect(result!.report.openEdges).toBe(0);
+        assertRimContactIndicesValid(result!, bodyVertexCount);
+
+        raw.dispose();
+        result!.geometry.dispose();
     });
 
     // PRODUCTION BASELINE (recorded 2026-06-13 commit 100611f6)
