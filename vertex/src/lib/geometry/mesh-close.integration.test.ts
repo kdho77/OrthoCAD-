@@ -14,6 +14,7 @@ import {
     SMOOTH_INWARD_LIMIT_MM,
     validateManifold,
 } from "@/lib/geometry/mesh-close";
+import { geometryToBinarySTL } from "@/lib/geometry/stl";
 
 const LENGTH_MM = 260;
 
@@ -190,6 +191,30 @@ describe("mesh-close — realistic orthotic integration", () => {
         expect(maxWeldVertexLoopDistanceMm(geo, result.topLoop, result.weldTopIndices)).toBeLessThanOrEqual(0.5);
         expect(maxWeldVertexLoopDistanceMm(geo, result.bottomLoop, result.weldBottomIndices)).toBeLessThanOrEqual(0.5);
         expect(bridgeNormalsPointOutward(geo, result.topLoop, result.bottomLoop)).toBe(true);
+
+        raw.dispose();
+        geo.dispose();
+    });
+
+    // PRODUCTION BASELINE (recorded 2026-06-13 commit 100611f6)
+    // V=320 E=570 F=380 STL=18.64KB bridge_faces=256
+    // Update this comment if bridge geometry changes intentionally.
+    test("production-scale orthotic STL size baseline", () => {
+        const raw = buildRealisticOrthoticPair();
+        const result = closeMeshPerimeter(raw);
+        const geo = result.geometry;
+        const stl = geometryToBinarySTL(geo);
+        const stlKb = stl.byteLength / 1024;
+        const perimeterVertexCount = result.topLoop.length;
+        const bridgeFaces = result.bridgeTriangleCount;
+
+        console.log(
+            `Production baseline: V=${result.report.vertexCount} F=${result.report.triangleCount} STL=${stlKb.toFixed(2)}KB bridge_faces=${bridgeFaces}`,
+        );
+
+        expect(stl.byteLength).toBeLessThan(2 * 1024 * 1024);
+        expect(bridgeFaces).toBeLessThanOrEqual(perimeterVertexCount * 4);
+        expect(result.report.eulerCharacteristic).toBe(2);
 
         raw.dispose();
         geo.dispose();
