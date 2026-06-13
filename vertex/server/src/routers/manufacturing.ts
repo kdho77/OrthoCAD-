@@ -8,6 +8,11 @@ import {
 } from "../lib/manufacturing-stl-lifecycle.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
 import {
+    assertActiveLicense,
+    getUserTokenBalance,
+    requireSupabaseAdmin,
+} from "../lib/supabase-db.js";
+import {
     assertManufacturingTempKeyForUser,
     buildManufacturingTempStlKey,
     MANUFACTURING_BUCKET,
@@ -46,27 +51,16 @@ const uploadStlInputSchema = z.object({
     fileName: z.string().max(200).optional(),
 });
 
-type LicenseReader = Pick<typeof import("../context").prisma, "license">;
-
-async function assertActiveLicense(db: LicenseReader, userId: string): Promise<void> {
-    const now = new Date();
-    const license = await db.license.findFirst({
-        where: {
-            status: "active",
-            OR: [{ ownerId: userId }, { seatList: { some: { userId } } }],
-            AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }],
-        },
-    });
-    if (!license) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "No valid license" });
-    }
+async function assertActiveLicenseForUser(userId: string): Promise<void> {
+    const supabase = requireSupabaseAdmin();
+    await assertActiveLicense(supabase, userId);
 }
 
 export const manufacturingRouter = router({
     uploadManufacturingStl: rateLimitedProcedure(RATE_LIMITS.export, "manufacturing:uploadStl")
         .input(uploadStlInputSchema)
         .mutation(async ({ ctx, input }) => {
-            await assertActiveLicense(ctx.prisma, ctx.user.id);
+            await assertActiveLicenseForUser(ctx.user.id);
 
             const supabase = getSupabaseAdmin();
             if (!supabase) {
@@ -129,14 +123,25 @@ export const manufacturingRouter = router({
             const supabase = getSupabaseAdmin();
 
             try {
-                await assertActiveLicense(ctx.prisma, ctx.user.id);
+                await assertActiveLicenseForUser(ctx.user.id);
 
                 const cost = HYBRID_GCODE_COST;
 
                 if (input.designId) {
-                    const design = await ctx.prisma.design.findFirst({
-                        where: { id: input.designId, ownerId: ctx.user.id },
-                    });
+                    const supabase = requireSupabaseAdmin();
+                    const { data: design, error: designError } = await supabase
+                        .from("designs")
+                        .select("id")
+                        .eq("id", input.designId)
+                        .eq("ownerId", ctx.user.id)
+                        .maybeSingle();
+
+                    if (designError) {
+                        throw new TRPCError({
+                            code: "INTERNAL_SERVER_ERROR",
+                            message: `Failed to verify design ownership: ${designError.message}`,
+                        });
+                    }
                     if (!design) {
                         throw new TRPCError({
                             code: "FORBIDDEN",
@@ -145,8 +150,8 @@ export const manufacturingRouter = router({
                     }
                 }
 
-                const user = await ctx.prisma.user.findUniqueOrThrow({ where: { id: ctx.user.id } });
-                if ((user.tokenBalance ?? 0) < cost) {
+                const balance = await getUserTokenBalance(requireSupabaseAdmin(), ctx.user.id);
+                if (balance < cost) {
                     throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
                 }
 
@@ -250,20 +255,17 @@ export const manufacturingRouter = router({
                 if (supabase) {
                     await uploadAsset(supabase, storageKey, outputBytes, contentType, MANUFACTURING_BUCKET);
                     downloadUrl = await signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET);
-                    await ctx.prisma.export.update({
-                        where: { id: result.exportId },
-                        data: { storageKey },
-                    });
+                    await supabase.from("exports").update({ storageKey }).eq("id", result.exportId);
                     if (result.productionId && isGcode) {
-                        await ctx.prisma.production.update({
-                            where: { id: result.productionId },
-                            data: { gcodeStorageKey: storageKey },
-                        });
+                        await supabase
+                            .from("productions")
+                            .update({ gcodeStorageKey: storageKey })
+                            .eq("id", result.productionId);
                     }
                 }
 
                 if (supabase) {
-                    await archiveManufacturingSourceStl(supabase, ctx.prisma, {
+                    await archiveManufacturingSourceStl(supabase, {
                         userId: ctx.user.id,
                         exportId: result.exportId,
                         tempStlKey,
@@ -297,11 +299,38 @@ export const manufacturingRouter = router({
     getGcodeDownloadUrl: protectedProcedure
         .input(z.object({ productionId: z.string().uuid() }))
         .query(async ({ ctx, input }) => {
-            const production = await ctx.prisma.production.findFirst({
-                where: { id: input.productionId },
-                include: { design: true },
-            });
-            if (!production?.design || production.design.ownerId !== ctx.user.id) {
+            const supabase = requireSupabaseAdmin();
+            const { data: production, error } = await supabase
+                .from("productions")
+                .select("id, gcodeStorageKey, designId")
+                .eq("id", input.productionId)
+                .maybeSingle();
+
+            if (error) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to load production: ${error.message}`,
+                });
+            }
+
+            if (!production?.designId) {
+                throw new TRPCError({ code: "FORBIDDEN", message: "Production not found or access denied" });
+            }
+
+            const { data: design, error: designError } = await supabase
+                .from("designs")
+                .select("ownerId")
+                .eq("id", production.designId)
+                .maybeSingle();
+
+            if (designError) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to verify production ownership: ${designError.message}`,
+                });
+            }
+
+            if (!design || design.ownerId !== ctx.user.id) {
                 throw new TRPCError({ code: "FORBIDDEN", message: "Production not found or access denied" });
             }
             if (!production.gcodeStorageKey) {
@@ -310,12 +339,12 @@ export const manufacturingRouter = router({
                     message: "No G-code file stored for this production",
                 });
             }
-            const supabase = getSupabaseAdmin();
-            if (!supabase) {
+            const storage = getSupabaseAdmin();
+            if (!storage) {
                 throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
             }
             const downloadUrl = await signedDownloadUrl(
-                supabase,
+                storage,
                 production.gcodeStorageKey,
                 3600,
                 MANUFACTURING_BUCKET,

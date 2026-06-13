@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSupabaseAdmin } from "../context.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
+import { assertActiveLicense, requireSupabaseAdmin } from "../lib/supabase-db.js";
 import { rateLimitedProcedure, router } from "../trpc.js";
 
 // Server-side token cost schedule. Authoritative — the client mirror is for UX
@@ -24,28 +25,18 @@ export const exportRouter = router({
         )
         .mutation(async ({ ctx, input }) => {
             const cost = TOKEN_COST[input.format];
-            const now = new Date();
+            const supabase = requireSupabaseAdmin();
+            await assertActiveLicense(supabase, ctx.user.id);
 
-            const license = await ctx.prisma.license.findFirst({
-                where: {
-                    status: "active",
-                    OR: [{ ownerId: ctx.user.id }, { seatList: { some: { userId: ctx.user.id } } }],
-                    AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }],
-                },
-            });
-            if (!license) {
-                throw new TRPCError({ code: "FORBIDDEN", message: "No valid license" });
-            }
-
-            const supabase = getSupabaseAdmin();
-            if (!supabase) {
+            const adminClient = getSupabaseAdmin();
+            if (!adminClient) {
                 throw new TRPCError({
                     code: "INTERNAL_SERVER_ERROR",
                     message: "Supabase admin client not configured",
                 });
             }
 
-            const { data, error } = await supabase.rpc("vertex_authorize_export", {
+            const { data, error } = await adminClient.rpc("vertex_authorize_export", {
                 p_user_id: ctx.user.id,
                 p_cost: cost,
                 p_design_id: input.designId ?? null,

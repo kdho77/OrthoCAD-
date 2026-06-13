@@ -15,20 +15,20 @@ import {
  * After a successful manufacturing job, archive the submitted STL and remove the temp copy.
  * Failures are logged but do not fail the request.
  */
-type ExportWriter = Pick<typeof import("../context.js").prisma, "export">;
-
 export async function archiveManufacturingSourceStl(
     supabase: SupabaseClient,
-    prisma: ExportWriter,
     opts: { userId: string; exportId: string; tempStlKey: string },
 ): Promise<void> {
     const archiveKey = buildManufacturingArchiveStlKey(opts.userId, opts.exportId);
     try {
         await copyStorageObject(supabase, opts.tempStlKey, archiveKey, "model/stl", MANUFACTURING_BUCKET);
-        await prisma.export.update({
-            where: { id: opts.exportId },
-            data: { sourceStlPath: archiveKey },
-        });
+        const { error } = await supabase
+            .from("exports")
+            .update({ sourceStlPath: archiveKey })
+            .eq("id", opts.exportId);
+        if (error) {
+            throw new Error(error.message);
+        }
         await deleteAsset(supabase, opts.tempStlKey, MANUFACTURING_BUCKET);
         console.log("[manufacturing] archived source STL", {
             exportId: opts.exportId,

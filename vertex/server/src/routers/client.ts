@@ -1,15 +1,26 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { requireSupabaseAdmin } from "../lib/supabase-db.js";
 import { protectedProcedure, router } from "../trpc.js";
 
 export const clientRouter = router({
-    list: protectedProcedure.query(({ ctx }) =>
-        ctx.prisma.client.findMany({
-            where: { ownerId: ctx.user.id },
-            orderBy: { createdAt: "desc" },
-            include: { _count: { select: { designs: true } } },
-        }),
-    ),
+    list: protectedProcedure.query(async ({ ctx }) => {
+        const supabase = requireSupabaseAdmin();
+        const { data, error } = await supabase
+            .from("clients")
+            .select("*, designs(count)")
+            .eq("ownerId", ctx.user.id)
+            .order("createdAt", { ascending: false });
+
+        if (error) {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: `Failed to list clients: ${error.message}`,
+            });
+        }
+
+        return data ?? [];
+    }),
 
     create: protectedProcedure
         .input(
@@ -22,9 +33,23 @@ export const clientRouter = router({
                 notes: z.string().max(2000).optional(),
             }),
         )
-        .mutation(({ ctx, input }) =>
-            ctx.prisma.client.create({ data: { ...input, ownerId: ctx.user.id } }),
-        ),
+        .mutation(async ({ ctx, input }) => {
+            const supabase = requireSupabaseAdmin();
+            const { data, error } = await supabase
+                .from("clients")
+                .insert({ ...input, ownerId: ctx.user.id })
+                .select()
+                .single();
+
+            if (error || !data) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to create client: ${error?.message ?? "unknown error"}`,
+                });
+            }
+
+            return data;
+        }),
 
     update: protectedProcedure
         .input(
@@ -40,15 +65,58 @@ export const clientRouter = router({
         )
         .mutation(async ({ ctx, input }) => {
             const { id, ...patch } = input;
-            const owned = await ctx.prisma.client.findFirst({ where: { id, ownerId: ctx.user.id } });
+            const supabase = requireSupabaseAdmin();
+            const { data: owned, error: ownedError } = await supabase
+                .from("clients")
+                .select("id")
+                .eq("id", id)
+                .eq("ownerId", ctx.user.id)
+                .maybeSingle();
+
+            if (ownedError) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to verify client ownership: ${ownedError.message}`,
+                });
+            }
             if (!owned) throw new TRPCError({ code: "NOT_FOUND" });
-            return ctx.prisma.client.update({ where: { id }, data: patch });
+
+            const { data, error } = await supabase.from("clients").update(patch).eq("id", id).select().single();
+            if (error || !data) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to update client: ${error?.message ?? "unknown error"}`,
+                });
+            }
+
+            return data;
         }),
 
     delete: protectedProcedure.input(z.object({ id: z.string().uuid() })).mutation(async ({ ctx, input }) => {
-        const owned = await ctx.prisma.client.findFirst({ where: { id: input.id, ownerId: ctx.user.id } });
+        const supabase = requireSupabaseAdmin();
+        const { data: owned, error: ownedError } = await supabase
+            .from("clients")
+            .select("id")
+            .eq("id", input.id)
+            .eq("ownerId", ctx.user.id)
+            .maybeSingle();
+
+        if (ownedError) {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: `Failed to verify client ownership: ${ownedError.message}`,
+            });
+        }
         if (!owned) throw new TRPCError({ code: "NOT_FOUND" });
-        await ctx.prisma.client.delete({ where: { id: input.id } });
+
+        const { error } = await supabase.from("clients").delete().eq("id", input.id);
+        if (error) {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: `Failed to delete client: ${error.message}`,
+            });
+        }
+
         return { ok: true };
     }),
 });

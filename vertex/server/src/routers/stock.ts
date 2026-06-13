@@ -1,11 +1,14 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { Prisma } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSupabaseAdmin } from "../context.js";
 import { validateGlbBase64 } from "../lib/glb-validation.js";
+import {
+    requireSupabaseAdmin as requireSupabase,
+    writeAuditLogBestEffort,
+} from "../lib/supabase-db.js";
 import {
     buildStockGlbKey,
     deleteAsset,
@@ -43,14 +46,7 @@ function stockBaseFromRpc(row: StockBaseRpcRow) {
 }
 
 async function requireSupabaseAdmin() {
-    const supabase = getSupabaseAdmin();
-    if (!supabase) {
-        throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: "Storage not configured",
-        });
-    }
-    return supabase;
+    return requireSupabase();
 }
 
 /**
@@ -88,13 +84,23 @@ export const stockRouter = router({
      * Ordered with defaults first for convenience in UI pickers.
      * Returns enriched objects with a short-lived signed download URL when storage is configured.
      */
-    listStockBases: protectedProcedure.query(async ({ ctx }) => {
-        const rows = await ctx.prisma.stockBase.findMany({
-            where: { isActive: true },
-            orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
-        });
+    listStockBases: protectedProcedure.query(async () => {
+        const supabase = requireSupabase();
+        const { data: rows, error } = await supabase
+            .from("stock_bases")
+            .select("*")
+            .eq("isActive", true)
+            .order("isDefault", { ascending: false })
+            .order("createdAt", { ascending: true });
 
-        const items = await Promise.all(rows.map((r) => enrichStockBase(r)));
+        if (error) {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: `Failed to list stock bases: ${error.message}`,
+            });
+        }
+
+        const items = await Promise.all((rows ?? []).map((r) => enrichStockBase(stockBaseFromRpc(r as StockBaseRpcRow))));
         return items;
     }),
 
@@ -103,10 +109,21 @@ export const stockRouter = router({
      */
     getStockBase: protectedProcedure
         .input(z.object({ id: z.string().uuid() }))
-        .query(async ({ ctx, input }) => {
-            const row = await ctx.prisma.stockBase.findFirst({
-                where: { id: input.id, isActive: true },
-            });
+        .query(async ({ input }) => {
+            const supabase = requireSupabase();
+            const { data: row, error } = await supabase
+                .from("stock_bases")
+                .select("*")
+                .eq("id", input.id)
+                .eq("isActive", true)
+                .maybeSingle();
+
+            if (error) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to load stock base: ${error.message}`,
+                });
+            }
 
             if (!row) {
                 throw new TRPCError({
@@ -115,7 +132,7 @@ export const stockRouter = router({
                 });
             }
 
-            return enrichStockBase(row);
+            return enrichStockBase(stockBaseFromRpc(row as StockBaseRpcRow));
         }),
 
     /**
@@ -127,39 +144,41 @@ export const stockRouter = router({
      * stock base is being used as the starting model for new designs.
      */
     getDefaultStockBase: protectedProcedure.query(async ({ ctx }) => {
-        // Prefer exact isDefault; if multiple, the most recently created wins as tie-breaker.
-        const row = await ctx.prisma.stockBase.findFirst({
-            where: { isDefault: true, isActive: true },
-            orderBy: { createdAt: "desc" },
-        });
+        const supabase = requireSupabase();
+        const { data: row, error } = await supabase
+            .from("stock_bases")
+            .select("*")
+            .eq("isDefault", true)
+            .eq("isActive", true)
+            .order("createdAt", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+        if (error) {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: `Failed to load default stock base: ${error.message}`,
+            });
+        }
 
         if (!row) {
             return null;
         }
 
-        const item = await enrichStockBase(row);
+        const item = await enrichStockBase(stockBaseFromRpc(row as StockBaseRpcRow));
 
-        // Basic audit / observability for stock base usage (non-blocking, best effort).
-        // This helps answer "which stock template was this design started from?" without
-        // the cost of full design audit on every correction.
-        try {
-            await ctx.prisma.auditLog.create({
-                data: {
-                    userId: ctx.user?.id ?? null,
-                    action: "stock_base_resolved",
-                    targetId: row.id,
-                    metadata: {
-                        kind: "stock_base_resolved",
-                        stockBaseName: row.name,
-                        isDefault: row.isDefault,
-                        primarySide: row.primarySide,
-                    },
-                    ipAddress: ctx.ip ?? null,
-                },
-            });
-        } catch {
-            // Audit is best-effort; never fail the resolution because of logging.
-        }
+        await writeAuditLogBestEffort(supabase, {
+            userId: ctx.user?.id ?? null,
+            action: "stock_base_resolved",
+            targetId: row.id,
+            metadata: {
+                kind: "stock_base_resolved",
+                stockBaseName: row.name,
+                isDefault: row.isDefault,
+                primarySide: row.primarySide,
+            },
+            ipAddress: ctx.ip ?? null,
+        });
 
         return item;
     }),
@@ -263,26 +282,19 @@ export const stockRouter = router({
 
             const row = stockBaseFromRpc(data as StockBaseRpcRow);
 
-            // Audit
-            try {
-                await ctx.prisma.auditLog.create({
-                    data: {
-                        userId: ctx.user.id,
-                        action: "stock_base_created",
-                        targetId: row.id,
-                        metadata: {
-                            kind: "stock_base_created",
-                            name: row.name,
-                            glbPath: finalGlbPath,
-                            isDefault: isDef,
-                            primarySide: input.primarySide ?? null,
-                        },
-                        ipAddress: ctx.ip,
-                    },
-                });
-            } catch {
-                // best effort
-            }
+            await writeAuditLogBestEffort(supabase, {
+                userId: ctx.user.id,
+                action: "stock_base_created",
+                targetId: row.id,
+                metadata: {
+                    kind: "stock_base_created",
+                    name: row.name,
+                    glbPath: finalGlbPath,
+                    isDefault: isDef,
+                    primarySide: input.primarySide ?? null,
+                },
+                ipAddress: ctx.ip,
+            });
 
             const item = await enrichStockBase(row);
             return { ok: true as const, item };
@@ -307,7 +319,19 @@ export const stockRouter = router({
             }),
         )
         .mutation(async ({ ctx, input }) => {
-            const existing = await ctx.prisma.stockBase.findUnique({ where: { id: input.id } });
+            const supabase = await requireSupabaseAdmin();
+            const { data: existing, error: existingError } = await supabase
+                .from("stock_bases")
+                .select("*")
+                .eq("id", input.id)
+                .maybeSingle();
+
+            if (existingError) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to load stock base: ${existingError.message}`,
+                });
+            }
             if (!existing) {
                 throw new TRPCError({ code: "NOT_FOUND", message: "Stock base not found" });
             }
@@ -325,17 +349,16 @@ export const stockRouter = router({
                 }
             }
 
-            const supabase = await requireSupabaseAdmin();
             const { data, error } = await supabase.rpc("vertex_update_stock_base", {
                 p_id: input.id,
                 p_existing_is_default: existing.isDefault,
                 p_existing_is_active: existing.isActive,
-                p_existing_metadata: (existing.metadata as Prisma.InputJsonValue) ?? null,
+                p_existing_metadata: existing.metadata ?? null,
                 p_name: input.name ?? null,
                 p_primary_side: input.primarySide ?? null,
                 p_is_default: isDef ?? null,
                 p_is_active: isAct ?? null,
-                p_metadata_patch: input.metadata ? (input.metadata as Prisma.InputJsonValue) : null,
+                p_metadata_patch: input.metadata ?? null,
                 p_category: input.category ?? null,
                 p_description: input.description ?? null,
             });
@@ -358,25 +381,18 @@ export const stockRouter = router({
 
             const row = stockBaseFromRpc(data as StockBaseRpcRow);
 
-            // Audit
-            try {
-                await ctx.prisma.auditLog.create({
-                    data: {
-                        userId: ctx.user.id,
-                        action: "stock_base_updated",
-                        targetId: row.id,
-                        metadata: {
-                            kind: "stock_base_updated",
-                            name: row.name,
-                            isDefault: row.isDefault,
-                            isActive: row.isActive,
-                        },
-                        ipAddress: ctx.ip,
-                    },
-                });
-            } catch {
-                // best effort
-            }
+            await writeAuditLogBestEffort(supabase, {
+                userId: ctx.user.id,
+                action: "stock_base_updated",
+                targetId: row.id,
+                metadata: {
+                    kind: "stock_base_updated",
+                    name: row.name,
+                    isDefault: row.isDefault,
+                    isActive: row.isActive,
+                },
+                ipAddress: ctx.ip,
+            });
 
             const item = await enrichStockBase(row);
             return { ok: true as const, item };
@@ -406,14 +422,25 @@ export const stockRouter = router({
     deleteStockBase: adminProcedure
         .input(z.object({ id: z.string().uuid() }))
         .mutation(async ({ ctx, input }) => {
-            const row = await ctx.prisma.stockBase.findUnique({ where: { id: input.id } });
+            const supabase = await requireSupabaseAdmin();
+            const { data: row, error: rowError } = await supabase
+                .from("stock_bases")
+                .select("*")
+                .eq("id", input.id)
+                .maybeSingle();
+
+            if (rowError) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to load stock base: ${rowError.message}`,
+                });
+            }
             if (!row) {
                 throw new TRPCError({ code: "NOT_FOUND", message: "Stock base not found" });
             }
 
             const wasDefault = row.isDefault;
 
-            const supabase = await requireSupabaseAdmin();
             await deleteAsset(supabase, row.glbPath, STOCK_BUCKET).catch(() => undefined);
 
             const { error } = await supabase.rpc("vertex_delete_stock_base", { p_id: input.id });
@@ -427,24 +454,18 @@ export const stockRouter = router({
                 });
             }
 
-            try {
-                await ctx.prisma.auditLog.create({
-                    data: {
-                        userId: ctx.user.id,
-                        action: "stock_base_deleted",
-                        targetId: input.id,
-                        metadata: {
-                            kind: "stock_base_deleted",
-                            name: row.name,
-                            wasDefault,
-                            promotedReplacement: wasDefault, // the tx above handled promotion if needed
-                        },
-                        ipAddress: ctx.ip,
-                    },
-                });
-            } catch {
-                // best effort
-            }
+            await writeAuditLogBestEffort(supabase, {
+                userId: ctx.user.id,
+                action: "stock_base_deleted",
+                targetId: input.id,
+                metadata: {
+                    kind: "stock_base_deleted",
+                    name: row.name,
+                    wasDefault,
+                    promotedReplacement: wasDefault,
+                },
+                ipAddress: ctx.ip,
+            });
 
             return { ok: true as const };
         }),
@@ -487,9 +508,20 @@ export const stockRouter = router({
             const desiredName = input?.name ?? "Default Stock Base";
             const desiredGlbPath = input?.glbPath ?? "stock/standard/Default.glb";
 
-            const existing = await ctx.prisma.stockBase.findFirst({
-                where: { name: desiredName },
-            });
+            const supabase = await requireSupabaseAdmin();
+            const { data: existing, error: existingError } = await supabase
+                .from("stock_bases")
+                .select("id, glbPath")
+                .eq("name", desiredName)
+                .maybeSingle();
+
+            if (existingError) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to load stock base: ${existingError.message}`,
+                });
+            }
+
             const rpcGlbPath = input?.glbBase64 && existing ? existing.glbPath : desiredGlbPath;
 
             const meta = {
@@ -500,7 +532,6 @@ export const stockRouter = router({
             if (input?.category) (meta as Record<string, unknown>).category = input.category;
             if (input?.description) (meta as Record<string, unknown>).description = input.description;
 
-            const supabase = await requireSupabaseAdmin();
             const { data, error } = await supabase.rpc("vertex_ensure_default_stock_base", {
                 p_name: desiredName,
                 p_glb_path: rpcGlbPath,
@@ -524,30 +555,34 @@ export const stockRouter = router({
                 const key = buildStockGlbKey(desiredName, { category: input?.category ?? "standard" });
                 await uploadAsset(supabase, key, validated.bytes, "model/gltf-binary", STOCK_BUCKET);
 
-                finalRow = await ctx.prisma.stockBase.update({
-                    where: { id: finalRow.id },
-                    data: { glbPath: key },
-                });
+                const { data: updated, error: updateError } = await supabase
+                    .from("stock_bases")
+                    .update({ glbPath: key })
+                    .eq("id", finalRow.id)
+                    .select("*")
+                    .single();
+
+                if (updateError || !updated) {
+                    throw new TRPCError({
+                        code: "INTERNAL_SERVER_ERROR",
+                        message: `Failed to update stock base path: ${updateError?.message ?? "unknown error"}`,
+                    });
+                }
+
+                finalRow = stockBaseFromRpc(updated as StockBaseRpcRow);
             }
 
-            // Audit the seeding action.
-            try {
-                await ctx.prisma.auditLog.create({
-                    data: {
-                        userId: ctx.user.id,
-                        action: "stock_base_created",
-                        targetId: finalRow.id,
-                        metadata: {
-                            kind: "stock_base_seeded",
-                            name: finalRow.name,
-                            isSystemDefault: true,
-                        },
-                        ipAddress: ctx.ip,
-                    },
-                });
-            } catch {
-                // best effort
-            }
+            await writeAuditLogBestEffort(supabase, {
+                userId: ctx.user.id,
+                action: "stock_base_created",
+                targetId: finalRow.id,
+                metadata: {
+                    kind: "stock_base_seeded",
+                    name: finalRow.name,
+                    isSystemDefault: true,
+                },
+                ipAddress: ctx.ip,
+            });
 
             const item = await enrichStockBase(finalRow);
             return { ok: true as const, item };
