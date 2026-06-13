@@ -116,6 +116,41 @@ function buildCoarseOpenShell(outline: Vector3[], z: number): BufferGeometry {
     return out;
 }
 
+/** Open shell with `outline.length` boundary verts plus two interior verts (different count from fan-only top). */
+function buildCoarseOpenShellWithInterior(outline: Vector3[], z: number): BufferGeometry {
+    const n = outline.length;
+    const positions = new Float32Array((n + 2) * 3);
+    for (let i = 0; i < n; i++) {
+        positions[i * 3] = outline[i]!.x;
+        positions[i * 3 + 1] = outline[i]!.y;
+        positions[i * 3 + 2] = z;
+    }
+    const c0 = n;
+    const c1 = n + 1;
+    positions[c0 * 3] = 0;
+    positions[c0 * 3 + 1] = 0;
+    positions[c0 * 3 + 2] = z;
+    positions[c1 * 3] = outline[Math.floor(n / 4)]!.x * 0.25;
+    positions[c1 * 3 + 1] = outline[Math.floor(n / 4)]!.y * 0.25;
+    positions[c1 * 3 + 2] = z;
+
+    const indices: number[] = [];
+    for (let i = 0; i < 4; i++) {
+        indices.push(c0, i, i + 1);
+    }
+    indices.push(c0, 4, 5, c0, 5, c1);
+    for (let i = 5; i < n; i++) {
+        indices.push(c1, i, (i + 1) % n);
+    }
+    indices.push(c1, 0, c0);
+
+    const out = new BufferGeometry();
+    out.setAttribute("position", new BufferAttribute(positions, 3));
+    out.setIndex(indices);
+    out.computeVertexNormals();
+    return out;
+}
+
 /** Coarse foot-like outline — 16 vertices, edges up to ~30 mm (mimics real stock GLB). */
 function coarseFootOutline(): Vector3[] {
     const ctrl: Array<[number, number]> = [
@@ -291,45 +326,37 @@ describe("mesh-close — realistic orthotic integration", () => {
     });
 
     test("bottom mesh indices are globally offset in merged buffer", () => {
-        const circle = (n: number): Vector3[] =>
-            Array.from({ length: n }, (_, i) => {
-                const a = (i / n) * Math.PI * 2;
-                return new Vector3(Math.cos(a) * 50, Math.sin(a) * 50, 0);
-            });
-        const outline10 = circle(10);
-        const outline12 = circle(12);
-        const outline10z = outline10.map((p) => new Vector3(p.x, p.y, 12));
-        const outline12z = outline12.map((p) => new Vector3(p.x, p.y, 0));
+        const outline16 = coarseFootOutline();
 
-        const top = buildCoarseOpenShell(outline10, 12);
-        const bottom = buildCoarseOpenShell(outline12, 0);
+        const top = buildCoarseOpenShell(outline16, 12);
+        const bottom = buildCoarseOpenShellWithInterior(outline16, 0);
+        const topCount = top.getAttribute("position").count;
+        const bottomCount = bottom.getAttribute("position").count;
+        expect(topCount).toBe(16);
+        expect(bottomCount).toBe(18);
+        expect(topCount).not.toBe(bottomCount);
+        expect(validateManifold(top).openEdges).toBe(16);
+        expect(validateManifold(bottom).openEdges).toBe(16);
+
         const raw = mergeTopBottomShells(top, bottom);
+        expect(raw.userData.topVertexCount).toBe(topCount);
 
-        const topLoop = resampleLoopToCount(outline10z, 8);
-        const bottomLoop = resampleLoopToCount(outline12z, 8);
-        const bridge = generateBridgeStrip(topLoop, bottomLoop);
-        const { geometry: merged, rimBottomIndices } = mergeGeometriesWithWeldedBridge(
-            raw,
-            topLoop,
-            bottomLoop,
-            bridge,
-            outline10z,
-            outline12z,
-            outline10.map((_, i) => i),
-            outline12.map((_, i) => i),
-            10,
-            12,
-        );
+        const result = closeMeshPerimeter(raw);
+        const totalVerts = result.geometry.getAttribute("position").count;
 
-        const totalVerts = merged.getAttribute("position").count;
-        for (const vi of rimBottomIndices) {
-            expect(vi).toBeGreaterThanOrEqual(10);
+        for (const vi of result.weldBottomIndices) {
+            expect(vi).toBeGreaterThanOrEqual(topCount);
             expect(vi).toBeLessThan(totalVerts);
         }
-        expect(rimBottomIndices[0]).toBeGreaterThanOrEqual(10);
+        expect(result.weldBottomIndices[0]).toBeGreaterThanOrEqual(topCount);
+        expect(result.report.eulerCharacteristic).toBe(2);
+        expect(result.report.isWatertight).toBe(true);
+        expect(result.report.openEdges).toBe(0);
+        expect(result.report.nonManifoldEdges).toBe(0);
 
-        raw.dispose();
-        merged.dispose();
+        top.dispose();
+        bottom.dispose();
+        result.geometry.dispose();
     });
 
     // PRODUCTION BASELINE (recorded 2026-06-13 commit 100611f6)
