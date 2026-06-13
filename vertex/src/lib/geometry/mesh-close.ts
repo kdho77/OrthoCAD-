@@ -38,6 +38,21 @@ export class MeshNotWatertightError extends Error {
     }
 }
 
+/** Thrown when a shell perimeter cannot be resolved to one continuous loop. */
+export class BoundaryFragmentedError extends Error {
+    readonly fragmentCount: number;
+    readonly shell: "top" | "bottom";
+
+    constructor(shell: "top" | "bottom", fragmentCount: number) {
+        super(
+            `${shell} mesh boundary has ${fragmentCount} fragments. Merge sub-meshes before export.`,
+        );
+        this.name = "BoundaryFragmentedError";
+        this.fragmentCount = fragmentCount;
+        this.shell = shell;
+    }
+}
+
 export interface ManifoldValidationReport extends ManifoldReport {
     edgeCount: number;
     eulerCharacteristic: number;
@@ -50,6 +65,9 @@ export interface CloseMeshResult {
     bridgeTriangleCount: number;
     smoothingIterations: number;
     rimHeightsMm: number[];
+    topLoop: Vector3[];
+    bottomLoop: Vector3[];
+    seamTopIndices: number[];
 }
 
 const QUANT = 1e4;
@@ -492,6 +510,68 @@ function removeSeamCapFaces(geometry: BufferGeometry): BufferGeometry {
     return out;
 }
 
+function buildVertexAdjacency(geometry: BufferGeometry): number[][] {
+    const index = geometry.getIndex();
+    const pos = geometry.getAttribute("position");
+    const count = pos.count;
+    const adj: Set<number>[] = Array.from({ length: count }, () => new Set<number>());
+    if (!index) return adj.map((s) => Array.from(s));
+    for (let i = 0; i < index.count; i += 3) {
+        const a = index.getX(i);
+        const b = index.getX(i + 1);
+        const c = index.getX(i + 2);
+        adj[a]!.add(b).add(c);
+        adj[b]!.add(a).add(c);
+        adj[c]!.add(a).add(b);
+    }
+    return adj.map((s) => Array.from(s));
+}
+
+/** Order seam vertices into a ring following mesh adjacency. */
+function orderSeamRingIndices(geometry: BufferGeometry, candidates: number[]): number[] {
+    const unique = Array.from(new Set(candidates));
+    if (unique.length < 3) return unique;
+    const candidateSet = new Set(unique);
+    const adj = buildVertexAdjacency(geometry);
+
+    const ring: number[] = [unique[0]!];
+    const used = new Set<number>([unique[0]!]);
+    while (ring.length < unique.length) {
+        const cur = ring[ring.length - 1]!;
+        const next = adj[cur]!.find((n) => candidateSet.has(n) && !used.has(n));
+        if (next === undefined) break;
+        ring.push(next);
+        used.add(next);
+    }
+    return ring;
+}
+
+/** Laplacian-smooth vertex normals along the seam ring (positions unchanged). */
+function smoothSeamVertexNormals(geometry: BufferGeometry, ring: number[], iterations = 2): void {
+    const nor = geometry.getAttribute("normal");
+    if (!nor || ring.length < 3) return;
+    const arr = nor.array as Float32Array;
+    for (let it = 0; it < iterations; it++) {
+        const next = new Float32Array(arr.length);
+        next.set(arr);
+        for (let i = 0; i < ring.length; i++) {
+            const vi = ring[i]!;
+            const prev = ring[(i - 1 + ring.length) % ring.length]!;
+            const nxt = ring[(i + 1) % ring.length]!;
+            const avg = new Vector3(
+                (arr[prev * 3]! + arr[vi * 3]! + arr[nxt * 3]!) / 3,
+                (arr[prev * 3 + 1]! + arr[vi * 3 + 1]! + arr[nxt * 3 + 1]!) / 3,
+                (arr[prev * 3 + 2]! + arr[vi * 3 + 2]! + arr[nxt * 3 + 2]!) / 3,
+            ).normalize();
+            next[vi * 3] = avg.x;
+            next[vi * 3 + 1] = avg.y;
+            next[vi * 3 + 2] = avg.z;
+        }
+        arr.set(next);
+    }
+    nor.needsUpdate = true;
+}
+
 function findVertexByPosition(geometry: BufferGeometry, target: Vector3, toleranceMm = 0.05): number {
     const pos = geometry.getAttribute("position");
     const key = quantKey(target.x, target.y, target.z);
@@ -644,32 +724,22 @@ export function validateManifold(geometry: BufferGeometry): ManifoldValidationRe
     };
 }
 
-function recomputeNormalsNearBridge(geometry: BufferGeometry, bridgePositions: number[], topCount: number): void {
+function recomputeNormalsNearSeam(
+    geometry: BufferGeometry,
+    topLoop: Vector3[],
+    bottomLoop: Vector3[],
+): void {
     const pos = geometry.getAttribute("position");
     const index = geometry.getIndex();
     if (!index) return;
 
-    const bridgeVerts: Vector3[] = [];
-    for (let i = 0; i < topCount; i++) {
-        bridgeVerts.push(
-            new Vector3(bridgePositions[i * 3]!, bridgePositions[i * 3 + 1]!, bridgePositions[i * 3 + 2]!),
-        );
-    }
-
     const near = new Set<number>();
-    const r2 = NORMAL_RECOMPUTE_RADIUS_MM * NORMAL_RECOMPUTE_RADIUS_MM;
     for (let vi = 0; vi < pos.count; vi++) {
-        const vx = pos.getX(vi);
-        const vy = pos.getY(vi);
-        const vz = pos.getZ(vi);
-        for (const bv of bridgeVerts) {
-            const dx = vx - bv.x;
-            const dy = vy - bv.y;
-            const dz = vz - bv.z;
-            if (dx * dx + dy * dy + dz * dz <= r2) {
-                near.add(vi);
-                break;
-            }
+        const p = new Vector3(pos.getX(vi), pos.getY(vi), pos.getZ(vi));
+        const dTop = distancePointToLoop(p, topLoop);
+        const dBottom = distancePointToLoop(p, bottomLoop);
+        if (dTop <= NORMAL_RECOMPUTE_RADIUS_MM || dBottom <= NORMAL_RECOMPUTE_RADIUS_MM) {
+            near.add(vi);
         }
     }
 
@@ -734,19 +804,98 @@ function measureRimHeights(topLoop: Vector3[], bottomLoop: Vector3[], samples = 
     return heights;
 }
 
-function pickTopBottomLoops(loops: Vector3[][]): { top: Vector3[]; bottom: Vector3[] } | null {
-    if (loops.length < 2) return null;
+const FRAGMENT_STITCH_GAP_MM = 1.0;
 
+/** Distance from point P to the closest point on a closed polyline loop. */
+function distancePointToLoop(p: Vector3, loop: Vector3[]): number {
+    let best = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ab = new Vector3().subVectors(b, a);
+        const len2 = ab.lengthSq();
+        if (len2 < 1e-12) {
+            best = Math.min(best, p.distanceTo(a));
+            continue;
+        }
+        const t = Math.max(0, Math.min(1, new Vector3().subVectors(p, a).dot(ab) / len2));
+        const proj = new Vector3().copy(a).addScaledVector(ab, t);
+        best = Math.min(best, p.distanceTo(proj));
+    }
+    return best;
+}
+
+/** Stitch loop fragments whose endpoints are within `maxGapMm`. */
+function stitchNearbyFragments(loops: Vector3[][], maxGapMm = FRAGMENT_STITCH_GAP_MM): Vector3[] | null {
+    if (loops.length === 0) return null;
+    if (loops.length === 1) return loops[0]!;
+
+    const chains = loops.map((loop) => loop.slice());
+    let merged = true;
+    while (merged && chains.length > 1) {
+        merged = false;
+        outer: for (let i = 0; i < chains.length; i++) {
+            for (let j = i + 1; j < chains.length; j++) {
+                const a = chains[i]!;
+                const b = chains[j]!;
+                const pairs: Array<[number, number, number]> = [
+                    [0, 0, a[0]!.distanceTo(b[0]!)],
+                    [0, b.length - 1, a[0]!.distanceTo(b[b.length - 1]!)],
+                    [a.length - 1, 0, a[a.length - 1]!.distanceTo(b[0]!)],
+                    [a.length - 1, b.length - 1, a[a.length - 1]!.distanceTo(b[b.length - 1]!)],
+                ];
+                pairs.sort((x, y) => x[2] - y[2]);
+                const [ai, bi, dist] = pairs[0]!;
+                if (dist > maxGapMm) continue;
+                const reversed = ai === a.length - 1 && bi === 0;
+                const reversedB = bi === b.length - 1 && ai === 0;
+                let next = a.slice();
+                const attach = reversedB ? b.slice().reverse() : b.slice();
+                if (reversed) next = a.slice().reverse();
+                if (ai === next.length - 1) next.push(...attach.slice(1));
+                else next.unshift(...attach.slice(0, -1));
+                chains.splice(j, 1);
+                chains[i] = next;
+                merged = true;
+                break outer;
+            }
+        }
+    }
+
+    if (chains.length !== 1) return null;
+    return chains[0]!;
+}
+
+function groupLoopsByMeanZ(loops: Vector3[][]): { high: Vector3[][]; low: Vector3[][] } {
+    if (loops.length < 2) return { high: loops, low: loops };
     const scored = loops.map((loop) => {
         const c = new Vector3();
         for (const p of loop) c.add(p);
         c.multiplyScalar(1 / loop.length);
-        return { loop, z: c.z, len: loopPerimeterLength(loop) };
+        return { loop, z: c.z };
     });
-
     scored.sort((a, b) => b.z - a.z);
-    const top = scored[0]!.loop;
-    const bottom = scored[scored.length - 1]!.loop;
+    const mid = (scored[0]!.z + scored[scored.length - 1]!.z) / 2;
+    const high: Vector3[][] = [];
+    const low: Vector3[][] = [];
+    for (const s of scored) {
+        if (s.z >= mid) high.push(s.loop);
+        else low.push(s.loop);
+    }
+    return { high, low };
+}
+
+function pickTopBottomLoops(loops: Vector3[][]): { top: Vector3[]; bottom: Vector3[] } | null {
+    if (loops.length < 2) return null;
+
+    const { high, low } = groupLoopsByMeanZ(loops);
+    const top = stitchNearbyFragments(high);
+    const bottom = stitchNearbyFragments(low);
+    if (!top || !bottom) {
+        if (high.length > 1) throw new BoundaryFragmentedError("top", high.length);
+        if (low.length > 1) throw new BoundaryFragmentedError("bottom", low.length);
+        return null;
+    }
     return { top, bottom };
 }
 
@@ -880,6 +1029,9 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
             bridgeTriangleCount: 0,
             smoothingIterations: 0,
             rimHeightsMm: [],
+            topLoop: [],
+            bottomLoop: [],
+            seamTopIndices: [],
         };
     }
 
@@ -932,7 +1084,13 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
 
     const merged = mergeGeometriesWithWeldedBridge(working, topLoop, bottomLoop, bridge);
     if (disposed) working.dispose();
-    recomputeNormalsNearBridge(merged, bridge.positions, targetN);
+    const seamTopIndices = orderSeamRingIndices(
+        merged,
+        topLoop.map((p) => findVertexByPosition(merged, p, 5.0)).filter((i) => i >= 0),
+    );
+    merged.computeVertexNormals();
+    recomputeNormalsNearSeam(merged, topLoop, bottomLoop);
+    smoothSeamVertexNormals(merged, seamTopIndices, 2);
     merged.computeBoundingBox();
     merged.computeBoundingSphere();
 
@@ -956,6 +1114,9 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
         bridgeTriangleCount: bridge.triangleCount,
         smoothingIterations: BRIDGE_SMOOTH_ITERATIONS,
         rimHeightsMm,
+        topLoop,
+        bottomLoop,
+        seamTopIndices,
     };
 }
 
@@ -980,4 +1141,92 @@ export function ensureWatertightForExport(geometry: BufferGeometry): BufferGeome
         result.geometry.userData = { ...geometry.userData };
     }
     return result.geometry;
+}
+
+/** Max angle between adjacent vertex normals along the welded seam ring (shading smoothness proxy). */
+export function maxSeamVertexNormalDiscontinuityDeg(
+    geometry: BufferGeometry,
+    seamTopIndices: number[],
+): number {
+    const nor = geometry.getAttribute("normal");
+    if (!nor || seamTopIndices.length < 2) return 0;
+
+    let maxDeg = 0;
+    for (let i = 0; i < seamTopIndices.length; i++) {
+        const a = seamTopIndices[i]!;
+        const b = seamTopIndices[(i + 1) % seamTopIndices.length]!;
+        const na = new Vector3(nor.getX(a), nor.getY(a), nor.getZ(a)).normalize();
+        const nb = new Vector3(nor.getX(b), nor.getY(b), nor.getZ(b)).normalize();
+        const dot = Math.max(-1, Math.min(1, na.dot(nb)));
+        maxDeg = Math.max(maxDeg, (Math.acos(dot) * 180) / Math.PI);
+    }
+    return maxDeg;
+}
+
+/** Max XY distance from bridge midpoint vertices to the perimeter loop (clinical guard). */
+export function maxBridgeMidpointDistanceFromPerimeterMm(
+    geometry: BufferGeometry,
+    topLoop: Vector3[],
+    bottomLoop: Vector3[],
+): number {
+    const pos = geometry.getAttribute("position");
+    let maxD = 0;
+    for (let i = 0; i < pos.count; i++) {
+        const p = new Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+        const dTop = distancePointToLoop(p, topLoop);
+        const dBot = distancePointToLoop(p, bottomLoop);
+        if (dTop > 0.5 && dBot > 0.5) continue;
+        const zTop = topLoop[0] ? topLoop.reduce((s, v, j) => {
+            const d = Math.hypot(v.x - p.x, v.y - p.y);
+            return d < Math.hypot(topLoop[s]!.x - p.x, topLoop[s]!.y - p.y) ? j : s;
+        }, 0) : 0;
+        const zLo = bottomLoop[zTop]?.z ?? 0;
+        const zHi = topLoop[zTop]?.z ?? p.z;
+        if (p.z <= zLo + 0.05 || p.z >= zHi - 0.05) continue;
+        maxD = Math.max(maxD, Math.min(dTop, dBot));
+    }
+    return maxD;
+}
+
+/** True when bridge-wall face normals point outward from mesh centroid. */
+export function bridgeNormalsPointOutward(geometry: BufferGeometry, topLoop: Vector3[], bottomLoop: Vector3[]): boolean {
+    const pos = geometry.getAttribute("position");
+    const index = geometry.getIndex();
+    if (!index) return true;
+
+    const centroid = new Vector3();
+    for (const p of topLoop) centroid.add(p);
+    for (const p of bottomLoop) centroid.add(p);
+    centroid.multiplyScalar(1 / (topLoop.length + bottomLoop.length));
+
+    const isBridgeWallTri = (i0: number, i1: number, i2: number): boolean => {
+        const p0 = new Vector3(pos.getX(i0), pos.getY(i0), pos.getZ(i0));
+        const p1 = new Vector3(pos.getX(i1), pos.getY(i1), pos.getZ(i1));
+        const p2 = new Vector3(pos.getX(i2), pos.getY(i2), pos.getZ(i2));
+        const nearTop = [p0, p1, p2].some((p) => distancePointToLoop(p, topLoop) < 0.75);
+        const nearBot = [p0, p1, p2].some((p) => distancePointToLoop(p, bottomLoop) < 0.75);
+        const spans = nearTop && nearBot;
+        const mid = [p0, p1, p2].some((p) => {
+            const dT = distancePointToLoop(p, topLoop);
+            const dB = distancePointToLoop(p, bottomLoop);
+            return dT < 0.75 && dB < 0.75 && p.z > bottomLoop[0]!.z + 0.1 && p.z < topLoop[0]!.z - 0.1;
+        });
+        return spans || mid;
+    };
+
+    const triN = index.count / 3;
+    for (let t = 0; t < triN; t++) {
+        const i0 = index.getX(t * 3);
+        const i1 = index.getX(t * 3 + 1);
+        const i2 = index.getX(t * 3 + 2);
+        if (!isBridgeWallTri(i0, i1, i2)) continue;
+        const a = new Vector3(pos.getX(i0), pos.getY(i0), pos.getZ(i0));
+        const b = new Vector3(pos.getX(i1), pos.getY(i1), pos.getZ(i1));
+        const c = new Vector3(pos.getX(i2), pos.getY(i2), pos.getZ(i2));
+        const center = new Vector3().addVectors(a, b).add(c).multiplyScalar(1 / 3);
+        const n = new Vector3().subVectors(b, a).cross(new Vector3().subVectors(c, a));
+        const outward = new Vector3().subVectors(center, centroid);
+        if (n.dot(outward) <= 0) return false;
+    }
+    return true;
 }
