@@ -124,6 +124,58 @@ function concatGeometries(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
 }
 
 /**
+ * Weld each part independently, then concatenate with explicit vertex/index offsets
+ * so the merged buffer layout is always [top vertices][bottom vertices] — required
+ * for bridge rim-contact index translation during mesh closure.
+ */
+function concatIndexedWeldedParts(parts: THREE.BufferGeometry[]): {
+    geometry: THREE.BufferGeometry;
+    topVertexCount: number;
+} {
+    const welded: THREE.BufferGeometry[] = [];
+    for (const p of parts) {
+        try {
+            const w = mergeVertices(p);
+            welded.push(w === p ? p : w);
+            if (w !== p) p.dispose();
+        } catch {
+            welded.push(p);
+        }
+    }
+
+    let totalVerts = 0;
+    for (const p of welded) totalVerts += p.getAttribute("position").count;
+
+    const positions = new Float32Array(totalVerts * 3);
+    const normals = new Float32Array(totalVerts * 3);
+    const indices: number[] = [];
+    let vertOffset = 0;
+
+    for (const p of welded) {
+        const pos = p.getAttribute("position");
+        const nor = p.getAttribute("normal");
+        positions.set(pos.array as Float32Array, vertOffset * 3);
+        if (nor) normals.set(nor.array as Float32Array, vertOffset * 3);
+
+        const idx = p.getIndex();
+        if (idx) {
+            for (let i = 0; i < idx.count; i++) indices.push(idx.getX(i) + vertOffset);
+        } else {
+            for (let i = 0; i < pos.count; i++) indices.push(i + vertOffset);
+        }
+        vertOffset += pos.count;
+    }
+
+    for (const p of welded) p.dispose();
+
+    const out = new THREE.BufferGeometry();
+    out.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    out.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+    out.setIndex(indices);
+    return { geometry: out, topVertexCount: welded[0]!.getAttribute("position").count };
+}
+
+/**
  * Merge every mesh inside a loaded GLB group into a single geometry, baking each
  * mesh's world transform. Bases authored as separate "Top" / "Bottom" meshes are
  * combined into one surface so the Base + Modifier deformation treats the whole
@@ -150,18 +202,24 @@ export function extractMergedGeometry(group: THREE.Group): MergedGlbGeometry | n
     if (parts.length === 0) return null;
 
     const meshCount = parts.length;
-    const combined = meshCount === 1 ? parts[0]! : concatGeometries(parts);
-    if (meshCount > 1) {
+    let geometry: THREE.BufferGeometry;
+    let topVertexCount = 0;
+
+    if (meshCount === 1) {
+        const single = parts[0]!;
+        try {
+            geometry = mergeVertices(single);
+            if (geometry !== single) single.dispose();
+        } catch {
+            geometry = single;
+        }
+    } else {
+        const merged = concatIndexedWeldedParts(parts);
+        geometry = merged.geometry;
+        topVertexCount = merged.topVertexCount;
         for (const p of parts) p.dispose();
     }
 
-    let geometry: THREE.BufferGeometry;
-    try {
-        geometry = mergeVertices(combined);
-        if (geometry !== combined) combined.dispose();
-    } catch {
-        geometry = combined;
-    }
     geometry.computeVertexNormals();
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
@@ -173,6 +231,7 @@ export function extractMergedGeometry(group: THREE.Group): MergedGlbGeometry | n
         geometry.userData = geometry.userData || {};
         (geometry.userData as any).isMultiMeshBase = true;
         (geometry.userData as any).sourceMeshNames = meshNames;
+        (geometry.userData as any).topVertexCount = topVertexCount;
     }
 
     return { geometry, meshCount, meshNames };
