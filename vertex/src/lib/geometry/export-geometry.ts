@@ -4,7 +4,6 @@
 import type { BufferGeometry } from "three";
 import { ensureKernelReady, getKernel, isAuthoritativeKernel, isKernelInitFailed } from "@/lib/chili3d/kernel";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
-import { sewGlbInputDiagnostics } from "@/lib/geometry/base-occt";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
@@ -115,23 +114,6 @@ async function buildModifiedBaseGeometry(design: DesignState, side: Side): Promi
     }
 }
 
-/** Load raw base GLB geometry without modifier deformation (for OCCT sew input). */
-async function loadRawBaseGeometry(design: DesignState, side: Side): Promise<BufferGeometry | null> {
-    const base = getDesignBase(design, side);
-    if (!base) return null;
-    // sealBottomSlits:false — never block the main thread on large stock bottoms (PR #84).
-    return loadBaseGeometry(base, { sealBottomSlits: false });
-}
-
-function logPreSewDiagnostics(geometry: BufferGeometry): void {
-    if (typeof console === "undefined") return;
-    const diag = sewGlbInputDiagnostics(geometry);
-    console.log(
-        `[EXPORT] pre-sew geometry: verts=${diag.vertexCount} tris=${diag.triangleCount} ` +
-            `openEdges=${diag.openEdges} multiMesh=${diag.isMultiMeshBase} topVerts=${diag.topVertexCount}`,
-    );
-}
-
 function logMeshClosePath(geometry: BufferGeometry): void {
     if (typeof console === "undefined") return;
     const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
@@ -179,9 +161,8 @@ export async function exportManufacturingStlAttempt(
 }
 
 /**
- * PATH A — manufacturing STL from loaded base via buildFromBase (viewer authoritative path).
- * Exports the OCCT solid when closed; otherwise the same deformation mesh the viewer displays.
- * Never runs sealBottomSlits or mesh-close (both block the main thread on Default.glb).
+ * PATH A — manufacturing STL via buildInsoleSolid (same parametric path as the viewer OCCT badge).
+ * Never loads GLB mesh, sealBottomSlits, or mesh-close on the main thread.
  */
 async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise<ArrayBuffer> {
     if (isKernelInitFailed()) {
@@ -193,45 +174,34 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
         throw new ExportKernelUnavailableError();
     }
 
-    const raw = await loadRawBaseGeometry(design, side);
-    if (!raw) {
-        throw new ExportGeometryNotReadyError();
+    const kernel = getKernel();
+    if (!kernel.ready) {
+        throw new ExportKernelUnavailableError();
     }
 
+    const params = insoleParamsFromDesign(design, side, "full");
+    const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
+
     try {
-        const effThickness = design.paired
-            ? side === "left"
-                ? design.paired.leftThicknessMm
-                : design.paired.rightThicknessMm
-            : design.thicknessMm;
-        const field = {
-            ...baseModifierFieldAuthoritative(design, side, effThickness),
-            method: design.method,
-        };
-        const kernel = getKernel();
-        if (!kernel.ready) {
-            throw new ExportKernelUnavailableError();
-        }
-
-        logPreSewDiagnostics(raw);
-
-        const built = kernel.buildFromBase(raw, field, 2);
+        const solid = kernel.buildInsoleSolid({ ...params, trimline });
         try {
-            const stl = kernel.exportSTL(built.geometry);
-            if (built.manifold.occtClosed || built.manifold.isWatertight) {
+            if (!solid.manifold.occtClosed && !solid.manifold.isWatertight) {
                 if (typeof console !== "undefined") {
-                    console.log("[EXPORT] OCCT sew path: success (buildFromBase)");
+                    console.warn(
+                        `[EXPORT] buildInsoleSolid not watertight: openEdges=${solid.manifold.openEdges} tris=${solid.manifold.triangleCount}`,
+                    );
                 }
-            } else if (typeof console !== "undefined") {
-                console.log("[EXPORT] buildFromBase deformation mesh exported (viewer parity, no mesh-close)");
+                throw new ExportKernelUnavailableError();
             }
-            return stl;
+            if (typeof console !== "undefined") {
+                console.log("[EXPORT] OCCT sew path: success (buildInsoleSolid)");
+            }
+            return kernel.exportSTL(solid.geometry);
         } finally {
-            built.geometry.dispose();
+            solid.geometry.dispose();
         }
     } catch (err) {
         if (
-            err instanceof ExportGeometryNotReadyError ||
             err instanceof ExportKernelUnavailableError ||
             err instanceof ExportTimeoutError
         ) {
@@ -239,11 +209,9 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
         }
         if (typeof console !== "undefined") {
             const reason = err instanceof Error ? err.message : String(err);
-            console.warn(`[EXPORT] buildFromBase export failed: ${reason}`);
+            console.warn(`[EXPORT] buildInsoleSolid export failed: ${reason}`);
         }
         throw new ExportKernelUnavailableError();
-    } finally {
-        raw.dispose();
     }
 }
 
@@ -270,32 +238,9 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
     const run = async (): Promise<ArrayBuffer> => {
         const { design } = useDesignStore.getState();
         const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
-        const hasBase = Boolean(getDesignBase(design, side));
 
         if (exportMode === "manufacturing") {
-            if (hasBase) {
-                return tryOcctManufacturingStl(design, side);
-            }
-
-            // Parametric OCCT loft — only when no loaded base GLB is configured.
-            if (isAuthoritativeKernel()) {
-                const params = insoleParamsFromDesign(design, side, "full");
-                const trimline =
-                    getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
-                try {
-                    const solid = getKernel().buildInsoleSolid({ ...params, trimline });
-                    if (solid.manifold.occtClosed || solid.manifold.isWatertight) {
-                        try {
-                            return exportStlFromGeometry(solid.geometry);
-                        } finally {
-                            solid.geometry.dispose();
-                        }
-                    }
-                    solid.geometry.dispose();
-                } catch {
-                    // fall through to mesh-close
-                }
-            }
+            return tryOcctManufacturingStl(design, side);
         }
 
         let geometry = await buildExportGeometry(side);
@@ -385,23 +330,16 @@ export async function buildExportSolid(
     const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
 
     if (exportMode === "manufacturing" && isAuthoritativeKernel()) {
-        const raw = await loadRawBaseGeometry(design, side);
-        if (raw) {
-            try {
-                const effThickness = design.paired
-                    ? side === "left"
-                        ? design.paired.leftThicknessMm
-                        : design.paired.rightThicknessMm
-                    : design.thicknessMm;
-                const field = baseModifierFieldAuthoritative(design, side, effThickness);
-                const result = getKernel().buildFromBase(raw, field, 2);
-                if (result.manifold.occtClosed || result.manifold.isWatertight) {
-                    return result.geometry;
-                }
-                result.geometry.dispose();
-            } finally {
-                raw.dispose();
+        const params = insoleParamsFromDesign(design, side, "full");
+        const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
+        try {
+            const solid = getKernel().buildInsoleSolid({ ...params, trimline });
+            if (solid.manifold.occtClosed || solid.manifold.isWatertight) {
+                return solid.geometry;
             }
+            solid.geometry.dispose();
+        } catch {
+            // fall through to GLB / trimline mesh paths
         }
     }
 

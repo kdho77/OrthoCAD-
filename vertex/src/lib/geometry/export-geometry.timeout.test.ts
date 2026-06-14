@@ -6,7 +6,11 @@ import { BufferAttribute, BufferGeometry } from "three";
 import type { DesignState } from "@/types";
 
 const mockEnsureKernelReady = rs.fn<() => Promise<boolean>>();
+const mockExportSTL = rs.fn<() => ArrayBuffer>();
 const mockLoadBaseGeometry = rs.fn<() => Promise<BufferGeometry | null>>();
+const mockBuildInsoleSolid = rs.fn<
+    () => { geometry: BufferGeometry; manifold: { isWatertight: boolean; occtClosed?: boolean } }
+>();
 const mockBuildFromBase = rs.fn<
     () => { geometry: BufferGeometry; manifold: { isWatertight: boolean; occtClosed?: boolean } }
 >();
@@ -35,9 +39,9 @@ rs.mock("@/lib/chili3d/kernel", () => ({
         name: "opencascade-wasm",
         tier: "authoritative",
         ready: true,
-        exportSTL: () => new ArrayBuffer(84),
+        exportSTL: (geometry: BufferGeometry) => mockExportSTL(geometry),
         buildInsole: rs.fn(),
-        buildInsoleSolid: rs.fn(),
+        buildInsoleSolid: (...args: unknown[]) => mockBuildInsoleSolid(...(args as [])),
         buildFromBase: mockBuildFromBase,
     }),
     isAuthoritativeKernel: () => true,
@@ -97,13 +101,16 @@ describe("export-geometry timeout and seal guards", () => {
 
     beforeEach(() => {
         mockEnsureKernelReady.mockReset();
+        mockExportSTL.mockReset();
         mockLoadBaseGeometry.mockReset();
+        mockBuildInsoleSolid.mockReset();
         mockBuildFromBase.mockReset();
         mockGetDesignBase.mockReset();
         mockBaseModifierField.mockReset();
         mockSealInternalSlits.mockReset();
 
         mockEnsureKernelReady.mockResolvedValue(true);
+        mockExportSTL.mockReturnValue(new ArrayBuffer(128));
         mockGetDesignBase.mockReturnValue(mockDesign.bases?.left ?? null);
         mockBaseModifierField.mockReturnValue({
             side: "left",
@@ -117,20 +124,19 @@ describe("export-geometry timeout and seal guards", () => {
             trimline: null,
         });
         mockLoadBaseGeometry.mockImplementation(async () => makeTestGeometry());
-        mockBuildFromBase.mockImplementation(() => ({
+        mockBuildInsoleSolid.mockImplementation(() => ({
             geometry: makeTestGeometry(),
-            manifold: { isWatertight: false, occtClosed: false },
+            manifold: { isWatertight: true, occtClosed: true },
         }));
         mockSealInternalSlits.mockImplementation((geometry) => geometry);
     });
 
-    test("manufacturing export never requests sealBottomSlits or calls sealInternalSlits", async () => {
+    test("manufacturing export never loads GLB or calls sealInternalSlits", async () => {
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         await buildExportStl("left", { exportMode: "manufacturing" });
 
-        const loadCalls = mockLoadBaseGeometry.mock.calls as Array<[unknown, { sealBottomSlits?: boolean }?]>;
-        expect(loadCalls.length).toBeGreaterThan(0);
-        expect(loadCalls.every(([, opts]) => opts?.sealBottomSlits !== true)).toBe(true);
+        expect(mockLoadBaseGeometry).not.toHaveBeenCalled();
+        expect(mockBuildFromBase).not.toHaveBeenCalled();
         expect(mockSealInternalSlits).not.toHaveBeenCalled();
     });
 
@@ -139,10 +145,25 @@ describe("export-geometry timeout and seal guards", () => {
             "@/lib/geometry/export-geometry"
         );
         setExportTimeoutMsForTesting(25);
-        mockLoadBaseGeometry.mockImplementation(() => new Promise(() => undefined));
+        mockEnsureKernelReady.mockImplementation(() => new Promise(() => undefined));
 
         await expect(buildExportStl("left", { exportMode: "manufacturing" })).rejects.toThrow(
             ExportTimeoutError,
         );
+    });
+
+    test("export routes buildInsoleSolid solid geometry to exportSTL", async () => {
+        const solidGeometry = makeTestGeometry();
+        mockBuildInsoleSolid.mockImplementation(() => ({
+            geometry: solidGeometry,
+            manifold: { isWatertight: true, occtClosed: true, triangleCount: 1975 },
+        }));
+
+        const { buildExportStl } = await import("@/lib/geometry/export-geometry");
+        const result = await buildExportStl("left", { exportMode: "manufacturing" });
+
+        expect(mockBuildInsoleSolid).toHaveBeenCalledTimes(1);
+        expect(mockExportSTL).toHaveBeenCalledWith(solidGeometry);
+        expect(result.byteLength).toBeGreaterThan(0);
     });
 });
