@@ -33,6 +33,7 @@ rs.mock("@/lib/chili3d/kernel", () => ({
     getKernel: () => ({
         name: "opencascade-wasm",
         tier: "authoritative",
+        ready: true,
         exportManufacturingStlFromBase: mockExportManufacturingStlFromBase,
         exportSTL: () => new ArrayBuffer(84),
         buildInsole: rs.fn(),

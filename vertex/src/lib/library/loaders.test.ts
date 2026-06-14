@@ -123,6 +123,20 @@ describe("GLB loaders — multi-mesh base support", () => {
                 .isInterleavedBufferAttribute,
         ).toBeFalsy();
     });
+
+    test("sealBottomSlits merge keeps normal buffer aligned with position buffer", () => {
+        const group = makeGroup([
+            { name: "Top", geo: new THREE.BoxGeometry(90, 260, 5), position: [0, 0, 10] },
+            { name: "Bottom", geo: new THREE.BoxGeometry(90, 260, 5), position: [0, 0, 0] },
+        ]);
+
+        const merged = extractMergedGeometry(group, { sealBottomSlits: true });
+        expect(merged).not.toBeNull();
+        const pos = merged!.geometry.getAttribute("position");
+        const nor = merged!.geometry.getAttribute("normal");
+        expect(nor).toBeTruthy();
+        expect(nor.count).toBe(pos.count);
+    });
 });
 
 describe("GLB loaders — base mirroring", () => {

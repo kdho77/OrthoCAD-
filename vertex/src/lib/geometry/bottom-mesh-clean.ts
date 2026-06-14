@@ -246,6 +246,7 @@ export function sealInternalSlits(geometry: BufferGeometry): BufferGeometry {
             `[BOTTOM-CLEAN] open edges before=${before} after=${after} outerChainVerts=${outer.length}`,
         );
     }
+    working.computeVertexNormals();
     return working;
 }
 
