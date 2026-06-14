@@ -9,7 +9,10 @@ import {
     MeshNotWatertightError,
     validateManifold,
 } from "@/lib/geometry/mesh-close";
+import { sealInternalSlitsSafe } from "@/lib/geometry/bottom-mesh-clean";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
+import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import * as THREE from "three";
 
 const DEFAULT_GLB_URL =
     "https://wstneucimlemaokoyjwh.supabase.co/storage/v1/object/public/stock-bases/Templates/Default.glb";
@@ -46,5 +49,26 @@ describe("Default.glb stock base closure", () => {
         expect(() => ensureWatertightForExport(raw.clone())).toThrow(MeshNotWatertightError);
 
         raw.dispose();
+    });
+
+    test("sealInternalSlitsSafe completes on Default.glb bottom mesh (benchmark)", async () => {
+        const group = await loadGlbFromBuffer(await loadDefaultGlbBuffer());
+        const parts: THREE.BufferGeometry[] = [];
+        group.traverse((obj) => {
+            if (obj instanceof THREE.Mesh && obj.geometry) {
+                parts.push(obj.geometry.clone());
+            }
+        });
+        expect(parts.length).toBeGreaterThanOrEqual(2);
+        let bottomGeometry = mergeVertices(parts[1]!);
+        if (bottomGeometry !== parts[1]) parts[1]!.dispose();
+
+        const start = performance.now();
+        await sealInternalSlitsSafe(bottomGeometry);
+        const elapsed = performance.now() - start;
+        console.log("[BENCH] sealInternalSlitsSafe elapsed:", elapsed, "ms");
+        expect(elapsed).toBeLessThan(5000);
+
+        bottomGeometry.dispose();
     });
 });
