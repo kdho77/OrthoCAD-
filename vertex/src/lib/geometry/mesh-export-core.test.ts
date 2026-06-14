@@ -4,7 +4,7 @@
 import { describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry, MeshStandardMaterial, BoxGeometry, Group, Mesh } from "three";
 import { extractMergedGeometry } from "@/lib/library/loaders";
-import { prepareReducedExportGeometry } from "@/lib/geometry/mesh-close";
+import { MeshNotWatertightError, prepareReducedExportGeometry } from "@/lib/geometry/mesh-close";
 import { closeAndSerializeExportPayload } from "@/lib/geometry/mesh-export-core";
 
 describe("mesh-export-core", () => {
@@ -87,5 +87,26 @@ describe("mesh-export-core", () => {
         bottom.geometry.dispose();
         (top.material as MeshStandardMaterial).dispose();
         (bottom.material as MeshStandardMaterial).dispose();
+    });
+
+    test("closeAndSerializeExportPayload rejects inverted height axis before bridge weld", () => {
+        const geometry = new BufferGeometry();
+        geometry.setAttribute(
+            "position",
+            new BufferAttribute(
+                new Float32Array([
+                    0, 10, 0, 1, 10, 0, 0, 10, 1, 0, 20, 0, 1, 20, 0, 0, 20, 1,
+                ]),
+                3,
+            ),
+        );
+        geometry.setIndex([0, 1, 2, 3, 5, 4]);
+        const positions = new Float32Array(geometry.getAttribute("position").array as ArrayLike<number>);
+        const indices = new Uint32Array(geometry.getIndex()!.array as ArrayLike<number>);
+
+        expect(() => closeAndSerializeExportPayload({ positions, indices }, 3)).toThrow(
+            MeshNotWatertightError,
+        );
+        geometry.dispose();
     });
 });

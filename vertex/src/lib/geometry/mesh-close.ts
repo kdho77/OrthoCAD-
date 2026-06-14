@@ -80,6 +80,78 @@ export interface CloseMeshResult {
     weldBottomIndices: number[];
 }
 
+export interface CloseMeshOptions {
+    /** Skip viewer-only steps (normal recompute, cap healing, seam-cap removal) for worker STL export. */
+    exportMode?: boolean;
+}
+
+export type HeightAxis = "x" | "y" | "z";
+
+function coordOnAxis(pos: BufferAttribute, vi: number, axis: HeightAxis): number {
+    if (axis === "y") return pos.getY(vi);
+    if (axis === "z") return pos.getZ(vi);
+    return pos.getX(vi);
+}
+
+/** Pick Y or Z as vertical height from top-shell vertex spread. */
+export function detectHeightAxis(geometry: BufferGeometry, topVertexCount: number): HeightAxis {
+    const pos = geometry.getAttribute("position");
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    let minZ = Number.POSITIVE_INFINITY;
+    let maxZ = Number.NEGATIVE_INFINITY;
+    const n = Math.min(topVertexCount, pos.count);
+    for (let i = 0; i < n; i++) {
+        const y = pos.getY(i);
+        const z = pos.getZ(i);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+        minZ = Math.min(minZ, z);
+        maxZ = Math.max(maxZ, z);
+    }
+    return maxY - minY >= maxZ - minZ ? "y" : "z";
+}
+
+/** Count bottom rim weld indices whose height coordinate is below the top shell max. */
+export function countRimVertsBelowTop(
+    geometry: BufferGeometry,
+    topVertexCount: number,
+    rimIndices: number[],
+    axis: HeightAxis,
+): number {
+    const pos = geometry.getAttribute("position");
+    let topMax = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < topVertexCount; i++) {
+        topMax = Math.max(topMax, coordOnAxis(pos, i, axis));
+    }
+    let below = 0;
+    for (const vi of rimIndices) {
+        if (vi >= topVertexCount && coordOnAxis(pos, vi, axis) < topMax - 0.01) below++;
+    }
+    return below;
+}
+
+/** Abort export when bottom shell sits at/above top shell along the detected height axis. */
+export function validateExportHeightAxis(geometry: BufferGeometry, topVertexCount: number): void {
+    const axis = detectHeightAxis(geometry, topVertexCount);
+    const pos = geometry.getAttribute("position");
+    const total = pos.count;
+    let topMax = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < topVertexCount; i++) {
+        topMax = Math.max(topMax, coordOnAxis(pos, i, axis));
+    }
+    let bottomMin = Number.POSITIVE_INFINITY;
+    for (let i = topVertexCount; i < total; i++) {
+        bottomMin = Math.min(bottomMin, coordOnAxis(pos, i, axis));
+    }
+    if (bottomMin >= topMax - 0.01) {
+        throw new MeshNotWatertightError(
+            `Axis error: bottom rim min${axis}=${bottomMin.toFixed(3)} is not below top max${axis}=${topMax.toFixed(3)}. Check coordinate convention.`,
+            validateManifold(geometry),
+        );
+    }
+}
+
 const QUANT = 1e4;
 
 function quantKey(x: number, y: number, z: number): string {
@@ -1658,14 +1730,30 @@ function resolveMultiMeshBaseLoops(
     return { top: topLoop, bottom: bottomLoop };
 }
 
-function resolveTopBottomLoops(geometry: BufferGeometry): { top: Vector3[]; bottom: Vector3[] } | null {
+function resolveTopBottomLoops(
+    geometry: BufferGeometry,
+    options: CloseMeshOptions = {},
+): { top: Vector3[]; bottom: Vector3[] } | null {
+    const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
+    const storedTop = userData.topVertexCount;
+    const total = geometry.getAttribute("position").count;
+
+    if (
+        options.exportMode &&
+        userData.isMultiMeshBase &&
+        storedTop &&
+        storedTop > 0 &&
+        storedTop < total
+    ) {
+        const multi = resolveMultiMeshBaseLoops(geometry, storedTop);
+        if (multi) return multi;
+    }
+
     const boundaryLoops = extractBoundaryLoops(geometry);
     const fromBoundary = pickTopBottomLoops(boundaryLoops);
     if (fromBoundary) return fromBoundary;
 
-    const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
-    const storedTop = userData.topVertexCount;
-    if (userData.isMultiMeshBase && storedTop && storedTop > 0 && storedTop < geometry.getAttribute("position").count) {
+    if (userData.isMultiMeshBase && storedTop && storedTop > 0 && storedTop < total) {
         const multi = resolveMultiMeshBaseLoops(geometry, storedTop);
         if (multi) return multi;
     }
@@ -1677,12 +1765,17 @@ function resolveTopBottomLoops(geometry: BufferGeometry): { top: Vector3[]; bott
  * Close the perimeter gap between top and bottom shells using explicit boundary
  * stitching (Option B). Returns the input unchanged when already watertight.
  */
-export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
+export function closeMeshPerimeter(geometry: BufferGeometry, options: CloseMeshOptions = {}): CloseMeshResult {
+    const exportMode = options.exportMode ?? false;
     let working = geometry;
     let disposed = false;
 
+    const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
+    const isMultiMeshExport =
+        exportMode && userData.isMultiMeshBase && userData.topVertexCount && userData.topVertexCount > 0;
+
     const precheck = validateManifold(geometry);
-    if (precheck.isWatertight && precheck.eulerCharacteristic === 2) {
+    if (!isMultiMeshExport && precheck.isWatertight && precheck.eulerCharacteristic === 2) {
         return {
             geometry,
             report: precheck,
@@ -1697,15 +1790,14 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
         };
     }
 
-    // Closed Top+Bottom shells hide the seam behind internal cap faces — remove them
-    // so the perimeter becomes an open boundary loop we can stitch.
-    if (precheck.isWatertight && precheck.eulerCharacteristic !== 2) {
+    const skipSeamCapStrip = isMultiMeshExport && precheck.openEdges > 0;
+    if (!skipSeamCapStrip && precheck.isWatertight && precheck.eulerCharacteristic !== 2) {
         working = removeSeamCapFaces(geometry);
         disposed = working !== geometry;
     }
 
     const workingPrecheck = validateManifold(working);
-    const pair = resolveTopBottomLoops(working);
+    const pair = resolveTopBottomLoops(working, options);
     if (!pair) {
         if (disposed) working.dispose();
         throw new MeshNotWatertightError(
@@ -1714,9 +1806,18 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
         );
     }
 
+    if (pair.top.length < 3 || pair.bottom.length < 3) {
+        if (disposed) working.dispose();
+        throw new MeshNotWatertightError(
+            `Bridge weld failed: rim loop is empty (top=${pair.top.length} bottom=${pair.bottom.length})`,
+            workingPrecheck,
+        );
+    }
+
     const storedTopForSlits = (working.userData as { isMultiMeshBase?: boolean; topVertexCount?: number })
         .topVertexCount;
     if (
+        !exportMode &&
         (working.userData as { isMultiMeshBase?: boolean }).isMultiMeshBase &&
         storedTopForSlits &&
         storedTopForSlits > 0
@@ -1789,25 +1890,42 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
         Array.from(new Set(weldTopIndices.filter((i) => i >= 0))),
     );
     merged.computeVertexNormals();
-    recomputeNormalsNearSeam(merged, topLoop, bottomLoop);
-    smoothSeamVertexNormals(merged, seamTopIndices, 2);
+    if (!exportMode) {
+        recomputeNormalsNearSeam(merged, topLoop, bottomLoop);
+        smoothSeamVertexNormals(merged, seamTopIndices, 2);
+    }
     merged.computeBoundingBox();
     merged.computeBoundingSphere();
 
     if (typeof console !== "undefined") {
-        const belowTop = weldBottomIndices.filter((i) => i >= 0 && i < topVertexCount).length;
+        const weldBottomInTopIndexRange = weldBottomIndices.filter(
+            (i) => i >= 0 && i < topVertexCount,
+        ).length;
         const minBot = weldBottomIndices.length > 0 ? Math.min(...weldBottomIndices) : -1;
+        const heightAxis = detectHeightAxis(merged, topVertexCount);
+        const spatialBelowTop = countRimVertsBelowTop(
+            merged,
+            topVertexCount,
+            weldBottomIndices,
+            heightAxis,
+        );
         console.log(
-            `[MESH-CLOSE] pre-validate: weldBottom belowTop=${belowTop} minBotIndex=${minBot} topVertexCount=${topVertexCount}`,
+            `[MESH-CLOSE] pre-validate: weldBottomInTopIndexRange=${weldBottomInTopIndexRange} minBotIndex=${minBot} topVertexCount=${topVertexCount}`,
+        );
+        console.log(
+            `[MESH-CLOSE] belowTop check axis=${heightAxis.toUpperCase()}: ${spatialBelowTop} of ${weldBottomIndices.length}`,
         );
     }
 
     const report = validateManifold(merged);
     if (!report.isWatertight || report.eulerCharacteristic !== 2) {
-        // Cap small leftover slit loops only on moderate meshes — large stock GLB
-        // export uses buildFromBase deformation mesh instead of mesh-close.
         const vertCount = merged.getAttribute("position").count;
-        if (report.openEdges > 0 && report.openEdges <= 4096 && vertCount <= 120_000) {
+        if (
+            !exportMode &&
+            report.openEdges > 0 &&
+            report.openEdges <= 4096 &&
+            vertCount <= 120_000
+        ) {
             capRemainingBoundaryLoops(merged);
             const healed = validateManifold(merged);
             if (healed.isWatertight && healed.eulerCharacteristic === 2) {

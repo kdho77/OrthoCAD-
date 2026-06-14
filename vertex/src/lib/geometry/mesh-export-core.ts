@@ -3,7 +3,11 @@
 
 import type { GeometryBufferPayload } from "@/lib/geometry/geometry-buffer";
 import { payloadToGeometry } from "@/lib/geometry/geometry-buffer";
-import { closeMeshPerimeter, prepareReducedExportGeometry } from "@/lib/geometry/mesh-close";
+import {
+    closeMeshPerimeter,
+    prepareReducedExportGeometry,
+    validateExportHeightAxis,
+} from "@/lib/geometry/mesh-close";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 
 export interface CloseAndSerializeExportResult {
@@ -26,8 +30,17 @@ export function closeAndSerializeExportPayload(
     const { geometry: reduced, bottomRimVertexCount, usedReducedBottom } = prepareReducedExportGeometry(geometry);
     geometry.dispose();
 
+    const reducedTopVc =
+        (reduced.userData as { topVertexCount?: number }).topVertexCount ?? topVertexCount;
+
+    if (usedReducedBottom && bottomRimVertexCount < 3) {
+        reduced.dispose();
+        throw new Error("Bottom rim loop too small to bridge (< 3 vertices)");
+    }
+
     try {
-        const closed = closeMeshPerimeter(reduced);
+        validateExportHeightAxis(reduced, reducedTopVc);
+        const closed = closeMeshPerimeter(reduced, { exportMode: true });
         try {
             const stlBuffer = geometryToBinarySTL(closed.geometry);
             return { stlBuffer, bottomRimVertexCount, usedReducedBottom };
@@ -35,6 +48,6 @@ export function closeAndSerializeExportPayload(
             closed.geometry.dispose();
         }
     } finally {
-        if (reduced !== geometry) reduced.dispose();
+        reduced.dispose();
     }
 }
