@@ -10,6 +10,7 @@ const mockExportManufacturingStlFromBase = rs.fn<() => ArrayBuffer | null>();
 const mockEnsureWatertight = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
 const mockLoadBaseGeometry = rs.fn<() => Promise<BufferGeometry | null>>();
 const mockBuildInsoleSolid = rs.fn<() => never>();
+const mockBuildInsole = rs.fn<() => BufferGeometry>();
 const mockBuildFromBase = rs.fn<() => { geometry: BufferGeometry; manifold: { isWatertight: boolean } }>();
 const mockGetDesignBase = rs.fn<() => unknown>();
 const mockBaseModifierField = rs.fn<() => object>();
@@ -37,7 +38,7 @@ rs.mock("@/lib/chili3d/kernel", () => ({
         ready: true,
         exportManufacturingStlFromBase: mockExportManufacturingStlFromBase,
         exportSTL: () => new ArrayBuffer(84),
-        buildInsole: rs.fn(),
+        buildInsole: mockBuildInsole,
         buildInsoleSolid: mockBuildInsoleSolid,
         buildFromBase: mockBuildFromBase,
     }),
@@ -104,6 +105,7 @@ describe("export-geometry routing", () => {
         mockEnsureWatertight.mockReset();
         mockLoadBaseGeometry.mockReset();
         mockBuildInsoleSolid.mockReset();
+        mockBuildInsole.mockReset();
         mockBuildFromBase.mockReset();
         mockGetDesignBase.mockReset();
         mockBaseModifierField.mockReset();
@@ -124,6 +126,7 @@ describe("export-geometry routing", () => {
         mockBuildInsoleSolid.mockImplementation(() => {
             throw new Error("skip insole solid");
         });
+        mockBuildInsole.mockImplementation(() => makeTestGeometry());
         mockBuildFromBase.mockImplementation(() => ({
             geometry: makeTestGeometry(),
             manifold: { isWatertight: false, occtClosed: false },
@@ -172,5 +175,38 @@ describe("export-geometry routing", () => {
         const { exportManufacturingStlAttempt } = await import("@/lib/geometry/export-geometry");
         const result = await exportManufacturingStlAttempt(mockDesign, "left");
         expect(result).toBeNull();
+    });
+
+    test("export receives merged GLB geometry not procedural base", async () => {
+        const glbGeometry = makeTestGeometry();
+        glbGeometry.userData = { source: "merged-glb" };
+
+        mockExportManufacturingStlFromBase.mockReturnValue(null);
+        mockLoadBaseGeometry.mockResolvedValue(glbGeometry);
+        mockBuildFromBase.mockImplementation(() => ({
+            geometry: glbGeometry,
+            manifold: { isWatertight: true, occtClosed: false },
+        }));
+
+        const { buildExportStl } = await import("@/lib/geometry/export-geometry");
+        await buildExportStl("left", { exportMode: "manufacturing" });
+
+        expect(mockLoadBaseGeometry).toHaveBeenCalled();
+        expect(mockBuildFromBase).toHaveBeenCalled();
+        expect(mockBuildInsoleSolid).not.toHaveBeenCalled();
+        expect(mockBuildInsole).not.toHaveBeenCalled();
+        expect(mockEnsureWatertight).toHaveBeenCalledWith(glbGeometry);
+    });
+
+    test("export throws when GLB base is configured but not yet loaded", async () => {
+        mockExportManufacturingStlFromBase.mockReturnValue(null);
+        mockLoadBaseGeometry.mockResolvedValue(null);
+        mockGetDesignBase.mockReturnValue(mockDesign.bases?.left ?? null);
+
+        const { buildExportStl, ExportGeometryNotReadyError } = await import("@/lib/geometry/export-geometry");
+        await expect(buildExportStl("left", { exportMode: "manufacturing" })).rejects.toBeInstanceOf(
+            ExportGeometryNotReadyError,
+        );
+        expect(mockEnsureWatertight).not.toHaveBeenCalled();
     });
 });
