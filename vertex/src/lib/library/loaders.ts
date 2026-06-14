@@ -1,7 +1,7 @@
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import * as THREE from "three";
-import { healShellInternalBoundaries } from "@/lib/geometry/mesh-close";
+import { sealInternalSlits } from "@/lib/geometry/bottom-mesh-clean";
 
 const loader = new GLTFLoader();
 
@@ -129,7 +129,15 @@ function concatGeometries(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
  * so the merged buffer layout is always [top vertices][bottom vertices] — required
  * for bridge rim-contact index translation during mesh closure.
  */
-function concatIndexedWeldedParts(parts: THREE.BufferGeometry[]): {
+export interface ExtractMergedGeometryOptions {
+    /** Viewer-only: seal small internal slits on bottom sub-meshes before concat. */
+    sealBottomSlits?: boolean;
+}
+
+function concatIndexedWeldedParts(
+    parts: THREE.BufferGeometry[],
+    options: ExtractMergedGeometryOptions = {},
+): {
     geometry: THREE.BufferGeometry;
     topVertexCount: number;
 } {
@@ -143,8 +151,12 @@ function concatIndexedWeldedParts(parts: THREE.BufferGeometry[]): {
         } catch {
             welded.push(p);
         }
-        if (parts.length > 1 && partIndex > 0) {
-            healShellInternalBoundaries(welded[partIndex]!);
+        if (options.sealBottomSlits && parts.length > 1 && partIndex > 0) {
+            const cleaned = sealInternalSlits(welded[partIndex]!);
+            if (cleaned !== welded[partIndex]) {
+                welded[partIndex]!.dispose();
+                welded[partIndex] = cleaned;
+            }
         }
     }
 
@@ -218,7 +230,10 @@ function orderMultiMeshParts(
  * attribute layouts GLB exporters emit — previously that failure dropped every
  * sub-mesh except the first, leaving an offset/flat partial surface in the viewer.
  */
-export function extractMergedGeometry(group: THREE.Group): MergedGlbGeometry | null {
+export function extractMergedGeometry(
+    group: THREE.Group,
+    options: ExtractMergedGeometryOptions = {},
+): MergedGlbGeometry | null {
     group.updateMatrixWorld(true);
     const parts: THREE.BufferGeometry[] = [];
     const meshNames: string[] = [];
@@ -250,7 +265,7 @@ export function extractMergedGeometry(group: THREE.Group): MergedGlbGeometry | n
             geometry = single;
         }
     } else {
-        const merged = concatIndexedWeldedParts(parts);
+        const merged = concatIndexedWeldedParts(parts, options);
         geometry = merged.geometry;
         topVertexCount = merged.topVertexCount;
         for (const p of parts) p.dispose();

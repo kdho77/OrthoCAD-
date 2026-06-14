@@ -38,6 +38,14 @@ export interface IGeometryKernel {
      */
     buildFromBase(base: BufferGeometry, field: HeightFieldParams, smoothingIterations?: number): SolidResult;
     exportSTL(geometry: BufferGeometry): ArrayBuffer;
+    /**
+     * Manufacturing export: sew imported GLB mesh into a BRep solid and emit STL
+     * bytes directly. Returns null when OCCT sewing is unavailable or fails.
+     */
+    exportManufacturingStlFromBase?(
+        base: BufferGeometry,
+        field: HeightFieldParams,
+    ): ArrayBuffer | null;
 }
 
 class ThreeKernel implements IGeometryKernel {
