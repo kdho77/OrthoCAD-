@@ -8,6 +8,14 @@ const INNER_SLIT_MAX_ARC_MM = 5;
 const INNER_SLIT_CLOSE_MM = 2;
 const SEAL_TIMEOUT_MS = 2000;
 
+/** @internal Override for unit tests — reset to null after each test. */
+let maxWalkStepsOverride: number | null = null;
+
+/** @internal Test hook to force MAX_WALK_STEPS guard without huge geometry. */
+export function setMaxWalkStepsForTesting(value: number | null): void {
+    maxWalkStepsOverride = value;
+}
+
 function indexEdgeKey(a: number, b: number): string {
     return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
@@ -166,7 +174,7 @@ function extractBoundaryChains(geometry: BufferGeometry): number[][] {
     const visitedEdges = new Set<string>();
     const chains: number[][] = [];
     const vertexCount = geometry.getAttribute("position").count;
-    const MAX_WALK_STEPS = vertexCount * 2;
+    const MAX_WALK_STEPS = maxWalkStepsOverride ?? vertexCount * 2;
 
     for (const [ek, count] of edgeCount) {
         if (count !== 1 || visitedEdges.has(ek)) continue;
@@ -191,7 +199,7 @@ function extractBoundaryChains(geometry: BufferGeometry): number[][] {
 
         if (steps >= MAX_WALK_STEPS && typeof console !== "undefined") {
             console.warn(
-                `[SEAL] infinite loop guard triggered at step ${steps} — aborting chain walk, returning partially sealed geometry`,
+                `[SEAL] MAX_WALK_STEPS guard triggered at step ${steps} — aborting chain walk, returning partially sealed geometry`,
             );
         }
         chains.push(chain);
