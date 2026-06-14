@@ -10,7 +10,9 @@ const mockExportManufacturingStlFromBase = rs.fn<() => ArrayBuffer | null>();
 const mockEnsureWatertight = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
 const mockLoadBaseGeometry = rs.fn<() => Promise<BufferGeometry | null>>();
 const mockBuildInsoleSolid = rs.fn<() => never>();
-const mockBuildFromBase = rs.fn<() => { geometry: BufferGeometry; manifold: { isWatertight: boolean } }>();
+const mockBuildFromBase = rs.fn<
+    () => { geometry: BufferGeometry; manifold: { isWatertight: boolean; occtClosed?: boolean } }
+>();
 const mockGetDesignBase = rs.fn<() => unknown>();
 const mockBaseModifierField = rs.fn<() => object>();
 
@@ -53,7 +55,7 @@ rs.mock("@/lib/geometry/mesh-close", () => ({
 
 rs.mock("@/lib/geometry/base-asset", () => ({
     getDesignBase: () => mockGetDesignBase(),
-    loadBaseGeometry: () => mockLoadBaseGeometry(),
+    loadBaseGeometry: (...args: unknown[]) => mockLoadBaseGeometry(...(args as [])),
     baseModifierFieldAuthoritative: () => mockBaseModifierField(),
 }));
 
@@ -138,27 +140,44 @@ describe("export-geometry routing", () => {
         expect(exportModeFromMethod("printing_shell")).toBe("preview");
     });
 
-    test("Printing Solid export uses OCCT path", async () => {
-        const occtBytes = new ArrayBuffer(128);
-        mockExportManufacturingStlFromBase.mockReturnValue(occtBytes);
+    test("Printing Solid export uses buildFromBase without mesh-close", async () => {
+        mockBuildFromBase.mockImplementation(() => ({
+            geometry: makeTestGeometry(),
+            manifold: { isWatertight: true, occtClosed: true },
+        }));
 
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
-        expect(mockExportManufacturingStlFromBase).toHaveBeenCalledTimes(1);
+        expect(mockBuildFromBase).toHaveBeenCalledTimes(1);
+        expect(mockExportManufacturingStlFromBase).not.toHaveBeenCalled();
         expect(mockEnsureWatertight).not.toHaveBeenCalled();
-        expect(result).toBe(occtBytes);
+        expect(result.byteLength).toBeGreaterThan(0);
     });
 
-    test("OCCT path failure falls back to mesh-close", async () => {
-        mockExportManufacturingStlFromBase.mockReturnValue(null);
+    test("manufacturing base export never enables sealBottomSlits or mesh-close", async () => {
+        mockBuildFromBase.mockImplementation(() => ({
+            geometry: makeTestGeometry(),
+            manifold: { isWatertight: false, occtClosed: false },
+        }));
 
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
-        expect(mockExportManufacturingStlFromBase).toHaveBeenCalledTimes(1);
-        expect(mockEnsureWatertight).toHaveBeenCalledTimes(1);
+        expect(mockBuildFromBase).toHaveBeenCalledTimes(1);
+        const loadCalls = mockLoadBaseGeometry.mock.calls as Array<[unknown, { sealBottomSlits?: boolean }?]>;
+        expect(loadCalls.every(([, opts]) => opts?.sealBottomSlits !== true)).toBe(true);
+        expect(mockEnsureWatertight).not.toHaveBeenCalled();
         expect(result.byteLength).toBeGreaterThan(0);
+    });
+
+    test("throws ExportGeometryNotReadyError when base GLB is not loaded yet", async () => {
+        mockLoadBaseGeometry.mockResolvedValue(null);
+
+        const { buildExportStl, ExportGeometryNotReadyError } = await import("@/lib/geometry/export-geometry");
+        await expect(buildExportStl("left", { exportMode: "manufacturing" })).rejects.toBeInstanceOf(
+            ExportGeometryNotReadyError,
+        );
     });
 
     test("GLB download path does not call ensureWatertightForExport", async () => {

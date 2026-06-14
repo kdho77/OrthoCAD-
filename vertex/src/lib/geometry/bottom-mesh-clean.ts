@@ -7,6 +7,8 @@ import { analyzeManifold } from "@/lib/geometry/manifold";
 const INNER_SLIT_MAX_ARC_MM = 5;
 const INNER_SLIT_CLOSE_MM = 2;
 const SEAL_TIMEOUT_MS = 2000;
+/** Never run synchronous slit sealing above this vertex count on the main thread. */
+export const SEAL_MAIN_THREAD_VERTEX_LIMIT = 50_000;
 
 /** @internal Override for unit tests — reset to null after each test. */
 let maxWalkStepsOverride: number | null = null;
@@ -218,6 +220,17 @@ export function extractBoundaryChainsForTest(geometry: BufferGeometry): number[]
  * degree-4 branch nodes. Does NOT run before the OCCT manufacturing path.
  */
 export function sealInternalSlits(geometry: BufferGeometry): BufferGeometry {
+    const vertCount = geometry.getAttribute("position")?.count ?? 0;
+    if (vertCount > SEAL_MAIN_THREAD_VERTEX_LIMIT) {
+        if (typeof console !== "undefined") {
+            console.warn(
+                `[BOTTOM-CLEAN] skipping sealInternalSlits on ${vertCount} verts ` +
+                    `(main-thread limit ${SEAL_MAIN_THREAD_VERTEX_LIMIT})`,
+            );
+        }
+        return geometry;
+    }
+
     const before = analyzeManifold(geometry).openEdges;
     let working = splitDegree4BranchNodes(geometry);
     if (working !== geometry) geometry.dispose();

@@ -42,7 +42,7 @@ Ad-hoc engineering tracking items that are not tied to a single PR.
 
 **Problem:** `extractMergedGeometryAsync` calls `sealInternalSlitsSafe`, which wraps synchronous `sealInternalSlits` in `Promise.resolve()`. On Default.glb (~208k bottom vertices), this blocks the main thread for ~1–2s in Node (longer in browser), freezing the UI. The 2s `SEAL_TIMEOUT_MS` race does not help because the event loop cannot process the timeout while sync work runs.
 
-**Current mitigation (Option C):** Viewer load passes `sealBottomSlits: false` in `useBaseInsoleGeometry.ts`. Export path is unchanged (`ensureWatertightForExport` / mesh-close).
+**Current mitigation (Option C):** Viewer and export load paths pass `sealBottomSlits: false`. `sealInternalSlits` refuses to run synchronously above `SEAL_MAIN_THREAD_VERTEX_LIMIT` (50,000 verts).
 
 **Target architecture (Option A):**
 

@@ -56,4 +56,20 @@ describe("mesh-close — perimeter stitching", () => {
         expect(resampled.length).toBe(8);
         expect(resampled[0]!.distanceTo(resampled[7]!)).toBeGreaterThan(0);
     });
+
+    test("multi-mesh bottom loop prefers vertices below top perimeter Z", () => {
+        const merged = extractMergedGeometry(makeTopBottomGroup())!;
+        const topVc = (merged.geometry.userData as { topVertexCount: number }).topVertexCount;
+        const pos = merged.geometry.getAttribute("position");
+        let belowTop = 0;
+        for (let i = topVc; i < pos.count; i++) {
+            if (pos.getZ(i) < pos.getZ(0)) belowTop++;
+        }
+        expect(belowTop).toBeGreaterThan(0);
+
+        const result = closeMeshPerimeter(merged.geometry);
+        expect(result.report.isWatertight).toBe(true);
+        expect(result.weldBottomIndices.every((i) => i >= topVc)).toBe(true);
+        result.geometry.dispose();
+    });
 });
