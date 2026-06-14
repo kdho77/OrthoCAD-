@@ -4,6 +4,7 @@
 import type { BufferGeometry } from "three";
 import { ensureKernelReady, getKernel, isAuthoritativeKernel, isKernelInitFailed } from "@/lib/chili3d/kernel";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
+import { sewGlbInputDiagnostics } from "@/lib/geometry/base-occt";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
@@ -16,6 +17,70 @@ import type { DesignState, ProductionMethod, Side } from "@/types";
 
 /** Export routing: manufacturing uses OCCT sew first; preview uses mesh-close. */
 export type ExportMode = "preview" | "manufacturing";
+
+/** Thrown when a design references a base GLB that has not finished loading yet. */
+export class ExportGeometryNotReadyError extends Error {
+    constructor(message = "Geometry not ready, please wait for the base model to finish loading.") {
+        super(message);
+        this.name = "ExportGeometryNotReadyError";
+    }
+}
+
+/** Thrown when manufacturing export exceeds the client-side time limit. */
+export class ExportTimeoutError extends Error {
+    constructor(message = "Export timed out — please try again.") {
+        super(message);
+        this.name = "ExportTimeoutError";
+    }
+}
+
+/** Thrown when OCCT is required for manufacturing export but is unavailable. */
+export class ExportKernelUnavailableError extends Error {
+    constructor(
+        message = "Export requires OpenCascade kernel. Please wait for the kernel to load and try again.",
+    ) {
+        super(message);
+        this.name = "ExportKernelUnavailableError";
+    }
+}
+
+/** Default client-side export timeout (manufacturing OCCT + GLB load). */
+export const EXPORT_OPERATION_TIMEOUT_MS = 30_000;
+
+/** @internal Test hook to shorten export timeout in unit tests. */
+let exportTimeoutMsOverride: number | null = null;
+
+/** @internal Reset after each test that overrides the export timeout. */
+export function setExportTimeoutMsForTesting(value: number | null): void {
+    exportTimeoutMsOverride = value;
+}
+
+/** Reject when an export operation exceeds the configured timeout. */
+export async function withExportTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs = exportTimeoutMsOverride ?? EXPORT_OPERATION_TIMEOUT_MS,
+): Promise<T> {
+    const start = typeof performance !== "undefined" ? performance.now() : Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise<T>((_, reject) => {
+                timer = setTimeout(() => {
+                    const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now()) - start;
+                    if (typeof console !== "undefined") {
+                        console.error(
+                            `[EXPORT] timed out after ${elapsed.toFixed(0)}ms (limit ${timeoutMs}ms)`,
+                        );
+                    }
+                    reject(new ExportTimeoutError());
+                }, timeoutMs);
+            }),
+        ]);
+    } finally {
+        if (timer !== undefined) clearTimeout(timer);
+    }
+}
 
 export function exportModeFromMethod(method: ProductionMethod): ExportMode {
     return method === "printing_solid" || method === "milling_3axis" ? "manufacturing" : "preview";
@@ -54,7 +119,17 @@ async function buildModifiedBaseGeometry(design: DesignState, side: Side): Promi
 async function loadRawBaseGeometry(design: DesignState, side: Side): Promise<BufferGeometry | null> {
     const base = getDesignBase(design, side);
     if (!base) return null;
-    return loadBaseGeometry(base);
+    // sealBottomSlits:false — never block the main thread on large stock bottoms (PR #84).
+    return loadBaseGeometry(base, { sealBottomSlits: false });
+}
+
+function logPreSewDiagnostics(geometry: BufferGeometry): void {
+    if (typeof console === "undefined") return;
+    const diag = sewGlbInputDiagnostics(geometry);
+    console.log(
+        `[EXPORT] pre-sew geometry: verts=${diag.vertexCount} tris=${diag.triangleCount} ` +
+            `openEdges=${diag.openEdges} multiMesh=${diag.isMultiMeshBase} topVerts=${diag.topVertexCount}`,
+    );
 }
 
 function logMeshClosePath(geometry: BufferGeometry): void {
@@ -96,28 +171,32 @@ export async function exportManufacturingStlAttempt(
     design: DesignState,
     side: Side,
 ): Promise<ArrayBuffer | null> {
-    return tryOcctManufacturingStl(design, side);
+    try {
+        return await tryOcctManufacturingStl(design, side);
+    } catch {
+        return null;
+    }
 }
 
-/** PATH A — OCCT sew manufacturing STL from raw GLB base. */
-async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise<ArrayBuffer | null> {
+/**
+ * PATH A — manufacturing STL from loaded base via buildFromBase (viewer authoritative path).
+ * Exports the OCCT solid when closed; otherwise the same deformation mesh the viewer displays.
+ * Never runs sealBottomSlits or mesh-close (both block the main thread on Default.glb).
+ */
+async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise<ArrayBuffer> {
     if (isKernelInitFailed()) {
-        if (typeof console !== "undefined") {
-            console.log("[EXPORT] OCCT unavailable — using mesh-close fallback");
-        }
-        return null;
+        throw new ExportKernelUnavailableError();
     }
 
     const kernelReady = await ensureKernelReady();
     if (!kernelReady) {
-        if (typeof console !== "undefined") {
-            console.log("[EXPORT] OCCT unavailable — using mesh-close fallback");
-        }
-        return null;
+        throw new ExportKernelUnavailableError();
     }
 
     const raw = await loadRawBaseGeometry(design, side);
-    if (!raw) return null;
+    if (!raw) {
+        throw new ExportGeometryNotReadyError();
+    }
 
     try {
         const effThickness = design.paired
@@ -125,31 +204,44 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
                 ? design.paired.leftThicknessMm
                 : design.paired.rightThicknessMm
             : design.thicknessMm;
-        const field = baseModifierFieldAuthoritative(design, side, effThickness);
+        const field = {
+            ...baseModifierFieldAuthoritative(design, side, effThickness),
+            method: design.method,
+        };
         const kernel = getKernel();
-        if (!kernel.ready || typeof kernel.exportManufacturingStlFromBase !== "function") {
-            if (typeof console !== "undefined") {
-                console.error("[EXPORT] OCCT kernel not ready — falling back");
-            }
-            return null;
+        if (!kernel.ready) {
+            throw new ExportKernelUnavailableError();
         }
-        const stl = kernel.exportManufacturingStlFromBase(raw, field) ?? null;
-        if (stl) {
-            if (typeof console !== "undefined") {
-                console.log("[EXPORT] OCCT sew path: success");
+
+        logPreSewDiagnostics(raw);
+
+        const built = kernel.buildFromBase(raw, field, 2);
+        try {
+            const stl = kernel.exportSTL(built.geometry);
+            if (built.manifold.occtClosed || built.manifold.isWatertight) {
+                if (typeof console !== "undefined") {
+                    console.log("[EXPORT] OCCT sew path: success (buildFromBase)");
+                }
+            } else if (typeof console !== "undefined") {
+                console.log("[EXPORT] buildFromBase deformation mesh exported (viewer parity, no mesh-close)");
             }
             return stl;
+        } finally {
+            built.geometry.dispose();
         }
-        if (typeof console !== "undefined") {
-            console.warn("[EXPORT] OCCT sew path: failed reason=sew returned null — falling back to mesh-close");
-        }
-        return null;
     } catch (err) {
+        if (
+            err instanceof ExportGeometryNotReadyError ||
+            err instanceof ExportKernelUnavailableError ||
+            err instanceof ExportTimeoutError
+        ) {
+            throw err;
+        }
         if (typeof console !== "undefined") {
             const reason = err instanceof Error ? err.message : String(err);
-            console.warn(`[EXPORT] OCCT sew path failed: ${reason} — falling back to mesh-close`);
+            console.warn(`[EXPORT] buildFromBase export failed: ${reason}`);
         }
-        return null;
+        throw new ExportKernelUnavailableError();
     } finally {
         raw.dispose();
     }
@@ -158,9 +250,14 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
 /** Builds export geometry for a side — base+modifiers or kernel insole solid. */
 export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
+    const base = getDesignBase(design, side);
 
     const modifiedBase = await buildModifiedBaseGeometry(design, side);
     if (modifiedBase) return modifiedBase;
+
+    if (base) {
+        throw new ExportGeometryNotReadyError();
+    }
 
     return getKernel().buildInsole({
         ...insoleParamsFromDesign(design, side, "full"),
@@ -170,38 +267,46 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
 
 /** Export STL bytes for the active design side. */
 export async function buildExportStl(side: Side, options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const { design } = useDesignStore.getState();
-    const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
+    const run = async (): Promise<ArrayBuffer> => {
+        const { design } = useDesignStore.getState();
+        const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
+        const hasBase = Boolean(getDesignBase(design, side));
 
-    if (exportMode === "manufacturing") {
-        const occtStl = await tryOcctManufacturingStl(design, side);
-        if (occtStl) return occtStl;
+        if (exportMode === "manufacturing") {
+            if (hasBase) {
+                return tryOcctManufacturingStl(design, side);
+            }
 
-        if (isAuthoritativeKernel()) {
-            const params = insoleParamsFromDesign(design, side, "full");
-            const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
-            try {
-                const solid = getKernel().buildInsoleSolid({ ...params, trimline });
-                if (solid.manifold.occtClosed || solid.manifold.isWatertight) {
-                    try {
-                        return exportStlFromGeometry(solid.geometry);
-                    } finally {
-                        solid.geometry.dispose();
+            // Parametric OCCT loft — only when no loaded base GLB is configured.
+            if (isAuthoritativeKernel()) {
+                const params = insoleParamsFromDesign(design, side, "full");
+                const trimline =
+                    getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
+                try {
+                    const solid = getKernel().buildInsoleSolid({ ...params, trimline });
+                    if (solid.manifold.occtClosed || solid.manifold.isWatertight) {
+                        try {
+                            return exportStlFromGeometry(solid.geometry);
+                        } finally {
+                            solid.geometry.dispose();
+                        }
                     }
+                    solid.geometry.dispose();
+                } catch {
+                    // fall through to mesh-close
                 }
-                solid.geometry.dispose();
-            } catch {
-                // fall through to mesh-close
             }
         }
-    }
 
-    let geometry = await buildExportGeometry(side);
-    try {
-        return buildPreviewStlFromGeometry(geometry);
-    } finally {
-        geometry.dispose();
-    }
+        let geometry = await buildExportGeometry(side);
+        try {
+            return buildPreviewStlFromGeometry(geometry);
+        } finally {
+            geometry.dispose();
+        }
+    };
+
+    return withExportTimeout(run());
 }
 
 /**
@@ -209,9 +314,14 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
  */
 export async function buildExportGlbGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
+    const base = getDesignBase(design, side);
 
     const modifiedBase = await buildModifiedBaseGeometry(design, side);
     if (modifiedBase) return modifiedBase;
+
+    if (base) {
+        throw new ExportGeometryNotReadyError();
+    }
 
     const params = insoleParamsFromDesign(design, side, "full");
     const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);

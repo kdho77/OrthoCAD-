@@ -1,7 +1,11 @@
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import * as THREE from "three";
-import { sealInternalSlits, sealInternalSlitsSafe } from "@/lib/geometry/bottom-mesh-clean";
+import {
+    SEAL_MAIN_THREAD_VERTEX_LIMIT,
+    sealInternalSlits,
+    sealInternalSlitsSafe,
+} from "@/lib/geometry/bottom-mesh-clean";
 
 const loader = new GLTFLoader();
 
@@ -152,10 +156,18 @@ function concatIndexedWeldedParts(
             welded.push(p);
         }
         if (options.sealBottomSlits && parts.length > 1 && partIndex > 0) {
-            const cleaned = sealInternalSlits(welded[partIndex]!);
-            if (cleaned !== welded[partIndex]) {
-                welded[partIndex]!.dispose();
-                welded[partIndex] = cleaned;
+            const bottomVerts = welded[partIndex]!.getAttribute("position").count;
+            if (bottomVerts <= SEAL_MAIN_THREAD_VERTEX_LIMIT) {
+                const cleaned = sealInternalSlits(welded[partIndex]!);
+                if (cleaned !== welded[partIndex]) {
+                    welded[partIndex]!.dispose();
+                    welded[partIndex] = cleaned;
+                }
+            } else if (typeof console !== "undefined") {
+                console.warn(
+                    `[loaders] sealBottomSlits skipped: bottom has ${bottomVerts} verts ` +
+                        `(limit ${SEAL_MAIN_THREAD_VERTEX_LIMIT})`,
+                );
             }
         }
     }
@@ -181,10 +193,18 @@ async function concatIndexedWeldedPartsAsync(
             welded.push(p);
         }
         if (options.sealBottomSlits && parts.length > 1 && partIndex > 0) {
-            const cleaned = await sealInternalSlitsSafe(welded[partIndex]!);
-            if (cleaned !== welded[partIndex]) {
-                welded[partIndex]!.dispose();
-                welded[partIndex] = cleaned;
+            const bottomVerts = welded[partIndex]!.getAttribute("position").count;
+            if (bottomVerts <= SEAL_MAIN_THREAD_VERTEX_LIMIT) {
+                const cleaned = await sealInternalSlitsSafe(welded[partIndex]!);
+                if (cleaned !== welded[partIndex]) {
+                    welded[partIndex]!.dispose();
+                    welded[partIndex] = cleaned;
+                }
+            } else if (typeof console !== "undefined") {
+                console.warn(
+                    `[loaders] sealBottomSlits skipped: bottom has ${bottomVerts} verts ` +
+                        `(limit ${SEAL_MAIN_THREAD_VERTEX_LIMIT})`,
+                );
             }
         }
     }

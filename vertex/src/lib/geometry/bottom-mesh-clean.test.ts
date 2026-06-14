@@ -8,6 +8,7 @@ import { BufferAttribute, BufferGeometry } from "three";
 import {
     extractBoundaryChainsForTest,
     sealInternalSlits,
+    SEAL_MAIN_THREAD_VERTEX_LIMIT,
     sealInternalSlitsSafe,
     setMaxWalkStepsForTesting,
     splitDegree4BranchNodes,
@@ -210,5 +211,19 @@ describe("bottom-mesh-clean", () => {
             warnSpy.mockRestore();
             geometry.dispose();
         }
+    });
+
+    test("sealInternalSlits skips meshes above main-thread vertex limit", () => {
+        const positions = new Float32Array((SEAL_MAIN_THREAD_VERTEX_LIMIT + 1) * 3);
+        const geometry = new BufferGeometry();
+        geometry.setAttribute("position", new BufferAttribute(positions, 3));
+        geometry.setIndex([0, 1, 2]);
+
+        const warnSpy = rs.spyOn(console, "warn").mockImplementation(() => {});
+        const result = sealInternalSlits(geometry);
+        expect(result).toBe(geometry);
+        expect(warnSpy.mock.calls.some((call) => String(call[0]).includes("skipping sealInternalSlits"))).toBe(true);
+        warnSpy.mockRestore();
+        geometry.dispose();
     });
 });

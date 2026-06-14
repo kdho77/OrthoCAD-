@@ -29,6 +29,9 @@ export function ExportPanel() {
 
     const handleStl = async () => {
         setBusyKind("stl");
+        const isManufacturing =
+            design.method === "printing_solid" || design.method === "milling_3axis";
+        setStatus(isManufacturing ? "Building manufacturing solid…" : "Exporting STL…");
         try {
             const res = await exportDesign("stl", side);
             setStatus(
@@ -124,7 +127,11 @@ export function ExportPanel() {
                 ) : (
                     <Lock className="h-4 w-4" />
                 )}
-                {busyKind === "stl" ? "Exporting STL…" : `Export STL · ${TOKEN_COST.stl} token`}
+                {busyKind === "stl"
+                    ? design.method === "printing_solid" || design.method === "milling_3axis"
+                        ? "Building solid…"
+                        : "Exporting STL…"
+                    : `Export STL · ${TOKEN_COST.stl} token`}
             </Button>
             {!stlCheck.ok ? <p className="text-xs text-amber-400">{stlCheck.reason}</p> : null}
 
