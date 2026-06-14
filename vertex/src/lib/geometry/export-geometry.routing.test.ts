@@ -5,16 +5,10 @@ import { describe, expect, test, beforeEach } from "@rstest/core";
 import { BufferAttribute, BufferGeometry } from "three";
 import type { DesignState } from "@/types";
 
-const mockEnsureKernelReady = rs.fn<() => Promise<boolean>>();
-const mockExportManufacturingStlFromBase = rs.fn<() => ArrayBuffer | null>();
 const mockEnsureWatertight = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
-const mockLoadBaseGeometry = rs.fn<() => Promise<BufferGeometry | null>>();
-const mockBuildInsoleSolid = rs.fn<() => never>();
-const mockBuildFromBase = rs.fn<
-    () => { geometry: BufferGeometry; manifold: { isWatertight: boolean; occtClosed?: boolean } }
->();
-const mockGetDesignBase = rs.fn<() => unknown>();
-const mockBaseModifierField = rs.fn<() => object>();
+const mockCloseLiveViewerMeshToSolid = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
+const mockSerializeBinarySTL = rs.fn<() => ArrayBuffer>();
+const mockBuildModifiedBaseGeometry = rs.fn<() => Promise<BufferGeometry | null>>();
 
 const mockDesign: DesignState = {
     method: "printing_solid",
@@ -26,26 +20,23 @@ const mockDesign: DesignState = {
     },
 } as DesignState;
 
+let viewerGeometry: BufferGeometry | null = null;
+let viewerBuilding = false;
+
 rs.mock("@/stores/design-store", () => ({
     useDesignStore: {
         getState: () => ({ design: mockDesign }),
     },
 }));
 
-rs.mock("@/lib/chili3d/kernel", () => ({
-    getKernel: () => ({
-        name: "opencascade-wasm",
-        tier: "authoritative",
-        ready: true,
-        exportManufacturingStlFromBase: mockExportManufacturingStlFromBase,
-        exportSTL: () => new ArrayBuffer(84),
-        buildInsole: rs.fn(),
-        buildInsoleSolid: mockBuildInsoleSolid,
-        buildFromBase: mockBuildFromBase,
-    }),
-    isAuthoritativeKernel: () => true,
-    isKernelInitFailed: () => false,
-    ensureKernelReady: () => mockEnsureKernelReady(),
+rs.mock("@/stores/viewer-geometry-store", () => ({
+    getLiveViewerGeometry: () => viewerGeometry,
+    isViewerGeometryBuilding: () => viewerBuilding,
+}));
+
+rs.mock("@/lib/geometry/mesh-export", () => ({
+    closeLiveViewerMeshToSolid: (geometry: BufferGeometry) => mockCloseLiveViewerMeshToSolid(geometry),
+    serializeBinarySTL: () => mockSerializeBinarySTL(),
 }));
 
 rs.mock("@/lib/geometry/mesh-close", () => ({
@@ -54,9 +45,30 @@ rs.mock("@/lib/geometry/mesh-close", () => ({
 }));
 
 rs.mock("@/lib/geometry/base-asset", () => ({
-    getDesignBase: () => mockGetDesignBase(),
-    loadBaseGeometry: (...args: unknown[]) => mockLoadBaseGeometry(...(args as [])),
-    baseModifierFieldAuthoritative: () => mockBaseModifierField(),
+    getDesignBase: () => mockDesign.bases?.left ?? null,
+    loadBaseGeometry: rs.fn(async () => makeTestGeometry()),
+    baseModifierFieldAuthoritative: () => ({
+        side: "left",
+        lengthMm: 260,
+        widthMm: 90,
+        thicknessMm: 3,
+        corrections: [],
+        elements: [],
+    }),
+}));
+
+rs.mock("@/lib/geometry/base-modifier", () => ({
+    applyBaseModifiers: (geometry: BufferGeometry) => geometry.clone(),
+}));
+
+rs.mock("@/lib/chili3d/kernel", () => ({
+    getKernel: () => ({
+        buildInsole: rs.fn(() => makeTestGeometry()),
+        buildInsoleSolid: rs.fn(),
+        buildFromBase: rs.fn(),
+        exportSTL: rs.fn(),
+    }),
+    isAuthoritativeKernel: () => false,
 }));
 
 rs.mock("@/lib/geometry/kernel-build", () => ({
@@ -68,7 +80,7 @@ rs.mock("@/lib/geometry/kernel-build", () => ({
         corrections: [],
         elements: [],
     }),
-    isOcctKernelActive: () => true,
+    isOcctKernelActive: () => false,
 }));
 
 rs.mock("@/lib/geometry/trimline", () => ({
@@ -100,36 +112,14 @@ function makeTestGeometry(): BufferGeometry {
 
 describe("export-geometry routing", () => {
     beforeEach(() => {
-        mockEnsureKernelReady.mockReset();
-        mockEnsureKernelReady.mockResolvedValue(true);
-        mockExportManufacturingStlFromBase.mockReset();
+        viewerGeometry = makeTestGeometry();
+        viewerBuilding = false;
         mockEnsureWatertight.mockReset();
-        mockLoadBaseGeometry.mockReset();
-        mockBuildInsoleSolid.mockReset();
-        mockBuildFromBase.mockReset();
-        mockGetDesignBase.mockReset();
-        mockBaseModifierField.mockReset();
-
-        mockGetDesignBase.mockReturnValue(mockDesign.bases?.left ?? null);
-        mockBaseModifierField.mockReturnValue({
-            side: "left",
-            lengthMm: 260,
-            widthMm: 90,
-            thicknessMm: 3,
-            corrections: [],
-            elements: [],
-            includeSkives: true,
-            includeElements: true,
-            trimline: null,
-        });
-        mockLoadBaseGeometry.mockImplementation(async () => makeTestGeometry());
-        mockBuildInsoleSolid.mockImplementation(() => {
-            throw new Error("skip insole solid");
-        });
-        mockBuildFromBase.mockImplementation(() => ({
-            geometry: makeTestGeometry(),
-            manifold: { isWatertight: false, occtClosed: false },
-        }));
+        mockCloseLiveViewerMeshToSolid.mockReset();
+        mockSerializeBinarySTL.mockReset();
+        mockBuildModifiedBaseGeometry.mockReset();
+        mockCloseLiveViewerMeshToSolid.mockImplementation((geometry) => geometry);
+        mockSerializeBinarySTL.mockReturnValue(new ArrayBuffer(256));
         mockEnsureWatertight.mockImplementation((geometry) => geometry);
     });
 
@@ -140,39 +130,20 @@ describe("export-geometry routing", () => {
         expect(exportModeFromMethod("printing_shell")).toBe("preview");
     });
 
-    test("Printing Solid export uses buildFromBase without mesh-close", async () => {
-        mockBuildFromBase.mockImplementation(() => ({
-            geometry: makeTestGeometry(),
-            manifold: { isWatertight: true, occtClosed: true },
-        }));
+    test("manufacturing export uses live viewer geometry and mesh-close without OCCT", async () => {
+        const live = makeTestGeometry();
+        viewerGeometry = live;
 
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
-        expect(mockBuildFromBase).toHaveBeenCalledTimes(1);
-        expect(mockExportManufacturingStlFromBase).not.toHaveBeenCalled();
-        expect(mockEnsureWatertight).not.toHaveBeenCalled();
+        expect(mockCloseLiveViewerMeshToSolid).toHaveBeenCalled();
+        expect(mockSerializeBinarySTL).toHaveBeenCalled();
         expect(result.byteLength).toBeGreaterThan(0);
     });
 
-    test("manufacturing base export never enables sealBottomSlits or mesh-close", async () => {
-        mockBuildFromBase.mockImplementation(() => ({
-            geometry: makeTestGeometry(),
-            manifold: { isWatertight: false, occtClosed: false },
-        }));
-
-        const { buildExportStl } = await import("@/lib/geometry/export-geometry");
-        const result = await buildExportStl("left", { exportMode: "manufacturing" });
-
-        expect(mockBuildFromBase).toHaveBeenCalledTimes(1);
-        const loadCalls = mockLoadBaseGeometry.mock.calls as Array<[unknown, { sealBottomSlits?: boolean }?]>;
-        expect(loadCalls.every(([, opts]) => opts?.sealBottomSlits !== true)).toBe(true);
-        expect(mockEnsureWatertight).not.toHaveBeenCalled();
-        expect(result.byteLength).toBeGreaterThan(0);
-    });
-
-    test("throws ExportGeometryNotReadyError when base GLB is not loaded yet", async () => {
-        mockLoadBaseGeometry.mockResolvedValue(null);
+    test("throws ExportGeometryNotReadyError when viewer geometry is building", async () => {
+        viewerBuilding = true;
 
         const { buildExportStl, ExportGeometryNotReadyError } = await import("@/lib/geometry/export-geometry");
         await expect(buildExportStl("left", { exportMode: "manufacturing" })).rejects.toBeInstanceOf(
@@ -180,14 +151,15 @@ describe("export-geometry routing", () => {
         );
     });
 
-    test("throws ExportKernelUnavailableError when OCCT kernel init failed", async () => {
-        const kernel = await import("@/lib/chili3d/kernel");
-        rs.spyOn(kernel, "isKernelInitFailed").mockReturnValue(true);
+    test("falls back to rebuilt geometry when viewer store is empty", async () => {
+        viewerGeometry = null;
 
-        const { buildExportStl, ExportKernelUnavailableError } = await import("@/lib/geometry/export-geometry");
-        await expect(buildExportStl("left", { exportMode: "manufacturing" })).rejects.toBeInstanceOf(
-            ExportKernelUnavailableError,
-        );
+        const { buildExportStl } = await import("@/lib/geometry/export-geometry");
+        const result = await buildExportStl("left", { exportMode: "manufacturing" });
+
+        expect(mockCloseLiveViewerMeshToSolid).toHaveBeenCalled();
+        expect(mockSerializeBinarySTL).toHaveBeenCalled();
+        expect(result.byteLength).toBeGreaterThan(0);
     });
 
     test("GLB download path does not call ensureWatertightForExport", async () => {
@@ -196,10 +168,11 @@ describe("export-geometry routing", () => {
         expect(mockEnsureWatertight).not.toHaveBeenCalled();
     });
 
-    test("exportManufacturingStlAttempt returns null without a loaded base design", async () => {
-        mockGetDesignBase.mockReturnValue(null);
+    test("exportManufacturingStlAttempt returns STL from live viewer geometry", async () => {
+        viewerGeometry = makeTestGeometry();
         const { exportManufacturingStlAttempt } = await import("@/lib/geometry/export-geometry");
         const result = await exportManufacturingStlAttempt(mockDesign, "left");
-        expect(result).toBeNull();
+        expect(result).not.toBeNull();
+        expect(result!.byteLength).toBeGreaterThan(0);
     });
 });

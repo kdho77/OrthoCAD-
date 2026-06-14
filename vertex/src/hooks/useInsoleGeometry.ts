@@ -7,6 +7,7 @@ import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import type { GeometryQuality } from "@/lib/geometry/quality";
 import { useKernelStore } from "@/stores/kernel-store";
 import { mergeCorrections, mergeElementPreviews, usePerformanceStore } from "@/stores/performance-store";
+import { useViewerGeometryStore } from "@/stores/viewer-geometry-store";
 import type { DesignState, Side } from "@/types";
 
 export interface UseInsoleGeometryOptions {
@@ -107,6 +108,10 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         kernelVersion,
         kernelLoadState,
     ]);
+
+    useEffect(() => {
+        useViewerGeometryStore.getState().setViewerGeometry(side, geometry, building);
+    }, [side, geometry, building]);
 
     useEffect(
         () => () => {

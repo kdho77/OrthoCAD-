@@ -42,7 +42,7 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     return btoa(binary);
 }
 
-/** Export the finalized viewer solid as binary STL (OCCT sew primary, mesh-close fallback). */
+/** Export the live viewer solid as binary STL (direct mesh-close, no OCCT). */
 async function buildManufacturingStl(side: Side): Promise<ArrayBuffer> {
     const { design } = useDesignStore.getState();
     return buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });

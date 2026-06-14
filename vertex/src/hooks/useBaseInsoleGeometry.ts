@@ -20,6 +20,7 @@ import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
+import { useViewerGeometryStore } from "@/stores/viewer-geometry-store";
 import type { DesignState, Side } from "@/types";
 
 export interface BaseInsoleGeometryState {
@@ -194,6 +195,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         interacting,
         building,
     ]);
+
+    useEffect(() => {
+        useViewerGeometryStore.getState().setViewerGeometry(side, geometry, building);
+    }, [side, geometry, building]);
 
     useEffect(
         () => () => {
