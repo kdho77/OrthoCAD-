@@ -180,6 +180,16 @@ describe("export-geometry routing", () => {
         );
     });
 
+    test("throws ExportKernelUnavailableError when OCCT kernel init failed", async () => {
+        const kernel = await import("@/lib/chili3d/kernel");
+        rs.spyOn(kernel, "isKernelInitFailed").mockReturnValue(true);
+
+        const { buildExportStl, ExportKernelUnavailableError } = await import("@/lib/geometry/export-geometry");
+        await expect(buildExportStl("left", { exportMode: "manufacturing" })).rejects.toBeInstanceOf(
+            ExportKernelUnavailableError,
+        );
+    });
+
     test("GLB download path does not call ensureWatertightForExport", async () => {
         const { buildExportGlb } = await import("@/lib/geometry/export-geometry");
         await buildExportGlb("left");

@@ -5,6 +5,8 @@ import {
     buildExportSolid,
     buildExportStl,
     ExportGeometryNotReadyError,
+    ExportKernelUnavailableError,
+    ExportTimeoutError,
     exportModeFromMethod,
 } from "@/lib/geometry/export-geometry";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
@@ -96,6 +98,12 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         return { ok: true, filename, blob };
     } catch (e) {
         if (e instanceof ExportGeometryNotReadyError) {
+            return { ok: false, reason: e.message };
+        }
+        if (e instanceof ExportKernelUnavailableError) {
+            return { ok: false, reason: e.message };
+        }
+        if (e instanceof ExportTimeoutError) {
             return { ok: false, reason: e.message };
         }
         throw e;
