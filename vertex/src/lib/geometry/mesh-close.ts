@@ -1453,9 +1453,12 @@ function buildBottomLoopFromTopXY(
     const bottomLoop: Vector3[] = [];
 
     for (const tp of topLoop) {
-        let bestVi = topVertexCount;
+        let bestVi = -1;
         let bestD2 = Number.POSITIVE_INFINITY;
         for (const i of boundaryVerts) {
+            const z = pos.getZ(i);
+            // Bottom rim vertices should sit at or below the top perimeter sample.
+            if (z > tp.z + 0.75) continue;
             const dx = pos.getX(i) - tp.x;
             const dy = pos.getY(i) - tp.y;
             const d2 = dx * dx + dy * dy;
@@ -1464,7 +1467,20 @@ function buildBottomLoopFromTopXY(
                 bestVi = i;
             }
         }
-        bottomLoop.push(new Vector3(pos.getX(bestVi), pos.getY(bestVi), pos.getZ(bestVi)));
+        if (bestVi < 0) {
+            // Fallback: ignore Z filter when slit topology leaves no candidate below top.
+            for (const i of boundaryVerts) {
+                const dx = pos.getX(i) - tp.x;
+                const dy = pos.getY(i) - tp.y;
+                const d2 = dx * dx + dy * dy;
+                if (d2 < bestD2) {
+                    bestD2 = d2;
+                    bestVi = i;
+                }
+            }
+        }
+        const vi = bestVi >= 0 ? bestVi : topVertexCount;
+        bottomLoop.push(new Vector3(pos.getX(vi), pos.getY(vi), pos.getZ(vi)));
     }
 
     return bottomLoop;
@@ -1786,6 +1802,32 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
 
     const report = validateManifold(merged);
     if (!report.isWatertight || report.eulerCharacteristic !== 2) {
+        // Cap small leftover slit loops only on moderate meshes — full Default.glb
+        // closure relies on sealBottomSlits at export load time instead.
+        const vertCount = merged.getAttribute("position").count;
+        if (report.openEdges > 0 && report.openEdges <= 4096 && vertCount <= 120_000) {
+            capRemainingBoundaryLoops(merged);
+            const healed = validateManifold(merged);
+            if (healed.isWatertight && healed.eulerCharacteristic === 2) {
+                if (typeof console !== "undefined") {
+                    console.log(
+                        `[MESH-CLOSE] closure complete (post-cap): V=${healed.vertexCount} E=${healed.edgeCount} F=${healed.triangleCount} Euler=${healed.eulerCharacteristic} Watertight=${healed.isWatertight}`,
+                    );
+                }
+                return {
+                    geometry: merged,
+                    report: healed,
+                    bridgeTriangleCount: bridge.triangleCount,
+                    smoothingIterations: BRIDGE_SMOOTH_ITERATIONS,
+                    rimHeightsMm,
+                    topLoop,
+                    bottomLoop,
+                    seamTopIndices,
+                    weldTopIndices,
+                    weldBottomIndices,
+                };
+            }
+        }
         throw new MeshNotWatertightError(
             `Mesh closure failed: openEdges=${report.openEdges} nonManifold=${report.nonManifoldEdges} euler=${report.eulerCharacteristic}`,
             report,

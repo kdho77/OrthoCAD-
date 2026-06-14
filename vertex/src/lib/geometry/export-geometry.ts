@@ -3,7 +3,14 @@
 
 import type { BufferGeometry } from "three";
 import { ensureKernelReady, getKernel, isAuthoritativeKernel, isKernelInitFailed } from "@/lib/chili3d/kernel";
-import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
+import {
+    baseModifierFieldAuthoritative,
+    getDesignBase,
+    loadBaseGeometry,
+    type LoadBaseGeometryOptions,
+} from "@/lib/geometry/base-asset";
+import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { sewGlbInputDiagnostics } from "@/lib/geometry/base-occt";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
@@ -51,10 +58,26 @@ async function buildModifiedBaseGeometry(design: DesignState, side: Side): Promi
 }
 
 /** Load raw base GLB geometry without modifier deformation (for OCCT sew input). */
-async function loadRawBaseGeometry(design: DesignState, side: Side): Promise<BufferGeometry | null> {
+async function loadRawBaseGeometry(
+    design: DesignState,
+    side: Side,
+    options: LoadBaseGeometryOptions = {},
+): Promise<BufferGeometry | null> {
     const base = getDesignBase(design, side);
     if (!base) return null;
-    return loadBaseGeometry(base);
+    return loadBaseGeometry(base, options);
+}
+
+/** Export load: seal bottom internal slits before mesh-close (viewer keeps this off for perf). */
+const EXPORT_BASE_LOAD_OPTIONS: LoadBaseGeometryOptions = { sealBottomSlits: true };
+
+function logPreSewDiagnostics(geometry: BufferGeometry): void {
+    if (typeof console === "undefined") return;
+    const diag = sewGlbInputDiagnostics(geometry);
+    console.log(
+        `[EXPORT] pre-sew geometry: verts=${diag.vertexCount} tris=${diag.triangleCount} ` +
+            `openEdges=${diag.openEdges} multiMesh=${diag.isMultiMeshBase} topVerts=${diag.topVertexCount}`,
+    );
 }
 
 function logMeshClosePath(geometry: BufferGeometry): void {
@@ -116,7 +139,7 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
         return null;
     }
 
-    const raw = await loadRawBaseGeometry(design, side);
+    const raw = await loadRawBaseGeometry(design, side, EXPORT_BASE_LOAD_OPTIONS);
     if (!raw) return null;
 
     try {
@@ -125,21 +148,45 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
                 ? design.paired.leftThicknessMm
                 : design.paired.rightThicknessMm
             : design.thicknessMm;
-        const field = baseModifierFieldAuthoritative(design, side, effThickness);
+        const field = {
+            ...baseModifierFieldAuthoritative(design, side, effThickness),
+            method: design.method,
+        };
         const kernel = getKernel();
-        if (!kernel.ready || typeof kernel.exportManufacturingStlFromBase !== "function") {
+        if (!kernel.ready) {
             if (typeof console !== "undefined") {
                 console.error("[EXPORT] OCCT kernel not ready — falling back");
             }
             return null;
         }
-        const stl = kernel.exportManufacturingStlFromBase(raw, field) ?? null;
-        if (stl) {
-            if (typeof console !== "undefined") {
-                console.log("[EXPORT] OCCT sew path: success");
+
+        logPreSewDiagnostics(raw);
+
+        // Align with viewer authoritative path: buildFromBase tries OCCT sew then
+        // deformation fallback; export STL from the cached OCCT shape when closed.
+        const built = kernel.buildFromBase(raw, field, 2);
+        try {
+            if (built.manifold.occtClosed || built.manifold.isWatertight) {
+                if (typeof console !== "undefined") {
+                    console.log("[EXPORT] OCCT sew path: success (buildFromBase)");
+                }
+                return kernel.exportSTL(built.geometry);
             }
-            return stl;
+
+            // Closed watertight mesh after modifiers — attempt direct BRep sew + STL.
+            if (typeof kernel.exportManufacturingStlFromBase === "function") {
+                const stl = kernel.exportManufacturingStlFromBase(raw, field) ?? null;
+                if (stl) {
+                    if (typeof console !== "undefined") {
+                        console.log("[EXPORT] OCCT sew path: success (manufacturingStlFromBase)");
+                    }
+                    return stl;
+                }
+            }
+        } finally {
+            built.geometry.dispose();
         }
+
         if (typeof console !== "undefined") {
             console.warn("[EXPORT] OCCT sew path: failed reason=sew returned null — falling back to mesh-close");
         }
@@ -153,6 +200,25 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
     } finally {
         raw.dispose();
     }
+}
+
+/** Builds export geometry for mesh-close fallback — sealed bottom slits + modifiers. */
+async function buildMeshCloseExportGeometry(design: DesignState, side: Side): Promise<BufferGeometry> {
+    const raw = await loadRawBaseGeometry(design, side, EXPORT_BASE_LOAD_OPTIONS);
+    if (raw) {
+        try {
+            const effThickness = design.paired
+                ? side === "left"
+                    ? design.paired.leftThicknessMm
+                    : design.paired.rightThicknessMm
+                : design.thicknessMm;
+            const field = baseModifierFieldAuthoritative(design, side, effThickness);
+            return applyBaseModifiers(raw, field, 2);
+        } finally {
+            raw.dispose();
+        }
+    }
+    return buildExportGeometry(side);
 }
 
 /** Builds export geometry for a side — base+modifiers or kernel insole solid. */
@@ -196,7 +262,7 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
         }
     }
 
-    let geometry = await buildExportGeometry(side);
+    let geometry = await buildMeshCloseExportGeometry(design, side);
     try {
         return buildPreviewStlFromGeometry(geometry);
     } finally {

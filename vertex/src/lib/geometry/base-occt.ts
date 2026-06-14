@@ -11,9 +11,47 @@ import {
     ShapeTypes,
 } from "@chili3d/core";
 import { applyElements, applySkives, applyTrimlineCut } from "@/lib/geometry/base-modifier-booleans";
+import { analyzeManifold } from "@/lib/geometry/manifold";
 import { repairOcctSolid } from "@/lib/geometry/repair";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import type { HeightFieldParams } from "./height-field";
+
+export interface SewGlbDiagnostics {
+    vertexCount: number;
+    triangleCount: number;
+    openEdges: number;
+    isMultiMeshBase: boolean;
+    topVertexCount: number;
+    failureReason?: string;
+}
+
+function triangleCount(geometry: BufferGeometry): number {
+    const index = geometry.getIndex();
+    const pos = geometry.getAttribute("position");
+    return index ? index.count / 3 : pos.count / 3;
+}
+
+/** Cheap input stats for export-time OCCT sew diagnostics. */
+export function sewGlbInputDiagnostics(geometry: BufferGeometry): SewGlbDiagnostics {
+    const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
+    const mesh = analyzeManifold(geometry);
+    return {
+        vertexCount: mesh.vertexCount,
+        triangleCount: mesh.triangleCount,
+        openEdges: mesh.openEdges,
+        isMultiMeshBase: !!userData.isMultiMeshBase,
+        topVertexCount: userData.topVertexCount ?? 0,
+    };
+}
+
+function logSewDiagnostics(stage: string, diag: SewGlbDiagnostics): void {
+    if (typeof console === "undefined") return;
+    console.log(
+        `[EXPORT] OCCT sew ${stage}: verts=${diag.vertexCount} tris=${diag.triangleCount} ` +
+            `openEdges=${diag.openEdges} multiMesh=${diag.isMultiMeshBase} topVerts=${diag.topVertexCount}` +
+            (diag.failureReason ? ` reason=${diag.failureReason}` : ""),
+    );
+}
 
 /**
  * OCCT base path parity (Phase 3B).
@@ -72,15 +110,33 @@ export function sewGlbGeometryToSolid(
     factory: IShapeFactory,
     geometry: BufferGeometry,
 ): ISolid | null {
+    const inputDiag = sewGlbInputDiagnostics(geometry);
+    logSewDiagnostics("input", inputDiag);
+
     try {
         const pos = geometry.getAttribute("position");
         const idx = geometry.getIndex();
-        if (!pos || pos.count < 3) return null;
+        if (!pos || pos.count < 3) {
+            logSewDiagnostics("failed", { ...inputDiag, failureReason: "missing position attribute" });
+            return null;
+        }
+
+        const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
+        if (userData.isMultiMeshBase && inputDiag.openEdges > 0) {
+            // Stock GLB bases ship as separate open Top/Bottom shells. Sewing every
+            // triangle into one BRep shell cannot close the perimeter gap — mesh-close
+            // must bridge the rim first (export fallback path).
+            logSewDiagnostics("skipped", {
+                ...inputDiag,
+                failureReason: "multi-mesh open shells require mesh-close bridge before BRep sew",
+            });
+            return null;
+        }
 
         // Fast path: if the geometry already came from an OCCT shape we cached,
         // we could short-circuit — but for imported GLB we always go through mesh.
         // Build a list of triangular faces.
-        const triCount = idx ? idx.count / 3 : pos.count / 3;
+        const triCount = triangleCount(geometry);
         const faces: IShape[] = [];
 
         for (let t = 0; t < triCount; t++) {
@@ -105,7 +161,10 @@ export function sewGlbGeometryToSolid(
             }
         }
 
-        if (faces.length === 0) return null;
+        if (faces.length === 0) {
+            logSewDiagnostics("failed", { ...inputDiag, failureReason: "no triangle faces built" });
+            return null;
+        }
 
         const shell = unwrap(factory.shell(faces as any), "base shell");
         let solid: IShape = unwrap(factory.solid([shell]), "base solid");
@@ -113,10 +172,24 @@ export function sewGlbGeometryToSolid(
         // Run the same repair that the parametric path trusts.
         solid = repairOcctSolid(factory, solid);
 
-        if (solid.shapeType === ShapeTypes.solid) return solid as ISolid;
+        if (solid.shapeType === ShapeTypes.solid && solid.isClosed()) {
+            logSewDiagnostics("success", inputDiag);
+            return solid as ISolid;
+        }
         // Last attempt to force solid.
-        return asSolid(factory, solid);
+        const forced = asSolid(factory, solid);
+        if (forced.isClosed()) {
+            logSewDiagnostics("success", inputDiag);
+            return forced;
+        }
+        logSewDiagnostics("failed", {
+            ...inputDiag,
+            failureReason: `BRep not closed after repair (shapeType=${solid.shapeType})`,
+        });
+        return null;
     } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        logSewDiagnostics("failed", { ...inputDiag, failureReason: reason });
         if (typeof console !== "undefined") {
             console.warn("[base-occt] sewGlbGeometryToSolid failed (will use deformation fallback):", err);
         }

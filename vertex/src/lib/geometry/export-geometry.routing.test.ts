@@ -10,7 +10,8 @@ const mockExportManufacturingStlFromBase = rs.fn<() => ArrayBuffer | null>();
 const mockEnsureWatertight = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
 const mockLoadBaseGeometry = rs.fn<() => Promise<BufferGeometry | null>>();
 const mockBuildInsoleSolid = rs.fn<() => never>();
-const mockBuildFromBase = rs.fn<() => { geometry: BufferGeometry; manifold: { isWatertight: boolean } }>();
+const mockBuildFromBase = rs.fn<() => { geometry: BufferGeometry; manifold: { isWatertight: boolean; occtClosed?: boolean } }>();
+const mockApplyBaseModifiers = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
 const mockGetDesignBase = rs.fn<() => unknown>();
 const mockBaseModifierField = rs.fn<() => object>();
 
@@ -51,9 +52,13 @@ rs.mock("@/lib/geometry/mesh-close", () => ({
     MeshNotWatertightError: class MeshNotWatertightError extends Error {},
 }));
 
+rs.mock("@/lib/geometry/base-modifier", () => ({
+    applyBaseModifiers: (geometry: BufferGeometry) => mockApplyBaseModifiers(geometry),
+}));
+
 rs.mock("@/lib/geometry/base-asset", () => ({
     getDesignBase: () => mockGetDesignBase(),
-    loadBaseGeometry: () => mockLoadBaseGeometry(),
+    loadBaseGeometry: (...args: unknown[]) => mockLoadBaseGeometry(...(args as [])),
     baseModifierFieldAuthoritative: () => mockBaseModifierField(),
 }));
 
@@ -105,6 +110,7 @@ describe("export-geometry routing", () => {
         mockLoadBaseGeometry.mockReset();
         mockBuildInsoleSolid.mockReset();
         mockBuildFromBase.mockReset();
+        mockApplyBaseModifiers.mockReset();
         mockGetDesignBase.mockReset();
         mockBaseModifierField.mockReset();
 
@@ -128,6 +134,7 @@ describe("export-geometry routing", () => {
             geometry: makeTestGeometry(),
             manifold: { isWatertight: false, occtClosed: false },
         }));
+        mockApplyBaseModifiers.mockImplementation((geometry) => geometry);
         mockEnsureWatertight.mockImplementation((geometry) => geometry);
     });
 
@@ -140,23 +147,34 @@ describe("export-geometry routing", () => {
 
     test("Printing Solid export uses OCCT path", async () => {
         const occtBytes = new ArrayBuffer(128);
-        mockExportManufacturingStlFromBase.mockReturnValue(occtBytes);
+        mockBuildFromBase.mockImplementation(() => ({
+            geometry: makeTestGeometry(),
+            manifold: { isWatertight: true, occtClosed: true },
+        }));
 
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
-        expect(mockExportManufacturingStlFromBase).toHaveBeenCalledTimes(1);
+        expect(mockBuildFromBase).toHaveBeenCalledTimes(1);
+        expect(mockExportManufacturingStlFromBase).not.toHaveBeenCalled();
         expect(mockEnsureWatertight).not.toHaveBeenCalled();
-        expect(result).toBe(occtBytes);
+        expect(result.byteLength).toBeGreaterThan(0);
     });
 
-    test("OCCT path failure falls back to mesh-close", async () => {
+    test("OCCT buildFromBase failure falls back to mesh-close with sealed base load", async () => {
+        mockBuildFromBase.mockImplementation(() => ({
+            geometry: makeTestGeometry(),
+            manifold: { isWatertight: false, occtClosed: false },
+        }));
         mockExportManufacturingStlFromBase.mockReturnValue(null);
 
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
-        expect(mockExportManufacturingStlFromBase).toHaveBeenCalledTimes(1);
+        expect(mockBuildFromBase).toHaveBeenCalledTimes(1);
+        expect(mockLoadBaseGeometry).toHaveBeenCalled();
+        const loadCalls = mockLoadBaseGeometry.mock.calls as Array<[unknown, { sealBottomSlits?: boolean }?]>;
+        expect(loadCalls.some(([, opts]) => opts?.sealBottomSlits === true)).toBe(true);
         expect(mockEnsureWatertight).toHaveBeenCalledTimes(1);
         expect(result.byteLength).toBeGreaterThan(0);
     });
