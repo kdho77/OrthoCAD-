@@ -1,1 +1,8 @@
-export { getKernel, loadOcctKernel, type IGeometryKernel, type SolidResult } from "./kernel";
+export {
+    ensureKernelReady,
+    getKernel,
+    isKernelInitFailed,
+    loadOcctKernel,
+    type IGeometryKernel,
+    type SolidResult,
+} from "./kernel";
