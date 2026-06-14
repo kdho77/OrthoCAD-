@@ -13,7 +13,6 @@ import { LoginScreen } from "@/features/auth/LoginScreen";
 import { exportDesign } from "@/features/exports/export-service";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
-import { loadOcctKernel } from "@/lib/chili3d";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
 import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
@@ -28,10 +27,6 @@ export default function App() {
     const [rxOpen, setRxOpen] = useState(false);
     const applyPrescription = useDesignStore((s) => s.applyPrescription);
     const { user, loading: authLoading } = useAuthStore();
-
-    useEffect(() => {
-        void loadOcctKernel();
-    }, []);
 
     // Resolve the default stock base from the server once auth is ready.
     // Single authoritative bootstrap path for Supabase deployments — avoids the rehydrate/auth race.

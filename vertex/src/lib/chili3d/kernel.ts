@@ -76,7 +76,8 @@ class ThreeKernel implements IGeometryKernel {
 }
 
 let kernel: IGeometryKernel = new ThreeKernel();
-let occtLoadAttempted = false;
+let kernelInitPromise: Promise<boolean> | null = null;
+let kernelInitFailed = false;
 
 export function getKernel(): IGeometryKernel {
     return kernel;
@@ -87,14 +88,12 @@ export function isAuthoritativeKernel(): boolean {
     return kernel.tier === "authoritative";
 }
 
-/**
- * Attempts to load the Chili3D OpenCascade WASM kernel. Resolves to `true` when
- * the OCCT kernel is active, `false` when falling back to the procedural kernel.
- */
-export async function loadOcctKernel(): Promise<boolean> {
-    if (occtLoadAttempted) return kernel.name !== "three-procedural";
-    occtLoadAttempted = true;
+/** True after a deferred OCCT init attempt failed (export falls back to mesh-close). */
+export function isKernelInitFailed(): boolean {
+    return kernelInitFailed;
+}
 
+async function initOcctKernelInternal(): Promise<boolean> {
     const { useKernelStore } = await import("@/stores/kernel-store");
     const { setLoadState, notifyKernelChanged } = useKernelStore.getState();
     setLoadState("loading");
@@ -109,10 +108,31 @@ export async function loadOcctKernel(): Promise<boolean> {
         return true;
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn("[loadOcctKernel] WASM unavailable, using procedural kernel:", error);
+        console.error(`[OCCT] kernel init failed: ${message}`);
+        kernelInitFailed = true;
         kernel = new ThreeKernel();
         notifyKernelChanged("three-procedural");
         setLoadState("failed", message);
         return false;
     }
+}
+
+/**
+ * Lazily loads the OpenCascade WASM kernel on first manufacturing export.
+ * Idempotent: concurrent callers share one init promise.
+ */
+export function ensureKernelReady(): Promise<boolean> {
+    if (kernel.name === "opencascade-wasm") return Promise.resolve(true);
+    if (kernelInitFailed) return Promise.resolve(false);
+    if (!kernelInitPromise) {
+        kernelInitPromise = initOcctKernelInternal();
+    }
+    return kernelInitPromise;
+}
+
+/**
+ * @deprecated Use `ensureKernelReady()` — OCCT init is deferred until export.
+ */
+export async function loadOcctKernel(): Promise<boolean> {
+    return ensureKernelReady();
 }

@@ -5,6 +5,7 @@ import { describe, expect, test, beforeEach } from "@rstest/core";
 import { BufferAttribute, BufferGeometry } from "three";
 import type { DesignState } from "@/types";
 
+const mockEnsureKernelReady = rs.fn<() => Promise<boolean>>();
 const mockExportManufacturingStlFromBase = rs.fn<() => ArrayBuffer | null>();
 const mockEnsureWatertight = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
 const mockLoadBaseGeometry = rs.fn<() => Promise<BufferGeometry | null>>();
@@ -41,6 +42,8 @@ rs.mock("@/lib/chili3d/kernel", () => ({
         buildFromBase: mockBuildFromBase,
     }),
     isAuthoritativeKernel: () => true,
+    isKernelInitFailed: () => false,
+    ensureKernelReady: () => mockEnsureKernelReady(),
 }));
 
 rs.mock("@/lib/geometry/mesh-close", () => ({
@@ -95,6 +98,8 @@ function makeTestGeometry(): BufferGeometry {
 
 describe("export-geometry routing", () => {
     beforeEach(() => {
+        mockEnsureKernelReady.mockReset();
+        mockEnsureKernelReady.mockResolvedValue(true);
         mockExportManufacturingStlFromBase.mockReset();
         mockEnsureWatertight.mockReset();
         mockLoadBaseGeometry.mockReset();

@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
-import { getKernel, isAuthoritativeKernel } from "@/lib/chili3d/kernel";
+import { ensureKernelReady, getKernel, isAuthoritativeKernel, isKernelInitFailed } from "@/lib/chili3d/kernel";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
@@ -101,6 +101,21 @@ export async function exportManufacturingStlAttempt(
 
 /** PATH A — OCCT sew manufacturing STL from raw GLB base. */
 async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise<ArrayBuffer | null> {
+    if (isKernelInitFailed()) {
+        if (typeof console !== "undefined") {
+            console.log("[EXPORT] OCCT unavailable — using mesh-close fallback");
+        }
+        return null;
+    }
+
+    const kernelReady = await ensureKernelReady();
+    if (!kernelReady) {
+        if (typeof console !== "undefined") {
+            console.log("[EXPORT] OCCT unavailable — using mesh-close fallback");
+        }
+        return null;
+    }
+
     const raw = await loadRawBaseGeometry(design, side);
     if (!raw) return null;
 
