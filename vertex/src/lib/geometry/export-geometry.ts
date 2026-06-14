@@ -17,6 +17,14 @@ import type { DesignState, ProductionMethod, Side } from "@/types";
 /** Export routing: manufacturing uses OCCT sew first; preview uses mesh-close. */
 export type ExportMode = "preview" | "manufacturing";
 
+/** Thrown when a design references a base GLB that has not finished loading yet. */
+export class ExportGeometryNotReadyError extends Error {
+    constructor(message = "Geometry not ready, please wait for the base model to finish loading.") {
+        super(message);
+        this.name = "ExportGeometryNotReadyError";
+    }
+}
+
 export function exportModeFromMethod(method: ProductionMethod): ExportMode {
     return method === "printing_solid" || method === "milling_3axis" ? "manufacturing" : "preview";
 }
@@ -158,9 +166,14 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
 /** Builds export geometry for a side — base+modifiers or kernel insole solid. */
 export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
+    const base = getDesignBase(design, side);
 
     const modifiedBase = await buildModifiedBaseGeometry(design, side);
     if (modifiedBase) return modifiedBase;
+
+    if (base) {
+        throw new ExportGeometryNotReadyError();
+    }
 
     return getKernel().buildInsole({
         ...insoleParamsFromDesign(design, side, "full"),
@@ -177,7 +190,9 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
         const occtStl = await tryOcctManufacturingStl(design, side);
         if (occtStl) return occtStl;
 
-        if (isAuthoritativeKernel()) {
+        // Parametric OCCT loft is only valid without a loaded base GLB. When a base
+        // is configured, fall through to buildExportGeometry (merged GLB + modifiers).
+        if (isAuthoritativeKernel() && !getDesignBase(design, side)) {
             const params = insoleParamsFromDesign(design, side, "full");
             const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
             try {
@@ -209,9 +224,14 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
  */
 export async function buildExportGlbGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
+    const base = getDesignBase(design, side);
 
     const modifiedBase = await buildModifiedBaseGeometry(design, side);
     if (modifiedBase) return modifiedBase;
+
+    if (base) {
+        throw new ExportGeometryNotReadyError();
+    }
 
     const params = insoleParamsFromDesign(design, side, "full");
     const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);

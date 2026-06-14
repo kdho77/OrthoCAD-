@@ -5,6 +5,7 @@ import { type ThreeEvent, useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
+import { resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import {
     cloneTrimline,
@@ -78,6 +79,13 @@ function TrimlineSideRow({
     const baseForSide = getDesignBase(design, side);
     const baseKey = getBaseCacheKey(baseForSide) ?? baseForSide?.assetId ?? null;
     const baseOutline = useBaseOutlineStore((s) => (baseKey ? (s.outlines[baseKey] ?? null) : null));
+    const designMode = resolveDesignMode(design, side);
+
+    // In base mode, hide the trimline overlay until the GLB mesh is loaded. Before
+    // load, getTrimlineForSide falls back to a flat default outline on the grid.
+    if (designMode.mode === "base" && !baseOutline) {
+        return null;
+    }
 
     const isEditing = editMode === "edit-trimline" && trimlineEdit?.side === side;
     const curve =

@@ -4,6 +4,7 @@ import {
     buildExportGlb,
     buildExportSolid,
     buildExportStl,
+    ExportGeometryNotReadyError,
     exportModeFromMethod,
 } from "@/lib/geometry/export-geometry";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
@@ -87,11 +88,18 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     const auth = await authorize("stl", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
     const { design } = useDesignStore.getState();
-    const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
-    const blob = new Blob([stl], { type: "model/stl" });
-    downloadBlob(blob, filename);
-    useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
-    return { ok: true, filename, blob };
+    try {
+        const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
+        const blob = new Blob([stl], { type: "model/stl" });
+        downloadBlob(blob, filename);
+        useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
+        return { ok: true, filename, blob };
+    } catch (e) {
+        if (e instanceof ExportGeometryNotReadyError) {
+            return { ok: false, reason: e.message };
+        }
+        throw e;
+    }
 }
 
 export async function exportGlb(side: Side): Promise<ExportOutcome> {
