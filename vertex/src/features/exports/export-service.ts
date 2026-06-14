@@ -1,17 +1,17 @@
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
-import { getKernel } from "@/lib/chili3d/kernel";
 import {
     buildExportGeometry,
     buildExportGlb,
     buildExportSolid,
     buildExportStl,
+    exportModeFromMethod,
 } from "@/lib/geometry/export-geometry";
-import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
+import { useDesignStore } from "@/stores/design-store";
 import type { ExportFormat, GrindingStyle, Side } from "@/types";
 
 // Re-export for convenience in UI components
@@ -39,17 +39,10 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     return btoa(binary);
 }
 
-/** Export the finalized viewer solid as binary STL (OCCT/kernel — not re-derived from parameters). */
+/** Export the finalized viewer solid as binary STL (OCCT sew primary, mesh-close fallback). */
 async function buildManufacturingStl(side: Side): Promise<ArrayBuffer> {
-    const geometry = await buildExportSolid(side);
-    const kernel = getKernel();
-    try {
-        return kernel.exportSTL(geometry);
-    } catch {
-        return geometryToBinarySTL(geometry);
-    } finally {
-        geometry.dispose();
-    }
+    const { design } = useDesignStore.getState();
+    return buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
 }
 
 async function authorize(
@@ -93,7 +86,8 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     const filename = `insole-${side}-${Date.now()}.stl`;
     const auth = await authorize("stl", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
-    const stl = await buildExportStl(side);
+    const { design } = useDesignStore.getState();
+    const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
     const blob = new Blob([stl], { type: "model/stl" });
     downloadBlob(blob, filename);
     useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);

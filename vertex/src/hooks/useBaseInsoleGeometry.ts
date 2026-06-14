@@ -7,17 +7,17 @@ import {
     isLocalPlaceholderGlbPath,
     isStockDesignBase,
     loadBaseGeometry,
-    stockBaseNeedsServerResolution,
     StockGlbLoadError,
+    stockBaseNeedsServerResolution,
 } from "@/lib/geometry/base-asset";
-import { isApiConfigured } from "@/lib/trpc";
-import { useDesignStore } from "@/stores/design-store";
-import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
-import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import { computeBaseBounds } from "@/lib/geometry/base-bounds";
+import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
+import { isApiConfigured } from "@/lib/trpc";
 import { useBaseBoundsStore } from "@/stores/base-bounds-store";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
+import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
@@ -114,7 +114,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             hasUrl,
             glbPath: ref.glbPath,
         });
-        void loadBaseGeometry(ref)
+        void loadBaseGeometry(ref, { sealBottomSlits: true })
             .then((geo) => {
                 if (cancelled) {
                     geo?.dispose();

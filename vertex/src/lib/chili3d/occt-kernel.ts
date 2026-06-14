@@ -113,4 +113,25 @@ export class OcctKernel implements IGeometryKernel {
         }
         return geometryToBinarySTL(geometry);
     }
+
+    /**
+     * Manufacturing STL from raw imported GLB geometry (before mesh-close).
+     * Uses sewGlbGeometryToSolid → base booleans → repair → shapesToStl.
+     */
+    exportManufacturingStlFromBase(base: BufferGeometry, field: HeightFieldParams): ArrayBuffer | null {
+        try {
+            const sewn = sewGlbGeometryToSolid(this.factory, base);
+            if (!sewn) return null;
+
+            let solid = applyBaseBooleansOnSewnSolid(this.factory, sewn, field);
+            solid = applyRimBlend(this.factory, solid, 1.0);
+            const method = (field as { method?: "printing_solid" | "printing_shell" | "milling_3axis" }).method;
+            solid = applyThicknessToSewnBase(this.factory, solid, field.thicknessMm, method);
+            const repaired = repairOcctSolid(this.factory, solid);
+            const bytes = shapesToStl([repaired], { binary: true });
+            return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+        } catch {
+            return null;
+        }
+    }
 }

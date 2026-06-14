@@ -10,7 +10,7 @@
 //         tessellation with seam edges, or when trimline-mesh claims watertight-by-construction but base path skips it
 // Step 6: [STL written via] kernel.exportSTL → shapesToStl (OCCT) or geometryToBinarySTL → vertex/src/lib/geometry/stl.ts
 
-import { BufferAttribute, BufferGeometry, Vector3 } from "three";
+import { BufferAttribute, BufferGeometry, ShapeUtils, Vector2, Vector3 } from "three";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 
 /** Laplacian smoothing iterations applied to bridge interior vertices only. */
@@ -189,6 +189,80 @@ export function extractBoundaryLoops(geometry: BufferGeometry): Vector3[][] {
     }
 
     return loops;
+}
+
+/** DFS boundary walk that enumerates simple cycles through degree>2 branch vertices. */
+function extractAllBoundaryCycles(geometry: BufferGeometry): Vector3[][] {
+    const { edgeCount, edgeVerts } = buildEdgeUsage(geometry);
+    const boundaryEdges: Array<[string, string]> = [];
+
+    for (const [ek, count] of edgeCount) {
+        if (count === 1) {
+            const pair = edgeVerts.get(ek);
+            if (pair) boundaryEdges.push(pair);
+        }
+    }
+
+    if (boundaryEdges.length === 0) return [];
+
+    const adj = new Map<string, string[]>();
+    for (const [a, b] of boundaryEdges) {
+        if (!adj.has(a)) adj.set(a, []);
+        if (!adj.has(b)) adj.set(b, []);
+        adj.get(a)!.push(b);
+        adj.get(b)!.push(a);
+    }
+
+    const visitedEdges = new Set<string>();
+    const cycles: Vector3[][] = [];
+
+    const walk = (start: string, prev: string, curr: string, loopKeys: string[]): void => {
+        const neighbors = adj.get(curr) ?? [];
+        for (const next of neighbors) {
+            if (next === prev) continue;
+            const e = edgeKey(curr, next);
+            if (visitedEdges.has(e)) continue;
+
+            if (next === start && loopKeys.length >= 2) {
+                visitedEdges.add(e);
+                cycles.push([...loopKeys, curr].map((k) => parseKey(k)));
+                continue;
+            }
+
+            if (loopKeys.includes(next)) continue;
+
+            visitedEdges.add(e);
+            walk(start, curr, next, [...loopKeys, curr]);
+            visitedEdges.delete(e);
+        }
+    };
+
+    for (const [startA, startB] of boundaryEdges) {
+        const startEdge = edgeKey(startA, startB);
+        if (visitedEdges.has(startEdge)) continue;
+        visitedEdges.add(startEdge);
+        walk(startA, startA, startB, [startA]);
+        visitedEdges.delete(startEdge);
+    }
+
+    return cycles;
+}
+
+function largestBoundaryLoop(geometry: BufferGeometry): Vector3[] {
+    const cycles = extractAllBoundaryCycles(geometry);
+    if (cycles.length === 0) return extractOrderedBoundaryLoop(geometry);
+
+    let best = cycles[0]!;
+    let bestLen = loopPerimeterLength(best);
+    for (let i = 1; i < cycles.length; i++) {
+        const loop = cycles[i]!;
+        const len = loopPerimeterLength(loop);
+        if (len > bestLen) {
+            best = loop;
+            bestLen = len;
+        }
+    }
+    return best;
 }
 
 /**
@@ -781,6 +855,31 @@ export function mergeGeometriesWithWeldedBridge(
     topVertexCount: number,
     bottomVertexCount: number,
 ): { geometry: BufferGeometry; rimTopIndices: number[]; rimBottomIndices: number[] } {
+    if (!body) {
+        throw new Error(
+            "mergeGeometriesWithWeldedBridge requires a body geometry. Do not pre-merge before calling this function.",
+        );
+    }
+    if (topVertexCount <= 0 || bottomVertexCount <= 0) {
+        throw new Error(
+            `mergeGeometriesWithWeldedBridge requires separate top and bottom vertex ranges. ` +
+                `Got topVertexCount=${topVertexCount} bottomVertexCount=${bottomVertexCount}. ` +
+                "Pass concatenated [top][bottom] geometry from extractMergedGeometry, not a pre-welded single shell.",
+        );
+    }
+    const bodyVertexCount = body.getAttribute("position").count;
+    if (topVertexCount + bottomVertexCount !== bodyVertexCount) {
+        throw new Error(
+            `mergeGeometriesWithWeldedBridge vertex layout mismatch: top=${topVertexCount} + bottom=${bottomVertexCount} ` +
+                `!= body=${bodyVertexCount}. The body must be [top vertices][bottom vertices] without bridge verts.`,
+        );
+    }
+    if (typeof console !== "undefined") {
+        console.log(
+            `[MESH-CLOSE] mergeGeometriesWithWeldedBridge: top verts=${topVertexCount} bottom verts=${bottomVertexCount}`,
+        );
+    }
+
     // MERGED VERTEX BUFFER LAYOUT
     // [0 .. topVertCount-1]                              → top body mesh vertices (copied as-is)
     // [topVertCount .. topVertCount+bottomVertCount-1]   → bottom body vertices
@@ -1274,10 +1373,285 @@ function pickTopBottomSeamLoops(geometry: BufferGeometry): { top: Vector3[]; bot
     return { top, bottom };
 }
 
+/** Extract a vertex-index submesh containing only triangles whose vertices lie in [rangeStart, rangeEnd). */
+function submeshByVertexRange(
+    geometry: BufferGeometry,
+    rangeStart: number,
+    rangeEnd: number,
+): BufferGeometry {
+    const pos = geometry.getAttribute("position");
+    const index = geometry.index;
+    if (!index) return geometry.clone();
+
+    const remap = new Map<number, number>();
+    const newPos: number[] = [];
+    const newIdx: number[] = [];
+    const map = (vi: number): number => {
+        if (!remap.has(vi)) {
+            remap.set(vi, remap.size);
+            newPos.push(pos.getX(vi), pos.getY(vi), pos.getZ(vi));
+        }
+        return remap.get(vi)!;
+    };
+
+    for (let t = 0; t < index.count; t += 3) {
+        const i0 = index.getX(t);
+        const i1 = index.getX(t + 1);
+        const i2 = index.getX(t + 2);
+        if (i0 < rangeStart || i0 >= rangeEnd) continue;
+        if (i1 < rangeStart || i1 >= rangeEnd) continue;
+        if (i2 < rangeStart || i2 >= rangeEnd) continue;
+        newIdx.push(map(i0), map(i1), map(i2));
+    }
+
+    const out = new BufferGeometry();
+    out.setAttribute("position", new BufferAttribute(new Float32Array(newPos), 3));
+    if (newIdx.length > 0) out.setIndex(newIdx);
+    return out;
+}
+
+/**
+ * For multi-mesh GLB bases the bottom shell often has branched boundary graphs (degree-4
+ * pinch vertices) that defeat generic loop extraction. The top perimeter is reliable; match
+ * each top loop point to the nearest bottom-shell vertex in XY within the bottom index range.
+ */
+/** Vertex indices in [rangeStart, rangeEnd) that touch at least one open boundary edge. */
+function boundaryVertexIndicesInRange(
+    geometry: BufferGeometry,
+    rangeStart: number,
+    rangeEnd: number,
+): Set<number> {
+    const { edgeCount, edgeVerts } = buildEdgeUsage(geometry);
+    const pos = geometry.getAttribute("position");
+    const out = new Set<number>();
+
+    for (const [ek, count] of edgeCount) {
+        if (count !== 1) continue;
+        const pair = edgeVerts.get(ek);
+        if (!pair) continue;
+        for (const key of pair) {
+            const vi = vertexIndexForQuantKeyInRange(geometry, key, rangeStart, rangeEnd);
+            if (vi >= 0) out.add(vi);
+        }
+    }
+
+    // Fallback when boundary keys fail quant lookup (should be rare).
+    if (out.size === 0) {
+        for (let i = rangeStart; i < rangeEnd; i++) out.add(i);
+    }
+    return out;
+}
+
+function buildBottomLoopFromTopXY(
+    geometry: BufferGeometry,
+    topLoop: Vector3[],
+    topVertexCount: number,
+): Vector3[] {
+    const pos = geometry.getAttribute("position");
+    const total = pos.count;
+    const boundaryVerts = boundaryVertexIndicesInRange(geometry, topVertexCount, total);
+    const bottomLoop: Vector3[] = [];
+
+    for (const tp of topLoop) {
+        let bestVi = topVertexCount;
+        let bestD2 = Number.POSITIVE_INFINITY;
+        for (const i of boundaryVerts) {
+            const dx = pos.getX(i) - tp.x;
+            const dy = pos.getY(i) - tp.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestD2) {
+                bestD2 = d2;
+                bestVi = i;
+            }
+        }
+        bottomLoop.push(new Vector3(pos.getX(bestVi), pos.getY(bestVi), pos.getZ(bestVi)));
+    }
+
+    return bottomLoop;
+}
+
+/** Order the outer bottom perimeter from boundary vertices sorted by polar angle in XY. */
+function extractOuterBoundaryLoopByAngle(geometry: BufferGeometry): Vector3[] {
+    const { edgeCount, edgeVerts } = buildEdgeUsage(geometry);
+    const boundaryVerts = new Set<string>();
+    for (const [ek, count] of edgeCount) {
+        if (count !== 1) continue;
+        const pair = edgeVerts.get(ek);
+        if (!pair) continue;
+        boundaryVerts.add(pair[0]);
+        boundaryVerts.add(pair[1]);
+    }
+    if (boundaryVerts.size < 3) return [];
+
+    const pts = Array.from(boundaryVerts).map((k) => parseKey(k));
+    const centroid = new Vector3();
+    for (const p of pts) centroid.add(p);
+    centroid.multiplyScalar(1 / pts.length);
+
+    pts.sort(
+        (a, b) =>
+            Math.atan2(a.y - centroid.y, a.x - centroid.x) - Math.atan2(b.y - centroid.y, b.x - centroid.x),
+    );
+    return pts;
+}
+
+/** Add a planar XY cap for one boundary loop using existing mesh vertices where possible. */
+function capBoundaryLoopInPlace(geometry: BufferGeometry, loop: Vector3[]): boolean {
+    if (loop.length < 3) return false;
+
+    const contour = loop.map((p) => new Vector2(p.x, p.y));
+    if (Math.abs(ShapeUtils.area(contour)) < 1e-6) return false;
+
+    let triangulated: number[][];
+    try {
+        triangulated = ShapeUtils.triangulateShape(contour, []);
+    } catch {
+        return false;
+    }
+    if (triangulated.length === 0) return false;
+
+    const index = geometry.index;
+    if (!index) return false;
+
+    const loopIndices: number[] = [];
+    for (const p of loop) {
+        const vi = vertexIndexForQuantKey(geometry, quantKey(p.x, p.y, p.z));
+        if (vi < 0) return false;
+        loopIndices.push(vi);
+    }
+
+    const newIdx = Array.from(index.array as ArrayLike<number>);
+    for (const tri of triangulated) {
+        newIdx.push(loopIndices[tri[0]!]!, loopIndices[tri[1]!]!, loopIndices[tri[2]!]!);
+    }
+    geometry.setIndex(newIdx);
+    return true;
+}
+
+/**
+ * Seal any remaining open boundary cycles after the main top/bottom bridge.
+ * Stock GLB bottoms often include internal slit boundaries (degree-4 branch nodes)
+ * that must be capped separately for watertight STL export.
+ */
+function capRemainingBoundaryLoops(geometry: BufferGeometry): boolean {
+    let cappedAny = false;
+    for (let pass = 0; pass < 4; pass++) {
+        const report = validateManifold(geometry);
+        if (report.isWatertight && report.eulerCharacteristic === 2) break;
+
+        const loops = extractBoundaryLoops(geometry).sort(
+            (a, b) => loopPerimeterLength(b) - loopPerimeterLength(a),
+        );
+        if (loops.length === 0) break;
+
+        let cappedPass = false;
+        for (const loop of loops) {
+            // Skip the main outer perimeter — already handled by the bridge strip.
+            if (loop.length > 512) continue;
+            if (capBoundaryLoopInPlace(geometry, loop)) {
+                cappedAny = true;
+                cappedPass = true;
+            }
+        }
+        if (!cappedPass) break;
+    }
+    return cappedAny;
+}
+
+function sealBottomSlitLoopsBeyondOuterLoop(
+    geometry: BufferGeometry,
+    topVertexCount: number,
+    outerBottomLoop: Vector3[],
+): boolean {
+    const outerKeys = new Set(outerBottomLoop.map((p) => quantKey(p.x, p.y, p.z)));
+    const { edgeCount, edgeVerts } = buildEdgeUsage(geometry);
+    const total = geometry.getAttribute("position").count;
+
+    const internalEdges: Array<[string, string]> = [];
+    for (const [ek, count] of edgeCount) {
+        if (count !== 1) continue;
+        const pair = edgeVerts.get(ek);
+        if (!pair) continue;
+        const inRange = pair.every((key) => {
+            const vi = vertexIndexForQuantKeyInRange(geometry, key, topVertexCount, total);
+            return vi >= 0;
+        });
+        if (!inRange) continue;
+        if (pair.every((key) => outerKeys.has(key))) continue;
+        internalEdges.push(pair);
+    }
+    if (internalEdges.length === 0) return false;
+
+    const adj = new Map<string, string[]>();
+    for (const [a, b] of internalEdges) {
+        if (!adj.has(a)) adj.set(a, []);
+        if (!adj.has(b)) adj.set(b, []);
+        adj.get(a)!.push(b);
+        adj.get(b)!.push(a);
+    }
+
+    const visited = new Set<string>();
+    let capped = false;
+    for (const [startA, startB] of internalEdges) {
+        const startEdge = edgeKey(startA, startB);
+        if (visited.has(startEdge)) continue;
+
+        const loopKeys: string[] = [startA];
+        let prev = startA;
+        let curr = startB;
+        visited.add(startEdge);
+
+        for (let guard = 0; guard < internalEdges.length + 2; guard++) {
+            loopKeys.push(curr);
+            const next = (adj.get(curr) ?? []).find((n) => n !== prev && !visited.has(edgeKey(curr, n)));
+            if (!next) break;
+            visited.add(edgeKey(curr, next));
+            if (next === startA && loopKeys.length >= 3) {
+                const loop = loopKeys.map((k) => parseKey(k));
+                if (loop.length <= 256 && capBoundaryLoopInPlace(geometry, loop)) capped = true;
+                break;
+            }
+            prev = curr;
+            curr = next;
+        }
+    }
+    return capped;
+}
+
+/**
+ * stored `topVertexCount` split instead of combined-mesh seam heuristics.
+ */
+function resolveMultiMeshBaseLoops(
+    geometry: BufferGeometry,
+    topVertexCount: number,
+): { top: Vector3[]; bottom: Vector3[] } | null {
+    const total = geometry.getAttribute("position").count;
+    if (topVertexCount <= 0 || topVertexCount >= total) return null;
+
+    const topSub = submeshByVertexRange(geometry, 0, topVertexCount);
+    const topLoop = extractOrderedBoundaryLoop(topSub);
+    topSub.dispose();
+
+    if (topLoop.length < 3) return null;
+
+    const bottomLoop = buildBottomLoopFromTopXY(geometry, topLoop, topVertexCount);
+    if (bottomLoop.length < 3) return null;
+
+    return { top: topLoop, bottom: bottomLoop };
+}
+
 function resolveTopBottomLoops(geometry: BufferGeometry): { top: Vector3[]; bottom: Vector3[] } | null {
     const boundaryLoops = extractBoundaryLoops(geometry);
     const fromBoundary = pickTopBottomLoops(boundaryLoops);
     if (fromBoundary) return fromBoundary;
+
+    const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
+    const storedTop = userData.topVertexCount;
+    if (userData.isMultiMeshBase && storedTop && storedTop > 0 && storedTop < geometry.getAttribute("position").count) {
+        const multi = resolveMultiMeshBaseLoops(geometry, storedTop);
+        if (multi) return multi;
+    }
+
     return pickTopBottomSeamLoops(geometry);
 }
 
@@ -1320,6 +1694,16 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
             `Cannot close mesh: no top/bottom seam loops (euler=${workingPrecheck.eulerCharacteristic}, openEdges=${workingPrecheck.openEdges})`,
             workingPrecheck,
         );
+    }
+
+    const storedTopForSlits = (working.userData as { isMultiMeshBase?: boolean; topVertexCount?: number })
+        .topVertexCount;
+    if (
+        (working.userData as { isMultiMeshBase?: boolean }).isMultiMeshBase &&
+        storedTopForSlits &&
+        storedTopForSlits > 0
+    ) {
+        sealBottomSlitLoopsBeyondOuterLoop(working, storedTopForSlits, pair.bottom);
     }
 
     const targetN = roundUpToNearest4(Math.max(pair.top.length, pair.bottom.length));
@@ -1392,6 +1776,14 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
     merged.computeBoundingBox();
     merged.computeBoundingSphere();
 
+    if (typeof console !== "undefined") {
+        const belowTop = weldBottomIndices.filter((i) => i >= 0 && i < topVertexCount).length;
+        const minBot = weldBottomIndices.length > 0 ? Math.min(...weldBottomIndices) : -1;
+        console.log(
+            `[MESH-CLOSE] pre-validate: weldBottom belowTop=${belowTop} minBotIndex=${minBot} topVertexCount=${topVertexCount}`,
+        );
+    }
+
     const report = validateManifold(merged);
     if (!report.isWatertight || report.eulerCharacteristic !== 2) {
         throw new MeshNotWatertightError(
@@ -1402,7 +1794,7 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
 
     if (typeof console !== "undefined") {
         console.log(
-            `Mesh closed: V=${report.vertexCount} E=${report.edgeCount} F=${report.triangleCount} Euler=${report.eulerCharacteristic} Watertight=true`,
+            `[MESH-CLOSE] closure complete: V=${report.vertexCount} E=${report.edgeCount} F=${report.triangleCount} Euler=${report.eulerCharacteristic} Watertight=${report.isWatertight}`,
         );
     }
 
@@ -1425,8 +1817,25 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
  * Preserves geometry when already watertight.
  */
 export function ensureWatertightForExport(geometry: BufferGeometry): BufferGeometry {
+    const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
+    const bodyVertexCount = geometry.getAttribute("position").count;
+    const storedTop = userData.topVertexCount;
+    const topVerts =
+        storedTop && storedTop > 0 && storedTop < bodyVertexCount
+            ? storedTop
+            : userData.isMultiMeshBase
+              ? inferTopVertexCount(geometry)
+              : bodyVertexCount;
+    const bottomVerts = userData.isMultiMeshBase ? Math.max(0, bodyVertexCount - topVerts) : 0;
+
+    if (typeof console !== "undefined") {
+        console.log(
+            `[MESH-CLOSE] ensureWatertightForExport called: topVerts=${topVerts} bottomVerts=${bottomVerts}`,
+        );
+    }
+
     const pre = validateManifold(geometry);
-    const isMultiMesh = !!(geometry.userData as { isMultiMeshBase?: boolean })?.isMultiMeshBase;
+    const isMultiMesh = !!userData.isMultiMeshBase;
     const needsClosure =
         isMultiMesh &&
         (!pre.isWatertight || pre.eulerCharacteristic !== 2 || pre.openEdges > 0);
@@ -1441,6 +1850,28 @@ export function ensureWatertightForExport(geometry: BufferGeometry): BufferGeome
         result.geometry.userData = { ...geometry.userData };
     }
     return result.geometry;
+}
+
+/** @internal Heal internal slit boundaries on a GLB shell before top/bottom concatenation. */
+export function healShellInternalBoundaries(geometry: BufferGeometry): boolean {
+    const cycles = extractAllBoundaryCycles(geometry);
+    const loops =
+        cycles.length > 0
+            ? cycles
+            : extractBoundaryLoops(geometry);
+    if (loops.length === 0) return false;
+
+    let capped = false;
+    for (const loop of loops) {
+        if (loop.length > 256) continue;
+        if (capBoundaryLoopInPlace(geometry, loop)) capped = true;
+    }
+    return capped;
+}
+
+/** @internal Exposes branched boundary cycle extraction for regression tests. */
+export function extractAllBoundaryCyclesForTest(geometry: BufferGeometry): Vector3[][] {
+    return extractAllBoundaryCycles(geometry);
 }
 
 /** Max angle between adjacent vertex normals along the welded seam ring (shading smoothness proxy). */

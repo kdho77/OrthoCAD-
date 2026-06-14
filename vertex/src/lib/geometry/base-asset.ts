@@ -513,7 +513,15 @@ async function resolveStockFetchUrl(base: DesignBase): Promise<string | null> {
  * Stock bases (API configured): load exclusively from the server-provided URL.
  * Offline dev: load the local builtin placeholder from public/.
  */
-export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry | null> {
+export interface LoadBaseGeometryOptions {
+    /** Viewer-only: seal small internal slits on the bottom sub-mesh after load. */
+    sealBottomSlits?: boolean;
+}
+
+export async function loadBaseGeometry(
+    base: DesignBase,
+    options: LoadBaseGeometryOptions = {},
+): Promise<BufferGeometry | null> {
     const store = useCustomLibraryStore.getState();
 
     let geo: BufferGeometry | null = null;
@@ -553,7 +561,9 @@ export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry
 
         try {
             const group = await loadGlbFromUrl(fetchUrl);
-            const merged = extractMergedGeometry(group);
+            const merged = extractMergedGeometry(group, {
+                sealBottomSlits: options.sealBottomSlits,
+            });
             geo = merged?.geometry ?? null;
             if (!geo) {
                 const msg = "GLTF loaded but no mesh geometry was found in the file";
@@ -582,7 +592,9 @@ export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry
         const local = store.getLocalGlb(base.assetId);
         if (local) {
             const group = await loadGlbFromBuffer(base64ToArrayBuffer(local.glbBase64));
-            const merged = extractMergedGeometry(group);
+            const merged = extractMergedGeometry(group, {
+                sealBottomSlits: options.sealBottomSlits,
+            });
             if (merged) geo = merged.geometry;
         }
 
@@ -590,7 +602,9 @@ export async function loadBaseGeometry(base: DesignBase): Promise<BufferGeometry
             const prefab = store.customPrefabs.find((p) => p.id === base.assetId);
             if (prefab?.url) {
                 const group = await loadGlbFromUrl(prefab.url);
-                const merged = extractMergedGeometry(group);
+                const merged = extractMergedGeometry(group, {
+                    sealBottomSlits: options.sealBottomSlits,
+                });
                 if (merged) geo = merged.geometry;
             }
         }
