@@ -517,7 +517,10 @@ async function resolveStockFetchUrl(base: DesignBase): Promise<string | null> {
  * Offline dev: load the local builtin placeholder from public/.
  */
 export interface LoadBaseGeometryOptions {
-    /** Viewer-only: seal small internal slits on the bottom sub-mesh after load. */
+    /**
+     * Seal small internal slits on the bottom sub-mesh after load.
+     * Disabled on viewer load (main-thread cost); reserved for future worker path.
+     */
     sealBottomSlits?: boolean;
 }
 

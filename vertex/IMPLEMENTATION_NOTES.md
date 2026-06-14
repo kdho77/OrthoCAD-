@@ -34,6 +34,29 @@ Ad-hoc engineering tracking items that are not tied to a single PR.
 
 ---
 
+## Geometry Worker — TODO
+
+**Recorded:** 2026-06-14 (viewer load freeze fix)
+
+`sealInternalSlits` must move to a Web Worker before re-enabling on the viewer load path.
+
+**Problem:** `extractMergedGeometryAsync` calls `sealInternalSlitsSafe`, which wraps synchronous `sealInternalSlits` in `Promise.resolve()`. On Default.glb (~208k bottom vertices), this blocks the main thread for ~1–2s in Node (longer in browser), freezing the UI. The 2s `SEAL_TIMEOUT_MS` race does not help because the event loop cannot process the timeout while sync work runs.
+
+**Current mitigation (Option C):** Viewer load passes `sealBottomSlits: false` in `useBaseInsoleGeometry.ts`. Export path is unchanged (`ensureWatertightForExport` / mesh-close).
+
+**Target architecture (Option A):**
+
+1. Create `vertex/src/workers/geometry-worker.ts`.
+2. Main thread serializes top/bottom geometry buffers (position, normal, index) as transferable `ArrayBuffer`s.
+3. Worker runs `concatIndexedWeldedParts` + `sealInternalSlits`, posts merged buffers back.
+4. Main thread reconstructs `BufferGeometry` from received buffers.
+
+**Owner:** _unassigned_
+
+**Priority:** High — required to restore bottom slit sealing in the viewer without UI freeze.
+
+---
+
 ## Production STL size baseline (mesh-close)
 
 **Recorded:** 2026-06-13 (commit `100611f6`)

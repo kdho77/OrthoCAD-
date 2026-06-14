@@ -114,7 +114,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             hasUrl,
             glbPath: ref.glbPath,
         });
-        void loadBaseGeometry(ref, { sealBottomSlits: true })
+        void loadBaseGeometry(ref, {
+            // sealBottomSlits disabled on viewer load — too expensive for 208k-vertex
+            // bottom mesh on main thread. Sealing runs on export path only via
+            // sealInternalSlitsSafe. See: vertex/IMPLEMENTATION_NOTES.md — geometry worker TODO
+            sealBottomSlits: false,
+        })
             .then((geo) => {
                 if (cancelled) {
                     geo?.dispose();
