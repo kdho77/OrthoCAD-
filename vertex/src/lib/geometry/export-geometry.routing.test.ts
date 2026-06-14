@@ -5,10 +5,12 @@ import { describe, expect, test, beforeEach } from "@rstest/core";
 import { BufferAttribute, BufferGeometry } from "three";
 import type { DesignState } from "@/types";
 
-const mockEnsureWatertight = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
-const mockCloseLiveViewerMeshToSolid = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
-const mockSerializeBinarySTL = rs.fn<() => ArrayBuffer>();
-const mockBuildModifiedBaseGeometry = rs.fn<() => Promise<BufferGeometry | null>>();
+const mockRunMeshExportWorker = rs.fn<
+    () => Promise<{ stlBuffer: ArrayBuffer; bottomRimVertexCount: number; usedReducedBottom: boolean }>
+>();
+
+let viewerGeometry: BufferGeometry | null = null;
+let viewerBuilding = false;
 
 const mockDesign: DesignState = {
     method: "printing_solid",
@@ -19,9 +21,6 @@ const mockDesign: DesignState = {
         left: { assetId: "stock-default", source: "stock", glbPath: "Templates/Default.glb" },
     },
 } as DesignState;
-
-let viewerGeometry: BufferGeometry | null = null;
-let viewerBuilding = false;
 
 rs.mock("@/stores/design-store", () => ({
     useDesignStore: {
@@ -34,13 +33,22 @@ rs.mock("@/stores/viewer-geometry-store", () => ({
     isViewerGeometryBuilding: () => viewerBuilding,
 }));
 
-rs.mock("@/lib/geometry/mesh-export", () => ({
-    closeLiveViewerMeshToSolid: (geometry: BufferGeometry) => mockCloseLiveViewerMeshToSolid(geometry),
-    serializeBinarySTL: () => mockSerializeBinarySTL(),
+rs.mock("@/lib/geometry/mesh-export-worker-runner", () => ({
+    geometryToExportPayload: (geometry: BufferGeometry) => ({
+        payload: {
+            positions: new Float32Array(geometry.getAttribute("position").array as ArrayLike<number>),
+            indices: geometry.getIndex()
+                ? new Uint32Array(geometry.getIndex()!.array as ArrayLike<number>)
+                : null,
+        },
+        topVertexCount: (geometry.userData as { topVertexCount?: number }).topVertexCount ?? geometry.getAttribute("position").count,
+    }),
+    runMeshExportWorker: (...args: unknown[]) => mockRunMeshExportWorker(...(args as [])),
+    setMeshExportWorkerRunnerForTesting: rs.fn(),
 }));
 
 rs.mock("@/lib/geometry/mesh-close", () => ({
-    ensureWatertightForExport: (geometry: BufferGeometry) => mockEnsureWatertight(geometry),
+    ensureWatertightForExport: (geometry: BufferGeometry) => geometry,
     MeshNotWatertightError: class MeshNotWatertightError extends Error {},
 }));
 
@@ -114,13 +122,12 @@ describe("export-geometry routing", () => {
     beforeEach(() => {
         viewerGeometry = makeTestGeometry();
         viewerBuilding = false;
-        mockEnsureWatertight.mockReset();
-        mockCloseLiveViewerMeshToSolid.mockReset();
-        mockSerializeBinarySTL.mockReset();
-        mockBuildModifiedBaseGeometry.mockReset();
-        mockCloseLiveViewerMeshToSolid.mockImplementation((geometry) => geometry);
-        mockSerializeBinarySTL.mockReturnValue(new ArrayBuffer(256));
-        mockEnsureWatertight.mockImplementation((geometry) => geometry);
+        mockRunMeshExportWorker.mockReset();
+        mockRunMeshExportWorker.mockResolvedValue({
+            stlBuffer: new ArrayBuffer(256),
+            bottomRimVertexCount: 128,
+            usedReducedBottom: true,
+        });
     });
 
     test("exportModeFromMethod maps manufacturing methods", async () => {
@@ -130,15 +137,14 @@ describe("export-geometry routing", () => {
         expect(exportModeFromMethod("printing_shell")).toBe("preview");
     });
 
-    test("manufacturing export uses live viewer geometry and mesh-close without OCCT", async () => {
+    test("manufacturing export posts live viewer geometry to export worker", async () => {
         const live = makeTestGeometry();
         viewerGeometry = live;
 
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
-        expect(mockCloseLiveViewerMeshToSolid).toHaveBeenCalled();
-        expect(mockSerializeBinarySTL).toHaveBeenCalled();
+        expect(mockRunMeshExportWorker).toHaveBeenCalledTimes(1);
         expect(result.byteLength).toBeGreaterThan(0);
     });
 
@@ -157,21 +163,15 @@ describe("export-geometry routing", () => {
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
-        expect(mockCloseLiveViewerMeshToSolid).toHaveBeenCalled();
-        expect(mockSerializeBinarySTL).toHaveBeenCalled();
+        expect(mockRunMeshExportWorker).toHaveBeenCalledTimes(1);
         expect(result.byteLength).toBeGreaterThan(0);
     });
 
-    test("GLB download path does not call ensureWatertightForExport", async () => {
-        const { buildExportGlb } = await import("@/lib/geometry/export-geometry");
-        await buildExportGlb("left");
-        expect(mockEnsureWatertight).not.toHaveBeenCalled();
-    });
-
-    test("exportManufacturingStlAttempt returns STL from live viewer geometry", async () => {
+    test("exportManufacturingStlAttempt returns STL from worker path", async () => {
         viewerGeometry = makeTestGeometry();
         const { exportManufacturingStlAttempt } = await import("@/lib/geometry/export-geometry");
         const result = await exportManufacturingStlAttempt(mockDesign, "left");
+        expect(mockRunMeshExportWorker).toHaveBeenCalledTimes(1);
         expect(result).not.toBeNull();
         expect(result!.byteLength).toBeGreaterThan(0);
     });

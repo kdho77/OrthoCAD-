@@ -2,7 +2,13 @@
 // See LICENSE file in the project root for full license information.
 
 import { BufferAttribute, BufferGeometry } from "three";
-import { closeMeshPerimeter, ensureWatertightForExport } from "@/lib/geometry/mesh-close";
+import {
+    buildFlatCapMeshFromLoop,
+    closeMeshPerimeter,
+    EXPORT_BOTTOM_FULL_MESH_LIMIT,
+    extractOrderedBoundaryLoop,
+    prepareReducedExportGeometry,
+} from "@/lib/geometry/mesh-close";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 
 function appendShellTriangles(
@@ -78,12 +84,35 @@ export function closeMeshToSolid(topGeometry: BufferGeometry, bottomGeometry: Bu
     }
 }
 
-/** Close a live merged viewer mesh (top+bottom with userData.topVertexCount). */
+/**
+ * @deprecated Use runMeshExportWorker — refuses main-thread closure on large bottom meshes.
+ */
 export function closeLiveViewerMeshToSolid(liveGeometry: BufferGeometry): BufferGeometry {
-    return ensureWatertightForExport(liveGeometry);
+    const total = liveGeometry.getAttribute("position").count;
+    const storedTop = (liveGeometry.userData as { topVertexCount?: number }).topVertexCount;
+    const topVertexCount =
+        storedTop && storedTop > 0 && storedTop < total ? storedTop : total;
+    const bottomVertexCount = total - topVertexCount;
+
+    if (bottomVertexCount > EXPORT_BOTTOM_FULL_MESH_LIMIT) {
+        throw new Error(
+            `closeLiveViewerMeshToSolid refused: bottomVerts=${bottomVertexCount} > ${EXPORT_BOTTOM_FULL_MESH_LIMIT}. Use export worker.`,
+        );
+    }
+
+    const { geometry } = prepareReducedExportGeometry(liveGeometry);
+    try {
+        const result = closeMeshPerimeter(geometry);
+        return result.geometry;
+    } catch (error) {
+        geometry.dispose();
+        throw error;
+    }
 }
 
 /** Pure-JS binary STL writer — no OCCT dependency on the export path. */
 export function serializeBinarySTL(geometry: BufferGeometry): ArrayBuffer {
     return geometryToBinarySTL(geometry);
 }
+
+export { EXPORT_BOTTOM_FULL_MESH_LIMIT, buildFlatCapMeshFromLoop, extractOrderedBoundaryLoop };

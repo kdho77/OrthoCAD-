@@ -25,6 +25,8 @@ export const RIM_HEIGHT_ADAPTIVE_THRESHOLD_MM = 2.0;
 export const RIM_HEIGHT_MIN_WARNING_MM = 1.0;
 /** Radius around the bridge within which vertex normals are recomputed after merge. */
 export const NORMAL_RECOMPUTE_RADIUS_MM = 3.0;
+/** Never run full-bottom mesh closure on the main thread above this vertex count. */
+export const EXPORT_BOTTOM_FULL_MESH_LIMIT = 50_000;
 /** Legacy — no longer used in bridge weld path. Retained for reference. Remove after v2 stable. */
 export const WELD_SNAP_TOLERANCE_MM = 1.0;
 /** Distance within which a resampled rim point is treated as an exact boundary endpoint. */
@@ -1854,6 +1856,149 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
     };
 }
 
+function appendShellTrianglesForMerge(
+    geometry: BufferGeometry,
+    vertexOffset: number,
+    flipWinding: boolean,
+    out: number[],
+): void {
+    const index = geometry.getIndex();
+    if (index) {
+        for (let t = 0; t < index.count; t += 3) {
+            const a = index.getX(t) + vertexOffset;
+            const b = index.getX(t + 1) + vertexOffset;
+            const c = index.getX(t + 2) + vertexOffset;
+            if (flipWinding) out.push(a, c, b);
+            else out.push(a, b, c);
+        }
+        return;
+    }
+
+    const count = geometry.getAttribute("position").count;
+    for (let i = 0; i < count; i += 3) {
+        if (flipWinding) out.push(vertexOffset + i, vertexOffset + i + 2, vertexOffset + i + 1);
+        else out.push(vertexOffset + i, vertexOffset + i + 1, vertexOffset + i + 2);
+    }
+}
+
+function concatTopBottomShellsInternal(
+    topGeometry: BufferGeometry,
+    bottomGeometry: BufferGeometry,
+): BufferGeometry {
+    const topPos = topGeometry.getAttribute("position");
+    const bottomPos = bottomGeometry.getAttribute("position");
+    const topCount = topPos.count;
+    const bottomCount = bottomPos.count;
+    const totalVerts = topCount + bottomCount;
+    const positions = new Float32Array(totalVerts * 3);
+
+    for (let i = 0; i < topCount; i++) {
+        positions[i * 3] = topPos.getX(i);
+        positions[i * 3 + 1] = topPos.getY(i);
+        positions[i * 3 + 2] = topPos.getZ(i);
+    }
+    for (let i = 0; i < bottomCount; i++) {
+        const o = topCount + i;
+        positions[o * 3] = bottomPos.getX(i);
+        positions[o * 3 + 1] = bottomPos.getY(i);
+        positions[o * 3 + 2] = bottomPos.getZ(i);
+    }
+
+    const indices: number[] = [];
+    appendShellTrianglesForMerge(topGeometry, 0, false, indices);
+    appendShellTrianglesForMerge(bottomGeometry, topCount, true, indices);
+
+    const merged = new BufferGeometry();
+    merged.setAttribute("position", new BufferAttribute(positions, 3));
+    merged.setIndex(indices);
+    merged.userData = { isMultiMeshBase: true, topVertexCount: topCount };
+    return merged;
+}
+
+/** Build a flat bottom cap from a closed rim loop (normals pointing down/out). */
+export function buildFlatCapMeshFromLoop(loop: Vector3[]): BufferGeometry {
+    if (loop.length < 3) {
+        throw new MeshNotWatertightError("Bottom rim loop has fewer than 3 vertices", validateManifold(new BufferGeometry()));
+    }
+
+    const contour = loop.map((p) => new Vector2(p.x, p.y));
+    if (Math.abs(ShapeUtils.area(contour)) < 1e-6) {
+        throw new MeshNotWatertightError("Bottom rim loop is degenerate", validateManifold(new BufferGeometry()));
+    }
+
+    let triangulated: number[][];
+    try {
+        triangulated = ShapeUtils.triangulateShape(contour, []);
+    } catch {
+        throw new MeshNotWatertightError("Bottom rim loop triangulation failed", validateManifold(new BufferGeometry()));
+    }
+
+    const positions = new Float32Array(loop.length * 3);
+    for (let i = 0; i < loop.length; i++) {
+        const p = loop[i]!;
+        positions[i * 3] = p.x;
+        positions[i * 3 + 1] = p.y;
+        positions[i * 3 + 2] = p.z;
+    }
+
+    const indices: number[] = [];
+    for (const tri of triangulated) {
+        indices.push(tri[0]!, tri[2]!, tri[1]!);
+    }
+
+    const cap = new BufferGeometry();
+    cap.setAttribute("position", new BufferAttribute(positions, 3));
+    cap.setIndex(indices);
+    return cap;
+}
+
+export interface ReducedExportGeometryResult {
+    geometry: BufferGeometry;
+    bottomRimVertexCount: number;
+    usedReducedBottom: boolean;
+}
+
+/**
+ * Replace the full high-vertex bottom shell with a flat rim cap before perimeter closure.
+ * Keeps the full top surface; bottom interior vertices are dropped for export.
+ */
+export function prepareReducedExportGeometry(geometry: BufferGeometry): ReducedExportGeometryResult {
+    const bodyVertexCount = geometry.getAttribute("position").count;
+    const storedTop = (geometry.userData as { topVertexCount?: number }).topVertexCount;
+    const topVertexCount =
+        storedTop && storedTop > 0 && storedTop < bodyVertexCount ? storedTop : bodyVertexCount;
+    const bottomVertexCount = bodyVertexCount - topVertexCount;
+
+    if (bottomVertexCount <= EXPORT_BOTTOM_FULL_MESH_LIMIT) {
+        return {
+            geometry: geometry.clone(),
+            bottomRimVertexCount: 0,
+            usedReducedBottom: false,
+        };
+    }
+
+    const pair = resolveMultiMeshBaseLoops(geometry, topVertexCount);
+    if (!pair) {
+        return {
+            geometry: geometry.clone(),
+            bottomRimVertexCount: 0,
+            usedReducedBottom: false,
+        };
+    }
+
+    const topSub = submeshByVertexRange(geometry, 0, topVertexCount);
+    const bottomCap = buildFlatCapMeshFromLoop(pair.bottom);
+    const merged = concatTopBottomShellsInternal(topSub, bottomCap);
+    topSub.dispose();
+    bottomCap.dispose();
+
+    return {
+        geometry: merged,
+        bottomRimVertexCount: pair.bottom.length,
+        usedReducedBottom: true,
+    };
+}
+
 /**
  * Export-time helper: close multi-mesh base geometry when the perimeter is open.
  * Preserves geometry when already watertight.
@@ -1873,6 +2018,17 @@ export function ensureWatertightForExport(geometry: BufferGeometry): BufferGeome
     if (typeof console !== "undefined") {
         console.log(
             `[MESH-CLOSE] ensureWatertightForExport called: topVerts=${topVerts} bottomVerts=${bottomVerts}`,
+        );
+    }
+
+    if (
+        bottomVerts > EXPORT_BOTTOM_FULL_MESH_LIMIT &&
+        typeof globalThis !== "undefined" &&
+        typeof (globalThis as { window?: unknown }).window !== "undefined"
+    ) {
+        throw new MeshNotWatertightError(
+            `Refusing main-thread mesh closure on bottomVerts=${bottomVerts} (limit ${EXPORT_BOTTOM_FULL_MESH_LIMIT}). Use export worker.`,
+            validateManifold(geometry),
         );
     }
 

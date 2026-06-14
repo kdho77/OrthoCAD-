@@ -7,7 +7,11 @@ import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from 
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
-import { closeLiveViewerMeshToSolid, serializeBinarySTL } from "@/lib/geometry/mesh-export";
+import { EXPORT_BOTTOM_FULL_MESH_LIMIT, closeLiveViewerMeshToSolid } from "@/lib/geometry/mesh-export";
+import {
+    geometryToExportPayload,
+    runMeshExportWorker,
+} from "@/lib/geometry/mesh-export-worker-runner";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
@@ -131,23 +135,37 @@ function logDirectMeshPath(geometry: BufferGeometry): void {
     console.log(`[EXPORT] direct mesh path: topVerts=${topVerts} bottomVerts=${bottomVerts}`);
 }
 
-/** Serialize live viewer geometry → mesh-close → binary STL (zero OCCT). */
-function buildStlFromLiveGeometry(liveGeometry: BufferGeometry): ArrayBuffer {
+/** Serialize live viewer geometry via export worker → mesh-close → binary STL. */
+async function buildStlFromLiveGeometry(liveGeometry: BufferGeometry): Promise<ArrayBuffer> {
     logDirectMeshPath(liveGeometry);
-    const working = liveGeometry.clone();
-    try {
-        const closed = closeLiveViewerMeshToSolid(working);
-        try {
-            if (typeof console !== "undefined") {
-                console.log("[EXPORT] direct mesh path: live viewer geometry closed for STL");
-            }
-            return serializeBinarySTL(closed);
-        } finally {
-            if (closed !== working) closed.dispose();
-        }
-    } finally {
-        working.dispose();
+
+    const { payload, topVertexCount } = geometryToExportPayload(liveGeometry);
+    const bottomVertexCount = payload.positions.length / 3 - topVertexCount;
+
+    if (bottomVertexCount > EXPORT_BOTTOM_FULL_MESH_LIMIT && typeof console !== "undefined") {
+        console.warn(
+            `[EXPORT] bottom mesh ${bottomVertexCount} verts > limit; extracting rim loop only (worker path)`,
+        );
     }
+
+    if (typeof console !== "undefined") {
+        console.log("[EXPORT] posting to worker...");
+    }
+
+    const { stlBuffer, bottomRimVertexCount, usedReducedBottom } = await runMeshExportWorker(
+        payload,
+        topVertexCount,
+        exportTimeoutMsOverride ?? EXPORT_OPERATION_TIMEOUT_MS,
+    );
+
+    if (typeof console !== "undefined") {
+        if (usedReducedBottom) {
+            console.log(`[EXPORT] rim loop extracted: ${bottomRimVertexCount} verts`);
+        }
+        console.log(`[EXPORT] worker returned STL: ${stlBuffer.byteLength} bytes`);
+    }
+
+    return stlBuffer;
 }
 
 /** Direct mesh export from the live viewer scene (test hook). */
@@ -271,7 +289,7 @@ export async function buildExportGlbGeometry(side: Side): Promise<BufferGeometry
     }
 }
 
-/** Watertight solid for hybrid upload — live viewer mesh when available. */
+/** Watertight solid for hybrid upload — uses reduced geometry; large bottoms must use worker STL path. */
 export async function buildExportSolid(
     side: Side,
     options: BuildExportStlOptions = {},
@@ -280,12 +298,29 @@ export async function buildExportSolid(
     if (!isViewerGeometryBuilding(side)) {
         const live = getLiveViewerGeometry(side);
         if (live) {
-            return closeLiveViewerMeshToSolid(live.clone());
+            const total = live.getAttribute("position").count;
+            const storedTop = (live.userData as { topVertexCount?: number }).topVertexCount;
+            const topVertexCount =
+                storedTop && storedTop > 0 && storedTop < total ? storedTop : total;
+            if (total - topVertexCount <= EXPORT_BOTTOM_FULL_MESH_LIMIT) {
+                return closeLiveViewerMeshToSolid(live.clone());
+            }
         }
     }
 
     const geometry = await buildExportGlbGeometry(side);
-    return closeLiveViewerMeshToSolid(geometry);
+    const total = geometry.getAttribute("position").count;
+    const storedTop = (geometry.userData as { topVertexCount?: number }).topVertexCount;
+    const topVertexCount =
+        storedTop && storedTop > 0 && storedTop < total ? storedTop : total;
+    if (total - topVertexCount <= EXPORT_BOTTOM_FULL_MESH_LIMIT) {
+        return closeLiveViewerMeshToSolid(geometry);
+    }
+
+    geometry.dispose();
+    throw new ExportGeometryNotReadyError(
+        "Large base mesh export must use STL download — perimeter closure runs in the export worker.",
+    );
 }
 
 /**

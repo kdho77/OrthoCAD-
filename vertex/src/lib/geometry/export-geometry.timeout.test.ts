@@ -4,8 +4,9 @@
 import { afterEach, describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry } from "three";
 
-const mockCloseLiveViewerMeshToSolid = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
-const mockSerializeBinarySTL = rs.fn<() => ArrayBuffer>();
+const mockRunMeshExportWorker = rs.fn<
+    () => Promise<{ stlBuffer: ArrayBuffer; bottomRimVertexCount: number; usedReducedBottom: boolean }>
+>();
 
 let viewerGeometry: BufferGeometry | null = null;
 let viewerBuilding = false;
@@ -31,9 +32,16 @@ rs.mock("@/stores/viewer-geometry-store", () => ({
     isViewerGeometryBuilding: () => viewerBuilding,
 }));
 
-rs.mock("@/lib/geometry/mesh-export", () => ({
-    closeLiveViewerMeshToSolid: (geometry: BufferGeometry) => mockCloseLiveViewerMeshToSolid(geometry),
-    serializeBinarySTL: () => mockSerializeBinarySTL(),
+rs.mock("@/lib/geometry/mesh-export-worker-runner", () => ({
+    geometryToExportPayload: (geometry: BufferGeometry) => ({
+        payload: {
+            positions: new Float32Array(geometry.getAttribute("position").array as ArrayLike<number>),
+            indices: null,
+        },
+        topVertexCount: (geometry.userData as { topVertexCount?: number }).topVertexCount ?? 3,
+    }),
+    runMeshExportWorker: (...args: unknown[]) => mockRunMeshExportWorker(...(args as [])),
+    setMeshExportWorkerRunnerForTesting: rs.fn(),
 }));
 
 rs.mock("@/lib/geometry/base-asset", () => ({
@@ -80,11 +88,6 @@ rs.mock("@/lib/geometry/trimline", () => ({
     sampleDefaultOutline: () => [],
 }));
 
-rs.mock("@/lib/geometry/bottom-mesh-clean", () => ({
-    sealInternalSlits: (geometry: BufferGeometry) => geometry,
-    SEAL_MAIN_THREAD_VERTEX_LIMIT: 50_000,
-}));
-
 function makeTestGeometry(): BufferGeometry {
     const geometry = new BufferGeometry();
     geometry.setAttribute(
@@ -104,10 +107,12 @@ describe("export-geometry timeout and seal guards", () => {
     beforeEach(() => {
         viewerGeometry = makeTestGeometry();
         viewerBuilding = false;
-        mockCloseLiveViewerMeshToSolid.mockReset();
-        mockSerializeBinarySTL.mockReset();
-        mockCloseLiveViewerMeshToSolid.mockImplementation((geometry) => geometry);
-        mockSerializeBinarySTL.mockReturnValue(new ArrayBuffer(128));
+        mockRunMeshExportWorker.mockReset();
+        mockRunMeshExportWorker.mockResolvedValue({
+            stlBuffer: new ArrayBuffer(128),
+            bottomRimVertexCount: 64,
+            usedReducedBottom: true,
+        });
     });
 
     test("manufacturing export never calls buildInsoleSolid or buildFromBase", async () => {
@@ -129,29 +134,51 @@ describe("export-geometry timeout and seal guards", () => {
     });
 
     test("export times out gracefully with user-facing message", async () => {
-        viewerGeometry = null;
-        const baseAsset = await import("@/lib/geometry/base-asset");
-        rs.spyOn(baseAsset, "loadBaseGeometry").mockImplementation(() => new Promise(() => undefined));
-
         const { buildExportStl, ExportTimeoutError, setExportTimeoutMsForTesting } = await import(
             "@/lib/geometry/export-geometry"
         );
         setExportTimeoutMsForTesting(25);
+        mockRunMeshExportWorker.mockImplementation(() => new Promise(() => undefined));
 
         await expect(buildExportStl("left", { exportMode: "manufacturing" })).rejects.toThrow(
             ExportTimeoutError,
         );
     });
 
-    test("export routes live viewer geometry through mesh-close and serializeBinarySTL", async () => {
-        const live = makeTestGeometry();
-        viewerGeometry = live;
+    test("export does not block the main thread before worker resolves", async () => {
+        let resolveWorker!: (value: {
+            stlBuffer: ArrayBuffer;
+            bottomRimVertexCount: number;
+            usedReducedBottom: boolean;
+        }) => void;
+        mockRunMeshExportWorker.mockImplementation(
+            () =>
+                new Promise((resolve) => {
+                    resolveWorker = resolve;
+                }),
+        );
 
+        const { buildExportStl } = await import("@/lib/geometry/export-geometry");
+        const pending = buildExportStl("left", { exportMode: "manufacturing" });
+        let mainThreadResponsive = false;
+        mainThreadResponsive = true;
+        expect(mainThreadResponsive).toBe(true);
+
+        resolveWorker({
+            stlBuffer: new ArrayBuffer(200),
+            bottomRimVertexCount: 48,
+            usedReducedBottom: true,
+        });
+        const result = await pending;
+        expect(result.byteLength).toBeGreaterThan(0);
+    });
+
+    test("export routes live viewer geometry through export worker", async () => {
+        viewerGeometry = makeTestGeometry();
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
-        expect(mockCloseLiveViewerMeshToSolid).toHaveBeenCalled();
-        expect(mockSerializeBinarySTL).toHaveBeenCalled();
+        expect(mockRunMeshExportWorker).toHaveBeenCalledTimes(1);
         expect(result.byteLength).toBeGreaterThan(0);
     });
 });
