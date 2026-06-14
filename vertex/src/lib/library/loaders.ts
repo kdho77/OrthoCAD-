@@ -151,7 +151,9 @@ function concatIndexedWeldedParts(
         } catch {
             welded.push(p);
         }
-        if (options.sealBottomSlits && parts.length > 1 && partIndex > 0) {
+        // sealBottomSlits temporarily disabled — caused load deadlock PR#81
+        // TODO: re-enable after fixing infinite loop in sealInternalSlits
+        if (false && options.sealBottomSlits && parts.length > 1 && partIndex > 0) {
             const cleaned = sealInternalSlits(welded[partIndex]!);
             if (cleaned !== welded[partIndex]) {
                 welded[partIndex]!.dispose();
