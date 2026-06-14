@@ -1,7 +1,7 @@
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import * as THREE from "three";
-import { sealInternalSlits } from "@/lib/geometry/bottom-mesh-clean";
+import { sealInternalSlits, sealInternalSlitsSafe } from "@/lib/geometry/bottom-mesh-clean";
 
 const loader = new GLTFLoader();
 
@@ -160,6 +160,42 @@ function concatIndexedWeldedParts(
         }
     }
 
+    return finalizeConcatIndexedWeldedParts(welded);
+}
+
+async function concatIndexedWeldedPartsAsync(
+    parts: THREE.BufferGeometry[],
+    options: ExtractMergedGeometryOptions = {},
+): Promise<{
+    geometry: THREE.BufferGeometry;
+    topVertexCount: number;
+}> {
+    const welded: THREE.BufferGeometry[] = [];
+    for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+        const p = parts[partIndex]!;
+        try {
+            const w = mergeVertices(p);
+            welded.push(w === p ? p : w);
+            if (w !== p) p.dispose();
+        } catch {
+            welded.push(p);
+        }
+        if (options.sealBottomSlits && parts.length > 1 && partIndex > 0) {
+            const cleaned = await sealInternalSlitsSafe(welded[partIndex]!);
+            if (cleaned !== welded[partIndex]) {
+                welded[partIndex]!.dispose();
+                welded[partIndex] = cleaned;
+            }
+        }
+    }
+
+    return finalizeConcatIndexedWeldedParts(welded);
+}
+
+function finalizeConcatIndexedWeldedParts(welded: THREE.BufferGeometry[]): {
+    geometry: THREE.BufferGeometry;
+    topVertexCount: number;
+} {
     let totalVerts = 0;
     for (const p of welded) totalVerts += p.getAttribute("position").count;
 
@@ -278,6 +314,65 @@ export function extractMergedGeometry(
     // Mark multi-mesh bases so that applyBaseModifiers can preserve exact
     // relative alignment between "Top" and "Bottom" layers (uniform delta
     // instead of topFactor-weighted, which would anchor one layer).
+    if (meshCount > 1) {
+        geometry.userData = geometry.userData || {};
+        (geometry.userData as any).isMultiMeshBase = true;
+        (geometry.userData as any).sourceMeshNames = meshNames;
+        (geometry.userData as any).topVertexCount = topVertexCount;
+    }
+
+    return { geometry, meshCount, meshNames };
+}
+
+/**
+ * Async variant used on the viewer load path so bottom slit sealing can time out
+ * without blocking page initialization indefinitely.
+ */
+export async function extractMergedGeometryAsync(
+    group: THREE.Group,
+    options: ExtractMergedGeometryOptions = {},
+): Promise<MergedGlbGeometry | null> {
+    group.updateMatrixWorld(true);
+    const parts: THREE.BufferGeometry[] = [];
+    const meshNames: string[] = [];
+
+    group.traverse((obj) => {
+        if (!(obj instanceof THREE.Mesh) || !obj.geometry) return;
+        parts.push(bakeMeshGeometry(obj));
+        meshNames.push(obj.name || `mesh_${parts.length}`);
+    });
+
+    if (parts.length === 0) return null;
+
+    const meshCount = parts.length;
+    let geometry: THREE.BufferGeometry;
+    let topVertexCount = 0;
+
+    if (meshCount > 1) {
+        const ordered = orderMultiMeshParts(parts, meshNames);
+        parts.splice(0, parts.length, ...ordered.parts);
+        meshNames.splice(0, meshNames.length, ...ordered.meshNames);
+    }
+
+    if (meshCount === 1) {
+        const single = parts[0]!;
+        try {
+            geometry = mergeVertices(single);
+            if (geometry !== single) single.dispose();
+        } catch {
+            geometry = single;
+        }
+    } else {
+        const merged = await concatIndexedWeldedPartsAsync(parts, options);
+        geometry = merged.geometry;
+        topVertexCount = merged.topVertexCount;
+        for (const p of parts) p.dispose();
+    }
+
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+
     if (meshCount > 1) {
         geometry.userData = geometry.userData || {};
         (geometry.userData as any).isMultiMeshBase = true;

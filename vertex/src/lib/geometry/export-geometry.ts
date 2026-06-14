@@ -68,7 +68,7 @@ function logMeshClosePath(geometry: BufferGeometry): void {
               ? Math.floor(total / 2)
               : total;
     const bottomVerts = userData.isMultiMeshBase ? Math.max(0, total - topVerts) : 0;
-    console.log(`[EXPORT] mesh-close path: topVerts=${topVerts} bottomVerts=${bottomVerts}`);
+    console.log(`[EXPORT] fallback mesh-close path: topVerts=${topVerts} bottomVerts=${bottomVerts}`);
 }
 
 function exportStlFromGeometry(geometry: BufferGeometry): ArrayBuffer {
@@ -112,7 +112,13 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, effThickness);
         const kernel = getKernel();
-        const stl = kernel.exportManufacturingStlFromBase?.(raw, field) ?? null;
+        if (!kernel.ready || typeof kernel.exportManufacturingStlFromBase !== "function") {
+            if (typeof console !== "undefined") {
+                console.error("[EXPORT] OCCT kernel not ready — falling back");
+            }
+            return null;
+        }
+        const stl = kernel.exportManufacturingStlFromBase(raw, field) ?? null;
         if (stl) {
             if (typeof console !== "undefined") {
                 console.log("[EXPORT] OCCT sew path: success");

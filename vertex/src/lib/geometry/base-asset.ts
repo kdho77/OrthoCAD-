@@ -7,10 +7,13 @@ import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { getDesignTrimline } from "@/lib/geometry/trimline";
 import {
     extractMergedGeometry,
+    extractMergedGeometryAsync,
     loadGlbFromBuffer,
     loadGlbFromUrl,
     mirrorGeometry,
     reorientToFootprintFrame,
+    type ExtractMergedGeometryOptions,
+    type MergedGlbGeometry,
 } from "@/lib/library/loaders";
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
@@ -518,6 +521,19 @@ export interface LoadBaseGeometryOptions {
     sealBottomSlits?: boolean;
 }
 
+async function mergeLoadedGlbGroup(
+    group: Awaited<ReturnType<typeof loadGlbFromUrl>>,
+    options: LoadBaseGeometryOptions,
+): Promise<MergedGlbGeometry | null> {
+    const mergeOptions: ExtractMergedGeometryOptions = {
+        sealBottomSlits: options.sealBottomSlits,
+    };
+    if (options.sealBottomSlits) {
+        return extractMergedGeometryAsync(group, mergeOptions);
+    }
+    return extractMergedGeometry(group, mergeOptions);
+}
+
 export async function loadBaseGeometry(
     base: DesignBase,
     options: LoadBaseGeometryOptions = {},
@@ -561,9 +577,7 @@ export async function loadBaseGeometry(
 
         try {
             const group = await loadGlbFromUrl(fetchUrl);
-            const merged = extractMergedGeometry(group, {
-                sealBottomSlits: options.sealBottomSlits,
-            });
+            const merged = await mergeLoadedGlbGroup(group, options);
             geo = merged?.geometry ?? null;
             if (!geo) {
                 const msg = "GLTF loaded but no mesh geometry was found in the file";
@@ -592,9 +606,7 @@ export async function loadBaseGeometry(
         const local = store.getLocalGlb(base.assetId);
         if (local) {
             const group = await loadGlbFromBuffer(base64ToArrayBuffer(local.glbBase64));
-            const merged = extractMergedGeometry(group, {
-                sealBottomSlits: options.sealBottomSlits,
-            });
+            const merged = await mergeLoadedGlbGroup(group, options);
             if (merged) geo = merged.geometry;
         }
 
@@ -602,9 +614,7 @@ export async function loadBaseGeometry(
             const prefab = store.customPrefabs.find((p) => p.id === base.assetId);
             if (prefab?.url) {
                 const group = await loadGlbFromUrl(prefab.url);
-                const merged = extractMergedGeometry(group, {
-                    sealBottomSlits: options.sealBottomSlits,
-                });
+                const merged = await mergeLoadedGlbGroup(group, options);
                 if (merged) geo = merged.geometry;
             }
         }
