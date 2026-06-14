@@ -6,6 +6,7 @@ import { analyzeManifold } from "@/lib/geometry/manifold";
 
 const INNER_SLIT_MAX_ARC_MM = 5;
 const INNER_SLIT_CLOSE_MM = 2;
+const SEAL_TIMEOUT_MS = 2000;
 
 function indexEdgeKey(a: number, b: number): string {
     return a < b ? `${a}|${b}` : `${b}|${a}`;
@@ -52,6 +53,22 @@ function buildIndexBoundaryGraph(geometry: BufferGeometry): {
     return { edgeCount, edgeVerts, adj };
 }
 
+function buildEdgeTriangleRefs(
+    indices: number[],
+): Map<string, Array<{ triOffset: number; corner: number }>> {
+    const refs = new Map<string, Array<{ triOffset: number; corner: number }>>();
+    for (let t = 0; t < indices.length; t += 3) {
+        for (let k = 0; k < 3; k++) {
+            const a = indices[t + k]!;
+            const b = indices[t + ((k + 1) % 3)]!;
+            const ek = indexEdgeKey(a, b);
+            if (!refs.has(ek)) refs.set(ek, []);
+            refs.get(ek)!.push({ triOffset: t, corner: k });
+        }
+    }
+    return refs;
+}
+
 function chainArcLength(chain: number[], positions: Float32Array): number {
     let len = 0;
     const a = new Vector3();
@@ -68,12 +85,13 @@ export function splitDegree4BranchNodes(geometry: BufferGeometry): BufferGeometr
     const index = geometry.getIndex();
     if (!index) return geometry;
 
-    const { edgeVerts, adj } = buildIndexBoundaryGraph(geometry);
+    const { adj } = buildIndexBoundaryGraph(geometry);
     const branchNodes = [...adj.entries()].filter(([, neighbors]) => neighbors.length === 4).map(([vi]) => vi);
     if (branchNodes.length === 0) return geometry;
 
     const positions = Array.from(pos.array as Float32Array);
     const indices = Array.from(index.array as ArrayLike<number>);
+    const edgeRefs = buildEdgeTriangleRefs(indices);
     let nextVert = pos.count;
 
     for (const src of branchNodes) {
@@ -86,15 +104,11 @@ export function splitDegree4BranchNodes(geometry: BufferGeometry): BufferGeometr
             positions.push(positions[srcBase]!, positions[srcBase + 1]!, positions[srcBase + 2]!);
             const targetEk = indexEdgeKey(src, nb);
 
-            for (let t = 0; t < indices.length; t += 3) {
-                const tri = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
-                for (let k = 0; k < 3; k++) {
-                    const a = tri[k]!;
-                    const b = tri[(k + 1) % 3]!;
-                    if (indexEdgeKey(a, b) !== targetEk) continue;
-                    if (a === src) indices[t + k] = vi;
-                    else if (b === src) indices[t + ((k + 1) % 3)] = vi;
-                }
+            for (const { triOffset, corner } of edgeRefs.get(targetEk) ?? []) {
+                const a = indices[triOffset + corner]!;
+                const b = indices[triOffset + ((corner + 1) % 3)]!;
+                if (a === src) indices[triOffset + corner] = vi;
+                else if (b === src) indices[triOffset + ((corner + 1) % 3)] = vi;
             }
         }
     }
@@ -151,6 +165,8 @@ function extractBoundaryChains(geometry: BufferGeometry): number[][] {
     const { edgeCount, edgeVerts, adj } = buildIndexBoundaryGraph(geometry);
     const visitedEdges = new Set<string>();
     const chains: number[][] = [];
+    const vertexCount = geometry.getAttribute("position").count;
+    const MAX_WALK_STEPS = vertexCount * 2;
 
     for (const [ek, count] of edgeCount) {
         if (count !== 1 || visitedEdges.has(ek)) continue;
@@ -159,8 +175,9 @@ function extractBoundaryChains(geometry: BufferGeometry): number[][] {
         visitedEdges.add(ek);
         let prev = startA;
         let curr = startB;
+        let steps = 0;
 
-        for (let guard = 0; guard < edgeCount.size + 4; guard++) {
+        while (steps++ < MAX_WALK_STEPS) {
             const next = (adj.get(curr) ?? []).find(
                 (n) => n !== prev && !visitedEdges.has(indexEdgeKey(curr, n)),
             );
@@ -170,6 +187,12 @@ function extractBoundaryChains(geometry: BufferGeometry): number[][] {
             chain.push(next);
             prev = curr;
             curr = next;
+        }
+
+        if (steps >= MAX_WALK_STEPS && typeof console !== "undefined") {
+            console.warn(
+                `[SEAL] infinite loop guard triggered at step ${steps} — aborting chain walk, returning partially sealed geometry`,
+            );
         }
         chains.push(chain);
     }
@@ -224,4 +247,22 @@ export function sealInternalSlits(geometry: BufferGeometry): BufferGeometry {
         );
     }
     return working;
+}
+
+/**
+ * Non-blocking seal with a hard timeout — returns the original geometry on
+ * timeout or error so the viewer load path can never hang indefinitely.
+ */
+export async function sealInternalSlitsSafe(geometry: BufferGeometry): Promise<BufferGeometry> {
+    return Promise.race([
+        Promise.resolve(sealInternalSlits(geometry)),
+        new Promise<BufferGeometry>((_, reject) =>
+            setTimeout(() => reject(new Error("sealInternalSlits timeout")), SEAL_TIMEOUT_MS),
+        ),
+    ]).catch((err: Error) => {
+        if (typeof console !== "undefined") {
+            console.warn(`[SEAL] sealInternalSlits aborted: ${err.message} — returning original geometry`);
+        }
+        return geometry;
+    });
 }
