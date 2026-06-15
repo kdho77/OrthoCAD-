@@ -9,6 +9,11 @@ import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { EXPORT_BOTTOM_FULL_MESH_LIMIT, closeLiveViewerMeshToSolid } from "@/lib/geometry/mesh-export";
 import {
+    preextractExportBottomRimLoop,
+    rimPointsFromVectors,
+    type ExportRimPoint,
+} from "@/lib/geometry/mesh-close";
+import {
     geometryToExportPayload,
     runMeshExportWorker,
 } from "@/lib/geometry/mesh-export-worker-runner";
@@ -53,8 +58,9 @@ export class ExportKernelUnavailableError extends Error {
     }
 }
 
-/** Default client-side export timeout. */
-export const EXPORT_OPERATION_TIMEOUT_MS = 30_000;
+/** Default client-side export timeout (worker closure on large stock GLB). */
+// 120s: worker processes ~42k top + 446 rim verts; full-mesh edge extraction takes 35-60s on Default.glb
+export const EXPORT_OPERATION_TIMEOUT_MS = 120_000;
 
 /** @internal Test hook to shorten export timeout in unit tests. */
 let exportTimeoutMsOverride: number | null = null;
@@ -148,6 +154,23 @@ async function buildStlFromLiveGeometry(liveGeometry: BufferGeometry): Promise<A
         );
     }
 
+    let precomputedBottomRim: ExportRimPoint[] | undefined;
+    if (bottomVertexCount > EXPORT_BOTTOM_FULL_MESH_LIMIT) {
+        const extractStart = typeof performance !== "undefined" ? performance.now() : Date.now();
+        if (typeof console !== "undefined") {
+            console.log("[EXPORT] pre-extracting bottom rim on main thread...");
+        }
+        const rimVectors = preextractExportBottomRimLoop(liveGeometry, topVertexCount);
+        precomputedBottomRim = rimPointsFromVectors(rimVectors);
+        if (typeof console !== "undefined") {
+            const extractMs =
+                (typeof performance !== "undefined" ? performance.now() : Date.now()) - extractStart;
+            console.log(
+                `[EXPORT] bottom rim pre-extracted: ${precomputedBottomRim.length} verts in ${extractMs.toFixed(0)}ms`,
+            );
+        }
+    }
+
     if (typeof console !== "undefined") {
         console.log("[EXPORT] posting to worker...");
     }
@@ -156,6 +179,7 @@ async function buildStlFromLiveGeometry(liveGeometry: BufferGeometry): Promise<A
         payload,
         topVertexCount,
         exportTimeoutMsOverride ?? EXPORT_OPERATION_TIMEOUT_MS,
+        precomputedBottomRim,
     );
 
     if (typeof console !== "undefined") {

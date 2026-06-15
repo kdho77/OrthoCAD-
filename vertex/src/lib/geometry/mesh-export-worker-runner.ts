@@ -4,19 +4,21 @@
 import type { BufferGeometry } from "three";
 import { clonePayloadForTransfer, geometryToPayload, type GeometryBufferPayload } from "@/lib/geometry/geometry-buffer";
 import { closeAndSerializeExportPayload } from "@/lib/geometry/mesh-export-core";
-import type { MeshExportWorkerRequest, MeshExportWorkerResponse } from "@/workers/mesh-export.worker";
+import type { ExportRimPoint, MeshExportWorkerRequest, MeshExportWorkerResponse } from "@/workers/mesh-export.worker";
 
-const DEFAULT_EXPORT_WORKER_TIMEOUT_MS = 30_000;
+/** Worker-side export timeout — keep in sync with EXPORT_OPERATION_TIMEOUT_MS. */
+const DEFAULT_EXPORT_WORKER_TIMEOUT_MS = 120_000;
+
+let exportWorker: Worker | null = null;
+let nextRequestId = 0;
+let workerRunnerOverride: MeshExportWorkerRunner | null = null;
 
 export type MeshExportWorkerRunner = (
     payload: GeometryBufferPayload,
     topVertexCount: number,
     timeoutMs?: number,
+    precomputedBottomRim?: ExportRimPoint[],
 ) => Promise<{ stlBuffer: ArrayBuffer; bottomRimVertexCount: number; usedReducedBottom: boolean }>;
-
-let exportWorker: Worker | null = null;
-let nextRequestId = 0;
-let workerRunnerOverride: MeshExportWorkerRunner | null = null;
 
 /** @internal Test hook to bypass the real Web Worker. */
 export function setMeshExportWorkerRunnerForTesting(runner: MeshExportWorkerRunner | null): void {
@@ -37,14 +39,15 @@ export function runMeshExportWorker(
     payload: GeometryBufferPayload,
     topVertexCount: number,
     timeoutMs = DEFAULT_EXPORT_WORKER_TIMEOUT_MS,
+    precomputedBottomRim?: ExportRimPoint[],
 ): Promise<{ stlBuffer: ArrayBuffer; bottomRimVertexCount: number; usedReducedBottom: boolean }> {
     if (workerRunnerOverride) {
-        return workerRunnerOverride(payload, topVertexCount, timeoutMs);
+        return workerRunnerOverride(payload, topVertexCount, timeoutMs, precomputedBottomRim);
     }
 
     const worker = getExportWorker();
     if (!worker) {
-        const result = closeAndSerializeExportPayload(payload, topVertexCount);
+        const result = closeAndSerializeExportPayload(payload, topVertexCount, { precomputedBottomRim });
         return Promise.resolve(result);
     }
 
@@ -54,7 +57,7 @@ export function runMeshExportWorker(
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
             cleanup();
-            reject(new Error("Export timeout after 30s"));
+            reject(new Error(`Export timeout after ${timeoutMs}ms`));
         }, timeoutMs);
 
         const onMessage = (event: MessageEvent<MeshExportWorkerResponse>) => {
@@ -90,6 +93,7 @@ export function runMeshExportWorker(
             id,
             payload: clonedPayload,
             topVertexCount,
+            precomputedBottomRim,
         };
         worker.postMessage(msg, transfer);
     });

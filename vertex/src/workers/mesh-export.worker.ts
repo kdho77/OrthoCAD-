@@ -4,11 +4,18 @@
 import type { GeometryBufferPayload } from "@/lib/geometry/geometry-buffer";
 import { closeAndSerializeExportPayload } from "@/lib/geometry/mesh-export-core";
 
+export interface ExportRimPoint {
+    x: number;
+    y: number;
+    z: number;
+}
+
 export type MeshExportWorkerRequest = {
     type: "CLOSE_AND_SERIALIZE";
     id: number;
     payload: GeometryBufferPayload;
     topVertexCount: number;
+    precomputedBottomRim?: ExportRimPoint[];
 };
 
 export type MeshExportWorkerResponse =
@@ -30,7 +37,9 @@ self.onmessage = (event: MessageEvent<MeshExportWorkerRequest>) => {
     if (msg.type !== "CLOSE_AND_SERIALIZE") return;
 
     try {
-        const result = closeAndSerializeExportPayload(msg.payload, msg.topVertexCount);
+        const result = closeAndSerializeExportPayload(msg.payload, msg.topVertexCount, {
+            precomputedBottomRim: msg.precomputedBottomRim,
+        });
         (self as DedicatedWorkerGlobalScope).postMessage(
             {
                 type: "STL_READY",

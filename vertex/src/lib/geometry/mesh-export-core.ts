@@ -3,6 +3,7 @@
 
 import type { GeometryBufferPayload } from "@/lib/geometry/geometry-buffer";
 import { payloadToGeometry } from "@/lib/geometry/geometry-buffer";
+import type { ExportRimPoint } from "@/lib/geometry/mesh-close";
 import {
     closeMeshPerimeter,
     prepareReducedExportGeometry,
@@ -16,10 +17,15 @@ export interface CloseAndSerializeExportResult {
     usedReducedBottom: boolean;
 }
 
+export interface CloseAndSerializeExportOptions {
+    precomputedBottomRim?: ExportRimPoint[];
+}
+
 /** Worker-safe: reduce bottom shell → bridge weld → binary STL. */
 export function closeAndSerializeExportPayload(
     payload: GeometryBufferPayload,
     topVertexCount: number,
+    options: CloseAndSerializeExportOptions = {},
 ): CloseAndSerializeExportResult {
     const geometry = payloadToGeometry(payload);
     geometry.userData = {
@@ -27,7 +33,10 @@ export function closeAndSerializeExportPayload(
         topVertexCount,
     };
 
-    const { geometry: reduced, bottomRimVertexCount, usedReducedBottom } = prepareReducedExportGeometry(geometry);
+    const { geometry: reduced, bottomRimVertexCount, usedReducedBottom } = prepareReducedExportGeometry(
+        geometry,
+        { precomputedBottomRim: options.precomputedBottomRim },
+    );
     geometry.dispose();
 
     const reducedTopVc =

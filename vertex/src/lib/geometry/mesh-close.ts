@@ -1516,14 +1516,15 @@ function boundaryVertexIndicesInRange(
     return out;
 }
 
-function buildBottomLoopFromTopXY(
+function buildBottomLoopFromTopXYInRange(
     geometry: BufferGeometry,
     topLoop: Vector3[],
-    topVertexCount: number,
+    rangeStart: number,
+    rangeEnd: number,
+    fallbackVertexIndex: number,
 ): Vector3[] {
     const pos = geometry.getAttribute("position");
-    const total = pos.count;
-    const boundaryVerts = boundaryVertexIndicesInRange(geometry, topVertexCount, total);
+    const boundaryVerts = boundaryVertexIndicesInRange(geometry, rangeStart, rangeEnd);
     const bottomLoop: Vector3[] = [];
 
     for (const tp of topLoop) {
@@ -1531,7 +1532,6 @@ function buildBottomLoopFromTopXY(
         let bestD2 = Number.POSITIVE_INFINITY;
         for (const i of boundaryVerts) {
             const z = pos.getZ(i);
-            // Bottom rim vertices should sit at or below the top perimeter sample.
             if (z > tp.z + 0.75) continue;
             const dx = pos.getX(i) - tp.x;
             const dy = pos.getY(i) - tp.y;
@@ -1542,7 +1542,6 @@ function buildBottomLoopFromTopXY(
             }
         }
         if (bestVi < 0) {
-            // Fallback: ignore Z filter when slit topology leaves no candidate below top.
             for (const i of boundaryVerts) {
                 const dx = pos.getX(i) - tp.x;
                 const dy = pos.getY(i) - tp.y;
@@ -1553,11 +1552,78 @@ function buildBottomLoopFromTopXY(
                 }
             }
         }
-        const vi = bestVi >= 0 ? bestVi : topVertexCount;
+        const vi = bestVi >= 0 ? bestVi : fallbackVertexIndex;
         bottomLoop.push(new Vector3(pos.getX(vi), pos.getY(vi), pos.getZ(vi)));
     }
 
     return bottomLoop;
+}
+
+function buildBottomLoopFromTopXY(
+    geometry: BufferGeometry,
+    topLoop: Vector3[],
+    topVertexCount: number,
+): Vector3[] {
+    const total = geometry.getAttribute("position").count;
+    return buildBottomLoopFromTopXYInRange(geometry, topLoop, topVertexCount, total, topVertexCount);
+}
+
+/** Serializable rim point for worker postMessage. */
+export interface ExportRimPoint {
+    x: number;
+    y: number;
+    z: number;
+}
+
+export function rimPointsFromVectors(loop: Vector3[]): ExportRimPoint[] {
+    return loop.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+}
+
+export function vectorsFromRimPoints(loop: ExportRimPoint[]): Vector3[] {
+    return loop.map((p) => new Vector3(p.x, p.y, p.z));
+}
+
+/**
+ * Pre-extract bottom rim on the main thread using bottom sub-mesh only.
+ * Avoids buildEdgeUsage on the full merged geometry inside the worker.
+ */
+export function preextractExportBottomRimLoop(geometry: BufferGeometry, topVertexCount: number): Vector3[] {
+    const total = geometry.getAttribute("position").count;
+    if (topVertexCount <= 0 || topVertexCount >= total) {
+        throw new MeshNotWatertightError(
+            `preextractExportBottomRimLoop: invalid topVertexCount=${topVertexCount} total=${total}`,
+            validateManifold(geometry),
+        );
+    }
+
+    const topSub = submeshByVertexRange(geometry, 0, topVertexCount);
+    const topLoop = extractOrderedBoundaryLoop(topSub);
+    topSub.dispose();
+    if (topLoop.length < 3) {
+        throw new MeshNotWatertightError(
+            "preextractExportBottomRimLoop: top boundary loop has fewer than 3 vertices",
+            validateManifold(geometry),
+        );
+    }
+
+    const bottomSub = submeshByVertexRange(geometry, topVertexCount, total);
+    const bottomLoop = buildBottomLoopFromTopXYInRange(
+        bottomSub,
+        topLoop,
+        0,
+        bottomSub.getAttribute("position").count,
+        0,
+    );
+    bottomSub.dispose();
+    return bottomLoop;
+}
+
+/** @internal Regression tests compare pre-extraction with the legacy full-mesh path. */
+export function resolveMultiMeshBaseLoopsForTest(
+    geometry: BufferGeometry,
+    topVertexCount: number,
+): { top: Vector3[]; bottom: Vector3[] } | null {
+    return resolveMultiMeshBaseLoops(geometry, topVertexCount);
 }
 
 /** Order the outer bottom perimeter from boundary vertices sorted by polar angle in XY. */
@@ -2076,11 +2142,19 @@ export interface ReducedExportGeometryResult {
     usedReducedBottom: boolean;
 }
 
+export interface PrepareReducedExportOptions {
+    /** Bottom rim from main-thread pre-extraction — skips resolveMultiMeshBaseLoops in worker. */
+    precomputedBottomRim?: Vector3[] | ExportRimPoint[];
+}
+
 /**
  * Replace the full high-vertex bottom shell with a flat rim cap before perimeter closure.
  * Keeps the full top surface; bottom interior vertices are dropped for export.
  */
-export function prepareReducedExportGeometry(geometry: BufferGeometry): ReducedExportGeometryResult {
+export function prepareReducedExportGeometry(
+    geometry: BufferGeometry,
+    options: PrepareReducedExportOptions = {},
+): ReducedExportGeometryResult {
     const bodyVertexCount = geometry.getAttribute("position").count;
     const storedTop = (geometry.userData as { topVertexCount?: number }).topVertexCount;
     const topVertexCount =
@@ -2095,24 +2169,42 @@ export function prepareReducedExportGeometry(geometry: BufferGeometry): ReducedE
         };
     }
 
-    const pair = resolveMultiMeshBaseLoops(geometry, topVertexCount);
-    if (!pair) {
-        return {
-            geometry: geometry.clone(),
-            bottomRimVertexCount: 0,
-            usedReducedBottom: false,
-        };
+    let bottomLoop: Vector3[] | null = null;
+    const precomputed = options.precomputedBottomRim;
+    if (precomputed && precomputed.length >= 3) {
+        bottomLoop =
+            precomputed[0] instanceof Vector3
+                ? (precomputed as Vector3[])
+                : vectorsFromRimPoints(precomputed as ExportRimPoint[]);
+        if (typeof console !== "undefined") {
+            console.log(
+                `[WORKER] using pre-computed bottom rim: ${bottomLoop.length} verts — skipping buildEdgeUsage on full mesh`,
+            );
+        }
+    } else {
+        if (typeof console !== "undefined") {
+            console.log("[WORKER] pre-computed rim missing — running full buildEdgeUsage (SLOW PATH)");
+        }
+        const pair = resolveMultiMeshBaseLoops(geometry, topVertexCount);
+        if (!pair) {
+            return {
+                geometry: geometry.clone(),
+                bottomRimVertexCount: 0,
+                usedReducedBottom: false,
+            };
+        }
+        bottomLoop = pair.bottom;
     }
 
     const topSub = submeshByVertexRange(geometry, 0, topVertexCount);
-    const bottomCap = buildFlatCapMeshFromLoop(pair.bottom);
+    const bottomCap = buildFlatCapMeshFromLoop(bottomLoop);
     const merged = concatTopBottomShellsInternal(topSub, bottomCap);
     topSub.dispose();
     bottomCap.dispose();
 
     return {
         geometry: merged,
-        bottomRimVertexCount: pair.bottom.length,
+        bottomRimVertexCount: bottomLoop.length,
         usedReducedBottom: true,
     };
 }
