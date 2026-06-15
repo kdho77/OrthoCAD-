@@ -427,6 +427,150 @@ export function resampleLoopToCount(loop: Vector3[], n: number): Vector3[] {
     return out;
 }
 
+/** Resample a closed loop to exactly `targetCount` points via arc-length parameterization. */
+export function resampleLoop(loop: Vector3[], targetCount: number): Vector3[] {
+    return resampleLoopToCount(loop, targetCount);
+}
+
+/** Signed area of a loop projected onto the XZ plane (positive = CCW, negative = CW). */
+export function signedLoopAreaXZ(loop: Vector3[]): number {
+    let area = 0;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        area += a.x * b.z - b.x * a.z;
+    }
+    return area * 0.5;
+}
+
+/** Ensure top and bottom loops share the same winding when viewed on XZ. */
+export function alignLoopWindingXZ(
+    topLoop: Vector3[],
+    botLoop: Vector3[],
+): { topLoop: Vector3[]; botLoop: Vector3[]; windingAligned: boolean } {
+    const topArea = signedLoopAreaXZ(topLoop);
+    const botArea = signedLoopAreaXZ(botLoop);
+    if (topArea * botArea < 0) {
+        return { topLoop, botLoop: [...botLoop].reverse(), windingAligned: false };
+    }
+    return { topLoop, botLoop, windingAligned: true };
+}
+
+function rotateLoop(loop: Vector3[], offset: number): Vector3[] {
+    const n = loop.length;
+    if (n === 0) return [];
+    const k = ((offset % n) + n) % n;
+    return Array.from({ length: n }, (_, i) => loop[(i + k) % n]!.clone());
+}
+
+/** Rotate `loop` so its samples best align with `reference` (minimizes XY distance). */
+export function alignLoopStartToReference(reference: Vector3[], loop: Vector3[]): Vector3[] {
+    const n = reference.length;
+    if (n === 0 || loop.length !== n) return loop.map((p) => p.clone());
+
+    let bestK = 0;
+    let bestCost = Number.POSITIVE_INFINITY;
+    for (let k = 0; k < n; k++) {
+        let cost = 0;
+        for (let i = 0; i < n; i++) {
+            const a = reference[i]!;
+            const b = loop[(i + k) % n]!;
+            const dx = a.x - b.x;
+            const dy = a.y - b.y;
+            cost += dx * dx + dy * dy;
+        }
+        if (cost < bestCost) {
+            bestCost = cost;
+            bestK = k;
+        }
+    }
+    return rotateLoop(loop, bestK);
+}
+
+interface SnappedBoundaryLoop {
+    positions: Vector3[];
+    localIndices: number[];
+}
+
+/** Snap each loop sample to the nearest boundary vertex in [rangeStart, rangeEnd). */
+function snapLoopToBoundaryVertices(
+    geometry: BufferGeometry,
+    loop: Vector3[],
+    rangeStart: number,
+    rangeEnd: number,
+): SnappedBoundaryLoop {
+    const boundaryVerts = boundaryVertexIndicesInRange(geometry, rangeStart, rangeEnd);
+    const pos = geometry.getAttribute("position");
+    const positions: Vector3[] = [];
+    const localIndices: number[] = [];
+
+    for (const p of loop) {
+        let bestVi = rangeStart;
+        let bestD2 = Number.POSITIVE_INFINITY;
+        for (const vi of boundaryVerts) {
+            const dx = pos.getX(vi) - p.x;
+            const dy = pos.getY(vi) - p.y;
+            const dz = pos.getZ(vi) - p.z;
+            const d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < bestD2) {
+                bestD2 = d2;
+                bestVi = vi;
+            }
+        }
+        localIndices.push(bestVi - rangeStart);
+        positions.push(new Vector3(pos.getX(bestVi), pos.getY(bestVi), pos.getZ(bestVi)));
+    }
+
+    return { positions, localIndices };
+}
+
+/**
+ * Build a complete quad-strip bridge between equal-length rim loops (2N triangles).
+ * No Laplacian smoothing — midpoints are not inserted.
+ */
+export function buildBridgeStrip(topLoop: Vector3[], bottomLoop: Vector3[]): BridgeStripResult {
+    const n = topLoop.length;
+    if (bottomLoop.length !== n) {
+        throw new Error(`buildBridgeStrip requires equal loop lengths, got top=${topLoop.length} bot=${bottomLoop.length}`);
+    }
+
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const topIdx: number[] = [];
+    const bottomIdx: number[] = [];
+    const midPerSample: number[] = new Array<number>(n).fill(-1);
+
+    const pushV = (v: Vector3): number => {
+        const idx = positions.length / 3;
+        positions.push(v.x, v.y, v.z);
+        return idx;
+    };
+
+    for (let i = 0; i < n; i++) {
+        topIdx.push(pushV(topLoop[i]!));
+        bottomIdx.push(pushV(bottomLoop[i]!));
+    }
+
+    for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const tA = topIdx[i]!;
+        const tB = topIdx[j]!;
+        const bA = bottomIdx[i]!;
+        const bB = bottomIdx[j]!;
+        indices.push(tA, bA, tB);
+        indices.push(tB, bA, bB);
+    }
+
+    return {
+        positions,
+        indices,
+        midPerSample,
+        topIdx,
+        bottomIdx,
+        triangleCount: indices.length / 3,
+    };
+}
+
 function roundUpToNearest4(n: number): number {
     return Math.max(4, Math.ceil(n / 4) * 4);
 }
@@ -1847,24 +1991,46 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
     const botSub = submeshByVertexRange(geometry, topVertexCount, bodyVertexCount);
 
     try {
-        const pairTop = extractOrderedBoundaryLoop(topSub);
-        const pairBottom = extractOrderedBoundaryLoop(botSub);
+        const topRawLoop = extractOrderedBoundaryLoop(topSub);
+        const botRawLoop = extractOrderedBoundaryLoop(botSub);
 
-        if (pairTop.length < 3 || pairBottom.length < 3) {
+        if (topRawLoop.length < 3 || botRawLoop.length < 3) {
             throw new MeshNotWatertightError(
-                `closeGlbInsoleToSolid: missing rim loop top=${pairTop.length} bot=${pairBottom.length}`,
+                `[MESH-CLOSE] rim loop too short: top=${topRawLoop.length} bot=${botRawLoop.length}`,
                 precheck,
             );
         }
 
-        sealBottomSlitLoopsBeyondOuterLoop(geometry, topVertexCount, pairBottom);
+        sealBottomSlitLoopsBeyondOuterLoop(geometry, topVertexCount, botRawLoop);
 
-        const targetN = roundUpToNearest4(Math.max(pairTop.length, pairBottom.length));
-        const topLoop = resampleLoopToCount(pairTop, targetN);
-        const bottomLoop = resampleLoopToCount(pairBottom, targetN);
+        const targetN = Math.max(topRawLoop.length, botRawLoop.length);
+        let topLoop = resampleLoop(topRawLoop, targetN);
+        let botLoop = resampleLoop(botRawLoop, targetN);
+
+        if (typeof console !== "undefined") {
+            console.log(`[MESH-CLOSE] resampled loops: top=${targetN} bot=${targetN}`);
+        }
+
+        const winding = alignLoopWindingXZ(topLoop, botLoop);
+        topLoop = winding.topLoop;
+        botLoop = alignLoopStartToReference(topLoop, winding.botLoop);
+
+        if (typeof console !== "undefined") {
+            console.log(`[MESH-CLOSE] winding aligned: ${winding.windingAligned}`);
+        }
+
+        const snappedTop = snapLoopToBoundaryVertices(geometry, topLoop, 0, topVertexCount);
+        const snappedBot = snapLoopToBoundaryVertices(
+            geometry,
+            botLoop,
+            topVertexCount,
+            bodyVertexCount,
+        );
+        topLoop = snappedTop.positions;
+        botLoop = snappedBot.positions;
 
         const topVal = validateLoop(topLoop, loopPerimeterLength(topLoop) / targetN * 2);
-        const bottomVal = validateLoop(bottomLoop, loopPerimeterLength(bottomLoop) / targetN * 2);
+        const bottomVal = validateLoop(botLoop, loopPerimeterLength(botLoop) / targetN * 2);
         if (!topVal.ok || !bottomVal.ok) {
             throw new MeshNotWatertightError(
                 `closeGlbInsoleToSolid: boundary loop validation failed: top=${topVal.reason ?? "ok"}, bottom=${bottomVal.reason ?? "ok"}`,
@@ -1872,7 +2038,7 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
             );
         }
 
-        const rimHeightsMm = measureRimHeights(topLoop, bottomLoop);
+        const rimHeightsMm = measureRimHeights(topLoop, botLoop);
         for (const h of rimHeightsMm) {
             if (h < RIM_HEIGHT_MIN_WARNING_MM && typeof console !== "undefined") {
                 console.warn(
@@ -1881,33 +2047,20 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
             }
         }
 
-        const sourceTopIndices = boundaryLoopVertexIndicesLocal(geometry, pairTop, 0, topVertexCount);
-        const sourceBottomIndices = boundaryLoopVertexIndicesLocal(
-            geometry,
-            pairBottom,
-            topVertexCount,
-            bodyVertexCount,
-        );
-
-        const bridge = generateBridgeStrip(topLoop, bottomLoop);
-        smoothBridgeStrip(
-            bridge.positions,
-            bridge.midPerSample,
-            bridge.topIdx,
-            bridge.bottomIdx,
-            BRIDGE_SMOOTH_ITERATIONS,
-            BRIDGE_SMOOTH_STRENGTH,
-        );
+        const bridge = buildBridgeStrip(topLoop, botLoop);
+        if (typeof console !== "undefined") {
+            console.log(`[MESH-CLOSE] bridge strip: tris=${bridge.triangleCount}`);
+        }
 
         const { geometry: merged, rimTopIndices: weldTopIndices } = mergeGeometriesWithWeldedBridge(
             geometry,
             topLoop,
-            bottomLoop,
+            botLoop,
             bridge,
-            pairTop,
-            pairBottom,
-            sourceTopIndices,
-            sourceBottomIndices,
+            topLoop,
+            botLoop,
+            snappedTop.localIndices,
+            snappedBot.localIndices,
             topVertexCount,
             bottomVertexCount,
         );
@@ -1917,7 +2070,7 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
             Array.from(new Set(weldTopIndices.filter((i) => i >= 0))),
         );
         merged.computeVertexNormals();
-        recomputeNormalsNearSeam(merged, topLoop, bottomLoop);
+        recomputeNormalsNearSeam(merged, topLoop, botLoop);
         smoothSeamVertexNormals(merged, seamTopIndices, 2);
         merged.computeBoundingBox();
         merged.computeBoundingSphere();
@@ -1932,6 +2085,7 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
         }
 
         if (typeof console !== "undefined") {
+            console.log(`[MESH-CLOSE] solid complete: total verts=${merged.getAttribute("position").count}`);
             console.log(
                 `[MESH-CLOSE] closeGlbInsoleToSolid complete: V=${report.vertexCount} openEdges=${report.openEdges} Euler=${report.eulerCharacteristic}`,
             );
