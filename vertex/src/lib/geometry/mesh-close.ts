@@ -1374,7 +1374,7 @@ function pickTopBottomSeamLoops(geometry: BufferGeometry): { top: Vector3[]; bot
 }
 
 /** Extract a vertex-index submesh containing only triangles whose vertices lie in [rangeStart, rangeEnd). */
-function submeshByVertexRange(
+export function submeshByVertexRange(
     geometry: BufferGeometry,
     rangeStart: number,
     rangeEnd: number,
@@ -1813,6 +1813,139 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
 }
 
 /**
+ * Closes a multi-mesh GLB insole into a watertight solid by bridging top and
+ * bottom rim loops extracted from each sub-mesh separately — never runs
+ * full-mesh boundary resolution on the combined vertex buffer.
+ */
+export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry {
+    const precheck = validateManifold(geometry);
+    if (precheck.isWatertight && precheck.eulerCharacteristic === 2) {
+        const clone = geometry.clone();
+        if (geometry.userData) clone.userData = { ...geometry.userData };
+        return clone;
+    }
+
+    const bodyVertexCount = geometry.getAttribute("position").count;
+    const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
+    const storedTop = userData.topVertexCount;
+    const topVertexCount =
+        storedTop && storedTop > 0 && storedTop < bodyVertexCount
+            ? storedTop
+            : userData.isMultiMeshBase
+              ? inferTopVertexCount(geometry)
+              : 0;
+
+    if (!userData.isMultiMeshBase || topVertexCount <= 0) {
+        const result = closeMeshPerimeter(geometry);
+        const out = result.geometry;
+        if (geometry.userData) out.userData = { ...geometry.userData };
+        return out;
+    }
+
+    const bottomVertexCount = bodyVertexCount - topVertexCount;
+    const topSub = submeshByVertexRange(geometry, 0, topVertexCount);
+    const botSub = submeshByVertexRange(geometry, topVertexCount, bodyVertexCount);
+
+    try {
+        const pairTop = extractOrderedBoundaryLoop(topSub);
+        const pairBottom = extractOrderedBoundaryLoop(botSub);
+
+        if (pairTop.length < 3 || pairBottom.length < 3) {
+            throw new MeshNotWatertightError(
+                `closeGlbInsoleToSolid: missing rim loop top=${pairTop.length} bot=${pairBottom.length}`,
+                precheck,
+            );
+        }
+
+        sealBottomSlitLoopsBeyondOuterLoop(geometry, topVertexCount, pairBottom);
+
+        const targetN = roundUpToNearest4(Math.max(pairTop.length, pairBottom.length));
+        const topLoop = resampleLoopToCount(pairTop, targetN);
+        const bottomLoop = resampleLoopToCount(pairBottom, targetN);
+
+        const topVal = validateLoop(topLoop, loopPerimeterLength(topLoop) / targetN * 2);
+        const bottomVal = validateLoop(bottomLoop, loopPerimeterLength(bottomLoop) / targetN * 2);
+        if (!topVal.ok || !bottomVal.ok) {
+            throw new MeshNotWatertightError(
+                `closeGlbInsoleToSolid: boundary loop validation failed: top=${topVal.reason ?? "ok"}, bottom=${bottomVal.reason ?? "ok"}`,
+                precheck,
+            );
+        }
+
+        const rimHeightsMm = measureRimHeights(topLoop, bottomLoop);
+        for (const h of rimHeightsMm) {
+            if (h < RIM_HEIGHT_MIN_WARNING_MM && typeof console !== "undefined") {
+                console.warn(
+                    `[mesh-close] rim height ${h.toFixed(3)}mm < ${RIM_HEIGHT_MIN_WARNING_MM}mm — may look pinched`,
+                );
+            }
+        }
+
+        const sourceTopIndices = boundaryLoopVertexIndicesLocal(geometry, pairTop, 0, topVertexCount);
+        const sourceBottomIndices = boundaryLoopVertexIndicesLocal(
+            geometry,
+            pairBottom,
+            topVertexCount,
+            bodyVertexCount,
+        );
+
+        const bridge = generateBridgeStrip(topLoop, bottomLoop);
+        smoothBridgeStrip(
+            bridge.positions,
+            bridge.midPerSample,
+            bridge.topIdx,
+            bridge.bottomIdx,
+            BRIDGE_SMOOTH_ITERATIONS,
+            BRIDGE_SMOOTH_STRENGTH,
+        );
+
+        const { geometry: merged, rimTopIndices: weldTopIndices } = mergeGeometriesWithWeldedBridge(
+            geometry,
+            topLoop,
+            bottomLoop,
+            bridge,
+            pairTop,
+            pairBottom,
+            sourceTopIndices,
+            sourceBottomIndices,
+            topVertexCount,
+            bottomVertexCount,
+        );
+
+        const seamTopIndices = orderSeamRingIndices(
+            merged,
+            Array.from(new Set(weldTopIndices.filter((i) => i >= 0))),
+        );
+        merged.computeVertexNormals();
+        recomputeNormalsNearSeam(merged, topLoop, bottomLoop);
+        smoothSeamVertexNormals(merged, seamTopIndices, 2);
+        merged.computeBoundingBox();
+        merged.computeBoundingSphere();
+
+        const report = validateManifold(merged);
+        if (!report.isWatertight || report.eulerCharacteristic !== 2) {
+            merged.dispose();
+            throw new MeshNotWatertightError(
+                `closeGlbInsoleToSolid failed: openEdges=${report.openEdges} nonManifold=${report.nonManifoldEdges} euler=${report.eulerCharacteristic}`,
+                report,
+            );
+        }
+
+        if (typeof console !== "undefined") {
+            console.log(
+                `[MESH-CLOSE] closeGlbInsoleToSolid complete: V=${report.vertexCount} openEdges=${report.openEdges} Euler=${report.eulerCharacteristic}`,
+            );
+        }
+
+        if (geometry.userData) merged.userData = { ...geometry.userData };
+        return merged;
+    } finally {
+        topSub.dispose();
+        botSub.dispose();
+    }
+}
+
+/**
  * Export-time helper: close multi-mesh base geometry when the perimeter is open.
  * Preserves geometry when already watertight.
  */
@@ -1842,14 +1975,15 @@ export function ensureWatertightForExport(geometry: BufferGeometry): BufferGeome
 
     if (!needsClosure) return geometry;
 
-    const result = closeMeshPerimeter(geometry);
-    if (result.geometry !== geometry) {
+    const savedUserData = geometry.userData ? { ...geometry.userData } : undefined;
+    const closed = isMultiMesh ? closeGlbInsoleToSolid(geometry) : closeMeshPerimeter(geometry).geometry;
+    if (closed !== geometry) {
         geometry.dispose();
     }
-    if (geometry.userData) {
-        result.geometry.userData = { ...geometry.userData };
+    if (savedUserData) {
+        closed.userData = savedUserData;
     }
-    return result.geometry;
+    return closed;
 }
 
 /** @internal Heal internal slit boundaries on a GLB shell before top/bottom concatenation. */

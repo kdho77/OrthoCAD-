@@ -7,7 +7,7 @@ import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from 
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
-import { ensureWatertightForExport } from "@/lib/geometry/mesh-close";
+import { closeGlbInsoleToSolid } from "@/lib/geometry/mesh-close";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
@@ -68,7 +68,7 @@ function logMeshClosePath(geometry: BufferGeometry): void {
               ? Math.floor(total / 2)
               : total;
     const bottomVerts = userData.isMultiMeshBase ? Math.max(0, total - topVerts) : 0;
-    console.log(`[EXPORT] fallback mesh-close path: topVerts=${topVerts} bottomVerts=${bottomVerts}`);
+    console.log(`[EXPORT] GLB rim-close path: topVerts=${topVerts} bottomVerts=${bottomVerts}`);
 }
 
 function exportStlFromGeometry(geometry: BufferGeometry): ArrayBuffer {
@@ -80,14 +80,24 @@ function exportStlFromGeometry(geometry: BufferGeometry): ArrayBuffer {
     }
 }
 
-/** PATH B — mesh-close preview / fallback STL export. */
-function buildPreviewStlFromGeometry(geometry: BufferGeometry): ArrayBuffer {
+/** PATH B — GLB rim-close STL export (sub-mesh loop extraction + bridge weld). */
+function buildClosedStlFromGeometry(geometry: BufferGeometry): ArrayBuffer {
     logMeshClosePath(geometry);
-    const closed = ensureWatertightForExport(geometry);
+    if (typeof console !== "undefined") {
+        console.log("[EXPORT] closing GLB insole rims...");
+    }
     try {
-        return exportStlFromGeometry(closed);
-    } finally {
-        if (closed !== geometry) closed.dispose();
+        const solid = closeGlbInsoleToSolid(geometry);
+        try {
+            return geometryToBinarySTL(solid);
+        } finally {
+            if (solid !== geometry) solid.dispose();
+        }
+    } catch (e) {
+        if (typeof console !== "undefined") {
+            console.warn("[EXPORT] rim close failed:", e);
+        }
+        return geometryToBinarySTL(geometry);
     }
 }
 
@@ -205,7 +215,7 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
 
     let geometry = await buildExportGeometry(side);
     try {
-        return buildPreviewStlFromGeometry(geometry);
+        return buildClosedStlFromGeometry(geometry);
     } finally {
         geometry.dispose();
     }
@@ -304,7 +314,7 @@ export async function buildExportSolid(
 
     const geometry = await buildExportGlbGeometry(side);
     if (exportMode === "manufacturing") {
-        return ensureWatertightForExport(geometry);
+        return closeGlbInsoleToSolid(geometry);
     }
     return geometry;
 }
