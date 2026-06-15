@@ -6,6 +6,7 @@ import {
     applyBaseBooleansOnSewnSolid,
     applyRimBlend,
     applyThicknessToSewnBase,
+    sewBufferGeometryToManufacturingStl,
     sewGlbGeometryToSolid,
 } from "@/lib/geometry/base-occt";
 import { modifiedBaseResult } from "@/lib/geometry/base-modifier";
@@ -133,5 +134,9 @@ export class OcctKernel implements IGeometryKernel {
         } catch {
             return null;
         }
+    }
+
+    exportManufacturingStlFromLiveMesh(geometry: BufferGeometry): ArrayBuffer | null {
+        return sewBufferGeometryToManufacturingStl(this.factory, geometry);
     }
 }

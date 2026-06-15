@@ -9,6 +9,7 @@ import {
     type IWire,
     type Result,
     ShapeTypes,
+    shapesToStl,
 } from "@chili3d/core";
 import { applyElements, applySkives, applyTrimlineCut } from "@/lib/geometry/base-modifier-booleans";
 import { analyzeManifold } from "@/lib/geometry/manifold";
@@ -122,15 +123,10 @@ export function sewGlbGeometryToSolid(
         }
 
         const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
-        if (userData.isMultiMeshBase && inputDiag.openEdges > 0) {
-            // Stock GLB bases ship as separate open Top/Bottom shells. Sewing every
-            // triangle into one BRep shell cannot close the perimeter gap — mesh-close
-            // must bridge the rim first (export fallback path).
-            logSewDiagnostics("skipped", {
-                ...inputDiag,
-                failureReason: "multi-mesh open shells require mesh-close bridge before BRep sew",
-            });
-            return null;
+        if (userData.isMultiMeshBase && inputDiag.openEdges > 0 && typeof console !== "undefined") {
+            console.log(
+                `[EXPORT] OCCT sew attempting multi-mesh open shell (${inputDiag.openEdges} open edges)`,
+            );
         }
 
         // Fast path: if the geometry already came from an OCCT shape we cached,
@@ -154,7 +150,7 @@ export function sewGlbGeometryToSolid(
             // is not present; the repair pass will help.
             try {
                 const w = unwrap(factory.polygon([p0, p1, p2, p0]), "tri wire");
-                const f = unwrap(factory.face(w), "tri face");
+                const f = unwrap(factory.face([w]), "tri face");
                 faces.push(f);
             } catch {
                 // If a single triangle fails we skip it (rare); the solid may still close.
@@ -193,6 +189,22 @@ export function sewGlbGeometryToSolid(
         if (typeof console !== "undefined") {
             console.warn("[base-occt] sewGlbGeometryToSolid failed (will use deformation fallback):", err);
         }
+        return null;
+    }
+}
+
+/** Sew live viewer tessellation → repair → binary STL (no modifier re-application). */
+export function sewBufferGeometryToManufacturingStl(
+    factory: IShapeFactory,
+    geometry: BufferGeometry,
+): ArrayBuffer | null {
+    const solid = sewGlbGeometryToSolid(factory, geometry);
+    if (!solid) return null;
+    try {
+        const repaired = repairOcctSolid(factory, solid);
+        const bytes = shapesToStl([repaired], { binary: true });
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+    } catch {
         return null;
     }
 }

@@ -4,12 +4,18 @@
 import { afterEach, describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry } from "three";
 
-const mockRunMeshExportWorker = rs.fn<
-    () => Promise<{ stlBuffer: ArrayBuffer; bottomRimVertexCount: number; usedReducedBottom: boolean }>
->();
+const mockExportManufacturingStlFromLiveMesh = rs.fn<(geometry: BufferGeometry) => ArrayBuffer | null>();
+const mockEnsureKernelReady = rs.fn<() => Promise<boolean>>();
 
 let viewerGeometry: BufferGeometry | null = null;
 let viewerBuilding = false;
+
+function makeStlBuffer(byteLength = 256): ArrayBuffer {
+    const buffer = new ArrayBuffer(byteLength);
+    const view = new Uint8Array(buffer);
+    view[80] = 1;
+    return buffer;
+}
 
 rs.mock("@/stores/design-store", () => ({
     useDesignStore: {
@@ -32,16 +38,17 @@ rs.mock("@/stores/viewer-geometry-store", () => ({
     isViewerGeometryBuilding: () => viewerBuilding,
 }));
 
-rs.mock("@/lib/geometry/mesh-export-worker-runner", () => ({
-    geometryToExportPayload: (geometry: BufferGeometry) => ({
-        payload: {
-            positions: new Float32Array(geometry.getAttribute("position").array as ArrayLike<number>),
-            indices: null,
-        },
-        topVertexCount: (geometry.userData as { topVertexCount?: number }).topVertexCount ?? 3,
+rs.mock("@/lib/chili3d/kernel", () => ({
+    ensureKernelReady: (...args: unknown[]) => mockEnsureKernelReady(...(args as [])),
+    getKernel: () => ({
+        buildInsole: rs.fn(() => makeTestGeometry()),
+        buildInsoleSolid: rs.fn(),
+        buildFromBase: rs.fn(),
+        exportSTL: rs.fn(),
+        exportManufacturingStlFromLiveMesh: (geometry: BufferGeometry) =>
+            mockExportManufacturingStlFromLiveMesh(geometry),
     }),
-    runMeshExportWorker: (...args: unknown[]) => mockRunMeshExportWorker(...(args as [])),
-    setMeshExportWorkerRunnerForTesting: rs.fn(),
+    isAuthoritativeKernel: () => true,
 }));
 
 rs.mock("@/lib/geometry/base-asset", () => ({
@@ -59,16 +66,6 @@ rs.mock("@/lib/geometry/base-asset", () => ({
 
 rs.mock("@/lib/geometry/base-modifier", () => ({
     applyBaseModifiers: (geometry: BufferGeometry) => geometry.clone(),
-}));
-
-rs.mock("@/lib/chili3d/kernel", () => ({
-    getKernel: () => ({
-        buildInsole: rs.fn(() => makeTestGeometry()),
-        buildInsoleSolid: rs.fn(),
-        buildFromBase: rs.fn(),
-        exportSTL: rs.fn(),
-    }),
-    isAuthoritativeKernel: () => false,
 }));
 
 rs.mock("@/lib/geometry/kernel-build", () => ({
@@ -99,7 +96,7 @@ function makeTestGeometry(): BufferGeometry {
     return geometry;
 }
 
-describe("export-geometry timeout and seal guards", () => {
+describe("export-geometry timeout and OCCT guards", () => {
     afterEach(() => {
         void import("@/lib/geometry/export-geometry").then((m) => m.setExportTimeoutMsForTesting(null));
     });
@@ -107,12 +104,10 @@ describe("export-geometry timeout and seal guards", () => {
     beforeEach(() => {
         viewerGeometry = makeTestGeometry();
         viewerBuilding = false;
-        mockRunMeshExportWorker.mockReset();
-        mockRunMeshExportWorker.mockResolvedValue({
-            stlBuffer: new ArrayBuffer(128),
-            bottomRimVertexCount: 64,
-            usedReducedBottom: true,
-        });
+        mockEnsureKernelReady.mockReset();
+        mockEnsureKernelReady.mockResolvedValue(true);
+        mockExportManufacturingStlFromLiveMesh.mockReset();
+        mockExportManufacturingStlFromLiveMesh.mockReturnValue(makeStlBuffer());
     });
 
     test("manufacturing export never calls buildInsoleSolid or buildFromBase", async () => {
@@ -124,6 +119,8 @@ describe("export-geometry timeout and seal guards", () => {
             buildInsoleSolid,
             buildFromBase,
             exportSTL: rs.fn(),
+            exportManufacturingStlFromLiveMesh: (geometry: BufferGeometry) =>
+                mockExportManufacturingStlFromLiveMesh(geometry),
         } as ReturnType<typeof kernel.getKernel>);
 
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
@@ -133,52 +130,31 @@ describe("export-geometry timeout and seal guards", () => {
         expect(buildFromBase).not.toHaveBeenCalled();
     });
 
-    test("export times out gracefully with user-facing message", async () => {
+    test("export times out gracefully when kernel init hangs", async () => {
         const { buildExportStl, ExportTimeoutError, setExportTimeoutMsForTesting } = await import(
             "@/lib/geometry/export-geometry"
         );
         setExportTimeoutMsForTesting(25);
-        mockRunMeshExportWorker.mockImplementation(() => new Promise(() => undefined));
+        mockEnsureKernelReady.mockImplementation(() => new Promise(() => undefined));
 
         await expect(buildExportStl("left", { exportMode: "manufacturing" })).rejects.toThrow(
             ExportTimeoutError,
         );
     });
 
-    test("export does not block the main thread before worker resolves", async () => {
-        let resolveWorker!: (value: {
-            stlBuffer: ArrayBuffer;
-            bottomRimVertexCount: number;
-            usedReducedBottom: boolean;
-        }) => void;
-        mockRunMeshExportWorker.mockImplementation(
-            () =>
-                new Promise((resolve) => {
-                    resolveWorker = resolve;
-                }),
-        );
-
+    test("manufacturing export resolves when OCCT sewing returns STL bytes", async () => {
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
-        const pending = buildExportStl("left", { exportMode: "manufacturing" });
-        let mainThreadResponsive = false;
-        mainThreadResponsive = true;
-        expect(mainThreadResponsive).toBe(true);
-
-        resolveWorker({
-            stlBuffer: new ArrayBuffer(200),
-            bottomRimVertexCount: 48,
-            usedReducedBottom: true,
-        });
-        const result = await pending;
-        expect(result.byteLength).toBeGreaterThan(0);
+        const result = await buildExportStl("left", { exportMode: "manufacturing" });
+        expect(mockExportManufacturingStlFromLiveMesh).toHaveBeenCalledTimes(1);
+        expect(result.byteLength).toBeGreaterThan(84);
     });
 
-    test("export routes live viewer geometry through export worker", async () => {
+    test("export routes live viewer geometry through OCCT sewing", async () => {
         viewerGeometry = makeTestGeometry();
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
-        expect(mockRunMeshExportWorker).toHaveBeenCalledTimes(1);
-        expect(result.byteLength).toBeGreaterThan(0);
+        expect(mockExportManufacturingStlFromLiveMesh).toHaveBeenCalledTimes(1);
+        expect(result.byteLength).toBeGreaterThan(84);
     });
 });

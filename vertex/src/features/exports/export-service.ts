@@ -2,10 +2,10 @@ import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import {
     buildExportGeometry,
     buildExportGlb,
-    buildExportSolid,
     buildExportStl,
     ExportGeometryNotReadyError,
     ExportKernelUnavailableError,
+    ExportOcctSewFailedError,
     ExportTimeoutError,
     exportModeFromMethod,
 } from "@/lib/geometry/export-geometry";
@@ -87,13 +87,18 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         return exportGlb(side);
     }
     const filename = `insole-${side}-${Date.now()}.stl`;
-    const auth = await authorize("stl", side, filename);
-    if (!auth.ok) return { ok: false, reason: auth.reason };
     const { design } = useDesignStore.getState();
     try {
         const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
         const blob = new Blob([stl], { type: "model/stl" });
         downloadBlob(blob, filename);
+        const auth = await authorize("stl", side, filename);
+        if (!auth.ok) {
+            return { ok: false, reason: auth.reason };
+        }
+        if (typeof console !== "undefined") {
+            console.log("[EXPORT] token deducted after successful download");
+        }
         useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
         return { ok: true, filename, blob };
     } catch (e) {
@@ -101,6 +106,9 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
             return { ok: false, reason: e.message };
         }
         if (e instanceof ExportKernelUnavailableError) {
+            return { ok: false, reason: e.message };
+        }
+        if (e instanceof ExportOcctSewFailedError) {
             return { ok: false, reason: e.message };
         }
         if (e instanceof ExportTimeoutError) {
@@ -132,13 +140,16 @@ export async function exportGcode(
     overrides: CamOverrides = {},
 ): Promise<ExportOutcome> {
     const filename = `insole-${side}-${preset.id}-${Date.now()}.gcode`;
-    const auth = await authorize("gcode", side, filename);
-    if (!auth.ok) return { ok: false, reason: auth.reason };
     const geometry = await buildSideGeometry(side);
     const { gcode, stats } = generateGcode(geometry, preset, overrides);
     geometry.dispose();
     const blob = new Blob([gcode], { type: "text/plain" });
     downloadBlob(blob, filename);
+    const auth = await authorize("gcode", side, filename);
+    if (!auth.ok) return { ok: false, reason: auth.reason };
+    if (typeof console !== "undefined") {
+        console.log("[EXPORT] token deducted after successful download");
+    }
     useAuditStore
         .getState()
         .record("export_generated", `G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);

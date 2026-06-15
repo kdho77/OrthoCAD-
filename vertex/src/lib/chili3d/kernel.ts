@@ -46,6 +46,11 @@ export interface IGeometryKernel {
         base: BufferGeometry,
         field: HeightFieldParams,
     ): ArrayBuffer | null;
+    /**
+     * Manufacturing export from live viewer tessellation (modifiers already applied).
+     * Sew triangle soup → BRep solid → binary STL. No JS mesh-close.
+     */
+    exportManufacturingStlFromLiveMesh?(geometry: BufferGeometry): ArrayBuffer | null;
 }
 
 class ThreeKernel implements IGeometryKernel {

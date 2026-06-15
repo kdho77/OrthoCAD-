@@ -2,22 +2,14 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
-import { getKernel, isAuthoritativeKernel } from "@/lib/chili3d/kernel";
+import { ensureKernelReady, getKernel, isAuthoritativeKernel } from "@/lib/chili3d/kernel";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { EXPORT_BOTTOM_FULL_MESH_LIMIT, closeLiveViewerMeshToSolid } from "@/lib/geometry/mesh-export";
-import {
-    preextractExportBottomRimLoop,
-    rimPointsFromVectors,
-    type ExportRimPoint,
-} from "@/lib/geometry/mesh-close";
-import {
-    geometryToExportPayload,
-    runMeshExportWorker,
-} from "@/lib/geometry/mesh-export-worker-runner";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
+import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { useDesignStore } from "@/stores/design-store";
@@ -27,7 +19,7 @@ import {
 } from "@/stores/viewer-geometry-store";
 import type { DesignState, ProductionMethod, Side } from "@/types";
 
-/** Export routing: manufacturing uses direct mesh-close; preview uses the same live mesh path. */
+/** Export routing: manufacturing uses OCCT sewing; preview uses direct tessellation STL. */
 export type ExportMode = "preview" | "manufacturing";
 
 /** Thrown when live viewer geometry is not available for export. */
@@ -48,7 +40,15 @@ export class ExportTimeoutError extends Error {
     }
 }
 
-/** @deprecated Export no longer requires OCCT — retained for export-service error handling. */
+/** Thrown when OCCT sewing cannot produce a watertight manufacturing solid. */
+export class ExportOcctSewFailedError extends Error {
+    constructor(message = "OCCT sewing failed — could not build a watertight solid from the live mesh.") {
+        super(message);
+        this.name = "ExportOcctSewFailedError";
+    }
+}
+
+/** @deprecated Retained for export-service error handling when OCCT kernel is not loaded. */
 export class ExportKernelUnavailableError extends Error {
     constructor(
         message = "Export requires OpenCascade kernel. Please wait for the kernel to load and try again.",
@@ -141,55 +141,63 @@ function logDirectMeshPath(geometry: BufferGeometry): void {
     console.log(`[EXPORT] direct mesh path: topVerts=${topVerts} bottomVerts=${bottomVerts}`);
 }
 
-/** Serialize live viewer geometry via export worker → mesh-close → binary STL. */
-async function buildStlFromLiveGeometry(liveGeometry: BufferGeometry): Promise<ArrayBuffer> {
+function triangleCount(geometry: BufferGeometry): number {
+    const index = geometry.getIndex();
+    const pos = geometry.getAttribute("position");
+    return index ? index.count / 3 : pos.count / 3;
+}
+
+/** Manufacturing export: OCCT sew live viewer tessellation → binary STL. */
+async function buildManufacturingStlViaOcct(liveGeometry: BufferGeometry): Promise<ArrayBuffer> {
     logDirectMeshPath(liveGeometry);
 
-    const { payload, topVertexCount } = geometryToExportPayload(liveGeometry);
-    const bottomVertexCount = payload.positions.length / 3 - topVertexCount;
+    const ready = await ensureKernelReady();
+    if (!ready || !isAuthoritativeKernel()) {
+        throw new ExportKernelUnavailableError();
+    }
 
-    if (bottomVertexCount > EXPORT_BOTTOM_FULL_MESH_LIMIT && typeof console !== "undefined") {
-        console.warn(
-            `[EXPORT] bottom mesh ${bottomVertexCount} verts > limit; extracting rim loop only (worker path)`,
+    const kernel = getKernel();
+    const exportLive = kernel.exportManufacturingStlFromLiveMesh;
+    if (!exportLive) {
+        throw new ExportOcctSewFailedError("OCCT live-mesh export is not available on the active kernel.");
+    }
+
+    const triCount = triangleCount(liveGeometry);
+    const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (typeof console !== "undefined") {
+        console.log(`[EXPORT] sending mesh to OCCT sewing: ${triCount} triangles`);
+    }
+
+    const stlBuffer = exportLive.call(kernel, liveGeometry);
+    if (!stlBuffer || stlBuffer.byteLength <= 84) {
+        throw new ExportOcctSewFailedError();
+    }
+
+    if (typeof console !== "undefined") {
+        const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now()) - t0;
+        console.log(
+            `[EXPORT] OCCT sewing complete in ${elapsed.toFixed(0)}ms, STL bytes: ${stlBuffer.byteLength}`,
         );
     }
 
-    let precomputedBottomRim: ExportRimPoint[] | undefined;
-    if (bottomVertexCount > EXPORT_BOTTOM_FULL_MESH_LIMIT) {
-        const extractStart = typeof performance !== "undefined" ? performance.now() : Date.now();
-        if (typeof console !== "undefined") {
-            console.log("[EXPORT] pre-extracting bottom rim on main thread...");
-        }
-        const rimVectors = preextractExportBottomRimLoop(liveGeometry, topVertexCount);
-        precomputedBottomRim = rimPointsFromVectors(rimVectors);
-        if (typeof console !== "undefined") {
-            const extractMs =
-                (typeof performance !== "undefined" ? performance.now() : Date.now()) - extractStart;
-            console.log(
-                `[EXPORT] bottom rim pre-extracted: ${precomputedBottomRim.length} verts in ${extractMs.toFixed(0)}ms`,
-            );
-        }
-    }
-
-    if (typeof console !== "undefined") {
-        console.log("[EXPORT] posting to worker...");
-    }
-
-    const { stlBuffer, bottomRimVertexCount, usedReducedBottom } = await runMeshExportWorker(
-        payload,
-        topVertexCount,
-        exportTimeoutMsOverride ?? EXPORT_OPERATION_TIMEOUT_MS,
-        precomputedBottomRim,
-    );
-
-    if (typeof console !== "undefined") {
-        if (usedReducedBottom) {
-            console.log(`[EXPORT] rim loop extracted: ${bottomRimVertexCount} verts`);
-        }
-        console.log(`[EXPORT] worker returned STL: ${stlBuffer.byteLength} bytes`);
-    }
-
     return stlBuffer;
+}
+
+/** Preview export: serialize live tessellation without mesh-close or OCCT sewing. */
+function buildPreviewStlFromLiveGeometry(liveGeometry: BufferGeometry): ArrayBuffer {
+    logDirectMeshPath(liveGeometry);
+    return geometryToBinarySTL(liveGeometry);
+}
+
+/** Route live geometry to manufacturing (OCCT) or preview (direct STL) export. */
+async function buildStlFromLiveGeometry(
+    liveGeometry: BufferGeometry,
+    mode: ExportMode,
+): Promise<ArrayBuffer> {
+    if (mode === "manufacturing") {
+        return buildManufacturingStlViaOcct(liveGeometry);
+    }
+    return buildPreviewStlFromLiveGeometry(liveGeometry);
 }
 
 /** Direct mesh export from the live viewer scene (test hook). */
@@ -198,25 +206,25 @@ export async function exportManufacturingStlAttempt(
     side: Side,
 ): Promise<ArrayBuffer | null> {
     try {
-        return await buildDirectMeshExportStl(side);
+        return await buildDirectMeshExportStl(side, "manufacturing");
     } catch {
         return null;
     }
 }
 
-async function buildDirectMeshExportStl(side: Side): Promise<ArrayBuffer> {
+async function buildDirectMeshExportStl(side: Side, mode: ExportMode): Promise<ArrayBuffer> {
     if (isViewerGeometryBuilding(side)) {
         throw new ExportGeometryNotReadyError();
     }
 
     const live = getLiveViewerGeometry(side);
     if (live) {
-        return buildStlFromLiveGeometry(live);
+        return buildStlFromLiveGeometry(live, mode);
     }
 
     const geometry = await buildExportGeometry(side);
     try {
-        return buildStlFromLiveGeometry(geometry);
+        return buildStlFromLiveGeometry(geometry, mode);
     } finally {
         geometry.dispose();
     }
@@ -240,12 +248,11 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
     });
 }
 
-/** Export STL bytes for the active design side — live viewer mesh, mesh-close, pure JS STL. */
+/** Export STL bytes for the active design side — manufacturing uses OCCT sewing; preview uses direct STL. */
 export async function buildExportStl(side: Side, options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const run = async (): Promise<ArrayBuffer> => {
-        void options;
-        return buildDirectMeshExportStl(side);
-    };
+    const { design } = useDesignStore.getState();
+    const mode = options.exportMode ?? exportModeFromMethod(design.method);
+    const run = async (): Promise<ArrayBuffer> => buildDirectMeshExportStl(side, mode);
 
     return withExportTimeout(run());
 }
