@@ -57,50 +57,6 @@ async function loadRawBaseGeometry(design: DesignState, side: Side): Promise<Buf
     return loadBaseGeometry(base);
 }
 
-function logMeshClosePath(geometry: BufferGeometry): void {
-    if (typeof console === "undefined") return;
-    const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
-    const total = geometry.getAttribute("position").count;
-    const topVerts =
-        userData.topVertexCount && userData.topVertexCount > 0 && userData.topVertexCount < total
-            ? userData.topVertexCount
-            : userData.isMultiMeshBase
-              ? Math.floor(total / 2)
-              : total;
-    const bottomVerts = userData.isMultiMeshBase ? Math.max(0, total - topVerts) : 0;
-    console.log(`[EXPORT] GLB rim-close path: topVerts=${topVerts} bottomVerts=${bottomVerts}`);
-}
-
-function exportStlFromGeometry(geometry: BufferGeometry): ArrayBuffer {
-    const kernel = getKernel();
-    try {
-        return kernel.exportSTL(geometry);
-    } catch {
-        return geometryToBinarySTL(geometry);
-    }
-}
-
-/** PATH B — GLB rim-close STL export (sub-mesh loop extraction + bridge weld). */
-function buildClosedStlFromGeometry(geometry: BufferGeometry): ArrayBuffer {
-    logMeshClosePath(geometry);
-    if (typeof console !== "undefined") {
-        console.log("[EXPORT] closing GLB insole rims...");
-    }
-    try {
-        const solid = closeGlbInsoleToSolid(geometry);
-        try {
-            return geometryToBinarySTL(solid);
-        } finally {
-            if (solid !== geometry) solid.dispose();
-        }
-    } catch (e) {
-        if (typeof console !== "undefined") {
-            console.warn("[EXPORT] rim close failed:", e);
-        }
-        return geometryToBinarySTL(geometry);
-    }
-}
-
 /** PATH A — OCCT sew manufacturing STL from raw GLB base (test hook). */
 export async function exportManufacturingStlAttempt(
     design: DesignState,
@@ -179,43 +135,23 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
 }
 
 /** Export STL bytes for the active design side. */
-export async function buildExportStl(side: Side, options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const { design } = useDesignStore.getState();
-    const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
-
-    if (exportMode === "manufacturing") {
-        await ensureKernelReady();
-        if (isAuthoritativeKernel()) {
-            const params = insoleParamsFromDesign(design, side, "full");
-            try {
-                const solid = getKernel().buildInsoleSolid(params);
-                console.log(
-                    "[EXPORT] buildInsoleSolid:",
-                    solid.manifold.occtClosed,
-                    solid.manifold.isWatertight,
-                    solid.manifold.triangleCount,
-                );
-                if (solid.manifold.occtClosed || solid.manifold.isWatertight) {
-                    try {
-                        return exportStlFromGeometry(solid.geometry);
-                    } finally {
-                        solid.geometry.dispose();
-                    }
-                }
-                solid.geometry.dispose();
-                console.warn("[EXPORT] solid not watertight — falling through");
-            } catch (e) {
-                console.warn("[EXPORT] buildInsoleSolid threw:", e);
-            }
-        }
-
-        const occtStl = await tryOcctManufacturingStl(design, side);
-        if (occtStl) return occtStl;
-    }
-
-    let geometry = await buildExportGeometry(side);
+export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
+    const geometry = await buildExportGeometry(side);
     try {
-        return buildClosedStlFromGeometry(geometry);
+        if (typeof console !== "undefined") {
+            console.log("[EXPORT] closing GLB insole rims...");
+        }
+        const solid = closeGlbInsoleToSolid(geometry);
+        try {
+            return geometryToBinarySTL(solid);
+        } finally {
+            solid.dispose();
+        }
+    } catch (e) {
+        if (typeof console !== "undefined") {
+            console.warn("[EXPORT] rim close failed:", e);
+        }
+        return geometryToBinarySTL(geometry);
     } finally {
         geometry.dispose();
     }
