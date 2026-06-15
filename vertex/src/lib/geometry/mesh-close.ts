@@ -10,7 +10,7 @@
 //         tessellation with seam edges, or when trimline-mesh claims watertight-by-construction but base path skips it
 // Step 6: [STL written via] kernel.exportSTL → shapesToStl (OCCT) or geometryToBinarySTL → vertex/src/lib/geometry/stl.ts
 
-import { BufferAttribute, BufferGeometry, ShapeUtils, Vector2, Vector3 } from "three";
+import { Box3, BufferAttribute, BufferGeometry, ShapeUtils, Vector2, Vector3 } from "three";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 
 /** Laplacian smoothing iterations applied to bridge interior vertices only. */
@@ -1999,6 +1999,74 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
                 `[MESH-CLOSE] rim loop too short: top=${topRawLoop.length} bot=${botRawLoop.length}`,
                 precheck,
             );
+        }
+
+        if (typeof console !== "undefined") {
+            const topBB = new Box3();
+            topRawLoop.forEach((v) => topBB.expandByPoint(v));
+            const botBB = new Box3();
+            botRawLoop.forEach((v) => botBB.expandByPoint(v));
+            console.log(
+                "[RIM-DIAG] topLoop BB:",
+                JSON.stringify({
+                    minX: topBB.min.x.toFixed(1),
+                    maxX: topBB.max.x.toFixed(1),
+                    minY: topBB.min.y.toFixed(1),
+                    maxY: topBB.max.y.toFixed(1),
+                    minZ: topBB.min.z.toFixed(1),
+                    maxZ: topBB.max.z.toFixed(1),
+                }),
+            );
+            console.log(
+                "[RIM-DIAG] botLoop BB:",
+                JSON.stringify({
+                    minX: botBB.min.x.toFixed(1),
+                    maxX: botBB.max.x.toFixed(1),
+                    minY: botBB.min.y.toFixed(1),
+                    maxY: botBB.max.y.toFixed(1),
+                    minZ: botBB.min.z.toFixed(1),
+                    maxZ: botBB.max.z.toFixed(1),
+                }),
+            );
+
+            console.log("[RIM-DIAG] topLoop verts:", topRawLoop.length);
+            console.log("[RIM-DIAG] botLoop verts:", botRawLoop.length);
+
+            const topYMin = Math.min(...topRawLoop.map((v) => v.y));
+            const topYMax = Math.max(...topRawLoop.map((v) => v.y));
+            const botYMin = Math.min(...botRawLoop.map((v) => v.y));
+            const botYMax = Math.max(...botRawLoop.map((v) => v.y));
+            console.log("[RIM-DIAG] top Y range:", topYMin.toFixed(3), "to", topYMax.toFixed(3));
+            console.log("[RIM-DIAG] bot Y range:", botYMin.toFixed(3), "to", botYMax.toFixed(3));
+            const yOverlap = Math.min(topYMax, botYMax) - Math.max(topYMin, botYMin);
+            console.log("[RIM-DIAG] Y overlap (positive=gap, negative=inversion):", yOverlap.toFixed(3));
+
+            const sampleN = 8;
+            for (let i = 0; i < sampleN; i++) {
+                const ti = Math.floor((i * topRawLoop.length) / sampleN);
+                const bi = Math.floor((i * botRawLoop.length) / sampleN);
+                const tv = topRawLoop[ti]!;
+                const bv = botRawLoop[bi]!;
+                console.log(
+                    `[RIM-DIAG] sample ${i}: top=(${tv.x.toFixed(1)},${tv.y.toFixed(1)},${tv.z.toFixed(1)}) bot=(${bv.x.toFixed(1)},${bv.y.toFixed(1)},${bv.z.toFixed(1)})`,
+                );
+            }
+
+            const inversionCount = topRawLoop.filter((v) => v.y < botYMin).length;
+            console.log(
+                "[RIM-DIAG] top rim verts BELOW bot rim min Y:",
+                inversionCount,
+                "/",
+                topRawLoop.length,
+                `(${(inversionCount / topRawLoop.length) * 100).toFixed(1)}%)`,
+            );
+
+            console.log(
+                "[RIM-DIAG] parent userData.topVertexCount:",
+                (geometry.userData as { topVertexCount?: number }).topVertexCount,
+            );
+            console.log("[RIM-DIAG] topSub position count:", topSub.getAttribute("position").count);
+            console.log("[RIM-DIAG] botSub position count:", botSub.getAttribute("position").count);
         }
 
         sealBottomSlitLoopsBeyondOuterLoop(geometry, topVertexCount, botRawLoop);
