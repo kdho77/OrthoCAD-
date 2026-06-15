@@ -174,14 +174,18 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
     const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
 
     if (exportMode === "manufacturing") {
-        const occtStl = await tryOcctManufacturingStl(design, side);
-        if (occtStl) return occtStl;
-
+        // PRIMARY: parametric solid — same path the viewer
+        // uses for "Watertight solid 19,008 tris" badge.
+        // Fast (~2-3s), correct shape, watertight.
         if (isAuthoritativeKernel()) {
             const params = insoleParamsFromDesign(design, side, "full");
             const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
             try {
-                const solid = getKernel().buildInsoleSolid({ ...params, trimline });
+                const solid = getKernel().buildInsoleSolid({
+                    ...params,
+                    trimline,
+                    useBooleanTrimline: true,
+                });
                 if (solid.manifold.occtClosed || solid.manifold.isWatertight) {
                     try {
                         return exportStlFromGeometry(solid.geometry);
@@ -190,10 +194,14 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
                     }
                 }
                 solid.geometry.dispose();
-            } catch {
-                // fall through to mesh-close
+            } catch (e) {
+                console.warn("[EXPORT] buildInsoleSolid failed:", e);
             }
         }
+        // FALLBACK only if OCCT unavailable:
+        // tryOcctManufacturingStl (GLB sew path)
+        const occtStl = await tryOcctManufacturingStl(design, side);
+        if (occtStl) return occtStl;
     }
 
     let geometry = await buildExportGeometry(side);
