@@ -2058,7 +2058,7 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
                 inversionCount,
                 "/",
                 topRawLoop.length,
-                `(${(inversionCount / topRawLoop.length) * 100).toFixed(1)}%)`,
+                `(${((inversionCount / topRawLoop.length) * 100).toFixed(1)}%)`,
             );
 
             console.log(
