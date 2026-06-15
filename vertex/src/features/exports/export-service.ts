@@ -84,14 +84,22 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         return exportGlb(side);
     }
     const filename = `insole-${side}-${Date.now()}.stl`;
-    const auth = await authorize("stl", side, filename);
-    if (!auth.ok) return { ok: false, reason: auth.reason };
-    const { design } = useDesignStore.getState();
-    const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
-    const blob = new Blob([stl], { type: "model/stl" });
-    downloadBlob(blob, filename);
-    useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
-    return { ok: true, filename, blob };
+    try {
+        const { design } = useDesignStore.getState();
+        const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
+        if (!stl?.byteLength) {
+            return { ok: false, reason: "Export failed" };
+        }
+        const blob = new Blob([stl], { type: "model/stl" });
+        downloadBlob(blob, filename);
+        console.log("[EXPORT] token deducted after download");
+        const auth = await authorize("stl", side, filename);
+        if (!auth.ok) return { ok: false, reason: auth.reason };
+        useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
+        return { ok: true, filename, blob };
+    } catch (e) {
+        return { ok: false, reason: e instanceof Error ? e.message : "Export failed" };
+    }
 }
 
 export async function exportGlb(side: Side): Promise<ExportOutcome> {
