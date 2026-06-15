@@ -174,14 +174,16 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
     const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
 
     if (exportMode === "manufacturing") {
-        const occtStl = await tryOcctManufacturingStl(design, side);
-        if (occtStl) return occtStl;
-
         if (isAuthoritativeKernel()) {
             const params = insoleParamsFromDesign(design, side, "full");
-            const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
             try {
-                const solid = getKernel().buildInsoleSolid({ ...params, trimline });
+                const solid = getKernel().buildInsoleSolid(params);
+                console.log(
+                    "[EXPORT] buildInsoleSolid:",
+                    solid.manifold.occtClosed,
+                    solid.manifold.isWatertight,
+                    solid.manifold.triangleCount,
+                );
                 if (solid.manifold.occtClosed || solid.manifold.isWatertight) {
                     try {
                         return exportStlFromGeometry(solid.geometry);
@@ -190,10 +192,14 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
                     }
                 }
                 solid.geometry.dispose();
-            } catch {
-                // fall through to mesh-close
+                console.warn("[EXPORT] solid not watertight — falling through");
+            } catch (e) {
+                console.warn("[EXPORT] buildInsoleSolid threw:", e);
             }
         }
+
+        const occtStl = await tryOcctManufacturingStl(design, side);
+        if (occtStl) return occtStl;
     }
 
     let geometry = await buildExportGeometry(side);
