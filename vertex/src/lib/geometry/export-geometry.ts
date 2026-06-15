@@ -174,6 +174,7 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
     const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
 
     if (exportMode === "manufacturing") {
+        await ensureKernelReady();
         if (isAuthoritativeKernel()) {
             const params = insoleParamsFromDesign(design, side, "full");
             try {

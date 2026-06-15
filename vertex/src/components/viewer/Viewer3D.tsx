@@ -115,14 +115,7 @@ export function Viewer3D() {
                 <directionalLight position={[150, 300, 200]} intensity={1.1} castShadow />
                 <directionalLight position={[-150, 100, -100]} intensity={0.4} />
 
-                <Suspense
-                    fallback={
-                        <mesh>
-                            <boxGeometry args={[1, 1, 1]} />
-                            <meshBasicMaterial color="#334155" wireframe />
-                        </mesh>
-                    }
-                >
+                <Suspense fallback={null}>
                     {viewer.showLeft ? (
                         <>
                             {!showBase ? (
