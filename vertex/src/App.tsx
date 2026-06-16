@@ -70,7 +70,8 @@ export default function App() {
             useDesignStore.getState().setViewer({ transparent: !v.transparent });
         },
         onExport: () => {
-            void exportDesign("stl", "left");
+            const side = useDesignStore.getState().exportSide;
+            void exportDesign("stl", side);
         },
     });
 

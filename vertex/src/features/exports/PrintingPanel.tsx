@@ -10,7 +10,7 @@ import { type CamOverrides, type CamResult, generateGcode, presetsForMethod } fr
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
-import type { Side } from "@/types";
+import { SIDE_LABELS, type Side } from "@/types";
 
 function fmtTime(sec: number): string {
     const h = Math.floor(sec / 3600);
@@ -20,8 +20,7 @@ function fmtTime(sec: number): string {
 
 export function PrintingPanel() {
     const { user, license } = useAuthStore();
-    const { design } = useDesignStore();
-    const [side, setSide] = useState<Side>("left");
+    const { design, exportSide, setExportSide } = useDesignStore();
     const [layerHeight, setLayerHeight] = useState(0.3);
     const [infill, setInfill] = useState(25);
     const [toolDia, setToolDia] = useState(6);
@@ -48,7 +47,7 @@ export function PrintingPanel() {
         ? { toolDiameterMm: toolDia }
         : { layerHeightMm: layerHeight, infillDensity: infill / 100 };
 
-    const buildGeom = () => getKernel().buildInsole(insoleParamsFromDesign(design, side, "full"));
+    const buildGeom = () => getKernel().buildInsole(insoleParamsFromDesign(design, exportSide, "full"));
 
     const onPreview = () => {
         if (!preset) return;
@@ -66,7 +65,7 @@ export function PrintingPanel() {
     const onExport = async () => {
         if (!preset) return;
         setBusy(true);
-        const res = await exportGcode(side, preset, overrides);
+        const res = await exportGcode(exportSide, preset, overrides);
         setStatus(
             res.ok
                 ? `Exported ${res.filename} (-${TOKEN_COST.gcode} tokens)`
@@ -88,7 +87,7 @@ export function PrintingPanel() {
             // baseAssetId will be included (when a base is active) so the server can do
             // authoritative CustomPrefab lookup + signed URL (see export-service.ts).
             // designId is also passed when an active persisted design exists.
-            const res = await generateHybridGcode(side, preset, grindingStyle, overrides);
+            const res = await generateHybridGcode(exportSide, preset, grindingStyle, overrides);
             if (res.ok) {
                 const idPart = res.productionId ? ` [production ${res.productionId}]` : "";
                 setStatus(
@@ -113,11 +112,11 @@ export function PrintingPanel() {
                     <Button
                         key={s}
                         size="sm"
-                        variant={side === s ? "default" : "secondary"}
+                        variant={exportSide === s ? "default" : "secondary"}
                         className="h-8 flex-1"
-                        onClick={() => setSide(s)}
+                        onClick={() => setExportSide(s)}
                     >
-                        {s} insole
+                        {SIDE_LABELS[s]} insole
                     </Button>
                 ))}
             </div>

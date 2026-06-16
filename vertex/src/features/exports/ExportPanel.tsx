@@ -9,28 +9,27 @@ import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
-import type { Side } from "@/types";
+import { SIDE_LABELS, type Side } from "@/types";
 
 type ExportKind = "stl" | "glb" | null;
 
 export function ExportPanel() {
     const { user, license } = useAuthStore();
-    const { design } = useDesignStore();
+    const { design, exportSide, setExportSide } = useDesignStore();
     const kernelName = useKernelStore((s) => s.name);
     const [status, setStatus] = useState<string | null>(null);
     const [busyKind, setBusyKind] = useState<ExportKind>(null);
-    const [side, setSide] = useState<Side>("left");
 
     const stlCheck = canExport(user, license, "stl");
     const glbCheck = canExport(user, license, "glb");
-    const validation = useSolidValidation(design, side);
+    const validation = useSolidValidation(design, exportSide);
     const occtActive = isOcctKernelActive();
     const busy = busyKind !== null;
 
     const handleStl = async () => {
         setBusyKind("stl");
         try {
-            const res = await exportDesign("stl", side);
+            const res = await exportDesign("stl", exportSide);
             setStatus(
                 res.ok
                     ? `Exported ${res.filename} (-${TOKEN_COST.stl} token)`
@@ -45,7 +44,7 @@ export function ExportPanel() {
         setBusyKind("glb");
         setStatus("Generating GLB…");
         try {
-            const res = await exportDesign("glb", side);
+            const res = await exportDesign("glb", exportSide);
             setStatus(
                 res.ok
                     ? `Exported ${res.filename} (-${TOKEN_COST.glb} token)`
@@ -86,11 +85,11 @@ export function ExportPanel() {
                     <Button
                         key={s}
                         size="sm"
-                        variant={side === s ? "default" : "secondary"}
+                        variant={exportSide === s ? "default" : "secondary"}
                         className="h-8 flex-1"
-                        onClick={() => setSide(s)}
+                        onClick={() => setExportSide(s)}
                     >
-                        {s} insole
+                        {SIDE_LABELS[s]} insole
                     </Button>
                 ))}
             </div>

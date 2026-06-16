@@ -183,23 +183,51 @@ export function sanitizeStockBaseForServerMode(base: DesignBase): DesignBase {
     };
 }
 
+/** Fix legacy paired bases whose (Left)/(Right) suffixes were swapped for primarySide=left stock. */
+function healInvertedPairedSideLabels(design: DesignState): DesignState {
+    const paired = design.paired;
+    if (!paired?.leftBase || !paired.rightBase) return design;
+
+    const left = paired.leftBase;
+    const right = paired.rightBase;
+    const leftSaysRight = /\(Right\)/i.test(left.name ?? "");
+    const rightSaysLeft = /\(Left\)/i.test(right.name ?? "");
+    if (!leftSaysRight || !rightSaysLeft) return design;
+
+    const primary = left.primarySide ?? right.primarySide;
+    if (primary?.toLowerCase() !== "left") return design;
+
+    const leftName = left.name?.replace(/\(Right\)/i, "(Left)") ?? left.name;
+    const rightName = right.name?.replace(/\(Left\)/i, "(Right)") ?? right.name;
+    if (leftName === left.name && rightName === right.name) return design;
+
+    return {
+        ...design,
+        paired: {
+            ...paired,
+            leftBase: { ...left, name: leftName },
+            rightBase: { ...right, name: rightName },
+        },
+        ...(design.base === left ? { base: { ...left, name: leftName }, customPrefabName: leftName } : {}),
+    };
+}
+
 /** Sanitize all stock bases on a design after localStorage rehydrate. */
 export function sanitizeDesignStockBases(design: DesignState): DesignState {
-    if (!isApiConfigured()) return design;
-
-    let next = design;
+    let next = healInvertedPairedSideLabels(design);
+    if (!isApiConfigured()) return next;
     const sanitize = (base: DesignBase | undefined): DesignBase | undefined =>
         base ? sanitizeStockBaseForServerMode(base) : undefined;
 
-    const base = sanitize(design.base);
-    const leftBase = sanitize(design.paired?.leftBase);
-    const rightBase = sanitize(design.paired?.rightBase);
+    const base = sanitize(next.base);
+    const leftBase = sanitize(next.paired?.leftBase);
+    const rightBase = sanitize(next.paired?.rightBase);
 
-    if (base !== design.base || leftBase !== design.paired?.leftBase || rightBase !== design.paired?.rightBase) {
+    if (base !== next.base || leftBase !== next.paired?.leftBase || rightBase !== next.paired?.rightBase) {
         next = {
-            ...design,
+            ...next,
             ...(base ? { base, customPrefabId: base.assetId, customPrefabName: base.name } : {}),
-            ...(design.paired
+            ...(next.paired
                 ? {
                       paired: {
                           ...design.paired,
@@ -418,14 +446,15 @@ export function createDefaultStockPairedBases(
     override?: DesignBase,
 ): { left: DesignBase; right: DesignBase } {
     const source = override ?? getDefaultStockBaseSync();
-    const primarySide = source.primarySide;
+    const primarySide = source.primarySide?.toLowerCase();
+    const sourceIsLeft = primarySide === "left";
+    const authoritativeName = source.name?.replace(/\s*\((Left|Right)\)?$/i, "") ?? "Stock Base";
 
-    const sourceIsRight = !primarySide || primarySide.toLowerCase() === "right";
-    const authoritativeName = source.name ?? "Stock Base";
-
-    const right: DesignBase = {
+    const shared: Pick<
+        DesignBase,
+        "assetId" | "source" | "glbPath" | "url" | "primarySide" | "offlinePlaceholder" | "resolutionFallback"
+    > = {
         assetId: source.assetId,
-        name: `${authoritativeName} (Right)`,
         source: "stock",
         glbPath: source.glbPath,
         ...(source.url ? { url: source.url } : {}),
@@ -434,24 +463,19 @@ export function createDefaultStockPairedBases(
         ...(source.resolutionFallback ? { resolutionFallback: true } : {}),
     };
 
-    const left: DesignBase = {
-        assetId: source.assetId,
-        name: `${authoritativeName.replace(/\s*\(Right\)?$/i, "")} (Left)`,
-        source: "stock",
-        glbPath: source.glbPath,
+    const sourceBase: DesignBase = {
+        ...shared,
+        name: `${authoritativeName} (${sourceIsLeft ? "Left" : "Right"})`,
+    };
+
+    const mirrorBase: DesignBase = {
+        ...shared,
+        name: `${authoritativeName} (${sourceIsLeft ? "Right" : "Left"})`,
         mirrored: true,
         mirroredFrom: source.assetId,
-        ...(source.url ? { url: source.url } : {}),
-        ...(source.primarySide !== undefined ? { primarySide: source.primarySide } : {}),
-        ...(source.offlinePlaceholder ? { offlinePlaceholder: true } : {}),
-        ...(source.resolutionFallback ? { resolutionFallback: true } : {}),
     };
 
-    if (primarySide?.toLowerCase() === "left") {
-        return { left: right, right: left };
-    }
-
-    return { left, right: sourceIsRight ? right : left };
+    return sourceIsLeft ? { left: sourceBase, right: mirrorBase } : { left: mirrorBase, right: sourceBase };
 }
 
 /**
