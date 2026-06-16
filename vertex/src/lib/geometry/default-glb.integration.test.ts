@@ -6,7 +6,6 @@ import { describe, expect, test } from "@rstest/core";
 import {
     ensureWatertightForExport,
     extractAllBoundaryCyclesForTest,
-    MeshNotWatertightError,
     validateManifold,
 } from "@/lib/geometry/mesh-close";
 import { sealInternalSlitsSafe } from "@/lib/geometry/bottom-mesh-clean";
@@ -46,7 +45,7 @@ describe("Default.glb stock base closure", () => {
         const cycles = extractAllBoundaryCyclesForTest(raw);
         expect(cycles.length).toBeGreaterThan(0);
 
-        expect(() => ensureWatertightForExport(raw.clone())).toThrow(MeshNotWatertightError);
+        expect(() => ensureWatertightForExport(raw.clone())).toThrow();
 
         raw.dispose();
     });

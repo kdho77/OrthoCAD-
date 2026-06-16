@@ -121,17 +121,18 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
     }
 }
 
-/** Builds export geometry for a side — base+modifiers or kernel insole solid. */
+/** Builds export geometry for a side — base+modifiers only; no parametric fallback. */
 export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
 
     const modifiedBase = await buildModifiedBaseGeometry(design, side);
     if (modifiedBase) return modifiedBase;
 
-    return getKernel().buildInsole({
-        ...insoleParamsFromDesign(design, side, "full"),
-        trimline: getDesignTrimline(design, side),
-    });
+    throw new Error(
+        "[EXPORT] No GLB base geometry available. " +
+            "Load a stock base before exporting. " +
+            "Parametric export is not supported.",
+    );
 }
 
 /** Export STL bytes for the active design side. */
@@ -149,9 +150,9 @@ export async function buildExportStl(side: Side, _options: BuildExportStlOptions
         }
     } catch (e) {
         if (typeof console !== "undefined") {
-            console.warn("[EXPORT] rim close failed:", e);
+            console.error("[EXPORT] export failed:", e);
         }
-        return geometryToBinarySTL(geometry);
+        throw e;
     } finally {
         geometry.dispose();
     }

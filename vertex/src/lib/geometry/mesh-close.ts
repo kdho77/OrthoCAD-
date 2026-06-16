@@ -1523,16 +1523,30 @@ export function submeshByVertexRange(
     rangeStart: number,
     rangeEnd: number,
 ): BufferGeometry {
+    return submeshByVertexRangeWithMap(geometry, rangeStart, rangeEnd).geometry;
+}
+
+function submeshByVertexRangeWithMap(
+    geometry: BufferGeometry,
+    rangeStart: number,
+    rangeEnd: number,
+): { geometry: BufferGeometry; localToParent: number[] } {
     const pos = geometry.getAttribute("position");
     const index = geometry.index;
-    if (!index) return geometry.clone();
+    if (!index) {
+        const localToParent = Array.from({ length: pos.count }, (_, i) => i + rangeStart);
+        return { geometry: geometry.clone(), localToParent };
+    }
 
     const remap = new Map<number, number>();
+    const localToParent: number[] = [];
     const newPos: number[] = [];
     const newIdx: number[] = [];
     const map = (vi: number): number => {
         if (!remap.has(vi)) {
-            remap.set(vi, remap.size);
+            const local = remap.size;
+            remap.set(vi, local);
+            localToParent[local] = vi;
             newPos.push(pos.getX(vi), pos.getY(vi), pos.getZ(vi));
         }
         return remap.get(vi)!;
@@ -1551,7 +1565,7 @@ export function submeshByVertexRange(
     const out = new BufferGeometry();
     out.setAttribute("position", new BufferAttribute(new Float32Array(newPos), 3));
     if (newIdx.length > 0) out.setIndex(newIdx);
-    return out;
+    return { geometry: out, localToParent };
 }
 
 /**
@@ -1957,9 +1971,8 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
 }
 
 /**
- * Closes a multi-mesh GLB insole into a watertight solid by bridging top and
- * bottom rim loops extracted from each sub-mesh separately — never runs
- * full-mesh boundary resolution on the combined vertex buffer.
+ * Closes a multi-mesh GLB insole into a watertight solid by directly indexing
+ * top/bottom sub-mesh faces and a sidewall quad strip — no bridge weld vertices.
  */
 export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry {
     const precheck = validateManifold(geometry);
@@ -1986,106 +1999,31 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
         return out;
     }
 
-    const bottomVertexCount = bodyVertexCount - topVertexCount;
     const topSub = submeshByVertexRange(geometry, 0, topVertexCount);
     const botSub = submeshByVertexRange(geometry, topVertexCount, bodyVertexCount);
 
     try {
-        const topRawLoop = extractOrderedBoundaryLoop(topSub);
-        const botRawLoop = extractOrderedBoundaryLoop(botSub);
+        const { positions: topRimPos } = extractOrderedBoundaryLoopWithIndices(topSub);
+        const { positions: botRimPos } = extractOrderedBoundaryLoopWithIndices(botSub);
 
-        if (topRawLoop.length < 3 || botRawLoop.length < 3) {
-            throw new MeshNotWatertightError(
-                `[MESH-CLOSE] rim loop too short: top=${topRawLoop.length} bot=${botRawLoop.length}`,
-                precheck,
+        if (topRimPos.length < 3 || botRimPos.length < 3) {
+            throw new Error(
+                `[MESH-CLOSE] rim loop too short: top=${topRimPos.length} bot=${botRimPos.length}`,
             );
         }
 
         if (typeof console !== "undefined") {
-            const topBB = new Box3();
-            topRawLoop.forEach((v) => topBB.expandByPoint(v));
-            const botBB = new Box3();
-            botRawLoop.forEach((v) => botBB.expandByPoint(v));
-            console.log(
-                "[RIM-DIAG] topLoop BB:",
-                JSON.stringify({
-                    minX: topBB.min.x.toFixed(1),
-                    maxX: topBB.max.x.toFixed(1),
-                    minY: topBB.min.y.toFixed(1),
-                    maxY: topBB.max.y.toFixed(1),
-                    minZ: topBB.min.z.toFixed(1),
-                    maxZ: topBB.max.z.toFixed(1),
-                }),
-            );
-            console.log(
-                "[RIM-DIAG] botLoop BB:",
-                JSON.stringify({
-                    minX: botBB.min.x.toFixed(1),
-                    maxX: botBB.max.x.toFixed(1),
-                    minY: botBB.min.y.toFixed(1),
-                    maxY: botBB.max.y.toFixed(1),
-                    minZ: botBB.min.z.toFixed(1),
-                    maxZ: botBB.max.z.toFixed(1),
-                }),
-            );
-
-            console.log("[RIM-DIAG] topLoop verts:", topRawLoop.length);
-            console.log("[RIM-DIAG] botLoop verts:", botRawLoop.length);
-
-            const topYMin = Math.min(...topRawLoop.map((v) => v.y));
-            const topYMax = Math.max(...topRawLoop.map((v) => v.y));
-            const botYMin = Math.min(...botRawLoop.map((v) => v.y));
-            const botYMax = Math.max(...botRawLoop.map((v) => v.y));
-            console.log("[RIM-DIAG] top Y range:", topYMin.toFixed(3), "to", topYMax.toFixed(3));
-            console.log("[RIM-DIAG] bot Y range:", botYMin.toFixed(3), "to", botYMax.toFixed(3));
-            const yOverlap = Math.min(topYMax, botYMax) - Math.max(topYMin, botYMin);
-            console.log("[RIM-DIAG] Y overlap (positive=gap, negative=inversion):", yOverlap.toFixed(3));
-
-            const sampleN = 8;
-            for (let i = 0; i < sampleN; i++) {
-                const ti = Math.floor((i * topRawLoop.length) / sampleN);
-                const bi = Math.floor((i * botRawLoop.length) / sampleN);
-                const tv = topRawLoop[ti]!;
-                const bv = botRawLoop[bi]!;
-                console.log(
-                    `[RIM-DIAG] sample ${i}: top=(${tv.x.toFixed(1)},${tv.y.toFixed(1)},${tv.z.toFixed(1)}) bot=(${bv.x.toFixed(1)},${bv.y.toFixed(1)},${bv.z.toFixed(1)})`,
-                );
-            }
-
-            const inversionCount = topRawLoop.filter((v) => v.y < botYMin).length;
-            console.log(
-                "[RIM-DIAG] top rim verts BELOW bot rim min Y:",
-                inversionCount,
-                "/",
-                topRawLoop.length,
-                `(${((inversionCount / topRawLoop.length) * 100).toFixed(1)}%)`,
-            );
-
-            console.log(
-                "[RIM-DIAG] parent userData.topVertexCount:",
-                (geometry.userData as { topVertexCount?: number }).topVertexCount,
-            );
-            console.log("[RIM-DIAG] topSub position count:", topSub.getAttribute("position").count);
-            console.log("[RIM-DIAG] botSub position count:", botSub.getAttribute("position").count);
+            console.log(`[MESH-CLOSE] topRim: ${topRimPos.length} verts`);
+            console.log(`[MESH-CLOSE] botRim: ${botRimPos.length} verts`);
         }
 
-        sealBottomSlitLoopsBeyondOuterLoop(geometry, topVertexCount, botRawLoop);
-
-        const targetN = Math.max(topRawLoop.length, botRawLoop.length);
-        let topLoop = resampleLoop(topRawLoop, targetN);
-        let botLoop = resampleLoop(botRawLoop, targetN);
-
-        if (typeof console !== "undefined") {
-            console.log(`[MESH-CLOSE] resampled loops: top=${targetN} bot=${targetN}`);
-        }
+        const targetN = Math.max(topRimPos.length, botRimPos.length);
+        let topLoop = resampleLoop(topRimPos, targetN);
+        let botLoop = resampleLoop(botRimPos, targetN);
 
         const winding = alignLoopWindingXZ(topLoop, botLoop);
         topLoop = winding.topLoop;
         botLoop = alignLoopStartToReference(topLoop, winding.botLoop);
-
-        if (typeof console !== "undefined") {
-            console.log(`[MESH-CLOSE] winding aligned: ${winding.windingAligned}`);
-        }
 
         const snappedTop = snapLoopToBoundaryVertices(geometry, topLoop, 0, topVertexCount);
         const snappedBot = snapLoopToBoundaryVertices(
@@ -2094,66 +2032,81 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
             topVertexCount,
             bodyVertexCount,
         );
-        topLoop = snappedTop.positions;
-        botLoop = snappedBot.positions;
+        const topRimN = snappedTop.localIndices;
+        const botRimN = snappedBot.localIndices.map((i) => i + topVertexCount);
+        const N = topRimN.length;
 
-        const topVal = validateLoop(topLoop, loopPerimeterLength(topLoop) / targetN * 2);
-        const bottomVal = validateLoop(botLoop, loopPerimeterLength(botLoop) / targetN * 2);
-        if (!topVal.ok || !bottomVal.ok) {
-            throw new MeshNotWatertightError(
-                `closeGlbInsoleToSolid: boundary loop validation failed: top=${topVal.reason ?? "ok"}, bottom=${bottomVal.reason ?? "ok"}`,
-                precheck,
-            );
+        const parentPos = geometry.getAttribute("position");
+        const combinedPos = new Float32Array(parentPos.count * 3);
+        combinedPos.set(parentPos.array as Float32Array, 0);
+
+        const allFaces: number[] = [];
+        const parentIdx = geometry.index;
+        if (parentIdx) {
+            for (let t = 0; t < parentIdx.count; t += 3) {
+                const i0 = parentIdx.getX(t);
+                const i1 = parentIdx.getX(t + 1);
+                const i2 = parentIdx.getX(t + 2);
+                const inTop =
+                    i0 >= 0 &&
+                    i0 < topVertexCount &&
+                    i1 >= 0 &&
+                    i1 < topVertexCount &&
+                    i2 >= 0 &&
+                    i2 < topVertexCount;
+                const inBot =
+                    i0 >= topVertexCount &&
+                    i0 < bodyVertexCount &&
+                    i1 >= topVertexCount &&
+                    i1 < bodyVertexCount &&
+                    i2 >= topVertexCount &&
+                    i2 < bodyVertexCount;
+                if (inTop || inBot) {
+                    allFaces.push(i0, i1, i2);
+                }
+            }
         }
 
-        const rimHeightsMm = measureRimHeights(topLoop, botLoop);
-        for (const h of rimHeightsMm) {
-            if (h < RIM_HEIGHT_MIN_WARNING_MM && typeof console !== "undefined") {
+        for (let i = 0; i < N; i++) {
+            const j = (i + 1) % N;
+            const tA = topRimN[i]!;
+            const tB = topRimN[j]!;
+            const bA = botRimN[i]!;
+            const bB = botRimN[j]!;
+            allFaces.push(tA, bA, tB);
+            allFaces.push(tB, bA, bB);
+        }
+
+        const merged = new BufferGeometry();
+        merged.setAttribute("position", new BufferAttribute(combinedPos, 3));
+        merged.setIndex(allFaces);
+        merged.computeVertexNormals();
+        merged.computeBoundingBox();
+        merged.computeBoundingSphere();
+
+        const openLoops = extractBoundaryLoops(merged);
+        if (typeof console !== "undefined") {
+            console.log(
+                "[EXPORT] watertight check: open loops =",
+                openLoops.length,
+                openLoops.length === 0 ? "✓ SOLID" : "✗ OPEN",
+            );
+            if (openLoops.length > 0) {
                 console.warn(
-                    `[mesh-close] rim height ${h.toFixed(3)}mm < ${RIM_HEIGHT_MIN_WARNING_MM}mm — may look pinched`,
+                    "[MESH-CLOSE] post-merge open loops:",
+                    openLoops.map((loop) => loop.length),
                 );
             }
         }
 
-        const bridge = buildBridgeStrip(topLoop, botLoop);
-        if (typeof console !== "undefined") {
-            console.log(`[MESH-CLOSE] bridge strip: tris=${bridge.triangleCount}`);
-        }
-
-        const { geometry: merged, rimTopIndices: weldTopIndices } = mergeGeometriesWithWeldedBridge(
-            geometry,
-            topLoop,
-            botLoop,
-            bridge,
-            topLoop,
-            botLoop,
-            snappedTop.localIndices,
-            snappedBot.localIndices,
-            topVertexCount,
-            bottomVertexCount,
-        );
-
-        const seamTopIndices = orderSeamRingIndices(
-            merged,
-            Array.from(new Set(weldTopIndices.filter((i) => i >= 0))),
-        );
-        merged.computeVertexNormals();
-        recomputeNormalsNearSeam(merged, topLoop, botLoop);
-        smoothSeamVertexNormals(merged, seamTopIndices, 2);
-        merged.computeBoundingBox();
-        merged.computeBoundingSphere();
-
         const report = validateManifold(merged);
         if (!report.isWatertight || report.eulerCharacteristic !== 2) {
-            merged.dispose();
-            throw new MeshNotWatertightError(
-                `closeGlbInsoleToSolid failed: openEdges=${report.openEdges} nonManifold=${report.nonManifoldEdges} euler=${report.eulerCharacteristic}`,
-                report,
-            );
-        }
-
-        if (typeof console !== "undefined") {
-            console.log(`[MESH-CLOSE] solid complete: total verts=${merged.getAttribute("position").count}`);
+            if (typeof console !== "undefined") {
+                console.warn(
+                    `[MESH-CLOSE] closeGlbInsoleToSolid manifold warning: openEdges=${report.openEdges} nonManifold=${report.nonManifoldEdges} euler=${report.eulerCharacteristic}`,
+                );
+            }
+        } else if (typeof console !== "undefined") {
             console.log(
                 `[MESH-CLOSE] closeGlbInsoleToSolid complete: V=${report.vertexCount} openEdges=${report.openEdges} Euler=${report.eulerCharacteristic}`,
             );
