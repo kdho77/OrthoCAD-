@@ -125,6 +125,16 @@ export const useCustomLibraryStore = create<CustomLibraryStore>()(
             setLoading: (loading) => set({ loading }),
             getLocalGlb: (id) => get().localGlbs[id],
         }),
-        { name: "vertex-custom-library" },
+        {
+            name: "vertex-custom-library",
+            partialize: (state) => ({
+                customElements: state.customElements,
+                customPrefabs: state.customPrefabs,
+                localGlbs: state.localGlbs,
+            }),
+            onRehydrateStorage: () => () => {
+                useCustomLibraryStore.setState({ loading: false });
+            },
+        },
     ),
 );

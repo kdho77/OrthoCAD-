@@ -6,6 +6,7 @@ import { BufferAttribute, BufferGeometry, Shape, ShapeGeometry, Vector2, Vector3
 import {
     bridgeNormalsPointOutward,
     bridgeWeldRingIsAdjacent,
+    closeGlbInsoleToSolid,
     closeMeshPerimeter,
     ensureWatertightForExport,
     generateBridgeStrip,
@@ -246,6 +247,21 @@ function buildConcaveOrthoticPair(): BufferGeometry {
 }
 
 describe("mesh-close — realistic orthotic integration", () => {
+    test("closeGlbInsoleToSolid closes foot-shaped open shells via sub-mesh rim extraction", () => {
+        const raw = buildRealisticOrthoticPair();
+        const pre = validateManifold(raw);
+        expect(pre.openEdges).toBeGreaterThan(0);
+
+        const closed = closeGlbInsoleToSolid(raw);
+        const report = validateManifold(closed);
+        expect(report.isWatertight).toBe(true);
+        expect(report.openEdges).toBe(0);
+        expect(report.eulerCharacteristic).toBe(2);
+
+        raw.dispose();
+        closed.dispose();
+    });
+
     test("ensureWatertightForExport closes foot-shaped open shells", () => {
         const raw = buildRealisticOrthoticPair();
         const pre = validateManifold(raw);

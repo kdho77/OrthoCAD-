@@ -41,6 +41,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const interacting = usePerformanceStore((s) => s.interacting);
     const stockBaseLoading = useDesignStore((s) => s.stockBaseLoading);
     const stockBaseResolutionState = useDesignStore((s) => s.stockBaseResolutionState);
+    const setBaseMeshLoading = useDesignStore((s) => s.setBaseMeshLoading);
 
     const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
@@ -64,6 +65,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         if (!ref) {
             setGeometry(null);
             setBuilding(false);
+            setBaseMeshLoading(side, false);
             return;
         }
 
@@ -97,10 +99,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             });
             setGeometry(null);
             setBuilding(stockBaseLoading || stockBaseResolutionState === "loading");
+            setBaseMeshLoading(side, true);
             return;
         }
 
         setBuilding(true);
+        setBaseMeshLoading(side, true);
         stockResolveLog("useBaseInsoleGeometry loading resolved stock base", {
             side,
             assetId: ref.assetId,
@@ -146,6 +150,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             .catch((e) => {
                 if (cancelled) return;
                 baseGeoRef.current = null;
+                setGeometry(null);
+                setBaseMeshLoading(side, false);
                 if (e instanceof StockGlbLoadError) {
                     useDesignStore.setState({ stockBaseError: e.message });
                 }
@@ -155,8 +161,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             });
         return () => {
             cancelled = true;
+            setBaseMeshLoading(side, false);
         };
-    }, [loadKey, stockBaseLoading, stockBaseResolutionState]);
+    }, [loadKey, stockBaseLoading, stockBaseResolutionState, setBaseMeshLoading, side]);
 
     // Re-apply modifiers whenever corrections / elements / thickness change.
     // biome-ignore lint/correctness/useExhaustiveDependencies: preview patches + live draft trimline are intentional triggers
@@ -181,6 +188,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         outRef.current?.dispose();
         outRef.current = display;
         setGeometry(display);
+        setBaseMeshLoading(side, false);
     }, [
         assetId,
         side,
@@ -193,6 +201,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         elementPreviews,
         interacting,
         building,
+        setBaseMeshLoading,
+        side,
     ]);
 
     useEffect(

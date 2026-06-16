@@ -7,7 +7,7 @@ import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from 
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
-import { ensureWatertightForExport } from "@/lib/geometry/mesh-close";
+import { closeGlbInsoleToSolid } from "@/lib/geometry/mesh-close";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
@@ -55,40 +55,6 @@ async function loadRawBaseGeometry(design: DesignState, side: Side): Promise<Buf
     const base = getDesignBase(design, side);
     if (!base) return null;
     return loadBaseGeometry(base);
-}
-
-function logMeshClosePath(geometry: BufferGeometry): void {
-    if (typeof console === "undefined") return;
-    const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
-    const total = geometry.getAttribute("position").count;
-    const topVerts =
-        userData.topVertexCount && userData.topVertexCount > 0 && userData.topVertexCount < total
-            ? userData.topVertexCount
-            : userData.isMultiMeshBase
-              ? Math.floor(total / 2)
-              : total;
-    const bottomVerts = userData.isMultiMeshBase ? Math.max(0, total - topVerts) : 0;
-    console.log(`[EXPORT] fallback mesh-close path: topVerts=${topVerts} bottomVerts=${bottomVerts}`);
-}
-
-function exportStlFromGeometry(geometry: BufferGeometry): ArrayBuffer {
-    const kernel = getKernel();
-    try {
-        return kernel.exportSTL(geometry);
-    } catch {
-        return geometryToBinarySTL(geometry);
-    }
-}
-
-/** PATH B — mesh-close preview / fallback STL export. */
-function buildPreviewStlFromGeometry(geometry: BufferGeometry): ArrayBuffer {
-    logMeshClosePath(geometry);
-    const closed = ensureWatertightForExport(geometry);
-    try {
-        return exportStlFromGeometry(closed);
-    } finally {
-        if (closed !== geometry) closed.dispose();
-    }
 }
 
 /** PATH A — OCCT sew manufacturing STL from raw GLB base (test hook). */
@@ -155,57 +121,38 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
     }
 }
 
-/** Builds export geometry for a side — base+modifiers or kernel insole solid. */
+/** Builds export geometry for a side — base+modifiers only; no parametric fallback. */
 export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
 
     const modifiedBase = await buildModifiedBaseGeometry(design, side);
     if (modifiedBase) return modifiedBase;
 
-    return getKernel().buildInsole({
-        ...insoleParamsFromDesign(design, side, "full"),
-        trimline: getDesignTrimline(design, side),
-    });
+    throw new Error(
+        "[EXPORT] No GLB base geometry available. " +
+            "Load a stock base before exporting. " +
+            "Parametric export is not supported.",
+    );
 }
 
 /** Export STL bytes for the active design side. */
-export async function buildExportStl(side: Side, options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const { design } = useDesignStore.getState();
-    const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
-
-    if (exportMode === "manufacturing") {
-        await ensureKernelReady();
-        if (isAuthoritativeKernel()) {
-            const params = insoleParamsFromDesign(design, side, "full");
-            try {
-                const solid = getKernel().buildInsoleSolid(params);
-                console.log(
-                    "[EXPORT] buildInsoleSolid:",
-                    solid.manifold.occtClosed,
-                    solid.manifold.isWatertight,
-                    solid.manifold.triangleCount,
-                );
-                if (solid.manifold.occtClosed || solid.manifold.isWatertight) {
-                    try {
-                        return exportStlFromGeometry(solid.geometry);
-                    } finally {
-                        solid.geometry.dispose();
-                    }
-                }
-                solid.geometry.dispose();
-                console.warn("[EXPORT] solid not watertight — falling through");
-            } catch (e) {
-                console.warn("[EXPORT] buildInsoleSolid threw:", e);
-            }
-        }
-
-        const occtStl = await tryOcctManufacturingStl(design, side);
-        if (occtStl) return occtStl;
-    }
-
-    let geometry = await buildExportGeometry(side);
+export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
+    const geometry = await buildExportGeometry(side);
     try {
-        return buildPreviewStlFromGeometry(geometry);
+        if (typeof console !== "undefined") {
+            console.log("[EXPORT] closing GLB insole rims...");
+        }
+        const solid = closeGlbInsoleToSolid(geometry);
+        try {
+            return geometryToBinarySTL(solid);
+        } finally {
+            solid.dispose();
+        }
+    } catch (e) {
+        if (typeof console !== "undefined") {
+            console.error("[EXPORT] export failed:", e);
+        }
+        throw e;
     } finally {
         geometry.dispose();
     }
@@ -304,7 +251,7 @@ export async function buildExportSolid(
 
     const geometry = await buildExportGlbGeometry(side);
     if (exportMode === "manufacturing") {
-        return ensureWatertightForExport(geometry);
+        return closeGlbInsoleToSolid(geometry);
     }
     return geometry;
 }

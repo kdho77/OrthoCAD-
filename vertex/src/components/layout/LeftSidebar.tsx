@@ -41,6 +41,9 @@ export function LeftSidebar() {
     const { design, setPattern, setMethod } = useDesignStore();
     const customPrefabs = useCustomLibraryStore((s) => s.customPrefabs);
     const libraryLoading = useCustomLibraryStore((s) => s.loading);
+    const baseMeshLoading = useDesignStore(
+        (s) => s.baseMeshLoadingBySide.left || s.baseMeshLoadingBySide.right,
+    );
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
     const merged = mergePrefabLibrary(customPrefabs);
@@ -109,14 +112,17 @@ export function LeftSidebar() {
     };
 
     const usingStockBase =
-        design.paired?.leftBase?.source === "stock" || design.paired?.rightBase?.source === "stock" || design.base?.source === "stock";
+        design.paired?.leftBase?.source === "stock" ||
+        design.paired?.rightBase?.source === "stock" ||
+        design.base?.source === "stock";
 
     return (
         <aside className="flex w-56 flex-col gap-4 overflow-y-auto border-r border-border bg-panel p-3">
             <Section icon={<Footprints className="h-3.5 w-3.5" />} title="Pattern">
                 {usingStockBase ? (
                     <p className="mb-1.5 text-[10px] text-muted-foreground">
-                        Base: {design.paired?.rightBase?.name ?? design.base?.name ?? "Stock GLB"} · patterns adjust scan metadata only
+                        Base: {design.paired?.rightBase?.name ?? design.base?.name ?? "Stock GLB"} · patterns
+                        adjust scan metadata only
                     </p>
                 ) : null}
                 <div className="grid grid-cols-2 gap-1.5">
@@ -181,7 +187,7 @@ export function LeftSidebar() {
                 </button>
                 {uploadError ? <p className="mt-1 text-[11px] text-destructive">{uploadError}</p> : null}
 
-                {libraryLoading ? (
+                {libraryLoading || baseMeshLoading ? (
                     <p className="mt-2 text-[11px] text-muted-foreground">Loading…</p>
                 ) : customPrefabs.length === 0 ? (
                     <p className="mt-2 text-[11px] text-muted-foreground">

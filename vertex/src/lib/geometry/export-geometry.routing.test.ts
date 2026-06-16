@@ -7,7 +7,8 @@ import type { DesignState } from "@/types";
 
 const mockEnsureKernelReady = rs.fn<() => Promise<boolean>>();
 const mockExportManufacturingStlFromBase = rs.fn<() => ArrayBuffer | null>();
-const mockEnsureWatertight = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
+const mockCloseGlbInsoleToSolid = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
+const mockGeometryToBinarySTL = rs.fn<(geometry: BufferGeometry) => ArrayBuffer>();
 const mockLoadBaseGeometry = rs.fn<() => Promise<BufferGeometry | null>>();
 const mockBuildInsoleSolid = rs.fn<() => never>();
 const mockBuildFromBase = rs.fn<() => { geometry: BufferGeometry; manifold: { isWatertight: boolean } }>();
@@ -47,8 +48,12 @@ rs.mock("@/lib/chili3d/kernel", () => ({
 }));
 
 rs.mock("@/lib/geometry/mesh-close", () => ({
-    ensureWatertightForExport: (geometry: BufferGeometry) => mockEnsureWatertight(geometry),
+    closeGlbInsoleToSolid: (geometry: BufferGeometry) => mockCloseGlbInsoleToSolid(geometry),
     MeshNotWatertightError: class MeshNotWatertightError extends Error {},
+}));
+
+rs.mock("@/lib/geometry/stl", () => ({
+    geometryToBinarySTL: (geometry: BufferGeometry) => mockGeometryToBinarySTL(geometry),
 }));
 
 rs.mock("@/lib/geometry/base-asset", () => ({
@@ -101,7 +106,8 @@ describe("export-geometry routing", () => {
         mockEnsureKernelReady.mockReset();
         mockEnsureKernelReady.mockResolvedValue(true);
         mockExportManufacturingStlFromBase.mockReset();
-        mockEnsureWatertight.mockReset();
+        mockCloseGlbInsoleToSolid.mockReset();
+        mockGeometryToBinarySTL.mockReset();
         mockLoadBaseGeometry.mockReset();
         mockBuildInsoleSolid.mockReset();
         mockBuildFromBase.mockReset();
@@ -128,7 +134,8 @@ describe("export-geometry routing", () => {
             geometry: makeTestGeometry(),
             manifold: { isWatertight: false, occtClosed: false },
         }));
-        mockEnsureWatertight.mockImplementation((geometry) => geometry);
+        mockCloseGlbInsoleToSolid.mockImplementation((geometry) => geometry);
+        mockGeometryToBinarySTL.mockImplementation(() => new ArrayBuffer(84));
     });
 
     test("exportModeFromMethod maps manufacturing methods", async () => {
@@ -146,25 +153,30 @@ describe("export-geometry routing", () => {
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
         expect(mockExportManufacturingStlFromBase).toHaveBeenCalledTimes(1);
-        expect(mockEnsureWatertight).not.toHaveBeenCalled();
+        expect(mockCloseGlbInsoleToSolid).not.toHaveBeenCalled();
         expect(result).toBe(occtBytes);
     });
 
-    test("OCCT path failure falls back to mesh-close", async () => {
+    test("OCCT path failure falls back to GLB rim-close", async () => {
         mockExportManufacturingStlFromBase.mockReturnValue(null);
+        const closedGeo = makeTestGeometry();
+        mockCloseGlbInsoleToSolid.mockReturnValue(closedGeo);
+        const stlBytes = new ArrayBuffer(96);
+        mockGeometryToBinarySTL.mockReturnValue(stlBytes);
 
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
         expect(mockExportManufacturingStlFromBase).toHaveBeenCalledTimes(1);
-        expect(mockEnsureWatertight).toHaveBeenCalledTimes(1);
-        expect(result.byteLength).toBeGreaterThan(0);
+        expect(mockCloseGlbInsoleToSolid).toHaveBeenCalledTimes(1);
+        expect(mockGeometryToBinarySTL).toHaveBeenCalledWith(closedGeo);
+        expect(result).toBe(stlBytes);
     });
 
-    test("GLB download path does not call ensureWatertightForExport", async () => {
+    test("GLB download path does not call closeGlbInsoleToSolid", async () => {
         const { buildExportGlb } = await import("@/lib/geometry/export-geometry");
         await buildExportGlb("left");
-        expect(mockEnsureWatertight).not.toHaveBeenCalled();
+        expect(mockCloseGlbInsoleToSolid).not.toHaveBeenCalled();
     });
 
     test("exportManufacturingStlAttempt returns null without a loaded base design", async () => {
