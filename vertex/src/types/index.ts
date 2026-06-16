@@ -6,6 +6,9 @@ export type Role = "super_admin" | "admin" | "clinician";
 
 export type Side = "left" | "right";
 
+/** Human-readable foot side labels for UI and export filenames. */
+export const SIDE_LABELS: Record<Side, string> = { left: "Left", right: "Right" };
+
 export type Unit = "mm" | "deg";
 
 export type LicenseType = "monthly" | "yearly" | "per_seat";

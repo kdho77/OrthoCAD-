@@ -319,6 +319,8 @@ export interface DesignStore {
     stockBaseResolutionState: StockBaseResolutionState;
     /** True per side while the viewer is waiting on or loading a base GLB mesh. */
     baseMeshLoadingBySide: Record<Side, boolean>;
+    /** Active foot side for STL/GLB/G-code export (shared across tabs + keyboard shortcut). */
+    exportSide: Side;
     viewer: ViewerSettings;
     selectedElementId: string | null;
     transformMode: TransformMode;
@@ -375,6 +377,7 @@ export interface DesignStore {
     clearSideTrimline: (side: Side) => void;
 
     setViewer: (patch: Partial<ViewerSettings>) => void;
+    setExportSide: (side: Side) => void;
     setBaseMeshLoading: (side: Side, loading: boolean) => void;
     reset: () => void;
 
@@ -404,6 +407,7 @@ export const useDesignStore = create<DesignStore>()(
             stockBaseLoading: false,
             stockBaseResolutionState: isApiConfigured() ? "idle" : "resolved",
             baseMeshLoadingBySide: { left: false, right: false },
+            exportSide: "left",
             viewer: { transparent: false, heightmap: false, showLeft: true, showRight: true, view: "iso" },
             selectedElementId: null,
             transformMode: "translate",
@@ -914,6 +918,7 @@ export const useDesignStore = create<DesignStore>()(
             },
 
             setViewer: (patch) => set((s) => ({ viewer: { ...s.viewer, ...patch } })),
+            setExportSide: (side) => set({ exportSide: side }),
             setBaseMeshLoading: (side, loading) =>
                 set((s) => ({
                     baseMeshLoadingBySide: { ...s.baseMeshLoadingBySide, [side]: loading },
