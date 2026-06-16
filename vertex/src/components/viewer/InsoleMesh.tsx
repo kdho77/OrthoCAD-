@@ -96,7 +96,7 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
     const offsetX = sideOffsetX(side);
     const displayGeo = coloredGeometry ?? geometry;
 
-    if (!displayGeo) return null;
+    if (!displayGeo || building) return null;
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
@@ -104,15 +104,9 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
                 geometry={displayGeo}
                 material={material}
                 position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}
-                castShadow={!building}
+                castShadow
                 receiveShadow
             />
-            {building ? (
-                <mesh position={[-INSOLE_LENGTH_MM / 2, offsetX, 0.5]}>
-                    <boxGeometry args={[INSOLE_LENGTH_MM, 90, 0.2]} />
-                    <meshBasicMaterial color="#334155" transparent opacity={0.15} wireframe />
-                </mesh>
-            ) : null}
         </group>
     );
 }

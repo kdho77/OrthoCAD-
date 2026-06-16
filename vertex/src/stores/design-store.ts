@@ -8,14 +8,14 @@ import {
     designStockBasesAreResolved,
     getDesignStockAssetId,
     resolveStockBase,
-    sanitizeDesignStockBases,
     StockBaseResolutionError,
+    sanitizeDesignStockBases,
 } from "@/lib/geometry/base-asset";
-import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
-import { isApiConfigured } from "@/lib/trpc";
-import { isSupabaseConfigured } from "@/lib/supabase";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
+import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { isApiConfigured } from "@/lib/trpc";
 import { buildEffectiveTrimlines, useIssuesStore } from "@/stores/issues-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
@@ -199,17 +199,24 @@ function upgradeStockBaseAsync(apply: () => Promise<void>, reason: string): void
             stockGlbLog(
                 `upgradeStockBaseAsync() success (${reason}) — injected url="${injected?.url ?? "(none)"}" glb_path="${injected?.glbPath ?? "(none)"}" name="${injected?.name ?? "(none)"}"`,
             );
-            stockDebug("upgradeStockBaseAsync() success", { reason, url: injected?.url, glbPath: injected?.glbPath });
+            stockDebug("upgradeStockBaseAsync() success", {
+                reason,
+                url: injected?.url,
+                glbPath: injected?.glbPath,
+            });
         })
         .catch((e) => {
             const msg =
                 e instanceof StockBaseResolutionError
                     ? e.message
                     : "Failed to load the default stock base. Check server configuration.";
-            stockFixLog("upgradeStockBaseAsync() failed — applying offline fallback and blocking auto-retry", {
-                reason,
-                error: msg,
-            });
+            stockFixLog(
+                "upgradeStockBaseAsync() failed — applying offline fallback and blocking auto-retry",
+                {
+                    reason,
+                    error: msg,
+                },
+            );
             stockDebug("upgradeStockBaseAsync() failed", {
                 reason,
                 error: msg,
@@ -259,9 +266,14 @@ export function ensureDefaultStockBaseResolved(): void {
             markStockBaseResolved();
             return;
         }
-        stockResolveLog("ensureDefaultStockBaseResolved() — bases present but missing glbPath/url, resolving");
+        stockResolveLog(
+            "ensureDefaultStockBaseResolved() — bases present but missing glbPath/url, resolving",
+        );
     }
-    upgradeStockBaseAsync(() => useDesignStore.getState().applyDefaultStockBase(), "ensureDefaultStockBaseResolved");
+    upgradeStockBaseAsync(
+        () => useDesignStore.getState().applyDefaultStockBase(),
+        "ensureDefaultStockBaseResolved",
+    );
 }
 
 /** User-initiated retry after a stock base resolution failure (StatusBar Retry button). */
@@ -305,6 +317,8 @@ export interface DesignStore {
     stockBaseLoading: boolean;
     /** Tracks server stock resolution lifecycle — prevents infinite auto-retry loops. */
     stockBaseResolutionState: StockBaseResolutionState;
+    /** True per side while the viewer is waiting on or loading a base GLB mesh. */
+    baseMeshLoadingBySide: Record<Side, boolean>;
     viewer: ViewerSettings;
     selectedElementId: string | null;
     transformMode: TransformMode;
@@ -361,6 +375,7 @@ export interface DesignStore {
     clearSideTrimline: (side: Side) => void;
 
     setViewer: (patch: Partial<ViewerSettings>) => void;
+    setBaseMeshLoading: (side: Side, loading: boolean) => void;
     reset: () => void;
 
     /** Push a snapshot of the current design onto the undo stack (clears future). */
@@ -388,6 +403,7 @@ export const useDesignStore = create<DesignStore>()(
             stockBaseError: null,
             stockBaseLoading: false,
             stockBaseResolutionState: isApiConfigured() ? "idle" : "resolved",
+            baseMeshLoadingBySide: { left: false, right: false },
             viewer: { transparent: false, heightmap: false, showLeft: true, showRight: true, view: "iso" },
             selectedElementId: null,
             transformMode: "translate",
@@ -669,7 +685,11 @@ export const useDesignStore = create<DesignStore>()(
                     stockFixLog("applyDefaultStockBase() start", { assetId });
                     stockDebug("applyDefaultStockBase() start", { assetId });
                     stockResolveLog("applyDefaultStockBase() start", { assetId });
-                    set({ stockBaseError: null, stockBaseLoading: true, stockBaseResolutionState: "loading" });
+                    set({
+                        stockBaseError: null,
+                        stockBaseLoading: true,
+                        stockBaseResolutionState: "loading",
+                    });
                     const resolved = await resolveStockBase(assetId);
                     const { left, right } = createDefaultStockPairedBases(resolved);
                     stockResolveLog("applyDefaultStockBase() resolved — injecting mirrored L+R pair", {
@@ -704,8 +724,10 @@ export const useDesignStore = create<DesignStore>()(
                             paired: {
                                 leftBase: left,
                                 rightBase: right,
-                                leftThicknessMm: s.design.paired?.leftThicknessMm ?? s.design.thicknessMm ?? 3,
-                                rightThicknessMm: s.design.paired?.rightThicknessMm ?? s.design.thicknessMm ?? 3,
+                                leftThicknessMm:
+                                    s.design.paired?.leftThicknessMm ?? s.design.thicknessMm ?? 3,
+                                rightThicknessMm:
+                                    s.design.paired?.rightThicknessMm ?? s.design.thicknessMm ?? 3,
                                 leftMethod: s.design.paired?.leftMethod ?? s.design.method,
                                 rightMethod: s.design.paired?.rightMethod ?? s.design.method,
                                 linked: s.design.paired?.linked ?? false,
@@ -892,6 +914,10 @@ export const useDesignStore = create<DesignStore>()(
             },
 
             setViewer: (patch) => set((s) => ({ viewer: { ...s.viewer, ...patch } })),
+            setBaseMeshLoading: (side, loading) =>
+                set((s) => ({
+                    baseMeshLoadingBySide: { ...s.baseMeshLoadingBySide, [side]: loading },
+                })),
             reset: () => {
                 usePerformanceStore.getState().clearAllPreviews();
                 useMeshEditStore.getState().cancelTrimlineEdit();
@@ -904,6 +930,7 @@ export const useDesignStore = create<DesignStore>()(
                     selectedElementId: null,
                     stockBaseError: null,
                     stockBaseResolutionState: isApiConfigured() ? "idle" : "resolved",
+                    baseMeshLoadingBySide: { left: false, right: false },
                 });
                 upgradeStockBaseAsync(() => get().applyDefaultStockBase(), "reset");
             },
@@ -1013,6 +1040,7 @@ export const useDesignStore = create<DesignStore>()(
                     stockBaseError: null,
                     stockBaseLoading: false,
                     stockBaseResolutionState: needsResolution && isApiConfigured() ? "idle" : "resolved",
+                    baseMeshLoadingBySide: { left: false, right: false },
                 });
                 stockFixLog("persist onRehydrate", { needsResolution, apiConfigured: isApiConfigured() });
                 // When Supabase auth is required, App.tsx resolves after the session is ready.

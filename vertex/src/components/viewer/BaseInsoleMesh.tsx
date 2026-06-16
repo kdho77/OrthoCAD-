@@ -35,7 +35,7 @@ export function BaseInsoleMesh({ side, transparent }: { side: Side; transparent:
 
     useEffect(() => () => material.dispose(), [material]);
 
-    if (!geometry) return null;
+    if (!geometry || building) return null;
 
     const offsetX = sideOffsetX(side);
     return (
