@@ -145,20 +145,18 @@ describe("export-geometry routing", () => {
         expect(exportModeFromMethod("printing_shell")).toBe("preview");
     });
 
-    test("Printing Solid export uses OCCT path", async () => {
+    test("exportManufacturingStlAttempt uses OCCT sew path when available", async () => {
         const occtBytes = new ArrayBuffer(128);
         mockExportManufacturingStlFromBase.mockReturnValue(occtBytes);
 
-        const { buildExportStl } = await import("@/lib/geometry/export-geometry");
-        const result = await buildExportStl("left", { exportMode: "manufacturing" });
+        const { exportManufacturingStlAttempt } = await import("@/lib/geometry/export-geometry");
+        const result = await exportManufacturingStlAttempt(mockDesign, "left");
 
         expect(mockExportManufacturingStlFromBase).toHaveBeenCalledTimes(1);
-        expect(mockCloseGlbInsoleToSolid).not.toHaveBeenCalled();
         expect(result).toBe(occtBytes);
     });
 
-    test("OCCT path failure falls back to GLB rim-close", async () => {
-        mockExportManufacturingStlFromBase.mockReturnValue(null);
+    test("buildExportStl uses mesh-close with zero smoothing iterations", async () => {
         const closedGeo = makeTestGeometry();
         mockCloseGlbInsoleToSolid.mockReturnValue(closedGeo);
         const stlBytes = new ArrayBuffer(96);
@@ -167,7 +165,7 @@ describe("export-geometry routing", () => {
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
-        expect(mockExportManufacturingStlFromBase).toHaveBeenCalledTimes(1);
+        expect(mockBuildFromBase).toHaveBeenCalledWith(expect.anything(), expect.anything(), 0);
         expect(mockCloseGlbInsoleToSolid).toHaveBeenCalledTimes(1);
         expect(mockGeometryToBinarySTL).toHaveBeenCalledWith(closedGeo);
         expect(result).toBe(stlBytes);

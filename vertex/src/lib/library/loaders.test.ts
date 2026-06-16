@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
-import { countMeshes, extractMergedGeometry, extractPrimaryGeometry, mirrorGeometry } from "./loaders";
+import { countMeshes, extractMergedGeometry, extractPrimaryGeometry, mirrorGeometry, reverseWindingOrder } from "./loaders";
 
 /** Build a GLB-like group with separately-named meshes (mirrors Top/Bottom bases). */
 function makeGroup(meshes: { name: string; geo: THREE.BufferGeometry; position?: [number, number, number] }[]) {
@@ -175,5 +175,27 @@ describe("GLB loaders — base mirroring", () => {
         const n = mirrored.getAttribute("normal");
         expect(n).toBeTruthy();
         expect(n.count).toBe(mirrored.getAttribute("position").count);
+    });
+
+    test("reverseWindingOrder preserves userData topVertexCount through mirror", () => {
+        const merged = extractMergedGeometry(
+            makeGroup([
+                { name: "Top", geo: new THREE.BoxGeometry(90, 260, 20) },
+                { name: "Bottom", geo: new THREE.BoxGeometry(90, 260, 5) },
+            ]),
+        )!.geometry;
+        const topVc = (merged.userData as { topVertexCount?: number }).topVertexCount;
+        expect(topVc).toBeGreaterThan(0);
+
+        const mirrored = mirrorGeometry(merged);
+        expect((mirrored.userData as { topVertexCount?: number }).topVertexCount).toBe(topVc);
+        expect((mirrored.userData as { isMultiMeshBase?: boolean }).isMultiMeshBase).toBe(true);
+
+        // Double-reversing restores original index order.
+        const before = Array.from(merged.index!.array.slice(0, 9));
+        const afterMirror = Array.from(mirrored.index!.array.slice(0, 9));
+        expect(afterMirror).not.toEqual(before);
+        reverseWindingOrder(mirrored);
+        expect(Array.from(mirrored.index!.array.slice(0, 9))).toEqual(before);
     });
 });

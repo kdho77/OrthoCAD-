@@ -384,6 +384,38 @@ export async function extractMergedGeometryAsync(
 }
 
 /**
+ * After mirroring geometry on the width axis (sagittal reflection), triangle
+ * winding is inverted. Swap b↔c in every triangle to restore outward normals and
+ * correct half-edge boundary walk direction for mesh-close export.
+ */
+export function reverseWindingOrder(geo: THREE.BufferGeometry): void {
+    const idx = geo.index;
+    const pos = geo.getAttribute("position");
+    if (idx) {
+        const arr = idx.array as Uint32Array | Uint16Array;
+        for (let i = 0; i < arr.length; i += 3) {
+            const tmp = arr[i + 1]!;
+            arr[i + 1] = arr[i + 2]!;
+            arr[i + 2] = tmp;
+        }
+        idx.needsUpdate = true;
+    } else if (pos) {
+        const arr = pos.array as Float32Array;
+        for (let i = 0; i < pos.count; i += 3) {
+            for (let c = 0; c < 3; c++) {
+                const a = (i + 1) * 3 + c;
+                const b = (i + 2) * 3 + c;
+                const tmp = arr[a]!;
+                arr[a] = arr[b]!;
+                arr[b] = tmp;
+            }
+        }
+        pos.needsUpdate = true;
+    }
+    geo.computeVertexNormals();
+}
+
+/**
  * Mirror a base geometry across its sagittal plane (Left ↔ Right). The width
  * axis (medial↔lateral) is detected from the geometry's extents — the middle of
  * its three bounding-box dimensions, matching the Base + Modifier axis
@@ -394,6 +426,9 @@ export async function extractMergedGeometryAsync(
  */
 export function mirrorGeometry(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
     const g = geometry.clone();
+    if (geometry.userData) {
+        g.userData = { ...geometry.userData };
+    }
     g.computeBoundingBox();
     const box = g.boundingBox;
     if (!box) return g;
@@ -416,29 +451,8 @@ export function mirrorGeometry(geometry: THREE.BufferGeometry): THREE.BufferGeom
     }
     pos.needsUpdate = true;
 
-    // A reflection flips orientation: reverse winding so faces stay outward.
-    if (g.index) {
-        const idx = g.index.array;
-        for (let i = 0; i < idx.length; i += 3) {
-            const tmp = idx[i + 1]!;
-            (idx as Uint32Array | Uint16Array)[i + 1] = idx[i + 2]!;
-            (idx as Uint32Array | Uint16Array)[i + 2] = tmp;
-        }
-        g.index.needsUpdate = true;
-    } else {
-        const arr = pos.array as Float32Array;
-        for (let i = 0; i < pos.count; i += 3) {
-            for (let c = 0; c < 3; c++) {
-                const a = (i + 1) * 3 + c;
-                const b = (i + 2) * 3 + c;
-                const tmp = arr[a]!;
-                arr[a] = arr[b]!;
-                arr[b] = tmp;
-            }
-        }
-    }
+    reverseWindingOrder(g);
 
-    g.computeVertexNormals();
     g.computeBoundingBox();
     g.computeBoundingSphere();
     return g;

@@ -25,13 +25,26 @@ export interface BuildExportStlOptions {
     exportMode?: ExportMode;
 }
 
+export interface BuildExportGeometryOptions {
+    /**
+     * Laplacian smoothing passes for modifier displacement. Mesh-close export
+     * must use 0 — smoothing ≥1 with active corrections collapses top sub-mesh
+     * boundary loops on stock GLB bases (mirrored or not).
+     */
+    smoothingIterations?: number;
+}
+
 /**
  * Build the base template geometry for a side with the design's modifiers
  * (corrections / elements) applied via the active kernel. Returns `null` when
  * the design has no base or the base mesh cannot be loaded, so callers fall
  * back to parametric generation.
  */
-async function buildModifiedBaseGeometry(design: DesignState, side: Side): Promise<BufferGeometry | null> {
+async function buildModifiedBaseGeometry(
+    design: DesignState,
+    side: Side,
+    smoothingIterations = 2,
+): Promise<BufferGeometry | null> {
     const base = getDesignBase(design, side);
     if (!base) return null;
     const raw = await loadBaseGeometry(base);
@@ -43,7 +56,7 @@ async function buildModifiedBaseGeometry(design: DesignState, side: Side): Promi
                 : design.paired.rightThicknessMm
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, effThickness);
-        const result = getKernel().buildFromBase(raw, field, 2);
+        const result = getKernel().buildFromBase(raw, field, smoothingIterations);
         return result.geometry;
     } finally {
         raw.dispose();
@@ -122,10 +135,14 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
 }
 
 /** Builds export geometry for a side — base+modifiers only; no parametric fallback. */
-export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
+export async function buildExportGeometry(
+    side: Side,
+    options: BuildExportGeometryOptions = {},
+): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
+    const smoothingIterations = options.smoothingIterations ?? 2;
 
-    const modifiedBase = await buildModifiedBaseGeometry(design, side);
+    const modifiedBase = await buildModifiedBaseGeometry(design, side, smoothingIterations);
     if (modifiedBase) return modifiedBase;
 
     throw new Error(
@@ -137,7 +154,9 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
 
 /** Export STL bytes for the active design side. */
 export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const geometry = await buildExportGeometry(side);
+    // Mesh-close reads top/bottom rim loops from the deformed sub-meshes. Laplacian
+    // smoothing (≥1) with clinical corrections destroys those boundaries — use 0 here.
+    const geometry = await buildExportGeometry(side, { smoothingIterations: 0 });
     try {
         if (typeof console !== "undefined") {
             console.log("[EXPORT] closing GLB insole rims...");
