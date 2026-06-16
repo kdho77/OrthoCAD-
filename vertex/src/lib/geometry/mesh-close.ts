@@ -11,6 +11,7 @@
 // Step 6: [STL written via] kernel.exportSTL → shapesToStl (OCCT) or geometryToBinarySTL → vertex/src/lib/geometry/stl.ts
 
 import { Box3, BufferAttribute, BufferGeometry, ShapeUtils, Vector2, Vector3 } from "three";
+import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 
 /** Laplacian smoothing iterations applied to bridge interior vertices only. */
@@ -189,6 +190,307 @@ export function extractBoundaryLoops(geometry: BufferGeometry): Vector3[][] {
     }
 
     return loops;
+}
+
+const SLIT_CYCLE_MAX_VERTS = 20;
+
+/** Undirected naked-edge adjacency using mesh vertex indices (not quant keys). */
+function buildNakedEdgeAdjacencyIndexed(geometry: BufferGeometry): Map<number, Set<number>> {
+    const index = geometry.index;
+    if (!index) return new Map();
+
+    const edgeUse = new Map<string, number>();
+    const edgeVerts = new Map<string, [number, number]>();
+
+    for (let t = 0; t < index.count; t += 3) {
+        const a = index.getX(t);
+        const b = index.getX(t + 1);
+        const c = index.getX(t + 2);
+        for (const [p, q] of [
+            [a, b],
+            [b, c],
+            [c, a],
+        ] as [number, number][]) {
+            const lo = Math.min(p, q);
+            const hi = Math.max(p, q);
+            const k = `${lo}_${hi}`;
+            edgeUse.set(k, (edgeUse.get(k) ?? 0) + 1);
+            if (!edgeVerts.has(k)) edgeVerts.set(k, [p, q]);
+        }
+    }
+
+    const adj = new Map<number, Set<number>>();
+    for (const [k, count] of edgeUse) {
+        if (count !== 1) continue;
+        const [p, q] = edgeVerts.get(k)!;
+        if (!adj.has(p)) adj.set(p, new Set());
+        if (!adj.has(q)) adj.set(q, new Set());
+        adj.get(p)!.add(q);
+        adj.get(q)!.add(p);
+    }
+    return adj;
+}
+
+function indexedEdgeKey(a: number, b: number): string {
+    return a < b ? `${a}_${b}` : `${b}_${a}`;
+}
+
+export interface BoundaryLoopWithIndices {
+    positions: Vector3[];
+    indices: number[];
+}
+
+/**
+ * Extract boundary cycles from meshes with branched topology (degree>2 junctions).
+ * At junctions, picks the unvisited neighbor with the smallest angular deviation.
+ * Returns cycles sorted by vertex count descending.
+ */
+export function extractBoundaryLoopsBranchedWithIndices(
+    geometry: BufferGeometry,
+): BoundaryLoopWithIndices[] {
+    const index = geometry.index;
+    const pos = geometry.getAttribute("position");
+    if (!index || !pos) return [];
+
+    const adj = buildNakedEdgeAdjacencyIndexed(geometry);
+    if (adj.size === 0) return [];
+
+    const visitedEdges = new Set<string>();
+    const cycles: BoundaryLoopWithIndices[] = [];
+
+    for (const [startV, neighbors] of adj) {
+        for (const nextV of neighbors) {
+            const startEdgeKey = indexedEdgeKey(startV, nextV);
+            if (visitedEdges.has(startEdgeKey)) continue;
+
+            const cycleIndices: number[] = [startV];
+            let prev = startV;
+            let cur = nextV;
+            visitedEdges.add(startEdgeKey);
+
+            for (let guard = 0; guard < adj.size + 10; guard++) {
+                cycleIndices.push(cur);
+                const curNeighbors = adj.get(cur) ?? new Set<number>();
+
+                const inDx = pos.getX(cur) - pos.getX(prev);
+                const inDy = pos.getY(cur) - pos.getY(prev);
+                const inDz = pos.getZ(cur) - pos.getZ(prev);
+                const inLen = Math.hypot(inDx, inDy, inDz) || 1;
+
+                let bestNext = -1;
+                let bestDot = Number.NEGATIVE_INFINITY;
+
+                for (const n of curNeighbors) {
+                    if (n === prev) continue;
+                    const ek = indexedEdgeKey(cur, n);
+                    if (visitedEdges.has(ek)) continue;
+                    const dx = pos.getX(n) - pos.getX(cur);
+                    const dy = pos.getY(n) - pos.getY(cur);
+                    const dz = pos.getZ(n) - pos.getZ(cur);
+                    const len = Math.hypot(dx, dy, dz) || 1;
+                    const dot =
+                        (inDx / inLen) * (dx / len) + (inDy / inLen) * (dy / len) + (inDz / inLen) * (dz / len);
+                    if (dot > bestDot) {
+                        bestDot = dot;
+                        bestNext = n;
+                    }
+                }
+
+                if (bestNext === -1) break;
+
+                visitedEdges.add(indexedEdgeKey(cur, bestNext));
+
+                if (bestNext === startV) break;
+
+                prev = cur;
+                cur = bestNext;
+            }
+
+            if (cycleIndices.length >= 3) {
+                cycles.push({
+                    indices: cycleIndices,
+                    positions: cycleIndices.map(
+                        (i) => new Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)),
+                    ),
+                });
+            }
+        }
+    }
+
+    cycles.sort((a, b) => b.indices.length - a.indices.length);
+    return cycles;
+}
+
+/** Positions-only convenience wrapper for branched boundary extraction. */
+export function extractBoundaryLoopsBranched(geometry: BufferGeometry): Vector3[][] {
+    return extractBoundaryLoopsBranchedWithIndices(geometry).map((c) => c.positions);
+}
+
+/** Concatenate geometries and weld coincident vertices (mergeVertices). */
+function mergeAndWeld(geometries: BufferGeometry[], _toleranceMm = 0.5): BufferGeometry {
+    if (geometries.length === 0) throw new Error("mergeAndWeld requires at least one geometry");
+    if (geometries.length === 1) return geometries[0]!.clone();
+
+    let vertOffset = 0;
+    const positions: number[] = [];
+    const indices: number[] = [];
+
+    for (const geo of geometries) {
+        const pos = geo.getAttribute("position");
+        const idx = geo.index;
+        for (let i = 0; i < pos.count; i++) {
+            positions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+        }
+        if (idx) {
+            for (let i = 0; i < idx.count; i++) {
+                indices.push(idx.getX(i) + vertOffset);
+            }
+        }
+        vertOffset += pos.count;
+    }
+
+    const out = new BufferGeometry();
+    out.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
+    if (indices.length > 0) out.setIndex(indices);
+
+    const welded = mergeVertices(out);
+    if (welded !== out) out.dispose();
+    return welded;
+}
+
+function mapLocalIndicesToParent(localIndices: number[], localToParent: number[]): number[] {
+    return localIndices.map((i) => localToParent[i]!);
+}
+
+/** Snap resampled rim samples to the nearest vertex on a reference boundary cycle. */
+function snapResampledToReferenceCycle(
+    resampled: Vector3[],
+    refPositions: Vector3[],
+    refParentIndices: number[],
+): number[] {
+    return resampled.map((p) => {
+        let bestI = 0;
+        let bestD2 = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < refPositions.length; i++) {
+            const d2 = p.distanceToSquared(refPositions[i]!);
+            if (d2 < bestD2) {
+                bestD2 = d2;
+                bestI = i;
+            }
+        }
+        return refParentIndices[bestI]!;
+    });
+}
+
+function buildQuantKeyToIndexMap(geometry: BufferGeometry): Map<string, number> {
+    const pos = geometry.getAttribute("position");
+    const map = new Map<string, number>();
+    for (let i = 0; i < pos.count; i++) {
+        const k = quantKey(pos.getX(i), pos.getY(i), pos.getZ(i));
+        if (!map.has(k)) map.set(k, i);
+    }
+    return map;
+}
+
+/** DFS boundary cycles with mesh vertex indices (handles degree>2 junctions). */
+function extractAllBoundaryCyclesWithIndices(geometry: BufferGeometry): BoundaryLoopWithIndices[] {
+    const cycles = extractAllBoundaryCycles(geometry);
+    const keyToIndex = buildQuantKeyToIndexMap(geometry);
+    const out: BoundaryLoopWithIndices[] = [];
+
+    for (const positions of cycles) {
+        const indices: number[] = [];
+        for (const p of positions) {
+            const vi = keyToIndex.get(quantKey(p.x, p.y, p.z));
+            if (vi === undefined) {
+                indices.length = 0;
+                break;
+            }
+            indices.push(vi);
+        }
+        if (indices.length >= 3) out.push({ positions, indices });
+    }
+
+    out.sort((a, b) => b.indices.length - a.indices.length);
+    return out;
+}
+
+function resolveBottomRim(
+    parentWorking: BufferGeometry,
+    botSub: BufferGeometry,
+    botLocalToParent: number[],
+    topVertexCount: number,
+    bodyVertexCount: number,
+): BoundaryLoopWithIndices & { parentIndices: number[] } {
+    const simple = extractOrderedBoundaryLoopWithIndices(botSub);
+    if (simple.positions.length >= 3) {
+        return {
+            positions: simple.positions,
+            indices: simple.indices,
+            parentIndices: mapLocalIndicesToParent(simple.indices, botLocalToParent),
+        };
+    }
+
+    if (typeof console !== "undefined") {
+        console.log(
+            "[MESH-CLOSE] botSub has branched boundary — sealing internal slits before rim extraction",
+        );
+    }
+
+    const allBotCycles = extractAllBoundaryCyclesWithIndices(botSub);
+    if (allBotCycles.length === 0) {
+        throw new Error("[MESH-CLOSE] botSub: no boundary cycles found");
+    }
+
+    if (typeof console !== "undefined") {
+        console.log(
+            "[MESH-CLOSE] botSub branched cycles:",
+            allBotCycles.map((c) => c.positions.length),
+        );
+    }
+
+    let sealed = 0;
+    for (let i = allBotCycles.length - 1; i >= 1; i--) {
+        const slit = allBotCycles[i]!;
+        if (slit.positions.length >= SLIT_CYCLE_MAX_VERTS) continue;
+        if (typeof console !== "undefined") {
+            console.log("[MESH-CLOSE] sealing slit loop:", slit.positions.length, "verts");
+        }
+        if (capBoundaryLoopInPlace(parentWorking, slit.positions)) sealed++;
+    }
+
+    if (sealed > 0) {
+        const botAfter = submeshByVertexRange(parentWorking, topVertexCount, bodyVertexCount);
+        const afterCycles = extractAllBoundaryCyclesWithIndices(botAfter);
+        if (typeof console !== "undefined") {
+            console.log(
+                "[MESH-CLOSE] after slit seal, bot branched cycles:",
+                afterCycles.map((c) => c.positions.length),
+            );
+        }
+        const afterSimple = extractOrderedBoundaryLoopWithIndices(botAfter);
+        botAfter.dispose();
+        if (afterSimple.positions.length >= 3) {
+            if (typeof console !== "undefined") {
+                console.log("[MESH-CLOSE] after slit seal, botRim:", afterSimple.positions.length);
+            }
+            return {
+                positions: afterSimple.positions,
+                indices: afterSimple.indices,
+                parentIndices: mapLocalIndicesToParent(afterSimple.indices, botLocalToParent),
+            };
+        }
+    }
+
+    const outer = allBotCycles[0]!;
+    if (typeof console !== "undefined") {
+        console.log("[MESH-CLOSE] using branched outer cycle as botRim:", outer.positions.length);
+    }
+    return {
+        positions: outer.positions,
+        indices: outer.indices,
+        parentIndices: mapLocalIndicesToParent(outer.indices, botLocalToParent),
+    };
 }
 
 /** DFS boundary walk that enumerates simple cycles through degree>2 branch vertices. */
@@ -1999,12 +2301,26 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
         return out;
     }
 
+    const parentWorking = geometry.clone();
+    if (geometry.userData) parentWorking.userData = { ...geometry.userData };
+
     const topSub = submeshByVertexRange(geometry, 0, topVertexCount);
-    const botSub = submeshByVertexRange(geometry, topVertexCount, bodyVertexCount);
+    const { geometry: botSub, localToParent: botLocalToParent } = submeshByVertexRangeWithMap(
+        geometry,
+        topVertexCount,
+        bodyVertexCount,
+    );
 
     try {
         const { positions: topRimPos } = extractOrderedBoundaryLoopWithIndices(topSub);
-        const { positions: botRimPos } = extractOrderedBoundaryLoopWithIndices(botSub);
+        const botRim = resolveBottomRim(
+            parentWorking,
+            botSub,
+            botLocalToParent,
+            topVertexCount,
+            bodyVertexCount,
+        );
+        const botRimPos = botRim.positions;
 
         if (topRimPos.length < 3 || botRimPos.length < 3) {
             throw new Error(
@@ -2025,23 +2341,17 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
         topLoop = winding.topLoop;
         botLoop = alignLoopStartToReference(topLoop, winding.botLoop);
 
-        const snappedTop = snapLoopToBoundaryVertices(geometry, topLoop, 0, topVertexCount);
-        const snappedBot = snapLoopToBoundaryVertices(
-            geometry,
-            botLoop,
-            topVertexCount,
-            bodyVertexCount,
-        );
+        const snappedTop = snapLoopToBoundaryVertices(parentWorking, topLoop, 0, topVertexCount);
         const topRimN = snappedTop.localIndices;
-        const botRimN = snappedBot.localIndices.map((i) => i + topVertexCount);
+        const botRimN = snapResampledToReferenceCycle(botLoop, botRim.positions, botRim.parentIndices);
         const N = topRimN.length;
 
-        const parentPos = geometry.getAttribute("position");
+        const parentPos = parentWorking.getAttribute("position");
         const combinedPos = new Float32Array(parentPos.count * 3);
         combinedPos.set(parentPos.array as Float32Array, 0);
 
         const allFaces: number[] = [];
-        const parentIdx = geometry.index;
+        const parentIdx = parentWorking.index;
         if (parentIdx) {
             for (let t = 0; t < parentIdx.count; t += 3) {
                 const i0 = parentIdx.getX(t);
@@ -2117,6 +2427,7 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
     } finally {
         topSub.dispose();
         botSub.dispose();
+        parentWorking.dispose();
     }
 }
 
