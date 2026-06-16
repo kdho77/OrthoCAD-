@@ -468,17 +468,16 @@ function resolveBottomRim(
                 afterCycles.map((c) => c.positions.length),
             );
         }
-        const afterBranched = extractBoundaryLoopsBranchedWithIndices(botAfter);
-        const afterCycle = afterBranched[0];
+        const afterSimple = extractOrderedBoundaryLoopWithIndices(botAfter);
         botAfter.dispose();
-        if (afterCycle && afterCycle.positions.length >= 3) {
+        if (afterSimple.positions.length >= 3) {
             if (typeof console !== "undefined") {
-                console.log("[MESH-CLOSE] after slit seal, botRim:", afterCycle.positions.length);
+                console.log("[MESH-CLOSE] after slit seal, botRim:", afterSimple.positions.length);
             }
             return {
-                positions: afterCycle.positions,
-                indices: afterCycle.indices,
-                parentIndices: mapLocalIndicesToParent(afterCycle.indices, botLocalToParent),
+                positions: afterSimple.positions,
+                indices: afterSimple.indices,
+                parentIndices: mapLocalIndicesToParent(afterSimple.indices, botLocalToParent),
             };
         }
     }
@@ -2279,6 +2278,38 @@ function capBoundaryLoopInPlace(geometry: BufferGeometry, loop: Vector3[]): bool
     }
 
     const newIdx = Array.from(index.array as ArrayLike<number>);
+    const edgeCount = buildEdgeUsage(geometry).edgeCount;
+
+    const capEdgeKey = (viA: number, viB: number): string => {
+        const pos = geometry.getAttribute("position");
+        const a = quantKey(pos.getX(viA), pos.getY(viA), pos.getZ(viA));
+        const b = quantKey(pos.getX(viB), pos.getY(viB), pos.getZ(viB));
+        return edgeKey(a, b);
+    };
+
+    const wouldCreateNonManifold = (ia: number, ib: number, ic: number): boolean => {
+        for (const [p, q] of [
+            [ia, ib],
+            [ib, ic],
+            [ic, ia],
+        ] as [number, number][]) {
+            if ((edgeCount.get(capEdgeKey(p, q)) ?? 0) >= 2) return true;
+        }
+        return false;
+    };
+
+    const addCapTriangle = (ia: number, ib: number, ic: number): void => {
+        newIdx.push(ia, ib, ic);
+        for (const [p, q] of [
+            [ia, ib],
+            [ib, ic],
+            [ic, ia],
+        ] as [number, number][]) {
+            const ek = capEdgeKey(p, q);
+            edgeCount.set(ek, (edgeCount.get(ek) ?? 0) + 1);
+        }
+    };
+
     for (const tri of triangulated) {
         const ia = loopIndices[tri[0]!]!;
         const ib = loopIndices[tri[1]!]!;
@@ -2293,7 +2324,13 @@ function capBoundaryLoopInPlace(geometry: BufferGeometry, loop: Vector3[]): bool
             }
             continue;
         }
-        newIdx.push(ia, ib, ic);
+        if (wouldCreateNonManifold(ia, ib, ic)) {
+            if (typeof console !== "undefined") {
+                console.warn("[MESH-CLOSE] skipping slit cap triangle that would create non-manifold edge");
+            }
+            continue;
+        }
+        addCapTriangle(ia, ib, ic);
     }
     if (newIdx.length === index.count) return false;
     geometry.setIndex(newIdx);
