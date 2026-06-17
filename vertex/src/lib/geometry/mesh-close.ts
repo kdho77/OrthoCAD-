@@ -729,9 +729,249 @@ export function resampleLoopToCount(loop: Vector3[], n: number): Vector3[] {
     return out;
 }
 
-/** Resample a closed loop to exactly `targetCount` points via arc-length parameterization. */
 export function resampleLoop(loop: Vector3[], targetCount: number): Vector3[] {
     return resampleLoopToCount(loop, targetCount);
+}
+
+/** Rotate an indexed boundary loop by `offset` samples. */
+function rotateIndexedLoop(
+    positions: Vector3[],
+    indices: number[],
+    offset: number,
+): { positions: Vector3[]; indices: number[] } {
+    const n = positions.length;
+    if (n === 0) return { positions: [], indices: [] };
+    const k = ((offset % n) + n) % n;
+    return {
+        positions: Array.from({ length: n }, (_, i) => positions[(i + k) % n]!.clone()),
+        indices: Array.from({ length: n }, (_, i) => indices[(i + k) % n]!),
+    };
+}
+
+/** Align indexed bottom loop start to a reference top loop (positions + indices). */
+function alignIndexedLoopStartToReference(
+    reference: Vector3[],
+    positions: Vector3[],
+    indices: number[],
+): { positions: Vector3[]; indices: number[] } {
+    const n = reference.length;
+    if (n === 0 || positions.length !== n) {
+        return { positions: positions.map((p) => p.clone()), indices: [...indices] };
+    }
+
+    let bestK = 0;
+    let bestCost = Number.POSITIVE_INFINITY;
+    for (let k = 0; k < n; k++) {
+        let cost = 0;
+        for (let i = 0; i < n; i++) {
+            const a = reference[i]!;
+            const b = positions[(i + k) % n]!;
+            cost += a.distanceToSquared(b);
+        }
+        if (cost < bestCost) {
+            bestCost = cost;
+            bestK = k;
+        }
+    }
+    return rotateIndexedLoop(positions, indices, bestK);
+}
+
+/** Remove consecutive duplicate indices from a closed boundary loop. */
+function dedupeConsecutiveLoopIndices(
+    positions: Vector3[],
+    indices: number[],
+): { positions: Vector3[]; indices: number[] } {
+    if (positions.length !== indices.length) {
+        throw new Error(
+            `dedupeConsecutiveLoopIndices: length mismatch positions=${positions.length} indices=${indices.length}`,
+        );
+    }
+    const outPos: Vector3[] = [];
+    const outIdx: number[] = [];
+    for (let i = 0; i < positions.length; i++) {
+        const idx = indices[i]!;
+        if (outIdx.length > 0 && outIdx[outIdx.length - 1] === idx) continue;
+        outPos.push(positions[i]!.clone());
+        outIdx.push(idx);
+    }
+    if (outIdx.length >= 2 && outIdx[0] === outIdx[outIdx.length - 1]) {
+        outPos.pop();
+        outIdx.pop();
+    }
+    return { positions: outPos, indices: outIdx };
+}
+
+/** Rotate a mismatched bottom loop so its start best aligns with the reference top loop. */
+function alignIndexedLoopStartByArcLength(
+    reference: Vector3[],
+    positions: Vector3[],
+    indices: number[],
+): { positions: Vector3[]; indices: number[] } {
+    if (reference.length === 0 || positions.length === 0) {
+        return { positions: positions.map((p) => p.clone()), indices: [...indices] };
+    }
+    const ref0 = reference[0]!;
+    let bestK = 0;
+    let bestD2 = Number.POSITIVE_INFINITY;
+    for (let k = 0; k < positions.length; k++) {
+        const d2 = ref0.distanceToSquared(positions[k]!);
+        if (d2 < bestD2) {
+            bestD2 = d2;
+            bestK = k;
+        }
+    }
+    return rotateIndexedLoop(positions, indices, bestK);
+}
+
+/** Normalized cumulative arc length at each vertex (length n+1, last entry = 1). */
+function buildNormalizedArcLengths(loop: Vector3[]): Float32Array {
+    const n = loop.length;
+    const cum = new Float32Array(n + 1);
+    for (let i = 0; i < n; i++) {
+        cum[i + 1] = cum[i]! + loop[i]!.distanceTo(loop[(i + 1) % n]!);
+    }
+    const total = cum[n]!;
+    if (total > 1e-12) {
+        for (let i = 0; i <= n; i++) cum[i] /= total;
+    }
+    return cum;
+}
+
+function triangleAreaMm2(a: Vector3, b: Vector3, c: Vector3): number {
+    const ab = new Vector3().subVectors(b, a);
+    const ac = new Vector3().subVectors(c, a);
+    return ab.cross(ac).length() * 0.5;
+}
+
+const DEGENERATE_TRIANGLE_AREA_MM2 = 1e-10;
+
+export interface ManifoldDetailedReport {
+    openEdges: number;
+    nonManifoldEdges: number;
+    euler: number;
+    totalFaces: number;
+}
+
+/**
+ * Edge→face diagnostic: counts boundary (1-face) and non-manifold (3+-face) edges.
+ * Exported for unit tests; production call sites are guarded.
+ */
+export function validateManifoldDetailed(geometry: BufferGeometry, label: string): ManifoldDetailedReport {
+    const index = geometry.index;
+    const pos = geometry.getAttribute("position");
+    if (!index || !pos) {
+        return { openEdges: 0, nonManifoldEdges: 0, euler: 0, totalFaces: 0 };
+    }
+
+    const edgeUse = new Map<string, number>();
+    const triCount = index.count / 3;
+    for (let t = 0; t < triCount; t++) {
+        const a = index.getX(t * 3);
+        const b = index.getX(t * 3 + 1);
+        const c = index.getX(t * 3 + 2);
+        for (const [p, q] of [
+            [a, b],
+            [b, c],
+            [c, a],
+        ] as [number, number][]) {
+            const lo = Math.min(p, q);
+            const hi = Math.max(p, q);
+            const k = `${lo}-${hi}`;
+            edgeUse.set(k, (edgeUse.get(k) ?? 0) + 1);
+        }
+    }
+
+    let openEdges = 0;
+    let nonManifoldEdges = 0;
+    for (const count of edgeUse.values()) {
+        if (count === 1) openEdges++;
+        else if (count > 2) nonManifoldEdges++;
+    }
+
+    const V = pos.count;
+    const E = edgeUse.size;
+    const F = triCount;
+    const euler = V - E + F;
+
+    const shouldLog =
+        typeof process !== "undefined"
+            ? process.env.NODE_ENV !== "production"
+            : typeof import.meta !== "undefined" && import.meta.env?.DEV;
+    if (shouldLog && typeof console !== "undefined") {
+        console.log(
+            `[MANIFOLD-DEBUG] ${label}: faces=${F} openEdges=${openEdges} nonManifoldEdges=${nonManifoldEdges} euler=${euler}`,
+        );
+    }
+
+    return { openEdges, nonManifoldEdges, euler, totalFaces: F };
+}
+
+/**
+ * Build a manifold-safe triangle strip between mismatched rim loops using a
+ * two-pointer arc-length walk. Each triangle uses consecutive rim vertices only —
+ * no rim edge is bisected, so no T-junction non-manifold edges are introduced.
+ */
+export function buildTwoPointerBridgeTriangles(
+    topPositions: Vector3[],
+    topIndices: number[],
+    bottomPositions: Vector3[],
+    bottomIndices: number[],
+    getPosition: (vertexIndex: number) => Vector3,
+    centroid: Vector3,
+): number[] {
+    const topLen = topPositions.length;
+    const botLen = bottomPositions.length;
+    if (topLen < 3 || botLen < 3) return [];
+    if (topIndices.length !== topLen || bottomIndices.length !== botLen) {
+        throw new Error(
+            `buildTwoPointerBridgeTriangles: index/position length mismatch top=${topLen}/${topIndices.length} bot=${botLen}/${bottomIndices.length}`,
+        );
+    }
+
+    const topArc = buildNormalizedArcLengths(topPositions);
+    const botArc = buildNormalizedArcLengths(bottomPositions);
+    const out: number[] = [];
+
+    const emit = (a: number, b: number, c: number) => {
+        if (a === b || b === c || a === c) return;
+        const va = getPosition(a);
+        const vb = getPosition(b);
+        const vc = getPosition(c);
+        if (triangleAreaMm2(va, vb, vc) < DEGENERATE_TRIANGLE_AREA_MM2) return;
+        const ab = new Vector3().subVectors(vb, va);
+        const ac = new Vector3().subVectors(vc, va);
+        const normal = new Vector3().crossVectors(ab, ac);
+        const center = new Vector3().add(va).add(vb).add(vc).multiplyScalar(1 / 3);
+        const outward = new Vector3().subVectors(center, centroid);
+        if (normal.dot(outward) < 0) out.push(a, c, b);
+        else out.push(a, b, c);
+    };
+
+    let i = 0;
+    let j = 0;
+    const guardMax = topLen + botLen + 4;
+
+    for (let guard = 0; guard < guardMax && (i < topLen || j < botLen); guard++) {
+        if (i >= topLen) {
+            j++;
+            if (j > botLen) break;
+            emit(topIndices[0]!, bottomIndices[j - 1]!, bottomIndices[j % botLen]!);
+        } else if (j >= botLen) {
+            i++;
+            if (i > topLen) break;
+            emit(topIndices[i - 1]!, bottomIndices[0]!, topIndices[i % topLen]!);
+        } else if (topArc[i + 1]! <= botArc[j + 1]! + 1e-9) {
+            const i1 = (i + 1) % topLen;
+            emit(topIndices[i]!, bottomIndices[j]!, topIndices[i1]!);
+            i++;
+        } else {
+            const j1 = (j + 1) % botLen;
+            emit(topIndices[i]!, bottomIndices[j]!, bottomIndices[j1]!);
+            j++;
+        }
+    }
+
+    return out;
 }
 
 /** Signed area of a loop projected onto the XZ plane (positive = CCW, negative = CW). */
@@ -888,10 +1128,19 @@ export interface BridgeStripResult {
 }
 
 /**
- * Generate a bridge triangle strip between corresponding top and bottom loops.
- * Inserts midpoint rows where local rim height >= RIM_HEIGHT_ADAPTIVE_THRESHOLD_MM.
+ * Generate a bridge triangle strip between top and bottom loops.
+ * When loop lengths differ, uses a manifold-safe two-pointer arc-length walk
+ * instead of resampling to equal counts (which creates T-junction non-manifold edges).
  */
-export function generateBridgeStrip(topLoop: Vector3[], bottomLoop: Vector3[]): BridgeStripResult {
+export function generateBridgeStrip(
+    topLoop: Vector3[],
+    bottomLoop: Vector3[],
+    options: { isMirrored?: boolean } = {},
+): BridgeStripResult {
+    if (topLoop.length !== bottomLoop.length) {
+        return generateBridgeStripTwoPointer(topLoop, bottomLoop, options.isMirrored === true);
+    }
+
     const n = topLoop.length;
     const positions: number[] = [];
     const indices: number[] = [];
@@ -969,6 +1218,54 @@ export function generateBridgeStrip(topLoop: Vector3[], bottomLoop: Vector3[]): 
         positions,
         indices,
         midPerSample,
+        topIdx,
+        bottomIdx,
+        triangleCount: indices.length / 3,
+    };
+}
+
+/** Standalone two-pointer bridge into a local vertex buffer (mismatched rim counts). */
+function generateBridgeStripTwoPointer(
+    topLoop: Vector3[],
+    bottomLoop: Vector3[],
+    _isMirrored: boolean,
+): BridgeStripResult {
+    const topLen = topLoop.length;
+    const botLen = bottomLoop.length;
+    const positions: number[] = [];
+    const topIdx: number[] = [];
+    const bottomIdx: number[] = [];
+
+    const pushV = (v: Vector3): number => {
+        const idx = positions.length / 3;
+        positions.push(v.x, v.y, v.z);
+        return idx;
+    };
+
+    for (let i = 0; i < topLen; i++) topIdx.push(pushV(topLoop[i]!));
+    for (let i = 0; i < botLen; i++) bottomIdx.push(pushV(bottomLoop[i]!));
+
+    const centroid = new Vector3();
+    for (const p of topLoop) centroid.add(p);
+    for (const p of bottomLoop) centroid.add(p);
+    centroid.multiplyScalar(1 / Math.max(1, topLen + botLen));
+
+    const getPosition = (vi: number) =>
+        new Vector3(positions[vi * 3]!, positions[vi * 3 + 1]!, positions[vi * 3 + 2]!);
+
+    const indices = buildTwoPointerBridgeTriangles(
+        topLoop,
+        topIdx,
+        bottomLoop,
+        bottomIdx,
+        getPosition,
+        centroid,
+    );
+
+    return {
+        positions,
+        indices,
+        midPerSample: new Array(Math.max(topLen, botLen)).fill(-1),
         topIdx,
         bottomIdx,
         triangleCount: indices.length / 3,
@@ -1981,9 +2278,61 @@ function capBoundaryLoopInPlace(geometry: BufferGeometry, loop: Vector3[]): bool
     }
 
     const newIdx = Array.from(index.array as ArrayLike<number>);
+    const edgeCount = buildEdgeUsage(geometry).edgeCount;
+
+    const capEdgeKey = (viA: number, viB: number): string => {
+        const pos = geometry.getAttribute("position");
+        const a = quantKey(pos.getX(viA), pos.getY(viA), pos.getZ(viA));
+        const b = quantKey(pos.getX(viB), pos.getY(viB), pos.getZ(viB));
+        return edgeKey(a, b);
+    };
+
+    const wouldCreateNonManifold = (ia: number, ib: number, ic: number): boolean => {
+        for (const [p, q] of [
+            [ia, ib],
+            [ib, ic],
+            [ic, ia],
+        ] as [number, number][]) {
+            if ((edgeCount.get(capEdgeKey(p, q)) ?? 0) >= 2) return true;
+        }
+        return false;
+    };
+
+    const addCapTriangle = (ia: number, ib: number, ic: number): void => {
+        newIdx.push(ia, ib, ic);
+        for (const [p, q] of [
+            [ia, ib],
+            [ib, ic],
+            [ic, ia],
+        ] as [number, number][]) {
+            const ek = capEdgeKey(p, q);
+            edgeCount.set(ek, (edgeCount.get(ek) ?? 0) + 1);
+        }
+    };
+
     for (const tri of triangulated) {
-        newIdx.push(loopIndices[tri[0]!]!, loopIndices[tri[1]!]!, loopIndices[tri[2]!]!);
+        const ia = loopIndices[tri[0]!]!;
+        const ib = loopIndices[tri[1]!]!;
+        const ic = loopIndices[tri[2]!]!;
+        const pos = geometry.getAttribute("position");
+        const a = new Vector3(pos.getX(ia), pos.getY(ia), pos.getZ(ia));
+        const b = new Vector3(pos.getX(ib), pos.getY(ib), pos.getZ(ib));
+        const c = new Vector3(pos.getX(ic), pos.getY(ic), pos.getZ(ic));
+        if (triangleAreaMm2(a, b, c) < DEGENERATE_TRIANGLE_AREA_MM2) {
+            if (typeof console !== "undefined") {
+                console.warn("[MESH-CLOSE] skipping degenerate slit cap triangle");
+            }
+            continue;
+        }
+        if (wouldCreateNonManifold(ia, ib, ic)) {
+            if (typeof console !== "undefined") {
+                console.warn("[MESH-CLOSE] skipping slit cap triangle that would create non-manifold edge");
+            }
+            continue;
+        }
+        addCapTriangle(ia, ib, ic);
     }
+    if (newIdx.length === index.count) return false;
     geometry.setIndex(newIdx);
     return true;
 }
@@ -2312,7 +2661,7 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
     );
 
     try {
-        const { positions: topRimPos } = extractOrderedBoundaryLoopWithIndices(topSub);
+        const topOrdered = extractOrderedBoundaryLoopWithIndices(topSub);
         const botRim = resolveBottomRim(
             parentWorking,
             botSub,
@@ -2320,35 +2669,101 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
             topVertexCount,
             bodyVertexCount,
         );
-        const botRimPos = botRim.positions;
 
-        if (topRimPos.length < 3 || botRimPos.length < 3) {
+        const dedupedTop = dedupeConsecutiveLoopIndices(topOrdered.positions, topOrdered.indices);
+        const dedupedBot = dedupeConsecutiveLoopIndices(botRim.positions, botRim.parentIndices);
+
+        let topPositions = dedupedTop.positions;
+        let botPositions = dedupedBot.positions;
+        let topIndices = dedupedTop.indices;
+        let botIndices = dedupedBot.indices;
+        const rimsEqualCount = topPositions.length === botPositions.length;
+
+        const shouldDiag =
+            typeof process !== "undefined"
+                ? process.env.NODE_ENV !== "production"
+                : typeof import.meta !== "undefined" && import.meta.env?.DEV;
+
+        if (shouldDiag) {
+            validateManifoldDetailed(topSub, "TOP-SUB");
+            validateManifoldDetailed(botSub, "BOT-SUB");
+            if (parentWorking.index) {
+                validateManifoldDetailed(parentWorking, "BOT-AFTER-SLIT-CAP");
+            }
+        }
+
+        const winding = alignLoopWindingXZ(topPositions, botPositions);
+        topPositions = winding.topLoop;
+        let botPositionsAligned = winding.windingAligned ? botPositions : winding.botLoop;
+
+        if (topPositions.length < 3 || botPositionsAligned.length < 3) {
             throw new Error(
-                `[MESH-CLOSE] rim loop too short: top=${topRimPos.length} bot=${botRimPos.length}`,
+                `[MESH-CLOSE] rim loop too short: top=${topPositions.length} bot=${botPositionsAligned.length}`,
             );
         }
 
         if (typeof console !== "undefined") {
-            console.log(`[MESH-CLOSE] topRim: ${topRimPos.length} verts`);
-            console.log(`[MESH-CLOSE] botRim: ${botRimPos.length} verts`);
+            console.log(`[MESH-CLOSE] topRim: ${topPositions.length} verts`);
+            console.log(`[MESH-CLOSE] botRim: ${botPositionsAligned.length} verts`);
         }
-
-        const targetN = Math.max(topRimPos.length, botRimPos.length);
-        let topLoop = resampleLoop(topRimPos, targetN);
-        let botLoop = resampleLoop(botRimPos, targetN);
-
-        const winding = alignLoopWindingXZ(topLoop, botLoop);
-        topLoop = winding.topLoop;
-        botLoop = alignLoopStartToReference(topLoop, winding.botLoop);
-
-        const snappedTop = snapLoopToBoundaryVertices(parentWorking, topLoop, 0, topVertexCount);
-        const topRimN = snappedTop.localIndices;
-        const botRimN = snapResampledToReferenceCycle(botLoop, botRim.positions, botRim.parentIndices);
-        const N = topRimN.length;
 
         const parentPos = parentWorking.getAttribute("position");
         const combinedPos = new Float32Array(parentPos.count * 3);
         combinedPos.set(parentPos.array as Float32Array, 0);
+
+        const getPosition = (vi: number) =>
+            new Vector3(combinedPos[vi * 3]!, combinedPos[vi * 3 + 1]!, combinedPos[vi * 3 + 2]!);
+
+        const centroid = new Vector3();
+        for (let vi = 0; vi < parentPos.count; vi++) centroid.add(getPosition(vi));
+        centroid.multiplyScalar(1 / Math.max(1, parentPos.count));
+
+        let bridgeFaces: number[];
+
+        if (rimsEqualCount) {
+            const targetN = Math.max(topPositions.length, botPositions.length);
+            let topLoop = resampleLoopToCount(topPositions, targetN);
+            let botLoop = resampleLoopToCount(botPositionsAligned, targetN);
+            const equalWinding = alignLoopWindingXZ(topLoop, botLoop);
+            topLoop = equalWinding.topLoop;
+            botLoop = alignLoopStartToReference(topLoop, equalWinding.botLoop);
+            const snappedTop = snapLoopToBoundaryVertices(parentWorking, topLoop, 0, topVertexCount);
+            const botRimN = snapResampledToReferenceCycle(botLoop, botRim.positions, botRim.parentIndices);
+            const n = snappedTop.localIndices.length;
+            bridgeFaces = [];
+            for (let i = 0; i < n; i++) {
+                const j = (i + 1) % n;
+                const tA = snappedTop.localIndices[i]!;
+                const tB = snappedTop.localIndices[j]!;
+                const bA = botRimN[i]!;
+                const bB = botRimN[j]!;
+                bridgeFaces.push(tA, bA, tB, tB, bA, bB);
+            }
+        } else {
+            if (!winding.windingAligned) {
+                botIndices = [...botIndices].reverse();
+            }
+            const alignedBot = alignIndexedLoopStartByArcLength(topPositions, botPositionsAligned, botIndices);
+            botPositionsAligned = alignedBot.positions;
+            botIndices = alignedBot.indices;
+
+            bridgeFaces = buildTwoPointerBridgeTriangles(
+                topPositions,
+                topIndices,
+                botPositionsAligned,
+                botIndices,
+                getPosition,
+                centroid,
+            );
+        }
+
+        if (shouldDiag) {
+            const bridgeOnly = new BufferGeometry();
+            bridgeOnly.setAttribute("position", new BufferAttribute(combinedPos.slice(), 3));
+            bridgeOnly.setIndex(bridgeFaces);
+            validateManifoldDetailed(bridgeOnly, "BRIDGE-STRIP");
+            bridgeOnly.dispose();
+        }
 
         const allFaces: number[] = [];
         const parentIdx = parentWorking.index;
@@ -2376,16 +2791,7 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
                 }
             }
         }
-
-        for (let i = 0; i < N; i++) {
-            const j = (i + 1) % N;
-            const tA = topRimN[i]!;
-            const tB = topRimN[j]!;
-            const bA = botRimN[i]!;
-            const bB = botRimN[j]!;
-            allFaces.push(tA, bA, tB);
-            allFaces.push(tB, bA, bB);
-        }
+        allFaces.push(...bridgeFaces);
 
         const merged = new BufferGeometry();
         merged.setAttribute("position", new BufferAttribute(combinedPos, 3));
@@ -2393,6 +2799,10 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
         merged.computeVertexNormals();
         merged.computeBoundingBox();
         merged.computeBoundingSphere();
+
+        if (shouldDiag) {
+            validateManifoldDetailed(merged, "FULL-MERGE");
+        }
 
         const openLoops = extractBoundaryLoops(merged);
         if (typeof console !== "undefined") {

@@ -31,7 +31,11 @@ export interface BuildExportStlOptions {
  * the design has no base or the base mesh cannot be loaded, so callers fall
  * back to parametric generation.
  */
-async function buildModifiedBaseGeometry(design: DesignState, side: Side): Promise<BufferGeometry | null> {
+async function buildModifiedBaseGeometry(
+    design: DesignState,
+    side: Side,
+    smoothingIterations = 2,
+): Promise<BufferGeometry | null> {
     const base = getDesignBase(design, side);
     if (!base) return null;
     const raw = await loadBaseGeometry(base);
@@ -43,7 +47,7 @@ async function buildModifiedBaseGeometry(design: DesignState, side: Side): Promi
                 : design.paired.rightThicknessMm
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, effThickness);
-        const result = getKernel().buildFromBase(raw, field, 2);
+        const result = getKernel().buildFromBase(raw, field, smoothingIterations);
         return result.geometry;
     } finally {
         raw.dispose();
@@ -137,7 +141,16 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
 
 /** Export STL bytes for the active design side. */
 export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const geometry = await buildExportGeometry(side);
+    const { design } = useDesignStore.getState();
+    const modifiedBase = await buildModifiedBaseGeometry(design, side, 0);
+    if (!modifiedBase) {
+        throw new Error(
+            "[EXPORT] No GLB base geometry available. " +
+                "Load a stock base before exporting. " +
+                "Parametric export is not supported.",
+        );
+    }
+    const geometry = modifiedBase;
     try {
         if (typeof console !== "undefined") {
             console.log("[EXPORT] closing GLB insole rims...");
