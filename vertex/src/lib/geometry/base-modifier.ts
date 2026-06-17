@@ -394,10 +394,14 @@ export function applyBaseModifiers(
     }
 
     // 2) Optional Laplacian relaxation of the displacement field (cached adjacency).
-    const adj = smoothingIterations > 0 ? getBaseAdjacency(base) : null;
+    // Multi-mesh GLB bases skip smoothing: diffusing wedge/posting deltas on the
+    // merged adjacency graph collapses the top rim loop and breaks closeGlbInsoleToSolid.
+    const effectiveSmoothing =
+        isMultiMesh && topVertexCount > 0 ? 0 : smoothingIterations;
+    const adj = effectiveSmoothing > 0 ? getBaseAdjacency(base) : null;
     if (adj) {
         let current = delta;
-        for (let it = 0; it < smoothingIterations; it++) {
+        for (let it = 0; it < effectiveSmoothing; it++) {
             const next = new Float32Array(count);
             for (let i = 0; i < count; i++) {
                 const neighbors = adj[i]!;
