@@ -5,6 +5,7 @@ import { BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { getDesignBase } from "@/lib/geometry/base-asset";
 import { type HeightFieldParams, heightAt, smoothstep } from "@/lib/geometry/height-field";
+import { closeGlbInsoleToSolid } from "@/lib/geometry/mesh-close";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
@@ -364,11 +365,17 @@ export function applyBaseModifiers(
     // back to a normalised-height weight when no bottom can be identified.
     const topFactors = classifyBaseTopFactors(base);
 
-    // For explicit multi-mesh bases ("Top" + "Bottom" sub-meshes from GLB), we
-    // want the *authored relative positions* (separation/alignment between the
-    // two layers) to be preserved exactly. Use uniform (w=1) delta for every
-    // vertex. The classification is still useful for other inferences.
-    const isMultiMesh = !!(base as any).userData?.isMultiMeshBase;
+    // For explicit multi-mesh bases ("Top" + "Bottom" sub-meshes from GLB),
+    // apply modifier delta only to the top vertex range [0 .. topVertexCount).
+    // Bottom vertices stay fixed (flat plantar surface); the perimeter gap is
+    // closed by closeGlbInsoleToSolid / applyBaseModifiersWithSidewall.
+    const baseUserData = (base as { userData?: { isMultiMeshBase?: boolean; topVertexCount?: number } })
+        .userData;
+    const isMultiMesh = !!baseUserData?.isMultiMeshBase;
+    const topVertexCount =
+        isMultiMesh && typeof baseUserData?.topVertexCount === "number" && baseUserData.topVertexCount > 0
+            ? baseUserData.topVertexCount
+            : 0;
 
     // Orient the footprint width so the medial arch lands on the anatomically
     // medial side for this foot (instead of assuming the bbox +width is medial).
@@ -408,21 +415,41 @@ export function applyBaseModifiers(
         delta.set(current);
     }
 
-    // 3) Apply the displacement along the thickness (up) axis, weighted by top
-    //    factor *except* for explicit multi-mesh bases (see flag set in
-    //    extractMergedGeometry). For Top+Bottom GLBs we use uniform delta so the
-    //    two layers keep their exact authored relative alignment/separation.
-    //
-    //    Note on wedges: wedge deltas (computed inside heightAt / correctionDeltaAt)
-    //    are part of the total `delta` array. Therefore they are subject to the
-    //    same `isMultiMeshBase` uniform rule. This means surface wedges are applied
-    //    to the entire imported template (both layers) when a multi-mesh base is
-    //    loaded — preserving the template's own Top/Bottom separation while still
-    //    delivering the wedge as an additive plantar surface feature.
+    // 3) Apply the displacement along the thickness (up) axis. Multi-mesh GLBs
+    //    use vertex-index separation (top range only). Single-mesh bases use
+    //    normal/height topFactor weighting so the bottom sheet stays anchored.
+    const originalBottomZ =
+        isMultiMesh && topVertexCount > 0
+            ? new Float32Array(count - topVertexCount)
+            : null;
+    if (originalBottomZ) {
+        for (let i = topVertexCount; i < count; i++) {
+            originalBottomZ[i - topVertexCount] = array[i * 3 + thickAxis]!;
+        }
+    }
+
     for (let i = 0; i < count; i++) {
         const t = array[i * 3 + thickAxis]!;
-        const w = isMultiMesh ? 1 : (topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize)));
+        let w: number;
+        if (isMultiMesh && topVertexCount > 0) {
+            w = i < topVertexCount ? 1 : 0;
+        } else {
+            w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
+        }
         array[i * 3 + thickAxis] = t + delta[i]! * w;
+    }
+
+    if (originalBottomZ && typeof console !== "undefined") {
+        let maxDrift = 0;
+        for (let i = topVertexCount; i < count; i++) {
+            const drift = Math.abs(array[i * 3 + thickAxis]! - originalBottomZ[i - topVertexCount]!);
+            if (drift > maxDrift) maxDrift = drift;
+        }
+        if (maxDrift > BASE_BOTTOM_DELTA_TOLERANCE_MM) {
+            console.warn(
+                `[WEDGE] Bottom mesh Z drift ${maxDrift.toFixed(3)}mm — HC-1 VIOLATION`,
+            );
+        }
     }
 
     pos.needsUpdate = true;
@@ -531,6 +558,35 @@ export function validateBaseResult(
         bottomStable,
         ok: bottomStable && normalsConsistent,
     };
+}
+
+/**
+ * Apply modifiers then close the top/bottom perimeter gap for multi-mesh GLB bases.
+ * Uses the post-wedge top rim with the existing two-pointer bridge walk.
+ */
+export function applyBaseModifiersWithSidewall(
+    base: BufferGeometry,
+    field: HeightFieldParams,
+    smoothingIterations = 0,
+): BufferGeometry {
+    const modified = applyBaseModifiers(base, field, smoothingIterations);
+    const userData = modified.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
+    if (!userData.isMultiMeshBase || !userData.topVertexCount) {
+        return modified;
+    }
+    try {
+        const closed = closeGlbInsoleToSolid(modified);
+        if (closed !== modified) {
+            modified.dispose();
+        }
+        return closed;
+    } catch (err) {
+        if (typeof console !== "undefined") {
+            const reason = err instanceof Error ? err.message : String(err);
+            console.warn(`[base-modifier] sidewall bridge failed: ${reason}`);
+        }
+        return modified;
+    }
 }
 
 /** Authoritative-tier result: modified base geometry + manifold/topology report. */

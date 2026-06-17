@@ -11,7 +11,7 @@ import {
     stockBaseNeedsServerResolution,
 } from "@/lib/geometry/base-asset";
 import { computeBaseBounds } from "@/lib/geometry/base-bounds";
-import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { applyBaseModifiersWithSidewall } from "@/lib/geometry/base-modifier";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
 import { isApiConfigured } from "@/lib/trpc";
@@ -173,7 +173,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         const thicknessMm = thicknessPreview ?? design.thicknessMm;
         const field = baseModifierField(design, side, thicknessMm);
         // Skip smoothing while dragging for responsiveness; relax once when idle.
-        const modified = applyBaseModifiers(raw, field, interacting ? 0 : 1);
+        const modified = applyBaseModifiersWithSidewall(raw, field, interacting ? 0 : 1);
         // Phase 3A: prefer the *live draft* trimline while a trimline edit session
         // is active for this side. This wires the deforming perimeter into the
         // rendered base mesh during drag (production editing requirement).
