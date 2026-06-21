@@ -115,6 +115,34 @@ function makeBase(opts: MakeBaseOptions = {}): BufferGeometry {
     return geometry;
 }
 
+/** GLB-style layout: [top sheet vertices][bottom sheet vertices] in one buffer. */
+function makeMultiMeshBase(opts: MakeBaseOptions = {}): BufferGeometry {
+    const topOnly = makeBase(opts);
+    const pos = topOnly.getAttribute("position")!;
+    const topCount = pos.count;
+    const topPositions = new Float32Array(pos.array as Float32Array);
+
+    const bottomPositions = new Float32Array(topCount * 3);
+    const thickAxis = opts.thickAxis ?? 2;
+    for (let i = 0; i < topCount; i++) {
+        bottomPositions[i * 3] = topPositions[i * 3]!;
+        bottomPositions[i * 3 + 1] = topPositions[i * 3 + 1]!;
+        bottomPositions[i * 3 + 2] = topPositions[i * 3 + 2]!;
+        bottomPositions[i * 3 + thickAxis] = 0;
+    }
+
+    const combined = new Float32Array(topCount * 6);
+    combined.set(topPositions, 0);
+    combined.set(bottomPositions, topCount * 3);
+
+    const geometry = new BufferGeometry();
+    geometry.setAttribute("position", new BufferAttribute(combined, 3));
+    geometry.userData = { isMultiMeshBase: true, topVertexCount: topCount };
+    geometry.computeVertexNormals();
+    topOnly.dispose();
+    return geometry;
+}
+
 function corrections(): SideCorrections {
     return {
         forefootPostingDeg: 0,
@@ -308,7 +336,7 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         expect(getRearfootFactor(0.5)).toBeLessThan(0.5);
     });
 
-    test("wedge delta flows through heightAt and applyBaseModifiers (single-mesh weighted, multi-mesh uniform)", () => {
+    test("wedge delta flows through heightAt and applyBaseModifiers (single-mesh weighted, multi-mesh top-only)", () => {
         const w = { side: "medial" as const, value: 5, unit: "mm" as const };
         const p = baseParams({ 
             corrections: { 
@@ -334,13 +362,19 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         // Bottom (low factor) movement small even with wedge (weighted)
         expect(metricsSingle.maxBottomDeltaMm).toBeLessThan(2); // wedge affects but weighted for single
 
-        // Multi-mesh: set flag, wedge delta applied uniformly (full move on "bottom" layer too, preserving alignment)
-        const multiBase = makeBase();
-        (multiBase as any).userData = { isMultiMeshBase: true };
+        // Multi-mesh: bottom layer must stay fixed (HC-1); wedge delta on top only
+        const multiBase = makeMultiMeshBase();
         const modifiedMulti = applyBaseModifiers(multiBase, p, 0);
-        // In multi, bottom layer gets full delta (including wedge), so maxBottom larger
-        const metricsMulti = validateBaseResult(multiBase, modifiedMulti);
-        expect(metricsMulti.maxBottomDeltaMm).toBeGreaterThan(3); // full wedge applied
+        const topN = (multiBase.userData as { topVertexCount: number }).topVertexCount;
+        const modArr = modifiedMulti.getAttribute("position")!.array as Float32Array;
+        const baseArr = multiBase.getAttribute("position")!.array as Float32Array;
+        let maxBottomDrift = 0;
+        for (let i = topN; i < modArr.length / 3; i++) {
+            maxBottomDrift = Math.max(maxBottomDrift, Math.abs(modArr[i * 3 + 2]! - baseArr[i * 3 + 2]!));
+        }
+        expect(maxBottomDrift).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM);
+        multiBase.dispose();
+        modifiedMulti.dispose();
     });
 });
 
