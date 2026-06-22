@@ -41,9 +41,11 @@ export function SliderField({
 
     const handleCommit = (v: number) => {
         const committed = clamp(v);
+        console.log("[HEELCUP-DIAG] slider commit start", { ts: performance.now(), committed });
         // Commit design state before clearing the interacting flag so the idle
         // geometry rebuild reads the final slider value (not a stale preview).
         onChange(committed);
+        console.log("[HEELCUP-DIAG] slider interacting false next", { ts: performance.now(), committed });
         setInteracting(false);
     };
 

@@ -502,6 +502,17 @@ export const useDesignStore = create<DesignStore>()(
                     const { constrained: safeRight } = constrainSideCorrections(corrections.right, t1);
                     const finalLeft = safeLeft;
                     const finalRight = corrections.linked ? safeLeft : safeRight;
+                    if ("heelCupDepthMm" in patch || "heelCupWidthMm" in patch) {
+                        console.log("[HEELCUP-DIAG] updateCorrection commit", {
+                            ts: performance.now(),
+                            side,
+                            patch,
+                            appliedLeftDepth: finalLeft.heelCupDepthMm,
+                            appliedLeftWidth: finalLeft.heelCupWidthMm,
+                            appliedRightDepth: finalRight.heelCupDepthMm,
+                            appliedRightWidth: finalRight.heelCupWidthMm,
+                        });
+                    }
                     return {
                         design: {
                             ...s.design,

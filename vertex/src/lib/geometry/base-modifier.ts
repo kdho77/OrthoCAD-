@@ -4,7 +4,13 @@
 import { BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { getDesignBase } from "@/lib/geometry/base-asset";
-import { type HeightFieldParams, heelCupWidthLateralOffsetMm, heightAt, smoothstep } from "@/lib/geometry/height-field";
+import {
+    type HeightFieldParams,
+    heelCupSideWallWeight,
+    heelCupWidthLateralOffsetMm,
+    heightAt,
+    smoothstep,
+} from "@/lib/geometry/height-field";
 import { closeGlbInsoleToSolid } from "@/lib/geometry/mesh-close";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import type { DesignState, Side, SideCorrections } from "@/types";
@@ -400,6 +406,87 @@ export function applyBaseModifiers(
         // Depth and other corrections stay on the thickness axis; width is lateral-only.
         delta[i] = correctionDeltaAt(u, vSigned, fieldWithoutWidth, neutral);
         widthLateral[i] = heelCupWidthLateralOffsetMm(u, vSigned, heelCupWidthMm);
+    }
+
+    // [HEELCUP-DIAG] read-only width instrumentation (throwaway; remove after Phase 1B)
+    if (heelCupWidthMm > 0 && typeof console !== "undefined") {
+        const topN = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+        const widthAdj = getBaseAdjacency(base);
+        const zoneBoundaryIndices: number[] = [];
+        const seamIndices = new Set<number>();
+        if (isMultiMesh && topVertexCount > 0) {
+            seamIndices.add(topVertexCount - 1);
+            seamIndices.add(topVertexCount);
+        }
+        let maxJump = 0;
+        let maxJumpEdge: [number, number] = [-1, -1];
+        for (let i = 0; i < topN; i++) {
+            const lenCoord = array[i * 3 + lengthAxis]!;
+            const widCoord = array[i * 3 + widthAxis]!;
+            const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+            const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
+            const zone = heelCupSideWallWeight(u, vSigned, heelCupWidthMm);
+            if (zone > 0.05 && zone < 0.95) {
+                zoneBoundaryIndices.push(i);
+            }
+            const neighbors = widthAdj?.[i];
+            if (neighbors) {
+                for (const n of neighbors) {
+                    if (n >= topN) continue;
+                    const jump = Math.abs(widthLateral[i]! - widthLateral[n]!);
+                    if (jump > maxJump) {
+                        maxJump = jump;
+                        maxJumpEdge = [i, n];
+                    }
+                }
+            }
+        }
+        const overlap = zoneBoundaryIndices.filter((idx) => seamIndices.has(idx));
+        const seamOnly = [...seamIndices].filter((idx) => !zoneBoundaryIndices.includes(idx));
+        const zoneOnly = zoneBoundaryIndices.filter((idx) => !seamIndices.has(idx));
+        console.log("[HEELCUP-DIAG] width zone vs seam", {
+            heelCupWidthMm,
+            isMultiMesh,
+            topVertexCount,
+            zoneBoundaryCount: zoneBoundaryIndices.length,
+            seamIndexList: [...seamIndices],
+            overlapCount: overlap.length,
+            overlapIndices: overlap.slice(0, 20),
+            seamOnlyIndices: seamOnly,
+            zoneOnlyCount: zoneOnly.length,
+            spatialCoincidence:
+                overlap.length > 0
+                    ? "PARTIAL_OR_FULL — zone-boundary vertices share indices with top/bottom seam"
+                    : "DISTINCT — zone boundary and seam gate are separate vertex regions",
+            maxLateralJumpMm: maxJump,
+            maxLateralJumpEdge: maxJumpEdge,
+        });
+        for (const i of zoneBoundaryIndices.slice(0, 8)) {
+            const lenCoord = array[i * 3 + lengthAxis]!;
+            const widCoord = array[i * 3 + widthAxis]!;
+            const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+            const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
+            console.log("[HEELCUP-DIAG] zone boundary vertex", {
+                i,
+                u: u.toFixed(4),
+                vSigned: vSigned.toFixed(4),
+                zone: heelCupSideWallWeight(u, vSigned, heelCupWidthMm).toFixed(4),
+                widthLateral: widthLateral[i]!.toFixed(4),
+                atSeam: seamIndices.has(i),
+            });
+        }
+        for (const i of [...seamIndices]) {
+            if (i < 0 || i >= count) continue;
+            const wGate = isMultiMesh && topVertexCount > 0 ? (i < topVertexCount ? 1 : 0) : 1;
+            console.log("[HEELCUP-DIAG] top/bottom seam vertex", {
+                i,
+                w: wGate,
+                widthLateral: widthLateral[i]!.toFixed(4),
+                appliedLateral: (widthLateral[i]! * wGate).toFixed(4),
+                thickDelta: delta[i]!.toFixed(4),
+                inZoneBoundary: zoneBoundaryIndices.includes(i),
+            });
+        }
     }
 
     // 2) Optional Laplacian relaxation of the displacement field (cached adjacency).

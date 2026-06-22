@@ -49,14 +49,24 @@ export const usePerformanceStore = create<PerformanceStore>((set) => ({
     setShowPerformanceMonitor: (showPerformanceMonitor) => set({ showPerformanceMonitor }),
 
     setCorrectionPreview: (side, patch) =>
-        set((s) => ({
-            correctionPreview: {
-                ...s.correctionPreview,
-                [side]: { ...s.correctionPreview[side], ...patch },
-            },
-        })),
+        set((s) => {
+            console.log("[HEELCUP-DIAG] setCorrectionPreview", {
+                ts: performance.now(),
+                side,
+                patch,
+            });
+            return {
+                correctionPreview: {
+                    ...s.correctionPreview,
+                    [side]: { ...s.correctionPreview[side], ...patch },
+                },
+            };
+        }),
 
-    clearCorrectionPreview: () => set({ correctionPreview: {}, thicknessPreview: null }),
+    clearCorrectionPreview: () => {
+        console.log("[HEELCUP-DIAG] clearCorrectionPreview", { ts: performance.now() });
+        set({ correctionPreview: {}, thicknessPreview: null });
+    },
 
     setThicknessPreview: (thicknessPreview) => set({ thicknessPreview }),
 
