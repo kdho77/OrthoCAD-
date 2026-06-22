@@ -129,7 +129,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const archAcross = medialBlend * (0.45 + 0.55 * smoothstep(0.05, 0.9, av));
     shaped += (c.archHeightMm + c.archFillMm) * arch * archAcross;
 
-    const heel = bump(u, 0.1, 0.18); // longitudinal heel region (used by cup + skives)
+    const heel = heelCupHeelEnvelope(u);
 
     // --- Heel cup (U-shaped 3D cup) -------------------------------------------
     // Redesigned to produce a true U-shaped raised rim around the heel:
@@ -160,14 +160,13 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
 
     // Medial + lateral walls (the legs of the U) — raised on the current edges
     // within the heel region (main U contribution from depth).
-    // Heel cup *width* tightens the cup: a higher value starts the side walls
-    // further inboard (hugging the heel) and adds an independent wall raise, so
-    // the breadth control has a visible effect even with zero cup depth.
-    const widthFrac = Math.max(0, Math.min(1, c.heelCupWidthMm / 10));
-    const wallInner = 0.55 - 0.3 * widthFrac; // walls move toward the center as width grows
-    const sideWall = smoothstep(wallInner, 0.92, av); // 0 near center line → 1 at edges
-    shaped += c.heelCupDepthMm * heel * sideWall * 0.65;
-    shaped += c.heelCupWidthMm * heel * sideWall * 0.35;
+    // Heel cup *width* tightens the parametric cup envelope: a higher value starts
+    // the side walls further inboard (hugging the heel) and adds an independent
+    // wall raise. On loaded bases, width is applied as a pure medial-lateral
+    // offset in `applyBaseModifiers` (see heelCupWidthLateralOffsetMm).
+    const sideWall = heelCupSideWallWeight(u, vSigned, c.heelCupWidthMm);
+    shaped += c.heelCupDepthMm * sideWall * 0.65;
+    shaped += c.heelCupWidthMm * sideWall * 0.35;
 
     // Posterior wall (the bottom of the U / back lip) — raised at the very heel end
     // (low u), wrapping across the width to connect the side walls and enclose the back.
@@ -244,6 +243,35 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     }
 
     return h;
+}
+
+/** Longitudinal heel-cup envelope (1 at rearfoot, 0 toward midfoot). */
+export function heelCupHeelEnvelope(u: number): number {
+    return bump(u, 0.1, 0.18);
+}
+
+/**
+ * Shared medial/lateral heel-cup wall mask used by depth and width.
+ * Reused by the base modifier for lateral width displacement (HC-1 top mesh only).
+ */
+export function heelCupSideWallWeight(u: number, vSigned: number, heelCupWidthMm: number): number {
+    const av = Math.abs(vSigned);
+    const widthFrac = Math.max(0, Math.min(1, heelCupWidthMm / 10));
+    const wallInner = 0.55 - 0.3 * widthFrac;
+    return heelCupHeelEnvelope(u) * smoothstep(wallInner, 0.92, av);
+}
+
+/**
+ * Signed medial-lateral offset (mm) for heel cup width on loaded bases.
+ * Centerline vertices (vSigned ≈ 0) move 0; wall vertices move proportionally
+ * to their distance from center, scaled by `heelCupWidthMm`.
+ */
+export function heelCupWidthLateralOffsetMm(u: number, vSigned: number, heelCupWidthMm: number): number {
+    if (heelCupWidthMm <= 0) return 0;
+    const av = Math.abs(vSigned);
+    const zone = heelCupSideWallWeight(u, vSigned, heelCupWidthMm);
+    // Positive width pushes walls outward along the signed width axis.
+    return vSigned * av * zone * heelCupWidthMm * 0.12;
 }
 
 export interface GridPoint {

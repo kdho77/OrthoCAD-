@@ -418,3 +418,80 @@ describe("resolveDesignMode", () => {
         });
     });
 });
+
+describe("heel cup width and depth (base modifier)", () => {
+    test("width moves heel walls laterally without thickness-axis drift on bottom mesh", () => {
+        const multiBase = makeMultiMeshBase();
+        const topN = (multiBase.userData as { topVertexCount: number }).topVertexCount;
+        const baseArr = multiBase.getAttribute("position")!.array as Float32Array;
+
+        const narrow = applyBaseModifiers(
+            multiBase,
+            {
+                ...field("right"),
+                corrections: { ...corrections(), heelCupWidthMm: 0 },
+            },
+            0,
+        );
+        const wide = applyBaseModifiers(
+            multiBase,
+            {
+                ...field("right"),
+                corrections: { ...corrections(), heelCupWidthMm: 8 },
+            },
+            0,
+        );
+
+        const narrowArr = narrow.getAttribute("position")!.array as Float32Array;
+        const wideArr = wide.getAttribute("position")!.array as Float32Array;
+
+        let maxWidthSpread = 0;
+        let maxBottomDrift = 0;
+        for (let i = 0; i < topN; i++) {
+            const spread = Math.abs(wideArr[i * 3]! - narrowArr[i * 3]!);
+            maxWidthSpread = Math.max(maxWidthSpread, spread);
+        }
+        for (let i = topN; i < wideArr.length / 3; i++) {
+            maxBottomDrift = Math.max(maxBottomDrift, Math.abs(wideArr[i * 3 + 2]! - baseArr[i * 3 + 2]!));
+        }
+
+        expect(maxWidthSpread).toBeGreaterThan(0.2);
+        expect(maxBottomDrift).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM);
+
+        narrow.dispose();
+        wide.dispose();
+        multiBase.dispose();
+    });
+
+    test("depth delta persists with smoothing enabled (release-time rebuild)", () => {
+        const base = makeBase({ lengthAxis: 1, widthAxis: 0, thickAxis: 2 });
+        const noCup = {
+            ...field("right"),
+            corrections: { ...corrections(), heelCupDepthMm: 0, heelCupHeightMm: 0, heelCupWidthMm: 0 },
+        };
+        const deepField = {
+            ...field("right"),
+            corrections: { ...corrections(), heelCupDepthMm: 6, heelCupHeightMm: 0, heelCupWidthMm: 0 },
+        };
+
+        const preview = applyBaseModifiers(base, deepField, 0);
+        const released = applyBaseModifiers(base, deepField, 1);
+        const baseline = applyBaseModifiers(base, noCup, 1);
+
+        const previewMetrics = validateBaseResult(base, preview);
+        const releasedMetrics = validateBaseResult(base, released);
+        const baselineMetrics = validateBaseResult(base, baseline);
+
+        const previewLift = previewMetrics.avgTopLiftMm - baselineMetrics.avgTopLiftMm;
+        const releasedLift = releasedMetrics.avgTopLiftMm - baselineMetrics.avgTopLiftMm;
+        expect(previewLift).toBeGreaterThan(0.1);
+        expect(releasedLift).toBeGreaterThan(0.05);
+        expect(releasedLift).toBeGreaterThan(previewLift * 0.25);
+        expect(releasedMetrics.maxBottomDeltaMm).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM);
+
+        preview.dispose();
+        released.dispose();
+        baseline.dispose();
+        base.dispose();
+    });
+});

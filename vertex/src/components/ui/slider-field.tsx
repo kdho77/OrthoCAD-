@@ -40,8 +40,11 @@ export function SliderField({
     };
 
     const handleCommit = (v: number) => {
+        const committed = clamp(v);
+        // Commit design state before clearing the interacting flag so the idle
+        // geometry rebuild reads the final slider value (not a stale preview).
+        onChange(committed);
         setInteracting(false);
-        onChange(clamp(v));
     };
 
     const onPointerDown = () => setInteracting(true, "slider");

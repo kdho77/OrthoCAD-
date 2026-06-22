@@ -4,7 +4,7 @@
 import { BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { getDesignBase } from "@/lib/geometry/base-asset";
-import { type HeightFieldParams, heightAt, smoothstep } from "@/lib/geometry/height-field";
+import { type HeightFieldParams, heelCupWidthLateralOffsetMm, heightAt, smoothstep } from "@/lib/geometry/height-field";
 import { closeGlbInsoleToSolid } from "@/lib/geometry/mesh-close";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import type { DesignState, Side, SideCorrections } from "@/types";
@@ -358,6 +358,11 @@ export function applyBaseModifiers(
     const thickSize = size[thickAxis];
 
     const neutral = neutralField(field);
+    const corrections = field.corrections;
+    const fieldWithoutWidth: HeightFieldParams = {
+        ...field,
+        corrections: { ...corrections, heelCupWidthMm: 0 },
+    };
     const array = pos.array as Float32Array;
     const count = pos.count;
 
@@ -385,12 +390,16 @@ export function applyBaseModifiers(
     // 1) Sample the pure modifier delta at every vertex's footprint (u, vSigned),
     //    mapping length/width from the detected base axes (orientation-robust).
     const delta = new Float32Array(count);
+    const widthLateral = new Float32Array(count);
+    const heelCupWidthMm = corrections.heelCupWidthMm;
     for (let i = 0; i < count; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
-        delta[i] = correctionDeltaAt(u, vSigned, field, neutral);
+        // Depth and other corrections stay on the thickness axis; width is lateral-only.
+        delta[i] = correctionDeltaAt(u, vSigned, fieldWithoutWidth, neutral);
+        widthLateral[i] = heelCupWidthLateralOffsetMm(u, vSigned, heelCupWidthMm);
     }
 
     // 2) Optional Laplacian relaxation of the displacement field (cached adjacency).
@@ -434,6 +443,7 @@ export function applyBaseModifiers(
 
     for (let i = 0; i < count; i++) {
         const t = array[i * 3 + thickAxis]!;
+        const wCoord = array[i * 3 + widthAxis]!;
         let w: number;
         if (isMultiMesh && topVertexCount > 0) {
             w = i < topVertexCount ? 1 : 0;
@@ -441,6 +451,7 @@ export function applyBaseModifiers(
             w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
         }
         array[i * 3 + thickAxis] = t + delta[i]! * w;
+        array[i * 3 + widthAxis] = wCoord + widthLateral[i]! * w;
     }
 
     if (originalBottomZ && typeof console !== "undefined") {
