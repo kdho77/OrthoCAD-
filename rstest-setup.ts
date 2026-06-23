@@ -22,3 +22,20 @@ if (typeof (Promise as any).try !== "function") {
     (Promise as any).try = (fn: (...args: any[]) => any, ...args: any[]) =>
         new Promise((resolve) => resolve(fn(...args)));
 }
+
+// three.js GLTFLoader progress callbacks use ProgressEvent. Node 22 exposes fetch
+// but not ProgressEvent; happy-dom may also omit it. Tests that load GLBs headlessly
+// need this shim (production/browser runtimes have the native global).
+if (typeof g.ProgressEvent === "undefined") {
+    g.ProgressEvent = class ProgressEvent extends Event {
+        lengthComputable: boolean;
+        loaded: number;
+        total: number;
+        constructor(type: string, init?: { lengthComputable?: boolean; loaded?: number; total?: number }) {
+            super(type);
+            this.lengthComputable = init?.lengthComputable ?? false;
+            this.loaded = init?.loaded ?? 0;
+            this.total = init?.total ?? 0;
+        }
+    };
+}

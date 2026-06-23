@@ -13,6 +13,7 @@ import {
     validateBaseResult,
 } from "./base-modifier";
 import { constrainSideCorrections } from "./clinical-constraints";
+import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import { defaultDesign } from "@/stores/design-store";
 import type { HeightFieldParams } from "./height-field";
 import { heightAt } from "./height-field";
@@ -531,5 +532,53 @@ describe("heel cup width and depth (base modifier)", () => {
         const { constrained } = constrainSideCorrections(draft, thicknessMm);
         expect(constrained.heelCupDepthMm).toBeLessThan(6);
         expect(constrained.heelCupDepthMm).toBeGreaterThan(0);
+    });
+
+    const STOCK_DEFAULT_GLB_URL =
+        "https://wstneucimlemaokoyjwh.supabase.co/storage/v1/object/public/stock-bases/Templates/Default.glb";
+
+    test("stock Default.glb zone-band jump matches Phase 1B baseline", async () => {
+        let buf: ArrayBuffer;
+        try {
+            const res = await fetch(STOCK_DEFAULT_GLB_URL, { signal: AbortSignal.timeout(30_000) });
+            if (!res.ok) {
+                test.skip(`stock GLB fetch unavailable (${res.status})`);
+                return;
+            }
+            buf = await res.arrayBuffer();
+        } catch {
+            test.skip("stock GLB fetch unavailable (network or timeout)");
+            return;
+        }
+
+        const group = await loadGlbFromBuffer(buf);
+        const merged = extractMergedGeometry(group, { sealBottomSlits: false });
+        if (!merged) {
+            group.traverse((o) => {
+                if (o.geometry) o.geometry.dispose();
+            });
+            throw new Error("extractMergedGeometry returned null for stock Default.glb");
+        }
+
+        const geo = merged.geometry;
+        const params = {
+            ...field("right"),
+            corrections: { ...corrections(), heelCupWidthMm: 8 },
+        };
+
+        const unsmoothed = measureHeelCupWidthSmoothing(geo, params, 0);
+        const smoothed = measureHeelCupWidthSmoothing(geo, params, 1);
+
+        expect((geo.userData as { topVertexCount?: number }).topVertexCount).toBe(42134);
+        expect(unsmoothed.zoneBandMaxEdgeJumpMm).toBeGreaterThan(0.065);
+        expect(unsmoothed.zoneBandMaxEdgeJumpMm).toBeLessThan(0.085);
+        expect(smoothed.zoneBandMaxEdgeJumpMm).toBeLessThan(0.05);
+        expect(smoothed.zoneBandMaxEdgeJumpMm).toBeLessThan(unsmoothed.zoneBandMaxEdgeJumpMm);
+        expect(smoothed.clampFiredCount).toBe(0);
+
+        geo.dispose();
+        group.traverse((o) => {
+            if (o.geometry) o.geometry.dispose();
+        });
     });
 });

@@ -23,7 +23,7 @@ if (typeof globalThis.ProgressEvent === "undefined") {
 }
 
 async function main() {
-    const { loadGlbFromBuffer, reorientToFootprintFrame } = await import(
+    const { loadGlbFromBuffer, extractMergedGeometry } = await import(
         pathToFileURL(resolve(__dirname, "../src/lib/library/loaders.ts")).href
     );
     const { measureHeelCupWidthSmoothing } = await import(
@@ -34,7 +34,9 @@ async function main() {
     if (!res.ok) throw new Error(`GLB fetch failed: ${res.status}`);
     const buf = await res.arrayBuffer();
     const group = await loadGlbFromBuffer(buf);
-    const geo = reorientToFootprintFrame(group);
+    const merged = extractMergedGeometry(group, { sealBottomSlits: false });
+    if (!merged) throw new Error("extractMergedGeometry returned null");
+    const geo = merged.geometry;
     group.traverse((o) => {
         if (o.geometry) o.geometry.dispose();
     });
