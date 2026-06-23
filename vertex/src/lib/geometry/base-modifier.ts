@@ -11,6 +11,7 @@ import {
     heightAt,
     smoothstep,
 } from "@/lib/geometry/height-field";
+import { SMOOTH_INWARD_LIMIT_MM } from "@/lib/geometry/mesh-close";
 import { closeGlbInsoleToSolid } from "@/lib/geometry/mesh-close";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import type { DesignState, Side, SideCorrections } from "@/types";
@@ -111,6 +112,226 @@ function getBaseAdjacency(base: BufferGeometry): number[][] | null {
     const adj = base.index && pos ? buildAdjacency(base.index.array, pos.count) : null;
     baseAdjacencyCache.set(base, adj);
     return adj;
+}
+
+/** Half-blend Laplacian relaxation shared by vertical delta and width-lateral fields. */
+function laplacianRelaxField(
+    field: Float32Array,
+    adj: number[][],
+    iterations: number,
+    options?: { vertexCount?: number; allowNeighbor?: (i: number, n: number) => boolean },
+): void {
+    const vertexCount = options?.vertexCount ?? field.length;
+    const allowNeighbor = options?.allowNeighbor ?? (() => true);
+    let current = field;
+    for (let it = 0; it < iterations; it++) {
+        const next = new Float32Array(field.length);
+        for (let i = 0; i < vertexCount; i++) {
+            const neighbors = adj[i]!;
+            if (neighbors.length === 0) {
+                next[i] = current[i]!;
+                continue;
+            }
+            let sum = 0;
+            let nCount = 0;
+            for (const n of neighbors) {
+                if (!allowNeighbor(i, n)) continue;
+                sum += current[n]!;
+                nCount++;
+            }
+            if (nCount === 0) {
+                next[i] = current[i]!;
+                continue;
+            }
+            next[i] = current[i]! * 0.5 + (sum / nCount) * 0.5;
+        }
+        for (let i = vertexCount; i < field.length; i++) {
+            next[i] = current[i]!;
+        }
+        current = next;
+    }
+    field.set(current);
+}
+
+/** Limit per-vertex smoothing deviation; returns count of vertices that were clamped. */
+function clampFieldDeviation(
+    smoothed: Float32Array,
+    original: Float32Array,
+    limitMm: number,
+    count: number,
+): number {
+    let clamped = 0;
+    for (let i = 0; i < count; i++) {
+        const d = smoothed[i]! - original[i]!;
+        const clampedD = Math.max(-limitMm, Math.min(limitMm, d));
+        if (Math.abs(clampedD - d) > 1e-9) clamped++;
+        smoothed[i] = original[i]! + clampedD;
+    }
+    return clamped;
+}
+
+function maxEdgeJumpInField(
+    field: Float32Array,
+    adj: number[][],
+    includeVertex: (i: number) => boolean,
+): number {
+    let maxJump = 0;
+    for (let i = 0; i < adj.length; i++) {
+        if (!includeVertex(i)) continue;
+        for (const n of adj[i]!) {
+            if (n <= i || !includeVertex(n)) continue;
+            maxJump = Math.max(maxJump, Math.abs(field[i]! - field[n]!));
+        }
+    }
+    return maxJump;
+}
+
+function smoothWidthLateralField(
+    widthLateral: Float32Array,
+    base: BufferGeometry,
+    isMultiMesh: boolean,
+    topVertexCount: number,
+    vertexCount: number,
+    widthSmoothIters: number,
+    heelCupWidthMm: number,
+): number {
+    if (heelCupWidthMm <= 0 || widthSmoothIters <= 0) return 0;
+    const widthAdj = getBaseAdjacency(base);
+    if (!widthAdj) return 0;
+    const topN = isMultiMesh && topVertexCount > 0 ? topVertexCount : vertexCount;
+    const widthOriginal = widthLateral.slice(0, topN);
+    const allowNeighbor = (i: number, n: number) =>
+        isMultiMesh && topVertexCount > 0 ? i < topVertexCount && n < topVertexCount : true;
+    laplacianRelaxField(widthLateral, widthAdj, widthSmoothIters, {
+        vertexCount: topN,
+        allowNeighbor,
+    });
+    return clampFieldDeviation(widthLateral, widthOriginal, SMOOTH_INWARD_LIMIT_MM, topN);
+}
+
+/** Verification metrics for heel-cup width Laplacian smoothing (tests / diagnostics). */
+export interface HeelCupWidthSmoothingReport {
+    zoneBandMaxEdgeJumpMm: number;
+    topVertexBoundaryMaxEdgeJumpMm: number;
+    transitionBandVertexCount: number;
+    clampFiredCount: number;
+}
+
+/**
+ * Sample and smooth the width-lateral field like `applyBaseModifiers`, then report
+ * edge-jump metrics in the zone transition band and near the multi-mesh top seam.
+ */
+export function measureHeelCupWidthSmoothing(
+    base: BufferGeometry,
+    field: HeightFieldParams,
+    smoothingIterations: number,
+): HeelCupWidthSmoothingReport {
+    const pos = base.getAttribute("position");
+    if (!pos) {
+        return {
+            zoneBandMaxEdgeJumpMm: 0,
+            topVertexBoundaryMaxEdgeJumpMm: 0,
+            transitionBandVertexCount: 0,
+            clampFiredCount: 0,
+        };
+    }
+
+    base.computeBoundingBox();
+    const box = base.boundingBox;
+    if (!box) {
+        return {
+            zoneBandMaxEdgeJumpMm: 0,
+            topVertexBoundaryMaxEdgeJumpMm: 0,
+            transitionBandVertexCount: 0,
+            clampFiredCount: 0,
+        };
+    }
+
+    const min = [box.min.x, box.min.y, box.min.z] as const;
+    const size = [
+        box.max.x - box.min.x || 1,
+        box.max.y - box.min.y || 1,
+        box.max.z - box.min.z || 1,
+    ] as const;
+    const { lengthAxis, widthAxis, thickAxis: _thickAxis } = resolveBaseAxes(size[0], size[1], size[2]);
+    const lenMin = min[lengthAxis];
+    const lenSize = size[lengthAxis];
+    const widMin = min[widthAxis];
+    const widSize = size[widthAxis];
+    const widCenter = widMin + widSize / 2;
+
+    const array = pos.array as Float32Array;
+    const count = pos.count;
+    const corrections = field.corrections;
+    const heelCupWidthMm = corrections.heelCupWidthMm;
+    const baseUserData = (base as { userData?: { isMultiMeshBase?: boolean; topVertexCount?: number } })
+        .userData;
+    const isMultiMesh = !!baseUserData?.isMultiMeshBase;
+    const topVertexCount =
+        isMultiMesh && typeof baseUserData?.topVertexCount === "number" && baseUserData.topVertexCount > 0
+            ? baseUserData.topVertexCount
+            : 0;
+    const topN = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+
+    const medialSign = field.side === "left" ? -1 : 1;
+    const widthSign = -(detectArchSideSign(base) * medialSign);
+
+    const widthLateral = new Float32Array(count);
+    const inTransitionBand = new Uint8Array(count);
+    let transitionBandVertexCount = 0;
+    for (let i = 0; i < count; i++) {
+        const lenCoord = array[i * 3 + lengthAxis]!;
+        const widCoord = array[i * 3 + widthAxis]!;
+        const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+        const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
+        widthLateral[i] = heelCupWidthLateralOffsetMm(u, vSigned, heelCupWidthMm);
+        if (heelCupWidthMm > 0) {
+            const zone = heelCupSideWallWeight(u, vSigned, heelCupWidthMm);
+            if (zone > 0.01 && zone < 0.99) {
+                inTransitionBand[i] = 1;
+                transitionBandVertexCount++;
+            }
+        }
+    }
+
+    const clampFiredCount = smoothWidthLateralField(
+        widthLateral,
+        base,
+        isMultiMesh,
+        topVertexCount,
+        count,
+        smoothingIterations,
+        heelCupWidthMm,
+    );
+
+    const widthAdj = getBaseAdjacency(base);
+    if (!widthAdj || heelCupWidthMm <= 0) {
+        return {
+            zoneBandMaxEdgeJumpMm: 0,
+            topVertexBoundaryMaxEdgeJumpMm: 0,
+            transitionBandVertexCount,
+            clampFiredCount,
+        };
+    }
+
+    const boundaryBand = Math.min(500, Math.max(32, Math.floor(topN * 0.02)));
+    const zoneBandMaxEdgeJumpMm = maxEdgeJumpInField(
+        widthLateral,
+        widthAdj,
+        (i) => i < topN && inTransitionBand[i] === 1,
+    );
+    const topVertexBoundaryMaxEdgeJumpMm = maxEdgeJumpInField(
+        widthLateral,
+        widthAdj,
+        (i) => i < topN && i >= topN - boundaryBand,
+    );
+
+    return {
+        zoneBandMaxEdgeJumpMm,
+        topVertexBoundaryMaxEdgeJumpMm,
+        transitionBandVertexCount,
+        clampFiredCount,
+    };
 }
 
 // --- Top / bottom surface classification -----------------------------------
@@ -408,86 +629,15 @@ export function applyBaseModifiers(
         widthLateral[i] = heelCupWidthLateralOffsetMm(u, vSigned, heelCupWidthMm);
     }
 
-    // [HEELCUP-DIAG] read-only width instrumentation (throwaway; remove after Phase 1B)
-    if (heelCupWidthMm > 0 && typeof console !== "undefined") {
-        const topN = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
-        const widthAdj = getBaseAdjacency(base);
-        const zoneBoundaryIndices: number[] = [];
-        const seamIndices = new Set<number>();
-        if (isMultiMesh && topVertexCount > 0) {
-            seamIndices.add(topVertexCount - 1);
-            seamIndices.add(topVertexCount);
-        }
-        let maxJump = 0;
-        let maxJumpEdge: [number, number] = [-1, -1];
-        for (let i = 0; i < topN; i++) {
-            const lenCoord = array[i * 3 + lengthAxis]!;
-            const widCoord = array[i * 3 + widthAxis]!;
-            const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
-            const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
-            const zone = heelCupSideWallWeight(u, vSigned, heelCupWidthMm);
-            if (zone > 0.05 && zone < 0.95) {
-                zoneBoundaryIndices.push(i);
-            }
-            const neighbors = widthAdj?.[i];
-            if (neighbors) {
-                for (const n of neighbors) {
-                    if (n >= topN) continue;
-                    const jump = Math.abs(widthLateral[i]! - widthLateral[n]!);
-                    if (jump > maxJump) {
-                        maxJump = jump;
-                        maxJumpEdge = [i, n];
-                    }
-                }
-            }
-        }
-        const overlap = zoneBoundaryIndices.filter((idx) => seamIndices.has(idx));
-        const seamOnly = [...seamIndices].filter((idx) => !zoneBoundaryIndices.includes(idx));
-        const zoneOnly = zoneBoundaryIndices.filter((idx) => !seamIndices.has(idx));
-        console.log("[HEELCUP-DIAG] width zone vs seam", {
-            heelCupWidthMm,
-            isMultiMesh,
-            topVertexCount,
-            zoneBoundaryCount: zoneBoundaryIndices.length,
-            seamIndexList: [...seamIndices],
-            overlapCount: overlap.length,
-            overlapIndices: overlap.slice(0, 20),
-            seamOnlyIndices: seamOnly,
-            zoneOnlyCount: zoneOnly.length,
-            spatialCoincidence:
-                overlap.length > 0
-                    ? "PARTIAL_OR_FULL — zone-boundary vertices share indices with top/bottom seam"
-                    : "DISTINCT — zone boundary and seam gate are separate vertex regions",
-            maxLateralJumpMm: maxJump,
-            maxLateralJumpEdge: maxJumpEdge,
-        });
-        for (const i of zoneBoundaryIndices.slice(0, 8)) {
-            const lenCoord = array[i * 3 + lengthAxis]!;
-            const widCoord = array[i * 3 + widthAxis]!;
-            const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
-            const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
-            console.log("[HEELCUP-DIAG] zone boundary vertex", {
-                i,
-                u: u.toFixed(4),
-                vSigned: vSigned.toFixed(4),
-                zone: heelCupSideWallWeight(u, vSigned, heelCupWidthMm).toFixed(4),
-                widthLateral: widthLateral[i]!.toFixed(4),
-                atSeam: seamIndices.has(i),
-            });
-        }
-        for (const i of [...seamIndices]) {
-            if (i < 0 || i >= count) continue;
-            const wGate = isMultiMesh && topVertexCount > 0 ? (i < topVertexCount ? 1 : 0) : 1;
-            console.log("[HEELCUP-DIAG] top/bottom seam vertex", {
-                i,
-                w: wGate,
-                widthLateral: widthLateral[i]!.toFixed(4),
-                appliedLateral: (widthLateral[i]! * wGate).toFixed(4),
-                thickDelta: delta[i]!.toFixed(4),
-                inZoneBoundary: zoneBoundaryIndices.includes(i),
-            });
-        }
-    }
+    smoothWidthLateralField(
+        widthLateral,
+        base,
+        isMultiMesh,
+        topVertexCount,
+        count,
+        Math.max(smoothingIterations, 1),
+        heelCupWidthMm,
+    );
 
     // 2) Optional Laplacian relaxation of the displacement field (cached adjacency).
     // Multi-mesh GLB bases skip smoothing: diffusing wedge/posting deltas on the
@@ -496,23 +646,7 @@ export function applyBaseModifiers(
         isMultiMesh && topVertexCount > 0 ? 0 : smoothingIterations;
     const adj = effectiveSmoothing > 0 ? getBaseAdjacency(base) : null;
     if (adj) {
-        let current = delta;
-        for (let it = 0; it < effectiveSmoothing; it++) {
-            const next = new Float32Array(count);
-            for (let i = 0; i < count; i++) {
-                const neighbors = adj[i]!;
-                if (neighbors.length === 0) {
-                    next[i] = current[i]!;
-                    continue;
-                }
-                let sum = 0;
-                for (const n of neighbors) sum += current[n]!;
-                // Gentle relaxation: blend halfway toward the neighbour average.
-                next[i] = current[i]! * 0.5 + (sum / neighbors.length) * 0.5;
-            }
-            current = next;
-        }
-        delta.set(current);
+        laplacianRelaxField(delta, adj, effectiveSmoothing);
     }
 
     // 3) Apply the displacement along the thickness (up) axis. Multi-mesh GLBs

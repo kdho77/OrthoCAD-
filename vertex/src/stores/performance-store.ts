@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import type { PlacedElement, Side, SideCorrections } from "@/types";
 
 export type InteractionSource = "slider" | "gizmo" | "ai" | "trimline" | null;
@@ -28,6 +29,8 @@ export interface PerformanceStore {
     setInteracting: (active: boolean, source?: InteractionSource) => void;
     setShowPerformanceMonitor: (show: boolean) => void;
     setCorrectionPreview: (side: Side, patch: Partial<SideCorrections>) => void;
+    /** Live preview with clinical constraints applied (replaces the whole side entry). */
+    applyConstrainedCorrectionPreview: (side: Side, patch: Partial<SideCorrections>) => void;
     clearCorrectionPreview: () => void;
     setThicknessPreview: (mm: number | null) => void;
     setElementPreview: (id: string, patch: ElementPreview) => void;
@@ -49,24 +52,32 @@ export const usePerformanceStore = create<PerformanceStore>((set) => ({
     setShowPerformanceMonitor: (showPerformanceMonitor) => set({ showPerformanceMonitor }),
 
     setCorrectionPreview: (side, patch) =>
+        set((s) => ({
+            correctionPreview: {
+                ...s.correctionPreview,
+                [side]: { ...s.correctionPreview[side], ...patch },
+            },
+        })),
+
+    applyConstrainedCorrectionPreview: (side, patch) =>
         set((s) => {
-            console.log("[HEELCUP-DIAG] setCorrectionPreview", {
-                ts: performance.now(),
-                side,
-                patch,
-            });
+            // Lazy read avoids design-store ↔ performance-store module init cycle.
+            const { useDesignStore } =
+                require("@/stores/design-store") as typeof import("@/stores/design-store");
+            const design = useDesignStore.getState().design;
+            const thicknessMm = s.thicknessPreview ?? design.thicknessMm;
+            const committed = design.corrections[side];
+            const draft = { ...committed, ...patch };
+            const { constrained } = constrainSideCorrections(draft, thicknessMm);
             return {
                 correctionPreview: {
                     ...s.correctionPreview,
-                    [side]: { ...s.correctionPreview[side], ...patch },
+                    [side]: constrained,
                 },
             };
         }),
 
-    clearCorrectionPreview: () => {
-        console.log("[HEELCUP-DIAG] clearCorrectionPreview", { ts: performance.now() });
-        set({ correctionPreview: {}, thicknessPreview: null });
-    },
+    clearCorrectionPreview: () => set({ correctionPreview: {}, thicknessPreview: null }),
 
     setThicknessPreview: (thicknessPreview) => set({ thicknessPreview }),
 

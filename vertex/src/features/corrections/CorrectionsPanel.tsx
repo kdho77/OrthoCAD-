@@ -43,7 +43,7 @@ const WEDGE_ZONES = [
 const SIDE_LABELS: Record<Side, string> = { left: "Left", right: "Right" };
 
 const previewCorrection = rafThrottle((side: Side, patch: Partial<SideCorrections>) => {
-    usePerformanceStore.getState().setCorrectionPreview(side, patch);
+    usePerformanceStore.getState().applyConstrainedCorrectionPreview(side, patch);
 });
 
 type WedgeEdge = "lateral" | "medial";

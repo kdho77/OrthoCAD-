@@ -8,9 +8,11 @@ import {
     BASE_BOTTOM_DELTA_TOLERANCE_MM,
     classifyBaseTopFactors,
     detectArchSideSign,
+    measureHeelCupWidthSmoothing,
     resolveDesignMode,
     validateBaseResult,
 } from "./base-modifier";
+import { constrainSideCorrections } from "./clinical-constraints";
 import { defaultDesign } from "@/stores/design-store";
 import type { HeightFieldParams } from "./height-field";
 import { heightAt } from "./height-field";
@@ -135,8 +137,14 @@ function makeMultiMeshBase(opts: MakeBaseOptions = {}): BufferGeometry {
     combined.set(topPositions, 0);
     combined.set(bottomPositions, topCount * 3);
 
+    const topIndex = topOnly.getIndex();
     const geometry = new BufferGeometry();
     geometry.setAttribute("position", new BufferAttribute(combined, 3));
+    if (topIndex) {
+        const topIdx = Array.from(topIndex.array as ArrayLike<number>);
+        const merged = topIdx.concat(topIdx.map((idx) => idx + topCount));
+        geometry.setIndex(merged);
+    }
     geometry.userData = { isMultiMeshBase: true, topVertexCount: topCount };
     geometry.computeVertexNormals();
     topOnly.dispose();
@@ -493,5 +501,35 @@ describe("heel cup width and depth (base modifier)", () => {
         released.dispose();
         baseline.dispose();
         base.dispose();
+    });
+
+    test("width smoothing reduces zone-band edge jump without clamping at width=8 / smoothing=1", () => {
+        const multiBase = makeMultiMeshBase({ nx: 60, ny: 24, asym: 4 });
+        const params = {
+            ...field("right"),
+            corrections: { ...corrections(), heelCupWidthMm: 8 },
+        };
+
+        const unsmoothed = measureHeelCupWidthSmoothing(multiBase, params, 0);
+        const smoothed = measureHeelCupWidthSmoothing(multiBase, params, 1);
+
+        expect(smoothed.transitionBandVertexCount).toBeGreaterThan(100);
+        expect(smoothed.zoneBandMaxEdgeJumpMm).toBeLessThan(unsmoothed.zoneBandMaxEdgeJumpMm);
+        // Neighbor-restricted smoothing must not relocate the crease to the top-mesh seam.
+        expect(smoothed.topVertexBoundaryMaxEdgeJumpMm).toBeLessThanOrEqual(
+            Math.max(smoothed.zoneBandMaxEdgeJumpMm * 1.25, unsmoothed.topVertexBoundaryMaxEdgeJumpMm),
+        );
+        expect(smoothed.clampFiredCount).toBe(0);
+
+        multiBase.dispose();
+    });
+
+    test("constrained depth preview matches commit clamp for combined wall guard", () => {
+        const committed = { ...corrections(), heelCupDepthMm: 0 };
+        const draft = { ...committed, heelCupDepthMm: 6 };
+        const thicknessMm = 3;
+        const { constrained } = constrainSideCorrections(draft, thicknessMm);
+        expect(constrained.heelCupDepthMm).toBeLessThan(6);
+        expect(constrained.heelCupDepthMm).toBeGreaterThan(0);
     });
 });

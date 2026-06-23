@@ -19,7 +19,7 @@ import { useBaseBoundsStore } from "@/stores/base-bounds-store";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
-import { mergeCorrections, usePerformanceStore } from "@/stores/performance-store";
+import { usePerformanceStore } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
 
 export interface BaseInsoleGeometryState {
@@ -171,21 +171,6 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         const raw = baseGeoRef.current;
         if (!assetId || !raw) return;
         const thicknessMm = thicknessPreview ?? design.thicknessMm;
-        const committedDepth = design.corrections[side].heelCupDepthMm;
-        const storeDepth = useDesignStore.getState().design.corrections[side].heelCupDepthMm;
-        const previewPatch = usePerformanceStore.getState().correctionPreview[side];
-        const previewDepth = previewPatch?.heelCupDepthMm;
-        const mergedDepth = mergeCorrections(side, design.corrections[side]).heelCupDepthMm;
-        console.log("[HEELCUP-DIAG] rebuild effect", {
-            ts: performance.now(),
-            side,
-            interacting,
-            committedDepth,
-            storeDepth,
-            previewDepth,
-            mergedDepth,
-            closureStale: committedDepth !== storeDepth,
-        });
         const field = baseModifierField(design, side, thicknessMm);
         // Skip smoothing while dragging for responsiveness; relax once when idle.
         const modified = applyBaseModifiers(raw, field, interacting ? 0 : 1);
