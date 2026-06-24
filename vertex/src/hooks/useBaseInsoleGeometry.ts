@@ -172,8 +172,29 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         if (!assetId || !raw) return;
         const thicknessMm = thicknessPreview ?? design.thicknessMm;
         const field = baseModifierField(design, side, thicknessMm);
+        const mergedDepth = field.corrections.heelCupDepthMm;
         // Skip smoothing while dragging for responsiveness; relax once when idle.
         const modified = applyBaseModifiers(raw, field, interacting ? 0 : 1);
+        let maxHeelZDelta = 0;
+        if (mergedDepth > 0 || correctionPreview?.[side]?.heelCupDepthMm) {
+            const rawPos = raw.getAttribute("position")!.array as Float32Array;
+            const modPos = modified.getAttribute("position")!.array as Float32Array;
+            const topN = (raw.userData as { topVertexCount?: number }).topVertexCount ?? rawPos.length / 3;
+            for (let i = 0; i < topN; i++) {
+                if (rawPos[i * 3 + 2]! < 5) continue;
+                maxHeelZDelta = Math.max(maxHeelZDelta, Math.abs(modPos[i * 3 + 2]! - rawPos[i * 3 + 2]!));
+            }
+            console.log("[HC-DEPTH] rebuild", {
+                ts: performance.now(),
+                side,
+                interacting,
+                thicknessMm,
+                committed: design.corrections[side].heelCupDepthMm,
+                preview: correctionPreview?.[side]?.heelCupDepthMm ?? null,
+                mergedDepth,
+                maxHeelZDelta,
+            });
+        }
         // Phase 3A: prefer the *live draft* trimline while a trimline edit session
         // is active for this side. This wires the deforming perimeter into the
         // rendered base mesh during drag (production editing requirement).

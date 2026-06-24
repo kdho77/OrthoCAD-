@@ -27,11 +27,33 @@ export interface HeightFieldParams {
 
 const DEG = Math.PI / 180;
 
+/**
+ * Max fractional lateral scale at heelCupWidthMm = 10 (placeholder — needs clinical
+ * tuning against a target mm spread at max width; not yet validated).
+ */
+export const HEEL_CUP_WIDTH_MAX_LATERAL_SCALE = 0.25;
+
 /** Smooth bump centered at `c` with radius `r`. Returns 0..1. */
 export function bump(t: number, c: number, r: number): number {
     const d = Math.abs(t - c) / r;
     if (d >= 1) return 0;
     return 0.5 * (1 + Math.cos(Math.PI * d));
+}
+
+/** Longitudinal heel-cup zone mask; smoothly → 0 outside the heel. Same as bump(u, 0.1, 0.18). */
+export function heelCupLongitudinalEnvelope(u: number): number {
+    return bump(u, 0.1, 0.18);
+}
+
+/**
+ * Per-vertex lateral scale factor: 1.0 outside the heel zone; approaches targetScale
+ * inside. Continuous in u (no hard zone cut).
+ */
+export function heelCupWidthScaleFactor(u: number, heelCupWidthMm: number): number {
+    if (heelCupWidthMm <= 0) return 1;
+    const targetScale = 1 + (heelCupWidthMm / 10) * HEEL_CUP_WIDTH_MAX_LATERAL_SCALE;
+    const env = heelCupLongitudinalEnvelope(u);
+    return 1 + env * (targetScale - 1);
 }
 
 /**
@@ -158,16 +180,9 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const rim = smoothstep(0.18, 0.95, av);
     shaped += c.heelCupHeightMm * heel * rim;
 
-    // Medial + lateral walls (the legs of the U) — raised on the current edges
-    // within the heel region (main U contribution from depth).
-    // Heel cup *width* tightens the cup: a higher value starts the side walls
-    // further inboard (hugging the heel) and adds an independent wall raise, so
-    // the breadth control has a visible effect even with zero cup depth.
-    const widthFrac = Math.max(0, Math.min(1, c.heelCupWidthMm / 10));
-    const wallInner = 0.55 - 0.3 * widthFrac; // walls move toward the center as width grows
-    const sideWall = smoothstep(wallInner, 0.92, av); // 0 near center line → 1 at edges
+    // Medial + lateral walls (depth rim raise only — width is lateral scale in base-modifier).
+    const sideWall = smoothstep(0.55, 0.92, av);
     shaped += c.heelCupDepthMm * heel * sideWall * 0.65;
-    shaped += c.heelCupWidthMm * heel * sideWall * 0.35;
 
     // Posterior wall (the bottom of the U / back lip) — raised at the very heel end
     // (low u), wrapping across the width to connect the side walls and enclose the back.

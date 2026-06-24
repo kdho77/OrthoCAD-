@@ -502,6 +502,21 @@ export const useDesignStore = create<DesignStore>()(
                     const { constrained: safeRight } = constrainSideCorrections(corrections.right, t1);
                     const finalLeft = safeLeft;
                     const finalRight = corrections.linked ? safeLeft : safeRight;
+                    if ("heelCupDepthMm" in patch) {
+                        const applied =
+                            side === "left" ? finalLeft.heelCupDepthMm : finalRight.heelCupDepthMm;
+                        const depthViolations = [...r1.violations, ...r2.violations].filter(
+                            (vi) => vi.field === "heelCupDepthMm" || vi.field === "combined",
+                        );
+                        console.log("[HC-DEPTH] store:constrain", {
+                            ts: performance.now(),
+                            side,
+                            requested: patch.heelCupDepthMm,
+                            applied,
+                            thicknessMm: t1,
+                            violations: depthViolations,
+                        });
+                    }
                     return {
                         design: {
                             ...s.design,

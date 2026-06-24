@@ -4,8 +4,13 @@
 import { BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { getDesignBase } from "@/lib/geometry/base-asset";
-import { type HeightFieldParams, heightAt, smoothstep } from "@/lib/geometry/height-field";
-import { closeGlbInsoleToSolid } from "@/lib/geometry/mesh-close";
+import {
+    type HeightFieldParams,
+    heightAt,
+    heelCupWidthScaleFactor,
+    smoothstep,
+} from "@/lib/geometry/height-field";
+import { closeGlbInsoleToSolid, SMOOTH_INWARD_LIMIT_MM } from "@/lib/geometry/mesh-close";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
@@ -310,6 +315,192 @@ export function detectArchSideSign(base: BufferGeometry): number {
     return sign;
 }
 
+/** Vertices with top factor above this are considered top-sheet. */
+const TOP_FACTOR_THRESHOLD = 0.9;
+
+/** Laplacian iterations for heel-cup width lateral displacement (multi-mesh safe). */
+const HEEL_CUP_WIDTH_LAPLACIAN_ITERS = 2;
+
+function allowTopMeshNeighbor(
+    index: number,
+    isMultiMesh: boolean,
+    topVertexCount: number,
+    topFactors: Float32Array | null,
+): boolean {
+    if (isMultiMesh && topVertexCount > 0) return index < topVertexCount;
+    return topFactors ? topFactors[index]! > TOP_FACTOR_THRESHOLD : true;
+}
+
+/** Laplacian relax lateral displacement; neighbors filtered to top mesh only on multi-mesh GLB. */
+function relaxLateralDeltaField(
+    raw: Float32Array,
+    adj: number[][],
+    allowNeighbor: (i: number) => boolean,
+    iterations: number,
+): Float32Array {
+    let current = raw;
+    for (let it = 0; it < iterations; it++) {
+        const next = new Float32Array(raw.length);
+        for (let i = 0; i < raw.length; i++) {
+            const neighbors = adj[i]!.filter(allowNeighbor);
+            if (neighbors.length === 0) {
+                next[i] = current[i]!;
+                continue;
+            }
+            let sum = 0;
+            for (const n of neighbors) sum += current[n]!;
+            next[i] = current[i]! * 0.5 + (sum / neighbors.length) * 0.5;
+        }
+        current = next;
+    }
+    return current;
+}
+
+/** Post-smoothing deviation clamp (SMOOTH_INWARD_LIMIT_MM safety net). */
+function clampLateralDeviation(raw: Float32Array, smoothed: Float32Array, limitMm: number): void {
+    for (let i = 0; i < smoothed.length; i++) {
+        const dev = smoothed[i]! - raw[i]!;
+        smoothed[i] = raw[i]! + Math.max(-limitMm, Math.min(limitMm, dev));
+    }
+}
+
+export interface HeelCupWidthLateralDiagnostics {
+    raw: Float32Array;
+    smoothed: Float32Array;
+    centerlineClosestIndex: number;
+    centerlineClosestOffsetMm: number;
+    centerlineSmoothedDeltaMm: number;
+    maxLateralAtEdgeMm: number;
+    maxTransitionBandJumpMm: number;
+}
+
+interface LateralDeltaContext {
+    count: number;
+    lengthAxis: AxisIndex;
+    widthAxis: AxisIndex;
+    lenMin: number;
+    lenSize: number;
+    widCenter: number;
+    array: Float32Array;
+}
+
+function buildHeelCupWidthLateralDelta(
+    base: BufferGeometry,
+    field: HeightFieldParams,
+    ctx: LateralDeltaContext,
+    topFactors: Float32Array | null,
+    isMultiMesh: boolean,
+    topVertexCount: number,
+): { raw: Float32Array; smoothed: Float32Array } {
+    const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
+    const raw = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+        const lenCoord = array[i * 3 + lengthAxis]!;
+        const widCoord = array[i * 3 + widthAxis]!;
+        const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+        const offset = widCoord - widCenter;
+        const scale = heelCupWidthScaleFactor(u, field.corrections.heelCupWidthMm);
+        raw[i] = offset * (scale - 1);
+    }
+
+    if (field.corrections.heelCupWidthMm <= 0) {
+        return { raw, smoothed: raw };
+    }
+
+    const adj = getBaseAdjacency(base);
+    if (!adj) {
+        return { raw, smoothed: raw };
+    }
+
+    const allowN = (idx: number) => allowTopMeshNeighbor(idx, isMultiMesh, topVertexCount, topFactors);
+    const smoothed = relaxLateralDeltaField(raw, adj, allowN, HEEL_CUP_WIDTH_LAPLACIAN_ITERS);
+    clampLateralDeviation(raw, smoothed, SMOOTH_INWARD_LIMIT_MM);
+    return { raw, smoothed };
+}
+
+/** Verification helper: post-smoothing lateral delta stats for heel-cup width. */
+export function diagnoseHeelCupWidthLateral(
+    base: BufferGeometry,
+    field: HeightFieldParams,
+): HeelCupWidthLateralDiagnostics | null {
+    const pos = base.getAttribute("position");
+    if (!pos) return null;
+
+    base.computeBoundingBox();
+    const box = base.boundingBox;
+    if (!box) return null;
+
+    const min = [box.min.x, box.min.y, box.min.z] as const;
+    const size = [
+        box.max.x - box.min.x || 1,
+        box.max.y - box.min.y || 1,
+        box.max.z - box.min.z || 1,
+    ] as const;
+    const { lengthAxis, widthAxis } = resolveBaseAxes(size[0], size[1], size[2]);
+    const lenMin = min[lengthAxis];
+    const lenSize = size[lengthAxis];
+    const widCenter = min[widthAxis] + size[widthAxis] / 2;
+    const array = pos.array as Float32Array;
+    const count = pos.count;
+    const topFactors = classifyBaseTopFactors(base);
+    const baseUserData = (base as { userData?: { isMultiMeshBase?: boolean; topVertexCount?: number } }).userData;
+    const isMultiMesh = !!baseUserData?.isMultiMeshBase;
+    const topVertexCount =
+        isMultiMesh && typeof baseUserData?.topVertexCount === "number" && baseUserData.topVertexCount > 0
+            ? baseUserData.topVertexCount
+            : 0;
+
+    const { raw, smoothed } = buildHeelCupWidthLateralDelta(
+        base,
+        field,
+        { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
+        topFactors,
+        isMultiMesh,
+        topVertexCount,
+    );
+
+    let centerlineClosestIndex = 0;
+    let centerlineClosestOffsetMm = Infinity;
+    const topLimit = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+    for (let i = 0; i < topLimit; i++) {
+        const offset = Math.abs(array[i * 3 + widthAxis]! - widCenter);
+        if (offset < centerlineClosestOffsetMm) {
+            centerlineClosestOffsetMm = offset;
+            centerlineClosestIndex = i;
+        }
+    }
+
+    let maxLateralAtEdgeMm = 0;
+    let maxTransitionBandJumpMm = 0;
+    for (let i = 0; i < topLimit; i++) {
+        const lenCoord = array[i * 3 + lengthAxis]!;
+        const u = (lenCoord - lenMin) / lenSize;
+        const absLat = Math.abs(smoothed[i]!);
+        maxLateralAtEdgeMm = Math.max(maxLateralAtEdgeMm, absLat);
+        // Transition band: longitudinal envelope between ~0.2 and ~0.35 (heel → midfoot fade).
+        if (u >= 0.18 && u <= 0.38) {
+            const neighbors = getBaseAdjacency(base)?.[i] ?? [];
+            for (const n of neighbors) {
+                if (n >= topLimit) continue;
+                maxTransitionBandJumpMm = Math.max(
+                    maxTransitionBandJumpMm,
+                    Math.abs(smoothed[i]! - smoothed[n]!),
+                );
+            }
+        }
+    }
+
+    return {
+        raw,
+        smoothed,
+        centerlineClosestIndex,
+        centerlineClosestOffsetMm,
+        centerlineSmoothedDeltaMm: smoothed[centerlineClosestIndex]!,
+        maxLateralAtEdgeMm,
+        maxTransitionBandJumpMm,
+    };
+}
+
 /**
  * Apply the current design modifiers to a base mesh as a vertical deformation.
  *
@@ -419,7 +610,16 @@ export function applyBaseModifiers(
         delta.set(current);
     }
 
-    // 3) Apply the displacement along the thickness (up) axis. Multi-mesh GLBs
+    const { smoothed: lateralDelta } = buildHeelCupWidthLateralDelta(
+        base,
+        field,
+        { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
+        topFactors,
+        isMultiMesh,
+        topVertexCount,
+    );
+
+    // 3) Apply vertical + lateral displacement. Multi-mesh GLBs use vertex-index
     //    use vertex-index separation (top range only). Single-mesh bases use
     //    normal/height topFactor weighting so the bottom sheet stays anchored.
     const originalBottomZ =
@@ -441,6 +641,7 @@ export function applyBaseModifiers(
             w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
         }
         array[i * 3 + thickAxis] = t + delta[i]! * w;
+        array[i * 3 + widthAxis] += lateralDelta[i]! * w;
     }
 
     if (originalBottomZ && typeof console !== "undefined") {
@@ -471,8 +672,6 @@ export function applyBaseModifiers(
 export const BASE_BOTTOM_DELTA_TOLERANCE_MM = 0.05;
 /** Vertices with top factor below this are considered bottom-sheet. */
 const BOTTOM_FACTOR_THRESHOLD = 0.1;
-/** Vertices with top factor above this are considered top-sheet. */
-const TOP_FACTOR_THRESHOLD = 0.9;
 
 export interface BaseValidation {
     /** Max |Δ| along the up axis over bottom-sheet vertices (topFactor < 0.1). */

@@ -296,10 +296,40 @@ export function CorrectionsPanel() {
                                             } as Partial<SideCorrections>)
                                         }
                                         onChange={(v) => {
+                                            if (f.key === "heelCupDepthMm") {
+                                                console.log("[HC-DEPTH] panel:onChange:pre", {
+                                                    ts: performance.now(),
+                                                    side,
+                                                    requested: v,
+                                                    storeBefore:
+                                                        useDesignStore.getState().design.corrections[side]
+                                                            .heelCupDepthMm,
+                                                });
+                                            }
                                             updateCorrection(side, {
                                                 [f.key]: v,
                                             } as Partial<SideCorrections>);
+                                            if (f.key === "heelCupDepthMm") {
+                                                console.log("[HC-DEPTH] panel:onChange:post", {
+                                                    ts: performance.now(),
+                                                    side,
+                                                    requested: v,
+                                                    storeAfter:
+                                                        useDesignStore.getState().design.corrections[side]
+                                                            .heelCupDepthMm,
+                                                    previewAfter:
+                                                        usePerformanceStore.getState().correctionPreview,
+                                                });
+                                            }
                                             clearCorrectionPreview();
+                                            if (f.key === "heelCupDepthMm") {
+                                                console.log("[HC-DEPTH] panel:previewCleared", {
+                                                    ts: performance.now(),
+                                                    store: useDesignStore.getState().design.corrections[side]
+                                                        .heelCupDepthMm,
+                                                    preview: usePerformanceStore.getState().correctionPreview,
+                                                });
+                                            }
                                         }}
                                     />
                                 ))}
