@@ -8,6 +8,7 @@ import {
     type HeightFieldParams,
     heightAt,
     heelCupWidthScaleFactor,
+    quinticSmoothstep,
     smoothstep,
 } from "@/lib/geometry/height-field";
 import { closeGlbInsoleToSolid, SMOOTH_INWARD_LIMIT_MM } from "@/lib/geometry/mesh-close";
@@ -418,6 +419,393 @@ function buildHeelCupWidthLateralDelta(
     return { raw, smoothed };
 }
 
+// --- Heel cup depth: monotone tangent displacement field --------------------
+// Replaces the signed three-term bowl delta (heelCupDepthBowlDelta) on the
+// base-mesh path with a separable, single-sign, monotone field:
+//
+//   displacement(v) = depthMm × A(s) × W(h) × d̂(v)
+//
+//  - s ∈ [0,1]: normalized rim-arc position, 0 at the posterior apex, 1 at the
+//    anterior termination of each wall. No anterior-termination landmark data
+//    exists for loaded bases, so terminations are symmetric (medial = lateral).
+//  - A(s) = 1 − quinticSmoothstep(s): monotone decreasing, C2, never negative.
+//  - h ∈ [0,1]: normalized wall height (0 = heel seat floor, 1 = local rim).
+//    W(h) = quinticSmoothstep((h − h₀)/(1 − h₀)) with a hard floor basin h₀ so
+//    the heel seat clinical contact surface is mathematically untouched.
+//  - d̂(v) = normalize(up + λ(c)·r̂out): the uphill wall direction, made
+//    convergence-free. c = up·n̂ from position-welded per-vertex normals (the
+//    GLB top mesh is only partially index-shared, so coincident copies must
+//    share one direction or the sheet would tear); λ(c) = |c|·√(1−c²) is the
+//    horizontal share of the true uphill surface tangent normalize(up−(up·n̂)n̂),
+//    damped to 0 at both flat extremes; r̂out is the horizontal unit radial away
+//    from the heel-arc center. On the cup wall proper this coincides with the
+//    spec's uphill tangent (up-and-outward at the wall slope, pure up on a
+//    vertical wall). The literal projected tangent is direction-DISCONTINUOUS
+//    at the rounded rim crest of the real Default.glb: uphill points *toward*
+//    the crest from both flanks, so inner and outer wall displacements converge
+//    and fold the crest (measured 175° wall dihedral, 4× triangle-area
+//    collapse, before this substitution). Replacing the horizontal direction
+//    with the smooth radial field keeps a single-sign, spatially C¹ horizontal
+//    component — no two neighboring vertices can be displaced toward each
+//    other, so crest folds are impossible. This also subsumes the spec's
+//    near-floor degeneracy guard: at |c| → 1 (flat floor or crest) λ → 0 and
+//    d̂ → pure up. ‖d̂‖ = 1 always, so amplitude truthfulness is unaffected.
+//
+// Every factor is non-negative and monotone with C2 falloff, so the field has
+// a single sign everywhere — folds are impossible by construction. The
+// displacement field is Laplacian-relaxed with the same pattern as the
+// heel-cup width fix (2 iterations, 0.5 blend, top-mesh-only neighbors,
+// SMOOTH_INWARD_LIMIT_MM deviation clamp), excluding the heel seat floor
+// region entirely.
+
+/** Anterior termination of the heel-cup rim arc (symmetric fallback, radians). */
+const HEEL_CUP_DEPTH_ARC_TERMINATION_RAD = (130 / 180) * Math.PI;
+/** Heel-cup arc center along the footprint length (matches the seat bump center). */
+const HEEL_CUP_DEPTH_HEEL_CENTER_U = 0.13;
+/** Wall-height basin: W(h) ≡ 0 for h ≤ h₀ (heel seat floor stays untouched). */
+const HEEL_CUP_DEPTH_FLOOR_BASIN_H = 0.1;
+/** Arc bins per side used to resolve the local rim height along the rim. */
+const HEEL_CUP_DEPTH_RIM_BINS = 32;
+/** Laplacian iterations for the depth displacement field (same as the width fix). */
+const HEEL_CUP_DEPTH_LAPLACIAN_ITERS = 2;
+/**
+ * Diffusion iterations for the welded vertex normals feeding d̂. The real
+ * Default.glb top sheet carries pre-existing sliver creases (up to ~58°
+ * between adjacent well-formed faces), so raw normals are far too noisy to
+ * steer a displacement direction — adjacent vertices would shear apart.
+ * ~10 rounds of 0.5-blend diffusion on ~1 mm edges smooths the direction
+ * field over a ~3 mm radius while fully preserving the floor/wall/rim
+ * distinction (the wall stands ~12–20 mm tall).
+ */
+const HEEL_CUP_DEPTH_NORMAL_DIFFUSION_ITERS = 10;
+
+interface HeelCupDepthFrame {
+    /** Position-weld group per vertex; −1 for ineligible (e.g. bottom mesh). */
+    groupOf: Int32Array;
+    groupCount: number;
+    /** Per-group raw unit-depth displacement A(s)·W(h)·d̂ (3 comps per group). */
+    vecRaw: Float32Array;
+    /**
+     * Unit-depth displacement after vector Laplacian relaxation (floor region
+     * excluded entirely) and peak renormalization (‖vec‖ at the raw-field peak
+     * restored, so slider mm stays physical mm at the posterior apex).
+     */
+    vecSmoothed: Float32Array;
+}
+
+const heelCupDepthFrameCache = new WeakMap<BufferGeometry, HeelCupDepthFrame | null>();
+
+/**
+ * Depth-specific group-graph vector relaxation: floor groups neither move nor
+ * pull (the heel seat is excluded from smoothing entirely). Smoothing the full
+ * vector field — rather than a scalar amplitude — also diffuses the *direction*
+ * across degenerate sliver triangles and the convergent rim crest, which is
+ * what makes tangent displacement shear-safe on the real mesh.
+ */
+function relaxDepthVec(
+    raw: Float32Array,
+    adj: number[][] | null,
+    isFloor: Uint8Array,
+    iterations: number,
+): Float32Array {
+    if (!adj) return raw.slice();
+    const groupCount = raw.length / 3;
+    let current = raw;
+    for (let it = 0; it < iterations; it++) {
+        const next = new Float32Array(raw.length);
+        for (let g = 0; g < groupCount; g++) {
+            if (isFloor[g]) continue;
+            const neighbors = adj[g]!;
+            let sx = 0;
+            let sy = 0;
+            let sz = 0;
+            let n = 0;
+            for (const nb of neighbors) {
+                if (isFloor[nb]) continue;
+                sx += current[nb * 3]!;
+                sy += current[nb * 3 + 1]!;
+                sz += current[nb * 3 + 2]!;
+                n++;
+            }
+            if (n === 0) {
+                next[g * 3] = current[g * 3]!;
+                next[g * 3 + 1] = current[g * 3 + 1]!;
+                next[g * 3 + 2] = current[g * 3 + 2]!;
+                continue;
+            }
+            next[g * 3] = current[g * 3]! * 0.5 + (sx / n) * 0.5;
+            next[g * 3 + 1] = current[g * 3 + 1]! * 0.5 + (sy / n) * 0.5;
+            next[g * 3 + 2] = current[g * 3 + 2]! * 0.5 + (sz / n) * 0.5;
+        }
+        current = next;
+    }
+    return current === raw ? raw.slice() : current;
+}
+
+/**
+ * Build (and cache) the per-base heel-cup depth frame: position-weld groups
+ * and the raw + relaxed unit-depth displacement vectors A(s)·W(h)·d̂. Pure
+ * function of the base geometry, so it is computed once per loaded base
+ * (HC-6: drags only rescale it by depthMm).
+ */
+function getHeelCupDepthFrame(
+    base: BufferGeometry,
+    ctx: LateralDeltaContext,
+    thickAxis: AxisIndex,
+    topFactors: Float32Array | null,
+    isMultiMesh: boolean,
+    topVertexCount: number,
+): HeelCupDepthFrame | null {
+    const cached = heelCupDepthFrameCache.get(base);
+    if (cached !== undefined) return cached;
+
+    const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
+    const heelCenterLen = lenMin + HEEL_CUP_DEPTH_HEEL_CENTER_U * lenSize;
+
+    const eligible = (i: number): boolean => {
+        if (isMultiMesh && topVertexCount > 0) return i < topVertexCount;
+        return topFactors ? topFactors[i]! > 0.5 : true;
+    };
+
+    // 1) Position-weld groups over eligible vertices.
+    const groupOf = new Int32Array(count).fill(-1);
+    const keyToGroup = new Map<string, number>();
+    const groupRep: number[] = [];
+    for (let i = 0; i < count; i++) {
+        if (!eligible(i)) continue;
+        const key = `${array[i * 3]},${array[i * 3 + 1]},${array[i * 3 + 2]}`;
+        let g = keyToGroup.get(key);
+        if (g === undefined) {
+            g = groupRep.length;
+            keyToGroup.set(key, g);
+            groupRep.push(i);
+        }
+        groupOf[i] = g;
+    }
+    const groupCount = groupRep.length;
+    if (groupCount === 0) {
+        heelCupDepthFrameCache.set(base, null);
+        return null;
+    }
+
+    // 2) Heel-arc classification per group: s (arc position) and thick coord.
+    const groupS = new Float32Array(groupCount).fill(Number.NaN);
+    const groupSideBin = new Int32Array(groupCount).fill(-1);
+    let floorZ = Infinity;
+    const binRimZ = new Float64Array(2 * HEEL_CUP_DEPTH_RIM_BINS).fill(-Infinity);
+    for (let g = 0; g < groupCount; g++) {
+        const i = groupRep[g]!;
+        const dLen = array[i * 3 + lengthAxis]! - heelCenterLen;
+        const dWid = array[i * 3 + widthAxis]! - widCenter;
+        const theta = Math.atan2(Math.abs(dWid), -dLen);
+        if (theta > HEEL_CUP_DEPTH_ARC_TERMINATION_RAD) continue;
+        const s = theta / HEEL_CUP_DEPTH_ARC_TERMINATION_RAD;
+        groupS[g] = s;
+        const side = dWid >= 0 ? 0 : 1;
+        const bin = Math.min(
+            HEEL_CUP_DEPTH_RIM_BINS - 1,
+            Math.floor(s * HEEL_CUP_DEPTH_RIM_BINS),
+        );
+        groupSideBin[g] = side * HEEL_CUP_DEPTH_RIM_BINS + bin;
+        const z = array[i * 3 + thickAxis]!;
+        if (z < floorZ) floorZ = z;
+        if (z > binRimZ[groupSideBin[g]!]!) binRimZ[groupSideBin[g]!] = z;
+    }
+
+    // 3) Raw gate A(s)·W(h) and floor mask per group.
+    const gateRaw = new Float32Array(groupCount);
+    const isFloor = new Uint8Array(groupCount);
+    for (let g = 0; g < groupCount; g++) {
+        const s = groupS[g]!;
+        if (Number.isNaN(s)) continue;
+        const rimZ = binRimZ[groupSideBin[g]!]!;
+        const denom = rimZ - floorZ;
+        const i = groupRep[g]!;
+        const h = denom > 1e-9 ? (array[i * 3 + thickAxis]! - floorZ) / denom : 0;
+        if (h <= HEEL_CUP_DEPTH_FLOOR_BASIN_H) {
+            isFloor[g] = 1;
+            continue;
+        }
+        const a = 1 - quinticSmoothstep(s);
+        const w = quinticSmoothstep(
+            (h - HEEL_CUP_DEPTH_FLOOR_BASIN_H) / (1 - HEEL_CUP_DEPTH_FLOOR_BASIN_H),
+        );
+        gateRaw[g] = a * w;
+    }
+
+    // 4) Position-welded normals (area-weighted face normals over eligible faces)
+    //    and group adjacency for the amplitude relaxation.
+    const groupNormal = new Float64Array(groupCount * 3);
+    const adjSets: Set<number>[] = Array.from({ length: groupCount }, () => new Set<number>());
+    const index = base.index ? (base.index.array as ArrayLike<number>) : null;
+    if (index) {
+        for (let f = 0; f < index.length; f += 3) {
+            const va = index[f]!;
+            const vb = index[f + 1]!;
+            const vc = index[f + 2]!;
+            const ga = groupOf[va]!;
+            const gb = groupOf[vb]!;
+            const gc = groupOf[vc]!;
+            if (ga < 0 || gb < 0 || gc < 0) continue;
+            const abx = array[vb * 3]! - array[va * 3]!;
+            const aby = array[vb * 3 + 1]! - array[va * 3 + 1]!;
+            const abz = array[vb * 3 + 2]! - array[va * 3 + 2]!;
+            const acx = array[vc * 3]! - array[va * 3]!;
+            const acy = array[vc * 3 + 1]! - array[va * 3 + 1]!;
+            const acz = array[vc * 3 + 2]! - array[va * 3 + 2]!;
+            const nx = aby * acz - abz * acy;
+            const ny = abz * acx - abx * acz;
+            const nz = abx * acy - aby * acx;
+            for (const g of [ga, gb, gc]) {
+                groupNormal[g * 3] += nx;
+                groupNormal[g * 3 + 1] += ny;
+                groupNormal[g * 3 + 2] += nz;
+            }
+            if (ga !== gb) {
+                adjSets[ga]!.add(gb);
+                adjSets[gb]!.add(ga);
+            }
+            if (gb !== gc) {
+                adjSets[gb]!.add(gc);
+                adjSets[gc]!.add(gb);
+            }
+            if (gc !== ga) {
+                adjSets[gc]!.add(ga);
+                adjSets[ga]!.add(gc);
+            }
+        }
+    }
+    const groupAdj = index ? adjSets.map((s) => Array.from(s)) : null;
+
+    // 4b) Diffuse the welded normals so the direction field is spatially smooth
+    //     (see HEEL_CUP_DEPTH_NORMAL_DIFFUSION_ITERS). Unnormalized blending of
+    //     the area-weighted sums is stable; step 5 normalizes.
+    if (groupAdj) {
+        let current = groupNormal;
+        for (let it = 0; it < HEEL_CUP_DEPTH_NORMAL_DIFFUSION_ITERS; it++) {
+            const next = new Float64Array(groupCount * 3);
+            for (let g = 0; g < groupCount; g++) {
+                const neighbors = groupAdj[g]!;
+                if (neighbors.length === 0) {
+                    next[g * 3] = current[g * 3]!;
+                    next[g * 3 + 1] = current[g * 3 + 1]!;
+                    next[g * 3 + 2] = current[g * 3 + 2]!;
+                    continue;
+                }
+                let sx = 0;
+                let sy = 0;
+                let sz = 0;
+                for (const nb of neighbors) {
+                    sx += current[nb * 3]!;
+                    sy += current[nb * 3 + 1]!;
+                    sz += current[nb * 3 + 2]!;
+                }
+                const inv = 1 / neighbors.length;
+                next[g * 3] = current[g * 3]! * 0.5 + sx * inv * 0.5;
+                next[g * 3 + 1] = current[g * 3 + 1]! * 0.5 + sy * inv * 0.5;
+                next[g * 3 + 2] = current[g * 3 + 2]! * 0.5 + sz * inv * 0.5;
+            }
+            current = next;
+        }
+        groupNormal.set(current);
+    }
+
+    // 5) Uphill unit direction per group: d̂ = √(1−λ²)·up + λ·r̂out, with
+    //    λ = |c|·√(1−c²) (c = up·n̂) the damped horizontal share of the true
+    //    uphill tangent and r̂out the horizontal radial away from the heel-arc
+    //    center. ‖d̂‖ = 1 and d̂·up > 0 wherever the gate is nonzero. Raw
+    //    unit-depth displacement vector = A(s)·W(h)·d̂. See header comment.
+    const vecRaw = new Float32Array(groupCount * 3);
+    for (let g = 0; g < groupCount; g++) {
+        const gate = gateRaw[g]!;
+        if (gate === 0) continue;
+        const i = groupRep[g]!;
+        let nx = groupNormal[g * 3]!;
+        let ny = groupNormal[g * 3 + 1]!;
+        let nz = groupNormal[g * 3 + 2]!;
+        const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        let lambda = 0;
+        if (nLen >= 1e-12) {
+            nx /= nLen;
+            ny /= nLen;
+            nz /= nLen;
+            const c = thickAxis === 0 ? nx : thickAxis === 1 ? ny : nz;
+            lambda = Math.abs(c) * Math.sqrt(Math.max(0, 1 - c * c));
+        }
+        const rLen0 = array[i * 3 + lengthAxis]! - heelCenterLen;
+        const rWid0 = array[i * 3 + widthAxis]! - widCenter;
+        const rLenSq = rLen0 * rLen0 + rWid0 * rWid0;
+        if (rLenSq < 1e-8) lambda = 0; // at the arc center: pure up
+        const upShare = Math.sqrt(Math.max(0, 1 - lambda * lambda));
+        vecRaw[g * 3 + thickAxis] = gate * upShare;
+        if (lambda > 0) {
+            const rInv = 1 / Math.sqrt(rLenSq);
+            vecRaw[g * 3 + lengthAxis] += gate * lambda * rLen0 * rInv;
+            vecRaw[g * 3 + widthAxis] += gate * lambda * rWid0 * rInv;
+        }
+    }
+
+    // 6) Relax the vector field over the group graph (floor fully excluded),
+    //    then restore the raw peak magnitude so the posterior apex displacement
+    //    stays exactly depthMm (amplitude truthfulness; the scale is derived
+    //    from this field only, never from the legacy bowl formula).
+    const vecSmoothed = relaxDepthVec(vecRaw, groupAdj, isFloor, HEEL_CUP_DEPTH_LAPLACIAN_ITERS);
+    let peakGroup = -1;
+    let peakRawSq = 0;
+    for (let g = 0; g < groupCount; g++) {
+        const m =
+            vecRaw[g * 3]! * vecRaw[g * 3]! +
+            vecRaw[g * 3 + 1]! * vecRaw[g * 3 + 1]! +
+            vecRaw[g * 3 + 2]! * vecRaw[g * 3 + 2]!;
+        if (m > peakRawSq) {
+            peakRawSq = m;
+            peakGroup = g;
+        }
+    }
+    if (peakGroup >= 0) {
+        const peakSmoothedSq =
+            vecSmoothed[peakGroup * 3]! * vecSmoothed[peakGroup * 3]! +
+            vecSmoothed[peakGroup * 3 + 1]! * vecSmoothed[peakGroup * 3 + 1]! +
+            vecSmoothed[peakGroup * 3 + 2]! * vecSmoothed[peakGroup * 3 + 2]!;
+        if (peakSmoothedSq > 1e-12) {
+            const scale = Math.sqrt(peakRawSq / peakSmoothedSq);
+            for (let k = 0; k < vecSmoothed.length; k++) vecSmoothed[k] = vecSmoothed[k]! * scale;
+        }
+    }
+
+    const frame: HeelCupDepthFrame = { groupOf, groupCount, vecRaw, vecSmoothed };
+    heelCupDepthFrameCache.set(base, frame);
+    return frame;
+}
+
+/**
+ * Per-group displacement vectors (mm) for the current depth value, with the
+ * SMOOTH_INWARD_LIMIT_MM deviation clamp applied against the unsmoothed field
+ * (same safety net the heel-cup width fix uses, in vector form).
+ */
+function heelCupDepthDisplacements(frame: HeelCupDepthFrame, depthMm: number): Float32Array {
+    const out = new Float32Array(frame.groupCount * 3);
+    for (let g = 0; g < frame.groupCount; g++) {
+        let dx = depthMm * frame.vecSmoothed[g * 3]!;
+        let dy = depthMm * frame.vecSmoothed[g * 3 + 1]!;
+        let dz = depthMm * frame.vecSmoothed[g * 3 + 2]!;
+        const rx = depthMm * frame.vecRaw[g * 3]!;
+        const ry = depthMm * frame.vecRaw[g * 3 + 1]!;
+        const rz = depthMm * frame.vecRaw[g * 3 + 2]!;
+        const devLen = Math.sqrt((dx - rx) ** 2 + (dy - ry) ** 2 + (dz - rz) ** 2);
+        if (devLen > SMOOTH_INWARD_LIMIT_MM) {
+            const k = SMOOTH_INWARD_LIMIT_MM / devLen;
+            dx = rx + (dx - rx) * k;
+            dy = ry + (dy - ry) * k;
+            dz = rz + (dz - rz) * k;
+        }
+        out[g * 3] = dx;
+        out[g * 3 + 1] = dy;
+        out[g * 3 + 2] = dz;
+    }
+    return out;
+}
+
 /** Verification helper: post-smoothing lateral delta stats for heel-cup width. */
 export function diagnoseHeelCupWidthLateral(
     base: BufferGeometry,
@@ -573,6 +961,17 @@ export function applyBaseModifiers(
     const medialSign = field.side === "left" ? -1 : 1;
     const widthSign = -(detectArchSideSign(base) * medialSign);
 
+    // Heel-cup depth is handled below as a dedicated tangent displacement field
+    // (monotone, single-sign — see getHeelCupDepthFrame), so it is stripped from
+    // the vertical height-field delta here, exactly like heel-cup width (which
+    // heightAt never carried). The parametric (non-base) path still uses
+    // heelCupDepthBowlDelta via heightAt and is unaffected.
+    const depthMm = field.corrections.heelCupDepthMm;
+    const fieldForDelta: HeightFieldParams =
+        depthMm !== 0
+            ? { ...field, corrections: { ...field.corrections, heelCupDepthMm: 0 } }
+            : field;
+
     // 1) Sample the pure modifier delta at every vertex's footprint (u, vSigned),
     //    mapping length/width from the detected base axes (orientation-robust).
     const delta = new Float32Array(count);
@@ -581,7 +980,7 @@ export function applyBaseModifiers(
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
-        delta[i] = correctionDeltaAt(u, vSigned, field, neutral);
+        delta[i] = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
     }
 
     // 2) Optional Laplacian relaxation of the displacement field (cached adjacency).
@@ -619,6 +1018,22 @@ export function applyBaseModifiers(
         topVertexCount,
     );
 
+    // Heel-cup depth tangent displacement (see field construction above). The
+    // frame is a pure function of the base geometry (cached per base), only the
+    // depthMm scale changes per edit — no per-drag rebuild cost (HC-6).
+    const depthFrame =
+        depthMm > 0
+            ? getHeelCupDepthFrame(
+                  base,
+                  { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
+                  thickAxis,
+                  topFactors,
+                  isMultiMesh,
+                  topVertexCount,
+              )
+            : null;
+    const depthVec = depthFrame ? heelCupDepthDisplacements(depthFrame, depthMm) : null;
+
     // 3) Apply vertical + lateral displacement. Multi-mesh GLBs use vertex-index
     //    use vertex-index separation (top range only). Single-mesh bases use
     //    normal/height topFactor weighting so the bottom sheet stays anchored.
@@ -642,6 +1057,14 @@ export function applyBaseModifiers(
         }
         array[i * 3 + thickAxis] = t + delta[i]! * w;
         array[i * 3 + widthAxis] += lateralDelta[i]! * w;
+        if (depthFrame && depthVec) {
+            const g = depthFrame.groupOf[i]!;
+            if (g >= 0 && w !== 0) {
+                array[i * 3] += w * depthVec[g * 3]!;
+                array[i * 3 + 1] += w * depthVec[g * 3 + 1]!;
+                array[i * 3 + 2] += w * depthVec[g * 3 + 2]!;
+            }
+        }
     }
 
     if (originalBottomZ && typeof console !== "undefined") {

@@ -103,6 +103,19 @@ export function heelCupDepthBowlDelta(u: number, av: number, heelCupDepthMm: num
 }
 
 /**
+ * Quintic smoothstep with C2 continuity at both ends: q(0)=0, q(1)=1,
+ * q′(0)=q′(1)=0, q″(0)=q″(1)=0, strictly monotone increasing on (0,1).
+ * Used by the heel-cup depth tangent displacement field (base-modifier) for
+ * its arc taper A(s)=1−q(s) and wall-height gate W(h)=q(h): the flat C2 ends
+ * make fold creases impossible where the displaced region meets the untouched
+ * region.
+ */
+export function quinticSmoothstep(t: number): number {
+    const x = Math.max(0, Math.min(1, t));
+    return x * x * x * (x * (x * 6 - 15) + 10);
+}
+
+/**
  * Hermite smoothstep with C1 continuity at both ends. Returns 0 for `x <= e0`,
  * 1 for `x >= e1`, and a smooth S-curve in between. `e0` may be greater than
  * `e1` to invert the ramp. Used to remove creases that a hard boolean weight
