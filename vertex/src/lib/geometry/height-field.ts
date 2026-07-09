@@ -27,11 +27,92 @@ export interface HeightFieldParams {
 
 const DEG = Math.PI / 180;
 
+/**
+ * Max fractional lateral scale at heelCupWidthMm = 10 (placeholder — needs clinical
+ * tuning against a target mm spread at max width; not yet validated).
+ */
+export const HEEL_CUP_WIDTH_MAX_LATERAL_SCALE = 0.25;
+
 /** Smooth bump centered at `c` with radius `r`. Returns 0..1. */
 export function bump(t: number, c: number, r: number): number {
     const d = Math.abs(t - c) / r;
     if (d >= 1) return 0;
     return 0.5 * (1 + Math.cos(Math.PI * d));
+}
+
+/** Longitudinal heel-cup zone mask; smoothly → 0 outside the heel. Same as bump(u, 0.1, 0.18). */
+export function heelCupLongitudinalEnvelope(u: number): number {
+    return bump(u, 0.1, 0.18);
+}
+
+/**
+ * Per-vertex lateral scale factor: 1.0 outside the heel zone; approaches targetScale
+ * inside. Continuous in u (no hard zone cut).
+ */
+export function heelCupWidthScaleFactor(u: number, heelCupWidthMm: number): number {
+    if (heelCupWidthMm <= 0) return 1;
+    const targetScale = 1 + (heelCupWidthMm / 10) * HEEL_CUP_WIDTH_MAX_LATERAL_SCALE;
+    const env = heelCupLongitudinalEnvelope(u);
+    return 1 + env * (targetScale - 1);
+}
+
+export const HEEL_CUP_DEPTH_RIM_LATERAL_GAIN = 0.65;
+export const HEEL_CUP_DEPTH_RIM_POSTERIOR_GAIN = 0.85;
+export const HEEL_CUP_DEPTH_SEAT_GAIN = 0.35;
+
+/**
+ * Widened mask knees for heel-cup depth (subtractionWidened, PR #105 analysis).
+ * Original knees — posterior smoothstep(0.07,0,u), floor 1−smoothstep(0.35,0.75,av) —
+ * produced ~106 max |∇| in the fold locus vs ~80 with these values (~25% reduction).
+ * Partition-of-unity crossfade was stress-tested and rejected: same wide knees with PU
+ * added 2–15% worse gradients in 3/5 parameter sets with no scenario earning the
+ * extra division/epsilon complexity. Values are intentionally conservative; retune only
+ * with the fold-locus gradient regression in heel-cup-depth.verify.test.ts.
+ */
+const HEEL_CUP_DEPTH_POSTERIOR_CUTOFF_U = 0.11;
+const HEEL_CUP_DEPTH_FLOOR_CENTER_E0 = 0.28;
+const HEEL_CUP_DEPTH_FLOOR_CENTER_E1 = 0.78;
+const HEEL_CUP_DEPTH_SEAT_BUMP_CENTER = 0.13;
+const HEEL_CUP_DEPTH_SEAT_BUMP_RADIUS = 0.12;
+
+/**
+ * Continuous heel-cup depth bowl profile (mm). Single scalar drives rim-up (wall
+ * containment) minus seat-down (calcaneal depression) as one signed field over (u, av).
+ */
+export function heelCupDepthBowlDelta(u: number, av: number, heelCupDepthMm: number): number {
+    if (heelCupDepthMm <= 0) return 0;
+
+    const heel = heelCupLongitudinalEnvelope(u);
+    const latEnv = smoothstep(0.55, 0.92, av);
+    const rimLat = latEnv * HEEL_CUP_DEPTH_RIM_LATERAL_GAIN;
+    const rimPost =
+        smoothstep(HEEL_CUP_DEPTH_POSTERIOR_CUTOFF_U, 0.0, u) *
+        (1 - smoothstep(0.7, 0.95, av)) *
+        HEEL_CUP_DEPTH_RIM_POSTERIOR_GAIN;
+
+    const seatEnvelope =
+        bump(u, HEEL_CUP_DEPTH_SEAT_BUMP_CENTER, HEEL_CUP_DEPTH_SEAT_BUMP_RADIUS) *
+        (1 - smoothstep(HEEL_CUP_DEPTH_FLOOR_CENTER_E0, HEEL_CUP_DEPTH_FLOOR_CENTER_E1, av));
+
+    const lateralRim = heel * rimLat;
+    const posteriorRim = rimPost * (1 - latEnv);
+    const rimContribution = lateralRim + posteriorRim;
+    const seatContribution = seatEnvelope * HEEL_CUP_DEPTH_SEAT_GAIN;
+
+    return heelCupDepthMm * (rimContribution - seatContribution);
+}
+
+/**
+ * Quintic smoothstep with C2 continuity at both ends: q(0)=0, q(1)=1,
+ * q′(0)=q′(1)=0, q″(0)=q″(1)=0, strictly monotone increasing on (0,1).
+ * Used by the heel-cup depth tangent displacement field (base-modifier) for
+ * its arc taper A(s)=1−q(s) and wall-height gate W(h)=q(h): the flat C2 ends
+ * make fold creases impossible where the displaced region meets the untouched
+ * region.
+ */
+export function quinticSmoothstep(t: number): number {
+    const x = Math.max(0, Math.min(1, t));
+    return x * x * x * (x * (x * 6 - 15) + 10);
 }
 
 /**
@@ -131,58 +212,16 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
 
     const heel = bump(u, 0.1, 0.18); // longitudinal heel region (used by cup + skives)
 
-    // --- Heel cup (U-shaped 3D cup) -------------------------------------------
-    // Redesigned to produce a true U-shaped raised rim around the heel:
-    // medial wall + posterior (back) wall + lateral wall.
-    // This creates an enclosed depression so the heel sits cradled in a deeper cup
-    // rather than just a medial-lateral channel.
-    //
-    // - heelCupDepthMm controls the rim raise (additive height on the U walls).
-    //   Per requirements, this value represents (controls) the height from the
-    //   print surface / bottom (z=0) to the top of the cup rim in the final contour.
-    //   The actual final thickness at rim is thickness + baseline + shaped_rim + ...
-    //   The param provides the clinical "cup depth" raise on top of base.
-    // - The cup floor (center/back seat) is relieved (lowered z) relative to the rim
-    //   for "deeper" enclosure.
-    // - Smooth blending (bump + smoothstep) with no hard edges or ridges.
-    // - Blends forward into the arch (heel factor fades).
-    // - Works for both parametric height field and Base+Modifier (the delta from
-    //   heightAt is applied only to high topFactor vertices on imported bases,
-    //   preserving the base's bottom sheet).
-    // - Bottom surface remains flat (z=0) by design of the height field model.
-    // - Interacts with rearfoot posting (planar tilt applied after, on top of cup)
-    //   and new rearfoot wedges (additional side raise on top of cup walls).
-    // - Robust to trimline (av and resolve are always w.r.t. current outline edges).
+    // --- Heel cup depth (continuous bowl profile) ------------------------------
+    // heelCupDepthMm drives one signed bowl field: rim-up (medial/lateral + posterior
+    // walls) minus seat-down (calcaneal depression). Width is lateral scale in
+    // base-modifier; depth is heelCupDepthBowlDelta below.
 
     // Legacy side rim raise using heelCupHeightMm (kept for backward compat / extra control).
     const rim = smoothstep(0.18, 0.95, av);
     shaped += c.heelCupHeightMm * heel * rim;
 
-    // Medial + lateral walls (the legs of the U) — raised on the current edges
-    // within the heel region (main U contribution from depth).
-    // Heel cup *width* tightens the cup: a higher value starts the side walls
-    // further inboard (hugging the heel) and adds an independent wall raise, so
-    // the breadth control has a visible effect even with zero cup depth.
-    const widthFrac = Math.max(0, Math.min(1, c.heelCupWidthMm / 10));
-    const wallInner = 0.55 - 0.3 * widthFrac; // walls move toward the center as width grows
-    const sideWall = smoothstep(wallInner, 0.92, av); // 0 near center line → 1 at edges
-    shaped += c.heelCupDepthMm * heel * sideWall * 0.65;
-    shaped += c.heelCupWidthMm * heel * sideWall * 0.35;
-
-    // Posterior wall (the bottom of the U / back lip) — raised at the very heel end
-    // (low u), wrapping across the width to connect the side walls and enclose the back.
-    // High across most of the heel width at the posterior, fading at extreme edges
-    // (sides already covered by sideWall).
-    const posteriorWall = smoothstep(0.07, 0.0, u) * (1 - smoothstep(0.7, 0.95, av));
-    shaped += c.heelCupDepthMm * posteriorWall * 0.85;
-
-    // Cup floor relief — lowers the central seat area (slightly forward of the
-    // posterior wall, around u=0.12, v~0) to create the actual depression/"deeper"
-    // cup. The floor sits lower than the rim by a fraction of the depth param.
-    // This, combined with the raised U, produces the enclosed 3D cup.
-    const floorSeat = bump(u, 0.13, 0.12); // location of the heel seat
-    const floorCenter = 1 - smoothstep(0.35, 0.75, av); // high near v=0 (center line)
-    shaped -= c.heelCupDepthMm * 0.35 * floorSeat * floorCenter;
+    shaped += heelCupDepthBowlDelta(u, av, c.heelCupDepthMm);
 
     // --- Skives (medial/lateral heel) -----------------------------------------
     const includeSkives = params.includeSkives ?? true;
