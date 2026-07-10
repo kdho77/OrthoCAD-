@@ -933,18 +933,7 @@ export function buildTwoPointerBridgeTriangles(
     const out: number[] = [];
 
     const emit = (a: number, b: number, c: number) => {
-        if (a === b || b === c || a === c) return;
-        const va = getPosition(a);
-        const vb = getPosition(b);
-        const vc = getPosition(c);
-        if (triangleAreaMm2(va, vb, vc) < DEGENERATE_TRIANGLE_AREA_MM2) return;
-        const ab = new Vector3().subVectors(vb, va);
-        const ac = new Vector3().subVectors(vc, va);
-        const normal = new Vector3().crossVectors(ab, ac);
-        const center = new Vector3().add(va).add(vb).add(vc).multiplyScalar(1 / 3);
-        const outward = new Vector3().subVectors(center, centroid);
-        if (normal.dot(outward) < 0) out.push(a, c, b);
-        else out.push(a, b, c);
+        emitGuardedBridgeTri(out, a, b, c, getPosition, centroid);
     };
 
     let i = 0;
@@ -974,15 +963,76 @@ export function buildTwoPointerBridgeTriangles(
     return out;
 }
 
-/** Signed area of a loop projected onto the XZ plane (positive = CCW, negative = CW). */
-export function signedLoopAreaXZ(loop: Vector3[]): number {
+/**
+ * Emit a bridge triangle with degenerate-area skip and outward-normal winding flip.
+ * Shared by the two-pointer walk and the equal-count guarded quad split.
+ */
+export function emitGuardedBridgeTri(
+    out: number[],
+    a: number,
+    b: number,
+    c: number,
+    getPosition: (vertexIndex: number) => Vector3,
+    centroid: Vector3,
+): void {
+    if (a === b || b === c || a === c) return;
+    const va = getPosition(a);
+    const vb = getPosition(b);
+    const vc = getPosition(c);
+    if (triangleAreaMm2(va, vb, vc) < DEGENERATE_TRIANGLE_AREA_MM2) return;
+    const ab = new Vector3().subVectors(vb, va);
+    const ac = new Vector3().subVectors(vc, va);
+    const normal = new Vector3().crossVectors(ab, ac);
+    const center = new Vector3().add(va).add(vb).add(vc).multiplyScalar(1 / 3);
+    const outward = new Vector3().subVectors(center, centroid);
+    if (normal.dot(outward) < 0) out.push(a, c, b);
+    else out.push(a, b, c);
+}
+
+/** Axis index into Vector3 (0=x, 1=y, 2=z). */
+export type FootprintAxis = 0 | 1 | 2;
+
+function axisComponent(v: Vector3, axis: FootprintAxis): number {
+    return axis === 0 ? v.x : axis === 1 ? v.y : v.z;
+}
+
+/** Signed area of a loop projected onto the plane spanned by (axisA, axisB). */
+export function signedLoopAreaOnAxes(
+    loop: Vector3[],
+    axisA: FootprintAxis,
+    axisB: FootprintAxis,
+): number {
     let area = 0;
     for (let i = 0; i < loop.length; i++) {
         const a = loop[i]!;
         const b = loop[(i + 1) % loop.length]!;
-        area += a.x * b.z - b.x * a.z;
+        const ax = axisComponent(a, axisA);
+        const ay = axisComponent(a, axisB);
+        const bx = axisComponent(b, axisA);
+        const by = axisComponent(b, axisB);
+        area += ax * by - bx * ay;
     }
     return area * 0.5;
+}
+
+/** Ensure top and bottom loops share the same winding on the given axis pair. */
+export function alignLoopWindingOnAxes(
+    topLoop: Vector3[],
+    botLoop: Vector3[],
+    axisA: FootprintAxis,
+    axisB: FootprintAxis,
+): { topLoop: Vector3[]; botLoop: Vector3[]; windingAligned: boolean } {
+    const topArea = signedLoopAreaOnAxes(topLoop, axisA, axisB);
+    const botArea = signedLoopAreaOnAxes(botLoop, axisA, axisB);
+    if (topArea * botArea < 0) {
+        return { topLoop, botLoop: [...botLoop].reverse(), windingAligned: false };
+    }
+    return { topLoop, botLoop, windingAligned: true };
+}
+
+/** Signed area of a loop projected onto the XZ plane (positive = CCW, negative = CW). */
+export function signedLoopAreaXZ(loop: Vector3[]): number {
+    return signedLoopAreaOnAxes(loop, 0, 2);
 }
 
 /** Ensure top and bottom loops share the same winding when viewed on XZ. */
@@ -990,12 +1040,256 @@ export function alignLoopWindingXZ(
     topLoop: Vector3[],
     botLoop: Vector3[],
 ): { topLoop: Vector3[]; botLoop: Vector3[]; windingAligned: boolean } {
-    const topArea = signedLoopAreaXZ(topLoop);
-    const botArea = signedLoopAreaXZ(botLoop);
-    if (topArea * botArea < 0) {
-        return { topLoop, botLoop: [...botLoop].reverse(), windingAligned: false };
+    return alignLoopWindingOnAxes(topLoop, botLoop, 0, 2);
+}
+
+/**
+ * Resolve thickness vs footprint axes from bbox extents — same convention as
+ * base-modifier's resolveBaseAxes: thickAxis = smallest extent, footprint = other two.
+ */
+export function resolveFootprintAxes(geometry: BufferGeometry): {
+    thickAxis: FootprintAxis;
+    axisA: FootprintAxis;
+    axisB: FootprintAxis;
+} {
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    const box = geometry.boundingBox ?? new Box3().setFromBufferAttribute(
+        geometry.getAttribute("position") as BufferAttribute,
+    );
+    const sizeX = box.max.x - box.min.x;
+    const sizeY = box.max.y - box.min.y;
+    const sizeZ = box.max.z - box.min.z;
+    const sizes: [FootprintAxis, number][] = [
+        [0, sizeX],
+        [1, sizeY],
+        [2, sizeZ],
+    ];
+    sizes.sort((a, b) => a[1] - b[1]);
+    return { thickAxis: sizes[0]![0], axisA: sizes[1]![0], axisB: sizes[2]![0] };
+}
+
+/**
+ * Heuristic: tetrahedron volume (mm³) above which an equal-count bridge quad is
+ * treated as significantly non-planar and diagonal-split. Re-tune in Phase 3
+ * against measured self-intersection trend at 3/8/15 mm.
+ */
+export const BRIDGE_QUAD_MAX_TETRA_VOL_MM3 = 0.5;
+
+/**
+ * Heuristic: bridge triangles with ymin below this (mm) are treated as the heel
+ * band for self-intersection counting. Same caveat as BRIDGE_QUAD_MAX_TETRA_VOL_MM3.
+ */
+export const HEEL_BRIDGE_Y_MAX_MM = 80;
+
+function tetraVolumeMm3(a: Vector3, b: Vector3, c: Vector3, d: Vector3): number {
+    return (
+        Math.abs(
+            new Vector3()
+                .subVectors(b, a)
+                .dot(
+                    new Vector3().crossVectors(
+                        new Vector3().subVectors(c, a),
+                        new Vector3().subVectors(d, a),
+                    ),
+                ),
+        ) / 6
+    );
+}
+
+/**
+ * Equal-count rim bridge: quad → 2 tris with planarity-aware diagonal choice and
+ * outward-normal / degenerate guards via emitGuardedBridgeTri.
+ */
+export function buildGuardedEqualCountBridgeFaces(
+    topIndices: number[],
+    botIndices: number[],
+    getPosition: (vertexIndex: number) => Vector3,
+    centroid: Vector3,
+): { faces: number[]; nonPlanarCount: number } {
+    const n = topIndices.length;
+    const faces: number[] = [];
+    let nonPlanarCount = 0;
+    if (n < 3 || botIndices.length !== n) return { faces, nonPlanarCount };
+
+    for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const tA = topIndices[i]!;
+        const tB = topIndices[j]!;
+        const bA = botIndices[i]!;
+        const bB = botIndices[j]!;
+        const vtA = getPosition(tA);
+        const vtB = getPosition(tB);
+        const vbA = getPosition(bA);
+        const vbB = getPosition(bB);
+        const vol = tetraVolumeMm3(vtA, vbA, vtB, vbB);
+        if (vol > BRIDGE_QUAD_MAX_TETRA_VOL_MM3) {
+            nonPlanarCount++;
+            // Heuristic diagonal split: prefer the shorter of tA–bB vs tB–bA.
+            const dAB = vtA.distanceTo(vbB);
+            const dBA = vtB.distanceTo(vbA);
+            if (dAB <= dBA) {
+                emitGuardedBridgeTri(faces, tA, bA, bB, getPosition, centroid);
+                emitGuardedBridgeTri(faces, tA, bB, tB, getPosition, centroid);
+            } else {
+                emitGuardedBridgeTri(faces, tA, bA, tB, getPosition, centroid);
+                emitGuardedBridgeTri(faces, tB, bA, bB, getPosition, centroid);
+            }
+        } else {
+            // Default connectivity identical to today's equal-count path.
+            emitGuardedBridgeTri(faces, tA, bA, tB, getPosition, centroid);
+            emitGuardedBridgeTri(faces, tB, bA, bB, getPosition, centroid);
+        }
     }
-    return { topLoop, botLoop, windingAligned: true };
+
+    return { faces, nonPlanarCount };
+}
+
+/**
+ * SAT triangle-triangle intersection (Phase 0 diagnostic). Shared-edge pairs are
+ * filtered by the caller via sharesVertex; this returns true when no separating axis exists.
+ */
+export function triTriIntersect(
+    t1: [Vector3, Vector3, Vector3],
+    t2: [Vector3, Vector3, Vector3],
+): boolean {
+    const eps = 1e-8;
+    const edges1 = [
+        new Vector3().subVectors(t1[1], t1[0]),
+        new Vector3().subVectors(t1[2], t1[1]),
+        new Vector3().subVectors(t1[0], t1[2]),
+    ];
+    const edges2 = [
+        new Vector3().subVectors(t2[1], t2[0]),
+        new Vector3().subVectors(t2[2], t2[1]),
+        new Vector3().subVectors(t2[0], t2[2]),
+    ];
+    const n1 = new Vector3().crossVectors(edges1[0]!, edges1[2]!.clone().negate()).normalize();
+    const n2 = new Vector3().crossVectors(edges2[0]!, edges2[2]!.clone().negate()).normalize();
+    const axes: Vector3[] = [n1, n2];
+    for (const e1 of edges1) {
+        for (const e2 of edges2) {
+            axes.push(new Vector3().crossVectors(e1, e2));
+        }
+    }
+    for (const axis of axes) {
+        if (axis.lengthSq() < eps) continue;
+        let min1 = Infinity;
+        let max1 = -Infinity;
+        let min2 = Infinity;
+        let max2 = -Infinity;
+        for (const p of t1) {
+            const d = p.dot(axis);
+            min1 = Math.min(min1, d);
+            max1 = Math.max(max1, d);
+        }
+        for (const p of t2) {
+            const d = p.dot(axis);
+            min2 = Math.min(min2, d);
+            max2 = Math.max(max2, d);
+        }
+        if (max1 < min2 - eps || max2 < min1 - eps) return false;
+    }
+    return true;
+}
+
+function sharesVertexIndices(a: number[], b: number[]): boolean {
+    return a.some((v) => b.includes(v));
+}
+
+/**
+ * Count pairwise SAT self-intersections among heel-band bridge triangles
+ * (ymin < HEEL_BRIDGE_Y_MAX_MM), skipping pairs that share a vertex.
+ */
+export function countHeelBridgeSelfIntersections(
+    geometry: BufferGeometry,
+    topVertexCount: number,
+): number {
+    const index = geometry.index;
+    const pos = geometry.getAttribute("position");
+    if (!index || !pos || topVertexCount <= 0) return 0;
+
+    const arr = pos.array as ArrayLike<number>;
+    const getV = (vi: number) => new Vector3(arr[vi * 3]!, arr[vi * 3 + 1]!, arr[vi * 3 + 2]!);
+
+    type BridgeTri = { i: [number, number, number]; v: [Vector3, Vector3, Vector3] };
+    const bridge: BridgeTri[] = [];
+    const triCount = index.count / 3;
+    for (let t = 0; t < triCount; t++) {
+        const ia = index.getX(t * 3);
+        const ib = index.getX(t * 3 + 1);
+        const ic = index.getX(t * 3 + 2);
+        const nTop = (ia < topVertexCount ? 1 : 0) + (ib < topVertexCount ? 1 : 0) + (ic < topVertexCount ? 1 : 0);
+        const nBot =
+            (ia >= topVertexCount ? 1 : 0) + (ib >= topVertexCount ? 1 : 0) + (ic >= topVertexCount ? 1 : 0);
+        if (nTop === 0 || nBot === 0) continue;
+        const va = getV(ia);
+        const vb = getV(ib);
+        const vc = getV(ic);
+        const ymin = Math.min(va.y, vb.y, vc.y);
+        if (ymin >= HEEL_BRIDGE_Y_MAX_MM) continue;
+        bridge.push({ i: [ia, ib, ic], v: [va, vb, vc] });
+    }
+
+    let count = 0;
+    for (let i = 0; i < bridge.length; i++) {
+        for (let j = i + 1; j < bridge.length; j++) {
+            if (sharesVertexIndices(bridge[i]!.i, bridge[j]!.i)) continue;
+            if (triTriIntersect(bridge[i]!.v, bridge[j]!.v)) count++;
+        }
+    }
+    return count;
+}
+
+export interface ClosedSolidBaseline {
+    eulerCharacteristic: number;
+    heelBridgeSelfIntersections: number;
+}
+
+/**
+ * Pinned Default.glb closed-solid baseline at depth=0.
+ *
+ * eulerCharacteristic=3 — pre-existing PR #103 slit-cap bowtie residue (3 vertex
+ * pinches on the bottom mesh; unrelated to heel bridge). Accepted as permanent
+ * baseline (Option 1); do not attempt to fix pieces B/C in the bridge round.
+ *
+ * heelBridgeSelfIntersections is mutable so the export-solid regression test can
+ * self-correct once if the live depth=0 measurement drifts from 249.
+ */
+export const DEFAULT_GLB_CLOSED_BASELINE: ClosedSolidBaseline = {
+    eulerCharacteristic: 3,
+    heelBridgeSelfIntersections: 249,
+};
+
+/**
+ * Edge-manifold gate always; Euler / heel-bridge self-intersection gates only when
+ * a baseline is provided (genuinely optional — no default-parameter trap).
+ */
+export function assertClosedSolidAcceptable(
+    geometry: BufferGeometry,
+    topVertexCount: number,
+    baseline?: ClosedSolidBaseline | null,
+): void {
+    const report = validateManifold(geometry);
+    if (report.openEdges !== 0 || report.nonManifoldEdges !== 0) {
+        throw new MeshNotWatertightError(
+            `[MESH-CLOSE] closed solid not edge-manifold: openEdges=${report.openEdges} nonManifold=${report.nonManifoldEdges}`,
+            report,
+        );
+    }
+    if (!baseline) return;
+    if (report.eulerCharacteristic !== baseline.eulerCharacteristic) {
+        throw new MeshNotWatertightError(
+            `[MESH-CLOSE] eulerCharacteristic=${report.eulerCharacteristic} !== baseline ${baseline.eulerCharacteristic}`,
+            report,
+        );
+    }
+    const si = countHeelBridgeSelfIntersections(geometry, topVertexCount);
+    if (si > baseline.heelBridgeSelfIntersections) {
+        throw new MeshNotWatertightError(
+            `[MESH-CLOSE] heelBridgeSelfIntersections=${si} exceeds baseline ${baseline.heelBridgeSelfIntersections}`,
+            report,
+        );
+    }
 }
 
 function rotateLoop(loop: Vector3[], offset: number): Vector3[] {
@@ -2692,7 +2986,8 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
             }
         }
 
-        const winding = alignLoopWindingXZ(topPositions, botPositions);
+        const { axisA, axisB } = resolveFootprintAxes(parentWorking);
+        const winding = alignLoopWindingOnAxes(topPositions, botPositions, axisA, axisB);
         topPositions = winding.topLoop;
         let botPositionsAligned = winding.windingAligned ? botPositions : winding.botLoop;
 
@@ -2724,20 +3019,39 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
             const targetN = Math.max(topPositions.length, botPositions.length);
             let topLoop = resampleLoopToCount(topPositions, targetN);
             let botLoop = resampleLoopToCount(botPositionsAligned, targetN);
-            const equalWinding = alignLoopWindingXZ(topLoop, botLoop);
+            const equalWinding = alignLoopWindingOnAxes(topLoop, botLoop, axisA, axisB);
             topLoop = equalWinding.topLoop;
             botLoop = alignLoopStartToReference(topLoop, equalWinding.botLoop);
             const snappedTop = snapLoopToBoundaryVertices(parentWorking, topLoop, 0, topVertexCount);
             const botRimN = snapResampledToReferenceCycle(botLoop, botRim.positions, botRim.parentIndices);
             const n = snappedTop.localIndices.length;
-            bridgeFaces = [];
-            for (let i = 0; i < n; i++) {
-                const j = (i + 1) % n;
-                const tA = snappedTop.localIndices[i]!;
-                const tB = snappedTop.localIndices[j]!;
-                const bA = botRimN[i]!;
-                const bB = botRimN[j]!;
-                bridgeFaces.push(tA, bA, tB, tB, bA, bB);
+            const guarded = buildGuardedEqualCountBridgeFaces(
+                snappedTop.localIndices,
+                botRimN,
+                getPosition,
+                centroid,
+            );
+            // If >5% of quads are significantly non-planar, fall back to the
+            // two-pointer walk on the original (pre-resample) loops.
+            if (n > 0 && guarded.nonPlanarCount > n * 0.05) {
+                if (!winding.windingAligned) {
+                    botIndices = [...botIndices].reverse();
+                }
+                const alignedBot = alignIndexedLoopStartByArcLength(
+                    topPositions,
+                    botPositionsAligned,
+                    botIndices,
+                );
+                bridgeFaces = buildTwoPointerBridgeTriangles(
+                    topPositions,
+                    topIndices,
+                    alignedBot.positions,
+                    alignedBot.indices,
+                    getPosition,
+                    centroid,
+                );
+            } else {
+                bridgeFaces = guarded.faces;
             }
         } else {
             if (!winding.windingAligned) {
@@ -2820,13 +3134,18 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
         }
 
         const report = validateManifold(merged);
-        if (!report.isWatertight || report.eulerCharacteristic !== 2) {
-            if (typeof console !== "undefined") {
-                console.warn(
-                    `[MESH-CLOSE] closeGlbInsoleToSolid manifold warning: openEdges=${report.openEdges} nonManifold=${report.nonManifoldEdges} euler=${report.eulerCharacteristic}`,
-                );
-            }
-        } else if (typeof console !== "undefined") {
+        // Always hard-fail on open / non-manifold edges. Do NOT throw on
+        // eulerCharacteristic !== 2 here — Default.glb pins Euler=3 at depth=0
+        // (bowtie residue), and this function has no mesh-specific Euler target.
+        // Baseline-relative Euler / self-intersection policy lives only in
+        // assertClosedSolidAcceptable on the export path.
+        if (report.openEdges !== 0 || report.nonManifoldEdges !== 0) {
+            throw new MeshNotWatertightError(
+                `[MESH-CLOSE] closeGlbInsoleToSolid not edge-manifold: openEdges=${report.openEdges} nonManifold=${report.nonManifoldEdges} euler=${report.eulerCharacteristic}`,
+                report,
+            );
+        }
+        if (typeof console !== "undefined") {
             console.log(
                 `[MESH-CLOSE] closeGlbInsoleToSolid complete: V=${report.vertexCount} openEdges=${report.openEdges} Euler=${report.eulerCharacteristic}`,
             );
