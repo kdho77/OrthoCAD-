@@ -13,6 +13,22 @@ import { SIDE_LABELS, type Side } from "@/types";
 
 type ExportKind = "stl" | "glb" | null;
 
+const HEEL_CUP_STL_BLOCKED_MSG =
+    "Heel cup depth correction can't be exported right now (depth must be 0).";
+
+/** Map mesh-close export gate failures to a plain message (exportDesign swallows the throw). */
+function stlExportUserMessage(reason: string | undefined): string {
+    if (!reason) return "Export failed";
+    if (
+        reason.includes("[MESH-CLOSE]") ||
+        reason.includes("heelBridgeSelfIntersections") ||
+        reason.includes("MeshNotWatertight")
+    ) {
+        return HEEL_CUP_STL_BLOCKED_MSG;
+    }
+    return reason;
+}
+
 export function ExportPanel() {
     const { user, license } = useAuthStore();
     const { design, exportSide, setExportSide } = useDesignStore();
@@ -33,8 +49,10 @@ export function ExportPanel() {
             setStatus(
                 res.ok
                     ? `Exported ${res.filename} (-${TOKEN_COST.stl} token)`
-                    : (res.reason ?? "Export failed"),
+                    : stlExportUserMessage(res.reason),
             );
+        } catch (e) {
+            setStatus(stlExportUserMessage(e instanceof Error ? e.message : undefined));
         } finally {
             setBusyKind(null);
         }
