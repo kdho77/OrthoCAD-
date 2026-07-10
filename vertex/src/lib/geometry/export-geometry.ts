@@ -7,7 +7,11 @@ import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from 
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
-import { closeGlbInsoleToSolid } from "@/lib/geometry/mesh-close";
+import {
+    assertClosedSolidAcceptable,
+    closeGlbInsoleToSolid,
+    DEFAULT_GLB_CLOSED_BASELINE,
+} from "@/lib/geometry/mesh-close";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
@@ -156,6 +160,8 @@ export async function buildExportStl(side: Side, _options: BuildExportStlOptions
             console.log("[EXPORT] closing GLB insole rims...");
         }
         const solid = closeGlbInsoleToSolid(geometry);
+        const topN = (solid.userData as { topVertexCount?: number }).topVertexCount ?? 0;
+        assertClosedSolidAcceptable(solid, topN, topN > 0 ? DEFAULT_GLB_CLOSED_BASELINE : null);
         try {
             return geometryToBinarySTL(solid);
         } finally {
