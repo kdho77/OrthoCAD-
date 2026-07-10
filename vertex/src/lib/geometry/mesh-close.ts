@@ -1246,8 +1246,14 @@ export interface ClosedSolidBaseline {
 }
 
 /**
- * Pinned Default.glb closed-solid baseline at depth=0. Mutable so the export-solid
- * regression test can self-correct once if the live measurement drifts from 249.
+ * Pinned Default.glb closed-solid baseline at depth=0.
+ *
+ * eulerCharacteristic=3 — pre-existing PR #103 slit-cap bowtie residue (3 vertex
+ * pinches on the bottom mesh; unrelated to heel bridge). Accepted as permanent
+ * baseline (Option 1); do not attempt to fix pieces B/C in the bridge round.
+ *
+ * heelBridgeSelfIntersections is mutable so the export-solid regression test can
+ * self-correct once if the live depth=0 measurement drifts from 249.
  */
 export const DEFAULT_GLB_CLOSED_BASELINE: ClosedSolidBaseline = {
     eulerCharacteristic: 3,
