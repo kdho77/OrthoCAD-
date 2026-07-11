@@ -490,13 +490,15 @@ describe("bottom-wall rim conformity (Default.glb)", () => {
     });
 
     test("manifold: openEdges=0 and topRim≈446 at tested configs", () => {
-        // Width-only configs are a known pre-existing topRim:4 collapse
-        // (toprim-extraction.test.ts / PR #107) — out of scope for this transfer.
+        // Post-#109 rebase: width cases must preserve topRim≈446 (no topRim:4 collapse).
         const configs: Partial<SideCorrections>[] = [
             {},
+            { heelCupWidthMm: 0.5 },
+            { heelCupWidthMm: 5 },
+            { heelCupWidthMm: 10 },
             { heelCupDepthMm: 15 },
             { archHeightMm: 12, apexMoveMm: 8 },
-            { heelCupDepthMm: 5, archHeightMm: 10 },
+            { heelCupWidthMm: 5, heelCupDepthMm: 5, archHeightMm: 10 },
         ];
         for (const patch of configs) {
             const mod = applyBaseModifiers(baseGeo, correctionField(patch));
