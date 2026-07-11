@@ -27,6 +27,7 @@ import {
     extractBoundaryLoops,
     extractOrderedBoundaryLoopWithIndices,
     submeshByVertexRange,
+    validateManifold,
 } from "@/lib/geometry/mesh-close";
 import { extractMeshOutline, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
@@ -176,13 +177,19 @@ describe("topRim extraction (pre-existing width tear)", () => {
         }
     });
 
-    test("heelCupWidthMm=5 alone collapses topRim to 4 (~3784 tiny loops)", () => {
+    test("heelCupWidthMm=5 alone preserves topRim≈446 (post-#109 welded Laplacian)", () => {
         const mod = applyBaseModifiers(baseGeo, correctionField("left", { heelCupWidthMm: 5 }), 0);
         try {
             const rim = measureTopRim(mod);
-            expect(rim.topRimVerts).toBe(4);
-            expect(rim.topLoopCount).toBeGreaterThan(3000);
-            expect(() => closeGlbInsoleToSolid(mod)).toThrow(/openEdges=11792|not edge-manifold/);
+            expect(rim.topLoopCount).toBe(1);
+            expect(rim.topRimVerts).toBeGreaterThan(400);
+            expect(rim.topRimVerts).toBeLessThan(500);
+            const solid = closeGlbInsoleToSolid(mod);
+            try {
+                expect(validateManifold(solid).openEdges).toBe(0);
+            } finally {
+                solid.dispose();
+            }
         } finally {
             mod.dispose();
         }
