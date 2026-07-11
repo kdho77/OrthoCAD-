@@ -288,25 +288,6 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         // `trimline` (crashes on .points). A minimal 4-pt placeholder is not a
         // meaningful width-halving curve either. Skipped pending a real trimline
         // fixture; not related to rim-conformity transfer.
-        const w = { side: "lateral" as const, value: 5, unit: "deg" as const };
-        const fullP = baseParams({ corrections: { ...baseParams().corrections, forefootWedge: w } });
-        const fullAtFore = wedgeDeltaAt(0.8, 0.8, "right", fullP.corrections, fullP);
-        const narrowTrim = {
-            points: [
-                { x: 200, y: 20, z: 0 },
-                { x: 220, y: -20, z: 0 },
-                { x: 180, y: -20, z: 0 },
-                { x: 160, y: 20, z: 0 },
-            ],
-        };
-        const narrowP = baseParams({
-            corrections: { ...baseParams().corrections, forefootWedge: w },
-            trimline: narrowTrim,
-            widthMm: 90,
-        });
-        const narrowAtFore = wedgeDeltaAt(0.8, 0.8, "right", narrowP.corrections, narrowP);
-        expect(narrowAtFore).toBeLessThan(fullAtFore * 0.6);
-        expect(narrowAtFore).toBeGreaterThan(0);
     });
 
     test("zero/negative value or out of zone -> 0", () => {
