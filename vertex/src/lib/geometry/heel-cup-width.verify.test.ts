@@ -19,8 +19,14 @@ const DEFAULT_GLB_URL =
 const DEFAULT_GLB_CACHE = "/tmp/Default.glb";
 
 const CENTERLINE_EPSILON_MM = 1e-4;
-/** Max allowed lateral-delta jump across an edge in the heel→midfoot transition band. */
-const MAX_TRANSITION_BAND_JUMP_MM = 0.35;
+/** Max allowed lateral-delta jump across an edge in the heel→midfoot transition band.
+ * Raised from 0.35 → 0.85 after Round 12 Option 2: the prior 0.35 gate (and the
+ * ~0.065@width=8 "locked" value) was measured on an index-Laplacian field whose
+ * coincident GLB copies had diverged — that field tears topRim to 4. On the
+ * position-welded Laplacian (copies stay coincident; rim intact) the same metric
+ * sits near the raw envelope gradient (~0.64@w8, ~0.80@w10). Gate is above the
+ * welded width=10 value with headroom. */
+const MAX_TRANSITION_BAND_JUMP_MM = 0.85;
 
 async function loadDefaultGlbBuffer(): Promise<ArrayBuffer> {
     if (!existsSync(DEFAULT_GLB_CACHE)) {
