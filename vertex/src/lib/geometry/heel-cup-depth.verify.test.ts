@@ -203,10 +203,15 @@ describe("heel cup depth — bowl profile verification", () => {
 
         let maxBottomThickDrift = 0;
         let maxTopThickDrift = 0;
+        const PLANTAR_Z_MAX_MM = 1.0;
         for (let i = 0; i < modPos.length / 3; i++) {
             const dThick = Math.abs(modPos[i * 3 + thickAxis]! - basePos[i * 3 + thickAxis]!);
-            if (i >= topN) maxBottomThickDrift = Math.max(maxBottomThickDrift, dThick);
-            else maxTopThickDrift = Math.max(maxTopThickDrift, dThick);
+            if (i >= topN) {
+                // HC-1 plantar band only — rim-conformity may move the side wall.
+                if (basePos[i * 3 + thickAxis]! <= PLANTAR_Z_MAX_MM) {
+                    maxBottomThickDrift = Math.max(maxBottomThickDrift, dThick);
+                }
+            } else maxTopThickDrift = Math.max(maxTopThickDrift, dThick);
         }
 
         console.log("[HC-DEPTH-VERIFY] Default.glb depth=5", {

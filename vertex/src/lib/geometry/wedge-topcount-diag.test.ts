@@ -72,7 +72,10 @@ async function diagnose(wedge: WedgeCorrection | undefined, smoothing: number) {
     const modPos = modified.getAttribute("position")!.array as Float32Array;
 
     let maxBottomDrift = 0;
+    const PLANTAR_Z_MAX_MM = 1.0;
     for (let i = topVertexCount; i < totalVerts; i++) {
+        // HC-1 plantar band only — rim-conformity may move the side wall.
+        if (basePos[i * 3 + 2]! > PLANTAR_Z_MAX_MM) continue;
         maxBottomDrift = Math.max(maxBottomDrift, Math.abs(modPos[i * 3 + 2]! - basePos[i * 3 + 2]!));
     }
 

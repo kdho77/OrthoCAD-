@@ -8,11 +8,9 @@
 //   Default.glb rims are unequal (topRim≈446, botRim≈1184) so closeGlbInsoleToSolid
 //   takes the two-pointer path, NOT the equal-count path that Phase 1 guards.
 //   Phase 0's "equal-count" label was wrong: bridgeTris=1630 = 446+1184 (two-pointer),
-//   not 2×815. Measured SI with footprint-XY winding (this PR) is unchanged from
-//   Phase 0: depth0=249, depth3=305, depth8=369, depth15=340. The export gate
-//   correctly rejects depth>0 against the depth=0 baseline.
-//   Combined width≥0.5mm tears the top rim into ~3784 tiny loops (pre-existing
-//   base-modifier / boundary extraction — locked this round).
+//   not 2×815. Post rim-conformity transfer SI (remeasured): depth0=249, depth3=277,
+//   depth8=296, depth15=365. The export gate still rejects depth>0 against depth=0
+//   baseline (SI escalation). Combined width+depth is edge-manifold post-#109.
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -45,9 +43,9 @@ const BASELINE_SI_EPSILON = 30;
  */
 const MEASURED_SI_BY_DEPTH: Record<number, number> = {
     0: 249,
-    3: 305,
-    8: 369,
-    15: 340,
+    3: 277,
+    8: 296,
+    15: 365,
 };
 
 function neutralCorrections(): SideCorrections {
@@ -86,8 +84,28 @@ function maxBottomDriftMm(base: BufferGeometry, mod: BufferGeometry): number {
     const topN = (base.userData as { topVertexCount?: number }).topVertexCount ?? 0;
     const baseArr = base.getAttribute("position")!.array as Float32Array;
     const modArr = mod.getAttribute("position")!.array as Float32Array;
+    // Detect thick axis from extents (Default.glb → Z).
+    let maxExtent = -1;
+    let thickAxis = 2;
+    for (let a = 0; a < 3; a++) {
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (let i = 0; i < baseArr.length / 3; i++) {
+            const v = baseArr[i * 3 + a]!;
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+        }
+        const e = hi - lo;
+        if (maxExtent < 0 || e < maxExtent) {
+            maxExtent = e;
+            thickAxis = a;
+        }
+    }
+    const PLANTAR_Z_MAX_MM = 1.0;
     let max = 0;
     for (let i = topN; i < baseArr.length / 3; i++) {
+        // HC-1 plantar band only — rim-conformity may move the side wall.
+        if (baseArr[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) continue;
         const dx = modArr[i * 3]! - baseArr[i * 3]!;
         const dy = modArr[i * 3 + 1]! - baseArr[i * 3 + 1]!;
         const dz = modArr[i * 3 + 2]! - baseArr[i * 3 + 2]!;
@@ -206,7 +224,7 @@ describe("heel-cup-depth export solid (Default.glb)", () => {
                 });
             }
 
-            test("combined width=5 + depth=5: top rim tears (known pre-existing)", () => {
+            test("combined width=5 + depth=5: topRim healthy + edge-manifold (post-#109)", () => {
                 const mod = applyBaseModifiers(
                     baseGeo,
                     correctionField(side, { heelCupDepthMm: 5, heelCupWidthMm: 5 }),
@@ -214,10 +232,14 @@ describe("heel-cup-depth export solid (Default.glb)", () => {
                 );
                 try {
                     expect(maxBottomDriftMm(baseGeo, mod)).toBeLessThan(1e-6);
-                    // Width≥0.5mm fragments the top boundary into thousands of tiny
-                    // loops (locked base-modifier). closeGlbInsoleToSolid must hard-fail
-                    // edge-manifold rather than emit a silently broken solid.
-                    expect(() => closeGlbInsoleToSolid(mod)).toThrow(/not edge-manifold|rim loop/);
+                    const solid = closeGlbInsoleToSolid(mod);
+                    try {
+                        const report = validateManifold(solid);
+                        expect(report.openEdges).toBe(0);
+                        expect(report.nonManifoldEdges).toBe(0);
+                    } finally {
+                        solid.dispose();
+                    }
                 } finally {
                     mod.dispose();
                 }

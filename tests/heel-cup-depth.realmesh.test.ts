@@ -265,6 +265,28 @@ function maxVertexDeltaMm(a: Float32Array, b: Float32Array, from: number, to: nu
     return maxD;
 }
 
+/**
+ * HC-1 plantar band only (Z ≤ 1mm). Rim-conformity transfer intentionally
+ * moves the bottom side wall; the ground-contact sheet must stay fixed.
+ */
+function plantarBottomMaxDeltaMm(
+    baseArr: Float32Array,
+    modArr: Float32Array,
+    frame: HeelFrame,
+    plantarZMaxMm = 1.0,
+): number {
+    let maxD = 0;
+    for (let i = frame.topVertexCount; i < frame.count; i++) {
+        if (baseArr[i * 3 + frame.thickAxis]! > plantarZMaxMm) continue;
+        const dx = modArr[i * 3]! - baseArr[i * 3]!;
+        const dy = modArr[i * 3 + 1]! - baseArr[i * 3 + 1]!;
+        const dz = modArr[i * 3 + 2]! - baseArr[i * 3 + 2]!;
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (d > maxD) maxD = d;
+    }
+    return maxD;
+}
+
 /** Max displacement magnitude over the heel seat floor region (h < threshold). */
 function floorRegionMaxDeltaMm(
     cls: HeelClassification,
@@ -531,6 +553,7 @@ describe("heel cup depth — real Default.glb mesh", () => {
 
             const floorDelta = floorRegionMaxDeltaMm(cls, frame, baseArr, modArr);
             const bottomDelta = maxVertexDeltaMm(baseArr, modArr, frame.topVertexCount, frame.count);
+            const plantarDelta = plantarBottomMaxDeltaMm(baseArr, modArr, frame);
             const dihedral = wallBandMaxDihedralDeg(modified, cls, frame, baseArr);
             const split = maxCoincidentSplitMm(cls, frame, modArr);
             const { rise } = rimProfiles(cls, frame, baseArr, modArr);
@@ -540,6 +563,7 @@ describe("heel cup depth — real Default.glb mesh", () => {
                 fingerprint: topologyFingerprint(modified) === baseFingerprint ? "identical" : "CHANGED",
                 floorDelta,
                 bottomDelta,
+                plantarDelta,
                 wallDihedralDeg: dihedral,
                 baselineWallDihedralDeg,
                 coincidentSplit: split,
@@ -556,7 +580,8 @@ describe("heel cup depth — real Default.glb mesh", () => {
             );
 
             expect(topologyFingerprint(modified)).toBe(baseFingerprint);
-            expect(bottomDelta).toBe(0);
+            // HC-1: plantar band fixed; side wall may receive rim-conformity transfer.
+            expect(plantarDelta).toBeLessThan(0.05);
             expect(floorDelta).toBeLessThan(FLOOR_MAX_DELTA_MM);
             expect(split).toBeLessThan(MAX_COINCIDENT_SPLIT_MM);
             expect(dihedral).toBeLessThanOrEqual(baselineWallDihedralDeg + CREASE_BUDGET_DEG);
@@ -573,14 +598,16 @@ describe("heel cup depth — real Default.glb mesh", () => {
         const dihedral = wallBandMaxDihedralDeg(modified, cls, frame, baseArr);
         const floorThick = floorRegionMaxThickDeltaMm(cls, frame, baseArr, modArr);
         const bottomDelta = maxVertexDeltaMm(baseArr, modArr, frame.topVertexCount, frame.count);
+        const plantarDelta = plantarBottomMaxDeltaMm(baseArr, modArr, frame);
         console.log("[HC-REALMESH] combined width=5 depth=5", {
             wallDihedralDeg: dihedral,
             baselineWallDihedralDeg,
             floorThickDelta: floorThick,
             bottomDelta,
+            plantarDelta,
         });
         expect(topologyFingerprint(modified)).toBe(baseFingerprint);
-        expect(bottomDelta).toBe(0);
+        expect(plantarDelta).toBeLessThan(0.05);
         expect(floorThick).toBeLessThan(FLOOR_MAX_DELTA_MM);
         expect(dihedral).toBeLessThanOrEqual(baselineWallDihedralDeg + CREASE_BUDGET_DEG);
         modified.dispose();

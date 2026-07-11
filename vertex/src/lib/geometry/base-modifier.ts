@@ -11,7 +11,12 @@ import {
     quinticSmoothstep,
     smoothstep,
 } from "@/lib/geometry/height-field";
-import { closeGlbInsoleToSolid, SMOOTH_INWARD_LIMIT_MM } from "@/lib/geometry/mesh-close";
+import {
+    closeGlbInsoleToSolid,
+    extractOrderedBoundaryLoopWithIndices,
+    SMOOTH_INWARD_LIMIT_MM,
+    submeshByVertexRange,
+} from "@/lib/geometry/mesh-close";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
@@ -322,6 +327,17 @@ const TOP_FACTOR_THRESHOLD = 0.9;
 /** Laplacian iterations for heel-cup width lateral displacement (multi-mesh safe). */
 const HEEL_CUP_WIDTH_LAPLACIAN_ITERS = 2;
 
+/**
+ * Position quantization for coincident-copy grouping — matches mesh-close QUANT
+ * (1e4 → 0.1µm bins) so sync keeps the same copies welded that boundary extract
+ * would otherwise split after index-adjacency Laplacian.
+ */
+const WIDTH_COINCIDENT_QUANT = 1e4;
+
+function widthCoincidentQuantKey(x: number, y: number, z: number): string {
+    return `${Math.round(x * WIDTH_COINCIDENT_QUANT)},${Math.round(y * WIDTH_COINCIDENT_QUANT)},${Math.round(z * WIDTH_COINCIDENT_QUANT)}`;
+}
+
 function allowTopMeshNeighbor(
     index: number,
     isMultiMesh: boolean,
@@ -332,29 +348,142 @@ function allowTopMeshNeighbor(
     return topFactors ? topFactors[index]! > TOP_FACTOR_THRESHOLD : true;
 }
 
-/** Laplacian relax lateral displacement; neighbors filtered to top mesh only on multi-mesh GLB. */
-function relaxLateralDeltaField(
+/**
+ * Force all verts that share a base-position quant key to carry the same delta.
+ * Prevents index-adjacency Laplacian from separating unwelded GLB position copies
+ * (which fragments position-quantized rim extraction into thousands of tiny loops).
+ */
+function syncCoincidentDeltas(delta: Float32Array, groups: number[][]): void {
+    for (const group of groups) {
+        if (group.length < 2) continue;
+        let sum = 0;
+        for (const j of group) sum += delta[j]!;
+        const mean = sum / group.length;
+        for (const j of group) delta[j] = mean;
+    }
+}
+
+/**
+ * Build coincident-position groups for width Laplacian sync.
+ *
+ * Multi-mesh: groups are built from the TOP range [0, topVertexCount) ONLY so a
+ * top vert and a bottom vert that happen to share a quant key never average
+ * together. `crossMeshGroupCount` is measured over the full mesh as a safety
+ * check (how many position bins would have mixed top+bottom if we had not
+ * scoped) — sync itself never uses those mixed groups.
+ *
+ * Returns `allGroups` covering every sync-range index (singletons included) for
+ * the position-welded Laplacian supernode graph.
+ */
+function buildWidthCoincidenceGroups(
+    array: Float32Array,
+    count: number,
+    isMultiMesh: boolean,
+    topVertexCount: number,
+): {
+    groups: number[][];
+    allGroups: number[][];
+    syncIndexCount: number;
+    crossMeshGroupCount: number;
+} {
+    const syncEnd = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+    const syncMap = new Map<string, number[]>();
+    for (let i = 0; i < syncEnd; i++) {
+        const k = widthCoincidentQuantKey(array[i * 3]!, array[i * 3 + 1]!, array[i * 3 + 2]!);
+        let g = syncMap.get(k);
+        if (!g) {
+            g = [];
+            syncMap.set(k, g);
+        }
+        g.push(i);
+    }
+    const allGroups = [...syncMap.values()];
+    const groups = allGroups.filter((g) => g.length > 1);
+
+    // Safety audit: full-mesh bins that contain BOTH a top-range and bottom-range index.
+    let crossMeshGroupCount = 0;
+    if (isMultiMesh && topVertexCount > 0 && topVertexCount < count) {
+        const fullMap = new Map<string, { hasTop: boolean; hasBot: boolean }>();
+        for (let i = 0; i < count; i++) {
+            const k = widthCoincidentQuantKey(array[i * 3]!, array[i * 3 + 1]!, array[i * 3 + 2]!);
+            let e = fullMap.get(k);
+            if (!e) {
+                e = { hasTop: false, hasBot: false };
+                fullMap.set(k, e);
+            }
+            if (i < topVertexCount) e.hasTop = true;
+            else e.hasBot = true;
+        }
+        for (const e of fullMap.values()) {
+            if (e.hasTop && e.hasBot) crossMeshGroupCount++;
+        }
+    }
+
+    return { groups, allGroups, syncIndexCount: syncEnd, crossMeshGroupCount };
+}
+
+/**
+ * Laplacian on the position-welded supernode graph: coincident base-position
+ * copies share one delta, so diffusion cannot separate them. Index-adjacency
+ * edges are lifted to supernode↔supernode edges. Result is scattered back to
+ * every member index (identical delta within each group).
+ */
+function relaxLateralDeltaFieldWelded(
     raw: Float32Array,
     adj: number[][],
+    allGroups: number[][],
     allowNeighbor: (i: number) => boolean,
     iterations: number,
 ): Float32Array {
-    let current = raw;
+    const groupCount = allGroups.length;
+    const vertToGroup = new Int32Array(raw.length).fill(-1);
+    for (let g = 0; g < groupCount; g++) {
+        for (const vi of allGroups[g]!) vertToGroup[vi] = g;
+    }
+
+    // Lift index adjacency → supernode adjacency (unique neighbors).
+    const superAdj: number[][] = Array.from({ length: groupCount }, () => []);
+    const seen = Array.from({ length: groupCount }, () => new Set<number>());
+    for (let g = 0; g < groupCount; g++) {
+        for (const vi of allGroups[g]!) {
+            for (const n of adj[vi] ?? []) {
+                if (!allowNeighbor(n)) continue;
+                const ng = vertToGroup[n]!;
+                if (ng < 0 || ng === g || seen[g]!.has(ng)) continue;
+                seen[g]!.add(ng);
+                superAdj[g]!.push(ng);
+            }
+        }
+    }
+
+    // One delta per supernode (raw is already equal within a group; take [0]).
+    let current = new Float32Array(groupCount);
+    for (let g = 0; g < groupCount; g++) {
+        current[g] = raw[allGroups[g]![0]!]!;
+    }
+
     for (let it = 0; it < iterations; it++) {
-        const next = new Float32Array(raw.length);
-        for (let i = 0; i < raw.length; i++) {
-            const neighbors = adj[i]!.filter(allowNeighbor);
+        const next = new Float32Array(groupCount);
+        for (let g = 0; g < groupCount; g++) {
+            const neighbors = superAdj[g]!;
             if (neighbors.length === 0) {
-                next[i] = current[i]!;
+                next[g] = current[g]!;
                 continue;
             }
             let sum = 0;
             for (const n of neighbors) sum += current[n]!;
-            next[i] = current[i]! * 0.5 + (sum / neighbors.length) * 0.5;
+            next[g] = current[g]! * 0.5 + (sum / neighbors.length) * 0.5;
         }
         current = next;
     }
-    return current;
+
+    const out = new Float32Array(raw);
+    for (let g = 0; g < groupCount; g++) {
+        const v = current[g]!;
+        for (const vi of allGroups[g]!) out[vi] = v;
+    }
+    // Bottom / non-sync indices keep raw (already in `out` via copy).
+    return out;
 }
 
 /** Post-smoothing deviation clamp (SMOOTH_INWARD_LIMIT_MM safety net). */
@@ -373,6 +502,12 @@ export interface HeelCupWidthLateralDiagnostics {
     centerlineSmoothedDeltaMm: number;
     maxLateralAtEdgeMm: number;
     maxTransitionBandJumpMm: number;
+    /** Top-only sync range end index (=== topVertexCount on multi-mesh). */
+    coincidenceSyncIndexCount: number;
+    /** Full-mesh quant bins that contain both a top and a bottom index (audit). */
+    crossMeshCoincidenceGroupCount: number;
+    /** Number of top-scoped groups with ≥2 members used by syncCoincident. */
+    coincidentGroupCount: number;
 }
 
 interface LateralDeltaContext {
@@ -392,7 +527,13 @@ function buildHeelCupWidthLateralDelta(
     topFactors: Float32Array | null,
     isMultiMesh: boolean,
     topVertexCount: number,
-): { raw: Float32Array; smoothed: Float32Array } {
+): {
+    raw: Float32Array;
+    smoothed: Float32Array;
+    coincidenceSyncIndexCount: number;
+    crossMeshCoincidenceGroupCount: number;
+    coincidentGroupCount: number;
+} {
     const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
     const raw = new Float32Array(count);
     for (let i = 0; i < count; i++) {
@@ -404,19 +545,70 @@ function buildHeelCupWidthLateralDelta(
         raw[i] = offset * (scale - 1);
     }
 
+    const {
+        groups,
+        allGroups,
+        syncIndexCount: coincidenceSyncIndexCount,
+        crossMeshGroupCount: crossMeshCoincidenceGroupCount,
+    } = buildWidthCoincidenceGroups(array, count, isMultiMesh, topVertexCount);
+    const coincidentGroupCount = groups.length;
+
     if (field.corrections.heelCupWidthMm <= 0) {
-        return { raw, smoothed: raw };
+        return {
+            raw,
+            smoothed: raw,
+            coincidenceSyncIndexCount,
+            crossMeshCoincidenceGroupCount,
+            coincidentGroupCount,
+        };
     }
 
     const adj = getBaseAdjacency(base);
     if (!adj) {
-        return { raw, smoothed: raw };
+        return {
+            raw,
+            smoothed: raw,
+            coincidenceSyncIndexCount,
+            crossMeshCoincidenceGroupCount,
+            coincidentGroupCount,
+        };
+    }
+
+    // Multi-mesh: sync groups are top-only by construction (see buildWidthCoincidenceGroups).
+    if (isMultiMesh && topVertexCount > 0) {
+        for (const g of allGroups) {
+            for (const idx of g) {
+                if (idx >= topVertexCount) {
+                    throw new Error(
+                        `[HC-WIDTH] syncCoincident group leaked bottom index ${idx} (topVertexCount=${topVertexCount})`,
+                    );
+                }
+            }
+        }
     }
 
     const allowN = (idx: number) => allowTopMeshNeighbor(idx, isMultiMesh, topVertexCount, topFactors);
-    const smoothed = relaxLateralDeltaField(raw, adj, allowN, HEEL_CUP_WIDTH_LAPLACIAN_ITERS);
+    // Position-welded Laplacian: coincident copies are one supernode during
+    // diffusion (cannot diverge), then scatter identical deltas. Avoids both
+    // mid-iter sync (re-amplifies crease) and post-hoc average (same failure).
+    const smoothed = relaxLateralDeltaFieldWelded(
+        raw,
+        adj,
+        allGroups,
+        allowN,
+        HEEL_CUP_WIDTH_LAPLACIAN_ITERS,
+    );
     clampLateralDeviation(raw, smoothed, SMOOTH_INWARD_LIMIT_MM);
-    return { raw, smoothed };
+    // Clamp can in principle introduce tiny float divergence within a group —
+    // re-sync so rim extract still sees welded positions.
+    syncCoincidentDeltas(smoothed, groups);
+    return {
+        raw,
+        smoothed,
+        coincidenceSyncIndexCount,
+        crossMeshCoincidenceGroupCount,
+        coincidentGroupCount,
+    };
 }
 
 // --- Heel cup depth: monotone tangent displacement field --------------------
@@ -806,6 +998,313 @@ function heelCupDepthDisplacements(frame: HeelCupDepthFrame, depthMm: number): F
     return out;
 }
 
+// --- Bottom-wall rim-conformity delta transfer (multi-mesh only) ------------
+// Samples the already-applied top-mesh total correction at the top rim and
+// scatters it onto bottom side-wall verts via BASE footprint correspondence
+// with analytic falloff. No Laplacian / diffusion. Correspondence + weights
+// are pure functions of the base mesh (cached); per-edit work is O(sparse).
+
+/** Max footprint distance (mm) for a valid top-rim ↔ wall-top seed pair. */
+export const RIM_PAIR_TOL_MM = 1.0;
+/** Footprint corridor (mm) beyond which wall verts receive zero transfer. */
+export const WALL_CORRIDOR_MM = 5.0;
+/** Wall-top seed must sit at least this far above plantar (mm). */
+export const WALL_TOP_MIN_Z_MM = 2.0;
+/** Plantar band (mm): HC-1 fixed; transfer weight is identically zero. */
+export const PLANTAR_Z_MAX_MM = 1.0;
+/** Anterior taper start (normalized length u); weight still 1.0 at/below. */
+export const ANTERIOR_U0 = 0.6;
+/** Anterior taper end (normalized length u); weight identically 0.0 at/above. */
+export const ANTERIOR_U1 = 0.8;
+
+/** w_h = smoothstep(clamp(h, 0, 1)) — h ≥ 1 → full weight (wall-top target). */
+export function rimConformityHeightWeight(h: number): number {
+    return smoothstep(0, 1, Math.max(0, Math.min(1, h)));
+}
+
+/** w_u: 1 for u ≤ ANTERIOR_U0, 0 for u ≥ ANTERIOR_U1, C1 ramp between. */
+export function rimConformityAnteriorTaperWeight(u: number): number {
+    return smoothstep(ANTERIOR_U1, ANTERIOR_U0, u);
+}
+
+/**
+ * w_d: 1 for d ≤ RIM_PAIR_TOL_MM, 0 for d ≥ WALL_CORRIDOR_MM, C1 ramp between.
+ * `d` is footprint distance to the paired seed's BASE wallTopIndex footprint.
+ */
+export function rimConformityDistanceWeight(d: number): number {
+    return smoothstep(WALL_CORRIDOR_MM, RIM_PAIR_TOL_MM, d);
+}
+
+interface RimWallSeed {
+    topRimIndex: number;
+    wallTopIndex: number;
+    fpLen: number;
+    fpWid: number;
+    wallTopZ: number;
+    u: number;
+}
+
+interface RimConformityFrame {
+    seeds: RimWallSeed[];
+    botMinZ: number;
+    lengthAxis: AxisIndex;
+    widthAxis: AxisIndex;
+    thickAxis: AxisIndex;
+    topVertexCount: number;
+    wallVertexIndex: Int32Array;
+    wallSeedIndex: Int32Array;
+    wallWeight: Float32Array;
+}
+
+const rimConformityCache = new WeakMap<BufferGeometry, RimConformityFrame | null>();
+
+function buildRimConformityFrame(
+    base: BufferGeometry,
+    topVertexCount: number,
+    lengthAxis: AxisIndex,
+    widthAxis: AxisIndex,
+    thickAxis: AxisIndex,
+    lenMin: number,
+    lenSize: number,
+): RimConformityFrame | null {
+    const pos = base.getAttribute("position");
+    if (!pos || topVertexCount <= 0) return null;
+    const baseArr = pos.array as Float32Array;
+    const count = pos.count;
+    if (topVertexCount >= count) return null;
+
+    const topSub = submeshByVertexRange(base, 0, topVertexCount);
+    let topRimIdx: number[];
+    try {
+        topRimIdx = extractOrderedBoundaryLoopWithIndices(topSub).indices;
+    } finally {
+        topSub.dispose();
+    }
+    if (topRimIdx.length < 3) return null;
+
+    let botMinZ = Infinity;
+    for (let i = topVertexCount; i < count; i++) {
+        const z = baseArr[i * 3 + thickAxis]!;
+        if (z < botMinZ) botMinZ = z;
+    }
+    if (!Number.isFinite(botMinZ)) return null;
+
+    // Spatial hash of bottom verts for seed extraction + corridor queries.
+    const cell = RIM_PAIR_TOL_MM;
+    const hash = new Map<string, number[]>();
+    const fpKey = (len: number, wid: number): string =>
+        `${Math.floor(len / cell)},${Math.floor(wid / cell)}`;
+    for (let i = topVertexCount; i < count; i++) {
+        const len = baseArr[i * 3 + lengthAxis]!;
+        const wid = baseArr[i * 3 + widthAxis]!;
+        const k = fpKey(len, wid);
+        let bucket = hash.get(k);
+        if (!bucket) {
+            bucket = [];
+            hash.set(k, bucket);
+        }
+        bucket.push(i);
+    }
+
+    const queryBottom = (len: number, wid: number, tol: number): number[] => {
+        const bins = Math.ceil(tol / cell) + 1;
+        const cx = Math.floor(len / cell);
+        const cy = Math.floor(wid / cell);
+        const out: number[] = [];
+        for (let dx = -bins; dx <= bins; dx++) {
+            for (let dy = -bins; dy <= bins; dy++) {
+                const bucket = hash.get(`${cx + dx},${cy + dy}`);
+                if (!bucket) continue;
+                for (const bi of bucket) {
+                    const bl = baseArr[bi * 3 + lengthAxis]!;
+                    const bw = baseArr[bi * 3 + widthAxis]!;
+                    if (Math.hypot(bl - len, bw - wid) <= tol) out.push(bi);
+                }
+            }
+        }
+        return out;
+    };
+
+    const seeds: RimWallSeed[] = [];
+    // Multiple top-rim verts may resolve to the same wallTopIndex; keep the
+    // pair with the smallest footprint distance so seed NN is unambiguous.
+    const seedByWallTop = new Map<number, RimWallSeed & { pairD: number }>();
+    for (const j of topRimIdx) {
+        const len = baseArr[j * 3 + lengthAxis]!;
+        const wid = baseArr[j * 3 + widthAxis]!;
+        const cands = queryBottom(len, wid, RIM_PAIR_TOL_MM);
+        let best = -1;
+        let bestZ = -Infinity;
+        let bestD = Infinity;
+        for (const bi of cands) {
+            const z = baseArr[bi * 3 + thickAxis]!;
+            const bl = baseArr[bi * 3 + lengthAxis]!;
+            const bw = baseArr[bi * 3 + widthAxis]!;
+            const d = Math.hypot(bl - len, bw - wid);
+            if (z > bestZ + 1e-9 || (Math.abs(z - bestZ) <= 1e-9 && d < bestD)) {
+                bestZ = z;
+                best = bi;
+                bestD = d;
+            }
+        }
+        if (best < 0 || bestZ < WALL_TOP_MIN_Z_MM) continue;
+        const u = Math.max(0, Math.min(1, (len - lenMin) / (lenSize || 1)));
+        const prev = seedByWallTop.get(best);
+        if (prev && prev.pairD <= bestD) continue;
+        seedByWallTop.set(best, {
+            topRimIndex: j,
+            wallTopIndex: best,
+            fpLen: baseArr[best * 3 + lengthAxis]!,
+            fpWid: baseArr[best * 3 + widthAxis]!,
+            wallTopZ: bestZ,
+            u,
+            pairD: bestD,
+        });
+    }
+    for (const s of seedByWallTop.values()) {
+        seeds.push({
+            topRimIndex: s.topRimIndex,
+            wallTopIndex: s.wallTopIndex,
+            fpLen: s.fpLen,
+            fpWid: s.fpWid,
+            wallTopZ: s.wallTopZ,
+            u: s.u,
+        });
+    }
+    if (seeds.length === 0) return null;
+
+    // Seed footprint hash for NN (d measured to seed.wallTopIndex BASE footprint).
+    const seedCell = RIM_PAIR_TOL_MM;
+    const seedHash = new Map<string, number[]>();
+    const seedKey = (len: number, wid: number): string =>
+        `${Math.floor(len / seedCell)},${Math.floor(wid / seedCell)}`;
+    for (let s = 0; s < seeds.length; s++) {
+        const seed = seeds[s]!;
+        const k = seedKey(seed.fpLen, seed.fpWid);
+        let bucket = seedHash.get(k);
+        if (!bucket) {
+            bucket = [];
+            seedHash.set(k, bucket);
+        }
+        bucket.push(s);
+    }
+
+    const wallVerts: number[] = [];
+    const wallSeeds: number[] = [];
+    const wallWeights: number[] = [];
+    const corridorBins = Math.ceil(WALL_CORRIDOR_MM / seedCell) + 1;
+
+    for (let i = topVertexCount; i < count; i++) {
+        const z = baseArr[i * 3 + thickAxis]!;
+        if (z <= PLANTAR_Z_MAX_MM) continue;
+
+        const len = baseArr[i * 3 + lengthAxis]!;
+        const wid = baseArr[i * 3 + widthAxis]!;
+        const cx = Math.floor(len / seedCell);
+        const cy = Math.floor(wid / seedCell);
+
+        let bestS = -1;
+        let bestD = Infinity;
+        for (let dx = -corridorBins; dx <= corridorBins; dx++) {
+            for (let dy = -corridorBins; dy <= corridorBins; dy++) {
+                const bucket = seedHash.get(`${cx + dx},${cy + dy}`);
+                if (!bucket) continue;
+                for (const s of bucket) {
+                    const seed = seeds[s]!;
+                    const d = Math.hypot(seed.fpLen - len, seed.fpWid - wid);
+                    if (d < bestD) {
+                        bestD = d;
+                        bestS = s;
+                    }
+                }
+            }
+        }
+        if (bestS < 0 || bestD >= WALL_CORRIDOR_MM) continue;
+
+        const seed = seeds[bestS]!;
+        const denom = seed.wallTopZ - botMinZ;
+        const h = denom > 1e-9 ? (z - botMinZ) / denom : 0;
+        const w =
+            rimConformityHeightWeight(h) *
+            rimConformityAnteriorTaperWeight(seed.u) *
+            rimConformityDistanceWeight(bestD);
+        if (w <= 0) continue;
+
+        wallVerts.push(i);
+        wallSeeds.push(bestS);
+        wallWeights.push(w);
+    }
+
+    return {
+        seeds,
+        botMinZ,
+        lengthAxis,
+        widthAxis,
+        thickAxis,
+        topVertexCount,
+        wallVertexIndex: Int32Array.from(wallVerts),
+        wallSeedIndex: Int32Array.from(wallSeeds),
+        wallWeight: Float32Array.from(wallWeights),
+    };
+}
+
+function getRimConformityFrame(
+    base: BufferGeometry,
+    topVertexCount: number,
+    lengthAxis: AxisIndex,
+    widthAxis: AxisIndex,
+    thickAxis: AxisIndex,
+    lenMin: number,
+    lenSize: number,
+): RimConformityFrame | null {
+    const cached = rimConformityCache.get(base);
+    if (cached !== undefined) return cached;
+    const frame = buildRimConformityFrame(
+        base,
+        topVertexCount,
+        lengthAxis,
+        widthAxis,
+        thickAxis,
+        lenMin,
+        lenSize,
+    );
+    rimConformityCache.set(base, frame);
+    return frame;
+}
+
+/**
+ * Scatter precomputed rim deltas onto bottom wall verts.
+ * Reads corrected top positions from `array`; writes bottom from BASE only.
+ */
+function transferRimConformityDeltas(
+    base: BufferGeometry,
+    array: Float32Array,
+    frame: RimConformityFrame,
+): void {
+    const basePos = base.getAttribute("position");
+    if (!basePos) return;
+    const baseArr = basePos.array as Float32Array;
+    const { wallVertexIndex, wallSeedIndex, wallWeight, seeds, topVertexCount } = frame;
+
+    for (let k = 0; k < wallVertexIndex.length; k++) {
+        const i = wallVertexIndex[k]!;
+        if (i < topVertexCount) {
+            throw new Error(
+                `[RIM-CONFORMITY] leak guard: attempted write to top index ${i} (topVertexCount=${topVertexCount})`,
+            );
+        }
+        const seed = seeds[wallSeedIndex[k]!]!;
+        const j = seed.topRimIndex;
+        const w = wallWeight[k]!;
+        const dx = array[j * 3]! - baseArr[j * 3]!;
+        const dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
+        const dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
+        array[i * 3] = baseArr[i * 3]! + w * dx;
+        array[i * 3 + 1] = baseArr[i * 3 + 1]! + w * dy;
+        array[i * 3 + 2] = baseArr[i * 3 + 2]! + w * dz;
+    }
+}
+
 /** Verification helper: post-smoothing lateral delta stats for heel-cup width. */
 export function diagnoseHeelCupWidthLateral(
     base: BufferGeometry,
@@ -838,7 +1337,13 @@ export function diagnoseHeelCupWidthLateral(
             ? baseUserData.topVertexCount
             : 0;
 
-    const { raw, smoothed } = buildHeelCupWidthLateralDelta(
+    const {
+        raw,
+        smoothed,
+        coincidenceSyncIndexCount,
+        crossMeshCoincidenceGroupCount,
+        coincidentGroupCount,
+    } = buildHeelCupWidthLateralDelta(
         base,
         field,
         { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
@@ -886,6 +1391,9 @@ export function diagnoseHeelCupWidthLateral(
         centerlineSmoothedDeltaMm: smoothed[centerlineClosestIndex]!,
         maxLateralAtEdgeMm,
         maxTransitionBandJumpMm,
+        coincidenceSyncIndexCount,
+        crossMeshCoincidenceGroupCount,
+        coincidentGroupCount,
     };
 }
 
@@ -1067,9 +1575,30 @@ export function applyBaseModifiers(
         }
     }
 
+    // Rim-conformity transfer: scatter top-rim total deltas onto bottom wall
+    // verts (multi-mesh only). Correspondence + weights are BASE-cached;
+    // this call only applies w · (correctedTop − baseTop) from base positions.
+    if (isMultiMesh && topVertexCount > 0) {
+        const rimFrame = getRimConformityFrame(
+            base,
+            topVertexCount,
+            lengthAxis,
+            widthAxis,
+            thickAxis,
+            lenMin,
+            lenSize,
+        );
+        if (rimFrame && rimFrame.seeds.length > 0) {
+            transferRimConformityDeltas(base, array, rimFrame);
+        }
+    }
+
     if (originalBottomZ && typeof console !== "undefined") {
         let maxDrift = 0;
+        const baseArr = base.getAttribute("position")!.array as Float32Array;
         for (let i = topVertexCount; i < count; i++) {
+            // HC-1: only the plantar band must stay fixed; wall verts intentionally move.
+            if (baseArr[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) continue;
             const drift = Math.abs(array[i * 3 + thickAxis]! - originalBottomZ[i - topVertexCount]!);
             if (drift > maxDrift) maxDrift = drift;
         }
