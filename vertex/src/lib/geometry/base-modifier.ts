@@ -327,6 +327,17 @@ const TOP_FACTOR_THRESHOLD = 0.9;
 /** Laplacian iterations for heel-cup width lateral displacement (multi-mesh safe). */
 const HEEL_CUP_WIDTH_LAPLACIAN_ITERS = 2;
 
+/**
+ * Position quantization for coincident-copy grouping — matches mesh-close QUANT
+ * (1e4 → 0.1µm bins) so sync keeps the same copies welded that boundary extract
+ * would otherwise split after index-adjacency Laplacian.
+ */
+const WIDTH_COINCIDENT_QUANT = 1e4;
+
+function widthCoincidentQuantKey(x: number, y: number, z: number): string {
+    return `${Math.round(x * WIDTH_COINCIDENT_QUANT)},${Math.round(y * WIDTH_COINCIDENT_QUANT)},${Math.round(z * WIDTH_COINCIDENT_QUANT)}`;
+}
+
 function allowTopMeshNeighbor(
     index: number,
     isMultiMesh: boolean,
@@ -337,29 +348,142 @@ function allowTopMeshNeighbor(
     return topFactors ? topFactors[index]! > TOP_FACTOR_THRESHOLD : true;
 }
 
-/** Laplacian relax lateral displacement; neighbors filtered to top mesh only on multi-mesh GLB. */
-function relaxLateralDeltaField(
+/**
+ * Force all verts that share a base-position quant key to carry the same delta.
+ * Prevents index-adjacency Laplacian from separating unwelded GLB position copies
+ * (which fragments position-quantized rim extraction into thousands of tiny loops).
+ */
+function syncCoincidentDeltas(delta: Float32Array, groups: number[][]): void {
+    for (const group of groups) {
+        if (group.length < 2) continue;
+        let sum = 0;
+        for (const j of group) sum += delta[j]!;
+        const mean = sum / group.length;
+        for (const j of group) delta[j] = mean;
+    }
+}
+
+/**
+ * Build coincident-position groups for width Laplacian sync.
+ *
+ * Multi-mesh: groups are built from the TOP range [0, topVertexCount) ONLY so a
+ * top vert and a bottom vert that happen to share a quant key never average
+ * together. `crossMeshGroupCount` is measured over the full mesh as a safety
+ * check (how many position bins would have mixed top+bottom if we had not
+ * scoped) — sync itself never uses those mixed groups.
+ *
+ * Returns `allGroups` covering every sync-range index (singletons included) for
+ * the position-welded Laplacian supernode graph.
+ */
+function buildWidthCoincidenceGroups(
+    array: Float32Array,
+    count: number,
+    isMultiMesh: boolean,
+    topVertexCount: number,
+): {
+    groups: number[][];
+    allGroups: number[][];
+    syncIndexCount: number;
+    crossMeshGroupCount: number;
+} {
+    const syncEnd = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+    const syncMap = new Map<string, number[]>();
+    for (let i = 0; i < syncEnd; i++) {
+        const k = widthCoincidentQuantKey(array[i * 3]!, array[i * 3 + 1]!, array[i * 3 + 2]!);
+        let g = syncMap.get(k);
+        if (!g) {
+            g = [];
+            syncMap.set(k, g);
+        }
+        g.push(i);
+    }
+    const allGroups = [...syncMap.values()];
+    const groups = allGroups.filter((g) => g.length > 1);
+
+    // Safety audit: full-mesh bins that contain BOTH a top-range and bottom-range index.
+    let crossMeshGroupCount = 0;
+    if (isMultiMesh && topVertexCount > 0 && topVertexCount < count) {
+        const fullMap = new Map<string, { hasTop: boolean; hasBot: boolean }>();
+        for (let i = 0; i < count; i++) {
+            const k = widthCoincidentQuantKey(array[i * 3]!, array[i * 3 + 1]!, array[i * 3 + 2]!);
+            let e = fullMap.get(k);
+            if (!e) {
+                e = { hasTop: false, hasBot: false };
+                fullMap.set(k, e);
+            }
+            if (i < topVertexCount) e.hasTop = true;
+            else e.hasBot = true;
+        }
+        for (const e of fullMap.values()) {
+            if (e.hasTop && e.hasBot) crossMeshGroupCount++;
+        }
+    }
+
+    return { groups, allGroups, syncIndexCount: syncEnd, crossMeshGroupCount };
+}
+
+/**
+ * Laplacian on the position-welded supernode graph: coincident base-position
+ * copies share one delta, so diffusion cannot separate them. Index-adjacency
+ * edges are lifted to supernode↔supernode edges. Result is scattered back to
+ * every member index (identical delta within each group).
+ */
+function relaxLateralDeltaFieldWelded(
     raw: Float32Array,
     adj: number[][],
+    allGroups: number[][],
     allowNeighbor: (i: number) => boolean,
     iterations: number,
 ): Float32Array {
-    let current = raw;
+    const groupCount = allGroups.length;
+    const vertToGroup = new Int32Array(raw.length).fill(-1);
+    for (let g = 0; g < groupCount; g++) {
+        for (const vi of allGroups[g]!) vertToGroup[vi] = g;
+    }
+
+    // Lift index adjacency → supernode adjacency (unique neighbors).
+    const superAdj: number[][] = Array.from({ length: groupCount }, () => []);
+    const seen = Array.from({ length: groupCount }, () => new Set<number>());
+    for (let g = 0; g < groupCount; g++) {
+        for (const vi of allGroups[g]!) {
+            for (const n of adj[vi] ?? []) {
+                if (!allowNeighbor(n)) continue;
+                const ng = vertToGroup[n]!;
+                if (ng < 0 || ng === g || seen[g]!.has(ng)) continue;
+                seen[g]!.add(ng);
+                superAdj[g]!.push(ng);
+            }
+        }
+    }
+
+    // One delta per supernode (raw is already equal within a group; take [0]).
+    let current = new Float32Array(groupCount);
+    for (let g = 0; g < groupCount; g++) {
+        current[g] = raw[allGroups[g]![0]!]!;
+    }
+
     for (let it = 0; it < iterations; it++) {
-        const next = new Float32Array(raw.length);
-        for (let i = 0; i < raw.length; i++) {
-            const neighbors = adj[i]!.filter(allowNeighbor);
+        const next = new Float32Array(groupCount);
+        for (let g = 0; g < groupCount; g++) {
+            const neighbors = superAdj[g]!;
             if (neighbors.length === 0) {
-                next[i] = current[i]!;
+                next[g] = current[g]!;
                 continue;
             }
             let sum = 0;
             for (const n of neighbors) sum += current[n]!;
-            next[i] = current[i]! * 0.5 + (sum / neighbors.length) * 0.5;
+            next[g] = current[g]! * 0.5 + (sum / neighbors.length) * 0.5;
         }
         current = next;
     }
-    return current;
+
+    const out = new Float32Array(raw);
+    for (let g = 0; g < groupCount; g++) {
+        const v = current[g]!;
+        for (const vi of allGroups[g]!) out[vi] = v;
+    }
+    // Bottom / non-sync indices keep raw (already in `out` via copy).
+    return out;
 }
 
 /** Post-smoothing deviation clamp (SMOOTH_INWARD_LIMIT_MM safety net). */
@@ -378,6 +502,12 @@ export interface HeelCupWidthLateralDiagnostics {
     centerlineSmoothedDeltaMm: number;
     maxLateralAtEdgeMm: number;
     maxTransitionBandJumpMm: number;
+    /** Top-only sync range end index (=== topVertexCount on multi-mesh). */
+    coincidenceSyncIndexCount: number;
+    /** Full-mesh quant bins that contain both a top and a bottom index (audit). */
+    crossMeshCoincidenceGroupCount: number;
+    /** Number of top-scoped groups with ≥2 members used by syncCoincident. */
+    coincidentGroupCount: number;
 }
 
 interface LateralDeltaContext {
@@ -397,7 +527,13 @@ function buildHeelCupWidthLateralDelta(
     topFactors: Float32Array | null,
     isMultiMesh: boolean,
     topVertexCount: number,
-): { raw: Float32Array; smoothed: Float32Array } {
+): {
+    raw: Float32Array;
+    smoothed: Float32Array;
+    coincidenceSyncIndexCount: number;
+    crossMeshCoincidenceGroupCount: number;
+    coincidentGroupCount: number;
+} {
     const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
     const raw = new Float32Array(count);
     for (let i = 0; i < count; i++) {
@@ -409,19 +545,70 @@ function buildHeelCupWidthLateralDelta(
         raw[i] = offset * (scale - 1);
     }
 
+    const {
+        groups,
+        allGroups,
+        syncIndexCount: coincidenceSyncIndexCount,
+        crossMeshGroupCount: crossMeshCoincidenceGroupCount,
+    } = buildWidthCoincidenceGroups(array, count, isMultiMesh, topVertexCount);
+    const coincidentGroupCount = groups.length;
+
     if (field.corrections.heelCupWidthMm <= 0) {
-        return { raw, smoothed: raw };
+        return {
+            raw,
+            smoothed: raw,
+            coincidenceSyncIndexCount,
+            crossMeshCoincidenceGroupCount,
+            coincidentGroupCount,
+        };
     }
 
     const adj = getBaseAdjacency(base);
     if (!adj) {
-        return { raw, smoothed: raw };
+        return {
+            raw,
+            smoothed: raw,
+            coincidenceSyncIndexCount,
+            crossMeshCoincidenceGroupCount,
+            coincidentGroupCount,
+        };
+    }
+
+    // Multi-mesh: sync groups are top-only by construction (see buildWidthCoincidenceGroups).
+    if (isMultiMesh && topVertexCount > 0) {
+        for (const g of allGroups) {
+            for (const idx of g) {
+                if (idx >= topVertexCount) {
+                    throw new Error(
+                        `[HC-WIDTH] syncCoincident group leaked bottom index ${idx} (topVertexCount=${topVertexCount})`,
+                    );
+                }
+            }
+        }
     }
 
     const allowN = (idx: number) => allowTopMeshNeighbor(idx, isMultiMesh, topVertexCount, topFactors);
-    const smoothed = relaxLateralDeltaField(raw, adj, allowN, HEEL_CUP_WIDTH_LAPLACIAN_ITERS);
+    // Position-welded Laplacian: coincident copies are one supernode during
+    // diffusion (cannot diverge), then scatter identical deltas. Avoids both
+    // mid-iter sync (re-amplifies crease) and post-hoc average (same failure).
+    const smoothed = relaxLateralDeltaFieldWelded(
+        raw,
+        adj,
+        allGroups,
+        allowN,
+        HEEL_CUP_WIDTH_LAPLACIAN_ITERS,
+    );
     clampLateralDeviation(raw, smoothed, SMOOTH_INWARD_LIMIT_MM);
-    return { raw, smoothed };
+    // Clamp can in principle introduce tiny float divergence within a group —
+    // re-sync so rim extract still sees welded positions.
+    syncCoincidentDeltas(smoothed, groups);
+    return {
+        raw,
+        smoothed,
+        coincidenceSyncIndexCount,
+        crossMeshCoincidenceGroupCount,
+        coincidentGroupCount,
+    };
 }
 
 // --- Heel cup depth: monotone tangent displacement field --------------------
@@ -1150,7 +1337,13 @@ export function diagnoseHeelCupWidthLateral(
             ? baseUserData.topVertexCount
             : 0;
 
-    const { raw, smoothed } = buildHeelCupWidthLateralDelta(
+    const {
+        raw,
+        smoothed,
+        coincidenceSyncIndexCount,
+        crossMeshCoincidenceGroupCount,
+        coincidentGroupCount,
+    } = buildHeelCupWidthLateralDelta(
         base,
         field,
         { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
@@ -1198,6 +1391,9 @@ export function diagnoseHeelCupWidthLateral(
         centerlineSmoothedDeltaMm: smoothed[centerlineClosestIndex]!,
         maxLateralAtEdgeMm,
         maxTransitionBandJumpMm,
+        coincidenceSyncIndexCount,
+        crossMeshCoincidenceGroupCount,
+        coincidentGroupCount,
     };
 }
 
