@@ -11,7 +11,12 @@ import {
     quinticSmoothstep,
     smoothstep,
 } from "@/lib/geometry/height-field";
-import { closeGlbInsoleToSolid, SMOOTH_INWARD_LIMIT_MM } from "@/lib/geometry/mesh-close";
+import {
+    closeGlbInsoleToSolid,
+    extractOrderedBoundaryLoopWithIndices,
+    SMOOTH_INWARD_LIMIT_MM,
+    submeshByVertexRange,
+} from "@/lib/geometry/mesh-close";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
@@ -806,6 +811,313 @@ function heelCupDepthDisplacements(frame: HeelCupDepthFrame, depthMm: number): F
     return out;
 }
 
+// --- Bottom-wall rim-conformity delta transfer (multi-mesh only) ------------
+// Samples the already-applied top-mesh total correction at the top rim and
+// scatters it onto bottom side-wall verts via BASE footprint correspondence
+// with analytic falloff. No Laplacian / diffusion. Correspondence + weights
+// are pure functions of the base mesh (cached); per-edit work is O(sparse).
+
+/** Max footprint distance (mm) for a valid top-rim ↔ wall-top seed pair. */
+export const RIM_PAIR_TOL_MM = 1.0;
+/** Footprint corridor (mm) beyond which wall verts receive zero transfer. */
+export const WALL_CORRIDOR_MM = 5.0;
+/** Wall-top seed must sit at least this far above plantar (mm). */
+export const WALL_TOP_MIN_Z_MM = 2.0;
+/** Plantar band (mm): HC-1 fixed; transfer weight is identically zero. */
+export const PLANTAR_Z_MAX_MM = 1.0;
+/** Anterior taper start (normalized length u); weight still 1.0 at/below. */
+export const ANTERIOR_U0 = 0.6;
+/** Anterior taper end (normalized length u); weight identically 0.0 at/above. */
+export const ANTERIOR_U1 = 0.8;
+
+/** w_h = smoothstep(clamp(h, 0, 1)) — h ≥ 1 → full weight (wall-top target). */
+export function rimConformityHeightWeight(h: number): number {
+    return smoothstep(0, 1, Math.max(0, Math.min(1, h)));
+}
+
+/** w_u: 1 for u ≤ ANTERIOR_U0, 0 for u ≥ ANTERIOR_U1, C1 ramp between. */
+export function rimConformityAnteriorTaperWeight(u: number): number {
+    return smoothstep(ANTERIOR_U1, ANTERIOR_U0, u);
+}
+
+/**
+ * w_d: 1 for d ≤ RIM_PAIR_TOL_MM, 0 for d ≥ WALL_CORRIDOR_MM, C1 ramp between.
+ * `d` is footprint distance to the paired seed's BASE wallTopIndex footprint.
+ */
+export function rimConformityDistanceWeight(d: number): number {
+    return smoothstep(WALL_CORRIDOR_MM, RIM_PAIR_TOL_MM, d);
+}
+
+interface RimWallSeed {
+    topRimIndex: number;
+    wallTopIndex: number;
+    fpLen: number;
+    fpWid: number;
+    wallTopZ: number;
+    u: number;
+}
+
+interface RimConformityFrame {
+    seeds: RimWallSeed[];
+    botMinZ: number;
+    lengthAxis: AxisIndex;
+    widthAxis: AxisIndex;
+    thickAxis: AxisIndex;
+    topVertexCount: number;
+    wallVertexIndex: Int32Array;
+    wallSeedIndex: Int32Array;
+    wallWeight: Float32Array;
+}
+
+const rimConformityCache = new WeakMap<BufferGeometry, RimConformityFrame | null>();
+
+function buildRimConformityFrame(
+    base: BufferGeometry,
+    topVertexCount: number,
+    lengthAxis: AxisIndex,
+    widthAxis: AxisIndex,
+    thickAxis: AxisIndex,
+    lenMin: number,
+    lenSize: number,
+): RimConformityFrame | null {
+    const pos = base.getAttribute("position");
+    if (!pos || topVertexCount <= 0) return null;
+    const baseArr = pos.array as Float32Array;
+    const count = pos.count;
+    if (topVertexCount >= count) return null;
+
+    const topSub = submeshByVertexRange(base, 0, topVertexCount);
+    let topRimIdx: number[];
+    try {
+        topRimIdx = extractOrderedBoundaryLoopWithIndices(topSub).indices;
+    } finally {
+        topSub.dispose();
+    }
+    if (topRimIdx.length < 3) return null;
+
+    let botMinZ = Infinity;
+    for (let i = topVertexCount; i < count; i++) {
+        const z = baseArr[i * 3 + thickAxis]!;
+        if (z < botMinZ) botMinZ = z;
+    }
+    if (!Number.isFinite(botMinZ)) return null;
+
+    // Spatial hash of bottom verts for seed extraction + corridor queries.
+    const cell = RIM_PAIR_TOL_MM;
+    const hash = new Map<string, number[]>();
+    const fpKey = (len: number, wid: number): string =>
+        `${Math.floor(len / cell)},${Math.floor(wid / cell)}`;
+    for (let i = topVertexCount; i < count; i++) {
+        const len = baseArr[i * 3 + lengthAxis]!;
+        const wid = baseArr[i * 3 + widthAxis]!;
+        const k = fpKey(len, wid);
+        let bucket = hash.get(k);
+        if (!bucket) {
+            bucket = [];
+            hash.set(k, bucket);
+        }
+        bucket.push(i);
+    }
+
+    const queryBottom = (len: number, wid: number, tol: number): number[] => {
+        const bins = Math.ceil(tol / cell) + 1;
+        const cx = Math.floor(len / cell);
+        const cy = Math.floor(wid / cell);
+        const out: number[] = [];
+        for (let dx = -bins; dx <= bins; dx++) {
+            for (let dy = -bins; dy <= bins; dy++) {
+                const bucket = hash.get(`${cx + dx},${cy + dy}`);
+                if (!bucket) continue;
+                for (const bi of bucket) {
+                    const bl = baseArr[bi * 3 + lengthAxis]!;
+                    const bw = baseArr[bi * 3 + widthAxis]!;
+                    if (Math.hypot(bl - len, bw - wid) <= tol) out.push(bi);
+                }
+            }
+        }
+        return out;
+    };
+
+    const seeds: RimWallSeed[] = [];
+    // Multiple top-rim verts may resolve to the same wallTopIndex; keep the
+    // pair with the smallest footprint distance so seed NN is unambiguous.
+    const seedByWallTop = new Map<number, RimWallSeed & { pairD: number }>();
+    for (const j of topRimIdx) {
+        const len = baseArr[j * 3 + lengthAxis]!;
+        const wid = baseArr[j * 3 + widthAxis]!;
+        const cands = queryBottom(len, wid, RIM_PAIR_TOL_MM);
+        let best = -1;
+        let bestZ = -Infinity;
+        let bestD = Infinity;
+        for (const bi of cands) {
+            const z = baseArr[bi * 3 + thickAxis]!;
+            const bl = baseArr[bi * 3 + lengthAxis]!;
+            const bw = baseArr[bi * 3 + widthAxis]!;
+            const d = Math.hypot(bl - len, bw - wid);
+            if (z > bestZ + 1e-9 || (Math.abs(z - bestZ) <= 1e-9 && d < bestD)) {
+                bestZ = z;
+                best = bi;
+                bestD = d;
+            }
+        }
+        if (best < 0 || bestZ < WALL_TOP_MIN_Z_MM) continue;
+        const u = Math.max(0, Math.min(1, (len - lenMin) / (lenSize || 1)));
+        const prev = seedByWallTop.get(best);
+        if (prev && prev.pairD <= bestD) continue;
+        seedByWallTop.set(best, {
+            topRimIndex: j,
+            wallTopIndex: best,
+            fpLen: baseArr[best * 3 + lengthAxis]!,
+            fpWid: baseArr[best * 3 + widthAxis]!,
+            wallTopZ: bestZ,
+            u,
+            pairD: bestD,
+        });
+    }
+    for (const s of seedByWallTop.values()) {
+        seeds.push({
+            topRimIndex: s.topRimIndex,
+            wallTopIndex: s.wallTopIndex,
+            fpLen: s.fpLen,
+            fpWid: s.fpWid,
+            wallTopZ: s.wallTopZ,
+            u: s.u,
+        });
+    }
+    if (seeds.length === 0) return null;
+
+    // Seed footprint hash for NN (d measured to seed.wallTopIndex BASE footprint).
+    const seedCell = RIM_PAIR_TOL_MM;
+    const seedHash = new Map<string, number[]>();
+    const seedKey = (len: number, wid: number): string =>
+        `${Math.floor(len / seedCell)},${Math.floor(wid / seedCell)}`;
+    for (let s = 0; s < seeds.length; s++) {
+        const seed = seeds[s]!;
+        const k = seedKey(seed.fpLen, seed.fpWid);
+        let bucket = seedHash.get(k);
+        if (!bucket) {
+            bucket = [];
+            seedHash.set(k, bucket);
+        }
+        bucket.push(s);
+    }
+
+    const wallVerts: number[] = [];
+    const wallSeeds: number[] = [];
+    const wallWeights: number[] = [];
+    const corridorBins = Math.ceil(WALL_CORRIDOR_MM / seedCell) + 1;
+
+    for (let i = topVertexCount; i < count; i++) {
+        const z = baseArr[i * 3 + thickAxis]!;
+        if (z <= PLANTAR_Z_MAX_MM) continue;
+
+        const len = baseArr[i * 3 + lengthAxis]!;
+        const wid = baseArr[i * 3 + widthAxis]!;
+        const cx = Math.floor(len / seedCell);
+        const cy = Math.floor(wid / seedCell);
+
+        let bestS = -1;
+        let bestD = Infinity;
+        for (let dx = -corridorBins; dx <= corridorBins; dx++) {
+            for (let dy = -corridorBins; dy <= corridorBins; dy++) {
+                const bucket = seedHash.get(`${cx + dx},${cy + dy}`);
+                if (!bucket) continue;
+                for (const s of bucket) {
+                    const seed = seeds[s]!;
+                    const d = Math.hypot(seed.fpLen - len, seed.fpWid - wid);
+                    if (d < bestD) {
+                        bestD = d;
+                        bestS = s;
+                    }
+                }
+            }
+        }
+        if (bestS < 0 || bestD >= WALL_CORRIDOR_MM) continue;
+
+        const seed = seeds[bestS]!;
+        const denom = seed.wallTopZ - botMinZ;
+        const h = denom > 1e-9 ? (z - botMinZ) / denom : 0;
+        const w =
+            rimConformityHeightWeight(h) *
+            rimConformityAnteriorTaperWeight(seed.u) *
+            rimConformityDistanceWeight(bestD);
+        if (w <= 0) continue;
+
+        wallVerts.push(i);
+        wallSeeds.push(bestS);
+        wallWeights.push(w);
+    }
+
+    return {
+        seeds,
+        botMinZ,
+        lengthAxis,
+        widthAxis,
+        thickAxis,
+        topVertexCount,
+        wallVertexIndex: Int32Array.from(wallVerts),
+        wallSeedIndex: Int32Array.from(wallSeeds),
+        wallWeight: Float32Array.from(wallWeights),
+    };
+}
+
+function getRimConformityFrame(
+    base: BufferGeometry,
+    topVertexCount: number,
+    lengthAxis: AxisIndex,
+    widthAxis: AxisIndex,
+    thickAxis: AxisIndex,
+    lenMin: number,
+    lenSize: number,
+): RimConformityFrame | null {
+    const cached = rimConformityCache.get(base);
+    if (cached !== undefined) return cached;
+    const frame = buildRimConformityFrame(
+        base,
+        topVertexCount,
+        lengthAxis,
+        widthAxis,
+        thickAxis,
+        lenMin,
+        lenSize,
+    );
+    rimConformityCache.set(base, frame);
+    return frame;
+}
+
+/**
+ * Scatter precomputed rim deltas onto bottom wall verts.
+ * Reads corrected top positions from `array`; writes bottom from BASE only.
+ */
+function transferRimConformityDeltas(
+    base: BufferGeometry,
+    array: Float32Array,
+    frame: RimConformityFrame,
+): void {
+    const basePos = base.getAttribute("position");
+    if (!basePos) return;
+    const baseArr = basePos.array as Float32Array;
+    const { wallVertexIndex, wallSeedIndex, wallWeight, seeds, topVertexCount } = frame;
+
+    for (let k = 0; k < wallVertexIndex.length; k++) {
+        const i = wallVertexIndex[k]!;
+        if (i < topVertexCount) {
+            throw new Error(
+                `[RIM-CONFORMITY] leak guard: attempted write to top index ${i} (topVertexCount=${topVertexCount})`,
+            );
+        }
+        const seed = seeds[wallSeedIndex[k]!]!;
+        const j = seed.topRimIndex;
+        const w = wallWeight[k]!;
+        const dx = array[j * 3]! - baseArr[j * 3]!;
+        const dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
+        const dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
+        array[i * 3] = baseArr[i * 3]! + w * dx;
+        array[i * 3 + 1] = baseArr[i * 3 + 1]! + w * dy;
+        array[i * 3 + 2] = baseArr[i * 3 + 2]! + w * dz;
+    }
+}
+
 /** Verification helper: post-smoothing lateral delta stats for heel-cup width. */
 export function diagnoseHeelCupWidthLateral(
     base: BufferGeometry,
@@ -1067,9 +1379,30 @@ export function applyBaseModifiers(
         }
     }
 
+    // Rim-conformity transfer: scatter top-rim total deltas onto bottom wall
+    // verts (multi-mesh only). Correspondence + weights are BASE-cached;
+    // this call only applies w · (correctedTop − baseTop) from base positions.
+    if (isMultiMesh && topVertexCount > 0) {
+        const rimFrame = getRimConformityFrame(
+            base,
+            topVertexCount,
+            lengthAxis,
+            widthAxis,
+            thickAxis,
+            lenMin,
+            lenSize,
+        );
+        if (rimFrame && rimFrame.seeds.length > 0) {
+            transferRimConformityDeltas(base, array, rimFrame);
+        }
+    }
+
     if (originalBottomZ && typeof console !== "undefined") {
         let maxDrift = 0;
+        const baseArr = base.getAttribute("position")!.array as Float32Array;
         for (let i = topVertexCount; i < count; i++) {
+            // HC-1: only the plantar band must stay fixed; wall verts intentionally move.
+            if (baseArr[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) continue;
             const drift = Math.abs(array[i * 3 + thickAxis]! - originalBottomZ[i - topVertexCount]!);
             if (drift > maxDrift) maxDrift = drift;
         }
