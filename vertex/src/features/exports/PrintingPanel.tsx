@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
 import { exportGcode, type GrindingStyleInput, generateHybridGcode } from "@/features/exports/export-service";
+import { stlExportUserMessage } from "@/features/exports/export-user-message";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/chili3d/kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
@@ -94,12 +95,18 @@ export function PrintingPanel() {
                     `Server G-code exported ${res.filename || "file"}${idPart} (tokens deducted on success)`,
                 );
             } else {
-                setStatus(res.reason ?? "Hybrid generation failed");
+                // Same friendly mapping as ExportPanel — hybrid STL build uses closeGlbInsoleToSolid
+                // and export-service returns the raw MeshNotWatertightError message as res.reason.
+                setStatus(stlExportUserMessage(res.reason ?? "Hybrid generation failed"));
             }
             // Note: the hybrid path handles its own download + audit inside the service helper.
             // Improved feedback: status reflects server nature and success-only deduction.
         } catch (e) {
-            setStatus(e instanceof Error ? e.message : "Hybrid G-code generation failed (unexpected error)");
+            setStatus(
+                stlExportUserMessage(
+                    e instanceof Error ? e.message : "Hybrid G-code generation failed (unexpected error)",
+                ),
+            );
         } finally {
             setBusy(false);
         }
