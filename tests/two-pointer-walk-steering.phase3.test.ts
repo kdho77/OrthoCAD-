@@ -15,15 +15,10 @@ import { type BufferGeometry, Vector3 } from "three";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import {
-    alignLoopWindingOnAxes,
     BRIDGE_QUAD_MAX_TETRA_VOL_MM3,
-    buildTwoPointerBridgeTriangles,
     closeGlbInsoleToSolid,
     countHeelBridgeSelfIntersections,
-    extractOrderedBoundaryLoopWithIndices,
     HEEL_BRIDGE_Y_MAX_MM,
-    resolveFootprintAxes,
-    submeshByVertexRange,
     TWO_POINTER_MAX_BOT_RUN,
     type TwoPointerWalkDiagnostics,
     triTriIntersect,
@@ -97,33 +92,6 @@ function tetraVolumeMm3(a: Vector3, b: Vector3, c: Vector3, d: Vector3): number 
                 ),
         ) / 6
     );
-}
-
-/** Rotate bot loop so start best matches reference[0] (private helper copy). */
-function alignBotStart(
-    reference: Vector3[],
-    positions: Vector3[],
-    indices: number[],
-): { positions: Vector3[]; indices: number[] } {
-    const ref0 = reference[0]!;
-    let bestK = 0;
-    let bestD2 = Number.POSITIVE_INFINITY;
-    for (let k = 0; k < positions.length; k++) {
-        const d2 = ref0.distanceToSquared(positions[k]!);
-        if (d2 < bestD2) {
-            bestD2 = d2;
-            bestK = k;
-        }
-    }
-    const n = positions.length;
-    const outPos: Vector3[] = [];
-    const outIdx: number[] = [];
-    for (let i = 0; i < n; i++) {
-        const k = (i + bestK) % n;
-        outPos.push(positions[k]!.clone());
-        outIdx.push(indices[k]!);
-    }
-    return { positions: outPos, indices: outIdx };
 }
 
 interface BridgeAnalysis {
@@ -261,48 +229,6 @@ function analyzeClosed(solid: BufferGeometry): BridgeAnalysis {
     };
 }
 
-/** Re-run walk with diagnostics on modified geometry rims (bot simple-loop path). */
-function walkDiagnostics(mod: BufferGeometry): TwoPointerWalkDiagnostics | null {
-    const topN = (mod.userData as { topVertexCount?: number }).topVertexCount ?? 0;
-    const count = mod.getAttribute("position")!.count;
-    const topSub = submeshByVertexRange(mod, 0, topN);
-    const botSub = submeshByVertexRange(mod, topN, count);
-    try {
-        const topRim = extractOrderedBoundaryLoopWithIndices(topSub);
-        const botRim = extractOrderedBoundaryLoopWithIndices(botSub);
-        if (topRim.indices.length < 3 || botRim.indices.length < 3) return null;
-        const botParent = botRim.indices.map((li) => li + topN);
-        const { axisA, axisB } = resolveFootprintAxes(mod);
-        const winding = alignLoopWindingOnAxes(topRim.positions, botRim.positions, axisA, axisB);
-        const topPos = winding.topLoop;
-        let botPos = winding.windingAligned ? botRim.positions : winding.botLoop;
-        let botIdx = winding.windingAligned ? botParent : [...botParent].reverse();
-        const aligned = alignBotStart(topPos, botPos, botIdx);
-        botPos = aligned.positions;
-        botIdx = aligned.indices;
-
-        const arr = mod.getAttribute("position")!.array as Float32Array;
-        const getV = (vi: number) => new Vector3(arr[vi * 3]!, arr[vi * 3 + 1]!, arr[vi * 3 + 2]!);
-        const centroid = new Vector3();
-        for (let vi = 0; vi < count; vi++) centroid.add(getV(vi));
-        centroid.multiplyScalar(1 / count);
-
-        const diag: TwoPointerWalkDiagnostics = {
-            topAdvances: 0,
-            botAdvances: 0,
-            forceTopByRunCap: 0,
-            forceTopByTetra: 0,
-            maxBotRunSeen: 0,
-            tetraForceVolumesMm3: [],
-        };
-        buildTwoPointerBridgeTriangles(topPos, topRim.indices, botPos, botIdx, getV, centroid, diag);
-        return diag;
-    } finally {
-        topSub.dispose();
-        botSub.dispose();
-    }
-}
-
 describe("Phase 3 walk-steering validation", () => {
     let base: BufferGeometry;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -352,7 +278,12 @@ describe("Phase 3 walk-steering validation", () => {
             const mod = applyBaseModifiers(base, field(cfg.patch), 0);
             const solid = closeGlbInsoleToSolid(mod);
             const analysis = analyzeClosed(solid);
-            const diag = walkDiagnostics(mod);
+            const diag =
+                (
+                    solid.userData as {
+                        twoPointerWalkDiagnostics?: TwoPointerWalkDiagnostics;
+                    }
+                ).twoPointerWalkDiagnostics ?? null;
 
             // ADDITION 1 — hard rim-edge coverage gate
             expect(analysis.topAdvances).toBe(446);

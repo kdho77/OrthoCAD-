@@ -3087,6 +3087,7 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
         centroid.multiplyScalar(1 / Math.max(1, parentPos.count));
 
         let bridgeFaces: number[];
+        let twoPointerDiag: TwoPointerWalkDiagnostics | null = null;
 
         if (rimsEqualCount) {
             const targetN = Math.max(topPositions.length, botPositions.length);
@@ -3115,6 +3116,14 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
                     botPositionsAligned,
                     botIndices,
                 );
+                twoPointerDiag = {
+                    topAdvances: 0,
+                    botAdvances: 0,
+                    forceTopByRunCap: 0,
+                    forceTopByTetra: 0,
+                    maxBotRunSeen: 0,
+                    tetraForceVolumesMm3: [],
+                };
                 bridgeFaces = buildTwoPointerBridgeTriangles(
                     topPositions,
                     topIndices,
@@ -3122,6 +3131,7 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
                     alignedBot.indices,
                     getPosition,
                     centroid,
+                    twoPointerDiag,
                 );
             } else {
                 bridgeFaces = guarded.faces;
@@ -3134,6 +3144,14 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
             botPositionsAligned = alignedBot.positions;
             botIndices = alignedBot.indices;
 
+            twoPointerDiag = {
+                topAdvances: 0,
+                botAdvances: 0,
+                forceTopByRunCap: 0,
+                forceTopByTetra: 0,
+                maxBotRunSeen: 0,
+                tetraForceVolumesMm3: [],
+            };
             bridgeFaces = buildTwoPointerBridgeTriangles(
                 topPositions,
                 topIndices,
@@ -3141,6 +3159,7 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
                 botIndices,
                 getPosition,
                 centroid,
+                twoPointerDiag,
             );
         }
 
@@ -3225,6 +3244,10 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
         }
 
         if (geometry.userData) merged.userData = { ...geometry.userData };
+        if (twoPointerDiag) {
+            (merged.userData as { twoPointerWalkDiagnostics?: TwoPointerWalkDiagnostics }).twoPointerWalkDiagnostics =
+                twoPointerDiag;
+        }
         return merged;
     } finally {
         topSub.dispose();
