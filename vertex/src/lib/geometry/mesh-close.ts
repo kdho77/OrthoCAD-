@@ -907,9 +907,33 @@ export function validateManifoldDetailed(geometry: BufferGeometry, label: string
 }
 
 /**
+ * Max consecutive bot-edge advances at one top apex in the unequal-rim walk.
+ * Pigeonhole: botRim/topRim ≈ 2.65 on Default.glb, so some fans must be ≥3;
+ * capping at 2 is impossible without new top samples. Cap 3 clips the measured
+ * pre-fix max of 5 while remaining feasible (446×3 > 1184).
+ */
+export const TWO_POINTER_MAX_BOT_RUN = 3;
+
+/** Optional counters for Phase 3 validation of walk steering. */
+export interface TwoPointerWalkDiagnostics {
+    topAdvances: number;
+    botAdvances: number;
+    forceTopByRunCap: number;
+    forceTopByTetra: number;
+    maxBotRunSeen: number;
+    /** Tetra volumes (mm³) that triggered forceTop (botRun≥1 branch). */
+    tetraForceVolumesMm3: number[];
+}
+
+/**
  * Build a manifold-safe triangle strip between mismatched rim loops using a
  * two-pointer arc-length walk. Each triangle uses consecutive rim vertices only —
  * no rim edge is bisected, so no T-junction non-manifold edges are introduced.
+ *
+ * Walk steering (Phase 2): prefer a top-advance when the current bot-run would
+ * exceed {@link TWO_POINTER_MAX_BOT_RUN}, or when a prospective bot tri is highly
+ * non-planar vs the next top sample (tetra volume &gt; {@link BRIDGE_QUAD_MAX_TETRA_VOL_MM3}
+ * and botRun ≥ 1). Reduces cross-fan self-intersections without new vertices.
  */
 export function buildTwoPointerBridgeTriangles(
     topPositions: Vector3[],
@@ -918,6 +942,7 @@ export function buildTwoPointerBridgeTriangles(
     bottomIndices: number[],
     getPosition: (vertexIndex: number) => Vector3,
     centroid: Vector3,
+    diagnostics?: TwoPointerWalkDiagnostics,
 ): number[] {
     const topLen = topPositions.length;
     const botLen = bottomPositions.length;
@@ -936,8 +961,18 @@ export function buildTwoPointerBridgeTriangles(
         emitGuardedBridgeTri(out, a, b, c, getPosition, centroid);
     };
 
+    if (diagnostics) {
+        diagnostics.topAdvances = 0;
+        diagnostics.botAdvances = 0;
+        diagnostics.forceTopByRunCap = 0;
+        diagnostics.forceTopByTetra = 0;
+        diagnostics.maxBotRunSeen = 0;
+        diagnostics.tetraForceVolumesMm3 = [];
+    }
+
     let i = 0;
     let j = 0;
+    let botRun = 0;
     const guardMax = topLen + botLen + 4;
 
     for (let guard = 0; guard < guardMax && (i < topLen || j < botLen); guard++) {
@@ -945,18 +980,55 @@ export function buildTwoPointerBridgeTriangles(
             j++;
             if (j > botLen) break;
             emit(topIndices[0]!, bottomIndices[j - 1]!, bottomIndices[j % botLen]!);
+            if (diagnostics) diagnostics.botAdvances++;
         } else if (j >= botLen) {
             i++;
             if (i > topLen) break;
             emit(topIndices[i - 1]!, bottomIndices[0]!, topIndices[i % topLen]!);
-        } else if (topArc[i + 1]! <= botArc[j + 1]! + 1e-9) {
-            const i1 = (i + 1) % topLen;
-            emit(topIndices[i]!, bottomIndices[j]!, topIndices[i1]!);
-            i++;
+            if (diagnostics) diagnostics.topAdvances++;
         } else {
-            const j1 = (j + 1) % botLen;
-            emit(topIndices[i]!, bottomIndices[j]!, bottomIndices[j1]!);
-            j++;
+            const arcPrefersTop = topArc[i + 1]! <= botArc[j + 1]! + 1e-9;
+            let forceTop = false;
+            if (botRun >= TWO_POINTER_MAX_BOT_RUN) {
+                forceTop = true;
+                if (diagnostics) diagnostics.forceTopByRunCap++;
+            } else if (!arcPrefersTop && botRun >= 1) {
+                // Prospective bot tri (top[i], bot[j], bot[j+1]) vs next top sample:
+                // high tetra volume ⇒ prefer breaking the fan with a top-advance.
+                const vol = tetraVolumeMm3(
+                    getPosition(topIndices[i]!),
+                    getPosition(bottomIndices[j]!),
+                    getPosition(bottomIndices[(j + 1) % botLen]!),
+                    getPosition(topIndices[(i + 1) % topLen]!),
+                );
+                if (vol > BRIDGE_QUAD_MAX_TETRA_VOL_MM3) {
+                    forceTop = true;
+                    if (diagnostics) {
+                        diagnostics.forceTopByTetra++;
+                        diagnostics.tetraForceVolumesMm3.push(vol);
+                    }
+                }
+            }
+
+            if (arcPrefersTop || forceTop) {
+                const i1 = (i + 1) % topLen;
+                emit(topIndices[i]!, bottomIndices[j]!, topIndices[i1]!);
+                i++;
+                if (diagnostics) {
+                    diagnostics.topAdvances++;
+                    diagnostics.maxBotRunSeen = Math.max(diagnostics.maxBotRunSeen, botRun);
+                }
+                botRun = 0;
+            } else {
+                const j1 = (j + 1) % botLen;
+                emit(topIndices[i]!, bottomIndices[j]!, bottomIndices[j1]!);
+                j++;
+                botRun++;
+                if (diagnostics) {
+                    diagnostics.botAdvances++;
+                    diagnostics.maxBotRunSeen = Math.max(diagnostics.maxBotRunSeen, botRun);
+                }
+            }
         }
     }
 
@@ -1253,11 +1325,12 @@ export interface ClosedSolidBaseline {
  * baseline (Option 1); do not attempt to fix pieces B/C in the bridge round.
  *
  * heelBridgeSelfIntersections is mutable so the export-solid regression test can
- * self-correct once if the live depth=0 measurement drifts from 249.
+ * self-correct once if the live depth=0 measurement drifts from 208
+ * (post walk-steering Phase 2; was 249 under the uncorrected two-pointer walk).
  */
 export const DEFAULT_GLB_CLOSED_BASELINE: ClosedSolidBaseline = {
     eulerCharacteristic: 3,
-    heelBridgeSelfIntersections: 249,
+    heelBridgeSelfIntersections: 208,
 };
 
 /**
