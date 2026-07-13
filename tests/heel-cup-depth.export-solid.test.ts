@@ -4,13 +4,12 @@
 // Export-solid regression for heel cup depth: closeGlbInsoleToSolid +
 // assertClosedSolidAcceptable gate. Separate from heel-cup-depth.realmesh.test.ts.
 //
-// DRIFT (Phase 1 halt — do not "fix" without review):
-//   Default.glb rims are unequal (topRim≈446, botRim≈1184) so closeGlbInsoleToSolid
-//   takes the two-pointer path, NOT the equal-count path that Phase 1 guards.
-//   Phase 0's "equal-count" label was wrong: bridgeTris=1630 = 446+1184 (two-pointer),
-//   not 2×815. Post rim-conformity transfer SI (remeasured): depth0=249, depth3=277,
-//   depth8=296, depth15=365. The export gate still rejects depth>0 against depth=0
-//   baseline (SI escalation). Combined width+depth is edge-manifold post-#109.
+// Default.glb rims are unequal (topRim≈446, botRim≈1184) so closeGlbInsoleToSolid
+// takes the two-pointer path. Post walk-steering (MAX_BOT_RUN=3 + tetra forceTop):
+// depth0=208, depth3=221, depth8=214, depth15=239. Export gate still rejects
+// depth>0 against the depth=0 baseline (residual SI escalation, much reduced
+// from the pre-fix 249/277/296/365 table). Combined width+depth stays
+// edge-manifold post-#109.
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -34,18 +33,17 @@ const FIXTURE_PATH = resolve(process.cwd(), "tests/fixtures/Default.glb");
 /** Depth samples exercised against the live depth=0 baseline. */
 const DEPTH_SAMPLES_MM = [0, 3, 8, 15] as const;
 
-/** Sanity pin: live depth=0 self-intersections may drift slightly from the pinned 249. */
+/** Sanity pin: live depth=0 self-intersections may drift slightly from the pinned 208. */
 const BASELINE_SI_EPSILON = 30;
 
 /**
- * Phase 0 / Phase 1 measured SI on Default.glb (two-pointer path). Documented so
- * a future Phase 3 retune has a regression table; not used as a soft pass.
+ * Post walk-steering measured SI on Default.glb (two-pointer path).
  */
 const MEASURED_SI_BY_DEPTH: Record<number, number> = {
-    0: 249,
-    3: 277,
-    8: 296,
-    15: 365,
+    0: 208,
+    3: 221,
+    8: 214,
+    15: 239,
 };
 
 function neutralCorrections(): SideCorrections {
@@ -208,9 +206,8 @@ describe("heel-cup-depth export solid (Default.glb)", () => {
                                     assertClosedSolidAcceptable(solid, topN, liveBaseline),
                                 ).not.toThrow();
                             } else {
-                                // Drift: two-pointer SI escalates with depth; the export
-                                // gate must reject until Phase 3 retunes the bridge path
-                                // Default.glb actually takes.
+                                // Drift: residual SI still escalates slightly with depth vs the
+                                // depth=0 baseline; export gate must keep rejecting depth>0.
                                 expect(() => assertClosedSolidAcceptable(solid, topN, liveBaseline)).toThrow(
                                     /heelBridgeSelfIntersections/,
                                 );
