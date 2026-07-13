@@ -1717,7 +1717,7 @@ export function validateBaseResult(
 
 /**
  * Apply modifiers then close the top/bottom perimeter gap for multi-mesh GLB bases.
- * Uses the post-wedge top rim with the existing two-pointer bridge walk.
+ * Uses the post-wedge top rim with the min-chord DP bridge (mesh-close).
  */
 export function applyBaseModifiersWithSidewall(
     base: BufferGeometry,
