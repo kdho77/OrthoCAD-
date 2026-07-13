@@ -1036,6 +1036,173 @@ export function buildTwoPointerBridgeTriangles(
 }
 
 /**
+ * Start-offset search half-width for the min-chord DP bridge. The caller
+ * start-aligns the bottom loop by nearest point; the DP additionally evaluates
+ * bottom rotations in [-W, +W] and keeps the minimum-cost solution.
+ *
+ * Phase 3 narrowing: windows 0, 2 and 8 all hold allBridgeSI=0 across the full
+ * Default.glb validation matrix (d0/d3/d8/d15 + live multi-correction), so the
+ * smallest is shipped. Widen via the function parameter if a future stock mesh
+ * shows seam-induced crossings at the nearest-point start.
+ */
+export const BRIDGE_DP_OFFSET_WINDOW = 0;
+
+/**
+ * Global min-chord bridge triangulation between mismatched rim loops
+ * (Fuchs–Kedem–Uselton contour stitching).
+ *
+ * Every coverage-exact bridge between two cyclic loops is a monotone staircase
+ * path through the (n+1)×(m+1) lattice: a top-step into (i,j) emits triangle
+ * (T[i−1], B[j], T[i]) and consumes top edge i−1→i; a bot-step emits
+ * (T[i], B[j−1], B[j]) and consumes bot edge j−1→j. Both step types create the
+ * diagonal T[i]−B[j], so the path cost is the sum of chord lengths along the
+ * staircase. Dynamic programming returns the global minimum over the ENTIRE
+ * family — crossing diagonals admit an uncrossed same-coverage alternative of
+ * strictly smaller total chord length (triangle-inequality exchange), which is
+ * why the optimum eliminates the cross-fan self-intersections the greedy
+ * arc-length walk produced (measured 2431–2816 → 0 on Default.glb).
+ *
+ * Emits exactly n+m triangles via the same guarded emitter and per-step
+ * triangle patterns as {@link buildTwoPointerBridgeTriangles}, so the rim-edge
+ * coverage invariant is inherited unchanged.
+ */
+export function buildMinChordBridgeTriangles(
+    topPositions: Vector3[],
+    topIndices: number[],
+    bottomPositions: Vector3[],
+    bottomIndices: number[],
+    getPosition: (vertexIndex: number) => Vector3,
+    centroid: Vector3,
+    offsetWindow: number = BRIDGE_DP_OFFSET_WINDOW,
+): number[] {
+    const n = topPositions.length;
+    const m = bottomPositions.length;
+    if (n < 3 || m < 3) return [];
+    if (topIndices.length !== n || bottomIndices.length !== m) {
+        throw new Error(
+            `buildMinChordBridgeTriangles: index/position length mismatch top=${n}/${topIndices.length} bot=${m}/${bottomIndices.length}`,
+        );
+    }
+
+    // Flatten live coordinates once (getPosition reflects corrected positions).
+    const tp = new Float64Array(3 * n);
+    for (let i = 0; i < n; i++) {
+        const p = getPosition(topIndices[i]!);
+        tp[3 * i] = p.x;
+        tp[3 * i + 1] = p.y;
+        tp[3 * i + 2] = p.z;
+    }
+    const bp = new Float64Array(3 * m);
+    for (let j = 0; j < m; j++) {
+        const p = getPosition(bottomIndices[j]!);
+        bp[3 * j] = p.x;
+        bp[3 * j + 1] = p.y;
+        bp[3 * j + 2] = p.z;
+    }
+
+    // Chord-length matrix chord[i*m + j] = |T[i] − B[j]| — shared across offsets.
+    const chord = new Float64Array(n * m);
+    for (let i = 0; i < n; i++) {
+        const tx = tp[3 * i]!;
+        const ty = tp[3 * i + 1]!;
+        const tz = tp[3 * i + 2]!;
+        for (let j = 0; j < m; j++) {
+            const dx = tx - bp[3 * j]!;
+            const dy = ty - bp[3 * j + 1]!;
+            const dz = tz - bp[3 * j + 2]!;
+            chord[i * m + j] = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        }
+    }
+
+    const W = (n + 1) * (m + 1);
+    const cost = new Float64Array(W);
+    const parent = new Uint8Array(W); // 0 = top-step from (i−1,j); 1 = bot-step from (i,j−1)
+
+    const runDp = (k: number): { total: number; steps: Uint8Array } => {
+        cost[0] = 0;
+        // First row (i=0): bot-steps only.
+        for (let j = 1; j <= m; j++) {
+            cost[j] = cost[j - 1]! + chord[(k + (j % m)) % m]!;
+            parent[j] = 1;
+        }
+        for (let i = 1; i <= n; i++) {
+            const row = i * (m + 1);
+            const prevRow = row - (m + 1);
+            const ci = (i % n) * m;
+            // First column (j=0): top-steps only.
+            cost[row] = cost[prevRow]! + chord[ci + k % m]!;
+            parent[row] = 0;
+            for (let j = 1; j <= m; j++) {
+                const c = chord[ci + ((j % m) + k) % m]!;
+                const fromTop = cost[prevRow + j]!;
+                const fromBot = cost[row + j - 1]!;
+                if (fromTop <= fromBot) {
+                    cost[row + j] = fromTop + c;
+                    parent[row + j] = 0;
+                } else {
+                    cost[row + j] = fromBot + c;
+                    parent[row + j] = 1;
+                }
+            }
+        }
+        const steps = new Uint8Array(n + m);
+        let i = n;
+        let j = m;
+        let s = n + m - 1;
+        while (i > 0 || j > 0) {
+            const par = parent[i * (m + 1) + j]!;
+            steps[s--] = par;
+            if (par === 0) i--;
+            else j--;
+        }
+        return { total: cost[n * (m + 1) + m]!, steps };
+    };
+
+    let bestTotal = Number.POSITIVE_INFINITY;
+    let bestSteps: Uint8Array | null = null;
+    let bestK = 0;
+    const window = Math.max(0, Math.min(Math.floor(offsetWindow), m - 1));
+    for (let k = -window; k <= window; k++) {
+        const kk = ((k % m) + m) % m;
+        const r = runDp(kk);
+        if (r.total < bestTotal) {
+            bestTotal = r.total;
+            bestSteps = r.steps;
+            bestK = kk;
+        }
+    }
+    if (!bestSteps) return [];
+
+    const out: number[] = [];
+    let i = 0;
+    let j = 0;
+    for (const s of bestSteps) {
+        if (s === 0) {
+            emitGuardedBridgeTri(
+                out,
+                topIndices[i]!,
+                bottomIndices[(j + bestK) % m]!,
+                topIndices[(i + 1) % n]!,
+                getPosition,
+                centroid,
+            );
+            i++;
+        } else {
+            emitGuardedBridgeTri(
+                out,
+                topIndices[i % n]!,
+                bottomIndices[(j + bestK) % m]!,
+                bottomIndices[(j + 1 + bestK) % m]!,
+                getPosition,
+                centroid,
+            );
+            j++;
+        }
+    }
+    return out;
+}
+
+/**
  * Emit a bridge triangle with degenerate-area skip and outward-normal winding flip.
  * Shared by the two-pointer walk and the equal-count guarded quad split.
  */
@@ -1324,13 +1491,15 @@ export interface ClosedSolidBaseline {
  * pinches on the bottom mesh; unrelated to heel bridge). Accepted as permanent
  * baseline (Option 1); do not attempt to fix pieces B/C in the bridge round.
  *
- * heelBridgeSelfIntersections is mutable so the export-solid regression test can
- * self-correct once if the live depth=0 measurement drifts from 208
- * (post walk-steering Phase 2; was 249 under the uncorrected two-pointer walk).
+ * heelBridgeSelfIntersections=0 — the min-chord DP bridge
+ * (buildMinChordBridgeTriangles) eliminates heel-bridge self-intersections
+ * entirely on Default.glb (was 249 under the raw two-pointer walk, 208 under
+ * the #113 steered walk). Mutable so the export-solid regression test can
+ * self-correct once if the live depth=0 measurement drifts.
  */
 export const DEFAULT_GLB_CLOSED_BASELINE: ClosedSolidBaseline = {
     eulerCharacteristic: 3,
-    heelBridgeSelfIntersections: 208,
+    heelBridgeSelfIntersections: 0,
 };
 
 /**
@@ -3144,22 +3313,13 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
             botPositionsAligned = alignedBot.positions;
             botIndices = alignedBot.indices;
 
-            twoPointerDiag = {
-                topAdvances: 0,
-                botAdvances: 0,
-                forceTopByRunCap: 0,
-                forceTopByTetra: 0,
-                maxBotRunSeen: 0,
-                tetraForceVolumesMm3: [],
-            };
-            bridgeFaces = buildTwoPointerBridgeTriangles(
+            bridgeFaces = buildMinChordBridgeTriangles(
                 topPositions,
                 topIndices,
                 botPositionsAligned,
                 botIndices,
                 getPosition,
                 centroid,
-                twoPointerDiag,
             );
         }
 

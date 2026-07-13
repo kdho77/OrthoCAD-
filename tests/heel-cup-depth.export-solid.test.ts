@@ -5,11 +5,10 @@
 // assertClosedSolidAcceptable gate. Separate from heel-cup-depth.realmesh.test.ts.
 //
 // Default.glb rims are unequal (topRim≈446, botRim≈1184) so closeGlbInsoleToSolid
-// takes the two-pointer path. Post walk-steering (MAX_BOT_RUN=3 + tetra forceTop):
-// depth0=208, depth3=221, depth8=214, depth15=239. Export gate still rejects
-// depth>0 against the depth=0 baseline (residual SI escalation, much reduced
-// from the pre-fix 249/277/296/365 table). Combined width+depth stays
-// edge-manifold post-#109.
+// takes the min-chord DP bridge (buildMinChordBridgeTriangles). The DP eliminates
+// heel-bridge self-intersections entirely: SI=0 at every depth (history: 249/277/
+// 296/365 raw walk → 208/221/214/239 under #113 steering → 0 under the DP).
+// The export gate now PASSES at every depth — heel-cup depth is exportable.
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -33,17 +32,17 @@ const FIXTURE_PATH = resolve(process.cwd(), "tests/fixtures/Default.glb");
 /** Depth samples exercised against the live depth=0 baseline. */
 const DEPTH_SAMPLES_MM = [0, 3, 8, 15] as const;
 
-/** Sanity pin: live depth=0 self-intersections may drift slightly from the pinned 208. */
+/** Sanity pin: live depth=0 self-intersections may drift slightly from the pinned 0. */
 const BASELINE_SI_EPSILON = 30;
 
 /**
- * Post walk-steering measured SI on Default.glb (two-pointer path).
+ * Min-chord DP bridge measured SI on Default.glb — zero at every depth.
  */
 const MEASURED_SI_BY_DEPTH: Record<number, number> = {
-    0: 208,
-    3: 221,
-    8: 214,
-    15: 239,
+    0: 0,
+    3: 0,
+    8: 0,
+    15: 0,
 };
 
 function neutralCorrections(): SideCorrections {
@@ -201,17 +200,11 @@ describe("heel-cup-depth export solid (Default.glb)", () => {
                                 expect(Math.abs(si - expectedSi)).toBeLessThanOrEqual(5);
                             }
 
-                            if (depthMm === 0) {
-                                expect(() =>
-                                    assertClosedSolidAcceptable(solid, topN, liveBaseline),
-                                ).not.toThrow();
-                            } else {
-                                // Drift: residual SI still escalates slightly with depth vs the
-                                // depth=0 baseline; export gate must keep rejecting depth>0.
-                                expect(() => assertClosedSolidAcceptable(solid, topN, liveBaseline)).toThrow(
-                                    /heelBridgeSelfIntersections/,
-                                );
-                            }
+                            // Min-chord DP bridge: SI=0 at every depth, so the
+                            // export gate passes — heel-cup depth is exportable.
+                            expect(() =>
+                                assertClosedSolidAcceptable(solid, topN, liveBaseline),
+                            ).not.toThrow();
                         } finally {
                             solid.dispose();
                         }

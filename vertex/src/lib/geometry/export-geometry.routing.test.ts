@@ -50,7 +50,7 @@ rs.mock("@/lib/chili3d/kernel", () => ({
 rs.mock("@/lib/geometry/mesh-close", () => ({
     closeGlbInsoleToSolid: (geometry: BufferGeometry) => mockCloseGlbInsoleToSolid(geometry),
     assertClosedSolidAcceptable: () => undefined,
-    DEFAULT_GLB_CLOSED_BASELINE: { eulerCharacteristic: 3, heelBridgeSelfIntersections: 208 },
+    DEFAULT_GLB_CLOSED_BASELINE: { eulerCharacteristic: 3, heelBridgeSelfIntersections: 0 },
     MeshNotWatertightError: class MeshNotWatertightError extends Error {},
 }));
 
