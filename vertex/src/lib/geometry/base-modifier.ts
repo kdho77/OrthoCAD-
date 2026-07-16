@@ -1555,6 +1555,10 @@ export function applyBaseModifiers(
         }
     }
 
+    // Parallel composition: vertical, width-lateral, and depth-tangent displacements
+    // are each computed from baseline positions (above) and summed here in one pass.
+    // Neither width nor depth reads the other's deformed coordinates — clinical
+    // axes stay independent regardless of slider commit order.
     for (let i = 0; i < count; i++) {
         const t = array[i * 3 + thickAxis]!;
         let w: number;
@@ -1563,16 +1567,24 @@ export function applyBaseModifiers(
         } else {
             w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
         }
-        array[i * 3 + thickAxis] = t + delta[i]! * w;
-        array[i * 3 + widthAxis] += lateralDelta[i]! * w;
+        const vertD = delta[i]! * w;
+        const latD = lateralDelta[i]! * w;
+        let dx = 0;
+        let dy = 0;
+        let dz = 0;
         if (depthFrame && depthVec) {
             const g = depthFrame.groupOf[i]!;
             if (g >= 0 && w !== 0) {
-                array[i * 3] += w * depthVec[g * 3]!;
-                array[i * 3 + 1] += w * depthVec[g * 3 + 1]!;
-                array[i * 3 + 2] += w * depthVec[g * 3 + 2]!;
+                dx = w * depthVec[g * 3]!;
+                dy = w * depthVec[g * 3 + 1]!;
+                dz = w * depthVec[g * 3 + 2]!;
             }
         }
+        array[i * 3 + thickAxis] = t + vertD;
+        array[i * 3 + widthAxis] += latD;
+        array[i * 3] += dx;
+        array[i * 3 + 1] += dy;
+        array[i * 3 + 2] += dz;
     }
 
     // Rim-conformity transfer: scatter top-rim total deltas onto bottom wall

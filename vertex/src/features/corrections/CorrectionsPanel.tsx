@@ -306,7 +306,14 @@ export function CorrectionsPanel() {
                                                             .heelCupDepthMm,
                                                 });
                                             }
+                                            // Flush sibling preview fields so committing one slider
+                                            // does not wipe uncommitted values from other sliders
+                                            // (e.g. depth preview lost when width pointer-up fires).
+                                            const preview =
+                                                usePerformanceStore.getState().correctionPreview[side] ??
+                                                {};
                                             updateCorrection(side, {
+                                                ...preview,
                                                 [f.key]: v,
                                             } as Partial<SideCorrections>);
                                             if (f.key === "heelCupDepthMm") {
