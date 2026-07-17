@@ -324,6 +324,93 @@ export function detectArchSideSign(base: BufferGeometry): number {
 /** Vertices with top factor above this are considered top-sheet. */
 const TOP_FACTOR_THRESHOLD = 0.9;
 
+// --- Local top-sheet edge profile (arch-dome faceting fix) -------------------
+// heightAt's additive-shaping edge feather assumes av = 1 is the local outline
+// edge, but the base path normalizes av by the bounding-box half-width. On the
+// real Default.glb the top sheet only reaches av ≈ 0.8–1.0 depending on u, so
+// the fixed 0.86–1.0 feather band cuts across the *interior* of the medial
+// arch dome for u ≈ 0.48–0.68 — concentrating the feather drop into a few mm
+// and creasing the dome roof into hard facets (measured 25–45° new dihedrals
+// from archHeightMm alone). The profile below tells heightAt where the real
+// local top-sheet edge is, so it can spread the feather smoothly to that edge
+// while preserving the exact feather value at the edge (rim deltas unchanged —
+// rim-conformity gap/protrusion behavior is untouched by construction).
+
+/** U bins per width half for the cached top-sheet edge profile. */
+const TOP_EDGE_PROFILE_BINS = 64;
+
+interface TopEdgeProfile {
+    /** Max |v-norm| per u bin on the +width / −width halves (mesh space). */
+    pos: Float64Array;
+    neg: Float64Array;
+}
+
+const topEdgeProfileCache = new WeakMap<BufferGeometry, TopEdgeProfile | null>();
+
+/** Fill empty bins from their nearest populated neighbor (in place). */
+function fillEmptyProfileBins(bins: Float64Array): void {
+    let last = 0;
+    for (let b = 0; b < bins.length; b++) {
+        if (bins[b]! > 0) last = bins[b]!;
+        else bins[b] = last;
+    }
+    last = 0;
+    for (let b = bins.length - 1; b >= 0; b--) {
+        if (bins[b]! > 0) last = bins[b]!;
+        else bins[b] = last;
+    }
+}
+
+/**
+ * Max top-sheet |v-norm| per (u bin, width half), cached per base geometry.
+ * Pure function of the base mesh; `null` when no top classification exists.
+ */
+function getTopEdgeProfile(
+    base: BufferGeometry,
+    ctx: LateralDeltaContext,
+    widSize: number,
+    topFactors: Float32Array | null,
+    isMultiMesh: boolean,
+    topVertexCount: number,
+): TopEdgeProfile | null {
+    const cached = topEdgeProfileCache.get(base);
+    if (cached !== undefined) return cached;
+
+    if (!(isMultiMesh && topVertexCount > 0) && !topFactors) {
+        topEdgeProfileCache.set(base, null);
+        return null;
+    }
+
+    const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
+    const limit = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+    const pos = new Float64Array(TOP_EDGE_PROFILE_BINS);
+    const neg = new Float64Array(TOP_EDGE_PROFILE_BINS);
+    for (let i = 0; i < limit; i++) {
+        if (!(isMultiMesh && topVertexCount > 0) && topFactors![i]! <= 0.5) continue;
+        const u = Math.max(0, Math.min(1, (array[i * 3 + lengthAxis]! - lenMin) / lenSize));
+        const vNorm = Math.max(-1, Math.min(1, (array[i * 3 + widthAxis]! - widCenter) / (widSize / 2)));
+        const b = Math.min(TOP_EDGE_PROFILE_BINS - 1, Math.floor(u * TOP_EDGE_PROFILE_BINS));
+        const target = vNorm >= 0 ? pos : neg;
+        const av = Math.abs(vNorm);
+        if (av > target[b]!) target[b] = av;
+    }
+    fillEmptyProfileBins(pos);
+    fillEmptyProfileBins(neg);
+
+    const profile: TopEdgeProfile = { pos, neg };
+    topEdgeProfileCache.set(base, profile);
+    return profile;
+}
+
+/** Linear interpolation of the edge profile at bin centers. */
+function sampleTopEdgeProfile(bins: Float64Array, u: number): number {
+    const x = Math.max(0, Math.min(1, u)) * TOP_EDGE_PROFILE_BINS - 0.5;
+    const b0 = Math.max(0, Math.min(TOP_EDGE_PROFILE_BINS - 1, Math.floor(x)));
+    const b1 = Math.min(TOP_EDGE_PROFILE_BINS - 1, b0 + 1);
+    const f = Math.max(0, Math.min(1, x - b0));
+    return bins[b0]! * (1 - f) + bins[b1]! * f;
+}
+
 /** Laplacian iterations for heel-cup width lateral displacement (multi-mesh safe). */
 const HEEL_CUP_WIDTH_LAPLACIAN_ITERS = 2;
 
@@ -1528,7 +1615,26 @@ export function applyBaseModifiers(
     const fieldForDelta: HeightFieldParams =
         depthMm !== 0
             ? { ...field, corrections: { ...field.corrections, heelCupDepthMm: 0 } }
-            : field;
+            : { ...field };
+
+    // Local top-sheet edge profile so the height-field edge feather lands on
+    // the real mesh outline instead of the bbox-normalized 0.86 band (which
+    // otherwise creases the arch dome roof — see getTopEdgeProfile).
+    const edgeProfile = getTopEdgeProfile(
+        base,
+        { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
+        widSize,
+        topFactors,
+        isMultiMesh,
+        topVertexCount,
+    );
+    if (edgeProfile) {
+        fieldForDelta.topEdgeAvProfile = (u: number, vSigned: number): number => {
+            // heightAt space → mesh width half: vSigned = widthSign · vNormMesh.
+            const bins = vSigned * widthSign >= 0 ? edgeProfile.pos : edgeProfile.neg;
+            return sampleTopEdgeProfile(bins, u);
+        };
+    }
 
     // 1) Sample the pure modifier delta at every vertex's footprint (u, vSigned),
     //    mapping length/width from the detected base axes (orientation-robust).
