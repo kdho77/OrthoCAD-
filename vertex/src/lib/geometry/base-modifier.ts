@@ -1035,6 +1035,31 @@ export function rimConformityDistanceWeight(d: number): number {
     return smoothstep(WALL_CORRIDOR_MM, RIM_PAIR_TOL_MM, d);
 }
 
+/**
+ * Inward blend span as a fraction of local half-width. Clamped so the 5 mm
+ * corridor actually attenuates (a raw half-width span would stay ≈1 across it).
+ */
+export const RIM_INWARD_SPAN_FRAC = 0.08;
+export const RIM_INWARD_SPAN_MIN_MM = 2.5;
+export const RIM_INWARD_SPAN_MAX_MM = WALL_CORRIDOR_MM;
+
+/**
+ * w_inward: 1 for d ≤ RIM_PAIR_TOL_MM (wall-top seed band — gap/protrusion safe),
+ * then C1 falloff toward the interior over a short span derived from local
+ * half-width. Softens the near-vertical arch-wall ridge from rim-delta scatter
+ * without weakening Δ_wall ≈ Δ_rim at paired wall-top seeds.
+ */
+export function rimConformityInwardWeight(dFromRimMm: number, localHalfWidthMm: number): number {
+    const d = Math.max(0, dFromRimMm);
+    if (d <= RIM_PAIR_TOL_MM) return 1;
+    const span = Math.max(
+        RIM_INWARD_SPAN_MIN_MM,
+        Math.min(RIM_INWARD_SPAN_MAX_MM, Math.max(0, localHalfWidthMm) * RIM_INWARD_SPAN_FRAC),
+    );
+    if (span <= RIM_PAIR_TOL_MM) return 0;
+    return smoothstep(span, RIM_PAIR_TOL_MM, d);
+}
+
 interface RimWallSeed {
     topRimIndex: number;
     wallTopIndex: number;
@@ -1083,11 +1108,17 @@ function buildRimConformityFrame(
     if (topRimIdx.length < 3) return null;
 
     let botMinZ = Infinity;
+    let widMin = Infinity;
+    let widMax = -Infinity;
     for (let i = topVertexCount; i < count; i++) {
         const z = baseArr[i * 3 + thickAxis]!;
         if (z < botMinZ) botMinZ = z;
+        const wid = baseArr[i * 3 + widthAxis]!;
+        if (wid < widMin) widMin = wid;
+        if (wid > widMax) widMax = wid;
     }
     if (!Number.isFinite(botMinZ)) return null;
+    const localHalfWidthMm = Math.max(1e-6, (widMax - widMin) / 2);
 
     // Spatial hash of bottom verts for seed extraction + corridor queries.
     const cell = RIM_PAIR_TOL_MM;
@@ -1224,10 +1255,14 @@ function buildRimConformityFrame(
         const seed = seeds[bestS]!;
         const denom = seed.wallTopZ - botMinZ;
         const h = denom > 1e-9 ? (z - botMinZ) / denom : 0;
+        // Parallel composition with top-mesh falloff intent: w_h·w_u·w_d close the
+        // rim gap; w_inward softens corridor verts so arch walls keep a rounded
+        // (concave) profile instead of a hard vertical rim-delta extrusion.
         const w =
             rimConformityHeightWeight(h) *
             rimConformityAnteriorTaperWeight(seed.u) *
-            rimConformityDistanceWeight(bestD);
+            rimConformityDistanceWeight(bestD) *
+            rimConformityInwardWeight(bestD, localHalfWidthMm);
         if (w <= 0) continue;
 
         wallVerts.push(i);
@@ -1275,16 +1310,25 @@ function getRimConformityFrame(
 /**
  * Scatter precomputed rim deltas onto bottom wall verts.
  * Reads corrected top positions from `array`; writes bottom from BASE only.
+ *
+ * When `verticalDelta` is provided (per-vertex height-field correction), the
+ * thick-axis component is reshaped so corridor verts follow the same falloff
+ * as the top mesh (concave mirror of the convex arch dome) while wall-top
+ * seeds still resolve to full Δ_rim:
+ *   disp = w · Δ_rim + w · ê_thick · (fieldLocal − fieldWallTop)
+ * Using the seed's wall-top index (not the top-rim index) as the field
+ * reference keeps fieldAdj ≡ 0 at paired wall-top seeds → gap-safe.
  */
 function transferRimConformityDeltas(
     base: BufferGeometry,
     array: Float32Array,
     frame: RimConformityFrame,
+    verticalDelta?: Float32Array | null,
 ): void {
     const basePos = base.getAttribute("position");
     if (!basePos) return;
     const baseArr = basePos.array as Float32Array;
-    const { wallVertexIndex, wallSeedIndex, wallWeight, seeds, topVertexCount } = frame;
+    const { wallVertexIndex, wallSeedIndex, wallWeight, seeds, topVertexCount, thickAxis } = frame;
 
     for (let k = 0; k < wallVertexIndex.length; k++) {
         const i = wallVertexIndex[k]!;
@@ -1296,9 +1340,15 @@ function transferRimConformityDeltas(
         const seed = seeds[wallSeedIndex[k]!]!;
         const j = seed.topRimIndex;
         const w = wallWeight[k]!;
-        const dx = array[j * 3]! - baseArr[j * 3]!;
-        const dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
-        const dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
+        let dx = array[j * 3]! - baseArr[j * 3]!;
+        let dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
+        let dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
+        if (verticalDelta) {
+            const fieldAdj = verticalDelta[i]! - verticalDelta[seed.wallTopIndex]!;
+            if (thickAxis === 0) dx += fieldAdj;
+            else if (thickAxis === 1) dy += fieldAdj;
+            else dz += fieldAdj;
+        }
         array[i * 3] = baseArr[i * 3]! + w * dx;
         array[i * 3 + 1] = baseArr[i * 3 + 1]! + w * dy;
         array[i * 3 + 2] = baseArr[i * 3 + 2]! + w * dz;
@@ -1589,7 +1639,8 @@ export function applyBaseModifiers(
 
     // Rim-conformity transfer: scatter top-rim total deltas onto bottom wall
     // verts (multi-mesh only). Correspondence + weights are BASE-cached;
-    // this call only applies w · (correctedTop − baseTop) from base positions.
+    // verticalDelta reshapes the thick axis to the height-field falloff so
+    // arch walls stay rounded (concave mirror of the top dome).
     if (isMultiMesh && topVertexCount > 0) {
         const rimFrame = getRimConformityFrame(
             base,
@@ -1601,7 +1652,7 @@ export function applyBaseModifiers(
             lenSize,
         );
         if (rimFrame && rimFrame.seeds.length > 0) {
-            transferRimConformityDeltas(base, array, rimFrame);
+            transferRimConformityDeltas(base, array, rimFrame, delta);
         }
     }
 
