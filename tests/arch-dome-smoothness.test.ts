@@ -309,6 +309,49 @@ describe("arch dome smoothness — real Default.glb mesh", () => {
         archOnly.dispose();
     });
 
+    test("arch wall re-loft: no straight vertical band on the medial arch wall (u=0.38)", () => {
+        // Defect signature (pre-re-loft): the corridor transfer stretched the
+        // wall into a ~16 mm-tall near-vertical face (outward travel 0.9 mm per
+        // 8 mm of height) sitting on the untouched original border. The re-loft
+        // scales the whole convex profile smoothly: every 8 mm height window
+        // must keep real outward travel.
+        const modified = applyBaseModifiers(baseGeometry, correctionField({ archHeightMm: 18 }), 0);
+        const modArr = modified.getAttribute("position")!.array as Float32Array;
+
+        // Medial wall silhouette at u=0.38: outermost |y| per 1 mm z bin.
+        const BIN_MM = 1.0;
+        const silhouette = new Map<number, number>();
+        for (let i = frame.topVertexCount; i < frame.count; i++) {
+            const u = (baseArr[i * 3 + frame.lengthAxis]! - frame.lenMin) / frame.lenSize;
+            if (Math.abs(u - 0.38) > 0.006) continue;
+            const y = modArr[i * 3 + frame.widthAxis]! - frame.widCenter;
+            if (y >= 0) continue;
+            const z = modArr[i * 3 + frame.thickAxis]!;
+            if (z < 2) continue;
+            const bin = Math.round(z / BIN_MM);
+            const cur = silhouette.get(bin);
+            if (cur === undefined || y < cur) silhouette.set(bin, y);
+        }
+        const bins = [...silhouette.entries()].sort((a, b) => a[0] - b[0]);
+        expect(bins.length).toBeGreaterThan(20);
+
+        const WINDOW = 8;
+        let minTravel = Infinity;
+        for (let k = 0; k < bins.length; k++) {
+            const [z0, y0] = bins[k]!;
+            for (let m = k + 1; m < bins.length; m++) {
+                const [z1, y1] = bins[m]!;
+                if ((z1 - z0) * BIN_MM < WINDOW) continue;
+                if ((z1 - z0) * BIN_MM > WINDOW + 2) break;
+                minTravel = Math.min(minTravel, Math.abs(y1 - y0));
+            }
+        }
+        console.log(`[ARCH-DOME] wall min outward travel per ${WINDOW}mm window: ${minTravel.toFixed(3)}mm`);
+        // Pre-re-loft measured 0.9 mm (straight band); post-re-loft ≥ ~1.6 mm.
+        expect(minTravel).toBeGreaterThan(1.2);
+        modified.dispose();
+    });
+
     test("arch18 exports watertight through closeGlbInsoleToSolid (openEdges=0, SI=0)", () => {
         const modified = applyBaseModifiers(
             baseGeometry,
