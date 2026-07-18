@@ -23,9 +23,30 @@ export interface HeightFieldParams {
     trimline?: TrimlineCurve | null;
     /** Phase 4 operator graph (additive clinical operators). When present its delta is added. */
     graph?: OperatorGraph | null;
+    /**
+     * Optional local top-sheet edge extent (base-mesh path only): returns the
+     * outermost |vSigned| of the base's top sheet at (u, side of vSigned).
+     * When present, the additive-shaping edge feather lands on this real local
+     * edge via a wide C2 ease that preserves the exact feather value at the
+     * edge (r = 1). Without it, `av` is bounding-box normalized on base
+     * meshes, so the fixed 0.86–1.0 feather band cuts across the *interior*
+     * of the medial arch dome wherever the local outline crosses av = 0.86 —
+     * concentrating the whole feather drop into a few millimetres of surface
+     * and creasing the dome roof into hard facets (arch-dome faceting fix).
+     */
+    topEdgeAvProfile?: (u: number, vSigned: number) => number;
 }
 
 const DEG = Math.PI / 180;
+
+/**
+ * Start of the widened edge-feather descent as a fraction of the local
+ * top-sheet half-extent (only used when `topEdgeAvProfile` is provided).
+ * 0.55 spreads the feather drop over ~45% of the local half-width (~20 mm on
+ * the Default.glb midfoot) — max curvature ≈ 5°/mm-edge, below the visible
+ * facet threshold, while keeping the dome crest inboard of the medial edge.
+ */
+export const EDGE_FEATHER_EASE_START_R = 0.55;
 
 /**
  * Max fractional lateral scale at heelCupWidthMm = 10 (placeholder — needs clinical
@@ -246,7 +267,25 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // Feather the additive shaping toward the trimline so the perimeter thins to
     // a clinical edge while the base wall and posting wedge are preserved.
     const edgeFeather = smoothstep(1.0, 0.86, av); // 1 interior → 0 at outer edge
-    shaped *= 0.35 + 0.65 * edgeFeather;
+    let featherScale = 0.35 + 0.65 * edgeFeather;
+    const avEdge = params.topEdgeAvProfile ? params.topEdgeAvProfile(u, vSigned) : 0;
+    if (avEdge > 1e-6) {
+        const edgeScale = 0.35 + 0.65 * smoothstep(1.0, 0.86, Math.min(avEdge, 1));
+        // Reshape only where the bbox-normalized feather band actually cuts
+        // across the local top sheet (edgeScale < 1). The narrow interior cliff
+        // is replaced by a wide C2 ease from EDGE_FEATHER_EASE_START_R of the
+        // local half-extent out to the edge; the feather value at the local
+        // edge itself (r = 1) is preserved exactly, so top-rim deltas — and the
+        // bottom walls rim-conformed to them — are unchanged. Where the local
+        // edge sits below the feather knee (entire heel/rearfoot: edgeScale
+        // = 1) this branch is skipped and the result is bit-identical.
+        if (edgeScale < 1 - 1e-9) {
+            const r = Math.min(1, av / avEdge);
+            const t = (r - EDGE_FEATHER_EASE_START_R) / (1 - EDGE_FEATHER_EASE_START_R);
+            featherScale = 1 - (1 - edgeScale) * quinticSmoothstep(t);
+        }
+    }
+    shaped *= featherScale;
 
     // --- Posting (rearfoot / forefoot wedges) — full strength at the edge -----
     const post = vSigned * medialSign * halfW;
