@@ -386,6 +386,21 @@ export function getDesignTrimline(design: DesignState, side: Side): TrimlineCurv
     return deserializeTrimlineCurve(pts);
 }
 
+/**
+ * Resolve the outline used for base/GLB mesh clipping: prefer the live edit-session
+ * draft when it matches `side`, otherwise the committed design trimline.
+ * Pure helper so base-geometry rebuild can subscribe reactively (Bug A fix) without
+ * calling `getState()` inside an effect.
+ */
+export function resolveActiveTrimlineForClip(
+    side: Side,
+    trimlineEdit: { side: Side; draft: TrimlineCurve } | null | undefined,
+    design: DesignState,
+): TrimlineCurve | null {
+    if (trimlineEdit?.side === side) return trimlineEdit.draft;
+    return getDesignTrimline(design, side);
+}
+
 /** Merge serialized trimlines into a design patch. */
 export function trimlinesToDesignPatch(trimlines: Partial<Record<Side, TrimlineCurve>>): DesignTrimlines {
     const out: DesignTrimlines = {};
