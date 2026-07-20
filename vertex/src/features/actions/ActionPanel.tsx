@@ -18,12 +18,19 @@ import type { Side } from "@/types";
 export function ActionPanel() {
     const viewer = useDesignStore((s) => s.viewer);
     const designTrimlines = useDesignStore((s) => s.design.trimlines);
+    const designBottomPatterns = useDesignStore((s) => s.design.bottomPatterns);
     const clearSideTrimline = useDesignStore((s) => s.clearSideTrimline);
+    const clearSideBottomPattern = useDesignStore((s) => s.clearSideBottomPattern);
     const editMode = useMeshEditStore((s) => s.editMode);
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
+    const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
+    const beginBottomPatternEdit = useMeshEditStore((s) => s.beginBottomPatternEdit);
+    const confirmBottomPatternEdit = useMeshEditStore((s) => s.confirmBottomPatternEdit);
+    const cancelBottomPatternEdit = useMeshEditStore((s) => s.cancelBottomPatternEdit);
+    const setBottomPatternDraft = useMeshEditStore((s) => s.setBottomPatternDraft);
     const orphans = useIssuesStore((s) => s.orphans);
     const design = useDesignStore((s) => s.design);
     const violations = useMemo(() => {
@@ -43,13 +50,17 @@ export function ActionPanel() {
     }, [design.corrections, design.thicknessMm]);
 
     const isEditing = editMode === "edit-trimline" && trimlineEdit !== null;
-    const activeSide = trimlineEdit?.side ?? "left";
+    const isEditingBottom = editMode === "edit-bottom-pattern" && bottomPatternEdit !== null;
+    const activeSide = trimlineEdit?.side ?? bottomPatternEdit?.side ?? "left";
 
     const startEdit = (side: Side) => {
         beginTrimlineEdit(side);
     };
 
     const hasCustom = (side: Side) => Boolean(designTrimlines?.[side]?.length);
+    const hasBottom = (side: Side) => Boolean(designBottomPatterns?.[side]?.outline?.length);
+
+    const draftDepth = bottomPatternEdit?.draft.depthMm ?? designBottomPatterns?.[activeSide]?.depthMm ?? 6;
 
     return (
         <div className="space-y-3">
@@ -144,6 +155,98 @@ export function ActionPanel() {
                 ) : (
                     <p className="text-[10px] text-muted-foreground">
                         No active edit session. Click the outline in the 3D view for the fastest start.
+                    </p>
+                )}
+            </div>
+
+            <div className="space-y-2 rounded-md border border-border bg-background/50 p-2">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                    <PencilLine className="h-3.5 w-3.5 text-sky-500" />
+                    Bottom pattern
+                </div>
+                <p className="text-[10px] leading-relaxed text-muted-foreground">
+                    Flat manufacturing outline (independent of the top trimline). Cyan points reshape; purple
+                    box translates; amber ring rotates. Depth is constant (no contour).
+                </p>
+                <div className="flex gap-1">
+                    {(["left", "right"] as Side[]).map((side) => {
+                        const visible = side === "left" ? viewer.showLeft : viewer.showRight;
+                        return (
+                            <Button
+                                key={side}
+                                size="sm"
+                                variant={isEditingBottom && activeSide === side ? "default" : "secondary"}
+                                className={cn("h-7 flex-1 capitalize", !visible && "opacity-50")}
+                                disabled={!visible}
+                                onClick={() => beginBottomPatternEdit(side)}
+                            >
+                                {side}
+                                {hasBottom(side) ? (
+                                    <span className="ml-1 text-[9px] text-sky-500">●</span>
+                                ) : null}
+                            </Button>
+                        );
+                    })}
+                </div>
+
+                {isEditingBottom && bottomPatternEdit ? (
+                    <div className="space-y-2 border-t border-border pt-2">
+                        <label className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                            <span>Depth (mm)</span>
+                            <input
+                                type="number"
+                                min={0}
+                                step={0.5}
+                                className="h-7 w-20 rounded border border-border bg-background px-1.5 text-foreground"
+                                value={draftDepth}
+                                onChange={(e) => {
+                                    const v = Number(e.target.value);
+                                    if (!Number.isFinite(v)) return;
+                                    setBottomPatternDraft({
+                                        ...bottomPatternEdit.draft,
+                                        depthMm: Math.max(0, v),
+                                    });
+                                }}
+                            />
+                        </label>
+                        <div className="flex gap-1">
+                            <Button
+                                size="sm"
+                                variant="default"
+                                className="h-7 flex-1 gap-1 text-[11px]"
+                                onClick={confirmBottomPatternEdit}
+                            >
+                                <Check className="h-3 w-3" />
+                                Confirm
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 flex-1 gap-1 text-[11px]"
+                                onClick={cancelBottomPatternEdit}
+                            >
+                                <X className="h-3 w-3" />
+                                Cancel
+                            </Button>
+                        </div>
+                        {hasBottom(activeSide) ? (
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 w-full gap-1 text-[11px] text-muted-foreground"
+                                onClick={() => {
+                                    clearSideBottomPattern(activeSide);
+                                    cancelBottomPatternEdit();
+                                }}
+                            >
+                                <RotateCcw className="h-3 w-3" />
+                                Clear {activeSide} bottom pattern
+                            </Button>
+                        ) : null}
+                    </div>
+                ) : (
+                    <p className="text-[10px] text-muted-foreground">
+                        Optional. Creates a default scaled outline when you start editing.
                     </p>
                 )}
             </div>

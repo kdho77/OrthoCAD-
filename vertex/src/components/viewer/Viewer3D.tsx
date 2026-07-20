@@ -20,12 +20,13 @@ import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { cn } from "@/lib/utils";
-import { type CameraView, type ViewerSettings, useDesignStore } from "@/stores/design-store";
+import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { Side } from "@/types";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
+import { BottomPatternEditTools } from "./BottomPatternEditTools";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
@@ -74,6 +75,10 @@ export function Viewer3D() {
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
+    const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
+    const beginBottomPatternEdit = useMeshEditStore((s) => s.beginBottomPatternEdit);
+    const confirmBottomPatternEdit = useMeshEditStore((s) => s.confirmBottomPatternEdit);
+    const cancelBottomPatternEdit = useMeshEditStore((s) => s.cancelBottomPatternEdit);
     const editSide = resolveDefaultEditSide(viewer, target);
     const designMode = resolveDesignMode(design);
     const showBase = designMode.mode === "base";
@@ -148,6 +153,7 @@ export function Viewer3D() {
                     <ElementMarkers />
                     <MeshEditTools />
                     <TrimlineEditTools />
+                    <BottomPatternEditTools />
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
@@ -168,7 +174,7 @@ export function Viewer3D() {
                     makeDefault
                     enableDamping
                     dampingFactor={0.1}
-                    enabled={!trimlineEdit?.isDragging}
+                    enabled={!trimlineEdit?.isDragging && !bottomPatternEdit?.isDragging}
                 />
             </Canvas>
 
@@ -209,6 +215,12 @@ export function Viewer3D() {
                     <span className="w-fit rounded bg-orange-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Editing trimline · {trimlineEdit.side}
                         {viewer.view !== "iso" ? " · plane-locked" : ""}
+                    </span>
+                ) : null}
+                {editMode === "edit-bottom-pattern" && bottomPatternEdit ? (
+                    <span className="w-fit rounded bg-sky-600/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Editing bottom pattern · {bottomPatternEdit.side}
+                        {bottomPatternEdit.gesture ? ` · ${bottomPatternEdit.gesture}` : ""}
                     </span>
                 ) : null}
             </div>
@@ -316,6 +328,12 @@ export function Viewer3D() {
                         label="Edit trimline"
                     />
                     <ModeButton
+                        active={editMode === "edit-bottom-pattern"}
+                        onClick={() => beginBottomPatternEdit(editSide)}
+                        icon={<Layers className="h-3.5 w-3.5" />}
+                        label="Bottom pattern"
+                    />
+                    <ModeButton
                         active={editMode === "trim"}
                         onClick={() => {
                             setEditMode("trim");
@@ -348,6 +366,26 @@ export function Viewer3D() {
                                 variant="ghost"
                                 className="h-7 text-[11px]"
                                 onClick={cancelTrimlineEdit}
+                            >
+                                Cancel
+                            </Button>
+                        </>
+                    ) : null}
+                    {editMode === "edit-bottom-pattern" && bottomPatternEdit ? (
+                        <>
+                            <Button
+                                size="sm"
+                                variant="default"
+                                className="h-7 text-[11px]"
+                                onClick={confirmBottomPatternEdit}
+                            >
+                                Confirm
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-[11px]"
+                                onClick={cancelBottomPatternEdit}
                             >
                                 Cancel
                             </Button>

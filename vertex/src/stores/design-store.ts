@@ -11,6 +11,7 @@ import {
     StockBaseResolutionError,
     sanitizeDesignStockBases,
 } from "@/lib/geometry/base-asset";
+import { cloneBottomPattern } from "@/lib/geometry/bottom-pattern";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
@@ -20,6 +21,7 @@ import { buildEffectiveTrimlines, useIssuesStore } from "@/stores/issues-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type {
+    BottomPattern,
     Corrections,
     DesignBase,
     DesignState,
@@ -375,6 +377,11 @@ export interface DesignStore {
     setSideTrimline: (side: Side, curve: TrimlineCurve | null) => void;
     /** Remove custom trimline for one side (revert to parametric outline). */
     clearSideTrimline: (side: Side) => void;
+
+    /** Persist a confirmed bottom pattern for one foot side (manufacturing only). */
+    setSideBottomPattern: (side: Side, pattern: BottomPattern | null) => void;
+    /** Remove bottom pattern for one side. */
+    clearSideBottomPattern: (side: Side) => void;
 
     setViewer: (patch: Partial<ViewerSettings>) => void;
     setExportSide: (side: Side) => void;
@@ -860,6 +867,7 @@ export const useDesignStore = create<DesignStore>()(
             loadDesign: (incoming) => {
                 usePerformanceStore.getState().clearAllPreviews();
                 useMeshEditStore.getState().cancelTrimlineEdit();
+                useMeshEditStore.getState().cancelBottomPatternEdit();
                 useIssuesStore.getState().clear();
                 get().clearHistory(); // Loaded design becomes the new undo root.
                 // Sanitize on load so persisted or imported designs are always valid.
@@ -931,6 +939,42 @@ export const useDesignStore = create<DesignStore>()(
                 });
             },
 
+            setSideBottomPattern: (side, pattern) => {
+                get().checkpoint("set-bottom-pattern");
+                set((s) => {
+                    const bottomPatterns = { ...s.design.bottomPatterns };
+                    if (pattern && pattern.outline.length >= 4) {
+                        bottomPatterns[side] = cloneBottomPattern(pattern);
+                    } else {
+                        delete bottomPatterns[side];
+                    }
+                    return {
+                        design: {
+                            ...s.design,
+                            bottomPatterns:
+                                Object.keys(bottomPatterns).length > 0 ? bottomPatterns : undefined,
+                        },
+                    };
+                });
+            },
+
+            clearSideBottomPattern: (side) => {
+                if (!get().design.bottomPatterns?.[side]) return;
+                get().checkpoint("clear-bottom-pattern");
+                set((s) => {
+                    if (!s.design.bottomPatterns?.[side]) return s;
+                    const bottomPatterns = { ...s.design.bottomPatterns };
+                    delete bottomPatterns[side];
+                    return {
+                        design: {
+                            ...s.design,
+                            bottomPatterns:
+                                Object.keys(bottomPatterns).length > 0 ? bottomPatterns : undefined,
+                        },
+                    };
+                });
+            },
+
             setViewer: (patch) => set((s) => ({ viewer: { ...s.viewer, ...patch } })),
             setExportSide: (side) => set({ exportSide: side }),
             setBaseMeshLoading: (side, loading) =>
@@ -940,6 +984,7 @@ export const useDesignStore = create<DesignStore>()(
             reset: () => {
                 usePerformanceStore.getState().clearAllPreviews();
                 useMeshEditStore.getState().cancelTrimlineEdit();
+                useMeshEditStore.getState().cancelBottomPatternEdit();
                 useIssuesStore.getState().clear();
                 get().clearHistory();
                 const withStock = createDesignWithStockPlaceholder(defaultDesign());
@@ -1000,6 +1045,7 @@ export const useDesignStore = create<DesignStore>()(
                 // Restore previous and push current onto future for redo.
                 usePerformanceStore.getState().clearAllPreviews();
                 useMeshEditStore.getState().cancelTrimlineEdit();
+                useMeshEditStore.getState().cancelBottomPatternEdit();
                 useIssuesStore.getState().clear();
                 const eff = buildEffectiveTrimlines(prev);
                 useIssuesStore.getState().recompute(prev, eff);
@@ -1018,6 +1064,7 @@ export const useDesignStore = create<DesignStore>()(
                 const currentSnap: DesignState = JSON.parse(JSON.stringify(s.design));
                 usePerformanceStore.getState().clearAllPreviews();
                 useMeshEditStore.getState().cancelTrimlineEdit();
+                useMeshEditStore.getState().cancelBottomPatternEdit();
                 useIssuesStore.getState().clear();
                 const eff = buildEffectiveTrimlines(next);
                 useIssuesStore.getState().recompute(next, eff);
