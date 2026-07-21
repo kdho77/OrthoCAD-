@@ -2,6 +2,9 @@
 // See LICENSE file in the project root for full license information.
 
 import * as THREE from "three";
+import {
+    lockZoneURange,
+} from "@/lib/geometry/heel-lift";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
     cloneTrimline,
@@ -12,6 +15,7 @@ import {
 import type {
     BottomPattern,
     BottomPatternTransform,
+    BuildLength,
     DesignBottomPatterns,
     DesignState,
     Side,
@@ -238,4 +242,109 @@ export function outlineBoundsXY(curve: TrimlineCurve): {
     const w = Math.max(0, maxX - minX);
     const h = Math.max(0, maxY - minY);
     return { minX, maxX, minY, maxY, area: w * h };
+}
+
+/** Resolve design buildLength; legacy designs without the field ⇒ "full". */
+export function resolveDesignBuildLength(design: DesignState): BuildLength {
+    return design.buildLength ?? "full";
+}
+
+/** Footprint length-axis frame from a reference outline (longer XY extent = length). */
+export function footprintLengthFrame(points: THREE.Vector3[]): {
+    lengthIsX: boolean;
+    lenMin: number;
+    lenSize: number;
+    widCenter: number;
+} {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of points) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    const extentX = maxX - minX;
+    const extentY = maxY - minY;
+    const lengthIsX = extentX >= extentY;
+    const lenMin = lengthIsX ? minX : minY;
+    const lenSize = Math.max(1e-6, lengthIsX ? extentX : extentY);
+    const widCenter = lengthIsX ? (minY + maxY) / 2 : (minX + maxX) / 2;
+    return { lengthIsX, lenMin, lenSize, widCenter };
+}
+
+/** Normalized u along length (heel≈0 → toe≈1) for a footprint point. */
+export function pointNormalizedU(
+    p: THREE.Vector3,
+    frame: { lengthIsX: boolean; lenMin: number; lenSize: number },
+): number {
+    const len = frame.lengthIsX ? p.x : p.y;
+    return Math.max(0, Math.min(1, (len - frame.lenMin) / frame.lenSize));
+}
+
+/** True when u is inside the active lock zone [archEnd, anterior]. */
+export function isUInLockZone(u: number, archEnd: number, anterior: number, active: boolean): boolean {
+    if (!active) return false;
+    return u >= archEnd - 1e-9 && u <= anterior + 1e-9;
+}
+
+/**
+ * Indices of bottom outline points that fall in the distal lock zone.
+ * Uses the top outline's length frame so u matches clinical heel→toe.
+ */
+export function lockedBottomOutlineIndices(
+    bottomLocalPoints: THREE.Vector3[],
+    topOutline: TrimlineCurve,
+    buildLength: BuildLength,
+    insoleLengthMm: number,
+): Set<number> {
+    const zone = lockZoneURange(buildLength, insoleLengthMm);
+    const locked = new Set<number>();
+    if (!zone.active || topOutline.points.length < 4 || bottomLocalPoints.length === 0) return locked;
+    const frame = footprintLengthFrame(topOutline.points);
+    for (let i = 0; i < bottomLocalPoints.length; i++) {
+        const u = pointNormalizedU(bottomLocalPoints[i]!, frame);
+        if (isUInLockZone(u, zone.archEnd, zone.anterior, zone.active)) locked.add(i);
+    }
+    return locked;
+}
+
+/**
+ * Snap locked bottom outline points to the matching top outline (same u + width side).
+ * Unlocked points unchanged. Returns a new point array.
+ */
+export function applyTopOutlineLockZone(
+    bottomLocalPoints: THREE.Vector3[],
+    topOutline: TrimlineCurve,
+    lockedIndices: ReadonlySet<number>,
+): THREE.Vector3[] {
+    if (lockedIndices.size === 0 || topOutline.points.length < 4) {
+        return bottomLocalPoints.map((p) => p.clone());
+    }
+    const frame = footprintLengthFrame(topOutline.points);
+    const top = topOutline.points;
+
+    const matchTop = (p: THREE.Vector3): THREE.Vector3 => {
+        const u = pointNormalizedU(p, frame);
+        const wid = frame.lengthIsX ? p.y : p.x;
+        const side = Math.sign(wid - frame.widCenter) || 1;
+        let best = top[0]!;
+        let bestScore = Infinity;
+        for (const t of top) {
+            const tu = pointNormalizedU(t, frame);
+            const tw = frame.lengthIsX ? t.y : t.x;
+            const tSide = Math.sign(tw - frame.widCenter) || 1;
+            const sidePenalty = tSide === side ? 0 : 1000;
+            const score = Math.abs(tu - u) * 100 + Math.abs(tw - wid) * 0.01 + sidePenalty;
+            if (score < bestScore) {
+                bestScore = score;
+                best = t;
+            }
+        }
+        return new THREE.Vector3(best.x, best.y, 0);
+    };
+
+    return bottomLocalPoints.map((p, i) => (lockedIndices.has(i) ? matchTop(p) : p.clone()));
 }

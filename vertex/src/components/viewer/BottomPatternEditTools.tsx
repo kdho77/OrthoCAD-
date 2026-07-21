@@ -2,22 +2,28 @@
 // See LICENSE file in the project root for full license information.
 
 import { type ThreeEvent, useThree } from "@react-three/fiber";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import {
+    applyTopOutlineLockZone,
     bottomPatternOutlineCurve,
     cloneBottomPattern,
     getDesignBottomPattern,
+    lockedBottomOutlineIndices,
+    resolveDesignBuildLength,
     setBottomPatternOutline,
     transformedBottomPatternPoints,
 } from "@/lib/geometry/bottom-pattern";
-import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import {
-    deformTrimlineSection,
+    deformTrimlineSectionMulti,
+    getDesignTrimline,
     pickTrimlineAnchorIndex,
     projectToFootprintPlane,
+    sampleDefaultOutline,
     TRIMLINE_PICK_RADIUS_EDIT,
     TRIMLINE_PICK_RADIUS_IDLE,
+    type TrimlineCurve,
     trimlineToCurve,
 } from "@/lib/geometry/trimline";
 import { useDesignStore } from "@/stores/design-store";
@@ -62,6 +68,12 @@ export function BottomPatternEditTools() {
                         key={side}
                         side={side}
                         pattern={display}
+                        topOutline={
+                            getDesignTrimline(design, side) ??
+                            sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM)
+                        }
+                        buildLength={resolveDesignBuildLength(design)}
+                        insoleLengthMm={INSOLE_LENGTH_MM}
                         isEditing={isEditing}
                         isDragging={isEditing && (bottomPatternEdit?.isDragging ?? false)}
                         gesture={isEditing ? (bottomPatternEdit?.gesture ?? null) : null}
@@ -78,6 +90,9 @@ export function BottomPatternEditTools() {
 function BottomPatternSideOverlay({
     side,
     pattern,
+    topOutline,
+    buildLength,
+    insoleLengthMm,
     isEditing,
     isDragging,
     gesture,
@@ -85,6 +100,9 @@ function BottomPatternSideOverlay({
 }: {
     side: Side;
     pattern: BottomPattern;
+    topOutline: TrimlineCurve;
+    buildLength: ReturnType<typeof resolveDesignBuildLength>;
+    insoleLengthMm: number;
     isEditing: boolean;
     isDragging: boolean;
     gesture: "outline" | "translate" | "rotate" | null;
@@ -103,7 +121,7 @@ function BottomPatternSideOverlay({
     const anchorWorldRef = useRef(new THREE.Vector3());
     const worldToLocalRef = useRef(new THREE.Matrix4());
     const baseOutlineRef = useRef<THREE.Vector3[]>([]);
-    const anchorIndexRef = useRef(0);
+    const anchorIndicesRef = useRef<number[]>([]);
     const startTransformRef = useRef(pattern.transform);
     const startCentroidLocalRef = useRef(new THREE.Vector3());
     const pendingRef = useRef<{
@@ -115,6 +133,41 @@ function BottomPatternSideOverlay({
     const rafRef = useRef<number | null>(null);
     const patternRef = useRef(pattern);
     patternRef.current = pattern;
+
+    // Multi-select (shift-click toggle). Locked points are never in this set.
+    const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
+
+    const localOutlinePoints = useMemo(
+        () => bottomPatternOutlineCurve(pattern).points,
+        [pattern],
+    );
+    const lockedIndices = useMemo(
+        () => lockedBottomOutlineIndices(localOutlinePoints, topOutline, buildLength, insoleLengthMm),
+        [localOutlinePoints, topOutline, buildLength, insoleLengthMm],
+    );
+    const lockedRef = useRef(lockedIndices);
+    lockedRef.current = lockedIndices;
+
+    // Keep distal lock zone snapped to top outline while editing.
+    useEffect(() => {
+        if (!isEditing || lockedIndices.size === 0) return;
+        const current = patternRef.current;
+        const local = bottomPatternOutlineCurve(current).points;
+        const snapped = applyTopOutlineLockZone(local, topOutline, lockedIndices);
+        let changed = false;
+        for (const i of lockedIndices) {
+            const a = local[i]!;
+            const b = snapped[i]!;
+            if (Math.hypot(a.x - b.x, a.y - b.y) > 1e-4) {
+                changed = true;
+                break;
+            }
+        }
+        if (changed) {
+            setBottomPatternDraft(setBottomPatternOutline(current, { points: snapped }));
+        }
+        setSelectedIndices((prev) => prev.filter((i) => !lockedIndices.has(i)));
+    }, [isEditing, lockedIndices, topOutline, buildLength, setBottomPatternDraft]);
 
     const worldPoints = useMemo(() => transformedBottomPatternPoints(pattern), [pattern]);
     const displayPoints = useMemo(
@@ -167,14 +220,15 @@ function BottomPatternSideOverlay({
         if (!pending) return;
         const current = patternRef.current;
         if (pending.kind === "outline" && pending.delta) {
-            const deformed = deformTrimlineSection(
+            const deformed = deformTrimlineSectionMulti(
                 baseOutlineRef.current,
-                anchorIndexRef.current,
+                anchorIndicesRef.current,
                 pending.delta,
                 INFLUENCE_RADIUS,
+                { skipIndices: lockedRef.current },
             );
-            // Deform in local outline space (pre-transform).
-            setBottomPatternDraft(setBottomPatternOutline(current, { points: deformed }));
+            const snapped = applyTopOutlineLockZone(deformed, topOutline, lockedRef.current);
+            setBottomPatternDraft(setBottomPatternOutline(current, { points: snapped }));
             return;
         }
         if (pending.kind === "translate" && pending.translation) {
@@ -197,7 +251,7 @@ function BottomPatternSideOverlay({
                 },
             });
         }
-    }, [setBottomPatternDraft]);
+    }, [setBottomPatternDraft, topOutline]);
 
     const hitLocal = useCallback(
         (clientX: number, clientY: number): THREE.Vector3 | null => {
@@ -349,13 +403,32 @@ function BottomPatternSideOverlay({
 
     // Swap window move listener for outline so rotation is inverted correctly.
     const beginOutlineGesture = useCallback(
-        (e: ThreeEvent<PointerEvent>, anchorIndex: number) => {
+        (e: ThreeEvent<PointerEvent>, anchorIndex: number, shiftKey: boolean) => {
+            if (lockedRef.current.has(anchorIndex)) return;
+
+            if (shiftKey) {
+                // Multi-select toggle only — no drag start.
+                setSelectedIndices((prev) =>
+                    prev.includes(anchorIndex)
+                        ? prev.filter((i) => i !== anchorIndex)
+                        : [...prev, anchorIndex],
+                );
+                return;
+            }
+
+            const anchors = (
+                selectedIndices.includes(anchorIndex) && selectedIndices.length > 0
+                    ? selectedIndices
+                    : [anchorIndex]
+            ).filter((i) => !lockedRef.current.has(i));
+            anchorIndicesRef.current = anchors.length > 0 ? anchors : [anchorIndex];
+            setSelectedIndices(anchorIndicesRef.current);
+
             const worldMatrix = getWorldMatrix();
             worldToLocalRef.current = worldMatrix.clone().invert();
             anchorWorldRef.current.copy(e.point);
             startTransformRef.current = { ...pattern.transform };
             baseOutlineRef.current = bottomPatternOutlineCurve(pattern).points.map((p) => p.clone());
-            anchorIndexRef.current = anchorIndex;
             pendingRef.current = { kind: "outline" };
             const normal = camera.getWorldDirection(new THREE.Vector3());
             dragPlaneRef.current.setFromNormalAndCoplanarPoint(normal, e.point);
@@ -404,6 +477,7 @@ function BottomPatternSideOverlay({
             gl.domElement,
             handleOutlineMove,
             pattern,
+            selectedIndices,
             setBottomPatternDragging,
             setBottomPatternGesture,
             setInteracting,
@@ -432,12 +506,19 @@ function BottomPatternSideOverlay({
                 return;
             }
             const local = projectToFootprintPlane(e.point, getWorldMatrix());
-            // Pick against transformed (world footprint) points for anchor index, then map to local.
             const worldCurve = { points: worldPoints };
             const idx = pickTrimlineAnchorIndex(local, worldCurve);
-            beginOutlineGesture(e, idx);
+            if (lockedIndices.has(idx)) return;
+            beginOutlineGesture(e, idx, e.nativeEvent.shiftKey);
         },
-        [beginOutlineGesture, getWorldMatrix, isEditing, onOutlineClick, worldPoints],
+        [
+            beginOutlineGesture,
+            getWorldMatrix,
+            isEditing,
+            lockedIndices,
+            onOutlineClick,
+            worldPoints,
+        ],
     );
 
     return (
@@ -449,24 +530,39 @@ function BottomPatternSideOverlay({
             <BottomPatternVisual points={displayPoints} color={outlineColor} tubeRadius={tubeRadius} />
 
             {isEditing
-                ? worldPoints.map((p, i) => (
-                      <mesh
-                          // biome-ignore lint/suspicious/noArrayIndexKey: control points are a fixed-order ring
-                          key={i}
-                          position={[p.x, p.y, p.z + 2.2]}
-                          renderOrder={101}
-                          onPointerDown={(e) => {
-                              e.stopPropagation();
-                              beginOutlineGesture(e, i);
-                          }}
-                      >
-                          <sphereGeometry args={[1.8, 10, 10]} />
-                          <meshBasicMaterial
-                              color={gesture === "outline" && isDragging ? "#22d3ee" : "#38bdf8"}
-                              depthTest={false}
-                          />
-                      </mesh>
-                  ))
+                ? worldPoints.map((p, i) => {
+                      const locked = lockedIndices.has(i);
+                      const selected = selectedIndices.includes(i);
+                      return (
+                          <mesh
+                              // biome-ignore lint/suspicious/noArrayIndexKey: control points are a fixed-order ring
+                              key={i}
+                              position={[p.x, p.y, p.z + 2.2]}
+                              renderOrder={101}
+                              onPointerDown={(e) => {
+                                  e.stopPropagation();
+                                  if (locked) return;
+                                  beginOutlineGesture(e, i, e.nativeEvent.shiftKey);
+                              }}
+                          >
+                              <sphereGeometry args={[locked ? 1.4 : 1.8, 10, 10]} />
+                              <meshBasicMaterial
+                                  color={
+                                      locked
+                                          ? "#94a3b8"
+                                          : selected
+                                            ? "#f472b6"
+                                            : gesture === "outline" && isDragging
+                                              ? "#22d3ee"
+                                              : "#38bdf8"
+                                  }
+                                  depthTest={false}
+                                  transparent={locked}
+                                  opacity={locked ? 0.55 : 1}
+                              />
+                          </mesh>
+                      );
+                  })
                 : null}
 
             {/* Translate handle — box at centroid; distinct from outline spheres */}

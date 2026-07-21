@@ -26,6 +26,9 @@ export type ScanPattern =
     | "flat"
     | "custom";
 
+/** Explicit insole build-length class (lock-zone distal boundary; not inferred from trimline). */
+export type BuildLength = "full" | "three_quarter" | "sulcus";
+
 export type ExportFormat = "stl" | "gcode" | "glb";
 
 export type GrindingStyleType = "straight" | "rounded";
@@ -216,6 +219,11 @@ export interface DesignState {
     /** Optional base template; absent ⇒ full parametric generation. */
     base?: DesignBase;
     method: ProductionMethod;
+    /**
+     * Explicit build-length class for manufacturing cut / bottom-pattern lock zone.
+     * Independent of trimline extent. Absent on legacy designs ⇒ treat as "full".
+     */
+    buildLength?: BuildLength;
     thicknessMm: number;
     corrections: Corrections;
     elements: PlacedElement[];

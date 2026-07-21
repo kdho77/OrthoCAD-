@@ -19,6 +19,8 @@ export function ActionPanel() {
     const viewer = useDesignStore((s) => s.viewer);
     const designTrimlines = useDesignStore((s) => s.design.trimlines);
     const designBottomPatterns = useDesignStore((s) => s.design.bottomPatterns);
+    const buildLength = useDesignStore((s) => s.design.buildLength ?? "full");
+    const setBuildLength = useDesignStore((s) => s.setBuildLength);
     const clearSideTrimline = useDesignStore((s) => s.clearSideTrimline);
     const clearSideBottomPattern = useDesignStore((s) => s.clearSideBottomPattern);
     const editMode = useMeshEditStore((s) => s.editMode);
@@ -165,9 +167,32 @@ export function ActionPanel() {
                     Bottom pattern
                 </div>
                 <p className="text-[10px] leading-relaxed text-muted-foreground">
-                    Flat manufacturing outline (independent of the top trimline). Cyan points reshape; purple
-                    box translates; amber ring rotates. Depth is constant (no contour).
+                    Flat manufacturing outline (independent of the top trimline). Cyan = editable; slate =
+                    lock zone (tracks top). Shift-click multi-select; pink = selected. Purple box translates;
+                    amber ring rotates.
                 </p>
+                <div className="space-y-1">
+                    <div className="text-[10px] font-medium text-muted-foreground">Build length</div>
+                    <div className="flex gap-1">
+                        {(
+                            [
+                                { id: "full" as const, label: "Full" },
+                                { id: "three_quarter" as const, label: "¾" },
+                                { id: "sulcus" as const, label: "Sulcus" },
+                            ] as const
+                        ).map((opt) => (
+                            <Button
+                                key={opt.id}
+                                size="sm"
+                                variant={buildLength === opt.id ? "default" : "secondary"}
+                                className="h-7 flex-1 text-[11px]"
+                                onClick={() => setBuildLength(opt.id)}
+                            >
+                                {opt.label}
+                            </Button>
+                        ))}
+                    </div>
+                </div>
                 <div className="flex gap-1">
                     {(["left", "right"] as Side[]).map((side) => {
                         const visible = side === "left" ? viewer.showLeft : viewer.showRight;

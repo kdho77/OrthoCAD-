@@ -22,6 +22,7 @@ import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type {
     BottomPattern,
+    BuildLength,
     Corrections,
     DesignBase,
     DesignState,
@@ -334,6 +335,8 @@ export interface DesignStore {
 
     setPattern: (pattern: ScanPattern) => void;
     setMethod: (method: ProductionMethod) => void;
+    /** Explicit build-length class (full / three_quarter / sulcus). */
+    setBuildLength: (buildLength: BuildLength) => void;
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
@@ -427,6 +430,7 @@ export const useDesignStore = create<DesignStore>()(
                     design: { ...s.design, pattern },
                 })),
             setMethod: (method) => set((s) => ({ design: { ...s.design, method } })),
+            setBuildLength: (buildLength) => set((s) => ({ design: { ...s.design, buildLength } })),
             setThickness: (thicknessMm) =>
                 set((s) => {
                     const isPaired = !!s.design.paired;

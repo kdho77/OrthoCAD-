@@ -315,18 +315,37 @@ export function deformTrimlineSection(
     delta: THREE.Vector3,
     influenceRadius = 10,
 ): THREE.Vector3[] {
+    return deformTrimlineSectionMulti(points, [anchorIndex], delta, influenceRadius);
+}
+
+/**
+ * Smooth multi-anchor deformation: each point takes the **max** Gaussian weight
+ * across selected anchors, then moves by `delta * weight`. Produces one continuous
+ * falloff across the selected span (no per-point kink). Optionally skip locked indices.
+ */
+export function deformTrimlineSectionMulti(
+    points: THREE.Vector3[],
+    anchorIndices: number[],
+    delta: THREE.Vector3,
+    influenceRadius = 10,
+    options?: { skipIndices?: ReadonlySet<number> },
+): THREE.Vector3[] {
     const n = points.length;
     if (n === 0) return [];
+    const anchors = anchorIndices.filter((i) => i >= 0 && i < n);
+    if (anchors.length === 0) return points.map((p) => p.clone());
+    const skip = options?.skipIndices;
 
     return points.map((p, i) => {
-        const direct = Math.abs(i - anchorIndex);
-        const wrapped = Math.min(direct, n - direct);
-        const weight = Math.exp(-(wrapped * wrapped) / (2 * influenceRadius * influenceRadius));
-        return new THREE.Vector3(
-            p.x + delta.x * weight,
-            p.y + delta.y * weight,
-            p.z,
-        );
+        if (skip?.has(i)) return p.clone();
+        let bestW = 0;
+        for (const a of anchors) {
+            const direct = Math.abs(i - a);
+            const wrapped = Math.min(direct, n - direct);
+            const w = Math.exp(-(wrapped * wrapped) / (2 * influenceRadius * influenceRadius));
+            if (w > bestW) bestW = w;
+        }
+        return new THREE.Vector3(p.x + delta.x * bestW, p.y + delta.y * bestW, p.z);
     });
 }
 
