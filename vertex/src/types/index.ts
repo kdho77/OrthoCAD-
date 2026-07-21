@@ -224,6 +224,11 @@ export interface DesignState {
      * Independent of trimline extent. Absent on legacy designs ⇒ treat as "full".
      */
     buildLength?: BuildLength;
+    /**
+     * Sulcus anterior offset (mm). Print-validation tunable.
+     * Absent on legacy designs ⇒ treat as SULCUS_OFFSET_MM (15).
+     */
+    sulcusOffsetMm?: number;
     thicknessMm: number;
     corrections: Corrections;
     elements: PlacedElement[];

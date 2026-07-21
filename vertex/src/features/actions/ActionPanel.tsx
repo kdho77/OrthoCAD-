@@ -4,9 +4,11 @@
 import { AlertTriangle, Check, PencilLine, Redo2, RotateCcw, Undo2, X } from "lucide-react";
 import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
+import { SliderField } from "@/components/ui/slider-field";
 import { constrainDesignCorrections } from "@/lib/geometry/clinical-constraints";
+import { MAX_SULCUS_OFFSET_MM, MIN_SULCUS_OFFSET_MM } from "@/lib/geometry/heel-lift";
 import { cn } from "@/lib/utils";
-import { useDesignStore } from "@/stores/design-store";
+import { resolveSulcusOffsetMm, useDesignStore } from "@/stores/design-store";
 import { useIssuesStore } from "@/stores/issues-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { Side } from "@/types";
@@ -21,6 +23,7 @@ export function ActionPanel() {
     const designBottomPatterns = useDesignStore((s) => s.design.bottomPatterns);
     const buildLength = useDesignStore((s) => s.design.buildLength ?? "full");
     const setBuildLength = useDesignStore((s) => s.setBuildLength);
+    const setSulcusOffsetMm = useDesignStore((s) => s.setSulcusOffsetMm);
     const clearSideTrimline = useDesignStore((s) => s.clearSideTrimline);
     const clearSideBottomPattern = useDesignStore((s) => s.clearSideBottomPattern);
     const editMode = useMeshEditStore((s) => s.editMode);
@@ -35,6 +38,7 @@ export function ActionPanel() {
     const setBottomPatternDraft = useMeshEditStore((s) => s.setBottomPatternDraft);
     const orphans = useIssuesStore((s) => s.orphans);
     const design = useDesignStore((s) => s.design);
+    const sulcusOffsetMm = resolveSulcusOffsetMm(design);
     const violations = useMemo(() => {
         const { violations: all } = constrainDesignCorrections(
             design.corrections.left,
@@ -192,6 +196,23 @@ export function ActionPanel() {
                             </Button>
                         ))}
                     </div>
+                    {buildLength === "sulcus" ? (
+                        <div className="space-y-1 pt-1">
+                            <SliderField
+                                label="Sulcus offset (print validation)"
+                                value={sulcusOffsetMm}
+                                min={MIN_SULCUS_OFFSET_MM}
+                                max={MAX_SULCUS_OFFSET_MM}
+                                step={0.5}
+                                unit="mm"
+                                onChange={(v) => setSulcusOffsetMm(v)}
+                            />
+                            <p className="text-[10px] text-muted-foreground">
+                                Tunable for physical print validation — not a finished clinical constant.
+                                Default 15 mm.
+                            </p>
+                        </div>
+                    ) : null}
                 </div>
                 <div className="flex gap-1">
                     {(["left", "right"] as Side[]).map((side) => {

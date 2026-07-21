@@ -13,6 +13,7 @@ import {
 } from "@/lib/geometry/base-asset";
 import { cloneBottomPattern } from "@/lib/geometry/bottom-pattern";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
+import { clampSulcusOffsetMm, SULCUS_OFFSET_MM } from "@/lib/geometry/heel-lift";
 import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { isSupabaseConfigured } from "@/lib/supabase";
@@ -93,6 +94,11 @@ export function defaultDesign(): DesignState {
         elements: [],
         // paired remains undefined for legacy/single side designs
     };
+}
+
+/** Legacy-safe sulcus offset: absent/invalid ⇒ 15, then clamp via heel-lift helper. */
+export function resolveSulcusOffsetMm(design: DesignState): number {
+    return clampSulcusOffsetMm(design.sulcusOffsetMm ?? SULCUS_OFFSET_MM);
 }
 
 /**
@@ -337,6 +343,8 @@ export interface DesignStore {
     setMethod: (method: ProductionMethod) => void;
     /** Explicit build-length class (full / three_quarter / sulcus). */
     setBuildLength: (buildLength: BuildLength) => void;
+    /** Persist sulcus offset mm (clamped [10,25] via clampSulcusOffsetMm). */
+    setSulcusOffsetMm: (mm: number) => void;
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
@@ -431,6 +439,13 @@ export const useDesignStore = create<DesignStore>()(
                 })),
             setMethod: (method) => set((s) => ({ design: { ...s.design, method } })),
             setBuildLength: (buildLength) => set((s) => ({ design: { ...s.design, buildLength } })),
+            setSulcusOffsetMm: (mm) =>
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        sulcusOffsetMm: clampSulcusOffsetMm(mm),
+                    },
+                })),
             setThickness: (thicknessMm) =>
                 set((s) => {
                     const isPaired = !!s.design.paired;

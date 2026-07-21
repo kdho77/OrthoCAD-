@@ -11,14 +11,17 @@ import {
 import {
     anteriorU,
     archEndU,
+    clampSulcusOffsetMm,
     HEEL_LIFT_TAPER_END,
     lockZoneURange,
     MAX_ARCH_MARGIN_MM,
+    MAX_SULCUS_OFFSET_MM,
     MIN_ARCH_MARGIN_MM,
+    MIN_SULCUS_OFFSET_MM,
     SULCUS_OFFSET_MM,
 } from "@/lib/geometry/heel-lift";
 import { deformTrimlineSection, deformTrimlineSectionMulti } from "@/lib/geometry/trimline";
-import { defaultDesign } from "@/stores/design-store";
+import { defaultDesign, resolveSulcusOffsetMm } from "@/stores/design-store";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 
 describe("archEndU / anteriorU / lock zone", () => {
@@ -148,5 +151,45 @@ describe("deformTrimlineSectionMulti smoothness", () => {
         expect(withSkip[15]!.y).toBe(0);
         expect(withSkip[16]!.y).toBe(0);
         expect(withSkip[10]!.y).toBeGreaterThan(7);
+    });
+});
+
+describe("sulcusOffsetMm tunable", () => {
+    test("default 15mm reproduces prior lock-span examples", () => {
+        // Fractions = anteriorU(sulcus) - archEndU = offset/L at default 15
+        expect(lockZoneURange("sulcus", 100).anterior - lockZoneURange("sulcus", 100).archEnd).toBeCloseTo(
+            0.15,
+            10,
+        );
+        expect(lockZoneURange("sulcus", 260).anterior - lockZoneURange("sulcus", 260).archEnd).toBeCloseTo(
+            15 / 260,
+            10,
+        );
+        expect(lockZoneURange("sulcus", 500).anterior - lockZoneURange("sulcus", 500).archEnd).toBeCloseTo(
+            0.03,
+            10,
+        );
+    });
+
+    test("clampSulcusOffsetMm at MIN 10 and MAX 25", () => {
+        expect(clampSulcusOffsetMm(10)).toBe(10);
+        expect(clampSulcusOffsetMm(25)).toBe(25);
+        expect(clampSulcusOffsetMm(9)).toBe(MIN_SULCUS_OFFSET_MM);
+        expect(clampSulcusOffsetMm(26)).toBe(MAX_SULCUS_OFFSET_MM);
+        expect(clampSulcusOffsetMm(Number.NaN)).toBe(SULCUS_OFFSET_MM);
+    });
+
+    test("legacy DesignState missing sulcusOffsetMm resolves to 15", () => {
+        expect(resolveSulcusOffsetMm(defaultDesign())).toBe(15);
+        expect(resolveSulcusOffsetMm({ ...defaultDesign(), sulcusOffsetMm: 99 })).toBe(25);
+    });
+
+    test("full and three_quarter paths unaffected by sulcus offset param", () => {
+        const L = 260;
+        expect(anteriorU("full", L, 10)).toBe(anteriorU("full", L, 25));
+        expect(anteriorU("full", L, 10)).toBe(1);
+        expect(anteriorU("three_quarter", L, 10)).toBeCloseTo(anteriorU("three_quarter", L, 25), 10);
+        expect(anteriorU("three_quarter", L, 10)).toBeCloseTo(archEndU(L), 10);
+        expect(anteriorU("sulcus", L, 10)).not.toBeCloseTo(anteriorU("sulcus", L, 25), 10);
     });
 });

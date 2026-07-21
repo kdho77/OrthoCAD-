@@ -40,10 +40,24 @@ export const MAX_ARCH_MARGIN_MM = 25;
 
 /**
  * Distal offset past archEndU for sulcus-length builds (mm along length).
- * PLACEHOLDER — not literature-verified to the same standard as arch margin;
+ * Default for print-validation tunable DesignState.sulcusOffsetMm.
+ * PLACEHOLDER baseline — not literature-verified to the same standard as arch margin;
  * Kendon intends to validate/adjust via physical testing.
  */
 export const SULCUS_OFFSET_MM = 15;
+
+/**
+ * Interim safe range for sulcusOffsetMm (mirrors arch-margin bounds).
+ * Pending print validation — not yet literature-backed to the same standard as arch margins.
+ */
+export const MIN_SULCUS_OFFSET_MM = 10;
+export const MAX_SULCUS_OFFSET_MM = 25;
+
+/** Clamp sulcus offset to [MIN, MAX]; non-finite → default SULCUS_OFFSET_MM. */
+export function clampSulcusOffsetMm(mm: number): number {
+    if (!Number.isFinite(mm)) return SULCUS_OFFSET_MM;
+    return Math.min(MAX_SULCUS_OFFSET_MM, Math.max(MIN_SULCUS_OFFSET_MM, mm));
+}
 
 /**
  * Proximal boundary of the bottom-pattern lock zone (normalized u, heel=0 → toe=1).
@@ -58,14 +72,19 @@ export function archEndU(insoleLengthMm: number): number {
 /**
  * Distal (anterior) extent for a build-length class, as normalized u (heel=0 → toe=1).
  * three_quarter terminates at archEndU (near-zero lock zone by design).
+ * `sulcusOffsetMm` only affects the sulcus class (default = SULCUS_OFFSET_MM).
  */
-export function anteriorU(buildLength: BuildLength, insoleLengthMm: number): number {
+export function anteriorU(
+    buildLength: BuildLength,
+    insoleLengthMm: number,
+    sulcusOffsetMm: number = SULCUS_OFFSET_MM,
+): number {
     const end = archEndU(insoleLengthMm);
     if (buildLength === "full") return 1;
     if (buildLength === "three_quarter") return end;
     // sulcus
     const L = Math.max(1e-6, insoleLengthMm);
-    return Math.min(1, end + SULCUS_OFFSET_MM / L);
+    return Math.min(1, end + clampSulcusOffsetMm(sulcusOffsetMm) / L);
 }
 
 /**
@@ -75,9 +94,10 @@ export function anteriorU(buildLength: BuildLength, insoleLengthMm: number): num
 export function lockZoneURange(
     buildLength: BuildLength,
     insoleLengthMm: number,
+    sulcusOffsetMm: number = SULCUS_OFFSET_MM,
 ): { archEnd: number; anterior: number; active: boolean } {
     const archEnd = archEndU(insoleLengthMm);
-    const anterior = anteriorU(buildLength, insoleLengthMm);
+    const anterior = anteriorU(buildLength, insoleLengthMm, sulcusOffsetMm);
     return { archEnd, anterior, active: anterior > archEnd + 1e-6 };
 }
 
