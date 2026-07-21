@@ -192,4 +192,45 @@ describe("sulcusOffsetMm tunable", () => {
         expect(anteriorU("three_quarter", L, 10)).toBeCloseTo(archEndU(L), 10);
         expect(anteriorU("sulcus", L, 10)).not.toBeCloseTo(anteriorU("sulcus", L, 25), 10);
     });
+
+    test("sulcus offset 10 vs 25 yields different locked index sets", () => {
+        const top = (() => {
+            const points: Vector3[] = [];
+            for (let i = 0; i < 48; i++) {
+                const a = (i / 48) * Math.PI * 2;
+                points.push(new Vector3(130 * Math.cos(a) + 130, 45 * Math.sin(a), 0));
+            }
+            return { points };
+        })();
+        const bottom = top.points.map((p) => p.clone());
+        const L = 260;
+        const locked10 = lockedBottomOutlineIndices(bottom, top, "sulcus", L, 10);
+        const locked25 = lockedBottomOutlineIndices(bottom, top, "sulcus", L, 25);
+        expect(locked10.size).toBeGreaterThan(0);
+        expect(locked25.size).toBeGreaterThan(locked10.size);
+        for (const i of locked10) {
+            expect(locked25.has(i)).toBe(true);
+        }
+    });
+
+    test("full and three_quarter locked sets identical for offset 10 vs 25", () => {
+        const top = (() => {
+            const points: Vector3[] = [];
+            for (let i = 0; i < 48; i++) {
+                const a = (i / 48) * Math.PI * 2;
+                points.push(new Vector3(130 * Math.cos(a) + 130, 45 * Math.sin(a), 0));
+            }
+            return { points };
+        })();
+        const bottom = top.points.map((p) => p.clone());
+        const L = 260;
+        const full10 = lockedBottomOutlineIndices(bottom, top, "full", L, 10);
+        const full25 = lockedBottomOutlineIndices(bottom, top, "full", L, 25);
+        expect([...full10].sort((a, b) => a - b)).toEqual([...full25].sort((a, b) => a - b));
+
+        const tq10 = lockedBottomOutlineIndices(bottom, top, "three_quarter", L, 10);
+        const tq25 = lockedBottomOutlineIndices(bottom, top, "three_quarter", L, 25);
+        expect(tq10.size).toBe(0);
+        expect(tq25.size).toBe(0);
+    });
 });

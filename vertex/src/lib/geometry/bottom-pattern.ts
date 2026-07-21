@@ -4,6 +4,7 @@
 import * as THREE from "three";
 import {
     lockZoneURange,
+    SULCUS_OFFSET_MM,
 } from "@/lib/geometry/heel-lift";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -293,14 +294,16 @@ export function isUInLockZone(u: number, archEnd: number, anterior: number, acti
 /**
  * Indices of bottom outline points that fall in the distal lock zone.
  * Uses the top outline's length frame so u matches clinical heel→toe.
+ * `sulcusOffsetMm` only affects the sulcus build-length class (default 15).
  */
 export function lockedBottomOutlineIndices(
     bottomLocalPoints: THREE.Vector3[],
     topOutline: TrimlineCurve,
     buildLength: BuildLength,
     insoleLengthMm: number,
+    sulcusOffsetMm: number = SULCUS_OFFSET_MM,
 ): Set<number> {
-    const zone = lockZoneURange(buildLength, insoleLengthMm);
+    const zone = lockZoneURange(buildLength, insoleLengthMm, sulcusOffsetMm);
     const locked = new Set<number>();
     if (!zone.active || topOutline.points.length < 4 || bottomLocalPoints.length === 0) return locked;
     const frame = footprintLengthFrame(topOutline.points);

@@ -26,7 +26,7 @@ import {
     type TrimlineCurve,
     trimlineToCurve,
 } from "@/lib/geometry/trimline";
-import { useDesignStore } from "@/stores/design-store";
+import { resolveSulcusOffsetMm, useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { BottomPattern, Side } from "@/types";
@@ -74,6 +74,7 @@ export function BottomPatternEditTools() {
                         }
                         buildLength={resolveDesignBuildLength(design)}
                         insoleLengthMm={INSOLE_LENGTH_MM}
+                        sulcusOffsetMm={resolveSulcusOffsetMm(design)}
                         isEditing={isEditing}
                         isDragging={isEditing && (bottomPatternEdit?.isDragging ?? false)}
                         gesture={isEditing ? (bottomPatternEdit?.gesture ?? null) : null}
@@ -93,6 +94,7 @@ function BottomPatternSideOverlay({
     topOutline,
     buildLength,
     insoleLengthMm,
+    sulcusOffsetMm,
     isEditing,
     isDragging,
     gesture,
@@ -103,6 +105,7 @@ function BottomPatternSideOverlay({
     topOutline: TrimlineCurve;
     buildLength: ReturnType<typeof resolveDesignBuildLength>;
     insoleLengthMm: number;
+    sulcusOffsetMm: number;
     isEditing: boolean;
     isDragging: boolean;
     gesture: "outline" | "translate" | "rotate" | null;
@@ -137,13 +140,17 @@ function BottomPatternSideOverlay({
     // Multi-select (shift-click toggle). Locked points are never in this set.
     const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
 
-    const localOutlinePoints = useMemo(
-        () => bottomPatternOutlineCurve(pattern).points,
-        [pattern],
-    );
+    const localOutlinePoints = useMemo(() => bottomPatternOutlineCurve(pattern).points, [pattern]);
     const lockedIndices = useMemo(
-        () => lockedBottomOutlineIndices(localOutlinePoints, topOutline, buildLength, insoleLengthMm),
-        [localOutlinePoints, topOutline, buildLength, insoleLengthMm],
+        () =>
+            lockedBottomOutlineIndices(
+                localOutlinePoints,
+                topOutline,
+                buildLength,
+                insoleLengthMm,
+                sulcusOffsetMm,
+            ),
+        [localOutlinePoints, topOutline, buildLength, insoleLengthMm, sulcusOffsetMm],
     );
     const lockedRef = useRef(lockedIndices);
     lockedRef.current = lockedIndices;
@@ -167,7 +174,7 @@ function BottomPatternSideOverlay({
             setBottomPatternDraft(setBottomPatternOutline(current, { points: snapped }));
         }
         setSelectedIndices((prev) => prev.filter((i) => !lockedIndices.has(i)));
-    }, [isEditing, lockedIndices, topOutline, buildLength, setBottomPatternDraft]);
+    }, [isEditing, lockedIndices, topOutline, setBottomPatternDraft]);
 
     const worldPoints = useMemo(() => transformedBottomPatternPoints(pattern), [pattern]);
     const displayPoints = useMemo(
@@ -511,14 +518,7 @@ function BottomPatternSideOverlay({
             if (lockedIndices.has(idx)) return;
             beginOutlineGesture(e, idx, e.nativeEvent.shiftKey);
         },
-        [
-            beginOutlineGesture,
-            getWorldMatrix,
-            isEditing,
-            lockedIndices,
-            onOutlineClick,
-            worldPoints,
-        ],
+        [beginOutlineGesture, getWorldMatrix, isEditing, lockedIndices, onOutlineClick, worldPoints],
     );
 
     return (
