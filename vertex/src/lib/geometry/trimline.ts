@@ -73,21 +73,33 @@ export function sampleDefaultOutline(
  * structure of `sampleDefaultOutline` so the editing / deform logic behaves the
  * same on a base as on the parametric outline.
  *
+ * Optional `vertexStart` / `vertexEnd` limit the silhouette to a sub-range of
+ * the position buffer (e.g. Bottom verts after `topVertexCount` on multi-mesh
+ * bases). Defaults cover the full mesh.
+ *
  * Returns `null` for degenerate input so callers fall back to the parametric
  * outline.
  */
-export function extractMeshOutline(geometry: THREE.BufferGeometry, stations = 32): TrimlineCurve | null {
+export function extractMeshOutline(
+    geometry: THREE.BufferGeometry,
+    stations = 32,
+    options?: { vertexStart?: number; vertexEnd?: number },
+): TrimlineCurve | null {
     const pos = geometry.getAttribute("position");
     if (!pos || pos.count < 3) return null;
 
-    const count = pos.count;
+    const start = Math.max(0, options?.vertexStart ?? 0);
+    const end = Math.min(pos.count, options?.vertexEnd ?? pos.count);
+    const count = end - start;
+    if (count < 3) return null;
+
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
     let maxY = -Infinity;
     let minZ = Infinity;
     let maxZ = -Infinity;
-    for (let i = 0; i < count; i++) {
+    for (let i = start; i < end; i++) {
         const x = pos.getX(i);
         const y = pos.getY(i);
         const z = pos.getZ(i);
@@ -112,7 +124,7 @@ export function extractMeshOutline(geometry: THREE.BufferGeometry, stations = 32
     // Per-station min / max of the width coordinate (the medial / lateral edge).
     const lo = new Array<number>(n).fill(Number.POSITIVE_INFINITY);
     const hi = new Array<number>(n).fill(Number.NEGATIVE_INFINITY);
-    for (let i = 0; i < count; i++) {
+    for (let i = start; i < end; i++) {
         const lenCoord = lengthIsX ? pos.getX(i) : pos.getY(i);
         const widCoord = lengthIsX ? pos.getY(i) : pos.getX(i);
         let s = Math.round(((lenCoord - lenMin) / lenSize) * (n - 1));

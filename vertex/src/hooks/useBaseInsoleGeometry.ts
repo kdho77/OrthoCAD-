@@ -12,6 +12,7 @@ import {
 } from "@/lib/geometry/base-asset";
 import { computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { extractBottomMeshOutline } from "@/lib/geometry/bottom-pattern";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import {
     clipGeometryToOutline,
@@ -146,6 +147,13 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     if (!useBaseOutlineStore.getState().getOutline(lookupKey)) {
                         const outline = extractMeshOutline(geo);
                         if (outline) useBaseOutlineStore.getState().setOutline(lookupKey, outline);
+                    }
+                    // Seed cache for new bottomPattern defaults (Bottom-mesh XY silhouette).
+                    if (!useBaseOutlineStore.getState().getBottomOutline(lookupKey)) {
+                        const bottomOutline = extractBottomMeshOutline(geo);
+                        if (bottomOutline) {
+                            useBaseOutlineStore.getState().setBottomOutline(lookupKey, bottomOutline);
+                        }
                     }
                     if (!useBaseBoundsStore.getState().getBounds(lookupKey)) {
                         // computeBaseBounds is cached internally and also stores outline + zones + safe margins.

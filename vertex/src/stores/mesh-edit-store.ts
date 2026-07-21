@@ -5,7 +5,7 @@ import {
     cloneBottomPattern,
     createBottomPatternFromOutline,
     getDesignBottomPattern,
-    scaleOutlineAboutCentroid,
+    seedBottomPatternOutline,
 } from "@/lib/geometry/bottom-pattern";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
@@ -126,14 +126,19 @@ function committedOrDefault(side: Side): TrimlineCurve {
     return sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
 }
 
-/** Default bottom pattern: scaled-down top outline (partial coverage), identity transform. */
+/** Default bottom pattern: Bottom-mesh footprint when available, else scaled top. */
 function defaultBottomPatternForSide(side: Side): BottomPattern {
     const design = useDesignStore.getState().design;
     const existing = getDesignBottomPattern(design, side);
     if (existing) return cloneBottomPattern(existing);
     const top = committedOrDefault(side);
-    const smaller = scaleOutlineAboutCentroid(top, 0.65);
-    return createBottomPatternFromOutline(smaller);
+    const base = getDesignBase(design, side);
+    const key = base ? (getBaseCacheKey(base) ?? base.assetId) : null;
+    const cachedBottom = key ? useBaseOutlineStore.getState().getBottomOutline(key) : null;
+    // Prefer published Bottom silhouette; seedBottomPatternOutline(null, top) is the
+    // 0.65× fallback for single-mesh / not-yet-loaded bases.
+    const outline = cachedBottom ?? seedBottomPatternOutline(null, top);
+    return createBottomPatternFromOutline(outline);
 }
 
 export const useMeshEditStore = create<MeshEditStore>((set, get) => ({

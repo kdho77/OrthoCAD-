@@ -3,7 +3,12 @@
 
 import * as THREE from "three";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
-import { cloneTrimline, deserializeTrimlineCurve, serializeTrimlineCurve } from "@/lib/geometry/trimline";
+import {
+    cloneTrimline,
+    deserializeTrimlineCurve,
+    extractMeshOutline,
+    serializeTrimlineCurve,
+} from "@/lib/geometry/trimline";
 import type {
     BottomPattern,
     BottomPatternTransform,
@@ -14,6 +19,8 @@ import type {
 } from "@/types";
 
 export const DEFAULT_BOTTOM_PATTERN_DEPTH_MM = 6;
+/** Legacy seed scale when no Bottom mesh is available (single-mesh / parametric). */
+export const BOTTOM_PATTERN_FALLBACK_SCALE = 0.65;
 
 export function defaultBottomPatternTransform(): BottomPatternTransform {
     return { x: 0, y: 0, rotationDeg: 0 };
@@ -147,7 +154,7 @@ export function bottomPatternsToDesignPatch(
     return out;
 }
 
-/** Scale a source outline about its centroid (for default bottom pattern smaller than top). */
+/** Scale a source outline about its centroid (legacy single-mesh bottom-pattern seed). */
 export function scaleOutlineAboutCentroid(curve: TrimlineCurve, scale: number): TrimlineCurve {
     const pts = curve.points;
     if (pts.length === 0) return cloneTrimline(curve);
@@ -164,4 +171,71 @@ export function scaleOutlineAboutCentroid(curve: TrimlineCurve, scale: number): 
             (p) => new THREE.Vector3(cx + (p.x - cx) * scale, cy + (p.y - cy) * scale, 0),
         ),
     };
+}
+
+/**
+ * XY silhouette of the multi-mesh base's Bottom vertex range (projected, Z ignored
+ * for the perimeter; output points forced flat at z=0 for bottomPattern editing).
+ * Returns null when the geometry is not a multi-mesh base or the Bottom range is
+ * degenerate — callers should fall back to scaled-top seeding.
+ */
+export function extractBottomMeshOutline(
+    geometry: THREE.BufferGeometry,
+    stations = 32,
+): TrimlineCurve | null {
+    const ud = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
+    const pos = geometry.getAttribute("position");
+    if (!pos || !ud.isMultiMeshBase || typeof ud.topVertexCount !== "number") return null;
+    const topN = ud.topVertexCount;
+    if (topN <= 0 || topN >= pos.count) return null;
+
+    const outline = extractMeshOutline(geometry, stations, {
+        vertexStart: topN,
+        vertexEnd: pos.count,
+    });
+    if (!outline || outline.points.length < 4) return null;
+
+    // Flat manufacturing pattern — discard residual Bottom Z (mold relief / noise).
+    return {
+        points: outline.points.map((p) => new THREE.Vector3(p.x, p.y, 0)),
+    };
+}
+
+/**
+ * Seed outline for a NEW bottomPattern: prefer real Bottom-mesh footprint when
+ * present; otherwise legacy 0.65× scaled top/base outline. Does not mutate
+ * existing committed bottomPatterns.
+ */
+export function seedBottomPatternOutline(
+    baseGeometry: THREE.BufferGeometry | null | undefined,
+    topFallback: TrimlineCurve,
+): TrimlineCurve {
+    if (baseGeometry) {
+        const fromBottom = extractBottomMeshOutline(baseGeometry);
+        if (fromBottom) return fromBottom;
+    }
+    return scaleOutlineAboutCentroid(topFallback, BOTTOM_PATTERN_FALLBACK_SCALE);
+}
+
+/** Bounding box of an outline's XY footprint (for tests / diagnostics). */
+export function outlineBoundsXY(curve: TrimlineCurve): {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+    area: number;
+} {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of curve.points) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    const w = Math.max(0, maxX - minX);
+    const h = Math.max(0, maxY - minY);
+    return { minX, maxX, minY, maxY, area: w * h };
 }
