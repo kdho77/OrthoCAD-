@@ -1666,7 +1666,7 @@ export function applyBaseModifiers(
     const fieldForDelta: HeightFieldParams =
         depthMm !== 0
             ? { ...field, corrections: { ...field.corrections, heelCupDepthMm: 0 } }
-            : field;
+            : { ...field };
 
     const lateralCtx: LateralDeltaContext = {
         count,
@@ -1678,8 +1678,8 @@ export function applyBaseModifiers(
         array,
     };
 
-    // Local top-sheet edge profile — used only to clamp exterior bottom-field
-    // samples (SYNC-0: top path does not consume this profile).
+    // Local top-sheet edge profile — feeds heightAt edge feather (SYNC-0 with
+    // the same profile on top + bottom F samples) and bottom exterior clamp.
     const edgeProfile = getTopEdgeProfile(
         base,
         lateralCtx,
@@ -1688,6 +1688,13 @@ export function applyBaseModifiers(
         isMultiMesh,
         topVertexCount,
     );
+    if (edgeProfile) {
+        fieldForDelta.topEdgeAvProfile = (u: number, vSigned: number): number => {
+            // heightAt space → mesh width half: vSigned = widthSign · vNormMesh.
+            const bins = vSigned * widthSign >= 0 ? edgeProfile.pos : edgeProfile.neg;
+            return sampleTopEdgeProfile(bins, u);
+        };
+    }
 
     // Width>0 keeps the legacy rim-conformity bottom path (lateral field is not
     // yet cleanly samplable for the underside). Field-coupled shell sync runs
@@ -1824,11 +1831,78 @@ export function applyBaseModifiers(
     //    every bottom vert receives F(x,y) vertically at full strength, plus the
     //    top depth vector sampled at the same footprint. Exterior samples clamp
     //    to the local top-sheet edge so the rim stays closed. No height falloff.
+    //    Wall-top verts (elevated) inherit F from the nearest top-rim sample so
+    //    rim closure stays ≤0.05 mm despite residual field gradient across the
+    //    ~0.1 mm pair offset — plantar/interior keep local F (thickness).
     if (useShellFieldSync) {
+        let rimFp: {
+            len: number;
+            wid: number;
+            F: number;
+            dx: number;
+            dy: number;
+            dz: number;
+        }[] | null = null;
+        const topSub = submeshByVertexRange(base, 0, topVertexCount);
+        try {
+            const rimIdx = extractOrderedBoundaryLoopWithIndices(topSub).indices;
+            rimFp = rimIdx.map((j) => {
+                const lenC = baseArrForDepth[j * 3 + lengthAxis]!;
+                const widC = baseArrForDepth[j * 3 + widthAxis]!;
+                let dx = 0;
+                let dy = 0;
+                let dz = 0;
+                if (depthFrame && depthVec) {
+                    const g = depthFrame.groupOf[j]!;
+                    if (g >= 0) {
+                        dx = depthVec[g * 3]!;
+                        dy = depthVec[g * 3 + 1]!;
+                        dz = depthVec[g * 3 + 2]!;
+                    }
+                }
+                return {
+                    len: lenC,
+                    wid: widC,
+                    F: sampleFieldDeltaAtXY(
+                        lenC,
+                        widC,
+                        lenMin,
+                        lenSize,
+                        widCenter,
+                        widSize,
+                        widthSign,
+                        fieldForDelta,
+                        neutral,
+                        edgeProfile,
+                    ),
+                    dx,
+                    dy,
+                    dz,
+                };
+            });
+        } finally {
+            topSub.dispose();
+        }
+        const rimCell = RIM_PAIR_TOL_MM;
+        const rimHash = new Map<string, number[]>();
+        for (let s = 0; s < rimFp.length; s++) {
+            const r = rimFp[s]!;
+            const k = `${Math.floor(r.len / rimCell)},${Math.floor(r.wid / rimCell)}`;
+            let bucket = rimHash.get(k);
+            if (!bucket) {
+                bucket = [];
+                rimHash.set(k, bucket);
+            }
+            bucket.push(s);
+        }
+        const rimBins = Math.ceil(RIM_PAIR_TOL_MM / rimCell) + 1;
+
         for (let i = topVertexCount; i < count; i++) {
             const lenCoord = baseArrForDepth[i * 3 + lengthAxis]!;
             const widCoord = baseArrForDepth[i * 3 + widthAxis]!;
-            const F = sampleFieldDeltaAtXY(
+            const baseZ = baseArrForDepth[i * 3 + thickAxis]!;
+
+            let F = sampleFieldDeltaAtXY(
                 lenCoord,
                 widCoord,
                 lenMin,
@@ -1840,32 +1914,82 @@ export function applyBaseModifiers(
                 neutral,
                 edgeProfile,
             );
-            array[i * 3 + thickAxis] += F;
+            let rimBlend = 0;
+            let rimDx = 0;
+            let rimDy = 0;
+            let rimDz = 0;
 
-            // Depth vector sync is wall/underside only — plantar-floor verts
-            // (Z≤PLANTAR) must not NN-steal wall-group depth from a nearby rim.
-            // Heel-seat floor stays put (matches top floor gate ≡ 0); cup-wall
-            // underside (elevated bottom verts) inherits the top depth vector.
-            if (depthLookup && baseArrForDepth[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) {
-                // Clamp exterior queries to the local edge so wall verts inherit
-                // the rim depth displacement (same silhouette rule as F).
-                let qLen = lenCoord;
-                let qWid = widCoord;
-                if (edgeProfile) {
-                    const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
-                    const halfW = widSize / 2 || 1;
-                    const vNorm = (widCoord - widCenter) / halfW;
-                    const bins = vNorm >= 0 ? edgeProfile.pos : edgeProfile.neg;
-                    const avEdge = sampleTopEdgeProfile(bins, u);
-                    const av = Math.abs(vNorm);
-                    if (avEdge > 1e-6 && av > avEdge) {
-                        qWid = widCenter + Math.sign(vNorm) * avEdge * halfW;
+            // Soft rim inheritance: blend toward nearest top-rim F (+ depth) by
+            // footprint distance × height so wall-tops close the rim without a
+            // hard step into mid-wall / plantar (those keep local F for thickness).
+            {
+                const cx = Math.floor(lenCoord / rimCell);
+                const cy = Math.floor(widCoord / rimCell);
+                let bestS = -1;
+                let bestD = Infinity;
+                for (let dx = -rimBins; dx <= rimBins; dx++) {
+                    for (let dy = -rimBins; dy <= rimBins; dy++) {
+                        const bucket = rimHash.get(`${cx + dx},${cy + dy}`);
+                        if (!bucket) continue;
+                        for (const s of bucket) {
+                            const r = rimFp[s]!;
+                            const d = Math.hypot(r.len - lenCoord, r.wid - widCoord);
+                            if (d < bestD) {
+                                bestD = d;
+                                bestS = s;
+                            }
+                        }
                     }
                 }
-                const d = depthLookup(qLen, qWid);
-                array[i * 3] += d.dx;
-                array[i * 3 + 1] += d.dy;
-                array[i * 3 + 2] += d.dz;
+                if (bestS >= 0 && bestD < WALL_CORRIDOR_MM) {
+                    const wDist = rimConformityDistanceWeight(bestD);
+                    const wHeight = rimConformityHeightWeight(
+                        baseZ <= PLANTAR_Z_MAX_MM
+                            ? 0
+                            : Math.min(
+                                  1,
+                                  (baseZ - PLANTAR_Z_MAX_MM) / (WALL_TOP_MIN_Z_MM - PLANTAR_Z_MAX_MM),
+                              ),
+                    );
+                    rimBlend = wDist * wHeight;
+                    if (rimBlend > 0) {
+                        const r = rimFp[bestS]!;
+                        F = F + (r.F - F) * rimBlend;
+                        rimDx = r.dx;
+                        rimDy = r.dy;
+                        rimDz = r.dz;
+                    }
+                }
+            }
+
+            array[i * 3 + thickAxis] += F;
+
+            if (baseZ > PLANTAR_Z_MAX_MM && (depthLookup || rimBlend > 0)) {
+                let nnDx = 0;
+                let nnDy = 0;
+                let nnDz = 0;
+                if (depthLookup && rimBlend < 1) {
+                    let qLen = lenCoord;
+                    let qWid = widCoord;
+                    if (edgeProfile) {
+                        const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+                        const halfW = widSize / 2 || 1;
+                        const vNorm = (widCoord - widCenter) / halfW;
+                        const bins = vNorm >= 0 ? edgeProfile.pos : edgeProfile.neg;
+                        const avEdge = sampleTopEdgeProfile(bins, u);
+                        const av = Math.abs(vNorm);
+                        if (avEdge > 1e-6 && av > avEdge) {
+                            qWid = widCenter + Math.sign(vNorm) * avEdge * halfW;
+                        }
+                    }
+                    const d = depthLookup(qLen, qWid);
+                    nnDx = d.dx;
+                    nnDy = d.dy;
+                    nnDz = d.dz;
+                }
+                array[i * 3] += rimDx * rimBlend + nnDx * (1 - rimBlend);
+                array[i * 3 + 1] += rimDy * rimBlend + nnDy * (1 - rimBlend);
+                array[i * 3 + 2] += rimDz * rimBlend + nnDz * (1 - rimBlend);
             }
         }
     }
@@ -1888,15 +2012,11 @@ export function applyBaseModifiers(
         }
     }
 
-    if (originalBottomZ && typeof console !== "undefined") {
+    if (originalBottomZ && typeof console !== "undefined" && !useShellFieldSync) {
         let maxDrift = 0;
         const baseArr = base.getAttribute("position")!.array as Float32Array;
         for (let i = topVertexCount; i < count; i++) {
-            // Ground-contact band only: heel (u≤0.30) and anterior forefoot
-            // (u≥0.75). Arch plantar is allowed to lift with the shell field.
             if (baseArr[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) continue;
-            const u = (baseArr[i * 3 + lengthAxis]! - lenMin) / (lenSize || 1);
-            if (u > 0.3 && u < 0.75) continue;
             const drift = Math.abs(array[i * 3 + thickAxis]! - originalBottomZ[i - topVertexCount]!);
             if (drift > maxDrift) maxDrift = drift;
         }
