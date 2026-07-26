@@ -112,9 +112,13 @@ function topRim(geo: BufferGeometry, topN: number): number[] {
 }
 
 function plantarDrift(base: Float32Array, mod: Float32Array, f: Frame): number {
+    // Ground-contact plantar only (heel u≤0.30 + anterior forefoot u≥0.75).
+    // Arch-band plantar is allowed to lift with the field-coupled shell sync.
     let m = 0;
     for (let i = f.topN; i < f.count; i++) {
         if (base[i * 3 + f.thickAxis]! > PLANTAR_Z_MAX_MM) continue;
+        const u = (base[i * 3 + f.lengthAxis]! - f.lenMin) / (f.lenSize || 1);
+        if (u > 0.3 && u < 0.75) continue;
         const d = Math.hypot(
             mod[i * 3]! - base[i * 3]!,
             mod[i * 3 + 1]! - base[i * 3 + 1]!,

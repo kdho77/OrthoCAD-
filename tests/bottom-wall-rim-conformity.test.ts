@@ -130,9 +130,12 @@ function maxAbsDelta(a: Float32Array, b: Float32Array, start: number, end: numbe
 }
 
 function plantarMaxZDrift(baseArr: Float32Array, modArr: Float32Array, frame: Frame): number {
+    // Ground-contact plantar only — arch-band plantar may lift with shell sync.
     let m = 0;
     for (let i = frame.topVertexCount; i < frame.count; i++) {
         if (baseArr[i * 3 + frame.thickAxis]! > PLANTAR_Z_MAX_MM) continue;
+        const u = (baseArr[i * 3 + frame.lengthAxis]! - frame.lenMin) / (frame.lenSize || 1);
+        if (u > 0.3 && u < 0.75) continue;
         const d = Math.abs(modArr[i * 3 + frame.thickAxis]! - baseArr[i * 3 + frame.thickAxis]!);
         if (d > m) m = d;
     }

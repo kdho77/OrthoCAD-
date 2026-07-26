@@ -324,6 +324,133 @@ export function detectArchSideSign(base: BufferGeometry): number {
 /** Vertices with top factor above this are considered top-sheet. */
 const TOP_FACTOR_THRESHOLD = 0.9;
 
+// --- Local top-sheet edge profile (clamp source for bottom-field sync) -------
+// Port of the ca915f24 cache (clamp-only on this branch — heightAt feather is
+// intentionally NOT rewired so the top-mesh path stays SYNC-0 bit-identical).
+// Bottom verts whose footprint sits outside the local top-sheet silhouette
+// sample F at the nearest edge point so the wall inherits the rim field value.
+
+/** U bins per width half for the cached top-sheet edge profile. */
+const TOP_EDGE_PROFILE_BINS = 64;
+/**
+ * Exterior overshoot band (mm) over which clamped vs unclamped F is blended
+ * with a C2 quintic. ~2.5 mm ≈ 1–2 midfoot edge lengths on Default.glb —
+ * wide enough to kill a hard tangent break at the clamp boundary, narrow
+ * enough that true exterior wall verts still inherit the rim value.
+ */
+const CLAMP_FEATHER_MM = 2.5;
+
+interface TopEdgeProfile {
+    /** Max |v-norm| per u bin on the +width / −width halves (mesh space). */
+    pos: Float64Array;
+    neg: Float64Array;
+}
+
+const topEdgeProfileCache = new WeakMap<BufferGeometry, TopEdgeProfile | null>();
+
+/** Fill empty bins from their nearest populated neighbor (in place). */
+function fillEmptyProfileBins(bins: Float64Array): void {
+    let last = 0;
+    for (let b = 0; b < bins.length; b++) {
+        if (bins[b]! > 0) last = bins[b]!;
+        else bins[b] = last;
+    }
+    last = 0;
+    for (let b = bins.length - 1; b >= 0; b--) {
+        if (bins[b]! > 0) last = bins[b]!;
+        else bins[b] = last;
+    }
+}
+
+/**
+ * Max top-sheet |v-norm| per (u bin, width half), cached per base geometry.
+ * Pure function of the base mesh; `null` when no top classification exists.
+ */
+function getTopEdgeProfile(
+    base: BufferGeometry,
+    ctx: LateralDeltaContext,
+    widSize: number,
+    topFactors: Float32Array | null,
+    isMultiMesh: boolean,
+    topVertexCount: number,
+): TopEdgeProfile | null {
+    const cached = topEdgeProfileCache.get(base);
+    if (cached !== undefined) return cached;
+
+    if (!(isMultiMesh && topVertexCount > 0) && !topFactors) {
+        topEdgeProfileCache.set(base, null);
+        return null;
+    }
+
+    const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
+    const limit = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+    const pos = new Float64Array(TOP_EDGE_PROFILE_BINS);
+    const neg = new Float64Array(TOP_EDGE_PROFILE_BINS);
+    for (let i = 0; i < limit; i++) {
+        if (!(isMultiMesh && topVertexCount > 0) && topFactors![i]! <= 0.5) continue;
+        const u = Math.max(0, Math.min(1, (array[i * 3 + lengthAxis]! - lenMin) / lenSize));
+        const vNorm = Math.max(-1, Math.min(1, (array[i * 3 + widthAxis]! - widCenter) / (widSize / 2)));
+        const b = Math.min(TOP_EDGE_PROFILE_BINS - 1, Math.floor(u * TOP_EDGE_PROFILE_BINS));
+        const target = vNorm >= 0 ? pos : neg;
+        const av = Math.abs(vNorm);
+        if (av > target[b]!) target[b] = av;
+    }
+    fillEmptyProfileBins(pos);
+    fillEmptyProfileBins(neg);
+
+    const profile: TopEdgeProfile = { pos, neg };
+    topEdgeProfileCache.set(base, profile);
+    return profile;
+}
+
+/** Linear interpolation of the edge profile at bin centers. */
+function sampleTopEdgeProfile(bins: Float64Array, u: number): number {
+    const x = Math.max(0, Math.min(1, u)) * TOP_EDGE_PROFILE_BINS - 0.5;
+    const b0 = Math.max(0, Math.min(TOP_EDGE_PROFILE_BINS - 1, Math.floor(x)));
+    const b1 = Math.min(TOP_EDGE_PROFILE_BINS - 1, b0 + 1);
+    const f = Math.max(0, Math.min(1, x - b0));
+    return bins[b0]! * (1 - f) + bins[b1]! * f;
+}
+
+/**
+ * Scalar vertical modifier field F at an arbitrary footprint sample, with
+ * exterior XY clamped to the local top-sheet edge profile so wall verts
+ * outside the top silhouette inherit the rim value (keeps the rim closed).
+ */
+function sampleFieldDeltaAtXY(
+    lenCoord: number,
+    widCoord: number,
+    lenMin: number,
+    lenSize: number,
+    widCenter: number,
+    widSize: number,
+    widthSign: number,
+    fieldForDelta: HeightFieldParams,
+    neutral: HeightFieldParams,
+    edgeProfile: TopEdgeProfile | null,
+): number {
+    const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+    const halfW = widSize / 2 || 1;
+    const vNorm = Math.max(-1, Math.min(1, (widCoord - widCenter) / halfW));
+    const vSigned = Math.max(-1, Math.min(1, widthSign * vNorm));
+    const F_raw = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
+
+    if (!edgeProfile) return F_raw;
+
+    const bins = vNorm >= 0 ? edgeProfile.pos : edgeProfile.neg;
+    const avEdge = sampleTopEdgeProfile(bins, u);
+    const av = Math.abs(vNorm);
+    if (!(avEdge > 1e-6) || av <= avEdge) return F_raw;
+
+    const vNormClamped = Math.sign(vNorm) * avEdge;
+    const vSignedClamped = Math.max(-1, Math.min(1, widthSign * vNormClamped));
+    const F_edge = correctionDeltaAt(u, vSignedClamped, fieldForDelta, neutral);
+    const overshootMm = (av - avEdge) * halfW;
+    if (overshootMm >= CLAMP_FEATHER_MM) return F_edge;
+    const t = overshootMm / CLAMP_FEATHER_MM;
+    return F_raw + (F_edge - F_raw) * quinticSmoothstep(t);
+}
+
 /** Laplacian iterations for heel-cup width lateral displacement (multi-mesh safe). */
 const HEEL_CUP_WIDTH_LAPLACIAN_ITERS = 2;
 
@@ -998,6 +1125,67 @@ function heelCupDepthDisplacements(frame: HeelCupDepthFrame, depthMm: number): F
     return out;
 }
 
+/**
+ * Footprint NN lookup of top-mesh heel-cup depth displacements for bottom-shell
+ * sync. Samples the already-computed top depth vector at the nearest eligible
+ * top footprint (within RIM_PAIR_TOL_MM) so underside thickness is preserved
+ * without height-based attenuation.
+ */
+function buildTopDepthFootprintLookup(
+    baseArr: Float32Array,
+    topVertexCount: number,
+    lengthAxis: AxisIndex,
+    widthAxis: AxisIndex,
+    depthFrame: HeelCupDepthFrame,
+    depthVec: Float32Array,
+): (len: number, wid: number) => { dx: number; dy: number; dz: number } {
+    const cell = RIM_PAIR_TOL_MM;
+    const hash = new Map<string, number[]>();
+    for (let i = 0; i < topVertexCount; i++) {
+        const g = depthFrame.groupOf[i]!;
+        if (g < 0) continue;
+        const len = baseArr[i * 3 + lengthAxis]!;
+        const wid = baseArr[i * 3 + widthAxis]!;
+        const k = `${Math.floor(len / cell)},${Math.floor(wid / cell)}`;
+        let bucket = hash.get(k);
+        if (!bucket) {
+            bucket = [];
+            hash.set(k, bucket);
+        }
+        bucket.push(i);
+    }
+    const bins = Math.ceil(RIM_PAIR_TOL_MM / cell) + 1;
+    return (len: number, wid: number) => {
+        const cx = Math.floor(len / cell);
+        const cy = Math.floor(wid / cell);
+        let best = -1;
+        let bestD = Infinity;
+        for (let dx = -bins; dx <= bins; dx++) {
+            for (let dy = -bins; dy <= bins; dy++) {
+                const bucket = hash.get(`${cx + dx},${cy + dy}`);
+                if (!bucket) continue;
+                for (const i of bucket) {
+                    const bl = baseArr[i * 3 + lengthAxis]!;
+                    const bw = baseArr[i * 3 + widthAxis]!;
+                    const d = Math.hypot(bl - len, bw - wid);
+                    if (d < bestD) {
+                        bestD = d;
+                        best = i;
+                    }
+                }
+            }
+        }
+        if (best < 0 || bestD > RIM_PAIR_TOL_MM) return { dx: 0, dy: 0, dz: 0 };
+        const g = depthFrame.groupOf[best]!;
+        if (g < 0) return { dx: 0, dy: 0, dz: 0 };
+        return {
+            dx: depthVec[g * 3]!,
+            dy: depthVec[g * 3 + 1]!,
+            dz: depthVec[g * 3 + 2]!,
+        };
+    };
+}
+
 // --- Bottom-wall rim-conformity delta transfer (multi-mesh only) ------------
 // Samples the already-applied top-mesh total correction at the top rim and
 // scatters it onto bottom side-wall verts via BASE footprint correspondence
@@ -1480,10 +1668,41 @@ export function applyBaseModifiers(
             ? { ...field, corrections: { ...field.corrections, heelCupDepthMm: 0 } }
             : field;
 
-    // 1) Sample the pure modifier delta at every vertex's footprint (u, vSigned),
-    //    mapping length/width from the detected base axes (orientation-robust).
+    const lateralCtx: LateralDeltaContext = {
+        count,
+        lengthAxis,
+        widthAxis,
+        lenMin,
+        lenSize,
+        widCenter,
+        array,
+    };
+
+    // Local top-sheet edge profile — used only to clamp exterior bottom-field
+    // samples (SYNC-0: top path does not consume this profile).
+    const edgeProfile = getTopEdgeProfile(
+        base,
+        lateralCtx,
+        widSize,
+        topFactors,
+        isMultiMesh,
+        topVertexCount,
+    );
+
+    // Width>0 keeps the legacy rim-conformity bottom path (lateral field is not
+    // yet cleanly samplable for the underside). Field-coupled shell sync runs
+    // only when width is inactive so the two paths never double-apply.
+    const useShellFieldSync =
+        isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm <= 0;
+
+    // 1) Sample the pure modifier delta. Multi-mesh top range only when shell
+    //    sync is active (bottom gets F via sampleFieldDeltaAtXY below); otherwise
+    //    sample the full mesh as before (bottom slots unused under w=0, then
+    //    rim-conformity moves the wall). Top-range samples are bit-identical
+    //    either way (same u/vSigned → correctionDeltaAt).
     const delta = new Float32Array(count);
-    for (let i = 0; i < count; i++) {
+    const sampleEnd = useShellFieldSync ? topVertexCount : count;
+    for (let i = 0; i < sampleEnd; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
@@ -1520,7 +1739,7 @@ export function applyBaseModifiers(
     const { smoothed: lateralDelta } = buildHeelCupWidthLateralDelta(
         base,
         field,
-        { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
+        lateralCtx,
         topFactors,
         isMultiMesh,
         topVertexCount,
@@ -1533,7 +1752,7 @@ export function applyBaseModifiers(
         depthMm > 0
             ? getHeelCupDepthFrame(
                   base,
-                  { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
+                  lateralCtx,
                   thickAxis,
                   topFactors,
                   isMultiMesh,
@@ -1554,6 +1773,20 @@ export function applyBaseModifiers(
             originalBottomZ[i - topVertexCount] = array[i * 3 + thickAxis]!;
         }
     }
+
+    // Capture undeformed top positions for depth footprint NN (BASE coords).
+    const baseArrForDepth = base.getAttribute("position")!.array as Float32Array;
+    const depthLookup =
+        useShellFieldSync && depthFrame && depthVec
+            ? buildTopDepthFootprintLookup(
+                  baseArrForDepth,
+                  topVertexCount,
+                  lengthAxis,
+                  widthAxis,
+                  depthFrame,
+                  depthVec,
+              )
+            : null;
 
     // Parallel composition: vertical, width-lateral, and depth-tangent displacements
     // are each computed from baseline positions (above) and summed here in one pass.
@@ -1587,10 +1820,60 @@ export function applyBaseModifiers(
         array[i * 3 + 2] += dz;
     }
 
-    // Rim-conformity transfer: scatter top-rim total deltas onto bottom wall
-    // verts (multi-mesh only). Correspondence + weights are BASE-cached;
-    // this call only applies w · (correctedTop − baseTop) from base positions.
-    if (isMultiMesh && topVertexCount > 0) {
+    // 4) Field-coupled bottom-shell sync (multi-mesh, width-inactive):
+    //    every bottom vert receives F(x,y) vertically at full strength, plus the
+    //    top depth vector sampled at the same footprint. Exterior samples clamp
+    //    to the local top-sheet edge so the rim stays closed. No height falloff.
+    if (useShellFieldSync) {
+        for (let i = topVertexCount; i < count; i++) {
+            const lenCoord = baseArrForDepth[i * 3 + lengthAxis]!;
+            const widCoord = baseArrForDepth[i * 3 + widthAxis]!;
+            const F = sampleFieldDeltaAtXY(
+                lenCoord,
+                widCoord,
+                lenMin,
+                lenSize,
+                widCenter,
+                widSize,
+                widthSign,
+                fieldForDelta,
+                neutral,
+                edgeProfile,
+            );
+            array[i * 3 + thickAxis] += F;
+
+            // Depth vector sync is wall/underside only — plantar-floor verts
+            // (Z≤PLANTAR) must not NN-steal wall-group depth from a nearby rim.
+            // Heel-seat floor stays put (matches top floor gate ≡ 0); cup-wall
+            // underside (elevated bottom verts) inherits the top depth vector.
+            if (depthLookup && baseArrForDepth[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) {
+                // Clamp exterior queries to the local edge so wall verts inherit
+                // the rim depth displacement (same silhouette rule as F).
+                let qLen = lenCoord;
+                let qWid = widCoord;
+                if (edgeProfile) {
+                    const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+                    const halfW = widSize / 2 || 1;
+                    const vNorm = (widCoord - widCenter) / halfW;
+                    const bins = vNorm >= 0 ? edgeProfile.pos : edgeProfile.neg;
+                    const avEdge = sampleTopEdgeProfile(bins, u);
+                    const av = Math.abs(vNorm);
+                    if (avEdge > 1e-6 && av > avEdge) {
+                        qWid = widCenter + Math.sign(vNorm) * avEdge * halfW;
+                    }
+                }
+                const d = depthLookup(qLen, qWid);
+                array[i * 3] += d.dx;
+                array[i * 3 + 1] += d.dy;
+                array[i * 3 + 2] += d.dz;
+            }
+        }
+    }
+
+    // Rim-conformity transfer: legacy vertical-stretch path. Bypassed when the
+    // shell-field sync above owns the bottom (width==0). Still runs for
+    // heelCupWidthMm > 0 until lateral width is field-samplable for the underside.
+    if (isMultiMesh && topVertexCount > 0 && !useShellFieldSync) {
         const rimFrame = getRimConformityFrame(
             base,
             topVertexCount,
@@ -1609,8 +1892,11 @@ export function applyBaseModifiers(
         let maxDrift = 0;
         const baseArr = base.getAttribute("position")!.array as Float32Array;
         for (let i = topVertexCount; i < count; i++) {
-            // HC-1: only the plantar band must stay fixed; wall verts intentionally move.
+            // Ground-contact band only: heel (u≤0.30) and anterior forefoot
+            // (u≥0.75). Arch plantar is allowed to lift with the shell field.
             if (baseArr[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) continue;
+            const u = (baseArr[i * 3 + lengthAxis]! - lenMin) / (lenSize || 1);
+            if (u > 0.3 && u < 0.75) continue;
             const drift = Math.abs(array[i * 3 + thickAxis]! - originalBottomZ[i - topVertexCount]!);
             if (drift > maxDrift) maxDrift = drift;
         }
