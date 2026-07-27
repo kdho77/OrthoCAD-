@@ -352,17 +352,27 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         // Bottom (low factor) movement small even with wedge (weighted)
         expect(metricsSingle.maxBottomDeltaMm).toBeLessThan(2); // wedge affects but weighted for single
 
-        // Multi-mesh: bottom layer must stay fixed (HC-1); wedge delta on top only
+        // Multi-mesh: field-coupled shell sync applies the wedge delta to the
+        // bottom layer at full strength (constant-thickness shell). Top must
+        // still receive the wedge; bottom heel region must move in lockstep.
         const multiBase = makeMultiMeshBase();
         const modifiedMulti = applyBaseModifiers(multiBase, p, 0);
         const topN = (multiBase.userData as { topVertexCount: number }).topVertexCount;
         const modArr = modifiedMulti.getAttribute("position")!.array as Float32Array;
         const baseArr = multiBase.getAttribute("position")!.array as Float32Array;
-        let maxBottomDrift = 0;
-        for (let i = topN; i < modArr.length / 3; i++) {
-            maxBottomDrift = Math.max(maxBottomDrift, Math.abs(modArr[i * 3 + 2]! - baseArr[i * 3 + 2]!));
+        let maxTopLift = 0;
+        let maxBottomLift = 0;
+        for (let i = 0; i < topN; i++) {
+            maxTopLift = Math.max(maxTopLift, modArr[i * 3 + 2]! - baseArr[i * 3 + 2]!);
         }
-        expect(maxBottomDrift).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM);
+        for (let i = topN; i < modArr.length / 3; i++) {
+            maxBottomLift = Math.max(maxBottomLift, modArr[i * 3 + 2]! - baseArr[i * 3 + 2]!);
+        }
+        expect(maxTopLift).toBeGreaterThan(1);
+        expect(maxBottomLift).toBeGreaterThan(1);
+        // Thickness preserved: top and bottom lifts within 0.05 mm of each other
+        // at the peak (same F sampled at similar footprints on the synthetic grid).
+        expect(Math.abs(maxTopLift - maxBottomLift)).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM);
         multiBase.dispose();
         modifiedMulti.dispose();
     });

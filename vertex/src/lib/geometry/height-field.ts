@@ -23,9 +23,24 @@ export interface HeightFieldParams {
     trimline?: TrimlineCurve | null;
     /** Phase 4 operator graph (additive clinical operators). When present its delta is added. */
     graph?: OperatorGraph | null;
+    /**
+     * Optional local top-sheet edge extent (base-mesh path only): returns the
+     * outermost |vSigned| of the base's top sheet at (u, side of vSigned).
+     * When present, the additive-shaping edge feather lands on this real local
+     * edge via a wide C2 ease that preserves the exact feather value at the
+     * edge (r = 1).
+     */
+    topEdgeAvProfile?: (u: number, vSigned: number) => number;
 }
 
 const DEG = Math.PI / 180;
+
+/**
+ * Start of the widened edge-feather descent as a fraction of the local
+ * top-sheet half-extent (only used when `topEdgeAvProfile` is provided).
+ * 0.55 spreads the feather drop over ~45% of the local half-width.
+ */
+export const EDGE_FEATHER_EASE_START_R = 0.55;
 
 /**
  * Max fractional lateral scale at heelCupWidthMm = 10 (placeholder — needs clinical
@@ -246,7 +261,19 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // Feather the additive shaping toward the trimline so the perimeter thins to
     // a clinical edge while the base wall and posting wedge are preserved.
     const edgeFeather = smoothstep(1.0, 0.86, av); // 1 interior → 0 at outer edge
-    shaped *= 0.35 + 0.65 * edgeFeather;
+    let featherScale = 0.35 + 0.65 * edgeFeather;
+    const avEdge = params.topEdgeAvProfile ? params.topEdgeAvProfile(u, vSigned) : 0;
+    if (avEdge > 1e-6) {
+        const edgeScale = 0.35 + 0.65 * smoothstep(1.0, 0.86, Math.min(avEdge, 1));
+        // Wide C2 ease to the real local top-sheet edge (ca915f24). Preserves
+        // the exact feather value at the edge so rim deltas stay stable.
+        if (edgeScale < 1 - 1e-9) {
+            const r = Math.min(1, av / avEdge);
+            const t = (r - EDGE_FEATHER_EASE_START_R) / (1 - EDGE_FEATHER_EASE_START_R);
+            featherScale = 1 - (1 - edgeScale) * quinticSmoothstep(t);
+        }
+    }
+    shaped *= featherScale;
 
     // --- Posting (rearfoot / forefoot wedges) — full strength at the edge -----
     const post = vSigned * medialSign * halfW;

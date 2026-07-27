@@ -73,9 +73,28 @@ async function diagnose(wedge: WedgeCorrection | undefined, smoothing: number) {
 
     let maxBottomDrift = 0;
     const PLANTAR_Z_MAX_MM = 1.0;
+    // Ground-contact forefoot plantar only. Under field-coupled shell sync a
+    // rearfoot wedge raises the heel shell — including plantar — so full-plantar
+    // HC-1 no longer applies; forefoot (u≥0.75) must stay put.
+    raw.computeBoundingBox();
+    const box = raw.boundingBox!;
+    const sizeX = box.max.x - box.min.x;
+    const sizeY = box.max.y - box.min.y;
+    const sizeZ = box.max.z - box.min.z;
+    const sizes: [number, number][] = [
+        [0, sizeX],
+        [1, sizeY],
+        [2, sizeZ],
+    ];
+    sizes.sort((a, b) => a[1] - b[1]);
+    const lengthAxis = sizes[2]![0];
+    const lenMinA = [box.min.x, box.min.y, box.min.z][lengthAxis]!;
+    const lenSizeA =
+        [box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z][lengthAxis]! || 1;
     for (let i = topVertexCount; i < totalVerts; i++) {
-        // HC-1 plantar band only — rim-conformity may move the side wall.
         if (basePos[i * 3 + 2]! > PLANTAR_Z_MAX_MM) continue;
+        const u = (basePos[i * 3 + lengthAxis]! - lenMinA) / lenSizeA;
+        if (u < 0.75) continue;
         maxBottomDrift = Math.max(maxBottomDrift, Math.abs(modPos[i * 3 + 2]! - basePos[i * 3 + 2]!));
     }
 
