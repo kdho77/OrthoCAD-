@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
 import { mergeCorrections, usePerformanceStore } from "@/stores/performance-store";
 import type { Side, SideCorrections, WedgeCorrection } from "@/types";
+import { skiveDerivedDisplayText } from "./skive-derived-display";
 
 /**
  * Scalar correction sliders grouped into clinical sections. Pronation/supination
@@ -109,6 +110,7 @@ function SkiveSideControl({ side, values, onPreview, onCommit }: SkiveSideContro
     const locationPct =
         driven === "location" ? derived.locationPct : (values.skiveLocationPct ?? derived.locationPct);
     const displayAngle = driven === "angle" ? derived.angleDeg : angleDeg;
+    const { angleDisplayText, locationDisplayText } = skiveDerivedDisplayText(driven, depthForSolve);
 
     const push = (patch: Partial<SideCorrections>, commit: boolean) => {
         if (commit) onCommit(patch);
@@ -159,6 +161,7 @@ function SkiveSideControl({ side, values, onPreview, onCommit }: SkiveSideContro
                         max={SKIVE_ANGLE_MAX_DEG}
                         step={1}
                         unit="deg"
+                        displayText={angleDisplayText}
                         onPreview={(v) =>
                             push(
                                 {
@@ -211,6 +214,7 @@ function SkiveSideControl({ side, values, onPreview, onCommit }: SkiveSideContro
                         max={100}
                         step={1}
                         unit="%"
+                        displayText={locationDisplayText}
                         onPreview={(v) =>
                             push(
                                 {
