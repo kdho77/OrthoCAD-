@@ -34,18 +34,16 @@ import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
 import { ScanMeshes } from "./ScanMeshes";
 import { TrimlineEditTools } from "./TrimlineEditTools";
 
-const VIEWS: { name: CameraView; label: string }[] = [
-    { name: "iso", label: "Orbit" },
-    { name: "front", label: "Front" },
-    { name: "back", label: "Back" },
-    { name: "left", label: "Left" },
-    { name: "right", label: "Right" },
-    { name: "top", label: "Top" },
-    { name: "bottom", label: "Bottom" },
-];
+/** Cross-pad anatomical views (Left / Top / Bottom / Right). */
+const CROSS_VIEWS = {
+    left: { name: "left" as const, label: "Left" },
+    top: { name: "top" as const, label: "Top" },
+    bottom: { name: "bottom" as const, label: "Bottom" },
+    right: { name: "right" as const, label: "Right" },
+};
 
 const VIEW_LABELS: Record<CameraView, string> = {
-    iso: "Orbit",
+    iso: "Free",
     front: "Front",
     back: "Back",
     left: "Left",
@@ -167,23 +165,38 @@ export function Viewer3D() {
                 />
             </Canvas>
 
-            {/* View buttons */}
-            <div className="absolute left-3 top-3 flex max-w-[220px] flex-wrap gap-1">
-                {VIEWS.map((v) => (
-                    <Button
-                        key={v.name}
-                        size="sm"
-                        variant={viewer.view === v.name ? "default" : "secondary"}
-                        className="h-7"
-                        onClick={() => setView(v.name)}
-                    >
-                        {v.label}
-                    </Button>
-                ))}
+            {/* View buttons — cross pad: Left | Top/Bottom | Right */}
+            <div className="absolute left-3 top-3 flex items-center gap-1" role="group" aria-label="Camera views">
+                <ViewButton
+                    view={CROSS_VIEWS.left}
+                    active={viewer.view === "left"}
+                    onClick={setView}
+                    className="w-[4.75rem]"
+                />
+                <div className="flex flex-col gap-1">
+                    <ViewButton
+                        view={CROSS_VIEWS.top}
+                        active={viewer.view === "top"}
+                        onClick={setView}
+                        className="w-[3.75rem]"
+                    />
+                    <ViewButton
+                        view={CROSS_VIEWS.bottom}
+                        active={viewer.view === "bottom"}
+                        onClick={setView}
+                        className="w-[3.75rem]"
+                    />
+                </div>
+                <ViewButton
+                    view={CROSS_VIEWS.right}
+                    active={viewer.view === "right"}
+                    onClick={setView}
+                    className="w-[4.75rem]"
+                />
             </div>
 
-            {/* Active view + edit-mode indicator */}
-            <div className="pointer-events-none absolute left-3 top-12 flex flex-col gap-1">
+            {/* Active view + edit-mode indicator (below the view pad) */}
+            <div className="pointer-events-none absolute left-3 top-[5.5rem] flex flex-col gap-1">
                 <span className="w-fit rounded bg-panel/80 px-2 py-0.5 text-[11px] font-medium text-foreground shadow backdrop-blur">
                     {VIEW_LABELS[viewer.view]} view
                 </span>
@@ -358,6 +371,29 @@ export function Viewer3D() {
                 · ⌘E export · T transparent · Esc deselect
             </div>
         </div>
+    );
+}
+
+function ViewButton({
+    view,
+    active,
+    onClick,
+    className,
+}: {
+    view: { name: Exclude<CameraView, "iso" | "front" | "back">; label: string };
+    active: boolean;
+    onClick: (name: CameraView) => void;
+    className?: string;
+}) {
+    return (
+        <Button
+            size="sm"
+            variant={active ? "default" : "secondary"}
+            className={cn("h-7 px-2", className)}
+            onClick={() => onClick(view.name)}
+        >
+            {view.label}
+        </Button>
     );
 }
 
