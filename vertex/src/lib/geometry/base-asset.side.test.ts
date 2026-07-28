@@ -2,7 +2,12 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import { createDefaultStockPairedBases, getDesignBase, sanitizeDesignStockBases } from "@/lib/geometry/base-asset";
+import {
+    createDefaultStockPairedBases,
+    getDefaultStockBaseSync,
+    getDesignBase,
+    sanitizeDesignStockBases,
+} from "@/lib/geometry/base-asset";
 import type { DesignBase, DesignState } from "@/types";
 
 function stockSource(primarySide: "left" | "right"): DesignBase {
@@ -40,8 +45,34 @@ function pairedDesign(leftBase: DesignBase, rightBase: DesignBase): DesignState 
 }
 
 describe("createDefaultStockPairedBases", () => {
-    test("primarySide right: left is mirrored with Left label, right is source with Right label", () => {
+    test("builtin sync default is primarySide left (Default.glb arch is on width−)", () => {
+        expect(getDefaultStockBaseSync().primarySide).toBe("left");
+        const { left, right } = createDefaultStockPairedBases();
+        expect(left.mirrored).toBeFalsy();
+        expect(right.mirrored).toBe(true);
+        expect(left.name).toMatch(/\(Left\)/i);
+        expect(right.name).toMatch(/\(Right\)/i);
+    });
+
+    test("primarySide right on Default.glb is normalized to left-primary pairing", () => {
         const { left, right } = createDefaultStockPairedBases(stockSource("right"));
+        // Builtin Default path is normalized to left regardless of the stale "right" label.
+        expect(left.mirrored).toBeFalsy();
+        expect(right.mirrored).toBe(true);
+        expect(left.primarySide).toBe("left");
+        expect(left.name).toMatch(/\(Left\)/i);
+        expect(right.name).toMatch(/\(Right\)/i);
+    });
+
+    test("non-default stock with primarySide right keeps right as source", () => {
+        const custom: DesignBase = {
+            assetId: "custom-stock-uuid",
+            name: "Custom Right Stock",
+            source: "stock",
+            glbPath: "stock/custom/RightOnly.glb",
+            primarySide: "right",
+        };
+        const { left, right } = createDefaultStockPairedBases(custom);
         expect(left.mirrored).toBe(true);
         expect(right.mirrored).toBeFalsy();
         expect(left.name).toMatch(/\(Left\)/i);
@@ -59,12 +90,12 @@ describe("createDefaultStockPairedBases", () => {
 
 describe("getDesignBase paired routing", () => {
     test("maps left/right keys to matching paired bases", () => {
-        const { left, right } = createDefaultStockPairedBases(stockSource("right"));
+        const { left, right } = createDefaultStockPairedBases(stockSource("left"));
         const design = pairedDesign(left, right);
         expect(getDesignBase(design, "left")?.name).toMatch(/\(Left\)/i);
         expect(getDesignBase(design, "right")?.name).toMatch(/\(Right\)/i);
-        expect(getDesignBase(design, "left")?.mirrored).toBe(true);
-        expect(getDesignBase(design, "right")?.mirrored).toBeFalsy();
+        expect(getDesignBase(design, "left")?.mirrored).toBeFalsy();
+        expect(getDesignBase(design, "right")?.mirrored).toBe(true);
     });
 });
 
@@ -87,6 +118,33 @@ describe("sanitizeDesignStockBases", () => {
         };
         const design = pairedDesign(legacyLeft, legacyRight);
         const healed = sanitizeDesignStockBases(design);
+        expect(healed.paired?.leftBase?.name).toMatch(/\(Left\)/i);
+        expect(healed.paired?.rightBase?.name).toMatch(/\(Right\)/i);
+    });
+
+    test("heals contralateral default pairing when left was mirrored (legacy primarySide=right)", () => {
+        const legacyLeft: DesignBase = {
+            assetId: "default-stock",
+            name: "Default Stock Base (Left)",
+            source: "stock",
+            glbPath: "Templates/Default.glb",
+            mirrored: true,
+            mirroredFrom: "default-stock",
+            primarySide: "right",
+        };
+        const legacyRight: DesignBase = {
+            assetId: "default-stock",
+            name: "Default Stock Base (Right)",
+            source: "stock",
+            glbPath: "Templates/Default.glb",
+            primarySide: "right",
+        };
+        const design = pairedDesign(legacyLeft, legacyRight);
+        const healed = sanitizeDesignStockBases(design);
+        expect(healed.paired?.leftBase?.mirrored).toBeFalsy();
+        expect(healed.paired?.rightBase?.mirrored).toBe(true);
+        expect(healed.paired?.leftBase?.primarySide).toBe("left");
+        expect(healed.paired?.rightBase?.primarySide).toBe("left");
         expect(healed.paired?.leftBase?.name).toMatch(/\(Left\)/i);
         expect(healed.paired?.rightBase?.name).toMatch(/\(Right\)/i);
     });

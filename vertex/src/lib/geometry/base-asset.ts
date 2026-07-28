@@ -183,6 +183,93 @@ export function sanitizeStockBaseForServerMode(base: DesignBase): DesignBase {
     };
 }
 
+/**
+ * Canonical laterality of the builtin Default.glb after `reorientToFootprintFrame`.
+ * Midfoot arch height sits on width− (Y−), which matches `medialSign` for a left foot
+ * (`side === "left" ? -1 : 1`). Marking it `primarySide: "right"` mirrored the left
+ * shape into the right slot — contralateral controls / eye toggles.
+ */
+export const DEFAULT_STOCK_PRIMARY_SIDE: Side = "left";
+
+/** True for the builtin / Templates default stock GLB (not arbitrary admin stock). */
+export function isBuiltinDefaultStockBase(base: Pick<DesignBase, "assetId" | "glbPath"> | null | undefined): boolean {
+    if (!base) return false;
+    if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
+    const path = (base.glbPath ?? "").replace(/^\/+/, "");
+    return /(?:^|\/)(?:Templates\/)?Default\.glb$/i.test(path) || /stock\/standard\/Default\.glb$/i.test(path);
+}
+
+/** Force correct primarySide on the builtin default so pairing / mirroring stay ipsilateral. */
+export function normalizeDefaultStockPrimarySide(base: DesignBase): DesignBase {
+    if (!isBuiltinDefaultStockBase(base)) return base;
+    if (base.primarySide?.toLowerCase() === DEFAULT_STOCK_PRIMARY_SIDE) return base;
+    return { ...base, primarySide: DEFAULT_STOCK_PRIMARY_SIDE };
+}
+
+function sideSuffixName(name: string | undefined, side: Side): string {
+    const base = (name ?? "Stock Base").replace(/\s*\((Left|Right)\)\s*$/i, "").trim() || "Stock Base";
+    return `${base} (${side === "left" ? "Left" : "Right"})`;
+}
+
+/**
+ * Legacy default stock was labeled primarySide=right, so createDefaultStockPairedBases put
+ * the unmirrored (actually left) mesh in the right slot. Swap mirrored flags + names.
+ */
+function healDefaultStockContralateralPairing(design: DesignState): DesignState {
+    const paired = design.paired;
+    if (!paired?.leftBase || !paired.rightBase) return design;
+
+    const left = paired.leftBase;
+    const right = paired.rightBase;
+    if (!isBuiltinDefaultStockBase(left) || !isBuiltinDefaultStockBase(right)) return design;
+
+    // Correct layout for a left-primary default: left = source, right = mirrored.
+    if (!left.mirrored && right.mirrored) {
+        const leftFixed = normalizeDefaultStockPrimarySide(left);
+        const rightFixed = normalizeDefaultStockPrimarySide(right);
+        if (leftFixed === left && rightFixed === right) return design;
+        return {
+            ...design,
+            paired: { ...paired, leftBase: leftFixed, rightBase: rightFixed },
+            ...(design.base && isBuiltinDefaultStockBase(design.base)
+                ? {
+                      base: normalizeDefaultStockPrimarySide(design.base),
+                      customPrefabName: sideSuffixName(
+                          normalizeDefaultStockPrimarySide(design.base).name,
+                          "left",
+                      ),
+                  }
+                : {}),
+        };
+    }
+
+    // Wrong layout: left mirrored (right shape) / right unmirrored (left shape).
+    if (!(left.mirrored && !right.mirrored)) return design;
+
+    const source = normalizeDefaultStockPrimarySide(right);
+    const { mirrored: _dropMirrored, mirroredFrom: _dropFrom, ...sourceRest } = source;
+    const leftBase: DesignBase = {
+        ...sourceRest,
+        name: sideSuffixName(source.name, "left"),
+        primarySide: DEFAULT_STOCK_PRIMARY_SIDE,
+    };
+    const rightBase: DesignBase = {
+        ...normalizeDefaultStockPrimarySide(left),
+        name: sideSuffixName(left.name, "right"),
+        mirrored: true,
+        mirroredFrom: source.assetId,
+        primarySide: DEFAULT_STOCK_PRIMARY_SIDE,
+    };
+
+    return {
+        ...design,
+        paired: { ...paired, leftBase, rightBase },
+        ...(design.base && isBuiltinDefaultStockBase(design.base)
+            ? { base: leftBase, customPrefabId: leftBase.assetId, customPrefabName: leftBase.name }
+            : {}),
+    };
+}
+
 /** Fix legacy paired bases whose (Left)/(Right) suffixes were swapped for primarySide=left stock. */
 function healInvertedPairedSideLabels(design: DesignState): DesignState {
     const paired = design.paired;
@@ -214,7 +301,8 @@ function healInvertedPairedSideLabels(design: DesignState): DesignState {
 
 /** Sanitize all stock bases on a design after localStorage rehydrate. */
 export function sanitizeDesignStockBases(design: DesignState): DesignState {
-    let next = healInvertedPairedSideLabels(design);
+    let next = healDefaultStockContralateralPairing(design);
+    next = healInvertedPairedSideLabels(next);
     if (!isApiConfigured()) return next;
     const sanitize = (base: DesignBase | undefined): DesignBase | undefined =>
         base ? sanitizeStockBaseForServerMode(base) : undefined;
@@ -230,7 +318,7 @@ export function sanitizeDesignStockBases(design: DesignState): DesignState {
             ...(next.paired
                 ? {
                       paired: {
-                          ...design.paired,
+                          ...next.paired,
                           ...(leftBase ? { leftBase } : {}),
                           ...(rightBase ? { rightBase } : {}),
                       },
@@ -256,7 +344,7 @@ export function getDefaultStockBaseSync(): DesignBase {
         source: "stock",
         glbPath,
         ...(url ? { url } : {}),
-        primarySide: "right",
+        primarySide: DEFAULT_STOCK_PRIMARY_SIDE,
     };
 }
 
@@ -362,7 +450,7 @@ export async function resolveStockBase(assetId: string): Promise<DesignBase> {
     let id = useDefault ? DEFAULT_STOCK_BASE_ID : assetId;
     let glbPath = BUILTIN_DEFAULT_STOCK.glbPath;
     let name = "Default Stock Base";
-    let primarySide: string | null = "right";
+    let primarySide: string | null = DEFAULT_STOCK_PRIMARY_SIDE;
 
     // Best-effort: enrich with the real row (id + glb_path) from the table.
     if (isSupabaseConfigured()) {
@@ -391,7 +479,10 @@ export async function resolveStockBase(assetId: string): Promise<DesignBase> {
         );
     }
 
-    const base = stockRowToDesignBase({ id, name, glbPath, url, primarySide });
+    // Builtin Default.glb is a left foot; ignore legacy DB rows that still say "right".
+    const base = normalizeDefaultStockPrimarySide(
+        stockRowToDesignBase({ id, name, glbPath, url, primarySide }),
+    );
     stockResolveLog("resolveStockBase() success", { assetId: base.assetId, glbPath: base.glbPath, url });
     stockDebug("resolveStockBase() resolved (public URL, no tRPC)", {
         requestedAssetId: assetId,
@@ -445,7 +536,7 @@ export function designHasBase(design: DesignState): boolean {
 export function createDefaultStockPairedBases(
     override?: DesignBase,
 ): { left: DesignBase; right: DesignBase } {
-    const source = override ?? getDefaultStockBaseSync();
+    const source = normalizeDefaultStockPrimarySide(override ?? getDefaultStockBaseSync());
     const primarySide = source.primarySide?.toLowerCase();
     const sourceIsLeft = primarySide === "left";
     const authoritativeName = source.name?.replace(/\s*\((Left|Right)\)?$/i, "") ?? "Stock Base";
