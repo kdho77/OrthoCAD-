@@ -49,7 +49,13 @@ const WEDGE_ZONES = [
 const SIDE_LABELS: Record<Side, string> = { left: "Left", right: "Right" };
 
 const previewCorrection = rafThrottle((side: Side, patch: Partial<SideCorrections>) => {
-    usePerformanceStore.getState().setCorrectionPreview(side, patch);
+    const store = usePerformanceStore.getState();
+    store.setCorrectionPreview(side, patch);
+    // Keep live preview ipsilateral with linked commits (both feet update together).
+    if (useDesignStore.getState().design.corrections.linked) {
+        const other: Side = side === "left" ? "right" : "left";
+        store.setCorrectionPreview(other, patch);
+    }
 });
 
 type WedgeEdge = "lateral" | "medial";

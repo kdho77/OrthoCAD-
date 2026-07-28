@@ -6,7 +6,14 @@ import type { CameraView } from "@/stores/design-store";
 import type { Side } from "@/types";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "./layout";
 
-/** Camera presets shared with Viewer3D — single source for anatomical L/R layout. */
+/**
+ * Camera presets shared with Viewer3D — single source for anatomical L/R layout.
+ *
+ * After Rx(−90°) placement, feet separate on world Z (left at +Z, right at −Z via
+ * {@link sideOffsetX}). Presets below keep the left instance on screen-left for
+ * clinical editing — including Bottom (plantar) view, which previously transposed
+ * L/R and made Right sliders / eye-toggles appear to act on the contralateral foot.
+ */
 export const VIEW_CAMERA_POS: Record<CameraView, [number, number, number]> = {
     iso: [220, 200, 260],
     front: [0, 40, 360],
@@ -17,9 +24,14 @@ export const VIEW_CAMERA_POS: Record<CameraView, [number, number, number]> = {
     bottom: [0, -400, 0],
 };
 
-/** Up vector for a preset. Vertical views use −X so Z-separated feet map to screen X. */
+/**
+ * Up vector for a preset.
+ * - Top: −X ⇒ heels toward screen-up, left stays screen-left.
+ * - Bottom: +X ⇒ looking from below without mirroring L/R (left stays screen-left).
+ */
 export function viewCameraUp(view: CameraView): [number, number, number] {
-    if (view === "top" || view === "bottom") return [-1, 0, 0];
+    if (view === "top") return [-1, 0, 0];
+    if (view === "bottom") return [1, 0, 0];
     return [0, 1, 0];
 }
 

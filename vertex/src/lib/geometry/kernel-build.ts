@@ -23,10 +23,17 @@ export function insoleParamsFromDesign(
     side: Side,
     quality: GeometryQuality = "full",
 ): InsoleParams {
-    const isPaired = !!design.paired;
-    const sideData = isPaired ? (side === 'left' ? design.paired!.left : design.paired!.right) : null;
-    const thickness = sideData ? sideData.thicknessMm : design.thicknessMm;
-    const method = sideData ? sideData.method : design.method;
+    const paired = design.paired;
+    const thickness = paired
+        ? side === "left"
+            ? paired.leftThicknessMm
+            : paired.rightThicknessMm
+        : design.thicknessMm;
+    const method = paired
+        ? side === "left"
+            ? paired.leftMethod
+            : paired.rightMethod
+        : design.method;
     return {
         side,
         lengthMm: INSOLE_LENGTH_MM,

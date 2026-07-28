@@ -12,13 +12,15 @@ import {
     viewCameraUp,
 } from "./viewport-side-layout";
 
-const ANATOMICAL: CameraView[] = ["iso", "front", "back", "left", "top"];
+const ANATOMICAL: CameraView[] = ["iso", "front", "back", "left", "top", "bottom"];
 
 describe("viewport side layout (T24–T27)", () => {
     test("T27: eye-toggle side ids match mesh instance placement keys", () => {
         // showLeft / showRight gate side="left" / side="right" meshes; offsets must differ.
         expect(sideOffsetX("left")).not.toBe(sideOffsetX("right"));
         expect(instanceWorldPosition("left").z).not.toBe(instanceWorldPosition("right").z);
+        // Left local −Y → world +Z after Rx(−90°).
+        expect(instanceWorldPosition("left").z).toBeGreaterThan(instanceWorldPosition("right").z);
     });
 
     test("T25: left instance projects further screen-left than right for anatomical presets", () => {
@@ -40,11 +42,12 @@ describe("viewport side layout (T24–T27)", () => {
         }
     });
 
-    test("T26: Bottom remains L/R-transposed relative to Top", () => {
+    test("T26: Bottom keeps ipsilateral L/R (no plantar transpose)", () => {
         expect(furtherScreenLeft("top")).toBe("left");
-        expect(furtherScreenLeft("bottom")).toBe("right");
-        // Same up vector — transposition comes from looking from below, not a flip table.
-        expect(viewCameraUp("top")).toEqual(viewCameraUp("bottom"));
+        expect(furtherScreenLeft("bottom")).toBe("left");
+        // Opposite up vectors cancel the view-from-below mirror so sliders stay ipsilateral.
+        expect(viewCameraUp("top")).toEqual([-1, 0, 0]);
+        expect(viewCameraUp("bottom")).toEqual([1, 0, 0]);
         expect(VIEW_CAMERA_POS.top[1]).toBeGreaterThan(0);
         expect(VIEW_CAMERA_POS.bottom[1]).toBeLessThan(0);
     });

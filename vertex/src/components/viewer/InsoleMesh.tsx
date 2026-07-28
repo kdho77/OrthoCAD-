@@ -1,10 +1,14 @@
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
+import { Html } from "@react-three/drei";
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useInsoleGeometry } from "@/hooks/useInsoleGeometry";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import { getDesignTrimline } from "@/lib/geometry/trimline";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
-import type { DesignState, Side } from "@/types";
+import { SIDE_LABELS, type DesignState, type Side } from "@/types";
 
 interface InsoleMeshProps {
     side: Side;
@@ -107,6 +111,11 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
                 castShadow
                 receiveShadow
             />
+            <Html position={[INSOLE_LENGTH_MM / 2 + 8, offsetX, 12]} center sprite>
+                <div className="pointer-events-none rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                    {SIDE_LABELS[side]}
+                </div>
+            </Html>
         </group>
     );
 }

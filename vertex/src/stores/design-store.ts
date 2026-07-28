@@ -83,7 +83,7 @@ export function defaultDesign(): DesignState {
         thicknessMm: 3,
         corrections: {
             unit: "mm",
-            linked: true,
+            linked: false,
             left: defaultSideCorrections(),
             right: defaultSideCorrections(),
         },
@@ -427,19 +427,19 @@ export const useDesignStore = create<DesignStore>()(
                     if (isPaired && s.design.paired) {
                         // Per-side thickness for paired workspace
                         const safe = constrainSideCorrections(
-                            s.design.paired.left.corrections || defaultSideCorrections(),
+                            s.design.corrections.left,
                             thicknessMm,
-                        ).thicknessMm; // approximate
+                        ).thicknessMm;
                         const next = {
                             ...s.design.paired,
-                            leftThicknessMm: linked ? safe : thicknessMm, // simplistic
+                            leftThicknessMm: linked ? safe : thicknessMm,
                             rightThicknessMm: linked ? safe : thicknessMm,
                         };
                         return {
                             design: {
                                 ...s.design,
                                 thicknessMm: safe, // legacy compat
-                                paired: next as any,
+                                paired: next,
                             },
                         };
                     }

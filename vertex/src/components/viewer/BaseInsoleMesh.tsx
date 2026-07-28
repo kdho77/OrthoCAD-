@@ -1,9 +1,13 @@
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
+import { Html } from "@react-three/drei";
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { useBaseInsoleGeometry } from "@/hooks/useBaseInsoleGeometry";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import { useDesignStore } from "@/stores/design-store";
-import type { Side } from "@/types";
+import { SIDE_LABELS, type Side } from "@/types";
 
 const sideColors: Record<Side, string> = {
     left: "#c084fc",
@@ -52,6 +56,11 @@ export function BaseInsoleMesh({ side, transparent }: { side: Side; transparent:
                 <edgesGeometry args={[geometry, 35]} />
                 <lineBasicMaterial color={sideColors[side]} transparent opacity={0.35} />
             </lineSegments>
+            <Html position={[INSOLE_LENGTH_MM / 2 + 8, offsetX, 12]} center sprite>
+                <div className="pointer-events-none rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                    {SIDE_LABELS[side]}
+                </div>
+            </Html>
         </group>
     );
 }
