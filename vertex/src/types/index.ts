@@ -70,8 +70,29 @@ export interface SideCorrections {
     forefootPostingDeg: number;
     /** Rearfoot pronation/supination. Positive = pronation. */
     rearfootPostingDeg: number;
+    /**
+     * Kirby heel skive depth (mm) at the one-third heel-width line.
+     * Medial skive RAISES the medial heel (+Z) — intrinsic supination moment.
+     * Never a subtractive cut; see heel-skive.ts.
+     */
     medialSkiveMm: number;
+    /** Lateral skive depth (mm); raises the lateral heel — pronation moment. */
     lateralSkiveMm: number;
+    /**
+     * Skive plane angle (deg) relative to the heel seat. Default 15.
+     * Range 5–30. Paired with {@link skiveLocationPct} via {@link skiveDriven}.
+     */
+    skiveAngleDeg?: number;
+    /**
+     * Zero-crossing location across the heel as % from medial (0) to lateral (100).
+     * Derived when {@link skiveDriven} is `"location"` (default).
+     */
+    skiveLocationPct?: number;
+    /**
+     * Which of angle/location is user-locked. Depth is always a driver.
+     * Default `"location"` (angle set by user/default 15°, location derived).
+     */
+    skiveDriven?: "angle" | "location";
     archFillMm: number;
     archHeightMm: number;
     heelCupDepthMm: number;

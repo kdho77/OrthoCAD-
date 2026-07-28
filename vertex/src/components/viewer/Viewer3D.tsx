@@ -19,8 +19,9 @@ import { Suspense, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
+import { VIEW_CAMERA_POS, viewCameraUp } from "@/lib/geometry/viewport-side-layout";
 import { cn } from "@/lib/utils";
-import { type CameraView, type ViewerSettings, useDesignStore } from "@/stores/design-store";
+import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
@@ -33,14 +34,14 @@ import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
 import { ScanMeshes } from "./ScanMeshes";
 import { TrimlineEditTools } from "./TrimlineEditTools";
 
-const VIEWS: { name: CameraView; label: string; pos: [number, number, number] }[] = [
-    { name: "iso", label: "Orbit", pos: [220, 200, 260] },
-    { name: "front", label: "Front", pos: [0, 40, 360] },
-    { name: "back", label: "Back", pos: [0, 40, -360] },
-    { name: "left", label: "Left", pos: [-360, 40, 0] },
-    { name: "right", label: "Right", pos: [360, 40, 0] },
-    { name: "top", label: "Top", pos: [0, 400, 0.001] },
-    { name: "bottom", label: "Bottom", pos: [0, -400, 0.001] },
+const VIEWS: { name: CameraView; label: string }[] = [
+    { name: "iso", label: "Orbit" },
+    { name: "front", label: "Front" },
+    { name: "back", label: "Back" },
+    { name: "left", label: "Left" },
+    { name: "right", label: "Right" },
+    { name: "top", label: "Top" },
+    { name: "bottom", label: "Bottom" },
 ];
 
 const VIEW_LABELS: Record<CameraView, string> = {
@@ -82,12 +83,12 @@ export function Viewer3D() {
     const setShowPerf = usePerformanceStore((s) => s.setShowPerformanceMonitor);
     const interacting = usePerformanceStore((s) => s.interacting);
 
-    const setView = (name: CameraView, pos: [number, number, number]) => {
+    const setView = (name: CameraView) => {
         const c = controls.current;
         if (c) {
-            c.object.position.set(...pos);
+            c.object.position.set(...VIEW_CAMERA_POS[name]);
             c.target.set(0, 0, 0);
-            c.object.up.set(0, 1, 0);
+            c.object.up.set(...viewCameraUp(name));
             c.update();
         }
         setViewer({ view: name });
@@ -99,7 +100,7 @@ export function Viewer3D() {
                 shadows
                 dpr={[1, 1.5]}
                 camera={{
-                    position: [220, 200, 260],
+                    position: VIEW_CAMERA_POS.iso,
                     fov: 40,
                     near: 1,
                     far: 5000,
@@ -180,7 +181,7 @@ export function Viewer3D() {
                         size="sm"
                         variant={viewer.view === v.name ? "default" : "secondary"}
                         className="h-7"
-                        onClick={() => setView(v.name, v.pos)}
+                        onClick={() => setView(v.name)}
                     >
                         {v.label}
                     </Button>

@@ -153,12 +153,17 @@ export function evaluateOperator(
         }
         case "medial_skive":
         case "lateral_skive": {
+            // Kirby raise model (replaces the clinically inverted subtractive op).
+            // Approximate plane-max raise: full depth near the skived edge in the
+            // heel, tapering across to the opposite edge. Exact plane∩bowl lives
+            // in heel-skive.ts for the base / heightAt paths.
             const mm = (p.mm as number) || 0;
             const isMedial = op.kind === "medial_skive";
-            const sign = isMedial ? -1 : 1;
-            const edge = Math.max(0, sign * vSigned);
-            const rear = Math.max(0, 0.3 - u) / 0.3;
-            return -mm * edge * rear * w; // skive removes material
+            const medialSign = ctx.side === "left" ? -1 : 1;
+            const m = -(vSigned * medialSign); // +1 medial
+            const edge = isMedial ? Math.max(0, m) : Math.max(0, -m);
+            const rear = Math.max(0, 0.28 - u) / 0.28;
+            return mm * edge * rear * w; // RAISE (+Z)
         }
         case "medial_flange":
         case "lateral_flange": {

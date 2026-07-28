@@ -107,7 +107,7 @@ and `2` on export.
 | Thickness                                  | Deformation      | Uniform/graded offset of the surface.                    |
 | Trimline                                   | **Boolean cut**  | Changes the footprint outline — a topology change.       |
 | Elements (pads = add, sinks = cut)         | Deformation (preview) → **Boolean** (authoritative) | Pads/sinks read as smooth bumps live; baked as exact OCCT fuse/cut on Confirm/Export. |
-| Skives                                     | Boolean cut      | Sharp wedge removal near the heel.                       |
+| Skives (Kirby)                             | **Top-only deformation** (plane half-space max) | Intrinsic raise of the skived heel edge; must NOT couple to the bottom shell (R11). |
 
 **Recommendation:** use vertex **deformation** for everything that is a smooth
 surface change (it is cheap, keeps the mesh watertight, and never fails), and
@@ -126,7 +126,11 @@ for Confirm / Export / idle:
   honours the trimline by width sampling, so this is for exact cuts).
 - **Discrete elements** — `applyElements` fuses additive tools (met pad/bar,
   Cluffy/Morton's) and cuts subtractive ones (sinks, kinetic/reverse wedges).
-- **Skives / posting wedges** — `applySkives` cuts heel skive wedges.
+- **Skives** — legacy `applySkives` boolean CUT is permanently disabled. The
+  Kirby skive is a plane half-space **raise** (`heel-skive.ts`) applied to the
+  top mesh after field-F / bottom-shell sync. The previous subtractive field +
+  boolean-cut model was clinically inverted (it removed material where the
+  technique adds an intrinsic wedge) and must not be reintroduced.
 
 Every pass **fails soft**: on any boolean error the previous valid solid is
 kept, so the result never regresses below the deformation-only output, and the

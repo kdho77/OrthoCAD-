@@ -50,8 +50,10 @@ export const CLINICAL_LIMITS = {
     thicknessMm: { min: 1.5, max: 8.0 },
     forefootPostingDeg: { min: -12, max: 12 },
     rearfootPostingDeg: { min: -10, max: 10 },
-    medialSkiveMm: { min: 0, max: 7.0 },
-    lateralSkiveMm: { min: 0, max: 7.0 },
+    medialSkiveMm: { min: 0, max: 8.0 },
+    lateralSkiveMm: { min: 0, max: 8.0 },
+    skiveAngleDeg: { min: 5, max: 30 },
+    skiveLocationPct: { min: 0, max: 100 },
     archHeightMm: { min: 0, max: 18.0 },
     archFillMm: { min: 0, max: 12.0 },
     heelCupHeightMm: { min: 0, max: 12.0 },
@@ -74,7 +76,7 @@ export const CLINICAL_LIMITS = {
 export const MIN_WALL_MM = 1.6; // absolute production minimum wall after all shaping
 
 export interface ConstraintViolation {
-    field: keyof SideCorrections | "thickness" | "combined";
+    field: keyof SideCorrections | "thickness" | "combined" | "skiveAngleDeg" | "skiveLocationPct";
     message: string;
     /** The value that was requested before clamping. */
     requested?: number;
@@ -156,6 +158,27 @@ export function constrainSideCorrections(
         const raw = (c as any)[key] as number;
         const res = clamp(raw, lim.min, lim.max, key);
         (c as any)[key] = res.value;
+        if (res.violation) v.push(res.violation);
+    }
+
+    if (c.skiveAngleDeg != null) {
+        const res = clamp(
+            c.skiveAngleDeg,
+            CLINICAL_LIMITS.skiveAngleDeg.min,
+            CLINICAL_LIMITS.skiveAngleDeg.max,
+            "skiveAngleDeg",
+        );
+        c.skiveAngleDeg = res.value;
+        if (res.violation) v.push(res.violation);
+    }
+    if (c.skiveLocationPct != null) {
+        const res = clamp(
+            c.skiveLocationPct,
+            CLINICAL_LIMITS.skiveLocationPct.min,
+            CLINICAL_LIMITS.skiveLocationPct.max,
+            "skiveLocationPct",
+        );
+        c.skiveLocationPct = res.value;
         if (res.violation) v.push(res.violation);
     }
 

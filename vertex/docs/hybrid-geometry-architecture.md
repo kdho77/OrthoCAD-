@@ -125,7 +125,8 @@ The foundation here lets each correction/element flow into the OCCT solid:
 
 - Corrections already flow through `heightAt`, so they shape the lofted top.
 - Skives and elements are applied as explicit booleans (extend
-  `applyElements` / `applySkives` with new tools as features are added).
+  `applyElements` with new tools as features are added; Kirby skives use
+  plane-max raise — `applySkives` boolean cut is disabled).
 - Next phases: replace the ruled loft with a B-spline skinned surface for
   smoother tops, build the trimline as an exact OCCT wire (instead of
   per-station width sampling), and add posting wedges / forefoot extensions as

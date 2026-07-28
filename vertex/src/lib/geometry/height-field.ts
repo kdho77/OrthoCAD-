@@ -4,6 +4,7 @@ import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
+import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
 
 // Shared parametric height field for insole surfaces. Used by both the procedural
 // Three.js mesher and the OpenCascade solid builder so corrections stay aligned.
@@ -238,12 +239,12 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
 
     shaped += heelCupDepthBowlDelta(u, av, c.heelCupDepthMm);
 
-    // --- Skives (medial/lateral heel) -----------------------------------------
-    const includeSkives = params.includeSkives ?? true;
-    if (includeSkives) {
-        shaped -= c.medialSkiveMm * heel * medialBlend * smoothstep(0.1, 0.85, av);
-        shaped -= c.lateralSkiveMm * heel * lateralBlend * smoothstep(0.1, 0.85, av);
-    }
+    // --- Skives ----------------------------------------------------------------
+    // The legacy subtractive field (shaped -= medialSkiveMm * …) was clinically
+    // inverted and is permanently removed. Kirby skives are applied as a plane
+    // half-space RAISE after the rest of the surface is formed (see below).
+    // Base-mesh preview sets includeSkives:false and applies the raise in
+    // applyBaseModifiers *after* #119 bottom-shell sync (R11).
 
     // --- Flanges (raised medial/lateral walls through the midfoot) ------------
     const edge = smoothstep(0.55, 1.0, av);
@@ -304,9 +305,41 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).
     // The graph is the new clinical source of truth when present; the flat
     // corrections above remain for backward compatibility and as a summary.
+    // Graph skive ops are raise-modelled; keep includeSkives gating consistent.
     if (params.graph) {
         const graphDelta = evaluateGraph(params.graph, u, vSigned);
         h += graphDelta;
+    }
+
+    // Kirby heel skive — plane half-space maximum (raise). Parametric / OCCT
+    // loft path only when includeSkives is true. Must NOT run inside the field
+    // that drives correctionDeltaAt / #119 bottom sync on loaded bases.
+    const includeSkives = params.includeSkives ?? true;
+    if (
+        includeSkives &&
+        (c.medialSkiveMm > 0 || c.lateralSkiveMm > 0)
+    ) {
+        const zCurrent = h;
+        const raise = kirbySkiveRaiseAt(u, vSigned, side, c, {
+            lengthMm,
+            widthMm,
+            trimline: params.trimline,
+            zCurrent,
+            zBowl: (uu, vv) =>
+                heightAt(uu, vv, {
+                    ...params,
+                    includeSkives: false,
+                    graph: params.graph
+                        ? {
+                              ...params.graph,
+                              operators: params.graph.operators.filter(
+                                  (op) => op.kind !== "medial_skive" && op.kind !== "lateral_skive",
+                              ),
+                          }
+                        : null,
+                }),
+        });
+        h = zCurrent + raise;
     }
 
     return h;

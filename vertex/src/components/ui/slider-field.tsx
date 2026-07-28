@@ -12,6 +12,8 @@ interface SliderFieldProps {
     /** Live preview during drag — does not commit to design store until pointer-up. */
     onPreview?: (value: number) => void;
     className?: string;
+    /** When set, replaces the numeric readout (e.g. "—" for inactive derived fields). */
+    displayText?: string;
 }
 
 /**
@@ -29,6 +31,7 @@ export function SliderField({
     onChange,
     onPreview,
     className,
+    displayText,
 }: SliderFieldProps) {
     const setInteracting = usePerformanceStore((s) => s.setInteracting);
     const clamp = (v: number) => Math.min(max, Math.max(min, Number.isFinite(v) ? v : min));
@@ -72,15 +75,21 @@ export function SliderField({
             <div className="flex items-center justify-between">
                 <label className="text-xs text-muted-foreground">{label}</label>
                 <div className="flex items-center gap-1">
-                    <input
-                        type="number"
-                        value={value}
-                        min={min}
-                        max={max}
-                        step={step}
-                        onChange={(e) => handleCommit(Number(e.target.value))}
-                        className="h-6 w-16 rounded border border-input bg-background px-1 text-right text-xs tabular-nums focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    />
+                    {displayText != null ? (
+                        <span className="flex h-6 w-16 items-center justify-end px-1 text-xs tabular-nums text-muted-foreground">
+                            {displayText}
+                        </span>
+                    ) : (
+                        <input
+                            type="number"
+                            value={value}
+                            min={min}
+                            max={max}
+                            step={step}
+                            onChange={(e) => handleCommit(Number(e.target.value))}
+                            className="h-6 w-16 rounded border border-input bg-background px-1 text-right text-xs tabular-nums focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        />
+                    )}
                     {unit ? <span className="w-5 text-xs text-muted-foreground">{unit}</span> : null}
                 </div>
             </div>

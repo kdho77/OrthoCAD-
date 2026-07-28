@@ -19,6 +19,7 @@ import {
 } from "@/lib/geometry/mesh-close";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import type { DesignState, Side, SideCorrections } from "@/types";
+import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 
 // Base + Modifier deformation core (see docs/base-modifier-architecture.md).
 //
@@ -76,7 +77,8 @@ function neutralField(field: HeightFieldParams): HeightFieldParams {
         },
         elements: [],
         includeElements: false,
-        includeSkives: true,
+        // Skives are applied post-sync on the top mesh only (R11) — never in F.
+        includeSkives: false,
         trimline: null,
     };
 }
@@ -1662,11 +1664,19 @@ export function applyBaseModifiers(
     // the vertical height-field delta here, exactly like heel-cup width (which
     // heightAt never carried). The parametric (non-base) path still uses
     // heelCupDepthBowlDelta via heightAt and is unaffected.
+    // Strip heel-cup depth (dedicated tangent field) AND skive depths (applied
+    // post-sync top-only) from the vertical F that drives top deltas + bottom sync.
     const depthMm = field.corrections.heelCupDepthMm;
-    const fieldForDelta: HeightFieldParams =
-        depthMm !== 0
-            ? { ...field, corrections: { ...field.corrections, heelCupDepthMm: 0 } }
-            : { ...field };
+    const fieldForDelta: HeightFieldParams = {
+        ...field,
+        includeSkives: false,
+        corrections: {
+            ...field.corrections,
+            heelCupDepthMm: 0,
+            medialSkiveMm: 0,
+            lateralSkiveMm: 0,
+        },
+    };
 
     const lateralCtx: LateralDeltaContext = {
         count,
@@ -2009,6 +2019,51 @@ export function applyBaseModifiers(
         );
         if (rimFrame && rimFrame.seeds.length > 0) {
             transferRimConformityDeltas(base, array, rimFrame);
+        }
+    }
+
+    // Kirby heel skive — TOP MESH ONLY, after F composition + bottom coupling (R11).
+    // Plane half-space maximum; never writes bottom verts; never feeds field-F.
+    if (
+        topVertexCount > 0 &&
+        (field.corrections.medialSkiveMm > 0 || field.corrections.lateralSkiveMm > 0)
+    ) {
+        applyHeelSkiveToTopMesh(array, {
+            side: field.side,
+            corrections: field.corrections,
+            lengthAxis,
+            widthAxis,
+            thickAxis,
+            lenMin,
+            lenSize,
+            topVertexCount,
+            widthSign,
+        });
+    } else if (
+        !isMultiMesh &&
+        (field.corrections.medialSkiveMm > 0 || field.corrections.lateralSkiveMm > 0)
+    ) {
+        // Single-mesh bases: treat all verts classified as top (factor>0.5) as eligible.
+        const topN = count;
+        applyHeelSkiveToTopMesh(array, {
+            side: field.side,
+            corrections: field.corrections,
+            lengthAxis,
+            widthAxis,
+            thickAxis,
+            lenMin,
+            lenSize,
+            topVertexCount: topN,
+            widthSign,
+        });
+        // Re-anchor bottom sheet: skive must not move bottom-classified verts.
+        if (topFactors) {
+            for (let i = 0; i < count; i++) {
+                if (topFactors[i]! > 0.5) continue;
+                array[i * 3 + thickAxis] = (base.getAttribute("position")!.array as Float32Array)[
+                    i * 3 + thickAxis
+                ]!;
+            }
         }
     }
 

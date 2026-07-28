@@ -1,15 +1,22 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { AlertTriangle, Link2, Unlink } from "lucide-react";
+import { AlertTriangle, Link2, Lock, Unlink, Unlock } from "lucide-react";
 import { useMemo, useState } from "react";
 import { SliderField } from "@/components/ui/slider-field";
 import { constrainDesignCorrections, hasWedgeViolations } from "@/lib/geometry/clinical-constraints";
+import {
+    SKIVE_ANGLE_MAX_DEG,
+    SKIVE_ANGLE_MIN_DEG,
+    SKIVE_DEFAULT_ANGLE_DEG,
+    solveSkiveDerived,
+} from "@/lib/geometry/heel-skive";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
 import { mergeCorrections, usePerformanceStore } from "@/stores/performance-store";
 import type { Side, SideCorrections, WedgeCorrection } from "@/types";
+import { skiveDerivedDisplayText } from "./skive-derived-display";
 
 /**
  * Scalar correction sliders grouped into clinical sections. Pronation/supination
@@ -19,10 +26,9 @@ import type { Side, SideCorrections, WedgeCorrection } from "@/types";
  *  - Apex move lives under **Arch**.
  *  - **Flanges** is its own dedicated section.
  *  - **Heel** holds heel cup depth, heel cup width and the new heel lift.
+ *  - **Skive** is a dedicated Kirby control (depth + angle/location solver).
  */
 const FIELDS: { key: keyof SideCorrections; label: string; min: number; max: number; group: string }[] = [
-    { key: "medialSkiveMm", label: "Medial skive", min: 0, max: 7, group: "Skive" },
-    { key: "lateralSkiveMm", label: "Lateral skive", min: 0, max: 7, group: "Skive" },
     { key: "archHeightMm", label: "Arch height", min: 0, max: 18, group: "Arch" },
     { key: "archFillMm", label: "Arch fill", min: 0, max: 12, group: "Arch" },
     { key: "apexMoveMm", label: "Apex move", min: -12, max: 12, group: "Arch" },
@@ -33,7 +39,7 @@ const FIELDS: { key: keyof SideCorrections; label: string; min: number; max: num
     { key: "lateralFlangeMm", label: "Lateral flange", min: 0, max: 8, group: "Flanges" },
 ];
 
-const GROUPS = ["Skive", "Arch", "Heel", "Flanges"];
+const GROUPS = ["Arch", "Heel", "Flanges"];
 
 const WEDGE_ZONES = [
     { zone: "rearfoot" as const, label: "Rearfoot" },
@@ -76,6 +82,183 @@ function TogglePair<T extends string>({ options, value, onChange, ariaLabel }: T
                 </button>
             ))}
         </fieldset>
+    );
+}
+
+interface SkiveSideControlProps {
+    side: Side;
+    values: SideCorrections;
+    onPreview: (patch: Partial<SideCorrections>) => void;
+    onCommit: (patch: Partial<SideCorrections>) => void;
+}
+
+/**
+ * Kirby skive controls: depth drivers + angle/location with D6 lock.
+ * Effect copy is moment language — not degrees of correction or predicted motion.
+ */
+function SkiveSideControl({ side, values, onPreview, onCommit }: SkiveSideControlProps) {
+    const driven = values.skiveDriven ?? "location";
+    const angleDeg = values.skiveAngleDeg ?? SKIVE_DEFAULT_ANGLE_DEG;
+    const depthForSolve = Math.max(values.medialSkiveMm, values.lateralSkiveMm);
+    const derived = solveSkiveDerived({
+        depthMm: depthForSolve,
+        angleDeg,
+        locationPct: values.skiveLocationPct ?? 50,
+        driven,
+        heelWidthMm: 70,
+    });
+    const locationPct =
+        driven === "location" ? derived.locationPct : (values.skiveLocationPct ?? derived.locationPct);
+    const displayAngle = driven === "angle" ? derived.angleDeg : angleDeg;
+    const { angleDisplayText, locationDisplayText } = skiveDerivedDisplayText(driven, depthForSolve);
+
+    const push = (patch: Partial<SideCorrections>, commit: boolean) => {
+        if (commit) onCommit(patch);
+        else onPreview(patch);
+    };
+
+    const toggleDriven = () => {
+        const next = driven === "location" ? "angle" : "location";
+        // Promoting a derived field locks it; the other becomes derived.
+        onCommit({
+            skiveDriven: next,
+            skiveAngleDeg: displayAngle,
+            skiveLocationPct: locationPct,
+        });
+    };
+
+    return (
+        <div className="space-y-2">
+            <div className="text-[10px] uppercase text-primary/80">{SIDE_LABELS[side]}</div>
+            <SliderField
+                label="Medial depth"
+                value={values.medialSkiveMm}
+                min={0}
+                max={8}
+                step={0.5}
+                unit="mm"
+                onPreview={(v) => push({ medialSkiveMm: v }, false)}
+                onChange={(v) => push({ medialSkiveMm: v }, true)}
+            />
+            <div className="text-[10px] text-muted-foreground">supination moment</div>
+            <SliderField
+                label="Lateral depth"
+                value={values.lateralSkiveMm}
+                min={0}
+                max={8}
+                step={0.5}
+                unit="mm"
+                onPreview={(v) => push({ lateralSkiveMm: v }, false)}
+                onChange={(v) => push({ lateralSkiveMm: v }, true)}
+            />
+            <div className="text-[10px] text-muted-foreground">pronation moment</div>
+            <div className="flex items-center gap-1">
+                <div className="min-w-0 flex-1">
+                    <SliderField
+                        label="Angle"
+                        value={displayAngle}
+                        min={SKIVE_ANGLE_MIN_DEG}
+                        max={SKIVE_ANGLE_MAX_DEG}
+                        step={1}
+                        unit="deg"
+                        displayText={angleDisplayText}
+                        onPreview={(v) =>
+                            push(
+                                {
+                                    skiveAngleDeg: v,
+                                    skiveDriven: "location",
+                                    skiveLocationPct: solveSkiveDerived({
+                                        depthMm: depthForSolve,
+                                        angleDeg: v,
+                                        locationPct,
+                                        driven: "location",
+                                        heelWidthMm: 70,
+                                    }).locationPct,
+                                },
+                                false,
+                            )
+                        }
+                        onChange={(v) =>
+                            push(
+                                {
+                                    skiveAngleDeg: v,
+                                    skiveDriven: "location",
+                                    skiveLocationPct: solveSkiveDerived({
+                                        depthMm: depthForSolve,
+                                        angleDeg: v,
+                                        locationPct,
+                                        driven: "location",
+                                        heelWidthMm: 70,
+                                    }).locationPct,
+                                },
+                                true,
+                            )
+                        }
+                    />
+                </div>
+                <button
+                    type="button"
+                    title={driven === "location" ? "Angle locked (location derived)" : "Unlock angle"}
+                    onClick={toggleDriven}
+                    className="mt-4 rounded border border-border p-1 text-muted-foreground hover:bg-muted"
+                >
+                    {driven === "location" ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+                </button>
+            </div>
+            <div className="flex items-center gap-1">
+                <div className="min-w-0 flex-1">
+                    <SliderField
+                        label="Location"
+                        value={Math.round(locationPct)}
+                        min={0}
+                        max={100}
+                        step={1}
+                        unit="%"
+                        displayText={locationDisplayText}
+                        onPreview={(v) =>
+                            push(
+                                {
+                                    skiveLocationPct: v,
+                                    skiveDriven: "angle",
+                                    skiveAngleDeg: solveSkiveDerived({
+                                        depthMm: depthForSolve,
+                                        angleDeg: displayAngle,
+                                        locationPct: v,
+                                        driven: "angle",
+                                        heelWidthMm: 70,
+                                    }).angleDeg,
+                                },
+                                false,
+                            )
+                        }
+                        onChange={(v) =>
+                            push(
+                                {
+                                    skiveLocationPct: v,
+                                    skiveDriven: "angle",
+                                    skiveAngleDeg: solveSkiveDerived({
+                                        depthMm: depthForSolve,
+                                        angleDeg: displayAngle,
+                                        locationPct: v,
+                                        driven: "angle",
+                                        heelWidthMm: 70,
+                                    }).angleDeg,
+                                },
+                                true,
+                            )
+                        }
+                    />
+                </div>
+                <button
+                    type="button"
+                    title={driven === "angle" ? "Location locked (angle derived)" : "Unlock location"}
+                    onClick={toggleDriven}
+                    className="mt-4 rounded border border-border p-1 text-muted-foreground hover:bg-muted"
+                >
+                    {driven === "angle" ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+                </button>
+            </div>
+        </div>
     );
 }
 
@@ -174,13 +357,15 @@ export function CorrectionsPanel() {
 
     const displayThickness = thicknessPreview ?? design.thicknessMm;
 
-    const sideValues = useMemo(
-        () => ({
+    // mergeCorrections reads live preview from the performance store; keep
+    // correctionPreview in deps so slider drags re-render committed+preview values.
+    const sideValues = useMemo(() => {
+        void correctionPreview;
+        return {
             left: mergeCorrections("left", corrections.left),
             right: mergeCorrections("right", corrections.right),
-        }),
-        [corrections, correctionPreview],
-    );
+        };
+    }, [corrections, correctionPreview]);
 
     // Soft clinical warnings for wedges approaching their limits (non-blocking).
     // Derived in useMemo — never select getActiveViolations() directly (returns a new
@@ -272,6 +457,27 @@ export function CorrectionsPanel() {
                 })}
             </div>
 
+            <div className="space-y-2 rounded-md border border-border bg-background/50 p-2">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Skive
+                </div>
+                <div className="grid grid-cols-2 gap-x-3">
+                    {(["left", "right"] as Side[]).map((side) => (
+                        <SkiveSideControl
+                            key={side}
+                            side={side}
+                            values={sideValues[side]}
+                            onPreview={(patch) => previewCorrection(side, patch)}
+                            onCommit={(patch) => {
+                                const preview = usePerformanceStore.getState().correctionPreview[side] ?? {};
+                                updateCorrection(side, { ...preview, ...patch });
+                                clearCorrectionPreview();
+                            }}
+                        />
+                    ))}
+                </div>
+            </div>
+
             {GROUPS.map((group) => (
                 <div key={group} className="space-y-2 rounded-md border border-border bg-background/50 p-2">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -310,8 +516,7 @@ export function CorrectionsPanel() {
                                             // does not wipe uncommitted values from other sliders
                                             // (e.g. depth preview lost when width pointer-up fires).
                                             const preview =
-                                                usePerformanceStore.getState().correctionPreview[side] ??
-                                                {};
+                                                usePerformanceStore.getState().correctionPreview[side] ?? {};
                                             updateCorrection(side, {
                                                 ...preview,
                                                 [f.key]: v,

@@ -7,7 +7,7 @@ import {
     type Result,
     ShapeTypes,
 } from "@chili3d/core";
-import { applyElements, applySkives, applyTrimlineCut } from "@/lib/geometry/base-modifier-booleans";
+import { applyElements, applyTrimlineCut } from "@/lib/geometry/base-modifier-booleans";
 import {
     bump,
     type GridPoint,
@@ -184,15 +184,10 @@ export function buildOcctInsoleSolid(factory: IShapeFactory, params: InsoleParam
         }
     }
 
-    // Skives are baked into the lofted height field; optional boolean wedges refine heel cuts.
-    if (params.corrections.medialSkiveMm > 0 || params.corrections.lateralSkiveMm > 0) {
-        try {
-            solid = applySkives(factory, solid, params.corrections, params);
-            solid = repairOcctSolid(factory, solid) as ISolid;
-        } catch (error) {
-            console.warn("[occt-insole] skive boolean pass failed, using lofted skives:", error);
-        }
-    }
+    // Kirby skives are a plane half-space RAISE baked into the lofted height
+    // field (includeSkives:true → kirbySkiveRaiseAt). The legacy applySkives
+    // boolean CUT subtracted material where the Kirby model adds it and is
+    // permanently disabled on the export path (G4).
 
     if ((params.elements?.length ?? 0) > 0) {
         try {
