@@ -212,69 +212,18 @@ export function applyElements(
     return current as ISolid;
 }
 
-// --- Skive / posting wedge booleans ---------------------------------------
+// --- Skive booleans (disabled) --------------------------------------------
 
-function buildSkiveWedge(
-    factory: IShapeFactory,
-    params: {
-        lengthMm: number;
-        widthMm: number;
-        depthMm: number;
-        medial: boolean;
-        side: Side;
-    },
-): ISolid | null {
-    const { lengthMm, widthMm, depthMm, medial, side } = params;
-    if (depthMm <= 0) return null;
-
-    const halfW = widthMm / 2;
-    const heelCenterX = 0.1 * lengthMm;
-    const medialSign = side === "left" ? -1 : 1;
-    const yCenter = medial ? -halfW * 0.55 * medialSign : halfW * 0.55 * medialSign;
-    const wedgeWidth = halfW * 0.45;
-    const wedgeLength = lengthMm * 0.22;
-    const wedgeHeight = depthMm + 6;
-
-    const origin = new XYZ({
-        x: heelCenterX - wedgeLength / 2,
-        y: yCenter - wedgeWidth / 2,
-        z: -1,
-    });
-    const plane = new Plane({ origin, normal: XYZ.unitZ, xvec: XYZ.unitX });
-    return unwrap(factory.box(plane, wedgeLength, wedgeWidth, wedgeHeight), "skive wedge");
-}
-
+/**
+ * @deprecated Clinically inverted. The Kirby skive is a plane half-space RAISE
+ * applied in heightAt / applyHeelSkiveToTopMesh. This boolean CUT is a permanent
+ * no-op (G4) so export cannot cancel the raise.
+ */
 export function applySkives(
-    factory: IShapeFactory,
+    _factory: IShapeFactory,
     solid: ISolid,
-    corrections: SideCorrections,
-    params: { lengthMm: number; widthMm: number; side: Side },
+    _corrections: SideCorrections,
+    _params: { lengthMm: number; widthMm: number; side: Side },
 ): ISolid {
-    let current: IShape = solid;
-
-    for (const [depthMm, medial] of [
-        [corrections.medialSkiveMm, true],
-        [corrections.lateralSkiveMm, false],
-    ] as const) {
-        const wedge = buildSkiveWedge(factory, {
-            lengthMm: params.lengthMm,
-            widthMm: params.widthMm,
-            depthMm,
-            medial,
-            side: params.side,
-        });
-        if (!wedge) continue;
-        try {
-            const cut = factory.booleanCut([current], [wedge]);
-            if (!cut.isOk) {
-                console.warn(`[base-modifier] skive boolean skipped: ${cut.error}`);
-                continue;
-            }
-            current = cut.value;
-        } catch (error) {
-            console.warn("[base-modifier] skive boolean failed:", error);
-        }
-    }
-
-    return current as ISolid;
+    return solid;
 }

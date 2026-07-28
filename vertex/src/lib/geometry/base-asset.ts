@@ -666,7 +666,9 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         thicknessMm: params.thicknessMm,
         corrections: mergeCorrections(side, design.corrections[side]),
         elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
-        includeSkives: true,
+        // Skives excluded from F / heightAt on the base path — applied post-sync
+        // as a top-only Kirby plane raise (R11). See heel-skive.ts.
+        includeSkives: false,
         includeElements: true,
         trimline: null,
     };

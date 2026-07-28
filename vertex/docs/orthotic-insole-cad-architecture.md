@@ -498,7 +498,7 @@ Corrections remain **fully active** during trimline drag. Scalar values in `desi
 | **Heel cup** | Evaluated inside draft envelope | Cup rim clips with trimline |
 | **Rearfoot posting** | **Not feathered**; full tilt at draft medial/lateral edge positions | Posting plane re-evaluates at new edge coords each frame |
 | **Forefoot posting** | Same as rearfoot in forefoot zone | Toe posting follows new toe line |
-| **Skives** | Field subtract active; boolean deferred (R5) | Skive depth visible in preview |
+| **Skives (Kirby)** | Plane-max raise on top; excluded from bottom sync (R11) | Skive depth visible as medial/lateral heel raise |
 | **Flanges** | Feathered additive; attenuates at draft edge | Flange thins at new boundary |
 | **Elements** | `elementHeightAt` active; orphan check uses **draft** polygon | Elements outside draft → amber ghost + tooltip (not removed until confirm) |
 | **Thickness** | Thickness δ applied before clip | Top lifts; bottom fixed |
@@ -615,7 +615,7 @@ interface OperatorGeometryPolicy {
 | **Forefoot posting (deg)** | Field | Field in loft | R1 |
 | **Supination wedge (mm)** | Field (`medialBlend` taper) | Field by default; **boolean wedge when slope > ~14°** (e.g. 4 mm rise over < 25 mm width) | R1 default; R4 when steep |
 | **Pronation wedge (mm)** | Field (lateral taper) | Same as supination | R1 / R4 |
-| **Medial / lateral skive** | Field subtract | Boolean box wedge (`applySkives`) | R4 — sharp heel shelf |
+| **Medial / lateral skive (Kirby)** | Plane half-space **raise** on top (`heel-skive.ts`); excluded from field-F / bottom sync (R11) | Same raise in lofted height field; `applySkives` boolean CUT disabled | Intrinsic wedge; previous subtract/cut model was clinically inverted |
 | **Medial / lateral flange** | Field | Field in loft | R1 — wall raise |
 | **Met pad / bar (additive)** | Field bump | Boolean fuse (`applyElements`) | R3 — exact pad volume |
 | **Heel / navicular sink** | Field subtract | Boolean cut | R3 + R4 |
@@ -720,7 +720,7 @@ export const OPERATOR_EVAL_ORDER = [
 | Overlap | Resolution | UI |
 |---------|------------|-----|
 | Arch + heel cup (same u band) | Sum in `shaped`; longitudinal cross-fade already in `heightAt` | None |
-| Posting + skive (heel) | Algebraic sum; skive subtracts after posting in stack | Warn if net heel height < 0 |
+| Posting + skive (heel) | Option C: skive plane built in world frame so seat-relative angle = prescribed; depth at 1/3-line on post-wedge bowl | Orthogonality test T18 |
 | Met pad on arch dome | Sum | None |
 | Two met pads overlapping | Sum heights | Soft warn if combined > 8 mm |
 | Medial skive + medial flange | Sum; warn if net < 0 | Amber |
@@ -1216,7 +1216,7 @@ Direct editing (trimline reshape, element move, correction sliders) and automate
 | Element pad | Bump via δ on top surface | Bottom fixed | N/A |
 | Element move | Repositions δ contribution | Bottom fixed | Orphan check vs trimline |
 | Thickness increase | Top lifts via thickness δ | Bottom anchored | N/A |
-| Skive | Field subtract on top; boolean on export | Bottom fixed | N/A |
+| Skive (Kirby) | Plane-max raise on top only; boolean cut disabled | Bottom unchanged (R11) | N/A |
 
 **Editing beyond the original imported outline:**
 
