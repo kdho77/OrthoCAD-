@@ -134,7 +134,7 @@ Both modes share identical correction / trimline / element parameters. Only the 
 
 ### 3.4 Stock Bases (server-authoritative system GLB templates)
 
-Stock bases are global, admin-managed GLB assets (e.g. a default right foot last) stored in the `stock_bases` table and referenced via `DesignBase { source: "stock", ... }`.
+Stock bases are global, admin-managed GLB assets (e.g. the builtin Default left-foot last) stored in the `stock_bases` table and referenced via `DesignBase { source: "stock", ... }`.
 
 - **Resolution**: Client calls `trpc.stock.getDefaultStockBase` (or list/get). The server returns the row + a ready-to-use `url` (public URL from the `stock-bases` / `STOCK_BUCKET` preferred; signed fallback).
 - **Mirroring**: A stock record can declare `primarySide` (`"left"` for the builtin Default.glb — its midfoot arch sits on width− after footprint reorientation). On the client this drives automatic creation of a mirrored opposite side inside the same `design.paired` (single unified pane). The mirrored side carries `mirrored: true` + `mirroredFrom` so the geometry loader, cache keys, and future "reset to mirrored" features can treat it correctly. Legacy Default rows labeled `primarySide: "right"` are normalized/healed on resolve and rehydrate so Right controls stay ipsilateral.
