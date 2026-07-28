@@ -19,7 +19,7 @@ import { Suspense, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
-import { VIEW_CAMERA_POS, viewCameraUp } from "@/lib/geometry/viewport-side-layout";
+import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
 import { cn } from "@/lib/utils";
 import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
@@ -84,13 +84,7 @@ export function Viewer3D() {
     const interacting = usePerformanceStore((s) => s.interacting);
 
     const setView = (name: CameraView) => {
-        const c = controls.current;
-        if (c) {
-            c.object.position.set(...VIEW_CAMERA_POS[name]);
-            c.target.set(0, 0, 0);
-            c.object.up.set(...viewCameraUp(name));
-            c.update();
-        }
+        applyCameraViewPreset(controls.current, name);
         setViewer({ view: name });
     };
 
