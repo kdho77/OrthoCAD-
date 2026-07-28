@@ -5,7 +5,12 @@ export const INSOLE_LENGTH_MM = 260;
 export const INSOLE_WIDTH_MM = 95;
 export const INSOLE_GAP_MM = 30;
 
-/** World X offset for a foot when both insoles are shown side by side. */
+/**
+ * Local-Y (width-axis) offset for a foot when both insoles are shown side by side.
+ * After viewer Rx(−90°) this becomes world −Z, so left=+offset → world Z negative →
+ * screen-left under the toe-up Top preset (up=+X). Magnitude unchanged; sign only.
+ * Presentation-only — never persisted on the design record / export geometry.
+ */
 export function sideOffsetX(side: "left" | "right"): number {
-    return side === "left" ? -(INSOLE_WIDTH_MM + INSOLE_GAP_MM) / 2 : (INSOLE_WIDTH_MM + INSOLE_GAP_MM) / 2;
+    return side === "left" ? (INSOLE_WIDTH_MM + INSOLE_GAP_MM) / 2 : -(INSOLE_WIDTH_MM + INSOLE_GAP_MM) / 2;
 }
