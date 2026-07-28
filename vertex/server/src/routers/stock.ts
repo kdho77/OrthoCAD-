@@ -6,10 +6,6 @@ import { z } from "zod";
 import { getSupabaseAdmin } from "../context.js";
 import { validateGlbBase64 } from "../lib/glb-validation.js";
 import {
-    requireSupabaseAdmin as requireSupabase,
-    writeAuditLogBestEffort,
-} from "../lib/supabase-db.js";
-import {
     buildStockGlbKey,
     deleteAsset,
     getPublicUrl,
@@ -17,6 +13,7 @@ import {
     signedDownloadUrl,
     uploadAsset,
 } from "../lib/storage.js";
+import { requireSupabaseAdmin as requireSupabase, writeAuditLogBestEffort } from "../lib/supabase-db.js";
 import { adminProcedure, protectedProcedure, router } from "../trpc.js";
 
 type StockBaseRpcRow = {
@@ -100,40 +97,40 @@ export const stockRouter = router({
             });
         }
 
-        const items = await Promise.all((rows ?? []).map((r) => enrichStockBase(stockBaseFromRpc(r as StockBaseRpcRow))));
+        const items = await Promise.all(
+            (rows ?? []).map((r) => enrichStockBase(stockBaseFromRpc(r as StockBaseRpcRow))),
+        );
         return items;
     }),
 
     /**
      * Fetch a single stock base by ID (must be active).
      */
-    getStockBase: protectedProcedure
-        .input(z.object({ id: z.string().uuid() }))
-        .query(async ({ input }) => {
-            const supabase = requireSupabase();
-            const { data: row, error } = await supabase
-                .from("stock_bases")
-                .select("*")
-                .eq("id", input.id)
-                .eq("isActive", true)
-                .maybeSingle();
+    getStockBase: protectedProcedure.input(z.object({ id: z.string().uuid() })).query(async ({ input }) => {
+        const supabase = requireSupabase();
+        const { data: row, error } = await supabase
+            .from("stock_bases")
+            .select("*")
+            .eq("id", input.id)
+            .eq("isActive", true)
+            .maybeSingle();
 
-            if (error) {
-                throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to load stock base: ${error.message}`,
-                });
-            }
+        if (error) {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: `Failed to load stock base: ${error.message}`,
+            });
+        }
 
-            if (!row) {
-                throw new TRPCError({
-                    code: "NOT_FOUND",
-                    message: "Stock base not found or inactive",
-                });
-            }
+        if (!row) {
+            throw new TRPCError({
+                code: "NOT_FOUND",
+                message: "Stock base not found or inactive",
+            });
+        }
 
-            return enrichStockBase(stockBaseFromRpc(row as StockBaseRpcRow));
-        }),
+        return enrichStockBase(stockBaseFromRpc(row as StockBaseRpcRow));
+    }),
 
     /**
      * Return the designated default stock base (the one with isDefault=true and active).
@@ -535,7 +532,8 @@ export const stockRouter = router({
             const { data, error } = await supabase.rpc("vertex_ensure_default_stock_base", {
                 p_name: desiredName,
                 p_glb_path: rpcGlbPath,
-                p_primary_side: input?.primarySide ?? null,
+                // Builtin Default.glb is a left foot; default seed must not say "right".
+                p_primary_side: input?.primarySide ?? "left",
                 p_metadata: meta,
             });
 
@@ -650,8 +648,8 @@ export const stockRouter = router({
  *    - `resolveDefaultStockBase()` (client) calls the server procedure and receives real
  *      UUID + glbPath + url (from storage) + primarySide.
  *    - loadBaseGeometry prefers the server url (works for organized stock/ paths).
- *    - createDefaultStockPairedBases uses primarySide (when present) / falls back to
- *      mirroring the Default as Right→Left.
+ *    - createDefaultStockPairedBases uses primarySide (when present). The builtin
+ *      Default.glb is a left foot (`primarySide: "left"`); the opposite side is mirrored.
  *
  * 4. Security & governance
  *    - Writes are **only** reachable via adminProcedure (role check in middleware).

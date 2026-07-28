@@ -11,10 +11,9 @@
 // The ensureDefaultStockBase admin mutation (exposed to admins) is the
 // preferred runtime way to (re)seed after the initial deploy.
 
-import { getSupabaseAdmin } from "../server/src/context";
-import { prisma } from "../server/src/context";
-import { buildStockGlbKey, uploadAsset } from "../server/src/lib/storage";
+import { getSupabaseAdmin, prisma } from "../server/src/context";
 import { validateGlbBase64 } from "../server/src/lib/glb-validation";
+import { buildStockGlbKey, uploadAsset } from "../server/src/lib/storage";
 
 // You can supply the GLB bytes via env (base64) for a true "upload on seed" experience,
 // or leave it empty and just ensure the row (file must already be in storage).
@@ -36,7 +35,13 @@ async function main() {
         }
         const key = buildStockGlbKey(DESIRED_NAME, { category: "standard" });
         if (supabase) {
-            await uploadAsset(supabase, key, validated.bytes, "model/gltf-binary", process.env.STOCK_STORAGE_BUCKET);
+            await uploadAsset(
+                supabase,
+                key,
+                validated.bytes,
+                "model/gltf-binary",
+                process.env.STOCK_STORAGE_BUCKET,
+            );
             glbPath = key;
             console.log("[seed] Uploaded GLB to", key);
         }
@@ -66,6 +71,7 @@ async function main() {
                     isDefault: true,
                     isActive: true,
                     glbPath,
+                    primarySide: "left",
                     metadata: meta,
                 },
             });
@@ -75,7 +81,7 @@ async function main() {
             data: {
                 name: DESIRED_NAME,
                 glbPath,
-                primarySide: "right",
+                primarySide: "left",
                 isDefault: true,
                 isActive: true,
                 metadata: meta,
@@ -87,6 +93,7 @@ async function main() {
         id: row.id,
         name: row.name,
         glbPath: row.glbPath,
+        primarySide: row.primarySide,
         isDefault: row.isDefault,
         isActive: row.isActive,
     });
