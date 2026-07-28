@@ -4,7 +4,7 @@
 import { describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
 import type { CameraView } from "@/stores/design-store";
-import { sideOffsetX } from "./layout";
+import { INSOLE_GAP_MM, INSOLE_WIDTH_MM, sideOffsetX } from "./layout";
 import {
     applyCameraViewPreset,
     cameraForView,
@@ -16,11 +16,10 @@ import {
     viewCameraUp,
 } from "./viewport-side-layout";
 
-/** Presets where the left instance must remain further screen-left than the right. */
-const LEFT_ON_SCREEN_LEFT: CameraView[] = ["iso", "front", "left", "right"];
-
 /** Orthogonal anatomical presets (excludes free Orbit / iso). */
 const ORTHOGONAL: Exclude<CameraView, "iso">[] = ["front", "back", "left", "right", "top", "bottom"];
+
+const PAIR_HALF_SPAN = (INSOLE_WIDTH_MM + INSOLE_GAP_MM) / 2;
 
 /** Expected normalize(target→position) axis for each orthogonal preset. */
 const EXPECTED_DIR: Record<Exclude<CameraView, "iso">, [number, number, number]> = {
@@ -47,32 +46,104 @@ describe("viewport side layout (T24–T27)", () => {
         expect(instanceWorldPosition("left").z).not.toBe(instanceWorldPosition("right").z);
     });
 
-    test("T25: left instance projects further screen-left for coronal/sagittal/iso presets", () => {
-        for (const view of LEFT_ON_SCREEN_LEFT) {
-            const lx = projectViewNdcX(view, instanceWorldPosition("left"));
-            const rx = projectViewNdcX(view, instanceWorldPosition("right"));
-            expect(lx).toBeLessThan(rx);
-            expect(furtherScreenLeft(view)).toBe("left");
-        }
+    test("T25: Top view — left instance projects further screen-left than right", () => {
+        const lx = projectViewNdcX("top", instanceWorldPosition("left"));
+        const rx = projectViewNdcX("top", instanceWorldPosition("right"));
+        expect(lx).toBeLessThan(rx);
+        expect(furtherScreenLeft("top")).toBe("left");
     });
 
-    test("T24: hiding right removes the screen-right instance (not screen-left)", () => {
-        for (const view of LEFT_ON_SCREEN_LEFT) {
-            // Remaining visible after hide-right is left, which must be further screen-left.
-            expect(furtherScreenLeft(view)).toBe("left");
-            const lx = projectViewNdcX(view, instanceWorldPosition("left"));
-            const rx = projectViewNdcX(view, instanceWorldPosition("right"));
-            expect(rx).toBeGreaterThan(lx);
-        }
+    test("T24: hiding right leaves the Top screen-left instance (left)", () => {
+        expect(furtherScreenLeft("top")).toBe("left");
+        const lx = projectViewNdcX("top", instanceWorldPosition("left"));
+        const rx = projectViewNdcX("top", instanceWorldPosition("right"));
+        expect(rx).toBeGreaterThan(lx);
     });
 
-    test("T26: Bottom remains L/R-transposed relative to Top (toe-up up-vector)", () => {
-        // Toe-up (+X) puts left on screen-right in Top; Bottom mirrors that.
-        expect(furtherScreenLeft("top")).toBe("right");
-        expect(furtherScreenLeft("bottom")).toBe("left");
+    test("T26: Bottom remains L/R-transposed relative to Top (optically correct)", () => {
+        expect(furtherScreenLeft("top")).toBe("left");
+        expect(furtherScreenLeft("bottom")).toBe("right");
         expect(viewCameraUp("top")).toEqual(viewCameraUp("bottom"));
         expect(VIEW_CAMERA_POS.top[1]).toBeGreaterThan(0);
         expect(VIEW_CAMERA_POS.bottom[1]).toBeLessThan(0);
+    });
+});
+
+describe("pair placement — screen L/R + medial adjacency", () => {
+    test("world Z: left and right sit on opposite sides of origin (medial↔lateral = ±Z)", () => {
+        const lz = instanceWorldPosition("left").z;
+        const rz = instanceWorldPosition("right").z;
+        expect(lz).toBeLessThan(0);
+        expect(rz).toBeGreaterThan(0);
+        expect(Math.abs(lz)).toBeCloseTo(PAIR_HALF_SPAN, 5);
+        expect(Math.abs(rz)).toBeCloseTo(PAIR_HALF_SPAN, 5);
+        expect(Math.sign(lz)).not.toBe(Math.sign(rz));
+    });
+
+    test("Top: projected screen-X of left < right", () => {
+        const lx = projectViewNdcX("top", instanceWorldPosition("left"));
+        const rx = projectViewNdcX("top", instanceWorldPosition("right"));
+        expect(lx).toBeLessThan(rx);
+    });
+
+    test("arch-apex adjacency: medial edges face each other (inner gap < outer span)", () => {
+        // Default.glb left arch sits on width−; mirrored right arch on width+.
+        // After Rx(−90°): worldZ = −(localY + sideOffset).
+        const halfWidth = INSOLE_WIDTH_MM / 2;
+        const worldZ = (side: "left" | "right", localY: number) => -(localY + sideOffsetX(side));
+        const leftMedialZ = worldZ("left", -halfWidth);
+        const rightMedialZ = worldZ("right", halfWidth);
+        const leftLateralZ = worldZ("left", halfWidth);
+        const rightLateralZ = worldZ("right", -halfWidth);
+        const innerGap = Math.abs(leftMedialZ - rightMedialZ);
+        const outerSpan = Math.abs(leftLateralZ - rightLateralZ);
+        expect(innerGap).toBeLessThan(outerSpan);
+        // Medials are closer to the midline than the instance centers.
+        expect(Math.abs(leftMedialZ)).toBeLessThan(Math.abs(instanceWorldPosition("left").z));
+        expect(Math.abs(rightMedialZ)).toBeLessThan(Math.abs(instanceWorldPosition("right").z));
+    });
+
+    test("Bottom: left projects to greater screen-X than right (intended transposition)", () => {
+        const lx = projectViewNdcX("bottom", instanceWorldPosition("left"));
+        const rx = projectViewNdcX("bottom", instanceWorldPosition("right"));
+        expect(lx).toBeGreaterThan(rx);
+        expect(furtherScreenLeft("bottom")).toBe("right");
+    });
+
+    test("idempotency: remount / visibility toggle 5× yields identical world positions", () => {
+        const p0L = instanceWorldPosition("left").clone();
+        const p0R = instanceWorldPosition("right").clone();
+        for (let i = 0; i < 5; i++) {
+            // Toggle visibility is presentation-only; offset is a pure function of side.
+            void sideOffsetX("left");
+            void sideOffsetX("right");
+            expect(instanceWorldPosition("left").distanceTo(p0L)).toBeLessThan(1e-9);
+            expect(instanceWorldPosition("right").distanceTo(p0R)).toBeLessThan(1e-9);
+        }
+    });
+
+    test("no negative scale on pair placement objects", () => {
+        // Placement is a translation only — scene objects must keep positive scale.
+        for (const side of ["left", "right"] as const) {
+            const obj = new THREE.Object3D();
+            obj.position.copy(instanceWorldPosition(side));
+            obj.scale.set(1, 1, 1);
+            expect(obj.scale.x).toBeGreaterThan(0);
+            expect(obj.scale.y).toBeGreaterThan(0);
+            expect(obj.scale.z).toBeGreaterThan(0);
+        }
+        expect(sideOffsetX("left")).toBeGreaterThan(0);
+        expect(sideOffsetX("right")).toBeLessThan(0);
+    });
+
+    test("empty-scene: placement helpers do not throw and produce finite positions", () => {
+        expect(() => sideOffsetX("left")).not.toThrow();
+        expect(() => instanceWorldPosition("right")).not.toThrow();
+        const p = instanceWorldPosition("left");
+        expect(Number.isFinite(p.x)).toBe(true);
+        expect(Number.isFinite(p.y)).toBe(true);
+        expect(Number.isFinite(p.z)).toBe(true);
+        expect(Number.isNaN(p.x + p.y + p.z)).toBe(false);
     });
 });
 

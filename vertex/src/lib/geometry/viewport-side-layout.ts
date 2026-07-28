@@ -10,7 +10,7 @@ import { INSOLE_LENGTH_MM, sideOffsetX } from "./layout";
  * World-space axis convention after footprint reorientation + viewer Rx(−90°):
  *   +X = heel → toe (anterior)
  *   +Y = plantar → dorsal (superior)
- *   +Z = toward the left instance (right instance at −Z)
+ *   −Z = toward the left instance (right instance at +Z)
  *
  * Camera presets are authored in this world frame (not mesh-local).
  */
