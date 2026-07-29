@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "@rstest/core";
 import type { Box3 } from "three";
 import {
@@ -13,10 +13,7 @@ import { constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import type { SideCorrections } from "@/types";
-
-const DEFAULT_GLB_URL =
-    "https://wstneucimlemaokoyjwh.supabase.co/storage/v1/object/public/stock-bases/Templates/Default.glb";
-const DEFAULT_GLB_CACHE = "/tmp/Default.glb";
+import { DEFAULT_GLB_FIXTURE_PATH } from "../../../../tests/helpers/load-production-default-glb";
 
 const CENTERLINE_EPSILON_MM = 1e-4;
 /** Max allowed lateral-delta jump across an edge in the heel→midfoot transition band.
@@ -29,12 +26,8 @@ const CENTERLINE_EPSILON_MM = 1e-4;
 const MAX_TRANSITION_BAND_JUMP_MM = 0.85;
 
 async function loadDefaultGlbBuffer(): Promise<ArrayBuffer> {
-    if (!existsSync(DEFAULT_GLB_CACHE)) {
-        const res = await fetch(DEFAULT_GLB_URL);
-        if (!res.ok) throw new Error(`Failed to download Default.glb (${res.status})`);
-        writeFileSync(DEFAULT_GLB_CACHE, Buffer.from(await res.arrayBuffer()));
-    }
-    return readFileSync(DEFAULT_GLB_CACHE).buffer.slice(0);
+    const buf = readFileSync(DEFAULT_GLB_FIXTURE_PATH);
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
 function neutralCorrections(): SideCorrections {
@@ -117,9 +110,7 @@ describe("heel cup width — Default.glb verification", () => {
         let maxTopThickDrift = 0;
         let maxWidthSpread = 0;
         for (let i = 0; i < modPos.length / 3; i++) {
-            const dThick = Math.abs(
-                modPos[i * 3 + thickAxis]! - basePos[i * 3 + thickAxis]!,
-            );
+            const dThick = Math.abs(modPos[i * 3 + thickAxis]! - basePos[i * 3 + thickAxis]!);
             const dWidth = Math.abs(modPos[i * 3 + widthAxis]! - basePos[i * 3 + widthAxis]!);
             if (i >= topN) maxBottomThickDrift = Math.max(maxBottomThickDrift, dThick);
             else {

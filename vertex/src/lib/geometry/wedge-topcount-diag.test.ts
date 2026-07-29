@@ -1,30 +1,23 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "@rstest/core";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import {
     closeGlbInsoleToSolid,
     extractOrderedBoundaryLoopWithIndices,
     submeshByVertexRange,
     validateManifold,
 } from "@/lib/geometry/mesh-close";
-import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import type { WedgeCorrection } from "@/types";
-
-const DEFAULT_GLB_URL =
-    "https://wstneucimlemaokoyjwh.supabase.co/storage/v1/object/public/stock-bases/Templates/Default.glb";
-const DEFAULT_GLB_CACHE = "/tmp/Default.glb";
+import { DEFAULT_GLB_FIXTURE_PATH } from "../../../../tests/helpers/load-production-default-glb";
 
 async function loadDefaultGlbBuffer(): Promise<ArrayBuffer> {
-    if (!existsSync(DEFAULT_GLB_CACHE)) {
-        const res = await fetch(DEFAULT_GLB_URL);
-        if (!res.ok) throw new Error(`Failed to download Default.glb (${res.status})`);
-        writeFileSync(DEFAULT_GLB_CACHE, Buffer.from(await res.arrayBuffer()));
-    }
-    return readFileSync(DEFAULT_GLB_CACHE).buffer.slice(0);
+    const buf = readFileSync(DEFAULT_GLB_FIXTURE_PATH);
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
 function fieldForWedge(wedge: WedgeCorrection | undefined): HeightFieldParams {
@@ -89,8 +82,7 @@ async function diagnose(wedge: WedgeCorrection | undefined, smoothing: number) {
     sizes.sort((a, b) => a[1] - b[1]);
     const lengthAxis = sizes[2]![0];
     const lenMinA = [box.min.x, box.min.y, box.min.z][lengthAxis]!;
-    const lenSizeA =
-        [box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z][lengthAxis]! || 1;
+    const lenSizeA = [box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z][lengthAxis]! || 1;
     for (let i = topVertexCount; i < totalVerts; i++) {
         if (basePos[i * 3 + 2]! > PLANTAR_Z_MAX_MM) continue;
         const u = (basePos[i * 3 + lengthAxis]! - lenMinA) / lenSizeA;

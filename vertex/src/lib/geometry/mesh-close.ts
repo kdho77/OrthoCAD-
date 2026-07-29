@@ -51,9 +51,7 @@ export class BoundaryFragmentedError extends Error {
     readonly shell: "top" | "bottom";
 
     constructor(shell: "top" | "bottom", fragmentCount: number) {
-        super(
-            `${shell} mesh boundary has ${fragmentCount} fragments. Merge sub-meshes before export.`,
-        );
+        super(`${shell} mesh boundary has ${fragmentCount} fragments. Merge sub-meshes before export.`);
         this.name = "BoundaryFragmentedError";
         this.fragmentCount = fragmentCount;
         this.shell = shell;
@@ -245,9 +243,7 @@ export interface BoundaryLoopWithIndices {
  * At junctions, picks the unvisited neighbor with the smallest angular deviation.
  * Returns cycles sorted by vertex count descending.
  */
-export function extractBoundaryLoopsBranchedWithIndices(
-    geometry: BufferGeometry,
-): BoundaryLoopWithIndices[] {
+export function extractBoundaryLoopsBranchedWithIndices(geometry: BufferGeometry): BoundaryLoopWithIndices[] {
     const index = geometry.index;
     const pos = geometry.getAttribute("position");
     if (!index || !pos) return [];
@@ -289,7 +285,9 @@ export function extractBoundaryLoopsBranchedWithIndices(
                     const dz = pos.getZ(n) - pos.getZ(cur);
                     const len = Math.hypot(dx, dy, dz) || 1;
                     const dot =
-                        (inDx / inLen) * (dx / len) + (inDy / inLen) * (dy / len) + (inDz / inLen) * (dz / len);
+                        (inDx / inLen) * (dx / len) +
+                        (inDy / inLen) * (dy / len) +
+                        (inDz / inLen) * (dz / len);
                     if (dot > bestDot) {
                         bestDot = dot;
                         bestNext = n;
@@ -309,9 +307,7 @@ export function extractBoundaryLoopsBranchedWithIndices(
             if (cycleIndices.length >= 3) {
                 cycles.push({
                     indices: cycleIndices,
-                    positions: cycleIndices.map(
-                        (i) => new Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)),
-                    ),
+                    positions: cycleIndices.map((i) => new Vector3(pos.getX(i), pos.getY(i), pos.getZ(i))),
                 });
             }
         }
@@ -393,12 +389,15 @@ function buildQuantKeyToIndexMap(geometry: BufferGeometry): Map<string, number> 
 }
 
 /** DFS boundary cycles with mesh vertex indices (handles degree>2 junctions). */
-function extractAllBoundaryCyclesWithIndices(geometry: BufferGeometry): BoundaryLoopWithIndices[] {
-    const cycles = extractAllBoundaryCycles(geometry);
+function extractAllBoundaryCyclesWithIndices(geometry: BufferGeometry): {
+    cycles: BoundaryLoopWithIndices[];
+    usedOppositeWinding: boolean;
+} {
+    const { cycles: positionCycles, usedOppositeWinding } = extractAllBoundaryCyclesWithSense(geometry);
     const keyToIndex = buildQuantKeyToIndexMap(geometry);
     const out: BoundaryLoopWithIndices[] = [];
 
-    for (const positions of cycles) {
+    for (const positions of positionCycles) {
         const indices: number[] = [];
         for (const p of positions) {
             const vi = keyToIndex.get(quantKey(p.x, p.y, p.z));
@@ -412,7 +411,7 @@ function extractAllBoundaryCyclesWithIndices(geometry: BufferGeometry): Boundary
     }
 
     out.sort((a, b) => b.indices.length - a.indices.length);
-    return out;
+    return { cycles: out, usedOppositeWinding };
 }
 
 function resolveBottomRim(
@@ -421,13 +420,14 @@ function resolveBottomRim(
     botLocalToParent: number[],
     topVertexCount: number,
     bodyVertexCount: number,
-): BoundaryLoopWithIndices & { parentIndices: number[] } {
+): BoundaryLoopWithIndices & { parentIndices: number[]; usedOppositeWinding: boolean } {
     const simple = extractOrderedBoundaryLoopWithIndices(botSub);
     if (simple.positions.length >= 3) {
         return {
             positions: simple.positions,
             indices: simple.indices,
             parentIndices: mapLocalIndicesToParent(simple.indices, botLocalToParent),
+            usedOppositeWinding: false,
         };
     }
 
@@ -437,7 +437,7 @@ function resolveBottomRim(
         );
     }
 
-    const allBotCycles = extractAllBoundaryCyclesWithIndices(botSub);
+    const { cycles: allBotCycles, usedOppositeWinding } = extractAllBoundaryCyclesWithIndices(botSub);
     if (allBotCycles.length === 0) {
         throw new Error("[MESH-CLOSE] botSub: no boundary cycles found");
     }
@@ -446,6 +446,7 @@ function resolveBottomRim(
         console.log(
             "[MESH-CLOSE] botSub branched cycles:",
             allBotCycles.map((c) => c.positions.length),
+            usedOppositeWinding ? "(opposite winding)" : "(as-is winding)",
         );
     }
 
@@ -461,7 +462,7 @@ function resolveBottomRim(
 
     if (sealed > 0) {
         const botAfter = submeshByVertexRange(parentWorking, topVertexCount, bodyVertexCount);
-        const afterCycles = extractAllBoundaryCyclesWithIndices(botAfter);
+        const { cycles: afterCycles } = extractAllBoundaryCyclesWithIndices(botAfter);
         if (typeof console !== "undefined") {
             console.log(
                 "[MESH-CLOSE] after slit seal, bot branched cycles:",
@@ -478,6 +479,7 @@ function resolveBottomRim(
                 positions: afterSimple.positions,
                 indices: afterSimple.indices,
                 parentIndices: mapLocalIndicesToParent(afterSimple.indices, botLocalToParent),
+                usedOppositeWinding,
             };
         }
     }
@@ -490,11 +492,16 @@ function resolveBottomRim(
         positions: outer.positions,
         indices: outer.indices,
         parentIndices: mapLocalIndicesToParent(outer.indices, botLocalToParent),
+        usedOppositeWinding,
     };
 }
 
-/** DFS boundary walk that enumerates simple cycles through degree>2 branch vertices. */
-function extractAllBoundaryCycles(geometry: BufferGeometry): Vector3[][] {
+/**
+ * Historical DFS boundary walk through degree>2 junctions (scan-order sensitive).
+ * Callers that need winding-agnostic results must compare both winding senses —
+ * see {@link extractAllBoundaryCycles}.
+ */
+function extractAllBoundaryCyclesOnce(geometry: BufferGeometry): Vector3[][] {
     const { edgeCount, edgeVerts } = buildEdgeUsage(geometry);
     const boundaryEdges: Array<[string, string]> = [];
 
@@ -548,6 +555,88 @@ function extractAllBoundaryCycles(geometry: BufferGeometry): Vector3[][] {
     }
 
     return cycles;
+}
+
+function cyclePartitionScore(cycles: Vector3[][]): {
+    maxLen: number;
+    count: number;
+    lengths: number[];
+} {
+    const lengths = cycles.map((c) => c.length).sort((a, b) => b - a);
+    return { maxLen: lengths[0] ?? 0, count: cycles.length, lengths };
+}
+
+/** Prefer intact outer rim; on ties prefer `preferred` (as-is winding) for G1. */
+function preferCyclePartition(preferred: Vector3[][], alternate: Vector3[][]): Vector3[][] {
+    const a = cyclePartitionScore(preferred);
+    const b = cyclePartitionScore(alternate);
+    if (b.maxLen !== a.maxLen) return b.maxLen > a.maxLen ? alternate : preferred;
+    if (b.count !== a.count) return b.count > a.count ? alternate : preferred;
+    for (let i = 0; i < Math.max(a.lengths.length, b.lengths.length); i++) {
+        const la = a.lengths[i] ?? 0;
+        const lb = b.lengths[i] ?? 0;
+        if (lb !== la) return lb > la ? alternate : preferred;
+    }
+    return preferred;
+}
+
+function flipTriangleWindingInPlace(geometry: BufferGeometry): void {
+    const index = geometry.index;
+    if (!index) return;
+    const arr = index.array as Uint32Array | Uint16Array;
+    for (let i = 0; i < arr.length; i += 3) {
+        const tmp = arr[i + 1]!;
+        arr[i + 1] = arr[i + 2]!;
+        arr[i + 2] = tmp;
+    }
+    index.needsUpdate = true;
+}
+
+/** Flip winding of triangles whose vertices all lie in [start, end). */
+function flipTriangleWindingInVertexRange(geometry: BufferGeometry, start: number, end: number): void {
+    const index = geometry.index;
+    if (!index) return;
+    const arr = Array.from(index.array as ArrayLike<number>);
+    for (let i = 0; i < arr.length; i += 3) {
+        const a = arr[i]!,
+            b = arr[i + 1]!,
+            c = arr[i + 2]!;
+        if (a >= start && a < end && b >= start && b < end && c >= start && c < end) {
+            arr[i + 1] = c;
+            arr[i + 2] = b;
+        }
+    }
+    geometry.setIndex(arr);
+}
+
+/**
+ * Enumerate boundary cycles through degree>2 branch vertices.
+ *
+ * The historical DFS partition depends on triangle winding (Phase 0b). Running it
+ * on both winding senses and keeping the partition with the longest outer cycle
+ * makes the multiset winding-agnostic without a max-dot heuristic. On ties the
+ * as-is winding wins so RIGHT/RAW closed solids stay byte-identical (G1).
+ *
+ * When the opposite winding wins, callers must also flip the companion shell
+ * (top) before rim extraction — otherwise top as-is rim walk disagrees with the
+ * bottom partition chosen under flipped winding and the bridge goes non-manifold.
+ */
+function extractAllBoundaryCycles(geometry: BufferGeometry): Vector3[][] {
+    return extractAllBoundaryCyclesWithSense(geometry).cycles;
+}
+
+function extractAllBoundaryCyclesWithSense(geometry: BufferGeometry): {
+    cycles: Vector3[][];
+    usedOppositeWinding: boolean;
+} {
+    const asIs = extractAllBoundaryCyclesOnce(geometry);
+    const flippedGeo = geometry.clone();
+    flipTriangleWindingInPlace(flippedGeo);
+    const opposite = extractAllBoundaryCyclesOnce(flippedGeo);
+    flippedGeo.dispose();
+    const chosen = preferCyclePartition(asIs, opposite);
+    const usedOppositeWinding = chosen === opposite;
+    return { cycles: chosen, usedOppositeWinding };
 }
 
 function largestBoundaryLoop(geometry: BufferGeometry): Vector3[] {
@@ -648,7 +737,10 @@ function loopPerimeterLength(loop: Vector3[]): number {
     return len;
 }
 
-function validateLoop(loop: Vector3[], maxGapMm = BOUNDARY_GAP_TOLERANCE_MM): { ok: boolean; reason?: string } {
+function validateLoop(
+    loop: Vector3[],
+    maxGapMm = BOUNDARY_GAP_TOLERANCE_MM,
+): { ok: boolean; reason?: string } {
     if (loop.length < 3) return { ok: false, reason: "loop has fewer than 3 vertices" };
 
     for (let i = 0; i < loop.length; i++) {
@@ -943,6 +1035,7 @@ export function buildTwoPointerBridgeTriangles(
     getPosition: (vertexIndex: number) => Vector3,
     centroid: Vector3,
     diagnostics?: TwoPointerWalkDiagnostics,
+    shellDirectedEdges?: Set<string>,
 ): number[] {
     const topLen = topPositions.length;
     const botLen = bottomPositions.length;
@@ -958,7 +1051,7 @@ export function buildTwoPointerBridgeTriangles(
     const out: number[] = [];
 
     const emit = (a: number, b: number, c: number) => {
-        emitGuardedBridgeTri(out, a, b, c, getPosition, centroid);
+        emitGuardedBridgeTri(out, a, b, c, getPosition, centroid, shellDirectedEdges);
     };
 
     if (diagnostics) {
@@ -1074,6 +1167,7 @@ export function buildMinChordBridgeTriangles(
     getPosition: (vertexIndex: number) => Vector3,
     centroid: Vector3,
     offsetWindow: number = BRIDGE_DP_OFFSET_WINDOW,
+    shellDirectedEdges?: Set<string>,
 ): number[] {
     const n = topPositions.length;
     const m = bottomPositions.length;
@@ -1130,10 +1224,10 @@ export function buildMinChordBridgeTriangles(
             const prevRow = row - (m + 1);
             const ci = (i % n) * m;
             // First column (j=0): top-steps only.
-            cost[row] = cost[prevRow]! + chord[ci + k % m]!;
+            cost[row] = cost[prevRow]! + chord[ci + (k % m)]!;
             parent[row] = 0;
             for (let j = 1; j <= m; j++) {
-                const c = chord[ci + ((j % m) + k) % m]!;
+                const c = chord[ci + (((j % m) + k) % m)]!;
                 const fromTop = cost[prevRow + j]!;
                 const fromBot = cost[row + j - 1]!;
                 if (fromTop <= fromBot) {
@@ -1185,6 +1279,7 @@ export function buildMinChordBridgeTriangles(
                 topIndices[(i + 1) % n]!,
                 getPosition,
                 centroid,
+                shellDirectedEdges,
             );
             i++;
         } else {
@@ -1195,6 +1290,7 @@ export function buildMinChordBridgeTriangles(
                 bottomIndices[(j + 1 + bestK) % m]!,
                 getPosition,
                 centroid,
+                shellDirectedEdges,
             );
             j++;
         }
@@ -1203,8 +1299,33 @@ export function buildMinChordBridgeTriangles(
 }
 
 /**
+ * Directed half-edges already present on the shell (`"a>b"`). Bridge emits that
+ * reuse these create non-manifold rim joins under odd-parity reorient.
+ */
+export function collectShellDirectedEdges(geometry: BufferGeometry): Set<string> {
+    const out = new Set<string>();
+    const index = geometry.index;
+    if (!index) return out;
+    for (let t = 0; t < index.count; t += 3) {
+        const a = index.getX(t);
+        const b = index.getX(t + 1);
+        const c = index.getX(t + 2);
+        out.add(`${a}>${b}`);
+        out.add(`${b}>${c}`);
+        out.add(`${c}>${a}`);
+    }
+    return out;
+}
+
+/**
  * Emit a bridge triangle with degenerate-area skip and outward-normal winding flip.
  * Shared by the two-pointer walk and the equal-count guarded quad split.
+ *
+ * When `shellDirectedEdges` is provided (entries `"a>b"` for each existing face
+ * half-edge), prefer the candidate winding that does NOT reuse a shell-directed
+ * edge. Outward-only flips that agree with a shell half-edge create non-manifold
+ * rim joins under odd-parity reorient (LEFT); shipping RIGHT/RAW already pick the
+ * non-conflicting candidate so G1 byte-identity is preserved.
  */
 export function emitGuardedBridgeTri(
     out: number[],
@@ -1213,6 +1334,7 @@ export function emitGuardedBridgeTri(
     c: number,
     getPosition: (vertexIndex: number) => Vector3,
     centroid: Vector3,
+    shellDirectedEdges?: Set<string>,
 ): void {
     if (a === b || b === c || a === c) return;
     const va = getPosition(a);
@@ -1222,10 +1344,28 @@ export function emitGuardedBridgeTri(
     const ab = new Vector3().subVectors(vb, va);
     const ac = new Vector3().subVectors(vc, va);
     const normal = new Vector3().crossVectors(ab, ac);
-    const center = new Vector3().add(va).add(vb).add(vc).multiplyScalar(1 / 3);
+    const center = new Vector3()
+        .add(va)
+        .add(vb)
+        .add(vc)
+        .multiplyScalar(1 / 3);
     const outward = new Vector3().subVectors(center, centroid);
-    if (normal.dot(outward) < 0) out.push(a, c, b);
-    else out.push(a, b, c);
+    const primary: [number, number, number] = normal.dot(outward) < 0 ? [a, c, b] : [a, b, c];
+    const secondary: [number, number, number] = primary[0] === a && primary[1] === b ? [a, c, b] : [a, b, c];
+
+    const conflicts = (tri: [number, number, number]): boolean => {
+        if (!shellDirectedEdges) return false;
+        for (let i = 0; i < 3; i++) {
+            const p = tri[i]!;
+            const q = tri[(i + 1) % 3]!;
+            if (shellDirectedEdges.has(`${p}>${q}`)) return true;
+        }
+        return false;
+    };
+
+    if (!conflicts(primary)) out.push(primary[0], primary[1], primary[2]);
+    else if (!conflicts(secondary)) out.push(secondary[0], secondary[1], secondary[2]);
+    else out.push(primary[0], primary[1], primary[2]);
 }
 
 /** Axis index into Vector3 (0=x, 1=y, 2=z). */
@@ -1236,11 +1376,7 @@ function axisComponent(v: Vector3, axis: FootprintAxis): number {
 }
 
 /** Signed area of a loop projected onto the plane spanned by (axisA, axisB). */
-export function signedLoopAreaOnAxes(
-    loop: Vector3[],
-    axisA: FootprintAxis,
-    axisB: FootprintAxis,
-): number {
+export function signedLoopAreaOnAxes(loop: Vector3[], axisA: FootprintAxis, axisB: FootprintAxis): number {
     let area = 0;
     for (let i = 0; i < loop.length; i++) {
         const a = loop[i]!;
@@ -1292,9 +1428,9 @@ export function resolveFootprintAxes(geometry: BufferGeometry): {
     axisB: FootprintAxis;
 } {
     if (!geometry.boundingBox) geometry.computeBoundingBox();
-    const box = geometry.boundingBox ?? new Box3().setFromBufferAttribute(
-        geometry.getAttribute("position") as BufferAttribute,
-    );
+    const box =
+        geometry.boundingBox ??
+        new Box3().setFromBufferAttribute(geometry.getAttribute("position") as BufferAttribute);
     const sizeX = box.max.x - box.min.x;
     const sizeY = box.max.y - box.min.y;
     const sizeZ = box.max.z - box.min.z;
@@ -1344,6 +1480,7 @@ export function buildGuardedEqualCountBridgeFaces(
     botIndices: number[],
     getPosition: (vertexIndex: number) => Vector3,
     centroid: Vector3,
+    shellDirectedEdges?: Set<string>,
 ): { faces: number[]; nonPlanarCount: number } {
     const n = topIndices.length;
     const faces: number[] = [];
@@ -1367,16 +1504,16 @@ export function buildGuardedEqualCountBridgeFaces(
             const dAB = vtA.distanceTo(vbB);
             const dBA = vtB.distanceTo(vbA);
             if (dAB <= dBA) {
-                emitGuardedBridgeTri(faces, tA, bA, bB, getPosition, centroid);
-                emitGuardedBridgeTri(faces, tA, bB, tB, getPosition, centroid);
+                emitGuardedBridgeTri(faces, tA, bA, bB, getPosition, centroid, shellDirectedEdges);
+                emitGuardedBridgeTri(faces, tA, bB, tB, getPosition, centroid, shellDirectedEdges);
             } else {
-                emitGuardedBridgeTri(faces, tA, bA, tB, getPosition, centroid);
-                emitGuardedBridgeTri(faces, tB, bA, bB, getPosition, centroid);
+                emitGuardedBridgeTri(faces, tA, bA, tB, getPosition, centroid, shellDirectedEdges);
+                emitGuardedBridgeTri(faces, tB, bA, bB, getPosition, centroid, shellDirectedEdges);
             }
         } else {
             // Default connectivity identical to today's equal-count path.
-            emitGuardedBridgeTri(faces, tA, bA, tB, getPosition, centroid);
-            emitGuardedBridgeTri(faces, tB, bA, bB, getPosition, centroid);
+            emitGuardedBridgeTri(faces, tA, bA, tB, getPosition, centroid, shellDirectedEdges);
+            emitGuardedBridgeTri(faces, tB, bA, bB, getPosition, centroid, shellDirectedEdges);
         }
     }
 
@@ -1387,10 +1524,7 @@ export function buildGuardedEqualCountBridgeFaces(
  * SAT triangle-triangle intersection (Phase 0 diagnostic). Shared-edge pairs are
  * filtered by the caller via sharesVertex; this returns true when no separating axis exists.
  */
-export function triTriIntersect(
-    t1: [Vector3, Vector3, Vector3],
-    t2: [Vector3, Vector3, Vector3],
-): boolean {
+export function triTriIntersect(t1: [Vector3, Vector3, Vector3], t2: [Vector3, Vector3, Vector3]): boolean {
     const eps = 1e-8;
     const edges1 = [
         new Vector3().subVectors(t1[1], t1[0]),
@@ -1439,10 +1573,7 @@ function sharesVertexIndices(a: number[], b: number[]): boolean {
  * Count pairwise SAT self-intersections among heel-band bridge triangles
  * (ymin < HEEL_BRIDGE_Y_MAX_MM), skipping pairs that share a vertex.
  */
-export function countHeelBridgeSelfIntersections(
-    geometry: BufferGeometry,
-    topVertexCount: number,
-): number {
+export function countHeelBridgeSelfIntersections(geometry: BufferGeometry, topVertexCount: number): number {
     const index = geometry.index;
     const pos = geometry.getAttribute("position");
     if (!index || !pos || topVertexCount <= 0) return 0;
@@ -1457,7 +1588,8 @@ export function countHeelBridgeSelfIntersections(
         const ia = index.getX(t * 3);
         const ib = index.getX(t * 3 + 1);
         const ic = index.getX(t * 3 + 2);
-        const nTop = (ia < topVertexCount ? 1 : 0) + (ib < topVertexCount ? 1 : 0) + (ic < topVertexCount ? 1 : 0);
+        const nTop =
+            (ia < topVertexCount ? 1 : 0) + (ib < topVertexCount ? 1 : 0) + (ic < topVertexCount ? 1 : 0);
         const nBot =
             (ia >= topVertexCount ? 1 : 0) + (ib >= topVertexCount ? 1 : 0) + (ic >= topVertexCount ? 1 : 0);
         if (nTop === 0 || nBot === 0) continue;
@@ -1487,9 +1619,12 @@ export interface ClosedSolidBaseline {
 /**
  * Pinned Default.glb closed-solid baseline at depth=0.
  *
- * eulerCharacteristic=3 — pre-existing PR #103 slit-cap bowtie residue (3 vertex
- * pinches on the bottom mesh; unrelated to heel bridge). Accepted as permanent
- * baseline (Option 1); do not attempt to fix pieces B/C in the bridge round.
+ * eulerCharacteristic=3 — KNOWN DEFECT: pre-existing PR #103 slit-cap bowtie
+ * residue (3 vertex pinches on the bottom mesh; unrelated to heel bridge).
+ * Accepted as permanent baseline under a separate euler contract (Option 1).
+ * Do NOT re-pin when euler moves on any path after a mesh-close change — stop
+ * and report; improvement toward 2 is either a partial bowtie fix or a new
+ * defect and needs that contract's scrutiny.
  *
  * heelBridgeSelfIntersections=0 — the min-chord DP bridge
  * (buildMinChordBridgeTriangles) eliminates heel-bridge self-intersections
@@ -1609,7 +1744,9 @@ function snapLoopToBoundaryVertices(
 export function buildBridgeStrip(topLoop: Vector3[], bottomLoop: Vector3[]): BridgeStripResult {
     const n = topLoop.length;
     if (bottomLoop.length !== n) {
-        throw new Error(`buildBridgeStrip requires equal loop lengths, got top=${topLoop.length} bot=${bottomLoop.length}`);
+        throw new Error(
+            `buildBridgeStrip requires equal loop lengths, got top=${topLoop.length} bot=${bottomLoop.length}`,
+        );
     }
 
     const positions: number[] = [];
@@ -1721,7 +1858,10 @@ export function generateBridgeStrip(
         const ab = new Vector3().subVectors(vb, va);
         const ac = new Vector3().subVectors(vc, va);
         const normal = new Vector3().crossVectors(ab, ac);
-        const center = new Vector3().addVectors(va, vb).add(vc).multiplyScalar(1 / 3);
+        const center = new Vector3()
+            .addVectors(va, vb)
+            .add(vc)
+            .multiplyScalar(1 / 3);
         const outward = new Vector3().subVectors(center, centroid);
         if (normal.dot(outward) < 0) {
             indices.push(a, c, b);
@@ -2212,13 +2352,7 @@ export function mergeGeometriesWithWeldedBridge(
     }
 
     const bufferSize = bodyCount + newRimPositions.length / 3;
-    assertRimContactIndicesInRange(
-        topBodyIdx,
-        bottomBodyIdx,
-        bufferSize,
-        topVertexCount,
-        bottomVertexCount,
-    );
+    assertRimContactIndicesInRange(topBodyIdx, bottomBodyIdx, bufferSize, topVertexCount, bottomVertexCount);
     for (let i = 0; i < topBodyIdx.length; i++) {
         const ti = topBodyIdx[i]!;
         const bi = bottomBodyIdx[i]!;
@@ -2282,7 +2416,10 @@ export function mergeGeometriesWithWeldedBridge(
         const ab = new Vector3().subVectors(vb, va);
         const ac = new Vector3().subVectors(vc, va);
         const normal = new Vector3().crossVectors(ab, ac);
-        const center = new Vector3().addVectors(va, vb).add(vc).multiplyScalar(1 / 3);
+        const center = new Vector3()
+            .addVectors(va, vb)
+            .add(vc)
+            .multiplyScalar(1 / 3);
         const outward = new Vector3().subVectors(center, centroid);
         if (normal.dot(outward) < 0) indices.push(a, c, b);
         else indices.push(a, b, c);
@@ -2370,11 +2507,7 @@ export function validateManifold(geometry: BufferGeometry): ManifoldValidationRe
     };
 }
 
-function recomputeNormalsNearSeam(
-    geometry: BufferGeometry,
-    topLoop: Vector3[],
-    bottomLoop: Vector3[],
-): void {
+function recomputeNormalsNearSeam(geometry: BufferGeometry, topLoop: Vector3[], bottomLoop: Vector3[]): void {
     const pos = geometry.getAttribute("position");
     const index = geometry.getIndex();
     if (!index) return;
@@ -2431,7 +2564,10 @@ function recomputeNormalsNearSeam(
     for (const vi of near) {
         const w = weight.get(vi);
         if (!w || w < 1e-12) continue;
-        const n = accum.get(vi)!.multiplyScalar(1 / w).normalize();
+        const n = accum
+            .get(vi)!
+            .multiplyScalar(1 / w)
+            .normalize();
         normals[vi * 3] = n.x;
         normals[vi * 3 + 1] = n.y;
         normals[vi * 3 + 2] = n.z;
@@ -2621,7 +2757,10 @@ function extractSeamLoopFromComponent(
     for (const p of pts) centroid.add(p);
     centroid.multiplyScalar(1 / pts.length);
 
-    pts.sort((a, b) => Math.atan2(a.y - centroid.y, a.x - centroid.x) - Math.atan2(b.y - centroid.y, b.x - centroid.x));
+    pts.sort(
+        (a, b) =>
+            Math.atan2(a.y - centroid.y, a.x - centroid.x) - Math.atan2(b.y - centroid.y, b.x - centroid.x),
+    );
     return pts;
 }
 
@@ -2792,16 +2931,16 @@ function extractOuterBoundaryLoopByAngle(geometry: BufferGeometry): Vector3[] {
 function capBoundaryLoopInPlace(geometry: BufferGeometry, loop: Vector3[]): boolean {
     if (loop.length < 3) return false;
 
-    const contour = loop.map((p) => new Vector2(p.x, p.y));
-    if (Math.abs(ShapeUtils.area(contour)) < 1e-6) return false;
-
-    let triangulated: number[][];
-    try {
-        triangulated = ShapeUtils.triangulateShape(contour, []);
-    } catch {
-        return false;
+    // ShapeUtils expects a CCW contour in XY. Derive orientation from signed area —
+    // never from a hardcoded laterality/side label (G3).
+    let contour = loop.map((p) => new Vector2(p.x, p.y));
+    const area = ShapeUtils.area(contour);
+    if (Math.abs(area) < 1e-6) return false;
+    if (area < 0) {
+        contour = contour.slice().reverse();
+        // Keep loopIndices aligned with the CCW contour by reversing the 3D loop too.
+        loop = loop.slice().reverse();
     }
-    if (triangulated.length === 0) return false;
 
     const index = geometry.index;
     if (!index) return false;
@@ -2814,7 +2953,8 @@ function capBoundaryLoopInPlace(geometry: BufferGeometry, loop: Vector3[]): bool
     }
 
     const newIdx = Array.from(index.array as ArrayLike<number>);
-    const edgeCount = buildEdgeUsage(geometry).edgeCount;
+    const edgeCountMap = buildEdgeUsage(geometry).edgeCount;
+    const indexCountBefore = index.count;
 
     const capEdgeKey = (viA: number, viB: number): string => {
         const pos = geometry.getAttribute("position");
@@ -2829,27 +2969,12 @@ function capBoundaryLoopInPlace(geometry: BufferGeometry, loop: Vector3[]): bool
             [ib, ic],
             [ic, ia],
         ] as [number, number][]) {
-            if ((edgeCount.get(capEdgeKey(p, q)) ?? 0) >= 2) return true;
+            if ((edgeCountMap.get(capEdgeKey(p, q)) ?? 0) >= 2) return true;
         }
         return false;
     };
 
-    const addCapTriangle = (ia: number, ib: number, ic: number): void => {
-        newIdx.push(ia, ib, ic);
-        for (const [p, q] of [
-            [ia, ib],
-            [ib, ic],
-            [ic, ia],
-        ] as [number, number][]) {
-            const ek = capEdgeKey(p, q);
-            edgeCount.set(ek, (edgeCount.get(ek) ?? 0) + 1);
-        }
-    };
-
-    for (const tri of triangulated) {
-        const ia = loopIndices[tri[0]!]!;
-        const ib = loopIndices[tri[1]!]!;
-        const ic = loopIndices[tri[2]!]!;
+    const addCapTriangle = (ia: number, ib: number, ic: number): boolean => {
         const pos = geometry.getAttribute("position");
         const a = new Vector3(pos.getX(ia), pos.getY(ia), pos.getZ(ia));
         const b = new Vector3(pos.getX(ib), pos.getY(ib), pos.getZ(ib));
@@ -2858,17 +2983,67 @@ function capBoundaryLoopInPlace(geometry: BufferGeometry, loop: Vector3[]): bool
             if (typeof console !== "undefined") {
                 console.warn("[MESH-CLOSE] skipping degenerate slit cap triangle");
             }
-            continue;
+            return false;
         }
         if (wouldCreateNonManifold(ia, ib, ic)) {
             if (typeof console !== "undefined") {
                 console.warn("[MESH-CLOSE] skipping slit cap triangle that would create non-manifold edge");
             }
-            continue;
+            return false;
         }
-        addCapTriangle(ia, ib, ic);
+        newIdx.push(ia, ib, ic);
+        for (const [p, q] of [
+            [ia, ib],
+            [ib, ic],
+            [ic, ia],
+        ] as [number, number][]) {
+            const ek = capEdgeKey(p, q);
+            edgeCountMap.set(ek, (edgeCountMap.get(ek) ?? 0) + 1);
+        }
+        return true;
+    };
+
+    const tryTriangulation = (tris: number[][]): number => {
+        let added = 0;
+        for (const tri of tris) {
+            const ia = loopIndices[tri[0]!]!;
+            const ib = loopIndices[tri[1]!]!;
+            const ic = loopIndices[tri[2]!]!;
+            if (addCapTriangle(ia, ib, ic)) added++;
+        }
+        return added;
+    };
+
+    let triangulated: number[][] = [];
+    try {
+        triangulated = ShapeUtils.triangulateShape(contour, []);
+    } catch {
+        triangulated = [];
     }
-    if (newIdx.length === index.count) return false;
+
+    let added = triangulated.length > 0 ? tryTriangulation(triangulated) : 0;
+
+    // Remapped XY can make ShapeUtils pick a diagonal that already exists in the
+    // mesh (count≥2). Fall back to the alternate quad diagonal — only when the
+    // primary attempt added nothing, so RAW/RIGHT first-success paths stay identical.
+    if (added === 0 && loop.length === 4) {
+        const altDiags: number[][][] = [
+            [
+                [0, 1, 2],
+                [0, 2, 3],
+            ],
+            [
+                [0, 1, 3],
+                [1, 2, 3],
+            ],
+        ];
+        for (const tris of altDiags) {
+            added = tryTriangulation(tris);
+            if (added > 0) break;
+        }
+    }
+
+    if (newIdx.length === indexCountBefore) return false;
     geometry.setIndex(newIdx);
     return true;
 }
@@ -2992,7 +3167,12 @@ function resolveTopBottomLoops(geometry: BufferGeometry): { top: Vector3[]; bott
 
     const userData = geometry.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
     const storedTop = userData.topVertexCount;
-    if (userData.isMultiMeshBase && storedTop && storedTop > 0 && storedTop < geometry.getAttribute("position").count) {
+    if (
+        userData.isMultiMeshBase &&
+        storedTop &&
+        storedTop > 0 &&
+        storedTop < geometry.getAttribute("position").count
+    ) {
         const multi = resolveMultiMeshBaseLoops(geometry, storedTop);
         if (multi) return multi;
     }
@@ -3055,8 +3235,8 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
     const topLoop = resampleLoopToCount(pair.top, targetN);
     const bottomLoop = resampleLoopToCount(pair.bottom, targetN);
 
-    const topVal = validateLoop(topLoop, loopPerimeterLength(topLoop) / targetN * 2);
-    const bottomVal = validateLoop(bottomLoop, loopPerimeterLength(bottomLoop) / targetN * 2);
+    const topVal = validateLoop(topLoop, (loopPerimeterLength(topLoop) / targetN) * 2);
+    const bottomVal = validateLoop(bottomLoop, (loopPerimeterLength(bottomLoop) / targetN) * 2);
     if (!topVal.ok || !bottomVal.ok) {
         throw new MeshNotWatertightError(
             `Boundary loop validation failed after resample: top=${topVal.reason ?? "ok"}, bottom=${bottomVal.reason ?? "ok"}`,
@@ -3067,16 +3247,16 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
     const rimHeightsMm = measureRimHeights(topLoop, bottomLoop);
     for (const h of rimHeightsMm) {
         if (h < RIM_HEIGHT_MIN_WARNING_MM && typeof console !== "undefined") {
-            console.warn(`[mesh-close] rim height ${h.toFixed(3)}mm < ${RIM_HEIGHT_MIN_WARNING_MM}mm — may look pinched`);
+            console.warn(
+                `[mesh-close] rim height ${h.toFixed(3)}mm < ${RIM_HEIGHT_MIN_WARNING_MM}mm — may look pinched`,
+            );
         }
     }
 
     const bodyVertexCount = working.getAttribute("position").count;
     const storedTop = (working.userData as { topVertexCount?: number }).topVertexCount;
     const topVertexCount =
-        storedTop && storedTop > 0 && storedTop < bodyVertexCount
-            ? storedTop
-            : inferTopVertexCount(working);
+        storedTop && storedTop > 0 && storedTop < bodyVertexCount ? storedTop : inferTopVertexCount(working);
     const bottomVertexCount = bodyVertexCount - topVertexCount;
 
     const sourceTopIndices = boundaryLoopVertexIndicesLocal(working, pair.top, 0, topVertexCount);
@@ -3097,19 +3277,22 @@ export function closeMeshPerimeter(geometry: BufferGeometry): CloseMeshResult {
         BRIDGE_SMOOTH_STRENGTH,
     );
 
-    const { geometry: merged, rimTopIndices: weldTopIndices, rimBottomIndices: weldBottomIndices } =
-        mergeGeometriesWithWeldedBridge(
-            working,
-            topLoop,
-            bottomLoop,
-            bridge,
-            pair.top,
-            pair.bottom,
-            sourceTopIndices,
-            sourceBottomIndices,
-            topVertexCount,
-            bottomVertexCount,
-        );
+    const {
+        geometry: merged,
+        rimTopIndices: weldTopIndices,
+        rimBottomIndices: weldBottomIndices,
+    } = mergeGeometriesWithWeldedBridge(
+        working,
+        topLoop,
+        bottomLoop,
+        bridge,
+        pair.top,
+        pair.bottom,
+        sourceTopIndices,
+        sourceBottomIndices,
+        topVertexCount,
+        bottomVertexCount,
+    );
     if (disposed) working.dispose();
     const seamTopIndices = orderSeamRingIndices(
         merged,
@@ -3197,7 +3380,6 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
     );
 
     try {
-        const topOrdered = extractOrderedBoundaryLoopWithIndices(topSub);
         const botRim = resolveBottomRim(
             parentWorking,
             botSub,
@@ -3206,12 +3388,30 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
             bodyVertexCount,
         );
 
+        // Dual-winding bottom partition may prefer the opposite face winding. The top
+        // rim walk still follows as-is winding; flip top faces so rim/bridge agree
+        // (LEFT / odd-parity reorient). As-is winners (RIGHT/RAW) skip this — G1.
+        if (botRim.usedOppositeWinding) {
+            flipTriangleWindingInVertexRange(parentWorking, 0, topVertexCount);
+            if (typeof console !== "undefined") {
+                console.log("[MESH-CLOSE] flipped top winding to match opposite bottom cycle partition");
+            }
+        }
+
+        const topSubForRim = botRim.usedOppositeWinding
+            ? submeshByVertexRange(parentWorking, 0, topVertexCount)
+            : topSub;
+        const topOrdered = extractOrderedBoundaryLoopWithIndices(topSubForRim);
+        if (botRim.usedOppositeWinding && topSubForRim !== topSub) {
+            topSubForRim.dispose();
+        }
+
         const dedupedTop = dedupeConsecutiveLoopIndices(topOrdered.positions, topOrdered.indices);
         const dedupedBot = dedupeConsecutiveLoopIndices(botRim.positions, botRim.parentIndices);
 
         let topPositions = dedupedTop.positions;
-        let botPositions = dedupedBot.positions;
-        let topIndices = dedupedTop.indices;
+        const botPositions = dedupedBot.positions;
+        const topIndices = dedupedTop.indices;
         let botIndices = dedupedBot.indices;
         const rimsEqualCount = topPositions.length === botPositions.length;
 
@@ -3309,7 +3509,11 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
             if (!winding.windingAligned) {
                 botIndices = [...botIndices].reverse();
             }
-            const alignedBot = alignIndexedLoopStartByArcLength(topPositions, botPositionsAligned, botIndices);
+            const alignedBot = alignIndexedLoopStartByArcLength(
+                topPositions,
+                botPositionsAligned,
+                botIndices,
+            );
             botPositionsAligned = alignedBot.positions;
             botIndices = alignedBot.indices;
 
@@ -3405,8 +3609,9 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
 
         if (geometry.userData) merged.userData = { ...geometry.userData };
         if (twoPointerDiag) {
-            (merged.userData as { twoPointerWalkDiagnostics?: TwoPointerWalkDiagnostics }).twoPointerWalkDiagnostics =
-                twoPointerDiag;
+            (
+                merged.userData as { twoPointerWalkDiagnostics?: TwoPointerWalkDiagnostics }
+            ).twoPointerWalkDiagnostics = twoPointerDiag;
         }
         return merged;
     } finally {
@@ -3441,8 +3646,7 @@ export function ensureWatertightForExport(geometry: BufferGeometry): BufferGeome
     const pre = validateManifold(geometry);
     const isMultiMesh = !!userData.isMultiMeshBase;
     const needsClosure =
-        isMultiMesh &&
-        (!pre.isWatertight || pre.eulerCharacteristic !== 2 || pre.openEdges > 0);
+        isMultiMesh && (!pre.isWatertight || pre.eulerCharacteristic !== 2 || pre.openEdges > 0);
 
     if (!needsClosure) return geometry;
 
@@ -3460,10 +3664,7 @@ export function ensureWatertightForExport(geometry: BufferGeometry): BufferGeome
 /** @internal Heal internal slit boundaries on a GLB shell before top/bottom concatenation. */
 export function healShellInternalBoundaries(geometry: BufferGeometry): boolean {
     const cycles = extractAllBoundaryCycles(geometry);
-    const loops =
-        cycles.length > 0
-            ? cycles
-            : extractBoundaryLoops(geometry);
+    const loops = cycles.length > 0 ? cycles : extractBoundaryLoops(geometry);
     if (loops.length === 0) return false;
 
     let capped = false;
@@ -3512,10 +3713,12 @@ export function maxBridgeMidpointDistanceFromPerimeterMm(
         const dTop = distancePointToLoop(p, topLoop);
         const dBot = distancePointToLoop(p, bottomLoop);
         if (dTop > 0.5 && dBot > 0.5) continue;
-        const zTop = topLoop[0] ? topLoop.reduce((s, v, j) => {
-            const d = Math.hypot(v.x - p.x, v.y - p.y);
-            return d < Math.hypot(topLoop[s]!.x - p.x, topLoop[s]!.y - p.y) ? j : s;
-        }, 0) : 0;
+        const zTop = topLoop[0]
+            ? topLoop.reduce((s, v, j) => {
+                  const d = Math.hypot(v.x - p.x, v.y - p.y);
+                  return d < Math.hypot(topLoop[s]!.x - p.x, topLoop[s]!.y - p.y) ? j : s;
+              }, 0)
+            : 0;
         const zLo = bottomLoop[zTop]?.z ?? 0;
         const zHi = topLoop[zTop]?.z ?? p.z;
         if (p.z <= zLo + 0.05 || p.z >= zHi - 0.05) continue;
@@ -3525,7 +3728,11 @@ export function maxBridgeMidpointDistanceFromPerimeterMm(
 }
 
 /** True when bridge-wall face normals point outward from mesh centroid. */
-export function bridgeNormalsPointOutward(geometry: BufferGeometry, topLoop: Vector3[], bottomLoop: Vector3[]): boolean {
+export function bridgeNormalsPointOutward(
+    geometry: BufferGeometry,
+    topLoop: Vector3[],
+    bottomLoop: Vector3[],
+): boolean {
     const pos = geometry.getAttribute("position");
     const index = geometry.getIndex();
     if (!index) return true;
@@ -3559,7 +3766,10 @@ export function bridgeNormalsPointOutward(geometry: BufferGeometry, topLoop: Vec
         const a = new Vector3(pos.getX(i0), pos.getY(i0), pos.getZ(i0));
         const b = new Vector3(pos.getX(i1), pos.getY(i1), pos.getZ(i1));
         const c = new Vector3(pos.getX(i2), pos.getY(i2), pos.getZ(i2));
-        const center = new Vector3().addVectors(a, b).add(c).multiplyScalar(1 / 3);
+        const center = new Vector3()
+            .addVectors(a, b)
+            .add(c)
+            .multiplyScalar(1 / 3);
         const n = new Vector3().subVectors(b, a).cross(new Vector3().subVectors(c, a));
         const outward = new Vector3().subVectors(center, centroid);
         if (n.dot(outward) <= 0) return false;
