@@ -16,10 +16,14 @@ import { applySkives } from "@/lib/geometry/base-modifier-booleans";
 import { oneThirdLineY, SKIVE_U_REF } from "@/lib/geometry/heel-skive";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
+import { deriveNativeShellThicknessDatum } from "@/lib/geometry/native-shell-thickness";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import type { SideCorrections } from "@/types";
 
 const FIXTURE = resolve(process.cwd(), "tests/fixtures/Default.glb");
+
+/** Option C identity thickness (native min clearance) — see synced-bottom-shell-field. */
+let identityThicknessMm = 3;
 
 function neu(): SideCorrections {
     return {
@@ -44,7 +48,7 @@ function field(patch: Partial<SideCorrections>): HeightFieldParams {
         side: "right",
         lengthMm: 266,
         widthMm: 95,
-        thicknessMm: 3,
+        thicknessMm: identityThicknessMm,
         corrections: { ...neu(), ...patch },
         elements: [],
         includeSkives: false,
@@ -147,6 +151,7 @@ describe("Kirby heel skive — Default.glb", () => {
         expect(merged).not.toBeNull();
         baseGeo = merged!.geometry;
         frame = resolveFrame(baseGeo);
+        identityThicknessMm = deriveNativeShellThicknessDatum(baseGeo)!.nativeMinClearanceMm;
         expect(frame.topN).toBeGreaterThan(1000);
     });
 

@@ -1,15 +1,15 @@
 import type { BufferGeometry } from "three";
-import { getKernel } from "@/lib/chili3d/kernel";
+import * as THREE from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
-import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
+import { getKernel } from "@/lib/chili3d/kernel";
 import type { InsoleParams } from "@/lib/geometry/insole";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import type { TrimLine } from "@/lib/geometry/mesh-edit";
+import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import type { GeometryQuality } from "@/lib/geometry/quality";
 import { segmentsForQuality } from "@/lib/geometry/quality";
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
-import type { TrimLine } from "@/lib/geometry/mesh-edit";
-import * as THREE from "three";
 
 export function isOcctKernelActive(): boolean {
     return getKernel().name === "opencascade-wasm";
@@ -23,10 +23,15 @@ export function insoleParamsFromDesign(
     side: Side,
     quality: GeometryQuality = "full",
 ): InsoleParams {
-    const isPaired = !!design.paired;
-    const sideData = isPaired ? (side === 'left' ? design.paired!.left : design.paired!.right) : null;
-    const thickness = sideData ? sideData.thicknessMm : design.thicknessMm;
-    const method = sideData ? sideData.method : design.method;
+    const paired = design.paired;
+    // Paired sides store thickness/method as leftThicknessMm / rightThicknessMm
+    // (and leftMethod / rightMethod) — there is no design.paired.left/.right object.
+    const thickness = paired
+        ? side === "left"
+            ? paired.leftThicknessMm
+            : paired.rightThicknessMm
+        : design.thicknessMm;
+    const method = paired ? (side === "left" ? paired.leftMethod : paired.rightMethod) : design.method;
     return {
         side,
         lengthMm: INSOLE_LENGTH_MM,
@@ -52,10 +57,7 @@ export interface MeshEditOptions {
     applyEdits?: boolean;
 }
 
-function applyMeshEdits(
-    geometry: BufferGeometry,
-    options: MeshEditOptions,
-): BufferGeometry {
+function applyMeshEdits(geometry: BufferGeometry, options: MeshEditOptions): BufferGeometry {
     if (!options.applyEdits) return geometry;
     let g = geometry;
     const trimLines = options.trimLines ?? [];

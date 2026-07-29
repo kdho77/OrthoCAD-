@@ -1,25 +1,29 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { BufferGeometry } from "three";
+import type { BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { getDesignBase } from "@/lib/geometry/base-asset";
+import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
     type HeightFieldParams,
-    heightAt,
     heelCupWidthScaleFactor,
+    heightAt,
     quinticSmoothstep,
     smoothstep,
 } from "@/lib/geometry/height-field";
+import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import {
     closeGlbInsoleToSolid,
     extractOrderedBoundaryLoopWithIndices,
     SMOOTH_INWARD_LIMIT_MM,
     submeshByVertexRange,
 } from "@/lib/geometry/mesh-close";
-import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
+import {
+    deriveNativeShellThicknessDatum,
+    thicknessOffsetFromDatum,
+} from "@/lib/geometry/native-shell-thickness";
 import type { DesignState, Side, SideCorrections } from "@/types";
-import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 
 // Base + Modifier deformation core (see docs/base-modifier-architecture.md).
 //
@@ -923,10 +927,7 @@ function getHeelCupDepthFrame(
         const s = theta / HEEL_CUP_DEPTH_ARC_TERMINATION_RAD;
         groupS[g] = s;
         const side = dWid >= 0 ? 0 : 1;
-        const bin = Math.min(
-            HEEL_CUP_DEPTH_RIM_BINS - 1,
-            Math.floor(s * HEEL_CUP_DEPTH_RIM_BINS),
-        );
+        const bin = Math.min(HEEL_CUP_DEPTH_RIM_BINS - 1, Math.floor(s * HEEL_CUP_DEPTH_RIM_BINS));
         groupSideBin[g] = side * HEEL_CUP_DEPTH_RIM_BINS + bin;
         const z = array[i * 3 + thickAxis]!;
         if (z < floorZ) floorZ = z;
@@ -948,9 +949,7 @@ function getHeelCupDepthFrame(
             continue;
         }
         const a = 1 - quinticSmoothstep(s);
-        const w = quinticSmoothstep(
-            (h - HEEL_CUP_DEPTH_FLOOR_BASIN_H) / (1 - HEEL_CUP_DEPTH_FLOOR_BASIN_H),
-        );
+        const w = quinticSmoothstep((h - HEEL_CUP_DEPTH_FLOOR_BASIN_H) / (1 - HEEL_CUP_DEPTH_FLOOR_BASIN_H));
         gateRaw[g] = a * w;
     }
 
@@ -1282,8 +1281,7 @@ function buildRimConformityFrame(
     // Spatial hash of bottom verts for seed extraction + corridor queries.
     const cell = RIM_PAIR_TOL_MM;
     const hash = new Map<string, number[]>();
-    const fpKey = (len: number, wid: number): string =>
-        `${Math.floor(len / cell)},${Math.floor(wid / cell)}`;
+    const fpKey = (len: number, wid: number): string => `${Math.floor(len / cell)},${Math.floor(wid / cell)}`;
     for (let i = topVertexCount; i < count; i++) {
         const len = baseArr[i * 3 + lengthAxis]!;
         const wid = baseArr[i * 3 + widthAxis]!;
@@ -1520,27 +1518,23 @@ export function diagnoseHeelCupWidthLateral(
     const array = pos.array as Float32Array;
     const count = pos.count;
     const topFactors = classifyBaseTopFactors(base);
-    const baseUserData = (base as { userData?: { isMultiMeshBase?: boolean; topVertexCount?: number } }).userData;
+    const baseUserData = (base as { userData?: { isMultiMeshBase?: boolean; topVertexCount?: number } })
+        .userData;
     const isMultiMesh = !!baseUserData?.isMultiMeshBase;
     const topVertexCount =
         isMultiMesh && typeof baseUserData?.topVertexCount === "number" && baseUserData.topVertexCount > 0
             ? baseUserData.topVertexCount
             : 0;
 
-    const {
-        raw,
-        smoothed,
-        coincidenceSyncIndexCount,
-        crossMeshCoincidenceGroupCount,
-        coincidentGroupCount,
-    } = buildHeelCupWidthLateralDelta(
-        base,
-        field,
-        { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
-        topFactors,
-        isMultiMesh,
-        topVertexCount,
-    );
+    const { raw, smoothed, coincidenceSyncIndexCount, crossMeshCoincidenceGroupCount, coincidentGroupCount } =
+        buildHeelCupWidthLateralDelta(
+            base,
+            field,
+            { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
+            topFactors,
+            isMultiMesh,
+            topVertexCount,
+        );
 
     let centerlineClosestIndex = 0;
     let centerlineClosestOffsetMm = Infinity;
@@ -1667,9 +1661,14 @@ export function applyBaseModifiers(
     // Strip heel-cup depth (dedicated tangent field) AND skive depths (applied
     // post-sync top-only) from the vertical F that drives top deltas + bottom sync.
     const depthMm = field.corrections.heelCupDepthMm;
+    // Multi-mesh: thickness is a rigid top translation (Option C), never part of
+    // the coupled field F — otherwise #119 bottom sync raises the plantar plate
+    // with it and the slider cannot change shell thickness. Single-mesh bases
+    // keep the legacy in-field thickness (no top/bottom split to translate).
     const fieldForDelta: HeightFieldParams = {
         ...field,
         includeSkives: false,
+        thicknessMm: isMultiMesh && topVertexCount > 0 ? BASE_REFERENCE_THICKNESS_MM : field.thicknessMm,
         corrections: {
             ...field.corrections,
             heelCupDepthMm: 0,
@@ -1677,6 +1676,16 @@ export function applyBaseModifiers(
             lateralSkiveMm: 0,
         },
     };
+
+    // Option C: absolute thickness against the plantar plane.
+    // offset = thicknessMm − nativeMinClearance (per-asset, cached).
+    let thicknessOffsetMm = 0;
+    if (isMultiMesh && topVertexCount > 0) {
+        const datum = deriveNativeShellThicknessDatum(base);
+        if (datum) {
+            thicknessOffsetMm = thicknessOffsetFromDatum(field.thicknessMm, datum).offsetMm;
+        }
+    }
 
     const lateralCtx: LateralDeltaContext = {
         count,
@@ -1690,14 +1699,7 @@ export function applyBaseModifiers(
 
     // Local top-sheet edge profile — feeds heightAt edge feather (SYNC-0 with
     // the same profile on top + bottom F samples) and bottom exterior clamp.
-    const edgeProfile = getTopEdgeProfile(
-        base,
-        lateralCtx,
-        widSize,
-        topFactors,
-        isMultiMesh,
-        topVertexCount,
-    );
+    const edgeProfile = getTopEdgeProfile(base, lateralCtx, widSize, topFactors, isMultiMesh, topVertexCount);
     if (edgeProfile) {
         fieldForDelta.topEdgeAvProfile = (u: number, vSigned: number): number => {
             // heightAt space → mesh width half: vSigned = widthSign · vNormMesh.
@@ -1709,8 +1711,7 @@ export function applyBaseModifiers(
     // Width>0 keeps the legacy rim-conformity bottom path (lateral field is not
     // yet cleanly samplable for the underside). Field-coupled shell sync runs
     // only when width is inactive so the two paths never double-apply.
-    const useShellFieldSync =
-        isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm <= 0;
+    const useShellFieldSync = isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm <= 0;
 
     // 1) Sample the pure modifier delta. Multi-mesh top range only when shell
     //    sync is active (bottom gets F via sampleFieldDeltaAtXY below); otherwise
@@ -1730,8 +1731,7 @@ export function applyBaseModifiers(
     // 2) Optional Laplacian relaxation of the displacement field (cached adjacency).
     // Multi-mesh GLB bases skip smoothing: diffusing wedge/posting deltas on the
     // merged adjacency graph collapses the top rim loop and breaks closeGlbInsoleToSolid.
-    const effectiveSmoothing =
-        isMultiMesh && topVertexCount > 0 ? 0 : smoothingIterations;
+    const effectiveSmoothing = isMultiMesh && topVertexCount > 0 ? 0 : smoothingIterations;
     const adj = effectiveSmoothing > 0 ? getBaseAdjacency(base) : null;
     if (adj) {
         let current = delta;
@@ -1767,14 +1767,7 @@ export function applyBaseModifiers(
     // depthMm scale changes per edit — no per-drag rebuild cost (HC-6).
     const depthFrame =
         depthMm > 0
-            ? getHeelCupDepthFrame(
-                  base,
-                  lateralCtx,
-                  thickAxis,
-                  topFactors,
-                  isMultiMesh,
-                  topVertexCount,
-              )
+            ? getHeelCupDepthFrame(base, lateralCtx, thickAxis, topFactors, isMultiMesh, topVertexCount)
             : null;
     const depthVec = depthFrame ? heelCupDepthDisplacements(depthFrame, depthMm) : null;
 
@@ -1782,9 +1775,7 @@ export function applyBaseModifiers(
     //    use vertex-index separation (top range only). Single-mesh bases use
     //    normal/height topFactor weighting so the bottom sheet stays anchored.
     const originalBottomZ =
-        isMultiMesh && topVertexCount > 0
-            ? new Float32Array(count - topVertexCount)
-            : null;
+        isMultiMesh && topVertexCount > 0 ? new Float32Array(count - topVertexCount) : null;
     if (originalBottomZ) {
         for (let i = topVertexCount; i < count; i++) {
             originalBottomZ[i - topVertexCount] = array[i * 3 + thickAxis]!;
@@ -1845,14 +1836,16 @@ export function applyBaseModifiers(
     //    rim closure stays ≤0.05 mm despite residual field gradient across the
     //    ~0.1 mm pair offset — plantar/interior keep local F (thickness).
     if (useShellFieldSync) {
-        let rimFp: {
-            len: number;
-            wid: number;
-            F: number;
-            dx: number;
-            dy: number;
-            dz: number;
-        }[] | null = null;
+        let rimFp:
+            | {
+                  len: number;
+                  wid: number;
+                  F: number;
+                  dx: number;
+                  dy: number;
+                  dz: number;
+              }[]
+            | null = null;
         const topSub = submeshByVertexRange(base, 0, topVertexCount);
         try {
             const rimIdx = extractOrderedBoundaryLoopWithIndices(topSub).indices;
@@ -1979,7 +1972,7 @@ export function applyBaseModifiers(
                 let nnDy = 0;
                 let nnDz = 0;
                 if (depthLookup && rimBlend < 1) {
-                    let qLen = lenCoord;
+                    const qLen = lenCoord;
                     let qWid = widCoord;
                     if (edgeProfile) {
                         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
@@ -2024,10 +2017,7 @@ export function applyBaseModifiers(
 
     // Kirby heel skive — TOP MESH ONLY, after F composition + bottom coupling (R11).
     // Plane half-space maximum; never writes bottom verts; never feeds field-F.
-    if (
-        topVertexCount > 0 &&
-        (field.corrections.medialSkiveMm > 0 || field.corrections.lateralSkiveMm > 0)
-    ) {
+    if (topVertexCount > 0 && (field.corrections.medialSkiveMm > 0 || field.corrections.lateralSkiveMm > 0)) {
         applyHeelSkiveToTopMesh(array, {
             side: field.side,
             corrections: field.corrections,
@@ -2067,6 +2057,32 @@ export function applyBaseModifiers(
         }
     }
 
+    // Option C rigid thickness — AFTER skive (seat-relative ⇒ depth invariant) and
+    // AFTER clinical #119 sync. Kept out of F so plantar stays bit-identical and
+    // corrections stay thickness-independent.
+    //
+    // Top: uniform translation. Bottom walls: same rimConformityHeightWeight #119
+    // already uses (PLANTAR→WALL_TOP). Rim-F inheritance cannot carry thickness
+    // alone — its anterior taper / corridor zeros the transfer where walls must
+    // still stretch. Height weight reuses the existing curve; no new blend.
+    if (thicknessOffsetMm !== 0 && isMultiMesh && topVertexCount > 0) {
+        for (let i = 0; i < topVertexCount; i++) {
+            array[i * 3 + thickAxis] += thicknessOffsetMm;
+        }
+        const baseArr = base.getAttribute("position")!.array as Float32Array;
+        for (let i = topVertexCount; i < count; i++) {
+            const baseZ = baseArr[i * 3 + thickAxis]!;
+            const wHeight = rimConformityHeightWeight(
+                baseZ <= PLANTAR_Z_MAX_MM
+                    ? 0
+                    : Math.min(1, (baseZ - PLANTAR_Z_MAX_MM) / (WALL_TOP_MIN_Z_MM - PLANTAR_Z_MAX_MM)),
+            );
+            if (wHeight > 0) {
+                array[i * 3 + thickAxis] += thicknessOffsetMm * wHeight;
+            }
+        }
+    }
+
     if (originalBottomZ && typeof console !== "undefined" && !useShellFieldSync) {
         let maxDrift = 0;
         const baseArr = base.getAttribute("position")!.array as Float32Array;
@@ -2076,9 +2092,7 @@ export function applyBaseModifiers(
             if (drift > maxDrift) maxDrift = drift;
         }
         if (maxDrift > BASE_BOTTOM_DELTA_TOLERANCE_MM) {
-            console.warn(
-                `[WEDGE] Bottom mesh Z drift ${maxDrift.toFixed(3)}mm — HC-1 VIOLATION`,
-            );
+            console.warn(`[WEDGE] Bottom mesh Z drift ${maxDrift.toFixed(3)}mm — HC-1 VIOLATION`);
         }
     }
 

@@ -4,19 +4,6 @@
 import type { BufferGeometry } from "three";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
-import { getDesignTrimline } from "@/lib/geometry/trimline";
-import {
-    extractMergedGeometry,
-    extractMergedGeometryAsync,
-    loadGlbFromBuffer,
-    loadGlbFromUrl,
-    mirrorGeometry,
-    reorientToFootprintFrame,
-    type ExtractMergedGeometryOptions,
-    type MergedGlbGeometry,
-} from "@/lib/library/loaders";
-import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
-import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import {
     classifyStockUrl,
     formatStockUrlLog,
@@ -26,8 +13,21 @@ import {
     stockResolveLog,
 } from "@/lib/geometry/stock-debug";
 import { getStockBasePublicUrl, queryStockBaseRow } from "@/lib/geometry/stock-resolve-supabase";
-import { isApiConfigured } from "@/lib/trpc";
+import { getDesignTrimline } from "@/lib/geometry/trimline";
+import {
+    type ExtractMergedGeometryOptions,
+    extractMergedGeometry,
+    extractMergedGeometryAsync,
+    loadGlbFromBuffer,
+    loadGlbFromUrl,
+    type MergedGlbGeometry,
+    mirrorGeometry,
+    reorientToFootprintFrame,
+} from "@/lib/library/loaders";
 import { isSupabaseConfigured } from "@/lib/supabase";
+import { isApiConfigured } from "@/lib/trpc";
+import { useCustomLibraryStore } from "@/stores/custom-library-store";
+import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import type { DesignBase, DesignState, Side } from "@/types";
 
 // Base resolution + loading for the Base + Modifier model.
@@ -177,9 +177,10 @@ export function sanitizeStockBaseForServerMode(base: DesignBase): DesignBase {
     const { glbPath: _gp, url: _url, offlinePlaceholder: _op, ...rest } = base;
     return {
         ...rest,
-        assetId: base.assetId === DEFAULT_STOCK_BASE_ID || isLocalPlaceholderGlbPath(base.glbPath)
-            ? DEFAULT_STOCK_BASE_ID
-            : base.assetId,
+        assetId:
+            base.assetId === DEFAULT_STOCK_BASE_ID || isLocalPlaceholderGlbPath(base.glbPath)
+                ? DEFAULT_STOCK_BASE_ID
+                : base.assetId,
     };
 }
 
@@ -192,11 +193,15 @@ export function sanitizeStockBaseForServerMode(base: DesignBase): DesignBase {
 export const DEFAULT_STOCK_PRIMARY_SIDE: Side = "left";
 
 /** True for the builtin / Templates default stock GLB (not arbitrary admin stock). */
-export function isBuiltinDefaultStockBase(base: Pick<DesignBase, "assetId" | "glbPath"> | null | undefined): boolean {
+export function isBuiltinDefaultStockBase(
+    base: Pick<DesignBase, "assetId" | "glbPath"> | null | undefined,
+): boolean {
     if (!base) return false;
     if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
     const path = (base.glbPath ?? "").replace(/^\/+/, "");
-    return /(?:^|\/)(?:Templates\/)?Default\.glb$/i.test(path) || /stock\/standard\/Default\.glb$/i.test(path);
+    return (
+        /(?:^|\/)(?:Templates\/)?Default\.glb$/i.test(path) || /stock\/standard\/Default\.glb$/i.test(path)
+    );
 }
 
 /** Force correct primarySide on the builtin default so pairing / mirroring stay ipsilateral. */
@@ -357,7 +362,9 @@ export function getOfflineFallbackStockBase(): DesignBase {
 }
 
 /** Build a design patch with paired L/R bases from the offline fallback (Right + mirrored Left). */
-export function createFallbackStockDesignPatch(design: DesignState): Pick<DesignState, "pattern" | "base" | "customPrefabId" | "customPrefabName" | "paired"> {
+export function createFallbackStockDesignPatch(
+    design: DesignState,
+): Pick<DesignState, "pattern" | "base" | "customPrefabId" | "customPrefabName" | "paired"> {
     const fallback = getOfflineFallbackStockBase();
     const { left, right } = createDefaultStockPairedBases(fallback);
     const leftBase: DesignBase = { ...left, resolutionFallback: true, offlinePlaceholder: true };
@@ -496,11 +503,9 @@ export async function resolveStockBase(assetId: string): Promise<DesignBase> {
 
 /** Pick the primary stock assetId already referenced on a design (falls back to default key). */
 export function getDesignStockAssetId(design: DesignState): string {
-    const candidates = [
-        design.paired?.rightBase,
-        design.paired?.leftBase,
-        design.base,
-    ].filter((b): b is DesignBase => Boolean(b && isStockDesignBase(b)));
+    const candidates = [design.paired?.rightBase, design.paired?.leftBase, design.base].filter(
+        (b): b is DesignBase => Boolean(b && isStockDesignBase(b)),
+    );
 
     const primary = candidates.find((b) => !b.mirrored) ?? candidates[0];
     if (primary?.assetId && UUID_RE.test(primary.assetId)) return primary.assetId;
@@ -521,21 +526,17 @@ export async function resolveDefaultStockBase(): Promise<DesignBase> {
 
 /** True when the design already references a GLB base (stock or custom). */
 export function designHasBase(design: DesignState): boolean {
-    return !!(
-        design.base ||
-        design.customPrefabId ||
-        design.paired?.leftBase ||
-        design.paired?.rightBase
-    );
+    return !!(design.base || design.customPrefabId || design.paired?.leftBase || design.paired?.rightBase);
 }
 
 /**
  * Create the Left + Right pair for a (usually Right-only) stock base.
  * Pass the result of resolveDefaultStockBase() — never rely on the sync stub in production.
  */
-export function createDefaultStockPairedBases(
-    override?: DesignBase,
-): { left: DesignBase; right: DesignBase } {
+export function createDefaultStockPairedBases(override?: DesignBase): {
+    left: DesignBase;
+    right: DesignBase;
+} {
     const source = normalizeDefaultStockPrimarySide(override ?? getDefaultStockBaseSync());
     const primarySide = source.primarySide?.toLowerCase();
     const sourceIsLeft = primarySide === "left";
@@ -587,7 +588,8 @@ export function stockBaseRequiresAutoMirror(base: DesignBase | null): boolean {
     }
 
     if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
-    if (base.glbPath && /default/i.test(base.glbPath) && !isLocalPlaceholderGlbPath(base.glbPath)) return true;
+    if (base.glbPath && /default/i.test(base.glbPath) && !isLocalPlaceholderGlbPath(base.glbPath))
+        return true;
 
     return false;
 }
@@ -754,7 +756,9 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         side,
         lengthMm: params.lengthMm,
         widthMm: params.widthMm,
-        thicknessMm: params.thicknessMm,
+        // Honour the caller-provided thickness (live preview / per-side effThickness).
+        // Previously this ignored the third argument and always used params.thicknessMm.
+        thicknessMm,
         corrections: mergeCorrections(side, design.corrections[side]),
         elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
         // Skives excluded from F / heightAt on the base path — applied post-sync
@@ -766,7 +770,11 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
 }
 
 /** Authoritative field for the sewn OCCT base path (Phase 3B). */
-export function baseModifierFieldAuthoritative(design: DesignState, side: Side, thicknessMm: number): HeightFieldParams {
+export function baseModifierFieldAuthoritative(
+    design: DesignState,
+    side: Side,
+    thicknessMm: number,
+): HeightFieldParams {
     const f = baseModifierField(design, side, thicknessMm);
     const committed = getDesignTrimline(design, side);
     return { ...f, trimline: committed };

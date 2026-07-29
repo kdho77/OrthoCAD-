@@ -29,10 +29,14 @@ import {
     submeshByVertexRange,
     validateManifold,
 } from "@/lib/geometry/mesh-close";
+import { deriveNativeShellThicknessDatum } from "@/lib/geometry/native-shell-thickness";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import type { SideCorrections } from "@/types";
 
 const FIXTURE_PATH = resolve(process.cwd(), "tests/fixtures/Default.glb");
+
+/** Option C identity thickness (native min clearance). */
+let identityThicknessMm = 3;
 
 function neutralCorrections(): SideCorrections {
     return {
@@ -57,7 +61,7 @@ function correctionField(patch: Partial<SideCorrections>): HeightFieldParams {
         side: "right",
         lengthMm: 266,
         widthMm: 95,
-        thicknessMm: 3,
+        thicknessMm: identityThicknessMm,
         corrections: { ...neutralCorrections(), ...patch },
         elements: [],
         includeSkives: true,
@@ -278,6 +282,7 @@ describe("bottom-wall rim conformity (Default.glb)", () => {
         expect(merged).not.toBeNull();
         baseGeo = merged!.geometry;
         frame = resolveFrame(baseGeo);
+        identityThicknessMm = deriveNativeShellThicknessDatum(baseGeo)!.nativeMinClearanceMm;
         expect(frame.topVertexCount).toBe(42134);
         expect(frame.count).toBe(250765);
         rimIdx = topRimIndices(baseGeo, frame.topVertexCount);
