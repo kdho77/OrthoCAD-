@@ -126,6 +126,49 @@ describe("shell thickness raises the top mesh (bottom-anchored)", () => {
         raw.dispose();
     });
 
+    test("wall lift is a smooth local ramp of base height — no nearest-rim-seed noise", async () => {
+        const raw = await loadRawDefault();
+        const topN = (raw.userData as { topVertexCount: number }).topVertexCount;
+        const total = raw.getAttribute("position").count;
+
+        const t = 7;
+        const expectedLift = t - BASE_REFERENCE_THICKNESS_MM;
+        const modified = applyBaseModifiers(raw, thicknessField(t), 0);
+        const a = raw.getAttribute("position")!.array as Float32Array;
+        const b = modified.getAttribute("position")!.array as Float32Array;
+
+        // With neutral corrections the bottom delta must be EXACTLY
+        // lift × smoothstep(height ramp) — a pure function of the vertex's own
+        // base z. Any dependence on nearest-rim-sample distance (the source of
+        // the jagged wall edge) shows up as deviation here.
+        const smoothstep01 = (x: number) => {
+            const c = Math.max(0, Math.min(1, x));
+            return c * c * (3 - 2 * c);
+        };
+        let maxDev = 0;
+        let wallTopCount = 0;
+        let minWallTopLift = Infinity;
+        for (let i = topN; i < total; i++) {
+            const z = a[i * 3 + 2]!;
+            const dz = b[i * 3 + 2]! - a[i * 3 + 2]!;
+            const hz =
+                z <= PLANTAR_Z_MAX_MM ? 0 : Math.min(1, (z - PLANTAR_Z_MAX_MM) / (2.0 - PLANTAR_Z_MAX_MM));
+            const expected = expectedLift * smoothstep01(hz);
+            maxDev = Math.max(maxDev, Math.abs(dz - expected));
+            if (z >= 2.0) {
+                wallTopCount++;
+                minWallTopLift = Math.min(minWallTopLift, dz);
+            }
+        }
+        expect(maxDev).toBeLessThan(1e-3);
+        // Wall tops reach the full lift so the rim pair stays closed.
+        expect(wallTopCount).toBeGreaterThan(100);
+        expect(minWallTopLift).toBeGreaterThan(expectedLift - 1e-3);
+
+        modified.dispose();
+        raw.dispose();
+    });
+
     test("closed solid stays edge-manifold at 7mm", async () => {
         const raw = await loadRawDefault();
         const modified = applyBaseModifiers(raw, thicknessField(7), 0);

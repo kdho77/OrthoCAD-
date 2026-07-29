@@ -1820,12 +1820,15 @@ export function applyBaseModifiers(
     //    Thickness is bottom-anchored (BASE_REFERENCE_THICKNESS_MM contract:
     //    "thickness expands upward from the stable bottom"): the plantar F is
     //    sampled with the reference thickness so the uniform slider lift stays
-    //    OUT of the bottom sheet, while rim seeds keep the full field so wall
-    //    tops follow the raised top rim and the shell wall stretches between.
+    //    OUT of the bottom sheet. The wall re-inherits the thickness component
+    //    via a smooth LOCAL height ramp (below) — never via nearest-rim-seed
+    //    distance, whose per-vertex variation renders as a jagged wall edge
+    //    when the lift is large.
     const fieldForBottomSync: HeightFieldParams = {
         ...fieldForDelta,
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
     };
+    const thicknessLiftActive = Math.abs(fieldForDelta.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-9;
     if (useShellFieldSync) {
         let rimFp:
             | {
@@ -1857,6 +1860,9 @@ export function applyBaseModifiers(
                 return {
                     len: lenC,
                     wid: widC,
+                    // Corrections-only field: the thickness component is added
+                    // AFTER the rim blend via the local height ramp, so the
+                    // nearest-seed distance never modulates the uniform lift.
                     F: sampleFieldDeltaAtXY(
                         lenC,
                         widC,
@@ -1865,7 +1871,7 @@ export function applyBaseModifiers(
                         widCenter,
                         widSize,
                         widthSign,
-                        fieldForDelta,
+                        fieldForBottomSync,
                         neutral,
                         edgeProfile,
                     ),
@@ -1908,6 +1914,7 @@ export function applyBaseModifiers(
                 neutral,
                 edgeProfile,
             );
+            const fCorrectionsLocal = F;
             let rimBlend = 0;
             let rimDx = 0;
             let rimDy = 0;
@@ -1954,6 +1961,33 @@ export function applyBaseModifiers(
                         rimDz = r.dz;
                     }
                 }
+            }
+
+            // Bottom-anchored thickness lift, added AFTER the rim blend so the
+            // nearest-seed distance never modulates it: the uniform component
+            // (F_full − F_corrections) ramps over the vertex's OWN base height —
+            // 0 on the plantar sheet, 1 at wall top. Purely local ⇒ adjacent
+            // wall vertices lift together (smooth edge), and wall tops reach the
+            // full lift so the rim pair stays closed against the raised top rim.
+            // Inactive at the reference thickness (component = 0, legacy path).
+            if (thicknessLiftActive) {
+                const fFull = sampleFieldDeltaAtXY(
+                    lenCoord,
+                    widCoord,
+                    lenMin,
+                    lenSize,
+                    widCenter,
+                    widSize,
+                    widthSign,
+                    fieldForDelta,
+                    neutral,
+                    edgeProfile,
+                );
+                const hz =
+                    baseZ <= PLANTAR_Z_MAX_MM
+                        ? 0
+                        : Math.min(1, (baseZ - PLANTAR_Z_MAX_MM) / (WALL_TOP_MIN_Z_MM - PLANTAR_Z_MAX_MM));
+                F += (fFull - fCorrectionsLocal) * rimConformityHeightWeight(hz);
             }
 
             array[i * 3 + thickAxis] += F;
