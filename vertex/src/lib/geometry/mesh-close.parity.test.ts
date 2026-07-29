@@ -12,7 +12,8 @@
 
 import { createHash } from "node:crypto";
 import { describe, expect, test } from "@rstest/core";
-import { type BufferGeometry, ShapeUtils, Vector2 } from "three";
+import { type BufferGeometry, ShapeUtils, Vector2, Vector3 } from "three";
+import { detectArchSideSign } from "@/lib/geometry/base-modifier";
 import {
     closeGlbInsoleToSolid,
     DEFAULT_GLB_CLOSED_BASELINE,
@@ -27,7 +28,9 @@ import {
     loadRawDefaultGlb,
 } from "../../../../tests/helpers/load-production-default-glb";
 
-/** Pinned shipping closed-solid hashes (pre Option-3 fix). G1 STOP if these drift. */
+/** Pinned shipping closed-solid hashes (pre Option-3 fix). G1 STOP if these drift.
+ * Asserted as literal constants below — a RIGHT/RAW regression must fail loudly,
+ * not silently via a recomputed "live" pin. */
 const G1_RIGHT = {
     pos: "1f53430e3291b2c7a75d30ae32e48c17",
     idx: "aa81d0db90896adcf243b6eb4afa5946",
@@ -91,6 +94,69 @@ function expectClosedSolid(geo: BufferGeometry, label: string): BufferGeometry {
     return closed;
 }
 
+function meshCentroid(geo: BufferGeometry): Vector3 {
+    const pos = geo.getAttribute("position")!;
+    const c = new Vector3();
+    for (let i = 0; i < pos.count; i++) c.add(new Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)));
+    return c.multiplyScalar(1 / pos.count);
+}
+
+/** Signed volume (mm³) via triangle sum v0·(v1×v2)/6. Positive ⇒ outward winding. */
+function signedVolumeMm3(geo: BufferGeometry): number {
+    const pos = geo.getAttribute("position")!;
+    const index = geo.index!;
+    let vol = 0;
+    const a = new Vector3(),
+        b = new Vector3(),
+        c = new Vector3();
+    for (let t = 0; t < index.count; t += 3) {
+        a.set(pos.getX(index.getX(t)), pos.getY(index.getX(t)), pos.getZ(index.getX(t)));
+        b.set(pos.getX(index.getX(t + 1)), pos.getY(index.getX(t + 1)), pos.getZ(index.getX(t + 1)));
+        c.set(pos.getX(index.getX(t + 2)), pos.getY(index.getX(t + 2)), pos.getZ(index.getX(t + 2)));
+        vol += a.dot(new Vector3().crossVectors(b, c));
+    }
+    return vol / 6;
+}
+
+/** Facet outward spot-check: normal · (faceCentroid − meshCentroid) > 0. */
+function outwardSpotCheck(
+    geo: BufferGeometry,
+    nSamples: number,
+    seed = 1,
+): { n: number; outward: number; inward: number; fracOutward: number } {
+    const pos = geo.getAttribute("position")!;
+    const index = geo.index!;
+    const triCount = index.count / 3;
+    const centroid = meshCentroid(geo);
+    let outward = 0,
+        inward = 0;
+    let state = seed >>> 0;
+    const seen = new Set<number>();
+    const target = Math.min(nSamples, triCount);
+    while (seen.size < target) {
+        state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+        const ti = state % triCount;
+        if (seen.has(ti)) continue;
+        seen.add(ti);
+        const i0 = index.getX(ti * 3),
+            i1 = index.getX(ti * 3 + 1),
+            i2 = index.getX(ti * 3 + 2);
+        const a = new Vector3(pos.getX(i0), pos.getY(i0), pos.getZ(i0));
+        const b = new Vector3(pos.getX(i1), pos.getY(i1), pos.getZ(i1));
+        const c = new Vector3(pos.getX(i2), pos.getY(i2), pos.getZ(i2));
+        const normal = new Vector3().subVectors(b, a).cross(new Vector3().subVectors(c, a));
+        const faceC = new Vector3()
+            .add(a)
+            .add(b)
+            .add(c)
+            .multiplyScalar(1 / 3);
+        const dot = normal.dot(new Vector3().subVectors(faceC, centroid));
+        if (dot > 1e-9) outward++;
+        else if (dot < -1e-9) inward++;
+    }
+    return { n: target, outward, inward, fracOutward: outward / target };
+}
+
 describe("Default.glb mesh-close parity (Option 3)", () => {
     test("G1: RIGHT (reorient+mirror) closed solid is byte-identical to shipping pin", async () => {
         const geo = await loadProductionDefaultGlb({ primarySide: "left", slot: "right" });
@@ -130,6 +196,47 @@ describe("Default.glb mesh-close parity (Option 3)", () => {
         expect(hashClosed(closed).pos).toBe(inputPos);
         closed.dispose();
         geo.dispose();
+    });
+
+    test("V1: LEFT closed solid is outward-correct, positive volume≈RIGHT, arch on width−", async () => {
+        const leftIn = await loadProductionDefaultGlb({ primarySide: "left", slot: "left" });
+        const rightIn = await loadProductionDefaultGlb({ primarySide: "left", slot: "right" });
+        const left = expectClosedSolid(leftIn, "LEFT");
+        const right = expectClosedSolid(rightIn, "RIGHT");
+
+        // Centroid·normal spot-check is imperfect on a concave heel cup (some
+        // plantar/wall faces point toward the mesh centroid while still
+        // outward-oriented). Compare LEFT vs RIGHT under the same sample —
+        // an inverted shell would invert the majority and the signed volume.
+        const spotL = outwardSpotCheck(left, 500);
+        const spotR = outwardSpotCheck(right, 500);
+        expect(spotL.fracOutward).toBeGreaterThan(0.85);
+        expect(spotR.fracOutward).toBeGreaterThan(0.85);
+        expect(Math.abs(spotL.inward - spotR.inward)).toBeLessThanOrEqual(5);
+
+        const volL = signedVolumeMm3(left);
+        const volR = signedVolumeMm3(right);
+        expect(volL).toBeGreaterThan(0);
+        expect(volR).toBeGreaterThan(0);
+        // Near-mirror-equal volumes (relative |Δ| < 1%).
+        expect(Math.abs(volL - volR) / Math.max(volL, volR)).toBeLessThan(0.01);
+
+        // Builtin Default.glb arch sits on width− after reorient.
+        expect(detectArchSideSign(left)).toBe(-1);
+
+        console.log("[V1]", {
+            volL,
+            volR,
+            relDiff: Math.abs(volL - volR) / Math.max(volL, volR),
+            spotL,
+            spotR,
+            arch: detectArchSideSign(left),
+        });
+
+        left.dispose();
+        right.dispose();
+        leftIn.dispose();
+        rightIn.dispose();
     });
 
     test("G5: primarySide×slot combinations and unreoriented all close", async () => {

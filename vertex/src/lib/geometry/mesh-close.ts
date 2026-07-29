@@ -498,8 +498,16 @@ function resolveBottomRim(
 
 /**
  * Historical DFS boundary walk through degree>2 junctions (scan-order sensitive).
- * Callers that need winding-agnostic results must compare both winding senses —
- * see {@link extractAllBoundaryCycles}.
+ *
+ * FRAGILITY (G1): cycle starts, directed edge seeds, and neighbour visit order
+ * come from triangle scan order + Map insertion order in {@link buildEdgeUsage}
+ * (`edgeVerts` stores the first-seen directed pair; `edgeCount`/`adj` iterate in
+ * insertion order). RIGHT/RAW closed-solid index buffers depend on this
+ * historical order. Re-sorting edges, canonicalising directed pairs, or changing
+ * triangle emission order in the GLB merge path can drift those hashes even when
+ * the cycle-length multiset is unchanged — treat that as a G1 STOP, not a
+ * cosmetic win. Callers that need winding-agnostic results must compare both
+ * winding senses — see {@link extractAllBoundaryCycles}.
  */
 function extractAllBoundaryCyclesOnce(geometry: BufferGeometry): Vector3[][] {
     const { edgeCount, edgeVerts } = buildEdgeUsage(geometry);
@@ -566,7 +574,16 @@ function cyclePartitionScore(cycles: Vector3[][]): {
     return { maxLen: lengths[0] ?? 0, count: cycles.length, lengths };
 }
 
-/** Prefer intact outer rim; on ties prefer `preferred` (as-is winding) for G1. */
+/**
+ * Prefer intact outer rim; on ties prefer `preferred` (as-is winding) for G1.
+ *
+ * FRAGILITY: an equal length-multiset tie does NOT pick a geometrically unique
+ * partition — it pins to the as-is DFS result, which is itself determined by
+ * triangle scan order / Map insertion order in {@link extractAllBoundaryCyclesOnce}.
+ * That is what keeps RIGHT/RAW byte-identical to the shipping pin. Changing
+ * triangle emission order upstream can change the as-is DFS walk and break G1
+ * even when both winding senses still score equal.
+ */
 function preferCyclePartition(preferred: Vector3[][], alternate: Vector3[][]): Vector3[][] {
     const a = cyclePartitionScore(preferred);
     const b = cyclePartitionScore(alternate);
@@ -2929,13 +2946,31 @@ function extractOuterBoundaryLoopByAngle(geometry: BufferGeometry): Vector3[] {
 
 /** Add a planar XY cap for one boundary loop using existing mesh vertices where possible. */
 function capBoundaryLoopInPlace(geometry: BufferGeometry, loop: Vector3[]): boolean {
-    if (loop.length < 3) return false;
+    return capBoundaryLoopInPlaceDetailed(geometry, loop).capped;
+}
+
+/**
+ * Cap one boundary loop; reports whether the alternate 4-gon diagonal fallback ran.
+ * Exported for unit tests that must exercise the blocked-diagonal path explicitly.
+ */
+export function capBoundaryLoopInPlaceForTest(
+    geometry: BufferGeometry,
+    loop: Vector3[],
+): { capped: boolean; usedAlternateDiagonal: boolean } {
+    return capBoundaryLoopInPlaceDetailed(geometry, loop);
+}
+
+function capBoundaryLoopInPlaceDetailed(
+    geometry: BufferGeometry,
+    loop: Vector3[],
+): { capped: boolean; usedAlternateDiagonal: boolean } {
+    if (loop.length < 3) return { capped: false, usedAlternateDiagonal: false };
 
     // ShapeUtils expects a CCW contour in XY. Derive orientation from signed area —
     // never from a hardcoded laterality/side label (G3).
     let contour = loop.map((p) => new Vector2(p.x, p.y));
     const area = ShapeUtils.area(contour);
-    if (Math.abs(area) < 1e-6) return false;
+    if (Math.abs(area) < 1e-6) return { capped: false, usedAlternateDiagonal: false };
     if (area < 0) {
         contour = contour.slice().reverse();
         // Keep loopIndices aligned with the CCW contour by reversing the 3D loop too.
@@ -2943,12 +2978,12 @@ function capBoundaryLoopInPlace(geometry: BufferGeometry, loop: Vector3[]): bool
     }
 
     const index = geometry.index;
-    if (!index) return false;
+    if (!index) return { capped: false, usedAlternateDiagonal: false };
 
     const loopIndices: number[] = [];
     for (const p of loop) {
         const vi = vertexIndexForQuantKey(geometry, quantKey(p.x, p.y, p.z));
-        if (vi < 0) return false;
+        if (vi < 0) return { capped: false, usedAlternateDiagonal: false };
         loopIndices.push(vi);
     }
 
@@ -3022,6 +3057,7 @@ function capBoundaryLoopInPlace(geometry: BufferGeometry, loop: Vector3[]): bool
     }
 
     let added = triangulated.length > 0 ? tryTriangulation(triangulated) : 0;
+    let usedAlternateDiagonal = false;
 
     // Remapped XY can make ShapeUtils pick a diagonal that already exists in the
     // mesh (count≥2). Fall back to the alternate quad diagonal — only when the
@@ -3039,13 +3075,16 @@ function capBoundaryLoopInPlace(geometry: BufferGeometry, loop: Vector3[]): bool
         ];
         for (const tris of altDiags) {
             added = tryTriangulation(tris);
-            if (added > 0) break;
+            if (added > 0) {
+                usedAlternateDiagonal = true;
+                break;
+            }
         }
     }
 
-    if (newIdx.length === indexCountBefore) return false;
+    if (newIdx.length === indexCountBefore) return { capped: false, usedAlternateDiagonal: false };
     geometry.setIndex(newIdx);
-    return true;
+    return { capped: true, usedAlternateDiagonal };
 }
 
 /**
@@ -3388,22 +3427,29 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
             bodyVertexCount,
         );
 
-        // Dual-winding bottom partition may prefer the opposite face winding. The top
-        // rim walk still follows as-is winding; flip top faces so rim/bridge agree
-        // (LEFT / odd-parity reorient). As-is winners (RIGHT/RAW) skip this — G1.
-        if (botRim.usedOppositeWinding) {
-            flipTriangleWindingInVertexRange(parentWorking, 0, topVertexCount);
+        // Dual-winding bottom partition may prefer the opposite face winding.
+        // Keep as-is face winding on the output solid (outward-correct after
+        // reorient). Flipping top faces permanently cancels signed volume.
+        // Instead: extract the top rim from a TEMPORARY top-flipped copy (that
+        // walk picks the coincident-vertex sequence that makes the bridge
+        // manifold), then bridge against the unflipped shell with shell-aware
+        // emit. As-is winners (RIGHT/RAW) skip this — G1.
+        const useOppositeBridgeAlign = botRim.usedOppositeWinding;
+        let topOrdered = extractOrderedBoundaryLoopWithIndices(topSub);
+        let shellDirectedEdges: Set<string> | undefined;
+        if (useOppositeBridgeAlign) {
+            const tmp = parentWorking.clone();
+            flipTriangleWindingInVertexRange(tmp, 0, topVertexCount);
+            const tmpTop = submeshByVertexRange(tmp, 0, topVertexCount);
+            topOrdered = extractOrderedBoundaryLoopWithIndices(tmpTop);
+            tmpTop.dispose();
+            tmp.dispose();
+            shellDirectedEdges = collectShellDirectedEdges(parentWorking);
             if (typeof console !== "undefined") {
-                console.log("[MESH-CLOSE] flipped top winding to match opposite bottom cycle partition");
+                console.log(
+                    "[MESH-CLOSE] opposite cycle partition — temp top-flip rim extract + shell-aware bridge (faces unflipped)",
+                );
             }
-        }
-
-        const topSubForRim = botRim.usedOppositeWinding
-            ? submeshByVertexRange(parentWorking, 0, topVertexCount)
-            : topSub;
-        const topOrdered = extractOrderedBoundaryLoopWithIndices(topSubForRim);
-        if (botRim.usedOppositeWinding && topSubForRim !== topSub) {
-            topSubForRim.dispose();
         }
 
         const dedupedTop = dedupeConsecutiveLoopIndices(topOrdered.positions, topOrdered.indices);
@@ -3473,6 +3519,7 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
                 botRimN,
                 getPosition,
                 centroid,
+                shellDirectedEdges,
             );
             // If >5% of quads are significantly non-planar, fall back to the
             // two-pointer walk on the original (pre-resample) loops.
@@ -3501,6 +3548,7 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
                     getPosition,
                     centroid,
                     twoPointerDiag,
+                    shellDirectedEdges,
                 );
             } else {
                 bridgeFaces = guarded.faces;
@@ -3524,6 +3572,8 @@ export function closeGlbInsoleToSolid(geometry: BufferGeometry): BufferGeometry 
                 botIndices,
                 getPosition,
                 centroid,
+                BRIDGE_DP_OFFSET_WINDOW,
+                shellDirectedEdges,
             );
         }
 
