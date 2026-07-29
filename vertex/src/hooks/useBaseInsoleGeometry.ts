@@ -170,7 +170,13 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     useEffect(() => {
         const raw = baseGeoRef.current;
         if (!assetId || !raw) return;
-        const thicknessMm = thicknessPreview ?? design.thicknessMm;
+        // Paired workspace: per-side committed thickness (matches export path).
+        const committedThickness = design.paired
+            ? side === "left"
+                ? design.paired.leftThicknessMm
+                : design.paired.rightThicknessMm
+            : design.thicknessMm;
+        const thicknessMm = thicknessPreview ?? committedThickness;
         const field = baseModifierField(design, side, thicknessMm);
         const mergedDepth = field.corrections.heelCupDepthMm;
         // Skip smoothing while dragging for responsiveness; relax once when idle.

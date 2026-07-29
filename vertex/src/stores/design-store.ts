@@ -425,21 +425,24 @@ export const useDesignStore = create<DesignStore>()(
                     const isPaired = !!s.design.paired;
                     const linked = isPaired ? s.design.paired!.linked : s.design.corrections.linked;
                     if (isPaired && s.design.paired) {
-                        // Per-side thickness for paired workspace
+                        // Per-side thickness for paired workspace. Corrections live
+                        // top-level (paired holds only thickness/method/base) — reading
+                        // a non-existent paired.left here used to throw and silently
+                        // swallow every thickness change in paired mode.
                         const safe = constrainSideCorrections(
-                            s.design.paired.left.corrections || defaultSideCorrections(),
+                            s.design.corrections.left,
                             thicknessMm,
-                        ).thicknessMm; // approximate
+                        ).thicknessMm;
                         const next = {
                             ...s.design.paired,
-                            leftThicknessMm: linked ? safe : thicknessMm, // simplistic
-                            rightThicknessMm: linked ? safe : thicknessMm,
+                            leftThicknessMm: safe,
+                            rightThicknessMm: safe,
                         };
                         return {
                             design: {
                                 ...s.design,
                                 thicknessMm: safe, // legacy compat
-                                paired: next as any,
+                                paired: next,
                             },
                         };
                     }
