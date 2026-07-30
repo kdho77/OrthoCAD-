@@ -1,8 +1,8 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import * as THREE from "three";
 import type { BufferGeometry } from "three";
+import * as THREE from "three";
 import { detectArchSideSign } from "@/lib/geometry/base-modifier";
 import { deriveNativeShellThicknessDatum } from "@/lib/geometry/native-shell-thickness";
 import type { Side } from "@/types";
@@ -84,6 +84,29 @@ export interface HeightDatumDelta {
     plantarPlaneZ: number;
 }
 
+/** T12 — separate rigid translation from tilt so they are never re-conflated. */
+export interface HeightDatumDecomposition {
+    /** Plane angle (degrees). */
+    rotationDeg: number;
+    /** Axis of rotation (unit), or null when planes are parallel within 1e-9. */
+    rotationAxis: THREE.Vector3 | null;
+    /**
+     * Rigid translation along reoriented +Z (mm): B-plane height above plantar
+     * after the linear tilt relative to the heel station is removed.
+     * Uniform across heel / arch / met within 0.01mm when the offset field is
+     * exactly a plane (shell thickness + tilt).
+     */
+    translationMm: number;
+    /** Per-station translation after tilt removal (should match translationMm). */
+    translationAtStationsMm: {
+        heel: number;
+        archApex: number;
+        met: number;
+    };
+    /** Max |T_station − T_heel| after tilt removal (mm). */
+    translationUniformityMm: number;
+}
+
 const FOREFOOT_U_MIN = 0.55;
 const FOREFOOT_U_MAX = 0.95;
 const HEEL_U_MAX = 1 / 3;
@@ -129,7 +152,10 @@ function requireTopSplit(base: BufferGeometry): {
     return { arr: pos.array as Float32Array, topN };
 }
 
-function topBounds(arr: Float32Array, topN: number): {
+function topBounds(
+    arr: Float32Array,
+    topN: number,
+): {
     minX: number;
     maxX: number;
     minY: number;
@@ -184,10 +210,7 @@ export function deriveMedialWidthSign(base: BufferGeometry): number {
         }
     }
     if (posN === 0 || negN === 0) {
-        throw new MarkerFrameError(
-            "laterality_mismatch",
-            "Cannot derive medial sign: empty midfoot half",
-        );
+        throw new MarkerFrameError("laterality_mismatch", "Cannot derive medial sign: empty midfoot half");
     }
     const diff = posSum / posN - negSum / negN;
     if (Math.abs(diff) < 1e-6) {
@@ -306,22 +329,8 @@ export function deriveBaseLandmarks(
     const B3 = new THREE.Vector3(hSx / hN, hSy / hN, hSz / hN);
 
     // B1/B2 — independent crest centroids (C2). Medial score = y * medialWidthSign.
-    const medial = crestCentroid(
-        arr,
-        topN,
-        minX,
-        lengthMm,
-        (y) => y * medialWidthSign,
-        CREST_BAND_MM,
-    );
-    const lateral = crestCentroid(
-        arr,
-        topN,
-        minX,
-        lengthMm,
-        (y) => -y * medialWidthSign,
-        CREST_BAND_MM,
-    );
+    const medial = crestCentroid(arr, topN, minX, lengthMm, (y) => y * medialWidthSign, CREST_BAND_MM);
+    const lateral = crestCentroid(arr, topN, minX, lengthMm, (y) => -y * medialWidthSign, CREST_BAND_MM);
     const B1 = medial.centroid;
     const B2 = lateral.centroid;
 
@@ -369,7 +378,7 @@ export function buildMarkerFrame(landmarks: BaseLandmarks, assetId = ""): Marker
     const { B1, B2, B3 } = landmarks;
     const v2 = new THREE.Vector3().subVectors(B2, B3);
     const v1 = new THREE.Vector3().subVectors(B1, B3);
-    let zAxis = new THREE.Vector3().crossVectors(v2, v1);
+    const zAxis = new THREE.Vector3().crossVectors(v2, v1);
     if (zAxis.lengthSq() < 1e-12) {
         throw new MarkerFrameError("degenerate_plane", "B1/B2/B3 do not span a plane");
     }
@@ -537,10 +546,7 @@ function planeSignedDistance(
  * Phase 1C — angle / offset between B-plane and the current AABB plantar datum.
  * Read-only use of deriveNativeShellThicknessDatum.
  */
-export function measureHeightDatumDelta(
-    rawBase: BufferGeometry,
-    frame: MarkerFrame,
-): HeightDatumDelta {
+export function measureHeightDatumDelta(rawBase: BufferGeometry, frame: MarkerFrame): HeightDatumDelta {
     const datum = deriveNativeShellThicknessDatum(rawBase);
     if (!datum) {
         throw new MarkerFrameError(
@@ -573,8 +579,7 @@ export function measureHeightDatumDelta(
         const nx = bNormal.x;
         const ny = bNormal.y;
         return (
-            frame.landmarks.B3.z -
-            (nx * (x - frame.landmarks.B3.x) + ny * (y - frame.landmarks.B3.y)) / nz
+            frame.landmarks.B3.z - (nx * (x - frame.landmarks.B3.x) + ny * (y - frame.landmarks.B3.y)) / nz
         );
     };
 
@@ -626,6 +631,76 @@ export function measureHeightDatumDelta(
 }
 
 /**
+ * T12 — decompose B-plane vs plantar into rigid +Z translation and tilt.
+ * Does NOT project landmarks toward plantarPlaneZ.
+ */
+export function decomposeHeightDatumRelationship(
+    rawBase: BufferGeometry,
+    frame: MarkerFrame,
+): HeightDatumDecomposition {
+    const delta = measureHeightDatumDelta(rawBase, frame);
+    const bNormal = frame.zAxis.clone().normalize();
+    const aabbNormal = new THREE.Vector3(0, 0, 1);
+    const axis = new THREE.Vector3().crossVectors(aabbNormal, bNormal);
+    const axisLen = axis.length();
+    const rotationAxis = axisLen > 1e-12 ? axis.multiplyScalar(1 / axisLen) : null;
+
+    const nz = bNormal.z;
+    if (Math.abs(nz) < 1e-9) {
+        throw new MarkerFrameError("degenerate_plane", "B-plane normal is horizontal");
+    }
+    const slopeX = -bNormal.x / nz;
+    const slopeY = -bNormal.y / nz;
+
+    const heel = frame.landmarks.B3;
+    const { arr, topN } = requireTopSplit(rawBase);
+    const { minX, lengthMm } = topBounds(arr, topN);
+    let archSx = 0;
+    let archSy = 0;
+    let archN = 0;
+    for (let i = 0; i < topN; i++) {
+        const u = (arr[i * 3]! - minX) / lengthMm;
+        if (Math.abs(u - ARCH_APEX_U) > 0.02) continue;
+        archSx += arr[i * 3]!;
+        archSy += arr[i * 3 + 1]!;
+        archN++;
+    }
+    const arch = {
+        x: archN > 0 ? archSx / archN : minX + ARCH_APEX_U * lengthMm,
+        y: archN > 0 ? archSy / archN : 0,
+    };
+    const met = {
+        x: 0.5 * (frame.landmarks.B1.x + frame.landmarks.B2.x),
+        y: 0.5 * (frame.landmarks.B1.y + frame.landmarks.B2.y),
+    };
+
+    const zOnB = (x: number, y: number) =>
+        heel.z - (bNormal.x * (x - heel.x) + bNormal.y * (y - heel.y)) / nz;
+
+    const offsetAt = (x: number, y: number) => zOnB(x, y) - delta.plantarPlaneZ;
+    // Tilt relative to heel: Δz from plane slopes (heel pivot → tilt contribution 0).
+    const tiltFromHeel = (x: number, y: number) => slopeX * (x - heel.x) + slopeY * (y - heel.y);
+
+    const tHeel = offsetAt(heel.x, heel.y) - tiltFromHeel(heel.x, heel.y);
+    const tArch = offsetAt(arch.x, arch.y) - tiltFromHeel(arch.x, arch.y);
+    const tMet = offsetAt(met.x, met.y) - tiltFromHeel(met.x, met.y);
+
+    const translationUniformityMm = Math.max(
+        Math.abs(tArch - tHeel),
+        Math.abs(tMet - tHeel),
+        Math.abs(tArch - tMet),
+    );
+
+    return {
+        rotationDeg: delta.angleDeg,
+        rotationAxis,
+        translationMm: tHeel,
+        translationAtStationsMm: { heel: tHeel, archApex: tArch, met: tMet },
+        translationUniformityMm,
+    };
+}
+
+/**
  * Shared-station widest-section search — Phase 0 plateau tombstone helper.
  * Returns stations within 1mm of the max width in the forefoot window.
  * NOT used for landmark derivation.
@@ -661,7 +736,5 @@ export function sharedStationWidthPlateau(
     widths.sort((a, b) => b.widthMm - a.widthMm);
     if (widths.length === 0) return [];
     const maxW = widths[0]!.widthMm;
-    return widths
-        .filter((w) => maxW - w.widthMm <= 1.0)
-        .map((w) => ({ u: w.u, widthMm: w.widthMm }));
+    return widths.filter((w) => maxW - w.widthMm <= 1.0).map((w) => ({ u: w.u, widthMm: w.widthMm }));
 }

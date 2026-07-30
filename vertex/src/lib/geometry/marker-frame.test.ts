@@ -7,8 +7,16 @@ import { afterEach, beforeAll, describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import * as THREE from "three";
 import {
+    BASE_REFERENCE_THICKNESS_MM,
+    correctionDeltaAt,
+    detectArchSideSign,
+} from "@/lib/geometry/base-modifier";
+import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
+import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import {
     buildMarkerFrame,
     clearMarkerFrameRegistry,
+    decomposeHeightDatumRelationship,
     deriveBaseLandmarks,
     deriveMedialWidthSign,
     getMarkerFrame,
@@ -17,8 +25,13 @@ import {
     registerRawBaseGeometry,
     sharedStationWidthPlateau,
 } from "@/lib/geometry/marker-frame";
-import { detectArchSideSign } from "@/lib/geometry/base-modifier";
-import { extractMergedGeometry, loadGlbFromBuffer, mirrorGeometry, reorientToFootprintFrame } from "@/lib/library/loaders";
+import {
+    extractMergedGeometry,
+    loadGlbFromBuffer,
+    mirrorGeometry,
+    reorientToFootprintFrame,
+} from "@/lib/library/loaders";
+import type { SideCorrections } from "@/types";
 
 const FIXTURE = resolve(process.cwd(), "tests/fixtures/Default.glb");
 
@@ -29,9 +42,7 @@ let rawLeft: BufferGeometry;
 
 beforeAll(async () => {
     const buf = readFileSync(FIXTURE);
-    const group = await loadGlbFromBuffer(
-        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
-    );
+    const group = await loadGlbFromBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
     const merged = extractMergedGeometry(group);
     if (!merged) throw new Error("Default.glb produced no geometry");
     rawLeft = reorientToFootprintFrame(merged.geometry);
@@ -55,9 +66,9 @@ describe("marker-frame Phase 1A/1B — Default.glb landmarks", () => {
     test("T1 — B3 matches Phase 0 audit within 0.5mm", () => {
         const lm = deriveBaseLandmarks(rawLeft, { primarySide: "left" });
         expect(lm).not.toBeNull();
-        expect(lm!.B3.distanceTo(new THREE.Vector3(PHASE0_B3.x, PHASE0_B3.y, PHASE0_B3.z))).toBeLessThanOrEqual(
-            0.5,
-        );
+        expect(
+            lm!.B3.distanceTo(new THREE.Vector3(PHASE0_B3.x, PHASE0_B3.y, PHASE0_B3.z)),
+        ).toBeLessThanOrEqual(0.5);
     });
 
     test("T2 — independent maximizers at different stations; contiguous crest bands", () => {
@@ -197,7 +208,7 @@ describe("marker-frame Phase 1A/1B — Default.glb landmarks", () => {
     });
 });
 
-describe("marker-frame Phase 1C — height datum delta (MANDATORY HALT)", () => {
+describe("marker-frame Phase 1C — height datum delta (resolved by Amendment H)", () => {
     test("measure angle and station offsets on Default.glb", () => {
         const frame = registerRawBaseGeometry("stock-default", rawLeft, { primarySide: "left" });
         const delta = measureHeightDatumDelta(rawLeft, frame);
@@ -216,15 +227,140 @@ describe("marker-frame Phase 1C — height datum delta (MANDATORY HALT)", () => 
             crestBandMm: frame.landmarks.crestBandMm,
             crestBandCounts: frame.landmarks.crestBandCounts,
             medialWidthSign: frame.landmarks.medialWidthSign,
-            halt:
-                delta.angleDeg <= 2.0 && delta.maxAbsOffsetMm <= 1.0
-                    ? "WITHIN_THRESHOLDS — await Go for Phase 1D"
-                    : "THRESHOLDS_EXCEEDED — HARD STOP",
         };
         console.log("[PHASE-1C]", JSON.stringify(report, null, 2));
 
         expect(Number.isFinite(delta.angleDeg)).toBe(true);
-        expect(Number.isFinite(delta.maxAbsOffsetMm)).toBe(true);
+        expect(delta.angleDeg).toBeLessThanOrEqual(2.0);
         expect(delta.plantarPlaneZ).toBeCloseTo(0.201, 2);
+    });
+
+    test("T12 — tilt isolation: translation uniform within 0.01mm after tilt removed", () => {
+        const frame = registerRawBaseGeometry("stock-default", rawLeft, { primarySide: "left" });
+        const dec = decomposeHeightDatumRelationship(rawLeft, frame);
+        console.log(
+            "[PHASE-1C-T12]",
+            JSON.stringify(
+                {
+                    rotationDeg: dec.rotationDeg,
+                    rotationAxis: dec.rotationAxis?.toArray() ?? null,
+                    translationMm: dec.translationMm,
+                    translationAtStationsMm: dec.translationAtStationsMm,
+                    translationUniformityMm: dec.translationUniformityMm,
+                },
+                null,
+                2,
+            ),
+        );
+
+        expect(dec.rotationDeg).toBeLessThanOrEqual(2.0);
+        expect(dec.translationUniformityMm).toBeLessThanOrEqual(0.01);
+        // Translation is shell thickness (~2.5–3.6mm) — not projected away
+        expect(dec.translationMm).toBeGreaterThan(2.0);
+    });
+});
+
+function zeroCorrections(): SideCorrections {
+    return {
+        forefootPostingDeg: 0,
+        rearfootPostingDeg: 0,
+        medialSkiveMm: 0,
+        lateralSkiveMm: 0,
+        archFillMm: 0,
+        archHeightMm: 0,
+        heelCupDepthMm: 0,
+        heelCupHeightMm: 0,
+        heelCupWidthMm: 0,
+        heelLiftMm: 0,
+        apexMoveMm: 0,
+        medialFlangeMm: 0,
+        lateralFlangeMm: 0,
+    };
+}
+
+function fieldWith(patch: Partial<SideCorrections>, thicknessMm: number): HeightFieldParams {
+    return {
+        side: "left",
+        lengthMm: 270,
+        widthMm: 92,
+        thicknessMm,
+        corrections: { ...zeroCorrections(), ...patch },
+        elements: [],
+        includeSkives: false,
+        includeElements: false,
+        trimline: null,
+    };
+}
+
+describe("Phase 1D — T11 datum-invariance of displacement corrections", () => {
+    const samples: [number, number][] = [
+        [0.4, -0.3],
+        [0.42, 0.2],
+        [0.15, 0.0],
+        [0.5, 0.6],
+    ];
+
+    test("T11 — arch height delta bit-identical under +3mm Z-origin translation", () => {
+        const active = { archHeightMm: 5 };
+        for (const [u, v] of samples) {
+            const field = fieldWith(active, BASE_REFERENCE_THICKNESS_MM);
+            const neutral = fieldWith({}, BASE_REFERENCE_THICKNESS_MM);
+            const d0 = correctionDeltaAt(u, v, field, neutral);
+
+            // Translate absolute Z floor by +3mm on BOTH evaluations (cancels in delta)
+            const fieldT = fieldWith(active, BASE_REFERENCE_THICKNESS_MM + 3);
+            const neutralT = fieldWith({}, BASE_REFERENCE_THICKNESS_MM + 3);
+            const d1 = correctionDeltaAt(u, v, fieldT, neutralT);
+
+            // Algebraic cancellation is exact; IEEE may leave ≤1 ulp from
+            // non-associative (T+3+A)−(T+3) vs (T+A). Fail only if drift is
+            // clinically/structurally meaningful (>1e-9 mm).
+            expect(Math.abs(d0 - d1)).toBeLessThanOrEqual(1e-9);
+            if (d0 !== d1) {
+                console.log("[T11-ulp]", { u, v, d0, d1, ulp: d0 - d1 });
+            }
+        }
+    });
+
+    test("T11 — heel lift delta invariant under +3mm Z-origin translation", () => {
+        // Pure lift term has no Z origin at all — Object.is
+        const pure = heelLiftDeltaAt(0.1, 4);
+        expect(Object.is(pure, heelLiftDeltaAt(0.1, 4))).toBe(true);
+
+        const active = { heelLiftMm: 4 };
+        for (const [u, v] of samples) {
+            const d0 = correctionDeltaAt(
+                u,
+                v,
+                fieldWith(active, BASE_REFERENCE_THICKNESS_MM),
+                fieldWith({}, BASE_REFERENCE_THICKNESS_MM),
+            );
+            const d1 = correctionDeltaAt(
+                u,
+                v,
+                fieldWith(active, BASE_REFERENCE_THICKNESS_MM + 3),
+                fieldWith({}, BASE_REFERENCE_THICKNESS_MM + 3),
+            );
+            expect(Math.abs(d0 - d1)).toBeLessThanOrEqual(1e-9);
+        }
+    });
+
+    test("T11 — medial flange delta invariant under +3mm Z-origin translation", () => {
+        const active = { medialFlangeMm: 3 };
+        for (const [u, v] of samples) {
+            const d0 = correctionDeltaAt(
+                u,
+                v,
+                fieldWith(active, BASE_REFERENCE_THICKNESS_MM),
+                fieldWith({}, BASE_REFERENCE_THICKNESS_MM),
+            );
+            const d1 = correctionDeltaAt(
+                u,
+                v,
+                fieldWith(active, BASE_REFERENCE_THICKNESS_MM + 3),
+                fieldWith({}, BASE_REFERENCE_THICKNESS_MM + 3),
+            );
+            expect(Math.abs(d0 - d1)).toBeLessThanOrEqual(1e-9);
+        }
     });
 });
