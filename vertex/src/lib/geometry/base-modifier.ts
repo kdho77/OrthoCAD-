@@ -19,6 +19,10 @@ import {
     SMOOTH_INWARD_LIMIT_MM,
     submeshByVertexRange,
 } from "@/lib/geometry/mesh-close";
+import {
+    deriveNativeShellThicknessDatum,
+    thicknessOffsetFromDatum,
+} from "@/lib/geometry/native-shell-thickness";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
 // Base + Modifier deformation core (see docs/base-modifier-architecture.md).
@@ -1649,6 +1653,27 @@ export function applyBaseModifiers(
     const medialSign = field.side === "left" ? -1 : 1;
     const widthSign = -(detectArchSideSign(base) * medialSign);
 
+    // Thickness-datum remap (clinical): BASE_REFERENCE_THICKNESS_MM stays the
+    // neutral-field zero for correction deltas. The physical lift is sourced from
+    // derived nativeMinClearance so labelled thicknessMm == delivered clearance.
+    // Epsilon 1e-9 matches thicknessLiftActive; ≪ slider step (0.1 mm).
+    const THICKNESS_DATUM_EPS_MM = 1e-9;
+    let thicknessMmForDelta = field.thicknessMm;
+    let thicknessDatumClamped = false;
+    let thicknessDatumNativeMm: number | null = null;
+    if (isMultiMesh && topVertexCount > 0) {
+        const datum = deriveNativeShellThicknessDatum(base);
+        if (datum) {
+            thicknessDatumNativeMm = datum.nativeMinClearanceMm;
+            const floored = Math.max(field.thicknessMm, datum.nativeMinClearanceMm);
+            thicknessDatumClamped = floored - field.thicknessMm > THICKNESS_DATUM_EPS_MM;
+            const { offsetMm } = thicknessOffsetFromDatum(floored, datum);
+            // Remap so heightAt(t') − heightAt(BASE_REFERENCE) ≈ offsetMm while
+            // neutralField / fieldForBottomSync remain pinned at BASE_REFERENCE.
+            thicknessMmForDelta = BASE_REFERENCE_THICKNESS_MM + offsetMm;
+        }
+    }
+
     // Heel-cup depth is handled below as a dedicated tangent displacement field
     // (monotone, single-sign — see getHeelCupDepthFrame), so it is stripped from
     // the vertical height-field delta here, exactly like heel-cup width (which
@@ -1659,6 +1684,7 @@ export function applyBaseModifiers(
     const depthMm = field.corrections.heelCupDepthMm;
     const fieldForDelta: HeightFieldParams = {
         ...field,
+        thicknessMm: thicknessMmForDelta,
         includeSkives: false,
         corrections: {
             ...field.corrections,
@@ -2099,6 +2125,16 @@ export function applyBaseModifiers(
     geometry.computeVertexNormals();
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
+    if (thicknessDatumNativeMm !== null) {
+        // Diagnostic only: STL writes positions; GLB export overwrites mesh.userData.
+        // Do not disturb topVertexCount / isMultiMeshBase.
+        (geometry.userData as Record<string, unknown>).thicknessDatum = {
+            nativeMinClearanceMm: thicknessDatumNativeMm,
+            requestedThicknessMm: field.thicknessMm,
+            flooredThicknessMm: Math.max(field.thicknessMm, thicknessDatumNativeMm),
+            clamped: thicknessDatumClamped,
+        };
+    }
     return geometry;
 }
 
