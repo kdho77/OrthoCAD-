@@ -1,10 +1,11 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, test } from "@rstest/core";
-import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import * as THREE from "three";
 import { BufferAttribute, BufferGeometry } from "three";
+import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import {
     extractBoundaryChainsForTest,
     sealInternalSlits,
@@ -14,29 +15,31 @@ import {
 } from "@/lib/geometry/bottom-mesh-clean";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
-import * as THREE from "three";
-
-const DEFAULT_GLB_URL =
-    "https://wstneucimlemaokoyjwh.supabase.co/storage/v1/object/public/stock-bases/Templates/Default.glb";
-const DEFAULT_GLB_CACHE = "/tmp/Default.glb";
+import { DEFAULT_GLB_FIXTURE_PATH } from "../../../../tests/helpers/load-production-default-glb";
 
 async function loadDefaultGlbBuffer(): Promise<ArrayBuffer> {
-    if (!existsSync(DEFAULT_GLB_CACHE)) {
-        const res = await fetch(DEFAULT_GLB_URL);
-        if (!res.ok) throw new Error(`Failed to download Default.glb (${res.status})`);
-        writeFileSync(DEFAULT_GLB_CACHE, Buffer.from(await res.arrayBuffer()));
-    }
-    return readFileSync(DEFAULT_GLB_CACHE).buffer.slice(0);
+    const buf = readFileSync(DEFAULT_GLB_FIXTURE_PATH);
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
 /** Two triangles sharing only V0 — V0 has four open boundary half-edges (degree-4 node). */
 function makeDegree4HubGeometry(): BufferGeometry {
     const positions = new Float32Array([
-        0, 0, 0, // 0 hub
-        1, 0, 0, // 1
-        0, 1, 0, // 2
-        -1, 0, 0, // 3
-        0, -1, 0, // 4
+        0,
+        0,
+        0, // 0 hub
+        1,
+        0,
+        0, // 1
+        0,
+        1,
+        0, // 2
+        -1,
+        0,
+        0, // 3
+        0,
+        -1,
+        0, // 4
     ]);
     const geometry = new BufferGeometry();
     geometry.setAttribute("position", new BufferAttribute(positions, 3));
@@ -50,23 +53,49 @@ function makeDegree4HubGeometry(): BufferGeometry {
  */
 function makeTwoSlitDegree4Geometry(): BufferGeometry {
     const positions = new Float32Array([
-        0, 0, 0, // 0 hub
-        0.02, 0, 0, // 1 slit A
-        0, 0.02, 0, // 10 slit A tip
-        -2, 0, 0, // 2 outer flap
-        -2, 1, 0, // 20
-        -0.02, 0, 0, // 4 slit B
-        0, -0.02, 0, // 50 slit B tip
-        2, 0, 0, // 6 outer flap
-        2, 1, 0, // 70
+        0,
+        0,
+        0, // 0 hub
+        0.02,
+        0,
+        0, // 1 slit A
+        0,
+        0.02,
+        0, // 10 slit A tip
+        -2,
+        0,
+        0, // 2 outer flap
+        -2,
+        1,
+        0, // 20
+        -0.02,
+        0,
+        0, // 4 slit B
+        0,
+        -0.02,
+        0, // 50 slit B tip
+        2,
+        0,
+        0, // 6 outer flap
+        2,
+        1,
+        0, // 70
     ]);
     const geometry = new BufferGeometry();
     geometry.setAttribute("position", new BufferAttribute(positions, 3));
     geometry.setIndex([
-        0, 1, 10, // slit A flap
-        0, 2, 20, // outer flap (keeps V0–2 open)
-        0, 4, 50, // slit B flap
-        0, 6, 70, // outer flap (keeps V0–6 open)
+        0,
+        1,
+        10, // slit A flap
+        0,
+        2,
+        20, // outer flap (keeps V0–2 open)
+        0,
+        4,
+        50, // slit B flap
+        0,
+        6,
+        70, // outer flap (keeps V0–6 open)
     ]);
     return geometry;
 }
@@ -137,7 +166,10 @@ describe("bottom-mesh-clean", () => {
 
     test("extractMergedGeometry applies sealBottomSlits only when requested", async () => {
         const top = new THREE.BufferGeometry();
-        top.setAttribute("position", new THREE.BufferAttribute(new Float32Array([0, 0, 1, 1, 0, 1, 0, 1, 1]), 3));
+        top.setAttribute(
+            "position",
+            new THREE.BufferAttribute(new Float32Array([0, 0, 1, 1, 0, 1, 0, 1, 1]), 3),
+        );
         top.setIndex([0, 1, 2]);
 
         const bottom = new THREE.BufferGeometry();
@@ -199,11 +231,7 @@ describe("bottom-mesh-clean", () => {
         try {
             const result = sealInternalSlits(geometry);
             expect(result).toBeInstanceOf(BufferGeometry);
-            expect(
-                warnSpy.mock.calls.some((call) =>
-                    String(call[0]).includes("MAX_WALK_STEPS"),
-                ),
-            ).toBe(true);
+            expect(warnSpy.mock.calls.some((call) => String(call[0]).includes("MAX_WALK_STEPS"))).toBe(true);
             if (result !== geometry) result.dispose();
         } finally {
             setMaxWalkStepsForTesting(null);

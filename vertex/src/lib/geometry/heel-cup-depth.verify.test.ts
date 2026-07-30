@@ -1,22 +1,18 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "@rstest/core";
 import type { Box3 } from "three";
-import { applyBaseModifiers, BASE_BOTTOM_DELTA_TOLERANCE_MM, correctionDeltaAt } from "@/lib/geometry/base-modifier";
 import {
-    bump,
-    heelCupDepthBowlDelta,
-    type HeightFieldParams,
-    smoothstep,
-} from "@/lib/geometry/height-field";
+    applyBaseModifiers,
+    BASE_BOTTOM_DELTA_TOLERANCE_MM,
+    correctionDeltaAt,
+} from "@/lib/geometry/base-modifier";
+import { bump, type HeightFieldParams, heelCupDepthBowlDelta, smoothstep } from "@/lib/geometry/height-field";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import type { SideCorrections } from "@/types";
-
-const DEFAULT_GLB_URL =
-    "https://wstneucimlemaokoyjwh.supabase.co/storage/v1/object/public/stock-bases/Templates/Default.glb";
-const DEFAULT_GLB_CACHE = "/tmp/Default.glb";
+import { DEFAULT_GLB_FIXTURE_PATH } from "../../../../tests/helpers/load-production-default-glb";
 
 /** Regression ceiling from PR #105 stress analysis (proven default ~79.6, legacy ~105.7). */
 const FOLD_LOCUS_MAX_GRADIENT_CEILING = 85;
@@ -25,12 +21,8 @@ const DEPTH_TEST_MM = 5;
 const CLEAN_ZONE_REL_TOLERANCE = 0.15;
 
 async function loadDefaultGlbBuffer(): Promise<ArrayBuffer> {
-    if (!existsSync(DEFAULT_GLB_CACHE)) {
-        const res = await fetch(DEFAULT_GLB_URL);
-        if (!res.ok) throw new Error(`Failed to download Default.glb (${res.status})`);
-        writeFileSync(DEFAULT_GLB_CACHE, Buffer.from(await res.arrayBuffer()));
-    }
-    return readFileSync(DEFAULT_GLB_CACHE).buffer.slice(0);
+    const buf = readFileSync(DEFAULT_GLB_FIXTURE_PATH);
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
 function neutralCorrections(): SideCorrections {
@@ -100,12 +92,10 @@ function maxFoldLocusGradient(depthMm: number): number {
         for (let ia = 0; ia <= nav; ia++) {
             const av = av0 + (ia / nav) * (av1 - av0);
             const fu =
-                (heelCupDepthBowlDelta(u + du, av, depthMm) -
-                    heelCupDepthBowlDelta(u - du, av, depthMm)) /
+                (heelCupDepthBowlDelta(u + du, av, depthMm) - heelCupDepthBowlDelta(u - du, av, depthMm)) /
                 (2 * du);
             const fa =
-                (heelCupDepthBowlDelta(u, av + dav, depthMm) -
-                    heelCupDepthBowlDelta(u, av - dav, depthMm)) /
+                (heelCupDepthBowlDelta(u, av + dav, depthMm) - heelCupDepthBowlDelta(u, av - dav, depthMm)) /
                 (2 * dav);
             maxCombined = Math.max(maxCombined, Math.hypot(fu, fa));
         }

@@ -1,44 +1,25 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "@rstest/core";
+import * as THREE from "three";
+import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { sealInternalSlitsSafe } from "@/lib/geometry/bottom-mesh-clean";
 import {
     ensureWatertightForExport,
     extractAllBoundaryCyclesForTest,
     extractBoundaryLoops,
     validateManifold,
 } from "@/lib/geometry/mesh-close";
-import { sealInternalSlitsSafe } from "@/lib/geometry/bottom-mesh-clean";
-import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
-import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import * as THREE from "three";
-
-const DEFAULT_GLB_URL =
-    "https://wstneucimlemaokoyjwh.supabase.co/storage/v1/object/public/stock-bases/Templates/Default.glb";
-const DEFAULT_GLB_CACHE = "/tmp/Default.glb";
-
-async function loadDefaultGlbBuffer(): Promise<ArrayBuffer> {
-    if (!existsSync(DEFAULT_GLB_CACHE)) {
-        const res = await fetch(DEFAULT_GLB_URL);
-        if (!res.ok) throw new Error(`Failed to download Default.glb (${res.status})`);
-        writeFileSync(DEFAULT_GLB_CACHE, Buffer.from(await res.arrayBuffer()));
-    }
-    return readFileSync(DEFAULT_GLB_CACHE).buffer.slice(0);
-}
+import { loadRawDefaultGlb } from "../../../../tests/helpers/load-production-default-glb";
 
 describe("Default.glb stock base closure", () => {
     test("mesh-close path is exercised with correct [top][bottom] vertex split", async () => {
-        const group = await loadGlbFromBuffer(await loadDefaultGlbBuffer());
-        const merged = extractMergedGeometry(group);
-        expect(merged).not.toBeNull();
-        expect(merged!.meshCount).toBe(2);
-        expect(merged!.meshNames[0]).toMatch(/top/i);
-
-        const raw = merged!.geometry;
+        const raw = await loadRawDefaultGlb();
         const topVc = (raw.userData as { topVertexCount: number }).topVertexCount;
         expect(topVc).toBeGreaterThan(40_000);
         expect(raw.getAttribute("position").count).toBeGreaterThan(topVc);
+        expect((raw.userData as { isMultiMeshBase?: boolean }).isMultiMeshBase).toBe(true);
 
         const pre = validateManifold(raw);
         expect(pre.openEdges).toBeGreaterThan(1000);
@@ -58,16 +39,28 @@ describe("Default.glb stock base closure", () => {
     });
 
     test("sealInternalSlitsSafe completes on Default.glb bottom mesh (benchmark)", async () => {
-        const group = await loadGlbFromBuffer(await loadDefaultGlbBuffer());
-        const parts: THREE.BufferGeometry[] = [];
-        group.traverse((obj) => {
-            if (obj instanceof THREE.Mesh && obj.geometry) {
-                parts.push(obj.geometry.clone());
-            }
-        });
-        expect(parts.length).toBeGreaterThanOrEqual(2);
-        let bottomGeometry = mergeVertices(parts[1]!);
-        if (bottomGeometry !== parts[1]) parts[1]!.dispose();
+        const raw = await loadRawDefaultGlb();
+        const topN = (raw.userData as { topVertexCount: number }).topVertexCount;
+        const pos = raw.getAttribute("position")!;
+        const index = raw.index!;
+        const botPositions: number[] = [];
+        const oldToNew = new Map<number, number>();
+        for (let i = topN; i < pos.count; i++) {
+            oldToNew.set(i, botPositions.length / 3);
+            botPositions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+        }
+        const botIndices: number[] = [];
+        for (let t = 0; t < index.count; t += 3) {
+            const a = index.getX(t),
+                b = index.getX(t + 1),
+                c = index.getX(t + 2);
+            if (a < topN || b < topN || c < topN) continue;
+            botIndices.push(oldToNew.get(a)!, oldToNew.get(b)!, oldToNew.get(c)!);
+        }
+        let bottomGeometry = new THREE.BufferGeometry();
+        bottomGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(botPositions), 3));
+        bottomGeometry.setIndex(botIndices);
+        bottomGeometry = mergeVertices(bottomGeometry);
 
         const start = performance.now();
         await sealInternalSlitsSafe(bottomGeometry);
@@ -76,5 +69,6 @@ describe("Default.glb stock base closure", () => {
         expect(elapsed).toBeLessThan(5000);
 
         bottomGeometry.dispose();
+        raw.dispose();
     });
 });
