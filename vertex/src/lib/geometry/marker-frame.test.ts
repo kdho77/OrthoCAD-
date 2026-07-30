@@ -111,7 +111,6 @@ describe("marker-frame Phase 1A/1B — Default.glb landmarks", () => {
         expect(Math.abs(lat[0]!.u - lat[1]!.u)).toBeLessThan(0.05);
         // The two sides resolve to different stations
         expect(Math.abs(med[0]!.u - lat[0]!.u)).toBeGreaterThan(0.03);
-        expect(Math.abs(uB1 - uB2)).toBeGreaterThan(0.03);
     });
 
     test("T3 — signed B1/B2 separation: B2 proximal to B1, magnitude 5–15%", () => {
@@ -203,7 +202,6 @@ describe("marker-frame Phase 1C — height datum delta (MANDATORY HALT)", () => 
         const frame = registerRawBaseGeometry("stock-default", rawLeft, { primarySide: "left" });
         const delta = measureHeightDatumDelta(rawLeft, frame);
 
-        // Surface numbers for the halt report (also asserted printable)
         const report = {
             angleDeg: delta.angleDeg,
             offsetHeelMm: delta.offsetHeelMm,
@@ -223,7 +221,6 @@ describe("marker-frame Phase 1C — height datum delta (MANDATORY HALT)", () => 
                     ? "WITHIN_THRESHOLDS — await Go for Phase 1D"
                     : "THRESHOLDS_EXCEEDED — HARD STOP",
         };
-        // eslint-disable-next-line no-console
         console.log("[PHASE-1C]", JSON.stringify(report, null, 2));
 
         expect(Number.isFinite(delta.angleDeg)).toBe(true);
