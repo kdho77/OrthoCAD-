@@ -3,24 +3,21 @@
 
 // Shell-thickness slider regression suite.
 //
-// Contract (BASE_REFERENCE_THICKNESS_MM): thickness is directional and
-// bottom-anchored. At the reference (3 mm, the design default) the slider is a
-// no-op on a loaded base; above it the TOP mesh lifts by (t − 3) while the
-// plantar bottom sheet stays fixed and the shell wall stretches to follow the
-// raised top rim. The closed solid must remain edge-manifold at 7 mm.
+// Contract (derived plantar datum): thicknessMm is the minimum material
+// clearance of the top sheet above the plantar plane. Lift magnitude is
+// (thicknessMm − nativeMinClearance), while BASE_REFERENCE_THICKNESS_MM remains
+// the neutral-field zero for correction deltas only. Plantar bottom stays fixed;
+// the shell wall stretches via #125's local height ramp.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
-import {
-    applyBaseModifiers,
-    BASE_REFERENCE_THICKNESS_MM,
-    PLANTAR_Z_MAX_MM,
-} from "@/lib/geometry/base-modifier";
+import { applyBaseModifiers, PLANTAR_Z_MAX_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { closeGlbInsoleToSolid, validateManifold } from "@/lib/geometry/mesh-close";
+import { deriveNativeShellThicknessDatum } from "@/lib/geometry/native-shell-thickness";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import type { DesignState, SideCorrections } from "@/types";
 
@@ -67,33 +64,18 @@ function thicknessField(thicknessMm: number): HeightFieldParams {
 }
 
 describe("shell thickness raises the top mesh (bottom-anchored)", () => {
-    test("reference thickness is a no-op on a loaded base", async () => {
+    test("labelled 3.0 mm lifts by (3 − nativeMinClearance), not a no-op", async () => {
+        // FINDING (C5): old expectation "reference thickness is a no-op" encoded
+        // defective (t − 3) semantics. Labelled 3.0 mm must deliver 3.0 mm clearance,
+        // so the top lifts by 3.0 − nativeMinClearance (~1.039 mm on Default.glb).
         const raw = await loadRawDefault();
-        const modified = applyBaseModifiers(raw, thicknessField(BASE_REFERENCE_THICKNESS_MM), 0);
-        const a = raw.getAttribute("position")!.array as Float32Array;
-        const b = modified.getAttribute("position")!.array as Float32Array;
-        let maxDelta = 0;
-        for (let i = 0; i < a.length; i++) {
-            maxDelta = Math.max(maxDelta, Math.abs(b[i]! - a[i]!));
-        }
-        expect(maxDelta).toBeLessThan(1e-4);
-        modified.dispose();
-        raw.dispose();
-    });
-
-    test("7mm lifts every top vertex by ≈4mm; plantar bottom stays fixed", async () => {
-        const raw = await loadRawDefault();
+        const datum = deriveNativeShellThicknessDatum(raw);
+        expect(datum).not.toBeNull();
+        const expectedLift = 3 - datum!.nativeMinClearanceMm;
         const topN = (raw.userData as { topVertexCount: number }).topVertexCount;
-        const total = raw.getAttribute("position").count;
-        expect(topN).toBeGreaterThan(0);
-
-        const t = 7;
-        const expectedLift = t - BASE_REFERENCE_THICKNESS_MM; // 4mm
-        const modified = applyBaseModifiers(raw, thicknessField(t), 0);
+        const modified = applyBaseModifiers(raw, thicknessField(3), 0);
         const a = raw.getAttribute("position")!.array as Float32Array;
         const b = modified.getAttribute("position")!.array as Float32Array;
-
-        // Default.glb thickness axis is Z.
         let minTop = Infinity;
         let maxTop = -Infinity;
         let sumTop = 0;
@@ -104,14 +86,46 @@ describe("shell thickness raises the top mesh (bottom-anchored)", () => {
             sumTop += dz;
         }
         const meanTop = sumTop / topN;
-        // Uniform directional lift: exact (t − reference) away from the soft
-        // floor band; softFloor may absorb a little where the dished baseline
-        // runs low, hence the loose lower bound.
+        // Equal strength to prior lift bounds (was expectedLift=0 / maxDelta<1e-4 no-op).
+        expect(maxTop).toBeLessThanOrEqual(expectedLift + 1e-3);
+        expect(minTop).toBeGreaterThan(expectedLift - 1.0);
+        expect(meanTop).toBeGreaterThan(expectedLift - 0.1);
+        modified.dispose();
+        raw.dispose();
+    });
+
+    test("7mm lifts every top vertex by ≈(7 − native); plantar bottom stays fixed", async () => {
+        const raw = await loadRawDefault();
+        const datum = deriveNativeShellThicknessDatum(raw);
+        expect(datum).not.toBeNull();
+        const topN = (raw.userData as { topVertexCount: number }).topVertexCount;
+        const total = raw.getAttribute("position").count;
+        expect(topN).toBeGreaterThan(0);
+
+        const t = 7;
+        // OLD expectedLift = t - BASE_REFERENCE_THICKNESS_MM = 4
+        // NEW expectedLift = t - nativeMinClearanceMm ≈ 5.03855
+        const expectedLift = t - datum!.nativeMinClearanceMm;
+        const modified = applyBaseModifiers(raw, thicknessField(t), 0);
+        const a = raw.getAttribute("position")!.array as Float32Array;
+        const b = modified.getAttribute("position")!.array as Float32Array;
+
+        let minTop = Infinity;
+        let maxTop = -Infinity;
+        let sumTop = 0;
+        for (let i = 0; i < topN; i++) {
+            const dz = b[i * 3 + 2]! - a[i * 3 + 2]!;
+            if (dz < minTop) minTop = dz;
+            if (dz > maxTop) maxTop = dz;
+            sumTop += dz;
+        }
+        const meanTop = sumTop / topN;
+        // Equal strength to prior bounds (same absolute tolerances vs new expectedLift).
         expect(maxTop).toBeLessThanOrEqual(expectedLift + 1e-3);
         expect(minTop).toBeGreaterThan(expectedLift - 1.0);
         expect(meanTop).toBeGreaterThan(expectedLift - 0.1);
 
-        // Plantar bottom sheet (z ≤ PLANTAR_Z_MAX_MM): fully anchored.
+        // Plantar bottom sheet (z ≤ PLANTAR_Z_MAX_MM): fully anchored — equal strength.
         let maxPlantar = 0;
         let plantarCount = 0;
         for (let i = topN; i < total; i++) {
@@ -128,19 +142,18 @@ describe("shell thickness raises the top mesh (bottom-anchored)", () => {
 
     test("wall lift is a smooth local ramp of base height — no nearest-rim-seed noise", async () => {
         const raw = await loadRawDefault();
+        const datum = deriveNativeShellThicknessDatum(raw);
+        expect(datum).not.toBeNull();
         const topN = (raw.userData as { topVertexCount: number }).topVertexCount;
         const total = raw.getAttribute("position").count;
 
         const t = 7;
-        const expectedLift = t - BASE_REFERENCE_THICKNESS_MM;
+        // OLD expectedLift = 4; NEW = t − nativeMinClearance
+        const expectedLift = t - datum!.nativeMinClearanceMm;
         const modified = applyBaseModifiers(raw, thicknessField(t), 0);
         const a = raw.getAttribute("position")!.array as Float32Array;
         const b = modified.getAttribute("position")!.array as Float32Array;
 
-        // With neutral corrections the bottom delta must be EXACTLY
-        // lift × smoothstep(height ramp) — a pure function of the vertex's own
-        // base z. Any dependence on nearest-rim-sample distance (the source of
-        // the jagged wall edge) shows up as deviation here.
         const smoothstep01 = (x: number) => {
             const c = Math.max(0, Math.min(1, x));
             return c * c * (3 - 2 * c);
@@ -160,8 +173,8 @@ describe("shell thickness raises the top mesh (bottom-anchored)", () => {
                 minWallTopLift = Math.min(minWallTopLift, dz);
             }
         }
+        // Equal strength: maxDev < 1e-3 unchanged; wall-top full-lift bound unchanged.
         expect(maxDev).toBeLessThan(1e-3);
-        // Wall tops reach the full lift so the rim pair stays closed.
         expect(wallTopCount).toBeGreaterThan(100);
         expect(minWallTopLift).toBeGreaterThan(expectedLift - 1e-3);
 
@@ -174,6 +187,7 @@ describe("shell thickness raises the top mesh (bottom-anchored)", () => {
         const modified = applyBaseModifiers(raw, thicknessField(7), 0);
         const closed = closeGlbInsoleToSolid(modified);
         const report = validateManifold(closed);
+        // Equal strength: openEdges/nonManifoldEdges still exactly 0.
         expect(report.openEdges).toBe(0);
         expect(report.nonManifoldEdges).toBe(0);
         closed.dispose();
