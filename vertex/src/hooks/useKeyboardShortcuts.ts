@@ -50,6 +50,10 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
                     meshEdit.cancelTrimlineEdit();
                     return;
                 }
+                if (meshEdit.editMode === "edit-bottom-pattern" && meshEdit.bottomPatternEdit) {
+                    meshEdit.cancelBottomPatternEdit();
+                    return;
+                }
                 selectElement(null);
             }
 
@@ -65,12 +69,17 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
                 return;
             }
 
-            // Confirm active trimline edit session with Enter (production editing convenience).
+            // Confirm active trimline / bottom-pattern edit session with Enter.
             if (e.key === "Enter") {
                 const meshEdit = useMeshEditStore.getState();
                 if (meshEdit.editMode === "edit-trimline" && meshEdit.trimlineEdit) {
                     e.preventDefault();
                     meshEdit.confirmTrimlineEdit();
+                    return;
+                }
+                if (meshEdit.editMode === "edit-bottom-pattern" && meshEdit.bottomPatternEdit) {
+                    e.preventDefault();
+                    meshEdit.confirmBottomPatternEdit();
                     return;
                 }
             }

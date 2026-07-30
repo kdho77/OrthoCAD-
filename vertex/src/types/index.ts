@@ -26,6 +26,9 @@ export type ScanPattern =
     | "flat"
     | "custom";
 
+/** Explicit insole build-length class (lock-zone distal boundary; not inferred from trimline). */
+export type BuildLength = "full" | "three_quarter" | "sulcus";
+
 export type ExportFormat = "stl" | "gcode" | "glb";
 
 export type GrindingStyleType = "straight" | "rounded";
@@ -170,6 +173,35 @@ export interface DesignTrimlines {
 }
 
 /**
+ * Flat manufacturing bottom outline (no contour). Independent of the top trimline —
+ * may cover only part of the top footprint, and may be offset/rotated freely.
+ * Clinical corrections never apply to this entity.
+ */
+export interface BottomPatternTransform {
+    /** In-plane translation along length (mm). */
+    x: number;
+    /** In-plane translation across width (mm). */
+    y: number;
+    /** In-plane rotation about local origin (degrees, CCW). */
+    rotationDeg: number;
+}
+
+export interface BottomPattern {
+    /** Closed 2D outline in local pattern space (same point representation as trimlines). */
+    outline: TrimlinePoint[];
+    /** Constant depth below the footprint plane (mm). Flat — no per-point Z contour. */
+    depthMm: number;
+    /** Drag-and-drop pose relative to the side footprint frame. */
+    transform: BottomPatternTransform;
+}
+
+/** Per-side optional bottom patterns — persisted in design JSON (not a Prisma column). */
+export interface DesignBottomPatterns {
+    left?: BottomPattern;
+    right?: BottomPattern;
+}
+
+/**
  * Optional base template a design starts from (Base + Modifier model — see
  * docs/base-modifier-architecture.md). When absent, the design is generated
  * purely parametrically. When present, corrections / trimline / elements /
@@ -208,11 +240,26 @@ export interface DesignState {
     /** Optional base template; absent ⇒ full parametric generation. */
     base?: DesignBase;
     method: ProductionMethod;
+    /**
+     * Explicit build-length class for manufacturing cut / bottom-pattern lock zone.
+     * Independent of trimline extent. Absent on legacy designs ⇒ treat as "full".
+     */
+    buildLength?: BuildLength;
+    /**
+     * Sulcus anterior offset (mm). Print-validation tunable.
+     * Absent on legacy designs ⇒ treat as SULCUS_OFFSET_MM (15).
+     */
+    sulcusOffsetMm?: number;
     thicknessMm: number;
     corrections: Corrections;
     elements: PlacedElement[];
     /** User-edited insole outline curves — persisted with the design. */
     trimlines?: DesignTrimlines;
+    /**
+     * Optional per-side flat bottom patterns (manufacturing shape control only).
+     * Absent on all legacy designs — loaders must treat as undefined-safe.
+     */
+    bottomPatterns?: DesignBottomPatterns;
 
     /**
      * Paired Left + Right dual-view workspace support.

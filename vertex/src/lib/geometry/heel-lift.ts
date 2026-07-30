@@ -1,6 +1,8 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import type { BuildLength } from "@/types";
+
 /**
  * Heel lift system (longitudinal ramp).
  *
@@ -22,10 +24,82 @@
  *    model keeps the bottom on the flat z = 0 plane, so adding a positive lift
  *    raises the top while the print/mill base stays flat — i.e. bottom-stable on
  *    solid prints by construction.
+ *
+ * u-axis convention (confirmed): **heel = 0, toe = 1** throughout.
  */
 
 /** Forward end of the linear taper, as a fraction of insole length (heel = 0, toe = 1). */
 export const HEEL_LIFT_TAPER_END = 0.75;
+
+/**
+ * Shell clearance proximal to first metatarsal head (literature-informed defaults).
+ * Kendon will validate/adjust against physical prints — keep these named and tunable.
+ */
+export const MIN_ARCH_MARGIN_MM = 10;
+export const MAX_ARCH_MARGIN_MM = 25;
+
+/**
+ * Distal offset past archEndU for sulcus-length builds (mm along length).
+ * Default for print-validation tunable DesignState.sulcusOffsetMm.
+ * PLACEHOLDER baseline — not literature-verified to the same standard as arch margin;
+ * Kendon intends to validate/adjust via physical testing.
+ */
+export const SULCUS_OFFSET_MM = 15;
+
+/**
+ * Interim safe range for sulcusOffsetMm (mirrors arch-margin bounds).
+ * Pending print validation — not yet literature-backed to the same standard as arch margins.
+ */
+export const MIN_SULCUS_OFFSET_MM = 10;
+export const MAX_SULCUS_OFFSET_MM = 25;
+
+/** Clamp sulcus offset to [MIN, MAX]; non-finite → default SULCUS_OFFSET_MM. */
+export function clampSulcusOffsetMm(mm: number): number {
+    if (!Number.isFinite(mm)) return SULCUS_OFFSET_MM;
+    return Math.min(MAX_SULCUS_OFFSET_MM, Math.max(MIN_SULCUS_OFFSET_MM, mm));
+}
+
+/**
+ * Proximal boundary of the bottom-pattern lock zone (normalized u, heel=0 → toe=1).
+ * archEndU = HEEL_LIFT_TAPER_END − margin/length, margin clamped to [MIN, MAX] arch margins.
+ */
+export function archEndU(insoleLengthMm: number): number {
+    const L = Math.max(1e-6, insoleLengthMm);
+    const marginMm = Math.min(MAX_ARCH_MARGIN_MM, Math.max(MIN_ARCH_MARGIN_MM, 0.06 * L));
+    return HEEL_LIFT_TAPER_END - marginMm / L;
+}
+
+/**
+ * Distal (anterior) extent for a build-length class, as normalized u (heel=0 → toe=1).
+ * three_quarter terminates at archEndU (near-zero lock zone by design).
+ * `sulcusOffsetMm` only affects the sulcus class (default = SULCUS_OFFSET_MM).
+ */
+export function anteriorU(
+    buildLength: BuildLength,
+    insoleLengthMm: number,
+    sulcusOffsetMm: number = SULCUS_OFFSET_MM,
+): number {
+    const end = archEndU(insoleLengthMm);
+    if (buildLength === "full") return 1;
+    if (buildLength === "three_quarter") return end;
+    // sulcus
+    const L = Math.max(1e-6, insoleLengthMm);
+    return Math.min(1, end + clampSulcusOffsetMm(sulcusOffsetMm) / L);
+}
+
+/**
+ * Lock-zone interval [archEndU, anteriorU]. Empty when anteriorU ≤ archEndU
+ * (expected for three_quarter) — callers must treat as no lock.
+ */
+export function lockZoneURange(
+    buildLength: BuildLength,
+    insoleLengthMm: number,
+    sulcusOffsetMm: number = SULCUS_OFFSET_MM,
+): { archEnd: number; anterior: number; active: boolean } {
+    const archEnd = archEndU(insoleLengthMm);
+    const anterior = anteriorU(buildLength, insoleLengthMm, sulcusOffsetMm);
+    return { archEnd, anterior, active: anterior > archEnd + 1e-6 };
+}
 
 /**
  * Additive height contribution (mm, positive = raise) of the heel lift at a

@@ -12,8 +12,13 @@ import {
 } from "@/lib/geometry/base-asset";
 import { computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { extractBottomMeshOutline } from "@/lib/geometry/bottom-pattern";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
-import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
+import {
+    clipGeometryToOutline,
+    extractMeshOutline,
+    resolveActiveTrimlineForClip,
+} from "@/lib/geometry/trimline";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBaseBoundsStore } from "@/stores/base-bounds-store";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
@@ -42,6 +47,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const stockBaseLoading = useDesignStore((s) => s.stockBaseLoading);
     const stockBaseResolutionState = useDesignStore((s) => s.stockBaseResolutionState);
     const setBaseMeshLoading = useDesignStore((s) => s.setBaseMeshLoading);
+    // Subscribe reactively — same pattern as InsoleMesh.tsx. getState() inside the
+    // rebuild effect would miss draft updates during drag (Bug A).
+    const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
 
     const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
@@ -140,6 +148,13 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         const outline = extractMeshOutline(geo);
                         if (outline) useBaseOutlineStore.getState().setOutline(lookupKey, outline);
                     }
+                    // Seed cache for new bottomPattern defaults (Bottom-mesh XY silhouette).
+                    if (!useBaseOutlineStore.getState().getBottomOutline(lookupKey)) {
+                        const bottomOutline = extractBottomMeshOutline(geo);
+                        if (bottomOutline) {
+                            useBaseOutlineStore.getState().setBottomOutline(lookupKey, bottomOutline);
+                        }
+                    }
                     if (!useBaseBoundsStore.getState().getBounds(lookupKey)) {
                         // computeBaseBounds is cached internally and also stores outline + zones + safe margins.
                         const b = computeBaseBounds(geo, lookupKey);
@@ -204,12 +219,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         // Phase 3A: prefer the *live draft* trimline while a trimline edit session
         // is active for this side. This wires the deforming perimeter into the
         // rendered base mesh during drag (production editing requirement).
-        const draft = useMeshEditStore.getState().getActiveDraftTrimline(side);
-        const committed = getDesignTrimline(design, side);
-        const activeForClip = draft ?? committed;
+        const activeForClip = resolveActiveTrimlineForClip(side, trimlineEdit, design);
         let display = modified;
         if (activeForClip) {
             display = clipGeometryToOutline(modified, activeForClip);
+            // Bug C guard: clipGeometryToOutline drops userData; preserve multi-mesh markers.
+            display.userData = { ...modified.userData, ...display.userData };
             modified.dispose();
         }
         outRef.current?.dispose();
@@ -229,6 +244,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         interacting,
         building,
         setBaseMeshLoading,
+        trimlineEdit,
         side,
     ]);
 

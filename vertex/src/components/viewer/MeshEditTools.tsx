@@ -1,11 +1,10 @@
 import { Html } from "@react-three/drei";
-import { type ThreeEvent } from "@react-three/fiber";
+import type { ThreeEvent } from "@react-three/fiber";
 import { useCallback } from "react";
 import * as THREE from "three";
-import { nearestVertexIndex } from "@/lib/geometry/mesh-edit";
-import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import { buildInsoleGeometry } from "@/lib/geometry/insole";
-import { INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { nearestVertexIndex } from "@/lib/geometry/mesh-edit";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { Side } from "@/types";
@@ -22,11 +21,20 @@ export function MeshEditTools() {
     const selectedVertex = useMeshEditStore((s) => s.selectedVertex);
     const design = useDesignStore((s) => s.design);
 
-    if (editMode === "transform" || editMode === "edit-trimline" || !target) return null;
+    if (
+        editMode === "transform" ||
+        editMode === "edit-trimline" ||
+        editMode === "edit-bottom-pattern" ||
+        !target
+    )
+        return null;
 
-    const side: Side = target.type === "insole" ? target.side : target.type === "element"
-        ? (design.elements.find((e) => e.id === target.id)?.side ?? "left")
-        : "left";
+    const side: Side =
+        target.type === "insole"
+            ? target.side
+            : target.type === "element"
+              ? (design.elements.find((e) => e.id === target.id)?.side ?? "left")
+              : "left";
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
@@ -46,21 +54,13 @@ export function MeshEditTools() {
                           </mesh>
                       ))
                     : null}
-                {selectedVertex !== null ? (
-                    <VertexHandle side={side} vertexIndex={selectedVertex} />
-                ) : null}
+                {selectedVertex !== null ? <VertexHandle side={side} vertexIndex={selectedVertex} /> : null}
             </group>
         </group>
     );
 }
 
-function InsoleEditSurface({
-    side,
-    editMode,
-}: {
-    side: Side;
-    editMode: "trim" | "vertex";
-}) {
+function InsoleEditSurface({ side, editMode }: { side: Side; editMode: "trim" | "vertex" }) {
     const design = useDesignStore((s) => s.design);
     const addTrimPoint = useMeshEditStore((s) => s.addTrimPoint);
     const finishTrimLine = useMeshEditStore((s) => s.finishTrimLine);
