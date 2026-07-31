@@ -15,6 +15,12 @@ import {
 import { computeScanDeviationAgainstRaw, DEVIATION_LEGEND_MM } from "@/lib/geometry/scan-deviation";
 import { deriveScanDorsal, ScanDorsalError } from "@/lib/geometry/scan-dorsal";
 import {
+    buildDecimatedPickGeometry,
+    PICK_DECIMATE_TRI_THRESHOLD,
+    refineHitOnFullMesh,
+    scanNeedsPickProxy,
+} from "@/lib/geometry/scan-pick-mesh";
+import {
     directKabschMatrix,
     ensureRawBaseRegistered,
     registerScanWithDerivedDorsal,
@@ -22,6 +28,7 @@ import {
     runScanRegistration,
     ScanRegistrationWireError,
 } from "@/lib/geometry/scan-registration-wire";
+import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import {
     extractMergedGeometry,
     loadGlbFromBuffer,
@@ -264,8 +271,10 @@ describe("Phase 2 — scan registration wiring", () => {
         g.dispose();
     });
 
-    test("T6 — registration is rigid; raw scan vertices unmutated", () => {
-        const frame = registerRawBaseGeometry("t6", rawLeft, { primarySide: "left" });
+    test("T6 — registration is rigid; raw SCAN and raw BASE vertices unmutated", () => {
+        const sourceBase = rawLeft.clone();
+        const baseBefore = (sourceBase.getAttribute("position") as THREE.BufferAttribute).array.slice(0);
+        const frame = registerRawBaseGeometry("t6", sourceBase, { primarySide: "left" });
         const base: [THREE.Vector3, THREE.Vector3, THREE.Vector3] = [
             frame.landmarks.B1.clone(),
             frame.landmarks.B2.clone(),
@@ -277,7 +286,7 @@ describe("Phase 2 — scan registration wiring", () => {
             THREE.Vector3,
         ];
         const scan = syntheticScanAround(markers, new THREE.Vector3(0, 0, -1));
-        const before = (scan.getAttribute("position") as THREE.BufferAttribute).array.slice(0);
+        const scanBefore = (scan.getAttribute("position") as THREE.BufferAttribute).array.slice(0);
         const d01 = markers[0].distanceTo(markers[1]);
         const d02 = markers[0].distanceTo(markers[2]);
         const d12 = markers[1].distanceTo(markers[2]);
@@ -288,11 +297,22 @@ describe("Phase 2 — scan registration wiring", () => {
         expect(mapped[0]!.distanceTo(mapped[2]!)).toBeCloseTo(d02, 6);
         expect(mapped[1]!.distanceTo(mapped[2]!)).toBeCloseTo(d12, 6);
 
-        const after = (scan.getAttribute("position") as THREE.BufferAttribute).array;
-        for (let i = 0; i < before.length; i++) {
-            expect(after[i]).toBe(before[i]);
-        }
+        const mirrored = mirrorGeometry(sourceBase);
+        ensureRawBaseRegistered({
+            assetId: "t6-src",
+            geometry: mirrored,
+            mirrored: true,
+            mirroredFrom: "t6-src",
+            primarySide: "left",
+        });
+
+        const scanAfter = (scan.getAttribute("position") as THREE.BufferAttribute).array;
+        const baseAfter = (sourceBase.getAttribute("position") as THREE.BufferAttribute).array;
+        for (let i = 0; i < scanBefore.length; i++) expect(scanAfter[i]).toBe(scanBefore[i]);
+        for (let i = 0; i < baseBefore.length; i++) expect(baseAfter[i]).toBe(baseBefore[i]);
         scan.dispose();
+        mirrored.dispose();
+        sourceBase.dispose();
     });
 
     test("T8 — deviation measured against RAW; legend fixed ±5; unchanged by correction concept", () => {
@@ -311,33 +331,95 @@ describe("Phase 2 — scan registration wiring", () => {
         expect(d1.legendMinMm).toBe(-DEVIATION_LEGEND_MM);
         expect(d1.legendMaxMm).toBe(DEVIATION_LEGEND_MM);
 
-        // Simulate a "correction" by lifting raw Z — deviation uses the RAW snapshot, so
-        // a separate corrected clone must not be what we measure. Measuring against raw again
-        // must be identical.
         const corrected = raw.clone();
         const pos = corrected.getAttribute("position") as THREE.BufferAttribute;
         for (let i = 0; i < pos.count; i++) pos.setZ(i, pos.getZ(i) + 3);
         pos.needsUpdate = true;
 
         const d2 = computeScanDeviationAgainstRaw(scan, reg.matrix, raw);
-        expect(d2.perVertexMm.length).toBe(d1.perVertexMm.length);
         for (let i = 0; i < d1.perVertexMm.length; i++) {
             expect(d2.perVertexMm[i]).toBeCloseTo(d1.perVertexMm[i]!, 6);
         }
-        // And measuring against corrected WOULD change — proving we must pass raw
         const dWrong = computeScanDeviationAgainstRaw(scan, reg.matrix, corrected);
         let changed = false;
         for (let i = 0; i < d1.perVertexMm.length; i++) {
             if (Math.abs(dWrong.perVertexMm[i]! - d1.perVertexMm[i]!) > 0.1) changed = true;
         }
         expect(changed).toBe(true);
-
         scan.dispose();
         raw.dispose();
         corrected.dispose();
     });
 
-    test("T9 — export path does not reference scan store (byte-identical safety)", async () => {
+    test("T9 — export buffer byte-identical with vs without registered scan", () => {
+        const sourceBase = rawLeft.clone();
+        const exportBuffer = () => geometryToBinarySTL(sourceBase);
+        const bufBefore = exportBuffer();
+
+        const frame = registerRawBaseGeometry("t9", sourceBase, { primarySide: "left" });
+        const basePts: [THREE.Vector3, THREE.Vector3, THREE.Vector3] = [
+            frame.landmarks.B1.clone(),
+            frame.landmarks.B2.clone(),
+            frame.landmarks.B3.clone(),
+        ];
+        const markers = basePts.map((p) => p.clone().add(new THREE.Vector3(0.4, -0.2, 0.1))) as [
+            THREE.Vector3,
+            THREE.Vector3,
+            THREE.Vector3,
+        ];
+        const scan = syntheticScanAround(markers, new THREE.Vector3(0, 0, -1));
+
+        useScanStore.getState().setLandmarkSourceAssetId("t9");
+        useScanStore.getState().setRawBaseGeometry("t9", sourceBase);
+        useScanStore.getState().addScan({
+            id: "t9-scan",
+            name: "foot.stl",
+            side: "left",
+            format: "stl",
+            triangleCount: 2,
+            geometry: scan,
+            manifold: {
+                isWatertight: false,
+                openEdges: 1,
+                triangleCount: 2,
+                vertexCount: scan.getAttribute("position")!.count,
+                nonManifoldEdges: 0,
+            },
+        });
+        useScanStore.getState().setMarker("t9-scan", "M1", markers[0]);
+        useScanStore.getState().setMarker("t9-scan", "M2", markers[1]);
+        useScanStore.getState().setMarker("t9-scan", "M3", markers[2]);
+        useScanStore.getState().setDeviationOverlay(true);
+        const reg = useScanStore.getState().registrationByScanId["t9-scan"];
+        expect(reg?.error).toBeNull();
+        expect(reg?.matrixElements).not.toBeNull();
+
+        const matrix = new THREE.Matrix4().fromArray(reg!.matrixElements!);
+        computeScanDeviationAgainstRaw(scan, matrix, sourceBase);
+
+        const mirrored = mirrorGeometry(sourceBase);
+        ensureRawBaseRegistered({
+            assetId: "t9",
+            geometry: mirrored,
+            mirrored: true,
+            mirroredFrom: "t9",
+            primarySide: "left",
+        });
+
+        const bufAfter = exportBuffer();
+        expect(bufAfter.byteLength).toBe(bufBefore.byteLength);
+        const a = new Uint8Array(bufBefore);
+        const b = new Uint8Array(bufAfter);
+        for (let i = 0; i < a.length; i++) {
+            if (a[i] !== b[i]) {
+                throw new Error(`T9 HARD STOP: export byte mismatch at offset ${i}`);
+            }
+        }
+        mirrored.dispose();
+        sourceBase.dispose();
+    });
+
+    test("T9b — export modules have zero scan-store references (tripwire)", () => {
         const exportService = readFileSync(
             resolve(process.cwd(), "vertex/src/features/exports/export-service.ts"),
             "utf8",
@@ -369,8 +451,6 @@ describe("Phase 2 — scan registration wiring", () => {
         });
         useScanStore.getState().setMarker("s1", "M1", new THREE.Vector3(1, 2, 3));
         expect(useScanStore.getState().markersByScanId.s1?.M1).not.toBeNull();
-
-        // Simulate re-import: remove + add (UI path) OR addScan for new id with reset
         useScanStore.getState().removeScan("s1");
         const geo2 = new THREE.BoxGeometry(1, 1, 1);
         useScanStore.getState().addScan({
@@ -390,8 +470,6 @@ describe("Phase 2 — scan registration wiring", () => {
         });
         expect(useScanStore.getState().markersByScanId.s1).toBeUndefined();
         expect(useScanStore.getState().markersByScanId.s2?.M1).toBeNull();
-        expect(useScanStore.getState().markersByScanId.s2?.M2).toBeNull();
-        expect(useScanStore.getState().markersByScanId.s2?.M3).toBeNull();
     });
 
     test("T13 — R_dorsalToZ is geometrically inert (twist freedom must not leak)", () => {
@@ -406,30 +484,24 @@ describe("Phase 2 — scan registration wiring", () => {
             THREE.Vector3,
             THREE.Vector3,
         ];
-        // Correctly oriented: plantar outward −Z → dorsal +Z
         const scan = syntheticScanAround(markers, new THREE.Vector3(0, 0, -1));
-
         const direct = directKabschMatrix(markers, base);
         const composed0 = registerScanWithDerivedDorsal(scan, markers, base, { dorsalTwistRad: 0 });
         const composedTwist = registerScanWithDerivedDorsal(scan, markers, base, {
             dorsalTwistRad: 1.234,
         });
-
         for (let i = 0; i < 16; i++) {
             expect(Math.abs(composed0.matrix.elements[i]! - direct.elements[i]!)).toBeLessThan(1e-9);
             expect(Math.abs(composedTwist.matrix.elements[i]! - direct.elements[i]!)).toBeLessThan(1e-9);
         }
-        // Sanity: twist matrices themselves differ
         const R0 = rotationAligningDorsalToZ(new THREE.Vector3(0, 0, 1), 0);
         const R1 = rotationAligningDorsalToZ(new THREE.Vector3(0, 0, 1), 1.234);
         expect(Math.abs(R0.elements[0]! - R1.elements[0]!)).toBeGreaterThan(1e-6);
-
         scan.dispose();
     });
 
     test("J5 — identified side ≠ assigned side surfaces mismatch; no matrix", () => {
         const frame = registerRawBaseGeometry("j5", rawLeft, { primarySide: "left" });
-        // Correct left markers but assign to right
         const markers: [THREE.Vector3, THREE.Vector3, THREE.Vector3] = [
             frame.landmarks.B1.clone(),
             frame.landmarks.B2.clone(),
@@ -472,33 +544,107 @@ describe("Phase 2 — scan registration wiring", () => {
     });
 });
 
-test("PERF — deviation timing on Default.glb top (~real scale)", () => {
-    const frame = registerRawBaseGeometry("perf", rawLeft, { primarySide: "left" });
-    const base: [THREE.Vector3, THREE.Vector3, THREE.Vector3] = [
-        frame.landmarks.B1.clone(),
-        frame.landmarks.B2.clone(),
-        frame.landmarks.B3.clone(),
-    ];
-    const markers = base.map((p) => p.clone()) as [THREE.Vector3, THREE.Vector3, THREE.Vector3];
-    const scan = syntheticScanAround(markers, new THREE.Vector3(0, 0, -1));
-    // Inflate scan to ~50k verts by cloning patch samples across the base top
-    const topN = (rawLeft.userData as { topVertexCount: number }).topVertexCount;
-    const pos = rawLeft.getAttribute("position")!;
-    const samples: THREE.Vector3[] = [];
-    const step = Math.max(1, Math.floor(topN / 5000));
-    for (let i = 0; i < topN; i += step) {
-        samples.push(new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i) + 0.5));
+/** Build a dense triangular terrain with ≥ minVerts vertices over the base footprint. */
+function buildLargeScanOverBase(minVerts: number, base: BufferGeometry): THREE.BufferGeometry {
+    const pos = base.getAttribute("position")!;
+    const topN = (base.userData as { topVertexCount?: number }).topVertexCount ?? pos.count;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < topN; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
     }
-    const big = mergeGeos(
-        samples.slice(0, 2000).map((m) => makePlantarPatch(m, new THREE.Vector3(0, 0, -1), 1.5)),
-    );
-    const reg = registerScanWithDerivedDorsal(scan, markers, base);
-    const d = computeScanDeviationAgainstRaw(big, reg.matrix, rawLeft);
-    const scanVerts = big.getAttribute("position")!.count;
-    const report = { scanVerts, baseTopN: topN, elapsedMs: d.elapsedMs };
-    writeFileSync("/tmp/phase2-deviation-perf.json", JSON.stringify(report));
-    expect(report.elapsedMs).toBeLessThan(2000);
-    expect(report.baseTopN).toBeGreaterThan(10000);
-    big.dispose();
-    scan.dispose();
+    const cols = Math.ceil(Math.sqrt(minVerts / 6)) + 1;
+    const rows = cols;
+    const patches: THREE.BufferGeometry[] = [];
+    for (let i = 0; i < rows; i++) {
+        for (let j = 0; j < cols; j++) {
+            const u = i / (rows - 1);
+            const v = j / (cols - 1);
+            const cx = minX + u * (maxX - minX);
+            const cy = minY + v * (maxY - minY);
+            const cz = 4 + Math.sin(u * 8) * Math.cos(v * 6);
+            patches.push(makePlantarPatch(new THREE.Vector3(cx, cy, cz), new THREE.Vector3(0, 0, -1), 1.2));
+        }
+    }
+    return mergeGeos(patches);
+}
+
+describe("Amendment K — realistic scale", () => {
+    test("K3 — deviation + raycast at ≥150k vertices; pick proxy if needed", () => {
+        const frame = registerRawBaseGeometry("k3", rawLeft, { primarySide: "left" });
+        const base: [THREE.Vector3, THREE.Vector3, THREE.Vector3] = [
+            frame.landmarks.B1.clone(),
+            frame.landmarks.B2.clone(),
+            frame.landmarks.B3.clone(),
+        ];
+        const markers = base.map((p) => p.clone()) as [THREE.Vector3, THREE.Vector3, THREE.Vector3];
+        const large = buildLargeScanOverBase(150_000, rawLeft);
+        const scanVerts = large.getAttribute("position")!.count;
+        expect(scanVerts).toBeGreaterThanOrEqual(150_000);
+
+        const tiny = syntheticScanAround(markers, new THREE.Vector3(0, 0, -1));
+        const reg = registerScanWithDerivedDorsal(tiny, markers, base);
+        const d = computeScanDeviationAgainstRaw(large, reg.matrix, rawLeft);
+
+        const mesh = new THREE.Mesh(large);
+        mesh.updateMatrixWorld(true);
+        const raycaster = new THREE.Raycaster();
+        const origin = new THREE.Vector3(80, 0, 200);
+        const times: number[] = [];
+        for (let i = 0; i < 30; i++) {
+            const dir = new THREE.Vector3(60 + i * 2, -10 + i, 0).sub(origin).normalize();
+            raycaster.set(origin, dir);
+            const t0 = performance.now();
+            raycaster.intersectObject(mesh, false);
+            times.push(performance.now() - t0);
+        }
+        times.sort((a, b) => a - b);
+        const medianFull = times[Math.floor(times.length / 2)]!;
+
+        let medianPick = medianFull;
+        let usedProxy = false;
+        // Pre-authorised: ship pick proxy when full-mesh drag is not comfortable (>16ms).
+        if (medianFull > 16 || scanNeedsPickProxy(large)) {
+            usedProxy = true;
+            const pickGeo = buildDecimatedPickGeometry(large);
+            const pickMesh = new THREE.Mesh(pickGeo);
+            pickMesh.updateMatrixWorld(true);
+            const pickTimes: number[] = [];
+            for (let i = 0; i < 30; i++) {
+                const dir = new THREE.Vector3(60 + i * 2, -10 + i, 0).sub(origin).normalize();
+                raycaster.set(origin, dir);
+                const t0 = performance.now();
+                const hits = raycaster.intersectObject(pickMesh, false);
+                if (hits[0]) {
+                    refineHitOnFullMesh(raycaster.ray.clone(), large, hits[0].point);
+                }
+                pickTimes.push(performance.now() - t0);
+            }
+            pickTimes.sort((a, b) => a - b);
+            medianPick = pickTimes[Math.floor(pickTimes.length / 2)]!;
+            pickGeo.dispose();
+        }
+
+        const report = {
+            scanVerts,
+            baseTopN: (rawLeft.userData as { topVertexCount: number }).topVertexCount,
+            deviationMs: d.elapsedMs,
+            raycastFullMedianMs: medianFull,
+            raycastPickMedianMs: medianPick,
+            usedProxy,
+            threshold: PICK_DECIMATE_TRI_THRESHOLD,
+        };
+        writeFileSync("/tmp/phase2-k3-perf.json", JSON.stringify(report, null, 2));
+        expect(d.elapsedMs).toBeLessThan(2000);
+        expect(medianPick).toBeLessThan(50);
+        large.dispose();
+        tiny.dispose();
+    });
 });

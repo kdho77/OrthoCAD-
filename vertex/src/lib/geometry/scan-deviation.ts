@@ -128,33 +128,30 @@ function nearestTopIndex(
     const iy = Math.floor((y - minY) / cellMm);
     let best = -1;
     let bestD2 = Infinity;
-    for (let dx = -1; dx <= 1; dx++) {
-        for (let dy = -1; dy <= 1; dy++) {
-            const b = buckets.get(`${ix + dx},${iy + dy}`);
-            if (!b) continue;
-            for (const i of b.indices) {
-                const px = positions[i * 3]!;
-                const py = positions[i * 3 + 1]!;
-                const pz = positions[i * 3 + 2]!;
-                const d2 = (px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2;
-                if (d2 < bestD2) {
-                    bestD2 = d2;
-                    best = i;
+    // Expand ring search — never fall back to O(topN) exhaustive (K3).
+    for (let ring = 0; ring <= 8; ring++) {
+        let foundInRing = false;
+        for (let dx = -ring; dx <= ring; dx++) {
+            for (let dy = -ring; dy <= ring; dy++) {
+                if (ring > 0 && Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+                const b = buckets.get(`${ix + dx},${iy + dy}`);
+                if (!b) continue;
+                foundInRing = true;
+                for (const i of b.indices) {
+                    const px = positions[i * 3]!;
+                    const py = positions[i * 3 + 1]!;
+                    const pz = positions[i * 3 + 2]!;
+                    const d2 = (px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2;
+                    if (d2 < bestD2) {
+                        bestD2 = d2;
+                        best = i;
+                    }
                 }
             }
         }
-    }
-    if (best >= 0) return best;
-    // Fallback: exhaustive (rare — off-grid samples)
-    for (let i = 0; i < positions.length / 3; i++) {
-        const px = positions[i * 3]!;
-        const py = positions[i * 3 + 1]!;
-        const pz = positions[i * 3 + 2]!;
-        const d2 = (px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2;
-        if (d2 < bestD2) {
-            bestD2 = d2;
-            best = i;
-        }
+        // Early exit once we have a hit and have searched at least the 3×3 neighbourhood.
+        if (best >= 0 && ring >= 1) return best;
+        if (!foundInRing && ring >= 2 && best >= 0) return best;
     }
     return best;
 }

@@ -30,6 +30,7 @@ export function ScanImport() {
         registrationByScanId,
         markersByScanId,
         deviationOverlay,
+        deviationBusy,
         setDeviationOverlay,
         landmarkSourceAssetId,
     } = useScanStore();
@@ -218,9 +219,10 @@ export function ScanImport() {
                                     type="checkbox"
                                     checked={deviationOverlay}
                                     onChange={(e) => setDeviationOverlay(e.target.checked)}
+                                    disabled={deviationBusy}
                                     className="h-3 w-3"
                                 />
-                                <span>{deviationLegendLabel()}</span>
+                                <span>{deviationBusy ? "Computing deviation…" : deviationLegendLabel()}</span>
                             </label>
                         </div>
                     </div>

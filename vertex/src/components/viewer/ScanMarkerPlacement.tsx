@@ -4,10 +4,12 @@
 import { useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
+import { refineHitOnFullMesh } from "@/lib/geometry/scan-pick-mesh";
 import { getScanRegistrationMatrix, type MarkerId, useScanStore } from "@/stores/scan-store";
 
 /**
  * Raycast marker placement / drag on the scan mesh only.
+ * Large scans: raycast invisible decimated pick proxy, then refine on full mesh (K3).
  * OrbitControls remain enabled; misses do not capture the pointer.
  */
 export function ScanMarkerPlacement() {
@@ -32,26 +34,44 @@ export function ScanMarkerPlacement() {
             );
             raycaster.setFromCamera(ndc, camera);
 
-            const targets: THREE.Object3D[] = [];
+            const pickTargets: THREE.Object3D[] = [];
+            const fullTargets: THREE.Object3D[] = [];
             scene.traverse((obj) => {
-                if (
-                    (obj as THREE.Mesh).isMesh &&
-                    obj.userData?.isScanMesh &&
-                    obj.userData.scanId === scanId
-                ) {
-                    targets.push(obj);
-                }
+                if (!(obj as THREE.Mesh).isMesh || obj.userData?.scanId !== scanId) return;
+                if (obj.userData?.isScanPickMesh) pickTargets.push(obj);
+                if (obj.userData?.isScanMesh) fullTargets.push(obj);
             });
+
+            // Prefer pick proxy when present (large scans); else full mesh.
+            const targets = pickTargets.length > 0 ? pickTargets : fullTargets;
             if (targets.length === 0) return null;
 
             const hits = raycaster.intersectObjects(targets, false);
             if (hits.length === 0) return null;
             const hit = hits[0]!;
             const mesh = hit.object as THREE.Mesh;
-            const local = hit.point.clone();
+
+            let worldPoint = hit.point.clone();
+
+            // Refine against full geometry when we hit the decimated proxy.
+            if (mesh.userData?.isScanPickMesh && mesh.userData.fullGeometry) {
+                const fullGeo = mesh.userData.fullGeometry as THREE.BufferGeometry;
+                // Ray in the mesh's local space (same frame as geometry).
+                const localRay = raycaster.ray.clone();
+                const inv = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
+                localRay.applyMatrix4(inv);
+                const coarseLocal = hit.point.clone();
+                mesh.worldToLocal(coarseLocal);
+                const refinedLocal = refineHitOnFullMesh(localRay, fullGeo, coarseLocal);
+                if (refinedLocal) {
+                    worldPoint = refinedLocal.clone();
+                    mesh.localToWorld(worldPoint);
+                }
+            }
+
+            const local = worldPoint.clone();
             mesh.worldToLocal(local);
-            // worldToLocal includes registration on the mesh — undo so markers
-            // stay in raw scan coordinates.
+            // Undo registration so markers stay in raw scan coordinates.
             const reg = getScanRegistrationMatrix(registrationByScanId[scanId]);
             if (reg) {
                 local.applyMatrix4(reg.clone().invert());
@@ -91,7 +111,7 @@ export function ScanMarkerPlacement() {
         (e: PointerEvent) => {
             if (!dragging.current || !scanIdRef.current) return;
             const local = hitScanLocal(e.clientX, e.clientY, scanIdRef.current);
-            if (!local) return; // clamp: keep last on-surface point
+            if (!local) return;
             setMarker(scanIdRef.current, dragging.current, local);
         },
         [hitScanLocal, setMarker],

@@ -75,6 +75,8 @@ interface ScanStore {
     registrationByScanId: Record<string, ScanRegistrationState>;
     placementMode: PlacementMode | null;
     deviationOverlay: boolean;
+    /** True while deviation colour field is being computed (K3 busy treatment). */
+    deviationBusy: boolean;
     /** Source asset id used for landmark lookup (unmirrored registry key). */
     landmarkSourceAssetId: string | null;
     /** RAW L0 geometry clones keyed by source asset id — deviation measures against these. */
@@ -91,6 +93,7 @@ interface ScanStore {
     setMarker: (scanId: string, id: MarkerId, point: THREE.Vector3) => void;
     resetMarkers: (scanId: string) => void;
     setDeviationOverlay: (on: boolean) => void;
+    setDeviationBusy: (busy: boolean) => void;
     setLandmarkSourceAssetId: (assetId: string | null) => void;
     setRawBaseGeometry: (sourceAssetId: string, geo: BufferGeometry) => void;
     /** Re-run registration for a scan (after marker drag / side change). */
@@ -164,6 +167,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
     registrationByScanId: {},
     placementMode: null,
     deviationOverlay: false,
+    deviationBusy: false,
     landmarkSourceAssetId: null,
     rawBaseBySourceId: {},
 
@@ -248,7 +252,9 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         }));
     },
 
-    setDeviationOverlay: (on) => set({ deviationOverlay: on }),
+    setDeviationOverlay: (on) => set({ deviationOverlay: on, deviationBusy: on }),
+
+    setDeviationBusy: (busy) => set({ deviationBusy: busy }),
 
     setLandmarkSourceAssetId: (assetId) => set({ landmarkSourceAssetId: assetId }),
 
