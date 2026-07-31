@@ -3,7 +3,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterEach, beforeAll, describe, expect, test } from "@rstest/core";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import * as THREE from "three";
 import {
@@ -16,7 +16,9 @@ import { computeScanDeviationAgainstRaw, DEVIATION_LEGEND_MM } from "@/lib/geome
 import { deriveScanDorsal, ScanDorsalError } from "@/lib/geometry/scan-dorsal";
 import {
     buildDecimatedPickGeometry,
+    intersectRayFullMesh,
     PICK_DECIMATE_TRI_THRESHOLD,
+    pickViaProxyThenRefine,
     refineHitOnFullMesh,
     scanNeedsPickProxy,
 } from "@/lib/geometry/scan-pick-mesh";
@@ -646,5 +648,313 @@ describe("Amendment K — realistic scale", () => {
         expect(medianPick).toBeLessThan(50);
         large.dispose();
         tiny.dispose();
+    });
+});
+
+/**
+ * Amendment L1 — clinical-scale STL-soup fixture.
+ * Non-indexed triangle soup: bufferVertexCount === 3 × triangleCount.
+ * Heel-cup shape: posterior wall rises into a cup; anterior stays plantar.
+ */
+function buildClinicalScaleHeelCupFixture(minTriangles: number): {
+    geometry: THREE.BufferGeometry;
+    triangleCount: number;
+    bufferVertexCount: number;
+} {
+    const nx = Math.ceil(Math.sqrt(minTriangles / 2));
+    const ny = nx;
+    const triangleCount = nx * ny * 2;
+    const bufferVertexCount = triangleCount * 3;
+    const positions = new Float32Array(bufferVertexCount * 3);
+    const normals = new Float32Array(bufferVertexCount * 3);
+
+    const minX = 0;
+    const maxX = 250;
+    const minY = -42;
+    const maxY = 42;
+
+    const heightAt = (u: number, v: number): number => {
+        // u: 0 = heel, 1 = toe; v: 0..1 across width.
+        const plantar = 2 + 0.4 * Math.sin(u * Math.PI) * Math.cos(v * Math.PI * 2);
+        const wallMask = Math.max(0, 1 - u * 2.8); // strong at heel
+        const edge = Math.abs(v - 0.5) * 2; // 0 centre → 1 medial/lateral
+        const wall = wallMask * edge * edge * 28; // heel-cup wall up to ~28 mm
+        return plantar + wall;
+    };
+
+    const writeVert = (
+        slot: number,
+        x: number,
+        y: number,
+        z: number,
+        nxv: number,
+        nyv: number,
+        nzv: number,
+    ) => {
+        const o = slot * 3;
+        positions[o] = x;
+        positions[o + 1] = y;
+        positions[o + 2] = z;
+        normals[o] = nxv;
+        normals[o + 1] = nyv;
+        normals[o + 2] = nzv;
+    };
+
+    let slot = 0;
+    for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+            const u0 = i / nx;
+            const u1 = (i + 1) / nx;
+            const v0 = j / ny;
+            const v1 = (j + 1) / ny;
+            const x00 = minX + u0 * (maxX - minX);
+            const x10 = minX + u1 * (maxX - minX);
+            const x01 = x00;
+            const x11 = x10;
+            const y00 = minY + v0 * (maxY - minY);
+            const y10 = y00;
+            const y01 = minY + v1 * (maxY - minY);
+            const y11 = y01;
+            const z00 = heightAt(u0, v0);
+            const z10 = heightAt(u1, v0);
+            const z01 = heightAt(u0, v1);
+            const z11 = heightAt(u1, v1);
+
+            // Two triangles (non-indexed soup). Normals ≈ +Z for plantar pick from above.
+            const e1x = x10 - x00;
+            const e1y = y10 - y00;
+            const e1z = z10 - z00;
+            const e2x = x01 - x00;
+            const e2y = y01 - y00;
+            const e2z = z01 - z00;
+            let nxv = e1y * e2z - e1z * e2y;
+            let nyv = e1z * e2x - e1x * e2z;
+            let nzv = e1x * e2y - e1y * e2x;
+            const len = Math.hypot(nxv, nyv, nzv) || 1;
+            nxv /= len;
+            nyv /= len;
+            nzv /= len;
+            if (nzv < 0) {
+                nxv = -nxv;
+                nyv = -nyv;
+                nzv = -nzv;
+            }
+
+            writeVert(slot++, x00, y00, z00, nxv, nyv, nzv);
+            writeVert(slot++, x10, y10, z10, nxv, nyv, nzv);
+            writeVert(slot++, x11, y11, z11, nxv, nyv, nzv);
+
+            writeVert(slot++, x00, y00, z00, nxv, nyv, nzv);
+            writeVert(slot++, x11, y11, z11, nxv, nyv, nzv);
+            writeVert(slot++, x01, y01, z01, nxv, nyv, nzv);
+        }
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+    geometry.computeBoundingSphere();
+    return { geometry, triangleCount, bufferVertexCount };
+}
+
+/** Clinical tol: refined pick vs direct full-mesh hit (Amendment L2). */
+const L2_CLINICAL_TOL_MM = 0.2;
+
+describe("Amendment L — clinical scale + pick proxy active", () => {
+    let clinicalFixture: {
+        geometry: THREE.BufferGeometry;
+        triangleCount: number;
+        bufferVertexCount: number;
+    };
+    let clinicalDeviationMs = 0;
+
+    beforeAll(() => {
+        clinicalFixture = buildClinicalScaleHeelCupFixture(300_000);
+        const frame = registerRawBaseGeometry("l-shared", rawLeft, { primarySide: "left" });
+        const base: [THREE.Vector3, THREE.Vector3, THREE.Vector3] = [
+            frame.landmarks.B1.clone(),
+            frame.landmarks.B2.clone(),
+            frame.landmarks.B3.clone(),
+        ];
+        const markers = base.map((p) => p.clone()) as [THREE.Vector3, THREE.Vector3, THREE.Vector3];
+        const tiny = syntheticScanAround(markers, new THREE.Vector3(0, 0, -1));
+        const reg = registerScanWithDerivedDorsal(tiny, markers, base);
+        clinicalDeviationMs = computeScanDeviationAgainstRaw(
+            clinicalFixture.geometry,
+            reg.matrix,
+            rawLeft,
+        ).elapsedMs;
+        tiny.dispose();
+        clearMarkerFrameRegistry();
+    });
+
+    afterAll(() => {
+        clinicalFixture?.geometry.dispose();
+    });
+
+    test("L1 — ≥300k-triangle soup: deviation, raycast p50/p95, proxy active", () => {
+        const { geometry: large, triangleCount, bufferVertexCount } = clinicalFixture;
+        expect(triangleCount).toBeGreaterThanOrEqual(300_000);
+        expect(bufferVertexCount).toBe(triangleCount * 3);
+        expect(scanNeedsPickProxy(large)).toBe(true);
+        expect(clinicalDeviationMs).toBeGreaterThan(250);
+
+        const pickGeo = buildDecimatedPickGeometry(large);
+        const pickMesh = new THREE.Mesh(pickGeo);
+        pickMesh.updateMatrixWorld(true);
+        const raycaster = new THREE.Raycaster();
+        const origin = new THREE.Vector3(125, 0, 200);
+        const times: number[] = [];
+        for (let i = 0; i < 40; i++) {
+            const target = new THREE.Vector3(40 + i * 4, -20 + (i % 10) * 4, 5);
+            raycaster.set(origin, target.clone().sub(origin).normalize());
+            const t0 = performance.now();
+            const hits = raycaster.intersectObject(pickMesh, false);
+            if (hits[0]) {
+                refineHitOnFullMesh(raycaster.ray.clone(), large, hits[0].point);
+            }
+            times.push(performance.now() - t0);
+        }
+        times.sort((a, b) => a - b);
+        const median = times[Math.floor(times.length / 2)]!;
+        const p95 = times[Math.floor(times.length * 0.95)]!;
+
+        const report = {
+            triangleCount,
+            bufferVertexCount,
+            deviationMs: clinicalDeviationMs,
+            raycastProxyMedianMs: median,
+            raycastProxyP95Ms: p95,
+            usedProxy: true,
+            threshold: PICK_DECIMATE_TRI_THRESHOLD,
+            busyThresholdMs: 250,
+            busyEngaged: clinicalDeviationMs > 250,
+        };
+        writeFileSync("/tmp/phase2-l1-perf.json", JSON.stringify(report, null, 2));
+
+        expect(median).toBeLessThan(50);
+        expect(p95).toBeLessThan(80);
+        pickGeo.dispose();
+    });
+
+    test("L2 — pick proxy forced active: hit/miss/refine ≤0.20mm + curvature drag", () => {
+        const { geometry: full, triangleCount } = clinicalFixture;
+        expect(triangleCount).toBeGreaterThanOrEqual(PICK_DECIMATE_TRI_THRESHOLD);
+        expect(scanNeedsPickProxy(full)).toBe(true);
+
+        const proxy = buildDecimatedPickGeometry(full);
+        const origin = new THREE.Vector3(125, 0, 120);
+
+        const hitTargets = [
+            new THREE.Vector3(180, 0, 3),
+            new THREE.Vector3(120, 10, 4),
+            new THREE.Vector3(30, 0, 8),
+            new THREE.Vector3(20, 30, 20),
+            new THREE.Vector3(25, -28, 18),
+        ];
+        let maxRefineErr = 0;
+        let compared = 0;
+        let casesWhereProxyDiffered = 0;
+        for (const target of hitTargets) {
+            const dir = target.clone().sub(origin).normalize();
+            const ray = new THREE.Ray(origin.clone(), dir);
+            const direct = intersectRayFullMesh(ray, full);
+            expect(direct).not.toBeNull();
+            const { refined, coarse } = pickViaProxyThenRefine(ray, full, proxy);
+            expect(refined).not.toBeNull();
+            expect(coarse).not.toBeNull();
+            const err = refined!.distanceTo(direct!);
+            maxRefineErr = Math.max(maxRefineErr, err);
+            if (coarse!.distanceTo(direct!) > L2_CLINICAL_TOL_MM) {
+                casesWhereProxyDiffered++;
+                expect(refined!.distanceTo(coarse!)).toBeGreaterThan(1e-6);
+            }
+            compared++;
+        }
+        writeFileSync(
+            "/tmp/phase2-l2-pick-accuracy.json",
+            JSON.stringify(
+                {
+                    compared,
+                    maxRefineErrMm: maxRefineErr,
+                    casesWhereProxyDiffered,
+                    clinicalTolMm: L2_CLINICAL_TOL_MM,
+                    triangleCount,
+                    proxyActivated: true,
+                },
+                null,
+                2,
+            ),
+        );
+        expect(maxRefineErr).toBeLessThanOrEqual(L2_CLINICAL_TOL_MM);
+
+        const missRay = new THREE.Ray(
+            new THREE.Vector3(125, 0, 120),
+            new THREE.Vector3(0, 1, 0.05).normalize(),
+        );
+        expect(intersectRayFullMesh(missRay, full)).toBeNull();
+        const missPick = pickViaProxyThenRefine(missRay, full, proxy);
+        expect(missPick.coarse).toBeNull();
+        expect(missPick.refined).toBeNull();
+
+        const dragHits: THREE.Vector3[] = [];
+        for (let i = 0; i <= 24; i++) {
+            const t = i / 24;
+            const target = new THREE.Vector3(22 + t * 40, 32 - t * 32, 22 - t * 18);
+            const ray = new THREE.Ray(origin.clone(), target.clone().sub(origin).normalize());
+            const { refined } = pickViaProxyThenRefine(ray, full, proxy);
+            if (refined) dragHits.push(refined);
+        }
+        expect(dragHits.length).toBeGreaterThan(16);
+        let maxStep = 0;
+        for (let i = 1; i < dragHits.length; i++) {
+            maxStep = Math.max(maxStep, dragHits[i]!.distanceTo(dragHits[i - 1]!));
+        }
+        expect(maxStep).toBeLessThan(12);
+
+        proxy.dispose();
+    });
+
+    test("L3 — deviation busy engages at true scale; toggle cannot double-fire", () => {
+        expect(clinicalDeviationMs).toBeGreaterThan(250);
+
+        useScanStore.getState().clear();
+        useScanStore.getState().setDeviationOverlay(true);
+        expect(useScanStore.getState().deviationOverlay).toBe(true);
+        expect(useScanStore.getState().deviationBusy).toBe(true);
+        useScanStore.getState().setDeviationBusy(true);
+        useScanStore.getState().setDeviationOverlay(true);
+        expect(useScanStore.getState().deviationOverlay).toBe(true);
+        expect(useScanStore.getState().deviationBusy).toBe(true);
+        useScanStore.getState().setDeviationOverlay(false);
+        expect(useScanStore.getState().deviationOverlay).toBe(false);
+        expect(useScanStore.getState().deviationBusy).toBe(false);
+
+        const importSrc = readFileSync(
+            resolve(process.cwd(), "vertex/src/features/scans/ScanImport.tsx"),
+            "utf8",
+        );
+        expect(importSrc).toMatch(/disabled=\{deviationBusy\}/);
+        const meshesSrc = readFileSync(
+            resolve(process.cwd(), "vertex/src/components/viewer/ScanMeshes.tsx"),
+            "utf8",
+        );
+        expect(meshesSrc).toMatch(/deviationGenRef/);
+        expect(meshesSrc).toMatch(/setTimeout/);
+
+        writeFileSync(
+            "/tmp/phase2-l3-busy.json",
+            JSON.stringify(
+                {
+                    deviationMs: clinicalDeviationMs,
+                    busyThresholdMs: 250,
+                    busyEngaged: clinicalDeviationMs > 250,
+                    triangleCount: clinicalFixture.triangleCount,
+                    bufferVertexCount: clinicalFixture.bufferVertexCount,
+                },
+                null,
+                2,
+            ),
+        );
     });
 });

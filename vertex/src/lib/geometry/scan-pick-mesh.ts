@@ -87,9 +87,59 @@ function rayTriangle(
     return ray.origin.distanceTo(hit);
 }
 
+function readTriangle(
+    pos: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
+    index: THREE.BufferAttribute | null,
+    t: number,
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    c: THREE.Vector3,
+): void {
+    let i0: number;
+    let i1: number;
+    let i2: number;
+    if (index) {
+        i0 = index.getX(t * 3);
+        i1 = index.getX(t * 3 + 1);
+        i2 = index.getX(t * 3 + 2);
+    } else {
+        i0 = t * 3;
+        i1 = t * 3 + 1;
+        i2 = t * 3 + 2;
+    }
+    a.set(pos.getX(i0), pos.getY(i0), pos.getZ(i0));
+    b.set(pos.getX(i1), pos.getY(i1), pos.getZ(i1));
+    c.set(pos.getX(i2), pos.getY(i2), pos.getZ(i2));
+}
+
 /**
- * After a coarse pick hit, refine against full-resolution triangles whose
- * vertices lie near the coarse hit (native neighbourhood filter).
+ * First hit of a ray against every triangle in `geometry` (full-resolution reference).
+ */
+export function intersectRayFullMesh(ray: THREE.Ray, geometry: BufferGeometry): THREE.Vector3 | null {
+    const pos = geometry.getAttribute("position");
+    if (!pos) return null;
+    const index = geometry.getIndex();
+    const triCount = index ? index.count / 3 : pos.count / 3;
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    const tmp = new THREE.Vector3();
+    let bestDist = Infinity;
+    let best: THREE.Vector3 | null = null;
+    for (let t = 0; t < triCount; t++) {
+        readTriangle(pos, index, t, a, b, c);
+        const d = rayTriangle(ray, a, b, c, tmp);
+        if (d != null && d < bestDist) {
+            bestDist = d;
+            best = tmp.clone();
+        }
+    }
+    return best;
+}
+
+/**
+ * After a coarse pick hit, refine against full-resolution triangles near the
+ * coarse hit (vertex or centroid within radius — native, allocation-light).
  */
 export function refineHitOnFullMesh(
     ray: THREE.Ray,
@@ -110,34 +160,45 @@ export function refineHitOnFullMesh(
     let best: THREE.Vector3 | null = null;
 
     for (let t = 0; t < triCount; t++) {
-        let i0: number;
-        let i1: number;
-        let i2: number;
-        if (index) {
-            i0 = index.getX(t * 3);
-            i1 = index.getX(t * 3 + 1);
-            i2 = index.getX(t * 3 + 2);
-        } else {
-            i0 = t * 3;
-            i1 = t * 3 + 1;
-            i2 = t * 3 + 2;
-        }
-        a.set(pos.getX(i0), pos.getY(i0), pos.getZ(i0));
-        b.set(pos.getX(i1), pos.getY(i1), pos.getZ(i1));
-        c.set(pos.getX(i2), pos.getY(i2), pos.getZ(i2));
-        // Keep triangle if any vertex is near the coarse hit.
-        if (
-            a.distanceToSquared(coarseHit) > r2 &&
-            b.distanceToSquared(coarseHit) > r2 &&
-            c.distanceToSquared(coarseHit) > r2
-        ) {
-            continue;
-        }
+        readTriangle(pos, index, t, a, b, c);
+        const cx = (a.x + b.x + c.x) / 3;
+        const cy = (a.y + b.y + c.y) / 3;
+        const cz = (a.z + b.z + c.z) / 3;
+        const near =
+            a.distanceToSquared(coarseHit) <= r2 ||
+            b.distanceToSquared(coarseHit) <= r2 ||
+            c.distanceToSquared(coarseHit) <= r2 ||
+            (cx - coarseHit.x) ** 2 + (cy - coarseHit.y) ** 2 + (cz - coarseHit.z) ** 2 <= r2;
+        if (!near) continue;
         const d = rayTriangle(ray, a, b, c, tmp);
         if (d != null && d < bestDist) {
             bestDist = d;
             best = tmp.clone();
         }
     }
+    // One wider pass if the coarse proxy sat in a stride hole.
+    if (!best && radiusMm < PICK_REFINE_RADIUS_MM * 2) {
+        return refineHitOnFullMesh(ray, fullGeometry, coarseHit, PICK_REFINE_RADIUS_MM * 2);
+    }
     return best;
+}
+
+/**
+ * Production pick path for large scans: raycast decimated proxy, then refine
+ * on the full mesh. Returns null when the proxy misses (no spurious hit).
+ */
+export function pickViaProxyThenRefine(
+    ray: THREE.Ray,
+    fullGeometry: BufferGeometry,
+    proxyGeometry: BufferGeometry,
+): { refined: THREE.Vector3 | null; coarse: THREE.Vector3 | null } {
+    const proxyMesh = new THREE.Mesh(proxyGeometry);
+    proxyMesh.updateMatrixWorld(true);
+    const raycaster = new THREE.Raycaster(ray.origin.clone(), ray.direction.clone());
+    const hits = raycaster.intersectObject(proxyMesh, false);
+    if (!hits[0]) return { refined: null, coarse: null };
+    const coarse = hits[0].point.clone();
+    const refined = refineHitOnFullMesh(ray, fullGeometry, coarse);
+    // Clinical path: never return an unrefined proxy hit as placement.
+    return { refined, coarse };
 }

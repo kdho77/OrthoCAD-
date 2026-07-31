@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import { getMarkerFrame, mirrorBaseLandmarks } from "@/lib/geometry/marker-frame";
@@ -56,10 +56,13 @@ function RegisteredScanMesh({
     const leftFrame = landmarkSourceAssetId ? getMarkerFrame(landmarkSourceAssetId) : null;
 
     const [coloredGeo, setColoredGeo] = useState<THREE.BufferGeometry | null>(null);
+    const deviationGenRef = useRef(0);
 
-    // K3 — deviation can exceed ~250ms on large scans; show busy, compute async.
+    // K3/L3 — deviation exceeds ~250ms at clinical scale; busy + deferred compute.
+    // Generation token drops stale results so toggles cannot stack overlapping work.
     useEffect(() => {
         if (!deviationOverlay || !matrix || !rawBase) {
+            deviationGenRef.current += 1;
             setColoredGeo((prev) => {
                 prev?.dispose();
                 return null;
@@ -67,12 +70,13 @@ function RegisteredScanMesh({
             setDeviationBusy(false);
             return;
         }
-        let cancelled = false;
+        const gen = ++deviationGenRef.current;
         setDeviationBusy(true);
         const handle = window.setTimeout(() => {
+            if (gen !== deviationGenRef.current) return;
             const t0 = performance.now();
             const dev = computeScanDeviationAgainstRaw(geometry, matrix, rawBase);
-            if (cancelled) return;
+            if (gen !== deviationGenRef.current) return;
             const g = geometry.clone();
             const colors = new Float32Array(dev.perVertexMm.length * 3);
             const c = new THREE.Color();
@@ -93,8 +97,11 @@ function RegisteredScanMesh({
             }
         }, 0);
         return () => {
-            cancelled = true;
             window.clearTimeout(handle);
+            // Invalidate this generation; a newer effect owns busy, or teardown cleared it.
+            if (deviationGenRef.current === gen) {
+                deviationGenRef.current += 1;
+            }
         };
     }, [deviationOverlay, matrix, rawBase, geometry, setDeviationBusy]);
 

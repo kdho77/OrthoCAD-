@@ -252,7 +252,13 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         }));
     },
 
-    setDeviationOverlay: (on) => set({ deviationOverlay: on, deviationBusy: on }),
+    setDeviationOverlay: (on) =>
+        set((s) => {
+            // L3 — while a deviation compute is in flight the toggle is disabled in UI;
+            // also ignore stacked "on" calls so overlapping computations cannot start.
+            if (s.deviationBusy && on) return s;
+            return { deviationOverlay: on, deviationBusy: on };
+        }),
 
     setDeviationBusy: (busy) => set({ deviationBusy: busy }),
 

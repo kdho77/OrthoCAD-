@@ -54,6 +54,7 @@ export function ScanMarkerPlacement() {
             let worldPoint = hit.point.clone();
 
             // Refine against full geometry when we hit the decimated proxy.
+            // Never place on the proxy surface — refine miss ⇒ no hit (L2).
             if (mesh.userData?.isScanPickMesh && mesh.userData.fullGeometry) {
                 const fullGeo = mesh.userData.fullGeometry as THREE.BufferGeometry;
                 // Ray in the mesh's local space (same frame as geometry).
@@ -63,10 +64,9 @@ export function ScanMarkerPlacement() {
                 const coarseLocal = hit.point.clone();
                 mesh.worldToLocal(coarseLocal);
                 const refinedLocal = refineHitOnFullMesh(localRay, fullGeo, coarseLocal);
-                if (refinedLocal) {
-                    worldPoint = refinedLocal.clone();
-                    mesh.localToWorld(worldPoint);
-                }
+                if (!refinedLocal) return null;
+                worldPoint = refinedLocal.clone();
+                mesh.localToWorld(worldPoint);
             }
 
             const local = worldPoint.clone();
