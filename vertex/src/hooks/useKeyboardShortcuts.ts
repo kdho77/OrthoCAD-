@@ -4,6 +4,7 @@
 import { useEffect } from "react";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import { useScanStore } from "@/stores/scan-store";
 
 export interface KeyboardShortcutHandlers {
     onSave?: () => void;
@@ -51,6 +52,7 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
                     return;
                 }
                 selectElement(null);
+                useScanStore.getState().selectScan(null);
             }
 
             // Phase 3A production undo/redo (Cmd/Ctrl+Z, Shift for redo).

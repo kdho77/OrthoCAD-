@@ -11,7 +11,11 @@ import {
     DEVIATION_LEGEND_MM,
     deviationColor,
 } from "@/lib/geometry/scan-deviation";
-import { resolveScanMeshMatrix, type ScanDisplayInfo } from "@/lib/geometry/scan-display";
+import {
+    resolveScanMeshMatrix,
+    type ScanDisplayInfo,
+    type ScanManualOffset,
+} from "@/lib/geometry/scan-display";
 import { buildDecimatedPickGeometry, scanNeedsPickProxy } from "@/lib/geometry/scan-pick-mesh";
 import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
 
@@ -44,6 +48,8 @@ function RegisteredScanMesh({
     transparent,
     registration,
     display,
+    manualOffset,
+    selected,
 }: {
     scanId: string;
     geometry: THREE.BufferGeometry;
@@ -51,6 +57,8 @@ function RegisteredScanMesh({
     transparent: boolean;
     registration: THREE.Matrix4 | null;
     display: ScanDisplayInfo;
+    manualOffset: ScanManualOffset | null;
+    selected: boolean;
 }) {
     const deviationOverlay = useScanStore((s) => s.deviationOverlay);
     const setDeviationBusy = useScanStore((s) => s.setDeviationBusy);
@@ -144,7 +152,7 @@ function RegisteredScanMesh({
     const registered = !!registration;
     // Same footprint slot as the base — unregistered scans must be on-screen (M2/M4).
     const posX = -INSOLE_LENGTH_MM / 2;
-    const meshMatrix = resolveScanMeshMatrix(display, registration);
+    const meshMatrix = resolveScanMeshMatrix(display, registration, manualOffset);
 
     const landmarks =
         leftFrame && registered
@@ -175,7 +183,9 @@ function RegisteredScanMesh({
                 }}
             >
                 <meshStandardMaterial
-                    color={registered ? "#c084fc" : "#a78bfa"}
+                    color={selected ? "#e9d5ff" : registered ? "#c084fc" : "#a78bfa"}
+                    emissive={selected ? "#a855f7" : "#000000"}
+                    emissiveIntensity={selected ? 0.35 : 0}
                     metalness={0.1}
                     roughness={0.8}
                     transparent={transparent || !!coloredGeo || !registered}
@@ -276,6 +286,8 @@ function RegisteredScanMesh({
 export function ScanMeshes({ transparent }: { transparent: boolean }) {
     const scans = useScanStore((s) => s.scans);
     const registrationByScanId = useScanStore((s) => s.registrationByScanId);
+    const manualOffsetByScanId = useScanStore((s) => s.manualOffsetByScanId);
+    const selectedScanId = useScanStore((s) => s.selectedScanId);
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
@@ -290,6 +302,8 @@ export function ScanMeshes({ transparent }: { transparent: boolean }) {
                         transparent={transparent}
                         registration={getScanRegistrationMatrix(registrationByScanId[s.id])}
                         display={s.display}
+                        manualOffset={manualOffsetByScanId[s.id] ?? null}
+                        selected={selectedScanId === s.id}
                     />
                 ))}
         </group>

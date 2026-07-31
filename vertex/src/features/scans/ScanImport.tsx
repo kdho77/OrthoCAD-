@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { CheckCircle2, Eye, EyeOff, MapPin, RotateCcw, Trash2, Upload } from "lucide-react";
+import { CheckCircle2, Eye, EyeOff, MapPin, Move, RotateCcw, Trash2, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
@@ -13,7 +13,11 @@ import {
     selectedComponentsBBox,
     weldAndLabelComponents,
 } from "@/lib/geometry/scan-components";
-import { buildScanDisplayInfo, buildScanDisplayInfoFromBBox } from "@/lib/geometry/scan-display";
+import {
+    buildScanDisplayInfo,
+    buildScanDisplayInfoFromBBox,
+    isNonZeroScanOffset,
+} from "@/lib/geometry/scan-display";
 import { suggestScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
 import { cn } from "@/lib/utils";
 import { useScanStore } from "@/stores/scan-store";
@@ -38,6 +42,10 @@ export function ScanImport() {
         resetMarkers,
         registrationByScanId,
         markersByScanId,
+        manualOffsetByScanId,
+        selectedScanId,
+        selectScan,
+        resetManualOffset,
         deviationOverlay,
         deviationBusy,
         setDeviationOverlay,
@@ -350,6 +358,55 @@ export function ScanImport() {
                                     </p>
                                 </>
                             )}
+                            {(() => {
+                                const offset = manualOffsetByScanId[s.id];
+                                const moved = isNonZeroScanOffset(offset);
+                                const isSelected = selectedScanId === s.id;
+                                return (
+                                    <div className="flex flex-col gap-1 pt-1">
+                                        <div className="flex gap-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => selectScan(isSelected ? null : s.id)}
+                                                className={cn(
+                                                    "flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
+                                                    isSelected
+                                                        ? "bg-violet-500/25 text-violet-200"
+                                                        : "bg-muted text-muted-foreground hover:text-foreground",
+                                                )}
+                                                title="Select scan to drag or nudge with arrow keys"
+                                            >
+                                                <Move className="h-3 w-3" />
+                                                {isSelected ? "Selected" : "Move scan"}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                disabled={!moved}
+                                                onClick={() => resetManualOffset(s.id)}
+                                                title="Reset manual position to auto-alignment"
+                                                className={cn(
+                                                    "rounded px-2 py-1 text-[11px]",
+                                                    moved
+                                                        ? "bg-muted text-muted-foreground hover:text-foreground"
+                                                        : "cursor-not-allowed bg-muted/50 text-muted-foreground/50",
+                                                )}
+                                            >
+                                                Reset
+                                            </button>
+                                        </div>
+                                        {moved && offset ? (
+                                            <p className="text-[10px] text-violet-300">
+                                                Manual offset: {offset.x.toFixed(1)}, {offset.y.toFixed(1)},{" "}
+                                                {offset.z.toFixed(1)} mm
+                                            </p>
+                                        ) : (
+                                            <p className="text-[10px] text-muted-foreground/80">
+                                                Click the scan to select, then drag or use arrow keys
+                                            </p>
+                                        )}
+                                    </div>
+                                );
+                            })()}
                             <label className="flex cursor-pointer items-center gap-1.5 pt-0.5">
                                 <input
                                     type="checkbox"

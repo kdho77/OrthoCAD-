@@ -19,6 +19,8 @@ import {
     buildScanDisplayInfo,
     buildScanDisplayInfoFromBBox,
     type ScanDisplayInfo,
+    type ScanManualOffset,
+    ZERO_SCAN_OFFSET,
 } from "@/lib/geometry/scan-display";
 import { ScanDorsalError } from "@/lib/geometry/scan-dorsal";
 import type { SuggestedScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
@@ -213,6 +215,10 @@ interface ScanStore {
     scans: ImportedScan[];
     markersByScanId: Record<string, ScanMarkers>;
     registrationByScanId: Record<string, ScanRegistrationState>;
+    /** Post-registration clinician translation (base-local mm). Session only. */
+    manualOffsetByScanId: Record<string, ScanManualOffset>;
+    /** Selected scan for manual reposition (drag / arrow keys). */
+    selectedScanId: string | null;
     placementMode: PlacementMode | null;
     /** Active plane-slice drawing session (mutually exclusive with marker placement). */
     sliceDraft: SliceDraft | null;
@@ -232,6 +238,11 @@ interface ScanStore {
     setSide: (id: string, side: Side) => void;
     toggleVisible: (id: string) => void;
     clear: () => void;
+
+    selectScan: (scanId: string | null) => void;
+    setManualOffset: (scanId: string, offset: ScanManualOffset) => void;
+    nudgeManualOffset: (scanId: string, dx: number, dy: number, dz?: number) => void;
+    resetManualOffset: (scanId: string) => void;
 
     enterPlacement: (scanId: string) => void;
     exitPlacement: () => void;
@@ -333,16 +344,21 @@ function invalidateMarkersRegistration(
     s: {
         markersByScanId: Record<string, ScanMarkers>;
         registrationByScanId: Record<string, ScanRegistrationState>;
+        manualOffsetByScanId: Record<string, ScanManualOffset>;
+        selectedScanId: string | null;
         placementMode: PlacementMode | null;
     },
     scanId: string,
 ) {
+    const { [scanId]: _o, ...manualOffsetByScanId } = s.manualOffsetByScanId;
     return {
         markersByScanId: { ...s.markersByScanId, [scanId]: { ...EMPTY_MARKERS } },
         registrationByScanId: {
             ...s.registrationByScanId,
             [scanId]: emptyRegistration(true),
         },
+        manualOffsetByScanId,
+        selectedScanId: s.selectedScanId === scanId ? null : s.selectedScanId,
         placementMode:
             s.placementMode?.scanId === scanId ? { scanId, next: "M1" as MarkerId } : s.placementMode,
     };
@@ -352,6 +368,8 @@ export const useScanStore = create<ScanStore>((set, get) => ({
     scans: [],
     markersByScanId: {},
     registrationByScanId: {},
+    manualOffsetByScanId: {},
+    selectedScanId: null,
     placementMode: null,
     sliceDraft: null,
     deviationOverlay: false,
@@ -385,6 +403,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                 suggestedLandmarks: scan.suggestedLandmarks ?? null,
                 cleanupMessage: null,
             };
+            const { [scan.id]: _o, ...manualOffsetByScanId } = s.manualOffsetByScanId;
             return {
                 scans: [...s.scans, imported],
                 // Re-import / new mesh: never retain markers pointing at a deleted mesh.
@@ -393,6 +412,8 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                     ...s.registrationByScanId,
                     [scan.id]: emptyRegistration(true),
                 },
+                manualOffsetByScanId,
+                selectedScanId: s.selectedScanId === scan.id ? null : s.selectedScanId,
                 hoveredComponentId: s.hoveredComponentId?.scanId === scan.id ? null : s.hoveredComponentId,
                 sliceDraft: s.sliceDraft?.scanId === scan.id ? null : s.sliceDraft,
             };
@@ -404,10 +425,13 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             if (target) disposeScanGeometry(target);
             const { [id]: _m, ...markersByScanId } = s.markersByScanId;
             const { [id]: _r, ...registrationByScanId } = s.registrationByScanId;
+            const { [id]: _o, ...manualOffsetByScanId } = s.manualOffsetByScanId;
             return {
                 scans: s.scans.filter((x) => x.id !== id),
                 markersByScanId,
                 registrationByScanId,
+                manualOffsetByScanId,
+                selectedScanId: s.selectedScanId === id ? null : s.selectedScanId,
                 placementMode: s.placementMode?.scanId === id ? null : s.placementMode,
                 hoveredComponentId: s.hoveredComponentId?.scanId === id ? null : s.hoveredComponentId,
                 sliceDraft: s.sliceDraft?.scanId === id ? null : s.sliceDraft,
@@ -434,6 +458,8 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                 scans: [],
                 markersByScanId: {},
                 registrationByScanId: {},
+                manualOffsetByScanId: {},
+                selectedScanId: null,
                 placementMode: null,
                 sliceDraft: null,
                 rawBaseBySourceId: {},
@@ -442,9 +468,48 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             };
         }),
 
+    selectScan: (scanId) => {
+        if (get().selectedScanId === scanId) return;
+        set({ selectedScanId: scanId });
+    },
+
+    setManualOffset: (scanId, offset) =>
+        set((s) => ({
+            manualOffsetByScanId: {
+                ...s.manualOffsetByScanId,
+                [scanId]: { x: offset.x, y: offset.y, z: offset.z },
+            },
+        })),
+
+    nudgeManualOffset: (scanId, dx, dy, dz = 0) =>
+        set((s) => {
+            const prev = s.manualOffsetByScanId[scanId] ?? ZERO_SCAN_OFFSET;
+            return {
+                manualOffsetByScanId: {
+                    ...s.manualOffsetByScanId,
+                    [scanId]: {
+                        x: prev.x + dx,
+                        y: prev.y + dy,
+                        z: prev.z + dz,
+                    },
+                },
+            };
+        }),
+
+    resetManualOffset: (scanId) =>
+        set((s) => {
+            if (!s.manualOffsetByScanId[scanId]) return s;
+            const { [scanId]: _o, ...manualOffsetByScanId } = s.manualOffsetByScanId;
+            return { manualOffsetByScanId };
+        }),
+
     enterPlacement: (scanId) => {
         const markers = get().markersByScanId[scanId] ?? { ...EMPTY_MARKERS };
-        set({ placementMode: { scanId, next: nextMarker(markers) }, sliceDraft: null });
+        set({
+            placementMode: { scanId, next: nextMarker(markers) },
+            sliceDraft: null,
+            selectedScanId: null,
+        });
     },
 
     exitPlacement: () => set({ placementMode: null }),
@@ -468,14 +533,19 @@ export const useScanStore = create<ScanStore>((set, get) => ({
     },
 
     resetMarkers: (scanId) => {
-        set((s) => ({
-            markersByScanId: { ...s.markersByScanId, [scanId]: { ...EMPTY_MARKERS } },
-            registrationByScanId: {
-                ...s.registrationByScanId,
-                [scanId]: emptyRegistration(true),
-            },
-            placementMode: s.placementMode?.scanId === scanId ? { scanId, next: "M1" } : s.placementMode,
-        }));
+        set((s) => {
+            const { [scanId]: _o, ...manualOffsetByScanId } = s.manualOffsetByScanId;
+            return {
+                markersByScanId: { ...s.markersByScanId, [scanId]: { ...EMPTY_MARKERS } },
+                registrationByScanId: {
+                    ...s.registrationByScanId,
+                    [scanId]: emptyRegistration(true),
+                },
+                manualOffsetByScanId,
+                selectedScanId: s.selectedScanId === scanId ? null : s.selectedScanId,
+                placementMode: s.placementMode?.scanId === scanId ? { scanId, next: "M1" } : s.placementMode,
+            };
+        });
     },
 
     setDeviationOverlay: (on) =>
@@ -653,6 +723,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
     beginSlice: (scanId) => {
         set({
             placementMode: null,
+            selectedScanId: null,
             sliceDraft: {
                 scanId,
                 step: 0,
