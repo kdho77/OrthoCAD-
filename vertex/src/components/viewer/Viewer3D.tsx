@@ -83,7 +83,7 @@ export function Viewer3D() {
     const showPerf = usePerformanceStore((s) => s.showPerformanceMonitor);
     const setShowPerf = usePerformanceStore((s) => s.setShowPerformanceMonitor);
     const interacting = usePerformanceStore((s) => s.interacting);
-    // Hide stock/parametric insolves while placing scan alignment markers so the
+    // Hide stock/parametric insoles while placing scan alignment markers so the
     // foot scan is unobstructed for picking M1–M3. Viewer Left/Right prefs are preserved.
     const placingMarkers = useScanStore((s) => s.placementMode != null);
     const showLeftInsole = viewer.showLeft && !placingMarkers;
