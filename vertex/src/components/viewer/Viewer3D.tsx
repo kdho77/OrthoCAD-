@@ -88,6 +88,14 @@ export function Viewer3D() {
     const placingMarkers = useScanStore((s) => s.placementMode != null);
     const showLeftInsole = viewer.showLeft && !placingMarkers;
     const showRightInsole = viewer.showRight && !placingMarkers;
+    const registrationStatus = useScanStore((s) => {
+        const regs = Object.values(s.registrationByScanId);
+        const failed = regs.find((r) => r.error);
+        if (failed) return { kind: "error" as const, message: failed.error!.message };
+        const ok = regs.find((r) => r.matrixElements && !r.incomplete && !r.error);
+        if (ok) return { kind: "ok" as const, rms: ok.residualRmsMm };
+        return null;
+    });
 
     const setView = (name: CameraView) => {
         applyCameraViewPreset(controls.current, name);
@@ -238,6 +246,19 @@ export function Viewer3D() {
                         Placing markers · insole hidden
                     </span>
                 ) : null}
+                {!placingMarkers && registrationStatus?.kind === "ok" ? (
+                    <span className="w-fit rounded bg-emerald-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Scan aligned to insole
+                        {registrationStatus.rms != null
+                            ? ` · RMS ${registrationStatus.rms.toFixed(2)} mm`
+                            : ""}
+                    </span>
+                ) : null}
+                {!placingMarkers && registrationStatus?.kind === "error" ? (
+                    <span className="w-fit max-w-[16rem] rounded bg-destructive/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Alignment failed: {registrationStatus.message}
+                    </span>
+                ) : null}
             </div>
 
             {/* Display toggles */}
@@ -272,11 +293,7 @@ export function Viewer3D() {
                         setViewer({ showRight: !viewer.showRight });
                     }}
                     icon={
-                        showRightInsole ? (
-                            <Eye className="h-3.5 w-3.5" />
-                        ) : (
-                            <EyeOff className="h-3.5 w-3.5" />
-                        )
+                        showRightInsole ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
                     }
                     label="Right"
                 />

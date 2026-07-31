@@ -1052,6 +1052,37 @@ describe("Amendment M — provisional display + deadlock guard", () => {
         geo.dispose();
     });
 
+    test("M2b — discrete unitScale maps meter-local markers onto mm base landmarks", () => {
+        const frame = registerRawBaseGeometry("m2b", rawLeft, { primarySide: "left" });
+        const base: [THREE.Vector3, THREE.Vector3, THREE.Vector3] = [
+            frame.landmarks.B1.clone(),
+            frame.landmarks.B2.clone(),
+            frame.landmarks.B3.clone(),
+        ];
+        // Meter-space markers that correspond 1:1 to base landmarks after ×1000.
+        const meterMarkers = base.map((p) => p.clone().multiplyScalar(0.001)) as [
+            THREE.Vector3,
+            THREE.Vector3,
+            THREE.Vector3,
+        ];
+        const meterScan = syntheticScanAround(meterMarkers, new THREE.Vector3(0, 0, -1));
+        const withoutScale = registerScanWithDerivedDorsal(meterScan, meterMarkers, base);
+        expect(withoutScale.residualRmsMm).toBeGreaterThan(10);
+
+        const withScale = registerScanWithDerivedDorsal(meterScan, meterMarkers, base, {
+            unitScale: 1000,
+        });
+        expect(withScale.residualRmsMm).toBeLessThan(0.05);
+        // Composed matrix must carry the discrete scale (not identity scale).
+        const sx = new THREE.Vector3();
+        const sy = new THREE.Vector3();
+        const sz = new THREE.Vector3();
+        withScale.matrix.extractBasis(sx, sy, sz);
+        expect(sx.length()).toBeGreaterThan(500);
+
+        meterScan.dispose();
+    });
+
     test("M4 — freshly imported scan is visible, in frustum, raycast-hittable with null registration", () => {
         const geo = buildMeterScaleFootScan();
         useScanStore.getState().addScan({

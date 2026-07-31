@@ -38,7 +38,10 @@ export interface ImportedScan {
     rawGeometry: BufferGeometry;
     manifold: ManifoldReport;
     visible: boolean;
-    /** DISPLAY-ONLY framing meta (units + provisional matrix). Never export / Kabsch. */
+    /**
+     * Framing meta: provisional matrix is display-only (never export / Kabsch).
+     * `displayScale` is the discrete mm/cm/m units correction used by registration.
+     */
     display: ScanDisplayInfo;
     /** Ranked connected components (analysis). Empty when unlabeled. */
     components: ScanComponentStats[];
@@ -305,6 +308,8 @@ function computeRegistration(
             scanMarkersM1M2M3: [markers.M1, markers.M2, markers.M3],
             assignedSide: scan.side,
             sourceAssetId,
+            // Discrete mm/cm/m correction from provisional display inference — not a fitted scale.
+            unitScale: scan.display.displayScale,
         });
         // Separation % is identical after mirror (signed length ratio).
         const frame = getMarkerFrame(sourceAssetId);
@@ -457,6 +462,11 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             // until all confirmed or kept-set changes.
         }));
         get().recomputeRegistration(scanId);
+        // Exit placement once M1–M3 are set so the insole returns and the
+        // registration result (aligned scan, or error) is visible against the base.
+        if (allPlaced(get().markersByScanId[scanId] ?? markers)) {
+            set({ placementMode: null });
+        }
     },
 
     resetMarkers: (scanId) => {
@@ -482,7 +492,17 @@ export const useScanStore = create<ScanStore>((set, get) => ({
     setCleanupBusy: (busy) => set({ cleanupBusy: busy }),
     setHoveredComponentId: (hover) => set({ hoveredComponentId: hover }),
 
-    setLandmarkSourceAssetId: (assetId) => set({ landmarkSourceAssetId: assetId }),
+    setLandmarkSourceAssetId: (assetId) => {
+        set({ landmarkSourceAssetId: assetId });
+        // Base may finish loading after markers were confirmed — retry registration.
+        if (!assetId) return;
+        for (const scan of get().scans) {
+            const markers = get().markersByScanId[scan.id];
+            if (markers && allPlaced(markers)) {
+                get().recomputeRegistration(scan.id);
+            }
+        }
+    },
 
     setRawBaseGeometry: (sourceAssetId, geo) =>
         set((s) => {

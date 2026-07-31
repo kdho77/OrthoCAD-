@@ -183,7 +183,8 @@ export function provisionalMatrixFromDisplay(display: ScanDisplayInfo): THREE.Ma
 
 /**
  * Active mesh matrix: registration if present, else provisional display.
- * Registration never incorporates the provisional matrix.
+ * Registration never incorporates the provisional matrix (orient/center/lift).
+ * Discrete `displayScale` is applied inside the registration path separately.
  */
 export function resolveScanMeshMatrix(
     display: ScanDisplayInfo | undefined,

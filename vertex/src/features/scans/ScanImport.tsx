@@ -317,9 +317,15 @@ export function ScanImport() {
                             {reg?.incomplete || placed < 3 ? (
                                 <p>Registration: waiting for 3 markers ({placed}/3)</p>
                             ) : reg?.error ? (
-                                <p className="text-destructive">{reg.error.message}</p>
+                                <p className="text-destructive">
+                                    Alignment failed: {reg.error.message}. Check Left/Right side and marker
+                                    order (M1 medial met, M2 lateral met, M3 heel).
+                                </p>
                             ) : (
                                 <>
+                                    <p className="text-emerald-400">
+                                        Aligned to insole (heel→heel, toes distal, centered)
+                                    </p>
                                     <p>
                                         Residual RMS:{" "}
                                         <span className="text-foreground">

@@ -99,9 +99,17 @@ export type WiredRegistrationResult = KabschResult & {
     matrix: THREE.Matrix4;
 };
 
+/** Discrete mm/cm/m correction only — never a fitted Kabsch scale. */
+function resolveUnitScale(unitScale: number | undefined): number {
+    return unitScale && Number.isFinite(unitScale) && unitScale > 0 ? unitScale : 1;
+}
+
 /**
  * Derive dorsal from the scan surface, reorient moving markers so +Z = dorsal
- * (feeds the frozen chirality gate), run Kabsch, compose matrixFinal = M * R_d.
+ * (feeds the frozen chirality gate), run Kabsch, compose matrixFinal = M * R_d * S.
+ *
+ * `unitScale` is the discrete Amendment-M units correction (1|10|1000). It is
+ * not the provisional display matrix and not a free Kabsch scale.
  *
  * Optional `dorsalTwistRad` only for T13 — production callers omit it.
  */
@@ -109,11 +117,16 @@ export function registerScanWithDerivedDorsal(
     scanGeometry: BufferGeometry,
     scanMarkersM1M2M3: [V3, V3, V3],
     baseLandmarksB1B2B3: [V3, V3, V3],
-    options?: { dorsalTwistRad?: number },
+    options?: { dorsalTwistRad?: number; unitScale?: number },
 ): WiredRegistrationResult {
-    const dorsal = deriveScanDorsal(scanGeometry, scanMarkersM1M2M3);
+    const unitScale = resolveUnitScale(options?.unitScale);
+    // Neighbourhood radius is specified in mm; convert to raw scan units.
+    const radiusRaw = 5 / unitScale;
+    const dorsal = deriveScanDorsal(scanGeometry, scanMarkersM1M2M3, radiusRaw);
     const R_d = rotationAligningDorsalToZ(dorsal, options?.dorsalTwistRad ?? 0);
-    const fromDorsal = applyMat4ToPoints(scanMarkersM1M2M3, R_d);
+    const S = new THREE.Matrix4().makeScale(unitScale, unitScale, unitScale);
+    // Markers → mm (S) then dorsal frame (R_d), then rigid Kabsch to base.
+    const fromDorsal = applyMat4ToPoints(scanMarkersM1M2M3, R_d.clone().multiply(S));
 
     let kabsch: KabschResult;
     try {
@@ -131,7 +144,7 @@ export function registerScanWithDerivedDorsal(
         throw e;
     }
 
-    const matrix = kabsch.matrix.clone().multiply(R_d);
+    const matrix = kabsch.matrix.clone().multiply(R_d).multiply(S);
     // identifiedSide filled by caller who has left landmarks; placeholder left here
     // when only this function is used in isolation — callers should prefer
     // `runScanRegistration` which sets it from anatomy.
@@ -151,6 +164,8 @@ export function runScanRegistration(args: {
     scanMarkersM1M2M3: [V3, V3, V3];
     assignedSide: Side;
     sourceAssetId: string;
+    /** Discrete units correction (1|10|1000). Optional; defaults to 1 (mm). */
+    unitScale?: number;
 }): WiredRegistrationResult {
     const frame = getMarkerFrame(args.sourceAssetId);
     if (!frame) {
@@ -159,8 +174,9 @@ export function runScanRegistration(args: {
             "Base landmarks not registered for this asset — wait for base load",
         );
     }
+    const unitScale = resolveUnitScale(args.unitScale);
     const leftLm = frame.landmarks;
-    const dorsal = deriveScanDorsal(args.scanGeometry, args.scanMarkersM1M2M3);
+    const dorsal = deriveScanDorsal(args.scanGeometry, args.scanMarkersM1M2M3, 5 / unitScale);
     const identified = identifySideFromMarkers(args.scanMarkersM1M2M3, dorsal, leftLm);
 
     // J5 / T3 — chirality vs assignment. Same clinical error as swapped M1/M2.
@@ -174,7 +190,9 @@ export function runScanRegistration(args: {
 
     const landmarks = args.assignedSide === "right" ? mirrorBaseLandmarks(leftLm) : leftLm;
     const baseTriple: [V3, V3, V3] = [landmarks.B1, landmarks.B2, landmarks.B3];
-    const result = registerScanWithDerivedDorsal(args.scanGeometry, args.scanMarkersM1M2M3, baseTriple);
+    const result = registerScanWithDerivedDorsal(args.scanGeometry, args.scanMarkersM1M2M3, baseTriple, {
+        unitScale,
+    });
     return { ...result, identifiedSide: identified };
 }
 
