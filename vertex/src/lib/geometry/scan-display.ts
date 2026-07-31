@@ -111,7 +111,6 @@ function orientLongestToX(dominant: DominantAxis): THREE.Matrix4 {
  * DISPLAY ONLY — never pass to Kabsch; never bake into geometry.
  */
 export function computeProvisionalDisplayMatrix(
-    geometry: BufferGeometry,
     displayScale: number,
     dominant: DominantAxis,
     center: THREE.Vector3,
@@ -127,7 +126,7 @@ export function computeProvisionalDisplayMatrix(
 export function buildScanDisplayInfo(geometry: BufferGeometry): ScanDisplayInfo {
     const { min, max, size, center, longest, dominant } = bboxOf(geometry);
     const { inferredUnit, displayScale } = inferScanDisplayScale(longest);
-    const matrix = computeProvisionalDisplayMatrix(geometry, displayScale, dominant, center);
+    const matrix = computeProvisionalDisplayMatrix(displayScale, dominant, center);
     return {
         rawMin: [min.x, min.y, min.z],
         rawMax: [max.x, max.y, max.z],

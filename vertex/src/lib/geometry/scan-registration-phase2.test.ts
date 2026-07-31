@@ -1015,7 +1015,7 @@ describe("Amendment M — provisional display + deadlock guard", () => {
     test("M2 — provisional is display-only; world hit → scan-local before Kabsch", () => {
         const geo = buildMeterScaleFootScan();
         const display = buildScanDisplayInfo(geo);
-        const { mesh, matrixWorld } = buildUnregisteredScanScene(geo, "left", display);
+        const { matrixWorld } = buildUnregisteredScanScene(geo, "left", display);
 
         // A known geometry-local point (near box centre before translate: translate baked in).
         const localKnown = new THREE.Vector3(2.4, -1.1, 0.85); // box centre in raw coords
