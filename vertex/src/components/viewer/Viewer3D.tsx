@@ -88,14 +88,25 @@ export function Viewer3D() {
     const placingMarkers = useScanStore((s) => s.placementMode != null);
     const showLeftInsole = viewer.showLeft && !placingMarkers;
     const showRightInsole = viewer.showRight && !placingMarkers;
-    const registrationStatus = useScanStore((s) => {
-        const regs = Object.values(s.registrationByScanId);
-        const failed = regs.find((r) => r.error);
-        if (failed) return { kind: "error" as const, message: failed.error!.message };
-        const ok = regs.find((r) => r.matrixElements && !r.incomplete && !r.error);
-        if (ok) return { kind: "ok" as const, rms: ok.residualRmsMm };
+    // Select primitives only — returning a fresh object from a zustand selector
+    // causes an infinite re-render loop (React #185) once registration completes.
+    const registrationError = useScanStore((s) => {
+        for (const r of Object.values(s.registrationByScanId)) {
+            if (r.error) return r.error.message;
+        }
         return null;
     });
+    const registrationRms = useScanStore((s) => {
+        for (const r of Object.values(s.registrationByScanId)) {
+            if (r.matrixElements && !r.incomplete && !r.error) return r.residualRmsMm;
+        }
+        return null;
+    });
+    const registrationOk = useScanStore((s) =>
+        Object.values(s.registrationByScanId).some(
+            (r) => Boolean(r.matrixElements) && !r.incomplete && !r.error,
+        ),
+    );
 
     const setView = (name: CameraView) => {
         applyCameraViewPreset(controls.current, name);
@@ -246,17 +257,15 @@ export function Viewer3D() {
                         Placing markers · insole hidden
                     </span>
                 ) : null}
-                {!placingMarkers && registrationStatus?.kind === "ok" ? (
+                {!placingMarkers && registrationOk ? (
                     <span className="w-fit rounded bg-emerald-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Scan aligned to insole
-                        {registrationStatus.rms != null
-                            ? ` · RMS ${registrationStatus.rms.toFixed(2)} mm`
-                            : ""}
+                        {registrationRms != null ? ` · RMS ${registrationRms.toFixed(2)} mm` : ""}
                     </span>
                 ) : null}
-                {!placingMarkers && registrationStatus?.kind === "error" ? (
+                {!placingMarkers && registrationError ? (
                     <span className="w-fit max-w-[16rem] rounded bg-destructive/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
-                        Alignment failed: {registrationStatus.message}
+                        Alignment failed: {registrationError}
                     </span>
                 ) : null}
             </div>

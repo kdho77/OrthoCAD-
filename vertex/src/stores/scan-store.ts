@@ -454,19 +454,17 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             ...(get().markersByScanId[scanId] ?? { ...EMPTY_MARKERS }),
             [id]: point.clone(),
         };
+        const complete = allPlaced(markers);
+        // Single store update for markers + placement exit; then one registration pass.
         set((s) => ({
             markersByScanId: { ...s.markersByScanId, [scanId]: markers },
-            placementMode:
-                s.placementMode?.scanId === scanId ? { scanId, next: nextMarker(markers) } : s.placementMode,
-            // Confirming a marker clears that suggestion slot visually via UI; keep suggestions
-            // until all confirmed or kept-set changes.
+            placementMode: complete
+                ? null
+                : s.placementMode?.scanId === scanId
+                  ? { scanId, next: nextMarker(markers) }
+                  : s.placementMode,
         }));
         get().recomputeRegistration(scanId);
-        // Exit placement once M1–M3 are set so the insole returns and the
-        // registration result (aligned scan, or error) is visible against the base.
-        if (allPlaced(get().markersByScanId[scanId] ?? markers)) {
-            set({ placementMode: null });
-        }
     },
 
     resetMarkers: (scanId) => {
@@ -488,11 +486,30 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             return { deviationOverlay: on, deviationBusy: on };
         }),
 
-    setDeviationBusy: (busy) => set({ deviationBusy: busy }),
-    setCleanupBusy: (busy) => set({ cleanupBusy: busy }),
+    setDeviationBusy: (busy) => {
+        if (get().deviationBusy === busy) return;
+        set({ deviationBusy: busy });
+    },
+    setCleanupBusy: (busy) => {
+        if (get().cleanupBusy === busy) return;
+        set({ cleanupBusy: busy });
+    },
     setHoveredComponentId: (hover) => set({ hoveredComponentId: hover }),
 
     setLandmarkSourceAssetId: (assetId) => {
+        // No-op when unchanged — remounting BaseInsoleMesh would otherwise
+        // re-fire registration and churn the store after every M3 placement.
+        if (get().landmarkSourceAssetId === assetId) {
+            if (!assetId) return;
+            for (const scan of get().scans) {
+                const markers = get().markersByScanId[scan.id];
+                const reg = get().registrationByScanId[scan.id];
+                if (markers && allPlaced(markers) && (!reg || reg.incomplete || reg.error)) {
+                    get().recomputeRegistration(scan.id);
+                }
+            }
+            return;
+        }
         set({ landmarkSourceAssetId: assetId });
         // Base may finish loading after markers were confirmed — retry registration.
         if (!assetId) return;
