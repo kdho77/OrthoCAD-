@@ -5,6 +5,7 @@ import { useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
 import { worldHitToScanLocal } from "@/lib/geometry/scan-display";
+import { resolveMarkerPlacementTarget } from "@/lib/geometry/scan-marker-target";
 import { refineHitOnFullMesh } from "@/lib/geometry/scan-pick-mesh";
 import { type MarkerId, useScanStore } from "@/stores/scan-store";
 
@@ -12,6 +13,10 @@ import { type MarkerId, useScanStore } from "@/stores/scan-store";
  * Raycast marker placement / drag on the scan mesh only.
  * Large scans: raycast invisible decimated pick proxy, then refine on full mesh (K3).
  * OrbitControls remain enabled; misses do not capture the pointer.
+ *
+ * Clicks auto-progress M1 → M2 → M3 while each next slot is empty. Existing
+ * markers are only retargeted for drag-adjust after that slot is already placed,
+ * using a scale-aware proximity radius (raw scan units ≠ mm).
  */
 export function ScanMarkerPlacement() {
     const placementMode = useScanStore((s) => s.placementMode);
@@ -84,18 +89,11 @@ export function ScanMarkerPlacement() {
             if (!local) return;
             e.stopPropagation();
             e.preventDefault();
-            const markers = useScanStore.getState().markersByScanId[placementMode.scanId];
-            let target: MarkerId = placementMode.next;
-            if (markers) {
-                const thresh = 8;
-                for (const id of ["M1", "M2", "M3"] as MarkerId[]) {
-                    const p = markers[id];
-                    if (p && p.distanceTo(local) < thresh) {
-                        target = id;
-                        break;
-                    }
-                }
-            }
+            const state = useScanStore.getState();
+            const markers = state.markersByScanId[placementMode.scanId];
+            const scan = state.scans.find((s) => s.id === placementMode.scanId);
+            const displayScale = scan?.display.displayScale ?? 1;
+            const target = resolveMarkerPlacementTarget(placementMode.next, markers, local, displayScale);
             dragging.current = target;
             setMarker(placementMode.scanId, target, local);
             gl.domElement.setPointerCapture(e.pointerId);

@@ -22,6 +22,7 @@ import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
+import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
 
 const CENTER_X = INSOLE_LENGTH_MM / 2;
@@ -35,10 +36,14 @@ export function TrimlineEditTools() {
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
     const getTrimlineForSide = useMeshEditStore((s) => s.getTrimlineForSide);
+    // Match insole hide during marker placement — outline would otherwise linger.
+    const placingMarkers = useScanStore((s) => s.placementMode != null);
 
     const sides: Side[] = [];
     if (viewer.showLeft) sides.push("left");
     if (viewer.showRight) sides.push("right");
+
+    if (placingMarkers) return null;
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>

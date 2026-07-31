@@ -25,6 +25,7 @@ import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/d
 import { useKernelStore } from "@/stores/kernel-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
+import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
 import { ElementMarkers } from "./ElementMarkers";
@@ -82,6 +83,30 @@ export function Viewer3D() {
     const showPerf = usePerformanceStore((s) => s.showPerformanceMonitor);
     const setShowPerf = usePerformanceStore((s) => s.setShowPerformanceMonitor);
     const interacting = usePerformanceStore((s) => s.interacting);
+    // Hide stock/parametric insoles while placing scan alignment markers so the
+    // foot scan is unobstructed for picking M1–M3. Viewer Left/Right prefs are preserved.
+    const placingMarkers = useScanStore((s) => s.placementMode != null);
+    const showLeftInsole = viewer.showLeft && !placingMarkers;
+    const showRightInsole = viewer.showRight && !placingMarkers;
+    // Select primitives only — returning a fresh object from a zustand selector
+    // causes an infinite re-render loop (React #185) once registration completes.
+    const registrationError = useScanStore((s) => {
+        for (const r of Object.values(s.registrationByScanId)) {
+            if (r.error) return r.error.message;
+        }
+        return null;
+    });
+    const registrationRms = useScanStore((s) => {
+        for (const r of Object.values(s.registrationByScanId)) {
+            if (r.matrixElements && !r.incomplete && !r.error) return r.residualRmsMm;
+        }
+        return null;
+    });
+    const registrationOk = useScanStore((s) =>
+        Object.values(s.registrationByScanId).some(
+            (r) => Boolean(r.matrixElements) && !r.incomplete && !r.error,
+        ),
+    );
 
     const setView = (name: CameraView) => {
         applyCameraViewPreset(controls.current, name);
@@ -111,7 +136,7 @@ export function Viewer3D() {
                 <directionalLight position={[-150, 100, -100]} intensity={0.4} />
 
                 <Suspense fallback={null}>
-                    {viewer.showLeft ? (
+                    {showLeftInsole ? (
                         <>
                             {!showBase ? (
                                 <InsoleMesh
@@ -125,7 +150,7 @@ export function Viewer3D() {
                             )}
                         </>
                     ) : null}
-                    {viewer.showRight ? (
+                    {showRightInsole ? (
                         <>
                             {!showBase ? (
                                 <InsoleMesh
@@ -142,7 +167,7 @@ export function Viewer3D() {
                     <ScanMeshes transparent={viewer.transparent} />
                     <ScanMarkerPlacement />
                     <ScanPlaneSliceTool />
-                    <ElementMarkers />
+                    {!placingMarkers ? <ElementMarkers /> : null}
                     <MeshEditTools />
                     <TrimlineEditTools />
                     <PerformanceMonitorOverlay />
@@ -227,6 +252,22 @@ export function Viewer3D() {
                         {viewer.view !== "iso" ? " · plane-locked" : ""}
                     </span>
                 ) : null}
+                {placingMarkers ? (
+                    <span className="w-fit rounded bg-amber-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Placing markers · insole hidden
+                    </span>
+                ) : null}
+                {!placingMarkers && registrationOk ? (
+                    <span className="w-fit rounded bg-emerald-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Scan aligned to insole
+                        {registrationRms != null ? ` · RMS ${registrationRms.toFixed(2)} mm` : ""}
+                    </span>
+                ) : null}
+                {!placingMarkers && registrationError ? (
+                    <span className="w-fit max-w-[16rem] rounded bg-destructive/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Alignment failed: {registrationError}
+                    </span>
+                ) : null}
             </div>
 
             {/* Display toggles */}
@@ -244,22 +285,24 @@ export function Viewer3D() {
                     label="Heightmap"
                 />
                 <ToggleButton
-                    active={viewer.showLeft}
-                    onClick={() => setViewer({ showLeft: !viewer.showLeft })}
+                    active={showLeftInsole}
+                    onClick={() => {
+                        if (placingMarkers) return;
+                        setViewer({ showLeft: !viewer.showLeft });
+                    }}
                     icon={
-                        viewer.showLeft ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
+                        showLeftInsole ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
                     }
                     label="Left"
                 />
                 <ToggleButton
-                    active={viewer.showRight}
-                    onClick={() => setViewer({ showRight: !viewer.showRight })}
+                    active={showRightInsole}
+                    onClick={() => {
+                        if (placingMarkers) return;
+                        setViewer({ showRight: !viewer.showRight });
+                    }}
                     icon={
-                        viewer.showRight ? (
-                            <Eye className="h-3.5 w-3.5" />
-                        ) : (
-                            <EyeOff className="h-3.5 w-3.5" />
-                        )
+                        showRightInsole ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
                     }
                     label="Right"
                 />
