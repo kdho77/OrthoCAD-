@@ -209,18 +209,16 @@ function SlicePlanePreview({
     const scan = scans.find((s) => s.id === scanId);
     const { scene } = useThree();
 
-    const meshMatrix = useMemo(() => {
-        let mesh: THREE.Mesh | null = null;
-        scene.traverse((obj) => {
-            if (mesh) return;
-            if ((obj as THREE.Mesh).isMesh && obj.userData?.isScanMesh && obj.userData?.scanId === scanId) {
-                mesh = obj as THREE.Mesh;
-            }
-        });
-        return mesh ? (mesh as THREE.Mesh).matrixWorld.clone() : new THREE.Matrix4();
-    }, [scene, scanId, scan?.geometry?.uuid]);
-
     if (!scan) return null;
+
+    let mesh: THREE.Mesh | null = null;
+    scene.traverse((obj) => {
+        if (mesh) return;
+        if ((obj as THREE.Mesh).isMesh && obj.userData?.isScanMesh && obj.userData?.scanId === scanId) {
+            mesh = obj as THREE.Mesh;
+        }
+    });
+    const meshMatrix = mesh ? (mesh as THREE.Mesh).matrixWorld.clone() : new THREE.Matrix4();
     scan.geometry.computeBoundingBox();
     const box = scan.geometry.boundingBox ?? new THREE.Box3();
     const size = new THREE.Vector3();
