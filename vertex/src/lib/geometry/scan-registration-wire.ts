@@ -104,9 +104,74 @@ function resolveUnitScale(unitScale: number | undefined): number {
     return unitScale && Number.isFinite(unitScale) && unitScale > 0 ? unitScale : 1;
 }
 
+function markerResidualRmsMm(
+    from: readonly [V3, V3, V3],
+    to: readonly [V3, V3, V3],
+    rotation: THREE.Matrix3,
+    translation: THREE.Vector3,
+): number {
+    let sum = 0;
+    for (let i = 0; i < 3; i++) {
+        const p = from[i]!.clone().applyMatrix3(rotation).add(translation);
+        sum += p.distanceToSquared(to[i]!);
+    }
+    return Math.sqrt(sum / 3);
+}
+
+/**
+ * Kabsch centroid-fit centers the marker triple front-to-back. Clinically the
+ * heel must seat in the heel cup: keep Kabsch rotation + ML/height translation,
+ * then slide along footprint +X so M3.x lands on B3.x.
+ */
+export function seatHeelLongitudinally(
+    kabsch: KabschResult,
+    scanMarkersM1M2M3: readonly [V3, V3, V3],
+    baseLandmarksB1B2B3: readonly [V3, V3, V3],
+): KabschResult {
+    const m3 = scanMarkersM1M2M3[2]!;
+    const b3 = baseLandmarksB1B2B3[2]!;
+    const m3Prime = m3.clone().applyMatrix3(kabsch.rotation).add(kabsch.translation);
+    const dx = b3.x - m3Prime.x;
+    if (Math.abs(dx) < 1e-12) return kabsch;
+
+    const translation = kabsch.translation.clone();
+    translation.x += dx;
+    const e = kabsch.rotation.elements;
+    const matrix = new THREE.Matrix4().set(
+        e[0]!,
+        e[3]!,
+        e[6]!,
+        translation.x,
+        e[1]!,
+        e[4]!,
+        e[7]!,
+        translation.y,
+        e[2]!,
+        e[5]!,
+        e[8]!,
+        translation.z,
+        0,
+        0,
+        0,
+        1,
+    );
+    return {
+        rotation: kabsch.rotation,
+        translation,
+        residualRmsMm: markerResidualRmsMm(
+            scanMarkersM1M2M3,
+            baseLandmarksB1B2B3,
+            kabsch.rotation,
+            translation,
+        ),
+        matrix,
+    };
+}
+
 /**
  * Derive dorsal from the scan surface, reorient moving markers so +Z = dorsal
- * (feeds the frozen chirality gate), run Kabsch, compose matrixFinal = M * R_d * S.
+ * (feeds the frozen chirality gate), run Kabsch, seat heel on +X, compose
+ * matrixFinal = M * R_d * S.
  *
  * `unitScale` is the discrete Amendment-M units correction (1|10|1000). It is
  * not the provisional display matrix and not a free Kabsch scale.
@@ -143,6 +208,9 @@ export function registerScanWithDerivedDorsal(
         }
         throw e;
     }
+
+    // Heel→heel cup seating (not front-to-back centroid centering).
+    kabsch = seatHeelLongitudinally(kabsch, fromDorsal, baseLandmarksB1B2B3);
 
     const matrix = kabsch.matrix.clone().multiply(R_d).multiply(S);
     // identifiedSide filled by caller who has left landmarks; placeholder left here

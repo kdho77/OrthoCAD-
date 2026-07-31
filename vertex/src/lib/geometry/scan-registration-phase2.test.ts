@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import * as THREE from "three";
+import { kabschRigid } from "@/lib/geometry/kabsch";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import {
     clearMarkerFrameRegistry,
@@ -36,6 +37,7 @@ import {
     rotationAligningDorsalToZ,
     runScanRegistration,
     ScanRegistrationWireError,
+    seatHeelLongitudinally,
 } from "@/lib/geometry/scan-registration-wire";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { cameraForView } from "@/lib/geometry/viewport-side-layout";
@@ -507,6 +509,43 @@ describe("Phase 2 — scan registration wiring", () => {
         const R0 = rotationAligningDorsalToZ(new THREE.Vector3(0, 0, 1), 0);
         const R1 = rotationAligningDorsalToZ(new THREE.Vector3(0, 0, 1), 1.234);
         expect(Math.abs(R0.elements[0]! - R1.elements[0]!)).toBeGreaterThan(1e-6);
+        scan.dispose();
+    });
+
+    test("heel seat — shorter foot lands M3.x on B3.x; ML (Y) unchanged vs Kabsch", () => {
+        const frame = registerRawBaseGeometry("heel-seat", rawLeft, { primarySide: "left" });
+        const base: [THREE.Vector3, THREE.Vector3, THREE.Vector3] = [
+            frame.landmarks.B1.clone(),
+            frame.landmarks.B2.clone(),
+            frame.landmarks.B3.clone(),
+        ];
+        // Compress length about the marker centroid so Kabsch alone leaves the heel forward.
+        const c = new THREE.Vector3()
+            .add(base[0]!)
+            .add(base[1]!)
+            .add(base[2]!)
+            .multiplyScalar(1 / 3);
+        const short = base.map((p) => {
+            const q = p.clone().sub(c);
+            q.x *= 0.8;
+            return q.add(c);
+        }) as [THREE.Vector3, THREE.Vector3, THREE.Vector3];
+
+        const kabschOnly = kabschRigid(short, base);
+        const m3Kabsch = short[2]!.clone().applyMatrix3(kabschOnly.rotation).add(kabschOnly.translation);
+        expect(Math.abs(m3Kabsch.x - base[2]!.x)).toBeGreaterThan(1);
+
+        const seated = seatHeelLongitudinally(kabschOnly, short, base);
+        const m3Seated = short[2]!.clone().applyMatrix3(seated.rotation).add(seated.translation);
+        expect(Math.abs(m3Seated.x - base[2]!.x)).toBeLessThan(1e-9);
+        // ML centering from Kabsch preserved.
+        expect(Math.abs(seated.translation.y - kabschOnly.translation.y)).toBeLessThan(1e-12);
+        expect(Math.abs(seated.translation.z - kabschOnly.translation.z)).toBeLessThan(1e-12);
+
+        const scan = syntheticScanAround(short, new THREE.Vector3(0, 0, -1));
+        const wired = registerScanWithDerivedDorsal(scan, short, base);
+        const m3Wired = short[2]!.clone().applyMatrix4(wired.matrix);
+        expect(Math.abs(m3Wired.x - base[2]!.x)).toBeLessThan(1e-6);
         scan.dispose();
     });
 

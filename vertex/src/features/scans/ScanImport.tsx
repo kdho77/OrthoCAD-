@@ -324,7 +324,7 @@ export function ScanImport() {
                             ) : (
                                 <>
                                     <p className="text-emerald-400">
-                                        Aligned to insole (heel→heel, toes distal, centered)
+                                        Aligned to insole (heel seated in cup, toes distal, ML centered)
                                     </p>
                                     <p>
                                         Residual RMS:{" "}
