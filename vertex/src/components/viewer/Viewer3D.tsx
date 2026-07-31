@@ -33,6 +33,7 @@ import { MeshEditTools } from "./MeshEditTools";
 import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
 import { ScanMarkerPlacement } from "./ScanMarkerPlacement";
 import { ScanMeshes } from "./ScanMeshes";
+import { ScanPlaneSliceTool } from "./ScanPlaneSliceTool";
 import { TrimlineEditTools } from "./TrimlineEditTools";
 
 /** Cross-pad anatomical views (Left / Top / Bottom / Right). */
@@ -140,6 +141,7 @@ export function Viewer3D() {
                     ) : null}
                     <ScanMeshes transparent={viewer.transparent} />
                     <ScanMarkerPlacement />
+                    <ScanPlaneSliceTool />
                     <ElementMarkers />
                     <MeshEditTools />
                     <TrimlineEditTools />

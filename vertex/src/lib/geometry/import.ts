@@ -1,9 +1,11 @@
 import type { BufferGeometry } from "three";
-import { mergeVertices } from "three-stdlib";
 import { OBJLoader, STLLoader } from "three-stdlib";
 
 // Client-side import of STL (binary/ASCII) and OBJ scans/prefabs into a single
 // BufferGeometry, ready for the viewer and the geometry kernel.
+//
+// Welding is NOT applied here — scan cleanup (scan-components.ts) welds for
+// analysis only and extracts original triangles for the kept set.
 
 export type ImportFormat = "stl" | "obj";
 
@@ -36,14 +38,14 @@ export async function importScanFile(file: File): Promise<ImportResult> {
             if (g?.isBufferGeometry) meshes.push(g);
         });
         if (meshes.length === 0) throw new Error("OBJ contains no mesh geometry");
-        geometry = meshes[0];
+        geometry = meshes[0]!;
     }
 
-    // Weld coincident vertices so manifold analysis and downstream booleans work.
+    // Preserve the original (often non-indexed) triangle buffer. Do not mergeVertices.
     geometry.deleteAttribute("uv");
-    geometry.deleteAttribute("normal");
-    geometry = mergeVertices(geometry);
-    geometry.computeVertexNormals();
+    if (!geometry.getAttribute("normal")) {
+        geometry.computeVertexNormals();
+    }
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
 

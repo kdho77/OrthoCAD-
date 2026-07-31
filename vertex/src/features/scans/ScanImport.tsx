@@ -4,8 +4,17 @@
 import { CheckCircle2, Eye, EyeOff, MapPin, RotateCcw, Trash2, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
+import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
 import { importScanFile } from "@/lib/geometry/import";
 import { analyzeManifold } from "@/lib/geometry/manifold";
+import {
+    extractKeptGeometry,
+    rankComponents,
+    selectedComponentsBBox,
+    weldAndLabelComponents,
+} from "@/lib/geometry/scan-components";
+import { buildScanDisplayInfo, buildScanDisplayInfoFromBBox } from "@/lib/geometry/scan-display";
+import { suggestScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
 import { cn } from "@/lib/utils";
 import { useScanStore } from "@/stores/scan-store";
 
@@ -33,6 +42,9 @@ export function ScanImport() {
         deviationBusy,
         setDeviationOverlay,
         landmarkSourceAssetId,
+        setCleanupBusy,
+        setSuggestedLandmarks,
+        setMarker,
     } = useScanStore();
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
@@ -43,19 +55,65 @@ export function ScanImport() {
         setBusy(true);
         try {
             for (const file of Array.from(files)) {
-                const { geometry, format, triangleCount } = await importScanFile(file);
+                const { geometry: rawGeometry, format } = await importScanFile(file);
+
+                setCleanupBusy(true);
+                const labeling = weldAndLabelComponents(rawGeometry);
+                const ranked = rankComponents(labeling.components);
+                // Multi-component: preselect top-ranked foot only. Single: keep all.
+                const keptIds =
+                    ranked.length <= 1 ? ranked.map((c) => c.id) : ranked[0] ? [ranked[0].id] : [];
+                const keptGeo =
+                    keptIds.length > 0 ? extractKeptGeometry(rawGeometry, labeling, keptIds) : rawGeometry;
+                const prior = buildScanDisplayInfo(rawGeometry);
+                const bbox = selectedComponentsBBox(ranked, keptIds);
+                const display = bbox
+                    ? buildScanDisplayInfoFromBBox(bbox.min, bbox.max, {
+                          inferredUnit: prior.inferredUnit,
+                          dominantRawAxis: prior.dominantRawAxis,
+                          rawLongest: prior.rawLongest,
+                      })
+                    : prior;
+
+                const index = keptGeo.getIndex();
+                const triangleCount = index ? index.count / 3 : keptGeo.getAttribute("position").count / 3;
+
+                const id = crypto.randomUUID();
+                const side = "left" as const;
                 addScan({
-                    id: crypto.randomUUID(),
+                    id,
                     name: file.name,
-                    side: "left",
+                    side,
                     format,
                     triangleCount,
-                    geometry,
-                    manifold: analyzeManifold(geometry),
+                    geometry: keptGeo,
+                    rawGeometry,
+                    manifold: analyzeManifold(keptGeo),
+                    display,
+                    components: ranked,
+                    keptComponentIds: keptIds,
+                    triangleComponentOf: labeling.triangleComponentOf,
+                    labelingMeta: {
+                        degenerateTriangleCount: labeling.degenerateTriangleCount,
+                        weldTolerance: labeling.weldTolerance,
+                        elapsedMs: labeling.elapsedMs,
+                        originalTriangleCount: labeling.originalTriangleCount,
+                    },
                 });
+
+                // Suggestions never block import.
+                const sug = suggestScanLandmarks(keptGeo, side);
+                if (sug) setSuggestedLandmarks(id, sug);
+
+                if (labeling.elapsedMs <= 250) setCleanupBusy(false);
+                else {
+                    // Keep busy treatment visible briefly when analysis was heavy.
+                    window.setTimeout(() => setCleanupBusy(false), 0);
+                }
             }
         } catch (e) {
             setError(e instanceof Error ? e.message : "Import failed");
+            setCleanupBusy(false);
         } finally {
             setBusy(false);
             if (inputRef.current) inputRef.current.value = "";
@@ -89,6 +147,7 @@ export function ScanImport() {
                 const placed = [markers?.M1, markers?.M2, markers?.M3].filter(Boolean).length;
                 const placing = placementMode?.scanId === s.id;
                 const baseReady = Boolean(landmarkSourceAssetId);
+                const sug = s.suggestedLandmarks;
 
                 return (
                     <div
@@ -150,9 +209,57 @@ export function ScanImport() {
                                         Inferred units: {d.inferredUnit} → display ×{d.displayScale}
                                         {d.displayScale !== 1 ? " (units correction, not a fit)" : ""}
                                     </p>
+                                    {d.priorRawInferredUnit != null &&
+                                    d.priorRawInferredUnit !== d.inferredUnit ? (
+                                        <p className="text-amber-300/90">
+                                            Raw-bbox units were {d.priorRawInferredUnit} — corrected from
+                                            selected component.
+                                        </p>
+                                    ) : null}
                                 </div>
                             );
                         })()}
+
+                        <ScanCleanupPanel scanId={s.id} />
+
+                        {sug ? (
+                            <div className="space-y-1 rounded border border-cyan-500/30 bg-cyan-500/5 px-1.5 py-1 text-[10px]">
+                                <p className="text-cyan-200">Suggested landmarks (unconfirmed)</p>
+                                <p className="text-muted-foreground">
+                                    M1/M2/M3 heuristics on the cleaned scan. Confirm each — nothing
+                                    auto-registers.
+                                </p>
+                                <div className="flex flex-wrap gap-1">
+                                    {(["M1", "M2", "M3"] as const).map((id) => {
+                                        const already = Boolean(markers?.[id]);
+                                        return (
+                                            <button
+                                                key={id}
+                                                type="button"
+                                                disabled={already}
+                                                onClick={() => setMarker(s.id, id, sug[id])}
+                                                className={cn(
+                                                    "rounded px-2 py-0.5 text-[11px]",
+                                                    already
+                                                        ? "bg-muted text-muted-foreground"
+                                                        : "bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30",
+                                                )}
+                                            >
+                                                {already ? `${id} placed` : `Confirm ${id}`}
+                                            </button>
+                                        );
+                                    })}
+                                    <button
+                                        type="button"
+                                        onClick={() => setSuggestedLandmarks(s.id, null)}
+                                        className="rounded bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
+                                    >
+                                        Dismiss
+                                    </button>
+                                </div>
+                            </div>
+                        ) : null}
+
                         <div className="flex gap-1">
                             {(["left", "right"] as const).map((side) => (
                                 <button

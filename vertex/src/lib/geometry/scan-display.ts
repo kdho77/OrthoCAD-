@@ -36,6 +36,13 @@ export type ScanDisplayInfo = {
     displayScale: number;
     /** Column-major mesh.matrix for unregistered display (not registration). */
     provisionalMatrixElements: number[];
+    /**
+     * When display was built from a selected-component bbox, the full-raw
+     * inference (before cleanup) for before/after UI. Undefined if same as above.
+     */
+    priorRawInferredUnit?: InferredScanUnit;
+    priorRawDominantAxis?: DominantAxis;
+    priorRawLongest?: number;
 };
 
 function bboxOf(geometry: BufferGeometry): {
@@ -123,11 +130,30 @@ export function computeProvisionalDisplayMatrix(
     return new THREE.Matrix4().multiplyMatrices(tLift, r).multiply(s).multiply(tCenter);
 }
 
-export function buildScanDisplayInfo(geometry: BufferGeometry): ScanDisplayInfo {
-    const { min, max, size, center, longest, dominant } = bboxOf(geometry);
+export function buildScanDisplayInfoFromBBox(
+    min: THREE.Vector3,
+    max: THREE.Vector3,
+    prior?: {
+        inferredUnit: InferredScanUnit;
+        dominantRawAxis: DominantAxis;
+        rawLongest: number;
+    },
+): ScanDisplayInfo {
+    const size = new THREE.Vector3().subVectors(max, min);
+    const center = new THREE.Vector3().addVectors(min, max).multiplyScalar(0.5);
+    let dominant: DominantAxis = "x";
+    let longest = size.x;
+    if (size.y > longest) {
+        longest = size.y;
+        dominant = "y";
+    }
+    if (size.z > longest) {
+        longest = size.z;
+        dominant = "z";
+    }
     const { inferredUnit, displayScale } = inferScanDisplayScale(longest);
     const matrix = computeProvisionalDisplayMatrix(displayScale, dominant, center);
-    return {
+    const info: ScanDisplayInfo = {
         rawMin: [min.x, min.y, min.z],
         rawMax: [max.x, max.y, max.z],
         rawSize: [size.x, size.y, size.z],
@@ -138,6 +164,17 @@ export function buildScanDisplayInfo(geometry: BufferGeometry): ScanDisplayInfo 
         displayScale,
         provisionalMatrixElements: Array.from(matrix.elements),
     };
+    if (prior) {
+        info.priorRawInferredUnit = prior.inferredUnit;
+        info.priorRawDominantAxis = prior.dominantRawAxis;
+        info.priorRawLongest = prior.rawLongest;
+    }
+    return info;
+}
+
+export function buildScanDisplayInfo(geometry: BufferGeometry): ScanDisplayInfo {
+    const { min, max } = bboxOf(geometry);
+    return buildScanDisplayInfoFromBBox(min, max);
 }
 
 export function provisionalMatrixFromDisplay(display: ScanDisplayInfo): THREE.Matrix4 {

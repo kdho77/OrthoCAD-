@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import { getMarkerFrame, mirrorBaseLandmarks } from "@/lib/geometry/marker-frame";
+import { extractKeptGeometry, type ScanComponentLabeling } from "@/lib/geometry/scan-components";
 import {
     computeScanDeviationAgainstRaw,
     DEVIATION_LEGEND_MM,
@@ -16,6 +17,8 @@ import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
 
 const CLINICIAN_MARKER_COLOR = "#f59e0b";
 const BASE_LANDMARK_COLOR = "#22d3ee";
+const SUGGESTED_MARKER_COLOR = "#67e8f9";
+const HOVER_COMPONENT_COLOR = "#fbbf24";
 
 function MarkerSphere({
     position,
@@ -56,6 +59,8 @@ function RegisteredScanMesh({
         landmarkSourceAssetId ? s.rawBaseBySourceId[landmarkSourceAssetId] : undefined,
     );
     const markers = useScanStore((s) => s.markersByScanId[scanId]);
+    const scanRecord = useScanStore((s) => s.scans.find((x) => x.id === scanId));
+    const hovered = useScanStore((s) => s.hoveredComponentId);
     const leftFrame = landmarkSourceAssetId ? getMarkerFrame(landmarkSourceAssetId) : null;
 
     const [coloredGeo, setColoredGeo] = useState<THREE.BufferGeometry | null>(null);
@@ -109,12 +114,30 @@ function RegisteredScanMesh({
         };
     }, [deviationOverlay, registration, rawBase, geometry, setDeviationBusy]);
 
+    // Pick proxy from KEPT geometry only — hidden components are not in `geometry`.
     const pickGeo = useMemo(() => {
         if (!scanNeedsPickProxy(geometry)) return null;
         return buildDecimatedPickGeometry(geometry);
     }, [geometry]);
 
     useEffect(() => () => pickGeo?.dispose(), [pickGeo]);
+
+    const hoverGeo = useMemo(() => {
+        if (!scanRecord || !hovered || hovered.scanId !== scanId) return null;
+        if (!scanRecord.triangleComponentOf || !scanRecord.labelingMeta) return null;
+        const labeling: ScanComponentLabeling = {
+            components: scanRecord.components,
+            triangleComponentOf: scanRecord.triangleComponentOf,
+            originalTriangleCount: scanRecord.labelingMeta.originalTriangleCount,
+            degenerateTriangleCount: scanRecord.labelingMeta.degenerateTriangleCount,
+            weldTolerance: scanRecord.labelingMeta.weldTolerance,
+            longestBbox: scanRecord.display.rawLongest,
+            elapsedMs: scanRecord.labelingMeta.elapsedMs,
+        };
+        return extractKeptGeometry(scanRecord.rawGeometry, labeling, [hovered.componentId]);
+    }, [scanRecord, hovered, scanId]);
+
+    useEffect(() => () => hoverGeo?.dispose(), [hoverGeo]);
 
     const displayGeo = coloredGeo ?? geometry;
     const offsetY = sideOffsetX(side);
@@ -131,6 +154,7 @@ function RegisteredScanMesh({
             : null;
 
     const applyPoint = (p: THREE.Vector3) => p.clone().applyMatrix4(meshMatrix);
+    const suggested = scanRecord?.suggestedLandmarks;
 
     return (
         <group position={[posX, offsetY, 0]}>
@@ -161,7 +185,29 @@ function RegisteredScanMesh({
                 />
             </mesh>
 
-            {/* Invisible decimated pick proxy (K3) — same transform as full mesh. */}
+            {/* Hover highlight — not a pick target (no isScanMesh / isScanPickMesh). */}
+            {hoverGeo ? (
+                <mesh
+                    geometry={hoverGeo}
+                    matrixAutoUpdate={false}
+                    userData={{ scanId, isScanHoverHighlight: true }}
+                    ref={(mesh) => {
+                        if (!mesh) return;
+                        mesh.matrix.copy(meshMatrix);
+                        mesh.matrixWorldNeedsUpdate = true;
+                    }}
+                >
+                    <meshBasicMaterial
+                        color={HOVER_COMPONENT_COLOR}
+                        transparent
+                        opacity={0.45}
+                        side={THREE.DoubleSide}
+                        depthTest={false}
+                    />
+                </mesh>
+            ) : null}
+
+            {/* Invisible decimated pick proxy (K3) — same transform as full mesh (kept only). */}
             {pickGeo ? (
                 <mesh
                     geometry={pickGeo}
@@ -191,6 +237,29 @@ function RegisteredScanMesh({
             ) : null}
             {markers?.M3 ? (
                 <MarkerSphere position={applyPoint(markers.M3)} color={CLINICIAN_MARKER_COLOR} />
+            ) : null}
+
+            {/* Suggested (provisional) markers — visually distinct; not confirmed. */}
+            {suggested && !markers?.M1 ? (
+                <MarkerSphere
+                    position={applyPoint(suggested.M1)}
+                    color={SUGGESTED_MARKER_COLOR}
+                    radius={1.6}
+                />
+            ) : null}
+            {suggested && !markers?.M2 ? (
+                <MarkerSphere
+                    position={applyPoint(suggested.M2)}
+                    color={SUGGESTED_MARKER_COLOR}
+                    radius={1.6}
+                />
+            ) : null}
+            {suggested && !markers?.M3 ? (
+                <MarkerSphere
+                    position={applyPoint(suggested.M3)}
+                    color={SUGGESTED_MARKER_COLOR}
+                    radius={1.6}
+                />
             ) : null}
 
             {landmarks ? (
