@@ -20,38 +20,117 @@ export const PICK_TARGET_TRIANGLES = 24_000;
 export const PICK_REFINE_RADIUS_MM = 8;
 
 /**
- * Build a coarser geometry by keeping every Nth triangle.
- * Preserves original positions (no vertex welding) — native stride only.
+ * Build a continuous coarse pick proxy from the scan's XY upper envelope.
+ * Stride-thinning leaves ray holes in triangle soup; a regular heightfield
+ * grid stays watertight for top-down marker rays, then refine restores
+ * full-resolution accuracy (Amendment L2).
  */
 export function buildDecimatedPickGeometry(
     geometry: BufferGeometry,
     targetTriangles = PICK_TARGET_TRIANGLES,
 ): BufferGeometry {
     const pos = geometry.getAttribute("position");
-    if (!pos) return geometry.clone();
+    if (!pos || pos.count === 0) return geometry.clone();
 
     const index = geometry.getIndex();
     const triCount = index ? index.count / 3 : pos.count / 3;
     if (triCount <= targetTriangles) return geometry.clone();
 
-    const stride = Math.max(1, Math.ceil(triCount / targetTriangles));
-    const outPos: number[] = [];
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+    const spanX = Math.max(maxX - minX, 1e-3);
+    const spanY = Math.max(maxY - minY, 1e-3);
 
-    if (index) {
-        for (let t = 0; t < triCount; t += stride) {
-            const i0 = index.getX(t * 3);
-            const i1 = index.getX(t * 3 + 1);
-            const i2 = index.getX(t * 3 + 2);
-            outPos.push(pos.getX(i0), pos.getY(i0), pos.getZ(i0));
-            outPos.push(pos.getX(i1), pos.getY(i1), pos.getZ(i1));
-            outPos.push(pos.getX(i2), pos.getY(i2), pos.getZ(i2));
+    // n×n quads → 2n² triangles. Aim near targetTriangles.
+    const n = Math.max(8, Math.ceil(Math.sqrt(targetTriangles / 2)));
+    const cellX = spanX / n;
+    const cellY = spanY / n;
+
+    // Max-Z per coarse cell (upper envelope for top-down picks).
+    const zMax = new Float32Array((n + 1) * (n + 1));
+    const filled = new Uint8Array((n + 1) * (n + 1));
+    zMax.fill(-Infinity);
+
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        const z = pos.getZ(i);
+        const ix = Math.min(n, Math.max(0, Math.round(((x - minX) / spanX) * n)));
+        const iy = Math.min(n, Math.max(0, Math.round(((y - minY) / spanY) * n)));
+        const k = iy * (n + 1) + ix;
+        if (z > zMax[k]!) {
+            zMax[k] = z;
+            filled[k] = 1;
         }
-    } else {
-        for (let t = 0; t < triCount; t += stride) {
-            const i0 = t * 3;
-            outPos.push(pos.getX(i0), pos.getY(i0), pos.getZ(i0));
-            outPos.push(pos.getX(i0 + 1), pos.getY(i0 + 1), pos.getZ(i0 + 1));
-            outPos.push(pos.getX(i0 + 2), pos.getY(i0 + 2), pos.getZ(i0 + 2));
+    }
+
+    // Fill empty nodes from nearest filled neighbour (scan footprint is not a rectangle).
+    for (let iy = 0; iy <= n; iy++) {
+        for (let ix = 0; ix <= n; ix++) {
+            const k = iy * (n + 1) + ix;
+            if (filled[k]) continue;
+            let bestD = Infinity;
+            let bestZ = 0;
+            for (let dy = -2; dy <= 2; dy++) {
+                for (let dx = -2; dx <= 2; dx++) {
+                    const jx = ix + dx;
+                    const jy = iy + dy;
+                    if (jx < 0 || jy < 0 || jx > n || jy > n) continue;
+                    const j = jy * (n + 1) + jx;
+                    if (!filled[j]) continue;
+                    const d = dx * dx + dy * dy;
+                    if (d < bestD) {
+                        bestD = d;
+                        bestZ = zMax[j]!;
+                    }
+                }
+            }
+            if (bestD < Infinity) {
+                zMax[k] = bestZ;
+                filled[k] = 1;
+            } else {
+                zMax[k] = 0;
+            }
+        }
+    }
+
+    const outPos: number[] = [];
+    const pushTri = (
+        x0: number,
+        y0: number,
+        z0: number,
+        x1: number,
+        y1: number,
+        z1: number,
+        x2: number,
+        y2: number,
+        z2: number,
+    ) => {
+        outPos.push(x0, y0, z0, x1, y1, z1, x2, y2, z2);
+    };
+
+    for (let iy = 0; iy < n; iy++) {
+        for (let ix = 0; ix < n; ix++) {
+            const x0 = minX + ix * cellX;
+            const x1 = minX + (ix + 1) * cellX;
+            const y0 = minY + iy * cellY;
+            const y1 = minY + (iy + 1) * cellY;
+            const z00 = zMax[iy * (n + 1) + ix]!;
+            const z10 = zMax[iy * (n + 1) + ix + 1]!;
+            const z01 = zMax[(iy + 1) * (n + 1) + ix]!;
+            const z11 = zMax[(iy + 1) * (n + 1) + ix + 1]!;
+            pushTri(x0, y0, z00, x1, y0, z10, x1, y1, z11);
+            pushTri(x0, y0, z00, x1, y1, z11, x0, y1, z01);
         }
     }
 
