@@ -1,36 +1,159 @@
-import { useMemo } from "react";
-import * as THREE from "three";
-import { sideOffsetX } from "@/lib/geometry/layout";
-import { useScanStore } from "@/stores/scan-store";
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
 
-// Renders imported STL/OBJ scans next to the parametric insoles, positioned by
-// assigned side so they can be visually compared / aligned (Phase 1).
+import { useEffect, useMemo } from "react";
+import * as THREE from "three";
+import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { getMarkerFrame, mirrorBaseLandmarks } from "@/lib/geometry/marker-frame";
+import {
+    computeScanDeviationAgainstRaw,
+    DEVIATION_LEGEND_MM,
+    deviationColor,
+} from "@/lib/geometry/scan-deviation";
+import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
+
+const CLINICIAN_MARKER_COLOR = "#f59e0b";
+const BASE_LANDMARK_COLOR = "#22d3ee";
+
+function MarkerSphere({
+    position,
+    color,
+    radius = 2.2,
+}: {
+    position: THREE.Vector3;
+    color: string;
+    radius?: number;
+}) {
+    return (
+        <mesh position={position.toArray() as [number, number, number]} renderOrder={20}>
+            <sphereGeometry args={[radius, 16, 12]} />
+            <meshBasicMaterial color={color} depthTest={false} />
+        </mesh>
+    );
+}
+
+function RegisteredScanMesh({
+    scanId,
+    geometry,
+    side,
+    transparent,
+    matrix,
+}: {
+    scanId: string;
+    geometry: THREE.BufferGeometry;
+    side: "left" | "right";
+    transparent: boolean;
+    matrix: THREE.Matrix4 | null;
+}) {
+    const deviationOverlay = useScanStore((s) => s.deviationOverlay);
+    const landmarkSourceAssetId = useScanStore((s) => s.landmarkSourceAssetId);
+    const rawBase = useScanStore((s) =>
+        landmarkSourceAssetId ? s.rawBaseBySourceId[landmarkSourceAssetId] : undefined,
+    );
+    const markers = useScanStore((s) => s.markersByScanId[scanId]);
+    const leftFrame = landmarkSourceAssetId ? getMarkerFrame(landmarkSourceAssetId) : null;
+
+    const coloredGeo = useMemo(() => {
+        if (!deviationOverlay || !matrix || !rawBase) return null;
+        const dev = computeScanDeviationAgainstRaw(geometry, matrix, rawBase);
+        const g = geometry.clone();
+        const colors = new Float32Array(dev.perVertexMm.length * 3);
+        const c = new THREE.Color();
+        for (let i = 0; i < dev.perVertexMm.length; i++) {
+            deviationColor(dev.perVertexMm[i]!, c);
+            colors[i * 3] = c.r;
+            colors[i * 3 + 1] = c.g;
+            colors[i * 3 + 2] = c.b;
+        }
+        g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+        return g;
+    }, [deviationOverlay, matrix, rawBase, geometry]);
+
+    useEffect(() => () => coloredGeo?.dispose(), [coloredGeo]);
+
+    const displayGeo = coloredGeo ?? geometry;
+    const offsetY = sideOffsetX(side);
+    const registered = !!matrix;
+    const posX = registered ? -INSOLE_LENGTH_MM / 2 : 0;
+
+    const landmarks =
+        leftFrame && registered
+            ? side === "right"
+                ? mirrorBaseLandmarks(leftFrame.landmarks)
+                : leftFrame.landmarks
+            : null;
+
+    const applyPoint = (p: THREE.Vector3) => (matrix ? p.clone().applyMatrix4(matrix) : p);
+
+    return (
+        <group position={[posX, offsetY, 0]}>
+            <mesh
+                geometry={displayGeo}
+                matrixAutoUpdate={false}
+                userData={{ scanId, isScanMesh: true }}
+                castShadow
+                receiveShadow
+                ref={(mesh) => {
+                    if (!mesh) return;
+                    if (matrix) mesh.matrix.copy(matrix);
+                    else mesh.matrix.identity();
+                    mesh.matrixWorldNeedsUpdate = true;
+                }}
+            >
+                <meshStandardMaterial
+                    color="#c084fc"
+                    metalness={0.1}
+                    roughness={0.8}
+                    transparent={transparent || !!coloredGeo}
+                    opacity={transparent ? 0.45 : coloredGeo ? 0.9 : 1}
+                    side={THREE.DoubleSide}
+                    vertexColors={!!coloredGeo}
+                />
+            </mesh>
+
+            {markers?.M1 ? (
+                <MarkerSphere position={applyPoint(markers.M1)} color={CLINICIAN_MARKER_COLOR} />
+            ) : null}
+            {markers?.M2 ? (
+                <MarkerSphere position={applyPoint(markers.M2)} color={CLINICIAN_MARKER_COLOR} />
+            ) : null}
+            {markers?.M3 ? (
+                <MarkerSphere position={applyPoint(markers.M3)} color={CLINICIAN_MARKER_COLOR} />
+            ) : null}
+
+            {landmarks ? (
+                <>
+                    <MarkerSphere position={landmarks.B1} color={BASE_LANDMARK_COLOR} radius={1.8} />
+                    <MarkerSphere position={landmarks.B2} color={BASE_LANDMARK_COLOR} radius={1.8} />
+                    <MarkerSphere position={landmarks.B3} color={BASE_LANDMARK_COLOR} radius={1.8} />
+                </>
+            ) : null}
+        </group>
+    );
+}
+
 export function ScanMeshes({ transparent }: { transparent: boolean }) {
     const scans = useScanStore((s) => s.scans);
-
-    const material = useMemo(
-        () =>
-            new THREE.MeshStandardMaterial({
-                color: "#c084fc",
-                metalness: 0.1,
-                roughness: 0.8,
-                transparent,
-                opacity: transparent ? 0.45 : 1,
-                side: THREE.DoubleSide,
-            }),
-        [transparent],
-    );
+    const registrationByScanId = useScanStore((s) => s.registrationByScanId);
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             {scans
                 .filter((s) => s.visible)
-                .map((s) => {
-                    const offsetX = sideOffsetX(s.side);
-                    return (
-                        <mesh key={s.id} geometry={s.geometry} material={material} position={[0, offsetX, 0]} castShadow receiveShadow />
-                    );
-                })}
+                .map((s) => (
+                    <RegisteredScanMesh
+                        key={s.id}
+                        scanId={s.id}
+                        geometry={s.geometry}
+                        side={s.side}
+                        transparent={transparent}
+                        matrix={getScanRegistrationMatrix(registrationByScanId[s.id])}
+                    />
+                ))}
         </group>
     );
+}
+
+export function deviationLegendLabel(): string {
+    return `Deviation vs raw L0 (±${DEVIATION_LEGEND_MM} mm)`;
 }
