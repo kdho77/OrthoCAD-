@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
 import {
     baseModifierField,
+    DEFAULT_STOCK_PRIMARY_SIDE,
     getBaseCacheKey,
     getDesignBase,
     isLocalPlaceholderGlbPath,
@@ -12,14 +13,17 @@ import {
 } from "@/lib/geometry/base-asset";
 import { computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
+import { mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBaseBoundsStore } from "@/stores/base-bounds-store";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
+import { useScanStore } from "@/stores/scan-store";
 import type { DesignState, Side } from "@/types";
 
 export interface BaseInsoleGeometryState {
@@ -144,6 +148,37 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         // computeBaseBounds is cached internally and also stores outline + zones + safe margins.
                         const b = computeBaseBounds(geo, lookupKey);
                         useBaseBoundsStore.getState().setBounds(lookupKey, b);
+                    }
+                }
+                // Phase 2 — register raw L0 once per source asset (J1: mirrored-only safe).
+                if (geo && ref) {
+                    try {
+                        const primarySide =
+                            (ref.primarySide?.toLowerCase() as Side | undefined) ??
+                            DEFAULT_STOCK_PRIMARY_SIDE;
+                        ensureRawBaseRegistered({
+                            assetId: ref.assetId,
+                            geometry: geo,
+                            mirrored: Boolean(ref.mirrored),
+                            mirroredFrom: ref.mirroredFrom ?? null,
+                            primarySide,
+                        });
+                        const sourceId = ref.mirrored ? (ref.mirroredFrom ?? ref.assetId) : ref.assetId;
+                        useScanStore.getState().setLandmarkSourceAssetId(sourceId);
+                        // Store unmirrored raw for deviation (J1: inverse-mirror when needed).
+                        if (ref.mirrored) {
+                            const unmirrored = mirrorGeometry(geo);
+                            useScanStore.getState().setRawBaseGeometry(sourceId, unmirrored);
+                            unmirrored.dispose(); // setRawBaseGeometry clones
+                        } else {
+                            useScanStore.getState().setRawBaseGeometry(sourceId, geo);
+                        }
+                    } catch (e) {
+                        stockDebug("marker-frame registration failed", {
+                            assetId: ref.assetId,
+                            message: e instanceof Error ? e.message : String(e),
+                        });
+                        useScanStore.getState().setLandmarkSourceAssetId(null);
                     }
                 }
             })

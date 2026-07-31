@@ -31,6 +31,7 @@ import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
 import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
+import { ScanMarkerPlacement } from "./ScanMarkerPlacement";
 import { ScanMeshes } from "./ScanMeshes";
 import { TrimlineEditTools } from "./TrimlineEditTools";
 
@@ -138,6 +139,7 @@ export function Viewer3D() {
                         </>
                     ) : null}
                     <ScanMeshes transparent={viewer.transparent} />
+                    <ScanMarkerPlacement />
                     <ElementMarkers />
                     <MeshEditTools />
                     <TrimlineEditTools />
@@ -166,7 +168,11 @@ export function Viewer3D() {
             </Canvas>
 
             {/* View buttons — cross pad: Left | Top/Bottom | Right */}
-            <div className="absolute left-3 top-3 flex items-center gap-1" role="group" aria-label="Camera views">
+            <div
+                className="absolute left-3 top-3 flex items-center gap-1"
+                role="group"
+                aria-label="Camera views"
+            >
                 <ViewButton
                     view={CROSS_VIEWS.left}
                     active={viewer.view === "left"}
