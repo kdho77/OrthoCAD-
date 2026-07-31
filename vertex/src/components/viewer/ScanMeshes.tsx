@@ -10,6 +10,7 @@ import {
     DEVIATION_LEGEND_MM,
     deviationColor,
 } from "@/lib/geometry/scan-deviation";
+import { resolveScanMeshMatrix, type ScanDisplayInfo } from "@/lib/geometry/scan-display";
 import { buildDecimatedPickGeometry, scanNeedsPickProxy } from "@/lib/geometry/scan-pick-mesh";
 import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
 
@@ -38,13 +39,15 @@ function RegisteredScanMesh({
     geometry,
     side,
     transparent,
-    matrix,
+    registration,
+    display,
 }: {
     scanId: string;
     geometry: THREE.BufferGeometry;
     side: "left" | "right";
     transparent: boolean;
-    matrix: THREE.Matrix4 | null;
+    registration: THREE.Matrix4 | null;
+    display: ScanDisplayInfo;
 }) {
     const deviationOverlay = useScanStore((s) => s.deviationOverlay);
     const setDeviationBusy = useScanStore((s) => s.setDeviationBusy);
@@ -60,8 +63,9 @@ function RegisteredScanMesh({
 
     // K3/L3 — deviation exceeds ~250ms at clinical scale; busy + deferred compute.
     // Generation token drops stale results so toggles cannot stack overlapping work.
+    // Deviation uses registration only — never the provisional display matrix (M2).
     useEffect(() => {
-        if (!deviationOverlay || !matrix || !rawBase) {
+        if (!deviationOverlay || !registration || !rawBase) {
             deviationGenRef.current += 1;
             setColoredGeo((prev) => {
                 prev?.dispose();
@@ -75,7 +79,7 @@ function RegisteredScanMesh({
         const handle = window.setTimeout(() => {
             if (gen !== deviationGenRef.current) return;
             const t0 = performance.now();
-            const dev = computeScanDeviationAgainstRaw(geometry, matrix, rawBase);
+            const dev = computeScanDeviationAgainstRaw(geometry, registration, rawBase);
             if (gen !== deviationGenRef.current) return;
             const g = geometry.clone();
             const colors = new Float32Array(dev.perVertexMm.length * 3);
@@ -103,7 +107,7 @@ function RegisteredScanMesh({
                 deviationGenRef.current += 1;
             }
         };
-    }, [deviationOverlay, matrix, rawBase, geometry, setDeviationBusy]);
+    }, [deviationOverlay, registration, rawBase, geometry, setDeviationBusy]);
 
     const pickGeo = useMemo(() => {
         if (!scanNeedsPickProxy(geometry)) return null;
@@ -114,8 +118,10 @@ function RegisteredScanMesh({
 
     const displayGeo = coloredGeo ?? geometry;
     const offsetY = sideOffsetX(side);
-    const registered = !!matrix;
-    const posX = registered ? -INSOLE_LENGTH_MM / 2 : 0;
+    const registered = !!registration;
+    // Same footprint slot as the base — unregistered scans must be on-screen (M2/M4).
+    const posX = -INSOLE_LENGTH_MM / 2;
+    const meshMatrix = resolveScanMeshMatrix(display, registration);
 
     const landmarks =
         leftFrame && registered
@@ -124,29 +130,32 @@ function RegisteredScanMesh({
                 : leftFrame.landmarks
             : null;
 
-    const applyPoint = (p: THREE.Vector3) => (matrix ? p.clone().applyMatrix4(matrix) : p);
+    const applyPoint = (p: THREE.Vector3) => p.clone().applyMatrix4(meshMatrix);
 
     return (
         <group position={[posX, offsetY, 0]}>
             <mesh
                 geometry={displayGeo}
                 matrixAutoUpdate={false}
-                userData={{ scanId, isScanMesh: true }}
+                userData={{
+                    scanId,
+                    isScanMesh: true,
+                    isProvisionalDisplay: !registered,
+                }}
                 castShadow
                 receiveShadow
                 ref={(mesh) => {
                     if (!mesh) return;
-                    if (matrix) mesh.matrix.copy(matrix);
-                    else mesh.matrix.identity();
+                    mesh.matrix.copy(meshMatrix);
                     mesh.matrixWorldNeedsUpdate = true;
                 }}
             >
                 <meshStandardMaterial
-                    color="#c084fc"
+                    color={registered ? "#c084fc" : "#a78bfa"}
                     metalness={0.1}
                     roughness={0.8}
-                    transparent={transparent || !!coloredGeo}
-                    opacity={transparent ? 0.45 : coloredGeo ? 0.9 : 1}
+                    transparent={transparent || !!coloredGeo || !registered}
+                    opacity={transparent ? 0.45 : coloredGeo ? 0.9 : registered ? 1 : 0.75}
                     side={THREE.DoubleSide}
                     vertexColors={!!coloredGeo}
                 />
@@ -158,11 +167,15 @@ function RegisteredScanMesh({
                     geometry={pickGeo}
                     matrixAutoUpdate={false}
                     visible={false}
-                    userData={{ scanId, isScanPickMesh: true, fullGeometry: geometry }}
+                    userData={{
+                        scanId,
+                        isScanPickMesh: true,
+                        fullGeometry: geometry,
+                        isProvisionalDisplay: !registered,
+                    }}
                     ref={(mesh) => {
                         if (!mesh) return;
-                        if (matrix) mesh.matrix.copy(matrix);
-                        else mesh.matrix.identity();
+                        mesh.matrix.copy(meshMatrix);
                         mesh.matrixWorldNeedsUpdate = true;
                     }}
                 >
@@ -206,7 +219,8 @@ export function ScanMeshes({ transparent }: { transparent: boolean }) {
                         geometry={s.geometry}
                         side={s.side}
                         transparent={transparent}
-                        matrix={getScanRegistrationMatrix(registrationByScanId[s.id])}
+                        registration={getScanRegistrationMatrix(registrationByScanId[s.id])}
+                        display={s.display}
                     />
                 ))}
         </group>

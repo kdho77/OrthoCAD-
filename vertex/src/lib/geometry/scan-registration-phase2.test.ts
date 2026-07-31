@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import * as THREE from "three";
+import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import {
     clearMarkerFrameRegistry,
     getMarkerFrame,
@@ -13,6 +14,12 @@ import {
     registerRawBaseGeometry,
 } from "@/lib/geometry/marker-frame";
 import { computeScanDeviationAgainstRaw, DEVIATION_LEGEND_MM } from "@/lib/geometry/scan-deviation";
+import {
+    buildScanDisplayInfo,
+    inferScanDisplayScale,
+    resolveScanMeshMatrix,
+    worldHitToScanLocal,
+} from "@/lib/geometry/scan-display";
 import { deriveScanDorsal, ScanDorsalError } from "@/lib/geometry/scan-dorsal";
 import {
     buildDecimatedPickGeometry,
@@ -31,6 +38,7 @@ import {
     ScanRegistrationWireError,
 } from "@/lib/geometry/scan-registration-wire";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
+import { cameraForView } from "@/lib/geometry/viewport-side-layout";
 import {
     extractMergedGeometry,
     loadGlbFromBuffer,
@@ -956,5 +964,199 @@ describe("Amendment L — clinical scale + pick proxy active", () => {
                 2,
             ),
         );
+    });
+});
+
+/** Meter-scale foot with a large raw origin offset — the clinical invisible-scan case. */
+function buildMeterScaleFootScan(): THREE.BufferGeometry {
+    const g = new THREE.BoxGeometry(0.27, 0.04, 0.1);
+    g.translate(2.4, -1.1, 0.85);
+    g.computeBoundingBox();
+    g.computeBoundingSphere();
+    return g;
+}
+
+/** Scene graph matching ScanMeshes placement for an unregistered scan. */
+function buildUnregisteredScanScene(
+    geometry: THREE.BufferGeometry,
+    side: "left" | "right",
+    display: ReturnType<typeof buildScanDisplayInfo>,
+): { root: THREE.Group; mesh: THREE.Mesh; matrixWorld: THREE.Matrix4 } {
+    const root = new THREE.Group();
+    root.rotation.x = -Math.PI / 2;
+    const slot = new THREE.Group();
+    slot.position.set(-INSOLE_LENGTH_MM / 2, sideOffsetX(side), 0);
+    root.add(slot);
+    const mesh = new THREE.Mesh(geometry);
+    mesh.matrixAutoUpdate = false;
+    mesh.matrix.copy(resolveScanMeshMatrix(display, null));
+    mesh.matrixWorldNeedsUpdate = true;
+    mesh.userData = { isScanMesh: true, isProvisionalDisplay: true };
+    slot.add(mesh);
+    root.updateMatrixWorld(true);
+    return { root, mesh, matrixWorld: mesh.matrixWorld.clone() };
+}
+
+describe("Amendment M — provisional display + deadlock guard", () => {
+    test("M1/M3 — meter-scale raw bbox infers m and display ×1000", () => {
+        const geo = buildMeterScaleFootScan();
+        const info = buildScanDisplayInfo(geo);
+        expect(info.rawLongest).toBeGreaterThan(0.2);
+        expect(info.rawLongest).toBeLessThan(1);
+        expect(inferScanDisplayScale(info.rawLongest).inferredUnit).toBe("m");
+        expect(info.inferredUnit).toBe("m");
+        expect(info.displayScale).toBe(1000);
+        // Display longest ≈ clinical foot length band.
+        expect(info.rawLongest * info.displayScale).toBeGreaterThan(120);
+        expect(info.rawLongest * info.displayScale).toBeLessThan(400);
+        geo.dispose();
+    });
+
+    test("M2 — provisional is display-only; world hit → scan-local before Kabsch", () => {
+        const geo = buildMeterScaleFootScan();
+        const display = buildScanDisplayInfo(geo);
+        const { mesh, matrixWorld } = buildUnregisteredScanScene(geo, "left", display);
+
+        // A known geometry-local point (near box centre before translate: translate baked in).
+        const localKnown = new THREE.Vector3(2.4, -1.1, 0.85); // box centre in raw coords
+        const world = localKnown.clone().applyMatrix4(matrixWorld);
+        const recovered = worldHitToScanLocal(world, matrixWorld);
+        expect(recovered.distanceTo(localKnown)).toBeLessThan(1e-6);
+
+        // Provisional matrix must NOT equal a registration and must not be identity.
+        const P = resolveScanMeshMatrix(display, null);
+        expect(P.equals(new THREE.Matrix4().identity())).toBe(false);
+
+        // Kabsch consumes scan-local markers only — feeding display-space would blow residual.
+        const frame = registerRawBaseGeometry("m2", rawLeft, { primarySide: "left" });
+        const base: [THREE.Vector3, THREE.Vector3, THREE.Vector3] = [
+            frame.landmarks.B1.clone(),
+            frame.landmarks.B2.clone(),
+            frame.landmarks.B3.clone(),
+        ];
+        // Synthesize a small plantar patch scan in mm around base landmarks (already local).
+        const markers = base.map((p) => p.clone()) as [THREE.Vector3, THREE.Vector3, THREE.Vector3];
+        const mmScan = syntheticScanAround(markers, new THREE.Vector3(0, 0, -1));
+        const ok = registerScanWithDerivedDorsal(mmScan, markers, base);
+        expect(ok.residualRmsMm).toBeLessThan(0.01);
+
+        // Assert helper is what ScanMarkerPlacement uses (tripwire).
+        const placementSrc = readFileSync(
+            resolve(process.cwd(), "vertex/src/components/viewer/ScanMarkerPlacement.tsx"),
+            "utf8",
+        );
+        expect(placementSrc).toMatch(/worldHitToScanLocal/);
+        expect(placementSrc).not.toMatch(/reg\.clone\(\)\.invert\(\)/);
+
+        mmScan.dispose();
+        geo.dispose();
+    });
+
+    test("M4 — freshly imported scan is visible, in frustum, raycast-hittable with null registration", () => {
+        const geo = buildMeterScaleFootScan();
+        useScanStore.getState().addScan({
+            id: "m4-scan",
+            name: "patient-L.obj",
+            side: "left",
+            format: "obj",
+            triangleCount: 12,
+            geometry: geo,
+            manifold: {
+                isWatertight: false,
+                openEdges: 802,
+                triangleCount: 12,
+                vertexCount: geo.getAttribute("position")!.count,
+                nonManifoldEdges: 0,
+            },
+        });
+        const stored = useScanStore.getState().scans.find((s) => s.id === "m4-scan");
+        expect(stored).toBeTruthy();
+        expect(stored!.visible).toBe(true);
+        const reg = useScanStore.getState().registrationByScanId["m4-scan"];
+        expect(reg?.matrixElements).toBeNull();
+        expect(reg?.incomplete).toBe(true);
+        expect(stored!.display.displayScale).toBe(1000);
+
+        const { mesh, matrixWorld } = buildUnregisteredScanScene(geo, "left", stored!.display);
+        expect(mesh.userData.isProvisionalDisplay).toBe(true);
+
+        // World AABB after provisional framing.
+        geo.computeBoundingBox();
+        const localBox = geo.boundingBox!.clone();
+        const worldBox = localBox.clone().applyMatrix4(matrixWorld);
+        const center = new THREE.Vector3();
+        const size = new THREE.Vector3();
+        worldBox.getCenter(center);
+        worldBox.getSize(size);
+        expect(size.length()).toBeGreaterThan(50); // mm-scale presence, not sub-pixel
+
+        const cam = cameraForView("iso");
+        cam.aspect = 1.5;
+        cam.updateProjectionMatrix();
+        const frustum = new THREE.Frustum();
+        frustum.setFromProjectionMatrix(
+            new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse),
+        );
+        const sphere = new THREE.Sphere(center, size.length() * 0.5);
+        expect(frustum.intersectsSphere(sphere)).toBe(true);
+
+        // Projected size: NDC extent of bbox corners must be clinically clickable.
+        const corners = [
+            new THREE.Vector3(worldBox.min.x, worldBox.min.y, worldBox.min.z),
+            new THREE.Vector3(worldBox.max.x, worldBox.max.y, worldBox.max.z),
+        ].map((p) => p.project(cam));
+        const ndcSpan = Math.hypot(corners[0]!.x - corners[1]!.x, corners[0]!.y - corners[1]!.y);
+        expect(ndcSpan).toBeGreaterThan(0.05);
+
+        // Ray from camera through bbox centre must hit the mesh.
+        const dir = center.clone().sub(cam.position).normalize();
+        const raycaster = new THREE.Raycaster(cam.position.clone(), dir);
+        const hits = raycaster.intersectObject(mesh, false);
+        expect(hits.length).toBeGreaterThan(0);
+
+        // Hit converts to scan-local (geometry space), not display space.
+        const local = worldHitToScanLocal(hits[0]!.point, matrixWorld);
+        const directLocal = intersectRayFullMesh(
+            new THREE.Ray(cam.position.clone(), dir).applyMatrix4(matrixWorld.clone().invert()),
+            geo,
+        );
+        // Local pick lies on the raw surface.
+        expect(local.length()).toBeGreaterThan(0);
+        if (directLocal) {
+            expect(local.distanceTo(directLocal)).toBeLessThan(1);
+        }
+
+        writeFileSync(
+            "/tmp/phase2-m4-deadlock.json",
+            JSON.stringify(
+                {
+                    rawLongest: stored!.display.rawLongest,
+                    inferredUnit: stored!.display.inferredUnit,
+                    displayScale: stored!.display.displayScale,
+                    worldSize: size.toArray(),
+                    ndcSpan,
+                    inFrustum: true,
+                    rayHits: hits.length,
+                    registrationNull: true,
+                },
+                null,
+                2,
+            ),
+        );
+    });
+
+    test("M5 — provisional matrix does not bake into geometry (T6 companion)", () => {
+        const geo = buildMeterScaleFootScan();
+        const before = (geo.getAttribute("position") as THREE.BufferAttribute).array.slice(0);
+        const display = buildScanDisplayInfo(geo);
+        const P = resolveScanMeshMatrix(display, null);
+        // Apply as mesh matrix only — geometry untouched.
+        const mesh = new THREE.Mesh(geo);
+        mesh.matrixAutoUpdate = false;
+        mesh.matrix.copy(P);
+        const after = (geo.getAttribute("position") as THREE.BufferAttribute).array;
+        for (let i = 0; i < before.length; i++) expect(after[i]).toBe(before[i]);
+        expect(P.elements.some((e, i) => e !== (i % 5 === 0 ? 1 : 0))).toBe(true);
+        geo.dispose();
     });
 });

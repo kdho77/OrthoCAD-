@@ -130,6 +130,29 @@ export function ScanImport() {
                                 {s.manifold.isWatertight ? "watertight" : `${s.manifold.openEdges} open`}
                             </span>
                         </div>
+                        {(() => {
+                            const d = s.display;
+                            const registered =
+                                Boolean(reg?.matrixElements) && !reg?.incomplete && !reg?.error;
+                            return (
+                                <div className="rounded border border-dashed border-border/70 bg-muted/20 px-1.5 py-1 text-[10px] leading-snug text-muted-foreground">
+                                    <p className={registered ? "" : "text-amber-300"}>
+                                        {registered
+                                            ? "Registered (fit)"
+                                            : "Provisional display — unregistered"}
+                                    </p>
+                                    <p>
+                                        Raw bbox: {d.rawSize[0].toFixed(3)} × {d.rawSize[1].toFixed(3)} ×{" "}
+                                        {d.rawSize[2].toFixed(3)} (longest {d.rawLongest.toFixed(3)},{" "}
+                                        {d.dominantRawAxis.toUpperCase()}-dominant)
+                                    </p>
+                                    <p>
+                                        Inferred units: {d.inferredUnit} → display ×{d.displayScale}
+                                        {d.displayScale !== 1 ? " (units correction, not a fit)" : ""}
+                                    </p>
+                                </div>
+                            );
+                        })()}
                         <div className="flex gap-1">
                             {(["left", "right"] as const).map((side) => (
                                 <button

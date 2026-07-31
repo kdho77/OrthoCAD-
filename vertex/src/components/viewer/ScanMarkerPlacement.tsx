@@ -4,8 +4,9 @@
 import { useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
+import { worldHitToScanLocal } from "@/lib/geometry/scan-display";
 import { refineHitOnFullMesh } from "@/lib/geometry/scan-pick-mesh";
-import { getScanRegistrationMatrix, type MarkerId, useScanStore } from "@/stores/scan-store";
+import { type MarkerId, useScanStore } from "@/stores/scan-store";
 
 /**
  * Raycast marker placement / drag on the scan mesh only.
@@ -16,7 +17,6 @@ export function ScanMarkerPlacement() {
     const placementMode = useScanStore((s) => s.placementMode);
     const setMarker = useScanStore((s) => s.setMarker);
     const scans = useScanStore((s) => s.scans);
-    const registrationByScanId = useScanStore((s) => s.registrationByScanId);
     const { gl, camera, raycaster, scene } = useThree();
 
     const dragging = useRef<MarkerId | null>(null);
@@ -69,16 +69,12 @@ export function ScanMarkerPlacement() {
                 mesh.localToWorld(worldPoint);
             }
 
-            const local = worldPoint.clone();
-            mesh.worldToLocal(local);
-            // Undo registration so markers stay in raw scan coordinates.
-            const reg = getScanRegistrationMatrix(registrationByScanId[scanId]);
-            if (reg) {
-                local.applyMatrix4(reg.clone().invert());
-            }
-            return local;
+            // M2 — markers are ALWAYS scan-local via inverse(matrixWorld).
+            // Provisional display and registration both live on mesh.matrix; never
+            // double-invert, and never pass display-space points to Kabsch.
+            return worldHitToScanLocal(worldPoint, mesh.matrixWorld);
         },
-        [scans, gl.domElement, camera, raycaster, scene, registrationByScanId],
+        [scans, gl.domElement, camera, raycaster, scene],
     );
 
     const onPointerDown = useCallback(

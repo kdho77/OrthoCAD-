@@ -8,6 +8,7 @@ import type { ImportFormat } from "@/lib/geometry/import";
 import { KabschError } from "@/lib/geometry/kabsch";
 import type { ManifoldReport } from "@/lib/geometry/manifold";
 import { getMarkerFrame, MarkerFrameError } from "@/lib/geometry/marker-frame";
+import { buildScanDisplayInfo, type ScanDisplayInfo } from "@/lib/geometry/scan-display";
 import { ScanDorsalError } from "@/lib/geometry/scan-dorsal";
 import { runScanRegistration, ScanRegistrationWireError } from "@/lib/geometry/scan-registration-wire";
 import type { Side } from "@/types";
@@ -21,6 +22,8 @@ export interface ImportedScan {
     geometry: BufferGeometry;
     manifold: ManifoldReport;
     visible: boolean;
+    /** DISPLAY-ONLY framing meta (units + provisional matrix). Never export / Kabsch. */
+    display: ScanDisplayInfo;
 }
 
 export type MarkerId = "M1" | "M2" | "M3";
@@ -82,7 +85,7 @@ interface ScanStore {
     /** RAW L0 geometry clones keyed by source asset id — deviation measures against these. */
     rawBaseBySourceId: Record<string, BufferGeometry>;
 
-    addScan: (scan: Omit<ImportedScan, "visible">) => void;
+    addScan: (scan: Omit<ImportedScan, "visible" | "display"> & { display?: ScanDisplayInfo }) => void;
     removeScan: (id: string) => void;
     setSide: (id: string, side: Side) => void;
     toggleVisible: (id: string) => void;
@@ -172,15 +175,18 @@ export const useScanStore = create<ScanStore>((set, get) => ({
     rawBaseBySourceId: {},
 
     addScan: (scan) =>
-        set((s) => ({
-            scans: [...s.scans, { ...scan, visible: true }],
-            // Re-import / new mesh: never retain markers pointing at a deleted mesh.
-            markersByScanId: { ...s.markersByScanId, [scan.id]: { ...EMPTY_MARKERS } },
-            registrationByScanId: {
-                ...s.registrationByScanId,
-                [scan.id]: emptyRegistration(true),
-            },
-        })),
+        set((s) => {
+            const display = scan.display ?? buildScanDisplayInfo(scan.geometry);
+            return {
+                scans: [...s.scans, { ...scan, visible: true, display }],
+                // Re-import / new mesh: never retain markers pointing at a deleted mesh.
+                markersByScanId: { ...s.markersByScanId, [scan.id]: { ...EMPTY_MARKERS } },
+                registrationByScanId: {
+                    ...s.registrationByScanId,
+                    [scan.id]: emptyRegistration(true),
+                },
+            };
+        }),
 
     removeScan: (id) =>
         set((s) => {
