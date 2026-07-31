@@ -35,6 +35,7 @@ import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
 import { ScanMarkerPlacement } from "./ScanMarkerPlacement";
 import { ScanMeshes } from "./ScanMeshes";
 import { ScanPlaneSliceTool } from "./ScanPlaneSliceTool";
+import { consumeScanMissDeselectSuppression, ScanTransformTool } from "./ScanTransformTool";
 import { TrimlineEditTools } from "./TrimlineEditTools";
 
 /** Cross-pad anatomical views (Left / Top / Bottom / Right). */
@@ -86,6 +87,8 @@ export function Viewer3D() {
     // Hide stock/parametric insoles while placing scan alignment markers so the
     // foot scan is unobstructed for picking M1–M3. Viewer Left/Right prefs are preserved.
     const placingMarkers = useScanStore((s) => s.placementMode != null);
+    const selectedScanId = useScanStore((s) => s.selectedScanId);
+    const selectScan = useScanStore((s) => s.selectScan);
     const showLeftInsole = viewer.showLeft && !placingMarkers;
     const showRightInsole = viewer.showRight && !placingMarkers;
     // Select primitives only — returning a fresh object from a zustand selector
@@ -126,6 +129,7 @@ export function Viewer3D() {
                 }}
                 onPointerMissed={() => {
                     selectElement(null);
+                    if (!consumeScanMissDeselectSuppression()) selectScan(null);
                     setTarget({ type: "insole", side: editSide });
                 }}
                 onClick={() => setTarget({ type: "insole", side: editSide })}
@@ -167,6 +171,7 @@ export function Viewer3D() {
                     <ScanMeshes transparent={viewer.transparent} />
                     <ScanMarkerPlacement />
                     <ScanPlaneSliceTool />
+                    <ScanTransformTool />
                     {!placingMarkers ? <ElementMarkers /> : null}
                     <MeshEditTools />
                     <TrimlineEditTools />
@@ -261,6 +266,11 @@ export function Viewer3D() {
                     <span className="w-fit rounded bg-emerald-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Scan aligned to insole
                         {registrationRms != null ? ` · RMS ${registrationRms.toFixed(2)} mm` : ""}
+                    </span>
+                ) : null}
+                {selectedScanId ? (
+                    <span className="w-fit rounded bg-violet-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Scan selected · drag or ←↑↓→ to move · Esc deselect
                     </span>
                 ) : null}
                 {!placingMarkers && registrationError ? (
@@ -420,6 +430,7 @@ export function Viewer3D() {
                 {interacting ? "Preview mesh · " : ""}
                 {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural worker"} kernel · ⌘P Rx
                 · ⌘E export · T transparent · Esc deselect
+                {selectedScanId ? " · arrows nudge scan" : ""}
             </div>
         </div>
     );

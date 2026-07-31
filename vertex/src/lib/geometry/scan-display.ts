@@ -181,18 +181,35 @@ export function provisionalMatrixFromDisplay(display: ScanDisplayInfo): THREE.Ma
     return new THREE.Matrix4().fromArray(display.provisionalMatrixElements);
 }
 
+/** Clinician fine-tune translation in base-local mm (applied after registration). */
+export type ScanManualOffset = { x: number; y: number; z: number };
+
+export const ZERO_SCAN_OFFSET: ScanManualOffset = { x: 0, y: 0, z: 0 };
+
+export function isNonZeroScanOffset(offset: ScanManualOffset | null | undefined): boolean {
+    if (!offset) return false;
+    return offset.x !== 0 || offset.y !== 0 || offset.z !== 0;
+}
+
 /**
  * Active mesh matrix: registration if present, else provisional display.
  * Registration never incorporates the provisional matrix (orient/center/lift).
  * Discrete `displayScale` is applied inside the registration path separately.
+ * Optional manual offset is a post-registration translation (never baked into verts).
  */
 export function resolveScanMeshMatrix(
     display: ScanDisplayInfo | undefined,
     registration: THREE.Matrix4 | null,
+    manualOffset?: ScanManualOffset | null,
 ): THREE.Matrix4 {
-    if (registration) return registration.clone();
-    if (display) return provisionalMatrixFromDisplay(display);
-    return new THREE.Matrix4().identity();
+    const base = registration
+        ? registration.clone()
+        : display
+          ? provisionalMatrixFromDisplay(display)
+          : new THREE.Matrix4().identity();
+    if (!manualOffset || !isNonZeroScanOffset(manualOffset)) return base;
+    const t = new THREE.Matrix4().makeTranslation(manualOffset.x, manualOffset.y, manualOffset.z);
+    return t.multiply(base);
 }
 
 /**
