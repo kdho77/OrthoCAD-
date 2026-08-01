@@ -181,21 +181,48 @@ export function provisionalMatrixFromDisplay(display: ScanDisplayInfo): THREE.Ma
     return new THREE.Matrix4().fromArray(display.provisionalMatrixElements);
 }
 
-/** Clinician fine-tune translation in base-local mm (applied after registration). */
-export type ScanManualOffset = { x: number; y: number; z: number };
+/**
+ * Clinician fine-tune in base-local mm / radians (applied after registration).
+ * `rz` is yaw about parent +Z (footprint normal before the viewer Rx−90°).
+ */
+export type ScanManualOffset = { x: number; y: number; z: number; rz?: number };
 
-export const ZERO_SCAN_OFFSET: ScanManualOffset = { x: 0, y: 0, z: 0 };
+export const ZERO_SCAN_OFFSET: ScanManualOffset = { x: 0, y: 0, z: 0, rz: 0 };
 
 export function isNonZeroScanOffset(offset: ScanManualOffset | null | undefined): boolean {
     if (!offset) return false;
-    return offset.x !== 0 || offset.y !== 0 || offset.z !== 0;
+    return offset.x !== 0 || offset.y !== 0 || offset.z !== 0 || Math.abs(offset.rz ?? 0) > 1e-12;
+}
+
+/**
+ * Apply a planar yaw about an arbitrary parent-local anchor.
+ * Equivalent to T(A)·Rz(δ)·T(−A)·T(t)·Rz(rz)·base → updated {x,y,z,rz}.
+ */
+export function applyYawAboutAnchor(
+    offset: ScanManualOffset,
+    anchorLocal: { x: number; y: number },
+    deltaRad: number,
+): ScanManualOffset {
+    if (Math.abs(deltaRad) < 1e-15) {
+        return { x: offset.x, y: offset.y, z: offset.z, rz: offset.rz ?? 0 };
+    }
+    const cos = Math.cos(deltaRad);
+    const sin = Math.sin(deltaRad);
+    const dx = offset.x - anchorLocal.x;
+    const dy = offset.y - anchorLocal.y;
+    return {
+        x: anchorLocal.x + cos * dx - sin * dy,
+        y: anchorLocal.y + sin * dx + cos * dy,
+        z: offset.z,
+        rz: (offset.rz ?? 0) + deltaRad,
+    };
 }
 
 /**
  * Active mesh matrix: registration if present, else provisional display.
  * Registration never incorporates the provisional matrix (orient/center/lift).
  * Discrete `displayScale` is applied inside the registration path separately.
- * Optional manual offset is a post-registration translation (never baked into verts).
+ * Optional manual offset is a post-registration rigid tweak (never baked into verts).
  */
 export function resolveScanMeshMatrix(
     display: ScanDisplayInfo | undefined,
@@ -208,8 +235,15 @@ export function resolveScanMeshMatrix(
           ? provisionalMatrixFromDisplay(display)
           : new THREE.Matrix4().identity();
     if (!manualOffset || !isNonZeroScanOffset(manualOffset)) return base;
-    const t = new THREE.Matrix4().makeTranslation(manualOffset.x, manualOffset.y, manualOffset.z);
-    return t.multiply(base);
+    let m = base;
+    const rz = manualOffset.rz ?? 0;
+    if (Math.abs(rz) > 1e-12) {
+        m = new THREE.Matrix4().makeRotationZ(rz).multiply(m);
+    }
+    if (manualOffset.x !== 0 || manualOffset.y !== 0 || manualOffset.z !== 0) {
+        m = new THREE.Matrix4().makeTranslation(manualOffset.x, manualOffset.y, manualOffset.z).multiply(m);
+    }
+    return m;
 }
 
 /**

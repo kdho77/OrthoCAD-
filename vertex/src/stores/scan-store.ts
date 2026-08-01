@@ -77,6 +77,24 @@ export type SliceDraft = {
     previewLocal: ScanSlicePlane | null;
 };
 
+/** Draft for two-point yaw rotate (anchor → pivot → cursor). */
+export type RotateDraft = {
+    scanId: string;
+    /** 0 = need anchor, 1 = need pivot, 2 = rotating with cursor. */
+    step: 0 | 1 | 2;
+    /** Parent-local anchor (rotation centre). */
+    anchorLocal: [number, number, number] | null;
+    /** Parent-local pivot (defines initial angle). */
+    pivotLocal: [number, number, number] | null;
+    /** World-space markers for overlays. */
+    anchorWorld: [number, number, number] | null;
+    pivotWorld: [number, number, number] | null;
+    /** Offset snapshot when rotation started (restored on cancel). */
+    startOffset: ScanManualOffset;
+    /** Angle of (pivot − anchor) when rotation began. */
+    baseAngle: number | null;
+};
+
 export type MarkerId = "M1" | "M2" | "M3";
 
 export interface ScanMarkers {
@@ -215,13 +233,15 @@ interface ScanStore {
     scans: ImportedScan[];
     markersByScanId: Record<string, ScanMarkers>;
     registrationByScanId: Record<string, ScanRegistrationState>;
-    /** Post-registration clinician translation (base-local mm). Session only. */
+    /** Post-registration clinician translation + yaw (base-local mm / rad). Session only. */
     manualOffsetByScanId: Record<string, ScanManualOffset>;
     /** Selected scan for manual reposition (drag / arrow keys). */
     selectedScanId: string | null;
     placementMode: PlacementMode | null;
     /** Active plane-slice drawing session (mutually exclusive with marker placement). */
     sliceDraft: SliceDraft | null;
+    /** Active two-point yaw rotate session (mutually exclusive with slice / markers). */
+    rotateDraft: RotateDraft | null;
     deviationOverlay: boolean;
     /** True while deviation colour field is being computed (K3 busy treatment). */
     deviationBusy: boolean;
@@ -243,6 +263,10 @@ interface ScanStore {
     setManualOffset: (scanId: string, offset: ScanManualOffset) => void;
     nudgeManualOffset: (scanId: string, dx: number, dy: number, dz?: number) => void;
     resetManualOffset: (scanId: string) => void;
+
+    beginRotate: (scanId: string) => void;
+    cancelRotate: (opts?: { restore?: boolean }) => void;
+    setRotateDraft: (draft: RotateDraft | null) => void;
 
     enterPlacement: (scanId: string) => void;
     exitPlacement: () => void;
@@ -372,6 +396,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
     selectedScanId: null,
     placementMode: null,
     sliceDraft: null,
+    rotateDraft: null,
     deviationOverlay: false,
     deviationBusy: false,
     cleanupBusy: false,
@@ -435,6 +460,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                 placementMode: s.placementMode?.scanId === id ? null : s.placementMode,
                 hoveredComponentId: s.hoveredComponentId?.scanId === id ? null : s.hoveredComponentId,
                 sliceDraft: s.sliceDraft?.scanId === id ? null : s.sliceDraft,
+                rotateDraft: s.rotateDraft?.scanId === id ? null : s.rotateDraft,
             };
         }),
 
@@ -462,6 +488,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                 selectedScanId: null,
                 placementMode: null,
                 sliceDraft: null,
+                rotateDraft: null,
                 rawBaseBySourceId: {},
                 hoveredComponentId: null,
                 cleanupBusy: false,
@@ -469,7 +496,20 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         }),
 
     selectScan: (scanId) => {
-        if (get().selectedScanId === scanId) return;
+        const cur = get();
+        if (cur.selectedScanId === scanId) return;
+        if (cur.rotateDraft) {
+            const draft = cur.rotateDraft;
+            set({
+                selectedScanId: scanId,
+                rotateDraft: null,
+                manualOffsetByScanId: {
+                    ...cur.manualOffsetByScanId,
+                    [draft.scanId]: { ...draft.startOffset },
+                },
+            });
+            return;
+        }
         set({ selectedScanId: scanId });
     },
 
@@ -477,7 +517,12 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         set((s) => ({
             manualOffsetByScanId: {
                 ...s.manualOffsetByScanId,
-                [scanId]: { x: offset.x, y: offset.y, z: offset.z },
+                [scanId]: {
+                    x: offset.x,
+                    y: offset.y,
+                    z: offset.z,
+                    rz: offset.rz ?? 0,
+                },
             },
         })),
 
@@ -491,6 +536,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                         x: prev.x + dx,
                         y: prev.y + dy,
                         z: prev.z + dz,
+                        rz: prev.rz ?? 0,
                     },
                 },
             };
@@ -503,11 +549,53 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             return { manualOffsetByScanId };
         }),
 
+    beginRotate: (scanId) => {
+        const s = get();
+        if (!s.scans.some((x) => x.id === scanId)) return;
+        const startOffset = s.manualOffsetByScanId[scanId] ?? { ...ZERO_SCAN_OFFSET };
+        set({
+            selectedScanId: scanId,
+            placementMode: null,
+            sliceDraft: null,
+            rotateDraft: {
+                scanId,
+                step: 0,
+                anchorLocal: null,
+                pivotLocal: null,
+                anchorWorld: null,
+                pivotWorld: null,
+                startOffset: { ...startOffset, rz: startOffset.rz ?? 0 },
+                baseAngle: null,
+            },
+        });
+    },
+
+    cancelRotate: (opts) => {
+        const s = get();
+        const draft = s.rotateDraft;
+        if (!draft) return;
+        const restore = opts?.restore !== false;
+        if (restore) {
+            set({
+                rotateDraft: null,
+                manualOffsetByScanId: {
+                    ...s.manualOffsetByScanId,
+                    [draft.scanId]: { ...draft.startOffset },
+                },
+            });
+            return;
+        }
+        set({ rotateDraft: null });
+    },
+
+    setRotateDraft: (draft) => set({ rotateDraft: draft }),
+
     enterPlacement: (scanId) => {
         const markers = get().markersByScanId[scanId] ?? { ...EMPTY_MARKERS };
         set({
             placementMode: { scanId, next: nextMarker(markers) },
             sliceDraft: null,
+            rotateDraft: null,
             selectedScanId: null,
         });
     },
@@ -724,6 +812,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         set({
             placementMode: null,
             selectedScanId: null,
+            rotateDraft: null,
             sliceDraft: {
                 scanId,
                 step: 0,
