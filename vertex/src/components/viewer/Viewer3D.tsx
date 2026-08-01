@@ -40,12 +40,14 @@ import { ScanRotateTool } from "./ScanRotateTool";
 import { consumeScanMissDeselectSuppression, ScanTransformTool } from "./ScanTransformTool";
 import { TrimlineEditTools } from "./TrimlineEditTools";
 
-/** Cross-pad anatomical views (Left / Top / Bottom / Right). */
+/** Cross-pad anatomical views (Left / Top / Bottom / Right / Front / Back). */
 const CROSS_VIEWS = {
     left: { name: "left" as const, label: "Left" },
     top: { name: "top" as const, label: "Top" },
     bottom: { name: "bottom" as const, label: "Bottom" },
     right: { name: "right" as const, label: "Right" },
+    front: { name: "front" as const, label: "Front" },
+    back: { name: "back" as const, label: "Back" },
 };
 
 const VIEW_LABELS: Record<CameraView, string> = {
@@ -223,12 +225,18 @@ export function Viewer3D() {
                 />
             </Canvas>
 
-            {/* View buttons — cross pad: Left | Top/Bottom | Right */}
+            {/* View buttons — cross pad: Front | Left | Top/Bottom | Right | Back */}
             <div
                 className="absolute left-3 top-3 flex items-center gap-1"
                 role="group"
                 aria-label="Camera views"
             >
+                <ViewButton
+                    view={CROSS_VIEWS.front}
+                    active={viewer.view === "front"}
+                    onClick={setView}
+                    className="w-[4.75rem]"
+                />
                 <ViewButton
                     view={CROSS_VIEWS.left}
                     active={viewer.view === "left"}
@@ -252,6 +260,12 @@ export function Viewer3D() {
                 <ViewButton
                     view={CROSS_VIEWS.right}
                     active={viewer.view === "right"}
+                    onClick={setView}
+                    className="w-[4.75rem]"
+                />
+                <ViewButton
+                    view={CROSS_VIEWS.back}
+                    active={viewer.view === "back"}
                     onClick={setView}
                     className="w-[4.75rem]"
                 />
@@ -520,7 +534,7 @@ function ViewButton({
     onClick,
     className,
 }: {
-    view: { name: Exclude<CameraView, "iso" | "front" | "back">; label: string };
+    view: { name: Exclude<CameraView, "iso">; label: string };
     active: boolean;
     onClick: (name: CameraView) => void;
     className?: string;
