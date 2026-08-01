@@ -18,10 +18,17 @@ import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
 import {
     ArchFitError,
+    type ArchFitResult,
     archFitReferenceFromBase,
     archFitToCorrectionPatch,
+    canAutoApplyArchFit,
     fitArchParamsFromScan,
 } from "@/lib/geometry/fit-arch-from-scan";
+import {
+    fitHeelCupFromScan,
+    type HeelCupFitSuggestion,
+    heelCupFitToCorrectionPatch,
+} from "@/lib/geometry/fit-heel-cup-from-scan";
 import { importScanFile } from "@/lib/geometry/import";
 import { INSOLE_LENGTH_MM } from "@/lib/geometry/layout";
 import { analyzeManifold } from "@/lib/geometry/manifold";
@@ -47,6 +54,12 @@ import {
     useScanStore,
 } from "@/stores/scan-store";
 import type { Side } from "@/types";
+
+type ScanFitReportState = {
+    arch: ArchFitResult | null;
+    heel: HeelCupFitSuggestion | null;
+    blockReason: string | null;
+};
 
 const MARKER_LABELS = {
     M1: "M1 — 1st met head (medial)",
@@ -231,49 +244,85 @@ export function ScanImport() {
     const updateCorrection = useDesignStore((s) => s.updateCorrection);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
-    const [archFitMsgByScanId, setArchFitMsgByScanId] = useState<Record<string, string>>({});
+    const [fitReportByScanId, setFitReportByScanId] = useState<Record<string, ScanFitReportState>>({});
     const [archFitBusyId, setArchFitBusyId] = useState<string | null>(null);
+    const [heelFitBusyId, setHeelFitBusyId] = useState<string | null>(null);
 
-    const matchArchFromScan = (scanId: string) => {
-        setError(null);
+    const resolveScanContext = (scanId: string) => {
         const scan = useScanStore.getState().scans.find((s) => s.id === scanId);
         const reg = useScanStore.getState().registrationByScanId[scanId];
         if (!scan || !reg?.matrixElements || reg.incomplete || reg.error) {
-            setError("Register the scan (M1–M3) before matching arch parameters");
-            return;
+            return { error: "Register the scan (M1–M3) before matching parameters" as const };
         }
         const sourceId = useScanStore.getState().landmarkSourceAssetId;
         const rawBase = sourceId ? useScanStore.getState().rawBaseBySourceId[sourceId] : undefined;
         if (!rawBase) {
-            setError("Load a clinical base before matching arch from scan");
+            return { error: "Load a clinical base before matching from scan" as const };
+        }
+        const registration = getScanRegistrationMatrix(reg);
+        const offset = useScanStore.getState().manualOffsetByScanId[scanId];
+        const scanToBase = resolveScanMeshMatrix(scan.display, registration, offset);
+        const pos = scan.geometry.getAttribute("position");
+        if (!pos) return { error: "Scan has no positions" as const };
+        const side: Side = reg.identifiedSide ?? scan.side;
+        return {
+            scan,
+            side,
+            scanToBase,
+            reference: archFitReferenceFromBase(rawBase),
+            positions: pos.array as ArrayLike<number>,
+            vertexCount: pos.count,
+        };
+    };
+
+    const matchArchFromScan = (scanId: string) => {
+        setError(null);
+        const ctx = resolveScanContext(scanId);
+        if ("error" in ctx) {
+            setError(ctx.error);
             return;
         }
         setArchFitBusyId(scanId);
         try {
-            const registration = getScanRegistrationMatrix(reg);
-            const offset = useScanStore.getState().manualOffsetByScanId[scanId];
-            const scanToBase = resolveScanMeshMatrix(scan.display, registration, offset);
-            const pos = scan.geometry.getAttribute("position");
-            if (!pos) throw new ArchFitError("insufficient_samples", "Scan has no positions");
-            const side: Side = reg.identifiedSide ?? scan.side;
             const fit = fitArchParamsFromScan({
-                scanPositions: pos.array as ArrayLike<number>,
-                scanVertexCount: pos.count,
-                scanToBase,
-                reference: archFitReferenceFromBase(rawBase),
-                side,
+                scanPositions: ctx.positions,
+                scanVertexCount: ctx.vertexCount,
+                scanToBase: ctx.scanToBase,
+                reference: ctx.reference,
+                side: ctx.side,
                 lengthMm: INSOLE_LENGTH_MM,
             });
-            updateCorrection(side, archFitToCorrectionPatch(fit));
-            setArchFitMsgByScanId((prev) => ({
+            let heel: HeelCupFitSuggestion | null = null;
+            try {
+                heel = fitHeelCupFromScan({
+                    scanPositions: ctx.positions,
+                    scanVertexCount: ctx.vertexCount,
+                    scanToBase: ctx.scanToBase,
+                    reference: ctx.reference,
+                });
+            } catch {
+                heel = null;
+            }
+
+            const blockReason = fit.confidence.registration.blockAutoApply
+                ? "Registration residual too high to fit reliably — re-run alignment"
+                : fit.confidence.tier === "poor"
+                  ? "Fit residual too high to apply reliably — check alignment and scan coverage"
+                  : null;
+
+            if (canAutoApplyArchFit(fit)) {
+                updateCorrection(ctx.side, archFitToCorrectionPatch(fit));
+            }
+
+            setFitReportByScanId((prev) => ({
                 ...prev,
-                [scanId]: `Arch ${fit.archHeightMm.toFixed(1)} mm · apex ${fit.apexMoveMm >= 0 ? "+" : ""}${fit.apexMoveMm.toFixed(1)} mm (peak gap ${fit.peakGapMm.toFixed(1)} mm${fit.clamped ? ", clamped" : ""})`,
+                [scanId]: { arch: fit, heel, blockReason },
             }));
         } catch (e) {
             const msg =
                 e instanceof ArchFitError ? e.message : e instanceof Error ? e.message : "Arch match failed";
             setError(msg);
-            setArchFitMsgByScanId((prev) => {
+            setFitReportByScanId((prev) => {
                 const next = { ...prev };
                 delete next[scanId];
                 return next;
@@ -281,6 +330,57 @@ export function ScanImport() {
         } finally {
             setArchFitBusyId(null);
         }
+    };
+
+    const suggestHeelCupFromScan = (scanId: string) => {
+        setError(null);
+        const ctx = resolveScanContext(scanId);
+        if ("error" in ctx) {
+            setError(ctx.error);
+            return;
+        }
+        setHeelFitBusyId(scanId);
+        try {
+            const heel = fitHeelCupFromScan({
+                scanPositions: ctx.positions,
+                scanVertexCount: ctx.vertexCount,
+                scanToBase: ctx.scanToBase,
+                reference: ctx.reference,
+            });
+            setFitReportByScanId((prev) => ({
+                ...prev,
+                [scanId]: {
+                    arch: prev[scanId]?.arch ?? null,
+                    heel,
+                    blockReason: prev[scanId]?.blockReason ?? null,
+                },
+            }));
+        } catch (e) {
+            const msg =
+                e instanceof ArchFitError
+                    ? e.message
+                    : e instanceof Error
+                      ? e.message
+                      : "Heel-cup fit failed";
+            setError(msg);
+        } finally {
+            setHeelFitBusyId(null);
+        }
+    };
+
+    const applyHeelCupSuggestion = (scanId: string) => {
+        const report = fitReportByScanId[scanId];
+        if (!report?.heel) return;
+        if (report.heel.confidence.registration.blockAutoApply || report.heel.confidence.tier === "poor") {
+            setError("Registration residual too high to fit reliably — re-run alignment");
+            return;
+        }
+        const ctx = resolveScanContext(scanId);
+        if ("error" in ctx) {
+            setError(ctx.error);
+            return;
+        }
+        updateCorrection(ctx.side, heelCupFitToCorrectionPatch(report.heel));
     };
 
     const onFiles = async (files: FileList | null) => {
@@ -545,16 +645,131 @@ export function ScanImport() {
                                         <Sparkles className="h-3 w-3" />
                                         {archFitBusyId === s.id ? "Matching arch…" : "Match arch from scan"}
                                     </button>
-                                    {archFitMsgByScanId[s.id] ? (
-                                        <p className="text-[10px] text-emerald-300/90">
-                                            {archFitMsgByScanId[s.id]}
-                                        </p>
-                                    ) : (
-                                        <p className="text-[10px] text-muted-foreground/80">
-                                            Estimates Arch height + Apex move from the plantar gap (simulation
-                                            — does not bake the scan mesh)
-                                        </p>
-                                    )}
+                                    {(() => {
+                                        const report = fitReportByScanId[s.id];
+                                        if (!report?.arch && !report?.heel) {
+                                            return (
+                                                <p className="text-[10px] text-muted-foreground/80">
+                                                    Estimates Arch height + Apex move from the plantar gap
+                                                    (compliance-adjusted — does not bake the scan mesh)
+                                                </p>
+                                            );
+                                        }
+                                        const arch = report.arch;
+                                        const heel = report.heel;
+                                        const conf = arch?.confidence ?? heel?.confidence;
+                                        const tierLabel = conf
+                                            ? conf.tier === "good"
+                                                ? "Good"
+                                                : conf.tier === "fair"
+                                                  ? "Fair"
+                                                  : "Poor"
+                                            : "—";
+                                        const flags = conf?.registration;
+                                        return (
+                                            <div className="mt-1 space-y-1 rounded border border-border/50 bg-muted/20 px-1.5 py-1 text-[10px]">
+                                                <p className="text-muted-foreground">
+                                                    Fit report · confidence{" "}
+                                                    <span
+                                                        className={cn(
+                                                            "font-medium",
+                                                            conf?.tier === "good" && "text-emerald-300",
+                                                            conf?.tier === "fair" && "text-amber-300",
+                                                            conf?.tier === "poor" && "text-destructive",
+                                                        )}
+                                                    >
+                                                        {tierLabel}
+                                                    </span>
+                                                    {conf ? (
+                                                        <> · RMS {conf.residualRmsMm.toFixed(2)} mm</>
+                                                    ) : null}
+                                                    {arch?.nonConverged ? " · non-converged" : null}
+                                                </p>
+                                                {flags?.blockAutoApply ? (
+                                                    <p className="text-destructive">
+                                                        Registration residual too high to fit reliably —
+                                                        re-run alignment
+                                                        {` [${[
+                                                            flags.meanOffsetExceeded ? "offset" : null,
+                                                            flags.pitchExceeded ? "pitch" : null,
+                                                            flags.rollExceeded ? "roll" : null,
+                                                        ]
+                                                            .filter(Boolean)
+                                                            .join(", ")}]`}
+                                                    </p>
+                                                ) : report.blockReason ? (
+                                                    <p className="text-amber-300">{report.blockReason}</p>
+                                                ) : null}
+                                                {arch ? (
+                                                    <p className="text-emerald-300/90">
+                                                        Arch {arch.archHeightMm.toFixed(1)} mm · apex{" "}
+                                                        {arch.apexMoveMm >= 0 ? "+" : ""}
+                                                        {arch.apexMoveMm.toFixed(1)} mm
+                                                        {canAutoApplyArchFit(arch)
+                                                            ? " · applied"
+                                                            : " · not applied"}
+                                                        {arch.clamped ? " · clamped" : ""}
+                                                    </p>
+                                                ) : null}
+                                                <div className="flex items-center gap-1 pt-0.5">
+                                                    <button
+                                                        type="button"
+                                                        disabled={
+                                                            heelFitBusyId === s.id ||
+                                                            Boolean(report.blockReason) ||
+                                                            conf?.registration.blockAutoApply
+                                                        }
+                                                        onClick={() => suggestHeelCupFromScan(s.id)}
+                                                        className={cn(
+                                                            "rounded px-2 py-0.5 text-[10px]",
+                                                            "bg-amber-500/15 text-amber-200 hover:bg-amber-500/25",
+                                                            (heelFitBusyId === s.id ||
+                                                                report.blockReason ||
+                                                                conf?.registration.blockAutoApply) &&
+                                                                "cursor-not-allowed opacity-50",
+                                                        )}
+                                                    >
+                                                        {heelFitBusyId === s.id
+                                                            ? "Suggesting…"
+                                                            : "Suggest heel cup"}
+                                                    </button>
+                                                    {heel ? (
+                                                        <>
+                                                            <span className="text-amber-200/90">
+                                                                {heel.suggestedHeelCupDepthMm.toFixed(1)} mm
+                                                                {heel.clamped ? " (clamped)" : ""}
+                                                                {heel.exceedsClinicalMax
+                                                                    ? " · exceeds clinical max"
+                                                                    : ""}
+                                                            </span>
+                                                            <button
+                                                                type="button"
+                                                                disabled={
+                                                                    heel.confidence.tier === "poor" ||
+                                                                    heel.confidence.registration
+                                                                        .blockAutoApply
+                                                                }
+                                                                onClick={() => applyHeelCupSuggestion(s.id)}
+                                                                className={cn(
+                                                                    "ml-auto rounded px-2 py-0.5 text-[10px]",
+                                                                    "border border-amber-500/40 text-amber-100 hover:bg-amber-500/20",
+                                                                    (heel.confidence.tier === "poor" ||
+                                                                        heel.confidence.registration
+                                                                            .blockAutoApply) &&
+                                                                        "cursor-not-allowed opacity-50",
+                                                                )}
+                                                            >
+                                                                Apply heel cup
+                                                            </button>
+                                                        </>
+                                                    ) : null}
+                                                </div>
+                                                <p className="text-muted-foreground/70">
+                                                    Heel cup is advisory only — never auto-applied
+                                                </p>
+                                            </div>
+                                        );
+                                    })()}
                                 </>
                             )}
                             {(() => {

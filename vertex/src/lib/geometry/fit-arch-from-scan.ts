@@ -4,17 +4,30 @@
 /**
  * Fit parametric archHeightMm + apexMoveMm from a registered foot scan.
  *
- * This does NOT bake the scan into the insole mesh. It measures the plantar
- * gap of the scan against a reference top surface (RAW base or parametric
- * zero-arch field) and solves for the two scalar arch operators that best
- * close that gap in the medial midfoot. Result is applied via design
- * corrections — the scan store stays off the export path.
+ * Pipeline: sample plantar gaps → rigid-body residual decomposition →
+ * medial-arch band filter → pure kernel solve (+ iterative refine) →
+ * soft-tissue compliance → clinical clamp.
+ *
+ * Does NOT bake the scan into the insole mesh. Export stays scan-isolated.
  */
 
 import type { BufferGeometry } from "three";
 import * as THREE from "three";
 import { CLINICAL_LIMITS } from "@/lib/geometry/clinical-constraints";
 import { bump, type HeightFieldParams, heightAt, smoothstep } from "@/lib/geometry/height-field";
+import { SCAN_FIT_ARCH_COMPLIANCE, SCAN_FIT_MIN_SAMPLES } from "@/lib/geometry/scan-fit-constants";
+import { iterativeRefineScalar } from "@/lib/geometry/scan-fit-kernel";
+import {
+    type ConfidenceTier,
+    confidenceFromRms,
+    decomposeRigidGap,
+    type FitConfidence,
+    type GapSample,
+    gapsEntirelyNegative,
+    type RegistrationFitFlags,
+    registrationFlagsFromRigid,
+    subtractRigidGap,
+} from "@/lib/geometry/scan-fit-residual";
 import type { Side, SideCorrections } from "@/types";
 
 /** Longitudinal band where the medial arch dome lives (heel→toe u). */
@@ -26,14 +39,16 @@ export const ARCH_DEFAULT_APEX_U = 0.42;
 export const ARCH_FIT_MEDIAL_MIN = 0.2;
 /** Ignore samples whose XY nearest-ref distance exceeds this (mm). */
 export const ARCH_FIT_MAX_XY_MM = 8;
-/** Minimum plantar samples required for a fit. */
-export const ARCH_FIT_MIN_SAMPLES = 24;
+/** @deprecated use SCAN_FIT_MIN_SAMPLES — kept for callers/tests. */
+export const ARCH_FIT_MIN_SAMPLES = SCAN_FIT_MIN_SAMPLES;
 
 export type ArchFitErrorCode =
     | "no_registration"
     | "no_reference"
     | "insufficient_samples"
-    | "degenerate_weight";
+    | "degenerate_weight"
+    | "registration_residual"
+    | "negative_gap_field";
 
 export class ArchFitError extends Error {
     readonly code: ArchFitErrorCode;
@@ -48,20 +63,22 @@ export class ArchFitError extends Error {
 export type ArchFitResult = {
     archHeightMm: number;
     apexMoveMm: number;
-    /** Peak measured plantar gap (scan above reference) before clamp. */
+    /** Peak measured plantar gap (scan above reference) before compliance. */
     peakGapMm: number;
     /** Longitudinal u of the peak gap sample. */
     apexU: number;
     sampleCount: number;
-    /** RMS residual of (weight · archHeight − gap) after fit (mm). */
+    /** Post-fit residual RMS (mm). */
     residualRmsMm: number;
     clamped: boolean;
+    confidence: FitConfidence;
+    /** Iterative refine did not meet convergence criteria within max iters. */
+    nonConverged: boolean;
 };
 
 export type ArchFitReference =
     | {
           kind: "base";
-          /** RAW L0 top positions (xyz interleaved). */
           topPositions: ArrayLike<number>;
           topVertexCount: number;
           lengthMin: number;
@@ -74,7 +91,11 @@ export type ArchFitReference =
           field: HeightFieldParams;
       };
 
+export type { ConfidenceTier, FitConfidence, RegistrationFitFlags };
+
 type Bucket = { indices: number[] };
+
+type PlantarPoint = GapSample & { u: number; vSigned: number };
 
 function buildXyBuckets(
     positions: ArrayLike<number>,
@@ -84,15 +105,15 @@ function buildXyBuckets(
     let minX = Infinity;
     let minY = Infinity;
     for (let i = 0; i < topN; i++) {
-        const x = positions[i * 3]!;
-        const y = positions[i * 3 + 1]!;
+        const x = positions[i * 3] ?? 0;
+        const y = positions[i * 3 + 1] ?? 0;
         if (x < minX) minX = x;
         if (y < minY) minY = y;
     }
     const buckets = new Map<string, Bucket>();
     for (let i = 0; i < topN; i++) {
-        const ix = Math.floor((positions[i * 3]! - minX) / cellMm);
-        const iy = Math.floor((positions[i * 3 + 1]! - minY) / cellMm);
+        const ix = Math.floor(((positions[i * 3] ?? 0) - minX) / cellMm);
+        const iy = Math.floor(((positions[i * 3 + 1] ?? 0) - minY) / cellMm);
         const key = `${ix},${iy}`;
         let b = buckets.get(key);
         if (!b) {
@@ -124,8 +145,8 @@ function nearestXyIndex(
                 const b = buckets.get(`${ix + dx},${iy + dy}`);
                 if (!b) continue;
                 for (const i of b.indices) {
-                    const px = positions[i * 3]!;
-                    const py = positions[i * 3 + 1]!;
+                    const px = positions[i * 3] ?? 0;
+                    const py = positions[i * 3 + 1] ?? 0;
                     const d2 = (px - x) ** 2 + (py - y) ** 2;
                     if (d2 < bestD2) {
                         bestD2 = d2;
@@ -159,8 +180,6 @@ export function unitArchWeight(
     return arch * archAcross * featherScale;
 }
 
-type Sample = { u: number; vSigned: number; gapMm: number; weight: number };
-
 function clampArch(
     height: number,
     apex: number,
@@ -179,10 +198,6 @@ function clampArch(
     return { archHeightMm, apexMoveMm, clamped };
 }
 
-/**
- * Build RAW-base reference extents from a multi-mesh (or single) base geometry.
- * Uses X as length and Y as width — same convention as registration / viewer local.
- */
 export function archFitReferenceFromBase(geometry: BufferGeometry): ArchFitReference {
     const pos = geometry.getAttribute("position");
     if (!pos || pos.count < 3) {
@@ -197,23 +212,21 @@ export function archFitReferenceFromBase(geometry: BufferGeometry): ArchFitRefer
     let minY = Infinity;
     let maxY = -Infinity;
     for (let i = 0; i < topN; i++) {
-        const x = arr[i * 3]!;
-        const y = arr[i * 3 + 1]!;
+        const x = arr[i * 3] ?? 0;
+        const y = arr[i * 3 + 1] ?? 0;
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
         if (y < minY) minY = y;
         if (y > maxY) maxY = y;
     }
-    const lengthSize = Math.max(1e-6, maxX - minX);
-    const widthHalf = Math.max(1e-6, (maxY - minY) / 2);
     return {
         kind: "base",
         topPositions: arr,
         topVertexCount: topN,
         lengthMin: minX,
-        lengthSize,
+        lengthSize: Math.max(1e-6, maxX - minX),
         widthCenter: (minY + maxY) / 2,
-        widthHalf,
+        widthHalf: Math.max(1e-6, (maxY - minY) / 2),
     };
 }
 
@@ -228,7 +241,6 @@ function referenceZAt(
         const u = Math.max(0, Math.min(1, x / lengthMm));
         const halfW = widthMm / 2;
         const vSigned = halfW > 1e-9 ? Math.max(-1, Math.min(1, y / halfW)) : 0;
-        // Zero-arch reference so the fit attributes raise entirely to archHeightMm.
         const zeroArch: HeightFieldParams = {
             ...ref.field,
             corrections: {
@@ -253,12 +265,56 @@ function referenceZAt(
     if (index < 0 || d2 > ARCH_FIT_MAX_XY_MM * ARCH_FIT_MAX_XY_MM) {
         return { z: 0, u: 0, vSigned: 0, ok: false };
     }
-    const bx = ref.topPositions[index * 3]!;
-    const by = ref.topPositions[index * 3 + 1]!;
-    const bz = ref.topPositions[index * 3 + 2]!;
+    const bx = ref.topPositions[index * 3] ?? 0;
+    const by = ref.topPositions[index * 3 + 1] ?? 0;
+    const bz = ref.topPositions[index * 3 + 2] ?? 0;
     const u = Math.max(0, Math.min(1, (bx - ref.lengthMin) / ref.lengthSize));
     const vSigned = Math.max(-1, Math.min(1, (by - ref.widthCenter) / ref.widthHalf));
     return { z: bz, u, vSigned, ok: true };
+}
+
+/** Collect full-footprint plantar gap samples (all bands) for rigid-body solve. */
+export function collectPlantarGapSamples(args: {
+    scanPositions: ArrayLike<number>;
+    scanVertexCount: number;
+    scanToBase: THREE.Matrix4;
+    reference: ArchFitReference;
+}): PlantarPoint[] {
+    const { scanPositions, scanVertexCount, scanToBase, reference } = args;
+    const buckets =
+        reference.kind === "base"
+            ? buildXyBuckets(reference.topPositions, reference.topVertexCount, 4)
+            : null;
+
+    const plantarBins = new Map<string, { x: number; y: number; z: number }>();
+    const cell = 4;
+    const tmp = new THREE.Vector3();
+    for (let i = 0; i < scanVertexCount; i++) {
+        tmp.set(
+            scanPositions[i * 3] ?? 0,
+            scanPositions[i * 3 + 1] ?? 0,
+            scanPositions[i * 3 + 2] ?? 0,
+        ).applyMatrix4(scanToBase);
+        const key = `${Math.floor(tmp.x / cell)},${Math.floor(tmp.y / cell)}`;
+        const prev = plantarBins.get(key);
+        if (!prev || tmp.z < prev.z) {
+            plantarBins.set(key, { x: tmp.x, y: tmp.y, z: tmp.z });
+        }
+    }
+
+    const out: PlantarPoint[] = [];
+    for (const p of plantarBins.values()) {
+        const hit = referenceZAt(p.x, p.y, reference, buckets);
+        if (!hit.ok) continue;
+        out.push({
+            x: p.x,
+            y: p.y,
+            gapMm: p.z - hit.z,
+            u: hit.u,
+            vSigned: hit.vSigned,
+        });
+    }
+    return out;
 }
 
 /**
@@ -278,49 +334,58 @@ export function fitArchParamsFromScan(args: {
         throw new ArchFitError("insufficient_samples", "Scan has too few vertices");
     }
 
-    const buckets =
-        reference.kind === "base"
-            ? buildXyBuckets(reference.topPositions, reference.topVertexCount, 4)
-            : null;
-
-    // Per-XY plantar: keep lowest Z in each ~4 mm cell (avoids dorsal verts).
-    const plantarBins = new Map<string, { x: number; y: number; z: number }>();
-    const cell = 4;
-    const tmp = new THREE.Vector3();
-    for (let i = 0; i < scanVertexCount; i++) {
-        tmp.set(scanPositions[i * 3]!, scanPositions[i * 3 + 1]!, scanPositions[i * 3 + 2]!).applyMatrix4(
-            scanToBase,
-        );
-        const key = `${Math.floor(tmp.x / cell)},${Math.floor(tmp.y / cell)}`;
-        const prev = plantarBins.get(key);
-        if (!prev || tmp.z < prev.z) {
-            plantarBins.set(key, { x: tmp.x, y: tmp.y, z: tmp.z });
-        }
-    }
-
-    const medialSign = side === "left" ? -1 : 1;
-    const gaps: { u: number; vSigned: number; gapMm: number }[] = [];
-    for (const p of plantarBins.values()) {
-        const hit = referenceZAt(p.x, p.y, reference, buckets);
-        if (!hit.ok) continue;
-        if (hit.u < ARCH_FIT_U_MIN || hit.u > ARCH_FIT_U_MAX) continue;
-        const m = -(hit.vSigned * medialSign);
-        if (m < ARCH_FIT_MEDIAL_MIN) continue;
-        const gapMm = p.z - hit.z;
-        // Only positive gaps (scan above reference) drive arch raise.
-        if (gapMm < 0.25) continue;
-        gaps.push({ u: hit.u, vSigned: hit.vSigned, gapMm });
-    }
-
-    if (gaps.length < ARCH_FIT_MIN_SAMPLES) {
+    const allPlantar = collectPlantarGapSamples({
+        scanPositions,
+        scanVertexCount,
+        scanToBase,
+        reference,
+    });
+    if (allPlantar.length < SCAN_FIT_MIN_SAMPLES) {
         throw new ArchFitError(
             "insufficient_samples",
-            `Need ≥${ARCH_FIT_MIN_SAMPLES} medial midfoot plantar samples with positive gap (got ${gaps.length})`,
+            `Need ≥${SCAN_FIT_MIN_SAMPLES} plantar samples (got ${allPlantar.length})`,
+        );
+    }
+    if (gapsEntirelyNegative(allPlantar)) {
+        throw new ArchFitError(
+            "negative_gap_field",
+            "Scan sits entirely below the base — re-run alignment or check Left/Right",
         );
     }
 
-    // Apex = mean u of the top 10% gaps (robust to single outliers).
-    const byGap = [...gaps].sort((a, b) => b.gapMm - a.gapMm);
+    const rigid = decomposeRigidGap(allPlantar);
+    if (!rigid) {
+        throw new ArchFitError("degenerate_weight", "Could not decompose registration residual");
+    }
+    const regFlags = registrationFlagsFromRigid(rigid);
+    const corrected = subtractRigidGap(allPlantar, rigid);
+    // Re-attach u/v from original samples (same order).
+    const correctedPlantar: PlantarPoint[] = corrected.map((c, i) => ({
+        ...c,
+        u: allPlantar[i]!.u,
+        vSigned: allPlantar[i]!.vSigned,
+    }));
+
+    const medialSign = side === "left" ? -1 : 1;
+    const band: PlantarPoint[] = [];
+    for (const p of correctedPlantar) {
+        if (p.u < ARCH_FIT_U_MIN || p.u > ARCH_FIT_U_MAX) continue;
+        const m = -(p.vSigned * medialSign);
+        if (m < ARCH_FIT_MEDIAL_MIN) continue;
+        // Positive residual after rigid removal drives arch raise.
+        if (p.gapMm < 0.25) continue;
+        band.push(p);
+    }
+
+    if (band.length < SCAN_FIT_MIN_SAMPLES) {
+        throw new ArchFitError(
+            "insufficient_samples",
+            `insufficient scan coverage in arch (need ≥${SCAN_FIT_MIN_SAMPLES}, got ${band.length})`,
+        );
+    }
+
+    // Apex from peak residual gap station (top 10%).
+    const byGap = [...band].sort((a, b) => b.gapMm - a.gapMm);
     const topN = Math.max(1, Math.floor(byGap.length * 0.1));
     let apexU = 0;
     let peakGapMm = 0;
@@ -332,41 +397,38 @@ export function fitArchParamsFromScan(args: {
     }
     apexU /= topN;
     const apexMoveRaw = (apexU - ARCH_DEFAULT_APEX_U) * lengthMm;
+    const apexClamped = clampArch(0, apexMoveRaw).apexMoveMm;
 
-    // Least-squares arch height against unit dome weights at fitted apex.
-    let swg = 0;
-    let sww = 0;
-    const samples: Sample[] = [];
-    for (const g of gaps) {
-        const w = unitArchWeight(g.u, g.vSigned, side, lengthMm, apexMoveRaw);
-        if (w < 0.05) continue;
-        samples.push({ ...g, weight: w });
-        swg += w * g.gapMm;
-        sww += w * w;
-    }
-    if (samples.length < ARCH_FIT_MIN_SAMPLES || sww < 1e-6) {
+    const refine = iterativeRefineScalar({
+        gaps: band.map((p) => ({ gapMm: p.gapMm })),
+        weightAt: (index, _current) =>
+            unitArchWeight(band[index]!.u, band[index]!.vSigned, side, lengthMm, apexClamped),
+        initialValue: 0,
+        compliance: SCAN_FIT_ARCH_COMPLIANCE,
+        minSamples: SCAN_FIT_MIN_SAMPLES,
+    });
+    if (!refine) {
         throw new ArchFitError("degenerate_weight", "Arch dome weight vanished in the sample band");
     }
-    const heightRaw = swg / sww;
 
-    const { archHeightMm, apexMoveMm, clamped } = clampArch(heightRaw, apexMoveRaw);
+    const { archHeightMm, apexMoveMm, clamped } = clampArch(refine.value, apexMoveRaw);
+    const confidence = confidenceFromRms(refine.residualRmsMm, regFlags, !refine.converged);
 
-    let err2 = 0;
-    for (const s of samples) {
-        const w = unitArchWeight(s.u, s.vSigned, side, lengthMm, apexMoveMm);
-        const r = w * archHeightMm - s.gapMm;
-        err2 += r * r;
+    if (regFlags.blockAutoApply) {
+        // Still return the fit for advisory display; caller checks confidence.tier / flags.
+        // Auto-apply is blocked in UI — do not throw (report surfaces the reason).
     }
-    const residualRmsMm = Math.sqrt(err2 / samples.length);
 
     return {
         archHeightMm,
         apexMoveMm,
         peakGapMm,
         apexU,
-        sampleCount: samples.length,
-        residualRmsMm,
+        sampleCount: refine.sampleCount,
+        residualRmsMm: refine.residualRmsMm,
         clamped,
+        confidence,
+        nonConverged: !refine.converged,
     };
 }
 
@@ -375,7 +437,14 @@ export function archFitToCorrectionPatch(fit: ArchFitResult): Partial<SideCorrec
     return {
         archHeightMm: fit.archHeightMm,
         apexMoveMm: fit.apexMoveMm,
-        // Avoid double-counting fill vs the fitted dome height.
+        // Zero archFillMm: compliance (SCAN_FIT_ARCH_COMPLIANCE) is now applied
+        // inside the fit — the digital equivalent of plaster arch fill — so a
+        // separate fill scalar would double-count soft-tissue allowance.
         archFillMm: 0,
     };
+}
+
+/** Whether the UI may auto-apply this arch fit into design corrections. */
+export function canAutoApplyArchFit(fit: ArchFitResult): boolean {
+    return fit.confidence.tier === "good" && !fit.confidence.registration.blockAutoApply;
 }
