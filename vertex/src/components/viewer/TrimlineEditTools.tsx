@@ -85,10 +85,19 @@ function TrimlineSideRow({
     const baseOutline = useBaseOutlineStore((s) => (baseKey ? (s.outlines[baseKey] ?? null) : null));
 
     const isEditing = editMode === "edit-trimline" && trimlineEdit?.side === side;
+    const committed = getDesignTrimline(design, side);
+
+    // While a base GLB is still loading, do not fall back to the parametric
+    // default outline — that generic wireframe is the "strange shape" flash on open.
+    // Stay empty until the mesh-derived outline (or a committed trimline) exists.
+    if (baseForSide && !committed && !baseOutline && !isEditing) {
+        return null;
+    }
+
     const curve =
         isEditing && trimlineEdit
             ? trimlineEdit.draft
-            : (getDesignTrimline(design, side) ?? baseOutline ?? getTrimlineForSide(side));
+            : (committed ?? baseOutline ?? getTrimlineForSide(side));
 
     return (
         <TrimlineSideOverlay
