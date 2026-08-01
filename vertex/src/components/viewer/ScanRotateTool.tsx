@@ -124,7 +124,8 @@ export function ScanRotateTool() {
             }
 
             // step 1 → start rotating about anchor using pivot as initial angle
-            const anchor = new THREE.Vector3().fromArray(rotateDraft.anchorLocal!);
+            if (!rotateDraft.anchorLocal) return;
+            const anchor = new THREE.Vector3().fromArray(rotateDraft.anchorLocal);
             const baseAngle = angleOnPlane(anchor, hit.parentLocal);
             setRotateDraft({
                 ...rotateDraft,
