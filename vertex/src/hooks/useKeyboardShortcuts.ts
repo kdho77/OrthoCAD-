@@ -51,8 +51,13 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
                     meshEdit.cancelTrimlineEdit();
                     return;
                 }
+                const scan = useScanStore.getState();
+                if (scan.rotateDraft) {
+                    scan.cancelRotate({ restore: true });
+                    return;
+                }
                 selectElement(null);
-                useScanStore.getState().selectScan(null);
+                scan.selectScan(null);
             }
 
             // Phase 3A production undo/redo (Cmd/Ctrl+Z, Shift for redo).
