@@ -12,6 +12,8 @@ import {
     sanitizeDesignStockBases,
 } from "@/lib/geometry/base-asset";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
+import { defaultElementPose } from "@/lib/geometry/elements";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { isSupabaseConfigured } from "@/lib/supabase";
@@ -615,14 +617,12 @@ export const useDesignStore = create<DesignStore>()(
             addElement: (kind, side) => {
                 get().checkpoint("add-element");
                 set((s) => {
+                    const pose = defaultElementPose(kind, side, INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
                     const el: PlacedElement = {
                         id: crypto.randomUUID(),
                         kind,
                         side,
-                        position: { x: 0, y: 0 },
-                        rotationDeg: 0,
-                        scale: { x: 1, y: 1 },
-                        heightMm: 4,
+                        ...pose,
                     };
                     const next = { ...s.design, elements: [...s.design.elements, el] };
                     const eff = buildEffectiveTrimlines(next);
@@ -836,10 +836,7 @@ export const useDesignStore = create<DesignStore>()(
                         id: crypto.randomUUID(),
                         kind: e.kind,
                         side: e.side,
-                        position: { x: 0, y: 0 },
-                        rotationDeg: 0,
-                        scale: { x: 1, y: 1 },
-                        heightMm: 4,
+                        ...defaultElementPose(e.kind, e.side, INSOLE_LENGTH_MM, INSOLE_WIDTH_MM),
                     }));
                     return {
                         design: {
