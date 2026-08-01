@@ -26,8 +26,15 @@ import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
 import { ScanImport } from "@/features/scans/ScanImport";
 import {
     DEFAULT_US_MEN_SIZE,
+    footLengthMmOptions,
+    formatFootLengthLabel,
+    formatUkShoeSizeLabel,
     formatUsShoeSizeLabel,
     insoleLayoutFromDesign,
+    normalizeShoeSizeSystem,
+    type ShoeSizeSystem,
+    ukShoeSizeOptions,
+    usMenToUk,
     usShoeSizeOptions,
 } from "@/lib/geometry/shoe-size";
 import { mergePrefabLibrary, STOCK_PREFABS } from "@/lib/library/manifest";
@@ -44,7 +51,15 @@ const METHODS: { id: ProductionMethod; label: string }[] = [
 ];
 
 export function LeftSidebar() {
-    const { design, setPattern, setMethod, setUsShoeSize } = useDesignStore();
+    const {
+        design,
+        setPattern,
+        setMethod,
+        setUsShoeSize,
+        setShoeSizeSystem,
+        setUkShoeSize,
+        setFootLengthMm,
+    } = useDesignStore();
     const customPrefabs = useCustomLibraryStore((s) => s.customPrefabs);
     const libraryLoading = useCustomLibraryStore((s) => s.loading);
     const baseMeshLoading = useDesignStore(
@@ -307,8 +322,17 @@ export function LeftSidebar() {
                 </div>
             </Section>
 
-            <Section icon={<Footprints className="h-3.5 w-3.5" />} title="Shoe size (US)">
-                <ShoeSizeSelect value={design.usMenSize ?? DEFAULT_US_MEN_SIZE} onChange={setUsShoeSize} />
+            <Section icon={<Footprints className="h-3.5 w-3.5" />} title="Shoe size">
+                <ShoeSizeSelect
+                    system={normalizeShoeSizeSystem(design.sizeSystem)}
+                    usMenSize={design.usMenSize ?? DEFAULT_US_MEN_SIZE}
+                    ukSize={design.ukSize ?? usMenToUk(design.usMenSize ?? DEFAULT_US_MEN_SIZE)}
+                    footLengthMm={design.footLengthMm ?? insoleLayoutFromDesign(design).footLengthMm}
+                    onSystemChange={setShoeSizeSystem}
+                    onUsChange={setUsShoeSize}
+                    onUkChange={setUkShoeSize}
+                    onMmChange={setFootLengthMm}
+                />
             </Section>
 
             <Section icon={<FileBox className="h-3.5 w-3.5" />} title="Import">
@@ -349,25 +373,112 @@ function Section({
     );
 }
 
-function ShoeSizeSelect({ value, onChange }: { value: number; onChange: (menSize: number) => void }) {
-    const options = usShoeSizeOptions();
-    const layout = insoleLayoutFromDesign({ usMenSize: value });
+function ShoeSizeSelect({
+    system,
+    usMenSize,
+    ukSize,
+    footLengthMm,
+    onSystemChange,
+    onUsChange,
+    onUkChange,
+    onMmChange,
+}: {
+    system: ShoeSizeSystem;
+    usMenSize: number;
+    ukSize: number;
+    footLengthMm: number;
+    onSystemChange: (system: ShoeSizeSystem) => void;
+    onUsChange: (menSize: number) => void;
+    onUkChange: (ukSize: number) => void;
+    onMmChange: (mm: number) => void;
+}) {
+    const layout = insoleLayoutFromDesign({
+        sizeSystem: system,
+        usMenSize,
+        ukSize,
+        footLengthMm,
+    });
+    const systems: { id: ShoeSizeSystem; label: string }[] = [
+        { id: "us", label: "US" },
+        { id: "uk", label: "UK" },
+        { id: "mm", label: "mm" },
+    ];
+
+    const selectClass =
+        "h-9 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
     return (
         <div className="space-y-1.5">
-            <select
-                className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                value={String(value)}
-                aria-label="US shoe size"
-                onChange={(e) => onChange(Number(e.target.value))}
-            >
-                {options.map((opt) => (
-                    <option key={opt.menSize} value={String(opt.menSize)}>
-                        {opt.label}
-                    </option>
+            <div className="grid grid-cols-3 gap-1">
+                {systems.map((s) => (
+                    <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => onSystemChange(s.id)}
+                        className={cn(
+                            "rounded border px-1 py-1 text-center text-[10px]",
+                            system === s.id
+                                ? "border-primary bg-primary/10 text-primary"
+                                : "border-border text-muted-foreground hover:bg-muted",
+                        )}
+                    >
+                        {s.label}
+                    </button>
                 ))}
-            </select>
+            </div>
+
+            {system === "us" ? (
+                <select
+                    className={selectClass}
+                    value={String(usMenSize)}
+                    aria-label="US shoe size"
+                    onChange={(e) => onUsChange(Number(e.target.value))}
+                >
+                    {usShoeSizeOptions().map((opt) => (
+                        <option key={opt.menSize} value={String(opt.menSize)}>
+                            {opt.label}
+                        </option>
+                    ))}
+                </select>
+            ) : null}
+
+            {system === "uk" ? (
+                <select
+                    className={selectClass}
+                    value={String(ukSize)}
+                    aria-label="UK shoe size"
+                    onChange={(e) => onUkChange(Number(e.target.value))}
+                >
+                    {ukShoeSizeOptions().map((opt) => (
+                        <option key={opt.ukSize} value={String(opt.ukSize)}>
+                            {opt.label}
+                        </option>
+                    ))}
+                </select>
+            ) : null}
+
+            {system === "mm" ? (
+                <select
+                    className={selectClass}
+                    value={String(Math.round(footLengthMm))}
+                    aria-label="Foot length millimetres"
+                    onChange={(e) => onMmChange(Number(e.target.value))}
+                >
+                    {footLengthMmOptions().map((opt) => (
+                        <option key={opt.footLengthMm} value={String(opt.footLengthMm)}>
+                            {opt.label}
+                        </option>
+                    ))}
+                </select>
+            ) : null}
+
             <p className="text-[10px] text-muted-foreground">
-                {formatUsShoeSizeLabel(value)} · {layout.lengthMm.toFixed(0)} × {layout.widthMm.toFixed(0)} mm
+                {system === "us"
+                    ? formatUsShoeSizeLabel(usMenSize)
+                    : system === "uk"
+                      ? formatUkShoeSizeLabel(ukSize)
+                      : formatFootLengthLabel(footLengthMm)}{" "}
+                · {layout.lengthMm.toFixed(0)} × {layout.widthMm.toFixed(0)} mm
             </p>
         </div>
     );

@@ -210,11 +210,21 @@ export interface DesignState {
     method: ProductionMethod;
     thicknessMm: number;
     /**
-     * US Men's shoe size (half steps) driving automatic footprint scale.
-     * Women's = men + 1.5; Youth shares the men's number for sizes ≤ 7.
+     * Footprint size system. Default `"us"`.
+     * - `us` — US Men's half-size (`usMenSize`); Women's = +1.5; Youth ≤ 7
+     * - `uk` — UK adult size (`ukSize`)
+     * - `mm` — Mondopoint-style foot length (`footLengthMm`)
+     */
+    sizeSystem?: "us" | "uk" | "mm";
+    /**
+     * US Men's shoe size (half steps). Used when `sizeSystem` is `"us"` (default).
      * Absent ⇒ Men's 9 (260 × 95 mm reference template).
      */
     usMenSize?: number;
+    /** UK adult shoe size (half steps). Used when `sizeSystem` is `"uk"`. */
+    ukSize?: number;
+    /** Foot length in mm (Mondopoint-style). Used when `sizeSystem` is `"mm"`. */
+    footLengthMm?: number;
     corrections: Corrections;
     elements: PlacedElement[];
     /** User-edited insole outline curves — persisted with the design. */

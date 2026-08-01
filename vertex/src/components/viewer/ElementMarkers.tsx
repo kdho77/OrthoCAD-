@@ -20,7 +20,10 @@ export function ElementMarkers() {
     const selectedId = useDesignStore((s) => s.selectedElementId);
     const elementPreviews = usePerformanceStore((s) => s.elementPreviews);
     const usMenSize = useDesignStore((s) => s.design.usMenSize);
-    const layout = insoleLayoutFromDesign({ usMenSize });
+    const sizeSystem = useDesignStore((s) => s.design.sizeSystem);
+    const ukSize = useDesignStore((s) => s.design.ukSize);
+    const footLengthMm = useDesignStore((s) => s.design.footLengthMm);
+    const layout = insoleLayoutFromDesign({ sizeSystem, usMenSize, ukSize, footLengthMm });
     const centerX = layout.lengthMm / 2;
 
     const nonSelected = useMemo(() => elements.filter((e) => e.id !== selectedId), [elements, selectedId]);

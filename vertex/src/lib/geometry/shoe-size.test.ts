@@ -5,14 +5,22 @@ import { describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import {
+    convertSizingToSystem,
     DEFAULT_US_MEN_SIZE,
+    footLengthMmOptions,
+    formatUkShoeSizeLabel,
     formatUsShoeSizeLabel,
+    insoleLayoutForFootLengthMm,
+    insoleLayoutForUkSize,
     insoleLayoutForUsMenSize,
     insoleLayoutFromDesign,
     normalizeUsMenSize,
     REFERENCE_US_MEN_SIZE,
     scaleGeometryToInsoleSize,
+    ukFootLengthMm,
+    ukShoeSizeOptions,
     usMenFootLengthMm,
+    usMenToUk,
     usShoeSizeOptions,
     usWomenFromMen,
 } from "@/lib/geometry/shoe-size";
@@ -71,6 +79,7 @@ describe("US shoe size chart", () => {
     test("missing design size falls back to Men's 9", () => {
         expect(insoleLayoutFromDesign(null).usMenSize).toBe(9);
         expect(insoleLayoutFromDesign({}).lengthMm).toBeCloseTo(INSOLE_LENGTH_MM, 6);
+        expect(insoleLayoutFromDesign({}).sizeSystem).toBe("us");
     });
 
     test("scaleGeometryToInsoleSize maps footprint bbox to target mm", () => {
@@ -85,5 +94,63 @@ describe("US shoe size chart", () => {
         expect((box.min.y + box.max.y) / 2).toBeCloseTo(0, 4);
         geo.dispose();
         sized.dispose();
+    });
+});
+
+describe("UK and mm sizing systems", () => {
+    test("UK ≈ US men − 1 at the same foot length", () => {
+        expect(usMenToUk(9)).toBe(8);
+        expect(formatUkShoeSizeLabel(8)).toBe("UK 8");
+        const us = insoleLayoutForUsMenSize(9);
+        const uk = insoleLayoutForUkSize(8);
+        expect(uk.footLengthMm).toBeCloseTo(us.footLengthMm, 6);
+        expect(uk.lengthMm).toBeCloseTo(us.lengthMm, 6);
+    });
+
+    test("UK dropdown options exist", () => {
+        const opts = ukShoeSizeOptions();
+        expect(opts[0]?.ukSize).toBe(1);
+        expect(opts.find((o) => o.ukSize === 8)?.label).toBe("UK 8");
+    });
+
+    test("mm options are 5 mm Mondopoint steps", () => {
+        const opts = footLengthMmOptions();
+        expect(opts[0]?.footLengthMm).toBe(210);
+        expect(opts.at(-1)?.footLengthMm).toBe(320);
+        expect(opts[1]!.footLengthMm - opts[0]!.footLengthMm).toBe(5);
+    });
+
+    test("mm length scales template proportionally", () => {
+        const ref = usMenFootLengthMm(9);
+        const layout = insoleLayoutForFootLengthMm(ref, "mm");
+        expect(layout.lengthMm).toBeCloseTo(INSOLE_LENGTH_MM, 4);
+        const longer = insoleLayoutForFootLengthMm(ref + 20, "mm");
+        expect(longer.lengthMm).toBeGreaterThan(layout.lengthMm);
+    });
+
+    test("switching systems preserves foot length", () => {
+        const fromUs = convertSizingToSystem({ sizeSystem: "us", usMenSize: 12 }, "uk");
+        expect(fromUs.sizeSystem).toBe("uk");
+        expect(fromUs.ukSize).toBe(11);
+        expect(ukFootLengthMm(fromUs.ukSize)).toBeCloseTo(usMenFootLengthMm(12), 6);
+
+        const toMm = convertSizingToSystem(fromUs, "mm");
+        expect(toMm.sizeSystem).toBe("mm");
+        expect(toMm.footLengthMm % 5).toBe(0);
+
+        const backUs = convertSizingToSystem(toMm, "us");
+        expect(backUs.sizeSystem).toBe("us");
+        // Nearest half-size after 5 mm snap — within one size of original.
+        expect(Math.abs(backUs.usMenSize - 12)).toBeLessThanOrEqual(1);
+    });
+
+    test("insoleLayoutFromDesign respects sizeSystem", () => {
+        const uk = insoleLayoutFromDesign({ sizeSystem: "uk", ukSize: 8 });
+        expect(uk.sizeSystem).toBe("uk");
+        expect(uk.ukSize).toBe(8);
+
+        const mm = insoleLayoutFromDesign({ sizeSystem: "mm", footLengthMm: 270 });
+        expect(mm.sizeSystem).toBe("mm");
+        expect(mm.footLengthMm).toBe(270);
     });
 });
