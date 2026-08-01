@@ -1,8 +1,8 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { CheckCircle2, Eye, EyeOff, MapPin, Move, RotateCcw, Trash2, Upload } from "lucide-react";
-import { useRef, useState } from "react";
+import { CheckCircle2, ChevronRight, Eye, EyeOff, MapPin, Move, RotateCcw, Trash2, Upload } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
 import { importScanFile } from "@/lib/geometry/import";
@@ -18,15 +18,166 @@ import {
     buildScanDisplayInfoFromBBox,
     isNonZeroScanOffset,
 } from "@/lib/geometry/scan-display";
-import { suggestScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
+import {
+    suggestScanLandmarks,
+    type SuggestedScanLandmarks,
+} from "@/lib/geometry/scan-landmark-suggest";
 import { cn } from "@/lib/utils";
-import { useScanStore } from "@/stores/scan-store";
+import { type MarkerId, type ScanMarkers, useScanStore } from "@/stores/scan-store";
 
 const MARKER_LABELS = {
     M1: "M1 — 1st met head (medial)",
     M2: "M2 — 5th met head (lateral)",
     M3: "M3 — heel centre",
 } as const;
+
+function ScanMarkersSection({
+    scanId,
+    sug,
+    markers,
+    placed,
+    placing,
+    baseReady,
+    nextLabel,
+    onConfirm,
+    onDismiss,
+    onTogglePlacement,
+    onResetMarkers,
+}: {
+    scanId: string;
+    sug: SuggestedScanLandmarks | null | undefined;
+    markers: ScanMarkers | undefined;
+    placed: number;
+    placing: boolean;
+    baseReady: boolean;
+    nextLabel: string | null;
+    onConfirm: (id: MarkerId) => void;
+    onDismiss: () => void;
+    onTogglePlacement: () => void;
+    onResetMarkers: () => void;
+}) {
+    const allAccepted = placed >= 3;
+    const [open, setOpen] = useState(!allAccepted);
+
+    useEffect(() => {
+        if (allAccepted) setOpen(false);
+        else setOpen(true);
+    }, [allAccepted]);
+
+    useEffect(() => {
+        // New suggestions (e.g. after cleanup) should prompt the user again.
+        if (sug && !allAccepted) setOpen(true);
+    }, [sug, scanId, allAccepted]);
+
+    useEffect(() => {
+        if (placing) setOpen(true);
+    }, [placing]);
+
+    return (
+        <div className="space-y-1 rounded border border-cyan-500/30 bg-cyan-500/5 px-1.5 py-1 text-[10px]">
+            <button
+                type="button"
+                onClick={() => setOpen((v) => !v)}
+                className="flex w-full items-center gap-1 text-left"
+                aria-expanded={open}
+            >
+                <ChevronRight
+                    className={cn(
+                        "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
+                        open && "rotate-90",
+                    )}
+                />
+                <span className="font-medium text-cyan-200">
+                    {allAccepted ? "Markers accepted" : sug ? "Suggested landmarks" : "Markers"}
+                </span>
+                <span className="ml-auto text-muted-foreground">{placed}/3</span>
+            </button>
+            {!open ? (
+                <p className="pl-4 text-muted-foreground">
+                    {allAccepted
+                        ? "All markers placed — expand to edit"
+                        : sug
+                          ? "Confirm or place markers to register"
+                          : "Expand to place M1 → M2 → M3"}
+                </p>
+            ) : (
+                <div className="space-y-1">
+                    {sug ? (
+                        <>
+                            <p className="text-muted-foreground">
+                                M1/M2/M3 heuristics on the cleaned scan. Confirm each — nothing
+                                auto-registers.
+                            </p>
+                            <div className="flex flex-wrap gap-1">
+                                {(["M1", "M2", "M3"] as const).map((id) => {
+                                    const already = Boolean(markers?.[id]);
+                                    return (
+                                        <button
+                                            key={id}
+                                            type="button"
+                                            disabled={already}
+                                            onClick={() => onConfirm(id)}
+                                            className={cn(
+                                                "rounded px-2 py-0.5 text-[11px]",
+                                                already
+                                                    ? "bg-muted text-muted-foreground"
+                                                    : "bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30",
+                                            )}
+                                        >
+                                            {already ? `${id} placed` : `Confirm ${id}`}
+                                        </button>
+                                    );
+                                })}
+                                <button
+                                    type="button"
+                                    onClick={onDismiss}
+                                    className="rounded bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
+                                >
+                                    Dismiss
+                                </button>
+                            </div>
+                        </>
+                    ) : null}
+
+                    <div className="flex gap-1 pt-0.5">
+                        <button
+                            type="button"
+                            disabled={!baseReady}
+                            title={
+                                baseReady ? "Place M1→M2→M3 on the scan" : "Base geometry not loaded"
+                            }
+                            onClick={onTogglePlacement}
+                            className={cn(
+                                "flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
+                                placing
+                                    ? "bg-amber-500/20 text-amber-300"
+                                    : "bg-muted text-muted-foreground hover:text-foreground",
+                                !baseReady && "cursor-not-allowed opacity-50",
+                            )}
+                        >
+                            <MapPin className="h-3 w-3" />
+                            {placing ? "Placing…" : "Place markers"}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onResetMarkers}
+                            title="Reset markers"
+                            className="rounded bg-muted px-2 py-1 text-muted-foreground hover:text-foreground"
+                        >
+                            <RotateCcw className="h-3 w-3" />
+                        </button>
+                    </div>
+
+                    {placing && nextLabel ? (
+                        <p className="text-[11px] text-amber-300">
+                            Next: {nextLabel} ({placed}/3)
+                        </p>
+                    ) : null}
+                </div>
+            )}
+        </div>
+    );
+}
 
 export function ScanImport() {
     const inputRef = useRef<HTMLInputElement>(null);
@@ -230,44 +381,6 @@ export function ScanImport() {
 
                         <ScanCleanupPanel scanId={s.id} />
 
-                        {sug ? (
-                            <div className="space-y-1 rounded border border-cyan-500/30 bg-cyan-500/5 px-1.5 py-1 text-[10px]">
-                                <p className="text-cyan-200">Suggested landmarks (unconfirmed)</p>
-                                <p className="text-muted-foreground">
-                                    M1/M2/M3 heuristics on the cleaned scan. Confirm each — nothing
-                                    auto-registers.
-                                </p>
-                                <div className="flex flex-wrap gap-1">
-                                    {(["M1", "M2", "M3"] as const).map((id) => {
-                                        const already = Boolean(markers?.[id]);
-                                        return (
-                                            <button
-                                                key={id}
-                                                type="button"
-                                                disabled={already}
-                                                onClick={() => setMarker(s.id, id, sug[id])}
-                                                className={cn(
-                                                    "rounded px-2 py-0.5 text-[11px]",
-                                                    already
-                                                        ? "bg-muted text-muted-foreground"
-                                                        : "bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30",
-                                                )}
-                                            >
-                                                {already ? `${id} placed` : `Confirm ${id}`}
-                                            </button>
-                                        );
-                                    })}
-                                    <button
-                                        type="button"
-                                        onClick={() => setSuggestedLandmarks(s.id, null)}
-                                        className="rounded bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
-                                    >
-                                        Dismiss
-                                    </button>
-                                </div>
-                            </div>
-                        ) : null}
-
                         <div className="flex gap-1">
                             {(["left", "right"] as const).map((side) => (
                                 <button
@@ -286,39 +399,19 @@ export function ScanImport() {
                             ))}
                         </div>
 
-                        {/* Registration controls */}
-                        <div className="flex gap-1 pt-0.5">
-                            <button
-                                type="button"
-                                disabled={!baseReady}
-                                title={baseReady ? "Place M1→M2→M3 on the scan" : "Base geometry not loaded"}
-                                onClick={() => (placing ? exitPlacement() : enterPlacement(s.id))}
-                                className={cn(
-                                    "flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
-                                    placing
-                                        ? "bg-amber-500/20 text-amber-300"
-                                        : "bg-muted text-muted-foreground hover:text-foreground",
-                                    !baseReady && "cursor-not-allowed opacity-50",
-                                )}
-                            >
-                                <MapPin className="h-3 w-3" />
-                                {placing ? "Placing…" : "Place markers"}
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => resetMarkers(s.id)}
-                                title="Reset markers"
-                                className="rounded bg-muted px-2 py-1 text-muted-foreground hover:text-foreground"
-                            >
-                                <RotateCcw className="h-3 w-3" />
-                            </button>
-                        </div>
-
-                        {placing ? (
-                            <p className="text-[11px] text-amber-300">
-                                Next: {MARKER_LABELS[placementMode!.next]} ({placed}/3)
-                            </p>
-                        ) : null}
+                        <ScanMarkersSection
+                            scanId={s.id}
+                            sug={sug}
+                            markers={markers}
+                            placed={placed}
+                            placing={placing}
+                            baseReady={baseReady}
+                            nextLabel={placing ? MARKER_LABELS[placementMode!.next] : null}
+                            onConfirm={(id) => sug && setMarker(s.id, id, sug[id])}
+                            onDismiss={() => setSuggestedLandmarks(s.id, null)}
+                            onTogglePlacement={() => (placing ? exitPlacement() : enterPlacement(s.id))}
+                            onResetMarkers={() => resetMarkers(s.id)}
+                        />
 
                         {/* Readout */}
                         <div className="space-y-0.5 rounded border border-border/60 bg-muted/30 px-1.5 py-1 text-[11px] text-muted-foreground">
