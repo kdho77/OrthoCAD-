@@ -406,8 +406,9 @@ export const useDesignStore = create<DesignStore>()(
         (set, get) => ({
             design: createDesignWithStockPlaceholder(),
             stockBaseError: null,
-            stockBaseLoading: false,
-            stockBaseResolutionState: isApiConfigured() ? "idle" : "resolved",
+            // Show "Loading base…" immediately while the pending stub waits for the server GLB.
+            stockBaseLoading: isApiConfigured(),
+            stockBaseResolutionState: isApiConfigured() ? "loading" : "resolved",
             baseMeshLoadingBySide: { left: false, right: false },
             exportSide: "left",
             viewer: {
@@ -895,12 +896,14 @@ export const useDesignStore = create<DesignStore>()(
                 const eff = buildEffectiveTrimlines(safeDesign);
                 useIssuesStore.getState().recompute(safeDesign, eff);
                 const needsResolution = !hadBase || designNeedsDefaultStockResolution(safeDesign);
+                const waitingOnServer = needsResolution && isApiConfigured();
                 stockBaseAutoRetryBlocked = false;
                 set({
                     design: safeDesign,
                     selectedElementId: null,
                     stockBaseError: null,
-                    stockBaseResolutionState: needsResolution && isApiConfigured() ? "idle" : "resolved",
+                    stockBaseLoading: waitingOnServer,
+                    stockBaseResolutionState: waitingOnServer ? "loading" : "resolved",
                 });
 
                 // Resolve server stock base when missing or still on a local/sync placeholder.
@@ -960,7 +963,8 @@ export const useDesignStore = create<DesignStore>()(
                     design: withStock,
                     selectedElementId: null,
                     stockBaseError: null,
-                    stockBaseResolutionState: isApiConfigured() ? "idle" : "resolved",
+                    stockBaseLoading: isApiConfigured(),
+                    stockBaseResolutionState: isApiConfigured() ? "loading" : "resolved",
                     baseMeshLoadingBySide: { left: false, right: false },
                 });
                 upgradeStockBaseAsync(() => get().applyDefaultStockBase(), "reset");
@@ -1066,11 +1070,12 @@ export const useDesignStore = create<DesignStore>()(
                     hasUrl: Boolean(design.base?.url),
                 });
                 stockBaseAutoRetryBlocked = false;
+                const waitingOnServer = needsResolution && isApiConfigured();
                 useDesignStore.setState({
                     design,
                     stockBaseError: null,
-                    stockBaseLoading: false,
-                    stockBaseResolutionState: needsResolution && isApiConfigured() ? "idle" : "resolved",
+                    stockBaseLoading: waitingOnServer,
+                    stockBaseResolutionState: waitingOnServer ? "loading" : "resolved",
                     baseMeshLoadingBySide: { left: false, right: false },
                 });
                 stockFixLog("persist onRehydrate", { needsResolution, apiConfigured: isApiConfigured() });

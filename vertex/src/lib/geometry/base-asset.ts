@@ -167,12 +167,19 @@ export function designStockBasesAreResolved(design: DesignState): boolean {
 }
 
 /**
- * Strip local placeholder paths from persisted stock bases so loadBaseGeometry never
- * fetches public/Templates/Default.glb in server mode.
+ * Strip loadable paths/URLs from unresolved stock placeholders so the viewer
+ * never fetches the sync Default.glb while waiting for server resolution.
+ * Placeholder asset ids (`stock-default`, `stock-*`) are always stripped in
+ * server mode — even when a public URL was previously persisted — so the
+ * loading state shows until `applyDefaultStockBase()` finishes.
  */
 export function sanitizeStockBaseForServerMode(base: DesignBase): DesignBase {
     if (!isApiConfigured() || !isStockDesignBase(base)) return base;
-    if (!stockBaseNeedsServerResolution(base)) return base;
+    if (base.resolutionFallback) return base;
+
+    const isPlaceholderId = base.assetId === DEFAULT_STOCK_BASE_ID || base.assetId.startsWith("stock-");
+    // Real UUID rows that already carry glbPath + https URL are fully resolved.
+    if (!isPlaceholderId && !stockBaseNeedsServerResolution(base)) return base;
 
     const { glbPath: _gp, url: _url, offlinePlaceholder: _op, ...rest } = base;
     return {
@@ -335,30 +342,43 @@ export function sanitizeDesignStockBases(design: DesignState): DesignState {
 }
 
 /**
- * Fully-resolved default stock base, built **synchronously** from the public
- * Supabase Storage URL. The `stock-bases` bucket is public, so the GLB URL is
- * deterministic — no table query, no signing, no auth, no tRPC, no async wait.
- * This means every new/rehydrated design has a loadable base immediately.
+ * Synchronous default stock base for new designs.
+ *
+ * When the API/Supabase is configured, returns a **non-loadable pending stub**
+ * (no glbPath/url) so the viewer shows a loading state until
+ * `applyDefaultStockBase()` resolves the real server GLB. Offline / no-API
+ * builds get the public-URL fallback immediately.
  */
 export function getDefaultStockBaseSync(): DesignBase {
-    const glbPath = BUILTIN_DEFAULT_STOCK.glbPath;
-    const url = getStockBasePublicUrl(glbPath);
+    if (!isApiConfigured()) {
+        return getOfflineFallbackStockBase();
+    }
     return {
         assetId: DEFAULT_STOCK_BASE_ID,
         name: "Default Stock Base",
         source: "stock",
-        glbPath,
-        ...(url ? { url } : {}),
         primarySide: DEFAULT_STOCK_PRIMARY_SIDE,
     };
 }
 
 /**
- * Emergency fallback — identical to the sync default (public URL). Kept as a
- * separate export for the few call sites that branch on degraded mode.
+ * Offline / degraded-mode fallback with a fetchable public Storage URL.
+ * Used when the API is not configured, or when server resolution fails without
+ * Supabase and we still need a loadable base.
  */
 export function getOfflineFallbackStockBase(): DesignBase {
-    return { ...getDefaultStockBaseSync(), resolutionFallback: true };
+    const glbPath = BUILTIN_DEFAULT_STOCK.glbPath;
+    const url = getStockBasePublicUrl(glbPath);
+    return {
+        assetId: DEFAULT_STOCK_BASE_ID,
+        name: BUILTIN_DEFAULT_STOCK.name,
+        source: "stock",
+        glbPath,
+        ...(url ? { url } : {}),
+        primarySide: DEFAULT_STOCK_PRIMARY_SIDE,
+        offlinePlaceholder: true,
+        resolutionFallback: true,
+    };
 }
 
 /** Build a design patch with paired L/R bases from the offline fallback (Right + mirrored Left). */
