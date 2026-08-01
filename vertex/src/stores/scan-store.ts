@@ -62,6 +62,11 @@ export interface ImportedScan {
     suggestedLandmarks: SuggestedScanLandmarks | null;
     /** Clinician-facing reason when markers/registration were cleared. */
     cleanupMessage: string | null;
+    /**
+     * True after the user approves the keep set (or when no multi-component review is needed).
+     * Drives collapsing the mesh-components panel so the rest of the scan UI stays visible.
+     */
+    keepSetApproved: boolean;
 }
 
 export type { ScanSlicePlane };
@@ -200,6 +205,7 @@ export type AddScanInput = Omit<
     | "slicePlanes"
     | "suggestedLandmarks"
     | "cleanupMessage"
+    | "keepSetApproved"
 > & {
     display?: ScanDisplayInfo;
     rawGeometry?: BufferGeometry;
@@ -209,6 +215,7 @@ export type AddScanInput = Omit<
     labelingMeta?: ImportedScan["labelingMeta"];
     slicePlanes?: ScanSlicePlane[];
     suggestedLandmarks?: SuggestedScanLandmarks | null;
+    keepSetApproved?: boolean;
 };
 
 interface ScanStore {
@@ -261,7 +268,11 @@ interface ScanStore {
      * Update kept component set. Non-destructive: rawGeometry retained.
      * Invalidates markers + registration. Blocks empty kept set.
      */
-    setKeptComponents: (scanId: string, keptIds: number[]) => { ok: true } | { ok: false; reason: string };
+    setKeptComponents: (
+        scanId: string,
+        keptIds: number[],
+        opts?: { approve?: boolean },
+    ) => { ok: true } | { ok: false; reason: string };
     /** Restore all components from the raw import (also clears plane slices). */
     restoreAllComponents: (scanId: string) => void;
     setSuggestedLandmarks: (scanId: string, suggestions: SuggestedScanLandmarks | null) => void;
@@ -402,6 +413,8 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                 slicePlanes: scan.slicePlanes ?? [],
                 suggestedLandmarks: scan.suggestedLandmarks ?? null,
                 cleanupMessage: null,
+                // Multi-component imports need explicit approval; single/empty do not.
+                keepSetApproved: scan.keepSetApproved ?? components.length <= 1,
             };
             const { [scan.id]: _o, ...manualOffsetByScanId } = s.manualOffsetByScanId;
             return {
@@ -613,7 +626,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         }));
     },
 
-    setKeptComponents: (scanId, keptIds) => {
+    setKeptComponents: (scanId, keptIds, opts) => {
         if (keptIds.length === 0) {
             return { ok: false, reason: "Keep at least one component — an empty scan is not allowed." };
         }
@@ -632,6 +645,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         const triangleCount = triangleCountOf(working);
 
         const hadMarkers = Object.values(get().markersByScanId[scanId] ?? {}).some(Boolean);
+        const approve = opts?.approve !== false;
 
         set((s) => {
             const prev = s.scans.find((x) => x.id === scanId);
@@ -651,6 +665,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                               display,
                               suggestedLandmarks: null,
                               cleanupMessage: hadMarkers ? MARKERS_INVALIDATED_MSG : x.cleanupMessage,
+                              keepSetApproved: approve,
                           }
                         : x,
                 ),
@@ -670,7 +685,8 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             sliceDraft: s.sliceDraft?.scanId === scanId ? null : s.sliceDraft,
         }));
         if (allIds.length > 0 && scan.components.length > 0) {
-            get().setKeptComponents(scanId, allIds);
+            // Restore is not an approval — re-prompt keep-set review when disjoint pieces exist.
+            get().setKeptComponents(scanId, allIds, { approve: scan.components.length <= 1 });
         } else {
             const fresh = get().scans.find((x) => x.id === scanId);
             if (!fresh) return;
@@ -690,6 +706,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                                   slicePlanes: [],
                                   suggestedLandmarks: null,
                                   cleanupMessage: MARKERS_INVALIDATED_MSG,
+                                  keepSetApproved: x.components.length <= 1,
                               }
                             : x,
                     ),
@@ -704,6 +721,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                           ...x,
                           slicePlanes: [],
                           cleanupMessage: MARKERS_INVALIDATED_MSG,
+                          keepSetApproved: x.components.length <= 1,
                       }
                     : x,
             ),
