@@ -49,3 +49,46 @@ export const SCAN_FIT_MIN_SAMPLES = 24;
 /** Heel longitudinal band: posterior of arch band (arch starts at u=0.28). */
 export const SCAN_FIT_HEEL_U_MIN = 0.0;
 export const SCAN_FIT_HEEL_U_MAX = 0.28;
+
+// ── Anatomically-banded rigid reference ──────────────────────────
+// The rigid reference plane must NEVER be fitted through the feature
+// being measured. The medial longitudinal arch is a large one-sided
+// departure from planarity; including it lets the plane tilt into the
+// dome and absorb clinical signal.
+
+// Sagittal (offset + pitch) reference: heel band + lateral column.
+// The lateral column (calcaneus-cuboid-5th met base) is the relatively
+// rigid ground-referencing strut. The medial column is mobile and
+// carries the arch, so it is signal, not reference.
+export const SCAN_FIT_LATERAL_COLUMN_V_FRAC = 0.35; // lateral-most 35% of half-width
+
+// Frontal (roll) reference: HEEL BAND ONLY.
+// Rearfoot bisection is the frontal-plane reference. Including the
+// forefoot would fit genuine forefoot varus/valgus as "registration
+// roll" and subtract the deformity out of the gap field — deleting the
+// exact signal the device exists to post.
+export const SCAN_FIT_ROLL_REFERENCE_HEEL_ONLY = true;
+
+// The medial midfoot arch band is excluded from the rigid solve.
+export const SCAN_FIT_EXCLUDE_ARCH_BAND_FROM_RIGID = true;
+
+// Robust rejection: one MAD pass before the plane solve. Scan borders
+// and toe regions carry capture noise that skews a plain LS plane.
+export const SCAN_FIT_MAD_REJECT_K = 2.5;
+
+// ── Multi-station joint profile solve ────────────────────────────
+export const SCAN_FIT_PROFILE_STATIONS = 5; // u stations across the arch band
+export const SCAN_FIT_MIN_SAMPLES_PER_STATION = 12; // below -> station dropped, not guessed
+export const SCAN_FIT_MIN_VALID_STATIONS = 3; // below -> fall back to scalar fit
+
+// Tikhonov regularization. archHeight and archFill bases are strongly
+// correlated; without damping the solver trades one against the other
+// and produces clinically absurd pairs that fit the data equally well.
+export const SCAN_FIT_PROFILE_RIDGE_LAMBDA = 0.05;
+
+// Compliance is applied ONCE, to the composite solved surface height —
+// never per-parameter. Applying it to both height and fill would
+// double-discount. Reuse SCAN_FIT_ARCH_COMPLIANCE from #139.
+
+/** Apex grid step (mm) for nonlinear profile search. */
+export const SCAN_FIT_APEX_SEARCH_STEP_MM = 1.0;

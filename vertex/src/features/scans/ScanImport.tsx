@@ -701,15 +701,43 @@ export function ScanImport() {
                                                     <p className="text-amber-300">{report.blockReason}</p>
                                                 ) : null}
                                                 {arch ? (
-                                                    <p className="text-emerald-300/90">
-                                                        Arch {arch.archHeightMm.toFixed(1)} mm · apex{" "}
-                                                        {arch.apexMoveMm >= 0 ? "+" : ""}
-                                                        {arch.apexMoveMm.toFixed(1)} mm
-                                                        {canAutoApplyArchFit(arch)
-                                                            ? " · applied"
-                                                            : " · not applied"}
-                                                        {arch.clamped ? " · clamped" : ""}
-                                                    </p>
+                                                    <>
+                                                        <p className="text-emerald-300/90">
+                                                            Arch {arch.archHeightMm.toFixed(1)} mm · fill{" "}
+                                                            {arch.archFillMm.toFixed(1)} mm · apex{" "}
+                                                            {arch.apexMoveMm >= 0 ? "+" : ""}
+                                                            {arch.apexMoveMm.toFixed(1)} mm
+                                                            {canAutoApplyArchFit(arch)
+                                                                ? " · applied"
+                                                                : " · not applied"}
+                                                            {arch.clamped ? " · clamped" : ""}
+                                                        </p>
+                                                        <p className="text-muted-foreground">
+                                                            Mode:{" "}
+                                                            {arch.solveMode === "profile"
+                                                                ? "multi-station profile"
+                                                                : "scalar fallback"}
+                                                            {arch.rigidWarnings.length > 0
+                                                                ? ` · ${arch.rigidWarnings[0]}`
+                                                                : ""}
+                                                        </p>
+                                                        <p className="text-muted-foreground">
+                                                            FF−RF: {arch.forefootToRearfootDeg.toFixed(1)}°
+                                                            (heel {arch.heelRollDeg.toFixed(1)}° · FF{" "}
+                                                            {arch.forefootRollDeg.toFixed(1)}°)
+                                                        </p>
+                                                        {arch.stationResidualsMm.length > 0 ? (
+                                                            <p className="font-mono text-muted-foreground/90">
+                                                                Stations:{" "}
+                                                                {arch.stationResidualsMm
+                                                                    .map((r, i) => {
+                                                                        const u = arch.stationUs[i];
+                                                                        return `u${u != null ? u.toFixed(2) : "?"} ${r >= 0 ? "+" : ""}${r.toFixed(2)}`;
+                                                                    })
+                                                                    .join(" · ")}
+                                                            </p>
+                                                        ) : null}
+                                                    </>
                                                 ) : null}
                                                 <div className="flex items-center gap-1 pt-0.5">
                                                     <button

@@ -17,10 +17,12 @@ import { CLINICAL_LIMITS } from "@/lib/geometry/clinical-constraints";
 import { bump, type HeightFieldParams, heightAt, smoothstep } from "@/lib/geometry/height-field";
 import { SCAN_FIT_ARCH_COMPLIANCE, SCAN_FIT_MIN_SAMPLES } from "@/lib/geometry/scan-fit-constants";
 import { iterativeRefineScalar } from "@/lib/geometry/scan-fit-kernel";
+import { buildProfileStations, solveArchProfile } from "@/lib/geometry/scan-fit-profile";
 import {
+    type BandedGapSample,
     type ConfidenceTier,
     confidenceFromRms,
-    decomposeRigidGap,
+    decomposeRigidGapBanded,
     type FitConfidence,
     type GapSample,
     gapsEntirelyNegative,
@@ -62,6 +64,7 @@ export class ArchFitError extends Error {
 
 export type ArchFitResult = {
     archHeightMm: number;
+    archFillMm: number;
     apexMoveMm: number;
     /** Peak measured plantar gap (scan above reference) before compliance. */
     peakGapMm: number;
@@ -74,6 +77,16 @@ export type ArchFitResult = {
     confidence: FitConfidence;
     /** Iterative refine did not meet convergence criteria within max iters. */
     nonConverged: boolean;
+    /** Amplitude before compliance — hard clinical gate uses this. */
+    amplitudePreComplianceMm: number;
+    solveMode: "profile" | "scalar_fallback";
+    stationResidualsMm: number[];
+    stationUs: number[];
+    basisCosine: number;
+    forefootToRearfootDeg: number;
+    heelRollDeg: number;
+    forefootRollDeg: number;
+    rigidWarnings: string[];
 };
 
 export type ArchFitReference =
@@ -182,20 +195,26 @@ export function unitArchWeight(
 
 function clampArch(
     height: number,
+    fill: number,
     apex: number,
 ): {
     archHeightMm: number;
+    archFillMm: number;
     apexMoveMm: number;
     clamped: boolean;
 } {
     const hLim = CLINICAL_LIMITS.archHeightMm;
+    const fLim = CLINICAL_LIMITS.archFillMm;
     const aLim = CLINICAL_LIMITS.apexMoveMm;
     const heightRounded = Math.round(height * 10) / 10;
+    const fillRounded = Math.round(fill * 10) / 10;
     const apexRounded = Math.round(apex * 10) / 10;
     const archHeightMm = Math.max(hLim.min, Math.min(hLim.max, heightRounded));
+    const archFillMm = Math.max(fLim.min, Math.min(fLim.max, fillRounded));
     const apexMoveMm = Math.max(aLim.min, Math.min(aLim.max, apexRounded));
-    const clamped = archHeightMm !== heightRounded || apexMoveMm !== apexRounded;
-    return { archHeightMm, apexMoveMm, clamped };
+    const clamped =
+        archHeightMm !== heightRounded || archFillMm !== fillRounded || apexMoveMm !== apexRounded;
+    return { archHeightMm, archFillMm, apexMoveMm, clamped };
 }
 
 export function archFitReferenceFromBase(geometry: BufferGeometry): ArchFitReference {
@@ -318,8 +337,11 @@ export function collectPlantarGapSamples(args: {
 }
 
 /**
- * Fit archHeightMm + apexMoveMm from scan geometry already pose-aligned to the
- * reference (scan verts × scanToBase → reference local).
+ * Fit archHeightMm + apexMoveMm (+ archFillMm) from scan geometry already
+ * pose-aligned to the reference (scan verts × scanToBase → reference local).
+ *
+ * Pipeline: plantar gaps → anatomically-banded rigid residual → multi-station
+ * profile solve (fallback: scalar) → compliance once on composite → clamp.
  */
 export function fitArchParamsFromScan(args: {
     scanPositions: ArrayLike<number>;
@@ -353,13 +375,20 @@ export function fitArchParamsFromScan(args: {
         );
     }
 
-    const rigid = decomposeRigidGap(allPlantar);
+    const banded: BandedGapSample[] = allPlantar.map((p) => ({
+        x: p.x,
+        y: p.y,
+        gapMm: p.gapMm,
+        u: p.u,
+        vSigned: p.vSigned,
+    }));
+
+    const rigid = decomposeRigidGapBanded(banded, side);
     if (!rigid) {
         throw new ArchFitError("degenerate_weight", "Could not decompose registration residual");
     }
     const regFlags = registrationFlagsFromRigid(rigid);
     const corrected = subtractRigidGap(allPlantar, rigid);
-    // Re-attach u/v from original samples (same order).
     const correctedPlantar: PlantarPoint[] = corrected.map((c, i) => ({
         ...c,
         u: allPlantar[i]!.u,
@@ -367,28 +396,66 @@ export function fitArchParamsFromScan(args: {
     }));
 
     const medialSign = side === "left" ? -1 : 1;
-    const band: PlantarPoint[] = [];
-    for (const p of correctedPlantar) {
-        if (p.u < ARCH_FIT_U_MIN || p.u > ARCH_FIT_U_MAX) continue;
+    // Profile stations use all medial arch-band samples (including small/negative
+    // residuals) so the joint solve sees the true contour; scalar fallback still
+    // prefers positive gaps.
+    const archSamples = correctedPlantar.filter((p) => {
+        if (p.u < ARCH_FIT_U_MIN || p.u > ARCH_FIT_U_MAX) return false;
         const m = -(p.vSigned * medialSign);
-        if (m < ARCH_FIT_MEDIAL_MIN) continue;
-        // Positive residual after rigid removal drives arch raise.
-        if (p.gapMm < 0.25) continue;
-        band.push(p);
+        return m >= ARCH_FIT_MEDIAL_MIN;
+    });
+
+    const stations = buildProfileStations(archSamples, side);
+    const profile = solveArchProfile({
+        stations,
+        samples: archSamples,
+        side,
+        lengthMm,
+        applyCompliance: true,
+    });
+
+    let peakGapMm = 0;
+    for (const p of archSamples) {
+        if (p.gapMm > peakGapMm) peakGapMm = p.gapMm;
     }
 
+    if (profile) {
+        const confidence = confidenceFromRms(profile.residualRmsMm, regFlags, false, rigid.pitchFallbackUsed);
+        return {
+            archHeightMm: profile.archHeightMm,
+            archFillMm: profile.archFillMm,
+            apexMoveMm: profile.apexMoveMm,
+            peakGapMm,
+            apexU: ARCH_DEFAULT_APEX_U + profile.apexMoveMm / lengthMm,
+            sampleCount: profile.sampleCount,
+            residualRmsMm: profile.residualRmsMm,
+            clamped: profile.clamped,
+            confidence,
+            nonConverged: false,
+            amplitudePreComplianceMm: profile.amplitudePreComplianceMm,
+            solveMode: "profile",
+            stationResidualsMm: profile.stationResidualsMm,
+            stationUs: profile.stationUs,
+            basisCosine: profile.basisCosine,
+            forefootToRearfootDeg: rigid.forefootToRearfootDeg,
+            heelRollDeg: rigid.heelRollDeg,
+            forefootRollDeg: rigid.forefootRollDeg,
+            rigidWarnings: rigid.warnings,
+        };
+    }
+
+    // Scalar fallback (#139 path) when stations are insufficient.
+    const band = archSamples.filter((p) => p.gapMm >= 0.25);
     if (band.length < SCAN_FIT_MIN_SAMPLES) {
         throw new ArchFitError(
             "insufficient_samples",
-            `insufficient scan coverage in arch (need ≥${SCAN_FIT_MIN_SAMPLES}, got ${band.length})`,
+            `insufficient scan coverage in arch (need ≥${SCAN_FIT_MIN_SAMPLES}, got ${band.length}); profile stations also insufficient`,
         );
     }
 
-    // Apex from peak residual gap station (top 10%).
     const byGap = [...band].sort((a, b) => b.gapMm - a.gapMm);
     const topN = Math.max(1, Math.floor(byGap.length * 0.1));
     let apexU = 0;
-    let peakGapMm = 0;
     for (let i = 0; i < topN; i++) {
         const g = byGap[i];
         if (!g) continue;
@@ -397,50 +464,63 @@ export function fitArchParamsFromScan(args: {
     }
     apexU /= topN;
     const apexMoveRaw = (apexU - ARCH_DEFAULT_APEX_U) * lengthMm;
-    const apexClamped = clampArch(0, apexMoveRaw).apexMoveMm;
+    const apexClamped = clampArch(0, 0, apexMoveRaw).apexMoveMm;
 
-    const refine = iterativeRefineScalar({
+    // Pre-compliance amplitude for the hard gate / reporting.
+    const refineRaw = iterativeRefineScalar({
         gaps: band.map((p) => ({ gapMm: p.gapMm })),
-        weightAt: (index, _current) =>
+        weightAt: (index) =>
             unitArchWeight(band[index]!.u, band[index]!.vSigned, side, lengthMm, apexClamped),
         initialValue: 0,
-        compliance: SCAN_FIT_ARCH_COMPLIANCE,
+        compliance: 1,
         minSamples: SCAN_FIT_MIN_SAMPLES,
     });
-    if (!refine) {
+    if (!refineRaw) {
         throw new ArchFitError("degenerate_weight", "Arch dome weight vanished in the sample band");
     }
-
-    const { archHeightMm, apexMoveMm, clamped } = clampArch(refine.value, apexMoveRaw);
-    const confidence = confidenceFromRms(refine.residualRmsMm, regFlags, !refine.converged);
-
-    if (regFlags.blockAutoApply) {
-        // Still return the fit for advisory display; caller checks confidence.tier / flags.
-        // Auto-apply is blocked in UI — do not throw (report surfaces the reason).
-    }
+    const amplitudePreComplianceMm = refineRaw.value;
+    const heightPost = amplitudePreComplianceMm * SCAN_FIT_ARCH_COMPLIANCE;
+    const { archHeightMm, archFillMm, apexMoveMm, clamped } = clampArch(heightPost, 0, apexMoveRaw);
+    const confidence = confidenceFromRms(
+        refineRaw.residualRmsMm,
+        regFlags,
+        !refineRaw.converged,
+        rigid.pitchFallbackUsed,
+    );
 
     return {
         archHeightMm,
+        archFillMm,
         apexMoveMm,
         peakGapMm,
         apexU,
-        sampleCount: refine.sampleCount,
-        residualRmsMm: refine.residualRmsMm,
+        sampleCount: refineRaw.sampleCount,
+        residualRmsMm: refineRaw.residualRmsMm,
         clamped,
         confidence,
-        nonConverged: !refine.converged,
+        nonConverged: !refineRaw.converged,
+        amplitudePreComplianceMm,
+        solveMode: "scalar_fallback",
+        stationResidualsMm: [],
+        stationUs: [],
+        basisCosine: 1,
+        forefootToRearfootDeg: rigid.forefootToRearfootDeg,
+        heelRollDeg: rigid.heelRollDeg,
+        forefootRollDeg: rigid.forefootRollDeg,
+        rigidWarnings: [...rigid.warnings, "Profile stations insufficient — fell back to scalar arch fit"],
     };
 }
 
-/** Patch to apply on SideCorrections — parks total raise in archHeightMm. */
+/**
+ * Patch for SideCorrections. archFillMm is a fitted profile parameter
+ * (multi-station joint solve), not a compliance stand-in — compliance is
+ * applied once to the composite amplitude inside the fit.
+ */
 export function archFitToCorrectionPatch(fit: ArchFitResult): Partial<SideCorrections> {
     return {
         archHeightMm: fit.archHeightMm,
         apexMoveMm: fit.apexMoveMm,
-        // Zero archFillMm: compliance (SCAN_FIT_ARCH_COMPLIANCE) is now applied
-        // inside the fit — the digital equivalent of plaster arch fill — so a
-        // separate fill scalar would double-count soft-tissue allowance.
-        archFillMm: 0,
+        archFillMm: fit.archFillMm,
     };
 }
 

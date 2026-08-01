@@ -13,8 +13,10 @@ import {
     solveWithCompliance,
 } from "@/lib/geometry/scan-fit-kernel";
 import {
+    type BandedGapSample,
     confidenceFromRms,
     decomposeRigidGap,
+    decomposeRigidGapBanded,
     type GapSample,
     gapsEntirelyNegative,
     registrationFlagsFromRigid,
@@ -162,13 +164,56 @@ describe("scan-fit-residual", () => {
             meanOffsetMm: 2.01,
             pitchDeg: 0,
             rollDeg: 0,
+            forefootRollDeg: 0,
+            heelRollDeg: 0,
+            forefootToRearfootDeg: 0,
             a: 2.01,
             b: 0,
             c: 0,
+            pitchFallbackUsed: false,
+            rollUnsolvable: false,
+            warnings: [] as string[],
         };
         const f = registrationFlagsFromRigid(r);
         expect(f.meanOffsetExceeded).toBe(true);
         expect(f.blockAutoApply).toBe(true);
+    });
+
+    test("banded sagittal does not absorb medial arch into pitch", () => {
+        const lengthMm = 260;
+        const widthMm = 95;
+        const archH = 8;
+        const samples: BandedGapSample[] = [];
+        for (let i = 0; i <= 50; i++) {
+            const u = i / 50;
+            for (let j = 0; j <= 20; j++) {
+                const vSigned = -0.95 + (1.9 * j) / 20;
+                const x = u * lengthMm;
+                const y = vSigned * (widthMm / 2);
+                let gap = 0;
+                if (u >= 0.28 && u <= 0.58) {
+                    const m = vSigned; // left medial = +v
+                    if (m > 0.2) {
+                        const du = (u - 0.42) / 0.36;
+                        const arch = Math.abs(du) >= 1 ? 0 : 0.5 * (1 + Math.cos(Math.PI * Math.abs(du)));
+                        gap = archH * arch * Math.min(1, m);
+                    }
+                }
+                samples.push({ x, y, gapMm: gap, u, vSigned });
+            }
+        }
+        const rigid = decomposeRigidGapBanded(samples, "left");
+        expect(rigid).not.toBeNull();
+        expect(Math.abs(rigid!.pitchDeg)).toBeLessThan(0.5);
+        const after = subtractRigidGap(samples, rigid!);
+        let peak = 0;
+        for (let i = 0; i < samples.length; i++) {
+            const s = samples[i]!;
+            if (s.u < 0.28 || s.u > 0.58) continue;
+            if (s.vSigned < 0.2) continue;
+            peak = Math.max(peak, after[i]!.gapMm);
+        }
+        expect(peak).toBeGreaterThan(archH - 1.5);
     });
 
     test("gapsEntirelyNegative", () => {

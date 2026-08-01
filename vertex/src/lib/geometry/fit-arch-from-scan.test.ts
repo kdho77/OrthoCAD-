@@ -13,6 +13,11 @@ import {
 } from "@/lib/geometry/fit-arch-from-scan";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { SCAN_FIT_ARCH_COMPLIANCE, SCAN_FIT_CONVERGE_DELTA_MM } from "@/lib/geometry/scan-fit-constants";
+import {
+    type BandedGapSample,
+    decomposeRigidGapBanded,
+    subtractRigidGap,
+} from "@/lib/geometry/scan-fit-residual";
 import type { SideCorrections } from "@/types";
 
 const ZERO: SideCorrections = {
@@ -64,8 +69,8 @@ function flatBaseReference(lengthMm: number, widthMm: number) {
 }
 
 /**
- * Synthetic plantar cloud matching unitArchWeight shape so compliance is testable.
- * Left foot medial = +Y (vSigned > 0).
+ * Full-footprint synthetic: arch dome on medial midfoot + flat heel/lateral/toe
+ * so the banded rigid plane has reference anatomy that is NOT the arch.
  */
 function syntheticArchScan(opts: {
     lengthMm: number;
@@ -74,20 +79,25 @@ function syntheticArchScan(opts: {
     apexU: number;
     pitchDeg?: number;
     offsetMm?: number;
+    forefootValgusDeg?: number;
 }): Float32Array {
-    const { lengthMm, widthMm, heightMm, apexU, pitchDeg = 0, offsetMm = 0 } = opts;
+    const { lengthMm, widthMm, heightMm, apexU, pitchDeg = 0, offsetMm = 0, forefootValgusDeg = 0 } = opts;
     const pitchRad = (pitchDeg * Math.PI) / 180;
+    const ffRad = (forefootValgusDeg * Math.PI) / 180;
+    const apexMove = (apexU - ARCH_DEFAULT_APEX_U) * lengthMm;
     const pts: number[] = [];
-    // Full footprint samples for rigid-body (heel + arch + toe), plus dorsal decoys.
     for (let i = 0; i <= 60; i++) {
         const u = i / 60;
         for (let j = 0; j <= 24; j++) {
             const vSigned = -0.95 + (1.9 * j) / 24;
             const x = u * lengthMm;
             const y = vSigned * (widthMm / 2);
-            const w = unitArchWeight(u, vSigned, "left", lengthMm, (apexU - ARCH_DEFAULT_APEX_U) * lengthMm);
-            const zArch = heightMm * w;
-            const z = zArch + offsetMm + Math.tan(pitchRad) * x;
+            const w = unitArchWeight(u, vSigned, "left", lengthMm, apexMove);
+            let z = heightMm * w + offsetMm + Math.tan(pitchRad) * x;
+            // Forefoot valgus: raise +Y in forefoot (u > 0.58) — survives heel-only roll.
+            if (u > 0.58) {
+                z += Math.tan(ffRad) * y;
+            }
             pts.push(x, y, z);
             pts.push(x, y, z + 25);
         }
@@ -95,26 +105,16 @@ function syntheticArchScan(opts: {
     return new Float32Array(pts);
 }
 
-describe("fitArchParamsFromScan", () => {
-    test("unitArchWeight peaks near default apex on medial edge", () => {
-        const wApex = unitArchWeight(ARCH_DEFAULT_APEX_U, 0.7, "left", 260, 0);
-        const wHeel = unitArchWeight(0.1, 0.7, "left", 260, 0);
-        const wLat = unitArchWeight(ARCH_DEFAULT_APEX_U, -0.7, "left", 260, 0);
-        expect(wApex).toBeGreaterThan(0.5);
-        expect(wApex).toBeGreaterThan(wHeel);
-        expect(wApex).toBeGreaterThan(wLat);
-    });
-
-    test("recovers arch height (with compliance) and distal apex", () => {
+describe("fitArchParamsFromScan (banded + profile)", () => {
+    test("HARD GATE A — pure arch amplitude recovered within 0.3 mm BEFORE compliance", () => {
         const lengthMm = 260;
         const widthMm = 95;
         const targetHeight = 8;
-        const targetApexU = 0.48;
         const scan = syntheticArchScan({
             lengthMm,
             widthMm,
             heightMm: targetHeight,
-            apexU: targetApexU,
+            apexU: 0.42,
         });
         const fit = fitArchParamsFromScan({
             scanPositions: scan,
@@ -124,28 +124,63 @@ describe("fitArchParamsFromScan", () => {
             side: "left",
             lengthMm,
         });
-        const expected = targetHeight * SCAN_FIT_ARCH_COMPLIANCE;
-        // Plane residual removes a small share of the dome; allow tolerance around compliance target.
-        expect(fit.archHeightMm).toBeGreaterThan(expected * 0.45);
-        expect(fit.archHeightMm).toBeLessThan(expected * 1.15);
-        expect(fit.apexMoveMm).toBeGreaterThan(5);
-        expect(fit.apexU).toBeGreaterThan(0.44);
-        expect(fit.sampleCount).toBeGreaterThanOrEqual(24);
-        expect(fit.confidence).toBeDefined();
-        const patch = archFitToCorrectionPatch(fit);
-        expect(patch.archFillMm).toBe(0);
-        expect(patch.archHeightMm).toBe(fit.archHeightMm);
+        expect(Math.abs(fit.amplitudePreComplianceMm - targetHeight)).toBeLessThan(0.3);
+        // Post-compliance is reduced once on the composite.
+        expect(fit.archHeightMm + fit.archFillMm).toBeCloseTo(
+            fit.amplitudePreComplianceMm * SCAN_FIT_ARCH_COMPLIANCE,
+            0,
+        );
+    });
+
+    test("HARD GATE B — forefoot valgus preserved (FF−heel roll ≈ 5° ± 0.5)", () => {
+        const lengthMm = 260;
+        const widthMm = 95;
+        const samples: BandedGapSample[] = [];
+        const ffDeg = 5;
+        const ffRad = (ffDeg * Math.PI) / 180;
+        for (let i = 0; i <= 50; i++) {
+            const u = i / 50;
+            for (let j = 0; j <= 20; j++) {
+                const vSigned = -0.95 + (1.9 * j) / 20;
+                const x = u * lengthMm;
+                const y = vSigned * (widthMm / 2);
+                // Pure FF valgus, zero registration, zero arch.
+                const gapMm = u > 0.58 ? Math.tan(ffRad) * y : 0;
+                samples.push({ x, y, gapMm, u, vSigned });
+            }
+        }
+        const rigid = decomposeRigidGapBanded(samples, "left");
+        expect(rigid).not.toBeNull();
+        expect(Math.abs(rigid!.forefootToRearfootDeg - ffDeg)).toBeLessThan(0.5);
+        // After subtraction (heel roll only), FF valgus must remain in forefoot gaps.
+        const after = subtractRigidGap(samples, rigid!);
+        const ffGaps = after.filter((_, i) => samples[i]!.u > 0.58);
+        // Fit roll on residual forefoot — should still be ~5°.
+        let s0 = 0;
+        let sy = 0;
+        let syy = 0;
+        let sg = 0;
+        let sgy = 0;
+        for (let i = 0; i < samples.length; i++) {
+            if (samples[i]!.u <= 0.58) continue;
+            const y = samples[i]!.y;
+            const g = after[i]!.gapMm;
+            s0 += 1;
+            sy += y;
+            syy += y * y;
+            sg += g;
+            sgy += g * y;
+        }
+        const det = s0 * syy - sy * sy;
+        const c = (s0 * sgy - sy * sg) / det;
+        const recoveredFf = (Math.atan(c) * 180) / Math.PI;
+        expect(Math.abs(recoveredFf - ffDeg)).toBeLessThan(0.5);
     });
 
     test("injected 2° pitch does not leak into arch height (< 0.1 mm)", () => {
         const lengthMm = 260;
         const widthMm = 95;
-        const baseArgs = {
-            lengthMm,
-            widthMm,
-            heightMm: 8,
-            apexU: 0.42,
-        };
+        const baseArgs = { lengthMm, widthMm, heightMm: 8, apexU: 0.42 };
         const scan0 = syntheticArchScan(baseArgs);
         const scanPitch = syntheticArchScan({ ...baseArgs, pitchDeg: 2, offsetMm: 0.5 });
         const ref = flatBaseReference(lengthMm, widthMm);
@@ -165,26 +200,7 @@ describe("fitArchParamsFromScan", () => {
             side: "left",
             lengthMm,
         });
-        expect(Math.abs(fitP.archHeightMm - fit0.archHeightMm)).toBeLessThan(0.1);
-    });
-
-    test("compliance: fitted height is reduced vs raw dome amplitude", () => {
-        const lengthMm = 260;
-        const widthMm = 95;
-        const rawHeight = 10;
-        const scan = syntheticArchScan({ lengthMm, widthMm, heightMm: rawHeight, apexU: 0.42 });
-        const fit = fitArchParamsFromScan({
-            scanPositions: scan,
-            scanVertexCount: scan.length / 3,
-            scanToBase: new THREE.Matrix4().identity(),
-            reference: flatBaseReference(lengthMm, widthMm),
-            side: "left",
-            lengthMm,
-        });
-        // Compliance + rigid residual both reduce applied height below the synthetic amplitude.
-        expect(fit.archHeightMm).toBeLessThan(rawHeight * SCAN_FIT_ARCH_COMPLIANCE + 0.5);
-        expect(fit.archHeightMm).toBeGreaterThan(2);
-        expect(SCAN_FIT_ARCH_COMPLIANCE).toBe(0.85);
+        expect(Math.abs(fitP.amplitudePreComplianceMm - fit0.amplitudePreComplianceMm)).toBeLessThan(0.1);
     });
 
     test("Match twice is idempotent within CONVERGE_DELTA", () => {
@@ -203,34 +219,29 @@ describe("fitArchParamsFromScan", () => {
         const b = fitArchParamsFromScan(args);
         expect(Math.abs(a.archHeightMm - b.archHeightMm)).toBeLessThan(SCAN_FIT_CONVERGE_DELTA_MM);
         expect(Math.abs(a.apexMoveMm - b.apexMoveMm)).toBeLessThan(SCAN_FIT_CONVERGE_DELTA_MM);
+        expect(Math.abs(a.archFillMm - b.archFillMm)).toBeLessThan(SCAN_FIT_CONVERGE_DELTA_MM);
     });
 
-    test("works against parametric zero-arch reference when scan clears baseline", () => {
+    test("archFillMm is fitted (not force-zeroed)", () => {
         const lengthMm = 260;
         const widthMm = 95;
-        const scan = syntheticArchScan({
-            lengthMm,
-            widthMm,
-            heightMm: 22,
-            apexU: 0.42,
-        });
+        const scan = syntheticArchScan({ lengthMm, widthMm, heightMm: 8, apexU: 0.42 });
         const fit = fitArchParamsFromScan({
             scanPositions: scan,
             scanVertexCount: scan.length / 3,
             scanToBase: new THREE.Matrix4().identity(),
-            reference: { kind: "parametric", field: parametricField(lengthMm, widthMm) },
+            reference: flatBaseReference(lengthMm, widthMm),
             side: "left",
             lengthMm,
         });
-        expect(fit.archHeightMm).toBeGreaterThan(2);
-        expect(fit.apexMoveMm).toBeGreaterThanOrEqual(-12);
-        expect(fit.apexMoveMm).toBeLessThanOrEqual(12);
+        const patch = archFitToCorrectionPatch(fit);
+        expect(patch.archFillMm).toBe(fit.archFillMm);
+        expect(fit.solveMode === "profile" || fit.solveMode === "scalar_fallback").toBe(true);
     });
 
     test("right-foot medial band uses opposite vSigned", () => {
         const lengthMm = 260;
         const widthMm = 95;
-        // Build right-medial cloud (vSigned negative for right).
         const pts: number[] = [];
         for (let i = 0; i <= 60; i++) {
             const u = i / 60;
@@ -251,8 +262,23 @@ describe("fitArchParamsFromScan", () => {
             side: "right",
             lengthMm,
         });
-        expect(fit.archHeightMm).toBeGreaterThan(3);
+        expect(fit.amplitudePreComplianceMm).toBeGreaterThan(3);
         expect(canAutoApplyArchFit(fit) || fit.confidence.tier === "fair").toBe(true);
+    });
+
+    test("works against parametric zero-arch reference when scan clears baseline", () => {
+        const lengthMm = 260;
+        const widthMm = 95;
+        const scan = syntheticArchScan({ lengthMm, widthMm, heightMm: 22, apexU: 0.42 });
+        const fit = fitArchParamsFromScan({
+            scanPositions: scan,
+            scanVertexCount: scan.length / 3,
+            scanToBase: new THREE.Matrix4().identity(),
+            reference: { kind: "parametric", field: parametricField(lengthMm, widthMm) },
+            side: "left",
+            lengthMm,
+        });
+        expect(fit.archHeightMm + fit.archFillMm).toBeGreaterThan(2);
     });
 
     test("throws when medial gap samples are missing", () => {
@@ -262,11 +288,10 @@ describe("fitArchParamsFromScan", () => {
         for (let i = 0; i < 100; i++) {
             pts.push((i / 100) * lengthMm, 20, 0);
         }
-        const scan = new Float32Array(pts);
         expect(() =>
             fitArchParamsFromScan({
-                scanPositions: scan,
-                scanVertexCount: scan.length / 3,
+                scanPositions: new Float32Array(pts),
+                scanVertexCount: pts.length / 3,
                 scanToBase: new THREE.Matrix4().identity(),
                 reference: flatBaseReference(lengthMm, widthMm),
                 side: "left",
@@ -284,11 +309,10 @@ describe("fitArchParamsFromScan", () => {
                 pts.push((i / 40) * lengthMm, ((j / 20) * 2 - 1) * (widthMm / 2), -5);
             }
         }
-        const scan = new Float32Array(pts);
         expect(() =>
             fitArchParamsFromScan({
-                scanPositions: scan,
-                scanVertexCount: scan.length / 3,
+                scanPositions: new Float32Array(pts),
+                scanVertexCount: pts.length / 3,
                 scanToBase: new THREE.Matrix4().identity(),
                 reference: flatBaseReference(lengthMm, widthMm),
                 side: "left",

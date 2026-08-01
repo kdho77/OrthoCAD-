@@ -12,19 +12,30 @@
  * Pitch = rotation about +Y (medial–lateral): z ≈ pitch_rad · (x − cx)
  * Roll  = rotation about +X (longitudinal):   z ≈ roll_rad  · (y − cy)
  *
- * Model: gap ≈ a + b·(x−cx) + c·(y−cy)
- *   a = mean Z offset (mm)
- *   b = ∂z/∂x ≈ pitch (rad) for small angles
- *   c = ∂z/∂y ≈ roll  (rad)
+ * Anatomically-banded reference (PR #140):
+ *   offset+pitch ← heel band + lateral column (NOT medial arch)
+ *   roll         ← heel band ONLY (preserves forefoot varus/valgus)
  */
 
 import {
+    SCAN_FIT_EXCLUDE_ARCH_BAND_FROM_RIGID,
+    SCAN_FIT_HEEL_U_MAX,
+    SCAN_FIT_HEEL_U_MIN,
+    SCAN_FIT_LATERAL_COLUMN_V_FRAC,
+    SCAN_FIT_MAD_REJECT_K,
     SCAN_FIT_MAX_MEAN_OFFSET_MM,
     SCAN_FIT_MAX_PITCH_DEG,
     SCAN_FIT_MAX_ROLL_DEG,
+    SCAN_FIT_MIN_SAMPLES,
     SCAN_FIT_RMS_FAIR_MM,
     SCAN_FIT_RMS_GOOD_MM,
+    SCAN_FIT_ROLL_REFERENCE_HEEL_ONLY,
 } from "@/lib/geometry/scan-fit-constants";
+import type { Side } from "@/types";
+
+/** Arch band u-range — imported loosely to avoid circular dep with fit-arch. */
+export const RIGID_ARCH_BAND_U_MIN = 0.28;
+export const RIGID_ARCH_BAND_U_MAX = 0.58;
 
 export type GapSample = {
     x: number;
@@ -33,16 +44,32 @@ export type GapSample = {
     gapMm: number;
 };
 
+export type BandedGapSample = GapSample & {
+    u: number;
+    vSigned: number;
+};
+
 export type RigidGapResidual = {
     meanOffsetMm: number;
     /** Pitch about +Y, degrees (positive raises distal / +X). */
     pitchDeg: number;
-    /** Roll about +X, degrees (positive raises +Y). */
+    /** Roll about +X from heel reference, degrees (positive raises +Y). */
     rollDeg: number;
-    /** Plane coefficients: gap ≈ a + b·x + c·y (absolute, not centered). */
+    /** Forefoot roll (display / FF–RF readout), degrees. */
+    forefootRollDeg: number;
+    /** Heel roll (same as rollDeg when heel-only reference). */
+    heelRollDeg: number;
+    /** Forefoot − heel roll (frontal-plane FF/RF relationship), degrees. */
+    forefootToRearfootDeg: number;
+    /** Plane coefficients: gap ≈ a + b·x + c·y (absolute). */
     a: number;
     b: number;
     c: number;
+    /** True when lateral-column pitch band was thin — fell back to fuller set. */
+    pitchFallbackUsed: boolean;
+    /** True when heel band was insufficient for roll — auto-apply must block. */
+    rollUnsolvable: boolean;
+    warnings: string[];
 };
 
 export type ConfidenceTier = "good" | "fair" | "poor";
@@ -63,9 +90,80 @@ export type FitConfidence = {
     nonConverged: boolean;
 };
 
+function medianSorted(sorted: number[]): number {
+    if (sorted.length === 0) return 0;
+    const m = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 1 ? sorted[m]! : 0.5 * (sorted[m - 1]! + sorted[m]!);
+}
+
+/** One MAD pass — reject outliers beyond k·MAD from median gap. */
+export function madRejectSamples<T extends GapSample>(
+    samples: readonly T[],
+    k: number = SCAN_FIT_MAD_REJECT_K,
+): T[] {
+    if (samples.length < 3) return [...samples];
+    const gaps = samples.map((s) => s.gapMm).sort((a, b) => a - b);
+    const med = medianSorted(gaps);
+    const absDev = gaps.map((g) => Math.abs(g - med)).sort((a, b) => a - b);
+    const mad = medianSorted(absDev);
+    if (mad < 1e-9) return [...samples];
+    const thresh = k * mad * 1.4826; // consistency with σ for normal
+    return samples.filter((s) => Math.abs(s.gapMm - med) <= thresh);
+}
+
+/** Lateral-most fraction of |vSigned| on the lateral side for this foot. */
+export function isLateralColumnSample(vSigned: number, side: Side): boolean {
+    const medialSign = side === "left" ? -1 : 1;
+    // Lateral = opposite of medial: m_lat = +(vSigned * medialSign) when medial is -v*medialSign
+    // medial coordinate m = -(vSigned * medialSign); lateral when m is negative / low.
+    const m = -(vSigned * medialSign);
+    // Lateral column: lateral-most SCAN_FIT_LATERAL_COLUMN_V_FRAC of half-width
+    // → m < -(1 - LATERAL_COLUMN_V_FRAC) approximately, using |v| on lateral side.
+    const av = Math.abs(vSigned);
+    const onLateralSide = m < -0.05;
+    return onLateralSide && av >= 1 - SCAN_FIT_LATERAL_COLUMN_V_FRAC;
+}
+
+export function isHeelBandSample(u: number): boolean {
+    return u >= SCAN_FIT_HEEL_U_MIN && u <= SCAN_FIT_HEEL_U_MAX;
+}
+
+export function isArchBandSample(u: number): boolean {
+    return u >= RIGID_ARCH_BAND_U_MIN && u <= RIGID_ARCH_BAND_U_MAX;
+}
+
 /**
- * Least-squares plane fit over the full plantar sample set.
- * Returns null when fewer than 3 finite samples (cannot solve).
+ * Sagittal reference set: heel ∪ lateral column, excluding medial arch band.
+ */
+export function selectSagittalReferenceBand(
+    samples: readonly BandedGapSample[],
+    side: Side,
+): BandedGapSample[] {
+    return samples.filter((s) => {
+        if (SCAN_FIT_EXCLUDE_ARCH_BAND_FROM_RIGID && isArchBandSample(s.u)) {
+            // Keep arch-band samples only if they are on the lateral column.
+            return isLateralColumnSample(s.vSigned, side);
+        }
+        return isHeelBandSample(s.u) || isLateralColumnSample(s.vSigned, side);
+    });
+}
+
+/** Roll reference: heel band only (when flag true). */
+export function selectRollReferenceBand(samples: readonly BandedGapSample[]): BandedGapSample[] {
+    if (SCAN_FIT_ROLL_REFERENCE_HEEL_ONLY) {
+        return samples.filter((s) => isHeelBandSample(s.u));
+    }
+    return [...samples];
+}
+
+/** Forefoot band for FF roll readout (u > arch max). */
+export function selectForefootBand(samples: readonly BandedGapSample[]): BandedGapSample[] {
+    return samples.filter((s) => s.u > RIGID_ARCH_BAND_U_MAX);
+}
+
+/**
+ * Least-squares plane fit gap ≈ a + b·x + c·y.
+ * Returns null when fewer than 3 finite samples.
  */
 export function decomposeRigidGap(samples: readonly GapSample[]): RigidGapResidual | null {
     const pts = samples.filter(
@@ -73,7 +171,6 @@ export function decomposeRigidGap(samples: readonly GapSample[]): RigidGapResidu
     );
     if (pts.length < 3) return null;
 
-    // Normal equations for [1, x, y] → gap
     let s0 = 0;
     let sx = 0;
     let sy = 0;
@@ -95,7 +192,6 @@ export function decomposeRigidGap(samples: readonly GapSample[]): RigidGapResidu
         sgy += p.gapMm * p.y;
     }
 
-    // Solve 3×3 via Cramer's rule / explicit inverse of symmetric Gram matrix.
     const det = s0 * (sxx * syy - sxy * sxy) - sx * (sx * syy - sxy * sy) + sy * (sx * sxy - sxx * sy);
     if (Math.abs(det) < 1e-12) return null;
 
@@ -111,9 +207,165 @@ export function decomposeRigidGap(samples: readonly GapSample[]): RigidGapResidu
         meanOffsetMm: a + b * (sx / s0) + c * (sy / s0),
         pitchDeg,
         rollDeg,
+        forefootRollDeg: rollDeg,
+        heelRollDeg: rollDeg,
+        forefootToRearfootDeg: 0,
         a,
         b,
         c,
+        pitchFallbackUsed: false,
+        rollUnsolvable: false,
+        warnings: [],
+    };
+}
+
+/**
+ * Fit roll-only (gap ≈ a0 + c·y) on a band — used for heel vs forefoot readout.
+ */
+export function fitRollOnBand(
+    samples: readonly GapSample[],
+): { a0: number; c: number; rollDeg: number } | null {
+    const pts = samples.filter((s) => Number.isFinite(s.y) && Number.isFinite(s.gapMm));
+    if (pts.length < 3) return null;
+    let s0 = 0;
+    let sy = 0;
+    let syy = 0;
+    let sg = 0;
+    let sgy = 0;
+    for (const p of pts) {
+        s0 += 1;
+        sy += p.y;
+        syy += p.y * p.y;
+        sg += p.gapMm;
+        sgy += p.gapMm * p.y;
+    }
+    const det = s0 * syy - sy * sy;
+    if (Math.abs(det) < 1e-12) return null;
+    const a0 = (sg * syy - sy * sgy) / det;
+    const c = (s0 * sgy - sy * sg) / det;
+    return { a0, c, rollDeg: (Math.atan(c) * 180) / Math.PI };
+}
+
+/**
+ * Fit gap ≈ a + b·x (offset + pitch only — no roll).
+ */
+export function fitOffsetPitch(samples: readonly GapSample[]): {
+    a: number;
+    b: number;
+    pitchDeg: number;
+    meanOffsetMm: number;
+} | null {
+    const pts = samples.filter((s) => Number.isFinite(s.x) && Number.isFinite(s.gapMm));
+    if (pts.length < 3) return null;
+    let s0 = 0;
+    let sx = 0;
+    let sxx = 0;
+    let sg = 0;
+    let sgx = 0;
+    for (const p of pts) {
+        s0 += 1;
+        sx += p.x;
+        sxx += p.x * p.x;
+        sg += p.gapMm;
+        sgx += p.gapMm * p.x;
+    }
+    const det = s0 * sxx - sx * sx;
+    if (Math.abs(det) < 1e-12) return null;
+    const a = (sg * sxx - sx * sgx) / det;
+    const b = (s0 * sgx - sx * sg) / det;
+    return {
+        a,
+        b,
+        pitchDeg: (Math.atan(b) * 180) / Math.PI,
+        meanOffsetMm: a + b * (sx / s0),
+    };
+}
+
+/**
+ * Anatomically-banded rigid decomposition.
+ * Order: offset+pitch on sagittal band (a+b·x), then roll on heel band (c·y).
+ * Forefoot roll is readout-only and is NOT written into the subtraction plane.
+ */
+export function decomposeRigidGapBanded(
+    samples: readonly BandedGapSample[],
+    side: Side,
+): RigidGapResidual | null {
+    const warnings: string[] = [];
+    let pitchFallbackUsed = false;
+    let rollUnsolvable = false;
+
+    const sagittalRaw = selectSagittalReferenceBand(samples, side);
+    let sagittal = madRejectSamples(sagittalRaw);
+    if (sagittal.length < SCAN_FIT_MIN_SAMPLES) {
+        const expanded = samples.filter(
+            (s) =>
+                isHeelBandSample(s.u) ||
+                isLateralColumnSample(s.vSigned, side) ||
+                (!isArchBandSample(s.u) && Math.abs(s.vSigned) > 0.3),
+        );
+        sagittal = madRejectSamples(expanded.length >= 3 ? expanded : samples);
+        pitchFallbackUsed = true;
+        warnings.push(
+            "Lateral/heel sagittal band thin — pitch solved on expanded set (confidence downgraded)",
+        );
+    }
+
+    const sag = fitOffsetPitch(sagittal);
+    if (!sag) return null;
+
+    // Remove offset+pitch, then fit heel roll on residual.
+    const afterSag = samples.map((s) => ({
+        ...s,
+        gapMm: s.gapMm - (sag.a + sag.b * s.x),
+    }));
+
+    const heelRaw = selectRollReferenceBand(afterSag);
+    const heel = madRejectSamples(heelRaw);
+    let heelRollDeg = 0;
+    let c = 0;
+    let aRoll = 0;
+
+    if (heel.length >= SCAN_FIT_MIN_SAMPLES) {
+        const heelRoll = fitRollOnBand(heel);
+        if (heelRoll) {
+            heelRollDeg = heelRoll.rollDeg;
+            c = heelRoll.c;
+            aRoll = heelRoll.a0;
+        } else {
+            rollUnsolvable = true;
+            warnings.push("Heel band insufficient for roll — auto-apply blocked");
+        }
+    } else {
+        rollUnsolvable = true;
+        warnings.push("Heel band insufficient for roll — auto-apply blocked");
+    }
+
+    const ffRaw = selectForefootBand(afterSag);
+    const ff = madRejectSamples(ffRaw);
+    let forefootRollDeg = heelRollDeg;
+    if (ff.length >= 8) {
+        const ffRoll = fitRollOnBand(ff);
+        if (ffRoll) forefootRollDeg = ffRoll.rollDeg;
+    }
+
+    // Combined plane: (sag.a + aRoll) + sag.b·x + c·y
+    // Heel roll a0 is a small ML-mean residual after sagittal removal.
+    const a = sag.a + aRoll;
+    const b = sag.b;
+
+    return {
+        meanOffsetMm: sag.meanOffsetMm,
+        pitchDeg: sag.pitchDeg,
+        rollDeg: heelRollDeg,
+        forefootRollDeg,
+        heelRollDeg,
+        forefootToRearfootDeg: forefootRollDeg - heelRollDeg,
+        a,
+        b,
+        c,
+        pitchFallbackUsed,
+        rollUnsolvable,
+        warnings,
     };
 }
 
@@ -135,22 +387,24 @@ export function registrationFlagsFromRigid(rigid: RigidGapResidual): Registratio
     const meanOffsetExceeded = Math.abs(rigid.meanOffsetMm) > SCAN_FIT_MAX_MEAN_OFFSET_MM;
     const pitchExceeded = Math.abs(rigid.pitchDeg) > SCAN_FIT_MAX_PITCH_DEG;
     const rollExceeded = Math.abs(rigid.rollDeg) > SCAN_FIT_MAX_ROLL_DEG;
+    const blockAutoApply = meanOffsetExceeded || pitchExceeded || rollExceeded || rigid.rollUnsolvable;
     return {
         meanOffsetExceeded,
         pitchExceeded,
         rollExceeded,
-        blockAutoApply: meanOffsetExceeded || pitchExceeded || rollExceeded,
+        blockAutoApply,
     };
 }
 
 /**
  * Map post-fit residual RMS (+ registration flags + convergence) → confidence tier.
- * Registration block forces poor. Non-convergence downgrades one tier.
+ * Registration block forces poor. Non-convergence / pitch fallback downgrades one tier.
  */
 export function confidenceFromRms(
     residualRmsMm: number,
     registration: RegistrationFitFlags,
     nonConverged = false,
+    extraDowngrade = false,
 ): FitConfidence {
     let tier: ConfidenceTier;
     if (registration.blockAutoApply || residualRmsMm > SCAN_FIT_RMS_FAIR_MM) {
@@ -160,10 +414,12 @@ export function confidenceFromRms(
     } else {
         tier = "fair";
     }
-    if (nonConverged) {
+    const downgrade = () => {
         if (tier === "good") tier = "fair";
         else if (tier === "fair") tier = "poor";
-    }
+    };
+    if (nonConverged) downgrade();
+    if (extraDowngrade) downgrade();
     return { tier, residualRmsMm, registration, nonConverged };
 }
 
