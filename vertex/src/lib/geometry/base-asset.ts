@@ -200,16 +200,35 @@ export function sanitizeStockBaseForServerMode(base: DesignBase): DesignBase {
  */
 export const DEFAULT_STOCK_PRIMARY_SIDE: Side = "left";
 
-/** True for the builtin / Templates default stock GLB (not arbitrary admin stock). */
+/**
+ * True for the builtin / Templates default stock GLB (not arbitrary admin stock).
+ *
+ * Matches:
+ * - placeholder id `stock-default`
+ * - classic keys `Templates/Default.glb`, `stock/standard/Default.glb`
+ * - timestamped uploads from `buildStockGlbKey("Default Stock Base", { category: "standard" })`
+ *   → `stock/standard/default-stock-base-{ms}.glb`
+ * - display name "Default Stock Base" when path was stripped during pending resolution
+ *
+ * Without these matches, a legacy DB row with `primarySide: "right"` (or null) skips
+ * {@link normalizeDefaultStockPrimarySide} and `createDefaultStockPairedBases` puts the
+ * unmirrored left last in the right slot — contralateral L/R on screen.
+ */
 export function isBuiltinDefaultStockBase(
-    base: Pick<DesignBase, "assetId" | "glbPath"> | null | undefined,
+    base: Pick<DesignBase, "assetId" | "glbPath" | "name"> | null | undefined,
 ): boolean {
     if (!base) return false;
     if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
     const path = (base.glbPath ?? "").replace(/^\/+/, "");
-    return (
-        /(?:^|\/)(?:Templates\/)?Default\.glb$/i.test(path) || /stock\/standard\/Default\.glb$/i.test(path)
-    );
+    if (
+        /(?:^|\/)(?:Templates\/)?Default\.glb$/i.test(path) ||
+        /stock\/standard\/Default\.glb$/i.test(path) ||
+        /stock\/standard\/default(?:-stock-base)?(?:-\d+)?\.glb$/i.test(path)
+    ) {
+        return true;
+    }
+    const bareName = (base.name ?? "").replace(/\s*\((Left|Right)\)\s*$/i, "").trim();
+    return /^default stock base$/i.test(bareName);
 }
 
 /** Force correct primarySide on the builtin default so pairing / mirroring stay ipsilateral. */
@@ -382,7 +401,7 @@ export function getOfflineFallbackStockBase(): DesignBase {
     };
 }
 
-/** Build a design patch with paired L/R bases from the offline fallback (Right + mirrored Left). */
+/** Build a design patch with paired L/R bases from the offline fallback (Left + mirrored Right). */
 export function createFallbackStockDesignPatch(
     design: DesignState,
 ): Pick<DesignState, "pattern" | "base" | "customPrefabId" | "customPrefabName" | "paired"> {
@@ -561,7 +580,11 @@ export function createDefaultStockPairedBases(override?: DesignBase): {
     right: DesignBase;
 } {
     const source = normalizeDefaultStockPrimarySide(override ?? getDefaultStockBaseSync());
-    const primarySide = source.primarySide?.toLowerCase();
+    // Missing primarySide on the builtin default must not fall through to "right"
+    // (the historical bug): treat unset as left-primary.
+    const primarySide =
+        source.primarySide?.toLowerCase() ??
+        (isBuiltinDefaultStockBase(source) ? DEFAULT_STOCK_PRIMARY_SIDE : undefined);
     const sourceIsLeft = primarySide === "left";
     const authoritativeName = source.name?.replace(/\s*\((Left|Right)\)?$/i, "") ?? "Stock Base";
 

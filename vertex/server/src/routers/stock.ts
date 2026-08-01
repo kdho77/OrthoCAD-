@@ -48,7 +48,7 @@ async function requireSupabaseAdmin() {
 
 /**
  * Server-authoritative procedures for system stock bases (global GLB templates
- * such as the default Right foot last uploaded as Templates/Default.glb).
+ * such as the default left-foot last uploaded as Templates/Default.glb).
  *
  * These are distinct from user custom library items:
  * - Stock bases are system-owned, shared by all licensed users.

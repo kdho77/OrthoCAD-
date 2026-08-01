@@ -142,8 +142,12 @@ export function LeftSidebar() {
             <Section icon={<Footprints className="h-3.5 w-3.5" />} title="Pattern">
                 {usingStockBase ? (
                     <p className="mb-1.5 text-[10px] text-muted-foreground">
-                        Base: {design.paired?.rightBase?.name ?? design.base?.name ?? "Stock GLB"} · patterns
-                        adjust scan metadata only
+                        Base:{" "}
+                        {design.base?.name ??
+                            design.paired?.leftBase?.name ??
+                            design.paired?.rightBase?.name ??
+                            "Stock GLB"}{" "}
+                        · patterns adjust scan metadata only
                     </p>
                 ) : null}
                 <div className="grid grid-cols-2 gap-1.5">

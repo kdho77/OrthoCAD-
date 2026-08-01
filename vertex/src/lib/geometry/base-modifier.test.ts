@@ -502,4 +502,38 @@ describe("resolveDesignMode", () => {
             baseId: "left-a",
         });
     });
+
+    test("left-primary stock pair badge prefers Left source name (not Right)", () => {
+        const paired = {
+            ...defaultDesign(),
+            base: {
+                assetId: "stock-default",
+                name: "Default Stock Base (Left)",
+                source: "stock" as const,
+                primarySide: "left",
+            },
+            paired: {
+                linked: true,
+                leftBase: {
+                    assetId: "stock-default",
+                    name: "Default Stock Base (Left)",
+                    source: "stock" as const,
+                    primarySide: "left",
+                },
+                rightBase: {
+                    assetId: "stock-default",
+                    name: "Default Stock Base (Right)",
+                    source: "stock" as const,
+                    mirrored: true,
+                    mirroredFrom: "stock-default",
+                    primarySide: "left",
+                },
+                leftThicknessMm: BASE_REFERENCE_THICKNESS_MM,
+                rightThicknessMm: BASE_REFERENCE_THICKNESS_MM,
+                leftMethod: "printing_solid" as const,
+                rightMethod: "printing_solid" as const,
+            },
+        };
+        expect(resolveDesignMode(paired).baseName).toMatch(/\(Left\)/i);
+    });
 });
