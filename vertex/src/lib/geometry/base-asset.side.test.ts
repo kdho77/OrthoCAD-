@@ -6,8 +6,12 @@ import {
     createDefaultStockPairedBases,
     getDefaultStockBaseSync,
     getDesignBase,
+    getOfflineFallbackStockBase,
     sanitizeDesignStockBases,
+    sanitizeStockBaseForServerMode,
+    stockBaseNeedsServerResolution,
 } from "@/lib/geometry/base-asset";
+import { isApiConfigured } from "@/lib/trpc";
 import type { DesignBase, DesignState } from "@/types";
 
 function stockSource(primarySide: "left" | "right"): DesignBase {
@@ -52,6 +56,41 @@ describe("createDefaultStockPairedBases", () => {
         expect(right.mirrored).toBe(true);
         expect(left.name).toMatch(/\(Left\)/i);
         expect(right.name).toMatch(/\(Right\)/i);
+    });
+
+    test("API mode sync default is a non-loadable pending stub (no glbPath/url)", () => {
+        // When Supabase/API is configured the stub must not carry a fetchable URL,
+        // so the viewer shows loading until applyDefaultStockBase resolves.
+        if (!isApiConfigured()) {
+            const offline = getOfflineFallbackStockBase();
+            expect(offline.glbPath).toBeTruthy();
+            expect(offline.resolutionFallback).toBe(true);
+            return;
+        }
+        const stub = getDefaultStockBaseSync();
+        expect(stub.glbPath).toBeUndefined();
+        expect(stub.url).toBeUndefined();
+        expect(stockBaseNeedsServerResolution(stub)).toBe(true);
+        const { left, right } = createDefaultStockPairedBases();
+        expect(left.url).toBeUndefined();
+        expect(right.url).toBeUndefined();
+        expect(stockBaseNeedsServerResolution(left)).toBe(true);
+    });
+
+    test("sanitize strips persisted placeholder URLs so Default.glb is not loaded early", () => {
+        if (!isApiConfigured()) return;
+        const persisted: DesignBase = {
+            assetId: "stock-default",
+            name: "Default Stock Base (Left)",
+            source: "stock",
+            glbPath: "Templates/Default.glb",
+            url: "https://example.supabase.co/storage/v1/object/public/stock-bases/Templates/Default.glb",
+            primarySide: "left",
+        };
+        const sanitized = sanitizeStockBaseForServerMode(persisted);
+        expect(sanitized.glbPath).toBeUndefined();
+        expect(sanitized.url).toBeUndefined();
+        expect(stockBaseNeedsServerResolution(sanitized)).toBe(true);
     });
 
     test("primarySide right on Default.glb is normalized to left-primary pairing", () => {
