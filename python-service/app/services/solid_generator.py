@@ -95,8 +95,8 @@ def generate_final_solid(
 
     # --- 1. Apply corrections (as deltas) to Top only ----------------
     # Use full vs neutral to get pure correction contribution (base detail preserved).
-    # Neutral: zeroed corrections, reference thickness ~ 3 mm (matches TS BASE_REFERENCE).
-    REF_THICKNESS = 3.0
+    # Neutral: zeroed corrections, reference thickness ~ 2 mm (matches TS BASE_REFERENCE).
+    REF_THICKNESS = 2.0
     side = str(corrections.get("side", "left")).lower()
 
     new_top_verts = top.vertices.copy()

@@ -62,7 +62,7 @@ const ZERO_CORRECTIONS: SideCorrections = {
  * (or lowers) the top surface by the difference — directional, bottom-anchored
  * thickness (see requirement: thickness expands upward from the stable bottom).
  */
-export const BASE_REFERENCE_THICKNESS_MM = 3;
+export const BASE_REFERENCE_THICKNESS_MM = 2;
 
 /** Neutral field (no corrections, no elements) used as the displacement baseline. */
 function neutralField(field: HeightFieldParams): HeightFieldParams {

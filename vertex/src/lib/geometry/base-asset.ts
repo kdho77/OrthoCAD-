@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
+import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import {
@@ -402,8 +403,10 @@ export function createFallbackStockDesignPatch(
         paired: {
             leftBase,
             rightBase,
-            leftThicknessMm: design.paired?.leftThicknessMm ?? design.thicknessMm ?? 3,
-            rightThicknessMm: design.paired?.rightThicknessMm ?? design.thicknessMm ?? 3,
+            leftThicknessMm:
+                design.paired?.leftThicknessMm ?? design.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
+            rightThicknessMm:
+                design.paired?.rightThicknessMm ?? design.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
             leftMethod: design.paired?.leftMethod ?? design.method,
             rightMethod: design.paired?.rightMethod ?? design.method,
             linked: design.paired?.linked ?? false,

@@ -200,7 +200,7 @@ model Design {
     name        String
     pattern     ScanPattern      @default(full_contact)
     method      ProductionMethod @default(printing_solid)
-    thicknessMm Float            @default(3)
+    thicknessMm Float            @default(2)
     linked      Boolean          @default(true)
     unit        Unit             @default(mm)
     createdAt   DateTime         @default(now())

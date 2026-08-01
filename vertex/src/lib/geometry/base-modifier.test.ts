@@ -8,6 +8,7 @@ import type { Side, SideCorrections } from "@/types";
 import {
     applyBaseModifiers,
     BASE_BOTTOM_DELTA_TOLERANCE_MM,
+    BASE_REFERENCE_THICKNESS_MM,
     classifyBaseTopFactors,
     detectArchSideSign,
     resolveDesignMode,
@@ -169,7 +170,7 @@ function field(side: Side): HeightFieldParams {
         widthMm: 95,
         // Default reference thickness ⇒ no directional thickness lift, so the
         // test isolates correction-driven top movement.
-        thicknessMm: 3,
+        thicknessMm: BASE_REFERENCE_THICKNESS_MM,
         corrections: corrections(),
         elements: [],
         includeSkives: true,
@@ -328,7 +329,8 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         side: "right",
         lengthMm: 260,
         widthMm: 90,
-        thicknessMm: 3,
+        // Match reference thickness so wedge test isolates wedge sync (no thickness offset).
+        thicknessMm: BASE_REFERENCE_THICKNESS_MM,
         corrections: {
             forefootPostingDeg: 0,
             rearfootPostingDeg: 0,
@@ -483,8 +485,8 @@ describe("resolveDesignMode", () => {
                 linked: false,
                 leftBase: { assetId: "left-a", name: "Left A", source: "custom" as const },
                 rightBase: undefined,
-                leftThicknessMm: 3,
-                rightThicknessMm: 3,
+                leftThicknessMm: BASE_REFERENCE_THICKNESS_MM,
+                rightThicknessMm: BASE_REFERENCE_THICKNESS_MM,
                 leftMethod: "printing_solid" as const,
                 rightMethod: "printing_solid" as const,
             },
