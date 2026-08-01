@@ -3,6 +3,8 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry } from "three";
+import { defaultDesign } from "@/stores/design-store";
+import type { Side, SideCorrections } from "@/types";
 import {
     applyBaseModifiers,
     BASE_BOTTOM_DELTA_TOLERANCE_MM,
@@ -11,11 +13,9 @@ import {
     resolveDesignMode,
     validateBaseResult,
 } from "./base-modifier";
-import { defaultDesign } from "@/stores/design-store";
 import type { HeightFieldParams } from "./height-field";
 import { heightAt } from "./height-field";
-import type { Side, SideCorrections } from "@/types";
-import { wedgeDeltaAt, getRearfootFactor, getForefootFactor } from "./wedge";
+import { getForefootFactor, getRearfootFactor, wedgeDeltaAt } from "./wedge";
 
 // --- Synthetic base mesh -----------------------------------------------------
 // A closed (watertight) insole-like slab: flat bottom at thickness 0, a domed
@@ -296,6 +296,31 @@ describe("applyBaseModifiers preview reuse path", () => {
         base.dispose();
         work.dispose();
     });
+
+    test("skipBottomSync leaves top-sheet positions unchanged vs full sync", () => {
+        const base = makeBase({ asym: 3 });
+        (base.userData as { isMultiMeshBase?: boolean; topVertexCount?: number }).isMultiMeshBase = true;
+        (base.userData as { topVertexCount?: number }).topVertexCount = Math.floor(
+            base.getAttribute("position")!.count * 0.55,
+        );
+        const f = field("right");
+        f.corrections = { ...f.corrections, archHeightMm: 8 };
+        const full = applyBaseModifiers(base, f, 0);
+        const preview = applyBaseModifiers(base, f, 0, { skipNormals: true, skipBottomSync: true });
+        const fullPos = full.getAttribute("position")!.array as Float32Array;
+        const previewPos = preview.getAttribute("position")!.array as Float32Array;
+        const topN = (base.userData as { topVertexCount?: number }).topVertexCount ?? 0;
+        let maxTopDelta = 0;
+        for (let i = 0; i < topN; i++) {
+            for (let a = 0; a < 3; a++) {
+                maxTopDelta = Math.max(maxTopDelta, Math.abs(fullPos[i * 3 + a]! - previewPos[i * 3 + a]!));
+            }
+        }
+        expect(maxTopDelta).toBeLessThan(1e-6);
+        full.dispose();
+        preview.dispose();
+        base.dispose();
+    });
 });
 
 describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
@@ -353,18 +378,23 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         expect(wedgeDeltaAt(0.7, 0, "right", p2.corrections, p2)).toBe(0);
 
         // Out of zone (u=0.5 mid)
-        const p3 = baseParams({ corrections: { ...baseParams().corrections, rearfootWedge: {side:"medial", value:4, unit:"mm"} } });
+        const p3 = baseParams({
+            corrections: {
+                ...baseParams().corrections,
+                rearfootWedge: { side: "medial", value: 4, unit: "mm" },
+            },
+        });
         expect(wedgeDeltaAt(0.5, 0, "right", p3.corrections, p3)).toBeLessThan(1);
     });
 
     test("composes additively with arch (no interference)", () => {
         const w = { side: "medial" as const, value: 4, unit: "mm" as const };
-        const p = baseParams({ 
-            corrections: { 
-                ...baseParams().corrections, 
+        const p = baseParams({
+            corrections: {
+                ...baseParams().corrections,
                 rearfootWedge: w,
                 archHeightMm: 6,
-            } 
+            },
         });
         const h = heightAt(0.1, -0.7, p); // medial rear
         // Should be > arch alone (wedge adds on top)
@@ -381,11 +411,11 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
 
     test("wedge delta flows through heightAt and applyBaseModifiers (single-mesh weighted, multi-mesh top-only)", () => {
         const w = { side: "medial" as const, value: 5, unit: "mm" as const };
-        const p = baseParams({ 
-            corrections: { 
-                ...baseParams().corrections, 
-                rearfootWedge: w 
-            } 
+        const p = baseParams({
+            corrections: {
+                ...baseParams().corrections,
+                rearfootWedge: w,
+            },
         });
 
         // Direct delta

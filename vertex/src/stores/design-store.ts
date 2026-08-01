@@ -509,26 +509,11 @@ export const useDesignStore = create<DesignStore>()(
                     // Note: wedge objects (if present in patch) are clamped inside constrainSideCorrections
                     // (value clamped per unit; mutual exclusion is structural: one WedgeCorrection per zone).
                     const leftResult = constrainSideCorrections(corrections.left, s.design.thicknessMm);
-                    const { constrained: safeLeft, thicknessMm: t1, violations: leftViolations } = leftResult;
+                    const { constrained: safeLeft, thicknessMm: t1 } = leftResult;
                     const rightResult = constrainSideCorrections(corrections.right, t1);
-                    const { constrained: safeRight, violations: rightViolations } = rightResult;
+                    const { constrained: safeRight } = rightResult;
                     const finalLeft = safeLeft;
                     const finalRight = corrections.linked ? safeLeft : safeRight;
-                    if ("heelCupDepthMm" in patch) {
-                        const applied =
-                            side === "left" ? finalLeft.heelCupDepthMm : finalRight.heelCupDepthMm;
-                        const depthViolations = [...leftViolations, ...rightViolations].filter(
-                            (vi) => vi.field === "heelCupDepthMm" || vi.field === "combined",
-                        );
-                        console.log("[HC-DEPTH] store:constrain", {
-                            ts: performance.now(),
-                            side,
-                            requested: patch.heelCupDepthMm,
-                            applied,
-                            thicknessMm: t1,
-                            violations: depthViolations,
-                        });
-                    }
                     return {
                         design: {
                             ...s.design,

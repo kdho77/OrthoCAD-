@@ -668,6 +668,19 @@ function buildHeelCupWidthLateralDelta(
     coincidentGroupCount: number;
 } {
     const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
+    const syncIndexCount = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+
+    if (field.corrections.heelCupWidthMm <= 0) {
+        const empty = new Float32Array(count);
+        return {
+            raw: empty,
+            smoothed: empty,
+            coincidenceSyncIndexCount: syncIndexCount,
+            crossMeshCoincidenceGroupCount: 0,
+            coincidentGroupCount: 0,
+        };
+    }
+
     const raw = new Float32Array(count);
     for (let i = 0; i < count; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
@@ -685,16 +698,6 @@ function buildHeelCupWidthLateralDelta(
         crossMeshGroupCount: crossMeshCoincidenceGroupCount,
     } = buildWidthCoincidenceGroups(array, count, isMultiMesh, topVertexCount);
     const coincidentGroupCount = groups.length;
-
-    if (field.corrections.heelCupWidthMm <= 0) {
-        return {
-            raw,
-            smoothed: raw,
-            coincidenceSyncIndexCount,
-            crossMeshCoincidenceGroupCount,
-            coincidentGroupCount,
-        };
-    }
 
     const adj = getBaseAdjacency(base);
     if (!adj) {
@@ -1247,6 +1250,205 @@ interface RimConformityFrame {
 
 const rimConformityCache = new WeakMap<BufferGeometry, RimConformityFrame | null>();
 
+/** Cached axis-aligned extents for a stable base mesh (positions unchanged across edits). */
+interface BaseExtents {
+    lengthAxis: AxisIndex;
+    widthAxis: AxisIndex;
+    thickAxis: AxisIndex;
+    min: [number, number, number];
+    size: [number, number, number];
+}
+
+const baseExtentsCache = new WeakMap<BufferGeometry, BaseExtents>();
+
+function getBaseExtents(base: BufferGeometry): BaseExtents | null {
+    const cached = baseExtentsCache.get(base);
+    if (cached) return cached;
+    if (!base.boundingBox) base.computeBoundingBox();
+    const box = base.boundingBox;
+    if (!box) return null;
+    const min: [number, number, number] = [box.min.x, box.min.y, box.min.z];
+    const size: [number, number, number] = [
+        box.max.x - box.min.x || 1,
+        box.max.y - box.min.y || 1,
+        box.max.z - box.min.z || 1,
+    ];
+    const axes = resolveBaseAxes(size[0], size[1], size[2]);
+    const extents: BaseExtents = { ...axes, min, size };
+    baseExtentsCache.set(base, extents);
+    return extents;
+}
+
+/** Precomputed bottom-wall correspondence for field-coupled shell sync (multi-mesh). */
+interface ShellFieldSyncBottomVert {
+    index: number;
+    baseZ: number;
+    lenCoord: number;
+    widCoord: number;
+    rimBlend: number;
+    bestSeed: number;
+    thicknessHz: number;
+    depthQueryLen: number;
+    depthQueryWid: number;
+}
+
+interface ShellFieldSyncFrame {
+    rimIndices: number[];
+    rimLen: Float64Array;
+    rimWid: Float64Array;
+    rimHash: Map<string, number[]>;
+    rimBins: number;
+    rimCell: number;
+    bottomVerts: ShellFieldSyncBottomVert[];
+}
+
+const shellFieldSyncCache = new WeakMap<BufferGeometry, ShellFieldSyncFrame | null>();
+
+function buildShellFieldSyncFrame(
+    base: BufferGeometry,
+    topVertexCount: number,
+    lengthAxis: AxisIndex,
+    widthAxis: AxisIndex,
+    thickAxis: AxisIndex,
+    lenMin: number,
+    lenSize: number,
+    widCenter: number,
+    widSize: number,
+    edgeProfile: TopEdgeProfile | null,
+): ShellFieldSyncFrame | null {
+    const basePos = base.getAttribute("position");
+    if (!basePos || topVertexCount <= 0 || topVertexCount >= basePos.count) return null;
+    const baseArr = basePos.array as Float32Array;
+    const count = basePos.count;
+
+    const topSub = submeshByVertexRange(base, 0, topVertexCount);
+    let rimIndices: number[];
+    try {
+        rimIndices = extractOrderedBoundaryLoopWithIndices(topSub).indices;
+    } finally {
+        topSub.dispose();
+    }
+    if (rimIndices.length < 3) return null;
+
+    const rimLen = new Float64Array(rimIndices.length);
+    const rimWid = new Float64Array(rimIndices.length);
+    const rimCell = RIM_PAIR_TOL_MM;
+    const rimHash = new Map<string, number[]>();
+    for (let s = 0; s < rimIndices.length; s++) {
+        const j = rimIndices[s]!;
+        const lenC = baseArr[j * 3 + lengthAxis]!;
+        const widC = baseArr[j * 3 + widthAxis]!;
+        rimLen[s] = lenC;
+        rimWid[s] = widC;
+        const k = `${Math.floor(lenC / rimCell)},${Math.floor(widC / rimCell)}`;
+        let bucket = rimHash.get(k);
+        if (!bucket) {
+            bucket = [];
+            rimHash.set(k, bucket);
+        }
+        bucket.push(s);
+    }
+    const rimBins = Math.ceil(RIM_PAIR_TOL_MM / rimCell) + 1;
+
+    const bottomVerts: ShellFieldSyncBottomVert[] = [];
+    for (let i = topVertexCount; i < count; i++) {
+        const lenCoord = baseArr[i * 3 + lengthAxis]!;
+        const widCoord = baseArr[i * 3 + widthAxis]!;
+        const baseZ = baseArr[i * 3 + thickAxis]!;
+
+        let rimBlend = 0;
+        let bestS = -1;
+        const cx = Math.floor(lenCoord / rimCell);
+        const cy = Math.floor(widCoord / rimCell);
+        let bestD = Infinity;
+        for (let dx = -rimBins; dx <= rimBins; dx++) {
+            for (let dy = -rimBins; dy <= rimBins; dy++) {
+                const bucket = rimHash.get(`${cx + dx},${cy + dy}`);
+                if (!bucket) continue;
+                for (const s of bucket) {
+                    const d = Math.hypot(rimLen[s]! - lenCoord, rimWid[s]! - widCoord);
+                    if (d < bestD) {
+                        bestD = d;
+                        bestS = s;
+                    }
+                }
+            }
+        }
+        if (bestS >= 0 && bestD < WALL_CORRIDOR_MM) {
+            const wDist = rimConformityDistanceWeight(bestD);
+            const wHeight = rimConformityHeightWeight(
+                baseZ <= PLANTAR_Z_MAX_MM
+                    ? 0
+                    : Math.min(1, (baseZ - PLANTAR_Z_MAX_MM) / (WALL_TOP_MIN_Z_MM - PLANTAR_Z_MAX_MM)),
+            );
+            rimBlend = wDist * wHeight;
+        }
+
+        const thicknessHz =
+            baseZ <= PLANTAR_Z_MAX_MM
+                ? 0
+                : Math.min(1, (baseZ - PLANTAR_Z_MAX_MM) / (WALL_TOP_MIN_Z_MM - PLANTAR_Z_MAX_MM));
+
+        const depthQueryLen = lenCoord;
+        let depthQueryWid = widCoord;
+        if (edgeProfile) {
+            const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+            const halfW = widSize / 2 || 1;
+            const vNorm = (widCoord - widCenter) / halfW;
+            const bins = vNorm >= 0 ? edgeProfile.pos : edgeProfile.neg;
+            const avEdge = sampleTopEdgeProfile(bins, u);
+            const av = Math.abs(vNorm);
+            if (avEdge > 1e-6 && av > avEdge) {
+                depthQueryWid = widCenter + Math.sign(vNorm) * avEdge * halfW;
+            }
+        }
+
+        bottomVerts.push({
+            index: i,
+            baseZ,
+            lenCoord,
+            widCoord,
+            rimBlend,
+            bestSeed: bestS,
+            thicknessHz,
+            depthQueryLen,
+            depthQueryWid,
+        });
+    }
+
+    return { rimIndices, rimLen, rimWid, rimHash, rimBins, rimCell, bottomVerts };
+}
+
+function getShellFieldSyncFrame(
+    base: BufferGeometry,
+    topVertexCount: number,
+    lengthAxis: AxisIndex,
+    widthAxis: AxisIndex,
+    thickAxis: AxisIndex,
+    lenMin: number,
+    lenSize: number,
+    widCenter: number,
+    widSize: number,
+    edgeProfile: TopEdgeProfile | null,
+): ShellFieldSyncFrame | null {
+    const cached = shellFieldSyncCache.get(base);
+    if (cached !== undefined) return cached;
+    const frame = buildShellFieldSyncFrame(
+        base,
+        topVertexCount,
+        lengthAxis,
+        widthAxis,
+        thickAxis,
+        lenMin,
+        lenSize,
+        widCenter,
+        widSize,
+        edgeProfile,
+    );
+    shellFieldSyncCache.set(base, frame);
+    return frame;
+}
+
 function buildRimConformityFrame(
     base: BufferGeometry,
     topVertexCount: number,
@@ -1603,12 +1805,13 @@ export function diagnoseHeelCupWidthLateral(
  * `options.reuse` — copy base positions into an existing same-sized geometry and
  * deform in place (avoids `clone()` alloc on every slider frame).
  * `options.skipNormals` — skip `computeVertexNormals` / sphere (preview scrub only).
+ * `options.skipBottomSync` — skip multi-mesh bottom shell field sync (preview scrub).
  */
 export function applyBaseModifiers(
     base: BufferGeometry,
     field: HeightFieldParams,
     smoothingIterations = 0,
-    options?: { reuse?: BufferGeometry; skipNormals?: boolean },
+    options?: { reuse?: BufferGeometry; skipNormals?: boolean; skipBottomSync?: boolean },
 ): BufferGeometry {
     const srcPos = base.getAttribute("position");
     const reuse = options?.reuse;
@@ -1624,17 +1827,9 @@ export function applyBaseModifiers(
     const pos = geometry.getAttribute("position");
     if (!pos) return geometry;
 
-    geometry.computeBoundingBox();
-    const box = geometry.boundingBox;
-    if (!box) return geometry;
-
-    const min = [box.min.x, box.min.y, box.min.z] as const;
-    const size = [
-        box.max.x - box.min.x || 1,
-        box.max.y - box.min.y || 1,
-        box.max.z - box.min.z || 1,
-    ] as const;
-    const { lengthAxis, widthAxis, thickAxis } = resolveBaseAxes(size[0], size[1], size[2]);
+    const extents = getBaseExtents(base);
+    if (!extents) return geometry;
+    const { lengthAxis, widthAxis, thickAxis, min, size } = extents;
     const lenMin = min[lengthAxis];
     const lenSize = size[lengthAxis];
     const widMin = min[widthAxis];
@@ -1870,23 +2065,29 @@ export function applyBaseModifiers(
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
     };
     const thicknessLiftActive = Math.abs(fieldForDelta.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-9;
-    if (useShellFieldSync) {
-        let rimFp:
-            | {
-                  len: number;
-                  wid: number;
-                  F: number;
-                  dx: number;
-                  dy: number;
-                  dz: number;
-              }[]
-            | null = null;
-        const topSub = submeshByVertexRange(base, 0, topVertexCount);
-        try {
-            const rimIdx = extractOrderedBoundaryLoopWithIndices(topSub).indices;
-            rimFp = rimIdx.map((j) => {
-                const lenC = baseArrForDepth[j * 3 + lengthAxis]!;
-                const widC = baseArrForDepth[j * 3 + widthAxis]!;
+    if (useShellFieldSync && !options?.skipBottomSync) {
+        const syncFrame = getShellFieldSyncFrame(
+            base,
+            topVertexCount,
+            lengthAxis,
+            widthAxis,
+            thickAxis,
+            lenMin,
+            lenSize,
+            widCenter,
+            widSize,
+            edgeProfile,
+        );
+        if (syncFrame) {
+            const rimCount = syncFrame.rimIndices.length;
+            const rimF = new Float64Array(rimCount);
+            const rimDx = new Float64Array(rimCount);
+            const rimDy = new Float64Array(rimCount);
+            const rimDz = new Float64Array(rimCount);
+            for (let s = 0; s < rimCount; s++) {
+                const j = syncFrame.rimIndices[s]!;
+                const lenC = syncFrame.rimLen[s]!;
+                const widC = syncFrame.rimWid[s]!;
                 let dx = 0;
                 let dy = 0;
                 let dz = 0;
@@ -1898,167 +2099,82 @@ export function applyBaseModifiers(
                         dz = depthVec[g * 3 + 2]!;
                     }
                 }
-                return {
-                    len: lenC,
-                    wid: widC,
-                    // Corrections-only field: the thickness component is added
-                    // AFTER the rim blend via the local height ramp, so the
-                    // nearest-seed distance never modulates the uniform lift.
-                    F: sampleFieldDeltaAtXY(
-                        lenC,
-                        widC,
-                        lenMin,
-                        lenSize,
-                        widCenter,
-                        widSize,
-                        widthSign,
-                        fieldForBottomSync,
-                        neutral,
-                        edgeProfile,
-                    ),
-                    dx,
-                    dy,
-                    dz,
-                };
-            });
-        } finally {
-            topSub.dispose();
-        }
-        const rimCell = RIM_PAIR_TOL_MM;
-        const rimHash = new Map<string, number[]>();
-        for (let s = 0; s < rimFp.length; s++) {
-            const r = rimFp[s]!;
-            const k = `${Math.floor(r.len / rimCell)},${Math.floor(r.wid / rimCell)}`;
-            let bucket = rimHash.get(k);
-            if (!bucket) {
-                bucket = [];
-                rimHash.set(k, bucket);
-            }
-            bucket.push(s);
-        }
-        const rimBins = Math.ceil(RIM_PAIR_TOL_MM / rimCell) + 1;
-
-        for (let i = topVertexCount; i < count; i++) {
-            const lenCoord = baseArrForDepth[i * 3 + lengthAxis]!;
-            const widCoord = baseArrForDepth[i * 3 + widthAxis]!;
-            const baseZ = baseArrForDepth[i * 3 + thickAxis]!;
-
-            let F = sampleFieldDeltaAtXY(
-                lenCoord,
-                widCoord,
-                lenMin,
-                lenSize,
-                widCenter,
-                widSize,
-                widthSign,
-                fieldForBottomSync,
-                neutral,
-                edgeProfile,
-            );
-            const fCorrectionsLocal = F;
-            let rimBlend = 0;
-            let rimDx = 0;
-            let rimDy = 0;
-            let rimDz = 0;
-
-            // Soft rim inheritance: blend toward nearest top-rim F (+ depth) by
-            // footprint distance × height so wall-tops close the rim without a
-            // hard step into mid-wall / plantar (those keep local F for thickness).
-            {
-                const cx = Math.floor(lenCoord / rimCell);
-                const cy = Math.floor(widCoord / rimCell);
-                let bestS = -1;
-                let bestD = Infinity;
-                for (let dx = -rimBins; dx <= rimBins; dx++) {
-                    for (let dy = -rimBins; dy <= rimBins; dy++) {
-                        const bucket = rimHash.get(`${cx + dx},${cy + dy}`);
-                        if (!bucket) continue;
-                        for (const s of bucket) {
-                            const r = rimFp[s]!;
-                            const d = Math.hypot(r.len - lenCoord, r.wid - widCoord);
-                            if (d < bestD) {
-                                bestD = d;
-                                bestS = s;
-                            }
-                        }
-                    }
-                }
-                if (bestS >= 0 && bestD < WALL_CORRIDOR_MM) {
-                    const wDist = rimConformityDistanceWeight(bestD);
-                    const wHeight = rimConformityHeightWeight(
-                        baseZ <= PLANTAR_Z_MAX_MM
-                            ? 0
-                            : Math.min(
-                                  1,
-                                  (baseZ - PLANTAR_Z_MAX_MM) / (WALL_TOP_MIN_Z_MM - PLANTAR_Z_MAX_MM),
-                              ),
-                    );
-                    rimBlend = wDist * wHeight;
-                    if (rimBlend > 0) {
-                        const r = rimFp[bestS]!;
-                        F = F + (r.F - F) * rimBlend;
-                        rimDx = r.dx;
-                        rimDy = r.dy;
-                        rimDz = r.dz;
-                    }
-                }
-            }
-
-            // Bottom-anchored thickness lift, added AFTER the rim blend so the
-            // nearest-seed distance never modulates it: the uniform component
-            // (F_full − F_corrections) ramps over the vertex's OWN base height —
-            // 0 on the plantar sheet, 1 at wall top. Purely local ⇒ adjacent
-            // wall vertices lift together (smooth edge), and wall tops reach the
-            // full lift so the rim pair stays closed against the raised top rim.
-            // Inactive at the reference thickness (component = 0, legacy path).
-            if (thicknessLiftActive) {
-                const fFull = sampleFieldDeltaAtXY(
-                    lenCoord,
-                    widCoord,
+                rimF[s] = sampleFieldDeltaAtXY(
+                    lenC,
+                    widC,
                     lenMin,
                     lenSize,
                     widCenter,
                     widSize,
                     widthSign,
-                    fieldForDelta,
+                    fieldForBottomSync,
                     neutral,
                     edgeProfile,
                 );
-                const hz =
-                    baseZ <= PLANTAR_Z_MAX_MM
-                        ? 0
-                        : Math.min(1, (baseZ - PLANTAR_Z_MAX_MM) / (WALL_TOP_MIN_Z_MM - PLANTAR_Z_MAX_MM));
-                F += (fFull - fCorrectionsLocal) * rimConformityHeightWeight(hz);
+                rimDx[s] = dx;
+                rimDy[s] = dy;
+                rimDz[s] = dz;
             }
 
-            array[i * 3 + thickAxis] += F;
-
-            if (baseZ > PLANTAR_Z_MAX_MM && (depthLookup || rimBlend > 0)) {
-                let nnDx = 0;
-                let nnDy = 0;
-                let nnDz = 0;
-                if (depthLookup && rimBlend < 1) {
-                    const qLen = lenCoord;
-                    let qWid = widCoord;
-                    if (edgeProfile) {
-                        const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
-                        const halfW = widSize / 2 || 1;
-                        const vNorm = (widCoord - widCenter) / halfW;
-                        const bins = vNorm >= 0 ? edgeProfile.pos : edgeProfile.neg;
-                        const avEdge = sampleTopEdgeProfile(bins, u);
-                        const av = Math.abs(vNorm);
-                        if (avEdge > 1e-6 && av > avEdge) {
-                            qWid = widCenter + Math.sign(vNorm) * avEdge * halfW;
-                        }
-                    }
-                    const d = depthLookup(qLen, qWid);
-                    nnDx = d.dx;
-                    nnDy = d.dy;
-                    nnDz = d.dz;
+            for (const bv of syncFrame.bottomVerts) {
+                const i = bv.index;
+                let F = sampleFieldDeltaAtXY(
+                    bv.lenCoord,
+                    bv.widCoord,
+                    lenMin,
+                    lenSize,
+                    widCenter,
+                    widSize,
+                    widthSign,
+                    fieldForBottomSync,
+                    neutral,
+                    edgeProfile,
+                );
+                const fCorrectionsLocal = F;
+                const rimBlend = bv.rimBlend;
+                let rdx = 0;
+                let rdy = 0;
+                let rdz = 0;
+                if (rimBlend > 0 && bv.bestSeed >= 0) {
+                    const seedF = rimF[bv.bestSeed]!;
+                    F = F + (seedF - F) * rimBlend;
+                    rdx = rimDx[bv.bestSeed]!;
+                    rdy = rimDy[bv.bestSeed]!;
+                    rdz = rimDz[bv.bestSeed]!;
                 }
-                array[i * 3] += rimDx * rimBlend + nnDx * (1 - rimBlend);
-                array[i * 3 + 1] += rimDy * rimBlend + nnDy * (1 - rimBlend);
-                array[i * 3 + 2] += rimDz * rimBlend + nnDz * (1 - rimBlend);
+
+                if (thicknessLiftActive) {
+                    const fFull = sampleFieldDeltaAtXY(
+                        bv.lenCoord,
+                        bv.widCoord,
+                        lenMin,
+                        lenSize,
+                        widCenter,
+                        widSize,
+                        widthSign,
+                        fieldForDelta,
+                        neutral,
+                        edgeProfile,
+                    );
+                    F += (fFull - fCorrectionsLocal) * rimConformityHeightWeight(bv.thicknessHz);
+                }
+
+                array[i * 3 + thickAxis] += F;
+
+                if (bv.baseZ > PLANTAR_Z_MAX_MM && (depthLookup || rimBlend > 0)) {
+                    let nnDx = 0;
+                    let nnDy = 0;
+                    let nnDz = 0;
+                    if (depthLookup && rimBlend < 1) {
+                        const d = depthLookup(bv.depthQueryLen, bv.depthQueryWid);
+                        nnDx = d.dx;
+                        nnDy = d.dy;
+                        nnDz = d.dz;
+                    }
+                    array[i * 3] += rdx * rimBlend + nnDx * (1 - rimBlend);
+                    array[i * 3 + 1] += rdy * rimBlend + nnDy * (1 - rimBlend);
+                    array[i * 3 + 2] += rdz * rimBlend + nnDz * (1 - rimBlend);
+                }
             }
         }
     }

@@ -231,6 +231,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         const modified = applyBaseModifiers(raw, field, interacting ? 0 : 1, {
             reuse: canReuseWork ? workRef.current! : undefined,
             skipNormals: fastPreview,
+            skipBottomSync: fastPreview,
         });
         if (workRef.current && workRef.current !== modified) {
             workRef.current.dispose();
