@@ -52,6 +52,10 @@ const previewCorrection = rafThrottle((side: Side, patch: Partial<SideCorrection
     usePerformanceStore.getState().setCorrectionPreview(side, patch);
 });
 
+const previewThickness = rafThrottle((mm: number) => {
+    usePerformanceStore.getState().setThicknessPreview(mm);
+});
+
 type WedgeEdge = "lateral" | "medial";
 type WedgeUnit = "deg" | "mm";
 
@@ -407,7 +411,7 @@ export function CorrectionsPanel() {
                 max={8}
                 step={0.1}
                 unit="mm"
-                onPreview={(v) => setThicknessPreview(v)}
+                onPreview={(v) => previewThickness(v)}
                 onChange={(v) => {
                     setThickness(v);
                     setThicknessPreview(null);

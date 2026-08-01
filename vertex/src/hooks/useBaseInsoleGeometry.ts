@@ -43,6 +43,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
     const elementPreviews = usePerformanceStore((s) => s.elementPreviews);
     const interacting = usePerformanceStore((s) => s.interacting);
+    const interactionSource = usePerformanceStore((s) => s.interactionSource);
     const stockBaseLoading = useDesignStore((s) => s.stockBaseLoading);
     const stockBaseResolutionState = useDesignStore((s) => s.stockBaseResolutionState);
     const setBaseMeshLoading = useDesignStore((s) => s.setBaseMeshLoading);
@@ -53,6 +54,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const baseUrl = base?.url ?? null;
 
     const baseGeoRef = useRef<BufferGeometry | null>(null);
+    /** Full-resolution deform target (never trim-clipped); reused across slider frames. */
+    const workRef = useRef<BufferGeometry | null>(null);
     const outRef = useRef<BufferGeometry | null>(null);
     const [geometry, setGeometry] = useState<BufferGeometry | null>(null);
     const [building, setBuilding] = useState(false);
@@ -65,6 +68,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         let cancelled = false;
         baseGeoRef.current?.dispose();
         baseGeoRef.current = null;
+        if (outRef.current && outRef.current !== workRef.current) {
+            outRef.current.dispose();
+        }
+        outRef.current = null;
+        workRef.current?.dispose();
+        workRef.current = null;
         const ref = getDesignBase(design, side);
         if (!ref) {
             setGeometry(null);
@@ -213,43 +222,38 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             : design.thicknessMm;
         const thicknessMm = thicknessPreview ?? committedThickness;
         const field = baseModifierField(design, side, thicknessMm);
-        const mergedDepth = field.corrections.heelCupDepthMm;
         // Skip smoothing while dragging for responsiveness; relax once when idle.
-        const modified = applyBaseModifiers(raw, field, interacting ? 0 : 1);
-        let maxHeelZDelta = 0;
-        if (mergedDepth > 0 || correctionPreview?.[side]?.heelCupDepthMm) {
-            const rawPos = raw.getAttribute("position")!.array as Float32Array;
-            const modPos = modified.getAttribute("position")!.array as Float32Array;
-            const topN = (raw.userData as { topVertexCount?: number }).topVertexCount ?? rawPos.length / 3;
-            for (let i = 0; i < topN; i++) {
-                if (rawPos[i * 3 + 2]! < 5) continue;
-                maxHeelZDelta = Math.max(maxHeelZDelta, Math.abs(modPos[i * 3 + 2]! - rawPos[i * 3 + 2]!));
-            }
-            console.log("[HC-DEPTH] rebuild", {
-                ts: performance.now(),
-                side,
-                interacting,
-                thicknessMm,
-                committed: design.corrections[side].heelCupDepthMm,
-                preview: correctionPreview?.[side]?.heelCupDepthMm ?? null,
-                mergedDepth,
-                maxHeelZDelta,
-            });
+        // Slider/gizmo: reuse work buffer + skip normals/clip. Trimline keeps clip.
+        const fastPreview = interacting && interactionSource !== "trimline";
+        const rawCount = raw.getAttribute("position")?.count ?? 0;
+        const canReuseWork =
+            workRef.current != null && workRef.current.getAttribute("position")?.count === rawCount;
+        const modified = applyBaseModifiers(raw, field, interacting ? 0 : 1, {
+            reuse: canReuseWork ? workRef.current! : undefined,
+            skipNormals: fastPreview,
+        });
+        if (workRef.current && workRef.current !== modified) {
+            workRef.current.dispose();
         }
+        workRef.current = modified;
+
         // Phase 3A: prefer the *live draft* trimline while a trimline edit session
         // is active for this side. This wires the deforming perimeter into the
         // rendered base mesh during drag (production editing requirement).
+        // Defer full clip during slider/gizmo scrub (idle + trimline still clip).
         const draft = useMeshEditStore.getState().getActiveDraftTrimline(side);
         const committed = getDesignTrimline(design, side);
         const activeForClip = draft ?? committed;
-        let display = modified;
-        if (activeForClip) {
+        let display: BufferGeometry = modified;
+        if (activeForClip && !fastPreview) {
             display = clipGeometryToOutline(modified, activeForClip);
-            modified.dispose();
         }
-        outRef.current?.dispose();
+        if (outRef.current && outRef.current !== display && outRef.current !== workRef.current) {
+            outRef.current.dispose();
+        }
         outRef.current = display;
-        setGeometry(display);
+        // Same BufferGeometry identity while scrubbing → avoid React remount / EdgesGeometry.
+        setGeometry((prev) => (prev === display ? prev : display));
         setBaseMeshLoading(side, false);
     }, [
         assetId,
@@ -262,6 +266,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         thicknessPreview,
         elementPreviews,
         interacting,
+        interactionSource,
         building,
         setBaseMeshLoading,
         side,
@@ -270,7 +275,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     useEffect(
         () => () => {
             baseGeoRef.current?.dispose();
-            outRef.current?.dispose();
+            if (outRef.current && outRef.current !== workRef.current) {
+                outRef.current.dispose();
+            }
+            workRef.current?.dispose();
         },
         [],
     );

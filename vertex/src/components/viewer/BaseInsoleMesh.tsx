@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { useBaseInsoleGeometry } from "@/hooks/useBaseInsoleGeometry";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
 import { useDesignStore } from "@/stores/design-store";
+import { usePerformanceStore } from "@/stores/performance-store";
 import type { Side } from "@/types";
 
 const sideColors: Record<Side, string> = {
@@ -18,6 +19,7 @@ const sideColors: Record<Side, string> = {
  */
 export function BaseInsoleMesh({ side, transparent }: { side: Side; transparent: boolean }) {
     const design = useDesignStore((s) => s.design);
+    const interacting = usePerformanceStore((s) => s.interacting);
     const { geometry, building } = useBaseInsoleGeometry(design, side);
 
     const material = useMemo(
@@ -47,11 +49,13 @@ export function BaseInsoleMesh({ side, transparent }: { side: Side; transparent:
                 castShadow={!building}
                 receiveShadow
             />
-            {/* Base outline overlay — a clear visual cue that this is a loaded base. */}
-            <lineSegments position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}>
-                <edgesGeometry args={[geometry, 35]} />
-                <lineBasicMaterial color={sideColors[side]} transparent opacity={0.35} />
-            </lineSegments>
+            {/* Edge extract is expensive on large bases — only when idle. */}
+            {!interacting ? (
+                <lineSegments position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}>
+                    <edgesGeometry args={[geometry, 35]} />
+                    <lineBasicMaterial color={sideColors[side]} transparent opacity={0.35} />
+                </lineSegments>
+            ) : null}
         </group>
     );
 }

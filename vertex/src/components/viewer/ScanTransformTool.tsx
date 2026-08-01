@@ -2,13 +2,13 @@
 // See LICENSE file in the project root for full license information.
 
 import { useThree } from "@react-three/fiber";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { ZERO_SCAN_OFFSET } from "@/lib/geometry/scan-display";
+import { rafThrottle } from "@/lib/performance/throttle";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
-import { usePerformanceStore } from "@/stores/performance-store";
 import { useScanStore } from "@/stores/scan-store";
 
 const DRAG_THRESHOLD_PX = 3;
@@ -39,12 +39,19 @@ export function ScanTransformTool() {
     const rotateDraft = useScanStore((s) => s.rotateDraft);
     const selectedScanId = useScanStore((s) => s.selectedScanId);
     const selectScan = useScanStore((s) => s.selectScan);
-    const setManualOffset = useScanStore((s) => s.setManualOffset);
     const nudgeManualOffset = useScanStore((s) => s.nudgeManualOffset);
     const selectElement = useDesignStore((s) => s.selectElement);
     const editMode = useMeshEditStore((s) => s.editMode);
-    const setInteracting = usePerformanceStore((s) => s.setInteracting);
     const { gl, camera, raycaster, scene, controls } = useThree();
+
+    /** Do not toggle performance `interacting` — that rebuilds base meshes. */
+    const publishOffset = useMemo(
+        () =>
+            rafThrottle((scanId: string, offset: { x: number; y: number; z: number }) => {
+                useScanStore.getState().setManualOffset(scanId, offset);
+            }),
+        [],
+    );
 
     const dragRef = useRef<{
         scanId: string;
@@ -164,19 +171,18 @@ export function ScanTransformTool() {
             if (!drag.dragging) {
                 drag.dragging = true;
                 if (controls) (controls as OrbitControlsImpl).enabled = false;
-                setInteracting(true, "gizmo");
             }
 
             const world = intersectDragPlane(e.clientX, e.clientY, drag.plane);
             if (!world) return;
             const local = world.applyMatrix4(drag.parentInv);
-            setManualOffset(drag.scanId, {
+            publishOffset(drag.scanId, {
                 x: drag.startOffset.x + (local.x - drag.originLocal.x),
                 y: drag.startOffset.y + (local.y - drag.originLocal.y),
                 z: drag.startOffset.z,
             });
         },
-        [controls, setInteracting, intersectDragPlane, setManualOffset],
+        [controls, intersectDragPlane, publishOffset],
     );
 
     const endDrag = useCallback(
@@ -185,7 +191,6 @@ export function ScanTransformTool() {
             if (!drag || drag.pointerId !== e.pointerId) return;
             if (drag.dragging) {
                 if (controls) (controls as OrbitControlsImpl).enabled = true;
-                setInteracting(false);
             }
             dragRef.current = null;
             try {
@@ -194,14 +199,13 @@ export function ScanTransformTool() {
                 /* already released */
             }
         },
-        [controls, setInteracting, gl.domElement],
+        [controls, gl.domElement],
     );
 
     useEffect(() => {
         if (blocked) {
             if (dragRef.current?.dragging && controls) {
                 (controls as OrbitControlsImpl).enabled = true;
-                setInteracting(false);
             }
             dragRef.current = null;
             return;
@@ -217,7 +221,7 @@ export function ScanTransformTool() {
             el.removeEventListener("pointerup", endDrag);
             el.removeEventListener("pointercancel", endDrag);
         };
-    }, [blocked, gl.domElement, onPointerDown, onPointerMove, endDrag, controls, setInteracting]);
+    }, [blocked, gl.domElement, onPointerDown, onPointerMove, endDrag, controls]);
 
     // Arrow-key nudge in base-local footprint axes (X length / AP, Y width / ML).
     useEffect(() => {

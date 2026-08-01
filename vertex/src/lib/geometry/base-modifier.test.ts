@@ -245,6 +245,59 @@ describe("base-modifier medial/lateral inference", () => {
     });
 });
 
+describe("applyBaseModifiers preview reuse path", () => {
+    test("reuse + skipNormals matches fresh clone positions", () => {
+        const base = makeBase({ asym: 3 });
+        const fresh = applyBaseModifiers(base, field("right"), 0);
+        const reused = applyBaseModifiers(base, field("right"), 0, {
+            reuse: base.clone(),
+            skipNormals: true,
+        });
+        const a = fresh.getAttribute("position")!.array as Float32Array;
+        const b = reused.getAttribute("position")!.array as Float32Array;
+        expect(b.length).toBe(a.length);
+        let maxAbs = 0;
+        for (let i = 0; i < a.length; i++) {
+            maxAbs = Math.max(maxAbs, Math.abs(a[i]! - b[i]!));
+        }
+        expect(maxAbs).toBeLessThan(1e-6);
+        // Second scrub frame into the same buffer stays stable.
+        const again = applyBaseModifiers(base, field("right"), 0, {
+            reuse: reused,
+            skipNormals: true,
+        });
+        expect(again).toBe(reused);
+        const c = again.getAttribute("position")!.array as Float32Array;
+        maxAbs = 0;
+        for (let i = 0; i < a.length; i++) {
+            maxAbs = Math.max(maxAbs, Math.abs(a[i]! - c[i]!));
+        }
+        expect(maxAbs).toBeLessThan(1e-6);
+        fresh.dispose();
+        reused.dispose();
+        base.dispose();
+    });
+
+    test("changing the field updates reused positions", () => {
+        const base = makeBase();
+        const work = base.clone();
+        const low = applyBaseModifiers(base, field("left"), 0, { reuse: work, skipNormals: true });
+        const lowZ = (low.getAttribute("position")!.array as Float32Array).slice();
+        const tallField = field("left");
+        tallField.corrections = { ...tallField.corrections, archHeightMm: 18 };
+        const high = applyBaseModifiers(base, tallField, 0, { reuse: work, skipNormals: true });
+        expect(high).toBe(work);
+        const highArr = high.getAttribute("position")!.array as Float32Array;
+        let maxDelta = 0;
+        for (let i = 2; i < lowZ.length; i += 3) {
+            maxDelta = Math.max(maxDelta, Math.abs(highArr[i]! - lowZ[i]!));
+        }
+        expect(maxDelta).toBeGreaterThan(0.5);
+        base.dispose();
+        work.dispose();
+    });
+});
+
 describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
     const baseParams = (overrides: Partial<HeightFieldParams> = {}): HeightFieldParams => ({
         side: "right",
