@@ -1599,13 +1599,28 @@ export function diagnoseHeelCupWidthLateral(
  * topology (Laplacian) for a clinically smooth top surface independent of the
  * base's tessellation. Pass `0` while dragging to keep editing responsive, and
  * `1`–`2` when idle / exporting.
+ *
+ * `options.reuse` — copy base positions into an existing same-sized geometry and
+ * deform in place (avoids `clone()` alloc on every slider frame).
+ * `options.skipNormals` — skip `computeVertexNormals` / sphere (preview scrub only).
  */
 export function applyBaseModifiers(
     base: BufferGeometry,
     field: HeightFieldParams,
     smoothingIterations = 0,
+    options?: { reuse?: BufferGeometry; skipNormals?: boolean },
 ): BufferGeometry {
-    const geometry = base.clone();
+    const srcPos = base.getAttribute("position");
+    const reuse = options?.reuse;
+    let geometry: BufferGeometry;
+    if (reuse && reuse !== base && srcPos && reuse.getAttribute("position")?.count === srcPos.count) {
+        geometry = reuse;
+        const dstPos = geometry.getAttribute("position")!;
+        (dstPos.array as Float32Array).set(srcPos.array as Float32Array);
+        dstPos.needsUpdate = true;
+    } else {
+        geometry = base.clone();
+    }
     const pos = geometry.getAttribute("position");
     if (!pos) return geometry;
 
@@ -2122,9 +2137,14 @@ export function applyBaseModifiers(
     }
 
     pos.needsUpdate = true;
-    geometry.computeVertexNormals();
-    geometry.computeBoundingBox();
-    geometry.computeBoundingSphere();
+    if (!options?.skipNormals) {
+        geometry.computeVertexNormals();
+        geometry.computeBoundingBox();
+        geometry.computeBoundingSphere();
+    } else {
+        // Preview scrub: positions changed; keep prior normals/bounds for speed.
+        geometry.boundingSphere = null;
+    }
     if (thicknessDatumNativeMm !== null) {
         // Diagnostic only: STL writes positions; GLB export overwrites mesh.userData.
         // Do not disturb topVertexCount / isMultiMeshBase.

@@ -1,10 +1,27 @@
 # Interaction Lag — Root Cause Analysis
 
-**Status:** Diagnosis (research only; no code changes in this document)  
+**Status:** Fixes landed (2026-08-01) — see § Remediation  
 **Date:** 2026-08-01  
 **Scope:** Slider scrubbing, parametric corrections, foot-scan drag/drop, scan load  
 
-Architecture already targets **&lt; 16 ms preview frames** and **no OCCT during drag/slider scrub** ([hybrid-geometry-architecture.md](./hybrid-geometry-architecture.md), R5 in [orthotic-insole-cad-architecture.md](./orthotic-insole-cad-architecture.md)). OCCT is largely kept off the interaction path. Lag comes from **heavy main-thread mesh work that still runs every preview frame** on the Base + Modifier (loaded GLB) path.
+Architecture already targets **&lt; 16 ms preview frames** and **no OCCT during drag/slider scrub** ([hybrid-geometry-architecture.md](./hybrid-geometry-architecture.md), R5 in [orthotic-insole-cad-architecture.md](./orthotic-insole-cad-architecture.md)). OCCT is largely kept off the interaction path. Lag came from **heavy main-thread mesh work that still ran every preview frame** on the Base + Modifier (loaded GLB) path.
+
+---
+
+## Remediation (implemented)
+
+| Fix | Change |
+|-----|--------|
+| In-place deform | `applyBaseModifiers(..., { reuse, skipNormals })` — no `clone()` / normals / sphere on slider scrub |
+| Skip trim clip while scrubbing | `useBaseInsoleGeometry` defers `clipGeometryToOutline` unless `interactionSource === "trimline"` |
+| Skip edges overlay | `BaseInsoleMesh` hides `EdgesGeometry` while `interacting` |
+| Stable geometry identity | Reuse work buffer + `setGeometry` no-op when same ref (avoids remount) |
+| Scan drag | No `setInteracting` (was forcing base rebuilds); rAF-throttle `setManualOffset` |
+| Scan rotate | Same — no interacting flag; rAF-throttle offsets |
+| Thickness preview | `rafThrottle` like other correction fields |
+| Remove HC-DEPTH debug | Dropped rebuild `console.log` / vertex scans from hot path |
+
+**Still open (follow-up):** move `applyBaseModifiers` to a worker for ~200k-vert bases; scan import weld/manifold off main thread.
 
 ---
 

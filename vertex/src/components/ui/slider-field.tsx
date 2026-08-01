@@ -44,28 +44,8 @@ export function SliderField({
 
     const handleCommit = (v: number) => {
         const cv = clamp(v);
-        const isDepth = label.toLowerCase().includes("depth");
-        if (isDepth) {
-            console.log("[HC-DEPTH] commit:start", {
-                ts: performance.now(),
-                label,
-                sliderDomValue: cv,
-                reactPropValue: value,
-                propVsDom: value - cv,
-                interacting: usePerformanceStore.getState().interacting,
-                preview: usePerformanceStore.getState().correctionPreview,
-            });
-        }
         setInteracting(false);
         onChange(cv);
-        if (isDepth) {
-            console.log("[HC-DEPTH] commit:end", {
-                ts: performance.now(),
-                sliderDomValue: cv,
-                interacting: usePerformanceStore.getState().interacting,
-                preview: usePerformanceStore.getState().correctionPreview,
-            });
-        }
     };
 
     const onPointerDown = () => setInteracting(true, "slider");

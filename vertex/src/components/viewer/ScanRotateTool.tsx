@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { applyYawAboutAnchor } from "@/lib/geometry/scan-display";
-import { usePerformanceStore } from "@/stores/performance-store";
+import { rafThrottle } from "@/lib/performance/throttle";
 import { useScanStore } from "@/stores/scan-store";
 import { suppressNextScanMissDeselect } from "./ScanTransformTool";
 
@@ -23,10 +23,16 @@ function angleOnPlane(from: THREE.Vector3, to: THREE.Vector3): number {
 export function ScanRotateTool() {
     const rotateDraft = useScanStore((s) => s.rotateDraft);
     const setRotateDraft = useScanStore((s) => s.setRotateDraft);
-    const setManualOffset = useScanStore((s) => s.setManualOffset);
     const cancelRotate = useScanStore((s) => s.cancelRotate);
-    const setInteracting = usePerformanceStore((s) => s.setInteracting);
     const { gl, camera, raycaster, scene, controls } = useThree();
+
+    const publishOffset = useMemo(
+        () =>
+            rafThrottle((scanId: string, offset: { x: number; y: number; z: number; rz?: number }) => {
+                useScanStore.getState().setManualOffset(scanId, offset);
+            }),
+        [],
+    );
 
     const pickOnScanOrPlane = useCallback(
         (
@@ -102,7 +108,6 @@ export function ScanRotateTool() {
                 e.stopPropagation();
                 suppressNextScanMissDeselect();
                 if (controls) (controls as OrbitControlsImpl).enabled = true;
-                setInteracting(false);
                 cancelRotate({ restore: false });
                 return;
             }
@@ -135,17 +140,8 @@ export function ScanRotateTool() {
                 baseAngle,
             });
             if (controls) (controls as OrbitControlsImpl).enabled = false;
-            setInteracting(true, "gizmo");
         },
-        [
-            rotateDraft,
-            gl.domElement,
-            pickOnScanOrPlane,
-            setRotateDraft,
-            cancelRotate,
-            controls,
-            setInteracting,
-        ],
+        [rotateDraft, gl.domElement, pickOnScanOrPlane, setRotateDraft, cancelRotate, controls],
     );
 
     const onPointerMove = useCallback(
@@ -163,12 +159,12 @@ export function ScanRotateTool() {
             while (delta > Math.PI) delta -= 2 * Math.PI;
             while (delta <= -Math.PI) delta += 2 * Math.PI;
 
-            setManualOffset(
+            publishOffset(
                 rotateDraft.scanId,
                 applyYawAboutAnchor(rotateDraft.startOffset, { x: anchor.x, y: anchor.y }, delta),
             );
         },
-        [rotateDraft, pickOnScanOrPlane, setManualOffset],
+        [rotateDraft, pickOnScanOrPlane, publishOffset],
     );
 
     useEffect(() => {
