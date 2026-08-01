@@ -120,6 +120,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         generationRef.current++;
         const gen = generationRef.current;
 
+        const prevActive = activeDisplayRef.current;
+        if (prevActive && prevActive !== displayFullRef.current && prevActive !== displayLodRef.current) {
+            prevActive.dispose();
+        }
         sourceFullRef.current?.dispose();
         sourceLodRef.current?.dispose();
         displayFullRef.current?.dispose();
