@@ -1,11 +1,29 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { CheckCircle2, ChevronRight, Eye, EyeOff, MapPin, Move, RotateCcw, Trash2, Upload } from "lucide-react";
+import {
+    CheckCircle2,
+    ChevronRight,
+    Eye,
+    EyeOff,
+    MapPin,
+    Move,
+    RotateCcw,
+    Sparkles,
+    Trash2,
+    Upload,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
+import {
+    ArchFitError,
+    archFitReferenceFromBase,
+    archFitToCorrectionPatch,
+    fitArchParamsFromScan,
+} from "@/lib/geometry/fit-arch-from-scan";
 import { importScanFile } from "@/lib/geometry/import";
+import { INSOLE_LENGTH_MM } from "@/lib/geometry/layout";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import {
     extractKeptGeometry,
@@ -17,13 +35,18 @@ import {
     buildScanDisplayInfo,
     buildScanDisplayInfoFromBBox,
     isNonZeroScanOffset,
+    resolveScanMeshMatrix,
 } from "@/lib/geometry/scan-display";
-import {
-    suggestScanLandmarks,
-    type SuggestedScanLandmarks,
-} from "@/lib/geometry/scan-landmark-suggest";
+import { type SuggestedScanLandmarks, suggestScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
 import { cn } from "@/lib/utils";
-import { type MarkerId, type ScanMarkers, useScanStore } from "@/stores/scan-store";
+import { useDesignStore } from "@/stores/design-store";
+import {
+    getScanRegistrationMatrix,
+    type MarkerId,
+    type ScanMarkers,
+    useScanStore,
+} from "@/stores/scan-store";
+import type { Side } from "@/types";
 
 const MARKER_LABELS = {
     M1: "M1 — 1st met head (medial)",
@@ -64,6 +87,7 @@ function ScanMarkersSection({
         else setOpen(true);
     }, [allAccepted]);
 
+    // biome-ignore lint/correctness/useExhaustiveDependencies: scanId is an intentional reset key
     useEffect(() => {
         // New suggestions (e.g. after cleanup) should prompt the user again.
         if (sug && !allAccepted) setOpen(true);
@@ -143,9 +167,7 @@ function ScanMarkersSection({
                         <button
                             type="button"
                             disabled={!baseReady}
-                            title={
-                                baseReady ? "Place M1→M2→M3 on the scan" : "Base geometry not loaded"
-                            }
+                            title={baseReady ? "Place M1→M2→M3 on the scan" : "Base geometry not loaded"}
                             onClick={onTogglePlacement}
                             className={cn(
                                 "flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
@@ -201,12 +223,65 @@ export function ScanImport() {
         deviationBusy,
         setDeviationOverlay,
         landmarkSourceAssetId,
+        rawBaseBySourceId,
         setCleanupBusy,
         setSuggestedLandmarks,
         setMarker,
     } = useScanStore();
+    const updateCorrection = useDesignStore((s) => s.updateCorrection);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [archFitMsgByScanId, setArchFitMsgByScanId] = useState<Record<string, string>>({});
+    const [archFitBusyId, setArchFitBusyId] = useState<string | null>(null);
+
+    const matchArchFromScan = (scanId: string) => {
+        setError(null);
+        const scan = useScanStore.getState().scans.find((s) => s.id === scanId);
+        const reg = useScanStore.getState().registrationByScanId[scanId];
+        if (!scan || !reg?.matrixElements || reg.incomplete || reg.error) {
+            setError("Register the scan (M1–M3) before matching arch parameters");
+            return;
+        }
+        const sourceId = useScanStore.getState().landmarkSourceAssetId;
+        const rawBase = sourceId ? useScanStore.getState().rawBaseBySourceId[sourceId] : undefined;
+        if (!rawBase) {
+            setError("Load a clinical base before matching arch from scan");
+            return;
+        }
+        setArchFitBusyId(scanId);
+        try {
+            const registration = getScanRegistrationMatrix(reg);
+            const offset = useScanStore.getState().manualOffsetByScanId[scanId];
+            const scanToBase = resolveScanMeshMatrix(scan.display, registration, offset);
+            const pos = scan.geometry.getAttribute("position");
+            if (!pos) throw new ArchFitError("insufficient_samples", "Scan has no positions");
+            const side: Side = reg.identifiedSide ?? scan.side;
+            const fit = fitArchParamsFromScan({
+                scanPositions: pos.array as ArrayLike<number>,
+                scanVertexCount: pos.count,
+                scanToBase,
+                reference: archFitReferenceFromBase(rawBase),
+                side,
+                lengthMm: INSOLE_LENGTH_MM,
+            });
+            updateCorrection(side, archFitToCorrectionPatch(fit));
+            setArchFitMsgByScanId((prev) => ({
+                ...prev,
+                [scanId]: `Arch ${fit.archHeightMm.toFixed(1)} mm · apex ${fit.apexMoveMm >= 0 ? "+" : ""}${fit.apexMoveMm.toFixed(1)} mm (peak gap ${fit.peakGapMm.toFixed(1)} mm${fit.clamped ? ", clamped" : ""})`,
+            }));
+        } catch (e) {
+            const msg =
+                e instanceof ArchFitError ? e.message : e instanceof Error ? e.message : "Arch match failed";
+            setError(msg);
+            setArchFitMsgByScanId((prev) => {
+                const next = { ...prev };
+                delete next[scanId];
+                return next;
+            });
+        } finally {
+            setArchFitBusyId(null);
+        }
+    };
 
     const onFiles = async (files: FileList | null) => {
         if (!files) return;
@@ -449,6 +524,37 @@ export function ScanImport() {
                                             {reg?.identifiedSide ? `${reg.identifiedSide} foot` : "—"}
                                         </span>
                                     </p>
+                                    <button
+                                        type="button"
+                                        disabled={
+                                            archFitBusyId === s.id ||
+                                            !landmarkSourceAssetId ||
+                                            !rawBaseBySourceId[landmarkSourceAssetId]
+                                        }
+                                        title="Set Arch height + Apex move from medial midfoot gap vs base"
+                                        onClick={() => matchArchFromScan(s.id)}
+                                        className={cn(
+                                            "mt-1 flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
+                                            "bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25",
+                                            (archFitBusyId === s.id ||
+                                                !landmarkSourceAssetId ||
+                                                !rawBaseBySourceId[landmarkSourceAssetId ?? ""]) &&
+                                                "cursor-not-allowed opacity-50",
+                                        )}
+                                    >
+                                        <Sparkles className="h-3 w-3" />
+                                        {archFitBusyId === s.id ? "Matching arch…" : "Match arch from scan"}
+                                    </button>
+                                    {archFitMsgByScanId[s.id] ? (
+                                        <p className="text-[10px] text-emerald-300/90">
+                                            {archFitMsgByScanId[s.id]}
+                                        </p>
+                                    ) : (
+                                        <p className="text-[10px] text-muted-foreground/80">
+                                            Estimates Arch height + Apex move from the plantar gap (simulation
+                                            — does not bake the scan mesh)
+                                        </p>
+                                    )}
                                 </>
                             )}
                             {(() => {
