@@ -104,6 +104,40 @@ describe("createDefaultStockPairedBases", () => {
         expect(right.name).toMatch(/\(Right\)/i);
     });
 
+    test("UUID + timestamped buildStockGlbKey path with legacy primarySide right stays ipsilateral", () => {
+        // ensureDefault uploads via buildStockGlbKey → stock/standard/default-stock-base-{ms}.glb
+        // which previously failed isBuiltinDefaultStockBase and kept primarySide right.
+        const resolved: DesignBase = {
+            assetId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            name: "Default Stock Base",
+            source: "stock",
+            glbPath: "stock/standard/default-stock-base-1719000000000.glb",
+            url: "https://example.supabase.co/storage/v1/object/public/stock-bases/stock/standard/default-stock-base-1719000000000.glb",
+            primarySide: "right",
+        };
+        const { left, right } = createDefaultStockPairedBases(resolved);
+        expect(left.mirrored).toBeFalsy();
+        expect(right.mirrored).toBe(true);
+        expect(left.primarySide).toBe("left");
+        expect(right.primarySide).toBe("left");
+        expect(left.name).toMatch(/\(Left\)/i);
+        expect(right.name).toMatch(/\(Right\)/i);
+    });
+
+    test("UUID default recognized by name when glbPath was stripped (pending resolve)", () => {
+        const pending: DesignBase = {
+            assetId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            name: "Default Stock Base (Right)",
+            source: "stock",
+            primarySide: "right",
+        };
+        const { left, right } = createDefaultStockPairedBases(pending);
+        expect(left.mirrored).toBeFalsy();
+        expect(right.mirrored).toBe(true);
+        expect(left.primarySide).toBe("left");
+        expect(left.name).toMatch(/\(Left\)/i);
+    });
+
     test("non-default stock with primarySide right keeps right as source", () => {
         const custom: DesignBase = {
             assetId: "custom-stock-uuid",
@@ -185,6 +219,34 @@ describe("sanitizeDesignStockBases", () => {
         expect(healed.paired?.rightBase?.mirrored).toBe(true);
         expect(healed.paired?.leftBase?.primarySide).toBe("left");
         expect(healed.paired?.rightBase?.primarySide).toBe("left");
+        expect(healed.paired?.leftBase?.name).toMatch(/\(Left\)/i);
+        expect(healed.paired?.rightBase?.name).toMatch(/\(Right\)/i);
+    });
+
+    test("heals contralateral pairing for UUID + timestamped default-stock-base path", () => {
+        const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        const path = "stock/standard/default-stock-base-1719000000000.glb";
+        const legacyLeft: DesignBase = {
+            assetId: id,
+            name: "Default Stock Base (Left)",
+            source: "stock",
+            glbPath: path,
+            mirrored: true,
+            mirroredFrom: id,
+            primarySide: "right",
+        };
+        const legacyRight: DesignBase = {
+            assetId: id,
+            name: "Default Stock Base (Right)",
+            source: "stock",
+            glbPath: path,
+            primarySide: "right",
+        };
+        const design = pairedDesign(legacyLeft, legacyRight);
+        const healed = sanitizeDesignStockBases(design);
+        expect(healed.paired?.leftBase?.mirrored).toBeFalsy();
+        expect(healed.paired?.rightBase?.mirrored).toBe(true);
+        expect(healed.paired?.leftBase?.primarySide).toBe("left");
         expect(healed.paired?.leftBase?.name).toMatch(/\(Left\)/i);
         expect(healed.paired?.rightBase?.name).toMatch(/\(Right\)/i);
     });
