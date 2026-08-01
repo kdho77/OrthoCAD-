@@ -11,7 +11,7 @@ export function RightPanel() {
                 <div className="border-b border-border p-2">
                     <TabsList className="grid w-full grid-cols-4">
                         <TabsTrigger value="corrections">Corrections</TabsTrigger>
-                        <TabsTrigger value="design">Design</TabsTrigger>
+                        <TabsTrigger value="design">Elements</TabsTrigger>
                         <TabsTrigger value="printing">Printing</TabsTrigger>
                         <TabsTrigger value="export">Export</TabsTrigger>
                     </TabsList>
