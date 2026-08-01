@@ -1,10 +1,10 @@
-import type { PlacedElement, Side, SideCorrections } from "@/types";
 import { elementHeightAt } from "@/lib/geometry/elements";
-import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
+import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
+import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
-import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
+import type { PlacedElement, Side, SideCorrections } from "@/types";
 
 // Shared parametric height field for insole surfaces. Used by both the procedural
 // Three.js mesher and the OpenCascade solid builder so corrections stay aligned.
@@ -75,6 +75,102 @@ export function heelCupWidthScaleFactor(u: number, heelCupWidthMm: number): numb
 export const HEEL_CUP_DEPTH_RIM_LATERAL_GAIN = 0.65;
 export const HEEL_CUP_DEPTH_RIM_POSTERIOR_GAIN = 0.85;
 export const HEEL_CUP_DEPTH_SEAT_GAIN = 0.35;
+
+// ── Flange longitudinal spans (mirrored from scan-fit-constants) ──────────
+// Kept inline so height-field stays free of scan-fit import cycles. Values
+// MUST match FLANGE_* in scan-fit-constants.ts.
+const FLANGE_MEDIAL_U_START = 0.3;
+const FLANGE_MEDIAL_U_END = 0.65;
+const FLANGE_LATERAL_U_START = 0.25;
+const FLANGE_LATERAL_U_END = 0.6;
+const FLANGE_FEATHER_U = 0.08;
+const FLANGE_PEAK_FRAC = 0.5;
+
+/**
+ * Cosine longitudinal profile for a flange span: 0 at both feathered ends,
+ * 1 across the interior (peak). Never terminates abruptly.
+ */
+export function flangeLongitudinalWeight(
+    u: number,
+    uStart: number,
+    uEnd: number,
+    featherU: number = FLANGE_FEATHER_U,
+    _peakFrac: number = FLANGE_PEAK_FRAC,
+): number {
+    if (uEnd <= uStart) return 0;
+    if (u < uStart || u > uEnd) return 0;
+    const span = uEnd - uStart;
+    const feather = Math.min(featherU, span * 0.45);
+    const dStart = u - uStart;
+    const dEnd = uEnd - u;
+    let w = 1;
+    if (dStart < feather) {
+        w = Math.min(w, 0.5 * (1 - Math.cos((Math.PI * dStart) / feather)));
+    }
+    if (dEnd < feather) {
+        w = Math.min(w, 0.5 * (1 - Math.cos((Math.PI * dEnd) / feather)));
+    }
+    return w;
+}
+
+/**
+ * Unit flange wall weight at (u, vSigned): longitudinal cosine × side blend ×
+ * rim-edge rise with inward falloff. Peak = 1 at the rim mid-span.
+ *
+ * FOLLOW-UP: the flange changes the rim profile the wall / bottomPattern
+ * generator will later consume — do not reconcile wall taper here.
+ */
+export function unitFlangeWeight(
+    u: number,
+    vSigned: number,
+    side: Side,
+    which: "medial" | "lateral",
+): number {
+    const medialSign = side === "left" ? -1 : 1;
+    const av = Math.abs(vSigned);
+    const m = -(vSigned * medialSign);
+    const medialBlend = smoothstep(-0.2, 0.45, m);
+    const lateralBlend = smoothstep(-0.2, 0.45, -m);
+    const sideBlend = which === "medial" ? medialBlend : lateralBlend;
+    if (sideBlend <= 0) return 0;
+
+    const uStart = which === "medial" ? FLANGE_MEDIAL_U_START : FLANGE_LATERAL_U_START;
+    const uEnd = which === "medial" ? FLANGE_MEDIAL_U_END : FLANGE_LATERAL_U_END;
+    const longW = flangeLongitudinalWeight(u, uStart, uEnd);
+    if (longW <= 0) return 0;
+
+    // Rim rise with inward blend: full at the edge, fades inboard so the
+    // flange is a curved wall continuous with the shell (not a fin).
+    const edgeRise = smoothstep(0.45, 0.95, av);
+    return longW * sideBlend * edgeRise;
+}
+
+/**
+ * Combined medial/lateral flange delta (mm). Crossfades against the heel-cup
+ * longitudinal envelope when heel cup depth is active so the proximal overlap
+ * does not double-add rim rise (partition: flange yields to heel cup).
+ */
+export function flangeDeltaAt(
+    u: number,
+    vSigned: number,
+    side: Side,
+    medialFlangeMm: number,
+    lateralFlangeMm: number,
+    heelCupDepthMm = 0,
+): number {
+    const med = medialFlangeMm > 0 ? medialFlangeMm * unitFlangeWeight(u, vSigned, side, "medial") : 0;
+    const lat = lateralFlangeMm > 0 ? lateralFlangeMm * unitFlangeWeight(u, vSigned, side, "lateral") : 0;
+    let delta = med + lat;
+    if (delta === 0) return 0;
+    // Proximal overlap with heel cup: soft gate spanning heel→flange junction.
+    // Heel envelope ends ~u=0.28; medial flange feathers in from u=0.30.
+    // Gate extends into the flange feather so the rises blend, not stack.
+    if (heelCupDepthMm > 0) {
+        const heelGate = smoothstep(0.4, 0.2, u);
+        delta *= 1 - heelGate;
+    }
+    return delta;
+}
 
 /**
  * Widened mask knees for heel-cup depth (subtractionWidened, PR #105 analysis).
@@ -210,8 +306,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const dish = smoothstep(0.12, 1.0, av); // raised edges, dished centre
     const medialRim = 12 * heelEnv + 16 * archEnv;
     const lateralRim = 12 * heelEnv + 5 * archEnv;
-    const baseline =
-        dish * (medialRim * medialBlend + lateralRim * lateralBlend) + 4 * toeEnv;
+    const baseline = dish * (medialRim * medialBlend + lateralRim * lateralBlend) + 4 * toeEnv;
 
     // Shaping that should feather toward the trimline edge (dome/cup/flange/
     // elements) accumulates in `shaped`; the planar posting tilt — which must
@@ -246,10 +341,9 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // Base-mesh preview sets includeSkives:false and applies the raise in
     // applyBaseModifiers *after* #119 bottom-shell sync (R11).
 
-    // --- Flanges (raised medial/lateral walls through the midfoot) ------------
-    const edge = smoothstep(0.55, 1.0, av);
-    const flangeRegion = bump(u, 0.45, 0.42);
-    shaped += (c.medialFlangeMm * medialBlend + c.lateralFlangeMm * lateralBlend) * flangeRegion * edge;
+    // Flanges are applied AFTER edge feather (see below) so the rim actually
+    // rises — feathering them with the dome/cup would collapse the STJ
+    // moment-arm operator at the trimline.
 
     // --- Placed elements (met pads, bars, sinks, …) ---------------------------
     const includeElements = params.includeElements ?? true;
@@ -276,6 +370,20 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     }
     shaped *= featherScale;
 
+    // --- Flanges (medial/lateral rim rise — STJ moment-arm operator) ----------
+    // Vertical displacement of existing rim vertices within the clinical span.
+    // Displacement only — no new verts / index change. Applied post-feather so
+    // the rim rises. FOLLOW-UP: wall/bottomPattern generator must later consume
+    // this raised rim profile (not reconciled here).
+    const flange = flangeDeltaAt(
+        u,
+        vSigned,
+        side,
+        c.medialFlangeMm ?? 0,
+        c.lateralFlangeMm ?? 0,
+        c.heelCupDepthMm ?? 0,
+    );
+
     // --- Posting (rearfoot / forefoot wedges) — full strength at the edge -----
     const post = vSigned * medialSign * halfW;
     let posting = Math.tan(c.rearfootPostingDeg * DEG) * post * heel;
@@ -300,7 +408,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // the flat z = 0 bottom stays stable on solid prints.
     const heelLift = heelLiftDeltaAt(u, c.heelLiftMm);
 
-    let h = softFloor(thicknessMm + baseline + shaped + posting + wedge + heelLift, 0.8);
+    let h = softFloor(thicknessMm + baseline + shaped + flange + posting + wedge + heelLift, 0.8);
 
     // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).
     // The graph is the new clinical source of truth when present; the flat
@@ -315,10 +423,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // loft path only when includeSkives is true. Must NOT run inside the field
     // that drives correctionDeltaAt / #119 bottom sync on loaded bases.
     const includeSkives = params.includeSkives ?? true;
-    if (
-        includeSkives &&
-        (c.medialSkiveMm > 0 || c.lateralSkiveMm > 0)
-    ) {
+    if (includeSkives && (c.medialSkiveMm > 0 || c.lateralSkiveMm > 0)) {
         const zCurrent = h;
         const raise = kirbySkiveRaiseAt(u, vSigned, side, c, {
             lengthMm,

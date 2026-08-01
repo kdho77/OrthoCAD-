@@ -28,8 +28,8 @@ const sideCorrectionPatch = z
         heelCupDepthMm: z.number(),
         heelCupHeightMm: z.number(),
         apexMoveMm: z.number(),
-        medialFlangeMm: z.number(),
-        lateralFlangeMm: z.number(),
+        medialFlangeMm: z.number().default(0),
+        lateralFlangeMm: z.number().default(0),
     })
     .partial();
 

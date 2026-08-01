@@ -12,9 +12,10 @@
  * Pitch = rotation about +Y (medial–lateral): z ≈ pitch_rad · (x − cx)
  * Roll  = rotation about +X (longitudinal):   z ≈ roll_rad  · (y − cy)
  *
- * Anatomically-banded reference (PR #140):
- *   offset+pitch ← heel band + lateral column (NOT medial arch)
- *   roll         ← heel band ONLY (preserves forefoot varus/valgus)
+ * Anatomically-banded reference (PR #140 / #141):
+ *   roll         ← posterior central heel FIRST (prevents roll→offset leakage
+ *                  via the asymmetric lateral-column sagittal band)
+ *   offset+pitch ← heel band + lateral column on the de-rolled field
  */
 
 import {
@@ -30,6 +31,9 @@ import {
     SCAN_FIT_RMS_FAIR_MM,
     SCAN_FIT_RMS_GOOD_MM,
     SCAN_FIT_ROLL_REFERENCE_HEEL_ONLY,
+    SCAN_FIT_ROLL_U_MAX,
+    SCAN_FIT_ROLL_V_ABS_MAX,
+    SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH,
 } from "@/lib/geometry/scan-fit-constants";
 import type { Side } from "@/types";
 
@@ -134,24 +138,40 @@ export function isArchBandSample(u: number): boolean {
 
 /**
  * Sagittal reference set: heel ∪ lateral column, excluding medial arch band.
+ * Under roll-first, strong medial heel samples are also dropped — the arch
+ * dome bleeds into the heel u-range and biases offset when pitch is present.
  */
 export function selectSagittalReferenceBand(
     samples: readonly BandedGapSample[],
     side: Side,
 ): BandedGapSample[] {
+    const medialSign = side === "left" ? -1 : 1;
     return samples.filter((s) => {
         if (SCAN_FIT_EXCLUDE_ARCH_BAND_FROM_RIGID && isArchBandSample(s.u)) {
             // Keep arch-band samples only if they are on the lateral column.
             return isLateralColumnSample(s.vSigned, side);
         }
-        return isHeelBandSample(s.u) || isLateralColumnSample(s.vSigned, side);
+        if (isHeelBandSample(s.u)) {
+            if (SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH) {
+                const m = -(s.vSigned * medialSign);
+                // Drop strong medial heel (arch-bleed); keep center + lateral.
+                return m < 0.25;
+            }
+            return true;
+        }
+        return isLateralColumnSample(s.vSigned, side);
     });
 }
 
-/** Roll reference: heel band only (when flag true). */
+/** Roll reference: posterior central heel bisection (when flag true). */
 export function selectRollReferenceBand(samples: readonly BandedGapSample[]): BandedGapSample[] {
     if (SCAN_FIT_ROLL_REFERENCE_HEEL_ONLY) {
-        return samples.filter((s) => isHeelBandSample(s.u));
+        return samples.filter(
+            (s) =>
+                s.u >= SCAN_FIT_HEEL_U_MIN &&
+                s.u <= SCAN_FIT_ROLL_U_MAX &&
+                Math.abs(s.vSigned) <= SCAN_FIT_ROLL_V_ABS_MAX,
+        );
     }
     return [...samples];
 }
@@ -283,7 +303,14 @@ export function fitOffsetPitch(samples: readonly GapSample[]): {
 
 /**
  * Anatomically-banded rigid decomposition.
- * Order: offset+pitch on sagittal band (a+b·x), then roll on heel band (c·y).
+ *
+ * When SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH:
+ *   1. Fit heel roll (c·y) on posterior central heel of the raw field
+ *   2. Subtract c·y only (a0 stays with the offset solve)
+ *   3. Fit offset+pitch (a+b·x) on heel ∪ lateral column of the de-rolled field
+ *
+ * This prevents registration roll from leaking into the global offset via the
+ * lateral-column band (entirely on one side of the midline).
  * Forefoot roll is readout-only and is NOT written into the subtraction plane.
  */
 export function decomposeRigidGapBanded(
@@ -294,16 +321,58 @@ export function decomposeRigidGapBanded(
     let pitchFallbackUsed = false;
     let rollUnsolvable = false;
 
-    const sagittalRaw = selectSagittalReferenceBand(samples, side);
+    let heelRollDeg = 0;
+    let c = 0;
+    let aRoll = 0;
+    let working: readonly BandedGapSample[] = samples;
+
+    if (SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH) {
+        // Pre-cleanse pitch on the heel band only (no lateral column) so the
+        // roll fit sees a level heel. This does NOT open the roll→offset path
+        // because the lateral column is excluded from the prelim.
+        const heelForPrelim = madRejectSamples(samples.filter((s) => isHeelBandSample(s.u)));
+        const prelim = heelForPrelim.length >= SCAN_FIT_MIN_SAMPLES ? fitOffsetPitch(heelForPrelim) : null;
+        const rollSource = prelim
+            ? samples.map((s) => ({
+                  ...s,
+                  gapMm: s.gapMm - (prelim.a + prelim.b * s.x),
+              }))
+            : samples;
+
+        const heelRaw = selectRollReferenceBand(rollSource);
+        const heel = madRejectSamples(heelRaw);
+        if (heel.length >= SCAN_FIT_MIN_SAMPLES) {
+            const heelRoll = fitRollOnBand(heel);
+            if (heelRoll) {
+                heelRollDeg = heelRoll.rollDeg;
+                c = heelRoll.c;
+                // Discard a0 — offset belongs to the subsequent sagittal solve.
+            } else {
+                rollUnsolvable = true;
+                warnings.push("Heel band insufficient for roll — auto-apply blocked");
+            }
+        } else {
+            rollUnsolvable = true;
+            warnings.push("Heel band insufficient for roll — auto-apply blocked");
+        }
+        // Subtract c·y from the ORIGINAL field, then solve final offset+pitch
+        // on heel ∪ lateral column of the de-rolled field.
+        working = samples.map((s) => ({
+            ...s,
+            gapMm: s.gapMm - c * s.y,
+        }));
+    }
+
+    const sagittalRaw = selectSagittalReferenceBand(working, side);
     let sagittal = madRejectSamples(sagittalRaw);
     if (sagittal.length < SCAN_FIT_MIN_SAMPLES) {
-        const expanded = samples.filter(
+        const expanded = working.filter(
             (s) =>
                 isHeelBandSample(s.u) ||
                 isLateralColumnSample(s.vSigned, side) ||
                 (!isArchBandSample(s.u) && Math.abs(s.vSigned) > 0.3),
         );
-        sagittal = madRejectSamples(expanded.length >= 3 ? expanded : samples);
+        sagittal = madRejectSamples(expanded.length >= 3 ? expanded : [...working]);
         pitchFallbackUsed = true;
         warnings.push(
             "Lateral/heel sagittal band thin — pitch solved on expanded set (confidence downgraded)",
@@ -313,34 +382,37 @@ export function decomposeRigidGapBanded(
     const sag = fitOffsetPitch(sagittal);
     if (!sag) return null;
 
-    // Remove offset+pitch, then fit heel roll on residual.
-    const afterSag = samples.map((s) => ({
-        ...s,
-        gapMm: s.gapMm - (sag.a + sag.b * s.x),
-    }));
-
-    const heelRaw = selectRollReferenceBand(afterSag);
-    const heel = madRejectSamples(heelRaw);
-    let heelRollDeg = 0;
-    let c = 0;
-    let aRoll = 0;
-
-    if (heel.length >= SCAN_FIT_MIN_SAMPLES) {
-        const heelRoll = fitRollOnBand(heel);
-        if (heelRoll) {
-            heelRollDeg = heelRoll.rollDeg;
-            c = heelRoll.c;
-            aRoll = heelRoll.a0;
+    if (!SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH) {
+        // Legacy order: offset+pitch first, then heel roll on residual.
+        const afterSag = samples.map((s) => ({
+            ...s,
+            gapMm: s.gapMm - (sag.a + sag.b * s.x),
+        }));
+        const heelRaw = selectRollReferenceBand(afterSag);
+        const heel = madRejectSamples(heelRaw);
+        if (heel.length >= SCAN_FIT_MIN_SAMPLES) {
+            const heelRoll = fitRollOnBand(heel);
+            if (heelRoll) {
+                heelRollDeg = heelRoll.rollDeg;
+                c = heelRoll.c;
+                aRoll = heelRoll.a0;
+            } else {
+                rollUnsolvable = true;
+                warnings.push("Heel band insufficient for roll — auto-apply blocked");
+            }
         } else {
             rollUnsolvable = true;
             warnings.push("Heel band insufficient for roll — auto-apply blocked");
         }
-    } else {
-        rollUnsolvable = true;
-        warnings.push("Heel band insufficient for roll — auto-apply blocked");
+        working = afterSag;
     }
 
-    const ffRaw = selectForefootBand(afterSag);
+    // FF roll readout on original field after removing offset+pitch only.
+    const afterPitchOnly = samples.map((s) => ({
+        ...s,
+        gapMm: s.gapMm - (sag.a + sag.b * s.x),
+    }));
+    const ffRaw = selectForefootBand(afterPitchOnly);
     const ff = madRejectSamples(ffRaw);
     let forefootRollDeg = heelRollDeg;
     if (ff.length >= 8) {
@@ -348,8 +420,6 @@ export function decomposeRigidGapBanded(
         if (ffRoll) forefootRollDeg = ffRoll.rollDeg;
     }
 
-    // Combined plane: (sag.a + aRoll) + sag.b·x + c·y
-    // Heel roll a0 is a small ML-mean residual after sagittal removal.
     const a = sag.a + aRoll;
     const b = sag.b;
 

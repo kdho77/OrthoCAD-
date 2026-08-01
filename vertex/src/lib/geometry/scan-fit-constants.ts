@@ -92,3 +92,51 @@ export const SCAN_FIT_PROFILE_RIDGE_LAMBDA = 0.05;
 
 /** Apex grid step (mm) for nonlinear profile search. */
 export const SCAN_FIT_APEX_SEARCH_STEP_MM = 1.0;
+
+/** Roll reference: heel band only (when flag true), posterior central strip.
+ * Extreme medial rim and distal heel are excluded — the arch dome bleeds
+ * proximally into the heel u-range on the medial side and would otherwise
+ * be misread as roll when roll is solved first. Posterior calcaneal
+ * bisection (u ≤ ROLL_U_MAX) is the clean frontal-plane reference. */
+export const SCAN_FIT_ROLL_U_MAX = 0.1;
+export const SCAN_FIT_ROLL_V_ABS_MAX = 0.35;
+
+// ── Rigid solve ordering ─────────────────────────────────────────
+// Roll MUST be solved before offset+pitch. The lateral column band lies
+// entirely on one side of the midline, so a real roll appears there as a
+// near-constant Z shift and gets absorbed into the offset term, which
+// then biases arch amplitude. Only the heel band spans both sides of the
+// midline, so only the heel band can observe roll cleanly.
+export const SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH = true;
+
+// ── Flange geometry ──────────────────────────────────────────────
+// Flange = vertical rise of the shell rim above the standard trimline.
+// Clinically this is a frontal-plane moment-arm operator about the STJ
+// axis: a medial flange increases supination moment (medially deviated
+// axis, high supination resistance); a lateral flange increases
+// pronation moment / lateral stability (laterally deviated axis).
+// It is NOT an accommodation feature and must not be confused with
+// heel cup depth, which encapsulates tissue and is near-inert for
+// axis moment arm.
+
+/** Medial flange longitudinal span: navicular through 1st met base. */
+export const FLANGE_MEDIAL_U_START = 0.3;
+export const FLANGE_MEDIAL_U_END = 0.65;
+
+/** Lateral flange longitudinal span: cuboid through 5th met base. */
+export const FLANGE_LATERAL_U_START = 0.25;
+export const FLANGE_LATERAL_U_END = 0.6;
+
+/** Cosine feather at both ends of each span (fraction of footprint length). */
+export const FLANGE_FEATHER_U = 0.08;
+
+/** Peak position within the span, as a fraction of span length. */
+export const FLANGE_PEAK_FRAC = 0.5;
+
+// ── Advisory flange fit ──────────────────────────────────────────
+// Edge-band gap is the noisiest region of any scan (capture dropout,
+// trim, skin fold). Flange fit is ADVISORY ONLY, never auto-applies,
+// and is held to a stricter sample floor than the plantar operators.
+export const SCAN_FIT_FLANGE_MIN_SAMPLES = 40;
+/** Soft tissue at the foot border. FLAGGED FOR PRINT VALIDATION. */
+export const SCAN_FIT_FLANGE_COMPLIANCE = 0.8;

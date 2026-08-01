@@ -80,9 +80,20 @@ function syntheticArchScan(opts: {
     pitchDeg?: number;
     offsetMm?: number;
     forefootValgusDeg?: number;
+    rollDeg?: number;
 }): Float32Array {
-    const { lengthMm, widthMm, heightMm, apexU, pitchDeg = 0, offsetMm = 0, forefootValgusDeg = 0 } = opts;
+    const {
+        lengthMm,
+        widthMm,
+        heightMm,
+        apexU,
+        pitchDeg = 0,
+        offsetMm = 0,
+        forefootValgusDeg = 0,
+        rollDeg = 0,
+    } = opts;
     const pitchRad = (pitchDeg * Math.PI) / 180;
+    const rollRad = (rollDeg * Math.PI) / 180;
     const ffRad = (forefootValgusDeg * Math.PI) / 180;
     const apexMove = (apexU - ARCH_DEFAULT_APEX_U) * lengthMm;
     const pts: number[] = [];
@@ -93,7 +104,7 @@ function syntheticArchScan(opts: {
             const x = u * lengthMm;
             const y = vSigned * (widthMm / 2);
             const w = unitArchWeight(u, vSigned, "left", lengthMm, apexMove);
-            let z = heightMm * w + offsetMm + Math.tan(pitchRad) * x;
+            let z = heightMm * w + offsetMm + Math.tan(pitchRad) * x + Math.tan(rollRad) * y;
             // Forefoot valgus: raise +Y in forefoot (u > 0.58) — survives heel-only roll.
             if (u > 0.58) {
                 z += Math.tan(ffRad) * y;
@@ -201,6 +212,32 @@ describe("fitArchParamsFromScan (banded + profile)", () => {
             lengthMm,
         });
         expect(Math.abs(fitP.amplitudePreComplianceMm - fit0.amplitudePreComplianceMm)).toBeLessThan(0.1);
+    });
+
+    test("HARD GATE — injected 2° roll does not leak into arch height (< 0.1 mm)", () => {
+        const lengthMm = 260;
+        const widthMm = 95;
+        const baseArgs = { lengthMm, widthMm, heightMm: 8, apexU: 0.42 };
+        const scan0 = syntheticArchScan(baseArgs);
+        const scanRoll = syntheticArchScan({ ...baseArgs, rollDeg: 2 });
+        const ref = flatBaseReference(lengthMm, widthMm);
+        const fit0 = fitArchParamsFromScan({
+            scanPositions: scan0,
+            scanVertexCount: scan0.length / 3,
+            scanToBase: new THREE.Matrix4().identity(),
+            reference: ref,
+            side: "left",
+            lengthMm,
+        });
+        const fitR = fitArchParamsFromScan({
+            scanPositions: scanRoll,
+            scanVertexCount: scanRoll.length / 3,
+            scanToBase: new THREE.Matrix4().identity(),
+            reference: ref,
+            side: "left",
+            lengthMm,
+        });
+        expect(Math.abs(fitR.amplitudePreComplianceMm - fit0.amplitudePreComplianceMm)).toBeLessThan(0.1);
     });
 
     test("Match twice is idempotent within CONVERGE_DELTA", () => {

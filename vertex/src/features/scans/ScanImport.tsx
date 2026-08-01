@@ -25,6 +25,11 @@ import {
     fitArchParamsFromScan,
 } from "@/lib/geometry/fit-arch-from-scan";
 import {
+    type FlangeFitSuggestion,
+    fitFlangeFromScan,
+    flangeFitToCorrectionPatch,
+} from "@/lib/geometry/fit-flange-from-scan";
+import {
     fitHeelCupFromScan,
     type HeelCupFitSuggestion,
     heelCupFitToCorrectionPatch,
@@ -58,6 +63,7 @@ import type { Side } from "@/types";
 type ScanFitReportState = {
     arch: ArchFitResult | null;
     heel: HeelCupFitSuggestion | null;
+    flange: FlangeFitSuggestion | null;
     blockReason: string | null;
 };
 
@@ -247,6 +253,7 @@ export function ScanImport() {
     const [fitReportByScanId, setFitReportByScanId] = useState<Record<string, ScanFitReportState>>({});
     const [archFitBusyId, setArchFitBusyId] = useState<string | null>(null);
     const [heelFitBusyId, setHeelFitBusyId] = useState<string | null>(null);
+    const [flangeFitBusyId, setFlangeFitBusyId] = useState<string | null>(null);
 
     const resolveScanContext = (scanId: string) => {
         const scan = useScanStore.getState().scans.find((s) => s.id === scanId);
@@ -303,6 +310,18 @@ export function ScanImport() {
             } catch {
                 heel = null;
             }
+            let flange: FlangeFitSuggestion | null = null;
+            try {
+                flange = fitFlangeFromScan({
+                    scanPositions: ctx.positions,
+                    scanVertexCount: ctx.vertexCount,
+                    scanToBase: ctx.scanToBase,
+                    reference: ctx.reference,
+                    side: ctx.side,
+                });
+            } catch {
+                flange = null;
+            }
 
             const blockReason = fit.confidence.registration.blockAutoApply
                 ? "Registration residual too high to fit reliably — re-run alignment"
@@ -316,7 +335,7 @@ export function ScanImport() {
 
             setFitReportByScanId((prev) => ({
                 ...prev,
-                [scanId]: { arch: fit, heel, blockReason },
+                [scanId]: { arch: fit, heel, flange, blockReason },
             }));
         } catch (e) {
             const msg =
@@ -352,6 +371,7 @@ export function ScanImport() {
                 [scanId]: {
                     arch: prev[scanId]?.arch ?? null,
                     heel,
+                    flange: prev[scanId]?.flange ?? null,
                     blockReason: prev[scanId]?.blockReason ?? null,
                 },
             }));
@@ -368,6 +388,40 @@ export function ScanImport() {
         }
     };
 
+    const suggestFlangeFromScan = (scanId: string) => {
+        setError(null);
+        const ctx = resolveScanContext(scanId);
+        if ("error" in ctx) {
+            setError(ctx.error);
+            return;
+        }
+        setFlangeFitBusyId(scanId);
+        try {
+            const flange = fitFlangeFromScan({
+                scanPositions: ctx.positions,
+                scanVertexCount: ctx.vertexCount,
+                scanToBase: ctx.scanToBase,
+                reference: ctx.reference,
+                side: ctx.side,
+            });
+            setFitReportByScanId((prev) => ({
+                ...prev,
+                [scanId]: {
+                    arch: prev[scanId]?.arch ?? null,
+                    heel: prev[scanId]?.heel ?? null,
+                    flange,
+                    blockReason: prev[scanId]?.blockReason ?? null,
+                },
+            }));
+        } catch (e) {
+            const msg =
+                e instanceof ArchFitError ? e.message : e instanceof Error ? e.message : "Flange fit failed";
+            setError(msg);
+        } finally {
+            setFlangeFitBusyId(null);
+        }
+    };
+
     const applyHeelCupSuggestion = (scanId: string) => {
         const report = fitReportByScanId[scanId];
         if (!report?.heel) return;
@@ -381,6 +435,24 @@ export function ScanImport() {
             return;
         }
         updateCorrection(ctx.side, heelCupFitToCorrectionPatch(report.heel));
+    };
+
+    const applyFlangeSuggestion = (scanId: string) => {
+        const report = fitReportByScanId[scanId];
+        if (!report?.flange) return;
+        if (
+            report.flange.confidence.registration.blockAutoApply ||
+            report.flange.confidence.tier === "poor"
+        ) {
+            setError("Registration residual too high to fit reliably — re-run alignment");
+            return;
+        }
+        const ctx = resolveScanContext(scanId);
+        if ("error" in ctx) {
+            setError(ctx.error);
+            return;
+        }
+        updateCorrection(ctx.side, flangeFitToCorrectionPatch(report.flange));
     };
 
     const onFiles = async (files: FileList | null) => {
@@ -647,7 +719,7 @@ export function ScanImport() {
                                     </button>
                                     {(() => {
                                         const report = fitReportByScanId[s.id];
-                                        if (!report?.arch && !report?.heel) {
+                                        if (!report?.arch && !report?.heel && !report?.flange) {
                                             return (
                                                 <p className="text-[10px] text-muted-foreground/80">
                                                     Estimates Arch height + Apex move from the plantar gap
@@ -657,7 +729,9 @@ export function ScanImport() {
                                         }
                                         const arch = report.arch;
                                         const heel = report.heel;
-                                        const conf = arch?.confidence ?? heel?.confidence;
+                                        const flange = report.flange;
+                                        const conf =
+                                            arch?.confidence ?? heel?.confidence ?? flange?.confidence;
                                         const tierLabel = conf
                                             ? conf.tier === "good"
                                                 ? "Good"
@@ -794,6 +868,66 @@ export function ScanImport() {
                                                 </div>
                                                 <p className="text-muted-foreground/70">
                                                     Heel cup is advisory only — never auto-applied
+                                                </p>
+                                                <div className="flex items-center gap-1 pt-0.5">
+                                                    <button
+                                                        type="button"
+                                                        disabled={
+                                                            flangeFitBusyId === s.id ||
+                                                            Boolean(report.blockReason) ||
+                                                            conf?.registration.blockAutoApply
+                                                        }
+                                                        onClick={() => suggestFlangeFromScan(s.id)}
+                                                        className={cn(
+                                                            "rounded px-2 py-0.5 text-[10px]",
+                                                            "bg-amber-500/15 text-amber-200 hover:bg-amber-500/25",
+                                                            (flangeFitBusyId === s.id ||
+                                                                report.blockReason ||
+                                                                conf?.registration.blockAutoApply) &&
+                                                                "cursor-not-allowed opacity-50",
+                                                        )}
+                                                    >
+                                                        {flangeFitBusyId === s.id
+                                                            ? "Suggesting…"
+                                                            : "Suggest flanges"}
+                                                    </button>
+                                                    {flange ? (
+                                                        <>
+                                                            <span className="text-amber-200/90">
+                                                                M {flange.suggestedMedialFlangeMm.toFixed(1)}
+                                                                {" / L "}
+                                                                {flange.suggestedLateralFlangeMm.toFixed(1)}{" "}
+                                                                mm
+                                                                {flange.clamped ? " (clamped)" : ""}
+                                                                {flange.medialInsufficient ||
+                                                                flange.lateralInsufficient
+                                                                    ? " · partial edge coverage"
+                                                                    : ""}
+                                                            </span>
+                                                            <button
+                                                                type="button"
+                                                                disabled={
+                                                                    flange.confidence.tier === "poor" ||
+                                                                    flange.confidence.registration
+                                                                        .blockAutoApply
+                                                                }
+                                                                onClick={() => applyFlangeSuggestion(s.id)}
+                                                                className={cn(
+                                                                    "ml-auto rounded px-2 py-0.5 text-[10px]",
+                                                                    "border border-amber-500/40 text-amber-100 hover:bg-amber-500/20",
+                                                                    (flange.confidence.tier === "poor" ||
+                                                                        flange.confidence.registration
+                                                                            .blockAutoApply) &&
+                                                                        "cursor-not-allowed opacity-50",
+                                                                )}
+                                                            >
+                                                                Apply flanges
+                                                            </button>
+                                                        </>
+                                                    ) : null}
+                                                </div>
+                                                <p className="text-muted-foreground/70">
+                                                    Flanges are advisory only — never auto-applied
                                                 </p>
                                             </div>
                                         );

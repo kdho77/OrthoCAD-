@@ -8,29 +8,29 @@ import type { SideCorrections, WedgeCorrection } from "@/types";
  * Allows future expansion for per-field rules, unit-aware limits, and export validation.
  */
 export interface ClinicalSpec {
-  min: number;
-  max: number;
-  unit?: "mm" | "deg" | "mixed";
-  description: string;
-  isCritical?: boolean; // if true, blocks export
+    min: number;
+    max: number;
+    unit?: "mm" | "deg" | "mixed";
+    description: string;
+    isCritical?: boolean; // if true, blocks export
 }
 
 // Example ClinicalSpec entries for wedges (per refined design)
 export const WEDGE_CLINICAL_SPECS: Record<string, ClinicalSpec> = {
-  rearfootWedge: {
-    min: 0,
-    max: 10,
-    unit: "mixed", // mm or deg (value interpretation depends on unit in object)
-    description: "Rearfoot medial/lateral wedge (surface raise on plantar side)",
-    isCritical: false, // soft warning; hard clamp only
-  },
-  forefootWedge: {
-    min: 0,
-    max: 10,
-    unit: "mixed",
-    description: "Forefoot medial/lateral wedge (surface raise on plantar side)",
-    isCritical: false,
-  },
+    rearfootWedge: {
+        min: 0,
+        max: 10,
+        unit: "mixed", // mm or deg (value interpretation depends on unit in object)
+        description: "Rearfoot medial/lateral wedge (surface raise on plantar side)",
+        isCritical: false, // soft warning; hard clamp only
+    },
+    forefootWedge: {
+        min: 0,
+        max: 10,
+        unit: "mixed",
+        description: "Forefoot medial/lateral wedge (surface raise on plantar side)",
+        isCritical: false,
+    },
 };
 
 /**
@@ -63,8 +63,10 @@ export const CLINICAL_LIMITS = {
     // rigid stilt and the longitudinal ramp angle stays printable/grindable.
     heelLiftMm: { min: 0, max: 20.0 },
     apexMoveMm: { min: -12, max: 12 },
-    medialFlangeMm: { min: 0, max: 8.0 },
-    lateralFlangeMm: { min: 0, max: 8.0 },
+    // Flange clamps raised to 25 mm (clinical STJ moment-arm operator).
+    // FLAGGED FOR PHYSICAL PRINT VALIDATION.
+    medialFlangeMm: { min: 0, max: 25.0 },
+    lateralFlangeMm: { min: 0, max: 25.0 },
     // Wedge limits (per the wedge design). Applied to the .value inside the wedge object.
     // mm: absolute raise on the edge. deg: angle (converted internally for clamping).
     rearfootWedgeMm: { min: 0, max: 10 },
@@ -124,10 +126,7 @@ function clamp(
  * true height field + trimline determine final local thickness) but good enough
  * to prevent the most common "impossible shell" states during interactive editing.
  */
-export function constrainSideCorrections(
-    corrections: SideCorrections,
-    thicknessMm: number,
-): ConstrainResult {
+export function constrainSideCorrections(corrections: SideCorrections, thicknessMm: number): ConstrainResult {
     const v: ConstraintViolation[] = [];
 
     let t = thicknessMm;
@@ -155,8 +154,9 @@ export function constrainSideCorrections(
     ];
 
     for (const [key, lim] of pairs) {
-        const raw = (c as any)[key] as number;
-        const res = clamp(raw, lim.min, lim.max, key);
+        const raw = (c as any)[key];
+        const num = typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
+        const res = clamp(num, lim.min, lim.max, key);
         (c as any)[key] = res.value;
         if (res.violation) v.push(res.violation);
     }
@@ -256,9 +256,14 @@ export function constrainSideCorrections(
         if (!w) continue;
 
         const spec = WEDGE_CLINICAL_SPECS[key as string] || { min: 0, max: 10, description: String(key) };
-        const limKey = w.unit === "mm" 
-            ? (key === "rearfootWedge" ? "rearfootWedgeMm" : "forefootWedgeMm")
-            : (key === "rearfootWedge" ? "rearfootWedgeDeg" : "forefootWedgeDeg");
+        const limKey =
+            w.unit === "mm"
+                ? key === "rearfootWedge"
+                    ? "rearfootWedgeMm"
+                    : "forefootWedgeMm"
+                : key === "rearfootWedge"
+                  ? "rearfootWedgeDeg"
+                  : "forefootWedgeDeg";
         const lim = (CLINICAL_LIMITS as any)[limKey] || { min: 0, max: 10 };
 
         const rawVal = w.value;
@@ -297,8 +302,10 @@ export function constrainDesignCorrections(
             {
                 ...r1.constrained,
                 // average extremes slightly toward safety for scalar postings
-                forefootPostingDeg: (r1.constrained.forefootPostingDeg + r2.constrained.forefootPostingDeg) / 2,
-                rearfootPostingDeg: (r1.constrained.rearfootPostingDeg + r2.constrained.rearfootPostingDeg) / 2,
+                forefootPostingDeg:
+                    (r1.constrained.forefootPostingDeg + r2.constrained.forefootPostingDeg) / 2,
+                rearfootPostingDeg:
+                    (r1.constrained.rearfootPostingDeg + r2.constrained.rearfootPostingDeg) / 2,
                 // Mirror wedges for linked symmetry (do not average objects)
                 rearfootWedge: leftWedge,
                 forefootWedge: rightWedge,

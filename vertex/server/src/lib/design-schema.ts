@@ -23,8 +23,9 @@ const sideCorrection = z.object({
     heelCupWidthMm: z.number().optional(),
     heelLiftMm: z.number().optional(),
     apexMoveMm: z.number(),
-    medialFlangeMm: z.number(),
-    lateralFlangeMm: z.number(),
+    // Flange fields default to 0 when absent from legacy payloads.
+    medialFlangeMm: z.number().default(0),
+    lateralFlangeMm: z.number().default(0),
     rearfootWedge: wedgeCorrection.optional(),
     forefootWedge: wedgeCorrection.optional(),
 });
