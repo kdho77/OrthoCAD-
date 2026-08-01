@@ -24,6 +24,12 @@ import {
 } from "@/features/library/custom-library-service";
 import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
 import { ScanImport } from "@/features/scans/ScanImport";
+import {
+    DEFAULT_US_MEN_SIZE,
+    formatUsShoeSizeLabel,
+    insoleLayoutFromDesign,
+    usShoeSizeOptions,
+} from "@/lib/geometry/shoe-size";
 import { mergePrefabLibrary, STOCK_PREFABS } from "@/lib/library/manifest";
 import { cn } from "@/lib/utils";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
@@ -38,7 +44,7 @@ const METHODS: { id: ProductionMethod; label: string }[] = [
 ];
 
 export function LeftSidebar() {
-    const { design, setPattern, setMethod } = useDesignStore();
+    const { design, setPattern, setMethod, setUsShoeSize } = useDesignStore();
     const customPrefabs = useCustomLibraryStore((s) => s.customPrefabs);
     const libraryLoading = useCustomLibraryStore((s) => s.loading);
     const baseMeshLoading = useDesignStore(
@@ -301,6 +307,10 @@ export function LeftSidebar() {
                 </div>
             </Section>
 
+            <Section icon={<Footprints className="h-3.5 w-3.5" />} title="Shoe size (US)">
+                <ShoeSizeSelect value={design.usMenSize ?? DEFAULT_US_MEN_SIZE} onChange={setUsShoeSize} />
+            </Section>
+
             <Section icon={<FileBox className="h-3.5 w-3.5" />} title="Import">
                 <ScanImport />
             </Section>
@@ -335,6 +345,30 @@ function Section({
                 {title}
             </div>
             {children}
+        </div>
+    );
+}
+
+function ShoeSizeSelect({ value, onChange }: { value: number; onChange: (menSize: number) => void }) {
+    const options = usShoeSizeOptions();
+    const layout = insoleLayoutFromDesign({ usMenSize: value });
+    return (
+        <div className="space-y-1.5">
+            <select
+                className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                value={String(value)}
+                aria-label="US shoe size"
+                onChange={(e) => onChange(Number(e.target.value))}
+            >
+                {options.map((opt) => (
+                    <option key={opt.menSize} value={String(opt.menSize)}>
+                        {opt.label}
+                    </option>
+                ))}
+            </select>
+            <p className="text-[10px] text-muted-foreground">
+                {formatUsShoeSizeLabel(value)} · {layout.lengthMm.toFixed(0)} × {layout.widthMm.toFixed(0)} mm
+            </p>
         </div>
     );
 }

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useInsoleGeometry } from "@/hooks/useInsoleGeometry";
-import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { sideOffsetX } from "@/lib/geometry/layout";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { getDesignTrimline } from "@/lib/geometry/trimline";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, Side } from "@/types";
@@ -42,6 +43,8 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
         vertexOverrides,
         applyEdits,
     });
+
+    const layout = insoleLayoutFromDesign(design);
 
     const material = useMemo(() => {
         if (heightmap) {
@@ -93,7 +96,7 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
         [],
     );
 
-    const offsetX = sideOffsetX(side);
+    const offsetX = sideOffsetX(side, layout.widthMm);
     const displayGeo = coloredGeometry ?? geometry;
 
     if (!displayGeo || building) return null;
@@ -103,7 +106,7 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
             <mesh
                 geometry={displayGeo}
                 material={material}
-                position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}
+                position={[-layout.lengthMm / 2, offsetX, 0]}
                 castShadow
                 receiveShadow
             />

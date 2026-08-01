@@ -12,6 +12,12 @@ import {
     sanitizeDesignStockBases,
 } from "@/lib/geometry/base-asset";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
+import {
+    DEFAULT_US_MEN_SIZE,
+    insoleLayoutForUsMenSize,
+    insoleLayoutFromDesign,
+    normalizeUsMenSize,
+} from "@/lib/geometry/shoe-size";
 import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { isSupabaseConfigured } from "@/lib/supabase";
@@ -81,6 +87,7 @@ export function defaultDesign(): DesignState {
         pattern: "full_contact",
         method: "printing_solid",
         thicknessMm: 3,
+        usMenSize: DEFAULT_US_MEN_SIZE,
         corrections: {
             unit: "mm",
             linked: true,
@@ -337,6 +344,8 @@ export interface DesignStore {
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
+    /** Change US shoe size and auto-scale footprint, trimlines, and element placement. */
+    setUsShoeSize: (menSize: number) => void;
 
     /** Patch corrections for a side. When linked, mirrors to the other side. */
     updateCorrection: (side: Side, patch: Partial<SideCorrections>) => void;
@@ -491,6 +500,42 @@ export const useDesignStore = create<DesignStore>()(
                         paired: s.design.paired ? { ...s.design.paired, linked } : undefined,
                     },
                 })),
+
+            setUsShoeSize: (menSize) =>
+                set((s) => {
+                    const nextSize = normalizeUsMenSize(menSize);
+                    const prev = insoleLayoutFromDesign(s.design);
+                    if (prev.usMenSize === nextSize) {
+                        return { design: { ...s.design, usMenSize: nextSize } };
+                    }
+                    const next = insoleLayoutForUsMenSize(nextSize);
+                    const sx = next.lengthMm / prev.lengthMm;
+                    const sy = next.widthMm / prev.widthMm;
+
+                    const elements = s.design.elements.map((el) => ({
+                        ...el,
+                        position: { x: el.position.x * sx, y: el.position.y * sy },
+                    }));
+
+                    let trimlines = s.design.trimlines;
+                    if (trimlines) {
+                        const scalePts = (pts: { x: number; y: number; z: number }[] | undefined) =>
+                            pts?.map((p) => ({ ...p, x: p.x * sx, y: p.y * sy }));
+                        trimlines = {
+                            left: scalePts(trimlines.left),
+                            right: scalePts(trimlines.right),
+                        };
+                    }
+
+                    return {
+                        design: {
+                            ...s.design,
+                            usMenSize: nextSize,
+                            elements,
+                            trimlines,
+                        },
+                    };
+                }),
 
             updateCorrection: (side, patch) =>
                 set((s) => {

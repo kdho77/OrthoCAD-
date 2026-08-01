@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { sideOffsetX } from "@/lib/geometry/layout";
 import { getMarkerFrame, mirrorBaseLandmarks } from "@/lib/geometry/marker-frame";
 import { extractKeptGeometry, type ScanComponentLabeling } from "@/lib/geometry/scan-components";
 import {
@@ -17,6 +17,8 @@ import {
     type ScanManualOffset,
 } from "@/lib/geometry/scan-display";
 import { buildDecimatedPickGeometry, scanNeedsPickProxy } from "@/lib/geometry/scan-pick-mesh";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { useDesignStore } from "@/stores/design-store";
 import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
 
 const CLINICIAN_MARKER_COLOR = "#f59e0b";
@@ -148,10 +150,12 @@ function RegisteredScanMesh({
     useEffect(() => () => hoverGeo?.dispose(), [hoverGeo]);
 
     const displayGeo = coloredGeo ?? geometry;
-    const offsetY = sideOffsetX(side);
+    const usMenSize = useDesignStore((s) => s.design.usMenSize);
+    const layout = insoleLayoutFromDesign({ usMenSize });
+    const offsetY = sideOffsetX(side, layout.widthMm);
     const registered = !!registration;
     // Same footprint slot as the base — unregistered scans must be on-screen (M2/M4).
-    const posX = -INSOLE_LENGTH_MM / 2;
+    const posX = -layout.lengthMm / 2;
     const meshMatrix = resolveScanMeshMatrix(display, registration, manualOffset);
 
     const landmarks =

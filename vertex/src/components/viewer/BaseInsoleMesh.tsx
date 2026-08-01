@@ -1,7 +1,8 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { useBaseInsoleGeometry } from "@/hooks/useBaseInsoleGeometry";
-import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { sideOffsetX } from "@/lib/geometry/layout";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { useDesignStore } from "@/stores/design-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { Side } from "@/types";
@@ -39,19 +40,20 @@ export function BaseInsoleMesh({ side, transparent }: { side: Side; transparent:
 
     if (!geometry || building) return null;
 
-    const offsetX = sideOffsetX(side);
+    const layout = insoleLayoutFromDesign(design);
+    const offsetX = sideOffsetX(side, layout.widthMm);
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             <mesh
                 geometry={geometry}
                 material={material}
-                position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}
+                position={[-layout.lengthMm / 2, offsetX, 0]}
                 castShadow={!building}
                 receiveShadow
             />
             {/* Edge extract is expensive on large bases — only when idle. */}
             {!interacting ? (
-                <lineSegments position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}>
+                <lineSegments position={[-layout.lengthMm / 2, offsetX, 0]}>
                     <edgesGeometry args={[geometry, 35]} />
                     <lineBasicMaterial color={sideColors[side]} transparent opacity={0.35} />
                 </lineSegments>

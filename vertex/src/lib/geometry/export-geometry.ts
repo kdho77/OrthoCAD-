@@ -2,19 +2,24 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
-import { ensureKernelReady, getKernel, isAuthoritativeKernel, isKernelInitFailed } from "@/lib/chili3d/kernel";
+import {
+    ensureKernelReady,
+    getKernel,
+    isAuthoritativeKernel,
+    isKernelInitFailed,
+} from "@/lib/chili3d/kernel";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
-import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
+import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
 import {
     assertClosedSolidAcceptable,
     closeGlbInsoleToSolid,
     DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
+import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
-import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { useDesignStore } from "@/stores/design-store";
 import type { DesignState, ProductionMethod, Side } from "@/types";
 
@@ -44,17 +49,21 @@ async function buildModifiedBaseGeometry(
     if (!base) return null;
     const raw = await loadBaseGeometry(base);
     if (!raw) return null;
+    let sized: BufferGeometry | null = null;
     try {
+        const layout = insoleLayoutFromDesign(design);
+        sized = scaleGeometryToInsoleSize(raw, layout.lengthMm, layout.widthMm);
         const effThickness = design.paired
             ? side === "left"
                 ? design.paired.leftThicknessMm
                 : design.paired.rightThicknessMm
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, effThickness);
-        const result = getKernel().buildFromBase(raw, field, smoothingIterations);
+        const result = getKernel().buildFromBase(sized, field, smoothingIterations);
         return result.geometry;
     } finally {
         raw.dispose();
+        sized?.dispose();
     }
 }
 
@@ -92,8 +101,11 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
 
     const raw = await loadRawBaseGeometry(design, side);
     if (!raw) return null;
+    let sized: BufferGeometry | null = null;
 
     try {
+        const layout = insoleLayoutFromDesign(design);
+        sized = scaleGeometryToInsoleSize(raw, layout.lengthMm, layout.widthMm);
         const effThickness = design.paired
             ? side === "left"
                 ? design.paired.leftThicknessMm
@@ -107,7 +119,7 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
             }
             return null;
         }
-        const stl = kernel.exportManufacturingStlFromBase(raw, field) ?? null;
+        const stl = kernel.exportManufacturingStlFromBase(sized, field) ?? null;
         if (stl) {
             if (typeof console !== "undefined") {
                 console.log("[EXPORT] OCCT sew path: success");
@@ -115,7 +127,9 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
             return stl;
         }
         if (typeof console !== "undefined") {
-            console.warn("[EXPORT] OCCT sew path: failed reason=sew returned null — falling back to mesh-close");
+            console.warn(
+                "[EXPORT] OCCT sew path: failed reason=sew returned null — falling back to mesh-close",
+            );
         }
         return null;
     } catch (err) {
@@ -126,6 +140,7 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
         return null;
     } finally {
         raw.dispose();
+        sized?.dispose();
     }
 }
 
@@ -187,7 +202,8 @@ export async function buildExportGlbGeometry(side: Side): Promise<BufferGeometry
     if (modifiedBase) return modifiedBase;
 
     const params = insoleParamsFromDesign(design, side, "full");
-    const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
+    const layout = insoleLayoutFromDesign(design);
+    const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(layout.lengthMm, layout.widthMm);
 
     if (isAuthoritativeKernel()) {
         try {

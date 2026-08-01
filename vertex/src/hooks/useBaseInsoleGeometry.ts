@@ -11,9 +11,10 @@ import {
     StockGlbLoadError,
     stockBaseNeedsServerResolution,
 } from "@/lib/geometry/base-asset";
-import { computeBaseBounds } from "@/lib/geometry/base-bounds";
+import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
+import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
@@ -52,7 +53,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const assetId = base?.assetId ?? null;
     const isMirroredForLoad = !!base?.mirrored;
     const baseUrl = base?.url ?? null;
+    const layout = insoleLayoutFromDesign(design);
 
+    const nativeGeoRef = useRef<BufferGeometry | null>(null);
     const baseGeoRef = useRef<BufferGeometry | null>(null);
     /** Full-resolution deform target (never trim-clipped); reused across slider frames. */
     const workRef = useRef<BufferGeometry | null>(null);
@@ -66,6 +69,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     // biome-ignore lint/correctness/useExhaustiveDependencies: loadKey captures asset + mirror variant
     useEffect(() => {
         let cancelled = false;
+        nativeGeoRef.current?.dispose();
+        nativeGeoRef.current = null;
         baseGeoRef.current?.dispose();
         baseGeoRef.current = null;
         if (outRef.current && outRef.current !== workRef.current) {
@@ -142,23 +147,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     geo?.dispose();
                     return;
                 }
-                baseGeoRef.current = geo;
-                // Publish an outline (legacy) and the richer BaseBounds (Phase 3A production editing).
-                // Use cacheKey (includes :mirrored suffix for auto-mirrored stock Left) so mirrored variant
-                // gets its own shape-specific outline/bounds instead of colliding with the source assetId.
-                const cacheKey = getBaseCacheKey(ref);
-                const lookupKey = cacheKey ?? ref?.assetId ?? null;
-                if (geo && lookupKey) {
-                    if (!useBaseOutlineStore.getState().getOutline(lookupKey)) {
-                        const outline = extractMeshOutline(geo);
-                        if (outline) useBaseOutlineStore.getState().setOutline(lookupKey, outline);
-                    }
-                    if (!useBaseBoundsStore.getState().getBounds(lookupKey)) {
-                        // computeBaseBounds is cached internally and also stores outline + zones + safe margins.
-                        const b = computeBaseBounds(geo, lookupKey);
-                        useBaseBoundsStore.getState().setBounds(lookupKey, b);
-                    }
-                }
+                nativeGeoRef.current = geo;
                 // Phase 2 — register raw L0 once per source asset (J1: mirrored-only safe).
                 if (geo && ref) {
                     try {
@@ -190,9 +179,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         useScanStore.getState().setLandmarkSourceAssetId(null);
                     }
                 }
+                // Signal size effect / modifier rebuild.
+                setBuilding(false);
             })
             .catch((e) => {
                 if (cancelled) return;
+                nativeGeoRef.current = null;
                 baseGeoRef.current = null;
                 setGeometry(null);
                 setBaseMeshLoading(side, false);
@@ -208,6 +200,32 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             setBaseMeshLoading(side, false);
         };
     }, [loadKey, stockBaseLoading, stockBaseResolutionState, setBaseMeshLoading, side]);
+
+    // Scale native template to the selected shoe size; publish outline/bounds for the sized mesh.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: rebuild when native load finishes (building→false)
+    useEffect(() => {
+        const native = nativeGeoRef.current;
+        if (!native || !assetId) return;
+        const ref = getDesignBase(design, side);
+        const sized = scaleGeometryToInsoleSize(native, layout.lengthMm, layout.widthMm);
+        if (baseGeoRef.current && baseGeoRef.current !== native) {
+            baseGeoRef.current.dispose();
+        }
+        baseGeoRef.current = sized;
+        if (workRef.current) {
+            workRef.current.dispose();
+            workRef.current = null;
+        }
+
+        const cacheKey = ref ? getBaseCacheKey(ref) : null;
+        const lookupKey = cacheKey ?? ref?.assetId ?? assetId;
+        // Invalidate prior size so outline/bounds refresh for the new footprint.
+        clearBaseBoundsCache(lookupKey);
+        const b = computeBaseBounds(sized, lookupKey);
+        useBaseBoundsStore.getState().setBounds(lookupKey, b);
+        const outline = extractMeshOutline(sized);
+        if (outline) useBaseOutlineStore.getState().setOutline(lookupKey, outline);
+    }, [assetId, side, layout.lengthMm, layout.widthMm, layout.usMenSize, building, design]);
 
     // Re-apply modifiers whenever corrections / elements / thickness change.
     // biome-ignore lint/correctness/useExhaustiveDependencies: preview patches + live draft trimline are intentional triggers
@@ -275,7 +293,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
 
     useEffect(
         () => () => {
-            baseGeoRef.current?.dispose();
+            nativeGeoRef.current?.dispose();
+            if (baseGeoRef.current && baseGeoRef.current !== nativeGeoRef.current) {
+                baseGeoRef.current.dispose();
+            }
             if (outRef.current && outRef.current !== workRef.current) {
                 outRef.current.dispose();
             }

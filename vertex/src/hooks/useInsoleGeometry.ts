@@ -3,8 +3,8 @@ import type { BufferGeometry } from "three";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
-import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import type { GeometryQuality } from "@/lib/geometry/quality";
+import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import { useKernelStore } from "@/stores/kernel-store";
 import { mergeCorrections, mergeElementPreviews, usePerformanceStore } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
@@ -56,7 +56,13 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         setBuilding(true);
         geometryEngine.cancelStaleBuilds();
 
-        const thicknessMm = thicknessPreview ?? (design.paired ? (side === 'left' ? design.paired.leftThicknessMm : design.paired.rightThicknessMm) : design.thicknessMm);
+        const thicknessMm =
+            thicknessPreview ??
+            (design.paired
+                ? side === "left"
+                    ? design.paired.leftThicknessMm
+                    : design.paired.rightThicknessMm
+                : design.thicknessMm);
         const params = {
             ...insoleParamsFromDesign(design, side, quality),
             corrections: mergeCorrections(side, design.corrections[side]),
@@ -93,6 +99,7 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         side,
         design.thicknessMm,
         design.method,
+        design.usMenSize,
         design.corrections,
         design.elements,
         trimLines,

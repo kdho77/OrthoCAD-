@@ -1,16 +1,14 @@
 import type * as THREE from "three";
 import { create } from "zustand";
-import { getDesignBase } from "@/lib/geometry/base-asset";
-import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import {
     cloneTrimline,
     getDesignTrimline,
     sampleDefaultOutline,
     type TrimlineCurve,
 } from "@/lib/geometry/trimline";
-import { buildEffectiveTrimlines } from "@/stores/issues-store";
-import { getBaseCacheKey } from "@/lib/geometry/base-asset";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useIssuesStore } from "@/stores/issues-store";
@@ -85,7 +83,10 @@ function committedOrDefault(side: Side): TrimlineCurve {
         const outline = useBaseOutlineStore.getState().getOutline(key);
         if (outline) return cloneTrimline(outline);
     }
-    return sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
+    return sampleDefaultOutline(
+        insoleLayoutFromDesign(design).lengthMm,
+        insoleLayoutFromDesign(design).widthMm,
+    );
 }
 
 export const useMeshEditStore = create<MeshEditStore>((set, get) => ({

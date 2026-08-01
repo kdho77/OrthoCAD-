@@ -209,6 +209,12 @@ export interface DesignState {
     base?: DesignBase;
     method: ProductionMethod;
     thicknessMm: number;
+    /**
+     * US Men's shoe size (half steps) driving automatic footprint scale.
+     * Women's = men + 1.5; Youth shares the men's number for sizes ≤ 7.
+     * Absent ⇒ Men's 9 (260 × 95 mm reference template).
+     */
+    usMenSize?: number;
     corrections: Corrections;
     elements: PlacedElement[];
     /** User-edited insole outline curves — persisted with the design. */
