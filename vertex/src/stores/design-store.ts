@@ -11,6 +11,7 @@ import {
     StockBaseResolutionError,
     sanitizeDesignStockBases,
 } from "@/lib/geometry/base-asset";
+import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { defaultElementPose } from "@/lib/geometry/elements";
 import {
@@ -132,7 +133,7 @@ export function defaultDesign(): DesignState {
     return {
         pattern: "full_contact",
         method: "printing_solid",
-        thicknessMm: 3,
+        thicknessMm: BASE_REFERENCE_THICKNESS_MM,
         sizeSystem: DEFAULT_SHOE_SIZE_SYSTEM,
         usMenSize: DEFAULT_US_MEN_SIZE,
         corrections: {
@@ -181,8 +182,8 @@ export function createDesignWithStockPlaceholder(design?: DesignState): DesignSt
         paired: {
             leftBase: left,
             rightBase: right,
-            leftThicknessMm: d.thicknessMm ?? 3,
-            rightThicknessMm: d.thicknessMm ?? 3,
+            leftThicknessMm: d.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
+            rightThicknessMm: d.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
             leftMethod: d.method,
             rightMethod: d.method,
             linked: false,
@@ -703,7 +704,7 @@ export const useDesignStore = create<DesignStore>()(
 
             setPairedBases: (left, right) =>
                 set((s) => {
-                    const currentThickness = s.design.thicknessMm || 3;
+                    const currentThickness = s.design.thicknessMm || BASE_REFERENCE_THICKNESS_MM;
                     const currentMethod = s.design.method || "printing_solid";
                     const newPaired = {
                         leftBase: left,
@@ -854,9 +855,13 @@ export const useDesignStore = create<DesignStore>()(
                                 leftBase: left,
                                 rightBase: right,
                                 leftThicknessMm:
-                                    s.design.paired?.leftThicknessMm ?? s.design.thicknessMm ?? 3,
+                                    s.design.paired?.leftThicknessMm ??
+                                    s.design.thicknessMm ??
+                                    BASE_REFERENCE_THICKNESS_MM,
                                 rightThicknessMm:
-                                    s.design.paired?.rightThicknessMm ?? s.design.thicknessMm ?? 3,
+                                    s.design.paired?.rightThicknessMm ??
+                                    s.design.thicknessMm ??
+                                    BASE_REFERENCE_THICKNESS_MM,
                                 leftMethod: s.design.paired?.leftMethod ?? s.design.method,
                                 rightMethod: s.design.paired?.rightMethod ?? s.design.method,
                                 linked: s.design.paired?.linked ?? false,

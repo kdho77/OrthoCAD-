@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "@rstest/core";
 import {
+    BASE_REFERENCE_THICKNESS_MM,
     createDefaultStockPairedBases,
     getDefaultStockBaseSync,
     getDesignBase,
@@ -28,7 +29,7 @@ function pairedDesign(leftBase: DesignBase, rightBase: DesignBase): DesignState 
     return {
         pattern: "custom",
         method: "printing_solid",
-        thicknessMm: 3,
+        thicknessMm: BASE_REFERENCE_THICKNESS_MM,
         corrections: {
             unit: "mm",
             linked: false,
@@ -39,8 +40,8 @@ function pairedDesign(leftBase: DesignBase, rightBase: DesignBase): DesignState 
         paired: {
             leftBase,
             rightBase,
-            leftThicknessMm: 3,
-            rightThicknessMm: 3,
+            leftThicknessMm: BASE_REFERENCE_THICKNESS_MM,
+            rightThicknessMm: BASE_REFERENCE_THICKNESS_MM,
             leftMethod: "printing_solid",
             rightMethod: "printing_solid",
             linked: false,

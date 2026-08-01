@@ -37,8 +37,8 @@ const PRECHANGE_GROUND_BAND = {
     count: 39352,
     /** max |Δlift| between adjacent bottom wall verts at t=7 on main, absolute. */
     wallRampMaxAdjLiftAt7: 1.7628222703933716,
-    /** expectedLift under old (t−3) semantics at t=7 — used to normalize shape. */
-    prechangeExpectedLiftAt7: 7 - BASE_REFERENCE_THICKNESS_MM,
+    /** expectedLift under old (t−3) semantics at t=7 — frozen pre-datum baseline. */
+    prechangeExpectedLiftAt7: 4,
 } as const;
 
 /** Float32 mesh / softFloor numerical floor; slider step is 0.1 mm. */
