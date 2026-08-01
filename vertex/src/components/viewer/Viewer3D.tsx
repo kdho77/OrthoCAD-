@@ -6,6 +6,7 @@ import {
     Eye,
     EyeOff,
     Layers,
+    Loader2,
     Maximize2,
     Move,
     PencilLine,
@@ -67,8 +68,17 @@ function resolveDefaultEditSide(viewer: ViewerSettings, target: MeshEditTarget |
 export function Viewer3D() {
     const controls = useRef<OrbitControlsImpl>(null);
     const kernelName = useKernelStore((s) => s.name);
-    const { design, viewer, setViewer, selectedElementId, transformMode, setTransformMode, selectElement } =
-        useDesignStore();
+    const {
+        design,
+        viewer,
+        setViewer,
+        selectedElementId,
+        transformMode,
+        setTransformMode,
+        selectElement,
+        stockBaseLoading,
+        baseMeshLoadingBySide,
+    } = useDesignStore();
     const editMode = useMeshEditStore((s) => s.editMode);
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
@@ -91,6 +101,13 @@ export function Viewer3D() {
     const selectScan = useScanStore((s) => s.selectScan);
     const showLeftInsole = viewer.showLeft && !placingMarkers;
     const showRightInsole = viewer.showRight && !placingMarkers;
+    // Prefer an empty viewport + loading cue over the parametric placeholder outline
+    // while the Default Stock Base GLB is still resolving/downloading.
+    const baseGeometryLoading =
+        showBase &&
+        (stockBaseLoading ||
+            (viewer.showLeft && baseMeshLoadingBySide.left) ||
+            (viewer.showRight && baseMeshLoadingBySide.right));
     // Select primitives only — returning a fresh object from a zustand selector
     // causes an infinite re-render loop (React #185) once registration completes.
     const registrationError = useScanStore((s) => {
@@ -172,9 +189,9 @@ export function Viewer3D() {
                     <ScanMarkerPlacement />
                     <ScanPlaneSliceTool />
                     <ScanTransformTool />
-                    {!placingMarkers ? <ElementMarkers /> : null}
+                    {!placingMarkers && !baseGeometryLoading ? <ElementMarkers /> : null}
                     <MeshEditTools />
-                    <TrimlineEditTools />
+                    {!baseGeometryLoading ? <TrimlineEditTools /> : null}
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
@@ -232,6 +249,19 @@ export function Viewer3D() {
                     className="w-[4.75rem]"
                 />
             </div>
+
+            {baseGeometryLoading ? (
+                <div
+                    className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[hsl(222_28%_7%/0.55)]"
+                    role="status"
+                    aria-live="polite"
+                >
+                    <div className="flex items-center gap-2 rounded-md border border-border/60 bg-panel/90 px-3 py-2 text-[12px] font-medium text-foreground shadow backdrop-blur">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-400" />
+                        Loading base…
+                    </div>
+                </div>
+            ) : null}
 
             {/* Active view + edit-mode indicator (below the view pad) */}
             <div className="pointer-events-none absolute left-3 top-[5.5rem] flex flex-col gap-1">
