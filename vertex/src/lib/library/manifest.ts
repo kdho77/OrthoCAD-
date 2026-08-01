@@ -1,6 +1,6 @@
 import type { ElementKind, ScanPattern } from "@/types";
 
-/** Stock element catalog entry — procedural profiles in `lib/geometry/elements.ts`. */
+/** Stock element catalog entry — clinical procedural footprints in `lib/geometry/elements.ts`. */
 export interface StockElementEntry {
     id: ElementKind;
     label: string;
@@ -92,10 +92,7 @@ export function mergePrefabLibrary(custom: LibraryPrefabItem[]): LibraryPrefabIt
 }
 
 /** Resolve display label for a placed element (stock kind or custom name). */
-export function elementDisplayName(
-    kind: ElementKind | "custom",
-    customName?: string,
-): string {
+export function elementDisplayName(kind: ElementKind | "custom", customName?: string): string {
     if (kind === "custom") return customName ?? "Custom Element";
     return STOCK_ELEMENT_LABELS[kind] ?? kind;
 }
