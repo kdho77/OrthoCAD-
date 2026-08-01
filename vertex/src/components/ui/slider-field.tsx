@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { usePerformanceStore } from "@/stores/performance-store";
 
@@ -35,25 +36,40 @@ export function SliderField({
 }: SliderFieldProps) {
     const setInteracting = usePerformanceStore((s) => s.setInteracting);
     const clamp = (v: number) => Math.min(max, Math.max(min, Number.isFinite(v) ? v : min));
+    // Local value keeps the range + numeric readout instant while geometry rebuilds throttle.
+    const [localValue, setLocalValue] = useState(value);
+    const draggingRef = useRef(false);
+
+    useEffect(() => {
+        if (!draggingRef.current) setLocalValue(value);
+    }, [value]);
 
     const handlePreview = (v: number) => {
         const c = clamp(v);
+        setLocalValue(c);
         if (onPreview) onPreview(c);
         else onChange(c);
     };
 
     const handleCommit = (v: number) => {
         const cv = clamp(v);
+        draggingRef.current = false;
+        setLocalValue(cv);
         setInteracting(false);
         onChange(cv);
     };
 
-    const onPointerDown = () => setInteracting(true, "slider");
+    const onPointerDown = () => {
+        draggingRef.current = true;
+        setInteracting(true, "slider");
+    };
 
     return (
         <div className={cn("space-y-1", className)}>
             <div className="flex items-center justify-between">
-                <label className="text-xs text-muted-foreground">{label}</label>
+                <label htmlFor={`slider-${label}`} className="text-xs text-muted-foreground">
+                    {label}
+                </label>
                 <div className="flex items-center gap-1">
                     {displayText != null ? (
                         <span className="flex h-6 w-16 items-center justify-end px-1 text-xs tabular-nums text-muted-foreground">
@@ -61,8 +77,9 @@ export function SliderField({
                         </span>
                     ) : (
                         <input
+                            id={`slider-${label}`}
                             type="number"
-                            value={value}
+                            value={localValue}
                             min={min}
                             max={max}
                             step={step}
@@ -74,8 +91,9 @@ export function SliderField({
                 </div>
             </div>
             <input
+                id={displayText != null ? `slider-${label}` : undefined}
                 type="range"
-                value={value}
+                value={localValue}
                 min={min}
                 max={max}
                 step={step}

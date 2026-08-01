@@ -1,9 +1,12 @@
-import { useEffect, useMemo } from "react";
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
+import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useBaseInsoleGeometry } from "@/hooks/useBaseInsoleGeometry";
 import { INSOLE_LENGTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { modifierPerf } from "@/lib/performance/modifier-perf";
 import { useDesignStore } from "@/stores/design-store";
-import { usePerformanceStore } from "@/stores/performance-store";
 import type { Side } from "@/types";
 
 const sideColors: Record<Side, string> = {
@@ -13,14 +16,15 @@ const sideColors: Record<Side, string> = {
 
 /**
  * Renders a base template GLB with the design's corrections / elements applied
- * live as a deformation (Base + Modifier model). Falls back to nothing when the
- * design has no base or the base fails to load (the parametric mesh covers that
- * case in the viewer).
+ * live as a deformation (Base + Modifier model).
+ *
+ * Geometry object identity is kept stable across slider ticks so R3F does not
+ * remount the mesh; only BufferAttribute contents update (`needsUpdate`).
  */
 export function BaseInsoleMesh({ side, transparent }: { side: Side; transparent: boolean }) {
     const design = useDesignStore((s) => s.design);
-    const interacting = usePerformanceStore((s) => s.interacting);
-    const { geometry, building } = useBaseInsoleGeometry(design, side);
+    const { geometry, building, usingLod, edgesRevision } = useBaseInsoleGeometry(design, side);
+    const mountCounted = useRef(false);
 
     const material = useMemo(
         () =>
@@ -37,21 +41,36 @@ export function BaseInsoleMesh({ side, transparent }: { side: Side; transparent:
 
     useEffect(() => () => material.dispose(), [material]);
 
-    if (!geometry || building) return null;
+    useEffect(() => {
+        if (geometry && !mountCounted.current) {
+            mountCounted.current = true;
+            modifierPerf.recordMeshMount();
+        }
+    }, [geometry]);
+
+    // Keep mesh mounted once geometry exists — never return null on rebuilds
+    // (that caused remounts). Show nothing only before the first successful load.
+    if (!geometry) return null;
 
     const offsetX = sideOffsetX(side);
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             <mesh
+                // Stable key: side only — geometry identity is preserved by the hook.
+                key={`base-mesh-${side}`}
                 geometry={geometry}
                 material={material}
                 position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}
-                castShadow={!building}
+                castShadow={!building && !usingLod}
                 receiveShadow
+                frustumCulled={false}
             />
-            {/* Edge extract is expensive on large bases — only when idle. */}
-            {!interacting ? (
-                <lineSegments position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}>
+            {/* Outline only when idle on the full mesh — EdgesGeometry rebuild is costly. */}
+            {!usingLod && !building ? (
+                <lineSegments
+                    key={`base-edges-${side}-${edgesRevision}`}
+                    position={[-INSOLE_LENGTH_MM / 2, offsetX, 0]}
+                >
                     <edgesGeometry args={[geometry, 35]} />
                     <lineBasicMaterial color={sideColors[side]} transparent opacity={0.35} />
                 </lineSegments>

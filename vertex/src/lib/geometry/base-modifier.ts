@@ -1,9 +1,14 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import type { BufferGeometry } from "three";
+import { Box3, type BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { getDesignBase } from "@/lib/geometry/base-asset";
+import {
+    applyNormalsToGeometry,
+    boundsFromPositions,
+    computeNormalsFloat32,
+} from "@/lib/geometry/compute-normals";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
     type HeightFieldParams,
@@ -24,6 +29,17 @@ import {
     thicknessOffsetFromDatum,
 } from "@/lib/geometry/native-shell-thickness";
 import type { DesignState, Side, SideCorrections } from "@/types";
+
+/** Options for in-place / preview-friendly modifier application. */
+export interface ApplyBaseModifiersOptions {
+    /**
+     * Existing geometry to mutate (same vertex count as `base`). When set,
+     * positions are rewritten from the immutable source — never cumulatively.
+     */
+    target?: BufferGeometry;
+    /** Skip normal + sphere recompute (interactive preview). Bounds still updated cheaply. */
+    skipNormals?: boolean;
+}
 
 // Base + Modifier deformation core (see docs/base-modifier-architecture.md).
 //
@@ -184,7 +200,12 @@ export function classifyBaseTopFactors(base: BufferGeometry): Float32Array | nul
 
     let normal = base.getAttribute("normal");
     if (!normal || normal.count !== pos.count) {
-        base.computeVertexNormals();
+        const index = base.getIndex();
+        const normals = computeNormalsFloat32(
+            pos.array as Float32Array,
+            index ? (index.array as ArrayLike<number>) : null,
+        );
+        applyNormalsToGeometry(base, normals);
         normal = base.getAttribute("normal");
     }
 
@@ -1600,40 +1621,36 @@ export function diagnoseHeelCupWidthLateral(
  * base's tessellation. Pass `0` while dragging to keep editing responsive, and
  * `1`–`2` when idle / exporting.
  *
- * `options.reuse` — copy base positions into an existing same-sized geometry and
- * deform in place (avoids `clone()` alloc on every slider frame).
- * `options.skipNormals` — skip `computeVertexNormals` / sphere (preview scrub only).
+ * Always samples displacements from the immutable `base` positions into a
+ * fresh working buffer (or `options.target`). Never applies modifiers on top
+ * of a previous modifier result.
  */
 export function applyBaseModifiers(
     base: BufferGeometry,
     field: HeightFieldParams,
     smoothingIterations = 0,
-    options?: { reuse?: BufferGeometry; skipNormals?: boolean },
+    options?: ApplyBaseModifiersOptions,
 ): BufferGeometry {
-    const srcPos = base.getAttribute("position");
-    const reuse = options?.reuse;
-    let geometry: BufferGeometry;
-    if (reuse && reuse !== base && srcPos && reuse.getAttribute("position")?.count === srcPos.count) {
-        geometry = reuse;
-        const dstPos = geometry.getAttribute("position")!;
-        (dstPos.array as Float32Array).set(srcPos.array as Float32Array);
-        dstPos.needsUpdate = true;
-    } else {
-        geometry = base.clone();
-    }
+    const sourceAttr = base.getAttribute("position");
+    if (!sourceAttr) return options?.target ?? base;
+
+    const sourceArr = sourceAttr.array as Float32Array;
+    const count = sourceAttr.count;
+
+    // Immutable source → working buffer.
+    // - With `options.target`: mutate the stable display geometry in place.
+    // - Without: clone the base (preserves index/normals/userData for export & tests).
+    const geometry = options?.target ?? base.clone();
     const pos = geometry.getAttribute("position");
-    if (!pos) return geometry;
+    if (!pos || pos.count !== count) {
+        throw new Error(`[applyBaseModifiers] target vertex count ${pos?.count ?? 0} != source ${count}`);
+    }
+    const array = pos.array as Float32Array;
+    // Critical: reset from original positions every call (no cumulative deform).
+    array.set(sourceArr);
 
-    geometry.computeBoundingBox();
-    const box = geometry.boundingBox;
-    if (!box) return geometry;
-
-    const min = [box.min.x, box.min.y, box.min.z] as const;
-    const size = [
-        box.max.x - box.min.x || 1,
-        box.max.y - box.min.y || 1,
-        box.max.z - box.min.z || 1,
-    ] as const;
+    const { min, max } = boundsFromPositions(sourceArr);
+    const size = [max[0] - min[0] || 1, max[1] - min[1] || 1, max[2] - min[2] || 1] as const;
     const { lengthAxis, widthAxis, thickAxis } = resolveBaseAxes(size[0], size[1], size[2]);
     const lenMin = min[lengthAxis];
     const lenSize = size[lengthAxis];
@@ -1644,8 +1661,6 @@ export function applyBaseModifiers(
     const thickSize = size[thickAxis];
 
     const neutral = neutralField(field);
-    const array = pos.array as Float32Array;
-    const count = pos.count;
 
     // Top/bottom classification keeps the original bottom surface stable; falls
     // back to a normalised-height weight when no bottom can be identified.
@@ -1805,7 +1820,7 @@ export function applyBaseModifiers(
     }
 
     // Capture undeformed top positions for depth footprint NN (BASE coords).
-    const baseArrForDepth = base.getAttribute("position")!.array as Float32Array;
+    const baseArrForDepth = sourceArr;
     const depthLookup =
         useShellFieldSync && depthFrame && depthVec
             ? buildTopDepthFootprintLookup(
@@ -2116,18 +2131,15 @@ export function applyBaseModifiers(
         if (topFactors) {
             for (let i = 0; i < count; i++) {
                 if (topFactors[i]! > 0.5) continue;
-                array[i * 3 + thickAxis] = (base.getAttribute("position")!.array as Float32Array)[
-                    i * 3 + thickAxis
-                ]!;
+                array[i * 3 + thickAxis] = sourceArr[i * 3 + thickAxis]!;
             }
         }
     }
 
     if (originalBottomZ && typeof console !== "undefined" && !useShellFieldSync) {
         let maxDrift = 0;
-        const baseArr = base.getAttribute("position")!.array as Float32Array;
         for (let i = topVertexCount; i < count; i++) {
-            if (baseArr[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) continue;
+            if (sourceArr[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) continue;
             const drift = Math.abs(array[i * 3 + thickAxis]! - originalBottomZ[i - topVertexCount]!);
             if (drift > maxDrift) maxDrift = drift;
         }
@@ -2137,14 +2149,20 @@ export function applyBaseModifiers(
     }
 
     pos.needsUpdate = true;
+
+    // Always refresh AABB from Float32 positions (no BufferAttribute getX).
+    const deformedBounds = boundsFromPositions(array);
+    if (!geometry.boundingBox) geometry.boundingBox = new Box3();
+    geometry.boundingBox.min.set(deformedBounds.min[0], deformedBounds.min[1], deformedBounds.min[2]);
+    geometry.boundingBox.max.set(deformedBounds.max[0], deformedBounds.max[1], deformedBounds.max[2]);
+
     if (!options?.skipNormals) {
-        geometry.computeVertexNormals();
-        geometry.computeBoundingBox();
+        const index = geometry.getIndex();
+        const normals = computeNormalsFloat32(array, index ? (index.array as ArrayLike<number>) : null);
+        applyNormalsToGeometry(geometry, normals);
         geometry.computeBoundingSphere();
-    } else {
-        // Preview scrub: positions changed; keep prior normals/bounds for speed.
-        geometry.boundingSphere = null;
     }
+
     if (thicknessDatumNativeMm !== null) {
         // Diagnostic only: STL writes positions; GLB export overwrites mesh.userData.
         // Do not disturb topVertexCount / isMultiMeshBase.

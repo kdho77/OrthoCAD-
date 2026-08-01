@@ -245,12 +245,12 @@ describe("base-modifier medial/lateral inference", () => {
     });
 });
 
-describe("applyBaseModifiers preview reuse path", () => {
-    test("reuse + skipNormals matches fresh clone positions", () => {
+describe("applyBaseModifiers preview target path", () => {
+    test("target + skipNormals matches fresh clone positions", () => {
         const base = makeBase({ asym: 3 });
         const fresh = applyBaseModifiers(base, field("right"), 0);
         const reused = applyBaseModifiers(base, field("right"), 0, {
-            reuse: base.clone(),
+            target: base.clone(),
             skipNormals: true,
         });
         const a = fresh.getAttribute("position")!.array as Float32Array;
@@ -263,7 +263,7 @@ describe("applyBaseModifiers preview reuse path", () => {
         expect(maxAbs).toBeLessThan(1e-6);
         // Second scrub frame into the same buffer stays stable.
         const again = applyBaseModifiers(base, field("right"), 0, {
-            reuse: reused,
+            target: reused,
             skipNormals: true,
         });
         expect(again).toBe(reused);
@@ -278,14 +278,14 @@ describe("applyBaseModifiers preview reuse path", () => {
         base.dispose();
     });
 
-    test("changing the field updates reused positions", () => {
+    test("changing the field updates target positions", () => {
         const base = makeBase();
         const work = base.clone();
-        const low = applyBaseModifiers(base, field("left"), 0, { reuse: work, skipNormals: true });
+        const low = applyBaseModifiers(base, field("left"), 0, { target: work, skipNormals: true });
         const lowZ = (low.getAttribute("position")!.array as Float32Array).slice();
         const tallField = field("left");
         tallField.corrections = { ...tallField.corrections, archHeightMm: 18 };
-        const high = applyBaseModifiers(base, tallField, 0, { reuse: work, skipNormals: true });
+        const high = applyBaseModifiers(base, tallField, 0, { target: work, skipNormals: true });
         expect(high).toBe(work);
         const highArr = high.getAttribute("position")!.array as Float32Array;
         let maxDelta = 0;

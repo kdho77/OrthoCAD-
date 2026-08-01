@@ -1,10 +1,10 @@
 # Interaction Lag — Root Cause Analysis
 
-**Status:** Fixes landed (2026-08-01) — see § Remediation  
+**Status:** Fixes landed (2026-08-01) — worker + LOD path for ~86k–200k bases  
 **Date:** 2026-08-01  
 **Scope:** Slider scrubbing, parametric corrections, foot-scan drag/drop, scan load  
 
-Architecture already targets **&lt; 16 ms preview frames** and **no OCCT during drag/slider scrub** ([hybrid-geometry-architecture.md](./hybrid-geometry-architecture.md), R5 in [orthotic-insole-cad-architecture.md](./orthotic-insole-cad-architecture.md)). OCCT is largely kept off the interaction path. Lag came from **heavy main-thread mesh work that still ran every preview frame** on the Base + Modifier (loaded GLB) path.
+Architecture already targets **&lt; 16 ms preview frames** and **no OCCT during drag/slider scrub** ([hybrid-geometry-architecture.md](./hybrid-geometry-architecture.md), R5 in [orthotic-insole-cad-architecture.md](./orthotic-insole-cad-architecture.md)). OCCT is largely kept off the interaction path. Lag came from **heavy main-thread mesh work that still ran every preview frame** on the Base + Modifier (loaded GLB) path — profiled at **3.3–4.0 s** per full ~86k apply.
 
 ---
 
@@ -12,16 +12,19 @@ Architecture already targets **&lt; 16 ms preview frames** and **no OCCT during 
 
 | Fix | Change |
 |-----|--------|
-| In-place deform | `applyBaseModifiers(..., { reuse, skipNormals })` — no `clone()` / normals / sphere on slider scrub |
-| Skip trim clip while scrubbing | `useBaseInsoleGeometry` defers `clipGeometryToOutline` unless `interactionSource === "trimline"` |
-| Skip edges overlay | `BaseInsoleMesh` hides `EdgesGeometry` while `interacting` |
-| Stable geometry identity | Reuse work buffer + `setGeometry` no-op when same ref (avoids remount) |
+| Worker offload | `base-modifier.worker.ts` + `baseModifierEngine` — deform off UI thread with request-ID stale discard |
+| Interactive LOD | 10–20k tris while scrubbing; full editing mesh on release / 200 ms idle |
+| Slider scheduling | UI immediate (`SliderField` local value); preview ≤1/75 ms; full on pointer-up |
+| In-place deform | `applyBaseModifiers(..., { target, skipNormals })` — immutable source → target, no cumulative deform |
+| Skip trim clip while scrubbing | Preview path skips clip; trimline edits keep full+clip (`interactionSource !== "trimline"` → LOD) |
+| Skip edges overlay | Edges only when idle on full mesh (`edgesRevision`) |
+| Stable geometry identity | Display twin mutated in place — zero R3F remounts during slider ticks |
 | Scan drag | No `setInteracting` (was forcing base rebuilds); rAF-throttle `setManualOffset` |
 | Scan rotate | Same — no interacting flag; rAF-throttle offsets |
 | Thickness preview | `rafThrottle` like other correction fields |
 | Remove HC-DEPTH debug | Dropped rebuild `console.log` / vertex scans from hot path |
 
-**Still open (follow-up):** move `applyBaseModifiers` to a worker for ~200k-vert bases; scan import weld/manifold off main thread.
+**Still open (follow-up):** scan import weld/manifold off main thread.
 
 ---
 
