@@ -13,7 +13,21 @@ import {
 } from "@/lib/geometry/base-asset";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { defaultElementPose } from "@/lib/geometry/elements";
-import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import {
+    convertSizingToSystem,
+    DEFAULT_SHOE_SIZE_SYSTEM,
+    DEFAULT_US_MEN_SIZE,
+    insoleLayoutForFootLengthMm,
+    insoleLayoutForUkSize,
+    insoleLayoutForUsMenSize,
+    insoleLayoutFromDesign,
+    normalizeFootLengthMm,
+    normalizeShoeSizeSystem,
+    normalizeUkSize,
+    normalizeUsMenSize,
+    type ShoeSizeSystem,
+    usMenToUk,
+} from "@/lib/geometry/shoe-size";
 import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { isSupabaseConfigured } from "@/lib/supabase";
@@ -78,11 +92,49 @@ function enforceWedgeMutualExclusion(corrections: Corrections): Corrections {
     return newCorrections;
 }
 
+/** Scale element positions + trimlines when footprint length/width change. */
+function scaleDesignToLayout(
+    design: DesignState,
+    next: ReturnType<typeof insoleLayoutFromDesign>,
+    sizingPatch: Partial<DesignState>,
+): DesignState {
+    const prev = insoleLayoutFromDesign(design);
+    const sx = next.lengthMm / prev.lengthMm;
+    const sy = next.widthMm / prev.widthMm;
+    const scaleNeeded = Math.abs(sx - 1) > 1e-9 || Math.abs(sy - 1) > 1e-9;
+
+    const elements = scaleNeeded
+        ? design.elements.map((el) => ({
+              ...el,
+              position: { x: el.position.x * sx, y: el.position.y * sy },
+          }))
+        : design.elements;
+
+    let trimlines = design.trimlines;
+    if (scaleNeeded && trimlines) {
+        const scalePts = (pts: { x: number; y: number; z: number }[] | undefined) =>
+            pts?.map((p) => ({ ...p, x: p.x * sx, y: p.y * sy }));
+        trimlines = {
+            left: scalePts(trimlines.left),
+            right: scalePts(trimlines.right),
+        };
+    }
+
+    return {
+        ...design,
+        ...sizingPatch,
+        elements,
+        trimlines,
+    };
+}
+
 export function defaultDesign(): DesignState {
     return {
         pattern: "full_contact",
         method: "printing_solid",
         thicknessMm: 3,
+        sizeSystem: DEFAULT_SHOE_SIZE_SYSTEM,
+        usMenSize: DEFAULT_US_MEN_SIZE,
         corrections: {
             unit: "mm",
             linked: true,
@@ -339,6 +391,14 @@ export interface DesignStore {
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
+    /** Change US shoe size and auto-scale footprint, trimlines, and element placement. */
+    setUsShoeSize: (menSize: number) => void;
+    /** Switch size system (US / UK / mm), converting the current footprint length. */
+    setShoeSizeSystem: (system: ShoeSizeSystem) => void;
+    /** Change UK shoe size and auto-scale. */
+    setUkShoeSize: (ukSize: number) => void;
+    /** Change foot length in mm and auto-scale. */
+    setFootLengthMm: (mm: number) => void;
 
     /** Patch corrections for a side. When linked, mirrors to the other side. */
     updateCorrection: (side: Side, patch: Partial<SideCorrections>) => void;
@@ -494,6 +554,58 @@ export const useDesignStore = create<DesignStore>()(
                     },
                 })),
 
+            setUsShoeSize: (menSize) =>
+                set((s) => {
+                    const nextSize = normalizeUsMenSize(menSize);
+                    const next = insoleLayoutForUsMenSize(nextSize);
+                    return {
+                        design: scaleDesignToLayout(s.design, next, {
+                            sizeSystem: "us",
+                            usMenSize: nextSize,
+                            ukSize: usMenToUk(nextSize),
+                            footLengthMm: next.footLengthMm,
+                        }),
+                    };
+                }),
+
+            setShoeSizeSystem: (system) =>
+                set((s) => {
+                    const nextSystem = normalizeShoeSizeSystem(system);
+                    const converted = convertSizingToSystem(s.design, nextSystem);
+                    const next = insoleLayoutFromDesign(converted);
+                    return {
+                        design: scaleDesignToLayout(s.design, next, converted),
+                    };
+                }),
+
+            setUkShoeSize: (ukSize) =>
+                set((s) => {
+                    const nextUk = normalizeUkSize(ukSize);
+                    const next = insoleLayoutForUkSize(nextUk);
+                    return {
+                        design: scaleDesignToLayout(s.design, next, {
+                            sizeSystem: "uk",
+                            ukSize: nextUk,
+                            usMenSize: next.usMenSize,
+                            footLengthMm: next.footLengthMm,
+                        }),
+                    };
+                }),
+
+            setFootLengthMm: (mm) =>
+                set((s) => {
+                    const nextMm = normalizeFootLengthMm(mm);
+                    const next = insoleLayoutForFootLengthMm(nextMm, "mm");
+                    return {
+                        design: scaleDesignToLayout(s.design, next, {
+                            sizeSystem: "mm",
+                            footLengthMm: nextMm,
+                            usMenSize: next.usMenSize,
+                            ukSize: next.ukSize,
+                        }),
+                    };
+                }),
+
             updateCorrection: (side, patch) =>
                 set((s) => {
                     let corrections: Corrections = { ...s.design.corrections };
@@ -617,7 +729,8 @@ export const useDesignStore = create<DesignStore>()(
             addElement: (kind, side) => {
                 get().checkpoint("add-element");
                 set((s) => {
-                    const pose = defaultElementPose(kind, side, INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
+                    const layout = insoleLayoutFromDesign(s.design);
+                    const pose = defaultElementPose(kind, side, layout.lengthMm, layout.widthMm);
                     const el: PlacedElement = {
                         id: crypto.randomUUID(),
                         kind,
@@ -832,11 +945,12 @@ export const useDesignStore = create<DesignStore>()(
                         left: r1.constrained,
                         right: s.design.corrections.linked ? r1.constrained : r2.constrained,
                     };
+                    const layout = insoleLayoutFromDesign(s.design);
                     const elements: PlacedElement[] = result.elements.map((e) => ({
                         id: crypto.randomUUID(),
                         kind: e.kind,
                         side: e.side,
-                        ...defaultElementPose(e.kind, e.side, INSOLE_LENGTH_MM, INSOLE_WIDTH_MM),
+                        ...defaultElementPose(e.kind, e.side, layout.lengthMm, layout.widthMm),
                     }));
                     return {
                         design: {

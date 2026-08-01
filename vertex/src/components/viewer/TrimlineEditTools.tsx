@@ -5,7 +5,8 @@ import { type ThreeEvent, useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
-import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM, sideOffsetX } from "@/lib/geometry/layout";
+import { sideOffsetX } from "@/lib/geometry/layout";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import {
     cloneTrimline,
     deformTrimlineSection,
@@ -25,7 +26,6 @@ import { usePerformanceStore } from "@/stores/performance-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
 
-const CENTER_X = INSOLE_LENGTH_MM / 2;
 const INFLUENCE_RADIUS = 12;
 
 /** Interactive trimline picking, drag-to-reshape, and preview overlays. */
@@ -125,7 +125,10 @@ function TrimlineSideOverlay({
     isDragging: boolean;
     onOutlineClick: () => void;
 }) {
-    const offsetY = sideOffsetX(side);
+    const design = useDesignStore((s) => s.design);
+    const layout = insoleLayoutFromDesign(design);
+    const centerX = layout.lengthMm / 2;
+    const offsetY = sideOffsetX(side, layout.widthMm);
     const setTrimlineDraft = useMeshEditStore((s) => s.setTrimlineDraft);
     const setTrimlineDragAnchor = useMeshEditStore((s) => s.setTrimlineDragAnchor);
     const setTrimlineDragging = useMeshEditStore((s) => s.setTrimlineDragging);
@@ -166,9 +169,9 @@ function TrimlineSideOverlay({
         }
         const m = new THREE.Matrix4();
         m.makeRotationX(-Math.PI / 2);
-        m.multiply(new THREE.Matrix4().makeTranslation(-CENTER_X, offsetY, 0));
+        m.multiply(new THREE.Matrix4().makeTranslation(-centerX, offsetY, 0));
         return m;
-    }, [offsetY]);
+    }, [centerX, offsetY]);
 
     /** Apply the latest pending delta to the draft (one update per animation frame). */
     const flushDraft = useCallback(() => {
@@ -339,7 +342,7 @@ function TrimlineSideOverlay({
     useEffect(() => () => pickTubeGeo.dispose(), [pickTubeGeo]);
 
     return (
-        <group ref={groupRef} position={[-CENTER_X, offsetY, 0]}>
+        <group ref={groupRef} position={[-centerX, offsetY, 0]}>
             {/* Pick tube — generous radius, always hittable above the insole mesh */}
             <mesh renderOrder={100} geometry={pickTubeGeo} onPointerDown={onPickPointerDown}>
                 <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
@@ -419,5 +422,6 @@ export function getCommittedTrimlinesFromDesign(): Partial<Record<Side, Trimline
 }
 
 export function defaultOutlineForSide(_side: Side): TrimlineCurve {
-    return sampleDefaultOutline(INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
+    const layout = insoleLayoutFromDesign(useDesignStore.getState().design);
+    return sampleDefaultOutline(layout.lengthMm, layout.widthMm);
 }

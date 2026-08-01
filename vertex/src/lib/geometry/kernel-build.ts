@@ -3,11 +3,11 @@ import * as THREE from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { getKernel } from "@/lib/chili3d/kernel";
 import type { InsoleParams } from "@/lib/geometry/insole";
-import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import type { GeometryQuality } from "@/lib/geometry/quality";
 import { segmentsForQuality } from "@/lib/geometry/quality";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
 
@@ -33,10 +33,11 @@ export function insoleParamsFromDesign(
             : paired.rightThicknessMm
         : design.thicknessMm;
     const method = paired ? (side === "left" ? paired.leftMethod : paired.rightMethod) : design.method;
+    const layout = insoleLayoutFromDesign(design);
     return {
         side,
-        lengthMm: INSOLE_LENGTH_MM,
-        widthMm: INSOLE_WIDTH_MM,
+        lengthMm: layout.lengthMm,
+        widthMm: layout.widthMm,
         thicknessMm: thickness,
         corrections: mergeCorrections(side, design.corrections[side]),
         elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
