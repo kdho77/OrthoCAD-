@@ -63,10 +63,10 @@ export const CLINICAL_LIMITS = {
     // rigid stilt and the longitudinal ramp angle stays printable/grindable.
     heelLiftMm: { min: 0, max: 20.0 },
     apexMoveMm: { min: -12, max: 12 },
-    // Flange clamps raised to 25 mm (clinical STJ moment-arm operator).
-    // FLAGGED FOR PHYSICAL PRINT VALIDATION.
-    medialFlangeMm: { min: 0, max: 25.0 },
-    lateralFlangeMm: { min: 0, max: 25.0 },
+    // Pre-existing clinical clamp (reverted from unauthorized 25 → 8).
+    // Raising requires owner decision + print validation at max.
+    medialFlangeMm: { min: 0, max: 8.0 },
+    lateralFlangeMm: { min: 0, max: 8.0 },
     // Wedge limits (per the wedge design). Applied to the .value inside the wedge object.
     // mm: absolute raise on the edge. deg: angle (converted internally for clamping).
     rearfootWedgeMm: { min: 0, max: 10 },

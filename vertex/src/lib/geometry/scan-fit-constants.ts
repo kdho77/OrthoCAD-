@@ -49,32 +49,45 @@ export const SCAN_FIT_MIN_SAMPLES = 24;
 /** Heel longitudinal band: posterior of arch band (arch starts at u=0.28). */
 export const SCAN_FIT_HEEL_U_MIN = 0.0;
 export const SCAN_FIT_HEEL_U_MAX = 0.28;
+/** Alias — joint-solve heel band (restores #139/#141). */
+export const SCAN_FIT_HEEL_BAND_U_MAX = SCAN_FIT_HEEL_U_MAX;
 
-// ── Anatomically-banded rigid reference ──────────────────────────
-// The rigid reference plane must NEVER be fitted through the feature
-// being measured. The medial longitudinal arch is a large one-sided
-// departure from planarity; including it lets the plane tilt into the
-// dome and absorb clinical signal.
+// ── Joint rigid solve (replaces PR #143 cascade) ─────────────────
+// One 3-parameter weighted LS: gap ≈ a + b·x + c·y over a SINGLE
+// reference set. Sequential estimation is biased when design columns
+// are non-orthogonal over the sample set (they are here).
+export const SCAN_FIT_JOINT_RIGID_SOLVE = true;
 
-// Sagittal (offset + pitch) reference: heel band + lateral column.
-// The lateral column (calcaneus-cuboid-5th met base) is the relatively
-// rigid ground-referencing strut. The medial column is mobile and
-// carries the arch, so it is signal, not reference.
+// Reference set = heel band ∪ PROXIMAL lateral column.
+// Heel spans the midline → identifies roll (c).
+// Lateral column spans x → identifies pitch (b).
+// Distal lateral (5th met head) excluded — forefoot valgus must not
+// enter the roll column (hard gate B).
 export const SCAN_FIT_LATERAL_COLUMN_V_FRAC = 0.35; // lateral-most 35% of half-width
-
-// Frontal (roll) reference: HEEL BAND ONLY.
-// Rearfoot bisection is the frontal-plane reference. Including the
-// forefoot would fit genuine forefoot varus/valgus as "registration
-// roll" and subtract the deformity out of the gap field — deleting the
-// exact signal the device exists to post.
-export const SCAN_FIT_ROLL_REFERENCE_HEEL_ONLY = true;
+/** Cuboid region — NOT 5th met head. */
+export const SCAN_FIT_LATERAL_COLUMN_U_MAX = 0.45;
 
 // The medial midfoot arch band is excluded from the rigid solve.
 export const SCAN_FIT_EXCLUDE_ARCH_BAND_FROM_RIGID = true;
 
+// Identifiability guard. Column-equilibrated spectral κ of the 3×3
+// normal matrix. Above this: flag ill-conditioned, downgrade confidence,
+// block auto-apply. Do NOT narrow bands to chase a lower number.
+export const SCAN_FIT_MAX_CONDITION_NUMBER = 1000;
+
 // Robust rejection: one MAD pass before the plane solve. Scan borders
 // and toe regions carry capture noise that skews a plain LS plane.
 export const SCAN_FIT_MAD_REJECT_K = 2.5;
+
+// ── Retired cascade flags (kept false / unused — do not re-enable) ─
+/** @deprecated Joint solve replaces heel-only roll cascade. */
+export const SCAN_FIT_ROLL_REFERENCE_HEEL_ONLY = false;
+/** @deprecated Posterior-central roll band retired with cascade. */
+export const SCAN_FIT_ROLL_U_MAX = 0.1;
+/** @deprecated Posterior-central roll band retired with cascade. */
+export const SCAN_FIT_ROLL_V_ABS_MAX = 0.35;
+/** @deprecated Joint solve replaces roll-before-pitch cascade. */
+export const SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH = false;
 
 // ── Multi-station joint profile solve ────────────────────────────
 export const SCAN_FIT_PROFILE_STATIONS = 5; // u stations across the arch band
@@ -92,22 +105,6 @@ export const SCAN_FIT_PROFILE_RIDGE_LAMBDA = 0.05;
 
 /** Apex grid step (mm) for nonlinear profile search. */
 export const SCAN_FIT_APEX_SEARCH_STEP_MM = 1.0;
-
-/** Roll reference: heel band only (when flag true), posterior central strip.
- * Extreme medial rim and distal heel are excluded — the arch dome bleeds
- * proximally into the heel u-range on the medial side and would otherwise
- * be misread as roll when roll is solved first. Posterior calcaneal
- * bisection (u ≤ ROLL_U_MAX) is the clean frontal-plane reference. */
-export const SCAN_FIT_ROLL_U_MAX = 0.1;
-export const SCAN_FIT_ROLL_V_ABS_MAX = 0.35;
-
-// ── Rigid solve ordering ─────────────────────────────────────────
-// Roll MUST be solved before offset+pitch. The lateral column band lies
-// entirely on one side of the midline, so a real roll appears there as a
-// near-constant Z shift and gets absorbed into the offset term, which
-// then biases arch amplitude. Only the heel band spans both sides of the
-// midline, so only the heel band can observe roll cleanly.
-export const SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH = true;
 
 // ── Flange geometry ──────────────────────────────────────────────
 // Flange = vertical rise of the shell rim above the standard trimline.
@@ -132,6 +129,12 @@ export const FLANGE_FEATHER_U = 0.08;
 
 /** Peak position within the span, as a fraction of span length. */
 export const FLANGE_PEAK_FRAC = 0.5;
+
+/**
+ * Heel cup + flange junction. `max` = continuous medial wall (no double-add);
+ * replaces the PR #143 proximal-yield smoothstep gate.
+ */
+export const FLANGE_HEEL_JUNCTION_MODE = "max" as const;
 
 // ── Advisory flange fit ──────────────────────────────────────────
 // Edge-band gap is the noisiest region of any scan (capture dropout,

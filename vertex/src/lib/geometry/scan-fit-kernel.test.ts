@@ -45,7 +45,7 @@ describe("scan-fit-kernel", () => {
     });
 
     test("compliance multiplies raw solve", () => {
-        const samples = Array.from({ length: SCAN_FIT_MIN_SAMPLES }, (_, i) => {
+        const samples = Array.from({ length: SCAN_FIT_MIN_SAMPLES }, () => {
             const w = 0.6;
             return { weight: w, gapMm: w * 10 };
         });
@@ -172,6 +172,11 @@ describe("scan-fit-residual", () => {
             c: 0,
             pitchFallbackUsed: false,
             rollUnsolvable: false,
+            conditionNumber: 1,
+            illConditioned: false,
+            heelSampleCount: 100,
+            lateralSampleCount: 100,
+            jointSampleCount: 200,
             warnings: [] as string[],
         };
         const f = registrationFlagsFromRigid(r);

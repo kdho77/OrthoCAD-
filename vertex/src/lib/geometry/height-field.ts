@@ -86,6 +86,12 @@ const FLANGE_LATERAL_U_END = 0.6;
 const FLANGE_FEATHER_U = 0.08;
 const FLANGE_PEAK_FRAC = 0.5;
 
+/** Mirrored span table — values must match scan-fit-constants FLANGE_*. */
+export const FLANGE_SPAN_TABLE = {
+    medial: { start: FLANGE_MEDIAL_U_START, end: FLANGE_MEDIAL_U_END },
+    lateral: { start: FLANGE_LATERAL_U_START, end: FLANGE_LATERAL_U_END },
+} as const;
+
 /**
  * Cosine longitudinal profile for a flange span: 0 at both feathered ends,
  * 1 across the interior (peak). Never terminates abruptly.
@@ -114,8 +120,12 @@ export function flangeLongitudinalWeight(
 }
 
 /**
- * Unit flange wall weight at (u, vSigned): longitudinal cosine × side blend ×
- * rim-edge rise with inward falloff. Peak = 1 at the rim mid-span.
+ * Unit flange wall weight at (u, vSigned): restored pre-#143 profile
+ * `bump(u, 0.45, 0.42) × smoothstep(0.55, 1, av) × sideBlend` so stored
+ * designs with nonzero flange render identically to pre-#143.
+ *
+ * FLANGE_*_U_START/END / FLANGE_FEATHER_U are unchanged and still gate the
+ * advisory fit sample band. Cosine longitudinal helper remains for diagnostics.
  *
  * FOLLOW-UP: the flange changes the rim profile the wall / bottomPattern
  * generator will later consume — do not reconcile wall taper here.
@@ -133,22 +143,16 @@ export function unitFlangeWeight(
     const lateralBlend = smoothstep(-0.2, 0.45, -m);
     const sideBlend = which === "medial" ? medialBlend : lateralBlend;
     if (sideBlend <= 0) return 0;
-
-    const uStart = which === "medial" ? FLANGE_MEDIAL_U_START : FLANGE_LATERAL_U_START;
-    const uEnd = which === "medial" ? FLANGE_MEDIAL_U_END : FLANGE_LATERAL_U_END;
-    const longW = flangeLongitudinalWeight(u, uStart, uEnd);
-    if (longW <= 0) return 0;
-
-    // Rim rise with inward blend: full at the edge, fades inboard so the
-    // flange is a curved wall continuous with the shell (not a fin).
-    const edgeRise = smoothstep(0.45, 0.95, av);
-    return longW * sideBlend * edgeRise;
+    // Legacy longitudinal + edge profile (pre-#143 heightAt flange term).
+    const flangeRegion = bump(u, 0.45, 0.42);
+    const edge = smoothstep(0.55, 1.0, av);
+    return flangeRegion * edge * sideBlend;
 }
 
 /**
- * Combined medial/lateral flange delta (mm). Crossfades against the heel-cup
- * longitudinal envelope when heel cup depth is active so the proximal overlap
- * does not double-add rim rise (partition: flange yields to heel cup).
+ * Combined medial/lateral flange delta (mm).
+ * Junction with heel cup uses FLANGE_HEEL_JUNCTION_MODE = 'max' at composition
+ * time in heightAt — this helper returns the raw flange rise (no proximal yield).
  */
 export function flangeDeltaAt(
     u: number,
@@ -156,20 +160,11 @@ export function flangeDeltaAt(
     side: Side,
     medialFlangeMm: number,
     lateralFlangeMm: number,
-    heelCupDepthMm = 0,
+    _heelCupDepthMm = 0,
 ): number {
     const med = medialFlangeMm > 0 ? medialFlangeMm * unitFlangeWeight(u, vSigned, side, "medial") : 0;
     const lat = lateralFlangeMm > 0 ? lateralFlangeMm * unitFlangeWeight(u, vSigned, side, "lateral") : 0;
-    let delta = med + lat;
-    if (delta === 0) return 0;
-    // Proximal overlap with heel cup: soft gate spanning heel→flange junction.
-    // Heel envelope ends ~u=0.28; medial flange feathers in from u=0.30.
-    // Gate extends into the flange feather so the rises blend, not stack.
-    if (heelCupDepthMm > 0) {
-        const heelGate = smoothstep(0.4, 0.2, u);
-        delta *= 1 - heelGate;
-    }
-    return delta;
+    return med + lat;
 }
 
 /**
@@ -332,7 +327,18 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const rim = smoothstep(0.18, 0.95, av);
     shaped += c.heelCupHeightMm * heel * rim;
 
-    shaped += heelCupDepthBowlDelta(u, av, c.heelCupDepthMm);
+    // --- Heel cup depth + flanges (max junction — continuous medial wall) ------
+    // Pre-#143 flange term restored for stored-design identity at nonzero values.
+    // When both heel-cup rim and flange raise the same point, take max() so the
+    // medial wall is continuous and monotone (no double-add, no proximal yield).
+    const heelCupDelta = heelCupDepthBowlDelta(u, av, c.heelCupDepthMm);
+    const flangeShaped = flangeDeltaAt(u, vSigned, side, c.medialFlangeMm ?? 0, c.lateralFlangeMm ?? 0, 0);
+    if (heelCupDelta > 0 && flangeShaped > 0) {
+        // FLANGE_HEEL_JUNCTION_MODE = 'max' — continuous medial wall.
+        shaped += Math.max(heelCupDelta, flangeShaped);
+    } else {
+        shaped += heelCupDelta + flangeShaped;
+    }
 
     // --- Skives ----------------------------------------------------------------
     // The legacy subtractive field (shaped -= medialSkiveMm * …) was clinically
@@ -340,10 +346,6 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // half-space RAISE after the rest of the surface is formed (see below).
     // Base-mesh preview sets includeSkives:false and applies the raise in
     // applyBaseModifiers *after* #119 bottom-shell sync (R11).
-
-    // Flanges are applied AFTER edge feather (see below) so the rim actually
-    // rises — feathering them with the dome/cup would collapse the STJ
-    // moment-arm operator at the trimline.
 
     // --- Placed elements (met pads, bars, sinks, …) ---------------------------
     const includeElements = params.includeElements ?? true;
@@ -370,20 +372,6 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     }
     shaped *= featherScale;
 
-    // --- Flanges (medial/lateral rim rise — STJ moment-arm operator) ----------
-    // Vertical displacement of existing rim vertices within the clinical span.
-    // Displacement only — no new verts / index change. Applied post-feather so
-    // the rim rises. FOLLOW-UP: wall/bottomPattern generator must later consume
-    // this raised rim profile (not reconciled here).
-    const flange = flangeDeltaAt(
-        u,
-        vSigned,
-        side,
-        c.medialFlangeMm ?? 0,
-        c.lateralFlangeMm ?? 0,
-        c.heelCupDepthMm ?? 0,
-    );
-
     // --- Posting (rearfoot / forefoot wedges) — full strength at the edge -----
     const post = vSigned * medialSign * halfW;
     let posting = Math.tan(c.rearfootPostingDeg * DEG) * post * heel;
@@ -408,7 +396,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // the flat z = 0 bottom stays stable on solid prints.
     const heelLift = heelLiftDeltaAt(u, c.heelLiftMm);
 
-    let h = softFloor(thicknessMm + baseline + shaped + flange + posting + wedge + heelLift, 0.8);
+    let h = softFloor(thicknessMm + baseline + shaped + posting + wedge + heelLift, 0.8);
 
     // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).
     // The graph is the new clinical source of truth when present; the flat

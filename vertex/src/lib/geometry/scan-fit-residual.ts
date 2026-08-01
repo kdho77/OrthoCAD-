@@ -12,18 +12,21 @@
  * Pitch = rotation about +Y (medial–lateral): z ≈ pitch_rad · (x − cx)
  * Roll  = rotation about +X (longitudinal):   z ≈ roll_rad  · (y − cy)
  *
- * Anatomically-banded reference (PR #140 / #141):
- *   roll         ← posterior central heel FIRST (prevents roll→offset leakage
- *                  via the asymmetric lateral-column sagittal band)
- *   offset+pitch ← heel band + lateral column on the de-rolled field
+ * Joint rigid solve (replaces PR #143 cascade):
+ *   One 3-parameter weighted LS gap ≈ a + b·x + c·y over
+ *   heel band ∪ proximal lateral column. Identifiability via
+ *   column-equilibrated spectral condition number of the 3×3 normal matrix.
  */
 
 import {
     SCAN_FIT_EXCLUDE_ARCH_BAND_FROM_RIGID,
     SCAN_FIT_HEEL_U_MAX,
     SCAN_FIT_HEEL_U_MIN,
+    SCAN_FIT_JOINT_RIGID_SOLVE,
+    SCAN_FIT_LATERAL_COLUMN_U_MAX,
     SCAN_FIT_LATERAL_COLUMN_V_FRAC,
     SCAN_FIT_MAD_REJECT_K,
+    SCAN_FIT_MAX_CONDITION_NUMBER,
     SCAN_FIT_MAX_MEAN_OFFSET_MM,
     SCAN_FIT_MAX_PITCH_DEG,
     SCAN_FIT_MAX_ROLL_DEG,
@@ -73,6 +76,13 @@ export type RigidGapResidual = {
     pitchFallbackUsed: boolean;
     /** True when heel band was insufficient for roll — auto-apply must block. */
     rollUnsolvable: boolean;
+    /** Column-equilibrated spectral κ of the joint normal matrix. */
+    conditionNumber: number;
+    /** True when conditionNumber > SCAN_FIT_MAX_CONDITION_NUMBER. */
+    illConditioned: boolean;
+    heelSampleCount: number;
+    lateralSampleCount: number;
+    jointSampleCount: number;
     warnings: string[];
 };
 
@@ -110,19 +120,16 @@ export function madRejectSamples<T extends GapSample>(
     const med = medianSorted(gaps);
     const absDev = gaps.map((g) => Math.abs(g - med)).sort((a, b) => a - b);
     const mad = medianSorted(absDev);
-    if (mad < 1e-9) return [...samples];
-    const thresh = k * mad * 1.4826; // consistency with σ for normal
+    // Floor prevents the zero-MAD early-exit from disabling rejection when the
+    // majority of gaps are exact zeros (common on synthetics / clean heel).
+    const thresh = Math.max(k * mad * 1.4826, 1e-6);
     return samples.filter((s) => Math.abs(s.gapMm - med) <= thresh);
 }
 
 /** Lateral-most fraction of |vSigned| on the lateral side for this foot. */
 export function isLateralColumnSample(vSigned: number, side: Side): boolean {
     const medialSign = side === "left" ? -1 : 1;
-    // Lateral = opposite of medial: m_lat = +(vSigned * medialSign) when medial is -v*medialSign
-    // medial coordinate m = -(vSigned * medialSign); lateral when m is negative / low.
     const m = -(vSigned * medialSign);
-    // Lateral column: lateral-most SCAN_FIT_LATERAL_COLUMN_V_FRAC of half-width
-    // → m < -(1 - LATERAL_COLUMN_V_FRAC) approximately, using |v| on lateral side.
     const av = Math.abs(vSigned);
     const onLateralSide = m < -0.05;
     return onLateralSide && av >= 1 - SCAN_FIT_LATERAL_COLUMN_V_FRAC;
@@ -137,33 +144,68 @@ export function isArchBandSample(u: number): boolean {
 }
 
 /**
- * Sagittal reference set: heel ∪ lateral column, excluding medial arch band.
- * Under roll-first, strong medial heel samples are also dropped — the arch
- * dome bleeds into the heel u-range and biases offset when pitch is present.
+ * True where the medial arch dome *basis* is active enough to contaminate
+ * a rigid reference plane.
+ *
+ * Mirrors height-field / unitArchWeight support:
+ *   bump(u, 0.42, 0.36) × smoothstep(-0.2, 0.45, m) × …
+ * That support extends into the heel u-range; excluding by nominal arch-band
+ * u alone leaves contaminated medial-heel samples in the joint set.
+ */
+export function isMedialArchFeatureSample(u: number, vSigned: number, side: Side): boolean {
+    const medialSign = side === "left" ? -1 : 1;
+    const m = -(vSigned * medialSign);
+    // smoothstep(-0.2, 0.45, m) — same knees as height-field medialBlend
+    const t = Math.max(0, Math.min(1, (m + 0.2) / 0.65));
+    const medialBlend = t * t * (3 - 2 * t);
+    if (medialBlend < 1e-3) return false;
+    // bump(u, 0.42, 0.36)
+    const du = Math.abs(u - 0.42) / 0.36;
+    if (du >= 1) return false;
+    const arch = 0.5 * (1 + Math.cos(Math.PI * du));
+    // Threshold: below this the dome is numerically negligible vs scan noise.
+    return arch * medialBlend > 0.02;
+}
+
+/** Proximal lateral column (cuboid) — u ≤ SCAN_FIT_LATERAL_COLUMN_U_MAX. */
+export function isProximalLateralColumnSample(u: number, vSigned: number, side: Side): boolean {
+    return u <= SCAN_FIT_LATERAL_COLUMN_U_MAX && isLateralColumnSample(vSigned, side);
+}
+
+/**
+ * Joint rigid reference set: heel band ∪ proximal lateral column,
+ * minus medial arch feature support (basis-overlap into heel included).
+ */
+export function selectJointRigidReferenceBand(
+    samples: readonly BandedGapSample[],
+    side: Side,
+): BandedGapSample[] {
+    return samples.filter((s) => {
+        if (isMedialArchFeatureSample(s.u, s.vSigned, side)) return false;
+        if (isHeelBandSample(s.u)) return true;
+        if (isProximalLateralColumnSample(s.u, s.vSigned, side)) return true;
+        return false;
+    });
+}
+
+/**
+ * Sagittal reference set (legacy cascade path only).
+ * Under joint solve this is unused — prefer selectJointRigidReferenceBand.
  */
 export function selectSagittalReferenceBand(
     samples: readonly BandedGapSample[],
     side: Side,
 ): BandedGapSample[] {
-    const medialSign = side === "left" ? -1 : 1;
     return samples.filter((s) => {
         if (SCAN_FIT_EXCLUDE_ARCH_BAND_FROM_RIGID && isArchBandSample(s.u)) {
-            // Keep arch-band samples only if they are on the lateral column.
             return isLateralColumnSample(s.vSigned, side);
         }
-        if (isHeelBandSample(s.u)) {
-            if (SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH) {
-                const m = -(s.vSigned * medialSign);
-                // Drop strong medial heel (arch-bleed); keep center + lateral.
-                return m < 0.25;
-            }
-            return true;
-        }
+        if (isHeelBandSample(s.u)) return true;
         return isLateralColumnSample(s.vSigned, side);
     });
 }
 
-/** Roll reference: posterior central heel bisection (when flag true). */
+/** Roll reference (legacy cascade path only). */
 export function selectRollReferenceBand(samples: readonly BandedGapSample[]): BandedGapSample[] {
     if (SCAN_FIT_ROLL_REFERENCE_HEEL_ONLY) {
         return samples.filter(
@@ -173,7 +215,7 @@ export function selectRollReferenceBand(samples: readonly BandedGapSample[]): Ba
                 Math.abs(s.vSigned) <= SCAN_FIT_ROLL_V_ABS_MAX,
         );
     }
-    return [...samples];
+    return samples.filter((s) => isHeelBandSample(s.u));
 }
 
 /** Forefoot band for FF roll readout (u > arch max). */
@@ -182,15 +224,23 @@ export function selectForefootBand(samples: readonly BandedGapSample[]): BandedG
 }
 
 /**
- * Least-squares plane fit gap ≈ a + b·x + c·y.
- * Returns null when fewer than 3 finite samples.
+ * Accumulate normal-equation sums for gap ≈ a + b·x + c·y.
  */
-export function decomposeRigidGap(samples: readonly GapSample[]): RigidGapResidual | null {
+export function accumulatePlaneNormalSums(samples: readonly GapSample[]): {
+    s0: number;
+    sx: number;
+    sy: number;
+    sxx: number;
+    syy: number;
+    sxy: number;
+    sg: number;
+    sgx: number;
+    sgy: number;
+} | null {
     const pts = samples.filter(
         (s) => Number.isFinite(s.x) && Number.isFinite(s.y) && Number.isFinite(s.gapMm),
     );
     if (pts.length < 3) return null;
-
     let s0 = 0;
     let sx = 0;
     let sy = 0;
@@ -211,7 +261,101 @@ export function decomposeRigidGap(samples: readonly GapSample[]): RigidGapResidu
         sgx += p.gapMm * p.x;
         sgy += p.gapMm * p.y;
     }
+    return { s0, sx, sy, sxx, syy, sxy, sg, sgx, sgy };
+}
 
+/**
+ * Column-equilibrated spectral condition number of the 3×3 normal matrix
+ * N = [[s0,sx,sy],[sx,sxx,sxy],[sy,sxy,syy]].
+ *
+ * Equilibration removes the mm-scale mismatch between the constant column and
+ * x/y (hundreds of mm) so κ reports geometric identifiability, not unit choice.
+ * Hand-rolled — no matrix library.
+ */
+export function planeNormalConditionNumber(sums: {
+    s0: number;
+    sx: number;
+    sy: number;
+    sxx: number;
+    syy: number;
+    sxy: number;
+}): number {
+    const { s0, sx, sy, sxx, syy, sxy } = sums;
+    const d0 = Math.sqrt(Math.max(s0, 1e-18));
+    const d1 = Math.sqrt(Math.max(sxx, 1e-18));
+    const d2 = Math.sqrt(Math.max(syy, 1e-18));
+    // Scaled matrix Ŝ = D^{-1/2} N D^{-1/2} (column equilibration)
+    const M = [
+        [1, sx / (d0 * d1), sy / (d0 * d2)],
+        [sx / (d1 * d0), 1, sxy / (d1 * d2)],
+        [sy / (d2 * d0), sxy / (d2 * d1), 1],
+    ];
+    // Jacobi eigenvalue iteration on SPD 3×3
+    for (let iter = 0; iter < 24; iter++) {
+        for (const [p, q] of [
+            [0, 1],
+            [0, 2],
+            [1, 2],
+        ] as const) {
+            const apq = M[p]![q]!;
+            if (Math.abs(apq) < 1e-15) continue;
+            const app = M[p]![p]!;
+            const aqq = M[q]![q]!;
+            const tau = (aqq - app) / (2 * apq);
+            const t = (tau >= 0 ? 1 : -1) / (Math.abs(tau) + Math.sqrt(1 + tau * tau));
+            const c = 1 / Math.sqrt(1 + t * t);
+            const s = t * c;
+            for (let k = 0; k < 3; k++) {
+                const mik = M[k]![p]!;
+                const miq = M[k]![q]!;
+                M[k]![p] = c * mik - s * miq;
+                M[k]![q] = s * mik + c * miq;
+            }
+            for (let k = 0; k < 3; k++) {
+                const mpi = M[p]![k]!;
+                const mqi = M[q]![k]!;
+                M[p]![k] = c * mpi - s * mqi;
+                M[q]![k] = s * mpi + c * mqi;
+            }
+            M[p]![q] = 0;
+            M[q]![p] = 0;
+        }
+    }
+    const ev = [Math.abs(M[0]![0]!), Math.abs(M[1]![1]!), Math.abs(M[2]![2]!)].sort((a, b) => a - b);
+    return ev[2]! / Math.max(ev[0]!, 1e-18);
+}
+
+function emptyRigid(warnings: string[]): RigidGapResidual {
+    return {
+        meanOffsetMm: 0,
+        pitchDeg: 0,
+        rollDeg: 0,
+        forefootRollDeg: 0,
+        heelRollDeg: 0,
+        forefootToRearfootDeg: 0,
+        a: 0,
+        b: 0,
+        c: 0,
+        pitchFallbackUsed: false,
+        rollUnsolvable: true,
+        conditionNumber: Number.POSITIVE_INFINITY,
+        illConditioned: true,
+        heelSampleCount: 0,
+        lateralSampleCount: 0,
+        jointSampleCount: 0,
+        warnings,
+    };
+}
+
+/**
+ * Least-squares plane fit gap ≈ a + b·x + c·y.
+ * Returns null when fewer than 3 finite samples.
+ */
+export function decomposeRigidGap(samples: readonly GapSample[]): RigidGapResidual | null {
+    const sums = accumulatePlaneNormalSums(samples);
+    if (!sums) return null;
+
+    const { s0, sx, sy, sxx, syy, sxy, sg, sgx, sgy } = sums;
     const det = s0 * (sxx * syy - sxy * sxy) - sx * (sx * syy - sxy * sy) + sy * (sx * sxy - sxx * sy);
     if (Math.abs(det) < 1e-12) return null;
 
@@ -222,6 +366,7 @@ export function decomposeRigidGap(samples: readonly GapSample[]): RigidGapResidu
 
     const pitchDeg = (Math.atan(b) * 180) / Math.PI;
     const rollDeg = (Math.atan(c) * 180) / Math.PI;
+    const conditionNumber = planeNormalConditionNumber(sums);
 
     return {
         meanOffsetMm: a + b * (sx / s0) + c * (sy / s0),
@@ -235,6 +380,11 @@ export function decomposeRigidGap(samples: readonly GapSample[]): RigidGapResidu
         c,
         pitchFallbackUsed: false,
         rollUnsolvable: false,
+        conditionNumber,
+        illConditioned: conditionNumber > SCAN_FIT_MAX_CONDITION_NUMBER,
+        heelSampleCount: 0,
+        lateralSampleCount: 0,
+        jointSampleCount: s0,
         warnings: [],
     };
 }
@@ -302,139 +452,116 @@ export function fitOffsetPitch(samples: readonly GapSample[]): {
 }
 
 /**
- * Anatomically-banded rigid decomposition.
+ * Anatomically-banded rigid decomposition — joint 3-parameter solve.
  *
- * When SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH:
- *   1. Fit heel roll (c·y) on posterior central heel of the raw field
- *   2. Subtract c·y only (a0 stays with the offset solve)
- *   3. Fit offset+pitch (a+b·x) on heel ∪ lateral column of the de-rolled field
- *
- * This prevents registration roll from leaking into the global offset via the
- * lateral-column band (entirely on one side of the midline).
+ * Reference = heel ∪ proximal lateral column (one MAD pre-pass, uniform weights).
  * Forefoot roll is readout-only and is NOT written into the subtraction plane.
  */
 export function decomposeRigidGapBanded(
     samples: readonly BandedGapSample[],
     side: Side,
 ): RigidGapResidual | null {
+    if (!SCAN_FIT_JOINT_RIGID_SOLVE && SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH) {
+        // Cascade path intentionally disabled; fall through to joint.
+    }
+
     const warnings: string[] = [];
-    let pitchFallbackUsed = false;
-    let rollUnsolvable = false;
 
-    let heelRollDeg = 0;
-    let c = 0;
-    let aRoll = 0;
-    let working: readonly BandedGapSample[] = samples;
+    // Count raw band coverage before MAD (degrade reasons use pre-MAD counts).
+    const heelCoverage = samples.filter(
+        (s) => isHeelBandSample(s.u) && !isMedialArchFeatureSample(s.u, s.vSigned, side),
+    );
+    const lateralCoverage = samples.filter((s) => isProximalLateralColumnSample(s.u, s.vSigned, side));
+    const heelSampleCount = heelCoverage.length;
+    const lateralSampleCount = lateralCoverage.length;
 
-    if (SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH) {
-        // Pre-cleanse pitch on the heel band only (no lateral column) so the
-        // roll fit sees a level heel. This does NOT open the roll→offset path
-        // because the lateral column is excluded from the prelim.
-        const heelForPrelim = madRejectSamples(samples.filter((s) => isHeelBandSample(s.u)));
-        const prelim = heelForPrelim.length >= SCAN_FIT_MIN_SAMPLES ? fitOffsetPitch(heelForPrelim) : null;
-        const rollSource = prelim
-            ? samples.map((s) => ({
-                  ...s,
-                  gapMm: s.gapMm - (prelim.a + prelim.b * s.x),
-              }))
-            : samples;
-
-        const heelRaw = selectRollReferenceBand(rollSource);
-        const heel = madRejectSamples(heelRaw);
-        if (heel.length >= SCAN_FIT_MIN_SAMPLES) {
-            const heelRoll = fitRollOnBand(heel);
-            if (heelRoll) {
-                heelRollDeg = heelRoll.rollDeg;
-                c = heelRoll.c;
-                // Discard a0 — offset belongs to the subsequent sagittal solve.
-            } else {
-                rollUnsolvable = true;
-                warnings.push("Heel band insufficient for roll — auto-apply blocked");
-            }
-        } else {
-            rollUnsolvable = true;
-            warnings.push("Heel band insufficient for roll — auto-apply blocked");
-        }
-        // Subtract c·y from the ORIGINAL field, then solve final offset+pitch
-        // on heel ∪ lateral column of the de-rolled field.
-        working = samples.map((s) => ({
-            ...s,
-            gapMm: s.gapMm - c * s.y,
-        }));
-    }
-
-    const sagittalRaw = selectSagittalReferenceBand(working, side);
-    let sagittal = madRejectSamples(sagittalRaw);
-    if (sagittal.length < SCAN_FIT_MIN_SAMPLES) {
-        const expanded = working.filter(
-            (s) =>
-                isHeelBandSample(s.u) ||
-                isLateralColumnSample(s.vSigned, side) ||
-                (!isArchBandSample(s.u) && Math.abs(s.vSigned) > 0.3),
-        );
-        sagittal = madRejectSamples(expanded.length >= 3 ? expanded : [...working]);
-        pitchFallbackUsed = true;
+    if (heelSampleCount < SCAN_FIT_MIN_SAMPLES) {
         warnings.push(
-            "Lateral/heel sagittal band thin — pitch solved on expanded set (confidence downgraded)",
+            `Heel band insufficient (need ≥${SCAN_FIT_MIN_SAMPLES}, got ${heelSampleCount}) — auto-apply blocked`,
+        );
+        return {
+            ...emptyRigid(warnings),
+            heelSampleCount,
+            lateralSampleCount,
+        };
+    }
+    if (lateralSampleCount < SCAN_FIT_MIN_SAMPLES) {
+        warnings.push(
+            `Proximal lateral column insufficient (need ≥${SCAN_FIT_MIN_SAMPLES}, got ${lateralSampleCount}) — auto-apply blocked`,
+        );
+        return {
+            ...emptyRigid(warnings),
+            heelSampleCount,
+            lateralSampleCount,
+            rollUnsolvable: true,
+        };
+    }
+
+    // Single MAD pre-pass on the joint reference set only (not the arch feature).
+    const jointRaw = selectJointRigidReferenceBand(samples, side);
+    const joint = madRejectSamples(jointRaw);
+    if (joint.length < SCAN_FIT_MIN_SAMPLES) {
+        warnings.push(
+            `Joint reference set insufficient after MAD (need ≥${SCAN_FIT_MIN_SAMPLES}, got ${joint.length})`,
+        );
+        return {
+            ...emptyRigid(warnings),
+            heelSampleCount,
+            lateralSampleCount,
+            jointSampleCount: joint.length,
+        };
+    }
+
+    const plane = decomposeRigidGap(joint);
+    if (!plane) {
+        warnings.push("Joint plane solve degenerate");
+        return {
+            ...emptyRigid(warnings),
+            heelSampleCount,
+            lateralSampleCount,
+            jointSampleCount: joint.length,
+        };
+    }
+
+    const illConditioned = plane.conditionNumber > SCAN_FIT_MAX_CONDITION_NUMBER;
+    if (illConditioned) {
+        warnings.push(
+            `Ill-conditioned joint reference (κ=${plane.conditionNumber.toFixed(1)} > ${SCAN_FIT_MAX_CONDITION_NUMBER})`,
         );
     }
 
-    const sag = fitOffsetPitch(sagittal);
-    if (!sag) return null;
-
-    if (!SCAN_FIT_SOLVE_ROLL_BEFORE_PITCH) {
-        // Legacy order: offset+pitch first, then heel roll on residual.
-        const afterSag = samples.map((s) => ({
-            ...s,
-            gapMm: s.gapMm - (sag.a + sag.b * s.x),
-        }));
-        const heelRaw = selectRollReferenceBand(afterSag);
-        const heel = madRejectSamples(heelRaw);
-        if (heel.length >= SCAN_FIT_MIN_SAMPLES) {
-            const heelRoll = fitRollOnBand(heel);
-            if (heelRoll) {
-                heelRollDeg = heelRoll.rollDeg;
-                c = heelRoll.c;
-                aRoll = heelRoll.a0;
-            } else {
-                rollUnsolvable = true;
-                warnings.push("Heel band insufficient for roll — auto-apply blocked");
-            }
-        } else {
-            rollUnsolvable = true;
-            warnings.push("Heel band insufficient for roll — auto-apply blocked");
-        }
-        working = afterSag;
-    }
-
-    // FF roll readout on original field after removing offset+pitch only.
+    // FF−RF readout: heel roll from the joint plane (heel∪proximal lateral).
+    // Forefoot roll measured after removing offset+pitch only so genuine FF
+    // valgus distal of arch max is preserved (hard gate B).
     const afterPitchOnly = samples.map((s) => ({
         ...s,
-        gapMm: s.gapMm - (sag.a + sag.b * s.x),
+        gapMm: s.gapMm - (plane.a + plane.b * s.x),
     }));
-    const ffRaw = selectForefootBand(afterPitchOnly);
-    const ff = madRejectSamples(ffRaw);
+    const ffForGate = madRejectSamples(selectForefootBand(afterPitchOnly));
+    const heelRollDeg = plane.rollDeg;
     let forefootRollDeg = heelRollDeg;
-    if (ff.length >= 8) {
-        const ffRoll = fitRollOnBand(ff);
+    if (ffForGate.length >= 8) {
+        const ffRoll = fitRollOnBand(ffForGate);
         if (ffRoll) forefootRollDeg = ffRoll.rollDeg;
     }
 
-    const a = sag.a + aRoll;
-    const b = sag.b;
-
     return {
-        meanOffsetMm: sag.meanOffsetMm,
-        pitchDeg: sag.pitchDeg,
+        meanOffsetMm: plane.meanOffsetMm,
+        pitchDeg: plane.pitchDeg,
         rollDeg: heelRollDeg,
         forefootRollDeg,
         heelRollDeg,
         forefootToRearfootDeg: forefootRollDeg - heelRollDeg,
-        a,
-        b,
-        c,
-        pitchFallbackUsed,
-        rollUnsolvable,
+        a: plane.a,
+        b: plane.b,
+        c: plane.c,
+        pitchFallbackUsed: false,
+        rollUnsolvable: false,
+        conditionNumber: plane.conditionNumber,
+        illConditioned,
+        heelSampleCount,
+        lateralSampleCount,
+        jointSampleCount: joint.length,
         warnings,
     };
 }
@@ -457,7 +584,8 @@ export function registrationFlagsFromRigid(rigid: RigidGapResidual): Registratio
     const meanOffsetExceeded = Math.abs(rigid.meanOffsetMm) > SCAN_FIT_MAX_MEAN_OFFSET_MM;
     const pitchExceeded = Math.abs(rigid.pitchDeg) > SCAN_FIT_MAX_PITCH_DEG;
     const rollExceeded = Math.abs(rigid.rollDeg) > SCAN_FIT_MAX_ROLL_DEG;
-    const blockAutoApply = meanOffsetExceeded || pitchExceeded || rollExceeded || rigid.rollUnsolvable;
+    const blockAutoApply =
+        meanOffsetExceeded || pitchExceeded || rollExceeded || rigid.rollUnsolvable || rigid.illConditioned;
     return {
         meanOffsetExceeded,
         pitchExceeded,
@@ -468,7 +596,8 @@ export function registrationFlagsFromRigid(rigid: RigidGapResidual): Registratio
 
 /**
  * Map post-fit residual RMS (+ registration flags + convergence) → confidence tier.
- * Registration block forces poor. Non-convergence / pitch fallback downgrades one tier.
+ * Registration block forces poor. Non-convergence / pitch fallback / ill-conditioned
+ * downgrades one tier (ill-conditioned also blocks via registrationFlags).
  */
 export function confidenceFromRms(
     residualRmsMm: number,

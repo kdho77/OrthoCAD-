@@ -87,6 +87,10 @@ export type ArchFitResult = {
     heelRollDeg: number;
     forefootRollDeg: number;
     rigidWarnings: string[];
+    /** Column-equilibrated κ of the joint rigid normal matrix. */
+    conditionNumber: number;
+    /** True when κ > SCAN_FIT_MAX_CONDITION_NUMBER. */
+    illConditioned: boolean;
 };
 
 export type ArchFitReference =
@@ -420,7 +424,12 @@ export function fitArchParamsFromScan(args: {
     }
 
     if (profile) {
-        const confidence = confidenceFromRms(profile.residualRmsMm, regFlags, false, rigid.pitchFallbackUsed);
+        const confidence = confidenceFromRms(
+            profile.residualRmsMm,
+            regFlags,
+            false,
+            rigid.pitchFallbackUsed || rigid.illConditioned,
+        );
         return {
             archHeightMm: profile.archHeightMm,
             archFillMm: profile.archFillMm,
@@ -441,6 +450,8 @@ export function fitArchParamsFromScan(args: {
             heelRollDeg: rigid.heelRollDeg,
             forefootRollDeg: rigid.forefootRollDeg,
             rigidWarnings: rigid.warnings,
+            conditionNumber: rigid.conditionNumber,
+            illConditioned: rigid.illConditioned,
         };
     }
 
@@ -485,7 +496,7 @@ export function fitArchParamsFromScan(args: {
         refineRaw.residualRmsMm,
         regFlags,
         !refineRaw.converged,
-        rigid.pitchFallbackUsed,
+        rigid.pitchFallbackUsed || rigid.illConditioned,
     );
 
     return {
@@ -508,6 +519,8 @@ export function fitArchParamsFromScan(args: {
         heelRollDeg: rigid.heelRollDeg,
         forefootRollDeg: rigid.forefootRollDeg,
         rigidWarnings: [...rigid.warnings, "Profile stations insufficient — fell back to scalar arch fit"],
+        conditionNumber: rigid.conditionNumber,
+        illConditioned: rigid.illConditioned,
     };
 }
 

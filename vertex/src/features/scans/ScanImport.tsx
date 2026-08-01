@@ -22,7 +22,6 @@ import {
     archFitReferenceFromBase,
     archFitToCorrectionPatch,
     canAutoApplyArchFit,
-    fitArchParamsFromScan,
 } from "@/lib/geometry/fit-arch-from-scan";
 import {
     type FlangeFitSuggestion,
@@ -49,6 +48,7 @@ import {
     isNonZeroScanOffset,
     resolveScanMeshMatrix,
 } from "@/lib/geometry/scan-display";
+import { matchFromScan } from "@/lib/geometry/scan-fit-orchestrator";
 import { type SuggestedScanLandmarks, suggestScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
@@ -65,6 +65,9 @@ type ScanFitReportState = {
     heel: HeelCupFitSuggestion | null;
     flange: FlangeFitSuggestion | null;
     blockReason: string | null;
+    conditionNumber?: number;
+    illConditioned?: boolean;
+    postFitDeviationRmsMm?: number | null;
 };
 
 const MARKER_LABELS = {
@@ -286,12 +289,12 @@ export function ScanImport() {
         setError(null);
         const ctx = resolveScanContext(scanId);
         if ("error" in ctx) {
-            setError(ctx.error);
+            setError(ctx.error ?? "Match unavailable");
             return;
         }
         setArchFitBusyId(scanId);
         try {
-            const fit = fitArchParamsFromScan({
+            const result = matchFromScan({
                 scanPositions: ctx.positions,
                 scanVertexCount: ctx.vertexCount,
                 scanToBase: ctx.scanToBase,
@@ -299,47 +302,34 @@ export function ScanImport() {
                 side: ctx.side,
                 lengthMm: INSOLE_LENGTH_MM,
             });
-            let heel: HeelCupFitSuggestion | null = null;
-            try {
-                heel = fitHeelCupFromScan({
-                    scanPositions: ctx.positions,
-                    scanVertexCount: ctx.vertexCount,
-                    scanToBase: ctx.scanToBase,
-                    reference: ctx.reference,
-                });
-            } catch {
-                heel = null;
-            }
-            let flange: FlangeFitSuggestion | null = null;
-            try {
-                flange = fitFlangeFromScan({
-                    scanPositions: ctx.positions,
-                    scanVertexCount: ctx.vertexCount,
-                    scanToBase: ctx.scanToBase,
-                    reference: ctx.reference,
-                    side: ctx.side,
-                });
-            } catch {
-                flange = null;
+
+            if (result.archApplied && result.arch) {
+                updateCorrection(ctx.side, archFitToCorrectionPatch(result.arch));
             }
 
-            const blockReason = fit.confidence.registration.blockAutoApply
-                ? "Registration residual too high to fit reliably — re-run alignment"
-                : fit.confidence.tier === "poor"
-                  ? "Fit residual too high to apply reliably — check alignment and scan coverage"
-                  : null;
-
-            if (canAutoApplyArchFit(fit)) {
-                updateCorrection(ctx.side, archFitToCorrectionPatch(fit));
+            if (!result.arch && result.blockReason) {
+                setError(result.blockReason);
             }
 
             setFitReportByScanId((prev) => ({
                 ...prev,
-                [scanId]: { arch: fit, heel, flange, blockReason },
+                [scanId]: {
+                    arch: result.arch,
+                    heel: result.heel,
+                    flange: result.flange,
+                    blockReason: result.blockReason,
+                    conditionNumber: result.conditionNumber,
+                    illConditioned: result.illConditioned,
+                    postFitDeviationRmsMm: result.postFitDeviationRmsMm,
+                },
             }));
         } catch (e) {
             const msg =
-                e instanceof ArchFitError ? e.message : e instanceof Error ? e.message : "Arch match failed";
+                e instanceof ArchFitError
+                    ? e.message
+                    : e instanceof Error
+                      ? e.message
+                      : "Match from scan failed";
             setError(msg);
             setFitReportByScanId((prev) => {
                 const next = { ...prev };
@@ -355,7 +345,7 @@ export function ScanImport() {
         setError(null);
         const ctx = resolveScanContext(scanId);
         if ("error" in ctx) {
-            setError(ctx.error);
+            setError(ctx.error ?? "Match unavailable");
             return;
         }
         setHeelFitBusyId(scanId);
@@ -373,6 +363,9 @@ export function ScanImport() {
                     heel,
                     flange: prev[scanId]?.flange ?? null,
                     blockReason: prev[scanId]?.blockReason ?? null,
+                    conditionNumber: prev[scanId]?.conditionNumber,
+                    illConditioned: prev[scanId]?.illConditioned,
+                    postFitDeviationRmsMm: prev[scanId]?.postFitDeviationRmsMm,
                 },
             }));
         } catch (e) {
@@ -392,7 +385,7 @@ export function ScanImport() {
         setError(null);
         const ctx = resolveScanContext(scanId);
         if ("error" in ctx) {
-            setError(ctx.error);
+            setError(ctx.error ?? "Match unavailable");
             return;
         }
         setFlangeFitBusyId(scanId);
@@ -411,6 +404,9 @@ export function ScanImport() {
                     heel: prev[scanId]?.heel ?? null,
                     flange,
                     blockReason: prev[scanId]?.blockReason ?? null,
+                    conditionNumber: prev[scanId]?.conditionNumber,
+                    illConditioned: prev[scanId]?.illConditioned,
+                    postFitDeviationRmsMm: prev[scanId]?.postFitDeviationRmsMm,
                 },
             }));
         } catch (e) {
@@ -431,7 +427,7 @@ export function ScanImport() {
         }
         const ctx = resolveScanContext(scanId);
         if ("error" in ctx) {
-            setError(ctx.error);
+            setError(ctx.error ?? "Match unavailable");
             return;
         }
         updateCorrection(ctx.side, heelCupFitToCorrectionPatch(report.heel));
@@ -449,7 +445,7 @@ export function ScanImport() {
         }
         const ctx = resolveScanContext(scanId);
         if ("error" in ctx) {
-            setError(ctx.error);
+            setError(ctx.error ?? "Match unavailable");
             return;
         }
         updateCorrection(ctx.side, flangeFitToCorrectionPatch(report.flange));
@@ -703,7 +699,7 @@ export function ScanImport() {
                                             !landmarkSourceAssetId ||
                                             !rawBaseBySourceId[landmarkSourceAssetId]
                                         }
-                                        title="Set Arch height + Apex move from medial midfoot gap vs base"
+                                        title="Match arch / heel / flange from registered scan (one joint rigid solve)"
                                         onClick={() => matchArchFromScan(s.id)}
                                         className={cn(
                                             "mt-1 flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
@@ -715,15 +711,15 @@ export function ScanImport() {
                                         )}
                                     >
                                         <Sparkles className="h-3 w-3" />
-                                        {archFitBusyId === s.id ? "Matching arch…" : "Match arch from scan"}
+                                        {archFitBusyId === s.id ? "Matching…" : "Match from scan"}
                                     </button>
                                     {(() => {
                                         const report = fitReportByScanId[s.id];
                                         if (!report?.arch && !report?.heel && !report?.flange) {
                                             return (
                                                 <p className="text-[10px] text-muted-foreground/80">
-                                                    Estimates Arch height + Apex move from the plantar gap
-                                                    (compliance-adjusted — does not bake the scan mesh)
+                                                    Joint rigid solve + arch (auto if Good) · heel/flange
+                                                    advisory — does not bake the scan mesh
                                                 </p>
                                             );
                                         }
@@ -759,6 +755,25 @@ export function ScanImport() {
                                                     ) : null}
                                                     {arch?.nonConverged ? " · non-converged" : null}
                                                 </p>
+                                                {report.conditionNumber != null &&
+                                                Number.isFinite(report.conditionNumber) ? (
+                                                    <p className="text-muted-foreground">
+                                                        Joint κ {report.conditionNumber.toFixed(1)}
+                                                        {report.illConditioned ? (
+                                                            <span className="text-amber-300">
+                                                                {" "}
+                                                                · ill-conditioned
+                                                            </span>
+                                                        ) : null}
+                                                        {report.postFitDeviationRmsMm != null ? (
+                                                            <>
+                                                                {" "}
+                                                                · post-fit RMS{" "}
+                                                                {report.postFitDeviationRmsMm.toFixed(2)} mm
+                                                            </>
+                                                        ) : null}
+                                                    </p>
+                                                ) : null}
                                                 {flags?.blockAutoApply ? (
                                                     <p className="text-destructive">
                                                         Registration residual too high to fit reliably —

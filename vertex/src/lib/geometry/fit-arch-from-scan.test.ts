@@ -165,7 +165,6 @@ describe("fitArchParamsFromScan (banded + profile)", () => {
         expect(Math.abs(rigid!.forefootToRearfootDeg - ffDeg)).toBeLessThan(0.5);
         // After subtraction (heel roll only), FF valgus must remain in forefoot gaps.
         const after = subtractRigidGap(samples, rigid!);
-        const ffGaps = after.filter((_, i) => samples[i]!.u > 0.58);
         // Fit roll on residual forefoot — should still be ~5°.
         let s0 = 0;
         let sy = 0;
@@ -238,6 +237,57 @@ describe("fitArchParamsFromScan (banded + profile)", () => {
             lengthMm,
         });
         expect(Math.abs(fitR.amplitudePreComplianceMm - fit0.amplitudePreComplianceMm)).toBeLessThan(0.1);
+    });
+
+    test("HARD GATE C — joint solve recovers offset+pitch+roll together", () => {
+        const lengthMm = 260;
+        const widthMm = 95;
+        const offsetMm = 1.5;
+        const pitchDeg = 2;
+        const rollDeg = 2;
+        const samples: BandedGapSample[] = [];
+        const pitchRad = (pitchDeg * Math.PI) / 180;
+        const rollRad = (rollDeg * Math.PI) / 180;
+        for (let i = 0; i <= 60; i++) {
+            const u = i / 60;
+            for (let j = 0; j <= 24; j++) {
+                const vSigned = -0.95 + (1.9 * j) / 24;
+                const x = u * lengthMm;
+                const y = vSigned * (widthMm / 2);
+                const gapMm = offsetMm + Math.tan(pitchRad) * x + Math.tan(rollRad) * y;
+                samples.push({ x, y, gapMm, u, vSigned });
+            }
+        }
+        const rigid = decomposeRigidGapBanded(samples, "left");
+        expect(rigid).not.toBeNull();
+        expect(rigid!.illConditioned).toBe(false);
+        // Intercept a recovers the injected offset (gap ≈ a + b·x + c·y).
+        expect(Math.abs(rigid!.a - offsetMm)).toBeLessThan(0.05);
+        expect(Math.abs(rigid!.pitchDeg - pitchDeg)).toBeLessThan(0.05);
+        expect(Math.abs(rigid!.rollDeg - rollDeg)).toBeLessThan(0.05);
+
+        // Arch amplitude unaffected by the combined rigid injection.
+        const baseArgs = { lengthMm, widthMm, heightMm: 8, apexU: 0.42 };
+        const scan0 = syntheticArchScan(baseArgs);
+        const scanCombo = syntheticArchScan({ ...baseArgs, offsetMm, pitchDeg, rollDeg });
+        const ref = flatBaseReference(lengthMm, widthMm);
+        const fit0 = fitArchParamsFromScan({
+            scanPositions: scan0,
+            scanVertexCount: scan0.length / 3,
+            scanToBase: new THREE.Matrix4().identity(),
+            reference: ref,
+            side: "left",
+            lengthMm,
+        });
+        const fitC = fitArchParamsFromScan({
+            scanPositions: scanCombo,
+            scanVertexCount: scanCombo.length / 3,
+            scanToBase: new THREE.Matrix4().identity(),
+            reference: ref,
+            side: "left",
+            lengthMm,
+        });
+        expect(Math.abs(fitC.amplitudePreComplianceMm - fit0.amplitudePreComplianceMm)).toBeLessThan(0.1);
     });
 
     test("Match twice is idempotent within CONVERGE_DELTA", () => {

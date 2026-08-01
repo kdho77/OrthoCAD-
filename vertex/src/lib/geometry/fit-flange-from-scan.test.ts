@@ -14,6 +14,7 @@ import {
 } from "@/lib/geometry/height-field";
 import {
     FLANGE_FEATHER_U,
+    FLANGE_HEEL_JUNCTION_MODE,
     FLANGE_LATERAL_U_END,
     FLANGE_LATERAL_U_START,
     FLANGE_MEDIAL_U_END,
@@ -153,34 +154,34 @@ describe("flange operator (height-field)", () => {
     });
 
     test("medial flange does not raise lateral rim (no cross-talk)", () => {
-        const f = field({ medialFlangeMm: 12, lateralFlangeMm: 0 });
+        const f = field({ medialFlangeMm: 8, lateralFlangeMm: 0 });
         const n = field();
         // Left medial = +vSigned
         const medDelta = heightAt(0.45, 0.9, f) - heightAt(0.45, 0.9, n);
         const latDelta = heightAt(0.45, -0.9, f) - heightAt(0.45, -0.9, n);
-        expect(medDelta).toBeGreaterThan(4);
+        expect(medDelta).toBeGreaterThan(1);
         expect(Math.abs(latDelta)).toBeLessThan(0.05);
     });
 
     test("lateral flange does not raise medial rim", () => {
-        const f = field({ medialFlangeMm: 0, lateralFlangeMm: 12 });
+        const f = field({ medialFlangeMm: 0, lateralFlangeMm: 8 });
         const n = field();
         const medDelta = heightAt(0.4, 0.9, f) - heightAt(0.4, 0.9, n);
         const latDelta = heightAt(0.4, -0.9, f) - heightAt(0.4, -0.9, n);
-        expect(latDelta).toBeGreaterThan(4);
+        expect(latDelta).toBeGreaterThan(1);
         expect(Math.abs(medDelta)).toBeLessThan(0.05);
     });
 
     test("left vs right medial mirroring", () => {
-        const left = field({ medialFlangeMm: 10 }, "left");
-        const right = field({ medialFlangeMm: 10 }, "right");
+        const left = field({ medialFlangeMm: 6 }, "left");
+        const right = field({ medialFlangeMm: 6 }, "right");
         const nL = field({}, "left");
         const nR = field({}, "right");
         // Left medial +v; right medial −v
         const dL = heightAt(0.45, 0.9, left) - heightAt(0.45, 0.9, nL);
         const dR = heightAt(0.45, -0.9, right) - heightAt(0.45, -0.9, nR);
-        expect(dL).toBeGreaterThan(3);
-        expect(dR).toBeGreaterThan(3);
+        expect(dL).toBeGreaterThan(1);
+        expect(dR).toBeGreaterThan(1);
         expect(Math.abs(dL - dR)).toBeLessThan(0.2);
         // Opposite side stays flat
         expect(Math.abs(heightAt(0.45, -0.9, left) - heightAt(0.45, -0.9, nL))).toBeLessThan(0.05);
@@ -201,36 +202,78 @@ describe("flange operator (height-field)", () => {
         expect(FLANGE_FEATHER_U).toBe(0.08);
         expect(FLANGE_LATERAL_U_START).toBe(0.25);
         expect(FLANGE_LATERAL_U_END).toBe(0.6);
+        expect(FLANGE_HEEL_JUNCTION_MODE).toBe("max");
     });
 
-    test("heel cup + flange at max: proximal overlap blends (no double-add)", () => {
-        const both = field({ medialFlangeMm: 25, heelCupDepthMm: 10 });
-        const flangeOnly = field({ medialFlangeMm: 25, heelCupDepthMm: 0 });
+    test("heel cup + flange: max() junction — continuous wall, no double-add", () => {
+        const both = field({ medialFlangeMm: 8, heelCupDepthMm: 10 });
+        const flangeOnly = field({ medialFlangeMm: 8, heelCupDepthMm: 0 });
         const cupOnly = field({ medialFlangeMm: 0, heelCupDepthMm: 10 });
         const neutral = field();
-        // Inside medial flange feather (uStart=0.30, feather=0.08) where heel gate still active.
         const u = 0.34;
         const v = 0.9;
         const dBoth = heightAt(u, v, both) - heightAt(u, v, neutral);
         const dFlange = heightAt(u, v, flangeOnly) - heightAt(u, v, neutral);
         const dCup = heightAt(u, v, cupOnly) - heightAt(u, v, neutral);
-        expect(dFlange).toBeGreaterThan(0.5);
-        expect(dBoth).toBeLessThan(dFlange + Math.max(0, dCup) + dFlange * 0.5);
-        const attenuated = flangeDeltaAt(u, v, "left", 25, 0, 10);
-        const full = flangeDeltaAt(u, v, "left", 25, 0, 0);
-        expect(full).toBeGreaterThan(0.5);
-        expect(attenuated).toBeLessThan(full);
-        expect(attenuated).toBeGreaterThan(0);
+        // max() ≤ sum of positives (no double-add)
+        expect(dBoth).toBeLessThanOrEqual(Math.max(dFlange, Math.max(0, dCup)) + 1e-6);
+        expect(dBoth).toBeGreaterThan(Math.min(dFlange, Math.max(0, dCup)) - 0.1);
+        // flangeDeltaAt no longer attenuates under heel (max mode)
+        const raw = flangeDeltaAt(u, v, "left", 8, 0, 10);
+        const full = flangeDeltaAt(u, v, "left", 8, 0, 0);
+        expect(raw).toBeCloseTo(full, 10);
     });
 
-    test("max flange (25 mm) stays finite / non-inverted at rim", () => {
-        const f = field({ medialFlangeMm: 25, lateralFlangeMm: 25 });
+    test("max flange (8 mm) stays finite / non-inverted at rim", () => {
+        const f = field({ medialFlangeMm: 8, lateralFlangeMm: 8 });
         const n = field();
         for (const u of [0.35, 0.45, 0.55]) {
             for (const v of [-0.95, 0.95]) {
                 const h = heightAt(u, v, f);
                 expect(Number.isFinite(h)).toBe(true);
                 expect(h).toBeGreaterThan(heightAt(u, v, n));
+            }
+        }
+    });
+
+    test("LEGACY IDENTITY — flange=6 matches pre-#143 bump×edge profile", () => {
+        // Pre-#143 term: (med*medBlend + lat*latBlend) * bump(u,0.45,0.42) * smoothstep(0.55,1,av)
+        // then edge-feathered with the rest of shaped. With heelCup=0 the restored
+        // path is byte-identical for the flange contribution.
+        const f = field({ medialFlangeMm: 6, lateralFlangeMm: 0, heelCupDepthMm: 0 });
+        const n = field();
+        for (let i = 0; i <= 20; i++) {
+            const u = i / 20;
+            for (let j = 0; j <= 10; j++) {
+                const v = -1 + (2 * j) / 10;
+                const av = Math.abs(v);
+                const medialSign = -1; // left
+                const m = -(v * medialSign);
+                const medialBlend = (() => {
+                    // smoothstep(-0.2, 0.45, m)
+                    const e0 = -0.2;
+                    const e1 = 0.45;
+                    const t = Math.max(0, Math.min(1, (m - e0) / (e1 - e0)));
+                    return t * t * (3 - 2 * t);
+                })();
+                const du = (u - 0.45) / 0.42;
+                const flangeRegion = Math.abs(du) >= 1 ? 0 : 0.5 * (1 + Math.cos(Math.PI * Math.abs(du)));
+                const edge = (() => {
+                    const e0 = 0.55;
+                    const e1 = 1.0;
+                    const t = Math.max(0, Math.min(1, (av - e0) / (e1 - e0)));
+                    return t * t * (3 - 2 * t);
+                })();
+                const edgeFeather = (() => {
+                    const e0 = 1.0;
+                    const e1 = 0.86;
+                    const t = Math.max(0, Math.min(1, (av - e0) / (e1 - e0)));
+                    return t * t * (3 - 2 * t);
+                })();
+                const featherScale = 0.35 + 0.65 * edgeFeather;
+                const expectedDelta = 6 * medialBlend * flangeRegion * edge * featherScale;
+                const got = heightAt(u, v, f) - heightAt(u, v, n);
+                expect(Math.abs(got - expectedDelta)).toBeLessThan(1e-9);
             }
         }
     });
@@ -245,7 +288,7 @@ describe("fitFlangeFromScan", () => {
     test("recovers medial flange independently of lateral", () => {
         const lengthMm = 260;
         const widthMm = 95;
-        const scan = syntheticFlangeScan({ lengthMm, widthMm, medialMm: 10, lateralMm: 0 });
+        const scan = syntheticFlangeScan({ lengthMm, widthMm, medialMm: 6, lateralMm: 0 });
         const sug = fitFlangeFromScan({
             scanPositions: scan,
             scanVertexCount: scan.length / 3,
@@ -254,7 +297,7 @@ describe("fitFlangeFromScan", () => {
             side: "left",
         });
         expect(sug.autoApply).toBe(false);
-        expect(sug.suggestedMedialFlangeMm).toBeGreaterThan(5);
+        expect(sug.suggestedMedialFlangeMm).toBeGreaterThan(3);
         expect(sug.suggestedLateralFlangeMm).toBeLessThan(1.5);
         const patch = flangeFitToCorrectionPatch(sug);
         expect(patch.medialFlangeMm).toBe(sug.suggestedMedialFlangeMm);
@@ -304,7 +347,7 @@ describe("fitFlangeFromScan", () => {
         expect(sug.confidence.registration.blockAutoApply || sug.confidence.tier === "poor").toBe(true);
     });
 
-    test("clamp reported when solve exceeds clinical max", () => {
+    test("clamp reported when solve exceeds clinical max (8 mm)", () => {
         const lengthMm = 260;
         const widthMm = 95;
         const scan = syntheticFlangeScan({ lengthMm, widthMm, medialMm: 40, lateralMm: 0 });
@@ -315,8 +358,8 @@ describe("fitFlangeFromScan", () => {
             reference: flatBaseReference(lengthMm, widthMm),
             side: "left",
         });
-        expect(sug.suggestedMedialFlangeMm).toBeLessThanOrEqual(25);
-        expect(sug.clamped || sug.suggestedMedialFlangeMm === 25).toBe(true);
+        expect(sug.suggestedMedialFlangeMm).toBeLessThanOrEqual(8);
+        expect(sug.clamped || sug.suggestedMedialFlangeMm === 8).toBe(true);
     });
 });
 
