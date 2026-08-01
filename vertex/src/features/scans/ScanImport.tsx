@@ -398,10 +398,13 @@ export function ScanImport() {
                                             <p className="text-[10px] text-violet-300">
                                                 Manual offset: {offset.x.toFixed(1)}, {offset.y.toFixed(1)},{" "}
                                                 {offset.z.toFixed(1)} mm
+                                                {Math.abs(offset.rz ?? 0) > 1e-6
+                                                    ? ` · ${(((offset.rz ?? 0) * 180) / Math.PI).toFixed(1)}°`
+                                                    : ""}
                                             </p>
                                         ) : (
                                             <p className="text-[10px] text-muted-foreground/80">
-                                                Click the scan to select, then drag or use arrow keys
+                                                Click the scan to select, then drag, rotate, or use arrow keys
                                             </p>
                                         )}
                                     </div>

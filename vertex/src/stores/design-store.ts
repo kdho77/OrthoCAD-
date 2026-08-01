@@ -301,6 +301,8 @@ export interface ViewerSettings {
     heightmap: boolean;
     showLeft: boolean;
     showRight: boolean;
+    /** Show imported foot scan meshes in the viewer. */
+    showScans: boolean;
     /** Active named camera view (for UI + planar editing constraint). */
     view: CameraView;
 }
@@ -408,7 +410,14 @@ export const useDesignStore = create<DesignStore>()(
             stockBaseResolutionState: isApiConfigured() ? "idle" : "resolved",
             baseMeshLoadingBySide: { left: false, right: false },
             exportSide: "left",
-            viewer: { transparent: false, heightmap: false, showLeft: true, showRight: true, view: "iso" },
+            viewer: {
+                transparent: false,
+                heightmap: false,
+                showLeft: true,
+                showRight: true,
+                showScans: true,
+                view: "iso",
+            },
             selectedElementId: null,
             transformMode: "translate",
             history: [],

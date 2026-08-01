@@ -35,6 +35,7 @@ import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
 import { ScanMarkerPlacement } from "./ScanMarkerPlacement";
 import { ScanMeshes } from "./ScanMeshes";
 import { ScanPlaneSliceTool } from "./ScanPlaneSliceTool";
+import { ScanRotateTool } from "./ScanRotateTool";
 import { consumeScanMissDeselectSuppression, ScanTransformTool } from "./ScanTransformTool";
 import { TrimlineEditTools } from "./TrimlineEditTools";
 
@@ -89,6 +90,11 @@ export function Viewer3D() {
     const placingMarkers = useScanStore((s) => s.placementMode != null);
     const selectedScanId = useScanStore((s) => s.selectedScanId);
     const selectScan = useScanStore((s) => s.selectScan);
+    const beginRotate = useScanStore((s) => s.beginRotate);
+    const cancelRotate = useScanStore((s) => s.cancelRotate);
+    const rotateDraft = useScanStore((s) => s.rotateDraft);
+    const hasScans = useScanStore((s) => s.scans.length > 0);
+    const showScans = viewer.showScans ?? true;
     const showLeftInsole = viewer.showLeft && !placingMarkers;
     const showRightInsole = viewer.showRight && !placingMarkers;
     // Select primitives only — returning a fresh object from a zustand selector
@@ -168,9 +174,10 @@ export function Viewer3D() {
                             )}
                         </>
                     ) : null}
-                    <ScanMeshes transparent={viewer.transparent} />
+                    {showScans ? <ScanMeshes transparent={viewer.transparent} /> : null}
                     <ScanMarkerPlacement />
                     <ScanPlaneSliceTool />
+                    <ScanRotateTool />
                     <ScanTransformTool />
                     {!placingMarkers ? <ElementMarkers /> : null}
                     <MeshEditTools />
@@ -268,9 +275,18 @@ export function Viewer3D() {
                         {registrationRms != null ? ` · RMS ${registrationRms.toFixed(2)} mm` : ""}
                     </span>
                 ) : null}
-                {selectedScanId ? (
+                {selectedScanId && !rotateDraft ? (
                     <span className="w-fit rounded bg-violet-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
-                        Scan selected · drag or ←↑↓→ to move · Esc deselect
+                        Scan selected · drag or ←↑↓→ to move · Rotate for yaw · Esc deselect
+                    </span>
+                ) : null}
+                {rotateDraft ? (
+                    <span className="w-fit rounded bg-violet-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        {rotateDraft.step === 0
+                            ? "Rotate · click anchor point"
+                            : rotateDraft.step === 1
+                              ? "Rotate · click pivot point"
+                              : "Rotate · move cursor · click to finish · Esc cancel"}
                     </span>
                 ) : null}
                 {!placingMarkers && registrationError ? (
@@ -317,12 +333,44 @@ export function Viewer3D() {
                     label="Right"
                 />
                 <ToggleButton
+                    active={showScans && hasScans}
+                    onClick={() => setViewer({ showScans: !showScans })}
+                    icon={showScans ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                    label="Scan"
+                />
+                <ToggleButton
                     active={showPerf}
                     onClick={() => setShowPerf(!showPerf)}
                     icon={<Activity className="h-3.5 w-3.5" />}
                     label="FPS Monitor"
                 />
             </div>
+
+            {/* Scan selection toolbar — rotate appears only while a scan is selected */}
+            {selectedScanId ? (
+                <div className="absolute left-1/2 top-14 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
+                    <ModeButton
+                        active={rotateDraft != null}
+                        onClick={() => {
+                            if (rotateDraft) cancelRotate({ restore: true });
+                            else beginRotate(selectedScanId);
+                        }}
+                        icon={<Rotate3d className="h-3.5 w-3.5" />}
+                        label={rotateDraft ? "Cancel rotate" : "Rotate"}
+                    />
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7"
+                        onClick={() => {
+                            if (rotateDraft) cancelRotate({ restore: true });
+                            selectScan(null);
+                        }}
+                    >
+                        <X className="h-3.5 w-3.5" />
+                    </Button>
+                </div>
+            ) : null}
 
             {/* Element / mesh edit toolbar */}
             {selectedElementId ? (

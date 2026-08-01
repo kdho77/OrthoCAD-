@@ -25,6 +25,10 @@ export function consumeScanMissDeselectSuppression(): boolean {
     return true;
 }
 
+export function suppressNextScanMissDeselect(): void {
+    suppressScanMissDeselect = true;
+}
+
 /**
  * Select a foot scan, then drag on the footprint plane or nudge with arrow keys.
  * Disabled during marker placement, plane slice, and trimline/trim edit.
@@ -32,6 +36,7 @@ export function consumeScanMissDeselectSuppression(): boolean {
 export function ScanTransformTool() {
     const placementMode = useScanStore((s) => s.placementMode);
     const sliceDraft = useScanStore((s) => s.sliceDraft);
+    const rotateDraft = useScanStore((s) => s.rotateDraft);
     const selectedScanId = useScanStore((s) => s.selectedScanId);
     const selectScan = useScanStore((s) => s.selectScan);
     const setManualOffset = useScanStore((s) => s.setManualOffset);
@@ -54,7 +59,11 @@ export function ScanTransformTool() {
     } | null>(null);
 
     const blocked =
-        placementMode != null || sliceDraft != null || editMode === "edit-trimline" || editMode === "trim";
+        placementMode != null ||
+        sliceDraft != null ||
+        rotateDraft != null ||
+        editMode === "edit-trimline" ||
+        editMode === "trim";
 
     const pickScan = useCallback(
         (
