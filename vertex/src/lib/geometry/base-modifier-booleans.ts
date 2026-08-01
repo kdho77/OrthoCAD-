@@ -7,13 +7,13 @@ import {
     type IShapeFactory,
     type ISolid,
     type IWire,
-    type Result,
     Plane,
+    type Result,
     ShapeTypes,
     XYZ,
 } from "@chili3d/core";
 import { getCustomElementBounds } from "@/lib/geometry/custom-element-bounds";
-import { ELEMENT_PROFILES } from "@/lib/geometry/elements";
+import { ELEMENT_PROFILES, elementOutlineLocalMm } from "@/lib/geometry/elements";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import type { PlacedElement, Side, SideCorrections } from "@/types";
 
@@ -139,6 +139,10 @@ export function applyTrimlineCut(
 
 // --- Discrete element booleans --------------------------------------------
 
+/**
+ * Extrude the clinical footprint outline into a boolean tool solid.
+ * Falls back to the oriented AABB if the polygonal loft fails.
+ */
 function buildElementTool(factory: IShapeFactory, el: PlacedElement, lengthMm: number): ISolid | null {
     if (el.kind === "custom") {
         return buildCustomElementTool(factory, el, lengthMm);
@@ -150,12 +154,40 @@ function buildElementTool(factory: IShapeFactory, el: PlacedElement, lengthMm: n
     const centerX = lengthMm / 2 + el.position.x;
     const centerY = el.position.y;
     const angleRad = (el.rotationDeg * Math.PI) / 180;
-    const xvec = new XYZ({ x: Math.cos(angleRad), y: Math.sin(angleRad), z: 0 });
-    const yvec = new XYZ({ x: -Math.sin(angleRad), y: Math.cos(angleRad), z: 0 });
+    const cos = Math.cos(angleRad);
+    const sin = Math.sin(angleRad);
+
+    try {
+        const local = elementOutlineLocalMm(el.kind, el.scale.x, el.scale.y, el.side, 40);
+        if (local.length >= 6) {
+            const bottom = local.map((p) => ({
+                x: centerX + p.x * cos - p.y * sin,
+                y: centerY + p.x * sin + p.y * cos,
+                z: 0,
+            }));
+            const top = bottom.map((p) => ({ x: p.x, y: p.y, z: h }));
+            // Close rings explicitly for OCCT polygon.
+            const firstBottom = bottom[0];
+            const firstTop = top[0];
+            if (firstBottom && firstTop) {
+                bottom.push({ ...firstBottom });
+                top.push({ ...firstTop });
+            }
+            const w0: IWire = unwrap(factory.polygon(bottom), "element bottom wire");
+            const w1: IWire = unwrap(factory.polygon(top), "element top wire");
+            const lofted = unwrap(factory.loft([w0, w1], true, true, "c0"), "element prism loft");
+            return asSolid(factory, lofted);
+        }
+    } catch (error) {
+        console.warn(`[base-modifier] element outline loft failed (${el.kind}), using box:`, error);
+    }
+
+    // AABB fallback — same extents as the clinical profile radii.
+    const xvec = new XYZ({ x: cos, y: sin, z: 0 });
+    const yvec = new XYZ({ x: -sin, y: cos, z: 0 });
     const origin = new XYZ({ x: centerX, y: centerY, z: 0 })
         .add(xvec.multiply(rx * -1))
         .add(yvec.multiply(ry * -1));
-
     const plane = new Plane({ origin, normal: XYZ.unitZ, xvec });
     const box = factory.box(plane, rx * 2, ry * 2, h);
     if (!box.isOk) return null;

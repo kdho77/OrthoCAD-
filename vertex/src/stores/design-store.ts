@@ -12,6 +12,7 @@ import {
     sanitizeDesignStockBases,
 } from "@/lib/geometry/base-asset";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
+import { defaultElementPose } from "@/lib/geometry/elements";
 import {
     convertSizingToSystem,
     DEFAULT_SHOE_SIZE_SYSTEM,
@@ -728,14 +729,13 @@ export const useDesignStore = create<DesignStore>()(
             addElement: (kind, side) => {
                 get().checkpoint("add-element");
                 set((s) => {
+                    const layout = insoleLayoutFromDesign(s.design);
+                    const pose = defaultElementPose(kind, side, layout.lengthMm, layout.widthMm);
                     const el: PlacedElement = {
                         id: crypto.randomUUID(),
                         kind,
                         side,
-                        position: { x: 0, y: 0 },
-                        rotationDeg: 0,
-                        scale: { x: 1, y: 1 },
-                        heightMm: 4,
+                        ...pose,
                     };
                     const next = { ...s.design, elements: [...s.design.elements, el] };
                     const eff = buildEffectiveTrimlines(next);
@@ -945,14 +945,12 @@ export const useDesignStore = create<DesignStore>()(
                         left: r1.constrained,
                         right: s.design.corrections.linked ? r1.constrained : r2.constrained,
                     };
+                    const layout = insoleLayoutFromDesign(s.design);
                     const elements: PlacedElement[] = result.elements.map((e) => ({
                         id: crypto.randomUUID(),
                         kind: e.kind,
                         side: e.side,
-                        position: { x: 0, y: 0 },
-                        rotationDeg: 0,
-                        scale: { x: 1, y: 1 },
-                        heightMm: 4,
+                        ...defaultElementPose(e.kind, e.side, layout.lengthMm, layout.widthMm),
                     }));
                     return {
                         design: {
