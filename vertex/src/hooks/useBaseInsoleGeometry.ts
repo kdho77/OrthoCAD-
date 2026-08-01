@@ -57,6 +57,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     /** Full-resolution deform target (never trim-clipped); reused across slider frames. */
     const workRef = useRef<BufferGeometry | null>(null);
     const outRef = useRef<BufferGeometry | null>(null);
+    /** Inputs of the last completed rebuild — skips no-op rebuilds (e.g. the
+     * other foot while a one-sided slider is scrubbed). */
+    const lastBuildRef = useRef<{ raw: BufferGeometry; signature: string } | null>(null);
     const [geometry, setGeometry] = useState<BufferGeometry | null>(null);
     const [building, setBuilding] = useState(false);
 
@@ -225,6 +228,26 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         // Skip smoothing while dragging for responsiveness; relax once when idle.
         // Slider/gizmo: reuse work buffer + skip normals/clip. Trimline keeps clip.
         const fastPreview = interacting && interactionSource !== "trimline";
+
+        // Live draft trimline (may deform during a trimline edit session).
+        const draft = useMeshEditStore.getState().getActiveDraftTrimline(side);
+        const committedTrim = getDesignTrimline(design, side);
+        const activeForClip = draft ?? committedTrim;
+
+        // Deduplicate rebuilds: preview-store changes retrigger this effect for
+        // BOTH sides, but e.g. a left-foot slider leaves the right side's field
+        // untouched — skip the full-mesh deform when the effective inputs are
+        // identical to the last completed build for the same raw base.
+        const signature = JSON.stringify([field, activeForClip, fastPreview, interacting]);
+        if (
+            lastBuildRef.current &&
+            lastBuildRef.current.raw === raw &&
+            lastBuildRef.current.signature === signature &&
+            outRef.current
+        ) {
+            return;
+        }
+
         const rawCount = raw.getAttribute("position")?.count ?? 0;
         const canReuseWork =
             workRef.current != null && workRef.current.getAttribute("position")?.count === rawCount;
@@ -241,9 +264,6 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         // is active for this side. This wires the deforming perimeter into the
         // rendered base mesh during drag (production editing requirement).
         // Defer full clip during slider/gizmo scrub (idle + trimline still clip).
-        const draft = useMeshEditStore.getState().getActiveDraftTrimline(side);
-        const committed = getDesignTrimline(design, side);
-        const activeForClip = draft ?? committed;
         let display: BufferGeometry = modified;
         if (activeForClip && !fastPreview) {
             display = clipGeometryToOutline(modified, activeForClip);
@@ -252,6 +272,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             outRef.current.dispose();
         }
         outRef.current = display;
+        lastBuildRef.current = { raw, signature };
         // Same BufferGeometry identity while scrubbing → avoid React remount / EdgesGeometry.
         setGeometry((prev) => (prev === display ? prev : display));
         setBaseMeshLoading(side, false);

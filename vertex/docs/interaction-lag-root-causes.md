@@ -21,6 +21,25 @@ Architecture already targets **&lt; 16 ms preview frames** and **no OCCT during 
 | Thickness preview | `rafThrottle` like other correction fields |
 | Remove HC-DEPTH debug | Dropped rebuild `console.log` / vertex scans from hot path |
 
+### Round 2 (2026-08-01) — per-base caching inside `applyBaseModifiers`
+
+Even after round 1, `applyBaseModifiers` re-derived large pure-per-base data on
+**every preview frame** for multi-mesh GLB bases. Measured on the committed
+`Default.glb` fixture: **1.7–2.1 s per slider frame** before, **~45–70 ms**
+after — bit-identical output (FNV-hash parity over 26 idle+preview field
+matrices).
+
+| Fix | Change |
+|-----|--------|
+| Top-rim extraction cached | `submeshByVertexRange` + boundary-loop extraction ran per frame; now cached per base (`getShellSyncFrame`) |
+| Nearest-rim correspondence cached | Per-bottom-vertex spatial-hash NN search (~25 string-keyed cells × ~100k verts per frame) precomputed once per base |
+| Depth footprint NN cached | `buildTopDepthFootprintLookup` per-frame queries → `getDepthBottomNNGroups` per base |
+| Neutral-field heights cached | `heightAt(u, v, neutral)` is pure per (base, side, footprint); cached so only live-field evaluations run per frame |
+| Width lateral delta skipped at width ≤ 0 | Coincidence groups + audit (~300k string quant-keys/frame) were built only to return zeros |
+| Width groups + supernode graph cached | For width > 0 scrubs, quant-key grouping and Laplacian graph lifting are per-base now |
+| Bounding box reused | Work-buffer positions equal the base pre-deform; reuse the base's cached bounds |
+| Unchanged side skips rebuild | `useBaseInsoleGeometry` dedupes on an input signature — a one-sided slider no longer deforms both feet |
+
 **Still open (follow-up):** move `applyBaseModifiers` to a worker for ~200k-vert bases; scan import weld/manifold off main thread.
 
 ---

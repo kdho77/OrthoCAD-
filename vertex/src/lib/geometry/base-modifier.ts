@@ -418,44 +418,10 @@ function sampleTopEdgeProfile(bins: Float64Array, u: number): number {
     return bins[b0]! * (1 - f) + bins[b1]! * f;
 }
 
-/**
- * Scalar vertical modifier field F at an arbitrary footprint sample, with
- * exterior XY clamped to the local top-sheet edge profile so wall verts
- * outside the top silhouette inherit the rim value (keeps the rim closed).
- */
-function sampleFieldDeltaAtXY(
-    lenCoord: number,
-    widCoord: number,
-    lenMin: number,
-    lenSize: number,
-    widCenter: number,
-    widSize: number,
-    widthSign: number,
-    fieldForDelta: HeightFieldParams,
-    neutral: HeightFieldParams,
-    edgeProfile: TopEdgeProfile | null,
-): number {
-    const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
-    const halfW = widSize / 2 || 1;
-    const vNorm = Math.max(-1, Math.min(1, (widCoord - widCenter) / halfW));
-    const vSigned = Math.max(-1, Math.min(1, widthSign * vNorm));
-    const F_raw = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
-
-    if (!edgeProfile) return F_raw;
-
-    const bins = vNorm >= 0 ? edgeProfile.pos : edgeProfile.neg;
-    const avEdge = sampleTopEdgeProfile(bins, u);
-    const av = Math.abs(vNorm);
-    if (!(avEdge > 1e-6) || av <= avEdge) return F_raw;
-
-    const vNormClamped = Math.sign(vNorm) * avEdge;
-    const vSignedClamped = Math.max(-1, Math.min(1, widthSign * vNormClamped));
-    const F_edge = correctionDeltaAt(u, vSignedClamped, fieldForDelta, neutral);
-    const overshootMm = (av - avEdge) * halfW;
-    if (overshootMm >= CLAMP_FEATHER_MM) return F_edge;
-    const t = overshootMm / CLAMP_FEATHER_MM;
-    return F_raw + (F_edge - F_raw) * quinticSmoothstep(t);
-}
+// NOTE: the scalar field sampler (formerly sampleFieldDeltaAtXY) now lives in
+// buildCachedFieldSamples + sampleCachedFieldDelta below: the sample geometry,
+// exterior edge-clamp classification and neutral heights are precomputed once
+// per base, and only the live-field heightAt evaluations run per frame.
 
 /** Laplacian iterations for heel-cup width lateral displacement (multi-mesh safe). */
 const HEEL_CUP_WIDTH_LAPLACIAN_ITERS = 2;
@@ -508,17 +474,21 @@ function syncCoincidentDeltas(delta: Float32Array, groups: number[][]): void {
  * Returns `allGroups` covering every sync-range index (singletons included) for
  * the position-welded Laplacian supernode graph.
  */
+interface WidthCoincidenceGroups {
+    groups: number[][];
+    allGroups: number[][];
+    syncIndexCount: number;
+    crossMeshGroupCount: number;
+}
+
+const widthCoincidenceCache = new WeakMap<BufferGeometry, WidthCoincidenceGroups>();
+
 function buildWidthCoincidenceGroups(
     array: Float32Array,
     count: number,
     isMultiMesh: boolean,
     topVertexCount: number,
-): {
-    groups: number[][];
-    allGroups: number[][];
-    syncIndexCount: number;
-    crossMeshGroupCount: number;
-} {
+): WidthCoincidenceGroups {
     const syncEnd = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
     const syncMap = new Map<string, number[]>();
     for (let i = 0; i < syncEnd; i++) {
@@ -555,21 +525,22 @@ function buildWidthCoincidenceGroups(
     return { groups, allGroups, syncIndexCount: syncEnd, crossMeshGroupCount };
 }
 
-/**
- * Laplacian on the position-welded supernode graph: coincident base-position
- * copies share one delta, so diffusion cannot separate them. Index-adjacency
- * edges are lifted to supernode↔supernode edges. Result is scattered back to
- * every member index (identical delta within each group).
- */
-function relaxLateralDeltaFieldWelded(
-    raw: Float32Array,
+/** Position-welded supernode graph for the width Laplacian (pure per base). */
+interface WidthSuperGraph {
+    vertToGroup: Int32Array;
+    superAdj: number[][];
+}
+
+const widthSuperGraphCache = new WeakMap<BufferGeometry, WidthSuperGraph>();
+
+function buildWidthSuperGraph(
+    vertexCount: number,
     adj: number[][],
     allGroups: number[][],
     allowNeighbor: (i: number) => boolean,
-    iterations: number,
-): Float32Array {
+): WidthSuperGraph {
     const groupCount = allGroups.length;
-    const vertToGroup = new Int32Array(raw.length).fill(-1);
+    const vertToGroup = new Int32Array(vertexCount).fill(-1);
     for (let g = 0; g < groupCount; g++) {
         for (const vi of allGroups[g]!) vertToGroup[vi] = g;
     }
@@ -588,6 +559,23 @@ function relaxLateralDeltaFieldWelded(
             }
         }
     }
+    return { vertToGroup, superAdj };
+}
+
+/**
+ * Laplacian on the position-welded supernode graph: coincident base-position
+ * copies share one delta, so diffusion cannot separate them. Index-adjacency
+ * edges are lifted to supernode↔supernode edges. Result is scattered back to
+ * every member index (identical delta within each group).
+ */
+function relaxLateralDeltaFieldWelded(
+    raw: Float32Array,
+    graph: WidthSuperGraph,
+    allGroups: number[][],
+    iterations: number,
+): Float32Array {
+    const groupCount = allGroups.length;
+    const { superAdj } = graph;
 
     // One delta per supernode (raw is already equal within a group; take [0]).
     let current = new Float32Array(groupCount);
@@ -678,12 +666,19 @@ function buildHeelCupWidthLateralDelta(
         raw[i] = offset * (scale - 1);
     }
 
+    // Coincidence groups are a pure function of the (stable) base positions —
+    // cache per base so slider scrubs skip the per-vertex quant-key rebuild.
+    let coincidence = widthCoincidenceCache.get(base);
+    if (!coincidence) {
+        coincidence = buildWidthCoincidenceGroups(array, count, isMultiMesh, topVertexCount);
+        widthCoincidenceCache.set(base, coincidence);
+    }
     const {
         groups,
         allGroups,
         syncIndexCount: coincidenceSyncIndexCount,
         crossMeshGroupCount: crossMeshCoincidenceGroupCount,
-    } = buildWidthCoincidenceGroups(array, count, isMultiMesh, topVertexCount);
+    } = coincidence;
     const coincidentGroupCount = groups.length;
 
     if (field.corrections.heelCupWidthMm <= 0) {
@@ -720,17 +715,17 @@ function buildHeelCupWidthLateralDelta(
         }
     }
 
-    const allowN = (idx: number) => allowTopMeshNeighbor(idx, isMultiMesh, topVertexCount, topFactors);
     // Position-welded Laplacian: coincident copies are one supernode during
     // diffusion (cannot diverge), then scatter identical deltas. Avoids both
     // mid-iter sync (re-amplifies crease) and post-hoc average (same failure).
-    const smoothed = relaxLateralDeltaFieldWelded(
-        raw,
-        adj,
-        allGroups,
-        allowN,
-        HEEL_CUP_WIDTH_LAPLACIAN_ITERS,
-    );
+    // Supernode graph is pure per base — cached across slider frames.
+    let superGraph = widthSuperGraphCache.get(base);
+    if (!superGraph) {
+        const allowN = (idx: number) => allowTopMeshNeighbor(idx, isMultiMesh, topVertexCount, topFactors);
+        superGraph = buildWidthSuperGraph(count, adj, allGroups, allowN);
+        widthSuperGraphCache.set(base, superGraph);
+    }
+    const smoothed = relaxLateralDeltaFieldWelded(raw, superGraph, allGroups, HEEL_CUP_WIDTH_LAPLACIAN_ITERS);
     clampLateralDeviation(raw, smoothed, SMOOTH_INWARD_LIMIT_MM);
     // Clamp can in principle introduce tiny float divergence within a group —
     // re-sync so rim extract still sees welded positions.
@@ -1126,66 +1121,11 @@ function heelCupDepthDisplacements(frame: HeelCupDepthFrame, depthMm: number): F
     return out;
 }
 
-/**
- * Footprint NN lookup of top-mesh heel-cup depth displacements for bottom-shell
- * sync. Samples the already-computed top depth vector at the nearest eligible
- * top footprint (within RIM_PAIR_TOL_MM) so underside thickness is preserved
- * without height-based attenuation.
- */
-function buildTopDepthFootprintLookup(
-    baseArr: Float32Array,
-    topVertexCount: number,
-    lengthAxis: AxisIndex,
-    widthAxis: AxisIndex,
-    depthFrame: HeelCupDepthFrame,
-    depthVec: Float32Array,
-): (len: number, wid: number) => { dx: number; dy: number; dz: number } {
-    const cell = RIM_PAIR_TOL_MM;
-    const hash = new Map<string, number[]>();
-    for (let i = 0; i < topVertexCount; i++) {
-        const g = depthFrame.groupOf[i]!;
-        if (g < 0) continue;
-        const len = baseArr[i * 3 + lengthAxis]!;
-        const wid = baseArr[i * 3 + widthAxis]!;
-        const k = `${Math.floor(len / cell)},${Math.floor(wid / cell)}`;
-        let bucket = hash.get(k);
-        if (!bucket) {
-            bucket = [];
-            hash.set(k, bucket);
-        }
-        bucket.push(i);
-    }
-    const bins = Math.ceil(RIM_PAIR_TOL_MM / cell) + 1;
-    return (len: number, wid: number) => {
-        const cx = Math.floor(len / cell);
-        const cy = Math.floor(wid / cell);
-        let best = -1;
-        let bestD = Infinity;
-        for (let dx = -bins; dx <= bins; dx++) {
-            for (let dy = -bins; dy <= bins; dy++) {
-                const bucket = hash.get(`${cx + dx},${cy + dy}`);
-                if (!bucket) continue;
-                for (const i of bucket) {
-                    const bl = baseArr[i * 3 + lengthAxis]!;
-                    const bw = baseArr[i * 3 + widthAxis]!;
-                    const d = Math.hypot(bl - len, bw - wid);
-                    if (d < bestD) {
-                        bestD = d;
-                        best = i;
-                    }
-                }
-            }
-        }
-        if (best < 0 || bestD > RIM_PAIR_TOL_MM) return { dx: 0, dy: 0, dz: 0 };
-        const g = depthFrame.groupOf[best]!;
-        if (g < 0) return { dx: 0, dy: 0, dz: 0 };
-        return {
-            dx: depthVec[g * 3]!,
-            dy: depthVec[g * 3 + 1]!,
-            dz: depthVec[g * 3 + 2]!,
-        };
-    };
-}
+// NOTE: the footprint NN lookup of top-mesh heel-cup depth displacements
+// (formerly buildTopDepthFootprintLookup) is replaced by the per-base cached
+// getDepthBottomNNGroups below — the nearest eligible top vertex per bottom
+// vertex is a pure function of the base mesh, so the spatial-hash search runs
+// once per base instead of on every preview frame.
 
 // --- Bottom-wall rim-conformity delta transfer (multi-mesh only) ------------
 // Samples the already-applied top-mesh total correction at the top rim and
@@ -1493,6 +1433,364 @@ function transferRimConformityDeltas(
     }
 }
 
+// --- Per-base slider-preview caches ------------------------------------------
+// applyBaseModifiers runs on every preview frame while a slider is scrubbed.
+// Everything below is a pure function of the loaded base mesh (plus the
+// side/footprint signature for neutral-field heights), so it is computed once
+// per base and reused across frames. Interaction lag fix — see
+// docs/interaction-lag-root-causes.md.
+
+/**
+ * Precomputed field-sample geometry + neutral heights for a fixed set of
+ * footprint coordinates (bottom-shell verts or top-rim verts). Per frame only
+ * the *field* heightAt evaluations remain; the neutral term and the exterior
+ * edge-clamp classification are cached (bit-identical to sampleFieldDeltaAtXY).
+ */
+interface CachedFieldSamples {
+    u: Float64Array;
+    vSigned: Float64Array;
+    neutralRaw: Float64Array;
+    /** 0 = raw only, 1 = fully edge-clamped, 2 = feathered blend. */
+    clampKind: Uint8Array;
+    vSignedClamped: Float64Array;
+    neutralEdge: Float64Array;
+    /** Precomputed quinticSmoothstep(t) for clampKind 2. */
+    blendQ: Float64Array;
+}
+
+/** Evaluate the cached samples against a live field (mirrors sampleFieldDeltaAtXY). */
+function sampleCachedFieldDelta(field: HeightFieldParams, s: CachedFieldSamples, k: number): number {
+    const F_raw = heightAt(s.u[k]!, s.vSigned[k]!, field) - s.neutralRaw[k]!;
+    const kind = s.clampKind[k]!;
+    if (kind === 0) return F_raw;
+    const F_edge = heightAt(s.u[k]!, s.vSignedClamped[k]!, field) - s.neutralEdge[k]!;
+    if (kind === 1) return F_edge;
+    return F_raw + (F_edge - F_raw) * s.blendQ[k]!;
+}
+
+function buildCachedFieldSamples(
+    coords: { len: (k: number) => number; wid: (k: number) => number; n: number },
+    lenMin: number,
+    lenSize: number,
+    widCenter: number,
+    widSize: number,
+    widthSign: number,
+    neutral: HeightFieldParams,
+    edgeProfile: TopEdgeProfile | null,
+): CachedFieldSamples {
+    const n = coords.n;
+    const s: CachedFieldSamples = {
+        u: new Float64Array(n),
+        vSigned: new Float64Array(n),
+        neutralRaw: new Float64Array(n),
+        clampKind: new Uint8Array(n),
+        vSignedClamped: new Float64Array(n),
+        neutralEdge: new Float64Array(n),
+        blendQ: new Float64Array(n),
+    };
+    const halfW = widSize / 2 || 1;
+    for (let k = 0; k < n; k++) {
+        const u = Math.max(0, Math.min(1, (coords.len(k) - lenMin) / lenSize));
+        const vNorm = Math.max(-1, Math.min(1, (coords.wid(k) - widCenter) / halfW));
+        const vSigned = Math.max(-1, Math.min(1, widthSign * vNorm));
+        s.u[k] = u;
+        s.vSigned[k] = vSigned;
+        s.neutralRaw[k] = heightAt(u, vSigned, neutral);
+        if (!edgeProfile) continue;
+        const bins = vNorm >= 0 ? edgeProfile.pos : edgeProfile.neg;
+        const avEdge = sampleTopEdgeProfile(bins, u);
+        const av = Math.abs(vNorm);
+        if (!(avEdge > 1e-6) || av <= avEdge) continue;
+        const vNormClamped = Math.sign(vNorm) * avEdge;
+        const vSignedClamped = Math.max(-1, Math.min(1, widthSign * vNormClamped));
+        s.vSignedClamped[k] = vSignedClamped;
+        s.neutralEdge[k] = heightAt(u, vSignedClamped, neutral);
+        const overshootMm = (av - avEdge) * halfW;
+        if (overshootMm >= CLAMP_FEATHER_MM) {
+            s.clampKind[k] = 1;
+        } else {
+            s.clampKind[k] = 2;
+            s.blendQ[k] = quinticSmoothstep(overshootMm / CLAMP_FEATHER_MM);
+        }
+    }
+    return s;
+}
+
+/**
+ * Shell-field-sync frame: top-rim loop, per-bottom-vertex nearest-rim
+ * correspondence and blend weights, plus cached field samples for both the rim
+ * and the bottom shell. Signature covers the neutral-field inputs (side +
+ * footprint dims); for a given loaded base it is effectively constant.
+ */
+interface ShellSyncFrame {
+    signature: string;
+    rimIndices: number[];
+    rimSamples: CachedFieldSamples;
+    bottomSamples: CachedFieldSamples;
+    /** Per bottom vertex: nearest rim entry (into rimIndices) or −1. */
+    nnSeed: Int32Array;
+    /** Per bottom vertex: wDist × wHeight rim-inheritance blend (0 when none). */
+    rimBlend: Float64Array;
+    /** Per bottom vertex: rimConformityHeightWeight(hz) for the thickness ramp. */
+    heightRamp: Float64Array;
+}
+
+const shellSyncFrameCache = new WeakMap<BufferGeometry, ShellSyncFrame>();
+
+function getShellSyncFrame(
+    base: BufferGeometry,
+    signature: string,
+    cacheable: boolean,
+    topVertexCount: number,
+    lengthAxis: AxisIndex,
+    widthAxis: AxisIndex,
+    thickAxis: AxisIndex,
+    lenMin: number,
+    lenSize: number,
+    widCenter: number,
+    widSize: number,
+    widthSign: number,
+    neutral: HeightFieldParams,
+    edgeProfile: TopEdgeProfile | null,
+): ShellSyncFrame {
+    if (cacheable) {
+        const cached = shellSyncFrameCache.get(base);
+        if (cached && cached.signature === signature) return cached;
+    }
+
+    const baseArr = base.getAttribute("position")!.array as Float32Array;
+    const count = base.getAttribute("position")!.count;
+
+    const topSub = submeshByVertexRange(base, 0, topVertexCount);
+    let rimIndices: number[];
+    try {
+        rimIndices = extractOrderedBoundaryLoopWithIndices(topSub).indices;
+    } finally {
+        topSub.dispose();
+    }
+
+    const rimSamples = buildCachedFieldSamples(
+        {
+            len: (s) => baseArr[rimIndices[s]! * 3 + lengthAxis]!,
+            wid: (s) => baseArr[rimIndices[s]! * 3 + widthAxis]!,
+            n: rimIndices.length,
+        },
+        lenMin,
+        lenSize,
+        widCenter,
+        widSize,
+        widthSign,
+        neutral,
+        edgeProfile,
+    );
+
+    const bottomCount = count - topVertexCount;
+    const bottomSamples = buildCachedFieldSamples(
+        {
+            len: (k) => baseArr[(topVertexCount + k) * 3 + lengthAxis]!,
+            wid: (k) => baseArr[(topVertexCount + k) * 3 + widthAxis]!,
+            n: bottomCount,
+        },
+        lenMin,
+        lenSize,
+        widCenter,
+        widSize,
+        widthSign,
+        neutral,
+        edgeProfile,
+    );
+
+    // Nearest-rim correspondence per bottom vertex (footprint spatial hash) —
+    // identical search to the previous per-frame loop, run once per base.
+    const rimCell = RIM_PAIR_TOL_MM;
+    const rimHash = new Map<string, number[]>();
+    for (let s = 0; s < rimIndices.length; s++) {
+        const j = rimIndices[s]!;
+        const len = baseArr[j * 3 + lengthAxis]!;
+        const wid = baseArr[j * 3 + widthAxis]!;
+        const k = `${Math.floor(len / rimCell)},${Math.floor(wid / rimCell)}`;
+        let bucket = rimHash.get(k);
+        if (!bucket) {
+            bucket = [];
+            rimHash.set(k, bucket);
+        }
+        bucket.push(s);
+    }
+    const rimBins = Math.ceil(RIM_PAIR_TOL_MM / rimCell) + 1;
+
+    const nnSeed = new Int32Array(bottomCount).fill(-1);
+    const rimBlend = new Float64Array(bottomCount);
+    const heightRamp = new Float64Array(bottomCount);
+    for (let k = 0; k < bottomCount; k++) {
+        const i = topVertexCount + k;
+        const lenCoord = baseArr[i * 3 + lengthAxis]!;
+        const widCoord = baseArr[i * 3 + widthAxis]!;
+        const baseZ = baseArr[i * 3 + thickAxis]!;
+
+        heightRamp[k] = rimConformityHeightWeight(
+            baseZ <= PLANTAR_Z_MAX_MM
+                ? 0
+                : Math.min(1, (baseZ - PLANTAR_Z_MAX_MM) / (WALL_TOP_MIN_Z_MM - PLANTAR_Z_MAX_MM)),
+        );
+
+        const cx = Math.floor(lenCoord / rimCell);
+        const cy = Math.floor(widCoord / rimCell);
+        let bestS = -1;
+        let bestD = Infinity;
+        for (let dx = -rimBins; dx <= rimBins; dx++) {
+            for (let dy = -rimBins; dy <= rimBins; dy++) {
+                const bucket = rimHash.get(`${cx + dx},${cy + dy}`);
+                if (!bucket) continue;
+                for (const s of bucket) {
+                    const j = rimIndices[s]!;
+                    const d = Math.hypot(
+                        baseArr[j * 3 + lengthAxis]! - lenCoord,
+                        baseArr[j * 3 + widthAxis]! - widCoord,
+                    );
+                    if (d < bestD) {
+                        bestD = d;
+                        bestS = s;
+                    }
+                }
+            }
+        }
+        if (bestS >= 0 && bestD < WALL_CORRIDOR_MM) {
+            nnSeed[k] = bestS;
+            rimBlend[k] = rimConformityDistanceWeight(bestD) * heightRamp[k]!;
+        }
+    }
+
+    const frame: ShellSyncFrame = {
+        signature,
+        rimIndices,
+        rimSamples,
+        bottomSamples,
+        nnSeed,
+        rimBlend,
+        heightRamp,
+    };
+    if (cacheable) shellSyncFrameCache.set(base, frame);
+    return frame;
+}
+
+/**
+ * Per-bottom-vertex nearest eligible top-vertex depth group (within
+ * RIM_PAIR_TOL_MM of the edge-clamped footprint), or −1. Pure function of the
+ * base mesh + cached depth frame — replaces the per-frame footprint NN lookup.
+ */
+const depthBottomNNCache = new WeakMap<BufferGeometry, Int32Array>();
+
+function getDepthBottomNNGroups(
+    base: BufferGeometry,
+    topVertexCount: number,
+    lengthAxis: AxisIndex,
+    widthAxis: AxisIndex,
+    lenMin: number,
+    lenSize: number,
+    widCenter: number,
+    widSize: number,
+    depthFrame: HeelCupDepthFrame,
+    edgeProfile: TopEdgeProfile | null,
+): Int32Array {
+    const cached = depthBottomNNCache.get(base);
+    if (cached) return cached;
+
+    const baseArr = base.getAttribute("position")!.array as Float32Array;
+    const count = base.getAttribute("position")!.count;
+    const cell = RIM_PAIR_TOL_MM;
+    const hash = new Map<string, number[]>();
+    for (let i = 0; i < topVertexCount; i++) {
+        const g = depthFrame.groupOf[i]!;
+        if (g < 0) continue;
+        const len = baseArr[i * 3 + lengthAxis]!;
+        const wid = baseArr[i * 3 + widthAxis]!;
+        const k = `${Math.floor(len / cell)},${Math.floor(wid / cell)}`;
+        let bucket = hash.get(k);
+        if (!bucket) {
+            bucket = [];
+            hash.set(k, bucket);
+        }
+        bucket.push(i);
+    }
+    const bins = Math.ceil(RIM_PAIR_TOL_MM / cell) + 1;
+
+    const out = new Int32Array(count - topVertexCount).fill(-1);
+    for (let k = 0; k < out.length; k++) {
+        const i = topVertexCount + k;
+        const lenCoord = baseArr[i * 3 + lengthAxis]!;
+        const widCoord = baseArr[i * 3 + widthAxis]!;
+        const qLen = lenCoord;
+        let qWid = widCoord;
+        if (edgeProfile) {
+            const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+            const halfW = widSize / 2 || 1;
+            const vNorm = (widCoord - widCenter) / halfW;
+            const binsArr = vNorm >= 0 ? edgeProfile.pos : edgeProfile.neg;
+            const avEdge = sampleTopEdgeProfile(binsArr, u);
+            const av = Math.abs(vNorm);
+            if (avEdge > 1e-6 && av > avEdge) {
+                qWid = widCenter + Math.sign(vNorm) * avEdge * halfW;
+            }
+        }
+        const cx = Math.floor(qLen / cell);
+        const cy = Math.floor(qWid / cell);
+        let best = -1;
+        let bestD = Infinity;
+        for (let dx = -bins; dx <= bins; dx++) {
+            for (let dy = -bins; dy <= bins; dy++) {
+                const bucket = hash.get(`${cx + dx},${cy + dy}`);
+                if (!bucket) continue;
+                for (const ti of bucket) {
+                    const bl = baseArr[ti * 3 + lengthAxis]!;
+                    const bw = baseArr[ti * 3 + widthAxis]!;
+                    const d = Math.hypot(bl - qLen, bw - qWid);
+                    if (d < bestD) {
+                        bestD = d;
+                        best = ti;
+                    }
+                }
+            }
+        }
+        if (best >= 0 && bestD <= RIM_PAIR_TOL_MM) out[k] = depthFrame.groupOf[best]!;
+    }
+    depthBottomNNCache.set(base, out);
+    return out;
+}
+
+/** Neutral heightAt per vertex (full mesh), keyed by base + field signature. */
+const neutralTopHeightsCache = new WeakMap<BufferGeometry, { signature: string; values: Float64Array }>();
+
+function getNeutralTopHeights(
+    base: BufferGeometry,
+    signature: string,
+    cacheable: boolean,
+    lengthAxis: AxisIndex,
+    widthAxis: AxisIndex,
+    lenMin: number,
+    lenSize: number,
+    widCenter: number,
+    widSize: number,
+    widthSign: number,
+    neutral: HeightFieldParams,
+): Float64Array {
+    if (cacheable) {
+        const cached = neutralTopHeightsCache.get(base);
+        if (cached && cached.signature === signature) return cached.values;
+    }
+    const baseArr = base.getAttribute("position")!.array as Float32Array;
+    const count = base.getAttribute("position")!.count;
+    const values = new Float64Array(count);
+    for (let i = 0; i < count; i++) {
+        const lenCoord = baseArr[i * 3 + lengthAxis]!;
+        const widCoord = baseArr[i * 3 + widthAxis]!;
+        const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+        const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
+        values[i] = heightAt(u, vSigned, neutral);
+    }
+    if (cacheable) neutralTopHeightsCache.set(base, { signature, values });
+    return values;
+}
+
 /** Verification helper: post-smoothing lateral delta stats for heel-cup width. */
 export function diagnoseHeelCupWidthLateral(
     base: BufferGeometry,
@@ -1624,9 +1922,15 @@ export function applyBaseModifiers(
     const pos = geometry.getAttribute("position");
     if (!pos) return geometry;
 
-    geometry.computeBoundingBox();
-    const box = geometry.boundingBox;
+    // Positions here are a pristine copy of the base, so the bounds equal the
+    // base's (cached) bounds — avoid re-scanning ~200k vertices per frame.
+    if (!base.boundingBox) base.computeBoundingBox();
+    const box = base.boundingBox;
     if (!box) return geometry;
+    if (geometry !== base) {
+        if (geometry.boundingBox) geometry.boundingBox.copy(box);
+        else geometry.boundingBox = box.clone();
+    }
 
     const min = [box.min.x, box.min.y, box.min.z] as const;
     const size = [
@@ -1735,6 +2039,26 @@ export function applyBaseModifiers(
     // only when width is inactive so the two paths never double-apply.
     const useShellFieldSync = isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm <= 0;
 
+    // Neutral-field heights are a pure function of the base + (side, footprint)
+    // signature — cached per base so each preview frame only evaluates the live
+    // field. Bypass the cache for exotic fields (operator graph / custom edge
+    // profile) that could leak into the neutral spread.
+    const cacheable = !field.graph && !field.topEdgeAvProfile;
+    const fieldSignature = `${field.side}|${field.lengthMm}|${field.widthMm}`;
+    const neutralHeights = getNeutralTopHeights(
+        base,
+        fieldSignature,
+        cacheable,
+        lengthAxis,
+        widthAxis,
+        lenMin,
+        lenSize,
+        widCenter,
+        widSize,
+        widthSign,
+        neutral,
+    );
+
     // 1) Sample the pure modifier delta. Multi-mesh top range only when shell
     //    sync is active (bottom gets F via sampleFieldDeltaAtXY below); otherwise
     //    sample the full mesh as before (bottom slots unused under w=0, then
@@ -1747,7 +2071,7 @@ export function applyBaseModifiers(
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
-        delta[i] = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
+        delta[i] = heightAt(u, vSigned, fieldForDelta) - neutralHeights[i]!;
     }
 
     // 2) Optional Laplacian relaxation of the displacement field (cached adjacency).
@@ -1775,14 +2099,13 @@ export function applyBaseModifiers(
         delta.set(current);
     }
 
-    const { smoothed: lateralDelta } = buildHeelCupWidthLateralDelta(
-        base,
-        field,
-        lateralCtx,
-        topFactors,
-        isMultiMesh,
-        topVertexCount,
-    );
+    // Width ≤ 0 ⇒ the lateral field is identically zero (heelCupWidthScaleFactor
+    // returns 1) — skip the whole coincidence/Laplacian machinery on that path.
+    const lateralDelta =
+        field.corrections.heelCupWidthMm > 0
+            ? buildHeelCupWidthLateralDelta(base, field, lateralCtx, topFactors, isMultiMesh, topVertexCount)
+                  .smoothed
+            : null;
 
     // Heel-cup depth tangent displacement (see field construction above). The
     // frame is a pure function of the base geometry (cached per base), only the
@@ -1806,15 +2129,21 @@ export function applyBaseModifiers(
 
     // Capture undeformed top positions for depth footprint NN (BASE coords).
     const baseArrForDepth = base.getAttribute("position")!.array as Float32Array;
-    const depthLookup =
+    // Per-bottom-vertex depth NN groups (cached per base; replaces the
+    // per-frame buildTopDepthFootprintLookup spatial-hash queries).
+    const depthBottomNN =
         useShellFieldSync && depthFrame && depthVec
-            ? buildTopDepthFootprintLookup(
-                  baseArrForDepth,
+            ? getDepthBottomNNGroups(
+                  base,
                   topVertexCount,
                   lengthAxis,
                   widthAxis,
+                  lenMin,
+                  lenSize,
+                  widCenter,
+                  widSize,
                   depthFrame,
-                  depthVec,
+                  edgeProfile,
               )
             : null;
 
@@ -1831,7 +2160,7 @@ export function applyBaseModifiers(
             w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
         }
         const vertD = delta[i]! * w;
-        const latD = lateralDelta[i]! * w;
+        const latD = lateralDelta ? lateralDelta[i]! * w : 0;
         let dx = 0;
         let dy = 0;
         let dz = 0;
@@ -1871,136 +2200,67 @@ export function applyBaseModifiers(
     };
     const thicknessLiftActive = Math.abs(fieldForDelta.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-9;
     if (useShellFieldSync) {
-        let rimFp:
-            | {
-                  len: number;
-                  wid: number;
-                  F: number;
-                  dx: number;
-                  dy: number;
-                  dz: number;
-              }[]
-            | null = null;
-        const topSub = submeshByVertexRange(base, 0, topVertexCount);
-        try {
-            const rimIdx = extractOrderedBoundaryLoopWithIndices(topSub).indices;
-            rimFp = rimIdx.map((j) => {
-                const lenC = baseArrForDepth[j * 3 + lengthAxis]!;
-                const widC = baseArrForDepth[j * 3 + widthAxis]!;
-                let dx = 0;
-                let dy = 0;
-                let dz = 0;
-                if (depthFrame && depthVec) {
-                    const g = depthFrame.groupOf[j]!;
-                    if (g >= 0) {
-                        dx = depthVec[g * 3]!;
-                        dy = depthVec[g * 3 + 1]!;
-                        dz = depthVec[g * 3 + 2]!;
-                    }
-                }
-                return {
-                    len: lenC,
-                    wid: widC,
-                    // Corrections-only field: the thickness component is added
-                    // AFTER the rim blend via the local height ramp, so the
-                    // nearest-seed distance never modulates the uniform lift.
-                    F: sampleFieldDeltaAtXY(
-                        lenC,
-                        widC,
-                        lenMin,
-                        lenSize,
-                        widCenter,
-                        widSize,
-                        widthSign,
-                        fieldForBottomSync,
-                        neutral,
-                        edgeProfile,
-                    ),
-                    dx,
-                    dy,
-                    dz,
-                };
-            });
-        } finally {
-            topSub.dispose();
-        }
-        const rimCell = RIM_PAIR_TOL_MM;
-        const rimHash = new Map<string, number[]>();
-        for (let s = 0; s < rimFp.length; s++) {
-            const r = rimFp[s]!;
-            const k = `${Math.floor(r.len / rimCell)},${Math.floor(r.wid / rimCell)}`;
-            let bucket = rimHash.get(k);
-            if (!bucket) {
-                bucket = [];
-                rimHash.set(k, bucket);
-            }
-            bucket.push(s);
-        }
-        const rimBins = Math.ceil(RIM_PAIR_TOL_MM / rimCell) + 1;
+        // Rim loop, nearest-rim correspondence and neutral heights are pure per
+        // base (cached). Per frame: evaluate the live field at the cached rim +
+        // bottom samples and blend with the cached weights — no submesh /
+        // boundary extraction / spatial-hash queries on the hot path.
+        const syncFrame = getShellSyncFrame(
+            base,
+            fieldSignature,
+            cacheable,
+            topVertexCount,
+            lengthAxis,
+            widthAxis,
+            thickAxis,
+            lenMin,
+            lenSize,
+            widCenter,
+            widSize,
+            widthSign,
+            neutral,
+            edgeProfile,
+        );
 
+        // Per-frame rim samples: corrections-only field F (thickness added
+        // AFTER the rim blend via the local height ramp, so the nearest-seed
+        // distance never modulates the uniform lift) + depth vector.
+        const nRim = syncFrame.rimIndices.length;
+        const rimF = new Float64Array(nRim);
+        const rimDepth = depthFrame && depthVec ? new Float64Array(nRim * 3) : null;
+        for (let s = 0; s < nRim; s++) {
+            rimF[s] = sampleCachedFieldDelta(fieldForBottomSync, syncFrame.rimSamples, s);
+            if (rimDepth && depthFrame && depthVec) {
+                const g = depthFrame.groupOf[syncFrame.rimIndices[s]!]!;
+                if (g >= 0) {
+                    rimDepth[s * 3] = depthVec[g * 3]!;
+                    rimDepth[s * 3 + 1] = depthVec[g * 3 + 1]!;
+                    rimDepth[s * 3 + 2] = depthVec[g * 3 + 2]!;
+                }
+            }
+        }
+
+        const depthActive = depthBottomNN != null && depthVec != null;
         for (let i = topVertexCount; i < count; i++) {
-            const lenCoord = baseArrForDepth[i * 3 + lengthAxis]!;
-            const widCoord = baseArrForDepth[i * 3 + widthAxis]!;
+            const k = i - topVertexCount;
             const baseZ = baseArrForDepth[i * 3 + thickAxis]!;
 
-            let F = sampleFieldDeltaAtXY(
-                lenCoord,
-                widCoord,
-                lenMin,
-                lenSize,
-                widCenter,
-                widSize,
-                widthSign,
-                fieldForBottomSync,
-                neutral,
-                edgeProfile,
-            );
+            let F = sampleCachedFieldDelta(fieldForBottomSync, syncFrame.bottomSamples, k);
             const fCorrectionsLocal = F;
-            let rimBlend = 0;
-            let rimDx = 0;
-            let rimDy = 0;
-            let rimDz = 0;
 
             // Soft rim inheritance: blend toward nearest top-rim F (+ depth) by
             // footprint distance × height so wall-tops close the rim without a
             // hard step into mid-wall / plantar (those keep local F for thickness).
-            {
-                const cx = Math.floor(lenCoord / rimCell);
-                const cy = Math.floor(widCoord / rimCell);
-                let bestS = -1;
-                let bestD = Infinity;
-                for (let dx = -rimBins; dx <= rimBins; dx++) {
-                    for (let dy = -rimBins; dy <= rimBins; dy++) {
-                        const bucket = rimHash.get(`${cx + dx},${cy + dy}`);
-                        if (!bucket) continue;
-                        for (const s of bucket) {
-                            const r = rimFp[s]!;
-                            const d = Math.hypot(r.len - lenCoord, r.wid - widCoord);
-                            if (d < bestD) {
-                                bestD = d;
-                                bestS = s;
-                            }
-                        }
-                    }
-                }
-                if (bestS >= 0 && bestD < WALL_CORRIDOR_MM) {
-                    const wDist = rimConformityDistanceWeight(bestD);
-                    const wHeight = rimConformityHeightWeight(
-                        baseZ <= PLANTAR_Z_MAX_MM
-                            ? 0
-                            : Math.min(
-                                  1,
-                                  (baseZ - PLANTAR_Z_MAX_MM) / (WALL_TOP_MIN_Z_MM - PLANTAR_Z_MAX_MM),
-                              ),
-                    );
-                    rimBlend = wDist * wHeight;
-                    if (rimBlend > 0) {
-                        const r = rimFp[bestS]!;
-                        F = F + (r.F - F) * rimBlend;
-                        rimDx = r.dx;
-                        rimDy = r.dy;
-                        rimDz = r.dz;
-                    }
+            const rimBlend = syncFrame.rimBlend[k]!;
+            let rimDx = 0;
+            let rimDy = 0;
+            let rimDz = 0;
+            if (rimBlend > 0) {
+                const bestS = syncFrame.nnSeed[k]!;
+                F = F + (rimF[bestS]! - F) * rimBlend;
+                if (rimDepth) {
+                    rimDx = rimDepth[bestS * 3]!;
+                    rimDy = rimDepth[bestS * 3 + 1]!;
+                    rimDz = rimDepth[bestS * 3 + 2]!;
                 }
             }
 
@@ -2012,49 +2272,23 @@ export function applyBaseModifiers(
             // full lift so the rim pair stays closed against the raised top rim.
             // Inactive at the reference thickness (component = 0, legacy path).
             if (thicknessLiftActive) {
-                const fFull = sampleFieldDeltaAtXY(
-                    lenCoord,
-                    widCoord,
-                    lenMin,
-                    lenSize,
-                    widCenter,
-                    widSize,
-                    widthSign,
-                    fieldForDelta,
-                    neutral,
-                    edgeProfile,
-                );
-                const hz =
-                    baseZ <= PLANTAR_Z_MAX_MM
-                        ? 0
-                        : Math.min(1, (baseZ - PLANTAR_Z_MAX_MM) / (WALL_TOP_MIN_Z_MM - PLANTAR_Z_MAX_MM));
-                F += (fFull - fCorrectionsLocal) * rimConformityHeightWeight(hz);
+                const fFull = sampleCachedFieldDelta(fieldForDelta, syncFrame.bottomSamples, k);
+                F += (fFull - fCorrectionsLocal) * syncFrame.heightRamp[k]!;
             }
 
             array[i * 3 + thickAxis] += F;
 
-            if (baseZ > PLANTAR_Z_MAX_MM && (depthLookup || rimBlend > 0)) {
+            if (baseZ > PLANTAR_Z_MAX_MM && (depthActive || rimBlend > 0)) {
                 let nnDx = 0;
                 let nnDy = 0;
                 let nnDz = 0;
-                if (depthLookup && rimBlend < 1) {
-                    const qLen = lenCoord;
-                    let qWid = widCoord;
-                    if (edgeProfile) {
-                        const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
-                        const halfW = widSize / 2 || 1;
-                        const vNorm = (widCoord - widCenter) / halfW;
-                        const bins = vNorm >= 0 ? edgeProfile.pos : edgeProfile.neg;
-                        const avEdge = sampleTopEdgeProfile(bins, u);
-                        const av = Math.abs(vNorm);
-                        if (avEdge > 1e-6 && av > avEdge) {
-                            qWid = widCenter + Math.sign(vNorm) * avEdge * halfW;
-                        }
+                if (depthActive && rimBlend < 1) {
+                    const g = depthBottomNN[k]!;
+                    if (g >= 0) {
+                        nnDx = depthVec[g * 3]!;
+                        nnDy = depthVec[g * 3 + 1]!;
+                        nnDz = depthVec[g * 3 + 2]!;
                     }
-                    const d = depthLookup(qLen, qWid);
-                    nnDx = d.dx;
-                    nnDy = d.dy;
-                    nnDz = d.dz;
                 }
                 array[i * 3] += rimDx * rimBlend + nnDx * (1 - rimBlend);
                 array[i * 3 + 1] += rimDy * rimBlend + nnDy * (1 - rimBlend);
