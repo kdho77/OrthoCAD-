@@ -20,7 +20,7 @@ import { ArchFitError, archFitToCorrectionPatch } from "@/lib/geometry/fit-arch-
 import { importScanFile } from "@/lib/geometry/import";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import {
-    ARCH_MATCH_MAX_RMS_MM,
+    ARCH_MATCH_BLOCK_RMS_MM,
     formatArchFitMessage,
     formatSizeSuggestionMessage,
     gateArchMatch,
@@ -308,6 +308,7 @@ export function ScanImport() {
             return;
         }
         if (!scan || !reg?.matrixElements || !rawBase) return;
+        const rmsWarning = gate.warning;
 
         setMatchBusyId(scanId);
         try {
@@ -322,9 +323,9 @@ export function ScanImport() {
                 setError(regNow?.error?.message ?? "Registration failed after size update");
                 return;
             }
-            if (regNow.residualRmsMm != null && regNow.residualRmsMm > ARCH_MATCH_MAX_RMS_MM) {
+            if (regNow.residualRmsMm != null && regNow.residualRmsMm > ARCH_MATCH_BLOCK_RMS_MM) {
                 setError(
-                    `Registration RMS ${regNow.residualRmsMm.toFixed(1)} mm exceeds ${ARCH_MATCH_MAX_RMS_MM} mm — fix markers before arch match`,
+                    `Registration RMS ${regNow.residualRmsMm.toFixed(1)} mm exceeds ${ARCH_MATCH_BLOCK_RMS_MM} mm — fix markers before arch match`,
                 );
                 return;
             }
@@ -343,9 +344,10 @@ export function ScanImport() {
                 layout,
             });
             updateCorrection(side, archFitToCorrectionPatch(fit));
+            const warnSuffix = rmsWarning ? ` · ${rmsWarning}` : "";
             setArchFitMsgByScanId((prev) => ({
                 ...prev,
-                [scanId]: formatArchFitMessage(fit),
+                [scanId]: `${formatArchFitMessage(fit)}${warnSuffix}`,
             }));
         } catch (e) {
             const msg =

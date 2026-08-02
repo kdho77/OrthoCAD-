@@ -38,8 +38,16 @@ import {
 } from "@/lib/geometry/shoe-size";
 import type { Side, SideCorrections } from "@/types";
 
-/** Refuse arch apply when marker residual exceeds this (mm). */
-export const ARCH_MATCH_MAX_RMS_MM = 8;
+/**
+ * Soft warning threshold for marker residual (mm). Kabsch returns RMS for
+ * display — clinical suggested markers often land 10–30 mm and are still
+ * heel-seated; do not hard-block arch fit at this level.
+ */
+export const ARCH_MATCH_WARN_RMS_MM = 8;
+/** Refuse only absurd residuals (likely wrong units / marker set). */
+export const ARCH_MATCH_BLOCK_RMS_MM = 60;
+/** @deprecated Alias of ARCH_MATCH_WARN_RMS_MM. */
+export const ARCH_MATCH_MAX_RMS_MM = ARCH_MATCH_WARN_RMS_MM;
 
 export { ARCH_FIT_CLEARANCE_MM };
 
@@ -94,7 +102,7 @@ export function archFitReferenceFromBaseSized(
 }
 
 export type ArchMatchGate =
-    | { ok: true }
+    | { ok: true; warning?: string }
     | { ok: false; reason: string; code: "incomplete" | "error" | "rms" | "no_base" | "no_size" };
 
 export function gateArchMatch(args: {
@@ -119,11 +127,17 @@ export function gateArchMatch(args: {
     if (args.residualRmsMm == null || !Number.isFinite(args.residualRmsMm)) {
         return { ok: false, code: "incomplete", reason: "Registration residual unavailable" };
     }
-    if (args.residualRmsMm > ARCH_MATCH_MAX_RMS_MM) {
+    if (args.residualRmsMm > ARCH_MATCH_BLOCK_RMS_MM) {
         return {
             ok: false,
             code: "rms",
-            reason: `Registration RMS ${args.residualRmsMm.toFixed(1)} mm exceeds ${ARCH_MATCH_MAX_RMS_MM} mm — fix markers before arch match`,
+            reason: `Registration RMS ${args.residualRmsMm.toFixed(1)} mm exceeds ${ARCH_MATCH_BLOCK_RMS_MM} mm — fix markers before arch match`,
+        };
+    }
+    if (args.residualRmsMm > ARCH_MATCH_WARN_RMS_MM) {
+        return {
+            ok: true,
+            warning: `High registration RMS (${args.residualRmsMm.toFixed(1)} mm) — arch fit may be approximate`,
         };
     }
     return { ok: true };
@@ -176,15 +190,32 @@ export function matchArchParamsFromRegisteredScan(args: {
     clearanceMm?: number;
 }): ArchFitResult {
     const reference = archFitReferenceFromBaseSized(args.rawBase, args.layout.lengthMm, args.layout.widthMm);
-    return fitArchParamsFromScan({
-        scanPositions: args.scanPositions,
-        scanVertexCount: args.scanVertexCount,
-        scanToBase: args.scanToBase,
-        reference,
-        side: args.side,
-        lengthMm: args.layout.lengthMm,
-        clearanceMm: args.clearanceMm,
-    });
+    const clearanceMm = args.clearanceMm !== undefined ? args.clearanceMm : ARCH_FIT_CLEARANCE_MM;
+    try {
+        return fitArchParamsFromScan({
+            scanPositions: args.scanPositions,
+            scanVertexCount: args.scanVertexCount,
+            scanToBase: args.scanToBase,
+            reference,
+            side: args.side,
+            lengthMm: args.layout.lengthMm,
+            clearanceMm,
+        });
+    } catch (e) {
+        // Borderline medial gaps: retry without clearance rather than failing the match.
+        if (clearanceMm > 0 && e instanceof ArchFitError && e.code === "insufficient_samples") {
+            return fitArchParamsFromScan({
+                scanPositions: args.scanPositions,
+                scanVertexCount: args.scanVertexCount,
+                scanToBase: args.scanToBase,
+                reference,
+                side: args.side,
+                lengthMm: args.layout.lengthMm,
+                clearanceMm: 0,
+            });
+        }
+        throw e;
+    }
 }
 
 export function formatArchFitMessage(fit: ArchFitResult): string {

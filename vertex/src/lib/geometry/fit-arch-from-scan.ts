@@ -329,7 +329,9 @@ export function fitArchParamsFromScan(args: {
     if (gaps.length < ARCH_FIT_MIN_SAMPLES) {
         throw new ArchFitError(
             "insufficient_samples",
-            `Need ≥${ARCH_FIT_MIN_SAMPLES} medial midfoot plantar samples with positive gap (got ${gaps.length})`,
+            gaps.length === 0
+                ? "No positive medial arch gap — scan plantar surface is at or below the base in the midfoot (check registration / markers)"
+                : `Need ≥${ARCH_FIT_MIN_SAMPLES} medial midfoot plantar samples with positive gap (got ${gaps.length})`,
         );
     }
 

@@ -27,9 +27,21 @@ function boxGeometry(lengthMm: number, widthMm: number): THREE.BufferGeometry {
 }
 
 describe("gateArchMatch", () => {
-    test("refuses high registration RMS", () => {
+    test("warns but allows clinical-range registration RMS", () => {
         const g = gateArchMatch({
-            residualRmsMm: 30,
+            residualRmsMm: 25,
+            incomplete: false,
+            error: null,
+            hasRawBase: true,
+            sizeAccepted: true,
+        });
+        expect(g.ok).toBe(true);
+        if (g.ok) expect(g.warning).toMatch(/25/);
+    });
+
+    test("refuses absurd registration RMS", () => {
+        const g = gateArchMatch({
+            residualRmsMm: 80,
             incomplete: false,
             error: null,
             hasRawBase: true,
@@ -39,7 +51,7 @@ describe("gateArchMatch", () => {
         if (!g.ok) expect(g.code).toBe("rms");
     });
 
-    test("allows RMS at the threshold", () => {
+    test("allows RMS at the warn threshold without warning", () => {
         const g = gateArchMatch({
             residualRmsMm: ARCH_MATCH_MAX_RMS_MM,
             incomplete: false,
@@ -48,6 +60,7 @@ describe("gateArchMatch", () => {
             sizeAccepted: true,
         });
         expect(g.ok).toBe(true);
+        if (g.ok) expect(g.warning).toBeUndefined();
     });
 });
 
