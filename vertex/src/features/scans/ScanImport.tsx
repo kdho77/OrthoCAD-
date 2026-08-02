@@ -238,13 +238,12 @@ export function ScanImport() {
     const setUsShoeSize = useDesignStore((s) => s.setUsShoeSize);
     const setUkShoeSize = useDesignStore((s) => s.setUkShoeSize);
     const setFootLengthMm = useDesignStore((s) => s.setFootLengthMm);
+    // Select primitives only — a fresh object from the selector re-renders forever (React #185).
     const sizeSystem = useDesignStore((s) => s.design.sizeSystem);
-    const designSizing = useDesignStore((s) => ({
-        sizeSystem: s.design.sizeSystem,
-        usMenSize: s.design.usMenSize,
-        ukSize: s.design.ukSize,
-        footLengthMm: s.design.footLengthMm,
-    }));
+    const usMenSize = useDesignStore((s) => s.design.usMenSize);
+    const ukSize = useDesignStore((s) => s.design.ukSize);
+    const footLengthMm = useDesignStore((s) => s.design.footLengthMm);
+    const designSizing = { sizeSystem, usMenSize, ukSize, footLengthMm };
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [archFitMsgByScanId, setArchFitMsgByScanId] = useState<Record<string, string>>({});

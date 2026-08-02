@@ -735,14 +735,16 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         }),
 
     setRegistrationTargetLayout: (layout) => {
-        const prev = get().registrationTargetLayout;
-        if (
-            Math.abs(prev.lengthMm - layout.lengthMm) < 1e-9 &&
-            Math.abs(prev.widthMm - layout.widthMm) < 1e-9
-        ) {
+        const lengthMm = Number(layout.lengthMm);
+        const widthMm = Number(layout.widthMm);
+        if (!Number.isFinite(lengthMm) || !Number.isFinite(widthMm) || lengthMm <= 0 || widthMm <= 0) {
             return;
         }
-        set({ registrationTargetLayout: layout });
+        const prev = get().registrationTargetLayout;
+        if (Math.abs(prev.lengthMm - lengthMm) < 1e-9 && Math.abs(prev.widthMm - widthMm) < 1e-9) {
+            return;
+        }
+        set({ registrationTargetLayout: { lengthMm, widthMm } });
         for (const scan of get().scans) {
             const markers = get().markersByScanId[scan.id];
             if (markers && allPlaced(markers)) {

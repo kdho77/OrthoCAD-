@@ -16,10 +16,11 @@ import {
     Scissors,
     X,
 } from "lucide-react";
-import { Suspense, useRef } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
 import { cn } from "@/lib/utils";
 import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
@@ -82,6 +83,13 @@ export function Viewer3D() {
         stockBaseLoading,
         baseMeshLoadingBySide,
     } = useDesignStore();
+    // Keep Kabsch targets on the sized footprint — sync outside the R3F tree.
+    const layoutLengthMm = useDesignStore((s) => insoleLayoutFromDesign(s.design).lengthMm);
+    const layoutWidthMm = useDesignStore((s) => insoleLayoutFromDesign(s.design).widthMm);
+    const setRegistrationTargetLayout = useScanStore((s) => s.setRegistrationTargetLayout);
+    useEffect(() => {
+        setRegistrationTargetLayout({ lengthMm: layoutLengthMm, widthMm: layoutWidthMm });
+    }, [layoutLengthMm, layoutWidthMm, setRegistrationTargetLayout]);
     const editMode = useMeshEditStore((s) => s.editMode);
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);

@@ -5,8 +5,15 @@ import type { BufferGeometry } from "three";
 import * as THREE from "three";
 import { detectArchSideSign } from "@/lib/geometry/base-modifier";
 import { deriveNativeShellThicknessDatum } from "@/lib/geometry/native-shell-thickness";
-import { type FootprintScale, scalePointToInsoleSize } from "@/lib/geometry/shoe-size";
 import type { Side } from "@/types";
+
+/** XY map from native footprint bbox → sized insole (matches scaleGeometryToInsoleSize). */
+export type FootprintScale = {
+    sx: number;
+    sy: number;
+    x0: number;
+    yMid: number;
+};
 
 /**
  * Marker support frame — Phase 1 datum infrastructure.
@@ -529,11 +536,13 @@ export function scaleBaseLandmarksToInsoleSize(
     scale: FootprintScale,
     lengthMm: number,
 ): BaseLandmarks {
+    const map = (v: THREE.Vector3) =>
+        new THREE.Vector3((v.x - scale.x0) * scale.sx, (v.y - scale.yMid) * scale.sy, v.z);
     return {
         ...landmarks,
-        B1: scalePointToInsoleSize(landmarks.B1, scale),
-        B2: scalePointToInsoleSize(landmarks.B2, scale),
-        B3: scalePointToInsoleSize(landmarks.B3, scale),
+        B1: map(landmarks.B1),
+        B2: map(landmarks.B2),
+        B3: map(landmarks.B3),
         footLengthMm: lengthMm,
     };
 }

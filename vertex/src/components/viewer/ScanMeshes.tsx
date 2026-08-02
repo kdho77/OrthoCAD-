@@ -155,10 +155,6 @@ function RegisteredScanMesh({
     const ukSize = useDesignStore((s) => s.design.ukSize);
     const footLengthMm = useDesignStore((s) => s.design.footLengthMm);
     const layout = insoleLayoutFromDesign({ sizeSystem, usMenSize, ukSize, footLengthMm });
-    const setRegistrationTargetLayout = useScanStore((s) => s.setRegistrationTargetLayout);
-    useEffect(() => {
-        setRegistrationTargetLayout({ lengthMm: layout.lengthMm, widthMm: layout.widthMm });
-    }, [layout.lengthMm, layout.widthMm, setRegistrationTargetLayout]);
     const offsetY = sideOffsetX(side, layout.widthMm);
     const registered = !!registration;
     // Same footprint slot as the base — unregistered scans must be on-screen (M2/M4).
@@ -300,6 +296,16 @@ export function ScanMeshes({ transparent }: { transparent: boolean }) {
     const manualOffsetByScanId = useScanStore((s) => s.manualOffsetByScanId);
     const selectedScanId = useScanStore((s) => s.selectedScanId);
 
+    // Stabilize Matrix4 identity across parent re-renders — a fresh matrix each
+    // render re-fires the deviation effect and can exceed React's update depth.
+    const registrationMatrices = useMemo(() => {
+        const map = new Map<string, THREE.Matrix4 | null>();
+        for (const s of scans) {
+            map.set(s.id, getScanRegistrationMatrix(registrationByScanId[s.id]));
+        }
+        return map;
+    }, [scans, registrationByScanId]);
+
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             {scans
@@ -311,7 +317,7 @@ export function ScanMeshes({ transparent }: { transparent: boolean }) {
                         geometry={s.geometry}
                         side={s.side}
                         transparent={transparent}
-                        registration={getScanRegistrationMatrix(registrationByScanId[s.id])}
+                        registration={registrationMatrices.get(s.id) ?? null}
                         display={s.display}
                         manualOffset={manualOffsetByScanId[s.id] ?? null}
                         selected={selectedScanId === s.id}
