@@ -5,6 +5,7 @@ import type { BufferGeometry } from "three";
 import * as THREE from "three";
 import { detectArchSideSign } from "@/lib/geometry/base-modifier";
 import { deriveNativeShellThicknessDatum } from "@/lib/geometry/native-shell-thickness";
+import { type FootprintScale, scalePointToInsoleSize } from "@/lib/geometry/shoe-size";
 import type { Side } from "@/types";
 
 /**
@@ -520,6 +521,21 @@ export function getMarkerFrame(assetId: string): MarkerFrame | null {
 export function clearMarkerFrameRegistry(): void {
     registry.clear();
     lruClock = 0;
+}
+
+/** Scale B1/B2/B3 into the shoe-size footprint frame (Z unchanged). */
+export function scaleBaseLandmarksToInsoleSize(
+    landmarks: BaseLandmarks,
+    scale: FootprintScale,
+    lengthMm: number,
+): BaseLandmarks {
+    return {
+        ...landmarks,
+        B1: scalePointToInsoleSize(landmarks.B1, scale),
+        B2: scalePointToInsoleSize(landmarks.B2, scale),
+        B3: scalePointToInsoleSize(landmarks.B3, scale),
+        footLengthMm: lengthMm,
+    };
 }
 
 /** Mirror landmarks across the sagittal (Y) plane — for right-slot carry. */

@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { create } from "zustand";
 import type { ImportFormat } from "@/lib/geometry/import";
 import { KabschError } from "@/lib/geometry/kabsch";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import type { ManifoldReport } from "@/lib/geometry/manifold";
 import { getMarkerFrame, MarkerFrameError } from "@/lib/geometry/marker-frame";
 import {
@@ -117,6 +118,12 @@ export interface ScanRegistrationState {
     error: { code: string; message: string } | null;
     incomplete: boolean;
 }
+
+/** Sized footprint used when Kabsch targets scaled B landmarks. */
+export type RegistrationTargetLayout = {
+    lengthMm: number;
+    widthMm: number;
+};
 
 export interface PlacementMode {
     scanId: string;
@@ -259,6 +266,11 @@ interface ScanStore {
     landmarkSourceAssetId: string | null;
     /** RAW L0 geometry clones keyed by source asset id — deviation measures against these. */
     rawBaseBySourceId: Record<string, BufferGeometry>;
+    /**
+     * Current shoe-size footprint for sized Kabsch targets. Synced from design
+     * layout; defaults to the Men's 9 template.
+     */
+    registrationTargetLayout: RegistrationTargetLayout;
 
     addScan: (scan: AddScanInput) => void;
     removeScan: (id: string) => void;
@@ -285,7 +297,12 @@ interface ScanStore {
     setHoveredComponentId: (hover: { scanId: string; componentId: number } | null) => void;
     setLandmarkSourceAssetId: (assetId: string | null) => void;
     setRawBaseGeometry: (sourceAssetId: string, geo: BufferGeometry) => void;
-    /** Re-run registration for a scan (after marker drag / side change). */
+    /**
+     * Update sized Kabsch footprint. When length/width change, re-registers every
+     * scan that already has M1–M3 placed.
+     */
+    setRegistrationTargetLayout: (layout: RegistrationTargetLayout) => void;
+    /** Re-run registration for a scan (after marker drag / side change / shoe size). */
     recomputeRegistration: (scanId: string) => void;
 
     /**
@@ -335,6 +352,8 @@ function computeRegistration(
     scan: ImportedScan,
     markers: ScanMarkers,
     sourceAssetId: string | null,
+    rawBaseBySourceId: Record<string, BufferGeometry>,
+    targetLayout?: RegistrationTargetLayout | null,
 ): ScanRegistrationState {
     if (!allPlaced(markers)) {
         return emptyRegistration(true);
@@ -349,6 +368,7 @@ function computeRegistration(
         };
     }
     try {
+        const nativeGeometry = rawBaseBySourceId[sourceAssetId];
         const result = runScanRegistration({
             scanGeometry: scan.geometry,
             scanMarkersM1M2M3: [markers.M1, markers.M2, markers.M3],
@@ -356,6 +376,15 @@ function computeRegistration(
             sourceAssetId,
             // Discrete mm/cm/m correction from provisional display inference — not a fitted scale.
             unitScale: scan.display.displayScale,
+            // Kabsch targets sized B landmarks so registration matches the scaled base mesh.
+            targetLayout:
+                nativeGeometry && targetLayout
+                    ? {
+                          lengthMm: targetLayout.lengthMm,
+                          widthMm: targetLayout.widthMm,
+                          nativeGeometry,
+                      }
+                    : undefined,
         });
         // Separation % is identical after mirror (signed length ratio).
         const frame = getMarkerFrame(sourceAssetId);
@@ -414,6 +443,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
     hoveredComponentId: null,
     landmarkSourceAssetId: null,
     rawBaseBySourceId: {},
+    registrationTargetLayout: { lengthMm: INSOLE_LENGTH_MM, widthMm: INSOLE_WIDTH_MM },
 
     addScan: (scan) =>
         set((s) => {
@@ -704,11 +734,34 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             };
         }),
 
+    setRegistrationTargetLayout: (layout) => {
+        const prev = get().registrationTargetLayout;
+        if (
+            Math.abs(prev.lengthMm - layout.lengthMm) < 1e-9 &&
+            Math.abs(prev.widthMm - layout.widthMm) < 1e-9
+        ) {
+            return;
+        }
+        set({ registrationTargetLayout: layout });
+        for (const scan of get().scans) {
+            const markers = get().markersByScanId[scan.id];
+            if (markers && allPlaced(markers)) {
+                get().recomputeRegistration(scan.id);
+            }
+        }
+    },
+
     recomputeRegistration: (scanId) => {
         const scan = get().scans.find((x) => x.id === scanId);
         if (!scan) return;
         const markers = get().markersByScanId[scanId] ?? { ...EMPTY_MARKERS };
-        const reg = computeRegistration(scan, markers, get().landmarkSourceAssetId);
+        const reg = computeRegistration(
+            scan,
+            markers,
+            get().landmarkSourceAssetId,
+            get().rawBaseBySourceId,
+            get().registrationTargetLayout,
+        );
         set((s) => ({
             registrationByScanId: { ...s.registrationByScanId, [scanId]: reg },
         }));

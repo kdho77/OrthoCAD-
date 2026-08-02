@@ -155,6 +155,10 @@ function RegisteredScanMesh({
     const ukSize = useDesignStore((s) => s.design.ukSize);
     const footLengthMm = useDesignStore((s) => s.design.footLengthMm);
     const layout = insoleLayoutFromDesign({ sizeSystem, usMenSize, ukSize, footLengthMm });
+    const setRegistrationTargetLayout = useScanStore((s) => s.setRegistrationTargetLayout);
+    useEffect(() => {
+        setRegistrationTargetLayout({ lengthMm: layout.lengthMm, widthMm: layout.widthMm });
+    }, [layout.lengthMm, layout.widthMm, setRegistrationTargetLayout]);
     const offsetY = sideOffsetX(side, layout.widthMm);
     const registered = !!registration;
     // Same footprint slot as the base — unregistered scans must be on-screen (M2/M4).

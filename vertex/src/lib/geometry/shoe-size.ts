@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import type * as THREE from "three";
+import * as THREE from "three";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 
 /**
@@ -340,6 +340,47 @@ export function footLengthMmOptions(): FootLengthOption[] {
     });
 }
 
+/** XY map from a native footprint bbox onto a target insole length/width. */
+export type FootprintScale = {
+    sx: number;
+    sy: number;
+    x0: number;
+    yMid: number;
+};
+
+/** Same XY map used by {@link scaleGeometryToInsoleSize}. */
+export function footprintScaleFromNativeBBox(
+    nativeBox: { min: THREE.Vector3; max: THREE.Vector3 },
+    lengthMm: number,
+    widthMm: number,
+): FootprintScale | null {
+    const nativeLen = nativeBox.max.x - nativeBox.min.x;
+    const nativeW = nativeBox.max.y - nativeBox.min.y;
+    if (!(nativeLen > 1e-6) || !(nativeW > 1e-6)) return null;
+    if (!(lengthMm > 1e-6) || !(widthMm > 1e-6)) return null;
+    return {
+        sx: lengthMm / nativeLen,
+        sy: widthMm / nativeW,
+        x0: nativeBox.min.x,
+        yMid: (nativeBox.min.y + nativeBox.max.y) / 2,
+    };
+}
+
+export function footprintScaleFromNativeGeometry(
+    geometry: THREE.BufferGeometry,
+    lengthMm: number,
+    widthMm: number,
+): FootprintScale | null {
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    if (!box) return null;
+    return footprintScaleFromNativeBBox(box, lengthMm, widthMm);
+}
+
+export function scalePointToInsoleSize(p: THREE.Vector3, scale: FootprintScale): THREE.Vector3 {
+    return new THREE.Vector3((p.x - scale.x0) * scale.sx, (p.y - scale.yMid) * scale.sy, p.z);
+}
+
 /**
  * Scale a footprint-frame geometry (X = length 0..L, Y = width centered) so its
  * bounding box matches the target insole length/width. Z (height) is unchanged.
@@ -355,20 +396,14 @@ export function scaleGeometryToInsoleSize(
     const pos = g.getAttribute("position");
     if (!box || !pos) return g;
 
-    const nativeLen = box.max.x - box.min.x;
-    const nativeW = box.max.y - box.min.y;
-    if (!(nativeLen > 1e-6) || !(nativeW > 1e-6)) return g;
-
-    const sx = lengthMm / nativeLen;
-    const sy = widthMm / nativeW;
-    const x0 = box.min.x;
-    const yMid = (box.min.y + box.max.y) / 2;
+    const scale = footprintScaleFromNativeBBox(box, lengthMm, widthMm);
+    if (!scale) return g;
 
     for (let i = 0; i < pos.count; i++) {
         const x = pos.getX(i);
         const y = pos.getY(i);
-        pos.setX(i, (x - x0) * sx);
-        pos.setY(i, (y - yMid) * sy);
+        pos.setX(i, (x - scale.x0) * scale.sx);
+        pos.setY(i, (y - scale.yMid) * scale.sy);
     }
     pos.needsUpdate = true;
     g.computeBoundingBox();
