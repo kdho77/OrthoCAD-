@@ -3,11 +3,12 @@
 
 import { describe, expect, test } from "@rstest/core";
 import {
+    INSOLE_TOE_ROOM_MM,
     measureBallWidthMm,
     measureFootLengthMm,
     suggestShoeSizeFromScan,
 } from "@/lib/geometry/measure-foot-from-scan";
-import { footLengthMmToUsMen, usMenFootLengthMm } from "@/lib/geometry/shoe-size";
+import { usMenFootLengthMm } from "@/lib/geometry/shoe-size";
 
 describe("measureFootLengthMm", () => {
     test("recovers heel→toe oriented AABB span along X", () => {
@@ -55,20 +56,28 @@ describe("measureFootLengthMm", () => {
 });
 
 describe("suggestShoeSizeFromScan", () => {
-    test("maps Men’s 9 foot length to US 9", () => {
-        const foot = usMenFootLengthMm(9);
-        const s = suggestShoeSizeFromScan({ footLengthMm: foot, sizeSystem: "us" });
+    test("adds toe room so a ~217 mm foot sizes to ~Men’s 9 / 260 mm insole", () => {
+        const s = suggestShoeSizeFromScan({ footLengthMm: 217, sizeSystem: "us" });
+        expect(s.toeRoomMm).toBe(INSOLE_TOE_ROOM_MM);
+        expect(s.sizingLengthMm).toBeCloseTo(217 + INSOLE_TOE_ROOM_MM, 5);
         expect(s.usMenSize).toBe(9);
+        expect(s.layout.lengthMm).toBeGreaterThan(250);
+        expect(s.layout.lengthMm).toBeLessThan(270);
         expect(s.inRange).toBe(true);
-        expect(s.confidence).toBe("high");
-        expect(s.layout.lengthMm).toBeCloseTo(260, 5);
     });
 
-    test("maps longer feet to larger half-sizes", () => {
-        const foot = usMenFootLengthMm(11);
-        const s = suggestShoeSizeFromScan({ footLengthMm: foot });
-        expect(s.usMenSize).toBe(11);
-        expect(footLengthMmToUsMen(foot)).toBe(11);
+    test("does not map bare foot length 1:1 to insole length", () => {
+        const foot = 240;
+        const s = suggestShoeSizeFromScan({ footLengthMm: foot, sizeSystem: "us" });
+        expect(s.layout.lengthMm).toBeGreaterThan(foot + 20);
+        expect(s.usMenSize).toBeGreaterThan(footLengthMmToUsMenBare(foot));
+    });
+
+    test("toeRoomMm 0 keeps legacy bare-foot Brannock mapping", () => {
+        const foot = usMenFootLengthMm(9);
+        const s = suggestShoeSizeFromScan({ footLengthMm: foot, sizeSystem: "us", toeRoomMm: 0 });
+        expect(s.usMenSize).toBe(9);
+        expect(s.layout.lengthMm).toBeCloseTo(260, 5);
     });
 
     test("flags out-of-range length as low confidence", () => {
@@ -78,6 +87,13 @@ describe("suggestShoeSizeFromScan", () => {
         expect(s.warnings.length).toBeGreaterThan(0);
     });
 });
+
+/** Local helper — bare Brannock map without toe room (for contrast assertions). */
+function footLengthMmToUsMenBare(mm: number): number {
+    const BARLEYCORN_MM = 25.4 / 3;
+    const size = mm / BARLEYCORN_MM - 22;
+    return Math.round(Math.min(16, Math.max(1, size)) * 2) / 2;
+}
 
 describe("measureBallWidthMm", () => {
     test("scales marker distance by displayScale", () => {

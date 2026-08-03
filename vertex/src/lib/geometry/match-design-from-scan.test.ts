@@ -73,7 +73,9 @@ describe("shouldAutoApplySize / isDefaultShoeSize", () => {
     test("auto-apply only for in-range high/medium confidence on default size", () => {
         const layout = insoleLayoutForUsMenSize(10);
         const suggestion: SizeSuggestion = {
-            footLengthMm: layout.footLengthMm,
+            footLengthMm: layout.footLengthMm - 45,
+            sizingLengthMm: layout.footLengthMm,
+            toeRoomMm: 45,
             ballWidthMm: 95,
             usMenSize: 10,
             ukSize: layout.ukSize,

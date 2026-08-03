@@ -4,9 +4,13 @@
 /**
  * Foot-length / shoe-size suggestion from a cleaned foot scan.
  *
- * Length is heel→toe (Brannock / Mondopoint), NOT heel→MPJ. Ball width is
- * advisory only. Unit scale is the discrete mm/cm/m display correction — never
- * a fitted Kabsch scale.
+ * Length is heel→toe anatomical span, NOT heel→MPJ. Ball width is advisory
+ * only. Unit scale is the discrete mm/cm/m display correction — never a fitted
+ * Kabsch scale.
+ *
+ * Orthotic device length is longer than bare foot length (toe room / last
+ * extension). Scan→size mapping adds {@link INSOLE_TOE_ROOM_MM} before the
+ * Brannock / template scale so the insole is not sized 1:1 to the foot AABB.
  */
 
 import type { BufferGeometry } from "three";
@@ -28,6 +32,12 @@ import {
     type ShoeSizeSystem,
 } from "@/lib/geometry/shoe-size";
 
+/**
+ * Toe room added to measured heel→toe length when choosing insole size.
+ * Midpoint of the typical 1.5–2 in (38–51 mm) device-vs-foot allowance.
+ */
+export const INSOLE_TOE_ROOM_MM = 45;
+
 /** Plausible adult ball width band (mm) for soft warnings. */
 export const BALL_WIDTH_MM_LO = 70;
 export const BALL_WIDTH_MM_HI = 120;
@@ -39,7 +49,11 @@ export const LENGTH_OVER_BALL_HI = 3.6;
 export type SizeSuggestionConfidence = "high" | "medium" | "low";
 
 export type SizeSuggestion = {
+    /** Anatomical heel→toe length from the scan (mm). */
     footLengthMm: number;
+    /** footLengthMm + toe room — length key used for size / insole scale. */
+    sizingLengthMm: number;
+    toeRoomMm: number;
     ballWidthMm: number | null;
     usMenSize: number;
     ukSize: number;
@@ -119,9 +133,16 @@ export function suggestShoeSizeFromScan(args: {
     footLengthMm: number;
     ballWidthMm?: number | null;
     sizeSystem?: ShoeSizeSystem | null;
+    /** Override toe room (mm); defaults to {@link INSOLE_TOE_ROOM_MM}. */
+    toeRoomMm?: number;
 }): SizeSuggestion {
     const sizeSystem = normalizeShoeSizeSystem(args.sizeSystem);
     const foot = args.footLengthMm;
+    const toeRoomMm =
+        args.toeRoomMm !== undefined && Number.isFinite(args.toeRoomMm)
+            ? Math.max(0, args.toeRoomMm)
+            : INSOLE_TOE_ROOM_MM;
+    const sizingLengthMm = foot + toeRoomMm;
     const warnings: string[] = [];
     const inRange = Number.isFinite(foot) && foot >= FOOT_LENGTH_MM_MIN && foot <= FOOT_LENGTH_MM_MAX;
 
@@ -147,13 +168,14 @@ export function suggestShoeSizeFromScan(args: {
         }
     }
 
-    const usMenSize = footLengthMmToUsMen(foot);
-    const ukSize = footLengthMmToUk(foot);
+    // Size / insole scale from (foot + toe room), not bare foot AABB.
+    const usMenSize = footLengthMmToUsMen(sizingLengthMm);
+    const ukSize = footLengthMmToUk(sizingLengthMm);
     const layout =
         sizeSystem === "uk"
             ? insoleLayoutForUkSize(ukSize)
             : sizeSystem === "mm"
-              ? insoleLayoutForFootLengthMm(normalizeFootLengthMm(foot), "mm")
+              ? insoleLayoutForFootLengthMm(normalizeFootLengthMm(sizingLengthMm), "mm")
               : insoleLayoutForUsMenSize(usMenSize);
 
     let confidence: SizeSuggestionConfidence = "high";
@@ -162,6 +184,8 @@ export function suggestShoeSizeFromScan(args: {
 
     return {
         footLengthMm: foot,
+        sizingLengthMm,
+        toeRoomMm,
         ballWidthMm,
         usMenSize: layout.usMenSize,
         ukSize: layout.ukSize,
@@ -180,5 +204,5 @@ export function formatSizeSuggestionLabel(s: SizeSuggestion, sizeSystem?: ShoeSi
             : system === "mm"
               ? formatFootLengthLabel(s.layout.footLengthMm)
               : formatUsShoeSizeLabel(s.usMenSize);
-    return `${sizeLabel} · ${s.footLengthMm.toFixed(0)} mm`;
+    return `${sizeLabel} · insole ${s.layout.lengthMm.toFixed(0)} mm (foot ${s.footLengthMm.toFixed(0)} + ${s.toeRoomMm.toFixed(0)} mm)`;
 }
