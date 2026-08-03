@@ -132,6 +132,12 @@ function ScanMarkersSection({
                 </p>
             ) : (
                 <div className="space-y-1">
+                    {placing ? (
+                        <p className="text-[10px] leading-snug text-cyan-200/90">
+                            Depth shading is on while placing. Amber = your M1–M3 on the scan. Light cyan =
+                            suggested spots. Insole B1–B3 targets are hidden until you finish.
+                        </p>
+                    ) : null}
                     {sug ? (
                         <>
                             <p className="text-muted-foreground">
@@ -626,6 +632,10 @@ export function ScanImport() {
                                         <span className="text-foreground">
                                             {reg?.identifiedSide ? `${reg.identifiedSide} foot` : "—"}
                                         </span>
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground/80">
+                                        Cyan dots (when shown) are insole landmarks B1–B3, not scan markers.
+                                        Amber = your M1–M3.
                                     </p>
                                     <div className="mt-1 flex flex-col gap-1">
                                         <button

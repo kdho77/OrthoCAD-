@@ -201,7 +201,9 @@ export function Viewer3D() {
                             )}
                         </>
                     ) : null}
-                    {showScans ? <ScanMeshes transparent={viewer.transparent} /> : null}
+                    {showScans ? (
+                        <ScanMeshes transparent={viewer.transparent} heightmap={viewer.heightmap} />
+                    ) : null}
                     <ScanMarkerPlacement />
                     <ScanPlaneSliceTool />
                     <ScanRotateTool />
