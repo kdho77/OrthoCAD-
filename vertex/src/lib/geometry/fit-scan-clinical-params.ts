@@ -4,7 +4,7 @@
 /**
  * Clinical parametric fits from registered scan landmarks / geometry.
  *
- * - Arch: optional ARCH apex marker → absolute height vs stock apex → additive archHeightMm
+ * - Arch: optional ARCH apex marker → raise = gap above stock base surface at that XY
  * - Heel cup width: scan heel width + clearance → signed heelCupWidthMm (± widen/narrow)
  */
 
@@ -21,16 +21,21 @@ export const DEFAULT_STOCK_ARCH_APEX_HEIGHT_MM = 23.5;
 /** Heel cup target = scan heel width + this clearance (mm). */
 export const HEEL_CUP_WIDTH_CLEARANCE_MM = 5;
 
-const HEEL_U_MAX = 1 / 3;
-const ARCH_U_BAND = 0.12;
+/** Heel band along length for width measure (slightly past classic heel third). */
+const HEEL_U_MAX = 0.38;
+/** Half-width of the longitudinal band around M3 used for heel width (u units). */
+const HEEL_MARKER_U_HALF = 0.08;
 
 export type ArchMarkerFitResult = {
     archHeightMm: number;
     apexMoveMm: number;
-    /** Absolute scan arch height above heel seat (mm). */
+    /** Gap of ARCH marker above stock base surface at the same XY (mm). */
+    gapMm: number;
+    /** Absolute scan arch height above heel seat when heel is available (mm). */
     scanArchHeightMm: number;
-    /** Stock / reference absolute apex height used (mm). */
+    /** Stock / reference absolute apex height used for messaging (mm). */
     stockArchHeightMm: number;
+    baseSurfaceZ: number;
     apexU: number;
     clamped: boolean;
 };
@@ -64,87 +69,142 @@ function clampArchParams(
 /**
  * Fit additive archHeightMm + apexMoveMm from an ARCH apex marker in base space.
  *
- * Absolute scan arch height = marker Z − heel seat Z (M3). Additive raise is
- * that height minus the stock GLB apex height (~23.5 mm). Negative extras clamp to 0.
+ * Raise is the gap of the marker above the stock base top at the same XY
+ * (what the shell must grow to meet the marker). Absolute scan−stock is kept
+ * for messaging only.
  */
 export function fitArchParamsFromApexMarker(args: {
     archPointBase: THREE.Vector3;
-    heelSeatBase: THREE.Vector3;
+    /** Stock base top Z at the arch marker XY (same frame as archPointBase). */
+    baseSurfaceZ: number;
     lengthMm: number;
     lengthMin?: number;
     lengthSize?: number;
+    heelSeatBase?: THREE.Vector3 | null;
+    /** Optional tissue clearance subtracted from the gap (default 0 for a placed marker). */
+    clearanceMm?: number;
     stockArchHeightMm?: number;
 }): ArchMarkerFitResult {
     const stockArchHeightMm = args.stockArchHeightMm ?? DEFAULT_STOCK_ARCH_APEX_HEIGHT_MM;
     const lengthMin = args.lengthMin ?? 0;
     const lengthSize = Math.max(1e-6, args.lengthSize ?? args.lengthMm);
-    const scanArchHeightMm = args.archPointBase.z - args.heelSeatBase.z;
-    const heightRaw = scanArchHeightMm - stockArchHeightMm;
+    const clearanceMm = Math.max(0, args.clearanceMm ?? 0);
+    const gapMm = args.archPointBase.z - args.baseSurfaceZ;
+    const heightRaw = gapMm - clearanceMm;
+    const scanArchHeightMm = args.heelSeatBase
+        ? args.archPointBase.z - args.heelSeatBase.z
+        : gapMm + stockArchHeightMm;
     const apexU = Math.max(0, Math.min(1, (args.archPointBase.x - lengthMin) / lengthSize));
     const apexMoveRaw = (apexU - ARCH_DEFAULT_APEX_U) * args.lengthMm;
     const { archHeightMm, apexMoveMm, clamped } = clampArchParams(heightRaw, apexMoveRaw);
     return {
         archHeightMm,
         apexMoveMm,
+        gapMm,
         scanArchHeightMm,
         stockArchHeightMm,
+        baseSurfaceZ: args.baseSurfaceZ,
         apexU,
         clamped,
     };
 }
 
-/** Width of plantar samples in the heel third (base frame, mm). */
-export function measureHeelWidthMm(
+type PlantarBin = { x: number; y: number; z: number };
+
+function collectPlantarBins(
     positions: ArrayLike<number>,
     vertexCount: number,
     scanToBase: THREE.Matrix4,
+    uMin: number,
+    uMax: number,
     lengthMin: number,
     lengthSize: number,
-): number | null {
-    const ys: number[] = [];
+    cell = 3,
+): PlantarBin[] {
+    const bins = new Map<string, PlantarBin>();
     const tmp = new THREE.Vector3();
-    const cell = 3;
-    const bins = new Map<string, { x: number; y: number; z: number }>();
     for (let i = 0; i < vertexCount; i++) {
         tmp.set(positions[i * 3]!, positions[i * 3 + 1]!, positions[i * 3 + 2]!).applyMatrix4(scanToBase);
         const u = (tmp.x - lengthMin) / Math.max(1e-6, lengthSize);
-        if (u < 0 || u > HEEL_U_MAX) continue;
+        if (u < uMin || u > uMax) continue;
         const key = `${Math.floor(tmp.x / cell)},${Math.floor(tmp.y / cell)}`;
         const prev = bins.get(key);
         if (!prev || tmp.z < prev.z) bins.set(key, { x: tmp.x, y: tmp.y, z: tmp.z });
     }
-    for (const p of bins.values()) ys.push(p.y);
-    if (ys.length < 8) return null;
+    return [...bins.values()];
+}
+
+function widthFromYs(ys: number[]): number | null {
+    if (ys.length < 4) return null;
     ys.sort((a, b) => a - b);
-    // Trim 5% tails for soft-tissue fluff.
     const lo = ys[Math.floor(ys.length * 0.05)]!;
     const hi = ys[Math.min(ys.length - 1, Math.floor(ys.length * 0.95))]!;
     const w = hi - lo;
     return w > 1e-3 ? w : null;
 }
 
-/** Heel-third width from top positions already in footprint mm. */
+/** Width of plantar samples in the heel band (base frame, mm). */
+export function measureHeelWidthMm(
+    positions: ArrayLike<number>,
+    vertexCount: number,
+    scanToBase: THREE.Matrix4,
+    lengthMin: number,
+    lengthSize: number,
+    /** Optional heel-seat X in base space — narrows the longitudinal band around M3. */
+    heelSeatX?: number | null,
+): number | null {
+    let uMin = 0;
+    let uMax = HEEL_U_MAX;
+    if (heelSeatX != null && Number.isFinite(heelSeatX)) {
+        const uHeel = (heelSeatX - lengthMin) / Math.max(1e-6, lengthSize);
+        uMin = Math.max(0, uHeel - HEEL_MARKER_U_HALF);
+        uMax = Math.min(HEEL_U_MAX, uHeel + HEEL_MARKER_U_HALF);
+        if (uMax <= uMin) {
+            uMin = 0;
+            uMax = HEEL_U_MAX;
+        }
+    }
+    const bins = collectPlantarBins(positions, vertexCount, scanToBase, uMin, uMax, lengthMin, lengthSize);
+    return widthFromYs(bins.map((p) => p.y));
+}
+
+/** Heel-band width from top positions already in footprint mm. */
 export function measureHeelWidthFromTopPositions(
     positions: ArrayLike<number>,
     vertexCount: number,
     lengthMin: number,
     lengthSize: number,
+    heelSeatX?: number | null,
 ): number | null {
-    return measureHeelWidthMm(positions, vertexCount, new THREE.Matrix4().identity(), lengthMin, lengthSize);
+    return measureHeelWidthMm(
+        positions,
+        vertexCount,
+        new THREE.Matrix4().identity(),
+        lengthMin,
+        lengthSize,
+        heelSeatX,
+    );
 }
 
-/** Heel-third width of a base top surface (already in footprint mm). */
+/** Heel-band width of a base top surface (already in footprint mm). */
 export function measureBaseHeelWidthMm(
     geometry: BufferGeometry,
     lengthMin: number,
     lengthSize: number,
+    heelSeatX?: number | null,
 ): number | null {
     const pos = geometry.getAttribute("position");
     if (!pos || pos.count < 8) return null;
     const ud = geometry.userData as { topVertexCount?: number };
     const topN =
         typeof ud.topVertexCount === "number" && ud.topVertexCount > 0 ? ud.topVertexCount : pos.count;
-    return measureHeelWidthFromTopPositions(pos.array as ArrayLike<number>, topN, lengthMin, lengthSize);
+    return measureHeelWidthFromTopPositions(
+        pos.array as ArrayLike<number>,
+        topN,
+        lengthMin,
+        lengthSize,
+        heelSeatX,
+    );
 }
 
 /**
@@ -173,57 +233,6 @@ export function heelCupWidthParamForTarget(args: {
     };
 }
 
-/** Measure stock absolute arch apex height from top positions (medial midfoot max Z − heel Z). */
-export function measureStockArchApexHeightFromPositions(
-    positions: ArrayLike<number>,
-    vertexCount: number,
-    lengthMin: number,
-    lengthSize: number,
-    medialSign: number,
-): number | null {
-    let heelN = 0;
-    let heelSum = 0;
-    let archZ = -Infinity;
-    for (let i = 0; i < vertexCount; i++) {
-        const x = positions[i * 3]!;
-        const y = positions[i * 3 + 1]!;
-        const z = positions[i * 3 + 2]!;
-        const u = (x - lengthMin) / Math.max(1e-6, lengthSize);
-        if (u >= 0 && u <= HEEL_U_MAX) {
-            heelSum += z;
-            heelN++;
-        }
-        if (Math.abs(u - ARCH_DEFAULT_APEX_U) <= ARCH_U_BAND && y * medialSign > 0) {
-            if (z > archZ) archZ = z;
-        }
-    }
-    if (heelN < 4 || !Number.isFinite(archZ)) return null;
-    const heelRef = heelSum / heelN;
-    const h = archZ - heelRef;
-    return h > 1 && h < 80 ? h : null;
-}
-
-/** Measure stock absolute arch apex height from base top (medial midfoot max Z − heel Z). */
-export function measureStockArchApexHeightMm(
-    geometry: BufferGeometry,
-    lengthMin: number,
-    lengthSize: number,
-    medialSign: number,
-): number | null {
-    const pos = geometry.getAttribute("position");
-    if (!pos || pos.count < 8) return null;
-    const ud = geometry.userData as { topVertexCount?: number };
-    const topN =
-        typeof ud.topVertexCount === "number" && ud.topVertexCount > 0 ? ud.topVertexCount : pos.count;
-    return measureStockArchApexHeightFromPositions(
-        pos.array as ArrayLike<number>,
-        topN,
-        lengthMin,
-        lengthSize,
-        medialSign,
-    );
-}
-
 export function archMarkerFitToCorrectionPatch(fit: ArchMarkerFitResult): Partial<SideCorrections> {
     return {
         archHeightMm: fit.archHeightMm,
@@ -234,9 +243,10 @@ export function archMarkerFitToCorrectionPatch(fit: ArchMarkerFitResult): Partia
 
 export function formatArchMarkerFitMessage(fit: ArchMarkerFitResult): string {
     const apex = `${fit.apexMoveMm >= 0 ? "+" : ""}${fit.apexMoveMm.toFixed(1)}`;
-    return `Arch ${fit.archHeightMm.toFixed(1)} mm · apex ${apex} mm (scan ${fit.scanArchHeightMm.toFixed(1)} − stock ${fit.stockArchHeightMm.toFixed(1)}${fit.clamped ? ", clamped" : ""})`;
+    return `Arch ${fit.archHeightMm.toFixed(1)} mm · apex ${apex} mm (gap ${fit.gapMm.toFixed(1)} mm above base${fit.clamped ? ", clamped" : ""})`;
 }
 
 export function formatHeelCupFitMessage(fit: HeelCupWidthFitResult): string {
-    return `Heel cup width ${fit.heelCupWidthMm.toFixed(1)} (scan ${fit.scanHeelWidthMm.toFixed(0)} + ${HEEL_CUP_WIDTH_CLEARANCE_MM} → ${fit.targetCupWidthMm.toFixed(0)} mm vs base ${fit.baseHeelWidthMm.toFixed(0)}${fit.clamped ? ", clamped" : ""})`;
+    const sign = fit.heelCupWidthMm >= 0 ? "+" : "";
+    return `Heel cup ${sign}${fit.heelCupWidthMm.toFixed(1)} (scan ${fit.scanHeelWidthMm.toFixed(0)} + ${HEEL_CUP_WIDTH_CLEARANCE_MM} → ${fit.targetCupWidthMm.toFixed(0)} mm vs base ${fit.baseHeelWidthMm.toFixed(0)}${fit.clamped ? ", clamped" : ""})`;
 }

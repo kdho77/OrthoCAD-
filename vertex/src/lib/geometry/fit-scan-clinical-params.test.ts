@@ -12,30 +12,33 @@ import {
 import { HEEL_CUP_WIDTH_MAX_LATERAL_SCALE } from "@/lib/geometry/height-field";
 
 describe("fitArchParamsFromApexMarker", () => {
-    test("additive arch height is scan absolute minus stock (~23.5)", () => {
+    test("additive arch height is gap above base surface at marker XY", () => {
         const heel = new THREE.Vector3(0, 0, 0);
-        const arch = new THREE.Vector3(0.42 * 260, 15, 23.5 + 6);
+        const baseSurfaceZ = 20;
+        const arch = new THREE.Vector3(0.42 * 260, 15, baseSurfaceZ + 6);
         const fit = fitArchParamsFromApexMarker({
             archPointBase: arch,
+            baseSurfaceZ,
             heelSeatBase: heel,
             lengthMm: 260,
             lengthMin: 0,
             lengthSize: 260,
             stockArchHeightMm: DEFAULT_STOCK_ARCH_APEX_HEIGHT_MM,
         });
-        expect(fit.stockArchHeightMm).toBe(23.5);
-        expect(fit.scanArchHeightMm).toBeCloseTo(29.5, 5);
+        expect(fit.gapMm).toBeCloseTo(6, 5);
         expect(fit.archHeightMm).toBeCloseTo(6, 5);
+        expect(fit.scanArchHeightMm).toBeCloseTo(26, 5);
         expect(Math.abs(fit.apexMoveMm)).toBeLessThan(1);
     });
 
-    test("clamps negative additive raise to 0", () => {
+    test("clamps negative gap to 0", () => {
         const fit = fitArchParamsFromApexMarker({
             archPointBase: new THREE.Vector3(100, 10, 18),
+            baseSurfaceZ: 23.5,
             heelSeatBase: new THREE.Vector3(0, 0, 0),
             lengthMm: 260,
-            stockArchHeightMm: 23.5,
         });
+        expect(fit.gapMm).toBeCloseTo(-5.5, 5);
         expect(fit.archHeightMm).toBe(0);
     });
 });

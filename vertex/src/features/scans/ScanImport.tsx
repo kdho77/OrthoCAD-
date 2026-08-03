@@ -746,8 +746,8 @@ export function ScanImport() {
                                         </p>
                                     ) : (
                                         <p className="text-[10px] text-muted-foreground/80">
-                                            Size = foot length + 45 mm toe room; arch from medial plantar gap
-                                            (does not bake the scan mesh)
+                                            Size = foot + 45 mm toe room; arch from ARCH marker (or gap fit);
+                                            heel cup = scan heel + 5 mm
                                         </p>
                                     )}
                                 </>

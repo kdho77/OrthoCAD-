@@ -222,6 +222,19 @@ export function archFitReferenceFromBase(geometry: BufferGeometry): ArchFitRefer
     };
 }
 
+/**
+ * Sample the arch-fit reference top surface at a footprint XY (base-local mm).
+ * Used by gap-fit and by ARCH-marker matching so the raise targets the shell.
+ */
+export function sampleArchFitReferenceAt(
+    x: number,
+    y: number,
+    ref: ArchFitReference,
+): { z: number; u: number; vSigned: number; ok: boolean } {
+    const buckets = ref.kind === "base" ? buildXyBuckets(ref.topPositions, ref.topVertexCount, 4) : null;
+    return referenceZAt(x, y, ref, buckets);
+}
+
 function referenceZAt(
     x: number,
     y: number,
