@@ -1800,12 +1800,27 @@ function getRimConformityFrame(
  * In the arch band (α→1), uses re-loft W(h)·Δ_rim so the sidewall stretches as
  * a rounded profile instead of a vertical extrusion (PR #117). Optional
  * `verticalDelta` reshapes the thick axis to the height-field falloff (PR #116).
+ *
+/**
+ * Scatter precomputed rim deltas onto bottom wall verts.
+ * Reads corrected top positions from `array`; writes bottom from BASE only.
+ *
+ * In the arch band (α→1), uses re-loft W(h)·Δ_rim so the sidewall stretches as
+ * a rounded profile instead of a vertical extrusion (PR #117). Optional
+ * `verticalDelta` reshapes the thick axis to the height-field falloff (PR #116).
+ *
+ * When `lateralDelta` is provided (heel-cup width active), the width-axis
+ * component is stripped from the height-weighted rim scatter and reapplied as a
+ * rigid per-column lateral (the paired top-rim's smoothed scale). Height-weighting
+ * a large inward/outward rim pull shears the originally smooth sidewall into
+ * vertical ridges — especially visible when narrowing to match a foot scan.
  */
 function transferRimConformityDeltas(
     base: BufferGeometry,
     array: Float32Array,
     frame: RimConformityFrame,
     verticalDelta?: Float32Array | null,
+    lateralDelta?: Float32Array | null,
 ): void {
     const basePos = base.getAttribute("position");
     if (!basePos) return;
@@ -1820,7 +1835,21 @@ function transferRimConformityDeltas(
         seeds,
         topVertexCount,
         thickAxis,
+        widthAxis,
     } = frame;
+
+    const stripWidthLateral = (
+        dx: number,
+        dy: number,
+        dz: number,
+        rimIndex: number,
+    ): [number, number, number] => {
+        if (!lateralDelta) return [dx, dy, dz];
+        const rimLat = lateralDelta[rimIndex]!;
+        if (widthAxis === 0) return [dx - rimLat, dy, dz];
+        if (widthAxis === 1) return [dx, dy - rimLat, dz];
+        return [dx, dy, dz - rimLat];
+    };
 
     for (let k = 0; k < wallVertexIndex.length; k++) {
         const i = wallVertexIndex[k]!;
@@ -1835,6 +1864,8 @@ function transferRimConformityDeltas(
         let cx = 0;
         let cy = 0;
         let cz = 0;
+        let corridorRimLat = 0;
+        let corridorLatW = 0;
         const w = wallWeight[k]!;
         if (w > 0 && alpha < 1) {
             const seed = seeds[wallSeedIndex[k]!]!;
@@ -1842,6 +1873,7 @@ function transferRimConformityDeltas(
             let dx = array[j * 3]! - baseArr[j * 3]!;
             let dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
             let dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
+            [dx, dy, dz] = stripWidthLateral(dx, dy, dz, j);
             if (verticalDelta) {
                 const fieldAdj = verticalDelta[i]! - verticalDelta[seed.wallTopIndex]!;
                 if (thickAxis === 0) dx += fieldAdj;
@@ -1851,25 +1883,63 @@ function transferRimConformityDeltas(
             cx = w * dx;
             cy = w * dy;
             cz = w * dz;
+            if (lateralDelta) {
+                // Rigid column: divide out w_h so lateral keeps distance/anterior/
+                // inward gates but not the height shear that faceted narrow walls.
+                const z = baseArr[i * 3 + thickAxis]!;
+                const denom = seed.wallTopZ - frame.botMinZ;
+                const h = denom > 1e-9 ? (z - frame.botMinZ) / denom : 0;
+                const wH = rimConformityHeightWeight(h);
+                corridorLatW = wH > 1e-9 ? w / wH : 0;
+                corridorRimLat = lateralDelta[j]!;
+            }
         }
 
         // Arch-band re-loft: whole-wall smooth profile W(h)·Δ_rim, scaled α.
         let ax = 0;
         let ay = 0;
         let az = 0;
+        let archRimLat = 0;
+        let archLatW = 0;
         const archS = wallArchSeedIndex[k]!;
         const archW = wallArchWeight[k]!;
         if (alpha > 0 && archS >= 0 && archW > 0) {
             const seed = seeds[archS]!;
             const j = seed.topRimIndex;
-            ax = archW * (array[j * 3]! - baseArr[j * 3]!);
-            ay = archW * (array[j * 3 + 1]! - baseArr[j * 3 + 1]!);
-            az = archW * (array[j * 3 + 2]! - baseArr[j * 3 + 2]!);
+            let dx = array[j * 3]! - baseArr[j * 3]!;
+            let dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
+            let dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
+            [dx, dy, dz] = stripWidthLateral(dx, dy, dz, j);
+            ax = archW * dx;
+            ay = archW * dy;
+            az = archW * dz;
+        }
+        if (lateralDelta && alpha > 0 && archS >= 0) {
+            // Lateral stays rigid through the arch wall (no W(h) shear); only the
+            // anterior taper gates it. Vertical re-loft above still uses archW.
+            const seed = seeds[archS]!;
+            archLatW = rimConformityAnteriorTaperWeight(seed.u);
+            archRimLat = lateralDelta[seed.topRimIndex]!;
         }
 
-        array[i * 3] = baseArr[i * 3]! + (1 - alpha) * cx + alpha * ax;
-        array[i * 3 + 1] = baseArr[i * 3 + 1]! + (1 - alpha) * cy + alpha * ay;
-        array[i * 3 + 2] = baseArr[i * 3 + 2]! + (1 - alpha) * cz + alpha * az;
+        let outX = baseArr[i * 3]! + (1 - alpha) * cx + alpha * ax;
+        let outY = baseArr[i * 3 + 1]! + (1 - alpha) * cy + alpha * ay;
+        let outZ = baseArr[i * 3 + 2]! + (1 - alpha) * cz + alpha * az;
+
+        if (lateralDelta) {
+            // Heel: rigid rim lateral. Arch: rigid rim lateral × anterior taper.
+            // Plantar was scaled in the main pass; wall verts are rewritten from
+            // BASE here so lateral must be applied explicitly.
+            const lat = (1 - alpha) * corridorLatW * corridorRimLat + alpha * archLatW * archRimLat;
+            const latEff = corridorLatW > 0 || archLatW > 0 ? lat : lateralDelta[i]!;
+            if (widthAxis === 0) outX += latEff;
+            else if (widthAxis === 1) outY += latEff;
+            else outZ += latEff;
+        }
+
+        array[i * 3] = outX;
+        array[i * 3 + 1] = outY;
+        array[i * 3 + 2] = outZ;
     }
 }
 
@@ -2199,6 +2269,13 @@ export function applyBaseModifiers(
     // are each computed from baseline positions (above) and summed here in one pass.
     // Neither width nor depth reads the other's deformed coordinates — clinical
     // axes stay independent regardless of slider commit order.
+    //
+    // Heel-cup width lateral scale is applied to the FULL multi-mesh shell (top +
+    // bottom), not just the top sheet. Height-shearing only the rim onto the wall
+    // destroyed sidewall smoothness when narrowing; a uniform radial scale keeps
+    // the base wall profile. Rim-conformity below strips this component and
+    // re-applies each wall vert's own lateral so plantar stays scaled too.
+    const widthLateralActive = field.corrections.heelCupWidthMm !== 0;
     for (let i = 0; i < count; i++) {
         const t = array[i * 3 + thickAxis]!;
         let w: number;
@@ -2208,7 +2285,9 @@ export function applyBaseModifiers(
             w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
         }
         const vertD = delta[i]! * w;
-        const latD = lateralDelta[i]! * w;
+        // Multi-mesh: lateral on every vert. Single-mesh: still top-weighted.
+        const latW = isMultiMesh && topVertexCount > 0 && widthLateralActive ? 1 : w;
+        const latD = lateralDelta[i]! * latW;
         let dx = 0;
         let dy = 0;
         let dz = 0;
@@ -2363,7 +2442,9 @@ export function applyBaseModifiers(
 
     // Rim-conformity transfer: legacy path when width ≠ 0 (shell-field sync owns
     // the bottom when width==0). Arch-band re-loft (#117) + inward soften (#116)
-    // keep medial arch sidewalls rounded under high archHeightMm.
+    // keep medial arch sidewalls rounded under high archHeightMm. When width is
+    // active, pass lateralDelta so walls get radial scale instead of height-sheared
+    // rim pull (narrowing / widening sidewall smoothness).
     if (isMultiMesh && topVertexCount > 0 && !useShellFieldSync) {
         const rimFrame = getRimConformityFrame(
             base,
@@ -2375,7 +2456,13 @@ export function applyBaseModifiers(
             lenSize,
         );
         if (rimFrame && rimFrame.seeds.length > 0) {
-            transferRimConformityDeltas(base, array, rimFrame, delta);
+            transferRimConformityDeltas(
+                base,
+                array,
+                rimFrame,
+                delta,
+                widthLateralActive ? lateralDelta : null,
+            );
         }
     }
 
