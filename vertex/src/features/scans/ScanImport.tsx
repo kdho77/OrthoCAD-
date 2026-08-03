@@ -60,16 +60,6 @@ const MARKER_LABELS = {
     ARCH: "ARCH — medial arch apex",
 } as const;
 
-function markerFingerprint(m: ScanMarkers | undefined): string {
-    if (!m) return "";
-    return (["M1", "M2", "M3", "ARCH"] as const)
-        .map((id) => {
-            const p = m[id];
-            return p ? `${p.x.toFixed(4)},${p.y.toFixed(4)},${p.z.toFixed(4)}` : "-";
-        })
-        .join("|");
-}
-
 function ScanMarkersSection({
     scanId,
     sug,
@@ -425,12 +415,20 @@ export function ScanImport() {
 
     const matchDesignFromScan = (scanId: string, opts?: { forceApplySize?: boolean }) => {
         setError(null);
+        const force = opts?.forceApplySize === true;
         const suggestion = suggestSizeForScan(scanId);
-        if (!suggestion) return;
+        if (!suggestion) {
+            if (!force) return;
+            setSizeMsgByScanId((prev) => ({
+                ...prev,
+                [scanId]: "Size unavailable from scan — matching arch/heel only",
+            }));
+            matchArchFromScan(scanId);
+            return;
+        }
 
         const accepted = sizeAcceptedByScanId[scanId] === true;
         const canAuto = shouldAutoApplySize(designSizing, suggestion);
-        const force = opts?.forceApplySize === true;
         if (!force && !accepted && !canAuto && isDefaultShoeSize(designSizing)) {
             setSizeMsgByScanId((prev) => ({
                 ...prev,
@@ -447,21 +445,16 @@ export function ScanImport() {
         matchArchFromScan(scanId);
     };
 
+    const pendingClinicalMatchScanId = useScanStore((s) => s.pendingClinicalMatchScanId);
+    const clearPendingClinicalMatch = useScanStore((s) => s.clearPendingClinicalMatch);
     // After all four markers + successful registration: auto-apply size, arch, heel cup.
-    const autoMatchKeyByScanId = useRef<Record<string, string>>({});
-    // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally keyed on marker/registration snapshots
+    // biome-ignore lint/correctness/useExhaustiveDependencies: store flag is the trigger; match fn reads latest state
     useEffect(() => {
-        for (const scan of scans) {
-            const markers = markersByScanId[scan.id];
-            const reg = registrationByScanId[scan.id];
-            if (!markers?.M1 || !markers.M2 || !markers.M3 || !markers.ARCH) continue;
-            if (!reg?.matrixElements || reg.incomplete || reg.error) continue;
-            const key = markerFingerprint(markers);
-            if (autoMatchKeyByScanId.current[scan.id] === key) continue;
-            autoMatchKeyByScanId.current[scan.id] = key;
-            matchDesignFromScan(scan.id, { forceApplySize: true });
-        }
-    }, [scans, markersByScanId, registrationByScanId]);
+        if (!pendingClinicalMatchScanId) return;
+        const scanId = pendingClinicalMatchScanId;
+        clearPendingClinicalMatch();
+        matchDesignFromScan(scanId, { forceApplySize: true });
+    }, [pendingClinicalMatchScanId]);
 
     const onFiles = async (files: FileList | null) => {
         if (!files) return;
@@ -673,10 +666,7 @@ export function ScanImport() {
                             }}
                             onDismiss={() => setSuggestedLandmarks(s.id, null)}
                             onTogglePlacement={() => (placing ? exitPlacement() : enterPlacement(s.id))}
-                            onResetMarkers={() => {
-                                delete autoMatchKeyByScanId.current[s.id];
-                                resetMarkers(s.id);
-                            }}
+                            onResetMarkers={() => resetMarkers(s.id)}
                         />
 
                         {/* Readout */}

@@ -414,6 +414,8 @@ describe("Phase 2 — scan registration wiring", () => {
         const reg = useScanStore.getState().registrationByScanId["t9-scan"];
         expect(reg?.error).toBeNull();
         expect(reg?.matrixElements).not.toBeNull();
+        // Successful seating requests automatic size/arch/heel match.
+        expect(useScanStore.getState().pendingClinicalMatchScanId).toBe("t9-scan");
 
         const matrix = new THREE.Matrix4().fromArray(reg!.matrixElements!);
         computeScanDeviationAgainstRaw(scan, matrix, sourceBase);
@@ -522,6 +524,13 @@ describe("Phase 2 — scan registration wiring", () => {
         expect(useScanStore.getState().placementMode).toEqual({ scanId: "arch-prompt", next: "ARCH" });
         expect(useScanStore.getState().registrationByScanId["arch-prompt"]?.incomplete).toBe(true);
         expect(useScanStore.getState().registrationByScanId["arch-prompt"]?.matrixElements).toBeNull();
+        expect(useScanStore.getState().pendingClinicalMatchScanId).toBeNull();
+
+        // Esc/cancel must not clear the ARCH requirement — re-open prompts ARCH.
+        useScanStore.getState().exitPlacement();
+        expect(useScanStore.getState().placementMode).toBeNull();
+        useScanStore.getState().setMarker("arch-prompt", "M3", new THREE.Vector3(0, 0, 1.1));
+        expect(useScanStore.getState().placementMode).toEqual({ scanId: "arch-prompt", next: "ARCH" });
 
         useScanStore.getState().setMarker("arch-prompt", "ARCH", new THREE.Vector3(-1, 0.5, 0));
         expect(useScanStore.getState().placementMode).toBeNull();
@@ -530,6 +539,7 @@ describe("Phase 2 — scan registration wiring", () => {
         const reg = useScanStore.getState().registrationByScanId["arch-prompt"];
         expect(reg?.incomplete).toBe(false);
         expect(reg?.error?.code).toBe("no_base_landmarks");
+        expect(useScanStore.getState().pendingClinicalMatchScanId).toBeNull();
     });
 
     test("T13 — R_dorsalToZ is geometrically inert (twist freedom must not leak)", () => {
