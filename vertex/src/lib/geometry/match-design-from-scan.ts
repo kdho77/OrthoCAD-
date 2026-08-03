@@ -258,7 +258,7 @@ export type ClinicalMatchResult = {
 
 /**
  * Match arch (+ optional heel cup width) from a registered scan.
- * Prefers ARCH apex marker vs stock (~23.5 mm); falls back to medial gap fit.
+ * Requires a clinician-placed ARCH apex marker (no automatic gap fit).
  */
 export function matchClinicalParamsFromRegisteredScan(args: {
     scanPositions: ArrayLike<number>;
@@ -286,43 +286,35 @@ export function matchClinicalParamsFromRegisteredScan(args: {
         heelSeatBase = args.heelMarkerLocal.clone().applyMatrix4(args.scanToBase);
     }
 
-    if (args.archMarkerLocal) {
-        const archPointBase = args.archMarkerLocal.clone().applyMatrix4(args.scanToBase);
-        const hit = sampleArchFitReferenceAt(archPointBase.x, archPointBase.y, reference);
-        if (!hit.ok) {
-            throw new ArchFitError(
-                "insufficient_samples",
-                "ARCH marker is not over the insole top — re-place it on the medial arch plantar surface",
-            );
-        }
-        // Raise = gap of marker above stock shell at that XY (meets the placed point).
-        const fit: ArchMarkerFitResult = fitArchParamsFromApexMarker({
-            archPointBase,
-            baseSurfaceZ: hit.z,
-            heelSeatBase,
-            lengthMm: args.layout.lengthMm,
-            lengthMin: reference.lengthMin,
-            lengthSize: reference.lengthSize,
-            stockArchHeightMm: DEFAULT_STOCK_ARCH_APEX_HEIGHT_MM,
-            clearanceMm: 0,
-        });
-        archPatch = archMarkerFitToCorrectionPatch(fit);
-        archMsg = formatArchMarkerFitMessage(fit);
-        archSource = "marker";
-    } else {
-        const fit = matchArchParamsFromRegisteredScan({
-            scanPositions: args.scanPositions,
-            scanVertexCount: args.scanVertexCount,
-            scanToBase: args.scanToBase,
-            rawBase: args.rawBase,
-            side: args.side,
-            layout: args.layout,
-            clearanceMm: args.clearanceMm,
-        });
-        archPatch = archFitToCorrectionPatch(fit);
-        archMsg = formatArchFitMessage(fit);
-        archSource = "gap";
+    // Arch raise requires a clinician-placed ARCH apex — never auto gap-fit here.
+    if (!args.archMarkerLocal) {
+        throw new ArchFitError(
+            "no_registration",
+            "Place the ARCH apex marker on the medial arch, then match again",
+        );
     }
+    const archPointBase = args.archMarkerLocal.clone().applyMatrix4(args.scanToBase);
+    const hit = sampleArchFitReferenceAt(archPointBase.x, archPointBase.y, reference);
+    if (!hit.ok) {
+        throw new ArchFitError(
+            "insufficient_samples",
+            "ARCH marker is not over the insole top — re-place it on the medial arch plantar surface",
+        );
+    }
+    // Raise = gap of marker above stock shell at that XY (meets the placed point).
+    const fit: ArchMarkerFitResult = fitArchParamsFromApexMarker({
+        archPointBase,
+        baseSurfaceZ: hit.z,
+        heelSeatBase,
+        lengthMm: args.layout.lengthMm,
+        lengthMin: reference.lengthMin,
+        lengthSize: reference.lengthSize,
+        stockArchHeightMm: DEFAULT_STOCK_ARCH_APEX_HEIGHT_MM,
+        clearanceMm: 0,
+    });
+    archPatch = archMarkerFitToCorrectionPatch(fit);
+    archMsg = formatArchMarkerFitMessage(fit);
+    archSource = "marker";
 
     let heel: HeelCupWidthFitResult | null = null;
     const heelSeatX = heelSeatBase?.x ?? null;

@@ -720,16 +720,22 @@ export function ScanImport() {
                                             disabled={
                                                 matchBusyId === s.id ||
                                                 !landmarkSourceAssetId ||
-                                                !rawBaseBySourceId[landmarkSourceAssetId]
+                                                !rawBaseBySourceId[landmarkSourceAssetId] ||
+                                                !markers?.ARCH
                                             }
-                                            title="Match shoe size, arch (ARCH marker or gap fit), and heel cup width (+5 mm)"
+                                            title={
+                                                markers?.ARCH
+                                                    ? "Match shoe size, arch from your ARCH marker, and heel cup width (+5 mm)"
+                                                    : "Place the ARCH apex marker first"
+                                            }
                                             onClick={() => matchDesignFromScan(s.id)}
                                             className={cn(
                                                 "flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
                                                 "bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25",
                                                 (matchBusyId === s.id ||
                                                     !landmarkSourceAssetId ||
-                                                    !rawBaseBySourceId[landmarkSourceAssetId ?? ""]) &&
+                                                    !rawBaseBySourceId[landmarkSourceAssetId ?? ""] ||
+                                                    !markers?.ARCH) &&
                                                     "cursor-not-allowed opacity-50",
                                             )}
                                         >
@@ -741,16 +747,22 @@ export function ScanImport() {
                                             disabled={
                                                 matchBusyId === s.id ||
                                                 !landmarkSourceAssetId ||
-                                                !rawBaseBySourceId[landmarkSourceAssetId]
+                                                !rawBaseBySourceId[landmarkSourceAssetId] ||
+                                                !markers?.ARCH
                                             }
-                                            title="Set arch (ARCH marker or gap) + heel cup width (+5 mm vs scan)"
+                                            title={
+                                                markers?.ARCH
+                                                    ? "Set arch from your ARCH marker + heel cup width (+5 mm vs scan)"
+                                                    : "Place the ARCH apex marker first"
+                                            }
                                             onClick={() => matchArchFromScan(s.id)}
                                             className={cn(
                                                 "flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
                                                 "bg-muted text-muted-foreground hover:text-foreground",
                                                 (matchBusyId === s.id ||
                                                     !landmarkSourceAssetId ||
-                                                    !rawBaseBySourceId[landmarkSourceAssetId ?? ""]) &&
+                                                    !rawBaseBySourceId[landmarkSourceAssetId ?? ""] ||
+                                                    !markers?.ARCH) &&
                                                     "cursor-not-allowed opacity-50",
                                             )}
                                         >
@@ -763,7 +775,7 @@ export function ScanImport() {
                                         </p>
                                     ) : (
                                         <p className="text-[10px] text-muted-foreground/80">
-                                            Size = foot + 45 mm toe room; arch from ARCH marker (or gap fit);
+                                            Size = foot + 45 mm toe room; arch from your placed ARCH marker;
                                             heel cup = scan heel + 5 mm
                                         </p>
                                     )}
