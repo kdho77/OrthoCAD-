@@ -19,7 +19,6 @@ import {
     type ArchFitReference,
     type ArchFitResult,
     archFitReferenceFromBase,
-    archFitToCorrectionPatch,
     fitArchParamsFromScan,
     sampleArchFitReferenceAt,
 } from "@/lib/geometry/fit-arch-from-scan";
