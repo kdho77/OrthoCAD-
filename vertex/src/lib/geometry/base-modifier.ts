@@ -1227,6 +1227,58 @@ export function rimConformityDistanceWeight(d: number): number {
     return smoothstep(WALL_CORRIDOR_MM, RIM_PAIR_TOL_MM, d);
 }
 
+/**
+ * Inward blend span as a fraction of local half-width. Clamped so the 5 mm
+ * corridor actually attenuates (a raw half-width span would stay ≈1 across it).
+ * Restored from PR #116 (rounded arch-wall falloff).
+ */
+export const RIM_INWARD_SPAN_FRAC = 0.08;
+export const RIM_INWARD_SPAN_MIN_MM = 2.5;
+export const RIM_INWARD_SPAN_MAX_MM = WALL_CORRIDOR_MM;
+
+/**
+ * w_inward: 1 for d ≤ RIM_PAIR_TOL_MM (wall-top seed band — gap/protrusion safe),
+ * then C1 falloff toward the interior over a short span derived from local
+ * half-width. Softens the near-vertical arch-wall ridge from rim-delta scatter
+ * without weakening Δ_wall ≈ Δ_rim at paired wall-top seeds.
+ */
+export function rimConformityInwardWeight(dFromRimMm: number, localHalfWidthMm: number): number {
+    const d = Math.max(0, dFromRimMm);
+    if (d <= RIM_PAIR_TOL_MM) return 1;
+    const span = Math.max(
+        RIM_INWARD_SPAN_MIN_MM,
+        Math.min(RIM_INWARD_SPAN_MAX_MM, Math.max(0, localHalfWidthMm) * RIM_INWARD_SPAN_FRAC),
+    );
+    if (span <= RIM_PAIR_TOL_MM) return 0;
+    return smoothstep(span, RIM_PAIR_TOL_MM, d);
+}
+
+// --- Arch-band wall re-loft (rounded side wall, PR #117 / 8c2be5d3) ----------
+// Corridor transfer alone turns tall arch side walls into straight vertical
+// extrusions. In the arch band the whole wall face is re-lofted:
+//   lift(v) = Δ_rim(u) · W(h),  W(h) = h^1.5
+// Crossfaded in over u ∈ [0.24, 0.36]; heel cup stays on corridor transfer.
+
+/** Heel-preserving crossfade: re-loft weight 0 for u ≤ U0, 1 for u ≥ U1. */
+export const ARCH_WALL_RELOFT_U0 = 0.24;
+export const ARCH_WALL_RELOFT_U1 = 0.36;
+/** Profile exponent p: >1 ⇒ C1 at the plantar fillet, no rigid top band. */
+export const ARCH_WALL_RELOFT_EXPONENT = 1.5;
+/** Max footprint span (mm) from a wall vert to its same-side rim seed. */
+export const ARCH_WALL_RELOFT_SPAN_MM = 40;
+
+/**
+ * Smooth full-wall lift profile: 0 at the plantar band, exactly 1 at wall top.
+ * C1 at plantar onset (p > 1) and W′(1) > 0 (no rigid top band).
+ */
+export function archWallReloftWeight(z: number, wallTopZ: number): number {
+    const denom = wallTopZ - PLANTAR_Z_MAX_MM;
+    if (denom <= 1e-9) return 0;
+    const t = Math.min(1, (z - PLANTAR_Z_MAX_MM) / denom);
+    if (t <= 0) return 0;
+    return t ** ARCH_WALL_RELOFT_EXPONENT;
+}
+
 interface RimWallSeed {
     topRimIndex: number;
     wallTopIndex: number;
@@ -1246,6 +1298,12 @@ interface RimConformityFrame {
     wallVertexIndex: Int32Array;
     wallSeedIndex: Int32Array;
     wallWeight: Float32Array;
+    /** Arch-band re-loft crossfade α(u) per wall vert (0 through the heel). */
+    wallAlpha: Float32Array;
+    /** Same-side seed used by the re-loft term (−1 when none in span). */
+    wallArchSeedIndex: Int32Array;
+    /** Re-loft weight W(h)·w_u per wall vert (0 when wallArchSeedIndex < 0). */
+    wallArchWeight: Float32Array;
 }
 
 const rimConformityCache = new WeakMap<BufferGeometry, RimConformityFrame | null>();
@@ -1474,11 +1532,17 @@ function buildRimConformityFrame(
     if (topRimIdx.length < 3) return null;
 
     let botMinZ = Infinity;
+    let widMin = Infinity;
+    let widMax = -Infinity;
     for (let i = topVertexCount; i < count; i++) {
         const z = baseArr[i * 3 + thickAxis]!;
         if (z < botMinZ) botMinZ = z;
+        const wid = baseArr[i * 3 + widthAxis]!;
+        if (wid < widMin) widMin = wid;
+        if (wid > widMax) widMax = wid;
     }
     if (!Number.isFinite(botMinZ)) return null;
+    const localHalfWidthMm = Math.max(1e-6, (widMax - widMin) / 2);
 
     // Spatial hash of bottom verts for seed extraction + corridor queries.
     const cell = RIM_PAIR_TOL_MM;
@@ -1579,9 +1643,49 @@ function buildRimConformityFrame(
         bucket.push(s);
     }
 
+    // Same-side seed lists sorted by footprint length, for the arch-band
+    // re-loft NN (span up to ARCH_WALL_RELOFT_SPAN_MM, far beyond the corridor).
+    const widCenter = (widMin + widMax) / 2;
+    const seedsBySide: [number[], number[]] = [[], []];
+    for (let s = 0; s < seeds.length; s++) {
+        seedsBySide[seeds[s]!.fpWid >= widCenter ? 0 : 1]!.push(s);
+    }
+    for (const list of seedsBySide) {
+        list.sort((a, b) => seeds[a]!.fpLen - seeds[b]!.fpLen);
+    }
+    const nearestSeedOnSide = (side: 0 | 1, len: number, wid: number): [number, number] => {
+        const list = seedsBySide[side]!;
+        if (list.length === 0) return [-1, Infinity];
+        let lo = 0;
+        let hi = list.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (seeds[list[mid]!]!.fpLen < len) lo = mid + 1;
+            else hi = mid;
+        }
+        let best = -1;
+        let bestD = Infinity;
+        for (let dir = 0; dir < 2; dir++) {
+            for (let k = dir === 0 ? lo : lo - 1; k >= 0 && k < list.length; k += dir === 0 ? 1 : -1) {
+                const seed = seeds[list[k]!]!;
+                const dLen = Math.abs(seed.fpLen - len);
+                if (dLen > Math.min(bestD, ARCH_WALL_RELOFT_SPAN_MM)) break;
+                const d = Math.hypot(seed.fpLen - len, seed.fpWid - wid);
+                if (d < bestD) {
+                    bestD = d;
+                    best = list[k]!;
+                }
+            }
+        }
+        return [best, bestD];
+    };
+
     const wallVerts: number[] = [];
     const wallSeeds: number[] = [];
     const wallWeights: number[] = [];
+    const wallAlphas: number[] = [];
+    const wallArchSeeds: number[] = [];
+    const wallArchWeights: number[] = [];
     const corridorBins = Math.ceil(WALL_CORRIDOR_MM / seedCell) + 1;
 
     for (let i = topVertexCount; i < count; i++) {
@@ -1609,20 +1713,44 @@ function buildRimConformityFrame(
                 }
             }
         }
-        if (bestS < 0 || bestD >= WALL_CORRIDOR_MM) continue;
 
-        const seed = seeds[bestS]!;
-        const denom = seed.wallTopZ - botMinZ;
-        const h = denom > 1e-9 ? (z - botMinZ) / denom : 0;
-        const w =
-            rimConformityHeightWeight(h) *
-            rimConformityAnteriorTaperWeight(seed.u) *
-            rimConformityDistanceWeight(bestD);
-        if (w <= 0) continue;
+        // Corridor transfer weight (heel behavior) + inward soften (#116).
+        let w = 0;
+        if (bestS >= 0 && bestD < WALL_CORRIDOR_MM) {
+            const seed = seeds[bestS]!;
+            const denom = seed.wallTopZ - botMinZ;
+            const h = denom > 1e-9 ? (z - botMinZ) / denom : 0;
+            w =
+                rimConformityHeightWeight(h) *
+                rimConformityAnteriorTaperWeight(seed.u) *
+                rimConformityDistanceWeight(bestD) *
+                rimConformityInwardWeight(bestD, localHalfWidthMm);
+        }
+
+        // Arch-band re-loft: full-wall smooth profile against the same-side seed.
+        const u = Math.max(0, Math.min(1, (len - lenMin) / (lenSize || 1)));
+        const alpha = smoothstep(ARCH_WALL_RELOFT_U0, ARCH_WALL_RELOFT_U1, u);
+        let archS = -1;
+        let archW = 0;
+        if (alpha > 0) {
+            const [s, d] = nearestSeedOnSide(wid >= widCenter ? 0 : 1, len, wid);
+            if (s >= 0 && d <= ARCH_WALL_RELOFT_SPAN_MM) {
+                const seed = seeds[s]!;
+                archW = archWallReloftWeight(z, seed.wallTopZ) * rimConformityAnteriorTaperWeight(seed.u);
+                if (archW > 0) archS = s;
+                else archW = 0;
+            }
+        }
+
+        const effAlpha = archS >= 0 ? alpha : 0;
+        if (w <= 0 && (effAlpha <= 0 || archW <= 0)) continue;
 
         wallVerts.push(i);
-        wallSeeds.push(bestS);
+        wallSeeds.push(bestS >= 0 ? bestS : archS);
         wallWeights.push(w);
+        wallAlphas.push(effAlpha);
+        wallArchSeeds.push(archS);
+        wallArchWeights.push(archW);
     }
 
     return {
@@ -1635,6 +1763,9 @@ function buildRimConformityFrame(
         wallVertexIndex: Int32Array.from(wallVerts),
         wallSeedIndex: Int32Array.from(wallSeeds),
         wallWeight: Float32Array.from(wallWeights),
+        wallAlpha: Float32Array.from(wallAlphas),
+        wallArchSeedIndex: Int32Array.from(wallArchSeeds),
+        wallArchWeight: Float32Array.from(wallArchWeights),
     };
 }
 
@@ -1665,16 +1796,31 @@ function getRimConformityFrame(
 /**
  * Scatter precomputed rim deltas onto bottom wall verts.
  * Reads corrected top positions from `array`; writes bottom from BASE only.
+ *
+ * In the arch band (α→1), uses re-loft W(h)·Δ_rim so the sidewall stretches as
+ * a rounded profile instead of a vertical extrusion (PR #117). Optional
+ * `verticalDelta` reshapes the thick axis to the height-field falloff (PR #116).
  */
 function transferRimConformityDeltas(
     base: BufferGeometry,
     array: Float32Array,
     frame: RimConformityFrame,
+    verticalDelta?: Float32Array | null,
 ): void {
     const basePos = base.getAttribute("position");
     if (!basePos) return;
     const baseArr = basePos.array as Float32Array;
-    const { wallVertexIndex, wallSeedIndex, wallWeight, seeds, topVertexCount } = frame;
+    const {
+        wallVertexIndex,
+        wallSeedIndex,
+        wallWeight,
+        wallAlpha,
+        wallArchSeedIndex,
+        wallArchWeight,
+        seeds,
+        topVertexCount,
+        thickAxis,
+    } = frame;
 
     for (let k = 0; k < wallVertexIndex.length; k++) {
         const i = wallVertexIndex[k]!;
@@ -1683,15 +1829,47 @@ function transferRimConformityDeltas(
                 `[RIM-CONFORMITY] leak guard: attempted write to top index ${i} (topVertexCount=${topVertexCount})`,
             );
         }
-        const seed = seeds[wallSeedIndex[k]!]!;
-        const j = seed.topRimIndex;
+        const alpha = wallAlpha[k]!;
+
+        // Corridor term (heel behavior), scaled 1−α.
+        let cx = 0;
+        let cy = 0;
+        let cz = 0;
         const w = wallWeight[k]!;
-        const dx = array[j * 3]! - baseArr[j * 3]!;
-        const dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
-        const dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
-        array[i * 3] = baseArr[i * 3]! + w * dx;
-        array[i * 3 + 1] = baseArr[i * 3 + 1]! + w * dy;
-        array[i * 3 + 2] = baseArr[i * 3 + 2]! + w * dz;
+        if (w > 0 && alpha < 1) {
+            const seed = seeds[wallSeedIndex[k]!]!;
+            const j = seed.topRimIndex;
+            let dx = array[j * 3]! - baseArr[j * 3]!;
+            let dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
+            let dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
+            if (verticalDelta) {
+                const fieldAdj = verticalDelta[i]! - verticalDelta[seed.wallTopIndex]!;
+                if (thickAxis === 0) dx += fieldAdj;
+                else if (thickAxis === 1) dy += fieldAdj;
+                else dz += fieldAdj;
+            }
+            cx = w * dx;
+            cy = w * dy;
+            cz = w * dz;
+        }
+
+        // Arch-band re-loft: whole-wall smooth profile W(h)·Δ_rim, scaled α.
+        let ax = 0;
+        let ay = 0;
+        let az = 0;
+        const archS = wallArchSeedIndex[k]!;
+        const archW = wallArchWeight[k]!;
+        if (alpha > 0 && archS >= 0 && archW > 0) {
+            const seed = seeds[archS]!;
+            const j = seed.topRimIndex;
+            ax = archW * (array[j * 3]! - baseArr[j * 3]!);
+            ay = archW * (array[j * 3 + 1]! - baseArr[j * 3 + 1]!);
+            az = archW * (array[j * 3 + 2]! - baseArr[j * 3 + 2]!);
+        }
+
+        array[i * 3] = baseArr[i * 3]! + (1 - alpha) * cx + alpha * ax;
+        array[i * 3 + 1] = baseArr[i * 3 + 1]! + (1 - alpha) * cy + alpha * ay;
+        array[i * 3 + 2] = baseArr[i * 3 + 2]! + (1 - alpha) * cz + alpha * az;
     }
 }
 
@@ -1925,10 +2103,14 @@ export function applyBaseModifiers(
         };
     }
 
-    // Non-zero width (widen or narrow) keeps the legacy rim-conformity bottom path
-    // (lateral field is not yet cleanly samplable for the underside). Field-coupled
-    // shell sync runs only when width is inactive so the two paths never double-apply.
-    const useShellFieldSync = isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm === 0;
+    // Field-coupled shell sync owns the bottom only when neither heel-cup width nor
+    // an arch raise is active. Non-zero width still needs the legacy rim path
+    // (lateral field not yet samplable for the underside). Active arch raises also
+    // take the legacy path so PR #117 arch-band re-loft (W=h^1.5) can keep the
+    // medial sidewall rounded instead of a vertical rim-delta extrusion.
+    const archRaiseActive = field.corrections.archHeightMm > 0 || field.corrections.archFillMm > 0;
+    const useShellFieldSync =
+        isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm === 0 && !archRaiseActive;
 
     // 1) Sample the pure modifier delta. Multi-mesh top range only when shell
     //    sync is active (bottom gets F via sampleFieldDeltaAtXY below); otherwise
@@ -2179,9 +2361,9 @@ export function applyBaseModifiers(
         }
     }
 
-    // Rim-conformity transfer: legacy vertical-stretch path. Bypassed when the
-    // shell-field sync above owns the bottom (width==0). Still runs for
-    // heelCupWidthMm ≠ 0 until lateral width is field-samplable for the underside.
+    // Rim-conformity transfer: legacy path when width ≠ 0 (shell-field sync owns
+    // the bottom when width==0). Arch-band re-loft (#117) + inward soften (#116)
+    // keep medial arch sidewalls rounded under high archHeightMm.
     if (isMultiMesh && topVertexCount > 0 && !useShellFieldSync) {
         const rimFrame = getRimConformityFrame(
             base,
@@ -2193,7 +2375,7 @@ export function applyBaseModifiers(
             lenSize,
         );
         if (rimFrame && rimFrame.seeds.length > 0) {
-            transferRimConformityDeltas(base, array, rimFrame);
+            transferRimConformityDeltas(base, array, rimFrame, delta);
         }
     }
 
