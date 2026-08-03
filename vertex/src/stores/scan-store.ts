@@ -159,6 +159,11 @@ function nextMarker(m: ScanMarkers): MarkerId {
     return "ARCH";
 }
 
+/** True when M1–M3 are set but ARCH is still missing (insole must stay hidden). */
+export function awaitingArchMarker(m: ScanMarkers | undefined | null): boolean {
+    return !!(m?.M1 && m.M2 && m.M3 && !m.ARCH);
+}
+
 /**
  * All four markers required before the scan is seated on the insole.
  * Kabsch uses M1–M3; ARCH is required so clinical match can run immediately after.
@@ -270,6 +275,11 @@ interface ScanStore {
     /** Selected scan for manual reposition (drag / arrow keys). */
     selectedScanId: string | null;
     placementMode: PlacementMode | null;
+    /**
+     * Set when all four markers are placed and registration succeeds.
+     * UI consumes this to auto-apply size / arch / heel, then clears it.
+     */
+    pendingClinicalMatchScanId: string | null;
     /** Active plane-slice drawing session (mutually exclusive with marker placement). */
     sliceDraft: SliceDraft | null;
     /** Active two-point yaw rotate session (mutually exclusive with slice / markers). */
@@ -309,6 +319,7 @@ interface ScanStore {
     exitPlacement: () => void;
     setMarker: (scanId: string, id: MarkerId, point: THREE.Vector3) => void;
     resetMarkers: (scanId: string) => void;
+    clearPendingClinicalMatch: () => void;
     setDeviationOverlay: (on: boolean) => void;
     setDeviationBusy: (busy: boolean) => void;
     setCleanupBusy: (busy: boolean) => void;
@@ -453,6 +464,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
     manualOffsetByScanId: {},
     selectedScanId: null,
     placementMode: null,
+    pendingClinicalMatchScanId: null,
     sliceDraft: null,
     rotateDraft: null,
     deviationOverlay: false,
@@ -548,6 +560,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                 manualOffsetByScanId: {},
                 selectedScanId: null,
                 placementMode: null,
+                pendingClinicalMatchScanId: null,
                 sliceDraft: null,
                 rotateDraft: null,
                 rawBaseBySourceId: {},
@@ -670,16 +683,32 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         };
         const complete = placementComplete(markers);
         // Keep the scan provisional until all four markers are set, then register once.
-        set((s) => ({
-            markersByScanId: { ...s.markersByScanId, [scanId]: markers },
-            placementMode: complete
-                ? null
-                : s.placementMode?.scanId === scanId
-                  ? { scanId, next: nextMarker(markers) }
-                  : s.placementMode,
-        }));
+        // After M1–M3, open ARCH placement if nothing else is active so the insole
+        // stays hidden and the user is prompted for the fourth marker.
+        set((s) => {
+            let placementMode = s.placementMode;
+            if (complete) {
+                placementMode = null;
+            } else if (placementMode?.scanId === scanId) {
+                placementMode = { scanId, next: nextMarker(markers) };
+            } else if (!placementMode && awaitingArchMarker(markers)) {
+                placementMode = { scanId, next: "ARCH" };
+            }
+            return {
+                markersByScanId: { ...s.markersByScanId, [scanId]: markers },
+                placementMode,
+            };
+        });
         get().recomputeRegistration(scanId);
+        if (complete) {
+            const reg = get().registrationByScanId[scanId];
+            if (reg && !reg.incomplete && !reg.error && reg.matrixElements) {
+                set({ pendingClinicalMatchScanId: scanId });
+            }
+        }
     },
+
+    clearPendingClinicalMatch: () => set({ pendingClinicalMatchScanId: null }),
 
     resetMarkers: (scanId) => {
         set((s) => {
@@ -693,6 +722,8 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                 manualOffsetByScanId,
                 selectedScanId: s.selectedScanId === scanId ? null : s.selectedScanId,
                 placementMode: s.placementMode?.scanId === scanId ? { scanId, next: "M1" } : s.placementMode,
+                pendingClinicalMatchScanId:
+                    s.pendingClinicalMatchScanId === scanId ? null : s.pendingClinicalMatchScanId,
             };
         });
     },
@@ -725,6 +756,10 @@ export const useScanStore = create<ScanStore>((set, get) => ({
                 const reg = get().registrationByScanId[scan.id];
                 if (markers && registrationReady(markers) && (!reg || reg.incomplete || reg.error)) {
                     get().recomputeRegistration(scan.id);
+                    const next = get().registrationByScanId[scan.id];
+                    if (next && !next.incomplete && !next.error && next.matrixElements) {
+                        set({ pendingClinicalMatchScanId: scan.id });
+                    }
                 }
             }
             return;
@@ -736,6 +771,10 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             const markers = get().markersByScanId[scan.id];
             if (markers && registrationReady(markers)) {
                 get().recomputeRegistration(scan.id);
+                const next = get().registrationByScanId[scan.id];
+                if (next && !next.incomplete && !next.error && next.matrixElements) {
+                    set({ pendingClinicalMatchScanId: scan.id });
+                }
             }
         }
     },
