@@ -484,6 +484,39 @@ describe("Phase 2 — scan registration wiring", () => {
         expect(useScanStore.getState().markersByScanId.s2?.M1).toBeNull();
     });
 
+    test("placement continues to optional ARCH after M1–M3", () => {
+        const geo = new THREE.BoxGeometry(1, 1, 1);
+        useScanStore.getState().addScan({
+            id: "arch-prompt",
+            name: "foot.stl",
+            side: "left",
+            format: "stl",
+            triangleCount: 12,
+            geometry: geo,
+            manifold: {
+                isWatertight: true,
+                openEdges: 0,
+                triangleCount: 12,
+                vertexCount: 8,
+                nonManifoldEdges: 0,
+            },
+        });
+        useScanStore.getState().enterPlacement("arch-prompt");
+        expect(useScanStore.getState().placementMode).toEqual({ scanId: "arch-prompt", next: "M1" });
+
+        useScanStore.getState().setMarker("arch-prompt", "M1", new THREE.Vector3(1, 0, 0));
+        expect(useScanStore.getState().placementMode?.next).toBe("M2");
+        useScanStore.getState().setMarker("arch-prompt", "M2", new THREE.Vector3(0, 1, 0));
+        expect(useScanStore.getState().placementMode?.next).toBe("M3");
+        useScanStore.getState().setMarker("arch-prompt", "M3", new THREE.Vector3(0, 0, 1));
+        // Registration may run, but placement must stay open for ARCH.
+        expect(useScanStore.getState().placementMode).toEqual({ scanId: "arch-prompt", next: "ARCH" });
+
+        useScanStore.getState().setMarker("arch-prompt", "ARCH", new THREE.Vector3(-1, 0.5, 0));
+        expect(useScanStore.getState().placementMode).toBeNull();
+        expect(useScanStore.getState().markersByScanId["arch-prompt"]?.ARCH).not.toBeNull();
+    });
+
     test("T13 — R_dorsalToZ is geometrically inert (twist freedom must not leak)", () => {
         const frame = registerRawBaseGeometry("t13", rawLeft, { primarySide: "left" });
         const base: [THREE.Vector3, THREE.Vector3, THREE.Vector3] = [

@@ -85,23 +85,37 @@ function ScanMarkersSection({
     onTogglePlacement: () => void;
     onResetMarkers: () => void;
 }) {
-    const allAccepted = placed >= 3;
-    const [open, setOpen] = useState(!allAccepted);
+    const awaitingArch = placing && Boolean(nextLabel?.startsWith("ARCH"));
+    const archPlaced = Boolean(markers?.ARCH);
+    // M1–M3 are enough for registration; ARCH is a separate optional step.
+    const alignmentDone = placed >= 3;
+    // Keep the panel expanded while still placing (including ARCH after M3).
+    const [open, setOpen] = useState(!alignmentDone || awaitingArch);
 
     useEffect(() => {
-        if (allAccepted) setOpen(false);
+        if (placing || awaitingArch) {
+            setOpen(true);
+            return;
+        }
+        if (alignmentDone) setOpen(false);
         else setOpen(true);
-    }, [allAccepted]);
+    }, [alignmentDone, placing, awaitingArch]);
 
     // biome-ignore lint/correctness/useExhaustiveDependencies: scanId is an intentional reset key
     useEffect(() => {
         // New suggestions (e.g. after cleanup) should prompt the user again.
-        if (sug && !allAccepted) setOpen(true);
-    }, [sug, scanId, allAccepted]);
+        if (sug && !alignmentDone) setOpen(true);
+    }, [sug, scanId, alignmentDone]);
 
-    useEffect(() => {
-        if (placing) setOpen(true);
-    }, [placing]);
+    const headerLabel = awaitingArch
+        ? "Place ARCH apex"
+        : alignmentDone && archPlaced
+          ? "Markers accepted"
+          : alignmentDone
+            ? "Alignment markers set"
+            : sug
+              ? "Suggested landmarks"
+              : "Markers";
 
     return (
         <div className="space-y-1 rounded border border-cyan-500/30 bg-cyan-500/5 px-1.5 py-1 text-[10px]">
@@ -117,25 +131,38 @@ function ScanMarkersSection({
                         open && "rotate-90",
                     )}
                 />
-                <span className="font-medium text-cyan-200">
-                    {allAccepted ? "Markers accepted" : sug ? "Suggested landmarks" : "Markers"}
+                <span className={cn("font-medium", awaitingArch ? "text-fuchsia-200" : "text-cyan-200")}>
+                    {headerLabel}
                 </span>
-                <span className="ml-auto text-muted-foreground">{placed}/3</span>
+                <span className="ml-auto text-muted-foreground">
+                    {placed}/3
+                    {archPlaced ? " · ARCH" : awaitingArch ? " · ARCH?" : ""}
+                </span>
             </button>
             {!open ? (
                 <p className="pl-4 text-muted-foreground">
-                    {allAccepted
-                        ? "All markers placed — expand to edit"
-                        : sug
-                          ? "Confirm or place markers to register"
-                          : "Expand to place M1 → M2 → M3 (+ optional ARCH)"}
+                    {awaitingArch
+                        ? "Click medial arch apex, or Skip ARCH"
+                        : alignmentDone && archPlaced
+                          ? "All markers placed — expand to edit"
+                          : alignmentDone
+                            ? "M1–M3 placed — expand to place optional ARCH"
+                            : sug
+                              ? "Confirm or place markers to register"
+                              : "Expand to place M1 → M2 → M3 (+ optional ARCH)"}
                 </p>
             ) : (
                 <div className="space-y-1">
                     {placing ? (
-                        <p className="text-[10px] leading-snug text-cyan-200/90">
-                            Depth shading is on while placing. Amber = M1–M3. Magenta = optional ARCH apex.
-                            Light cyan = suggested spots. Insole B1–B3 targets are hidden until you finish.
+                        <p
+                            className={cn(
+                                "text-[10px] leading-snug",
+                                awaitingArch ? "text-fuchsia-200/90" : "text-cyan-200/90",
+                            )}
+                        >
+                            {awaitingArch
+                                ? "Optional ARCH: click the medial arch apex on the plantar surface. Insole stays visible. Skip ARCH or Esc to omit."
+                                : "Depth shading is on while placing. Amber = M1–M3. Magenta = optional ARCH apex next. Light cyan = suggested spots. Insole hidden until M1–M3 are set."}
                         </p>
                     ) : null}
                     {sug ? (
@@ -622,6 +649,11 @@ export function ScanImport() {
                             onConfirm={(id) => {
                                 if (!sug || id === "ARCH") return;
                                 setMarker(s.id, id, sug[id]);
+                                // After M1–M3, continue into the optional ARCH prompt.
+                                const after = useScanStore.getState().markersByScanId[s.id];
+                                if (after?.M1 && after?.M2 && after?.M3 && !after.ARCH) {
+                                    enterPlacement(s.id);
+                                }
                             }}
                             onDismiss={() => setSuggestedLandmarks(s.id, null)}
                             onTogglePlacement={() => (placing ? exitPlacement() : enterPlacement(s.id))}
