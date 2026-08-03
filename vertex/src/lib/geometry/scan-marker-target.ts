@@ -30,7 +30,7 @@ export function resolveMarkerPlacementTarget(
     const thresh = MARKER_DRAG_RADIUS_MM / scale;
     let best: MarkerId | null = null;
     let bestD = thresh;
-    for (const id of ["M1", "M2", "M3"] as MarkerId[]) {
+    for (const id of ["M1", "M2", "M3", "ARCH"] as MarkerId[]) {
         const p = markers?.[id];
         if (!p) continue;
         const d = p.distanceTo(local);

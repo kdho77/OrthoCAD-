@@ -22,9 +22,13 @@ import { useDesignStore } from "@/stores/design-store";
 import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
 
 const CLINICIAN_MARKER_COLOR = "#f59e0b";
+const ARCH_MARKER_COLOR = "#d946ef";
 const BASE_LANDMARK_COLOR = "#22d3ee";
 const SUGGESTED_MARKER_COLOR = "#67e8f9";
 const HOVER_COMPONENT_COLOR = "#fbbf24";
+
+/** Skip edge extract on very large scans during placement (perf). */
+const SCAN_EDGE_MAX_TRIANGLES = 80_000;
 
 function MarkerSphere({
     position,
@@ -43,6 +47,37 @@ function MarkerSphere({
     );
 }
 
+/**
+ * Z-height vertex colors for reading plantar relief / arch contour on a scan.
+ * Cool = low (plantar), warm = high (dorsal / raised soft tissue).
+ */
+function applyScanDepthColors(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+    const g = geometry.clone();
+    if (!g.getAttribute("normal")) g.computeVertexNormals();
+    const pos = g.getAttribute("position");
+    if (!pos || pos.count === 0) return g;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+        const z = pos.getZ(i);
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+    }
+    const span = Math.max(1e-6, maxZ - minZ);
+    const colors = new Float32Array(pos.count * 3);
+    const color = new THREE.Color();
+    for (let i = 0; i < pos.count; i++) {
+        const t = (pos.getZ(i) - minZ) / span;
+        // Teal → amber → magenta: readable on dark viewport, emphasizes midfoot relief.
+        color.setHSL(0.55 - 0.55 * t, 0.75, 0.42 + 0.12 * t);
+        colors[i * 3] = color.r;
+        colors[i * 3 + 1] = color.g;
+        colors[i * 3 + 2] = color.b;
+    }
+    g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    return g;
+}
+
 function RegisteredScanMesh({
     scanId,
     geometry,
@@ -52,6 +87,8 @@ function RegisteredScanMesh({
     display,
     manualOffset,
     selected,
+    heightmap,
+    placingMarkers,
 }: {
     scanId: string;
     geometry: THREE.BufferGeometry;
@@ -61,6 +98,8 @@ function RegisteredScanMesh({
     display: ScanDisplayInfo;
     manualOffset: ScanManualOffset | null;
     selected: boolean;
+    heightmap: boolean;
+    placingMarkers: boolean;
 }) {
     const deviationOverlay = useScanStore((s) => s.deviationOverlay);
     const setDeviationBusy = useScanStore((s) => s.setDeviationBusy);
@@ -75,6 +114,25 @@ function RegisteredScanMesh({
 
     const [coloredGeo, setColoredGeo] = useState<THREE.BufferGeometry | null>(null);
     const deviationGenRef = useRef(0);
+    /** Depth shading while placing markers, or when Heightmap is on (and not in deviation mode). */
+    const wantDepthShading = placingMarkers || heightmap;
+
+    const depthGeo = useMemo(() => {
+        if (!wantDepthShading || deviationOverlay) return null;
+        return applyScanDepthColors(geometry);
+    }, [geometry, wantDepthShading, deviationOverlay]);
+
+    useEffect(() => () => depthGeo?.dispose(), [depthGeo]);
+
+    const edgeGeo = useMemo(() => {
+        if (!placingMarkers) return null;
+        const index = geometry.getIndex();
+        const triCount = index ? index.count / 3 : geometry.getAttribute("position").count / 3;
+        if (triCount > SCAN_EDGE_MAX_TRIANGLES) return null;
+        return new THREE.EdgesGeometry(geometry, 25);
+    }, [geometry, placingMarkers]);
+
+    useEffect(() => () => edgeGeo?.dispose(), [edgeGeo]);
 
     // K3/L3 — deviation exceeds ~250ms at clinical scale; busy + deferred compute.
     // Generation token drops stale results so toggles cannot stack overlapping work.
@@ -149,7 +207,8 @@ function RegisteredScanMesh({
 
     useEffect(() => () => hoverGeo?.dispose(), [hoverGeo]);
 
-    const displayGeo = coloredGeo ?? geometry;
+    const displayGeo = coloredGeo ?? depthGeo ?? geometry;
+    const useVertexColors = !!coloredGeo || !!depthGeo;
     const usMenSize = useDesignStore((s) => s.design.usMenSize);
     const sizeSystem = useDesignStore((s) => s.design.sizeSystem);
     const ukSize = useDesignStore((s) => s.design.ukSize);
@@ -161,12 +220,14 @@ function RegisteredScanMesh({
     const posX = -layout.lengthMm / 2;
     const meshMatrix = resolveScanMeshMatrix(display, registration, manualOffset);
 
-    const landmarks =
-        leftFrame && registered
-            ? side === "right"
-                ? mirrorBaseLandmarks(leftFrame.landmarks)
-                : leftFrame.landmarks
-            : null;
+    const registrationRms = useScanStore((s) => s.registrationByScanId[scanId]?.residualRmsMm);
+    // Insole B1/B2/B3 targets (cyan). Hide while placing scan markers, and when RMS is
+    // poor so they don't float far off the foot and get mistaken for scan markers.
+    const landmarks = (() => {
+        if (!leftFrame || !registered || placingMarkers) return null;
+        if (registrationRms != null && registrationRms > 15) return null;
+        return side === "right" ? mirrorBaseLandmarks(leftFrame.landmarks) : leftFrame.landmarks;
+    })();
 
     const applyPoint = (p: THREE.Vector3) => p.clone().applyMatrix4(meshMatrix);
     const suggested = scanRecord?.suggestedLandmarks;
@@ -190,17 +251,40 @@ function RegisteredScanMesh({
                 }}
             >
                 <meshStandardMaterial
-                    color={selected ? "#e9d5ff" : registered ? "#c084fc" : "#a78bfa"}
-                    emissive={selected ? "#a855f7" : "#000000"}
-                    emissiveIntensity={selected ? 0.35 : 0}
-                    metalness={0.1}
-                    roughness={0.8}
-                    transparent={transparent || !!coloredGeo || !registered}
-                    opacity={transparent ? 0.45 : coloredGeo ? 0.9 : registered ? 1 : 0.75}
+                    color={
+                        useVertexColors
+                            ? "#ffffff"
+                            : selected
+                              ? "#e9d5ff"
+                              : registered
+                                ? "#c084fc"
+                                : "#a78bfa"
+                    }
+                    emissive={selected && !useVertexColors ? "#a855f7" : "#000000"}
+                    emissiveIntensity={selected && !useVertexColors ? 0.35 : 0}
+                    metalness={0.05}
+                    roughness={placingMarkers || depthGeo ? 0.55 : 0.8}
+                    transparent={transparent || !!coloredGeo || (!registered && !depthGeo)}
+                    opacity={transparent ? 0.45 : coloredGeo ? 0.9 : depthGeo ? 1 : registered ? 1 : 0.75}
                     side={THREE.DoubleSide}
-                    vertexColors={!!coloredGeo}
+                    vertexColors={useVertexColors}
+                    flatShading={placingMarkers && !coloredGeo}
                 />
             </mesh>
+            {edgeGeo ? (
+                <lineSegments
+                    geometry={edgeGeo}
+                    matrixAutoUpdate={false}
+                    renderOrder={5}
+                    ref={(lines) => {
+                        if (!lines) return;
+                        lines.matrix.copy(meshMatrix);
+                        lines.matrixWorldNeedsUpdate = true;
+                    }}
+                >
+                    <lineBasicMaterial color="#f8fafc" transparent opacity={0.35} depthTest />
+                </lineSegments>
+            ) : null}
 
             {/* Hover highlight — not a pick target (no isScanMesh / isScanPickMesh). */}
             {hoverGeo ? (
@@ -255,6 +339,9 @@ function RegisteredScanMesh({
             {markers?.M3 ? (
                 <MarkerSphere position={applyPoint(markers.M3)} color={CLINICIAN_MARKER_COLOR} />
             ) : null}
+            {markers?.ARCH ? (
+                <MarkerSphere position={applyPoint(markers.ARCH)} color={ARCH_MARKER_COLOR} radius={2.4} />
+            ) : null}
 
             {/* Suggested (provisional) markers — visually distinct; not confirmed. */}
             {suggested && !markers?.M1 ? (
@@ -290,11 +377,28 @@ function RegisteredScanMesh({
     );
 }
 
-export function ScanMeshes({ transparent }: { transparent: boolean }) {
+export function ScanMeshes({
+    transparent,
+    heightmap = false,
+}: {
+    transparent: boolean;
+    heightmap?: boolean;
+}) {
     const scans = useScanStore((s) => s.scans);
     const registrationByScanId = useScanStore((s) => s.registrationByScanId);
     const manualOffsetByScanId = useScanStore((s) => s.manualOffsetByScanId);
     const selectedScanId = useScanStore((s) => s.selectedScanId);
+    const placementScanId = useScanStore((s) => s.placementMode?.scanId ?? null);
+
+    // Stabilize Matrix4 identity across parent re-renders — a fresh matrix each
+    // render re-fires the deviation effect and can exceed React's update depth.
+    const registrationMatrices = useMemo(() => {
+        const map = new Map<string, THREE.Matrix4 | null>();
+        for (const s of scans) {
+            map.set(s.id, getScanRegistrationMatrix(registrationByScanId[s.id]));
+        }
+        return map;
+    }, [scans, registrationByScanId]);
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
@@ -307,10 +411,12 @@ export function ScanMeshes({ transparent }: { transparent: boolean }) {
                         geometry={s.geometry}
                         side={s.side}
                         transparent={transparent}
-                        registration={getScanRegistrationMatrix(registrationByScanId[s.id])}
+                        registration={registrationMatrices.get(s.id) ?? null}
                         display={s.display}
                         manualOffset={manualOffsetByScanId[s.id] ?? null}
                         selected={selectedScanId === s.id}
+                        heightmap={heightmap}
+                        placingMarkers={placementScanId === s.id}
                     />
                 ))}
         </group>

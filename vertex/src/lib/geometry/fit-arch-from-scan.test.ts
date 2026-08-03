@@ -121,6 +121,7 @@ describe("fitArchParamsFromScan", () => {
             reference: flatBaseReference(lengthMm, widthMm),
             side: "left",
             lengthMm,
+            clearanceMm: 0,
         });
         expect(fit.archHeightMm).toBeGreaterThan(5);
         expect(fit.archHeightMm).toBeLessThan(12);
@@ -130,6 +131,37 @@ describe("fitArchParamsFromScan", () => {
         const patch = archFitToCorrectionPatch(fit);
         expect(patch.archFillMm).toBe(0);
         expect(patch.archHeightMm).toBe(fit.archHeightMm);
+    });
+
+    test("clearance reduces fitted arch height vs full-gap solve", () => {
+        const lengthMm = 260;
+        const widthMm = 95;
+        const scan = syntheticArchScan({
+            lengthMm,
+            widthMm,
+            heightMm: 10,
+            apexU: 0.42,
+        });
+        const full = fitArchParamsFromScan({
+            scanPositions: scan,
+            scanVertexCount: scan.length / 3,
+            scanToBase: new THREE.Matrix4().identity(),
+            reference: flatBaseReference(lengthMm, widthMm),
+            side: "left",
+            lengthMm,
+            clearanceMm: 0,
+        });
+        const cleared = fitArchParamsFromScan({
+            scanPositions: scan,
+            scanVertexCount: scan.length / 3,
+            scanToBase: new THREE.Matrix4().identity(),
+            reference: flatBaseReference(lengthMm, widthMm),
+            side: "left",
+            lengthMm,
+            clearanceMm: 1.5,
+        });
+        expect(cleared.archHeightMm).toBeLessThan(full.archHeightMm);
+        expect(full.peakGapMm).toBeCloseTo(cleared.peakGapMm, 5);
     });
 
     test("works against parametric zero-arch reference when scan clears baseline", () => {
@@ -149,6 +181,7 @@ describe("fitArchParamsFromScan", () => {
             reference: { kind: "parametric", field: parametricField(lengthMm, widthMm) },
             side: "left",
             lengthMm,
+            clearanceMm: 0,
         });
         expect(fit.archHeightMm).toBeGreaterThan(2);
         expect(fit.apexMoveMm).toBeGreaterThanOrEqual(-12);
@@ -172,6 +205,7 @@ describe("fitArchParamsFromScan", () => {
                 reference: flatBaseReference(lengthMm, widthMm),
                 side: "left",
                 lengthMm,
+                clearanceMm: 0,
             }),
         ).toThrow(ArchFitError);
     });

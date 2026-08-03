@@ -16,15 +16,19 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
-import {
-    ArchFitError,
-    archFitReferenceFromBase,
-    archFitToCorrectionPatch,
-    fitArchParamsFromScan,
-} from "@/lib/geometry/fit-arch-from-scan";
+import { ArchFitError } from "@/lib/geometry/fit-arch-from-scan";
 import { importScanFile } from "@/lib/geometry/import";
-import { INSOLE_LENGTH_MM } from "@/lib/geometry/layout";
 import { analyzeManifold } from "@/lib/geometry/manifold";
+import {
+    ARCH_MATCH_BLOCK_RMS_MM,
+    formatSizeSuggestionMessage,
+    gateArchMatch,
+    isDefaultShoeSize,
+    matchClinicalParamsFromRegisteredScan,
+    shouldAutoApplySize,
+    suggestSizeFromScanGeometry,
+} from "@/lib/geometry/match-design-from-scan";
+import type { SizeSuggestion } from "@/lib/geometry/measure-foot-from-scan";
 import {
     extractKeptGeometry,
     rankComponents,
@@ -38,6 +42,7 @@ import {
     resolveScanMeshMatrix,
 } from "@/lib/geometry/scan-display";
 import { type SuggestedScanLandmarks, suggestScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
 import {
@@ -52,6 +57,7 @@ const MARKER_LABELS = {
     M1: "M1 — 1st met head (medial)",
     M2: "M2 — 5th met head (lateral)",
     M3: "M3 — heel centre",
+    ARCH: "ARCH — medial arch apex (optional)",
 } as const;
 
 function ScanMarkersSection({
@@ -122,10 +128,16 @@ function ScanMarkersSection({
                         ? "All markers placed — expand to edit"
                         : sug
                           ? "Confirm or place markers to register"
-                          : "Expand to place M1 → M2 → M3"}
+                          : "Expand to place M1 → M2 → M3 (+ optional ARCH)"}
                 </p>
             ) : (
                 <div className="space-y-1">
+                    {placing ? (
+                        <p className="text-[10px] leading-snug text-cyan-200/90">
+                            Depth shading is on while placing. Amber = M1–M3. Magenta = optional ARCH apex.
+                            Light cyan = suggested spots. Insole B1–B3 targets are hidden until you finish.
+                        </p>
+                    ) : null}
                     {sug ? (
                         <>
                             <p className="text-muted-foreground">
@@ -167,18 +179,32 @@ function ScanMarkersSection({
                         <button
                             type="button"
                             disabled={!baseReady}
-                            title={baseReady ? "Place M1→M2→M3 on the scan" : "Base geometry not loaded"}
+                            title={
+                                baseReady
+                                    ? placing && nextLabel?.startsWith("ARCH")
+                                        ? "Skip optional ARCH apex"
+                                        : "Place M1→M2→M3, then optional ARCH apex"
+                                    : "Base geometry not loaded"
+                            }
                             onClick={onTogglePlacement}
                             className={cn(
                                 "flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
                                 placing
-                                    ? "bg-amber-500/20 text-amber-300"
+                                    ? nextLabel?.startsWith("ARCH")
+                                        ? "bg-fuchsia-500/20 text-fuchsia-300"
+                                        : "bg-amber-500/20 text-amber-300"
                                     : "bg-muted text-muted-foreground hover:text-foreground",
                                 !baseReady && "cursor-not-allowed opacity-50",
                             )}
                         >
                             <MapPin className="h-3 w-3" />
-                            {placing ? "Placing…" : "Place markers"}
+                            {placing
+                                ? nextLabel?.startsWith("ARCH")
+                                    ? "Skip ARCH"
+                                    : "Done placing"
+                                : placed >= 3 && !markers?.ARCH
+                                  ? "Place ARCH (optional)"
+                                  : "Place markers"}
                         </button>
                         <button
                             type="button"
@@ -191,9 +217,20 @@ function ScanMarkersSection({
                     </div>
 
                     {placing && nextLabel ? (
-                        <p className="text-[11px] text-amber-300">
-                            Next: {nextLabel} ({placed}/3)
+                        <p
+                            className={cn(
+                                "text-[11px]",
+                                nextLabel.startsWith("ARCH") ? "text-fuchsia-300" : "text-amber-300",
+                            )}
+                        >
+                            Next: {nextLabel}
+                            {nextLabel.startsWith("ARCH")
+                                ? " — click medial arch apex, or Skip ARCH"
+                                : ` (${placed}/3)`}
                         </p>
+                    ) : null}
+                    {markers?.ARCH ? (
+                        <p className="text-[10px] text-fuchsia-300/90">ARCH apex placed</p>
                     ) : null}
                 </div>
             )}
@@ -229,45 +266,122 @@ export function ScanImport() {
         setMarker,
     } = useScanStore();
     const updateCorrection = useDesignStore((s) => s.updateCorrection);
+    const setUsShoeSize = useDesignStore((s) => s.setUsShoeSize);
+    const setUkShoeSize = useDesignStore((s) => s.setUkShoeSize);
+    const setFootLengthMm = useDesignStore((s) => s.setFootLengthMm);
+    // Select primitives only — a fresh object from the selector re-renders forever (React #185).
+    const sizeSystem = useDesignStore((s) => s.design.sizeSystem);
+    const usMenSize = useDesignStore((s) => s.design.usMenSize);
+    const ukSize = useDesignStore((s) => s.design.ukSize);
+    const footLengthMm = useDesignStore((s) => s.design.footLengthMm);
+    const designSizing = { sizeSystem, usMenSize, ukSize, footLengthMm };
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [archFitMsgByScanId, setArchFitMsgByScanId] = useState<Record<string, string>>({});
-    const [archFitBusyId, setArchFitBusyId] = useState<string | null>(null);
+    const [sizeMsgByScanId, setSizeMsgByScanId] = useState<Record<string, string>>({});
+    const [sizeSuggestionByScanId, setSizeSuggestionByScanId] = useState<Record<string, SizeSuggestion>>({});
+    const [sizeAcceptedByScanId, setSizeAcceptedByScanId] = useState<Record<string, boolean>>({});
+    const [matchBusyId, setMatchBusyId] = useState<string | null>(null);
+
+    const applySizeSuggestion = (scanId: string, suggestion: SizeSuggestion) => {
+        const system = sizeSystem ?? "us";
+        if (system === "uk") setUkShoeSize(suggestion.ukSize);
+        else if (system === "mm") setFootLengthMm(suggestion.layout.footLengthMm);
+        else setUsShoeSize(suggestion.usMenSize);
+        setSizeAcceptedByScanId((prev) => ({ ...prev, [scanId]: true }));
+        setSizeMsgByScanId((prev) => ({
+            ...prev,
+            [scanId]: `Size applied · ${formatSizeSuggestionMessage(suggestion, system)}`,
+        }));
+    };
+
+    const suggestSizeForScan = (scanId: string) => {
+        const scan = useScanStore.getState().scans.find((s) => s.id === scanId);
+        if (!scan) return null;
+        const markers = useScanStore.getState().markersByScanId[scanId];
+        const suggestion = suggestSizeFromScanGeometry({
+            geometry: scan.geometry,
+            displayScale: scan.display.displayScale,
+            dominantRawAxis: scan.display.dominantRawAxis,
+            sizeSystem,
+            m1: markers?.M1,
+            m2: markers?.M2,
+        });
+        if (!suggestion) {
+            setError("Could not measure foot length from the scan");
+            return null;
+        }
+        setSizeSuggestionByScanId((prev) => ({ ...prev, [scanId]: suggestion }));
+        setSizeMsgByScanId((prev) => ({
+            ...prev,
+            [scanId]: formatSizeSuggestionMessage(suggestion, sizeSystem),
+        }));
+        return suggestion;
+    };
 
     const matchArchFromScan = (scanId: string) => {
         setError(null);
         const scan = useScanStore.getState().scans.find((s) => s.id === scanId);
         const reg = useScanStore.getState().registrationByScanId[scanId];
-        if (!scan || !reg?.matrixElements || reg.incomplete || reg.error) {
-            setError("Register the scan (M1–M3) before matching arch parameters");
-            return;
-        }
         const sourceId = useScanStore.getState().landmarkSourceAssetId;
         const rawBase = sourceId ? useScanStore.getState().rawBaseBySourceId[sourceId] : undefined;
-        if (!rawBase) {
-            setError("Load a clinical base before matching arch from scan");
+
+        const gate = gateArchMatch({
+            residualRmsMm: reg?.residualRmsMm,
+            incomplete: !scan || !reg?.matrixElements || !!reg.incomplete,
+            error: reg?.error,
+            hasRawBase: Boolean(rawBase),
+            // Standalone arch match uses the current design size (default or chosen).
+            sizeAccepted: true,
+        });
+        if (!gate.ok) {
+            setError(gate.reason);
             return;
         }
-        setArchFitBusyId(scanId);
+        if (!scan || !reg?.matrixElements || !rawBase) return;
+        const rmsWarning = gate.warning;
+
+        setMatchBusyId(scanId);
         try {
-            const registration = getScanRegistrationMatrix(reg);
+            // Ensure sized Kabsch targets match the current design layout before fitting.
+            const layout = insoleLayoutFromDesign(useDesignStore.getState().design);
+            useScanStore.getState().setRegistrationTargetLayout({
+                lengthMm: layout.lengthMm,
+                widthMm: layout.widthMm,
+            });
+            const regNow = useScanStore.getState().registrationByScanId[scanId];
+            if (!regNow?.matrixElements || regNow.incomplete || regNow.error) {
+                setError(regNow?.error?.message ?? "Registration failed after size update");
+                return;
+            }
+            if (regNow.residualRmsMm != null && regNow.residualRmsMm > ARCH_MATCH_BLOCK_RMS_MM) {
+                setError(
+                    `Registration RMS ${regNow.residualRmsMm.toFixed(1)} mm exceeds ${ARCH_MATCH_BLOCK_RMS_MM} mm — fix markers before arch match`,
+                );
+                return;
+            }
+            const registration = getScanRegistrationMatrix(regNow);
             const offset = useScanStore.getState().manualOffsetByScanId[scanId];
             const scanToBase = resolveScanMeshMatrix(scan.display, registration, offset);
             const pos = scan.geometry.getAttribute("position");
             if (!pos) throw new ArchFitError("insufficient_samples", "Scan has no positions");
-            const side: Side = reg.identifiedSide ?? scan.side;
-            const fit = fitArchParamsFromScan({
+            const side: Side = regNow.identifiedSide ?? scan.side;
+            const markers = useScanStore.getState().markersByScanId[scanId];
+            const clinical = matchClinicalParamsFromRegisteredScan({
                 scanPositions: pos.array as ArrayLike<number>,
                 scanVertexCount: pos.count,
                 scanToBase,
-                reference: archFitReferenceFromBase(rawBase),
+                rawBase,
                 side,
-                lengthMm: INSOLE_LENGTH_MM,
+                layout,
+                archMarkerLocal: markers?.ARCH,
+                heelMarkerLocal: markers?.M3,
             });
-            updateCorrection(side, archFitToCorrectionPatch(fit));
+            updateCorrection(side, clinical.correction);
+            const warnSuffix = rmsWarning ? ` · ${rmsWarning}` : "";
             setArchFitMsgByScanId((prev) => ({
                 ...prev,
-                [scanId]: `Arch ${fit.archHeightMm.toFixed(1)} mm · apex ${fit.apexMoveMm >= 0 ? "+" : ""}${fit.apexMoveMm.toFixed(1)} mm (peak gap ${fit.peakGapMm.toFixed(1)} mm${fit.clamped ? ", clamped" : ""})`,
+                [scanId]: `${clinical.message}${warnSuffix}`,
             }));
         } catch (e) {
             const msg =
@@ -279,8 +393,31 @@ export function ScanImport() {
                 return next;
             });
         } finally {
-            setArchFitBusyId(null);
+            setMatchBusyId(null);
         }
+    };
+
+    const matchDesignFromScan = (scanId: string) => {
+        setError(null);
+        const suggestion = suggestSizeForScan(scanId);
+        if (!suggestion) return;
+
+        const accepted = sizeAcceptedByScanId[scanId] === true;
+        const canAuto = shouldAutoApplySize(designSizing, suggestion);
+        if (!accepted && !canAuto && isDefaultShoeSize(designSizing)) {
+            setSizeMsgByScanId((prev) => ({
+                ...prev,
+                [scanId]: `${formatSizeSuggestionMessage(suggestion, sizeSystem)} — Accept size, then match arch`,
+            }));
+            return;
+        }
+
+        if (!accepted && canAuto) {
+            applySizeSuggestion(scanId, suggestion);
+        } else if (!accepted && !isDefaultShoeSize(designSizing)) {
+            setSizeAcceptedByScanId((prev) => ({ ...prev, [scanId]: true }));
+        }
+        matchArchFromScan(scanId);
     };
 
     const onFiles = async (files: FileList | null) => {
@@ -482,7 +619,10 @@ export function ScanImport() {
                             placing={placing}
                             baseReady={baseReady}
                             nextLabel={placing ? MARKER_LABELS[placementMode!.next] : null}
-                            onConfirm={(id) => sug && setMarker(s.id, id, sug[id])}
+                            onConfirm={(id) => {
+                                if (!sug || id === "ARCH") return;
+                                setMarker(s.id, id, sug[id]);
+                            }}
                             onDismiss={() => setSuggestedLandmarks(s.id, null)}
                             onTogglePlacement={() => (placing ? exitPlacement() : enterPlacement(s.id))}
                             onResetMarkers={() => resetMarkers(s.id)}
@@ -524,35 +664,119 @@ export function ScanImport() {
                                             {reg?.identifiedSide ? `${reg.identifiedSide} foot` : "—"}
                                         </span>
                                     </p>
-                                    <button
-                                        type="button"
-                                        disabled={
-                                            archFitBusyId === s.id ||
-                                            !landmarkSourceAssetId ||
-                                            !rawBaseBySourceId[landmarkSourceAssetId]
-                                        }
-                                        title="Set Arch height + Apex move from medial midfoot gap vs base"
-                                        onClick={() => matchArchFromScan(s.id)}
-                                        className={cn(
-                                            "mt-1 flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
-                                            "bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25",
-                                            (archFitBusyId === s.id ||
+                                    <p className="text-[10px] text-muted-foreground/80">
+                                        Cyan dots (when shown) are insole landmarks B1–B3, not scan markers.
+                                        Amber = your M1–M3.
+                                    </p>
+                                    <div className="mt-1 flex flex-col gap-1">
+                                        <button
+                                            type="button"
+                                            disabled={matchBusyId === s.id}
+                                            title="Suggest shoe size from heel→toe scan length"
+                                            onClick={() => suggestSizeForScan(s.id)}
+                                            className={cn(
+                                                "flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
+                                                "bg-sky-500/15 text-sky-200 hover:bg-sky-500/25",
+                                                matchBusyId === s.id && "cursor-not-allowed opacity-50",
+                                            )}
+                                        >
+                                            Suggest size from scan
+                                        </button>
+                                        {sizeSuggestionByScanId[s.id] && !sizeAcceptedByScanId[s.id] ? (
+                                            <button
+                                                type="button"
+                                                disabled={
+                                                    matchBusyId === s.id ||
+                                                    !sizeSuggestionByScanId[s.id]?.inRange
+                                                }
+                                                title="Apply suggested shoe size and re-seat registration"
+                                                onClick={() => {
+                                                    const sug = sizeSuggestionByScanId[s.id];
+                                                    if (sug) applySizeSuggestion(s.id, sug);
+                                                }}
+                                                className={cn(
+                                                    "flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
+                                                    "bg-sky-500/25 text-sky-100 hover:bg-sky-500/35",
+                                                    (matchBusyId === s.id ||
+                                                        !sizeSuggestionByScanId[s.id]?.inRange) &&
+                                                        "cursor-not-allowed opacity-50",
+                                                )}
+                                            >
+                                                Accept size
+                                            </button>
+                                        ) : null}
+                                        {sizeMsgByScanId[s.id] ? (
+                                            <p className="text-[10px] text-sky-200/90">
+                                                {sizeMsgByScanId[s.id]}
+                                            </p>
+                                        ) : null}
+                                        {sizeSuggestionByScanId[s.id]?.warnings[0] ? (
+                                            <p className="text-[10px] text-amber-300/90">
+                                                {sizeSuggestionByScanId[s.id]?.warnings[0]}
+                                            </p>
+                                        ) : null}
+                                        <button
+                                            type="button"
+                                            disabled={
+                                                matchBusyId === s.id ||
                                                 !landmarkSourceAssetId ||
-                                                !rawBaseBySourceId[landmarkSourceAssetId ?? ""]) &&
-                                                "cursor-not-allowed opacity-50",
-                                        )}
-                                    >
-                                        <Sparkles className="h-3 w-3" />
-                                        {archFitBusyId === s.id ? "Matching arch…" : "Match arch from scan"}
-                                    </button>
+                                                !rawBaseBySourceId[landmarkSourceAssetId] ||
+                                                !markers?.ARCH
+                                            }
+                                            title={
+                                                markers?.ARCH
+                                                    ? "Match shoe size, arch from your ARCH marker, and heel cup width (+5 mm)"
+                                                    : "Place the ARCH apex marker first"
+                                            }
+                                            onClick={() => matchDesignFromScan(s.id)}
+                                            className={cn(
+                                                "flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
+                                                "bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25",
+                                                (matchBusyId === s.id ||
+                                                    !landmarkSourceAssetId ||
+                                                    !rawBaseBySourceId[landmarkSourceAssetId ?? ""] ||
+                                                    !markers?.ARCH) &&
+                                                    "cursor-not-allowed opacity-50",
+                                            )}
+                                        >
+                                            <Sparkles className="h-3 w-3" />
+                                            {matchBusyId === s.id ? "Matching…" : "Match size + arch"}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled={
+                                                matchBusyId === s.id ||
+                                                !landmarkSourceAssetId ||
+                                                !rawBaseBySourceId[landmarkSourceAssetId] ||
+                                                !markers?.ARCH
+                                            }
+                                            title={
+                                                markers?.ARCH
+                                                    ? "Set arch from your ARCH marker + heel cup width (+5 mm vs scan)"
+                                                    : "Place the ARCH apex marker first"
+                                            }
+                                            onClick={() => matchArchFromScan(s.id)}
+                                            className={cn(
+                                                "flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
+                                                "bg-muted text-muted-foreground hover:text-foreground",
+                                                (matchBusyId === s.id ||
+                                                    !landmarkSourceAssetId ||
+                                                    !rawBaseBySourceId[landmarkSourceAssetId ?? ""] ||
+                                                    !markers?.ARCH) &&
+                                                    "cursor-not-allowed opacity-50",
+                                            )}
+                                        >
+                                            Match arch only
+                                        </button>
+                                    </div>
                                     {archFitMsgByScanId[s.id] ? (
                                         <p className="text-[10px] text-emerald-300/90">
                                             {archFitMsgByScanId[s.id]}
                                         </p>
                                     ) : (
                                         <p className="text-[10px] text-muted-foreground/80">
-                                            Estimates Arch height + Apex move from the plantar gap (simulation
-                                            — does not bake the scan mesh)
+                                            Size = foot + 45 mm toe room; arch from your placed ARCH marker;
+                                            heel cup = scan heel + 5 mm
                                         </p>
                                     )}
                                 </>

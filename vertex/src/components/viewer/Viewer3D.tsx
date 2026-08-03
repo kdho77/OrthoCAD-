@@ -16,10 +16,11 @@ import {
     Scissors,
     X,
 } from "lucide-react";
-import { Suspense, useRef } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
 import { cn } from "@/lib/utils";
 import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
@@ -82,6 +83,13 @@ export function Viewer3D() {
         stockBaseLoading,
         baseMeshLoadingBySide,
     } = useDesignStore();
+    // Keep Kabsch targets on the sized footprint — sync outside the R3F tree.
+    const layoutLengthMm = useDesignStore((s) => insoleLayoutFromDesign(s.design).lengthMm);
+    const layoutWidthMm = useDesignStore((s) => insoleLayoutFromDesign(s.design).widthMm);
+    const setRegistrationTargetLayout = useScanStore((s) => s.setRegistrationTargetLayout);
+    useEffect(() => {
+        setRegistrationTargetLayout({ lengthMm: layoutLengthMm, widthMm: layoutWidthMm });
+    }, [layoutLengthMm, layoutWidthMm, setRegistrationTargetLayout]);
     const editMode = useMeshEditStore((s) => s.editMode);
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
@@ -97,9 +105,12 @@ export function Viewer3D() {
     const showPerf = usePerformanceStore((s) => s.showPerformanceMonitor);
     const setShowPerf = usePerformanceStore((s) => s.setShowPerformanceMonitor);
     const interacting = usePerformanceStore((s) => s.interacting);
-    // Hide stock/parametric insoles while placing scan alignment markers so the
-    // foot scan is unobstructed for picking M1–M3. Viewer Left/Right prefs are preserved.
-    const placingMarkers = useScanStore((s) => s.placementMode != null);
+    // Hide stock/parametric insoles only while placing M1–M3 alignment markers.
+    // Optional ARCH keeps the insole visible so the user isn't "stuck" with it hidden.
+    const placementNext = useScanStore((s) => s.placementMode?.next ?? null);
+    const placingMarkers = placementNext != null;
+    const hideInsoleForPlacement = placementNext === "M1" || placementNext === "M2" || placementNext === "M3";
+    const placingArchOnly = placementNext === "ARCH";
     const selectedScanId = useScanStore((s) => s.selectedScanId);
     const selectScan = useScanStore((s) => s.selectScan);
     const beginRotate = useScanStore((s) => s.beginRotate);
@@ -107,8 +118,8 @@ export function Viewer3D() {
     const rotateDraft = useScanStore((s) => s.rotateDraft);
     const hasScans = useScanStore((s) => s.scans.length > 0);
     const showScans = viewer.showScans ?? true;
-    const showLeftInsole = viewer.showLeft && !placingMarkers;
-    const showRightInsole = viewer.showRight && !placingMarkers;
+    const showLeftInsole = viewer.showLeft && !hideInsoleForPlacement;
+    const showRightInsole = viewer.showRight && !hideInsoleForPlacement;
     // Prefer an empty viewport + loading cue over the parametric placeholder outline
     // while the Default Stock Base GLB is still resolving/downloading.
     const baseGeometryLoading =
@@ -175,7 +186,11 @@ export function Viewer3D() {
                                     heightmap={viewer.heightmap}
                                 />
                             ) : (
-                                <BaseInsoleMesh side="left" transparent={viewer.transparent} />
+                                <BaseInsoleMesh
+                                    side="left"
+                                    transparent={viewer.transparent}
+                                    heightmap={viewer.heightmap}
+                                />
                             )}
                         </>
                     ) : null}
@@ -189,11 +204,17 @@ export function Viewer3D() {
                                     heightmap={viewer.heightmap}
                                 />
                             ) : (
-                                <BaseInsoleMesh side="right" transparent={viewer.transparent} />
+                                <BaseInsoleMesh
+                                    side="right"
+                                    transparent={viewer.transparent}
+                                    heightmap={viewer.heightmap}
+                                />
                             )}
                         </>
                     ) : null}
-                    {showScans ? <ScanMeshes transparent={viewer.transparent} /> : null}
+                    {showScans ? (
+                        <ScanMeshes transparent={viewer.transparent} heightmap={viewer.heightmap} />
+                    ) : null}
                     <ScanMarkerPlacement />
                     <ScanPlaneSliceTool />
                     <ScanRotateTool />
@@ -308,9 +329,14 @@ export function Viewer3D() {
                         {viewer.view !== "iso" ? " · plane-locked" : ""}
                     </span>
                 ) : null}
-                {placingMarkers ? (
+                {hideInsoleForPlacement ? (
                     <span className="w-fit rounded bg-amber-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Placing markers · insole hidden
+                    </span>
+                ) : null}
+                {placingArchOnly ? (
+                    <span className="w-fit rounded bg-fuchsia-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Place ARCH apex on medial arch · Esc to skip
                     </span>
                 ) : null}
                 {!placingMarkers && registrationOk ? (
@@ -357,7 +383,7 @@ export function Viewer3D() {
                 <ToggleButton
                     active={showLeftInsole}
                     onClick={() => {
-                        if (placingMarkers) return;
+                        if (hideInsoleForPlacement) return;
                         setViewer({ showLeft: !viewer.showLeft });
                     }}
                     icon={
@@ -368,7 +394,7 @@ export function Viewer3D() {
                 <ToggleButton
                     active={showRightInsole}
                     onClick={() => {
-                        if (placingMarkers) return;
+                        if (hideInsoleForPlacement) return;
                         setViewer({ showRight: !viewer.showRight });
                     }}
                     icon={

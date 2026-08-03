@@ -28,6 +28,11 @@ export const ARCH_FIT_MEDIAL_MIN = 0.2;
 export const ARCH_FIT_MAX_XY_MM = 8;
 /** Minimum plantar samples required for a fit. */
 export const ARCH_FIT_MIN_SAMPLES = 24;
+/**
+ * Soft-tissue / NWB clearance subtracted from measured plantar gaps before the
+ * LS arch solve. Full gap closure overbuilds shells from unloaded scans.
+ */
+export const ARCH_FIT_CLEARANCE_MM = 1.5;
 
 export type ArchFitErrorCode =
     | "no_registration"
@@ -217,6 +222,19 @@ export function archFitReferenceFromBase(geometry: BufferGeometry): ArchFitRefer
     };
 }
 
+/**
+ * Sample the arch-fit reference top surface at a footprint XY (base-local mm).
+ * Used by gap-fit and by ARCH-marker matching so the raise targets the shell.
+ */
+export function sampleArchFitReferenceAt(
+    x: number,
+    y: number,
+    ref: ArchFitReference,
+): { z: number; u: number; vSigned: number; ok: boolean } {
+    const buckets = ref.kind === "base" ? buildXyBuckets(ref.topPositions, ref.topVertexCount, 4) : null;
+    return referenceZAt(x, y, ref, buckets);
+}
+
 function referenceZAt(
     x: number,
     y: number,
@@ -271,9 +289,18 @@ export function fitArchParamsFromScan(args: {
     scanToBase: THREE.Matrix4;
     reference: ArchFitReference;
     side: Side;
+    /** Sized insole length — must match height-field / design layout lengthMm. */
     lengthMm: number;
+    /**
+     * Tissue clearance (mm) removed from each positive gap before the solve.
+     * Defaults to {@link ARCH_FIT_CLEARANCE_MM}. Pass 0 for tests that recover
+     * a synthetic gap exactly.
+     */
+    clearanceMm?: number;
 }): ArchFitResult {
     const { scanPositions, scanVertexCount, scanToBase, reference, side, lengthMm } = args;
+    const clearanceMm =
+        args.clearanceMm !== undefined ? Math.max(0, args.clearanceMm) : ARCH_FIT_CLEARANCE_MM;
     if (scanVertexCount < 3) {
         throw new ArchFitError("insufficient_samples", "Scan has too few vertices");
     }
@@ -315,11 +342,13 @@ export function fitArchParamsFromScan(args: {
     if (gaps.length < ARCH_FIT_MIN_SAMPLES) {
         throw new ArchFitError(
             "insufficient_samples",
-            `Need ≥${ARCH_FIT_MIN_SAMPLES} medial midfoot plantar samples with positive gap (got ${gaps.length})`,
+            gaps.length === 0
+                ? "No positive medial arch gap — scan plantar surface is at or below the base in the midfoot (check registration / markers)"
+                : `Need ≥${ARCH_FIT_MIN_SAMPLES} medial midfoot plantar samples with positive gap (got ${gaps.length})`,
         );
     }
 
-    // Apex = mean u of the top 10% gaps (robust to single outliers).
+    // Apex = mean u of the top 10% raw gaps (robust to single outliers).
     const byGap = [...gaps].sort((a, b) => b.gapMm - a.gapMm);
     const topN = Math.max(1, Math.floor(byGap.length * 0.1));
     let apexU = 0;
@@ -333,11 +362,20 @@ export function fitArchParamsFromScan(args: {
     apexU /= topN;
     const apexMoveRaw = (apexU - ARCH_DEFAULT_APEX_U) * lengthMm;
 
+    // Fit against clearance-adjusted gaps so NWB scans do not overbuild.
+    const fitGaps = gaps.map((g) => ({ ...g, gapMm: g.gapMm - clearanceMm })).filter((g) => g.gapMm >= 0.25);
+    if (fitGaps.length < ARCH_FIT_MIN_SAMPLES) {
+        throw new ArchFitError(
+            "insufficient_samples",
+            `Need ≥${ARCH_FIT_MIN_SAMPLES} medial midfoot samples after ${clearanceMm.toFixed(1)} mm clearance (got ${fitGaps.length})`,
+        );
+    }
+
     // Least-squares arch height against unit dome weights at fitted apex.
     let swg = 0;
     let sww = 0;
     const samples: Sample[] = [];
-    for (const g of gaps) {
+    for (const g of fitGaps) {
         const w = unitArchWeight(g.u, g.vSigned, side, lengthMm, apexMoveRaw);
         if (w < 0.05) continue;
         samples.push({ ...g, weight: w });

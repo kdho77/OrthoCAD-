@@ -78,13 +78,20 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
         }
         const colors = colorAttrRef.current;
         const color = new THREE.Color();
-        let maxZ = 0;
-        for (let i = 0; i < pos.count; i++) maxZ = Math.max(maxZ, pos.getZ(i));
+        let minZ = Infinity;
+        let maxZ = -Infinity;
         for (let i = 0; i < pos.count; i++) {
-            const t = maxZ > 0 ? pos.getZ(i) / maxZ : 0;
+            const z = pos.getZ(i);
+            if (z < minZ) minZ = z;
+            if (z > maxZ) maxZ = z;
+        }
+        const span = Math.max(1e-6, maxZ - minZ);
+        for (let i = 0; i < pos.count; i++) {
+            const t = (pos.getZ(i) - minZ) / span;
             color.setHSL(0.66 - 0.66 * t, 0.85, 0.5);
             colors.setXYZ(i, color.r, color.g, color.b);
         }
+        colors.needsUpdate = true;
         geometry.setAttribute("color", colors);
         return geometry;
     }, [geometry, heightmap]);

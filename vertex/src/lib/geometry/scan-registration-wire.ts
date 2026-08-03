@@ -16,9 +16,11 @@ import {
     getMarkerFrame,
     mirrorBaseLandmarks,
     registerRawBaseGeometry,
+    scaleBaseLandmarksToInsoleSize,
 } from "@/lib/geometry/marker-frame";
 import { registerScanToBase } from "@/lib/geometry/registration";
 import { deriveScanDorsal, ScanDorsalError } from "@/lib/geometry/scan-dorsal";
+import { footprintScaleFromNativeGeometry } from "@/lib/geometry/shoe-size";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import type { Side } from "@/types";
 
@@ -234,6 +236,16 @@ export function runScanRegistration(args: {
     sourceAssetId: string;
     /** Discrete units correction (1|10|1000). Optional; defaults to 1 (mm). */
     unitScale?: number;
+    /**
+     * When set with nativeGeometry, Kabsch targets sized B1/B2/B3 so registration
+     * matches the shoe-size-scaled base mesh (same map as scaleGeometryToInsoleSize).
+     * Rigid registration — no similarity scale inside Kabsch.
+     */
+    targetLayout?: {
+        lengthMm: number;
+        widthMm: number;
+        nativeGeometry: BufferGeometry;
+    };
 }): WiredRegistrationResult {
     const frame = getMarkerFrame(args.sourceAssetId);
     if (!frame) {
@@ -243,7 +255,17 @@ export function runScanRegistration(args: {
         );
     }
     const unitScale = resolveUnitScale(args.unitScale);
-    const leftLm = frame.landmarks;
+    let leftLm = frame.landmarks;
+    if (args.targetLayout) {
+        const scale = footprintScaleFromNativeGeometry(
+            args.targetLayout.nativeGeometry,
+            args.targetLayout.lengthMm,
+            args.targetLayout.widthMm,
+        );
+        if (scale) {
+            leftLm = scaleBaseLandmarksToInsoleSize(leftLm, scale, args.targetLayout.lengthMm);
+        }
+    }
     const dorsal = deriveScanDorsal(args.scanGeometry, args.scanMarkersM1M2M3, 5 / unitScale);
     const identified = identifySideFromMarkers(args.scanMarkersM1M2M3, dorsal, leftLm);
 
