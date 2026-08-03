@@ -401,6 +401,15 @@ describe("Phase 2 — scan registration wiring", () => {
         useScanStore.getState().setMarker("t9-scan", "M1", markers[0]);
         useScanStore.getState().setMarker("t9-scan", "M2", markers[1]);
         useScanStore.getState().setMarker("t9-scan", "M3", markers[2]);
+        // Registration is gated on ARCH as well as M1–M3.
+        useScanStore.getState().setMarker(
+            "t9-scan",
+            "ARCH",
+            markers[0]!
+                .clone()
+                .lerp(markers[2]!, 0.4)
+                .add(new THREE.Vector3(0, 5, 0)),
+        );
         useScanStore.getState().setDeviationOverlay(true);
         const reg = useScanStore.getState().registrationByScanId["t9-scan"];
         expect(reg?.error).toBeNull();
@@ -484,7 +493,7 @@ describe("Phase 2 — scan registration wiring", () => {
         expect(useScanStore.getState().markersByScanId.s2?.M1).toBeNull();
     });
 
-    test("placement continues to optional ARCH after M1–M3", () => {
+    test("registration waits for ARCH after M1–M3", () => {
         const geo = new THREE.BoxGeometry(1, 1, 1);
         useScanStore.getState().addScan({
             id: "arch-prompt",
@@ -509,12 +518,18 @@ describe("Phase 2 — scan registration wiring", () => {
         useScanStore.getState().setMarker("arch-prompt", "M2", new THREE.Vector3(0, 1, 0));
         expect(useScanStore.getState().placementMode?.next).toBe("M3");
         useScanStore.getState().setMarker("arch-prompt", "M3", new THREE.Vector3(0, 0, 1));
-        // Registration may run, but placement must stay open for ARCH.
+        // Still placing ARCH — scan must not seat on the insole yet.
         expect(useScanStore.getState().placementMode).toEqual({ scanId: "arch-prompt", next: "ARCH" });
+        expect(useScanStore.getState().registrationByScanId["arch-prompt"]?.incomplete).toBe(true);
+        expect(useScanStore.getState().registrationByScanId["arch-prompt"]?.matrixElements).toBeNull();
 
         useScanStore.getState().setMarker("arch-prompt", "ARCH", new THREE.Vector3(-1, 0.5, 0));
         expect(useScanStore.getState().placementMode).toBeNull();
         expect(useScanStore.getState().markersByScanId["arch-prompt"]?.ARCH).not.toBeNull();
+        // Without a loaded base, registration is attempted but errors — not incomplete-for-markers.
+        const reg = useScanStore.getState().registrationByScanId["arch-prompt"];
+        expect(reg?.incomplete).toBe(false);
+        expect(reg?.error?.code).toBe("no_base_landmarks");
     });
 
     test("T13 — R_dorsalToZ is geometrically inert (twist freedom must not leak)", () => {

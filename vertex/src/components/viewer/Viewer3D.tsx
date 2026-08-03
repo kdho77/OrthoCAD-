@@ -105,11 +105,10 @@ export function Viewer3D() {
     const showPerf = usePerformanceStore((s) => s.showPerformanceMonitor);
     const setShowPerf = usePerformanceStore((s) => s.setShowPerformanceMonitor);
     const interacting = usePerformanceStore((s) => s.interacting);
-    // Hide stock/parametric insoles only while placing M1–M3 alignment markers.
-    // Optional ARCH keeps the insole visible so the user isn't "stuck" with it hidden.
+    // Hide stock/parametric insoles while placing all four markers (M1–M3 + ARCH).
+    // The scan is seated on the insole only after ARCH is placed.
     const placementNext = useScanStore((s) => s.placementMode?.next ?? null);
     const placingMarkers = placementNext != null;
-    const hideInsoleForPlacement = placementNext === "M1" || placementNext === "M2" || placementNext === "M3";
     const placingArchOnly = placementNext === "ARCH";
     const selectedScanId = useScanStore((s) => s.selectedScanId);
     const selectScan = useScanStore((s) => s.selectScan);
@@ -118,8 +117,8 @@ export function Viewer3D() {
     const rotateDraft = useScanStore((s) => s.rotateDraft);
     const hasScans = useScanStore((s) => s.scans.length > 0);
     const showScans = viewer.showScans ?? true;
-    const showLeftInsole = viewer.showLeft && !hideInsoleForPlacement;
-    const showRightInsole = viewer.showRight && !hideInsoleForPlacement;
+    const showLeftInsole = viewer.showLeft && !placingMarkers;
+    const showRightInsole = viewer.showRight && !placingMarkers;
     // Prefer an empty viewport + loading cue over the parametric placeholder outline
     // while the Default Stock Base GLB is still resolving/downloading.
     const baseGeometryLoading =
@@ -329,14 +328,14 @@ export function Viewer3D() {
                         {viewer.view !== "iso" ? " · plane-locked" : ""}
                     </span>
                 ) : null}
-                {hideInsoleForPlacement ? (
+                {placingMarkers && !placingArchOnly ? (
                     <span className="w-fit rounded bg-amber-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
-                        Placing markers · insole hidden
+                        Placing M1–M3 · insole hidden until all 4 markers
                     </span>
                 ) : null}
                 {placingArchOnly ? (
                     <span className="w-fit rounded bg-fuchsia-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
-                        Next: place ARCH apex on medial arch · Esc / Skip ARCH to omit
+                        Next: place ARCH apex on medial arch · then scan seats on insole
                     </span>
                 ) : null}
                 {!placingMarkers && registrationOk ? (
@@ -383,7 +382,7 @@ export function Viewer3D() {
                 <ToggleButton
                     active={showLeftInsole}
                     onClick={() => {
-                        if (hideInsoleForPlacement) return;
+                        if (placingMarkers) return;
                         setViewer({ showLeft: !viewer.showLeft });
                     }}
                     icon={
@@ -394,7 +393,7 @@ export function Viewer3D() {
                 <ToggleButton
                     active={showRightInsole}
                     onClick={() => {
-                        if (hideInsoleForPlacement) return;
+                        if (placingMarkers) return;
                         setViewer({ showRight: !viewer.showRight });
                     }}
                     icon={

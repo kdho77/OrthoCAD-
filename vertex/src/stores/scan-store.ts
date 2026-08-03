@@ -101,14 +101,14 @@ export type RotateDraft = {
     baseAngle: number | null;
 };
 
-/** M1–M3 drive rigid registration; ARCH is optional and drives parametric arch height. */
+/** M1–M3 drive Kabsch; ARCH gates registration apply + parametric arch height. */
 export type MarkerId = "M1" | "M2" | "M3" | "ARCH";
 
 export interface ScanMarkers {
     M1: THREE.Vector3 | null;
     M2: THREE.Vector3 | null;
     M3: THREE.Vector3 | null;
-    /** Medial arch apex on plantar surface (scan local). Optional — not used for Kabsch. */
+    /** Medial arch apex on plantar surface (scan local). Required before registration. */
     ARCH: THREE.Vector3 | null;
 }
 
@@ -159,19 +159,22 @@ function nextMarker(m: ScanMarkers): MarkerId {
     return "ARCH";
 }
 
-/** M1–M3 are required for Kabsch registration. */
+/**
+ * All four markers required before the scan is seated on the insole.
+ * Kabsch uses M1–M3; ARCH is required so clinical match can run immediately after.
+ */
 function registrationReady(
     m: ScanMarkers,
-): m is { M1: THREE.Vector3; M2: THREE.Vector3; M3: THREE.Vector3; ARCH: THREE.Vector3 | null } {
-    return !!(m.M1 && m.M2 && m.M3);
+): m is { M1: THREE.Vector3; M2: THREE.Vector3; M3: THREE.Vector3; ARCH: THREE.Vector3 } {
+    return !!(m.M1 && m.M2 && m.M3 && m.ARCH);
 }
 
 /**
- * Placement continues to optional ARCH after M1–M3 (registration already runs).
- * Exits when ARCH is placed, or when the user skips via Done / Esc.
+ * Placement asks for M1 → M2 → M3 → ARCH, then exits.
+ * Registration (and clinical auto-match) run only when all four are set.
  */
 function placementComplete(m: ScanMarkers): boolean {
-    return !!(m.M1 && m.M2 && m.M3 && m.ARCH);
+    return registrationReady(m);
 }
 
 function disposeScanGeometry(scan: ImportedScan): void {
@@ -666,8 +669,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             [id]: point.clone(),
         };
         const complete = placementComplete(markers);
-        // Single store update for markers + placement exit; then one registration pass.
-        // Registration runs as soon as M1–M3 are set; ARCH may still be pending.
+        // Keep the scan provisional until all four markers are set, then register once.
         set((s) => ({
             markersByScanId: { ...s.markersByScanId, [scanId]: markers },
             placementMode: complete
