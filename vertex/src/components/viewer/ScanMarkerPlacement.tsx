@@ -14,9 +14,10 @@ import { type MarkerId, useScanStore } from "@/stores/scan-store";
  * Large scans: raycast invisible decimated pick proxy, then refine on full mesh (K3).
  * OrbitControls remain enabled; misses do not capture the pointer.
  *
- * Clicks auto-progress M1 → M2 → M3 → ARCH while each next slot is empty.
- * ARCH is optional (exit after M3 to skip). Existing markers are only retargeted
- * for drag-adjust after that slot is already placed,
+ * Clicks auto-progress M1 → M2 → M3 while each next slot is empty; placement
+ * exits after M3 so the insole returns. ARCH is optional — re-enter placement
+ * to set it. Existing markers are only retargeted for drag-adjust after that
+ * slot is already placed,
  * using a scale-aware proximity radius (raw scan units ≠ mm).
  */
 export function ScanMarkerPlacement() {

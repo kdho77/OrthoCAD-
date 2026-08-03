@@ -328,7 +328,7 @@ export function Viewer3D() {
                 ) : null}
                 {placingMarkers ? (
                     <span className="w-fit rounded bg-amber-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
-                        Placing markers · insole hidden
+                        Placing markers · insole hidden · Esc or Done placing to finish
                     </span>
                 ) : null}
                 {!placingMarkers && registrationOk ? (

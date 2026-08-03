@@ -56,6 +56,10 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
                     scan.cancelRotate({ restore: true });
                     return;
                 }
+                if (scan.placementMode) {
+                    scan.exitPlacement();
+                    return;
+                }
                 selectElement(null);
                 scan.selectScan(null);
             }

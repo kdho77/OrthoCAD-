@@ -166,9 +166,12 @@ function registrationReady(
     return !!(m.M1 && m.M2 && m.M3);
 }
 
-/** Placement exits after optional ARCH (M1–M3 already registered). */
+/**
+ * Exit placement once M1–M3 are set so the insole returns and registration UI
+ * is usable. ARCH is optional — re-enter placement to set it (next → ARCH).
+ */
 function placementComplete(m: ScanMarkers): boolean {
-    return !!(m.M1 && m.M2 && m.M3 && m.ARCH);
+    return !!(m.M1 && m.M2 && m.M3);
 }
 
 function disposeScanGeometry(scan: ImportedScan): void {

@@ -181,7 +181,9 @@ function ScanMarkersSection({
                             disabled={!baseReady}
                             title={
                                 baseReady
-                                    ? "Place M1→M2→M3, then optional ARCH apex"
+                                    ? placed >= 3 && !markers?.ARCH
+                                        ? "Place optional ARCH apex (or skip)"
+                                        : "Place M1→M2→M3 on the scan"
                                     : "Base geometry not loaded"
                             }
                             onClick={onTogglePlacement}
@@ -194,7 +196,11 @@ function ScanMarkersSection({
                             )}
                         >
                             <MapPin className="h-3 w-3" />
-                            {placing ? "Placing…" : "Place markers"}
+                            {placing
+                                ? "Done placing"
+                                : placed >= 3 && !markers?.ARCH
+                                  ? "Place ARCH (optional)"
+                                  : "Place markers"}
                         </button>
                         <button
                             type="button"
