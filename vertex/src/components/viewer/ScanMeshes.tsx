@@ -222,13 +222,11 @@ function RegisteredScanMesh({
     const registrationRms = useScanStore((s) => s.registrationByScanId[scanId]?.residualRmsMm);
     // Insole B1/B2/B3 targets (cyan). Hide while placing scan markers, and when RMS is
     // poor so they don't float far off the foot and get mistaken for scan markers.
-    const showBaseLandmarks =
-        !!leftFrame && registered && !placingMarkers && (registrationRms == null || registrationRms <= 15);
-    const landmarks = showBaseLandmarks
-        ? side === "right"
-            ? mirrorBaseLandmarks(leftFrame!.landmarks)
-            : leftFrame!.landmarks
-        : null;
+    const landmarks = (() => {
+        if (!leftFrame || !registered || placingMarkers) return null;
+        if (registrationRms != null && registrationRms > 15) return null;
+        return side === "right" ? mirrorBaseLandmarks(leftFrame.landmarks) : leftFrame.landmarks;
+    })();
 
     const applyPoint = (p: THREE.Vector3) => p.clone().applyMatrix4(meshMatrix);
     const suggested = scanRecord?.suggestedLandmarks;
