@@ -16,16 +16,15 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
-import { ArchFitError, archFitToCorrectionPatch } from "@/lib/geometry/fit-arch-from-scan";
+import { ArchFitError } from "@/lib/geometry/fit-arch-from-scan";
 import { importScanFile } from "@/lib/geometry/import";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import {
     ARCH_MATCH_BLOCK_RMS_MM,
-    formatArchFitMessage,
     formatSizeSuggestionMessage,
     gateArchMatch,
     isDefaultShoeSize,
-    matchArchParamsFromRegisteredScan,
+    matchClinicalParamsFromRegisteredScan,
     shouldAutoApplySize,
     suggestSizeFromScanGeometry,
 } from "@/lib/geometry/match-design-from-scan";
@@ -58,6 +57,7 @@ const MARKER_LABELS = {
     M1: "M1 — 1st met head (medial)",
     M2: "M2 — 5th met head (lateral)",
     M3: "M3 — heel centre",
+    ARCH: "ARCH — medial arch apex (optional)",
 } as const;
 
 function ScanMarkersSection({
@@ -128,14 +128,14 @@ function ScanMarkersSection({
                         ? "All markers placed — expand to edit"
                         : sug
                           ? "Confirm or place markers to register"
-                          : "Expand to place M1 → M2 → M3"}
+                          : "Expand to place M1 → M2 → M3 (+ optional ARCH)"}
                 </p>
             ) : (
                 <div className="space-y-1">
                     {placing ? (
                         <p className="text-[10px] leading-snug text-cyan-200/90">
-                            Depth shading is on while placing. Amber = your M1–M3 on the scan. Light cyan =
-                            suggested spots. Insole B1–B3 targets are hidden until you finish.
+                            Depth shading is on while placing. Amber = M1–M3. Magenta = optional ARCH apex.
+                            Light cyan = suggested spots. Insole B1–B3 targets are hidden until you finish.
                         </p>
                     ) : null}
                     {sug ? (
@@ -179,7 +179,11 @@ function ScanMarkersSection({
                         <button
                             type="button"
                             disabled={!baseReady}
-                            title={baseReady ? "Place M1→M2→M3 on the scan" : "Base geometry not loaded"}
+                            title={
+                                baseReady
+                                    ? "Place M1→M2→M3, then optional ARCH apex"
+                                    : "Base geometry not loaded"
+                            }
                             onClick={onTogglePlacement}
                             className={cn(
                                 "flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
@@ -204,8 +208,12 @@ function ScanMarkersSection({
 
                     {placing && nextLabel ? (
                         <p className="text-[11px] text-amber-300">
-                            Next: {nextLabel} ({placed}/3)
+                            Next: {nextLabel}
+                            {nextLabel.startsWith("ARCH") ? " — exit anytime to skip" : ` (${placed}/3)`}
                         </p>
+                    ) : null}
+                    {markers?.ARCH ? (
+                        <p className="text-[10px] text-fuchsia-300/90">ARCH apex placed</p>
                     ) : null}
                 </div>
             )}
@@ -341,19 +349,22 @@ export function ScanImport() {
             const pos = scan.geometry.getAttribute("position");
             if (!pos) throw new ArchFitError("insufficient_samples", "Scan has no positions");
             const side: Side = regNow.identifiedSide ?? scan.side;
-            const fit = matchArchParamsFromRegisteredScan({
+            const markers = useScanStore.getState().markersByScanId[scanId];
+            const clinical = matchClinicalParamsFromRegisteredScan({
                 scanPositions: pos.array as ArrayLike<number>,
                 scanVertexCount: pos.count,
                 scanToBase,
                 rawBase,
                 side,
                 layout,
+                archMarkerLocal: markers?.ARCH,
+                heelMarkerLocal: markers?.M3,
             });
-            updateCorrection(side, archFitToCorrectionPatch(fit));
+            updateCorrection(side, clinical.correction);
             const warnSuffix = rmsWarning ? ` · ${rmsWarning}` : "";
             setArchFitMsgByScanId((prev) => ({
                 ...prev,
-                [scanId]: `${formatArchFitMessage(fit)}${warnSuffix}`,
+                [scanId]: `${clinical.message}${warnSuffix}`,
             }));
         } catch (e) {
             const msg =
@@ -591,7 +602,10 @@ export function ScanImport() {
                             placing={placing}
                             baseReady={baseReady}
                             nextLabel={placing ? MARKER_LABELS[placementMode!.next] : null}
-                            onConfirm={(id) => sug && setMarker(s.id, id, sug[id])}
+                            onConfirm={(id) => {
+                                if (!sug || id === "ARCH") return;
+                                setMarker(s.id, id, sug[id]);
+                            }}
                             onDismiss={() => setSuggestedLandmarks(s.id, null)}
                             onTogglePlacement={() => (placing ? exitPlacement() : enterPlacement(s.id))}
                             onResetMarkers={() => resetMarkers(s.id)}
@@ -691,7 +705,7 @@ export function ScanImport() {
                                                 !landmarkSourceAssetId ||
                                                 !rawBaseBySourceId[landmarkSourceAssetId]
                                             }
-                                            title="Match shoe size (if needed) then Arch height + Apex from medial midfoot gap"
+                                            title="Match shoe size, arch (ARCH marker or gap fit), and heel cup width (+5 mm)"
                                             onClick={() => matchDesignFromScan(s.id)}
                                             className={cn(
                                                 "flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
@@ -712,7 +726,7 @@ export function ScanImport() {
                                                 !landmarkSourceAssetId ||
                                                 !rawBaseBySourceId[landmarkSourceAssetId]
                                             }
-                                            title="Set Arch height + Apex move from medial midfoot gap vs sized base"
+                                            title="Set arch (ARCH marker or gap) + heel cup width (+5 mm vs scan)"
                                             onClick={() => matchArchFromScan(s.id)}
                                             className={cn(
                                                 "flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",

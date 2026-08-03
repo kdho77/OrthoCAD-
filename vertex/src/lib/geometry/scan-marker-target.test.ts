@@ -12,6 +12,7 @@ describe("resolveMarkerPlacementTarget", () => {
             M1: new THREE.Vector3(0, 0, 0),
             M2: null,
             M3: null,
+            ARCH: null,
         };
         // Within 8mm of M1 — must still place M2 while M2 is unplaced.
         const local = new THREE.Vector3(3, 0, 0);
@@ -23,6 +24,7 @@ describe("resolveMarkerPlacementTarget", () => {
             M1: new THREE.Vector3(0, 0, 0),
             M2: null,
             M3: null,
+            ARCH: null,
         };
         // ~70mm medial→lateral in meters; old thresh=8 would always hit M1.
         const local = new THREE.Vector3(0, 0.07, 0);
@@ -34,13 +36,16 @@ describe("resolveMarkerPlacementTarget", () => {
             M1: new THREE.Vector3(0, 0, 0),
             M2: new THREE.Vector3(0, 70, 0),
             M3: new THREE.Vector3(-100, 0, 0),
+            ARCH: new THREE.Vector3(-40, 20, 5),
         };
         const nearM1 = new THREE.Vector3(2, 0, 0);
-        expect(resolveMarkerPlacementTarget("M3", markers, nearM1, 1)).toBe("M1");
+        expect(resolveMarkerPlacementTarget("ARCH", markers, nearM1, 1)).toBe("M1");
         const nearM2 = new THREE.Vector3(0, 71, 0);
-        expect(resolveMarkerPlacementTarget("M3", markers, nearM2, 1)).toBe("M2");
+        expect(resolveMarkerPlacementTarget("ARCH", markers, nearM2, 1)).toBe("M2");
+        const nearArch = new THREE.Vector3(-41, 20, 5);
+        expect(resolveMarkerPlacementTarget("ARCH", markers, nearArch, 1)).toBe("ARCH");
         const far = new THREE.Vector3(50, 50, 0);
-        expect(resolveMarkerPlacementTarget("M3", markers, far, 1)).toBe("M3");
+        expect(resolveMarkerPlacementTarget("ARCH", markers, far, 1)).toBe("ARCH");
     });
 
     test("drag radius scales with displayScale", () => {
@@ -48,6 +53,7 @@ describe("resolveMarkerPlacementTarget", () => {
             M1: new THREE.Vector3(0, 0, 0),
             M2: new THREE.Vector3(1, 0, 0),
             M3: new THREE.Vector3(2, 0, 0),
+            ARCH: null,
         };
         // 0.005m = 5mm — inside 8mm radius at ×1000.
         const inside = new THREE.Vector3(MARKER_DRAG_RADIUS_MM / 1000 / 2, 0, 0);

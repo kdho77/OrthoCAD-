@@ -22,6 +22,7 @@ import { useDesignStore } from "@/stores/design-store";
 import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
 
 const CLINICIAN_MARKER_COLOR = "#f59e0b";
+const ARCH_MARKER_COLOR = "#d946ef";
 const BASE_LANDMARK_COLOR = "#22d3ee";
 const SUGGESTED_MARKER_COLOR = "#67e8f9";
 const HOVER_COMPONENT_COLOR = "#fbbf24";
@@ -337,6 +338,9 @@ function RegisteredScanMesh({
             ) : null}
             {markers?.M3 ? (
                 <MarkerSphere position={applyPoint(markers.M3)} color={CLINICIAN_MARKER_COLOR} />
+            ) : null}
+            {markers?.ARCH ? (
+                <MarkerSphere position={applyPoint(markers.ARCH)} color={ARCH_MARKER_COLOR} radius={2.4} />
             ) : null}
 
             {/* Suggested (provisional) markers — visually distinct; not confirmed. */}

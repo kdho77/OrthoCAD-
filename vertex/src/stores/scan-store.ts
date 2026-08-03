@@ -101,12 +101,15 @@ export type RotateDraft = {
     baseAngle: number | null;
 };
 
-export type MarkerId = "M1" | "M2" | "M3";
+/** M1–M3 drive rigid registration; ARCH is optional and drives parametric arch height. */
+export type MarkerId = "M1" | "M2" | "M3" | "ARCH";
 
 export interface ScanMarkers {
     M1: THREE.Vector3 | null;
     M2: THREE.Vector3 | null;
     M3: THREE.Vector3 | null;
+    /** Medial arch apex on plantar surface (scan local). Optional — not used for Kabsch. */
+    ARCH: THREE.Vector3 | null;
 }
 
 export interface ScanRegistrationState {
@@ -130,7 +133,7 @@ export interface PlacementMode {
     next: MarkerId;
 }
 
-const EMPTY_MARKERS: ScanMarkers = { M1: null, M2: null, M3: null };
+const EMPTY_MARKERS: ScanMarkers = { M1: null, M2: null, M3: null, ARCH: null };
 
 const MARKERS_INVALIDATED_MSG =
     "Markers and registration cleared — kept components changed. Re-place markers on the cleaned scan.";
@@ -152,11 +155,20 @@ function emptyRegistration(incomplete: boolean): ScanRegistrationState {
 function nextMarker(m: ScanMarkers): MarkerId {
     if (!m.M1) return "M1";
     if (!m.M2) return "M2";
-    return "M3";
+    if (!m.M3) return "M3";
+    return "ARCH";
 }
 
-function allPlaced(m: ScanMarkers): m is { M1: THREE.Vector3; M2: THREE.Vector3; M3: THREE.Vector3 } {
+/** M1–M3 are required for Kabsch registration. */
+function registrationReady(
+    m: ScanMarkers,
+): m is { M1: THREE.Vector3; M2: THREE.Vector3; M3: THREE.Vector3; ARCH: THREE.Vector3 | null } {
     return !!(m.M1 && m.M2 && m.M3);
+}
+
+/** Placement exits after optional ARCH (M1–M3 already registered). */
+function placementComplete(m: ScanMarkers): boolean {
+    return !!(m.M1 && m.M2 && m.M3 && m.ARCH);
 }
 
 function disposeScanGeometry(scan: ImportedScan): void {
@@ -355,7 +367,7 @@ function computeRegistration(
     rawBaseBySourceId: Record<string, BufferGeometry>,
     targetLayout?: RegistrationTargetLayout | null,
 ): ScanRegistrationState {
-    if (!allPlaced(markers)) {
+    if (!registrationReady(markers)) {
         return emptyRegistration(true);
     }
     if (!sourceAssetId) {
@@ -650,8 +662,9 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             ...(get().markersByScanId[scanId] ?? { ...EMPTY_MARKERS }),
             [id]: point.clone(),
         };
-        const complete = allPlaced(markers);
+        const complete = placementComplete(markers);
         // Single store update for markers + placement exit; then one registration pass.
+        // Registration runs as soon as M1–M3 are set; ARCH may still be pending.
         set((s) => ({
             markersByScanId: { ...s.markersByScanId, [scanId]: markers },
             placementMode: complete
@@ -705,7 +718,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             for (const scan of get().scans) {
                 const markers = get().markersByScanId[scan.id];
                 const reg = get().registrationByScanId[scan.id];
-                if (markers && allPlaced(markers) && (!reg || reg.incomplete || reg.error)) {
+                if (markers && registrationReady(markers) && (!reg || reg.incomplete || reg.error)) {
                     get().recomputeRegistration(scan.id);
                 }
             }
@@ -716,7 +729,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         if (!assetId) return;
         for (const scan of get().scans) {
             const markers = get().markersByScanId[scan.id];
-            if (markers && allPlaced(markers)) {
+            if (markers && registrationReady(markers)) {
                 get().recomputeRegistration(scan.id);
             }
         }
@@ -747,7 +760,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         set({ registrationTargetLayout: { lengthMm, widthMm } });
         for (const scan of get().scans) {
             const markers = get().markersByScanId[scan.id];
-            if (markers && allPlaced(markers)) {
+            if (markers && registrationReady(markers)) {
                 get().recomputeRegistration(scan.id);
             }
         }

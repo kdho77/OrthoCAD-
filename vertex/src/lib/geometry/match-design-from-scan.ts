@@ -11,6 +11,7 @@
  * scaleGeometryToInsoleSize).
  */
 
+import type * as THREE from "three";
 import type { BufferGeometry, Matrix4 } from "three";
 import {
     ARCH_FIT_CLEARANCE_MM,
@@ -18,8 +19,22 @@ import {
     type ArchFitReference,
     type ArchFitResult,
     archFitReferenceFromBase,
+    archFitToCorrectionPatch,
     fitArchParamsFromScan,
 } from "@/lib/geometry/fit-arch-from-scan";
+import {
+    type ArchMarkerFitResult,
+    archMarkerFitToCorrectionPatch,
+    DEFAULT_STOCK_ARCH_APEX_HEIGHT_MM,
+    fitArchParamsFromApexMarker,
+    formatArchMarkerFitMessage,
+    formatHeelCupFitMessage,
+    type HeelCupWidthFitResult,
+    heelCupWidthParamForTarget,
+    measureHeelWidthFromTopPositions,
+    measureHeelWidthMm,
+    measureStockArchApexHeightFromPositions,
+} from "@/lib/geometry/fit-scan-clinical-params";
 import {
     formatSizeSuggestionLabel,
     measureBallWidthMm,
@@ -233,3 +248,109 @@ export function formatSizeSuggestionMessage(
 }
 
 export type ArchCorrectionPatch = Partial<SideCorrections>;
+
+export type ClinicalMatchResult = {
+    correction: Partial<SideCorrections>;
+    message: string;
+    archSource: "marker" | "gap";
+    heel: HeelCupWidthFitResult | null;
+};
+
+/**
+ * Match arch (+ optional heel cup width) from a registered scan.
+ * Prefers ARCH apex marker vs stock (~23.5 mm); falls back to medial gap fit.
+ */
+export function matchClinicalParamsFromRegisteredScan(args: {
+    scanPositions: ArrayLike<number>;
+    scanVertexCount: number;
+    scanToBase: Matrix4;
+    rawBase: BufferGeometry;
+    side: Side;
+    layout: InsoleLayout;
+    /** ARCH marker in scan-local space (optional). */
+    archMarkerLocal?: THREE.Vector3 | null;
+    /** M3 heel centre in scan-local space (for seat Z / heel width). */
+    heelMarkerLocal?: THREE.Vector3 | null;
+    clearanceMm?: number;
+}): ClinicalMatchResult {
+    const reference = archFitReferenceFromBaseSized(args.rawBase, args.layout.lengthMm, args.layout.widthMm);
+    if (reference.kind !== "base") {
+        throw new ArchFitError("no_reference", "Sized arch reference missing top positions");
+    }
+    const medialSign = args.side === "left" ? 1 : -1;
+    // Measure on sized top XY (same frame as scanToBase / Kabsch targets); Z is unchanged by footprint scale.
+    const stockMeasured = measureStockArchApexHeightFromPositions(
+        reference.topPositions,
+        reference.topVertexCount,
+        reference.lengthMin,
+        reference.lengthSize,
+        medialSign,
+    );
+    const stockArchHeightMm = stockMeasured ?? DEFAULT_STOCK_ARCH_APEX_HEIGHT_MM;
+
+    let archPatch: Partial<SideCorrections>;
+    let archMsg: string;
+    let archSource: "marker" | "gap";
+
+    if (args.archMarkerLocal && args.heelMarkerLocal) {
+        const archPointBase = args.archMarkerLocal.clone().applyMatrix4(args.scanToBase);
+        const heelSeatBase = args.heelMarkerLocal.clone().applyMatrix4(args.scanToBase);
+        const fit: ArchMarkerFitResult = fitArchParamsFromApexMarker({
+            archPointBase,
+            heelSeatBase,
+            lengthMm: args.layout.lengthMm,
+            lengthMin: reference.lengthMin,
+            lengthSize: reference.lengthSize,
+            stockArchHeightMm,
+        });
+        archPatch = archMarkerFitToCorrectionPatch(fit);
+        archMsg = formatArchMarkerFitMessage(fit);
+        archSource = "marker";
+    } else {
+        const fit = matchArchParamsFromRegisteredScan({
+            scanPositions: args.scanPositions,
+            scanVertexCount: args.scanVertexCount,
+            scanToBase: args.scanToBase,
+            rawBase: args.rawBase,
+            side: args.side,
+            layout: args.layout,
+            clearanceMm: args.clearanceMm,
+        });
+        archPatch = archFitToCorrectionPatch(fit);
+        archMsg = formatArchFitMessage(fit);
+        archSource = "gap";
+    }
+
+    let heel: HeelCupWidthFitResult | null = null;
+    const scanHeel = measureHeelWidthMm(
+        args.scanPositions,
+        args.scanVertexCount,
+        args.scanToBase,
+        reference.lengthMin,
+        reference.lengthSize,
+    );
+    const baseHeel = measureHeelWidthFromTopPositions(
+        reference.topPositions,
+        reference.topVertexCount,
+        reference.lengthMin,
+        reference.lengthSize,
+    );
+    if (scanHeel != null && baseHeel != null) {
+        heel = heelCupWidthParamForTarget({
+            scanHeelWidthMm: scanHeel,
+            baseHeelWidthMm: baseHeel,
+        });
+    }
+
+    const correction: Partial<SideCorrections> = {
+        ...archPatch,
+        ...(heel ? { heelCupWidthMm: heel.heelCupWidthMm } : {}),
+    };
+    const heelMsg = heel ? ` · ${formatHeelCupFitMessage(heel)}` : "";
+    return {
+        correction,
+        message: `${archMsg}${heelMsg}`,
+        archSource,
+        heel,
+    };
+}
