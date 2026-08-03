@@ -336,7 +336,7 @@ export function Viewer3D() {
                 ) : null}
                 {placingArchOnly ? (
                     <span className="w-fit rounded bg-fuchsia-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
-                        Place ARCH apex on medial arch · Esc to skip
+                        Next: place ARCH apex on medial arch · Esc / Skip ARCH to omit
                     </span>
                 ) : null}
                 {!placingMarkers && registrationOk ? (
