@@ -183,7 +183,11 @@ export function Viewer3D() {
                                     heightmap={viewer.heightmap}
                                 />
                             ) : (
-                                <BaseInsoleMesh side="left" transparent={viewer.transparent} />
+                                <BaseInsoleMesh
+                                    side="left"
+                                    transparent={viewer.transparent}
+                                    heightmap={viewer.heightmap}
+                                />
                             )}
                         </>
                     ) : null}
@@ -197,7 +201,11 @@ export function Viewer3D() {
                                     heightmap={viewer.heightmap}
                                 />
                             ) : (
-                                <BaseInsoleMesh side="right" transparent={viewer.transparent} />
+                                <BaseInsoleMesh
+                                    side="right"
+                                    transparent={viewer.transparent}
+                                    heightmap={viewer.heightmap}
+                                />
                             )}
                         </>
                     ) : null}
