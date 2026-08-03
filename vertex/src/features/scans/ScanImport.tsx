@@ -181,23 +181,27 @@ function ScanMarkersSection({
                             disabled={!baseReady}
                             title={
                                 baseReady
-                                    ? placed >= 3 && !markers?.ARCH
-                                        ? "Place optional ARCH apex (or skip)"
-                                        : "Place M1→M2→M3 on the scan"
+                                    ? placing && nextLabel?.startsWith("ARCH")
+                                        ? "Skip optional ARCH apex"
+                                        : "Place M1→M2→M3, then optional ARCH apex"
                                     : "Base geometry not loaded"
                             }
                             onClick={onTogglePlacement}
                             className={cn(
                                 "flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
                                 placing
-                                    ? "bg-amber-500/20 text-amber-300"
+                                    ? nextLabel?.startsWith("ARCH")
+                                        ? "bg-fuchsia-500/20 text-fuchsia-300"
+                                        : "bg-amber-500/20 text-amber-300"
                                     : "bg-muted text-muted-foreground hover:text-foreground",
                                 !baseReady && "cursor-not-allowed opacity-50",
                             )}
                         >
                             <MapPin className="h-3 w-3" />
                             {placing
-                                ? "Done placing"
+                                ? nextLabel?.startsWith("ARCH")
+                                    ? "Skip ARCH"
+                                    : "Done placing"
                                 : placed >= 3 && !markers?.ARCH
                                   ? "Place ARCH (optional)"
                                   : "Place markers"}
@@ -213,9 +217,16 @@ function ScanMarkersSection({
                     </div>
 
                     {placing && nextLabel ? (
-                        <p className="text-[11px] text-amber-300">
+                        <p
+                            className={cn(
+                                "text-[11px]",
+                                nextLabel.startsWith("ARCH") ? "text-fuchsia-300" : "text-amber-300",
+                            )}
+                        >
                             Next: {nextLabel}
-                            {nextLabel.startsWith("ARCH") ? " — exit anytime to skip" : ` (${placed}/3)`}
+                            {nextLabel.startsWith("ARCH")
+                                ? " — click medial arch apex, or Skip ARCH"
+                                : ` (${placed}/3)`}
                         </p>
                     ) : null}
                     {markers?.ARCH ? (
