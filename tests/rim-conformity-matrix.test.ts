@@ -111,19 +111,23 @@ function topRim(geo: BufferGeometry, topN: number): number[] {
     }
 }
 
-function plantarDrift(base: Float32Array, mod: Float32Array, f: Frame): number {
+function plantarDrift(base: Float32Array, mod: Float32Array, f: Frame, zOnly = false): number {
     // F≈0 ground-contact plantar (forefoot u≥0.80 / ultra-posterior u≤0.05).
     // Arch bump bleeds into u≈0.1–0.3 so mid-heel plantar lifts under shell sync.
+    // zOnly: HC-1 is thickness-axis stability — heel-cup width intentionally scales
+    // plantar XY, so width-active cases must not fail on lateral footprint motion.
     let m = 0;
     for (let i = f.topN; i < f.count; i++) {
         if (base[i * 3 + f.thickAxis]! > PLANTAR_Z_MAX_MM) continue;
         const u = (base[i * 3 + f.lengthAxis]! - f.lenMin) / (f.lenSize || 1);
         if (u > 0.05 && u < 0.8) continue;
-        const d = Math.hypot(
-            mod[i * 3]! - base[i * 3]!,
-            mod[i * 3 + 1]! - base[i * 3 + 1]!,
-            mod[i * 3 + 2]! - base[i * 3 + 2]!,
-        );
+        const d = zOnly
+            ? Math.abs(mod[i * 3 + f.thickAxis]! - base[i * 3 + f.thickAxis]!)
+            : Math.hypot(
+                  mod[i * 3]! - base[i * 3]!,
+                  mod[i * 3 + 1]! - base[i * 3 + 1]!,
+                  mod[i * 3 + 2]! - base[i * 3 + 2]!,
+              );
         if (d > m) m = d;
     }
     return m;
@@ -212,6 +216,8 @@ describe("rim-conformity combined validation matrix", () => {
         { name: "width-0.5", patch: { heelCupWidthMm: 0.5 } },
         { name: "width-5", patch: { heelCupWidthMm: 5 } },
         { name: "width-10", patch: { heelCupWidthMm: 10 } },
+        { name: "width-neg-5", patch: { heelCupWidthMm: -5 } },
+        { name: "width-neg-10", patch: { heelCupWidthMm: -10 } },
         { name: "depth-3", patch: { heelCupDepthMm: 3 } },
         { name: "depth-8", patch: { heelCupDepthMm: 8 } },
         { name: "depth-15", patch: { heelCupDepthMm: 15 } },
@@ -230,7 +236,8 @@ describe("rim-conformity combined validation matrix", () => {
             const rim = topRim(mod, frame.topN);
             const solid = closeGlbInsoleToSolid(mod);
             const report = validateManifold(solid);
-            const plantar = plantarDrift(baseArr, modArr, frame);
+            const widthActive = (cfg.patch.heelCupWidthMm ?? 0) !== 0;
+            const plantar = plantarDrift(baseArr, modArr, frame, widthActive);
             const mismatch = maxDeltaMismatch(baseArr, modArr, frame, rimIdx);
 
             // Idempotency
@@ -259,7 +266,6 @@ describe("rim-conformity combined validation matrix", () => {
             // Width cases: legacy rim-conformity (strict). Field-sync: allow larger
             // 3D mismatch from nearest-rim vs pair-rim depth noise; Z-gap covered
             // by synced-bottom-shell-field.test.ts (≤0.05 mm).
-            const widthActive = (cfg.patch.heelCupWidthMm ?? 0) > 0;
             expect(mismatch).toBeLessThan(widthActive ? 0.1 : 0.8);
             expect(idemp).toBe(0);
 
