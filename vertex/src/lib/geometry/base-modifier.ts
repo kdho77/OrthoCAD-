@@ -1801,14 +1801,6 @@ function getRimConformityFrame(
  * a rounded profile instead of a vertical extrusion (PR #117). Optional
  * `verticalDelta` reshapes the thick axis to the height-field falloff (PR #116).
  *
-/**
- * Scatter precomputed rim deltas onto bottom wall verts.
- * Reads corrected top positions from `array`; writes bottom from BASE only.
- *
- * In the arch band (α→1), uses re-loft W(h)·Δ_rim so the sidewall stretches as
- * a rounded profile instead of a vertical extrusion (PR #117). Optional
- * `verticalDelta` reshapes the thick axis to the height-field falloff (PR #116).
- *
  * When `lateralDelta` is provided (heel-cup width active), the width-axis
  * component is stripped from the height-weighted rim scatter and reapplied as a
  * rigid per-column lateral (the paired top-rim's smoothed scale). Height-weighting
@@ -2272,9 +2264,9 @@ export function applyBaseModifiers(
     //
     // Heel-cup width lateral scale is applied to the FULL multi-mesh shell (top +
     // bottom), not just the top sheet. Height-shearing only the rim onto the wall
-    // destroyed sidewall smoothness when narrowing; a uniform radial scale keeps
-    // the base wall profile. Rim-conformity below strips this component and
-    // re-applies each wall vert's own lateral so plantar stays scaled too.
+    // destroyed sidewall smoothness when narrowing. Plantar receives the radial
+    // scale here; rim-conformity below strips width from the height-weighted
+    // scatter and reapplies rigid per-column rim lateral on the wall.
     const widthLateralActive = field.corrections.heelCupWidthMm !== 0;
     for (let i = 0; i < count; i++) {
         const t = array[i * 3 + thickAxis]!;

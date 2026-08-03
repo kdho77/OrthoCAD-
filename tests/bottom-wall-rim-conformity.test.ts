@@ -339,6 +339,8 @@ describe("bottom-wall rim conformity (Default.glb)", () => {
             { name: "width-0.5", patch: { heelCupWidthMm: 0.5 } },
             { name: "width-5", patch: { heelCupWidthMm: 5 } },
             { name: "width-10", patch: { heelCupWidthMm: 10 } },
+            { name: "width-neg-5", patch: { heelCupWidthMm: -5 } },
+            { name: "width-neg-10", patch: { heelCupWidthMm: -10 } },
             { name: "depth-3", patch: { heelCupDepthMm: 3 } },
             { name: "depth-8", patch: { heelCupDepthMm: 8 } },
             { name: "depth-15", patch: { heelCupDepthMm: 15 } },
@@ -363,10 +365,10 @@ describe("bottom-wall rim conformity (Default.glb)", () => {
                 `[RIM-CONFORMITY] ${cfg.name}: mismatch=${after.maxMismatch.toFixed(4)}mm paired=${after.paired} absFpGap=${after.maxAbsFpGap.toFixed(4)}mm`,
             );
             expect(after.paired).toBeGreaterThan(100);
-            // Width>0 keeps legacy rim-conformity (strict 3D match). Field-coupled
+            // Width≠0 keeps legacy rim-conformity (strict 3D match). Field-coupled
             // shell sync matches ΔZ at the rim (≤0.05); 3D mismatch can be larger
             // when nearest-rim depth ≠ the test's specific pair-rim depth.
-            const widthActive = (cfg.patch.heelCupWidthMm ?? 0) > 0;
+            const widthActive = (cfg.patch.heelCupWidthMm ?? 0) !== 0;
             expect(after.maxMismatch).toBeLessThan(widthActive ? 0.1 : 0.8);
             mod.dispose();
         }
@@ -502,6 +504,8 @@ describe("bottom-wall rim conformity (Default.glb)", () => {
             { heelCupWidthMm: 0.5 },
             { heelCupWidthMm: 5 },
             { heelCupWidthMm: 10 },
+            { heelCupWidthMm: -5 },
+            { heelCupWidthMm: -10 },
             { heelCupDepthMm: 15 },
             { archHeightMm: 12, apexMoveMm: 8 },
             { heelCupWidthMm: 5, heelCupDepthMm: 5, archHeightMm: 10 },
