@@ -1,10 +1,10 @@
-import type { PlacedElement, Side, SideCorrections } from "@/types";
 import { elementHeightAt } from "@/lib/geometry/elements";
-import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
+import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
+import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
-import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
+import type { PlacedElement, Side, SideCorrections } from "@/types";
 
 // Shared parametric height field for insole surfaces. Used by both the procedural
 // Three.js mesher and the OpenCascade solid builder so corrections stay aligned.
@@ -44,8 +44,9 @@ const DEG = Math.PI / 180;
 export const EDGE_FEATHER_EASE_START_R = 0.55;
 
 /**
- * Max fractional lateral scale at heelCupWidthMm = 10 (placeholder — needs clinical
- * tuning against a target mm spread at max width; not yet validated).
+ * Max |fractional| lateral scale at |heelCupWidthMm| = 10 (placeholder — needs clinical
+ * tuning against a target mm spread at max |width|; not yet validated).
+ * Positive param widens; negative narrows (scale down to 1 − this fraction).
  */
 export const HEEL_CUP_WIDTH_MAX_LATERAL_SCALE = 0.25;
 
@@ -63,10 +64,11 @@ export function heelCupLongitudinalEnvelope(u: number): number {
 
 /**
  * Per-vertex lateral scale factor: 1.0 outside the heel zone; approaches targetScale
- * inside. Continuous in u (no hard zone cut).
+ * inside. Continuous in u (no hard zone cut). Positive heelCupWidthMm widens;
+ * negative narrows.
  */
 export function heelCupWidthScaleFactor(u: number, heelCupWidthMm: number): number {
-    if (heelCupWidthMm <= 0) return 1;
+    if (heelCupWidthMm === 0) return 1;
     const targetScale = 1 + (heelCupWidthMm / 10) * HEEL_CUP_WIDTH_MAX_LATERAL_SCALE;
     const env = heelCupLongitudinalEnvelope(u);
     return 1 + env * (targetScale - 1);
@@ -210,8 +212,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const dish = smoothstep(0.12, 1.0, av); // raised edges, dished centre
     const medialRim = 12 * heelEnv + 16 * archEnv;
     const lateralRim = 12 * heelEnv + 5 * archEnv;
-    const baseline =
-        dish * (medialRim * medialBlend + lateralRim * lateralBlend) + 4 * toeEnv;
+    const baseline = dish * (medialRim * medialBlend + lateralRim * lateralBlend) + 4 * toeEnv;
 
     // Shaping that should feather toward the trimline edge (dome/cup/flange/
     // elements) accumulates in `shaped`; the planar posting tilt — which must
@@ -315,10 +316,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // loft path only when includeSkives is true. Must NOT run inside the field
     // that drives correctionDeltaAt / #119 bottom sync on loaded bases.
     const includeSkives = params.includeSkives ?? true;
-    if (
-        includeSkives &&
-        (c.medialSkiveMm > 0 || c.lateralSkiveMm > 0)
-    ) {
+    if (includeSkives && (c.medialSkiveMm > 0 || c.lateralSkiveMm > 0)) {
         const zCurrent = h;
         const raise = kirbySkiveRaiseAt(u, vSigned, side, c, {
             lengthMm,

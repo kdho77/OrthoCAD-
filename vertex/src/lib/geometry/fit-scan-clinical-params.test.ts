@@ -53,12 +53,15 @@ describe("heelCupWidthParamForTarget", () => {
         expect(fit.heelCupWidthMm).toBeCloseTo(Math.round(expected * 10) / 10, 5);
     });
 
-    test("no widen when scan+clearance ≤ base", () => {
+    test("narrows when scan+clearance < base", () => {
         const fit = heelCupWidthParamForTarget({
             scanHeelWidthMm: 50,
             baseHeelWidthMm: 60,
         });
-        expect(fit.heelCupWidthMm).toBe(0);
         expect(fit.targetCupWidthMm).toBe(55);
+        // scale = 55/60 ≈ 0.917 → param = (0.917-1)/0.25 * 10 ≈ −3.3
+        const expected = ((55 / 60 - 1) / HEEL_CUP_WIDTH_MAX_LATERAL_SCALE) * 10;
+        expect(fit.heelCupWidthMm).toBeCloseTo(Math.round(expected * 10) / 10, 5);
+        expect(fit.heelCupWidthMm).toBeLessThan(0);
     });
 });

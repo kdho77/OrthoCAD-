@@ -33,7 +33,7 @@ const FIELDS: { key: keyof SideCorrections; label: string; min: number; max: num
     { key: "archFillMm", label: "Arch fill", min: 0, max: 12, group: "Arch" },
     { key: "apexMoveMm", label: "Apex move", min: -12, max: 12, group: "Arch" },
     { key: "heelCupDepthMm", label: "Heel cup depth", min: 0, max: 10, group: "Heel" },
-    { key: "heelCupWidthMm", label: "Heel cup width", min: 0, max: 10, group: "Heel" },
+    { key: "heelCupWidthMm", label: "Heel cup width", min: -10, max: 10, group: "Heel" },
     { key: "heelLiftMm", label: "Heel lift", min: 0, max: 20, group: "Heel" },
     { key: "medialFlangeMm", label: "Medial flange", min: 0, max: 8, group: "Flanges" },
     { key: "lateralFlangeMm", label: "Lateral flange", min: 0, max: 8, group: "Flanges" },

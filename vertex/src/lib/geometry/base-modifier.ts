@@ -670,7 +670,7 @@ function buildHeelCupWidthLateralDelta(
     const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
     const syncIndexCount = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
 
-    if (field.corrections.heelCupWidthMm <= 0) {
+    if (field.corrections.heelCupWidthMm === 0) {
         const empty = new Float32Array(count);
         return {
             raw: empty,
@@ -1925,10 +1925,10 @@ export function applyBaseModifiers(
         };
     }
 
-    // Width>0 keeps the legacy rim-conformity bottom path (lateral field is not
-    // yet cleanly samplable for the underside). Field-coupled shell sync runs
-    // only when width is inactive so the two paths never double-apply.
-    const useShellFieldSync = isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm <= 0;
+    // Non-zero width (widen or narrow) keeps the legacy rim-conformity bottom path
+    // (lateral field is not yet cleanly samplable for the underside). Field-coupled
+    // shell sync runs only when width is inactive so the two paths never double-apply.
+    const useShellFieldSync = isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm === 0;
 
     // 1) Sample the pure modifier delta. Multi-mesh top range only when shell
     //    sync is active (bottom gets F via sampleFieldDeltaAtXY below); otherwise
@@ -2181,7 +2181,7 @@ export function applyBaseModifiers(
 
     // Rim-conformity transfer: legacy vertical-stretch path. Bypassed when the
     // shell-field sync above owns the bottom (width==0). Still runs for
-    // heelCupWidthMm > 0 until lateral width is field-samplable for the underside.
+    // heelCupWidthMm ≠ 0 until lateral width is field-samplable for the underside.
     if (isMultiMesh && topVertexCount > 0 && !useShellFieldSync) {
         const rimFrame = getRimConformityFrame(
             base,

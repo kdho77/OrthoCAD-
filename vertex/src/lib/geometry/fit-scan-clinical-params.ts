@@ -5,7 +5,7 @@
  * Clinical parametric fits from registered scan landmarks / geometry.
  *
  * - Arch: optional ARCH apex marker → absolute height vs stock apex → additive archHeightMm
- * - Heel cup width: scan heel width + clearance → heelCupWidthMm widen parameter
+ * - Heel cup width: scan heel width + clearance → signed heelCupWidthMm (± widen/narrow)
  */
 
 import type { BufferGeometry } from "three";
@@ -40,7 +40,7 @@ export type HeelCupWidthFitResult = {
     scanHeelWidthMm: number;
     baseHeelWidthMm: number;
     targetCupWidthMm: number;
-    /** True when target was wider than max widen scale allows. */
+    /** True when target exceeded ± max lateral scale. */
     clamped: boolean;
 };
 
@@ -148,8 +148,8 @@ export function measureBaseHeelWidthMm(
 }
 
 /**
- * Convert desired absolute cup width into heelCupWidthMm (0–10 widen param).
- * Param only widens; if scan+clearance ≤ base width → 0.
+ * Convert desired absolute cup width into signed heelCupWidthMm (−10…+10).
+ * Positive widens; negative narrows relative to the stock base heel width.
  */
 export function heelCupWidthParamForTarget(args: {
     scanHeelWidthMm: number;
@@ -161,15 +161,6 @@ export function heelCupWidthParamForTarget(args: {
     const base = Math.max(1e-3, args.baseHeelWidthMm);
     const scale = targetCupWidthMm / base;
     const wLim = CLINICAL_LIMITS.heelCupWidthMm;
-    if (scale <= 1) {
-        return {
-            heelCupWidthMm: 0,
-            scanHeelWidthMm: args.scanHeelWidthMm,
-            baseHeelWidthMm: args.baseHeelWidthMm,
-            targetCupWidthMm,
-            clamped: false,
-        };
-    }
     const rawParam = ((scale - 1) / HEEL_CUP_WIDTH_MAX_LATERAL_SCALE) * 10;
     const rounded = Math.round(rawParam * 10) / 10;
     const heelCupWidthMm = Math.max(wLim.min, Math.min(wLim.max, rounded));
