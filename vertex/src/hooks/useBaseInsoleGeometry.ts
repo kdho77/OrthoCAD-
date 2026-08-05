@@ -187,13 +187,16 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 nativeGeoRef.current = null;
                 baseGeoRef.current = null;
                 setGeometry(null);
-                setBaseMeshLoading(side, false);
                 if (e instanceof StockGlbLoadError) {
                     useDesignStore.setState({ stockBaseError: e.message });
                 }
             })
             .finally(() => {
-                if (!cancelled) setBuilding(false);
+                if (cancelled) return;
+                setBuilding(false);
+                // Clear even when the modifier rebuild path has not run yet (e.g. zero-field
+                // designs) so Viewer3D does not stay on "Loading base…".
+                setBaseMeshLoading(side, false);
             });
         return () => {
             cancelled = true;

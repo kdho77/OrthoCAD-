@@ -502,16 +502,30 @@ export async function resolveStockBase(assetId: string): Promise<DesignBase> {
     let primarySide: string | null = DEFAULT_STOCK_PRIMARY_SIDE;
 
     // Best-effort: enrich with the real row (id + glb_path) from the table.
+    // Cap wait time — a hung PostgREST call previously left stockBaseLoading=true
+    // forever while the viewer already had a fetchable public URL from rehydrate.
     if (isSupabaseConfigured()) {
         try {
-            const row = await queryStockBaseRow(assetId, useDefault);
+            const row = await Promise.race([
+                queryStockBaseRow(assetId, useDefault),
+                new Promise<never>((_, reject) => {
+                    const timer = globalThis.setTimeout(
+                        () => reject(new Error("stock_bases query timed out after 8000ms")),
+                        8000,
+                    );
+                    // Avoid keeping the process alive in Node test runners.
+                    if (typeof timer === "object" && timer && "unref" in timer) {
+                        (timer as { unref: () => void }).unref();
+                    }
+                }),
+            ]);
             id = row.id || id;
             glbPath = row.glbPath?.trim() || glbPath;
             name = row.name || name;
             primarySide = row.primarySide ?? primarySide;
             stockResolveLog("resolveStockBase() table row", { id, glbPath, name, primarySide });
         } catch (e) {
-            // RLS-blocked / missing row / removed UUID: fall through to the known
+            // RLS-blocked / missing row / removed UUID / timeout: fall through to the known
             // default glb_path. The public URL still works for the default GLB.
             stockResolveLog("resolveStockBase() table read failed — using known default glb_path", {
                 assetId,

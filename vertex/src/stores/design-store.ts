@@ -198,7 +198,13 @@ let stockBaseAutoRetryBlocked = false;
 
 function markStockBaseResolved(): void {
     stockBaseAutoRetryBlocked = false;
-    useDesignStore.setState({ stockBaseResolutionState: "resolved" });
+    // Always clear the loading flag here — early-return paths used to leave
+    // stockBaseLoading=true after a rehydrated/session design was already usable,
+    // which stuck the viewer on "Loading base…" / "Loading stock base from server…".
+    useDesignStore.setState({
+        stockBaseResolutionState: "resolved",
+        stockBaseLoading: false,
+    });
 }
 
 function markStockBaseFailed(msg: string): void {
@@ -214,10 +220,21 @@ function markStockBaseFailed(msg: string): void {
 function upgradeStockBaseAsync(apply: () => Promise<void>, reason: string): void {
     if (stockBaseAutoRetryBlocked) {
         stockFixLog("upgradeStockBaseAsync() skipped — auto-retry blocked after prior failure", { reason });
+        // Ensure a prior "loading" bootstrap flag cannot linger after a blocked retry.
+        useDesignStore.setState({ stockBaseLoading: false });
         return;
     }
     if (stockBaseUpgradeInFlight) {
         stockFixLog("upgradeStockBaseAsync() skipped — already in flight", { reason });
+        return;
+    }
+
+    // Rehydrate / auth races can call this after paired bases already have public URLs.
+    // Do not flip loading back on — the mesh is already fetchable.
+    const current = useDesignStore.getState().design;
+    if (designStockBasesAreResolved(current)) {
+        stockFixLog("upgradeStockBaseAsync() skipped — design already fully resolved", { reason });
+        markStockBaseResolved();
         return;
     }
 
@@ -295,10 +312,12 @@ function upgradeStockBaseAsync(apply: () => Promise<void>, reason: string): void
 export function ensureDefaultStockBaseResolved(): void {
     if (!isApiConfigured()) {
         stockFixLog("ensureDefaultStockBaseResolved() skipped — API not configured");
+        useDesignStore.setState({ stockBaseLoading: false });
         return;
     }
     if (stockBaseAutoRetryBlocked) {
         stockFixLog("ensureDefaultStockBaseResolved() skipped — auto-retry blocked after failure");
+        useDesignStore.setState({ stockBaseLoading: false });
         return;
     }
     const design = useDesignStore.getState().design;
@@ -312,18 +331,13 @@ export function ensureDefaultStockBaseResolved(): void {
         assetId: getDesignStockAssetId(design),
     });
     if (!needs) {
-        if (resolved && designStockBasesAreResolved(design)) {
-            stockResolveLog("ensureDefaultStockBaseResolved() — already fully resolved", {
-                assetId: getDesignStockAssetId(design),
-                glbPath: design.paired?.rightBase?.glbPath ?? design.base?.glbPath ?? null,
-                hasUrl: Boolean(design.paired?.rightBase?.url ?? design.base?.url),
-            });
-            markStockBaseResolved();
-            return;
-        }
-        stockResolveLog(
-            "ensureDefaultStockBaseResolved() — bases present but missing glbPath/url, resolving",
-        );
+        stockResolveLog("ensureDefaultStockBaseResolved() — already fully resolved", {
+            assetId: getDesignStockAssetId(design),
+            glbPath: design.paired?.rightBase?.glbPath ?? design.base?.glbPath ?? null,
+            hasUrl: Boolean(design.paired?.rightBase?.url ?? design.base?.url),
+        });
+        markStockBaseResolved();
+        return;
     }
     upgradeStockBaseAsync(
         () => useDesignStore.getState().applyDefaultStockBase(),
@@ -811,6 +825,22 @@ export const useDesignStore = create<DesignStore>()(
             applyDefaultStockBase: async () => {
                 try {
                     const snap = get().design;
+                    // Persist rehydrate can win the race and already inject public URLs.
+                    // Skip the network round-trip so we never leave stockBaseLoading=true
+                    // while the viewer is already rendering the base GLB.
+                    if (designStockBasesAreResolved(snap)) {
+                        stockResolveLog("applyDefaultStockBase() skipped — already resolved", {
+                            assetId: getDesignStockAssetId(snap),
+                            glbPath: snap.paired?.rightBase?.glbPath ?? snap.base?.glbPath ?? null,
+                        });
+                        set({
+                            stockBaseError: null,
+                            stockBaseLoading: false,
+                            stockBaseResolutionState: "resolved",
+                        });
+                        stockBaseAutoRetryBlocked = false;
+                        return;
+                    }
                     const assetId = getDesignStockAssetId(snap);
                     stockFixLog("applyDefaultStockBase() start", { assetId });
                     stockDebug("applyDefaultStockBase() start", { assetId });
@@ -821,6 +851,19 @@ export const useDesignStore = create<DesignStore>()(
                         stockBaseResolutionState: "loading",
                     });
                     const resolved = await resolveStockBase(assetId);
+                    // Another bootstrap path (rehydrate) may have resolved while we awaited.
+                    if (designStockBasesAreResolved(get().design)) {
+                        stockResolveLog(
+                            "applyDefaultStockBase() abandoned inject — design resolved during await",
+                        );
+                        set({
+                            stockBaseError: null,
+                            stockBaseLoading: false,
+                            stockBaseResolutionState: "resolved",
+                        });
+                        stockBaseAutoRetryBlocked = false;
+                        return;
+                    }
                     const { left, right } = createDefaultStockPairedBases(resolved);
                     stockResolveLog("applyDefaultStockBase() resolved — injecting mirrored L+R pair", {
                         resolvedId: resolved.assetId,
