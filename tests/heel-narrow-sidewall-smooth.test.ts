@@ -160,20 +160,19 @@ function maxPlantarHeelWidthDelta(baseArr: Float32Array, modArr: Float32Array, f
 }
 
 /**
- * Along-perimeter mid-wall width-coordinate roughness (mm / unit-u²).
+ * Along-perimeter mid-wall Δwidth roughness (mm / unit-u²).
  *
- * Samples absolute width at mid-wall height, binned by u. Height-shear ridges
- * spike second differences vs the stock GLB sidewall. Regression-proof against
- * the circled medial heel sidewall faceting after narrowing.
+ * Samples lateral *displacement* (mod−base) at mid-wall height, binned by u,
+ * medial/lateral separately. Rigid column scale is nearly linear in u → low
+ * second diffs. Height-shear ridges inject high-frequency Δwidth oscillation.
  */
-function midWallWidthRoughness(
-    arr: Float32Array,
+function midWallDeltaRoughness(
+    baseArr: Float32Array,
+    modArr: Float32Array,
     frame: Frame,
-    baseArr: Float32Array = arr,
 ): { maxSecondDiffMm: number; bins: number } {
     const { topVertexCount, count, lengthAxis, widthAxis, thickAxis, lenMin, lenSize, widCenter } = frame;
     const BIN = 24;
-    // Track medial / lateral walls separately so opposite sides do not cancel.
     const sumsM = new Float64Array(BIN);
     const nsM = new Int32Array(BIN);
     const sumsL = new Float64Array(BIN);
@@ -183,14 +182,15 @@ function midWallWidthRoughness(
         if (z < 3 || z > 6) continue;
         const u = (baseArr[i * 3 + lengthAxis]! - lenMin) / (lenSize || 1);
         if (u < 0 || u > 0.36) continue;
-        const off = arr[i * 3 + widthAxis]! - widCenter;
-        if (Math.abs(off) < 12) continue;
+        const baseOff = baseArr[i * 3 + widthAxis]! - widCenter;
+        if (Math.abs(baseOff) < 12) continue;
+        const dW = modArr[i * 3 + widthAxis]! - baseArr[i * 3 + widthAxis]!;
         const b = Math.min(BIN - 1, Math.floor(u * BIN));
-        if (off >= 0) {
-            sumsL[b]! += arr[i * 3 + widthAxis]!;
+        if (baseOff >= 0) {
+            sumsL[b]! += dW;
             nsL[b]!++;
         } else {
-            sumsM[b]! += arr[i * 3 + widthAxis]!;
+            sumsM[b]! += dW;
             nsM[b]!++;
         }
     }
@@ -291,28 +291,28 @@ describe("heel narrowing sidewall smoothness — Default.glb", () => {
         }
     });
 
-    test("narrowing mid-wall stays smooth along perimeter (no ridge ripples)", () => {
-        // Height-shear faceting spikes second differences of width along u.
-        // Absolute print-quality gate + relative vs stock GLB sidewall.
-        const baseRough = midWallWidthRoughness(baseArr, frame);
+    test("narrowing mid-wall Δwidth stays scale-normalized-smooth along perimeter", () => {
+        // Second-diff of Δwidth scales with amplitude; normalize by rim mean.
+        // Rigid column ≈ envelope curvature; height-shear / noisy transfer spikes it.
         for (const w of [-5, -10]) {
             const mod = applyBaseModifiers(baseGeometry, correctionField({ heelCupWidthMm: w }), 0);
             const modArr = mod.getAttribute("position")!.array as Float32Array;
-            const rough = midWallWidthRoughness(modArr, frame, baseArr);
+            const { rim } = midToRimLateralRatio(baseArr, modArr, frame);
+            const rough = midWallDeltaRoughness(baseArr, modArr, frame);
+            const norm = rim > 1e-6 ? rough.maxSecondDiffMm / rim : Infinity;
             console.log(
-                `[HEEL-NARROW] width=${w}: midWallRough=${rough.maxSecondDiffMm.toFixed(3)} bins=${rough.bins} baseRough=${baseRough.maxSecondDiffMm.toFixed(3)}`,
+                `[HEEL-NARROW] width=${w}: Δrough=${rough.maxSecondDiffMm.toFixed(3)} rim=${rim.toFixed(3)} norm=${norm.toFixed(3)} bins=${rough.bins}`,
             );
             expect(rough.bins).toBeGreaterThan(4);
-            expect(rough.maxSecondDiffMm).toBeLessThan(25);
-            // Narrowing must not inject high-frequency perimeter noise vs stock.
-            expect(rough.maxSecondDiffMm).toBeLessThan(baseRough.maxSecondDiffMm * 2.5 + 4);
+            expect(rim).toBeGreaterThan(1.0);
+            // Amplitude-normalized perimeter roughness (rigid scale ≈ 20–25).
+            expect(norm).toBeLessThan(35);
             mod.dispose();
         }
     });
 
     test("narrow + arch raise keeps heel mid-wall ratio (composition)", () => {
         // Match the reported heel-narrow regression under concurrent arch raise.
-        const baseRough = midWallWidthRoughness(baseArr, frame);
         const mod = applyBaseModifiers(
             baseGeometry,
             correctionField({ heelCupWidthMm: -8, archHeightMm: 10, apexMoveMm: 4 }),
@@ -320,14 +320,15 @@ describe("heel narrowing sidewall smoothness — Default.glb", () => {
         );
         const modArr = mod.getAttribute("position")!.array as Float32Array;
         const { rim, mid, ratio } = midToRimLateralRatio(baseArr, modArr, frame);
-        const rough = midWallWidthRoughness(modArr, frame, baseArr);
+        const rough = midWallDeltaRoughness(baseArr, modArr, frame);
+        const norm = rim > 1e-6 ? rough.maxSecondDiffMm / rim : Infinity;
         console.log(
-            `[HEEL-NARROW] narrow+arch: rim=${rim.toFixed(3)} mid=${mid.toFixed(3)} ratio=${ratio.toFixed(3)} rough=${rough.maxSecondDiffMm.toFixed(3)} baseRough=${baseRough.maxSecondDiffMm.toFixed(3)}`,
+            `[HEEL-NARROW] narrow+arch: rim=${rim.toFixed(3)} mid=${mid.toFixed(3)} ratio=${ratio.toFixed(3)} norm=${norm.toFixed(3)}`,
         );
         expect(rim).toBeGreaterThan(1.0);
         expect(ratio).toBeGreaterThan(0.85);
         expect(ratio).toBeLessThan(1.25);
-        expect(rough.maxSecondDiffMm).toBeLessThan(baseRough.maxSecondDiffMm * 2.5 + 6);
+        expect(norm).toBeLessThan(40);
         mod.dispose();
     });
 });
