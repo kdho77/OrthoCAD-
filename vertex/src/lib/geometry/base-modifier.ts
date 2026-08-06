@@ -1800,12 +1800,20 @@ function getRimConformityFrame(
  * In the arch band (α→1), uses re-loft W(h)·Δ_rim so the sidewall stretches as
  * a rounded profile instead of a vertical extrusion (PR #117). Optional
  * `verticalDelta` reshapes the thick axis to the height-field falloff (PR #116).
+ *
+ * Optional `lateralField` (heel-cup narrowing): each wall vert carries its own
+ * analytic lateral delta at full strength, and the width component transferred
+ * from the rim is measured RELATIVE to it — lat(i) = L_own(i) + w·(L_rim − L_own).
+ * Without this, the height-tapered transfer leaves the lower sidewall at the
+ * original width while the top rim narrows, bulging the wall outside the top
+ * mesh border (unprintable overhang).
  */
 function transferRimConformityDeltas(
     base: BufferGeometry,
     array: Float32Array,
     frame: RimConformityFrame,
     verticalDelta?: Float32Array | null,
+    lateralField?: Float32Array | null,
 ): void {
     const basePos = base.getAttribute("position");
     if (!basePos) return;
@@ -1820,6 +1828,7 @@ function transferRimConformityDeltas(
         seeds,
         topVertexCount,
         thickAxis,
+        widthAxis,
     } = frame;
 
     for (let k = 0; k < wallVertexIndex.length; k++) {
@@ -1830,6 +1839,7 @@ function transferRimConformityDeltas(
             );
         }
         const alpha = wallAlpha[k]!;
+        const latOwn = lateralField ? lateralField[i]! : 0;
 
         // Corridor term (heel behavior), scaled 1−α.
         let cx = 0;
@@ -1848,6 +1858,11 @@ function transferRimConformityDeltas(
                 else if (thickAxis === 1) dy += fieldAdj;
                 else dz += fieldAdj;
             }
+            if (lateralField) {
+                if (widthAxis === 0) dx -= latOwn;
+                else if (widthAxis === 1) dy -= latOwn;
+                else dz -= latOwn;
+            }
             cx = w * dx;
             cy = w * dy;
             cz = w * dz;
@@ -1862,14 +1877,25 @@ function transferRimConformityDeltas(
         if (alpha > 0 && archS >= 0 && archW > 0) {
             const seed = seeds[archS]!;
             const j = seed.topRimIndex;
-            ax = archW * (array[j * 3]! - baseArr[j * 3]!);
-            ay = archW * (array[j * 3 + 1]! - baseArr[j * 3 + 1]!);
-            az = archW * (array[j * 3 + 2]! - baseArr[j * 3 + 2]!);
+            let dx = array[j * 3]! - baseArr[j * 3]!;
+            let dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
+            let dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
+            if (lateralField) {
+                if (widthAxis === 0) dx -= latOwn;
+                else if (widthAxis === 1) dy -= latOwn;
+                else dz -= latOwn;
+            }
+            ax = archW * dx;
+            ay = archW * dy;
+            az = archW * dz;
         }
 
-        array[i * 3] = baseArr[i * 3]! + (1 - alpha) * cx + alpha * ax;
-        array[i * 3 + 1] = baseArr[i * 3 + 1]! + (1 - alpha) * cy + alpha * ay;
-        array[i * 3 + 2] = baseArr[i * 3 + 2]! + (1 - alpha) * cz + alpha * az;
+        const ox = widthAxis === 0 ? latOwn : 0;
+        const oy = widthAxis === 1 ? latOwn : 0;
+        const oz = widthAxis === 2 ? latOwn : 0;
+        array[i * 3] = baseArr[i * 3]! + ox + (1 - alpha) * cx + alpha * ax;
+        array[i * 3 + 1] = baseArr[i * 3 + 1]! + oy + (1 - alpha) * cy + alpha * ay;
+        array[i * 3 + 2] = baseArr[i * 3 + 2]! + oz + (1 - alpha) * cz + alpha * az;
     }
 }
 
@@ -2195,6 +2221,17 @@ export function applyBaseModifiers(
               )
             : null;
 
+    // Heel-cup NARROWING must contract the entire shell cross-section: if only
+    // the top sheet moved inward, the lower sidewall + plantar outline would
+    // stay at the original width and extend WIDER than the top mesh border
+    // (unprintable bulge). The lateral field is analytic in (u, width-offset),
+    // so it is safely samplable for the underside; applying it at full strength
+    // everywhere keeps top/wall/bottom in lockstep. Purely lateral — bottom Z
+    // is untouched, so HC-1 holds. Widening keeps the legacy top-only path
+    // (bottom fixed; wall follows via rim-conformity) — there the top border
+    // is always the widest extent, so the print constraint already holds.
+    const heelCupNarrowing = field.corrections.heelCupWidthMm < 0;
+
     // Parallel composition: vertical, width-lateral, and depth-tangent displacements
     // are each computed from baseline positions (above) and summed here in one pass.
     // Neither width nor depth reads the other's deformed coordinates — clinical
@@ -2208,7 +2245,7 @@ export function applyBaseModifiers(
             w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
         }
         const vertD = delta[i]! * w;
-        const latD = lateralDelta[i]! * w;
+        const latD = lateralDelta[i]! * (heelCupNarrowing ? 1 : w);
         let dx = 0;
         let dy = 0;
         let dz = 0;
@@ -2375,7 +2412,11 @@ export function applyBaseModifiers(
             lenSize,
         );
         if (rimFrame && rimFrame.seeds.length > 0) {
-            transferRimConformityDeltas(base, array, rimFrame, delta);
+            // Narrowing: wall verts keep their own analytic lateral delta (already
+            // applied above) and the transfer's width component is relative to it,
+            // so the sidewall follows the narrowed rim instead of being reset to
+            // the original (wider) footprint by the height-tapered rim delta.
+            transferRimConformityDeltas(base, array, rimFrame, delta, heelCupNarrowing ? lateralDelta : null);
         }
     }
 
