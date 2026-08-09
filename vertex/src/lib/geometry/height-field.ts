@@ -63,6 +63,21 @@ export function heelCupLongitudinalEnvelope(u: number): number {
 }
 
 /**
+ * Width-only longitudinal envelope. Longer anterior reach than the depth/heel
+ * bowl mask so planform narrowing/widening eases through the arch↔heel blend
+ * (u≈0.24–0.36) instead of dying at u≈0.28 — where a proximal-shifted arch
+ * apex (apexMoveMm≈−12) is already near peak and Top-view shows a medial
+ * outline kink. Aligns release near HEEL_U_MAX (0.38) / arch apex station.
+ * Depth bowl keeps {@link heelCupLongitudinalEnvelope} unchanged.
+ */
+export const HEEL_CUP_WIDTH_ENV_CENTER = 0.12;
+export const HEEL_CUP_WIDTH_ENV_RADIUS = 0.28;
+
+export function heelCupWidthLongitudinalEnvelope(u: number): number {
+    return bump(u, HEEL_CUP_WIDTH_ENV_CENTER, HEEL_CUP_WIDTH_ENV_RADIUS);
+}
+
+/**
  * Per-vertex lateral scale factor: 1.0 outside the heel zone; approaches targetScale
  * inside. Continuous in u (no hard zone cut). Positive heelCupWidthMm widens;
  * negative narrows.
@@ -70,7 +85,7 @@ export function heelCupLongitudinalEnvelope(u: number): number {
 export function heelCupWidthScaleFactor(u: number, heelCupWidthMm: number): number {
     if (heelCupWidthMm === 0) return 1;
     const targetScale = 1 + (heelCupWidthMm / 10) * HEEL_CUP_WIDTH_MAX_LATERAL_SCALE;
-    const env = heelCupLongitudinalEnvelope(u);
+    const env = heelCupWidthLongitudinalEnvelope(u);
     return 1 + env * (targetScale - 1);
 }
 

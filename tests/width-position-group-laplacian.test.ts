@@ -27,16 +27,17 @@ import type { Side, SideCorrections } from "@/types";
 
 const FIXTURE_PATH = resolve(process.cwd(), "tests/fixtures/Default.glb");
 
-/** Locked pre-Option-2 smoothed jumps were measured on a TORN index-Laplacian
- * field (coincident copies diverged → topRim=4). On the welded field they are
- * not reproducible; we pin the welded baselines instead and keep the <0.85 gate. */
+/** Locked welded-Laplacian transition-band jumps. Retuned after the width-only
+ * longitudinal envelope was lengthened (HEEL_CUP_WIDTH_ENV_RADIUS=0.28) so
+ * planform eases through the arch↔heel blend — raw envelope gradient (and thus
+ * welded jump) is lower than the short bump(u,0.1,0.18) baselines. Gate <0.85. */
 const WELDED_SMOOTH_JUMP_MM: Record<number, number> = {
-    0.5: 0.0401,
-    1: 0.0802,
-    2: 0.1604,
-    5: 0.401,
-    8: 0.6416,
-    10: 0.8021,
+    0.5: 0.0255,
+    1: 0.0509,
+    2: 0.1018,
+    5: 0.2545,
+    8: 0.4072,
+    10: 0.509,
 };
 
 /** Allow small float/convergence drift around welded baselines. */
