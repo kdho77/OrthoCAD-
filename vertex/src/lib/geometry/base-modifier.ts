@@ -723,26 +723,6 @@ function buildHeelCupWidthLateralDelta(
         }
     }
 
-    // Narrowing must keep a homologous radial scale on top + bottom + wall so the
-    // loft from the flat plantar edge to the top rim stays C0-smooth. Top-only
-    // Laplacian diffusion makes L_rim diverge from the bottom's analytic field;
-    // height-blended rim transfer then shears the wall into a shelf, and
-    // footprint-IDW "fixes" fold the plantar floor (180° dihedrals). For
-    // narrowing: coincidence-weld only (no relax). Widening keeps the welded
-    // Laplacian (top-only path; bottom stays fixed).
-    const narrowing = field.corrections.heelCupWidthMm < 0;
-    if (narrowing) {
-        const smoothed = new Float32Array(raw);
-        syncCoincidentDeltas(smoothed, groups);
-        return {
-            raw,
-            smoothed,
-            coincidenceSyncIndexCount,
-            crossMeshCoincidenceGroupCount,
-            coincidentGroupCount,
-        };
-    }
-
     const allowN = (idx: number) => allowTopMeshNeighbor(idx, isMultiMesh, topVertexCount, topFactors);
     // Position-welded Laplacian: coincident copies are one supernode during
     // diffusion (cannot diverge), then scatter identical deltas. Avoids both
@@ -1821,12 +1801,12 @@ function getRimConformityFrame(
  * a rounded profile instead of a vertical extrusion (PR #117). Optional
  * `verticalDelta` reshapes the thick axis to the height-field falloff (PR #116).
  *
- * Optional `lateralField` (heel-cup narrowing): the width-axis component is
- * stripped from the height-weighted rim scatter and replaced by each wall
- * vert's own homologous lateral at full strength. Narrowing skips the top-only
- * Laplacian so top/bottom/wall share one analytic radial scale — the loft from
- * the flat plantar edge to the top rim stays continuous (no height-shear shelf).
- * Widening leaves `lateralField` null and keeps the legacy height-tapered path.
+ * Optional `lateralField` (heel-cup narrowing): each wall vert carries its own
+ * analytic lateral delta at full strength, and the width component transferred
+ * from the rim is measured RELATIVE to it — lat(i) = L_own(i) + w·(L_rim − L_own).
+ * Without this, the height-tapered transfer leaves the lower sidewall at the
+ * original width while the top rim narrows, bulging the wall outside the top
+ * mesh border (unprintable overhang).
  */
 function transferRimConformityDeltas(
     base: BufferGeometry,
@@ -1879,10 +1859,9 @@ function transferRimConformityDeltas(
                 else dz += fieldAdj;
             }
             if (lateralField) {
-                // Zero width-axis rim delta: homologous latOwn reapplied below.
-                if (widthAxis === 0) dx = 0;
-                else if (widthAxis === 1) dy = 0;
-                else dz = 0;
+                if (widthAxis === 0) dx -= latOwn;
+                else if (widthAxis === 1) dy -= latOwn;
+                else dz -= latOwn;
             }
             cx = w * dx;
             cy = w * dy;
@@ -1902,9 +1881,9 @@ function transferRimConformityDeltas(
             let dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
             let dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
             if (lateralField) {
-                if (widthAxis === 0) dx = 0;
-                else if (widthAxis === 1) dy = 0;
-                else dz = 0;
+                if (widthAxis === 0) dx -= latOwn;
+                else if (widthAxis === 1) dy -= latOwn;
+                else dz -= latOwn;
             }
             ax = archW * dx;
             ay = archW * dy;
@@ -2427,17 +2406,6 @@ export function applyBaseModifiers(
         topVertexCount,
     );
 
-    // Heel-cup NARROWING must contract the entire shell cross-section: if only
-    // the top sheet moved inward, the lower sidewall + plantar outline would
-    // stay at the original width and extend WIDER than the top mesh border
-    // (unprintable bulge). The lateral field is analytic in (u, width-offset),
-    // so it is safely samplable for the underside; applying it at full strength
-    // everywhere keeps top/wall/bottom in lockstep. Purely lateral — bottom Z
-    // is untouched, so HC-1 holds. Widening keeps the legacy top-only path
-    // (bottom fixed; wall follows via rim-conformity) — there the top border
-    // is always the widest extent, so the print constraint already holds.
-    const heelCupNarrowing = field.corrections.heelCupWidthMm < 0;
-
     // Heel-cup depth tangent displacement (see field construction above). The
     // frame is a pure function of the base geometry (cached per base), only the
     // depthMm scale changes per edit — no per-drag rebuild cost (HC-6).
@@ -2471,6 +2439,17 @@ export function applyBaseModifiers(
                   depthVec,
               )
             : null;
+
+    // Heel-cup NARROWING must contract the entire shell cross-section: if only
+    // the top sheet moved inward, the lower sidewall + plantar outline would
+    // stay at the original width and extend WIDER than the top mesh border
+    // (unprintable bulge). The lateral field is analytic in (u, width-offset),
+    // so it is safely samplable for the underside; applying it at full strength
+    // everywhere keeps top/wall/bottom in lockstep. Purely lateral — bottom Z
+    // is untouched, so HC-1 holds. Widening keeps the legacy top-only path
+    // (bottom fixed; wall follows via rim-conformity) — there the top border
+    // is always the widest extent, so the print constraint already holds.
+    const heelCupNarrowing = field.corrections.heelCupWidthMm < 0;
 
     // Parallel composition: vertical, width-lateral, and depth-tangent displacements
     // are each computed from baseline positions (above) and summed here in one pass.
@@ -2652,7 +2631,10 @@ export function applyBaseModifiers(
             lenSize,
         );
         if (rimFrame && rimFrame.seeds.length > 0) {
-            // Narrowing: homologous own-only lateral (smooth plantar→rim loft).
+            // Narrowing: wall verts keep their own analytic lateral delta (already
+            // applied above) and the transfer's width component is relative to it,
+            // so the sidewall follows the narrowed rim instead of being reset to
+            // the original (wider) footprint by the height-tapered rim delta.
             transferRimConformityDeltas(base, array, rimFrame, delta, heelCupNarrowing ? lateralDelta : null);
             // Print-quality wall smoothing: weld coincident copies + diffuse the
             // wall displacement field (plantar band and rim-paired wall tops
