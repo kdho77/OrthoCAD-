@@ -1800,12 +1800,20 @@ function getRimConformityFrame(
  * In the arch band (α→1), uses re-loft W(h)·Δ_rim so the sidewall stretches as
  * a rounded profile instead of a vertical extrusion (PR #117). Optional
  * `verticalDelta` reshapes the thick axis to the height-field falloff (PR #116).
+ *
+ * Optional `lateralField` (heel-cup narrowing): each wall vert carries its own
+ * analytic lateral delta at full strength, and the width component transferred
+ * from the rim is measured RELATIVE to it — lat(i) = L_own(i) + w·(L_rim − L_own).
+ * Without this, the height-tapered transfer leaves the lower sidewall at the
+ * original width while the top rim narrows, bulging the wall outside the top
+ * mesh border (unprintable overhang).
  */
 function transferRimConformityDeltas(
     base: BufferGeometry,
     array: Float32Array,
     frame: RimConformityFrame,
     verticalDelta?: Float32Array | null,
+    lateralField?: Float32Array | null,
 ): void {
     const basePos = base.getAttribute("position");
     if (!basePos) return;
@@ -1820,6 +1828,7 @@ function transferRimConformityDeltas(
         seeds,
         topVertexCount,
         thickAxis,
+        widthAxis,
     } = frame;
 
     for (let k = 0; k < wallVertexIndex.length; k++) {
@@ -1830,6 +1839,7 @@ function transferRimConformityDeltas(
             );
         }
         const alpha = wallAlpha[k]!;
+        const latOwn = lateralField ? lateralField[i]! : 0;
 
         // Corridor term (heel behavior), scaled 1−α.
         let cx = 0;
@@ -1848,6 +1858,11 @@ function transferRimConformityDeltas(
                 else if (thickAxis === 1) dy += fieldAdj;
                 else dz += fieldAdj;
             }
+            if (lateralField) {
+                if (widthAxis === 0) dx -= latOwn;
+                else if (widthAxis === 1) dy -= latOwn;
+                else dz -= latOwn;
+            }
             cx = w * dx;
             cy = w * dy;
             cz = w * dz;
@@ -1862,14 +1877,244 @@ function transferRimConformityDeltas(
         if (alpha > 0 && archS >= 0 && archW > 0) {
             const seed = seeds[archS]!;
             const j = seed.topRimIndex;
-            ax = archW * (array[j * 3]! - baseArr[j * 3]!);
-            ay = archW * (array[j * 3 + 1]! - baseArr[j * 3 + 1]!);
-            az = archW * (array[j * 3 + 2]! - baseArr[j * 3 + 2]!);
+            let dx = array[j * 3]! - baseArr[j * 3]!;
+            let dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
+            let dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
+            if (lateralField) {
+                if (widthAxis === 0) dx -= latOwn;
+                else if (widthAxis === 1) dy -= latOwn;
+                else dz -= latOwn;
+            }
+            ax = archW * dx;
+            ay = archW * dy;
+            az = archW * dz;
         }
 
-        array[i * 3] = baseArr[i * 3]! + (1 - alpha) * cx + alpha * ax;
-        array[i * 3 + 1] = baseArr[i * 3 + 1]! + (1 - alpha) * cy + alpha * ay;
-        array[i * 3 + 2] = baseArr[i * 3 + 2]! + (1 - alpha) * cz + alpha * az;
+        const ox = widthAxis === 0 ? latOwn : 0;
+        const oy = widthAxis === 1 ? latOwn : 0;
+        const oz = widthAxis === 2 ? latOwn : 0;
+        array[i * 3] = baseArr[i * 3]! + ox + (1 - alpha) * cx + alpha * ax;
+        array[i * 3 + 1] = baseArr[i * 3 + 1]! + oy + (1 - alpha) * cy + alpha * ay;
+        array[i * 3 + 2] = baseArr[i * 3 + 2]! + oz + (1 - alpha) * cz + alpha * az;
+    }
+}
+
+// --- Bottom-wall displacement smoothing (print-quality sidewalls) -----------
+// The corridor transfer and arch re-loft assign each wall vert a nearest seed:
+// piecewise-constant NN assignment, the ARCH_WALL_RELOFT_SPAN_MM cutoff, and
+// unwelded coincident GLB position copies all inject step discontinuities into
+// the wall displacement field — visible as folds/tears on the printed wall.
+// This pass welds coincident copies into supernodes and diffuses the FULL 3D
+// wall displacement (same proven pattern as the width lateral field and the
+// depth vector field), with the plantar band and rim-paired wall tops pinned:
+//  - plantar pin keeps HC-1 (ground contact) mathematically intact;
+//  - wall-top pin keeps rim closure (wall top ≡ transferred rim delta).
+// A deviation clamp bounds shape drift to SMOOTH_INWARD_LIMIT_MM.
+
+/** Diffusion iterations for the wall displacement field (0.5 blend per iter). */
+const WALL_DISPLACEMENT_SMOOTH_ITERS = 4;
+
+interface BottomWallSmoothFrame {
+    /** Weld group per vertex; −1 for top-mesh verts. */
+    groupOf: Int32Array;
+    members: number[][];
+    /** Supernode adjacency (bottom mesh only). */
+    adj: number[][];
+    /** Pinned groups: plantar band (HC-1) + rim-paired wall tops (rim closure). */
+    pinned: Uint8Array;
+    groupCount: number;
+}
+
+const bottomWallSmoothCache = new WeakMap<BufferGeometry, BottomWallSmoothFrame | null>();
+
+function buildBottomWallSmoothFrame(
+    base: BufferGeometry,
+    topVertexCount: number,
+    thickAxis: AxisIndex,
+    rimFrame: RimConformityFrame,
+): BottomWallSmoothFrame | null {
+    const pos = base.getAttribute("position");
+    if (!pos || topVertexCount <= 0 || topVertexCount >= pos.count) return null;
+    const baseArr = pos.array as Float32Array;
+    const count = pos.count;
+
+    const groupOf = new Int32Array(count).fill(-1);
+    const members: number[][] = [];
+    const keyToGroup = new Map<string, number>();
+    for (let i = topVertexCount; i < count; i++) {
+        const k = widthCoincidentQuantKey(baseArr[i * 3]!, baseArr[i * 3 + 1]!, baseArr[i * 3 + 2]!);
+        let g = keyToGroup.get(k);
+        if (g === undefined) {
+            g = members.length;
+            keyToGroup.set(k, g);
+            members.push([]);
+        }
+        members[g]!.push(i);
+        groupOf[i] = g;
+    }
+    const groupCount = members.length;
+
+    const indexAdj = getBaseAdjacency(base);
+    if (!indexAdj) return null;
+    const adj: number[][] = Array.from({ length: groupCount }, () => []);
+    const seen: Set<number>[] = Array.from({ length: groupCount }, () => new Set<number>());
+    for (let g = 0; g < groupCount; g++) {
+        for (const vi of members[g]!) {
+            for (const n of indexAdj[vi] ?? []) {
+                if (n < topVertexCount) continue;
+                const ng = groupOf[n]!;
+                if (ng < 0 || ng === g || seen[g]!.has(ng)) continue;
+                seen[g]!.add(ng);
+                adj[g]!.push(ng);
+            }
+        }
+    }
+
+    const pinned = new Uint8Array(groupCount);
+    for (let g = 0; g < groupCount; g++) {
+        for (const vi of members[g]!) {
+            if (baseArr[vi * 3 + thickAxis]! <= PLANTAR_Z_MAX_MM) {
+                pinned[g] = 1;
+                break;
+            }
+        }
+    }
+    for (const seed of rimFrame.seeds) {
+        const g = groupOf[seed.wallTopIndex]!;
+        if (g >= 0) pinned[g] = 1;
+    }
+
+    // Pin the full bottom-mesh boundary (weld-group level: a group-edge with
+    // exactly one incident face). The wall-top rim loop feeds the top↔bottom
+    // bridge strip in closeGlbInsoleToSolid — smoothing must not move it, or
+    // bridge quads can graze the wall (heel self-intersections). Slit borders
+    // are pinned by the same rule.
+    const index = base.index;
+    if (index) {
+        const idxArr = index.array as Uint32Array | Uint16Array;
+        const edgeFaceCount = new Map<string, number>();
+        for (let f = 0; f < idxArr.length; f += 3) {
+            const a = idxArr[f]!;
+            const b = idxArr[f + 1]!;
+            const c = idxArr[f + 2]!;
+            if (a < topVertexCount || b < topVertexCount || c < topVertexCount) continue;
+            const ga = groupOf[a]!;
+            const gb = groupOf[b]!;
+            const gc = groupOf[c]!;
+            for (const [p, q] of [
+                [ga, gb],
+                [gb, gc],
+                [gc, ga],
+            ] as const) {
+                if (p === q || p < 0 || q < 0) continue;
+                const k = p < q ? `${p},${q}` : `${q},${p}`;
+                edgeFaceCount.set(k, (edgeFaceCount.get(k) ?? 0) + 1);
+            }
+        }
+        for (const [k, n] of edgeFaceCount) {
+            if (n !== 1) continue;
+            const comma = k.indexOf(",");
+            pinned[Number(k.slice(0, comma))] = 1;
+            pinned[Number(k.slice(comma + 1))] = 1;
+        }
+    }
+
+    return { groupOf, members, adj, pinned, groupCount };
+}
+
+function getBottomWallSmoothFrame(
+    base: BufferGeometry,
+    topVertexCount: number,
+    thickAxis: AxisIndex,
+    rimFrame: RimConformityFrame,
+): BottomWallSmoothFrame | null {
+    const cached = bottomWallSmoothCache.get(base);
+    if (cached !== undefined) return cached;
+    const frame = buildBottomWallSmoothFrame(base, topVertexCount, thickAxis, rimFrame);
+    bottomWallSmoothCache.set(base, frame);
+    return frame;
+}
+
+/**
+ * Weld + diffuse the bottom-shell displacement field (current − base) and
+ * scatter it back. Group-averaging alone already closes coincident-copy tears;
+ * diffusion then smears NN-seed / span-cutoff steps across ~4 rings.
+ */
+function smoothBottomWallDisplacements(
+    base: BufferGeometry,
+    array: Float32Array,
+    frame: BottomWallSmoothFrame,
+    iterations: number,
+): void {
+    const baseArr = base.getAttribute("position")!.array as Float32Array;
+    const { members, adj, pinned, groupCount } = frame;
+
+    let disp = new Float64Array(groupCount * 3);
+    for (let g = 0; g < groupCount; g++) {
+        const m = members[g]!;
+        let sx = 0;
+        let sy = 0;
+        let sz = 0;
+        for (const vi of m) {
+            sx += array[vi * 3]! - baseArr[vi * 3]!;
+            sy += array[vi * 3 + 1]! - baseArr[vi * 3 + 1]!;
+            sz += array[vi * 3 + 2]! - baseArr[vi * 3 + 2]!;
+        }
+        disp[g * 3] = sx / m.length;
+        disp[g * 3 + 1] = sy / m.length;
+        disp[g * 3 + 2] = sz / m.length;
+    }
+    const init = disp.slice();
+
+    for (let it = 0; it < iterations; it++) {
+        const next = new Float64Array(groupCount * 3);
+        for (let g = 0; g < groupCount; g++) {
+            if (pinned[g] || adj[g]!.length === 0) {
+                next[g * 3] = disp[g * 3]!;
+                next[g * 3 + 1] = disp[g * 3 + 1]!;
+                next[g * 3 + 2] = disp[g * 3 + 2]!;
+                continue;
+            }
+            let sx = 0;
+            let sy = 0;
+            let sz = 0;
+            for (const n of adj[g]!) {
+                sx += disp[n * 3]!;
+                sy += disp[n * 3 + 1]!;
+                sz += disp[n * 3 + 2]!;
+            }
+            const inv = 1 / adj[g]!.length;
+            next[g * 3] = disp[g * 3]! * 0.5 + sx * inv * 0.5;
+            next[g * 3 + 1] = disp[g * 3 + 1]! * 0.5 + sy * inv * 0.5;
+            next[g * 3 + 2] = disp[g * 3 + 2]! * 0.5 + sz * inv * 0.5;
+        }
+        disp = next;
+    }
+
+    // Deviation clamp: smoothing may not drift a group more than the clinical
+    // guard away from its transferred (raw) displacement.
+    for (let g = 0; g < groupCount; g++) {
+        const dx = disp[g * 3]! - init[g * 3]!;
+        const dy = disp[g * 3 + 1]! - init[g * 3 + 1]!;
+        const dz = disp[g * 3 + 2]! - init[g * 3 + 2]!;
+        const dev = Math.hypot(dx, dy, dz);
+        if (dev > SMOOTH_INWARD_LIMIT_MM) {
+            const k = SMOOTH_INWARD_LIMIT_MM / dev;
+            disp[g * 3] = init[g * 3]! + dx * k;
+            disp[g * 3 + 1] = init[g * 3 + 1]! + dy * k;
+            disp[g * 3 + 2] = init[g * 3 + 2]! + dz * k;
+        }
+    }
+
+    for (let g = 0; g < groupCount; g++) {
+        const gx = disp[g * 3]!;
+        const gy = disp[g * 3 + 1]!;
+        const gz = disp[g * 3 + 2]!;
+        for (const vi of members[g]!) {
+            array[vi * 3] = baseArr[vi * 3]! + gx;
+            array[vi * 3 + 1] = baseArr[vi * 3 + 1]! + gy;
+            array[vi * 3 + 2] = baseArr[vi * 3 + 2]! + gz;
+        }
     }
 }
 
@@ -2195,6 +2440,17 @@ export function applyBaseModifiers(
               )
             : null;
 
+    // Heel-cup NARROWING must contract the entire shell cross-section: if only
+    // the top sheet moved inward, the lower sidewall + plantar outline would
+    // stay at the original width and extend WIDER than the top mesh border
+    // (unprintable bulge). The lateral field is analytic in (u, width-offset),
+    // so it is safely samplable for the underside; applying it at full strength
+    // everywhere keeps top/wall/bottom in lockstep. Purely lateral — bottom Z
+    // is untouched, so HC-1 holds. Widening keeps the legacy top-only path
+    // (bottom fixed; wall follows via rim-conformity) — there the top border
+    // is always the widest extent, so the print constraint already holds.
+    const heelCupNarrowing = field.corrections.heelCupWidthMm < 0;
+
     // Parallel composition: vertical, width-lateral, and depth-tangent displacements
     // are each computed from baseline positions (above) and summed here in one pass.
     // Neither width nor depth reads the other's deformed coordinates — clinical
@@ -2208,7 +2464,7 @@ export function applyBaseModifiers(
             w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
         }
         const vertD = delta[i]! * w;
-        const latD = lateralDelta[i]! * w;
+        const latD = lateralDelta[i]! * (heelCupNarrowing ? 1 : w);
         let dx = 0;
         let dy = 0;
         let dz = 0;
@@ -2375,7 +2631,18 @@ export function applyBaseModifiers(
             lenSize,
         );
         if (rimFrame && rimFrame.seeds.length > 0) {
-            transferRimConformityDeltas(base, array, rimFrame, delta);
+            // Narrowing: wall verts keep their own analytic lateral delta (already
+            // applied above) and the transfer's width component is relative to it,
+            // so the sidewall follows the narrowed rim instead of being reset to
+            // the original (wider) footprint by the height-tapered rim delta.
+            transferRimConformityDeltas(base, array, rimFrame, delta, heelCupNarrowing ? lateralDelta : null);
+            // Print-quality wall smoothing: weld coincident copies + diffuse the
+            // wall displacement field (plantar band and rim-paired wall tops
+            // pinned) so NN-seed steps and copy tears cannot fold the sidewall.
+            const wallFrame = getBottomWallSmoothFrame(base, topVertexCount, thickAxis, rimFrame);
+            if (wallFrame) {
+                smoothBottomWallDisplacements(base, array, wallFrame, WALL_DISPLACEMENT_SMOOTH_ITERS);
+            }
         }
     }
 

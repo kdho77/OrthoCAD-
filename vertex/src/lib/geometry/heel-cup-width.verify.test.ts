@@ -8,9 +8,11 @@ import {
     applyBaseModifiers,
     BASE_BOTTOM_DELTA_TOLERANCE_MM,
     diagnoseHeelCupWidthLateral,
+    PLANTAR_Z_MAX_MM,
 } from "@/lib/geometry/base-modifier";
 import { constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { deriveNativeShellThicknessDatum } from "@/lib/geometry/native-shell-thickness";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import type { SideCorrections } from "@/types";
 import { DEFAULT_GLB_FIXTURE_PATH } from "../../../../tests/helpers/load-production-default-glb";
@@ -101,7 +103,10 @@ describe("heel cup width — Default.glb verification", () => {
         const topN = (raw.userData as { topVertexCount?: number }).topVertexCount ?? basePos.length / 3;
         raw.computeBoundingBox();
         const { thickAxis, widthAxis } = detectAxes(raw.boundingBox!);
-        const field10 = widthField(10);
+        // Datum-neutral thickness (offset 0) so the width-only path stays purely
+        // lateral — the Option C thickness lift is exercised by its own suite.
+        const datum = deriveNativeShellThicknessDatum(raw);
+        const field10 = { ...widthField(10), thicknessMm: datum?.nativeMinClearanceMm ?? 3 };
         const diag10 = diagnoseHeelCupWidthLateral(raw, field10);
         const modified = applyBaseModifiers(raw, field10, 0);
         const modPos = modified.getAttribute("position")!.array as Float32Array;
@@ -112,8 +117,13 @@ describe("heel cup width — Default.glb verification", () => {
         for (let i = 0; i < modPos.length / 3; i++) {
             const dThick = Math.abs(modPos[i * 3 + thickAxis]! - basePos[i * 3 + thickAxis]!);
             const dWidth = Math.abs(modPos[i * 3 + widthAxis]! - basePos[i * 3 + widthAxis]!);
-            if (i >= topN) maxBottomThickDrift = Math.max(maxBottomThickDrift, dThick);
-            else {
+            if (i >= topN) {
+                // HC-1 plantar band only — rim-conformity may move the side wall
+                // (e.g. thickness-datum lift transfers to wall verts by design).
+                if (basePos[i * 3 + thickAxis]! <= PLANTAR_Z_MAX_MM) {
+                    maxBottomThickDrift = Math.max(maxBottomThickDrift, dThick);
+                }
+            } else {
                 maxTopThickDrift = Math.max(maxTopThickDrift, dThick);
                 maxWidthSpread = Math.max(maxWidthSpread, dWidth);
             }
@@ -132,6 +142,94 @@ describe("heel cup width — Default.glb verification", () => {
         expect(maxBottomThickDrift).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM);
         expect(maxTopThickDrift).toBeLessThan(CENTERLINE_EPSILON_MM);
         expect(maxWidthSpread).toBeGreaterThan(1.0);
+
+        modified.dispose();
+        raw.dispose();
+    });
+
+    test("narrowing (width −10): sidewall follows the top border, HC-1 intact", async () => {
+        const group = await loadGlbFromBuffer(await loadDefaultGlbBuffer());
+        const merged = extractMergedGeometry(group);
+        expect(merged).not.toBeNull();
+        const raw = merged!.geometry;
+
+        const basePos = raw.getAttribute("position")!.array as Float32Array;
+        const topN = (raw.userData as { topVertexCount?: number }).topVertexCount ?? basePos.length / 3;
+        raw.computeBoundingBox();
+        const box = raw.boundingBox!;
+        const { thickAxis, widthAxis } = detectAxes(box);
+        const lengthAxis = [0, 1, 2].find((a) => a !== thickAxis && a !== widthAxis)!;
+        const axisMin = [box.min.x, box.min.y, box.min.z];
+        const axisMax = [box.max.x, box.max.y, box.max.z];
+        const lenMin = axisMin[lengthAxis]!;
+        const lenSize = axisMax[lengthAxis]! - lenMin || 1;
+        const widCenter = (axisMin[widthAxis]! + axisMax[widthAxis]!) / 2;
+
+        const modified = applyBaseModifiers(raw, widthField(-10), 0);
+        const modPos = modified.getAttribute("position")!.array as Float32Array;
+
+        // HC-1: purely lateral on the bottom shell — no vertical drift.
+        let maxBottomThickDrift = 0;
+        let maxTopInwardMove = 0;
+        for (let i = 0; i < modPos.length / 3; i++) {
+            if (i >= topN) {
+                // HC-1 plantar band only — the sidewall follows the rim by design
+                // (thickness-datum lift + narrowing transfer both move wall verts).
+                if (basePos[i * 3 + thickAxis]! <= PLANTAR_Z_MAX_MM) {
+                    maxBottomThickDrift = Math.max(
+                        maxBottomThickDrift,
+                        Math.abs(modPos[i * 3 + thickAxis]! - basePos[i * 3 + thickAxis]!),
+                    );
+                }
+            } else {
+                const baseOff = Math.abs(basePos[i * 3 + widthAxis]! - widCenter);
+                const modOff = Math.abs(modPos[i * 3 + widthAxis]! - widCenter);
+                maxTopInwardMove = Math.max(maxTopInwardMove, baseOff - modOff);
+            }
+        }
+        expect(maxBottomThickDrift).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM);
+        expect(maxTopInwardMove).toBeGreaterThan(1.0);
+
+        // Print constraint: per longitudinal bin in the heel zone, the bottom
+        // shell (sidewall + plantar outline) must not overhang the top border
+        // any more than it does on the unmodified base. Without the whole-shell
+        // lateral fix the lower sidewall stays at original width while the rim
+        // narrows ~10 mm — overhang growth of several mm.
+        const BIN_U = 0.05;
+        const HEEL_ZONE_MAX_U = 0.4;
+        const OVERHANG_GROWTH_TOL_MM = 0.3;
+        const bins = Math.ceil(HEEL_ZONE_MAX_U / BIN_U);
+        const topMaxBase = new Float64Array(bins).fill(-Infinity);
+        const botMaxBase = new Float64Array(bins).fill(-Infinity);
+        const topMaxMod = new Float64Array(bins).fill(-Infinity);
+        const botMaxMod = new Float64Array(bins).fill(-Infinity);
+        for (let i = 0; i < modPos.length / 3; i++) {
+            const u = (basePos[i * 3 + lengthAxis]! - lenMin) / lenSize;
+            if (u < 0 || u >= HEEL_ZONE_MAX_U) continue;
+            const b = Math.min(bins - 1, Math.floor(u / BIN_U));
+            const baseOff = Math.abs(basePos[i * 3 + widthAxis]! - widCenter);
+            const modOff = Math.abs(modPos[i * 3 + widthAxis]! - widCenter);
+            if (i < topN) {
+                topMaxBase[b] = Math.max(topMaxBase[b]!, baseOff);
+                topMaxMod[b] = Math.max(topMaxMod[b]!, modOff);
+            } else {
+                botMaxBase[b] = Math.max(botMaxBase[b]!, baseOff);
+                botMaxMod[b] = Math.max(botMaxMod[b]!, modOff);
+            }
+        }
+        let worstOverhangGrowth = -Infinity;
+        for (let b = 0; b < bins; b++) {
+            if (!Number.isFinite(topMaxBase[b]!) || !Number.isFinite(botMaxBase[b]!)) continue;
+            const overhangBase = botMaxBase[b]! - topMaxBase[b]!;
+            const overhangMod = botMaxMod[b]! - topMaxMod[b]!;
+            worstOverhangGrowth = Math.max(worstOverhangGrowth, overhangMod - overhangBase);
+        }
+        console.log("[HC-WIDTH] narrow width=-10", {
+            maxBottomThickDrift,
+            maxTopInwardMove,
+            worstOverhangGrowth,
+        });
+        expect(worstOverhangGrowth).toBeLessThan(OVERHANG_GROWTH_TOL_MM);
 
         modified.dispose();
         raw.dispose();
