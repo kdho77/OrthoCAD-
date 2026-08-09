@@ -723,6 +723,25 @@ function buildHeelCupWidthLateralDelta(
         }
     }
 
+    // Narrowing must keep a homologous radial scale on top + bottom + wall so the
+    // loft from the flat plantar edge to the top rim stays C0-smooth. Top-only
+    // Laplacian diffusion makes L_rim diverge from the bottom's analytic field;
+    // height-blended rim transfer then shears the wall into a shelf. For
+    // narrowing: coincidence-weld only (no relax). Widening keeps the welded
+    // Laplacian (top-only path; bottom stays fixed).
+    const narrowing = field.corrections.heelCupWidthMm < 0;
+    if (narrowing) {
+        const smoothed = new Float32Array(raw);
+        syncCoincidentDeltas(smoothed, groups);
+        return {
+            raw,
+            smoothed,
+            coincidenceSyncIndexCount,
+            crossMeshCoincidenceGroupCount,
+            coincidentGroupCount,
+        };
+    }
+
     const allowN = (idx: number) => allowTopMeshNeighbor(idx, isMultiMesh, topVertexCount, topFactors);
     // Position-welded Laplacian: coincident copies are one supernode during
     // diffusion (cannot diverge), then scatter identical deltas. Avoids both
@@ -1257,7 +1276,8 @@ export function rimConformityInwardWeight(dFromRimMm: number, localHalfWidthMm: 
 // Corridor transfer alone turns tall arch side walls into straight vertical
 // extrusions. In the arch band the whole wall face is re-lofted:
 //   lift(v) = Δ_rim(u) · W(h),  W(h) = h^1.5
-// Crossfaded in over u ∈ [0.24, 0.36]; heel cup stays on corridor transfer.
+// Crossfaded in over u ∈ [0.24, 0.36] with a C2 quintic so the heel cup
+// (corridor) flows into the arch wall without a G1 kink at the seam.
 
 /** Heel-preserving crossfade: re-loft weight 0 for u ≤ U0, 1 for u ≥ U1. */
 export const ARCH_WALL_RELOFT_U0 = 0.24;
@@ -1266,6 +1286,16 @@ export const ARCH_WALL_RELOFT_U1 = 0.36;
 export const ARCH_WALL_RELOFT_EXPONENT = 1.5;
 /** Max footprint span (mm) from a wall vert to its same-side rim seed. */
 export const ARCH_WALL_RELOFT_SPAN_MM = 40;
+
+/**
+ * Depth-graded Gaussian σ for rim-delta blend (mm).
+ * Tight at the wall top (preserves rim detail / closure) → wide at the plantar
+ * base (harmonic-like diffusion kills NN banding from the arch dome falloff).
+ */
+export const RIM_DELTA_SIGMA_TOP_MM = 5;
+export const RIM_DELTA_SIGMA_BASE_MM = 20;
+/** Blend support cutoff in σ units (beyond this, weight ≈ 0). */
+const RIM_DELTA_BLEND_SIGMA_CUTOFF = 3;
 
 /**
  * Smooth full-wall lift profile: 0 at the plantar band, exactly 1 at wall top.
@@ -1279,6 +1309,27 @@ export function archWallReloftWeight(z: number, wallTopZ: number): number {
     return t ** ARCH_WALL_RELOFT_EXPONENT;
 }
 
+/**
+ * Harmonic depth-graded Gaussian σ (mm): 1/σ = (1−h)/σ_base + h/σ_top.
+ * h = 0 at plantar base → σ_base; h = 1 at wall top → σ_top.
+ */
+export function rimDeltaBlendSigmaMm(h: number): number {
+    const t = Math.max(0, Math.min(1, h));
+    const inv = (1 - t) / RIM_DELTA_SIGMA_BASE_MM + t / RIM_DELTA_SIGMA_TOP_MM;
+    return 1 / Math.max(inv, 1e-9);
+}
+
+/**
+ * C2 heel→arch re-loft crossfade. 0 through the heel cup (u ≤ U0), 1 through
+ * the arch band (u ≥ U1). Quintic (not Hermite smoothstep) so α′=α″=0 at both
+ * knees — no G1 kink where corridor transfer hands off to re-loft.
+ */
+export function archWallReloftAlpha(u: number): number {
+    const span = ARCH_WALL_RELOFT_U1 - ARCH_WALL_RELOFT_U0;
+    if (span <= 1e-12) return u >= ARCH_WALL_RELOFT_U1 ? 1 : 0;
+    return quinticSmoothstep((u - ARCH_WALL_RELOFT_U0) / span);
+}
+
 interface RimWallSeed {
     topRimIndex: number;
     wallTopIndex: number;
@@ -1290,6 +1341,9 @@ interface RimWallSeed {
 
 interface RimConformityFrame {
     seeds: RimWallSeed[];
+    /** Same-side seed indices sorted by footprint length (0 = +width, 1 = −width). */
+    seedsBySide: [number[], number[]];
+    widCenter: number;
     botMinZ: number;
     lengthAxis: AxisIndex;
     widthAxis: AxisIndex;
@@ -1715,21 +1769,25 @@ function buildRimConformityFrame(
         }
 
         // Corridor transfer weight (heel behavior) + inward soften (#116).
+        // Height profile MUST match arch-band re-loft W(h)=h^1.5 — Hermite
+        // smoothstep(h) vs h^1.5 was a different wall section, so the α(u)
+        // crossfade at u∈[0.24,0.36] morphed profile shape and painted the
+        // visible medial arch↔heel pinch even when Δ_rim was smooth.
         let w = 0;
         if (bestS >= 0 && bestD < WALL_CORRIDOR_MM) {
             const seed = seeds[bestS]!;
-            const denom = seed.wallTopZ - botMinZ;
-            const h = denom > 1e-9 ? (z - botMinZ) / denom : 0;
             w =
-                rimConformityHeightWeight(h) *
+                archWallReloftWeight(z, seed.wallTopZ) *
                 rimConformityAnteriorTaperWeight(seed.u) *
                 rimConformityDistanceWeight(bestD) *
                 rimConformityInwardWeight(bestD, localHalfWidthMm);
         }
 
         // Arch-band re-loft: full-wall smooth profile against the same-side seed.
+        // C2 quintic α(u) — Hermite smoothstep left a G1 kink at the heel→arch
+        // handoff (u≈0.24–0.36) where corridor and re-loft meet.
         const u = Math.max(0, Math.min(1, (len - lenMin) / (lenSize || 1)));
-        const alpha = smoothstep(ARCH_WALL_RELOFT_U0, ARCH_WALL_RELOFT_U1, u);
+        const alpha = archWallReloftAlpha(u);
         let archS = -1;
         let archW = 0;
         if (alpha > 0) {
@@ -1755,6 +1813,8 @@ function buildRimConformityFrame(
 
     return {
         seeds,
+        seedsBySide,
+        widCenter,
         botMinZ,
         lengthAxis,
         widthAxis,
@@ -1794,19 +1854,106 @@ function getRimConformityFrame(
 }
 
 /**
+ * Gaussian-blend rim deltas over same-side seeds at a wall footprint.
+ * Depth-graded σ (tight at top, wide at base) kills the piecewise-constant NN
+ * banding that paints a seam at the heel→arch re-loft handoff. Within
+ * RIM_PAIR_TOL of the paired seed the exact paired Δ is returned so rim
+ * closure (bridge gap < 0.1 mm) is preserved.
+ */
+function blendRimDeltaAtWall(
+    frame: RimConformityFrame,
+    array: Float32Array,
+    baseArr: Float32Array,
+    len: number,
+    wid: number,
+    z: number,
+    pairedSeed: number,
+): { dx: number; dy: number; dz: number; wallTopZ: number } {
+    const { seeds, seedsBySide, widCenter, botMinZ } = frame;
+    const paired = pairedSeed >= 0 ? seeds[pairedSeed]! : null;
+    if (paired) {
+        const dPair = Math.hypot(paired.fpLen - len, paired.fpWid - wid);
+        if (dPair <= RIM_PAIR_TOL_MM) {
+            const j = paired.topRimIndex;
+            return {
+                dx: array[j * 3]! - baseArr[j * 3]!,
+                dy: array[j * 3 + 1]! - baseArr[j * 3 + 1]!,
+                dz: array[j * 3 + 2]! - baseArr[j * 3 + 2]!,
+                wallTopZ: paired.wallTopZ,
+            };
+        }
+    }
+
+    const denom = (paired?.wallTopZ ?? z) - botMinZ;
+    const h = denom > 1e-9 ? Math.max(0, Math.min(1, (z - botMinZ) / denom)) : 0;
+    const sigma = rimDeltaBlendSigmaMm(h);
+    const radius = RIM_DELTA_BLEND_SIGMA_CUTOFF * sigma;
+    const invTwoSigma2 = 1 / (2 * sigma * sigma);
+    const side: 0 | 1 = wid >= widCenter ? 0 : 1;
+    const list = seedsBySide[side]!;
+
+    let wSum = 0;
+    let dx = 0;
+    let dy = 0;
+    let dz = 0;
+    let zSum = 0;
+    if (list.length > 0) {
+        let lo = 0;
+        let hi = list.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (seeds[list[mid]!]!.fpLen < len) lo = mid + 1;
+            else hi = mid;
+        }
+        for (let dir = 0; dir < 2; dir++) {
+            for (let k = dir === 0 ? lo : lo - 1; k >= 0 && k < list.length; k += dir === 0 ? 1 : -1) {
+                const seed = seeds[list[k]!]!;
+                const dLen = Math.abs(seed.fpLen - len);
+                if (dLen > radius) break;
+                const d = Math.hypot(seed.fpLen - len, seed.fpWid - wid);
+                if (d > radius) continue;
+                const w = Math.exp(-d * d * invTwoSigma2);
+                if (w < 1e-12) continue;
+                const j = seed.topRimIndex;
+                dx += w * (array[j * 3]! - baseArr[j * 3]!);
+                dy += w * (array[j * 3 + 1]! - baseArr[j * 3 + 1]!);
+                dz += w * (array[j * 3 + 2]! - baseArr[j * 3 + 2]!);
+                zSum += w * seed.wallTopZ;
+                wSum += w;
+            }
+        }
+    }
+
+    if (wSum <= 1e-12) {
+        if (!paired) return { dx: 0, dy: 0, dz: 0, wallTopZ: z };
+        const j = paired.topRimIndex;
+        return {
+            dx: array[j * 3]! - baseArr[j * 3]!,
+            dy: array[j * 3 + 1]! - baseArr[j * 3 + 1]!,
+            dz: array[j * 3 + 2]! - baseArr[j * 3 + 2]!,
+            wallTopZ: paired.wallTopZ,
+        };
+    }
+    return { dx: dx / wSum, dy: dy / wSum, dz: dz / wSum, wallTopZ: zSum / wSum };
+}
+
+/**
  * Scatter precomputed rim deltas onto bottom wall verts.
  * Reads corrected top positions from `array`; writes bottom from BASE only.
  *
- * In the arch band (α→1), uses re-loft W(h)·Δ_rim so the sidewall stretches as
- * a rounded profile instead of a vertical extrusion (PR #117). Optional
- * `verticalDelta` reshapes the thick axis to the height-field falloff (PR #116).
+ * Rim Δ is Gaussian-blended over same-side seeds (depth-graded σ) so the arch
+ * dome's rim falloff cannot paint vertical banding / a heel→arch seam from
+ * piecewise-constant NN scatter. In the arch band (α→1), uses re-loft
+ * W(h)·Δ_rim so the sidewall stretches as a rounded profile instead of a
+ * vertical extrusion (PR #117). Optional `verticalDelta` reshapes the thick
+ * axis to the height-field falloff (PR #116).
  *
- * Optional `lateralField` (heel-cup narrowing): each wall vert carries its own
- * analytic lateral delta at full strength, and the width component transferred
- * from the rim is measured RELATIVE to it — lat(i) = L_own(i) + w·(L_rim − L_own).
- * Without this, the height-tapered transfer leaves the lower sidewall at the
- * original width while the top rim narrows, bulging the wall outside the top
- * mesh border (unprintable overhang).
+ * Optional `lateralField` (heel-cup narrowing): the width-axis component is
+ * stripped from the (Gaussian-blended) rim scatter and replaced by each wall
+ * vert's own homologous lateral at full strength. Narrowing skips the top-only
+ * Laplacian so top/bottom/wall share one analytic radial scale — the loft from
+ * the flat plantar edge to the top rim stays continuous (no height-shear shelf).
+ * Widening leaves `lateralField` null and keeps the legacy height-tapered path.
  */
 function transferRimConformityDeltas(
     base: BufferGeometry,
@@ -1829,6 +1976,7 @@ function transferRimConformityDeltas(
         topVertexCount,
         thickAxis,
         widthAxis,
+        lengthAxis,
     } = frame;
 
     for (let k = 0; k < wallVertexIndex.length; k++) {
@@ -1840,28 +1988,33 @@ function transferRimConformityDeltas(
         }
         const alpha = wallAlpha[k]!;
         const latOwn = lateralField ? lateralField[i]! : 0;
+        const len = baseArr[i * 3 + lengthAxis]!;
+        const wid = baseArr[i * 3 + widthAxis]!;
+        const z = baseArr[i * 3 + thickAxis]!;
 
-        // Corridor term (heel behavior), scaled 1−α.
+        // Corridor term (heel behavior), scaled 1−α. Gaussian-blended Δ_rim.
         let cx = 0;
         let cy = 0;
         let cz = 0;
         const w = wallWeight[k]!;
-        if (w > 0 && alpha < 1) {
-            const seed = seeds[wallSeedIndex[k]!]!;
-            const j = seed.topRimIndex;
-            let dx = array[j * 3]! - baseArr[j * 3]!;
-            let dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
-            let dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
+        const corridorSeed = wallSeedIndex[k]!;
+        if (w > 0 && alpha < 1 && corridorSeed >= 0) {
+            const blended = blendRimDeltaAtWall(frame, array, baseArr, len, wid, z, corridorSeed);
+            let dx = blended.dx;
+            let dy = blended.dy;
+            let dz = blended.dz;
             if (verticalDelta) {
+                const seed = seeds[corridorSeed]!;
                 const fieldAdj = verticalDelta[i]! - verticalDelta[seed.wallTopIndex]!;
                 if (thickAxis === 0) dx += fieldAdj;
                 else if (thickAxis === 1) dy += fieldAdj;
                 else dz += fieldAdj;
             }
             if (lateralField) {
-                if (widthAxis === 0) dx -= latOwn;
-                else if (widthAxis === 1) dy -= latOwn;
-                else dz -= latOwn;
+                // Zero width-axis rim delta: homologous latOwn reapplied below.
+                if (widthAxis === 0) dx = 0;
+                else if (widthAxis === 1) dy = 0;
+                else dz = 0;
             }
             cx = w * dx;
             cy = w * dy;
@@ -1869,21 +2022,28 @@ function transferRimConformityDeltas(
         }
 
         // Arch-band re-loft: whole-wall smooth profile W(h)·Δ_rim, scaled α.
+        // Blended wallTopZ feeds W(h) so the profile itself has no NN steps.
         let ax = 0;
         let ay = 0;
         let az = 0;
         const archS = wallArchSeedIndex[k]!;
-        const archW = wallArchWeight[k]!;
-        if (alpha > 0 && archS >= 0 && archW > 0) {
+        const archWBase = wallArchWeight[k]!;
+        if (alpha > 0 && archS >= 0 && archWBase > 0) {
+            const blended = blendRimDeltaAtWall(frame, array, baseArr, len, wid, z, archS);
             const seed = seeds[archS]!;
-            const j = seed.topRimIndex;
-            let dx = array[j * 3]! - baseArr[j * 3]!;
-            let dy = array[j * 3 + 1]! - baseArr[j * 3 + 1]!;
-            let dz = array[j * 3 + 2]! - baseArr[j * 3 + 2]!;
+            // Rebuild W(h) against the blended wall-top height; keep the seed's
+            // anterior taper (precomputed into archWBase / W_seed ratio).
+            const wSeed = archWallReloftWeight(z, seed.wallTopZ);
+            const wBlend = archWallReloftWeight(z, blended.wallTopZ);
+            const archW = wSeed > 1e-12 ? archWBase * (wBlend / wSeed) : archWBase;
+            let dx = blended.dx;
+            let dy = blended.dy;
+            let dz = blended.dz;
             if (lateralField) {
-                if (widthAxis === 0) dx -= latOwn;
-                else if (widthAxis === 1) dy -= latOwn;
-                else dz -= latOwn;
+                // Zero width-axis rim delta: homologous latOwn reapplied below.
+                if (widthAxis === 0) dx = 0;
+                else if (widthAxis === 1) dy = 0;
+                else dz = 0;
             }
             ax = archW * dx;
             ay = archW * dy;
@@ -2631,10 +2791,9 @@ export function applyBaseModifiers(
             lenSize,
         );
         if (rimFrame && rimFrame.seeds.length > 0) {
-            // Narrowing: wall verts keep their own analytic lateral delta (already
-            // applied above) and the transfer's width component is relative to it,
-            // so the sidewall follows the narrowed rim instead of being reset to
-            // the original (wider) footprint by the height-tapered rim delta.
+            // Narrowing: homologous own-only lateral (smooth plantar→rim loft).
+            // Gaussian-blended height/length rim Δ still transfers; width axis
+            // is stripped and latOwn reapplied so the cup wall does not shear.
             transferRimConformityDeltas(base, array, rimFrame, delta, heelCupNarrowing ? lateralDelta : null);
             // Print-quality wall smoothing: weld coincident copies + diffuse the
             // wall displacement field (plantar band and rim-paired wall tops
