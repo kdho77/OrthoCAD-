@@ -15,6 +15,7 @@ import {
     ARCH_WALL_RELOFT_U1,
     applyBaseModifiers,
     archWallReloftAlpha,
+    PLANTAR_Z_MAX_MM,
     RIM_DELTA_SIGMA_BASE_MM,
     RIM_DELTA_SIGMA_TOP_MM,
     rimDeltaBlendSigmaMm,
@@ -33,6 +34,9 @@ import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb"
 const MAX_PLANFORM_BLEND_TURN_SUM_DEG = 22;
 /** Legacy short envelope died at 0.28 — width envelope must still be live there. */
 const MIN_WIDTH_ENV_AT_HANDOFF = 0.25;
+/** Min outward travel (mm) over an 8 mm height window on the medial wall at the
+ * arch↔heel junction — guards "rounded then straight up" after heel narrowing. */
+const MIN_JUNCTION_OUTWARD_TRAVEL_MM = 1.2;
 
 function neutralCorrections(): SideCorrections {
     return {
@@ -299,5 +303,82 @@ describe("arch↔heel blend — Gaussian rim-delta + C2 quintic", () => {
             mod.dispose();
             raw.dispose();
         }
+    });
+
+    test("medial wall at arch↔heel junction stays rounded (no vertical band) under clinical narrow", async () => {
+        // Early re-loft α(u) (U0=0.16→U1=0.32) must put u≈0.28 under full W(h)
+        // loft so the wall flares outward over every 8 mm height window — not
+        // "rounded then straight up" from a half-α corridor/re-loft mix.
+        const raw = await loadProductionDefaultGlb({ slot: "left" });
+        const basePos = Float32Array.from(raw.getAttribute("position")!.array as Float32Array);
+        const topN = (raw.userData as { topVertexCount?: number }).topVertexCount!;
+        raw.computeBoundingBox();
+        const box = raw.boundingBox!;
+        const sizes: [number, number][] = [
+            [0, box.max.x - box.min.x],
+            [1, box.max.y - box.min.y],
+            [2, box.max.z - box.min.z],
+        ];
+        sizes.sort((a, b) => b[1]! - a[1]!);
+        const lengthAxis = sizes[0]![0]!;
+        const widthAxis = sizes[1]![0]!;
+        const thickAxis = sizes[2]![0]!;
+        const lenMin = box.min.getComponent(lengthAxis);
+        const lenSize = sizes[0]![1]! || 1;
+        const widCenter = (box.min.getComponent(widthAxis) + box.max.getComponent(widthAxis)) / 2;
+
+        expect(archWallReloftAlpha(0.28)).toBeGreaterThan(0.85);
+
+        const mod = applyBaseModifiers(
+            raw,
+            makeField({ archHeightMm: 18, heelCupWidthMm: -5.7, apexMoveMm: -12 }),
+            1,
+        );
+        const pos = mod.getAttribute("position")!.array as Float32Array;
+        const BIN = 1;
+        const u0 = 0.28;
+        const silNeg = new Map<number, number>();
+        const silPos = new Map<number, number>();
+        for (let i = topN; i < pos.length / 3; i++) {
+            const u = (basePos[i * 3 + lengthAxis]! - lenMin) / lenSize;
+            if (Math.abs(u - u0) > 0.012) continue;
+            const z = pos[i * 3 + thickAxis]!;
+            if (z <= PLANTAR_Z_MAX_MM) continue;
+            const y = pos[i * 3 + widthAxis]! - widCenter;
+            const bin = Math.round(z / BIN);
+            if (y < 0) {
+                const cur = silNeg.get(bin);
+                if (cur === undefined || y < cur) silNeg.set(bin, y);
+            } else {
+                const cur = silPos.get(bin);
+                if (cur === undefined || y > cur) silPos.set(bin, y);
+            }
+        }
+        const neg = [...silNeg.entries()];
+        const posB = [...silPos.entries()];
+        const negMax = Math.max(0, ...neg.map((e) => Math.abs(e[1]!)));
+        const posMax = Math.max(0, ...posB.map((e) => Math.abs(e[1]!)));
+        const bins = (negMax >= posMax ? neg : posB).sort((a, b) => a[0]! - b[0]!);
+        expect(bins.length).toBeGreaterThan(8);
+
+        const WINDOW = 8;
+        let minTravel = Infinity;
+        for (let k = 0; k < bins.length; k++) {
+            const [z0, y0] = bins[k]!;
+            for (let m = k + 1; m < bins.length; m++) {
+                const [z1, y1] = bins[m]!;
+                const dz = (z1! - z0!) * BIN;
+                if (dz < WINDOW) continue;
+                if (dz > WINDOW + 2) break;
+                minTravel = Math.min(minTravel, Math.abs(y1! - y0!));
+            }
+        }
+        console.log(
+            "[ARCH-HEEL-WALL]",
+            JSON.stringify({ bins: bins.length, minTravel: +minTravel.toFixed(3) }),
+        );
+        expect(minTravel).toBeGreaterThan(MIN_JUNCTION_OUTWARD_TRAVEL_MM);
+        mod.dispose();
+        raw.dispose();
     });
 });

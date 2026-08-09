@@ -1279,9 +1279,12 @@ export function rimConformityInwardWeight(dFromRimMm: number, localHalfWidthMm: 
 // Crossfaded in over u ∈ [0.24, 0.36] with a C2 quintic so the heel cup
 // (corridor) flows into the arch wall without a G1 kink at the seam.
 
-/** Heel-preserving crossfade: re-loft weight 0 for u ≤ U0, 1 for u ≥ U1. */
-export const ARCH_WALL_RELOFT_U0 = 0.24;
-export const ARCH_WALL_RELOFT_U1 = 0.36;
+/** Heel-preserving crossfade: re-loft weight 0 for u ≤ U0, 1 for u ≥ U1.
+ * U0 pulled into the rearfoot so the arch↔heel junction (clinical apex −12
+ * lands near u≈0.30) is under full rounded re-loft, not a half-α vertical
+ * corridor/re-loft mix. */
+export const ARCH_WALL_RELOFT_U0 = 0.16;
+export const ARCH_WALL_RELOFT_U1 = 0.32;
 /** Profile exponent p: >1 ⇒ C1 at the plantar fillet, no rigid top band. */
 export const ARCH_WALL_RELOFT_EXPONENT = 1.5;
 /** Max footprint span (mm) from a wall vert to its same-side rim seed. */
@@ -1333,6 +1336,8 @@ export function archWallReloftAlpha(u: number): number {
 interface RimWallSeed {
     topRimIndex: number;
     wallTopIndex: number;
+    /** Nearest plantar-band bottom vert under this seed (for column morph). */
+    plantarIndex: number;
     fpLen: number;
     fpWid: number;
     wallTopZ: number;
@@ -1669,10 +1674,54 @@ function buildRimConformityFrame(
             pairD: bestD,
         });
     }
+    // Plantar footprint hash — column morph anchors each wall column to the
+    // flat bottom outline under the same seed so narrowing can preserve the
+    // stock wall's rounded flare (chord morph) instead of radial-scaling it
+    // into a steeper near-vertical face.
+    const plantarHash = new Map<string, number[]>();
+    const plantarCell = RIM_PAIR_TOL_MM;
+    const plantarKey = (len: number, wid: number): string =>
+        `${Math.floor(len / plantarCell)},${Math.floor(wid / plantarCell)}`;
+    for (let i = topVertexCount; i < count; i++) {
+        if (baseArr[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) continue;
+        const k = plantarKey(baseArr[i * 3 + lengthAxis]!, baseArr[i * 3 + widthAxis]!);
+        let bucket = plantarHash.get(k);
+        if (!bucket) {
+            bucket = [];
+            plantarHash.set(k, bucket);
+        }
+        bucket.push(i);
+    }
+    const findPlantar = (len: number, wid: number): number => {
+        const bins = Math.ceil(ARCH_WALL_RELOFT_SPAN_MM / plantarCell) + 1;
+        const cx = Math.floor(len / plantarCell);
+        const cy = Math.floor(wid / plantarCell);
+        let best = -1;
+        let bestD = Infinity;
+        for (let dx = -bins; dx <= bins; dx++) {
+            for (let dy = -bins; dy <= bins; dy++) {
+                const bucket = plantarHash.get(`${cx + dx},${cy + dy}`);
+                if (!bucket) continue;
+                for (const bi of bucket) {
+                    const d = Math.hypot(
+                        baseArr[bi * 3 + lengthAxis]! - len,
+                        baseArr[bi * 3 + widthAxis]! - wid,
+                    );
+                    if (d < bestD) {
+                        bestD = d;
+                        best = bi;
+                    }
+                }
+            }
+        }
+        return bestD <= ARCH_WALL_RELOFT_SPAN_MM ? best : -1;
+    };
+
     for (const s of seedByWallTop.values()) {
         seeds.push({
             topRimIndex: s.topRimIndex,
             wallTopIndex: s.wallTopIndex,
+            plantarIndex: findPlantar(s.fpLen, s.fpWid),
             fpLen: s.fpLen,
             fpWid: s.fpWid,
             wallTopZ: s.wallTopZ,
@@ -2011,7 +2060,7 @@ function transferRimConformityDeltas(
                 else dz += fieldAdj;
             }
             if (lateralField) {
-                // Zero width-axis rim delta: homologous latOwn reapplied below.
+                // Width comes from column morph below — strip it from rim Δ.
                 if (widthAxis === 0) dx = 0;
                 else if (widthAxis === 1) dy = 0;
                 else dz = 0;
@@ -2040,7 +2089,6 @@ function transferRimConformityDeltas(
             let dy = blended.dy;
             let dz = blended.dz;
             if (lateralField) {
-                // Zero width-axis rim delta: homologous latOwn reapplied below.
                 if (widthAxis === 0) dx = 0;
                 else if (widthAxis === 1) dy = 0;
                 else dz = 0;
@@ -2050,6 +2098,9 @@ function transferRimConformityDeltas(
             az = archW * dz;
         }
 
+        // Narrowing: homologous latOwn. Rounded plantar→rim shape under arch
+        // raise is from re-loft W(h)·Δ (α band starts at ARCH_WALL_RELOFT_U0 so
+        // the arch↔heel junction is under full rounded loft, not a vertical mix).
         const ox = widthAxis === 0 ? latOwn : 0;
         const oy = widthAxis === 1 ? latOwn : 0;
         const oz = widthAxis === 2 ? latOwn : 0;
@@ -2791,9 +2842,8 @@ export function applyBaseModifiers(
             lenSize,
         );
         if (rimFrame && rimFrame.seeds.length > 0) {
-            // Narrowing: homologous own-only lateral (smooth plantar→rim loft).
-            // Gaussian-blended height/length rim Δ still transfers; width axis
-            // is stripped and latOwn reapplied so the cup wall does not shear.
+            // Narrowing: homologous own-only lateral. Early re-loft α(u) keeps
+            // the arch↔heel junction on a rounded W(h) loft (not vertical mix).
             transferRimConformityDeltas(base, array, rimFrame, delta, heelCupNarrowing ? lateralDelta : null);
             // Print-quality wall smoothing: weld coincident copies + diffuse the
             // wall displacement field (plantar band and rim-paired wall tops
