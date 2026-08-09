@@ -2,9 +2,12 @@
 // See LICENSE file in the project root for full license information.
 
 /**
- * Arch↔heel blend gate: the medial sidewall at the re-loft handoff
- * (u ∈ [0.24, 0.40]) must not grow a hard crease when arch raise and heel
- * narrowing compose. Guards the Gaussian rim-delta blend + C2 quintic α(u).
+ * Arch↔heel blend gate:
+ *  1) Medial sidewall at the re-loft handoff (u ∈ [0.24, 0.40]) — Gaussian
+ *     rim-delta blend + C2 quintic α(u) + unified W(h).
+ *  2) Top-view medial planform — heel-width envelope must ease through the
+ *     blend (not die at u≈0.28) so the outline does not kink under
+ *     arch18 + narrow + proximal apex.
  */
 import { describe, expect, test } from "@rstest/core";
 import {
@@ -16,9 +19,20 @@ import {
     RIM_DELTA_SIGMA_TOP_MM,
     rimDeltaBlendSigmaMm,
 } from "@/lib/geometry/base-modifier";
-import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import {
+    HEEL_CUP_WIDTH_ENV_CENTER,
+    HEEL_CUP_WIDTH_ENV_RADIUS,
+    type HeightFieldParams,
+    heelCupWidthLongitudinalEnvelope,
+} from "@/lib/geometry/height-field";
+import { extractOrderedBoundaryLoopWithIndices, submeshByVertexRange } from "@/lib/geometry/mesh-close";
 import type { SideCorrections } from "@/types";
 import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
+
+/** Top medial crest planform: sum of turning angles in the blend band (deg). */
+const MAX_PLANFORM_BLEND_TURN_SUM_DEG = 22;
+/** Legacy short envelope died at 0.28 — width envelope must still be live there. */
+const MIN_WIDTH_ENV_AT_HANDOFF = 0.25;
 
 function neutralCorrections(): SideCorrections {
     return {
@@ -185,5 +199,105 @@ describe("arch↔heel blend — Gaussian rim-delta + C2 quintic", () => {
             mod.dispose();
         }
         raw.dispose();
+    });
+
+    test("width envelope stays live through arch↔heel handoff", () => {
+        expect(HEEL_CUP_WIDTH_ENV_CENTER + HEEL_CUP_WIDTH_ENV_RADIUS).toBeGreaterThan(0.38);
+        expect(heelCupWidthLongitudinalEnvelope(0.28)).toBeGreaterThan(MIN_WIDTH_ENV_AT_HANDOFF);
+        expect(heelCupWidthLongitudinalEnvelope(0.36)).toBeGreaterThan(0.02);
+        expect(heelCupWidthLongitudinalEnvelope(0.42)).toBeLessThan(0.02);
+    });
+
+    test("Top-view medial planform: no outline kink under clinical arch+narrow", async () => {
+        const raw = await loadProductionDefaultGlb({ slot: "left" });
+        const topN = (raw.userData as { topVertexCount?: number }).topVertexCount!;
+        raw.computeBoundingBox();
+        const box = raw.boundingBox!;
+        const sizes: [number, number][] = [
+            [0, box.max.x - box.min.x],
+            [1, box.max.y - box.min.y],
+            [2, box.max.z - box.min.z],
+        ];
+        sizes.sort((a, b) => b[1]! - a[1]!);
+        const lengthAxis = sizes[0]![0]!;
+        const widthAxis = sizes[1]![0]!;
+        const lenMin = box.min.getComponent(lengthAxis);
+        const lenSize = sizes[0]![1]! || 1;
+        const widCenter = (box.min.getComponent(widthAxis) + box.max.getComponent(widthAxis)) / 2;
+
+        const clinical = {
+            archHeightMm: 18,
+            heelCupWidthMm: -5.7,
+            apexMoveMm: -12,
+        } as const;
+        const mod = applyBaseModifiers(raw, makeField(clinical), 1);
+        const top = submeshByVertexRange(mod, 0, topN);
+        try {
+            const loop = extractOrderedBoundaryLoopWithIndices(top);
+            const coords = loop.positions.map((p) => [p.x, p.y, p.z]);
+
+            // Medial crest for left: width side with more extreme |wid| toward arch
+            // (pick the side whose mean |wid−center| in u∈[0.3,0.45] is larger).
+            let posExt = 0,
+                negExt = 0,
+                posN = 0,
+                negN = 0;
+            for (const p of coords) {
+                const u = (p[lengthAxis]! - lenMin) / lenSize;
+                if (u < 0.3 || u > 0.45) continue;
+                const d = p[widthAxis]! - widCenter;
+                if (d >= 0) {
+                    posExt += Math.abs(d);
+                    posN++;
+                } else {
+                    negExt += Math.abs(d);
+                    negN++;
+                }
+            }
+            const medialSign = posExt / Math.max(1, posN) >= negExt / Math.max(1, negN) ? 1 : -1;
+
+            let sumTurn = 0;
+            let maxTurn = 0;
+            let samples = 0;
+            for (let i = 1; i < coords.length - 1; i++) {
+                const a = coords[i - 1]!;
+                const b = coords[i]!;
+                const c = coords[i + 1]!;
+                const u = (b[lengthAxis]! - lenMin) / lenSize;
+                if (u < BLEND_U0 || u > BLEND_U1) continue;
+                if (Math.sign(b[widthAxis]! - widCenter) !== medialSign && b[widthAxis]! !== widCenter) {
+                    continue;
+                }
+                const ux = b[0]! - a[0]!,
+                    uy = b[1]! - a[1]!,
+                    uz = b[2]! - a[2]!;
+                const vx = c[0]! - b[0]!,
+                    vy = c[1]! - b[1]!,
+                    vz = c[2]! - b[2]!;
+                const ul = Math.hypot(ux, uy, uz) || 1;
+                const vl = Math.hypot(vx, vy, vz) || 1;
+                const turn =
+                    (Math.acos(Math.max(-1, Math.min(1, (ux * vx + uy * vy + uz * vz) / (ul * vl)))) * 180) /
+                    Math.PI;
+                sumTurn += turn;
+                if (turn > maxTurn) maxTurn = turn;
+                samples++;
+            }
+            console.log(
+                "[ARCH-HEEL-PLANFORM]",
+                JSON.stringify({
+                    samples,
+                    sumTurn: +sumTurn.toFixed(3),
+                    maxTurn: +maxTurn.toFixed(3),
+                    medialSign,
+                }),
+            );
+            expect(samples).toBeGreaterThan(10);
+            expect(sumTurn).toBeLessThan(MAX_PLANFORM_BLEND_TURN_SUM_DEG);
+        } finally {
+            top.dispose();
+            mod.dispose();
+            raw.dispose();
+        }
     });
 });
