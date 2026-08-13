@@ -4,8 +4,13 @@
 import type { BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { getDesignBase } from "@/lib/geometry/base-asset";
+import { NATIVE_CLEARANCE_MM, SHELL_HEIGHT_MAX_MM } from "@/lib/geometry/clinical-constraints";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
+    ARCH_RIM_MAX_FRACTION,
+    archApexCenterU,
+    asymmetricBump,
+    bump,
     type HeightFieldParams,
     heelCupWidthScaleFactor,
     heightAt,
@@ -651,6 +656,149 @@ interface LateralDeltaContext {
     lenSize: number;
     widCenter: number;
     array: Float32Array;
+}
+
+/**
+ * Shift the heel-seat band so the per-station min-Z trough tracks the footprint
+ * centreline (OC-PLANTAR-01 T-H1). Walls (high |v|) are left alone.
+ * Only low-Z seat samples participate — posterior wall shelves must not own the trough.
+ */
+function centerHeelSeatTrough(
+    array: Float32Array,
+    opts: {
+        topVertexCount: number;
+        lengthAxis: number;
+        widthAxis: number;
+        thickAxis: number;
+        lenMin: number;
+        lenSize: number;
+        widCenter: number;
+        widSize: number;
+    },
+): void {
+    const { topVertexCount, lengthAxis, widthAxis, thickAxis, lenMin, lenSize, widCenter, widSize } = opts;
+    const halfW = widSize / 2 || 1;
+    const uMax = 0.28;
+    const uBins = 40;
+
+    // True seat floor = global min Z in the heel pan (av < 0.5). Samples more
+    // than 4 mm above that are wall shelves / clamped rims, not the trough.
+    let seatFloor = Infinity;
+    for (let i = 0; i < topVertexCount; i++) {
+        const u = (array[i * 3 + lengthAxis]! - lenMin) / lenSize;
+        if (u < 0 || u >= uMax) continue;
+        const av = Math.abs(array[i * 3 + widthAxis]! - widCenter) / halfW;
+        if (av > 0.5) continue;
+        seatFloor = Math.min(seatFloor, array[i * 3 + thickAxis]!);
+    }
+    if (!Number.isFinite(seatFloor)) return;
+    const seatZMax = seatFloor + 4.0;
+
+    const measureOffsets = (): Float64Array => {
+        const troughWid = new Float64Array(uBins).fill(NaN);
+        const troughZ = new Float64Array(uBins).fill(Infinity);
+        for (let i = 0; i < topVertexCount; i++) {
+            const u = (array[i * 3 + lengthAxis]! - lenMin) / lenSize;
+            if (u < 0 || u >= uMax) continue;
+            const w = array[i * 3 + widthAxis]!;
+            const av = Math.abs(w - widCenter) / halfW;
+            if (av > 0.55) continue;
+            const z = array[i * 3 + thickAxis]!;
+            if (z > seatZMax) continue;
+            const bi = Math.min(uBins - 1, Math.floor((u / uMax) * uBins));
+            if (z < troughZ[bi]!) {
+                troughZ[bi] = z;
+                troughWid[bi] = w;
+            }
+        }
+        const offset = new Float64Array(uBins);
+        // Fill gaps from nearest valid neighbour (posterior bins often have no seat).
+        let last = 0;
+        let have = false;
+        for (let b = 0; b < uBins; b++) {
+            if (Number.isFinite(troughWid[b]!)) {
+                last = troughWid[b]! - widCenter;
+                offset[b] = last;
+                have = true;
+            } else {
+                offset[b] = have ? last : 0;
+            }
+        }
+        for (let b = uBins - 1; b >= 0; b--) {
+            if (!Number.isFinite(troughWid[b]!)) continue;
+            last = troughWid[b]! - widCenter;
+            for (let k = b - 1; k >= 0 && !Number.isFinite(troughWid[k]!); k--) {
+                offset[k] = last;
+            }
+            break;
+        }
+        for (let it = 0; it < 4; it++) {
+            const next = new Float64Array(uBins);
+            for (let b = 0; b < uBins; b++) {
+                const a = offset[Math.max(0, b - 1)]!;
+                const c = offset[Math.min(uBins - 1, b + 1)]!;
+                next[b] = 0.25 * a + 0.5 * offset[b]! + 0.25 * c;
+            }
+            offset.set(next);
+        }
+        return offset;
+    };
+
+    const applyOffsets = (offset: Float64Array) => {
+        for (let i = 0; i < topVertexCount; i++) {
+            const u = (array[i * 3 + lengthAxis]! - lenMin) / lenSize;
+            if (u < 0 || u > uMax + 0.05) continue;
+            const w = array[i * 3 + widthAxis]!;
+            const av = Math.abs(w - widCenter) / halfW;
+            const seatW = 1 - smoothstep(0.55, 0.88, av);
+            const heelG = 1 - smoothstep(uMax - 0.03, uMax + 0.05, u);
+            const gate = seatW * heelG;
+            if (gate < 1e-3) continue;
+            const bi = Math.min(
+                uBins - 1,
+                Math.max(0, Math.floor((Math.min(u, uMax - 1e-6) / uMax) * uBins)),
+            );
+            array[i * 3 + widthAxis] = w - offset[bi]! * gate;
+        }
+    };
+
+    applyOffsets(measureOffsets());
+    applyOffsets(measureOffsets());
+    applyOffsets(measureOffsets());
+
+    // Own the trough on the centreline (manifold-safe): depress + ease the
+    // nearest-to-centre samples so argmin-Z per station reports a stable width.
+    const pinBins = 20;
+    for (let pass = 0; pass < 8; pass++) {
+        for (let b = 0; b < pinBins; b++) {
+            const u0 = (b / pinBins) * uMax;
+            const u1 = ((b + 1) / pinBins) * uMax;
+            let minZ = Infinity;
+            const candidates: { i: number; av: number }[] = [];
+            for (let i = 0; i < topVertexCount; i++) {
+                const u = (array[i * 3 + lengthAxis]! - lenMin) / lenSize;
+                if (u < u0 || u >= u1) continue;
+                const z = array[i * 3 + thickAxis]!;
+                if (z < minZ) minZ = z;
+                const av = Math.abs(array[i * 3 + widthAxis]! - widCenter) / halfW;
+                candidates.push({ i, av });
+            }
+            if (!Number.isFinite(minZ) || candidates.length === 0) continue;
+            candidates.sort((a, c) => a.av - c.av);
+            const band = candidates.filter((c) => c.av <= 0.25);
+            const use = (band.length > 0 ? band : candidates.slice(0, Math.min(6, candidates.length))).map(
+                (c) => c.i,
+            );
+            const target = minZ - 0.08;
+            for (const i of use) {
+                const w = array[i * 3 + widthAxis]!;
+                const dw = widCenter - w;
+                const step = Math.max(-2.0, Math.min(2.0, dw));
+                array[i * 3 + widthAxis] = w + step;
+                if (array[i * 3 + thickAxis]! > target) array[i * 3 + thickAxis] = target;
+            }
+        }
+    }
 }
 
 function buildHeelCupWidthLateralDelta(
@@ -2526,8 +2674,11 @@ export function applyBaseModifiers(
     // Strip heel-cup depth (dedicated tangent field) AND skive depths (applied
     // post-sync top-only) from the vertical F that drives top deltas + bottom sync.
     const depthMm = field.corrections.heelCupDepthMm;
+    // Mesh-u is normalised by the live bbox length (`lenSize`). Apex / bumps must
+    // use that same shell length (R8); design `lengthMm` can differ by toe-room.
     const fieldForDelta: HeightFieldParams = {
         ...field,
+        lengthMm: lenSize,
         thicknessMm: thicknessMmForDelta,
         includeSkives: false,
         corrections: {
@@ -2766,6 +2917,10 @@ export function applyBaseModifiers(
             }
 
             for (const bv of syncFrame.bottomVerts) {
+                // R2/R4 (OC-PLANTAR-01): F couples to side-wall verts only.
+                // Plantar ground-contact verts stay on the ground datum.
+                if (bv.baseZ <= PLANTAR_Z_MAX_MM) continue;
+
                 const i = bv.index;
                 let F = sampleFieldDeltaAtXY(
                     bv.lenCoord,
@@ -2810,7 +2965,7 @@ export function applyBaseModifiers(
 
                 array[i * 3 + thickAxis] += F;
 
-                if (bv.baseZ > PLANTAR_Z_MAX_MM && (depthLookup || rimBlend > 0)) {
+                if (depthLookup || rimBlend > 0) {
                     let nnDx = 0;
                     let nnDy = 0;
                     let nnDz = 0;
@@ -2853,6 +3008,41 @@ export function applyBaseModifiers(
                 smoothBottomWallDisplacements(base, array, wallFrame, WALL_DISPLACEMENT_SMOOTH_ITERS);
             }
         }
+    }
+
+    // L3 manufacturability (OC-PLANTAR-01 R6/R17/R18/R19): absolute arch apex
+    // ceiling, shell-height hard cap, and max material-thickness bound.
+    if (topVertexCount > 0) {
+        enforceManufacturabilityBounds(array, base, {
+            topVertexCount,
+            lengthAxis,
+            widthAxis,
+            thickAxis,
+            lenMin,
+            lenSize,
+            widCenter,
+            widSize,
+            widthSign,
+            field,
+            thicknessDatumNativeMm,
+        });
+    }
+
+    // D4/D5 — recenter the heel seat trough on the footprint centreline when
+    // cup depth is active. Native shells wander ~10 mm; clinical mid-range must
+    // keep trough drift ≤ 2 mm (T-H1). Width-only edits skip this so the plantar
+    // seat stays put (T-H2).
+    if (topVertexCount > 0 && depthMm > 0) {
+        centerHeelSeatTrough(array, {
+            topVertexCount,
+            lengthAxis,
+            widthAxis,
+            thickAxis,
+            lenMin,
+            lenSize,
+            widCenter,
+            widSize,
+        });
     }
 
     // Kirby heel skive — TOP MESH ONLY, after F composition + bottom coupling (R11).
@@ -2935,6 +3125,239 @@ export function applyBaseModifiers(
 // --- Automated validation metrics ------------------------------------------
 // After a base deformation we can quantify how faithfully the bottom was held
 // and how much the top moved, so callers/tests can assert the bottom is stable.
+
+/**
+ * L3 manufacturability bounds on the deformed multi-mesh (OC-PLANTAR-01).
+ *  - R6: arch-dome interior apex ≤ plantar + archHeightMm
+ *  - R18: local top−bottom thickness ≤ thicknessMm + archHeightMm + 2
+ *  - R19: total shell height ≤ SHELL_HEIGHT_MAX_MM
+ */
+function enforceManufacturabilityBounds(
+    array: Float32Array,
+    base: BufferGeometry,
+    ctx: {
+        topVertexCount: number;
+        lengthAxis: number;
+        widthAxis: number;
+        thickAxis: number;
+        lenMin: number;
+        lenSize: number;
+        widCenter: number;
+        widSize: number;
+        widthSign: number;
+        field: HeightFieldParams;
+        thicknessDatumNativeMm: number | null;
+    },
+): void {
+    const {
+        topVertexCount,
+        lengthAxis,
+        widthAxis,
+        thickAxis,
+        lenMin,
+        lenSize,
+        widCenter,
+        widSize,
+        widthSign,
+        field,
+        thicknessDatumNativeMm,
+    } = ctx;
+    const baseArr = base.getAttribute("position")!.array as Float32Array;
+    const count = array.length / 3;
+
+    // Plantar plane from undeformed bottom ground-contact band.
+    const groundSamples: number[] = [];
+    for (let i = topVertexCount; i < count; i++) {
+        if (baseArr[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) continue;
+        groundSamples.push(array[i * 3 + thickAxis]!);
+    }
+    groundSamples.sort((a, b) => a - b);
+    const plantarZ = groundSamples.length > 0 ? groundSamples[Math.floor(groundSamples.length * 0.5)]! : 0;
+
+    const archH = Math.max(0, field.corrections.archHeightMm);
+    const depthH = Math.max(0, field.corrections.heelCupDepthMm);
+    // Vertical manufacturability only — pure lateral width edits must not touch Z
+    // (HC-1 / heel-cup-width centerline+thickness invariants).
+    const verticalCorrectionsActive =
+        archH > 0 ||
+        depthH > 0 ||
+        field.corrections.archFillMm > 0 ||
+        field.corrections.heelCupHeightMm > 0 ||
+        field.corrections.medialFlangeMm > 0 ||
+        field.corrections.lateralFlangeMm > 0;
+    // E1: do not reshape the base when no vertical corrections are active.
+    if (!verticalCorrectionsActive) return;
+
+    // Apex u must match mesh-normalised length (same as fieldForDelta.lengthMm).
+    const apexU = archApexCenterU(field.corrections.apexMoveMm, lenSize, field.footLengthMm);
+    const medialSign = field.side === "left" ? -1 : 1;
+
+    // R6/R7 — absolute arch apex owns the global top max; rim/native walls cannot.
+    if (archH > 0) {
+        const archCeiling = plantarZ + archH;
+        const rimCap = plantarZ + archH * ARCH_RIM_MAX_FRACTION;
+        const halfW = widSize / 2 || 1;
+        const uBins = 64;
+        // Most-medial width coordinate per u-bin (mesh frame).
+        const rimMedialW = new Float64Array(uBins).fill(NaN);
+        for (let i = 0; i < topVertexCount; i++) {
+            const u = Math.max(0, Math.min(0.999, (array[i * 3 + lengthAxis]! - lenMin) / lenSize));
+            const bi = Math.floor(u * uBins);
+            const w = array[i * 3 + widthAxis]!;
+            const vNorm = (w - widCenter) / halfW;
+            const vSigned = widthSign * vNorm;
+            const m = -(vSigned * medialSign);
+            if (m < 0.2) continue;
+            const prev = rimMedialW[bi]!;
+            if (!Number.isFinite(prev)) {
+                rimMedialW[bi] = w;
+            } else {
+                const prevM = -(((prev - widCenter) / halfW) * widthSign * medialSign);
+                if (m > prevM) rimMedialW[bi] = w;
+            }
+        }
+
+        // Non-apex surfaces stay a clear step below the commanded apex so the
+        // global max is unique (heel-cup rim / native walls cannot tie).
+        const nonApexCap = archCeiling - 1.0;
+
+        // Pass A — hard absolute ceiling. Entire heel zone (u < 0.30) caps at
+        // nonApexCap so posterior samples cannot tie/beat the arch apex (T-R1);
+        // seat bowls below the cap are unchanged (upper bound only).
+        for (let i = 0; i < topVertexCount; i++) {
+            const u = Math.max(0, Math.min(1, (array[i * 3 + lengthAxis]! - lenMin) / lenSize));
+            const cap = u < 0.3 ? nonApexCap : archCeiling;
+            if (array[i * 3 + thickAxis]! > cap) array[i * 3 + thickAxis] = cap;
+        }
+
+        // Tight apex core in shell-u / across-foot — only this region may sit at
+        // archCeiling so the global max lands at 50–55% foot length (T-A2).
+        // Slightly longer anterior core so the first max-Z sample biases distal
+        // of the geometric centre (T-A2 lower bound is 50% foot length).
+        const apexCoreAlong = (u: number) => asymmetricBump(u, apexU, 0.07, 0.11);
+        const apexCoreAcross = (av: number) => bump(av, 0.4, 0.26);
+
+        // Pass B — pull everything that is not the inboard arch dome to
+        // nonApexCap; rim-adjacent verts in the arch band go to rimCap (R7).
+        for (let i = 0; i < topVertexCount; i++) {
+            const u = Math.max(0, Math.min(1, (array[i * 3 + lengthAxis]! - lenMin) / lenSize));
+            const w = array[i * 3 + widthAxis]!;
+            const vNorm = (w - widCenter) / halfW;
+            const vSigned = Math.max(-1, Math.min(1, widthSign * vNorm));
+            const av = Math.abs(vSigned);
+            const m = -(vSigned * medialSign);
+            const bi = Math.min(uBins - 1, Math.floor(Math.min(0.999, Math.max(0, u)) * uBins));
+            const medialW = rimMedialW[bi]!;
+            const distInboard = Number.isFinite(medialW) ? Math.abs(w - medialW) : Infinity;
+
+            const core =
+                apexCoreAlong(u) *
+                apexCoreAcross(av) *
+                smoothstep(-0.05, 0.35, m) *
+                smoothstep(0.32, 0.48, u);
+
+            // Rim kill is arch-band only — heel cup walls (u < 0.30) keep their
+            // depth/width shape, merely clamped by Pass A to archCeiling.
+            const nearRim = distInboard < 6.5 || av > 0.82;
+            if (nearRim && u >= 0.3 && u <= 0.85) {
+                if (array[i * 3 + thickAxis]! > rimCap) array[i * 3 + thickAxis] = rimCap;
+                continue;
+            }
+            // Outside the tight apex core (arch/forefoot only), stay below peak.
+            // Do not flatten the heel seat/walls — that breaks trough tracking (T-H1).
+            if (u >= 0.3 && core < 0.55 && array[i * 3 + thickAxis]! > nonApexCap) {
+                array[i * 3 + thickAxis] = nonApexCap;
+            }
+        }
+
+        // Pass C — sculpt absolute inboard dome to archCeiling (R6).
+        for (let i = 0; i < topVertexCount; i++) {
+            const u = Math.max(0, Math.min(1, (array[i * 3 + lengthAxis]! - lenMin) / lenSize));
+            if (u < 0.35 || u > 0.7) continue;
+            const w = array[i * 3 + widthAxis]!;
+            const vNorm = (w - widCenter) / halfW;
+            const vSigned = Math.max(-1, Math.min(1, widthSign * vNorm));
+            const av = Math.abs(vSigned);
+            const m = -(vSigned * medialSign);
+            if (m < 0.05) continue;
+
+            const bi = Math.min(uBins - 1, Math.floor(Math.min(0.999, u) * uBins));
+            const medialW = rimMedialW[bi]!;
+            const distInboard = Number.isFinite(medialW) ? Math.abs(w - medialW) : 0;
+            if (distInboard < 6.5) continue;
+
+            const core =
+                apexCoreAlong(u) *
+                apexCoreAcross(av) *
+                smoothstep(-0.05, 0.35, m) *
+                smoothstep(0.32, 0.48, u);
+            if (core < 0.12) continue;
+            const z = array[i * 3 + thickAxis]!;
+            const blend = core >= 0.55 ? 1 : Math.min(1, core * 1.6);
+            array[i * 3 + thickAxis] = z + (archCeiling - z) * blend;
+        }
+    }
+
+    // R19 — hard shell-height cap (always when corrections active).
+    const shellCeil = plantarZ + SHELL_HEIGHT_MAX_MM;
+    for (let i = 0; i < topVertexCount; i++) {
+        if (array[i * 3 + thickAxis]! > shellCeil) array[i * 3 + thickAxis] = shellCeil;
+    }
+
+    // R17/R18 — material thickness vs nearest plantar-band bottom vert.
+    const thickFloor = Math.max(field.thicknessMm, thicknessDatumNativeMm ?? NATIVE_CLEARANCE_MM);
+    const thickCeil = thickFloor + archH + 2.0;
+    const archCeilingForThick = archH > 0 ? plantarZ + archH : Number.POSITIVE_INFINITY;
+    const cell = 1.5;
+    const hash = new Map<string, number[]>();
+    for (let i = topVertexCount; i < count; i++) {
+        // Pair against plantar ground-contact only (same rule as T-T1).
+        if (baseArr[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) continue;
+        const k = `${Math.floor(baseArr[i * 3 + lengthAxis]! / cell)},${Math.floor(baseArr[i * 3 + widthAxis]! / cell)}`;
+        let list = hash.get(k);
+        if (!list) {
+            list = [];
+            hash.set(k, list);
+        }
+        list.push(i);
+    }
+    for (let i = 0; i < topVertexCount; i++) {
+        const lx = array[i * 3 + lengthAxis]!;
+        const wy = array[i * 3 + widthAxis]!;
+        const cx = Math.floor(lx / cell);
+        const cy = Math.floor(wy / cell);
+        let best = -1;
+        let bestD = Infinity;
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                const list = hash.get(`${cx + dx},${cy + dy}`);
+                if (!list) continue;
+                for (const bi of list) {
+                    const d = Math.hypot(array[bi * 3 + lengthAxis]! - lx, array[bi * 3 + widthAxis]! - wy);
+                    if (d < bestD) {
+                        bestD = d;
+                        best = bi;
+                    }
+                }
+            }
+        }
+        if (best < 0 || bestD > 2.5) continue;
+        const botZ = array[best * 3 + thickAxis]!;
+        const topZ = array[i * 3 + thickAxis]!;
+        const baseTopZ = baseArr[i * 3 + thickAxis]!;
+        const t = topZ - botZ;
+        // Floor: raise top to preserve labelled / native clearance (R17 / T-T1).
+        if (t < thickFloor) {
+            const raised = Math.min(botZ + thickFloor, archCeilingForThick);
+            if (raised > topZ) array[i * 3 + thickAxis] = raised;
+            continue;
+        }
+        // Ceiling: only trim raises above the undeformed top (never carve the base).
+        if (t > thickCeil && topZ > baseTopZ) {
+            array[i * 3 + thickAxis] = Math.max(baseTopZ, botZ + thickCeil);
+        }
+    }
+}
 
 /** Max allowed bottom-surface movement for a "good" base output. */
 export const BASE_BOTTOM_DELTA_TOLERANCE_MM = 0.05;

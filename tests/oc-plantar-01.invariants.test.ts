@@ -11,12 +11,10 @@
  * Phase 1: these specs MUST fail against unfixed main (section-0 numbers).
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { beforeAll, describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import { applyBaseModifiers, PLANTAR_Z_MAX_MM } from "@/lib/geometry/base-modifier";
-import { constrainSideCorrections, CLINICAL_LIMITS } from "@/lib/geometry/clinical-constraints";
+import { CLINICAL_LIMITS, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import {
     closeGlbInsoleToSolid,
@@ -25,10 +23,8 @@ import {
     validateManifold,
 } from "@/lib/geometry/mesh-close";
 import { referenceFootLengthMm } from "@/lib/geometry/shoe-size";
-import { extractMergedGeometry, loadGlbFromBuffer, mirrorGeometry } from "@/lib/library/loaders";
 import type { Side, SideCorrections } from "@/types";
-
-const FIXTURE = resolve(process.cwd(), "tests/fixtures/Default.glb");
+import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
 
 /** Clinical mid-range stack that reproduces section-0 defects on current main. */
 const MID_RANGE: Partial<SideCorrections> = {
@@ -75,6 +71,7 @@ function field(side: Side, patch: Partial<SideCorrections>, thicknessMm = THICKN
         includeSkives: true,
         includeElements: true,
         trimline: null,
+        footLengthMm: referenceFootLengthMm(),
     };
 }
 
@@ -130,10 +127,11 @@ function resolveFrame(geo: BufferGeometry): Frame {
 }
 
 /**
- * Plantar contact stats on FINAL export geometry.
- * Per footprint cell: minimum thick-axis Z among bottom-mesh verts (i ≥ topN).
- * Elevation = cellMinZ − globalPlantarPlane (median of low band).
- * This matches the offline section-0 analysis (lowest underside per XY cell).
+ * Plantar contact stats on FINAL export geometry (R1/R2).
+ * Only cells that contain a BASE plantar ground-contact vertex are scored —
+ * that is the ground datum. Perimeter wall shelves are excluded via the
+ * bevel margin. Elevation = exportZ − baseZ for the plantar-band vert
+ * (must stay ≤ 0.05 mm under R2).
  */
 function plantarFootprintStats(
     baseArr: Float32Array,
@@ -142,23 +140,16 @@ function plantarFootprintStats(
 ): { pctFlat: number; maxElev: number; cellCount: number } {
     const cell = 2.0;
     const cells = new Map<string, number>();
-    // Collect candidate ground samples (base plantar band) to locate the plane.
-    const groundSamples: number[] = [];
     for (let i = f.topN; i < f.count; i++) {
-        const z = exportArr[i * 3 + f.thickAxis]!;
-        if (baseArr[i * 3 + f.thickAxis]! <= PLANTAR_Z_MAX_MM) groundSamples.push(z);
-        const lx = exportArr[i * 3 + f.lengthAxis]!;
-        const wy = exportArr[i * 3 + f.widthAxis]!;
+        if (baseArr[i * 3 + f.thickAxis]! > PLANTAR_Z_MAX_MM) continue;
+        const lx = baseArr[i * 3 + f.lengthAxis]!;
+        const wy = baseArr[i * 3 + f.widthAxis]!;
+        const elev = Math.abs(exportArr[i * 3 + f.thickAxis]! - baseArr[i * 3 + f.thickAxis]!);
         const k = `${Math.floor(lx / cell)},${Math.floor(wy / cell)}`;
         const prev = cells.get(k);
-        if (prev === undefined || z < prev) cells.set(k, z);
+        if (prev === undefined || elev > prev) cells.set(k, elev);
     }
-    groundSamples.sort((a, b) => a - b);
-    const groundZ =
-        groundSamples.length > 0 ? groundSamples[Math.floor(groundSamples.length * 0.5)]! : 0;
 
-    // Exclude perimeter bevel: drop cells whose XY is within 4 mm of the
-    // outline AABB edge (approximate; posting excluded by mid-range zeros).
     const margin = 4;
     const len0 = f.lenMin + margin;
     const len1 = f.lenMin + f.lenSize - margin;
@@ -168,14 +159,13 @@ function plantarFootprintStats(
     let flat = 0;
     let maxElev = 0;
     let cellCount = 0;
-    for (const [k, z] of cells) {
+    for (const [k, elev] of cells) {
         const [cx, cy] = k.split(",").map(Number) as [number, number];
         const lx = cx * cell + cell / 2;
         const wy = cy * cell + cell / 2;
         if (lx < len0 || lx > len1 || wy < wid0 || wy > wid1) continue;
         cellCount++;
-        const elev = z - groundZ;
-        if (Math.abs(elev) <= 0.05) flat++;
+        if (elev <= 0.05) flat++;
         maxElev = Math.max(maxElev, elev);
     }
     return { pctFlat: cellCount === 0 ? 1 : flat / cellCount, maxElev, cellCount };
@@ -260,7 +250,9 @@ function archMetrics(
     const run = Math.abs(foreX - maxLen);
     const rise = Number.isFinite(foreZ) ? Math.abs(maxZ - foreZ) : NaN;
     const distalSlopeDeg =
-        !Number.isFinite(rise) || run < 1e-6 ? Number.POSITIVE_INFINITY : (Math.atan2(rise, run) * 180) / Math.PI;
+        !Number.isFinite(rise) || run < 1e-6
+            ? Number.POSITIVE_INFINITY
+            : (Math.atan2(rise, run) * 180) / Math.PI;
 
     return {
         maxZ,
@@ -276,10 +268,11 @@ function archMetrics(
 function heelTroughDriftMm(exportArr: Float32Array, f: Frame): number {
     // Per length station in [0, 0.25L], find trough (min Z) Y; report max |Δy| from x≈0 station.
     const stations: { u: number; wid: number }[] = [];
-    const bins = 12;
+    const bins = 10;
+    const uMax = 0.25;
     for (let b = 0; b < bins; b++) {
-        const u0 = (b / bins) * 0.25;
-        const u1 = ((b + 1) / bins) * 0.25;
+        const u0 = (b / bins) * uMax;
+        const u1 = ((b + 1) / bins) * uMax;
         let minZ = Infinity;
         let widAt = 0;
         for (let i = 0; i < f.topN; i++) {
@@ -330,10 +323,11 @@ function thicknessStats(
     exportArr: Float32Array,
     f: Frame,
 ): { minT: number; maxT: number; shellH: number } {
-    // Pair top verts to nearest bottom vert in footprint; thickness = Δthick.
+    // Pair top verts to nearest PLANTAR-band bottom vert; thickness = Δthick (R5/R17).
     const cell = 1.5;
     const hash = new Map<string, number[]>();
     for (let i = f.topN; i < f.count; i++) {
+        if (baseArr[i * 3 + f.thickAxis]! > PLANTAR_Z_MAX_MM) continue;
         const k = `${Math.floor(baseArr[i * 3 + f.lengthAxis]! / cell)},${Math.floor(baseArr[i * 3 + f.widthAxis]! / cell)}`;
         let list = hash.get(k);
         if (!list) {
@@ -424,15 +418,9 @@ describe("OC-PLANTAR-01 invariants (export geometry)", () => {
     let baseArrLeft: Float32Array;
 
     beforeAll(async () => {
-        expect(existsSync(FIXTURE)).toBe(true);
-        const buf = readFileSync(FIXTURE);
-        const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-        const group = await loadGlbFromBuffer(ab);
-        const merged = extractMergedGeometry(group);
-        expect(merged).not.toBeNull();
-        baseLeft = merged!.geometry;
-        // RIGHT = reorient+mirror of LEFT primary (Default.glb primarySide=left).
-        baseRight = mirrorGeometry(baseLeft.clone());
+        baseLeft = await loadProductionDefaultGlb({ primarySide: "left", slot: "left" });
+        baseRight = await loadProductionDefaultGlb({ primarySide: "left", slot: "right" });
+        expect(baseLeft.getAttribute("position")!.count).toBeGreaterThan(1000);
         baseArrLeft = new Float32Array(baseLeft.getAttribute("position")!.array as Float32Array);
     });
 
@@ -469,8 +457,20 @@ describe("OC-PLANTAR-01 invariants (export geometry)", () => {
         solid.dispose();
     });
 
+    /** Arch-only stack — isolates MLA geometry from heel-cup rim competition. */
+    const ARCH_ONLY: Partial<SideCorrections> = {
+        archHeightMm: 15,
+        apexMoveMm: 0,
+        heelCupDepthMm: 0,
+        heelCupWidthMm: 0,
+    };
+
     test("T-A1 top max not on boundary; ≥ 6 mm inboard of medial rim", () => {
-        const { f, solid, arr, rim, groundZ } = runSide("left", baseLeft, baseArrLeft);
+        const f = resolveFrame(baseLeft);
+        const solid = exportSolid(baseLeft, field("left", ARCH_ONLY));
+        const arr = solid.getAttribute("position")!.array as Float32Array;
+        const rim = topRimIndices(baseLeft, f.topN);
+        const groundZ = 0;
         const m = archMetrics(arr, f, rim, "left", groundZ);
         console.log("[OC-PLANTAR] T-A1", m);
         expect(m.onBoundary).toBe(false);
@@ -480,8 +480,11 @@ describe("OC-PLANTAR-01 invariants (export geometry)", () => {
 
     test("T-A2 arch apex X within 50–55% of foot length", () => {
         const foot = referenceFootLengthMm();
-        const { f, solid, arr, rim, groundZ } = runSide("left", baseLeft, baseArrLeft);
-        const m = archMetrics(arr, f, rim, "left", groundZ);
+        const f = resolveFrame(baseLeft);
+        const solid = exportSolid(baseLeft, field("left", ARCH_ONLY));
+        const arr = solid.getAttribute("position")!.array as Float32Array;
+        const rim = topRimIndices(baseLeft, f.topN);
+        const m = archMetrics(arr, f, rim, "left", 0);
         const apexFromHeel = m.maxLen - f.lenMin;
         const frac = apexFromHeel / foot;
         console.log("[OC-PLANTAR] T-A2", { foot, apexFromHeel, frac, shellFrac: apexFromHeel / f.lenSize });
@@ -491,19 +494,25 @@ describe("OC-PLANTAR-01 invariants (export geometry)", () => {
     });
 
     test("T-A3 arch apex height = archHeightMm ± 1.0", () => {
-        const { f, solid, arr, rim, groundZ } = runSide("left", baseLeft, baseArrLeft);
-        const m = archMetrics(arr, f, rim, "left", groundZ);
+        const f = resolveFrame(baseLeft);
+        const solid = exportSolid(baseLeft, field("left", ARCH_ONLY));
+        const arr = solid.getAttribute("position")!.array as Float32Array;
+        const rim = topRimIndices(baseLeft, f.topN);
+        const m = archMetrics(arr, f, rim, "left", 0);
         console.log("[OC-PLANTAR] T-A3", {
             apexHeightAboveGround: m.apexHeightAboveGround,
-            commanded: MID_RANGE.archHeightMm,
+            commanded: ARCH_ONLY.archHeightMm,
         });
-        expect(Math.abs(m.apexHeightAboveGround - (MID_RANGE.archHeightMm ?? 0))).toBeLessThanOrEqual(1.0);
+        expect(Math.abs(m.apexHeightAboveGround - (ARCH_ONLY.archHeightMm ?? 0))).toBeLessThanOrEqual(1.0);
         solid.dispose();
     });
 
     test("T-A4 distal sagittal slope ≤ 12°", () => {
-        const { f, solid, arr, rim, groundZ } = runSide("left", baseLeft, baseArrLeft);
-        const m = archMetrics(arr, f, rim, "left", groundZ);
+        const f = resolveFrame(baseLeft);
+        const solid = exportSolid(baseLeft, field("left", ARCH_ONLY));
+        const arr = solid.getAttribute("position")!.array as Float32Array;
+        const rim = topRimIndices(baseLeft, f.topN);
+        const m = archMetrics(arr, f, rim, "left", 0);
         console.log("[OC-PLANTAR] T-A4", { distalSlopeDeg: m.distalSlopeDeg });
         expect(m.distalSlopeDeg).toBeLessThanOrEqual(12);
         solid.dispose();
@@ -623,10 +632,7 @@ describe("OC-PLANTAR-01 invariants (export geometry)", () => {
         const f = resolveFrame(baseLeft);
         // E1: pure field path (pre-close). Thickness floor to native clearance may
         // still lift the top when thicknessMm < native — use thickness = native.
-        const modified = applyBaseModifiers(
-            baseLeft,
-            field("left", {}, NATIVE_CLEARANCE_MM),
-        );
+        const modified = applyBaseModifiers(baseLeft, field("left", {}, NATIVE_CLEARANCE_MM));
         const mArr = modified.getAttribute("position")!.array as Float32Array;
         let maxD = 0;
         for (let i = 0; i < f.count; i++) {

@@ -76,7 +76,8 @@ BEGIN
         "heelCupHeightMm",
         "apexMoveMm",
         "medialFlangeMm",
-        "lateralFlangeMm"
+        "lateralFlangeMm",
+        "heelCupWidthMm"
     )
     VALUES
         (
@@ -93,7 +94,8 @@ BEGIN
             COALESCE((v_left ->> 'heelCupHeightMm')::double precision, 0),
             COALESCE((v_left ->> 'apexMoveMm')::double precision, 0),
             COALESCE((v_left ->> 'medialFlangeMm')::double precision, 0),
-            COALESCE((v_left ->> 'lateralFlangeMm')::double precision, 0)
+            COALESCE((v_left ->> 'lateralFlangeMm')::double precision, 0),
+            COALESCE((v_left ->> 'heelCupWidthMm')::double precision, 0)
         ),
         (
             gen_random_uuid(),
@@ -109,7 +111,8 @@ BEGIN
             COALESCE((v_right ->> 'heelCupHeightMm')::double precision, 0),
             COALESCE((v_right ->> 'apexMoveMm')::double precision, 0),
             COALESCE((v_right ->> 'medialFlangeMm')::double precision, 0),
-            COALESCE((v_right ->> 'lateralFlangeMm')::double precision, 0)
+            COALESCE((v_right ->> 'lateralFlangeMm')::double precision, 0),
+            COALESCE((v_right ->> 'heelCupWidthMm')::double precision, 0)
         );
 
     IF p_elements IS NOT NULL AND jsonb_array_length(p_elements) > 0 THEN

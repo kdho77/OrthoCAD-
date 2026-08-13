@@ -46,24 +46,33 @@ export const WEDGE_CLINICAL_SPECS: Record<string, ClinicalSpec> = {
  * reporting. No "override" mode yet (that would be a deliberate logged action).
  */
 
+/** Default.glb derived native clearance — thickness floor (OC-PLANTAR-01 R17). */
+export const NATIVE_CLEARANCE_MM = 1.961;
+/** Soft shell-height warning threshold (R19). */
+export const SHELL_HEIGHT_WARN_MM = 28;
+/** Hard shell-height cap (R19). */
+export const SHELL_HEIGHT_MAX_MM = 30;
+
 export const CLINICAL_LIMITS = {
-    thicknessMm: { min: 1.5, max: 8.0 },
+    // Floor raised to native clearance (R17); UI still allows entry below and we warn (E8/U4).
+    thicknessMm: { min: NATIVE_CLEARANCE_MM, max: 8.0 },
     forefootPostingDeg: { min: -12, max: 12 },
     rearfootPostingDeg: { min: -10, max: 10 },
     medialSkiveMm: { min: 0, max: 8.0 },
     lateralSkiveMm: { min: 0, max: 8.0 },
     skiveAngleDeg: { min: 5, max: 30 },
     skiveLocationPct: { min: 0, max: 100 },
-    archHeightMm: { min: 0, max: 18.0 },
+    archHeightMm: { min: 0, max: 24.0 },
     archFillMm: { min: 0, max: 12.0 },
     heelCupHeightMm: { min: 0, max: 12.0 },
-    heelCupDepthMm: { min: 0, max: 10.0 },
-    /** Signed: + widens heel cup, − narrows (same |scale| budget as widen). */
-    heelCupWidthMm: { min: -10.0, max: 10.0 },
+    /** Clinical 10–18 mm; hard cap 20 mm (R14). */
+    heelCupDepthMm: { min: 0, max: 20.0 },
+    /** Signed: + widens heel cup, − narrows (DM4 −6..+8). */
+    heelCupWidthMm: { min: -6.0, max: 8.0 },
     // Heel lift raises the heel region; capped so the rearfoot does not become a
     // rigid stilt and the longitudinal ramp angle stays printable/grindable.
     heelLiftMm: { min: 0, max: 20.0 },
-    apexMoveMm: { min: -12, max: 12 },
+    apexMoveMm: { min: -15, max: 15 },
     medialFlangeMm: { min: 0, max: 8.0 },
     lateralFlangeMm: { min: 0, max: 8.0 },
     // Wedge limits (per the wedge design). Applied to the .value inside the wedge object.
@@ -180,49 +189,21 @@ export function constrainSideCorrections(corrections: SideCorrections, thickness
         if (res.violation) v.push(res.violation);
     }
 
-    // Combined wall guard (very conservative rearfoot check).
-    // Effective rear wall rough estimate: thickness - max(0, heelCupDepth) + small posting lift term.
-    // If too thin, pull back the largest "eater" of material.
-    const rearCup = Math.max(0, c.heelCupDepthMm);
-    const rearPostingEffect = Math.max(0, -c.rearfootPostingDeg) * 0.12; // approx mm lift per deg (conservative)
-    const approxRearWall = t - rearCup + rearPostingEffect;
-
-    if (approxRearWall < MIN_WALL_MM) {
-        const deficit = MIN_WALL_MM - approxRearWall;
-        // Reduce cup depth first (most common over-edit).
-        if (c.heelCupDepthMm > 0) {
-            const reduce = Math.min(deficit, c.heelCupDepthMm);
-            c.heelCupDepthMm -= reduce;
-            v.push({
-                field: "combined",
-                message: `Reduced heelCupDepthMm by ${reduce.toFixed(1)} mm to maintain ≥ ${MIN_WALL_MM} mm wall`,
-                requested: corrections.heelCupDepthMm,
-                applied: c.heelCupDepthMm,
-            });
-        }
-        // Still short? Reduce arch height contribution (affects rear transition).
-        if (t - Math.max(0, c.heelCupDepthMm) + rearPostingEffect < MIN_WALL_MM && c.archHeightMm > 0) {
-            const reduce = Math.min(1.5, c.archHeightMm * 0.3);
-            const before = c.archHeightMm;
-            c.archHeightMm = Math.max(0, c.archHeightMm - reduce);
-            v.push({
-                field: "combined",
-                message: `Reduced archHeightMm to protect minimum wall in rearfoot`,
-                requested: before,
-                applied: c.archHeightMm,
-            });
-        }
-        // Last resort: tone down negative rear posting.
-        if (t - Math.max(0, c.heelCupDepthMm) + Math.max(0, -c.rearfootPostingDeg) * 0.12 < MIN_WALL_MM) {
-            const before = c.rearfootPostingDeg;
-            c.rearfootPostingDeg = Math.min(0, c.rearfootPostingDeg + 3);
-            v.push({
-                field: "combined",
-                message: `Limited rearfootPostingDeg (negative) to protect wall thickness`,
-                requested: before,
-                applied: c.rearfootPostingDeg,
-            });
-        }
+    // Combined wall guard — rearfoot posting only.
+    // Heel-cup depth is a RAISE of the rim above the seat (not a subtractive
+    // cut through the wall); do not treat heelCupDepthMm as a material eater
+    // (OC-PLANTAR-01 R14 / T-H4). Thickness floor already enforces R17.
+    const rearPostingEffect = Math.max(0, -c.rearfootPostingDeg) * 0.12;
+    const approxRearWall = t + rearPostingEffect;
+    if (approxRearWall < MIN_WALL_MM && c.rearfootPostingDeg < 0) {
+        const before = c.rearfootPostingDeg;
+        c.rearfootPostingDeg = Math.min(0, c.rearfootPostingDeg + 3);
+        v.push({
+            field: "combined",
+            message: `Limited rearfootPostingDeg (negative) to protect wall thickness`,
+            requested: before,
+            applied: c.rearfootPostingDeg,
+        });
     }
 
     // Arch total (height + fill) should not create an excessively tall rigid column on thin shells.

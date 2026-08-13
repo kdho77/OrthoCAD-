@@ -2,9 +2,15 @@
 // See LICENSE file in the project root for full license information.
 
 import { AlertTriangle, ChevronRight, Link2, Lock, Unlink, Unlock } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { SliderField } from "@/components/ui/slider-field";
-import { constrainDesignCorrections, hasWedgeViolations } from "@/lib/geometry/clinical-constraints";
+import {
+    CLINICAL_LIMITS,
+    type ConstraintViolation,
+    constrainDesignCorrections,
+    hasWedgeViolations,
+    NATIVE_CLEARANCE_MM,
+} from "@/lib/geometry/clinical-constraints";
 import {
     SKIVE_ANGLE_MAX_DEG,
     SKIVE_ANGLE_MIN_DEG,
@@ -29,11 +35,35 @@ import { skiveDerivedDisplayText } from "./skive-derived-display";
  *  - **Skive** is a dedicated Kirby control (depth + angle/location solver).
  */
 const FIELDS: { key: keyof SideCorrections; label: string; min: number; max: number; group: string }[] = [
-    { key: "archHeightMm", label: "Arch height", min: 0, max: 18, group: "Arch" },
+    {
+        key: "archHeightMm",
+        label: "Arch height",
+        min: 0,
+        max: CLINICAL_LIMITS.archHeightMm.max,
+        group: "Arch",
+    },
     { key: "archFillMm", label: "Arch fill", min: 0, max: 12, group: "Arch" },
-    { key: "apexMoveMm", label: "Apex move", min: -12, max: 12, group: "Arch" },
-    { key: "heelCupDepthMm", label: "Heel cup depth", min: 0, max: 10, group: "Heel" },
-    { key: "heelCupWidthMm", label: "Heel cup width", min: -10, max: 10, group: "Heel" },
+    {
+        key: "apexMoveMm",
+        label: "Apex move",
+        min: CLINICAL_LIMITS.apexMoveMm.min,
+        max: CLINICAL_LIMITS.apexMoveMm.max,
+        group: "Arch",
+    },
+    {
+        key: "heelCupDepthMm",
+        label: "Heel cup depth",
+        min: 0,
+        max: CLINICAL_LIMITS.heelCupDepthMm.max,
+        group: "Heel",
+    },
+    {
+        key: "heelCupWidthMm",
+        label: "Heel Cup Width",
+        min: CLINICAL_LIMITS.heelCupWidthMm.min,
+        max: CLINICAL_LIMITS.heelCupWidthMm.max,
+        group: "Heel",
+    },
     { key: "heelLiftMm", label: "Heel lift", min: 0, max: 20, group: "Heel" },
     { key: "medialFlangeMm", label: "Medial flange", min: 0, max: 8, group: "Flanges" },
     { key: "lateralFlangeMm", label: "Lateral flange", min: 0, max: 8, group: "Flanges" },
@@ -406,22 +436,33 @@ export function CorrectionsPanel() {
         };
     }, [corrections, correctionPreview]);
 
-    // Soft clinical warnings for wedges approaching their limits (non-blocking).
-    // Derived in useMemo — never select getActiveViolations() directly (returns a new
-    // array each call and triggers React useSyncExternalStore infinite loop / #185).
-    const showWedgeWarning = useMemo(() => {
+    // Soft clinical warnings (non-blocking). Derived in useMemo — never select
+    // getActiveViolations() directly (new array each call → #185 loop).
+    const clinicalViolations = useMemo(() => {
         const { violations } = constrainDesignCorrections(
             corrections.left,
             corrections.right,
             design.thicknessMm,
             corrections.linked,
         );
-        return hasWedgeViolations(violations);
+        return violations;
     }, [corrections, design.thicknessMm]);
+    const showWedgeWarning = useMemo(() => hasWedgeViolations(clinicalViolations), [clinicalViolations]);
+    const fieldWarning = (field: ConstraintViolation["field"]): string | null => {
+        const v = clinicalViolations.find((x) => x.field === field);
+        if (!v) return null;
+        if (v.requested != null && v.applied != null) {
+            return `Clamped ${v.requested.toFixed(1)} → ${v.applied.toFixed(1)}`;
+        }
+        return v.message;
+    };
+    const thicknessWarning =
+        displayThickness < NATIVE_CLEARANCE_MM - 1e-6
+            ? `Floored to native clearance ${NATIVE_CLEARANCE_MM.toFixed(3)} mm`
+            : fieldWarning("thickness");
 
     const sectionOpen = (key: string) => openSections[key] ?? false;
-    const toggleSection = (key: string) =>
-        setOpenSections((prev) => ({ ...prev, [key]: !sectionOpen(key) }));
+    const toggleSection = (key: string) => setOpenSections((prev) => ({ ...prev, [key]: !sectionOpen(key) }));
 
     return (
         <div className="space-y-3">
@@ -443,19 +484,27 @@ export function CorrectionsPanel() {
                 </button>
             </div>
 
-            <SliderField
-                label="Shell thickness"
-                value={displayThickness}
-                min={1.5}
-                max={8}
-                step={0.1}
-                unit="mm"
-                onPreview={(v) => previewThickness(v)}
-                onChange={(v) => {
-                    setThickness(v);
-                    setThicknessPreview(null);
-                }}
-            />
+            <div className="space-y-1">
+                <SliderField
+                    label="Shell thickness"
+                    value={displayThickness}
+                    min={1.5}
+                    max={CLINICAL_LIMITS.thicknessMm.max}
+                    step={0.1}
+                    unit="mm"
+                    onPreview={(v) => previewThickness(v)}
+                    onChange={(v) => {
+                        setThickness(v);
+                        setThicknessPreview(null);
+                    }}
+                />
+                {thicknessWarning ? (
+                    <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
+                        <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                        <span>{thicknessWarning}</span>
+                    </div>
+                ) : null}
+            </div>
 
             <CollapsibleSection
                 title="Pronation/Supination"
@@ -534,31 +583,43 @@ export function CorrectionsPanel() {
                         {(["left", "right"] as Side[]).map((side) => (
                             <div key={side} className="space-y-2">
                                 <div className="text-[10px] uppercase text-primary/80">{side}</div>
-                                {FIELDS.filter((f) => f.group === group).map((f) => (
-                                    <SliderField
-                                        key={`${side}-${f.key}`}
-                                        label={f.label}
-                                        value={sideValues[side][f.key] as number}
-                                        min={f.min}
-                                        max={f.max}
-                                        step={0.5}
-                                        unit="mm"
-                                        onPreview={(v) =>
-                                            previewCorrection(side, {
-                                                [f.key]: v,
-                                            } as Partial<SideCorrections>)
-                                        }
-                                        onChange={(v) => {
-                                            const preview =
-                                                usePerformanceStore.getState().correctionPreview[side] ?? {};
-                                            updateCorrection(side, {
-                                                ...preview,
-                                                [f.key]: v,
-                                            } as Partial<SideCorrections>);
-                                            clearCorrectionPreview();
-                                        }}
-                                    />
-                                ))}
+                                {FIELDS.filter((f) => f.group === group).map((f) => {
+                                    const warn = fieldWarning(f.key);
+                                    return (
+                                        <div key={`${side}-${f.key}`} className="space-y-1">
+                                            <SliderField
+                                                label={f.label}
+                                                value={sideValues[side][f.key] as number}
+                                                min={f.min}
+                                                max={f.max}
+                                                step={0.5}
+                                                unit="mm"
+                                                onPreview={(v) =>
+                                                    previewCorrection(side, {
+                                                        [f.key]: v,
+                                                    } as Partial<SideCorrections>)
+                                                }
+                                                onChange={(v) => {
+                                                    const preview =
+                                                        usePerformanceStore.getState().correctionPreview[
+                                                            side
+                                                        ] ?? {};
+                                                    updateCorrection(side, {
+                                                        ...preview,
+                                                        [f.key]: v,
+                                                    } as Partial<SideCorrections>);
+                                                    clearCorrectionPreview();
+                                                }}
+                                            />
+                                            {warn ? (
+                                                <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1 text-[10px] text-amber-600">
+                                                    <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                                                    <span>{warn}</span>
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    );
+                                })}
                             </div>
                         ))}
                     </div>

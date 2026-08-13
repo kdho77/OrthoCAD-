@@ -827,6 +827,9 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         includeSkives: false,
         includeElements: true,
         trimline: null,
+        // Arch apex normalises to foot length (OC-PLANTAR-01 R8); E6 falls back
+        // inside archApexCenterU when this is absent/zero.
+        footLengthMm: design.footLengthMm,
     };
 }
 

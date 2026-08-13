@@ -32,6 +32,11 @@ export interface HeightFieldParams {
      * edge (r = 1).
      */
     topEdgeAvProfile?: (u: number, vSigned: number) => number;
+    /**
+     * Anatomical foot length (mm) for arch-apex normalisation (OC-PLANTAR-01 R8).
+     * When absent/zero, apex falls back to shell length with a console warning (E6).
+     */
+    footLengthMm?: number;
 }
 
 const DEG = Math.PI / 180;
@@ -44,17 +49,68 @@ const DEG = Math.PI / 180;
 export const EDGE_FEATHER_EASE_START_R = 0.55;
 
 /**
- * Max |fractional| lateral scale at |heelCupWidthMm| = 10 (placeholder — needs clinical
- * tuning against a target mm spread at max |width|; not yet validated).
+ * Max |fractional| lateral scale at heelCupWidthMm = +8 (OC-PLANTAR-01 DM4).
  * Positive param widens; negative narrows (scale down to 1 − this fraction).
  */
 export const HEEL_CUP_WIDTH_MAX_LATERAL_SCALE = 0.25;
+/** Denominator matching the +8 mm clinical max for width scale. */
+export const HEEL_CUP_WIDTH_SCALE_REF_MM = 8;
+
+/** Default arch apex as a fraction of FOOT length (R8). */
+export const ARCH_APEX_FOOT_FRACTION = 0.525;
+/** apexMoveMm hard window about the default apex (R9). */
+export const ARCH_APEX_MOVE_LIMIT_MM = 15;
+/** Posterior / anterior arch bump radii in shell-u (R11 distal taper). */
+export const ARCH_BUMP_RADIUS_POSTERIOR = 0.26;
+export const ARCH_BUMP_RADIUS_ANTERIOR = 0.72;
+/** Medial arch peak in normalised half-width (inboard of rim). */
+export const ARCH_ACROSS_PEAK_AV = 0.42;
+/** Rim may receive at most this fraction of peak arch displacement (R7). */
+export const ARCH_RIM_MAX_FRACTION = 0.28;
 
 /** Smooth bump centered at `c` with radius `r`. Returns 0..1. */
 export function bump(t: number, c: number, r: number): number {
     const d = Math.abs(t - c) / r;
     if (d >= 1) return 0;
     return 0.5 * (1 + Math.cos(Math.PI * d));
+}
+
+/** Asymmetric longitudinal bump — longer anterior decay (R11). */
+export function asymmetricBump(t: number, c: number, rPosterior: number, rAnterior: number): number {
+    const r = t < c ? rPosterior : rAnterior;
+    if (r <= 1e-9) return 0;
+    return bump(t, c, r);
+}
+
+/**
+ * Arch apex u on the shell parameterisation from foot-length anatomy (R8/R9/E6).
+ * Default = 52% of foot length from posterior heel; apexMoveMm shifts ±15 mm.
+ */
+export function archApexCenterU(apexMoveMm: number, lengthMm: number, footLengthMm?: number): number {
+    const shell = Math.max(1e-6, lengthMm);
+    let foot = footLengthMm;
+    if (!(foot != null && Number.isFinite(foot) && foot > 1e-6)) {
+        if (typeof console !== "undefined") {
+            console.warn("[ARCH] missing footLengthMm — falling back to shell length (E6)");
+        }
+        foot = shell;
+    }
+    const move = Math.max(-ARCH_APEX_MOVE_LIMIT_MM, Math.min(ARCH_APEX_MOVE_LIMIT_MM, apexMoveMm));
+    const apexMm = ARCH_APEX_FOOT_FRACTION * foot + move;
+    return Math.max(0, Math.min(1, apexMm / shell));
+}
+
+/**
+ * Medial-arch across-foot weight: peaks inboard, ≤ ARCH_RIM_MAX_FRACTION at the rim (R7).
+ * `medialBlend` is the centerline-smooth medial gate; `av` is |vSigned|.
+ */
+export function archAcrossWeight(medialBlend: number, av: number): number {
+    // Peak ~av=0.42 (≈ 18+ mm inboard on a 95 mm last); hard rim exclusion so
+    // boundary verts cannot own the global max (R7 / T-A1 ≥ 6 mm inboard).
+    const dome = bump(av, ARCH_ACROSS_PEAK_AV, 0.38);
+    const rimT = smoothstep(0.55, 0.88, av);
+    const rimScale = 1 - (1 - ARCH_RIM_MAX_FRACTION) * rimT;
+    return medialBlend * dome * rimScale;
 }
 
 /** Longitudinal heel-cup zone mask; smoothly → 0 outside the heel. Same as bump(u, 0.1, 0.18). */
@@ -84,7 +140,9 @@ export function heelCupWidthLongitudinalEnvelope(u: number): number {
  */
 export function heelCupWidthScaleFactor(u: number, heelCupWidthMm: number): number {
     if (heelCupWidthMm === 0) return 1;
-    const targetScale = 1 + (heelCupWidthMm / 10) * HEEL_CUP_WIDTH_MAX_LATERAL_SCALE;
+    // Clamp at geometry boundary (DM4); UI/zod also enforce −6..+8.
+    const w = Math.max(-6, Math.min(8, heelCupWidthMm));
+    const targetScale = 1 + (w / HEEL_CUP_WIDTH_SCALE_REF_MM) * HEEL_CUP_WIDTH_MAX_LATERAL_SCALE;
     const env = heelCupWidthLongitudinalEnvelope(u);
     return 1 + env * (targetScale - 1);
 }
@@ -234,20 +292,23 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // remain full-strength at the edge — accumulates separately in `posting`.
     let shaped = 0;
 
-    // --- Longitudinal arch dome ------------------------------------------------
-    // Wider, gentler bell so the arch eases into the forefoot and rearfoot.
-    const apexCenter = 0.42 + c.apexMoveMm / lengthMm;
-    const arch = bump(u, apexCenter, 0.36);
-    // Dome peaks just inboard of the medial edge and fades smoothly to centerline.
-    const archAcross = medialBlend * (0.45 + 0.55 * smoothstep(0.05, 0.9, av));
-    shaped += (c.archHeightMm + c.archFillMm) * arch * archAcross;
+    // --- Longitudinal arch dome (OC-PLANTAR-01 R7/R8/R9/R11) --------------------
+    // Apex at 52% foot length (+ apexMoveMm); medial falloff keeps the peak
+    // inboard of the rim; longer anterior decay keeps distal slope ≤ 12°.
+    // Heel-zone gate prevents arch from summing into the heel cup (D4/D5).
+    const apexCenter = archApexCenterU(c.apexMoveMm, lengthMm, params.footLengthMm);
+    const arch = asymmetricBump(u, apexCenter, ARCH_BUMP_RADIUS_POSTERIOR, ARCH_BUMP_RADIUS_ANTERIOR);
+    const archHeelGate = smoothstep(0.32, 0.48, u); // 0 through heel cup, 1 by midfoot
+    const archAcross = archAcrossWeight(medialBlend, av);
+    shaped += (c.archHeightMm + c.archFillMm) * arch * archAcross * archHeelGate;
 
     const heel = bump(u, 0.1, 0.18); // longitudinal heel region (used by cup + skives)
 
-    // --- Heel cup depth (continuous bowl profile) ------------------------------
+    // --- Heel cup depth (continuous bowl profile) — FIRST clinical cup term -----
     // heelCupDepthMm drives one signed bowl field: rim-up (medial/lateral + posterior
     // walls) minus seat-down (calcaneal depression). Width is lateral scale in
     // base-modifier; depth is heelCupDepthBowlDelta below.
+    // Arch is gated out of this zone above so the two fields blend, not sum (E4).
 
     // Legacy side rim raise using heelCupHeightMm (kept for backward compat / extra control).
     const rim = smoothstep(0.18, 0.95, av);

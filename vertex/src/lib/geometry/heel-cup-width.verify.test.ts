@@ -75,13 +75,14 @@ function detectAxes(box: Box3): { thickAxis: number; widthAxis: number } {
 }
 
 describe("heel cup width — Default.glb verification", () => {
-    test("centerline invariance post-smoothing + lateral spread at width 8-10", async () => {
+    test("centerline invariance post-smoothing + lateral spread at width 6-8", async () => {
         const group = await loadGlbFromBuffer(await loadDefaultGlbBuffer());
         const merged = extractMergedGeometry(group);
         expect(merged).not.toBeNull();
         const raw = merged!.geometry;
 
-        for (const widthMm of [8, 10]) {
+        // OC-PLANTAR-01 DM4: heelCupWidthMm clinical range is −6..+8.
+        for (const widthMm of [6, 8]) {
             const field = widthField(widthMm);
             const diag = diagnoseHeelCupWidthLateral(raw, field);
             expect(diag).not.toBeNull();
@@ -106,9 +107,9 @@ describe("heel cup width — Default.glb verification", () => {
         // Datum-neutral thickness (offset 0) so the width-only path stays purely
         // lateral — the Option C thickness lift is exercised by its own suite.
         const datum = deriveNativeShellThicknessDatum(raw);
-        const field10 = { ...widthField(10), thicknessMm: datum?.nativeMinClearanceMm ?? 3 };
-        const diag10 = diagnoseHeelCupWidthLateral(raw, field10);
-        const modified = applyBaseModifiers(raw, field10, 0);
+        const field8 = { ...widthField(8), thicknessMm: datum?.nativeMinClearanceMm ?? 3 };
+        const diag10 = diagnoseHeelCupWidthLateral(raw, field8);
+        const modified = applyBaseModifiers(raw, field8, 0);
         const modPos = modified.getAttribute("position")!.array as Float32Array;
 
         let maxBottomThickDrift = 0;
@@ -129,7 +130,7 @@ describe("heel cup width — Default.glb verification", () => {
             }
         }
 
-        console.log("[HC-WIDTH] applyBaseModifiers width=10", {
+        console.log("[HC-WIDTH] applyBaseModifiers width=8", {
             thickAxis,
             widthAxis,
             topVertexCount: topN,
@@ -147,7 +148,7 @@ describe("heel cup width — Default.glb verification", () => {
         raw.dispose();
     });
 
-    test("narrowing (width −10): sidewall follows the top border, HC-1 intact", async () => {
+    test("narrowing (width −6): sidewall follows the top border, HC-1 intact", async () => {
         const group = await loadGlbFromBuffer(await loadDefaultGlbBuffer());
         const merged = extractMergedGeometry(group);
         expect(merged).not.toBeNull();
@@ -165,7 +166,7 @@ describe("heel cup width — Default.glb verification", () => {
         const lenSize = axisMax[lengthAxis]! - lenMin || 1;
         const widCenter = (axisMin[widthAxis]! + axisMax[widthAxis]!) / 2;
 
-        const modified = applyBaseModifiers(raw, widthField(-10), 0);
+        const modified = applyBaseModifiers(raw, widthField(-6), 0);
         const modPos = modified.getAttribute("position")!.array as Float32Array;
 
         // HC-1: purely lateral on the bottom shell — no vertical drift.
@@ -224,7 +225,7 @@ describe("heel cup width — Default.glb verification", () => {
             const overhangMod = botMaxMod[b]! - topMaxMod[b]!;
             worstOverhangGrowth = Math.max(worstOverhangGrowth, overhangMod - overhangBase);
         }
-        console.log("[HC-WIDTH] narrow width=-10", {
+        console.log("[HC-WIDTH] narrow width=-6", {
             maxBottomThickDrift,
             maxTopInwardMove,
             worstOverhangGrowth,
@@ -236,25 +237,23 @@ describe("heel cup width — Default.glb verification", () => {
     });
 });
 
-describe("heel cup depth — constraint ceiling at thickness 2mm (instrumentation baseline)", () => {
-    test("commit simulation: drag 5mm → release at default thickness 2mm", () => {
+describe("heel cup depth — OC-PLANTAR-01 independent of thickness (no combined-wall crush)", () => {
+    test("commit simulation: drag 5mm → release at thickness 2mm keeps depth", () => {
         const thicknessMm = 2;
         const requested = 5;
         const c = { ...neutralCorrections(), heelCupDepthMm: requested };
         const { constrained, violations } = constrainSideCorrections(c, thicknessMm);
-        const ceiling = thicknessMm - 1.6; // MIN_WALL_MM
 
         console.log("[HC-DEPTH] constraint-sim@2mm", {
             thicknessMm,
             requested,
             applied: constrained.heelCupDepthMm,
-            theoreticalCeiling: ceiling,
             violations,
         });
 
-        // At t=2, any depth > 0.4 should clamp to 0.4; depth=5 → 0.4 (may display as ~0)
-        expect(constrained.heelCupDepthMm).toBeCloseTo(0.4, 5);
-        expect(constrained.heelCupDepthMm).toBeLessThan(0.5);
+        // OC-PLANTAR-01: depth is not crushed by thickness/wall heuristic (R14/E4).
+        expect(constrained.heelCupDepthMm).toBe(5);
+        expect(violations.some((v) => v.field === "heelCupDepthMm")).toBe(false);
     });
 
     test("full drag→release sequence simulation (store + preview + geometry inputs)", () => {
@@ -292,7 +291,7 @@ describe("heel cup depth — constraint ceiling at thickness 2mm (instrumentatio
         });
 
         expect(mergedDuringDrag.heelCupDepthMm).toBe(5);
-        expect(committedAfter).toBeCloseTo(0.4, 5);
-        expect(mergedAfterRelease.heelCupDepthMm).toBeCloseTo(0.4, 5);
+        expect(committedAfter).toBe(5);
+        expect(mergedAfterRelease.heelCupDepthMm).toBe(5);
     });
 });
