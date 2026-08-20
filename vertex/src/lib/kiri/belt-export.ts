@@ -363,19 +363,24 @@ export function measureGcodeEnvelope(gcode: string): {
     let yMaxLayer = 0;
     let retractCount = 0;
     let hasNaN = false;
+    let inLayers = false;
 
     for (const raw of gcode.split("\n")) {
         const line = raw.trim();
+        if (line.startsWith(";End of Gcode") || line === "PRINT_END" || line.startsWith("M204 S4000")) {
+            inLayers = false;
+        }
         const cm = countRe.exec(line);
         if (cm) declared = Number(cm[1]);
         const lm = layerRe.exec(line);
         if (lm) {
+            inLayers = true;
             curLayer = Number(lm[1]);
             seen = Math.max(seen, curLayer + 1);
             if (yMinByLayer[curLayer] === undefined) yMinByLayer[curLayer] = Infinity;
         }
         if (/\bNaN\b|\bInfinity\b/i.test(line)) hasNaN = true;
-        if (/^G1 E-/.test(line)) retractCount++;
+        if (inLayers && /^G1 E-/.test(line)) retractCount++;
         if (!/^G[01]\b/.test(line)) continue;
         const x = numWord(line, "X");
         const y = numWord(line, "Y");
@@ -383,8 +388,11 @@ export function measureGcodeEnvelope(gcode: string): {
         if (x !== undefined) xs.push(x);
         if (y !== undefined) {
             ys.push(y);
-            if (curLayer >= 0) yMinByLayer[curLayer] = Math.min(yMinByLayer[curLayer] ?? Infinity, y);
-            if (y > yMax) {
+            const isExtrude = /^G1\b/.test(line) && /\sE-?\d/.test(line);
+            if (curLayer >= 0 && isExtrude) {
+                yMinByLayer[curLayer] = Math.min(yMinByLayer[curLayer] ?? Infinity, y);
+            }
+            if (isExtrude && y > yMax) {
                 yMax = y;
                 yMaxLayer = Math.max(0, curLayer);
             }

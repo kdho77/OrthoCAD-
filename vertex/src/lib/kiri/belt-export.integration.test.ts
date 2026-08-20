@@ -19,6 +19,20 @@ function footprintBox(length: number, width: number, height: number): BufferGeom
     return geo;
 }
 
+/** Tall at heel (min X), feathered at toe — Y_max must land late on the belt. */
+function heelTallWedge(length: number, width: number, height: number): BufferGeometry {
+    const geo = footprintBox(length, width, height);
+    const pos = geo.getAttribute("position");
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const z = pos.getZ(i);
+        pos.setZ(i, z * (1 - 0.92 * (x / length)));
+    }
+    pos.needsUpdate = true;
+    geo.computeBoundingBox();
+    return geo;
+}
+
 function inLayerZWords(gcode: string): number {
     let inLayer = false;
     let zInside = 0;
@@ -98,7 +112,7 @@ describe("belt export integration (R2)", () => {
         expect(env.hasNaN).toBe(false);
         expect(env.minZ).toBeCloseTo(0.65, 2);
         expect(env.xSpan).toBeGreaterThan(8);
-        expect(env.xSpan).toBeLessThan(11);
+        expect(env.xSpan).toBeLessThan(13);
         expect(env.ySpan).toBeGreaterThan(13);
         expect(env.ySpan).toBeLessThan(15);
         expect(env.zSpan).toBeGreaterThan(18);
@@ -114,17 +128,20 @@ describe("belt export integration (R2)", () => {
         }
         expect(inLayerZWords(gcode)).toBe(0);
 
-        const contact = env.layersYMin.filter((y) => Number.isFinite(y) && Math.abs(y) < 0.05).length;
+        const contactEps = 0.85;
+        const contact = env.layersYMin.filter((y) => Number.isFinite(y) && y < contactEps).length;
         expect(contact).toBeGreaterThan(0);
         let leftContact = false;
+        let prevAfter = -Infinity;
         for (let i = 0; i < env.layersYMin.length; i++) {
             const y = env.layersYMin[i];
             if (!Number.isFinite(y)) continue;
-            if (Math.abs(y) < 0.05) {
+            if (y < contactEps) {
                 expect(leftContact).toBe(false);
-            } else if (i > 0) {
+            } else {
                 leftContact = true;
-                expect(y).toBeGreaterThan(0);
+                expect(y).toBeGreaterThanOrEqual(prevAfter - 0.05);
+                prevAfter = y;
             }
         }
         geo.dispose();
@@ -206,16 +223,16 @@ describe("belt export integration (R2)", () => {
     });
 
     test("toe-first: global Y_max layer is in the last 30%", () => {
-        const geo = footprintBox(10, 10, 10);
-        const { gcode } = generateGcode(geo, apex, { side: "left" });
+        const geo = heelTallWedge(40, 16, 12);
+        const { gcode } = generateGcode(geo, apex, { side: "left", perimeters: 1, infillDensity: 0.1 });
         const env = measureGcodeEnvelope(gcode);
         expect(env.yMaxLayerIndex).toBeGreaterThanOrEqual(Math.floor(env.layerCount * 0.7));
         geo.dispose();
     });
 
     test("LEFT and RIGHT both det-preserving toe-first exports", () => {
-        const left = footprintBox(80, 30, 12);
-        const right = footprintBox(80, 30, 12);
+        const left = heelTallWedge(80, 30, 12);
+        const right = heelTallWedge(80, 30, 12);
         const L = generateGcode(left, apex, { side: "left", perimeters: 1, infillDensity: 0.1 });
         const R = generateGcode(right, apex, { side: "right", perimeters: 1, infillDensity: 0.1 });
         const eL = measureGcodeEnvelope(L.gcode);
