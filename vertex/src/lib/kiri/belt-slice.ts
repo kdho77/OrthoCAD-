@@ -111,6 +111,7 @@ export function sliceBeltFdm(geometry: BufferGeometry, opts: BeltSliceOptions): 
             const loop = ringInfo.loop;
             let ring = clipLoopToBelt(insetLoop(loop, w / 2, beltY), beltY);
             if (ring.length < 3) continue;
+            clampOuterWall(ring, loop, w, ringInfo.kind);
             pushRing(moves, ring, z, "WALL-OUTER");
             for (let p = 1; p < opts.perimeters; p++) {
                 const next = tryInset(ring, w, beltY);
@@ -124,6 +125,7 @@ export function sliceBeltFdm(geometry: BufferGeometry, opts: BeltSliceOptions): 
             const infillLoops = loops
                 .map((ringInfo) => {
                     let ring = clipLoopToBelt(insetLoop(ringInfo.loop, w / 2, beltY), beltY);
+                    clampOuterWall(ring, ringInfo.loop, w, ringInfo.kind);
                     for (let p = 1; p < opts.perimeters; p++) {
                         const next = tryInset(ring, w, beltY);
                         if (!next) return [];
@@ -149,7 +151,57 @@ function tryInset(ring: Pt[], d: number, beltY: number): Pt[] | null {
     if (next.length < 3) return null;
     if (signedArea(next) * signedArea(ring) <= 0) return null;
     if (next.some((p) => p[1] > beltY + BELT_ON_EPS)) return null;
+    clampTo(next, aabbOf(ring));
     return next;
+}
+
+/**
+ * Keep the outer-wall X-silhouette inset by w/2 per side (R1d). Vertex-normal
+ * offset of a thin racetrack barely moves ±X extrema that sit on ±Y-facing
+ * walls; those extrema are clamped into the shrunk-X box. Holes and rings
+ * narrower than w stay inside the source AABB only (no extra X shrink).
+ */
+export function clampOuterWall(
+    ring: Pt[],
+    source: Pt[],
+    lineWidthMm: number,
+    kind: "outer" | "hole" = "outer",
+): void {
+    const box = aabbOf(source);
+    const xSpan = box.maxX - box.minX;
+    if (kind === "outer" && xSpan > lineWidthMm) {
+        clampTo(ring, {
+            minX: box.minX + lineWidthMm * 0.5,
+            maxX: box.maxX - lineWidthMm * 0.5,
+            minY: box.minY,
+            maxY: box.maxY,
+        });
+        return;
+    }
+    clampTo(ring, box);
+}
+
+function aabbOf(loop: Pt[]): { minX: number; maxX: number; minY: number; maxY: number } {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of loop) {
+        if (p[0] < minX) minX = p[0];
+        if (p[0] > maxX) maxX = p[0];
+        if (p[1] < minY) minY = p[1];
+        if (p[1] > maxY) maxY = p[1];
+    }
+    return { minX, maxX, minY, maxY };
+}
+
+function clampTo(loop: Pt[], box: { minX: number; maxX: number; minY: number; maxY: number }): void {
+    for (const p of loop) {
+        if (p[0] < box.minX) p[0] = box.minX;
+        if (p[0] > box.maxX) p[0] = box.maxX;
+        if (p[1] < box.minY) p[1] = box.minY;
+        if (p[1] > box.maxY) p[1] = box.maxY;
+    }
 }
 
 function pushRing(moves: BeltMove[], ring: Pt[], z: number, role: BeltPathRole): void {

@@ -3,7 +3,7 @@
 
 import type { BufferGeometry } from "three";
 import { applyXRotationToGeometry, orientMeshToBeltFrame } from "./belt-orient";
-import { clipLoopToBelt, insetLoop } from "./belt-slice";
+import { clampOuterWall, clipLoopToBelt, insetLoop } from "./belt-slice";
 import { classifyBeltRings, stitchBeltLoops } from "./belt-stitch";
 import { resolveBeltConfig, slicePitchRotatedMm } from "./belt-transform";
 import type { PrinterPreset } from "./presets";
@@ -268,6 +268,7 @@ export function sliceStations(
                 area += p[0] * q[1] - q[0] * p[1];
             }
             const inset = raw.length ? clipLoopToBelt(insetLoop(loop, lineWidthMm / 2, beltY), beltY) : [];
+            if (inset.length >= 3) clampOuterWall(inset, loop, lineWidthMm, ring.kind);
             let iMin = Infinity;
             let iMax = -Infinity;
             for (const p of inset) {
