@@ -2,11 +2,12 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
+import { toeFirstOrientMatrix } from "./belt-orient";
 import {
     applyAxisMap,
+    BeltConfigError,
     type BeltTransformConfig,
     beltToMachine,
-    BeltConfigError,
     extrusionPerMm,
     FLOW_ANCHOR_E,
     FLOW_ANCHOR_SEGMENT_MM,
@@ -20,7 +21,6 @@ import {
     slicePitchRotatedMm,
     TOE_FIRST_ORIENT_MATRIX,
 } from "./belt-transform";
-import { toeFirstOrientMatrix } from "./belt-orient";
 import { PRINTER_PRESETS } from "./presets";
 
 function cfg(over: Partial<BeltTransformConfig> = {}): BeltTransformConfig {
@@ -131,8 +131,12 @@ describe("beltToMachine (R2)", () => {
     });
 
     test("θ outside (0, 90) is rejected", () => {
-        expect(() => beltToMachine({ x: 0, y: 0, z: 1 }, cfg({ beltGantryAngleDeg: 0 }))).toThrow(BeltConfigError);
-        expect(() => beltToMachine({ x: 0, y: 0, z: 1 }, cfg({ beltGantryAngleDeg: 90 }))).toThrow(BeltConfigError);
+        expect(() => beltToMachine({ x: 0, y: 0, z: 1 }, cfg({ beltGantryAngleDeg: 0 }))).toThrow(
+            BeltConfigError,
+        );
+        expect(() => beltToMachine({ x: 0, y: 0, z: 1 }, cfg({ beltGantryAngleDeg: 90 }))).toThrow(
+            BeltConfigError,
+        );
     });
 
     test("orientation determinant is +1 for both sides", () => {
@@ -144,5 +148,14 @@ describe("beltToMachine (R2)", () => {
         const e = extrusionPerMm(cfg()) * FLOW_ANCHOR_SEGMENT_MM;
         expect(e).toBeGreaterThanOrEqual(FLOW_ANCHOR_E - 0.0008);
         expect(e).toBeLessThanOrEqual(FLOW_ANCHOR_E + 0.0008);
+    });
+
+    test("R4 — E scales as sinθ at 30° and 60°", () => {
+        const e45 = extrusionPerMm(cfg({ beltGantryAngleDeg: 45 }));
+        const e30 = extrusionPerMm(cfg({ beltGantryAngleDeg: 30 }));
+        const e60 = extrusionPerMm(cfg({ beltGantryAngleDeg: 60 }));
+        const s45 = Math.sin(Math.PI / 4);
+        expect(e30 / e45).toBeCloseTo(Math.sin(Math.PI / 6) / s45, 9);
+        expect(e60 / e45).toBeCloseTo(Math.sin(Math.PI / 3) / s45, 9);
     });
 });

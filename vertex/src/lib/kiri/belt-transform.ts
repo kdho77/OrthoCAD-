@@ -82,6 +82,23 @@ export class SlicePlaneError extends Error {
     }
 }
 
+export class BeltContactError extends Error {
+    readonly code = "BELT_CONTACT";
+    readonly layerIndex: number;
+    readonly move: string;
+    readonly gantry: number;
+    constructor(layerIndex: number, move: string, gantry: number) {
+        super(
+            `Belt contact violation at layer ${layerIndex}: ${move} gantry=${gantry} ` +
+                `(gantry < -1e-6 is a defect, not clamped)`,
+        );
+        this.name = "BeltContactError";
+        this.layerIndex = layerIndex;
+        this.move = move;
+        this.gantry = gantry;
+    }
+}
+
 export const DEFAULT_BELT_AXIS_MAP: BeltAxisMap = { across: "X", gantry: "Y", belt: "Z" };
 
 /** Cura/IdeaFormer flow anchor at lineWidth 0.80, layerHeight 0.65, θ 45°. */
@@ -102,7 +119,9 @@ export interface BeltTrig {
     travelSign: 1 | -1;
 }
 
-export function beltTrig(cfg: Pick<BeltTransformConfig, "beltGantryAngleDeg" | "beltLeanSign" | "beltTravelSign">): BeltTrig {
+export function beltTrig(
+    cfg: Pick<BeltTransformConfig, "beltGantryAngleDeg" | "beltLeanSign" | "beltTravelSign">,
+): BeltTrig {
     validateBeltAngle(cfg.beltGantryAngleDeg);
     const theta = cfg.beltGantryAngleDeg * DEG;
     return {
@@ -134,13 +153,17 @@ export function validateBeltConfig(cfg: BeltTransformConfig): void {
 }
 
 /** Perpendicular bead thickness — derived, not a config input. */
-export function perpendicularThicknessMm(cfg: Pick<BeltTransformConfig, "layerHeightMm" | "beltGantryAngleDeg">): number {
+export function perpendicularThicknessMm(
+    cfg: Pick<BeltTransformConfig, "layerHeightMm" | "beltGantryAngleDeg">,
+): number {
     validateBeltAngle(cfg.beltGantryAngleDeg);
     return cfg.layerHeightMm * Math.sin(cfg.beltGantryAngleDeg * DEG);
 }
 
 /** Horizontal pitch in the X-rotated slice frame. */
-export function slicePitchRotatedMm(cfg: Pick<BeltTransformConfig, "layerHeightMm" | "beltGantryAngleDeg">): number {
+export function slicePitchRotatedMm(
+    cfg: Pick<BeltTransformConfig, "layerHeightMm" | "beltGantryAngleDeg">,
+): number {
     return perpendicularThicknessMm(cfg);
 }
 
@@ -209,13 +232,23 @@ export function axisLetters(map: BeltAxisMap): { across: BeltAxis; gantry: BeltA
  * Extrusion per mm of machine-space in-layer path.
  * Calibrated so 15.20 mm @ 0.80/0.65 yields E = 1.38016 with the default flow pair.
  */
-export function extrusionPerMm(cfg: Pick<BeltTransformConfig, "lineWidthMm" | "layerHeightMm" | "filamentDiameterMm" | "flowMultiplier">): number {
+export function extrusionPerMm(
+    cfg: Pick<
+        BeltTransformConfig,
+        "lineWidthMm" | "layerHeightMm" | "filamentDiameterMm" | "flowMultiplier" | "beltGantryAngleDeg"
+    >,
+): number {
     const area = Math.PI * (cfg.filamentDiameterMm / 2) ** 2;
-    return (cfg.flowMultiplier * cfg.lineWidthMm * cfg.layerHeightMm) / area;
+    const sin = Math.sin(cfg.beltGantryAngleDeg * DEG);
+    return (cfg.flowMultiplier * cfg.lineWidthMm * cfg.layerHeightMm * sin) / area;
 }
 
 /** Linear part of footprint → belt-frame (toe-first). det = +1. */
-export const TOE_FIRST_ORIENT_MATRIX: readonly [readonly [number, number, number], readonly [number, number, number], readonly [number, number, number]] = [
+export const TOE_FIRST_ORIENT_MATRIX: readonly [
+    readonly [number, number, number],
+    readonly [number, number, number],
+    readonly [number, number, number],
+] = [
     [0, 1, 0],
     [-1, 0, 0],
     [0, 0, 1],
@@ -226,9 +259,13 @@ export function orientationDeterminant(matrix: readonly (readonly [number, numbe
     return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
 }
 
-const DEFAULT_FLOW_MULTIPLIER = 0.42;
+/** Holds emitted E invariant at 45° vs the prior 0.42 × layerHeight (no sinθ) model. */
+const DEFAULT_FLOW_MULTIPLIER = 0.42 / Math.sin(Math.PI / 4);
 
-export function resolveBeltConfig(preset: PrinterPreset, overrides: { layerHeightMm?: number } = {}): BeltTransformConfig {
+export function resolveBeltConfig(
+    preset: PrinterPreset,
+    overrides: { layerHeightMm?: number } = {},
+): BeltTransformConfig {
     const angle = preset.beltGantryAngleDeg ?? preset.beltAngleDeg ?? 45;
     const cfg: BeltTransformConfig = {
         beltGantryAngleDeg: angle,

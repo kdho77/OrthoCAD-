@@ -4,20 +4,21 @@
 import type { BufferGeometry } from "three";
 import type { Side } from "@/types";
 import { applyXRotationToGeometry, orientMeshToBeltFrame } from "./belt-orient";
+import { type BeltMove, type BeltPathRole, sliceBeltFdm } from "./belt-slice";
 import {
     applyAxisMap,
     type BeltAxis,
-    type BeltTransformConfig,
     BeltBoundsError,
+    BeltContactError,
+    type BeltTransformConfig,
     extrusionPerMm,
     resolveBeltConfig,
+    SlicePlaneError,
     sliceFrameToMachine,
     slicePitchRotatedMm,
-    SlicePlaneError,
 } from "./belt-transform";
 import type { GcodeStats } from "./gcode";
 import type { PrinterPreset } from "./presets";
-import { type Move, sliceFdm } from "./slicer";
 
 export interface BeltCamOverrides {
     layerHeightMm?: number;
@@ -35,21 +36,26 @@ export interface BeltCamResult {
 interface LayerPath {
     planeZ: number;
     beltZ: number;
-    sections: { type: "WALL-OUTER" | "WALL-INNER" | "FILL"; moves: Move[] }[];
+    sections: { type: BeltPathRole; moves: BeltMove[] }[];
 }
 
-export function emitBeltFdm(geometry: BufferGeometry, preset: PrinterPreset, o: BeltCamOverrides): BeltCamResult {
+export function emitBeltFdm(
+    geometry: BufferGeometry,
+    preset: PrinterPreset,
+    o: BeltCamOverrides,
+): BeltCamResult {
     const cfg = resolveBeltConfig(preset, o);
     const framed = orientMeshToBeltFrame(geometry, o.side, cfg);
     assertBounds(framed.widthMm, framed.heightMm, cfg);
 
     const rotated = applyXRotationToGeometry(framed.geometry, cfg);
     const pitch = slicePitchRotatedMm(cfg);
-    const moves = sliceFdm(rotated, {
+    const moves = sliceBeltFdm(rotated, {
         layerHeightMm: pitch,
         perimeters: o.perimeters ?? (preset.method === "printing_shell" ? 1 : 2),
         infillDensity: o.infillDensity ?? (preset.method === "printing_shell" ? 0 : 0.25),
         extrusionWidthMm: cfg.lineWidthMm,
+        beltGantryAngleDeg: cfg.beltGantryAngleDeg,
     });
     framed.geometry.dispose();
     rotated.dispose();
@@ -78,9 +84,15 @@ export function emitBeltFdm(geometry: BufferGeometry, preset: PrinterPreset, o: 
         body.push(line);
     };
 
-    x = firstXY(layers[0], cfg).x;
-    y = firstXY(layers[0], cfg).y;
-    emit(`G0 F600 ${word(letters.across, x)} ${word(letters.gantry, y)} ${word(letters.belt, layers[0].beltZ)}`);
+    const start = firstXY(layers[0], cfg);
+    if (start.gantry < -1e-6) {
+        throw new BeltContactError(0, `G0 start ${word(letters.gantry, start.gantry)}`, start.gantry);
+    }
+    x = start.x;
+    y = start.y;
+    emit(
+        `G0 F600 ${word(letters.across, x)} ${word(letters.gantry, y)} ${word(letters.belt, layers[0].beltZ)}`,
+    );
 
     for (let n = 0; n < layers.length; n++) {
         const layer = layers[n];
@@ -98,6 +110,13 @@ export function emitBeltFdm(geometry: BufferGeometry, preset: PrinterPreset, o: 
             for (const mv of section.moves) {
                 const m = sliceFrameToMachine({ x: mv.x, y: mv.y, z: mv.z }, cfg);
                 assertFinite(m.across, m.gantry, layer.planeZ);
+                if (m.gantry < -1e-6) {
+                    throw new BeltContactError(
+                        n,
+                        `${mv.type} ${word(letters.across, m.across)} ${word(letters.gantry, m.gantry)}`,
+                        m.gantry,
+                    );
+                }
                 const mapped = applyAxisMap({ ...m, belt: layer.beltZ }, letters);
                 const nx = mapped[letters.across];
                 const ny = mapped[letters.gantry];
@@ -179,7 +198,7 @@ function assertBounds(widthMm: number, heightMm: number, cfg: BeltTransformConfi
     }
 }
 
-function groupLayers(moves: Move[], cfg: BeltTransformConfig): LayerPath[] {
+function groupLayers(moves: BeltMove[], cfg: BeltTransformConfig): LayerPath[] {
     const groups = new Map<string, Move[]>();
     const order: number[] = [];
     for (const mv of moves) {
@@ -205,42 +224,25 @@ function groupLayers(moves: Move[], cfg: BeltTransformConfig): LayerPath[] {
     return layers;
 }
 
-function classifySections(moves: Move[]): LayerPath["sections"] {
+function classifySections(moves: BeltMove[]): LayerPath["sections"] {
     const sections: LayerPath["sections"] = [];
-    let i = 0;
-    let walls = 0;
-    while (i < moves.length) {
-        if (moves[i].type !== "travel") {
-            i++;
-            continue;
-        }
-        const chunk: Move[] = [moves[i]];
-        i++;
-        while (i < moves.length && moves[i].type === "extrude") {
-            chunk.push(moves[i]);
-            i++;
-        }
-        if (chunk.length < 2) continue;
-        const closed = chunk.length >= 4;
-        let type: LayerPath["sections"][number]["type"];
-        if (closed) {
-            type = walls === 0 ? "WALL-OUTER" : "WALL-INNER";
-            walls++;
-        } else {
-            type = "FILL";
-        }
+    for (const mv of moves) {
         const last = sections[sections.length - 1];
-        if (last && last.type === type && type === "FILL") last.moves.push(...chunk);
-        else sections.push({ type, moves: chunk });
+        if (last && last.type === mv.role) last.moves.push(mv);
+        else sections.push({ type: mv.role, moves: [mv] });
     }
     return sections;
 }
 
-function firstXY(layer: LayerPath, cfg: BeltTransformConfig): { x: number; y: number } {
+function firstXY(layer: LayerPath, cfg: BeltTransformConfig): { x: number; y: number; gantry: number } {
     const mv = layer.sections[0].moves[0];
     const m = sliceFrameToMachine({ x: mv.x, y: mv.y, z: mv.z }, cfg);
     const mapped = applyAxisMap({ ...m, belt: layer.beltZ }, cfg.beltAxisMap);
-    return { x: mapped[cfg.beltAxisMap.across], y: mapped[cfg.beltAxisMap.gantry] };
+    return {
+        x: mapped[cfg.beltAxisMap.across],
+        y: mapped[cfg.beltAxisMap.gantry],
+        gantry: m.gantry,
+    };
 }
 
 function feedForLayer(n: number, _kind: "print", cfg: BeltTransformConfig): number {
@@ -389,7 +391,7 @@ export function measureGcodeEnvelope(gcode: string): {
         if (y !== undefined) {
             ys.push(y);
             const isExtrude = /^G1\b/.test(line) && /\sE-?\d/.test(line);
-            if (curLayer >= 0 && isExtrude) {
+            if (curLayer >= 0) {
                 yMinByLayer[curLayer] = Math.min(yMinByLayer[curLayer] ?? Infinity, y);
             }
             if (isExtrude && y > yMax) {
