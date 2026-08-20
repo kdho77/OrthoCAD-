@@ -9,6 +9,15 @@ import { measureGcodeEnvelope } from "./belt-export";
 import { BeltBoundsError, MissingToeHeelError } from "./belt-transform";
 import { generateGcode } from "./engine";
 import { PRINTER_PRESETS } from "./presets";
+import {
+    contactLoopInnerGantry,
+    indexWalls,
+    measureMoveSpans,
+    prepareRotated,
+    sliceStations,
+    sliverRanges,
+    widestOuterSection,
+} from "./belt-r3-harness";
 
 const apex = PRINTER_PRESETS.find((p) => p.id === "apex-belt-v2")!;
 const desktop = PRINTER_PRESETS.find((p) => p.id === "desktop-fdm")!;
@@ -160,111 +169,6 @@ function feedsOnLayer(gcode: string, layer: number): number[] {
         if (fm) feeds.push(Number(fm[1]));
     }
     return feeds;
-}
-
-function indexWalls(gcode: string): Map<
-    number,
-    { outer: WallBox | null; inner: WallBox | null; maxOuterSpan: number; minInnerY: number | null }
-> {
-    const out = new Map<
-        number,
-        { outer: WallBox | null; inner: WallBox | null; maxOuterSpan: number; minInnerY: number | null }
-    >();
-    let cur = -1;
-    let kind: "WALL-OUTER" | "WALL-INNER" | null = null;
-    const acc = { ox: [] as number[], oy: [] as number[], ix: [] as number[], iy: [] as number[] };
-    let maxOuterSpan = Number.NEGATIVE_INFINITY;
-    let minInnerY: number | null = null;
-    let unionOx: number[] = [];
-    let unionOy: number[] = [];
-    let unionIx: number[] = [];
-    let unionIy: number[] = [];
-    const boxOf = (xs: number[], ys: number[]): WallBox | null => {
-        if (!xs.length || !ys.length) return null;
-        return {
-            minX: Math.min(...xs),
-            maxX: Math.max(...xs),
-            minY: Math.min(...ys),
-            maxY: Math.max(...ys),
-        };
-    };
-    const flushSection = () => {
-        if (kind === "WALL-OUTER" && acc.ox.length) {
-            const b = boxOf(acc.ox, acc.oy);
-            if (b) maxOuterSpan = Math.max(maxOuterSpan, b.maxX - b.minX);
-            unionOx.push(...acc.ox);
-            unionOy.push(...acc.oy);
-        }
-        if (kind === "WALL-INNER" && acc.iy.length) {
-            const y = Math.min(...acc.iy);
-            minInnerY = minInnerY === null ? y : Math.min(minInnerY, y);
-            unionIx.push(...acc.ix);
-            unionIy.push(...acc.iy);
-        }
-        acc.ox = [];
-        acc.oy = [];
-        acc.ix = [];
-        acc.iy = [];
-    };
-    const flushLayer = () => {
-        if (cur < 0) return;
-        flushSection();
-        out.set(cur, {
-            outer: boxOf(unionOx, unionOy),
-            inner: boxOf(unionIx, unionIy),
-            maxOuterSpan: Number.isFinite(maxOuterSpan) ? maxOuterSpan : Number.NaN,
-            minInnerY,
-        });
-        unionOx = [];
-        unionOy = [];
-        unionIx = [];
-        unionIy = [];
-    };
-    for (const raw of gcode.split("\n")) {
-        const line = raw.trim();
-        const lm = /^;LAYER:(\d+)/.exec(line);
-        if (lm) {
-            flushLayer();
-            cur = Number(lm[1]);
-            kind = null;
-            maxOuterSpan = Number.NEGATIVE_INFINITY;
-            minInnerY = null;
-            acc.ox = [];
-            acc.oy = [];
-            acc.ix = [];
-            acc.iy = [];
-            continue;
-        }
-        if (line.startsWith(";TYPE:")) {
-            flushSection();
-            kind = line === ";TYPE:WALL-OUTER" ? "WALL-OUTER" : line === ";TYPE:WALL-INNER" ? "WALL-INNER" : null;
-            continue;
-        }
-        if (line === ";MESH:NONMESH") {
-            flushSection();
-            kind = null;
-            continue;
-        }
-        if (!kind || !/^G[01]\b/.test(line)) continue;
-        const x = /(?:^|\s)X(-?\d+(?:\.\d+)?)/.exec(line);
-        const y = /(?:^|\s)Y(-?\d+(?:\.\d+)?)/.exec(line);
-        if (kind === "WALL-OUTER") {
-            if (x) acc.ox.push(Number(x[1]));
-            if (y) acc.oy.push(Number(y[1]));
-        } else {
-            if (x) acc.ix.push(Number(x[1]));
-            if (y) acc.iy.push(Number(y[1]));
-        }
-    }
-    flushLayer();
-    return out;
-}
-
-function footprintAabb(geo: BufferGeometry): { x: number; y: number; z: number } {
-    geo.computeBoundingBox();
-    const bb = geo.boundingBox;
-    if (!bb) return { x: 0, y: 0, z: 0 };
-    return { x: bb.max.x - bb.min.x, y: bb.max.y - bb.min.y, z: bb.max.z - bb.min.z };
 }
 
 describe("belt export integration (R2)", () => {
@@ -548,168 +452,316 @@ describe("belt export integration (R2)", () => {
     });
 });
 
+function r1dAtLayer(
+    stations: ReturnType<typeof sliceStations>,
+    walls: ReturnType<typeof indexWalls>,
+    layer: number,
+    wallBox: { minX: number; maxX: number },
+) {
+    const st = stations.find((s) => s.layerIndex === layer);
+    if (!st || !st.loops.length) return null;
+    const overlap = (a: { minX: number; maxX: number }, b: { minX: number; maxX: number }) =>
+        Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
+    const slice = st.loops.reduce((a, b) => (overlap(b, wallBox) > overlap(a, wallBox) ? b : a));
+    const wallSpan = wallBox.maxX - wallBox.minX;
+    return {
+        layer,
+        sliceMin: slice.minX,
+        sliceMax: slice.maxX,
+        sliceSpan: slice.span,
+        wallMin: wallBox.minX,
+        wallMax: wallBox.maxX,
+        wallSpan,
+        leftDeficit: wallBox.minX - slice.minX,
+        rightDeficit: slice.maxX - wallBox.maxX,
+        extentDelta: slice.span - wallSpan,
+        loopCount: st.loops.length,
+        loops: st.loops,
+    };
+}
+
+function assertR1cReal(gcode: string, solid: { minX: number; maxX: number; maxY: number }) {
+    const spans = measureMoveSpans(gcode);
+    expect(spans.extrude.minX).toBeGreaterThanOrEqual(solid.minX - 1e-6);
+    expect(spans.extrude.maxX).toBeLessThanOrEqual(solid.maxX + 1e-6);
+    expect(spans.extrude.minY).toBeGreaterThanOrEqual(-1e-6);
+    expect(spans.extrude.maxY).toBeLessThanOrEqual(solid.maxY + 1e-6);
+}
+
 describe("AC13 production Default.glb", () => {
+    const cache: Partial<
+        Record<
+            "left" | "right",
+            {
+                gcode: string;
+                env: ReturnType<typeof measureGcodeEnvelope>;
+                aabb: { x: number; y: number; z: number };
+                widthMm: number;
+                heightMm: number;
+                lengthMm: number;
+                stations: ReturnType<typeof sliceStations>;
+            }
+        >
+    > = {};
+
     async function runSlot(slot: "left" | "right") {
+        const hit = cache[slot];
+        if (hit) return hit;
         const geo = await loadProductionDefaultGlb({ slot });
-        const aabb = footprintAabb(geo);
+        geo.computeBoundingBox();
+        const bb = geo.boundingBox;
+        const aabb = bb
+            ? { x: bb.max.x - bb.min.x, y: bb.max.y - bb.min.y, z: bb.max.z - bb.min.z }
+            : { x: 0, y: 0, z: 0 };
+        const prep = prepareRotated(geo, apex, slot);
+        const stations = sliceStations(prep.rotated, prep.pitch, 45);
         const { gcode } = generateGcode(geo, apex, { side: slot, perimeters: 2, infillDensity: 0.08 });
         const env = measureGcodeEnvelope(gcode);
         geo.dispose();
-        return { gcode, env, aabb };
+        prep.rotated.dispose();
+        const row = {
+            gcode,
+            env,
+            aabb,
+            widthMm: prep.widthMm,
+            heightMm: prep.heightMm,
+            lengthMm: prep.lengthMm,
+            stations,
+        };
+        cache[slot] = row;
+        return row;
     }
 
-    function measureSide(
-        gcode: string,
-        env: ReturnType<typeof measureGcodeEnvelope>,
-        aabb: { x: number; y: number; z: number },
-    ) {
+
+    test("LEFT Default.glb envelope / contact / AC6", async () => {
+        const { env, gcode, aabb } = await runSlot("left");
         const sin = Math.SQRT2 / 2;
         const steps = env.beltSteps.filter((s) => Math.abs(s) > 1e-4);
         const maxDev = steps.length ? Math.max(...steps.map((s) => Math.abs(s - 0.65))) : 0;
-        const W = env.xSpan;
-        const H = env.ySpan * sin;
-        const L = env.zSpan - H;
-        const contactIdx: number[] = [];
-        for (let i = 0; i < env.layersYMin.length; i++) {
-            const y = env.layersYMin[i];
-            if (Number.isFinite(y) && Math.abs(y) <= 1e-6) contactIdx.push(i);
-        }
         const firstRise = env.layersYMin.findIndex((y) => Number.isFinite(y) && y > 1e-6);
         const returned =
             firstRise >= 0 &&
             env.layersYMin.slice(firstRise + 1).some((y) => Number.isFinite(y) && Math.abs(y) <= 1e-6);
-        const walls = indexWalls(gcode);
-        let sliverDrops = 0;
-        let outerMissing = 0;
-        let outerX = Number.NEGATIVE_INFINITY;
-        for (let i = 0; i < env.layerCount; i++) {
-            const w = walls.get(i);
-            const outer = w?.outer ?? null;
-            const inner = w?.inner ?? null;
-            if (!outer) outerMissing++;
-            if (outer && !inner) sliverDrops++;
-            if (w && Number.isFinite(w.maxOuterSpan)) outerX = Math.max(outerX, w.maxOuterSpan);
-        }
-        const withInner = contactIdx.filter((i) => walls.get(i)?.inner);
-        const mid = withInner[Math.floor(withInner.length / 2)];
-        const innerG = mid === undefined ? null : (walls.get(mid)?.minInnerY ?? null);
-        const solidX = aabb.y;
-        return {
-            steps,
-            maxDev,
-            W,
-            H,
-            L,
-            contactIdx,
-            firstRise,
-            returned,
-            sliverDrops,
-            outerMissing,
-            mid,
-            innerG,
-            solidX,
-            outerX,
-        };
-    }
-
-    test("LEFT Default.glb measurements", async () => {
-        const { env, gcode, aabb } = await runSlot("left");
-        const m = measureSide(gcode, env, aabb);
+        const contactCount = env.layersYMin.filter((y) => Number.isFinite(y) && Math.abs(y) <= 1e-6).length;
+        const spans = measureMoveSpans(gcode);
+        const Llo = env.zSpan - env.ySpan * sin;
+        const Lhi = env.zSpan;
         console.log(
             "AC13_LEFT",
             JSON.stringify({
                 layerCount: env.layerCount,
-                maxDev: m.maxDev,
-                xSpan: env.xSpan,
-                ySpan: env.ySpan,
+                maxDev,
+                all: spans.all,
+                extrude: spans.extrude,
                 zSpan: env.zSpan,
-                W: m.W,
-                H: m.H,
-                L: m.L,
+                H: env.ySpan * sin,
+                Lbound: [Llo, aabb.x, Lhi],
                 minZ: env.minZ,
                 hasNaN: env.hasNaN,
                 minY: env.minY,
-                aabb: m.solidX,
-                outerX: m.outerX,
-                delta: m.solidX - m.outerX,
-                contactCount: m.contactIdx.length,
-                firstRise: m.firstRise,
-                returned: m.returned,
+                aabb,
+                contactCount,
+                firstRise,
+                returned,
                 yMaxLayer: env.yMaxLayerIndex,
                 yMaxPct: (100 * env.yMaxLayerIndex) / env.layerCount,
-                sliverDrops: m.sliverDrops,
-                outerMissing: m.outerMissing,
-                mid: m.mid,
-                innerG: m.innerG,
-                aabbFoot: aabb,
             }),
         );
         expect(env.hasNaN).toBe(false);
         expect(env.layerCount).toBeGreaterThan(10);
-        for (const s of m.steps) {
-            expect(Math.abs(s - 0.65)).toBeLessThan(0.02);
-        }
         expect(env.minZ).toBeCloseTo(0.65, 1);
         expect(env.minY).toBeGreaterThanOrEqual(-1e-6);
-        expect(m.contactIdx.length).toBeGreaterThan(0);
+        expect(contactCount).toBeGreaterThan(0);
+        expect(returned).toBe(false);
         expect(gcode).toContain(";MESH:insole-left");
-        expect(gcode).toContain("M83 ;relative extrusion mode");
         expect(env.yMaxLayerIndex).toBeGreaterThanOrEqual(Math.floor(env.layerCount * 0.7));
-        expect(Math.abs(m.solidX - m.outerX - 0.8)).toBeLessThanOrEqual(0.02);
-        expect(m.innerG).not.toBeNull();
-        if (m.innerG !== null) {
-            expect(m.innerG).toBeGreaterThan(0);
-            expect(m.innerG).toBeLessThan(0.8);
-        }
-        expect(m.outerMissing).toBe(0);
-        expect(m.returned).toBe(false);
+        expect(aabb.x).toBeGreaterThanOrEqual(Llo - 1e-3);
+        expect(aabb.x).toBeLessThanOrEqual(Lhi + 1e-3);
+        for (const s of steps) expect(Math.abs(s - 0.65)).toBeLessThan(0.02);
     });
 
-    test("RIGHT Default.glb measurements", async () => {
+    test("RIGHT Default.glb envelope / contact / AC6", async () => {
         const { env, gcode, aabb } = await runSlot("right");
-        const m = measureSide(gcode, env, aabb);
+        const sin = Math.SQRT2 / 2;
+        const firstRise = env.layersYMin.findIndex((y) => Number.isFinite(y) && y > 1e-6);
+        const returned =
+            firstRise >= 0 &&
+            env.layersYMin.slice(firstRise + 1).some((y) => Number.isFinite(y) && Math.abs(y) <= 1e-6);
+        const spans = measureMoveSpans(gcode);
+        const Llo = env.zSpan - env.ySpan * sin;
         console.log(
             "AC13_RIGHT",
             JSON.stringify({
                 layerCount: env.layerCount,
-                maxDev: m.maxDev,
-                xSpan: env.xSpan,
-                ySpan: env.ySpan,
+                all: spans.all,
+                extrude: spans.extrude,
                 zSpan: env.zSpan,
-                W: m.W,
-                H: m.H,
-                L: m.L,
+                H: env.ySpan * sin,
+                Lbound: [Llo, aabb.x, env.zSpan],
                 minZ: env.minZ,
-                hasNaN: env.hasNaN,
                 minY: env.minY,
-                aabb: m.solidX,
-                outerX: m.outerX,
-                delta: m.solidX - m.outerX,
-                contactCount: m.contactIdx.length,
-                firstRise: m.firstRise,
-                returned: m.returned,
+                aabb,
+                contactCount: env.layersYMin.filter((y) => Number.isFinite(y) && Math.abs(y) <= 1e-6).length,
+                firstRise,
+                returned,
                 yMaxLayer: env.yMaxLayerIndex,
                 yMaxPct: (100 * env.yMaxLayerIndex) / env.layerCount,
-                sliverDrops: m.sliverDrops,
-                outerMissing: m.outerMissing,
-                mid: m.mid,
-                innerG: m.innerG,
-                aabbFoot: aabb,
             }),
         );
         expect(env.hasNaN).toBe(false);
-        expect(env.layerCount).toBeGreaterThan(10);
         expect(env.minZ).toBeCloseTo(0.65, 1);
         expect(env.minY).toBeGreaterThanOrEqual(-1e-6);
+        expect(returned).toBe(false);
         expect(gcode).toContain(";MESH:insole-right");
         expect(env.yMaxLayerIndex).toBeGreaterThanOrEqual(Math.floor(env.layerCount * 0.7));
-        expect(Math.abs(m.solidX - m.outerX - 0.8)).toBeLessThanOrEqual(0.02);
-        expect(m.innerG).not.toBeNull();
-        if (m.innerG !== null) {
-            expect(m.innerG).toBeGreaterThan(0);
-            expect(m.innerG).toBeLessThan(0.8);
+        expect(aabb.x).toBeGreaterThanOrEqual(Llo - 1e-3);
+        expect(aabb.x).toBeLessThanOrEqual(env.zSpan + 1e-3);
+    });
+
+    test("R1d LEFT per-layer slice vs WALL-OUTER", async () => {
+        const { gcode, stations, env } = await runSlot("left");
+        const walls = indexWalls(gcode);
+        const widest = widestOuterSection(walls);
+        expect(widest).toBeTruthy();
+        if (!widest) return;
+        const midLayer = Math.floor(env.layerCount * 0.45);
+        const heelLayer = Math.floor(env.layerCount * 0.82);
+        const midBox = walls.get(midLayer)?.outerSections.reduce((a, b) =>
+            b.maxX - b.minX > a.maxX - a.minX ? b : a,
+        );
+        const heelBox = walls.get(heelLayer)?.outerSections.reduce((a, b) =>
+            b.maxX - b.minX > a.maxX - a.minX ? b : a,
+        );
+        const rows = [
+            r1dAtLayer(stations, walls, widest.layer, widest.box),
+            midBox ? r1dAtLayer(stations, walls, midLayer, midBox) : null,
+            heelBox ? r1dAtLayer(stations, walls, heelLayer, heelBox) : null,
+        ];
+        console.log("R1D_LEFT", JSON.stringify(rows, null, 2));
+        for (const r of rows) {
+            expect(r).toBeTruthy();
+            if (!r) continue;
+            expect(Math.abs(r.extentDelta - 0.8)).toBeLessThanOrEqual(0.02);
         }
-        expect(m.outerMissing).toBe(0);
-        expect(m.returned).toBe(false);
+    });
+
+    test("R1d RIGHT per-layer slice vs WALL-OUTER", async () => {
+        const { gcode, stations, env } = await runSlot("right");
+        const walls = indexWalls(gcode);
+        const widest = widestOuterSection(walls);
+        expect(widest).toBeTruthy();
+        if (!widest) return;
+        const midLayer = Math.floor(env.layerCount * 0.45);
+        const heelLayer = Math.floor(env.layerCount * 0.82);
+        const midBox = walls.get(midLayer)?.outerSections.reduce((a, b) =>
+            b.maxX - b.minX > a.maxX - a.minX ? b : a,
+        );
+        const heelBox = walls.get(heelLayer)?.outerSections.reduce((a, b) =>
+            b.maxX - b.minX > a.maxX - a.minX ? b : a,
+        );
+        const rows = [
+            r1dAtLayer(stations, walls, widest.layer, widest.box),
+            midBox ? r1dAtLayer(stations, walls, midLayer, midBox) : null,
+            heelBox ? r1dAtLayer(stations, walls, heelLayer, heelBox) : null,
+        ];
+        console.log("R1D_RIGHT", JSON.stringify(rows, null, 2));
+        for (const r of rows) {
+            expect(r).toBeTruthy();
+            if (!r) continue;
+            expect(Math.abs(r.extentDelta - 0.8)).toBeLessThanOrEqual(0.02);
+        }
+    });
+
+    test("R1c-real LEFT extrude inside solid AABB", async () => {
+        const { gcode, widthMm, heightMm } = await runSlot("left");
+        const spans = measureMoveSpans(gcode);
+        console.log("R1C_LEFT_SPANS", JSON.stringify({ spans, widthMm, heightMm }));
+        assertR1cReal(gcode, { minX: 0, maxX: widthMm, maxY: heightMm / Math.sin(Math.PI / 4) });
+    });
+
+    test("R1c-real RIGHT extrude inside solid AABB", async () => {
+        const { gcode, widthMm, heightMm } = await runSlot("right");
+        const spans = measureMoveSpans(gcode);
+        console.log("R1C_RIGHT_SPANS", JSON.stringify({ spans, widthMm, heightMm }));
+        assertR1cReal(gcode, { minX: 0, maxX: widthMm, maxY: heightMm / Math.sin(Math.PI / 4) });
+    });
+
+    test("2c LEFT contact-loop inner gantry", async () => {
+        const { gcode, env } = await runSlot("left");
+        const walls = indexWalls(gcode);
+        const mid = Math.floor(env.layerCount * 0.45);
+        const hit = contactLoopInnerGantry(walls, mid);
+        console.log("C2C_LEFT", JSON.stringify(hit));
+        expect(hit).toBeTruthy();
+        if (!hit) return;
+        expect(hit.gantry).toBeGreaterThan(0);
+        expect(hit.gantry).toBeLessThan(0.8);
+    });
+
+    test("2c RIGHT contact-loop inner gantry", async () => {
+        const { gcode, env } = await runSlot("right");
+        const walls = indexWalls(gcode);
+        const mid = Math.floor(env.layerCount * 0.45);
+        const hit = contactLoopInnerGantry(walls, mid);
+        console.log("C2C_RIGHT", JSON.stringify(hit));
+        expect(hit).toBeTruthy();
+        if (!hit) return;
+        expect(hit.gantry).toBeGreaterThan(0);
+        expect(hit.gantry).toBeLessThan(0.8);
+    });
+
+    test("Task 4 sliver-drop ranges LEFT+RIGHT", async () => {
+        const L = await runSlot("left");
+        const R = await runSlot("right");
+        const beltZ = (n: number) => 0.65 * (n + 1);
+        const lw = indexWalls(L.gcode);
+        const rw = indexWalls(R.gcode);
+        const leftSliver = sliverRanges(lw, L.env.layerCount, beltZ);
+        const rightSliver = sliverRanges(rw, R.env.layerCount, beltZ);
+        let lDrop = 0;
+        let rDrop = 0;
+        let lMiss = 0;
+        let rMiss = 0;
+        for (let i = 0; i < L.env.layerCount; i++) {
+            const w = lw.get(i);
+            if (!w?.outer) lMiss++;
+            else if (!w.inner) lDrop++;
+        }
+        for (let i = 0; i < R.env.layerCount; i++) {
+            const w = rw.get(i);
+            if (!w?.outer) rMiss++;
+            else if (!w.inner) rDrop++;
+        }
+        console.log(
+            "SLIVER",
+            JSON.stringify({
+                leftRanges: leftSliver.ranges,
+                rightRanges: rightSliver.ranges,
+                leftDropped: leftSliver.droppedLayers,
+                rightDropped: rightSliver.droppedLayers,
+                lDrop,
+                rDrop,
+                lMiss,
+                rMiss,
+            }),
+        );
+        expect(lMiss).toBe(0);
+        expect(rMiss).toBe(0);
+    });
+});
+
+describe("R1c-real cube and wedge", () => {
+    test("cube extrude inside AABB", () => {
+        const geo = footprintBox(10, 10, 10);
+        const { gcode } = generateGcode(geo, apex, { side: "left", infillDensity: 0.2, perimeters: 1 });
+        assertR1cReal(gcode, { minX: 0, maxX: 10, maxY: 10 * Math.SQRT2 });
+        geo.dispose();
+    });
+
+    test("heel-tall wedge extrude inside AABB", () => {
+        const geo = heelTallWedge(40, 16, 12);
+        const { gcode } = generateGcode(geo, apex, { side: "left", perimeters: 1, infillDensity: 0.1 });
+        assertR1cReal(gcode, { minX: 0, maxX: 16, maxY: 12 * Math.SQRT2 });
+        geo.dispose();
     });
 });

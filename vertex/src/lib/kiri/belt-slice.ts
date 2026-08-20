@@ -149,7 +149,7 @@ function pushRing(moves: BeltMove[], ring: Pt[], z: number, role: BeltPathRole):
 }
 
 /** Sutherland–Hodgman clip against the half-plane y ≤ beltY (gantry ≥ 0). */
-function clipLoopToBelt(loop: Pt[], beltY: number): Pt[] {
+export function clipLoopToBelt(loop: Pt[], beltY: number): Pt[] {
     const pts = closedRing(loop);
     if (pts.length < 3) return [];
     const inside = (p: Pt) => p[1] <= beltY + BELT_ON_EPS;
