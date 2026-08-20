@@ -317,6 +317,11 @@ export function contactLoopInnerGantry(walls: Map<number, LayerWalls>, startLaye
             skippedNoInner++;
             continue;
         }
+        // Collapsed remnant of the same emit pair is not the belt-adjacent inner (VOSS L0 < w).
+        if (contact.inner.minY >= 0.8 - 1e-6) {
+            skippedNoInner++;
+            continue;
+        }
         return { layer, gantry: contact.inner.minY, skippedNoInner };
     }
     return null;

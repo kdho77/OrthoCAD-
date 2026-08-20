@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { describe, expect, test } from "@rstest/core";
 import { BoxGeometry, type BufferGeometry } from "three";
 import { loadProductionDefaultGlb } from "../../../../tests/helpers/load-production-default-glb";
@@ -454,7 +455,6 @@ describe("belt export integration (R2)", () => {
 
 function r1dAtLayer(
     stations: ReturnType<typeof sliceStations>,
-    walls: ReturnType<typeof indexWalls>,
     layer: number,
     wallBox: { minX: number; maxX: number },
 ) {
@@ -462,21 +462,36 @@ function r1dAtLayer(
     if (!st || !st.loops.length) return null;
     const overlap = (a: { minX: number; maxX: number }, b: { minX: number; maxX: number }) =>
         Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
-    const slice = st.loops.reduce((a, b) => (overlap(b, wallBox) > overlap(a, wallBox) ? b : a));
+    const candidates = st.loops.filter((l) => overlap(l, wallBox) > 0);
+    const slice = (candidates.length ? candidates : st.loops).reduce((a, b) => (b.span > a.span ? b : a));
     const wallSpan = wallBox.maxX - wallBox.minX;
     return {
         layer,
         sliceMin: slice.minX,
         sliceMax: slice.maxX,
         sliceSpan: slice.span,
+        unionMin: st.unionMinX,
+        unionMax: st.unionMaxX,
+        unionSpan: st.unionMaxX - st.unionMinX,
         wallMin: wallBox.minX,
         wallMax: wallBox.maxX,
         wallSpan,
         leftDeficit: wallBox.minX - slice.minX,
         rightDeficit: slice.maxX - wallBox.maxX,
         extentDelta: slice.span - wallSpan,
+        grewCount: st.loops.filter((l) => l.grew).length,
         loopCount: st.loops.length,
-        loops: st.loops,
+        stationCount: stations.length,
+        loops: st.loops.map((l) => ({
+            minX: l.minX,
+            maxX: l.maxX,
+            span: l.span,
+            verts: l.verts,
+            area: l.area,
+            hole: l.area < 0,
+            insetSpan: l.insetSpan,
+            grew: l.grew,
+        })),
     };
 }
 
@@ -546,27 +561,26 @@ describe("AC13 production Default.glb", () => {
         const spans = measureMoveSpans(gcode);
         const Llo = env.zSpan - env.ySpan * sin;
         const Lhi = env.zSpan;
-        console.log(
-            "AC13_LEFT",
-            JSON.stringify({
-                layerCount: env.layerCount,
-                maxDev,
-                all: spans.all,
-                extrude: spans.extrude,
-                zSpan: env.zSpan,
-                H: env.ySpan * sin,
-                Lbound: [Llo, aabb.x, Lhi],
-                minZ: env.minZ,
-                hasNaN: env.hasNaN,
-                minY: env.minY,
-                aabb,
-                contactCount,
-                firstRise,
-                returned,
-                yMaxLayer: env.yMaxLayerIndex,
-                yMaxPct: (100 * env.yMaxLayerIndex) / env.layerCount,
-            }),
-        );
+        const ac13Left = {
+            layerCount: env.layerCount,
+            maxDev,
+            all: spans.all,
+            extrude: spans.extrude,
+            zSpan: env.zSpan,
+            H: env.ySpan * sin,
+            Lbound: [Llo, aabb.x, Lhi],
+            minZ: env.minZ,
+            hasNaN: env.hasNaN,
+            minY: env.minY,
+            aabb,
+            contactCount,
+            firstRise,
+            returned,
+            yMaxLayer: env.yMaxLayerIndex,
+            yMaxPct: (100 * env.yMaxLayerIndex) / env.layerCount,
+        };
+        writeFileSync("/tmp/oc-belt-r3-ac13-left.json", JSON.stringify(ac13Left));
+        console.log("AC13_LEFT", JSON.stringify(ac13Left));
         expect(env.hasNaN).toBe(false);
         expect(env.layerCount).toBeGreaterThan(10);
         expect(env.minZ).toBeCloseTo(0.65, 1);
@@ -589,25 +603,24 @@ describe("AC13 production Default.glb", () => {
             env.layersYMin.slice(firstRise + 1).some((y) => Number.isFinite(y) && Math.abs(y) <= 1e-6);
         const spans = measureMoveSpans(gcode);
         const Llo = env.zSpan - env.ySpan * sin;
-        console.log(
-            "AC13_RIGHT",
-            JSON.stringify({
-                layerCount: env.layerCount,
-                all: spans.all,
-                extrude: spans.extrude,
-                zSpan: env.zSpan,
-                H: env.ySpan * sin,
-                Lbound: [Llo, aabb.x, env.zSpan],
-                minZ: env.minZ,
-                minY: env.minY,
-                aabb,
-                contactCount: env.layersYMin.filter((y) => Number.isFinite(y) && Math.abs(y) <= 1e-6).length,
-                firstRise,
-                returned,
-                yMaxLayer: env.yMaxLayerIndex,
-                yMaxPct: (100 * env.yMaxLayerIndex) / env.layerCount,
-            }),
-        );
+        const ac13Right = {
+            layerCount: env.layerCount,
+            all: spans.all,
+            extrude: spans.extrude,
+            zSpan: env.zSpan,
+            H: env.ySpan * sin,
+            Lbound: [Llo, aabb.x, env.zSpan],
+            minZ: env.minZ,
+            minY: env.minY,
+            aabb,
+            contactCount: env.layersYMin.filter((y) => Number.isFinite(y) && Math.abs(y) <= 1e-6).length,
+            firstRise,
+            returned,
+            yMaxLayer: env.yMaxLayerIndex,
+            yMaxPct: (100 * env.yMaxLayerIndex) / env.layerCount,
+        };
+        writeFileSync("/tmp/oc-belt-r3-ac13-right.json", JSON.stringify(ac13Right));
+        console.log("AC13_RIGHT", JSON.stringify(ac13Right));
         expect(env.hasNaN).toBe(false);
         expect(env.minZ).toBeCloseTo(0.65, 1);
         expect(env.minY).toBeGreaterThanOrEqual(-1e-6);
@@ -633,10 +646,15 @@ describe("AC13 production Default.glb", () => {
             b.maxX - b.minX > a.maxX - a.minX ? b : a,
         );
         const rows = [
-            r1dAtLayer(stations, walls, widest.layer, widest.box),
-            midBox ? r1dAtLayer(stations, walls, midLayer, midBox) : null,
-            heelBox ? r1dAtLayer(stations, walls, heelLayer, heelBox) : null,
+            r1dAtLayer(stations, widest.layer, widest.box),
+            midBox ? r1dAtLayer(stations, midLayer, midBox) : null,
+            heelBox ? r1dAtLayer(stations, heelLayer, heelBox) : null,
         ];
+        writeFileSync("/tmp/oc-belt-r3-r1d-left.json", JSON.stringify({
+            layerCount: env.layerCount,
+            stationCount: stations.length,
+            rows,
+        }));
         console.log("R1D_LEFT", JSON.stringify(rows, null, 2));
         for (const r of rows) {
             expect(r).toBeTruthy();
@@ -660,10 +678,15 @@ describe("AC13 production Default.glb", () => {
             b.maxX - b.minX > a.maxX - a.minX ? b : a,
         );
         const rows = [
-            r1dAtLayer(stations, walls, widest.layer, widest.box),
-            midBox ? r1dAtLayer(stations, walls, midLayer, midBox) : null,
-            heelBox ? r1dAtLayer(stations, walls, heelLayer, heelBox) : null,
+            r1dAtLayer(stations, widest.layer, widest.box),
+            midBox ? r1dAtLayer(stations, midLayer, midBox) : null,
+            heelBox ? r1dAtLayer(stations, heelLayer, heelBox) : null,
         ];
+        writeFileSync("/tmp/oc-belt-r3-r1d-right.json", JSON.stringify({
+            layerCount: env.layerCount,
+            stationCount: stations.length,
+            rows,
+        }));
         console.log("R1D_RIGHT", JSON.stringify(rows, null, 2));
         for (const r of rows) {
             expect(r).toBeTruthy();
@@ -691,7 +714,9 @@ describe("AC13 production Default.glb", () => {
         const walls = indexWalls(gcode);
         const mid = Math.floor(env.layerCount * 0.45);
         const hit = contactLoopInnerGantry(walls, mid);
-        console.log("C2C_LEFT", JSON.stringify(hit));
+        const pair = hit ? walls.get(hit.layer)?.pairs.find((p) => Math.abs(p.outer.minY) <= 1e-6) : null;
+        writeFileSync("/tmp/oc-belt-r3-c2c-left.json", JSON.stringify({ hit, pair }));
+        console.log("C2C_LEFT", JSON.stringify({ hit, pair }));
         expect(hit).toBeTruthy();
         if (!hit) return;
         expect(hit.gantry).toBeGreaterThan(0);
@@ -703,7 +728,9 @@ describe("AC13 production Default.glb", () => {
         const walls = indexWalls(gcode);
         const mid = Math.floor(env.layerCount * 0.45);
         const hit = contactLoopInnerGantry(walls, mid);
-        console.log("C2C_RIGHT", JSON.stringify(hit));
+        const pair = hit ? walls.get(hit.layer)?.pairs.find((p) => Math.abs(p.outer.minY) <= 1e-6) : null;
+        writeFileSync("/tmp/oc-belt-r3-c2c-right.json", JSON.stringify({ hit, pair }));
+        console.log("C2C_RIGHT", JSON.stringify({ hit, pair }));
         expect(hit).toBeTruthy();
         if (!hit) return;
         expect(hit.gantry).toBeGreaterThan(0);
@@ -732,6 +759,19 @@ describe("AC13 production Default.glb", () => {
             if (!w?.outer) rMiss++;
             else if (!w.inner) rDrop++;
         }
+        writeFileSync(
+            "/tmp/oc-belt-r3-sliver.json",
+            JSON.stringify({
+                leftRanges: leftSliver.ranges,
+                rightRanges: rightSliver.ranges,
+                leftDropped: leftSliver.droppedLayers,
+                rightDropped: rightSliver.droppedLayers,
+                lDrop,
+                rDrop,
+                lMiss,
+                rMiss,
+            }),
+        );
         console.log(
             "SLIVER",
             JSON.stringify({
