@@ -50,12 +50,16 @@ export function emitBeltFdm(
 
     const rotated = applyXRotationToGeometry(framed.geometry, cfg);
     const pitch = slicePitchRotatedMm(cfg);
+    const openByPlane = new Map<string, number>();
     const moves = sliceBeltFdm(rotated, {
         layerHeightMm: pitch,
         perimeters: o.perimeters ?? (preset.method === "printing_shell" ? 1 : 2),
         infillDensity: o.infillDensity ?? (preset.method === "printing_shell" ? 0 : 0.25),
         extrusionWidthMm: cfg.lineWidthMm,
         beltGantryAngleDeg: cfg.beltGantryAngleDeg,
+        onOpenChains: (planeZ, count) => {
+            openByPlane.set(planeZ.toFixed(6), count);
+        },
     });
     framed.geometry.dispose();
     rotated.dispose();
@@ -100,6 +104,8 @@ export function emitBeltFdm(
         const fillFeed = n === 1 ? 1400 : printFeed;
         const wallTravel = n === 0 ? 360 : 15000;
         emit(`;LAYER:${n}`);
+        const openN = openByPlane.get(layer.planeZ.toFixed(6));
+        if (openN) emit(`; WARN belt-stitch: ${openN} open chain(s) discarded`);
         emit(`M204 S${cfg.accelPrint}`);
         emit(fanLine(n));
         emit(`;MESH:${meshName}`);

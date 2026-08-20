@@ -4,9 +4,10 @@
 import type { BufferGeometry } from "three";
 import { applyXRotationToGeometry, orientMeshToBeltFrame } from "./belt-orient";
 import { clipLoopToBelt, insetLoop } from "./belt-slice";
+import { classifyBeltRings, stitchBeltLoops } from "./belt-stitch";
 import { resolveBeltConfig, slicePitchRotatedMm } from "./belt-transform";
 import type { PrinterPreset } from "./presets";
-import { extractTriangles, type Pt, sliceLayerSegments, stitchLoops } from "./slicer";
+import { extractTriangles, type Pt, sliceLayerSegments } from "./slicer";
 
 export interface WallBox {
     minX: number;
@@ -79,10 +80,10 @@ export function indexWalls(gcode: string): Map<number, LayerWalls> {
         flushSection();
         let maxOuterSpan = Number.NEGATIVE_INFINITY;
         let minInnerY: number | null = null;
-        let uox: number[] = [];
-        let uoy: number[] = [];
-        let uix: number[] = [];
-        let uiy: number[] = [];
+        const uox: number[] = [];
+        const uoy: number[] = [];
+        const uix: number[] = [];
+        const uiy: number[] = [];
         for (const b of outerSections) {
             maxOuterSpan = Math.max(maxOuterSpan, b.maxX - b.minX);
             uox.push(b.minX, b.maxX);
@@ -120,7 +121,12 @@ export function indexWalls(gcode: string): Map<number, LayerWalls> {
         }
         if (line.startsWith(";TYPE:")) {
             flushSection();
-            kind = line === ";TYPE:WALL-OUTER" ? "WALL-OUTER" : line === ";TYPE:WALL-INNER" ? "WALL-INNER" : null;
+            kind =
+                line === ";TYPE:WALL-OUTER"
+                    ? "WALL-OUTER"
+                    : line === ";TYPE:WALL-INNER"
+                      ? "WALL-INNER"
+                      : null;
             continue;
         }
         if (line === ";MESH:NONMESH") {
@@ -180,7 +186,14 @@ export function measureMoveSpans(gcode: string): {
     }
     const span = (lo: number, hi: number) => (Number.isFinite(lo) && Number.isFinite(hi) ? hi - lo : 0);
     return {
-        all: { minX: aMinX, maxX: aMaxX, minY: aMinY, maxY: aMaxY, xSpan: span(aMinX, aMaxX), ySpan: span(aMinY, aMaxY) },
+        all: {
+            minX: aMinX,
+            maxX: aMaxX,
+            minY: aMinY,
+            maxY: aMaxY,
+            xSpan: span(aMinX, aMaxX),
+            ySpan: span(aMinY, aMaxY),
+        },
         extrude: {
             minX: eMinX,
             maxX: eMaxX,
@@ -203,7 +216,11 @@ export interface SliceStation {
         verts: number;
         area: number;
         insetSpan: number;
+        insetMinX: number;
+        insetMaxX: number;
         grew: boolean;
+        identity: number;
+        kind: "outer" | "hole";
     }[];
     unionMinX: number;
     unionMaxX: number;
@@ -225,12 +242,16 @@ export function sliceStations(
         const segs = sliceLayerSegments(tris, z);
         if (segs.length === 0) continue;
         const beltY = z / tan;
-        const raw = stitchLoops(segs)
-            .map((loop) => clipLoopToBelt(loop, beltY))
-            .filter((l) => l.length >= 3);
-        const emits = raw.some((loop) => clipLoopToBelt(insetLoop(loop, lineWidthMm / 2, beltY), beltY).length >= 3);
+        const stitched = stitchBeltLoops(segs, { beltY });
+        const raw = classifyBeltRings(
+            stitched.closed.map((loop) => clipLoopToBelt(loop, beltY)).filter((l) => l.length >= 3),
+        );
+        const emits = raw.some(
+            (ring) => clipLoopToBelt(insetLoop(ring.loop, lineWidthMm / 2, beltY), beltY).length >= 3,
+        );
         if (!emits) continue;
-        const loops = raw.map((loop) => {
+        const loops = raw.map((ring, identity) => {
+            const loop = ring.loop;
             let minX = Infinity;
             let maxX = -Infinity;
             let area = 0;
@@ -256,7 +277,11 @@ export function sliceStations(
                 verts: loop.length,
                 area: area / 2,
                 insetSpan,
+                insetMinX: iMin,
+                insetMaxX: iMax,
                 grew: Number.isFinite(insetSpan) ? insetSpan > maxX - minX + 1e-6 : false,
+                identity,
+                kind: ring.kind,
             };
         });
         if (loops.length === 0) continue;
@@ -300,7 +325,10 @@ export function widestOuterSection(walls: Map<number, LayerWalls>): { layer: num
     return best;
 }
 
-export function contactLoopInnerGantry(walls: Map<number, LayerWalls>, startLayer: number): {
+export function contactLoopInnerGantry(
+    walls: Map<number, LayerWalls>,
+    startLayer: number,
+): {
     layer: number;
     gantry: number;
     skippedNoInner: number;

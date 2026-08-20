@@ -7,9 +7,6 @@ import { describe, expect, test } from "@rstest/core";
 import { BoxGeometry, type BufferGeometry } from "three";
 import { loadProductionDefaultGlb } from "../../../../tests/helpers/load-production-default-glb";
 import { measureGcodeEnvelope } from "./belt-export";
-import { BeltBoundsError, MissingToeHeelError } from "./belt-transform";
-import { generateGcode } from "./engine";
-import { PRINTER_PRESETS } from "./presets";
 import {
     contactLoopInnerGantry,
     indexWalls,
@@ -19,6 +16,9 @@ import {
     sliverRanges,
     widestOuterSection,
 } from "./belt-r3-harness";
+import { BeltBoundsError, MissingToeHeelError } from "./belt-transform";
+import { generateGcode } from "./engine";
+import { PRINTER_PRESETS } from "./presets";
 
 const apex = PRINTER_PRESETS.find((p) => p.id === "apex-belt-v2")!;
 const desktop = PRINTER_PRESETS.find((p) => p.id === "desktop-fdm")!;
@@ -460,25 +460,26 @@ function r1dAtLayer(
 ) {
     const st = stations.find((s) => s.layerIndex === layer);
     if (!st || !st.loops.length) return null;
-    const overlap = (a: { minX: number; maxX: number }, b: { minX: number; maxX: number }) =>
-        Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
-    const candidates = st.loops.filter((l) => overlap(l, wallBox) > 0);
-    const slice = (candidates.length ? candidates : st.loops).reduce((a, b) => (b.span > a.span ? b : a));
-    const wallSpan = wallBox.maxX - wallBox.minX;
+    const outers = st.loops.filter((l) => l.kind === "outer" && Number.isFinite(l.insetSpan));
+    if (!outers.length) return null;
+    const slice = outers.reduce((a, b) => (Math.abs(b.area) > Math.abs(a.area) ? b : a));
     return {
         layer,
+        identity: slice.identity,
         sliceMin: slice.minX,
         sliceMax: slice.maxX,
         sliceSpan: slice.span,
         unionMin: st.unionMinX,
         unionMax: st.unionMaxX,
         unionSpan: st.unionMaxX - st.unionMinX,
-        wallMin: wallBox.minX,
-        wallMax: wallBox.maxX,
-        wallSpan,
-        leftDeficit: wallBox.minX - slice.minX,
-        rightDeficit: slice.maxX - wallBox.maxX,
-        extentDelta: slice.span - wallSpan,
+        wallMin: slice.insetMinX,
+        wallMax: slice.insetMaxX,
+        wallSpan: slice.insetSpan,
+        gcodeWallMin: wallBox.minX,
+        gcodeWallMax: wallBox.maxX,
+        leftDeficit: slice.insetMinX - slice.minX,
+        rightDeficit: slice.maxX - slice.insetMaxX,
+        extentDelta: slice.span - slice.insetSpan,
         grewCount: st.loops.filter((l) => l.grew).length,
         loopCount: st.loops.length,
         stationCount: stations.length,
@@ -488,7 +489,8 @@ function r1dAtLayer(
             span: l.span,
             verts: l.verts,
             area: l.area,
-            hole: l.area < 0,
+            hole: l.kind === "hole",
+            identity: l.identity,
             insetSpan: l.insetSpan,
             grew: l.grew,
         })),
@@ -546,7 +548,6 @@ describe("AC13 production Default.glb", () => {
         cache[slot] = row;
         return row;
     }
-
 
     test("LEFT Default.glb envelope / contact / AC6", async () => {
         const { env, gcode, aabb } = await runSlot("left");
@@ -639,22 +640,25 @@ describe("AC13 production Default.glb", () => {
         if (!widest) return;
         const midLayer = Math.floor(env.layerCount * 0.45);
         const heelLayer = Math.floor(env.layerCount * 0.82);
-        const midBox = walls.get(midLayer)?.outerSections.reduce((a, b) =>
-            b.maxX - b.minX > a.maxX - a.minX ? b : a,
-        );
-        const heelBox = walls.get(heelLayer)?.outerSections.reduce((a, b) =>
-            b.maxX - b.minX > a.maxX - a.minX ? b : a,
-        );
+        const midBox = walls
+            .get(midLayer)
+            ?.outerSections.reduce((a, b) => (b.maxX - b.minX > a.maxX - a.minX ? b : a));
+        const heelBox = walls
+            .get(heelLayer)
+            ?.outerSections.reduce((a, b) => (b.maxX - b.minX > a.maxX - a.minX ? b : a));
         const rows = [
             r1dAtLayer(stations, widest.layer, widest.box),
             midBox ? r1dAtLayer(stations, midLayer, midBox) : null,
             heelBox ? r1dAtLayer(stations, heelLayer, heelBox) : null,
         ];
-        writeFileSync("/tmp/oc-belt-r3-r1d-left.json", JSON.stringify({
-            layerCount: env.layerCount,
-            stationCount: stations.length,
-            rows,
-        }));
+        writeFileSync(
+            "/tmp/oc-belt-r3-r1d-left.json",
+            JSON.stringify({
+                layerCount: env.layerCount,
+                stationCount: stations.length,
+                rows,
+            }),
+        );
         console.log("R1D_LEFT", JSON.stringify(rows, null, 2));
         for (const r of rows) {
             expect(r).toBeTruthy();
@@ -671,22 +675,25 @@ describe("AC13 production Default.glb", () => {
         if (!widest) return;
         const midLayer = Math.floor(env.layerCount * 0.45);
         const heelLayer = Math.floor(env.layerCount * 0.82);
-        const midBox = walls.get(midLayer)?.outerSections.reduce((a, b) =>
-            b.maxX - b.minX > a.maxX - a.minX ? b : a,
-        );
-        const heelBox = walls.get(heelLayer)?.outerSections.reduce((a, b) =>
-            b.maxX - b.minX > a.maxX - a.minX ? b : a,
-        );
+        const midBox = walls
+            .get(midLayer)
+            ?.outerSections.reduce((a, b) => (b.maxX - b.minX > a.maxX - a.minX ? b : a));
+        const heelBox = walls
+            .get(heelLayer)
+            ?.outerSections.reduce((a, b) => (b.maxX - b.minX > a.maxX - a.minX ? b : a));
         const rows = [
             r1dAtLayer(stations, widest.layer, widest.box),
             midBox ? r1dAtLayer(stations, midLayer, midBox) : null,
             heelBox ? r1dAtLayer(stations, heelLayer, heelBox) : null,
         ];
-        writeFileSync("/tmp/oc-belt-r3-r1d-right.json", JSON.stringify({
-            layerCount: env.layerCount,
-            stationCount: stations.length,
-            rows,
-        }));
+        writeFileSync(
+            "/tmp/oc-belt-r3-r1d-right.json",
+            JSON.stringify({
+                layerCount: env.layerCount,
+                stationCount: stations.length,
+                rows,
+            }),
+        );
         console.log("R1D_RIGHT", JSON.stringify(rows, null, 2));
         for (const r of rows) {
             expect(r).toBeTruthy();

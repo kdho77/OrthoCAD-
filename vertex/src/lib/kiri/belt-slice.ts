@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
+import { classifyBeltRings, stitchBeltLoops } from "./belt-stitch";
 import {
     edgeNormal,
     extractTriangles,
@@ -10,7 +11,6 @@ import {
     type Pt,
     type SliceOptions,
     sliceLayerSegments,
-    stitchLoops,
 } from "./slicer";
 
 export type BeltPathRole = "WALL-OUTER" | "WALL-INNER" | "FILL";
@@ -21,6 +21,7 @@ export interface BeltMove extends Move {
 
 export interface BeltSliceOptions extends SliceOptions {
     beltGantryAngleDeg: number;
+    onOpenChains?: (planeZ: number, count: number) => void;
 }
 
 const BELT_ON_EPS = 1e-6;
@@ -93,10 +94,13 @@ export function sliceBeltFdm(geometry: BufferGeometry, opts: BeltSliceOptions): 
             continue;
         }
         const beltY = z / tan;
-        const loops = stitchLoops(segs)
-            .map((loop) => clipLoopToBelt(loop, beltY))
-            .filter((l) => l.length >= 3);
-        for (const loop of loops) {
+        const stitched = stitchBeltLoops(segs, { beltY });
+        if (stitched.open.length > 0) opts.onOpenChains?.(z, stitched.open.length);
+        const loops = classifyBeltRings(
+            stitched.closed.map((loop) => clipLoopToBelt(loop, beltY)).filter((l) => l.length >= 3),
+        );
+        for (const ringInfo of loops) {
+            const loop = ringInfo.loop;
             let ring = clipLoopToBelt(insetLoop(loop, w / 2, beltY), beltY);
             if (ring.length < 3) continue;
             pushRing(moves, ring, z, "WALL-OUTER");
@@ -110,8 +114,8 @@ export function sliceBeltFdm(geometry: BufferGeometry, opts: BeltSliceOptions): 
 
         if (opts.infillDensity > 0 && loops.length > 0) {
             const infillLoops = loops
-                .map((loop) => {
-                    let ring = clipLoopToBelt(insetLoop(loop, w / 2, beltY), beltY);
+                .map((ringInfo) => {
+                    let ring = clipLoopToBelt(insetLoop(ringInfo.loop, w / 2, beltY), beltY);
                     for (let p = 1; p < opts.perimeters; p++) {
                         const next = tryInset(ring, w, beltY);
                         if (!next) return [];
