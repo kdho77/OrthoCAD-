@@ -27,33 +27,52 @@ const BELT_ON_EPS = 1e-6;
 const NEAR = 1e-4;
 
 /**
- * Winding-aware inset: positive `d` always moves toward the polygon interior.
- * Vertices matching `pin` stay put (belt-plane contact edge is not half-width inset).
+ * Winding-aware edge offset: positive `d` moves every edge toward the polygon
+ * interior. Belt-plane edges (`beltY` set and both endpoints on the plane) are
+ * offset by 0 so their centreline stays at gantry 0; new vertices are
+ * intersections of consecutive offset lines (Cura-style clip, not vertex pin).
  */
-export function insetLoop(loop: Pt[], d: number, pin?: (p: Pt) => boolean): Pt[] {
+export function insetLoop(loop: Pt[], d: number, beltY?: number): Pt[] {
     const ring = closedRing(loop);
     const n = ring.length;
     if (n < 3) return ring.slice();
-    const towardInterior = signedArea(ring) >= 0 ? 1 : -1;
-    const out: Pt[] = [];
+    let sign = signedArea(ring) >= 0 ? 1 : -1;
+    const probe = edgeNormal(ring[0], ring[1]);
+    const mid: Pt = [
+        (ring[0][0] + ring[1][0]) / 2 + probe[0] * sign * 1e-3,
+        (ring[0][1] + ring[1][1]) / 2 + probe[1] * sign * 1e-3,
+    ];
+    if (!pointInPoly(ring, mid)) sign = -sign;
+
+    const lines: { p: Pt; dir: Pt }[] = [];
     for (let i = 0; i < n; i++) {
-        const prev = ring[(i - 1 + n) % n];
-        const cur = ring[i];
-        const next = ring[(i + 1) % n];
-        if (pin?.(cur)) {
-            out.push([cur[0], cur[1]]);
-            continue;
-        }
-        const n1 = edgeNormal(prev, cur);
-        const n2 = edgeNormal(cur, next);
-        let nx = (n1[0] + n2[0]) * towardInterior;
-        let ny = (n1[1] + n2[1]) * towardInterior;
-        const len = Math.hypot(nx, ny) || 1;
-        nx /= len;
-        ny /= len;
-        out.push([cur[0] + nx * d, cur[1] + ny * d]);
+        const a = ring[i];
+        const b = ring[(i + 1) % n];
+        const nn = edgeNormal(a, b);
+        const onBelt =
+            beltY !== undefined &&
+            Math.abs(a[1] - beltY) <= BELT_ON_EPS &&
+            Math.abs(b[1] - beltY) <= BELT_ON_EPS;
+        const dist = onBelt ? 0 : d * sign;
+        lines.push({
+            p: [a[0] + nn[0] * dist, a[1] + nn[1] * dist],
+            dir: [b[0] - a[0], b[1] - a[1]],
+        });
     }
-    return out;
+
+    const out: Pt[] = [];
+    const miter = Math.max(4 * d, 1e-3);
+    for (let i = 0; i < n; i++) {
+        const prev = lines[(i - 1 + n) % n];
+        const cur = lines[i];
+        const hit = intersectLines(prev.p, prev.dir, cur.p, cur.dir);
+        if (hit && Math.hypot(hit[0] - ring[i][0], hit[1] - ring[i][1]) <= miter) {
+            out.push(hit);
+        } else {
+            out.push([cur.p[0], cur.p[1]]);
+        }
+    }
+    return closedRing(out);
 }
 
 export function sliceBeltFdm(geometry: BufferGeometry, opts: BeltSliceOptions): BeltMove[] {
@@ -77,15 +96,14 @@ export function sliceBeltFdm(geometry: BufferGeometry, opts: BeltSliceOptions): 
         const loops = stitchLoops(segs)
             .map((loop) => clipLoopToBelt(loop, beltY))
             .filter((l) => l.length >= 3);
-        const onBelt = (p: Pt) => Math.abs(p[1] - beltY) <= BELT_ON_EPS;
-
         for (const loop of loops) {
-            let ring = insetLoop(loop, w / 2, onBelt);
+            let ring = clipLoopToBelt(insetLoop(loop, w / 2, beltY), beltY);
             if (ring.length < 3) continue;
             pushRing(moves, ring, z, "WALL-OUTER");
             for (let p = 1; p < opts.perimeters; p++) {
-                ring = insetLoop(ring, w);
-                if (ring.length < 3) break;
+                const next = tryInset(ring, w, beltY);
+                if (!next) break;
+                ring = next;
                 pushRing(moves, ring, z, "WALL-INNER");
             }
         }
@@ -93,9 +111,13 @@ export function sliceBeltFdm(geometry: BufferGeometry, opts: BeltSliceOptions): 
         if (opts.infillDensity > 0 && loops.length > 0) {
             const infillLoops = loops
                 .map((loop) => {
-                    let ring = insetLoop(loop, w / 2, onBelt);
-                    for (let p = 1; p < opts.perimeters; p++) ring = insetLoop(ring, w);
-                    return insetLoop(ring, w / 2);
+                    let ring = clipLoopToBelt(insetLoop(loop, w / 2, beltY), beltY);
+                    for (let p = 1; p < opts.perimeters; p++) {
+                        const next = tryInset(ring, w, beltY);
+                        if (!next) return [];
+                        ring = next;
+                    }
+                    return tryInset(ring, w / 2, beltY) ?? [];
                 })
                 .filter((l) => l.length >= 3);
             const fill = infillSegments(infillLoops, z, spacing, layerIndex % 2 === 0);
@@ -107,6 +129,15 @@ export function sliceBeltFdm(geometry: BufferGeometry, opts: BeltSliceOptions): 
         layerIndex++;
     }
     return moves;
+}
+
+/** Drop an inset that inverts or crosses the belt — the wall does not fit in this sliver. */
+function tryInset(ring: Pt[], d: number, beltY: number): Pt[] | null {
+    const next = insetLoop(ring, d);
+    if (next.length < 3) return null;
+    if (signedArea(next) * signedArea(ring) <= 0) return null;
+    if (next.some((p) => p[1] > beltY + BELT_ON_EPS)) return null;
+    return next;
 }
 
 function pushRing(moves: BeltMove[], ring: Pt[], z: number, role: BeltPathRole): void {
@@ -157,6 +188,25 @@ function closedRing(loop: Pt[]): Pt[] {
 
 function near(a: Pt, b: Pt): boolean {
     return Math.abs(a[0] - b[0]) < NEAR && Math.abs(a[1] - b[1]) < NEAR;
+}
+
+function intersectLines(p1: Pt, d1: Pt, p2: Pt, d2: Pt): Pt | null {
+    const cross = d1[0] * d2[1] - d1[1] * d2[0];
+    if (Math.abs(cross) < 1e-12) return null;
+    const t = ((p2[0] - p1[0]) * d2[1] - (p2[1] - p1[1]) * d2[0]) / cross;
+    return [p1[0] + t * d1[0], p1[1] + t * d1[1]];
+}
+
+function pointInPoly(loop: Pt[], p: Pt): boolean {
+    let inside = false;
+    for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
+        const a = loop[i];
+        const b = loop[j];
+        const hit =
+            a[1] > p[1] !== b[1] > p[1] && p[0] < ((b[0] - a[0]) * (p[1] - a[1])) / (b[1] - a[1]) + a[0];
+        if (hit) inside = !inside;
+    }
+    return inside;
 }
 
 function signedArea(loop: Pt[]): number {

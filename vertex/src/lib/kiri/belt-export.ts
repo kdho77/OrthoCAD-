@@ -199,7 +199,7 @@ function assertBounds(widthMm: number, heightMm: number, cfg: BeltTransformConfi
 }
 
 function groupLayers(moves: BeltMove[], cfg: BeltTransformConfig): LayerPath[] {
-    const groups = new Map<string, Move[]>();
+    const groups = new Map<string, BeltMove[]>();
     const order: number[] = [];
     for (const mv of moves) {
         if (!Number.isFinite(mv.x) || !Number.isFinite(mv.y) || !Number.isFinite(mv.z)) {
@@ -268,10 +268,16 @@ function assertFinite(a: number, b: number, planeZ: number): void {
 }
 
 function minOf(a: number[]): number {
-    return a.length ? Math.min(...a) : 0;
+    let m = a[0];
+    if (m === undefined) return 0;
+    for (let i = 1; i < a.length; i++) if (a[i] < m) m = a[i];
+    return m;
 }
 function maxOf(a: number[]): number {
-    return a.length ? Math.max(...a) : 0;
+    let m = a[0];
+    if (m === undefined) return 0;
+    for (let i = 1; i < a.length; i++) if (a[i] > m) m = a[i];
+    return m;
 }
 
 function buildPreamble(
@@ -415,12 +421,12 @@ export function measureGcodeEnvelope(gcode: string): {
         xSpan: span(xs),
         ySpan: span(ys),
         zSpan: span(zs),
-        minZ: zs.length ? Math.min(...zs) : 0,
-        maxZ: zs.length ? Math.max(...zs) : 0,
-        minX: xs.length ? Math.min(...xs) : 0,
-        maxX: xs.length ? Math.max(...xs) : 0,
-        minY: ys.length ? Math.min(...ys) : 0,
-        maxY: ys.length ? Math.max(...ys) : 0,
+        minZ: minOf(zs),
+        maxZ: maxOf(zs),
+        minX: minOf(xs),
+        maxX: maxOf(xs),
+        minY: minOf(ys),
+        maxY: maxOf(ys),
         layersYMin: yMinByLayer.map((v) => (v === Infinity ? Number.NaN : v)),
         yMaxLayerIndex: yMaxLayer,
         retractCount,
@@ -434,5 +440,5 @@ function numWord(line: string, axis: string): number | undefined {
 }
 
 function span(a: number[]): number {
-    return a.length ? Math.max(...a) - Math.min(...a) : 0;
+    return a.length ? maxOf(a) - minOf(a) : 0;
 }
