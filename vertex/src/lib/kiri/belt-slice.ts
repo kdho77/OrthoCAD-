@@ -99,6 +99,14 @@ export function sliceBeltFdm(geometry: BufferGeometry, opts: BeltSliceOptions): 
         const loops = classifyBeltRings(
             stitched.closed.map((loop) => clipLoopToBelt(loop, beltY)).filter((l) => l.length >= 3),
         );
+        if (loops.length === 0) {
+            for (const chain of stitched.open) {
+                const poly = clipOpenToBelt(chain, beltY);
+                if (poly.length >= 2) pushOpen(moves, poly, z, "WALL-OUTER");
+            }
+            layerIndex++;
+            continue;
+        }
         for (const ringInfo of loops) {
             const loop = ringInfo.loop;
             let ring = clipLoopToBelt(insetLoop(loop, w / 2, beltY), beltY);
@@ -150,6 +158,35 @@ function pushRing(moves: BeltMove[], ring: Pt[], z: number, role: BeltPathRole):
         moves.push({ type: "extrude", x: ring[i][0], y: ring[i][1], z, role });
     }
     moves.push({ type: "extrude", x: ring[0][0], y: ring[0][1], z, role });
+}
+
+/** Trace an open chain. Never passed to insetLoop. */
+function pushOpen(moves: BeltMove[], poly: Pt[], z: number, role: BeltPathRole): void {
+    moves.push({ type: "travel", x: poly[0][0], y: poly[0][1], z, role });
+    for (let i = 1; i < poly.length; i++) {
+        moves.push({ type: "extrude", x: poly[i][0], y: poly[i][1], z, role });
+    }
+}
+
+/** Polyline clip against y ≤ beltY. */
+function clipOpenToBelt(chain: Pt[], beltY: number): Pt[] {
+    if (chain.length === 0) return [];
+    const out: Pt[] = [];
+    const inside = (p: Pt) => p[1] <= beltY + 1e-6;
+    for (let i = 0; i < chain.length - 1; i++) {
+        const s = chain[i];
+        const e = chain[i + 1];
+        const sIn = inside(s);
+        const eIn = inside(e);
+        if (sIn && out.length === 0) out.push(s);
+        if (sIn && eIn) out.push(e);
+        else if (sIn && !eIn) out.push(intersectBelt(s, e, beltY));
+        else if (!sIn && eIn) {
+            out.push(intersectBelt(s, e, beltY));
+            out.push(e);
+        }
+    }
+    return out;
 }
 
 /** Sutherland–Hodgman clip against the half-plane y ≤ beltY (gantry ≥ 0). */

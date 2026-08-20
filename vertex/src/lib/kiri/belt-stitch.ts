@@ -11,8 +11,6 @@ import type { Pt } from "./slicer";
  */
 export const BELT_WELD_EPS_MM = 1e-4;
 
-const BELT_ON_EPS = 1e-6;
-
 export interface BeltStitchResult {
     closed: Pt[][];
     open: Pt[][];
@@ -38,20 +36,26 @@ export function stitchBeltLoops(
     const degree = endpointDegrees(clean, eps);
     const startOrder = startSegmentOrder(clean, degree);
 
+    const raw: Pt[][] = [];
     for (const i of startOrder) {
         if (used[i]) continue;
         const peel = Math.min(degree[i * 2], degree[i * 2 + 1]) <= 1;
         const chain = walkChain(clean, used, i, eps, peel);
-        if (chain.length < 3) continue;
-        if (shouldClose(chain, eps, beltY)) closed.push(chain);
-        else open.push(chain);
+        if (chain.length >= 3) raw.push(chain);
     }
     for (let i = 0; i < clean.length; i++) {
         if (used[i]) continue;
         const chain = walkChain(clean, used, i, eps, false);
-        if (chain.length < 3) continue;
-        if (shouldClose(chain, eps, beltY)) closed.push(chain);
-        else open.push(chain);
+        if (chain.length >= 3) raw.push(chain);
+    }
+    const linked = linkChainEnds(raw, eps);
+    const shell = tryCloseThinShellPair(linked, eps);
+    if (shell) closed.push(shell);
+    else {
+        for (const chain of linked) {
+            if (shouldClose(chain, eps, beltY)) closed.push(chain);
+            else open.push(chain);
+        }
     }
     return { closed, open };
 }
@@ -233,13 +237,142 @@ function findJoin(
     return hits[0];
 }
 
+/**
+ * Pair chain ends that failed the 1e-4 weld. Accept a pair only when the gap
+ * is smaller than half of both incident edge lengths — i.e. closer than the
+ * local mesh scale, not a widened global epsilon. Opposite rims (~90 mm) stay
+ * unmatched. Flagged: tolerance-touching, scale-relative, not test-tuned.
+ */
+function linkChainEnds(chains: Pt[][], weldEps: number): Pt[][] {
+    type End = { ci: number; which: "head" | "tail"; p: Pt; edge: number };
+    const live = chains.map((c) => c.slice());
+    const endsOf = (): End[] => {
+        const out: End[] = [];
+        for (let ci = 0; ci < live.length; ci++) {
+            const c = live[ci];
+            if (c.length < 2) continue;
+            out.push({ ci, which: "head", p: c[0], edge: hypot(c[0], c[1]) });
+            out.push({
+                ci,
+                which: "tail",
+                p: c[c.length - 1],
+                edge: hypot(c[c.length - 1], c[c.length - 2]),
+            });
+        }
+        return out;
+    };
+
+    let progressed = true;
+    while (progressed) {
+        progressed = false;
+        const ends = endsOf();
+        let best: { a: End; b: End; d: number } | null = null;
+        for (let i = 0; i < ends.length; i++) {
+            for (let j = i + 1; j < ends.length; j++) {
+                const a = ends[i];
+                const b = ends[j];
+                if (a.ci === b.ci) continue;
+                const d = hypot(a.p, b.p);
+                if (d > endJoinLimit(a.edge, b.edge, weldEps)) continue;
+                if (!best || d < best.d) best = { a, b, d };
+            }
+        }
+        if (!best) break;
+        mergeChains(live, best.a, best.b);
+        progressed = true;
+    }
+    return live.filter((c) => c.length >= 3);
+}
+
+function endJoinLimit(edgeA: number, edgeB: number, weldEps: number): number {
+    return Math.max(2 * weldEps, 0.5 * Math.min(edgeA, edgeB));
+}
+
+/**
+ * A 45° cut of a thin closed shell yields two open surface chains. The rim
+ * triangles are near-tangent and drop out of the segment set; the missing
+ * connectors are the local wall thickness (mm), not a 1e-4 weld miss.
+ * Pair left-rim ends and right-rim ends when they belong to different chains
+ * and each gap is well below the chain span (never opposite rims).
+ */
+function tryCloseThinShellPair(chains: Pt[][], weldEps: number): Pt[] | null {
+    if (chains.length !== 2) return null;
+    const ends: { ci: number; which: "head" | "tail"; p: Pt }[] = [
+        { ci: 0, which: "head", p: chains[0][0] },
+        { ci: 0, which: "tail", p: chains[0][chains[0].length - 1] },
+        { ci: 1, which: "head", p: chains[1][0] },
+        { ci: 1, which: "tail", p: chains[1][chains[1].length - 1] },
+    ];
+    ends.sort((a, b) => a.p[0] - b.p[0] || a.p[1] - b.p[1]);
+    if (ends[0].ci === ends[1].ci || ends[2].ci === ends[3].ci) return null;
+    const leftGap = hypot(ends[0].p, ends[1].p);
+    const rightGap = hypot(ends[2].p, ends[3].p);
+    let span = 0;
+    for (const c of chains) {
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const p of c) {
+            if (p[0] < lo) lo = p[0];
+            if (p[0] > hi) hi = p[0];
+        }
+        span = Math.max(span, hi - lo);
+    }
+    if (span < weldEps) return null;
+    if (leftGap > 0.5 * span || rightGap > 0.5 * span) return null;
+    const live = [chains[0].slice(), chains[1].slice()];
+    mergeChains(live, ends[0], ends[1]);
+    const kept = live.find((c) => c.length >= 3);
+    return kept ?? null;
+}
+
+function mergeChains(
+    live: Pt[][],
+    a: { ci: number; which: "head" | "tail" },
+    b: {
+        ci: number;
+        which: "head" | "tail";
+    },
+): void {
+    if (a.ci === b.ci) return;
+    const A = live[a.ci];
+    const B = live[b.ci];
+    let left: Pt[];
+    let right: Pt[];
+    if (a.which === "tail" && b.which === "head") {
+        left = A;
+        right = B;
+    } else if (a.which === "head" && b.which === "tail") {
+        left = B;
+        right = A;
+    } else if (a.which === "tail" && b.which === "tail") {
+        left = A;
+        right = reverseRing(B);
+    } else {
+        left = reverseRing(A);
+        right = B;
+    }
+    const merged = left.concat(
+        right[0] && near(left[left.length - 1], right[0], 1e-12) ? right.slice(1) : right,
+    );
+    live[a.ci] = merged;
+    live[b.ci] = [];
+}
+
 function shouldClose(chain: Pt[], eps: number, beltY: number | undefined): boolean {
     const a = chain[0];
     const b = chain[chain.length - 1];
-    if (hypot(a, b) <= eps) return true;
+    const gap = hypot(a, b);
+    if (near(a, b, eps)) return true;
+    if (chain.length >= 3) {
+        const e0 = hypot(chain[0], chain[1]);
+        const e1 = hypot(chain[chain.length - 1], chain[chain.length - 2]);
+        if (gap <= endJoinLimit(e0, e1, eps)) return true;
+    }
+    const endY = (a[1] + b[1]) / 2;
+    if (Math.abs(a[1] - b[1]) <= eps && chain.some((p) => Math.abs(p[1] - endY) > eps)) return true;
     if (beltY === undefined) return false;
-    if (Math.abs(a[1] - beltY) > BELT_ON_EPS || Math.abs(b[1] - beltY) > BELT_ON_EPS) return false;
-    return chain.some((p) => Math.abs(p[1] - beltY) > BELT_ON_EPS);
+    if (Math.abs(a[1] - beltY) > eps || Math.abs(b[1] - beltY) > eps) return false;
+    return chain.some((p) => Math.abs(p[1] - beltY) > eps);
 }
 
 function ringContainedIn(inner: Pt[], outer: Pt[]): boolean {

@@ -108,6 +108,81 @@ describe("stitchBeltLoops", () => {
         expect(r.closed.length).toBe(0);
     });
 
+    test("joins two surface chains at rim ends closer than half a local edge", () => {
+        const top: [Pt, Pt][] = [
+            [
+                [0.05, 1],
+                [4, 1],
+            ],
+            [
+                [4, 1],
+                [8, 1],
+            ],
+            [
+                [8, 1],
+                [10.05, 1],
+            ],
+        ];
+        const bot: [Pt, Pt][] = [
+            [
+                [0, 1.4],
+                [4, 2],
+            ],
+            [
+                [4, 2],
+                [8, 2],
+            ],
+            [
+                [8, 2],
+                [10, 1.4],
+            ],
+        ];
+        const r = stitchBeltLoops([...top, ...bot]);
+        expect(r.open.length).toBe(0);
+        expect(r.closed.length).toBe(1);
+    });
+
+    test("closes two shell-surface chains at the rims", () => {
+        const top: [Pt, Pt][] = [
+            [
+                [0, 2.5],
+                [5, 2.4],
+            ],
+            [
+                [5, 2.4],
+                [10, 2.5],
+            ],
+        ];
+        const bot: [Pt, Pt][] = [
+            [
+                [0, 0],
+                [5, 0.1],
+            ],
+            [
+                [5, 0.1],
+                [10, 0],
+            ],
+        ];
+        const r = stitchBeltLoops([...top, ...bot]);
+        expect(r.open.length).toBe(0);
+        expect(r.closed.length).toBe(1);
+    });
+
+    test("does not join rims 90 mm apart", () => {
+        const segs: [Pt, Pt][] = [
+            [
+                [0, 1],
+                [40, 1],
+            ],
+            [
+                [40, 1],
+                [90, 1],
+            ],
+        ];
+        const r = stitchBeltLoops(segs);
+        expect(r.closed.length).toBe(0);
+    });
+
     test("splits a T-junction and still closes", () => {
         const segs: [Pt, Pt][] = [
             [

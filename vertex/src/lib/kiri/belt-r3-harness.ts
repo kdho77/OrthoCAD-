@@ -249,8 +249,13 @@ export function sliceStations(
         const emits = raw.some(
             (ring) => clipLoopToBelt(insetLoop(ring.loop, lineWidthMm / 2, beltY), beltY).length >= 3,
         );
-        if (!emits) continue;
-        const loops = raw.map((ring, identity) => {
+        if (!emits && stitched.open.length === 0) continue;
+        const source = raw.length
+            ? raw
+            : stitched.open
+                  .filter((c) => c.length >= 2)
+                  .map((loop) => ({ loop, kind: "outer" as const, depth: 0 }));
+        const loops = source.map((ring, identity) => {
             const loop = ring.loop;
             let minX = Infinity;
             let maxX = -Infinity;
@@ -262,7 +267,7 @@ export function sliceStations(
                 if (p[0] > maxX) maxX = p[0];
                 area += p[0] * q[1] - q[0] * p[1];
             }
-            const inset = clipLoopToBelt(insetLoop(loop, lineWidthMm / 2, beltY), beltY);
+            const inset = raw.length ? clipLoopToBelt(insetLoop(loop, lineWidthMm / 2, beltY), beltY) : [];
             let iMin = Infinity;
             let iMax = -Infinity;
             for (const p of inset) {
