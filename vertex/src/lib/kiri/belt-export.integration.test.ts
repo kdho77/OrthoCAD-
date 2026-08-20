@@ -162,6 +162,111 @@ function feedsOnLayer(gcode: string, layer: number): number[] {
     return feeds;
 }
 
+function indexWalls(gcode: string): Map<
+    number,
+    { outer: WallBox | null; inner: WallBox | null; maxOuterSpan: number; minInnerY: number | null }
+> {
+    const out = new Map<
+        number,
+        { outer: WallBox | null; inner: WallBox | null; maxOuterSpan: number; minInnerY: number | null }
+    >();
+    let cur = -1;
+    let kind: "WALL-OUTER" | "WALL-INNER" | null = null;
+    const acc = { ox: [] as number[], oy: [] as number[], ix: [] as number[], iy: [] as number[] };
+    let maxOuterSpan = Number.NEGATIVE_INFINITY;
+    let minInnerY: number | null = null;
+    let unionOx: number[] = [];
+    let unionOy: number[] = [];
+    let unionIx: number[] = [];
+    let unionIy: number[] = [];
+    const boxOf = (xs: number[], ys: number[]): WallBox | null => {
+        if (!xs.length || !ys.length) return null;
+        return {
+            minX: Math.min(...xs),
+            maxX: Math.max(...xs),
+            minY: Math.min(...ys),
+            maxY: Math.max(...ys),
+        };
+    };
+    const flushSection = () => {
+        if (kind === "WALL-OUTER" && acc.ox.length) {
+            const b = boxOf(acc.ox, acc.oy);
+            if (b) maxOuterSpan = Math.max(maxOuterSpan, b.maxX - b.minX);
+            unionOx.push(...acc.ox);
+            unionOy.push(...acc.oy);
+        }
+        if (kind === "WALL-INNER" && acc.iy.length) {
+            const y = Math.min(...acc.iy);
+            minInnerY = minInnerY === null ? y : Math.min(minInnerY, y);
+            unionIx.push(...acc.ix);
+            unionIy.push(...acc.iy);
+        }
+        acc.ox = [];
+        acc.oy = [];
+        acc.ix = [];
+        acc.iy = [];
+    };
+    const flushLayer = () => {
+        if (cur < 0) return;
+        flushSection();
+        out.set(cur, {
+            outer: boxOf(unionOx, unionOy),
+            inner: boxOf(unionIx, unionIy),
+            maxOuterSpan: Number.isFinite(maxOuterSpan) ? maxOuterSpan : Number.NaN,
+            minInnerY,
+        });
+        unionOx = [];
+        unionOy = [];
+        unionIx = [];
+        unionIy = [];
+    };
+    for (const raw of gcode.split("\n")) {
+        const line = raw.trim();
+        const lm = /^;LAYER:(\d+)/.exec(line);
+        if (lm) {
+            flushLayer();
+            cur = Number(lm[1]);
+            kind = null;
+            maxOuterSpan = Number.NEGATIVE_INFINITY;
+            minInnerY = null;
+            acc.ox = [];
+            acc.oy = [];
+            acc.ix = [];
+            acc.iy = [];
+            continue;
+        }
+        if (line.startsWith(";TYPE:")) {
+            flushSection();
+            kind = line === ";TYPE:WALL-OUTER" ? "WALL-OUTER" : line === ";TYPE:WALL-INNER" ? "WALL-INNER" : null;
+            continue;
+        }
+        if (line === ";MESH:NONMESH") {
+            flushSection();
+            kind = null;
+            continue;
+        }
+        if (!kind || !/^G[01]\b/.test(line)) continue;
+        const x = /(?:^|\s)X(-?\d+(?:\.\d+)?)/.exec(line);
+        const y = /(?:^|\s)Y(-?\d+(?:\.\d+)?)/.exec(line);
+        if (kind === "WALL-OUTER") {
+            if (x) acc.ox.push(Number(x[1]));
+            if (y) acc.oy.push(Number(y[1]));
+        } else {
+            if (x) acc.ix.push(Number(x[1]));
+            if (y) acc.iy.push(Number(y[1]));
+        }
+    }
+    flushLayer();
+    return out;
+}
+
+function footprintAabb(geo: BufferGeometry): { x: number; y: number; z: number } {
+    geo.computeBoundingBox();
+    const bb = geo.boundingBox;
+    if (!bb) return { x: 0, y: 0, z: 0 };
+    return { x: bb.max.x - bb.min.x, y: bb.max.y - bb.min.y, z: bb.max.z - bb.min.z };
+}
+
 describe("belt export integration (R2)", () => {
     test("9 — 10×10×10 cube envelope, constant belt step, Z constant in-layer", () => {
         const geo = footprintBox(10, 10, 10);
@@ -390,6 +495,24 @@ describe("belt export integration (R2)", () => {
         const { gcode } = generateGcode(geo, apex, { side: "left", perimeters: 1, infillDensity: 0.1 });
         const env = measureGcodeEnvelope(gcode);
         expect(env.yMaxLayerIndex).toBeGreaterThanOrEqual(Math.floor(env.layerCount * 0.7));
+        expect(env.minY).toBeGreaterThanOrEqual(-1e-6);
+        let leftContact = false;
+        let prevAfter = -Infinity;
+        let sawContact = false;
+        for (let i = 0; i < env.layersYMin.length; i++) {
+            const y = env.layersYMin[i];
+            if (!Number.isFinite(y)) continue;
+            expect(y).toBeGreaterThanOrEqual(-1e-6);
+            if (Math.abs(y) <= 1e-6) {
+                expect(leftContact).toBe(false);
+                sawContact = true;
+            } else {
+                leftContact = true;
+                expect(y).toBeGreaterThan(prevAfter);
+                prevAfter = y;
+            }
+        }
+        expect(sawContact).toBe(true);
         geo.dispose();
     });
 
@@ -428,35 +551,165 @@ describe("belt export integration (R2)", () => {
 describe("AC13 production Default.glb", () => {
     async function runSlot(slot: "left" | "right") {
         const geo = await loadProductionDefaultGlb({ slot });
-        const { gcode } = generateGcode(geo, apex, { side: slot, perimeters: 1, infillDensity: 0.08 });
+        const aabb = footprintAabb(geo);
+        const { gcode } = generateGcode(geo, apex, { side: slot, perimeters: 2, infillDensity: 0.08 });
         const env = measureGcodeEnvelope(gcode);
         geo.dispose();
-        return { gcode, env };
+        return { gcode, env, aabb };
+    }
+
+    function measureSide(
+        gcode: string,
+        env: ReturnType<typeof measureGcodeEnvelope>,
+        aabb: { x: number; y: number; z: number },
+    ) {
+        const sin = Math.SQRT2 / 2;
+        const steps = env.beltSteps.filter((s) => Math.abs(s) > 1e-4);
+        const maxDev = steps.length ? Math.max(...steps.map((s) => Math.abs(s - 0.65))) : 0;
+        const W = env.xSpan;
+        const H = env.ySpan * sin;
+        const L = env.zSpan - H;
+        const contactIdx: number[] = [];
+        for (let i = 0; i < env.layersYMin.length; i++) {
+            const y = env.layersYMin[i];
+            if (Number.isFinite(y) && Math.abs(y) <= 1e-6) contactIdx.push(i);
+        }
+        const firstRise = env.layersYMin.findIndex((y) => Number.isFinite(y) && y > 1e-6);
+        const returned =
+            firstRise >= 0 &&
+            env.layersYMin.slice(firstRise + 1).some((y) => Number.isFinite(y) && Math.abs(y) <= 1e-6);
+        const walls = indexWalls(gcode);
+        let sliverDrops = 0;
+        let outerMissing = 0;
+        let outerX = Number.NEGATIVE_INFINITY;
+        for (let i = 0; i < env.layerCount; i++) {
+            const w = walls.get(i);
+            const outer = w?.outer ?? null;
+            const inner = w?.inner ?? null;
+            if (!outer) outerMissing++;
+            if (outer && !inner) sliverDrops++;
+            if (w && Number.isFinite(w.maxOuterSpan)) outerX = Math.max(outerX, w.maxOuterSpan);
+        }
+        const withInner = contactIdx.filter((i) => walls.get(i)?.inner);
+        const mid = withInner[Math.floor(withInner.length / 2)];
+        const innerG = mid === undefined ? null : (walls.get(mid)?.minInnerY ?? null);
+        const solidX = aabb.y;
+        return {
+            steps,
+            maxDev,
+            W,
+            H,
+            L,
+            contactIdx,
+            firstRise,
+            returned,
+            sliverDrops,
+            outerMissing,
+            mid,
+            innerG,
+            solidX,
+            outerX,
+        };
     }
 
     test("LEFT Default.glb measurements", async () => {
-        const { env, gcode } = await runSlot("left");
+        const { env, gcode, aabb } = await runSlot("left");
+        const m = measureSide(gcode, env, aabb);
+        console.log(
+            "AC13_LEFT",
+            JSON.stringify({
+                layerCount: env.layerCount,
+                maxDev: m.maxDev,
+                xSpan: env.xSpan,
+                ySpan: env.ySpan,
+                zSpan: env.zSpan,
+                W: m.W,
+                H: m.H,
+                L: m.L,
+                minZ: env.minZ,
+                hasNaN: env.hasNaN,
+                minY: env.minY,
+                aabb: m.solidX,
+                outerX: m.outerX,
+                delta: m.solidX - m.outerX,
+                contactCount: m.contactIdx.length,
+                firstRise: m.firstRise,
+                returned: m.returned,
+                yMaxLayer: env.yMaxLayerIndex,
+                yMaxPct: (100 * env.yMaxLayerIndex) / env.layerCount,
+                sliverDrops: m.sliverDrops,
+                outerMissing: m.outerMissing,
+                mid: m.mid,
+                innerG: m.innerG,
+                aabbFoot: aabb,
+            }),
+        );
         expect(env.hasNaN).toBe(false);
         expect(env.layerCount).toBeGreaterThan(10);
-        const steps = env.beltSteps.filter((s) => Math.abs(s) > 1e-4);
-        for (const s of steps) {
+        for (const s of m.steps) {
             expect(Math.abs(s - 0.65)).toBeLessThan(0.02);
         }
         expect(env.minZ).toBeCloseTo(0.65, 1);
         expect(env.minY).toBeGreaterThanOrEqual(-1e-6);
-        expect(
-            env.layersYMin.filter((y) => Number.isFinite(y) && Math.abs(y) <= 1e-6).length,
-        ).toBeGreaterThan(0);
+        expect(m.contactIdx.length).toBeGreaterThan(0);
         expect(gcode).toContain(";MESH:insole-left");
         expect(gcode).toContain("M83 ;relative extrusion mode");
+        expect(env.yMaxLayerIndex).toBeGreaterThanOrEqual(Math.floor(env.layerCount * 0.7));
+        expect(Math.abs(m.solidX - m.outerX - 0.8)).toBeLessThanOrEqual(0.02);
+        expect(m.innerG).not.toBeNull();
+        if (m.innerG !== null) {
+            expect(m.innerG).toBeGreaterThan(0);
+            expect(m.innerG).toBeLessThan(0.8);
+        }
+        expect(m.outerMissing).toBe(0);
+        expect(m.returned).toBe(false);
     });
 
     test("RIGHT Default.glb measurements", async () => {
-        const { env, gcode } = await runSlot("right");
+        const { env, gcode, aabb } = await runSlot("right");
+        const m = measureSide(gcode, env, aabb);
+        console.log(
+            "AC13_RIGHT",
+            JSON.stringify({
+                layerCount: env.layerCount,
+                maxDev: m.maxDev,
+                xSpan: env.xSpan,
+                ySpan: env.ySpan,
+                zSpan: env.zSpan,
+                W: m.W,
+                H: m.H,
+                L: m.L,
+                minZ: env.minZ,
+                hasNaN: env.hasNaN,
+                minY: env.minY,
+                aabb: m.solidX,
+                outerX: m.outerX,
+                delta: m.solidX - m.outerX,
+                contactCount: m.contactIdx.length,
+                firstRise: m.firstRise,
+                returned: m.returned,
+                yMaxLayer: env.yMaxLayerIndex,
+                yMaxPct: (100 * env.yMaxLayerIndex) / env.layerCount,
+                sliverDrops: m.sliverDrops,
+                outerMissing: m.outerMissing,
+                mid: m.mid,
+                innerG: m.innerG,
+                aabbFoot: aabb,
+            }),
+        );
         expect(env.hasNaN).toBe(false);
         expect(env.layerCount).toBeGreaterThan(10);
         expect(env.minZ).toBeCloseTo(0.65, 1);
         expect(env.minY).toBeGreaterThanOrEqual(-1e-6);
         expect(gcode).toContain(";MESH:insole-right");
+        expect(env.yMaxLayerIndex).toBeGreaterThanOrEqual(Math.floor(env.layerCount * 0.7));
+        expect(Math.abs(m.solidX - m.outerX - 0.8)).toBeLessThanOrEqual(0.02);
+        expect(m.innerG).not.toBeNull();
+        if (m.innerG !== null) {
+            expect(m.innerG).toBeGreaterThan(0);
+            expect(m.innerG).toBeLessThan(0.8);
+        }
+        expect(m.outerMissing).toBe(0);
+        expect(m.returned).toBe(false);
     });
 });
