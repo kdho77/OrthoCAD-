@@ -1,4 +1,5 @@
 import type { ProductionMethod } from "@/types";
+import type { BeltAxisMap } from "./belt-transform";
 
 export interface PrinterPreset {
     id: string;
@@ -10,6 +11,28 @@ export interface PrinterPreset {
     layerHeightMm?: number;
     material?: string;
     bed: { x: number; y: number; z: number };
+    beltGantryAngleDeg?: number;
+    beltAxisMap?: BeltAxisMap;
+    beltLeanSign?: 1 | -1;
+    beltTravelSign?: 1 | -1;
+    beltLeadInMm?: number;
+    printDirection?: "toe-first" | "heel-first";
+    acrossMarginMm?: number;
+    lineWidthMm?: number;
+    nozzleDiameterMm?: number;
+    filamentDiameterMm?: number;
+    flowMultiplier?: number;
+    retractionEnabled?: boolean;
+    retractMm?: number;
+    retractFeedMmMin?: number;
+    firstLayerFeedScale?: number;
+    accelPrint?: number;
+    accelTravel?: number;
+    accelEnd?: number;
+    nozzleTempC?: number;
+    gantryStrokeMm?: number;
+    beltWidthMm?: number;
+    beltLeadInTab?: boolean;
 }
 
 export const PRINTER_PRESETS: PrinterPreset[] = [
@@ -18,8 +41,27 @@ export const PRINTER_PRESETS: PrinterPreset[] = [
         name: "Apex Belt V2 (TPU)",
         method: "printing_solid",
         beltAngleDeg: 45,
-        nozzleMm: 0.6,
-        layerHeightMm: 0.3,
+        beltGantryAngleDeg: 45,
+        beltAxisMap: { across: "X", gantry: "Y", belt: "Z" },
+        beltLeanSign: 1,
+        beltTravelSign: 1,
+        beltLeadInMm: 0,
+        printDirection: "toe-first",
+        nozzleMm: 0.8,
+        nozzleDiameterMm: 0.8,
+        layerHeightMm: 0.65,
+        lineWidthMm: 0.8,
+        filamentDiameterMm: 1.75,
+        flowMultiplier: 0.42 / Math.sin(Math.PI / 4),
+        retractionEnabled: false,
+        retractMm: 1.0,
+        retractFeedMmMin: 1500,
+        firstLayerFeedScale: 600 / 1800,
+        accelPrint: 8000,
+        accelTravel: 10000,
+        accelEnd: 4000,
+        nozzleTempC: 230,
+        beltLeadInTab: false,
         material: "TPU 95A",
         bed: { x: 300, y: 100000, z: 200 },
     },
@@ -28,8 +70,27 @@ export const PRINTER_PRESETS: PrinterPreset[] = [
         name: "Apex Belt V2 — Shell (TPU)",
         method: "printing_shell",
         beltAngleDeg: 45,
-        nozzleMm: 0.6,
-        layerHeightMm: 0.3,
+        beltGantryAngleDeg: 45,
+        beltAxisMap: { across: "X", gantry: "Y", belt: "Z" },
+        beltLeanSign: 1,
+        beltTravelSign: 1,
+        beltLeadInMm: 0,
+        printDirection: "toe-first",
+        nozzleMm: 0.8,
+        nozzleDiameterMm: 0.8,
+        layerHeightMm: 0.65,
+        lineWidthMm: 0.8,
+        filamentDiameterMm: 1.75,
+        flowMultiplier: 0.42 / Math.sin(Math.PI / 4),
+        retractionEnabled: false,
+        retractMm: 1.0,
+        retractFeedMmMin: 1500,
+        firstLayerFeedScale: 600 / 1800,
+        accelPrint: 8000,
+        accelTravel: 10000,
+        accelEnd: 4000,
+        nozzleTempC: 230,
+        beltLeadInTab: false,
         material: "TPU 95A",
         bed: { x: 300, y: 100000, z: 200 },
     },

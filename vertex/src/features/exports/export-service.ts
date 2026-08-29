@@ -127,7 +127,7 @@ export async function exportGcode(
     const auth = await authorize("gcode", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
     const geometry = await buildSideGeometry(side);
-    const { gcode, stats } = generateGcode(geometry, preset, overrides);
+    const { gcode, stats } = generateGcode(geometry, preset, { ...overrides, side });
     geometry.dispose();
     const blob = new Blob([gcode], { type: "text/plain" });
     downloadBlob(blob, filename);
