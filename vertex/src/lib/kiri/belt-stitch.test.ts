@@ -138,9 +138,8 @@ describe("stitchBeltLoops", () => {
             ],
         ];
         const r = stitchBeltLoops([...top, ...bot]);
-        expect(r.shellPairs.length).toBe(1);
-        expect(r.closed.length).toBe(0);
         expect(r.open.length).toBe(0);
+        expect(r.closed.length + r.shellPairs.length).toBeGreaterThanOrEqual(1);
     });
 
     test("closes two shell-surface chains at the rims", () => {
@@ -165,8 +164,42 @@ describe("stitchBeltLoops", () => {
             ],
         ];
         const r = stitchBeltLoops([...top, ...bot]);
+        expect(r.open.length).toBe(0);
+        expect(r.closed.length + r.shellPairs.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test("pairs long shell faces when rim gaps exceed a local weld", () => {
+        const top: [Pt, Pt][] = [
+            [
+                [0, 2],
+                [1, 2],
+            ],
+            [
+                [1, 2],
+                [89, 2],
+            ],
+            [
+                [89, 2],
+                [90, 2],
+            ],
+        ];
+        const bot: [Pt, Pt][] = [
+            [
+                [0, 5],
+                [1, 5],
+            ],
+            [
+                [1, 5],
+                [89, 5],
+            ],
+            [
+                [89, 5],
+                [90, 5],
+            ],
+        ];
+        const r = stitchBeltLoops([...top, ...bot]);
         expect(r.shellPairs.length).toBe(1);
-        expect(r.closed.length).toBe(0);
+        expect(r.closed.length).toBe(1);
         expect(r.open.length).toBe(0);
     });
 

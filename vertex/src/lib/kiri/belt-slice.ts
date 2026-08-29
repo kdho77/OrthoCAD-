@@ -96,16 +96,9 @@ export function sliceBeltFdm(geometry: BufferGeometry, opts: BeltSliceOptions): 
         const beltY = z / tan;
         const stitched = stitchBeltLoops(segs, { beltY });
         if (stitched.open.length > 0) opts.onOpenChains?.(z, stitched.open.length);
-        if (stitched.shellPairs.length > 0) {
-            for (const pair of stitched.shellPairs) emitShellPair(moves, pair, z, beltY, w, opts.perimeters);
-            if (stitched.closed.length === 0) {
-                for (const chain of stitched.open) {
-                    const poly = clipOpenToBelt(chain, beltY);
-                    if (poly.length >= 2) pushOpen(moves, poly, z, "WALL-OUTER");
-                }
-                layerIndex++;
-                continue;
-            }
+        const thinPairs = stitched.shellPairs.filter((p) => shellPairWidthMm(p) <= RIBBON_WIDTH_BEADS * w);
+        if (thinPairs.length > 0) {
+            for (const pair of thinPairs) emitShellPair(moves, pair, z, beltY, w, opts.perimeters);
         }
         const loops = classifyBeltRings(
             stitched.closed.map((loop) => clipLoopToBelt(loop, beltY)).filter((l) => l.length >= 3),
@@ -159,9 +152,11 @@ function tryInset(ring: Pt[], d: number, beltY: number): Pt[] | null {
     const next = insetLoop(ring, d);
     if (next.length < 3) return null;
     if (signedArea(next) * signedArea(ring) <= 0) return null;
-    if (next.some((p) => p[1] > beltY + BELT_ON_EPS)) return null;
-    clampTo(next, aabbOf(ring));
-    return next;
+    const clipped = clipLoopToBelt(next, beltY);
+    if (clipped.length < 3) return null;
+    if (signedArea(clipped) * signedArea(ring) <= 0) return null;
+    clampTo(clipped, aabbOf(ring));
+    return clipped;
 }
 
 /** Ribbon threshold: a wall thinner than two beads cannot take an area inset. */

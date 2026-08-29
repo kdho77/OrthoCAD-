@@ -3,13 +3,7 @@
 
 import type { BufferGeometry } from "three";
 import { applyXRotationToGeometry, orientMeshToBeltFrame } from "./belt-orient";
-import {
-    clipLoopToBelt,
-    insetLoop,
-    offsetOpenToward,
-    RIBBON_WIDTH_BEADS,
-    shellPairWidthMm,
-} from "./belt-slice";
+import { clipLoopToBelt, insetLoop, RIBBON_WIDTH_BEADS, shellPairWidthMm } from "./belt-slice";
 import { classifyBeltRings, stitchBeltLoops } from "./belt-stitch";
 import { resolveBeltConfig, slicePitchRotatedMm } from "./belt-transform";
 import type { PrinterPreset } from "./presets";
@@ -259,8 +253,13 @@ export function sliceStations(
             (ring) => clipLoopToBelt(insetLoop(ring.loop, lineWidthMm / 2, beltY), beltY).length >= 3,
         );
         if (!emits && stitched.open.length === 0 && stitched.shellPairs.length === 0) continue;
+        const pairWidth = stitched.shellPairs[0] ? shellPairWidthMm(stitched.shellPairs[0]) : Number.NaN;
         const source = raw.length
-            ? raw.map((ring) => ({ ...ring, shellPair: false, localWidthMm: Number.NaN }))
+            ? raw.map((ring) => ({
+                  ...ring,
+                  shellPair: stitched.shellPairs.length > 0,
+                  localWidthMm: pairWidth,
+              }))
             : stitched.shellPairs.length
               ? stitched.shellPairs.map((pair) => {
                     const aOn = pair.a.some((p) => Math.abs(p[1] - beltY) <= 1e-6);
@@ -273,14 +272,12 @@ export function sliceStations(
                             : aOn
                               ? pair.a
                               : pair.b;
-                    const other = outer === pair.a ? pair.b : pair.a;
                     return {
                         loop: outer,
                         kind: "outer" as const,
                         depth: 0,
                         shellPair: true,
                         localWidthMm: shellPairWidthMm(pair),
-                        toward: other,
                     };
                 })
               : stitched.open
@@ -304,12 +301,7 @@ export function sliceStations(
                 if (p[0] > maxX) maxX = p[0];
                 area += p[0] * q[1] - q[0] * p[1];
             }
-            const toward = "toward" in ring ? ring.toward : undefined;
-            const inset = raw.length
-                ? clipLoopToBelt(insetLoop(loop, lineWidthMm / 2, beltY), beltY)
-                : toward
-                  ? offsetOpenToward(loop, lineWidthMm / 2, toward, beltY)
-                  : [];
+            const inset = raw.length ? clipLoopToBelt(insetLoop(loop, lineWidthMm / 2, beltY), beltY) : [];
             let iMin = Infinity;
             let iMax = -Infinity;
             for (const p of inset) {

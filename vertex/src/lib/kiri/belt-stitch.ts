@@ -62,6 +62,8 @@ export function stitchBeltLoops(
     const open: Pt[][] = [];
     const hit = findThinShellPair(linked, eps);
     if (hit) {
+        const fused = fuseThinShellPair(hit.pair.a, hit.pair.b);
+        if (fused) closed.push(fused);
         for (let i = 0; i < linked.length; i++) {
             if (i === hit.ia || i === hit.ib) continue;
             if (shouldClose(linked[i], eps, beltY)) closed.push(linked[i]);
@@ -312,6 +314,21 @@ function endJoinLimit(edgeA: number, edgeB: number, weldEps: number): number {
  */
 export function detectThinShellPair(chains: Pt[][], weldEps: number): BeltShellPair | null {
     return findThinShellPair(chains, weldEps)?.pair ?? null;
+}
+
+/** Join same-rim ends so the two faces become one wall-section ring. */
+function fuseThinShellPair(a: Pt[], b: Pt[]): Pt[] | null {
+    const ends: { ci: number; which: "head" | "tail"; p: Pt }[] = [
+        { ci: 0, which: "head", p: a[0] },
+        { ci: 0, which: "tail", p: a[a.length - 1] },
+        { ci: 1, which: "head", p: b[0] },
+        { ci: 1, which: "tail", p: b[b.length - 1] },
+    ];
+    ends.sort((x, y) => x.p[0] - y.p[0] || x.p[1] - y.p[1]);
+    if (ends[0].ci === ends[1].ci || ends[2].ci === ends[3].ci) return null;
+    const live = [a.slice(), b.slice()];
+    mergeChains(live, ends[0], ends[1]);
+    return live.find((c) => c.length >= 3) ?? null;
 }
 
 function findThinShellPair(
