@@ -118,9 +118,16 @@ export function sliceBeltFdm(geometry: BufferGeometry, opts: BeltSliceOptions): 
             pushRing(moves, ring, z, "WALL-OUTER");
             for (let p = 1; p < opts.perimeters; p++) {
                 const next = tryInset(ring, w, beltY);
-                if (!next) break;
-                ring = next;
-                pushRing(moves, ring, z, "WALL-INNER");
+                if (next) {
+                    ring = next;
+                    pushRing(moves, ring, z, "WALL-INNER");
+                    continue;
+                }
+                const pair = stitched.shellPairs[0];
+                if (!pair || shellPairWidthMm(pair) <= RIBBON_WIDTH_BEADS * w) break;
+                const openInner = shellPairInner(pair, w / 2 + p * w, beltY);
+                if (openInner.length >= 2) pushOpen(moves, openInner, z, "WALL-INNER");
+                break;
             }
         }
 
@@ -152,11 +159,9 @@ function tryInset(ring: Pt[], d: number, beltY: number): Pt[] | null {
     const next = insetLoop(ring, d);
     if (next.length < 3) return null;
     if (signedArea(next) * signedArea(ring) <= 0) return null;
-    const clipped = clipLoopToBelt(next, beltY);
-    if (clipped.length < 3) return null;
-    if (signedArea(clipped) * signedArea(ring) <= 0) return null;
-    clampTo(clipped, aabbOf(ring));
-    return clipped;
+    if (next.some((p) => p[1] > beltY + BELT_ON_EPS)) return null;
+    clampTo(next, aabbOf(ring));
+    return next;
 }
 
 /** Ribbon threshold: a wall thinner than two beads cannot take an area inset. */
@@ -199,6 +204,14 @@ export function offsetOpenToward(chain: Pt[], d: number, toward: Pt[], beltY?: n
         out.push([cur[0] + nx * dist, cur[1] + ny * dist]);
     }
     return out;
+}
+
+function shellPairInner(pair: BeltShellPair, d: number, beltY: number): Pt[] {
+    const aOn = pair.a.some((p) => Math.abs(p[1] - beltY) <= BELT_ON_EPS);
+    const bOn = pair.b.some((p) => Math.abs(p[1] - beltY) <= BELT_ON_EPS);
+    const outer = aOn === bOn ? (xSpan(pair.a) >= xSpan(pair.b) ? pair.a : pair.b) : aOn ? pair.a : pair.b;
+    const other = outer === pair.a ? pair.b : pair.a;
+    return clipOpenToBelt(offsetOpenToward(outer, d, other), beltY);
 }
 
 function emitShellPair(
