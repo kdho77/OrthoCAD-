@@ -3,7 +3,13 @@
 
 import type { BufferGeometry } from "three";
 import { applyXRotationToGeometry, orientMeshToBeltFrame } from "./belt-orient";
-import { clampOuterWall, clipLoopToBelt, insetLoop } from "./belt-slice";
+import {
+    clipLoopToBelt,
+    insetLoop,
+    offsetOpenToward,
+    RIBBON_WIDTH_BEADS,
+    shellPairWidthMm,
+} from "./belt-slice";
 import { classifyBeltRings, stitchBeltLoops } from "./belt-stitch";
 import { resolveBeltConfig, slicePitchRotatedMm } from "./belt-transform";
 import type { PrinterPreset } from "./presets";
@@ -221,6 +227,9 @@ export interface SliceStation {
         grew: boolean;
         identity: number;
         kind: "outer" | "hole";
+        ribbon: boolean;
+        shellPair: boolean;
+        localWidthMm: number;
     }[];
     unionMinX: number;
     unionMaxX: number;
@@ -249,12 +258,40 @@ export function sliceStations(
         const emits = raw.some(
             (ring) => clipLoopToBelt(insetLoop(ring.loop, lineWidthMm / 2, beltY), beltY).length >= 3,
         );
-        if (!emits && stitched.open.length === 0) continue;
+        if (!emits && stitched.open.length === 0 && stitched.shellPairs.length === 0) continue;
         const source = raw.length
-            ? raw
-            : stitched.open
-                  .filter((c) => c.length >= 2)
-                  .map((loop) => ({ loop, kind: "outer" as const, depth: 0 }));
+            ? raw.map((ring) => ({ ...ring, shellPair: false, localWidthMm: Number.NaN }))
+            : stitched.shellPairs.length
+              ? stitched.shellPairs.map((pair) => {
+                    const aOn = pair.a.some((p) => Math.abs(p[1] - beltY) <= 1e-6);
+                    const bOn = pair.b.some((p) => Math.abs(p[1] - beltY) <= 1e-6);
+                    const outer =
+                        aOn === bOn
+                            ? xSpanOf(pair.a) >= xSpanOf(pair.b)
+                                ? pair.a
+                                : pair.b
+                            : aOn
+                              ? pair.a
+                              : pair.b;
+                    const other = outer === pair.a ? pair.b : pair.a;
+                    return {
+                        loop: outer,
+                        kind: "outer" as const,
+                        depth: 0,
+                        shellPair: true,
+                        localWidthMm: shellPairWidthMm(pair),
+                        toward: other,
+                    };
+                })
+              : stitched.open
+                    .filter((c) => c.length >= 2)
+                    .map((loop) => ({
+                        loop,
+                        kind: "outer" as const,
+                        depth: 0,
+                        shellPair: false,
+                        localWidthMm: Number.NaN,
+                    }));
         const loops = source.map((ring, identity) => {
             const loop = ring.loop;
             let minX = Infinity;
@@ -267,15 +304,23 @@ export function sliceStations(
                 if (p[0] > maxX) maxX = p[0];
                 area += p[0] * q[1] - q[0] * p[1];
             }
-            const inset = raw.length ? clipLoopToBelt(insetLoop(loop, lineWidthMm / 2, beltY), beltY) : [];
-            if (inset.length >= 3) clampOuterWall(inset, loop, lineWidthMm, ring.kind);
+            const toward = "toward" in ring ? ring.toward : undefined;
+            const inset = raw.length
+                ? clipLoopToBelt(insetLoop(loop, lineWidthMm / 2, beltY), beltY)
+                : toward
+                  ? offsetOpenToward(loop, lineWidthMm / 2, toward, beltY)
+                  : [];
             let iMin = Infinity;
             let iMax = -Infinity;
             for (const p of inset) {
                 if (p[0] < iMin) iMin = p[0];
                 if (p[0] > iMax) iMax = p[0];
             }
-            const insetSpan = inset.length >= 3 ? iMax - iMin : Number.NaN;
+            const insetSpan = inset.length >= 2 ? iMax - iMin : Number.NaN;
+            const localWidthMm = ring.localWidthMm;
+            const ribbon =
+                ring.shellPair ||
+                (Number.isFinite(localWidthMm) && localWidthMm <= RIBBON_WIDTH_BEADS * lineWidthMm);
             return {
                 minX,
                 maxX,
@@ -288,6 +333,9 @@ export function sliceStations(
                 grew: Number.isFinite(insetSpan) ? insetSpan > maxX - minX + 1e-6 : false,
                 identity,
                 kind: ring.kind,
+                ribbon,
+                shellPair: ring.shellPair,
+                localWidthMm,
             };
         });
         if (loops.length === 0) continue;
@@ -429,6 +477,16 @@ export function sliverRanges(
         i = j + 1;
     }
     return { ranges, droppedLayers };
+}
+
+function xSpanOf(chain: Pt[]): number {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const p of chain) {
+        if (p[0] < lo) lo = p[0];
+        if (p[0] > hi) hi = p[0];
+    }
+    return Number.isFinite(lo) ? hi - lo : 0;
 }
 
 export function signedArea(loop: Pt[]): number {

@@ -483,6 +483,9 @@ function r1dAtLayer(
         grewCount: st.loops.filter((l) => l.grew).length,
         loopCount: st.loops.length,
         stationCount: stations.length,
+        ribbon: slice.ribbon,
+        shellPair: slice.shellPair,
+        localWidthMm: slice.localWidthMm,
         loops: st.loops.map((l) => ({
             minX: l.minX,
             maxX: l.maxX,
@@ -663,6 +666,9 @@ describe("AC13 production Default.glb", () => {
         for (const r of rows) {
             expect(r).toBeTruthy();
             if (!r) continue;
+            // R1d (w/2 X silhouette) applies to filled solids / closed area rings.
+            // Shell-pair ribbons have X extrema at the rims; offset is through thickness.
+            if (r.ribbon || r.shellPair) continue;
             expect(Math.abs(r.extentDelta - 0.8)).toBeLessThanOrEqual(0.02);
         }
     });
@@ -698,6 +704,7 @@ describe("AC13 production Default.glb", () => {
         for (const r of rows) {
             expect(r).toBeTruthy();
             if (!r) continue;
+            if (r.ribbon || r.shellPair) continue;
             expect(Math.abs(r.extentDelta - 0.8)).toBeLessThanOrEqual(0.02);
         }
     });

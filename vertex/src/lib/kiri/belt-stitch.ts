@@ -11,9 +11,16 @@ import type { Pt } from "./slicer";
  */
 export const BELT_WELD_EPS_MM = 1e-4;
 
+export interface BeltShellPair {
+    a: Pt[];
+    b: Pt[];
+}
+
 export interface BeltStitchResult {
     closed: Pt[][];
     open: Pt[][];
+    /** Two rim-open surface chains of a thin shell — not a filled outline. */
+    shellPairs: BeltShellPair[];
 }
 
 export interface BeltClassifiedRing {
@@ -22,20 +29,13 @@ export interface BeltClassifiedRing {
     depth: number;
 }
 
-export function stitchBeltLoops(
-    segs: [Pt, Pt][],
-    opts: { weldEps?: number; beltY?: number } = {},
-): BeltStitchResult {
+/** Walk + scale-relative end-join. Does not run the thin-shell rim closer. */
+export function collectLinkedBeltChains(segs: [Pt, Pt][], opts: { weldEps?: number } = {}): Pt[][] {
     const eps = opts.weldEps ?? BELT_WELD_EPS_MM;
-    const beltY = opts.beltY;
     const clean = splitTJunctions(dropDuplicates(dropZeroLength(segs, eps), eps), eps);
     const used = new Array(clean.length).fill(false);
-    const closed: Pt[][] = [];
-    const open: Pt[][] = [];
-
     const degree = endpointDegrees(clean, eps);
     const startOrder = startSegmentOrder(clean, degree);
-
     const raw: Pt[][] = [];
     for (const i of startOrder) {
         if (used[i]) continue;
@@ -48,16 +48,32 @@ export function stitchBeltLoops(
         const chain = walkChain(clean, used, i, eps, false);
         if (chain.length >= 3) raw.push(chain);
     }
-    const linked = linkChainEnds(raw, eps);
-    const shell = tryCloseThinShellPair(linked, eps);
-    if (shell) closed.push(shell);
-    else {
-        for (const chain of linked) {
-            if (shouldClose(chain, eps, beltY)) closed.push(chain);
-            else open.push(chain);
+    return linkChainEnds(raw, eps);
+}
+
+export function stitchBeltLoops(
+    segs: [Pt, Pt][],
+    opts: { weldEps?: number; beltY?: number } = {},
+): BeltStitchResult {
+    const eps = opts.weldEps ?? BELT_WELD_EPS_MM;
+    const beltY = opts.beltY;
+    const linked = collectLinkedBeltChains(segs, { weldEps: eps });
+    const closed: Pt[][] = [];
+    const open: Pt[][] = [];
+    const hit = findThinShellPair(linked, eps);
+    if (hit) {
+        for (let i = 0; i < linked.length; i++) {
+            if (i === hit.ia || i === hit.ib) continue;
+            if (shouldClose(linked[i], eps, beltY)) closed.push(linked[i]);
+            else open.push(linked[i]);
         }
+        return { closed, open, shellPairs: [hit.pair] };
     }
-    return { closed, open };
+    for (const chain of linked) {
+        if (shouldClose(chain, eps, beltY)) closed.push(chain);
+        else open.push(chain);
+    }
+    return { closed, open, shellPairs: [] };
 }
 
 /** Even depth = outer, odd = hole. Outers forced CCW, holes CW. */
@@ -289,26 +305,57 @@ function endJoinLimit(edgeA: number, edgeB: number, weldEps: number): number {
 }
 
 /**
- * A 45° cut of a thin closed shell yields two open surface chains. The rim
- * triangles are near-tangent and drop out of the segment set; the missing
- * connectors are the local wall thickness (mm), not a 1e-4 weld miss.
- * Pair left-rim ends and right-rim ends when they belong to different chains
- * and each gap is well below the chain span (never opposite rims).
+ * A 45° cut of a thin shell yields two open surface chains (top and bottom
+ * faces). Rim triangles are near-tangent and drop out; the missing connectors
+ * are local wall thickness, not a 1e-4 weld miss. Detect when the four ends
+ * pair as same-rim (never opposite rims ~90 mm).
  */
-function tryCloseThinShellPair(chains: Pt[][], weldEps: number): Pt[] | null {
-    if (chains.length !== 2) return null;
-    const ends: { ci: number; which: "head" | "tail"; p: Pt }[] = [
-        { ci: 0, which: "head", p: chains[0][0] },
-        { ci: 0, which: "tail", p: chains[0][chains[0].length - 1] },
-        { ci: 1, which: "head", p: chains[1][0] },
-        { ci: 1, which: "tail", p: chains[1][chains[1].length - 1] },
+export function detectThinShellPair(chains: Pt[][], weldEps: number): BeltShellPair | null {
+    return findThinShellPair(chains, weldEps)?.pair ?? null;
+}
+
+function findThinShellPair(
+    chains: Pt[][],
+    weldEps: number,
+): { pair: BeltShellPair; ia: number; ib: number } | null {
+    let best: { pair: BeltShellPair; ia: number; ib: number; score: number } | null = null;
+    for (let i = 0; i < chains.length; i++) {
+        for (let j = i + 1; j < chains.length; j++) {
+            if (!isThinShellPair(chains[i], chains[j], weldEps)) continue;
+            const gaps = rimGaps(chains[i], chains[j]);
+            const score = gaps.left + gaps.right;
+            if (!best || score < best.score) {
+                best = { pair: { a: chains[i], b: chains[j] }, ia: i, ib: j, score };
+            }
+        }
+    }
+    return best;
+}
+
+function rimGaps(a: Pt[], b: Pt[]): { left: number; right: number } {
+    const ends: { ci: number; p: Pt }[] = [
+        { ci: 0, p: a[0] },
+        { ci: 0, p: a[a.length - 1] },
+        { ci: 1, p: b[0] },
+        { ci: 1, p: b[b.length - 1] },
     ];
-    ends.sort((a, b) => a.p[0] - b.p[0] || a.p[1] - b.p[1]);
-    if (ends[0].ci === ends[1].ci || ends[2].ci === ends[3].ci) return null;
+    ends.sort((x, y) => x.p[0] - y.p[0] || x.p[1] - y.p[1]);
+    return { left: hypot(ends[0].p, ends[1].p), right: hypot(ends[2].p, ends[3].p) };
+}
+
+function isThinShellPair(a: Pt[], b: Pt[], weldEps: number): boolean {
+    const ends: { ci: number; p: Pt }[] = [
+        { ci: 0, p: a[0] },
+        { ci: 0, p: a[a.length - 1] },
+        { ci: 1, p: b[0] },
+        { ci: 1, p: b[b.length - 1] },
+    ];
+    ends.sort((x, y) => x.p[0] - y.p[0] || x.p[1] - y.p[1]);
+    if (ends[0].ci === ends[1].ci || ends[2].ci === ends[3].ci) return false;
     const leftGap = hypot(ends[0].p, ends[1].p);
     const rightGap = hypot(ends[2].p, ends[3].p);
     let span = 0;
-    for (const c of chains) {
+    for (const c of [a, b]) {
         let lo = Infinity;
         let hi = -Infinity;
         for (const p of c) {
@@ -317,12 +364,8 @@ function tryCloseThinShellPair(chains: Pt[][], weldEps: number): Pt[] | null {
         }
         span = Math.max(span, hi - lo);
     }
-    if (span < weldEps) return null;
-    if (leftGap > 0.5 * span || rightGap > 0.5 * span) return null;
-    const live = [chains[0].slice(), chains[1].slice()];
-    mergeChains(live, ends[0], ends[1]);
-    const kept = live.find((c) => c.length >= 3);
-    return kept ?? null;
+    if (span < weldEps) return false;
+    return leftGap <= 0.5 * span && rightGap <= 0.5 * span;
 }
 
 function mergeChains(

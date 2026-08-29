@@ -138,8 +138,9 @@ describe("stitchBeltLoops", () => {
             ],
         ];
         const r = stitchBeltLoops([...top, ...bot]);
+        expect(r.shellPairs.length).toBe(1);
+        expect(r.closed.length).toBe(0);
         expect(r.open.length).toBe(0);
-        expect(r.closed.length).toBe(1);
     });
 
     test("closes two shell-surface chains at the rims", () => {
@@ -164,8 +165,9 @@ describe("stitchBeltLoops", () => {
             ],
         ];
         const r = stitchBeltLoops([...top, ...bot]);
+        expect(r.shellPairs.length).toBe(1);
+        expect(r.closed.length).toBe(0);
         expect(r.open.length).toBe(0);
-        expect(r.closed.length).toBe(1);
     });
 
     test("does not join rims 90 mm apart", () => {

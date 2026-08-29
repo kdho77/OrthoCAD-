@@ -105,7 +105,8 @@ export function emitBeltFdm(
         const wallTravel = n === 0 ? 360 : 15000;
         emit(`;LAYER:${n}`);
         const openN = openByPlane.get(layer.planeZ.toFixed(6));
-        if (openN) emit(`; WARN belt-stitch: ${openN} open chain(s) discarded`);
+        if (openN)
+            emit(`; WARN belt-stitch: ${openN} leftover open chain(s) traced as WALL-OUTER (not inset)`);
         emit(`M204 S${cfg.accelPrint}`);
         emit(fanLine(n));
         emit(`;MESH:${meshName}`);
