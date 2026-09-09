@@ -22,7 +22,7 @@ function fmtTime(sec: number): string {
 export function PrintingPanel() {
     const { user, license } = useAuthStore();
     const { design, exportSide, setExportSide } = useDesignStore();
-    const [layerHeight, setLayerHeight] = useState(0.3);
+    const [layerHeight, setLayerHeight] = useState(() => 0.65);
     const [infill, setInfill] = useState(25);
     const [toolDia, setToolDia] = useState(6);
     const [result, setResult] = useState<CamResult | null>(null);
@@ -55,7 +55,7 @@ export function PrintingPanel() {
         setBusy(true);
         setStatus(null);
         try {
-            setResult(generateGcode(buildGeom(), preset, overrides));
+            setResult(generateGcode(buildGeom(), preset, { ...overrides, side: exportSide }));
         } catch (e) {
             setStatus(e instanceof Error ? e.message : "Toolpath generation failed");
         } finally {
@@ -136,7 +136,10 @@ export function PrintingPanel() {
                     <button
                         key={p.id}
                         type="button"
-                        onClick={() => setPresetId(p.id)}
+                        onClick={() => {
+                            setPresetId(p.id);
+                            if (p.layerHeightMm) setLayerHeight(p.layerHeightMm);
+                        }}
                         className={cn(
                             "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left text-xs",
                             presetId === p.id

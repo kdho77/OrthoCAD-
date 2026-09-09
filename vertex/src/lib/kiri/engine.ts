@@ -1,4 +1,6 @@
 import type { BufferGeometry } from "three";
+import type { Side } from "@/types";
+import { emitBeltFdm } from "./belt-export";
 import { cncToolpath } from "./cnc";
 import { GcodeBuilder, type GcodeStats } from "./gcode";
 import type { PrinterPreset } from "./presets";
@@ -12,6 +14,7 @@ export interface CamOverrides {
     infillDensity?: number;
     perimeters?: number;
     toolDiameterMm?: number;
+    side?: Side;
 }
 
 export interface CamResult {
@@ -96,6 +99,10 @@ export function generateGcode(geometry: BufferGeometry, preset: PrinterPreset, o
             sampleMm: 1.5,
         });
         return emitCnc(moves, preset);
+    }
+
+    if (preset.beltAngleDeg) {
+        return emitBeltFdm(geometry, preset, o);
     }
 
     const moves = sliceFdm(geometry, {

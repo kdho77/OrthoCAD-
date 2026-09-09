@@ -20,7 +20,7 @@ export interface SliceOptions {
     extrusionWidthMm: number;
 }
 
-interface Tri {
+export interface Tri {
     ax: number; ay: number; az: number;
     bx: number; by: number; bz: number;
     cx: number; cy: number; cz: number;
@@ -28,7 +28,7 @@ interface Tri {
 
 const EPS = 1e-4;
 
-function extractTriangles(geometry: BufferGeometry): Tri[] {
+export function extractTriangles(geometry: BufferGeometry): Tri[] {
     const pos = geometry.getAttribute("position");
     const index = geometry.getIndex();
     const count = index ? index.count : pos.count;
@@ -45,9 +45,9 @@ function extractTriangles(geometry: BufferGeometry): Tri[] {
     return tris;
 }
 
-type Pt = [number, number];
+export type Pt = [number, number];
 
-function sliceLayerSegments(tris: Tri[], z: number): [Pt, Pt][] {
+export function sliceLayerSegments(tris: Tri[], z: number): [Pt, Pt][] {
     const segs: [Pt, Pt][] = [];
     for (const t of tris) {
         const pts: Pt[] = [];
@@ -69,7 +69,7 @@ function sliceLayerSegments(tris: Tri[], z: number): [Pt, Pt][] {
     return segs;
 }
 
-function stitchLoops(segs: [Pt, Pt][]): Pt[][] {
+export function stitchLoops(segs: [Pt, Pt][]): Pt[][] {
     const loops: Pt[][] = [];
     const used = new Array(segs.length).fill(false);
     const near = (a: Pt, b: Pt) => Math.abs(a[0] - b[0]) < EPS && Math.abs(a[1] - b[1]) < EPS;
@@ -104,7 +104,7 @@ function stitchLoops(segs: [Pt, Pt][]): Pt[][] {
 }
 
 /** Offset a closed loop inward by `d` (mm) using per-vertex normal averaging. */
-function offsetLoop(loop: Pt[], d: number): Pt[] {
+export function offsetLoop(loop: Pt[], d: number): Pt[] {
     const n = loop.length;
     const out: Pt[] = [];
     for (let i = 0; i < n; i++) {
@@ -123,7 +123,7 @@ function offsetLoop(loop: Pt[], d: number): Pt[] {
     return out;
 }
 
-function edgeNormal(a: Pt, b: Pt): Pt {
+export function edgeNormal(a: Pt, b: Pt): Pt {
     // Inward normal assuming CCW; sign handled by averaging.
     const dx = b[0] - a[0];
     const dy = b[1] - a[1];
@@ -131,7 +131,7 @@ function edgeNormal(a: Pt, b: Pt): Pt {
     return [-dy / len, dx / len];
 }
 
-function infillSegments(loops: Pt[][], z: number, spacing: number, vertical: boolean): [Pt, Pt][] {
+export function infillSegments(loops: Pt[][], z: number, spacing: number, vertical: boolean): [Pt, Pt][] {
     let min = Infinity;
     let max = -Infinity;
     for (const loop of loops)
