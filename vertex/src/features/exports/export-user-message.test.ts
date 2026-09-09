@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
+import { PAYLOAD_TOO_LARGE_MESSAGE } from "@/lib/trpc-errors";
 
 describe("stlExportUserMessage", () => {
     test("maps MESH-CLOSE openEdges reason to friendly heel-cup message", () => {
@@ -15,6 +16,12 @@ describe("stlExportUserMessage", () => {
 
     test("passes through unrelated reasons", () => {
         expect(stlExportUserMessage("API not configured")).toBe("API not configured");
+    });
+
+    test("maps JSON.parse of Request Entity Too Large to a stable message", () => {
+        expect(stlExportUserMessage(`Unexpected token 'R', "Request En"... is not valid JSON`)).toBe(
+            PAYLOAD_TOO_LARGE_MESSAGE,
+        );
     });
 
     test("undefined → Export failed", () => {
