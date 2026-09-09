@@ -8,17 +8,14 @@ import {
 } from "../lib/manufacturing-stl-lifecycle.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
 import {
-    assertActiveLicense,
-    getUserTokenBalance,
-    requireSupabaseAdmin,
-} from "../lib/supabase-db.js";
-import {
     assertManufacturingTempKeyForUser,
     buildManufacturingTempStlKey,
+    createSignedUpload,
     MANUFACTURING_BUCKET,
     signedDownloadUrl,
     uploadAsset,
 } from "../lib/storage.js";
+import { assertActiveLicense, getUserTokenBalance, requireSupabaseAdmin } from "../lib/supabase-db.js";
 import { protectedProcedure, rateLimitedProcedure, router } from "../trpc.js";
 
 const HYBRID_GCODE_COST = 3;
@@ -34,7 +31,7 @@ const manufactureInputSchema = z.object({
     designId: z.string().uuid().optional(),
     side: z.enum(["left", "right"]).optional(),
     presetId: z.string().min(1),
-    stlUrl: z.string().url(),
+    stlUrl: z.string().url().optional(),
     stlStorageKey: z.string().min(1),
     outputType: z.enum(["gcode", "stl"]),
     beltAngleDeg: z.number().min(10).max(80).default(45),
@@ -57,6 +54,45 @@ async function assertActiveLicenseForUser(userId: string): Promise<void> {
 }
 
 export const manufacturingRouter = router({
+    /**
+     * Browser uploads the STL directly to Storage via a signed URL so the JSON
+     * tRPC payload never carries multi-MB base64 (that 413'd as "Request Entity Too Large"
+     * and the client then showed 0 tokens after auth refresh).
+     */
+    prepareManufacturingStlUpload: rateLimitedProcedure(RATE_LIMITS.export, "manufacturing:prepareStl")
+        .input(
+            z.object({
+                side: z.enum(["left", "right"]),
+                fileName: z.string().max(200).optional(),
+            }),
+        )
+        .mutation(async ({ ctx }) => {
+            await assertActiveLicenseForUser(ctx.user.id);
+
+            const supabase = getSupabaseAdmin();
+            if (!supabase) {
+                throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
+            }
+
+            const key = buildManufacturingTempStlKey(ctx.user.id);
+            let signed: { key: string; uploadUrl: string; token: string };
+            try {
+                signed = await createSignedUpload(supabase, key, MANUFACTURING_BUCKET);
+            } catch (err) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: err instanceof Error ? err.message : "Failed to create manufacturing upload URL",
+                });
+            }
+
+            return {
+                ok: true as const,
+                storageKey: signed.key,
+                uploadUrl: signed.uploadUrl,
+                token: signed.token,
+            };
+        }),
+
     uploadManufacturingStl: rateLimitedProcedure(RATE_LIMITS.export, "manufacturing:uploadStl")
         .input(uploadStlInputSchema)
         .mutation(async ({ ctx, input }) => {
@@ -103,10 +139,10 @@ export const manufacturingRouter = router({
                 stlStorageKey: input.stlStorageKey,
             });
 
-            if (!input.presetId || !input.stlUrl || !input.stlStorageKey) {
+            if (!input.presetId || !input.stlStorageKey) {
                 throw new TRPCError({
                     code: "BAD_REQUEST",
-                    message: "Missing required manufacturing parameters (stlUrl, stlStorageKey, presetId)",
+                    message: "Missing required manufacturing parameters (stlStorageKey, presetId)",
                 });
             }
 
@@ -155,11 +191,27 @@ export const manufacturingRouter = router({
                     throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
                 }
 
+                let stlUrl = input.stlUrl;
+                if (!stlUrl) {
+                    if (!supabase) {
+                        throw new TRPCError({
+                            code: "INTERNAL_SERVER_ERROR",
+                            message: "Storage not available",
+                        });
+                    }
+                    stlUrl = await signedDownloadUrl(
+                        supabase,
+                        input.stlStorageKey,
+                        3600,
+                        MANUFACTURING_BUCKET,
+                    );
+                }
+
                 const pythonResult = await callManufacture({
                     job_id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
                     design_id: input.designId ?? "adhoc",
                     preset_id: input.presetId,
-                    stl_url: input.stlUrl,
+                    stl_url: stlUrl,
                     output_type: input.outputType,
                     belt_angle_deg: input.beltAngleDeg,
                     side: input.side ?? null,

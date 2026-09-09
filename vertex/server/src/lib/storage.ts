@@ -10,6 +10,12 @@ export const MAIN_BUCKET = process.env.STORAGE_BUCKET ?? "vertex-assets";
 /** Private bucket for manufacturing STL uploads, archives, and G-code output. */
 export const MANUFACTURING_BUCKET = process.env.MANUFACTURING_BUCKET ?? "vertex-manufacturing";
 
+export interface SignedUpload {
+    key: string;
+    uploadUrl: string;
+    token: string;
+}
+
 if (process.env.MANUFACTURING_BUCKET === undefined) {
     console.warn("WARNING: MANUFACTURING_BUCKET env var not set, defaulting to vertex-manufacturing");
 }
@@ -21,7 +27,7 @@ if (process.env.MANUFACTURING_BUCKET === undefined) {
  */
 export const STOCK_BUCKET = process.env.STOCK_STORAGE_BUCKET ?? MAIN_BUCKET;
 
-/** Ephemeral manufacturing STL uploads (TTL-cleaned). Only `uploadManufacturingStl` may write here. */
+/** Ephemeral manufacturing STL uploads (TTL-cleaned). Written via signed URL or `uploadManufacturingStl`. */
 export const MANUFACTURING_TEMP_PREFIX = "manufacturing-temp/";
 
 /** Permanent submitted-geometry archive for successful manufacturing jobs. */
@@ -53,6 +59,19 @@ export async function uploadAsset(
     return { key, sizeBytes: data.length };
 }
 
+/** Create a one-shot signed upload URL so the browser can PUT bytes directly to Storage. */
+export async function createSignedUpload(
+    supabase: SupabaseClient,
+    key: string,
+    bucket = MAIN_BUCKET,
+): Promise<SignedUpload> {
+    const { data, error } = await supabase.storage.from(bucket).createSignedUploadUrl(key);
+    if (error || !data?.signedUrl) {
+        throw new Error(`Signed upload URL failed: ${error?.message ?? "unknown"}`);
+    }
+    return { key, uploadUrl: data.signedUrl, token: data.token };
+}
+
 /**
  * Create a time-limited signed URL.
  * @param bucket - optional (defaults to MAIN_BUCKET). Pass STOCK_BUCKET for stock.
@@ -71,7 +90,11 @@ export async function signedDownloadUrl(
 }
 
 /** Remove an object (best-effort). */
-export async function deleteAsset(supabase: SupabaseClient, key: string, bucket = MAIN_BUCKET): Promise<void> {
+export async function deleteAsset(
+    supabase: SupabaseClient,
+    key: string,
+    bucket = MAIN_BUCKET,
+): Promise<void> {
     const { error } = await supabase.storage.from(bucket).remove([key]);
     if (error) {
         throw new Error(`Storage delete failed: ${error.message}`);
@@ -83,11 +106,7 @@ export async function deleteAsset(supabase: SupabaseClient, key: string, bucket 
  * Returns null if the client cannot produce one or the object is not public.
  * Preferred for stock bases when the bucket (e.g. "stock-bases") has public read policy.
  */
-export function getPublicUrl(
-    supabase: SupabaseClient,
-    key: string,
-    bucket = STOCK_BUCKET,
-): string | null {
+export function getPublicUrl(supabase: SupabaseClient, key: string, bucket = STOCK_BUCKET): string | null {
     const { data } = supabase.storage.from(bucket).getPublicUrl(key);
     return data?.publicUrl ?? null;
 }
@@ -166,10 +185,11 @@ export function buildStockGlbKey(name: string, opts?: { category?: string }): st
         .slice(0, 60);
 
     const rawCat = (opts?.category || "general").toLowerCase();
-    const safeCat = rawCat
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-|-$/g, "")
-        .slice(0, 40) || "general";
+    const safeCat =
+        rawCat
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-|-$/g, "")
+            .slice(0, 40) || "general";
 
     const stamp = Date.now();
     return `stock/${safeCat}/${safeName || "base"}-${stamp}.glb`;

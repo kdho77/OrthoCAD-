@@ -2,12 +2,12 @@ import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import {
     buildExportGeometry,
     buildExportGlb,
-    buildExportSolid,
     buildExportStl,
     exportModeFromMethod,
 } from "@/lib/geometry/export-geometry";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
+import { mapClientRpcError } from "@/lib/trpc-errors";
 import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
@@ -30,13 +30,31 @@ function buildSideGeometry(side: Side) {
     return buildExportGeometry(side);
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
+function applyServerBalance(balance: number | undefined): void {
+    if (typeof balance !== "number") return;
+    const { user, setUser } = useAuthStore.getState();
+    if (user) setUser({ ...user, tokenBalance: balance });
+}
+
+async function uploadManufacturingStlDirect(side: Side, stlBuffer: ArrayBuffer): Promise<string> {
+    const prep = await trpc.manufacturing.prepareManufacturingStlUpload.mutate({
+        side,
+        fileName: `manufacturing-${side}.stl`,
+    });
+    const putHeaders: Record<string, string> = { "Content-Type": "model/stl" };
+    if (prep.token) putHeaders.Authorization = `Bearer ${prep.token}`;
+    const putRes = await fetch(prep.uploadUrl, {
+        method: "PUT",
+        headers: putHeaders,
+        body: stlBuffer,
+    });
+    if (!putRes.ok) {
+        const detail = await putRes.text().catch(() => "");
+        throw new Error(
+            `Manufacturing STL upload failed (${putRes.status})${detail ? `: ${detail.slice(0, 120)}` : ""}`,
+        );
     }
-    return btoa(binary);
+    return prep.storageKey;
 }
 
 /** Export the finalized viewer solid as binary STL (OCCT sew primary, mesh-close fallback). */
@@ -58,7 +76,8 @@ async function authorize(
             if (user) setUser({ ...user, tokenBalance: res.balance });
             return { ok: true };
         } catch (e) {
-            return { ok: false, reason: e instanceof Error ? e.message : "Export authorization failed" };
+            const raw = e instanceof Error ? e.message : "Export authorization failed";
+            return { ok: false, reason: mapClientRpcError(raw, "Export authorization failed") };
         }
     }
     const check = canExport(user, license, format);
@@ -155,18 +174,13 @@ export async function generateHybridGcode(
     if (isApiConfigured()) {
         try {
             const stlBuffer = await buildManufacturingStl(side);
-            const upload = await trpc.manufacturing.uploadManufacturingStl.mutate({
-                side,
-                stlBase64: arrayBufferToBase64(stlBuffer),
-                fileName: `manufacturing-${side}.stl`,
-            });
+            const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
             const res = await trpc.manufacturing.generateSolid.mutate({
                 designId: activeDesignId || undefined,
                 side,
                 presetId: preset.id,
-                stlUrl: upload.stlUrl,
-                stlStorageKey: upload.storageKey,
+                stlStorageKey,
                 outputType,
                 beltAngleDeg: preset.beltAngleDeg ?? 45,
                 layerHeightMm: overrides.layerHeightMm,
@@ -179,6 +193,7 @@ export async function generateHybridGcode(
             if (!res?.ok) {
                 return { ok: false, reason: "Server manufacturing request failed" };
             }
+            applyServerBalance(res.balance);
 
             let blob: Blob | undefined;
             const downloadUrl = res.downloadUrl ?? res.gcodeDownloadUrl;
@@ -210,9 +225,10 @@ export async function generateHybridGcode(
 
             return { ok: true, filename, blob, productionId: res.productionId ?? undefined };
         } catch (e) {
+            const raw = e instanceof Error ? e.message : "Hybrid manufacturing failed (server)";
             return {
                 ok: false,
-                reason: e instanceof Error ? e.message : "Hybrid manufacturing failed (server)",
+                reason: mapClientRpcError(raw, "Hybrid manufacturing failed (server)"),
             };
         }
     }
