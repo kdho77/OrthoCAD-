@@ -133,7 +133,11 @@ export function gateArchMatch(args: {
         return { ok: false, code: "no_base", reason: "Load a clinical base before matching arch from scan" };
     }
     if (args.incomplete) {
-        return { ok: false, code: "incomplete", reason: "Register the scan (M1–M3) before matching arch" };
+        return {
+            ok: false,
+            code: "incomplete",
+            reason: "Register the scan (M1–M3 + ARCH) before matching arch",
+        };
     }
     if (args.error) {
         return { ok: false, code: "error", reason: args.error.message };

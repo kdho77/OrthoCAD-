@@ -57,7 +57,7 @@ const MARKER_LABELS = {
     M1: "M1 — 1st met head (medial)",
     M2: "M2 — 5th met head (lateral)",
     M3: "M3 — heel centre",
-    ARCH: "ARCH — medial arch apex (optional)",
+    ARCH: "ARCH — medial arch apex",
 } as const;
 
 function ScanMarkersSection({
@@ -85,23 +85,35 @@ function ScanMarkersSection({
     onTogglePlacement: () => void;
     onResetMarkers: () => void;
 }) {
-    const allAccepted = placed >= 3;
-    const [open, setOpen] = useState(!allAccepted);
+    const awaitingArch = placing && Boolean(nextLabel?.startsWith("ARCH"));
+    const archPlaced = Boolean(markers?.ARCH);
+    const placedCount = placed + (archPlaced ? 1 : 0);
+    const allFourDone = placed >= 3 && archPlaced;
+    // Keep the panel expanded until all four markers are set (or while placing).
+    const [open, setOpen] = useState(!allFourDone || placing);
 
     useEffect(() => {
-        if (allAccepted) setOpen(false);
+        if (placing || awaitingArch) {
+            setOpen(true);
+            return;
+        }
+        if (allFourDone) setOpen(false);
         else setOpen(true);
-    }, [allAccepted]);
+    }, [allFourDone, placing, awaitingArch]);
 
     // biome-ignore lint/correctness/useExhaustiveDependencies: scanId is an intentional reset key
     useEffect(() => {
         // New suggestions (e.g. after cleanup) should prompt the user again.
-        if (sug && !allAccepted) setOpen(true);
-    }, [sug, scanId, allAccepted]);
+        if (sug && !allFourDone) setOpen(true);
+    }, [sug, scanId, allFourDone]);
 
-    useEffect(() => {
-        if (placing) setOpen(true);
-    }, [placing]);
+    const headerLabel = awaitingArch
+        ? "Place ARCH apex"
+        : allFourDone
+          ? "Markers accepted"
+          : sug
+            ? "Suggested landmarks"
+            : "Markers";
 
     return (
         <div className="space-y-1 rounded border border-cyan-500/30 bg-cyan-500/5 px-1.5 py-1 text-[10px]">
@@ -117,32 +129,38 @@ function ScanMarkersSection({
                         open && "rotate-90",
                     )}
                 />
-                <span className="font-medium text-cyan-200">
-                    {allAccepted ? "Markers accepted" : sug ? "Suggested landmarks" : "Markers"}
+                <span className={cn("font-medium", awaitingArch ? "text-fuchsia-200" : "text-cyan-200")}>
+                    {headerLabel}
                 </span>
-                <span className="ml-auto text-muted-foreground">{placed}/3</span>
+                <span className="ml-auto text-muted-foreground">{placedCount}/4</span>
             </button>
             {!open ? (
                 <p className="pl-4 text-muted-foreground">
-                    {allAccepted
-                        ? "All markers placed — expand to edit"
+                    {allFourDone
+                        ? "All 4 markers placed — expand to edit"
                         : sug
                           ? "Confirm or place markers to register"
-                          : "Expand to place M1 → M2 → M3 (+ optional ARCH)"}
+                          : "Expand to place M1 → M2 → M3 → ARCH"}
                 </p>
             ) : (
                 <div className="space-y-1">
                     {placing ? (
-                        <p className="text-[10px] leading-snug text-cyan-200/90">
-                            Depth shading is on while placing. Amber = M1–M3. Magenta = optional ARCH apex.
-                            Light cyan = suggested spots. Insole B1–B3 targets are hidden until you finish.
+                        <p
+                            className={cn(
+                                "text-[10px] leading-snug",
+                                awaitingArch ? "text-fuchsia-200/90" : "text-cyan-200/90",
+                            )}
+                        >
+                            {awaitingArch
+                                ? "Required ARCH: click the medial arch apex on the plantar surface. Insole stays hidden until ARCH is placed, then the scan seats and size/arch/heel auto-adjust."
+                                : "Depth shading is on while placing. Amber = M1–M3, then magenta ARCH. Insole hidden until all 4 markers are set."}
                         </p>
                     ) : null}
                     {sug ? (
                         <>
                             <p className="text-muted-foreground">
-                                M1/M2/M3 heuristics on the cleaned scan. Confirm each — nothing
-                                auto-registers.
+                                M1/M2/M3 heuristics on the cleaned scan. Confirm each, then place ARCH —
+                                registration waits for all 4.
                             </p>
                             <div className="flex flex-wrap gap-1">
                                 {(["M1", "M2", "M3"] as const).map((id) => {
@@ -181,16 +199,16 @@ function ScanMarkersSection({
                             disabled={!baseReady}
                             title={
                                 baseReady
-                                    ? placing && nextLabel?.startsWith("ARCH")
-                                        ? "Skip optional ARCH apex"
-                                        : "Place M1→M2→M3, then optional ARCH apex"
+                                    ? placing
+                                        ? "Cancel marker placement (scan stays unregistered until all 4)"
+                                        : "Place M1→M2→M3→ARCH, then auto-seat and match"
                                     : "Base geometry not loaded"
                             }
                             onClick={onTogglePlacement}
                             className={cn(
                                 "flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
                                 placing
-                                    ? nextLabel?.startsWith("ARCH")
+                                    ? awaitingArch
                                         ? "bg-fuchsia-500/20 text-fuchsia-300"
                                         : "bg-amber-500/20 text-amber-300"
                                     : "bg-muted text-muted-foreground hover:text-foreground",
@@ -199,11 +217,9 @@ function ScanMarkersSection({
                         >
                             <MapPin className="h-3 w-3" />
                             {placing
-                                ? nextLabel?.startsWith("ARCH")
-                                    ? "Skip ARCH"
-                                    : "Done placing"
+                                ? "Cancel placing"
                                 : placed >= 3 && !markers?.ARCH
-                                  ? "Place ARCH (optional)"
+                                  ? "Place ARCH"
                                   : "Place markers"}
                         </button>
                         <button
@@ -225,8 +241,8 @@ function ScanMarkersSection({
                         >
                             Next: {nextLabel}
                             {nextLabel.startsWith("ARCH")
-                                ? " — click medial arch apex, or Skip ARCH"
-                                : ` (${placed}/3)`}
+                                ? " — required before seating on insole"
+                                : ` (${placed}/3 · then ARCH)`}
                         </p>
                     ) : null}
                     {markers?.ARCH ? (
@@ -397,14 +413,23 @@ export function ScanImport() {
         }
     };
 
-    const matchDesignFromScan = (scanId: string) => {
+    const matchDesignFromScan = (scanId: string, opts?: { forceApplySize?: boolean }) => {
         setError(null);
+        const force = opts?.forceApplySize === true;
         const suggestion = suggestSizeForScan(scanId);
-        if (!suggestion) return;
+        if (!suggestion) {
+            if (!force) return;
+            setSizeMsgByScanId((prev) => ({
+                ...prev,
+                [scanId]: "Size unavailable from scan — matching arch/heel only",
+            }));
+            matchArchFromScan(scanId);
+            return;
+        }
 
         const accepted = sizeAcceptedByScanId[scanId] === true;
         const canAuto = shouldAutoApplySize(designSizing, suggestion);
-        if (!accepted && !canAuto && isDefaultShoeSize(designSizing)) {
+        if (!force && !accepted && !canAuto && isDefaultShoeSize(designSizing)) {
             setSizeMsgByScanId((prev) => ({
                 ...prev,
                 [scanId]: `${formatSizeSuggestionMessage(suggestion, sizeSystem)} — Accept size, then match arch`,
@@ -412,13 +437,24 @@ export function ScanImport() {
             return;
         }
 
-        if (!accepted && canAuto) {
+        if (!accepted && (canAuto || force)) {
             applySizeSuggestion(scanId, suggestion);
         } else if (!accepted && !isDefaultShoeSize(designSizing)) {
             setSizeAcceptedByScanId((prev) => ({ ...prev, [scanId]: true }));
         }
         matchArchFromScan(scanId);
     };
+
+    const pendingClinicalMatchScanId = useScanStore((s) => s.pendingClinicalMatchScanId);
+    const clearPendingClinicalMatch = useScanStore((s) => s.clearPendingClinicalMatch);
+    // After all four markers + successful registration: auto-apply size, arch, heel cup.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: store flag is the trigger; match fn reads latest state
+    useEffect(() => {
+        if (!pendingClinicalMatchScanId) return;
+        const scanId = pendingClinicalMatchScanId;
+        clearPendingClinicalMatch();
+        matchDesignFromScan(scanId, { forceApplySize: true });
+    }, [pendingClinicalMatchScanId]);
 
     const onFiles = async (files: FileList | null) => {
         if (!files) return;
@@ -622,6 +658,11 @@ export function ScanImport() {
                             onConfirm={(id) => {
                                 if (!sug || id === "ARCH") return;
                                 setMarker(s.id, id, sug[id]);
+                                // After M1–M3, continue into required ARCH before seating.
+                                const after = useScanStore.getState().markersByScanId[s.id];
+                                if (after?.M1 && after?.M2 && after?.M3 && !after.ARCH) {
+                                    enterPlacement(s.id);
+                                }
                             }}
                             onDismiss={() => setSuggestedLandmarks(s.id, null)}
                             onTogglePlacement={() => (placing ? exitPlacement() : enterPlacement(s.id))}
@@ -630,8 +671,11 @@ export function ScanImport() {
 
                         {/* Readout */}
                         <div className="space-y-0.5 rounded border border-border/60 bg-muted/30 px-1.5 py-1 text-[11px] text-muted-foreground">
-                            {reg?.incomplete || placed < 3 ? (
-                                <p>Registration: waiting for 3 markers ({placed}/3)</p>
+                            {reg?.incomplete || placed < 3 || !markers?.ARCH ? (
+                                <p>
+                                    Registration: waiting for M1–M3 + ARCH ({placed + (markers?.ARCH ? 1 : 0)}
+                                    /4)
+                                </p>
                             ) : reg?.error ? (
                                 <p className="text-destructive">
                                     Alignment failed: {reg.error.message}. Check Left/Right side and marker
@@ -666,7 +710,8 @@ export function ScanImport() {
                                     </p>
                                     <p className="text-[10px] text-muted-foreground/80">
                                         Cyan dots (when shown) are insole landmarks B1–B3, not scan markers.
-                                        Amber = your M1–M3.
+                                        Amber = M1–M3 · Magenta = ARCH. Size, arch, and heel auto-adjust after
+                                        all 4 markers.
                                     </p>
                                     <div className="mt-1 flex flex-col gap-1">
                                         <button
