@@ -22,5 +22,8 @@ jobs:
             - name: Install dependencies
               run: npm install
 
+            - name: Generate Prisma client (vertex)
+              run: npm run prisma:generate --workspace=vertex-insole-cad
+
             - name: Run unit tests
               run: npm run test
