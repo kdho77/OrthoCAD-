@@ -2,6 +2,10 @@
 
 Python microservice for the OrthoCAD hybrid manufacturing pipeline. Accepts a finished STL exported from the client viewer, validates watertightness, and returns G-code (Vertex belt/FDM profiles) or the validated STL (external printers).
 
+### Track 4 shell thickness (parity)
+
+`geometry_utils.resolve_thickness_at_u` mirrors the TypeScript zonal RF/MF/FF `t(u)` when `corrections.shellThicknessMode` is `"zonal"` (keys `shellThicknessRfMm`, `shellThicknessMfMm`, `shellThicknessFfMm`, `shellThicknessBlendMm`). Default / absent mode remains uniform scalar `thickness_mm`. Intrinsic post, extrinsic blocks, and shell-edge #5 are **Vertex TS height-field only** until ported to this service.
+
 ## Endpoints
 
 | Method | Path | Description |
