@@ -7,13 +7,16 @@ import {
     ARCH_GRIND_APEX_GATE_TOL_MM,
     ARCH_GRIND_TOP_GATE_TOL_MM,
     archGrindApexRaiseMm,
+    clampArchGrindDepthMm,
+    getSideShapeFinish,
     SHAPE_FINISH_DEFAULTS,
     TOP_COVER_GATE_TOL_MM,
     TRACK5B_MIN_WALL_MM,
     TRIMMABLE_FOREFOOT_GATE_TOL_MM,
+    thicknessMmForDesignSide,
     trimmableForefootLengthDeltaMm,
 } from "@/lib/geometry/shape-finish-modifiers";
-import type { Side, SideShapeFinish } from "@/types";
+import type { DesignState, Side, SideShapeFinish } from "@/types";
 
 export interface ShapeFinishGateResult {
     ok: boolean;
@@ -233,5 +236,40 @@ export function gateArchSkiveDepth(
 export function assertShapeFinishDefaults(sf: SideShapeFinish): void {
     if (sf.topCoverAccommodateMm < SHAPE_FINISH_DEFAULTS.topCoverAccommodateMm.min) {
         throw new Error("topCover below min");
+    }
+}
+
+/** Hard-fail manufacturing export when shape/finish gates do not pass (min wall 0.8, etc.). */
+export function assertShapeFinishExportAllowed(design: DesignState, side: Side): void {
+    const sf = getSideShapeFinish(design, side);
+    const thicknessMm = thicknessMmForDesignSide(design, side);
+    const c = design.corrections[side];
+    const appliedGrindMm = clampArchGrindDepthMm(sf.archGrindDepthMm, thicknessMm);
+    const apex = archGrindApexRaiseMm(appliedGrindMm);
+    const minWallEst = thicknessMm - apex;
+    const grindGate = gateArchGrindDepth(appliedGrindMm, apex, 0, minWallEst);
+    if (!grindGate.ok) {
+        throw new Error(`Shape/finish export blocked: ${grindGate.failures.join("; ")}`);
+    }
+
+    const skiveExpected = archSkiveDepthAtThirdWidth(sf.archSkiveMm, sf.archSkiveSide);
+    const skiveGate = gateArchSkiveDepth(sf, skiveExpected, 0);
+    if (!skiveGate.ok) {
+        throw new Error(`Shape/finish export blocked: ${skiveGate.failures.join("; ")}`);
+    }
+
+    const sfApplied =
+        appliedGrindMm === sf.archGrindDepthMm ? sf : { ...sf, archGrindDepthMm: appliedGrindMm };
+    const qc = evaluateShapeFinishQc({
+        side,
+        sf: sfApplied,
+        thicknessMm,
+        archHeightMm: c.archHeightMm + c.archFillMm,
+        heelSkiveMedialMm: c.medialSkiveMm,
+        heelSkiveLateralMm: c.lateralSkiveMm,
+    });
+    const fails = qc.filter((i) => i.status === "fail");
+    if (fails.length > 0) {
+        throw new Error(`Shape/finish export blocked: ${fails.map((f) => f.detail).join(" ")}`);
     }
 }

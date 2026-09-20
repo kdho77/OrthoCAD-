@@ -19,11 +19,18 @@ export const TRIMMABLE_FOREFOOT_GATE_TOL_MM = 0.5;
 export const ARCH_GRIND_APEX_GATE_TOL_MM = 0.3;
 export const ARCH_GRIND_TOP_GATE_TOL_MM = 0.1;
 
+export function thicknessMmForDesignSide(design: DesignState, side: Side): number {
+    if (design.paired) {
+        return side === "left" ? design.paired.leftThicknessMm : design.paired.rightThicknessMm;
+    }
+    return design.thicknessMm;
+}
+
 export function getSideShapeFinish(design: DesignState, side: Side): SideShapeFinish {
     const paired = design.paired;
     const method = paired ? (side === "left" ? paired.leftMethod : paired.rightMethod) : design.method;
     const stored = design.shapeFinish?.[side];
-    return normalizeSideShapeFinish(stored, method);
+    return normalizeSideShapeFinish(stored, method, thicknessMmForDesignSide(design, side));
 }
 
 export function defaultSideShapeFinish(method?: ProductionMethod): SideShapeFinish {
@@ -40,12 +47,24 @@ export function defaultSideShapeFinish(method?: ProductionMethod): SideShapeFini
 export function normalizeSideShapeFinish(
     patch: Partial<SideShapeFinish> | undefined,
     method?: ProductionMethod,
+    thicknessMm?: number,
 ): SideShapeFinish {
     const base = defaultSideShapeFinish(method);
-    if (!patch) return base;
+    if (!patch) {
+        if (thicknessMm != null) {
+            return {
+                ...base,
+                archGrindDepthMm: clampArchGrindDepthMm(base.archGrindDepthMm, thicknessMm),
+            };
+        }
+        return base;
+    }
     const top = patch.topCoverAccommodateMm ?? base.topCoverAccommodateMm;
     const extra = patch.trimmableForefootExtraMm ?? base.trimmableForefootExtraMm;
-    const grind = patch.archGrindDepthMm ?? base.archGrindDepthMm;
+    let grind = patch.archGrindDepthMm ?? base.archGrindDepthMm;
+    if (thicknessMm != null) {
+        grind = clampArchGrindDepthMm(grind, thicknessMm);
+    }
     const skive = patch.archSkiveMm ?? base.archSkiveMm;
     return {
         topCoverAccommodateMm: Math.max(
@@ -88,6 +107,33 @@ export function archGrindPlantarMask(u: number, av: number): number {
 export function archGrindPlantarRaiseAt(u: number, av: number, depthMm: number): number {
     if (depthMm <= 0) return 0;
     return depthMm * archGrindPlantarMask(u, av);
+}
+
+/**
+ * Max arch grind depth that keeps est. apex min wall ≥ {@link TRACK5B_MIN_WALL_MM}
+ * (thickness − apex plantar raise at arch station).
+ */
+export function maxArchGrindDepthForThickness(thicknessMm: number): number {
+    let hi = SHAPE_FINISH_DEFAULTS.archGrindDepthMm.max;
+    if (thicknessMm - archGrindApexRaiseMm(hi) >= TRACK5B_MIN_WALL_MM) return hi;
+    let lo = 0;
+    for (let i = 0; i < 24; i++) {
+        const mid = (lo + hi) / 2;
+        if (thicknessMm - archGrindApexRaiseMm(mid) >= TRACK5B_MIN_WALL_MM) lo = mid;
+        else hi = mid;
+    }
+    let max = Math.floor(lo * 10 + 1e-6) / 10;
+    while (max > 0 && thicknessMm - archGrindApexRaiseMm(max) < TRACK5B_MIN_WALL_MM) {
+        max = Math.max(0, Math.round((max - 0.1) * 10) / 10);
+    }
+    return max;
+}
+
+/** Clamp grind depth at apply time so plantar deepen cannot breach min wall. */
+export function clampArchGrindDepthMm(depthMm: number, thicknessMm: number): number {
+    if (depthMm <= 0) return 0;
+    const max = maxArchGrindDepthForThickness(thicknessMm);
+    return Math.min(depthMm, max);
 }
 
 export interface ApplyArchGrindMeshParams {

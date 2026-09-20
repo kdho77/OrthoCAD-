@@ -18,7 +18,7 @@ import {
 } from "@/lib/geometry/height-field";
 import type { InsoleParams } from "@/lib/geometry/insole";
 import { repairOcctSolid } from "@/lib/geometry/repair";
-import { archGrindPlantarRaiseAt } from "@/lib/geometry/shape-finish-modifiers";
+import { archGrindPlantarRaiseAt, clampArchGrindDepthMm } from "@/lib/geometry/shape-finish-modifiers";
 
 function unwrap<T>(result: Result<T, string>, context: string): T {
     if (!result.isOk) throw new Error(`${context}: ${result.error}`);
@@ -75,23 +75,33 @@ const LOFT_STATIONS = 40;
  *
  * Every station emits the same point count so the sections loft cleanly.
  */
-function sectionWire(factory: IShapeFactory, u: number, params: HeightFieldParams): IWire {
-    const { lengthMm, widthMm } = params;
+/**
+ * Loft cross-section polygon: plantar chord (per-point av) then dorsal contour.
+ * @internal Exported for OCCT arch-grind regression tests.
+ */
+export function sectionProfilePoints(u: number, params: HeightFieldParams): GridPoint[] {
+    const { lengthMm, widthMm, thicknessMm } = params;
     const halfW = widthMm / 2;
     const hw = resolveOutlineHalfWidth(u, params) * halfW;
     const x = u * lengthMm;
+    const grind = clampArchGrindDepthMm(params.shapeFinish?.archGrindDepthMm ?? 0, thicknessMm);
+    const n = CROSS_SECTION_SAMPLES;
+    const points: GridPoint[] = [];
 
-    const grind = params.shapeFinish?.archGrindDepthMm ?? 0;
-    const bottomMedialZ = archGrindPlantarRaiseAt(u, 1, grind);
-    const bottomLateralZ = archGrindPlantarRaiseAt(u, 1, grind);
-    const points: GridPoint[] = [{ x, y: -hw, z: bottomMedialZ }];
-    for (let k = 0; k <= CROSS_SECTION_SAMPLES; k++) {
-        const vSigned = -1 + (2 * k) / CROSS_SECTION_SAMPLES;
+    for (let k = 0; k <= n; k++) {
+        const vSigned = -1 + (2 * k) / n;
+        const av = Math.abs(vSigned);
+        points.push({ x, y: vSigned * hw, z: archGrindPlantarRaiseAt(u, av, grind) });
+    }
+    for (let k = n; k >= 0; k--) {
+        const vSigned = -1 + (2 * k) / n;
         points.push({ x, y: vSigned * hw, z: heightAt(u, vSigned, params) });
     }
-    points.push({ x, y: hw, z: bottomLateralZ });
+    return points;
+}
 
-    return wireFromPoints(factory, points);
+function sectionWire(factory: IShapeFactory, u: number, params: HeightFieldParams): IWire {
+    return wireFromPoints(factory, sectionProfilePoints(u, params));
 }
 
 /** @internal Exported for WASM integration tests. */

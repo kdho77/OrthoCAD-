@@ -27,6 +27,7 @@ import {
 import {
     applyArchGrindToBottomMesh,
     applyTrimmableForefootExtension,
+    clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
@@ -2875,7 +2876,8 @@ export function applyBaseModifiers(
                 extraMm: extra,
             });
         }
-        if (shapeFinish.archGrindDepthMm > 0) {
+        const grindDepth = clampArchGrindDepthMm(shapeFinish.archGrindDepthMm, field.thicknessMm);
+        if (grindDepth > 0) {
             applyArchGrindToBottomMesh(array, {
                 lengthAxis,
                 widthAxis,
@@ -2888,7 +2890,7 @@ export function applyBaseModifiers(
                 topVertexCount,
                 vertexCount: count,
                 plantarZMax: PLANTAR_Z_MAX_MM,
-                archGrindDepthMm: shapeFinish.archGrindDepthMm,
+                archGrindDepthMm: grindDepth,
             });
         }
         if (topVertexCount > 0 && shapeFinish.archSkiveMm > 0) {

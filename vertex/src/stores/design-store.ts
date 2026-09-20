@@ -14,7 +14,11 @@ import {
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { defaultElementPose } from "@/lib/geometry/elements";
-import { defaultSideShapeFinish, normalizeSideShapeFinish } from "@/lib/geometry/shape-finish-modifiers";
+import {
+    defaultSideShapeFinish,
+    normalizeSideShapeFinish,
+    thicknessMmForDesignSide,
+} from "@/lib/geometry/shape-finish-modifiers";
 import {
     convertSizingToSystem,
     DEFAULT_SHOE_SIZE_SYSTEM,
@@ -672,12 +676,14 @@ export const useDesignStore = create<DesignStore>()(
                     const left = normalizeSideShapeFinish(
                         { ...current.left, ...(applyLeft ? patch : {}) },
                         method,
+                        thicknessMmForDesignSide(s.design, "left"),
                     );
                     const right = current.linked
                         ? { ...left }
                         : normalizeSideShapeFinish(
                               { ...current.right, ...(applyRight ? patch : {}) },
                               method,
+                              thicknessMmForDesignSide(s.design, "right"),
                           );
                     return {
                         design: {

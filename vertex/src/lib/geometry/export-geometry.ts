@@ -17,6 +17,7 @@ import {
     closeGlbInsoleToSolid,
     DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
+import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gates";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
@@ -161,6 +162,7 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
 /** Export STL bytes for the active design side. */
 export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
     const { design } = useDesignStore.getState();
+    assertShapeFinishExportAllowed(design, side);
     const modifiedBase = await buildModifiedBaseGeometry(design, side, 0);
     if (!modifiedBase) {
         throw new Error(
@@ -197,6 +199,7 @@ export async function buildExportStl(side: Side, _options: BuildExportStlOptions
  */
 export async function buildExportGlbGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
+    assertShapeFinishExportAllowed(design, side);
 
     const modifiedBase = await buildModifiedBaseGeometry(design, side);
     if (modifiedBase) return modifiedBase;
