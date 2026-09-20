@@ -52,6 +52,62 @@ def soft_floor(value: float, floor: float, smoothing: float = 0.6) -> float:
     return max(value, floor) + h * h * smoothing * 0.25
 
 
+# Track 4 #1 — zonal shell thickness (mirrors vertex/shell-thickness-zonal.ts)
+SHELL_ZONE_RF_END_U = 0.28
+SHELL_ZONE_MF_END_U = 0.55
+MIN_SHELL_WALL_MM = 0.8
+DEFAULT_SHELL_BLEND_HALF_MM = 12.0
+
+
+def _smoothstep01(t: float) -> float:
+    c = max(0.0, min(1.0, t))
+    return c * c * (3.0 - 2.0 * c)
+
+
+def zonal_shell_thickness_at_u(
+    u: float,
+    rf_mm: float,
+    mf_mm: float,
+    ff_mm: float,
+    length_mm: float,
+    blend_half_mm: float = DEFAULT_SHELL_BLEND_HALF_MM,
+) -> float:
+    if length_mm <= 0:
+        raw = rf_mm if u <= SHELL_ZONE_RF_END_U else (ff_mm if u >= SHELL_ZONE_MF_END_U else mf_mm)
+        return max(MIN_SHELL_WALL_MM, raw)
+    blend_u = max(1e-6, (2.0 * blend_half_mm) / length_mm)
+    b0, b1 = SHELL_ZONE_RF_END_U, SHELL_ZONE_MF_END_U
+    if u <= b0 - blend_u:
+        raw = rf_mm
+    elif u >= b1 + blend_u:
+        raw = ff_mm
+    elif u < b0 + blend_u:
+        t = _smoothstep01((u - (b0 - blend_u)) / (2.0 * blend_u))
+        raw = rf_mm + (mf_mm - rf_mm) * t
+    elif u > b1 - blend_u:
+        t = _smoothstep01((u - (b1 - blend_u)) / (2.0 * blend_u))
+        raw = mf_mm + (ff_mm - mf_mm) * t
+    else:
+        raw = mf_mm
+    return max(MIN_SHELL_WALL_MM, raw)
+
+
+def resolve_thickness_at_u(
+    u: float,
+    thickness_mm: float,
+    corrections: dict[str, Any],
+    length_mm: float,
+) -> float:
+    mode = str(corrections.get("shellThicknessMode", "uniform")).lower()
+    if mode != "zonal":
+        return max(MIN_SHELL_WALL_MM, float(thickness_mm))
+    rf = float(corrections.get("shellThicknessRfMm", 3.0))
+    mf = float(corrections.get("shellThicknessMfMm", 2.5))
+    ff = float(corrections.get("shellThicknessFfMm", 2.0))
+    blend = float(corrections.get("shellThicknessBlendMm", DEFAULT_SHELL_BLEND_HALF_MM))
+    return zonal_shell_thickness_at_u(u, rf, mf, ff, length_mm, blend)
+
+
 def heel_lift_delta_at(
     u: float,
     heel_lift_mm: float,
@@ -244,7 +300,9 @@ def compute_top_height(
     # Heel lift (full-width structural ramp, not feathered)
     heel_lift = heel_lift_delta_at(u, heel_lift_mm)
 
-    h = soft_floor(thickness_mm + baseline + shaped + posting + wedge + heel_lift, 0.8)
+    thickness_at_u = resolve_thickness_at_u(u, thickness_mm, c, length_mm)
+
+    h = soft_floor(thickness_at_u + baseline + shaped + posting + wedge + heel_lift, 0.8)
 
     return float(h)
 
