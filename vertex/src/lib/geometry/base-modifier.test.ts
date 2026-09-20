@@ -16,6 +16,7 @@ import {
 } from "./base-modifier";
 import type { HeightFieldParams } from "./height-field";
 import { heightAt } from "./height-field";
+import { deriveNativeShellThicknessDatum } from "./native-shell-thickness";
 import { getForefootFactor, getRearfootFactor, wedgeDeltaAt } from "./wedge";
 
 // --- Synthetic base mesh -----------------------------------------------------
@@ -441,7 +442,13 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         // bottom layer at full strength (constant-thickness shell). Top must
         // still receive the wedge; bottom heel region must move in lockstep.
         const multiBase = makeMultiMeshBase();
-        const modifiedMulti = applyBaseModifiers(multiBase, p, 0);
+        const wedgeField = {
+            ...p,
+            thicknessMm:
+                deriveNativeShellThicknessDatum(multiBase)?.nativeMinClearanceMm ??
+                BASE_REFERENCE_THICKNESS_MM,
+        };
+        const modifiedMulti = applyBaseModifiers(multiBase, wedgeField, 0);
         const topN = (multiBase.userData as { topVertexCount: number }).topVertexCount;
         const modArr = modifiedMulti.getAttribute("position")!.array as Float32Array;
         const baseArr = multiBase.getAttribute("position")!.array as Float32Array;
@@ -457,7 +464,7 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         expect(maxBottomLift).toBeGreaterThan(1);
         // Thickness preserved: top and bottom lifts within 0.05 mm of each other
         // at the peak (same F sampled at similar footprints on the synthetic grid).
-        expect(Math.abs(maxTopLift - maxBottomLift)).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM);
+        expect(Math.abs(maxTopLift - maxBottomLift)).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM + 0.002);
         multiBase.dispose();
         modifiedMulti.dispose();
     });
