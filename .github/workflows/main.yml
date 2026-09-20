@@ -22,5 +22,11 @@ jobs:
             - name: Install dependencies
               run: npm install
 
+            - name: Install vertex app dependencies
+              run: npm install --prefix vertex
+
+            - name: Generate Prisma client (vertex)
+              run: npm run prisma:generate --prefix vertex
+
             - name: Run unit tests
               run: npm run test

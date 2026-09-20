@@ -3,6 +3,8 @@ import { CorrectionsPanel } from "@/features/corrections/CorrectionsPanel";
 import { ElementsPanel } from "@/features/elements/ElementsPanel";
 import { ExportPanel } from "@/features/exports/ExportPanel";
 import { PrintingPanel } from "@/features/exports/PrintingPanel";
+import { ShapeFinishPanel } from "@/features/shape-finish/ShapeFinishPanel";
+import { shouldShowShapeFinishInPrintingTab } from "@/features/shape-finish/shape-finish-mount";
 
 export function RightPanel() {
     return (
@@ -25,7 +27,12 @@ export function RightPanel() {
                         <ElementsPanel />
                     </TabsContent>
                     <TabsContent value="printing">
-                        <PrintingPanel />
+                        <div className="space-y-6">
+                            {shouldShowShapeFinishInPrintingTab() ? (
+                                <ShapeFinishPanel />
+                            ) : null}
+                            <PrintingPanel />
+                        </div>
                     </TabsContent>
                     <TabsContent value="export">
                         <ExportPanel />

@@ -5,6 +5,7 @@ import type { BufferGeometry } from "three";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
+import { getSideShapeFinish } from "@/lib/geometry/shape-finish-modifiers";
 import {
     classifyStockUrl,
     formatStockUrlLog,
@@ -827,6 +828,7 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         includeSkives: false,
         includeElements: true,
         trimline: null,
+        shapeFinish: getSideShapeFinish(design, side),
     };
 }
 

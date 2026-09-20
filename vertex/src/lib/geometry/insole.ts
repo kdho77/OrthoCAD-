@@ -1,7 +1,7 @@
 import { BufferAttribute, BufferGeometry } from "three";
-import { heightAt, resolveOutlineHalfWidth, type HeightFieldParams } from "@/lib/geometry/height-field";
+import { type HeightFieldParams, heightAt, resolveOutlineHalfWidth } from "@/lib/geometry/height-field";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
-import type { PlacedElement, ProductionMethod, Side, SideCorrections } from "@/types";
+import type { PlacedElement, ProductionMethod, Side, SideCorrections, SideShapeFinish } from "@/types";
 
 // Generates a parametric orthotic insole mesh from correction parameters.
 // Procedural fallback when the OpenCascade WASM kernel is unavailable.
@@ -25,6 +25,7 @@ export interface InsoleParams {
      * Reserved for Confirm / Export; falls back to the lofted footprint on error.
      */
     useBooleanTrimline?: boolean;
+    shapeFinish?: SideShapeFinish | null;
 }
 
 export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
@@ -38,6 +39,7 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         segmentsX = 96,
         segmentsY = 48,
         trimline = null,
+        shapeFinish = null,
     } = params;
 
     const field: HeightFieldParams = {
@@ -50,6 +52,7 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         includeSkives: true,
         includeElements: true,
         trimline,
+        shapeFinish,
     };
 
     const nx = segmentsX;

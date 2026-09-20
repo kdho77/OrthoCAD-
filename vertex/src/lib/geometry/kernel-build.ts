@@ -7,6 +7,7 @@ import type { TrimLine } from "@/lib/geometry/mesh-edit";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import type { GeometryQuality } from "@/lib/geometry/quality";
 import { segmentsForQuality } from "@/lib/geometry/quality";
+import { effectiveLengthMm, getSideShapeFinish } from "@/lib/geometry/shape-finish-modifiers";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
@@ -34,14 +35,16 @@ export function insoleParamsFromDesign(
         : design.thicknessMm;
     const method = paired ? (side === "left" ? paired.leftMethod : paired.rightMethod) : design.method;
     const layout = insoleLayoutFromDesign(design);
+    const shapeFinish = getSideShapeFinish(design, side);
     return {
         side,
-        lengthMm: layout.lengthMm,
+        lengthMm: effectiveLengthMm(layout.lengthMm, shapeFinish),
         widthMm: layout.widthMm,
         thicknessMm: thickness,
         corrections: mergeCorrections(side, design.corrections[side]),
         elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
         method: method,
+        shapeFinish,
         ...segmentsForQuality(quality),
     };
 }
