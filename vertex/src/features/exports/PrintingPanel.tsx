@@ -12,6 +12,14 @@ import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
 import { SIDE_LABELS, type Side } from "@/types";
+import {
+    gyroidInfillPctForHardness,
+    HARDNESS_NAMES,
+    HARDNESS_TO_INFILL_PCT,
+    type HardnessName,
+    infillFractionFromRecipe,
+    migratePrintRecipe,
+} from "../../../shared/print-recipe/print-recipe";
 
 function fmtTime(sec: number): string {
     const h = Math.floor(sec / 3600);
@@ -19,11 +27,18 @@ function fmtTime(sec: number): string {
     return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+const HARDNESS_UNCERTAINTY_COPY =
+    "Named hardness is a relative stiffness ladder for one locked FDM profile—not Shore durometer. " +
+    "Feel depends on filament, walls, layer height, and temperature; OrthoCAD exports solid CAD and realize feel in the slicer.";
+
 export function PrintingPanel() {
     const { user, license } = useAuthStore();
-    const { design, exportSide, setExportSide } = useDesignStore();
+    const { design, exportSide, setExportSide, setPrintHardness } = useDesignStore();
+    const printRecipe = migratePrintRecipe(design.printRecipe);
+    const activeHardness = printRecipe.defaultHardness;
+    const activeGyroidPct = gyroidInfillPctForHardness(activeHardness, printRecipe.hardnessToInfillPct);
+
     const [layerHeight, setLayerHeight] = useState(0.3);
-    const [infill, setInfill] = useState(25);
     const [toolDia, setToolDia] = useState(6);
     const [result, setResult] = useState<CamResult | null>(null);
     const [status, setStatus] = useState<string | null>(null);
@@ -46,7 +61,10 @@ export function PrintingPanel() {
 
     const overrides: CamOverrides = isCnc
         ? { toolDiameterMm: toolDia }
-        : { layerHeightMm: layerHeight, infillDensity: infill / 100 };
+        : {
+              layerHeightMm: layerHeight,
+              infillDensity: infillFractionFromRecipe(printRecipe),
+          };
 
     const buildGeom = () => getKernel().buildInsole(insoleParamsFromDesign(design, exportSide, "full"));
 
@@ -82,12 +100,6 @@ export function PrintingPanel() {
         setStatus("Exporting finished solid and generating G-code on server…");
         setResult(null);
         try {
-            // The helper (generateHybridGcode) derives baseAssetId (and baseGlbUrl) internally
-            // from the current design state in useDesignStore at the time of the call.
-            // This is the canonical place that assembles the full server payload.
-            // baseAssetId will be included (when a base is active) so the server can do
-            // authoritative CustomPrefab lookup + signed URL (see export-service.ts).
-            // designId is also passed when an active persisted design exists.
             const res = await generateHybridGcode(exportSide, preset, grindingStyle, overrides);
             if (res.ok) {
                 const idPart = res.productionId ? ` [production ${res.productionId}]` : "";
@@ -95,12 +107,8 @@ export function PrintingPanel() {
                     `Server G-code exported ${res.filename || "file"}${idPart} (tokens deducted on success)`,
                 );
             } else {
-                // Same friendly mapping as ExportPanel — hybrid STL build uses closeGlbInsoleToSolid
-                // and export-service returns the raw MeshNotWatertightError message as res.reason.
                 setStatus(stlExportUserMessage(res.reason ?? "Hybrid generation failed"));
             }
-            // Note: the hybrid path handles its own download + audit inside the service helper.
-            // Improved feedback: status reflects server nature and success-only deduction.
         } catch (e) {
             setStatus(
                 stlExportUserMessage(
@@ -212,15 +220,35 @@ export function PrintingPanel() {
                         unit="mm"
                         onChange={setLayerHeight}
                     />
-                    <SliderField
-                        label="Infill"
-                        value={infill}
-                        min={0}
-                        max={100}
-                        step={5}
-                        unit="%"
-                        onChange={setInfill}
-                    />
+                    <div className="space-y-1.5">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Device hardness
+                        </div>
+                        {HARDNESS_NAMES.map((name) => (
+                            <button
+                                key={name}
+                                type="button"
+                                onClick={() => setPrintHardness(name as HardnessName)}
+                                className={cn(
+                                    "flex w-full items-center justify-between rounded-md border px-2 py-2 text-left text-xs",
+                                    activeHardness === name
+                                        ? "border-primary bg-primary/10 text-foreground"
+                                        : "border-border bg-background text-muted-foreground",
+                                )}
+                            >
+                                <span>{name}</span>
+                                <span className="tabular-nums text-[10px]">
+                                    {HARDNESS_TO_INFILL_PCT[name as HardnessName]}% gyroid target
+                                </span>
+                            </button>
+                        ))}
+                        <p className="text-[10px] text-muted-foreground">
+                            Selected: {activeHardness} ({activeGyroidPct}% gyroid target under locked profile).
+                            Server hybrid uses gyroid infill (experimental); client preview is a fast
+                            rectilinear approximation only.
+                        </p>
+                        <p className="text-[10px] text-muted-foreground">{HARDNESS_UNCERTAINTY_COPY}</p>
+                    </div>
                 </>
             )}
 

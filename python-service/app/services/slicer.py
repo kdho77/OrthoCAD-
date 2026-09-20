@@ -30,6 +30,7 @@ import numpy as np
 import trimesh
 
 from app.services.geometry_utils import ensure_watertight
+from app.services.gyroid_infill import generate_gyroid_infill_for_layer
 
 # ---------------------------------------------------------------------------
 # Basic types mirroring the spirit of the TS kiri code
@@ -120,6 +121,7 @@ def slice_solid(
     extrusion_width_mm: float = 0.48,
     solid_layers: int = 3,
     infill_angle_deg: float = 45.0,
+    infill_pattern: str = "rectilinear",
 ) -> list[dict[str, Any]]:
     """
     Improved slicer for belt TPU insoles (Kiri-inspired but focused and maintainable).
@@ -181,29 +183,43 @@ def slice_solid(
         eff_density = 0.92 if is_solid else infill_density
 
         if wall_contours and eff_density > 0.01:
-            all_pts = np.vstack(wall_contours)
-            min_x, min_y = all_pts.min(0)
-            max_x, max_y = all_pts.max(0)
-            cx, cy = (min_x + max_x) * 0.5, (min_y + max_y) * 0.5
-            step = extrusion_width_mm / max(eff_density, 0.04)
-            ang = math.radians(infill_angle_deg)
-            dx, dy = math.cos(ang), math.sin(ang)
-            px, py = -dy, dx
-            length = max(max_x - min_x, max_y - min_y) * 1.6
-            off = -length
-            while off < length:
-                x0 = cx + px * off
-                y0 = cy + py * off
-                p1 = np.array([x0 - dx * length, y0 - dy * length])
-                p2 = np.array([x0 + dx * length, y0 + dy * length])
-                infill.append(np.stack([p1, p2]))
-                off += step
+            if infill_pattern == "gyroid" and not is_solid:
+                infill = generate_gyroid_infill_for_layer(
+                    wall_contours,
+                    z,
+                    eff_density,
+                    extrusion_width_mm,
+                    perimeters=perimeters,
+                )
+            else:
+                all_pts = np.vstack(wall_contours)
+                min_x, min_y = all_pts.min(0)
+                max_x, max_y = all_pts.max(0)
+                cx, cy = (min_x + max_x) * 0.5, (min_y + max_y) * 0.5
+                step = extrusion_width_mm / max(eff_density, 0.04)
+                ang = math.radians(infill_angle_deg)
+                dx, dy = math.cos(ang), math.sin(ang)
+                px, py = -dy, dx
+                length = max(max_x - min_x, max_y - min_y) * 1.6
+                off = -length
+                while off < length:
+                    x0 = cx + px * off
+                    y0 = cy + py * off
+                    p1 = np.array([x0 - dx * length, y0 - dy * length])
+                    p2 = np.array([x0 + dx * length, y0 + dy * length])
+                    infill.append(np.stack([p1, p2]))
+                    off += step
 
         layers.append({
             "z": z,
             "contours": wall_contours or contours,
             "infill": infill,
             "is_solid": is_solid,
+            "infill_pattern": (
+                "gyroid"
+                if infill_pattern == "gyroid" and not is_solid and len(infill) > 0
+                else "rectilinear"
+            ),
         })
         z += layer_height_mm
         layer_idx += 1
@@ -277,13 +293,18 @@ def emit_gcode(
             g.extrude_to(float(contour[0][0]), float(contour[0][1]), z, print_speed * 60)
             g.stats["perimeters"] += 1
 
-        # Infill (angle + density already prepared; solid layers denser)
-        for line in layer.get("infill", []):
+        infill_lines = layer.get("infill", [])
+        pat = layer.get("infill_pattern", "rectilinear")
+        if infill_lines and pat == "gyroid":
+            g.comment("BEGIN_INFILL_GYROID")
+        for line in infill_lines:
             if len(line) < 2:
                 continue
             g.travel(float(line[0][0]), float(line[0][1]), z, travel_speed * 60)
             g.extrude_to(float(line[1][0]), float(line[1][1]), z, print_speed * 60)
             g.stats["infill"] += 1
+        if infill_lines and pat == "gyroid":
+            g.comment("END_INFILL_GYROID")
 
         g.stats["layers"] += 1
 
@@ -309,19 +330,25 @@ def build_slice_overrides(
     layer_height_mm: float | None = None,
     infill_density: float | None = None,
     perimeters: int | None = None,
+    print_recipe: PrintRecipeV1 | None = None,
 ) -> dict[str, Any]:
-    """Merge request overrides on top of preset defaults (request wins)."""
+    """Merge request overrides on top of preset defaults (recipe wins over scalar infill)."""
     overrides: dict[str, Any] = {
         "layerHeightMm": preset.get("layerHeightMm", 0.30),
         "perimeters": preset.get("perimeters", 3),
         "infillDensity": preset.get("infillDensity", 0.15),
+        "infillPattern": "rectilinear",
     }
     if layer_height_mm is not None:
         overrides["layerHeightMm"] = layer_height_mm
-    if infill_density is not None:
-        overrides["infillDensity"] = infill_density
     if perimeters is not None:
         overrides["perimeters"] = perimeters
+    if print_recipe is not None:
+        overrides["infillDensity"] = print_recipe.infill_fraction()
+        overrides["infillPattern"] = "gyroid"
+        overrides["printRecipe"] = print_recipe
+    elif infill_density is not None:
+        overrides["infillDensity"] = infill_density
     return overrides
 
 
@@ -345,5 +372,6 @@ def generate_gcode_from_solid(
         extrusion_width_mm=float(preset.get("nozzleMm", 0.4)) * 1.2,
         solid_layers=int(preset.get("solidLayers", 3)),
         infill_angle_deg=float(preset.get("infillAngleDeg", 45)),
+        infill_pattern=str(o.get("infillPattern", "rectilinear")),
     )
     return emit_gcode(layers, preset, overrides)

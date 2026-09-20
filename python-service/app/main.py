@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from app.models.requests import GenerateSolidRequest
 from app.services.belt_transformer import apply_belt_transform
 from app.services.presets import get_preset, is_known_preset
+from app.services.print_recipe import coerce_print_recipe, is_gyroid_manufacturing_preset
 from app.services.slicer import build_slice_overrides, generate_gcode_from_solid
 from app.services.stl_loader import download_stl_to_temp, load_watertight_stl
 
@@ -79,6 +80,22 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
 
     grinding_label = req.grinding_style.type if req.grinding_style else None
 
+    if (
+        output_type == "gcode"
+        and is_gyroid_manufacturing_preset(req.preset_id)
+        and req.print_recipe is None
+        and req.infill_density is not None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Legacy infill_density is not accepted for gyroid manufacturing presets. "
+                "Send print_recipe (PrintRecipeV1) with named hardness instead."
+            ),
+        )
+
+    print_recipe = coerce_print_recipe(req.print_recipe) if req.print_recipe is not None else None
+
     logger.info(
         "manufacture start job=%s design=%s preset=%s output=%s belt=%.1f side=%s",
         req.job_id,
@@ -119,8 +136,9 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
         overrides = build_slice_overrides(
             preset,
             layer_height_mm=req.layer_height_mm,
-            infill_density=req.infill_density,
+            infill_density=req.infill_density if print_recipe is None else None,
             perimeters=req.perimeters,
+            print_recipe=print_recipe,
         )
         gcode = generate_gcode_from_solid(transformed, preset, overrides)
 
@@ -140,6 +158,8 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
                     "layerHeightMm": overrides["layerHeightMm"],
                     "infillDensity": overrides["infillDensity"],
                     "perimeters": overrides["perimeters"],
+                    "infillPattern": overrides.get("infillPattern"),
+                    "printRecipe": print_recipe.model_dump() if print_recipe else None,
                 },
             }
         )
