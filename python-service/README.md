@@ -58,7 +58,8 @@ uvicorn app.main:app --reload --port 8001
 |--------|------|
 | `stl_loader.py` | Download STL, validate/repair watertightness |
 | `belt_transformer.py` | 3D belt pre-transform before planar slicing |
-| `slicer.py` | Planar layer slicing + G-code emission |
+| `slicer.py` | Belt-aware planar slicing + G-code emission |
+| `belt_stitch.py` / `belt_wall_slice.py` | Racetrack stitch + wall insets (Vertex belt SOP, hybrid path) |
 | `presets.py` | Server-side printer profiles + client ID aliases |
 
 `solid_generator.py` remains for tests and legacy tooling but is not used by `/manufacture`.
