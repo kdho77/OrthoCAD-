@@ -895,7 +895,7 @@ export const CLINICAL_LIMITS = {
   archHeightMm:        { min: -5, max: 15, default: 0, warn: 12 },
   archFillMm:          { min: 0,  max: 10, default: 0, warn: 8 },
   apexMoveMm:          { min: -25, max: 25, default: 0, warn: 20 },
-  heelCupDepthMm:      { min: 0,  max: 8,  default: 0, warn: 6 },
+  heelCupDepthMm:      { min: 12, max: 18, default: 12, warn: 16 }, // authoritative: vertex/src/lib/geometry/clinical-constraints.ts (Biomechanics lock 2026-09-20; 0 = off in app)
   medialSkiveMm:       { min: 0,  max: 6,  default: 0, warn: 4 },
   elementHeightMm:     { min: 0.5, max: 12, default: 3, warn: 8 },
   minWallThicknessMm:  0.8,
