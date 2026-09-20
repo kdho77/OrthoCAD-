@@ -1,5 +1,11 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import {
+    isGyroidManufacturingPreset,
+    migratePrintRecipe,
+    printRecipeToSnake,
+    printRecipeV1Schema,
+} from "../../../shared/print-recipe/print-recipe.js";
 import { getSupabaseAdmin } from "../context.js";
 import { callManufacture } from "../lib/manufacturing-client.js";
 import {
@@ -39,6 +45,7 @@ const manufactureInputSchema = z.object({
     infillDensity: z.number().min(0).max(1).optional(),
     perimeters: z.number().int().min(1).max(10).optional(),
     grindingStyle: grindingStyleSchema.optional(),
+    printRecipe: printRecipeV1Schema.optional(),
     fileName: z.string().max(200).optional(),
 });
 
@@ -146,6 +153,22 @@ export const manufacturingRouter = router({
                 });
             }
 
+            const gyroidPreset = isGyroidManufacturingPreset(input.presetId);
+            if (gyroidPreset && input.infillDensity !== undefined && !input.printRecipe) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                        "Legacy infillDensity is not accepted for gyroid manufacturing presets. " +
+                        "Upgrade the design with PrintRecipeV1 (named hardness) and resend printRecipe.",
+                });
+            }
+
+            const resolvedPrintRecipe = input.printRecipe
+                ? migratePrintRecipe(input.printRecipe)
+                : gyroidPreset
+                  ? migratePrintRecipe(undefined)
+                  : undefined;
+
             try {
                 assertManufacturingTempKeyForUser(input.stlStorageKey, ctx.user.id);
             } catch {
@@ -216,9 +239,10 @@ export const manufacturingRouter = router({
                     belt_angle_deg: input.beltAngleDeg,
                     side: input.side ?? null,
                     layer_height_mm: input.layerHeightMm,
-                    infill_density: input.infillDensity,
+                    infill_density: resolvedPrintRecipe ? undefined : input.infillDensity,
                     perimeters: input.perimeters,
                     grinding_style: input.grindingStyle,
+                    print_recipe: resolvedPrintRecipe ? printRecipeToSnake(resolvedPrintRecipe) : undefined,
                 });
 
                 const outputType = pythonResult.output_type ?? input.outputType;
@@ -276,7 +300,8 @@ export const manufacturingRouter = router({
                             grindingStyle: input.grindingStyle?.type ?? null,
                             side: input.side ?? null,
                             layerHeightMm: input.layerHeightMm ?? null,
-                            infillDensity: input.infillDensity ?? null,
+                            infillDensity: resolvedPrintRecipe ? null : (input.infillDensity ?? null),
+                            printRecipe: resolvedPrintRecipe ?? null,
                             perimeters: input.perimeters ?? null,
                             sourceStlTempKey: tempStlKey,
                         },

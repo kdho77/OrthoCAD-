@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { printRecipeV1Schema } from "../../../shared/print-recipe/print-recipe.js";
 import { ELEMENT_KINDS, PRODUCTION_METHODS, SCAN_PATTERNS } from "./prescription-schema.js";
 
 // Zod schema for a full design payload, used by design.save. Mirrors the
@@ -63,6 +64,7 @@ export const designStateSchema = z.object({
     }),
     elements: z.array(placedElement),
     trimlines: designTrimlines,
+    printRecipe: printRecipeV1Schema.optional(),
 });
 
 export type DesignStatePayload = z.infer<typeof designStateSchema>;

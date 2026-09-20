@@ -22,6 +22,7 @@ export interface ManufacturePayload {
     infill_density?: number;
     perimeters?: number;
     grinding_style?: GrindingStylePayload;
+    print_recipe?: Record<string, unknown>;
 }
 
 /** Shape returned by the Python `/manufacture` endpoint on success. */
@@ -101,9 +102,14 @@ export async function callManufacture(payload: ManufacturePayload): Promise<Manu
     if (!response.ok) {
         const body = (await response.json().catch(() => null)) as { detail?: string } | null;
         const detail = body?.detail || (await response.text().catch(() => "")) || response.statusText;
-        console.error("[manufacturing] Python service returned error", { endpoint, status: response.status, detail });
+        console.error("[manufacturing] Python service returned error", {
+            endpoint,
+            status: response.status,
+            detail,
+        });
         throw new TRPCError({
-            code: response.status === 401 || response.status === 403 ? "UNAUTHORIZED" : "INTERNAL_SERVER_ERROR",
+            code:
+                response.status === 401 || response.status === 403 ? "UNAUTHORIZED" : "INTERNAL_SERVER_ERROR",
             message: `Manufacturing service error (${response.status}): ${detail}`,
         });
     }

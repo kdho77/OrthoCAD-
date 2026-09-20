@@ -2,6 +2,8 @@
 // These mirror the Prisma schema but are framework-agnostic for use in the
 // browser, stores and the 3D pipeline.
 
+import type { PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
+
 export type Role = "super_admin" | "admin" | "clinician";
 
 export type Side = "left" | "right";
@@ -229,6 +231,9 @@ export interface DesignState {
     elements: PlacedElement[];
     /** User-edited insole outline curves — persisted with the design. */
     trimlines?: DesignTrimlines;
+
+    /** Whole-device named hardness → gyroid density (Phase A). */
+    printRecipe?: PrintRecipeV1;
 
     /**
      * Paired Left + Right dual-view workspace support.

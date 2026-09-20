@@ -5,9 +5,11 @@
 Pydantic models for the hybrid manufacturing pipeline (STL-in → G-code or STL-out).
 """
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+from app.services.print_recipe import PrintRecipeV1
 
 
 class GrindingStyle(BaseModel):
@@ -32,3 +34,4 @@ class GenerateSolidRequest(BaseModel):
     infill_density: float | None = None
     perimeters: int | None = None
     grinding_style: GrindingStyle | None = None
+    print_recipe: PrintRecipeV1 | None = None

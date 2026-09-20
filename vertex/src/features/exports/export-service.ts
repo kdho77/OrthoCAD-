@@ -176,6 +176,9 @@ export async function generateHybridGcode(
             const stlBuffer = await buildManufacturingStl(side);
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
+            const design = useDesignStore.getState().design;
+            const printRecipe = design.printRecipe;
+
             const res = await trpc.manufacturing.generateSolid.mutate({
                 designId: activeDesignId || undefined,
                 side,
@@ -184,7 +187,7 @@ export async function generateHybridGcode(
                 outputType,
                 beltAngleDeg: preset.beltAngleDeg ?? 45,
                 layerHeightMm: overrides.layerHeightMm,
-                infillDensity: overrides.infillDensity,
+                printRecipe,
                 perimeters: overrides.perimeters,
                 grindingStyle,
                 fileName: filename,
