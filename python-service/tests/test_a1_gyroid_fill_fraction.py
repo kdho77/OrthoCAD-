@@ -4,7 +4,7 @@
 """
 phaseA-gyroid-hardness-v1 — A1 coupon fill-fraction gate (in-repo).
 
-40×40×6 mm box, locked profile: w=0.48 mm, layer_h=0.3 mm, perimeters=1, solid_layers=1.
+40×40×6 mm box, locked profile: w=0.48 mm, layer_h=0.3 mm, perimeters=3 (belt preset), solid_layers=1.
 Each hardness target φ ∈ {0.14,0.20,0.26,0.32,0.38}: |measured φ − target| ≤ 0.05.
 """
 
@@ -15,6 +15,8 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
+
+from app.services.gyroid_infill import _LUT_PATH, _period_multiplier, generate_gyroid_infill_for_layer
 
 from app.services.gcode_metrology import gcode_has_infill_gyroid_blocks, measure_infill_fill_fraction_from_gcode
 from app.services.geometry_utils import point_in_polygon
@@ -28,7 +30,7 @@ from app.services.slicer import emit_gcode, slice_solid
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "a1_coupon_40x40x6.stl"
 EXTRUSION_W = 0.48
 LAYER_H = 0.3
-PERIMETERS = 1
+PERIMETERS = 3
 SOLID_LAYERS = 1
 TOL = 0.05
 
@@ -101,6 +103,27 @@ class A1GyroidFillFractionTests(unittest.TestCase):
                     point_in_polygon(float(mid[0]), float(mid[1]), poly),
                     "Infill segment midpoint outside wall contour",
                 )
+
+    def test_lut_not_mutated_on_manufacture_path(self) -> None:
+        _period_multiplier.cache_clear()
+        mtime_before = _LUT_PATH.stat().st_mtime
+        layers = self._slice_gyroid(0.26)
+        layer = next(
+            l
+            for l in layers
+            if not l.get("is_solid") and l.get("infill_pattern") == "gyroid" and l.get("infill")
+        )
+        generate_gyroid_infill_for_layer(
+            layer["contours"],
+            float(layer["z"]),
+            0.26,
+            EXTRUSION_W,
+            perimeters=PERIMETERS,
+        )
+        _period_multiplier.cache_clear()
+        # Unknown width forces in-memory fit path (no LUT key for w=0.37)
+        generate_gyroid_infill_for_layer(layer["contours"], float(layer["z"]), 0.26, 0.37, perimeters=3)
+        self.assertEqual(_LUT_PATH.stat().st_mtime, mtime_before)
 
     def test_gcode_metrology_matches_layer_estimate(self) -> None:
         target = 0.26

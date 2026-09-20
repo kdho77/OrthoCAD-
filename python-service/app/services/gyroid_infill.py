@@ -53,16 +53,17 @@ def gyroid_cell_period_mm(extrusion_width_mm: float, infill_fraction: float) -> 
     return GYROID_CELL_K * extrusion_width_mm / math.sqrt(phi)
 
 
+def _lut_lookup_key(target_percent: int, extrusion_width_mm: float) -> str:
+    """LUT keys are hardness % + line width; wall inset is taken from sliced contours."""
+    return f"{target_percent}:{extrusion_width_mm:.4f}"
+
+
 def _load_period_lut() -> dict[str, float]:
-    if _LUT_PATH.is_file():
-        with _LUT_PATH.open(encoding="utf-8") as f:
-            return {str(k): float(v) for k, v in json.load(f).items()}
-    return {}
-
-
-def _save_period_lut(lut: dict[str, float]) -> None:
-    with _LUT_PATH.open("w", encoding="utf-8") as f:
-        json.dump(lut, f, indent=2, sort_keys=True)
+    if not _LUT_PATH.is_file():
+        return {}
+    with _LUT_PATH.open(encoding="utf-8") as f:
+        raw = json.load(f)
+    return {str(k): float(v) for k, v in raw.items() if not str(k).startswith("_")}
 
 
 def _gyroid_field_grid(
@@ -257,15 +258,16 @@ def _fit_period_multiplier(
 
 
 @lru_cache(maxsize=32)
-def _period_multiplier(target_percent: int, extrusion_width_mm: float, perimeters: int) -> float:
+def _period_multiplier(target_percent: int, extrusion_width_mm: float) -> float:
+    """
+    Read μ from checked-in LUT. On cache miss, fit in-memory for this call only (no disk write).
+    Persist LUT updates via python-service/scripts/calibrate_gyroid_lut.py only.
+    """
     lut = _load_period_lut()
-    key = f"{target_percent}:{extrusion_width_mm:.4f}:{perimeters}"
+    key = _lut_lookup_key(target_percent, extrusion_width_mm)
     if key in lut:
         return lut[key]
-    mu = _fit_period_multiplier(target_percent, extrusion_width_mm, perimeters, z=3.0)
-    lut[key] = mu
-    _save_period_lut(lut)
-    return mu
+    return _fit_period_multiplier(target_percent, extrusion_width_mm, 3, z=3.0)
 
 
 def generate_gyroid_infill_for_layer(
@@ -273,13 +275,13 @@ def generate_gyroid_infill_for_layer(
     z: float,
     infill_fraction: float,
     extrusion_width_mm: float,
-    perimeters: int = 3,
+    perimeters: int = 3,  # noqa: ARG001 — wall inset comes from wall_contours at slice time
 ) -> list[np.ndarray]:
     if not wall_contours or infill_fraction <= 0.01:
         return []
     target_pct = int(round(infill_fraction * 100.0))
     target_pct = max(1, min(99, target_pct))
-    mu = _period_multiplier(target_pct, round(extrusion_width_mm, 4), perimeters)
+    mu = _period_multiplier(target_pct, round(extrusion_width_mm, 4))
     period = mu * gyroid_cell_period_mm(extrusion_width_mm, infill_fraction)
     boundary = pick_infill_boundary(wall_contours)
     raw = _raw_gyroid_segments(boundary, z, period, extrusion_width_mm)
