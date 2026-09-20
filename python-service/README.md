@@ -31,6 +31,9 @@ When `MANUFACTURING_INTERNAL_API_KEY` is unset (local dev), auth is skipped.
 | `infill_density` | Optional UI override (0–1) |
 | `perimeters` | Optional UI override |
 | `side` | `"left"` or `"right"` (metadata) |
+| `print_recipe` | `PrintRecipeV1` hardness → gyroid infill (required for gyroid manufacturing presets when `output_type=gcode`) |
+
+**G-code is belt-printer only** (`belt_angle_deg` + known belt preset). This service does not emit non-belt FDM gcode; unknown presets with `output_type=gcode` fall back to STL passthrough. Gyroid manufacturing presets reject legacy `infill_density` without `print_recipe` (HTTP 400).
 
 Unknown `preset_id` values with `output_type=gcode` fall back to STL passthrough.
 
@@ -60,6 +63,7 @@ uvicorn app.main:app --reload --port 8001
 | `belt_transformer.py` | 3D belt pre-transform before planar slicing |
 | `slicer.py` | Belt-aware planar slicing + G-code emission |
 | `belt_stitch.py` / `belt_wall_slice.py` | Racetrack stitch + wall insets (Vertex belt SOP, hybrid path) |
+| `gyroid_infill.py` / `print_recipe.py` | Phase A gyroid infill + hardness recipe |
 | `presets.py` | Server-side printer profiles + client ID aliases |
 
 `solid_generator.py` remains for tests and legacy tooling but is not used by `/manufacture`.
