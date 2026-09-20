@@ -3,8 +3,10 @@ import { z } from "zod";
 import {
     isGyroidManufacturingPreset,
     migratePrintRecipe,
+    PrintRecipeProfileRequiredError,
     printRecipeToSnake,
     printRecipeV1Schema,
+    resolveGyroidManufacturingPrintRecipe,
 } from "../../../shared/print-recipe/print-recipe.js";
 import { getSupabaseAdmin } from "../context.js";
 import { callManufacture } from "../lib/manufacturing-client.js";
@@ -163,11 +165,29 @@ export const manufacturingRouter = router({
                 });
             }
 
-            const resolvedPrintRecipe = input.printRecipe
-                ? migratePrintRecipe(input.printRecipe)
-                : gyroidPreset
-                  ? migratePrintRecipe(undefined)
-                  : undefined;
+            let resolvedPrintRecipe: ReturnType<typeof migratePrintRecipe> | undefined;
+            if (gyroidPreset) {
+                try {
+                    resolvedPrintRecipe = resolveGyroidManufacturingPrintRecipe(
+                        input.presetId,
+                        input.printRecipe,
+                    );
+                } catch (e) {
+                    if (e instanceof PrintRecipeProfileRequiredError) {
+                        throw new TRPCError({ code: "BAD_REQUEST", message: e.message });
+                    }
+                    throw e;
+                }
+                if (input.presetId !== resolvedPrintRecipe.profileId) {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message:
+                            "presetId must match PrintRecipeV1.profileId for production gyroid manufacturing.",
+                    });
+                }
+            } else if (input.printRecipe) {
+                resolvedPrintRecipe = migratePrintRecipe(input.printRecipe);
+            }
 
             try {
                 assertManufacturingTempKeyForUser(input.stlStorageKey, ctx.user.id);

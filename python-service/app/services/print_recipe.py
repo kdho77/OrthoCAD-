@@ -35,6 +35,8 @@ def load_hardness_table() -> dict[str, int]:
 
 HARDNESS_TO_INFILL_PCT: dict[str, int] = load_hardness_table()
 
+DEFAULT_PRODUCTION_PROFILE_ID = "apex-belt-v2"
+
 GYROID_MANUFACTURING_PRESET_IDS = frozenset(
     {
         "apex-belt-v2",
@@ -49,6 +51,7 @@ GYROID_MANUFACTURING_PRESET_IDS = frozenset(
 class PrintRecipeV1(BaseModel):
     version: Literal[1] = 1
     pattern: Literal["gyroid"] = "gyroid"
+    profile_id: str = Field(default=DEFAULT_PRODUCTION_PROFILE_ID, min_length=1)
     default_hardness: HardnessName = "Medium"
     zones: list[Any] = Field(default_factory=list)
     hardness_to_infill_pct: dict[str, int] | None = None
@@ -76,4 +79,24 @@ def coerce_print_recipe(raw: PrintRecipeV1 | dict[str, Any] | None) -> PrintReci
         return DEFAULT_PRINT_RECIPE.model_copy()
     if isinstance(raw, PrintRecipeV1):
         return raw
-    return PrintRecipeV1.model_validate(raw)
+    data = dict(raw)
+    if not str(data.get("profile_id") or "").strip():
+        data["profile_id"] = DEFAULT_PRODUCTION_PROFILE_ID
+    return PrintRecipeV1.model_validate(data)
+
+
+def require_gyroid_print_recipe_with_profile(
+    preset_id: str, print_recipe: PrintRecipeV1 | None
+) -> PrintRecipeV1:
+    if not is_gyroid_manufacturing_preset(preset_id):
+        raise ValueError("require_gyroid_print_recipe_with_profile called for non-gyroid preset")
+    if print_recipe is None:
+        raise ValueError(
+            "Production gyroid manufacturing requires print_recipe with profile_id (locked printer preset)."
+        )
+    recipe = coerce_print_recipe(print_recipe)
+    if not recipe.profile_id.strip():
+        raise ValueError("print_recipe.profile_id is required for gyroid manufacturing.")
+    if recipe.profile_id != preset_id:
+        raise ValueError("preset_id must match print_recipe.profile_id for production gyroid manufacturing.")
+    return recipe
