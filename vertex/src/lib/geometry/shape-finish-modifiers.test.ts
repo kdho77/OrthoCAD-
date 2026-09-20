@@ -4,10 +4,12 @@
 import { describe, expect, test } from "@rstest/core";
 import { archSkiveDepthAtThirdWidth, archSkiveUMask } from "@/lib/geometry/arch-skive";
 import {
+    evaluateShapeFinishQc,
     gateArchGrindDepth,
     gateArchSkiveDepth,
     gateTopCoverAccommodate,
     gateTrimmableForefootLength,
+    shapeFinishWallRisk,
 } from "@/lib/geometry/shape-finish-gates";
 import {
     archGrindApexRaiseMm,
@@ -56,6 +58,36 @@ describe("shape-finish modifiers", () => {
         const set = 1.25;
         const measured = topCoverAccommodateDeltaAt(0.1, 0.85, set);
         expect(gateTopCoverAccommodate(set, measured).ok).toBe(true);
+    });
+
+    test("evaluateShapeFinishQc reports fail when min wall breached", () => {
+        const sf = {
+            ...defaultSideShapeFinish(),
+            archGrindDepthMm: 5,
+            archSkiveMm: 0,
+            topCoverAccommodateMm: 0,
+            trimmableForefoot: false,
+        };
+        const items = evaluateShapeFinishQc({
+            side: "right",
+            sf,
+            thicknessMm: 3,
+            archHeightMm: 6,
+            heelSkiveMedialMm: 0,
+            heelSkiveLateralMm: 0,
+        });
+        const grind = items.find((i) => i.key === "archGrind");
+        expect(grind?.status).toBe("fail");
+        expect(
+            shapeFinishWallRisk({
+                side: "right",
+                sf,
+                thicknessMm: 3,
+                archHeightMm: 6,
+                heelSkiveMedialMm: 0,
+                heelSkiveLateralMm: 0,
+            }).atRisk,
+        ).toBe(true);
     });
 
     test("arch skive mask zero outside midfoot band", () => {

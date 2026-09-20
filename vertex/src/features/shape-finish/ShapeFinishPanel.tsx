@@ -2,15 +2,19 @@
 // See LICENSE file in the project root for full license information.
 
 import { Link2, Unlink } from "lucide-react";
+import { useMemo } from "react";
 import { SliderField } from "@/components/ui/slider-field";
+import { ActiveFootSideBar } from "@/features/clinical/ActiveFootSideBar";
+import { ShapeFinishQcBlock } from "@/features/shape-finish/ShapeFinishQcBlock";
+import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
 import {
-    getSideShapeFinish,
-    SHAPE_FINISH_DEFAULTS,
-    shapeFinishQcLines,
-} from "@/lib/geometry/shape-finish-modifiers";
+    evaluateShapeFinishQc,
+    shapeFinishWallRisk,
+} from "@/lib/geometry/shape-finish-gates";
+import { getSideShapeFinish, SHAPE_FINISH_DEFAULTS } from "@/lib/geometry/shape-finish-modifiers";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
-import type { ArchSkiveSide, Side } from "@/types";
+import type { ArchSkiveSide, Side, SideShapeFinish } from "@/types";
 
 const SIDE_LABELS: Record<Side, string> = { left: "Left", right: "Right" };
 
@@ -20,23 +24,67 @@ const ARCH_SKIVE_SIDES: { value: ArchSkiveSide; label: string }[] = [
     { value: "central", label: "Central" },
 ];
 
+function thicknessForSide(
+    design: ReturnType<typeof useDesignStore.getState>["design"],
+    side: Side,
+): number {
+    if (design.paired) {
+        return side === "left" ? design.paired.leftThicknessMm : design.paired.rightThicknessMm;
+    }
+    return design.thicknessMm;
+}
+
+function commitShapeFinish(
+    side: Side,
+    patch: Partial<SideShapeFinish>,
+    design: ReturnType<typeof useDesignStore.getState>["design"],
+    updateShapeFinish: (side: Side, patch: Partial<SideShapeFinish>) => void,
+): void {
+    const next = { ...getSideShapeFinish(design, side), ...patch };
+    const qcInput = {
+        side,
+        sf: next,
+        thicknessMm: thicknessForSide(design, side),
+        archHeightMm: design.corrections[side].archHeightMm + design.corrections[side].archFillMm,
+        heelSkiveMedialMm: design.corrections[side].medialSkiveMm,
+        heelSkiveLateralMm: design.corrections[side].lateralSkiveMm,
+    };
+    const risk = shapeFinishWallRisk(qcInput);
+    if (risk.atRisk && (patch.archGrindDepthMm !== undefined || patch.archSkiveMm !== undefined)) {
+        if (!window.confirm(risk.message)) return;
+    }
+    updateShapeFinish(side, patch);
+}
+
 export function ShapeFinishPanel() {
     const design = useDesignStore((s) => s.design);
-    const exportSide = useDesignStore((s) => s.exportSide);
+    const side = useActiveFootSide();
     const updateShapeFinish = useDesignStore((s) => s.updateShapeFinish);
     const setShapeFinishLinked = useDesignStore((s) => s.setShapeFinishLinked);
     const linked = design.shapeFinish?.linked ?? true;
-    const side = exportSide;
     const sf = getSideShapeFinish(design, side);
     const corr = design.corrections[side];
-    const qc = shapeFinishQcLines(side, sf, {
-        medial: corr.medialSkiveMm,
-        lateral: corr.lateralSkiveMm,
-    });
+
+    const qcItems = useMemo(
+        () =>
+            evaluateShapeFinishQc({
+                side,
+                sf,
+                thicknessMm: thicknessForSide(design, side),
+                archHeightMm: corr.archHeightMm + corr.archFillMm,
+                heelSkiveMedialMm: corr.medialSkiveMm,
+                heelSkiveLateralMm: corr.lateralSkiveMm,
+            }),
+        [side, sf, design, corr],
+    );
+
+    const onPatch = (patch: Partial<SideShapeFinish>) => {
+        commitShapeFinish(side, patch, design, updateShapeFinish);
+    };
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
                 <h3 className="text-sm font-medium">Shape / Finish</h3>
                 <button
                     type="button"
@@ -51,6 +99,13 @@ export function ShapeFinishPanel() {
                 </button>
             </div>
 
+            <ActiveFootSideBar />
+
+            <p className="text-[11px] leading-snug text-muted-foreground">
+                Top cover adds clearance for cover bulk — it does not change heel cup depth. Arch grind
+                deepens the plantar only — not arch height or fill.
+            </p>
+
             <SliderField
                 label="Top cover accommodate"
                 value={sf.topCoverAccommodateMm}
@@ -58,7 +113,7 @@ export function ShapeFinishPanel() {
                 max={SHAPE_FINISH_DEFAULTS.topCoverAccommodateMm.max}
                 step={0.1}
                 unit="mm"
-                onChange={(v) => updateShapeFinish(side, { topCoverAccommodateMm: v })}
+                onChange={(v) => onPatch({ topCoverAccommodateMm: v })}
             />
 
             <label className="flex items-center justify-between gap-2 text-xs">
@@ -88,7 +143,7 @@ export function ShapeFinishPanel() {
                 max={SHAPE_FINISH_DEFAULTS.archGrindDepthMm.max}
                 step={0.1}
                 unit="mm"
-                onChange={(v) => updateShapeFinish(side, { archGrindDepthMm: v })}
+                onChange={(v) => onPatch({ archGrindDepthMm: v })}
             />
 
             <SliderField
@@ -98,37 +153,29 @@ export function ShapeFinishPanel() {
                 max={SHAPE_FINISH_DEFAULTS.archSkiveMm.max}
                 step={0.1}
                 unit="mm"
-                onChange={(v) => updateShapeFinish(side, { archSkiveMm: v })}
+                onChange={(v) => onPatch({ archSkiveMm: v })}
             />
-            <div className="flex gap-1">
-                {ARCH_SKIVE_SIDES.map((opt) => (
-                    <button
-                        key={opt.value}
-                        type="button"
-                        className={cn(
-                            "flex-1 rounded border px-2 py-1 text-xs",
-                            sf.archSkiveSide === opt.value
-                                ? "border-primary bg-primary/10"
-                                : "border-border text-muted-foreground",
-                        )}
-                        onClick={() => updateShapeFinish(side, { archSkiveSide: opt.value })}
-                    >
-                        {opt.label}
-                    </button>
-                ))}
-            </div>
-
-            <div className="rounded-md border border-border bg-background/50 p-2 text-xs">
-                <p className="mb-1 font-medium text-muted-foreground">QC (shape / finish)</p>
-                <ul className="space-y-0.5">
-                    {qc.map((line) => (
-                        <li key={line.key} className="flex justify-between gap-2">
-                            <span className="text-muted-foreground">{line.label}</span>
-                            <span className="tabular-nums text-right">{line.value}</span>
-                        </li>
+            {sf.archSkiveMm > 0 ? (
+                <div className="flex gap-1">
+                    {ARCH_SKIVE_SIDES.map((opt) => (
+                        <button
+                            key={opt.value}
+                            type="button"
+                            className={cn(
+                                "flex-1 rounded border px-2 py-1 text-xs",
+                                sf.archSkiveSide === opt.value
+                                    ? "border-primary bg-primary/10"
+                                    : "border-border text-muted-foreground",
+                            )}
+                            onClick={() => updateShapeFinish(side, { archSkiveSide: opt.value })}
+                        >
+                            {opt.label}
+                        </button>
                     ))}
-                </ul>
-            </div>
+                </div>
+            ) : null}
+
+            <ShapeFinishQcBlock items={qcItems} />
         </div>
     );
 }

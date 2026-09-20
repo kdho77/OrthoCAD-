@@ -4,6 +4,7 @@ import { ElementsPanel } from "@/features/elements/ElementsPanel";
 import { ExportPanel } from "@/features/exports/ExportPanel";
 import { PrintingPanel } from "@/features/exports/PrintingPanel";
 import { ShapeFinishPanel } from "@/features/shape-finish/ShapeFinishPanel";
+import { shouldShowShapeFinishInPrintingTab } from "@/features/shape-finish/shape-finish-mount";
 
 export function RightPanel() {
     return (
@@ -27,7 +28,9 @@ export function RightPanel() {
                     </TabsContent>
                     <TabsContent value="printing">
                         <div className="space-y-6">
-                            <ShapeFinishPanel />
+                            {shouldShowShapeFinishInPrintingTab() ? (
+                                <ShapeFinishPanel />
+                            ) : null}
                             <PrintingPanel />
                         </div>
                     </TabsContent>
