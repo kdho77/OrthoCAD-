@@ -36,6 +36,7 @@ const FIELDS: { key: keyof SideCorrections; label: string; min: number; max: num
     { key: "archHeightMm", label: "Arch height", min: 0, max: 18, group: "Arch" },
     { key: "archFillMm", label: "Arch fill", min: 0, max: 12, group: "Arch" },
     { key: "apexMoveMm", label: "Apex move", min: -12, max: 12, group: "Arch" },
+    // Heel cup depth: slider 0 = off; commit clamps positive values to 12–18 mm (see constrainSideCorrections).
     {
         key: "heelCupDepthMm",
         label: "Heel cup depth",

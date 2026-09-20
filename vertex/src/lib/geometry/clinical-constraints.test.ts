@@ -6,6 +6,7 @@ import {
     CLINICAL_LIMITS,
     constrainDesignCorrections,
     constrainSideCorrections,
+    HEEL_CUP_DEPTH_DEEP_MM,
     HEEL_CUP_DEPTH_DEFAULT_MM,
 } from "@/lib/geometry/clinical-constraints";
 import type { SideCorrections } from "@/types";
@@ -31,6 +32,11 @@ function neutral(): SideCorrections {
 describe("clinical limits — heel cup depth (Biomechanics lock 2026-09-20)", () => {
     test("HEEL_CUP_DEPTH_DEFAULT_MM is 12", () => {
         expect(HEEL_CUP_DEPTH_DEFAULT_MM).toBe(12);
+    });
+
+    test("HEEL_CUP_DEPTH_DEEP_MM is 16 (deep heuristic, not default)", () => {
+        expect(HEEL_CUP_DEPTH_DEEP_MM).toBe(16);
+        expect(HEEL_CUP_DEPTH_DEEP_MM).toBeGreaterThan(HEEL_CUP_DEPTH_DEFAULT_MM);
     });
 
     test("0 stays off; values below 12 clamp up; above 18 clamp down", () => {

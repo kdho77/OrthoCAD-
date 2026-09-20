@@ -77,6 +77,9 @@ export const CLINICAL_LIMITS = {
 /** Product default when a heel cup depth is suggested without an explicit value (Biomechanics lock 2026-09-20). */
 export const HEEL_CUP_DEPTH_DEFAULT_MM = 12;
 
+/** Deep heel cup keyword heuristic — upper clinical range, not the product default (Biomechanics lock 2026-09-20). */
+export const HEEL_CUP_DEPTH_DEEP_MM = 16;
+
 export const MIN_WALL_MM = 1.6; // absolute production minimum wall after all shaping
 
 export interface ConstraintViolation {
