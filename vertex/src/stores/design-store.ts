@@ -50,7 +50,11 @@ import type {
     Unit,
     WedgeCorrection,
 } from "@/types";
-import { type HardnessName, migratePrintRecipe } from "../../shared/print-recipe/print-recipe";
+import {
+    bindPrintRecipeProfile,
+    type HardnessName,
+    migratePrintRecipe,
+} from "../../shared/print-recipe/print-recipe";
 
 function defaultSideCorrections(): SideCorrections {
     return {
@@ -407,6 +411,7 @@ export interface DesignStore {
     setMethod: (method: ProductionMethod) => void;
     /** Named whole-device hardness (Phase A PrintRecipe). */
     setPrintHardness: (hardness: HardnessName) => void;
+    setPrintProfile: (profileId: string, hardness?: HardnessName) => void;
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
@@ -518,10 +523,19 @@ export const useDesignStore = create<DesignStore>()(
                     return {
                         design: {
                             ...s.design,
-                            printRecipe: { ...recipe, defaultHardness: hardness },
+                            printRecipe: bindPrintRecipeProfile(recipe, recipe.profileId, hardness),
                         },
                     };
                 });
+            },
+            setPrintProfile: (profileId, hardness) => {
+                get().checkpoint("print-profile");
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        printRecipe: bindPrintRecipeProfile(s.design.printRecipe, profileId, hardness),
+                    },
+                }));
             },
             setThickness: (thicknessMm) =>
                 set((s) => {
