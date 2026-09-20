@@ -18,8 +18,10 @@ import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import type { SideCorrections } from "@/types";
+import { nativeThicknessMmForDefaultGlb } from "./default-glb-native-thickness";
 
 const FIXTURE = resolve(process.cwd(), "tests/fixtures/Default.glb");
+let defaultThicknessMm = 3;
 
 function neu(): SideCorrections {
     return {
@@ -44,7 +46,7 @@ function field(patch: Partial<SideCorrections>): HeightFieldParams {
         side: "right",
         lengthMm: 266,
         widthMm: 95,
-        thicknessMm: 3,
+        thicknessMm: defaultThicknessMm,
         corrections: { ...neu(), ...patch },
         elements: [],
         includeSkives: false,
@@ -146,6 +148,7 @@ describe("Kirby heel skive — Default.glb", () => {
         const merged = extractMergedGeometry(group);
         expect(merged).not.toBeNull();
         baseGeo = merged!.geometry;
+        defaultThicknessMm = nativeThicknessMmForDefaultGlb(baseGeo);
         frame = resolveFrame(baseGeo);
         expect(frame.topN).toBeGreaterThan(1000);
     });
@@ -416,7 +419,7 @@ describe("Kirby heel skive — Default.glb", () => {
             side: "right",
             lengthMm: 266,
             widthMm: 95,
-            thicknessMm: 3,
+            thicknessMm: defaultThicknessMm,
             corrections: neu(),
             includeSkives: true,
         };

@@ -11,6 +11,15 @@ const wedgeCorrection = z.object({
     unit: z.enum(["mm", "deg"]),
 });
 
+const sideShapeFinish = z.object({
+    topCoverAccommodateMm: z.number(),
+    trimmableForefoot: z.boolean(),
+    trimmableForefootExtraMm: z.number(),
+    archGrindDepthMm: z.number(),
+    archSkiveMm: z.number(),
+    archSkiveSide: z.enum(["medial", "lateral", "central"]),
+});
+
 const sideCorrection = z.object({
     forefootPostingDeg: z.number(),
     rearfootPostingDeg: z.number(),
@@ -65,6 +74,13 @@ export const designStateSchema = z.object({
     elements: z.array(placedElement),
     trimlines: designTrimlines,
     printRecipe: printRecipeV1Schema.optional(),
+    shapeFinish: z
+        .object({
+            linked: z.boolean(),
+            left: sideShapeFinish,
+            right: sideShapeFinish,
+        })
+        .optional(),
 });
 
 export type DesignStatePayload = z.infer<typeof designStateSchema>;

@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import { beforeAll, describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import { useDesignStore } from "@/stores/design-store";
@@ -20,7 +21,8 @@ import type { Side, SideCorrections } from "@/types";
 
 const FIXTURE = resolve(process.cwd(), "tests/fixtures/Default.glb");
 const SIDE: Side = "right";
-const DEPTH = 4;
+/** Biomechanics lock: positive heel cup depth clamps to 12–18 mm when enabled. */
+const DEPTH = 12;
 const WIDTH = 5;
 
 const captured: string[] = [];
@@ -78,6 +80,15 @@ function previewSlider(key: keyof SideCorrections, value: number): void {
     usePerformanceStore.getState().setCorrectionPreview(SIDE, { [key]: value });
 }
 
+function expectedCommittedDepthWidth(depthMm: number, widthMm: number): { depth: number; width: number } {
+    const t = useDesignStore.getState().design.thicknessMm;
+    const { constrained } = constrainSideCorrections(
+        { ...neutral(), heelCupDepthMm: depthMm, heelCupWidthMm: widthMm },
+        t,
+    );
+    return { depth: constrained.heelCupDepthMm, width: constrained.heelCupWidthMm };
+}
+
 function rebuildLabel(tag: string, base: BufferGeometry): void {
     const f = fieldFromStore();
     const modified = applyBaseModifiers(base, f, 0);
@@ -116,7 +127,7 @@ describe("heel cup composition — live viewer console simulation", () => {
         captured.length = 0;
         usePerformanceStore.setState({ correctionPreview: {}, interacting: false });
         useDesignStore.setState((s) => ({
-            design: { ...s.design, thicknessMm: 8 },
+            design: { ...s.design, thicknessMm: 18 },
         }));
         useDesignStore.getState().updateCorrection(SIDE, neutral());
 
@@ -130,8 +141,9 @@ describe("heel cup composition — live viewer console simulation", () => {
             heelCupDepthMm: afterA.heelCupDepthMm,
             heelCupWidthMm: afterA.heelCupWidthMm,
         });
-        expect(afterA.heelCupDepthMm).toBe(DEPTH);
-        expect(afterA.heelCupWidthMm).toBe(WIDTH);
+        const expA = expectedCommittedDepthWidth(DEPTH, WIDTH);
+        expect(afterA.heelCupDepthMm).toBe(expA.depth);
+        expect(afterA.heelCupWidthMm).toBe(expA.width);
 
         useDesignStore.getState().updateCorrection(SIDE, neutral());
         usePerformanceStore.getState().clearCorrectionPreview();
@@ -146,8 +158,9 @@ describe("heel cup composition — live viewer console simulation", () => {
             heelCupDepthMm: afterB.heelCupDepthMm,
             heelCupWidthMm: afterB.heelCupWidthMm,
         });
-        expect(afterB.heelCupDepthMm).toBe(DEPTH);
-        expect(afterB.heelCupWidthMm).toBe(WIDTH);
+        const expB = expectedCommittedDepthWidth(DEPTH, WIDTH);
+        expect(afterB.heelCupDepthMm).toBe(expB.depth);
+        expect(afterB.heelCupWidthMm).toBe(expB.width);
 
         useDesignStore.getState().updateCorrection(SIDE, neutral());
         usePerformanceStore.getState().clearCorrectionPreview();
@@ -162,8 +175,9 @@ describe("heel cup composition — live viewer console simulation", () => {
             heelCupDepthMm: afterC.heelCupDepthMm,
             heelCupWidthMm: afterC.heelCupWidthMm,
         });
-        expect(afterC.heelCupDepthMm).toBe(DEPTH);
-        expect(afterC.heelCupWidthMm).toBe(WIDTH);
+        const expC = expectedCommittedDepthWidth(DEPTH, WIDTH);
+        expect(afterC.heelCupDepthMm).toBe(expC.depth);
+        expect(afterC.heelCupWidthMm).toBe(expC.width);
 
         console.log("[HC-QA] === RAW CONSOLE CAPTURE BEGIN ===");
         for (const line of captured) console.log(line);

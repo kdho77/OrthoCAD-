@@ -4,7 +4,7 @@ import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
 import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
-import type { PlacedElement, Side, SideCorrections } from "@/types";
+import type { PlacedElement, Side, SideCorrections, SideShapeFinish } from "@/types";
 
 // Shared parametric height field for insole surfaces. Used by both the procedural
 // Three.js mesher and the OpenCascade solid builder so corrections stay aligned.
@@ -32,6 +32,8 @@ export interface HeightFieldParams {
      * edge (r = 1).
      */
     topEdgeAvProfile?: (u: number, vSigned: number) => number;
+    /** Track 5b — top-only print/shell finish (excludes bottom-only arch grind). */
+    shapeFinish?: SideShapeFinish | null;
 }
 
 const DEG = Math.PI / 180;
@@ -82,6 +84,16 @@ export function heelCupWidthLongitudinalEnvelope(u: number): number {
  * inside. Continuous in u (no hard zone cut). Positive heelCupWidthMm widens;
  * negative narrows.
  */
+/** Track 5b — local top raise in cup/flange for cover bulk (not heel cup depth setpoint). */
+export function topCoverAccommodateDeltaAt(u: number, av: number, accommodateMm: number): number {
+    if (accommodateMm <= 0) return 0;
+    const heel = heelCupLongitudinalEnvelope(u);
+    const cupWall = heel * smoothstep(0.12, 0.95, av);
+    const flange = bump(u, 0.45, 0.4) * smoothstep(0.5, 1.0, av);
+    const mask = Math.max(cupWall, flange * 0.85);
+    return accommodateMm * mask;
+}
+
 export function heelCupWidthScaleFactor(u: number, heelCupWidthMm: number): number {
     if (heelCupWidthMm === 0) return 1;
     const targetScale = 1 + (heelCupWidthMm / 10) * HEEL_CUP_WIDTH_MAX_LATERAL_SCALE;
@@ -254,6 +266,11 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     shaped += c.heelCupHeightMm * heel * rim;
 
     shaped += heelCupDepthBowlDelta(u, av, c.heelCupDepthMm);
+
+    const sf = params.shapeFinish;
+    if (sf && sf.topCoverAccommodateMm > 0) {
+        shaped += topCoverAccommodateDeltaAt(u, av, sf.topCoverAccommodateMm);
+    }
 
     // --- Skives ----------------------------------------------------------------
     // The legacy subtractive field (shaped -= medialSkiveMm * …) was clinically

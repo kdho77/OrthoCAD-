@@ -31,8 +31,10 @@ import {
 } from "@/lib/geometry/mesh-close";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import type { SideCorrections } from "@/types";
+import { nativeThicknessMmForDefaultGlb } from "./default-glb-native-thickness";
 
 const FIXTURE_PATH = resolve(process.cwd(), "tests/fixtures/Default.glb");
+let defaultThicknessMm = 3;
 
 function neutralCorrections(): SideCorrections {
     return {
@@ -57,7 +59,7 @@ function correctionField(patch: Partial<SideCorrections>): HeightFieldParams {
         side: "right",
         lengthMm: 266,
         widthMm: 95,
-        thicknessMm: 3,
+        thicknessMm: defaultThicknessMm,
         corrections: { ...neutralCorrections(), ...patch },
         elements: [],
         includeSkives: true,
@@ -284,6 +286,7 @@ describe("bottom-wall rim conformity (Default.glb)", () => {
         expect(rimIdx.length).toBeGreaterThan(400);
         expect(rimIdx.length).toBeLessThan(500);
         baseArr = copyPositions(baseGeo);
+        defaultThicknessMm = nativeThicknessMmForDefaultGlb(baseGeo);
     });
 
     test("HC-3: zero corrections → bottom mesh bit-identical", () => {

@@ -18,8 +18,10 @@ import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import type { SideCorrections } from "@/types";
+import { nativeThicknessMmForDefaultGlb } from "./default-glb-native-thickness";
 
 const FIXTURE_PATH = resolve(process.cwd(), "tests/fixtures/Default.glb");
+let defaultThicknessMm = 3;
 
 /** Depth slider values (mm) measured in addition to the delta-0 baseline. */
 const DEPTH_SAMPLES_MM = [3, 8, 15];
@@ -61,7 +63,7 @@ function correctionField(patch: Partial<SideCorrections>): HeightFieldParams {
         side: "right",
         lengthMm: 266,
         widthMm: 95,
-        thicknessMm: 3,
+        thicknessMm: defaultThicknessMm,
         corrections: { ...neutralCorrections(), ...patch },
         elements: [],
         includeSkives: true,
@@ -508,6 +510,7 @@ beforeAll(async () => {
     const merged = extractMergedGeometry(group);
     expect(merged).not.toBeNull();
     baseGeometry = merged!.geometry;
+    defaultThicknessMm = nativeThicknessMmForDefaultGlb(baseGeometry);
     frame = resolveFrame(baseGeometry);
     baseArr = (baseGeometry.getAttribute("position")!.array as Float32Array).slice();
     cls = classifyHeel(frame, baseArr);

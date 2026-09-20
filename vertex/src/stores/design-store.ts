@@ -15,6 +15,11 @@ import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { defaultElementPose } from "@/lib/geometry/elements";
 import {
+    defaultSideShapeFinish,
+    normalizeSideShapeFinish,
+    thicknessMmForDesignSide,
+} from "@/lib/geometry/shape-finish-modifiers";
+import {
     convertSizingToSystem,
     DEFAULT_SHOE_SIZE_SYSTEM,
     DEFAULT_US_MEN_SIZE,
@@ -45,8 +50,10 @@ import type {
     PrescriptionParseResult,
     ProductionMethod,
     ScanPattern,
+    ShapeFinishModifiers,
     Side,
     SideCorrections,
+    SideShapeFinish,
     Unit,
     WedgeCorrection,
 } from "@/types";
@@ -135,6 +142,11 @@ function scaleDesignToLayout(
     };
 }
 
+function defaultShapeFinishModifiers(method: ProductionMethod = "printing_solid"): ShapeFinishModifiers {
+    const side = defaultSideShapeFinish(method);
+    return { left: side, right: { ...side }, linked: true };
+}
+
 export function defaultDesign(): DesignState {
     return {
         pattern: "full_contact",
@@ -149,6 +161,7 @@ export function defaultDesign(): DesignState {
             left: defaultSideCorrections(),
             right: defaultSideCorrections(),
         },
+        shapeFinish: defaultShapeFinishModifiers("printing_solid"),
         elements: [],
         // paired remains undefined for legacy/single side designs
     };
@@ -429,6 +442,9 @@ export interface DesignStore {
     /** Patch corrections for a side. When linked, mirrors to the other side. */
     updateCorrection: (side: Side, patch: Partial<SideCorrections>) => void;
 
+    updateShapeFinish: (side: Side, patch: Partial<SideShapeFinish>) => void;
+    setShapeFinishLinked: (linked: boolean) => void;
+
     /** Live production constraint violations for the current design (derived). */
     getActiveViolations: () => ConstraintViolation[];
 
@@ -659,6 +675,46 @@ export const useDesignStore = create<DesignStore>()(
                             usMenSize: next.usMenSize,
                             ukSize: next.ukSize,
                         }),
+                    };
+                }),
+
+            updateShapeFinish: (side, patch) =>
+                set((s) => {
+                    const method = s.design.method;
+                    const current = s.design.shapeFinish ?? defaultShapeFinishModifiers(method);
+                    const applyLeft = side === "left" || current.linked;
+                    const applyRight = side === "right" || current.linked;
+                    const left = normalizeSideShapeFinish(
+                        { ...current.left, ...(applyLeft ? patch : {}) },
+                        method,
+                        thicknessMmForDesignSide(s.design, "left"),
+                    );
+                    const right = current.linked
+                        ? { ...left }
+                        : normalizeSideShapeFinish(
+                              { ...current.right, ...(applyRight ? patch : {}) },
+                              method,
+                              thicknessMmForDesignSide(s.design, "right"),
+                          );
+                    return {
+                        design: {
+                            ...s.design,
+                            shapeFinish: { ...current, left, right },
+                        },
+                    };
+                }),
+
+            setShapeFinishLinked: (linked) =>
+                set((s) => {
+                    const method = s.design.method;
+                    const current = s.design.shapeFinish ?? defaultShapeFinishModifiers(method);
+                    const left = normalizeSideShapeFinish(current.left, method);
+                    const right = linked ? { ...left } : normalizeSideShapeFinish(current.right, method);
+                    return {
+                        design: {
+                            ...s.design,
+                            shapeFinish: { ...current, linked, left, right },
+                        },
                     };
                 }),
 

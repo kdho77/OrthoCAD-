@@ -10,6 +10,11 @@ export default defineConfig({
     setupFiles: ["./rstest-setup.ts"],
     tools: {
         rspack: {
+            resolve: {
+                // Vertex app deps (zustand, react, etc.) install under vertex/; hoist
+                // them for rstest without linking the whole package into npm workspaces.
+                modules: [resolve("vertex/node_modules"), "node_modules"],
+            },
             plugins: [
                 new DefinePlugin({
                     __APP_VERSION__: JSON.stringify(packages.version),
