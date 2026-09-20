@@ -14,6 +14,7 @@ import {
     Upload,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
 import { ArchFitError } from "@/lib/geometry/fit-arch-from-scan";
@@ -51,7 +52,9 @@ import {
     type ScanMarkers,
     useScanStore,
 } from "@/stores/scan-store";
-import type { Side } from "@/types";
+import { SIDE_LABELS, type Side } from "@/types";
+
+type ImportSideChoice = Side | "pair";
 
 const MARKER_LABELS = {
     M1: "M1 — 1st met head (medial)",
@@ -298,6 +301,7 @@ export function ScanImport() {
     const [sizeSuggestionByScanId, setSizeSuggestionByScanId] = useState<Record<string, SizeSuggestion>>({});
     const [sizeAcceptedByScanId, setSizeAcceptedByScanId] = useState<Record<string, boolean>>({});
     const [matchBusyId, setMatchBusyId] = useState<string | null>(null);
+    const [importSideChoice, setImportSideChoice] = useState<ImportSideChoice | null>(null);
 
     const applySizeSuggestion = (scanId: string, suggestion: SizeSuggestion) => {
         const system = sizeSystem ?? "us";
@@ -458,10 +462,22 @@ export function ScanImport() {
 
     const onFiles = async (files: FileList | null) => {
         if (!files) return;
+        if (!importSideChoice) {
+            setError("Select Left, Right, or Pair before importing a scan.");
+            return;
+        }
+        const fileList = Array.from(files);
+        if (importSideChoice === "pair" && fileList.length !== 2) {
+            setError("Pair import needs exactly two files (first = left, second = right).");
+            return;
+        }
         setError(null);
         setBusy(true);
         try {
-            for (const file of Array.from(files)) {
+            for (let fileIndex = 0; fileIndex < fileList.length; fileIndex++) {
+                const file = fileList[fileIndex];
+                const side: Side =
+                    importSideChoice === "pair" ? (fileIndex === 0 ? "left" : "right") : importSideChoice;
                 const { geometry: rawGeometry, format } = await importScanFile(file);
 
                 setCleanupBusy(true);
@@ -486,7 +502,6 @@ export function ScanImport() {
                 const triangleCount = index ? index.count / 3 : keptGeo.getAttribute("position").count / 3;
 
                 const id = crypto.randomUUID();
-                const side = "left" as const;
                 addScan({
                     id,
                     name: file.name,
@@ -529,22 +544,44 @@ export function ScanImport() {
 
     return (
         <div className="space-y-2">
+            <div className="space-y-1">
+                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Foot side
+                </p>
+                <div className="grid grid-cols-3 gap-1">
+                    {(["left", "right", "pair"] as ImportSideChoice[]).map((choice) => (
+                        <button
+                            key={choice}
+                            type="button"
+                            onClick={() => setImportSideChoice(choice)}
+                            className={cn(
+                                "rounded px-1 py-1.5 text-[10px] capitalize",
+                                importSideChoice === choice
+                                    ? "bg-primary text-primary-foreground"
+                                    : "bg-muted text-muted-foreground hover:text-foreground",
+                            )}
+                        >
+                            {choice === "pair" ? "Pair L+R" : SIDE_LABELS[choice]}
+                        </button>
+                    ))}
+                </div>
+            </div>
             <input
                 ref={inputRef}
                 type="file"
                 accept=".stl,.obj"
-                multiple
+                multiple={importSideChoice === "pair"}
                 className="hidden"
                 onChange={(e) => void onFiles(e.target.files)}
             />
             <button
                 type="button"
-                disabled={busy}
+                disabled={busy || !importSideChoice}
                 onClick={() => inputRef.current?.click()}
                 className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-border bg-background px-2 py-4 text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground disabled:opacity-50"
             >
                 <Upload className="h-3.5 w-3.5" />
-                {busy ? "Importing…" : "Import STL / OBJ"}
+                {busy ? "Importing…" : importSideChoice ? "Import STL / OBJ" : "Choose side, then import"}
             </button>
             {error ? <p className="text-xs text-destructive">{error}</p> : null}
 
@@ -577,9 +614,14 @@ export function ScanImport() {
                                         <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
                                     )}
                                 </button>
-                                <button type="button" onClick={() => removeScan(s.id)} title="Remove">
+                                <ConfirmDeleteTrigger
+                                    title="Remove scan?"
+                                    description={`Detach "${s.name}" from this session?`}
+                                    onConfirm={() => removeScan(s.id)}
+                                    className="inline-flex"
+                                >
                                     <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
-                                </button>
+                                </ConfirmDeleteTrigger>
                             </div>
                         </div>
                         <div className="flex items-center justify-between text-[11px] text-muted-foreground">

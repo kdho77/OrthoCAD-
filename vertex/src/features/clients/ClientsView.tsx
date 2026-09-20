@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from "@/components/ui/input";
 import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
 import { type ClientInput, useClientStore } from "@/stores/client-store";
+import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { cn } from "@/lib/utils";
 
 interface ClientsViewProps {
@@ -47,29 +48,38 @@ export function ClientsView({ onOpenDesign }: ClientsViewProps) {
                         <p className="p-4 text-xs text-muted-foreground">No clients yet. Create one to begin.</p>
                     ) : (
                         clients.map((c) => (
-                            <button
+                            <div
                                 key={c.id}
-                                type="button"
-                                onClick={() => setActiveClient(c.id)}
                                 className={cn(
-                                    "flex w-full items-center gap-2 border-b border-border/50 px-4 py-2.5 text-left text-sm hover:bg-secondary/40",
+                                    "flex w-full items-center gap-2 border-b border-border/50 px-4 py-2.5 text-sm hover:bg-secondary/40",
                                     activeClientId === c.id && "bg-secondary/60",
                                 )}
                             >
-                                <User className="h-4 w-4 text-muted-foreground" />
-                                <span className="flex-1 truncate">
-                                    {c.firstName} {c.lastName}
-                                    {c.reference ? <span className="ml-1 text-xs text-muted-foreground">· {c.reference}</span> : null}
-                                </span>
-                                <span className="text-xs text-muted-foreground">{designs.filter((d) => d.clientId === c.id).length}</span>
-                                <Trash2
-                                    className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive"
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        removeClient(c.id);
-                                    }}
-                                />
-                            </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setActiveClient(c.id)}
+                                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                                >
+                                    <User className="h-4 w-4 text-muted-foreground" />
+                                    <span className="flex-1 truncate">
+                                        {c.firstName} {c.lastName}
+                                        {c.reference ? (
+                                            <span className="ml-1 text-xs text-muted-foreground">· {c.reference}</span>
+                                        ) : null}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground">
+                                        {designs.filter((d) => d.clientId === c.id).length}
+                                    </span>
+                                </button>
+                                <ConfirmDeleteTrigger
+                                    title="Delete client?"
+                                    description={`Remove ${c.firstName} ${c.lastName} and all of their designs. This cannot be undone.`}
+                                    onConfirm={() => removeClient(c.id)}
+                                    className="inline-flex shrink-0"
+                                >
+                                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
+                                </ConfirmDeleteTrigger>
+                            </div>
                         ))
                     )}
                 </div>
@@ -107,9 +117,14 @@ export function ClientsView({ onOpenDesign }: ClientsViewProps) {
                                                 <Button size="sm" className="h-7 flex-1" onClick={() => openDesign(d.id)}>
                                                     <FolderOpen className="h-3.5 w-3.5" /> Open
                                                 </Button>
-                                                <Button size="sm" variant="ghost" className="h-7" onClick={() => removeDesign(d.id)}>
-                                                    <Trash2 className="h-3.5 w-3.5" />
-                                                </Button>
+                                                <ConfirmDeleteTrigger
+                                                    title="Delete design?"
+                                                    description={`Permanently delete "${d.name}"?`}
+                                                    onConfirm={() => removeDesign(d.id)}
+                                                    className="inline-flex h-7 items-center rounded-md px-2 hover:bg-muted"
+                                                >
+                                                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
+                                                </ConfirmDeleteTrigger>
                                             </div>
                                         </div>
                                     ))}

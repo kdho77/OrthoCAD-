@@ -1,24 +1,28 @@
-import { BookmarkPlus, Plus, Save, Scissors, Trash2, PenTool } from "lucide-react";
+import { BookmarkPlus, PenTool, Plus, Save, Scissors, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
-import { SliderField } from "@/components/ui/slider-field";
+import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { Button } from "@/components/ui/button";
+import { SliderField } from "@/components/ui/slider-field";
+import {
+    deleteCustomAsset,
+    placeCustomElement,
+    refreshCustomLibrary,
+} from "@/features/library/custom-library-service";
+import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
+import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
+import { elementDisplayName, STOCK_ELEMENTS } from "@/lib/library/manifest";
 import { rafThrottle } from "@/lib/performance/throttle";
-import { useDesignStore } from "@/stores/design-store";
+import { cn } from "@/lib/utils";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
+import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
-import { cn } from "@/lib/utils";
-import {
-    STOCK_ELEMENTS,
-    elementDisplayName,
-} from "@/lib/library/manifest";
-import { deleteCustomAsset, placeCustomElement, refreshCustomLibrary } from "@/features/library/custom-library-service";
-import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
 import type { ElementKind, Side } from "@/types";
 
 export function ElementsPanel() {
-    const { design, addElement, updateElement, removeElement, selectElement, selectedElementId } = useDesignStore();
+    const { design, addElement, updateElement, removeElement, selectElement, selectedElementId } =
+        useDesignStore();
     const customElements = useCustomLibraryStore((s) => s.customElements);
     const libraryLoading = useCustomLibraryStore((s) => s.loading);
     const editMode = useMeshEditStore((s) => s.editMode);
@@ -54,6 +58,7 @@ export function ElementsPanel() {
     });
 
     const [saveOpen, setSaveOpen] = useState(false);
+    const activeFootSide = useActiveFootSide();
 
     useEffect(() => {
         void refreshCustomLibrary();
@@ -75,7 +80,7 @@ export function ElementsPanel() {
                         <button
                             key={item.id}
                             type="button"
-                            onClick={() => addElement(item.id as ElementKind, "left")}
+                            onClick={() => addElement(item.id as ElementKind, activeFootSide)}
                             className="flex items-center justify-between rounded-md border border-border bg-background px-2 py-2 text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
                         >
                             {item.label}
@@ -91,7 +96,9 @@ export function ElementsPanel() {
                         <BookmarkPlus className="h-3 w-3" />
                         My Custom Library
                     </div>
-                    {libraryLoading ? <span className="text-[10px] text-muted-foreground">Loading…</span> : null}
+                    {libraryLoading ? (
+                        <span className="text-[10px] text-muted-foreground">Loading…</span>
+                    ) : null}
                 </div>
                 {customElements.length === 0 ? (
                     <p className="rounded-md border border-dashed border-border px-2 py-2 text-center text-[11px] text-muted-foreground">
@@ -103,20 +110,21 @@ export function ElementsPanel() {
                             <div key={item.id} className="flex items-center gap-0.5">
                                 <button
                                     type="button"
-                                    onClick={() => placeCustomElement(item.id, item.name, "left")}
+                                    onClick={() => placeCustomElement(item.id, item.name, activeFootSide)}
                                     className="flex flex-1 items-center justify-between rounded-md border border-primary/30 bg-primary/5 px-2 py-2 text-xs text-foreground hover:border-primary/60"
                                     title={item.category}
                                 >
                                     <span className="truncate">{item.name}</span>
                                     <Plus className="h-3 w-3 shrink-0" />
                                 </button>
-                                <button
-                                    type="button"
-                                    onClick={() => void deleteCustomAsset("element", item.id)}
+                                <ConfirmDeleteTrigger
+                                    title="Delete custom element?"
+                                    description={`Remove "${item.name}" from your library?`}
+                                    onConfirm={() => void deleteCustomAsset("element", item.id)}
                                     className="rounded border border-border p-1.5 text-muted-foreground hover:text-destructive"
                                 >
                                     <Trash2 className="h-3 w-3" />
-                                </button>
+                                </ConfirmDeleteTrigger>
                             </div>
                         ))}
                     </div>
@@ -124,7 +132,9 @@ export function ElementsPanel() {
             </div>
 
             <div className="space-y-1">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Placed</div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Placed
+                </div>
                 {design.elements.length === 0 ? (
                     <p className="rounded-md border border-dashed border-border px-2 py-3 text-center text-xs text-muted-foreground">
                         No elements added
@@ -137,7 +147,9 @@ export function ElementsPanel() {
                             onClick={() => onSelectElement(el.id)}
                             className={cn(
                                 "flex w-full items-center justify-between rounded-md border px-2 py-1.5 text-xs",
-                                el.id === selectedElementId ? "border-primary bg-primary/10" : "border-border bg-background",
+                                el.id === selectedElementId
+                                    ? "border-primary bg-primary/10"
+                                    : "border-border bg-background",
                             )}
                         >
                             <span>
@@ -147,13 +159,17 @@ export function ElementsPanel() {
                                     <span className="ml-1 text-[10px] text-primary">custom</span>
                                 ) : null}
                             </span>
-                            <Trash2
-                                className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive"
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    removeElement(el.id);
-                                }}
-                            />
+                            <ConfirmDeleteTrigger
+                                title="Remove element?"
+                                description="Remove this element from the design?"
+                                onConfirm={() => removeElement(el.id)}
+                                className="inline-flex"
+                            >
+                                <Trash2
+                                    className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive"
+                                    onClick={(e) => e.stopPropagation()}
+                                />
+                            </ConfirmDeleteTrigger>
                         </button>
                     ))
                 )}
@@ -165,7 +181,12 @@ export function ElementsPanel() {
                         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                             Edit · {elementDisplayName(displaySelected.kind, displaySelected.customName)}
                         </div>
-                        <Button size="sm" variant="secondary" className="h-7 gap-1 text-[11px]" onClick={() => setSaveOpen(true)}>
+                        <Button
+                            size="sm"
+                            variant="secondary"
+                            className="h-7 gap-1 text-[11px]"
+                            onClick={() => setSaveOpen(true)}
+                        >
                             <Save className="h-3 w-3" />
                             Save as Custom…
                         </Button>
@@ -198,10 +219,20 @@ export function ElementsPanel() {
                         </Button>
                         {editMode === "trim" ? (
                             <>
-                                <Button size="sm" variant="secondary" className="h-7 text-[11px]" onClick={finishTrimLine}>
+                                <Button
+                                    size="sm"
+                                    variant="secondary"
+                                    className="h-7 text-[11px]"
+                                    onClick={finishTrimLine}
+                                >
                                     Finish line
                                 </Button>
-                                <Button size="sm" variant="ghost" className="h-7 text-[11px]" onClick={clearTrimLines}>
+                                <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 text-[11px]"
+                                    onClick={clearTrimLines}
+                                >
                                     Clear
                                 </Button>
                             </>
@@ -224,12 +255,110 @@ export function ElementsPanel() {
                             </Button>
                         ))}
                     </div>
-                    <SliderField label="Position X" value={displaySelected.position.x} min={-100} max={100} onPreview={(v) => previewElementPatch(displaySelected.id, { id: displaySelected.id, position: { ...displaySelected.position, x: v } })} onChange={(v) => { updateElement(displaySelected.id, { position: { ...displaySelected.position, x: v } }); clearElementPreview(displaySelected.id); }} unit="mm" />
-                    <SliderField label="Position Y" value={displaySelected.position.y} min={-50} max={50} onPreview={(v) => previewElementPatch(displaySelected.id, { id: displaySelected.id, position: { ...displaySelected.position, y: v } })} onChange={(v) => { updateElement(displaySelected.id, { position: { ...displaySelected.position, y: v } }); clearElementPreview(displaySelected.id); }} unit="mm" />
-                    <SliderField label="Height" value={displaySelected.heightMm} min={0} max={15} step={0.5} onPreview={(v) => previewElementPatch(displaySelected.id, { id: displaySelected.id, heightMm: v })} onChange={(v) => { updateElement(displaySelected.id, { heightMm: v }); clearElementPreview(displaySelected.id); }} unit="mm" />
-                    <SliderField label="Rotation" value={displaySelected.rotationDeg} min={-90} max={90} onPreview={(v) => previewElementPatch(displaySelected.id, { id: displaySelected.id, rotationDeg: v })} onChange={(v) => { updateElement(displaySelected.id, { rotationDeg: v }); clearElementPreview(displaySelected.id); }} unit="°" />
-                    <SliderField label="Scale X" value={displaySelected.scale.x} min={0.25} max={3} step={0.05} onPreview={(v) => previewElementPatch(displaySelected.id, { id: displaySelected.id, scale: { ...displaySelected.scale, x: v } })} onChange={(v) => { updateElement(displaySelected.id, { scale: { ...displaySelected.scale, x: v } }); clearElementPreview(displaySelected.id); }} />
-                    <SliderField label="Scale Y" value={displaySelected.scale.y} min={0.25} max={3} step={0.05} onPreview={(v) => previewElementPatch(displaySelected.id, { id: displaySelected.id, scale: { ...displaySelected.scale, y: v } })} onChange={(v) => { updateElement(displaySelected.id, { scale: { ...displaySelected.scale, y: v } }); clearElementPreview(displaySelected.id); }} />
+                    <SliderField
+                        label="Position X"
+                        value={displaySelected.position.x}
+                        min={-100}
+                        max={100}
+                        onPreview={(v) =>
+                            previewElementPatch(displaySelected.id, {
+                                id: displaySelected.id,
+                                position: { ...displaySelected.position, x: v },
+                            })
+                        }
+                        onChange={(v) => {
+                            updateElement(displaySelected.id, {
+                                position: { ...displaySelected.position, x: v },
+                            });
+                            clearElementPreview(displaySelected.id);
+                        }}
+                        unit="mm"
+                    />
+                    <SliderField
+                        label="Position Y"
+                        value={displaySelected.position.y}
+                        min={-50}
+                        max={50}
+                        onPreview={(v) =>
+                            previewElementPatch(displaySelected.id, {
+                                id: displaySelected.id,
+                                position: { ...displaySelected.position, y: v },
+                            })
+                        }
+                        onChange={(v) => {
+                            updateElement(displaySelected.id, {
+                                position: { ...displaySelected.position, y: v },
+                            });
+                            clearElementPreview(displaySelected.id);
+                        }}
+                        unit="mm"
+                    />
+                    <SliderField
+                        label="Height"
+                        value={displaySelected.heightMm}
+                        min={0}
+                        max={15}
+                        step={0.5}
+                        onPreview={(v) =>
+                            previewElementPatch(displaySelected.id, { id: displaySelected.id, heightMm: v })
+                        }
+                        onChange={(v) => {
+                            updateElement(displaySelected.id, { heightMm: v });
+                            clearElementPreview(displaySelected.id);
+                        }}
+                        unit="mm"
+                    />
+                    <SliderField
+                        label="Rotation"
+                        value={displaySelected.rotationDeg}
+                        min={-90}
+                        max={90}
+                        onPreview={(v) =>
+                            previewElementPatch(displaySelected.id, {
+                                id: displaySelected.id,
+                                rotationDeg: v,
+                            })
+                        }
+                        onChange={(v) => {
+                            updateElement(displaySelected.id, { rotationDeg: v });
+                            clearElementPreview(displaySelected.id);
+                        }}
+                        unit="°"
+                    />
+                    <SliderField
+                        label="Scale X"
+                        value={displaySelected.scale.x}
+                        min={0.25}
+                        max={3}
+                        step={0.05}
+                        onPreview={(v) =>
+                            previewElementPatch(displaySelected.id, {
+                                id: displaySelected.id,
+                                scale: { ...displaySelected.scale, x: v },
+                            })
+                        }
+                        onChange={(v) => {
+                            updateElement(displaySelected.id, { scale: { ...displaySelected.scale, x: v } });
+                            clearElementPreview(displaySelected.id);
+                        }}
+                    />
+                    <SliderField
+                        label="Scale Y"
+                        value={displaySelected.scale.y}
+                        min={0.25}
+                        max={3}
+                        step={0.05}
+                        onPreview={(v) =>
+                            previewElementPatch(displaySelected.id, {
+                                id: displaySelected.id,
+                                scale: { ...displaySelected.scale, y: v },
+                            })
+                        }
+                        onChange={(v) => {
+                            updateElement(displaySelected.id, { scale: { ...displaySelected.scale, y: v } });
+                            clearElementPreview(displaySelected.id);
+                        }}
+                    />
 
                     {editMode === "vertex" && selectedVertex !== null ? (
                         <SliderField
@@ -255,9 +384,19 @@ export function ElementsPanel() {
                 open={saveOpen}
                 onClose={() => setSaveOpen(false)}
                 kind="element"
-                defaultName={displaySelected ? `${elementDisplayName(displaySelected.kind, displaySelected.customName)} Custom` : "Custom Element"}
-                defaultCategory={displaySelected?.kind === "custom" ? "other" : (displaySelected?.kind ?? "other")}
-                parentStockId={displaySelected?.kind !== "custom" ? displaySelected?.kind : displaySelected?.customElementId}
+                defaultName={
+                    displaySelected
+                        ? `${elementDisplayName(displaySelected.kind, displaySelected.customName)} Custom`
+                        : "Custom Element"
+                }
+                defaultCategory={
+                    displaySelected?.kind === "custom" ? "other" : (displaySelected?.kind ?? "other")
+                }
+                parentStockId={
+                    displaySelected?.kind !== "custom"
+                        ? displaySelected?.kind
+                        : displaySelected?.customElementId
+                }
                 sourceId={displaySelected?.id}
                 side={displaySelected?.side}
             />

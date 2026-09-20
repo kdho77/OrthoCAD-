@@ -4,6 +4,8 @@
 
 import type { PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
 
+export type { HardnessName, PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
+
 export type Role = "super_admin" | "admin" | "clinician";
 
 export type Side = "left" | "right";
@@ -234,6 +236,8 @@ export interface DesignState {
     /** Optional base template; absent ⇒ full parametric generation. */
     base?: DesignBase;
     method: ProductionMethod;
+    /** Phase A gyroid hardness ladder (PrintRecipe v1). */
+    printRecipe?: PrintRecipeV1;
     thicknessMm: number;
     /**
      * Footprint size system. Default `"us"`.

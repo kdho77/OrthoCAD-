@@ -12,14 +12,7 @@ import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
 import { SIDE_LABELS, type Side } from "@/types";
-import {
-    gyroidInfillPctForHardness,
-    HARDNESS_NAMES,
-    HARDNESS_TO_INFILL_PCT,
-    type HardnessName,
-    infillFractionFromRecipe,
-    migratePrintRecipe,
-} from "../../../shared/print-recipe/print-recipe";
+import { infillFractionFromRecipe, migratePrintRecipe } from "../../../shared/print-recipe/print-recipe";
 
 function fmtTime(sec: number): string {
     const h = Math.floor(sec / 3600);
@@ -27,18 +20,20 @@ function fmtTime(sec: number): string {
     return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-const HARDNESS_UNCERTAINTY_COPY =
-    "Named hardness is a relative stiffness ladder for one locked FDM profile—not Shore durometer. " +
-    "Feel depends on filament, walls, layer height, and temperature; OrthoCAD exports solid CAD and realize feel in the slicer.";
+interface PrintingPanelProps {
+    /** Simplified clinical print step — primary CTA + fewer exposed knobs. */
+    clinicalMode?: boolean;
+    /** Clinical print step: only foot side + Prepare for print (AC7). */
+    primaryOnly?: boolean;
+}
 
-export function PrintingPanel() {
+export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: PrintingPanelProps) {
     const { user, license } = useAuthStore();
     const { design, exportSide, setExportSide, setPrintHardness, setPrintProfile } = useDesignStore();
     const printRecipe = migratePrintRecipe(design.printRecipe);
-    const activeHardness = printRecipe.defaultHardness;
-    const activeGyroidPct = gyroidInfillPctForHardness(activeHardness, printRecipe.hardnessToInfillPct);
-
+    const recipeInfillPct = Math.round(infillFractionFromRecipe(printRecipe) * 100);
     const [layerHeight, setLayerHeight] = useState(0.3);
+    const [infill, setInfill] = useState(recipeInfillPct);
     const [toolDia, setToolDia] = useState(6);
     const [result, setResult] = useState<CamResult | null>(null);
     const [status, setStatus] = useState<string | null>(null);
@@ -73,7 +68,7 @@ export function PrintingPanel() {
         ? { toolDiameterMm: toolDia }
         : {
               layerHeightMm: layerHeight,
-              infillDensity: infillFractionFromRecipe(printRecipe),
+              infillDensity: (clinicalMode ? recipeInfillPct : infill) / 100,
           };
 
     const buildGeom = () => getKernel().buildInsole(insoleParamsFromDesign(design, exportSide, "full"));
@@ -110,6 +105,12 @@ export function PrintingPanel() {
         setStatus("Exporting finished solid and generating G-code on server…");
         setResult(null);
         try {
+            // The helper (generateHybridGcode) derives baseAssetId (and baseGlbUrl) internally
+            // from the current design state in useDesignStore at the time of the call.
+            // This is the canonical place that assembles the full server payload.
+            // baseAssetId will be included (when a base is active) so the server can do
+            // authoritative CustomPrefab lookup + signed URL (see export-service.ts).
+            // designId is also passed when an active persisted design exists.
             const res = await generateHybridGcode(exportSide, preset, grindingStyle, overrides);
             if (res.ok) {
                 const idPart = res.productionId ? ` [production ${res.productionId}]` : "";
@@ -117,8 +118,12 @@ export function PrintingPanel() {
                     `Server G-code exported ${res.filename || "file"}${idPart} (tokens deducted on success)`,
                 );
             } else {
+                // Same friendly mapping as ExportPanel — hybrid STL build uses closeGlbInsoleToSolid
+                // and export-service returns the raw MeshNotWatertightError message as res.reason.
                 setStatus(stlExportUserMessage(res.reason ?? "Hybrid generation failed"));
             }
+            // Note: the hybrid path handles its own download + audit inside the service helper.
+            // Improved feedback: status reflects server nature and success-only deduction.
         } catch (e) {
             setStatus(
                 stlExportUserMessage(
@@ -130,22 +135,27 @@ export function PrintingPanel() {
         }
     };
 
+    const showPrimaryOnly = clinicalMode && primaryOnly;
+
     return (
         <div className="space-y-3">
-            <div className="flex gap-1">
-                {(["left", "right"] as Side[]).map((s) => (
-                    <Button
-                        key={s}
-                        size="sm"
-                        variant={exportSide === s ? "default" : "secondary"}
-                        className="h-8 flex-1"
-                        onClick={() => setExportSide(s)}
-                    >
-                        {SIDE_LABELS[s]} insole
-                    </Button>
-                ))}
-            </div>
+            {!showPrimaryOnly ? (
+                <div className="flex gap-1">
+                    {(["left", "right"] as Side[]).map((s) => (
+                        <Button
+                            key={s}
+                            size="sm"
+                            variant={exportSide === s ? "default" : "secondary"}
+                            className="h-8 flex-1"
+                            onClick={() => setExportSide(s)}
+                        >
+                            {SIDE_LABELS[s]} insole
+                        </Button>
+                    ))}
+                </div>
+            ) : null}
 
+            {!showPrimaryOnly ? (
             <div className="space-y-1.5">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     {isCnc ? "Mill preset" : "Printer preset"}
@@ -172,8 +182,14 @@ export function PrintingPanel() {
                     </button>
                 ))}
             </div>
+            ) : showPrimaryOnly && preset ? (
+                <p className="text-[10px] text-muted-foreground">
+                    Preset: <span className="text-foreground">{preset.name}</span>
+                    {preset.beltAngleDeg ? ` · belt ${preset.beltAngleDeg}°` : ""}
+                </p>
+            ) : null}
 
-            {isBeltPreset && (
+            {!showPrimaryOnly && isBeltPreset && (
                 <div className="space-y-1.5">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                         Grinding Style (server hybrid)
@@ -209,7 +225,7 @@ export function PrintingPanel() {
                 </div>
             )}
 
-            {isCnc ? (
+            {!showPrimaryOnly && isCnc ? (
                 <SliderField
                     label="Tool diameter"
                     value={toolDia}
@@ -219,6 +235,14 @@ export function PrintingPanel() {
                     unit="mm"
                     onChange={setToolDia}
                 />
+            ) : showPrimaryOnly ? (
+                <p className="text-[10px] text-muted-foreground">
+                    Layer height {layerHeight} mm · gyroid infill {recipeInfillPct}% (from hardness step)
+                </p>
+            ) : clinicalMode ? (
+                <p className="text-[10px] text-muted-foreground">
+                    Layer height {layerHeight} mm · gyroid infill {recipeInfillPct}% (from hardness step)
+                </p>
             ) : (
                 <>
                     <SliderField
@@ -265,9 +289,11 @@ export function PrintingPanel() {
                 </>
             )}
 
-            <Button variant="secondary" className="w-full" disabled={busy || !preset} onClick={onPreview}>
-                <Play className="h-4 w-4" /> {busy ? "Generating…" : "Generate toolpath"}
-            </Button>
+            {!clinicalMode ? (
+                <Button variant="secondary" className="w-full" disabled={busy || !preset} onClick={onPreview}>
+                    <Play className="h-4 w-4" /> {busy ? "Generating…" : "Generate toolpath"}
+                </Button>
+            ) : null}
 
             {result ? (
                 <div className="space-y-1 rounded-md border border-border bg-background/50 p-2 text-xs">
@@ -286,12 +312,14 @@ export function PrintingPanel() {
                 </div>
             ) : null}
 
-            <Button className="w-full" disabled={busy || !preset || !gcodeCheck.ok} onClick={onExport}>
-                {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
-                Export G-code · {TOKEN_COST.gcode} tokens (client)
-            </Button>
+            {!clinicalMode ? (
+                <Button className="w-full" disabled={busy || !preset || !gcodeCheck.ok} onClick={onExport}>
+                    {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                    Export G-code · {TOKEN_COST.gcode} tokens (client)
+                </Button>
+            ) : null}
 
-            {isBeltPreset && (
+            {isBeltPreset ? (
                 <Button
                     variant="default"
                     className="w-full"
@@ -300,9 +328,14 @@ export function PrintingPanel() {
                     title="Exports the finished viewer solid as STL, uploads to server, then slices with belt transform"
                 >
                     {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
-                    Generate G-code (Server) — {grindingStyle.type}
+                    {clinicalMode ? "Prepare for print" : `Generate G-code (Server) — ${grindingStyle.type}`}
                 </Button>
-            )}
+            ) : clinicalMode ? (
+                <Button className="w-full" disabled={busy || !preset || !gcodeCheck.ok} onClick={onExport}>
+                    {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                    Prepare for print · {TOKEN_COST.gcode} tokens
+                </Button>
+            ) : null}
 
             {isBeltPreset && !productionProfileReady ? (
                 <p className="text-xs text-amber-400">
@@ -313,11 +346,13 @@ export function PrintingPanel() {
             {!gcodeCheck.ok ? <p className="text-xs text-amber-400">{gcodeCheck.reason}</p> : null}
             {status ? <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p> : null}
 
-            <p className="text-xs text-muted-foreground">
-                {preset?.beltAngleDeg
-                    ? `Belt presets support client preview or server G-code from the finished viewer solid.`
-                    : "In-house CAM engine (Kiri:Moto-compatible seam)."}
-            </p>
+            {!showPrimaryOnly ? (
+                <p className="text-xs text-muted-foreground">
+                    {preset?.beltAngleDeg
+                        ? `Belt presets support client preview or server G-code from the finished viewer solid.`
+                        : "In-house CAM engine (Kiri:Moto-compatible seam)."}
+                </p>
+            ) : null}
         </div>
     );
 }

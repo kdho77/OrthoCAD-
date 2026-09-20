@@ -22,6 +22,7 @@ import {
     selectCustomPrefab,
     uploadBaseGlb,
 } from "@/features/library/custom-library-service";
+import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
 import { ScanImport } from "@/features/scans/ScanImport";
 import {
@@ -291,14 +292,14 @@ export function LeftSidebar() {
                                     >
                                         <Pencil className="h-3 w-3" />
                                     </button>
-                                    <button
-                                        type="button"
+                                    <ConfirmDeleteTrigger
+                                        title="Delete custom base?"
+                                        description={`Remove "${p.name}" from your library?`}
+                                        onConfirm={() => void deleteCustomAsset("prefab", p.id)}
                                         className="text-muted-foreground hover:text-destructive"
-                                        onClick={() => void deleteCustomAsset("prefab", p.id)}
-                                        title="Delete"
                                     >
                                         <Trash2 className="h-3 w-3" />
-                                    </button>
+                                    </ConfirmDeleteTrigger>
                                 </div>
                             ),
                         )}
