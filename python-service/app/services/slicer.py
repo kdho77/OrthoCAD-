@@ -4,42 +4,34 @@
 """
 Kiri:Moto-inspired slicer for the hybrid manufacturing pipeline (Python port).
 
-This is a focused, belt-printer-oriented implementation:
-- Input: a watertight, belt-transformed solid (the output of belt_transformer).
-- The 3D belt compensation has already been applied to the mesh geometry.
-- Therefore the slicer can treat the transformed solid as a "flat" print and
-  generate normal planar layers (Z = const) at the desired layer height.
-- Produces perimeters + simple infill and emits G-code with proper start/end
-  scripts, temperatures, and metadata.
-
-It draws structural inspiration and naming from the existing TS implementation
-in vertex/src/lib/kiri/ (engine.ts, slicer.ts, gcode.ts) but is a clean Python
-re-implementation using trimesh for robust geometry.
-
-Improved for belt TPU insoles (multi-wall, solid top/bottom, accurate E, TPU material
-profiles, angled infill, better start/end). Node layer owns final storage + download.
-Further features (advanced seams, variable speed, etc.) can be added iteratively.
+Belt manufacturing: watertight solid is belt-transformed, then sliced with belt-aware
+walls (racetrack / belt-plane pinning) and gyroid or rectilinear infill inside the
+wall region. `/manufacture` gcode output requires a belt preset (beltAngleDeg).
 """
 
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import trimesh
 
+from app.services.belt_wall_slice import slice_belt_layer_contours
 from app.services.geometry_utils import ensure_watertight
 from app.services.gyroid_infill import generate_gyroid_infill_for_layer
+from app.services.print_recipe import PrintRecipeV1
 
 # ---------------------------------------------------------------------------
 # Basic types mirroring the spirit of the TS kiri code
 # ---------------------------------------------------------------------------
 
+
 class GcodeBuilder:
     """Improved G-code emitter with position tracking and accurate extrusion math.
     Suitable for TPU on belt printers (configurable via presets).
     """
+
     def __init__(
         self,
         filament_dia: float = 1.75,
@@ -79,10 +71,8 @@ class GcodeBuilder:
         """Accurate filament length for a move (rect approx cross-section)."""
         if dist <= 0:
             return 0.0
-        # volume per mm of toolpath
         cross_section = self.extrusion_width * self.layer_h
         vol_mm3 = dist * cross_section
-        # filament cross section
         r = self.filament_dia / 2.0
         filament_area = 3.1415926535 * r * r
         e_delta = vol_mm3 / filament_area
@@ -94,8 +84,8 @@ class GcodeBuilder:
         self.lines.append(f"G1 X{x:.3f} Y{y:.3f} Z{z:.3f} E{self._e:.5f} F{int(feed)}")
 
     def travel(self, x: float, y: float, z: float, feed: float | None = None) -> None:
-        feed = feed or self.travel_speed * 60  # mm/s -> mm/min
-        dist = self._update_pos(x, y, z)
+        feed = feed or self.travel_speed * 60
+        self._update_pos(x, y, z)
         self.lines.append(f"G0 X{x:.3f} Y{y:.3f} Z{z:.3f} F{int(feed)}")
 
     def extrude_to(self, x: float, y: float, z: float, feed: float | None = None) -> None:
@@ -103,7 +93,7 @@ class GcodeBuilder:
         dist = self._update_pos(x, y, z)
         e_delta = self._e_for_dist(dist)
         self._emit_move(x, y, z, feed, e_delta)
-        self.stats["perimeters"] += 1  # caller decides if perimeter or infill
+        self.stats["perimeters"] += 1
 
     def to_string(self) -> str:
         return "\n".join(self.lines)
@@ -112,6 +102,7 @@ class GcodeBuilder:
 # ---------------------------------------------------------------------------
 # Core slicing
 # ---------------------------------------------------------------------------
+
 
 def slice_solid(
     solid: trimesh.Trimesh,
@@ -122,14 +113,13 @@ def slice_solid(
     solid_layers: int = 3,
     infill_angle_deg: float = 45.0,
     infill_pattern: str = "rectilinear",
+    belt_gantry_angle_deg: float | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Improved slicer for belt TPU insoles (Kiri-inspired but focused and maintainable).
+    Belt TPU slicer: racetrack-aware walls first, then infill inside the wall region.
 
-    - Reliable contours via trimesh.section on the pre-belt-transformed solid.
-    - Multi-wall perimeters (outer + inset inners via centroid-directed offset).
-    - Angle-aware infill + high-density "solid" top/bottom layers for insole surface/strength.
-    - Returns data ready for high-quality emit_gcode (per-preset temps/speeds etc).
+    - Walls: triangle intersection + belt stitch / inset (Vertex belt SOP).
+    - Infill: gyroid (PrintRecipe) or polygon-clipped rectilinear inside inset region.
     """
     if not solid.is_watertight:
         solid = ensure_watertight(solid, label="slice_input")
@@ -139,6 +129,12 @@ def slice_solid(
             f"(faces={len(solid.faces)}, verts={len(solid.vertices)})"
         )
 
+    belt_angle = belt_gantry_angle_deg
+    if belt_angle is None or belt_angle <= 0:
+        raise ValueError(
+            "slice_solid requires belt_gantry_angle_deg; hybrid gcode is belt-printer only"
+        )
+
     bounds = solid.bounds
     min_z = float(bounds[0][2])
     max_z = float(bounds[1][2])
@@ -146,42 +142,25 @@ def slice_solid(
     layers: list[dict[str, Any]] = []
     z = min_z + layer_height_mm / 2.0
     layer_idx = 0
-    plane_normal = np.array([0.0, 0.0, 1.0])
-
     total_layers = max(1, int((max_z - min_z) / layer_height_mm) + 1)
 
     while z <= max_z + 1e-6:
-        try:
-            path = solid.section(plane_origin=[0, 0, z], plane_normal=plane_normal)
-        except Exception:
-            path = None
-
-        contours: list[np.ndarray] = []
-        if path is not None and len(getattr(path, "entities", [])) > 0:
-            for entity in getattr(path, "entities", []):
-                pts = path.vertices[entity.points]
-                if len(pts) >= 3:
-                    contours.append(pts[:, :2])
-
-        # Multi-perimeter walls (inset toward centroid for demo; good for typical insole outlines)
-        wall_contours: list[np.ndarray] = []
-        if contours:
-            for c in contours:
-                if len(c) < 3:
-                    continue
-                wall_contours.append(c)
-                cx, cy = float(c[:, 0].mean()), float(c[:, 1].mean())
-                for w in range(1, max(1, perimeters)):
-                    inset = extrusion_width_mm * 0.85 * w
-                    dirs = np.stack([cx - c[:, 0], cy - c[:, 1]], axis=1)
-                    norms = np.linalg.norm(dirs, axis=1, keepdims=True) + 1e-9
-                    wall_contours.append(c - (dirs / norms) * inset)
-
-        # Infill (angle + density). Solid layers get near-100% for top/bottom quality.
-        infill: list[np.ndarray] = []
         is_solid = (layer_idx < solid_layers) or (layer_idx >= total_layers - solid_layers)
         eff_density = 0.92 if is_solid else infill_density
 
+        use_rectilinear_infill = infill_pattern != "gyroid" or is_solid
+        wall_contours, rect_infill = slice_belt_layer_contours(
+            solid,
+            z,
+            belt_gantry_angle_deg=belt_angle,
+            perimeters=perimeters,
+            extrusion_width_mm=extrusion_width_mm,
+            infill_density=eff_density,
+            layer_index=layer_idx,
+            include_infill=use_rectilinear_infill and eff_density > 0.01,
+        )
+
+        infill: list[np.ndarray] = []
         if wall_contours and eff_density > 0.01:
             if infill_pattern == "gyroid" and not is_solid:
                 infill = generate_gyroid_infill_for_layer(
@@ -192,35 +171,40 @@ def slice_solid(
                     perimeters=perimeters,
                 )
             else:
-                all_pts = np.vstack(wall_contours)
-                min_x, min_y = all_pts.min(0)
-                max_x, max_y = all_pts.max(0)
-                cx, cy = (min_x + max_x) * 0.5, (min_y + max_y) * 0.5
-                step = extrusion_width_mm / max(eff_density, 0.04)
-                ang = math.radians(infill_angle_deg)
-                dx, dy = math.cos(ang), math.sin(ang)
-                px, py = -dy, dx
-                length = max(max_x - min_x, max_y - min_y) * 1.6
-                off = -length
-                while off < length:
-                    x0 = cx + px * off
-                    y0 = cy + py * off
-                    p1 = np.array([x0 - dx * length, y0 - dy * length])
-                    p2 = np.array([x0 + dx * length, y0 + dy * length])
-                    infill.append(np.stack([p1, p2]))
-                    off += step
+                infill = rect_infill
+                if not infill and not is_solid:
+                    # Solid-top/bottom rectilinear fallback when no inset loops (open racetrack layers).
+                    all_pts = np.vstack(wall_contours)
+                    min_x, min_y = all_pts.min(0)
+                    max_x, max_y = all_pts.max(0)
+                    cx, cy = (min_x + max_x) * 0.5, (min_y + max_y) * 0.5
+                    step = extrusion_width_mm / max(eff_density, 0.04)
+                    ang = math.radians(infill_angle_deg + (layer_idx % 2) * 90.0)
+                    dx, dy = math.cos(ang), math.sin(ang)
+                    px, py = -dy, dx
+                    length = max(max_x - min_x, max_y - min_y) * 1.6
+                    off = -length
+                    while off < length:
+                        x0 = cx + px * off
+                        y0 = cy + py * off
+                        p1 = np.array([x0 - dx * length, y0 - dy * length])
+                        p2 = np.array([x0 + dx * length, y0 + dy * length])
+                        infill.append(np.stack([p1, p2]))
+                        off += step
 
-        layers.append({
-            "z": z,
-            "contours": wall_contours or contours,
-            "infill": infill,
-            "is_solid": is_solid,
-            "infill_pattern": (
-                "gyroid"
-                if infill_pattern == "gyroid" and not is_solid and len(infill) > 0
-                else "rectilinear"
-            ),
-        })
+        layers.append(
+            {
+                "z": z,
+                "contours": wall_contours,
+                "infill": infill,
+                "is_solid": is_solid,
+                "infill_pattern": (
+                    "gyroid"
+                    if infill_pattern == "gyroid" and not is_solid and len(infill) > 0
+                    else "rectilinear"
+                ),
+            }
+        )
         z += layer_height_mm
         layer_idx += 1
 
@@ -232,13 +216,7 @@ def emit_gcode(
     preset: dict[str, Any],
     overrides: dict[str, Any] | None = None,
 ) -> str:
-    """
-    Production-oriented G-code emission for belt TPU.
-
-    Uses preset for material (TPU) + machine (belt angle/speeds/temps).
-    Respects solid layers, multi-wall, angled infill from slice_solid.
-    Accurate E via GcodeBuilder. Good start/end scripts.
-    """
+    """Production-oriented G-code emission for belt TPU."""
     o = overrides or {}
     layer_h = float(o.get("layerHeightMm", preset.get("layerHeightMm", 0.3)))
     nozzle = float(preset.get("nozzleMm", 0.4))
@@ -260,7 +238,7 @@ def emit_gcode(
     )
 
     belt = preset.get("beltAngleDeg")
-    g.comment("OrthoCAD Hybrid Manufacturing — improved Kiri-style slicer for belt TPU")
+    g.comment("OrthoCAD Hybrid Manufacturing — belt-aware slicer (walls + gyroid/rectilinear infill)")
     g.comment(f"preset={preset.get('name','unknown')} layerH={layer_h}mm nozzle={nozzle}mm belt={belt}° material=TPU")
     g.raw("G21")
     g.raw("G90")
@@ -272,7 +250,6 @@ def emit_gcode(
         g.raw(f"M190 S{bed_temp}")
     g.raw("G92 E0")
 
-    # Prime / skirt hint (simple line for belt setups)
     g.comment("start prime")
     g.travel(5, 5, layer_h * 0.5, travel_speed * 60)
     g.extrude_to(30, 5, layer_h * 0.5, print_speed * 60)
@@ -281,7 +258,6 @@ def emit_gcode(
     for li, layer in enumerate(layers):
         z = layer["z"]
         g.comment(f"LAYER {li} Z={z:.3f} {'SOLID' if layer.get('is_solid') else ''}")
-        # Walls (multi-perimeter already expanded in slice)
         for contour in layer.get("contours", []):
             if len(contour) < 2:
                 continue
@@ -289,7 +265,6 @@ def emit_gcode(
             g.travel(float(first[0]), float(first[1]), z, travel_speed * 60)
             for pt in contour[1:]:
                 g.extrude_to(float(pt[0]), float(pt[1]), z, print_speed * 60)
-            # close
             g.extrude_to(float(contour[0][0]), float(contour[0][1]), z, print_speed * 60)
             g.stats["perimeters"] += 1
 
@@ -308,12 +283,11 @@ def emit_gcode(
 
         g.stats["layers"] += 1
 
-    # End
     if retract:
         g.raw(f"G1 E-{preset.get('retractDistanceMm', 0.5):.1f} F{preset.get('retractSpeedMmS', 20)*60:.0f}")
     g.raw("M104 S0")
     g.raw("M140 S0")
-    g.raw(f"M106 S{int(fan * 255)}")  # ensure fan state
+    g.raw(f"M106 S{int(fan * 255)}")
     g.raw("G91")
     g.raw("G1 Z5 F3000")
     g.raw("G90")
@@ -323,7 +297,6 @@ def emit_gcode(
     return g.to_string()
 
 
-# Public API used by the manufacturing endpoint
 def build_slice_overrides(
     preset: dict[str, Any],
     *,
@@ -357,13 +330,11 @@ def generate_gcode_from_solid(
     preset: dict[str, Any],
     overrides: dict[str, Any] | None = None,
 ) -> str:
-    """
-    High-level entry point. Expects pre belt-transformed solid.
-    Now consumes richer preset (TPU temps/speeds/perimeters/solids/angle) for quality.
-    """
+    """High-level entry point. Expects pre belt-transformed solid."""
     o = overrides or {}
     if not transformed_solid.is_watertight:
         transformed_solid = ensure_watertight(transformed_solid, label="gcode_input")
+    belt_angle = float(preset.get("beltAngleDeg") or 45.0)
     layers = slice_solid(
         transformed_solid,
         layer_height_mm=float(o.get("layerHeightMm", preset.get("layerHeightMm", 0.3))),
@@ -373,5 +344,6 @@ def generate_gcode_from_solid(
         solid_layers=int(preset.get("solidLayers", 3)),
         infill_angle_deg=float(preset.get("infillAngleDeg", 45)),
         infill_pattern=str(o.get("infillPattern", "rectilinear")),
+        belt_gantry_angle_deg=belt_angle,
     )
     return emit_gcode(layers, preset, overrides)

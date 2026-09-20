@@ -1,0 +1,11 @@
+{
+    "description": "Two rim-open shell face chains that should fuse into one racetrack (from belt-stitch.test.ts)",
+    "segments": [
+        [[0.05, 1.0], [4.0, 1.0]],
+        [[4.0, 1.0], [8.0, 1.0]],
+        [[8.0, 1.0], [10.05, 1.0]],
+        [[0.0, 1.4], [4.0, 2.0]],
+        [[4.0, 2.0], [8.0, 2.0]],
+        [[8.0, 2.0], [10.0, 1.4]]
+    ]
+}
