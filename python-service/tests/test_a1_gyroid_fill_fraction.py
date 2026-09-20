@@ -33,6 +33,7 @@ LAYER_H = 0.3
 PERIMETERS = 3
 SOLID_LAYERS = 1
 TOL = 0.05
+BELT_GANTRY_DEG = 45.0
 
 
 def _load_coupon() -> trimesh.Trimesh:
@@ -71,6 +72,7 @@ class A1GyroidFillFractionTests(unittest.TestCase):
             extrusion_width_mm=EXTRUSION_W,
             solid_layers=SOLID_LAYERS,
             infill_pattern="gyroid",
+            belt_gantry_angle_deg=BELT_GANTRY_DEG,
         )
 
     def test_all_five_hardnesses_within_tolerance(self) -> None:

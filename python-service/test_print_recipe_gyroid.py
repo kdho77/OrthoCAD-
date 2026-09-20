@@ -34,6 +34,7 @@ class PrintRecipeGyroidTests(unittest.TestCase):
             extrusion_width_mm=0.48,
             solid_layers=1,
             infill_pattern="gyroid",
+            belt_gantry_angle_deg=45.0,
         )
         gcode = emit_gcode(layers, {"name": "test", "nozzleMm": 0.4, "layerHeightMm": 0.3})
         self.assertTrue(gcode_has_infill_gyroid_blocks(gcode))
