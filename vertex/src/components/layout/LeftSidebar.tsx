@@ -38,6 +38,7 @@ import {
     usMenToUk,
     usShoeSizeOptions,
 } from "@/lib/geometry/shoe-size";
+import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
 import { mergePrefabLibrary, STOCK_PREFABS } from "@/lib/library/manifest";
 import { cn } from "@/lib/utils";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
@@ -122,13 +123,14 @@ export function LeftSidebar() {
     };
 
     const onPattern = async (id: string, stock: boolean) => {
+        const side = getActiveFootSide();
         if (stock) {
             // Scan pattern only — the mandatory GLB stock base is never cleared here.
             setPattern(id as ScanPattern);
-            setTarget({ type: "insole", side: "left" });
+            setTarget({ type: "insole", side });
         } else {
             await selectCustomPrefab(id, customPrefabs.find((p) => p.id === id)?.name ?? "Custom Prefab");
-            setTarget({ type: "insole", side: "left" });
+            setTarget({ type: "insole", side });
         }
         setEditMode("transform");
     };

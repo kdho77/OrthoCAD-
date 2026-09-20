@@ -3,6 +3,7 @@
 
 import { designHasBase, designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
 import type { ClinicalStepId } from "@/stores/clinical-workflow-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useScanStore } from "@/stores/scan-store";
 
@@ -16,6 +17,11 @@ function scanRegistrationReady(scanId: string): boolean {
     if (placed < 3) return false;
     if (!reg?.matrixElements || reg.incomplete || reg.error) return false;
     return true;
+}
+
+/** Clinician explicitly chose Left or Right (not silent default). */
+export function isFootSideExplicitlyKnown(): boolean {
+    return useClinicalWorkflowStore.getState().footSideExplicitlyChosen;
 }
 
 /** Base GLB loaded and usable for shaping. */
@@ -33,8 +39,15 @@ export function isReadyToShape(): StepGateResult {
     return { ok: true };
 }
 
-/** Scan step: active foot chosen + base ready; if scans exist, at least one must be registered. */
+/** Scan step: explicit L/R + base ready; if scans exist, at least one must be registered. */
 export function evaluateScanStepGate(): StepGateResult {
+    if (!isFootSideExplicitlyKnown()) {
+        return {
+            ok: false,
+            reason: "Select Left or Right foot above before continuing (no silent default).",
+        };
+    }
+
     const ready = isReadyToShape();
     if (!ready.ok) return ready;
 
@@ -54,23 +67,24 @@ export function evaluateScanStepGate(): StepGateResult {
     return { ok: true };
 }
 
-export function evaluateStepComplete(step: ClinicalStepId): boolean {
-    switch (step) {
-        case "scan":
-            return evaluateScanStepGate().ok;
-        case "shape":
-        case "elements":
-        case "hardness":
-            return isReadyToShape().ok;
-        case "print":
-            return false;
-        default:
-            return false;
-    }
+/**
+ * Whether a step may show a completed checkmark.
+ * Shape / Elements / Hardness are never auto-complete from base-load alone — only via `completedSteps`.
+ */
+export function evaluateStepComplete(step: ClinicalStepId, completedSteps: ClinicalStepId[]): boolean {
+    if (completedSteps.includes(step)) return true;
+    if (step === "scan") return evaluateScanStepGate().ok;
+    return false;
 }
 
 /** Gate for leaving the current step via Next. */
 export function evaluateNextGate(fromStep: ClinicalStepId): StepGateResult {
     if (fromStep === "scan") return evaluateScanStepGate();
     return { ok: true };
+}
+
+/** Steps after Scan require the scan gate to stay satisfied (sticky failure when jumping ahead). */
+export function scanGateBlocksLaterSteps(): StepGateResult {
+    const gate = evaluateScanStepGate();
+    return gate;
 }

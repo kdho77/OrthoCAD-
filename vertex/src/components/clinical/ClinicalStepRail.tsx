@@ -9,7 +9,9 @@ import { CLINICAL_STEPS, type ClinicalStepId, useClinicalWorkflowStore } from "@
 
 export function ClinicalStepRail() {
     const step = useClinicalWorkflowStore((s) => s.step);
+    const completedSteps = useClinicalWorkflowStore((s) => s.completedSteps);
     const nextBlockReason = useClinicalWorkflowStore((s) => s.nextBlockReason);
+    const scanGateStickyReason = useClinicalWorkflowStore((s) => s.scanGateStickyReason);
     const setStep = useClinicalWorkflowStore((s) => s.setStep);
     const goNext = useClinicalWorkflowStore((s) => s.goNext);
     const goBack = useClinicalWorkflowStore((s) => s.goBack);
@@ -21,10 +23,13 @@ export function ClinicalStepRail() {
 
     const stepState = (id: ClinicalStepId) => {
         if (step === id) return "current";
-        if (stepIndex(id) < stepIndex(step) && evaluateStepComplete(id)) return "completed";
+        if (evaluateStepComplete(id, completedSteps)) return "completed";
         if (stepIndex(id) < stepIndex(step)) return "visited";
         return "upcoming";
     };
+
+    const bannerReason =
+        scanGateStickyReason ?? (nextBlockReason || (!nextGate.ok && !atLast ? nextGate.reason : null));
 
     return (
         <div className="border-b border-border bg-panel px-3 py-2">
@@ -84,9 +89,9 @@ export function ClinicalStepRail() {
                 ) : null}
             </div>
 
-            {!atLast && (nextBlockReason || (nextDisabled && !nextGate.ok)) ? (
+            {bannerReason ? (
                 <p className="mt-2 text-[11px] leading-snug text-amber-300/95" role="status">
-                    {nextBlockReason ?? nextGate.reason}
+                    {bannerReason}
                 </p>
             ) : null}
         </div>
