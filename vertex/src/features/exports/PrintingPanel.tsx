@@ -58,8 +58,7 @@ export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: Pri
     }, [lockedProfileId, preset, setPrintProfile]);
 
     const isBeltPreset = !!preset?.beltAngleDeg;
-    const productionProfileReady =
-        !!lockedProfileId?.trim() && presets.some((p) => p.id === lockedProfileId);
+    const productionProfileReady = !!lockedProfileId?.trim() && presets.some((p) => p.id === lockedProfileId);
 
     const isCnc = design.method === "milling_3axis";
     const gcodeCheck = canExport(user, license, "gcode");
@@ -280,9 +279,9 @@ export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: Pri
                             </button>
                         ))}
                         <p className="text-[10px] text-muted-foreground">
-                            Selected: {activeHardness} ({activeGyroidPct}% gyroid target under locked profile).
-                            Server hybrid uses gyroid infill (experimental); client preview is a fast
-                            rectilinear approximation only.
+                            Selected: {activeHardness} ({activeGyroidPct}% gyroid target under locked
+                            profile). Server hybrid uses gyroid infill (experimental); client preview is a
+                            fast rectilinear approximation only.
                         </p>
                         <p className="text-[10px] text-muted-foreground">{HARDNESS_UNCERTAINTY_COPY}</p>
                     </div>
