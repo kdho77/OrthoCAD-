@@ -918,6 +918,12 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         includeSkives: false,
         includeElements: true,
         trimline: null,
+        shellThicknessMode: design.shellThicknessMode,
+        shellThicknessRfMm: design.shellThicknessRfMm,
+        shellThicknessMfMm: design.shellThicknessMfMm,
+        shellThicknessFfMm: design.shellThicknessFfMm,
+        shellThicknessBlendMm: design.shellThicknessBlendMm,
+        method: params.method,
         shapeFinish: getSideShapeFinish(design, side),
         // Omit the keys when this foot has no sink so the field shape matches main.
         ...(sinks ? { sinks, sinkStyloidThicken: sinkStyloidThickenForSide(design, side) } : {}),

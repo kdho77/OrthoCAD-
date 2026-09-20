@@ -1,13 +1,20 @@
 import { elementHeightAt } from "@/lib/geometry/elements";
-import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
+import { type HeelLiftTaperOptions, heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
 import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
+import {
+    type ShellThicknessContext,
+    shellThicknessContextFromDesign,
+    shellThicknessMmAtU,
+} from "@/lib/geometry/shell-thickness-zonal";
 import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type {
     PlacedElement,
     PlacedSink,
+    ProductionMethod,
+    ShellThicknessMode,
     Side,
     SideCorrections,
     SideShapeFinish,
@@ -46,8 +53,39 @@ export interface HeightFieldParams {
      * edge (r = 1).
      */
     topEdgeAvProfile?: (u: number, vSigned: number) => number;
+    /** When set, overrides design-derived shell thickness sampling. */
+    shell?: ShellThicknessContext | null;
+    shellThicknessMode?: ShellThicknessMode;
+    shellThicknessRfMm?: number;
+    shellThicknessMfMm?: number;
+    shellThicknessFfMm?: number;
+    shellThicknessBlendMm?: number;
+    method?: ProductionMethod;
     /** Track 5b — top-only print/shell finish (excludes bottom-only arch grind). */
     shapeFinish?: SideShapeFinish | null;
+}
+
+export function resolveShellThicknessContext(params: HeightFieldParams): ShellThicknessContext {
+    if (params.shell) return params.shell;
+    return shellThicknessContextFromDesign(
+        params.shellThicknessMode,
+        params.thicknessMm,
+        params.lengthMm,
+        {
+            rfMm: params.shellThicknessRfMm,
+            mfMm: params.shellThicknessMfMm,
+            ffMm: params.shellThicknessFfMm,
+        },
+        params.shellThicknessBlendMm,
+    );
+}
+
+function heelLiftTaperFromCorrections(c: SideCorrections): HeelLiftTaperOptions {
+    return {
+        preset: c.heelLiftTaperPreset,
+        endU: c.heelLiftTaperEndU,
+        customPctAp: c.heelLiftCustomTaperPctAp,
+    };
 }
 
 const DEG = Math.PI / 180;
@@ -429,9 +467,15 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // Added at full strength (not edge-feathered, like posting) since it is a
     // structural raise of the whole rearfoot, and additive on the top surface so
     // the flat z = 0 bottom stays stable on solid prints.
-    const heelLift = heelLiftDeltaAt(u, c.heelLiftMm);
+    const heelLift = heelLiftDeltaAt(u, c.heelLiftMm, heelLiftTaperFromCorrections(c));
 
-    let h = softFloor(thicknessMm + baseline + shaped + archEase + wedge + heelLift, 0.8);
+    // Uniform (and legacy undefined) mode uses thicknessMm directly so the sum
+    // stays bit-identical to main. Zonal mode samples t(u), which already
+    // enforces the minimum wall, and keeps arch ease, wedge, and sinks.
+    const shellCtx = resolveShellThicknessContext(params);
+    const thicknessTerm = shellCtx.mode === "zonal" ? shellThicknessMmAtU(u, shellCtx) : thicknessMm;
+
+    let h = softFloor(thicknessTerm + baseline + shaped + archEase + wedge + heelLift, 0.8);
 
     // Forefoot / styloid thickness T. After posting, before skive. The cut S is
     // not applied here — it is the last subtraction on the composed top.

@@ -52,12 +52,16 @@ def soft_floor(value: float, floor: float, smoothing: float = 0.6) -> float:
     return max(value, floor) + h * h * smoothing * 0.25
 
 
-def heel_lift_delta_at(u: float, heel_lift_mm: float) -> float:
-    """Linear ramp heel lift (full at u=0, zero at and beyond 0.75)."""
+def heel_lift_delta_at(
+    u: float,
+    heel_lift_mm: float,
+    taper_end_u: float = 0.75,
+) -> float:
+    """Linear ramp heel lift (full at u=0, zero at and beyond taper_end_u)."""
     if heel_lift_mm <= 0:
         return 0.0
-    HEEL_LIFT_TAPER_END = 0.75
-    t = max(0.0, min(1.0, 1.0 - u / HEEL_LIFT_TAPER_END))
+    end_u = max(0.45, min(0.90, taper_end_u))
+    t = max(0.0, min(1.0, 1.0 - u / end_u))
     return heel_lift_mm * t
 
 
