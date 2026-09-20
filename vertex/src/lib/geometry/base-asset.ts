@@ -828,6 +828,12 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         includeSkives: false,
         includeElements: true,
         trimline: null,
+        shellThicknessMode: design.shellThicknessMode,
+        shellThicknessRfMm: design.shellThicknessRfMm,
+        shellThicknessMfMm: design.shellThicknessMfMm,
+        shellThicknessFfMm: design.shellThicknessFfMm,
+        shellThicknessBlendMm: design.shellThicknessBlendMm,
+        method: params.method,
         shapeFinish: getSideShapeFinish(design, side),
     };
 }

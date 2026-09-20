@@ -211,7 +211,9 @@ export function buildOcctInsoleSolid(factory: IShapeFactory, params: InsoleParam
         }
     }
 
-    if (params.method === "printing_shell") {
+    // Track 4: zonal wall thickness is encoded in the height field / mesh path —
+    // do not apply a second uniform OCCT shell offset.
+    if (params.method === "printing_shell" && params.shellThicknessMode !== "zonal") {
         solid = applyShelling(factory, solid, params.thicknessMm);
     }
 

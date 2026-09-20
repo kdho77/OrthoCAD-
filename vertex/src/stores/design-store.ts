@@ -153,6 +153,11 @@ export function defaultDesign(): DesignState {
         method: "printing_solid",
         printRecipe: migratePrintRecipe(undefined),
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
+        shellThicknessMode: "zonal",
+        shellThicknessRfMm: 3,
+        shellThicknessMfMm: 2.5,
+        shellThicknessFfMm: 2,
+        shellThicknessBlendMm: 12,
         sizeSystem: DEFAULT_SHOE_SIZE_SYSTEM,
         usMenSize: DEFAULT_US_MEN_SIZE,
         corrections: {
