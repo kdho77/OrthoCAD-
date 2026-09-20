@@ -34,7 +34,8 @@
         ]
     },
     "workspaces": [
-        "packages/*"
+        "packages/*",
+        "vertex"
     ],
     "devDependencies": {
         "@biomejs/biome": "^2.4.15",

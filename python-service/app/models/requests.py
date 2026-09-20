@@ -35,3 +35,4 @@ class GenerateSolidRequest(BaseModel):
     perimeters: int | None = None
     grinding_style: GrindingStyle | None = None
     print_recipe: PrintRecipeV1 | None = None
+    production_release_label: str | None = None

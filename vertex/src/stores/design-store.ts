@@ -54,6 +54,7 @@ import {
     bindPrintRecipeProfile,
     type HardnessName,
     migratePrintRecipe,
+    setProductionLabelEnabled,
 } from "../../shared/print-recipe/print-recipe";
 
 function defaultSideCorrections(): SideCorrections {
@@ -412,6 +413,7 @@ export interface DesignStore {
     /** Named whole-device hardness (Phase A PrintRecipe). */
     setPrintHardness: (hardness: HardnessName) => void;
     setPrintProfile: (profileId: string, hardness?: HardnessName) => void;
+    setProductionLabelEnabled: (enabled: boolean) => void;
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
@@ -534,6 +536,15 @@ export const useDesignStore = create<DesignStore>()(
                     design: {
                         ...s.design,
                         printRecipe: bindPrintRecipeProfile(s.design.printRecipe, profileId, hardness),
+                    },
+                }));
+            },
+            setProductionLabelEnabled: (enabled) => {
+                get().checkpoint("production-label");
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        printRecipe: setProductionLabelEnabled(s.design.printRecipe, enabled),
                     },
                 }));
             },

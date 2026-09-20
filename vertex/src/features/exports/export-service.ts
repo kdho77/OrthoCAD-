@@ -14,6 +14,7 @@ import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
 import type { ExportFormat, GrindingStyle, Side } from "@/types";
 import { bindPrintRecipeProfile } from "../../../shared/print-recipe/print-recipe";
+import { buildProductionReleaseLabel } from "../../../shared/print-recipe/production-label";
 
 // Re-export for convenience in UI components
 export type GrindingStyleInput = GrindingStyle;
@@ -179,18 +180,37 @@ export async function generateHybridGcode(
 
             const design = useDesignStore.getState().design;
             const printRecipe = bindPrintRecipeProfile(design.printRecipe, preset.id);
+            const profilePreset = preset;
+
+            const clientState = useClientStore.getState();
+            const activeClient = clientState.clients.find((c) => c.id === clientState.activeClientId);
+            const clientLabel = activeClient
+                ? `${activeClient.firstName} ${activeClient.lastName}`.trim()
+                : undefined;
+
+            const productionReleaseLabel =
+                printRecipe.includeProductionLabel !== false
+                    ? buildProductionReleaseLabel({
+                          side,
+                          recipe: printRecipe,
+                          profileDisplayName: profilePreset.name,
+                          clientLabel,
+                          designId: activeDesignId || undefined,
+                      })
+                    : undefined;
 
             const res = await trpc.manufacturing.generateSolid.mutate({
                 designId: activeDesignId || undefined,
                 side,
-                presetId: preset.id,
+                presetId: lockedPresetId,
                 stlStorageKey,
                 outputType,
-                beltAngleDeg: preset.beltAngleDeg ?? 45,
+                beltAngleDeg: profilePreset.beltAngleDeg ?? 45,
                 layerHeightMm: overrides.layerHeightMm,
                 printRecipe,
                 perimeters: overrides.perimeters,
                 grindingStyle,
+                productionReleaseLabel,
                 fileName: filename,
             });
 
