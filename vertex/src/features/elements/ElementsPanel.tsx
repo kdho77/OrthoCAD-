@@ -141,10 +141,8 @@ export function ElementsPanel() {
                     </p>
                 ) : (
                     design.elements.map((el) => (
-                        <button
+                        <div
                             key={el.id}
-                            type="button"
-                            onClick={() => onSelectElement(el.id)}
                             className={cn(
                                 "flex w-full items-center justify-between rounded-md border px-2 py-1.5 text-xs",
                                 el.id === selectedElementId
@@ -152,25 +150,26 @@ export function ElementsPanel() {
                                     : "border-border bg-background",
                             )}
                         >
-                            <span>
+                            <button
+                                type="button"
+                                className="min-w-0 flex-1 text-left"
+                                onClick={() => onSelectElement(el.id)}
+                            >
                                 {elementDisplayName(el.kind, el.customName)}{" "}
                                 <span className="text-muted-foreground">({el.side})</span>
                                 {el.kind === "custom" ? (
                                     <span className="ml-1 text-[10px] text-primary">custom</span>
                                 ) : null}
-                            </span>
+                            </button>
                             <ConfirmDeleteTrigger
                                 title="Remove element?"
                                 description="Remove this element from the design?"
                                 onConfirm={() => removeElement(el.id)}
-                                className="inline-flex"
+                                className="inline-flex shrink-0"
                             >
-                                <Trash2
-                                    className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive"
-                                    onClick={(e) => e.stopPropagation()}
-                                />
+                                <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
                             </ConfirmDeleteTrigger>
-                        </button>
+                        </div>
                     ))
                 )}
             </div>
