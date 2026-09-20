@@ -10,7 +10,7 @@ import {
     refreshCustomLibrary,
 } from "@/features/library/custom-library-service";
 import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
-import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
+import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
 import { elementDisplayName, STOCK_ELEMENTS } from "@/lib/library/manifest";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { cn } from "@/lib/utils";
@@ -58,7 +58,18 @@ export function ElementsPanel() {
     });
 
     const [saveOpen, setSaveOpen] = useState(false);
-    const activeFootSide = useActiveFootSide();
+
+    const placeStockElement = (kind: ElementKind) => {
+        for (const side of elementPlacementSides()) {
+            addElement(kind, side);
+        }
+    };
+
+    const placeCustom = (id: string, name: string) => {
+        for (const side of elementPlacementSides()) {
+            void placeCustomElement(id, name, side);
+        }
+    };
 
     useEffect(() => {
         void refreshCustomLibrary();
@@ -80,7 +91,7 @@ export function ElementsPanel() {
                         <button
                             key={item.id}
                             type="button"
-                            onClick={() => addElement(item.id as ElementKind, activeFootSide)}
+                            onClick={() => placeStockElement(item.id as ElementKind)}
                             className="flex items-center justify-between rounded-md border border-border bg-background px-2 py-2 text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
                         >
                             {item.label}
@@ -110,7 +121,7 @@ export function ElementsPanel() {
                             <div key={item.id} className="flex items-center gap-0.5">
                                 <button
                                     type="button"
-                                    onClick={() => placeCustomElement(item.id, item.name, activeFootSide)}
+                                    onClick={() => placeCustom(item.id, item.name)}
                                     className="flex flex-1 items-center justify-between rounded-md border border-primary/30 bg-primary/5 px-2 py-2 text-xs text-foreground hover:border-primary/60"
                                     title={item.category}
                                 >

@@ -3,6 +3,7 @@ import { AdminPortal } from "@/components/admin/AdminPortal";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { KernelLoadingBanner } from "@/components/layout/KernelLoadingBanner";
 import { LeftSidebar } from "@/components/layout/LeftSidebar";
+import { ClinicalStepRail } from "@/components/clinical/ClinicalStepRail";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { TopNav, type NavItem } from "@/components/layout/TopNav";
@@ -91,13 +92,16 @@ export default function App() {
 
             <div className="flex min-h-0 flex-1">
                 {nav === "Production" ? (
-                    <>
-                        <LeftSidebar />
-                        <main className="min-w-0 flex-1">
-                            <Viewer3D />
-                        </main>
-                        <RightPanel />
-                    </>
+                    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                        <ClinicalStepRail />
+                        <div className="flex min-h-0 flex-1">
+                            <LeftSidebar />
+                            <main className="min-w-0 flex-1">
+                                <Viewer3D />
+                            </main>
+                            <RightPanel />
+                        </div>
+                    </div>
                 ) : nav === "Clients" ? (
                     <ClientsView onOpenDesign={() => setNav("Production")} />
                 ) : (

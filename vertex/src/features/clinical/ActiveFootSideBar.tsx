@@ -3,34 +3,82 @@
 
 import { Button } from "@/components/ui/button";
 import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
+import { useClinicalWorkflowStore, type ElementPlacementFoot } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { SIDE_LABELS, type Side } from "@/types";
 
+<<<<<<< HEAD
 /** L/R selector aligned with viewer target and shape-finish edits (clinical rail #168 compatible). */
 export function ActiveFootSideBar() {
+=======
+interface ActiveFootSideBarProps {
+    /** When true, offer Both (L+R) when corrections are linked. */
+    allowBothWhenLinked?: boolean;
+}
+
+/** Shared L/R (and optional both) selector for scan, elements, and export context. */
+export function ActiveFootSideBar({ allowBothWhenLinked = false }: ActiveFootSideBarProps) {
+>>>>>>> 4c16b577 (✨ feat(vertex): align clinical spine to finalized Track 2 ACs)
     const active = useActiveFootSide();
+    const linked = useDesignStore((s) => s.design.corrections.linked);
+    const placementFoot = useClinicalWorkflowStore((s) => s.elementPlacementFoot);
+    const setPlacementFoot = useClinicalWorkflowStore((s) => s.setElementPlacementFoot);
     const setExportSide = useDesignStore((s) => s.setExportSide);
     const setTarget = useMeshEditStore((s) => s.setTarget);
 
     const pickSide = (side: Side) => {
+<<<<<<< HEAD
+=======
+        setPlacementFoot(side);
+>>>>>>> 4c16b577 (✨ feat(vertex): align clinical spine to finalized Track 2 ACs)
         setExportSide(side);
         setTarget({ type: "insole", side });
     };
 
+    const pickBoth = () => {
+        setPlacementFoot("both");
+        setTarget({ type: "insole", side: active });
+    };
+
+    const showBoth = allowBothWhenLinked && linked;
+
+    const isActive = (choice: ElementPlacementFoot | Side) => {
+        if (choice === "both") return placementFoot === "both";
+        return placementFoot !== "both" && active === choice;
+    };
+
     return (
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1">
             {(["left", "right"] as Side[]).map((s) => (
                 <Button
                     key={s}
                     size="sm"
-                    variant={active === s ? "default" : "secondary"}
+                    variant={isActive(s) ? "default" : "secondary"}
                     className="h-8 flex-1 text-[11px]"
                     onClick={() => pickSide(s)}
                 >
                     {SIDE_LABELS[s]} foot
                 </Button>
             ))}
+            {showBoth ? (
+                <Button
+                    size="sm"
+                    variant={isActive("both") ? "default" : "secondary"}
+                    className="h-8 w-full text-[11px]"
+                    onClick={() => pickBoth()}
+                >
+                    Both feet (linked L+R)
+                </Button>
+            ) : null}
         </div>
     );
+}
+
+/** Resolve sides for element placement from workflow + active foot. */
+export function elementPlacementSides(): Side[] {
+    const foot = useClinicalWorkflowStore.getState().elementPlacementFoot;
+    if (foot === "both") return ["left", "right"];
+    if (foot === "left" || foot === "right") return [foot];
+    return [useDesignStore.getState().exportSide];
 }

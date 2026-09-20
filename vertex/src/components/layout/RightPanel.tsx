@@ -1,4 +1,3 @@
-import { ClinicalStepRail } from "@/components/clinical/ClinicalStepRail";
 import { ActiveFootSideBar } from "@/features/clinical/ActiveFootSideBar";
 import { ClinicalPrintStepPanel } from "@/features/clinical/ClinicalPrintStepPanel";
 import { ClinicalScanStepPanel } from "@/features/clinical/ClinicalScanStepPanel";
@@ -13,13 +12,12 @@ export function RightPanel() {
     return (
         <aside className="flex w-80 flex-col border-l border-border bg-panel">
             <div className="flex flex-1 flex-col overflow-hidden p-3">
-                <ClinicalStepRail />
-                <div className="mt-3 flex-1 overflow-y-auto">
+                <div className="flex-1 overflow-y-auto">
                     {step === "scan" ? <ClinicalScanStepPanel /> : null}
                     {step === "shape" ? <CorrectionsPanel /> : null}
                     {step === "elements" ? (
                         <div className="space-y-3">
-                            <ActiveFootSideBar />
+                            <ActiveFootSideBar allowBothWhenLinked />
                             <ElementsPanel />
                         </div>
                     ) : null}
