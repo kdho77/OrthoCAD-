@@ -3,6 +3,7 @@
 
 import type { BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
+import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
 import { getDesignBase } from "@/lib/geometry/base-asset";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
@@ -23,6 +24,10 @@ import {
     deriveNativeShellThicknessDatum,
     thicknessOffsetFromDatum,
 } from "@/lib/geometry/native-shell-thickness";
+import {
+    applyArchGrindToBottomMesh,
+    applyTrimmableForefootExtension,
+} from "@/lib/geometry/shape-finish-modifiers";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
 // Base + Modifier deformation core (see docs/base-modifier-architecture.md).
@@ -2855,6 +2860,53 @@ export function applyBaseModifiers(
         }
     }
 
+    const shapeFinish = field.shapeFinish;
+    if (shapeFinish) {
+        const extra =
+            shapeFinish.trimmableForefoot && shapeFinish.trimmableForefootExtraMm > 0
+                ? shapeFinish.trimmableForefootExtraMm
+                : 0;
+        if (extra > 0) {
+            applyTrimmableForefootExtension(array, {
+                lengthAxis,
+                lenMin,
+                lenSize,
+                vertexCount: count,
+                extraMm: extra,
+            });
+        }
+        if (shapeFinish.archGrindDepthMm > 0) {
+            applyArchGrindToBottomMesh(array, {
+                lengthAxis,
+                widthAxis,
+                thickAxis,
+                lenMin,
+                lenSize,
+                widCenter,
+                widSize,
+                widthSign,
+                topVertexCount,
+                vertexCount: count,
+                plantarZMax: PLANTAR_Z_MAX_MM,
+                archGrindDepthMm: shapeFinish.archGrindDepthMm,
+            });
+        }
+        if (topVertexCount > 0 && shapeFinish.archSkiveMm > 0) {
+            applyArchSkiveToTopMesh(array, {
+                side: field.side,
+                archSkiveMm: shapeFinish.archSkiveMm,
+                archSkiveSide: shapeFinish.archSkiveSide,
+                lengthAxis,
+                widthAxis,
+                thickAxis,
+                lenMin,
+                lenSize,
+                topVertexCount,
+                widthSign,
+            });
+        }
+    }
+
     // Kirby heel skive — TOP MESH ONLY, after F composition + bottom coupling (R11).
     // Plane half-space maximum; never writes bottom verts; never feeds field-F.
     if (topVertexCount > 0 && (field.corrections.medialSkiveMm > 0 || field.corrections.lateralSkiveMm > 0)) {
@@ -3127,6 +3179,13 @@ export function hasActiveModifiers(design: DesignState, side?: Side): boolean {
         if (anyCorrection) return true;
         if (design.elements.some((e) => e.side === s)) return true;
         if (design.trimlines?.[s] && design.trimlines[s]!.length >= 4) return true;
+        const sf = design.shapeFinish?.[s];
+        if (sf) {
+            if (sf.topCoverAccommodateMm > 0.05) return true;
+            if (sf.trimmableForefoot && sf.trimmableForefootExtraMm > 0.05) return true;
+            if (sf.archGrindDepthMm > 0.05) return true;
+            if (sf.archSkiveMm > 0.05) return true;
+        }
     }
     return false;
 }

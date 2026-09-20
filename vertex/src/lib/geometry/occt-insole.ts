@@ -1,8 +1,8 @@
 import {
     type IFace,
     type IShape,
-    type ISolid,
     type IShapeFactory,
+    type ISolid,
     type IWire,
     type Result,
     ShapeTypes,
@@ -16,8 +16,9 @@ import {
     outlineHalfWidth,
     resolveOutlineHalfWidth,
 } from "@/lib/geometry/height-field";
-import { repairOcctSolid } from "@/lib/geometry/repair";
 import type { InsoleParams } from "@/lib/geometry/insole";
+import { repairOcctSolid } from "@/lib/geometry/repair";
+import { archGrindPlantarRaiseAt } from "@/lib/geometry/shape-finish-modifiers";
 
 function unwrap<T>(result: Result<T, string>, context: string): T {
     if (!result.isOk) throw new Error(`${context}: ${result.error}`);
@@ -74,22 +75,21 @@ const LOFT_STATIONS = 40;
  *
  * Every station emits the same point count so the sections loft cleanly.
  */
-function sectionWire(
-    factory: IShapeFactory,
-    u: number,
-    params: HeightFieldParams,
-): IWire {
+function sectionWire(factory: IShapeFactory, u: number, params: HeightFieldParams): IWire {
     const { lengthMm, widthMm } = params;
     const halfW = widthMm / 2;
     const hw = resolveOutlineHalfWidth(u, params) * halfW;
     const x = u * lengthMm;
 
-    const points: GridPoint[] = [{ x, y: -hw, z: 0 }];
+    const grind = params.shapeFinish?.archGrindDepthMm ?? 0;
+    const bottomMedialZ = archGrindPlantarRaiseAt(u, 1, grind);
+    const bottomLateralZ = archGrindPlantarRaiseAt(u, 1, grind);
+    const points: GridPoint[] = [{ x, y: -hw, z: bottomMedialZ }];
     for (let k = 0; k <= CROSS_SECTION_SAMPLES; k++) {
         const vSigned = -1 + (2 * k) / CROSS_SECTION_SAMPLES;
         points.push({ x, y: vSigned * hw, z: heightAt(u, vSigned, params) });
     }
-    points.push({ x, y: hw, z: 0 });
+    points.push({ x, y: hw, z: bottomLateralZ });
 
     return wireFromPoints(factory, points);
 }
@@ -105,6 +105,7 @@ export function buildBaseShell(factory: IShapeFactory, params: InsoleParams): IS
         includeSkives: true,
         includeElements: false,
         trimline: params.trimline,
+        shapeFinish: params.shapeFinish ?? null,
     };
 
     const nx = LOFT_STATIONS;
@@ -191,12 +192,8 @@ export function buildOcctInsoleSolid(factory: IShapeFactory, params: InsoleParam
 
     if ((params.elements?.length ?? 0) > 0) {
         try {
-            solid = applyElements(
-                factory,
-                solid,
-                params.elements ?? [],
-                params.lengthMm,
-                (shape) => repairOcctSolid(factory, shape),
+            solid = applyElements(factory, solid, params.elements ?? [], params.lengthMm, (shape) =>
+                repairOcctSolid(factory, shape),
             );
             solid = repairOcctSolid(factory, solid) as ISolid;
         } catch (error) {

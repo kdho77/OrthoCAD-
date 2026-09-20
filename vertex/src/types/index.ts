@@ -28,6 +28,30 @@ export type ScanPattern =
     | "flat"
     | "custom";
 
+/** Midfoot arch skive target (distinct from Kirby heel skive). */
+export type ArchSkiveSide = "medial" | "lateral" | "central";
+
+/** Track 5b — print / shell shape & finish modifiers (per foot). */
+export interface SideShapeFinish {
+    /** Extra top clearance in heel cup / flange for cover bulk (mm). */
+    topCoverAccommodateMm: number;
+    /** Extend distal footprint past wear trim for solid FDM trimming. */
+    trimmableForefoot: boolean;
+    /** Distal extension when trimmable forefoot is on (mm). */
+    trimmableForefootExtraMm: number;
+    /** Bottom plantar deepen in arch ellipse only (mm). */
+    archGrindDepthMm: number;
+    /** Midfoot arch skive depth (mm) — separate from heel Kirby skive. */
+    archSkiveMm: number;
+    archSkiveSide: ArchSkiveSide;
+}
+
+export interface ShapeFinishModifiers {
+    left: SideShapeFinish;
+    right: SideShapeFinish;
+    linked: boolean;
+}
+
 export type ExportFormat = "stl" | "gcode" | "glb";
 
 export type GrindingStyleType = "straight" | "rounded";
@@ -234,6 +258,9 @@ export interface DesignState {
 
     /** Whole-device named hardness → gyroid density (Phase A). */
     printRecipe?: PrintRecipeV1;
+
+    /** Track 5b shape / finish (top cover, trimmable forefoot, arch grind / skive). */
+    shapeFinish?: ShapeFinishModifiers;
 
     /**
      * Paired Left + Right dual-view workspace support.
