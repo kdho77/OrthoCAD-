@@ -1,5 +1,5 @@
 import { Cpu, Download, Lock, Play, Printer } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
 import { exportGcode, type GrindingStyleInput, generateHybridGcode } from "@/features/exports/export-service";
@@ -33,7 +33,7 @@ const HARDNESS_UNCERTAINTY_COPY =
 
 export function PrintingPanel() {
     const { user, license } = useAuthStore();
-    const { design, exportSide, setExportSide, setPrintHardness } = useDesignStore();
+    const { design, exportSide, setExportSide, setPrintHardness, setPrintProfile } = useDesignStore();
     const printRecipe = migratePrintRecipe(design.printRecipe);
     const activeHardness = printRecipe.defaultHardness;
     const activeGyroidPct = gyroidInfillPctForHardness(activeHardness, printRecipe.hardnessToInfillPct);
@@ -51,10 +51,20 @@ export function PrintingPanel() {
     });
 
     const presets = useMemo(() => presetsForMethod(design.method), [design.method]);
-    const [presetId, setPresetId] = useState(presets[0]?.id ?? "");
-    const preset = presets.find((p) => p.id === presetId) ?? presets[0];
+    const lockedProfileId = printRecipe.profileId;
+    const preset =
+        presets.find((p) => p.id === lockedProfileId) ??
+        presets.find((p) => p.id === presets[0]?.id) ??
+        presets[0];
+
+    useEffect(() => {
+        if (!preset || preset.id === lockedProfileId) return;
+        setPrintProfile(preset.id);
+    }, [lockedProfileId, preset, setPrintProfile]);
 
     const isBeltPreset = !!preset?.beltAngleDeg;
+    const productionProfileReady =
+        !!lockedProfileId?.trim() && presets.some((p) => p.id === lockedProfileId);
 
     const isCnc = design.method === "milling_3axis";
     const gcodeCheck = canExport(user, license, "gcode");
@@ -144,10 +154,10 @@ export function PrintingPanel() {
                     <button
                         key={p.id}
                         type="button"
-                        onClick={() => setPresetId(p.id)}
+                        onClick={() => setPrintProfile(p.id)}
                         className={cn(
                             "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left text-xs",
-                            presetId === p.id
+                            lockedProfileId === p.id
                                 ? "border-primary bg-primary/10 text-foreground"
                                 : "border-border bg-background text-muted-foreground",
                         )}
@@ -228,7 +238,10 @@ export function PrintingPanel() {
                             <button
                                 key={name}
                                 type="button"
-                                onClick={() => setPrintHardness(name as HardnessName)}
+                                onClick={() => {
+                                    if (preset) setPrintProfile(preset.id, name as HardnessName);
+                                    else setPrintHardness(name as HardnessName);
+                                }}
                                 className={cn(
                                     "flex w-full items-center justify-between rounded-md border px-2 py-2 text-left text-xs",
                                     activeHardness === name
@@ -282,7 +295,7 @@ export function PrintingPanel() {
                 <Button
                     variant="default"
                     className="w-full"
-                    disabled={busy || !preset || !gcodeCheck.ok}
+                    disabled={busy || !preset || !gcodeCheck.ok || !productionProfileReady}
                     onClick={onHybridGenerate}
                     title="Exports the finished viewer solid as STL, uploads to server, then slices with belt transform"
                 >
@@ -291,6 +304,12 @@ export function PrintingPanel() {
                 </Button>
             )}
 
+            {isBeltPreset && !productionProfileReady ? (
+                <p className="text-xs text-amber-400">
+                    Select a printer preset and device hardness before server G-code (locked production
+                    profile required).
+                </p>
+            ) : null}
             {!gcodeCheck.ok ? <p className="text-xs text-amber-400">{gcodeCheck.reason}</p> : null}
             {status ? <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p> : null}
 
