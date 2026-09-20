@@ -24,7 +24,10 @@
  *    solid prints by construction.
  */
 
-/** Forward end of the linear taper, as a fraction of insole length (heel = 0, toe = 1). */
+/**
+ * Forward end of the linear taper, as a fraction of insole length (heel = 0, toe = 1).
+ * Fixed product constant — not user-adjustable in the UI; taper geometry may be revisited by CAD.
+ */
 export const HEEL_LIFT_TAPER_END = 0.75;
 
 /**

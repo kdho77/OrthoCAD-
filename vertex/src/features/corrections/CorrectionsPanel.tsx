@@ -2,9 +2,13 @@
 // See LICENSE file in the project root for full license information.
 
 import { AlertTriangle, ChevronRight, Link2, Lock, Unlink, Unlock } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { SliderField } from "@/components/ui/slider-field";
-import { constrainDesignCorrections, hasWedgeViolations } from "@/lib/geometry/clinical-constraints";
+import {
+    CLINICAL_LIMITS,
+    constrainDesignCorrections,
+    hasWedgeViolations,
+} from "@/lib/geometry/clinical-constraints";
 import {
     SKIVE_ANGLE_MAX_DEG,
     SKIVE_ANGLE_MIN_DEG,
@@ -32,9 +36,27 @@ const FIELDS: { key: keyof SideCorrections; label: string; min: number; max: num
     { key: "archHeightMm", label: "Arch height", min: 0, max: 18, group: "Arch" },
     { key: "archFillMm", label: "Arch fill", min: 0, max: 12, group: "Arch" },
     { key: "apexMoveMm", label: "Apex move", min: -12, max: 12, group: "Arch" },
-    { key: "heelCupDepthMm", label: "Heel cup depth", min: 0, max: 10, group: "Heel" },
-    { key: "heelCupWidthMm", label: "Heel cup width", min: -10, max: 10, group: "Heel" },
-    { key: "heelLiftMm", label: "Heel lift", min: 0, max: 20, group: "Heel" },
+    {
+        key: "heelCupDepthMm",
+        label: "Heel cup depth",
+        min: 0,
+        max: CLINICAL_LIMITS.heelCupDepthMm.max,
+        group: "Heel",
+    },
+    {
+        key: "heelCupWidthMm",
+        label: "Heel cup width",
+        min: CLINICAL_LIMITS.heelCupWidthMm.min,
+        max: CLINICAL_LIMITS.heelCupWidthMm.max,
+        group: "Heel",
+    },
+    {
+        key: "heelLiftMm",
+        label: "Heel lift",
+        min: CLINICAL_LIMITS.heelLiftMm.min,
+        max: CLINICAL_LIMITS.heelLiftMm.max,
+        group: "Heel",
+    },
     { key: "medialFlangeMm", label: "Medial flange", min: 0, max: 8, group: "Flanges" },
     { key: "lateralFlangeMm", label: "Lateral flange", min: 0, max: 8, group: "Flanges" },
 ];
@@ -420,8 +442,7 @@ export function CorrectionsPanel() {
     }, [corrections, design.thicknessMm]);
 
     const sectionOpen = (key: string) => openSections[key] ?? false;
-    const toggleSection = (key: string) =>
-        setOpenSections((prev) => ({ ...prev, [key]: !sectionOpen(key) }));
+    const toggleSection = (key: string) => setOpenSections((prev) => ({ ...prev, [key]: !sectionOpen(key) }));
 
     return (
         <div className="space-y-3">

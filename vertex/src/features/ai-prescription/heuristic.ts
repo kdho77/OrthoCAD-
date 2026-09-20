@@ -1,3 +1,4 @@
+import { HEEL_CUP_DEPTH_DEFAULT_MM } from "@/lib/geometry/clinical-constraints";
 import type { ParsedElement, PrescriptionParseResult, Side, SideCorrections } from "@/types";
 
 // Offline keyword-based prescription parser used when no AI provider/API is
@@ -53,7 +54,7 @@ export function heuristicParse(text: string): PrescriptionParseResult {
 
     const heelCup = firstNumber(lower, /heel\s*cup[^.]*?\d+(\.\d+)?\s*mm/);
     if (heelCup !== undefined) apply({ heelCupDepthMm: heelCup });
-    else if (/deep heel cup/.test(lower)) apply({ heelCupDepthMm: 16 });
+    else if (/deep heel cup/.test(lower)) apply({ heelCupDepthMm: HEEL_CUP_DEPTH_DEFAULT_MM });
 
     const elementMap: { re: RegExp; kind: ParsedElement["kind"] }[] = [
         { re: /met(atarsal)?\s*pad/, kind: "met_pad" },
