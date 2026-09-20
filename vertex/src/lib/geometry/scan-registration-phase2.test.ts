@@ -401,10 +401,21 @@ describe("Phase 2 — scan registration wiring", () => {
         useScanStore.getState().setMarker("t9-scan", "M1", markers[0]);
         useScanStore.getState().setMarker("t9-scan", "M2", markers[1]);
         useScanStore.getState().setMarker("t9-scan", "M3", markers[2]);
+        // Registration is gated on ARCH as well as M1–M3.
+        useScanStore.getState().setMarker(
+            "t9-scan",
+            "ARCH",
+            markers[0]!
+                .clone()
+                .lerp(markers[2]!, 0.4)
+                .add(new THREE.Vector3(0, 5, 0)),
+        );
         useScanStore.getState().setDeviationOverlay(true);
         const reg = useScanStore.getState().registrationByScanId["t9-scan"];
         expect(reg?.error).toBeNull();
         expect(reg?.matrixElements).not.toBeNull();
+        // Successful seating requests automatic size/arch/heel match.
+        expect(useScanStore.getState().pendingClinicalMatchScanId).toBe("t9-scan");
 
         const matrix = new THREE.Matrix4().fromArray(reg!.matrixElements!);
         computeScanDeviationAgainstRaw(scan, matrix, sourceBase);
@@ -482,6 +493,53 @@ describe("Phase 2 — scan registration wiring", () => {
         });
         expect(useScanStore.getState().markersByScanId.s1).toBeUndefined();
         expect(useScanStore.getState().markersByScanId.s2?.M1).toBeNull();
+    });
+
+    test("registration waits for ARCH after M1–M3", () => {
+        const geo = new THREE.BoxGeometry(1, 1, 1);
+        useScanStore.getState().addScan({
+            id: "arch-prompt",
+            name: "foot.stl",
+            side: "left",
+            format: "stl",
+            triangleCount: 12,
+            geometry: geo,
+            manifold: {
+                isWatertight: true,
+                openEdges: 0,
+                triangleCount: 12,
+                vertexCount: 8,
+                nonManifoldEdges: 0,
+            },
+        });
+        useScanStore.getState().enterPlacement("arch-prompt");
+        expect(useScanStore.getState().placementMode).toEqual({ scanId: "arch-prompt", next: "M1" });
+
+        useScanStore.getState().setMarker("arch-prompt", "M1", new THREE.Vector3(1, 0, 0));
+        expect(useScanStore.getState().placementMode?.next).toBe("M2");
+        useScanStore.getState().setMarker("arch-prompt", "M2", new THREE.Vector3(0, 1, 0));
+        expect(useScanStore.getState().placementMode?.next).toBe("M3");
+        useScanStore.getState().setMarker("arch-prompt", "M3", new THREE.Vector3(0, 0, 1));
+        // Still placing ARCH — scan must not seat on the insole yet.
+        expect(useScanStore.getState().placementMode).toEqual({ scanId: "arch-prompt", next: "ARCH" });
+        expect(useScanStore.getState().registrationByScanId["arch-prompt"]?.incomplete).toBe(true);
+        expect(useScanStore.getState().registrationByScanId["arch-prompt"]?.matrixElements).toBeNull();
+        expect(useScanStore.getState().pendingClinicalMatchScanId).toBeNull();
+
+        // Esc/cancel must not clear the ARCH requirement — re-open prompts ARCH.
+        useScanStore.getState().exitPlacement();
+        expect(useScanStore.getState().placementMode).toBeNull();
+        useScanStore.getState().setMarker("arch-prompt", "M3", new THREE.Vector3(0, 0, 1.1));
+        expect(useScanStore.getState().placementMode).toEqual({ scanId: "arch-prompt", next: "ARCH" });
+
+        useScanStore.getState().setMarker("arch-prompt", "ARCH", new THREE.Vector3(-1, 0.5, 0));
+        expect(useScanStore.getState().placementMode).toBeNull();
+        expect(useScanStore.getState().markersByScanId["arch-prompt"]?.ARCH).not.toBeNull();
+        // Without a loaded base, registration is attempted but errors — not incomplete-for-markers.
+        const reg = useScanStore.getState().registrationByScanId["arch-prompt"];
+        expect(reg?.incomplete).toBe(false);
+        expect(reg?.error?.code).toBe("no_base_landmarks");
+        expect(useScanStore.getState().pendingClinicalMatchScanId).toBeNull();
     });
 
     test("T13 — R_dorsalToZ is geometrically inert (twist freedom must not leak)", () => {
