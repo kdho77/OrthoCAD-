@@ -3,7 +3,7 @@
 
 import unittest
 
-from app.services.gcode_metrology import estimate_extrusion_move_fraction, gcode_declares_gyroid_pattern
+from app.services.gcode_metrology import gcode_has_infill_gyroid_blocks
 from app.services.gyroid_infill import gyroid_cell_period_mm
 from app.services.print_recipe import HARDNESS_TO_INFILL_PCT, PrintRecipeV1, coerce_print_recipe
 from app.services.slicer import emit_gcode, slice_solid
@@ -24,20 +24,20 @@ class PrintRecipeGyroidTests(unittest.TestCase):
         hard = gyroid_cell_period_mm(0.48, 0.38)
         self.assertGreater(soft, hard)
 
-    def test_gcode_emits_gyroid_tag(self) -> None:
+    def test_gcode_emits_infill_blocks_not_header_tag_only(self) -> None:
         box = trimesh.creation.box(extents=(40, 40, 6))
         layers = slice_solid(
             box,
-            layer_height_mm=1.0,
+            layer_height_mm=0.3,
             perimeters=1,
             infill_density=0.26,
             extrusion_width_mm=0.48,
             solid_layers=1,
             infill_pattern="gyroid",
         )
-        gcode = emit_gcode(layers, {"name": "test", "nozzleMm": 0.4, "layerHeightMm": 1.0})
-        self.assertTrue(gcode_declares_gyroid_pattern(gcode))
-        self.assertGreater(estimate_extrusion_move_fraction(gcode), 0.0)
+        gcode = emit_gcode(layers, {"name": "test", "nozzleMm": 0.4, "layerHeightMm": 0.3})
+        self.assertTrue(gcode_has_infill_gyroid_blocks(gcode))
+        self.assertNotIn(";infill_pattern=gyroid", gcode.lower())
 
     def test_coerce_default_medium(self) -> None:
         self.assertEqual(coerce_print_recipe(None).default_hardness, "Medium")

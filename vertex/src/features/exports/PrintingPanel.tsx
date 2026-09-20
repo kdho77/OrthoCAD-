@@ -238,14 +238,14 @@ export function PrintingPanel() {
                             >
                                 <span>{name}</span>
                                 <span className="tabular-nums text-[10px]">
-                                    {HARDNESS_TO_INFILL_PCT[name as HardnessName]}% gyroid
+                                    {HARDNESS_TO_INFILL_PCT[name as HardnessName]}% target density
                                 </span>
                             </button>
                         ))}
                         <p className="text-[10px] text-muted-foreground">
-                            Selected: {activeHardness} ({activeGyroidPct}% under locked profile). Server
-                            hybrid slicing uses gyroid TPMS; client preview uses a fast rectilinear
-                            approximation.
+                            Selected: {activeHardness} ({activeGyroidPct}% target under locked profile).
+                            Server hybrid uses experimental cellular infill; client preview is a fast
+                            rectilinear approximation only.
                         </p>
                         <p className="text-[10px] text-muted-foreground">{HARDNESS_UNCERTAINTY_COPY}</p>
                     </div>

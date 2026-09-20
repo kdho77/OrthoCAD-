@@ -2,6 +2,7 @@
 numpy>=1.24
 pydantic>=2.0
 trimesh>=4.0
+shapely>=2.0
 scipy>=1.11   # Required by trimesh for graph/connected_components used in fix_normals, repair, etc.
 
 # For the manufacturing service API (Phase 1+)

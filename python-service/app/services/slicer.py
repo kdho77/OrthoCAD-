@@ -30,8 +30,7 @@ import numpy as np
 import trimesh
 
 from app.services.geometry_utils import ensure_watertight
-from app.services.gyroid_infill import generate_gyroid_infill_for_layer, gyroid_cell_period_mm
-from app.services.print_recipe import PrintRecipeV1
+from app.services.gyroid_infill import generate_gyroid_infill_for_layer
 
 # ---------------------------------------------------------------------------
 # Basic types mirroring the spirit of the TS kiri code
@@ -190,6 +189,7 @@ def slice_solid(
                     z,
                     eff_density,
                     extrusion_width_mm,
+                    perimeters=perimeters,
                 )
             else:
                 all_pts = np.vstack(wall_contours)
@@ -215,7 +215,11 @@ def slice_solid(
             "contours": wall_contours or contours,
             "infill": infill,
             "is_solid": is_solid,
-            "infill_pattern": "gyroid" if infill_pattern == "gyroid" and not is_solid else "rectilinear",
+            "infill_pattern": (
+                "gyroid"
+                if infill_pattern == "gyroid" and not is_solid and len(infill) > 0
+                else "rectilinear"
+            ),
         })
         z += layer_height_mm
         layer_idx += 1
@@ -256,12 +260,6 @@ def emit_gcode(
     )
 
     belt = preset.get("beltAngleDeg")
-    gyroid_layers = [li for li, layer in enumerate(layers) if layer.get("infill_pattern") == "gyroid"]
-    if gyroid_layers:
-        g.comment("infill_pattern=gyroid")
-        g.comment(
-            f"gyroid_cell_period_mm={gyroid_cell_period_mm(width, float(o.get('infillDensity', 0.26))):.3f}"
-        )
     g.comment("OrthoCAD Hybrid Manufacturing — improved Kiri-style slicer for belt TPU")
     g.comment(f"preset={preset.get('name','unknown')} layerH={layer_h}mm nozzle={nozzle}mm belt={belt}° material=TPU")
     g.raw("G21")
@@ -282,11 +280,7 @@ def emit_gcode(
 
     for li, layer in enumerate(layers):
         z = layer["z"]
-        pat = layer.get("infill_pattern", "rectilinear")
-        g.comment(
-            f"LAYER {li} Z={z:.3f} {'SOLID' if layer.get('is_solid') else ''}"
-            + (f" infill_pattern={pat}" if not layer.get("is_solid") else "")
-        )
+        g.comment(f"LAYER {li} Z={z:.3f} {'SOLID' if layer.get('is_solid') else ''}")
         # Walls (multi-perimeter already expanded in slice)
         for contour in layer.get("contours", []):
             if len(contour) < 2:
@@ -299,13 +293,18 @@ def emit_gcode(
             g.extrude_to(float(contour[0][0]), float(contour[0][1]), z, print_speed * 60)
             g.stats["perimeters"] += 1
 
-        # Infill (angle + density already prepared; solid layers denser)
-        for line in layer.get("infill", []):
+        infill_lines = layer.get("infill", [])
+        pat = layer.get("infill_pattern", "rectilinear")
+        if infill_lines and pat == "gyroid":
+            g.comment("BEGIN_INFILL_GYROID")
+        for line in infill_lines:
             if len(line) < 2:
                 continue
             g.travel(float(line[0][0]), float(line[0][1]), z, travel_speed * 60)
             g.extrude_to(float(line[1][0]), float(line[1][1]), z, print_speed * 60)
             g.stats["infill"] += 1
+        if infill_lines and pat == "gyroid":
+            g.comment("END_INFILL_GYROID")
 
         g.stats["layers"] += 1
 
