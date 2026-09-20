@@ -21,7 +21,11 @@ from fastapi.responses import JSONResponse
 from app.models.requests import GenerateSolidRequest
 from app.services.belt_transformer import apply_belt_transform
 from app.services.presets import get_preset, is_known_preset
-from app.services.print_recipe import coerce_print_recipe, is_gyroid_manufacturing_preset
+from app.services.print_recipe import (
+    coerce_print_recipe,
+    is_gyroid_manufacturing_preset,
+    require_gyroid_print_recipe_with_profile,
+)
 from app.services.slicer import build_slice_overrides, generate_gcode_from_solid
 from app.services.stl_loader import download_stl_to_temp, load_watertight_stl
 
@@ -95,6 +99,12 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
         )
 
     print_recipe = coerce_print_recipe(req.print_recipe) if req.print_recipe is not None else None
+
+    if output_type == "gcode" and is_gyroid_manufacturing_preset(req.preset_id):
+        try:
+            print_recipe = require_gyroid_print_recipe_with_profile(req.preset_id, req.print_recipe)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     logger.info(
         "manufacture start job=%s design=%s preset=%s output=%s belt=%.1f side=%s",

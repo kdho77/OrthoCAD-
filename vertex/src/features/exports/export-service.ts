@@ -13,6 +13,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
 import type { ExportFormat, GrindingStyle, Side } from "@/types";
+import { bindPrintRecipeProfile } from "../../../shared/print-recipe/print-recipe";
 
 // Re-export for convenience in UI components
 export type GrindingStyleInput = GrindingStyle;
@@ -177,7 +178,7 @@ export async function generateHybridGcode(
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
             const design = useDesignStore.getState().design;
-            const printRecipe = design.printRecipe;
+            const printRecipe = bindPrintRecipeProfile(design.printRecipe, preset.id);
 
             const res = await trpc.manufacturing.generateSolid.mutate({
                 designId: activeDesignId || undefined,
