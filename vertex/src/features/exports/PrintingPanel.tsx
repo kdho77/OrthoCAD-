@@ -13,7 +13,6 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
 import { SIDE_LABELS, type Side } from "@/types";
 import {
-    DEFAULT_INCLUDE_PRODUCTION_LABEL,
     gyroidInfillPctForHardness,
     HARDNESS_NAMES,
     HARDNESS_TO_INFILL_PCT,
@@ -21,7 +20,6 @@ import {
     infillFractionFromRecipe,
     migratePrintRecipe,
 } from "../../../shared/print-recipe/print-recipe";
-import { buildProductionReleaseLabel } from "../../../shared/print-recipe/production-label";
 
 function fmtTime(sec: number): string {
     const h = Math.floor(sec / 3600);
@@ -35,18 +33,10 @@ const HARDNESS_UNCERTAINTY_COPY =
 
 export function PrintingPanel() {
     const { user, license } = useAuthStore();
-    const {
-        design,
-        exportSide,
-        setExportSide,
-        setPrintHardness,
-        setPrintProfile,
-        setProductionLabelEnabled,
-    } = useDesignStore();
+    const { design, exportSide, setExportSide, setPrintHardness, setPrintProfile } = useDesignStore();
     const printRecipe = migratePrintRecipe(design.printRecipe);
     const activeHardness = printRecipe.defaultHardness;
     const activeGyroidPct = gyroidInfillPctForHardness(activeHardness, printRecipe.hardnessToInfillPct);
-    const productionLabelOn = printRecipe.includeProductionLabel ?? DEFAULT_INCLUDE_PRODUCTION_LABEL;
 
     const [layerHeight, setLayerHeight] = useState(0.3);
     const [toolDia, setToolDia] = useState(6);
@@ -54,6 +44,7 @@ export function PrintingPanel() {
     const [status, setStatus] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
 
+    // Hybrid manufacturing (server-side solid + G-code) controls
     const [grindingStyle, setGrindingStyle] = useState<GrindingStyleInput>({
         type: "straight",
         angle_degrees: 8,
@@ -72,7 +63,8 @@ export function PrintingPanel() {
     }, [lockedProfileId, preset, setPrintProfile]);
 
     const isBeltPreset = !!preset?.beltAngleDeg;
-    const productionProfileReady = !!lockedProfileId?.trim() && presets.some((p) => p.id === lockedProfileId);
+    const productionProfileReady =
+        !!lockedProfileId?.trim() && presets.some((p) => p.id === lockedProfileId);
 
     const isCnc = design.method === "milling_3axis";
     const gcodeCheck = canExport(user, license, "gcode");
@@ -83,15 +75,6 @@ export function PrintingPanel() {
               layerHeightMm: layerHeight,
               infillDensity: infillFractionFromRecipe(printRecipe),
           };
-
-    const releaseLabelPreview =
-        isBeltPreset && productionLabelOn && preset
-            ? buildProductionReleaseLabel({
-                  side: exportSide,
-                  recipe: printRecipe,
-                  profileDisplayName: preset.name,
-              })
-            : null;
 
     const buildGeom = () => getKernel().buildInsole(insoleParamsFromDesign(design, exportSide, "full"));
 
@@ -165,7 +148,7 @@ export function PrintingPanel() {
 
             <div className="space-y-1.5">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {isCnc ? "Mill preset" : "Printer profile"}
+                    {isCnc ? "Mill preset" : "Printer preset"}
                 </div>
                 {presets.map((p) => (
                     <button
@@ -173,75 +156,22 @@ export function PrintingPanel() {
                         type="button"
                         onClick={() => setPrintProfile(p.id)}
                         className={cn(
-                            "flex w-full flex-col gap-1 rounded-md border px-2 py-2 text-left text-xs",
+                            "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left text-xs",
                             lockedProfileId === p.id
                                 ? "border-primary bg-primary/10 text-foreground"
                                 : "border-border bg-background text-muted-foreground",
                         )}
                     >
-                        <div className="flex w-full items-center gap-2">
-                            {isCnc ? (
-                                <Cpu className="h-3.5 w-3.5 shrink-0" />
-                            ) : (
-                                <Printer className="h-3.5 w-3.5 shrink-0" />
-                            )}
-                            <span className="font-medium">{p.name}</span>
-                            {p.beltAngleDeg ? (
-                                <span className="ml-auto rounded bg-muted px-1 text-[10px]">
-                                    belt {p.beltAngleDeg}°
-                                </span>
-                            ) : null}
-                        </div>
-                        {!isCnc && lockedProfileId === p.id ? (
-                            <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 pl-5 text-[10px] text-muted-foreground">
-                                {p.material ? <span>Material: {p.material}</span> : null}
-                                {p.nozzleMm ? <span>Nozzle: {p.nozzleMm} mm</span> : null}
-                                {p.layerHeightMm ? <span>Layer: {p.layerHeightMm} mm</span> : null}
-                                {p.nozzleTempC != null ? <span>Nozzle temp: {p.nozzleTempC}°C</span> : null}
-                                {p.perimeters != null ? <span>Walls: {p.perimeters}</span> : null}
-                                {p.infillPattern ? (
-                                    <span className="col-span-2">
-                                        Infill: {p.infillPattern} (experimental)
-                                    </span>
-                                ) : null}
-                            </div>
+                        {isCnc ? <Cpu className="h-3.5 w-3.5" /> : <Printer className="h-3.5 w-3.5" />}
+                        {p.name}
+                        {p.beltAngleDeg ? (
+                            <span className="ml-auto rounded bg-muted px-1 text-[10px]">
+                                belt {p.beltAngleDeg}°
+                            </span>
                         ) : null}
                     </button>
                 ))}
             </div>
-
-            {isBeltPreset && (
-                <div className="space-y-1.5 rounded-md border border-border bg-background/40 p-2">
-                    <div className="flex items-center justify-between gap-2">
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                            Production release label
-                        </div>
-                        <button
-                            type="button"
-                            role="switch"
-                            aria-checked={productionLabelOn}
-                            onClick={() => setProductionLabelEnabled(!productionLabelOn)}
-                            className={cn(
-                                "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                                productionLabelOn
-                                    ? "bg-primary text-primary-foreground"
-                                    : "bg-muted text-muted-foreground",
-                            )}
-                        >
-                            {productionLabelOn ? "On (recommended)" : "Off"}
-                        </button>
-                    </div>
-                    <p className="text-[10px] text-muted-foreground">
-                        When enabled, belt G-code and manufacturing metadata include a human-readable release
-                        label for shop identification (side, hardness ladder, profile).
-                    </p>
-                    {productionLabelOn && releaseLabelPreview ? (
-                        <p className="rounded bg-muted/80 px-2 py-1 text-[10px] font-mono leading-snug">
-                            {releaseLabelPreview}
-                        </p>
-                    ) : null}
-                </div>
-            )}
 
             {isBeltPreset && (
                 <div className="space-y-1.5">
@@ -326,9 +256,9 @@ export function PrintingPanel() {
                             </button>
                         ))}
                         <p className="text-[10px] text-muted-foreground">
-                            Selected: {activeHardness} ({activeGyroidPct}% gyroid target under locked
-                            profile). Server hybrid uses gyroid infill (experimental); client preview is a
-                            fast rectilinear approximation only.
+                            Selected: {activeHardness} ({activeGyroidPct}% gyroid target under locked profile).
+                            Server hybrid uses gyroid infill (experimental); client preview is a fast
+                            rectilinear approximation only.
                         </p>
                         <p className="text-[10px] text-muted-foreground">{HARDNESS_UNCERTAINTY_COPY}</p>
                     </div>
@@ -376,7 +306,7 @@ export function PrintingPanel() {
 
             {isBeltPreset && !productionProfileReady ? (
                 <p className="text-xs text-amber-400">
-                    Select a printer profile and device hardness before server G-code (locked production
+                    Select a printer preset and device hardness before server G-code (locked production
                     profile required).
                 </p>
             ) : null}
@@ -385,7 +315,7 @@ export function PrintingPanel() {
 
             <p className="text-xs text-muted-foreground">
                 {preset?.beltAngleDeg
-                    ? `Belt profiles support client preview or server G-code from the finished viewer solid.`
+                    ? `Belt presets support client preview or server G-code from the finished viewer solid.`
                     : "In-house CAM engine (Kiri:Moto-compatible seam)."}
             </p>
         </div>

@@ -5,19 +5,41 @@ import {
     buildExportStl,
     exportModeFromMethod,
 } from "@/lib/geometry/export-geometry";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { mapClientRpcError } from "@/lib/trpc-errors";
 import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
+import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
-import type { ExportFormat, GrindingStyle, Side } from "@/types";
-import { bindPrintRecipeProfile } from "../../../shared/print-recipe/print-recipe";
-import { buildProductionReleaseLabel } from "../../../shared/print-recipe/production-label";
+import type { ExportFormat, GrindingStyle, PlacedElement, Side } from "@/types";
+import {
+    bindPrintRecipeProfile,
+    migratePrintRecipe,
+    preparePrintRecipeForManufacturing,
+} from "../../../shared/print-recipe/print-recipe";
 
 // Re-export for convenience in UI components
 export type GrindingStyleInput = GrindingStyle;
+
+function elementFootprintsForRecipe(elements: PlacedElement[]) {
+    const lib = useCustomLibraryStore.getState().customElements;
+    return elements.map((e) => {
+        let parentStockId: string | null | undefined;
+        if (e.kind === "custom" && e.customElementId) {
+            parentStockId = lib.find((item) => item.id === e.customElementId)?.parentStockId;
+        }
+        return {
+            kind: e.kind,
+            side: e.side,
+            position: e.position,
+            customName: e.customName,
+            parentStockId,
+        };
+    });
+}
 
 export interface ExportOutcome {
     ok: boolean;
@@ -179,38 +201,25 @@ export async function generateHybridGcode(
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
             const design = useDesignStore.getState().design;
-            const printRecipe = bindPrintRecipeProfile(design.printRecipe, preset.id);
-            const profilePreset = preset;
-
-            const clientState = useClientStore.getState();
-            const activeClient = clientState.clients.find((c) => c.id === clientState.activeClientId);
-            const clientLabel = activeClient
-                ? `${activeClient.firstName} ${activeClient.lastName}`.trim()
-                : undefined;
-
-            const productionReleaseLabel =
-                printRecipe.includeProductionLabel !== false
-                    ? buildProductionReleaseLabel({
-                          side,
-                          recipe: printRecipe,
-                          profileDisplayName: profilePreset.name,
-                          clientLabel,
-                          designId: activeDesignId || undefined,
-                      })
-                    : undefined;
+            const layout = insoleLayoutFromDesign(design);
+            const printRecipe = preparePrintRecipeForManufacturing(
+                bindPrintRecipeProfile(design.printRecipe, preset.id),
+                elementFootprintsForRecipe(design.elements),
+                layout.lengthMm,
+                layout.widthMm,
+            );
 
             const res = await trpc.manufacturing.generateSolid.mutate({
                 designId: activeDesignId || undefined,
                 side,
-                presetId: lockedPresetId,
+                presetId: preset.id,
                 stlStorageKey,
                 outputType,
-                beltAngleDeg: profilePreset.beltAngleDeg ?? 45,
+                beltAngleDeg: preset.beltAngleDeg ?? 45,
                 layerHeightMm: overrides.layerHeightMm,
                 printRecipe,
                 perimeters: overrides.perimeters,
                 grindingStyle,
-                productionReleaseLabel,
                 fileName: filename,
             });
 

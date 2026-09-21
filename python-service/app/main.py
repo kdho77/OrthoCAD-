@@ -21,12 +21,14 @@ from fastapi.responses import JSONResponse
 from app.models.requests import GenerateSolidRequest
 from app.services.belt_transformer import apply_belt_transform
 from app.services.presets import get_preset, is_known_preset
+from app.services.material_zones import ZoneValidationError
 from app.services.print_recipe import (
+    SoleUvFramePayload,
     coerce_print_recipe,
     is_gyroid_manufacturing_preset,
     require_gyroid_print_recipe_with_profile,
 )
-from app.services.production_label import build_production_release_label
+from app.services.sole_uv_map import SoleUvFrame
 from app.services.slicer import build_slice_overrides, generate_gcode_from_solid
 from app.services.stl_loader import download_stl_to_temp, load_watertight_stl
 
@@ -125,6 +127,19 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
         preset = get_preset(req.preset_id)
         preset["beltAngleDeg"] = belt_angle
 
+        if print_recipe is not None and print_recipe.zones and print_recipe.sole_uv_frame is None:
+            frame = SoleUvFrame.from_mesh_bounds(solid.bounds)
+            print_recipe = print_recipe.model_copy(
+                update={
+                    "sole_uv_frame": SoleUvFramePayload(
+                        min_x_mm=frame.min_x_mm,
+                        min_y_mm=frame.min_y_mm,
+                        length_mm=frame.length_mm,
+                        width_mm=frame.width_mm,
+                    ),
+                },
+            )
+
         if output_type == "stl":
             stl_bytes = solid.export(file_type="stl")
             logger.info("manufacture ok job=%s output=stl bytes=%d", req.job_id, len(stl_bytes))
@@ -151,17 +166,6 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
             perimeters=req.perimeters,
             print_recipe=print_recipe,
         )
-        release_label: str | None = None
-        if print_recipe and print_recipe.include_production_label:
-            release_label = req.production_release_label
-            if not release_label:
-                release_label = build_production_release_label(
-                    side=req.side,
-                    recipe=print_recipe,
-                    profile_display_name=str(preset.get("name", req.preset_id)),
-                    design_id=req.design_id,
-                )
-            overrides["productionReleaseLabel"] = release_label
         gcode = generate_gcode_from_solid(transformed, preset, overrides)
 
         logger.info("manufacture ok job=%s output=gcode bytes=%d", req.job_id, len(gcode))
@@ -182,13 +186,14 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
                     "perimeters": overrides["perimeters"],
                     "infillPattern": overrides.get("infillPattern"),
                     "printRecipe": print_recipe.model_dump() if print_recipe else None,
-                    "productionReleaseLabel": overrides.get("productionReleaseLabel"),
                 },
             }
         )
 
     except HTTPException:
         raise
+    except ZoneValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("manufacture failed job=%s: %s", req.job_id, e)
         raise HTTPException(status_code=500, detail=f"Manufacturing failed: {str(e)}") from e

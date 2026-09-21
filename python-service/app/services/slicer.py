@@ -19,8 +19,12 @@ import trimesh
 
 from app.services.belt_wall_slice import slice_belt_layer_contours
 from app.services.geometry_utils import ensure_watertight
-from app.services.gyroid_infill import generate_gyroid_infill_for_layer
+from app.services.gyroid_infill import (
+    generate_gyroid_infill_for_layer,
+    generate_gyroid_infill_zoned_for_layer,
+)
 from app.services.print_recipe import PrintRecipeV1
+from app.services.sole_uv_map import SoleUvFrame
 
 # ---------------------------------------------------------------------------
 # Basic types mirroring the spirit of the TS kiri code
@@ -104,6 +108,41 @@ class GcodeBuilder:
 # ---------------------------------------------------------------------------
 
 
+def _section_wall_contours_for_layer(
+    solid: trimesh.Trimesh,
+    z: float,
+    perimeters: int,
+    extrusion_width_mm: float,
+) -> list[np.ndarray]:
+    """Planar section walls for zoned gyroid clip (A2 coupon gates / sole-UV field)."""
+    plane_normal = np.array([0.0, 0.0, 1.0])
+    try:
+        path = solid.section(plane_origin=[0, 0, z], plane_normal=plane_normal)
+    except Exception:
+        path = None
+
+    contours: list[np.ndarray] = []
+    if path is not None and len(getattr(path, "entities", [])) > 0:
+        for entity in getattr(path, "entities", []):
+            pts = path.vertices[entity.points]
+            if len(pts) >= 3:
+                contours.append(pts[:, :2])
+
+    wall_contours: list[np.ndarray] = []
+    if contours:
+        for c in contours:
+            if len(c) < 3:
+                continue
+            wall_contours.append(c)
+            cx, cy = float(c[:, 0].mean()), float(c[:, 1].mean())
+            for w in range(1, max(1, perimeters)):
+                inset = extrusion_width_mm * 0.85 * w
+                dirs = np.stack([cx - c[:, 0], cy - c[:, 1]], axis=1)
+                norms = np.linalg.norm(dirs, axis=1, keepdims=True) + 1e-9
+                wall_contours.append(c - (dirs / norms) * inset)
+    return wall_contours
+
+
 def slice_solid(
     solid: trimesh.Trimesh,
     layer_height_mm: float = 0.30,
@@ -114,6 +153,8 @@ def slice_solid(
     infill_angle_deg: float = 45.0,
     infill_pattern: str = "rectilinear",
     belt_gantry_angle_deg: float | None = None,
+    print_recipe: PrintRecipeV1 | None = None,
+    sole_uv_frame: SoleUvFrame | None = None,
 ) -> list[dict[str, Any]]:
     """
     Belt TPU slicer: racetrack-aware walls first, then infill inside the wall region.
@@ -163,13 +204,32 @@ def slice_solid(
         infill: list[np.ndarray] = []
         if wall_contours and eff_density > 0.01:
             if infill_pattern == "gyroid" and not is_solid:
-                infill = generate_gyroid_infill_for_layer(
-                    wall_contours,
-                    z,
-                    eff_density,
-                    extrusion_width_mm,
-                    perimeters=perimeters,
-                )
+                use_zones = bool(print_recipe and print_recipe.zones and sole_uv_frame)
+                if use_zones and print_recipe is not None and sole_uv_frame is not None:
+                    clip_contours = _section_wall_contours_for_layer(
+                        solid,
+                        z,
+                        perimeters,
+                        extrusion_width_mm,
+                    )
+                    if not clip_contours:
+                        clip_contours = wall_contours
+                    infill = generate_gyroid_infill_zoned_for_layer(
+                        clip_contours,
+                        z,
+                        extrusion_width_mm,
+                        print_recipe,
+                        sole_uv_frame,
+                        belt_angle,
+                    )
+                else:
+                    infill = generate_gyroid_infill_for_layer(
+                        wall_contours,
+                        z,
+                        eff_density,
+                        extrusion_width_mm,
+                        perimeters=perimeters,
+                    )
             else:
                 infill = rect_infill
                 if not infill and not is_solid:
@@ -238,13 +298,8 @@ def emit_gcode(
     )
 
     belt = preset.get("beltAngleDeg")
-    production_label = o.get("productionReleaseLabel")
     g.comment("OrthoCAD Hybrid Manufacturing — belt-aware slicer (walls + gyroid/rectilinear infill)")
     g.comment(f"preset={preset.get('name','unknown')} layerH={layer_h}mm nozzle={nozzle}mm belt={belt}° material=TPU")
-    if production_label:
-        g.comment("PRODUCTION_RELEASE_LABEL")
-        g.comment(str(production_label))
-        g.comment("END_PRODUCTION_RELEASE_LABEL")
     g.raw("G21")
     g.raw("G90")
     g.raw("M82")
@@ -325,6 +380,22 @@ def build_slice_overrides(
         overrides["infillDensity"] = print_recipe.infill_fraction()
         overrides["infillPattern"] = "gyroid"
         overrides["printRecipe"] = print_recipe
+        frame: SoleUvFrame | None = None
+        if print_recipe.sole_uv_frame is not None:
+            sf = print_recipe.sole_uv_frame
+            frame = SoleUvFrame(
+                min_x_mm=sf.min_x_mm,
+                min_y_mm=sf.min_y_mm,
+                length_mm=sf.length_mm,
+                width_mm=sf.width_mm,
+            )
+        if frame is not None and print_recipe.zones:
+            zones = [
+                MaterialZoneV1.model_validate(z) if isinstance(z, dict) else z
+                for z in print_recipe.zones
+            ]
+            validate_material_zones(zones, frame, extrusion_width_mm=0.48)
+        overrides["soleUvFrame"] = frame
     elif infill_density is not None:
         overrides["infillDensity"] = infill_density
     return overrides
@@ -350,5 +421,7 @@ def generate_gcode_from_solid(
         infill_angle_deg=float(preset.get("infillAngleDeg", 45)),
         infill_pattern=str(o.get("infillPattern", "rectilinear")),
         belt_gantry_angle_deg=belt_angle,
+        print_recipe=o.get("printRecipe"),
+        sole_uv_frame=o.get("soleUvFrame"),
     )
     return emit_gcode(layers, preset, overrides)

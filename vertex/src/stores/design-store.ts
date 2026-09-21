@@ -38,6 +38,7 @@ import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geo
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
+import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { buildEffectiveTrimlines, useIssuesStore } from "@/stores/issues-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
@@ -58,11 +59,44 @@ import type {
     WedgeCorrection,
 } from "@/types";
 import {
+    applyAutoLesionTagsToRecipe,
+    type ElementFootprintInput,
+} from "../../shared/print-recipe/accommodative-auto-tags";
+import {
     bindPrintRecipeProfile,
     type HardnessName,
     migratePrintRecipe,
-    setProductionLabelEnabled,
 } from "../../shared/print-recipe/print-recipe";
+
+function elementFootprintsForAutoTags(elements: PlacedElement[]): ElementFootprintInput[] {
+    const lib = useCustomLibraryStore.getState().customElements;
+    return elements.map((e) => {
+        let parentStockId: string | null | undefined;
+        if (e.kind === "custom" && e.customElementId) {
+            parentStockId = lib.find((item) => item.id === e.customElementId)?.parentStockId;
+        }
+        return {
+            kind: e.kind,
+            side: e.side,
+            position: e.position,
+            customName: e.customName,
+            parentStockId,
+        };
+    });
+}
+
+function syncPrintRecipeLesionTags(design: DesignState): DesignState {
+    const layout = insoleLayoutFromDesign(design);
+    const recipe = migratePrintRecipe(design.printRecipe);
+    if (!recipe.zones.length) return design;
+    const tagged = applyAutoLesionTagsToRecipe(
+        recipe,
+        elementFootprintsForAutoTags(design.elements),
+        layout.lengthMm,
+        layout.widthMm,
+    );
+    return { ...design, printRecipe: tagged };
+}
 
 function defaultSideCorrections(): SideCorrections {
     return {
@@ -426,7 +460,6 @@ export interface DesignStore {
     /** Named whole-device hardness (Phase A PrintRecipe). */
     setPrintHardness: (hardness: HardnessName) => void;
     setPrintProfile: (profileId: string, hardness?: HardnessName) => void;
-    setProductionLabelEnabled: (enabled: boolean) => void;
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
@@ -552,15 +585,6 @@ export const useDesignStore = create<DesignStore>()(
                     design: {
                         ...s.design,
                         printRecipe: bindPrintRecipeProfile(s.design.printRecipe, profileId, hardness),
-                    },
-                }));
-            },
-            setProductionLabelEnabled: (enabled) => {
-                get().checkpoint("production-label");
-                set((s) => ({
-                    design: {
-                        ...s.design,
-                        printRecipe: setProductionLabelEnabled(s.design.printRecipe, enabled),
                     },
                 }));
             },
@@ -849,7 +873,10 @@ export const useDesignStore = create<DesignStore>()(
                         side,
                         ...pose,
                     };
-                    const next = { ...s.design, elements: [...s.design.elements, el] };
+                    const next = syncPrintRecipeLesionTags({
+                        ...s.design,
+                        elements: [...s.design.elements, el],
+                    });
                     const eff = buildEffectiveTrimlines(next);
                     useIssuesStore.getState().recompute(next, eff);
                     return { design: next, selectedElementId: el.id };
@@ -870,7 +897,10 @@ export const useDesignStore = create<DesignStore>()(
                         scale: { x: 1, y: 1 },
                         heightMm: 4,
                     };
-                    const next = { ...s.design, elements: [...s.design.elements, el] };
+                    const next = syncPrintRecipeLesionTags({
+                        ...s.design,
+                        elements: [...s.design.elements, el],
+                    });
                     const eff = buildEffectiveTrimlines(next);
                     useIssuesStore.getState().recompute(next, eff);
                     return { design: next, selectedElementId: el.id };
@@ -1051,7 +1081,7 @@ export const useDesignStore = create<DesignStore>()(
             updateElement: (id, patch) =>
                 set((s) => {
                     const nextElements = s.design.elements.map((e) => (e.id === id ? { ...e, ...patch } : e));
-                    const next = { ...s.design, elements: nextElements };
+                    const next = syncPrintRecipeLesionTags({ ...s.design, elements: nextElements });
                     // Recompute orphans when an element moves/scales (common source of "outside trimline").
                     const eff = buildEffectiveTrimlines(next);
                     useIssuesStore.getState().recompute(next, eff);
@@ -1062,7 +1092,7 @@ export const useDesignStore = create<DesignStore>()(
                 get().checkpoint("remove-element");
                 set((s) => {
                     const nextElements = s.design.elements.filter((e) => e.id !== id);
-                    const next = { ...s.design, elements: nextElements };
+                    const next = syncPrintRecipeLesionTags({ ...s.design, elements: nextElements });
                     const eff = buildEffectiveTrimlines(next);
                     useIssuesStore.getState().recompute(next, eff);
                     return {
@@ -1097,16 +1127,15 @@ export const useDesignStore = create<DesignStore>()(
                         side: e.side,
                         ...defaultElementPose(e.kind, e.side, layout.lengthMm, layout.widthMm),
                     }));
-                    return {
-                        design: {
-                            ...s.design,
-                            pattern: result.pattern ?? s.design.pattern,
-                            method: result.method ?? s.design.method,
-                            thicknessMm: r1.thicknessMm,
-                            corrections,
-                            elements: [...s.design.elements, ...elements],
-                        },
-                    };
+                    const next = syncPrintRecipeLesionTags({
+                        ...s.design,
+                        pattern: result.pattern ?? s.design.pattern,
+                        method: result.method ?? s.design.method,
+                        thicknessMm: r1.thicknessMm,
+                        corrections,
+                        elements: [...s.design.elements, ...elements],
+                    });
+                    return { design: next };
                 });
                 requestAnimationFrame(() => usePerformanceStore.getState().setInteracting(false));
             },
@@ -1135,6 +1164,7 @@ export const useDesignStore = create<DesignStore>()(
                     safeDesign = createDesignWithStockPlaceholder(safeDesign);
                 }
                 safeDesign = sanitizeDesignStockBases(safeDesign);
+                safeDesign = syncPrintRecipeLesionTags(safeDesign);
                 const eff = buildEffectiveTrimlines(safeDesign);
                 useIssuesStore.getState().recompute(safeDesign, eff);
                 const needsResolution = !hadBase || designNeedsDefaultStockResolution(safeDesign);

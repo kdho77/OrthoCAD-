@@ -1,0 +1,41 @@
+{
+    "fixture_id": "A2-F1",
+    "description": "Midline sagittal split: Soft 20% (heel half) | Hard 32% (forefoot half)",
+    "sole_uv_frame": { "min_x_mm": -20, "min_y_mm": -20, "length_mm": 40, "width_mm": 40 },
+    "belt_angle_deg": 45,
+    "expected_zones": [
+        { "zone_id": "heel-soft", "target_pct": 20, "sample_uv": { "u": 0.25, "v": 0 } },
+        { "zone_id": "fore-hard", "target_pct": 32, "sample_uv": { "u": 0.75, "v": 0 } }
+    ],
+    "print_recipe": {
+        "version": 1,
+        "pattern": "gyroid",
+        "default_hardness": "Medium",
+        "override_soft_wins": false,
+        "sole_uv_frame": { "min_x_mm": -20, "min_y_mm": -20, "length_mm": 40, "width_mm": 40 },
+        "zones": [
+            {
+                "zone_id": "heel-soft",
+                "anatomic_label": "Heel soft half",
+                "hardness_name": "Soft",
+                "boundary_sole_uv": [
+                    { "u": 0, "v": -1 },
+                    { "u": 0.5, "v": -1 },
+                    { "u": 0.5, "v": 1 },
+                    { "u": 0, "v": 1 }
+                ]
+            },
+            {
+                "zone_id": "fore-hard",
+                "anatomic_label": "Forefoot hard half",
+                "hardness_name": "Hard",
+                "boundary_sole_uv": [
+                    { "u": 0.5, "v": -1 },
+                    { "u": 1, "v": -1 },
+                    { "u": 1, "v": 1 },
+                    { "u": 0.5, "v": 1 }
+                ]
+            }
+        ]
+    }
+}

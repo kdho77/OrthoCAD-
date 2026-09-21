@@ -48,6 +48,13 @@ GYROID_MANUFACTURING_PRESET_IDS = frozenset(
 )
 
 
+class SoleUvFramePayload(BaseModel):
+    min_x_mm: float
+    min_y_mm: float
+    length_mm: float
+    width_mm: float
+
+
 class PrintRecipeV1(BaseModel):
     version: Literal[1] = 1
     pattern: Literal["gyroid"] = "gyroid"
@@ -55,7 +62,8 @@ class PrintRecipeV1(BaseModel):
     default_hardness: HardnessName = "Medium"
     zones: list[Any] = Field(default_factory=list)
     hardness_to_infill_pct: dict[str, int] | None = None
-    include_production_label: bool = True
+    override_soft_wins: bool = False
+    sole_uv_frame: SoleUvFramePayload | None = None
 
     def resolved_infill_percent(self) -> int:
         table = self.hardness_to_infill_pct or HARDNESS_TO_INFILL_PCT
