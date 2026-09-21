@@ -15,6 +15,7 @@ import { useClientStore } from "@/stores/client-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
 import type { ExportFormat, GrindingStyle, PlacedElement, Side } from "@/types";
+import { evaluateHardnessZonesForProduction } from "../../../shared/print-recipe/hardness-zone-guard";
 import {
     bindPrintRecipeProfile,
     migratePrintRecipe,
@@ -195,15 +196,20 @@ export async function generateHybridGcode(
     const ext = outputType === "gcode" ? "gcode" : "stl";
     const filename = `hybrid-${side}-${preset.id}-${Date.now()}.${ext}`;
 
+    const design = useDesignStore.getState().design;
+    const layout = insoleLayoutFromDesign(design);
+    const zoneGate = evaluateHardnessZonesForProduction(design.printRecipe, layout.lengthMm, layout.widthMm);
+    if (zoneGate.blockReason) {
+        return { ok: false, reason: zoneGate.blockReason };
+    }
+
     if (isApiConfigured()) {
         try {
             const stlBuffer = await buildManufacturingStl(side);
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
-            const design = useDesignStore.getState().design;
-            const layout = insoleLayoutFromDesign(design);
             const printRecipe = preparePrintRecipeForManufacturing(
-                bindPrintRecipeProfile(design.printRecipe, preset.id),
+                bindPrintRecipeProfile(zoneGate.recipe, preset.id),
                 elementFootprintsForRecipe(design.elements),
                 layout.lengthMm,
                 layout.widthMm,

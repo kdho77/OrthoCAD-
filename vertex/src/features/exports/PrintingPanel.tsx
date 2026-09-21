@@ -7,6 +7,7 @@ import { stlExportUserMessage } from "@/features/exports/export-user-message";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/chili3d/kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { type CamOverrides, type CamResult, generateGcode, presetsForMethod } from "@/lib/kiri";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
@@ -20,6 +21,8 @@ import {
     infillFractionFromRecipe,
     migratePrintRecipe,
 } from "../../../shared/print-recipe/print-recipe";
+import { HardnessZonesPanel } from "@/features/exports/HardnessZonesPanel";
+import { evaluateHardnessZonesForProduction } from "../../../shared/print-recipe/hardness-zone-guard";
 
 function fmtTime(sec: number): string {
     const h = Math.floor(sec / 3600);
@@ -68,6 +71,12 @@ export function PrintingPanel() {
 
     const isCnc = design.method === "milling_3axis";
     const gcodeCheck = canExport(user, license, "gcode");
+    const layout = useMemo(() => insoleLayoutFromDesign(design), [design]);
+    const zoneProductionGate = useMemo(
+        () => evaluateHardnessZonesForProduction(printRecipe, layout.lengthMm, layout.widthMm),
+        [printRecipe, layout.lengthMm, layout.widthMm],
+    );
+    const hybridBlockedReason = zoneProductionGate.blockReason;
 
     const overrides: CamOverrides = isCnc
         ? { toolDiameterMm: toolDia }
@@ -106,6 +115,10 @@ export function PrintingPanel() {
 
     const onHybridGenerate = async () => {
         if (!preset || !isBeltPreset) return;
+        if (hybridBlockedReason) {
+            setStatus(hybridBlockedReason);
+            return;
+        }
         setBusy(true);
         setStatus("Exporting finished solid and generating G-code on server…");
         setResult(null);
@@ -262,6 +275,7 @@ export function PrintingPanel() {
                         </p>
                         <p className="text-[10px] text-muted-foreground">{HARDNESS_UNCERTAINTY_COPY}</p>
                     </div>
+                    {!isCnc ? <HardnessZonesPanel /> : null}
                 </>
             )}
 
@@ -295,16 +309,29 @@ export function PrintingPanel() {
                 <Button
                     variant="default"
                     className="w-full"
-                    disabled={busy || !preset || !gcodeCheck.ok || !productionProfileReady}
+                    disabled={
+                        busy || !preset || !gcodeCheck.ok || !productionProfileReady || !!hybridBlockedReason
+                    }
                     onClick={onHybridGenerate}
-                    title="Exports the finished viewer solid as STL, uploads to server, then slices with belt transform"
+                    title={
+                        hybridBlockedReason ??
+                        "Exports the finished viewer solid as STL, uploads to server, then slices with belt transform"
+                    }
                 >
-                    {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                    {gcodeCheck.ok && !hybridBlockedReason ? (
+                        <Download className="h-4 w-4" />
+                    ) : (
+                        <Lock className="h-4 w-4" />
+                    )}
                     Generate G-code (Server) — {grindingStyle.type}
                 </Button>
             )}
 
-            {isBeltPreset && !productionProfileReady ? (
+            {hybridBlockedReason ? (
+                <p className="text-xs text-amber-200" role="alert">
+                    {hybridBlockedReason}
+                </p>
+            ) : isBeltPreset && !productionProfileReady ? (
                 <p className="text-xs text-amber-400">
                     Select a printer preset and device hardness before server G-code (locked production
                     profile required).
