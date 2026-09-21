@@ -23,7 +23,10 @@ export type ElementShape =
     | "reverse_mortons" // 2–5 platform with 1st-ray notch
     | "kinetic_oval" // 1st MPJ relief cutout
     | "heel_cup" // circular heel sink
-    | "navicular_oval"; // oval navicular sink
+    | "navicular_oval" // oval navicular sink
+    | "scaphoid_pad" // medial midfoot scaphoid / navicular pad
+    | "heel_cushion" // accommodative heel cushion
+    | "dancers_pad"; // lateral sulcus / 5th ray relief
 
 export interface ElementProfile {
     /** Base half-extents in mm along (length / AP, width / ML) before scale. */
@@ -131,6 +134,43 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultU: 0.38,
         defaultMedial: 0.55,
     },
+    // Scaphoid / navicular accommodative pad — medial midfoot, 0–8 mm.
+    scaphoid_pad: {
+        rxMm: 16,
+        ryMm: 12,
+        sign: 1,
+        shape: "scaphoid_pad",
+        defaultHeightMm: 4,
+        defaultU: 0.42,
+        defaultMedial: 0.62,
+    },
+    // Heel cushion — full heel accommodative layer, 0–6 mm.
+    heel_cushion: {
+        rxMm: 22,
+        ryMm: 20,
+        sign: 1,
+        shape: "heel_cushion",
+        defaultHeightMm: 3,
+        defaultU: 0.14,
+        defaultMedial: 0,
+    },
+    // Dancer's pad — lateral forefoot / sulcus relief, 0–6 mm.
+    dancers_pad: {
+        rxMm: 18,
+        ryMm: 10,
+        sign: 1,
+        shape: "dancers_pad",
+        defaultHeightMm: 2.5,
+        defaultU: 0.7,
+        defaultMedial: -0.55,
+    },
+};
+
+/** Clinical height sliders per stock kind (mm). */
+export const ELEMENT_HEIGHT_LIMITS: Partial<Record<ElementKind, { min: number; max: number }>> = {
+    scaphoid_pad: { min: 0, max: 8 },
+    heel_cushion: { min: 0, max: 6 },
+    dancers_pad: { min: 0, max: 6 },
 };
 
 const DEG = Math.PI / 180;
@@ -303,6 +343,12 @@ export function elementFootprintT(
             return superEllipseT(lx, ly, rx, ry, 2);
         case "navicular_oval":
             return superEllipseT(lx, ly, rx, ry, 2.4);
+        case "scaphoid_pad":
+            return superEllipseT(lx, ly, rx, ry, 2.6);
+        case "heel_cushion":
+            return superEllipseT(lx, ly, rx, ry, 2.2);
+        case "dancers_pad":
+            return superEllipseT(lx - rx * 0.15, ly, rx * 0.9, ry, 2.8);
         default:
             return Math.hypot(lx / rx, ly / ry);
     }

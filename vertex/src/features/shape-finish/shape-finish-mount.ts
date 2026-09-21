@@ -13,7 +13,7 @@
  */
 
 /** Flip to `true` when PR #168 clinical workflow lands on main. */
-export const CLINICAL_RAIL_PR168_AVAILABLE = false;
+export const CLINICAL_RAIL_PR168_AVAILABLE = true;
 
 export type ShapeFinishMountId = "clinical-shape" | "clinical-print-advanced" | "printing-tab-fallback";
 

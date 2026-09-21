@@ -52,6 +52,9 @@ export const STOCK_ELEMENTS: StockElementEntry[] = [
     { id: "kinetic_wedge", label: "Kinetic Wedge", category: "wedge", stock: true },
     { id: "heel_sink", label: "Heel Sink", category: "sink", stock: true },
     { id: "navicular_sink", label: "Navicular Sink", category: "sink", stock: true },
+    { id: "scaphoid_pad", label: "Scaphoid Pad", category: "pad", stock: true },
+    { id: "heel_cushion", label: "Heel Cushion", category: "pad", stock: true },
+    { id: "dancers_pad", label: "Dancer's Pad", category: "pad", stock: true },
 ];
 
 export const STOCK_PREFABS: StockPrefabEntry[] = [

@@ -4,6 +4,8 @@
 
 import type { PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
 
+export type { HardnessName, PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
+
 export type Role = "super_admin" | "admin" | "clinician";
 
 export type Side = "left" | "right";
@@ -166,7 +168,13 @@ export type ElementKind =
     | "reverse_mortons"
     | "heel_sink"
     | "navicular_sink"
-    | "kinetic_wedge";
+    | "kinetic_wedge"
+    | "scaphoid_pad"
+    | "heel_cushion"
+    | "dancers_pad";
+
+/** Top trim preset id — `custom` when the user edits the spline manually. */
+export type TrimPresetId = "full" | "sulcus" | "met_head" | "custom";
 
 export interface PlacedElement {
     id: string;
@@ -234,6 +242,8 @@ export interface DesignState {
     /** Optional base template; absent ⇒ full parametric generation. */
     base?: DesignBase;
     method: ProductionMethod;
+    /** Phase A gyroid hardness ladder (PrintRecipe v1). */
+    printRecipe?: PrintRecipeV1;
     thicknessMm: number;
     /**
      * Footprint size system. Default `"us"`.
@@ -255,9 +265,8 @@ export interface DesignState {
     elements: PlacedElement[];
     /** User-edited insole outline curves — persisted with the design. */
     trimlines?: DesignTrimlines;
-
-    /** Whole-device named hardness → gyroid density (Phase A). */
-    printRecipe?: PrintRecipeV1;
+    /** Active top-trim preset label per foot (cleared to custom on manual edit). */
+    trimPreset?: { left?: TrimPresetId; right?: TrimPresetId };
 
     /** Track 5b shape / finish (top cover, trimmable forefoot, arch grind / skive). */
     shapeFinish?: ShapeFinishModifiers;

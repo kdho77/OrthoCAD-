@@ -12,7 +12,7 @@ import {
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useIssuesStore } from "@/stores/issues-store";
-import type { Side } from "@/types";
+import type { Side, TrimPresetId } from "@/types";
 
 export type MeshEditMode = "transform" | "trim" | "vertex" | "edit-trimline";
 
@@ -27,6 +27,8 @@ export interface TrimlineEditSession {
     draft: TrimlineCurve;
     /** Snapshot taken at session start for cancel/revert. */
     snapshot: TrimlineCurve;
+    /** When set, committed on confirm (otherwise marks preset as custom). */
+    presetOnCommit?: TrimPresetId;
     /** Control point index where the current drag started. */
     dragAnchorIndex: number | null;
     /** Local footprint point where drag started (for delta computation). */
@@ -57,6 +59,8 @@ export interface MeshEditStore {
 
     /** Enter interactive trimline editing for a foot side. */
     beginTrimlineEdit: (side: Side) => void;
+    /** Begin trimline edit with a preset draft (preview before confirm). */
+    beginTrimlineEditWithDraft: (side: Side, draft: TrimlineCurve, presetOnCommit?: TrimPresetId) => void;
     /** Commit draft trimline to design store and exit edit mode. */
     confirmTrimlineEdit: () => void;
     /** Revert draft to session snapshot and exit edit mode. */
@@ -149,19 +153,21 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
         }),
 
     beginTrimlineEdit: (side) => {
-        // Phase 3A: checkpoint before entering a long-running edit session so that
-        // cancel (or later undo) reliably restores the pre-edit design state.
-        useDesignStore.getState().checkpoint("trimline-edit-begin");
         const base = committedOrDefault(side);
-        const snapshot = cloneTrimline(base);
-        const draft = cloneTrimline(base);
+        get().beginTrimlineEditWithDraft(side, base);
+    },
+
+    beginTrimlineEditWithDraft: (side, draft, presetOnCommit) => {
+        useDesignStore.getState().checkpoint("trimline-edit-begin");
+        const snapshot = cloneTrimline(committedOrDefault(side));
         set({
             editMode: "edit-trimline",
             target: { type: "insole", side },
             trimlineEdit: {
                 side,
-                draft,
+                draft: cloneTrimline(draft),
                 snapshot,
+                presetOnCommit,
                 dragAnchorIndex: null,
                 dragStartLocal: null,
                 isDragging: false,
@@ -175,7 +181,15 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
         // Checkpoint the post-trim state as its own history entry (the begin checkpoint
         // captured the pre-trim state, so undo after confirm steps back across the whole edit).
         useDesignStore.getState().checkpoint("trimline-edit-confirm");
-        useDesignStore.getState().setSideTrimline(session.side, session.draft);
+        const store = useDesignStore.getState();
+        const presetId = session.presetOnCommit ?? "custom";
+        store.setSideTrimline(session.side, session.draft);
+        store.setTrimPresetId(session.side, presetId);
+        if (store.design.corrections.linked) {
+            const other: Side = session.side === "left" ? "right" : "left";
+            store.setSideTrimline(other, session.draft);
+            store.setTrimPresetId(other, presetId);
+        }
         // Phase 3A: after committing a new footprint, surface any now-orphaned elements or correction regions.
         const design = useDesignStore.getState().design;
         const effective = { [session.side]: session.draft } as Partial<Record<Side, TrimlineCurve>>;

@@ -1,5 +1,11 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
+import {
+    applyCorrectionPresetToDesign,
+    type CorrectionPresetApplyMode,
+    type CorrectionPresetPayload,
+} from "@/lib/clinical/correction-presets";
 import {
     createDefaultStockPairedBases,
     createFallbackStockDesignPatch,
@@ -54,15 +60,11 @@ import type {
     Side,
     SideCorrections,
     SideShapeFinish,
+    TrimPresetId,
     Unit,
     WedgeCorrection,
 } from "@/types";
-import {
-    bindPrintRecipeProfile,
-    type HardnessName,
-    migratePrintRecipe,
-    setProductionLabelEnabled,
-} from "../../shared/print-recipe/print-recipe";
+import { type HardnessName, migratePrintRecipe } from "../../shared/print-recipe/print-recipe";
 
 function defaultSideCorrections(): SideCorrections {
     return {
@@ -425,8 +427,6 @@ export interface DesignStore {
     setMethod: (method: ProductionMethod) => void;
     /** Named whole-device hardness (Phase A PrintRecipe). */
     setPrintHardness: (hardness: HardnessName) => void;
-    setPrintProfile: (profileId: string, hardness?: HardnessName) => void;
-    setProductionLabelEnabled: (enabled: boolean) => void;
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
@@ -481,6 +481,15 @@ export interface DesignStore {
     setSideTrimline: (side: Side, curve: TrimlineCurve | null) => void;
     /** Remove custom trimline for one side (revert to parametric outline). */
     clearSideTrimline: (side: Side) => void;
+    /** Record top-trim preset id for a foot (or clear with custom). */
+    setTrimPresetId: (side: Side, preset: TrimPresetId | undefined) => void;
+
+    /** Apply a correction macro preset without changing the clinical workflow step. */
+    applyCorrectionPreset: (
+        payload: CorrectionPresetPayload,
+        mode: CorrectionPresetApplyMode,
+        options?: { includeElements?: boolean; activeSide?: Side },
+    ) => void;
 
     setViewer: (patch: Partial<ViewerSettings>) => void;
     setExportSide: (side: Side) => void;
@@ -541,28 +550,10 @@ export const useDesignStore = create<DesignStore>()(
                     return {
                         design: {
                             ...s.design,
-                            printRecipe: bindPrintRecipeProfile(recipe, recipe.profileId, hardness),
+                            printRecipe: { ...recipe, defaultHardness: hardness },
                         },
                     };
                 });
-            },
-            setPrintProfile: (profileId, hardness) => {
-                get().checkpoint("print-profile");
-                set((s) => ({
-                    design: {
-                        ...s.design,
-                        printRecipe: bindPrintRecipeProfile(s.design.printRecipe, profileId, hardness),
-                    },
-                }));
-            },
-            setProductionLabelEnabled: (enabled) => {
-                get().checkpoint("production-label");
-                set((s) => ({
-                    design: {
-                        ...s.design,
-                        printRecipe: setProductionLabelEnabled(s.design.printRecipe, enabled),
-                    },
-                }));
             },
             setThickness: (thicknessMm) =>
                 set((s) => {
@@ -1179,12 +1170,43 @@ export const useDesignStore = create<DesignStore>()(
                     if (!s.design.trimlines?.[side]) return s;
                     const trimlines = { ...s.design.trimlines };
                     delete trimlines[side];
+                    const trimPreset = { ...s.design.trimPreset };
+                    delete trimPreset[side];
                     return {
                         design: {
                             ...s.design,
                             trimlines: Object.keys(trimlines).length > 0 ? trimlines : undefined,
+                            trimPreset: Object.keys(trimPreset).length > 0 ? trimPreset : undefined,
                         },
                     };
+                });
+            },
+
+            setTrimPresetId: (side, preset) =>
+                set((s) => {
+                    const trimPreset = { ...s.design.trimPreset };
+                    if (!preset) delete trimPreset[side];
+                    else trimPreset[side] = preset;
+                    return {
+                        design: {
+                            ...s.design,
+                            trimPreset: Object.keys(trimPreset).length > 0 ? trimPreset : undefined,
+                        },
+                    };
+                }),
+
+            applyCorrectionPreset: (payload, mode, options) => {
+                get().checkpoint("apply-correction-preset");
+                set((s) => {
+                    const next = applyCorrectionPresetToDesign(s.design, payload, {
+                        mode,
+                        includeElements: options?.includeElements ?? true,
+                        activeSide: options?.activeSide ?? s.exportSide,
+                        placementSides: elementPlacementSides(),
+                    });
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
                 });
             },
 
