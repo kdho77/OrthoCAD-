@@ -26,6 +26,7 @@ from app.services.print_recipe import (
     is_gyroid_manufacturing_preset,
     require_gyroid_print_recipe_with_profile,
 )
+from app.services.production_label import build_production_release_label
 from app.services.slicer import build_slice_overrides, generate_gcode_from_solid
 from app.services.stl_loader import download_stl_to_temp, load_watertight_stl
 
@@ -150,6 +151,17 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
             perimeters=req.perimeters,
             print_recipe=print_recipe,
         )
+        release_label: str | None = None
+        if print_recipe and print_recipe.include_production_label:
+            release_label = req.production_release_label
+            if not release_label:
+                release_label = build_production_release_label(
+                    side=req.side,
+                    recipe=print_recipe,
+                    profile_display_name=str(preset.get("name", req.preset_id)),
+                    design_id=req.design_id,
+                )
+            overrides["productionReleaseLabel"] = release_label
         gcode = generate_gcode_from_solid(transformed, preset, overrides)
 
         logger.info("manufacture ok job=%s output=gcode bytes=%d", req.job_id, len(gcode))
@@ -170,6 +182,7 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
                     "perimeters": overrides["perimeters"],
                     "infillPattern": overrides.get("infillPattern"),
                     "printRecipe": print_recipe.model_dump() if print_recipe else None,
+                    "productionReleaseLabel": overrides.get("productionReleaseLabel"),
                 },
             }
         )
