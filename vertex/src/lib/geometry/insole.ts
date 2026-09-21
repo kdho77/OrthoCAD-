@@ -1,7 +1,14 @@
 import { BufferAttribute, BufferGeometry } from "three";
 import { type HeightFieldParams, heightAt, resolveOutlineHalfWidth } from "@/lib/geometry/height-field";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
-import type { PlacedElement, ProductionMethod, Side, SideCorrections, SideShapeFinish } from "@/types";
+import type {
+    PlacedElement,
+    ProductionMethod,
+    ShellThicknessMode,
+    Side,
+    SideCorrections,
+    SideShapeFinish,
+} from "@/types";
 
 // Generates a parametric orthotic insole mesh from correction parameters.
 // Procedural fallback when the OpenCascade WASM kernel is unavailable.
@@ -25,6 +32,11 @@ export interface InsoleParams {
      * Reserved for Confirm / Export; falls back to the lofted footprint on error.
      */
     useBooleanTrimline?: boolean;
+    shellThicknessMode?: ShellThicknessMode;
+    shellThicknessRfMm?: number;
+    shellThicknessMfMm?: number;
+    shellThicknessFfMm?: number;
+    shellThicknessBlendMm?: number;
     shapeFinish?: SideShapeFinish | null;
 }
 
@@ -39,6 +51,12 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         segmentsX = 96,
         segmentsY = 48,
         trimline = null,
+        shellThicknessMode,
+        shellThicknessRfMm,
+        shellThicknessMfMm,
+        shellThicknessFfMm,
+        shellThicknessBlendMm,
+        method,
         shapeFinish = null,
     } = params;
 
@@ -52,6 +70,12 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         includeSkives: true,
         includeElements: true,
         trimline,
+        shellThicknessMode,
+        shellThicknessRfMm,
+        shellThicknessMfMm,
+        shellThicknessFfMm,
+        shellThicknessBlendMm,
+        method,
         shapeFinish,
     };
 
@@ -68,55 +92,29 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         const hw = resolveOutlineHalfWidth(u, field) * halfW;
         const row: number[] = [];
         for (let j = 0; j <= ny; j++) {
-            const vSigned = (j / ny) * 2 - 1;
-            const x = u * lengthMm;
+            const vSigned = -1 + (2 * j) / ny;
             const y = vSigned * hw;
             const z = heightAt(u, vSigned, field);
-            positions.push(x, y, z);
+            positions.push(u * lengthMm, y, z);
             row.push(vIndex++);
         }
         grid.push(row);
     }
 
-    const bottomGrid: number[][] = [];
-    for (let i = 0; i <= nx; i++) {
-        const u = i / nx;
-        const hw = resolveOutlineHalfWidth(u, field) * halfW;
-        const row: number[] = [];
-        for (let j = 0; j <= ny; j++) {
-            const vSigned = (j / ny) * 2 - 1;
-            positions.push(u * lengthMm, vSigned * hw, 0);
-            row.push(vIndex++);
-        }
-        bottomGrid.push(row);
-    }
-
     const indices: number[] = [];
-    const quad = (a: number, b: number, cc: number, d: number) => {
-        indices.push(a, b, cc, a, cc, d);
-    };
-
     for (let i = 0; i < nx; i++) {
         for (let j = 0; j < ny; j++) {
-            quad(grid[i][j], grid[i][j + 1], grid[i + 1][j + 1], grid[i + 1][j]);
-            quad(bottomGrid[i][j], bottomGrid[i + 1][j], bottomGrid[i + 1][j + 1], bottomGrid[i][j + 1]);
+            const a = grid[i][j];
+            const b = grid[i + 1][j];
+            const c = grid[i][j + 1];
+            const d = grid[i + 1][j + 1];
+            indices.push(a, b, c, b, d, c);
         }
-    }
-
-    for (let i = 0; i < nx; i++) {
-        quad(grid[i][0], grid[i + 1][0], bottomGrid[i + 1][0], bottomGrid[i][0]);
-        quad(grid[i][ny], bottomGrid[i][ny], bottomGrid[i + 1][ny], grid[i + 1][ny]);
-    }
-    for (let j = 0; j < ny; j++) {
-        quad(grid[0][j], bottomGrid[0][j], bottomGrid[0][j + 1], grid[0][j + 1]);
-        quad(grid[nx][j], grid[nx][j + 1], bottomGrid[nx][j + 1], bottomGrid[nx][j]);
     }
 
     const geometry = new BufferGeometry();
     geometry.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
-    geometry.computeBoundingBox();
-    geometry.computeBoundingSphere();
     return geometry;
 }

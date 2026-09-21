@@ -58,6 +58,10 @@ export type ExportFormat = "stl" | "gcode" | "glb";
 
 export type GrindingStyleType = "straight" | "rounded";
 
+export type ShellThicknessMode = "uniform" | "zonal";
+
+export type HeelLiftTaperPreset = "midfoot" | "metHeads" | "sulcus" | "custom";
+
 export interface GrindingStyle {
     type: GrindingStyleType;
     angle_degrees?: number;
@@ -137,6 +141,12 @@ export interface SideCorrections {
      * (z = 0), so the lift is bottom-stable on solid prints. See {@link heelLiftDeltaAt}.
      */
     heelLiftMm: number;
+    /** Heel-lift ramp endpoint preset (Track 4 #4). */
+    heelLiftTaperPreset?: HeelLiftTaperPreset;
+    /** Explicit taper end u ∈ [0.45, 0.90]; overrides preset when set. */
+    heelLiftTaperEndU?: number;
+    /** Custom %AP (25–75) when preset is `custom`. */
+    heelLiftCustomTaperPctAp?: number;
     apexMoveMm: number;
     medialFlangeMm: number;
     lateralFlangeMm: number;
@@ -245,6 +255,13 @@ export interface DesignState {
     /** Phase A gyroid hardness ladder (PrintRecipe v1). */
     printRecipe?: PrintRecipeV1;
     thicknessMm: number;
+    /** uniform | zonal shell thickness (Track 4 #1). Default zonal. */
+    shellThicknessMode?: ShellThicknessMode;
+    shellThicknessRfMm?: number;
+    shellThicknessMfMm?: number;
+    shellThicknessFfMm?: number;
+    /** Half-width of RF/MF/FF blends along length (mm). Default 12. */
+    shellThicknessBlendMm?: number;
     /**
      * Footprint size system. Default `"us"`.
      * - `us` — US Men's half-size (`usMenSize`); Women's = +1.5; Youth ≤ 7

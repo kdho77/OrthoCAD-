@@ -55,6 +55,7 @@ function thicknessField(thicknessMm: number): HeightFieldParams {
         lengthMm: 266,
         widthMm: 95,
         thicknessMm,
+        shellThicknessMode: "uniform",
         corrections: neutralCorrections(),
         elements: [],
         includeSkives: false,

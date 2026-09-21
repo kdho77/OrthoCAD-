@@ -1,10 +1,22 @@
 import { elementHeightAt } from "@/lib/geometry/elements";
-import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
+import { type HeelLiftTaperOptions, heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
 import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
+import {
+    type ShellThicknessContext,
+    shellThicknessContextFromDesign,
+    shellThicknessMmAtU,
+} from "@/lib/geometry/shell-thickness-zonal";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
-import type { PlacedElement, Side, SideCorrections, SideShapeFinish } from "@/types";
+import type {
+    PlacedElement,
+    ProductionMethod,
+    ShellThicknessMode,
+    Side,
+    SideCorrections,
+    SideShapeFinish,
+} from "@/types";
 
 // Shared parametric height field for insole surfaces. Used by both the procedural
 // Three.js mesher and the OpenCascade solid builder so corrections stay aligned.
@@ -32,8 +44,39 @@ export interface HeightFieldParams {
      * edge (r = 1).
      */
     topEdgeAvProfile?: (u: number, vSigned: number) => number;
+    /** When set, overrides design-derived shell thickness sampling. */
+    shell?: ShellThicknessContext | null;
+    shellThicknessMode?: ShellThicknessMode;
+    shellThicknessRfMm?: number;
+    shellThicknessMfMm?: number;
+    shellThicknessFfMm?: number;
+    shellThicknessBlendMm?: number;
+    method?: ProductionMethod;
     /** Track 5b — top-only print/shell finish (excludes bottom-only arch grind). */
     shapeFinish?: SideShapeFinish | null;
+}
+
+export function resolveShellThicknessContext(params: HeightFieldParams): ShellThicknessContext {
+    if (params.shell) return params.shell;
+    return shellThicknessContextFromDesign(
+        params.shellThicknessMode,
+        params.thicknessMm,
+        params.lengthMm,
+        {
+            rfMm: params.shellThicknessRfMm,
+            mfMm: params.shellThicknessMfMm,
+            ffMm: params.shellThicknessFfMm,
+        },
+        params.shellThicknessBlendMm,
+    );
+}
+
+function heelLiftTaperFromCorrections(c: SideCorrections): HeelLiftTaperOptions {
+    return {
+        preset: c.heelLiftTaperPreset,
+        endU: c.heelLiftTaperEndU,
+        customPctAp: c.heelLiftCustomTaperPctAp,
+    };
 }
 
 const DEG = Math.PI / 180;
@@ -214,7 +257,7 @@ export function resolveOutlineHalfWidth(u: number, params: HeightFieldParams): n
  *  - A soft floor keeps the minimum wall thickness without a hard clamp crease.
  */
 export function heightAt(u: number, vSigned: number, params: HeightFieldParams): number {
-    const { side, lengthMm, widthMm, thicknessMm, corrections: c, elements = [] } = params;
+    const { side, lengthMm, widthMm, corrections: c, elements = [] } = params;
     const halfW = widthMm / 2;
     const medialSign = side === "left" ? -1 : 1;
     const av = Math.abs(vSigned);
@@ -331,9 +374,12 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // Added at full strength (not edge-feathered, like posting) since it is a
     // structural raise of the whole rearfoot, and additive on the top surface so
     // the flat z = 0 bottom stays stable on solid prints.
-    const heelLift = heelLiftDeltaAt(u, c.heelLiftMm);
+    const heelLift = heelLiftDeltaAt(u, c.heelLiftMm, heelLiftTaperFromCorrections(c));
 
-    let h = softFloor(thicknessMm + baseline + shaped + posting + wedge + heelLift, 0.8);
+    const shellCtx = resolveShellThicknessContext(params);
+    const thicknessAtU = shellThicknessMmAtU(u, shellCtx);
+
+    let h = softFloor(thicknessAtU + baseline + shaped + posting + wedge + heelLift, 0.8);
 
     // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).
     // The graph is the new clinical source of truth when present; the flat

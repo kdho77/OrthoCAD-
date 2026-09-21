@@ -11,6 +11,7 @@ import {
     heelCupWidthScaleFactor,
     heightAt,
     quinticSmoothstep,
+    resolveShellThicknessContext,
     smoothstep,
 } from "@/lib/geometry/height-field";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
@@ -29,6 +30,7 @@ import {
     applyTrimmableForefootExtension,
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
+import { neutralShellThicknessContext } from "@/lib/geometry/shell-thickness-zonal";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
 // Base + Modifier deformation core (see docs/base-modifier-architecture.md).
@@ -72,8 +74,10 @@ export const BASE_REFERENCE_THICKNESS_MM = 2;
 
 /** Neutral field (no corrections, no elements) used as the displacement baseline. */
 function neutralField(field: HeightFieldParams): HeightFieldParams {
+    const activeShell = resolveShellThicknessContext(field);
     return {
         ...field,
+        shell: neutralShellThicknessContext(activeShell, BASE_REFERENCE_THICKNESS_MM),
         // Fixed baseline thickness so the thickness slider produces a real delta
         // (top lifts upward) instead of cancelling out in `correctionDeltaAt`.
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
@@ -2511,7 +2515,8 @@ export function applyBaseModifiers(
     let thicknessMmForDelta = field.thicknessMm;
     let thicknessDatumClamped = false;
     let thicknessDatumNativeMm: number | null = null;
-    if (isMultiMesh && topVertexCount > 0) {
+    const shellMode = resolveShellThicknessContext(field).mode;
+    if (isMultiMesh && topVertexCount > 0 && shellMode !== "zonal") {
         const datum = deriveNativeShellThicknessDatum(base);
         if (datum) {
             thicknessDatumNativeMm = datum.nativeMinClearanceMm;
