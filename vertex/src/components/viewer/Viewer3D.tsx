@@ -32,6 +32,7 @@ import type { Side } from "@/types";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
+import { HardnessZonesFootOverlay } from "./HardnessZonesFootOverlay";
 import { MeshEditTools } from "./MeshEditTools";
 import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
 import { ScanMarkerPlacement } from "./ScanMarkerPlacement";
@@ -207,6 +208,7 @@ export function Viewer3D() {
                                     heightmap={viewer.heightmap}
                                 />
                             )}
+                            <HardnessZonesFootOverlay side="left" design={design} />
                         </>
                     ) : null}
                     {showRightInsole ? (
@@ -225,6 +227,7 @@ export function Viewer3D() {
                                     heightmap={viewer.heightmap}
                                 />
                             )}
+                            <HardnessZonesFootOverlay side="right" design={design} />
                         </>
                     ) : null}
                     {showScans ? (

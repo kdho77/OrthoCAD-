@@ -62,9 +62,11 @@ import {
     applyAutoLesionTagsToRecipe,
     type ElementFootprintInput,
 } from "../../shared/print-recipe/accommodative-auto-tags";
+import { HARDNESS_ZONE_PRESETS } from "../../shared/print-recipe/hardness-zone-presets";
 import {
     bindPrintRecipeProfile,
     type HardnessName,
+    type MaterialZoneV1,
     migratePrintRecipe,
 } from "../../shared/print-recipe/print-recipe";
 
@@ -460,6 +462,11 @@ export interface DesignStore {
     /** Named whole-device hardness (Phase A PrintRecipe). */
     setPrintHardness: (hardness: HardnessName) => void;
     setPrintProfile: (profileId: string, hardness?: HardnessName) => void;
+    addHardnessZoneFromPreset: (presetId: string, hardness: HardnessName) => void;
+    removeHardnessZone: (zoneId: string) => void;
+    updateHardnessZoneHardness: (zoneId: string, hardness: HardnessName) => void;
+    setOverrideSoftWins: (override: boolean) => void;
+    clearHardnessZones: () => void;
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
@@ -587,6 +594,84 @@ export const useDesignStore = create<DesignStore>()(
                         printRecipe: bindPrintRecipeProfile(s.design.printRecipe, profileId, hardness),
                     },
                 }));
+            },
+            addHardnessZoneFromPreset: (presetId, hardness) => {
+                const preset = HARDNESS_ZONE_PRESETS.find((p) => p.id === presetId);
+                if (!preset) return;
+                get().checkpoint("hardness-zone-add");
+                set((s) => {
+                    const recipe = migratePrintRecipe(s.design.printRecipe);
+                    const zone: MaterialZoneV1 = {
+                        zoneId: `zone-${preset.id}-${Date.now()}`,
+                        anatomicLabel: preset.anatomicLabel,
+                        hardnessName: hardness,
+                        boundarySoleUv: [...preset.boundarySoleUv],
+                        lesionTags:
+                            preset.id === "heel" && hardness === "Extra Soft" ? ["accommodative"] : undefined,
+                    };
+                    return {
+                        design: {
+                            ...s.design,
+                            printRecipe: { ...recipe, zones: [...recipe.zones, zone] },
+                        },
+                    };
+                });
+            },
+            removeHardnessZone: (zoneId) => {
+                get().checkpoint("hardness-zone-remove");
+                set((s) => {
+                    const recipe = migratePrintRecipe(s.design.printRecipe);
+                    return {
+                        design: {
+                            ...s.design,
+                            printRecipe: {
+                                ...recipe,
+                                zones: recipe.zones.filter((z) => z.zoneId !== zoneId),
+                            },
+                        },
+                    };
+                });
+            },
+            updateHardnessZoneHardness: (zoneId, hardness) => {
+                get().checkpoint("hardness-zone-hardness");
+                set((s) => {
+                    const recipe = migratePrintRecipe(s.design.printRecipe);
+                    return {
+                        design: {
+                            ...s.design,
+                            printRecipe: {
+                                ...recipe,
+                                zones: recipe.zones.map((z) =>
+                                    z.zoneId === zoneId ? { ...z, hardnessName: hardness } : z,
+                                ),
+                            },
+                        },
+                    };
+                });
+            },
+            setOverrideSoftWins: (override) => {
+                get().checkpoint("hardness-override-soft-wins");
+                set((s) => {
+                    const recipe = migratePrintRecipe(s.design.printRecipe);
+                    return {
+                        design: {
+                            ...s.design,
+                            printRecipe: { ...recipe, overrideSoftWins: override },
+                        },
+                    };
+                });
+            },
+            clearHardnessZones: () => {
+                get().checkpoint("hardness-zones-clear");
+                set((s) => {
+                    const recipe = migratePrintRecipe(s.design.printRecipe);
+                    return {
+                        design: {
+                            ...s.design,
+                            printRecipe: { ...recipe, zones: [], overrideSoftWins: false },
+                        },
+                    };
+                });
             },
             setThickness: (thicknessMm) =>
                 set((s) => {
