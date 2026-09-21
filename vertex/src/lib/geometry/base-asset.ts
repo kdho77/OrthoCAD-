@@ -834,7 +834,10 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         shellThicknessFfMm: design.shellThicknessFfMm,
         shellThicknessBlendMm: design.shellThicknessBlendMm,
         method: params.method,
-        shapeFinish: getSideShapeFinish(design, side),
+        postFilletMm: design.postFilletMm,
+        postTaperAngleDeg: design.postTaperAngleDeg,
+        shellEdgeThicknessMm: design.shellEdgeThicknessMm,
+        distalTaperDistanceMm: design.distalTaperDistanceMm,
     };
 }
 

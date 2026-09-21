@@ -49,6 +49,10 @@ export function insoleParamsFromDesign(
         shellThicknessMfMm: design.shellThicknessMfMm,
         shellThicknessFfMm: design.shellThicknessFfMm,
         shellThicknessBlendMm: design.shellThicknessBlendMm,
+        postFilletMm: design.postFilletMm,
+        postTaperAngleDeg: design.postTaperAngleDeg,
+        shellEdgeThicknessMm: design.shellEdgeThicknessMm,
+        distalTaperDistanceMm: design.distalTaperDistanceMm,
         shapeFinish,
         ...segmentsForQuality(quality),
     };

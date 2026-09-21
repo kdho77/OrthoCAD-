@@ -60,6 +60,8 @@ export type ShellThicknessMode = "uniform" | "zonal";
 
 export type HeelLiftTaperPreset = "midfoot" | "metHeads" | "sulcus" | "custom";
 
+export type PostingPolarity = "pronation" | "supination";
+
 export interface GrindingStyle {
     type: GrindingStyleType;
     angle_degrees?: number;
@@ -145,6 +147,17 @@ export interface SideCorrections {
     heelLiftTaperEndU?: number;
     /** Custom %AP (25–75) when preset is `custom`. */
     heelLiftCustomTaperPctAp?: number;
+    /**
+     * Intrinsic post RF (mm, ±8). Bio LOCKED: +mm = medial high (varus); −mm = lateral high.
+     * DISTINCT from `rearfootPostingDeg` and extrinsic posting blocks.
+     */
+    intrinsicPostRfMm?: number;
+    /** Intrinsic post FF (mm, ±8). Same sign convention as {@link intrinsicPostRfMm}. */
+    intrinsicPostFfMm?: number;
+    extrinsicPostingRfMm?: number;
+    extrinsicPostingFfMm?: number;
+    extrinsicPostingPolarity?: PostingPolarity;
+    grindAllowanceMm?: number;
     apexMoveMm: number;
     medialFlangeMm: number;
     lateralFlangeMm: number;
@@ -252,6 +265,10 @@ export interface DesignState {
     shellThicknessFfMm?: number;
     /** Half-width of RF/MF/FF blends along length (mm). Default 12. */
     shellThicknessBlendMm?: number;
+    postFilletMm?: number;
+    postTaperAngleDeg?: number;
+    shellEdgeThicknessMm?: number;
+    distalTaperDistanceMm?: number;
     /**
      * Footprint size system. Default `"us"`.
      * - `us` — US Men's half-size (`usMenSize`); Women's = +1.5; Youth ≤ 7
