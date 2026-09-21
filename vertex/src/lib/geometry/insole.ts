@@ -37,6 +37,10 @@ export interface InsoleParams {
     shellThicknessMfMm?: number;
     shellThicknessFfMm?: number;
     shellThicknessBlendMm?: number;
+    postFilletMm?: number;
+    postTaperAngleDeg?: number;
+    shellEdgeThicknessMm?: number;
+    distalTaperDistanceMm?: number;
     shapeFinish?: SideShapeFinish | null;
 }
 
@@ -57,6 +61,10 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         shellThicknessFfMm,
         shellThicknessBlendMm,
         method,
+        postFilletMm,
+        postTaperAngleDeg,
+        shellEdgeThicknessMm,
+        distalTaperDistanceMm,
         shapeFinish = null,
     } = params;
 
@@ -76,6 +84,10 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         shellThicknessFfMm,
         shellThicknessBlendMm,
         method,
+        postFilletMm,
+        postTaperAngleDeg,
+        shellEdgeThicknessMm,
+        distalTaperDistanceMm,
         shapeFinish,
     };
 
@@ -92,29 +104,55 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         const hw = resolveOutlineHalfWidth(u, field) * halfW;
         const row: number[] = [];
         for (let j = 0; j <= ny; j++) {
-            const vSigned = -1 + (2 * j) / ny;
+            const vSigned = (j / ny) * 2 - 1;
+            const x = u * lengthMm;
             const y = vSigned * hw;
             const z = heightAt(u, vSigned, field);
-            positions.push(u * lengthMm, y, z);
+            positions.push(x, y, z);
             row.push(vIndex++);
         }
         grid.push(row);
     }
 
+    const bottomGrid: number[][] = [];
+    for (let i = 0; i <= nx; i++) {
+        const u = i / nx;
+        const hw = resolveOutlineHalfWidth(u, field) * halfW;
+        const row: number[] = [];
+        for (let j = 0; j <= ny; j++) {
+            const vSigned = (j / ny) * 2 - 1;
+            positions.push(u * lengthMm, vSigned * hw, 0);
+            row.push(vIndex++);
+        }
+        bottomGrid.push(row);
+    }
+
     const indices: number[] = [];
+    const quad = (a: number, b: number, cc: number, d: number) => {
+        indices.push(a, b, cc, a, cc, d);
+    };
+
     for (let i = 0; i < nx; i++) {
         for (let j = 0; j < ny; j++) {
-            const a = grid[i][j];
-            const b = grid[i + 1][j];
-            const c = grid[i][j + 1];
-            const d = grid[i + 1][j + 1];
-            indices.push(a, b, c, b, d, c);
+            quad(grid[i][j], grid[i][j + 1], grid[i + 1][j + 1], grid[i + 1][j]);
+            quad(bottomGrid[i][j], bottomGrid[i + 1][j], bottomGrid[i + 1][j + 1], bottomGrid[i][j + 1]);
         }
+    }
+
+    for (let i = 0; i < nx; i++) {
+        quad(grid[i][0], grid[i + 1][0], bottomGrid[i + 1][0], bottomGrid[i][0]);
+        quad(grid[i][ny], bottomGrid[i][ny], bottomGrid[i + 1][ny], grid[i + 1][ny]);
+    }
+    for (let j = 0; j < ny; j++) {
+        quad(grid[0][j], bottomGrid[0][j], bottomGrid[0][j + 1], grid[0][j + 1]);
+        quad(grid[nx][j], grid[nx][j + 1], bottomGrid[nx][j + 1], bottomGrid[nx][j]);
     }
 
     const geometry = new BufferGeometry();
     geometry.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
     return geometry;
 }

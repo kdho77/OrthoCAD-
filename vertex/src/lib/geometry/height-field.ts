@@ -1,7 +1,9 @@
 import { elementHeightAt } from "@/lib/geometry/elements";
 import { type HeelLiftTaperOptions, heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
+import { intrinsicPostDeltaAt } from "@/lib/geometry/intrinsic-post";
 import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
+import { shellEdgeDistalDeltaAt } from "@/lib/geometry/shell-edge";
 import {
     type ShellThicknessContext,
     shellThicknessContextFromDesign,
@@ -52,6 +54,13 @@ export interface HeightFieldParams {
     shellThicknessFfMm?: number;
     shellThicknessBlendMm?: number;
     method?: ProductionMethod;
+    postFilletMm?: number;
+    postTaperAngleDeg?: number;
+    shellEdgeThicknessMm?: number;
+    distalTaperDistanceMm?: number;
+    /** When false, intrinsic post is omitted (bottom-shell F sampling). */
+    includeIntrinsicPost?: boolean;
+    includeShellEdge?: boolean;
     /** Track 5b — top-only print/shell finish (excludes bottom-only arch grind). */
     shapeFinish?: SideShapeFinish | null;
 }
@@ -352,34 +361,54 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     }
     shaped *= featherScale;
 
-    // --- Posting (rearfoot / forefoot wedges) — full strength at the edge -----
+    const shellCtx = resolveShellThicknessContext(params);
+    const thicknessAtU = shellThicknessMmAtU(u, shellCtx);
+
+    // --- Top-surface composition order (Bio / PM / CAD) -----------------------
+    // Baseline arch/cup/feather in `shaped` first. Then additives:
+    //   heel lift → intrinsic post (mm) → deg posting → mm wedge → shell edge (#5)
+    // Kirby heel skive is always LAST (plane max after the sum below).
+    // Bio: deg-before-intrinsic is clinically OK if final ML heel heights match Rx;
+    // this stack uses lift early + intrinsic before deg (CAD brief). ML section
+    // gates must pass on the composed surface (see intrinsic-post.test.ts).
+
+    const heelLift = heelLiftDeltaAt(u, c.heelLiftMm, heelLiftTaperFromCorrections(c));
+
+    const intrinsicPost =
+        (params.includeIntrinsicPost ?? true)
+            ? intrinsicPostDeltaAt(u, vSigned, side, c, {
+                  widthMm,
+                  postFilletMm: params.postFilletMm,
+              })
+            : 0;
+
     const post = vSigned * medialSign * halfW;
     let posting = Math.tan(c.rearfootPostingDeg * DEG) * post * heel;
     const fore = bump(u, 0.82, 0.24);
     posting += Math.tan(c.forefootPostingDeg * DEG) * post * fore;
 
-    // --- Medial / Lateral surface wedges (new system) -------------------------
-    // Applied after posting/flanges (so they are surface features on the already
-    // tilted/posted shell) but before discrete elements. Uses the current
-    // trimline-aware outline for both the cross position and (for degrees) the
-    // local width used to convert angle → physical raise.
     const wedge = wedgeDeltaAt(u, vSigned, side, c, {
         lengthMm,
         widthMm,
         trimline: params.trimline,
     });
 
-    // --- Heel lift (longitudinal ramp) ----------------------------------------
-    // Full-width raise under the heel that tapers linearly to 0 by the met heads.
-    // Added at full strength (not edge-feathered, like posting) since it is a
-    // structural raise of the whole rearfoot, and additive on the top surface so
-    // the flat z = 0 bottom stays stable on solid prints.
-    const heelLift = heelLiftDeltaAt(u, c.heelLiftMm, heelLiftTaperFromCorrections(c));
+    const shellEdge =
+        (params.includeShellEdge ?? true) && params.method === "printing_shell"
+            ? shellEdgeDistalDeltaAt(u, av, {
+                  shellEdgeThicknessMm: params.shellEdgeThicknessMm,
+                  distalTaperDistanceMm: params.distalTaperDistanceMm,
+                  lengthMm: params.lengthMm,
+                  widthMm,
+                  postFilletMm: params.postFilletMm,
+                  postTaperAngleDeg: params.postTaperAngleDeg,
+              })
+            : 0;
 
-    const shellCtx = resolveShellThicknessContext(params);
-    const thicknessAtU = shellThicknessMmAtU(u, shellCtx);
-
-    let h = softFloor(thicknessAtU + baseline + shaped + posting + wedge + heelLift, 0.8);
+    let h = softFloor(
+        thicknessAtU + baseline + shaped + heelLift + intrinsicPost + posting + wedge + shellEdge,
+        0.8,
+    );
 
     // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).
     // The graph is the new clinical source of truth when present; the flat

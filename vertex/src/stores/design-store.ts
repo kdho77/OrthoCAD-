@@ -61,7 +61,6 @@ import {
     bindPrintRecipeProfile,
     type HardnessName,
     migratePrintRecipe,
-    setProductionLabelEnabled,
 } from "../../shared/print-recipe/print-recipe";
 
 function defaultSideCorrections(): SideCorrections {
@@ -158,6 +157,10 @@ export function defaultDesign(): DesignState {
         shellThicknessMfMm: 2.5,
         shellThicknessFfMm: 2,
         shellThicknessBlendMm: 12,
+        postFilletMm: 2,
+        postTaperAngleDeg: 15,
+        shellEdgeThicknessMm: 2,
+        distalTaperDistanceMm: 20,
         sizeSystem: DEFAULT_SHOE_SIZE_SYSTEM,
         usMenSize: DEFAULT_US_MEN_SIZE,
         corrections: {
@@ -431,7 +434,6 @@ export interface DesignStore {
     /** Named whole-device hardness (Phase A PrintRecipe). */
     setPrintHardness: (hardness: HardnessName) => void;
     setPrintProfile: (profileId: string, hardness?: HardnessName) => void;
-    setProductionLabelEnabled: (enabled: boolean) => void;
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
@@ -557,15 +559,6 @@ export const useDesignStore = create<DesignStore>()(
                     design: {
                         ...s.design,
                         printRecipe: bindPrintRecipeProfile(s.design.printRecipe, profileId, hardness),
-                    },
-                }));
-            },
-            setProductionLabelEnabled: (enabled) => {
-                get().checkpoint("production-label");
-                set((s) => ({
-                    design: {
-                        ...s.design,
-                        printRecipe: setProductionLabelEnabled(s.design.printRecipe, enabled),
                     },
                 }));
             },

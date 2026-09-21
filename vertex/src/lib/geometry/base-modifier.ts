@@ -5,6 +5,7 @@ import type { BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
 import { getDesignBase } from "@/lib/geometry/base-asset";
+import { extrinsicPostingBottomDeltaAt } from "@/lib/geometry/extrinsic-posting";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
     type HeightFieldParams,
@@ -25,11 +26,6 @@ import {
     deriveNativeShellThicknessDatum,
     thicknessOffsetFromDatum,
 } from "@/lib/geometry/native-shell-thickness";
-import {
-    applyArchGrindToBottomMesh,
-    applyTrimmableForefootExtension,
-    clampArchGrindDepthMm,
-} from "@/lib/geometry/shape-finish-modifiers";
 import { neutralShellThicknessContext } from "@/lib/geometry/shell-thickness-zonal";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
@@ -2723,6 +2719,8 @@ export function applyBaseModifiers(
     const fieldForBottomSync: HeightFieldParams = {
         ...fieldForDelta,
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
+        includeIntrinsicPost: false,
+        includeShellEdge: false,
     };
     const thicknessLiftActive = Math.abs(fieldForDelta.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-9;
     if (useShellFieldSync && !options?.skipBottomSync) {
@@ -2952,6 +2950,27 @@ export function applyBaseModifiers(
                 array[i * 3 + thickAxis] = (base.getAttribute("position")!.array as Float32Array)[
                     i * 3 + thickAxis
                 ]!;
+            }
+        }
+    }
+
+    const extrinsicRf = field.corrections.extrinsicPostingRfMm ?? 0;
+    const extrinsicFf = field.corrections.extrinsicPostingFfMm ?? 0;
+    if (extrinsicRf > 0 || extrinsicFf > 0) {
+        const postParams = {
+            postFilletMm: field.postFilletMm,
+            postTaperAngleDeg: field.postTaperAngleDeg,
+            widthMm: field.widthMm,
+        };
+        const bottomStart = isMultiMesh && topVertexCount > 0 ? topVertexCount : 0;
+        for (let i = bottomStart; i < count; i++) {
+            const lenCoord = array[i * 3 + lengthAxis]!;
+            const widCoord = array[i * 3 + widthAxis]!;
+            const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+            const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
+            const dz = extrinsicPostingBottomDeltaAt(u, vSigned, field.side, field.corrections, postParams);
+            if (dz !== 0) {
+                array[i * 3 + thickAxis] += dz;
             }
         }
     }
