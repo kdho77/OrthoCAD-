@@ -9,11 +9,6 @@ export interface PrinterPreset {
     nozzleMm?: number;
     layerHeightMm?: number;
     material?: string;
-    nozzleTempC?: number;
-    bedTempC?: number;
-    perimeters?: number;
-    /** Server hybrid infill pattern for this profile. */
-    infillPattern?: "gyroid" | "rectilinear";
     bed: { x: number; y: number; z: number };
 }
 
@@ -26,10 +21,6 @@ export const PRINTER_PRESETS: PrinterPreset[] = [
         nozzleMm: 0.6,
         layerHeightMm: 0.3,
         material: "TPU 95A",
-        nozzleTempC: 235,
-        bedTempC: 0,
-        perimeters: 3,
-        infillPattern: "gyroid",
         bed: { x: 300, y: 100000, z: 200 },
     },
     {
@@ -40,10 +31,6 @@ export const PRINTER_PRESETS: PrinterPreset[] = [
         nozzleMm: 0.6,
         layerHeightMm: 0.3,
         material: "TPU 95A",
-        nozzleTempC: 235,
-        bedTempC: 0,
-        perimeters: 3,
-        infillPattern: "gyroid",
         bed: { x: 300, y: 100000, z: 200 },
     },
     {
@@ -53,10 +40,6 @@ export const PRINTER_PRESETS: PrinterPreset[] = [
         nozzleMm: 0.4,
         layerHeightMm: 0.2,
         material: "TPU 95A",
-        nozzleTempC: 230,
-        bedTempC: 60,
-        perimeters: 3,
-        infillPattern: "gyroid",
         bed: { x: 250, y: 210, z: 210 },
     },
     {
@@ -69,8 +52,4 @@ export const PRINTER_PRESETS: PrinterPreset[] = [
 
 export function presetsForMethod(method: ProductionMethod): PrinterPreset[] {
     return PRINTER_PRESETS.filter((p) => p.method === method);
-}
-
-export function presetById(id: string): PrinterPreset | undefined {
-    return PRINTER_PRESETS.find((p) => p.id === id);
 }

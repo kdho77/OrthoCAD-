@@ -1,0 +1,28 @@
+{
+    "fixture_id": "A2-F2",
+    "description": "Heel Extra Soft 14% accommodative over default Medium 26% — soft-wins",
+    "sole_uv_frame": { "min_x_mm": -20, "min_y_mm": -20, "length_mm": 40, "width_mm": 40 },
+    "belt_angle_deg": 45,
+    "expected_zones": [{ "zone_id": "heel-es", "target_pct": 14, "sample_uv": { "u": 0.15, "v": 0 } }],
+    "print_recipe": {
+        "version": 1,
+        "pattern": "gyroid",
+        "default_hardness": "Medium",
+        "override_soft_wins": false,
+        "sole_uv_frame": { "min_x_mm": -20, "min_y_mm": -20, "length_mm": 40, "width_mm": 40 },
+        "zones": [
+            {
+                "zone_id": "heel-es",
+                "anatomic_label": "Heel accommodative",
+                "hardness_name": "Extra Soft",
+                "lesion_tags": ["accommodative"],
+                "boundary_sole_uv": [
+                    { "u": 0, "v": -1 },
+                    { "u": 0.35, "v": -1 },
+                    { "u": 0.35, "v": 1 },
+                    { "u": 0, "v": 1 }
+                ]
+            }
+        ]
+    }
+}

@@ -48,7 +48,6 @@ const manufactureInputSchema = z.object({
     perimeters: z.number().int().min(1).max(10).optional(),
     grindingStyle: grindingStyleSchema.optional(),
     printRecipe: printRecipeV1Schema.optional(),
-    productionReleaseLabel: z.string().max(500).optional(),
     fileName: z.string().max(200).optional(),
 });
 
@@ -264,7 +263,6 @@ export const manufacturingRouter = router({
                     perimeters: input.perimeters,
                     grinding_style: input.grindingStyle,
                     print_recipe: resolvedPrintRecipe ? printRecipeToSnake(resolvedPrintRecipe) : undefined,
-                    production_release_label: input.productionReleaseLabel ?? undefined,
                 });
 
                 const outputType = pythonResult.output_type ?? input.outputType;
@@ -324,7 +322,6 @@ export const manufacturingRouter = router({
                             layerHeightMm: input.layerHeightMm ?? null,
                             infillDensity: resolvedPrintRecipe ? null : (input.infillDensity ?? null),
                             printRecipe: resolvedPrintRecipe ?? null,
-                            productionReleaseLabel: input.productionReleaseLabel ?? null,
                             perimeters: input.perimeters ?? null,
                             sourceStlTempKey: tempStlKey,
                         },

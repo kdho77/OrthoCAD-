@@ -17,11 +17,13 @@ import json
 import math
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 from shapely.geometry import LineString, Polygon
 from shapely.geometry.base import BaseGeometry
+
+from app.services.sole_uv_map import SoleUvFrame, belt_slice_xy_to_sole_uv
 
 GYROID_CELL_K = 2.4
 
@@ -268,6 +270,103 @@ def _period_multiplier(target_percent: int, extrusion_width_mm: float) -> float:
     if key in lut:
         return lut[key]
     return _fit_period_multiplier(target_percent, extrusion_width_mm, 3, z=3.0)
+
+
+def _gyroid_field_grid_varying(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    z: float,
+    period_at: Callable[[float, float], float],
+    iso_level: float = 0.0,
+) -> np.ndarray:
+    field = np.zeros((len(xs), len(ys)), dtype=float)
+    for i, x in enumerate(xs):
+        for j, y in enumerate(ys):
+            period = max(period_at(x, y), 1e-3)
+            k = 2.0 * math.pi / period
+            field[i, j] = (
+                math.sin(k * x) * math.cos(k * y)
+                + math.sin(k * y) * math.cos(k * z)
+                + math.sin(k * z) * math.cos(k * x)
+                - iso_level
+            )
+    return field
+
+
+def _spatial_gyroid_segments(
+    boundary: np.ndarray,
+    z: float,
+    extrusion_width_mm: float,
+    period_at: Callable[[float, float], float],
+) -> list[np.ndarray]:
+    min_x, min_y = boundary.min(0)
+    max_x, max_y = boundary.max(0)
+    pad = extrusion_width_mm * 4.0
+    min_x -= pad
+    min_y -= pad
+    max_x += pad
+    max_y += pad
+    step = max(extrusion_width_mm * 0.5, 0.25)
+    nx = max(16, int((max_x - min_x) / step) + 1)
+    ny = max(16, int((max_y - min_y) / step) + 1)
+    xs = np.linspace(min_x, max_x, nx)
+    ys = np.linspace(min_y, max_y, ny)
+    field = _gyroid_field_grid_varying(xs, ys, z, period_at)
+    return marching_squares_segments(field, xs, ys)
+
+
+def generate_gyroid_infill_zoned_for_layer(
+    wall_contours: list[np.ndarray],
+    z: float,
+    extrusion_width_mm: float,
+    recipe: Any,
+    frame: SoleUvFrame,
+    belt_angle_deg: float,
+) -> list[np.ndarray]:
+    """
+    Piecewise-uniform gyroid: one calibrated density per MaterialZone (+ default fill).
+    Midpoint assignment uses sole-UV + belt inverse map (soft-wins via recipe resolver).
+    """
+    from app.services.material_zones import MaterialZoneV1, resolve_infill_fraction_at_uv
+
+    if not wall_contours:
+        return []
+
+    zones = [MaterialZoneV1.model_validate(z) if isinstance(z, dict) else z for z in (recipe.zones or [])]
+    default_phi = recipe.infill_fraction()
+
+    def seg_mid_uv(seg: np.ndarray) -> tuple[float, float]:
+        mid = (seg[0] + seg[1]) * 0.5
+        return belt_slice_xy_to_sole_uv(float(mid[0]), float(mid[1]), z, belt_angle_deg, frame)
+
+    def phi_for_seg(seg: np.ndarray) -> float:
+        u, v = seg_mid_uv(seg)
+        return resolve_infill_fraction_at_uv(recipe, u, v)
+
+    base = generate_gyroid_infill_for_layer(
+        wall_contours,
+        z,
+        default_phi,
+        extrusion_width_mm,
+    )
+    if not zones:
+        return base
+
+    pcts: set[int] = {int(round(phi_for_seg(seg) * 100)) for seg in base}
+
+    out: list[np.ndarray] = []
+    for pct in sorted(pcts):
+        target_phi = pct / 100.0
+        regen = generate_gyroid_infill_for_layer(
+            wall_contours,
+            z,
+            target_phi,
+            extrusion_width_mm,
+        )
+        for seg in regen:
+            if int(round(phi_for_seg(seg) * 100)) == pct:
+                out.append(seg)
+    return out if out else base
 
 
 def generate_gyroid_infill_for_layer(

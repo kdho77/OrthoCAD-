@@ -1,0 +1,42 @@
+{
+    "fixture_id": "A2-F3",
+    "description": "Medial ES 14% + lateral EH 38% + default Medium 26% sagittal gap",
+    "sole_uv_frame": { "min_x_mm": -20, "min_y_mm": -20, "length_mm": 40, "width_mm": 40 },
+    "belt_angle_deg": 45,
+    "expected_zones": [
+        { "zone_id": "medial-es", "target_pct": 14, "sample_uv": { "u": 0.5, "v": 0.6 } },
+        { "zone_id": "lateral-eh", "target_pct": 38, "sample_uv": { "u": 0.5, "v": -0.6 } },
+        { "zone_id": "gap-medium", "target_pct": 26, "sample_uv": { "u": 0.5, "v": 0 } }
+    ],
+    "print_recipe": {
+        "version": 1,
+        "pattern": "gyroid",
+        "default_hardness": "Medium",
+        "override_soft_wins": false,
+        "sole_uv_frame": { "min_x_mm": -20, "min_y_mm": -20, "length_mm": 40, "width_mm": 40 },
+        "zones": [
+            {
+                "zone_id": "medial-es",
+                "anatomic_label": "Medial extra soft",
+                "hardness_name": "Extra Soft",
+                "boundary_sole_uv": [
+                    { "u": 0, "v": 0.25 },
+                    { "u": 1, "v": 0.25 },
+                    { "u": 1, "v": 1 },
+                    { "u": 0, "v": 1 }
+                ]
+            },
+            {
+                "zone_id": "lateral-eh",
+                "anatomic_label": "Lateral extra hard",
+                "hardness_name": "Extra Hard",
+                "boundary_sole_uv": [
+                    { "u": 0, "v": -1 },
+                    { "u": 1, "v": -1 },
+                    { "u": 1, "v": -0.25 },
+                    { "u": 0, "v": -0.25 }
+                ]
+            }
+        ]
+    }
+}

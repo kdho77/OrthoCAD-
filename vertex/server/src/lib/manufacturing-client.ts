@@ -23,7 +23,6 @@ export interface ManufacturePayload {
     perimeters?: number;
     grinding_style?: GrindingStylePayload;
     print_recipe?: Record<string, unknown>;
-    production_release_label?: string;
 }
 
 /** Shape returned by the Python `/manufacture` endpoint on success. */
