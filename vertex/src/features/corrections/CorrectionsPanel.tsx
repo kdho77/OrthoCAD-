@@ -2,8 +2,9 @@
 // See LICENSE file in the project root for full license information.
 
 import { AlertTriangle, ChevronRight, Link2, Lock, Unlink, Unlock } from "lucide-react";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { SliderField } from "@/components/ui/slider-field";
+import { useProductionMethodForActiveFoot } from "@/lib/clinical/active-foot-side";
 import {
     CLINICAL_LIMITS,
     constrainDesignCorrections,
@@ -17,6 +18,7 @@ import {
 } from "@/lib/geometry/heel-skive";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { cn } from "@/lib/utils";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { mergeCorrections, usePerformanceStore } from "@/stores/performance-store";
 import type { Side, SideCorrections, WedgeCorrection } from "@/types";
@@ -405,6 +407,10 @@ function WedgeSideControl({ side, zoneLabel, wedge, onPreview, onCommit }: Wedge
 
 export function CorrectionsPanel() {
     const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
+    const workflowStep = useClinicalWorkflowStore((s) => s.step);
+    const pendingCorrectionSections = useClinicalWorkflowStore((s) => s.pendingCorrectionSections);
+    const productionMethod = useProductionMethodForActiveFoot();
+    const showShellThickness = productionMethod === "printing_shell";
     const design = useDesignStore((s) => s.design);
     const updateCorrection = useDesignStore((s) => s.updateCorrection);
     const setLinked = useDesignStore((s) => s.setLinked);
@@ -445,6 +451,16 @@ export function CorrectionsPanel() {
     const sectionOpen = (key: string) => openSections[key] ?? false;
     const toggleSection = (key: string) => setOpenSections((prev) => ({ ...prev, [key]: !sectionOpen(key) }));
 
+    useEffect(() => {
+        if (workflowStep !== "shape" || pendingCorrectionSections.length === 0) return;
+        setOpenSections((prev) => {
+            const next = { ...prev };
+            for (const key of pendingCorrectionSections) next[key] = true;
+            return next;
+        });
+        useClinicalWorkflowStore.getState().consumePendingCorrectionSections();
+    }, [workflowStep, pendingCorrectionSections]);
+
     return (
         <div className="space-y-3">
             <div className="flex items-center rounded-md bg-muted px-2 py-1.5">
@@ -465,19 +481,25 @@ export function CorrectionsPanel() {
                 </button>
             </div>
 
-            <SliderField
-                label="Shell thickness"
-                value={displayThickness}
-                min={1.5}
-                max={8}
-                step={0.1}
-                unit="mm"
-                onPreview={(v) => previewThickness(v)}
-                onChange={(v) => {
-                    setThickness(v);
-                    setThicknessPreview(null);
-                }}
-            />
+            {showShellThickness ? (
+                <SliderField
+                    label="Shell thickness"
+                    value={displayThickness}
+                    min={1.5}
+                    max={8}
+                    step={0.1}
+                    unit="mm"
+                    onPreview={(v) => previewThickness(v)}
+                    onChange={(v) => {
+                        setThickness(v);
+                        setThicknessPreview(null);
+                    }}
+                />
+            ) : (
+                <p className="text-[10px] text-muted-foreground">
+                    Shell thickness is available when production method is Printing — Shell (left sidebar).
+                </p>
+            )}
 
             <CollapsibleSection
                 title="Pronation/Supination"

@@ -238,13 +238,8 @@ def emit_gcode(
     )
 
     belt = preset.get("beltAngleDeg")
-    production_label = o.get("productionReleaseLabel")
     g.comment("OrthoCAD Hybrid Manufacturing — belt-aware slicer (walls + gyroid/rectilinear infill)")
     g.comment(f"preset={preset.get('name','unknown')} layerH={layer_h}mm nozzle={nozzle}mm belt={belt}° material=TPU")
-    if production_label:
-        g.comment("PRODUCTION_RELEASE_LABEL")
-        g.comment(str(production_label))
-        g.comment("END_PRODUCTION_RELEASE_LABEL")
     g.raw("G21")
     g.raw("G90")
     g.raw("M82")

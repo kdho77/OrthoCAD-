@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import hardnessTable from "./hardness-to-infill-pct.json";
+
 /** Locked clinical hardness ladder (Biomechanics 2026-09-20). */
 export const HARDNESS_NAMES = ["Extra Soft", "Soft", "Medium", "Hard", "Extra Hard"] as const;
 
@@ -30,8 +31,6 @@ export const printRecipeV1Schema = z.object({
     defaultHardness: hardnessNameSchema,
     zones: z.tuple([]),
     hardnessToInfillPct: z.record(hardnessNameSchema, gyroidPctSchema).optional(),
-    /** Belt release label in manufacturing output (default ON). */
-    includeProductionLabel: z.boolean().optional(),
 });
 
 export type PrintRecipeV1 = z.infer<typeof printRecipeV1Schema>;
@@ -42,11 +41,7 @@ export const DEFAULT_PRINT_RECIPE_V1: PrintRecipeV1 = {
     profileId: DEFAULT_PRODUCTION_PROFILE_ID,
     defaultHardness: "Medium",
     zones: [],
-    includeProductionLabel: true,
 };
-
-/** Recommended default for belt production release labels (Track 3a). */
-export const DEFAULT_INCLUDE_PRODUCTION_LABEL = true;
 
 /** Presets that require PrintRecipeV1 (reject legacy infill-only overrides). */
 export const GYROID_MANUFACTURING_PRESET_IDS = new Set([
@@ -75,13 +70,6 @@ export function infillFractionFromRecipe(recipe: PrintRecipeV1): number {
     return pct / 100;
 }
 
-function withLabelDefault(recipe: PrintRecipeV1): PrintRecipeV1 {
-    return {
-        ...recipe,
-        includeProductionLabel: recipe.includeProductionLabel ?? true,
-    };
-}
-
 /** Legacy PrintRecipeV1 payloads saved before profile lock (no profileId). */
 const legacyPrintRecipeV1Schema = z.object({
     version: z.literal(1),
@@ -89,7 +77,6 @@ const legacyPrintRecipeV1Schema = z.object({
     defaultHardness: hardnessNameSchema,
     zones: z.tuple([]),
     hardnessToInfillPct: z.record(hardnessNameSchema, gyroidPctSchema).optional(),
-    includeProductionLabel: z.boolean().optional(),
 });
 
 export function migratePrintRecipe(recipe: PrintRecipeV1 | undefined | null): PrintRecipeV1 {
@@ -98,14 +85,14 @@ export function migratePrintRecipe(recipe: PrintRecipeV1 | undefined | null): Pr
     }
     const parsed = printRecipeV1Schema.safeParse(recipe);
     if (parsed.success) {
-        return withLabelDefault(parsed.data);
+        return parsed.data;
     }
     const legacy = legacyPrintRecipeV1Schema.safeParse(recipe);
     if (legacy.success) {
-        return withLabelDefault({
+        return {
             ...legacy.data,
             profileId: DEFAULT_PRODUCTION_PROFILE_ID,
-        });
+        };
     }
     return { ...DEFAULT_PRINT_RECIPE_V1 };
 }
@@ -146,15 +133,13 @@ export function resolveGyroidManufacturingPrintRecipe(
 
 /** Snake_case payload for Python `/manufacture`. */
 export function printRecipeToSnake(recipe: PrintRecipeV1): Record<string, unknown> {
-    const migrated = migratePrintRecipe(recipe);
     return {
-        version: migrated.version,
-        pattern: migrated.pattern,
-        profile_id: migrated.profileId,
-        default_hardness: migrated.defaultHardness,
-        zones: migrated.zones,
-        hardness_to_infill_pct: migrated.hardnessToInfillPct ?? HARDNESS_TO_INFILL_PCT,
-        include_production_label: migrated.includeProductionLabel ?? true,
+        version: recipe.version,
+        pattern: recipe.pattern,
+        profile_id: recipe.profileId,
+        default_hardness: recipe.defaultHardness,
+        zones: recipe.zones,
+        hardness_to_infill_pct: recipe.hardnessToInfillPct ?? HARDNESS_TO_INFILL_PCT,
     };
 }
 
@@ -165,17 +150,9 @@ export function bindPrintRecipeProfile(
     hardness?: HardnessName,
 ): PrintRecipeV1 {
     const base = migratePrintRecipe(recipe);
-    return withLabelDefault({
+    return {
         ...base,
         profileId,
         defaultHardness: hardness ?? base.defaultHardness,
-    });
-}
-
-export function setProductionLabelEnabled(
-    recipe: PrintRecipeV1 | undefined | null,
-    enabled: boolean,
-): PrintRecipeV1 {
-    const base = migratePrintRecipe(recipe);
-    return { ...base, includeProductionLabel: enabled };
+    };
 }

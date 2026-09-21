@@ -12,6 +12,9 @@ export const ELEMENT_KINDS = [
     "heel_sink",
     "navicular_sink",
     "kinetic_wedge",
+    "scaphoid_pad",
+    "heel_cushion",
+    "dancers_pad",
 ] as const;
 
 export const SCAN_PATTERNS = ["full_contact", "prefab_3d", "flat", "custom"] as const;

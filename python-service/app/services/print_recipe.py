@@ -55,7 +55,6 @@ class PrintRecipeV1(BaseModel):
     default_hardness: HardnessName = "Medium"
     zones: list[Any] = Field(default_factory=list)
     hardness_to_infill_pct: dict[str, int] | None = None
-    include_production_label: bool = True
 
     def resolved_infill_percent(self) -> int:
         table = self.hardness_to_infill_pct or HARDNESS_TO_INFILL_PCT

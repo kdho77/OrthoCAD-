@@ -31,6 +31,9 @@ describe("anatomical element footprints", () => {
                 "kinetic_oval",
                 "heel_cup",
                 "navicular_oval",
+                "scaphoid_pad",
+                "heel_cushion",
+                "dancers_pad",
             ]).toContain(p.shape);
         }
     });
