@@ -16,6 +16,7 @@ on:
         branches: ["main"]
 
 # Safe to cancel: this workflow is validation-only (no deploy/publish/migration).
+# A cancelled or failed test-and-deploy run is not success; do not treat either as a pass.
 concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
