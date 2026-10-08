@@ -1,32 +1,107 @@
+# Test workflow — side-effect-free validation only (job name is historical; no deploy).
+# Deploys are handled by Vercel outside GitHub Actions; this workflow must not publish or mutate prod.
+#
+# Push to main is a justified protected-branch integration check after merge.
+# Feature-branch validation is PR-only (no extra push trigger), so an open PR does not
+# also pay for a duplicate branch-push run of the same suite.
+# Policy: internal Bot CI usage policy, commit b5959d5.
+
 name: Test
 
 on:
     push:
         branches: ["main"]
     pull_request:
+        types: [opened, synchronize, reopened, ready_for_review]
         branches: ["main"]
+
+# Safe to cancel: this workflow is validation-only (no deploy/publish/migration).
+# A cancelled or failed test-and-deploy run is not success; do not treat either as a pass.
+concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
 
 jobs:
     test-and-deploy:
         runs-on: ubuntu-latest
+        # Recent successful runs of this job: ~9–16 min. 25 min leaves headroom without hanging.
+        timeout-minutes: 25
 
         steps:
             - name: Checkout repository
               uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Classify change scope
+              id: scope
+              env:
+                  EVENT_NAME: ${{ github.event_name }}
+                  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+              run: |
+                  set -euo pipefail
+                  reason="code-or-tooling-change"
+                  full="true"
+                  if [ -z "${BASE_SHA}" ] || [ "${BASE_SHA}" = "0000000000000000000000000000000000000000" ]; then
+                      reason="missing-baseline-run-full"
+                  else
+                      CHANGED="$(git diff --name-only "${BASE_SHA}" HEAD || true)"
+                      if [ -z "${CHANGED}" ]; then
+                          reason="empty-diff-run-full"
+                      else
+                          non_doc="false"
+                          while IFS= read -r path; do
+                              [ -z "${path}" ] && continue
+                              case "${path}" in
+                                  *.md|docs/*|LICENSE|screenshots/*|.gitignore)
+                                      ;;
+                                  *)
+                                      non_doc="true"
+                                      ;;
+                              esac
+                          done < <(printf '%s\n' "${CHANGED}")
+                          if [ "${non_doc}" = "false" ]; then
+                              full="false"
+                              reason="docs-only"
+                          fi
+                      fi
+                  fi
+                  {
+                      echo "full=${full}"
+                      echo "reason=${reason}"
+                  } >> "${GITHUB_OUTPUT}"
+                  echo "Validation scope full=${full} reason=${reason}"
+                  echo "Compared ${BASE_SHA:-none} -> ${GITHUB_SHA} (${EVENT_NAME})"
 
             - name: Setup node
+              if: steps.scope.outputs.full == 'true'
               uses: actions/setup-node@v4
               with:
                   node-version: 24
+                  cache: npm
+                  cache-dependency-path: |
+                      package-lock.json
+                      vertex/package-lock.json
 
             - name: Install dependencies
+              if: steps.scope.outputs.full == 'true'
               run: npm install
 
             - name: Install vertex app dependencies
+              if: steps.scope.outputs.full == 'true'
               run: npm install --prefix vertex
 
             - name: Generate Prisma client (vertex)
+              if: steps.scope.outputs.full == 'true'
               run: npm run prisma:generate --prefix vertex
 
             - name: Run unit tests
+              if: steps.scope.outputs.full == 'true'
               run: npm run test
+
+            - name: Record docs-only scope
+              if: steps.scope.outputs.full != 'true'
+              run: |
+                  echo "Documented not-applicable result: expensive install/test omitted (${{ steps.scope.outputs.reason }})."
+                  echo "Workflow still ran so the Test / test-and-deploy check is not left pending."
+                  echo "Workflow, lockfile, or tooling changes are classified as full and are not omitted."

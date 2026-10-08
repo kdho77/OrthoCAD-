@@ -171,3 +171,22 @@ Examples:
 - **ICommand**: For user actions
 - **Factory**: For creating shapes and visuals
 - **Dependency Injection**: Use service container
+
+## CI usage rules
+
+Workers that create commits, pull requests, or workflow runs follow these rules
+(internal Bot CI usage policy, commit b5959d5):
+
+- Batch related edits and validate locally first. Do not use GitHub CI as the first debugger.
+- One active implementation branch/PR per objective unless separation is justified.
+  Check existing PRs and runs for the same objective before opening another.
+- Keep incomplete work in a draft PR. Do not create empty commits, toggle draft/ready
+  repeatedly, or rebase just to retrigger checks.
+- Do not retry deterministic failures blindly. Read the failed job first; at most one
+  retry for an evidenced transient runner or network failure on the same revision.
+- No routine CI polling or status loops. Record commands, results, and the tested
+  revision in the PR.
+- Keep existing job and check names stable. Do not use skip-CI directives,
+  `continue-on-error`, blanket success, or disabled required checks to manufacture
+  a green PR.
+
