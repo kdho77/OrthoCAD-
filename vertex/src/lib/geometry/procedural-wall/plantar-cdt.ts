@@ -1,14 +1,14 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { minDistToLoopXY, pointInPoly } from "./cdt-band";
+import { cdtInteriorPolygon, countOpenNonBoundaryEdges, minDistToLoopXY, pointInPoly } from "./cdt-band";
 import type { PolyPoint } from "./curves";
 import { sampleUvField } from "./extract";
 import { type DishZIndex, sampleDishZVertical } from "./height-xy";
 import type { UvHeightField } from "./types";
 
 export const PLANTAR_STEINER_MM = 1.8;
-export const PLANTAR_MARGIN_MM = 1.0;
+export const PLANTAR_MARGIN_MM = 1.5;
 export const GRIND_REFINE_DZ_MM = 1.2;
 
 export interface GeneratedPlantar {
@@ -17,6 +17,8 @@ export interface GeneratedPlantar {
     boundaryCount: number;
     steinerCount: number;
     minZ: number;
+    openEdges: number;
+    missingBoundary: number;
 }
 
 function stockDishZ(
@@ -32,7 +34,7 @@ function stockDishZ(
     return Math.max(0, z);
 }
 
-function hexSteiner(
+export function hexSteiner(
     boundary: PolyPoint[],
     step = PLANTAR_STEINER_MM,
     margin = PLANTAR_MARGIN_MM,
@@ -61,7 +63,7 @@ function hexSteiner(
     return out;
 }
 
-function applyZ(
+export function applyPlantarFields(
     points: PolyPoint[],
     boundary: PolyPoint[],
     dish: DishZIndex | null,
@@ -75,7 +77,7 @@ function applyZ(
     }
 }
 
-function reanchorMinZ(points: PolyPoint[]): number {
+export function reanchorPlantarMinZ(points: PolyPoint[]): number {
     let minZ = Infinity;
     for (const p of points) if (p.z < minZ) minZ = p.z;
     const lift = Number.isFinite(minZ) && minZ < 0 ? -minZ : 0;
@@ -83,11 +85,7 @@ function reanchorMinZ(points: PolyPoint[]): number {
     return lift;
 }
 
-function orient2(ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number {
-    return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
-}
-
-function inTri(
+function barycentric(
     px: number,
     py: number,
     ax: number,
@@ -96,83 +94,46 @@ function inTri(
     by: number,
     cx: number,
     cy: number,
-): boolean {
-    const o0 = orient2(ax, ay, bx, by, px, py);
-    const o1 = orient2(bx, by, cx, cy, px, py);
-    const o2 = orient2(cx, cy, ax, ay, px, py);
-    return o0 >= -1e-9 && o1 >= -1e-9 && o2 >= -1e-9;
+): [number, number, number] | null {
+    const den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (Math.abs(den) < 1e-18) return null;
+    const w0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / den;
+    const w1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / den;
+    const w2 = 1 - w0 - w1;
+    return [w0, w1, w2];
 }
 
-function earClip(poly: PolyPoint[]): Array<[number, number, number]> {
-    const n = poly.length;
-    if (n < 3) return [];
-    const next = Int32Array.from({ length: n }, (_, i) => (i + 1) % n);
-    const prev = Int32Array.from({ length: n }, (_, i) => (i - 1 + n) % n);
-    const reflex = (i: number): boolean =>
-        orient2(
-            poly[prev[i]!]!.x,
-            poly[prev[i]!]!.y,
-            poly[i]!.x,
-            poly[i]!.y,
-            poly[next[i]!]!.x,
-            poly[next[i]!]!.y,
-        ) <= 1e-12;
-    const isEar = (i: number): boolean => {
-        if (reflex(i)) return false;
-        const a = prev[i]!;
-        const b = i;
-        const c = next[i]!;
-        const pa = poly[a]!;
-        const pb = poly[b]!;
-        const pc = poly[c]!;
-        if (orient2(pa.x, pa.y, pb.x, pb.y, pc.x, pc.y) <= 1e-12) return false;
-        for (let k = next[c]!; k !== a; k = next[k]!) {
-            if (!reflex(k)) continue;
-            const p = poly[k]!;
-            if (inTri(p.x, p.y, pa.x, pa.y, pb.x, pb.y, pc.x, pc.y)) return false;
-        }
-        return true;
-    };
-    const faces: Array<[number, number, number]> = [];
-    let remaining = n;
-    let i = 0;
-    let fail = 0;
-    while (remaining > 3 && fail < remaining * 8) {
-        const a0 = prev[i]!;
-        const c0 = next[i]!;
-        const o = orient2(poly[a0]!.x, poly[a0]!.y, poly[i]!.x, poly[i]!.y, poly[c0]!.x, poly[c0]!.y);
-        if (Math.abs(o) <= 1e-8) {
-            next[a0] = c0;
-            prev[c0] = a0;
-            remaining--;
-            fail = 0;
-            i = c0;
-            continue;
-        }
-        if (isEar(i)) {
-            if (o > 0) faces.push([a0, i, c0]);
-            else faces.push([a0, c0, i]);
-            next[a0] = c0;
-            prev[c0] = a0;
-            remaining--;
-            fail = 0;
-            i = c0;
-        } else {
-            fail++;
-            i = next[i]!;
-        }
+export function interpolatePlantarZ(
+    points: PolyPoint[],
+    faces: Array<[number, number, number]>,
+    x: number,
+    y: number,
+): number | null {
+    for (const f of faces) {
+        const A = points[f[0]!]!;
+        const B = points[f[1]!]!;
+        const C = points[f[2]!]!;
+        const w = barycentric(x, y, A.x, A.y, B.x, B.y, C.x, C.y);
+        if (!w) continue;
+        if (w[0] < -1e-7 || w[1] < -1e-7 || w[2] < -1e-7) continue;
+        return w[0] * A.z + w[1] * B.z + w[2] * C.z;
     }
-    if (remaining === 3) {
-        const a = i;
-        const b = next[a]!;
-        const c = next[b]!;
-        if (orient2(poly[a]!.x, poly[a]!.y, poly[b]!.x, poly[b]!.y, poly[c]!.x, poly[c]!.y) > 0) {
-            faces.push([a, b, c]);
-        } else {
-            faces.push([a, c, b]);
-        }
+    return null;
+}
+
+/** Plantar slope from horizontal along −h (inward), sampled 1–2 mm from B. */
+export function samplePlantarSlopeAlongMinusH(
+    points: PolyPoint[],
+    faces: Array<[number, number, number]>,
+    B: PolyPoint,
+    h: { x: number; y: number },
+): number {
+    for (const s of [1.5, 2, 1]) {
+        const z = interpolatePlantarZ(points, faces, B.x - h.x * s, B.y - h.y * s);
+        if (z == null) continue;
+        return Math.atan((z - B.z) / s);
     }
-    return faces;
+    return 0;
 }
 
 function insertSteiner(points: PolyPoint[], faces: Array<[number, number, number]>, p: PolyPoint): boolean {
@@ -181,7 +142,8 @@ function insertSteiner(points: PolyPoint[], faces: Array<[number, number, number
         const A = points[a]!;
         const B = points[b]!;
         const C = points[c]!;
-        if (!inTri(p.x, p.y, A.x, A.y, B.x, B.y, C.x, C.y)) continue;
+        const w = barycentric(p.x, p.y, A.x, A.y, B.x, B.y, C.x, C.y);
+        if (!w || w[0] < -1e-9 || w[1] < -1e-9 || w[2] < -1e-9) continue;
         const v = points.length;
         points.push({ ...p });
         faces.splice(i, 1);
@@ -189,19 +151,6 @@ function insertSteiner(points: PolyPoint[], faces: Array<[number, number, number
         return true;
     }
     return false;
-}
-
-function triangulateInterior(
-    boundary: PolyPoint[],
-    steiner: PolyPoint[],
-): {
-    points: PolyPoint[];
-    faces: Array<[number, number, number]>;
-} {
-    const points = boundary.map((p) => ({ ...p }));
-    const faces = earClip(points);
-    for (const s of steiner) insertSteiner(points, faces, s);
-    return { points, faces };
 }
 
 function grindRefine(
@@ -212,6 +161,7 @@ function grindRefine(
     const extra: PolyPoint[] = [];
     const seen = new Set<string>();
     const addMid = (a: number, b: number) => {
+        if (a < boundary.length && b < boundary.length) return;
         const i = Math.min(a, b);
         const j = Math.max(a, b);
         const k = `${i},${j}`;
@@ -240,6 +190,40 @@ function grindRefine(
     return extra;
 }
 
+export function assertPlantarDisk(faces: Array<[number, number, number]>, nBoundary: number): void {
+    const { open, nonManifold, missingBoundary } = countOpenNonBoundaryEdges(faces, nBoundary);
+    if (open !== 0 || nonManifold !== 0 || missingBoundary !== 0) {
+        throw new Error(
+            `[S1-CDT] plantar disk failed: open=${open} nonManifold=${nonManifold} ` +
+                `missingBoundary=${missingBoundary}`,
+        );
+    }
+}
+
+/**
+ * Constrained Delaunay of BottomOutline + Steiner grid. Boundary vertices stay
+ * at indices 0..n-1 and are never split.
+ */
+export function triangulatePlantarXY(
+    boundary: PolyPoint[],
+    margin = PLANTAR_MARGIN_MM,
+): {
+    points: PolyPoint[];
+    faces: Array<[number, number, number]>;
+    boundaryCount: number;
+    steinerCount: number;
+} {
+    const loop = boundary.map((p) => ({ ...p, z: 0 }));
+    const steiner = hexSteiner(loop, PLANTAR_STEINER_MM, margin);
+    const mesh = cdtInteriorPolygon(loop, steiner);
+    return {
+        points: mesh.points,
+        faces: mesh.faces,
+        boundaryCount: loop.length,
+        steinerCount: mesh.points.length - loop.length,
+    };
+}
+
 /**
  * Fully generated plantar: CDT of BottomOutline + ~1.8 mm Steiner grid.
  * Stock dish z is sampled first (clamped >= 0); posting / grind / zonal are
@@ -251,17 +235,19 @@ export function buildGeneratedPlantar(input: {
     field?: UvHeightField;
     zDelta: (x: number, y: number) => number;
     refineGrind?: boolean;
+    marginMm?: number;
 }): GeneratedPlantar {
     const boundary = input.boundary.map((p) => ({ ...p }));
-    const steiner = hexSteiner(boundary);
-    const mesh = triangulateInterior(boundary, steiner);
-    applyZ(mesh.points, boundary, input.dish, input.field, input.zDelta);
+    const mesh = triangulatePlantarXY(boundary, input.marginMm ?? PLANTAR_MARGIN_MM);
+    applyPlantarFields(mesh.points, boundary, input.dish, input.field, input.zDelta);
     if (input.refineGrind) {
         const extra = grindRefine(boundary, mesh.points, mesh.faces);
         for (const p of extra) insertSteiner(mesh.points, mesh.faces, p);
-        if (extra.length) applyZ(mesh.points, boundary, input.dish, input.field, input.zDelta);
+        if (extra.length) applyPlantarFields(mesh.points, boundary, input.dish, input.field, input.zDelta);
     }
-    reanchorMinZ(mesh.points);
+    reanchorPlantarMinZ(mesh.points);
+    assertPlantarDisk(mesh.faces, boundary.length);
+    const hygiene = countOpenNonBoundaryEdges(mesh.faces, boundary.length);
     let minZ = Infinity;
     for (const p of mesh.points) if (p.z < minZ) minZ = p.z;
     return {
@@ -270,5 +256,7 @@ export function buildGeneratedPlantar(input: {
         boundaryCount: boundary.length,
         steinerCount: mesh.points.length - boundary.length,
         minZ: Number.isFinite(minZ) ? minZ : 0,
+        openEdges: hygiene.open,
+        missingBoundary: hygiene.missingBoundary,
     };
 }

@@ -1,22 +1,27 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { buildBezierColumns, type ColumnFrame } from "./bezier-column";
+import {
+    buildBezierColumns,
+    type ColumnFrame,
+    type MinWallClamp,
+    TOP_CLEARANCE_DEG as T0_CLEARANCE_DEG,
+} from "./bezier-column";
 import type { PolyPoint } from "./curves";
 import { lateralFlangeEnvelope, type WallRegionDefaults } from "./defaults";
 import { sampleUvField } from "./extract";
 import { type DishZIndex, sampleDishZVertical } from "./height-xy";
 import { MAX_FILLET_ASPECT, MIN_FILLET_RING_SPACING_MM, MIN_FILLET_RINGS, type NZ } from "./hermite";
 import type { HermiteStation } from "./loft";
-import { buildGeneratedPlantar, type GeneratedPlantar } from "./plantar-cdt";
+import { buildGeneratedPlantar, type GeneratedPlantar, samplePlantarSlopeAlongMinusH } from "./plantar-cdt";
 import type { FlareCapReport } from "./stations";
-import type { UvHeightField } from "./types";
+import { S1_MIN_WALL_MM, type UvHeightField } from "./types";
 
 export const PLANTAR_RINGS = 0;
 export const WALL_MID_ROWS = 8;
 export const INNER_CAP_MM = 4;
 export const STATION_MERGE_MM = 0.2;
-export const TOP_CLEARANCE_DEG = 5;
+export const TOP_CLEARANCE_DEG = T0_CLEARANCE_DEG;
 
 export interface QuadGrid {
     /** nS × nJ xyz, row-major j then i. Row 0 is the native rim (not stored). */
@@ -38,6 +43,7 @@ export interface QuadGrid {
     bandTiltDegMax: number;
     /** Outline-row vertices, exactly BottomOutline station samples. */
     outlineRing: PolyPoint[];
+    minWallClamps: MinWallClamp[];
 }
 
 export interface RimJunction {
@@ -231,6 +237,16 @@ export interface BuildQuadGridInput {
     footLengthMm?: number;
 }
 
+function steinerMarginMm(stations: HermiteStation[]): number {
+    let margin = 1.5;
+    for (const st of stations) {
+        const height = Math.max(st.rim.z - st.outline.z, 0.5);
+        const r = Math.min(0.4 * height, 3);
+        margin = Math.max(margin, r);
+    }
+    return margin;
+}
+
 export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     const stations = input.stations;
     const nS = stations.length;
@@ -243,11 +259,26 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         field: input.plantarField,
         zDelta: input.zDelta,
         refineGrind: input.refineGrind,
+        marginMm: steinerMarginMm(stations),
     });
     for (let i = 0; i < nS; i++) {
         const z = plantar.points[i]?.z;
         if (z != null) stations[i]!.outline.z = z;
     }
+    const headingOf = (i: number) => {
+        const st = stations[i]!;
+        const dx = st.outline.x - st.rim.x;
+        const dy = st.outline.y - st.rim.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 1e-4) {
+            const nl = Math.hypot(st.n.x, st.n.y) || 1;
+            return { x: st.n.x / nl, y: st.n.y / nl };
+        }
+        return { x: dx / len, y: dy / len };
+    };
+    const plantarSlopeRad = stations.map((st, i) =>
+        samplePlantarSlopeAlongMinusH(plantar.points, plantar.faces, st.outline, headingOf(i)),
+    );
     const built = buildBezierColumns(
         stations,
         input.junctions,
@@ -255,7 +286,14 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         input.rimLoop,
         input.topZ,
         nWall,
+        plantarSlopeRad,
+        S1_MIN_WALL_MM,
     );
+    for (let i = 0; i < nS; i++) {
+        const z = built.frames[i]!.B.z;
+        stations[i]!.outline.z = z;
+        if (plantar.points[i]) plantar.points[i]!.z = z;
+    }
     const columns: PolyPoint[][] = built.xyz.map((col) => col.map((p) => ({ ...p })));
     applyLateralFlange(
         columns,
@@ -271,6 +309,17 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     const report = built.flareCapReport;
 
     const outlineRing = columns.map((col) => ({ ...col[outlineRow]! }));
+    for (let i = 0; i < nS; i++) {
+        const ring = outlineRing[i]!;
+        const b = plantar.points[i]!;
+        if (Math.hypot(ring.x - b.x, ring.y - b.y, ring.z - b.z) > 1e-6) {
+            throw new Error(
+                `[S1-CDT] column bottom ring != plantar boundary at ${i}: ` +
+                    `ring=(${ring.x.toFixed(3)},${ring.y.toFixed(3)},${ring.z.toFixed(3)}) ` +
+                    `B=(${b.x.toFixed(3)},${b.y.toFixed(3)},${b.z.toFixed(3)})`,
+            );
+        }
+    }
     let bandTiltDegMax = 0;
     for (const f of plantar.faces) {
         const ids = [f[0]!, f[1]!, f[2]!];
@@ -309,5 +358,6 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         chordCrossings: 0,
         bandTiltDegMax,
         outlineRing,
+        minWallClamps: built.minWallClamps,
     };
 }

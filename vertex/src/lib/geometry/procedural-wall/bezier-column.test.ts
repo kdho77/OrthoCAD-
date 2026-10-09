@@ -8,6 +8,8 @@ import {
     buildBezierColumns,
     COLUMN_PLANARITY_LIMIT_MM,
     evalCubicBezier,
+    FILLET_R_CAP_MM,
+    filletCenterAndF,
     HANDLE_CHORD_CAP,
     initColumnFrames,
     MERGE_ROW_MM,
@@ -17,6 +19,7 @@ import {
     sampleInPlaneSlope,
     slopeFromSheetPlane,
     summarizeWallBands,
+    T0_PIN_DEG,
     TOP_CLEARANCE_DEG,
     t0FromSheetSlope,
 } from "./bezier-column";
@@ -155,22 +158,23 @@ describe("bezier column", () => {
         expect(rimOverhangMm({ x: 0, y: 0, z: 4 }, outline)).toBeLessThan(0);
     });
 
-    test("T0 is sheet slope rotated down 5deg, never pinned near -5 from horizontal", () => {
+    test("T0 is min(sheet_h-10, -45); short chord stays nearly vertical", () => {
         const sheet = (43 * Math.PI) / 180;
         const t0 = t0FromSheetSlope(sheet, false);
-        expect((t0 * 180) / Math.PI).toBeCloseTo(38, 5);
+        expect((t0 * 180) / Math.PI).toBeCloseTo(T0_PIN_DEG, 5);
         expect(t0).toBeLessThanOrEqual(sheet - (TOP_CLEARANCE_DEG * Math.PI) / 180 + 1e-12);
-        expect(Math.abs((t0 * 180) / Math.PI + 5)).toBeGreaterThan(20);
-        expect((t0FromSheetSlope(0, false) * 180) / Math.PI).toBeCloseTo(-5, 5);
-        expect((t0FromSheetSlope(sheet, true) * 180) / Math.PI).toBeCloseTo(-85, 5);
+        const descending = (-48 * Math.PI) / 180;
+        expect((t0FromSheetSlope(descending, false) * 180) / Math.PI).toBeCloseTo(-58, 5);
+        expect((t0FromSheetSlope(0, false) * 180) / Math.PI).toBeCloseTo(T0_PIN_DEG, 5);
+        expect((t0FromSheetSlope(sheet, true) * 180) / Math.PI).toBeCloseTo(-80, 5);
     });
 
-    test("exit-side slope along +h is used; rising lip yields T0 <= sheet-5", () => {
+    test("slope is sampled along +h; T0 pins to -45 even if the lip rises along +h", () => {
         const tan = Math.tan((43 * Math.PI) / 180);
         const R = { x: 0, y: 0, z: 10 };
         const h = { x: 1, y: 0 };
         const topZ = (x: number, _y: number): number | null => {
-            if (x > 0.05) return null;
+            if (x < -0.05) return null;
             return 10 + x * tan;
         };
         const slope = sampleInPlaneSlope(R, h, topZ);
@@ -191,7 +195,7 @@ describe("bezier column", () => {
         );
         const fr = frames[0]!;
         expect((fr.sheetSlopeRad * 180) / Math.PI).toBeCloseTo(43, 0);
-        expect((fr.t0TiltRad * 180) / Math.PI).toBeCloseTo(38, 0);
+        expect((fr.t0TiltRad * 180) / Math.PI).toBeCloseTo(T0_PIN_DEG, 0);
         expect(fr.t0TiltRad).toBeLessThanOrEqual(
             fr.sheetSlopeRad - (TOP_CLEARANCE_DEG * Math.PI) / 180 + 1e-9,
         );
@@ -230,5 +234,17 @@ describe("bezier column", () => {
         expect(rows.find((r) => r.band === "arch")?.hits).toBe(1);
         expect(rows.find((r) => r.band === "forefoot")?.hits).toBe(1);
         expect(rows.find((r) => r.band === "heel")?.meanOverhangOverHeight).toBeCloseTo(0.2, 6);
+    });
+
+    test("circular fillet F is r inward and r up when the plantar is flat", () => {
+        const B = { x: 5, y: 0, z: 0 };
+        const h = { x: 1, y: 0 };
+        const U = { x: 0, y: 0, z: 1 };
+        const placed = filletCenterAndF(B, h, 2, U, 0);
+        expect(placed.F.x).toBeCloseTo(3, 5);
+        expect(placed.F.y).toBeCloseTo(0, 5);
+        expect(placed.F.z).toBeCloseTo(2, 5);
+        expect(placed.theta).toBeCloseTo(Math.PI / 2, 5);
+        expect(FILLET_R_CAP_MM).toBe(3);
     });
 });

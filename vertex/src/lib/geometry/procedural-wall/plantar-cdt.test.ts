@@ -20,6 +20,8 @@ describe("generated plantar CDT", () => {
         expect(mesh.steinerCount).toBeGreaterThan(8);
         expect(mesh.faces.length).toBeGreaterThan(n);
         expect(mesh.minZ).toBeGreaterThanOrEqual(-1e-9);
+        expect(mesh.openEdges).toBe(0);
+        expect(mesh.missingBoundary).toBe(0);
         for (const p of mesh.points) expect(p.z).toBeGreaterThanOrEqual(-1e-9);
         const edge = new Map<string, number>();
         const key = (a: number, b: number) => (a < b ? `${a},${b}` : `${b},${a}`);

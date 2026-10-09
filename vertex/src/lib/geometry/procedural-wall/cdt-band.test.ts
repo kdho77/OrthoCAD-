@@ -2,7 +2,14 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import { cdtInteriorPolygon, cdtPlanarBand, DISH_BAND_MM, delaunayXY, pointInPoly } from "./cdt-band";
+import {
+    cdtInteriorPolygon,
+    cdtPlanarBand,
+    countOpenNonBoundaryEdges,
+    DISH_BAND_MM,
+    delaunayXY,
+    pointInPoly,
+} from "./cdt-band";
 
 describe("plan-view CDT dish band", () => {
     test("DISH_BAND_MM is 3", () => {
@@ -71,5 +78,30 @@ describe("plan-view CDT dish band", () => {
         for (let i = 0; i < n; i++) {
             expect(edgeCount.get(key(i, (i + 1) % n)) ?? 0).toBe(1);
         }
+    });
+
+    test("CDT of a concave C keeps every constraint edge and no interior holes", () => {
+        const boundary = [
+            { x: 0, y: 0, z: 0 },
+            { x: 10, y: 0, z: 0 },
+            { x: 10, y: 8, z: 0 },
+            { x: 6, y: 8, z: 0 },
+            { x: 6, y: 3, z: 0 },
+            { x: 4, y: 3, z: 0 },
+            { x: 4, y: 8, z: 0 },
+            { x: 0, y: 8, z: 0 },
+        ];
+        const steiner = [
+            { x: 2, y: 2, z: 0 },
+            { x: 8, y: 2, z: 0 },
+            { x: 2, y: 6, z: 0 },
+            { x: 8, y: 6, z: 0 },
+        ];
+        const { faces } = cdtInteriorPolygon(boundary, steiner);
+        const { open, nonManifold, missingBoundary } = countOpenNonBoundaryEdges(faces, boundary.length);
+        expect(open).toBe(0);
+        expect(nonManifold).toBe(0);
+        expect(missingBoundary).toBe(0);
+        expect(faces.length).toBeGreaterThan(6);
     });
 });

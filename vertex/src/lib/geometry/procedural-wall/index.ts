@@ -7,10 +7,12 @@ export {
     COLUMN_PLANARITY_LIMIT_MM,
     type ColumnFrame,
     evalCubicBezier,
+    FILLET_R_CAP_MM,
     FRAME_ANGLE_LIMIT_DEG,
     FRAME_SMOOTH_ITERS,
     HANDLE_CHORD_CAP,
     MERGE_ROW_MM,
+    type MinWallClamp,
     OUTLINE_STATION_SPACING_MM,
     offPlaneMm,
     rimOverhangMm,
@@ -18,11 +20,20 @@ export {
     sampleInPlaneSlope,
     slopeFromSheetPlane,
     summarizeWallBands,
+    T0_PIN_DEG,
+    TOP_CLEARANCE_DEG,
     t0FromSheetSlope,
     U_BANDS,
     type WallBandRow,
 } from "./bezier-column";
-export { cdtInteriorPolygon, cdtPlanarBand, DISH_BAND_MM, delaunayXY } from "./cdt-band";
+export {
+    cdtInteriorPolygon,
+    cdtPlanarBand,
+    countOpenNonBoundaryEdges,
+    DISH_BAND_MM,
+    delaunayXY,
+    insertConstraintEdges,
+} from "./cdt-band";
 export { fitClosedC2Spline, resampleClosedC2, resamplePolyline } from "./curves";
 export {
     applyMeasuredUnclamped,
@@ -84,7 +95,12 @@ export {
 } from "./metrics";
 export { applyCurveModifiers } from "./modifiers";
 export { assertNonCrossing, buildPlanformFrame } from "./planform";
-export { buildGeneratedPlantar, PLANTAR_STEINER_MM } from "./plantar-cdt";
+export {
+    assertPlantarDisk,
+    buildGeneratedPlantar,
+    PLANTAR_MARGIN_MM,
+    PLANTAR_STEINER_MM,
+} from "./plantar-cdt";
 export { reconstructProceduralWalls } from "./reconstruct";
 export {
     mapZoneFixtures,

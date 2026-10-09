@@ -209,11 +209,15 @@ describe("S1 parametric wall", () => {
             const implied = (
                 (rebuilt.userData as { filletImpliedSeamDeg?: number[] }).filletImpliedSeamDeg ?? []
             ).slice();
+            const filletRing =
+                (rebuilt.userData as { filletRing?: Array<{ x: number; y: number; z: number }> })
+                    .filletRing ?? [];
+            const fSeam = filletRing.length ? outlineSeamDihedrals(rebuilt, filletRing, 1.25) : reconSeam;
             let seamOver = 0;
-            const nSeam = reconSeam.perStation.length;
+            const nSeam = fSeam.perStation.length;
             for (let i = 0; i < nSeam; i++) {
                 const allow = (implied[i] ?? 0) + 2;
-                seamOver = Math.max(seamOver, reconSeam.perStation[i]! - allow);
+                seamOver = Math.max(seamOver, fSeam.perStation[i]! - allow);
             }
             const stitchDelta = 0;
             const archFolds = medialArchUpperWallFolds(rebuilt, model.bounds, topN);
@@ -342,9 +346,11 @@ describe("S1 parametric wall", () => {
                 misses.push(`medial-arch-upper≥10 ${archFolds.edgesAtLeast10Deg}`);
             }
             if (seamOver > 0) {
-                misses.push(`seam ${reconSeam.worstDeg.toFixed(1)} over fillet+2 by ${seamOver.toFixed(1)}`);
+                misses.push(`seam-F ${fSeam.worstDeg.toFixed(1)} over fillet+2 by ${seamOver.toFixed(1)}`);
             }
-            if (reconSeam.worstDeg > 15) misses.push(`seam-abs ${reconSeam.worstDeg.toFixed(1)}>15`);
+            if (reconSeam.worstDeg > 5 + 1e-6) {
+                misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>5`);
+            }
             if (flareCap?.stillNeeded) {
                 misses.push(
                     `flare-cap still needed at ${flareCap.cappedStations?.length ?? 0} stations (maxDev ${flareCap.maxDeviationDeg?.toFixed(1)})`,
@@ -482,6 +488,10 @@ describe("S1 parametric wall", () => {
             const man = reconstructionManifold(rebuilt);
             const drift = groundDriftMm(rebuilt, outlineOf(model));
             const archFolds = medialArchUpperWallFolds(rebuilt, model.bounds, topN);
+            const generatedOutline =
+                (rebuilt.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> })
+                    .outlineRing ?? outlineOf(model);
+            const reconSeam = outlineSeamDihedrals(rebuilt, generatedOutline, 1.25);
             const sud = rebuilt.userData as {
                 chordCrossings?: number;
                 maxSidewaysSkewMm?: number;
@@ -507,7 +517,7 @@ describe("S1 parametric wall", () => {
                 foldWorstDeg: Number(fold.worstDeg.toFixed(3)),
                 foldGe10: fold.edgesAtLeast10Deg,
                 archFoldGe10: archFolds.edgesAtLeast10Deg,
-                seamWorstDeg: Number((fold.seamWorstDeg ?? 0).toFixed(3)),
+                seamWorstDeg: Number(reconSeam.worstDeg.toFixed(3)),
                 watertight: man.watertight,
                 openEdges: man.openEdges,
                 nonManifold: man.nonManifoldEdges,
@@ -564,6 +574,9 @@ describe("S1 parametric wall", () => {
             }
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) smokeMiss.push(`${smoke.name} fold`);
             if (fold.edgesAtLeast10Deg !== 0) smokeMiss.push(`${smoke.name} fold≥10`);
+            if (reconSeam.worstDeg > 5 + 1e-6) {
+                smokeMiss.push(`${smoke.name} seam-B ${reconSeam.worstDeg.toFixed(1)}>5`);
+            }
             if (!man.watertight) smokeMiss.push(`${smoke.name} open=${man.openEdges}`);
             if (minZ < -0.01) smokeMiss.push(`${smoke.name} min-z ${minZ.toFixed(3)}`);
             if ((sud.bandTiltDegMax ?? 0) > 30 + 1e-3) {

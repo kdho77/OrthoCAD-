@@ -175,6 +175,267 @@ function hasEdge(faces: Array<[number, number, number]>, a: number, b: number): 
     return false;
 }
 
+function segIntersectProper(
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    cx: number,
+    cy: number,
+    dx: number,
+    dy: number,
+): boolean {
+    const o1 = orient2(ax, ay, bx, by, cx, cy);
+    const o2 = orient2(ax, ay, bx, by, dx, dy);
+    const o3 = orient2(cx, cy, dx, dy, ax, ay);
+    const o4 = orient2(cx, cy, dx, dy, bx, by);
+    return o1 * o2 < -1e-16 && o3 * o4 < -1e-16;
+}
+
+function thirdOf(f: [number, number, number], p: number, q: number): number {
+    if (f[0] !== p && f[0] !== q) return f[0]!;
+    if (f[1] !== p && f[1] !== q) return f[1]!;
+    return f[2]!;
+}
+
+function orientFace(
+    points: Array<{ x: number; y: number }>,
+    a: number,
+    b: number,
+    c: number,
+): [number, number, number] {
+    const A = points[a]!;
+    const B = points[b]!;
+    const C = points[c]!;
+    if (orient2(A.x, A.y, B.x, B.y, C.x, C.y) > 0) return [a, b, c];
+    return [a, c, b];
+}
+
+function facesSharingEdge(faces: Array<[number, number, number]>, p: number, q: number): number[] {
+    const out: number[] = [];
+    for (let i = 0; i < faces.length; i++) {
+        const f = faces[i]!;
+        const hasP = f[0] === p || f[1] === p || f[2] === p;
+        const hasQ = f[0] === q || f[1] === q || f[2] === q;
+        if (hasP && hasQ) out.push(i);
+    }
+    return out;
+}
+
+function quadIsConvex(
+    points: Array<{ x: number; y: number }>,
+    u: number,
+    p: number,
+    v: number,
+    q: number,
+): boolean {
+    const o0 = orient2(points[u]!.x, points[u]!.y, points[p]!.x, points[p]!.y, points[v]!.x, points[v]!.y);
+    const o1 = orient2(points[p]!.x, points[p]!.y, points[v]!.x, points[v]!.y, points[q]!.x, points[q]!.y);
+    const o2 = orient2(points[v]!.x, points[v]!.y, points[q]!.x, points[q]!.y, points[u]!.x, points[u]!.y);
+    const o3 = orient2(points[q]!.x, points[q]!.y, points[u]!.x, points[u]!.y, points[p]!.x, points[p]!.y);
+    return o0 > 1e-14 && o1 > 1e-14 && o2 > 1e-14 && o3 > 1e-14;
+}
+
+function flipSharedEdge(
+    points: Array<{ x: number; y: number }>,
+    faces: Array<[number, number, number]>,
+    p: number,
+    q: number,
+): boolean {
+    const shared = facesSharingEdge(faces, p, q);
+    if (shared.length !== 2) return false;
+    const f0 = faces[shared[0]!]!;
+    const f1 = faces[shared[1]!]!;
+    const u = thirdOf(f0, p, q);
+    const v = thirdOf(f1, p, q);
+    if (u === v) return false;
+    if (!quadIsConvex(points, u, p, v, q)) return false;
+    faces[shared[0]!] = orientFace(points, u, v, p);
+    faces[shared[1]!] = orientFace(points, u, v, q);
+    return true;
+}
+
+function findCrossingEdge(
+    points: Array<{ x: number; y: number }>,
+    faces: Array<[number, number, number]>,
+    a: number,
+    b: number,
+): { p: number; q: number } | null {
+    const A = points[a]!;
+    const B = points[b]!;
+    for (const f of faces) {
+        const e: Array<[number, number]> = [
+            [f[0]!, f[1]!],
+            [f[1]!, f[2]!],
+            [f[2]!, f[0]!],
+        ];
+        for (const [p, q] of e) {
+            if (p === a || p === b || q === a || q === b) continue;
+            const P = points[p]!;
+            const Q = points[q]!;
+            if (segIntersectProper(A.x, A.y, B.x, B.y, P.x, P.y, Q.x, Q.y)) return { p, q };
+        }
+    }
+    return null;
+}
+
+function triHitsSegment(
+    points: Array<{ x: number; y: number }>,
+    f: [number, number, number],
+    a: number,
+    b: number,
+): boolean {
+    if (f[0] === a || f[1] === a || f[2] === a || f[0] === b || f[1] === b || f[2] === b) {
+        const cross = findCrossingEdge(points, [f], a, b);
+        return cross != null;
+    }
+    const A = points[a]!;
+    const B = points[b]!;
+    const e: Array<[number, number]> = [
+        [f[0]!, f[1]!],
+        [f[1]!, f[2]!],
+        [f[2]!, f[0]!],
+    ];
+    for (const [p, q] of e) {
+        const P = points[p]!;
+        const Q = points[q]!;
+        if (segIntersectProper(A.x, A.y, B.x, B.y, P.x, P.y, Q.x, Q.y)) return true;
+    }
+    return false;
+}
+
+function insertConstraintCavity(
+    points: Array<{ x: number; y: number }>,
+    faces: Array<[number, number, number]>,
+    a: number,
+    b: number,
+): void {
+    const hit: number[] = [];
+    for (let i = 0; i < faces.length; i++) {
+        if (triHitsSegment(points, faces[i]!, a, b)) hit.push(i);
+    }
+    if (hit.length === 0) return;
+    const edgeUse = new Map<string, { p: number; q: number; n: number }>();
+    const add = (p: number, q: number) => {
+        const k = boundaryEdgeKey(p, q);
+        const e = edgeUse.get(k);
+        if (e) e.n++;
+        else edgeUse.set(k, { p, q, n: 1 });
+    };
+    for (const i of hit) {
+        const f = faces[i]!;
+        add(f[0]!, f[1]!);
+        add(f[1]!, f[2]!);
+        add(f[2]!, f[0]!);
+    }
+    const adj = new Map<number, number[]>();
+    const link = (p: number, q: number) => {
+        const list = adj.get(p) ?? [];
+        list.push(q);
+        adj.set(p, list);
+    };
+    for (const e of edgeUse.values()) {
+        if (e.n !== 1) continue;
+        if (boundaryEdgeKey(e.p, e.q) === boundaryEdgeKey(a, b)) continue;
+        link(e.p, e.q);
+        link(e.q, e.p);
+    }
+    const walk = (first: number): number[] => {
+        const path = [a, first];
+        const seen = new Set<string>([boundaryEdgeKey(a, first)]);
+        let cur = first;
+        const guard = points.length + 4;
+        for (let k = 0; k < guard && cur !== b; k++) {
+            const nbrs = adj.get(cur) ?? [];
+            let next = -1;
+            for (const n of nbrs) {
+                const ek = boundaryEdgeKey(cur, n);
+                if (seen.has(ek)) continue;
+                next = n;
+                seen.add(ek);
+                break;
+            }
+            if (next < 0) break;
+            path.push(next);
+            cur = next;
+        }
+        return path;
+    };
+    const starts = (adj.get(a) ?? []).slice(0, 2);
+    const left = starts[0] != null ? walk(starts[0]) : [a, b];
+    const right = starts[1] != null ? walk(starts[1]) : [a, b];
+    const drop = new Set(hit);
+    const kept = faces.filter((_, i) => !drop.has(i));
+    faces.length = 0;
+    for (const f of kept) faces.push(f);
+    const fan = (chain: number[]) => {
+        if (chain.length < 3) return;
+        for (let i = 1; i < chain.length - 1; i++) {
+            faces.push(orientFace(points, chain[0]!, chain[i]!, chain[i + 1]!));
+        }
+    };
+    if (left.length >= 3 && left[left.length - 1] === b) fan(left);
+    if (right.length >= 3 && right[right.length - 1] === b && right.join(",") !== left.join(",")) {
+        fan(right);
+    }
+}
+
+/** Insert polygon constraint edges by Sloan flips, then cavity fill if needed. */
+export function insertConstraintEdges(
+    points: Array<{ x: number; y: number }>,
+    faces: Array<[number, number, number]>,
+    edges: Array<[number, number]>,
+): void {
+    for (const [a, b] of edges) {
+        if (a === b || a < 0 || b < 0 || a >= points.length || b >= points.length) continue;
+        if (hasEdge(faces, a, b)) continue;
+        const budget = Math.max(32, faces.length * 4);
+        for (let n = 0; n < budget && !hasEdge(faces, a, b); n++) {
+            const cross = findCrossingEdge(points, faces, a, b);
+            if (!cross) break;
+            if (!flipSharedEdge(points, faces, cross.p, cross.q)) break;
+        }
+        if (!hasEdge(faces, a, b)) insertConstraintCavity(points, faces, a, b);
+    }
+}
+
+/** Interior edges used once (holes) plus edges used more than twice. */
+export function countOpenNonBoundaryEdges(
+    faces: Array<[number, number, number]>,
+    nBoundary: number,
+): { open: number; nonManifold: number; missingBoundary: number } {
+    const use = new Map<string, number>();
+    for (const f of faces) {
+        const e: Array<[number, number]> = [
+            [f[0]!, f[1]!],
+            [f[1]!, f[2]!],
+            [f[2]!, f[0]!],
+        ];
+        for (const [a, b] of e) {
+            const k = boundaryEdgeKey(a, b);
+            use.set(k, (use.get(k) ?? 0) + 1);
+        }
+    }
+    let open = 0;
+    let nonManifold = 0;
+    let missingBoundary = 0;
+    for (const [k, n] of use) {
+        const [a, b] = k.split(",").map(Number) as [number, number];
+        const wrap = nBoundary > 1 && ((a === 0 && b === nBoundary - 1) || (b === 0 && a === nBoundary - 1));
+        const boundary = a < nBoundary && b < nBoundary && (Math.abs(a - b) === 1 || wrap);
+        if (n === 1) {
+            if (!boundary) open++;
+        } else if (n !== 2) {
+            nonManifold++;
+        }
+    }
+    for (let i = 0; i < nBoundary; i++) {
+        const k = boundaryEdgeKey(i, (i + 1) % nBoundary);
+        if ((use.get(k) ?? 0) !== 1) missingBoundary++;
+    }
+    return { open, nonManifold, missingBoundary };
+}
+
 /**
  * Plan-view constrained Delaunay of the dish outer band. `outer` is the wall
  * bottom ring; `inner` is the ~3 mm inset. Steiner points are native dish
@@ -243,22 +504,24 @@ export function cdtInteriorPolygon(
     const points = boundary.map((p) => ({ ...p }));
     const nB = points.length;
     for (const p of steiner) points.push({ ...p });
+    const constrain: Array<[number, number]> = [];
+    for (let i = 0; i < nB; i++) constrain.push([i, (i + 1) % nB]);
+    const faces = delaunayXY(points);
+    insertConstraintEdges(points, faces, constrain);
     const inside = (x: number, y: number) => pointInPoly(x, y, boundary);
-    let faces = delaunayXY(points).filter((f) => {
+    const interior = faces.filter((f) => {
         const a = points[f[0]]!;
         const b = points[f[1]]!;
         const c = points[f[2]]!;
         return inside((a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3);
     });
-    faces = uniqueBoundaryFaces(faces, nB);
-    const constrain: Array<[number, number]> = [];
-    for (let i = 0; i < nB; i++) constrain.push([i, (i + 1) % nB]);
+    const recovered = uniqueBoundaryFaces(interior, nB);
     for (const [a, b] of constrain) {
-        if (hasEdge(faces, a, b)) continue;
+        if (hasEdge(recovered, a, b)) continue;
         const tri = thirdPointForEdge(points, a, b, inside);
-        if (tri) faces.push(tri);
+        if (tri) recovered.push(tri);
     }
-    return { points, faces: uniqueBoundaryFaces(faces, nB) };
+    return { points, faces: uniqueBoundaryFaces(recovered, nB) };
 }
 
 function stripExactLoops(outerIdx: number[], innerIdx: number[]): Array<[number, number, number]> {
