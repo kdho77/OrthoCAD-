@@ -21,7 +21,6 @@ import {
     startAtPosteriorHeel,
 } from "./curves";
 import { blendedFlareDeg } from "./defaults";
-import { evalCubicHermite } from "./hermite";
 import { defaultsFromStockCurves, outwardNormal, type StationBandFlare } from "./measure";
 import { buildPlanformFrame } from "./planform";
 import { offsetClosedInward, smoothClosedToMinRadius } from "./stations";
@@ -1039,6 +1038,31 @@ function trimPlantarBand(
     };
 }
 
+function dropSteepOuterFaces(
+    mesh: { positions: Float32Array; indices: Uint32Array },
+    outline: PolyPoint[] | null,
+): { positions: Float32Array; indices: Uint32Array } {
+    const inset = outline && outline.length >= 8 ? offsetClosedInward(outline, PLANTAR_INSET_MM) : null;
+    const keep: Array<{ i0: number; i1: number; i2: number }> = [];
+    const { positions, indices } = mesh;
+    for (let t = 0; t < indices.length; t += 3) {
+        const i0 = indices[t]!;
+        const i1 = indices[t + 1]!;
+        const i2 = indices[t + 2]!;
+        const info = faceNzCz(positions, i0, i1, i2);
+        if (!info) continue;
+        const interior = inset ? pointInPoly(info.cx, info.cy, inset) : false;
+        if (!interior && info.nz > PLANTAR_TRIM_NZ) continue;
+        keep.push({ i0, i1, i2 });
+    }
+    if (keep.length < 8) return mesh;
+    const compact = compactFaces(positions, keep);
+    return {
+        positions: new Float32Array(compact.pos),
+        indices: new Uint32Array(compact.idx),
+    };
+}
+
 function localStockZLookup(pos: Float32Array): (x: number, y: number, fallback: number) => number {
     const cell = 2;
     const grid = new Map<string, number[]>();
@@ -1072,69 +1096,6 @@ function localStockZLookup(pos: Float32Array): (x: number, y: number, fallback: 
         }
         return z;
     };
-}
-
-function rimFaceSlope(
-    pos: Float32Array,
-    idx: Uint32Array,
-    rim: number[],
-): Array<{ n: number; z: number; nx: number; ny: number }> {
-    const vfaces = new Map<number, number[]>();
-    for (let t = 0; t < idx.length; t += 3) {
-        for (const v of [idx[t]!, idx[t + 1]!, idx[t + 2]!]) {
-            let list = vfaces.get(v);
-            if (!list) {
-                list = [];
-                vfaces.set(v, list);
-            }
-            list.push(t);
-        }
-    }
-    const rimPts = rim.map((i) => ({ x: pos[i * 3]!, y: pos[i * 3 + 1]!, z: pos[i * 3 + 2]! }));
-    const c = { x: 0, y: 0 };
-    for (const p of rimPts) {
-        c.x += p.x;
-        c.y += p.y;
-    }
-    c.x /= Math.max(1, rimPts.length);
-    c.y /= Math.max(1, rimPts.length);
-    return rim.map((vi, i) => {
-        const nxy = outwardNormal(rimPts, i, c);
-        let tn = 1;
-        let tz = 0;
-        let best = 1;
-        for (const f of vfaces.get(vi) ?? []) {
-            const info = faceNzCz(pos, idx[f]!, idx[f + 1]!, idx[f + 2]!);
-            if (!info) continue;
-            if (info.nz > best) continue;
-            best = info.nz;
-            const ia = idx[f]!;
-            const ib = idx[f + 1]!;
-            const ic = idx[f + 2]!;
-            const ax = pos[ia * 3]!;
-            const ay = pos[ia * 3 + 1]!;
-            const az = pos[ia * 3 + 2]!;
-            const ux = pos[ib * 3]! - ax;
-            const uy = pos[ib * 3 + 1]! - ay;
-            const uz = pos[ib * 3 + 2]! - az;
-            const vx = pos[ic * 3]! - ax;
-            const vy = pos[ic * 3 + 1]! - ay;
-            const vz = pos[ic * 3 + 2]! - az;
-            const nx = uy * vz - uz * vy;
-            const ny = uz * vx - ux * vz;
-            const nz = ux * vy - uy * vx;
-            const len = Math.hypot(nx, ny, nz) || 1;
-            const nnx = nx / len;
-            const nny = ny / len;
-            const nnz = nz / len;
-            const dn = nxy.x * nnx + nxy.y * nny;
-            tn = nxy.x * (nxy.x - dn * nnx) + nxy.y * (nxy.y - dn * nny);
-            tz = -dn * nnz;
-        }
-        const mag = Math.hypot(tn, tz);
-        if (mag < 1e-6) return { n: 1, z: 0, nx: nxy.x, ny: nxy.y };
-        return { n: tn / mag, z: tz / mag, nx: nxy.x, ny: nxy.y };
-    });
 }
 
 /**
@@ -1212,7 +1173,6 @@ function rebuildC1BoundaryStrip(
         }
         cInner.x /= Math.max(1, innerLoop.length);
         cInner.y /= Math.max(1, innerLoop.length);
-        const slopes = rimFaceSlope(pos, idx, innerIdx);
         const stockZAt = localStockZLookup(pos);
         const outPos = Array.from(pos);
         const outIdx = Array.from(idx);
@@ -1222,35 +1182,20 @@ function rebuildC1BoundaryStrip(
         for (let i = 0; i < nOut; i++) {
             const o = outer[i]!;
             const nxy = outwardNormal(outer, i, cInner);
-            const sl = slopes[Math.round((i / nOut) * innerIdx.length) % innerIdx.length] ?? {
-                n: 1,
-                z: 0,
-                nx: nxy.x,
-                ny: nxy.y,
-            };
             const innerPt = nearestOnInner(innerLoop, o);
-            const iz = innerPt.z;
-            const stockZ = stockZAt(o.x, o.y, iz);
-            const floorZ = Math.max(0, stockZ, iz);
-            let dx = o.x - innerPt.x;
-            let dy = o.y - innerPt.y;
-            let dist = Math.hypot(dx, dy);
+            const stockZ = stockZAt(o.x, o.y, 0);
+            const floorZ = Math.max(0, stockZ);
+            let dist = Math.hypot(o.x - innerPt.x, o.y - innerPt.y);
             if (dist < 0.8) {
                 o.x = innerPt.x + nxy.x * PLANTAR_STRIP_MM;
                 o.y = innerPt.y + nxy.y * PLANTAR_STRIP_MM;
-                dx = o.x - innerPt.x;
-                dy = o.y - innerPt.y;
-                dist = Math.hypot(dx, dy);
+                dist = PLANTAR_STRIP_MM;
             }
-            const maxRise = Math.max(0.15, dist * tan30);
-            o.z = Math.min(PLANTAR_TRIM_Z_MM, floorZ + maxRise);
-            o.z = Math.max(floorZ, o.z);
-            const T0 = { n: sl.n * dist, z: Math.max(0, sl.z) * dist };
-            const T1 = { n: dist, z: 0 };
-            const midNZ = evalCubicHermite({ n: 0, z: iz }, T0, { n: dist, z: o.z }, T1, 0.45);
-            const midX = innerPt.x + dx * 0.5;
-            const midY = innerPt.y + dy * 0.5;
-            const midZ = Math.max(floorZ, Math.min(o.z, midNZ.z));
+            const maxRise = dist * tan30;
+            o.z = Math.max(floorZ, Math.min(PLANTAR_TRIM_Z_MM, floorZ + Math.min(maxRise, 0.15)));
+            const midX = (innerPt.x + o.x) * 0.5;
+            const midY = (innerPt.y + o.y) * 0.5;
+            const midZ = Math.max(floorZ, Math.min(o.z, (innerPt.z + o.z) * 0.5));
             midIdx.push(outPos.length / 3);
             outPos.push(midX, midY, midZ);
             outerIdx.push(outPos.length / 3);
@@ -1542,7 +1487,7 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
             rimLocal = snapLoopToMesh(meshPositions, hull);
         }
         if (rimLocal.length < 8) return { meshPositions, meshIndices, ...extractMeta };
-        const trimmed = trimPlantarBand(meshPositions, meshIndices, hull);
+        const trimmed = dropSteepOuterFaces(trimPlantarBand(meshPositions, meshIndices, hull), hull);
         const trimGeo = new BufferGeometry();
         trimGeo.setAttribute("position", new BufferAttribute(trimmed.positions, 3));
         trimGeo.setIndex(Array.from(trimmed.indices));
