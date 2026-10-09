@@ -1,6 +1,20 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+export {
+    BEZIER_HANDLE_FRAC,
+    type ColumnFrame,
+    evalCubicBezier,
+    FRAME_ANGLE_LIMIT_DEG,
+    FRAME_SMOOTH_ITERS,
+    HANDLE_CHORD_CAP,
+    MERGE_ROW_MM,
+    rimOverhangMm,
+    sampleByArcLength,
+    summarizeWallBands,
+    U_BANDS,
+    type WallBandRow,
+} from "./bezier-column";
 export { cdtPlanarBand, DISH_BAND_MM, delaunayXY } from "./cdt-band";
 export { fitClosedC2Spline, resampleClosedC2, resamplePolyline } from "./curves";
 export {

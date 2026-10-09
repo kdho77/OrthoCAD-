@@ -10,6 +10,8 @@ export interface SelfIntersectionReport {
     coplanar: number;
     /** Pair-class breakdown (top / wall / plantar). */
     byClass?: Record<string, number>;
+    /** Centroids of real wall-wall hits (for u-band STOP reports). */
+    wallHitCentroids?: Array<{ x: number; y: number; z: number }>;
 }
 
 interface Tri {
@@ -320,6 +322,7 @@ export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionRep
     let real = 0;
     let coplanar = 0;
     const byClass: Record<string, number> = {};
+    const wallHitCentroids: Array<{ x: number; y: number; z: number }> = [];
     const collect = (node: BvhNode, a: Tri, ai: number, out: number[]) => {
         if (!aabbHit(node, a)) return;
         if (!node.left || !node.right) {
@@ -348,8 +351,15 @@ export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionRep
                 real++;
                 const key = pairKey(classOf(a), classOf(b));
                 byClass[key] = (byClass[key] ?? 0) + 1;
+                if (key === "wall-wall") {
+                    wallHitCentroids.push({
+                        x: (a.ax + a.bx + a.cx + b.ax + b.bx + b.cx) / 6,
+                        y: (a.ay + a.by + a.cy + b.ay + b.by + b.cy) / 6,
+                        z: (a.az + a.bz + a.cz + b.az + b.bz + b.cz) / 6,
+                    });
+                }
             }
         }
     }
-    return { real, coplanar, byClass };
+    return { real, coplanar, byClass, wallHitCentroids };
 }

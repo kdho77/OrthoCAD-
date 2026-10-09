@@ -233,8 +233,8 @@ function meshMinZOf(positions: number[]): number {
 }
 
 /**
- * One closed quad grid: native TopSheet + G(i,j) wall/fillet/plantar.
- * No CDT, zip, or native-plantar splice.
+ * One closed quad grid: native TopSheet + Bezier wall R→F + fillet F→B +
+ * generated plantar. Native rim and outline endpoints never move.
  */
 export function reconstructProceduralWalls(
     model: StockWallModel,
@@ -406,8 +406,14 @@ export function reconstructProceduralWalls(
         stockId: model.id,
         loftN: nS,
         pairingMethod: pairing.method ?? "harmonic",
-        junctionRewrite: "quad-grid",
+        junctionRewrite: "bezier",
         planReversals: grid.planReversals,
+        maxFrameAngleDeg: grid.maxFrameAngleDeg,
+        wallFrames: grid.frames.map((f) => ({
+            u: f.u,
+            overhangMm: f.overhangMm,
+            heightMm: f.heightMm,
+        })),
         zeroAreaFaces: hygiene.zeroArea,
         duplicateFaces: hygiene.duplicates,
         meshMinZ: meshMinZOf(positions),

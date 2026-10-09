@@ -26,6 +26,7 @@ import {
     FILLET_BOUNDS,
     FOLD_HARD_LIMIT_DEG,
     FOLD_WORST_LIMIT_DEG,
+    FRAME_ANGLE_LIMIT_DEG,
     foldReport,
     groundDriftMm,
     heelInnerWidthAtU,
@@ -43,6 +44,7 @@ import {
     sheetBoundaryStats,
     soleUvFrameFromOutline,
     soleUvFrameFromPolyline,
+    summarizeWallBands,
     zoneFixturesMapIdentically,
 } from "@/lib/geometry/procedural-wall";
 import { listStockBaseFixtures } from "@/lib/geometry/procedural-wall/catalog";
@@ -218,6 +220,7 @@ describe("S1 parametric wall", () => {
             );
             const ud = rebuilt.userData as {
                 pairingMethod?: string;
+                maxFrameAngleDeg?: number;
                 masterMinRadiusMm?: number;
                 waistMinRadiusMm?: number;
                 maxSepMm?: number;
@@ -299,6 +302,14 @@ describe("S1 parametric wall", () => {
                         `[S1-TOP] top junction still has ${topWall} real hits (${cls}). HARD STOP.`,
                     );
                 }
+                const wallWall = hits.byClass?.["wall-wall"] ?? 0;
+                if (wallWall > 0) {
+                    throw new Error(wallWallStopMessage(hits, rebuilt, model));
+                }
+            }
+            const frameAngle = (rebuilt.userData as { maxFrameAngleDeg?: number }).maxFrameAngleDeg ?? 0;
+            if (frameAngle > FRAME_ANGLE_LIMIT_DEG) {
+                misses.push(`frame-angle ${frameAngle.toFixed(2)}>${FRAME_ANGLE_LIMIT_DEG}`);
             }
             if (chordX !== 0 || loftChordX !== 0) {
                 misses.push(`chord-cross ${chordX}/${loftChordX}`);
@@ -367,6 +378,7 @@ describe("S1 parametric wall", () => {
                 boundaryZ: Number(boundary.zMax.toFixed(3)),
                 boundaryTilt: Number(boundary.tiltDegMax.toFixed(2)),
                 pairingMethod: ud.pairingMethod ?? "harmonic",
+                maxFrameAngleDeg: Number((ud.maxFrameAngleDeg ?? 0).toFixed(3)),
                 masterMinRadiusMm: Number((ud.masterMinRadiusMm ?? 0).toFixed(2)),
                 waistMinRadiusMm: Number((ud.waistMinRadiusMm ?? 0).toFixed(2)),
                 pairingMonotonic: ud.pairingMonotonic !== false,
@@ -456,6 +468,7 @@ describe("S1 parametric wall", () => {
                 junctionSlivers?: number;
                 meshMinZ?: number;
                 bandTiltDegMax?: number;
+                maxFrameAngleDeg?: number;
             };
             const chordX = sud.chordCrossings ?? -1;
             const maxSkew = sud.maxSidewaysSkewMm ?? 0;
@@ -495,6 +508,15 @@ describe("S1 parametric wall", () => {
                         `[S1-TOP] ${smoke.name}: top junction still has ${topWall} hits. HARD STOP.`,
                     );
                 }
+                const wallWall = hits.byClass?.["wall-wall"] ?? 0;
+                if (wallWall > 0) {
+                    throw new Error(`[S1-WALL] ${smoke.name}: ${wallWallStopMessage(hits, rebuilt, model)}`);
+                }
+            }
+            if ((sud.maxFrameAngleDeg ?? 0) > FRAME_ANGLE_LIMIT_DEG) {
+                smokeMiss.push(
+                    `${smoke.name} frame-angle ${sud.maxFrameAngleDeg!.toFixed(2)}>${FRAME_ANGLE_LIMIT_DEG}`,
+                );
             }
             if (chordX !== 0) smokeMiss.push(`${smoke.name} chord-cross=${chordX}`);
             if ((sud.planReversals ?? 0) !== 0)
@@ -645,4 +667,35 @@ describe("S1 parametric wall", () => {
 
 function matchOutline(_geo: BufferGeometry, _n: number) {
     return null;
+}
+
+function wallWallStopMessage(
+    hits: ReturnType<typeof countSelfIntersections>,
+    rebuilt: BufferGeometry,
+    model: ReturnType<typeof extractStockWallModel>,
+): string {
+    const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+    const hitUs = (hits.wallHitCentroids ?? []).map((c) =>
+        Math.max(0, Math.min(1, (c.x - model.bounds.minX) / length)),
+    );
+    const frames =
+        (
+            rebuilt.userData as {
+                wallFrames?: Array<{ u: number; overhangMm: number; heightMm: number }>;
+            }
+        ).wallFrames ?? [];
+    const bands = summarizeWallBands(hitUs, frames);
+    const wallWall = hits.byClass?.["wall-wall"] ?? hits.real;
+    return (
+        `[S1-WALL] wall-wall hits remain (${wallWall}). STOP.\n` +
+        JSON.stringify(
+            {
+                hits: wallWall,
+                bands,
+                note: "overhangMm is rim plan offset beyond BottomOutline; heightMm is local wall height",
+            },
+            null,
+            2,
+        )
+    );
 }
