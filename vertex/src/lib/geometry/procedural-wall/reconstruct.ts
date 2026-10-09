@@ -373,6 +373,7 @@ export function reconstructProceduralWalls(
     }
 
     const stations = buildHermiteStations(outlineMatched, rimPts, model.bounds);
+    applyPlantarNaturalTangents(stations, model);
     const grid = loftHermiteWall({
         stations,
         defaults,
@@ -446,7 +447,8 @@ export function reconstructProceduralWalls(
         stockId: model.id,
         loftN: n,
         topVertexCount: topPos.length / 3,
-        outlineVertexCount: n,
+        outlineVertexCount: model.outline.meshPositions ? model.outline.meshPositions.length / 3 : n,
+        plantarVertexCount: model.outline.meshPositions ? model.outline.meshPositions.length / 3 : 0,
         deviceType: preset,
         lateralFlangeHeightMm: flangeH,
         measuredVsBound: defaults.report,
@@ -454,6 +456,81 @@ export function reconstructProceduralWalls(
         manifoldHint: analyzeManifold(geo),
     };
     return geo;
+}
+
+function applyPlantarNaturalTangents(
+    stations: ReturnType<typeof buildHermiteStations>,
+    model: StockWallModel,
+): void {
+    const pos = model.outline.meshPositions;
+    const indices = model.outline.meshIndices;
+    const rim = model.outline.rimLocal;
+    if (!pos || !indices || !rim || rim.length < 3) return;
+    const vfaces = new Map<number, number[]>();
+    for (let t = 0; t < indices.length; t += 3) {
+        for (const v of [indices[t]!, indices[t + 1]!, indices[t + 2]!]) {
+            let list = vfaces.get(v);
+            if (!list) {
+                list = [];
+                vfaces.set(v, list);
+            }
+            list.push(t);
+        }
+    }
+    for (const st of stations) {
+        let bestI = 0;
+        let bestD = Infinity;
+        for (let i = 0; i < rim.length; i++) {
+            const vi = rim[i]!;
+            const d = (pos[vi * 3]! - st.outline.x) ** 2 + (pos[vi * 3 + 1]! - st.outline.y) ** 2;
+            if (d < bestD) {
+                bestD = d;
+                bestI = i;
+            }
+        }
+        const vi = rim[bestI]!;
+        let tn = 0.5;
+        let tz = 1;
+        let bestNz = 1;
+        for (const f of vfaces.get(vi) ?? []) {
+            const ia = indices[f]!;
+            const ib = indices[f + 1]!;
+            const ic = indices[f + 2]!;
+            const ax = pos[ia * 3]!;
+            const ay = pos[ia * 3 + 1]!;
+            const az = pos[ia * 3 + 2]!;
+            const ux = pos[ib * 3]! - ax;
+            const uy = pos[ib * 3 + 1]! - ay;
+            const uz = pos[ib * 3 + 2]! - az;
+            const vx = pos[ic * 3]! - ax;
+            const vy = pos[ic * 3 + 1]! - ay;
+            const vz = pos[ic * 3 + 2]! - az;
+            const nx = uy * vz - uz * vy;
+            const ny = uz * vx - ux * vz;
+            const nz = ux * vy - uy * vx;
+            const len = Math.hypot(nx, ny, nz);
+            if (len < 1e-12) continue;
+            const Nz = nz / len;
+            if (Nz > bestNz) continue;
+            bestNz = Nz;
+            const nnx = nx / len;
+            const nny = ny / len;
+            const nnz = Nz;
+            const ox = st.n.x;
+            const oy = st.n.y;
+            const dnN = ox * nnx + oy * nny;
+            const dx = ox - dnN * nnx;
+            const dy = oy - dnN * nny;
+            const dz = -dnN * nnz;
+            tn = dx * ox + dy * oy;
+            tz = dz;
+        }
+        const mag = Math.hypot(tn, tz) || 1;
+        const H = Math.max(st.rim.z - st.outline.z, 1);
+        let zn = tz / mag;
+        if (zn < 0.15) zn = 0.15;
+        st.t0 = { n: (tn / mag) * H, z: zn * H };
+    }
 }
 
 function transformPlantarVertex(
@@ -487,26 +564,22 @@ function appendStockPlantar(
     const srcIdx = model.outline.meshIndices;
     const srcRim = model.outline.rimLocal;
     if (srcPos && srcIdx && srcRim && srcRim.length >= 3) {
-        const map = new Map<number, number>();
-        const remap = (i: number): number => {
-            let ni = map.get(i);
-            if (ni == null) {
-                const p = transformPlantarVertex(
-                    srcPos[i * 3]!,
-                    srcPos[i * 3 + 1]!,
-                    srcPos[i * 3 + 2]!,
-                    model.bounds,
-                    options,
-                );
-                ni = push(p);
-                map.set(i, ni);
-            }
-            return ni;
-        };
-        for (let t = 0; t < srcIdx.length; t += 3) {
-            pushTri(remap(srcIdx[t]!), remap(srcIdx[t + 1]!), remap(srcIdx[t + 2]!));
+        const base = positions.length / 3;
+        const nVerts = srcPos.length / 3;
+        for (let i = 0; i < nVerts; i++) {
+            const p = transformPlantarVertex(
+                srcPos[i * 3]!,
+                srcPos[i * 3 + 1]!,
+                srcPos[i * 3 + 2]!,
+                model.bounds,
+                options,
+            );
+            push(p);
         }
-        const rim = srcRim.map((i) => remap(i));
+        for (let t = 0; t < srcIdx.length; t += 3) {
+            pushTri(base + srcIdx[t]!, base + srcIdx[t + 1]!, base + srcIdx[t + 2]!);
+        }
+        const rim = srcRim.map((i) => base + i);
         const rimPts = rim.map((i) => ({
             x: positions[i * 3]!,
             y: positions[i * 3 + 1]!,

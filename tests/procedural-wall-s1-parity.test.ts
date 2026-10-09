@@ -121,6 +121,16 @@ describe("S1 parametric wall", () => {
             const topRecon = (rebuilt.getAttribute("position").array as Float32Array).slice(0, topN * 3);
             const topStock = model.top.meshPositions ?? new Float32Array(0);
             const topDelta = maxVertexDeltaMm(topRecon, topStock);
+            const plantarN = (rebuilt.userData as { plantarVertexCount?: number }).plantarVertexCount ?? 0;
+            const plantarRecon = (rebuilt.getAttribute("position").array as Float32Array).slice(
+                topN * 3,
+                (topN + plantarN) * 3,
+            );
+            const plantarStock = model.outline.meshPositions ?? new Float32Array(0);
+            const plantarSheetDelta =
+                plantarN > 0 && plantarStock.length === plantarRecon.length
+                    ? maxVertexDeltaMm(plantarRecon, plantarStock)
+                    : Number.POSITIVE_INFINITY;
 
             const man = reconstructionManifold(rebuilt);
             const outlineN = (rebuilt.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
@@ -195,7 +205,8 @@ describe("S1 parametric wall", () => {
 
             const misses: string[] = [];
             if (topDelta > 1e-9) misses.push(`top-identical ${topDelta.toFixed(6)}`);
-            if (haus.plantar.maxMm > 1e-3) misses.push(`plantar ${haus.plantar.maxMm.toFixed(3)}`);
+            const plantarDelta = Number.isFinite(plantarSheetDelta) ? plantarSheetDelta : haus.plantar.maxMm;
+            if (plantarDelta > 1e-3) misses.push(`plantar ${plantarDelta.toFixed(3)}`);
             if (haus.outline.maxMm > 0.1) misses.push(`outline ${haus.outline.maxMm.toFixed(3)}`);
             if (Math.abs(drift) > 0.05) misses.push(`ground-drift ${drift.toFixed(3)}`);
             if (man.openEdges !== 0) misses.push(`open ${man.openEdges}`);
@@ -225,7 +236,8 @@ describe("S1 parametric wall", () => {
             const row = {
                 base: fixture.name,
                 topDelta: Number(topDelta.toFixed(6)),
-                plantarMax: Number(haus.plantar.maxMm.toFixed(4)),
+                plantarMax: Number(plantarDelta.toFixed(4)),
+                plantarHaus: Number(haus.plantar.maxMm.toFixed(4)),
                 outlineMax: Number(haus.outline.maxMm.toFixed(4)),
                 groundDrift: Number(drift.toFixed(4)),
                 openEdges: man.openEdges,
@@ -420,11 +432,18 @@ describe("S1 parametric wall", () => {
                 light: [0.2, 0.2, 1] as [number, number, number],
             },
         ];
-        mkdirSync("/opt/cursor/artifacts/screenshots", { recursive: true });
+        const shotDir = "/opt/cursor/artifacts/screenshots";
+        mkdirSync(shotDir, { recursive: true });
+        mkdirSync("/tmp/procedural-screenshots", { recursive: true });
         for (const v of views) {
             const rgb = renderMesh(pos, idx, { right: v.right, up: v.up, light: v.light }, 720, 540);
             const png = encodePng(720, 540, rgb);
-            writeFileSync(`/opt/cursor/artifacts/screenshots/procedural-default-${v.name}.png`, png);
+            const name = `procedural-default-${v.name}.png`;
+            try {
+                writeFileSync(`${shotDir}/${name}`, png);
+            } catch {
+                writeFileSync(`/tmp/procedural-screenshots/${name}`, png);
+            }
         }
         rebuilt.dispose();
         raw.dispose();

@@ -15,6 +15,7 @@ import {
     ensureCcw,
     fitClosedC2Spline,
     type PolyPoint,
+    polygonSignedArea,
     resamplePolyline,
     startAtPosteriorHeel,
 } from "./curves";
@@ -519,8 +520,8 @@ export function extractStockWallModel(
     const topRim = extractTopRim(geo);
     const rimSet = new Set(topRim.points.map((p) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`));
     const topInterior = top.filter((p) => !rimSet.has(`${p.x.toFixed(3)},${p.y.toFixed(3)}`));
-    const plantarSheet = extractPlantarSheet(geo);
-    let outlinePoly: PolyPoint[] = [];
+    let outlinePoly = extractPlantarOutline(geo, topRim.points);
+    const plantarSheet = extractPlantarSheet(geo, outlinePoly);
     if (plantarSheet.meshPositions && plantarSheet.rimLocal && plantarSheet.rimLocal.length >= 8) {
         const ppos = plantarSheet.meshPositions;
         const rimPts = plantarSheet.rimLocal.map((i) => ({
@@ -532,9 +533,6 @@ export function extractStockWallModel(
         const ordered = startAtPosteriorHeel(ensureCcw(rimPts)) as Array<PolyPoint & { i: number }>;
         plantarSheet.rimLocal = ordered.map((p) => p.i);
         outlinePoly = ordered.map((p) => ({ x: p.x, y: p.y, z: p.z }));
-    }
-    if (outlinePoly.length < 8) {
-        outlinePoly = extractPlantarOutline(geo, topRim.points);
     }
     if (outlinePoly.length < 8) {
         // Last resort: longest branched bottom cycle projected to its low-Z verts.
@@ -723,17 +721,144 @@ type PlantarSheet = {
     rimLocal: number[];
 };
 
+function fillInteriorHoles(pos: Float32Array, indices: Uint32Array, outerRim: number[]): Uint32Array {
+    const edgeCount = new Map<string, { a: number; b: number; n: number }>();
+    const add = (a: number, b: number) => {
+        const k = a < b ? `${a},${b}` : `${b},${a}`;
+        const e = edgeCount.get(k);
+        if (e) e.n++;
+        else edgeCount.set(k, { a, b, n: 1 });
+    };
+    for (let t = 0; t < indices.length; t += 3) {
+        add(indices[t]!, indices[t + 1]!);
+        add(indices[t + 1]!, indices[t + 2]!);
+        add(indices[t + 2]!, indices[t]!);
+    }
+    const nbrs = new Map<number, number[]>();
+    for (const e of edgeCount.values()) {
+        if (e.n !== 1) continue;
+        let la = nbrs.get(e.a);
+        if (!la) {
+            la = [];
+            nbrs.set(e.a, la);
+        }
+        la.push(e.b);
+        let lb = nbrs.get(e.b);
+        if (!lb) {
+            lb = [];
+            nbrs.set(e.b, lb);
+        }
+        lb.push(e.a);
+    }
+    const outer = new Set(outerRim);
+    const seen = new Set<number>();
+    const extra: number[] = [];
+    for (const start of nbrs.keys()) {
+        if (seen.has(start)) continue;
+        const loop: number[] = [start];
+        seen.add(start);
+        let prev = -1;
+        let cur = start;
+        for (let guard = 0; guard < 10000; guard++) {
+            const opts = nbrs.get(cur) ?? [];
+            const next = opts.find((v) => v !== prev && !seen.has(v)) ?? opts.find((v) => v === start);
+            if (next == null) break;
+            if (next === start) break;
+            loop.push(next);
+            seen.add(next);
+            prev = cur;
+            cur = next;
+        }
+        if (loop.length < 3) continue;
+        const overlap = loop.filter((v) => outer.has(v)).length;
+        if (overlap > loop.length * 0.5) continue;
+        const pts = loop.map((i) => ({ x: pos[i * 3]!, y: pos[i * 3 + 1]!, z: pos[i * 3 + 2]!, i }));
+        const ccw = polygonSignedArea(pts) < 0 ? pts.slice().reverse() : pts;
+        const live = ccw.map((_, i) => i);
+        const cross = (i0: number, i1: number, i2: number) => {
+            const a = ccw[i0]!;
+            const b = ccw[i1]!;
+            const c = ccw[i2]!;
+            return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        };
+        let guard = 0;
+        while (live.length > 3 && guard++ < live.length * live.length) {
+            let clipped = false;
+            for (let i = 0; i < live.length; i++) {
+                const i0 = live[(i + live.length - 1) % live.length]!;
+                const i1 = live[i]!;
+                const i2 = live[(i + 1) % live.length]!;
+                if (cross(i0, i1, i2) <= 0) continue;
+                extra.push(ccw[i0]!.i, ccw[i1]!.i, ccw[i2]!.i);
+                live.splice(i, 1);
+                clipped = true;
+                break;
+            }
+            if (!clipped) break;
+        }
+        if (live.length === 3) extra.push(ccw[live[0]!]!.i, ccw[live[1]!]!.i, ccw[live[2]!]!.i);
+    }
+    if (!extra.length) return indices;
+    const out = new Uint32Array(indices.length + extra.length);
+    out.set(indices);
+    out.set(extra, indices.length);
+    return out;
+}
+
+function snapLoopToMesh(pos: Float32Array, loop: PolyPoint[]): number[] {
+    const n = pos.length / 3;
+    if (n === 0) return [];
+    const out: number[] = [];
+    let last = 0;
+    for (const p of loop) {
+        let best = last;
+        let bestD = Infinity;
+        const start = Math.max(0, last - 24);
+        const end = Math.min(n, last + 48);
+        for (let pass = 0; pass < 2; pass++) {
+            const a = pass === 0 ? start : 0;
+            const b = pass === 0 ? end : n;
+            for (let i = a; i < b; i++) {
+                const d =
+                    (pos[i * 3]! - p.x) ** 2 + (pos[i * 3 + 1]! - p.y) ** 2 + (pos[i * 3 + 2]! - p.z) ** 2;
+                if (d < bestD) {
+                    bestD = d;
+                    best = i;
+                }
+            }
+            if (bestD < 4) break;
+        }
+        if (out.length === 0 || out[out.length - 1] !== best) out.push(best);
+        last = best;
+    }
+    return out;
+}
+
+function pointInPoly(x: number, y: number, poly: PolyPoint[]): boolean {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const yi = poly[i]!.y;
+        const yj = poly[j]!.y;
+        const xi = poly[i]!.x;
+        const xj = poly[j]!.x;
+        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-18) + xi) inside = !inside;
+    }
+    return inside;
+}
+
 /**
- * Face-selected downward faces of the stock bottom, welded, original topology.
- * Largest connected component with nz < -0.35 in the low-Z band.
+ * Face-selected downward faces of the stock plantar, welded, original topology.
+ * Keeps inward downward faces (inside the silhouette) so flared wall undersides
+ * are not mistaken for the floor.
  */
-export function extractPlantarSheet(geo: BufferGeometry): Partial<PlantarSheet> {
+export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]): Partial<PlantarSheet> {
     const posAttr = geo.getAttribute("position");
     const index = geo.getIndex();
     if (!posAttr || !index) return {};
     const pos = posAttr.array as Float32Array;
     const idx = index.array;
     const topN = topVertexCountOf(geo);
+    const hull = outline && outline.length >= 8 ? outline : null;
     const kept: number[][] = [];
     for (let t = 0; t < idx.length; t += 3) {
         const i0 = idx[t]!;
@@ -760,48 +885,14 @@ export function extractPlantarSheet(geo: BufferGeometry): Partial<PlantarSheet> 
         const nz = ux * vy - uy * vx;
         const len = Math.hypot(nx, ny, nz);
         if (len < 1e-12) continue;
+        if (nz / len >= -0.7) continue;
         const faceZ = (az + bz + cz) / 3;
-        if (nz / len < -0.35 && faceZ <= SOLE_FIELD_Z_MM + 6) {
-            kept.push([i0, i1, i2]);
-        }
+        if (faceZ > 5) continue;
+        if (hull && !pointInPoly((ax + bx + cx) / 3, (ay + by + cy) / 3, hull)) continue;
+        kept.push([i0, i1, i2]);
     }
     if (kept.length < 8) return {};
-
-    const vertFaces = new Map<number, number[]>();
-    for (let f = 0; f < kept.length; f++) {
-        for (const v of kept[f]!) {
-            let list = vertFaces.get(v);
-            if (!list) {
-                list = [];
-                vertFaces.set(v, list);
-            }
-            list.push(f);
-        }
-    }
-    const seen = new Uint8Array(kept.length);
-    let best: number[] = [];
-    for (let seed = 0; seed < kept.length; seed++) {
-        if (seen[seed]) continue;
-        const stack = [seed];
-        const comp: number[] = [];
-        seen[seed] = 1;
-        while (stack.length) {
-            const f = stack.pop()!;
-            comp.push(f);
-            for (const v of kept[f]!) {
-                const nbrs = vertFaces.get(v);
-                if (!nbrs) continue;
-                for (const g of nbrs) {
-                    if (!seen[g]) {
-                        seen[g] = 1;
-                        stack.push(g);
-                    }
-                }
-            }
-        }
-        if (comp.length > best.length) best = comp;
-    }
-    const faces = best.length ? best.map((f) => kept[f]!) : kept;
+    const faces = kept;
 
     const used = new Map<number, number>();
     const newPos: number[] = [];
@@ -827,9 +918,25 @@ export function extractPlantarSheet(geo: BufferGeometry): Partial<PlantarSheet> 
         const meshPositions = new Float32Array(wpos.array as ArrayLike<number>);
         const widx = welded.getIndex();
         const meshIndices = widx ? new Uint32Array(widx.array as ArrayLike<number>) : new Uint32Array(0);
-        const rim = extractOrderedBoundaryLoopWithIndices(welded);
-        if (rim.indices.length < 8) return { meshPositions, meshIndices };
-        return { meshPositions, meshIndices, rimLocal: rim.indices.slice() };
+        let rimLocal = extractOrderedBoundaryLoopWithIndices(welded).indices.slice();
+        if (rimLocal.length < 8) {
+            const cycles = extractBoundaryLoopsBranchedWithIndices(welded);
+            let best = cycles[0];
+            let bestLen = best?.positions.length ?? 0;
+            for (const c of cycles) {
+                if (c.positions.length > bestLen) {
+                    best = c;
+                    bestLen = c.positions.length;
+                }
+            }
+            rimLocal = best?.indices.slice() ?? [];
+        }
+        if (rimLocal.length < 8 && hull) {
+            rimLocal = snapLoopToMesh(meshPositions, hull);
+        }
+        if (rimLocal.length < 8) return { meshPositions, meshIndices };
+        const filled = fillInteriorHoles(meshPositions, meshIndices, rimLocal);
+        return { meshPositions, meshIndices: filled, rimLocal };
     } finally {
         welded.dispose();
     }

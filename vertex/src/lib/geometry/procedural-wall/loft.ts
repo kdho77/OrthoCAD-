@@ -25,6 +25,8 @@ export interface HermiteStation {
     rim: PolyPoint;
     n: { x: number; y: number };
     u: number;
+    /** Natural plantar-boundary tangent in (n, z), when known. */
+    t0?: { n: number; z: number };
 }
 
 export interface HermiteLoftInput {
@@ -113,7 +115,7 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
         const curvature = blendedFlareCurvature(st.u, o.y, input.defaults.flareCurvature);
         const filletBot = input.defaults.wallFilletBottomMm;
         const bowl = filletBot < 0.2 ? 0 : heelBowlMix(st.u);
-        const { T0, T1 } = wallEndTangents({
+        const ends = wallEndTangents({
             heightMm: Math.max(height, 0.5),
             flareDeg: flare,
             filletTopMm: input.defaults.wallFilletTopMm,
@@ -122,6 +124,8 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
             bowlFactor: input.defaults.cupBowlFactor,
             flareCurvature: curvature,
         });
+        const T0 = st.t0 ?? ends.T0;
+        const T1 = ends.T1;
         const P0 = { n: 0, z: o.z };
         const P1 = { n: chordN, z: r.z };
         const column: Array<{ n: number; z: number }> = [];

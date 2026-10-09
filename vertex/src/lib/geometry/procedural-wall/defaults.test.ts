@@ -61,6 +61,7 @@ describe("biomechanics wall defaults", () => {
         expect(functional.report.some((r) => r.region === "accommodative overlay")).toBe(false);
         expect(functional.flareDeg.lateralMidfoot).toBe(41.0);
         expect(functional.flareDeg.heelPosterior).toBe(23.9);
+        expect(functional.flareDeg.heelMedial).toBe(27.7);
     });
 
     test("flare blend has no step and forefoot height tapers to the trim", () => {

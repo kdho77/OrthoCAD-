@@ -125,6 +125,9 @@ export function clusteredWallT(
     heightMm: number,
 ): number {
     if (nT <= 2) return i / Math.max(1, nT - 1);
+    if (filletBotMm < 0.2 && filletTopMm < 0.6) {
+        return i / Math.max(1, nT - 1);
+    }
     const H = Math.max(heightMm, 1e-3);
     const botFrac = Math.max(filletBotMm < 0.2 ? 0.05 : 0.12, Math.min(0.4, (filletBotMm + 0.15) / H));
     const topFrac = Math.max(0.08, Math.min(0.35, (filletTopMm + 0.15) / H));

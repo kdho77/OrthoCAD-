@@ -167,30 +167,35 @@ export function resolveWallDefaults(
         measured.flareDeg.heelPosterior ?? null,
         FLARE_BOUNDS.heelPosterior,
         "deg",
+        "recommended",
     );
     const heelM = row(
         "heel medial flare",
         measured.flareDeg.heelMedial ?? null,
         FLARE_BOUNDS.heelMedial,
         "deg",
+        "recommended",
     );
     const heelL = row(
         "heel lateral flare",
         measured.flareDeg.heelLateral ?? null,
         FLARE_BOUNDS.heelLateral,
         "deg",
+        "recommended",
     );
     const arch = row(
         "medial arch flare",
         measured.flareDeg.medialArch ?? null,
         FLARE_BOUNDS.medialArch,
         "deg",
+        "recommended",
     );
     const mid = row(
         "lateral midfoot flare",
         measured.flareDeg.lateralMidfoot ?? null,
         FLARE_BOUNDS.lateralMidfoot,
         "deg",
+        "recommended",
     );
     const topF = row(
         "top rim fillet",
