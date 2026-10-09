@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 export {
+    assertT0ClearsSheet,
     BEZIER_HANDLE_FRAC,
     COLUMN_PLANARITY_LIMIT_MM,
     type ColumnFrame,
@@ -16,6 +17,7 @@ export {
     sampleByArcLength,
     sampleInPlaneSlope,
     summarizeWallBands,
+    t0FromSheetSlope,
     U_BANDS,
     type WallBandRow,
 } from "./bezier-column";
@@ -45,7 +47,13 @@ export {
     sampleUvField,
 } from "./extract";
 export { evaluateHeelCupGate } from "./hermite";
-export { countSelfIntersections, type SelfIntersectionReport } from "./intersect";
+export {
+    type ClassifiedHit,
+    countSelfIntersections,
+    formatSiBreakdown,
+    type SelfIntersectionReport,
+    type WallSubClass,
+} from "./intersect";
 export {
     buildHermiteStations,
     countColumnPlanReversals,

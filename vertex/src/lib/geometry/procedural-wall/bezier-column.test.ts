@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "@rstest/core";
 import {
+    assertT0ClearsSheet,
     BEZIER_HANDLE_FRAC,
     buildBezierColumns,
     COLUMN_PLANARITY_LIMIT_MM,
@@ -13,7 +14,10 @@ import {
     offPlaneMm,
     rimOverhangMm,
     sampleByArcLength,
+    sampleInPlaneSlope,
     summarizeWallBands,
+    TOP_CLEARANCE_DEG,
+    t0FromSheetSlope,
 } from "./bezier-column";
 import type { WallRegionDefaults } from "./defaults";
 import type { HermiteStation } from "./loft";
@@ -148,6 +152,49 @@ describe("bezier column", () => {
         ];
         expect(rimOverhangMm({ x: 2, y: 0, z: 4 }, outline)).toBeGreaterThan(0);
         expect(rimOverhangMm({ x: 0, y: 0, z: 4 }, outline)).toBeLessThan(0);
+    });
+
+    test("T0 is sheet slope rotated down 5deg, never pinned near -5 from horizontal", () => {
+        const sheet = (43 * Math.PI) / 180;
+        const t0 = t0FromSheetSlope(sheet, false);
+        expect((t0 * 180) / Math.PI).toBeCloseTo(38, 5);
+        expect(t0).toBeLessThanOrEqual(sheet - (TOP_CLEARANCE_DEG * Math.PI) / 180 + 1e-12);
+        expect(Math.abs((t0 * 180) / Math.PI + 5)).toBeGreaterThan(20);
+        expect((t0FromSheetSlope(0, false) * 180) / Math.PI).toBeCloseTo(-5, 5);
+        expect((t0FromSheetSlope(sheet, true) * 180) / Math.PI).toBeCloseTo(-85, 5);
+    });
+
+    test("exit-side slope along +h is used; rising lip yields T0 <= sheet-5", () => {
+        const tan = Math.tan((43 * Math.PI) / 180);
+        const R = { x: 0, y: 0, z: 10 };
+        const h = { x: 1, y: 0 };
+        const topZ = (x: number, _y: number): number | null => {
+            if (x > 0.05) return null;
+            return 10 + x * tan;
+        };
+        const slope = sampleInPlaneSlope(R, h, topZ);
+        expect((slope * 180) / Math.PI).toBeCloseTo(43, 0);
+        const st: HermiteStation = {
+            outline: { x: 5, y: 0, z: 0 },
+            rim: { x: 0, y: 0, z: 10 },
+            n: { x: -1, y: 0 },
+            u: 0.1,
+        };
+        const frames = initColumnFrames(
+            [st],
+            [{ planeN: { x: 0, y: 0, z: 1 }, slopeRad: 0.75 }],
+            defaults(),
+            [24],
+            topZ,
+        );
+        const fr = frames[0]!;
+        expect((fr.sheetSlopeRad * 180) / Math.PI).toBeCloseTo(43, 0);
+        expect((fr.t0TiltRad * 180) / Math.PI).toBeCloseTo(38, 0);
+        expect(fr.t0TiltRad).toBeLessThanOrEqual(
+            fr.sheetSlopeRad - (TOP_CLEARANCE_DEG * Math.PI) / 180 + 1e-9,
+        );
+        expect(() => assertT0ClearsSheet(frames)).not.toThrow();
+        expect(() => assertT0ClearsSheet([{ ...fr, t0TiltRad: fr.sheetSlopeRad }])).toThrow(/\[S1-T0\]/);
     });
 
     test("wall-band summary buckets hits by u", () => {

@@ -418,6 +418,8 @@ export function reconstructProceduralWalls(
         planReversals: grid.planReversals,
         maxFrameAngleDeg: grid.maxFrameAngleDeg,
         maxOffPlaneMm: grid.maxOffPlaneMm,
+        nJ: grid.nJ,
+        filletRowStart: Math.max(0, grid.outlineRow - 3),
         wallFrames: grid.frames.map((f) => ({
             u: f.u,
             overhangMm: f.overhangMm,

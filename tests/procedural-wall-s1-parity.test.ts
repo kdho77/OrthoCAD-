@@ -28,6 +28,7 @@ import {
     FOLD_HARD_LIMIT_DEG,
     FOLD_WORST_LIMIT_DEG,
     foldReport,
+    formatSiBreakdown,
     groundDriftMm,
     heelInnerWidthAtU,
     maxVertexDeltaMm,
@@ -146,7 +147,7 @@ describe("S1 parametric wall", () => {
                 outlineVertexCount: outlineN,
                 outlineVertexStart: outlineStart,
             });
-            let hits = { real: -1, coplanar: 0 };
+            let hits: ReturnType<typeof countSelfIntersections> = { real: -1, coplanar: 0 };
             try {
                 hits = countSelfIntersections(rebuilt);
             } catch (err) {
@@ -299,7 +300,14 @@ describe("S1 parametric wall", () => {
                           .map(([k, v]) => `${k}:${v}`)
                           .join(",")
                     : "";
-                misses.push(`self-intersect ${hits.real} (coplanar ${hits.coplanar}${cls ? ` ${cls}` : ""})`);
+                const sub = hits.bySubClass
+                    ? Object.entries(hits.bySubClass)
+                          .map(([k, v]) => `${k}:${v}`)
+                          .join(",")
+                    : "";
+                misses.push(
+                    `self-intersect ${hits.real} (coplanar ${hits.coplanar}${cls ? ` ${cls}` : ""}${sub ? ` ${sub}` : ""})`,
+                );
                 const topWall = hits.byClass?.["top-wall"] ?? 0;
                 if (topWall > 0) {
                     const heelHits = heelTopWallHits(hits, model);
@@ -310,10 +318,7 @@ describe("S1 parametric wall", () => {
                         `[S1-TOP] top junction still has ${topWall} real hits (${cls}). HARD STOP.`,
                     );
                 }
-                const wallWall = hits.byClass?.["wall-wall"] ?? 0;
-                if (wallWall > 0) {
-                    throw new Error(wallWallStopMessage(hits, rebuilt, model));
-                }
+                throw new Error(siBreakdownMessage(hits, rebuilt, model, `[S1-SI] ${fixture.name}`));
             }
             const offPlane = (rebuilt.userData as { maxOffPlaneMm?: number }).maxOffPlaneMm ?? 0;
             if (offPlane > COLUMN_PLANARITY_LIMIT_MM) {
@@ -449,13 +454,20 @@ describe("S1 parametric wall", () => {
         ];
         const results: Array<Record<string, number | string | boolean>> = [];
         const smokeMiss: string[] = [];
+        const smokeBreakdowns: string[] = [];
         for (const smoke of smokes) {
-            const rebuilt = reconstructProceduralWalls(model, {
-                corrections: { ...neutralCorrections(), ...smoke.patch },
-                thicknessMm: smoke.thicknessMm,
-                stockThicknessMm: 3,
-                archGrindDepthMm: smoke.archGrindDepthMm,
-            });
+            let rebuilt: BufferGeometry;
+            try {
+                rebuilt = reconstructProceduralWalls(model, {
+                    corrections: { ...neutralCorrections(), ...smoke.patch },
+                    thicknessMm: smoke.thicknessMm,
+                    stockThicknessMm: 3,
+                    archGrindDepthMm: smoke.archGrindDepthMm,
+                });
+            } catch (err) {
+                smokeMiss.push(`${smoke.name} reconstruct: ${String(err)}`);
+                continue;
+            }
             const topN = (rebuilt.userData as { topVertexCount?: number }).topVertexCount ?? 0;
             const outlineN = (rebuilt.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
             const outlineStart =
@@ -487,6 +499,8 @@ describe("S1 parametric wall", () => {
             results.push({
                 smoke: smoke.name,
                 selfIntersections: hits.real,
+                byClass: hits.byClass ? JSON.stringify(hits.byClass) : "",
+                bySubClass: hits.bySubClass ? JSON.stringify(hits.bySubClass) : "",
                 coplanarOverlaps: hits.coplanar,
                 chordCrossings: chordX,
                 maxSkewMm: Number(maxSkew.toFixed(3)),
@@ -511,7 +525,12 @@ describe("S1 parametric wall", () => {
                           .map(([k, v]) => `${k}:${v}`)
                           .join(",")
                     : "";
-                smokeMiss.push(`${smoke.name} xi=${hits.real}${cls ? ` ${cls}` : ""}`);
+                const sub = hits.bySubClass
+                    ? Object.entries(hits.bySubClass)
+                          .map(([k, v]) => `${k}:${v}`)
+                          .join(",")
+                    : "";
+                smokeMiss.push(`${smoke.name} xi=${hits.real}${cls ? ` ${cls}` : ""}${sub ? ` ${sub}` : ""}`);
                 const topWall = hits.byClass?.["top-wall"] ?? 0;
                 if (topWall > 0) {
                     const heelHits = heelTopWallHits(hits, model);
@@ -524,10 +543,7 @@ describe("S1 parametric wall", () => {
                         `[S1-TOP] ${smoke.name}: top junction still has ${topWall} hits. HARD STOP.`,
                     );
                 }
-                const wallWall = hits.byClass?.["wall-wall"] ?? 0;
-                if (wallWall > 0) {
-                    smokeMiss.push(`[S1-WALL] ${smoke.name}: ${wallWallStopMessage(hits, rebuilt, model)}`);
-                }
+                smokeBreakdowns.push(siBreakdownMessage(hits, rebuilt, model, `[S1-SI] ${smoke.name}`));
             }
             if ((sud.maxOffPlaneMm ?? 0) > COLUMN_PLANARITY_LIMIT_MM) {
                 smokeMiss.push(
@@ -556,6 +572,9 @@ describe("S1 parametric wall", () => {
             rebuilt.dispose();
         }
         writeFileSync("/tmp/s1-smoke.json", JSON.stringify(results, null, 2));
+        if (smokeBreakdowns.length) {
+            throw new Error(`[S1-SMOKE] nonzero SI. STOP.\n${smokeBreakdowns.join("\n\n")}`);
+        }
         if (smokeMiss.length) throw new Error(`[S1-SMOKE] ${smokeMiss.join("; ")}`);
         original.dispose();
     }, 240_000);
@@ -727,33 +746,32 @@ function heelSlopeStopMessage(rebuilt: BufferGeometry, topWall: number, heelHits
     );
 }
 
-function wallWallStopMessage(
+function siBreakdownMessage(
     hits: ReturnType<typeof countSelfIntersections>,
     rebuilt: BufferGeometry,
     model: ReturnType<typeof extractStockWallModel>,
+    title: string,
 ): string {
     const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
-    const hitUs = (hits.wallHitCentroids ?? []).map((c) =>
-        Math.max(0, Math.min(1, (c.x - model.bounds.minX) / length)),
-    );
+    const classified = hits.classifiedHits ?? [];
+    const hitUs = classified.map((c) => Math.max(0, Math.min(1, (c.x - model.bounds.minX) / length)));
     const frames =
         (
             rebuilt.userData as {
                 wallFrames?: Array<{ u: number; overhangMm: number; heightMm: number }>;
+                maxOffPlaneMm?: number;
+                chordCrossings?: number;
             }
         ).wallFrames ?? [];
+    const ud = rebuilt.userData as { maxOffPlaneMm?: number; chordCrossings?: number };
     const bands = summarizeWallBands(hitUs, frames);
-    const wallWall = hits.byClass?.["wall-wall"] ?? hits.real;
     return (
-        `[S1-WALL] wall-wall hits remain (${wallWall}). STOP.\n` +
-        JSON.stringify(
-            {
-                hits: wallWall,
-                bands,
-                note: "overhangMm is rim plan offset beyond BottomOutline; heightMm is local wall height",
-            },
-            null,
-            2,
-        )
+        formatSiBreakdown(hits, {
+            title,
+            hitUs,
+            frames,
+            maxOffPlaneMm: ud.maxOffPlaneMm,
+            chordCrossings: ud.chordCrossings,
+        }) + `\n${JSON.stringify({ overhangBands: bands }, null, 2)}`
     );
 }

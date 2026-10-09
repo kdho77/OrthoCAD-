@@ -2,6 +2,25 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
+import { U_BANDS } from "./bezier-column";
+
+export type WallSubClass =
+    | "column-column"
+    | "column-plantar"
+    | "fillet-plantar"
+    | "plantar-plantar"
+    | "column-fillet"
+    | "fillet-fillet"
+    | "other";
+
+export interface ClassifiedHit {
+    sub: WallSubClass;
+    x: number;
+    y: number;
+    z: number;
+    adjacentStrip: boolean;
+    betweenPlane: boolean;
+}
 
 export interface SelfIntersectionReport {
     /** Proper (non-coplanar) triangle-triangle hits. Must be 0. */
@@ -10,10 +29,13 @@ export interface SelfIntersectionReport {
     coplanar: number;
     /** Pair-class breakdown (top / wall / plantar). */
     byClass?: Record<string, number>;
+    /** Wall-body subclass breakdown (column / fillet / plantar). */
+    bySubClass?: Record<string, number>;
     /** Centroids of real wall-wall hits (for u-band STOP reports). */
     wallHitCentroids?: Array<{ x: number; y: number; z: number }>;
     /** Centroids of real top-wall hits (heel slope STOP). */
     topWallHitCentroids?: Array<{ x: number; y: number; z: number }>;
+    classifiedHits?: ClassifiedHit[];
 }
 
 interface Tri {
@@ -308,15 +330,92 @@ export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionRep
             maxZ: Math.max(az, bz, cz),
         });
     }
-    const topN = (geo.userData as { topVertexCount?: number }).topVertexCount ?? 0;
-    const plantarN = (geo.userData as { plantarVertexCount?: number }).plantarVertexCount ?? 0;
+    const ud = geo.userData as {
+        topVertexCount?: number;
+        plantarVertexCount?: number;
+        generatedStart?: number;
+        outlineRow?: number;
+        stationCount?: number;
+        filletRowStart?: number;
+        nJ?: number;
+        originalTopVertexCount?: number;
+    };
+    const topN = ud.originalTopVertexCount ?? ud.topVertexCount ?? 0;
+    const generatedStart = ud.generatedStart ?? topN;
+    const nS = ud.stationCount ?? 0;
+    const outlineRow = ud.outlineRow ?? 0;
+    const filletRowStart = ud.filletRowStart ?? Math.max(0, outlineRow - 3);
+    const nJ = ud.nJ ?? outlineRow + 1;
+    const centerId = nS > 0 ? generatedStart + nS * Math.max(0, nJ - 1) : -1;
+
+    type VertRegion = "top" | "column" | "fillet" | "plantar";
+    const rowOf = (v: number): number | null => {
+        if (v === centerId) return nJ;
+        if (v < generatedStart) return v < topN ? -1 : 0;
+        if (nS <= 0) return null;
+        return Math.floor((v - generatedStart) / nS) + 1;
+    };
+    const stationOf = (v: number): number | null => {
+        if (v === centerId || nS <= 0) return null;
+        if (v >= generatedStart) return (v - generatedStart) % nS;
+        return null;
+    };
+    const regionOfVert = (v: number): VertRegion => {
+        const j = rowOf(v);
+        if (j == null) return "column";
+        if (j < 0) return "top";
+        if (j > outlineRow) return "plantar";
+        if (j >= filletRowStart) return "fillet";
+        return "column";
+    };
+    const regionOfFace = (t: Tri): VertRegion | "mixed" => {
+        const rs = new Set([t.i0, t.i1, t.i2].map(regionOfVert));
+        if (rs.size === 1) return [...rs][0]!;
+        if (rs.has("top") && !rs.has("plantar") && !rs.has("fillet") && !rs.has("column")) return "top";
+        if (rs.has("plantar") && !rs.has("column") && !rs.has("fillet")) return "plantar";
+        if (rs.has("plantar")) return "mixed";
+        if (rs.has("fillet") && rs.has("column")) return "fillet";
+        if (rs.has("fillet")) return "fillet";
+        if (rs.has("column")) return "column";
+        return "mixed";
+    };
     const classOf = (t: Tri): string => {
         const vs = [t.i0, t.i1, t.i2];
         const allTop = vs.every((v) => v < topN);
-        const allPlantar = vs.every((v) => v >= topN && v < topN + plantarN);
         if (allTop) return "top";
-        if (allPlantar) return "plantar";
+        const r = regionOfFace(t);
+        if (r === "plantar") return "plantar";
+        if (r === "top") return "top";
         return "wall";
+    };
+    const subOfPair = (a: VertRegion | "mixed", b: VertRegion | "mixed"): WallSubClass => {
+        const pair = [a, b].sort().join("-");
+        if (pair === "column-column") return "column-column";
+        if (pair === "column-plantar" || pair === "mixed-column") return "column-plantar";
+        if (pair === "fillet-plantar" || pair === "fillet-mixed") return "fillet-plantar";
+        if (pair === "plantar-plantar" || pair === "mixed-plantar" || pair === "mixed-mixed") {
+            return "plantar-plantar";
+        }
+        if (pair === "column-fillet") return "column-fillet";
+        if (pair === "fillet-fillet") return "fillet-fillet";
+        return "other";
+    };
+    const stationsOf = (t: Tri): number[] => {
+        const s = new Set<number>();
+        for (const v of [t.i0, t.i1, t.i2]) {
+            const i = stationOf(v);
+            if (i != null) s.add(i);
+        }
+        return [...s];
+    };
+    const circAdj = (a: number, b: number): boolean => {
+        if (nS <= 0) return false;
+        const d = Math.abs(a - b);
+        return d === 0 || d === 1 || d === nS - 1;
+    };
+    const stripsAdjacent = (sa: number[], sb: number[]): boolean => {
+        for (const a of sa) for (const b of sb) if (circAdj(a, b)) return true;
+        return false;
     };
     const pairKey = (a: string, b: string): string => (a < b ? `${a}-${b}` : `${b}-${a}`);
     const order = Array.from({ length: tris.length }, (_, i) => i);
@@ -324,8 +423,10 @@ export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionRep
     let real = 0;
     let coplanar = 0;
     const byClass: Record<string, number> = {};
+    const bySubClass: Record<string, number> = {};
     const wallHitCentroids: Array<{ x: number; y: number; z: number }> = [];
     const topWallHitCentroids: Array<{ x: number; y: number; z: number }> = [];
+    const classifiedHits: ClassifiedHit[] = [];
     const collect = (node: BvhNode, a: Tri, ai: number, out: number[]) => {
         if (!aabbHit(node, a)) return;
         if (!node.left || !node.right) {
@@ -354,17 +455,100 @@ export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionRep
                 real++;
                 const key = pairKey(classOf(a), classOf(b));
                 byClass[key] = (byClass[key] ?? 0) + 1;
-                if (key === "wall-wall" || key === "top-wall") {
-                    const c = {
-                        x: (a.ax + a.bx + a.cx + b.ax + b.bx + b.cx) / 6,
-                        y: (a.ay + a.by + a.cy + b.ay + b.by + b.cy) / 6,
-                        z: (a.az + a.bz + a.cz + b.az + b.bz + b.cz) / 6,
-                    };
-                    if (key === "wall-wall") wallHitCentroids.push(c);
-                    else topWallHitCentroids.push(c);
+                const c = {
+                    x: (a.ax + a.bx + a.cx + b.ax + b.bx + b.cx) / 6,
+                    y: (a.ay + a.by + a.cy + b.ay + b.by + b.cy) / 6,
+                    z: (a.az + a.bz + a.cz + b.az + b.bz + b.cz) / 6,
+                };
+                if (key === "top-wall") topWallHitCentroids.push(c);
+                if (key === "wall-wall" || key === "plantar-plantar" || key === "plantar-wall") {
+                    wallHitCentroids.push(c);
+                    const sa = stationsOf(a);
+                    const sb = stationsOf(b);
+                    const sub = subOfPair(regionOfFace(a), regionOfFace(b));
+                    bySubClass[sub] = (bySubClass[sub] ?? 0) + 1;
+                    classifiedHits.push({
+                        sub,
+                        ...c,
+                        adjacentStrip: stripsAdjacent(sa, sb),
+                        betweenPlane: sa.length >= 2 && sb.length >= 2,
+                    });
                 }
             }
         }
     }
-    return { real, coplanar, byClass, wallHitCentroids, topWallHitCentroids };
+    return { real, coplanar, byClass, bySubClass, wallHitCentroids, topWallHitCentroids, classifiedHits };
+}
+
+export interface SiBreakdownOptions {
+    title?: string;
+    hitUs?: number[];
+    frames?: Array<{ u: number; overhangMm: number; heightMm: number }>;
+    maxOffPlaneMm?: number;
+    chordCrossings?: number;
+}
+
+/** STOP payload: class + subclass + u-band, plus column-column / plantar-ring notes. */
+export function formatSiBreakdown(hits: SelfIntersectionReport, opts: SiBreakdownOptions = {}): string {
+    const classified = hits.classifiedHits ?? [];
+    const hitUs = opts.hitUs ?? [];
+    const bySub = { ...(hits.bySubClass ?? {}) };
+    const bandOf = (u: number | undefined): string | null => {
+        if (u == null) return null;
+        return U_BANDS.find((b) => u >= b.min && u < b.max)?.id ?? null;
+    };
+    const bands = U_BANDS.map((band) => {
+        const sub: Record<string, number> = {};
+        let n = 0;
+        for (let i = 0; i < classified.length; i++) {
+            const u = hitUs[i];
+            if (u == null || u < band.min || u >= band.max) continue;
+            const key = classified[i]!.sub;
+            sub[key] = (sub[key] ?? 0) + 1;
+            n++;
+        }
+        return { band: band.id, hits: n, bySub: sub };
+    });
+    const colCol = classified.filter((h) => h.sub === "column-column");
+    const plantar = classified.filter((h) => h.sub === "plantar-plantar");
+    const plantarByBand = U_BANDS.map((band) => ({
+        band: band.id,
+        hits: classified.filter((h, i) => h.sub === "plantar-plantar" && bandOf(hitUs[i]) === band.id).length,
+    }));
+    const payload = {
+        real: hits.real,
+        coplanar: hits.coplanar,
+        byClass: hits.byClass ?? {},
+        bySubClass: bySub,
+        bands,
+        columnColumn:
+            colCol.length > 0
+                ? {
+                      hits: colCol.length,
+                      betweenPlane: colCol.filter((h) => h.betweenPlane).length,
+                      adjacentStrip: colCol.filter((h) => h.adjacentStrip).length,
+                      maxOffPlaneMm: opts.maxOffPlaneMm ?? null,
+                      chordCrossings: opts.chordCrossings ?? null,
+                      note: "true column-vs-column: check planarity and quads spanning stations i..i+1",
+                  }
+                : { hits: 0 },
+        plantarPlantar:
+            plantar.length > 0
+                ? {
+                      hits: plantar.length,
+                      byBand: plantarByBand,
+                      note: "concentric rings toward the centroid can cross in the heel/forefoot",
+                  }
+                : { hits: 0 },
+        columnPlantar: bySub["column-plantar"] ?? 0,
+        filletPlantar: bySub["fillet-plantar"] ?? 0,
+        frames: opts.frames
+            ? {
+                  count: opts.frames.length,
+                  meanOverhangMm:
+                      opts.frames.reduce((s, f) => s + f.overhangMm, 0) / Math.max(1, opts.frames.length),
+              }
+            : undefined,
+    };
+    return `${opts.title ?? "[S1-SI]"} nonzero self-intersections. STOP.\n${JSON.stringify(payload, null, 2)}`;
 }

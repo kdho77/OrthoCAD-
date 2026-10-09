@@ -297,9 +297,10 @@ function walkTopZ(
 }
 
 /**
- * TopSheet in-plane slope along +h. Samples ±h and uses the exit side:
- * the direction that leaves the sheet. Slope is expressed as dz/ds along +h
- * (toward B) so T0 can travel in-plane toward the outline.
+ * TopSheet in-plane slope along +h (toward B). Samples ±h and uses the
+ * exit-side slope expressed as dz/ds along h. If +h stays on the sheet
+ * (typical heel lip), that walk is the slope T0 must sit 5° below.
+ * If +h leaves immediately, the interior (−h) slope is continued through R.
  */
 export function sampleInPlaneSlope(
     R: XYZ,
@@ -309,22 +310,39 @@ export function sampleInPlaneSlope(
     const zR = topZ(R.x, R.y) ?? R.z;
     const plus = walkTopZ(R, h, topZ);
     const minus = walkTopZ(R, { x: -h.x, y: -h.y }, topZ);
-    if (plus.length === 0 && minus.length === 0) return 0;
-    const exitIsPlus = plus.length <= minus.length;
-    if (exitIsPlus && minus.length > 0) {
-        const p = minus[Math.min(2, minus.length - 1)]!;
-        return Math.atan((zR - p.z) / Math.max(p.s, 1e-6));
-    }
-    if (!exitIsPlus && plus.length > 0) {
+    if (plus.length > 0) {
         const p = plus[Math.min(2, plus.length - 1)]!;
         return Math.atan((p.z - zR) / Math.max(p.s, 1e-6));
     }
-    if (plus.length > 0) {
-        const p = plus[0]!;
-        return Math.atan((p.z - zR) / Math.max(p.s, 1e-6));
+    if (minus.length > 0) {
+        const p = minus[Math.min(2, minus.length - 1)]!;
+        return Math.atan((zR - p.z) / Math.max(p.s, 1e-6));
     }
-    const p = minus[0]!;
-    return Math.atan((zR - p.z) / Math.max(p.s, 1e-6));
+    return 0;
+}
+
+/** T0 is the sheet slope rotated down by at least 5°. Never pinned to −5° from horizontal. */
+export function t0FromSheetSlope(sheetSlopeRad: number, shortChord: boolean): number {
+    const clear = (TOP_CLEARANCE_DEG * Math.PI) / 180;
+    if (shortChord) return -Math.PI / 2 + clear;
+    return sheetSlopeRad - clear;
+}
+
+export function assertT0ClearsSheet(frames: ColumnFrame[]): void {
+    const clear = (TOP_CLEARANCE_DEG * Math.PI) / 180;
+    const bad = frames
+        .filter((f) => !f.shortChord && f.t0TiltRad > f.sheetSlopeRad - clear + 1e-5)
+        .map((f) => ({
+            u: f.u,
+            sheetSlopeDeg: (f.sheetSlopeRad * 180) / Math.PI,
+            t0TiltDeg: (f.t0TiltRad * 180) / Math.PI,
+        }));
+    if (bad.length) {
+        throw new Error(
+            `[S1-T0] T0 must be <= sheetSlope - ${TOP_CLEARANCE_DEG}deg at every station.\n` +
+                JSON.stringify(bad.slice(0, 12), null, 2),
+        );
+    }
 }
 
 function columnHeading(st: HermiteStation): {
@@ -352,7 +370,6 @@ export function initColumnFrames(
     topZ: (x: number, y: number) => number | null = () => null,
 ): ColumnFrame[] {
     const outline = stations.map((s) => s.outline);
-    const clear = (TOP_CLEARANCE_DEG * Math.PI) / 180;
     return stations.map((st, i) => {
         const R = { ...st.rim };
         const B = { ...st.outline };
@@ -368,7 +385,7 @@ export function initColumnFrames(
             ? { x: B.x, y: B.y, z: B.z + r }
             : { x: B.x - h.x * r, y: B.y - h.y * r, z: B.z + r };
         const sheetSlopeRad = sampleInPlaneSlope(R, h, topZ);
-        const t0TiltRad = shortChord ? -Math.PI / 2 + clear : Math.min(sheetSlopeRad - clear, -clear);
+        const t0TiltRad = t0FromSheetSlope(sheetSlopeRad, shortChord);
         const flare = ((flareDeg[i] ?? 0) * Math.PI) / 180;
         const rf = dist3(R, F);
         const handle = Math.min(BEZIER_HANDLE_FRAC * rf, HANDLE_CHORD_CAP * rf);
@@ -423,8 +440,11 @@ function applySmooth(frames: ColumnFrame[], passes: number): void {
     const clear = (TOP_CLEARANCE_DEG * Math.PI) / 180;
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
-        const floor = fr.shortChord ? -Math.PI / 2 + clear : Math.min(fr.sheetSlopeRad - clear, -clear);
-        fr.t0TiltRad = Math.min(t0[i]!, floor);
+        const ceiling = t0FromSheetSlope(fr.sheetSlopeRad, fr.shortChord);
+        fr.t0TiltRad = Math.min(t0[i]!, ceiling);
+        if (fr.t0TiltRad > fr.sheetSlopeRad - clear + 1e-6 && !fr.shortChord) {
+            fr.t0TiltRad = fr.sheetSlopeRad - clear;
+        }
         fr.uTiltRad = ut[i]!;
         const cap = HANDLE_CHORD_CAP * dist3(fr.R, fr.F);
         fr.a = Math.min(cap, Math.max(0, a[i]!));
@@ -526,6 +546,7 @@ export function buildBezierColumns(
         const nxt = frames[(i + 1) % frames.length]!;
         maxTiltStep = Math.max(maxTiltStep, (Math.abs(nxt.t0TiltRad - fr.t0TiltRad) * 180) / Math.PI);
     }
+    assertT0ClearsSheet(frames);
     return {
         xyz,
         impliedSeamDeg: implied,
