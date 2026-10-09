@@ -373,29 +373,6 @@ function minClearanceMm(ring: PolyPoint[], outline: PolyPoint[]): number {
     return best;
 }
 
-function maxInsetKeepingMinEdge(
-    a: PolyPoint,
-    dirA: { x: number; y: number },
-    b: PolyPoint,
-    dirB: { x: number; y: number },
-    minE = I_MIN_EDGE_MM,
-): number {
-    const ux = b.x - a.x;
-    const uy = b.y - a.y;
-    const vx = dirB.x - dirA.x;
-    const vy = dirB.y - dirA.y;
-    const uu = ux * ux + uy * uy;
-    const vv = vx * vx + vy * vy;
-    const uv = ux * vx + uy * vy;
-    if (uu <= minE * minE) return 0;
-    if (vv < 1e-12) return Number.POSITIVE_INFINITY;
-    if (uv >= 0) return Number.POSITIVE_INFINITY;
-    const disc = uv * uv - vv * (uu - minE * minE);
-    if (disc < 0) return Number.POSITIVE_INFINITY;
-    const root = (-uv - Math.sqrt(disc)) / vv;
-    return root > 1e-6 ? root : 0;
-}
-
 function shortEdgeStation(ring: PolyPoint[]): number {
     let bestI = 0;
     let best = Infinity;
@@ -485,15 +462,6 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
         const r = estimateFilletRadius(st, planLen);
         dirs.push(outlineInward(i, outline));
         insets.push(Math.max(r, BAND_INSET_FLOOR_MM));
-    }
-    for (let i = 0; i < n; i++) {
-        const prev = (i + n - 1) % n;
-        const next = (i + 1) % n;
-        const cap = Math.min(
-            maxInsetKeepingMinEdge(outline[prev]!, dirs[prev]!, outline[i]!, dirs[i]!),
-            maxInsetKeepingMinEdge(outline[i]!, dirs[i]!, outline[next]!, dirs[next]!),
-        );
-        if (Number.isFinite(cap)) insets[i] = Math.min(insets[i]!, Math.max(I_CLEARANCE_MM, cap * 0.95));
     }
     for (let pass = 0; pass < 48; pass++) {
         const ring = bandFromInsets(outline, dirs, insets);
