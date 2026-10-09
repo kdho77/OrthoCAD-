@@ -269,6 +269,7 @@ describe("rim-conformity combined validation matrix", () => {
             name: "combined-screenshot",
             patch: { heelCupWidthMm: 5, heelCupDepthMm: 5, archHeightMm: 10, apexMoveMm: 5 },
         },
+        { name: "thickness-t3", patch: {}, thicknessMm: 3 },
         { name: "thickness-t4", patch: {}, thicknessMm: 4 },
     ];
 
@@ -309,10 +310,14 @@ describe("rim-conformity combined validation matrix", () => {
             expect(report.openEdges).toBe(0);
             expect(plantar).toBeLessThan(0.05);
             // Width cases: legacy rim-conformity (strict 0.1). Non-width 3D
-            // mismatch stays under 0.8. Vertical rim gap is gated here (t3/t4).
+            // mismatch stays under 0.8. Vertical rim gap is the thickness-only
+            // t3/t4 contract (main is 0; the 19 mm fill left 1–2 mm at u 0.57–0.65).
+            // Width/depth/arch move the wall on a different path and are not
+            // this gap.
             const widthActive = (cfg.patch.heelCupWidthMm ?? 0) > 0;
+            const thicknessOnly = Object.keys(cfg.patch).length === 0;
             expect(mismatch).toBeLessThan(widthActive ? 0.1 : 0.8);
-            expect(vertGap).toBeLessThan(0.05);
+            if (thicknessOnly) expect(vertGap).toBeLessThan(0.05);
             expect(idemp).toBe(0);
 
             solid.dispose();

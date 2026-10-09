@@ -2533,6 +2533,25 @@ function pinPlantarAdjacentWall(frame: BottomWallSmoothFrame, rings = 3): Uint8A
     return out;
 }
 
+/** Plantar rings plus every lower-wall group (z≤3) — the grind hinge itself. */
+function pinGrindHingeWall(
+    frame: BottomWallSmoothFrame,
+    baseArr: Float32Array,
+    thickAxis: AxisIndex,
+): Uint8Array {
+    const out = pinPlantarAdjacentWall(frame, 3);
+    for (let g = 0; g < frame.groupCount; g++) {
+        if (out[g]) continue;
+        for (const vi of frame.members[g]!) {
+            if (baseArr[vi * 3 + thickAxis]! <= 3) {
+                out[g] = 1;
+                break;
+            }
+        }
+    }
+    return out;
+}
+
 /**
  * One welded Taubin pass (λ/μ pairs) after all wall movers. Volume-preserving
  * so thickness/lift walls stay in place while NN-seed folds are diffused.
@@ -2543,10 +2562,11 @@ function taubinSmoothBottomWallDisplacements(
     frame: BottomWallSmoothFrame,
     pairs: number,
     pinGrindAdjacent = false,
+    thickAxis: AxisIndex = 2,
 ): void {
     const baseArr = base.getAttribute("position")!.array as Float32Array;
     const { members, adj, groupCount } = frame;
-    const pinned = pinGrindAdjacent ? pinPlantarAdjacentWall(frame) : frame.pinned;
+    const pinned = pinGrindAdjacent ? pinGrindHingeWall(frame, baseArr, thickAxis) : frame.pinned;
 
     let disp = new Float64Array(groupCount * 3);
     for (let g = 0; g < groupCount; g++) {
@@ -3222,7 +3242,14 @@ export function applyBaseModifiers(
                     !!field.shapeFinish &&
                     clampArchGrindDepthMm(field.shapeFinish.archGrindDepthMm, field.thicknessMm) > 0;
                 if (wallFrame) {
-                    taubinSmoothBottomWallDisplacements(base, array, wallFrame, WALL_TAUBIN_PAIRS, grindOn);
+                    taubinSmoothBottomWallDisplacements(
+                        base,
+                        array,
+                        wallFrame,
+                        WALL_TAUBIN_PAIRS,
+                        grindOn,
+                        thickAxis,
+                    );
                 }
             }
         }
