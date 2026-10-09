@@ -108,6 +108,7 @@ export { applyCurveModifiers } from "./modifiers";
 export {
     applyOutlineClean,
     cleanClosedLoop,
+    mergeCloseOutlineStations,
     OUTLINE_COLLINEAR_MM,
     OUTLINE_DEDUPE_MM,
     OUTLINE_NUDGE_MM,

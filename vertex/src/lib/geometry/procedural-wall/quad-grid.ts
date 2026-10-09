@@ -448,8 +448,7 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
         dirs.push(alongH >= 0 ? h : { x: -h.x, y: -h.y });
         insets.push(Math.max(r, BAND_INSET_FLOOR_MM));
     }
-    for (let pass = 0; pass < 40; pass++) {
-        smoothInsets(insets);
+    for (let pass = 0; pass < 48; pass++) {
         const ring = bandFromInsets(outline, dirs, insets);
         const bad = new Set<number>();
         const pushOut = new Set<number>();
@@ -469,10 +468,14 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
                 bad.add((i + 1) % n);
             }
         }
-        if (bad.size === 0 && pushOut.size === 0) break;
+        if (bad.size === 0 && pushOut.size === 0) {
+            if (pass === 0 || pass % 4 === 3) break;
+            smoothInsets(insets);
+            continue;
+        }
         let changed = false;
         for (const i of bad) {
-            const next = Math.max(I_CLEARANCE_MM, insets[i]! * 0.85);
+            const next = Math.max(I_CLEARANCE_MM, insets[i]! * 0.8);
             if (next < insets[i]! - 1e-6) {
                 insets[i] = next;
                 changed = true;
@@ -488,6 +491,7 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
             }
         }
         if (!changed) break;
+        if (pass % 3 === 2) smoothInsets(insets);
     }
     const ring = bandFromInsets(outline, dirs, insets);
     const checked = assertSimpleInnerRing(ring, outline);

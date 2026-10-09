@@ -155,3 +155,55 @@ export function applyOutlineClean(
     for (const r of nextRim) rimLocal.push(r);
     return { dropped: n - keep.length };
 }
+
+/** Weld consecutive stations whose outline XY is shorter than `minMm`. */
+export function mergeCloseOutlineStations(
+    stations: HermiteStation[],
+    rimLocal: number[],
+    indices: number[],
+    minMm: number,
+): { dropped: number } {
+    const n = Math.min(stations.length, rimLocal.length);
+    if (n < 3) return { dropped: 0 };
+    const keep: number[] = [];
+    const weld = (fromIdx: number, toIdx: number): void => {
+        const from = rimLocal[fromIdx]!;
+        const to = rimLocal[toIdx]!;
+        if (from === to) return;
+        for (let k = 0; k < indices.length; k++) {
+            if (indices[k] === from) indices[k] = to;
+        }
+    };
+    for (let i = 0; i < n; i++) {
+        if (keep.length === 0) {
+            keep.push(i);
+            continue;
+        }
+        const prev = keep[keep.length - 1]!;
+        const a = stations[prev]!.outline;
+        const b = stations[i]!.outline;
+        if (Math.hypot(b.x - a.x, b.y - a.y) < minMm) {
+            weld(i, prev);
+            continue;
+        }
+        keep.push(i);
+    }
+    if (keep.length >= 3) {
+        const first = keep[0]!;
+        const last = keep[keep.length - 1]!;
+        const a = stations[first]!.outline;
+        const b = stations[last]!.outline;
+        if (Math.hypot(b.x - a.x, b.y - a.y) < minMm) {
+            weld(last, first);
+            keep.pop();
+        }
+    }
+    if (keep.length < 3 || keep.length === n) return { dropped: 0 };
+    const nextSt = keep.map((i) => stations[i]!);
+    const nextRim = keep.map((i) => rimLocal[i]!);
+    stations.length = 0;
+    for (const s of nextSt) stations.push(s);
+    rimLocal.length = 0;
+    for (const r of nextRim) rimLocal.push(r);
+    return { dropped: n - keep.length };
+}
