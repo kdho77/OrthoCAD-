@@ -4,6 +4,7 @@
 import type { BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
+import { averageCoincidentNormals } from "@/lib/geometry/average-coincident-normals";
 import { getDesignBase } from "@/lib/geometry/base-asset";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
@@ -30,6 +31,8 @@ import {
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
 import type { DesignState, Side, SideCorrections } from "@/types";
+
+export { averageCoincidentNormals } from "@/lib/geometry/average-coincident-normals";
 
 // Base + Modifier deformation core (see docs/base-modifier-architecture.md).
 //
@@ -69,6 +72,24 @@ const ZERO_CORRECTIONS: SideCorrections = {
  * thickness (see requirement: thickness expands upward from the stable bottom).
  */
 export const BASE_REFERENCE_THICKNESS_MM = 2;
+
+/** True when the field will deform the imported base (skip raw-base OCCT sew). */
+export function fieldHasMeshModifiers(field: HeightFieldParams): boolean {
+    const c = field.corrections;
+    if (Math.abs(field.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-3) return true;
+    if (Object.values(c).some((v) => typeof v === "number" && Math.abs(v) > 1e-3)) return true;
+    if (c.rearfootWedge || c.forefootWedge) return true;
+    if (field.elements && field.elements.length > 0) return true;
+    if (field.trimline && field.trimline.points.length >= 4) return true;
+    const sf = field.shapeFinish;
+    if (sf) {
+        if (sf.topCoverAccommodateMm > 0.05) return true;
+        if (sf.trimmableForefoot && sf.trimmableForefootExtraMm > 0.05) return true;
+        if (sf.archGrindDepthMm > 0.05) return true;
+        if (sf.archSkiveMm > 0.05) return true;
+    }
+    return false;
+}
 
 /** Neutral field (no corrections, no elements) used as the displacement baseline. */
 function neutralField(field: HeightFieldParams): HeightFieldParams {
@@ -1507,10 +1528,7 @@ function buildShellFieldSyncFrame(
             rimBlend = wDist * wHeight;
         }
 
-        const thicknessHz =
-            baseZ <= PLANTAR_Z_MAX_MM
-                ? 0
-                : Math.min(1, (baseZ - PLANTAR_Z_MAX_MM) / (WALL_TOP_MIN_Z_MM - PLANTAR_Z_MAX_MM));
+        const thicknessHz = 0;
 
         const depthQueryLen = lenCoord;
         let depthQueryWid = widCoord;
@@ -1537,6 +1555,106 @@ function buildShellFieldSyncFrame(
             depthQueryLen,
             depthQueryWid,
         });
+    }
+
+    // Thickness / lift uses full-wall W(h), h=(z−1)/(wallTopZ(s)−1).
+    // Unhit stations take a LOCAL crest (top-rim Z, else nearest sample) — never
+    // the tallest wall (~19 mm), which left midfoot crests at W≈0 (1–2 mm gap).
+    // Hit stations stay pinned through the rim-loop smooth so a 2 mm local fill
+    // cannot collapse a 19 mm neighbor (that restored the old z∈[1,2] crease).
+    const nRim = rimIndices.length;
+    const seedWallTopZ = new Float64Array(nRim);
+    const seedHit = new Uint8Array(nRim);
+    const localCrestZ = new Float64Array(nRim);
+    let globalWallTopZ = WALL_TOP_MIN_Z_MM;
+    for (const bv of bottomVerts) {
+        if (bv.baseZ > globalWallTopZ) globalWallTopZ = bv.baseZ;
+        if (bv.bestSeed < 0 || bv.rimBlend < 0.5 || bv.baseZ < WALL_TOP_MIN_Z_MM) continue;
+        const s = bv.bestSeed;
+        if (!seedHit[s] || bv.baseZ > seedWallTopZ[s]!) {
+            seedWallTopZ[s] = bv.baseZ;
+            seedHit[s] = 1;
+        }
+    }
+    for (let s = 0; s < nRim; s++) {
+        const rimZ = baseArr[rimIndices[s]! * 3 + thickAxis]!;
+        if (seedHit[s]) {
+            localCrestZ[s] = seedWallTopZ[s]!;
+            continue;
+        }
+        let found = -1;
+        for (let k = 1; k < nRim; k++) {
+            const fw = (s + k) % nRim;
+            const bw = (s - k + nRim) % nRim;
+            if (seedHit[fw]) {
+                found = fw;
+                break;
+            }
+            if (seedHit[bw]) {
+                found = bw;
+                break;
+            }
+        }
+        const local =
+            rimZ >= WALL_TOP_MIN_Z_MM ? rimZ : found >= 0 ? seedWallTopZ[found]! : WALL_TOP_MIN_Z_MM;
+        seedWallTopZ[s] = local;
+        localCrestZ[s] = local;
+    }
+    for (let it = 0; it < 12; it++) {
+        const next = new Float64Array(nRim);
+        for (let s = 0; s < nRim; s++) {
+            if (seedHit[s]) {
+                next[s] = seedWallTopZ[s]!;
+                continue;
+            }
+            const prev = seedWallTopZ[(s + nRim - 1) % nRim]!;
+            const cur = seedWallTopZ[s]!;
+            const nxt = seedWallTopZ[(s + 1) % nRim]!;
+            next[s] = 0.5 * cur + 0.25 * prev + 0.25 * nxt;
+        }
+        seedWallTopZ.set(next);
+    }
+    for (const bv of bottomVerts) {
+        if (bv.baseZ <= PLANTAR_Z_MAX_MM) {
+            bv.thicknessHz = 0;
+            continue;
+        }
+        // Unpaired verts keep the global crest — never a 2 mm default, which
+        // paints W=1 up a 19 mm wall and folds ~120°.
+        let wallTopZ = globalWallTopZ;
+        let crestZ = globalWallTopZ;
+        if (bv.bestSeed >= 0 && nRim > 1) {
+            const s0 = bv.bestSeed;
+            const sPrev = (s0 + nRim - 1) % nRim;
+            const sNext = (s0 + 1) % nRim;
+            const d0 = (rimLen[s0]! - bv.lenCoord) ** 2 + (rimWid[s0]! - bv.widCoord) ** 2;
+            const dPrev = (rimLen[sPrev]! - bv.lenCoord) ** 2 + (rimWid[sPrev]! - bv.widCoord) ** 2;
+            const dNext = (rimLen[sNext]! - bv.lenCoord) ** 2 + (rimWid[sNext]! - bv.widCoord) ** 2;
+            const s1 = dPrev <= dNext ? sPrev : sNext;
+            const d1 = dPrev <= dNext ? dPrev : dNext;
+            const w = d0 + d1 > 1e-12 ? d1 / (d0 + d1) : 1;
+            // Do not blend a pinned tall sample with an unhit 2 mm neighbor.
+            if (seedHit[s0] !== seedHit[s1]) {
+                const keep = seedHit[s0] ? s0 : s1;
+                wallTopZ = seedWallTopZ[keep]!;
+                crestZ = localCrestZ[keep]!;
+            } else {
+                wallTopZ = seedWallTopZ[s0]! * w + seedWallTopZ[s1]! * (1 - w);
+                crestZ = localCrestZ[s0]! * w + localCrestZ[s1]! * (1 - w);
+            }
+        } else if (bv.bestSeed >= 0) {
+            wallTopZ = seedWallTopZ[bv.bestSeed]!;
+            crestZ = localCrestZ[bv.bestSeed]!;
+        }
+        wallTopZ = Math.max(wallTopZ, WALL_TOP_MIN_Z_MM);
+        crestZ = Math.max(crestZ, WALL_TOP_MIN_Z_MM);
+        const denom = wallTopZ - PLANTAR_Z_MAX_MM;
+        bv.thicknessHz = denom > 1e-9 ? Math.max(0, Math.min(1, (bv.baseZ - PLANTAR_Z_MAX_MM) / denom)) : 0;
+        // Wall-top boundary (rim-paired crest) takes the full lift so ΔZ matches
+        // the top rim. Band is vs the unsmoothed local crest, not a 19 mm fill.
+        if (bv.rimBlend >= 0.5 && bv.baseZ >= crestZ - 0.35) {
+            bv.thicknessHz = 1;
+        }
     }
 
     return { rimIndices, rimLen, rimWid, rimHash, rimBins, rimCell, bottomVerts };
@@ -2128,8 +2246,12 @@ function transferRimConformityDeltas(
 //  - wall-top pin keeps rim closure (wall top ≡ transferred rim delta).
 // A deviation clamp bounds shape drift to SMOOTH_INWARD_LIMIT_MM.
 
-/** Diffusion iterations for the wall displacement field (0.5 blend per iter). */
+/** Jacobi iterations on the rim-transfer path (arch-heel / width contracts). */
 const WALL_DISPLACEMENT_SMOOTH_ITERS = 4;
+/** Taubin pairs after all wall movers on the thickness/sync path (λ=0.5, μ=−0.53). */
+const WALL_TAUBIN_PAIRS = 16;
+const WALL_TAUBIN_LAMBDA = 0.5;
+const WALL_TAUBIN_MU = -0.53;
 
 interface BottomWallSmoothFrame {
     /** Weld group per vertex; −1 for top-mesh verts. */
@@ -2139,6 +2261,8 @@ interface BottomWallSmoothFrame {
     adj: number[][];
     /** Pinned groups: plantar band (HC-1) + rim-paired wall tops (rim closure). */
     pinned: Uint8Array;
+    /** Plantar-band groups only (for grind-adjacent wall pins). */
+    plantar: Uint8Array;
     groupCount: number;
 }
 
@@ -2188,10 +2312,12 @@ function buildBottomWallSmoothFrame(
     }
 
     const pinned = new Uint8Array(groupCount);
+    const plantar = new Uint8Array(groupCount);
     for (let g = 0; g < groupCount; g++) {
         for (const vi of members[g]!) {
             if (baseArr[vi * 3 + thickAxis]! <= PLANTAR_Z_MAX_MM) {
                 pinned[g] = 1;
+                plantar[g] = 1;
                 break;
             }
         }
@@ -2236,7 +2362,7 @@ function buildBottomWallSmoothFrame(
         }
     }
 
-    return { groupOf, members, adj, pinned, groupCount };
+    return { groupOf, members, adj, pinned, plantar, groupCount };
 }
 
 function getBottomWallSmoothFrame(
@@ -2323,6 +2449,50 @@ function smoothBottomWallDisplacements(
         }
     }
 
+    writeSmoothedWallDisplacement(baseArr, array, members, disp, groupCount);
+}
+
+function jacobiWallStep(
+    disp: Float64Array,
+    adj: number[][],
+    pinned: Uint8Array,
+    groupCount: number,
+    lambda: number,
+): Float64Array {
+    const next = new Float64Array(groupCount * 3);
+    for (let g = 0; g < groupCount; g++) {
+        if (pinned[g] || adj[g]!.length === 0) {
+            next[g * 3] = disp[g * 3]!;
+            next[g * 3 + 1] = disp[g * 3 + 1]!;
+            next[g * 3 + 2] = disp[g * 3 + 2]!;
+            continue;
+        }
+        let sx = 0;
+        let sy = 0;
+        let sz = 0;
+        for (const n of adj[g]!) {
+            sx += disp[n * 3]!;
+            sy += disp[n * 3 + 1]!;
+            sz += disp[n * 3 + 2]!;
+        }
+        const inv = 1 / adj[g]!.length;
+        const ax = sx * inv;
+        const ay = sy * inv;
+        const az = sz * inv;
+        next[g * 3] = disp[g * 3]! + lambda * (ax - disp[g * 3]!);
+        next[g * 3 + 1] = disp[g * 3 + 1]! + lambda * (ay - disp[g * 3 + 1]!);
+        next[g * 3 + 2] = disp[g * 3 + 2]! + lambda * (az - disp[g * 3 + 2]!);
+    }
+    return next;
+}
+
+function writeSmoothedWallDisplacement(
+    baseArr: Float32Array,
+    array: Float32Array,
+    members: number[][],
+    disp: Float64Array,
+    groupCount: number,
+): void {
     for (let g = 0; g < groupCount; g++) {
         const gx = disp[g * 3]!;
         const gy = disp[g * 3 + 1]!;
@@ -2333,6 +2503,107 @@ function smoothBottomWallDisplacements(
             array[vi * 3 + 2] = baseArr[vi * 3 + 2]! + gz;
         }
     }
+}
+
+/**
+ * Copy of `pinned` plus `rings` wall hops out from the plantar band.
+ * Arch grind only moves z≤1; Taubin otherwise smears that raise (and the
+ * thickness crest) into the z=1–3 grind hinge — three rings covers it.
+ */
+function pinPlantarAdjacentWall(frame: BottomWallSmoothFrame, rings = 3): Uint8Array {
+    const { adj, pinned, plantar, groupCount } = frame;
+    const out = pinned.slice();
+    const seen = plantar.slice();
+    let frontier: number[] = [];
+    for (let g = 0; g < groupCount; g++) {
+        if (plantar[g]) frontier.push(g);
+    }
+    for (let r = 0; r < rings; r++) {
+        const next: number[] = [];
+        for (const g of frontier) {
+            for (const n of adj[g] ?? []) {
+                if (seen[n]) continue;
+                seen[n] = 1;
+                out[n] = 1;
+                next.push(n);
+            }
+        }
+        frontier = next;
+    }
+    return out;
+}
+
+/** Plantar rings plus every lower-wall group (z≤3) — the grind hinge itself. */
+function pinGrindHingeWall(
+    frame: BottomWallSmoothFrame,
+    baseArr: Float32Array,
+    thickAxis: AxisIndex,
+): Uint8Array {
+    const out = pinPlantarAdjacentWall(frame, 3);
+    for (let g = 0; g < frame.groupCount; g++) {
+        if (out[g]) continue;
+        for (const vi of frame.members[g]!) {
+            if (baseArr[vi * 3 + thickAxis]! <= 3) {
+                out[g] = 1;
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+/**
+ * One welded Taubin pass (λ/μ pairs) after all wall movers. Volume-preserving
+ * so thickness/lift walls stay in place while NN-seed folds are diffused.
+ */
+function taubinSmoothBottomWallDisplacements(
+    base: BufferGeometry,
+    array: Float32Array,
+    frame: BottomWallSmoothFrame,
+    pairs: number,
+    pinGrindAdjacent = false,
+    thickAxis: AxisIndex = 2,
+): void {
+    const baseArr = base.getAttribute("position")!.array as Float32Array;
+    const { members, adj, groupCount } = frame;
+    const pinned = pinGrindAdjacent ? pinGrindHingeWall(frame, baseArr, thickAxis) : frame.pinned;
+
+    let disp = new Float64Array(groupCount * 3);
+    for (let g = 0; g < groupCount; g++) {
+        const m = members[g]!;
+        let sx = 0;
+        let sy = 0;
+        let sz = 0;
+        for (const vi of m) {
+            sx += array[vi * 3]! - baseArr[vi * 3]!;
+            sy += array[vi * 3 + 1]! - baseArr[vi * 3 + 1]!;
+            sz += array[vi * 3 + 2]! - baseArr[vi * 3 + 2]!;
+        }
+        disp[g * 3] = sx / m.length;
+        disp[g * 3 + 1] = sy / m.length;
+        disp[g * 3 + 2] = sz / m.length;
+    }
+    const init = disp.slice();
+
+    for (let it = 0; it < pairs; it++) {
+        disp = jacobiWallStep(disp, adj, pinned, groupCount, WALL_TAUBIN_LAMBDA);
+        disp = jacobiWallStep(disp, adj, pinned, groupCount, WALL_TAUBIN_MU);
+    }
+
+    for (let g = 0; g < groupCount; g++) {
+        const dx = disp[g * 3]! - init[g * 3]!;
+        const dy = disp[g * 3 + 1]! - init[g * 3 + 1]!;
+        const dz = disp[g * 3 + 2]! - init[g * 3 + 2]!;
+        const dev = Math.hypot(dx, dy, dz);
+        if (dev > 1e-12) {
+            const k = (Math.tanh(dev / SMOOTH_INWARD_LIMIT_MM) * SMOOTH_INWARD_LIMIT_MM) / dev;
+            disp[g * 3] = init[g * 3]! + dx * k;
+            disp[g * 3 + 1] = init[g * 3 + 1]! + dy * k;
+            disp[g * 3 + 2] = init[g * 3 + 2]! + dz * k;
+        }
+    }
+
+    writeSmoothedWallDisplacement(baseArr, array, members, disp, groupCount);
 }
 
 /** Verification helper: post-smoothing lateral delta stats for heel-cup width. */
@@ -2811,7 +3082,7 @@ export function applyBaseModifiers(
                         neutral,
                         edgeProfile,
                     );
-                    F += (fFull - fCorrectionsLocal) * rimConformityHeightWeight(bv.thicknessHz);
+                    F += (fFull - fCorrectionsLocal) * quinticSmoothstep(bv.thicknessHz);
                 }
 
                 array[i * 3 + thickAxis] += F;
@@ -2951,6 +3222,39 @@ export function applyBaseModifiers(
         }
     }
 
+    // One welded Taubin pass after wall movers. When arch grind ran, pin the
+    // wall ring next to the plantar band so the grind raise cannot bleed up.
+    if (useShellFieldSync && !options?.skipBottomSync) {
+        const thicknessLift = Math.abs(fieldForDelta.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-9;
+        if (thicknessLift) {
+            const rimFrame = getRimConformityFrame(
+                base,
+                topVertexCount,
+                lengthAxis,
+                widthAxis,
+                thickAxis,
+                lenMin,
+                lenSize,
+            );
+            if (rimFrame && rimFrame.seeds.length > 0) {
+                const wallFrame = getBottomWallSmoothFrame(base, topVertexCount, thickAxis, rimFrame);
+                const grindOn =
+                    !!field.shapeFinish &&
+                    clampArchGrindDepthMm(field.shapeFinish.archGrindDepthMm, field.thicknessMm) > 0;
+                if (wallFrame) {
+                    taubinSmoothBottomWallDisplacements(
+                        base,
+                        array,
+                        wallFrame,
+                        WALL_TAUBIN_PAIRS,
+                        grindOn,
+                        thickAxis,
+                    );
+                }
+            }
+        }
+    }
+
     if (originalBottomZ && typeof console !== "undefined" && !useShellFieldSync) {
         let maxDrift = 0;
         const baseArr = base.getAttribute("position")!.array as Float32Array;
@@ -2967,6 +3271,7 @@ export function applyBaseModifiers(
     pos.needsUpdate = true;
     if (!options?.skipNormals) {
         geometry.computeVertexNormals();
+        averageCoincidentNormals(geometry, 60);
         geometry.computeBoundingBox();
         geometry.computeBoundingSphere();
     } else {

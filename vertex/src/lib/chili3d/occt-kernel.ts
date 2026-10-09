@@ -1,21 +1,21 @@
-import { shapesToStl, type IShape } from "@chili3d/core";
+import { type IShape, shapesToStl } from "@chili3d/core";
 import { ShapeFactory } from "@chili3d/wasm";
 import type { BufferGeometry } from "three";
 import type { GeometryTier, IGeometryKernel, SolidResult } from "@/lib/chili3d/kernel";
+import { fieldHasMeshModifiers, modifiedBaseResult } from "@/lib/geometry/base-modifier";
 import {
     applyBaseBooleansOnSewnSolid,
     applyRimBlend,
     applyThicknessToSewnBase,
     sewGlbGeometryToSolid,
 } from "@/lib/geometry/base-occt";
-import { modifiedBaseResult } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { buildInsoleGeometry, type InsoleParams } from "@/lib/geometry/insole";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { shapeToBufferGeometry } from "@/lib/geometry/mesh-bridge";
+import { closeGlbInsoleToSolid, validateManifold } from "@/lib/geometry/mesh-close";
 import { buildOcctInsoleSolid } from "@/lib/geometry/occt-insole";
-import { repairOcctSolid } from "@/lib/geometry/repair";
-import { validateSolid } from "@/lib/geometry/repair";
+import { repairOcctSolid, validateSolid } from "@/lib/geometry/repair";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 
 const shapeByGeometry = new WeakMap<BufferGeometry, IShape>();
@@ -63,6 +63,14 @@ export class OcctKernel implements IGeometryKernel {
         // Always compute the deformation result first (fast, stable bottom guarantee,
         // and the universal fallback).
         const deform = modifiedBaseResult(base, field, smoothingIterations);
+
+        // Mesh modifiers already live on deform.geometry. Sewing the RAW base
+        // would discard that deformation. Sewing the still-open deformed mesh
+        // fails (thousands of open edges) and costs seconds per call — skip sew
+        // here and use the closed-mesh sew on the manufacturing export path.
+        if (fieldHasMeshModifiers(field)) {
+            return deform;
+        }
 
         // Only attempt the sewn authoritative path when we are the OCCT kernel and
         // the caller is asking for manufacturing quality (smoothingIterations >= 1
@@ -120,14 +128,31 @@ export class OcctKernel implements IGeometryKernel {
      */
     exportManufacturingStlFromBase(base: BufferGeometry, field: HeightFieldParams): ArrayBuffer | null {
         try {
+            // Sewing a deformed (or even a closed tessellated) mesh returns null
+            // on the real wasm kernel. Drop that path: close the deform mesh and
+            // emit STL only when the mesh is watertight.
+            if (fieldHasMeshModifiers(field)) {
+                const deform = modifiedBaseResult(base, field, 0);
+                const closed = closeGlbInsoleToSolid(deform.geometry);
+                const report = validateManifold(closed);
+                if (!report.isWatertight || report.openEdges !== 0) return null;
+                return geometryToBinarySTL(closed);
+            }
+
             const sewn = sewGlbGeometryToSolid(this.factory, base);
             if (!sewn) return null;
 
             let solid = applyBaseBooleansOnSewnSolid(this.factory, sewn, field);
             solid = applyRimBlend(this.factory, solid, 1.0);
-            const method = (field as { method?: "printing_solid" | "printing_shell" | "milling_3axis" }).method;
+            const method = (field as { method?: "printing_solid" | "printing_shell" | "milling_3axis" })
+                .method;
             solid = applyThicknessToSewnBase(this.factory, solid, field.thicknessMm, method);
             const repaired = repairOcctSolid(this.factory, solid);
+            if (!repaired.isClosed()) return null;
+            const probe = shapeToBufferGeometry(repaired);
+            const manifold = validateSolid(repaired, probe);
+            probe.dispose();
+            if (!manifold.isWatertight) return null;
             const bytes = shapesToStl([repaired], { binary: true });
             return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
         } catch {

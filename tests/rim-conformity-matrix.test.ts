@@ -48,12 +48,12 @@ function neu(): SideCorrections {
     };
 }
 
-function field(patch: Partial<SideCorrections>): HeightFieldParams {
+function field(patch: Partial<SideCorrections>, thicknessMm = 3): HeightFieldParams {
     return {
         side: "right",
         lengthMm: 266,
         widthMm: 95,
-        thicknessMm: 3,
+        thicknessMm,
         corrections: { ...neu(), ...patch },
         elements: [],
         includeSkives: true,
@@ -188,6 +188,54 @@ function maxDeltaMismatch(base: Float32Array, mod: Float32Array, f: Frame, rim: 
     return maxM;
 }
 
+/** Max |ΔZ_wall − ΔZ_rim| on the same paired wall-top seeds. */
+function maxVerticalRimGap(base: Float32Array, mod: Float32Array, f: Frame, rim: number[]): number {
+    const HQ = 20;
+    const hash = new Map<string, number[]>();
+    for (let i = f.topN; i < f.count; i++) {
+        const k = `${Math.round(base[i * 3 + f.lengthAxis]! * HQ)},${Math.round(base[i * 3 + f.widthAxis]! * HQ)}`;
+        let list = hash.get(k);
+        if (!list) {
+            list = [];
+            hash.set(k, list);
+        }
+        list.push(i);
+    }
+    let maxGap = 0;
+    for (const j of rim) {
+        const lx = base[j * 3 + f.lengthAxis]!;
+        const wy = base[j * 3 + f.widthAxis]!;
+        const bins = Math.ceil(RIM_PAIR_TOL_MM * HQ) + 2;
+        const cx = Math.round(lx * HQ);
+        const cy = Math.round(wy * HQ);
+        let best = -1;
+        let bestZ = -Infinity;
+        let bestD = Infinity;
+        for (let dx = -bins; dx <= bins; dx++) {
+            for (let dy = -bins; dy <= bins; dy++) {
+                const list = hash.get(`${cx + dx},${cy + dy}`);
+                if (!list) continue;
+                for (const bi of list) {
+                    const d = Math.hypot(base[bi * 3 + f.lengthAxis]! - lx, base[bi * 3 + f.widthAxis]! - wy);
+                    if (d > RIM_PAIR_TOL_MM) continue;
+                    const z = base[bi * 3 + f.thickAxis]!;
+                    if (z < WALL_TOP_MIN_Z_MM) continue;
+                    if (z > bestZ + 1e-9 || (Math.abs(z - bestZ) <= 1e-9 && d < bestD)) {
+                        bestZ = z;
+                        best = bi;
+                        bestD = d;
+                    }
+                }
+            }
+        }
+        if (best < 0) continue;
+        const dWall = mod[best * 3 + f.thickAxis]! - base[best * 3 + f.thickAxis]!;
+        const dRim = mod[j * 3 + f.thickAxis]! - base[j * 3 + f.thickAxis]!;
+        maxGap = Math.max(maxGap, Math.abs(dWall - dRim));
+    }
+    return maxGap;
+}
+
 describe("rim-conformity combined validation matrix", () => {
     let baseGeo: BufferGeometry;
     let frame: Frame;
@@ -208,7 +256,7 @@ describe("rim-conformity combined validation matrix", () => {
         expect(rimIdx.length).toBeGreaterThan(400);
     });
 
-    const configs: Array<{ name: string; patch: Partial<SideCorrections> }> = [
+    const configs: Array<{ name: string; patch: Partial<SideCorrections>; thicknessMm?: number }> = [
         { name: "width-0.5", patch: { heelCupWidthMm: 0.5 } },
         { name: "width-5", patch: { heelCupWidthMm: 5 } },
         { name: "width-10", patch: { heelCupWidthMm: 10 } },
@@ -221,20 +269,24 @@ describe("rim-conformity combined validation matrix", () => {
             name: "combined-screenshot",
             patch: { heelCupWidthMm: 5, heelCupDepthMm: 5, archHeightMm: 10, apexMoveMm: 5 },
         },
+        { name: "thickness-t3", patch: {}, thicknessMm: 3 },
+        { name: "thickness-t4", patch: {}, thicknessMm: 4 },
     ];
 
     for (const cfg of configs) {
         test(cfg.name, () => {
-            const mod = applyBaseModifiers(baseGeo, field(cfg.patch));
+            const spec = field(cfg.patch, cfg.thicknessMm ?? 3);
+            const mod = applyBaseModifiers(baseGeo, spec);
             const modArr = new Float32Array(mod.getAttribute("position")!.array as Float32Array);
             const rim = topRim(mod, frame.topN);
             const solid = closeGlbInsoleToSolid(mod);
             const report = validateManifold(solid);
             const plantar = plantarDrift(baseArr, modArr, frame);
             const mismatch = maxDeltaMismatch(baseArr, modArr, frame, rimIdx);
+            const vertGap = maxVerticalRimGap(baseArr, modArr, frame, rimIdx);
 
             // Idempotency
-            const mod2 = applyBaseModifiers(baseGeo, field(cfg.patch));
+            const mod2 = applyBaseModifiers(baseGeo, spec);
             const mod2Arr = new Float32Array(mod2.getAttribute("position")!.array as Float32Array);
             let idemp = 0;
             for (let i = 0; i < frame.count * 3; i++) {
@@ -247,6 +299,7 @@ describe("rim-conformity combined validation matrix", () => {
                 openEdges: report.openEdges,
                 plantarDriftMm: Number(plantar.toFixed(6)),
                 deltaMismatchMm: Number(mismatch.toFixed(6)),
+                verticalRimGapMm: Number(vertGap.toFixed(6)),
                 idempotencyMaxDiff: idemp,
             };
             rows.push(row);
@@ -256,11 +309,15 @@ describe("rim-conformity combined validation matrix", () => {
             expect(rim.length).toBeLessThan(500);
             expect(report.openEdges).toBe(0);
             expect(plantar).toBeLessThan(0.05);
-            // Width cases: legacy rim-conformity (strict). Field-sync: allow larger
-            // 3D mismatch from nearest-rim vs pair-rim depth noise; Z-gap covered
-            // by synced-bottom-shell-field.test.ts (≤0.05 mm).
+            // Width cases: legacy rim-conformity (strict 0.1). Non-width 3D
+            // mismatch stays under 0.8. Vertical rim gap is the thickness-only
+            // t3/t4 contract (main is 0; the 19 mm fill left 1–2 mm at u 0.57–0.65).
+            // Width/depth/arch move the wall on a different path and are not
+            // this gap.
             const widthActive = (cfg.patch.heelCupWidthMm ?? 0) > 0;
+            const thicknessOnly = Object.keys(cfg.patch).length === 0;
             expect(mismatch).toBeLessThan(widthActive ? 0.1 : 0.8);
+            if (thicknessOnly) expect(vertGap).toBeLessThan(0.05);
             expect(idemp).toBe(0);
 
             solid.dispose();

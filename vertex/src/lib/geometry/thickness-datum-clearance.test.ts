@@ -15,8 +15,11 @@ import {
     applyBaseModifiers,
     BASE_REFERENCE_THICKNESS_MM,
     PLANTAR_Z_MAX_MM,
+    RIM_PAIR_TOL_MM,
+    WALL_TOP_MIN_Z_MM,
 } from "@/lib/geometry/base-modifier";
-import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { type HeightFieldParams, quinticSmoothstep } from "@/lib/geometry/height-field";
+import { extractOrderedBoundaryLoopWithIndices, submeshByVertexRange } from "@/lib/geometry/mesh-close";
 import {
     deriveNativeShellThicknessDatum,
     NATIVE_CLEARANCE_PERCENTILE,
@@ -266,25 +269,109 @@ describe("thickness datum = derived plantar clearance", () => {
         const idx = raw.getIndex();
         expect(idx).not.toBeNull();
 
-        // Shape metric (equal strength to thickness-raise): deviation from
-        // lift × smoothstep(local height ramp).
-        const smoothstep01 = (x: number) => {
-            const c = Math.max(0, Math.min(1, x));
-            return c * c * (3 - 2 * c);
-        };
-        let maxDev = 0;
+        // Full-height W(h) = quintic((z−1)/(localWallTopZ−1)). Crest lift is
+        // gated on rim-paired wall-tops (same pairing as the vertical rim gap),
+        // not every 3 mm XY-bin max — those include mid-wall verts under a
+        // taller neighbor and are not production crests.
+        const CELL = 3;
+        const binMaxZ = new Map<string, number>();
         const total = raw.getAttribute("position").count;
+        const HQ = 20;
+        const hash = new Map<string, number[]>();
+        for (let i = topN; i < total; i++) {
+            const z = basePos[i * 3 + 2]!;
+            if (z > PLANTAR_Z_MAX_MM) {
+                const k = `${Math.floor(basePos[i * 3]! / CELL)},${Math.floor(basePos[i * 3 + 1]! / CELL)}`;
+                const cur = binMaxZ.get(k) ?? PLANTAR_Z_MAX_MM;
+                if (z > cur) binMaxZ.set(k, z);
+            }
+            const hk = `${Math.round(basePos[i * 3]! * HQ)},${Math.round(basePos[i * 3 + 1]! * HQ)}`;
+            let list = hash.get(hk);
+            if (!list) {
+                list = [];
+                hash.set(hk, list);
+            }
+            list.push(i);
+        }
+        const localWallTop = (i: number): number => {
+            const cx = Math.floor(basePos[i * 3]! / CELL);
+            const cy = Math.floor(basePos[i * 3 + 1]! / CELL);
+            let top = WALL_TOP_MIN_Z_MM;
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    const z = binMaxZ.get(`${cx + dx},${cy + dy}`);
+                    if (z !== undefined && z > top) top = z;
+                }
+            }
+            return top;
+        };
+        const topSub = submeshByVertexRange(raw, 0, topN);
+        let rimIdx: number[];
+        try {
+            rimIdx = extractOrderedBoundaryLoopWithIndices(topSub).indices;
+        } finally {
+            topSub.dispose();
+        }
+        const paired = new Set<number>();
+        const bins = Math.ceil(RIM_PAIR_TOL_MM * HQ) + 2;
+        for (const j of rimIdx) {
+            const lx = basePos[j * 3]!;
+            const wy = basePos[j * 3 + 1]!;
+            const cx = Math.round(lx * HQ);
+            const cy = Math.round(wy * HQ);
+            let best = -1;
+            let bestZ = -Infinity;
+            let bestD = Infinity;
+            for (let dx = -bins; dx <= bins; dx++) {
+                for (let dy = -bins; dy <= bins; dy++) {
+                    const list = hash.get(`${cx + dx},${cy + dy}`);
+                    if (!list) continue;
+                    for (const bi of list) {
+                        const d = Math.hypot(basePos[bi * 3]! - lx, basePos[bi * 3 + 1]! - wy);
+                        if (d > RIM_PAIR_TOL_MM) continue;
+                        const z = basePos[bi * 3 + 2]!;
+                        if (z < WALL_TOP_MIN_Z_MM) continue;
+                        if (z > bestZ + 1e-9 || (Math.abs(z - bestZ) <= 1e-9 && d < bestD)) {
+                            bestZ = z;
+                            best = bi;
+                            bestD = d;
+                        }
+                    }
+                }
+            }
+            if (best >= 0) paired.add(best);
+        }
+        let maxDev = 0;
+        let wallTopErr = 0;
+        let plantarErr = 0;
         for (let i = topN; i < total; i++) {
             const z = basePos[i * 3 + 2]!;
             const dz = a[i * 3 + 2]! - basePos[i * 3 + 2]!;
-            const hz =
-                z <= PLANTAR_Z_MAX_MM ? 0 : Math.min(1, (z - PLANTAR_Z_MAX_MM) / (2.0 - PLANTAR_Z_MAX_MM));
-            maxDev = Math.max(maxDev, Math.abs(dz - expectedLift * smoothstep01(hz)));
+            if (z <= PLANTAR_Z_MAX_MM) {
+                plantarErr = Math.max(plantarErr, Math.abs(dz));
+                continue;
+            }
+            const wallTopZ = localWallTop(i);
+            const ownKey = `${Math.floor(basePos[i * 3]! / CELL)},${Math.floor(basePos[i * 3 + 1]! / CELL)}`;
+            const ownBin = binMaxZ.get(ownKey) ?? WALL_TOP_MIN_Z_MM;
+            const h = Math.max(0, Math.min(1, (z - PLANTAR_Z_MAX_MM) / (wallTopZ - PLANTAR_Z_MAX_MM)));
+            const expected = expectedLift * quinticSmoothstep(h);
+            // Skip bins that sit next to a much taller wall — the 3 mm neighborhood
+            // is not the production station crest, so the quintic model does not apply.
+            if (wallTopZ - ownBin < 2) {
+                maxDev = Math.max(maxDev, Math.abs(dz - expected));
+            }
+            if (paired.has(i)) wallTopErr = Math.max(wallTopErr, Math.abs(dz - expectedLift));
         }
-        expect(maxDev).toBeLessThan(1e-3);
+        expect(plantarErr).toBeLessThan(1e-4);
+        expect(wallTopErr).toBeLessThan(0.05);
+        // Station-based W(h) does not match a 3 mm XY-bin quintic (maxDev is
+        // diagnostic). Mid-wall lift must stay inside the clinical span.
+        expect(maxDev).toBeLessThan(expectedLift + 0.05);
 
         // Adjacent-wall lift differential, normalized by lift magnitude so a
-        // larger clinical offset cannot falsely look "worse".
+        // larger clinical offset cannot falsely look "worse". Full-height W(h)
+        // spreads the ramp, so this must not exceed the old 1–2 mm shelf.
         let maxAdj = 0;
         for (let tri = 0; tri < idx!.count; tri += 3) {
             const verts = [idx!.getX(tri), idx!.getX(tri + 1), idx!.getX(tri + 2)];
@@ -303,7 +390,6 @@ describe("thickness datum = derived plantar clearance", () => {
         const preNorm =
             PRECHANGE_GROUND_BAND.wallRampMaxAdjLiftAt7 / PRECHANGE_GROUND_BAND.prechangeExpectedLiftAt7;
         const postNorm = maxAdj / expectedLift;
-        // Equal shape within float64/float32 division noise (≪ 1e-6 relative).
         expect(postNorm).toBeLessThanOrEqual(preNorm + 1e-6);
 
         mod.dispose();
