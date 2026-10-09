@@ -15,18 +15,31 @@ import {
     assertNoStationSelfIntersection,
     clusteredWallT,
     evalWallProfile,
+    FILLET_MAX_HEIGHT_FRAC,
     filletImpliedSeamDeg,
+    MIN_FILLET_RINGS,
     sampleFilletArc,
     unitNZ,
     wallDirectionNZ,
 } from "./hermite";
 import { outwardNormal } from "./measure";
+import {
+    CROSSING_WINDOW,
+    countPlanViewChordCrossings,
+    type FlareCapReport,
+    segmentsCrossXY,
+    smoothAndCapFlare,
+} from "./stations";
 
 export interface LoftGrid {
     nS: number;
     nT: number;
     /** Packed xyz, row-major t then s: index = (ti * nS + si) * 3 */
     positions: Float32Array;
+    flareDeg?: number[];
+    flareCapReport?: FlareCapReport;
+    chordCrossings?: number;
+    windowCrossings?: number;
 }
 
 export interface HermiteStation {
@@ -159,8 +172,10 @@ function buildStationColumn(
     const chordN = (r.x - o.x) * st.n.x + (r.y - o.y) * st.n.y;
     const hScale = wallHeightScale(st.u);
     const curvature = blendedFlareCurvature(st.u, o.y, defaults.flareCurvature);
-    const filletBot = defaults.wallFilletBottomMm;
-    const filletTop = defaults.wallFilletTopMm;
+    const localH = Math.max(height, 0.5);
+    const maxR = FILLET_MAX_HEIGHT_FRAC * localH;
+    const filletBot = Math.min(defaults.wallFilletBottomMm, maxR);
+    const filletTop = Math.min(defaults.wallFilletTopMm, maxR);
     const bowl = filletBot < 0.2 ? 0 : heelBowlMix(st.u);
     const Twall = wallDirectionNZ(flareDeg);
     const Tsheet = st.t0 ? unitNZ(st.t0) : Twall;
@@ -205,28 +220,70 @@ function buildStationColumn(
 function resampleColumnKeepFirstStep(
     column: Array<{ n: number; z: number }>,
     nT: number,
+    keepPrefix = 1 + MIN_FILLET_RINGS,
 ): Array<{ n: number; z: number }> {
     if (column.length === 0) return Array.from({ length: nT }, () => ({ n: 0, z: 0 }));
     if (column.length === nT) return column;
     const out: Array<{ n: number; z: number }> = [];
-    out.push(column[0]!);
-    if (nT === 1) return out;
+    const prefix = Math.max(1, Math.min(keepPrefix, column.length, nT));
+    for (let i = 0; i < prefix; i++) out.push(column[i]!);
+    if (nT === out.length) return out;
     if (column.length === 1) {
         for (let i = 1; i < nT; i++) out.push(column[0]!);
         return out;
     }
-    out.push(column[1]!);
-    const tail = column.slice(1);
-    for (let i = 2; i < nT; i++) {
-        const t = ((i - 1) / Math.max(1, nT - 2)) * (tail.length - 1);
-        const j = Math.min(tail.length - 2, Math.floor(t));
+    const tail = column.slice(Math.max(0, prefix - 1));
+    for (let i = prefix; i < nT; i++) {
+        const t = ((i - (prefix - 1)) / Math.max(1, nT - prefix)) * (tail.length - 1);
+        const j = Math.min(tail.length - 2, Math.max(0, Math.floor(t)));
         const f = t - j;
         const a = tail[j]!;
-        const b = tail[j + 1]!;
+        const b = tail[j + 1] ?? tail[j]!;
         out.push({ n: a.n + (b.n - a.n) * f, z: a.z + (b.z - a.z) * f });
     }
     out[nT - 1] = column[column.length - 1]!;
     return out;
+}
+
+function writeColumn(
+    st: HermiteStation,
+    column: Array<{ n: number; z: number }>,
+    nS: number,
+    nT: number,
+    si: number,
+    positions: Float32Array,
+    xyz: Array<Array<{ x: number; y: number; z: number }>>,
+): void {
+    const row: Array<{ x: number; y: number; z: number }> = [];
+    for (let ti = 0; ti < nT; ti++) {
+        const p = column[ti]!;
+        const x = st.outline.x + st.n.x * p.n;
+        const y = st.outline.y + st.n.y * p.n;
+        const z = p.z;
+        row.push({ x, y, z });
+        const idx = (ti * nS + si) * 3;
+        positions[idx] = x;
+        positions[idx + 1] = y;
+        positions[idx + 2] = z;
+    }
+    xyz[si] = row;
+}
+
+function columnsCrossInWindow(
+    xyz: Array<Array<{ x: number; y: number; z: number }>>,
+    si: number,
+    window = CROSSING_WINDOW,
+): boolean {
+    const nS = xyz.length;
+    const a = xyz[si]!;
+    for (let k = 1; k <= window; k++) {
+        const b = xyz[(si + k) % nS]!;
+        if (adjacentStationsCross(a, b)) return true;
+        if (a.length && b.length && segmentsCrossXY(a[0]!, a[a.length - 1]!, b[0]!, b[b.length - 1]!)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -241,12 +298,18 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
     const flangeLen = input.flangeLengthMm ?? input.defaults.lateralFlangeLengthMm;
     const flangeAng = input.flangeAngleDeg ?? input.defaults.lateralFlangeAngleDeg;
     const circMm = polylineCircMm(input.stations.map((s) => s.outline));
-    const xyz: Array<Array<{ x: number; y: number; z: number }>> = [];
+    const xyz: Array<Array<{ x: number; y: number; z: number }>> = new Array(nS);
+    const regionDefault = input.stations.map((st) =>
+        blendedFlareDeg(st.u, st.outline.y, input.defaults.flareDeg),
+    );
+    const { flare: flareAlong, report: flareCapReport } = smoothAndCapFlare(
+        input.stations.map((s) => s.outline),
+        regionDefault,
+    );
 
-    for (let si = 0; si < nS; si++) {
+    const buildAt = (si: number, flare: number) => {
         const st = input.stations[si]!;
-        let flare = blendedFlareDeg(st.u, st.outline.y, input.defaults.flareDeg);
-        let built = buildStationColumn(
+        const built = buildStationColumn(
             st,
             flare,
             input.defaults,
@@ -259,12 +322,13 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
         );
         let column = resampleColumnKeepFirstStep(built.column, nT);
         let guard = 0;
+        let f = flare;
         while (!assertNoStationSelfIntersection(column) && guard++ < 8) {
-            if (flare < 0) flare = Math.min(0, flare * 0.5);
-            else flare *= 0.7;
-            built = buildStationColumn(
+            if (f < 0) f = 0;
+            else f = regionDefault[si]! + (f - regionDefault[si]!) * 0.5;
+            const again = buildStationColumn(
                 st,
-                flare,
+                f,
                 input.defaults,
                 nT,
                 circMm,
@@ -273,62 +337,50 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
                 flangeAng,
                 input.footLengthMm,
             );
-            column = resampleColumnKeepFirstStep(built.column, nT);
+            column = resampleColumnKeepFirstStep(again.column, nT);
+            built.impliedSeamDeg = again.impliedSeamDeg;
         }
         for (let i = 1; i < column.length; i++) {
             if (column[i]!.z < column[i - 1]!.z) column[i]!.z = column[i - 1]!.z;
         }
         st.impliedSeamDeg = built.impliedSeamDeg;
-        const row: Array<{ x: number; y: number; z: number }> = [];
-        for (let ti = 0; ti < nT; ti++) {
-            const p = column[ti]!;
-            const x = st.outline.x + st.n.x * p.n;
-            const y = st.outline.y + st.n.y * p.n;
-            const z = p.z;
-            row.push({ x, y, z });
-            const idx = (ti * nS + si) * 3;
-            positions[idx] = x;
-            positions[idx + 1] = y;
-            positions[idx + 2] = z;
-        }
-        xyz.push(row);
-    }
+        writeColumn(st, column, nS, nT, si, positions, xyz);
+        return f;
+    };
+
     for (let si = 0; si < nS; si++) {
-        if (adjacentStationsCross(xyz[si]!, xyz[(si + 1) % nS]!)) {
-            const st = input.stations[si]!;
-            let flare = blendedFlareDeg(st.u, st.outline.y, input.defaults.flareDeg);
-            if (flare < 0) {
-                flare = 0;
-                const rebuilt = resampleColumnKeepFirstStep(
-                    buildStationColumn(
-                        st,
-                        flare,
-                        input.defaults,
-                        nT,
-                        circMm,
-                        flangeH,
-                        flangeLen,
-                        flangeAng,
-                        input.footLengthMm,
-                    ).column,
-                    nT,
-                );
-                for (let ti = 0; ti < nT; ti++) {
-                    const p = rebuilt[ti]!;
-                    const idx = (ti * nS + si) * 3;
-                    positions[idx] = st.outline.x + st.n.x * p.n;
-                    positions[idx + 1] = st.outline.y + st.n.y * p.n;
-                    positions[idx + 2] = p.z;
-                    xyz[si]![ti] = {
-                        x: positions[idx]!,
-                        y: positions[idx + 1]!,
-                        z: positions[idx + 2]!,
-                    };
-                }
-            }
+        flareAlong[si] = buildAt(si, flareAlong[si]!);
+    }
+
+    for (let si = 0; si < nS; si++) {
+        if (!columnsCrossInWindow(xyz, si)) continue;
+        const def = regionDefault[si]!;
+        if (flareAlong[si]! < 0) {
+            flareAlong[si] = 0;
+            buildAt(si, 0);
+        } else if (flareAlong[si]! !== def) {
+            flareAlong[si] = def;
+            buildAt(si, def);
         }
     }
-    return { nS, nT, positions };
+
+    let windowCrossings = 0;
+    for (let si = 0; si < nS; si++) {
+        if (columnsCrossInWindow(xyz, si)) windowCrossings++;
+    }
+    const chordCrossings = countPlanViewChordCrossings(
+        input.stations.map((s) => s.outline),
+        input.stations.map((s) => s.rim),
+    );
+    return {
+        nS,
+        nT,
+        positions,
+        flareDeg: flareAlong,
+        flareCapReport,
+        chordCrossings,
+        windowCrossings,
+    };
 }
 
 export function wallTriangles(grid: LoftGrid): number[] {

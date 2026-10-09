@@ -74,6 +74,8 @@ export interface WallTangentInput {
 export const MIN_FILLET_RING_SPACING_MM = 0.3;
 export const MAX_FILLET_ASPECT = 20;
 export const FILLET_RING_TARGET = 4;
+export const MIN_FILLET_RINGS = 3;
+export const FILLET_MAX_HEIGHT_FRAC = 0.4;
 
 export function unitNZ(t: NZ): NZ {
     const l = Math.hypot(t.n, t.z) || 1;
@@ -114,25 +116,36 @@ export function sampleFilletArc(P0: NZ, Tstart: NZ, Tend: NZ, radiusMm: number, 
 
     const emit = (p: NZ, prev: NZ, rings: NZ[]): boolean => {
         const dist = Math.hypot(p.n - prev.n, p.z - prev.z);
-        if (rings.length && dist < MIN_FILLET_RING_SPACING_MM) return false;
+        const force = rings.length < MIN_FILLET_RINGS;
+        if (rings.length && dist < MIN_FILLET_RING_SPACING_MM && !force) return false;
         const radial = Math.max(dist, 1e-6);
         const aspect = circMm > 1e-6 ? Math.max(circMm, radial) / Math.min(circMm, radial) : 1;
-        if (aspect > MAX_FILLET_ASPECT) return false;
+        if (aspect > MAX_FILLET_ASPECT && !force) return false;
         rings.push(p);
         return true;
     };
 
+    const stepAlong = (dir: NZ, count: number): NZ[] => {
+        const u = unitNZ(dir.z >= 0 ? dir : ts);
+        const step = Math.max(
+            0.12,
+            Math.min(MIN_FILLET_RING_SPACING_MM, minOff || MIN_FILLET_RING_SPACING_MM),
+        );
+        const rings: NZ[] = [];
+        for (let i = 1; i <= count; i++) {
+            rings.push({ n: P0.n + u.n * step * i, z: P0.z + u.z * step * i });
+        }
+        return rings;
+    };
+
     if (r < 1e-4 || theta < 1e-3) {
-        // Degenerate fillet: step off the plane along the wall direction (Tend),
-        // not along a horizontal sheet tangent (that would be coplanar).
-        const dir = unitNZ(Tend.z >= 0 ? Tend : ts);
-        const step = Math.max(MIN_FILLET_RING_SPACING_MM, minOff);
-        return [{ n: P0.n + dir.n * step, z: P0.z + dir.z * step }];
+        // Degenerate fillet: at least 3 rows even on the ~2.2 mm forefoot wall.
+        return stepAlong(Tend, MIN_FILLET_RINGS);
     }
 
-    const nWant = Math.min(
-        FILLET_RING_TARGET,
-        Math.max(3, Math.floor((r * theta) / MIN_FILLET_RING_SPACING_MM)),
+    const nWant = Math.max(
+        MIN_FILLET_RINGS,
+        Math.min(FILLET_RING_TARGET, Math.floor((r * theta) / MIN_FILLET_RING_SPACING_MM)),
     );
     const rings: NZ[] = [];
     for (let i = 1; i <= nWant; i++) {
@@ -151,9 +164,8 @@ export function sampleFilletArc(P0: NZ, Tstart: NZ, Tend: NZ, radiusMm: number, 
         }
         emit(p, rings.length ? rings[rings.length - 1]! : P0, rings);
     }
-    if (!rings.length) {
-        const step = Math.max(MIN_FILLET_RING_SPACING_MM, minOff);
-        rings.push({ n: P0.n + ts.n * step, z: P0.z + ts.z * step });
+    if (rings.length < MIN_FILLET_RINGS) {
+        return stepAlong(Tend, MIN_FILLET_RINGS);
     }
     return rings;
 }

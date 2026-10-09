@@ -15,12 +15,15 @@ import {
     ensureCcw,
     fitClosedC2Spline,
     type PolyPoint,
+    resampleClosedC2,
     resamplePolyline,
     startAtPosteriorHeel,
 } from "./curves";
 import { blendedFlareDeg } from "./defaults";
-import { defaultsFromStockCurves, type StationBandFlare } from "./measure";
+import { evalCubicHermite } from "./hermite";
+import { defaultsFromStockCurves, outwardNormal, type StationBandFlare } from "./measure";
 import { buildPlanformFrame } from "./planform";
+import { offsetClosedInward } from "./stations";
 import { DEFAULT_LOFT_N, type StockWallModel, type UvHeightField, type WallProfile } from "./types";
 
 const UV_CELL_MM = 0.4;
@@ -34,6 +37,11 @@ const PLANTAR_NZ_MAX = -0.5;
 const PLANTAR_WELD_MM = 1e-5;
 const WALL_FOOT_BAND_MM = 8;
 const WALL_FOOT_CELL_MM = 4;
+/** Drop band faces once tilt exceeds 30° from horizontal. */
+const PLANTAR_TRIM_NZ = -0.866;
+const PLANTAR_TRIM_Z_MM = 2.0;
+const PLANTAR_INSET_MM = 1.5;
+const PLANTAR_STRIP_MM = 2.5;
 
 function topVertexCountOf(geo: BufferGeometry): number {
     return (geo.userData as { topVertexCount?: number }).topVertexCount ?? 0;
@@ -406,27 +414,6 @@ function polygonCentroid(poly: PolyPoint[]): { x: number; y: number } {
     }
     const n = Math.max(1, poly.length);
     return { x: x / n, y: y / n };
-}
-
-function outwardNormal(
-    poly: PolyPoint[],
-    i: number,
-    centroid: { x: number; y: number },
-): { x: number; y: number } {
-    const n = poly.length;
-    const prev = poly[(i + n - 1) % n]!;
-    const next = poly[(i + 1) % n]!;
-    const a = poly[i]!;
-    const tx = next.x - prev.x;
-    const ty = next.y - prev.y;
-    const len = Math.hypot(tx, ty) || 1;
-    let nx = ty / len;
-    let ny = -tx / len;
-    if (nx * (a.x - centroid.x) + ny * (a.y - centroid.y) < 0) {
-        nx = -nx;
-        ny = -ny;
-    }
-    return { x: nx, y: ny };
 }
 
 function extractWallProfile(trim: PolyPoint[], outline: PolyPoint[], wallPts: PolyPoint[]): WallProfile {
@@ -866,9 +853,294 @@ function floodFromLowest(candidates: number[], faces: PlantarFace[], maxStepZ = 
     return [...seen];
 }
 
+function faceNzCz(
+    pos: Float32Array,
+    i0: number,
+    i1: number,
+    i2: number,
+): { nz: number; cx: number; cy: number; cz: number } | null {
+    const ax = pos[i0 * 3]!;
+    const ay = pos[i0 * 3 + 1]!;
+    const az = pos[i0 * 3 + 2]!;
+    const bx = pos[i1 * 3]!;
+    const by = pos[i1 * 3 + 1]!;
+    const bz = pos[i1 * 3 + 2]!;
+    const cx = pos[i2 * 3]!;
+    const cy = pos[i2 * 3 + 1]!;
+    const cz = pos[i2 * 3 + 2]!;
+    const nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
+    const ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+    const nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-12) return null;
+    return { nz: nz / len, cx: (ax + bx + cx) / 3, cy: (ay + by + cy) / 3, cz: (az + bz + cz) / 3 };
+}
+
+function compactFaces(
+    pos: Float32Array,
+    faces: Array<{ i0: number; i1: number; i2: number }>,
+): { pos: number[]; idx: number[] } {
+    const remap = new Map<number, number>();
+    const outPos: number[] = [];
+    const outIdx: number[] = [];
+    for (const f of faces) {
+        for (const old of [f.i0, f.i1, f.i2]) {
+            let ni = remap.get(old);
+            if (ni == null) {
+                ni = outPos.length / 3;
+                remap.set(old, ni);
+                outPos.push(pos[old * 3]!, pos[old * 3 + 1]!, pos[old * 3 + 2]!);
+            }
+            outIdx.push(ni);
+        }
+    }
+    return { pos: outPos, idx: outIdx };
+}
+
+/**
+ * Keep interior inside the outline inset (1.5 mm). In the outer band drop
+ * faces once tilt > 30° (nz > −0.866) or z > 2.0 mm, whichever comes first.
+ */
+function trimPlantarBand(
+    positions: Float32Array,
+    indices: Uint32Array,
+    outline: PolyPoint[] | null,
+): { positions: Float32Array; indices: Uint32Array } {
+    const inset = outline && outline.length >= 8 ? offsetClosedInward(outline, PLANTAR_INSET_MM) : null;
+    const keep: Array<{ i0: number; i1: number; i2: number }> = [];
+    for (let t = 0; t < indices.length; t += 3) {
+        const i0 = indices[t]!;
+        const i1 = indices[t + 1]!;
+        const i2 = indices[t + 2]!;
+        const info = faceNzCz(positions, i0, i1, i2);
+        if (!info) continue;
+        const interior = inset ? pointInPoly(info.cx, info.cy, inset) : false;
+        if (!interior && (info.nz > PLANTAR_TRIM_NZ || info.cz > PLANTAR_TRIM_Z_MM)) continue;
+        keep.push({ i0, i1, i2 });
+    }
+    if (keep.length < 8) return { positions, indices };
+    const compact = compactFaces(positions, keep);
+    return {
+        positions: new Float32Array(compact.pos),
+        indices: new Uint32Array(compact.idx),
+    };
+}
+
+function rimFaceSlope(
+    pos: Float32Array,
+    idx: Uint32Array,
+    rim: number[],
+): Array<{ n: number; z: number; nx: number; ny: number }> {
+    const vfaces = new Map<number, number[]>();
+    for (let t = 0; t < idx.length; t += 3) {
+        for (const v of [idx[t]!, idx[t + 1]!, idx[t + 2]!]) {
+            let list = vfaces.get(v);
+            if (!list) {
+                list = [];
+                vfaces.set(v, list);
+            }
+            list.push(t);
+        }
+    }
+    const rimPts = rim.map((i) => ({ x: pos[i * 3]!, y: pos[i * 3 + 1]!, z: pos[i * 3 + 2]! }));
+    const c = { x: 0, y: 0 };
+    for (const p of rimPts) {
+        c.x += p.x;
+        c.y += p.y;
+    }
+    c.x /= Math.max(1, rimPts.length);
+    c.y /= Math.max(1, rimPts.length);
+    return rim.map((vi, i) => {
+        const nxy = outwardNormal(rimPts, i, c);
+        let tn = 1;
+        let tz = 0;
+        let best = 1;
+        for (const f of vfaces.get(vi) ?? []) {
+            const info = faceNzCz(pos, idx[f]!, idx[f + 1]!, idx[f + 2]!);
+            if (!info) continue;
+            if (info.nz > best) continue;
+            best = info.nz;
+            const ia = idx[f]!;
+            const ib = idx[f + 1]!;
+            const ic = idx[f + 2]!;
+            const ax = pos[ia * 3]!;
+            const ay = pos[ia * 3 + 1]!;
+            const az = pos[ia * 3 + 2]!;
+            const ux = pos[ib * 3]! - ax;
+            const uy = pos[ib * 3 + 1]! - ay;
+            const uz = pos[ib * 3 + 2]! - az;
+            const vx = pos[ic * 3]! - ax;
+            const vy = pos[ic * 3 + 1]! - ay;
+            const vz = pos[ic * 3 + 2]! - az;
+            const nx = uy * vz - uz * vy;
+            const ny = uz * vx - ux * vz;
+            const nz = ux * vy - uy * vx;
+            const len = Math.hypot(nx, ny, nz) || 1;
+            const nnx = nx / len;
+            const nny = ny / len;
+            const nnz = nz / len;
+            const dn = nxy.x * nnx + nxy.y * nny;
+            tn = nxy.x * (nxy.x - dn * nnx) + nxy.y * (nxy.y - dn * nny);
+            tz = -dn * nnz;
+        }
+        const mag = Math.hypot(tn, tz);
+        if (mag < 1e-6) return { n: 1, z: 0, nx: nxy.x, ny: nxy.y };
+        return { n: tn / mag, z: tz / mag, nx: nxy.x, ny: nxy.y };
+    });
+}
+
+/**
+ * Replace the outer 2–3 mm of the trimmed sheet with a regular C1 strip
+ * whose outer loop is the C2 of the trim contour (z ≤ 2 mm, tilt ≤ 30°).
+ */
+function rebuildC1BoundaryStrip(
+    positions: Float32Array,
+    indices: Uint32Array,
+    rimLocal: number[],
+): PlantarSheet | null {
+    if (rimLocal.length < 8) return null;
+    const rimPts = rimLocal.map((i) => ({
+        x: positions[i * 3]!,
+        y: positions[i * 3 + 1]!,
+        z: positions[i * 3 + 2]!,
+    }));
+    const contour = startAtPosteriorHeel(ensureCcw(rimPts));
+    const innerPoly = offsetClosedInward(contour, PLANTAR_STRIP_MM);
+    const keep: Array<{ i0: number; i1: number; i2: number }> = [];
+    for (let t = 0; t < indices.length; t += 3) {
+        const i0 = indices[t]!;
+        const i1 = indices[t + 1]!;
+        const i2 = indices[t + 2]!;
+        const info = faceNzCz(positions, i0, i1, i2);
+        if (!info) continue;
+        if (!pointInPoly(info.cx, info.cy, innerPoly)) continue;
+        keep.push({ i0, i1, i2 });
+    }
+    if (keep.length < 8) return null;
+    const compact = compactFaces(positions, keep);
+    const tmp = new BufferGeometry();
+    tmp.setAttribute("position", new BufferAttribute(new Float32Array(compact.pos), 3));
+    tmp.setIndex(compact.idx);
+    const welded = mergeVertices(tmp, PLANTAR_WELD_MM);
+    if (welded !== tmp) tmp.dispose();
+    try {
+        const wpos = welded.getAttribute("position");
+        const widx = welded.getIndex();
+        if (!wpos || !widx) return null;
+        const pos = new Float32Array(wpos.array as ArrayLike<number>);
+        const idx = new Uint32Array(widx.array as ArrayLike<number>);
+        let innerRim = extractOrderedBoundaryLoopWithIndices(welded).indices.slice();
+        if (innerRim.length < 8) {
+            const cycles = extractBoundaryLoopsBranchedWithIndices(welded);
+            let best = cycles[0];
+            let bestLen = best?.positions.length ?? 0;
+            for (const c of cycles) {
+                if (c.positions.length > bestLen) {
+                    best = c;
+                    bestLen = c.positions.length;
+                }
+            }
+            innerRim = best?.indices.slice() ?? [];
+        }
+        if (innerRim.length < 8) return null;
+        const innerPts = innerRim.map((i) => ({
+            x: pos[i * 3]!,
+            y: pos[i * 3 + 1]!,
+            z: pos[i * 3 + 2]!,
+            i,
+        }));
+        const innerOrdered = startAtPosteriorHeel(ensureCcw(innerPts)) as Array<PolyPoint & { i: number }>;
+        const innerIdx = innerOrdered.map((p) => p.i);
+        const n = innerIdx.length;
+        const outerSpline = fitClosedC2Spline(contour);
+        const outer = resampleClosedC2(outerSpline, n);
+        const slopes = rimFaceSlope(pos, idx, innerIdx);
+        const outPos = Array.from(pos);
+        const outIdx = Array.from(idx);
+        const midIdx: number[] = [];
+        const outerIdx: number[] = [];
+        for (let i = 0; i < n; i++) {
+            const inner = {
+                x: outPos[innerIdx[i]! * 3]!,
+                y: outPos[innerIdx[i]! * 3 + 1]!,
+                z: outPos[innerIdx[i]! * 3 + 2]!,
+            };
+            const o = outer[i]!;
+            o.z = Math.min(o.z, PLANTAR_TRIM_Z_MM);
+            const sl = slopes[i] ?? { n: 1, z: 0, nx: 0, ny: 0 };
+            const T0 = { n: sl.n * PLANTAR_STRIP_MM, z: sl.z * PLANTAR_STRIP_MM };
+            const dn = (o.x - inner.x) * sl.nx + (o.y - inner.y) * sl.ny;
+            const T1 = { n: Math.max(0.2, dn), z: 0 };
+            const midNZ = evalCubicHermite({ n: 0, z: inner.z }, T0, { n: dn, z: o.z }, T1, 0.45);
+            const mid = {
+                x: inner.x + sl.nx * midNZ.n,
+                y: inner.y + sl.ny * midNZ.n,
+                z: Math.min(midNZ.z, PLANTAR_TRIM_Z_MM),
+            };
+            midIdx.push(outPos.length / 3);
+            outPos.push(mid.x, mid.y, mid.z);
+            outerIdx.push(outPos.length / 3);
+            outPos.push(o.x, o.y, o.z);
+        }
+        const pushQuad = (a: number, b: number, c: number, d: number) => {
+            outIdx.push(a, b, c, a, c, d);
+        };
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            pushQuad(innerIdx[i]!, innerIdx[j]!, midIdx[j]!, midIdx[i]!);
+            pushQuad(midIdx[i]!, midIdx[j]!, outerIdx[j]!, outerIdx[i]!);
+        }
+        const sheet = new BufferGeometry();
+        sheet.setAttribute("position", new BufferAttribute(new Float32Array(outPos), 3));
+        sheet.setIndex(outIdx);
+        const weldedStrip = mergeVertices(sheet, PLANTAR_WELD_MM);
+        if (weldedStrip !== sheet) sheet.dispose();
+        try {
+            const sp = weldedStrip.getAttribute("position");
+            const si = weldedStrip.getIndex();
+            if (!sp || !si) return null;
+            const meshPositions = new Float32Array(sp.array as ArrayLike<number>);
+            const meshIndices = new Uint32Array(si.array as ArrayLike<number>);
+            const snap = outerIdx.map((oi) => {
+                const x = outPos[oi * 3]!;
+                const y = outPos[oi * 3 + 1]!;
+                const z = outPos[oi * 3 + 2]!;
+                let best = 0;
+                let bestD = Infinity;
+                for (let v = 0; v < meshPositions.length / 3; v++) {
+                    const d =
+                        (meshPositions[v * 3]! - x) ** 2 +
+                        (meshPositions[v * 3 + 1]! - y) ** 2 +
+                        (meshPositions[v * 3 + 2]! - z) ** 2;
+                    if (d < bestD) {
+                        bestD = d;
+                        best = v;
+                    }
+                }
+                return best;
+            });
+            const seen = new Set<number>();
+            const rim: number[] = [];
+            for (const v of snap) {
+                if (seen.has(v)) continue;
+                seen.add(v);
+                rim.push(v);
+            }
+            if (rim.length < 8) return null;
+            return { meshPositions, meshIndices, rimLocal: rim };
+        } finally {
+            weldedStrip.dispose();
+        }
+    } finally {
+        welded.dispose();
+    }
+}
+
 /**
  * Stock plantar sheet: n_z < -0.5 and below the wall-foot band, flood-filled
  * from the lowest face, then welded. Native triangles and Z; no ear-clip.
+ * After the flood, the outer band is trimmed at 30° / z=2 and a 2–3 mm C1
+ * strip is rebuilt to the trimmed contour.
  */
 export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]): Partial<PlantarSheet> {
     const posAttr = geo.getAttribute("position");
@@ -1082,7 +1354,37 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
             rimLocal = snapLoopToMesh(meshPositions, hull);
         }
         if (rimLocal.length < 8) return { meshPositions, meshIndices };
-        return { meshPositions, meshIndices, rimLocal };
+        const trimmed = trimPlantarBand(meshPositions, meshIndices, hull);
+        const trimGeo = new BufferGeometry();
+        trimGeo.setAttribute("position", new BufferAttribute(trimmed.positions, 3));
+        trimGeo.setIndex(Array.from(trimmed.indices));
+        const trimWeld = mergeVertices(trimGeo, PLANTAR_WELD_MM);
+        if (trimWeld !== trimGeo) trimGeo.dispose();
+        try {
+            const tp = trimWeld.getAttribute("position");
+            const ti = trimWeld.getIndex();
+            if (!tp || !ti) return { meshPositions, meshIndices, rimLocal };
+            const tpos = new Float32Array(tp.array as ArrayLike<number>);
+            const tidx = new Uint32Array(ti.array as ArrayLike<number>);
+            let trimRim = extractOrderedBoundaryLoopWithIndices(trimWeld).indices.slice();
+            if (trimRim.length < 8) {
+                const cycles = extractBoundaryLoopsBranchedWithIndices(trimWeld);
+                let best = cycles[0];
+                let bestLen = best?.positions.length ?? 0;
+                for (const c of cycles) {
+                    if (c.positions.length > bestLen) {
+                        best = c;
+                        bestLen = c.positions.length;
+                    }
+                }
+                trimRim = best?.indices.slice() ?? [];
+            }
+            if (trimRim.length < 8) return { meshPositions: tpos, meshIndices: tidx };
+            const strip = rebuildC1BoundaryStrip(tpos, tidx, trimRim);
+            return strip ?? { meshPositions: tpos, meshIndices: tidx, rimLocal: trimRim };
+        } finally {
+            trimWeld.dispose();
+        }
     } finally {
         welded.dispose();
     }

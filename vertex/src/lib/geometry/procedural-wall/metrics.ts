@@ -451,6 +451,50 @@ export function medialArchUpperWallFolds(
     return { worstDeg: worst, edgesAtLeast10Deg: hard, interiorEdgeCount: interior };
 }
 
+/** Plantar-boundary z and face tilt (deg from horizontal) on the sheet rim. */
+export function sheetBoundaryStats(
+    positions: Float32Array | undefined,
+    indices: Uint32Array | undefined,
+    rimLocal: number[] | undefined,
+): { zMax: number; tiltDegMax: number } {
+    if (!positions || !rimLocal?.length) return { zMax: 0, tiltDegMax: 0 };
+    let zMax = -Infinity;
+    for (const i of rimLocal) {
+        const z = positions[i * 3 + 2]!;
+        if (z > zMax) zMax = z;
+    }
+    let tiltDegMax = 0;
+    if (indices && indices.length >= 3) {
+        const rimSet = new Set(rimLocal);
+        for (let t = 0; t < indices.length; t += 3) {
+            const a = indices[t]!;
+            const b = indices[t + 1]!;
+            const c = indices[t + 2]!;
+            if (!rimSet.has(a) && !rimSet.has(b) && !rimSet.has(c)) continue;
+            const ax = positions[a * 3]!;
+            const ay = positions[a * 3 + 1]!;
+            const az = positions[a * 3 + 2]!;
+            const ux = positions[b * 3]! - ax;
+            const uy = positions[b * 3 + 1]! - ay;
+            const uz = positions[b * 3 + 2]! - az;
+            const vx = positions[c * 3]! - ax;
+            const vy = positions[c * 3 + 1]! - ay;
+            const vz = positions[c * 3 + 2]! - az;
+            const nx = uy * vz - uz * vy;
+            const ny = uz * vx - ux * vz;
+            const nz = ux * vy - uy * vx;
+            const len = Math.hypot(nx, ny, nz);
+            if (len < 1e-12) continue;
+            const tilt = (Math.acos(Math.max(-1, Math.min(1, Math.abs(nz / len)))) * 180) / Math.PI;
+            if (tilt > tiltDegMax) tiltDegMax = tilt;
+        }
+    }
+    return {
+        zMax: Number.isFinite(zMax) ? zMax : 0,
+        tiltDegMax,
+    };
+}
+
 /** Max distance from reconstructed stitch verts to the source plantar rim. */
 export function stitchVertexDeltaMm(
     reconstruction: BufferGeometry,

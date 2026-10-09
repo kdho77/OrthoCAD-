@@ -41,6 +41,7 @@ export {
     minWallThicknessMm,
     outlineSeamDihedrals,
     reconstructionManifold,
+    sheetBoundaryStats,
     stitchVertexDeltaMm,
     tieredHausdorffReport,
 } from "./metrics";
@@ -54,6 +55,16 @@ export {
     ZONE_FIXTURES,
     zoneFixturesMapIdentically,
 } from "./sole-uv";
+export {
+    CROSSING_WINDOW,
+    columnSidewaysSkewMm,
+    countPlanViewChordCrossings,
+    FLARE_DEV_CAP_DEG,
+    type FlareCapReport,
+    pairByOutwardRay,
+    SKEW_LIMIT_MM,
+    type StationPairing,
+} from "./stations";
 export type {
     BottomOutline,
     ClinicalWallReport,

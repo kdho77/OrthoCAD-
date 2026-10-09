@@ -8,6 +8,8 @@ export interface SelfIntersectionReport {
     real: number;
     /** Coplanar overlaps, reported separately. */
     coplanar: number;
+    /** Pair-class breakdown (top / wall / plantar). */
+    byClass?: Record<string, number>;
 }
 
 interface Tri {
@@ -302,10 +304,22 @@ export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionRep
             maxZ: Math.max(az, bz, cz),
         });
     }
+    const topN = (geo.userData as { topVertexCount?: number }).topVertexCount ?? 0;
+    const plantarN = (geo.userData as { plantarVertexCount?: number }).plantarVertexCount ?? 0;
+    const classOf = (t: Tri): string => {
+        const vs = [t.i0, t.i1, t.i2];
+        const allTop = vs.every((v) => v < topN);
+        const allPlantar = vs.every((v) => v >= topN && v < topN + plantarN);
+        if (allTop) return "top";
+        if (allPlantar) return "plantar";
+        return "wall";
+    };
+    const pairKey = (a: string, b: string): string => (a < b ? `${a}-${b}` : `${b}-${a}`);
     const order = Array.from({ length: tris.length }, (_, i) => i);
     const root = tris.length ? buildBvh(tris, order) : null;
     let real = 0;
     let coplanar = 0;
+    const byClass: Record<string, number> = {};
     const collect = (node: BvhNode, a: Tri, ai: number, out: number[]) => {
         if (!aabbHit(node, a)) return;
         if (!node.left || !node.right) {
@@ -330,8 +344,12 @@ export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionRep
             if (sharedVertexCount(a, b) > 0) continue;
             if (!trianglesIntersect(a, b)) continue;
             if (facesCoplanar(a, b)) coplanar++;
-            else real++;
+            else {
+                real++;
+                const key = pairKey(classOf(a), classOf(b));
+                byClass[key] = (byClass[key] ?? 0) + 1;
+            }
         }
     }
-    return { real, coplanar };
+    return { real, coplanar, byClass };
 }

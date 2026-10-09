@@ -35,6 +35,8 @@ import {
     reconstructionManifold,
     reconstructProceduralWalls,
     S1_MIN_WALL_MM,
+    SKEW_LIMIT_MM,
+    sheetBoundaryStats,
     soleUvFrameFromOutline,
     soleUvFrameFromPolyline,
     stitchVertexDeltaMm,
@@ -218,6 +220,29 @@ describe("S1 parametric wall", () => {
                 topN,
             );
             const archFolds = medialArchUpperWallFolds(rebuilt, model.bounds, topN);
+            const boundary = sheetBoundaryStats(
+                model.outline.meshPositions,
+                model.outline.meshIndices,
+                model.outline.rimLocal,
+            );
+            const ud = rebuilt.userData as {
+                chordCrossings?: number;
+                loftChordCrossings?: number;
+                windowCrossings?: number;
+                maxSidewaysSkewMm?: number;
+                pairingMonotonic?: boolean;
+                missedRays?: number;
+                flareCapReport?: {
+                    stillNeeded?: boolean;
+                    cappedStations?: number[];
+                    maxDeviationDeg?: number;
+                };
+            };
+            const chordX = ud.chordCrossings ?? -1;
+            const loftChordX = ud.loftChordCrossings ?? chordX;
+            const windowX = ud.windowCrossings ?? 0;
+            const maxSkew = ud.maxSidewaysSkewMm ?? 0;
+            const flareCap = ud.flareCapReport;
 
             const misses: string[] = [];
             if (topDelta > 1e-9) misses.push(`top-identical ${topDelta.toFixed(6)}`);
@@ -229,7 +254,24 @@ describe("S1 parametric wall", () => {
             if (man.openEdges !== 0) misses.push(`open ${man.openEdges}`);
             if (man.nonManifoldEdges !== 0) misses.push(`nonManifold ${man.nonManifoldEdges}`);
             if (!man.watertight) misses.push("not-watertight");
-            if (hits.real !== 0) misses.push(`self-intersect ${hits.real} (coplanar ${hits.coplanar})`);
+            if (hits.real !== 0) {
+                const cls = hits.byClass
+                    ? Object.entries(hits.byClass)
+                          .map(([k, v]) => `${k}:${v}`)
+                          .join(",")
+                    : "";
+                misses.push(`self-intersect ${hits.real} (coplanar ${hits.coplanar}${cls ? ` ${cls}` : ""})`);
+            }
+            if (chordX !== 0 || loftChordX !== 0) {
+                misses.push(`chord-cross ${chordX}/${loftChordX}`);
+            }
+            if (windowX !== 0) misses.push(`window-cross ${windowX}`);
+            if (maxSkew > SKEW_LIMIT_MM) misses.push(`skew ${maxSkew.toFixed(2)}`);
+            if (ud.pairingMonotonic === false) misses.push("pairing-not-monotonic");
+            if (boundary.zMax > 2.0 + 1e-3) misses.push(`plantar-boundary-z ${boundary.zMax.toFixed(2)}`);
+            if (boundary.tiltDegMax > 30 + 1e-3) {
+                misses.push(`plantar-boundary-tilt ${boundary.tiltDegMax.toFixed(1)}`);
+            }
             if (minWall < S1_MIN_WALL_MM) misses.push(`minWall ${minWall.toFixed(3)}`);
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) misses.push(`fold ${fold.worstDeg.toFixed(1)}`);
             if (fold.edgesAtLeast10Deg !== 0) misses.push(`fold≥10 ${fold.edgesAtLeast10Deg}`);
@@ -238,6 +280,12 @@ describe("S1 parametric wall", () => {
             }
             if (seamOver > 0) {
                 misses.push(`seam ${reconSeam.worstDeg.toFixed(1)} over fillet+2 by ${seamOver.toFixed(1)}`);
+            }
+            if (reconSeam.worstDeg > 15) misses.push(`seam-abs ${reconSeam.worstDeg.toFixed(1)}>15`);
+            if (flareCap?.stillNeeded) {
+                misses.push(
+                    `flare-cap still needed at ${flareCap.cappedStations?.length ?? 0} stations (maxDev ${flareCap.maxDeviationDeg?.toFixed(1)})`,
+                );
             }
             if (!uvOk) misses.push("sole-UV");
             for (const c of cup) {
@@ -270,6 +318,12 @@ describe("S1 parametric wall", () => {
                 foldGe10: fold.edgesAtLeast10Deg,
                 seamWorstDeg: Number(reconSeam.worstDeg.toFixed(3)),
                 seamOverFilletDeg: Number(seamOver.toFixed(3)),
+                chordCrossings: chordX,
+                maxSkewMm: Number(maxSkew.toFixed(3)),
+                boundaryZ: Number(boundary.zMax.toFixed(3)),
+                boundaryTilt: Number(boundary.tiltDegMax.toFixed(2)),
+                pairingMonotonic: ud.pairingMonotonic !== false,
+                flareCapNeeded: Boolean(flareCap?.stillNeeded),
                 occtSolid: occt,
                 soleUvIdentical: uvOk,
                 flareArch: Number(flareArch.toFixed(2)),
@@ -281,6 +335,12 @@ describe("S1 parametric wall", () => {
             rows.push(row);
             writeFileSync("/tmp/s1-parity.json", JSON.stringify({ rows, reports }, null, 2));
             expect(FOLD_HARD_LIMIT_DEG).toBe(10);
+            if (chordX !== 0) {
+                throw new Error(
+                    `[S1-PAIR] outward ray-cast pairing left ${chordX} plan-view chord crossings ` +
+                        `(skew ${maxSkew.toFixed(2)} mm, monotonic=${ud.pairingMonotonic}, missed=${ud.missedRays}). Stop.`,
+                );
+            }
             if (misses.length) {
                 throw new Error(`[S1-GAP] ${fixture.name}: ${misses.join("; ")}`);
             }
@@ -326,10 +386,14 @@ describe("S1 parametric wall", () => {
             const man = reconstructionManifold(rebuilt);
             const drift = groundDriftMm(rebuilt, outlineOf(model));
             const archFolds = medialArchUpperWallFolds(rebuilt, model.bounds, topN);
+            const chordX = (rebuilt.userData as { chordCrossings?: number }).chordCrossings ?? -1;
+            const maxSkew = (rebuilt.userData as { maxSidewaysSkewMm?: number }).maxSidewaysSkewMm ?? 0;
             results.push({
                 smoke: smoke.name,
                 selfIntersections: hits.real,
                 coplanarOverlaps: hits.coplanar,
+                chordCrossings: chordX,
+                maxSkewMm: Number(maxSkew.toFixed(3)),
                 foldWorstDeg: Number(fold.worstDeg.toFixed(3)),
                 foldGe10: fold.edgesAtLeast10Deg,
                 archFoldGe10: archFolds.edgesAtLeast10Deg,
@@ -339,6 +403,7 @@ describe("S1 parametric wall", () => {
                 groundDrift: Number(drift.toFixed(3)),
             });
             if (hits.real !== 0) smokeMiss.push(`${smoke.name} xi=${hits.real}`);
+            if (chordX !== 0) smokeMiss.push(`${smoke.name} chord-cross=${chordX}`);
             if (archFolds.edgesAtLeast10Deg !== 0) {
                 smokeMiss.push(`${smoke.name} medial-arch-upper≥10`);
             }

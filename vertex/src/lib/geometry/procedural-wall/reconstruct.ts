@@ -10,13 +10,7 @@ import {
 import { type HeightFieldParams, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SideCorrections } from "@/types";
-import {
-    ensureCcw,
-    matchClosedByArc,
-    type PolyPoint,
-    polylineArcLengths,
-    startAtPosteriorHeel,
-} from "./curves";
+import { ensureCcw, type PolyPoint, polylineArcLengths, startAtPosteriorHeel } from "./curves";
 import {
     type DeviceTypePreset,
     LATERAL_FLANGE_BOUNDS,
@@ -28,7 +22,8 @@ import { buildXyHeightIndex, sampleXyHeight, type XyHeightIndex } from "./height
 import { buildHermiteStations, loftHermiteWall } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
 import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
-import type { StockWallModel, UvHeightField } from "./types";
+import { pairByOutwardRay } from "./stations";
+import { DEFAULT_LOFT_N, type StockWallModel, type UvHeightField } from "./types";
 
 export interface ReconstructOptions extends ProceduralModifierInput {
     n?: number;
@@ -326,17 +321,22 @@ export function reconstructProceduralWalls(
     };
 
     const plantarRim = appendStockPlantar(model, options, positions, rimPts, push, pushTri);
-    const outlineIdx = plantarRim;
-    const outlineStart = outlineIdx[0] ?? positions.length / 3;
-    const plantarPts: PolyPoint[] = outlineIdx.map((i) => ({
+    const nativePlantarIdx = plantarRim;
+    const plantarPts: PolyPoint[] = nativePlantarIdx.map((i) => ({
         x: positions[i * 3]!,
         y: positions[i * 3 + 1]!,
         z: positions[i * 3 + 2]!,
     }));
-    const topForStations =
-        plantarPts.length === rimPts.length ? rimPts : matchClosedByArc(plantarPts, rimPts);
-    const stations = buildHermiteStations(plantarPts, topForStations, model.bounds);
-    applyBoundaryTangents(stations, positions, indices, outlineIdx, "t0");
+    const nLoft = options.n ?? DEFAULT_LOFT_N;
+    const pairing = pairByOutwardRay(plantarPts, rimPts, nLoft);
+    const stationBot: number[] = pairing.plantar.map((p) => push(p));
+    zipClosedLoops(nativePlantarIdx, stationBot, positions, pushTri);
+    const stations = buildHermiteStations(pairing.plantar, pairing.top, model.bounds);
+    for (let i = 0; i < stations.length; i++) {
+        const n = pairing.normals[i];
+        if (n) stations[i]!.n = n;
+    }
+    applyBoundaryTangents(stations, positions, indices, nativePlantarIdx, "t0");
     applyBoundaryTangents(stations, positions, indices, rimLocal, "t1");
     const grid = loftHermiteWall({
         stations,
@@ -351,8 +351,8 @@ export function reconstructProceduralWalls(
     const nT = grid.nT;
     const nS = grid.nS;
     const wallStart = positions.length / 3;
-    // Emit interior rings only. Bottom row IS the plantar boundary verts.
-    for (let ti = 1; ti < nT - 1; ti++) {
+    // Regular nS×nT quad strip. Bottom row IS the resampled plantar stations.
+    for (let ti = 1; ti < nT; ti++) {
         for (let si = 0; si < nS; si++) {
             const o = (ti * nS + si) * 3;
             positions.push(grid.positions[o]!, grid.positions[o + 1]!, grid.positions[o + 2]!);
@@ -360,10 +360,10 @@ export function reconstructProceduralWalls(
     }
     const wallVert = (ti: number, si: number): number => {
         const s = ((si % nS) + nS) % nS;
-        if (ti <= 0) return outlineIdx[s] ?? outlineStart + s;
+        if (ti <= 0) return stationBot[s]!;
         return wallStart + (ti - 1) * nS + s;
     };
-    for (let ti = 0; ti < nT - 2; ti++) {
+    for (let ti = 0; ti < nT - 1; ti++) {
         for (let si = 0; si < nS; si++) {
             const a = wallVert(ti, si);
             const b = wallVert(ti, si + 1);
@@ -374,7 +374,7 @@ export function reconstructProceduralWalls(
         }
     }
     const lastRing: number[] = [];
-    for (let si = 0; si < nS; si++) lastRing.push(wallVert(nT - 2, si));
+    for (let si = 0; si < nS; si++) lastRing.push(wallVert(nT - 1, si));
     zipClosedLoops(lastRing, rimLocal, positions, pushTri);
 
     const geo = new BufferGeometry();
@@ -386,12 +386,23 @@ export function reconstructProceduralWalls(
     geo.userData = {
         wallModel: "procedural",
         stockId: model.id,
-        loftN: n,
+        loftN: nLoft,
+        pairingMethod: "outward-ray",
         topVertexCount: topPos.length / 3,
         outlineVertexCount: model.outline.meshPositions ? model.outline.meshPositions.length / 3 : n,
         plantarVertexCount: model.outline.meshPositions ? model.outline.meshPositions.length / 3 : 0,
-        stitchVertexCount: outlineIdx.length,
+        stitchVertexCount: nativePlantarIdx.length,
+        stationCount: nS,
         filletImpliedSeamDeg: stations.map((s) => s.impliedSeamDeg ?? 0),
+        chordCrossings: pairing.chordCrossings,
+        loftChordCrossings: grid.chordCrossings ?? pairing.chordCrossings,
+        windowCrossings: grid.windowCrossings ?? 0,
+        maxSidewaysSkewMm: pairing.maxSkewMm,
+        sidewaysSkewMm: pairing.sidewaysSkewMm,
+        pairingMonotonic: pairing.monotonic,
+        missedRays: pairing.missedRays,
+        flareCapReport: grid.flareCapReport,
+        flareDeg: grid.flareDeg,
         deviceType: preset,
         lateralFlangeHeightMm: flangeH,
         measuredVsBound: defaults.report,
