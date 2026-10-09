@@ -321,7 +321,7 @@ export function reconstructProceduralWalls(
     }
     densifyHeelForefootStations(stations, rimLocal, positions, indices, outlineLoop, model.bounds);
     applyOutlineClean(stations, rimLocal, indices);
-    mergeCloseOutlineStations(stations, rimLocal, indices, I_MIN_EDGE_MM);
+    mergeCloseOutlineStations(stations, rimLocal, indices, Math.max(I_MIN_EDGE_MM, 0.85));
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,
         y: positions[i * 3 + 1]!,

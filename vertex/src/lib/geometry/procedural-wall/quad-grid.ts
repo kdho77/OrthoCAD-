@@ -446,7 +446,14 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
         const inn = outlineInward(i, outline);
         const alongH = inn.x * h.x + inn.y * h.y;
         dirs.push(alongH >= 0 ? h : { x: -h.x, y: -h.y });
-        insets.push(Math.max(r, BAND_INSET_FLOOR_MM));
+        const prev = outline[(i + n - 1) % n]!;
+        const next = outline[(i + 1) % n]!;
+        const spacing = Math.min(
+            Math.hypot(st.outline.x - prev.x, st.outline.y - prev.y),
+            Math.hypot(st.outline.x - next.x, st.outline.y - next.y),
+        );
+        const cap = Math.max(I_CLEARANCE_MM, spacing * 0.45);
+        insets.push(Math.min(Math.max(r, BAND_INSET_FLOOR_MM), cap));
     }
     for (let pass = 0; pass < 48; pass++) {
         const ring = bandFromInsets(outline, dirs, insets);
