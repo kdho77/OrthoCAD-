@@ -221,7 +221,7 @@ function sanitizeMesh(positions: number[], indices: number[]): { zeroArea: numbe
         out.push(a, b, c);
     }
     indices.length = 0;
-    indices.push(...out);
+    for (let i = 0; i < out.length; i++) indices.push(out[i]!);
     return { zeroArea, duplicates };
 }
 

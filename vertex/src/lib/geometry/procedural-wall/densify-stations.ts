@@ -58,7 +58,7 @@ function splitEdge(indices: number[], a: number, b: number, m: number): void {
         }
     }
     indices.length = 0;
-    indices.push(...out);
+    for (let i = 0; i < out.length; i++) indices.push(out[i]!);
 }
 
 /**
@@ -84,8 +84,8 @@ export function densifyHeelForefootStations(
         const nxt = stations[(i + 1) % n]!;
         if (!inDenseBand(cur.u, nxt.u)) continue;
         const dist = Math.hypot(nxt.outline.x - cur.outline.x, nxt.outline.y - cur.outline.y);
-        if (dist <= OUTLINE_STATION_SPACING_MM) continue;
-        const nAdd = Math.ceil(dist / OUTLINE_STATION_SPACING_MM) - 1;
+        if (dist <= OUTLINE_STATION_SPACING_MM || dist > 8) continue;
+        const nAdd = Math.min(4, Math.ceil(dist / OUTLINE_STATION_SPACING_MM) - 1);
         let prevRim = rimLocal[i]!;
         const endRim = rimLocal[(i + 1) % n]!;
         for (let k = 1; k <= nAdd; k++) {
