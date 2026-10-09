@@ -171,70 +171,50 @@ export function countSelfIntersections(geo: BufferGeometry): number {
         });
     }
     const hash = new Map<string, number[]>();
-    const large: number[] = [];
     for (let i = 0; i < tris.length; i++) {
         const t = tris[i]!;
         const ext = Math.max(t.maxX - t.minX, t.maxY - t.minY, t.maxZ - t.minZ);
-        if (!Number.isFinite(ext) || ext > 28) {
-            large.push(i);
-            continue;
+        if (!Number.isFinite(ext)) continue;
+        // Index by centroid so each tri lives in one cell; query by AABB below.
+        const cx = Math.floor(((t.minX + t.maxX) * 0.5) / CELL);
+        const cy = Math.floor(((t.minY + t.maxY) * 0.5) / CELL);
+        const cz = Math.floor(((t.minZ + t.maxZ) * 0.5) / CELL);
+        const k = `${cx},${cy},${cz}`;
+        let b = hash.get(k);
+        if (!b) {
+            b = [];
+            hash.set(k, b);
         }
-        const x0 = Math.floor(t.minX / CELL);
-        const y0 = Math.floor(t.minY / CELL);
-        const z0 = Math.floor(t.minZ / CELL);
-        const x1 = Math.floor(t.maxX / CELL);
-        const y1 = Math.floor(t.maxY / CELL);
-        const z1 = Math.floor(t.maxZ / CELL);
-        for (let z = z0; z <= z1; z++) {
-            for (let y = y0; y <= y1; y++) {
-                for (let x = x0; x <= x1; x++) {
-                    const k = `${x},${y},${z}`;
-                    let b = hash.get(k);
-                    if (!b) {
-                        b = [];
-                        hash.set(k, b);
-                    }
-                    b.push(i);
-                }
-            }
-        }
+        b.push(i);
     }
-    const seen = new Set<string>();
     let hits = 0;
-    const consider = (ia: number, ib: number) => {
-        const key = ia < ib ? `${ia}:${ib}` : `${ib}:${ia}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        const a = tris[ia]!;
-        const b = tris[ib]!;
-        if (segmentsShareVertex(a, b)) return;
-        if (trianglesIntersect(a, b)) hits++;
-    };
-    for (const bucket of hash.values()) {
-        for (let i = 0; i < bucket.length; i++) {
-            for (let j = i + 1; j < bucket.length; j++) consider(bucket[i]!, bucket[j]!);
-        }
-    }
-    for (let i = 0; i < large.length; i++) {
-        for (let j = i + 1; j < large.length; j++) consider(large[i]!, large[j]!);
-        const L = tris[large[i]!]!;
-        const x0 = Math.floor(L.minX / CELL);
-        const y0 = Math.floor(L.minY / CELL);
-        const z0 = Math.floor(L.minZ / CELL);
-        const x1 = Math.floor(L.maxX / CELL);
-        const y1 = Math.floor(L.maxY / CELL);
-        const z1 = Math.floor(L.maxZ / CELL);
-        const nearby = new Set<number>();
+    const queried = new Set<number>();
+    for (let i = 0; i < tris.length; i++) {
+        const a = tris[i]!;
+        const ext = Math.max(a.maxX - a.minX, a.maxY - a.minY, a.maxZ - a.minZ);
+        if (!Number.isFinite(ext) || ext > 40) continue;
+        const x0 = Math.floor(a.minX / CELL);
+        const y0 = Math.floor(a.minY / CELL);
+        const z0 = Math.floor(a.minZ / CELL);
+        const x1 = Math.floor(a.maxX / CELL);
+        const y1 = Math.floor(a.maxY / CELL);
+        const z1 = Math.floor(a.maxZ / CELL);
+        queried.clear();
         for (let z = z0; z <= z1; z++) {
             for (let y = y0; y <= y1; y++) {
                 for (let x = x0; x <= x1; x++) {
-                    const b = hash.get(`${x},${y},${z}`);
-                    if (!b) continue;
-                    for (const id of b) nearby.add(id);
+                    const bucket = hash.get(`${x},${y},${z}`);
+                    if (!bucket) continue;
+                    for (const j of bucket) {
+                        if (j <= i || queried.has(j)) continue;
+                        queried.add(j);
+                        const b = tris[j]!;
+                        if (segmentsShareVertex(a, b)) continue;
+                        if (trianglesIntersect(a, b)) hits++;
+                    }
                 }
             }
         }
-        for (const id of nearby) consider(large[i]!, id);
     }
     return hits;
 }

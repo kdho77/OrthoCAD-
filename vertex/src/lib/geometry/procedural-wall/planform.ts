@@ -30,20 +30,6 @@ function isWaist(p: PolyPoint, minX: number, length: number): boolean {
     return u > 0.28 && u < 0.62;
 }
 
-function pointInPoly(x: number, y: number, poly: PolyPoint[]): boolean {
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const xi = poly[i]!.x;
-        const yi = poly[i]!.y;
-        const xj = poly[j]!.x;
-        const yj = poly[j]!.y;
-        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-18) + xi) {
-            inside = !inside;
-        }
-    }
-    return inside;
-}
-
 /** Curvature-filter the outline so waist radius of curvature is at least `minRho` mm. */
 export function curvatureFilterOutline(src: PolyPoint[], minRho = S1_WAIST_RHO_MM): PolyPoint[] {
     let cur = startAtPosteriorHeel(ensureCcw(src.map((p) => ({ ...p }))));
@@ -184,35 +170,34 @@ export function buildPlanformFrame(
         const ty = next.y - prev.y;
         const len = Math.hypot(tx, ty) || 1;
         const t = { x: tx / len, y: ty / len };
-        // CCW outline → inward = rotate tangent 90° CCW.
-        let n = { x: -t.y, y: t.x };
-        const o = smoothed[k]!;
-        if (!pointInPoly(o.x + n.x * 0.8, o.y + n.y * 0.8, filtered)) {
-            n = { x: -n.x, y: -n.y };
-        }
+        // CCW outline → inward = rotate tangent 90° CCW. Do not centroid-flip:
+        // a C2-smoothed sample can sit slightly outside the polyline.
+        const n = { x: -t.y, y: t.x };
         ns.push(n);
         ts.push({ x: n.y, y: -n.x });
     }
-    // Periodic Laplacian on n so a leftover kink cannot flip the frame.
-    for (let pass = 0; pass < 3; pass++) {
+    // Periodic Laplacian on n, then re-enforce CCW inward.
+    for (let pass = 0; pass < 2; pass++) {
         const next = ns.map((n, i) => {
             const a = ns[(i + columnCount - 1) % columnCount]!;
             const c = ns[(i + 1) % columnCount]!;
-            const x = n.x * 0.6 + (a.x + c.x) * 0.2;
-            const y = n.y * 0.6 + (a.y + c.y) * 0.2;
+            const x = n.x * 0.7 + (a.x + c.x) * 0.15;
+            const y = n.y * 0.7 + (a.y + c.y) * 0.15;
             const len = Math.hypot(x, y) || 1;
             return { x: x / len, y: y / len };
         });
-        for (let i = 0; i < columnCount; i++) ns[i] = next[i]!;
-    }
-    for (let k = 0; k < columnCount; k++) {
-        const n = ns[k]!;
-        const o = smoothed[k]!;
-        if (!pointInPoly(o.x + n.x * 0.8, o.y + n.y * 0.8, filtered)) {
-            ns[k] = { x: -n.x, y: -n.y };
+        for (let i = 0; i < columnCount; i++) {
+            const prev = smoothed[(i + columnCount - 1) % columnCount]!;
+            const nxt = smoothed[(i + 1) % columnCount]!;
+            const tx = nxt.x - prev.x;
+            const ty = nxt.y - prev.y;
+            const tlen = Math.hypot(tx, ty) || 1;
+            const inward = { x: -ty / tlen, y: tx / tlen };
+            const cand = next[i]!;
+            ns[i] = cand.x * inward.x + cand.y * inward.y >= 0 ? cand : { x: -cand.x, y: -cand.y };
+            const nn = ns[i]!;
+            ts[i] = { x: nn.y, y: -nn.x };
         }
-        const nn = ns[k]!;
-        ts[k] = { x: nn.y, y: -nn.x };
     }
 
     const columns: PlanformColumn[] = [];

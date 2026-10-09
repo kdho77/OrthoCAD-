@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { BufferAttribute, BufferGeometry, ShapeUtils, Vector2 } from "three";
+import { BufferAttribute, BufferGeometry } from "three";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { PolyPoint } from "./curves";
 import { sampleUvField } from "./extract";
@@ -9,41 +9,6 @@ import { buildXyHeightIndex, sampleXyHeight, type XyHeightIndex } from "./height
 import { loftWallGrid, wallTriangles } from "./loft";
 import { applyCurveModifiers, type ProceduralModifierInput } from "./modifiers";
 import type { StockWallModel, UvHeightField } from "./types";
-
-function pointInPoly(x: number, y: number, poly: PolyPoint[]): boolean {
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const xi = poly[i]!.x;
-        const yi = poly[i]!.y;
-        const xj = poly[j]!.x;
-        const yj = poly[j]!.y;
-        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-18) + xi) {
-            inside = !inside;
-        }
-    }
-    return inside;
-}
-
-function ringInwardNormals(ring: PolyPoint[]): Array<{ x: number; y: number }> {
-    const n = ring.length;
-    const out: Array<{ x: number; y: number }> = [];
-    for (let i = 0; i < n; i++) {
-        const prev = ring[(i + n - 1) % n]!;
-        const next = ring[(i + 1) % n]!;
-        const tx = next.x - prev.x;
-        const ty = next.y - prev.y;
-        const len = Math.hypot(tx, ty) || 1;
-        let nx = -ty / len;
-        let ny = tx / len;
-        const p = ring[i]!;
-        if (!pointInPoly(p.x + nx * 0.6, p.y + ny * 0.6, ring)) {
-            nx = -nx;
-            ny = -ny;
-        }
-        out.push({ x: nx, y: ny });
-    }
-    return out;
-}
 
 function sampleZ(
     field: UvHeightField,
@@ -72,32 +37,14 @@ function fillCap(
 ): void {
     const n = ring.length;
     if (n < 3) return;
-    const contour = ring.map((p) => new Vector2(p.x, p.y));
-    let faces: number[][];
-    try {
-        faces = ShapeUtils.triangulateShape(contour, []);
-    } catch {
-        faces = [];
+    let cx = 0;
+    let cy = 0;
+    for (const p of ring) {
+        cx += p.x;
+        cy += p.y;
     }
-    if (faces.length === 0) {
-        let cx = 0;
-        let cy = 0;
-        for (const p of ring) {
-            cx += p.x;
-            cy += p.y;
-        }
-        cx /= n;
-        cy /= n;
-        const c = push({ x: cx, y: cy, z: sampleZ(field, height, cx, cy, ring[0]!.z, prefer) });
-        for (let i = 0; i < n; i++) pushTri(ringIdx[i]!, ringIdx[(i + 1) % n]!, c, flip);
-        return;
-    }
-    const isBoundary = (a: number, b: number) => {
-        const d = Math.abs(a - b);
-        return d === 1 || d === n - 1;
-    };
-    type Face = [number, number, number];
-    let work: Face[] = faces.map((f) => [f[0]!, f[1]!, f[2]!]);
+    cx /= n;
+    cy /= n;
     const localPos = ring.map((p) => ({ ...p }));
     const localIdx = ringIdx.slice();
     const add = (p: PolyPoint) => {
@@ -105,7 +52,15 @@ function fillCap(
         localIdx.push(push(p));
         return localPos.length - 1;
     };
-    for (let pass = 0; pass < 6; pass++) {
+    const cLocal = add({ x: cx, y: cy, z: sampleZ(field, height, cx, cy, ring[0]!.z, prefer) });
+    type Face = [number, number, number];
+    let work: Face[] = [];
+    for (let i = 0; i < n; i++) work.push([i, (i + 1) % n, cLocal]);
+    const isBoundary = (a: number, b: number) => {
+        const d = Math.abs(a - b);
+        return d === 1 || d === n - 1;
+    };
+    for (let pass = 0; pass < 4; pass++) {
         const mid = new Map<string, number>();
         const getMid = (a: number, b: number) => {
             const lo = Math.min(a, b);
@@ -157,16 +112,6 @@ function fillCap(
     for (const [a, b, c] of work) pushTri(localIdx[a]!, localIdx[b]!, localIdx[c]!, flip);
 }
 
-function signedArea(ring: PolyPoint[]): number {
-    let s = 0;
-    for (let i = 0; i < ring.length; i++) {
-        const a = ring[i]!;
-        const b = ring[(i + 1) % ring.length]!;
-        s += a.x * b.y - b.x * a.y;
-    }
-    return 0.5 * s;
-}
-
 function uvGridCap(
     field: UvHeightField,
     height: XyHeightIndex | null,
@@ -177,54 +122,7 @@ function uvGridCap(
     flip: boolean,
     prefer: "min" | "max",
 ): void {
-    const n = boundaryPts.length;
-    const rings = 10;
-    const step = 0.85;
-    let prev = boundaryIdx;
-    let inner = boundaryPts.map((p) => ({ ...p }));
-    const poly = inner.map((p) => ({ ...p }));
-    const area0 = Math.abs(signedArea(inner));
-    for (let k = 1; k <= rings; k++) {
-        const ns = ringInwardNormals(inner);
-        const ring: PolyPoint[] = [];
-        let insideN = 0;
-        for (let i = 0; i < n; i++) {
-            const base = inner[i]!;
-            const nn = ns[i]!;
-            const x = base.x + nn.x * step;
-            const y = base.y + nn.y * step;
-            const inside = pointInPoly(x, y, poly);
-            if (inside) insideN++;
-            const px = inside ? x : base.x + nn.x * step * 0.25;
-            const py = inside ? y : base.y + nn.y * step * 0.25;
-            const z = sampleZ(field, height, px, py, base.z, prefer);
-            ring.push({ x: px, y: py, z });
-        }
-        const area = Math.abs(signedArea(ring));
-        let minSp = Infinity;
-        for (let i = 0; i < n; i++) {
-            const a = ring[i]!;
-            const b = ring[(i + 1) % n]!;
-            minSp = Math.min(minSp, Math.hypot(b.x - a.x, b.y - a.y));
-        }
-        if (insideN < n * 0.7 || area < area0 * 0.18 || minSp < 0.28) {
-            break;
-        }
-        const row = ring.map((p) => push(p));
-        for (let i = 0; i < n; i++) {
-            const i1 = (i + 1) % n;
-            if (flip) {
-                pushTri(prev[i]!, row[i]!, row[i1]!);
-                pushTri(prev[i]!, row[i1]!, prev[i1]!);
-            } else {
-                pushTri(prev[i]!, prev[i1]!, row[i1]!);
-                pushTri(prev[i]!, row[i1]!, row[i]!);
-            }
-        }
-        prev = row;
-        inner = ring;
-    }
-    fillCap(inner, field, height, prev, push, pushTri, flip, prefer);
+    fillCap(boundaryPts, field, height, boundaryIdx, push, pushTri, flip, prefer);
 }
 
 export interface ReconstructOptions extends ProceduralModifierInput {
@@ -252,7 +150,11 @@ export function reconstructProceduralWalls(
         throw new Error("S1 reconstruction requires planform columns");
     }
 
-    const grid = loftWallGrid(columns, profiles);
+    const grid = loftWallGrid(columns, profiles, undefined, {
+        outline: model.outline.spline.controls,
+        rim: model.trim.spline.controls,
+        sMul: 4,
+    });
     const positions: number[] = [];
     const indices: number[] = [];
     const push = (p: PolyPoint): number => {

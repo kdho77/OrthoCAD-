@@ -124,6 +124,25 @@ function resampleNz(samples: NZ[], count: number): NZ[] {
     return out;
 }
 
+function smoothOpenNz(samples: NZ[], passes = 3, mix = 0.4): NZ[] {
+    if (samples.length < 3) return samples.map((p) => ({ ...p }));
+    let cur = samples.map((p) => ({ ...p }));
+    for (let pass = 0; pass < passes; pass++) {
+        const next = cur.map((p) => ({ ...p }));
+        for (let i = 1; i < cur.length - 1; i++) {
+            const a = cur[i - 1]!;
+            const b = cur[i]!;
+            const c = cur[i + 1]!;
+            next[i] = {
+                n: b.n * (1 - mix) + (a.n + c.n) * 0.5 * mix,
+                z: b.z * (1 - mix) + (a.z + c.z) * 0.5 * mix,
+            };
+        }
+        cur = next;
+    }
+    return cur;
+}
+
 function fitCubicPoles(samples: NZ[], nCtrl = S1_PROFILE_POLES): { poles: NZ[]; residualMm: number } {
     const m = samples.length;
     if (m < 4) {
@@ -132,8 +151,11 @@ function fitCubicPoles(samples: NZ[], nCtrl = S1_PROFILE_POLES): { poles: NZ[]; 
     }
     const nP = Math.max(8, Math.min(12, nCtrl, m));
     const targets = resampleNz(samples, nP);
+    targets[0] = { ...samples[0]! };
+    targets[nP - 1] = { ...samples[m - 1]! };
     const knots = clampedKnots(nP);
-    const A = targets.map((_, i) => basisRow(i / Math.max(1, nP - 1), nP, knots));
+    const us = targets.map((_, i) => i / Math.max(1, nP - 1));
+    const A = us.map((u) => basisRow(u, nP, knots));
     const { x, y } = solveLinear(
         A,
         targets.map((s) => s.n),
@@ -141,8 +163,6 @@ function fitCubicPoles(samples: NZ[], nCtrl = S1_PROFILE_POLES): { poles: NZ[]; 
     );
     const poles: NZ[] = [];
     for (let i = 0; i < nP; i++) poles.push({ n: x[i]!, z: y[i]! });
-    poles[0] = { ...samples[0]! };
-    poles[nP - 1] = { ...samples[m - 1]! };
     let residual = 0;
     const cum = [0];
     for (let i = 1; i < m; i++) {
@@ -494,14 +514,10 @@ export function fitColumnProfiles(
             samples = sliceByPlane(col, pos, idx, collectNearbyTris(hash, col, cell));
         }
         if (samples.length < 6) samples = sliceColumnVerts(col, pos);
-        let { poles, residualMm } = fitCubicPoles(samples, S1_PROFILE_POLES);
-        if (residualMm > 0.1 && samples.length >= 12) {
-            const retry = fitCubicPoles(samples, 12);
-            if (retry.residualMm < residualMm) {
-                poles = retry.poles;
-                residualMm = retry.residualMm;
-            }
-        }
+        samples = smoothOpenNz(samples, 2, 0.35);
+        const fitted = fitCubicPoles(samples, 12);
+        const poles = fitted.poles;
+        const residualMm = fitted.residualMm;
         out.push({
             s01: col.s01,
             poles,

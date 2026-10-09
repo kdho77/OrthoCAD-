@@ -80,8 +80,14 @@ describe("S1 planform-column loft", () => {
             const haus = tieredHausdorffReport(original, rebuilt, model);
             const fold = foldReport(rebuilt);
             const man = reconstructionManifold(rebuilt);
-            const hits = countSelfIntersections(rebuilt);
             const minWall = minWallThicknessMm(model);
+            let hits = -1;
+            try {
+                hits = countSelfIntersections(rebuilt);
+            } catch (err) {
+                hits = -1;
+                console.error("countSelfIntersections failed", err);
+            }
             const uvOk = zoneFixturesMapIdentically(
                 soleUvFrameFromOutline(model.outline),
                 soleUvFrameFromPolyline(model.outline.spline.controls),
@@ -107,22 +113,33 @@ describe("S1 planform-column loft", () => {
                 nonCrossing: assertNonCrossing(model.planform!),
                 soleUvIdentical: uvOk,
                 profileResidual: Number(maxRes.toFixed(4)),
+                rimNMax: Number(
+                    Math.max(
+                        ...model.planform!.columns.map(
+                            (c) => (c.rim.x - c.outline.x) * c.n.x + (c.rim.y - c.outline.y) * c.n.y,
+                        ),
+                    ).toFixed(3),
+                ),
+                rimNMin: Number(
+                    Math.min(
+                        ...model.planform!.columns.map(
+                            (c) => (c.rim.x - c.outline.x) * c.n.x + (c.rim.y - c.outline.y) * c.n.y,
+                        ),
+                    ).toFixed(3),
+                ),
             };
             rows.push(row);
             writeFileSync("/tmp/s1-parity.json", JSON.stringify(rows, null, 2));
 
-            expect(man.watertight).toBe(true);
-            expect(man.openEdges).toBe(0);
-            expect(man.nonManifoldEdges).toBe(0);
-            expect(uvOk).toBe(true);
-            expect(assertNonCrossing(model.planform!)).toBe(true);
-            expect(hits).toBe(0);
-            expect(fold.worstDeg).toBeLessThanOrEqual(FOLD_WORST_LIMIT_DEG);
-            expect(fold.edgesAtLeast10Deg).toBe(0);
-            expect(FOLD_HARD_LIMIT_DEG).toBe(10);
-            expect(minWall).toBeGreaterThanOrEqual(S1_MIN_WALL_MM);
-
             const misses: string[] = [];
+            if (!man.watertight)
+                misses.push(`openEdges ${man.openEdges} nonManifold ${man.nonManifoldEdges}`);
+            if (!uvOk) misses.push("sole-UV");
+            if (!assertNonCrossing(model.planform!)) misses.push("crossing");
+            if (hits !== 0) misses.push(`self-intersect ${hits}`);
+            if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) misses.push(`fold ${fold.worstDeg.toFixed(1)}`);
+            if (fold.edgesAtLeast10Deg !== 0) misses.push(`fold≥10 ${fold.edgesAtLeast10Deg}`);
+            if (minWall < S1_MIN_WALL_MM) misses.push(`minWall ${minWall.toFixed(3)}`);
             if (haus.top.maxMm > S1_HAUSDORFF.topMax) misses.push(`top ${haus.top.maxMm.toFixed(3)}`);
             if (haus.plantar.maxMm > S1_HAUSDORFF.plantarMax)
                 misses.push(`plantar ${haus.plantar.maxMm.toFixed(3)}`);
@@ -136,6 +153,7 @@ describe("S1 planform-column loft", () => {
             if (haus.heelCup.maxMm > S1_HAUSDORFF.heelCupMax)
                 misses.push(`heel ${haus.heelCup.maxMm.toFixed(3)}`);
             if (maxRes > S1_PROFILE_RESIDUAL_MM) misses.push(`fit ${maxRes.toFixed(3)}`);
+            expect(FOLD_HARD_LIMIT_DEG).toBe(10);
             if (misses.length) {
                 throw new Error(`[S1-GAP] ${fixture.name}: ${misses.join("; ")}`);
             }
@@ -172,13 +190,19 @@ describe("S1 planform-column loft", () => {
                 watertight: man.watertight,
                 openEdges: man.openEdges,
             });
-            expect(hits).toBe(0);
-            expect(fold.worstDeg).toBeLessThanOrEqual(FOLD_WORST_LIMIT_DEG);
-            expect(fold.edgesAtLeast10Deg).toBe(0);
-            expect(man.watertight).toBe(true);
             rebuilt.dispose();
         }
         writeFileSync("/tmp/s1-smoke.json", JSON.stringify(results, null, 2));
+        const smokeMiss: string[] = [];
+        for (const r of results) {
+            if (r.selfIntersections !== 0) smokeMiss.push(`${r.smoke} xi=${r.selfIntersections}`);
+            if (Number(r.foldWorstDeg) > FOLD_WORST_LIMIT_DEG) smokeMiss.push(`${r.smoke} fold`);
+            if (r.foldGe10 !== 0) smokeMiss.push(`${r.smoke} fold≥10`);
+            if (r.watertight !== true) smokeMiss.push(`${r.smoke} open`);
+        }
+        if (smokeMiss.length) {
+            throw new Error(`[S1-SMOKE] ${smokeMiss.join("; ")}`);
+        }
         original.dispose();
     }, 240_000);
 
