@@ -4,7 +4,15 @@
 import { describe, expect, test } from "@rstest/core";
 import { minDistToLoopXY } from "./cdt-band";
 import { assertIEdges } from "./cdt-lib";
-import { buildGeneratedPlantar, makePlantarSampler, PLANTAR_STEINER_EDGE_MIN_MM } from "./plantar-cdt";
+import {
+    buildGeneratedPlantar,
+    collapseShortIEdges,
+    I_COLLAPSE_MM,
+    I_SLIVER_ASPECT,
+    makePlantarSampler,
+    maxIAspect,
+    PLANTAR_STEINER_EDGE_MIN_MM,
+} from "./plantar-cdt";
 
 describe("generated plantar CDT", () => {
     test("re-anchors min z to 0 after a negative posting field", () => {
@@ -100,6 +108,51 @@ describe("generated plantar CDT", () => {
 
     test("missing I edge fails with the station index", () => {
         expect(() => assertIEdges([[0, 1, 2]], 4)).toThrow(/\[S1-I\] missing edge at station 2/);
+    });
+
+    test("collapses I edges under 0.3 mm and keeps sliver aspect <= 20", () => {
+        const points = [
+            { x: 0, y: 0, z: 0 },
+            { x: 0.2, y: 0, z: 0 },
+            { x: 10, y: 0, z: 0 },
+            { x: 10, y: 8, z: 0 },
+            { x: 0, y: 8, z: 0 },
+            { x: 5, y: 4, z: 0 },
+        ];
+        const faces: Array<[number, number, number]> = [
+            [0, 1, 5],
+            [1, 2, 5],
+            [2, 3, 5],
+            [3, 4, 5],
+            [4, 0, 5],
+        ];
+        const out = collapseShortIEdges(points, faces, 5, I_COLLAPSE_MM);
+        expect(out.collapsed).toBe(1);
+        expect(out.faces.some((f) => f.includes(1))).toBe(false);
+        expect(maxIAspect(points, out.faces, 5)).toBeLessThanOrEqual(I_SLIVER_ASPECT);
+        const mesh = buildGeneratedPlantar({
+            boundary: [
+                { x: 0, y: 0, z: 0 },
+                { x: 16, y: 0, z: 0 },
+                { x: 16, y: 10, z: 0 },
+                { x: 0, y: 10, z: 0 },
+            ],
+            dish: null,
+            zDelta: () => 0,
+        });
+        expect(mesh.sliverMaxAspect).toBeLessThanOrEqual(I_SLIVER_ASPECT);
+        expect(mesh.openEdges).toBe(0);
+    });
+
+    test("flat sampler ignores dish and starts at z=0", () => {
+        const n = 12;
+        const outline = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 10 * Math.cos(a), y: 6 * Math.sin(a), z: 2 };
+        });
+        const sampler = makePlantarSampler(outline, null, undefined, () => 0, { flat: true });
+        expect(sampler.lift).toBe(0);
+        expect(sampler.z(0, 0, 9)).toBe(0);
     });
 
     test("sampler applies fields and re-anchor before B", () => {

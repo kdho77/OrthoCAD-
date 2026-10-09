@@ -22,6 +22,7 @@ import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
 import { buildHermiteStations } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
+import { countJunctionBandSlivers } from "./metrics";
 import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
@@ -34,6 +35,10 @@ export interface ReconstructOptions extends ProceduralModifierInput {
     /** Unmodified stock mesh — used to steal today's top (±0.01 mm). */
     sourceGeometry?: BufferGeometry;
     sourceField?: HeightFieldParams;
+    /** Separate bottom-pattern outline in the same frame as TopSheet. */
+    bottomPattern?: PolyPoint[];
+    /** Flat ground plantar (z=0 + posting/grind). Dish sampling is skipped. */
+    flatPlantar?: boolean;
 }
 
 function zeroCorrections(): SideCorrections {
@@ -244,7 +249,10 @@ export function reconstructProceduralWalls(
 ): BufferGeometry {
     const preset = options.deviceType ?? "functional";
     const defaults = defaultsFromModel(model, preset);
-    const flangeH = snapToStep(options.lateralFlange?.heightMm ?? 0, LATERAL_FLANGE_BOUNDS.heightMm);
+    const flatPlantar = Boolean(options.flatPlantar || options.bottomPattern);
+    const flangeH = flatPlantar
+        ? 0
+        : snapToStep(options.lateralFlange?.heightMm ?? 0, LATERAL_FLANGE_BOUNDS.heightMm);
     const flangeLen = snapToStep(
         options.lateralFlange?.lengthMm ?? defaults.lateralFlangeLengthMm,
         LATERAL_FLANGE_BOUNDS.lengthMm,
@@ -292,7 +300,12 @@ export function reconstructProceduralWalls(
         indices.push(topIdx[i]!, topIdx[i + 1]!, topIdx[i + 2]!);
     }
 
-    const outlineLoop = startAtPosteriorHeel(ensureCcw(model.outline.spline.controls.map((p) => ({ ...p }))));
+    const stockOutline = startAtPosteriorHeel(
+        ensureCcw(model.outline.spline.controls.map((p) => ({ ...p }))),
+    );
+    const outlineLoop = options.bottomPattern?.length
+        ? startAtPosteriorHeel(ensureCcw(options.bottomPattern.map((p) => ({ ...p, z: 0 }))))
+        : stockOutline;
     let pairing = pairAtNativeTop(outlineLoop, rimPts);
     const collapsed = mergeCollapsedStations(pairing, rimLocal, indices);
     pairing = collapsed.pairing;
@@ -300,9 +313,9 @@ export function reconstructProceduralWalls(
     pairing.chordCrossings = countPlanViewChordCrossings(pairing.plantar, pairing.top);
 
     const dish =
-        model.outline.meshPositions && model.outline.meshIndices
-            ? buildDishZIndex(model.outline.meshPositions, model.outline.meshIndices)
-            : null;
+        flatPlantar || !model.outline.meshPositions || !model.outline.meshIndices
+            ? null
+            : buildDishZIndex(model.outline.meshPositions, model.outline.meshIndices);
     const zDelta = (x: number, y: number) => plantarZDelta(x, y, model.bounds, options);
     const outlineZ: PolyPoint[] = pairing.plantar.map((p) => ({
         x: p.x,
@@ -351,6 +364,7 @@ export function reconstructProceduralWalls(
         flangeLengthMm: flangeLen,
         flangeAngleDeg: flangeAng,
         footLengthMm: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
+        flatPlantar,
     });
 
     const nS = grid.nS;
@@ -397,6 +411,9 @@ export function reconstructProceduralWalls(
     geo.computeVertexNormals();
     geo.computeBoundingBox();
     geo.computeBoundingSphere();
+    const iVerts = new Set<number>();
+    for (let i = 0; i < nS; i++) iVerts.add(gridVert(grid.innerRow, i));
+    const junctionSlivers = countJunctionBandSlivers(geo, iVerts, 20);
     geo.userData = {
         wallModel: "procedural",
         stockId: model.id,
@@ -430,6 +447,11 @@ export function reconstructProceduralWalls(
         minWallClamps: grid.minWallClamps,
         plantarOpenEdges: grid.plantar.openEdges,
         plantarMissingBoundary: grid.plantar.missingBoundary,
+        collapsedIEdges: grid.plantar.collapsedIEdges,
+        sliverMaxAspect: grid.plantar.sliverMaxAspect,
+        junctionSlivers,
+        flatPlantar,
+        allowOverhang: true,
         filletRing: grid.frames.map((f) => ({ ...f.F })),
         zeroAreaFaces: hygiene.zeroArea,
         duplicateFaces: hygiene.duplicates,

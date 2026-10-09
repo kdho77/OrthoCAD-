@@ -260,6 +260,7 @@ export interface BuildQuadGridInput {
     flangeLengthMm?: number;
     flangeAngleDeg?: number;
     footLengthMm?: number;
+    flatPlantar?: boolean;
 }
 
 function headingOfStation(st: HermiteStation): { h: { x: number; y: number }; planLen: number } {
@@ -586,9 +587,10 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
 
     const sampler = makePlantarSampler(
         stations.map((s) => s.outline),
-        input.dish,
-        input.plantarField,
+        input.flatPlantar ? null : input.dish,
+        input.flatPlantar ? undefined : input.plantarField,
         input.zDelta,
+        { flat: Boolean(input.flatPlantar) },
     );
     for (let i = 0; i < nS; i++) {
         const p = stations[i]!.outline;
@@ -612,6 +614,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         refineGrind: input.refineGrind,
         marginMm: PLANTAR_MARGIN_MM,
         sampler,
+        flat: Boolean(input.flatPlantar),
     });
     if (plantar.extraLift) {
         for (let i = 0; i < nS; i++) stations[i]!.outline.z += plantar.extraLift;
@@ -627,6 +630,8 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
             extraLift: Number(plantar.extraLift.toFixed(4)),
             openEdges: plantar.openEdges,
             missingBoundary: plantar.missingBoundary,
+            collapsedIEdges: plantar.collapsedIEdges,
+            sliverMaxAspect: Number(plantar.sliverMaxAspect.toFixed(2)),
         }),
     );
 

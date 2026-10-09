@@ -46,6 +46,7 @@ import {
     soleUvFrameFromOutline,
     soleUvFrameFromPolyline,
     summarizeWallBands,
+    syntheticBottomPattern,
     zoneFixturesMapIdentically,
 } from "@/lib/geometry/procedural-wall";
 import { listStockBaseFixtures } from "@/lib/geometry/procedural-wall/catalog";
@@ -592,6 +593,97 @@ describe("S1 parametric wall", () => {
                     smokeBreakdowns.join("\n\n"),
             );
         }
+        original.dispose();
+    }, 240_000);
+
+    test("smoke: synthetic flat-plantar bottom pattern", async () => {
+        const original = await loadProductionDefaultGlb({ slot: "left" });
+        const model = extractStockWallModel(original, { id: "default", name: "Default" });
+        const pattern = syntheticBottomPattern(outlineOf(model), model.bounds);
+        let rebuilt: BufferGeometry;
+        try {
+            rebuilt = reconstructProceduralWalls(model, {
+                corrections: neutralCorrections(),
+                bottomPattern: pattern,
+                flatPlantar: true,
+            });
+        } catch (err) {
+            throw new Error(`[S1-PATTERN] reconstruct: ${String(err)}`);
+        }
+        const topN = (rebuilt.userData as { topVertexCount?: number }).topVertexCount ?? 0;
+        const outlineN = (rebuilt.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
+        const outlineStart = (rebuilt.userData as { outlineVertexStart?: number }).outlineVertexStart ?? topN;
+        const fold = foldReport(rebuilt, {
+            wholeInsole: true,
+            topVertexCount: topN,
+            outlineVertexCount: outlineN,
+            outlineVertexStart: outlineStart,
+        });
+        const hits = countSelfIntersections(rebuilt);
+        const man = reconstructionManifold(rebuilt);
+        const generatedOutline =
+            (rebuilt.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> }).outlineRing ??
+            pattern;
+        const reconSeam = outlineSeamDihedrals(rebuilt, generatedOutline, 1.25);
+        const sud = rebuilt.userData as {
+            bandTiltDegMax?: number;
+            sliverMaxAspect?: number;
+            junctionSlivers?: number;
+            collapsedIEdges?: number;
+            plantarOpenEdges?: number;
+            plantarMissingBoundary?: number;
+            maxOffPlaneMm?: number;
+        };
+        const misses: string[] = [];
+        if (hits.real !== 0) {
+            misses.push(
+                `xi=${hits.real} ${hits.byClass ? JSON.stringify(hits.byClass) : ""} ${
+                    hits.bySubClass ? JSON.stringify(hits.bySubClass) : ""
+                }`,
+            );
+        }
+        if (!man.watertight) misses.push(`open=${man.openEdges}`);
+        if (fold.edgesAtLeast10Deg !== 0) misses.push(`fold≥10=${fold.edgesAtLeast10Deg}`);
+        if (reconSeam.worstDeg > 5 + 1e-6) misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>5`);
+        if ((sud.bandTiltDegMax ?? 0) > 30 + 1e-3) {
+            misses.push(`band-tilt ${sud.bandTiltDegMax!.toFixed(1)}`);
+        }
+        if ((sud.sliverMaxAspect ?? 0) > 20) misses.push(`sliver ${sud.sliverMaxAspect}`);
+        if ((sud.junctionSlivers ?? 0) !== 0) misses.push(`junction-slivers=${sud.junctionSlivers}`);
+        if ((sud.plantarOpenEdges ?? 0) !== 0) misses.push(`plantar-open=${sud.plantarOpenEdges}`);
+        if ((sud.plantarMissingBoundary ?? 0) !== 0) {
+            misses.push(`plantar-missing=${sud.plantarMissingBoundary}`);
+        }
+        if ((sud.maxOffPlaneMm ?? 0) > COLUMN_PLANARITY_LIMIT_MM) {
+            misses.push(`off-plane ${sud.maxOffPlaneMm}`);
+        }
+        writeFileSync(
+            "/tmp/s1-pattern.json",
+            JSON.stringify(
+                {
+                    selfIntersections: hits.real,
+                    byClass: hits.byClass,
+                    bySubClass: hits.bySubClass,
+                    watertight: man.watertight,
+                    openEdges: man.openEdges,
+                    foldGe10: fold.edgesAtLeast10Deg,
+                    seamWorstDeg: Number(reconSeam.worstDeg.toFixed(3)),
+                    bandTilt: Number((sud.bandTiltDegMax ?? 0).toFixed(2)),
+                    sliverMaxAspect: sud.sliverMaxAspect,
+                    collapsedIEdges: sud.collapsedIEdges,
+                    junctionSlivers: sud.junctionSlivers,
+                },
+                null,
+                2,
+            ),
+        );
+        if (misses.length || hits.real !== 0) {
+            throw new Error(
+                `[S1-PATTERN] nonzero. STOP.\nmisses: ${misses.join("; ")}\n` +
+                    (hits.real ? siBreakdownMessage(hits, rebuilt, model, "[S1-SI] pattern") : ""),
+            );
+        }
+        rebuilt.dispose();
         original.dispose();
     }, 240_000);
 

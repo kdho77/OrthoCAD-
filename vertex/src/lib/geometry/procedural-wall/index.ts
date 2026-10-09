@@ -36,6 +36,11 @@ export {
     type WallBandRow,
 } from "./bezier-column";
 export {
+    PATTERN_ARCH_INSET_MM,
+    PATTERN_INSET_MM,
+    syntheticBottomPattern,
+} from "./bottom-pattern";
+export {
     cdtInteriorPolygon,
     cdtPlanarBand,
     countOpenNonBoundaryEdges,
@@ -43,7 +48,7 @@ export {
     delaunayXY,
     insertConstraintEdges,
 } from "./cdt-band";
-export { assertIEdges, assertLibraryDisk, libraryCdtInterior } from "./cdt-lib";
+export { assertIEdges, assertLibraryDisk, assertRemainingIEdges, libraryCdtInterior } from "./cdt-lib";
 export { fitClosedC2Spline, resampleClosedC2, resamplePolyline } from "./curves";
 export {
     applyMeasuredUnclamped,
@@ -117,6 +122,9 @@ export { assertNonCrossing, buildPlanformFrame } from "./planform";
 export {
     assertPlantarDisk,
     buildGeneratedPlantar,
+    collapseShortIEdges,
+    I_COLLAPSE_MM,
+    I_SLIVER_ASPECT,
     makePlantarSampler,
     PLANTAR_MARGIN_MM,
     PLANTAR_STEINER_EDGE_MIN_MM,

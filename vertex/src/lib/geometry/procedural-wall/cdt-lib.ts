@@ -92,17 +92,48 @@ export function libraryCdtInterior(
     return faces;
 }
 
-/** Fail loudly with the station index when an I constraint edge is missing. */
-export function assertIEdges(faces: Array<[number, number, number]>, nOuter: number): void {
+function faceEdgeSet(faces: Array<[number, number, number]>): Set<string> {
     const have = new Set<string>();
     for (const f of faces) {
         have.add(edgeKey(f[0]!, f[1]!));
         have.add(edgeKey(f[1]!, f[2]!));
         have.add(edgeKey(f[2]!, f[0]!));
     }
+    return have;
+}
+
+/** Fail loudly with the station index when an I constraint edge is missing. */
+export function assertIEdges(
+    faces: Array<[number, number, number]>,
+    nOuter: number,
+    skip?: ReadonlySet<number>,
+): void {
+    const have = faceEdgeSet(faces);
     for (let i = 0; i < nOuter; i++) {
+        if (skip?.has(i)) continue;
         const j = (i + 1) % nOuter;
         if (!have.has(edgeKey(i, j))) {
+            throw new Error(`[S1-I] missing edge at station ${i}`);
+        }
+    }
+}
+
+export function assertRemainingIEdges(
+    faces: Array<[number, number, number]>,
+    nOuter: number,
+    parent: number[],
+): void {
+    const find = (i: number): number => {
+        let x = i;
+        while (parent[x] !== x) x = parent[x]!;
+        return x;
+    };
+    const have = faceEdgeSet(faces);
+    for (let i = 0; i < nOuter; i++) {
+        const a = find(i);
+        const b = find((i + 1) % nOuter);
+        if (a === b) continue;
+        if (!have.has(edgeKey(a, b))) {
             throw new Error(`[S1-I] missing edge at station ${i}`);
         }
     }
