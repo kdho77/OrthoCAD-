@@ -50,18 +50,13 @@ describe("outward-ray station pairing", () => {
     });
 
     test("harmonic midline pairing is strictly increasing with 0 crossings", () => {
-        const plantar = [
-            { x: -2, y: 0, z: 0 },
-            { x: 10, y: -6, z: 0 },
-            { x: 22, y: 0, z: 0 },
-            { x: 10, y: 6, z: 0 },
-        ];
-        const top = [
-            { x: 0, y: 0, z: 8 },
-            { x: 10, y: -4, z: 8 },
-            { x: 20, y: 0, z: 8 },
-            { x: 10, y: 4, z: 8 },
-        ];
+        const ellipse = (rx: number, ry: number, z: number, n = 32) =>
+            Array.from({ length: n }, (_, i) => {
+                const a = (i / n) * Math.PI * 2;
+                return { x: 10 + rx * Math.cos(a), y: ry * Math.sin(a), z };
+            });
+        const plantar = ellipse(12, 7, 0);
+        const top = ellipse(10, 5, 8);
         const paired = pairByHarmonic(plantar, top, 24);
         expect(paired.method).toBe("harmonic");
         expect(paired.monotonic).toBe(true);
