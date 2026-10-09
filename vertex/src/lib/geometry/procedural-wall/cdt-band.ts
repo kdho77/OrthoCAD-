@@ -492,6 +492,173 @@ export function cdtPlanarBand(
     return { points, faces };
 }
 
+function inTriXY(
+    px: number,
+    py: number,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    cx: number,
+    cy: number,
+): boolean {
+    const o0 = orient2(ax, ay, bx, by, px, py);
+    const o1 = orient2(bx, by, cx, cy, px, py);
+    const o2 = orient2(cx, cy, ax, ay, px, py);
+    return o0 >= -1e-9 && o1 >= -1e-9 && o2 >= -1e-9;
+}
+
+/**
+ * Simple-polygon triangulation that keeps every boundary vertex. Near-collinear
+ * verts emit a sliver instead of being dropped, so (i,i+1) always exists.
+ */
+export function triangulateSimplePolygon(
+    poly: Array<{ x: number; y: number }>,
+): Array<[number, number, number]> {
+    const n = poly.length;
+    if (n < 3) return [];
+    const next = Int32Array.from({ length: n }, (_, i) => (i + 1) % n);
+    const prev = Int32Array.from({ length: n }, (_, i) => (i - 1 + n) % n);
+    const live = new Uint8Array(n).fill(1);
+    const area = (i: number): number =>
+        orient2(
+            poly[prev[i]!]!.x,
+            poly[prev[i]!]!.y,
+            poly[i]!.x,
+            poly[i]!.y,
+            poly[next[i]!]!.x,
+            poly[next[i]!]!.y,
+        );
+    const isEar = (i: number): boolean => {
+        const o = area(i);
+        if (o <= -1e-9) return false;
+        const a = prev[i]!;
+        const b = i;
+        const c = next[i]!;
+        const pa = poly[a]!;
+        const pb = poly[b]!;
+        const pc = poly[c]!;
+        for (let k = 0; k < n; k++) {
+            if (!live[k] || k === a || k === b || k === c) continue;
+            const p = poly[k]!;
+            if (inTriXY(p.x, p.y, pa.x, pa.y, pb.x, pb.y, pc.x, pc.y)) return false;
+        }
+        return true;
+    };
+    const clip = (i: number, faces: Array<[number, number, number]>): void => {
+        const a = prev[i]!;
+        const c = next[i]!;
+        faces.push(orientFace(poly, a, i, c));
+        next[a] = c;
+        prev[c] = a;
+        live[i] = 0;
+    };
+    const faces: Array<[number, number, number]> = [];
+    let remaining = n;
+    let i = 0;
+    let fail = 0;
+    const budget = n * n + 32;
+    while (remaining > 3 && fail < budget) {
+        if (!live[i]) {
+            i = (i + 1) % n;
+            fail++;
+            continue;
+        }
+        if (isEar(i)) {
+            clip(i, faces);
+            remaining--;
+            fail = 0;
+            i = next[i]!;
+            continue;
+        }
+        fail++;
+        i = next[i]!;
+    }
+    if (remaining > 3) {
+        for (let k = 0; k < n && remaining > 3; k++) {
+            if (!live[k] || area(k) <= 0) continue;
+            clip(k, faces);
+            remaining--;
+        }
+    }
+    if (remaining >= 3) {
+        const alive: number[] = [];
+        for (let k = 0; k < n; k++) if (live[k]) alive.push(k);
+        if (alive.length >= 3) {
+            faces.push(orientFace(poly, alive[0]!, alive[1]!, alive[2]!));
+        }
+    }
+    return faces;
+}
+
+function insertSteinerSplit(
+    points: Array<{ x: number; y: number }>,
+    faces: Array<[number, number, number]>,
+    p: { x: number; y: number },
+): boolean {
+    for (let i = 0; i < faces.length; i++) {
+        const [a, b, c] = faces[i]!;
+        const A = points[a]!;
+        const B = points[b]!;
+        const C = points[c]!;
+        if (!inTriXY(p.x, p.y, A.x, A.y, B.x, B.y, C.x, C.y)) continue;
+        const v = points.length;
+        points.push({ x: p.x, y: p.y, z: "z" in p ? (p as PolyPoint).z : 0 });
+        faces.splice(i, 1);
+        faces.push(orientFace(points, a, b, v), orientFace(points, b, c, v), orientFace(points, c, a, v));
+        return true;
+    }
+    return false;
+}
+
+/** Flip interior edges toward Delaunay. Boundary edges (0..nB-1 consecutive) stay locked. */
+export function constrainedDelaunayFlip(
+    points: Array<{ x: number; y: number }>,
+    faces: Array<[number, number, number]>,
+    nBoundary: number,
+): void {
+    const isBoundary = (p: number, q: number): boolean => {
+        if (p >= nBoundary || q >= nBoundary) return false;
+        const d = Math.abs(p - q);
+        return d === 1 || d === nBoundary - 1;
+    };
+    let dirty = true;
+    let guard = 0;
+    const limit = Math.max(32, faces.length * 8);
+    while (dirty && guard++ < limit) {
+        dirty = false;
+        for (let i = 0; i < faces.length; i++) {
+            const f = faces[i]!;
+            const e: Array<[number, number]> = [
+                [f[0]!, f[1]!],
+                [f[1]!, f[2]!],
+                [f[2]!, f[0]!],
+            ];
+            for (const [p, q] of e) {
+                if (isBoundary(p, q)) continue;
+                const shared = facesSharingEdge(faces, p, q);
+                if (shared.length !== 2) continue;
+                const f0 = faces[shared[0]!]!;
+                const f1 = faces[shared[1]!]!;
+                const u = thirdOf(f0, p, q);
+                const v = thirdOf(f1, p, q);
+                if (u === v) continue;
+                const A = points[p]!;
+                const B = points[q]!;
+                const C = points[u]!;
+                const D = points[v]!;
+                if (!inCircumcircle(A.x, A.y, B.x, B.y, C.x, C.y, D.x, D.y)) continue;
+                if (!quadIsConvex(points, u, p, v, q)) continue;
+                faces[shared[0]!] = orientFace(points, u, v, p);
+                faces[shared[1]!] = orientFace(points, u, v, q);
+                dirty = true;
+                break;
+            }
+            if (dirty) break;
+        }
+    }
+}
+
 /**
  * Constrained Delaunay of a simple polygon interior. `boundary` vertices stay
  * at indices 0..n-1; each boundary edge is kept once. Steiner points are extra.
@@ -501,27 +668,12 @@ export function cdtInteriorPolygon(
     steiner: PolyPoint[],
 ): { points: PolyPoint[]; faces: Array<[number, number, number]> } {
     if (boundary.length < 3) return { points: [], faces: [] };
-    const points = boundary.map((p) => ({ ...p }));
+    const points: PolyPoint[] = boundary.map((p) => ({ ...p }));
     const nB = points.length;
-    for (const p of steiner) points.push({ ...p });
-    const constrain: Array<[number, number]> = [];
-    for (let i = 0; i < nB; i++) constrain.push([i, (i + 1) % nB]);
-    const faces = delaunayXY(points);
-    insertConstraintEdges(points, faces, constrain);
-    const inside = (x: number, y: number) => pointInPoly(x, y, boundary);
-    const interior = faces.filter((f) => {
-        const a = points[f[0]]!;
-        const b = points[f[1]]!;
-        const c = points[f[2]]!;
-        return inside((a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3);
-    });
-    const recovered = uniqueBoundaryFaces(interior, nB);
-    for (const [a, b] of constrain) {
-        if (hasEdge(recovered, a, b)) continue;
-        const tri = thirdPointForEdge(points, a, b, inside);
-        if (tri) recovered.push(tri);
-    }
-    return { points, faces: uniqueBoundaryFaces(recovered, nB) };
+    const faces = triangulateSimplePolygon(points);
+    for (const s of steiner) insertSteinerSplit(points, faces, s);
+    constrainedDelaunayFlip(points, faces, nB);
+    return { points, faces };
 }
 
 function stripExactLoops(outerIdx: number[], innerIdx: number[]): Array<[number, number, number]> {
