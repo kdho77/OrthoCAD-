@@ -2,18 +2,37 @@
 // See LICENSE file in the project root for full license information.
 
 import {
+    applyPlantarBandZ,
+    BAND_INSET_MIN_MM,
     buildBezierColumns,
     type ColumnFrame,
+    estimateBandInsetMm,
+    FILLET_R_CAP_MM,
+    filletCenterAndF,
+    inwardOfOutline,
     type MinWallClamp,
+    SHORT_CHORD_MM,
     TOP_CLEARANCE_DEG as T0_CLEARANCE_DEG,
 } from "./bezier-column";
+import { pointInPoly } from "./cdt-band";
 import type { PolyPoint } from "./curves";
 import { lateralFlangeEnvelope, type WallRegionDefaults } from "./defaults";
 import { sampleUvField } from "./extract";
 import { type DishZIndex, sampleDishZVertical } from "./height-xy";
-import { MAX_FILLET_ASPECT, MIN_FILLET_RING_SPACING_MM, MIN_FILLET_RINGS, type NZ } from "./hermite";
+import {
+    FILLET_MAX_HEIGHT_FRAC,
+    MAX_FILLET_ASPECT,
+    MIN_FILLET_RING_SPACING_MM,
+    MIN_FILLET_RINGS,
+    type NZ,
+} from "./hermite";
 import type { HermiteStation } from "./loft";
-import { buildGeneratedPlantar, type GeneratedPlantar, samplePlantarSlopeAlongMinusH } from "./plantar-cdt";
+import {
+    buildGeneratedPlantar,
+    type GeneratedPlantar,
+    PLANTAR_MARGIN_MM,
+    samplePlantarSlopeAlongMinusH,
+} from "./plantar-cdt";
 import type { FlareCapReport } from "./stations";
 import { S1_MIN_WALL_MM, type UvHeightField } from "./types";
 
@@ -237,14 +256,49 @@ export interface BuildQuadGridInput {
     footLengthMm?: number;
 }
 
-function steinerMarginMm(stations: HermiteStation[]): number {
-    let margin = 1.5;
-    for (const st of stations) {
-        const height = Math.max(st.rim.z - st.outline.z, 0.5);
-        const r = Math.min(0.4 * height, 3);
-        margin = Math.max(margin, r);
+function headingOfStation(st: HermiteStation): { h: { x: number; y: number }; planLen: number } {
+    const dx = st.outline.x - st.rim.x;
+    const dy = st.outline.y - st.rim.y;
+    const planLen = Math.hypot(dx, dy);
+    if (planLen < 1e-4) {
+        const nl = Math.hypot(st.n.x, st.n.y) || 1;
+        return { h: { x: st.n.x / nl, y: st.n.y / nl }, planLen };
     }
-    return margin;
+    return { h: { x: dx / planLen, y: dy / planLen }, planLen };
+}
+
+function estimateFilletRadius(st: HermiteStation, planLen: number): number {
+    const height = Math.max(st.rim.z - st.outline.z, 0.5);
+    const rawR = Math.min(FILLET_MAX_HEIGHT_FRAC * height, FILLET_R_CAP_MM);
+    return planLen < SHORT_CHORD_MM ? Math.min(rawR, 0.4) : Math.min(rawR, Math.max(0.15, planLen * 0.8));
+}
+
+/** One structured ring at B − r·sin(θ) inward, constrained in the plantar CDT. */
+export function placeStructuredBandRing(stations: HermiteStation[]): PolyPoint[] {
+    const outline = stations.map((s) => s.outline);
+    return stations.map((st) => {
+        const { h, planLen } = headingOfStation(st);
+        const r = estimateFilletRadius(st, planLen);
+        const placed = filletCenterAndF(st.outline, h, r, { x: 0, y: 0, z: 1 }, 0);
+        const inset = Math.min(
+            estimateBandInsetMm(r, placed.theta),
+            Math.max(BAND_INSET_MIN_MM, planLen * 0.45),
+        );
+        const inn = inwardOfOutline(st.outline, h, outline);
+        const p = {
+            x: st.outline.x + inn.x * inset,
+            y: st.outline.y + inn.y * inset,
+            z: st.outline.z,
+        };
+        if (!pointInPoly(p.x, p.y, outline)) {
+            return {
+                x: st.outline.x + inn.x * BAND_INSET_MIN_MM,
+                y: st.outline.y + inn.y * BAND_INSET_MIN_MM,
+                z: st.outline.z,
+            };
+        }
+        return p;
+    });
 }
 
 export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
@@ -253,13 +307,15 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     const nWall = Math.max(10, input.nWall ?? 1 + MIN_FILLET_RINGS + WALL_MID_ROWS + MIN_FILLET_RINGS);
     const nJ = nWall;
     const outlineRow = nWall - 1;
+    const innerRing = placeStructuredBandRing(stations);
     const plantar = buildGeneratedPlantar({
         boundary: stations.map((s) => s.outline),
         dish: input.dish,
         field: input.plantarField,
         zDelta: input.zDelta,
         refineGrind: input.refineGrind,
-        marginMm: steinerMarginMm(stations),
+        marginMm: PLANTAR_MARGIN_MM,
+        innerRing,
     });
     for (let i = 0; i < nS; i++) {
         const z = plantar.points[i]?.z;
@@ -276,8 +332,9 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         }
         return { x: dx / len, y: dy / len };
     };
+    const outlineLoop = stations.map((s) => s.outline);
     const plantarSlopeRad = stations.map((st, i) =>
-        samplePlantarSlopeAlongMinusH(plantar.points, plantar.faces, st.outline, headingOf(i)),
+        samplePlantarSlopeAlongMinusH(plantar.points, plantar.faces, st.outline, headingOf(i), outlineLoop),
     );
     const built = buildBezierColumns(
         stations,
@@ -293,6 +350,9 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         const z = built.frames[i]!.B.z;
         stations[i]!.outline.z = z;
         if (plantar.points[i]) plantar.points[i]!.z = z;
+    }
+    if (plantar.bandCount >= nS) {
+        applyPlantarBandZ(built.frames, plantar.points.slice(nS, nS + nS));
     }
     const columns: PolyPoint[][] = built.xyz.map((col) => col.map((p) => ({ ...p })));
     applyLateralFlange(

@@ -481,10 +481,20 @@ export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionRep
     return { real, coplanar, byClass, bySubClass, wallHitCentroids, topWallHitCentroids, classifiedHits };
 }
 
+export interface SiFrameLog {
+    u: number;
+    overhangMm: number;
+    heightMm: number;
+    rFillet?: number;
+    bandZ?: number;
+    Bz?: number;
+    arcEndZ?: number;
+}
+
 export interface SiBreakdownOptions {
     title?: string;
     hitUs?: number[];
-    frames?: Array<{ u: number; overhangMm: number; heightMm: number }>;
+    frames?: SiFrameLog[];
     maxOffPlaneMm?: number;
     chordCrossings?: number;
 }
@@ -543,6 +553,7 @@ export function formatSiBreakdown(hits: SelfIntersectionReport, opts: SiBreakdow
                 : { hits: 0 },
         columnPlantar: bySub["column-plantar"] ?? 0,
         filletPlantar: bySub["fillet-plantar"] ?? 0,
+        filletHits: filletHitLog(classified, hitUs, opts.frames ?? []),
         frames: opts.frames
             ? {
                   count: opts.frames.length,
@@ -552,4 +563,62 @@ export function formatSiBreakdown(hits: SelfIntersectionReport, opts: SiBreakdow
             : undefined,
     };
     return `${opts.title ?? "[S1-SI]"} nonzero self-intersections. STOP.\n${JSON.stringify(payload, null, 2)}`;
+}
+
+function filletHitLog(
+    classified: ClassifiedHit[],
+    hitUs: number[],
+    frames: SiFrameLog[],
+): Array<{
+    sub: WallSubClass;
+    i: number;
+    u: number;
+    r: number | null;
+    rNext: number | null;
+    arcEndZ: number | null;
+    plantarZ: number | null;
+    bandZ: number | null;
+}> {
+    const n = frames.length;
+    const nearest = (u: number): number => {
+        if (n === 0) return 0;
+        let best = 0;
+        let bd = Infinity;
+        for (let i = 0; i < n; i++) {
+            const d = Math.abs((frames[i]!.u ?? 0) - u);
+            if (d < bd) {
+                bd = d;
+                best = i;
+            }
+        }
+        return best;
+    };
+    const out: Array<{
+        sub: WallSubClass;
+        i: number;
+        u: number;
+        r: number | null;
+        rNext: number | null;
+        arcEndZ: number | null;
+        plantarZ: number | null;
+        bandZ: number | null;
+    }> = [];
+    for (let k = 0; k < classified.length; k++) {
+        const h = classified[k]!;
+        if (h.sub !== "fillet-fillet" && h.sub !== "fillet-plantar") continue;
+        const i = nearest(hitUs[k] ?? 0);
+        const fr = frames[i];
+        const next = n ? frames[(i + 1) % n] : undefined;
+        out.push({
+            sub: h.sub,
+            i,
+            u: Number((fr?.u ?? hitUs[k] ?? 0).toFixed(4)),
+            r: fr?.rFillet ?? null,
+            rNext: next?.rFillet ?? null,
+            arcEndZ: fr?.arcEndZ ?? null,
+            plantarZ: fr?.Bz ?? null,
+            bandZ: fr?.bandZ ?? null,
+        });
+    }
+    return out;
 }

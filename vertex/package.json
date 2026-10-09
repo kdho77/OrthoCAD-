@@ -27,6 +27,7 @@
     "dependencies": {
         "@chili3d/core": "file:../packages/core",
         "@chili3d/wasm": "file:../packages/wasm",
+        "@kninnug/constrainautor": "^4.1.0",
         "@prisma/client": "^5.22.0",
         "@radix-ui/react-dialog": "^1.1.6",
         "@radix-ui/react-slot": "^1.1.2",
@@ -40,6 +41,7 @@
         "@trpc/server": "^11.0.0-rc.660",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
+        "delaunator": "^5.1.0",
         "lucide-react": "^0.456.0",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",

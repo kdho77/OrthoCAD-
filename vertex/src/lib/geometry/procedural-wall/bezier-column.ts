@@ -20,7 +20,8 @@ export const MERGE_ROW_MM = 0.3;
 export const TOP_CLEARANCE_DEG = 10;
 export const T0_PIN_DEG = -45;
 export const FILLET_R_CAP_MM = 3;
-export const R_SMOOTH_FRAC = 0.1;
+export const R_SMOOTH_FRAC = 0.05;
+export const BAND_INSET_MIN_MM = 0.35;
 export const SHORT_CHORD_MM = 0.5;
 export const COLUMN_PLANARITY_LIMIT_MM = 0.01;
 export const OUTLINE_STATION_SPACING_MM = 1.5;
@@ -56,6 +57,12 @@ export interface ColumnFrame {
     /** Rim plan offset beyond the outline (mm). Positive = overhang. */
     overhangMm: number;
     heightMm: number;
+    /** Structured band ring z from the F→B tangent continuation. */
+    bandZ: number;
+    /** Plan inset of the constrained band ring (mm). */
+    bandInsetMm: number;
+    /** Last fillet-sample z before B. */
+    arcEndZ: number;
 }
 
 export interface MinWallClamp {
@@ -253,6 +260,59 @@ export function filletPathTangents(
     return { tf, tb };
 }
 
+/** Side of B that lands inside BottomOutline. +h is R→B (usually inward). */
+export function inwardOfOutline(
+    B: XYZ,
+    h: { x: number; y: number },
+    outline: PolyPoint[],
+): { x: number; y: number } {
+    const plus = { x: B.x + h.x * 0.6, y: B.y + h.y * 0.6 };
+    if (pointInPolyXY(plus.x, plus.y, outline)) return h;
+    return { x: -h.x, y: -h.y };
+}
+
+export function estimateBandInsetMm(r: number, theta: number): number {
+    const raw = Math.max(0, r) * Math.sin(Math.max(0, Math.min(Math.PI / 2, theta)));
+    return Math.max(BAND_INSET_MIN_MM, raw);
+}
+
+/** Band z from the F→B arrival tangent so the first plantar face is G1 at B. */
+export function tangentBandZ(fr: ColumnFrame, alongH: number): number {
+    applyTilts(fr);
+    const { tb } = filletPathTangents(fr.h, fr.U, fr.plantarSlopeRad);
+    if (Math.abs(tb.s) < 1e-6) return fr.B.z;
+    return fr.B.z + alongH * (tb.z / tb.s);
+}
+
+export function applyTangentBandZ(frames: ColumnFrame[]): void {
+    const outline = frames.map((f) => f.B);
+    for (const fr of frames) {
+        applyTilts(fr);
+        const { theta } = filletCenterAndF(fr.B, fr.h, fr.rFillet, fr.U, fr.plantarSlopeRad);
+        const inset = estimateBandInsetMm(fr.rFillet, theta);
+        const inn = inwardOfOutline(fr.B, fr.h, outline);
+        const alongH = inset * Math.sign(inn.x * fr.h.x + inn.y * fr.h.y || 1);
+        fr.bandInsetMm = inset;
+        fr.bandZ = tangentBandZ(fr, alongH);
+    }
+}
+
+/** Overwrite constrained-band verts from the final column tangent (actual XY). */
+export function applyPlantarBandZ(frames: ColumnFrame[], bandPoints: PolyPoint[]): void {
+    for (let i = 0; i < frames.length; i++) {
+        const fr = frames[i]!;
+        const band = bandPoints[i];
+        if (!band) {
+            fr.bandZ = fr.B.z;
+            continue;
+        }
+        const alongH = (band.x - fr.B.x) * fr.h.x + (band.y - fr.B.y) * fr.h.y;
+        fr.bandInsetMm = Math.hypot(band.x - fr.B.x, band.y - fr.B.y);
+        fr.bandZ = tangentBandZ(fr, alongH);
+        band.z = fr.bandZ;
+    }
+}
+
 export function filletCenterAndF(
     B: XYZ,
     h: { x: number; y: number },
@@ -285,13 +345,14 @@ function sampleFilletFB(fr: ColumnFrame, nInterior: number): XYZ[] {
     const rings: XYZ[] = [];
     const count = Math.max(MIN_FILLET_RINGS, nInterior);
     const r = Math.max(fr.rFillet, 1e-6);
+    const floorZ = Number.isFinite(fr.bandZ) ? fr.bandZ : fr.B.z;
     for (let i = 1; i <= count; i++) {
         const phi = start + (theta * i) / (count + 1);
         const s = C.s + r * Math.cos(phi);
         rings.push({
             x: fr.B.x + fr.h.x * s,
             y: fr.B.y + fr.h.y * s,
-            z: C.z + r * Math.sin(phi),
+            z: Math.max(C.z + r * Math.sin(phi), floorZ),
         });
     }
     return rings;
@@ -573,6 +634,9 @@ export function initColumnFrames(
             shortChord,
             overhangMm: rimOverhangMm(R, outline),
             heightMm: height,
+            bandZ: B.z,
+            bandInsetMm: estimateBandInsetMm(r, Math.PI / 2),
+            arcEndZ: B.z,
         };
         return fr;
     });
@@ -704,6 +768,7 @@ export function buildBezierColumns(
         }
         if (!dirty) break;
     }
+    applyTangentBandZ(frames);
     const xyz: PolyPoint[][] = [];
     const implied: number[] = [];
     let maxOff = 0;
@@ -714,6 +779,7 @@ export function buildBezierColumns(
         const col = columnPoints(fr, nWall);
         col[0] = { ...fr.R };
         col[col.length - 1] = { ...fr.B };
+        fr.arcEndZ = col[col.length - 2]?.z ?? fr.B.z;
         for (const p of col) maxOff = Math.max(maxOff, offPlaneMm(p, fr.R, fr.h));
         xyz.push(col);
         const first = col[1] ?? fr.F;

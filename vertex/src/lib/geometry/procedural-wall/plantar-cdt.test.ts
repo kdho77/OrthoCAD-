@@ -38,4 +38,62 @@ describe("generated plantar CDT", () => {
             expect(edge.get(key(i, (i + 1) % n)) ?? 0).toBe(1);
         }
     });
+
+    test("library CDT with a constrained band keeps a disk", () => {
+        const n = 24;
+        const boundary = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 24 * Math.cos(a), y: 14 * Math.sin(a), z: 0 };
+        });
+        const innerRing = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 20 * Math.cos(a), y: 11 * Math.sin(a), z: 0.1 };
+        });
+        const mesh = buildGeneratedPlantar({
+            boundary,
+            dish: null,
+            zDelta: () => 0,
+            innerRing,
+        });
+        expect(mesh.bandCount).toBe(n);
+        expect(mesh.openEdges).toBe(0);
+        expect(mesh.missingBoundary).toBe(0);
+        expect(mesh.steinerCount).toBeGreaterThan(0);
+        const edge = new Map<string, number>();
+        const key = (a: number, b: number) => (a < b ? `${a},${b}` : `${b},${a}`);
+        for (const [a, b, c] of mesh.faces) {
+            for (const [i, j] of [
+                [a, b],
+                [b, c],
+                [c, a],
+            ] as Array<[number, number]>) {
+                if (i < n && j < n) edge.set(key(i, j), (edge.get(key(i, j)) ?? 0) + 1);
+            }
+        }
+        for (let i = 0; i < n; i++) {
+            expect(edge.get(key(i, (i + 1) % n)) ?? 0).toBe(1);
+        }
+    });
+
+    test("library CDT of a concave C has 0 open and 0 missing boundary edges", () => {
+        const boundary = [
+            { x: 0, y: 0, z: 0 },
+            { x: 20, y: 0, z: 0 },
+            { x: 20, y: 14, z: 0 },
+            { x: 12, y: 14, z: 0 },
+            { x: 12, y: 5, z: 0 },
+            { x: 8, y: 5, z: 0 },
+            { x: 8, y: 14, z: 0 },
+            { x: 0, y: 14, z: 0 },
+        ];
+        const mesh = buildGeneratedPlantar({
+            boundary,
+            dish: null,
+            zDelta: () => 0,
+            marginMm: 1.2,
+        });
+        expect(mesh.openEdges).toBe(0);
+        expect(mesh.missingBoundary).toBe(0);
+        expect(mesh.faces.length).toBeGreaterThan(6);
+    });
 });

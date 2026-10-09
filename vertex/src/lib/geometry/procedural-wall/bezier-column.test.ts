@@ -14,6 +14,7 @@ import {
     initColumnFrames,
     MERGE_ROW_MM,
     offPlaneMm,
+    R_SMOOTH_FRAC,
     rimOverhangMm,
     sampleByArcLength,
     sampleInPlaneSlope,
@@ -236,6 +237,10 @@ describe("bezier column", () => {
         expect(rows.find((r) => r.band === "heel")?.meanOverhangOverHeight).toBeCloseTo(0.2, 6);
     });
 
+    test("fillet radius smooths at most 5% per station", () => {
+        expect(R_SMOOTH_FRAC).toBe(0.05);
+    });
+
     test("circular fillet F is r inward and r up when the plantar is flat", () => {
         const B = { x: 5, y: 0, z: 0 };
         const h = { x: 1, y: 0 };
@@ -246,5 +251,31 @@ describe("bezier column", () => {
         expect(placed.F.z).toBeCloseTo(2, 5);
         expect(placed.theta).toBeCloseTo(Math.PI / 2, 5);
         expect(FILLET_R_CAP_MM).toBe(3);
+    });
+
+    test("fillet samples never drop below the tangent band z", () => {
+        const stations: HermiteStation[] = [];
+        for (let i = 0; i < 8; i++) {
+            const a = (i / 8) * Math.PI * 2;
+            stations.push(
+                station(20 * Math.cos(a), 12 * Math.sin(a), 12, {
+                    x: Math.cos(a),
+                    y: Math.sin(a),
+                }),
+            );
+        }
+        const junctions = stations.map(() => ({ planeN: { x: 0, y: 0, z: 1 }, slopeRad: 0.1 }));
+        const built = buildBezierColumns(
+            stations,
+            junctions,
+            defaults(),
+            stations.map((s) => s.rim),
+            () => 12,
+            14,
+        );
+        for (const fr of built.frames) {
+            expect(fr.bandZ).toBeGreaterThanOrEqual(fr.B.z - 1e-6);
+            expect(fr.arcEndZ).toBeGreaterThanOrEqual(fr.bandZ - 1e-6);
+        }
     });
 });

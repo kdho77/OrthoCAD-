@@ -2,19 +2,27 @@
 // See LICENSE file in the project root for full license information.
 
 export {
+    applyPlantarBandZ,
+    applyTangentBandZ,
     assertT0ClearsSheet,
+    BAND_INSET_MIN_MM,
     BEZIER_HANDLE_FRAC,
     COLUMN_PLANARITY_LIMIT_MM,
     type ColumnFrame,
+    estimateBandInsetMm,
     evalCubicBezier,
     FILLET_R_CAP_MM,
     FRAME_ANGLE_LIMIT_DEG,
     FRAME_SMOOTH_ITERS,
+    filletCenterAndF,
+    filletPathTangents,
     HANDLE_CHORD_CAP,
+    inwardOfOutline,
     MERGE_ROW_MM,
     type MinWallClamp,
     OUTLINE_STATION_SPACING_MM,
     offPlaneMm,
+    R_SMOOTH_FRAC,
     rimOverhangMm,
     sampleByArcLength,
     sampleInPlaneSlope,
@@ -23,6 +31,7 @@ export {
     T0_PIN_DEG,
     TOP_CLEARANCE_DEG,
     t0FromSheetSlope,
+    tangentBandZ,
     U_BANDS,
     type WallBandRow,
 } from "./bezier-column";
@@ -34,6 +43,7 @@ export {
     delaunayXY,
     insertConstraintEdges,
 } from "./cdt-band";
+export { assertLibraryDisk, libraryCdtInterior } from "./cdt-lib";
 export { fitClosedC2Spline, resampleClosedC2, resamplePolyline } from "./curves";
 export {
     applyMeasuredUnclamped,
@@ -64,6 +74,7 @@ export {
     countSelfIntersections,
     formatSiBreakdown,
     type SelfIntersectionReport,
+    type SiFrameLog,
     type WallSubClass,
 } from "./intersect";
 export {
@@ -94,12 +105,20 @@ export {
     tieredHausdorffReport,
 } from "./metrics";
 export { applyCurveModifiers } from "./modifiers";
+export {
+    applyOutlineClean,
+    cleanClosedLoop,
+    OUTLINE_COLLINEAR_MM,
+    OUTLINE_DEDUPE_MM,
+    OUTLINE_NUDGE_MM,
+} from "./outline-clean";
 export { assertNonCrossing, buildPlanformFrame } from "./planform";
 export {
     assertPlantarDisk,
     buildGeneratedPlantar,
     PLANTAR_MARGIN_MM,
     PLANTAR_STEINER_MM,
+    PLANTAR_STEINER_OUTLINE_FRAC,
 } from "./plantar-cdt";
 export { reconstructProceduralWalls } from "./reconstruct";
 export {
