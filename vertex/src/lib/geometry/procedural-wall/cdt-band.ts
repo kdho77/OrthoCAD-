@@ -643,15 +643,18 @@ export function constrainedDelaunayFlip(
     let map = build();
     for (let pass = 0; pass < 24; pass++) {
         let flipped = 0;
+        const used = new Set<number>();
         const keys = [...map.keys()];
         for (const k of keys) {
             const [ps, qs] = k.split(",").map(Number) as [number, number];
             if (isBoundary(ps, qs)) continue;
             const shared = map.get(k);
             if (!shared || shared.length !== 2) continue;
-            const f0 = faces[shared[0]!]!;
-            const f1 = faces[shared[1]!]!;
-            if (!f0 || !f1) continue;
+            const i0 = shared[0]!;
+            const i1 = shared[1]!;
+            if (used.has(i0) || used.has(i1)) continue;
+            const f0 = faces[i0]!;
+            const f1 = faces[i1]!;
             const u = thirdOf(f0, ps, qs);
             const v = thirdOf(f1, ps, qs);
             if (u === v) continue;
@@ -661,8 +664,10 @@ export function constrainedDelaunayFlip(
             const D = points[v]!;
             if (!inCircumcircle(A.x, A.y, B.x, B.y, C.x, C.y, D.x, D.y)) continue;
             if (!quadIsConvex(points, u, ps, v, qs)) continue;
-            faces[shared[0]!] = orientFace(points, u, v, ps);
-            faces[shared[1]!] = orientFace(points, u, v, qs);
+            faces[i0] = orientFace(points, u, v, ps);
+            faces[i1] = orientFace(points, u, v, qs);
+            used.add(i0);
+            used.add(i1);
             flipped++;
         }
         if (!flipped) break;
