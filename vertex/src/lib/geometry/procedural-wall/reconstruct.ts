@@ -23,8 +23,8 @@ import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy
 import { buildHermiteStations } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
 import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
-import { applyOutlineClean, mergeCloseOutlineStations } from "./outline-clean";
-import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
+import { applyOutlineClean, mergeCloseOutlineStations, mergeStationPair } from "./outline-clean";
+import { buildQuadGrid, placeSimpleInnerRing, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
 import { countPlanViewChordCrossings, pairAtNativeTop } from "./stations";
 import type { StockWallModel } from "./types";
 
@@ -322,6 +322,18 @@ export function reconstructProceduralWalls(
     densifyHeelForefootStations(stations, rimLocal, positions, indices, outlineLoop, model.bounds);
     applyOutlineClean(stations, rimLocal, indices);
     mergeCloseOutlineStations(stations, rimLocal, indices, 0.6);
+    for (let round = 0; round < 24; round++) {
+        try {
+            placeSimpleInnerRing(stations);
+            break;
+        } catch (err) {
+            const text = String(err);
+            const m = text.match(/min edge .* station (\d+)/);
+            if (!m || stations.length < 64) throw err;
+            const i = Number(m[1]);
+            mergeStationPair(stations, rimLocal, indices, (i + 1) % stations.length, i);
+        }
+    }
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,
         y: positions[i * 3 + 1]!,
