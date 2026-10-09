@@ -15,6 +15,7 @@ import {
     ensureCcw,
     fitClosedC2Spline,
     type PolyPoint,
+    polylineArcLengths,
     resampleClosedC2,
     resamplePolyline,
     startAtPosteriorHeel,
@@ -1067,46 +1068,74 @@ function rebuildC1BoundaryStrip(
         }));
         const innerOrdered = startAtPosteriorHeel(ensureCcw(innerPts)) as Array<PolyPoint & { i: number }>;
         const innerIdx = innerOrdered.map((p) => p.i);
-        const n = innerIdx.length;
+        const nOut = DEFAULT_LOFT_N;
         const outerSpline = fitClosedC2Spline(contour);
-        const outer = resampleClosedC2(outerSpline, n);
+        const outer = resampleClosedC2(outerSpline, nOut);
+        const innerLoop = innerOrdered.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+        const cInner = { x: 0, y: 0 };
+        for (const p of innerLoop) {
+            cInner.x += p.x;
+            cInner.y += p.y;
+        }
+        cInner.x /= Math.max(1, innerLoop.length);
+        cInner.y /= Math.max(1, innerLoop.length);
         const slopes = rimFaceSlope(pos, idx, innerIdx);
         const outPos = Array.from(pos);
         const outIdx = Array.from(idx);
         const midIdx: number[] = [];
         const outerIdx: number[] = [];
-        for (let i = 0; i < n; i++) {
-            const inner = {
-                x: outPos[innerIdx[i]! * 3]!,
-                y: outPos[innerIdx[i]! * 3 + 1]!,
-                z: outPos[innerIdx[i]! * 3 + 2]!,
-            };
+        const maxDz = PLANTAR_STRIP_MM * Math.tan(Math.PI / 6);
+        for (let i = 0; i < nOut; i++) {
             const o = outer[i]!;
-            const sl = slopes[i] ?? { n: 1, z: 0, nx: 0, ny: 0 };
-            const maxDz = PLANTAR_STRIP_MM * Math.tan(Math.PI / 6);
-            o.z = Math.min(PLANTAR_TRIM_Z_MM, inner.z + maxDz);
-            o.z = Math.max(inner.z, o.z);
-            const T0 = { n: sl.n * PLANTAR_STRIP_MM, z: sl.z * PLANTAR_STRIP_MM };
-            const dn = (o.x - inner.x) * sl.nx + (o.y - inner.y) * sl.ny;
-            const T1 = { n: Math.max(0.2, dn), z: 0 };
-            const midNZ = evalCubicHermite({ n: 0, z: inner.z }, T0, { n: dn, z: o.z }, T1, 0.45);
-            const mid = {
-                x: inner.x + sl.nx * midNZ.n,
-                y: inner.y + sl.ny * midNZ.n,
-                z: Math.min(Math.max(midNZ.z, inner.z), PLANTAR_TRIM_Z_MM),
+            const nxy = outwardNormal(outer, i, cInner);
+            const sl = slopes[Math.round((i / nOut) * innerIdx.length) % innerIdx.length] ?? {
+                n: 1,
+                z: 0,
+                nx: nxy.x,
+                ny: nxy.y,
             };
+            const iz = innerLoop[Math.round((i / nOut) * innerLoop.length) % innerLoop.length]!.z;
+            o.z = Math.min(PLANTAR_TRIM_Z_MM, iz + maxDz);
+            o.z = Math.max(iz, o.z);
+            const T0 = { n: sl.n * PLANTAR_STRIP_MM, z: sl.z * PLANTAR_STRIP_MM };
+            const T1 = { n: PLANTAR_STRIP_MM, z: 0 };
+            const midNZ = evalCubicHermite({ n: 0, z: iz }, T0, { n: PLANTAR_STRIP_MM, z: o.z }, T1, 0.45);
             midIdx.push(outPos.length / 3);
-            outPos.push(mid.x, mid.y, mid.z);
+            outPos.push(o.x - nxy.x * PLANTAR_STRIP_MM * 0.5, o.y - nxy.y * PLANTAR_STRIP_MM * 0.5, midNZ.z);
             outerIdx.push(outPos.length / 3);
             outPos.push(o.x, o.y, o.z);
         }
-        const pushQuad = (a: number, b: number, c: number, d: number) => {
-            outIdx.push(a, b, c, a, c, d);
+        const asPts = (ids: number[]): PolyPoint[] =>
+            ids.map((i) => ({ x: outPos[i * 3]!, y: outPos[i * 3 + 1]!, z: outPos[i * 3 + 2]! }));
+        const zip = (aIdx: number[], bIdx: number[]) => {
+            const nA = aIdx.length;
+            const nB = bIdx.length;
+            if (nA < 2 || nB < 2) return;
+            const sA = polylineArcLengths(asPts(aIdx));
+            const sB = polylineArcLengths(asPts(bIdx));
+            const totA = sA.total || 1;
+            const totB = sB.total || 1;
+            let i = 0;
+            let j = 0;
+            for (let step = 0; step < nA + nB; step++) {
+                const a0 = aIdx[i % nA]!;
+                const b0 = bIdx[j % nB]!;
+                if (i >= nA && j >= nB) break;
+                const nextA = sA.cum[Math.min(i + 1, nA)]! / totA;
+                const nextB = sB.cum[Math.min(j + 1, nB)]! / totB;
+                if (i < nA && (j >= nB || nextA <= nextB)) {
+                    outIdx.push(a0, aIdx[(i + 1) % nA]!, b0);
+                    i++;
+                } else {
+                    outIdx.push(a0, bIdx[(j + 1) % nB]!, b0);
+                    j++;
+                }
+            }
         };
-        for (let i = 0; i < n; i++) {
-            const j = (i + 1) % n;
-            pushQuad(innerIdx[i]!, innerIdx[j]!, midIdx[j]!, midIdx[i]!);
-            pushQuad(midIdx[i]!, midIdx[j]!, outerIdx[j]!, outerIdx[i]!);
+        zip(innerIdx, midIdx);
+        for (let i = 0; i < nOut; i++) {
+            const j = (i + 1) % nOut;
+            outIdx.push(midIdx[i]!, midIdx[j]!, outerIdx[j]!, midIdx[i]!, outerIdx[j]!, outerIdx[i]!);
         }
         const sheet = new BufferGeometry();
         sheet.setAttribute("position", new BufferAttribute(new Float32Array(outPos), 3));
