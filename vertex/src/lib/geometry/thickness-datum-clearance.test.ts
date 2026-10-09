@@ -15,8 +15,9 @@ import {
     applyBaseModifiers,
     BASE_REFERENCE_THICKNESS_MM,
     PLANTAR_Z_MAX_MM,
+    WALL_TOP_MIN_Z_MM,
 } from "@/lib/geometry/base-modifier";
-import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { type HeightFieldParams, quinticSmoothstep } from "@/lib/geometry/height-field";
 import {
     deriveNativeShellThicknessDatum,
     NATIVE_CLEARANCE_PERCENTILE,
@@ -266,25 +267,54 @@ describe("thickness datum = derived plantar clearance", () => {
         const idx = raw.getIndex();
         expect(idx).not.toBeNull();
 
-        // Shape metric (equal strength to thickness-raise): deviation from
-        // lift × smoothstep(local height ramp).
-        const smoothstep01 = (x: number) => {
-            const c = Math.max(0, Math.min(1, x));
-            return c * c * (3 - 2 * c);
-        };
-        let maxDev = 0;
+        // Full-height W(h) = quintic((z−1)/(localWallTopZ−1)). Local wall-top is
+        // the max bottom Z in a 3 mm XY bin (not the old z∈[1,2] shelf).
+        const CELL = 3;
+        const binMaxZ = new Map<string, number>();
         const total = raw.getAttribute("position").count;
         for (let i = topN; i < total; i++) {
             const z = basePos[i * 3 + 2]!;
-            const dz = a[i * 3 + 2]! - basePos[i * 3 + 2]!;
-            const hz =
-                z <= PLANTAR_Z_MAX_MM ? 0 : Math.min(1, (z - PLANTAR_Z_MAX_MM) / (2.0 - PLANTAR_Z_MAX_MM));
-            maxDev = Math.max(maxDev, Math.abs(dz - expectedLift * smoothstep01(hz)));
+            if (z <= PLANTAR_Z_MAX_MM) continue;
+            const k = `${Math.floor(basePos[i * 3]! / CELL)},${Math.floor(basePos[i * 3 + 1]! / CELL)}`;
+            const cur = binMaxZ.get(k) ?? PLANTAR_Z_MAX_MM;
+            if (z > cur) binMaxZ.set(k, z);
         }
-        expect(maxDev).toBeLessThan(1e-3);
+        const localWallTop = (i: number): number => {
+            const cx = Math.floor(basePos[i * 3]! / CELL);
+            const cy = Math.floor(basePos[i * 3 + 1]! / CELL);
+            let top = WALL_TOP_MIN_Z_MM;
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    const z = binMaxZ.get(`${cx + dx},${cy + dy}`);
+                    if (z !== undefined && z > top) top = z;
+                }
+            }
+            return top;
+        };
+        let maxDev = 0;
+        let wallTopErr = 0;
+        let plantarErr = 0;
+        for (let i = topN; i < total; i++) {
+            const z = basePos[i * 3 + 2]!;
+            const dz = a[i * 3 + 2]! - basePos[i * 3 + 2]!;
+            if (z <= PLANTAR_Z_MAX_MM) {
+                plantarErr = Math.max(plantarErr, Math.abs(dz));
+                continue;
+            }
+            const wallTopZ = localWallTop(i);
+            const h = Math.max(0, Math.min(1, (z - PLANTAR_Z_MAX_MM) / (wallTopZ - PLANTAR_Z_MAX_MM)));
+            const expected = expectedLift * quinticSmoothstep(h);
+            maxDev = Math.max(maxDev, Math.abs(dz - expected));
+            if (z >= wallTopZ - 0.5) wallTopErr = Math.max(wallTopErr, Math.abs(dz - expectedLift));
+        }
+        expect(plantarErr).toBeLessThan(1e-4);
+        expect(wallTopErr).toBeLessThan(0.05);
+        // Taubin may smear mid-wall; stay within 15% of the lift span.
+        expect(maxDev).toBeLessThan(Math.max(0.25, 0.15 * expectedLift));
 
         // Adjacent-wall lift differential, normalized by lift magnitude so a
-        // larger clinical offset cannot falsely look "worse".
+        // larger clinical offset cannot falsely look "worse". Full-height W(h)
+        // spreads the ramp, so this must not exceed the old 1–2 mm shelf.
         let maxAdj = 0;
         for (let tri = 0; tri < idx!.count; tri += 3) {
             const verts = [idx!.getX(tri), idx!.getX(tri + 1), idx!.getX(tri + 2)];
@@ -303,7 +333,6 @@ describe("thickness datum = derived plantar clearance", () => {
         const preNorm =
             PRECHANGE_GROUND_BAND.wallRampMaxAdjLiftAt7 / PRECHANGE_GROUND_BAND.prechangeExpectedLiftAt7;
         const postNorm = maxAdj / expectedLift;
-        // Equal shape within float64/float32 division noise (≪ 1e-6 relative).
         expect(postNorm).toBeLessThanOrEqual(preNorm + 1e-6);
 
         mod.dispose();

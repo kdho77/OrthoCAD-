@@ -15,6 +15,7 @@ import {
     PLANTAR_Z_MAX_MM,
 } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { defaultSideShapeFinish } from "@/lib/geometry/shape-finish-modifiers";
 import type { SideCorrections } from "@/types";
 import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
 import { measureWeldedFold } from "./helpers/welded-fold-metrics";
@@ -94,22 +95,48 @@ describe("wall fold — thickness fixtures (gated) + widen report", () => {
             const fold = measureWeldedFold(basePos, pos, index, heelOpts);
             console.log(`[THICK-FOLD ${name}]`, JSON.stringify(fold));
 
-            let plantarDrift = 0;
+            let plantarZChangeMm = 0;
             for (let i = topN; i < pos.length / 3; i++) {
                 if (basePos[i * 3 + thickAxis]! > PLANTAR_Z_MAX_MM) continue;
-                plantarDrift = Math.max(
-                    plantarDrift,
+                plantarZChangeMm = Math.max(
+                    plantarZChangeMm,
                     Math.abs(pos[i * 3 + thickAxis]! - basePos[i * 3 + thickAxis]!),
                 );
             }
-            console.log(`[THICK-FOLD ${name} plantarDrift]`, plantarDrift.toFixed(4));
+            const liftMm = c.heelLiftMm ?? 0;
+            console.log(
+                `[THICK-FOLD ${name} plantarZChangeMm]`,
+                plantarZChangeMm.toFixed(4),
+                liftMm > 0 ? "(expected seat raise from heel lift)" : "",
+            );
 
-            if (gated && (c.heelLiftMm ?? 0) === 0) {
-                expect(plantarDrift).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM);
+            if (gated && liftMm === 0) {
+                expect(plantarZChangeMm).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM);
             }
             if (gated && t <= 3) {
                 expect(fold.edgesGe10).toBeLessThanOrEqual(t === 2 ? 0 : 5);
                 expect(fold.maxWorseDeg).toBeLessThanOrEqual(t === 2 ? 2 : 16);
+            }
+            if (gated && t === 4) {
+                expect(fold.edgesGe10).toBeLessThanOrEqual(8);
+                expect(fold.maxWorseDeg).toBeLessThanOrEqual(24);
+            }
+            const full = measureWeldedFold(basePos, pos, index, {
+                topVertexCount: topN,
+                wallOnly: true,
+                thickAxis,
+            });
+            console.log(`[THICK-FOLD ${name} full-length]`, JSON.stringify(full));
+            if (gated && t === 2) {
+                expect(full.edgesGe10).toBeLessThanOrEqual(0);
+            }
+            if (gated && t === 3) {
+                expect(full.edgesGe10).toBeLessThanOrEqual(40);
+                expect(full.maxWorseDeg).toBeLessThanOrEqual(20);
+            }
+            if (gated && t === 4) {
+                expect(full.edgesGe10).toBeLessThanOrEqual(80);
+                expect(full.maxWorseDeg).toBeLessThanOrEqual(28);
             }
             console.log(`[THICK-FOLD ${name} vs-target]`, {
                 max: fold.maxWorseDeg,
@@ -144,6 +171,27 @@ describe("wall fold — thickness fixtures (gated) + widen report", () => {
             console.log(`[WIDEN-FOLD report ${name}]`, JSON.stringify(fold));
             mod.dispose();
         }
+
+        // Arch-grind lower wall must not rise when thickness leaves t=2 (Taubin).
+        const grindRise = (thicknessMm: number): number => {
+            const field = makeField({}, thicknessMm);
+            field.shapeFinish = { ...defaultSideShapeFinish(), archGrindDepthMm: 5 };
+            const mod = applyBaseModifiers(raw, field, 1);
+            const pos = mod.getAttribute("position")!.array as Float32Array;
+            let maxRise = 0;
+            for (let i = topN; i < pos.length / 3; i++) {
+                const z0 = basePos[i * 3 + thickAxis]!;
+                if (z0 <= PLANTAR_Z_MAX_MM || z0 > 3) continue;
+                maxRise = Math.max(maxRise, pos[i * 3 + thickAxis]! - z0);
+            }
+            mod.dispose();
+            return maxRise;
+        };
+        const grindT2 = grindRise(2);
+        const grindT3 = grindRise(3);
+        console.log(`[GRIND-WALL t2 vs t3]`, { grindT2, grindT3, delta: grindT3 - grindT2 });
+        expect(grindT3 - grindT2).toBeLessThan(0.2);
+
         raw.dispose();
     });
 });

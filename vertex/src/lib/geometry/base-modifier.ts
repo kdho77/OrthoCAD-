@@ -1557,28 +1557,56 @@ function buildShellFieldSyncFrame(
         });
     }
 
-    // Thickness / lift uses full-wall W(h), h=(z−1)/(wallTopZ(s)−1). The old
-    // z∈[1,2] shelf (WALL_TOP_MIN_Z_MM) creased the sidewall under t=3/4.
-    // Sample only wall-top verts (z≥2, near the rim), then diffuse along the
-    // rim loop so adjacent stations cannot jump and paint a 5° band.
-    const seedWallTopZ = new Float64Array(rimIndices.length);
-    const seedHit = new Uint8Array(rimIndices.length);
-    const nRim = seedWallTopZ.length;
+    // Thickness / lift uses full-wall W(h), h=(z−1)/(wallTopZ(s)−1).
+    // Unhit stations take a LOCAL crest (top-rim Z, else nearest sample) — never
+    // the tallest wall (~19 mm), which left midfoot crests at W≈0 (1–2 mm gap).
+    // Hit stations stay pinned through the rim-loop smooth so a 2 mm local fill
+    // cannot collapse a 19 mm neighbor (that restored the old z∈[1,2] crease).
+    const nRim = rimIndices.length;
+    const seedWallTopZ = new Float64Array(nRim);
+    const seedHit = new Uint8Array(nRim);
+    const localCrestZ = new Float64Array(nRim);
     let globalWallTopZ = WALL_TOP_MIN_Z_MM;
     for (const bv of bottomVerts) {
         if (bv.baseZ > globalWallTopZ) globalWallTopZ = bv.baseZ;
         if (bv.bestSeed < 0 || bv.rimBlend < 0.5 || bv.baseZ < WALL_TOP_MIN_Z_MM) continue;
-        if (!seedHit[bv.bestSeed] || bv.baseZ > seedWallTopZ[bv.bestSeed]!) {
-            seedWallTopZ[bv.bestSeed] = bv.baseZ;
-            seedHit[bv.bestSeed] = 1;
+        const s = bv.bestSeed;
+        if (!seedHit[s] || bv.baseZ > seedWallTopZ[s]!) {
+            seedWallTopZ[s] = bv.baseZ;
+            seedHit[s] = 1;
         }
     }
     for (let s = 0; s < nRim; s++) {
-        if (!seedHit[s]) seedWallTopZ[s] = globalWallTopZ;
+        const rimZ = baseArr[rimIndices[s]! * 3 + thickAxis]!;
+        if (seedHit[s]) {
+            localCrestZ[s] = seedWallTopZ[s]!;
+            continue;
+        }
+        let found = -1;
+        for (let k = 1; k < nRim; k++) {
+            const fw = (s + k) % nRim;
+            const bw = (s - k + nRim) % nRim;
+            if (seedHit[fw]) {
+                found = fw;
+                break;
+            }
+            if (seedHit[bw]) {
+                found = bw;
+                break;
+            }
+        }
+        const local =
+            rimZ >= WALL_TOP_MIN_Z_MM ? rimZ : found >= 0 ? seedWallTopZ[found]! : WALL_TOP_MIN_Z_MM;
+        seedWallTopZ[s] = local;
+        localCrestZ[s] = local;
     }
     for (let it = 0; it < 12; it++) {
         const next = new Float64Array(nRim);
         for (let s = 0; s < nRim; s++) {
+            if (seedHit[s]) {
+                next[s] = seedWallTopZ[s]!;
+                continue;
+            }
             const prev = seedWallTopZ[(s + nRim - 1) % nRim]!;
             const cur = seedWallTopZ[s]!;
             const nxt = seedWallTopZ[(s + 1) % nRim]!;
@@ -1591,7 +1619,10 @@ function buildShellFieldSyncFrame(
             bv.thicknessHz = 0;
             continue;
         }
+        // Unpaired verts keep the global crest — never a 2 mm default, which
+        // paints W=1 up a 19 mm wall and folds ~120°.
         let wallTopZ = globalWallTopZ;
+        let crestZ = globalWallTopZ;
         if (bv.bestSeed >= 0 && nRim > 1) {
             const s0 = bv.bestSeed;
             const sPrev = (s0 + nRim - 1) % nRim;
@@ -1602,10 +1633,28 @@ function buildShellFieldSyncFrame(
             const s1 = dPrev <= dNext ? sPrev : sNext;
             const d1 = dPrev <= dNext ? dPrev : dNext;
             const w = d0 + d1 > 1e-12 ? d1 / (d0 + d1) : 1;
-            wallTopZ = seedWallTopZ[s0]! * w + seedWallTopZ[s1]! * (1 - w);
+            // Do not blend a pinned tall sample with an unhit 2 mm neighbor.
+            if (seedHit[s0] !== seedHit[s1]) {
+                const keep = seedHit[s0] ? s0 : s1;
+                wallTopZ = seedWallTopZ[keep]!;
+                crestZ = localCrestZ[keep]!;
+            } else {
+                wallTopZ = seedWallTopZ[s0]! * w + seedWallTopZ[s1]! * (1 - w);
+                crestZ = localCrestZ[s0]! * w + localCrestZ[s1]! * (1 - w);
+            }
+        } else if (bv.bestSeed >= 0) {
+            wallTopZ = seedWallTopZ[bv.bestSeed]!;
+            crestZ = localCrestZ[bv.bestSeed]!;
         }
-        const denom = Math.max(wallTopZ, WALL_TOP_MIN_Z_MM) - PLANTAR_Z_MAX_MM;
+        wallTopZ = Math.max(wallTopZ, WALL_TOP_MIN_Z_MM);
+        crestZ = Math.max(crestZ, WALL_TOP_MIN_Z_MM);
+        const denom = wallTopZ - PLANTAR_Z_MAX_MM;
         bv.thicknessHz = denom > 1e-9 ? Math.max(0, Math.min(1, (bv.baseZ - PLANTAR_Z_MAX_MM) / denom)) : 0;
+        // Wall-top boundary (rim-paired crest) takes the full lift so ΔZ matches
+        // the top rim. Band is vs the unsmoothed local crest, not a 19 mm fill.
+        if (bv.rimBlend >= 0.5 && bv.baseZ >= crestZ - 0.35) {
+            bv.thicknessHz = 1;
+        }
     }
 
     return { rimIndices, rimLen, rimWid, rimHash, rimBins, rimCell, bottomVerts };
@@ -2212,6 +2261,8 @@ interface BottomWallSmoothFrame {
     adj: number[][];
     /** Pinned groups: plantar band (HC-1) + rim-paired wall tops (rim closure). */
     pinned: Uint8Array;
+    /** Plantar-band groups only (for grind-adjacent wall pins). */
+    plantar: Uint8Array;
     groupCount: number;
 }
 
@@ -2261,10 +2312,12 @@ function buildBottomWallSmoothFrame(
     }
 
     const pinned = new Uint8Array(groupCount);
+    const plantar = new Uint8Array(groupCount);
     for (let g = 0; g < groupCount; g++) {
         for (const vi of members[g]!) {
             if (baseArr[vi * 3 + thickAxis]! <= PLANTAR_Z_MAX_MM) {
                 pinned[g] = 1;
+                plantar[g] = 1;
                 break;
             }
         }
@@ -2309,7 +2362,7 @@ function buildBottomWallSmoothFrame(
         }
     }
 
-    return { groupOf, members, adj, pinned, groupCount };
+    return { groupOf, members, adj, pinned, plantar, groupCount };
 }
 
 function getBottomWallSmoothFrame(
@@ -2452,6 +2505,22 @@ function writeSmoothedWallDisplacement(
     }
 }
 
+/** Copy of `pinned` plus the wall ring next to plantar (arch-grind hinge). */
+function pinPlantarAdjacentWall(frame: BottomWallSmoothFrame): Uint8Array {
+    const { adj, pinned, plantar, groupCount } = frame;
+    const out = pinned.slice();
+    for (let g = 0; g < groupCount; g++) {
+        if (out[g]) continue;
+        for (const n of adj[g] ?? []) {
+            if (plantar[n]) {
+                out[g] = 1;
+                break;
+            }
+        }
+    }
+    return out;
+}
+
 /**
  * One welded Taubin pass (λ/μ pairs) after all wall movers. Volume-preserving
  * so thickness/lift walls stay in place while NN-seed folds are diffused.
@@ -2461,9 +2530,11 @@ function taubinSmoothBottomWallDisplacements(
     array: Float32Array,
     frame: BottomWallSmoothFrame,
     pairs: number,
+    pinGrindAdjacent = false,
 ): void {
     const baseArr = base.getAttribute("position")!.array as Float32Array;
-    const { members, adj, pinned, groupCount } = frame;
+    const { members, adj, groupCount } = frame;
+    const pinned = pinGrindAdjacent ? pinPlantarAdjacentWall(frame) : frame.pinned;
 
     let disp = new Float64Array(groupCount * 3);
     for (let g = 0; g < groupCount; g++) {
@@ -3119,8 +3190,8 @@ export function applyBaseModifiers(
         }
     }
 
-    // Thickness lift: one welded Taubin pass after all wall movers. Rim-transfer
-    // already ran its 4-iter Jacobi above (arch-heel / width contracts).
+    // One welded Taubin pass after wall movers. When arch grind ran, pin the
+    // wall ring next to the plantar band so the grind raise cannot bleed up.
     if (useShellFieldSync && !options?.skipBottomSync) {
         const thicknessLift = Math.abs(fieldForDelta.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-9;
         if (thicknessLift) {
@@ -3135,8 +3206,11 @@ export function applyBaseModifiers(
             );
             if (rimFrame && rimFrame.seeds.length > 0) {
                 const wallFrame = getBottomWallSmoothFrame(base, topVertexCount, thickAxis, rimFrame);
+                const grindOn =
+                    !!field.shapeFinish &&
+                    clampArchGrindDepthMm(field.shapeFinish.archGrindDepthMm, field.thicknessMm) > 0;
                 if (wallFrame) {
-                    taubinSmoothBottomWallDisplacements(base, array, wallFrame, WALL_TAUBIN_PAIRS);
+                    taubinSmoothBottomWallDisplacements(base, array, wallFrame, WALL_TAUBIN_PAIRS, grindOn);
                 }
             }
         }
