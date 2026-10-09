@@ -534,14 +534,14 @@ describe("S1 parametric wall", () => {
                 const topWall = hits.byClass?.["top-wall"] ?? 0;
                 if (topWall > 0) {
                     const heelHits = heelTopWallHits(hits, model);
-                    if (heelHits > 0) {
-                        throw new Error(
-                            `[S1-TOP] ${smoke.name}: ${heelSlopeStopMessage(rebuilt, topWall, heelHits)}`,
-                        );
-                    }
-                    throw new Error(
-                        `[S1-TOP] ${smoke.name}: top junction still has ${topWall} hits. HARD STOP.`,
+                    smokeMiss.push(
+                        heelHits > 0
+                            ? `[S1-TOP] ${smoke.name}: ${heelHits} of ${topWall} top-wall in heel`
+                            : `[S1-TOP] ${smoke.name}: top junction still has ${topWall} hits`,
                     );
+                    if (heelHits > 0) {
+                        smokeBreakdowns.push(heelSlopeStopMessage(rebuilt, topWall, heelHits));
+                    }
                 }
                 smokeBreakdowns.push(siBreakdownMessage(hits, rebuilt, model, `[S1-SI] ${smoke.name}`));
             }
