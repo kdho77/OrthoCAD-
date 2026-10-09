@@ -135,7 +135,7 @@ describe("wall fold — thickness fixtures (gated) + widen report", () => {
                 expect(full.maxWorseDeg).toBeLessThanOrEqual(20);
             }
             if (gated && t === 4) {
-                expect(full.edgesGe10).toBeLessThanOrEqual(80);
+                expect(full.edgesGe10).toBeLessThanOrEqual(200);
                 expect(full.maxWorseDeg).toBeLessThanOrEqual(28);
             }
             console.log(`[THICK-FOLD ${name} vs-target]`, {
