@@ -327,10 +327,11 @@ export function reconstructProceduralWalls(
         y: positions[i * 3 + 1]!,
         z: positions[i * 3 + 2]!,
     }));
-    const nLoft = options.n ?? DEFAULT_LOFT_N;
+    const nLoft = nativePlantarIdx.length >= 32 ? nativePlantarIdx.length : (options.n ?? DEFAULT_LOFT_N);
     const pairing = pairByOutwardRay(plantarPts, rimPts, nLoft);
-    const stationBot: number[] = pairing.plantar.map((p) => push(p));
-    zipClosedLoops(nativePlantarIdx, stationBot, positions, pushTri);
+    const shareRim = pairing.plantar.length === nativePlantarIdx.length;
+    const stationBot: number[] = shareRim ? nativePlantarIdx.slice() : pairing.plantar.map((p) => push(p));
+    if (!shareRim) zipClosedLoops(nativePlantarIdx, stationBot, positions, pushTri);
     const stations = buildHermiteStations(pairing.plantar, pairing.top, model.bounds);
     for (let i = 0; i < stations.length; i++) {
         const n = pairing.normals[i];

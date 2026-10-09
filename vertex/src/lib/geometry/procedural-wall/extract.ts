@@ -26,6 +26,23 @@ import { buildPlanformFrame } from "./planform";
 import { offsetClosedInward } from "./stations";
 import { DEFAULT_LOFT_N, type StockWallModel, type UvHeightField, type WallProfile } from "./types";
 
+function minDistToLoopXY(x: number, y: number, loop: PolyPoint[]): number {
+    let best = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const len2 = ex * ex + ey * ey;
+        const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((x - a.x) * ex + (y - a.y) * ey) / len2)) : 0;
+        const dx = x - (a.x + ex * t);
+        const dy = y - (a.y + ey * t);
+        const d = dx * dx + dy * dy;
+        if (d < best) best = d;
+    }
+    return Math.sqrt(best);
+}
+
 const UV_CELL_MM = 0.4;
 const OUTLINE_BINS = 360;
 const OFFSET_H = [0, 0.06, 0.12, 0.18, 0.25, 0.32, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
@@ -1005,7 +1022,6 @@ function rebuildC1BoundaryStrip(
         z: positions[i * 3 + 2]!,
     }));
     const contour = startAtPosteriorHeel(ensureCcw(rimPts));
-    const innerPoly = offsetClosedInward(contour, PLANTAR_STRIP_MM);
     const keep: Array<{ i0: number; i1: number; i2: number }> = [];
     for (let t = 0; t < indices.length; t += 3) {
         const i0 = indices[t]!;
@@ -1013,7 +1029,7 @@ function rebuildC1BoundaryStrip(
         const i2 = indices[t + 2]!;
         const info = faceNzCz(positions, i0, i1, i2);
         if (!info) continue;
-        if (!pointInPoly(info.cx, info.cy, innerPoly)) continue;
+        if (minDistToLoopXY(info.cx, info.cy, contour) < PLANTAR_STRIP_MM) continue;
         keep.push({ i0, i1, i2 });
     }
     if (keep.length < 8) return null;
@@ -1066,8 +1082,10 @@ function rebuildC1BoundaryStrip(
                 z: outPos[innerIdx[i]! * 3 + 2]!,
             };
             const o = outer[i]!;
-            o.z = Math.min(o.z, PLANTAR_TRIM_Z_MM);
             const sl = slopes[i] ?? { n: 1, z: 0, nx: 0, ny: 0 };
+            const maxDz = PLANTAR_STRIP_MM * Math.tan(Math.PI / 6);
+            o.z = Math.min(PLANTAR_TRIM_Z_MM, inner.z + maxDz);
+            o.z = Math.max(inner.z, o.z);
             const T0 = { n: sl.n * PLANTAR_STRIP_MM, z: sl.z * PLANTAR_STRIP_MM };
             const dn = (o.x - inner.x) * sl.nx + (o.y - inner.y) * sl.ny;
             const T1 = { n: Math.max(0.2, dn), z: 0 };
@@ -1075,7 +1093,7 @@ function rebuildC1BoundaryStrip(
             const mid = {
                 x: inner.x + sl.nx * midNZ.n,
                 y: inner.y + sl.ny * midNZ.n,
-                z: Math.min(midNZ.z, PLANTAR_TRIM_Z_MM),
+                z: Math.min(Math.max(midNZ.z, inner.z), PLANTAR_TRIM_Z_MM),
             };
             midIdx.push(outPos.length / 3);
             outPos.push(mid.x, mid.y, mid.z);

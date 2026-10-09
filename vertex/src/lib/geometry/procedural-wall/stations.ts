@@ -266,8 +266,10 @@ export function columnSidewaysSkewMm(
  * Both loops are resampled to N; station index is strictly increasing.
  */
 export function pairByOutwardRay(plantarLoop: PolyPoint[], topLoop: PolyPoint[], n: number): StationPairing {
-    const spline = fitClosedC2Spline(plantarLoop);
-    const plantar = resampleClosedC2(spline, n);
+    const plantar =
+        n > 0 && plantarLoop.length === n
+            ? plantarLoop.map((p) => ({ ...p }))
+            : resampleClosedC2(fitClosedC2Spline(plantarLoop), n);
     const c = centroidOf(plantar);
     const rawN = plantar.map((_, i) => outwardNormal(plantar, i, c));
     const normals = smoothNormals(rawN);
