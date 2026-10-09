@@ -279,24 +279,59 @@ function estimateFilletRadius(st: HermiteStation, planLen: number): number {
     return planLen < SHORT_CHORD_MM ? Math.min(rawR, 0.4) : Math.min(rawR, Math.max(0.15, planLen * 0.8));
 }
 
-function outlineInward(i: number, outline: PolyPoint[]): { x: number; y: number } {
-    const n = outline.length;
-    const a = outline[(i + n - 1) % n]!;
-    const b = outline[i]!;
-    const c = outline[(i + 1) % n]!;
-    const ex = c.x - a.x;
-    const ey = c.y - a.y;
-    let nx = -ey;
-    let ny = ex;
-    const len = Math.hypot(nx, ny) || 1;
-    nx /= len;
-    ny /= len;
-    const probe = { x: b.x + nx * 0.5, y: b.y + ny * 0.5 };
+function edgeInward(a: PolyPoint, b: PolyPoint, outline: PolyPoint[]): { x: number; y: number } {
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const len = Math.hypot(ex, ey) || 1;
+    let nx = -ey / len;
+    let ny = ex / len;
+    const probe = { x: (a.x + b.x) * 0.5 + nx * 0.5, y: (a.y + b.y) * 0.5 + ny * 0.5 };
     if (!pointInPoly(probe.x, probe.y, outline)) {
         nx = -nx;
         ny = -ny;
     }
     return { x: nx, y: ny };
+}
+
+/**
+ * Parallel-offset miter at station i. I = B + m * d, where d is the
+ * outline-inward offset distance and |m| = 1 / sin(α/2) for a convex vertex.
+ * Adjacent I edges stay copies of the outline edges (same length) when d is
+ * uniform. Runaway miters at needle corners are clipped.
+ */
+const MITER_LEN_CAP = 4;
+
+function outlineInward(i: number, outline: PolyPoint[]): { x: number; y: number } {
+    const n = outline.length;
+    const a = outline[(i + n - 1) % n]!;
+    const b = outline[i]!;
+    const c = outline[(i + 1) % n]!;
+    const n1 = edgeInward(a, b, outline);
+    const n2 = edgeInward(b, c, outline);
+    const denom = 1 + n1.x * n2.x + n1.y * n2.y;
+    let mx: number;
+    let my: number;
+    if (Math.abs(denom) < 1e-4) {
+        mx = n1.x + n2.x;
+        my = n1.y + n2.y;
+        const len = Math.hypot(mx, my) || 1;
+        mx /= len;
+        my /= len;
+    } else {
+        mx = (n1.x + n2.x) / denom;
+        my = (n1.y + n2.y) / denom;
+    }
+    const mlen = Math.hypot(mx, my);
+    if (mlen > MITER_LEN_CAP) {
+        mx *= MITER_LEN_CAP / mlen;
+        my *= MITER_LEN_CAP / mlen;
+    }
+    const probe = { x: b.x + mx * 0.4, y: b.y + my * 0.4 };
+    if (!pointInPoly(probe.x, probe.y, outline)) {
+        mx = -mx;
+        my = -my;
+    }
+    return { x: mx, y: my };
 }
 
 function bandFromInsets(
@@ -447,9 +482,9 @@ export function assertSimpleInnerRing(ring: PolyPoint[], outline: PolyPoint[]): 
 }
 
 /**
- * Simple inner band ring I: offset each B along the outline inward by
- * max(r, 1.5). Crossing stations shrink d; d is Laplacian-smoothed at most
- * 10% per station. I stays ≥ 1.0 mm from the outline; min edge ≥ 0.05 mm.
+ * Simple inner band ring I: parallel outline-inward offset by max(r, 1.5).
+ * Crossing stations shrink d; d is Laplacian-smoothed at most 10% per station.
+ * I stays ≥ 1.0 mm from the outline; min edge ≥ 0.05 mm. Stations are not welded.
  */
 export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlacement {
     const outline = stations.map((s) => s.outline);
@@ -475,14 +510,6 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
             else if (clearance < I_CLEARANCE_MM) pushOut.add(i);
         }
         for (const i of ringIntersectsOutline(ring, outline)) bad.add(i);
-        for (let i = 0; i < n; i++) {
-            const a = ring[i]!;
-            const b = ring[(i + 1) % n]!;
-            if (Math.hypot(b.x - a.x, b.y - a.y) < I_MIN_EDGE_MM) {
-                bad.add(i);
-                bad.add((i + 1) % n);
-            }
-        }
         if (bad.size === 0 && pushOut.size === 0) {
             if (pass === 0 || pass % 4 === 3) break;
             smoothInsets(insets);
@@ -509,6 +536,33 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
         if (pass % 3 === 2) smoothInsets(insets);
     }
     const ring = bandFromInsets(outline, dirs, insets);
+    const shortAt = shortEdgeStation(ring);
+    const win = [-2, -1, 0, 1, 2].map((k) => {
+        const j = (shortAt + k + n) % n;
+        const a = outline[j]!;
+        const b = outline[(j + 1) % n]!;
+        const ia = ring[j]!;
+        const ib = ring[(j + 1) % n]!;
+        return {
+            j,
+            outE: Number(Math.hypot(b.x - a.x, b.y - a.y).toFixed(3)),
+            iE: Number(Math.hypot(ib.x - ia.x, ib.y - ia.y).toFixed(3)),
+            d: Number(insets[j]!.toFixed(3)),
+            m: Number(Math.hypot(dirs[j]!.x, dirs[j]!.y).toFixed(3)),
+        };
+    });
+    console.log(
+        "[S1-I-DIAG]",
+        JSON.stringify({
+            minI: Number(minEdgeMm(ring).toFixed(3)),
+            minOut: Number(minEdgeMm(outline).toFixed(3)),
+            turning: Number(turningNumber(ring).toFixed(3)),
+            minC: Number(minClearanceMm(ring, outline).toFixed(3)),
+            shortAt,
+            around: win,
+            inset: [Number(Math.min(...insets).toFixed(3)), Number(Math.max(...insets).toFixed(3))],
+        }),
+    );
     const checked = assertSimpleInnerRing(ring, outline);
     return { ...checked, ring, dirs, insets };
 }
