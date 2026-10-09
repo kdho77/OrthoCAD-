@@ -4,6 +4,7 @@
 import type { BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
+import { averageCoincidentNormals } from "@/lib/geometry/average-coincident-normals";
 import { getDesignBase } from "@/lib/geometry/base-asset";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
@@ -30,6 +31,8 @@ import {
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
 import type { DesignState, Side, SideCorrections } from "@/types";
+
+export { averageCoincidentNormals } from "@/lib/geometry/average-coincident-normals";
 
 // Base + Modifier deformation core (see docs/base-modifier-architecture.md).
 //
@@ -69,6 +72,24 @@ const ZERO_CORRECTIONS: SideCorrections = {
  * thickness (see requirement: thickness expands upward from the stable bottom).
  */
 export const BASE_REFERENCE_THICKNESS_MM = 2;
+
+/** True when the field will deform the imported base (skip raw-base OCCT sew). */
+export function fieldHasMeshModifiers(field: HeightFieldParams): boolean {
+    const c = field.corrections;
+    if (Math.abs(field.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-3) return true;
+    if (Object.values(c).some((v) => typeof v === "number" && Math.abs(v) > 1e-3)) return true;
+    if (c.rearfootWedge || c.forefootWedge) return true;
+    if (field.elements && field.elements.length > 0) return true;
+    if (field.trimline && field.trimline.points.length >= 4) return true;
+    const sf = field.shapeFinish;
+    if (sf) {
+        if (sf.topCoverAccommodateMm > 0.05) return true;
+        if (sf.trimmableForefoot && sf.trimmableForefootExtraMm > 0.05) return true;
+        if (sf.archGrindDepthMm > 0.05) return true;
+        if (sf.archSkiveMm > 0.05) return true;
+    }
+    return false;
+}
 
 /** Neutral field (no corrections, no elements) used as the displacement baseline. */
 function neutralField(field: HeightFieldParams): HeightFieldParams {
@@ -1507,10 +1528,7 @@ function buildShellFieldSyncFrame(
             rimBlend = wDist * wHeight;
         }
 
-        const thicknessHz =
-            baseZ <= PLANTAR_Z_MAX_MM
-                ? 0
-                : Math.min(1, (baseZ - PLANTAR_Z_MAX_MM) / (WALL_TOP_MIN_Z_MM - PLANTAR_Z_MAX_MM));
+        const thicknessHz = 0;
 
         const depthQueryLen = lenCoord;
         let depthQueryWid = widCoord;
@@ -1537,6 +1555,57 @@ function buildShellFieldSyncFrame(
             depthQueryLen,
             depthQueryWid,
         });
+    }
+
+    // Thickness / lift uses full-wall W(h), h=(z−1)/(wallTopZ(s)−1). The old
+    // z∈[1,2] shelf (WALL_TOP_MIN_Z_MM) creased the sidewall under t=3/4.
+    // Sample only wall-top verts (z≥2, near the rim), then diffuse along the
+    // rim loop so adjacent stations cannot jump and paint a 5° band.
+    const seedWallTopZ = new Float64Array(rimIndices.length);
+    const seedHit = new Uint8Array(rimIndices.length);
+    const nRim = seedWallTopZ.length;
+    let globalWallTopZ = WALL_TOP_MIN_Z_MM;
+    for (const bv of bottomVerts) {
+        if (bv.baseZ > globalWallTopZ) globalWallTopZ = bv.baseZ;
+        if (bv.bestSeed < 0 || bv.rimBlend < 0.5 || bv.baseZ < WALL_TOP_MIN_Z_MM) continue;
+        if (!seedHit[bv.bestSeed] || bv.baseZ > seedWallTopZ[bv.bestSeed]!) {
+            seedWallTopZ[bv.bestSeed] = bv.baseZ;
+            seedHit[bv.bestSeed] = 1;
+        }
+    }
+    for (let s = 0; s < nRim; s++) {
+        if (!seedHit[s]) seedWallTopZ[s] = globalWallTopZ;
+    }
+    for (let it = 0; it < 12; it++) {
+        const next = new Float64Array(nRim);
+        for (let s = 0; s < nRim; s++) {
+            const prev = seedWallTopZ[(s + nRim - 1) % nRim]!;
+            const cur = seedWallTopZ[s]!;
+            const nxt = seedWallTopZ[(s + 1) % nRim]!;
+            next[s] = 0.5 * cur + 0.25 * prev + 0.25 * nxt;
+        }
+        seedWallTopZ.set(next);
+    }
+    for (const bv of bottomVerts) {
+        if (bv.baseZ <= PLANTAR_Z_MAX_MM) {
+            bv.thicknessHz = 0;
+            continue;
+        }
+        let wallTopZ = globalWallTopZ;
+        if (bv.bestSeed >= 0 && nRim > 1) {
+            const s0 = bv.bestSeed;
+            const sPrev = (s0 + nRim - 1) % nRim;
+            const sNext = (s0 + 1) % nRim;
+            const d0 = (rimLen[s0]! - bv.lenCoord) ** 2 + (rimWid[s0]! - bv.widCoord) ** 2;
+            const dPrev = (rimLen[sPrev]! - bv.lenCoord) ** 2 + (rimWid[sPrev]! - bv.widCoord) ** 2;
+            const dNext = (rimLen[sNext]! - bv.lenCoord) ** 2 + (rimWid[sNext]! - bv.widCoord) ** 2;
+            const s1 = dPrev <= dNext ? sPrev : sNext;
+            const d1 = dPrev <= dNext ? dPrev : dNext;
+            const w = d0 + d1 > 1e-12 ? d1 / (d0 + d1) : 1;
+            wallTopZ = seedWallTopZ[s0]! * w + seedWallTopZ[s1]! * (1 - w);
+        }
+        const denom = Math.max(wallTopZ, WALL_TOP_MIN_Z_MM) - PLANTAR_Z_MAX_MM;
+        bv.thicknessHz = denom > 1e-9 ? Math.max(0, Math.min(1, (bv.baseZ - PLANTAR_Z_MAX_MM) / denom)) : 0;
     }
 
     return { rimIndices, rimLen, rimWid, rimHash, rimBins, rimCell, bottomVerts };
@@ -2128,8 +2197,12 @@ function transferRimConformityDeltas(
 //  - wall-top pin keeps rim closure (wall top ≡ transferred rim delta).
 // A deviation clamp bounds shape drift to SMOOTH_INWARD_LIMIT_MM.
 
-/** Diffusion iterations for the wall displacement field (0.5 blend per iter). */
+/** Jacobi iterations on the rim-transfer path (arch-heel / width contracts). */
 const WALL_DISPLACEMENT_SMOOTH_ITERS = 4;
+/** Taubin pairs after all wall movers on the thickness/sync path (λ=0.5, μ=−0.53). */
+const WALL_TAUBIN_PAIRS = 16;
+const WALL_TAUBIN_LAMBDA = 0.5;
+const WALL_TAUBIN_MU = -0.53;
 
 interface BottomWallSmoothFrame {
     /** Weld group per vertex; −1 for top-mesh verts. */
@@ -2323,6 +2396,50 @@ function smoothBottomWallDisplacements(
         }
     }
 
+    writeSmoothedWallDisplacement(baseArr, array, members, disp, groupCount);
+}
+
+function jacobiWallStep(
+    disp: Float64Array,
+    adj: number[][],
+    pinned: Uint8Array,
+    groupCount: number,
+    lambda: number,
+): Float64Array {
+    const next = new Float64Array(groupCount * 3);
+    for (let g = 0; g < groupCount; g++) {
+        if (pinned[g] || adj[g]!.length === 0) {
+            next[g * 3] = disp[g * 3]!;
+            next[g * 3 + 1] = disp[g * 3 + 1]!;
+            next[g * 3 + 2] = disp[g * 3 + 2]!;
+            continue;
+        }
+        let sx = 0;
+        let sy = 0;
+        let sz = 0;
+        for (const n of adj[g]!) {
+            sx += disp[n * 3]!;
+            sy += disp[n * 3 + 1]!;
+            sz += disp[n * 3 + 2]!;
+        }
+        const inv = 1 / adj[g]!.length;
+        const ax = sx * inv;
+        const ay = sy * inv;
+        const az = sz * inv;
+        next[g * 3] = disp[g * 3]! + lambda * (ax - disp[g * 3]!);
+        next[g * 3 + 1] = disp[g * 3 + 1]! + lambda * (ay - disp[g * 3 + 1]!);
+        next[g * 3 + 2] = disp[g * 3 + 2]! + lambda * (az - disp[g * 3 + 2]!);
+    }
+    return next;
+}
+
+function writeSmoothedWallDisplacement(
+    baseArr: Float32Array,
+    array: Float32Array,
+    members: number[][],
+    disp: Float64Array,
+    groupCount: number,
+): void {
     for (let g = 0; g < groupCount; g++) {
         const gx = disp[g * 3]!;
         const gy = disp[g * 3 + 1]!;
@@ -2333,6 +2450,57 @@ function smoothBottomWallDisplacements(
             array[vi * 3 + 2] = baseArr[vi * 3 + 2]! + gz;
         }
     }
+}
+
+/**
+ * One welded Taubin pass (λ/μ pairs) after all wall movers. Volume-preserving
+ * so thickness/lift walls stay in place while NN-seed folds are diffused.
+ */
+function taubinSmoothBottomWallDisplacements(
+    base: BufferGeometry,
+    array: Float32Array,
+    frame: BottomWallSmoothFrame,
+    pairs: number,
+): void {
+    const baseArr = base.getAttribute("position")!.array as Float32Array;
+    const { members, adj, pinned, groupCount } = frame;
+
+    let disp = new Float64Array(groupCount * 3);
+    for (let g = 0; g < groupCount; g++) {
+        const m = members[g]!;
+        let sx = 0;
+        let sy = 0;
+        let sz = 0;
+        for (const vi of m) {
+            sx += array[vi * 3]! - baseArr[vi * 3]!;
+            sy += array[vi * 3 + 1]! - baseArr[vi * 3 + 1]!;
+            sz += array[vi * 3 + 2]! - baseArr[vi * 3 + 2]!;
+        }
+        disp[g * 3] = sx / m.length;
+        disp[g * 3 + 1] = sy / m.length;
+        disp[g * 3 + 2] = sz / m.length;
+    }
+    const init = disp.slice();
+
+    for (let it = 0; it < pairs; it++) {
+        disp = jacobiWallStep(disp, adj, pinned, groupCount, WALL_TAUBIN_LAMBDA);
+        disp = jacobiWallStep(disp, adj, pinned, groupCount, WALL_TAUBIN_MU);
+    }
+
+    for (let g = 0; g < groupCount; g++) {
+        const dx = disp[g * 3]! - init[g * 3]!;
+        const dy = disp[g * 3 + 1]! - init[g * 3 + 1]!;
+        const dz = disp[g * 3 + 2]! - init[g * 3 + 2]!;
+        const dev = Math.hypot(dx, dy, dz);
+        if (dev > 1e-12) {
+            const k = (Math.tanh(dev / SMOOTH_INWARD_LIMIT_MM) * SMOOTH_INWARD_LIMIT_MM) / dev;
+            disp[g * 3] = init[g * 3]! + dx * k;
+            disp[g * 3 + 1] = init[g * 3 + 1]! + dy * k;
+            disp[g * 3 + 2] = init[g * 3 + 2]! + dz * k;
+        }
+    }
+
+    writeSmoothedWallDisplacement(baseArr, array, members, disp, groupCount);
 }
 
 /** Verification helper: post-smoothing lateral delta stats for heel-cup width. */
@@ -2811,7 +2979,7 @@ export function applyBaseModifiers(
                         neutral,
                         edgeProfile,
                     );
-                    F += (fFull - fCorrectionsLocal) * rimConformityHeightWeight(bv.thicknessHz);
+                    F += (fFull - fCorrectionsLocal) * quinticSmoothstep(bv.thicknessHz);
                 }
 
                 array[i * 3 + thickAxis] += F;
@@ -2951,6 +3119,29 @@ export function applyBaseModifiers(
         }
     }
 
+    // Thickness lift: one welded Taubin pass after all wall movers. Rim-transfer
+    // already ran its 4-iter Jacobi above (arch-heel / width contracts).
+    if (useShellFieldSync && !options?.skipBottomSync) {
+        const thicknessLift = Math.abs(fieldForDelta.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-9;
+        if (thicknessLift) {
+            const rimFrame = getRimConformityFrame(
+                base,
+                topVertexCount,
+                lengthAxis,
+                widthAxis,
+                thickAxis,
+                lenMin,
+                lenSize,
+            );
+            if (rimFrame && rimFrame.seeds.length > 0) {
+                const wallFrame = getBottomWallSmoothFrame(base, topVertexCount, thickAxis, rimFrame);
+                if (wallFrame) {
+                    taubinSmoothBottomWallDisplacements(base, array, wallFrame, WALL_TAUBIN_PAIRS);
+                }
+            }
+        }
+    }
+
     if (originalBottomZ && typeof console !== "undefined" && !useShellFieldSync) {
         let maxDrift = 0;
         const baseArr = base.getAttribute("position")!.array as Float32Array;
@@ -2967,6 +3158,7 @@ export function applyBaseModifiers(
     pos.needsUpdate = true;
     if (!options?.skipNormals) {
         geometry.computeVertexNormals();
+        averageCoincidentNormals(geometry, 60);
         geometry.computeBoundingBox();
         geometry.computeBoundingSphere();
     } else {

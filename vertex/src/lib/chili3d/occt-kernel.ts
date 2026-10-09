@@ -1,21 +1,20 @@
-import { shapesToStl, type IShape } from "@chili3d/core";
+import { type IShape, shapesToStl } from "@chili3d/core";
 import { ShapeFactory } from "@chili3d/wasm";
 import type { BufferGeometry } from "three";
 import type { GeometryTier, IGeometryKernel, SolidResult } from "@/lib/chili3d/kernel";
+import { fieldHasMeshModifiers, modifiedBaseResult } from "@/lib/geometry/base-modifier";
 import {
     applyBaseBooleansOnSewnSolid,
     applyRimBlend,
     applyThicknessToSewnBase,
     sewGlbGeometryToSolid,
 } from "@/lib/geometry/base-occt";
-import { modifiedBaseResult } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { buildInsoleGeometry, type InsoleParams } from "@/lib/geometry/insole";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { shapeToBufferGeometry } from "@/lib/geometry/mesh-bridge";
 import { buildOcctInsoleSolid } from "@/lib/geometry/occt-insole";
-import { repairOcctSolid } from "@/lib/geometry/repair";
-import { validateSolid } from "@/lib/geometry/repair";
+import { repairOcctSolid, validateSolid } from "@/lib/geometry/repair";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 
 const shapeByGeometry = new WeakMap<BufferGeometry, IShape>();
@@ -63,6 +62,31 @@ export class OcctKernel implements IGeometryKernel {
         // Always compute the deformation result first (fast, stable bottom guarantee,
         // and the universal fallback).
         const deform = modifiedBaseResult(base, field, smoothingIterations);
+
+        // Mesh modifiers already live on deform.geometry. Sewing the RAW base
+        // would discard that deformation (thickness, widen, arch, …).
+        if (fieldHasMeshModifiers(field)) {
+            try {
+                const sewn = sewGlbGeometryToSolid(this.factory, deform.geometry);
+                if (!sewn) return deform;
+                let solid = applyBaseBooleansOnSewnSolid(this.factory, sewn, field);
+                solid = applyRimBlend(this.factory, solid, 1.0);
+                const repaired = repairOcctSolid(this.factory, solid);
+                const geometry = shapeToBufferGeometry(repaired);
+                shapeByGeometry.set(geometry, repaired);
+                const manifold = validateSolid(repaired, geometry);
+                if (!manifold.isWatertight && deform.manifold.isWatertight) {
+                    geometry.dispose();
+                    return deform;
+                }
+                return { geometry, manifold };
+            } catch (err) {
+                if (typeof console !== "undefined") {
+                    console.warn("[OcctKernel] deformed sew failed, using mesh deformation:", err);
+                }
+                return deform;
+            }
+        }
 
         // Only attempt the sewn authoritative path when we are the OCCT kernel and
         // the caller is asking for manufacturing quality (smoothingIterations >= 1
@@ -120,13 +144,17 @@ export class OcctKernel implements IGeometryKernel {
      */
     exportManufacturingStlFromBase(base: BufferGeometry, field: HeightFieldParams): ArrayBuffer | null {
         try {
-            const sewn = sewGlbGeometryToSolid(this.factory, base);
+            const deform = fieldHasMeshModifiers(field) ? modifiedBaseResult(base, field, 0) : null;
+            const sewn = sewGlbGeometryToSolid(this.factory, deform ? deform.geometry : base);
             if (!sewn) return null;
 
             let solid = applyBaseBooleansOnSewnSolid(this.factory, sewn, field);
             solid = applyRimBlend(this.factory, solid, 1.0);
-            const method = (field as { method?: "printing_solid" | "printing_shell" | "milling_3axis" }).method;
-            solid = applyThicknessToSewnBase(this.factory, solid, field.thicknessMm, method);
+            const method = (field as { method?: "printing_solid" | "printing_shell" | "milling_3axis" })
+                .method;
+            if (!deform) {
+                solid = applyThicknessToSewnBase(this.factory, solid, field.thicknessMm, method);
+            }
             const repaired = repairOcctSolid(this.factory, solid);
             const bytes = shapesToStl([repaired], { binary: true });
             return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
