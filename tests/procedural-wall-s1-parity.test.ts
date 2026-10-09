@@ -226,6 +226,14 @@ describe("S1 parametric wall", () => {
                 model.outline.rimLocal,
             );
             const ud = rebuilt.userData as {
+                pairingMethod?: string;
+                masterMinRadiusMm?: number;
+                waistMinRadiusMm?: number;
+                maxSepMm?: number;
+                dishLost?: boolean;
+                floodFaceCount?: number;
+                floodZSpanMm?: number;
+                interiorFaceCount?: number;
                 chordCrossings?: number;
                 loftChordCrossings?: number;
                 windowCrossings?: number;
@@ -238,6 +246,28 @@ describe("S1 parametric wall", () => {
                     maxDeviationDeg?: number;
                 };
             };
+            console.log(
+                "[S1-HARMONIC]",
+                JSON.stringify({
+                    base: fixture.name,
+                    method: ud.pairingMethod,
+                    chordCrossings: ud.chordCrossings,
+                    masterMinRadiusMm: ud.masterMinRadiusMm,
+                    waistMinRadiusMm: ud.waistMinRadiusMm,
+                    maxSepMm: ud.maxSepMm,
+                    dishLost: ud.dishLost ?? model.outline.dishLost,
+                    floodFaceCount: ud.floodFaceCount ?? model.outline.floodFaceCount,
+                    floodZSpanMm: ud.floodZSpanMm ?? model.outline.floodZSpanMm,
+                    interiorFaceCount: ud.interiorFaceCount ?? model.outline.interiorFaceCount,
+                }),
+            );
+            const flareKinds = (model.flareDiagnostics ?? []).map((d) => ({
+                region: d.region,
+                lower: d.lowerThirdDeg,
+                upper: d.upperThirdDeg,
+                kind: d.kind,
+            }));
+            console.log("[S1-FLARE-CURVE-VS-KINK]", JSON.stringify({ base: fixture.name, rows: flareKinds }));
             const chordX = ud.chordCrossings ?? -1;
             const loftChordX = ud.loftChordCrossings ?? chordX;
             const windowX = ud.windowCrossings ?? 0;
@@ -250,7 +280,7 @@ describe("S1 parametric wall", () => {
             if (plantarDelta > 1e-3) misses.push(`plantar ${plantarDelta.toFixed(3)}`);
             if (haus.outline.maxMm > 0.1) misses.push(`outline ${haus.outline.maxMm.toFixed(3)}`);
             if (stitchDelta > 1e-6) misses.push(`outline-stitch ${stitchDelta.toFixed(6)}`);
-            if (Math.abs(drift) > 0.05) misses.push(`ground-drift ${drift.toFixed(3)}`);
+            if (Math.abs(drift) > 0.01) misses.push(`ground-drift ${drift.toFixed(3)}`);
             if (man.openEdges !== 0) misses.push(`open ${man.openEdges}`);
             if (man.nonManifoldEdges !== 0) misses.push(`nonManifold ${man.nonManifoldEdges}`);
             if (!man.watertight) misses.push("not-watertight");
@@ -322,8 +352,12 @@ describe("S1 parametric wall", () => {
                 maxSkewMm: Number(maxSkew.toFixed(3)),
                 boundaryZ: Number(boundary.zMax.toFixed(3)),
                 boundaryTilt: Number(boundary.tiltDegMax.toFixed(2)),
+                pairingMethod: ud.pairingMethod ?? "harmonic",
+                masterMinRadiusMm: Number((ud.masterMinRadiusMm ?? 0).toFixed(2)),
+                waistMinRadiusMm: Number((ud.waistMinRadiusMm ?? 0).toFixed(2)),
                 pairingMonotonic: ud.pairingMonotonic !== false,
                 flareCapNeeded: Boolean(flareCap?.stillNeeded),
+                dishLost: Boolean(ud.dishLost ?? model.outline.dishLost),
                 occtSolid: occt,
                 soleUvIdentical: uvOk,
                 flareArch: Number(flareArch.toFixed(2)),
@@ -335,10 +369,22 @@ describe("S1 parametric wall", () => {
             rows.push(row);
             writeFileSync("/tmp/s1-parity.json", JSON.stringify({ rows, reports }, null, 2));
             expect(FOLD_HARD_LIMIT_DEG).toBe(10);
+            if (ud.dishLost || model.outline.dishLost) {
+                throw new Error(
+                    `[S1-PAIR] trimmed plantar cannot meet tilt<=30 without losing the stock dish ` +
+                        `(flood=${ud.floodFaceCount ?? model.outline.floodFaceCount} zSpan=${(
+                            ud.floodZSpanMm ?? model.outline.floodZSpanMm ?? 0
+                        ).toFixed(
+                            2,
+                        )} interior=${ud.interiorFaceCount ?? model.outline.interiorFaceCount}). REAL STOP.`,
+                );
+            }
             if (chordX !== 0) {
                 throw new Error(
-                    `[S1-PAIR] outward ray-cast pairing left ${chordX} plan-view chord crossings ` +
-                        `(skew ${maxSkew.toFixed(2)} mm, monotonic=${ud.pairingMonotonic}, missed=${ud.missedRays}). Stop.`,
+                    `[S1-PAIR] harmonic pairing still left ${chordX} plan-view chord crossings on ${fixture.name} ` +
+                        `(skew ${maxSkew.toFixed(2)} mm, masterR=${(ud.masterMinRadiusMm ?? 0).toFixed(1)}, ` +
+                        `waistR=${(ud.waistMinRadiusMm ?? 0).toFixed(1)}, maxSep=${(ud.maxSepMm ?? 0).toFixed(1)}, ` +
+                        `monotonic=${ud.pairingMonotonic}, missed=${ud.missedRays}). REAL STOP.`,
                 );
             }
             if (misses.length) {

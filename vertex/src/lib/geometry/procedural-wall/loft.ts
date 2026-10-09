@@ -198,7 +198,7 @@ function buildStationColumn(
     const T1 = { n: Twall.n * midLen, z: Twall.z * midLen };
     const nMid = Math.max(3, nT - 2 - botRings.length - topFromRim.length);
     const column: Array<{ n: number; z: number }> = [P0];
-    for (const p of botRings) column.push(p);
+    for (const p of botRings) column.push({ n: p.n, z: Math.max(p.z, P0.z, 0) });
     for (let i = 1; i < nMid; i++) {
         const t = clusteredWallT(i, nMid, filletBot, filletTop, Math.max(height, 1));
         let p = evalWallProfile(hermiteStart, T0, hermiteEnd, T1, t, bowl);
@@ -259,7 +259,7 @@ function writeColumn(
         const p = column[ti]!;
         const x = st.outline.x + st.n.x * p.n;
         const y = st.outline.y + st.n.y * p.n;
-        const z = p.z;
+        const z = Math.max(p.z, st.outline.z, 0);
         row.push({ x, y, z });
         const idx = (ti * nS + si) * 3;
         positions[idx] = x;

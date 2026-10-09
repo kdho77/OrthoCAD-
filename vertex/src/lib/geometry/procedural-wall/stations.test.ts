@@ -6,6 +6,7 @@ import { FLARE_BOUNDS } from "./defaults";
 import {
     countPlanViewChordCrossings,
     FLARE_DEV_CAP_DEG,
+    pairByHarmonic,
     pairByOutwardRay,
     raySegHit2D,
     smoothAndCapFlare,
@@ -46,6 +47,49 @@ describe("outward-ray station pairing", () => {
         expect(paired.chordCrossings).toBe(0);
         expect(paired.maxSkewMm).toBeLessThan(2);
         expect(countPlanViewChordCrossings(paired.plantar, paired.top)).toBe(0);
+    });
+
+    test("harmonic midline pairing is strictly increasing with 0 crossings", () => {
+        const plantar = [
+            { x: -2, y: 0, z: 0 },
+            { x: 10, y: -6, z: 0 },
+            { x: 22, y: 0, z: 0 },
+            { x: 10, y: 6, z: 0 },
+        ];
+        const top = [
+            { x: 0, y: 0, z: 8 },
+            { x: 10, y: -4, z: 8 },
+            { x: 20, y: 0, z: 8 },
+            { x: 10, y: 4, z: 8 },
+        ];
+        const paired = pairByHarmonic(plantar, top, 24);
+        expect(paired.method).toBe("harmonic");
+        expect(paired.monotonic).toBe(true);
+        expect(paired.chordCrossings).toBe(0);
+        expect(countPlanViewChordCrossings(paired.plantar, paired.top)).toBe(0);
+        for (let i = 1; i < paired.s01.length; i++) {
+            expect(paired.s01[i]!).toBeGreaterThan(paired.s01[i - 1]!);
+        }
+    });
+
+    test("where T and P coincide the harmonic column is vertical", () => {
+        const loop = [
+            { x: 0, y: 0, z: 0 },
+            { x: 10, y: -3, z: 0 },
+            { x: 20, y: 0, z: 0 },
+            { x: 10, y: 3, z: 0 },
+        ];
+        const top = loop.map((p) => ({ x: p.x, y: p.y, z: 8 }));
+        const paired = pairByHarmonic(loop, top, 16);
+        expect(paired.chordCrossings).toBe(0);
+        let maxPlan = 0;
+        for (let i = 0; i < paired.plantar.length; i++) {
+            maxPlan = Math.max(
+                maxPlan,
+                Math.hypot(paired.top[i]!.x - paired.plantar[i]!.x, paired.top[i]!.y - paired.plantar[i]!.y),
+            );
+        }
+        expect(maxPlan).toBeLessThan(0.35);
     });
 
     test("±25° cap does not override the lateral-midfoot 41° default", () => {

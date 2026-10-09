@@ -66,6 +66,11 @@ export interface BottomOutline {
     meshIndices?: Uint32Array;
     /** Local indices of the ordered plantar boundary (CCW, heel-started). */
     rimLocal?: number[];
+    /** True when the tilt-gated flood no longer covers the stock dish interior. */
+    dishLost?: boolean;
+    floodFaceCount?: number;
+    floodZSpanMm?: number;
+    interiorFaceCount?: number;
 }
 
 /**

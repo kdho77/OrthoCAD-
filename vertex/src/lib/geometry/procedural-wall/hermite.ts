@@ -133,7 +133,10 @@ export function sampleFilletArc(P0: NZ, Tstart: NZ, Tend: NZ, radiusMm: number, 
         );
         const rings: NZ[] = [];
         for (let i = 1; i <= count; i++) {
-            rings.push({ n: P0.n + u.n * step * i, z: P0.z + u.z * step * i });
+            rings.push({
+                n: P0.n + u.n * step * i,
+                z: Math.max(P0.z, 0, P0.z + Math.max(0, u.z) * step * i),
+            });
         }
         return rings;
     };
@@ -152,7 +155,7 @@ export function sampleFilletArc(P0: NZ, Tstart: NZ, Tend: NZ, radiusMm: number, 
         const phi = (theta * i) / nWant;
         const p = {
             n: P0.n + n0.n * r * (1 - Math.cos(phi)) + ts.n * r * Math.sin(phi),
-            z: P0.z + n0.z * r * (1 - Math.cos(phi)) + ts.z * r * Math.sin(phi),
+            z: Math.max(P0.z, 0, P0.z + n0.z * r * (1 - Math.cos(phi)) + ts.z * r * Math.sin(phi)),
         };
         if (rings.length === 0) {
             const off = (p.n - P0.n) * n0.n + (p.z - P0.z) * n0.z;

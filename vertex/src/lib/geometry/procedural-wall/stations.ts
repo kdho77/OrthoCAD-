@@ -43,6 +43,10 @@ export interface StationPairing {
     chordCrossings: number;
     missedRays: number;
     monotonic: boolean;
+    method?: "harmonic" | "outward-ray";
+    masterMinRadiusMm?: number;
+    waistMinRadiusMm?: number;
+    maxSepMm?: number;
 }
 
 function centroidOf(pts: PolyPoint[]): { x: number; y: number } {
@@ -168,24 +172,65 @@ export function segmentsCrossXY(p0: PolyPoint, p1: PolyPoint, q0: PolyPoint, q1:
     return t > 1e-4 && t < 1 - 1e-4 && u > 1e-4 && u < 1 - 1e-4;
 }
 
-/** Plan-view column chords (plantar→top) crossing inside a ±window. */
+/** Plan-view column chords. `window` defaults to all pairs (BVH / grid). */
 export function countPlanViewChordCrossings(
     plantar: PolyPoint[],
     top: PolyPoint[],
-    window = CROSSING_WINDOW,
+    window = Number.POSITIVE_INFINITY,
 ): number {
     const n = Math.min(plantar.length, top.length);
     if (n < 2) return 0;
-    let hits = 0;
+    const segs: Array<{ i: number; minX: number; maxX: number; minY: number; maxY: number }> = [];
     for (let i = 0; i < n; i++) {
-        for (let k = 1; k <= window; k++) {
-            const j = (i + k) % n;
-            if (j === i) continue;
-            if (k === 1 && n > 2 && (j === (i + 1) % n || i === (j + 1) % n)) {
-                // Adjacent chords share the outline edge; only count if they
-                // properly cross (not just meet at a vertex).
+        const a = plantar[i]!;
+        const b = top[i]!;
+        segs.push({
+            i,
+            minX: Math.min(a.x, b.x),
+            maxX: Math.max(a.x, b.x),
+            minY: Math.min(a.y, b.y),
+            maxY: Math.max(a.y, b.y),
+        });
+    }
+    const cell = 4;
+    const grid = new Map<string, number[]>();
+    for (let s = 0; s < segs.length; s++) {
+        const g = segs[s]!;
+        const x0 = Math.floor(g.minX / cell);
+        const x1 = Math.floor(g.maxX / cell);
+        const y0 = Math.floor(g.minY / cell);
+        const y1 = Math.floor(g.maxY / cell);
+        for (let y = y0; y <= y1; y++) {
+            for (let x = x0; x <= x1; x++) {
+                const k = `${x},${y}`;
+                let b = grid.get(k);
+                if (!b) {
+                    b = [];
+                    grid.set(k, b);
+                }
+                b.push(s);
             }
-            if (segmentsCrossXY(plantar[i]!, top[i]!, plantar[j]!, top[j]!)) hits++;
+        }
+    }
+    const seen = new Set<string>();
+    let hits = 0;
+    const maxK = Number.isFinite(window) ? Math.max(1, Math.floor(window)) : n;
+    for (const list of grid.values()) {
+        for (let a = 0; a < list.length; a++) {
+            for (let b = a + 1; b < list.length; b++) {
+                const i = list[a]!;
+                const j = list[b]!;
+                if (i === j) continue;
+                const d = Math.min((j - i + n) % n, (i - j + n) % n);
+                if (d === 0 || d > maxK) continue;
+                const key = i < j ? `${i},${j}` : `${j},${i}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const A = segs[i]!;
+                const B = segs[j]!;
+                if (A.maxX < B.minX || B.maxX < A.minX || A.maxY < B.minY || B.maxY < A.minY) continue;
+                if (segmentsCrossXY(plantar[i]!, top[i]!, plantar[j]!, top[j]!)) hits++;
+            }
         }
     }
     return hits;
@@ -207,6 +252,185 @@ export function columnSidewaysSkewMm(
         out[i] = Math.abs(dx * ny - dy * nx);
     }
     return out;
+}
+
+function polylineCurvatureRadii(pts: PolyPoint[]): number[] {
+    const n = pts.length;
+    const out = new Array<number>(n).fill(Number.POSITIVE_INFINITY);
+    for (let i = 0; i < n; i++) {
+        const a = pts[(i + n - 1) % n]!;
+        const b = pts[i]!;
+        const c = pts[(i + 1) % n]!;
+        const ab = Math.hypot(b.x - a.x, b.y - a.y);
+        const bc = Math.hypot(c.x - b.x, c.y - b.y);
+        const ca = Math.hypot(a.x - c.x, a.y - c.y);
+        const area2 = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+        if (area2 < 1e-10 || ab < 1e-9 || bc < 1e-9) continue;
+        out[i] = (ab * bc * ca) / (2 * area2);
+    }
+    return out;
+}
+
+export function masterCurveRadii(
+    pts: PolyPoint[],
+    bounds?: { minX: number; maxX: number },
+): { minRadiusMm: number; waistMinRadiusMm: number } {
+    const r = polylineCurvatureRadii(pts);
+    let minR = Infinity;
+    let waistR = Infinity;
+    const minX = bounds?.minX ?? Math.min(...pts.map((p) => p.x));
+    const length = Math.max(1e-3, (bounds?.maxX ?? Math.max(...pts.map((p) => p.x))) - minX);
+    for (let i = 0; i < pts.length; i++) {
+        const rr = r[i]!;
+        if (rr < minR) minR = rr;
+        const u = (pts[i]!.x - minX) / length;
+        if (u >= 0.32 && u <= 0.68 && rr < waistR) waistR = rr;
+    }
+    return {
+        minRadiusMm: Number.isFinite(minR) ? minR : 0,
+        waistMinRadiusMm: Number.isFinite(waistR) ? waistR : 0,
+    };
+}
+
+function smoothClosedXY(pts: PolyPoint[], passes: number): PolyPoint[] {
+    let cur = pts.map((p) => ({ ...p }));
+    for (let p = 0; p < passes; p++) {
+        const next = cur.map((b, i) => {
+            const a = cur[(i + cur.length - 1) % cur.length]!;
+            const c = cur[(i + 1) % cur.length]!;
+            return {
+                x: b.x * 0.5 + (a.x + c.x) * 0.25,
+                y: b.y * 0.5 + (a.y + c.y) * 0.25,
+                z: b.z,
+            };
+        });
+        cur = next;
+    }
+    return cur;
+}
+
+function nearestOnLoop(origin: PolyPoint, loop: PolyPoint[]): PolyPoint {
+    let best = loop[0] ?? { x: origin.x, y: origin.y, z: origin.z };
+    let bestD = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const len2 = ex * ex + ey * ey;
+        const t =
+            len2 > 1e-12
+                ? Math.max(0, Math.min(1, ((origin.x - a.x) * ex + (origin.y - a.y) * ey) / len2))
+                : 0;
+        const x = a.x + ex * t;
+        const y = a.y + ey * t;
+        const d = (x - origin.x) ** 2 + (y - origin.y) ** 2;
+        if (d < bestD) {
+            bestD = d;
+            best = { x, y, z: a.z + (b.z - a.z) * t };
+        }
+    }
+    return best;
+}
+
+/**
+ * 0-skew seed: C2 of P, then the TopSheet hit along P's plan normal (+n then −n).
+ * Midpoints of those pairs are the master-curve samples.
+ */
+function seedMidline(plantarLoop: PolyPoint[], topLoop: PolyPoint[], n: number): PolyPoint[] {
+    const seed = pairByOutwardRay(plantarLoop, topLoop, n);
+    const mid: PolyPoint[] = [];
+    for (let i = 0; i < seed.plantar.length; i++) {
+        const p = seed.plantar[i]!;
+        const t = seed.top[i]!;
+        mid.push({ x: (p.x + t.x) * 0.5, y: (p.y + t.y) * 0.5, z: (p.z + t.z) * 0.5 });
+    }
+    return mid;
+}
+
+function hitLoopFromMaster(
+    origin: PolyPoint,
+    n: { x: number; y: number },
+    loop: PolyPoint[],
+): { point: PolyPoint; missed: boolean } {
+    const pos = nearestRayHitOnLoop(origin, n, loop, 1);
+    const neg = nearestRayHitOnLoop(origin, n, loop, -1);
+    if (pos && neg) return { point: pos.t <= neg.t ? pos.point : neg.point, missed: false };
+    if (pos) return { point: pos.point, missed: false };
+    if (neg) return { point: neg.point, missed: false };
+    return { point: nearestOnLoop(origin, loop), missed: true };
+}
+
+/**
+ * Harmonic correspondence via the signed-distance gradient to a C2 master
+ * curve M (the cheaper accepted alternative). M is the 0-skew midline,
+ * smoothed until min radius of curvature exceeds max |T−P|. Columns are
+ * iso-psi (M arc-length) lines: from each M station, shoot both ways along
+ * ∇d_M. Where T and P cross, the column is vertical. Both loops share N
+ * strictly increasing stations.
+ */
+export function pairByHarmonic(plantarLoop: PolyPoint[], topLoop: PolyPoint[], n: number): StationPairing {
+    const midSeed = seedMidline(plantarLoop, topLoop, n);
+    let master = resampleClosedC2(fitClosedC2Spline(midSeed), n);
+    let maxSep = 0;
+    for (let i = 0; i < n; i++) {
+        const p = nearestOnLoop(master[i]!, plantarLoop);
+        const t = nearestOnLoop(master[i]!, topLoop);
+        maxSep = Math.max(maxSep, Math.hypot(p.x - t.x, p.y - t.y));
+    }
+    const needR = Math.max(12, maxSep);
+    for (let pass = 0; pass < 24; pass++) {
+        const { minRadiusMm } = masterCurveRadii(master);
+        if (minRadiusMm >= needR) break;
+        master = resampleClosedC2(fitClosedC2Spline(smoothClosedXY(master, 2)), n);
+    }
+    const c = centroidOf(master);
+    const normals = smoothNormals(
+        master.map((_, i) => outwardNormal(master, i, c)),
+        4,
+    );
+    const plantar: PolyPoint[] = [];
+    const top: PolyPoint[] = [];
+    let missed = 0;
+    for (let i = 0; i < n; i++) {
+        const m = master[i]!;
+        const nxy = normals[i]!;
+        const pHit = hitLoopFromMaster(m, nxy, plantarLoop);
+        const tHit = hitLoopFromMaster(m, nxy, topLoop);
+        const cross =
+            Math.hypot(pHit.point.x - tHit.point.x, pHit.point.y - tHit.point.y) < 0.15 ||
+            Math.hypot(pHit.point.x - m.x, pHit.point.y - m.y) +
+                Math.hypot(tHit.point.x - m.x, tHit.point.y - m.y) <
+                0.3;
+        if (cross) {
+            plantar.push({ x: m.x, y: m.y, z: pHit.point.z });
+            top.push({ x: m.x, y: m.y, z: tHit.point.z });
+        } else {
+            plantar.push(pHit.point);
+            top.push(tHit.point);
+        }
+        if (pHit.missed || tHit.missed) missed++;
+    }
+    const { minRadiusMm, waistMinRadiusMm } = masterCurveRadii(master);
+    const sidewaysSkewMm = columnSidewaysSkewMm(plantar, top, normals);
+    let maxSkewMm = 0;
+    for (const d of sidewaysSkewMm) if (d > maxSkewMm) maxSkewMm = d;
+    const s01 = plantar.map((_, i) => i / n);
+    return {
+        plantar,
+        top,
+        normals,
+        s01,
+        sidewaysSkewMm,
+        maxSkewMm,
+        chordCrossings: countPlanViewChordCrossings(plantar, top),
+        missedRays: missed,
+        monotonic: true,
+        method: "harmonic",
+        masterMinRadiusMm: minRadiusMm,
+        waistMinRadiusMm,
+        maxSepMm: maxSep,
+    };
 }
 
 /**
@@ -273,6 +497,7 @@ export function pairByOutwardRay(plantarLoop: PolyPoint[], topLoop: PolyPoint[],
         chordCrossings: countPlanViewChordCrossings(plantar, top),
         missedRays: missed,
         monotonic: ok,
+        method: "outward-ray",
     };
 }
 

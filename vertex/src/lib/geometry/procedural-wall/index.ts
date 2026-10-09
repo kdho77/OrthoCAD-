@@ -61,6 +61,8 @@ export {
     countPlanViewChordCrossings,
     FLARE_DEV_CAP_DEG,
     type FlareCapReport,
+    masterCurveRadii,
+    pairByHarmonic,
     pairByOutwardRay,
     SKEW_LIMIT_MM,
     type StationPairing,

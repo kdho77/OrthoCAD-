@@ -27,21 +27,33 @@ import { buildPlanformFrame } from "./planform";
 import { offsetClosedInward } from "./stations";
 import { DEFAULT_LOFT_N, type StockWallModel, type UvHeightField, type WallProfile } from "./types";
 
-function minDistToLoopXY(x: number, y: number, loop: PolyPoint[]): number {
-    let best = Infinity;
+function nearestOnInner(loop: PolyPoint[], origin: PolyPoint): PolyPoint {
+    let best = loop[0] ?? { x: origin.x, y: origin.y, z: origin.z };
+    let bestD = Infinity;
     for (let i = 0; i < loop.length; i++) {
         const a = loop[i]!;
         const b = loop[(i + 1) % loop.length]!;
         const ex = b.x - a.x;
         const ey = b.y - a.y;
         const len2 = ex * ex + ey * ey;
-        const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((x - a.x) * ex + (y - a.y) * ey) / len2)) : 0;
-        const dx = x - (a.x + ex * t);
-        const dy = y - (a.y + ey * t);
-        const d = dx * dx + dy * dy;
-        if (d < best) best = d;
+        const t =
+            len2 > 1e-12
+                ? Math.max(0, Math.min(1, ((origin.x - a.x) * ex + (origin.y - a.y) * ey) / len2))
+                : 0;
+        const x = a.x + ex * t;
+        const y = a.y + ey * t;
+        const d = (x - origin.x) ** 2 + (y - origin.y) ** 2;
+        if (d < bestD) {
+            bestD = d;
+            best = { x, y, z: a.z + (b.z - a.z) * t };
+        }
     }
-    return Math.sqrt(best);
+    return best;
+}
+
+function minDistToLoopXY(x: number, y: number, loop: PolyPoint[]): number {
+    const p = nearestOnInner(loop, { x, y, z: 0 });
+    return Math.hypot(p.x - x, p.y - y);
 }
 
 const UV_CELL_MM = 0.4;
@@ -724,6 +736,10 @@ type PlantarSheet = {
     meshPositions: Float32Array;
     meshIndices: Uint32Array;
     rimLocal: number[];
+    dishLost?: boolean;
+    floodFaceCount?: number;
+    floodZSpanMm?: number;
+    interiorFaceCount?: number;
 };
 
 function snapLoopToMesh(pos: Float32Array, loop: PolyPoint[]): number[] {
@@ -862,7 +878,7 @@ function floodFromLowest(candidates: number[], faces: PlantarFace[], maxStepZ = 
         const cur = stack.pop()!;
         for (const n of nbrs.get(cur) ?? []) {
             if (seen.has(n)) continue;
-            if (faces[n]!.nz > -0.75) continue;
+            if (faces[n]!.nz > PLANTAR_TRIM_NZ) continue;
             if (faces[n]!.cz > faces[cur]!.cz + maxStepZ) continue;
             seen.add(n);
             stack.push(n);
@@ -915,9 +931,80 @@ function compactFaces(
     return { pos: outPos, idx: outIdx };
 }
 
+function splitEdgeAtZ(
+    pos: number[],
+    a: number,
+    b: number,
+    zCut: number,
+    edgeVert: Map<string, number>,
+): number {
+    const key = a < b ? `${a},${b}` : `${b},${a}`;
+    const existing = edgeVert.get(key);
+    if (existing != null) return existing;
+    const za = pos[a * 3 + 2]!;
+    const zb = pos[b * 3 + 2]!;
+    const den = zb - za;
+    const t = Math.abs(den) < 1e-12 ? 0 : (zCut - za) / den;
+    const tt = Math.max(0, Math.min(1, t));
+    const ni = pos.length / 3;
+    pos.push(
+        pos[a * 3]! + (pos[b * 3]! - pos[a * 3]!) * tt,
+        pos[a * 3 + 1]! + (pos[b * 3 + 1]! - pos[a * 3 + 1]!) * tt,
+        zCut,
+    );
+    edgeVert.set(key, ni);
+    return ni;
+}
+
+/** Keep the z ≤ zCut portion of a triangle, splitting along the contour. */
+function keepTriBelowZ(
+    pos: number[],
+    i0: number,
+    i1: number,
+    i2: number,
+    zCut: number,
+    edgeVert: Map<string, number>,
+): number[] {
+    const zOf = (i: number) => pos[i * 3 + 2]!;
+    const below = (i: number) => zOf(i) <= zCut + 1e-9;
+    const b0 = below(i0);
+    const b1 = below(i1);
+    const b2 = below(i2);
+    const nBelow = (b0 ? 1 : 0) + (b1 ? 1 : 0) + (b2 ? 1 : 0);
+    if (nBelow === 3) return [i0, i1, i2];
+    if (nBelow === 0) return [];
+    const vs = [i0, i1, i2];
+    const bs = [b0, b1, b2];
+    if (nBelow === 1) {
+        const k = bs.findIndex(Boolean);
+        const a = vs[k]!;
+        const b = vs[(k + 1) % 3]!;
+        const c = vs[(k + 2) % 3]!;
+        return [a, splitEdgeAtZ(pos, a, b, zCut, edgeVert), splitEdgeAtZ(pos, a, c, zCut, edgeVert)];
+    }
+    const k = bs.findIndex((x) => !x);
+    const a = vs[k]!;
+    const b = vs[(k + 1) % 3]!;
+    const c = vs[(k + 2) % 3]!;
+    const ab = splitEdgeAtZ(pos, a, b, zCut, edgeVert);
+    const ac = splitEdgeAtZ(pos, a, c, zCut, edgeVert);
+    return [b, c, ac, b, ac, ab];
+}
+
+function polygonAreaXY(poly: PolyPoint[]): number {
+    let a = 0;
+    for (let i = 0; i < poly.length; i++) {
+        const p = poly[i]!;
+        const q = poly[(i + 1) % poly.length]!;
+        a += p.x * q.y - q.x * p.y;
+    }
+    return Math.abs(a) * 0.5;
+}
+
 /**
- * Keep interior inside the outline inset (1.5 mm). In the outer band drop
- * faces once tilt > 30° (nz > −0.866) or z > 2.0 mm, whichever comes first.
+ * Keep the stock dish interior (inside the 1.5 mm inset) as-is. In the outer
+ * band cut z ≤ 2 by splitting triangles along the contour — never by dropping
+ * whole faces that straddle the iso-z.
  */
 function trimPlantarBand(
     positions: Float32Array,
@@ -925,6 +1012,8 @@ function trimPlantarBand(
     outline: PolyPoint[] | null,
 ): { positions: Float32Array; indices: Uint32Array } {
     const inset = outline && outline.length >= 8 ? offsetClosedInward(outline, PLANTAR_INSET_MM) : null;
+    const pos = Array.from(positions);
+    const edgeVert = new Map<string, number>();
     const keep: Array<{ i0: number; i1: number; i2: number }> = [];
     for (let t = 0; t < indices.length; t += 3) {
         const i0 = indices[t]!;
@@ -933,14 +1022,55 @@ function trimPlantarBand(
         const info = faceNzCz(positions, i0, i1, i2);
         if (!info) continue;
         const interior = inset ? pointInPoly(info.cx, info.cy, inset) : false;
-        if (!interior && (info.nz > PLANTAR_TRIM_NZ || info.cz > PLANTAR_TRIM_Z_MM)) continue;
-        keep.push({ i0, i1, i2 });
+        if (interior) {
+            keep.push({ i0, i1, i2 });
+            continue;
+        }
+        const bits = keepTriBelowZ(pos, i0, i1, i2, PLANTAR_TRIM_Z_MM, edgeVert);
+        for (let k = 0; k < bits.length; k += 3) {
+            keep.push({ i0: bits[k]!, i1: bits[k + 1]!, i2: bits[k + 2]! });
+        }
     }
     if (keep.length < 8) return { positions, indices };
-    const compact = compactFaces(positions, keep);
+    const compact = compactFaces(new Float32Array(pos), keep);
     return {
         positions: new Float32Array(compact.pos),
         indices: new Uint32Array(compact.idx),
+    };
+}
+
+function localStockZLookup(pos: Float32Array): (x: number, y: number, fallback: number) => number {
+    const cell = 2;
+    const grid = new Map<string, number[]>();
+    const n = pos.length / 3;
+    for (let i = 0; i < n; i++) {
+        const k = `${Math.floor(pos[i * 3]! / cell)},${Math.floor(pos[i * 3 + 1]! / cell)}`;
+        let b = grid.get(k);
+        if (!b) {
+            b = [];
+            grid.set(k, b);
+        }
+        b.push(i);
+    }
+    return (x: number, y: number, fallback: number): number => {
+        const ix = Math.floor(x / cell);
+        const iy = Math.floor(y / cell);
+        let best = 16;
+        let z = fallback;
+        for (let dy = -2; dy <= 2; dy++) {
+            for (let dx = -2; dx <= 2; dx++) {
+                const bucket = grid.get(`${ix + dx},${iy + dy}`);
+                if (!bucket) continue;
+                for (const i of bucket) {
+                    const d = (pos[i * 3]! - x) ** 2 + (pos[i * 3 + 1]! - y) ** 2;
+                    if (d < best) {
+                        best = d;
+                        z = pos[i * 3 + 2]!;
+                    }
+                }
+            }
+        }
+        return z;
     };
 }
 
@@ -1080,11 +1210,12 @@ function rebuildC1BoundaryStrip(
         cInner.x /= Math.max(1, innerLoop.length);
         cInner.y /= Math.max(1, innerLoop.length);
         const slopes = rimFaceSlope(pos, idx, innerIdx);
+        const stockZAt = localStockZLookup(pos);
         const outPos = Array.from(pos);
         const outIdx = Array.from(idx);
         const midIdx: number[] = [];
         const outerIdx: number[] = [];
-        const maxDz = PLANTAR_STRIP_MM * Math.tan(Math.PI / 6);
+        const tan30 = Math.tan(Math.PI / 6);
         for (let i = 0; i < nOut; i++) {
             const o = outer[i]!;
             const nxy = outwardNormal(outer, i, cInner);
@@ -1094,14 +1225,31 @@ function rebuildC1BoundaryStrip(
                 nx: nxy.x,
                 ny: nxy.y,
             };
-            const iz = innerLoop[Math.round((i / nOut) * innerLoop.length) % innerLoop.length]!.z;
-            o.z = Math.min(PLANTAR_TRIM_Z_MM, iz + maxDz);
-            o.z = Math.max(iz, o.z);
-            const T0 = { n: sl.n * PLANTAR_STRIP_MM, z: sl.z * PLANTAR_STRIP_MM };
-            const T1 = { n: PLANTAR_STRIP_MM, z: 0 };
-            const midNZ = evalCubicHermite({ n: 0, z: iz }, T0, { n: PLANTAR_STRIP_MM, z: o.z }, T1, 0.45);
+            const innerPt = nearestOnInner(innerLoop, o);
+            const iz = innerPt.z;
+            const stockZ = stockZAt(o.x, o.y, iz);
+            const floorZ = Math.max(0, stockZ, iz);
+            let dx = o.x - innerPt.x;
+            let dy = o.y - innerPt.y;
+            let dist = Math.hypot(dx, dy);
+            if (dist < 0.8) {
+                o.x = innerPt.x + nxy.x * PLANTAR_STRIP_MM;
+                o.y = innerPt.y + nxy.y * PLANTAR_STRIP_MM;
+                dx = o.x - innerPt.x;
+                dy = o.y - innerPt.y;
+                dist = Math.hypot(dx, dy);
+            }
+            const maxRise = Math.max(0.15, dist * tan30);
+            o.z = Math.min(PLANTAR_TRIM_Z_MM, floorZ + maxRise);
+            o.z = Math.max(floorZ, o.z);
+            const T0 = { n: sl.n * dist, z: Math.max(0, sl.z) * dist };
+            const T1 = { n: dist, z: 0 };
+            const midNZ = evalCubicHermite({ n: 0, z: iz }, T0, { n: dist, z: o.z }, T1, 0.45);
+            const midX = innerPt.x + dx * 0.5;
+            const midY = innerPt.y + dy * 0.5;
+            const midZ = Math.max(floorZ, Math.min(o.z, midNZ.z));
             midIdx.push(outPos.length / 3);
-            outPos.push(o.x - nxy.x * PLANTAR_STRIP_MM * 0.5, o.y - nxy.y * PLANTAR_STRIP_MM * 0.5, midNZ.z);
+            outPos.push(midX, midY, midZ);
             outerIdx.push(outPos.length / 3);
             outPos.push(o.x, o.y, o.z);
         }
@@ -1149,9 +1297,11 @@ function rebuildC1BoundaryStrip(
 
 /**
  * Stock plantar sheet: n_z < -0.5 and below the wall-foot band, flood-filled
- * from the lowest face, then welded. Native triangles and Z; no ear-clip.
- * After the flood, the outer band is trimmed at 30° / z=2 and a 2–3 mm C1
- * strip is rebuilt to the trimmed contour.
+ * from the lowest face (cross a neighbour only when its tilt is < 30°), then
+ * welded. Native triangles and Z; no ear-clip. The outer band is then cut at
+ * z = 2 by splitting triangles along the contour. A 2–3 mm C1 strip stays
+ * inside the band, z-clamped to the stock plantar (ground min 0), never
+ * outward-down.
  */
 export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]): Partial<PlantarSheet> {
     const posAttr = geo.getAttribute("position");
@@ -1297,6 +1447,30 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
         }
     }
     let live = flooded.length >= 8 ? flooded.slice() : wids.slice();
+    const floodZSpanMm = zSpanOf(live);
+    const insetForDish = hull && hull.length >= 8 ? offsetClosedInward(hull, PLANTAR_INSET_MM) : null;
+    let interiorFaceCount = 0;
+    let interiorArea = 0;
+    for (const i of live) {
+        const f = wfaces[i]!;
+        if (insetForDish && !pointInPoly(f.cx, f.cy, insetForDish)) continue;
+        interiorFaceCount++;
+        interiorArea +=
+            Math.abs(
+                (wposArr[f.i1 * 3]! - wposArr[f.i0 * 3]!) *
+                    (wposArr[f.i2 * 3 + 1]! - wposArr[f.i0 * 3 + 1]!) -
+                    (wposArr[f.i1 * 3 + 1]! - wposArr[f.i0 * 3 + 1]!) *
+                        (wposArr[f.i2 * 3]! - wposArr[f.i0 * 3]!),
+            ) * 0.5;
+    }
+    const hullArea = hull && hull.length >= 8 ? polygonAreaXY(hull) : 0;
+    const dishLost = interiorFaceCount < 80 || (hullArea > 1 && interiorArea < 0.25 * hullArea);
+    const extractMeta = {
+        dishLost,
+        floodFaceCount: live.length,
+        floodZSpanMm,
+        interiorFaceCount,
+    };
     for (let pass = 0; pass < 2; pass++) {
         const edgeN = new Map<string, number>();
         const addE = (a: number, b: number) => {
@@ -1316,7 +1490,7 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
                 (edgeN.get(f.i0 < f.i1 ? `${f.i0},${f.i1}` : `${f.i1},${f.i0}`) ?? 0) === 1 ||
                 (edgeN.get(f.i1 < f.i2 ? `${f.i1},${f.i2}` : `${f.i2},${f.i1}`) ?? 0) === 1 ||
                 (edgeN.get(f.i2 < f.i0 ? `${f.i2},${f.i0}` : `${f.i0},${f.i2}`) ?? 0) === 1;
-            if (b && f.nz > -0.85) continue;
+            if (b && f.nz > PLANTAR_TRIM_NZ) continue;
             next.push(i);
         }
         if (next.length < 8) break;
@@ -1364,7 +1538,7 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
         if (rimLocal.length < 8 && hull) {
             rimLocal = snapLoopToMesh(meshPositions, hull);
         }
-        if (rimLocal.length < 8) return { meshPositions, meshIndices };
+        if (rimLocal.length < 8) return { meshPositions, meshIndices, ...extractMeta };
         const trimmed = trimPlantarBand(meshPositions, meshIndices, hull);
         const trimGeo = new BufferGeometry();
         trimGeo.setAttribute("position", new BufferAttribute(trimmed.positions, 3));
@@ -1374,7 +1548,7 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
         try {
             const tp = trimWeld.getAttribute("position");
             const ti = trimWeld.getIndex();
-            if (!tp || !ti) return { meshPositions, meshIndices, rimLocal };
+            if (!tp || !ti) return { meshPositions, meshIndices, rimLocal, ...extractMeta };
             const tpos = new Float32Array(tp.array as ArrayLike<number>);
             const tidx = new Uint32Array(ti.array as ArrayLike<number>);
             let trimRim = extractOrderedBoundaryLoopWithIndices(trimWeld).indices.slice();
@@ -1390,9 +1564,11 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
                 }
                 trimRim = best?.indices.slice() ?? [];
             }
-            if (trimRim.length < 8) return { meshPositions: tpos, meshIndices: tidx };
+            if (trimRim.length < 8) return { meshPositions: tpos, meshIndices: tidx, ...extractMeta };
             const strip = rebuildC1BoundaryStrip(tpos, tidx, trimRim);
-            return strip ?? { meshPositions: tpos, meshIndices: tidx, rimLocal: trimRim };
+            return strip
+                ? { ...strip, ...extractMeta }
+                : { meshPositions: tpos, meshIndices: tidx, rimLocal: trimRim, ...extractMeta };
         } finally {
             trimWeld.dispose();
         }

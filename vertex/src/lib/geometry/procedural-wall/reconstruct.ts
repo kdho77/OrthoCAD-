@@ -22,7 +22,7 @@ import { buildXyHeightIndex, sampleXyHeight, type XyHeightIndex } from "./height
 import { buildHermiteStations, loftHermiteWall } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
 import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
-import { pairByOutwardRay } from "./stations";
+import { pairByHarmonic } from "./stations";
 import { DEFAULT_LOFT_N, type StockWallModel, type UvHeightField } from "./types";
 
 export interface ReconstructOptions extends ProceduralModifierInput {
@@ -328,10 +328,9 @@ export function reconstructProceduralWalls(
         z: positions[i * 3 + 2]!,
     }));
     const nLoft = options.n ?? DEFAULT_LOFT_N;
-    const pairing = pairByOutwardRay(plantarPts, rimPts, nLoft);
-    const shareRim = nativePlantarIdx.length === nLoft;
-    const stationBot: number[] = shareRim ? nativePlantarIdx.slice() : pairing.plantar.map((p) => push(p));
-    if (!shareRim) zipClosedLoops(nativePlantarIdx, stationBot, positions, pushTri);
+    const pairing = pairByHarmonic(plantarPts, rimPts, nLoft);
+    const stationBot = pairing.plantar.map((p) => push(p));
+    zipClosedLoops(nativePlantarIdx, stationBot, positions, pushTri);
     const stations = buildHermiteStations(pairing.plantar, pairing.top, model.bounds);
     for (let i = 0; i < stations.length; i++) {
         const n = pairing.normals[i];
@@ -388,7 +387,14 @@ export function reconstructProceduralWalls(
         wallModel: "procedural",
         stockId: model.id,
         loftN: nLoft,
-        pairingMethod: "outward-ray",
+        pairingMethod: pairing.method ?? "harmonic",
+        masterMinRadiusMm: pairing.masterMinRadiusMm,
+        waistMinRadiusMm: pairing.waistMinRadiusMm,
+        maxSepMm: pairing.maxSepMm,
+        dishLost: Boolean(model.outline.dishLost),
+        floodFaceCount: model.outline.floodFaceCount,
+        floodZSpanMm: model.outline.floodZSpanMm,
+        interiorFaceCount: model.outline.interiorFaceCount,
         topVertexCount: topPos.length / 3,
         outlineVertexCount: model.outline.meshPositions ? model.outline.meshPositions.length / 3 : n,
         plantarVertexCount: model.outline.meshPositions ? model.outline.meshPositions.length / 3 : 0,
