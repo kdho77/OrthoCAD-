@@ -6,6 +6,7 @@ import {
     type PolyPoint,
     polylineArcLengths,
     resampleClosedC2,
+    resamplePolyline,
     sampleClosedAtArc01,
 } from "./curves";
 import { outwardNormal } from "./measure";
@@ -335,55 +336,113 @@ function nearestOnLoop(origin: PolyPoint, loop: PolyPoint[]): PolyPoint {
 
 /**
  * 0-skew seed: C2 of P, then the TopSheet hit along P's plan normal (+n then −n).
- * Midpoints of those pairs are the master-curve samples.
+ * Midpoints of those pairs are the master-curve samples. maxSep is the seed
+ * column length (the real |T−P|), not a nearest-point jump across the foot.
  */
-function seedMidline(plantarLoop: PolyPoint[], topLoop: PolyPoint[], n: number): PolyPoint[] {
+function seedMidline(
+    plantarLoop: PolyPoint[],
+    topLoop: PolyPoint[],
+    n: number,
+): { mid: PolyPoint[]; maxSep: number } {
     const seed = pairByOutwardRay(plantarLoop, topLoop, n);
     const mid: PolyPoint[] = [];
+    let maxSep = 0;
     for (let i = 0; i < seed.plantar.length; i++) {
         const p = seed.plantar[i]!;
         const t = seed.top[i]!;
+        maxSep = Math.max(maxSep, Math.hypot(p.x - t.x, p.y - t.y));
         mid.push({ x: (p.x + t.x) * 0.5, y: (p.y + t.y) * 0.5, z: (p.z + t.z) * 0.5 });
     }
-    return mid;
+    return { mid, maxSep };
 }
 
-function hitLoopFromMaster(
+function nearerHit(a: RayHit | null, b: RayHit | null, maxT: number): RayHit | null {
+    const ok = (h: RayHit | null): h is RayHit => h != null && h.t <= maxT;
+    const A = ok(a) ? a : null;
+    const B = ok(b) ? b : null;
+    if (A && B) return A.t <= B.t ? A : B;
+    return A ?? B;
+}
+
+function pairHitsFromMaster(
     origin: PolyPoint,
     n: { x: number; y: number },
-    loop: PolyPoint[],
-): { point: PolyPoint; missed: boolean } {
-    const pos = nearestRayHitOnLoop(origin, n, loop, 1);
-    const neg = nearestRayHitOnLoop(origin, n, loop, -1);
-    if (pos && neg) return { point: pos.t <= neg.t ? pos.point : neg.point, missed: false };
-    if (pos) return { point: pos.point, missed: false };
-    if (neg) return { point: neg.point, missed: false };
-    return { point: nearestOnLoop(origin, loop), missed: true };
+    plantarLoop: PolyPoint[],
+    topLoop: PolyPoint[],
+    maxT: number,
+): { plantar: PolyPoint; top: PolyPoint; missed: boolean; vertical: boolean } {
+    const nearP = nearestOnLoop(origin, plantarLoop);
+    const nearT = nearestOnLoop(origin, topLoop);
+    if (Math.hypot(nearP.x - nearT.x, nearP.y - nearT.y) < 0.15) {
+        return { plantar: nearP, top: nearT, missed: false, vertical: true };
+    }
+    const pHit = nearerHit(
+        nearestRayHitOnLoop(origin, n, plantarLoop, 1),
+        nearestRayHitOnLoop(origin, n, plantarLoop, -1),
+        maxT,
+    );
+    const tHit = nearerHit(
+        nearestRayHitOnLoop(origin, n, topLoop, 1),
+        nearestRayHitOnLoop(origin, n, topLoop, -1),
+        maxT,
+    );
+    const plantar = pHit?.point ?? nearP;
+    const top = tHit?.point ?? nearT;
+    const missed = !pHit || !tHit;
+    const sep = Math.hypot(plantar.x - top.x, plantar.y - top.y);
+    const vertical =
+        sep < 0.15 ||
+        Math.hypot(plantar.x - origin.x, plantar.y - origin.y) +
+            Math.hypot(top.x - origin.x, top.y - origin.y) <
+            0.3;
+    return { plantar, top, missed, vertical };
+}
+
+function bboxSize(pts: PolyPoint[]): number {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of pts) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    return Math.max(maxX - minX, maxY - minY);
+}
+
+function smoothMasterToRadius(seed: PolyPoint[], n: number, needR: number): PolyPoint[] {
+    let master = resamplePolyline(seed, n);
+    const seedSpan = bboxSize(master);
+    let best = master;
+    let bestR = masterCurveRadii(master).minRadiusMm;
+    for (let pass = 0; pass < 48; pass++) {
+        const { minRadiusMm } = masterCurveRadii(master);
+        if (minRadiusMm >= needR) return master;
+        if (minRadiusMm > bestR && bboxSize(master) > seedSpan * 0.72) {
+            bestR = minRadiusMm;
+            best = master;
+        }
+        master = resamplePolyline(smoothClosedXY(master, 2), n);
+        if (bboxSize(master) < seedSpan * 0.72) return best;
+    }
+    return bestR >= masterCurveRadii(master).minRadiusMm ? best : master;
 }
 
 /**
- * Harmonic correspondence via the signed-distance gradient to a C2 master
+ * Harmonic correspondence via the signed-distance gradient to a master
  * curve M (the cheaper accepted alternative). M is the 0-skew midline,
- * smoothed until min radius of curvature exceeds max |T−P|. Columns are
- * iso-psi (M arc-length) lines: from each M station, shoot both ways along
- * ∇d_M. Where T and P cross, the column is vertical. Both loops share N
- * strictly increasing stations.
+ * Laplacian-smoothed until min radius of curvature exceeds max |T−P|.
+ * Columns are iso-psi (M arc-length) lines: from each M station, shoot
+ * both ways along ∇d_M and keep the opposite-side T/P hits. Where T and
+ * P cross, the column is vertical. Both loops share N strictly increasing
+ * stations.
  */
 export function pairByHarmonic(plantarLoop: PolyPoint[], topLoop: PolyPoint[], n: number): StationPairing {
-    const midSeed = seedMidline(plantarLoop, topLoop, n);
-    let master = resampleClosedC2(fitClosedC2Spline(midSeed), n);
-    let maxSep = 0;
-    for (let i = 0; i < n; i++) {
-        const p = nearestOnLoop(master[i]!, plantarLoop);
-        const t = nearestOnLoop(master[i]!, topLoop);
-        maxSep = Math.max(maxSep, Math.hypot(p.x - t.x, p.y - t.y));
-    }
+    const { mid, maxSep } = seedMidline(plantarLoop, topLoop, n);
     const needR = Math.max(12, maxSep);
-    for (let pass = 0; pass < 24; pass++) {
-        const { minRadiusMm } = masterCurveRadii(master);
-        if (minRadiusMm >= needR) break;
-        master = resampleClosedC2(fitClosedC2Spline(smoothClosedXY(master, 2)), n);
-    }
+    const master = smoothMasterToRadius(mid, n, needR);
     const c = centroidOf(master);
     const normals = smoothNormals(
         master.map((_, i) => outwardNormal(master, i, c)),
@@ -394,22 +453,15 @@ export function pairByHarmonic(plantarLoop: PolyPoint[], topLoop: PolyPoint[], n
     let missed = 0;
     for (let i = 0; i < n; i++) {
         const m = master[i]!;
-        const nxy = normals[i]!;
-        const pHit = hitLoopFromMaster(m, nxy, plantarLoop);
-        const tHit = hitLoopFromMaster(m, nxy, topLoop);
-        const cross =
-            Math.hypot(pHit.point.x - tHit.point.x, pHit.point.y - tHit.point.y) < 0.15 ||
-            Math.hypot(pHit.point.x - m.x, pHit.point.y - m.y) +
-                Math.hypot(tHit.point.x - m.x, tHit.point.y - m.y) <
-                0.3;
-        if (cross) {
-            plantar.push({ x: m.x, y: m.y, z: pHit.point.z });
-            top.push({ x: m.x, y: m.y, z: tHit.point.z });
+        const hit = pairHitsFromMaster(m, normals[i]!, plantarLoop, topLoop, Math.max(8, maxSep * 2.5));
+        if (hit.vertical) {
+            plantar.push({ x: m.x, y: m.y, z: hit.plantar.z });
+            top.push({ x: m.x, y: m.y, z: hit.top.z });
         } else {
-            plantar.push(pHit.point);
-            top.push(tHit.point);
+            plantar.push(hit.plantar);
+            top.push(hit.top);
         }
-        if (pHit.missed || tHit.missed) missed++;
+        if (hit.missed) missed++;
     }
     const { minRadiusMm, waistMinRadiusMm } = masterCurveRadii(master);
     const sidewaysSkewMm = columnSidewaysSkewMm(plantar, top, normals);
