@@ -396,6 +396,12 @@ export interface ViewerSettings {
     showScans: boolean;
     /** Active named camera view (for UI + planar editing constraint). */
     view: CameraView;
+    /**
+     * S0 Option B preview: `'procedural'` rebuilds the unmodified stock base
+     * from TopSurface + BottomOutline (viewer-only). Default `'legacy'` keeps
+     * today's sidewall-deform path. Not persisted; never touches modifiers/export.
+     */
+    wallModel?: "legacy" | "procedural";
 }
 
 export type TransformMode = "translate" | "rotate" | "scale";
@@ -531,6 +537,7 @@ export const useDesignStore = create<DesignStore>()(
                 showRight: true,
                 showScans: true,
                 view: "iso",
+                wallModel: "legacy",
             },
             selectedElementId: null,
             transformMode: "translate",

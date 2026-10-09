@@ -13,6 +13,7 @@ import {
 } from "@/lib/geometry/base-asset";
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { extractStockWallModel, reconstructProceduralWalls } from "@/lib/geometry/procedural-wall";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
@@ -48,6 +49,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const stockBaseLoading = useDesignStore((s) => s.stockBaseLoading);
     const stockBaseResolutionState = useDesignStore((s) => s.stockBaseResolutionState);
     const setBaseMeshLoading = useDesignStore((s) => s.setBaseMeshLoading);
+    const wallModel = useDesignStore((s) => s.viewer.wallModel ?? "legacy");
 
     const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
@@ -231,10 +233,27 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     }, [assetId, side, layout.lengthMm, layout.widthMm, layout.usMenSize, building, design]);
 
     // Re-apply modifiers whenever corrections / elements / thickness change.
+    // `wallModel: 'procedural'` is S0 viewer-only: reconstruct the unmodified
+    // sized base from the extracted representation. Modifier / export paths
+    // are unchanged.
     // biome-ignore lint/correctness/useExhaustiveDependencies: preview patches + live draft trimline are intentional triggers
     useEffect(() => {
         const raw = baseGeoRef.current;
         if (!assetId || !raw) return;
+        if (wallModel === "procedural") {
+            const extracted = extractStockWallModel(raw, {
+                id: assetId,
+                name: getDesignBase(design, side)?.name ?? assetId,
+            });
+            const rebuilt = reconstructProceduralWalls(extracted);
+            if (outRef.current && outRef.current !== workRef.current) {
+                outRef.current.dispose();
+            }
+            outRef.current = rebuilt;
+            setGeometry(rebuilt);
+            setBaseMeshLoading(side, false);
+            return;
+        }
         // Paired workspace: per-side committed thickness (matches export path).
         const committedThickness = design.paired
             ? side === "left"
@@ -292,6 +311,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         building,
         setBaseMeshLoading,
         side,
+        wallModel,
     ]);
 
     useEffect(
