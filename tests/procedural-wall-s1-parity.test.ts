@@ -34,6 +34,7 @@ import {
     medialArchUpperWallFolds,
     meshVertexMinZ,
     minWallThicknessMm,
+    outlineRingDeviationMm,
     outlineSeamDihedrals,
     reconstructionManifold,
     reconstructProceduralWalls,
@@ -128,13 +129,17 @@ describe("S1 parametric wall", () => {
             const topStock = model.top.meshPositions ?? new Float32Array(0);
             const topDelta = maxVertexDeltaMm(topRecon, topStock);
             const dishDelta = dishInteriorDeltaMm(rebuilt, model);
+            const outlineDev = outlineRingDeviationMm(rebuilt, model);
 
             const man = reconstructionManifold(rebuilt);
             const outlineN = (rebuilt.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
+            const outlineStart =
+                (rebuilt.userData as { outlineVertexStart?: number }).outlineVertexStart ?? topN;
             const fold = foldReport(rebuilt, {
                 wholeInsole: true,
                 topVertexCount: topN,
                 outlineVertexCount: outlineN,
+                outlineVertexStart: outlineStart,
             });
             let hits = { real: -1, coplanar: 0 };
             try {
@@ -191,12 +196,10 @@ describe("S1 parametric wall", () => {
                 occt = "unavailable";
             }
 
-            const stitchPts = (model.outline.rimLocal ?? []).map((i) => ({
-                x: (model.outline.meshPositions ?? new Float32Array())[i * 3]!,
-                y: (model.outline.meshPositions ?? new Float32Array())[i * 3 + 1]!,
-                z: (model.outline.meshPositions ?? new Float32Array())[i * 3 + 2]!,
-            }));
-            const reconSeam = outlineSeamDihedrals(rebuilt, stitchPts.length ? stitchPts : outlineOf(model));
+            const generatedOutline =
+                (rebuilt.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> })
+                    .outlineRing ?? outlineOf(model);
+            const reconSeam = outlineSeamDihedrals(rebuilt, generatedOutline, 1.25);
             const implied = (
                 (rebuilt.userData as { filletImpliedSeamDeg?: number[] }).filletImpliedSeamDeg ?? []
             ).slice();
@@ -272,7 +275,7 @@ describe("S1 parametric wall", () => {
             if (topDelta > 1e-9) misses.push(`top-identical ${topDelta.toFixed(6)}`);
             const plantarDelta = dishDelta;
             if (plantarDelta > 0.05) misses.push(`plantar-dish ${plantarDelta.toFixed(3)}`);
-            if (haus.outline.maxMm > 1e-3) misses.push(`outline ${haus.outline.maxMm.toFixed(3)}`);
+            if (outlineDev > 1e-3) misses.push(`outline ${outlineDev.toFixed(3)}`);
             const minZ = ud.meshMinZ ?? meshVertexMinZ(rebuilt);
             const degenerates = countDegenerateFaces(rebuilt);
             if (minZ < -0.01) misses.push(`min-z ${minZ.toFixed(3)}`);
@@ -340,7 +343,7 @@ describe("S1 parametric wall", () => {
                 topDelta: Number(topDelta.toFixed(6)),
                 plantarMax: Number(plantarDelta.toFixed(4)),
                 plantarHaus: Number(haus.plantar.maxMm.toFixed(4)),
-                outlineMax: Number(haus.outline.maxMm.toFixed(4)),
+                outlineMax: Number(outlineDev.toFixed(4)),
                 groundDrift: Number(drift.toFixed(4)),
                 meshMinZ: Number(minZ.toFixed(4)),
                 planReversals: ud.planReversals ?? 0,
@@ -434,10 +437,13 @@ describe("S1 parametric wall", () => {
             });
             const topN = (rebuilt.userData as { topVertexCount?: number }).topVertexCount ?? 0;
             const outlineN = (rebuilt.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
+            const outlineStart =
+                (rebuilt.userData as { outlineVertexStart?: number }).outlineVertexStart ?? topN;
             const fold = foldReport(rebuilt, {
                 wholeInsole: true,
                 topVertexCount: topN,
                 outlineVertexCount: outlineN,
+                outlineVertexStart: outlineStart,
             });
             const hits = countSelfIntersections(rebuilt);
             const man = reconstructionManifold(rebuilt);

@@ -48,6 +48,7 @@ export {
     medialArchUpperWallFolds,
     meshVertexMinZ,
     minWallThicknessMm,
+    outlineRingDeviationMm,
     outlineSeamDihedrals,
     reconstructionManifold,
     sheetBoundaryStats,

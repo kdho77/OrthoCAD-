@@ -553,8 +553,7 @@ export function pairAtNativeTop(plantarLoop: PolyPoint[], topLoop: PolyPoint[]):
         );
         const p = pHit?.point ?? nearestOnLoop(m, plantarLoop);
         if (!pHit) missed++;
-        const vertical = Math.hypot(p.x - t.x, p.y - t.y) < 0.15;
-        plantar.push(vertical ? { x: t.x, y: t.y, z: p.z } : p);
+        plantar.push({ x: p.x, y: p.y, z: p.z });
     }
     const { minRadiusMm, waistMinRadiusMm } = masterCurveRadii(master);
     const sidewaysSkewMm = columnSidewaysSkewMm(plantar, top, normals);

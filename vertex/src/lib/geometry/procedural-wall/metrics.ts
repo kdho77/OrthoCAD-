@@ -272,8 +272,10 @@ export interface FoldReportOptions {
      * separately as `seamWorstDeg`.
      */
     topVertexCount?: number;
-    /** Count of wall-bottom / plantar-boundary verts immediately after the top sheet. */
+    /** Count of BottomOutline-ring verts (generated plantar outer ring). */
     outlineVertexCount?: number;
+    /** First outline-ring vertex id. Defaults to `topVertexCount` (legacy stitch). */
+    outlineVertexStart?: number;
     /** When true, measure the whole insole (wall + plantar + new edges). */
     wholeInsole?: boolean;
 }
@@ -345,9 +347,10 @@ export function foldReport(reconstruction: BufferGeometry, opts?: FoldReportOpti
         if (areaOf(f1) < 1e-3 || areaOf(f2) < 1e-3) continue;
         const topN = opts?.topVertexCount ?? 0;
         const outN = opts?.outlineVertexCount ?? 0;
+        const outStart = opts?.outlineVertexStart ?? topN;
         const bothTop = topN > 0 && sa < topN && sb < topN;
         const oneTop = topN > 0 && sa < topN !== sb < topN;
-        const inOutline = (v: number) => outN > 0 && v >= topN && v < topN + outN;
+        const inOutline = (v: number) => outN > 0 && v >= outStart && v < outStart + outN;
         const oneOutline = inOutline(sa) !== inOutline(sb);
         if (opts?.wholeInsole) {
             if (bothTop) continue;
@@ -659,6 +662,32 @@ export function maxVertexDeltaMm(a: Float32Array, b: Float32Array): number {
     return max;
 }
 
+/** Max XY distance from the generated outline ring to BottomOutline. */
+export function outlineRingDeviationMm(reconstruction: BufferGeometry, model: StockWallModel): number {
+    const ring = (reconstruction.userData as { outlineRing?: Array<{ x: number; y: number }> }).outlineRing;
+    const loop = model.outline.spline.controls;
+    if (!ring?.length || loop.length < 2) return Infinity;
+    let max = 0;
+    for (const p of ring) {
+        let best = Infinity;
+        for (let i = 0; i < loop.length; i++) {
+            const a = loop[i]!;
+            const b = loop[(i + 1) % loop.length]!;
+            const ex = b.x - a.x;
+            const ey = b.y - a.y;
+            const len2 = ex * ex + ey * ey;
+            const t =
+                len2 > 1e-12 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
+            const dx = p.x - (a.x + ex * t);
+            const dy = p.y - (a.y + ey * t);
+            const d = Math.hypot(dx, dy);
+            if (d < best) best = d;
+        }
+        if (best > max) max = best;
+    }
+    return max;
+}
+
 /** Max |generated-plantar z − stock dish z| at interior samples. */
 export function dishInteriorDeltaMm(
     reconstruction: BufferGeometry,
@@ -675,7 +704,7 @@ export function dishInteriorDeltaMm(
     const nS = (reconstruction.userData as { stationCount?: number }).stationCount ?? 0;
     let max = 0;
     let n = 0;
-    const start = generatedStart + Math.max(0, outlineRow - 1) * nS;
+    const start = generatedStart + Math.max(0, outlineRow) * nS;
     const end = generatedStart + generatedCount;
     for (let i = start; i < end && i < pos.length / 3; i++) {
         const x = pos[i * 3]!;

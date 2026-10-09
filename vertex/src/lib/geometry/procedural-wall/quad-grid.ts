@@ -45,6 +45,10 @@ export interface QuadGrid {
     flareCapReport?: FlareCapReport;
     planReversals: number;
     chordCrossings: number;
+    /** Max tilt (deg from horizontal) of the first plantar ring off BottomOutline. */
+    bandTiltDegMax: number;
+    /** Outline-row vertices, exactly BottomOutline station samples. */
+    outlineRing: PolyPoint[];
 }
 
 export interface RimJunction {
@@ -151,6 +155,62 @@ function belowPlane(
     eps = 1e-3,
 ): boolean {
     return plane.x * (p.x - rim.x) + plane.y * (p.y - rim.y) + plane.z * (p.z - rim.z) < -eps;
+}
+
+/**
+ * Bottom fillet on the wall side of BottomOutline. n increases to P1.n;
+ * arrives with horizontal +n tangent so the plantar can leave inward.
+ * Does not sample inward of the outline (that caused plan reversals).
+ */
+export function sampleBottomWallFillet(P1: NZ, radiusMm: number, circMm: number): NZ[] {
+    const r = Math.max(
+        MIN_FILLET_RING_SPACING_MM * MIN_FILLET_RINGS * 0.5,
+        Math.min(radiusMm, Math.max(P1.n * 0.8, MIN_FILLET_RING_SPACING_MM)),
+    );
+    const nWant = Math.max(
+        MIN_FILLET_RINGS,
+        Math.min(
+            4,
+            r > 1e-8 ? Math.floor((r * (Math.PI / 2)) / MIN_FILLET_RING_SPACING_MM) : MIN_FILLET_RINGS,
+        ),
+    );
+    const rings: NZ[] = [];
+    for (let i = 1; i <= nWant; i++) {
+        const phi = ((Math.PI / 2) * i) / nWant;
+        const p = {
+            n: P1.n - r * Math.cos(phi),
+            z: P1.z + r * (1 - Math.sin(phi)),
+        };
+        const prev = rings.length ? rings[rings.length - 1]! : { n: P1.n - r, z: P1.z + r };
+        const dist = Math.hypot(p.n - prev.n, p.z - prev.z);
+        const force = rings.length < MIN_FILLET_RINGS || i === nWant;
+        if (rings.length && dist < MIN_FILLET_RING_SPACING_MM && !force) continue;
+        const radial = Math.max(dist, 1e-6);
+        const aspect = circMm > 1e-6 ? Math.max(circMm, radial) / Math.min(circMm, radial) : 1;
+        if (aspect > MAX_FILLET_ASPECT && !force) continue;
+        rings.push(p);
+    }
+    if (rings.length === 0 || rings[rings.length - 1]!.n < P1.n - 1e-6) {
+        rings.push({ n: P1.n, z: P1.z });
+    } else {
+        rings[rings.length - 1] = { n: P1.n, z: P1.z };
+    }
+    return rings;
+}
+
+function tiltFromHorizontal(a: PolyPoint, b: PolyPoint, c: PolyPoint): number {
+    const ux = b.x - a.x;
+    const uy = b.y - a.y;
+    const uz = b.z - a.z;
+    const vx = c.x - a.x;
+    const vy = c.y - a.y;
+    const vz = c.z - a.z;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-12) return 0;
+    return (Math.acos(Math.max(-1, Math.min(1, Math.abs(nz / len)))) * 180) / Math.PI;
 }
 
 /** Circular fillet that may descend (z not clamped to P0). */
@@ -288,14 +348,16 @@ function buildWallColumn(
     const Tw = wallDirectionNZ(flareDeg);
     const Tdown = unitNZ({ n: Math.abs(Tw.n), z: -Math.max(Tw.z, 0.2) });
     const Tstart = unitNZ(junct.tStart);
-    const Tbot = unitNZ({ n: -1, z: 0 });
     const P0 = { n: 0, z: R.z };
     const P1 = { n: Math.max(chordN, 0.05), z: O.z };
-    const startRings = sampleFilletSigned(P0, Tstart, Tdown, rTop, circMm);
-    const botRings = sampleFilletSigned(P1, Tbot, unitNZ({ n: -Tdown.n, z: -Tdown.z }), rBot, circMm);
-    const hermiteEnd = botRings[botRings.length - 1] ?? P1;
+    const startRings = sampleFilletSigned(P0, Tstart, Tdown, rTop, circMm).map((p) => ({
+        n: Math.max(0, p.n),
+        z: Math.min(p.z, R.z - 1e-3),
+    }));
+    const botRings = sampleBottomWallFillet(P1, rBot, circMm);
+    const hermiteEnd = botRings[0] ?? { n: Math.max(0, P1.n - rBot), z: P1.z + rBot };
     const hermiteStart = startRings[startRings.length - 1] ?? {
-        n: Tstart.n * 0.4,
+        n: Math.max(0.05, Tstart.n * 0.4),
         z: R.z + Tstart.z * 0.4,
     };
     const midLen = Math.max(1e-3, Math.hypot(hermiteEnd.n - hermiteStart.n, hermiteEnd.z - hermiteStart.z));
@@ -304,7 +366,7 @@ function buildWallColumn(
     const curvature = blendedFlareCurvature(st.u, O.y, defaults.flareCurvature);
     const nChord = Math.max(0.05, localH * Math.tan(Math.abs((flareDeg * Math.PI) / 180)));
     const T0 = clampTangentMag({ n: Tdown.n * midLen + curvature * nChord, z: Tdown.z * midLen }, maxT);
-    const T1 = clampTangentMag({ n: Tdown.n * midLen, z: Tdown.z * midLen }, maxT);
+    const T1 = clampTangentMag({ n: 0, z: -midLen }, maxT);
     const hScale = wallHeightScale(st.u);
     const nMid = Math.max(3, nWall - 2 - startRings.length - botRings.length);
     const col: NZ[] = [P0];
@@ -327,18 +389,28 @@ function buildWallColumn(
                 };
             }
         }
-        col.push(p);
+        col.push({ n: Math.max(0, Math.min(p.n, P1.n)), z: p.z });
     }
-    for (let i = botRings.length - 2; i >= 0; i--) col.push(botRings[i]!);
+    for (let i = 1; i < botRings.length - 1; i++) {
+        const p = botRings[i]!;
+        col.push({ n: Math.max(0, Math.min(p.n, P1.n)), z: p.z });
+    }
     col.push(P1);
+    for (let j = 1; j < col.length; j++) {
+        if (col[j]!.n < col[j - 1]!.n) col[j]!.n = col[j - 1]!.n;
+    }
     const wall = resampleTo(col, nWall);
     wall[0] = P0;
     wall[nWall - 1] = { n: P1.n, z: O.z };
+    for (let j = 1; j < nWall; j++) {
+        if (wall[j]!.n < wall[j - 1]!.n) wall[j]!.n = wall[j - 1]!.n;
+        if (j < nWall - 1 && wall[j]!.n > P1.n && flangeH <= 0) wall[j]!.n = P1.n;
+    }
     const first = startRings[0] ?? { n: Tstart.n * 0.3, z: R.z + Tstart.z * 0.3 };
     const implied = filletImpliedSeamDeg(Tstart, { n: first.n - P0.n, z: first.z - P0.z });
     const xyz: PolyPoint[] = [];
+    let prevN = 0;
     for (let j = 0; j < nWall; j++) {
-        const raw = toXyz(R, st.n, wall[j]!);
         if (j === 0) {
             xyz.push({ ...R });
             continue;
@@ -347,7 +419,13 @@ function buildWallColumn(
             xyz.push({ ...O });
             continue;
         }
-        xyz.push(shortenOutsideTop(raw, R, st.n, junct, rimLoop, topZ, P1.n));
+        const raw = toXyz(R, st.n, wall[j]!);
+        const q = shortenOutsideTop(raw, R, st.n, junct, rimLoop, topZ, P1.n);
+        let n = (q.x - R.x) * st.n.x + (q.y - R.y) * st.n.y;
+        if (n < prevN) n = prevN;
+        if (flangeH <= 0 && n > P1.n) n = P1.n;
+        xyz.push({ x: R.x + st.n.x * n, y: R.y + st.n.y * n, z: Math.min(q.z, R.z - 0.05) });
+        prevN = n;
     }
     return { xyz, implied };
 }
@@ -417,23 +495,35 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     }
     cx /= Math.max(1, nS);
     cy /= Math.max(1, nS);
-    const innerR = INNER_CAP_MM;
+    const outlineLoop = stations.map((st) => st.outline);
     for (let i = 0; i < nS; i++) {
         const o = stations[i]!.outline;
-        const nx = stations[i]!.n.x;
-        const ny = stations[i]!.n.y;
-        const span = Math.max(innerR, Math.hypot(o.x - cx, o.y - cy) - innerR);
+        const radial = Math.hypot(o.x - cx, o.y - cy);
+        const inner = Math.min(INNER_CAP_MM, radial * 0.4);
+        const span = Math.max(0, radial - inner);
         for (let k = 1; k <= nPlantar; k++) {
-            const t = k / nPlantar;
-            const d = span * t;
-            const x = o.x - nx * d;
-            const y = o.y - ny * d;
-            const z = sampleGeneratedZ(x, y, input.dish, input.plantarField, o.z, input.zDelta);
-            columns[i]!.push({ x, y, z });
+            const t = radial > 1e-6 ? ((k / nPlantar) * span) / radial : 0;
+            const x = o.x + (cx - o.x) * t;
+            const y = o.y + (cy - o.y) * t;
+            const inside = pointInPolyXY(x, y, outlineLoop);
+            const px = inside ? x : o.x + (cx - o.x) * Math.min(t, 0.92);
+            const py = inside ? y : o.y + (cy - o.y) * Math.min(t, 0.92);
+            const z = sampleGeneratedZ(px, py, input.dish, input.plantarField, o.z, input.zDelta);
+            columns[i]!.push({ x: px, y: py, z });
         }
     }
     const cz = sampleGeneratedZ(cx, cy, input.dish, input.plantarField, 0, input.zDelta);
     const center = { x: cx, y: cy, z: cz };
+    const outlineRing = columns.map((col) => ({ ...col[outlineRow]! }));
+    let bandTiltDegMax = 0;
+    if (nPlantar > 0) {
+        for (let i = 0; i < nS; i++) {
+            const a = columns[i]![outlineRow]!;
+            const b = columns[(i + 1) % nS]![outlineRow]!;
+            const c = columns[i]![outlineRow + 1]!;
+            bandTiltDegMax = Math.max(bandTiltDegMax, tiltFromHorizontal(a, b, c));
+        }
+    }
 
     const wallXyz = columns.map((col) => col.slice(0, nWall));
     const planReversals = countColumnPlanReversals(wallXyz);
@@ -459,5 +549,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         flareCapReport: report,
         planReversals,
         chordCrossings: 0,
+        bandTiltDegMax,
+        outlineRing,
     };
 }

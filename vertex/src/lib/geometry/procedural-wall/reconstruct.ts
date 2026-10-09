@@ -304,29 +304,28 @@ export function reconstructProceduralWalls(
     const zDelta = (x: number, y: number) => plantarZDelta(x, y, model.bounds, options);
     const probeZ = (x: number, y: number, fb: number) =>
         sampleGeneratedZ(x, y, dish, model.outline.plantarZ, fb, zDelta);
-    let outlineZ: PolyPoint[] = pairing.plantar.map((p) => ({ x: p.x, y: p.y, z: probeZ(p.x, p.y, p.z) }));
     let minGen = Infinity;
-    for (const p of outlineZ) if (p.z < minGen) minGen = p.z;
     let cx = 0;
     let cy = 0;
-    for (const p of outlineZ) {
+    for (const p of pairing.plantar) {
         cx += p.x;
         cy += p.y;
+        if (p.z < minGen) minGen = p.z;
     }
-    cx /= Math.max(1, outlineZ.length);
-    cy /= Math.max(1, outlineZ.length);
+    cx /= Math.max(1, pairing.plantar.length);
+    cy /= Math.max(1, pairing.plantar.length);
     for (const t of [0.25, 0.5, 0.75]) {
-        for (const p of outlineZ) {
+        for (const p of pairing.plantar) {
             const z = probeZ(p.x + (cx - p.x) * t, p.y + (cy - p.y) * t, p.z);
             if (z < minGen) minGen = z;
         }
     }
     const groundLift = Number.isFinite(minGen) && minGen < 0 ? -minGen : 0;
     const zDeltaG = (x: number, y: number) => zDelta(x, y) + groundLift;
-    outlineZ = pairing.plantar.map((p) => ({
+    const outlineZ: PolyPoint[] = pairing.plantar.map((p) => ({
         x: p.x,
         y: p.y,
-        z: sampleGeneratedZ(p.x, p.y, dish, model.outline.plantarZ, p.z, zDeltaG),
+        z: p.z + zDelta(p.x, p.y) + groundLift,
     }));
     pairing.plantar = outlineZ;
 
@@ -415,6 +414,10 @@ export function reconstructProceduralWalls(
         generatedStart,
         generatedCount: positions.length / 3 - generatedStart,
         outlineRow: grid.outlineRow,
+        outlineRing: grid.outlineRing,
+        outlineVertexStart: generatedStart + Math.max(0, grid.outlineRow - 1) * nS,
+        outlineVertexCount: nS,
+        bandTiltDegMax: grid.bandTiltDegMax,
         masterMinRadiusMm: pairing.masterMinRadiusMm,
         waistMinRadiusMm: pairing.waistMinRadiusMm,
         maxSepMm: pairing.maxSepMm,
@@ -423,7 +426,6 @@ export function reconstructProceduralWalls(
         floodZSpanMm: model.outline.floodZSpanMm,
         interiorFaceCount: model.outline.interiorFaceCount,
         topVertexCount: topPos.length / 3,
-        outlineVertexCount: model.outline.spline.controls.length,
         plantarVertexCount: 0,
         stitchVertexCount: nS,
         stationCount: nS,
