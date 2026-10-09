@@ -1,6 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+export { cdtPlanarBand, DISH_BAND_MM, delaunayXY } from "./cdt-band";
 export { fitClosedC2Spline, resampleClosedC2, resamplePolyline } from "./curves";
 export {
     applyMeasuredUnclamped,
@@ -27,9 +28,15 @@ export {
 } from "./extract";
 export { evaluateHeelCupGate } from "./hermite";
 export { countSelfIntersections, type SelfIntersectionReport } from "./intersect";
-export { buildHermiteStations } from "./loft";
+export {
+    buildHermiteStations,
+    countColumnPlanReversals,
+    MIN_REAL_BOTTOM_FILLET_MM,
+} from "./loft";
 export { defaultsFromStockCurves, diagnoseFlareProfiles, measureRegionFeatures } from "./measure";
 export {
+    countDegenerateFaces,
+    countJunctionBandSlivers,
     cupHeightAtU,
     foldReport,
     groundDriftMm,
@@ -38,6 +45,7 @@ export {
     maxVertexDeltaMm,
     measureReconFlareDeg,
     medialArchUpperWallFolds,
+    meshVertexMinZ,
     minWallThicknessMm,
     outlineSeamDihedrals,
     reconstructionManifold,
@@ -62,6 +70,7 @@ export {
     FLARE_DEV_CAP_DEG,
     type FlareCapReport,
     masterCurveRadii,
+    pairAtNativeTop,
     pairByHarmonic,
     pairByOutwardRay,
     SKEW_LIMIT_MM,

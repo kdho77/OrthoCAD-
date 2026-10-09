@@ -16,6 +16,7 @@ import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import {
     buildHermiteStations,
     CUP_BOWL,
+    countDegenerateFaces,
     countSelfIntersections,
     cupHeightAtU,
     evaluateHeelCupGate,
@@ -30,6 +31,7 @@ import {
     maxVertexDeltaMm,
     measureReconFlareDeg,
     medialArchUpperWallFolds,
+    meshVertexMinZ,
     minWallThicknessMm,
     outlineSeamDihedrals,
     reconstructionManifold,
@@ -240,6 +242,12 @@ describe("S1 parametric wall", () => {
                 maxSidewaysSkewMm?: number;
                 pairingMonotonic?: boolean;
                 missedRays?: number;
+                planReversals?: number;
+                zeroAreaFaces?: number;
+                duplicateFaces?: number;
+                junctionSlivers?: number;
+                bandTiltDegMax?: number;
+                meshMinZ?: number;
                 flareCapReport?: {
                     stillNeeded?: boolean;
                     cappedStations?: number[];
@@ -280,7 +288,13 @@ describe("S1 parametric wall", () => {
             if (plantarDelta > 1e-3) misses.push(`plantar ${plantarDelta.toFixed(3)}`);
             if (haus.outline.maxMm > 0.1) misses.push(`outline ${haus.outline.maxMm.toFixed(3)}`);
             if (stitchDelta > 1e-6) misses.push(`outline-stitch ${stitchDelta.toFixed(6)}`);
-            if (Math.abs(drift) > 0.01) misses.push(`ground-drift ${drift.toFixed(3)}`);
+            const minZ = ud.meshMinZ ?? meshVertexMinZ(rebuilt);
+            const degenerates = countDegenerateFaces(rebuilt);
+            if (minZ < -0.01) misses.push(`min-z ${minZ.toFixed(3)}`);
+            if ((ud.planReversals ?? 0) !== 0) misses.push(`plan-reversals ${ud.planReversals}`);
+            if ((ud.junctionSlivers ?? 0) !== 0) misses.push(`junction-slivers ${ud.junctionSlivers}`);
+            if (degenerates.zeroArea !== 0) misses.push(`zero-area ${degenerates.zeroArea}`);
+            if (degenerates.duplicates !== 0) misses.push(`duplicate-faces ${degenerates.duplicates}`);
             if (man.openEdges !== 0) misses.push(`open ${man.openEdges}`);
             if (man.nonManifoldEdges !== 0) misses.push(`nonManifold ${man.nonManifoldEdges}`);
             if (!man.watertight) misses.push("not-watertight");
@@ -298,9 +312,10 @@ describe("S1 parametric wall", () => {
             if (windowX !== 0) misses.push(`window-cross ${windowX}`);
             if (maxSkew > SKEW_LIMIT_MM) misses.push(`skew ${maxSkew.toFixed(2)}`);
             if (ud.pairingMonotonic === false) misses.push("pairing-not-monotonic");
+            const bandTilt = ud.bandTiltDegMax ?? boundary.tiltDegMax;
             if (boundary.zMax > 2.0 + 1e-3) misses.push(`plantar-boundary-z ${boundary.zMax.toFixed(2)}`);
-            if (boundary.tiltDegMax > 30 + 1e-3) {
-                misses.push(`plantar-boundary-tilt ${boundary.tiltDegMax.toFixed(1)}`);
+            if (bandTilt > 30 + 1e-3) {
+                misses.push(`plantar-boundary-tilt ${bandTilt.toFixed(1)}`);
             }
             if (minWall < S1_MIN_WALL_MM) misses.push(`minWall ${minWall.toFixed(3)}`);
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) misses.push(`fold ${fold.worstDeg.toFixed(1)}`);
@@ -336,6 +351,11 @@ describe("S1 parametric wall", () => {
                 plantarHaus: Number(haus.plantar.maxMm.toFixed(4)),
                 outlineMax: Number(haus.outline.maxMm.toFixed(4)),
                 groundDrift: Number(drift.toFixed(4)),
+                meshMinZ: Number(minZ.toFixed(4)),
+                planReversals: ud.planReversals ?? 0,
+                junctionSlivers: ud.junctionSlivers ?? 0,
+                zeroArea: degenerates.zeroArea,
+                duplicateFaces: degenerates.duplicates,
                 openEdges: man.openEdges,
                 nonManifold: man.nonManifoldEdges,
                 watertight: man.watertight,
@@ -432,8 +452,18 @@ describe("S1 parametric wall", () => {
             const man = reconstructionManifold(rebuilt);
             const drift = groundDriftMm(rebuilt, outlineOf(model));
             const archFolds = medialArchUpperWallFolds(rebuilt, model.bounds, topN);
-            const chordX = (rebuilt.userData as { chordCrossings?: number }).chordCrossings ?? -1;
-            const maxSkew = (rebuilt.userData as { maxSidewaysSkewMm?: number }).maxSidewaysSkewMm ?? 0;
+            const sud = rebuilt.userData as {
+                chordCrossings?: number;
+                maxSidewaysSkewMm?: number;
+                planReversals?: number;
+                junctionSlivers?: number;
+                meshMinZ?: number;
+                bandTiltDegMax?: number;
+            };
+            const chordX = sud.chordCrossings ?? -1;
+            const maxSkew = sud.maxSidewaysSkewMm ?? 0;
+            const minZ = sud.meshMinZ ?? meshVertexMinZ(rebuilt);
+            const degenerates = countDegenerateFaces(rebuilt);
             results.push({
                 smoke: smoke.name,
                 selfIntersections: hits.real,
@@ -446,18 +476,41 @@ describe("S1 parametric wall", () => {
                 seamWorstDeg: Number((fold.seamWorstDeg ?? 0).toFixed(3)),
                 watertight: man.watertight,
                 openEdges: man.openEdges,
+                nonManifold: man.nonManifoldEdges,
                 groundDrift: Number(drift.toFixed(3)),
+                meshMinZ: Number(minZ.toFixed(3)),
+                planReversals: sud.planReversals ?? 0,
+                junctionSlivers: sud.junctionSlivers ?? 0,
+                zeroArea: degenerates.zeroArea,
+                duplicateFaces: degenerates.duplicates,
+                bandTilt: Number((sud.bandTiltDegMax ?? 0).toFixed(2)),
             });
-            if (hits.real !== 0) smokeMiss.push(`${smoke.name} xi=${hits.real}`);
+            if (hits.real !== 0) {
+                const cls = hits.byClass
+                    ? Object.entries(hits.byClass)
+                          .map(([k, v]) => `${k}:${v}`)
+                          .join(",")
+                    : "";
+                smokeMiss.push(`${smoke.name} xi=${hits.real}${cls ? ` ${cls}` : ""}`);
+            }
             if (chordX !== 0) smokeMiss.push(`${smoke.name} chord-cross=${chordX}`);
+            if ((sud.planReversals ?? 0) !== 0)
+                smokeMiss.push(`${smoke.name} reversals=${sud.planReversals}`);
+            if ((sud.junctionSlivers ?? 0) !== 0)
+                smokeMiss.push(`${smoke.name} slivers=${sud.junctionSlivers}`);
+            if (degenerates.zeroArea !== 0) smokeMiss.push(`${smoke.name} zero-area=${degenerates.zeroArea}`);
+            if (degenerates.duplicates !== 0) smokeMiss.push(`${smoke.name} dupes=${degenerates.duplicates}`);
+            if (man.nonManifoldEdges !== 0)
+                smokeMiss.push(`${smoke.name} nonManifold=${man.nonManifoldEdges}`);
             if (archFolds.edgesAtLeast10Deg !== 0) {
                 smokeMiss.push(`${smoke.name} medial-arch-upper≥10`);
             }
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) smokeMiss.push(`${smoke.name} fold`);
             if (fold.edgesAtLeast10Deg !== 0) smokeMiss.push(`${smoke.name} fold≥10`);
             if (!man.watertight) smokeMiss.push(`${smoke.name} open=${man.openEdges}`);
-            if (smoke.name === "heel-lift-10" && Math.abs(drift) > 0.05) {
-                smokeMiss.push(`${smoke.name} ground-drift ${drift.toFixed(3)}`);
+            if (minZ < -0.01) smokeMiss.push(`${smoke.name} min-z ${minZ.toFixed(3)}`);
+            if ((sud.bandTiltDegMax ?? 0) > 30 + 1e-3) {
+                smokeMiss.push(`${smoke.name} band-tilt ${sud.bandTiltDegMax!.toFixed(1)}`);
             }
             rebuilt.dispose();
         }

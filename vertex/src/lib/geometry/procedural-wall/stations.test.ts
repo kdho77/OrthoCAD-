@@ -6,6 +6,7 @@ import { FLARE_BOUNDS } from "./defaults";
 import {
     countPlanViewChordCrossings,
     FLARE_DEV_CAP_DEG,
+    pairAtNativeTop,
     pairByHarmonic,
     pairByOutwardRay,
     raySegHit2D,
@@ -64,6 +65,25 @@ describe("outward-ray station pairing", () => {
         expect(countPlanViewChordCrossings(paired.plantar, paired.top)).toBe(0);
         for (let i = 1; i < paired.s01.length; i++) {
             expect(paired.s01[i]!).toBeGreaterThan(paired.s01[i - 1]!);
+        }
+    });
+
+    test("pairAtNativeTop keeps exact TopSheet rim vertices", () => {
+        const ellipse = (rx: number, ry: number, z: number, n = 24) =>
+            Array.from({ length: n }, (_, i) => {
+                const a = (i / n) * Math.PI * 2;
+                return { x: 10 + rx * Math.cos(a), y: ry * Math.sin(a), z };
+            });
+        const plantar = ellipse(12, 7, 0);
+        const top = ellipse(10, 5, 8, 20);
+        const paired = pairAtNativeTop(plantar, top);
+        expect(paired.top.length).toBe(top.length);
+        expect(paired.plantar.length).toBe(top.length);
+        expect(paired.chordCrossings).toBe(0);
+        for (let i = 0; i < top.length; i++) {
+            expect(paired.top[i]!.x).toBe(top[i]!.x);
+            expect(paired.top[i]!.y).toBe(top[i]!.y);
+            expect(paired.top[i]!.z).toBe(top[i]!.z);
         }
     });
 

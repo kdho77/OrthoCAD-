@@ -500,6 +500,84 @@ export function pairByHarmonic(plantarLoop: PolyPoint[], topLoop: PolyPoint[], n
 }
 
 /**
+ * One station per native TopSheet rim vertex. Top XY/Z are the rim verts
+ * themselves. Plantar hits come from M along ∇d_M so the zip can be deleted.
+ */
+export function pairAtNativeTop(plantarLoop: PolyPoint[], topLoop: PolyPoint[]): StationPairing {
+    const n = topLoop.length;
+    if (n < 3) {
+        return {
+            plantar: [],
+            top: [],
+            normals: [],
+            s01: [],
+            sidewaysSkewMm: [],
+            maxSkewMm: 0,
+            chordCrossings: 0,
+            missedRays: 0,
+            monotonic: true,
+            method: "harmonic",
+        };
+    }
+    const { mid, maxSep } = seedMidline(plantarLoop, topLoop, n);
+    const needR = Math.max(12, Math.min(maxSep, 20));
+    const master = smoothClosedToMinRadius(mid, needR, n);
+    const c = centroidOf(master);
+    const masterN = smoothNormals(
+        master.map((_, i) => outwardNormal(master, i, c)),
+        4,
+    );
+    const plantar: PolyPoint[] = [];
+    const top = topLoop.map((p) => ({ ...p }));
+    const normals: Array<{ x: number; y: number }> = [];
+    let missed = 0;
+    const maxT = Math.max(8, maxSep * 2.5);
+    for (let i = 0; i < n; i++) {
+        const t = top[i]!;
+        let bestM = 0;
+        let bestD = Infinity;
+        for (let k = 0; k < master.length; k++) {
+            const d = (master[k]!.x - t.x) ** 2 + (master[k]!.y - t.y) ** 2;
+            if (d < bestD) {
+                bestD = d;
+                bestM = k;
+            }
+        }
+        const nxy = masterN[bestM]!;
+        normals.push(nxy);
+        const m = master[bestM]!;
+        const pHit = nearerHit(
+            nearestRayHitOnLoop(m, nxy, plantarLoop, 1),
+            nearestRayHitOnLoop(m, nxy, plantarLoop, -1),
+            maxT,
+        );
+        const p = pHit?.point ?? nearestOnLoop(m, plantarLoop);
+        if (!pHit) missed++;
+        const vertical = Math.hypot(p.x - t.x, p.y - t.y) < 0.15;
+        plantar.push(vertical ? { x: t.x, y: t.y, z: p.z } : p);
+    }
+    const { minRadiusMm, waistMinRadiusMm } = masterCurveRadii(master);
+    const sidewaysSkewMm = columnSidewaysSkewMm(plantar, top, normals);
+    let maxSkewMm = 0;
+    for (const d of sidewaysSkewMm) if (d > maxSkewMm) maxSkewMm = d;
+    return {
+        plantar,
+        top,
+        normals,
+        s01: top.map((_, i) => i / n),
+        sidewaysSkewMm,
+        maxSkewMm,
+        chordCrossings: countPlanViewChordCrossings(plantar, top),
+        missedRays: missed,
+        monotonic: true,
+        method: "harmonic",
+        masterMinRadiusMm: minRadiusMm,
+        waistMinRadiusMm,
+        maxSepMm: maxSep,
+    };
+}
+
+/**
  * C2 of the trimmed plantar boundary → N stations. Each column's top is the
  * nearest plan-view ray hit on the TopSheet rim along +n, falling back to −n.
  * Both loops are resampled to N; station index is strictly increasing.

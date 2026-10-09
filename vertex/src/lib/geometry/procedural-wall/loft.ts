@@ -18,6 +18,7 @@ import {
     FILLET_MAX_HEIGHT_FRAC,
     filletImpliedSeamDeg,
     MIN_FILLET_RINGS,
+    type NZ,
     sampleFilletArc,
     unitNZ,
     wallDirectionNZ,
@@ -40,6 +41,7 @@ export interface LoftGrid {
     flareCapReport?: FlareCapReport;
     chordCrossings?: number;
     windowCrossings?: number;
+    planReversals?: number;
 }
 
 export interface HermiteStation {
@@ -64,6 +66,45 @@ export interface HermiteLoftInput {
     flangeHeightMm?: number;
     flangeLengthMm?: number;
     flangeAngleDeg?: number;
+}
+
+/** Minimum real bottom fillet so row 0 is tangent to the dish band. */
+export const MIN_REAL_BOTTOM_FILLET_MM = 0.8;
+
+function clampTangentMag(t: NZ, maxMag: number): NZ {
+    const m = Math.hypot(t.n, t.z);
+    if (m <= maxMag || m < 1e-12) return t;
+    return { n: (t.n / m) * maxMag, z: (t.z / m) * maxMag };
+}
+
+/** Band tangent: at most 30° from horizontal, never outward-down. */
+function clampToBandTangent(t0?: NZ): NZ {
+    if (!t0) return { n: 1, z: 0 };
+    const u = unitNZ(t0);
+    const n = u.n >= 0 ? Math.max(u.n, 0.15) : 0.15;
+    const z = Math.max(0, u.z);
+    const tilt = Math.atan2(z, n);
+    if (tilt > Math.PI / 6) {
+        return { n: Math.cos(Math.PI / 6), z: Math.sin(Math.PI / 6) };
+    }
+    return unitNZ({ n, z });
+}
+
+export function countColumnPlanReversals(xyz: Array<Array<{ x: number; y: number; z: number }>>): number {
+    let hits = 0;
+    for (const col of xyz) {
+        if (!col || col.length < 2) continue;
+        const dx = col[col.length - 1]!.x - col[0]!.x;
+        const dy = col[col.length - 1]!.y - col[0]!.y;
+        const chord = Math.hypot(dx, dy);
+        if (chord < 1e-6) continue;
+        for (let i = 1; i < col.length; i++) {
+            const sx = col[i]!.x - col[i - 1]!.x;
+            const sy = col[i]!.y - col[i - 1]!.y;
+            if (sx * dx + sy * dy < -1e-4 * chord) hits++;
+        }
+    }
+    return hits;
 }
 
 function centroidOf(pts: PolyPoint[]): { x: number; y: number } {
@@ -174,13 +215,13 @@ function buildStationColumn(
     const curvature = blendedFlareCurvature(st.u, o.y, defaults.flareCurvature);
     const localH = Math.max(height, 0.5);
     const maxR = FILLET_MAX_HEIGHT_FRAC * localH;
-    const filletBot = Math.min(defaults.wallFilletBottomMm, maxR);
+    /** Real bottom fillet so row 0 starts tangent to the dish band (not r=0). */
+    const filletBot = Math.min(maxR, Math.max(defaults.wallFilletBottomMm, MIN_REAL_BOTTOM_FILLET_MM));
     const filletTop = Math.min(defaults.wallFilletTopMm, maxR);
     const bowl = filletBot < 0.2 ? 0 : heelBowlMix(st.u);
     const Twall = wallDirectionNZ(flareDeg);
-    const Tsheet = st.t0 ? unitNZ(st.t0) : Twall;
-    let Ttop = st.t1 ? unitNZ(st.t1) : { n: Twall.n, z: -Twall.z };
-    if (Ttop.z > 0) Ttop = { n: Ttop.n, z: -Math.max(0.15, Ttop.z) };
+    const Tsheet = clampToBandTangent(st.t0);
+    const Ttop = unitNZ({ n: -1, z: 0 });
     const P0 = { n: 0, z: o.z };
     const P1 = { n: chordN, z: r.z };
     const botRings = sampleFilletArc(P0, Tsheet, Twall, filletBot, circMm);
@@ -194,8 +235,10 @@ function buildStationColumn(
     const hermiteEnd = topFromRim[topFromRim.length - 1] ?? P1;
     const midLen = Math.max(1e-3, Math.hypot(hermiteEnd.n - hermiteStart.n, hermiteEnd.z - hermiteStart.z));
     const nChord = Math.max(0.05, Math.max(height, 0.5) * Math.tan(Math.abs((flareDeg * Math.PI) / 180)));
-    const T0 = { n: Twall.n * midLen + curvature * nChord, z: Twall.z * midLen };
-    const T1 = { n: Twall.n * midLen, z: Twall.z * midLen };
+    const chord = Math.max(1e-3, Math.hypot(chordN, height));
+    const maxT = 0.5 * chord;
+    const T0 = clampTangentMag({ n: Twall.n * midLen + curvature * nChord, z: Twall.z * midLen }, maxT);
+    const T1 = clampTangentMag({ n: Twall.n * midLen, z: Twall.z * midLen }, maxT);
     const nMid = Math.max(3, nT - 2 - botRings.length - topFromRim.length);
     const column: Array<{ n: number; z: number }> = [P0];
     for (const p of botRings) column.push({ n: p.n, z: Math.max(p.z, P0.z, 0) });
@@ -380,6 +423,7 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
         flareCapReport,
         chordCrossings,
         windowCrossings,
+        planReversals: countColumnPlanReversals(xyz),
     };
 }
 

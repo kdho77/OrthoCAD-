@@ -658,6 +658,94 @@ export function maxVertexDeltaMm(a: Float32Array, b: Float32Array): number {
     return max;
 }
 
+export function meshVertexMinZ(geo: BufferGeometry): number {
+    const pos = geo.getAttribute("position").array as Float32Array;
+    let minZ = Infinity;
+    for (let i = 2; i < pos.length; i += 3) minZ = Math.min(minZ, pos[i]!);
+    return Number.isFinite(minZ) ? minZ : 0;
+}
+
+export function countDegenerateFaces(geo: BufferGeometry): { zeroArea: number; duplicates: number } {
+    const pos = geo.getAttribute("position").array as Float32Array;
+    const index = geo.getIndex();
+    if (!index) return { zeroArea: 0, duplicates: 0 };
+    const idx = index.array;
+    const seen = new Set<string>();
+    let zeroArea = 0;
+    let duplicates = 0;
+    for (let t = 0; t < idx.length; t += 3) {
+        const a = idx[t]!;
+        const b = idx[t + 1]!;
+        const c = idx[t + 2]!;
+        if (a === b || b === c || c === a) {
+            zeroArea++;
+            continue;
+        }
+        const ax = pos[a * 3]!;
+        const ay = pos[a * 3 + 1]!;
+        const az = pos[a * 3 + 2]!;
+        const ux = pos[b * 3]! - ax;
+        const uy = pos[b * 3 + 1]! - ay;
+        const uz = pos[b * 3 + 2]! - az;
+        const vx = pos[c * 3]! - ax;
+        const vy = pos[c * 3 + 1]! - ay;
+        const vz = pos[c * 3 + 2]! - az;
+        const nx = uy * vz - uz * vy;
+        const ny = uz * vx - ux * vz;
+        const nz = ux * vy - uy * vx;
+        if (nx * nx + ny * ny + nz * nz < 1e-20) {
+            zeroArea++;
+            continue;
+        }
+        const canon = [a, b, c]
+            .slice()
+            .sort((x, y) => x - y)
+            .join(",");
+        if (seen.has(canon)) duplicates++;
+        else seen.add(canon);
+    }
+    return { zeroArea, duplicates };
+}
+
+/** Faces that touch `bandVerts` with longest/shortest edge > 20. */
+export function countJunctionBandSlivers(
+    geo: BufferGeometry,
+    bandVerts: Iterable<number>,
+    aspectLimit = 20,
+): number {
+    const pos = geo.getAttribute("position").array as Float32Array;
+    const index = geo.getIndex();
+    if (!index) return 0;
+    const idx = index.array;
+    const band = bandVerts instanceof Set ? bandVerts : new Set(bandVerts);
+    let n = 0;
+    for (let t = 0; t < idx.length; t += 3) {
+        const a = idx[t]!;
+        const b = idx[t + 1]!;
+        const c = idx[t + 2]!;
+        if (!band.has(a) && !band.has(b) && !band.has(c)) continue;
+        const e1 = Math.hypot(
+            pos[b * 3]! - pos[a * 3]!,
+            pos[b * 3 + 1]! - pos[a * 3 + 1]!,
+            pos[b * 3 + 2]! - pos[a * 3 + 2]!,
+        );
+        const e2 = Math.hypot(
+            pos[c * 3]! - pos[b * 3]!,
+            pos[c * 3 + 1]! - pos[b * 3 + 1]!,
+            pos[c * 3 + 2]! - pos[b * 3 + 2]!,
+        );
+        const e3 = Math.hypot(
+            pos[a * 3]! - pos[c * 3]!,
+            pos[a * 3 + 1]! - pos[c * 3 + 1]!,
+            pos[a * 3 + 2]! - pos[c * 3 + 2]!,
+        );
+        const short = Math.min(e1, e2, e3);
+        const long = Math.max(e1, e2, e3);
+        if (short < 1e-9 || long / short > aspectLimit) n++;
+    }
+    return n;
+}
+
 export function groundDriftMm(
     geo: BufferGeometry,
     outline: Array<{ x: number; y: number; z: number }>,

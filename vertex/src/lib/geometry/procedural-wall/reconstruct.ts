@@ -10,7 +10,8 @@ import {
 import { type HeightFieldParams, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SideCorrections } from "@/types";
-import { ensureCcw, type PolyPoint, polylineArcLengths, startAtPosteriorHeel } from "./curves";
+import { cdtPlanarBand, DISH_BAND_MM, minDistToLoopXY, pointInPoly } from "./cdt-band";
+import { ensureCcw, type PolyPoint, startAtPosteriorHeel } from "./curves";
 import {
     type DeviceTypePreset,
     LATERAL_FLANGE_BOUNDS,
@@ -22,8 +23,8 @@ import { buildXyHeightIndex, sampleXyHeight, type XyHeightIndex } from "./height
 import { buildHermiteStations, loftHermiteWall } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
 import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
-import { pairByHarmonic } from "./stations";
-import { DEFAULT_LOFT_N, type StockWallModel, type UvHeightField } from "./types";
+import { countPlanViewChordCrossings, offsetClosedInward, pairAtNativeTop } from "./stations";
+import type { StockWallModel, UvHeightField } from "./types";
 
 export interface ReconstructOptions extends ProceduralModifierInput {
     n?: number;
@@ -320,24 +321,80 @@ export function reconstructProceduralWalls(
         else indices.push(a, b, c);
     };
 
+    const plantarStart = positions.length / 3;
+    const plantarFaceBegin = indices.length;
     const plantarRim = appendStockPlantar(model, options, positions, rimPts, push, pushTri);
     const nativePlantarIdx = plantarRim;
+    const plantarCount = positions.length / 3 - plantarStart;
+    if (shouldReanchorPlantar(options)) {
+        reanchorPlantarMinZ(positions, plantarStart, plantarCount);
+    }
     const plantarPts: PolyPoint[] = nativePlantarIdx.map((i) => ({
         x: positions[i * 3]!,
         y: positions[i * 3 + 1]!,
         z: positions[i * 3 + 2]!,
     }));
-    const nLoft = options.n ?? DEFAULT_LOFT_N;
-    const pairing = pairByHarmonic(plantarPts, rimPts, nLoft);
-    const stationBot = pairing.plantar.map((p) => push(p));
-    zipClosedLoops(nativePlantarIdx, stationBot, positions, pushTri);
+    let pairing = pairAtNativeTop(plantarPts, rimPts);
+    const collapsed = mergeCollapsedStations(pairing, rimLocal, indices);
+    pairing = collapsed.pairing;
+    rimLocal = collapsed.rimLocal;
+    pairing.chordCrossings = countPlanViewChordCrossings(pairing.plantar, pairing.top);
+    const dishHeight = buildXyHeightIndex(new Float32Array(positions), indices);
+    const stationBot: number[] = [];
+    const stationBotPts: PolyPoint[] = [];
+    for (const p of pairing.plantar) {
+        const z = sampleXyHeight(dishHeight, p.x, p.y, "min") ?? p.z;
+        const pt = { x: p.x, y: p.y, z };
+        stationBotPts.push(pt);
+        stationBot.push(push(pt));
+    }
+    pairing.plantar = stationBotPts;
+    dropPlantarBandFaces(indices, positions, plantarFaceBegin, nativePlantarIdx, stationBotPts);
+    const holeIdx = extractLongestInteriorHole(indices, plantarFaceBegin, positions, stationBotPts);
+    const innerPts =
+        holeIdx.length >= 3
+            ? holeIdx.map((i) => ({
+                  x: positions[i * 3]!,
+                  y: positions[i * 3 + 1]!,
+                  z: positions[i * 3 + 2]!,
+              }))
+            : offsetClosedInward(stationBotPts, DISH_BAND_MM);
+    const innerIds = holeIdx.length >= 3 ? holeIdx : innerPts.map((p) => push(p));
+    const steinerIds: number[] = [];
+    const steinerPts: PolyPoint[] = [];
+    const holeSet = new Set(innerIds);
+    const botSet = new Set(stationBot);
+    const rimSet = new Set(nativePlantarIdx);
+    for (let i = plantarStart; i < plantarStart + plantarCount; i++) {
+        if (holeSet.has(i) || botSet.has(i) || rimSet.has(i)) continue;
+        const x = positions[i * 3]!;
+        const y = positions[i * 3 + 1]!;
+        const d = minDistToLoopXY(x, y, stationBotPts);
+        if (d < 0.25 || d > DISH_BAND_MM) continue;
+        if (!pointInPoly(x, y, stationBotPts)) continue;
+        steinerIds.push(i);
+        steinerPts.push({ x, y, z: positions[i * 3 + 2]! });
+    }
+    const cdt = cdtPlanarBand(stationBotPts, innerPts, steinerPts);
+    const nMapped = stationBot.length + innerIds.length + steinerIds.length;
+    const cdtId = (li: number): number => {
+        if (li < stationBot.length) return stationBot[li]!;
+        if (li < stationBot.length + innerIds.length) return innerIds[li - stationBot.length]!;
+        if (li < nMapped) return steinerIds[li - stationBot.length - innerIds.length]!;
+        const p = cdt.points[li]!;
+        return push(p);
+    };
+    const cdtMeshIds: number[] = [];
+    for (let i = 0; i < cdt.points.length; i++) cdtMeshIds.push(cdtId(i));
+    for (const [a, b, c] of cdt.faces) {
+        pushTri(cdtMeshIds[a]!, cdtMeshIds[b]!, cdtMeshIds[c]!, true);
+    }
     const stations = buildHermiteStations(pairing.plantar, pairing.top, model.bounds);
     for (let i = 0; i < stations.length; i++) {
-        const n = pairing.normals[i];
-        if (n) stations[i]!.n = n;
+        const nn = pairing.normals[i];
+        if (nn) stations[i]!.n = nn;
     }
-    applyBoundaryTangents(stations, positions, indices, nativePlantarIdx, "t0");
-    applyBoundaryTangents(stations, positions, indices, rimLocal, "t1");
+    applyBoundaryTangents(stations, positions, indices, stationBot, "t0");
     const grid = loftHermiteWall({
         stations,
         defaults,
@@ -351,8 +408,8 @@ export function reconstructProceduralWalls(
     const nT = grid.nT;
     const nS = grid.nS;
     const wallStart = positions.length / 3;
-    // Regular nS×nT quad strip. Bottom row IS the resampled plantar stations.
-    for (let ti = 1; ti < nT; ti++) {
+    // Rows 1..nT-2 only. Row 0 IS stationBot; row nT-1 IS the native rim.
+    for (let ti = 1; ti < nT - 1; ti++) {
         for (let si = 0; si < nS; si++) {
             const o = (ti * nS + si) * 3;
             positions.push(grid.positions[o]!, grid.positions[o + 1]!, grid.positions[o + 2]!);
@@ -361,6 +418,7 @@ export function reconstructProceduralWalls(
     const wallVert = (ti: number, si: number): number => {
         const s = ((si % nS) + nS) % nS;
         if (ti <= 0) return stationBot[s]!;
+        if (ti >= nT - 1) return rimLocal[s]!;
         return wallStart + (ti - 1) * nS + s;
     };
     for (let ti = 0; ti < nT - 1; ti++) {
@@ -373,9 +431,9 @@ export function reconstructProceduralWalls(
             pushTri(a, c, d);
         }
     }
-    const lastRing: number[] = [];
-    for (let si = 0; si < nS; si++) lastRing.push(wallVert(nT - 1, si));
-    zipClosedLoops(lastRing, rimLocal, positions, pushTri);
+    const hygiene = sanitizeMesh(positions, indices);
+    const junctionSlivers = countJunctionSlivers(positions, indices, stationBot, rimLocal);
+    const bandTiltDegMax = nonSliverBandTilt(positions, indices, stationBot);
 
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
@@ -386,8 +444,15 @@ export function reconstructProceduralWalls(
     geo.userData = {
         wallModel: "procedural",
         stockId: model.id,
-        loftN: nLoft,
+        loftN: nS,
         pairingMethod: pairing.method ?? "harmonic",
+        junctionRewrite: "cdt-band",
+        planReversals: grid.planReversals ?? 0,
+        zeroAreaFaces: hygiene.zeroArea,
+        duplicateFaces: hygiene.duplicates,
+        junctionSlivers,
+        bandTiltDegMax,
+        meshMinZ: meshMinZOf(positions),
         masterMinRadiusMm: pairing.masterMinRadiusMm,
         waistMinRadiusMm: pairing.waistMinRadiusMm,
         maxSepMm: pairing.maxSepMm,
@@ -417,6 +482,332 @@ export function reconstructProceduralWalls(
         manifoldHint: analyzeManifold(geo),
     };
     return geo;
+}
+
+const COLLAPSED_STATION_MM = 1e-4;
+
+function shouldReanchorPlantar(input: ReconstructOptions): boolean {
+    const c = input.corrections;
+    if (!c) return (input.archGrindDepthMm ?? 0) > 0;
+    return c.rearfootPostingDeg !== 0 || c.forefootPostingDeg !== 0 || (input.archGrindDepthMm ?? 0) > 0;
+}
+
+function reanchorPlantarMinZ(positions: number[], start: number, count: number): void {
+    if (count <= 0) return;
+    let minZ = Infinity;
+    for (let i = 0; i < count; i++) {
+        const z = positions[(start + i) * 3 + 2]!;
+        if (z < minZ) minZ = z;
+    }
+    if (!Number.isFinite(minZ) || minZ >= 0) return;
+    const lift = -minZ;
+    for (let i = 0; i < count; i++) positions[(start + i) * 3 + 2]! += lift;
+}
+
+function mergeCollapsedStations(
+    pairing: ReturnType<typeof pairAtNativeTop>,
+    rimLocal: number[],
+    indices: number[],
+): { pairing: ReturnType<typeof pairAtNativeTop>; rimLocal: number[] } {
+    const n = Math.min(pairing.top.length, rimLocal.length, pairing.plantar.length);
+    if (n < 3) return { pairing, rimLocal };
+    const keep: number[] = [];
+    for (let i = 0; i < n; i++) {
+        if (keep.length === 0) {
+            keep.push(i);
+            continue;
+        }
+        const prev = keep[keep.length - 1]!;
+        const a = pairing.top[prev]!;
+        const b = pairing.top[i]!;
+        const pa = pairing.plantar[prev]!;
+        const pb = pairing.plantar[i]!;
+        const dt = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+        const dp = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z);
+        if (dt < COLLAPSED_STATION_MM && dp < COLLAPSED_STATION_MM) {
+            const from = rimLocal[i]!;
+            const to = rimLocal[prev]!;
+            if (from !== to) {
+                for (let k = 0; k < indices.length; k++) {
+                    if (indices[k] === from) indices[k] = to;
+                }
+            }
+            continue;
+        }
+        keep.push(i);
+    }
+    if (keep.length < 3 || keep.length === n) return { pairing, rimLocal };
+    const last = keep[keep.length - 1]!;
+    const first = keep[0]!;
+    const a = pairing.top[last]!;
+    const b = pairing.top[first]!;
+    if (Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) < COLLAPSED_STATION_MM && keep.length > 3) {
+        keep.pop();
+    }
+    const pick = <T>(arr: T[]): T[] => keep.map((i) => arr[i]!);
+    return {
+        pairing: {
+            ...pairing,
+            plantar: pick(pairing.plantar),
+            top: pick(pairing.top),
+            normals: pick(pairing.normals),
+            s01: pick(pairing.s01),
+            sidewaysSkewMm: pick(pairing.sidewaysSkewMm),
+        },
+        rimLocal: pick(rimLocal),
+    };
+}
+
+function dropPlantarBandFaces(
+    indices: number[],
+    positions: number[],
+    plantarFaceBegin: number,
+    nativeRim: number[],
+    stationBot: PolyPoint[],
+): void {
+    const rimSet = new Set(nativeRim);
+    const keep = indices.slice(0, plantarFaceBegin);
+    for (let t = plantarFaceBegin; t < indices.length; t += 3) {
+        const a = indices[t]!;
+        const b = indices[t + 1]!;
+        const c = indices[t + 2]!;
+        const onRim = rimSet.has(a) || rimSet.has(b) || rimSet.has(c);
+        const cx = (positions[a * 3]! + positions[b * 3]! + positions[c * 3]!) / 3;
+        const cy = (positions[a * 3 + 1]! + positions[b * 3 + 1]! + positions[c * 3 + 1]!) / 3;
+        const inBand = minDistToLoopXY(cx, cy, stationBot) < DISH_BAND_MM;
+        if (onRim || inBand) continue;
+        keep.push(a, b, c);
+    }
+    indices.length = 0;
+    indices.push(...keep);
+}
+
+function extractLongestInteriorHole(
+    indices: number[],
+    faceBegin: number,
+    positions: number[],
+    outer: PolyPoint[],
+): number[] {
+    const use = new Map<string, { a: number; b: number; n: number }>();
+    const add = (a: number, b: number) => {
+        const k = a < b ? `${a},${b}` : `${b},${a}`;
+        const e = use.get(k);
+        if (e) e.n++;
+        else use.set(k, { a, b, n: 1 });
+    };
+    for (let t = faceBegin; t < indices.length; t += 3) {
+        add(indices[t]!, indices[t + 1]!);
+        add(indices[t + 1]!, indices[t + 2]!);
+        add(indices[t + 2]!, indices[t]!);
+    }
+    const adj = new Map<number, number[]>();
+    for (const e of use.values()) {
+        if (e.n !== 1) continue;
+        let la = adj.get(e.a);
+        if (!la) {
+            la = [];
+            adj.set(e.a, la);
+        }
+        la.push(e.b);
+        let lb = adj.get(e.b);
+        if (!lb) {
+            lb = [];
+            adj.set(e.b, lb);
+        }
+        lb.push(e.a);
+    }
+    const used = new Set<string>();
+    const loops: number[][] = [];
+    const ek = (a: number, b: number) => (a < b ? `${a},${b}` : `${b},${a}`);
+    for (const [start, nbrs] of adj) {
+        for (const first of nbrs) {
+            const k0 = ek(start, first);
+            if (used.has(k0)) continue;
+            const loop = [start];
+            let prev = start;
+            let cur = first;
+            used.add(k0);
+            let guard = 0;
+            while (cur !== start && guard++ < adj.size + 2) {
+                loop.push(cur);
+                const nexts = adj.get(cur) ?? [];
+                let nxt = -1;
+                for (const cand of nexts) {
+                    if (cand === prev) continue;
+                    const ck = ek(cur, cand);
+                    if (used.has(ck)) continue;
+                    nxt = cand;
+                    break;
+                }
+                if (nxt < 0) break;
+                used.add(ek(cur, nxt));
+                prev = cur;
+                cur = nxt;
+            }
+            if (loop.length >= 3 && cur === start) loops.push(loop);
+        }
+    }
+    let best: number[] = [];
+    for (const loop of loops) {
+        let cx = 0;
+        let cy = 0;
+        for (const i of loop) {
+            cx += positions[i * 3]!;
+            cy += positions[i * 3 + 1]!;
+        }
+        cx /= loop.length;
+        cy /= loop.length;
+        if (!pointInPoly(cx, cy, outer)) continue;
+        if (loop.length > best.length) best = loop;
+    }
+    if (best.length < 3) {
+        for (const loop of loops) {
+            if (loop.length > best.length) best = loop;
+        }
+    }
+    if (best.length < 3) return [];
+    const pts = best.map((i) => ({
+        x: positions[i * 3]!,
+        y: positions[i * 3 + 1]!,
+        z: positions[i * 3 + 2]!,
+        i,
+    }));
+    const ordered = ensureCcw(pts) as Array<PolyPoint & { i: number }>;
+    return ordered.map((p) => p.i);
+}
+
+function sanitizeMesh(positions: number[], indices: number[]): { zeroArea: number; duplicates: number } {
+    const seen = new Set<string>();
+    const out: number[] = [];
+    let zeroArea = 0;
+    let duplicates = 0;
+    for (let t = 0; t < indices.length; t += 3) {
+        const a = indices[t]!;
+        const b = indices[t + 1]!;
+        const c = indices[t + 2]!;
+        if (a === b || b === c || c === a) {
+            zeroArea++;
+            continue;
+        }
+        const ax = positions[a * 3]!;
+        const ay = positions[a * 3 + 1]!;
+        const az = positions[a * 3 + 2]!;
+        const ux = positions[b * 3]! - ax;
+        const uy = positions[b * 3 + 1]! - ay;
+        const uz = positions[b * 3 + 2]! - az;
+        const vx = positions[c * 3]! - ax;
+        const vy = positions[c * 3 + 1]! - ay;
+        const vz = positions[c * 3 + 2]! - az;
+        const nx = uy * vz - uz * vy;
+        const ny = uz * vx - ux * vz;
+        const nz = ux * vy - uy * vx;
+        if (nx * nx + ny * ny + nz * nz < 1e-20) {
+            zeroArea++;
+            continue;
+        }
+        const canon = [a, b, c]
+            .slice()
+            .sort((x, y) => x - y)
+            .join(",");
+        if (seen.has(canon)) {
+            duplicates++;
+            continue;
+        }
+        seen.add(canon);
+        out.push(a, b, c);
+    }
+    indices.length = 0;
+    indices.push(...out);
+    return { zeroArea, duplicates };
+}
+
+function countJunctionSlivers(
+    positions: number[],
+    indices: number[],
+    stationBot: number[],
+    rim: number[],
+): number {
+    const band = new Set<number>([...stationBot, ...rim]);
+    let n = 0;
+    for (let t = 0; t < indices.length; t += 3) {
+        const a = indices[t]!;
+        const b = indices[t + 1]!;
+        const c = indices[t + 2]!;
+        if (!band.has(a) && !band.has(b) && !band.has(c)) continue;
+        const e1 = Math.hypot(
+            positions[b * 3]! - positions[a * 3]!,
+            positions[b * 3 + 1]! - positions[a * 3 + 1]!,
+            positions[b * 3 + 2]! - positions[a * 3 + 2]!,
+        );
+        const e2 = Math.hypot(
+            positions[c * 3]! - positions[b * 3]!,
+            positions[c * 3 + 1]! - positions[b * 3 + 1]!,
+            positions[c * 3 + 2]! - positions[b * 3 + 2]!,
+        );
+        const e3 = Math.hypot(
+            positions[a * 3]! - positions[c * 3]!,
+            positions[a * 3 + 1]! - positions[c * 3 + 1]!,
+            positions[a * 3 + 2]! - positions[c * 3 + 2]!,
+        );
+        const short = Math.min(e1, e2, e3);
+        const long = Math.max(e1, e2, e3);
+        if (short < 1e-9 || long / short > 20) n++;
+    }
+    return n;
+}
+
+function nonSliverBandTilt(positions: number[], indices: number[], ring: number[]): number {
+    const band = new Set(ring);
+    let maxTilt = 0;
+    for (let t = 0; t < indices.length; t += 3) {
+        const a = indices[t]!;
+        const b = indices[t + 1]!;
+        const c = indices[t + 2]!;
+        if (!band.has(a) && !band.has(b) && !band.has(c)) continue;
+        const e1 = Math.hypot(
+            positions[b * 3]! - positions[a * 3]!,
+            positions[b * 3 + 1]! - positions[a * 3 + 1]!,
+            positions[b * 3 + 2]! - positions[a * 3 + 2]!,
+        );
+        const e2 = Math.hypot(
+            positions[c * 3]! - positions[b * 3]!,
+            positions[c * 3 + 1]! - positions[b * 3 + 1]!,
+            positions[c * 3 + 2]! - positions[b * 3 + 2]!,
+        );
+        const e3 = Math.hypot(
+            positions[a * 3]! - positions[c * 3]!,
+            positions[a * 3 + 1]! - positions[c * 3 + 1]!,
+            positions[a * 3 + 2]! - positions[c * 3 + 2]!,
+        );
+        const short = Math.min(e1, e2, e3);
+        const long = Math.max(e1, e2, e3);
+        if (short < 1e-9 || long / short > 20) continue;
+        const ax = positions[a * 3]!;
+        const ay = positions[a * 3 + 1]!;
+        const az = positions[a * 3 + 2]!;
+        const ux = positions[b * 3]! - ax;
+        const uy = positions[b * 3 + 1]! - ay;
+        const uz = positions[b * 3 + 2]! - az;
+        const vx = positions[c * 3]! - ax;
+        const vy = positions[c * 3 + 1]! - ay;
+        const vz = positions[c * 3 + 2]! - az;
+        const nx = uy * vz - uz * vy;
+        const ny = uz * vx - ux * vz;
+        const nz = ux * vy - uy * vx;
+        const len = Math.hypot(nx, ny, nz);
+        if (len < 1e-12) continue;
+        const tilt = (Math.acos(Math.max(-1, Math.min(1, Math.abs(nz / len)))) * 180) / Math.PI;
+        if (tilt > maxTilt) maxTilt = tilt;
+    }
+    return maxTilt;
+}
+
+function meshMinZOf(positions: number[]): number {
+    let minZ = Infinity;
+    for (let i = 2; i < positions.length; i += 3) {
+        if (positions[i]! < minZ) minZ = positions[i]!;
+    }
+    return Number.isFinite(minZ) ? minZ : 0;
 }
 
 function applyBoundaryTangents(
@@ -575,39 +966,4 @@ function appendStockPlantar(
         (x, y) => plantarZDelta(x, y, model.bounds, options),
     );
     return outlineIdx;
-}
-
-function zipClosedLoops(
-    aIdx: number[],
-    bIdx: number[],
-    positions: number[],
-    pushTri: (a: number, b: number, c: number, flip?: boolean) => void,
-): void {
-    const nA = aIdx.length;
-    const nB = bIdx.length;
-    if (nA < 2 || nB < 2) return;
-    const asPts = (ids: number[]): PolyPoint[] =>
-        ids.map((i) => ({ x: positions[i * 3]!, y: positions[i * 3 + 1]!, z: positions[i * 3 + 2]! }));
-    const sA = polylineArcLengths(asPts(aIdx));
-    const sB = polylineArcLengths(asPts(bIdx));
-    const totA = sA.total || 1;
-    const totB = sB.total || 1;
-    let i = 0;
-    let j = 0;
-    for (let step = 0; step < nA + nB; step++) {
-        const a0 = aIdx[i % nA]!;
-        const b0 = bIdx[j % nB]!;
-        const aDone = i >= nA;
-        const bDone = j >= nB;
-        if (aDone && bDone) break;
-        const nextA = sA.cum[Math.min(i + 1, nA)]! / totA;
-        const nextB = sB.cum[Math.min(j + 1, nB)]! / totB;
-        if (!aDone && (bDone || nextA <= nextB)) {
-            pushTri(a0, aIdx[(i + 1) % nA]!, b0);
-            i++;
-        } else {
-            pushTri(a0, bIdx[(j + 1) % nB]!, b0);
-            j++;
-        }
-    }
 }
