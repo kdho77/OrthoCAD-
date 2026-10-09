@@ -1137,47 +1137,11 @@ function rebuildC1BoundaryStrip(
             const j = (i + 1) % nOut;
             outIdx.push(midIdx[i]!, midIdx[j]!, outerIdx[j]!, midIdx[i]!, outerIdx[j]!, outerIdx[i]!);
         }
-        const sheet = new BufferGeometry();
-        sheet.setAttribute("position", new BufferAttribute(new Float32Array(outPos), 3));
-        sheet.setIndex(outIdx);
-        const weldedStrip = mergeVertices(sheet, PLANTAR_WELD_MM);
-        if (weldedStrip !== sheet) sheet.dispose();
-        try {
-            const sp = weldedStrip.getAttribute("position");
-            const si = weldedStrip.getIndex();
-            if (!sp || !si) return null;
-            const meshPositions = new Float32Array(sp.array as ArrayLike<number>);
-            const meshIndices = new Uint32Array(si.array as ArrayLike<number>);
-            const snap = outerIdx.map((oi) => {
-                const x = outPos[oi * 3]!;
-                const y = outPos[oi * 3 + 1]!;
-                const z = outPos[oi * 3 + 2]!;
-                let best = 0;
-                let bestD = Infinity;
-                for (let v = 0; v < meshPositions.length / 3; v++) {
-                    const d =
-                        (meshPositions[v * 3]! - x) ** 2 +
-                        (meshPositions[v * 3 + 1]! - y) ** 2 +
-                        (meshPositions[v * 3 + 2]! - z) ** 2;
-                    if (d < bestD) {
-                        bestD = d;
-                        best = v;
-                    }
-                }
-                return best;
-            });
-            const seen = new Set<number>();
-            const rim: number[] = [];
-            for (const v of snap) {
-                if (seen.has(v)) continue;
-                seen.add(v);
-                rim.push(v);
-            }
-            if (rim.length < 8) return null;
-            return { meshPositions, meshIndices, rimLocal: rim };
-        } finally {
-            weldedStrip.dispose();
-        }
+        return {
+            meshPositions: new Float32Array(outPos),
+            meshIndices: new Uint32Array(outIdx),
+            rimLocal: outerIdx,
+        };
     } finally {
         welded.dispose();
     }
