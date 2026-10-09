@@ -195,40 +195,70 @@ export function cdtPlanarBand(
         return inBand(cx, cy);
     });
 
-    for (let pass = 0; pass < 8; pass++) {
-        let inserted = false;
-        for (const [a, b] of constrain) {
-            if (a >= points.length || b >= points.length) continue;
-            if (hasEdge(faces, a, b)) continue;
-            const pa = points[a]!;
-            const pb = points[b]!;
-            points.push({
-                x: (pa.x + pb.x) * 0.5,
-                y: (pa.y + pb.y) * 0.5,
-                z: (pa.z + pb.z) * 0.5,
-            });
-            inserted = true;
-        }
-        if (!inserted) break;
-        faces = delaunayXY(points).filter((f) => {
-            const A = points[f[0]]!;
-            const B = points[f[1]]!;
-            const C = points[f[2]]!;
-            return inBand((A.x + B.x + C.x) / 3, (A.y + B.y + C.y) / 3);
-        });
-    }
-
-    if (faces.length < 8) {
-        faces = [];
-        const n = Math.min(outer.length, inner.length);
-        for (let i = 0; i < n; i++) {
-            const j = (i + 1) % n;
-            const oi = i;
-            const oj = j;
-            const ii = innerStart + (Math.round((i / n) * inner.length) % inner.length);
-            const ij = innerStart + (Math.round((j / n) * inner.length) % inner.length);
-            faces.push([oi, oj, ij], [oi, ij, ii]);
+    const missing = constrain.filter(
+        ([a, b]) => a < points.length && b < points.length && !hasEdge(faces, a, b),
+    );
+    if (missing.length > constrain.length * 0.15 || faces.length < 8) {
+        faces = stripExactLoops(outerIdx, innerIdx);
+    } else {
+        for (const [a, b] of missing) {
+            const tri = thirdPointForEdge(points, a, b, inBand);
+            if (tri) faces.push(tri);
         }
     }
     return { points, faces };
+}
+
+function stripExactLoops(outerIdx: number[], innerIdx: number[]): Array<[number, number, number]> {
+    const faces: Array<[number, number, number]> = [];
+    const nA = outerIdx.length;
+    const nB = innerIdx.length;
+    if (nA < 2 || nB < 2) return faces;
+    let i = 0;
+    let j = 0;
+    for (let step = 0; step < nA + nB; step++) {
+        const aDone = i >= nA;
+        const bDone = j >= nB;
+        if (aDone && bDone) break;
+        const a0 = outerIdx[i % nA]!;
+        const b0 = innerIdx[j % nB]!;
+        const ta = (i + 1) / nA;
+        const tb = (j + 1) / nB;
+        if (!aDone && (bDone || ta <= tb)) {
+            faces.push([a0, outerIdx[(i + 1) % nA]!, b0]);
+            i++;
+        } else {
+            faces.push([a0, innerIdx[(j + 1) % nB]!, b0]);
+            j++;
+        }
+    }
+    return faces;
+}
+
+function thirdPointForEdge(
+    points: PolyPoint[],
+    a: number,
+    b: number,
+    inBand: (x: number, y: number) => boolean,
+): [number, number, number] | null {
+    const pa = points[a]!;
+    const pb = points[b]!;
+    let best = -1;
+    let bestD = Infinity;
+    for (let k = 0; k < points.length; k++) {
+        if (k === a || k === b) continue;
+        const p = points[k]!;
+        const cx = (pa.x + pb.x + p.x) / 3;
+        const cy = (pa.y + pb.y + p.y) / 3;
+        if (!inBand(cx, cy)) continue;
+        const d = (p.x - (pa.x + pb.x) * 0.5) ** 2 + (p.y - (pa.y + pb.y) * 0.5) ** 2;
+        if (d < bestD) {
+            bestD = d;
+            best = k;
+        }
+    }
+    if (best < 0) return null;
+    const pc = points[best]!;
+    if (orient2(pa.x, pa.y, pb.x, pb.y, pc.x, pc.y) > 0) return [a, b, best];
+    return [a, best, b];
 }

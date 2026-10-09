@@ -77,17 +77,18 @@ function clampTangentMag(t: NZ, maxMag: number): NZ {
     return { n: (t.n / m) * maxMag, z: (t.z / m) * maxMag };
 }
 
-/** Band tangent: at most 30° from horizontal, never outward-down. */
+/** Band tangent: at most 30° from horizontal. Default is inward along the dish. */
 function clampToBandTangent(t0?: NZ): NZ {
-    if (!t0) return { n: 1, z: 0 };
+    if (!t0) return { n: -1, z: 0 };
     const u = unitNZ(t0);
-    const n = u.n >= 0 ? Math.max(u.n, 0.15) : 0.15;
+    const n = u.n;
     const z = Math.max(0, u.z);
-    const tilt = Math.atan2(z, n);
+    const tilt = Math.atan2(z, Math.abs(n) || 1e-9);
     if (tilt > Math.PI / 6) {
-        return { n: Math.cos(Math.PI / 6), z: Math.sin(Math.PI / 6) };
+        const s = n >= 0 ? 1 : -1;
+        return { n: s * Math.cos(Math.PI / 6), z: Math.sin(Math.PI / 6) };
     }
-    return unitNZ({ n, z });
+    return unitNZ({ n: n === 0 ? -1 : n, z });
 }
 
 export function countColumnPlanReversals(xyz: Array<Array<{ x: number; y: number; z: number }>>): number {
@@ -219,9 +220,12 @@ function buildStationColumn(
     const filletBot = Math.min(maxR, Math.max(defaults.wallFilletBottomMm, MIN_REAL_BOTTOM_FILLET_MM));
     const filletTop = Math.min(defaults.wallFilletTopMm, maxR);
     const bowl = filletBot < 0.2 ? 0 : heelBowlMix(st.u);
-    const Twall = wallDirectionNZ(flareDeg);
+    const Tw = wallDirectionNZ(flareDeg);
+    const towardTop = chordN === 0 ? -1 : Math.sign(chordN);
+    const Twall = unitNZ({ n: towardTop * Math.abs(Tw.n), z: Tw.z });
     const Tsheet = clampToBandTangent(st.t0);
-    const Ttop = unitNZ({ n: -1, z: 0 });
+    /** In-plane, toward the wall from the rim (not a tilted TopSheet face). */
+    const Ttop = unitNZ({ n: -towardTop, z: 0 });
     const P0 = { n: 0, z: o.z };
     const P1 = { n: chordN, z: r.z };
     const botRings = sampleFilletArc(P0, Tsheet, Twall, filletBot, circMm);
@@ -257,7 +261,24 @@ function buildStationColumn(
     for (let i = 1; i < column.length; i++) {
         if (column[i]!.z < column[i - 1]!.z) column[i]!.z = column[i - 1]!.z;
     }
+    enforcePlanMonotonic(column, chordN);
     return { column, impliedSeamDeg: implied };
+}
+
+/** Keep n monotonic toward the rim so a column cannot reverse in plan. */
+function enforcePlanMonotonic(column: Array<{ n: number; z: number }>, chordN: number): void {
+    if (column.length < 2) return;
+    const dir = chordN === 0 ? 0 : Math.sign(chordN);
+    const inwardLimit = Math.min(0, chordN);
+    const outwardLimit = Math.max(0, chordN);
+    for (let i = 1; i < column.length - 1; i++) {
+        const p = column[i]!;
+        if (dir < 0) p.n = Math.max(inwardLimit, Math.min(outwardLimit + 2, p.n));
+        else if (dir > 0) p.n = Math.min(outwardLimit, Math.max(inwardLimit - 2, p.n));
+        const prev = column[i - 1]!.n;
+        if (dir !== 0 && (p.n - prev) * dir < -1e-6) p.n = prev;
+    }
+    column[column.length - 1]!.n = chordN;
 }
 
 function resampleColumnKeepFirstStep(
@@ -364,6 +385,7 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
             input.footLengthMm,
         );
         let column = resampleColumnKeepFirstStep(built.column, nT);
+        enforcePlanMonotonic(column, (st.rim.x - st.outline.x) * st.n.x + (st.rim.y - st.outline.y) * st.n.y);
         let guard = 0;
         let f = flare;
         while (!assertNoStationSelfIntersection(column) && guard++ < 8) {
@@ -381,6 +403,10 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
                 input.footLengthMm,
             );
             column = resampleColumnKeepFirstStep(again.column, nT);
+            enforcePlanMonotonic(
+                column,
+                (st.rim.x - st.outline.x) * st.n.x + (st.rim.y - st.outline.y) * st.n.y,
+            );
             built.impliedSeamDeg = again.impliedSeamDeg;
         }
         for (let i = 1; i < column.length; i++) {

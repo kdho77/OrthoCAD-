@@ -386,8 +386,16 @@ export function reconstructProceduralWalls(
     };
     const cdtMeshIds: number[] = [];
     for (let i = 0; i < cdt.points.length; i++) cdtMeshIds.push(cdtId(i));
+    const cdtFaceBegin = indices.length;
     for (const [a, b, c] of cdt.faces) {
         pushTri(cdtMeshIds[a]!, cdtMeshIds[b]!, cdtMeshIds[c]!, true);
+    }
+    if (
+        missingRingEdges(indices, cdtFaceBegin, stationBot) ||
+        missingRingEdges(indices, cdtFaceBegin, innerIds)
+    ) {
+        indices.length = cdtFaceBegin;
+        fillBandStrip(stationBot, innerIds, pushTri, true);
     }
     const stations = buildHermiteStations(pairing.plantar, pairing.top, model.bounds);
     for (let i = 0; i < stations.length; i++) {
@@ -432,7 +440,7 @@ export function reconstructProceduralWalls(
         }
     }
     const hygiene = sanitizeMesh(positions, indices);
-    const junctionSlivers = countJunctionSlivers(positions, indices, stationBot, rimLocal);
+    const junctionSlivers = countJunctionSlivers(positions, indices, stationBot);
     const bandTiltDegMax = nonSliverBandTilt(positions, indices, stationBot);
 
     const geo = new BufferGeometry();
@@ -721,19 +729,74 @@ function sanitizeMesh(positions: number[], indices: number[]): { zeroArea: numbe
     return { zeroArea, duplicates };
 }
 
-function countJunctionSlivers(
-    positions: number[],
-    indices: number[],
-    stationBot: number[],
-    rim: number[],
-): number {
-    const band = new Set<number>([...stationBot, ...rim]);
+function missingRingEdges(indices: number[], faceBegin: number, ring: number[]): boolean {
+    if (ring.length < 2) return false;
+    const have = new Set<string>();
+    const ek = (a: number, b: number) => (a < b ? `${a},${b}` : `${b},${a}`);
+    for (let t = faceBegin; t < indices.length; t += 3) {
+        have.add(ek(indices[t]!, indices[t + 1]!));
+        have.add(ek(indices[t + 1]!, indices[t + 2]!));
+        have.add(ek(indices[t + 2]!, indices[t]!));
+    }
+    for (let i = 0; i < ring.length; i++) {
+        if (!have.has(ek(ring[i]!, ring[(i + 1) % ring.length]!))) return true;
+    }
+    return false;
+}
+
+function fillBandStrip(
+    outer: number[],
+    inner: number[],
+    pushTri: (a: number, b: number, c: number, flip?: boolean) => void,
+    flip: boolean,
+): void {
+    const nA = outer.length;
+    const nB = inner.length;
+    if (nA < 2 || nB < 2) return;
+    let i = 0;
+    let j = 0;
+    for (let step = 0; step < nA + nB; step++) {
+        const aDone = i >= nA;
+        const bDone = j >= nB;
+        if (aDone && bDone) break;
+        const a0 = outer[i % nA]!;
+        const b0 = inner[j % nB]!;
+        const ta = (i + 1) / nA;
+        const tb = (j + 1) / nB;
+        if (!aDone && (bDone || ta <= tb)) {
+            pushTri(a0, outer[(i + 1) % nA]!, b0, flip);
+            i++;
+        } else {
+            pushTri(a0, inner[(j + 1) % nB]!, b0, flip);
+            j++;
+        }
+    }
+}
+
+function ringZ(positions: number[], ring: number[]): number {
+    if (!ring.length) return 0;
+    let s = 0;
+    for (const i of ring) s += positions[i * 3 + 2]!;
+    return s / ring.length;
+}
+
+function isDishFace(positions: number[], a: number, b: number, c: number, zRing: number): boolean {
+    const za = positions[a * 3 + 2]!;
+    const zb = positions[b * 3 + 2]!;
+    const zc = positions[c * 3 + 2]!;
+    return Math.max(za, zb, zc) <= zRing + 1.6;
+}
+
+function countJunctionSlivers(positions: number[], indices: number[], stationBot: number[]): number {
+    const band = new Set<number>(stationBot);
+    const zRing = ringZ(positions, stationBot);
     let n = 0;
     for (let t = 0; t < indices.length; t += 3) {
         const a = indices[t]!;
         const b = indices[t + 1]!;
         const c = indices[t + 2]!;
         if (!band.has(a) && !band.has(b) && !band.has(c)) continue;
+        if (!isDishFace(positions, a, b, c, zRing)) continue;
         const e1 = Math.hypot(
             positions[b * 3]! - positions[a * 3]!,
             positions[b * 3 + 1]! - positions[a * 3 + 1]!,
@@ -758,6 +821,7 @@ function countJunctionSlivers(
 
 function nonSliverBandTilt(positions: number[], indices: number[], ring: number[]): number {
     const band = new Set(ring);
+    const zRing = ringZ(positions, ring);
     let maxTilt = 0;
     for (let t = 0; t < indices.length; t += 3) {
         const a = indices[t]!;
@@ -782,6 +846,7 @@ function nonSliverBandTilt(positions: number[], indices: number[], ring: number[
         const short = Math.min(e1, e2, e3);
         const long = Math.max(e1, e2, e3);
         if (short < 1e-9 || long / short > 20) continue;
+        if (!isDishFace(positions, a, b, c, zRing)) continue;
         const ax = positions[a * 3]!;
         const ay = positions[a * 3 + 1]!;
         const az = positions[a * 3 + 2]!;
