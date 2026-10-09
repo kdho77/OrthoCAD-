@@ -72,5 +72,11 @@ describe("shared foot side state", () => {
         expect(importSrc).toMatch(/setSharedFootSide/);
         expect(importSrc).toMatch(/useImportSideChoice/);
         expect(importSrc).not.toMatch(/useState<ImportSideChoice/);
+        const rail = readFileSync(
+            resolve(process.cwd(), "vertex/src/components/clinical/ClinicalStepRail.tsx"),
+            "utf8",
+        );
+        expect(rail).toMatch(/footSideExplicitlyChosen/);
+        expect(rail).toMatch(/importSideChoice/);
     });
 });

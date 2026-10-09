@@ -2,11 +2,14 @@
 // See LICENSE file in the project root for full license information.
 
 import { ScanImport } from "@/features/scans/ScanImport";
-import { evaluateScanStepGate, isFootSideExplicitlyKnown } from "@/lib/clinical/clinical-step-gates";
+import { evaluateScanStepGate } from "@/lib/clinical/clinical-step-gates";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 
 export function ClinicalScanStepPanel() {
+    const footSideExplicitlyChosen = useClinicalWorkflowStore((s) => s.footSideExplicitlyChosen);
+    const importSideChoice = useClinicalWorkflowStore((s) => s.importSideChoice);
     const scanGate = evaluateScanStepGate();
-    const sideChosen = isFootSideExplicitlyKnown();
+    const sideChosen = footSideExplicitlyChosen || Boolean(importSideChoice);
 
     return (
         <div className="space-y-3 text-xs">

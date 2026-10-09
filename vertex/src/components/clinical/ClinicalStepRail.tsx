@@ -5,13 +5,19 @@ import { Check, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { evaluateNextGate, evaluateStepComplete } from "@/lib/clinical/clinical-step-gates";
 import { cn } from "@/lib/utils";
-import { CLINICAL_STEPS, type ClinicalStepId, useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
+import {
+    CLINICAL_STEPS,
+    type ClinicalStepId,
+    useClinicalWorkflowStore,
+} from "@/stores/clinical-workflow-store";
 
 export function ClinicalStepRail() {
     const step = useClinicalWorkflowStore((s) => s.step);
     const completedSteps = useClinicalWorkflowStore((s) => s.completedSteps);
     const nextBlockReason = useClinicalWorkflowStore((s) => s.nextBlockReason);
     const scanGateStickyReason = useClinicalWorkflowStore((s) => s.scanGateStickyReason);
+    const footSideExplicitlyChosen = useClinicalWorkflowStore((s) => s.footSideExplicitlyChosen);
+    const importSideChoice = useClinicalWorkflowStore((s) => s.importSideChoice);
     const setStep = useClinicalWorkflowStore((s) => s.setStep);
     const goNext = useClinicalWorkflowStore((s) => s.goNext);
     const goBack = useClinicalWorkflowStore((s) => s.goBack);
@@ -81,6 +87,8 @@ export function ClinicalStepRail() {
                         size="sm"
                         className="h-8 flex-1 gap-1"
                         disabled={nextDisabled}
+                        data-import-side={importSideChoice ?? "none"}
+                        data-foot-explicit={footSideExplicitlyChosen ? "true" : "false"}
                         onClick={() => goNext()}
                     >
                         Next
