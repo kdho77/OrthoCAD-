@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { cdtInteriorPolygon, minDistToLoopXY, pointInPoly } from "./cdt-band";
+import { minDistToLoopXY, pointInPoly } from "./cdt-band";
 import type { PolyPoint } from "./curves";
 import { sampleUvField } from "./extract";
 import { type DishZIndex, sampleDishZVertical } from "./height-xy";
@@ -83,6 +83,127 @@ function reanchorMinZ(points: PolyPoint[]): number {
     return lift;
 }
 
+function orient2(ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number {
+    return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+}
+
+function inTri(
+    px: number,
+    py: number,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    cx: number,
+    cy: number,
+): boolean {
+    const o0 = orient2(ax, ay, bx, by, px, py);
+    const o1 = orient2(bx, by, cx, cy, px, py);
+    const o2 = orient2(cx, cy, ax, ay, px, py);
+    return o0 >= -1e-9 && o1 >= -1e-9 && o2 >= -1e-9;
+}
+
+function earClip(poly: PolyPoint[]): Array<[number, number, number]> {
+    const n = poly.length;
+    if (n < 3) return [];
+    const next = Int32Array.from({ length: n }, (_, i) => (i + 1) % n);
+    const prev = Int32Array.from({ length: n }, (_, i) => (i - 1 + n) % n);
+    const reflex = (i: number): boolean =>
+        orient2(
+            poly[prev[i]!]!.x,
+            poly[prev[i]!]!.y,
+            poly[i]!.x,
+            poly[i]!.y,
+            poly[next[i]!]!.x,
+            poly[next[i]!]!.y,
+        ) <= 1e-12;
+    const isEar = (i: number): boolean => {
+        if (reflex(i)) return false;
+        const a = prev[i]!;
+        const b = i;
+        const c = next[i]!;
+        const pa = poly[a]!;
+        const pb = poly[b]!;
+        const pc = poly[c]!;
+        if (orient2(pa.x, pa.y, pb.x, pb.y, pc.x, pc.y) <= 1e-12) return false;
+        for (let k = next[c]!; k !== a; k = next[k]!) {
+            if (!reflex(k)) continue;
+            const p = poly[k]!;
+            if (inTri(p.x, p.y, pa.x, pa.y, pb.x, pb.y, pc.x, pc.y)) return false;
+        }
+        return true;
+    };
+    const faces: Array<[number, number, number]> = [];
+    let remaining = n;
+    let i = 0;
+    let fail = 0;
+    while (remaining > 3 && fail < remaining * 8) {
+        const a0 = prev[i]!;
+        const c0 = next[i]!;
+        const o = orient2(poly[a0]!.x, poly[a0]!.y, poly[i]!.x, poly[i]!.y, poly[c0]!.x, poly[c0]!.y);
+        if (Math.abs(o) <= 1e-8) {
+            next[a0] = c0;
+            prev[c0] = a0;
+            remaining--;
+            fail = 0;
+            i = c0;
+            continue;
+        }
+        if (isEar(i)) {
+            if (o > 0) faces.push([a0, i, c0]);
+            else faces.push([a0, c0, i]);
+            next[a0] = c0;
+            prev[c0] = a0;
+            remaining--;
+            fail = 0;
+            i = c0;
+        } else {
+            fail++;
+            i = next[i]!;
+        }
+    }
+    if (remaining === 3) {
+        const a = i;
+        const b = next[a]!;
+        const c = next[b]!;
+        if (orient2(poly[a]!.x, poly[a]!.y, poly[b]!.x, poly[b]!.y, poly[c]!.x, poly[c]!.y) > 0) {
+            faces.push([a, b, c]);
+        } else {
+            faces.push([a, c, b]);
+        }
+    }
+    return faces;
+}
+
+function insertSteiner(points: PolyPoint[], faces: Array<[number, number, number]>, p: PolyPoint): boolean {
+    for (let i = 0; i < faces.length; i++) {
+        const [a, b, c] = faces[i]!;
+        const A = points[a]!;
+        const B = points[b]!;
+        const C = points[c]!;
+        if (!inTri(p.x, p.y, A.x, A.y, B.x, B.y, C.x, C.y)) continue;
+        const v = points.length;
+        points.push({ ...p });
+        faces.splice(i, 1);
+        faces.push([a, b, v], [b, c, v], [c, a, v]);
+        return true;
+    }
+    return false;
+}
+
+function triangulateInterior(
+    boundary: PolyPoint[],
+    steiner: PolyPoint[],
+): {
+    points: PolyPoint[];
+    faces: Array<[number, number, number]>;
+} {
+    const points = boundary.map((p) => ({ ...p }));
+    const faces = earClip(points);
+    for (const s of steiner) insertSteiner(points, faces, s);
+    return { points, faces };
+}
+
 function grindRefine(
     boundary: PolyPoint[],
     points: PolyPoint[],
@@ -132,16 +253,13 @@ export function buildGeneratedPlantar(input: {
     refineGrind?: boolean;
 }): GeneratedPlantar {
     const boundary = input.boundary.map((p) => ({ ...p }));
-    let steiner = hexSteiner(boundary);
-    let mesh = cdtInteriorPolygon(boundary, steiner);
+    const steiner = hexSteiner(boundary);
+    const mesh = triangulateInterior(boundary, steiner);
     applyZ(mesh.points, boundary, input.dish, input.field, input.zDelta);
     if (input.refineGrind) {
         const extra = grindRefine(boundary, mesh.points, mesh.faces);
-        if (extra.length) {
-            steiner = steiner.concat(extra);
-            mesh = cdtInteriorPolygon(boundary, steiner);
-            applyZ(mesh.points, boundary, input.dish, input.field, input.zDelta);
-        }
+        for (const p of extra) insertSteiner(mesh.points, mesh.faces, p);
+        if (extra.length) applyZ(mesh.points, boundary, input.dish, input.field, input.zDelta);
     }
     reanchorMinZ(mesh.points);
     let minZ = Infinity;

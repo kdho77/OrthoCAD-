@@ -398,13 +398,13 @@ function columnHeading(st: HermiteStation): {
     const dx = st.outline.x - st.rim.x;
     const dy = st.outline.y - st.rim.y;
     const planLen = Math.hypot(dx, dy);
-    if (planLen < SHORT_CHORD_MM) {
+    if (planLen < 1e-4) {
         const nx = st.n.x;
         const ny = st.n.y;
         const nl = Math.hypot(nx, ny) || 1;
         return { h: { x: nx / nl, y: ny / nl }, shortChord: true, planLen };
     }
-    return { h: { x: dx / planLen, y: dy / planLen }, shortChord: false, planLen };
+    return { h: { x: dx / planLen, y: dy / planLen }, shortChord: planLen < SHORT_CHORD_MM, planLen };
 }
 
 export function initColumnFrames(
