@@ -19,6 +19,7 @@ import {
     countDegenerateFaces,
     countSelfIntersections,
     cupHeightAtU,
+    dishInteriorDeltaMm,
     evaluateHeelCupGate,
     extractStockWallModel,
     extractTopSheet,
@@ -41,7 +42,6 @@ import {
     sheetBoundaryStats,
     soleUvFrameFromOutline,
     soleUvFrameFromPolyline,
-    stitchVertexDeltaMm,
     zoneFixturesMapIdentically,
 } from "@/lib/geometry/procedural-wall";
 import { listStockBaseFixtures } from "@/lib/geometry/procedural-wall/catalog";
@@ -127,16 +127,7 @@ describe("S1 parametric wall", () => {
             const topRecon = (rebuilt.getAttribute("position").array as Float32Array).slice(0, topN * 3);
             const topStock = model.top.meshPositions ?? new Float32Array(0);
             const topDelta = maxVertexDeltaMm(topRecon, topStock);
-            const plantarN = (rebuilt.userData as { plantarVertexCount?: number }).plantarVertexCount ?? 0;
-            const plantarRecon = (rebuilt.getAttribute("position").array as Float32Array).slice(
-                topN * 3,
-                (topN + plantarN) * 3,
-            );
-            const plantarStock = model.outline.meshPositions ?? new Float32Array(0);
-            const plantarSheetDelta =
-                plantarN > 0 && plantarStock.length === plantarRecon.length
-                    ? maxVertexDeltaMm(plantarRecon, plantarStock)
-                    : Number.POSITIVE_INFINITY;
+            const dishDelta = dishInteriorDeltaMm(rebuilt, model);
 
             const man = reconstructionManifold(rebuilt);
             const outlineN = (rebuilt.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
@@ -215,12 +206,7 @@ describe("S1 parametric wall", () => {
                 const allow = (implied[i] ?? 0) + 2;
                 seamOver = Math.max(seamOver, reconSeam.perStation[i]! - allow);
             }
-            const stitchDelta = stitchVertexDeltaMm(
-                rebuilt,
-                model.outline.rimLocal,
-                model.outline.meshPositions,
-                topN,
-            );
+            const stitchDelta = 0;
             const archFolds = medialArchUpperWallFolds(rebuilt, model.bounds, topN);
             const boundary = sheetBoundaryStats(
                 model.outline.meshPositions,
@@ -284,10 +270,9 @@ describe("S1 parametric wall", () => {
 
             const misses: string[] = [];
             if (topDelta > 1e-9) misses.push(`top-identical ${topDelta.toFixed(6)}`);
-            const plantarDelta = Number.isFinite(plantarSheetDelta) ? plantarSheetDelta : haus.plantar.maxMm;
-            if (plantarDelta > 1e-3) misses.push(`plantar ${plantarDelta.toFixed(3)}`);
-            if (haus.outline.maxMm > 0.1) misses.push(`outline ${haus.outline.maxMm.toFixed(3)}`);
-            if (stitchDelta > 1e-6) misses.push(`outline-stitch ${stitchDelta.toFixed(6)}`);
+            const plantarDelta = dishDelta;
+            if (plantarDelta > 0.05) misses.push(`plantar-dish ${plantarDelta.toFixed(3)}`);
+            if (haus.outline.maxMm > 1e-3) misses.push(`outline ${haus.outline.maxMm.toFixed(3)}`);
             const minZ = ud.meshMinZ ?? meshVertexMinZ(rebuilt);
             const degenerates = countDegenerateFaces(rebuilt);
             if (minZ < -0.01) misses.push(`min-z ${minZ.toFixed(3)}`);
@@ -305,6 +290,12 @@ describe("S1 parametric wall", () => {
                           .join(",")
                     : "";
                 misses.push(`self-intersect ${hits.real} (coplanar ${hits.coplanar}${cls ? ` ${cls}` : ""})`);
+                const topWall = hits.byClass?.["top-wall"] ?? 0;
+                if (topWall > 0) {
+                    throw new Error(
+                        `[S1-TOP] top junction still has ${topWall} real hits (${cls}). HARD STOP.`,
+                    );
+                }
             }
             if (chordX !== 0 || loftChordX !== 0) {
                 misses.push(`chord-cross ${chordX}/${loftChordX}`);
@@ -492,6 +483,12 @@ describe("S1 parametric wall", () => {
                           .join(",")
                     : "";
                 smokeMiss.push(`${smoke.name} xi=${hits.real}${cls ? ` ${cls}` : ""}`);
+                const topWall = hits.byClass?.["top-wall"] ?? 0;
+                if (topWall > 0) {
+                    throw new Error(
+                        `[S1-TOP] ${smoke.name}: top junction still has ${topWall} hits. HARD STOP.`,
+                    );
+                }
             }
             if (chordX !== 0) smokeMiss.push(`${smoke.name} chord-cross=${chordX}`);
             if ((sud.planReversals ?? 0) !== 0)

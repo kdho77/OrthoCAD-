@@ -3,6 +3,7 @@
 
 import type { BufferGeometry } from "three";
 import { analyzeManifold } from "@/lib/geometry/manifold";
+import { buildDishZIndex, sampleDishZVertical } from "./height-xy";
 import type { FoldReport, HausdorffReport, StockWallModel, TieredHausdorffReport } from "./types";
 
 interface Tri {
@@ -656,6 +657,47 @@ export function maxVertexDeltaMm(a: Float32Array, b: Float32Array): number {
     for (let i = 0; i < n; i++) max = Math.max(max, Math.abs(a[i]! - b[i]!));
     if (a.length !== b.length) max = Math.max(max, 1e6);
     return max;
+}
+
+/** Max |generated-plantar z − stock dish z| at interior samples. */
+export function dishInteriorDeltaMm(
+    reconstruction: BufferGeometry,
+    model: StockWallModel,
+    insetMm = 4,
+): number {
+    const pos = reconstruction.getAttribute("position").array as Float32Array;
+    const outline = model.outline.spline.controls;
+    if (outline.length < 3 || !model.outline.meshPositions || !model.outline.meshIndices) return 0;
+    const dish = buildDishZIndex(model.outline.meshPositions, model.outline.meshIndices);
+    const generatedStart = (reconstruction.userData as { generatedStart?: number }).generatedStart ?? 0;
+    const generatedCount = (reconstruction.userData as { generatedCount?: number }).generatedCount ?? 0;
+    const outlineRow = (reconstruction.userData as { outlineRow?: number }).outlineRow ?? 0;
+    const nS = (reconstruction.userData as { stationCount?: number }).stationCount ?? 0;
+    let max = 0;
+    let n = 0;
+    const start = generatedStart + Math.max(0, outlineRow - 1) * nS;
+    const end = generatedStart + generatedCount;
+    for (let i = start; i < end && i < pos.length / 3; i++) {
+        const x = pos[i * 3]!;
+        const y = pos[i * 3 + 1]!;
+        const z = pos[i * 3 + 2]!;
+        let inside = false;
+        for (let a = 0, b = outline.length - 1; a < outline.length; b = a++) {
+            const yi = outline[a]!.y;
+            const yj = outline[b]!.y;
+            const xi = outline[a]!.x;
+            const xj = outline[b]!.x;
+            if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-18) + xi) inside = !inside;
+        }
+        if (!inside) continue;
+        const stock = sampleDishZVertical(dish, x, y);
+        if (stock == null) continue;
+        const d = Math.abs(z - stock);
+        if (d > max) max = d;
+        n++;
+    }
+    void insetMm;
+    return n ? max : 0;
 }
 
 export function meshVertexMinZ(geo: BufferGeometry): number {

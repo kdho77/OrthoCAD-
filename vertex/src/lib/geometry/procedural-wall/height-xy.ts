@@ -120,3 +120,93 @@ export function sampleXyHeight(
     }
     return null;
 }
+
+interface DishBvhNode {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+    left?: DishBvhNode;
+    right?: DishBvhNode;
+    start: number;
+    count: number;
+}
+
+export interface DishZIndex {
+    tris: XyTri[];
+    order: number[];
+    root: DishBvhNode | null;
+}
+
+function buildDishBvh(tris: XyTri[], order: number[], start: number, count: number): DishBvhNode {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = start; i < start + count; i++) {
+        const t = tris[order[i]!]!;
+        if (t.minX < minX) minX = t.minX;
+        if (t.minY < minY) minY = t.minY;
+        if (t.maxX > maxX) maxX = t.maxX;
+        if (t.maxY > maxY) maxY = t.maxY;
+    }
+    const node: DishBvhNode = { minX, minY, maxX, maxY, start, count };
+    if (count <= 8) return node;
+    const dx = maxX - minX;
+    const dy = maxY - minY;
+    const axis = dx >= dy ? 0 : 1;
+    const slice = order.slice(start, start + count);
+    slice.sort((a, b) => {
+        const ta = tris[a]!;
+        const tb = tris[b]!;
+        const ca = axis === 0 ? (ta.minX + ta.maxX) * 0.5 : (ta.minY + ta.maxY) * 0.5;
+        const cb = axis === 0 ? (tb.minX + tb.maxX) * 0.5 : (tb.minY + tb.maxY) * 0.5;
+        return ca - cb;
+    });
+    for (let i = 0; i < slice.length; i++) order[start + i] = slice[i]!;
+    const mid = start + (count >> 1);
+    node.left = buildDishBvh(tris, order, start, mid - start);
+    node.right = buildDishBvh(tris, order, mid, start + count - mid);
+    return node;
+}
+
+/** BVH over the stock dish for vertical (x,y) → z rays. */
+export function buildDishZIndex(positions: Float32Array, indices: ArrayLike<number>): DishZIndex {
+    const xy = buildXyHeightIndex(positions, indices);
+    const order = xy.tris.map((_, i) => i);
+    const root = xy.tris.length ? buildDishBvh(xy.tris, order, 0, xy.tris.length) : null;
+    return { tris: xy.tris, order, root };
+}
+
+function rayHitNode(
+    node: DishBvhNode,
+    index: DishZIndex,
+    x: number,
+    y: number,
+    prefer: "min" | "max",
+): number | null {
+    if (x < node.minX - 1e-6 || x > node.maxX + 1e-6 || y < node.minY - 1e-6 || y > node.maxY + 1e-6) {
+        return null;
+    }
+    if (!node.left || !node.right) {
+        let best: number | null = null;
+        for (let i = node.start; i < node.start + node.count; i++) {
+            const z = barycentricZ(index.tris[index.order[i]!]!, x, y);
+            if (z == null) continue;
+            if (best == null) best = z;
+            else if (prefer === "min" ? z < best : z > best) best = z;
+        }
+        return best;
+    }
+    const a = rayHitNode(node.left, index, x, y, prefer);
+    const b = rayHitNode(node.right, index, x, y, prefer);
+    if (a == null) return b;
+    if (b == null) return a;
+    return prefer === "min" ? Math.min(a, b) : Math.max(a, b);
+}
+
+/** Vertical ray against the stock dish. Returns the lowest (plantar) hit. */
+export function sampleDishZVertical(index: DishZIndex, x: number, y: number): number | null {
+    if (!index.root) return null;
+    return rayHitNode(index.root, index, x, y, "min");
+}

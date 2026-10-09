@@ -38,6 +38,7 @@ export {
     countDegenerateFaces,
     countJunctionBandSlivers,
     cupHeightAtU,
+    dishInteriorDeltaMm,
     foldReport,
     groundDriftMm,
     hausdorffReport,
