@@ -622,40 +622,51 @@ export function constrainedDelaunayFlip(
         const d = Math.abs(p - q);
         return d === 1 || d === nBoundary - 1;
     };
-    let dirty = true;
-    let guard = 0;
-    const limit = Math.max(32, faces.length * 8);
-    while (dirty && guard++ < limit) {
-        dirty = false;
+    const ek = (a: number, b: number) => (a < b ? `${a},${b}` : `${b},${a}`);
+    const build = (): Map<string, number[]> => {
+        const map = new Map<string, number[]>();
         for (let i = 0; i < faces.length; i++) {
             const f = faces[i]!;
-            const e: Array<[number, number]> = [
+            for (const [p, q] of [
                 [f[0]!, f[1]!],
                 [f[1]!, f[2]!],
                 [f[2]!, f[0]!],
-            ];
-            for (const [p, q] of e) {
-                if (isBoundary(p, q)) continue;
-                const shared = facesSharingEdge(faces, p, q);
-                if (shared.length !== 2) continue;
-                const f0 = faces[shared[0]!]!;
-                const f1 = faces[shared[1]!]!;
-                const u = thirdOf(f0, p, q);
-                const v = thirdOf(f1, p, q);
-                if (u === v) continue;
-                const A = points[p]!;
-                const B = points[q]!;
-                const C = points[u]!;
-                const D = points[v]!;
-                if (!inCircumcircle(A.x, A.y, B.x, B.y, C.x, C.y, D.x, D.y)) continue;
-                if (!quadIsConvex(points, u, p, v, q)) continue;
-                faces[shared[0]!] = orientFace(points, u, v, p);
-                faces[shared[1]!] = orientFace(points, u, v, q);
-                dirty = true;
-                break;
+            ] as Array<[number, number]>) {
+                const k = ek(p, q);
+                const list = map.get(k);
+                if (list) list.push(i);
+                else map.set(k, [i]);
             }
-            if (dirty) break;
         }
+        return map;
+    };
+    let map = build();
+    for (let pass = 0; pass < 24; pass++) {
+        let flipped = 0;
+        const keys = [...map.keys()];
+        for (const k of keys) {
+            const [ps, qs] = k.split(",").map(Number) as [number, number];
+            if (isBoundary(ps, qs)) continue;
+            const shared = map.get(k);
+            if (!shared || shared.length !== 2) continue;
+            const f0 = faces[shared[0]!]!;
+            const f1 = faces[shared[1]!]!;
+            if (!f0 || !f1) continue;
+            const u = thirdOf(f0, ps, qs);
+            const v = thirdOf(f1, ps, qs);
+            if (u === v) continue;
+            const A = points[ps]!;
+            const B = points[qs]!;
+            const C = points[u]!;
+            const D = points[v]!;
+            if (!inCircumcircle(A.x, A.y, B.x, B.y, C.x, C.y, D.x, D.y)) continue;
+            if (!quadIsConvex(points, u, ps, v, qs)) continue;
+            faces[shared[0]!] = orientFace(points, u, v, ps);
+            faces[shared[1]!] = orientFace(points, u, v, qs);
+            flipped++;
+        }
+        if (!flipped) break;
+        map = build();
     }
 }
 
