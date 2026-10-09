@@ -41,6 +41,6 @@ describe("generated plantar quad grid", () => {
         const placed = placeSimpleInnerRing(stations);
         expect(placed.minEdgeMm).toBeGreaterThanOrEqual(I_MIN_EDGE_MM);
         expect(placed.minClearanceMm).toBeGreaterThanOrEqual(I_CLEARANCE_MM - 1e-6);
-        expect(Math.abs(Math.abs(placed.turning) - 1)).toBeLessThan(0.05);
+        expect(Math.abs(placed.turning - 1)).toBeLessThan(0.05);
     });
 });

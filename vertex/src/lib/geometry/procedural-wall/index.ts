@@ -119,6 +119,7 @@ export {
     buildGeneratedPlantar,
     makePlantarSampler,
     PLANTAR_MARGIN_MM,
+    PLANTAR_STEINER_EDGE_MIN_MM,
     PLANTAR_STEINER_MM,
     PLANTAR_STEINER_OUTLINE_FRAC,
 } from "./plantar-cdt";

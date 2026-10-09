@@ -36,7 +36,7 @@ import { S1_MIN_WALL_MM, type UvHeightField } from "./types";
 export const BAND_ROWS = 3;
 export const BAND_INSET_FLOOR_MM = 1.5;
 export const I_CLEARANCE_MM = 1.0;
-export const I_MIN_EDGE_MM = 0.3;
+export const I_MIN_EDGE_MM = 0.05;
 export const I_SMOOTH_FRAC = 0.1;
 
 export const PLANTAR_RINGS = 0;
@@ -442,8 +442,8 @@ export function assertSimpleInnerRing(ring: PolyPoint[], outline: PolyPoint[]): 
         );
     }
     const tn = turningNumber(ring);
-    if (Math.abs(Math.abs(tn) - 1) > 0.05) {
-        throw new Error(`[S1-I] turning number ${tn.toFixed(3)} is not ±1`);
+    if (Math.abs(tn - 1) > 0.05) {
+        throw new Error(`[S1-I] turning number ${tn.toFixed(3)} is not +1`);
     }
     const hits = ringIntersectsOutline(ring, outline);
     if (hits.length) {
@@ -470,9 +470,9 @@ export function assertSimpleInnerRing(ring: PolyPoint[], outline: PolyPoint[]): 
 }
 
 /**
- * Simple inner band ring I: offset each B along inward ±h by max(r, 1.5).
- * Crossing stations at the tight heel shrink d; d is Laplacian-smoothed at
- * most 10% per station. I stays ≥ 1.0 mm from the outline.
+ * Simple inner band ring I: offset each B along the outline inward by
+ * max(r, 1.5). Crossing stations shrink d; d is Laplacian-smoothed at most
+ * 10% per station. I stays ≥ 1.0 mm from the outline; min edge ≥ 0.05 mm.
  */
 export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlacement {
     const outline = stations.map((s) => s.outline);
@@ -481,7 +481,7 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
     const insets: number[] = [];
     for (let i = 0; i < n; i++) {
         const st = stations[i]!;
-        const { h, planLen } = headingOfStation(st);
+        const { planLen } = headingOfStation(st);
         const r = estimateFilletRadius(st, planLen);
         dirs.push(outlineInward(i, outline));
         insets.push(Math.max(r, BAND_INSET_FLOOR_MM));

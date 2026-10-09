@@ -11,6 +11,7 @@ import type { UvHeightField } from "./types";
 export const PLANTAR_STEINER_MM = 1.8;
 export const PLANTAR_MARGIN_MM = 1.5;
 export const PLANTAR_STEINER_OUTLINE_FRAC = 0.75;
+export const PLANTAR_STEINER_EDGE_MIN_MM = 0.5;
 export const GRIND_REFINE_DZ_MM = 1.2;
 
 export interface GeneratedPlantar {
@@ -49,7 +50,7 @@ export function hexSteiner(
     margin = PLANTAR_MARGIN_MM,
     inner?: PolyPoint[],
 ): PolyPoint[] {
-    const outlineKeep = Math.max(margin, step * PLANTAR_STEINER_OUTLINE_FRAC);
+    const outlineKeep = Math.max(step * PLANTAR_STEINER_OUTLINE_FRAC, PLANTAR_STEINER_EDGE_MIN_MM, margin);
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -217,7 +218,9 @@ export function triangulatePlantarXY(
     steinerCount: number;
 } {
     const loop = boundary.map((p) => ({ ...p, z: 0 }));
-    const steiner = hexSteiner(loop, PLANTAR_STEINER_MM, margin);
+    const steiner = hexSteiner(loop, PLANTAR_STEINER_MM, margin).filter(
+        (p) => minDistToLoopXY(p.x, p.y, loop) >= PLANTAR_STEINER_EDGE_MIN_MM,
+    );
     const points = [...loop, ...steiner];
     nudgeInteriorDuplicates(points, loop.length);
     const faces = libraryCdtInterior(points, loop.length);

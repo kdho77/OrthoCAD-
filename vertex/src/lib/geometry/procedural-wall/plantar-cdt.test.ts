@@ -2,8 +2,9 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
+import { minDistToLoopXY } from "./cdt-band";
 import { assertIEdges } from "./cdt-lib";
-import { buildGeneratedPlantar, makePlantarSampler } from "./plantar-cdt";
+import { buildGeneratedPlantar, makePlantarSampler, PLANTAR_STEINER_EDGE_MIN_MM } from "./plantar-cdt";
 
 describe("generated plantar CDT", () => {
     test("re-anchors min z to 0 after a negative posting field", () => {
@@ -55,6 +56,10 @@ describe("generated plantar CDT", () => {
         expect(mesh.openEdges).toBe(0);
         expect(mesh.missingBoundary).toBe(0);
         expect(mesh.steinerCount).toBeGreaterThan(0);
+        for (let i = n; i < mesh.points.length; i++) {
+            const p = mesh.points[i]!;
+            expect(minDistToLoopXY(p.x, p.y, inner)).toBeGreaterThanOrEqual(PLANTAR_STEINER_EDGE_MIN_MM);
+        }
         const edge = new Map<string, number>();
         const key = (a: number, b: number) => (a < b ? `${a},${b}` : `${b},${a}`);
         for (const [a, b, c] of mesh.faces) {
