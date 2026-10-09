@@ -154,57 +154,6 @@ export function unwrapStrictlyIncreasing(s01: number[]): { unwrapped: number[]; 
     return { unwrapped: out, ok };
 }
 
-function fillMissingS(s: Array<number | null>): number[] {
-    const n = s.length;
-    const out = new Array<number>(n);
-    let last = 0;
-    let lastI = -1;
-    for (let i = 0; i < n; i++) {
-        if (s[i] != null) {
-            last = s[i]!;
-            lastI = i;
-            out[i] = last;
-        }
-    }
-    if (lastI < 0) {
-        for (let i = 0; i < n; i++) out[i] = i / n;
-        return out;
-    }
-    for (let i = 0; i < n; i++) {
-        if (s[i] != null) {
-            out[i] = s[i]!;
-            continue;
-        }
-        let nextI = -1;
-        for (let k = 1; k <= n; k++) {
-            const j = (i + k) % n;
-            if (s[j] != null) {
-                nextI = j;
-                break;
-            }
-        }
-        let prevI = -1;
-        for (let k = 1; k <= n; k++) {
-            const j = (i - k + n) % n;
-            if (s[j] != null) {
-                prevI = j;
-                break;
-            }
-        }
-        if (prevI < 0 || nextI < 0) {
-            out[i] = i / n;
-            continue;
-        }
-        const span = (nextI - prevI + n) % n || n;
-        const step = (i - prevI + n) % n;
-        const a = s[prevI]!;
-        let b = s[nextI]!;
-        if (b < a) b += 1;
-        out[i] = (((a + ((b - a) * step) / span) % 1) + 1) % 1;
-    }
-    return out;
-}
-
 export function segmentsCrossXY(p0: PolyPoint, p1: PolyPoint, q0: PolyPoint, q1: PolyPoint): boolean {
     const dax = p1.x - p0.x;
     const day = p1.y - p0.y;
@@ -270,23 +219,47 @@ export function pairByOutwardRay(plantarLoop: PolyPoint[], topLoop: PolyPoint[],
     const c = centroidOf(plantar);
     const rawN = plantar.map((_, i) => outwardNormal(plantar, i, c));
     const normals = smoothNormals(rawN);
-    const rawS: Array<number | null> = [];
     let missed = 0;
+    const sUsed: number[] = [];
+    const top: PolyPoint[] = [];
     for (let i = 0; i < plantar.length; i++) {
         const pos = nearestRayHitOnLoop(plantar[i]!, normals[i]!, topLoop, 1);
-        const neg = pos ? null : nearestRayHitOnLoop(plantar[i]!, normals[i]!, topLoop, -1);
-        const hit = pos ?? neg;
-        if (!hit) {
-            rawS.push(null);
+        const neg = nearestRayHitOnLoop(plantar[i]!, normals[i]!, topLoop, -1);
+        const prev = i === 0 ? 0 : sUsed[i - 1]!;
+        const expected = i === 0 ? 0 : prev + 1 / plantar.length;
+        const unwrapS = (s: number): number => {
+            let u = s;
+            while (i > 0 && u <= prev) u += 1;
+            while (i > 0 && u > prev + 1) u -= 1;
+            return u;
+        };
+        const scored = [pos, neg]
+            .filter((h): h is RayHit => h != null)
+            .map((h) => {
+                const u = i === 0 ? ((h.s01 % 1) + 1) % 1 : unwrapS(h.s01);
+                return { h, u, err: Math.abs(u - expected) + (h.dir === 1 ? 0 : 0.02) };
+            });
+        scored.sort((a, b) => a.err - b.err);
+        const pick = scored.find((c) => i === 0 || c.u > prev) ?? scored[0];
+        if (!pick) {
             missed++;
-        } else {
-            rawS.push(hit.s01);
+            const s = expected;
+            sUsed.push(s);
+            top.push(sampleClosedAtArc01(topLoop, ((s % 1) + 1) % 1));
+            continue;
         }
+        sUsed.push(pick.u);
+        top.push(pick.h.point);
     }
-    const filled = fillMissingS(rawS);
-    const { unwrapped, ok } = unwrapStrictlyIncreasing(filled);
-    const s01 = unwrapped.map((s) => ((s % 1) + 1) % 1);
-    const top = s01.map((s) => sampleClosedAtArc01(topLoop, s));
+    const s01 = sUsed.map((s) => ((s % 1) + 1) % 1);
+    let ok = true;
+    for (let i = 1; i < sUsed.length; i++) {
+        if (sUsed[i]! <= sUsed[i - 1]!) ok = false;
+    }
+    if (sUsed.length) {
+        const advance = sUsed[sUsed.length - 1]! - sUsed[0]!;
+        if (advance < 0.45 || advance > 1.55) ok = false;
+    }
     const sidewaysSkewMm = columnSidewaysSkewMm(plantar, top, normals);
     let maxSkewMm = 0;
     for (const d of sidewaysSkewMm) if (d > maxSkewMm) maxSkewMm = d;
