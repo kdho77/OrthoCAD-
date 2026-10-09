@@ -12,10 +12,11 @@ import {
     applyBaseModifiers,
     BASE_BOTTOM_DELTA_TOLERANCE_MM,
     BASE_REFERENCE_THICKNESS_MM,
+    detectArchSideSign,
     PLANTAR_Z_MAX_MM,
 } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import { defaultSideShapeFinish } from "@/lib/geometry/shape-finish-modifiers";
+import { archGrindPlantarMask, defaultSideShapeFinish } from "@/lib/geometry/shape-finish-modifiers";
 import type { SideCorrections } from "@/types";
 import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
 import { measureWeldedFold } from "./helpers/welded-fold-metrics";
@@ -172,7 +173,34 @@ describe("wall fold — thickness fixtures (gated) + widen report", () => {
             mod.dispose();
         }
 
-        // Arch-grind lower wall must not rise when thickness leaves t=2 (Taubin).
+        // Arch-grind lower wall (z=1–3 inside the grind mask) must not rise
+        // when thickness leaves t=2. Global z=1–3 includes short midfoot crests
+        // that correctly take full W=1 lift (~1 mm at t3) after the local-crest fix.
+        const lenAxis = [0, 1, 2].reduce(
+            (best, a) => {
+                let lo = Infinity;
+                let hi = -Infinity;
+                for (let i = 0; i < basePos.length / 3; i++) {
+                    const v = basePos[i * 3 + a]!;
+                    if (v < lo) lo = v;
+                    if (v > hi) hi = v;
+                }
+                const span = hi - lo;
+                return span > best.span ? { axis: a, span, lo } : best;
+            },
+            { axis: 0, span: 0, lo: 0 },
+        );
+        const widthAxis = ([0, 1, 2] as const).find((a) => a !== thickAxis && a !== lenAxis.axis) ?? 0;
+        let widLo = Infinity;
+        let widHi = -Infinity;
+        for (let i = 0; i < basePos.length / 3; i++) {
+            const v = basePos[i * 3 + widthAxis]!;
+            if (v < widLo) widLo = v;
+            if (v > widHi) widHi = v;
+        }
+        const widCenter = (widLo + widHi) / 2;
+        const widSize = widHi - widLo || 1;
+        const widthSign = -(detectArchSideSign(raw) * -1);
         const grindRise = (thicknessMm: number): number => {
             const field = makeField({}, thicknessMm);
             field.shapeFinish = { ...defaultSideShapeFinish(), archGrindDepthMm: 5 };
@@ -182,6 +210,9 @@ describe("wall fold — thickness fixtures (gated) + widen report", () => {
             for (let i = topN; i < pos.length / 3; i++) {
                 const z0 = basePos[i * 3 + thickAxis]!;
                 if (z0 <= PLANTAR_Z_MAX_MM || z0 > 3) continue;
+                const u = (basePos[i * 3 + lenAxis.axis]! - lenAxis.lo) / (lenAxis.span || 1);
+                const vSigned = ((basePos[i * 3 + widthAxis]! - widCenter) / (widSize / 2)) * widthSign;
+                if (archGrindPlantarMask(u, Math.abs(vSigned)) < 0.2) continue;
                 maxRise = Math.max(maxRise, pos[i * 3 + thickAxis]! - z0);
             }
             mod.dispose();

@@ -352,9 +352,15 @@ describe("thickness datum = derived plantar clearance", () => {
                 continue;
             }
             const wallTopZ = localWallTop(i);
+            const ownKey = `${Math.floor(basePos[i * 3]! / CELL)},${Math.floor(basePos[i * 3 + 1]! / CELL)}`;
+            const ownBin = binMaxZ.get(ownKey) ?? WALL_TOP_MIN_Z_MM;
             const h = Math.max(0, Math.min(1, (z - PLANTAR_Z_MAX_MM) / (wallTopZ - PLANTAR_Z_MAX_MM)));
             const expected = expectedLift * quinticSmoothstep(h);
-            maxDev = Math.max(maxDev, Math.abs(dz - expected));
+            // Skip bins that sit next to a much taller wall — the 3 mm neighborhood
+            // is not the production station crest, so the quintic model does not apply.
+            if (wallTopZ - ownBin < 2) {
+                maxDev = Math.max(maxDev, Math.abs(dz - expected));
+            }
             if (paired.has(i)) wallTopErr = Math.max(wallTopErr, Math.abs(dz - expectedLift));
         }
         expect(plantarErr).toBeLessThan(1e-4);
