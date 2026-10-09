@@ -66,7 +66,13 @@ export function cleanClosedLoop(pts: PolyPoint[]): { points: PolyPoint[]; keep: 
             const b = points[i]!;
             const c = points[(i + 1) % points.length]!;
             const hit = distToSeg(b, a, c);
-            if (hit.d < OUTLINE_COLLINEAR_MM && hit.t > 1e-4 && hit.t < 1 - 1e-4) {
+            const abx = b.x - a.x;
+            const aby = b.y - a.y;
+            const bcx = c.x - b.x;
+            const bcy = c.y - b.y;
+            const reversal = abx * bcx + aby * bcy < 0;
+            const spike = hit.d < OUTLINE_COLLINEAR_MM && (hit.t < 0.08 || hit.t > 0.92 || reversal);
+            if (spike) {
                 points.splice(i, 1);
                 keep.splice(i, 1);
                 dirty = true;
@@ -108,7 +114,11 @@ export function cleanClosedLoop(pts: PolyPoint[]): { points: PolyPoint[]; keep: 
 }
 
 /** Merge column stations to the cleaned outline (same keep map). */
-export function applyOutlineClean(stations: HermiteStation[], rimLocal: number[]): { dropped: number } {
+export function applyOutlineClean(
+    stations: HermiteStation[],
+    rimLocal: number[],
+    indices?: number[],
+): { dropped: number } {
     const n = Math.min(stations.length, rimLocal.length);
     if (n < 3) return { dropped: 0 };
     const loop = stations.slice(0, n).map((s) => s.outline);
@@ -116,6 +126,23 @@ export function applyOutlineClean(stations: HermiteStation[], rimLocal: number[]
     if (keep.length === n) {
         for (let i = 0; i < n; i++) stations[i]!.outline = points[i]!;
         return { dropped: 0 };
+    }
+    const keepSet = new Set(keep);
+    if (indices) {
+        for (let i = 0; i < n; i++) {
+            if (keepSet.has(i)) continue;
+            let dest = keep[0]!;
+            for (const k of keep) {
+                if (k < i) dest = k;
+                else break;
+            }
+            const from = rimLocal[i]!;
+            const to = rimLocal[dest]!;
+            if (from === to) continue;
+            for (let t = 0; t < indices.length; t++) {
+                if (indices[t] === from) indices[t] = to;
+            }
+        }
     }
     const nextSt = keep.map((i, k) => {
         const st = stations[i]!;
