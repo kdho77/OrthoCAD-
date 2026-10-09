@@ -15,9 +15,11 @@ import {
     applyBaseModifiers,
     BASE_REFERENCE_THICKNESS_MM,
     PLANTAR_Z_MAX_MM,
+    RIM_PAIR_TOL_MM,
     WALL_TOP_MIN_Z_MM,
 } from "@/lib/geometry/base-modifier";
 import { type HeightFieldParams, quinticSmoothstep } from "@/lib/geometry/height-field";
+import { extractOrderedBoundaryLoopWithIndices, submeshByVertexRange } from "@/lib/geometry/mesh-close";
 import {
     deriveNativeShellThicknessDatum,
     NATIVE_CLEARANCE_PERCENTILE,
@@ -267,17 +269,29 @@ describe("thickness datum = derived plantar clearance", () => {
         const idx = raw.getIndex();
         expect(idx).not.toBeNull();
 
-        // Full-height W(h) = quintic((z−1)/(localWallTopZ−1)). Local wall-top is
-        // the max bottom Z in a 3 mm XY bin (not the old z∈[1,2] shelf).
+        // Full-height W(h) = quintic((z−1)/(localWallTopZ−1)). Crest lift is
+        // gated on rim-paired wall-tops (same pairing as the vertical rim gap),
+        // not every 3 mm XY-bin max — those include mid-wall verts under a
+        // taller neighbor and are not production crests.
         const CELL = 3;
         const binMaxZ = new Map<string, number>();
         const total = raw.getAttribute("position").count;
+        const HQ = 20;
+        const hash = new Map<string, number[]>();
         for (let i = topN; i < total; i++) {
             const z = basePos[i * 3 + 2]!;
-            if (z <= PLANTAR_Z_MAX_MM) continue;
-            const k = `${Math.floor(basePos[i * 3]! / CELL)},${Math.floor(basePos[i * 3 + 1]! / CELL)}`;
-            const cur = binMaxZ.get(k) ?? PLANTAR_Z_MAX_MM;
-            if (z > cur) binMaxZ.set(k, z);
+            if (z > PLANTAR_Z_MAX_MM) {
+                const k = `${Math.floor(basePos[i * 3]! / CELL)},${Math.floor(basePos[i * 3 + 1]! / CELL)}`;
+                const cur = binMaxZ.get(k) ?? PLANTAR_Z_MAX_MM;
+                if (z > cur) binMaxZ.set(k, z);
+            }
+            const hk = `${Math.round(basePos[i * 3]! * HQ)},${Math.round(basePos[i * 3 + 1]! * HQ)}`;
+            let list = hash.get(hk);
+            if (!list) {
+                list = [];
+                hash.set(hk, list);
+            }
+            list.push(i);
         }
         const localWallTop = (i: number): number => {
             const cx = Math.floor(basePos[i * 3]! / CELL);
@@ -291,6 +305,42 @@ describe("thickness datum = derived plantar clearance", () => {
             }
             return top;
         };
+        const topSub = submeshByVertexRange(raw, 0, topN);
+        let rimIdx: number[];
+        try {
+            rimIdx = extractOrderedBoundaryLoopWithIndices(topSub).indices;
+        } finally {
+            topSub.dispose();
+        }
+        const paired = new Set<number>();
+        const bins = Math.ceil(RIM_PAIR_TOL_MM * HQ) + 2;
+        for (const j of rimIdx) {
+            const lx = basePos[j * 3]!;
+            const wy = basePos[j * 3 + 1]!;
+            const cx = Math.round(lx * HQ);
+            const cy = Math.round(wy * HQ);
+            let best = -1;
+            let bestZ = -Infinity;
+            let bestD = Infinity;
+            for (let dx = -bins; dx <= bins; dx++) {
+                for (let dy = -bins; dy <= bins; dy++) {
+                    const list = hash.get(`${cx + dx},${cy + dy}`);
+                    if (!list) continue;
+                    for (const bi of list) {
+                        const d = Math.hypot(basePos[bi * 3]! - lx, basePos[bi * 3 + 1]! - wy);
+                        if (d > RIM_PAIR_TOL_MM) continue;
+                        const z = basePos[bi * 3 + 2]!;
+                        if (z < WALL_TOP_MIN_Z_MM) continue;
+                        if (z > bestZ + 1e-9 || (Math.abs(z - bestZ) <= 1e-9 && d < bestD)) {
+                            bestZ = z;
+                            best = bi;
+                            bestD = d;
+                        }
+                    }
+                }
+            }
+            if (best >= 0) paired.add(best);
+        }
         let maxDev = 0;
         let wallTopErr = 0;
         let plantarErr = 0;
@@ -305,7 +355,7 @@ describe("thickness datum = derived plantar clearance", () => {
             const h = Math.max(0, Math.min(1, (z - PLANTAR_Z_MAX_MM) / (wallTopZ - PLANTAR_Z_MAX_MM)));
             const expected = expectedLift * quinticSmoothstep(h);
             maxDev = Math.max(maxDev, Math.abs(dz - expected));
-            if (z >= wallTopZ - 0.5) wallTopErr = Math.max(wallTopErr, Math.abs(dz - expectedLift));
+            if (paired.has(i)) wallTopErr = Math.max(wallTopErr, Math.abs(dz - expectedLift));
         }
         expect(plantarErr).toBeLessThan(1e-4);
         expect(wallTopErr).toBeLessThan(0.05);

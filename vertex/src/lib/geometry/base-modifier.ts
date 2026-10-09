@@ -2505,18 +2505,30 @@ function writeSmoothedWallDisplacement(
     }
 }
 
-/** Copy of `pinned` plus the wall ring next to plantar (arch-grind hinge). */
-function pinPlantarAdjacentWall(frame: BottomWallSmoothFrame): Uint8Array {
+/**
+ * Copy of `pinned` plus `rings` wall hops out from the plantar band.
+ * Arch grind only moves z≤1; Taubin otherwise smears that raise (and the
+ * thickness crest) into the z=1–3 grind hinge — three rings covers it.
+ */
+function pinPlantarAdjacentWall(frame: BottomWallSmoothFrame, rings = 3): Uint8Array {
     const { adj, pinned, plantar, groupCount } = frame;
     const out = pinned.slice();
+    const seen = plantar.slice();
+    let frontier: number[] = [];
     for (let g = 0; g < groupCount; g++) {
-        if (out[g]) continue;
-        for (const n of adj[g] ?? []) {
-            if (plantar[n]) {
-                out[g] = 1;
-                break;
+        if (plantar[g]) frontier.push(g);
+    }
+    for (let r = 0; r < rings; r++) {
+        const next: number[] = [];
+        for (const g of frontier) {
+            for (const n of adj[g] ?? []) {
+                if (seen[n]) continue;
+                seen[n] = 1;
+                out[n] = 1;
+                next.push(n);
             }
         }
+        frontier = next;
     }
     return out;
 }
