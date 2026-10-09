@@ -373,6 +373,44 @@ function minClearanceMm(ring: PolyPoint[], outline: PolyPoint[]): number {
     return best;
 }
 
+function maxInsetKeepingMinEdge(
+    a: PolyPoint,
+    dirA: { x: number; y: number },
+    b: PolyPoint,
+    dirB: { x: number; y: number },
+    minE = I_MIN_EDGE_MM,
+): number {
+    const ux = b.x - a.x;
+    const uy = b.y - a.y;
+    const vx = dirB.x - dirA.x;
+    const vy = dirB.y - dirA.y;
+    const uu = ux * ux + uy * uy;
+    const vv = vx * vx + vy * vy;
+    const uv = ux * vx + uy * vy;
+    if (uu <= minE * minE) return 0;
+    if (vv < 1e-12) return Number.POSITIVE_INFINITY;
+    if (uv >= 0) return Number.POSITIVE_INFINITY;
+    const disc = uv * uv - vv * (uu - minE * minE);
+    if (disc < 0) return Number.POSITIVE_INFINITY;
+    const root = (-uv - Math.sqrt(disc)) / vv;
+    return root > 1e-6 ? root : 0;
+}
+
+function shortEdgeStation(ring: PolyPoint[]): number {
+    let bestI = 0;
+    let best = Infinity;
+    for (let i = 0; i < ring.length; i++) {
+        const a = ring[i]!;
+        const b = ring[(i + 1) % ring.length]!;
+        const d = Math.hypot(b.x - a.x, b.y - a.y);
+        if (d < best) {
+            best = d;
+            bestI = i;
+        }
+    }
+    return bestI;
+}
+
 function smoothInsets(insets: number[], frac = I_SMOOTH_FRAC): void {
     const n = insets.length;
     if (n < 3) return;
@@ -399,7 +437,9 @@ export interface InnerRingPlacement {
 export function assertSimpleInnerRing(ring: PolyPoint[], outline: PolyPoint[]): InnerRingPlacement {
     const minE = minEdgeMm(ring);
     if (minE < I_MIN_EDGE_MM - 1e-9) {
-        throw new Error(`[S1-I] min edge ${minE.toFixed(3)} < ${I_MIN_EDGE_MM} mm`);
+        throw new Error(
+            `[S1-I] min edge ${minE.toFixed(3)} < ${I_MIN_EDGE_MM} mm at station ${shortEdgeStation(ring)}`,
+        );
     }
     const tn = turningNumber(ring);
     if (Math.abs(Math.abs(tn) - 1) > 0.05) {
@@ -446,14 +486,16 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
         const inn = outlineInward(i, outline);
         const alongH = inn.x * h.x + inn.y * h.y;
         dirs.push(alongH >= 0 ? h : { x: -h.x, y: -h.y });
-        const prev = outline[(i + n - 1) % n]!;
-        const next = outline[(i + 1) % n]!;
-        const spacing = Math.min(
-            Math.hypot(st.outline.x - prev.x, st.outline.y - prev.y),
-            Math.hypot(st.outline.x - next.x, st.outline.y - next.y),
+        insets.push(Math.max(r, BAND_INSET_FLOOR_MM));
+    }
+    for (let i = 0; i < n; i++) {
+        const prev = (i + n - 1) % n;
+        const next = (i + 1) % n;
+        const cap = Math.min(
+            maxInsetKeepingMinEdge(outline[prev]!, dirs[prev]!, outline[i]!, dirs[i]!),
+            maxInsetKeepingMinEdge(outline[i]!, dirs[i]!, outline[next]!, dirs[next]!),
         );
-        const cap = Math.max(I_CLEARANCE_MM, spacing * 0.45);
-        insets.push(Math.min(Math.max(r, BAND_INSET_FLOOR_MM), cap));
+        if (Number.isFinite(cap)) insets[i] = Math.min(insets[i]!, Math.max(0.35, cap * 0.95));
     }
     for (let pass = 0; pass < 48; pass++) {
         const ring = bandFromInsets(outline, dirs, insets);
@@ -482,7 +524,7 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
         }
         let changed = false;
         for (const i of bad) {
-            const next = Math.max(I_CLEARANCE_MM, insets[i]! * 0.8);
+            const next = Math.max(0.35, insets[i]! * 0.8);
             if (next < insets[i]! - 1e-6) {
                 insets[i] = next;
                 changed = true;

@@ -207,3 +207,27 @@ export function mergeCloseOutlineStations(
     for (const r of nextRim) rimLocal.push(r);
     return { dropped: n - keep.length };
 }
+
+/** Weld station `drop` into `keepIdx` and remove it from the column list. */
+export function mergeStationPair(
+    stations: HermiteStation[],
+    rimLocal: number[],
+    indices: number[],
+    drop: number,
+    keepIdx: number,
+): void {
+    const n = stations.length;
+    if (n < 4) return;
+    const d = ((drop % n) + n) % n;
+    const k = ((keepIdx % n) + n) % n;
+    if (d === k) return;
+    const from = rimLocal[d]!;
+    const to = rimLocal[k]!;
+    if (from !== to) {
+        for (let t = 0; t < indices.length; t++) {
+            if (indices[t] === from) indices[t] = to;
+        }
+    }
+    stations.splice(d, 1);
+    rimLocal.splice(d, 1);
+}
