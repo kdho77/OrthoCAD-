@@ -13,7 +13,7 @@ import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { buildInsoleGeometry, type InsoleParams } from "@/lib/geometry/insole";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { shapeToBufferGeometry } from "@/lib/geometry/mesh-bridge";
-import { closeGlbInsoleToSolid } from "@/lib/geometry/mesh-close";
+import { closeGlbInsoleToSolid, validateManifold } from "@/lib/geometry/mesh-close";
 import { buildOcctInsoleSolid } from "@/lib/geometry/occt-insole";
 import { repairOcctSolid, validateSolid } from "@/lib/geometry/repair";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
@@ -128,18 +128,25 @@ export class OcctKernel implements IGeometryKernel {
      */
     exportManufacturingStlFromBase(base: BufferGeometry, field: HeightFieldParams): ArrayBuffer | null {
         try {
-            const deform = fieldHasMeshModifiers(field) ? modifiedBaseResult(base, field, 0) : null;
-            const source = deform ? closeGlbInsoleToSolid(deform.geometry) : base;
-            const sewn = sewGlbGeometryToSolid(this.factory, source);
+            // Sewing a deformed (or even a closed tessellated) mesh returns null
+            // on the real wasm kernel. Drop that path: close the deform mesh and
+            // emit STL only when the mesh is watertight.
+            if (fieldHasMeshModifiers(field)) {
+                const deform = modifiedBaseResult(base, field, 0);
+                const closed = closeGlbInsoleToSolid(deform.geometry);
+                const report = validateManifold(closed);
+                if (!report.isWatertight || report.openEdges !== 0) return null;
+                return geometryToBinarySTL(closed);
+            }
+
+            const sewn = sewGlbGeometryToSolid(this.factory, base);
             if (!sewn) return null;
 
             let solid = applyBaseBooleansOnSewnSolid(this.factory, sewn, field);
             solid = applyRimBlend(this.factory, solid, 1.0);
             const method = (field as { method?: "printing_solid" | "printing_shell" | "milling_3axis" })
                 .method;
-            if (!deform) {
-                solid = applyThicknessToSewnBase(this.factory, solid, field.thicknessMm, method);
-            }
+            solid = applyThicknessToSewnBase(this.factory, solid, field.thicknessMm, method);
             const repaired = repairOcctSolid(this.factory, solid);
             if (!repaired.isClosed()) return null;
             const probe = shapeToBufferGeometry(repaired);
