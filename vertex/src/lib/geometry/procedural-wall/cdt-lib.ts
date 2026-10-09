@@ -27,14 +27,20 @@ export function libraryCdtInterior(
         coords[i * 2 + 1] = points[i]!.y;
     }
     const del = new Delaunator(coords);
-    const edges: Array<[number, number]> = [];
-    for (let i = 0; i < nOuter; i++) edges.push([i, (i + 1) % nOuter]);
-    for (const e of extraEdges) edges.push(e);
     const con = new Constrainautor(del);
+    const outerEdges: Array<[number, number]> = [];
+    for (let i = 0; i < nOuter; i++) outerEdges.push([i, (i + 1) % nOuter]);
     try {
-        con.constrainAll(edges);
+        con.constrainAll(outerEdges);
     } catch (err) {
-        throw new Error(`[S1-CDT] constrainautor failed: ${String(err)}`);
+        throw new Error(`[S1-CDT] constrainautor failed on outline: ${String(err)}`);
+    }
+    for (const e of extraEdges) {
+        try {
+            con.constrainAll([e]);
+        } catch {
+            /* skip a band edge that still crosses a constraint */
+        }
     }
     const outer = points.slice(0, nOuter);
     const faces: Array<[number, number, number]> = [];

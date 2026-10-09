@@ -9,12 +9,11 @@ import {
     estimateBandInsetMm,
     FILLET_R_CAP_MM,
     filletCenterAndF,
-    inwardOfOutline,
     type MinWallClamp,
     SHORT_CHORD_MM,
     TOP_CLEARANCE_DEG as T0_CLEARANCE_DEG,
 } from "./bezier-column";
-import { pointInPoly } from "./cdt-band";
+import { minDistToLoopXY, pointInPoly } from "./cdt-band";
 import type { PolyPoint } from "./curves";
 import { lateralFlangeEnvelope, type WallRegionDefaults } from "./defaults";
 import { sampleUvField } from "./extract";
@@ -27,6 +26,7 @@ import {
     type NZ,
 } from "./hermite";
 import type { HermiteStation } from "./loft";
+import { segIntersect } from "./outline-clean";
 import {
     buildGeneratedPlantar,
     type GeneratedPlantar,
@@ -273,32 +273,120 @@ function estimateFilletRadius(st: HermiteStation, planLen: number): number {
     return planLen < SHORT_CHORD_MM ? Math.min(rawR, 0.4) : Math.min(rawR, Math.max(0.15, planLen * 0.8));
 }
 
+function outlineInward(i: number, outline: PolyPoint[]): { x: number; y: number } {
+    const n = outline.length;
+    const a = outline[(i + n - 1) % n]!;
+    const b = outline[i]!;
+    const c = outline[(i + 1) % n]!;
+    const ex = c.x - a.x;
+    const ey = c.y - a.y;
+    let nx = -ey;
+    let ny = ex;
+    const len = Math.hypot(nx, ny) || 1;
+    nx /= len;
+    ny /= len;
+    const probe = { x: b.x + nx * 0.5, y: b.y + ny * 0.5 };
+    if (!pointInPoly(probe.x, probe.y, outline)) {
+        nx = -nx;
+        ny = -ny;
+    }
+    return { x: nx, y: ny };
+}
+
+function bandFromInsets(
+    outline: PolyPoint[],
+    dirs: Array<{ x: number; y: number }>,
+    insets: number[],
+): PolyPoint[] {
+    return outline.map((b, i) => {
+        const d = dirs[i]!;
+        const s = insets[i]!;
+        return { x: b.x + d.x * s, y: b.y + d.y * s, z: b.z };
+    });
+}
+
+function ringIntersectsOutline(ring: PolyPoint[], outline: PolyPoint[]): number[] {
+    const hit = new Set<number>();
+    const n = ring.length;
+    const m = outline.length;
+    for (let i = 0; i < n; i++) {
+        const a = ring[i]!;
+        const b = ring[(i + 1) % n]!;
+        for (let k = 0; k < m; k++) {
+            const c = outline[k]!;
+            const d = outline[(k + 1) % m]!;
+            if (segIntersect(a, b, c, d)) {
+                hit.add(i);
+                hit.add((i + 1) % n);
+            }
+        }
+        for (let j = i + 2; j < n; j++) {
+            if (i === 0 && j === n - 1) continue;
+            const c = ring[j]!;
+            const d = ring[(j + 1) % n]!;
+            if (segIntersect(a, b, c, d)) {
+                hit.add(i);
+                hit.add((i + 1) % n);
+                hit.add(j);
+                hit.add((j + 1) % n);
+            }
+        }
+    }
+    return [...hit];
+}
+
 /** One structured ring at B − r·sin(θ) inward, constrained in the plantar CDT. */
 export function placeStructuredBandRing(stations: HermiteStation[]): PolyPoint[] {
     const outline = stations.map((s) => s.outline);
-    return stations.map((st) => {
+    const n = outline.length;
+    const dirs: Array<{ x: number; y: number }> = [];
+    const insets: number[] = [];
+    for (let i = 0; i < n; i++) {
+        const st = stations[i]!;
         const { h, planLen } = headingOfStation(st);
         const r = estimateFilletRadius(st, planLen);
         const placed = filletCenterAndF(st.outline, h, r, { x: 0, y: 0, z: 1 }, 0);
-        const inset = Math.min(
+        const prev = outline[(i + n - 1) % n]!;
+        const next = outline[(i + 1) % n]!;
+        const spacing = Math.min(
+            Math.hypot(st.outline.x - prev.x, st.outline.y - prev.y),
+            Math.hypot(st.outline.x - next.x, st.outline.y - next.y),
+        );
+        const target = Math.min(
             estimateBandInsetMm(r, placed.theta),
             Math.max(BAND_INSET_MIN_MM, planLen * 0.45),
+            Math.max(BAND_INSET_MIN_MM, spacing * 0.35),
         );
-        const inn = inwardOfOutline(st.outline, h, outline);
-        const p = {
-            x: st.outline.x + inn.x * inset,
-            y: st.outline.y + inn.y * inset,
-            z: st.outline.z,
-        };
-        if (!pointInPoly(p.x, p.y, outline)) {
-            return {
-                x: st.outline.x + inn.x * BAND_INSET_MIN_MM,
-                y: st.outline.y + inn.y * BAND_INSET_MIN_MM,
-                z: st.outline.z,
-            };
+        const inn = outlineInward(i, outline);
+        const alongH = inn.x * h.x + inn.y * h.y;
+        dirs.push(alongH >= 0 ? h : { x: -h.x, y: -h.y });
+        insets.push(target);
+    }
+    for (let pass = 0; pass < 20; pass++) {
+        const ring = bandFromInsets(outline, dirs, insets);
+        const bad = new Set<number>();
+        for (let i = 0; i < n; i++) {
+            const p = ring[i]!;
+            if (!pointInPoly(p.x, p.y, outline) || minDistToLoopXY(p.x, p.y, outline) < 0.18) {
+                bad.add(i);
+            }
         }
-        return p;
-    });
+        for (const i of ringIntersectsOutline(ring, outline)) bad.add(i);
+        if (bad.size === 0) return ring;
+        let shrunk = false;
+        for (const i of bad) {
+            const next = insets[i]! * 0.65;
+            if (next >= 0.12 && next < insets[i]! - 1e-6) {
+                insets[i] = next;
+                shrunk = true;
+            } else if (insets[i]! > 0.12) {
+                insets[i] = 0.12;
+                shrunk = true;
+            }
+        }
+        if (!shrunk) break;
+    }
+    return bandFromInsets(outline, dirs, insets);
 }
 
 export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {

@@ -21,7 +21,7 @@ function distToSeg(p: PolyPoint, a: PolyPoint, b: PolyPoint): { d: number; t: nu
     return { d: Math.hypot(p.x - (a.x + ex * tt), p.y - (a.y + ey * tt)), t: tt };
 }
 
-function segIntersect(a: PolyPoint, b: PolyPoint, c: PolyPoint, d: PolyPoint): boolean {
+export function segIntersect(a: PolyPoint, b: PolyPoint, c: PolyPoint, d: PolyPoint): boolean {
     const o = (p: PolyPoint, q: PolyPoint, r: PolyPoint) =>
         (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
     const o1 = o(a, b, c);
