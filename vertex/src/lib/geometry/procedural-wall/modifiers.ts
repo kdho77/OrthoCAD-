@@ -3,77 +3,99 @@
 
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { heelCupDepthBowlDelta, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import { archGrindPlantarRaiseAt } from "@/lib/geometry/shape-finish-modifiers";
 import type { SideCorrections } from "@/types";
-import { rescaleProfileAffine } from "./profile";
-import type { ColumnProfile, PlanformColumn, PlanformFrame, StockWallModel } from "./types";
+import type { PolyPoint } from "./curves";
+import type { DeviceTypePreset, LateralFlangeParams, StockWallModel } from "./types";
 
 export interface ProceduralModifierInput {
     corrections?: SideCorrections;
     thicknessMm?: number;
     stockThicknessMm?: number;
+    /** Accommodative overlays heel flare / arch / top fillet. Default functional. */
+    deviceType?: DeviceTypePreset;
+    lateralFlange?: Partial<LateralFlangeParams>;
+    /** Arch grind depth (mm) applied to the plantar sheet only. */
+    archGrindDepthMm?: number;
 }
 
-function cloneColumns(cols: PlanformColumn[]): PlanformColumn[] {
-    return cols.map((c) => ({
-        ...c,
-        outline: { ...c.outline },
-        rim: { ...c.rim },
-        n: { ...c.n },
-        tangent: { ...c.tangent },
-    }));
+export interface ModifiedCurves {
+    trim: PolyPoint[];
+    outline: PolyPoint[];
+}
+
+function clonePoly(pts: PolyPoint[]): PolyPoint[] {
+    return pts.map((p) => ({ ...p }));
 }
 
 /**
- * Widen / cup depth / heel lift / thickness move only the trim and outline
- * curves. Profile interiors are then affinely rescaled in the local (n, z) frame.
- * No Laplacian / sidewall smoothing.
+ * Widen and cup depth move only TrimCurve / BottomOutline. Nothing deforms
+ * wall vertices — the wall is regenerated from the moved curves.
+ *
+ * Thickness and heel lift raise the trim (top) only; the plantar outline
+ * stays on the ground (bottom-stable).
  */
 export function applyCurveModifiers(
     model: StockWallModel,
     input: ProceduralModifierInput = {},
-): { columns: PlanformColumn[]; profiles: ColumnProfile[]; frame: PlanformFrame } {
-    if (!model.planform || !model.columns) {
-        throw new Error("S1 planform/columns missing — extractStockWallModel first");
-    }
+): ModifiedCurves {
+    const trim = clonePoly(model.trim.spline.controls);
+    const outline = clonePoly(model.outline.spline.controls);
     const c = input.corrections;
-    const columns = cloneColumns(model.planform.columns);
     const minX = model.bounds.minX;
     const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
     const widCenter = (model.bounds.minY + model.bounds.maxY) * 0.5;
     const dThick = (input.thicknessMm ?? 0) - (input.stockThicknessMm ?? input.thicknessMm ?? 0);
 
-    for (const col of columns) {
-        const u = Math.max(0, Math.min(1, (col.outline.x - minX) / length));
+    const n = Math.min(trim.length, outline.length);
+    for (let i = 0; i < n; i++) {
+        const o = outline[i]!;
+        const t = trim[i]!;
+        const u = Math.max(0, Math.min(1, (o.x - minX) / length));
         if (c && c.heelCupWidthMm !== 0) {
             const scale = heelCupWidthScaleFactor(u, c.heelCupWidthMm);
-            const shift = (scale - 1) * (col.outline.y - widCenter);
-            // Width scale is about the centerline (Y). Move both curves only.
-            col.outline.y += shift;
-            col.rim.y += shift;
+            o.y = widCenter + (o.y - widCenter) * scale;
+            t.y = widCenter + (t.y - widCenter) * scale;
         }
         if (c && c.heelCupDepthMm > 0) {
-            const avRim = 0.92;
-            const bowl = heelCupDepthBowlDelta(u, avRim, c.heelCupDepthMm);
-            col.rim.z += bowl;
+            const halfW = Math.max(1e-3, (model.bounds.maxY - model.bounds.minY) * 0.5);
+            const av = Math.abs((t.y - widCenter) / halfW);
+            t.z += heelCupDepthBowlDelta(u, Math.min(1, av), c.heelCupDepthMm);
         }
         if (c && c.heelLiftMm > 0) {
-            col.rim.z += heelLiftDeltaAt(u, c.heelLiftMm);
+            t.z += heelLiftDeltaAt(u, c.heelLiftMm);
         }
-        if (dThick) {
-            col.rim.z += dThick;
-        }
+        if (dThick) t.z += dThick;
     }
+    return { trim, outline };
+}
 
-    const profiles = model.columns.map((p, i) => {
-        const col = columns[i]!;
-        const plantar = { n: 0, z: col.outline.z };
-        const rimN = (col.rim.x - col.outline.x) * col.n.x + (col.rim.y - col.outline.y) * col.n.y;
-        return rescaleProfileAffine(p, plantar, { n: rimN, z: col.rim.z });
-    });
-
-    const frame: PlanformFrame = {
-        ...model.planform,
-        columns,
-    };
-    return { columns, profiles, frame };
+/** Posting / grind stay as bottom fields on the plantar sheet. */
+export function plantarZDelta(
+    x: number,
+    y: number,
+    bounds: StockWallModel["bounds"],
+    input: ProceduralModifierInput,
+): number {
+    const c = input.corrections;
+    const minX = bounds.minX;
+    const length = Math.max(1e-3, bounds.maxX - minX);
+    const widCenter = (bounds.minY + bounds.maxY) * 0.5;
+    const halfW = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
+    const u = Math.max(0, Math.min(1, (x - minX) / length));
+    const vSigned = (y - widCenter) / halfW;
+    const av = Math.abs(vSigned);
+    let dz = 0;
+    if (c && c.rearfootPostingDeg) {
+        const heel = 1 - Math.max(0, Math.min(1, (u - 0.05) / 0.35));
+        dz += Math.tan((c.rearfootPostingDeg * Math.PI) / 180) * vSigned * halfW * heel;
+    }
+    if (c && c.forefootPostingDeg) {
+        const fore = Math.max(0, Math.min(1, (u - 0.62) / 0.28));
+        dz += Math.tan((c.forefootPostingDeg * Math.PI) / 180) * vSigned * halfW * fore;
+    }
+    if ((input.archGrindDepthMm ?? 0) > 0) {
+        dz += archGrindPlantarRaiseAt(u, av, input.archGrindDepthMm!);
+    }
+    return dz;
 }

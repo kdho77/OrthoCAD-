@@ -67,25 +67,37 @@ export interface BottomOutline {
 }
 
 /**
- * Wall column parameters that encode today's heel-cup flare and flange.
- * `offsetMm` is the residual radial offset from the quintic chord after the
- * flare/cup/fillet terms — required so S0 can reproduce the stock walls.
+ * Parametric wall (Rhino model). Reverse-fit residuals are no longer used.
+ * Flare / fillets are biomechanics defaults (measured from Default.glb, then
+ * clamped). `offset*` arrays stay empty for S0 field-shape compatibility.
  */
 export interface WallProfile {
     /** Per-station flare from vertical (deg). 0 = vertical wall. */
     flareDeg: number[];
     /** Per-station cup / wall height (mm): trim.z − outline.z. */
     cupHeightMm: number[];
-    /** Global fillet radius (mm) fitted at the plantar junction. */
+    /** Bottom-join fillet (mm). */
     filletMm: number;
-    /** Per-station fillet radius (mm). */
+    /** Per-station bottom fillet (mm). */
     filletMmAt: number[];
-    /** Sample heights in [0, 1] for `offsetMm` / `offsetXyz`. */
+    /** Top-rim fillet (mm). Must not drop cup height by more than 0.5 mm. */
+    wallFilletTopMm: number;
+    wallFilletBottomMm: number;
+    /** Unused (reverse-fit removed). */
     offsetH: number[];
-    /** offsetMm[hIndex][station] — outward (+) / inward (−) from the quintic chord. */
     offsetMm: number[][];
-    /** Full 3D residual from the quintic chord (captures flange / cup that is not radial). */
     offsetXyz: Array<Array<{ x: number; y: number; z: number }>>;
+}
+
+export type DeviceTypePreset = "functional" | "accommodative";
+
+export interface LateralFlangeParams {
+    /** 0 = identity (standard wall unchanged). Range 0–10, step 1. */
+    heightMm: number;
+    /** Along-wall length (mm). Range 20–80, step 5. */
+    lengthMm: number;
+    /** Extra flare (deg). Range 0–25. */
+    angleDeg: number;
 }
 
 /** One planform column: plane spanned by inward n(s) and +Z. */
@@ -127,9 +139,12 @@ export interface StockWallModel {
     outline: BottomOutline;
     wall: WallProfile;
     planform?: PlanformFrame;
+    /** @deprecated Reverse-fit columns are no longer generated. */
     columns?: ColumnProfile[];
     /** Footprint AABB after `reorientToFootprintFrame`. */
     bounds: { minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number };
+    /** Measured vs bound table (Default.glb rule). */
+    measuredVsBound?: import("./defaults").MeasuredVsBoundRow[];
 }
 
 export interface LoftOptions {
@@ -152,6 +167,38 @@ export interface FoldReport {
     worstDeg: number;
     edgesAtLeast10Deg: number;
     interiorEdgeCount: number;
+    /** Wall↔sheet seam dihedral (deg). Fillet-implied ≈ 0; gate is +2°. */
+    seamWorstDeg?: number;
+}
+
+export interface ClinicalWallReport {
+    cupHeightAtU: { u: number; stockMm: number; reconMm: number; deltaMm: number }[];
+    heelInnerWidthMm: { stock: number; recon: number; delta: number };
+    flareMedialArchDeg: { placeholder: number; recon: number; delta: number };
+    flareLateralHeelDeg: { placeholder: number; recon: number; delta: number };
+    cupHeightDropMm: number;
+}
+
+export interface S1GateRow {
+    id: string;
+    name: string;
+    topBitIdentical: boolean;
+    topMaxDeltaMm: number;
+    plantarMaxMm: number;
+    outlineMaxMm: number;
+    groundDriftMm: number;
+    openEdges: number;
+    nonManifold: number;
+    watertight: boolean;
+    selfIntersections: number;
+    minWallMm: number;
+    foldWorstDeg: number;
+    foldGe10: number;
+    seamWorstDeg: number;
+    occtSolid: "ok" | "unavailable" | "fail";
+    soleUvIdentical: boolean;
+    clinical?: ClinicalWallReport;
+    misses: string[];
 }
 
 export interface S0ParityReport {

@@ -402,6 +402,11 @@ export interface ViewerSettings {
      * today's sidewall-deform path. Not persisted; never touches modifiers/export.
      */
     wallModel?: "legacy" | "procedural";
+    /** Viewer-only device-type preset for the procedural wall. Not persisted. */
+    deviceType?: "functional" | "accommodative";
+    lateralFlangeHeightMm?: number;
+    lateralFlangeLengthMm?: number;
+    lateralFlangeAngleDeg?: number;
 }
 
 export type TransformMode = "translate" | "rotate" | "scale";

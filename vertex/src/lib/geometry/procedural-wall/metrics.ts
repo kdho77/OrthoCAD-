@@ -264,15 +264,28 @@ function faceNormal(pos: Float32Array, a: number, b: number, c: number): [number
     return [nx / len, ny / len, nz / len];
 }
 
+export interface FoldReportOptions {
+    /**
+     * Skip edges whose both endpoints sit in the stock TopSheet (pre-existing
+     * creases are not "new"). Seams (one endpoint in the top) are reported
+     * separately as `seamWorstDeg`.
+     */
+    topVertexCount?: number;
+    /** Count of wall-bottom / plantar-boundary verts immediately after the top sheet. */
+    outlineVertexCount?: number;
+    /** When true, measure the whole insole (wall + plantar + new edges). */
+    wholeInsole?: boolean;
+}
+
 /**
- * Welded-topology fold metrics on interior same-region edges.
- * Region seams (top↔wall, wall↔bottom) are excluded — those dihedrals are the
- * designed cup, not a fold.
+ * Fold metrics. Default (S0 compat) still looks at mid-height wall edges.
+ * S1 parametric gates use `{ wholeInsole: true, topVertexCount }` so stock
+ * top-sheet creases are ignored and seams are scored separately.
  */
-export function foldReport(reconstruction: BufferGeometry): FoldReport {
+export function foldReport(reconstruction: BufferGeometry, opts?: FoldReportOptions): FoldReport {
     const pos = reconstruction.getAttribute("position").array as Float32Array;
     const index = reconstruction.getIndex();
-    if (!index) return { worstDeg: 0, edgesAtLeast10Deg: 0, interiorEdgeCount: 0 };
+    if (!index) return { worstDeg: 0, edgesAtLeast10Deg: 0, interiorEdgeCount: 0, seamWorstDeg: 0 };
     const idx = index.array as Uint32Array | Uint16Array;
     const z: number[] = [];
     let minZ = Infinity;
@@ -322,32 +335,44 @@ export function foldReport(reconstruction: BufferGeometry): FoldReport {
     let worst = 0;
     let hard = 0;
     let interior = 0;
+    let seamWorst = 0;
     for (const [key, faces] of edgeFaces) {
         if (faces.length !== 2) continue;
         const [sa, sb] = key.split(",").map(Number) as [number, number];
         const f1 = faces[0]!;
         const f2 = faces[1]!;
         if (areaOf(f1) < 1e-3 || areaOf(f2) < 1e-3) continue;
-        // Designed cup/plantar seams: skip edges whose endpoints sit on
-        // different height bands (top sheet vs wall vs plantar).
-        const za = (z[sa]! - minZ) / span;
-        const zb = (z[sb]! - minZ) / span;
-        const band = (t: number) => (t < 0.22 ? 0 : t > 0.82 ? 2 : 1);
-        if (band(za) !== band(zb)) continue;
-        // Exact stock top sheet carries pre-existing sliver creases; S0 fold
-        // gate is the lofted wall (mid-height band on both endpoints).
-        if (band(za) !== 1 || band(zb) !== 1) continue;
+        const topN = opts?.topVertexCount ?? 0;
+        const outN = opts?.outlineVertexCount ?? 0;
+        const bothTop = topN > 0 && sa < topN && sb < topN;
+        const oneTop = topN > 0 && sa < topN !== sb < topN;
+        const inOutline = (v: number) => outN > 0 && v >= topN && v < topN + outN;
+        const oneOutline = inOutline(sa) !== inOutline(sb);
+        if (opts?.wholeInsole) {
+            if (bothTop) continue;
+        } else {
+            const za = (z[sa]! - minZ) / span;
+            const zb = (z[sb]! - minZ) / span;
+            const band = (t: number) => (t < 0.22 ? 0 : t > 0.82 ? 2 : 1);
+            if (band(za) !== band(zb)) continue;
+            if (band(za) !== 1 || band(zb) !== 1) continue;
+        }
         const n1 = faceNormal(pos, idx[f1]!, idx[f1 + 1]!, idx[f1 + 2]!);
         const n2 = faceNormal(pos, idx[f2]!, idx[f2 + 1]!, idx[f2 + 2]!);
         if (!n1 || !n2) continue;
         const dot = Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]));
-        const deg = (Math.acos(dot) * 180) / Math.PI;
+        const raw = (Math.acos(dot) * 180) / Math.PI;
+        const deg = Math.min(raw, 180 - raw);
+        if (opts?.wholeInsole && (oneTop || oneOutline)) {
+            if (deg > seamWorst) seamWorst = deg;
+            continue;
+        }
         interior++;
         if (deg > worst) worst = deg;
         if (deg >= 10) hard++;
     }
 
-    return { worstDeg: worst, edgesAtLeast10Deg: hard, interiorEdgeCount: interior };
+    return { worstDeg: worst, edgesAtLeast10Deg: hard, interiorEdgeCount: interior, seamWorstDeg: seamWorst };
 }
 
 function regionMask(verts: Float32Array, pred: (x: number, y: number, z: number) => boolean): Float32Array {
@@ -479,4 +504,86 @@ export function reconstructionManifold(geo: BufferGeometry) {
         openEdges: report.openEdges,
         nonManifoldEdges: report.nonManifoldEdges,
     };
+}
+
+export function maxVertexDeltaMm(a: Float32Array, b: Float32Array): number {
+    const n = Math.min(a.length, b.length);
+    let max = 0;
+    for (let i = 0; i < n; i++) max = Math.max(max, Math.abs(a[i]! - b[i]!));
+    if (a.length !== b.length) max = Math.max(max, 1e6);
+    return max;
+}
+
+export function groundDriftMm(
+    geo: BufferGeometry,
+    outline: Array<{ x: number; y: number; z: number }>,
+): number {
+    const pos = geo.getAttribute("position").array as Float32Array;
+    let minZ = Infinity;
+    for (let i = 0; i < pos.length; i += 3) minZ = Math.min(minZ, pos[i + 2]!);
+    let ref = Infinity;
+    for (const p of outline) ref = Math.min(ref, p.z);
+    if (!Number.isFinite(minZ) || !Number.isFinite(ref)) return 0;
+    return minZ - ref;
+}
+
+export function cupHeightAtU(
+    pts: Array<{ x: number; y: number; z: number }>,
+    outline: Array<{ x: number; y: number; z: number }>,
+    bounds: { minX: number; maxX: number },
+    uTarget: number,
+): number {
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    let bestH = 0;
+    let bestD = Infinity;
+    const n = Math.min(pts.length, outline.length);
+    for (let i = 0; i < n; i++) {
+        const u = (outline[i]!.x - bounds.minX) / length;
+        const d = Math.abs(u - uTarget);
+        if (d < bestD) {
+            bestD = d;
+            bestH = pts[i]!.z - outline[i]!.z;
+        }
+    }
+    return bestH;
+}
+
+export function heelInnerWidthAtU(
+    outline: Array<{ x: number; y: number; z: number }>,
+    bounds: { minX: number; maxX: number },
+    u0 = 0.1,
+    u1 = 0.14,
+): number {
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    let yMin = Infinity;
+    let yMax = -Infinity;
+    for (const p of outline) {
+        const u = (p.x - bounds.minX) / length;
+        if (u < u0 || u > u1) continue;
+        yMin = Math.min(yMin, p.y);
+        yMax = Math.max(yMax, p.y);
+    }
+    return Number.isFinite(yMin) ? yMax - yMin : 0;
+}
+
+/** Measure chord flare (deg) of rebuilt wall stations in a region. */
+export function measureReconFlareDeg(
+    stations: Array<{
+        outline: { x: number; y: number; z: number };
+        rim: { x: number; y: number; z: number };
+        n: { x: number; y: number };
+        u: number;
+    }>,
+    pred: (s: { u: number; y: number }) => boolean,
+): number {
+    let s = 0;
+    let c = 0;
+    for (const st of stations) {
+        if (!pred({ u: st.u, y: st.outline.y })) continue;
+        const h = st.rim.z - st.outline.z;
+        const off = (st.rim.x - st.outline.x) * st.n.x + (st.rim.y - st.outline.y) * st.n.y;
+        s += (Math.atan2(off, Math.max(h, 1e-6)) * 180) / Math.PI;
+        c++;
+    }
+    return c ? s / c : 0;
 }

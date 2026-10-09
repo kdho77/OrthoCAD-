@@ -2,11 +2,31 @@
 // See LICENSE file in the project root for full license information.
 
 export { fitClosedC2Spline, resampleClosedC2, resamplePolyline } from "./curves";
-export { extractStockWallModel, matchedLoftCurves, sampleUvField } from "./extract";
-export { countSelfIntersections } from "./intersect";
 export {
+    blendedFlareDeg,
+    CUP_BOWL,
+    clampToBound,
+    type DeviceTypePreset,
+    FILLET_BOUNDS,
+    FLARE_BOUNDS,
+    LATERAL_FLANGE_BOUNDS,
+    type MeasuredVsBoundRow,
+    resolveWallDefaults,
+    type WallRegionDefaults,
+} from "./defaults";
+export { extractStockWallModel, extractTopSheet, matchedLoftCurves, sampleUvField } from "./extract";
+export { evaluateHeelCupGate } from "./hermite";
+export { countSelfIntersections } from "./intersect";
+export { buildHermiteStations } from "./loft";
+export { defaultsFromStockCurves, measureRegionFeatures } from "./measure";
+export {
+    cupHeightAtU,
     foldReport,
+    groundDriftMm,
     hausdorffReport,
+    heelInnerWidthAtU,
+    maxVertexDeltaMm,
+    measureReconFlareDeg,
     minWallThicknessMm,
     reconstructionManifold,
     tieredHausdorffReport,
@@ -23,12 +43,15 @@ export {
 } from "./sole-uv";
 export type {
     BottomOutline,
+    ClinicalWallReport,
     ColumnProfile,
     FoldReport,
     HausdorffReport,
+    LateralFlangeParams,
     LoftOptions,
     PlanformFrame,
     S0ParityReport,
+    S1GateRow,
     S1ParityReport,
     StockWallModel,
     TieredHausdorffReport,

@@ -18,8 +18,9 @@ import {
     resamplePolyline,
     startAtPosteriorHeel,
 } from "./curves";
+import { blendedFlareDeg } from "./defaults";
+import { defaultsFromStockCurves } from "./measure";
 import { buildPlanformFrame } from "./planform";
-import { fitColumnProfiles } from "./profile";
 import { DEFAULT_LOFT_N, type StockWallModel, type UvHeightField, type WallProfile } from "./types";
 
 const UV_CELL_MM = 0.4;
@@ -545,24 +546,59 @@ export function extractStockWallModel(
         p.z = sampleUvField(plantarField, p.x, p.y) ?? Math.min(p.z, PLANTAR_Z_MAX_MM);
     }
     const wallPts = wall.length || plantar.length ? wall.concat(plantar) : top;
-    const wallProfile = extractWallProfile(trimSpline.controls, outlineOnTrim, wallPts);
+    // Measurement-only: chord flare + band residuals. Residuals are not lofted.
+    const measuredProfile = extractWallProfile(trimSpline.controls, outlineOnTrim, wallPts);
+    const nSt = measuredProfile.flareDeg.length;
+    const topBand = measuredProfile.offsetH.findIndex((h) => h >= 0.82);
+    const botBand = measuredProfile.offsetH.findIndex((h) => h >= 0.12);
+    const topMm = Array.from({ length: nSt }, (_, i) => Math.abs(measuredProfile.offsetMm[topBand]![i] ?? 0));
+    const botMm = Array.from({ length: nSt }, (_, i) => Math.abs(measuredProfile.offsetMm[botBand]![i] ?? 0));
+    const defaults = defaultsFromStockCurves(trimSpline.controls, outlineOnTrim, bounds, { topMm, botMm });
     const planform = buildPlanformFrame(outlineSpline.controls, trimSpline.controls);
-    const columns = fitColumnProfiles(planform, geo);
-    planform.maxFitResidualMm = columns.reduce((m, c) => Math.max(m, c.residualMm), 0);
-    wallProfile.flareDeg = planform.columns.map((col) => {
-        const horiz = Math.hypot(col.rim.x - col.outline.x, col.rim.y - col.outline.y);
-        return (Math.atan2(horiz, Math.max(col.rim.z - col.outline.z, 1e-6)) * 180) / Math.PI;
-    });
-    wallProfile.cupHeightMm = planform.columns.map((col) => col.rim.z - col.outline.z);
+
+    const topSheet = copyTopMesh(geo);
+    let trimFromSheet = trimSpline;
+    let trimCount = topRim.points.length;
+    if (topSheet.meshPositions && topSheet.rimLocal && topSheet.rimLocal.length >= 3) {
+        const pos = topSheet.meshPositions;
+        const rimPts = topSheet.rimLocal.map((i) => ({
+            x: pos[i * 3]!,
+            y: pos[i * 3 + 1]!,
+            z: pos[i * 3 + 2]!,
+            i,
+        }));
+        const ordered = startAtPosteriorHeel(ensureCcw(rimPts)) as Array<PolyPoint & { i: number }>;
+        topSheet.rimLocal = ordered.map((p) => p.i);
+        trimFromSheet = fitClosedC2Spline(ordered.map((p) => ({ x: p.x, y: p.y, z: p.z })));
+        trimCount = ordered.length;
+    }
+
+    const wallProfile: WallProfile = {
+        flareDeg: planform.columns.map((col) => {
+            const u = Math.max(
+                0,
+                Math.min(1, (col.outline.x - bounds.minX) / Math.max(1e-3, bounds.maxX - bounds.minX)),
+            );
+            return blendedFlareDeg(u, col.outline.y, defaults.flareDeg);
+        }),
+        cupHeightMm: planform.columns.map((col) => col.rim.z - col.outline.z),
+        filletMm: defaults.wallFilletBottomMm,
+        filletMmAt: planform.columns.map(() => defaults.wallFilletBottomMm),
+        wallFilletTopMm: defaults.wallFilletTopMm,
+        wallFilletBottomMm: defaults.wallFilletBottomMm,
+        offsetH: [],
+        offsetMm: [],
+        offsetXyz: [],
+    };
 
     return {
         id: meta.id,
         name: meta.name,
         top: {
             field: buildUvField(topInterior.length ? topInterior : top.length ? top : trimSpline.controls),
-            ...copyTopMesh(geo),
+            ...topSheet,
         },
-        trim: { spline: trimSpline, sourceCount: topRim.points.length },
+        trim: { spline: trimFromSheet, sourceCount: trimCount },
         outline: {
             spline: outlineSpline,
             plantarZ: plantarField,
@@ -571,8 +607,8 @@ export function extractStockWallModel(
         },
         wall: wallProfile,
         planform,
-        columns,
         bounds,
+        measuredVsBound: defaults.report,
     };
 }
 
@@ -613,7 +649,7 @@ function copyBottomMesh(
         const z0 = pos[i0 * 3 + 2]!;
         const z1 = pos[i1 * 3 + 2]!;
         const z2 = pos[i2 * 3 + 2]!;
-        if ((z0 + z1 + z2) / 3 <= SOLE_FIELD_Z_MM + 1.2) {
+        if ((z0 + z1 + z2) / 3 <= SOLE_FIELD_Z_MM + 6) {
             kept.push(i0, i1, i2);
         }
     }
@@ -642,6 +678,15 @@ function copyTopMesh(geo: BufferGeometry):
     } finally {
         welded.dispose();
     }
+}
+
+/** Exact stock TopSheet (welded contact sheet + ordered rim). Never resampled. */
+export function extractTopSheet(geo: BufferGeometry): {
+    meshPositions?: Float32Array;
+    meshIndices?: Uint32Array;
+    rimLocal?: number[];
+} {
+    return copyTopMesh(geo);
 }
 
 export function matchedLoftCurves(

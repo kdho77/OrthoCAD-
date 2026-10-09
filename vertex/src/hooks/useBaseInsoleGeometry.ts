@@ -50,6 +50,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const stockBaseResolutionState = useDesignStore((s) => s.stockBaseResolutionState);
     const setBaseMeshLoading = useDesignStore((s) => s.setBaseMeshLoading);
     const wallModel = useDesignStore((s) => s.viewer.wallModel ?? "legacy");
+    const deviceType = useDesignStore((s) => s.viewer.deviceType ?? "functional");
+    const lateralFlangeHeightMm = useDesignStore((s) => s.viewer.lateralFlangeHeightMm ?? 0);
+    const lateralFlangeLengthMm = useDesignStore((s) => s.viewer.lateralFlangeLengthMm ?? 40);
+    const lateralFlangeAngleDeg = useDesignStore((s) => s.viewer.lateralFlangeAngleDeg ?? 10);
 
     const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
@@ -256,6 +260,15 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 corrections: field.corrections,
                 thicknessMm,
                 stockThicknessMm: field.thicknessMm > 0 ? 3 : field.thicknessMm,
+                sourceGeometry: raw,
+                sourceField: field,
+                deviceType,
+                lateralFlange: {
+                    heightMm: lateralFlangeHeightMm,
+                    lengthMm: lateralFlangeLengthMm,
+                    angleDeg: lateralFlangeAngleDeg,
+                },
+                archGrindDepthMm: 0,
             });
             if (outRef.current && outRef.current !== workRef.current) {
                 outRef.current.dispose();
@@ -323,6 +336,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         setBaseMeshLoading,
         side,
         wallModel,
+        deviceType,
+        lateralFlangeHeightMm,
+        lateralFlangeLengthMm,
+        lateralFlangeAngleDeg,
     ]);
 
     useEffect(
