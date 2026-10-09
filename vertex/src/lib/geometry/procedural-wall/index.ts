@@ -66,6 +66,7 @@ export {
     pairByOutwardRay,
     SKEW_LIMIT_MM,
     type StationPairing,
+    smoothClosedToMinRadius,
 } from "./stations";
 export type {
     BottomOutline,

@@ -24,7 +24,7 @@ import { blendedFlareDeg } from "./defaults";
 import { evalCubicHermite } from "./hermite";
 import { defaultsFromStockCurves, outwardNormal, type StationBandFlare } from "./measure";
 import { buildPlanformFrame } from "./planform";
-import { offsetClosedInward } from "./stations";
+import { offsetClosedInward, smoothClosedToMinRadius } from "./stations";
 import { DEFAULT_LOFT_N, type StockWallModel, type UvHeightField, type WallProfile } from "./types";
 
 function nearestOnInner(loop: PolyPoint[], origin: PolyPoint): PolyPoint {
@@ -1145,6 +1145,7 @@ function rebuildC1BoundaryStrip(
     positions: Float32Array,
     indices: Uint32Array,
     rimLocal: number[],
+    planform?: PolyPoint[] | null,
 ): PlantarSheet | null {
     if (rimLocal.length < 8) return null;
     const rimPts = rimLocal.map((i) => ({
@@ -1152,7 +1153,8 @@ function rebuildC1BoundaryStrip(
         y: positions[i * 3 + 1]!,
         z: positions[i * 3 + 2]!,
     }));
-    const contour = startAtPosteriorHeel(ensureCcw(rimPts));
+    const contourSrc = planform && planform.length >= 8 ? planform : rimPts;
+    const contour = startAtPosteriorHeel(ensureCcw(contourSrc));
     const keep: Array<{ i0: number; i1: number; i2: number }> = [];
     for (let t = 0; t < indices.length; t += 3) {
         const i0 = indices[t]!;
@@ -1199,7 +1201,8 @@ function rebuildC1BoundaryStrip(
         const innerOrdered = startAtPosteriorHeel(ensureCcw(innerPts)) as Array<PolyPoint & { i: number }>;
         const innerIdx = innerOrdered.map((p) => p.i);
         const nOut = DEFAULT_LOFT_N;
-        const outerSpline = fitClosedC2Spline(contour);
+        const smoothed = smoothClosedToMinRadius(contour, 12, nOut);
+        const outerSpline = fitClosedC2Spline(smoothed);
         const outer = resampleClosedC2(outerSpline, nOut);
         const innerLoop = innerOrdered.map((p) => ({ x: p.x, y: p.y, z: p.z }));
         const cInner = { x: 0, y: 0 };
@@ -1565,7 +1568,7 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
                 trimRim = best?.indices.slice() ?? [];
             }
             if (trimRim.length < 8) return { meshPositions: tpos, meshIndices: tidx, ...extractMeta };
-            const strip = rebuildC1BoundaryStrip(tpos, tidx, trimRim);
+            const strip = rebuildC1BoundaryStrip(tpos, tidx, trimRim, hull);
             return strip
                 ? { ...strip, ...extractMeta }
                 : { meshPositions: tpos, meshIndices: tidx, rimLocal: trimRim, ...extractMeta };
