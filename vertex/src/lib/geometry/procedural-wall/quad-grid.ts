@@ -280,59 +280,24 @@ function estimateFilletRadius(st: HermiteStation, planLen: number): number {
     return planLen < SHORT_CHORD_MM ? Math.min(rawR, 0.4) : Math.min(rawR, Math.max(0.15, planLen * 0.8));
 }
 
-function edgeInward(a: PolyPoint, b: PolyPoint, outline: PolyPoint[]): { x: number; y: number } {
-    const ex = b.x - a.x;
-    const ey = b.y - a.y;
-    const len = Math.hypot(ex, ey) || 1;
-    let nx = -ey / len;
-    let ny = ex / len;
-    const probe = { x: (a.x + b.x) * 0.5 + nx * 0.5, y: (a.y + b.y) * 0.5 + ny * 0.5 };
-    if (!pointInPoly(probe.x, probe.y, outline)) {
-        nx = -nx;
-        ny = -ny;
-    }
-    return { x: nx, y: ny };
-}
-
-/**
- * Parallel-offset miter at station i. I = B + m * d, where d is the
- * outline-inward offset distance and |m| = 1 / sin(α/2) for a convex vertex.
- * Adjacent I edges stay copies of the outline edges (same length) when d is
- * uniform. Runaway miters at needle corners are clipped.
- */
-const MITER_LEN_CAP = 4;
-
 function outlineInward(i: number, outline: PolyPoint[]): { x: number; y: number } {
     const n = outline.length;
     const a = outline[(i + n - 1) % n]!;
     const b = outline[i]!;
     const c = outline[(i + 1) % n]!;
-    const n1 = edgeInward(a, b, outline);
-    const n2 = edgeInward(b, c, outline);
-    const denom = 1 + n1.x * n2.x + n1.y * n2.y;
-    let mx: number;
-    let my: number;
-    if (Math.abs(denom) < 1e-4) {
-        mx = n1.x + n2.x;
-        my = n1.y + n2.y;
-        const len = Math.hypot(mx, my) || 1;
-        mx /= len;
-        my /= len;
-    } else {
-        mx = (n1.x + n2.x) / denom;
-        my = (n1.y + n2.y) / denom;
-    }
-    const mlen = Math.hypot(mx, my);
-    if (mlen > MITER_LEN_CAP) {
-        mx *= MITER_LEN_CAP / mlen;
-        my *= MITER_LEN_CAP / mlen;
-    }
-    const probe = { x: b.x + mx * 0.4, y: b.y + my * 0.4 };
+    const ex = c.x - a.x;
+    const ey = c.y - a.y;
+    let nx = -ey;
+    let ny = ex;
+    const len = Math.hypot(nx, ny) || 1;
+    nx /= len;
+    ny /= len;
+    const probe = { x: b.x + nx * 0.5, y: b.y + ny * 0.5 };
     if (!pointInPoly(probe.x, probe.y, outline)) {
-        mx = -mx;
-        my = -my;
+        nx = -nx;
+        ny = -ny;
     }
-    return { x: mx, y: my };
+    return { x: nx, y: ny };
 }
 
 function bandFromInsets(
@@ -483,9 +448,10 @@ export function assertSimpleInnerRing(ring: PolyPoint[], outline: PolyPoint[]): 
 }
 
 /**
- * Simple inner band ring I: parallel outline-inward offset by max(r, 1.5).
- * Crossing stations shrink d; d is Laplacian-smoothed at most 10% per station.
- * I stays ≥ 1.0 mm from the outline; min edge ≥ 0.05 mm. Stations are not welded.
+ * Simple inner band ring I: offset each B along the outline inward by
+ * max(r, 1.5). Crossing stations shrink d; d is Laplacian-smoothed at most
+ * 10% per station. I stays ≥ 1.0 mm from the outline; min edge ≥ 0.05 mm.
+ * Stations are not welded.
  */
 export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlacement {
     const outline = stations.map((s) => s.outline);
