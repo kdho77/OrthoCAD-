@@ -2,8 +2,8 @@
 // See LICENSE file in the project root for full license information.
 
 import { Button } from "@/components/ui/button";
-import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
-import { useClinicalWorkflowStore, type ElementPlacementFoot } from "@/stores/clinical-workflow-store";
+import { setSharedFootSide, useActiveFootSide } from "@/lib/clinical/active-foot-side";
+import { type ElementPlacementFoot, useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { SIDE_LABELS, type Side } from "@/types";
@@ -18,20 +18,14 @@ export function ActiveFootSideBar({ allowBothWhenLinked = false }: ActiveFootSid
     const active = useActiveFootSide();
     const linked = useDesignStore((s) => s.design.corrections.linked);
     const placementFoot = useClinicalWorkflowStore((s) => s.elementPlacementFoot);
-    const setPlacementFoot = useClinicalWorkflowStore((s) => s.setElementPlacementFoot);
-    const acknowledgeExplicitFootSide = useClinicalWorkflowStore((s) => s.acknowledgeExplicitFootSide);
-    const setExportSide = useDesignStore((s) => s.setExportSide);
     const setTarget = useMeshEditStore((s) => s.setTarget);
 
     const pickSide = (side: Side) => {
-        acknowledgeExplicitFootSide(side);
-        setPlacementFoot(side);
-        setExportSide(side);
-        setTarget({ type: "insole", side });
+        setSharedFootSide(side);
     };
 
     const pickBoth = () => {
-        setPlacementFoot("both");
+        setSharedFootSide("pair");
         setTarget({ type: "insole", side: active });
     };
 

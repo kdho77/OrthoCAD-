@@ -15,6 +15,7 @@ import { useScanStore } from "@/stores/scan-store";
 beforeEach(() => {
     useClinicalWorkflowStore.setState({
         footSideExplicitlyChosen: false,
+        importSideChoice: null,
         completedSteps: [],
         scanGateStickyReason: null,
     });

@@ -23,12 +23,17 @@ export type CorrectionsSectionKey = "pronationSupination" | "skive" | string;
 
 export type ElementPlacementFoot = "left" | "right" | "both";
 
+/** Scan import destination: a single foot or a paired L+R upload. */
+export type ImportSideChoice = "left" | "right" | "pair";
+
 interface ClinicalWorkflowStore {
     step: ClinicalStepId;
     /** Steps the user advanced past via successful Next (no environment auto-complete). */
     completedSteps: ClinicalStepId[];
     /** User clicked Left or Right on the clinical foot bar (scan gate). */
     footSideExplicitlyChosen: boolean;
+    /** Shared with the Scan step import selector — null until the user picks a side. */
+    importSideChoice: ImportSideChoice | null;
     /** Persists scan-gate failure when user jumps ahead on the rail. */
     scanGateStickyReason: string | null;
     /** Inline reason when Next is blocked (AC8). */
@@ -36,7 +41,7 @@ interface ClinicalWorkflowStore {
     elementPlacementFoot: ElementPlacementFoot;
     pendingCorrectionSections: CorrectionsSectionKey[];
     setStep: (step: ClinicalStepId) => void;
-    acknowledgeExplicitFootSide: (side: "left" | "right") => void;
+    acknowledgeExplicitFootSide: (side: "left" | "right" | "pair") => void;
     setElementPlacementFoot: (foot: ElementPlacementFoot) => void;
     goNext: () => void;
     goBack: () => void;
@@ -83,6 +88,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
     step: "scan",
     completedSteps: [],
     footSideExplicitlyChosen: false,
+    importSideChoice: null,
     scanGateStickyReason: null,
     nextBlockReason: null,
     elementPlacementFoot: "left",
@@ -90,7 +96,8 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
     acknowledgeExplicitFootSide: (side) =>
         set({
             footSideExplicitlyChosen: true,
-            elementPlacementFoot: side,
+            importSideChoice: side,
+            elementPlacementFoot: side === "pair" ? "both" : side,
         }),
     setStep: (step) => {
         const sticky = applyScanStickyReason(step);

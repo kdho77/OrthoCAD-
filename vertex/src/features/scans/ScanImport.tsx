@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
+import { setSharedFootSide, useImportSideChoice } from "@/lib/clinical/active-foot-side";
 import { ArchFitError } from "@/lib/geometry/fit-arch-from-scan";
 import { importScanFile } from "@/lib/geometry/import";
 import { analyzeManifold } from "@/lib/geometry/manifold";
@@ -45,6 +46,7 @@ import {
 import { type SuggestedScanLandmarks, suggestScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { cn } from "@/lib/utils";
+import type { ImportSideChoice } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import {
     getScanRegistrationMatrix,
@@ -53,8 +55,6 @@ import {
     useScanStore,
 } from "@/stores/scan-store";
 import { SIDE_LABELS, type Side } from "@/types";
-
-type ImportSideChoice = Side | "pair";
 
 const MARKER_LABELS = {
     M1: "M1 — 1st met head (medial)",
@@ -285,7 +285,7 @@ export function ScanImport() {
     const [sizeSuggestionByScanId, setSizeSuggestionByScanId] = useState<Record<string, SizeSuggestion>>({});
     const [sizeAcceptedByScanId, setSizeAcceptedByScanId] = useState<Record<string, boolean>>({});
     const [matchBusyId, setMatchBusyId] = useState<string | null>(null);
-    const [importSideChoice, setImportSideChoice] = useState<ImportSideChoice | null>(null);
+    const importSideChoice = useImportSideChoice();
 
     const applySizeSuggestion = (scanId: string, suggestion: SizeSuggestion) => {
         const system = sizeSystem ?? "us";
@@ -517,7 +517,7 @@ export function ScanImport() {
                         <button
                             key={choice}
                             type="button"
-                            onClick={() => setImportSideChoice(choice)}
+                            onClick={() => setSharedFootSide(choice)}
                             className={cn(
                                 "rounded px-1 py-1.5 text-[10px] capitalize",
                                 importSideChoice === choice

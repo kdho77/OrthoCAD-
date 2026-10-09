@@ -44,7 +44,7 @@ export function evaluateScanStepGate(): StepGateResult {
     if (!isFootSideExplicitlyKnown()) {
         return {
             ok: false,
-            reason: "Select Left or Right foot above before continuing (no silent default).",
+            reason: "Select Left, Right, or Pair before continuing (no silent default).",
         };
     }
 

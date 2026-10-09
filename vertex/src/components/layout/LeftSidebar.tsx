@@ -12,6 +12,7 @@ import {
     X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -22,9 +23,8 @@ import {
     selectCustomPrefab,
     uploadBaseGlb,
 } from "@/features/library/custom-library-service";
-import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
-import { ScanImport } from "@/features/scans/ScanImport";
+import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
 import {
     DEFAULT_US_MEN_SIZE,
     footLengthMmOptions,
@@ -38,9 +38,9 @@ import {
     usMenToUk,
     usShoeSizeOptions,
 } from "@/lib/geometry/shoe-size";
-import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
 import { mergePrefabLibrary, STOCK_PREFABS } from "@/lib/library/manifest";
 import { cn } from "@/lib/utils";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -343,7 +343,13 @@ export function LeftSidebar() {
             </Section>
 
             <Section icon={<FileBox className="h-3.5 w-3.5" />} title="Import">
-                <ScanImport />
+                <button
+                    type="button"
+                    onClick={() => useClinicalWorkflowStore.getState().setStep("scan")}
+                    className="w-full rounded-md border border-dashed border-border bg-background px-2 py-2 text-left text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground"
+                >
+                    Import scans in the Scan step →
+                </button>
             </Section>
 
             <SaveCustomDialog
