@@ -585,10 +585,13 @@ describe("S1 parametric wall", () => {
             rebuilt.dispose();
         }
         writeFileSync("/tmp/s1-smoke.json", JSON.stringify(results, null, 2));
-        if (smokeBreakdowns.length) {
-            throw new Error(`[S1-SMOKE] nonzero SI. STOP.\n${smokeBreakdowns.join("\n\n")}`);
+        if (smokeBreakdowns.length || smokeMiss.length) {
+            throw new Error(
+                `[S1-SMOKE] nonzero. STOP.\n` +
+                    (smokeMiss.length ? `misses: ${smokeMiss.join("; ")}\n` : "") +
+                    smokeBreakdowns.join("\n\n"),
+            );
         }
-        if (smokeMiss.length) throw new Error(`[S1-SMOKE] ${smokeMiss.join("; ")}`);
         original.dispose();
     }, 240_000);
 
