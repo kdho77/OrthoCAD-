@@ -17,6 +17,7 @@ import {
     snapToStep,
     type WallRegionDefaults,
 } from "./defaults";
+import { densifyHeelForefootStations } from "./densify-stations";
 import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
 import { buildHermiteStations } from "./loft";
@@ -329,6 +330,7 @@ export function reconstructProceduralWalls(
     }));
     pairing.plantar = outlineZ;
 
+    const originalTopCount = topPos.length / 3;
     const stations = buildHermiteStations(pairing.plantar, pairing.top, model.bounds);
     for (let i = 0; i < stations.length; i++) {
         const nn = pairing.normals[i];
@@ -336,10 +338,16 @@ export function reconstructProceduralWalls(
         stations[i]!.outline = outlineZ[i]!;
         stations[i]!.rim = pairing.top[i]!;
     }
+    densifyHeelForefootStations(stations, rimLocal, positions, indices, outlineLoop, model.bounds);
+    const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
+        x: positions[i * 3]!,
+        y: positions[i * 3 + 1]!,
+        z: positions[i * 3 + 2]!,
+    }));
 
     const junctions = rimJunctions(
-        topPos,
-        topIdx,
+        positions,
+        indices,
         rimLocal,
         stations.map((s) => s.n),
     );
@@ -353,7 +361,7 @@ export function reconstructProceduralWalls(
         stations,
         junctions,
         defaults,
-        rimLoop: rimPts,
+        rimLoop: rimPtsLive,
         dish,
         plantarField: model.outline.plantarZ,
         zDelta: zDeltaG,
@@ -406,13 +414,16 @@ export function reconstructProceduralWalls(
         stockId: model.id,
         loftN: nS,
         pairingMethod: pairing.method ?? "harmonic",
-        junctionRewrite: "bezier",
+        junctionRewrite: "planar-bezier",
         planReversals: grid.planReversals,
         maxFrameAngleDeg: grid.maxFrameAngleDeg,
+        maxOffPlaneMm: grid.maxOffPlaneMm,
         wallFrames: grid.frames.map((f) => ({
             u: f.u,
             overhangMm: f.overhangMm,
             heightMm: f.heightMm,
+            sheetSlopeDeg: (f.sheetSlopeRad * 180) / Math.PI,
+            t0TiltDeg: (f.t0TiltRad * 180) / Math.PI,
         })),
         zeroAreaFaces: hygiene.zeroArea,
         duplicateFaces: hygiene.duplicates,
@@ -431,7 +442,8 @@ export function reconstructProceduralWalls(
         floodFaceCount: model.outline.floodFaceCount,
         floodZSpanMm: model.outline.floodZSpanMm,
         interiorFaceCount: model.outline.interiorFaceCount,
-        topVertexCount: topPos.length / 3,
+        topVertexCount: generatedStart,
+        originalTopVertexCount: originalTopCount,
         plantarVertexCount: 0,
         stitchVertexCount: nS,
         stationCount: nS,

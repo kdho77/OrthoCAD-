@@ -5,11 +5,12 @@ import { describe, expect, test } from "@rstest/core";
 import {
     BEZIER_HANDLE_FRAC,
     buildBezierColumns,
+    COLUMN_PLANARITY_LIMIT_MM,
     evalCubicBezier,
-    FRAME_ANGLE_LIMIT_DEG,
     HANDLE_CHORD_CAP,
     initColumnFrames,
     MERGE_ROW_MM,
+    offPlaneMm,
     rimOverhangMm,
     sampleByArcLength,
     summarizeWallBands,
@@ -118,12 +119,13 @@ describe("bezier column", () => {
         const junctions = stations.map(() => ({ planeN: { x: 0, y: 0, z: 1 }, slopeRad: 0.15 }));
         const rimLoop = stations.map((s) => s.rim);
         const built = buildBezierColumns(stations, junctions, defaults(), rimLoop, () => 12, 14);
-        expect(built.maxFrameAngleDeg).toBeLessThanOrEqual(FRAME_ANGLE_LIMIT_DEG + 1e-3);
         expect(built.planReversals).toBe(0);
+        expect(built.maxOffPlaneMm).toBeLessThanOrEqual(COLUMN_PLANARITY_LIMIT_MM);
         for (let i = 0; i < n; i++) {
             const col = built.xyz[i]!;
             const R = stations[i]!.rim;
             const B = stations[i]!.outline;
+            const fr = built.frames[i]!;
             expect(col[0]!.x).toBeCloseTo(R.x, 9);
             expect(col[0]!.y).toBeCloseTo(R.y, 9);
             expect(col[0]!.z).toBeCloseTo(R.z, 9);
@@ -131,6 +133,9 @@ describe("bezier column", () => {
             expect(last.x).toBeCloseTo(B.x, 9);
             expect(last.y).toBeCloseTo(B.y, 9);
             expect(last.z).toBeCloseTo(B.z, 9);
+            for (const p of col) {
+                expect(offPlaneMm(p, fr.R, fr.h)).toBeLessThanOrEqual(COLUMN_PLANARITY_LIMIT_MM);
+            }
         }
     });
 

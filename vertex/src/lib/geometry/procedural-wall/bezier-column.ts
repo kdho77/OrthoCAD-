@@ -3,12 +3,7 @@
 
 import type { PolyPoint } from "./curves";
 import { blendedFlareDeg, type WallRegionDefaults } from "./defaults";
-import {
-    FILLET_MAX_HEIGHT_FRAC,
-    filletImpliedSeamDeg,
-    MIN_FILLET_RING_SPACING_MM,
-    MIN_FILLET_RINGS,
-} from "./hermite";
+import { FILLET_MAX_HEIGHT_FRAC, filletImpliedSeamDeg, MIN_FILLET_RINGS } from "./hermite";
 import { countColumnPlanReversals, type HermiteStation, MIN_REAL_BOTTOM_FILLET_MM } from "./loft";
 import { smoothAndCapFlare } from "./stations";
 
@@ -23,6 +18,9 @@ export const BEZIER_HANDLE_FRAC = 0.35;
 export const HANDLE_CHORD_CAP = 0.5;
 export const MERGE_ROW_MM = 0.3;
 export const TOP_CLEARANCE_DEG = 5;
+export const SHORT_CHORD_MM = 0.5;
+export const COLUMN_PLANARITY_LIMIT_MM = 0.01;
+export const OUTLINE_STATION_SPACING_MM = 1.5;
 
 export interface XYZ {
     x: number;
@@ -34,12 +32,20 @@ export interface ColumnFrame {
     R: PolyPoint;
     B: PolyPoint;
     F: PolyPoint;
+    h: { x: number; y: number };
     T0: XYZ;
     U: XYZ;
     a: number;
     b: number;
+    /** T0 tilt from horizontal (rad). Negative is down. */
+    t0TiltRad: number;
+    /** U tilt from vertical toward −h (rad). */
+    uTiltRad: number;
+    /** TopSheet in-plane slope along +h (rad). */
+    sheetSlopeRad: number;
     rFillet: number;
     u: number;
+    shortChord: boolean;
     /** Rim plan offset beyond the outline (mm). Positive = overhang. */
     overhangMm: number;
     heightMm: number;
@@ -50,6 +56,7 @@ export interface BezierColumns {
     impliedSeamDeg: number[];
     planReversals: number;
     maxFrameAngleDeg: number;
+    maxOffPlaneMm: number;
     frames: ColumnFrame[];
     flareDeg: number[];
     flareCapReport: ReturnType<typeof smoothAndCapFlare>["report"];
@@ -70,12 +77,6 @@ function add3(a: XYZ, b: XYZ, s = 1): XYZ {
 
 function dist3(a: XYZ, b: XYZ): number {
     return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
-}
-
-function angleDeg(a: XYZ, b: XYZ): number {
-    const ua = unit3(a);
-    const ub = unit3(b);
-    return (Math.acos(Math.max(-1, Math.min(1, ua.x * ub.x + ua.y * ub.y + ua.z * ub.z))) * 180) / Math.PI;
 }
 
 function pointInPolyXY(x: number, y: number, poly: PolyPoint[]): boolean {
@@ -123,19 +124,34 @@ export function evalCubicBezier(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, t: number): 
     };
 }
 
-function rotateDown(outward: { x: number; y: number }, tiltRad: number): XYZ {
+/** In-plane T0: +h in plan, tilt from horizontal (negative = down). */
+function t0FromTilt(h: { x: number; y: number }, tiltRad: number): XYZ {
     const c = Math.cos(tiltRad);
     const s = Math.sin(tiltRad);
-    return unit3({ x: outward.x * c, y: outward.y * c, z: -s });
+    return unit3({ x: h.x * c, y: h.y * c, z: s });
 }
 
-function tiltT0Down(T0: XYZ, extraDeg: number): XYZ {
-    const horiz = Math.hypot(T0.x, T0.y);
-    const cur = Math.atan2(-T0.z, Math.max(horiz, 1e-9));
-    const next = Math.min(Math.PI * 0.48, cur + (extraDeg * Math.PI) / 180);
-    const ox = horiz > 1e-9 ? T0.x / horiz : 1;
-    const oy = horiz > 1e-9 ? T0.y / horiz : 0;
-    return rotateDown({ x: ox, y: oy }, next);
+/** In-plane U: up, tilted toward −h (toward R) by flare. */
+function uFromTilt(h: { x: number; y: number }, flareRad: number): XYZ {
+    const s = Math.sin(Math.abs(flareRad));
+    const c = Math.cos(Math.abs(flareRad));
+    return unit3({ x: -h.x * s, y: -h.y * s, z: c });
+}
+
+function applyTilts(fr: ColumnFrame): void {
+    fr.T0 = t0FromTilt(fr.h, fr.t0TiltRad);
+    fr.U = uFromTilt(fr.h, fr.uTiltRad);
+}
+
+function projectToPlane(p: XYZ, R: XYZ, h: { x: number; y: number }): XYZ {
+    const nx = -h.y;
+    const ny = h.x;
+    const d = (p.x - R.x) * nx + (p.y - R.y) * ny;
+    return { x: p.x - d * nx, y: p.y - d * ny, z: p.z };
+}
+
+export function offPlaneMm(p: XYZ, R: XYZ, h: { x: number; y: number }): number {
+    return Math.abs((p.x - R.x) * -h.y + (p.y - R.y) * h.x);
 }
 
 function belowPlane(p: XYZ, rim: XYZ, plane: XYZ, eps = 1e-3): boolean {
@@ -233,19 +249,26 @@ function planMonotone(pts: XYZ[], R: XYZ, B: XYZ): boolean {
 }
 
 function columnPoints(fr: ColumnFrame, nWall: number): XYZ[] {
+    applyTilts(fr);
     const P0 = fr.R;
     const P3 = fr.F;
     const P1 = add3(P0, fr.T0, fr.a);
     const P2 = add3(P3, fr.U, fr.b);
     const dense: XYZ[] = [];
-    for (let k = 0; k <= 32; k++) dense.push(evalCubicBezier(P0, P1, P2, P3, k / 32));
+    for (let k = 0; k <= 32; k++) {
+        dense.push(projectToPlane(evalCubicBezier(P0, P1, P2, P3, k / 32), fr.R, fr.h));
+    }
     const nFil = MIN_FILLET_RINGS;
     const nBez = Math.max(4, nWall - 2 - nFil);
     const bez = sampleByArcLength(dense, nBez + 1);
-    const fil = sampleFilletFB(fr.F, fr.B, nFil);
+    const fil = sampleFilletFB(fr.F, fr.B, nFil).map((p) => projectToPlane(p, fr.R, fr.h));
     const col = [...bez, ...fil, { ...fr.B }];
-    if (col.length === nWall) return col;
-    return sampleByArcLength(col, nWall);
+    const raw = col.length === nWall ? col : sampleByArcLength(col, nWall);
+    return raw.map((p, i) => {
+        if (i === 0) return { ...fr.R };
+        if (i === raw.length - 1) return { ...fr.B };
+        return projectToPlane(p, fr.R, fr.h);
+    });
 }
 
 function smoothScalars(vals: number[], passes: number): number[] {
@@ -257,131 +280,137 @@ function smoothScalars(vals: number[], passes: number): number[] {
     return cur;
 }
 
-function smoothUnits(vs: XYZ[], passes: number): XYZ[] {
-    let cur = vs.map((v) => unit3(v));
-    const n = cur.length;
-    for (let p = 0; p < passes; p++) {
-        cur = cur.map((v, i) =>
-            unit3({
-                x: v.x * 0.5 + (cur[(i + n - 1) % n]!.x + cur[(i + 1) % n]!.x) * 0.25,
-                y: v.y * 0.5 + (cur[(i + n - 1) % n]!.y + cur[(i + 1) % n]!.y) * 0.25,
-                z: v.z * 0.5 + (cur[(i + n - 1) % n]!.z + cur[(i + 1) % n]!.z) * 0.25,
-            }),
-        );
+function walkTopZ(
+    R: XYZ,
+    dir: { x: number; y: number },
+    topZ: (x: number, y: number) => number | null,
+): Array<{ s: number; z: number }> {
+    const step = 0.35;
+    const out: Array<{ s: number; z: number }> = [];
+    for (let k = 1; k <= 10; k++) {
+        const s = step * k;
+        const z = topZ(R.x + dir.x * s, R.y + dir.y * s);
+        if (z == null) break;
+        out.push({ s, z });
     }
-    for (let i = 0; i < n; i++) {
-        const j = (i + 1) % n;
-        if (angleDeg(cur[i]!, cur[j]!) <= FRAME_ANGLE_LIMIT_DEG) continue;
-        const m = unit3(add3(cur[i]!, cur[j]!));
-        cur[i] = unit3(add3(cur[i]!, m));
-        cur[j] = unit3(add3(cur[j]!, m));
-    }
-    return cur.map(unit3);
+    return out;
 }
 
-function clampAdjacentAngles(vs: XYZ[], preferDown: boolean): XYZ[] {
-    const cur = vs.map(unit3);
-    const n = cur.length;
-    for (let pass = 0; pass < 20; pass++) {
-        let dirty = false;
-        for (let i = 0; i < n; i++) {
-            const j = (i + 1) % n;
-            if (angleDeg(cur[i]!, cur[j]!) <= FRAME_ANGLE_LIMIT_DEG) continue;
-            dirty = true;
-            const m = unit3(add3(cur[i]!, cur[j]!));
-            cur[i] = unit3(add3(cur[i]!, m));
-            cur[j] = unit3(add3(cur[j]!, m));
-        }
-        if (!dirty) break;
+/**
+ * TopSheet in-plane slope along +h. Samples ±h and uses the exit side:
+ * the direction that leaves the sheet. Slope is expressed as dz/ds along +h
+ * (toward B) so T0 can travel in-plane toward the outline.
+ */
+export function sampleInPlaneSlope(
+    R: XYZ,
+    h: { x: number; y: number },
+    topZ: (x: number, y: number) => number | null,
+): number {
+    const zR = topZ(R.x, R.y) ?? R.z;
+    const plus = walkTopZ(R, h, topZ);
+    const minus = walkTopZ(R, { x: -h.x, y: -h.y }, topZ);
+    if (plus.length === 0 && minus.length === 0) return 0;
+    const exitIsPlus = plus.length <= minus.length;
+    if (exitIsPlus && minus.length > 0) {
+        const p = minus[Math.min(2, minus.length - 1)]!;
+        return Math.atan((zR - p.z) / Math.max(p.s, 1e-6));
     }
-    return cur.map((v) => {
-        if (preferDown && v.z > 0) return unit3({ x: v.x, y: v.y, z: -Math.abs(v.z) });
-        if (!preferDown && v.z < 0) return unit3({ x: v.x, y: v.y, z: Math.abs(v.z) });
-        return unit3(v);
-    });
+    if (!exitIsPlus && plus.length > 0) {
+        const p = plus[Math.min(2, plus.length - 1)]!;
+        return Math.atan((p.z - zR) / Math.max(p.s, 1e-6));
+    }
+    if (plus.length > 0) {
+        const p = plus[0]!;
+        return Math.atan((p.z - zR) / Math.max(p.s, 1e-6));
+    }
+    const p = minus[0]!;
+    return Math.atan((zR - p.z) / Math.max(p.s, 1e-6));
 }
 
-function maxAdjacentAngle(vs: XYZ[]): number {
-    let max = 0;
-    for (let i = 0; i < vs.length; i++) {
-        max = Math.max(max, angleDeg(vs[i]!, vs[(i + 1) % vs.length]!));
+function columnHeading(st: HermiteStation): {
+    h: { x: number; y: number };
+    shortChord: boolean;
+    planLen: number;
+} {
+    const dx = st.outline.x - st.rim.x;
+    const dy = st.outline.y - st.rim.y;
+    const planLen = Math.hypot(dx, dy);
+    if (planLen < SHORT_CHORD_MM) {
+        const nx = st.n.x;
+        const ny = st.n.y;
+        const nl = Math.hypot(nx, ny) || 1;
+        return { h: { x: nx / nl, y: ny / nl }, shortChord: true, planLen };
     }
-    return max;
+    return { h: { x: dx / planLen, y: dy / planLen }, shortChord: false, planLen };
 }
 
 export function initColumnFrames(
     stations: HermiteStation[],
-    junctions: ColumnJunction[],
+    _junctions: ColumnJunction[],
     defaults: WallRegionDefaults,
     flareDeg: number[],
+    topZ: (x: number, y: number) => number | null = () => null,
 ): ColumnFrame[] {
     const outline = stations.map((s) => s.outline);
+    const clear = (TOP_CLEARANCE_DEG * Math.PI) / 180;
     return stations.map((st, i) => {
         const R = { ...st.rim };
         const B = { ...st.outline };
+        const { h, shortChord } = columnHeading(st);
         const height = Math.max(R.z - B.z, 0.5);
         const rFillet = Math.min(
             FILLET_MAX_HEIGHT_FRAC * height,
             Math.max(defaults.wallFilletBottomMm, MIN_REAL_BOTTOM_FILLET_MM),
         );
-        const toR = { x: R.x - B.x, y: R.y - B.y };
-        const toRLen = Math.hypot(toR.x, toR.y);
-        const tx = toRLen > 1e-6 ? toR.x / toRLen : -(st.n.x || 1);
-        const ty = toRLen > 1e-6 ? toR.y / toRLen : -(st.n.y || 0);
-        const r = Math.min(rFillet, Math.max(0.4, toRLen * 0.35));
-        const F = { x: B.x + tx * r, y: B.y + ty * r, z: B.z + r };
-        const junct = junctions[i]!;
-        const tilt = Math.max(junct.slopeRad + (TOP_CLEARANCE_DEG * Math.PI) / 180, (5 * Math.PI) / 180);
-        const T0 = rotateDown(st.n, tilt);
+        const toRLen = Math.hypot(R.x - B.x, R.y - B.y);
+        const r = shortChord ? Math.min(rFillet, 0.4) : Math.min(rFillet, Math.max(0.4, toRLen * 0.35));
+        const F = shortChord
+            ? { x: B.x, y: B.y, z: B.z + r }
+            : { x: B.x - h.x * r, y: B.y - h.y * r, z: B.z + r };
+        const sheetSlopeRad = sampleInPlaneSlope(R, h, topZ);
+        const t0TiltRad = shortChord ? -Math.PI / 2 + clear : Math.min(sheetSlopeRad - clear, -clear);
         const flare = ((flareDeg[i] ?? 0) * Math.PI) / 180;
-        const U = unit3({
-            x: tx * Math.sin(Math.abs(flare)),
-            y: ty * Math.sin(Math.abs(flare)),
-            z: Math.cos(Math.abs(flare)),
-        });
         const rf = dist3(R, F);
         const handle = Math.min(BEZIER_HANDLE_FRAC * rf, HANDLE_CHORD_CAP * rf);
-        return {
+        const fr: ColumnFrame = {
             R,
             B,
             F,
-            T0,
-            U: U.z < 0 ? { x: U.x, y: U.y, z: -U.z } : U,
+            h,
+            T0: t0FromTilt(h, t0TiltRad),
+            U: uFromTilt(h, flare),
             a: handle,
             b: handle,
+            t0TiltRad,
+            uTiltRad: flare,
+            sheetSlopeRad,
             rFillet: r,
             u: st.u,
+            shortChord,
             overhangMm: rimOverhangMm(R, outline),
             heightMm: height,
         };
+        return fr;
     });
 }
 
-/** Keep P2 from going outboard of R along R→B (plan). */
 function clampHandleInboard(fr: ColumnFrame): void {
     const dx = fr.B.x - fr.R.x;
     const dy = fr.B.y - fr.R.y;
     const den = fr.U.x * dx + fr.U.y * dy;
     if (den >= -1e-9) return;
     const num = (fr.F.x - fr.R.x) * dx + (fr.F.y - fr.R.y) * dy;
-    const maxB = Math.max(0, -num / den);
-    fr.b = Math.min(fr.b, maxB);
+    fr.b = Math.min(fr.b, Math.max(0, -num / den));
 }
 
 function applySmooth(frames: ColumnFrame[], passes: number): void {
-    const T0 = clampAdjacentAngles(
-        smoothUnits(
-            frames.map((f) => f.T0),
-            passes,
-        ),
-        true,
+    const t0 = smoothScalars(
+        frames.map((f) => f.t0TiltRad),
+        passes,
     );
-    const U = clampAdjacentAngles(
-        smoothUnits(
-            frames.map((f) => f.U),
-            passes,
-        ),
-        false,
+    const ut = smoothScalars(
+        frames.map((f) => f.uTiltRad),
+        passes,
     );
     const a = smoothScalars(
         frames.map((f) => f.a),
@@ -391,13 +420,16 @@ function applySmooth(frames: ColumnFrame[], passes: number): void {
         frames.map((f) => f.b),
         passes,
     );
+    const clear = (TOP_CLEARANCE_DEG * Math.PI) / 180;
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
-        fr.T0 = T0[i]!.z > 0 ? tiltT0Down(T0[i]!, 8) : unit3(T0[i]!);
-        fr.U = U[i]!.z < 0 ? unit3({ x: U[i]!.x, y: U[i]!.y, z: Math.abs(U[i]!.z) }) : unit3(U[i]!);
+        const floor = fr.shortChord ? -Math.PI / 2 + clear : Math.min(fr.sheetSlopeRad - clear, -clear);
+        fr.t0TiltRad = Math.min(t0[i]!, floor);
+        fr.uTiltRad = ut[i]!;
         const cap = HANDLE_CHORD_CAP * dist3(fr.R, fr.F);
         fr.a = Math.min(cap, Math.max(0, a[i]!));
         fr.b = Math.min(cap, Math.max(0, b[i]!));
+        applyTilts(fr);
         clampHandleInboard(fr);
     }
 }
@@ -413,6 +445,7 @@ function guardFrames(
         let dirty = false;
         for (let i = 0; i < frames.length; i++) {
             const fr = frames[i]!;
+            applyTilts(fr);
             const pts = columnPoints(fr, nWall);
             if (!planMonotone(pts, fr.R, fr.B)) {
                 fr.a = Math.max(0, fr.a * 0.7);
@@ -429,7 +462,8 @@ function guardFrames(
                 }
             }
             if (inside) {
-                fr.T0 = tiltT0Down(fr.T0, 3);
+                fr.t0TiltRad = Math.max(-Math.PI * 0.48, fr.t0TiltRad - (3 * Math.PI) / 180);
+                applyTilts(fr);
                 dirty = true;
             }
         }
@@ -439,7 +473,8 @@ function guardFrames(
 }
 
 /**
- * Pairing-outward Bezier columns R→F plus fillet F→B. R and B never move.
+ * Planar Bezier columns: each station stays in the vertical plane through R and B.
+ * R and B never move. Vector-frame smoothing is not used.
  */
 export function buildBezierColumns(
     stations: HermiteStation[],
@@ -454,24 +489,13 @@ export function buildBezierColumns(
         stations.map((s) => s.outline),
         regionDefault,
     );
-    const frames = initColumnFrames(stations, junctions, defaults, flare);
+    const frames = initColumnFrames(stations, junctions, defaults, flare, topZ);
     applySmooth(frames, FRAME_SMOOTH_ITERS);
     guardFrames(frames, junctions, rimLoop, topZ, nWall);
-    const T0 = clampAdjacentAngles(
-        frames.map((f) => f.T0),
-        true,
-    );
-    const U = clampAdjacentAngles(
-        frames.map((f) => f.U),
-        false,
-    );
-    for (let i = 0; i < frames.length; i++) {
-        frames[i]!.T0 = T0[i]!;
-        frames[i]!.U = U[i]!;
-    }
     for (let round = 0; round < 20; round++) {
         let dirty = false;
         for (const fr of frames) {
+            applyTilts(fr);
             if (planMonotone(columnPoints(fr, nWall), fr.R, fr.B)) continue;
             fr.a = Math.max(0, fr.a * 0.5);
             fr.b = Math.max(0, fr.b * 0.5);
@@ -482,11 +506,15 @@ export function buildBezierColumns(
     }
     const xyz: PolyPoint[][] = [];
     const implied: number[] = [];
+    let maxOff = 0;
+    let maxTiltStep = 0;
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
+        applyTilts(fr);
         const col = columnPoints(fr, nWall);
         col[0] = { ...fr.R };
         col[col.length - 1] = { ...fr.B };
+        for (const p of col) maxOff = Math.max(maxOff, offPlaneMm(p, fr.R, fr.h));
         xyz.push(col);
         const first = col[1] ?? fr.F;
         implied.push(
@@ -495,15 +523,15 @@ export function buildBezierColumns(
                 { n: Math.hypot(first.x - fr.R.x, first.y - fr.R.y), z: first.z - fr.R.z },
             ),
         );
+        const nxt = frames[(i + 1) % frames.length]!;
+        maxTiltStep = Math.max(maxTiltStep, (Math.abs(nxt.t0TiltRad - fr.t0TiltRad) * 180) / Math.PI);
     }
     return {
         xyz,
         impliedSeamDeg: implied,
         planReversals: countColumnPlanReversals(xyz),
-        maxFrameAngleDeg: Math.max(
-            maxAdjacentAngle(frames.map((f) => f.T0)),
-            maxAdjacentAngle(frames.map((f) => f.U)),
-        ),
+        maxFrameAngleDeg: maxTiltStep,
+        maxOffPlaneMm: maxOff,
         frames,
         flareDeg: flare,
         flareCapReport: report,

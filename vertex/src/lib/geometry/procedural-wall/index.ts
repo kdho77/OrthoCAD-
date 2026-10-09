@@ -3,14 +3,18 @@
 
 export {
     BEZIER_HANDLE_FRAC,
+    COLUMN_PLANARITY_LIMIT_MM,
     type ColumnFrame,
     evalCubicBezier,
     FRAME_ANGLE_LIMIT_DEG,
     FRAME_SMOOTH_ITERS,
     HANDLE_CHORD_CAP,
     MERGE_ROW_MM,
+    OUTLINE_STATION_SPACING_MM,
+    offPlaneMm,
     rimOverhangMm,
     sampleByArcLength,
+    sampleInPlaneSlope,
     summarizeWallBands,
     U_BANDS,
     type WallBandRow,

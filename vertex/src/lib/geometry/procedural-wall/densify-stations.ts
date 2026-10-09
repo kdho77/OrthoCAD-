@@ -1,0 +1,124 @@
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
+import { OUTLINE_STATION_SPACING_MM } from "./bezier-column";
+import type { PolyPoint } from "./curves";
+import type { HermiteStation } from "./loft";
+
+const HEEL_U_MAX = 0.22;
+const FORE_U_MIN = 0.78;
+
+function inDenseBand(ua: number, ub: number): boolean {
+    const heel = ua <= HEEL_U_MAX && ub <= HEEL_U_MAX;
+    const fore = ua >= FORE_U_MIN && ub >= FORE_U_MIN;
+    return heel || fore;
+}
+
+function nearestOnLoop(origin: PolyPoint, loop: PolyPoint[]): PolyPoint {
+    let best = loop[0] ?? { x: origin.x, y: origin.y, z: origin.z };
+    let bestD = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const len2 = ex * ex + ey * ey;
+        const t =
+            len2 > 1e-12
+                ? Math.max(0, Math.min(1, ((origin.x - a.x) * ex + (origin.y - a.y) * ey) / len2))
+                : 0;
+        const x = a.x + ex * t;
+        const y = a.y + ey * t;
+        const d = (x - origin.x) ** 2 + (y - origin.y) ** 2;
+        if (d < bestD) {
+            bestD = d;
+            best = { x, y, z: a.z + (b.z - a.z) * t };
+        }
+    }
+    return best;
+}
+
+function splitEdge(indices: number[], a: number, b: number, m: number): void {
+    const out: number[] = [];
+    for (let t = 0; t < indices.length; t += 3) {
+        const i0 = indices[t]!;
+        const i1 = indices[t + 1]!;
+        const i2 = indices[t + 2]!;
+        const e01 = (i0 === a && i1 === b) || (i0 === b && i1 === a);
+        const e12 = (i1 === a && i2 === b) || (i1 === b && i2 === a);
+        const e20 = (i2 === a && i0 === b) || (i2 === b && i0 === a);
+        if (e01) {
+            out.push(i0, m, i2, m, i1, i2);
+        } else if (e12) {
+            out.push(i0, i1, m, i0, m, i2);
+        } else if (e20) {
+            out.push(i0, i1, m, m, i1, i2);
+        } else {
+            out.push(i0, i1, i2);
+        }
+    }
+    indices.length = 0;
+    indices.push(...out);
+}
+
+/**
+ * Insert stations so heel-posterior and forefoot outline spacing is ≤ 1.5 mm.
+ * New rim points lie on existing TopSheet rim edges (original verts stay put).
+ */
+export function densifyHeelForefootStations(
+    stations: HermiteStation[],
+    rimLocal: number[],
+    positions: number[],
+    indices: number[],
+    outlineLoop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+): void {
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const outSt: HermiteStation[] = [];
+    const outRim: number[] = [];
+    const n = stations.length;
+    for (let i = 0; i < n; i++) {
+        const cur = stations[i]!;
+        outSt.push(cur);
+        outRim.push(rimLocal[i]!);
+        const nxt = stations[(i + 1) % n]!;
+        if (!inDenseBand(cur.u, nxt.u)) continue;
+        const dist = Math.hypot(nxt.outline.x - cur.outline.x, nxt.outline.y - cur.outline.y);
+        if (dist <= OUTLINE_STATION_SPACING_MM) continue;
+        const nAdd = Math.ceil(dist / OUTLINE_STATION_SPACING_MM) - 1;
+        let prevRim = rimLocal[i]!;
+        const endRim = rimLocal[(i + 1) % n]!;
+        for (let k = 1; k <= nAdd; k++) {
+            const t = k / (nAdd + 1);
+            const R = {
+                x: cur.rim.x + (nxt.rim.x - cur.rim.x) * t,
+                y: cur.rim.y + (nxt.rim.y - cur.rim.y) * t,
+                z: cur.rim.z + (nxt.rim.z - cur.rim.z) * t,
+            };
+            const chord = {
+                x: cur.outline.x + (nxt.outline.x - cur.outline.x) * t,
+                y: cur.outline.y + (nxt.outline.y - cur.outline.y) * t,
+                z: cur.outline.z + (nxt.outline.z - cur.outline.z) * t,
+            };
+            const B = nearestOnLoop(chord, outlineLoop);
+            const nx = cur.n.x + (nxt.n.x - cur.n.x) * t;
+            const ny = cur.n.y + (nxt.n.y - cur.n.y) * t;
+            const nl = Math.hypot(nx, ny) || 1;
+            const mid = positions.length / 3;
+            positions.push(R.x, R.y, R.z);
+            splitEdge(indices, prevRim, endRim, mid);
+            prevRim = mid;
+            outSt.push({
+                outline: B,
+                rim: R,
+                n: { x: nx / nl, y: ny / nl },
+                u: Math.max(0, Math.min(1, (B.x - bounds.minX) / length)),
+            });
+            outRim.push(mid);
+        }
+    }
+    stations.length = 0;
+    stations.push(...outSt);
+    rimLocal.length = 0;
+    rimLocal.push(...outRim);
+}

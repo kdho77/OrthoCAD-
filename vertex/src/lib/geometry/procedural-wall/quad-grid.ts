@@ -30,6 +30,7 @@ export interface QuadGrid {
     flareCapReport?: FlareCapReport;
     planReversals: number;
     maxFrameAngleDeg: number;
+    maxOffPlaneMm: number;
     frames: ColumnFrame[];
     chordCrossings: number;
     /** Max tilt (deg from horizontal) of the first plantar ring off BottomOutline. */
@@ -331,6 +332,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         flareCapReport: report,
         planReversals,
         maxFrameAngleDeg: built.maxFrameAngleDeg,
+        maxOffPlaneMm: built.maxOffPlaneMm,
         frames: built.frames,
         chordCrossings: 0,
         bandTiltDegMax,

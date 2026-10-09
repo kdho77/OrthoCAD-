@@ -15,6 +15,7 @@ import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import {
     buildHermiteStations,
+    COLUMN_PLANARITY_LIMIT_MM,
     CUP_BOWL,
     countDegenerateFaces,
     countSelfIntersections,
@@ -26,7 +27,6 @@ import {
     FILLET_BOUNDS,
     FOLD_HARD_LIMIT_DEG,
     FOLD_WORST_LIMIT_DEG,
-    FRAME_ANGLE_LIMIT_DEG,
     foldReport,
     groundDriftMm,
     heelInnerWidthAtU,
@@ -127,8 +127,11 @@ describe("S1 parametric wall", () => {
 
             const rebuilt = reconstructProceduralWalls(model);
             const topN = (rebuilt.userData as { topVertexCount?: number }).topVertexCount ?? 0;
-            const topRecon = (rebuilt.getAttribute("position").array as Float32Array).slice(0, topN * 3);
             const topStock = model.top.meshPositions ?? new Float32Array(0);
+            const topRecon = (rebuilt.getAttribute("position").array as Float32Array).slice(
+                0,
+                topStock.length,
+            );
             const topDelta = maxVertexDeltaMm(topRecon, topStock);
             const dishDelta = dishInteriorDeltaMm(rebuilt, model);
             const outlineDev = outlineRingDeviationMm(rebuilt, model);
@@ -221,6 +224,7 @@ describe("S1 parametric wall", () => {
             const ud = rebuilt.userData as {
                 pairingMethod?: string;
                 maxFrameAngleDeg?: number;
+                maxOffPlaneMm?: number;
                 masterMinRadiusMm?: number;
                 waistMinRadiusMm?: number;
                 maxSepMm?: number;
@@ -298,6 +302,10 @@ describe("S1 parametric wall", () => {
                 misses.push(`self-intersect ${hits.real} (coplanar ${hits.coplanar}${cls ? ` ${cls}` : ""})`);
                 const topWall = hits.byClass?.["top-wall"] ?? 0;
                 if (topWall > 0) {
+                    const heelHits = heelTopWallHits(hits, model);
+                    if (heelHits > 0) {
+                        throw new Error(heelSlopeStopMessage(rebuilt, topWall, heelHits));
+                    }
                     throw new Error(
                         `[S1-TOP] top junction still has ${topWall} real hits (${cls}). HARD STOP.`,
                     );
@@ -307,9 +315,9 @@ describe("S1 parametric wall", () => {
                     throw new Error(wallWallStopMessage(hits, rebuilt, model));
                 }
             }
-            const frameAngle = (rebuilt.userData as { maxFrameAngleDeg?: number }).maxFrameAngleDeg ?? 0;
-            if (frameAngle > FRAME_ANGLE_LIMIT_DEG) {
-                misses.push(`frame-angle ${frameAngle.toFixed(2)}>${FRAME_ANGLE_LIMIT_DEG}`);
+            const offPlane = (rebuilt.userData as { maxOffPlaneMm?: number }).maxOffPlaneMm ?? 0;
+            if (offPlane > COLUMN_PLANARITY_LIMIT_MM) {
+                misses.push(`off-plane ${offPlane.toFixed(4)}>${COLUMN_PLANARITY_LIMIT_MM}`);
             }
             if (chordX !== 0 || loftChordX !== 0) {
                 misses.push(`chord-cross ${chordX}/${loftChordX}`);
@@ -379,6 +387,7 @@ describe("S1 parametric wall", () => {
                 boundaryTilt: Number(boundary.tiltDegMax.toFixed(2)),
                 pairingMethod: ud.pairingMethod ?? "harmonic",
                 maxFrameAngleDeg: Number((ud.maxFrameAngleDeg ?? 0).toFixed(3)),
+                maxOffPlaneMm: Number((ud.maxOffPlaneMm ?? 0).toFixed(4)),
                 masterMinRadiusMm: Number((ud.masterMinRadiusMm ?? 0).toFixed(2)),
                 waistMinRadiusMm: Number((ud.waistMinRadiusMm ?? 0).toFixed(2)),
                 pairingMonotonic: ud.pairingMonotonic !== false,
@@ -469,6 +478,7 @@ describe("S1 parametric wall", () => {
                 meshMinZ?: number;
                 bandTiltDegMax?: number;
                 maxFrameAngleDeg?: number;
+                maxOffPlaneMm?: number;
             };
             const chordX = sud.chordCrossings ?? -1;
             const maxSkew = sud.maxSidewaysSkewMm ?? 0;
@@ -504,18 +514,24 @@ describe("S1 parametric wall", () => {
                 smokeMiss.push(`${smoke.name} xi=${hits.real}${cls ? ` ${cls}` : ""}`);
                 const topWall = hits.byClass?.["top-wall"] ?? 0;
                 if (topWall > 0) {
+                    const heelHits = heelTopWallHits(hits, model);
+                    if (heelHits > 0) {
+                        throw new Error(
+                            `[S1-TOP] ${smoke.name}: ${heelSlopeStopMessage(rebuilt, topWall, heelHits)}`,
+                        );
+                    }
                     throw new Error(
                         `[S1-TOP] ${smoke.name}: top junction still has ${topWall} hits. HARD STOP.`,
                     );
                 }
                 const wallWall = hits.byClass?.["wall-wall"] ?? 0;
                 if (wallWall > 0) {
-                    throw new Error(`[S1-WALL] ${smoke.name}: ${wallWallStopMessage(hits, rebuilt, model)}`);
+                    smokeMiss.push(`[S1-WALL] ${smoke.name}: ${wallWallStopMessage(hits, rebuilt, model)}`);
                 }
             }
-            if ((sud.maxFrameAngleDeg ?? 0) > FRAME_ANGLE_LIMIT_DEG) {
+            if ((sud.maxOffPlaneMm ?? 0) > COLUMN_PLANARITY_LIMIT_MM) {
                 smokeMiss.push(
-                    `${smoke.name} frame-angle ${sud.maxFrameAngleDeg!.toFixed(2)}>${FRAME_ANGLE_LIMIT_DEG}`,
+                    `${smoke.name} off-plane ${sud.maxOffPlaneMm!.toFixed(4)}>${COLUMN_PLANARITY_LIMIT_MM}`,
                 );
             }
             if (chordX !== 0) smokeMiss.push(`${smoke.name} chord-cross=${chordX}`);
@@ -567,9 +583,12 @@ describe("S1 parametric wall", () => {
             sourceGeometry: raw,
             sourceField: field,
         });
-        const topN = (rebuilt.userData as { topVertexCount?: number }).topVertexCount ?? 0;
-        const reconTop = (rebuilt.getAttribute("position").array as Float32Array).slice(0, topN * 3);
-        const delta = maxVertexDeltaMm(reconTop, todayTop.meshPositions ?? new Float32Array(0));
+        const todayTopPos = todayTop.meshPositions ?? new Float32Array(0);
+        const reconTop = (rebuilt.getAttribute("position").array as Float32Array).slice(
+            0,
+            todayTopPos.length,
+        );
+        const delta = maxVertexDeltaMm(reconTop, todayTopPos);
         expect(delta).toBeLessThanOrEqual(0.01);
         today.dispose();
         rebuilt.dispose();
@@ -667,6 +686,45 @@ describe("S1 parametric wall", () => {
 
 function matchOutline(_geo: BufferGeometry, _n: number) {
     return null;
+}
+
+function heelTopWallHits(
+    hits: ReturnType<typeof countSelfIntersections>,
+    model: ReturnType<typeof extractStockWallModel>,
+): number {
+    const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+    return (hits.topWallHitCentroids ?? []).filter((c) => {
+        const u = Math.max(0, Math.min(1, (c.x - model.bounds.minX) / length));
+        return u < 0.22;
+    }).length;
+}
+
+function heelSlopeStopMessage(rebuilt: BufferGeometry, topWall: number, heelHits: number): string {
+    const frames =
+        (
+            rebuilt.userData as {
+                wallFrames?: Array<{
+                    u: number;
+                    sheetSlopeDeg?: number;
+                    t0TiltDeg?: number;
+                    overhangMm: number;
+                    heightMm: number;
+                }>;
+            }
+        ).wallFrames ?? [];
+    const heel = frames
+        .filter((f) => f.u < 0.22)
+        .map((f) => ({
+            u: Number(f.u.toFixed(3)),
+            sheetSlopeDeg: Number((f.sheetSlopeDeg ?? 0).toFixed(2)),
+            t0TiltDeg: Number((f.t0TiltDeg ?? 0).toFixed(2)),
+            overhangMm: Number(f.overhangMm.toFixed(2)),
+            heightMm: Number(f.heightMm.toFixed(2)),
+        }));
+    return (
+        `[S1-TOP] heel top-wall hits remain (${heelHits} of ${topWall} top-wall). STOP.\n` +
+        JSON.stringify({ heelStations: heel }, null, 2)
+    );
 }
 
 function wallWallStopMessage(
