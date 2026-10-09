@@ -237,8 +237,8 @@ describe("bezier column", () => {
         expect(rows.find((r) => r.band === "heel")?.meanOverhangOverHeight).toBeCloseTo(0.2, 6);
     });
 
-    test("fillet radius smooths at most 5% per station", () => {
-        expect(R_SMOOTH_FRAC).toBe(0.05);
+    test("fillet radius smooths at most 10% per station", () => {
+        expect(R_SMOOTH_FRAC).toBe(0.1);
     });
 
     test("circular fillet F is r inward and r up when the plantar is flat", () => {

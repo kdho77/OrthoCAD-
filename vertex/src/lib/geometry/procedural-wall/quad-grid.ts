@@ -2,13 +2,9 @@
 // See LICENSE file in the project root for full license information.
 
 import {
-    applyPlantarBandZ,
-    BAND_INSET_MIN_MM,
     buildBezierColumns,
     type ColumnFrame,
-    estimateBandInsetMm,
     FILLET_R_CAP_MM,
-    filletCenterAndF,
     type MinWallClamp,
     SHORT_CHORD_MM,
     TOP_CLEARANCE_DEG as T0_CLEARANCE_DEG,
@@ -30,11 +26,18 @@ import { segIntersect } from "./outline-clean";
 import {
     buildGeneratedPlantar,
     type GeneratedPlantar,
+    makePlantarSampler,
     PLANTAR_MARGIN_MM,
-    samplePlantarSlopeAlongMinusH,
+    type PlantarSampler,
 } from "./plantar-cdt";
 import type { FlareCapReport } from "./stations";
 import { S1_MIN_WALL_MM, type UvHeightField } from "./types";
+
+export const BAND_ROWS = 3;
+export const BAND_INSET_FLOOR_MM = 1.5;
+export const I_CLEARANCE_MM = 1.0;
+export const I_MIN_EDGE_MM = 0.3;
+export const I_SMOOTH_FRAC = 0.1;
 
 export const PLANTAR_RINGS = 0;
 export const WALL_MID_ROWS = 8;
@@ -50,6 +53,9 @@ export interface QuadGrid {
     body: Float32Array;
     plantar: GeneratedPlantar;
     outlineRow: number;
+    innerRow: number;
+    innerRing: PolyPoint[];
+    fieldsBeforeBF: boolean;
     impliedSeamDeg: number[];
     flareDeg: number[];
     flareCapReport?: FlareCapReport;
@@ -335,8 +341,100 @@ function ringIntersectsOutline(ring: PolyPoint[], outline: PolyPoint[]): number[
     return [...hit];
 }
 
-/** One structured ring at B − r·sin(θ) inward, constrained in the plantar CDT. */
-export function placeStructuredBandRing(stations: HermiteStation[]): PolyPoint[] {
+function turningNumber(loop: PolyPoint[]): number {
+    let sum = 0;
+    const n = loop.length;
+    for (let i = 0; i < n; i++) {
+        const a = loop[(i + n - 1) % n]!;
+        const b = loop[i]!;
+        const c = loop[(i + 1) % n]!;
+        const v1x = b.x - a.x;
+        const v1y = b.y - a.y;
+        const v2x = c.x - b.x;
+        const v2y = c.y - b.y;
+        sum += Math.atan2(v1x * v2y - v1y * v2x, v1x * v2x + v1y * v2y);
+    }
+    return sum / (Math.PI * 2);
+}
+
+function minEdgeMm(loop: PolyPoint[]): number {
+    let best = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        best = Math.min(best, Math.hypot(b.x - a.x, b.y - a.y));
+    }
+    return best;
+}
+
+function minClearanceMm(ring: PolyPoint[], outline: PolyPoint[]): number {
+    let best = Infinity;
+    for (const p of ring) best = Math.min(best, minDistToLoopXY(p.x, p.y, outline));
+    return best;
+}
+
+function smoothInsets(insets: number[], frac = I_SMOOTH_FRAC): void {
+    const n = insets.length;
+    if (n < 3) return;
+    const next = insets.slice();
+    for (let i = 0; i < n; i++) {
+        const a = insets[(i + n - 1) % n]!;
+        const b = insets[i]!;
+        const c = insets[(i + 1) % n]!;
+        const blended = 0.5 * b + 0.25 * a + 0.25 * c;
+        next[i] = Math.min(b * (1 + frac), Math.max(b * (1 - frac), blended));
+    }
+    for (let i = 0; i < n; i++) insets[i] = next[i]!;
+}
+
+export interface InnerRingPlacement {
+    ring: PolyPoint[];
+    dirs: Array<{ x: number; y: number }>;
+    insets: number[];
+    minEdgeMm: number;
+    turning: number;
+    minClearanceMm: number;
+}
+
+export function assertSimpleInnerRing(ring: PolyPoint[], outline: PolyPoint[]): InnerRingPlacement {
+    const minE = minEdgeMm(ring);
+    if (minE < I_MIN_EDGE_MM - 1e-9) {
+        throw new Error(`[S1-I] min edge ${minE.toFixed(3)} < ${I_MIN_EDGE_MM} mm`);
+    }
+    const tn = turningNumber(ring);
+    if (Math.abs(Math.abs(tn) - 1) > 0.05) {
+        throw new Error(`[S1-I] turning number ${tn.toFixed(3)} is not ±1`);
+    }
+    const hits = ringIntersectsOutline(ring, outline);
+    if (hits.length) {
+        throw new Error(`[S1-I] self-intersect or outline cross at station ${hits[0]}`);
+    }
+    for (let i = 0; i < ring.length; i++) {
+        const p = ring[i]!;
+        if (!pointInPoly(p.x, p.y, outline)) {
+            throw new Error(`[S1-I] station ${i} is outside the outline`);
+        }
+    }
+    const minC = minClearanceMm(ring, outline);
+    if (minC < I_CLEARANCE_MM - 1e-6) {
+        throw new Error(`[S1-I] clearance ${minC.toFixed(3)} < ${I_CLEARANCE_MM} mm`);
+    }
+    return {
+        ring,
+        dirs: [],
+        insets: [],
+        minEdgeMm: minE,
+        turning: tn,
+        minClearanceMm: minC,
+    };
+}
+
+/**
+ * Simple inner band ring I: offset each B along inward ±h by max(r, 1.5).
+ * Crossing stations at the tight heel shrink d; d is Laplacian-smoothed at
+ * most 10% per station. I stays ≥ 1.0 mm from the outline.
+ */
+export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlacement {
     const outline = stations.map((s) => s.outline);
     const n = outline.length;
     const dirs: Array<{ x: number; y: number }> = [];
@@ -345,85 +443,121 @@ export function placeStructuredBandRing(stations: HermiteStation[]): PolyPoint[]
         const st = stations[i]!;
         const { h, planLen } = headingOfStation(st);
         const r = estimateFilletRadius(st, planLen);
-        const placed = filletCenterAndF(st.outline, h, r, { x: 0, y: 0, z: 1 }, 0);
-        const prev = outline[(i + n - 1) % n]!;
-        const next = outline[(i + 1) % n]!;
-        const spacing = Math.min(
-            Math.hypot(st.outline.x - prev.x, st.outline.y - prev.y),
-            Math.hypot(st.outline.x - next.x, st.outline.y - next.y),
-        );
-        const target = Math.min(
-            estimateBandInsetMm(r, placed.theta),
-            Math.max(BAND_INSET_MIN_MM, planLen * 0.45),
-            Math.max(BAND_INSET_MIN_MM, spacing * 0.35),
-        );
         const inn = outlineInward(i, outline);
         const alongH = inn.x * h.x + inn.y * h.y;
         dirs.push(alongH >= 0 ? h : { x: -h.x, y: -h.y });
-        insets.push(target);
+        insets.push(Math.max(r, BAND_INSET_FLOOR_MM));
     }
-    for (let pass = 0; pass < 20; pass++) {
+    for (let pass = 0; pass < 40; pass++) {
+        smoothInsets(insets);
         const ring = bandFromInsets(outline, dirs, insets);
         const bad = new Set<number>();
+        const pushOut = new Set<number>();
         for (let i = 0; i < n; i++) {
             const p = ring[i]!;
-            if (!pointInPoly(p.x, p.y, outline) || minDistToLoopXY(p.x, p.y, outline) < 0.18) {
-                bad.add(i);
-            }
+            const inside = pointInPoly(p.x, p.y, outline);
+            const clearance = minDistToLoopXY(p.x, p.y, outline);
+            if (!inside) bad.add(i);
+            else if (clearance < I_CLEARANCE_MM) pushOut.add(i);
         }
         for (const i of ringIntersectsOutline(ring, outline)) bad.add(i);
-        if (bad.size === 0) return ring;
-        let shrunk = false;
-        for (const i of bad) {
-            const next = insets[i]! * 0.65;
-            if (next >= 0.12 && next < insets[i]! - 1e-6) {
-                insets[i] = next;
-                shrunk = true;
-            } else if (insets[i]! > 0.12) {
-                insets[i] = 0.12;
-                shrunk = true;
+        for (let i = 0; i < n; i++) {
+            const a = ring[i]!;
+            const b = ring[(i + 1) % n]!;
+            if (Math.hypot(b.x - a.x, b.y - a.y) < I_MIN_EDGE_MM) {
+                bad.add(i);
+                bad.add((i + 1) % n);
             }
         }
-        if (!shrunk) break;
+        if (bad.size === 0 && pushOut.size === 0) break;
+        let changed = false;
+        for (const i of bad) {
+            const next = Math.max(I_CLEARANCE_MM, insets[i]! * 0.85);
+            if (next < insets[i]! - 1e-6) {
+                insets[i] = next;
+                changed = true;
+            }
+        }
+        for (const i of pushOut) {
+            if (bad.has(i)) continue;
+            const cap = Math.max(insets[i]!, BAND_INSET_FLOOR_MM) * 1.15;
+            const next = Math.min(cap, insets[i]! * 1.08);
+            if (next > insets[i]! + 1e-6) {
+                insets[i] = next;
+                changed = true;
+            }
+        }
+        if (!changed) break;
     }
-    return bandFromInsets(outline, dirs, insets);
+    const ring = bandFromInsets(outline, dirs, insets);
+    const checked = assertSimpleInnerRing(ring, outline);
+    return { ...checked, ring, dirs, insets };
+}
+
+/** @deprecated v15 band-as-CDT-constraint; v16 uses placeSimpleInnerRing. */
+export function placeStructuredBandRing(stations: HermiteStation[]): PolyPoint[] {
+    return placeSimpleInnerRing(stations).ring;
+}
+
+function sampleBandZ(sampler: PlantarSampler, x: number, y: number, extraLift: number): number {
+    return sampler.z(x, y, 0) + extraLift;
 }
 
 export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     const stations = input.stations;
     const nS = stations.length;
     const nWall = Math.max(10, input.nWall ?? 1 + MIN_FILLET_RINGS + WALL_MID_ROWS + MIN_FILLET_RINGS);
-    const nJ = nWall;
+    const nJ = nWall + BAND_ROWS;
     const outlineRow = nWall - 1;
-    const innerRing = placeStructuredBandRing(stations);
+    const innerRow = nJ - 1;
+
+    const sampler = makePlantarSampler(
+        stations.map((s) => s.outline),
+        input.dish,
+        input.plantarField,
+        input.zDelta,
+    );
+    for (let i = 0; i < nS; i++) {
+        const p = stations[i]!.outline;
+        p.z = sampler.z(p.x, p.y, p.z);
+    }
+    console.log(
+        "[S1-ORDER]",
+        JSON.stringify({ fieldsBeforeBF: true, lift: Number(sampler.lift.toFixed(4)) }),
+    );
+
+    const placed = placeSimpleInnerRing(stations);
+    const innerRing = placed.ring.map((p) => ({
+        ...p,
+        z: sampler.z(p.x, p.y, 0),
+    }));
     const plantar = buildGeneratedPlantar({
-        boundary: stations.map((s) => s.outline),
+        boundary: innerRing,
         dish: input.dish,
         field: input.plantarField,
         zDelta: input.zDelta,
         refineGrind: input.refineGrind,
         marginMm: PLANTAR_MARGIN_MM,
-        innerRing,
+        sampler,
     });
-    for (let i = 0; i < nS; i++) {
-        const z = plantar.points[i]?.z;
-        if (z != null) stations[i]!.outline.z = z;
+    if (plantar.extraLift) {
+        for (let i = 0; i < nS; i++) stations[i]!.outline.z += plantar.extraLift;
+        for (const p of innerRing) p.z += plantar.extraLift;
     }
-    const headingOf = (i: number) => {
-        const st = stations[i]!;
-        const dx = st.outline.x - st.rim.x;
-        const dy = st.outline.y - st.rim.y;
-        const len = Math.hypot(dx, dy);
-        if (len < 1e-4) {
-            const nl = Math.hypot(st.n.x, st.n.y) || 1;
-            return { x: st.n.x / nl, y: st.n.y / nl };
-        }
-        return { x: dx / len, y: dy / len };
-    };
-    const outlineLoop = stations.map((s) => s.outline);
-    const plantarSlopeRad = stations.map((st, i) =>
-        samplePlantarSlopeAlongMinusH(plantar.points, plantar.faces, st.outline, headingOf(i), outlineLoop),
+    console.log(
+        "[S1-I]",
+        JSON.stringify({
+            simple: true,
+            minEdgeMm: Number(placed.minEdgeMm.toFixed(3)),
+            turning: Number(placed.turning.toFixed(3)),
+            minClearanceMm: Number(placed.minClearanceMm.toFixed(3)),
+            extraLift: Number(plantar.extraLift.toFixed(4)),
+            openEdges: plantar.openEdges,
+            missingBoundary: plantar.missingBoundary,
+        }),
     );
+
+    const plantarSlopeRad = stations.map(() => 0);
     const built = buildBezierColumns(
         stations,
         input.junctions,
@@ -434,14 +568,14 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         plantarSlopeRad,
         S1_MIN_WALL_MM,
     );
-    for (let i = 0; i < nS; i++) {
-        const z = built.frames[i]!.B.z;
-        stations[i]!.outline.z = z;
-        if (plantar.points[i]) plantar.points[i]!.z = z;
-    }
-    if (plantar.bandCount >= nS) {
-        applyPlantarBandZ(built.frames, plantar.points.slice(nS, nS + nS));
-    }
+    console.log(
+        "[S1-MIN-WALL]",
+        JSON.stringify({
+            n: built.minWallClamps.length,
+            sample: built.minWallClamps.slice(0, 8),
+        }),
+    );
+
     const columns: PolyPoint[][] = built.xyz.map((col) => col.map((p) => ({ ...p })));
     applyLateralFlange(
         columns,
@@ -452,33 +586,44 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         input.flangeAngleDeg ?? 10,
         input.footLengthMm ?? 250,
     );
+    for (let i = 0; i < nS; i++) {
+        const B = columns[i]![outlineRow]!;
+        const dir = placed.dirs[i]!;
+        const dI = placed.insets[i]!;
+        built.frames[i]!.bandInsetMm = dI;
+        for (let k = 1; k <= BAND_ROWS; k++) {
+            const d = (dI * k) / BAND_ROWS;
+            const x = B.x + dir.x * d;
+            const y = B.y + dir.y * d;
+            const z = sampleBandZ(sampler, x, y, plantar.extraLift);
+            columns[i]!.push({ x, y, z });
+        }
+        const last = columns[i]![innerRow]!;
+        built.frames[i]!.bandZ = columns[i]![outlineRow + 1]?.z ?? last.z;
+        const I = plantar.points[i]!;
+        if (Math.hypot(last.x - I.x, last.y - I.y) > 1e-3) {
+            throw new Error(
+                `[S1-I] last band row != I at station ${i}: ` +
+                    `row=(${last.x.toFixed(3)},${last.y.toFixed(3)}) ` +
+                    `I=(${I.x.toFixed(3)},${I.y.toFixed(3)})`,
+            );
+        }
+        last.z = I.z;
+    }
+
     const implied = built.impliedSeamDeg;
     const flare = built.flareDeg;
     const report = built.flareCapReport;
-
     const outlineRing = columns.map((col) => ({ ...col[outlineRow]! }));
-    for (let i = 0; i < nS; i++) {
-        const ring = outlineRing[i]!;
-        const b = plantar.points[i]!;
-        if (Math.hypot(ring.x - b.x, ring.y - b.y, ring.z - b.z) > 1e-6) {
-            throw new Error(
-                `[S1-CDT] column bottom ring != plantar boundary at ${i}: ` +
-                    `ring=(${ring.x.toFixed(3)},${ring.y.toFixed(3)},${ring.z.toFixed(3)}) ` +
-                    `B=(${b.x.toFixed(3)},${b.y.toFixed(3)},${b.z.toFixed(3)})`,
-            );
-        }
-    }
-    let bandTiltDegMax = 0;
-    for (const f of plantar.faces) {
-        const ids = [f[0]!, f[1]!, f[2]!];
-        if (ids.filter((i) => i < nS).length < 2) continue;
-        bandTiltDegMax = Math.max(
-            bandTiltDegMax,
-            tiltFromHorizontal(plantar.points[f[0]!]!, plantar.points[f[1]!]!, plantar.points[f[2]!]!),
-        );
-    }
 
-    const planReversals = built.planReversals;
+    let bandTiltDegMax = 0;
+    for (let i = 0; i < nS; i++) {
+        const a = columns[i]![outlineRow]!;
+        const b = columns[(i + 1) % nS]![outlineRow]!;
+        const c = columns[i]![outlineRow + 1]!;
+        const d = columns[(i + 1) % nS]![outlineRow + 1]!;
+        bandTiltDegMax = Math.max(bandTiltDegMax, tiltFromHorizontal(a, b, c), tiltFromHorizontal(a, c, d));
+    }
 
     const body = new Float32Array(nS * (nJ - 1) * 3);
     for (let j = 1; j < nJ; j++) {
@@ -496,10 +641,13 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         body,
         plantar,
         outlineRow,
+        innerRow,
+        innerRing: innerRing.map((p) => ({ ...p })),
+        fieldsBeforeBF: true,
         impliedSeamDeg: implied,
         flareDeg: flare,
         flareCapReport: report,
-        planReversals,
+        planReversals: built.planReversals,
         maxFrameAngleDeg: built.maxFrameAngleDeg,
         maxOffPlaneMm: built.maxOffPlaneMm,
         frames: built.frames,

@@ -2,7 +2,8 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import { buildGeneratedPlantar } from "./plantar-cdt";
+import { assertIEdges } from "./cdt-lib";
+import { buildGeneratedPlantar, makePlantarSampler } from "./plantar-cdt";
 
 describe("generated plantar CDT", () => {
     test("re-anchors min z to 0 after a negative posting field", () => {
@@ -39,23 +40,18 @@ describe("generated plantar CDT", () => {
         }
     });
 
-    test("library CDT with a constrained band keeps a disk", () => {
+    test("library CDT of inner ring I keeps every I edge", () => {
         const n = 24;
-        const boundary = Array.from({ length: n }, (_, i) => {
-            const a = (i / n) * Math.PI * 2;
-            return { x: 24 * Math.cos(a), y: 14 * Math.sin(a), z: 0 };
-        });
-        const innerRing = Array.from({ length: n }, (_, i) => {
+        const inner = Array.from({ length: n }, (_, i) => {
             const a = (i / n) * Math.PI * 2;
             return { x: 20 * Math.cos(a), y: 11 * Math.sin(a), z: 0.1 };
         });
         const mesh = buildGeneratedPlantar({
-            boundary,
+            boundary: inner,
             dish: null,
             zDelta: () => 0,
-            innerRing,
         });
-        expect(mesh.bandCount).toBe(n);
+        expect(mesh.bandCount).toBe(0);
         expect(mesh.openEdges).toBe(0);
         expect(mesh.missingBoundary).toBe(0);
         expect(mesh.steinerCount).toBeGreaterThan(0);
@@ -95,5 +91,22 @@ describe("generated plantar CDT", () => {
         expect(mesh.openEdges).toBe(0);
         expect(mesh.missingBoundary).toBe(0);
         expect(mesh.faces.length).toBeGreaterThan(6);
+    });
+
+    test("missing I edge fails with the station index", () => {
+        expect(() => assertIEdges([[0, 1, 2]], 4)).toThrow(/\[S1-I\] missing edge at station 2/);
+    });
+
+    test("sampler applies fields and re-anchor before B", () => {
+        const n = 16;
+        const outline = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 12 * Math.cos(a), y: 8 * Math.sin(a), z: 0 };
+        });
+        const sampler = makePlantarSampler(outline, null, undefined, (_x, y) => y * 0.4);
+        expect(sampler.lift).toBeGreaterThan(0);
+        for (const p of outline) {
+            expect(sampler.z(p.x, p.y, 0)).toBeGreaterThanOrEqual(-1e-9);
+        }
     });
 });

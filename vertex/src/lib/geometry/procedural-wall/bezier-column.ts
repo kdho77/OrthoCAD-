@@ -20,7 +20,7 @@ export const MERGE_ROW_MM = 0.3;
 export const TOP_CLEARANCE_DEG = 10;
 export const T0_PIN_DEG = -45;
 export const FILLET_R_CAP_MM = 3;
-export const R_SMOOTH_FRAC = 0.05;
+export const R_SMOOTH_FRAC = 0.1;
 export const BAND_INSET_MIN_MM = 0.35;
 export const SHORT_CHORD_MM = 0.5;
 export const COLUMN_PLANARITY_LIMIT_MM = 0.01;
@@ -345,7 +345,7 @@ function sampleFilletFB(fr: ColumnFrame, nInterior: number): XYZ[] {
     const rings: XYZ[] = [];
     const count = Math.max(MIN_FILLET_RINGS, nInterior);
     const r = Math.max(fr.rFillet, 1e-6);
-    const floorZ = Number.isFinite(fr.bandZ) ? fr.bandZ : fr.B.z;
+    const floorZ = fr.B.z;
     for (let i = 1; i <= count; i++) {
         const phi = start + (theta * i) / (count + 1);
         const s = C.s + r * Math.cos(phi);
@@ -768,7 +768,6 @@ export function buildBezierColumns(
         }
         if (!dirty) break;
     }
-    applyTangentBandZ(frames);
     const xyz: PolyPoint[][] = [];
     const implied: number[] = [];
     let maxOff = 0;

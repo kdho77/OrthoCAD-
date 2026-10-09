@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { countOpenNonBoundaryEdges, minDistToLoopXY, pointInPoly } from "./cdt-band";
-import { assertLibraryDisk, libraryCdtInterior } from "./cdt-lib";
+import { assertIEdges, assertLibraryDisk, libraryCdtInterior } from "./cdt-lib";
 import type { PolyPoint } from "./curves";
 import { sampleUvField } from "./extract";
 import { type DishZIndex, sampleDishZVertical } from "./height-xy";
@@ -22,6 +22,12 @@ export interface GeneratedPlantar {
     minZ: number;
     openEdges: number;
     missingBoundary: number;
+    extraLift: number;
+}
+
+export interface PlantarSampler {
+    z(x: number, y: number, fallback?: number): number;
+    lift: number;
 }
 
 function stockDishZ(
@@ -90,6 +96,29 @@ export function reanchorPlantarMinZ(points: PolyPoint[]): number {
     const lift = Number.isFinite(minZ) && minZ < 0 ? -minZ : 0;
     if (lift) for (const p of points) p.z += lift;
     return lift;
+}
+
+/**
+ * Dish + zDelta + a single re-anchor lift, computed before B / F / the band.
+ * Every later z sample (B, band rows, CDT interior) uses this same field.
+ */
+export function makePlantarSampler(
+    outline: PolyPoint[],
+    dish: DishZIndex | null,
+    field: UvHeightField | undefined,
+    zDelta: (x: number, y: number) => number,
+): PlantarSampler {
+    const raw = (x: number, y: number, fallback = 0): number =>
+        stockDishZ(x, y, dish, field, fallback) + zDelta(x, y);
+    let minZ = Infinity;
+    for (const p of outline) minZ = Math.min(minZ, raw(p.x, p.y, p.z));
+    const probes = hexSteiner(outline, Math.max(PLANTAR_STEINER_MM, 3), 1);
+    for (const p of probes) minZ = Math.min(minZ, raw(p.x, p.y, 0));
+    const lift = Number.isFinite(minZ) && minZ < 0 ? -minZ : 0;
+    return {
+        lift,
+        z: (x, y, fallback = 0) => raw(x, y, fallback) + lift,
+    };
 }
 
 function barycentric(
@@ -168,17 +197,18 @@ function nudgeInteriorDuplicates(points: PolyPoint[], nOuter: number, tol = 0.04
 }
 
 export function assertPlantarDisk(faces: Array<[number, number, number]>, nBoundary: number): void {
+    assertIEdges(faces, nBoundary);
     assertLibraryDisk(faces, nBoundary);
 }
 
 /**
- * Constrained Delaunay of BottomOutline (+ optional tangent band) + Steiner.
- * Boundary vertices stay at 0..n-1 and are never split.
+ * Constrained Delaunay of the inner band ring I + Steiner inside I.
+ * Boundary vertices stay at 0..n-1 and are never split. The structured
+ * band is not a CDT constraint.
  */
 export function triangulatePlantarXY(
     boundary: PolyPoint[],
     margin = PLANTAR_MARGIN_MM,
-    innerRing?: PolyPoint[],
 ): {
     points: PolyPoint[];
     faces: Array<[number, number, number]>;
@@ -187,22 +217,17 @@ export function triangulatePlantarXY(
     steinerCount: number;
 } {
     const loop = boundary.map((p) => ({ ...p, z: 0 }));
-    const band = innerRing?.map((p) => ({ ...p, z: 0 })) ?? [];
-    const steiner = hexSteiner(loop, PLANTAR_STEINER_MM, margin, band.length >= 3 ? band : undefined);
-    const points = [...loop, ...band, ...steiner];
+    const steiner = hexSteiner(loop, PLANTAR_STEINER_MM, margin);
+    const points = [...loop, ...steiner];
     nudgeInteriorDuplicates(points, loop.length);
-    const extra: Array<[number, number]> = [];
-    if (band.length >= 3) {
-        const s0 = loop.length;
-        for (let i = 0; i < band.length; i++) extra.push([s0 + i, s0 + ((i + 1) % band.length)]);
-    }
-    const faces = libraryCdtInterior(points, loop.length, extra);
+    const faces = libraryCdtInterior(points, loop.length);
+    assertIEdges(faces, loop.length);
     assertLibraryDisk(faces, loop.length);
     return {
         points,
         faces,
         boundaryCount: loop.length,
-        bandCount: band.length,
+        bandCount: 0,
         steinerCount: steiner.length,
     };
 }
@@ -214,12 +239,17 @@ export function buildGeneratedPlantar(input: {
     zDelta: (x: number, y: number) => number;
     refineGrind?: boolean;
     marginMm?: number;
-    innerRing?: PolyPoint[];
+    sampler?: PlantarSampler;
 }): GeneratedPlantar {
     const boundary = input.boundary.map((p) => ({ ...p }));
-    const mesh = triangulatePlantarXY(boundary, input.marginMm ?? PLANTAR_MARGIN_MM, input.innerRing);
-    applyPlantarFields(mesh.points, boundary, input.dish, input.field, input.zDelta);
-    reanchorPlantarMinZ(mesh.points);
+    const mesh = triangulatePlantarXY(boundary, input.marginMm ?? PLANTAR_MARGIN_MM);
+    const sampler = input.sampler;
+    if (sampler) {
+        for (const p of mesh.points) p.z = sampler.z(p.x, p.y, 0);
+    } else {
+        applyPlantarFields(mesh.points, boundary, input.dish, input.field, input.zDelta);
+    }
+    const extraLift = reanchorPlantarMinZ(mesh.points);
     assertPlantarDisk(mesh.faces, boundary.length);
     const hygiene = countOpenNonBoundaryEdges(mesh.faces, boundary.length);
     let minZ = Infinity;
@@ -233,5 +263,6 @@ export function buildGeneratedPlantar(input: {
         minZ: Number.isFinite(minZ) ? minZ : 0,
         openEdges: hygiene.open,
         missingBoundary: hygiene.missingBoundary,
+        extraLift,
     };
 }

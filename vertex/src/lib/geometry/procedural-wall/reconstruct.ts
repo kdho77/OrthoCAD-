@@ -333,10 +333,7 @@ export function reconstructProceduralWalls(
         rimLocal,
         stations.map((s) => s.n),
     );
-    const topHeight =
-        model.top.meshPositions && model.top.meshIndices
-            ? buildXyHeightIndex(model.top.meshPositions, model.top.meshIndices)
-            : buildXyHeightIndex(topPos, topIdx);
+    const topHeight = buildXyHeightIndex(Float32Array.from(positions), indices);
     const topZ = (x: number, y: number) => sampleXyHeight(topHeight, x, y, "max");
 
     const grid = buildQuadGrid({
@@ -372,7 +369,7 @@ export function reconstructProceduralWalls(
         return generatedStart + (j - 1) * nS + s;
     };
     const plantarVert = (local: number): number => {
-        if (local < nBoundary) return gridVert(grid.outlineRow, local);
+        if (local < nBoundary) return gridVert(grid.innerRow, local);
         return plantarStart + (local - nBoundary);
     };
     const pushTri = (a: number, b: number, c: number): void => {
@@ -441,6 +438,8 @@ export function reconstructProceduralWalls(
         generatedCount: positions.length / 3 - generatedStart,
         plantarStart,
         outlineRow: grid.outlineRow,
+        innerRow: grid.innerRow,
+        fieldsBeforeBF: grid.fieldsBeforeBF,
         outlineRing: grid.outlineRing,
         outlineVertexStart: generatedStart + Math.max(0, grid.outlineRow - 1) * nS,
         outlineVertexCount: nS,

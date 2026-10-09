@@ -43,7 +43,7 @@ export {
     delaunayXY,
     insertConstraintEdges,
 } from "./cdt-band";
-export { assertLibraryDisk, libraryCdtInterior } from "./cdt-lib";
+export { assertIEdges, assertLibraryDisk, libraryCdtInterior } from "./cdt-lib";
 export { fitClosedC2Spline, resampleClosedC2, resamplePolyline } from "./curves";
 export {
     applyMeasuredUnclamped,
@@ -116,6 +116,7 @@ export { assertNonCrossing, buildPlanformFrame } from "./planform";
 export {
     assertPlantarDisk,
     buildGeneratedPlantar,
+    makePlantarSampler,
     PLANTAR_MARGIN_MM,
     PLANTAR_STEINER_MM,
     PLANTAR_STEINER_OUTLINE_FRAC,
