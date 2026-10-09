@@ -36,7 +36,7 @@ describe("clinical step gates", () => {
         expect(isFootSideExplicitlyKnown()).toBe(false);
         const gate = evaluateScanStepGate();
         expect(gate.ok).toBe(false);
-        if (!gate.ok) expect(gate.reason).toMatch(/Select Left or Right/i);
+        if (!gate.ok) expect(gate.reason).toMatch(/Select Left, Right, or Pair/i);
 
         useClinicalWorkflowStore.getState().acknowledgeExplicitFootSide("right");
         expect(isFootSideExplicitlyKnown()).toBe(true);
