@@ -10,11 +10,16 @@ import {
 import { type HeightFieldParams, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SideCorrections } from "@/types";
-import { ensureCcw, type PolyPoint, resamplePolyline, startAtPosteriorHeel } from "./curves";
+import {
+    ensureCcw,
+    type PolyPoint,
+    polylineArcLengths,
+    resamplePolyline,
+    startAtPosteriorHeel,
+} from "./curves";
 import {
     type DeviceTypePreset,
     LATERAL_FLANGE_BOUNDS,
-    resolveWallDefaults,
     snapToStep,
     type WallRegionDefaults,
 } from "./defaults";
@@ -287,22 +292,19 @@ function applyAnalyticTopDeltas(
     }
 }
 
-function defaultsFromModel(model: StockWallModel, preset: DeviceTypePreset): WallRegionDefaults {
+function defaultsFromModel(model: StockWallModel, _preset: DeviceTypePreset): WallRegionDefaults {
     const base = defaultsFromStockCurves(
         model.trim.spline.controls,
         model.outline.spline.controls,
         model.bounds,
     );
-    if (preset === "functional") return base;
-    return resolveWallDefaults(
-        {
-            flareDeg: { ...base.flareDeg },
-            filletTopMm: base.wallFilletTopMm,
-            filletBottomMm: base.wallFilletBottomMm,
-            cupBowlFactor: base.cupBowlFactor,
-        },
-        preset,
-    );
+    const diag = model.flareDiagnostics;
+    if (!diag?.length) return base;
+    const flareCurvature = { ...base.flareCurvature };
+    for (const d of diag) {
+        flareCurvature[d.region] = d.kind === "curved" ? d.curvature : 0;
+    }
+    return { ...base, flareCurvature, flareDiagnostics: diag };
 }
 
 /**
@@ -366,8 +368,7 @@ export function reconstructProceduralWalls(
             ? buildXyHeightIndex(model.outline.meshPositions, model.outline.meshIndices)
             : null;
     for (const p of outlineMatched) {
-        const sampled = sampleZ(model.outline.plantarZ, plantarHeight, p.x, p.y, p.z, "min");
-        if (Math.abs(sampled - p.z) < 0.15) p.z = sampled;
+        p.z = sampleZ(model.outline.plantarZ, plantarHeight, p.x, p.y, p.z, "min");
         p.z += plantarZDelta(p.x, p.y, model.bounds, options);
     }
 
@@ -399,19 +400,9 @@ export function reconstructProceduralWalls(
         else indices.push(a, b, c);
     };
 
-    const outlineStart = positions.length / 3;
-    const outlineIdx: number[] = [];
-    for (const p of outlineMatched) outlineIdx.push(push(p));
-
-    triangulatePlantar(
-        outlineMatched,
-        outlineIdx,
-        model.outline.plantarZ,
-        plantarHeight,
-        push,
-        pushTri,
-        (x, y) => plantarZDelta(x, y, model.bounds, options),
-    );
+    const plantarRim = appendStockPlantar(model, options, positions, outlineMatched, push, pushTri);
+    const outlineIdx = plantarRim;
+    const outlineStart = outlineIdx[0] ?? positions.length / 3;
 
     const nT = grid.nT;
     const nS = grid.nS;
@@ -424,11 +415,12 @@ export function reconstructProceduralWalls(
     }
     const wallVert = (ti: number, si: number): number => {
         const s = ((si % nS) + nS) % nS;
-        if (ti <= 0) return outlineStart + s;
+        if (ti <= 0) return outlineIdx[s] ?? outlineStart + s;
         if (ti >= nT - 1) return rimLocal[s]!;
         return wallStart + (ti - 1) * nS + s;
     };
-    for (let ti = 0; ti < nT - 1; ti++) {
+    // Interior wall quads from the first rising ring to the top rim.
+    for (let ti = 1; ti < nT - 1; ti++) {
         for (let si = 0; si < nS; si++) {
             const a = wallVert(ti, si);
             const b = wallVert(ti, si + 1);
@@ -438,6 +430,10 @@ export function reconstructProceduralWalls(
             pushTri(a, c, d);
         }
     }
+    // Bottom stitch: every plantar-boundary vert ↔ first wall ring (natural tangent).
+    const firstRing: number[] = [];
+    for (let si = 0; si < nS; si++) firstRing.push(wallVert(1, si));
+    zipClosedLoops(outlineIdx, firstRing, positions, pushTri);
 
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
@@ -454,7 +450,122 @@ export function reconstructProceduralWalls(
         deviceType: preset,
         lateralFlangeHeightMm: flangeH,
         measuredVsBound: defaults.report,
+        flareDiagnostics: defaults.flareDiagnostics,
         manifoldHint: analyzeManifold(geo),
     };
     return geo;
+}
+
+function transformPlantarVertex(
+    x: number,
+    y: number,
+    z: number,
+    bounds: StockWallModel["bounds"],
+    input: ReconstructOptions,
+): PolyPoint {
+    const c = input.corrections;
+    const minX = bounds.minX;
+    const length = Math.max(1e-3, bounds.maxX - minX);
+    const widCenter = (bounds.minY + bounds.maxY) * 0.5;
+    let yy = y;
+    if (c && c.heelCupWidthMm !== 0) {
+        const u = Math.max(0, Math.min(1, (x - minX) / length));
+        yy = widCenter + (y - widCenter) * heelCupWidthScaleFactor(u, c.heelCupWidthMm);
+    }
+    return { x, y: yy, z: z + plantarZDelta(x, yy, bounds, input) };
+}
+
+function appendStockPlantar(
+    model: StockWallModel,
+    options: ReconstructOptions,
+    positions: number[],
+    outlineMatched: PolyPoint[],
+    push: (p: PolyPoint) => number,
+    pushTri: (a: number, b: number, c: number, flip?: boolean) => void,
+): number[] {
+    const srcPos = model.outline.meshPositions;
+    const srcIdx = model.outline.meshIndices;
+    const srcRim = model.outline.rimLocal;
+    if (srcPos && srcIdx && srcRim && srcRim.length >= 3) {
+        const map = new Map<number, number>();
+        const remap = (i: number): number => {
+            let ni = map.get(i);
+            if (ni == null) {
+                const p = transformPlantarVertex(
+                    srcPos[i * 3]!,
+                    srcPos[i * 3 + 1]!,
+                    srcPos[i * 3 + 2]!,
+                    model.bounds,
+                    options,
+                );
+                ni = push(p);
+                map.set(i, ni);
+            }
+            return ni;
+        };
+        for (let t = 0; t < srcIdx.length; t += 3) {
+            pushTri(remap(srcIdx[t]!), remap(srcIdx[t + 1]!), remap(srcIdx[t + 2]!));
+        }
+        const rim = srcRim.map((i) => remap(i));
+        const rimPts = rim.map((i) => ({
+            x: positions[i * 3]!,
+            y: positions[i * 3 + 1]!,
+            z: positions[i * 3 + 2]!,
+            i,
+        }));
+        const ordered = startAtPosteriorHeel(ensureCcw(rimPts)) as Array<PolyPoint & { i: number }>;
+        return ordered.map((p) => p.i);
+    }
+
+    const outlineIdx: number[] = [];
+    for (const p of outlineMatched) outlineIdx.push(push(p));
+    const plantarHeight =
+        model.outline.meshPositions && model.outline.meshIndices
+            ? buildXyHeightIndex(model.outline.meshPositions, model.outline.meshIndices)
+            : null;
+    triangulatePlantar(
+        outlineMatched,
+        outlineIdx,
+        model.outline.plantarZ,
+        plantarHeight,
+        push,
+        pushTri,
+        (x, y) => plantarZDelta(x, y, model.bounds, options),
+    );
+    return outlineIdx;
+}
+
+function zipClosedLoops(
+    aIdx: number[],
+    bIdx: number[],
+    positions: number[],
+    pushTri: (a: number, b: number, c: number, flip?: boolean) => void,
+): void {
+    const nA = aIdx.length;
+    const nB = bIdx.length;
+    if (nA < 2 || nB < 2) return;
+    const asPts = (ids: number[]): PolyPoint[] =>
+        ids.map((i) => ({ x: positions[i * 3]!, y: positions[i * 3 + 1]!, z: positions[i * 3 + 2]! }));
+    const sA = polylineArcLengths(asPts(aIdx));
+    const sB = polylineArcLengths(asPts(bIdx));
+    const totA = sA.total || 1;
+    const totB = sB.total || 1;
+    let i = 0;
+    let j = 0;
+    for (let step = 0; step < nA + nB; step++) {
+        const a0 = aIdx[i % nA]!;
+        const b0 = bIdx[j % nB]!;
+        const aDone = i >= nA;
+        const bDone = j >= nB;
+        if (aDone && bDone) break;
+        const nextA = sA.cum[Math.min(i + 1, nA)]! / totA;
+        const nextB = sB.cum[Math.min(j + 1, nB)]! / totB;
+        if (!aDone && (bDone || nextA <= nextB)) {
+            pushTri(a0, aIdx[(i + 1) % nA]!, b0);
+            i++;
+        } else {
+            pushTri(a0, bIdx[(j + 1) % nB]!, b0);
+            j++;
+        }
+    }
 }

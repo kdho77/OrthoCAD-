@@ -3,22 +3,32 @@
 
 export { fitClosedC2Spline, resampleClosedC2, resamplePolyline } from "./curves";
 export {
+    applyMeasuredUnclamped,
+    blendedFlareCurvature,
     blendedFlareDeg,
     CUP_BOWL,
     clampToBound,
     type DeviceTypePreset,
     FILLET_BOUNDS,
     FLARE_BOUNDS,
+    type FlareProfileKind,
+    type FlareRegionDiagnostic,
     LATERAL_FLANGE_BOUNDS,
     type MeasuredVsBoundRow,
     resolveWallDefaults,
     type WallRegionDefaults,
 } from "./defaults";
-export { extractStockWallModel, extractTopSheet, matchedLoftCurves, sampleUvField } from "./extract";
+export {
+    extractPlantarSheet,
+    extractStockWallModel,
+    extractTopSheet,
+    matchedLoftCurves,
+    sampleUvField,
+} from "./extract";
 export { evaluateHeelCupGate } from "./hermite";
 export { countSelfIntersections } from "./intersect";
 export { buildHermiteStations } from "./loft";
-export { defaultsFromStockCurves, measureRegionFeatures } from "./measure";
+export { defaultsFromStockCurves, diagnoseFlareProfiles, measureRegionFeatures } from "./measure";
 export {
     cupHeightAtU,
     foldReport,
@@ -28,6 +38,7 @@ export {
     maxVertexDeltaMm,
     measureReconFlareDeg,
     minWallThicknessMm,
+    outlineSeamDihedrals,
     reconstructionManifold,
     tieredHausdorffReport,
 } from "./metrics";

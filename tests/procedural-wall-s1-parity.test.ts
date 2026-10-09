@@ -30,6 +30,7 @@ import {
     maxVertexDeltaMm,
     measureReconFlareDeg,
     minWallThicknessMm,
+    outlineSeamDihedrals,
     reconstructionManifold,
     reconstructProceduralWalls,
     S1_MIN_WALL_MM,
@@ -101,10 +102,18 @@ describe("S1 parametric wall", () => {
         for (const fixture of fixtures) {
             const original = await loadFixture(fixture.path);
             const model = extractStockWallModel(original, { id: fixture.id, name: fixture.name });
-            reports.push({ base: fixture.name, measuredVsBound: model.measuredVsBound });
+            reports.push({
+                base: fixture.name,
+                measuredVsBound: model.measuredVsBound,
+                flareDiagnostics: model.flareDiagnostics,
+            });
             console.log(
                 "[S1-MEASURED-VS-BOUND]",
                 JSON.stringify({ base: fixture.name, rows: model.measuredVsBound }, null, 2),
+            );
+            console.log(
+                "[S1-FLARE-PROFILE]",
+                JSON.stringify({ base: fixture.name, rows: model.flareDiagnostics }, null, 2),
             );
 
             const rebuilt = reconstructProceduralWalls(model);
@@ -175,9 +184,18 @@ describe("S1 parametric wall", () => {
                 occt = "unavailable";
             }
 
+            const stockSeam = outlineSeamDihedrals(original, outlineOf(model));
+            const reconSeam = outlineSeamDihedrals(rebuilt, outlineOf(model));
+            let seamExcess = 0;
+            const nSeam = Math.min(stockSeam.perStation.length, reconSeam.perStation.length);
+            for (let i = 0; i < nSeam; i++) {
+                seamExcess = Math.max(seamExcess, reconSeam.perStation[i]! - stockSeam.perStation[i]!);
+            }
+            if (nSeam === 0) seamExcess = reconSeam.worstDeg - stockSeam.worstDeg;
+
             const misses: string[] = [];
             if (topDelta > 1e-9) misses.push(`top-identical ${topDelta.toFixed(6)}`);
-            if (haus.plantar.maxMm > 0.05) misses.push(`plantar ${haus.plantar.maxMm.toFixed(3)}`);
+            if (haus.plantar.maxMm > 1e-3) misses.push(`plantar ${haus.plantar.maxMm.toFixed(3)}`);
             if (haus.outline.maxMm > 0.1) misses.push(`outline ${haus.outline.maxMm.toFixed(3)}`);
             if (Math.abs(drift) > 0.05) misses.push(`ground-drift ${drift.toFixed(3)}`);
             if (man.openEdges !== 0) misses.push(`open ${man.openEdges}`);
@@ -187,7 +205,11 @@ describe("S1 parametric wall", () => {
             if (minWall < S1_MIN_WALL_MM) misses.push(`minWall ${minWall.toFixed(3)}`);
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) misses.push(`fold ${fold.worstDeg.toFixed(1)}`);
             if (fold.edgesAtLeast10Deg !== 0) misses.push(`fold≥10 ${fold.edgesAtLeast10Deg}`);
-            if ((fold.seamWorstDeg ?? 0) > 2) misses.push(`seam ${fold.seamWorstDeg?.toFixed(1)}`);
+            if (seamExcess > 2) {
+                misses.push(
+                    `seam ${reconSeam.worstDeg.toFixed(1)} vs stock ${stockSeam.worstDeg.toFixed(1)} excess ${seamExcess.toFixed(1)}`,
+                );
+            }
             if (!uvOk) misses.push("sole-UV");
             for (const c of cup) {
                 if (Math.abs(c.delta) > 0.5) misses.push(`cup@${c.u} ${c.delta.toFixed(2)}`);
@@ -213,7 +235,9 @@ describe("S1 parametric wall", () => {
                 minWallMm: Number(minWall.toFixed(3)),
                 foldWorstDeg: Number(fold.worstDeg.toFixed(3)),
                 foldGe10: fold.edgesAtLeast10Deg,
-                seamWorstDeg: Number((fold.seamWorstDeg ?? 0).toFixed(3)),
+                seamWorstDeg: Number(reconSeam.worstDeg.toFixed(3)),
+                stockSeamWorstDeg: Number(stockSeam.worstDeg.toFixed(3)),
+                seamExcessDeg: Number(seamExcess.toFixed(3)),
                 occtSolid: occt,
                 soleUvIdentical: uvOk,
                 flareArch: Number(flareArch.toFixed(2)),

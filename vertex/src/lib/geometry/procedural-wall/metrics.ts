@@ -567,6 +567,78 @@ export function heelInnerWidthAtU(
 }
 
 /** Measure chord flare (deg) of rebuilt wall stations in a region. */
+/**
+ * Seam dihedral at each outline station (deg, folded into [0, 90]).
+ * Used to gate the rebuilt wall against the stock join, not a fixed angle.
+ */
+export function outlineSeamDihedrals(
+    geo: BufferGeometry,
+    outline: Array<{ x: number; y: number; z: number }>,
+    tolMm = 0.85,
+): { worstDeg: number; meanDeg: number; perStation: number[] } {
+    const pos = geo.getAttribute("position").array as Float32Array;
+    const index = geo.getIndex();
+    const empty = { worstDeg: 0, meanDeg: 0, perStation: outline.map(() => 0) };
+    if (!index || outline.length === 0) return empty;
+    const idx = index.array;
+    const edgeFaces = new Map<string, number[]>();
+    for (let f = 0; f < idx.length; f += 3) {
+        const a = idx[f]!;
+        const b = idx[f + 1]!;
+        const c = idx[f + 2]!;
+        for (const [p, q] of [
+            [a, b],
+            [b, c],
+            [c, a],
+        ] as const) {
+            const k = p < q ? `${p},${q}` : `${q},${p}`;
+            let faces = edgeFaces.get(k);
+            if (!faces) {
+                faces = [];
+                edgeFaces.set(k, faces);
+            }
+            faces.push(f);
+        }
+    }
+    const perStation = outline.map(() => 0);
+    const tol2 = tolMm * tolMm;
+    for (const [key, faces] of edgeFaces) {
+        if (faces.length !== 2) continue;
+        const [sa, sb] = key.split(",").map(Number) as [number, number];
+        const mx = (pos[sa * 3]! + pos[sb * 3]!) * 0.5;
+        const my = (pos[sa * 3 + 1]! + pos[sb * 3 + 1]!) * 0.5;
+        const mz = (pos[sa * 3 + 2]! + pos[sb * 3 + 2]!) * 0.5;
+        let bestI = -1;
+        let bestD = tol2;
+        for (let i = 0; i < outline.length; i++) {
+            const o = outline[i]!;
+            const d = (o.x - mx) ** 2 + (o.y - my) ** 2 + (o.z - mz) ** 2;
+            if (d < bestD) {
+                bestD = d;
+                bestI = i;
+            }
+        }
+        if (bestI < 0) continue;
+        const n1 = faceNormal(pos, idx[faces[0]!]!, idx[faces[0]! + 1]!, idx[faces[0]! + 2]!);
+        const n2 = faceNormal(pos, idx[faces[1]!]!, idx[faces[1]! + 1]!, idx[faces[1]! + 2]!);
+        if (!n1 || !n2) continue;
+        const dot = Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]));
+        const deg = Math.min((Math.acos(dot) * 180) / Math.PI, 180 - (Math.acos(dot) * 180) / Math.PI);
+        if (deg > perStation[bestI]!) perStation[bestI] = deg;
+    }
+    let worst = 0;
+    let sum = 0;
+    let c = 0;
+    for (const d of perStation) {
+        if (d > worst) worst = d;
+        if (d > 0) {
+            sum += d;
+            c++;
+        }
+    }
+    return { worstDeg: worst, meanDeg: c ? sum / c : 0, perStation };
+}
+
 export function measureReconFlareDeg(
     stations: Array<{
         outline: { x: number; y: number; z: number };

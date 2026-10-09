@@ -3,9 +3,9 @@
 
 import { describe, expect, test } from "@rstest/core";
 import {
+    applyMeasuredUnclamped,
     blendedFlareDeg,
     CUP_BOWL,
-    clampToBound,
     FILLET_BOUNDS,
     FLARE_BOUNDS,
     resolveWallDefaults,
@@ -14,55 +14,63 @@ import {
 import { evaluateHeelCupGate } from "./hermite";
 
 describe("biomechanics wall defaults", () => {
-    test("keeps measured values inside the bound and clamps outside", () => {
-        expect(clampToBound(10, FLARE_BOUNDS.heelPosterior)).toEqual({ value: 10, clamped: false });
-        expect(clampToBound(4, FLARE_BOUNDS.heelPosterior)).toEqual({ value: 5, clamped: true });
-        expect(clampToBound(22, FLARE_BOUNDS.lateralMidfoot)).toEqual({ value: 20, clamped: true });
-        expect(clampToBound(1.91, FILLET_BOUNDS.topRimMm)).toEqual({ value: 1.91, clamped: false });
-        expect(clampToBound(3.43, FILLET_BOUNDS.bottomJoinMm)).toEqual({ value: 3.43, clamped: false });
-        expect(clampToBound(0.4, FILLET_BOUNDS.topRimMm)).toEqual({ value: 1, clamped: true });
+    test("stock flare defaults match measured Default.glb with widened bounds", () => {
+        expect(FLARE_BOUNDS.heelPosterior).toEqual({ recommended: 23.9, min: 10, max: 35 });
+        expect(FLARE_BOUNDS.heelMedial).toEqual({ recommended: 27.7, min: 10, max: 35 });
+        expect(FLARE_BOUNDS.heelLateral).toEqual({ recommended: 27.8, min: 10, max: 35 });
+        expect(FLARE_BOUNDS.medialArch).toEqual({ recommended: 23.0, min: 10, max: 35 });
+        expect(FLARE_BOUNDS.lateralMidfoot).toEqual({ recommended: 41.0, min: 15, max: 50 });
+        expect(FILLET_BOUNDS.topRimMm).toEqual({ recommended: 0.5, min: 0, max: 3 });
+        expect(FILLET_BOUNDS.bottomJoinMm).toEqual({ recommended: 0, min: 0, max: 5 });
     });
 
-    test("functional uses clamped measurements; accommodative overlays heel+5 / arch 25 / top 3.0", () => {
-        const functional = resolveWallDefaults({
-            flareDeg: { heelPosterior: 4, heelMedial: 8, heelLateral: 8, medialArch: 18, lateralMidfoot: 22 },
-            filletTopMm: 1.91,
-            filletBottomMm: 3.43,
+    test("does not clamp measured flare; reports when it sits outside the bound", () => {
+        expect(applyMeasuredUnclamped(41.0, FLARE_BOUNDS.lateralMidfoot)).toEqual({
+            value: 41.0,
+            clamped: false,
         });
-        expect(functional.flareDeg.heelPosterior).toBe(5);
-        expect(functional.flareDeg.medialArch).toBe(18);
-        expect(functional.flareDeg.lateralMidfoot).toBe(20);
-        expect(functional.wallFilletTopMm).toBe(1.91);
-        expect(functional.wallFilletBottomMm).toBe(3.43);
+        expect(applyMeasuredUnclamped(8, FLARE_BOUNDS.heelPosterior)).toEqual({
+            value: 8,
+            clamped: true,
+        });
+        expect(applyMeasuredUnclamped(null, FLARE_BOUNDS.medialArch)).toEqual({
+            value: 23.0,
+            clamped: false,
+        });
+    });
 
-        const acc = resolveWallDefaults(
-            {
-                flareDeg: {
-                    heelPosterior: 4,
-                    heelMedial: 8,
-                    heelLateral: 8,
-                    medialArch: 18,
-                    lateralMidfoot: 22,
-                },
-                filletTopMm: 1.91,
-                filletBottomMm: 3.43,
+    test("functional and accommodative share the same stock defaults", () => {
+        const measured = {
+            flareDeg: {
+                heelPosterior: 23.9,
+                heelMedial: 27.7,
+                heelLateral: 27.8,
+                medialArch: 23.0,
+                lateralMidfoot: 41.0,
             },
-            "accommodative",
-        );
-        expect(acc.flareDeg.heelPosterior).toBe(10);
-        expect(acc.flareDeg.heelMedial).toBe(13);
-        expect(acc.flareDeg.medialArch).toBe(25);
-        expect(acc.wallFilletTopMm).toBe(3);
+            filletTopMm: 0.067,
+            filletBottomMm: 0.067,
+        };
+        const functional = resolveWallDefaults(measured);
+        const acc = resolveWallDefaults(measured, "accommodative");
+        expect(functional.flareDeg).toEqual(acc.flareDeg);
+        expect(functional.wallFilletTopMm).toBe(0.5);
+        expect(acc.wallFilletTopMm).toBe(0.5);
+        expect(functional.wallFilletBottomMm).toBeCloseTo(0.067, 5);
+        expect(acc.wallFilletBottomMm).toBeCloseTo(0.067, 5);
+        expect(functional.report.some((r) => r.region === "accommodative overlay")).toBe(false);
+        expect(functional.flareDeg.lateralMidfoot).toBe(41.0);
+        expect(functional.flareDeg.heelPosterior).toBe(23.9);
     });
 
     test("flare blend has no step and forefoot height tapers to the trim", () => {
         const flare = resolveWallDefaults({
             flareDeg: {
-                heelPosterior: 10,
-                heelMedial: 8,
-                heelLateral: 8,
-                medialArch: 20,
-                lateralMidfoot: 12,
+                heelPosterior: 23.9,
+                heelMedial: 27.7,
+                heelLateral: 27.8,
+                medialArch: 23.0,
+                lateralMidfoot: 41.0,
             },
         }).flareDeg;
         const a = blendedFlareDeg(0.21, 8, flare);

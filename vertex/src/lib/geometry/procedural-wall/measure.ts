@@ -3,6 +3,8 @@
 
 import type { PolyPoint } from "./curves";
 import {
+    type FlareProfileKind,
+    type FlareRegionDiagnostic,
     type FlareRegionId,
     type RegionMeasurements,
     regionWeights,
@@ -160,11 +162,76 @@ export function measureRegionFeatures(
     };
 }
 
+export interface StationBandFlare {
+    lowerThirdDeg: number;
+    upperThirdDeg: number;
+}
+
+const PROFILE_REGIONS: Array<Exclude<FlareRegionId, "forefoot">> = [
+    "heelPosterior",
+    "heelMedial",
+    "heelLateral",
+    "medialArch",
+    "lateralMidfoot",
+];
+
+/**
+ * Per-region lower-vs-upper-third flare of the stock wall.
+ * Curved = flare rises smoothly (bowl). Kink = lip / sculpted flange.
+ */
+export function diagnoseFlareProfiles(
+    stations: StationSample[],
+    bands: StationBandFlare[],
+): FlareRegionDiagnostic[] {
+    const n = Math.min(stations.length, bands.length);
+    const out: FlareRegionDiagnostic[] = [];
+    for (const region of PROFILE_REGIONS) {
+        let lower = 0;
+        let upper = 0;
+        let w = 0;
+        for (let i = 0; i < n; i++) {
+            const st = stations[i]!;
+            if (dominantRegion(st.u, st.y) === "forefoot") continue;
+            const ww = regionWeights(st.u, st.y)[region];
+            if (ww < 0.35) continue;
+            const b = bands[i]!;
+            if (!Number.isFinite(b.lowerThirdDeg) || !Number.isFinite(b.upperThirdDeg)) continue;
+            lower += b.lowerThirdDeg * ww;
+            upper += b.upperThirdDeg * ww;
+            w += ww;
+        }
+        const lowerThirdDeg = w > 1e-6 ? lower / w : null;
+        const upperThirdDeg = w > 1e-6 ? upper / w : null;
+        let kind: FlareProfileKind = "linear";
+        let curvature = 0;
+        if (lowerThirdDeg != null && upperThirdDeg != null) {
+            const delta = lowerThirdDeg - upperThirdDeg;
+            if (delta > 8) {
+                kind = "curved";
+                curvature = Math.max(0, Math.min(1.5, delta / 45));
+            } else if (delta < -8) {
+                kind = "kink";
+                curvature = 0;
+            }
+        }
+        out.push({ region, lowerThirdDeg, upperThirdDeg, kind, curvature });
+    }
+    return out;
+}
+
 export function defaultsFromStockCurves(
     trim: PolyPoint[],
     outline: PolyPoint[],
     bounds: StockWallModel["bounds"],
     wallOffsets?: { topMm: number[]; botMm: number[] },
+    bandFlares?: StationBandFlare[],
 ): WallRegionDefaults {
-    return resolveWallDefaults(measureRegionFeatures(trim, outline, bounds, wallOffsets), "functional");
+    const measured = measureRegionFeatures(trim, outline, bounds, wallOffsets);
+    if (bandFlares && bandFlares.length) {
+        measured.flareDiagnostics = diagnoseFlareProfiles(
+            measureStations(trim, outline, bounds, wallOffsets),
+            bandFlares,
+        );
+    }
+    return resolveWallDefaults(measured, "functional");
 }

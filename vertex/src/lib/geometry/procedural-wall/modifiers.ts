@@ -12,7 +12,7 @@ export interface ProceduralModifierInput {
     corrections?: SideCorrections;
     thicknessMm?: number;
     stockThicknessMm?: number;
-    /** Accommodative overlays heel flare / arch / top fillet. Default functional. */
+    /** Device preset. Accommodative uses the same stock defaults as functional. */
     deviceType?: DeviceTypePreset;
     lateralFlange?: Partial<LateralFlangeParams>;
     /** Arch grind depth (mm) applied to the plantar sheet only. */

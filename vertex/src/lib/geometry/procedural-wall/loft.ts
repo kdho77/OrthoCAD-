@@ -3,6 +3,7 @@
 
 import type { PolyPoint } from "./curves";
 import {
+    blendedFlareCurvature,
     blendedFlareDeg,
     heelBowlMix,
     lateralFlangeEnvelope,
@@ -109,14 +110,17 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
         const chordN = (r.x - o.x) * st.n.x + (r.y - o.y) * st.n.y;
         const hScale = wallHeightScale(st.u);
         const flare = blendedFlareDeg(st.u, o.y, input.defaults.flareDeg);
-        const bowl = heelBowlMix(st.u);
+        const curvature = blendedFlareCurvature(st.u, o.y, input.defaults.flareCurvature);
+        const filletBot = input.defaults.wallFilletBottomMm;
+        const bowl = filletBot < 0.2 ? 0 : heelBowlMix(st.u);
         const { T0, T1 } = wallEndTangents({
             heightMm: Math.max(height, 0.5),
             flareDeg: flare,
             filletTopMm: input.defaults.wallFilletTopMm,
-            filletBottomMm: input.defaults.wallFilletBottomMm,
+            filletBottomMm: filletBot,
             bowlMix: bowl,
             bowlFactor: input.defaults.cupBowlFactor,
+            flareCurvature: curvature,
         });
         const P0 = { n: 0, z: o.z };
         const P1 = { n: chordN, z: r.z };

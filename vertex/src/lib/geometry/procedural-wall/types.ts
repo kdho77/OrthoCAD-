@@ -61,15 +61,17 @@ export interface BottomOutline {
     plantarZ: UvHeightField;
     /** Source plantar-silhouette sample count before the spline fit. */
     sourceCount: number;
-    /** Welded plantar/bottom sheet for XY height queries (S1 caps). */
+    /** Welded plantar sheet (downward faces, original topology). */
     meshPositions?: Float32Array;
     meshIndices?: Uint32Array;
+    /** Local indices of the ordered plantar boundary (CCW, heel-started). */
+    rimLocal?: number[];
 }
 
 /**
  * Parametric wall (Rhino model). Reverse-fit residuals are no longer used.
- * Flare / fillets are biomechanics defaults (measured from Default.glb, then
- * clamped). `offset*` arrays stay empty for S0 field-shape compatibility.
+ * Flare / fillets are stock-measured defaults (flare is never clamped).
+ * `offset*` arrays stay empty for S0 field-shape compatibility.
  */
 export interface WallProfile {
     /** Per-station flare from vertical (deg). 0 = vertical wall. */
@@ -145,6 +147,8 @@ export interface StockWallModel {
     bounds: { minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number };
     /** Measured vs bound table (Default.glb rule). */
     measuredVsBound?: import("./defaults").MeasuredVsBoundRow[];
+    /** Lower-vs-upper-third flare (curved bowl vs sculpted kink/lip). */
+    flareDiagnostics?: import("./defaults").FlareRegionDiagnostic[];
 }
 
 export interface LoftOptions {
@@ -167,8 +171,10 @@ export interface FoldReport {
     worstDeg: number;
     edgesAtLeast10Deg: number;
     interiorEdgeCount: number;
-    /** Wall↔sheet seam dihedral (deg). Fillet-implied ≈ 0; gate is +2°. */
+    /** Wall↔sheet seam dihedral (deg). Gated against stock at the same station. */
     seamWorstDeg?: number;
+    /** Stock seam dihedral at the same outline stations (deg). */
+    stockSeamWorstDeg?: number;
 }
 
 export interface ClinicalWallReport {

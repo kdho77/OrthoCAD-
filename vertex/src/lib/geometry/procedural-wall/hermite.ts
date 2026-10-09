@@ -67,13 +67,15 @@ export interface WallTangentInput {
     filletBottomMm: number;
     bowlMix: number;
     bowlFactor: number;
+    /** 0 = linear chord; >0 bows the profile toward the stock curved wall. */
+    flareCurvature?: number;
 }
 
 /**
- * End tangents so the wall is C1 to both sheets.
- * T0 is horizontal (along +n) for C1 to a flat plantar.
- * T1 is horizontal at the rim so the top fillet does not drop the trim vertex;
- * cup-height drop is measured on the meshed wall after the fillet.
+ * End tangents. With a ~0 bottom fillet the wall starts along the natural
+ * flare (not a horizontal C1), so the first ring is not coplanar with the
+ * plantar sheet. A non-zero bottom fillet blends toward a horizontal start.
+ * Flare-curvature adds outward bow when the stock profile is curved.
  */
 export function wallEndTangents(input: WallTangentInput): { T0: NZ; T1: NZ } {
     const H = Math.max(input.heightMm, 1e-3);
@@ -84,20 +86,31 @@ export function wallEndTangents(input: WallTangentInput): { T0: NZ; T1: NZ } {
         CUP_BOWL.radiusMinFactor * H,
         Math.min(CUP_BOWL.radiusMaxFactor * H, input.bowlFactor * H, circleR),
     );
-    const rBot = Math.max(FILLET_BOUNDS.bottomJoinMm.min, input.filletBottomMm);
-    const rTop = Math.max(FILLET_BOUNDS.topRimMm.min, input.filletTopMm);
-    const rFloor = rBot * (1 - input.bowlMix) + bowlR * input.bowlMix;
-    const cosEnd = Math.max(-1, Math.min(1, 1 - H / Math.max(rFloor, H * 0.51)));
-    const theta = Math.acos(cosEnd);
-    const t0n = rFloor * theta;
-    // Arrive along the bowl, then blend a little toward the top-rim fillet (horizontal).
-    const k = 0.18;
-    const t1n = rFloor * Math.cos(theta) * theta * (1 - k) + rTop * k;
-    const t1z = rFloor * Math.sin(theta) * theta * (1 - k);
-    return {
-        T0: { n: t0n, z: 0 },
-        T1: { n: t1n, z: t1z },
+    const rBot = Math.max(0, input.filletBottomMm);
+    const rTop = Math.max(0, input.filletTopMm);
+    const kappa = Math.max(0, input.flareCurvature ?? 0);
+
+    const cn = Math.sin(alpha);
+    const cz = Math.max(0.15, Math.cos(alpha));
+    let T0 = { n: cn * H + kappa * nChord, z: cz * H };
+
+    if (rBot > 1e-4) {
+        const w = Math.min(1, rBot / Math.max(H * 0.25, 1e-3));
+        const rFloor = rBot * (1 - input.bowlMix) + bowlR * input.bowlMix;
+        const cosEnd = Math.max(-1, Math.min(1, 1 - H / Math.max(rFloor, H * 0.51)));
+        const theta = Math.acos(cosEnd);
+        T0 = {
+            n: T0.n * (1 - w) + rFloor * theta * w,
+            z: T0.z * (1 - w),
+        };
+    }
+
+    const topW = Math.min(0.35, rTop / Math.max(H * 0.2, 1e-3));
+    const T1 = {
+        n: cn * H * (1 - topW) + rTop * topW,
+        z: cz * H * (1 - topW),
     };
+    return { T0, T1 };
 }
 
 /**
@@ -113,8 +126,8 @@ export function clusteredWallT(
 ): number {
     if (nT <= 2) return i / Math.max(1, nT - 1);
     const H = Math.max(heightMm, 1e-3);
-    const botFrac = Math.max(0.12, Math.min(0.4, filletBotMm / H));
-    const topFrac = Math.max(0.1, Math.min(0.35, filletTopMm / H));
+    const botFrac = Math.max(filletBotMm < 0.2 ? 0.05 : 0.12, Math.min(0.4, (filletBotMm + 0.15) / H));
+    const topFrac = Math.max(0.08, Math.min(0.35, (filletTopMm + 0.15) / H));
     const nBot = Math.max(4, Math.round((nT - 1) * 0.35));
     const nTop = Math.max(4, Math.round((nT - 1) * 0.3));
     const nMid = nT - 1 - nBot - nTop;
@@ -145,9 +158,9 @@ export interface HeelCupGateResult {
  */
 export function evaluateHeelCupGate(
     heightMm: number,
-    flareDeg = 10,
-    filletTopMm = 2,
-    filletBottomMm = 3,
+    flareDeg = 23.9,
+    filletTopMm = 0.5,
+    filletBottomMm = 0,
     bowlFactor = 0.5,
     samples = 96,
 ): HeelCupGateResult {

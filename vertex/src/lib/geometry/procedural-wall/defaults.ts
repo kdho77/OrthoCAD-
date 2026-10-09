@@ -6,9 +6,10 @@ import { smoothstep } from "@/lib/geometry/height-field";
 /**
  * Biomechanics Expert bounds for the parametric wall (S1).
  *
- * Rule: keep the value measured from Default.glb wherever it falls inside the
- * bound, otherwise clamp to the bound. CAD owns region-boundary placement;
- * flare is C1-blended so there is never a step between regions.
+ * Parity wins: flare defaults ARE the measured stock values. Bounds are
+ * widened for later UI, but measured flare is never clamped. CAD owns
+ * region-boundary placement; flare is C1-blended so there is never a step
+ * between regions.
  *
  * All of this is viewer-only behind `wallModel: 'procedural'`.
  */
@@ -23,8 +24,10 @@ export type FlareRegionId =
 
 export type DeviceTypePreset = "functional" | "accommodative";
 
+export type FlareProfileKind = "curved" | "kink" | "linear";
+
 export interface BoundSpec {
-    /** Biomechanics recommended default (used only when there is no measurement). */
+    /** Biomechanics / stock recommended default (used only when there is no measurement). */
     recommended: number;
     min: number;
     max: number;
@@ -32,16 +35,16 @@ export interface BoundSpec {
 }
 
 export const FLARE_BOUNDS: Record<Exclude<FlareRegionId, "forefoot">, BoundSpec> = {
-    heelPosterior: { recommended: 10, min: 5, max: 15 },
-    heelMedial: { recommended: 8, min: 5, max: 15 },
-    heelLateral: { recommended: 8, min: 5, max: 15 },
-    medialArch: { recommended: 20, min: 10, max: 30 },
-    lateralMidfoot: { recommended: 12, min: 5, max: 20 },
+    heelPosterior: { recommended: 23.9, min: 10, max: 35 },
+    heelMedial: { recommended: 27.7, min: 10, max: 35 },
+    heelLateral: { recommended: 27.8, min: 10, max: 35 },
+    medialArch: { recommended: 23.0, min: 10, max: 35 },
+    lateralMidfoot: { recommended: 41.0, min: 15, max: 50 },
 };
 
 export const FILLET_BOUNDS = {
-    topRimMm: { recommended: 2.0, min: 1, max: 3 } satisfies BoundSpec,
-    bottomJoinMm: { recommended: 3.0, min: 2, max: 5 } satisfies BoundSpec,
+    topRimMm: { recommended: 0.5, min: 0, max: 3 } satisfies BoundSpec,
+    bottomJoinMm: { recommended: 0, min: 0, max: 5 } satisfies BoundSpec,
     /** Top fillet must not lower cup height by more than this (measure after fillet). */
     maxCupHeightDropMm: 0.5,
 } as const;
@@ -71,8 +74,17 @@ export interface MeasuredVsBoundRow {
     unit: "deg" | "mm";
 }
 
+export interface FlareRegionDiagnostic {
+    region: Exclude<FlareRegionId, "forefoot">;
+    lowerThirdDeg: number | null;
+    upperThirdDeg: number | null;
+    kind: FlareProfileKind;
+    curvature: number;
+}
+
 export interface WallRegionDefaults {
     flareDeg: Record<Exclude<FlareRegionId, "forefoot">, number>;
+    flareCurvature: Record<Exclude<FlareRegionId, "forefoot">, number>;
     wallFilletTopMm: number;
     wallFilletBottomMm: number;
     cupBowlFactor: number;
@@ -80,6 +92,7 @@ export interface WallRegionDefaults {
     lateralFlangeLengthMm: number;
     lateralFlangeAngleDeg: number;
     report: MeasuredVsBoundRow[];
+    flareDiagnostics: FlareRegionDiagnostic[];
 }
 
 export function clampToBound(measured: number | null, spec: BoundSpec): { value: number; clamped: boolean } {
@@ -91,20 +104,34 @@ export function clampToBound(measured: number | null, spec: BoundSpec): { value:
     return { value: measured, clamped: false };
 }
 
+/** Apply the measured value even when it sits outside the (widened) bound. */
+export function applyMeasuredUnclamped(
+    measured: number | null,
+    spec: BoundSpec,
+): { value: number; clamped: boolean } {
+    if (measured == null || !Number.isFinite(measured)) {
+        return { value: spec.recommended, clamped: false };
+    }
+    return { value: measured, clamped: measured < spec.min || measured > spec.max };
+}
+
 function row(
     region: string,
     measured: number | null,
     spec: BoundSpec,
     unit: "deg" | "mm",
+    mode: "measure" | "recommended" = "measure",
 ): MeasuredVsBoundRow {
-    const { value, clamped } = clampToBound(measured, spec);
+    const finite = measured != null && Number.isFinite(measured) ? measured : null;
+    const applied = mode === "recommended" ? spec.recommended : applyMeasuredUnclamped(finite, spec).value;
+    const clamped = finite != null && (finite < spec.min || finite > spec.max);
     return {
         region,
-        measured: measured == null || !Number.isFinite(measured) ? null : measured,
+        measured: finite,
         boundMin: spec.min,
         boundMax: spec.max,
         recommended: spec.recommended,
-        applied: value,
+        applied,
         clamped,
         unit,
     };
@@ -115,16 +142,25 @@ export interface RegionMeasurements {
     filletTopMm?: number;
     filletBottomMm?: number;
     cupBowlFactor?: number;
+    flareDiagnostics?: FlareRegionDiagnostic[];
 }
 
+const ZERO_CURVATURE: WallRegionDefaults["flareCurvature"] = {
+    heelPosterior: 0,
+    heelMedial: 0,
+    heelLateral: 0,
+    medialArch: 0,
+    lateralMidfoot: 0,
+};
+
 /**
- * Keep Default.glb measurements inside the biomechanics bounds; otherwise clamp.
- * Functional preset = those clamped values. Accommodative overlays heel flare +5,
- * medial arch 25, top fillet 3.0.
+ * Stock-measured flare (unclamped) with widened bounds for later UI.
+ * Top rim fillet defaults to 0.5 mm; bottom join stays at the stock value (~0).
+ * Functional and accommodative share the same stock defaults (no +5/25 overlay).
  */
 export function resolveWallDefaults(
     measured: RegionMeasurements,
-    preset: DeviceTypePreset = "functional",
+    _preset: DeviceTypePreset = "functional",
 ): WallRegionDefaults {
     const heelP = row(
         "heel posterior flare",
@@ -156,7 +192,13 @@ export function resolveWallDefaults(
         FLARE_BOUNDS.lateralMidfoot,
         "deg",
     );
-    const topF = row("top rim fillet", measured.filletTopMm ?? null, FILLET_BOUNDS.topRimMm, "mm");
+    const topF = row(
+        "top rim fillet",
+        measured.filletTopMm ?? null,
+        FILLET_BOUNDS.topRimMm,
+        "mm",
+        "recommended",
+    );
     const botF = row("bottom join fillet", measured.filletBottomMm ?? null, FILLET_BOUNDS.bottomJoinMm, "mm");
 
     const flareDeg = {
@@ -166,7 +208,13 @@ export function resolveWallDefaults(
         medialArch: arch.applied,
         lateralMidfoot: mid.applied,
     };
-    let wallFilletTopMm = topF.applied;
+    const flareDiagnostics = measured.flareDiagnostics ?? [];
+    const flareCurvature = { ...ZERO_CURVATURE };
+    for (const d of flareDiagnostics) {
+        flareCurvature[d.region] = d.kind === "curved" ? d.curvature : 0;
+    }
+
+    const wallFilletTopMm = topF.applied;
     const wallFilletBottomMm = botF.applied;
     const cupBowlFactor = Math.max(
         CUP_BOWL.radiusMinFactor,
@@ -175,26 +223,9 @@ export function resolveWallDefaults(
 
     const report = [heelP, heelM, heelL, arch, mid, topF, botF];
 
-    if (preset === "accommodative") {
-        flareDeg.heelPosterior += 5;
-        flareDeg.heelMedial += 5;
-        flareDeg.heelLateral += 5;
-        flareDeg.medialArch = 25;
-        wallFilletTopMm = 3.0;
-        report.push({
-            region: "accommodative overlay",
-            measured: null,
-            boundMin: 0,
-            boundMax: 0,
-            recommended: 0,
-            applied: 1,
-            clamped: false,
-            unit: "deg",
-        });
-    }
-
     return {
         flareDeg,
+        flareCurvature,
         wallFilletTopMm,
         wallFilletBottomMm,
         cupBowlFactor,
@@ -202,6 +233,7 @@ export function resolveWallDefaults(
         lateralFlangeLengthMm: LATERAL_FLANGE_BOUNDS.lengthMm.recommended,
         lateralFlangeAngleDeg: LATERAL_FLANGE_BOUNDS.angleDeg.recommended,
         report,
+        flareDiagnostics,
     };
 }
 
@@ -236,13 +268,30 @@ export function regionWeights(u: number, y: number): Record<FlareRegionId, numbe
 
 /** C1-blended flare (deg from vertical). Forefoot does not contribute a flare step. */
 export function blendedFlareDeg(u: number, y: number, flare: WallRegionDefaults["flareDeg"]): number {
+    return blendRegionScalar(u, y, flare);
+}
+
+/** C1-blended flare-curvature (0 = linear chord, >0 = stock bowl). */
+export function blendedFlareCurvature(
+    u: number,
+    y: number,
+    curvature: WallRegionDefaults["flareCurvature"],
+): number {
+    return blendRegionScalar(u, y, curvature);
+}
+
+function blendRegionScalar(
+    u: number,
+    y: number,
+    values: Record<Exclude<FlareRegionId, "forefoot">, number>,
+): number {
     const w = regionWeights(u, y);
     const num =
-        w.heelPosterior * flare.heelPosterior +
-        w.heelMedial * flare.heelMedial +
-        w.heelLateral * flare.heelLateral +
-        w.medialArch * flare.medialArch +
-        w.lateralMidfoot * flare.lateralMidfoot;
+        w.heelPosterior * values.heelPosterior +
+        w.heelMedial * values.heelMedial +
+        w.heelLateral * values.heelLateral +
+        w.medialArch * values.medialArch +
+        w.lateralMidfoot * values.lateralMidfoot;
     const den = w.heelPosterior + w.heelMedial + w.heelLateral + w.medialArch + w.lateralMidfoot;
     if (den < 1e-9) return 0;
     return num / den;

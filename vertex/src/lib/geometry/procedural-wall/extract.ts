@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import type { BufferGeometry } from "three";
+import { BufferAttribute, BufferGeometry } from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { PLANTAR_Z_MAX_MM } from "@/lib/geometry/base-modifier";
 import { quinticSmoothstep } from "@/lib/geometry/height-field";
@@ -19,7 +19,8 @@ import {
     startAtPosteriorHeel,
 } from "./curves";
 import { blendedFlareDeg } from "./defaults";
-import { defaultsFromStockCurves } from "./measure";
+import { buildXyHeightIndex, sampleXyHeight } from "./height-xy";
+import { defaultsFromStockCurves, type StationBandFlare } from "./measure";
 import { buildPlanformFrame } from "./planform";
 import { DEFAULT_LOFT_N, type StockWallModel, type UvHeightField, type WallProfile } from "./types";
 
@@ -518,7 +519,23 @@ export function extractStockWallModel(
     const topRim = extractTopRim(geo);
     const rimSet = new Set(topRim.points.map((p) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`));
     const topInterior = top.filter((p) => !rimSet.has(`${p.x.toFixed(3)},${p.y.toFixed(3)}`));
-    let outlinePoly = extractPlantarOutline(geo, topRim.points);
+    const plantarSheet = extractPlantarSheet(geo);
+    let outlinePoly: PolyPoint[] = [];
+    if (plantarSheet.meshPositions && plantarSheet.rimLocal && plantarSheet.rimLocal.length >= 8) {
+        const ppos = plantarSheet.meshPositions;
+        const rimPts = plantarSheet.rimLocal.map((i) => ({
+            x: ppos[i * 3]!,
+            y: ppos[i * 3 + 1]!,
+            z: ppos[i * 3 + 2]!,
+            i,
+        }));
+        const ordered = startAtPosteriorHeel(ensureCcw(rimPts)) as Array<PolyPoint & { i: number }>;
+        plantarSheet.rimLocal = ordered.map((p) => p.i);
+        outlinePoly = ordered.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    }
+    if (outlinePoly.length < 8) {
+        outlinePoly = extractPlantarOutline(geo, topRim.points);
+    }
     if (outlinePoly.length < 8) {
         // Last resort: longest branched bottom cycle projected to its low-Z verts.
         const topN = topVertexCountOf(geo);
@@ -543,7 +560,11 @@ export function extractStockWallModel(
     outlineSpline.controls = outlineOnTrim;
     const plantarField = buildUvField(plantar.length ? plantar : outlineOnTrim);
     for (const p of outlineOnTrim) {
-        p.z = sampleUvField(plantarField, p.x, p.y) ?? Math.min(p.z, PLANTAR_Z_MAX_MM);
+        const fromSheet =
+            plantarSheet.meshPositions && plantarSheet.meshIndices
+                ? samplePlantarSheetZ(plantarSheet.meshPositions, plantarSheet.meshIndices, p.x, p.y)
+                : null;
+        p.z = fromSheet ?? sampleUvField(plantarField, p.x, p.y) ?? Math.min(p.z, PLANTAR_Z_MAX_MM);
     }
     const wallPts = wall.length || plantar.length ? wall.concat(plantar) : top;
     // Measurement-only: chord flare + band residuals. Residuals are not lofted.
@@ -553,7 +574,14 @@ export function extractStockWallModel(
     const botBand = measuredProfile.offsetH.findIndex((h) => h >= 0.12);
     const topMm = Array.from({ length: nSt }, (_, i) => Math.abs(measuredProfile.offsetMm[topBand]![i] ?? 0));
     const botMm = Array.from({ length: nSt }, (_, i) => Math.abs(measuredProfile.offsetMm[botBand]![i] ?? 0));
-    const defaults = defaultsFromStockCurves(trimSpline.controls, outlineOnTrim, bounds, { topMm, botMm });
+    const bandFlares = measureStationBandFlares(trimSpline.controls, outlineOnTrim, wallPts);
+    const defaults = defaultsFromStockCurves(
+        trimSpline.controls,
+        outlineOnTrim,
+        bounds,
+        { topMm, botMm },
+        bandFlares,
+    );
     const planform = buildPlanformFrame(outlineSpline.controls, trimSpline.controls);
 
     const topSheet = copyTopMesh(geo);
@@ -603,57 +631,14 @@ export function extractStockWallModel(
             spline: outlineSpline,
             plantarZ: plantarField,
             sourceCount: outlinePoly.length,
-            ...copyBottomMesh(geo),
+            ...plantarSheet,
         },
         wall: wallProfile,
         planform,
         bounds,
         measuredVsBound: defaults.report,
+        flareDiagnostics: defaults.flareDiagnostics,
     };
-}
-
-function copyRangeMesh(
-    geo: BufferGeometry,
-    start: number,
-    end: number,
-): { meshPositions: Float32Array; meshIndices: Uint32Array } | Record<string, never> {
-    if (end - start < 3) return {};
-    const sub = submeshByVertexRange(geo, start, end);
-    const welded = mergeVertices(sub, 1e-4);
-    if (welded !== sub) sub.dispose();
-    try {
-        const pos = welded.getAttribute("position");
-        const meshPositions = new Float32Array(pos.array as ArrayLike<number>);
-        const idx = welded.getIndex();
-        const meshIndices = idx ? new Uint32Array(idx.array as ArrayLike<number>) : new Uint32Array(0);
-        return { meshPositions, meshIndices };
-    } finally {
-        welded.dispose();
-    }
-}
-
-function copyBottomMesh(
-    geo: BufferGeometry,
-): { meshPositions: Float32Array; meshIndices: Uint32Array } | Record<string, never> {
-    const topN = topVertexCountOf(geo);
-    const count = geo.getAttribute("position").count;
-    const start = topN > 0 && topN < count ? topN : 0;
-    const raw = copyRangeMesh(geo, start, count);
-    if (!raw.meshPositions || !raw.meshIndices) return raw;
-    const pos = raw.meshPositions;
-    const kept: number[] = [];
-    for (let t = 0; t < raw.meshIndices.length; t += 3) {
-        const i0 = raw.meshIndices[t]!;
-        const i1 = raw.meshIndices[t + 1]!;
-        const i2 = raw.meshIndices[t + 2]!;
-        const z0 = pos[i0 * 3 + 2]!;
-        const z1 = pos[i1 * 3 + 2]!;
-        const z2 = pos[i2 * 3 + 2]!;
-        if ((z0 + z1 + z2) / 3 <= SOLE_FIELD_Z_MM + 6) {
-            kept.push(i0, i1, i2);
-        }
-    }
-    return { meshPositions: pos, meshIndices: new Uint32Array(kept) };
 }
 
 function copyTopMesh(geo: BufferGeometry):
@@ -687,6 +672,167 @@ export function extractTopSheet(geo: BufferGeometry): {
     rimLocal?: number[];
 } {
     return copyTopMesh(geo);
+}
+
+function samplePlantarSheetZ(
+    positions: Float32Array,
+    indices: Uint32Array,
+    x: number,
+    y: number,
+): number | null {
+    const height = buildXyHeightIndex(positions, indices);
+    return sampleXyHeight(height, x, y, "min");
+}
+
+function measureStationBandFlares(
+    trim: PolyPoint[],
+    outline: PolyPoint[],
+    wallPts: PolyPoint[],
+): StationBandFlare[] {
+    const n = Math.min(trim.length, outline.length);
+    const hash = buildPointHash(wallPts, WALL_HASH_CELL);
+    const centroid = polygonCentroid(outline);
+    const out: StationBandFlare[] = [];
+    for (let i = 0; i < n; i++) {
+        const t = trim[i]!;
+        const o = outline[i]!;
+        const nxy = outwardNormal(outline, i, centroid);
+        const hitAt = (frac: number): PolyPoint => {
+            const cx = o.x + (t.x - o.x) * frac;
+            const cy = o.y + (t.y - o.y) * frac;
+            const cz = o.z + (t.z - o.z) * frac;
+            return nearestInHash(hash, cx, cy, cz, WALL_HASH_CELL, WALL_SEARCH_MM) ?? { x: cx, y: cy, z: cz };
+        };
+        const p0 = o;
+        const pLo = hitAt(1 / 3);
+        const pHi0 = hitAt(2 / 3);
+        const p1 = t;
+        const local = (a: PolyPoint, b: PolyPoint): number => {
+            const dn = (b.x - a.x) * nxy.x + (b.y - a.y) * nxy.y;
+            const dz = b.z - a.z;
+            return (Math.atan2(dn, Math.max(dz, 1e-6)) * 180) / Math.PI;
+        };
+        out.push({ lowerThirdDeg: local(p0, pLo), upperThirdDeg: local(pHi0, p1) });
+    }
+    return out;
+}
+
+type PlantarSheet = {
+    meshPositions: Float32Array;
+    meshIndices: Uint32Array;
+    rimLocal: number[];
+};
+
+/**
+ * Face-selected downward faces of the stock bottom, welded, original topology.
+ * Largest connected component with nz < -0.35 in the low-Z band.
+ */
+export function extractPlantarSheet(geo: BufferGeometry): Partial<PlantarSheet> {
+    const posAttr = geo.getAttribute("position");
+    const index = geo.getIndex();
+    if (!posAttr || !index) return {};
+    const pos = posAttr.array as Float32Array;
+    const idx = index.array;
+    const topN = topVertexCountOf(geo);
+    const kept: number[][] = [];
+    for (let t = 0; t < idx.length; t += 3) {
+        const i0 = idx[t]!;
+        const i1 = idx[t + 1]!;
+        const i2 = idx[t + 2]!;
+        if (topN > 0 && i0 < topN && i1 < topN && i2 < topN) continue;
+        const ax = pos[i0 * 3]!;
+        const ay = pos[i0 * 3 + 1]!;
+        const az = pos[i0 * 3 + 2]!;
+        const bx = pos[i1 * 3]!;
+        const by = pos[i1 * 3 + 1]!;
+        const bz = pos[i1 * 3 + 2]!;
+        const cx = pos[i2 * 3]!;
+        const cy = pos[i2 * 3 + 1]!;
+        const cz = pos[i2 * 3 + 2]!;
+        const ux = bx - ax;
+        const uy = by - ay;
+        const uz = bz - az;
+        const vx = cx - ax;
+        const vy = cy - ay;
+        const vz = cz - az;
+        const nx = uy * vz - uz * vy;
+        const ny = uz * vx - ux * vz;
+        const nz = ux * vy - uy * vx;
+        const len = Math.hypot(nx, ny, nz);
+        if (len < 1e-12) continue;
+        const faceZ = (az + bz + cz) / 3;
+        if (nz / len < -0.35 && faceZ <= SOLE_FIELD_Z_MM + 6) {
+            kept.push([i0, i1, i2]);
+        }
+    }
+    if (kept.length < 8) return {};
+
+    const vertFaces = new Map<number, number[]>();
+    for (let f = 0; f < kept.length; f++) {
+        for (const v of kept[f]!) {
+            let list = vertFaces.get(v);
+            if (!list) {
+                list = [];
+                vertFaces.set(v, list);
+            }
+            list.push(f);
+        }
+    }
+    const seen = new Uint8Array(kept.length);
+    let best: number[] = [];
+    for (let seed = 0; seed < kept.length; seed++) {
+        if (seen[seed]) continue;
+        const stack = [seed];
+        const comp: number[] = [];
+        seen[seed] = 1;
+        while (stack.length) {
+            const f = stack.pop()!;
+            comp.push(f);
+            for (const v of kept[f]!) {
+                const nbrs = vertFaces.get(v);
+                if (!nbrs) continue;
+                for (const g of nbrs) {
+                    if (!seen[g]) {
+                        seen[g] = 1;
+                        stack.push(g);
+                    }
+                }
+            }
+        }
+        if (comp.length > best.length) best = comp;
+    }
+    const faces = best.length ? best.map((f) => kept[f]!) : kept;
+
+    const used = new Map<number, number>();
+    const newPos: number[] = [];
+    const newIdx: number[] = [];
+    for (const tri of faces) {
+        for (const old of tri) {
+            let ni = used.get(old);
+            if (ni == null) {
+                ni = newPos.length / 3;
+                used.set(old, ni);
+                newPos.push(pos[old * 3]!, pos[old * 3 + 1]!, pos[old * 3 + 2]!);
+            }
+            newIdx.push(ni);
+        }
+    }
+    const tmp = new BufferGeometry();
+    tmp.setAttribute("position", new BufferAttribute(new Float32Array(newPos), 3));
+    tmp.setIndex(newIdx);
+    const welded = mergeVertices(tmp, 1e-4);
+    if (welded !== tmp) tmp.dispose();
+    try {
+        const wpos = welded.getAttribute("position");
+        const meshPositions = new Float32Array(wpos.array as ArrayLike<number>);
+        const widx = welded.getIndex();
+        const meshIndices = widx ? new Uint32Array(widx.array as ArrayLike<number>) : new Uint32Array(0);
+        const rim = extractOrderedBoundaryLoopWithIndices(welded);
+        if (rim.indices.length < 8) return { meshPositions, meshIndices };
+        return { meshPositions, meshIndices, rimLocal: rim.indices.slice() };
+    } finally {
+        welded.dispose();
+    }
 }
 
 export function matchedLoftCurves(

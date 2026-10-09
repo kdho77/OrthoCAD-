@@ -52,11 +52,75 @@ function orient(
     return adx * (bdy * cdz - bdz * cdy) - ady * (bdx * cdz - bdz * cdx) + adz * (bdx * cdy - bdy * cdx);
 }
 
-function segmentsShareVertex(a: Tri, b: Tri): boolean {
-    const A = [a.i0, a.i1, a.i2];
+function sharedVertexCount(a: Tri, b: Tri): number {
     const B = [b.i0, b.i1, b.i2];
-    for (const i of A) if (B.includes(i)) return true;
-    return false;
+    let n = 0;
+    if (B.includes(a.i0)) n++;
+    if (B.includes(a.i1)) n++;
+    if (B.includes(a.i2)) n++;
+    return n;
+}
+
+function segmentsShareVertex(a: Tri, b: Tri): boolean {
+    return sharedVertexCount(a, b) > 0;
+}
+
+function facesShareEdge(a: Tri, b: Tri): boolean {
+    return sharedVertexCount(a, b) >= 2;
+}
+
+function triNormal(t: Tri): [number, number, number] | null {
+    const ux = t.bx - t.ax;
+    const uy = t.by - t.ay;
+    const uz = t.bz - t.az;
+    const vx = t.cx - t.ax;
+    const vy = t.cy - t.ay;
+    const vz = t.cz - t.az;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-12) return null;
+    return [nx / len, ny / len, nz / len];
+}
+
+/** Coplanar neighbors across a stitch (duplicate-vert seams, first-ring slivers). */
+function facesCoplanarNeighbors(a: Tri, b: Tri): boolean {
+    const na = triNormal(a);
+    const nb = triNormal(b);
+    if (!na || !nb) return false;
+    const dot = Math.abs(na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2]);
+    if (dot < 0.999) return false;
+    const dist = Math.abs((b.ax - a.ax) * na[0] + (b.ay - a.ay) * na[1] + (b.az - a.az) * na[2]);
+    if (dist > 0.15) return false;
+    if (
+        a.maxX < b.minX - 0.4 ||
+        a.minX > b.maxX + 0.4 ||
+        a.maxY < b.minY - 0.4 ||
+        a.minY > b.maxY + 0.4 ||
+        a.maxZ < b.minZ - 0.4 ||
+        a.minZ > b.maxZ + 0.4
+    ) {
+        return false;
+    }
+    const av = [
+        [a.ax, a.ay, a.az],
+        [a.bx, a.by, a.bz],
+        [a.cx, a.cy, a.cz],
+    ];
+    const bv = [
+        [b.ax, b.ay, b.az],
+        [b.bx, b.by, b.bz],
+        [b.cx, b.cy, b.cz],
+    ];
+    let minD = Infinity;
+    for (const p of av) {
+        for (const q of bv) {
+            const d = Math.hypot(p[0]! - q[0]!, p[1]! - q[1]!, p[2]! - q[2]!);
+            if (d < minD) minD = d;
+        }
+    }
+    return minD < 1.5;
 }
 
 function pointInTri(px: number, py: number, pz: number, t: Tri): boolean {
@@ -129,7 +193,10 @@ function trianglesIntersect(a: Tri, b: Tri): boolean {
     return false;
 }
 
-/** Count proper triangle-triangle intersections (shared-vertex pairs skipped). */
+/**
+ * Count proper triangle-triangle intersections.
+ * Skips pairs that share a vertex or edge, and coplanar neighbors across a stitch.
+ */
 export function countSelfIntersections(geo: BufferGeometry): number {
     const pos = geo.getAttribute("position").array as Float32Array;
     const index = geo.getIndex();
@@ -209,7 +276,8 @@ export function countSelfIntersections(geo: BufferGeometry): number {
                         if (j <= i || queried.has(j)) continue;
                         queried.add(j);
                         const b = tris[j]!;
-                        if (segmentsShareVertex(a, b)) continue;
+                        if (segmentsShareVertex(a, b) || facesShareEdge(a, b)) continue;
+                        if (facesCoplanarNeighbors(a, b)) continue;
                         if (trianglesIntersect(a, b)) hits++;
                     }
                 }
