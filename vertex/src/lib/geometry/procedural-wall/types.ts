@@ -61,6 +61,9 @@ export interface BottomOutline {
     plantarZ: UvHeightField;
     /** Source plantar-silhouette sample count before the spline fit. */
     sourceCount: number;
+    /** Welded plantar/bottom sheet for XY height queries (S1 caps). */
+    meshPositions?: Float32Array;
+    meshIndices?: Uint32Array;
 }
 
 /**
@@ -85,6 +88,37 @@ export interface WallProfile {
     offsetXyz: Array<Array<{ x: number; y: number; z: number }>>;
 }
 
+/** One planform column: plane spanned by inward n(s) and +Z. */
+export interface PlanformColumn {
+    s: number;
+    s01: number;
+    outline: { x: number; y: number; z: number };
+    n: { x: number; y: number };
+    tangent: { x: number; y: number };
+    rim: { x: number; y: number; z: number };
+    rho: number;
+}
+
+/** Smoothed BottomOutline frame. n(s) is the inward normal of the filtered curve. */
+export interface PlanformFrame {
+    columns: PlanformColumn[];
+    totalS: number;
+    minRho: number;
+    spacingOk: boolean;
+    detSignStable: boolean;
+    maxFitResidualMm: number;
+}
+
+/** Per-column 2D cubic B-spline P(t) = (offset along n, z). Allows overhang. */
+export interface ColumnProfile {
+    s01: number;
+    /** 8–12 cubic B-spline poles in (n, z). */
+    poles: Array<{ n: number; z: number }>;
+    residualMm: number;
+    plantar: { n: number; z: number };
+    rim: { n: number; z: number };
+}
+
 export interface StockWallModel {
     id: string;
     name: string;
@@ -92,6 +126,8 @@ export interface StockWallModel {
     trim: TrimCurve;
     outline: BottomOutline;
     wall: WallProfile;
+    planform?: PlanformFrame;
+    columns?: ColumnProfile[];
     /** Footprint AABB after `reorientToFootprintFrame`. */
     bounds: { minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number };
 }
@@ -135,3 +171,42 @@ export const PLANTAR_BAND_Z_MM = 1.0;
 export const HAUSDORFF_LIMIT_MM = 0.2;
 export const FOLD_WORST_LIMIT_DEG = 8;
 export const FOLD_HARD_LIMIT_DEG = 10;
+
+/** S1 column count (64–96), denser at heel and waist. */
+export const S1_COLUMN_COUNT = 80;
+export const S1_PROFILE_POLES = 10;
+export const S1_LOFT_T_SAMPLES = 18;
+export const S1_WAIST_RHO_MM = 15;
+export const S1_PROFILE_RESIDUAL_MM = 0.1;
+export const S1_MIN_WALL_MM = 0.8;
+
+export const S1_HAUSDORFF = {
+    topMax: 0.05,
+    plantarMax: 0.05,
+    curveMax: 0.1,
+    wallMax: 0.5,
+    wallP99: 0.3,
+    wallMean: 0.15,
+    heelCupMax: 0.3,
+} as const;
+
+export interface TieredHausdorffReport {
+    top: HausdorffReport;
+    plantar: HausdorffReport;
+    rim: HausdorffReport;
+    outline: HausdorffReport;
+    wall: HausdorffReport;
+    heelCup: HausdorffReport;
+}
+
+export interface S1ParityReport {
+    id: string;
+    name: string;
+    hausdorff: TieredHausdorffReport;
+    fold: FoldReport;
+    manifold: { watertight: boolean; openEdges: number; nonManifoldEdges: number };
+    selfIntersections: number;
+    minWallMm: number;
+    nonCrossing: boolean;
+    soleUvIdentical: boolean;
+}

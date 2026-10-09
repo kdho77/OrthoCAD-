@@ -18,9 +18,11 @@ import {
     resamplePolyline,
     startAtPosteriorHeel,
 } from "./curves";
+import { buildPlanformFrame } from "./planform";
+import { fitColumnProfiles } from "./profile";
 import { DEFAULT_LOFT_N, type StockWallModel, type UvHeightField, type WallProfile } from "./types";
 
-const UV_CELL_MM = 0.7;
+const UV_CELL_MM = 0.4;
 const OUTLINE_BINS = 360;
 const OFFSET_H = [0, 0.06, 0.12, 0.18, 0.25, 0.32, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
 const WALL_HASH_CELL = 2.5;
@@ -544,6 +546,14 @@ export function extractStockWallModel(
     }
     const wallPts = wall.length || plantar.length ? wall.concat(plantar) : top;
     const wallProfile = extractWallProfile(trimSpline.controls, outlineOnTrim, wallPts);
+    const planform = buildPlanformFrame(outlineSpline.controls, trimSpline.controls);
+    const columns = fitColumnProfiles(planform, geo);
+    planform.maxFitResidualMm = columns.reduce((m, c) => Math.max(m, c.residualMm), 0);
+    wallProfile.flareDeg = planform.columns.map((col) => {
+        const horiz = Math.hypot(col.rim.x - col.outline.x, col.rim.y - col.outline.y);
+        return (Math.atan2(horiz, Math.max(col.rim.z - col.outline.z, 1e-6)) * 180) / Math.PI;
+    });
+    wallProfile.cupHeightMm = planform.columns.map((col) => col.rim.z - col.outline.z);
 
     return {
         id: meta.id,
@@ -557,10 +567,57 @@ export function extractStockWallModel(
             spline: outlineSpline,
             plantarZ: plantarField,
             sourceCount: outlinePoly.length,
+            ...copyBottomMesh(geo),
         },
         wall: wallProfile,
+        planform,
+        columns,
         bounds,
     };
+}
+
+function copyRangeMesh(
+    geo: BufferGeometry,
+    start: number,
+    end: number,
+): { meshPositions: Float32Array; meshIndices: Uint32Array } | Record<string, never> {
+    if (end - start < 3) return {};
+    const sub = submeshByVertexRange(geo, start, end);
+    const welded = mergeVertices(sub, 1e-4);
+    if (welded !== sub) sub.dispose();
+    try {
+        const pos = welded.getAttribute("position");
+        const meshPositions = new Float32Array(pos.array as ArrayLike<number>);
+        const idx = welded.getIndex();
+        const meshIndices = idx ? new Uint32Array(idx.array as ArrayLike<number>) : new Uint32Array(0);
+        return { meshPositions, meshIndices };
+    } finally {
+        welded.dispose();
+    }
+}
+
+function copyBottomMesh(
+    geo: BufferGeometry,
+): { meshPositions: Float32Array; meshIndices: Uint32Array } | Record<string, never> {
+    const topN = topVertexCountOf(geo);
+    const count = geo.getAttribute("position").count;
+    const start = topN > 0 && topN < count ? topN : 0;
+    const raw = copyRangeMesh(geo, start, count);
+    if (!raw.meshPositions || !raw.meshIndices) return raw;
+    const pos = raw.meshPositions;
+    const kept: number[] = [];
+    for (let t = 0; t < raw.meshIndices.length; t += 3) {
+        const i0 = raw.meshIndices[t]!;
+        const i1 = raw.meshIndices[t + 1]!;
+        const i2 = raw.meshIndices[t + 2]!;
+        const z0 = pos[i0 * 3 + 2]!;
+        const z1 = pos[i1 * 3 + 2]!;
+        const z2 = pos[i2 * 3 + 2]!;
+        if ((z0 + z1 + z2) / 3 <= SOLE_FIELD_Z_MM + 1.2) {
+            kept.push(i0, i1, i2);
+        }
+    }
+    return { meshPositions: pos, meshIndices: new Uint32Array(kept) };
 }
 
 function copyTopMesh(geo: BufferGeometry):

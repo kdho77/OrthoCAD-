@@ -233,9 +233,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     }, [assetId, side, layout.lengthMm, layout.widthMm, layout.usMenSize, building, design]);
 
     // Re-apply modifiers whenever corrections / elements / thickness change.
-    // `wallModel: 'procedural'` is S0 viewer-only: reconstruct the unmodified
-    // sized base from the extracted representation. Modifier / export paths
-    // are unchanged.
+    // `wallModel: 'procedural'` is viewer-only (S1): loft from planform columns.
+    // Widen / cup / lift move only the curves; profile interiors rescale affinely.
+    // Export / legacy modifier paths are unchanged.
     // biome-ignore lint/correctness/useExhaustiveDependencies: preview patches + live draft trimline are intentional triggers
     useEffect(() => {
         const raw = baseGeoRef.current;
@@ -245,7 +245,18 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 id: assetId,
                 name: getDesignBase(design, side)?.name ?? assetId,
             });
-            const rebuilt = reconstructProceduralWalls(extracted);
+            const committedThickness = design.paired
+                ? side === "left"
+                    ? design.paired.leftThicknessMm
+                    : design.paired.rightThicknessMm
+                : design.thicknessMm;
+            const thicknessMm = thicknessPreview ?? committedThickness;
+            const field = baseModifierField(design, side, thicknessMm);
+            const rebuilt = reconstructProceduralWalls(extracted, {
+                corrections: field.corrections,
+                thicknessMm,
+                stockThicknessMm: field.thicknessMm > 0 ? 3 : field.thicknessMm,
+            });
             if (outRef.current && outRef.current !== workRef.current) {
                 outRef.current.dispose();
             }

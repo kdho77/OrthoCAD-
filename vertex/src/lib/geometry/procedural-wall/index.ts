@@ -3,7 +3,16 @@
 
 export { fitClosedC2Spline, resampleClosedC2, resamplePolyline } from "./curves";
 export { extractStockWallModel, matchedLoftCurves, sampleUvField } from "./extract";
-export { foldReport, hausdorffReport, reconstructionManifold } from "./metrics";
+export { countSelfIntersections } from "./intersect";
+export {
+    foldReport,
+    hausdorffReport,
+    minWallThicknessMm,
+    reconstructionManifold,
+    tieredHausdorffReport,
+} from "./metrics";
+export { applyCurveModifiers } from "./modifiers";
+export { assertNonCrossing, buildPlanformFrame } from "./planform";
 export { reconstructProceduralWalls } from "./reconstruct";
 export {
     mapZoneFixtures,
@@ -14,11 +23,15 @@ export {
 } from "./sole-uv";
 export type {
     BottomOutline,
+    ColumnProfile,
     FoldReport,
     HausdorffReport,
     LoftOptions,
+    PlanformFrame,
     S0ParityReport,
+    S1ParityReport,
     StockWallModel,
+    TieredHausdorffReport,
     TopSurface,
     TrimCurve,
     UvHeightField,
@@ -30,4 +43,7 @@ export {
     FOLD_HARD_LIMIT_DEG,
     FOLD_WORST_LIMIT_DEG,
     HAUSDORFF_LIMIT_MM,
+    S1_HAUSDORFF,
+    S1_MIN_WALL_MM,
+    S1_PROFILE_RESIDUAL_MM,
 } from "./types";

@@ -3,7 +3,7 @@
 
 import type { BufferGeometry } from "three";
 import { analyzeManifold } from "@/lib/geometry/manifold";
-import type { FoldReport, HausdorffReport } from "./types";
+import type { FoldReport, HausdorffReport, StockWallModel, TieredHausdorffReport } from "./types";
 
 interface Tri {
     ax: number;
@@ -348,6 +348,128 @@ export function foldReport(reconstruction: BufferGeometry): FoldReport {
     }
 
     return { worstDeg: worst, edgesAtLeast10Deg: hard, interiorEdgeCount: interior };
+}
+
+function regionMask(verts: Float32Array, pred: (x: number, y: number, z: number) => boolean): Float32Array {
+    const out: number[] = [];
+    for (let i = 0; i < verts.length; i += 3) {
+        if (pred(verts[i]!, verts[i + 1]!, verts[i + 2]!)) {
+            out.push(verts[i]!, verts[i + 1]!, verts[i + 2]!);
+        }
+    }
+    return new Float32Array(out);
+}
+
+function directedToMesh(from: Float32Array, toHash: Map<string, Tri[]>, stride: number): number[] {
+    return directedHausdorff(from, toHash, stride);
+}
+
+export function tieredHausdorffReport(
+    original: BufferGeometry,
+    reconstruction: BufferGeometry,
+    model: StockWallModel,
+): TieredHausdorffReport {
+    const a = geometryTriangles(original);
+    const b = geometryTriangles(reconstruction);
+    const hashA = new Map<string, Tri[]>();
+    const hashB = new Map<string, Tri[]>();
+    for (const t of a.tris) hashInsert(hashA, t, HASH_CELL);
+    for (const t of b.tris) hashInsert(hashB, t, HASH_CELL);
+    const minZ = model.bounds.minZ;
+    const maxZ = model.bounds.maxZ;
+    const span = Math.max(1e-3, maxZ - minZ);
+    const minX = model.bounds.minX;
+    const length = Math.max(1e-3, model.bounds.maxX - minX);
+    const strideA = Math.max(1, Math.floor(a.verts.length / 3 / 30_000));
+
+    const pair = (
+        pred: (x: number, y: number, z: number) => boolean,
+        strideFromOrig: number,
+    ): HausdorffReport => {
+        const va = regionMask(a.verts, pred);
+        const vb = regionMask(b.verts, pred);
+        if (va.length < 3 && vb.length < 3) return { maxMm: 0, p99Mm: 0, meanMm: 0, sampleCount: 0 };
+        const ab = va.length >= 3 ? directedToMesh(va, hashB, strideFromOrig) : [];
+        const ba = vb.length >= 3 ? directedToMesh(vb, hashA, 1) : [];
+        return summarize(ab.concat(ba));
+    };
+
+    const top = pair((_, __, z) => (z - minZ) / span > 0.82, strideA);
+    const plantar = pair((_, __, z) => (z - minZ) / span < 0.14, strideA);
+    const wall = pair((_, __, z) => {
+        const t = (z - minZ) / span;
+        return t >= 0.14 && t <= 0.82;
+    }, strideA);
+    const heelCup = pair((x, _, z) => {
+        const t = (z - minZ) / span;
+        const u = (x - minX) / length;
+        return t >= 0.14 && t <= 0.82 && u < 0.28;
+    }, strideA);
+
+    const rimOrig = model.trim.spline.controls;
+    const outlineOrig = model.outline.spline.controls;
+    const rimPacked = new Float32Array(rimOrig.length * 3);
+    for (let i = 0; i < rimOrig.length; i++) {
+        rimPacked[i * 3] = rimOrig[i]!.x;
+        rimPacked[i * 3 + 1] = rimOrig[i]!.y;
+        rimPacked[i * 3 + 2] = rimOrig[i]!.z;
+    }
+    const outPacked = new Float32Array(outlineOrig.length * 3);
+    for (let i = 0; i < outlineOrig.length; i++) {
+        outPacked[i * 3] = outlineOrig[i]!.x;
+        outPacked[i * 3 + 1] = outlineOrig[i]!.y;
+        outPacked[i * 3 + 2] = outlineOrig[i]!.z;
+    }
+    const rim = summarize(directedToMesh(rimPacked, hashB, 1));
+    const outline = summarize(directedToMesh(outPacked, hashB, 1));
+
+    return { top, plantar, rim, outline, wall, heelCup };
+}
+
+export function minWallThicknessMm(model: StockWallModel): number {
+    const top = model.top.field;
+    const bot = model.outline.plantarZ;
+    const poly = model.outline.spline.controls;
+    if (poly.length < 3) return 0;
+    let min = Infinity;
+    const minX = model.bounds.minX;
+    const minY = model.bounds.minY;
+    const sx = Math.max(1e-3, model.bounds.maxX - minX);
+    const sy = Math.max(1e-3, model.bounds.maxY - minY);
+    const pointIn = (x: number, y: number): boolean => {
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+            const xi = poly[i]!.x;
+            const yi = poly[i]!.y;
+            const xj = poly[j]!.x;
+            const yj = poly[j]!.y;
+            if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-18) + xi) inside = !inside;
+        }
+        return inside;
+    };
+    for (let iy = 0; iy < 18; iy++) {
+        for (let ix = 0; ix < 28; ix++) {
+            const x = minX + ((ix + 0.5) / 28) * sx;
+            const y = minY + ((iy + 0.5) / 18) * sy;
+            if (!pointIn(x, y)) continue;
+            const tz = sampleUvFromModel(top, x, y);
+            const bz = sampleUvFromModel(bot, x, y);
+            if (tz == null || bz == null) continue;
+            min = Math.min(min, tz - bz);
+        }
+    }
+    return Number.isFinite(min) ? min : 0;
+}
+
+function sampleUvFromModel(field: import("./types").UvHeightField, x: number, y: number): number | null {
+    const u = ((x - field.originX) / field.sizeX) * (field.nu - 1);
+    const v = ((y - field.originY) / field.sizeY) * (field.nv - 1);
+    if (u < 0 || v < 0 || u > field.nu - 1 || v > field.nv - 1) return null;
+    const u0 = Math.max(0, Math.min(field.nu - 2, Math.floor(u)));
+    const v0 = Math.max(0, Math.min(field.nv - 2, Math.floor(v)));
+    const i = v0 * field.nu + u0;
+    if (!field.inside[i] || !Number.isFinite(field.z[i]!)) return null;
+    return field.z[i]!;
 }
 
 export function reconstructionManifold(geo: BufferGeometry) {
