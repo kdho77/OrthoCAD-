@@ -70,7 +70,11 @@ export function applyCurveModifiers(
     return { trim, outline };
 }
 
-/** Posting / grind stay as bottom fields on the plantar sheet. */
+/**
+ * Bottom fields (thickness, zonal, posting, grind) act on the extracted
+ * plantar sheet vertices. Thickness is bottom-stable (sheet Z unchanged;
+ * the top expands). Zonal = arch fill. Posting / grind offset sheet Z.
+ */
 export function plantarZDelta(
     x: number,
     y: number,
@@ -93,6 +97,11 @@ export function plantarZDelta(
     if (c && c.forefootPostingDeg) {
         const fore = Math.max(0, Math.min(1, (u - 0.62) / 0.28));
         dz += Math.tan((c.forefootPostingDeg * Math.PI) / 180) * vSigned * halfW * fore;
+    }
+    if (c && c.archFillMm) {
+        const arch = Math.exp(-(((u - 0.42) / 0.16) ** 2));
+        const across = 1 - Math.min(1, av);
+        dz += c.archFillMm * arch * across;
     }
     if ((input.archGrindDepthMm ?? 0) > 0) {
         dz += archGrindPlantarRaiseAt(u, av, input.archGrindDepthMm!);

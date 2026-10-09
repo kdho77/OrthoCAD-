@@ -50,6 +50,35 @@ export function polylineArcLengths(points: PolyPoint[]): { cum: number[]; total:
     return { cum, total: cum[n]! };
 }
 
+/** Sample a closed polyline at arc-length fraction `s01` ∈ [0, 1). */
+export function sampleClosedAtArc01(points: PolyPoint[], s01: number): PolyPoint {
+    if (points.length === 0) return { x: 0, y: 0, z: 0 };
+    if (points.length === 1) return { ...points[0]! };
+    const { cum, total } = polylineArcLengths(points);
+    if (total <= 1e-12) return { ...points[0]! };
+    const t = (((s01 % 1) + 1) % 1) * total;
+    let j = 0;
+    while (j < points.length - 1 && cum[j + 1]! < t) j++;
+    const a = points[j]!;
+    const b = points[(j + 1) % points.length]!;
+    const seg = cum[j + 1]! - cum[j]!;
+    const f = seg > 1e-12 ? (t - cum[j]!) / seg : 0;
+    return {
+        x: a.x + (b.x - a.x) * f,
+        y: a.y + (b.y - a.y) * f,
+        z: a.z + (b.z - a.z) * f,
+    };
+}
+
+/** For each vertex of `src`, sample `target` at the same closed arc-length fraction. */
+export function matchClosedByArc(src: PolyPoint[], target: PolyPoint[]): PolyPoint[] {
+    if (src.length === 0) return [];
+    if (target.length === 0) return src.map((p) => ({ ...p }));
+    const { cum, total } = polylineArcLengths(src);
+    const denom = Math.max(total, 1e-12);
+    return src.map((_, i) => sampleClosedAtArc01(target, cum[i]! / denom));
+}
+
 export function resamplePolyline(points: PolyPoint[], n: number): PolyPoint[] {
     if (points.length === 0 || n <= 0) return [];
     if (points.length === 1) return Array.from({ length: n }, () => ({ ...points[0]! }));

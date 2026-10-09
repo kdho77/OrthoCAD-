@@ -375,6 +375,106 @@ export function foldReport(reconstruction: BufferGeometry, opts?: FoldReportOpti
     return { worstDeg: worst, edgesAtLeast10Deg: hard, interiorEdgeCount: interior, seamWorstDeg: seamWorst };
 }
 
+/**
+ * New folds on the medial-arch upper wall (u 0.42–0.60, +Y, upper third).
+ * Top-sheet edges are excluded so the count is "new" wall folds.
+ */
+export function medialArchUpperWallFolds(
+    reconstruction: BufferGeometry,
+    bounds: { minX: number; maxX: number; minZ: number; maxZ: number },
+    topVertexCount = 0,
+): FoldReport {
+    const pos = reconstruction.getAttribute("position").array as Float32Array;
+    const index = reconstruction.getIndex();
+    if (!index) return { worstDeg: 0, edgesAtLeast10Deg: 0, interiorEdgeCount: 0 };
+    const idx = index.array;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const zSpan = Math.max(1e-3, bounds.maxZ - bounds.minZ);
+    const inRegion = (v: number): boolean => {
+        const x = pos[v * 3]!;
+        const y = pos[v * 3 + 1]!;
+        const z = pos[v * 3 + 2]!;
+        const u = (x - bounds.minX) / length;
+        const zf = (z - bounds.minZ) / zSpan;
+        return u >= 0.42 && u <= 0.6 && y > 0 && zf >= 0.55;
+    };
+    const areaOf = (f: number): number => {
+        const a = idx[f]!;
+        const b = idx[f + 1]!;
+        const c = idx[f + 2]!;
+        const ux = pos[b * 3]! - pos[a * 3]!;
+        const uy = pos[b * 3 + 1]! - pos[a * 3 + 1]!;
+        const uz = pos[b * 3 + 2]! - pos[a * 3 + 2]!;
+        const vx = pos[c * 3]! - pos[a * 3]!;
+        const vy = pos[c * 3 + 1]! - pos[a * 3 + 1]!;
+        const vz = pos[c * 3 + 2]! - pos[a * 3 + 2]!;
+        return Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) * 0.5;
+    };
+    const edgeFaces = new Map<string, number[]>();
+    for (let f = 0; f < idx.length; f += 3) {
+        const a = idx[f]!;
+        const b = idx[f + 1]!;
+        const c = idx[f + 2]!;
+        for (const [p, q] of [
+            [a, b],
+            [b, c],
+            [c, a],
+        ] as const) {
+            const k = p < q ? `${p},${q}` : `${q},${p}`;
+            let faces = edgeFaces.get(k);
+            if (!faces) {
+                faces = [];
+                edgeFaces.set(k, faces);
+            }
+            faces.push(f);
+        }
+    }
+    let worst = 0;
+    let hard = 0;
+    let interior = 0;
+    for (const [key, faces] of edgeFaces) {
+        if (faces.length !== 2) continue;
+        const [sa, sb] = key.split(",").map(Number) as [number, number];
+        if (topVertexCount > 0 && sa < topVertexCount && sb < topVertexCount) continue;
+        if (!inRegion(sa) && !inRegion(sb)) continue;
+        if (areaOf(faces[0]!) < 1e-3 || areaOf(faces[1]!) < 1e-3) continue;
+        const n1 = faceNormal(pos, idx[faces[0]!]!, idx[faces[0]! + 1]!, idx[faces[0]! + 2]!);
+        const n2 = faceNormal(pos, idx[faces[1]!]!, idx[faces[1]! + 1]!, idx[faces[1]! + 2]!);
+        if (!n1 || !n2) continue;
+        const dot = Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]));
+        const raw = (Math.acos(dot) * 180) / Math.PI;
+        const deg = Math.min(raw, 180 - raw);
+        interior++;
+        if (deg > worst) worst = deg;
+        if (deg >= 10) hard++;
+    }
+    return { worstDeg: worst, edgesAtLeast10Deg: hard, interiorEdgeCount: interior };
+}
+
+/** Max distance from reconstructed stitch verts to the source plantar rim. */
+export function stitchVertexDeltaMm(
+    reconstruction: BufferGeometry,
+    rimLocal: number[] | undefined,
+    sheetPositions: Float32Array | undefined,
+    topVertexCount: number,
+): number {
+    if (!rimLocal?.length || !sheetPositions) return 0;
+    const pos = reconstruction.getAttribute("position").array as Float32Array;
+    let max = 0;
+    for (const li of rimLocal) {
+        const sx = sheetPositions[li * 3]!;
+        const sy = sheetPositions[li * 3 + 1]!;
+        const sz = sheetPositions[li * 3 + 2]!;
+        const ri = topVertexCount + li;
+        const dx = pos[ri * 3]! - sx;
+        const dy = pos[ri * 3 + 1]! - sy;
+        const dz = pos[ri * 3 + 2]! - sz;
+        const d = Math.hypot(dx, dy, dz);
+        if (d > max) max = d;
+    }
+    return max;
+}
+
 function regionMask(verts: Float32Array, pred: (x: number, y: number, z: number) => boolean): Float32Array {
     const out: number[] = [];
     for (let i = 0; i < verts.length; i += 3) {

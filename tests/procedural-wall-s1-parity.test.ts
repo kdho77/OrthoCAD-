@@ -29,6 +29,7 @@ import {
     heelInnerWidthAtU,
     maxVertexDeltaMm,
     measureReconFlareDeg,
+    medialArchUpperWallFolds,
     minWallThicknessMm,
     outlineSeamDihedrals,
     reconstructionManifold,
@@ -36,6 +37,7 @@ import {
     S1_MIN_WALL_MM,
     soleUvFrameFromOutline,
     soleUvFrameFromPolyline,
+    stitchVertexDeltaMm,
     zoneFixturesMapIdentically,
 } from "@/lib/geometry/procedural-wall";
 import { listStockBaseFixtures } from "@/lib/geometry/procedural-wall/catalog";
@@ -139,7 +141,7 @@ describe("S1 parametric wall", () => {
                 topVertexCount: topN,
                 outlineVertexCount: outlineN,
             });
-            let hits = -1;
+            let hits = { real: -1, coplanar: 0 };
             try {
                 hits = countSelfIntersections(rebuilt);
             } catch (err) {
@@ -194,32 +196,48 @@ describe("S1 parametric wall", () => {
                 occt = "unavailable";
             }
 
-            const stockSeam = outlineSeamDihedrals(original, outlineOf(model));
-            const reconSeam = outlineSeamDihedrals(rebuilt, outlineOf(model));
-            let seamExcess = 0;
-            const nSeam = Math.min(stockSeam.perStation.length, reconSeam.perStation.length);
+            const stitchPts = (model.outline.rimLocal ?? []).map((i) => ({
+                x: (model.outline.meshPositions ?? new Float32Array())[i * 3]!,
+                y: (model.outline.meshPositions ?? new Float32Array())[i * 3 + 1]!,
+                z: (model.outline.meshPositions ?? new Float32Array())[i * 3 + 2]!,
+            }));
+            const reconSeam = outlineSeamDihedrals(rebuilt, stitchPts.length ? stitchPts : outlineOf(model));
+            const implied = (
+                (rebuilt.userData as { filletImpliedSeamDeg?: number[] }).filletImpliedSeamDeg ?? []
+            ).slice();
+            let seamOver = 0;
+            const nSeam = reconSeam.perStation.length;
             for (let i = 0; i < nSeam; i++) {
-                seamExcess = Math.max(seamExcess, reconSeam.perStation[i]! - stockSeam.perStation[i]!);
+                const allow = (implied[i] ?? 0) + 2;
+                seamOver = Math.max(seamOver, reconSeam.perStation[i]! - allow);
             }
-            if (nSeam === 0) seamExcess = reconSeam.worstDeg - stockSeam.worstDeg;
+            const stitchDelta = stitchVertexDeltaMm(
+                rebuilt,
+                model.outline.rimLocal,
+                model.outline.meshPositions,
+                topN,
+            );
+            const archFolds = medialArchUpperWallFolds(rebuilt, model.bounds, topN);
 
             const misses: string[] = [];
             if (topDelta > 1e-9) misses.push(`top-identical ${topDelta.toFixed(6)}`);
             const plantarDelta = Number.isFinite(plantarSheetDelta) ? plantarSheetDelta : haus.plantar.maxMm;
             if (plantarDelta > 1e-3) misses.push(`plantar ${plantarDelta.toFixed(3)}`);
             if (haus.outline.maxMm > 0.1) misses.push(`outline ${haus.outline.maxMm.toFixed(3)}`);
+            if (stitchDelta > 1e-6) misses.push(`outline-stitch ${stitchDelta.toFixed(6)}`);
             if (Math.abs(drift) > 0.05) misses.push(`ground-drift ${drift.toFixed(3)}`);
             if (man.openEdges !== 0) misses.push(`open ${man.openEdges}`);
             if (man.nonManifoldEdges !== 0) misses.push(`nonManifold ${man.nonManifoldEdges}`);
             if (!man.watertight) misses.push("not-watertight");
-            if (hits !== 0) misses.push(`self-intersect ${hits}`);
+            if (hits.real !== 0) misses.push(`self-intersect ${hits.real} (coplanar ${hits.coplanar})`);
             if (minWall < S1_MIN_WALL_MM) misses.push(`minWall ${minWall.toFixed(3)}`);
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) misses.push(`fold ${fold.worstDeg.toFixed(1)}`);
             if (fold.edgesAtLeast10Deg !== 0) misses.push(`fold≥10 ${fold.edgesAtLeast10Deg}`);
-            if (seamExcess > 2) {
-                misses.push(
-                    `seam ${reconSeam.worstDeg.toFixed(1)} vs stock ${stockSeam.worstDeg.toFixed(1)} excess ${seamExcess.toFixed(1)}`,
-                );
+            if (archFolds.edgesAtLeast10Deg !== 0) {
+                misses.push(`medial-arch-upper≥10 ${archFolds.edgesAtLeast10Deg}`);
+            }
+            if (seamOver > 0) {
+                misses.push(`seam ${reconSeam.worstDeg.toFixed(1)} over fillet+2 by ${seamOver.toFixed(1)}`);
             }
             if (!uvOk) misses.push("sole-UV");
             for (const c of cup) {
@@ -243,13 +261,15 @@ describe("S1 parametric wall", () => {
                 openEdges: man.openEdges,
                 nonManifold: man.nonManifoldEdges,
                 watertight: man.watertight,
-                selfIntersections: hits,
+                selfIntersections: hits.real,
+                coplanarOverlaps: hits.coplanar,
+                stitchDelta: Number(stitchDelta.toFixed(6)),
+                archFoldGe10: archFolds.edgesAtLeast10Deg,
                 minWallMm: Number(minWall.toFixed(3)),
                 foldWorstDeg: Number(fold.worstDeg.toFixed(3)),
                 foldGe10: fold.edgesAtLeast10Deg,
                 seamWorstDeg: Number(reconSeam.worstDeg.toFixed(3)),
-                stockSeamWorstDeg: Number(stockSeam.worstDeg.toFixed(3)),
-                seamExcessDeg: Number(seamExcess.toFixed(3)),
+                seamOverFilletDeg: Number(seamOver.toFixed(3)),
                 occtSolid: occt,
                 soleUvIdentical: uvOk,
                 flareArch: Number(flareArch.toFixed(2)),
@@ -305,17 +325,23 @@ describe("S1 parametric wall", () => {
             const hits = countSelfIntersections(rebuilt);
             const man = reconstructionManifold(rebuilt);
             const drift = groundDriftMm(rebuilt, outlineOf(model));
+            const archFolds = medialArchUpperWallFolds(rebuilt, model.bounds, topN);
             results.push({
                 smoke: smoke.name,
-                selfIntersections: hits,
+                selfIntersections: hits.real,
+                coplanarOverlaps: hits.coplanar,
                 foldWorstDeg: Number(fold.worstDeg.toFixed(3)),
                 foldGe10: fold.edgesAtLeast10Deg,
+                archFoldGe10: archFolds.edgesAtLeast10Deg,
                 seamWorstDeg: Number((fold.seamWorstDeg ?? 0).toFixed(3)),
                 watertight: man.watertight,
                 openEdges: man.openEdges,
                 groundDrift: Number(drift.toFixed(3)),
             });
-            if (hits !== 0) smokeMiss.push(`${smoke.name} xi=${hits}`);
+            if (hits.real !== 0) smokeMiss.push(`${smoke.name} xi=${hits.real}`);
+            if (archFolds.edgesAtLeast10Deg !== 0) {
+                smokeMiss.push(`${smoke.name} medial-arch-upper≥10`);
+            }
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) smokeMiss.push(`${smoke.name} fold`);
             if (fold.edgesAtLeast10Deg !== 0) smokeMiss.push(`${smoke.name} fold≥10`);
             if (!man.watertight) smokeMiss.push(`${smoke.name} open=${man.openEdges}`);

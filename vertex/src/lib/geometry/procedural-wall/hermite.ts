@@ -71,44 +71,108 @@ export interface WallTangentInput {
     flareCurvature?: number;
 }
 
+export const MIN_FILLET_RING_SPACING_MM = 0.3;
+export const MAX_FILLET_ASPECT = 20;
+export const FILLET_RING_TARGET = 4;
+
+export function unitNZ(t: NZ): NZ {
+    const l = Math.hypot(t.n, t.z) || 1;
+    return { n: t.n / l, z: t.z / l };
+}
+
+/** Wall direction from the plantar plane: 90° − flare (not horizontal). */
+export function wallDirectionNZ(flareDeg: number): NZ {
+    const alpha = (flareDeg * Math.PI) / 180;
+    return { n: Math.sin(alpha), z: Math.max(0, Math.cos(alpha)) };
+}
+
+export function angleBetweenNZ(a: NZ, b: NZ): number {
+    const ua = unitNZ(a);
+    const ub = unitNZ(b);
+    return Math.acos(Math.max(-1, Math.min(1, ua.n * ub.n + ua.z * ub.z)));
+}
+
+/** Fillet-implied seam dihedral (deg) between sheet slope and first ring. */
+export function filletImpliedSeamDeg(sheetT: NZ, firstRingT: NZ): number {
+    return (angleBetweenNZ(sheetT, firstRingT) * 180) / Math.PI;
+}
+
 /**
- * End tangents. With a ~0 bottom fillet the wall starts along the natural
- * flare (not a horizontal C1), so the first ring is not coplanar with the
- * plantar sheet. A non-zero bottom fillet blends toward a horizontal start.
+ * Explicit 3–4 ring circular fillet in (n, z). Starts along `Tstart` (sheet
+ * boundary-face slope) and turns toward `Tend` (wall direction). First ring
+ * is at least r(1−cos θ) off the start plane. Rings closer than 0.3 mm or
+ * with triangle aspect > 20 are dropped.
+ */
+export function sampleFilletArc(P0: NZ, Tstart: NZ, Tend: NZ, radiusMm: number, circMm: number): NZ[] {
+    const ts = unitNZ(Tstart);
+    const te = unitNZ(Tend);
+    const theta = angleBetweenNZ(ts, te);
+    const r = Math.max(0, radiusMm);
+    const cross = ts.n * te.z - ts.z * te.n;
+    const n0 = cross >= 0 ? { n: -ts.z, z: ts.n } : { n: ts.z, z: -ts.n };
+    const minOff = r > 1e-8 ? r * (1 - Math.cos(Math.max(theta / FILLET_RING_TARGET, 1e-4))) : 0;
+
+    const emit = (p: NZ, prev: NZ, rings: NZ[]): boolean => {
+        const dist = Math.hypot(p.n - prev.n, p.z - prev.z);
+        if (rings.length && dist < MIN_FILLET_RING_SPACING_MM) return false;
+        const radial = Math.max(dist, 1e-6);
+        const aspect = circMm > 1e-6 ? Math.max(circMm, radial) / Math.min(circMm, radial) : 1;
+        if (aspect > MAX_FILLET_ASPECT) return false;
+        rings.push(p);
+        return true;
+    };
+
+    if (r < 1e-4 || theta < 1e-3) {
+        const step = Math.max(MIN_FILLET_RING_SPACING_MM, minOff);
+        const p = { n: P0.n + ts.n * step, z: P0.z + ts.z * step };
+        return [p];
+    }
+
+    const nWant = Math.min(
+        FILLET_RING_TARGET,
+        Math.max(3, Math.floor((r * theta) / MIN_FILLET_RING_SPACING_MM)),
+    );
+    const rings: NZ[] = [];
+    for (let i = 1; i <= nWant; i++) {
+        const phi = (theta * i) / nWant;
+        const p = {
+            n: P0.n + n0.n * r * (1 - Math.cos(phi)) + ts.n * r * Math.sin(phi),
+            z: P0.z + n0.z * r * (1 - Math.cos(phi)) + ts.z * r * Math.sin(phi),
+        };
+        if (rings.length === 0) {
+            const off = (p.n - P0.n) * n0.n + (p.z - P0.z) * n0.z;
+            if (off < minOff) {
+                const phi0 = Math.acos(Math.max(-1, Math.min(1, 1 - minOff / r)));
+                p.n = P0.n + n0.n * r * (1 - Math.cos(phi0)) + ts.n * r * Math.sin(phi0);
+                p.z = P0.z + n0.z * r * (1 - Math.cos(phi0)) + ts.z * r * Math.sin(phi0);
+            }
+        }
+        emit(p, rings.length ? rings[rings.length - 1]! : P0, rings);
+    }
+    if (!rings.length) {
+        const step = Math.max(MIN_FILLET_RING_SPACING_MM, minOff);
+        rings.push({ n: P0.n + ts.n * step, z: P0.z + ts.z * step });
+    }
+    return rings;
+}
+
+/**
+ * End tangents. T0 follows the wall direction (90° − flare from the plantar
+ * plane), never horizontal. Fillet blending lives in the explicit ring sampler.
  * Flare-curvature adds outward bow when the stock profile is curved.
  */
 export function wallEndTangents(input: WallTangentInput): { T0: NZ; T1: NZ } {
     const H = Math.max(input.heightMm, 1e-3);
     const alpha = (input.flareDeg * Math.PI) / 180;
     const nChord = Math.max(0.05, H * Math.tan(Math.abs(alpha)));
-    const circleR = (nChord * nChord + H * H) / (2 * H);
-    const bowlR = Math.max(
-        CUP_BOWL.radiusMinFactor * H,
-        Math.min(CUP_BOWL.radiusMaxFactor * H, input.bowlFactor * H, circleR),
-    );
-    const rBot = Math.max(0, input.filletBottomMm);
-    const rTop = Math.max(0, input.filletTopMm);
     const kappa = Math.max(0, input.flareCurvature ?? 0);
-
-    const cn = Math.sin(alpha);
-    const cz = Math.max(0.15, Math.cos(alpha));
-    let T0 = { n: cn * H + kappa * nChord, z: cz * H };
-
-    if (rBot > 1e-4) {
-        const w = Math.min(1, rBot / Math.max(H * 0.25, 1e-3));
-        const rFloor = rBot * (1 - input.bowlMix) + bowlR * input.bowlMix;
-        const cosEnd = Math.max(-1, Math.min(1, 1 - H / Math.max(rFloor, H * 0.51)));
-        const theta = Math.acos(cosEnd);
-        T0 = {
-            n: T0.n * (1 - w) + rFloor * theta * w,
-            z: T0.z * (1 - w),
-        };
-    }
-
+    const dir = wallDirectionNZ(input.flareDeg);
+    const T0 = { n: dir.n * H + kappa * nChord, z: dir.z * H };
+    const rTop = Math.max(0, input.filletTopMm);
     const topW = Math.min(0.35, rTop / Math.max(H * 0.2, 1e-3));
     const T1 = {
-        n: cn * H * (1 - topW) + rTop * topW,
-        z: cz * H * (1 - topW),
+        n: dir.n * H * (1 - topW) + rTop * topW,
+        z: Math.max(0.15, dir.z) * H * (1 - topW),
     };
     return { T0, T1 };
 }
@@ -217,10 +281,66 @@ export function evaluateHeelCupGate(
     return { heightMm, maxVerticalRunMm: maxVert, curvatureBreaks: breaks, maxCupDropMm: drop, ok };
 }
 
+function segmentsIntersect2D(a0: NZ, a1: NZ, b0: NZ, b1: NZ): boolean {
+    const dax = a1.n - a0.n;
+    const daz = a1.z - a0.z;
+    const dbx = b1.n - b0.n;
+    const dbz = b1.z - b0.z;
+    const den = dax * dbz - daz * dbx;
+    if (Math.abs(den) < 1e-12) return false;
+    const dx = b0.n - a0.n;
+    const dz = b0.z - a0.z;
+    const t = (dx * dbz - dz * dbx) / den;
+    const u = (dx * daz - dz * dax) / den;
+    return t > 1e-4 && t < 1 - 1e-4 && u > 1e-4 && u < 1 - 1e-4;
+}
+
+/** Per-station 2D profile must stay single-valued in z and not self-cross. */
 export function assertNoStationSelfIntersection(profile: NZ[]): boolean {
-    // A single column must not reverse in z (would fold onto itself).
     for (let i = 1; i < profile.length; i++) {
         if (profile[i]!.z + 1e-4 < profile[i - 1]!.z) return false;
     }
+    for (let i = 0; i < profile.length - 1; i++) {
+        for (let j = i + 2; j < profile.length - 1; j++) {
+            if (i === 0 && j === profile.length - 2) continue;
+            if (segmentsIntersect2D(profile[i]!, profile[i + 1]!, profile[j]!, profile[j + 1]!)) {
+                return false;
+            }
+        }
+    }
     return true;
+}
+
+/** Adjacent station columns must not cross inside the planform envelope. */
+export function adjacentStationsCross(
+    a: Array<{ x: number; y: number; z: number }>,
+    b: Array<{ x: number; y: number; z: number }>,
+): boolean {
+    const n = Math.min(a.length, b.length);
+    if (n < 2) return false;
+    const segHit = (
+        p0: { x: number; y: number },
+        p1: { x: number; y: number },
+        q0: { x: number; y: number },
+        q1: { x: number; y: number },
+    ): boolean => {
+        const dax = p1.x - p0.x;
+        const day = p1.y - p0.y;
+        const dbx = q1.x - q0.x;
+        const dby = q1.y - q0.y;
+        const den = dax * dby - day * dbx;
+        if (Math.abs(den) < 1e-12) return false;
+        const dx = q0.x - p0.x;
+        const dy = q0.y - p0.y;
+        const t = (dx * dby - dy * dbx) / den;
+        const u = (dx * day - dy * dax) / den;
+        return t > 1e-4 && t < 1 - 1e-4 && u > 1e-4 && u < 1 - 1e-4;
+    };
+    for (let i = 0; i < n - 1; i++) {
+        for (let j = 0; j < n - 1; j++) {
+            if (i === j) continue;
+            if (segHit(a[i]!, a[i + 1]!, b[j]!, b[j + 1]!)) return true;
+        }
+    }
+    return false;
 }

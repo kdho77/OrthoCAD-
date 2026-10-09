@@ -26,7 +26,7 @@ export {
     sampleUvField,
 } from "./extract";
 export { evaluateHeelCupGate } from "./hermite";
-export { countSelfIntersections } from "./intersect";
+export { countSelfIntersections, type SelfIntersectionReport } from "./intersect";
 export { buildHermiteStations } from "./loft";
 export { defaultsFromStockCurves, diagnoseFlareProfiles, measureRegionFeatures } from "./measure";
 export {
@@ -37,9 +37,11 @@ export {
     heelInnerWidthAtU,
     maxVertexDeltaMm,
     measureReconFlareDeg,
+    medialArchUpperWallFolds,
     minWallThicknessMm,
     outlineSeamDihedrals,
     reconstructionManifold,
+    stitchVertexDeltaMm,
     tieredHausdorffReport,
 } from "./metrics";
 export { applyCurveModifiers } from "./modifiers";

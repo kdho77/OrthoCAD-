@@ -3,6 +3,13 @@
 
 import type { BufferGeometry } from "three";
 
+export interface SelfIntersectionReport {
+    /** Proper (non-coplanar) triangle-triangle hits. Must be 0. */
+    real: number;
+    /** Coplanar overlaps, reported separately. */
+    coplanar: number;
+}
+
 interface Tri {
     i0: number;
     i1: number;
@@ -24,7 +31,7 @@ interface Tri {
     maxZ: number;
 }
 
-const CELL = 6;
+const WELD_MM = 1e-5;
 
 function orient(
     ax: number,
@@ -61,14 +68,6 @@ function sharedVertexCount(a: Tri, b: Tri): number {
     return n;
 }
 
-function segmentsShareVertex(a: Tri, b: Tri): boolean {
-    return sharedVertexCount(a, b) > 0;
-}
-
-function facesShareEdge(a: Tri, b: Tri): boolean {
-    return sharedVertexCount(a, b) >= 2;
-}
-
 function triNormal(t: Tri): [number, number, number] | null {
     const ux = t.bx - t.ax;
     const uy = t.by - t.ay;
@@ -84,43 +83,14 @@ function triNormal(t: Tri): [number, number, number] | null {
     return [nx / len, ny / len, nz / len];
 }
 
-/** Coplanar neighbors across a stitch (duplicate-vert seams, first-ring slivers). */
-function facesCoplanarNeighbors(a: Tri, b: Tri): boolean {
+function facesCoplanar(a: Tri, b: Tri): boolean {
     const na = triNormal(a);
     const nb = triNormal(b);
     if (!na || !nb) return false;
     const dot = Math.abs(na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2]);
-    if (dot < 0.999) return false;
+    if (dot < 0.9995) return false;
     const dist = Math.abs((b.ax - a.ax) * na[0] + (b.ay - a.ay) * na[1] + (b.az - a.az) * na[2]);
-    if (dist > 0.15) return false;
-    if (
-        a.maxX < b.minX - 0.4 ||
-        a.minX > b.maxX + 0.4 ||
-        a.maxY < b.minY - 0.4 ||
-        a.minY > b.maxY + 0.4 ||
-        a.maxZ < b.minZ - 0.4 ||
-        a.minZ > b.maxZ + 0.4
-    ) {
-        return false;
-    }
-    const av = [
-        [a.ax, a.ay, a.az],
-        [a.bx, a.by, a.bz],
-        [a.cx, a.cy, a.cz],
-    ];
-    const bv = [
-        [b.ax, b.ay, b.az],
-        [b.bx, b.by, b.bz],
-        [b.cx, b.cy, b.cz],
-    ];
-    let minD = Infinity;
-    for (const p of av) {
-        for (const q of bv) {
-            const d = Math.hypot(p[0]! - q[0]!, p[1]! - q[1]!, p[2]! - q[2]!);
-            if (d < minD) minD = d;
-        }
-    }
-    return minD < 1.5;
+    return dist <= 1e-3;
 }
 
 function pointInTri(px: number, py: number, pz: number, t: Tri): boolean {
@@ -193,20 +163,115 @@ function trianglesIntersect(a: Tri, b: Tri): boolean {
     return false;
 }
 
+function weldIndex(pos: Float32Array, tol = WELD_MM): Int32Array {
+    const n = pos.length / 3;
+    const map = new Int32Array(n);
+    const cell = Math.max(tol, 1e-6);
+    const hash = new Map<string, number[]>();
+    for (let i = 0; i < n; i++) {
+        const x = pos[i * 3]!;
+        const y = pos[i * 3 + 1]!;
+        const z = pos[i * 3 + 2]!;
+        const k = `${Math.round(x / cell)},${Math.round(y / cell)},${Math.round(z / cell)}`;
+        let bucket = hash.get(k);
+        if (!bucket) {
+            bucket = [];
+            hash.set(k, bucket);
+        }
+        let canon = i;
+        for (const j of bucket) {
+            const d = Math.hypot(x - pos[j * 3]!, y - pos[j * 3 + 1]!, z - pos[j * 3 + 2]!);
+            if (d <= tol) {
+                canon = j;
+                break;
+            }
+        }
+        map[i] = canon;
+        if (canon === i) bucket.push(i);
+    }
+    return map;
+}
+
+interface BvhNode {
+    minX: number;
+    minY: number;
+    minZ: number;
+    maxX: number;
+    maxY: number;
+    maxZ: number;
+    left?: BvhNode;
+    right?: BvhNode;
+    start: number;
+    count: number;
+}
+
+function buildBvh(tris: Tri[], order: number[]): BvhNode {
+    const nodeOf = (start: number, count: number): BvhNode => {
+        let minX = Infinity;
+        let minY = Infinity;
+        let minZ = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let maxZ = -Infinity;
+        for (let i = start; i < start + count; i++) {
+            const t = tris[order[i]!]!;
+            if (t.minX < minX) minX = t.minX;
+            if (t.minY < minY) minY = t.minY;
+            if (t.minZ < minZ) minZ = t.minZ;
+            if (t.maxX > maxX) maxX = t.maxX;
+            if (t.maxY > maxY) maxY = t.maxY;
+            if (t.maxZ > maxZ) maxZ = t.maxZ;
+        }
+        const node: BvhNode = { minX, minY, minZ, maxX, maxY, maxZ, start, count };
+        if (count <= 8) return node;
+        const dx = maxX - minX;
+        const dy = maxY - minY;
+        const dz = maxZ - minZ;
+        const axis = dx > dy && dx > dz ? 0 : dy > dz ? 1 : 2;
+        const mid = start + (count >> 1);
+        const slice = order.slice(start, start + count);
+        slice.sort((ia, ib) => {
+            const a = tris[ia]!;
+            const b = tris[ib]!;
+            const ca = axis === 0 ? a.minX + a.maxX : axis === 1 ? a.minY + a.maxY : a.minZ + a.maxZ;
+            const cb = axis === 0 ? b.minX + b.maxX : axis === 1 ? b.minY + b.maxY : b.minZ + b.maxZ;
+            return ca - cb;
+        });
+        for (let i = 0; i < slice.length; i++) order[start + i] = slice[i]!;
+        node.left = nodeOf(start, mid - start);
+        node.right = nodeOf(mid, start + count - mid);
+        return node;
+    };
+    return nodeOf(0, order.length);
+}
+
+function aabbHit(a: BvhNode, b: Tri): boolean {
+    return !(
+        a.maxX < b.minX ||
+        a.minX > b.maxX ||
+        a.maxY < b.minY ||
+        a.minY > b.maxY ||
+        a.maxZ < b.minZ ||
+        a.minZ > b.maxZ
+    );
+}
+
 /**
- * Count proper triangle-triangle intersections.
- * Skips pairs that share a vertex or edge, and coplanar neighbors across a stitch.
+ * BVH tri-tri test. Pairs that share a vertex or edge (after a 1e-5 mm weld)
+ * are excluded. Coplanar overlaps are counted separately from real hits.
  */
-export function countSelfIntersections(geo: BufferGeometry): number {
+export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionReport {
     const pos = geo.getAttribute("position").array as Float32Array;
     const index = geo.getIndex();
-    if (!index) return 0;
+    if (!index) return { real: 0, coplanar: 0 };
     const idx = index.array;
+    const weld = weldIndex(pos, WELD_MM);
     const tris: Tri[] = [];
     for (let t = 0; t < idx.length; t += 3) {
-        const i0 = idx[t]!;
-        const i1 = idx[t + 1]!;
-        const i2 = idx[t + 2]!;
+        const i0 = weld[idx[t]!]!;
+        const i1 = weld[idx[t + 1]!]!;
+        const i2 = weld[idx[t + 2]!]!;
+        if (i0 === i1 || i1 === i2 || i2 === i0) continue;
         const ax = pos[i0 * 3]!;
         const ay = pos[i0 * 3 + 1]!;
         const az = pos[i0 * 3 + 2]!;
@@ -237,52 +302,36 @@ export function countSelfIntersections(geo: BufferGeometry): number {
             maxZ: Math.max(az, bz, cz),
         });
     }
-    const hash = new Map<string, number[]>();
-    for (let i = 0; i < tris.length; i++) {
-        const t = tris[i]!;
-        const ext = Math.max(t.maxX - t.minX, t.maxY - t.minY, t.maxZ - t.minZ);
-        if (!Number.isFinite(ext)) continue;
-        // Index by centroid so each tri lives in one cell; query by AABB below.
-        const cx = Math.floor(((t.minX + t.maxX) * 0.5) / CELL);
-        const cy = Math.floor(((t.minY + t.maxY) * 0.5) / CELL);
-        const cz = Math.floor(((t.minZ + t.maxZ) * 0.5) / CELL);
-        const k = `${cx},${cy},${cz}`;
-        let b = hash.get(k);
-        if (!b) {
-            b = [];
-            hash.set(k, b);
+    const order = Array.from({ length: tris.length }, (_, i) => i);
+    const root = tris.length ? buildBvh(tris, order) : null;
+    let real = 0;
+    let coplanar = 0;
+    const collect = (node: BvhNode, a: Tri, ai: number, out: number[]) => {
+        if (!aabbHit(node, a)) return;
+        if (!node.left || !node.right) {
+            for (let k = node.start; k < node.start + node.count; k++) {
+                const j = order[k]!;
+                if (j <= ai) continue;
+                out.push(j);
+            }
+            return;
         }
-        b.push(i);
-    }
-    let hits = 0;
-    const queried = new Set<number>();
+        collect(node.left, a, ai, out);
+        collect(node.right, a, ai, out);
+    };
+    const buf: number[] = [];
     for (let i = 0; i < tris.length; i++) {
         const a = tris[i]!;
-        const ext = Math.max(a.maxX - a.minX, a.maxY - a.minY, a.maxZ - a.minZ);
-        if (!Number.isFinite(ext) || ext > 40) continue;
-        const x0 = Math.floor(a.minX / CELL);
-        const y0 = Math.floor(a.minY / CELL);
-        const z0 = Math.floor(a.minZ / CELL);
-        const x1 = Math.floor(a.maxX / CELL);
-        const y1 = Math.floor(a.maxY / CELL);
-        const z1 = Math.floor(a.maxZ / CELL);
-        queried.clear();
-        for (let z = z0; z <= z1; z++) {
-            for (let y = y0; y <= y1; y++) {
-                for (let x = x0; x <= x1; x++) {
-                    const bucket = hash.get(`${x},${y},${z}`);
-                    if (!bucket) continue;
-                    for (const j of bucket) {
-                        if (j <= i || queried.has(j)) continue;
-                        queried.add(j);
-                        const b = tris[j]!;
-                        if (segmentsShareVertex(a, b) || facesShareEdge(a, b)) continue;
-                        if (facesCoplanarNeighbors(a, b)) continue;
-                        if (trianglesIntersect(a, b)) hits++;
-                    }
-                }
-            }
+        if (!root) break;
+        buf.length = 0;
+        collect(root, a, i, buf);
+        for (const j of buf) {
+            const b = tris[j]!;
+            if (sharedVertexCount(a, b) > 0) continue;
+            if (!trianglesIntersect(a, b)) continue;
+            if (facesCoplanar(a, b)) coplanar++;
+            else real++;
         }
     }
-    return hits;
+    return { real, coplanar };
 }

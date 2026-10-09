@@ -12,9 +12,9 @@ import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SideCorrections } from "@/types";
 import {
     ensureCcw,
+    matchClosedByArc,
     type PolyPoint,
     polylineArcLengths,
-    resamplePolyline,
     startAtPosteriorHeel,
 } from "./curves";
 import {
@@ -27,7 +27,7 @@ import { extractTopSheet, sampleUvField } from "./extract";
 import { buildXyHeightIndex, sampleXyHeight, type XyHeightIndex } from "./height-xy";
 import { buildHermiteStations, loftHermiteWall } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
-import { applyCurveModifiers, type ProceduralModifierInput, plantarZDelta } from "./modifiers";
+import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
 import type { StockWallModel, UvHeightField } from "./types";
 
 export interface ReconstructOptions extends ProceduralModifierInput {
@@ -85,59 +85,6 @@ function sampleZ(
         if (z != null) return z;
     }
     return sampleUvField(field, x, y) ?? fallback;
-}
-
-function matchOutlineToRim(outline: PolyPoint[], rim: PolyPoint[]): PolyPoint[] {
-    if (outline.length < 3) return rim.map((r) => ({ ...r, z: 0 }));
-    const src = startAtPosteriorHeel(ensureCcw(outline.map((p) => ({ ...p }))));
-    if (src.length === rim.length) return src;
-    const dense = resamplePolyline(src, Math.max(src.length, rim.length * 4));
-    const c = { x: 0, y: 0 };
-    for (const p of dense) {
-        c.x += p.x;
-        c.y += p.y;
-    }
-    c.x /= dense.length;
-    c.y /= dense.length;
-    const ns = dense.map((_, i) => {
-        const prev = dense[(i + dense.length - 1) % dense.length]!;
-        const next = dense[(i + 1) % dense.length]!;
-        const tx = next.x - prev.x;
-        const ty = next.y - prev.y;
-        const len = Math.hypot(tx, ty) || 1;
-        let nx = ty / len;
-        let ny = -tx / len;
-        if (nx * (dense[i]!.x - c.x) + ny * (dense[i]!.y - c.y) < 0) {
-            nx = -nx;
-            ny = -ny;
-        }
-        return { x: nx, y: ny };
-    });
-    const out: PolyPoint[] = [];
-    let last = 0;
-    const m = dense.length;
-    for (const r of rim) {
-        let bestI = last;
-        let best = Infinity;
-        const window = Math.floor(m / 6);
-        for (let k = 0; k <= window; k++) {
-            const i = (last + k) % m;
-            const p = dense[i]!;
-            const n = ns[i]!;
-            const dx = r.x - p.x;
-            const dy = r.y - p.y;
-            const along = dx * n.x + dy * n.y;
-            const tang = dx * -n.y + dy * n.x;
-            const score = Math.abs(tang) + Math.max(0, -along) * 4 + Math.abs(along) * 0.05;
-            if (score < best) {
-                best = score;
-                bestI = i;
-            }
-        }
-        last = bestI;
-        out.push({ ...dense[bestI]! });
-    }
-    return out;
 }
 
 function triangulatePlantar(
@@ -361,29 +308,6 @@ export function reconstructProceduralWalls(
         z: topPos[i * 3 + 2]!,
     }));
 
-    const curves = applyCurveModifiers(model, options);
-    const outlineMatched = matchOutlineToRim(curves.outline, rimPts);
-    const plantarHeight =
-        model.outline.meshPositions && model.outline.meshIndices
-            ? buildXyHeightIndex(model.outline.meshPositions, model.outline.meshIndices)
-            : null;
-    for (const p of outlineMatched) {
-        p.z = sampleZ(model.outline.plantarZ, plantarHeight, p.x, p.y, p.z, "min");
-        p.z += plantarZDelta(p.x, p.y, model.bounds, options);
-    }
-
-    const stations = buildHermiteStations(outlineMatched, rimPts, model.bounds);
-    applyPlantarNaturalTangents(stations, model);
-    const grid = loftHermiteWall({
-        stations,
-        defaults,
-        nT: options.wallLayers ?? 16,
-        footLengthMm: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
-        flangeHeightMm: flangeH,
-        flangeLengthMm: flangeLen,
-        flangeAngleDeg: flangeAng,
-    });
-
     const positions: number[] = [];
     const indices: number[] = [];
     for (let i = 0; i < topPos.length; i++) positions.push(topPos[i]!);
@@ -401,13 +325,33 @@ export function reconstructProceduralWalls(
         else indices.push(a, b, c);
     };
 
-    const plantarRim = appendStockPlantar(model, options, positions, outlineMatched, push, pushTri);
+    const plantarRim = appendStockPlantar(model, options, positions, rimPts, push, pushTri);
     const outlineIdx = plantarRim;
     const outlineStart = outlineIdx[0] ?? positions.length / 3;
+    const plantarPts: PolyPoint[] = outlineIdx.map((i) => ({
+        x: positions[i * 3]!,
+        y: positions[i * 3 + 1]!,
+        z: positions[i * 3 + 2]!,
+    }));
+    const topForStations =
+        plantarPts.length === rimPts.length ? rimPts : matchClosedByArc(plantarPts, rimPts);
+    const stations = buildHermiteStations(plantarPts, topForStations, model.bounds);
+    applyBoundaryTangents(stations, positions, indices, outlineIdx, "t0");
+    applyBoundaryTangents(stations, positions, indices, rimLocal, "t1");
+    const grid = loftHermiteWall({
+        stations,
+        defaults,
+        nT: options.wallLayers ?? 16,
+        footLengthMm: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
+        flangeHeightMm: flangeH,
+        flangeLengthMm: flangeLen,
+        flangeAngleDeg: flangeAng,
+    });
 
     const nT = grid.nT;
     const nS = grid.nS;
     const wallStart = positions.length / 3;
+    // Emit interior rings only. Bottom row IS the plantar boundary verts.
     for (let ti = 1; ti < nT - 1; ti++) {
         for (let si = 0; si < nS; si++) {
             const o = (ti * nS + si) * 3;
@@ -417,11 +361,9 @@ export function reconstructProceduralWalls(
     const wallVert = (ti: number, si: number): number => {
         const s = ((si % nS) + nS) % nS;
         if (ti <= 0) return outlineIdx[s] ?? outlineStart + s;
-        if (ti >= nT - 1) return rimLocal[s]!;
         return wallStart + (ti - 1) * nS + s;
     };
-    // Interior wall quads from the first rising ring to the top rim.
-    for (let ti = 1; ti < nT - 1; ti++) {
+    for (let ti = 0; ti < nT - 2; ti++) {
         for (let si = 0; si < nS; si++) {
             const a = wallVert(ti, si);
             const b = wallVert(ti, si + 1);
@@ -431,10 +373,9 @@ export function reconstructProceduralWalls(
             pushTri(a, c, d);
         }
     }
-    // Bottom stitch: every plantar-boundary vert ↔ first wall ring (natural tangent).
-    const firstRing: number[] = [];
-    for (let si = 0; si < nS; si++) firstRing.push(wallVert(1, si));
-    zipClosedLoops(outlineIdx, firstRing, positions, pushTri);
+    const lastRing: number[] = [];
+    for (let si = 0; si < nS; si++) lastRing.push(wallVert(nT - 2, si));
+    zipClosedLoops(lastRing, rimLocal, positions, pushTri);
 
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
@@ -449,6 +390,8 @@ export function reconstructProceduralWalls(
         topVertexCount: topPos.length / 3,
         outlineVertexCount: model.outline.meshPositions ? model.outline.meshPositions.length / 3 : n,
         plantarVertexCount: model.outline.meshPositions ? model.outline.meshPositions.length / 3 : 0,
+        stitchVertexCount: outlineIdx.length,
+        filletImpliedSeamDeg: stations.map((s) => s.impliedSeamDeg ?? 0),
         deviceType: preset,
         lateralFlangeHeightMm: flangeH,
         measuredVsBound: defaults.report,
@@ -458,14 +401,15 @@ export function reconstructProceduralWalls(
     return geo;
 }
 
-function applyPlantarNaturalTangents(
+function applyBoundaryTangents(
     stations: ReturnType<typeof buildHermiteStations>,
-    model: StockWallModel,
+    pos: number[] | Float32Array,
+    indices: number[],
+    rim: number[],
+    slot: "t0" | "t1",
 ): void {
-    const pos = model.outline.meshPositions;
-    const indices = model.outline.meshIndices;
-    const rim = model.outline.rimLocal;
-    if (!pos || !indices || !rim || rim.length < 3) return;
+    if (rim.length < 3) return;
+    const nPos = pos.length / 3;
     const vfaces = new Map<number, number[]>();
     for (let t = 0; t < indices.length; t += 3) {
         for (const v of [indices[t]!, indices[t + 1]!, indices[t + 2]!]) {
@@ -480,9 +424,12 @@ function applyPlantarNaturalTangents(
     for (const st of stations) {
         let bestI = 0;
         let bestD = Infinity;
+        const tx = slot === "t0" ? st.outline.x : st.rim.x;
+        const ty = slot === "t0" ? st.outline.y : st.rim.y;
         for (let i = 0; i < rim.length; i++) {
             const vi = rim[i]!;
-            const d = (pos[vi * 3]! - st.outline.x) ** 2 + (pos[vi * 3 + 1]! - st.outline.y) ** 2;
+            if (vi < 0 || vi >= nPos) continue;
+            const d = (pos[vi * 3]! - tx) ** 2 + (pos[vi * 3 + 1]! - ty) ** 2;
             if (d < bestD) {
                 bestD = d;
                 bestI = i;
@@ -490,8 +437,8 @@ function applyPlantarNaturalTangents(
         }
         const vi = rim[bestI]!;
         let tn = 0.5;
-        let tz = 1;
-        let bestNz = 1;
+        let tzN = slot === "t0" ? 1 : -1;
+        let bestScore = slot === "t0" ? 1 : -1;
         for (const f of vfaces.get(vi) ?? []) {
             const ia = indices[f]!;
             const ib = indices[f + 1]!;
@@ -511,25 +458,27 @@ function applyPlantarNaturalTangents(
             const len = Math.hypot(nx, ny, nz);
             if (len < 1e-12) continue;
             const Nz = nz / len;
-            if (Nz > bestNz) continue;
-            bestNz = Nz;
+            if (slot === "t0" && Nz > bestScore) continue;
+            if (slot === "t1" && Nz < bestScore) continue;
+            bestScore = Nz;
             const nnx = nx / len;
             const nny = ny / len;
-            const nnz = Nz;
             const ox = st.n.x;
             const oy = st.n.y;
             const dnN = ox * nnx + oy * nny;
             const dx = ox - dnN * nnx;
             const dy = oy - dnN * nny;
-            const dz = -dnN * nnz;
             tn = dx * ox + dy * oy;
-            tz = dz;
+            tzN = -dnN * Nz;
         }
-        const mag = Math.hypot(tn, tz) || 1;
+        const mag = Math.hypot(tn, tzN) || 1;
         const H = Math.max(st.rim.z - st.outline.z, 1);
-        let zn = tz / mag;
-        if (zn < 0.15) zn = 0.15;
-        st.t0 = { n: (tn / mag) * H, z: zn * H };
+        let zn = tzN / mag;
+        if (slot === "t0" && zn < 0.15) zn = 0.15;
+        if (slot === "t1" && zn > -0.15) zn = -0.15;
+        const tan = { n: (tn / mag) * H, z: zn * H };
+        if (slot === "t0") st.t0 = tan;
+        else st.t1 = tan;
     }
 }
 

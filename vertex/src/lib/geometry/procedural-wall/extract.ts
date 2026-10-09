@@ -15,12 +15,10 @@ import {
     ensureCcw,
     fitClosedC2Spline,
     type PolyPoint,
-    polygonSignedArea,
     resamplePolyline,
     startAtPosteriorHeel,
 } from "./curves";
 import { blendedFlareDeg } from "./defaults";
-import { buildXyHeightIndex, sampleXyHeight } from "./height-xy";
 import { defaultsFromStockCurves, type StationBandFlare } from "./measure";
 import { buildPlanformFrame } from "./planform";
 import { DEFAULT_LOFT_N, type StockWallModel, type UvHeightField, type WallProfile } from "./types";
@@ -32,6 +30,10 @@ const WALL_HASH_CELL = 2.5;
 const WALL_SEARCH_MM = 16;
 const PLANTAR_OUTLINE_Z_MM = 2;
 const SOLE_FIELD_Z_MM = 3.5;
+const PLANTAR_NZ_MAX = -0.5;
+const PLANTAR_WELD_MM = 1e-5;
+const WALL_FOOT_BAND_MM = 2.5;
+const WALL_FOOT_CELL_MM = 4;
 
 function topVertexCountOf(geo: BufferGeometry): number {
     return (geo.userData as { topVertexCount?: number }).topVertexCount ?? 0;
@@ -548,6 +550,8 @@ export function extractStockWallModel(
     }
 
     const trimSpline = fitClosedC2Spline(topRim.points.length >= 3 ? topRim.points : top);
+    // BottomOutline is a C2 fit of the actual plantar boundary. Planform
+    // modifiers consume this curve; the stitch uses the native rim vertices.
     const outlineSpline = fitClosedC2Spline(outlinePoly);
     const outlineOnTrim = arcLengthMatch(
         trimSpline.controls,
@@ -555,17 +559,15 @@ export function extractStockWallModel(
             ? outlineSpline.controls
             : resamplePolyline(outlineSpline.controls, trimSpline.controls.length),
     );
-    outlineSpline.controls = outlineOnTrim;
-    const plantarField = buildUvField(plantar.length ? plantar : outlineOnTrim);
-    for (const p of outlineOnTrim) {
-        const fromSheet =
-            plantarSheet.meshPositions && plantarSheet.meshIndices
-                ? samplePlantarSheetZ(plantarSheet.meshPositions, plantarSheet.meshIndices, p.x, p.y)
-                : null;
-        p.z = fromSheet ?? sampleUvField(plantarField, p.x, p.y) ?? Math.min(p.z, PLANTAR_Z_MAX_MM);
-    }
+    const plantarField = buildUvField(
+        plantarSheet.meshPositions
+            ? packSheetPoints(plantarSheet.meshPositions)
+            : plantar.length
+              ? plantar
+              : outlineSpline.controls,
+    );
     const wallPts = wall.length || plantar.length ? wall.concat(plantar) : top;
-    // Measurement-only: chord flare + band residuals. Residuals are not lofted.
+    // Measurement-only: equal-length resample. Not stored as BottomOutline.
     const measuredProfile = extractWallProfile(trimSpline.controls, outlineOnTrim, wallPts);
     const nSt = measuredProfile.flareDeg.length;
     const topBand = measuredProfile.offsetH.findIndex((h) => h >= 0.82);
@@ -672,14 +674,12 @@ export function extractTopSheet(geo: BufferGeometry): {
     return copyTopMesh(geo);
 }
 
-function samplePlantarSheetZ(
-    positions: Float32Array,
-    indices: Uint32Array,
-    x: number,
-    y: number,
-): number | null {
-    const height = buildXyHeightIndex(positions, indices);
-    return sampleXyHeight(height, x, y, "min");
+function packSheetPoints(positions: Float32Array): PolyPoint[] {
+    const out: PolyPoint[] = [];
+    for (let i = 0; i < positions.length; i += 3) {
+        out.push({ x: positions[i]!, y: positions[i + 1]!, z: positions[i + 2]! });
+    }
+    return out;
 }
 
 function measureStationBandFlares(
@@ -720,90 +720,6 @@ type PlantarSheet = {
     meshIndices: Uint32Array;
     rimLocal: number[];
 };
-
-function fillInteriorHoles(pos: Float32Array, indices: Uint32Array, outerRim: number[]): Uint32Array {
-    const edgeCount = new Map<string, { a: number; b: number; n: number }>();
-    const add = (a: number, b: number) => {
-        const k = a < b ? `${a},${b}` : `${b},${a}`;
-        const e = edgeCount.get(k);
-        if (e) e.n++;
-        else edgeCount.set(k, { a, b, n: 1 });
-    };
-    for (let t = 0; t < indices.length; t += 3) {
-        add(indices[t]!, indices[t + 1]!);
-        add(indices[t + 1]!, indices[t + 2]!);
-        add(indices[t + 2]!, indices[t]!);
-    }
-    const nbrs = new Map<number, number[]>();
-    for (const e of edgeCount.values()) {
-        if (e.n !== 1) continue;
-        let la = nbrs.get(e.a);
-        if (!la) {
-            la = [];
-            nbrs.set(e.a, la);
-        }
-        la.push(e.b);
-        let lb = nbrs.get(e.b);
-        if (!lb) {
-            lb = [];
-            nbrs.set(e.b, lb);
-        }
-        lb.push(e.a);
-    }
-    const outer = new Set(outerRim);
-    const seen = new Set<number>();
-    const extra: number[] = [];
-    for (const start of nbrs.keys()) {
-        if (seen.has(start)) continue;
-        const loop: number[] = [start];
-        seen.add(start);
-        let prev = -1;
-        let cur = start;
-        for (let guard = 0; guard < 10000; guard++) {
-            const opts = nbrs.get(cur) ?? [];
-            const next = opts.find((v) => v !== prev && !seen.has(v)) ?? opts.find((v) => v === start);
-            if (next == null) break;
-            if (next === start) break;
-            loop.push(next);
-            seen.add(next);
-            prev = cur;
-            cur = next;
-        }
-        if (loop.length < 3) continue;
-        const overlap = loop.filter((v) => outer.has(v)).length;
-        if (overlap > loop.length * 0.5) continue;
-        const pts = loop.map((i) => ({ x: pos[i * 3]!, y: pos[i * 3 + 1]!, z: pos[i * 3 + 2]!, i }));
-        const ccw = polygonSignedArea(pts) < 0 ? pts.slice().reverse() : pts;
-        const live = ccw.map((_, i) => i);
-        const cross = (i0: number, i1: number, i2: number) => {
-            const a = ccw[i0]!;
-            const b = ccw[i1]!;
-            const c = ccw[i2]!;
-            return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-        };
-        let guard = 0;
-        while (live.length > 3 && guard++ < live.length * live.length) {
-            let clipped = false;
-            for (let i = 0; i < live.length; i++) {
-                const i0 = live[(i + live.length - 1) % live.length]!;
-                const i1 = live[i]!;
-                const i2 = live[(i + 1) % live.length]!;
-                if (cross(i0, i1, i2) <= 0) continue;
-                extra.push(ccw[i0]!.i, ccw[i1]!.i, ccw[i2]!.i);
-                live.splice(i, 1);
-                clipped = true;
-                break;
-            }
-            if (!clipped) break;
-        }
-        if (live.length === 3) extra.push(ccw[live[0]!]!.i, ccw[live[1]!]!.i, ccw[live[2]!]!.i);
-    }
-    if (!extra.length) return indices;
-    const out = new Uint32Array(indices.length + extra.length);
-    out.set(indices);
-    out.set(extra, indices.length);
-    return out;
-}
 
 function snapLoopToMesh(pos: Float32Array, loop: PolyPoint[]): number[] {
     const n = pos.length / 3;
@@ -846,10 +762,110 @@ function pointInPoly(x: number, y: number, poly: PolyPoint[]): boolean {
     return inside;
 }
 
+interface PlantarFace {
+    i0: number;
+    i1: number;
+    i2: number;
+    cx: number;
+    cy: number;
+    cz: number;
+    nz: number;
+}
+
+function wallFootKey(x: number, y: number): string {
+    return `${Math.floor(x / WALL_FOOT_CELL_MM)},${Math.floor(y / WALL_FOOT_CELL_MM)}`;
+}
+
+/** Local wall-foot Z: min Z of nearby wall-like faces (|n_z| < 0.5). */
+function buildWallFootGrid(faces: PlantarFace[]): Map<string, number> {
+    const grid = new Map<string, number>();
+    for (const f of faces) {
+        if (Math.abs(f.nz) >= 0.5) continue;
+        const k = wallFootKey(f.cx, f.cy);
+        const prev = grid.get(k);
+        if (prev == null || f.cz < prev) grid.set(k, f.cz);
+    }
+    return grid;
+}
+
+function localWallFootZ(grid: Map<string, number>, x: number, y: number): number {
+    const ix = Math.floor(x / WALL_FOOT_CELL_MM);
+    const iy = Math.floor(y / WALL_FOOT_CELL_MM);
+    let best = Infinity;
+    for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+            const z = grid.get(`${ix + dx},${iy + dy}`);
+            if (z != null && z < best) best = z;
+        }
+    }
+    return best;
+}
+
+function floodFromLowest(candidates: number[], faces: PlantarFace[]): number[] {
+    if (candidates.length === 0) return [];
+    const candSet = new Set(candidates);
+    let seed = candidates[0]!;
+    let seedZ = faces[seed]!.cz;
+    for (const i of candidates) {
+        if (faces[i]!.cz < seedZ) {
+            seedZ = faces[i]!.cz;
+            seed = i;
+        }
+    }
+    const edgeFaces = new Map<string, number[]>();
+    const add = (a: number, b: number, fi: number) => {
+        const k = a < b ? `${a},${b}` : `${b},${a}`;
+        let list = edgeFaces.get(k);
+        if (!list) {
+            list = [];
+            edgeFaces.set(k, list);
+        }
+        list.push(fi);
+    };
+    for (const i of candidates) {
+        const f = faces[i]!;
+        add(f.i0, f.i1, i);
+        add(f.i1, f.i2, i);
+        add(f.i2, f.i0, i);
+    }
+    const nbrs = new Map<number, number[]>();
+    for (const list of edgeFaces.values()) {
+        for (let a = 0; a < list.length; a++) {
+            for (let b = a + 1; b < list.length; b++) {
+                const ia = list[a]!;
+                const ib = list[b]!;
+                if (!candSet.has(ia) || !candSet.has(ib)) continue;
+                let la = nbrs.get(ia);
+                if (!la) {
+                    la = [];
+                    nbrs.set(ia, la);
+                }
+                la.push(ib);
+                let lb = nbrs.get(ib);
+                if (!lb) {
+                    lb = [];
+                    nbrs.set(ib, lb);
+                }
+                lb.push(ia);
+            }
+        }
+    }
+    const seen = new Set<number>([seed]);
+    const stack = [seed];
+    while (stack.length) {
+        const cur = stack.pop()!;
+        for (const n of nbrs.get(cur) ?? []) {
+            if (seen.has(n)) continue;
+            seen.add(n);
+            stack.push(n);
+        }
+    }
+    return [...seen];
+}
+
 /**
- * Face-selected downward faces of the stock plantar, welded, original topology.
- * Keeps inward downward faces (inside the silhouette) so flared wall undersides
- * are not mistaken for the floor.
+ * Stock plantar sheet: n_z < -0.5 and below the wall-foot band, flood-filled
+ * from the lowest face, then welded. Native triangles and Z; no ear-clip.
  */
 export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]): Partial<PlantarSheet> {
     const posAttr = geo.getAttribute("position");
@@ -859,7 +875,7 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
     const idx = index.array;
     const topN = topVertexCountOf(geo);
     const hull = outline && outline.length >= 8 ? outline : null;
-    const kept: number[][] = [];
+    const faces: PlantarFace[] = [];
     for (let t = 0; t < idx.length; t += 3) {
         const i0 = idx[t]!;
         const i1 = idx[t + 1]!;
@@ -885,20 +901,35 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
         const nz = ux * vy - uy * vx;
         const len = Math.hypot(nx, ny, nz);
         if (len < 1e-12) continue;
-        if (nz / len >= -0.7) continue;
-        const faceZ = (az + bz + cz) / 3;
-        if (faceZ > 5) continue;
-        if (hull && !pointInPoly((ax + bx + cx) / 3, (ay + by + cy) / 3, hull)) continue;
-        kept.push([i0, i1, i2]);
+        faces.push({
+            i0,
+            i1,
+            i2,
+            cx: (ax + bx + cx) / 3,
+            cy: (ay + by + cy) / 3,
+            cz: (az + bz + cz) / 3,
+            nz: nz / len,
+        });
     }
+    const footGrid = buildWallFootGrid(faces);
+    const candidates: number[] = [];
+    for (let i = 0; i < faces.length; i++) {
+        const f = faces[i]!;
+        if (f.nz >= PLANTAR_NZ_MAX) continue;
+        const footZ = localWallFootZ(footGrid, f.cx, f.cy);
+        if (Number.isFinite(footZ) && f.cz > footZ + WALL_FOOT_BAND_MM) continue;
+        if (hull && !pointInPoly(f.cx, f.cy, hull)) continue;
+        candidates.push(i);
+    }
+    const flooded = floodFromLowest(candidates, faces);
+    const kept = (flooded.length >= 8 ? flooded : candidates).map((i) => faces[i]!);
     if (kept.length < 8) return {};
-    const faces = kept;
 
     const used = new Map<number, number>();
     const newPos: number[] = [];
     const newIdx: number[] = [];
-    for (const tri of faces) {
-        for (const old of tri) {
+    for (const tri of kept) {
+        for (const old of [tri.i0, tri.i1, tri.i2]) {
             let ni = used.get(old);
             if (ni == null) {
                 ni = newPos.length / 3;
@@ -911,7 +942,7 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
     const tmp = new BufferGeometry();
     tmp.setAttribute("position", new BufferAttribute(new Float32Array(newPos), 3));
     tmp.setIndex(newIdx);
-    const welded = mergeVertices(tmp, 1e-4);
+    const welded = mergeVertices(tmp, PLANTAR_WELD_MM);
     if (welded !== tmp) tmp.dispose();
     try {
         const wpos = welded.getAttribute("position");
@@ -935,8 +966,7 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
             rimLocal = snapLoopToMesh(meshPositions, hull);
         }
         if (rimLocal.length < 8) return { meshPositions, meshIndices };
-        const filled = fillInteriorHoles(meshPositions, meshIndices, rimLocal);
-        return { meshPositions, meshIndices: filled, rimLocal };
+        return { meshPositions, meshIndices, rimLocal };
     } finally {
         welded.dispose();
     }

@@ -10,7 +10,17 @@ import {
     type WallRegionDefaults,
     wallHeightScale,
 } from "./defaults";
-import { assertNoStationSelfIntersection, clusteredWallT, evalWallProfile, wallEndTangents } from "./hermite";
+import {
+    adjacentStationsCross,
+    assertNoStationSelfIntersection,
+    clusteredWallT,
+    evalWallProfile,
+    filletImpliedSeamDeg,
+    sampleFilletArc,
+    unitNZ,
+    wallDirectionNZ,
+    wallEndTangents,
+} from "./hermite";
 import { outwardNormal } from "./measure";
 
 export interface LoftGrid {
@@ -27,6 +37,10 @@ export interface HermiteStation {
     u: number;
     /** Natural plantar-boundary tangent in (n, z), when known. */
     t0?: { n: number; z: number };
+    /** Top-sheet boundary-face slope in (n, z), pointing down the wall. */
+    t1?: { n: number; z: number };
+    /** Fillet-implied seam dihedral at the plantar stitch (deg). */
+    impliedSeamDeg?: number;
 }
 
 export interface HermiteLoftInput {
@@ -91,81 +105,217 @@ export function buildHermiteStations(
     return stations;
 }
 
+function polylineCircMm(pts: PolyPoint[]): number {
+    let s = 0;
+    for (let i = 0; i < pts.length; i++) {
+        const a = pts[i]!;
+        const b = pts[(i + 1) % pts.length]!;
+        s += Math.hypot(b.x - a.x, b.y - a.y);
+    }
+    return pts.length ? s / pts.length : 1;
+}
+
+function applyFlangeAndScale(
+    p: { n: number; z: number },
+    t: number,
+    st: HermiteStation,
+    chordN: number,
+    hScale: number,
+    flangeH: number,
+    flangeLen: number,
+    flangeAng: number,
+    footLengthMm: number,
+): { n: number; z: number } {
+    let out = p;
+    if (hScale < 0.999 && t > 0 && t < 1) {
+        out = {
+            n: out.n * hScale + chordN * t * (1 - hScale),
+            z: st.outline.z + (out.z - st.outline.z) * hScale + (st.rim.z - st.outline.z) * t * (1 - hScale),
+        };
+    }
+    if (flangeH > 0) {
+        const env = lateralFlangeEnvelope(st.u, st.outline.y, flangeLen, footLengthMm);
+        if (env > 0 && t > 0 && t < 1) {
+            const extra = env * flangeH * Math.tan((flangeAng * Math.PI) / 180) * Math.sin(Math.PI * t);
+            out = { n: out.n + extra, z: out.z };
+        }
+    }
+    return out;
+}
+
+function buildStationColumn(
+    st: HermiteStation,
+    flareDeg: number,
+    defaults: WallRegionDefaults,
+    nT: number,
+    circMm: number,
+    flangeH: number,
+    flangeLen: number,
+    flangeAng: number,
+    footLengthMm: number,
+): { column: Array<{ n: number; z: number }>; impliedSeamDeg: number } {
+    const o = st.outline;
+    const r = st.rim;
+    const height = r.z - o.z;
+    const chordN = (r.x - o.x) * st.n.x + (r.y - o.y) * st.n.y;
+    const hScale = wallHeightScale(st.u);
+    const curvature = blendedFlareCurvature(st.u, o.y, defaults.flareCurvature);
+    const filletBot = defaults.wallFilletBottomMm;
+    const filletTop = defaults.wallFilletTopMm;
+    const bowl = filletBot < 0.2 ? 0 : heelBowlMix(st.u);
+    const ends = wallEndTangents({
+        heightMm: Math.max(height, 0.5),
+        flareDeg,
+        filletTopMm: filletTop,
+        filletBottomMm: filletBot,
+        bowlMix: bowl,
+        bowlFactor: defaults.cupBowlFactor,
+        flareCurvature: curvature,
+    });
+    const Twall = wallDirectionNZ(flareDeg);
+    const Tsheet = st.t0 ? unitNZ(st.t0) : Twall;
+    const Ttop = st.t1 ? unitNZ(st.t1) : { n: Twall.n, z: -Twall.z };
+    const P0 = { n: 0, z: o.z };
+    const P1 = { n: chordN, z: r.z };
+    const botRings = sampleFilletArc(P0, Tsheet, Twall, filletBot, circMm);
+    const topFromRim = sampleFilletArc(P1, Ttop, { n: -Twall.n, z: -Twall.z }, filletTop, circMm);
+    const first = botRings[0] ?? { n: P0.n + Tsheet.n * 0.3, z: P0.z + Tsheet.z * 0.3 };
+    const implied = filletImpliedSeamDeg(Tsheet, {
+        n: first.n - P0.n,
+        z: first.z - P0.z,
+    });
+    const hermiteStart = botRings[botRings.length - 1] ?? P0;
+    const hermiteEnd = topFromRim[topFromRim.length - 1] ?? P1;
+    const nMid = Math.max(4, nT - 2 - botRings.length - topFromRim.length);
+    const column: Array<{ n: number; z: number }> = [P0];
+    for (const p of botRings) column.push(p);
+    for (let i = 1; i < nMid; i++) {
+        const t = clusteredWallT(i, nMid, filletBot, filletTop, Math.max(height, 1));
+        let p = evalWallProfile(hermiteStart, ends.T0, hermiteEnd, ends.T1, t, bowl);
+        p = applyFlangeAndScale(p, t, st, chordN, hScale, flangeH, flangeLen, flangeAng, footLengthMm);
+        column.push(p);
+    }
+    for (let i = topFromRim.length - 1; i >= 0; i--) column.push(topFromRim[i]!);
+    column.push(P1);
+    return { column, impliedSeamDeg: implied };
+}
+
+function resampleColumn(
+    column: Array<{ n: number; z: number }>,
+    nT: number,
+): Array<{ n: number; z: number }> {
+    if (column.length === nT) return column;
+    if (column.length === 0) return Array.from({ length: nT }, () => ({ n: 0, z: 0 }));
+    const out: Array<{ n: number; z: number }> = [];
+    for (let i = 0; i < nT; i++) {
+        const t = (i / Math.max(1, nT - 1)) * (column.length - 1);
+        const j = Math.min(column.length - 2, Math.floor(t));
+        const f = t - j;
+        const a = column[j]!;
+        const b = column[j + 1]!;
+        out.push({ n: a.n + (b.n - a.n) * f, z: a.z + (b.z - a.z) * f });
+    }
+    out[0] = column[0]!;
+    out[nT - 1] = column[column.length - 1]!;
+    return out;
+}
+
 /**
- * Cubic Hermite wall in the local (outward n, z) frame. Endpoints are the
- * outline and trim points; tangents come from flare + fillets. Lateral flange
- * is an additive interior offset — height 0 does not change any sample.
+ * Cubic Hermite wall in the local (outward n, z) frame with explicit 3–4
+ * ring fillet arcs at both ends. T0 is the wall direction (90° − flare).
  */
 export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
     const nS = input.stations.length;
-    const nT = Math.max(8, input.nT ?? 16);
+    const nT = Math.max(10, input.nT ?? 16);
     const positions = new Float32Array(nS * nT * 3);
     const flangeH = input.flangeHeightMm ?? 0;
     const flangeLen = input.flangeLengthMm ?? input.defaults.lateralFlangeLengthMm;
     const flangeAng = input.flangeAngleDeg ?? input.defaults.lateralFlangeAngleDeg;
+    const circMm = polylineCircMm(input.stations.map((s) => s.outline));
+    const xyz: Array<Array<{ x: number; y: number; z: number }>> = [];
 
     for (let si = 0; si < nS; si++) {
         const st = input.stations[si]!;
-        const o = st.outline;
-        const r = st.rim;
-        const height = r.z - o.z;
-        const chordN = (r.x - o.x) * st.n.x + (r.y - o.y) * st.n.y;
-        const hScale = wallHeightScale(st.u);
-        const flare = blendedFlareDeg(st.u, o.y, input.defaults.flareDeg);
-        const curvature = blendedFlareCurvature(st.u, o.y, input.defaults.flareCurvature);
-        const filletBot = input.defaults.wallFilletBottomMm;
-        const bowl = filletBot < 0.2 ? 0 : heelBowlMix(st.u);
-        const ends = wallEndTangents({
-            heightMm: Math.max(height, 0.5),
-            flareDeg: flare,
-            filletTopMm: input.defaults.wallFilletTopMm,
-            filletBottomMm: filletBot,
-            bowlMix: bowl,
-            bowlFactor: input.defaults.cupBowlFactor,
-            flareCurvature: curvature,
-        });
-        const T0 = st.t0 ?? ends.T0;
-        const T1 = ends.T1;
-        const P0 = { n: 0, z: o.z };
-        const P1 = { n: chordN, z: r.z };
-        const column: Array<{ n: number; z: number }> = [];
-        for (let ti = 0; ti < nT; ti++) {
-            const t = clusteredWallT(
-                ti,
+        let flare = blendedFlareDeg(st.u, st.outline.y, input.defaults.flareDeg);
+        let built = buildStationColumn(
+            st,
+            flare,
+            input.defaults,
+            nT,
+            circMm,
+            flangeH,
+            flangeLen,
+            flangeAng,
+            input.footLengthMm,
+        );
+        let column = resampleColumn(built.column, nT);
+        let guard = 0;
+        while (flare < 0 && !assertNoStationSelfIntersection(column) && guard++ < 8) {
+            flare = Math.min(0, flare * 0.5);
+            built = buildStationColumn(
+                st,
+                flare,
+                input.defaults,
                 nT,
-                input.defaults.wallFilletBottomMm,
-                input.defaults.wallFilletTopMm,
-                Math.max(height, 1),
+                circMm,
+                flangeH,
+                flangeLen,
+                flangeAng,
+                input.footLengthMm,
             );
-            let p = evalWallProfile(P0, T0, P1, T1, t, bowl);
-            if (ti === 0) p = { n: 0, z: o.z };
-            if (ti === nT - 1) p = { n: chordN, z: r.z };
-            if (hScale < 0.999 && ti > 0 && ti < nT - 1) {
-                p = {
-                    n: chordN * t + p.n * (1 - hScale) * 0 + p.n * hScale,
-                    z: o.z + (r.z - o.z) * t * (1 - hScale) + (p.z - o.z) * hScale + o.z * 0,
-                };
-                p = {
-                    n: p.n * hScale + chordN * t * (1 - hScale),
-                    z: o.z + (p.z - o.z) * hScale + (r.z - o.z) * t * (1 - hScale),
-                };
-            }
-            if (flangeH > 0) {
-                const env = lateralFlangeEnvelope(st.u, o.y, flangeLen, input.footLengthMm);
-                if (env > 0 && ti > 0 && ti < nT - 1) {
-                    const extra =
-                        env * flangeH * Math.tan((flangeAng * Math.PI) / 180) * Math.sin(Math.PI * t);
-                    p = { n: p.n + extra, z: p.z };
-                }
-            }
-            column.push(p);
-            const idx = (ti * nS + si) * 3;
-            positions[idx] = o.x + st.n.x * p.n;
-            positions[idx + 1] = o.y + st.n.y * p.n;
-            positions[idx + 2] = p.z;
+            column = resampleColumn(built.column, nT);
         }
         if (!assertNoStationSelfIntersection(column)) {
             throw new Error(`procedural wall self-intersects at station ${si} (u=${st.u.toFixed(3)})`);
+        }
+        st.impliedSeamDeg = built.impliedSeamDeg;
+        const row: Array<{ x: number; y: number; z: number }> = [];
+        for (let ti = 0; ti < nT; ti++) {
+            const p = column[ti]!;
+            const x = st.outline.x + st.n.x * p.n;
+            const y = st.outline.y + st.n.y * p.n;
+            const z = p.z;
+            row.push({ x, y, z });
+            const idx = (ti * nS + si) * 3;
+            positions[idx] = x;
+            positions[idx + 1] = y;
+            positions[idx + 2] = z;
+        }
+        xyz.push(row);
+    }
+    for (let si = 0; si < nS; si++) {
+        if (adjacentStationsCross(xyz[si]!, xyz[(si + 1) % nS]!)) {
+            const st = input.stations[si]!;
+            let flare = blendedFlareDeg(st.u, st.outline.y, input.defaults.flareDeg);
+            if (flare < 0) {
+                flare = 0;
+                const rebuilt = resampleColumn(
+                    buildStationColumn(
+                        st,
+                        flare,
+                        input.defaults,
+                        nT,
+                        circMm,
+                        flangeH,
+                        flangeLen,
+                        flangeAng,
+                        input.footLengthMm,
+                    ).column,
+                    nT,
+                );
+                for (let ti = 0; ti < nT; ti++) {
+                    const p = rebuilt[ti]!;
+                    const idx = (ti * nS + si) * 3;
+                    positions[idx] = st.outline.x + st.n.x * p.n;
+                    positions[idx + 1] = st.outline.y + st.n.y * p.n;
+                    positions[idx + 2] = p.z;
+                    xyz[si]![ti] = {
+                        x: positions[idx]!,
+                        y: positions[idx + 1]!,
+                        z: positions[idx + 2]!,
+                    };
+                }
+            }
         }
     }
     return { nS, nT, positions };
