@@ -483,9 +483,7 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
         const st = stations[i]!;
         const { h, planLen } = headingOfStation(st);
         const r = estimateFilletRadius(st, planLen);
-        const inn = outlineInward(i, outline);
-        const alongH = inn.x * h.x + inn.y * h.y;
-        dirs.push(alongH >= 0 ? h : { x: -h.x, y: -h.y });
+        dirs.push(outlineInward(i, outline));
         insets.push(Math.max(r, BAND_INSET_FLOOR_MM));
     }
     for (let i = 0; i < n; i++) {
@@ -495,7 +493,7 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
             maxInsetKeepingMinEdge(outline[prev]!, dirs[prev]!, outline[i]!, dirs[i]!),
             maxInsetKeepingMinEdge(outline[i]!, dirs[i]!, outline[next]!, dirs[next]!),
         );
-        if (Number.isFinite(cap)) insets[i] = Math.min(insets[i]!, Math.max(0.35, cap * 0.95));
+        if (Number.isFinite(cap)) insets[i] = Math.min(insets[i]!, Math.max(I_CLEARANCE_MM, cap * 0.95));
     }
     for (let pass = 0; pass < 48; pass++) {
         const ring = bandFromInsets(outline, dirs, insets);
@@ -524,7 +522,7 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
         }
         let changed = false;
         for (const i of bad) {
-            const next = Math.max(0.35, insets[i]! * 0.8);
+            const next = Math.max(I_CLEARANCE_MM, insets[i]! * 0.8);
             if (next < insets[i]! - 1e-6) {
                 insets[i] = next;
                 changed = true;
