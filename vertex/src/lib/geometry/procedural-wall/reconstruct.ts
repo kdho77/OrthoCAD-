@@ -471,12 +471,14 @@ function applyBoundaryTangents(
             tn = dx * ox + dy * oy;
             tzN = -dnN * Nz;
         }
-        const mag = Math.hypot(tn, tzN) || 1;
+        const mag = Math.hypot(tn, tzN);
         const H = Math.max(st.rim.z - st.outline.z, 1);
-        let zn = tzN / mag;
-        if (slot === "t0" && zn < 0.15) zn = 0.15;
-        if (slot === "t1" && zn > -0.15) zn = -0.15;
-        const tan = { n: (tn / mag) * H, z: zn * H };
+        if (mag < 1e-6) {
+            if (slot === "t0") st.t0 = { n: H, z: 0 };
+            else st.t1 = { n: H, z: -H };
+            continue;
+        }
+        const tan = { n: (tn / mag) * H, z: (tzN / mag) * H };
         if (slot === "t0") st.t0 = tan;
         else st.t1 = tan;
     }

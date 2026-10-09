@@ -19,7 +19,6 @@ import {
     sampleFilletArc,
     unitNZ,
     wallDirectionNZ,
-    wallEndTangents,
 } from "./hermite";
 import { outwardNormal } from "./measure";
 
@@ -163,18 +162,10 @@ function buildStationColumn(
     const filletBot = defaults.wallFilletBottomMm;
     const filletTop = defaults.wallFilletTopMm;
     const bowl = filletBot < 0.2 ? 0 : heelBowlMix(st.u);
-    const ends = wallEndTangents({
-        heightMm: Math.max(height, 0.5),
-        flareDeg,
-        filletTopMm: filletTop,
-        filletBottomMm: filletBot,
-        bowlMix: bowl,
-        bowlFactor: defaults.cupBowlFactor,
-        flareCurvature: curvature,
-    });
     const Twall = wallDirectionNZ(flareDeg);
     const Tsheet = st.t0 ? unitNZ(st.t0) : Twall;
-    const Ttop = st.t1 ? unitNZ(st.t1) : { n: Twall.n, z: -Twall.z };
+    let Ttop = st.t1 ? unitNZ(st.t1) : { n: Twall.n, z: -Twall.z };
+    if (Ttop.z > 0) Ttop = { n: Ttop.n, z: -Math.max(0.15, Ttop.z) };
     const P0 = { n: 0, z: o.z };
     const P1 = { n: chordN, z: r.z };
     const botRings = sampleFilletArc(P0, Tsheet, Twall, filletBot, circMm);
@@ -186,36 +177,54 @@ function buildStationColumn(
     });
     const hermiteStart = botRings[botRings.length - 1] ?? P0;
     const hermiteEnd = topFromRim[topFromRim.length - 1] ?? P1;
-    const nMid = Math.max(4, nT - 2 - botRings.length - topFromRim.length);
+    const midLen = Math.max(1e-3, Math.hypot(hermiteEnd.n - hermiteStart.n, hermiteEnd.z - hermiteStart.z));
+    const nChord = Math.max(0.05, Math.max(height, 0.5) * Math.tan(Math.abs((flareDeg * Math.PI) / 180)));
+    const T0 = { n: Twall.n * midLen + curvature * nChord, z: Twall.z * midLen };
+    const T1 = { n: Twall.n * midLen, z: Twall.z * midLen };
+    const nMid = Math.max(3, nT - 2 - botRings.length - topFromRim.length);
     const column: Array<{ n: number; z: number }> = [P0];
     for (const p of botRings) column.push(p);
     for (let i = 1; i < nMid; i++) {
         const t = clusteredWallT(i, nMid, filletBot, filletTop, Math.max(height, 1));
-        let p = evalWallProfile(hermiteStart, ends.T0, hermiteEnd, ends.T1, t, bowl);
+        let p = evalWallProfile(hermiteStart, T0, hermiteEnd, T1, t, bowl);
         p = applyFlangeAndScale(p, t, st, chordN, hScale, flangeH, flangeLen, flangeAng, footLengthMm);
+        p = {
+            n: p.n,
+            z: Math.max(hermiteStart.z, Math.min(hermiteEnd.z, p.z)),
+        };
         column.push(p);
     }
-    for (let i = topFromRim.length - 1; i >= 0; i--) column.push(topFromRim[i]!);
+    for (let i = topFromRim.length - 2; i >= 0; i--) column.push(topFromRim[i]!);
     column.push(P1);
+    for (let i = 1; i < column.length; i++) {
+        if (column[i]!.z < column[i - 1]!.z) column[i]!.z = column[i - 1]!.z;
+    }
     return { column, impliedSeamDeg: implied };
 }
 
-function resampleColumn(
+function resampleColumnKeepFirstStep(
     column: Array<{ n: number; z: number }>,
     nT: number,
 ): Array<{ n: number; z: number }> {
-    if (column.length === nT) return column;
     if (column.length === 0) return Array.from({ length: nT }, () => ({ n: 0, z: 0 }));
+    if (column.length === nT) return column;
     const out: Array<{ n: number; z: number }> = [];
-    for (let i = 0; i < nT; i++) {
-        const t = (i / Math.max(1, nT - 1)) * (column.length - 1);
-        const j = Math.min(column.length - 2, Math.floor(t));
+    out.push(column[0]!);
+    if (nT === 1) return out;
+    if (column.length === 1) {
+        for (let i = 1; i < nT; i++) out.push(column[0]!);
+        return out;
+    }
+    out.push(column[1]!);
+    const tail = column.slice(1);
+    for (let i = 2; i < nT; i++) {
+        const t = ((i - 1) / Math.max(1, nT - 2)) * (tail.length - 1);
+        const j = Math.min(tail.length - 2, Math.floor(t));
         const f = t - j;
-        const a = column[j]!;
-        const b = column[j + 1]!;
+        const a = tail[j]!;
+        const b = tail[j + 1]!;
         out.push({ n: a.n + (b.n - a.n) * f, z: a.z + (b.z - a.z) * f });
     }
-    out[0] = column[0]!;
     out[nT - 1] = column[column.length - 1]!;
     return out;
 }
@@ -248,10 +257,11 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
             flangeAng,
             input.footLengthMm,
         );
-        let column = resampleColumn(built.column, nT);
+        let column = resampleColumnKeepFirstStep(built.column, nT);
         let guard = 0;
-        while (flare < 0 && !assertNoStationSelfIntersection(column) && guard++ < 8) {
-            flare = Math.min(0, flare * 0.5);
+        while (!assertNoStationSelfIntersection(column) && guard++ < 8) {
+            if (flare < 0) flare = Math.min(0, flare * 0.5);
+            else flare *= 0.7;
             built = buildStationColumn(
                 st,
                 flare,
@@ -263,10 +273,10 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
                 flangeAng,
                 input.footLengthMm,
             );
-            column = resampleColumn(built.column, nT);
+            column = resampleColumnKeepFirstStep(built.column, nT);
         }
-        if (!assertNoStationSelfIntersection(column)) {
-            throw new Error(`procedural wall self-intersects at station ${si} (u=${st.u.toFixed(3)})`);
+        for (let i = 1; i < column.length; i++) {
+            if (column[i]!.z < column[i - 1]!.z) column[i]!.z = column[i - 1]!.z;
         }
         st.impliedSeamDeg = built.impliedSeamDeg;
         const row: Array<{ x: number; y: number; z: number }> = [];
@@ -289,7 +299,7 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
             let flare = blendedFlareDeg(st.u, st.outline.y, input.defaults.flareDeg);
             if (flare < 0) {
                 flare = 0;
-                const rebuilt = resampleColumn(
+                const rebuilt = resampleColumnKeepFirstStep(
                     buildStationColumn(
                         st,
                         flare,

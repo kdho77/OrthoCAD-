@@ -32,7 +32,7 @@ const PLANTAR_OUTLINE_Z_MM = 2;
 const SOLE_FIELD_Z_MM = 3.5;
 const PLANTAR_NZ_MAX = -0.5;
 const PLANTAR_WELD_MM = 1e-5;
-const WALL_FOOT_BAND_MM = 2.5;
+const WALL_FOOT_BAND_MM = 8;
 const WALL_FOOT_CELL_MM = 4;
 
 function topVertexCountOf(geo: BufferGeometry): number {
@@ -781,6 +781,7 @@ function buildWallFootGrid(faces: PlantarFace[]): Map<string, number> {
     const grid = new Map<string, number>();
     for (const f of faces) {
         if (Math.abs(f.nz) >= 0.5) continue;
+        if (f.cz < 1.5) continue;
         const k = wallFootKey(f.cx, f.cy);
         const prev = grid.get(k);
         if (prev == null || f.cz < prev) grid.set(k, f.cz);
@@ -801,7 +802,7 @@ function localWallFootZ(grid: Map<string, number>, x: number, y: number): number
     return best;
 }
 
-function floodFromLowest(candidates: number[], faces: PlantarFace[]): number[] {
+function floodFromLowest(candidates: number[], faces: PlantarFace[], maxStepZ = 1.2): number[] {
     if (candidates.length === 0) return [];
     const candSet = new Set(candidates);
     let seed = candidates[0]!;
@@ -856,6 +857,8 @@ function floodFromLowest(candidates: number[], faces: PlantarFace[]): number[] {
         const cur = stack.pop()!;
         for (const n of nbrs.get(cur) ?? []) {
             if (seen.has(n)) continue;
+            if (faces[n]!.nz > -0.75) continue;
+            if (faces[n]!.cz > faces[cur]!.cz + maxStepZ) continue;
             seen.add(n);
             stack.push(n);
         }
@@ -918,17 +921,14 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
         if (f.nz >= PLANTAR_NZ_MAX) continue;
         const footZ = localWallFootZ(footGrid, f.cx, f.cy);
         if (Number.isFinite(footZ) && f.cz > footZ + WALL_FOOT_BAND_MM) continue;
-        if (hull && !pointInPoly(f.cx, f.cy, hull)) continue;
         candidates.push(i);
     }
-    const flooded = floodFromLowest(candidates, faces);
-    const kept = (flooded.length >= 8 ? flooded : candidates).map((i) => faces[i]!);
-    if (kept.length < 8) return {};
-
+    if (candidates.length < 8) return {};
     const used = new Map<number, number>();
     const newPos: number[] = [];
     const newIdx: number[] = [];
-    for (const tri of kept) {
+    for (const ci of candidates) {
+        const tri = faces[ci]!;
         for (const old of [tri.i0, tri.i1, tri.i2]) {
             let ni = used.get(old);
             if (ni == null) {
@@ -942,8 +942,124 @@ export function extractPlantarSheet(geo: BufferGeometry, outline?: PolyPoint[]):
     const tmp = new BufferGeometry();
     tmp.setAttribute("position", new BufferAttribute(new Float32Array(newPos), 3));
     tmp.setIndex(newIdx);
-    const welded = mergeVertices(tmp, PLANTAR_WELD_MM);
-    if (welded !== tmp) tmp.dispose();
+    const weldedAll = mergeVertices(tmp, PLANTAR_WELD_MM);
+    if (weldedAll !== tmp) tmp.dispose();
+    const wposAll = weldedAll.getAttribute("position");
+    const widxAll = weldedAll.getIndex();
+    if (!wposAll || !widxAll) {
+        weldedAll.dispose();
+        return {};
+    }
+    const wposArr = wposAll.array as Float32Array;
+    const widxArr = widxAll.array;
+    const wfaces: PlantarFace[] = [];
+    for (let t = 0; t < widxArr.length; t += 3) {
+        const i0 = widxArr[t]!;
+        const i1 = widxArr[t + 1]!;
+        const i2 = widxArr[t + 2]!;
+        const ax = wposArr[i0 * 3]!;
+        const ay = wposArr[i0 * 3 + 1]!;
+        const az = wposArr[i0 * 3 + 2]!;
+        const bx = wposArr[i1 * 3]!;
+        const by = wposArr[i1 * 3 + 1]!;
+        const bz = wposArr[i1 * 3 + 2]!;
+        const cx = wposArr[i2 * 3]!;
+        const cy = wposArr[i2 * 3 + 1]!;
+        const cz = wposArr[i2 * 3 + 2]!;
+        const nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
+        const ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+        const nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        const len = Math.hypot(nx, ny, nz) || 1;
+        wfaces.push({
+            i0,
+            i1,
+            i2,
+            cx: (ax + bx + cx) / 3,
+            cy: (ay + by + cy) / 3,
+            cz: (az + bz + cz) / 3,
+            nz: nz / len,
+        });
+    }
+    const wids = wfaces.map((_, i) => i);
+    const areaOf = (ids: number[]): number => {
+        let a = 0;
+        for (const i of ids) {
+            const f = wfaces[i]!;
+            a += Math.abs(
+                (wposArr[f.i1 * 3]! - wposArr[f.i0 * 3]!) *
+                    (wposArr[f.i2 * 3 + 1]! - wposArr[f.i0 * 3 + 1]!) -
+                    (wposArr[f.i1 * 3 + 1]! - wposArr[f.i0 * 3 + 1]!) *
+                        (wposArr[f.i2 * 3]! - wposArr[f.i0 * 3]!),
+            );
+        }
+        return a * 0.5;
+    };
+    const zSpanOf = (ids: number[]): number => {
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const i of ids) {
+            const z = wfaces[i]!.cz;
+            if (z < lo) lo = z;
+            if (z > hi) hi = z;
+        }
+        return hi - lo;
+    };
+    let flooded = floodFromLowest(wids, wfaces, 1.2);
+    if (zSpanOf(flooded) < 0.8) {
+        const usedLow = new Set(flooded);
+        const rest = wids.filter((i) => !usedLow.has(i));
+        const second = floodFromLowest(rest, wfaces, 1.2);
+        if (areaOf(second) > areaOf(flooded) || zSpanOf(second) > zSpanOf(flooded)) {
+            flooded = second;
+        }
+    }
+    let live = flooded.length >= 8 ? flooded.slice() : wids.slice();
+    for (let pass = 0; pass < 2; pass++) {
+        const edgeN = new Map<string, number>();
+        const addE = (a: number, b: number) => {
+            const k = a < b ? `${a},${b}` : `${b},${a}`;
+            edgeN.set(k, (edgeN.get(k) ?? 0) + 1);
+        };
+        for (const i of live) {
+            const f = wfaces[i]!;
+            addE(f.i0, f.i1);
+            addE(f.i1, f.i2);
+            addE(f.i2, f.i0);
+        }
+        const next: number[] = [];
+        for (const i of live) {
+            const f = wfaces[i]!;
+            const b =
+                (edgeN.get(f.i0 < f.i1 ? `${f.i0},${f.i1}` : `${f.i1},${f.i0}`) ?? 0) === 1 ||
+                (edgeN.get(f.i1 < f.i2 ? `${f.i1},${f.i2}` : `${f.i2},${f.i1}`) ?? 0) === 1 ||
+                (edgeN.get(f.i2 < f.i0 ? `${f.i2},${f.i0}` : `${f.i0},${f.i2}`) ?? 0) === 1;
+            if (b && f.nz > -0.85) continue;
+            next.push(i);
+        }
+        if (next.length < 8) break;
+        live = next;
+    }
+    const compactPos: number[] = [];
+    const compactIdx: number[] = [];
+    const remap = new Map<number, number>();
+    for (const i of live) {
+        const f = wfaces[i]!;
+        for (const old of [f.i0, f.i1, f.i2]) {
+            let ni = remap.get(old);
+            if (ni == null) {
+                ni = compactPos.length / 3;
+                remap.set(old, ni);
+                compactPos.push(wposArr[old * 3]!, wposArr[old * 3 + 1]!, wposArr[old * 3 + 2]!);
+            }
+            compactIdx.push(ni);
+        }
+    }
+    const sheet = new BufferGeometry();
+    sheet.setAttribute("position", new BufferAttribute(new Float32Array(compactPos), 3));
+    sheet.setIndex(compactIdx);
+    const welded = mergeVertices(sheet, PLANTAR_WELD_MM);
+    if (welded !== sheet) sheet.dispose();
+    weldedAll.dispose();
     try {
         const wpos = welded.getAttribute("position");
         const meshPositions = new Float32Array(wpos.array as ArrayLike<number>);

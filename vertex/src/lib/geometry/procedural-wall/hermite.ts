@@ -123,9 +123,11 @@ export function sampleFilletArc(P0: NZ, Tstart: NZ, Tend: NZ, radiusMm: number, 
     };
 
     if (r < 1e-4 || theta < 1e-3) {
+        // Degenerate fillet: step off the plane along the wall direction (Tend),
+        // not along a horizontal sheet tangent (that would be coplanar).
+        const dir = unitNZ(Tend.z >= 0 ? Tend : ts);
         const step = Math.max(MIN_FILLET_RING_SPACING_MM, minOff);
-        const p = { n: P0.n + ts.n * step, z: P0.z + ts.z * step };
-        return [p];
+        return [{ n: P0.n + dir.n * step, z: P0.z + dir.z * step }];
     }
 
     const nWant = Math.min(
