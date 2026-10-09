@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import { cdtPlanarBand, DISH_BAND_MM, delaunayXY, pointInPoly } from "./cdt-band";
+import { cdtInteriorPolygon, cdtPlanarBand, DISH_BAND_MM, delaunayXY, pointInPoly } from "./cdt-band";
 
 describe("plan-view CDT dish band", () => {
     test("DISH_BAND_MM is 3", () => {
@@ -42,5 +42,34 @@ describe("plan-view CDT dish band", () => {
             expect(pointInPoly(cx, cy, outer)).toBe(true);
         }
         expect(onOuter).toBeGreaterThan(0);
+    });
+
+    test("interior CDT keeps every boundary edge once", () => {
+        const n = 16;
+        const outer = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 12 * Math.cos(a), y: 7 * Math.sin(a), z: 0 };
+        });
+        const steiner = [{ x: 0, y: 0, z: 0 }];
+        const { points, faces } = cdtInteriorPolygon(outer, steiner);
+        expect(faces.length).toBeGreaterThan(n - 2);
+        const edgeCount = new Map<string, number>();
+        const key = (a: number, b: number) => (a < b ? `${a},${b}` : `${b},${a}`);
+        for (const [a, b, c] of faces) {
+            for (const [i, j] of [
+                [a, b],
+                [b, c],
+                [c, a],
+            ] as Array<[number, number]>) {
+                if (i < n && j < n) edgeCount.set(key(i, j), (edgeCount.get(key(i, j)) ?? 0) + 1);
+            }
+            const pa = points[a]!;
+            const pb = points[b]!;
+            const pc = points[c]!;
+            expect(pointInPoly((pa.x + pb.x + pc.x) / 3, (pa.y + pb.y + pc.y) / 3, outer)).toBe(true);
+        }
+        for (let i = 0; i < n; i++) {
+            expect(edgeCount.get(key(i, (i + 1) % n)) ?? 0).toBe(1);
+        }
     });
 });

@@ -15,6 +15,7 @@ import {
     rimOverhangMm,
     sampleByArcLength,
     sampleInPlaneSlope,
+    slopeFromSheetPlane,
     summarizeWallBands,
     TOP_CLEARANCE_DEG,
     t0FromSheetSlope,
@@ -173,7 +174,8 @@ describe("bezier column", () => {
             return 10 + x * tan;
         };
         const slope = sampleInPlaneSlope(R, h, topZ);
-        expect((slope * 180) / Math.PI).toBeCloseTo(43, 0);
+        expect(slope.valid).toBe(true);
+        expect((slope.slopeRad * 180) / Math.PI).toBeCloseTo(43, 0);
         const st: HermiteStation = {
             outline: { x: 5, y: 0, z: 0 },
             rim: { x: 0, y: 0, z: 10 },
@@ -195,6 +197,24 @@ describe("bezier column", () => {
         );
         expect(() => assertT0ClearsSheet(frames)).not.toThrow();
         expect(() => assertT0ClearsSheet([{ ...fr, t0TiltRad: fr.sheetSlopeRad }])).toThrow(/\[S1-T0\]/);
+    });
+
+    test("missed rays use adjacent-face plane; never default to 0", () => {
+        const R = { x: 0, y: 0, z: 10 };
+        const h = { x: 1, y: 0 };
+        const tan = Math.tan((43 * Math.PI) / 180);
+        const planeN = { x: -tan, y: 0, z: 1 };
+        const len = Math.hypot(planeN.x, planeN.z);
+        const n = { x: planeN.x / len, y: 0, z: planeN.z / len };
+        const face = slopeFromSheetPlane(n, h);
+        expect(face).not.toBeNull();
+        expect((face! * 180) / Math.PI).toBeCloseTo(43, 0);
+        const missed = sampleInPlaneSlope(R, h, () => null, n);
+        expect(missed.valid).toBe(true);
+        expect((missed.slopeRad * 180) / Math.PI).toBeCloseTo(43, 0);
+        const none = sampleInPlaneSlope(R, h, () => null);
+        expect(none.valid).toBe(false);
+        expect(Number.isNaN(none.slopeRad)).toBe(true);
     });
 
     test("wall-band summary buckets hits by u", () => {

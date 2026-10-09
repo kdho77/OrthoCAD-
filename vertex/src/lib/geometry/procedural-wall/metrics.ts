@@ -702,9 +702,12 @@ export function dishInteriorDeltaMm(
     const generatedCount = (reconstruction.userData as { generatedCount?: number }).generatedCount ?? 0;
     const outlineRow = (reconstruction.userData as { outlineRow?: number }).outlineRow ?? 0;
     const nS = (reconstruction.userData as { stationCount?: number }).stationCount ?? 0;
+    const plantarStart =
+        (reconstruction.userData as { plantarStart?: number }).plantarStart ??
+        generatedStart + Math.max(0, outlineRow) * nS;
     let max = 0;
     let n = 0;
-    const start = generatedStart + Math.max(0, outlineRow) * nS;
+    const start = plantarStart;
     const end = generatedStart + generatedCount;
     for (let i = start; i < end && i < pos.length / 3; i++) {
         const x = pos[i * 3]!;

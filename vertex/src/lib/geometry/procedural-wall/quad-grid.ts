@@ -8,10 +8,11 @@ import { sampleUvField } from "./extract";
 import { type DishZIndex, sampleDishZVertical } from "./height-xy";
 import { MAX_FILLET_ASPECT, MIN_FILLET_RING_SPACING_MM, MIN_FILLET_RINGS, type NZ } from "./hermite";
 import type { HermiteStation } from "./loft";
+import { buildGeneratedPlantar, type GeneratedPlantar } from "./plantar-cdt";
 import type { FlareCapReport } from "./stations";
 import type { UvHeightField } from "./types";
 
-export const PLANTAR_RINGS = 12;
+export const PLANTAR_RINGS = 0;
 export const WALL_MID_ROWS = 8;
 export const INNER_CAP_MM = 4;
 export const STATION_MERGE_MM = 0.2;
@@ -23,7 +24,7 @@ export interface QuadGrid {
     nJ: number;
     /** Packed xyz for rows j = 1 .. nJ-1 (row 0 lives on the TopSheet rim). */
     body: Float32Array;
-    center: PolyPoint;
+    plantar: GeneratedPlantar;
     outlineRow: number;
     impliedSeamDeg: number[];
     flareDeg: number[];
@@ -46,18 +47,6 @@ export interface RimJunction {
     slopeRad: number;
     /** Start tangent in (outboard n, z): rotated down by slope+5°. */
     tStart: NZ;
-}
-
-function pointInPolyXY(x: number, y: number, poly: PolyPoint[]): boolean {
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const yi = poly[i]!.y;
-        const yj = poly[j]!.y;
-        const xi = poly[i]!.x;
-        const xj = poly[j]!.x;
-        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-18) + xi) inside = !inside;
-    }
-    return inside;
 }
 
 /** TopSheet tangent planes at each rim vertex. */
@@ -235,7 +224,7 @@ export interface BuildQuadGridInput {
     zDelta: (x: number, y: number) => number;
     topZ: (x: number, y: number) => number | null;
     nWall?: number;
-    nPlantar?: number;
+    refineGrind?: boolean;
     flangeHeightMm?: number;
     flangeLengthMm?: number;
     flangeAngleDeg?: number;
@@ -246,9 +235,19 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     const stations = input.stations;
     const nS = stations.length;
     const nWall = Math.max(10, input.nWall ?? 1 + MIN_FILLET_RINGS + WALL_MID_ROWS + MIN_FILLET_RINGS);
-    const nPlantar = Math.max(4, input.nPlantar ?? PLANTAR_RINGS);
-    const nJ = nWall + nPlantar;
+    const nJ = nWall;
     const outlineRow = nWall - 1;
+    const plantar = buildGeneratedPlantar({
+        boundary: stations.map((s) => s.outline),
+        dish: input.dish,
+        field: input.plantarField,
+        zDelta: input.zDelta,
+        refineGrind: input.refineGrind,
+    });
+    for (let i = 0; i < nS; i++) {
+        const z = plantar.points[i]?.z;
+        if (z != null) stations[i]!.outline.z = z;
+    }
     const built = buildBezierColumns(
         stations,
         input.junctions,
@@ -271,42 +270,15 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     const flare = built.flareDeg;
     const report = built.flareCapReport;
 
-    let cx = 0;
-    let cy = 0;
-    for (const st of stations) {
-        cx += st.outline.x;
-        cy += st.outline.y;
-    }
-    cx /= Math.max(1, nS);
-    cy /= Math.max(1, nS);
-    const outlineLoop = stations.map((st) => st.outline);
-    for (let i = 0; i < nS; i++) {
-        const o = stations[i]!.outline;
-        const radial = Math.hypot(o.x - cx, o.y - cy);
-        const inner = Math.min(INNER_CAP_MM, radial * 0.4);
-        const span = Math.max(0, radial - inner);
-        for (let k = 1; k <= nPlantar; k++) {
-            const t = radial > 1e-6 ? ((k / nPlantar) * span) / radial : 0;
-            const x = o.x + (cx - o.x) * t;
-            const y = o.y + (cy - o.y) * t;
-            const inside = pointInPolyXY(x, y, outlineLoop);
-            const px = inside ? x : o.x + (cx - o.x) * Math.min(t, 0.92);
-            const py = inside ? y : o.y + (cy - o.y) * Math.min(t, 0.92);
-            const z = sampleGeneratedZ(px, py, input.dish, input.plantarField, o.z, input.zDelta);
-            columns[i]!.push({ x: px, y: py, z });
-        }
-    }
-    const cz = sampleGeneratedZ(cx, cy, input.dish, input.plantarField, 0, input.zDelta);
-    const center = { x: cx, y: cy, z: cz };
     const outlineRing = columns.map((col) => ({ ...col[outlineRow]! }));
     let bandTiltDegMax = 0;
-    if (nPlantar > 0) {
-        for (let i = 0; i < nS; i++) {
-            const a = columns[i]![outlineRow]!;
-            const b = columns[(i + 1) % nS]![outlineRow]!;
-            const c = columns[i]![outlineRow + 1]!;
-            bandTiltDegMax = Math.max(bandTiltDegMax, tiltFromHorizontal(a, b, c));
-        }
+    for (const f of plantar.faces) {
+        const ids = [f[0]!, f[1]!, f[2]!];
+        if (ids.filter((i) => i < nS).length < 2) continue;
+        bandTiltDegMax = Math.max(
+            bandTiltDegMax,
+            tiltFromHorizontal(plantar.points[f[0]!]!, plantar.points[f[1]!]!, plantar.points[f[2]!]!),
+        );
     }
 
     const planReversals = built.planReversals;
@@ -325,7 +297,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         nS,
         nJ,
         body,
-        center,
+        plantar,
         outlineRow,
         impliedSeamDeg: implied,
         flareDeg: flare,

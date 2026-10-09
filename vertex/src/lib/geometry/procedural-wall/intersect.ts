@@ -339,28 +339,29 @@ export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionRep
         filletRowStart?: number;
         nJ?: number;
         originalTopVertexCount?: number;
+        plantarStart?: number;
     };
     const topN = ud.originalTopVertexCount ?? ud.topVertexCount ?? 0;
     const generatedStart = ud.generatedStart ?? topN;
     const nS = ud.stationCount ?? 0;
     const outlineRow = ud.outlineRow ?? 0;
     const filletRowStart = ud.filletRowStart ?? Math.max(0, outlineRow - 3);
-    const nJ = ud.nJ ?? outlineRow + 1;
-    const centerId = nS > 0 ? generatedStart + nS * Math.max(0, nJ - 1) : -1;
+    const plantarStart = ud.plantarStart ?? generatedStart + nS * Math.max(0, outlineRow);
 
     type VertRegion = "top" | "column" | "fillet" | "plantar";
     const rowOf = (v: number): number | null => {
-        if (v === centerId) return nJ;
+        if (v >= plantarStart) return outlineRow + 1;
         if (v < generatedStart) return v < topN ? -1 : 0;
         if (nS <= 0) return null;
         return Math.floor((v - generatedStart) / nS) + 1;
     };
     const stationOf = (v: number): number | null => {
-        if (v === centerId || nS <= 0) return null;
+        if (v >= plantarStart || nS <= 0) return null;
         if (v >= generatedStart) return (v - generatedStart) % nS;
         return null;
     };
     const regionOfVert = (v: number): VertRegion => {
+        if (v >= plantarStart) return "plantar";
         const j = rowOf(v);
         if (j == null) return "column";
         if (j < 0) return "top";
@@ -537,7 +538,7 @@ export function formatSiBreakdown(hits: SelfIntersectionReport, opts: SiBreakdow
                 ? {
                       hits: plantar.length,
                       byBand: plantarByBand,
-                      note: "concentric rings toward the centroid can cross in the heel/forefoot",
+                      note: "generated plantar (CDT) self-hits",
                   }
                 : { hits: 0 },
         columnPlantar: bySub["column-plantar"] ?? 0,

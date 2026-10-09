@@ -23,7 +23,7 @@ import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy
 import { buildHermiteStations } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
 import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
-import { buildQuadGrid, rimJunctions, STATION_MERGE_MM, sampleGeneratedZ } from "./quad-grid";
+import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
 import { countPlanViewChordCrossings, pairAtNativeTop } from "./stations";
 import type { StockWallModel } from "./types";
 
@@ -303,30 +303,10 @@ export function reconstructProceduralWalls(
             ? buildDishZIndex(model.outline.meshPositions, model.outline.meshIndices)
             : null;
     const zDelta = (x: number, y: number) => plantarZDelta(x, y, model.bounds, options);
-    const probeZ = (x: number, y: number, fb: number) =>
-        sampleGeneratedZ(x, y, dish, model.outline.plantarZ, fb, zDelta);
-    let minGen = Infinity;
-    let cx = 0;
-    let cy = 0;
-    for (const p of pairing.plantar) {
-        cx += p.x;
-        cy += p.y;
-        if (p.z < minGen) minGen = p.z;
-    }
-    cx /= Math.max(1, pairing.plantar.length);
-    cy /= Math.max(1, pairing.plantar.length);
-    for (const t of [0.25, 0.5, 0.75]) {
-        for (const p of pairing.plantar) {
-            const z = probeZ(p.x + (cx - p.x) * t, p.y + (cy - p.y) * t, p.z);
-            if (z < minGen) minGen = z;
-        }
-    }
-    const groundLift = Number.isFinite(minGen) && minGen < 0 ? -minGen : 0;
-    const zDeltaG = (x: number, y: number) => zDelta(x, y) + groundLift;
     const outlineZ: PolyPoint[] = pairing.plantar.map((p) => ({
         x: p.x,
         y: p.y,
-        z: p.z + zDelta(p.x, p.y) + groundLift,
+        z: p.z,
     }));
     pairing.plantar = outlineZ;
 
@@ -364,9 +344,10 @@ export function reconstructProceduralWalls(
         rimLoop: rimPtsLive,
         dish,
         plantarField: model.outline.plantarZ,
-        zDelta: zDeltaG,
+        zDelta,
         topZ,
         nWall: options.wallLayers ?? 16,
+        refineGrind: (options.archGrindDepthMm ?? 0) > 0,
         flangeHeightMm: flangeH,
         flangeLengthMm: flangeLen,
         flangeAngleDeg: flangeAng,
@@ -377,12 +358,20 @@ export function reconstructProceduralWalls(
     const nJ = grid.nJ;
     const generatedStart = positions.length / 3;
     for (let k = 0; k < grid.body.length; k++) positions.push(grid.body[k]!);
-    const centerId = positions.length / 3;
-    positions.push(grid.center.x, grid.center.y, grid.center.z);
+    const plantarStart = positions.length / 3;
+    const nBoundary = grid.plantar.boundaryCount;
+    for (let i = nBoundary; i < grid.plantar.points.length; i++) {
+        const p = grid.plantar.points[i]!;
+        positions.push(p.x, p.y, p.z);
+    }
     const gridVert = (j: number, i: number): number => {
         const s = ((i % nS) + nS) % nS;
         if (j <= 0) return rimLocal[s]!;
         return generatedStart + (j - 1) * nS + s;
+    };
+    const plantarVert = (local: number): number => {
+        if (local < nBoundary) return gridVert(grid.outlineRow, local);
+        return plantarStart + (local - nBoundary);
     };
     const pushTri = (a: number, b: number, c: number): void => {
         if (a === b || b === c || c === a) return;
@@ -398,8 +387,8 @@ export function reconstructProceduralWalls(
             pushTri(a, c, d);
         }
     }
-    for (let i = 0; i < nS; i++) {
-        pushTri(gridVert(nJ - 1, i), gridVert(nJ - 1, i + 1), centerId);
+    for (const f of grid.plantar.faces) {
+        pushTri(plantarVert(f[0]!), plantarVert(f[1]!), plantarVert(f[2]!));
     }
 
     const hygiene = sanitizeMesh(positions, indices);
@@ -426,12 +415,14 @@ export function reconstructProceduralWalls(
             heightMm: f.heightMm,
             sheetSlopeDeg: (f.sheetSlopeRad * 180) / Math.PI,
             t0TiltDeg: (f.t0TiltRad * 180) / Math.PI,
+            sheetSlopeValid: f.sheetSlopeValid,
         })),
         zeroAreaFaces: hygiene.zeroArea,
         duplicateFaces: hygiene.duplicates,
         meshMinZ: meshMinZOf(positions),
         generatedStart,
         generatedCount: positions.length / 3 - generatedStart,
+        plantarStart,
         outlineRow: grid.outlineRow,
         outlineRing: grid.outlineRing,
         outlineVertexStart: generatedStart + Math.max(0, grid.outlineRow - 1) * nS,
@@ -446,7 +437,7 @@ export function reconstructProceduralWalls(
         interiorFaceCount: model.outline.interiorFaceCount,
         topVertexCount: generatedStart,
         originalTopVertexCount: originalTopCount,
-        plantarVertexCount: 0,
+        plantarVertexCount: grid.plantar.steinerCount,
         stitchVertexCount: nS,
         stationCount: nS,
         filletImpliedSeamDeg: grid.impliedSeamDeg,

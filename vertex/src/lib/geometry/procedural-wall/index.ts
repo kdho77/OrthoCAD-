@@ -16,12 +16,13 @@ export {
     rimOverhangMm,
     sampleByArcLength,
     sampleInPlaneSlope,
+    slopeFromSheetPlane,
     summarizeWallBands,
     t0FromSheetSlope,
     U_BANDS,
     type WallBandRow,
 } from "./bezier-column";
-export { cdtPlanarBand, DISH_BAND_MM, delaunayXY } from "./cdt-band";
+export { cdtInteriorPolygon, cdtPlanarBand, DISH_BAND_MM, delaunayXY } from "./cdt-band";
 export { fitClosedC2Spline, resampleClosedC2, resamplePolyline } from "./curves";
 export {
     applyMeasuredUnclamped,
@@ -83,6 +84,7 @@ export {
 } from "./metrics";
 export { applyCurveModifiers } from "./modifiers";
 export { assertNonCrossing, buildPlanformFrame } from "./planform";
+export { buildGeneratedPlantar, PLANTAR_STEINER_MM } from "./plantar-cdt";
 export { reconstructProceduralWalls } from "./reconstruct";
 export {
     mapZoneFixtures,

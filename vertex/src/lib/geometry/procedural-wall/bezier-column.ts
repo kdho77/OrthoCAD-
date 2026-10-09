@@ -43,6 +43,8 @@ export interface ColumnFrame {
     uTiltRad: number;
     /** TopSheet in-plane slope along +h (rad). */
     sheetSlopeRad: number;
+    /** False when neither a ray hit nor an adjacent-face plane was usable. */
+    sheetSlopeValid: boolean;
     rFillet: number;
     u: number;
     shortChord: boolean;
@@ -280,45 +282,88 @@ function smoothScalars(vals: number[], passes: number): number[] {
     return cur;
 }
 
-function walkTopZ(
+function smoothScalarsMasked(vals: number[], valid: boolean[], passes: number): number[] {
+    let cur = vals.slice();
+    const n = cur.length;
+    for (let p = 0; p < passes; p++) {
+        const next = cur.slice();
+        for (let i = 0; i < n; i++) {
+            if (!valid[i]) continue;
+            const im = (i + n - 1) % n;
+            const ip = (i + 1) % n;
+            const vm = valid[im] ? cur[im]! : cur[i]!;
+            const vp = valid[ip] ? cur[ip]! : cur[i]!;
+            next[i] = 0.5 * cur[i]! + 0.25 * vm + 0.25 * vp;
+        }
+        cur = next;
+    }
+    return cur;
+}
+
+function applyT0Ceiling(frames: ColumnFrame[]): void {
+    for (const fr of frames) {
+        const ceiling = t0FromSheetSlope(fr.sheetSlopeRad, fr.shortChord);
+        if (fr.sheetSlopeValid || fr.shortChord) {
+            fr.t0TiltRad = Math.min(fr.t0TiltRad, ceiling);
+        }
+        applyTilts(fr);
+    }
+}
+
+export const SLOPE_SAMPLE_MM = [0.5, 1, 2] as const;
+
+function rayHitsAlong(
     R: XYZ,
     dir: { x: number; y: number },
     topZ: (x: number, y: number) => number | null,
 ): Array<{ s: number; z: number }> {
-    const step = 0.35;
     const out: Array<{ s: number; z: number }> = [];
-    for (let k = 1; k <= 10; k++) {
-        const s = step * k;
+    for (const s of SLOPE_SAMPLE_MM) {
         const z = topZ(R.x + dir.x * s, R.y + dir.y * s);
-        if (z == null) break;
+        if (z == null) continue;
         out.push({ s, z });
     }
     return out;
 }
 
+/** Sheet slope in the vertical R–B plane from an adjacent TopSheet face normal. */
+export function slopeFromSheetPlane(planeN: XYZ, h: { x: number; y: number }): number | null {
+    const nz = planeN.z;
+    if (Math.abs(nz) < 1e-8) return null;
+    return Math.atan(-(planeN.x * h.x + planeN.y * h.y) / nz);
+}
+
+export interface InPlaneSlope {
+    slopeRad: number;
+    valid: boolean;
+}
+
 /**
- * TopSheet in-plane slope along +h (toward B). Samples ±h and uses the
- * exit-side slope expressed as dz/ds along h. If +h stays on the sheet
- * (typical heel lip), that walk is the slope T0 must sit 5° below.
- * If +h leaves immediately, the interior (−h) slope is continued through R.
+ * TopSheet in-plane slope along +h. Rays at 0.5 / 1 / 2 mm on ±h; if none hit,
+ * the adjacent-face plane is projected into the column plane. Never defaults to 0.
  */
 export function sampleInPlaneSlope(
     R: XYZ,
     h: { x: number; y: number },
     topZ: (x: number, y: number) => number | null,
-): number {
+    planeN?: XYZ,
+): InPlaneSlope {
     const zR = topZ(R.x, R.y) ?? R.z;
-    const plus = walkTopZ(R, h, topZ);
-    const minus = walkTopZ(R, { x: -h.x, y: -h.y }, topZ);
+    const plus = rayHitsAlong(R, h, topZ);
+    const minus = rayHitsAlong(R, { x: -h.x, y: -h.y }, topZ);
     if (plus.length > 0) {
-        const p = plus[Math.min(2, plus.length - 1)]!;
-        return Math.atan((p.z - zR) / Math.max(p.s, 1e-6));
+        const p = plus[Math.min(1, plus.length - 1)]!;
+        return { slopeRad: Math.atan((p.z - zR) / Math.max(p.s, 1e-6)), valid: true };
     }
     if (minus.length > 0) {
-        const p = minus[Math.min(2, minus.length - 1)]!;
-        return Math.atan((zR - p.z) / Math.max(p.s, 1e-6));
+        const p = minus[Math.min(1, minus.length - 1)]!;
+        return { slopeRad: Math.atan((zR - p.z) / Math.max(p.s, 1e-6)), valid: true };
     }
-    return 0;
+    if (planeN) {
+        const face = slopeFromSheetPlane(planeN, h);
+        if (face != null) return { slopeRad: face, valid: true };
+    }
+    return { slopeRad: Number.NaN, valid: false };
 }
 
 /** T0 is the sheet slope rotated down by at least 5°. Never pinned to −5° from horizontal. */
@@ -384,8 +429,11 @@ export function initColumnFrames(
         const F = shortChord
             ? { x: B.x, y: B.y, z: B.z + r }
             : { x: B.x - h.x * r, y: B.y - h.y * r, z: B.z + r };
-        const sheetSlopeRad = sampleInPlaneSlope(R, h, topZ);
-        const t0TiltRad = t0FromSheetSlope(sheetSlopeRad, shortChord);
+        const sampled = sampleInPlaneSlope(R, h, topZ, _junctions[i]?.planeN);
+        const sheetSlopeRad = sampled.valid ? sampled.slopeRad : 0;
+        const t0TiltRad = sampled.valid
+            ? t0FromSheetSlope(sheetSlopeRad, shortChord)
+            : t0FromSheetSlope(0, true);
         const flare = ((flareDeg[i] ?? 0) * Math.PI) / 180;
         const rf = dist3(R, F);
         const handle = Math.min(BEZIER_HANDLE_FRAC * rf, HANDLE_CHORD_CAP * rf);
@@ -401,6 +449,7 @@ export function initColumnFrames(
             t0TiltRad,
             uTiltRad: flare,
             sheetSlopeRad,
+            sheetSlopeValid: sampled.valid,
             rFillet: r,
             u: st.u,
             shortChord,
@@ -421,8 +470,9 @@ function clampHandleInboard(fr: ColumnFrame): void {
 }
 
 function applySmooth(frames: ColumnFrame[], passes: number): void {
-    const t0 = smoothScalars(
+    const t0 = smoothScalarsMasked(
         frames.map((f) => f.t0TiltRad),
+        frames.map((f) => f.sheetSlopeValid),
         passes,
     );
     const ut = smoothScalars(
@@ -437,21 +487,17 @@ function applySmooth(frames: ColumnFrame[], passes: number): void {
         frames.map((f) => f.b),
         passes,
     );
-    const clear = (TOP_CLEARANCE_DEG * Math.PI) / 180;
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
-        const ceiling = t0FromSheetSlope(fr.sheetSlopeRad, fr.shortChord);
-        fr.t0TiltRad = Math.min(t0[i]!, ceiling);
-        if (fr.t0TiltRad > fr.sheetSlopeRad - clear + 1e-6 && !fr.shortChord) {
-            fr.t0TiltRad = fr.sheetSlopeRad - clear;
-        }
+        if (fr.sheetSlopeValid) fr.t0TiltRad = t0[i]!;
         fr.uTiltRad = ut[i]!;
         const cap = HANDLE_CHORD_CAP * dist3(fr.R, fr.F);
         fr.a = Math.min(cap, Math.max(0, a[i]!));
         fr.b = Math.min(cap, Math.max(0, b[i]!));
-        applyTilts(fr);
         clampHandleInboard(fr);
     }
+    applyT0Ceiling(frames);
+    for (const fr of frames) clampHandleInboard(fr);
 }
 
 function guardFrames(
@@ -546,6 +592,7 @@ export function buildBezierColumns(
         const nxt = frames[(i + 1) % frames.length]!;
         maxTiltStep = Math.max(maxTiltStep, (Math.abs(nxt.t0TiltRad - fr.t0TiltRad) * 180) / Math.PI);
     }
+    applyT0Ceiling(frames);
     assertT0ClearsSheet(frames);
     return {
         xyz,

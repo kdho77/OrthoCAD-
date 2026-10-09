@@ -144,6 +144,28 @@ export function delaunayXY(pts: Array<{ x: number; y: number }>): Array<[number,
     return out;
 }
 
+function boundaryEdgeKey(a: number, b: number): string {
+    return a < b ? `${a},${b}` : `${b},${a}`;
+}
+
+function uniqueBoundaryFaces(
+    faces: Array<[number, number, number]>,
+    nBoundary: number,
+): Array<[number, number, number]> {
+    const seen = new Set<string>();
+    const out: Array<[number, number, number]> = [];
+    for (const f of faces) {
+        const b = [f[0]!, f[1]!, f[2]!].filter((i) => i < nBoundary);
+        if (b.length === 2) {
+            const k = boundaryEdgeKey(b[0]!, b[1]!);
+            if (seen.has(k)) continue;
+            seen.add(k);
+        }
+        out.push(f);
+    }
+    return out;
+}
+
 function hasEdge(faces: Array<[number, number, number]>, a: number, b: number): boolean {
     for (const f of faces) {
         const [i, j, k] = f;
@@ -207,6 +229,36 @@ export function cdtPlanarBand(
         }
     }
     return { points, faces };
+}
+
+/**
+ * Constrained Delaunay of a simple polygon interior. `boundary` vertices stay
+ * at indices 0..n-1; each boundary edge is kept once. Steiner points are extra.
+ */
+export function cdtInteriorPolygon(
+    boundary: PolyPoint[],
+    steiner: PolyPoint[],
+): { points: PolyPoint[]; faces: Array<[number, number, number]> } {
+    if (boundary.length < 3) return { points: [], faces: [] };
+    const points = boundary.map((p) => ({ ...p }));
+    const nB = points.length;
+    for (const p of steiner) points.push({ ...p });
+    const inside = (x: number, y: number) => pointInPoly(x, y, boundary);
+    let faces = delaunayXY(points).filter((f) => {
+        const a = points[f[0]]!;
+        const b = points[f[1]]!;
+        const c = points[f[2]]!;
+        return inside((a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3);
+    });
+    faces = uniqueBoundaryFaces(faces, nB);
+    const constrain: Array<[number, number]> = [];
+    for (let i = 0; i < nB; i++) constrain.push([i, (i + 1) % nB]);
+    for (const [a, b] of constrain) {
+        if (hasEdge(faces, a, b)) continue;
+        const tri = thirdPointForEdge(points, a, b, inside);
+        if (tri) faces.push(tri);
+    }
+    return { points, faces: uniqueBoundaryFaces(faces, nB) };
 }
 
 function stripExactLoops(outerIdx: number[], innerIdx: number[]): Array<[number, number, number]> {
