@@ -89,6 +89,36 @@ export function libraryCdtInterior(
         if (!inside && !keepSliver) continue;
         faces.push(oriented);
     }
+    const have = faceEdgeSet(faces);
+    const cover = new Map<string, [number, number, number]>();
+    for (let t = 0; t < tri.length; t += 3) {
+        const a = tri[t]!;
+        const b = tri[t + 1]!;
+        const c = tri[t + 2]!;
+        const A = points[a]!;
+        const B = points[b]!;
+        const C = points[c]!;
+        const oriented: [number, number, number] =
+            orient2(A.x, A.y, B.x, B.y, C.x, C.y) > 0 ? [a, b, c] : [a, c, b];
+        for (const [p, q] of [
+            [oriented[0], oriented[1]],
+            [oriented[1], oriented[2]],
+            [oriented[2], oriented[0]],
+        ] as const) {
+            if (p >= nOuter || q >= nOuter) continue;
+            if (q !== (p + step + nOuter) % nOuter && p !== (q + step + nOuter) % nOuter) continue;
+            cover.set(edgeKey(p, q), oriented);
+        }
+    }
+    for (let i = 0; i < nOuter; i++) {
+        const j = (i + 1) % nOuter;
+        const k = edgeKey(i, j);
+        if (have.has(k)) continue;
+        const f = cover.get(k);
+        if (!f) continue;
+        faces.push(f);
+        have.add(k);
+    }
     return faces;
 }
 
