@@ -184,9 +184,9 @@ export function plantarNormalAt(
 }
 
 /**
- * Raise starved rim / top-sheet vertices so top.z − 0 ≥ minWall + r1 + r2.
- * `droppedMm` is the downward posting that was refused. Interior verts inherit
- * the nearest rim station's raise.
+ * Undo downward posting only, so top.z − 0 ≥ minWall + r1 + r2.
+ * Thin stock / lift / thickness edges are left alone. `droppedMm` is the
+ * posting that was refused. Interior verts inherit the nearest rim raise.
  */
 export function clampPostingOnTopSheet(
     topPos: Float32Array,
@@ -195,6 +195,7 @@ export function clampPostingOnTopSheet(
     r2: number,
     minWallMm: number,
     bounds?: { minX: number; maxX: number },
+    postingAt: (x: number, y: number) => number = () => 0,
 ): PostingClamp[] {
     const n = rimLocal.length;
     if (n < 1) return [];
@@ -204,11 +205,14 @@ export function clampPostingOnTopSheet(
     const length = bounds ? Math.max(1e-3, bounds.maxX - bounds.minX) : 1;
     for (let i = 0; i < n; i++) {
         const vi = rimLocal[i]!;
-        const z = topPos[vi * 3 + 2]!;
-        if (z >= need - 1e-9) continue;
-        const droppedMm = need - z;
-        raise[i] = droppedMm;
         const x = topPos[vi * 3]!;
+        const y = topPos[vi * 3 + 1]!;
+        const z = topPos[vi * 3 + 2]!;
+        const postingDz = postingAt(x, y);
+        if (postingDz >= -1e-9 || z >= need - 1e-9) continue;
+        const droppedMm = Math.min(need - z, -postingDz);
+        if (droppedMm <= 1e-9) continue;
+        raise[i] = droppedMm;
         const u = bounds ? Math.max(0, Math.min(1, (x - bounds.minX) / length)) : i / n;
         postingClamps.push({ station: i, u, droppedMm });
     }

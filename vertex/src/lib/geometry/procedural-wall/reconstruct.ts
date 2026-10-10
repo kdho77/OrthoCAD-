@@ -42,7 +42,12 @@ import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy
 import { buildHermiteStations } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
 import { countJunctionBandSlivers, windingReport } from "./metrics";
-import { clampPostingOnTopSheet, type ProceduralModifierInput, plantarZDelta } from "./modifiers";
+import {
+    clampPostingOnTopSheet,
+    type ProceduralModifierInput,
+    plantarZDelta,
+    postingZDelta,
+} from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
 import { hygieneBottomPattern } from "./pattern-hygiene";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
@@ -701,7 +706,16 @@ export function reconstructProceduralWalls(
 
     rimLocal = orderRimLocal(topPos, rimLocal);
     const { r1, r2 } = filletRadiiFromDefaults(defaults);
-    const postingClamps = clampPostingOnTopSheet(topPos, rimLocal, r1, r2, S1_MIN_WALL_MM, model.bounds);
+    const postingAt = (x: number, y: number) => postingZDelta(x, y, model.bounds, options);
+    const postingClamps = clampPostingOnTopSheet(
+        topPos,
+        rimLocal,
+        r1,
+        r2,
+        S1_MIN_WALL_MM,
+        model.bounds,
+        postingAt,
+    );
     if (postingClamps.length) {
         console.log(
             "[S1-POSTING]",

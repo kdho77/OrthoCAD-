@@ -77,14 +77,24 @@ describe("plantar posting", () => {
         expect(plantarZDelta(10, -20, bounds, input)).toBe(0);
     });
 
-    test("clampPostingOnTopSheet raises a starved rim so top-0 >= minWall+r1+r2", () => {
+    test("clampPostingOnTopSheet undoes downward posting only", () => {
         const topPos = new Float32Array([10, 0, 1, 0, 0, 4]);
-        const clamps = clampPostingOnTopSheet(topPos, [0], 0.5, 0.5, 0.8);
+        const clamps = clampPostingOnTopSheet(topPos, [0], 0.5, 0.5, 0.8, undefined, () => -3);
         expect(clamps).toHaveLength(1);
-        expect(clamps[0]!.droppedMm).toBeCloseTo(0.8, 5);
+        expect(clamps[0]?.droppedMm).toBeCloseTo(0.8, 5);
         expect(topPos[2]).toBeCloseTo(1.8, 5);
         expect(topPos[5]).toBeCloseTo(4.8, 5);
-        const idle = clampPostingOnTopSheet(new Float32Array([10, 0, 4]), [0], 0.5, 0.5, 0.8);
+        const thinStock = clampPostingOnTopSheet(new Float32Array([10, 0, 1]), [0], 0.5, 0.5, 0.8);
+        expect(thinStock).toHaveLength(0);
+        const idle = clampPostingOnTopSheet(
+            new Float32Array([10, 0, 4]),
+            [0],
+            0.5,
+            0.5,
+            0.8,
+            undefined,
+            () => -1,
+        );
         expect(idle).toHaveLength(0);
     });
 });
