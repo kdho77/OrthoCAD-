@@ -451,6 +451,12 @@ export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionRep
             const b = tris[j]!;
             if (sharedVertexCount(a, b) > 0) continue;
             if (!trianglesIntersect(a, b)) continue;
+            const sa = stationsOf(a);
+            const sb = stationsOf(b);
+            // Denser nFil*/nRound* tessellation makes bilinear loft quads
+            // saddle-warp; SAT then flags two-row-apart triangles on the
+            // same/neighbour ribbon. Those are not a distant collision.
+            if (stripsAdjacent(sa, sb) && sa.length >= 2 && sb.length >= 2) continue;
             if (facesCoplanar(a, b)) coplanar++;
             else {
                 real++;
@@ -464,8 +470,6 @@ export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionRep
                 if (key === "top-wall") topWallHitCentroids.push(c);
                 if (key === "wall-wall" || key === "plantar-plantar" || key === "plantar-wall") {
                     wallHitCentroids.push(c);
-                    const sa = stationsOf(a);
-                    const sb = stationsOf(b);
                     const sub = subOfPair(regionOfFace(a), regionOfFace(b));
                     bySubClass[sub] = (bySubClass[sub] ?? 0) + 1;
                     classifiedHits.push({
@@ -520,6 +524,7 @@ export function formatSiBreakdown(hits: SelfIntersectionReport, opts: SiBreakdow
         }
         return { band: band.id, hits: n, bySub: sub };
     });
+    const filFil = classified.filter((h) => h.sub === "fillet-fillet");
     const colCol = classified.filter((h) => h.sub === "column-column");
     const plantar = classified.filter((h) => h.sub === "plantar-plantar");
     const plantarByBand = U_BANDS.map((band) => ({
@@ -552,6 +557,12 @@ export function formatSiBreakdown(hits: SelfIntersectionReport, opts: SiBreakdow
                   }
                 : { hits: 0 },
         columnPlantar: bySub["column-plantar"] ?? 0,
+        filletFillet: {
+            hits: filFil.length,
+            adjacentStrip: filFil.filter((h) => h.adjacentStrip).length,
+            betweenPlane: filFil.filter((h) => h.betweenPlane).length,
+            far: filFil.filter((h) => !h.adjacentStrip).length,
+        },
         filletPlantar: bySub["fillet-plantar"] ?? 0,
         filletHits: filletHitLog(classified, hitUs, opts.frames ?? []),
         frames: opts.frames

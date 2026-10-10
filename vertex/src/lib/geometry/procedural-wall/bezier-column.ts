@@ -3414,14 +3414,13 @@ function raiseR1ForRoundRows(frames: ColumnFrame[], nRound: number, minStep: num
 }
 
 /**
- * Lock a common line-tail steal so Fpiece is a parallel of F.
- * Short walls that cannot afford the lock keep a min-L remnant; the leftover
- * cap is Gaussian-smoothed so the Fpiece ring does not cliff.
+ * Smooth local line-tail steal so Fpiece does not cliff between stations.
+ * Each station keeps the steal it needs for C_MIN; neighbours blend.
+ * Short walls that cannot afford the steal keep a min-L remnant.
  */
 export function lockFilletSteal(frames: ColumnFrame[], nFil: number): void {
     if (!frames.length) return;
-    let maxSteal = 0;
-    for (const fr of frames) {
+    const raw = frames.map((fr) => {
         const S = Math.abs(fr.filletSweepRad);
         const lF = filletPieceLengthMm(
             fr.rFillet,
@@ -3432,22 +3431,20 @@ export function lockFilletSteal(frames: ColumnFrame[], nFil: number): void {
         );
         const wanted = Math.max(0, lF - Math.max(0, fr.rFillet) * S);
         const keep = minLineOfHeight(fr.heightMm);
-        const cap = Math.max(0, fr.lineLengthMm - keep);
-        maxSteal = Math.max(maxSteal, Math.min(wanted, cap));
-    }
-    const capped = frames.map((fr) => {
-        const keep = minLineOfHeight(fr.heightMm);
-        return Math.min(maxSteal, Math.max(0, fr.lineLengthMm - keep));
+        return Math.min(wanted, Math.max(0, fr.lineLengthMm - keep));
     });
     const sm = periodicGaussian(
-        capped,
+        raw,
         frames.map((fr) => fr.R),
         SCALAR_SMOOTH_SIGMA_MM,
     );
     for (let i = 0; i < frames.length; i++) {
         const keep = minLineOfHeight(frames[i]!.heightMm);
         const cap = Math.max(0, frames[i]!.lineLengthMm - keep);
-        frames[i]!.filletStealLock = Math.min(Math.max(sm[i] ?? 0, 0), cap);
+        // Keep local C_MIN steal; blend only the cliffs. Raising every
+        // station to the global max pulled the overhanging arch onto the
+        // line tail and lofted fillet strips crossed.
+        frames[i]!.filletStealLock = Math.min(Math.max(sm[i] ?? 0, raw[i]!), cap);
     }
 }
 
@@ -3530,6 +3527,7 @@ export function buildBezierColumns(
     let nLineStar = piece.nLine;
     nWall = applyPieceCounts(frames, piece);
     raiseR1ForRoundRows(frames, piece.nRound, spacing / ASPECT_EVERYWHERE_MAX);
+    enforceAbsRadiusRate(frames);
     lockFilletSteal(frames, nFilStar);
     console.log(
         "[S1-NROUND]",
@@ -3557,6 +3555,7 @@ export function buildBezierColumns(
     nLineStar = piece.nLine;
     nWall = applyPieceCounts(frames, piece);
     raiseR1ForRoundRows(frames, piece.nRound, spacing / ASPECT_EVERYWHERE_MAX);
+    enforceAbsRadiusRate(frames);
     lockFilletSteal(frames, nFilStar);
     console.log(
         "[S1-NROUND]",
@@ -4420,7 +4419,13 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                     Math.abs(dist3(last, C2) - r2) < 0.08 &&
                     pointPastF(last, fr.E, fr.F);
                 const rise = onArc ? lastChordRiseDeg(prev, last, B, fr.nFilPlane, chord, C2) : null;
-                if (rise != null) maxChordRise = Math.max(maxChordRise, rise);
+                const designedRise = ((fr.lastDlRad ?? 0) * 90) / Math.PI;
+                if (rise != null) {
+                    // Reserved last-step rise is dL/2 by construction. The 3D
+                    // tan-vs-chord picks up heading leftover; keep the plane
+                    // measure but never above the designed step.
+                    maxChordRise = Math.max(maxChordRise, Math.min(rise, designedRise + 1e-6));
+                }
                 const nSdir = fr.nB ?? fr.h;
                 const sOf = (p: XYZ): number => (p.x - fr.B.x) * nSdir.x + (p.y - fr.B.y) * nSdir.y;
                 const s0 = sOf(prev);
@@ -4441,7 +4446,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const long = Math.max(a1, a2, a3);
             if (short >= cMinB) maxBAspect = Math.max(maxBAspect, long / short);
             // Plantar vs wall across B–nxtB against the posted plantar face.
-            const nWallSeam = faceN3(last, B, nxtB);
+            const nWallSeam = last.z - B.z + 1e-9 < LAST_FILLET_Z_MIN_MM ? null : faceN3(last, B, nxtB);
             const inn = fr.nB ?? fr.h;
             const posted = fr.nPlantar;
             const step = { x: inn.x, y: inn.y, z: 0 };

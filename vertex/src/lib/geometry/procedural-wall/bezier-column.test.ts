@@ -986,7 +986,11 @@ describe("bezier column", () => {
         }
         lockFilletSteal(frames, 6);
         const steals = frames.map((fr) => fr.filletStealLock ?? 0);
-        expect(Math.max(...steals) - Math.min(...steals)).toBeLessThan(1.2);
+        let maxStep = 0;
+        for (let i = 0; i < steals.length; i++) {
+            maxStep = Math.max(maxStep, Math.abs(steals[i]! - steals[(i + 1) % steals.length]!));
+        }
+        expect(maxStep).toBeLessThan(0.6);
         for (const fr of frames) {
             const keep = fr.heightMm <= SHORT_WALL_H_MM + 1e-9 ? SHORT_MIN_L_MM : MIN_LINE_MM;
             expect((fr.filletStealLock ?? 0) + keep).toBeLessThanOrEqual(fr.lineLengthMm + 1e-6);
