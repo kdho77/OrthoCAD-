@@ -13,6 +13,7 @@ import {
 } from "./hermite";
 import { countColumnPlanReversals, type HermiteStation } from "./loft";
 import { countPlanViewChordCrossings, smoothAndCapFlare } from "./stations";
+import { resolveWallStyleParams, sampleWallMidStyle, stationBulge, type WallStyleParams } from "./wall-style";
 
 export interface ColumnJunction {
     planeN: XYZ;
@@ -229,6 +230,20 @@ export interface ColumnFrame {
     filletStealLock?: number;
     /** Last constructed sweep; columnPoints samples this so the round stays on-plane. */
     sweepRule?: SweepRule;
+    /** Print-step grinding dropdown → E→F mid-style. */
+    wallStyle?: WallStyleParams;
+    /** +1 medial, −1 lateral (hybrid switch). */
+    sideSign?: 1 | -1;
+    footLengthMm?: number;
+    midWeight?: number;
+}
+
+export interface SweepMidStyle {
+    params: WallStyleParams;
+    bulge: number;
+    heightMm: number;
+    outward: { x: number; y: number };
+    weightOut?: { value: number };
 }
 
 export interface ObliqueFallbackRow {
@@ -1184,13 +1199,15 @@ export function smoothFRing(frames: ColumnFrame[]): void {
             if (hypot3(U) > 1e-9) fr.U = unit3(U);
         }
     };
-    for (let pass = 0; pass < 3; pass++) {
-        const plan = ringTurningDeg(
-            frames.map((f) => f.F),
-            true,
-        );
-        if (plan <= RING_TURNING_MAX_DEG + 1e-9 && pass > 0) break;
-        applyLaplacian();
+    for (let pass = 0; pass < 3; pass++) applyLaplacian();
+    const r2s = frames.map((fr) => fr.rFillet);
+    const sm = periodicGaussian(
+        r2s,
+        frames.map((fr) => fr.R),
+        SCALAR_SMOOTH_SIGMA_MM,
+    );
+    for (let i = 0; i < frames.length; i++) {
+        frames[i]!.rFillet = Math.min(frames[i]!.rFillet, sm[i] ?? frames[i]!.rFillet);
     }
     for (const fr of frames) applyAlaToFrame(fr);
 }
@@ -2134,10 +2151,19 @@ export function sampleArcLineArc(
             z: 1,
         });
     }
-    for (let k = 1; k <= nLine; k++) {
-        const t = k / nLine;
-        pts.push(lerp3(ala.T1, fil.Fpiece, t));
-    }
+    const midAla = sampleWallMidStyle(
+        ala.T1,
+        fil.Fpiece,
+        ala.d,
+        { x: -ala.d.x, y: -ala.d.y, z: -ala.d.z },
+        R,
+        nLine,
+        Math.max(R.z - B.z, 0.5),
+        { x: -h.x, y: -h.y },
+        resolveWallStyleParams({ style: "straight" }),
+        0,
+    );
+    for (const p of midAla.pts) pts.push(p);
     for (const p of fil.pts) pts.push(p);
     pts.push({ ...B });
     ensureColumnMinEdge(pts, MIN_EDGE_MM);
@@ -2327,6 +2353,7 @@ export function sampleSweepRule(
     localSpacing = OUTLINE_STATION_SPACING_MM,
     stealLock?: number,
     strictSpacing = true,
+    midStyle?: SweepMidStyle,
 ): XYZ[] {
     const stepDeg = (FILLET_STEP_MAX_DEG * Math.PI) / 180;
     const nRound =
@@ -2363,10 +2390,22 @@ export function sampleSweepRule(
     if (S > 1e-12) {
         assertFilletWalk(fil.pts, B, sw.r2, dL, station, sw.nFilPlane, sw.C2, sw.nPlant);
     }
-    for (let k = 1; k <= nLine; k++) {
-        const t = k / nLine;
-        pts.push(lerp3(sw.E, fil.Fpiece, t));
-    }
+    const tE = sweptRoundTangent(sw.eN, sw.eW, sw.phiRound1);
+    const tF = unit3({ x: -sw.fil.d.x, y: -sw.fil.d.y, z: -sw.fil.d.z });
+    const mid = sampleWallMidStyle(
+        sw.E,
+        fil.Fpiece,
+        tE,
+        tF,
+        R,
+        nLine,
+        midStyle?.heightMm ?? Math.max(R.z - B.z, 0.5),
+        midStyle?.outward ?? { x: sw.eW.x, y: sw.eW.y },
+        midStyle?.params ?? resolveWallStyleParams({ style: "straight" }),
+        midStyle?.bulge ?? 0,
+    );
+    if (midStyle?.weightOut) midStyle.weightOut.value = mid.weight;
+    for (const p of mid.pts) pts.push(p);
     for (const p of fil.pts) pts.push(p);
     pts.push({ ...B });
     ensureColumnMinEdge(pts, MIN_EDGE_MM);
@@ -2588,6 +2627,9 @@ function columnPoints(
                   nWall,
               }
             : undefined;
+    const style = fr.wallStyle ?? resolveWallStyleParams({ style: "straight" });
+    const bulge = stationBulge(style, fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250);
+    const weightOut = { value: 0 };
     const assembled = sampleSweepRule(
         sw,
         fr.R,
@@ -2599,10 +2641,49 @@ function columnPoints(
         local,
         fr.filletStealLock,
         !isCollapsedColumn(fr),
+        {
+            params: style,
+            bulge,
+            heightMm: fr.heightMm,
+            outward: { x: fr.wOut.x, y: fr.wOut.y },
+            weightOut,
+        },
     );
+    fr.midWeight = weightOut.value;
     fr.roundRows = counts?.nRound ?? nRound;
     assembled[0] = { ...fr.R };
     assembled[assembled.length - 1] = { ...fr.B };
+    if (style.style !== "straight" && weightOut.value > 1e-9) {
+        const eIdx = fr.roundRows;
+        const nLn = counts?.nLine ?? nLine;
+        const fIdx = eIdx + nLn;
+        if (eIdx > 0 && fIdx + 1 < assembled.length) {
+            fr.g1EDeg = vecAngleDeg(
+                {
+                    x: assembled[eIdx]!.x - assembled[eIdx - 1]!.x,
+                    y: assembled[eIdx]!.y - assembled[eIdx - 1]!.y,
+                    z: assembled[eIdx]!.z - assembled[eIdx - 1]!.z,
+                },
+                {
+                    x: assembled[eIdx + 1]!.x - assembled[eIdx]!.x,
+                    y: assembled[eIdx + 1]!.y - assembled[eIdx]!.y,
+                    z: assembled[eIdx + 1]!.z - assembled[eIdx]!.z,
+                },
+            );
+            fr.g1FDeg = vecAngleDeg(
+                {
+                    x: assembled[fIdx]!.x - assembled[fIdx - 1]!.x,
+                    y: assembled[fIdx]!.y - assembled[fIdx - 1]!.y,
+                    z: assembled[fIdx]!.z - assembled[fIdx - 1]!.z,
+                },
+                {
+                    x: assembled[fIdx + 1]!.x - assembled[fIdx]!.x,
+                    y: assembled[fIdx + 1]!.y - assembled[fIdx]!.y,
+                    z: assembled[fIdx + 1]!.z - assembled[fIdx]!.z,
+                },
+            );
+        }
+    }
     return assembled;
 }
 
@@ -3798,6 +3879,8 @@ export function buildBezierColumns(
     nPlantars: XYZ[] = [],
     liveSheet = false,
     movedAt?: (u: number) => boolean,
+    wallStyle?: WallStyleParams,
+    footLengthMm?: number,
 ): BezierColumns {
     const regionDefault = stations.map((st) =>
         blendedFlareDeg(st.u, st.outline.y, defaults.flareDeg, defaults.medialYSign ?? 1),
@@ -3816,6 +3899,14 @@ export function buildBezierColumns(
         nPlantars,
         liveSheet,
     );
+    const style = wallStyle ?? resolveWallStyleParams({ style: "straight" });
+    const lengthMm = footLengthMm ?? 250;
+    const medial = defaults.medialYSign ?? 1;
+    for (const fr of frames) {
+        fr.wallStyle = style;
+        fr.sideSign = fr.R.y * medial >= 0 ? 1 : -1;
+        fr.footLengthMm = lengthMm;
+    }
     const spacing = medianStationSpacing(stations);
     const minWallClamps = clampFramesMinWall(frames, topZ, minWallMm);
     enforceLastChordFloor(frames);

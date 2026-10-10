@@ -78,6 +78,7 @@ import {
     TB_SMOOTH_SIGMA_MM,
 } from "./stations";
 import { S1_MIN_WALL_MM, type StockWallModel } from "./types";
+import { resolveWallStyleParams } from "./wall-style";
 
 export interface ReconstructOptions extends ProceduralModifierInput {
     n?: number;
@@ -98,6 +99,9 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * grind/arch-fill no longer offset the plantar.
      */
     wallStyle?: ProceduralWallStyle;
+    wallBulge?: number;
+    wallPlanOutMm?: number;
+    forefootRound?: boolean;
     /**
      * Heel-widen follow. Default 1 when heelCupWidthMm ≠ 0 (B tracks the rim
      * plan displacement, then the faired-pattern QP). 0 = B fixed. Other
@@ -1056,6 +1060,12 @@ export function reconstructProceduralWalls(
         footLengthMm: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
         flatPlantar,
         movedAt: patternMovedAt,
+        wallStyle: resolveWallStyleParams({
+            style: options.wallStyle ?? "straight",
+            bulge: options.wallBulge,
+            planOutMm: options.wallPlanOutMm,
+            forefootRound: options.forefootRound,
+        }),
     });
     assertPostLoftGates(grid.quality);
 
@@ -1267,6 +1277,7 @@ export function reconstructProceduralWalls(
             bandInsetMm: f.bandInsetMm,
             arcEndZ: f.arcEndZ,
             Bz: f.B.z,
+            midWeight: f.midWeight ?? 0,
         })),
         t0Log: grid.frames.map((f) => ({
             u: Number(f.u.toFixed(4)),

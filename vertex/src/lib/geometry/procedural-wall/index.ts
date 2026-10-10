@@ -409,3 +409,18 @@ export {
     S1_MIN_WALL_MM,
     S1_PROFILE_RESIDUAL_MM,
 } from "./types";
+export {
+    HYBRID_BLEND_MM,
+    HYBRID_SWITCH_U_LATERAL,
+    HYBRID_SWITCH_U_MEDIAL,
+    hybridBulgeAt,
+    type MidStyleSample,
+    type PlanBoundReport,
+    planBoundsOf,
+    resolveWallStyleParams,
+    sampleWallMidStyle,
+    stationBulge,
+    WALL_BULGE_DEFAULT,
+    WALL_PLAN_OUT_DEFAULT_MM,
+    type WallStyleParams,
+} from "./wall-style";

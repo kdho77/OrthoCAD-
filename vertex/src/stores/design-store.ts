@@ -402,6 +402,8 @@ export interface ViewerSettings {
      * today's sidewall-deform path. Not persisted; never touches modifiers/export.
      */
     wallModel?: "legacy" | "procedural";
+    /** Print-step grinding dropdown → wall mid-style. Viewer-only. */
+    wallStyle?: "straight" | "round" | "hybrid";
     /** Viewer-only device-type preset for the procedural wall. Not persisted. */
     deviceType?: "functional" | "accommodative";
     lateralFlangeHeightMm?: number;

@@ -35,6 +35,7 @@ import {
 } from "./plantar-cdt";
 import type { FlareCapReport } from "./stations";
 import { S1_MIN_WALL_MM, type UvHeightField } from "./types";
+import type { WallStyleParams } from "./wall-style";
 
 export const PLANTAR_RINGS = 0;
 export const WALL_MID_ROWS = 8;
@@ -283,6 +284,8 @@ export interface BuildQuadGridInput {
     liveSheet?: boolean;
     /** Moved-B stations get the r2 abs rate (≤ 0.05 mm / station). */
     movedAt?: (u: number) => boolean;
+    /** Print-step grinding dropdown → E→F mid-style. */
+    wallStyle?: WallStyleParams;
 }
 
 function headingOfStation(st: HermiteStation): { h: { x: number; y: number }; planLen: number } {
@@ -723,6 +726,8 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
             normals,
             input.liveSheet === true,
             input.movedAt,
+            input.wallStyle,
+            input.footLengthMm,
         );
     let built = buildCols(plantarSlopeRad, nPlantars);
     const extra = new Array(nS).fill(0);
