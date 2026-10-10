@@ -1566,13 +1566,6 @@ export function constructSweepRule(
     // Floor r2 on the real last step. U is frozen so S does not chase when r2 grows.
     // φ1 restore changes heading (cosT) and therefore dL — re-floor after that.
     const frozenU = filletU();
-    const lastChordHolds = (): boolean => {
-        const next = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
-        if (hypot3(next) > 1e-9) d = unit3(next);
-        const S = Math.abs(fil.phi1 - fil.phi0);
-        const cosT = planCosT(d, nB, h);
-        return lastStepChordMm(r2, lastFilletDLRad(S, cosT)) + 1e-9 >= lastFilletCMinMm(localSpacing);
-    };
     const floorLastStepKeepU = (): boolean => {
         let grew = false;
         for (let grow = 0; grow < 6; grow++) {
@@ -1619,22 +1612,17 @@ export function constructSweepRule(
         };
         const g1Aim = measureG1();
         if (g1Aim.g1E > G1_MAX_DEG + 1e-6 || g1Aim.g1F > G1_MAX_DEG + 1e-6) {
-            const keepPhi = phiRound1;
-            let bestPhi = keepPhi;
-            let bestScore = Infinity;
-            let found = false;
+            let bestPhi = prePhi;
+            let bestScore = Math.max(g1Aim.g1E, g1Aim.g1F);
             for (let k = -16; k <= 16; k++) {
-                const phi = prePhi + (k * Math.PI) / 180;
-                const m = applyPhiKeepFillet(phi);
-                if (!lastChordHolds()) continue;
+                const m = applyPhiKeepFillet(prePhi + (k * Math.PI) / 180);
                 const score = Math.max(m.g1E, m.g1F);
                 if (score < bestScore) {
                     bestScore = score;
-                    bestPhi = phi;
-                    found = true;
+                    bestPhi = prePhi + (k * Math.PI) / 180;
                 }
             }
-            applyPhiKeepFillet(found ? bestPhi : keepPhi);
+            applyPhiKeepFillet(bestPhi);
         }
     };
     if (!freezeLastR2) {
