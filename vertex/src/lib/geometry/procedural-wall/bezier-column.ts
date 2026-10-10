@@ -1208,11 +1208,6 @@ function minLineOfHeight(height: number): number {
     return height <= SHORT_WALL_H_MM + 1e-9 ? SHORT_MIN_L_MM : MIN_LINE_MM;
 }
 
-/** r1 floor so identical nRound samples stay ≥ MIN_EDGE on this sweep. */
-function r1FloorForSweep(sweepRad: number): number {
-    return Math.max(MIN_ROUND_R_MM, (MIN_EDGE_MM * 14) / Math.max(Math.abs(sweepRad), 1e-3));
-}
-
 /**
  * ARC-LINE-ARC in the column plane (s inward, z up).
  * C1 = R − r1 n_top; C2 = B + r2 n_plantar; body is the exterior common tangent.
@@ -1532,18 +1527,6 @@ export function constructSweepRule(
         if (hypot3(next) > 1e-9) d = unit3(next);
     };
     for (let iter = 0; iter < 2; iter++) step();
-    const applyR1SweepFloor = (): number => {
-        const keep = r1FloorForSweep(phiRound1 - phiRound0);
-        if (r1 + 1e-9 < keep) {
-            r1 = keep;
-            C1 = add3(R, eN, -r1);
-            E = sweptRoundPoint(C1, r1, eN, eW, phiRound1);
-            const next = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
-            if (hypot3(next) > 1e-9) d = unit3(next);
-        }
-        return keep;
-    };
-    applyR1SweepFloor();
     const locked = phiRound1Lock != null && Number.isFinite(phiRound1Lock);
     if (locked) {
         const freePhi = phiRound1;
@@ -1578,7 +1561,6 @@ export function constructSweepRule(
             }
             apply(lo);
         }
-        applyR1SweepFloor();
     }
 
     // Floor r2 on the real last step. U is frozen so S does not chase when r2 grows.
@@ -1596,8 +1578,7 @@ export function constructSweepRule(
         for (let grow = 0; grow < 6; grow++) {
             const S = Math.abs(fil.phi1 - fil.phi0);
             const cosT = planCosT(d, nB, h);
-            const r1Keep = Math.max(r1Floor, r1FloorForSweep(phiRound1 - phiRound0));
-            const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S, cosT, r1Keep);
+            const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S, cosT, r1Floor);
             if (r2 + 1e-9 >= floored.r2Min && r1 <= floored.r1 + 1e-9) break;
             const trialR1 = floored.r1;
             const trialR2 = floored.r2;
