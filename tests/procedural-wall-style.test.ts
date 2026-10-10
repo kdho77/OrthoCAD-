@@ -17,9 +17,11 @@ import {
     reconstructProceduralWalls,
     WALL_MID_DIHEDRAL_MAX_DEG,
     WALL_MID_TURN_MAX_DEG,
+    WALL_PLAN_ANGLE_REPORT_DEG,
     WALL_STYLE_ACROSS_P99_BLOCK_DEG,
     WALL_STYLE_ACROSS_P100_BLOCK_DEG,
     WALL_STYLE_G1_MAX_DEG,
+    WALL_STYLE_G1_OUT_MAX_DEG,
 } from "@/lib/geometry/procedural-wall";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
@@ -88,6 +90,7 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             g1EDeg?: number;
             g1FDeg?: number;
             midFlagged?: boolean;
+            midPlanAngleDeg?: number;
         }>;
         medialYSign?: 1 | -1;
         footLengthMm?: number;
@@ -140,6 +143,8 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
     }
     const frames = ud.wallFrames ?? [];
     if (style !== "straight" && frames.length) {
+        const infl = frames.filter((f) => f.midFlagged);
+        if (infl.length) misses.push(`[RND-INFL] ${infl.length}`);
         const g1Hits = frames
             .map((f, i) => ({
                 i,
@@ -148,7 +153,7 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
                 f: f.g1FDeg ?? 0,
                 flagged: !!f.midFlagged,
             }))
-            .filter((s) => s.e > WALL_STYLE_G1_MAX_DEG + 1e-6 || s.f > WALL_STYLE_G1_MAX_DEG + 1e-6);
+            .filter((s) => s.e > WALL_STYLE_G1_OUT_MAX_DEG + 1e-6 || s.f > WALL_STYLE_G1_OUT_MAX_DEG + 1e-6);
         if (g1Hits.length) {
             misses.push(
                 `g1Out ${g1Hits.length} stn ${g1Hits
@@ -373,6 +378,7 @@ describe("procedural wall styles", () => {
                 g1EDeg?: number;
                 g1FDeg?: number;
                 midFlagged?: boolean;
+                midPlanAngleDeg?: number;
                 u?: number;
             }>;
             const weights = frames.map((f) => f.midWeight ?? 0);
@@ -388,6 +394,13 @@ describe("procedural wall styles", () => {
                 return b[Math.floor(b.length / 2)] ?? 0;
             };
             const limiter = Object.entries(limits).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "none";
+            const planStations = frames.map((f, i) => ({
+                i,
+                u: Number((f.u ?? 0).toFixed(4)),
+                plan: Number((f.midPlanAngleDeg ?? 0).toFixed(3)),
+                e: Number((f.g1EDeg ?? 0).toFixed(4)),
+                f: Number((f.g1FDeg ?? 0).toFixed(4)),
+            }));
             return {
                 style: s,
                 g1E: geos[s]!.userData.columnQuality?.maxG1EDeg,
@@ -410,12 +423,18 @@ describe("procedural wall styles", () => {
                 limits,
                 limiter,
                 flagged: frames.filter((f) => f.midFlagged).length,
+                planOver30: planStations.filter((p) => p.plan > WALL_PLAN_ANGLE_REPORT_DEG + 1e-6),
+                af6037caG1_22_26: {
+                    note: "At af6037ca, 450/452 stations flagged (skew tE/tF, no 3D M) and fell back to a chord with G1 22–26°. Listed with current u and tE/tF plan angle.",
+                    stations: planStations,
+                },
                 g1Over: frames
                     .map((f, i) => ({
                         i,
                         u: Number((f.u ?? 0).toFixed(4)),
                         e: Number((f.g1EDeg ?? 0).toFixed(3)),
                         f: Number((f.g1FDeg ?? 0).toFixed(3)),
+                        plan: Number((f.midPlanAngleDeg ?? 0).toFixed(3)),
                         flagged: !!f.midFlagged,
                     }))
                     .filter((s) => s.e > 1 + 1e-6 || s.f > 1 + 1e-6 || s.flagged),

@@ -14,15 +14,18 @@ import {
 import { countColumnPlanReversals, type HermiteStation } from "./loft";
 import { countPlanViewChordCrossings, smoothAndCapFlare } from "./stations";
 import {
-    g1OfConic,
-    intersectTangentLines,
+    type MidStyleLimit,
     type MidStyleLock,
+    midStyleLambda,
+    planAngleDeg,
     resolveWallStyleParams,
     sampleWallMidStyle,
     stationBulge,
+    WALL_LAMBDA_MIN,
     WALL_MID_SMOOTH_SIGMA_MM,
     WALL_MID_TURN_MAX_DEG,
     WALL_MID_TURN_TARGET_DEG,
+    WALL_PLAN_ANGLE_REPORT_DEG,
     WALL_STYLE_G1_MAX_DEG,
     type WallStyleParams,
 } from "./wall-style";
@@ -226,7 +229,7 @@ export interface ColumnFrame {
     phiRound1Lock?: number;
     /** Sticky fillet start φ after mid-style scalar smooth. */
     phiFLock?: number;
-    /** True when the mid-style station fell back to w = 0 (no tangent intersection). */
+    /** True when the cubic mid-piece still inflects at λ = 1/3 ([RND-INFL]). */
     midFlagged?: boolean;
     /** Posted plantar normal at B (unit, +z). */
     nPlantar?: XYZ;
@@ -254,12 +257,14 @@ export interface ColumnFrame {
     midWeight?: number;
     midChordOffMm?: number;
     midPlanOffMm?: number;
-    midLimit?: "none" | "w" | "chord" | "plan";
-    /** Locked G1 control after ring-smooth (round/hybrid). */
-    midM?: XYZ;
+    midLimit?: MidStyleLimit;
+    /** Locked Hermite interiors after λ smooth (round/hybrid). */
+    midP1?: XYZ;
+    midP2?: XYZ;
     midS?: number;
     midT?: number;
     midWLock?: number;
+    midPlanAngleDeg?: number;
     midTE?: XYZ;
     midTF?: XYZ;
     midForceStraight?: boolean;
@@ -274,7 +279,7 @@ export interface SweepMidStyle {
     outward: { x: number; y: number };
     weightOut?: { value: number };
     g1Out?: { e: number; f: number };
-    offsetOut?: { chord: number; plan: number; limit: "none" | "w" | "chord" | "plan" };
+    offsetOut?: { chord: number; plan: number; limit: MidStyleLimit };
     lock?: MidStyleLock;
 }
 
@@ -2682,7 +2687,7 @@ export function sampleSweepRule(
         return t.x * w.x + t.y * w.y + t.z * w.z < 0 ? { x: -t.x, y: -t.y, z: -t.z } : t;
     };
     const tE = toward(sweptRoundTangent(sw.eN, sw.eW, sw.phiRound1), fil.Fpiece, sw.E);
-    const tF = toward(filletTangentAtPhi(sw.fil, walkUse.phiF), sw.E, fil.Fpiece);
+    const tF = toward(filletTangentAtPhi(sw.fil, walkUse.phiF), fil.Fpiece, sw.E);
     const mid = sampleWallMidStyle(
         sw.E,
         fil.Fpiece,
@@ -2696,21 +2701,15 @@ export function sampleSweepRule(
         bulge,
         midStyle?.lock,
     );
-    if (midStyle?.weightOut) midStyle.weightOut.value = mid.weight;
+    if (midStyle?.weightOut) midStyle.weightOut.value = mid.lambda;
     if (midStyle?.offsetOut) {
         midStyle.offsetOut.chord = mid.chordOffsetMm ?? 0;
         midStyle.offsetOut.plan = mid.planOffsetMm ?? 0;
         midStyle.offsetOut.limit = mid.limit ?? "none";
     }
     if (midStyle?.g1Out) {
-        if (mid.M) {
-            const g1 = g1OfConic(sw.E, mid.M, fil.Fpiece, tE, tF);
-            midStyle.g1Out.e = g1.e;
-            midStyle.g1Out.f = g1.f;
-        } else {
-            midStyle.g1Out.e = mid.g1EDeg ?? 0;
-            midStyle.g1Out.f = mid.g1FDeg ?? 0;
-        }
+        midStyle.g1Out.e = mid.g1EDeg ?? 0;
+        midStyle.g1Out.f = mid.g1FDeg ?? 0;
     }
     for (const p of mid.pts) pts.push(p);
     for (const p of fil.pts) pts.push(p);
@@ -2952,7 +2951,7 @@ function columnPoints(
     const bulge = stationBulge(style, fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250);
     const weightOut = { value: 0 };
     const g1Out = { e: fr.g1EDeg, f: fr.g1FDeg };
-    const offsetOut = { chord: 0, plan: 0, limit: "none" as const };
+    const offsetOut = { chord: 0, plan: 0, limit: "none" as MidStyleLimit };
     const assembled = sampleSweepRule(
         sw,
         fr.R,
@@ -2972,7 +2971,7 @@ function columnPoints(
             weightOut,
             g1Out,
             offsetOut,
-            lock: fr.midWLock != null ? { w: fr.midWLock } : undefined,
+            lock: fr.midWLock != null ? { lambda: fr.midWLock } : undefined,
         },
     );
     fr.midWeight = weightOut.value;
@@ -4167,112 +4166,14 @@ function midStyleEnds(fr: ColumnFrame): { E: XYZ; Fpiece: XYZ; tE: XYZ; tF: XYZ 
         E: sw.E,
         Fpiece: Fend,
         tE: toward(sweptRoundTangent(sw.eN, sw.eW, sw.phiRound1), Fend, sw.E),
-        tF: toward(filletTangentAtPhi(sw.fil, tFPhi), sw.E, Fend),
+        tF: toward(filletTangentAtPhi(sw.fil, tFPhi), Fend, sw.E),
     };
-}
-
-const THETA_E_MIN_RAD = (15 * Math.PI) / 180;
-
-function styleToward(t: XYZ, target: XYZ, from: XYZ): XYZ {
-    const w = { x: target.x - from.x, y: target.y - from.y, z: target.z - from.z };
-    return t.x * w.x + t.y * w.y + t.z * w.z < 0 ? { x: -t.x, y: -t.y, z: -t.z } : t;
-}
-
-function endsAtAngles(
-    sw: SweepRule,
-    phiE: number,
-    phiF: number,
-): { E: XYZ; F: XYZ; Fpiece: XYZ; tE: XYZ; tF: XYZ; phiF: number } {
-    const E = sweptRoundPoint(sw.C1, sw.r1, sw.eN, sw.eW, phiE);
-    const F = filletPointAtPhi(sw.fil, phiF);
-    const tE = styleToward(sweptRoundTangent(sw.eN, sw.eW, phiE), F, E);
-    const tF = styleToward(filletTangentAtPhi(sw.fil, phiF), E, F);
-    return { E, F, Fpiece: F, tE, tF, phiF };
-}
-
-function mIsOutward(E: XYZ, F: XYZ, M: XYZ, out: { x: number; y: number }): boolean {
-    const nl = Math.hypot(out.x, out.y) || 1;
-    const mx = 0.5 * (E.x + F.x);
-    const my = 0.5 * (E.y + F.y);
-    return ((M.x - mx) * out.x + (M.y - my) * out.y) / nl >= -1e-3;
-}
-
-function hitAtAngles(
-    sw: SweepRule,
-    phiE: number,
-    phiF: number,
-): { ends: ReturnType<typeof endsAtAngles>; M: XYZ | null } {
-    const ends = endsAtAngles(sw, phiE, phiF);
-    const M = intersectTangentLines(ends.E, ends.tE, ends.Fpiece, ends.tF);
-    if (!M || !mIsOutward(ends.E, ends.Fpiece, M, sw.eW)) return { ends, M: null };
-    if (ends.F.z <= sw.fil.Pp.z + 0.05 || ends.F.z >= ends.E.z - 0.05) return { ends, M: null };
-    return { ends, M };
-}
-
-/** Slide φF on the existing fillet so tF meets tE. Prefer the smallest outward hit. */
-function findPhiFForTangent(
-    sw: SweepRule,
-    phiE: number,
-    phiF0: number,
-): { ends: ReturnType<typeof endsAtAngles>; M: XYZ; phiF: number } | null {
-    const tryP = (phiF: number) => {
-        const hit = hitAtAngles(sw, phiE, phiF);
-        return hit.M ? { ends: hit.ends, M: hit.M, phiF } : null;
-    };
-    const atFree = tryP(phiF0);
-    if (atFree) return atFree;
-    const window = (8 * Math.PI) / 180;
-    let best: { ends: ReturnType<typeof endsAtAngles>; M: XYZ; phiF: number } | null = null;
-    let bestD = Infinity;
-    for (let k = 1; k <= 8; k++) {
-        const d = (window * k) / 8;
-        for (const sign of [1, -1]) {
-            const hit = tryP(phiF0 + sign * d);
-            if (hit && d < bestD) {
-                best = hit;
-                bestD = d;
-            }
-        }
-        if (best) return best;
-    }
-    return best;
-}
-
-function searchThetaE(
-    _fr: ColumnFrame,
-    sw: SweepRule,
-    wantBulge: boolean,
-    phiStart?: number,
-    phiFStart?: number,
-): { phi: number; ends: ReturnType<typeof endsAtAngles>; M: XYZ | null; flagged: boolean } {
-    const freeE = phiStart ?? sw.phiRound1;
-    const freeF = phiFStart ?? sw.fil.phiF;
-    const atFree = hitAtAngles(sw, freeE, freeF);
-    if (atFree.M) return { phi: freeE, ends: atFree.ends, M: atFree.M, flagged: false };
-    if (!wantBulge) return { phi: freeE, ends: atFree.ends, M: null, flagged: false };
-    const phiMin = Math.max(THETA_E_MIN_RAD, freeE - (25 * Math.PI) / 180);
-    const from = freeE;
-    const toward = freeE >= phiMin ? phiMin : Math.max(freeE, phiMin);
-    const span = toward - from;
-    for (let k = 1; k <= 20; k++) {
-        const phiE = from + (span * k) / 20;
-        const hit = hitAtAngles(sw, phiE, freeF);
-        if (hit.M) return { phi: phiE, ends: hit.ends, M: hit.M, flagged: false };
-    }
-    const slid = findPhiFForTangent(sw, freeE, freeF);
-    if (slid) return { phi: freeE, ends: slid.ends, M: slid.M, flagged: false };
-    for (let k = 1; k <= 10; k++) {
-        const phiE = from + (span * k) / 10;
-        const slidE = findPhiFForTangent(sw, phiE, freeF);
-        if (slidE) return { phi: phiE, ends: slidE.ends, M: slidE.M, flagged: false };
-    }
-    return { phi: freeE, ends: atFree.ends, M: null, flagged: true };
 }
 
 /**
- * M = intersectTangentLines only. Shorten φ1 (theta_E) when the rays miss,
- * smooth w / theta_E / phiF, then recompute E, F, tangents and M. Never
- * smooth M. Rows by equal turning; nLine* is the max over stations.
+ * Cubic Hermite mid-piece. tE / tF come from the built arcs and are not
+ * modified. Smooth only λ(i), then rebuild P1 / P2 on those rays.
+ * Rows by equal turning; nLine* is the max over stations.
  */
 function prepareStyledMid(
     frames: ColumnFrame[],
@@ -4283,96 +4184,34 @@ function prepareStyledMid(
 ): number {
     const style = frames[0]?.wallStyle ?? resolveWallStyleParams({ style: "straight" });
     if (style.style === "straight" || !frames.length) return nWall;
-    const rawW: number[] = [];
-    const rawTheta: number[] = [];
-    const rawPhiF: number[] = [];
-    const flagged0: boolean[] = [];
+    const rawL: number[] = [];
     for (const fr of frames) {
         applyAlaToFrame(fr);
-        const sw = fr.sweepRule;
         const bulge = stationBulge(style, fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250);
-        const wantBulge = bulge > 1e-6 && (fr.heightMm ?? 0) > 1e-6;
-        if (!sw) {
-            rawW.push(0);
-            rawTheta.push(fr.phiRound1);
-            rawPhiF.push(0);
-            flagged0.push(true);
-            continue;
-        }
-        const hit = searchThetaE(fr, sw, wantBulge);
-        const mid = hit.M
-            ? sampleWallMidStyle(
-                  hit.ends.E,
-                  hit.ends.Fpiece,
-                  hit.ends.tE,
-                  hit.ends.tF,
-                  fr.R,
-                  Math.max(1, fr.nLineFix || nLine),
-                  fr.heightMm,
-                  { x: fr.wOut.x, y: fr.wOut.y },
-                  style,
-                  bulge,
-              )
-            : null;
-        rawW.push(mid?.weight ?? 0);
-        rawTheta.push(hit.phi);
-        rawPhiF.push(hit.ends.phiF);
-        flagged0.push(hit.flagged);
-        fr.midFlagged = hit.flagged;
+        rawL.push(midStyleLambda(fr.heightMm, bulge));
     }
     const rim = frames.map((fr) => fr.R);
-    const smW = periodicGaussian(rawW, rim, WALL_MID_SMOOTH_SIGMA_MM);
-    const smTheta = periodicGaussian(unwrapClosedRad(rawTheta), rim, WALL_MID_SMOOTH_SIGMA_MM);
-    const smPhiF = periodicGaussian(unwrapClosedRad(rawPhiF), rim, WALL_MID_SMOOTH_SIGMA_MM);
+    const smL = periodicGaussian(rawL, rim, WALL_MID_SMOOTH_SIGMA_MM);
     let nLineNeed = nLine;
     let nFlagged = 0;
-    const g1Stations: Array<{ i: number; u: number; e: number; f: number; flagged: boolean }> = [];
+    const g1Stations: Array<{
+        i: number;
+        u: number;
+        e: number;
+        f: number;
+        plan: number;
+        lambda: number;
+        flagged: boolean;
+    }> = [];
+    const planWide: Array<{ i: number; u: number; plan: number }> = [];
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
         const bulge = stationBulge(style, fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250);
-        const wantBulge = bulge > 1e-6;
-        fr.phiRound1Lock = smTheta[i];
-        fr.phiRound1 = smTheta[i]!;
-        fr.phiFLock = smPhiF[i];
         applyAlaToFrame(fr);
-        const sw = fr.sweepRule;
-        if (!sw) {
-            fr.midFlagged = true;
-            fr.midWLock = 0;
-            nFlagged++;
-            continue;
-        }
-        let en = midStyleEnds(fr);
-        let M = en ? intersectTangentLines(en.E, en.tE, en.Fpiece, en.tF) : null;
-        if (!M && wantBulge) {
-            const retry = searchThetaE(fr, sw, true, smTheta[i], smPhiF[i]);
-            if (retry.M) {
-                fr.phiRound1Lock = retry.phi;
-                fr.phiRound1 = retry.phi;
-                fr.phiFLock = retry.ends.phiF;
-                applyAlaToFrame(fr);
-                en = midStyleEnds(fr);
-                M = en ? intersectTangentLines(en.E, en.tE, en.Fpiece, en.tF) : retry.M;
-            }
-        }
-        if (!en || !M) {
-            fr.phiRound1Lock = undefined;
-            fr.phiFLock = undefined;
-            applyAlaToFrame(fr);
-            fr.midFlagged = wantBulge || flagged0[i];
-            fr.midWLock = 0;
-            fr.midM = undefined;
-            if (fr.midFlagged) nFlagged++;
-            if (en) {
-                const g1 = g1OfConic(en.E, en.Fpiece, en.Fpiece, en.tE, en.tF);
-                g1Stations.push({
-                    i,
-                    u: Number(fr.u.toFixed(4)),
-                    e: Number(g1.e.toFixed(3)),
-                    f: Number(g1.f.toFixed(3)),
-                    flagged: !!fr.midFlagged,
-                });
-            }
+        const en = midStyleEnds(fr);
+        if (!en) {
+            fr.midWLock = WALL_LAMBDA_MIN;
+            fr.midFlagged = false;
             continue;
         }
         const locked = sampleWallMidStyle(
@@ -4386,29 +4225,49 @@ function prepareStyledMid(
             { x: fr.wOut.x, y: fr.wOut.y },
             style,
             bulge,
-            { w: Math.max(0, smW[i] ?? rawW[i]!) },
+            { lambda: Math.max(WALL_LAMBDA_MIN, smL[i] ?? rawL[i]!) },
         );
-        fr.midM = locked.M ?? undefined;
-        fr.midWLock = locked.flagged ? 0 : locked.weight;
+        fr.midP1 = locked.P1;
+        fr.midP2 = locked.P2;
+        fr.midWLock = locked.lambda;
         fr.midS = locked.s;
         fr.midT = locked.t;
-        fr.midWeight = locked.weight;
+        fr.midWeight = locked.lambda;
         fr.midTE = en.tE;
         fr.midTF = en.tF;
+        fr.midPlanAngleDeg = locked.planAngleDeg ?? planAngleDeg(en.tE, en.tF);
         fr.midFlagged = !!locked.flagged;
-        if (locked.flagged) nFlagged++;
-        if (!locked.flagged) nLineNeed = Math.max(nLineNeed, locked.rowNeed ?? nLine);
+        fr.midLimit = locked.limit ?? "none";
+        fr.midChordOffMm = locked.chordOffsetMm ?? 0;
+        fr.midPlanOffMm = locked.planOffsetMm ?? 0;
+        if (locked.flagged) {
+            nFlagged++;
+            console.log(
+                "[RND-INFL]",
+                JSON.stringify({ i, u: Number(fr.u.toFixed(4)), lambda: locked.lambda }),
+            );
+        }
+        nLineNeed = Math.max(nLineNeed, locked.rowNeed ?? nLine);
         const g1e = locked.g1EDeg ?? 0;
         const g1f = locked.g1FDeg ?? 0;
+        const plan = fr.midPlanAngleDeg;
         g1Stations.push({
             i,
             u: Number(fr.u.toFixed(4)),
-            e: Number(g1e.toFixed(3)),
-            f: Number(g1f.toFixed(3)),
+            e: Number(g1e.toFixed(4)),
+            f: Number(g1f.toFixed(4)),
+            plan: Number(plan.toFixed(3)),
+            lambda: Number(locked.lambda.toFixed(4)),
             flagged: !!locked.flagged,
         });
+        if (plan > WALL_PLAN_ANGLE_REPORT_DEG + 1e-6) {
+            planWide.push({ i, u: Number(fr.u.toFixed(4)), plan: Number(plan.toFixed(3)) });
+        }
         if (g1e > WALL_STYLE_G1_MAX_DEG + 1e-6 || g1f > WALL_STYLE_G1_MAX_DEG + 1e-6) {
-            console.log("[S1-G1-STATION]", JSON.stringify({ i, u: Number(fr.u.toFixed(4)), e: g1e, f: g1f }));
+            console.log(
+                "[S1-G1-STATION]",
+                JSON.stringify({ i, u: Number(fr.u.toFixed(4)), e: g1e, f: g1f, plan }),
+            );
         }
     }
     const nLineStar = Math.max(nLine, nLineNeed);
@@ -4425,9 +4284,11 @@ function prepareStyledMid(
             sigma: WALL_MID_SMOOTH_SIGMA_MM,
             flagged: nFlagged,
             g1Over: over.length,
+            planOver30: planWide.length,
         }),
     );
     if (over.length) console.log("[S1-G1-OUT]", JSON.stringify(over.slice(0, 24)));
+    if (planWide.length) console.log("[S1-PLAN-ANGLE]", JSON.stringify(planWide));
     return nRound + nLineStar + nFil + 2;
 }
 

@@ -16,7 +16,10 @@ export const WALL_BULGE_OFFSET_MAX_MM = 3;
 export const WALL_W_MAX = 0.9;
 /** Keep a tiny weight so a valid G1 M never collapses onto the chord. */
 export const WALL_W_MIN = 1e-3;
+export const WALL_LAMBDA_MIN = 1 / 3;
+export const WALL_LAMBDA_BULGE_SPAN = 0.6 - 1 / 3;
 export const WALL_STYLE_G1_MAX_DEG = 1;
+export const WALL_STYLE_G1_OUT_MAX_DEG = 0.1;
 export const WALL_MID_TURN_TARGET_DEG = 3;
 export const WALL_MID_TURN_MAX_DEG = 4;
 export const WALL_MID_DIHEDRAL_MAX_DEG = 4;
@@ -26,6 +29,9 @@ export const WALL_STYLE_ACROSS_P99_BLOCK_DEG = 5;
 export const WALL_STYLE_ACROSS_P100_BLOCK_DEG = 8;
 export const WALL_MID_SMOOTH_SIGMA_MM = 10;
 export const WALL_MID_ROW_CAP = 32;
+export const WALL_MID_TURN_DENSE = 256;
+export const WALL_MID_INFL_SAMPLES = 32;
+export const WALL_PLAN_ANGLE_REPORT_DEG = 30;
 export const HYBRID_SWITCH_U_MEDIAL = 0.3;
 export const HYBRID_SWITCH_U_LATERAL = 0.28;
 export const HYBRID_BLEND_MM = 20;
@@ -81,9 +87,14 @@ export function hybridBulgeAt(
 export function midStyleWeight(heightMm: number, bulge: number): number {
     const b = Math.max(0, Math.min(1, bulge));
     const h = smoothstep01(WALL_H_SMOOTH_LO_MM, WALL_H_SMOOTH_HI_MM, heightMm);
-    // Default bulge 0.6 reaches w = 0.9 on tall walls so the conic can hit the
-    // chord-offset bound. Lower bulge scales down from that.
     return Math.max(0, Math.min(WALL_W_MAX, WALL_W_MAX * (b / WALL_BULGE_DEFAULT) * h));
+}
+
+/** λ = 1/3 + bulge · k(H) · (0.6 − 1/3), k = smoothstep(3, 12, H). */
+export function midStyleLambda(heightMm: number, bulge: number): number {
+    const b = Math.max(0, Math.min(1, bulge));
+    const k = smoothstep01(WALL_H_SMOOTH_LO_MM, WALL_H_SMOOTH_HI_MM, heightMm);
+    return WALL_LAMBDA_MIN + b * k * WALL_LAMBDA_BULGE_SPAN;
 }
 
 function hypot3(a: XYZ): number {
@@ -224,6 +235,215 @@ export function g1OfConic(E: XYZ, M: XYZ, F: XYZ, tE: XYZ, tF: XYZ): { e: number
         e: acuteVecDeg(sub3(M, E), tE),
         f: acuteVecDeg(sub3(M, F), tF),
     };
+}
+
+export function vecAngleDeg(a: XYZ, b: XYZ): number {
+    const du = hypot3(a) || 1;
+    const dv = hypot3(b) || 1;
+    const c = Math.max(-1, Math.min(1, dot3(a, b) / (du * dv)));
+    return (Math.acos(c) * 180) / Math.PI;
+}
+
+/** Plan-projected angle between tE and tF (0–180). */
+export function planAngleDeg(tE: XYZ, tF: XYZ): number {
+    return vecAngleDeg({ x: tE.x, y: tE.y, z: 0 }, { x: tF.x, y: tF.y, z: 0 });
+}
+
+export function hermiteControls(
+    E: XYZ,
+    F: XYZ,
+    tE: XYZ,
+    tF: XYZ,
+    lambda: number,
+): {
+    P0: XYZ;
+    P1: XYZ;
+    P2: XYZ;
+    P3: XYZ;
+    d: number;
+} {
+    const d = dist3(E, F);
+    const a = Math.max(0, lambda) * d;
+    const uE = unit3(tE);
+    const uF = unit3(tF);
+    return {
+        P0: { ...E },
+        P1: add3(E, uE, a),
+        P2: add3(F, uF, -a),
+        P3: { ...F },
+        d,
+    };
+}
+
+export function evalCubicHermite(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, t: number): XYZ {
+    const u = 1 - t;
+    const uu = u * u;
+    const tt = t * t;
+    return {
+        x: uu * u * P0.x + 3 * uu * t * P1.x + 3 * u * tt * P2.x + tt * t * P3.x,
+        y: uu * u * P0.y + 3 * uu * t * P1.y + 3 * u * tt * P2.y + tt * t * P3.y,
+        z: uu * u * P0.z + 3 * uu * t * P1.z + 3 * u * tt * P2.z + tt * t * P3.z,
+    };
+}
+
+export function cubicHermiteTangent(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, t: number): XYZ {
+    const u = 1 - t;
+    return {
+        x: 3 * u * u * (P1.x - P0.x) + 6 * u * t * (P2.x - P1.x) + 3 * t * t * (P3.x - P2.x),
+        y: 3 * u * u * (P1.y - P0.y) + 6 * u * t * (P2.y - P1.y) + 3 * t * t * (P3.y - P2.y),
+        z: 3 * u * u * (P1.z - P0.z) + 6 * u * t * (P2.z - P1.z) + 3 * t * t * (P3.z - P2.z),
+    };
+}
+
+function cubicHermiteSecond(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, t: number): XYZ {
+    const u = 1 - t;
+    return {
+        x: 6 * u * (P0.x - 2 * P1.x + P2.x) + 6 * t * (P1.x - 2 * P2.x + P3.x),
+        y: 6 * u * (P0.y - 2 * P1.y + P2.y) + 6 * t * (P1.y - 2 * P2.y + P3.y),
+        z: 6 * u * (P0.z - 2 * P1.z + P2.z) + 6 * t * (P1.z - 2 * P2.z + P3.z),
+    };
+}
+
+export function g1OfCubic(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, tE: XYZ, tF: XYZ): { e: number; f: number } {
+    return {
+        e: acuteVecDeg(sub3(P1, P0), tE),
+        f: acuteVecDeg(sub3(P3, P2), tF),
+    };
+}
+
+export function inflectionNormal(tE: XYZ, tF: XYZ, outward: { x: number; y: number }): XYZ {
+    const n = cross3(tE, tF);
+    if (hypot3(n) > 1e-10) return unit3(n);
+    const h = { x: outward.x, y: outward.y, z: 0 };
+    const hz = cross3(h, { x: 0, y: 0, z: 1 });
+    if (hypot3(hz) > 1e-10) return unit3(hz);
+    return { x: 0, y: 1, z: 0 };
+}
+
+export function cubicHasInflection(
+    P0: XYZ,
+    P1: XYZ,
+    P2: XYZ,
+    P3: XYZ,
+    tE: XYZ,
+    tF: XYZ,
+    outward: { x: number; y: number },
+    samples = WALL_MID_INFL_SAMPLES,
+): boolean {
+    const n = inflectionNormal(tE, tF, outward);
+    let sign = 0;
+    for (let i = 0; i <= samples; i++) {
+        const t = i / samples;
+        const d1 = cubicHermiteTangent(P0, P1, P2, P3, t);
+        const d2 = cubicHermiteSecond(P0, P1, P2, P3, t);
+        const k = dot3(cross3(d1, d2), n);
+        if (Math.abs(k) < 1e-12) continue;
+        const s = k > 0 ? 1 : -1;
+        if (sign === 0) sign = s;
+        else if (s !== sign) return true;
+    }
+    return false;
+}
+
+function pointToLineDist(p: XYZ, a: XYZ, b: XYZ): number {
+    const ab = sub3(b, a);
+    const len2 = dot3(ab, ab);
+    if (len2 < 1e-16) return dist3(p, a);
+    const t = Math.max(0, Math.min(1, dot3(sub3(p, a), ab) / len2));
+    return dist3(p, add3(a, ab, t));
+}
+
+export function cubicMaxChordOffset(
+    P0: XYZ,
+    P1: XYZ,
+    P2: XYZ,
+    P3: XYZ,
+    samples = WALL_MID_INFL_SAMPLES,
+): number {
+    let max = 0;
+    for (let i = 1; i < samples; i++) {
+        max = Math.max(max, pointToLineDist(evalCubicHermite(P0, P1, P2, P3, i / samples), P0, P3));
+    }
+    return max;
+}
+
+function denseCubic(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, n = WALL_MID_INFL_SAMPLES): XYZ[] {
+    const pts: XYZ[] = [];
+    for (let i = 0; i <= n; i++) pts.push(evalCubicHermite(P0, P1, P2, P3, i / n));
+    return pts;
+}
+
+export function cubicTurningTotal(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, tE: XYZ, tF: XYZ): number {
+    let acc = 0;
+    let prev = cubicHermiteTangent(P0, P1, P2, P3, 0);
+    for (let i = 1; i <= WALL_MID_TURN_DENSE; i++) {
+        const tan = cubicHermiteTangent(P0, P1, P2, P3, i / WALL_MID_TURN_DENSE);
+        acc += vecAngleDeg(prev, tan);
+        prev = tan;
+    }
+    const end = vecAngleDeg(tE, tF);
+    const internal = Math.max(0, acc - end);
+    return end + internal;
+}
+
+/** Rows by equal turning. Includes F, excludes E. Invert 256 dense samples. */
+export function sampleCubicByTurning(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, n: number): XYZ[] {
+    if (n < 1) return [];
+    const steps = WALL_MID_TURN_DENSE;
+    const dense: XYZ[] = [];
+    const acc = [0];
+    let prevTan = cubicHermiteTangent(P0, P1, P2, P3, 0);
+    for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const p = evalCubicHermite(P0, P1, P2, P3, t);
+        if (i > 0) {
+            const tan = cubicHermiteTangent(P0, P1, P2, P3, t);
+            acc.push(acc[i - 1]! + vecAngleDeg(prevTan, tan));
+            prevTan = tan;
+        }
+        dense.push(p);
+    }
+    const total = acc[steps]!;
+    if (total < 1e-6) {
+        const pts: XYZ[] = [];
+        for (let k = 1; k <= n; k++) pts.push(evalCubicHermite(P0, P1, P2, P3, k / n));
+        pts[pts.length - 1] = { ...P3 };
+        return pts;
+    }
+    const pts: XYZ[] = [];
+    for (let k = 1; k <= n; k++) {
+        const target = (k / n) * total;
+        let i = 1;
+        while (i < acc.length && acc[i]! < target) i++;
+        const a = acc[i - 1]!;
+        const b = acc[i] ?? a;
+        const u = b > a + 1e-12 ? (target - a) / (b - a) : 0;
+        const t0 = (i - 1) / steps;
+        const t1 = i / steps;
+        pts.push(k === n ? { ...P3 } : evalCubicHermite(P0, P1, P2, P3, t0 + (t1 - t0) * u));
+    }
+    return pts;
+}
+
+export function cubicRowCountByTurning(
+    P0: XYZ,
+    P1: XYZ,
+    P2: XYZ,
+    P3: XYZ,
+    tE: XYZ,
+    tF: XYZ,
+    maxDeg = WALL_MID_TURN_MAX_DEG,
+    targetDeg = WALL_MID_TURN_TARGET_DEG,
+): number {
+    const total = cubicTurningTotal(P0, P1, P2, P3, tE, tF);
+    let n = Math.max(2, Math.ceil(total / Math.max(targetDeg, 1e-3)));
+    for (let k = 0; k < 8; k++) {
+        const pts = [P0, ...sampleCubicByTurning(P0, P1, P2, P3, n)];
+        const turn = maxPolylineTurnDeg(pts);
+        if (turn <= maxDeg + 1e-6 || n >= WALL_MID_ROW_CAP) return Math.min(WALL_MID_ROW_CAP, n);
+        n = Math.min(WALL_MID_ROW_CAP, Math.max(n + 1, Math.ceil((n * turn) / maxDeg)));
+    }
+    return n;
 }
 
 /** Rational quadratic (E, M, F) with end weights 1 and control weight w. */
@@ -432,9 +652,14 @@ export function sampleStraightMid(E: XYZ, F: XYZ, n: number): XYZ[] {
     return pts;
 }
 
+export type MidStyleLimit = "none" | "lambda" | "chord" | "plan" | "infl";
+
 export interface MidStyleSample {
     pts: XYZ[];
     weight: number;
+    lambda: number;
+    P1: XYZ;
+    P2: XYZ;
     M: XYZ | null;
     bulge: number;
     s?: number;
@@ -444,30 +669,14 @@ export interface MidStyleSample {
     rowNeed?: number;
     chordOffsetMm?: number;
     planOffsetMm?: number;
-    limit?: "none" | "w" | "chord" | "plan";
+    planAngleDeg?: number;
+    limit?: MidStyleLimit;
     flagged?: boolean;
 }
 
 export interface MidStyleLock {
-    M?: XYZ;
-    w: number;
-}
-
-function clampMidWeight(
-    E: XYZ,
-    M: XYZ,
-    F: XYZ,
-    R: XYZ,
-    wWanted: number,
-    n: number,
-    outward: { x: number; y: number },
-    planOutMm: number,
-    maxOff: number,
-): { w: number; afterChord: number } {
-    const w0 = Math.max(WALL_W_MIN, Math.min(WALL_W_MAX, wWanted));
-    const afterChord = clampWeightForChordOffset(E, M, F, w0, maxOff);
-    const w = Math.max(WALL_W_MIN, bisectWeightForPlan(E, M, F, R, afterChord, n, outward, planOutMm));
-    return { w, afterChord };
+    lambda?: number;
+    w?: number;
 }
 
 function lineG1(E: XYZ, F: XYZ, tE: XYZ, tF: XYZ): { e: number; f: number } {
@@ -477,10 +686,31 @@ function lineG1(E: XYZ, F: XYZ, tE: XYZ, tF: XYZ): { e: number; f: number } {
     };
 }
 
+function cubicBoundsOk(
+    ctrl: { P0: XYZ; P1: XYZ; P2: XYZ; P3: XYZ },
+    tE: XYZ,
+    tF: XYZ,
+    R: XYZ,
+    F: XYZ,
+    outward: { x: number; y: number },
+    planOutMm: number,
+    maxOff: number,
+): { ok: boolean; infl: boolean; chord: number; plan: PlanBoundReport } {
+    const infl = cubicHasInflection(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF, outward);
+    const chord = cubicMaxChordOffset(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3);
+    const plan = planBoundsOf(denseCubic(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3), R, F, outward, planOutMm);
+    return {
+        ok: !infl && chord <= maxOff + 1e-9 && plan.ok,
+        infl,
+        chord,
+        plan,
+    };
+}
+
 /**
- * E→F mid-style. Straight = ruled line. Round/hybrid = rational quadratic
- * whose control M is the E/F tangent intersection. Bounds shrink w only.
- * Never invents an off-tangent M.
+ * E→F mid-style. Straight = ruled line (unchanged vs the ALA). Round/hybrid =
+ * cubic Bezier Hermite: P1 = E + a tE, P2 = F − b tF, a = b = λ d. Bounds
+ * bisect λ toward 1/3 and never move P1/P2 off their tangent rays.
  */
 export function sampleWallMidStyle(
     E: XYZ,
@@ -495,61 +725,82 @@ export function sampleWallMidStyle(
     bulgeAtStation: number,
     lock?: MidStyleLock,
 ): MidStyleSample {
+    const planAng = planAngleDeg(tE, tF);
     if (params.style === "straight" || n < 1) {
         const g1 = lineG1(E, F, tE, tF);
+        const empty = { x: 0, y: 0, z: 0 };
         return {
-            pts: sampleStraightMid(E, F, n),
-            weight: 0,
+            pts: n < 1 ? [] : sampleStraightMid(E, F, n),
+            weight: WALL_LAMBDA_MIN,
+            lambda: WALL_LAMBDA_MIN,
+            P1: E,
+            P2: F,
             M: null,
             bulge: 0,
             g1EDeg: g1.e,
             g1FDeg: g1.f,
+            planAngleDeg: planAng,
         };
     }
-    const chord = dist3(E, F);
-    const maxOff = Math.min(WALL_BULGE_OFFSET_FRAC * chord, WALL_BULGE_OFFSET_MAX_MM);
-    const M = intersectTangentLines(E, tE, F, tF);
-    if (!M) {
-        const g1 = lineG1(E, F, tE, tF);
-        return {
-            pts: sampleStraightMid(E, F, n),
-            weight: 0,
-            M: null,
-            bulge: bulgeAtStation,
-            chordOffsetMm: 0,
-            planOffsetMm: 0,
-            limit: "none",
-            g1EDeg: g1.e,
-            g1FDeg: g1.f,
-            rowNeed: n,
-            flagged: true,
-        };
+    const d = dist3(E, F);
+    const maxOff = Math.min(WALL_BULGE_OFFSET_FRAC * d, WALL_BULGE_OFFSET_MAX_MM);
+    const wanted = lock?.lambda ?? midStyleLambda(heightMm, Math.max(bulgeAtStation, 0));
+    const check = (lam: number) =>
+        cubicBoundsOk(hermiteControls(E, F, tE, tF, lam), tE, tF, R, F, outward, params.planOutMm, maxOff);
+    let lambda = wanted;
+    let limit: MidStyleLimit = "none";
+    let flagged = false;
+    const atWanted = check(wanted);
+    if (!atWanted.ok) {
+        const atMin = check(WALL_LAMBDA_MIN);
+        if (atMin.ok && wanted > WALL_LAMBDA_MIN + 1e-12) {
+            let lo = WALL_LAMBDA_MIN;
+            let hi = wanted;
+            for (let i = 0; i < 16; i++) {
+                const mid = 0.5 * (lo + hi);
+                if (check(mid).ok) lo = mid;
+                else hi = mid;
+            }
+            lambda = lo;
+            if (atWanted.infl) limit = "infl";
+            else if (atWanted.chord > maxOff + 1e-9) limit = "chord";
+            else if (!atWanted.plan.ok) limit = "plan";
+            else limit = "lambda";
+        } else {
+            lambda = WALL_LAMBDA_MIN;
+            if (atMin.infl) {
+                flagged = true;
+                limit = "infl";
+            } else if (atMin.chord > maxOff + 1e-9) limit = "chord";
+            else if (!atMin.plan.ok) limit = "plan";
+            else limit = "lambda";
+        }
+    } else if (wanted + 1e-9 < WALL_LAMBDA_MIN + WALL_LAMBDA_BULGE_SPAN) {
+        limit = "lambda";
     }
-    let wWanted = lock?.w ?? midStyleWeight(heightMm, Math.max(bulgeAtStation, 0));
-    if (lock?.w == null && bulgeAtStation <= 1e-9) wWanted = WALL_W_MIN;
-    const { w, afterChord } = clampMidWeight(E, M, F, R, wWanted, n, outward, params.planOutMm, maxOff);
-    const pts = sampleConicByTurning(E, M, F, w, n);
-    const chordOff = chordOffsetAtMid(E, M, F, w);
+    const ctrl = hermiteControls(E, F, tE, tF, lambda);
+    const pts = sampleCubicByTurning(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, n);
+    const chordOff = cubicMaxChordOffset(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3);
     const plan = planBoundsOf(pts, R, F, outward, params.planOutMm);
-    const g1 = g1OfConic(E, M, F, tE, tF);
-    let limit: "none" | "w" | "chord" | "plan" = "none";
-    if (w + 1e-6 < afterChord) limit = "plan";
-    else if (afterChord + 1e-6 < wWanted) limit = "chord";
-    else if (wWanted + 1e-6 < WALL_W_MAX) limit = "w";
+    const g1 = g1OfCubic(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF);
     return {
         pts,
-        weight: w,
-        M,
+        weight: lambda,
+        lambda,
+        P1: ctrl.P1,
+        P2: ctrl.P2,
+        M: null,
         bulge: bulgeAtStation,
-        s: dist3(M, E),
-        t: dist3(M, F),
+        s: dist3(ctrl.P1, E),
+        t: dist3(ctrl.P2, F),
         g1EDeg: g1.e,
         g1FDeg: g1.f,
-        rowNeed: conicRowCountByTurning(E, M, F, w),
+        rowNeed: cubicRowCountByTurning(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF),
         chordOffsetMm: chordOff,
         planOffsetMm: plan.offsetMax,
+        planAngleDeg: planAng,
         limit,
-        flagged: false,
+        flagged,
     };
 }
 

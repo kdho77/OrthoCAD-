@@ -3,24 +3,22 @@
 
 import { describe, expect, test } from "@rstest/core";
 import {
-    chordOffsetAtMid,
-    clampWeightForChordOffset,
-    conicRowCountByTurning,
-    evalRationalQuadratic,
-    g1ControlPoint,
-    g1OfConic,
+    cubicHasInflection,
+    cubicRowCountByTurning,
+    g1OfCubic,
+    hermiteControls,
     hybridBulgeAt,
-    intersectTangentLines,
-    midStyleWeight,
+    midStyleLambda,
+    planAngleDeg,
     planBoundsOf,
     resolveWallStyleParams,
-    sampleConicByTurning,
+    sampleCubicByTurning,
     sampleWallMidStyle,
     stationBulge,
     WALL_BULGE_OFFSET_FRAC,
     WALL_BULGE_OFFSET_MAX_MM,
+    WALL_LAMBDA_MIN,
     WALL_MID_TURN_MAX_DEG,
-    WALL_W_MAX,
 } from "./wall-style";
 
 describe("wall style mid-piece", () => {
@@ -38,63 +36,78 @@ describe("wall style mid-piece", () => {
         expect(hybridBulgeAt(0.29, -1, 250, 0.6)).toBeGreaterThan(hybridBulgeAt(0.29, 1, 250, 0.6));
     });
 
-    test("mid-style weight is 0 on short walls and capped at 0.9", () => {
-        expect(midStyleWeight(2, 0.6)).toBe(0);
-        expect(midStyleWeight(20, 1)).toBe(WALL_W_MAX);
-        expect(midStyleWeight(12, 0.6)).toBeCloseTo(WALL_W_MAX, 6);
+    test("lambda is 1/3 on short or zero-bulge walls and rises with bulge·k(H)", () => {
+        expect(midStyleLambda(2, 0.6)).toBeCloseTo(WALL_LAMBDA_MIN, 6);
+        expect(midStyleLambda(20, 0)).toBeCloseTo(WALL_LAMBDA_MIN, 6);
+        expect(midStyleLambda(12, 0.6)).toBeCloseTo(WALL_LAMBDA_MIN + 0.6 * (0.6 - 1 / 3), 6);
     });
 
-    test("rational quadratic is G1 at E and F when M is the tangent intersection", () => {
-        const E = { x: 0, y: 0, z: 8 };
+    test("cubic Hermite is G1 at E and F even when the tangent rays are skew", () => {
+        const E = { x: 0, y: 0, z: 10 };
+        const F = { x: 0, y: 2, z: 2 };
+        const tE = { x: 1, y: 0, z: -1 };
+        const tF = { x: 0, y: 1, z: -1 };
+        const mid = sampleWallMidStyle(
+            E,
+            F,
+            tE,
+            tF,
+            { x: 0, y: 0, z: 12 },
+            8,
+            14,
+            { x: 1, y: 0 },
+            resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 2 }),
+            0.6,
+        );
+        const g1 = g1OfCubic(E, mid.P1, mid.P2, F, tE, tF);
+        expect(g1.e).toBeLessThan(1e-6);
+        expect(g1.f).toBeLessThan(1e-6);
+        expect(mid.g1EDeg ?? 1).toBeLessThan(0.1);
+        expect(mid.g1FDeg ?? 1).toBeLessThan(0.1);
+        expect(mid.flagged).toBeFalsy();
+        const dE = { x: mid.P1.x - E.x, y: mid.P1.y - E.y, z: mid.P1.z - E.z };
+        const dF = { x: F.x - mid.P2.x, y: F.y - mid.P2.y, z: F.z - mid.P2.z };
+        expect(g1OfCubic(E, mid.P1, mid.P2, F, dE, dF).e).toBeLessThan(1e-5);
+        expect(g1OfCubic(E, mid.P1, mid.P2, F, dE, dF).f).toBeLessThan(1e-5);
+    });
+
+    test("P1 and P2 stay on the end-tangent rays; bounds only shrink lambda", () => {
+        const E = { x: 0, y: 0, z: 14 };
         const F = { x: 0, y: 0, z: 2 };
         const tE = { x: 1, y: 0, z: -1 };
         const tF = { x: -1, y: 0, z: -1 };
-        const M = intersectTangentLines(E, tE, F, tF);
-        expect(M).not.toBeNull();
-        const a = evalRationalQuadratic(E, M!, F, 0.6, 0.02);
-        const b = evalRationalQuadratic(E, M!, F, 0.6, 0.98);
-        const dE = { x: a.x - E.x, y: a.y - E.y, z: a.z - E.z };
-        const dF = { x: F.x - b.x, y: F.y - b.y, z: F.z - b.z };
-        const ang = (u: typeof dE, v: typeof tE): number => {
-            const du = Math.hypot(u.x, u.y, u.z) || 1;
-            const dv = Math.hypot(v.x, v.y, v.z) || 1;
-            const c = (u.x * v.x + u.y * v.y + u.z * v.z) / (du * dv);
-            return (Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI;
-        };
-        expect(ang(dE, tE)).toBeLessThan(1);
-        expect(ang(dF, tF)).toBeLessThan(1);
-    });
-
-    test("chord offset cap and plan bound shrink w", () => {
-        const E = { x: 0, y: 0, z: 10 };
-        const F = { x: 0, y: 0, z: 2 };
-        const M = { x: 8, y: 0, z: 6 };
-        const maxOff = Math.min(WALL_BULGE_OFFSET_FRAC * 8, WALL_BULGE_OFFSET_MAX_MM);
-        const w = clampWeightForChordOffset(E, M, F, 0.9, maxOff);
-        expect(chordOffsetAtMid(E, M, F, w)).toBeLessThanOrEqual(maxOff + 1e-6);
-        const pts = sampleWallMidStyle(
+        const mid = sampleWallMidStyle(
             E,
             F,
-            { x: 1, y: 0, z: -1 },
-            { x: 1, y: 0, z: 1 },
-            { x: 0, y: 0, z: 12 },
-            6,
-            12,
+            tE,
+            tF,
+            { x: 0, y: 0, z: 16 },
+            8,
+            14,
             { x: 1, y: 0 },
-            resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 2 }),
+            resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 4 }),
             0.6,
         );
-        const bound = planBoundsOf(pts.pts, { x: 0, y: 0, z: 12 }, F, { x: 1, y: 0 }, 2);
-        expect(bound.insetMin).toBeGreaterThanOrEqual(-1e-6);
-        expect(bound.offsetMax).toBeLessThanOrEqual(2 + 1e-6);
+        const eDir = { x: mid.P1.x - E.x, y: mid.P1.y - E.y, z: mid.P1.z - E.z };
+        const fDir = { x: F.x - mid.P2.x, y: F.y - mid.P2.y, z: F.z - mid.P2.z };
+        expect(g1OfCubic(E, mid.P1, mid.P2, F, tE, tF).e).toBeLessThan(1e-6);
+        expect(g1OfCubic(E, mid.P1, mid.P2, F, tE, tF).f).toBeLessThan(1e-6);
+        expect(Math.hypot(eDir.y, fDir.y)).toBeLessThan(1e-9);
+        expect(mid.lambda).toBeGreaterThanOrEqual(WALL_LAMBDA_MIN - 1e-9);
+        expect(mid.planOffsetMm ?? 0).toBeLessThanOrEqual(4 + 1e-6);
+        const bound = Math.min(WALL_BULGE_OFFSET_FRAC * 12, WALL_BULGE_OFFSET_MAX_MM);
+        expect(mid.chordOffsetMm ?? 0).toBeLessThanOrEqual(bound + 1e-6);
+        const plan = planBoundsOf(mid.pts, { x: 0, y: 0, z: 16 }, F, { x: 1, y: 0 }, 4);
+        expect(plan.insetMin).toBeGreaterThanOrEqual(-1e-6);
+        expect(plan.offsetMax).toBeLessThanOrEqual(4 + 1e-6);
     });
 
-    test("parallel end tangents do not invent an off-tangent M", () => {
+    test("parallel end tangents still build a cubic (no chord fallback)", () => {
         const E = { x: 0, y: 0, z: 10 };
         const F = { x: 0, y: 0, z: 2 };
         const tE = { x: 0, y: 0, z: -1 };
-        const tF = { x: 0, y: 0, z: 1 };
-        const pts = sampleWallMidStyle(
+        const tF = { x: 0, y: 0, z: -1 };
+        const mid = sampleWallMidStyle(
             E,
             F,
             tE,
@@ -106,74 +119,22 @@ describe("wall style mid-piece", () => {
             resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 2 }),
             0.6,
         );
-        expect(intersectTangentLines(E, tE, F, tF)).toBeNull();
-        expect(pts.M).toBeNull();
-        expect(pts.weight).toBe(0);
-        expect(pts.flagged).toBe(true);
+        expect(mid.P1.z).toBeLessThan(E.z);
+        expect(mid.P2.z).toBeGreaterThan(F.z);
+        expect(mid.flagged).toBeFalsy();
+        expect(mid.g1EDeg ?? 1).toBeLessThan(0.1);
+        expect(mid.g1FDeg ?? 1).toBeLessThan(0.1);
     });
 
-    test("sampleWallMidStyle M is the tangent intersection", () => {
+    test("cubic rows densify until turning is <= 4 deg", () => {
         const E = { x: 0, y: 0, z: 14 };
         const F = { x: 0, y: 0, z: 2 };
         const tE = { x: 1, y: 0, z: -1 };
-        const tF = { x: 1, y: 0, z: 1 };
-        const hit = intersectTangentLines(E, tE, F, tF);
-        const pts = sampleWallMidStyle(
-            E,
-            F,
-            tE,
-            tF,
-            { x: 0, y: 0, z: 16 },
-            8,
-            14,
-            { x: 1, y: 0 },
-            resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 2 }),
-            0.6,
-        );
-        expect(hit).not.toBeNull();
-        expect(pts.M).not.toBeNull();
-        expect(pts.M!.x).toBeCloseTo(hit!.x, 6);
-        expect(pts.M!.y).toBeCloseTo(hit!.y, 6);
-        expect(pts.M!.z).toBeCloseTo(hit!.z, 6);
-        expect(g1OfConic(E, pts.M!, F, tE, tF).e).toBeLessThan(1);
-        expect(g1OfConic(E, pts.M!, F, tE, tF).f).toBeLessThan(1);
-    });
-
-    test("G1 M stays on the E/F tangents; bounds shrink w only", () => {
-        const E = { x: 0, y: 0, z: 14 };
-        const F = { x: 0, y: 0, z: 2 };
-        const tE = { x: 1, y: 0, z: -1 };
-        const tF = { x: 1, y: 0, z: 1 };
-        const ctrl = g1ControlPoint(E, tE, F, tF);
-        expect(ctrl).not.toBeNull();
-        const pts = sampleWallMidStyle(
-            E,
-            F,
-            tE,
-            tF,
-            { x: 0, y: 0, z: 16 },
-            8,
-            14,
-            { x: 1, y: 0 },
-            resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 2 }),
-            0.6,
-        );
-        expect(pts.M).not.toBeNull();
-        const g1 = g1OfConic(E, pts.M!, F, tE, tF);
-        expect(g1.e).toBeLessThan(1);
-        expect(g1.f).toBeLessThan(1);
-        expect(pts.planOffsetMm ?? 0).toBeLessThanOrEqual(2 + 1e-6);
-        const bound = Math.min(WALL_BULGE_OFFSET_FRAC * 12, WALL_BULGE_OFFSET_MAX_MM);
-        expect(pts.chordOffsetMm ?? 0).toBeLessThanOrEqual(bound + 1e-6);
-    });
-
-    test("conic rows densify until turning is <= 4 deg", () => {
-        const E = { x: 0, y: 0, z: 14 };
-        const F = { x: 0, y: 0, z: 2 };
-        const M = { x: 6, y: 0, z: 8 };
-        const n = conicRowCountByTurning(E, M, F, 0.9, WALL_MID_TURN_MAX_DEG);
+        const tF = { x: -1, y: 0, z: -1 };
+        const ctrl = hermiteControls(E, F, tE, tF, 0.5);
+        const n = cubicRowCountByTurning(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF, WALL_MID_TURN_MAX_DEG);
         expect(n).toBeGreaterThan(4);
-        const pts = [{ x: 0, y: 0, z: 14 }, ...sampleConicByTurning(E, M, F, 0.9, n)];
+        const pts = [E, ...sampleCubicByTurning(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, n)];
         let max = 0;
         for (let i = 1; i < pts.length - 1; i++) {
             const a = pts[i]!;
@@ -190,6 +151,33 @@ describe("wall style mid-piece", () => {
             max = Math.max(max, Math.min(ang, 180 - ang));
         }
         expect(max).toBeLessThanOrEqual(WALL_MID_TURN_MAX_DEG + 0.05);
+        expect(cubicHasInflection(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF, { x: 1, y: 0 })).toBe(false);
+    });
+
+    test("straight mid-piece stays a ruled line", () => {
+        const E = { x: 0, y: 0, z: 10 };
+        const F = { x: 1, y: 0, z: 2 };
+        const mid = sampleWallMidStyle(
+            E,
+            F,
+            { x: 0, y: 0, z: -1 },
+            { x: 0, y: 0, z: -1 },
+            { x: 0, y: 0, z: 12 },
+            4,
+            12,
+            { x: 1, y: 0 },
+            resolveWallStyleParams({ style: "straight" }),
+            0.6,
+        );
+        expect(mid.lambda).toBeCloseTo(WALL_LAMBDA_MIN, 6);
+        expect(mid.pts).toHaveLength(4);
+        expect(mid.pts[1]!.x).toBeCloseTo(0.5, 6);
+        expect(mid.pts[1]!.z).toBeCloseTo(6, 6);
+    });
+
+    test("plan angle is the xy angle between tE and tF", () => {
+        expect(planAngleDeg({ x: 1, y: 0, z: -1 }, { x: 0, y: 1, z: -1 })).toBeCloseTo(90, 4);
+        expect(planAngleDeg({ x: 1, y: 0, z: 0 }, { x: 1, y: 0, z: -4 })).toBeCloseTo(0, 4);
     });
 
     test("stationBulge is 0 on straight and ramps on hybrid", () => {
