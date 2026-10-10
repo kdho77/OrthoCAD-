@@ -176,7 +176,11 @@ describe("outward-ray station pairing", () => {
             return { x: 20 * Math.cos(a), y: 12 * Math.sin(a), z: 0 };
         });
         const stations = Array.from({ length: n }, (_, i) => {
-            const t = i === 4 ? 0.08 : i / n;
+            // Monotone 2:1 clump: one short step then one long step.
+            let t = i / n;
+            if (i === 4) t = 3 / n + 1 / n / 2;
+            if (i > 4) t = (i + 0.5) / n;
+            t = ((t % 1) + 1) % 1;
             const p = loop[Math.round(t * 80) % 80]!;
             const a = (i / n) * Math.PI * 2;
             return {
@@ -193,9 +197,15 @@ describe("outward-ray station pairing", () => {
             const b = stations[(i + 1) % n]!.outline;
             ds.push(Math.hypot(b.x - a.x, b.y - a.y));
         }
-        const lo = Math.min(...ds);
-        const hi = Math.max(...ds);
-        expect(hi / lo).toBeLessThanOrEqual(1.5);
+        let maxNeighbour = 0;
+        for (let i = 0; i < n; i++) {
+            const a = ds[i]!;
+            const b = ds[(i + n - 1) % n]!;
+            const lo = Math.min(a, b);
+            const hi = Math.max(a, b);
+            if (lo > 1e-9) maxNeighbour = Math.max(maxNeighbour, hi / lo);
+        }
+        expect(maxNeighbour).toBeLessThanOrEqual(1.5);
         const t = stations.map((s) => s.tB ?? 0);
         for (let i = 1; i < n; i++) {
             const d = (t[i]! - t[i - 1]! + 1) % 1;

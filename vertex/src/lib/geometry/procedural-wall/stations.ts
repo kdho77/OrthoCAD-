@@ -895,8 +895,9 @@ export function stampMonotonicTB(
 }
 
 /**
- * After t_B smooth, re-sample B at equal pattern arc-length, keeping t order.
- * If the equal map crosses, clamp neighbour Δt to 1.5 and retry.
+ * After t_B smooth, remap B on the pattern while keeping t order.
+ * Prefer a neighbour-Δt clamp to 1.5 (small moves). Fall back to equal
+ * arc-length only if the clamp still crosses.
  */
 export function reparameterizeBArcLength(
     stations: Array<{ outline: PolyPoint; rim: PolyPoint; tB?: number }>,
@@ -907,28 +908,38 @@ export function reparameterizeBArcLength(
     const raw = stations.map((s) => s.tB ?? parameterOnClosedLoop(s.outline, loop));
     const unwrapped = unwrapAllowPlateau(raw);
     const t0 = unwrapped[0]!;
-    const equal: number[] = [];
-    for (let i = 0; i < n; i++) equal.push(t0 + i / n);
-    if (commitTB(stations, loop, equal)) return true;
     const deltas: number[] = [];
     for (let i = 0; i < n; i++) {
         const a = unwrapped[i]!;
         const b = i + 1 < n ? unwrapped[i + 1]! : unwrapped[0]! + 1;
         deltas.push(Math.max(1e-6, b - a));
     }
-    const mean = 1 / n;
-    const lo = mean / 1.5;
-    const hi = mean * 1.5;
-    let sum = 0;
-    const clamped = deltas.map((d) => {
-        const v = Math.max(lo, Math.min(hi, d));
-        sum += v;
-        return v;
-    });
-    const scale = sum > 1e-9 ? 1 / sum : 1;
+    const ratio = 1.49;
+    for (let pass = 0; pass < 8; pass++) {
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            const a = deltas[i]!;
+            const b = deltas[j]!;
+            if (b > a * ratio + 1e-12 || a > b * ratio + 1e-12) {
+                const s = a + b;
+                const lo = s / (1 + ratio);
+                const hi = s - lo;
+                if (b > a) {
+                    deltas[i] = lo;
+                    deltas[j] = hi;
+                } else {
+                    deltas[i] = hi;
+                    deltas[j] = lo;
+                }
+            }
+        }
+    }
     const next: number[] = [t0];
-    for (let i = 0; i < n - 1; i++) next.push(next[i]! + clamped[i]! * scale);
-    return commitTB(stations, loop, next);
+    for (let i = 0; i < n - 1; i++) next.push(next[i]! + deltas[i]!);
+    if (commitTB(stations, loop, next)) return true;
+    const equal: number[] = [];
+    for (let i = 0; i < n; i++) equal.push(t0 + i / n);
+    return commitTB(stations, loop, equal);
 }
 
 function commitTB(

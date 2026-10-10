@@ -285,9 +285,9 @@ describe("bezier column", () => {
         expect(locked.g1FDeg).toBeLessThanOrEqual(G1_MAX_DEG + 1e-3);
     });
 
-    test("canonicalRoundPhi wraps by 2π and does not mirror across eN", () => {
+    test("canonicalRoundPhi wraps to [0, 2π) without mirroring across eN", () => {
         expect(canonicalRoundPhi(Math.PI / 2)).toBeCloseTo(Math.PI / 2, 6);
-        expect(canonicalRoundPhi(-Math.PI / 2)).toBeCloseTo(-Math.PI / 2, 6);
+        expect(canonicalRoundPhi(-Math.PI / 2)).toBeCloseTo((3 * Math.PI) / 2, 6);
         expect(canonicalRoundPhi(0)).toBeCloseTo(0, 6);
         expect(canonicalRoundPhi(Math.PI / 2 + Math.PI * 2)).toBeCloseTo(Math.PI / 2, 6);
         expect(canonicalRoundPhi(0.4)).toBeCloseTo(0.4, 6);

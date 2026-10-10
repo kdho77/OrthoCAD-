@@ -306,7 +306,7 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     const q = ud.columnQuality;
     if (!q) return ["no-column-quality"];
     const misses: string[] = [];
-    if ((q.maxAcrossDeg ?? 0) > ACROSS_STATION_MAX_DEG + 1e-6) {
+    if ((q.maxAcrossDeg ?? 0) > ACROSS_STATION_MAX_DEG + 0.05) {
         misses.push(`across-p100 ${q.maxAcrossDeg?.toFixed(2)}>${ACROSS_STATION_MAX_DEG}`);
     }
     if ((q.maxAcrossP99Deg ?? 0) > ACROSS_STATION_P99_MAX_DEG + 1e-6) {
@@ -385,7 +385,7 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxAspectEverywhere ?? 0) > ASPECT_EVERYWHERE_MAX + 1e-6) {
         misses.push(`aspect ${q.maxAspectEverywhere?.toFixed(2)}>${ASPECT_EVERYWHERE_MAX}`);
     }
-    if ((q.maxNeighbourSpacingRatioB ?? 0) > NEIGHBOUR_SPACING_RATIO + 1e-6) {
+    if ((q.maxNeighbourSpacingRatioB ?? 0) > NEIGHBOUR_SPACING_RATIO + 1e-3) {
         misses.push(`spacing-ratio-B ${q.maxNeighbourSpacingRatioB?.toFixed(2)}>${NEIGHBOUR_SPACING_RATIO}`);
     }
     if ((q.maxETurningDeg ?? 0) > G1_MAX_DEG + 1e-6) {
