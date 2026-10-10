@@ -67,7 +67,6 @@ export {
     nTopFromSheetSlope,
     OUTLINE_STATION_SPACING_MM,
     offPlaneMm,
-    orientRoundPhi,
     periodicGaussian,
     plantarFrameAt,
     R_CHANGE_MAX_PCT,

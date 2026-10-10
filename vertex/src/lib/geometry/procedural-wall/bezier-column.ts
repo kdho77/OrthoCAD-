@@ -1397,7 +1397,6 @@ export function constructSweepRule(
             apply(lo);
         }
     }
-    phiRound1 = orientRoundPhi(phiRound1, tStart, eW);
 
     const tE = sweptRoundTangent(eN, eW, phiRound1);
     const tFPath = unit3({ x: -fil.d.x, y: -fil.d.y, z: -fil.d.z });
@@ -2994,19 +2993,6 @@ export function canonicalRoundPhi(phi: number): number {
     while (t < 0) t += twopi;
     while (t >= twopi) t -= twopi;
     return t;
-}
-
-/**
- * Same E and tangent at φ and φ+2πk. Pick the branch whose first step agrees
- * with tStart (sheet / T0). Only flip by 2π when |φ| > 90° — a small opposite
- * sweep stays put so we do not sample a near-full circle.
- */
-export function orientRoundPhi(phi: number, tStart: XYZ, eW: XYZ): number {
-    const startAlong = tStart.x * eW.x + tStart.y * eW.y + tStart.z * eW.z;
-    const phiAlong = phi >= 0 ? 1 : -1;
-    if (startAlong * phiAlong >= 0) return phi;
-    if (Math.abs(phi) <= Math.PI / 2 + 1e-9) return phi;
-    return phi >= 0 ? phi - Math.PI * 2 : phi + Math.PI * 2;
 }
 
 function unwrapClosedRad(phis: number[]): number[] {
