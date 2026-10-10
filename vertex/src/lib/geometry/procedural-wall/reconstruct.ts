@@ -40,6 +40,15 @@ import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
 import { hygieneBottomPattern } from "./pattern-hygiene";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
+import {
+    fairRim01,
+    RIM_FAIR_MAX_MM,
+    RIM_TURN_EXEMPT_DEG,
+    type RimFairing,
+    rimTurningDeg,
+    stationsOnTaggedRim,
+    tagStaircaseRim,
+} from "./rim-fairing";
 import { assertClosedStationRing, assertPeriodicQuadStrip, rotateStationRing } from "./ring-seam";
 import {
     applyStoredTB,
@@ -67,6 +76,11 @@ export interface ReconstructOptions extends ProceduralModifierInput {
     bottomPatternLabel?: string;
     /** Flat ground plantar (z=0 + posting/grind). Dish sampling is skipped. */
     flatPlantar?: boolean;
+    /**
+     * Source-rim handling. `exact` keeps R and exempts across at verts turning
+     * >15°. `fair01` fairs R within 0.1 mm. Default exact until Kendon picks.
+     */
+    rimFairing?: "exact" | "fair01";
 }
 
 function zeroCorrections(): SideCorrections {
@@ -411,6 +425,34 @@ export function reconstructProceduralWalls(
     }
 
     rimLocal = orderRimLocal(topPos, rimLocal);
+    const sourceRimPts: PolyPoint[] = rimLocal.map((i) => ({
+        x: topPos[i * 3]!,
+        y: topPos[i * 3 + 1]!,
+        z: topPos[i * 3 + 2]!,
+    }));
+    const rimFairing: RimFairing = options.rimFairing ?? "exact";
+    const staircaseMask = tagStaircaseRim(sourceRimPts, RIM_TURN_EXEMPT_DEG);
+    const taggedSource = sourceRimPts.filter((_, i) => staircaseMask[i]);
+    const footLen = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+    const rimStaircaseVerts = sourceRimPts
+        .map((p, i) => ({
+            i: rimLocal[i]!,
+            u: Number(((p.x - model.bounds.minX) / footLen).toFixed(4)),
+            turnDeg: Number(rimTurningDeg(sourceRimPts, i).toFixed(2)),
+            x: p.x,
+            y: p.y,
+            z: p.z,
+        }))
+        .filter((_, i) => staircaseMask[i]);
+    if (rimFairing === "fair01") {
+        const faired = fairRim01(sourceRimPts, RIM_FAIR_MAX_MM);
+        for (let k = 0; k < rimLocal.length; k++) {
+            const vi = rimLocal[k]!;
+            topPos[vi * 3] = faired[k]!.x;
+            topPos[vi * 3 + 1] = faired[k]!.y;
+            topPos[vi * 3 + 2] = faired[k]!.z;
+        }
+    }
     const rimPts: PolyPoint[] = rimLocal.map((i) => ({
         x: topPos[i * 3]!,
         y: topPos[i * 3 + 1]!,
@@ -548,6 +590,8 @@ export function reconstructProceduralWalls(
     stampMonotonicTB(stations, hygiened.loop);
     applyStoredTB(stations, hygiened.loop);
     assertClosedStationRing(stations, rimLocal);
+    const exemptAcross =
+        rimFairing === "exact" ? stationsOnTaggedRim(stations, taggedSource) : stations.map(() => false);
     {
         let minB = Infinity;
         let maxHead = 0;
@@ -603,6 +647,7 @@ export function reconstructProceduralWalls(
         topZ,
         nWall: options.wallLayers ?? 26,
         refineGrind: (options.archGrindDepthMm ?? 0) > 0,
+        exemptAcross,
         flangeHeightMm: flangeH,
         flangeLengthMm: flangeLen,
         flangeAngleDeg: flangeAng,
@@ -716,6 +761,10 @@ export function reconstructProceduralWalls(
         patternMinRadiusMm: hygiened.minRadiusMm,
         bottomOutlineB: grid.outlineRing,
         junctionSlivers,
+        rimFairing,
+        rimStaircaseTagged: rimStaircaseVerts.length,
+        rimStaircaseVerts,
+        rimFairMaxMm: RIM_FAIR_MAX_MM,
         flatPlantar,
         allowOverhang: true,
         filletRing: grid.frames.map((f) => ({ ...f.F })),

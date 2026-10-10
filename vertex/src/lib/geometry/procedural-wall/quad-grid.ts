@@ -264,6 +264,8 @@ export interface BuildQuadGridInput {
     flangeAngleDeg?: number;
     footLengthMm?: number;
     flatPlantar?: boolean;
+    /** Exact-mode across-gate exemption at source-rim staircase verts. */
+    exemptAcross?: boolean[];
 }
 
 function headingOfStation(st: HermiteStation): { h: { x: number; y: number }; planLen: number } {
@@ -685,6 +687,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         nWall,
         plantarSlopeRad,
         S1_MIN_WALL_MM,
+        input.exemptAcross ?? [],
     );
     console.log(
         "[S1-MIN-WALL]",

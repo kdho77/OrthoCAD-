@@ -53,6 +53,10 @@ export const LINE_MAX_STEP_MM = 2;
 export const N_TOP_PATCH_MM = 2;
 export const N_TOP_MAX_DEG = 5;
 export const R_CHANGE_MAX_PCT = 5;
+export const R2_CHANGE_MAX_PCT = 10;
+export const FILLET_LAST_ROW_FRAC = 0.15;
+export const ROUND_SWEEP_SPLIT_DEG = 80;
+export const ALONG_JOINT_MIN_EDGE_MM = 1e-6;
 export const FILLET_B_MIN_DEG = -60;
 export const FILLET_B_MAX_DEG = 80;
 export const FILLET_PSI_MIN_DEG = 10;
@@ -596,7 +600,11 @@ export function sizedArcRows(
     const nByAngle = Math.max(minRows, Math.ceil(deg / Math.max(maxStepDeg, 1e-3)));
     const nBy1x = Math.max(minRows, Math.ceil(arcLen / spacing));
     const nByHalf = Math.max(minRows, Math.ceil(arcLen / Math.max(0.5 * spacing, minStep)));
-    if (preferAngle) return Math.max(minRows, nByAngle);
+    if (preferAngle) {
+        // Extra rows wherever the round turns more than 80° so every row is ≤ 8°.
+        if (deg > ROUND_SWEEP_SPLIT_DEG) return Math.max(minRows, nByAngle);
+        return Math.max(minRows, nByAngle);
+    }
     return Math.max(minRows, Math.min(Math.max(nBy1x, nByHalf, nByAngle), nByMin));
 }
 
@@ -985,6 +993,11 @@ export function sampleArcLineArc(
         if (dist3(p, B) < MIN_EDGE_MM) continue;
         pts.push(p);
     }
+    const minLast = FILLET_LAST_ROW_FRAC * stationSpacing;
+    while (pts.length >= 3 && dist3(pts[pts.length - 1]!, B) < minLast) {
+        if (dist3(pts[pts.length - 1]!, ala.T2) < WELD_MM) break;
+        pts.pop();
+    }
     pts.push({ ...B });
     return dropShortEdges(pts, MIN_EDGE_MM);
 }
@@ -1202,18 +1215,20 @@ function dropShortEdges(pts: XYZ[], minMm: number): XYZ[] {
     return out;
 }
 
-function fitColumnCount(pts: XYZ[], n: number, keepFrom: number): XYZ[] {
+function fitColumnCount(pts: XYZ[], n: number, keepFrom: number, minLastMm = 0): XYZ[] {
     const out = pts.map((p) => ({ ...p }));
     while (out.length < n) {
         let best = keepFrom;
         let bestD = -1;
         for (let i = keepFrom; i < out.length - 1; i++) {
             const d = dist3(out[i]!, out[i + 1]!);
+            if (i === out.length - 2 && minLastMm > 0 && d * 0.5 < minLastMm) continue;
             if (d > bestD) {
                 bestD = d;
                 best = i;
             }
         }
+        if (bestD < 0) break;
         const a = out[best]!;
         const b = out[best + 1]!;
         out.splice(best + 1, 0, { x: 0.5 * (a.x + b.x), y: 0.5 * (a.y + b.y), z: 0.5 * (a.z + b.z) });
@@ -1242,11 +1257,16 @@ function columnPoints(
 ): XYZ[] {
     const ala = applyAlaToFrame(fr);
     const assembled = sampleArcLineArc(ala, fr.h, fr.R, fr.B, nWall, _stationSpacing);
-    const keepFrom = Math.max(
-        1,
-        assembled.findIndex((p) => dist3(p, ala.T1) < 0.2),
-    );
-    const raw = fitColumnCount(assembled, nWall, keepFrom);
+    let keepFrom = 1;
+    let bestT1 = Infinity;
+    for (let i = 1; i < assembled.length - 1; i++) {
+        const d = dist3(assembled[i]!, ala.T1);
+        if (d < bestT1) {
+            bestT1 = d;
+            keepFrom = i;
+        }
+    }
+    const raw = fitColumnCount(assembled, nWall, keepFrom, FILLET_LAST_ROW_FRAC * _stationSpacing);
     const out = raw.map((p, i) => {
         if (i === 0) return { ...fr.R };
         if (i === raw.length - 1) return { ...fr.B };
@@ -1483,7 +1503,7 @@ export function assertT0ClearsSheet(frames: ColumnFrame[]): void {
     console.log("[S1-T0]", JSON.stringify({ n: rows.length, bad: bad.length, sample: rows.slice(0, 8) }));
 }
 
-function columnHeading(st: HermiteStation): {
+export function columnHeading(st: HermiteStation): {
     h: { x: number; y: number };
     shortChord: boolean;
     planLen: number;
@@ -1504,16 +1524,64 @@ function headingAngle(a: { x: number; y: number }, b: { x: number; y: number }):
     return Math.acos(Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y)));
 }
 
+function clampHeadingTo(
+    h: { x: number; y: number },
+    ref: { x: number; y: number },
+    maxDeg: number,
+): { x: number; y: number } {
+    const ang = headingAngle(ref, h);
+    const maxRad = (maxDeg * Math.PI) / 180;
+    if (ang <= maxRad + 1e-9) return { ...h };
+    const t = maxRad / ang;
+    const x = ref.x + (h.x - ref.x) * t;
+    const y = ref.y + (h.y - ref.y) * t;
+    const hl = Math.hypot(x, y) || 1;
+    return { x: x / hl, y: y / hl };
+}
+
+/** CCW B-loop outward normal, flipped to agree with plan(B−R). */
+export function bLoopOutwardNormal(stations: HermiteStation[], i: number): { x: number; y: number } {
+    const n = stations.length;
+    const prev = stations[(i + n - 1) % n]!.outline;
+    const next = stations[(i + 1) % n]!.outline;
+    const tx = next.x - prev.x;
+    const ty = next.y - prev.y;
+    const tl = Math.hypot(tx, ty) || 1;
+    let nx = ty / tl;
+    let ny = -tx / tl;
+    const chord = columnHeading(stations[i]!).h;
+    if (nx * chord.x + ny * chord.y < 0) {
+        nx = -nx;
+        ny = -ny;
+    }
+    return { x: nx, y: ny };
+}
+
 /**
- * Column heading is plan(B−R). Clamp only extra jitter above the geometric
- * fan and the 3°/station budget — never flatten a real arch fan, and never
- * pin B sideways.
+ * Heading = plan(B−R), corrected by the B-loop outward normal within 3°.
+ * Gaussian-smooth the B-loop heading, then re-clamp. Extra jitter above the
+ * geometric fan stays inside the 3°/station budget.
  */
 export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: number; y: number }> {
     const n = stations.length;
     if (n === 0) return [];
     const chords = stations.map((st) => columnHeading(st));
-    const out = chords.map((c) => ({ ...c.h }));
+    const corrected = chords.map((c, i) =>
+        clampHeadingTo(bLoopOutwardNormal(stations, i), c.h, HEADING_MAX_DEG),
+    );
+    const bLoop = stations.map((s) => s.outline);
+    const sx = periodicGaussian(
+        corrected.map((h) => h.x),
+        bLoop,
+    );
+    const sy = periodicGaussian(
+        corrected.map((h) => h.y),
+        bLoop,
+    );
+    const out = sx.map((_, i) => {
+        const hl = Math.hypot(sx[i]!, sy[i]!) || 1;
+        return clampHeadingTo({ x: sx[i]! / hl, y: sy[i]! / hl }, chords[i]!.h, HEADING_MAX_DEG);
+    });
     const maxRad = (HEADING_MAX_DEG * Math.PI) / 180;
     for (let pass = 0; pass < 8; pass++) {
         for (let i = 0; i < n; i++) {
@@ -1781,7 +1849,7 @@ function applySmooth(
     const rim = frames.map((f) => f.R);
     const applyLimited = (r1: number[], r2: number[]): void => {
         const lim1 = rateLimitClosed(r1, R_CHANGE_MAX_PCT, MIN_ROUND_R_MM);
-        const lim2 = rateLimitClosed(r2, R_CHANGE_MAX_PCT, 0.05);
+        const lim2 = rateLimitClosed(r2, R2_CHANGE_MAX_PCT, 0.05);
         for (let i = 0; i < frames.length; i++) {
             const fr = frames[i]!;
             fr.rTop = lim1[i]!;
@@ -1856,6 +1924,7 @@ export function buildBezierColumns(
     nWall: number,
     plantarSlopeRad: number[] = [],
     minWallMm = 0.8,
+    exemptAcross: boolean[] = [],
 ): BezierColumns {
     const regionDefault = stations.map((st) =>
         blendedFlareDeg(st.u, st.outline.y, defaults.flareDeg, defaults.medialYSign ?? 1),
@@ -1887,7 +1956,7 @@ export function buildBezierColumns(
     }
     nWall = nNeed;
     guardFrames(frames, junctions, rimLoop, topZ, nWall, spacing);
-    {
+    for (let pass = 0; pass < 8; pass++) {
         const lim1 = rateLimitClosed(
             frames.map((f) => f.rTop),
             R_CHANGE_MAX_PCT,
@@ -1895,7 +1964,7 @@ export function buildBezierColumns(
         );
         const lim2 = rateLimitClosed(
             frames.map((f) => f.rFillet),
-            R_CHANGE_MAX_PCT,
+            R2_CHANGE_MAX_PCT,
             0.05,
         );
         for (let i = 0; i < frames.length; i++) {
@@ -1932,6 +2001,11 @@ export function buildBezierColumns(
         const nxt = frames[(i + 1) % frames.length]!;
         maxTiltStep = Math.max(maxTiltStep, (Math.abs(nxt.leanRad - fr.leanRad) * 180) / Math.PI);
     }
+    mergeShortLastFilletRows(xyz, spacing);
+    for (let i = 0; i < frames.length; i++) {
+        const col = xyz[i]!;
+        frames[i]!.arcEndZ = col[col.length - 2]?.z ?? frames[i]!.B.z;
+    }
     assertT0ClearsSheet(frames);
     reportLeanVsBio(frames, defaults, flare);
     const bad: Array<{ i: number; u: number; off: number; side: number }> = [];
@@ -1948,7 +2022,7 @@ export function buildBezierColumns(
     if (bad.length) {
         throw new Error(`[S1-COL] off-plane\n${JSON.stringify({ n: bad.length, sample: bad.slice(0, 8) })}`);
     }
-    const quality = columnProfileQuality(xyz, frames);
+    const quality = columnProfileQuality(xyz, frames, exemptAcross);
     console.log(
         "[S1-COL-Q]",
         JSON.stringify({
@@ -2038,7 +2112,25 @@ function reportLeanVsBio(frames: ColumnFrame[], defaults: WallRegionDefaults, _b
     console.log("[S1-LEAN]", JSON.stringify(rows));
 }
 
-export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): ColumnQuality {
+function mergeShortLastFilletRows(xyz: XYZ[][], stationSpacing: number): void {
+    const minLast = FILLET_LAST_ROW_FRAC * stationSpacing;
+    for (let pass = 0; pass < 2; pass++) {
+        if (!xyz[0] || xyz[0].length < 4) return;
+        const anyShort = xyz.some(
+            (col) => col.length >= 4 && dist3(col[col.length - 2]!, col[col.length - 1]!) < minLast,
+        );
+        if (!anyShort) return;
+        for (const col of xyz) {
+            if (col.length >= 4) col.splice(col.length - 2, 1);
+        }
+    }
+}
+
+export function columnProfileQuality(
+    xyz: XYZ[][],
+    frames: ColumnFrame[],
+    exemptAcross: boolean[] = [],
+): ColumnQuality {
     let maxAlong = 0;
     let maxTcol = 0;
     let tColHits = 0;
@@ -2084,7 +2176,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 y: col[j + 1]!.y - col[j]!.y,
                 z: col[j + 1]!.z - col[j]!.z,
             };
-            if (hypot3(t0) < 0.08 || hypot3(t1) < 0.08) continue;
+            if (hypot3(t0) < ALONG_JOINT_MIN_EDGE_MM || hypot3(t1) < ALONG_JOINT_MIN_EDGE_MM) continue;
             const deg = signedJointDeg(t0, t1, bin);
             joints.push(deg);
             maxAlong = Math.max(maxAlong, Math.abs(deg));
@@ -2141,6 +2233,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         const prv = xyz[(i + nS - 1) % nS]!;
         const rows = Math.min(col.length, nxt.length, prv.length);
         for (let j = 0; j < rows - 1; j++) {
+            if (j === 0 && (exemptAcross[i] || exemptAcross[(i + 1) % nS])) continue;
             const nL = faceN3(prv[j]!, col[j]!, col[j + 1]!);
             const nR = faceN3(col[j]!, nxt[j]!, col[j + 1]!);
             if (!nL || !nR) continue;

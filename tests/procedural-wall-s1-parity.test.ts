@@ -57,6 +57,8 @@ import {
     patternCurvatureReport,
     plantarFlatDeltaMm,
     R_CHANGE_MAX_PCT,
+    R2_CHANGE_MAX_PCT,
+    RIM_FAIR_MAX_MM,
     ROUND_JOINT_MAX_DEG,
     reconstructionManifold,
     reconstructProceduralWalls,
@@ -70,6 +72,7 @@ import {
     summarizeWallBands,
     syntheticBottomPattern,
     TOE_SPACING_EXTENT_FRAC,
+    topSurfaceDeltas,
     windingReport,
     zoneFixturesMapIdentically,
 } from "@/lib/geometry/procedural-wall";
@@ -144,6 +147,128 @@ type ColumnQualityUd = {
     maxAlaPackMm?: number;
 };
 
+type SampleGateReport = {
+    rimFairing: "exact" | "fair01";
+    misses: string[];
+    columnQuality: ColumnQualityUd | undefined;
+    seamWorstDeg: number;
+    junctionSlivers: number;
+    sliverMaxAspect: number;
+    topDelta: number;
+    topRimMm: number;
+    topInteriorMm: number;
+    rimStaircaseTagged: number;
+    watertight: boolean;
+    selfIntersections: number;
+    archFoldGe10: number;
+};
+
+function sampleGateReport(
+    rebuilt: BufferGeometry,
+    model: ReturnType<typeof extractTopOnlyModel>,
+    pattern: Array<{ x: number; y: number; z: number }>,
+    rimFairing: "exact" | "fair01",
+): SampleGateReport {
+    const topN = (rebuilt.userData as { topVertexCount?: number }).topVertexCount ?? 0;
+    const hits = countSelfIntersections(rebuilt);
+    const man = reconstructionManifold(rebuilt);
+    const generatedOutline =
+        (rebuilt.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> }).outlineRing ??
+        pattern;
+    const reconSeam = outlineSeamDihedrals(rebuilt, generatedOutline, 1.25);
+    const archFolds = medialArchUpperWallFolds(
+        rebuilt,
+        model.bounds,
+        topN,
+        (rebuilt.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1,
+    );
+    const outlineDev = outlineExactOnBMm(rebuilt);
+    const plantarZ0 = plantarFlatDeltaMm(rebuilt);
+    const genMinWall = generatedMinWallMm(rebuilt);
+    const topStock = model.top.meshPositions ?? new Float32Array(0);
+    const topRecon = (rebuilt.getAttribute("position").array as Float32Array).slice(0, topStock.length);
+    const topDelta = maxVertexDeltaMm(topRecon, topStock);
+    const surface = topSurfaceDeltas(topRecon, topStock, model.top.rimLocal ?? []);
+    const uvOk = zoneFixturesMapIdentically(
+        soleUvFrameFromOutline(model.outline),
+        soleUvFrameFromPolyline(model.outline.spline.controls),
+    );
+    const sud = rebuilt.userData as {
+        sliverMaxAspect?: number;
+        junctionSlivers?: number;
+        plantarOpenEdges?: number;
+        plantarMissingBoundary?: number;
+        maxOffPlaneMm?: number;
+        planReversals?: number;
+        chordCrossings?: number;
+        bottomPatternSource?: string;
+        columnQuality?: ColumnQualityUd;
+        rimStaircaseTagged?: number;
+    };
+    const misses: string[] = [];
+    if (hits.real !== 0) {
+        misses.push(
+            `xi=${hits.real} ${hits.byClass ? JSON.stringify(hits.byClass) : ""} ${
+                hits.bySubClass ? JSON.stringify(hits.bySubClass) : ""
+            }`,
+        );
+    }
+    if (!man.watertight) misses.push(`open=${man.openEdges}`);
+    if (man.nonManifoldEdges !== 0) misses.push(`nonManifold=${man.nonManifoldEdges}`);
+    misses.push(...qualityMisses(sud));
+    if (archFolds.edgesAtLeast10Deg !== 0) {
+        misses.push(`medial-arch-upper≥10 ${JSON.stringify(archFolds.hardEdges ?? [])}`);
+    }
+    if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6) {
+        misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
+    }
+    if (outlineDev > 1e-3) misses.push(`outline-B ${outlineDev.toFixed(4)}`);
+    if (plantarZ0 > 1e-3) misses.push(`plantar-z0 ${plantarZ0.toFixed(4)}`);
+    if (rimFairing === "fair01") {
+        if (surface.interiorMm > 1e-9) misses.push(`top-interior ${surface.interiorMm.toFixed(6)}`);
+        if (surface.rimMm > RIM_FAIR_MAX_MM + 1e-6) {
+            misses.push(`top-rim ${surface.rimMm.toFixed(4)}>${RIM_FAIR_MAX_MM}`);
+        }
+    } else if (topDelta > 1e-9) {
+        misses.push(`top-surface ${topDelta.toFixed(6)}`);
+    }
+    if (genMinWall < S1_MIN_WALL_MM) misses.push(`minWall ${genMinWall.toFixed(3)}`);
+    if ((sud.sliverMaxAspect ?? 0) > 20) misses.push(`sliver ${sud.sliverMaxAspect}`);
+    if ((sud.junctionSlivers ?? 0) !== 0) misses.push(`junction-slivers=${sud.junctionSlivers}`);
+    if ((sud.plantarOpenEdges ?? 0) !== 0) misses.push(`plantar-open=${sud.plantarOpenEdges}`);
+    if ((sud.plantarMissingBoundary ?? 0) !== 0) {
+        misses.push(`plantar-missing=${sud.plantarMissingBoundary}`);
+    }
+    if ((sud.maxOffPlaneMm ?? 0) > COLUMN_PLANARITY_LIMIT_MM) {
+        misses.push(`off-plane ${sud.maxOffPlaneMm}`);
+    }
+    const wind = windingReport(rebuilt);
+    if (!wind.consistent || wind.signedVolume <= 0 || wind.oppositeEdgeMismatch !== 0) {
+        misses.push(`winding vol=${wind.signedVolume.toFixed(1)} mismatch=${wind.oppositeEdgeMismatch}`);
+    }
+    if ((sud.planReversals ?? 0) !== 0) misses.push(`reversals=${sud.planReversals}`);
+    if ((sud.chordCrossings ?? 0) !== 0) misses.push(`crossings=${sud.chordCrossings}`);
+    if (!uvOk) misses.push("sole-UV");
+    if (sud.bottomPatternSource !== PATTERN_SOURCE_SYNTHETIC) {
+        misses.push(`pattern-source ${sud.bottomPatternSource}`);
+    }
+    return {
+        rimFairing,
+        misses,
+        columnQuality: sud.columnQuality,
+        seamWorstDeg: reconSeam.worstDeg,
+        junctionSlivers: sud.junctionSlivers ?? 0,
+        sliverMaxAspect: sud.sliverMaxAspect ?? 0,
+        topDelta,
+        topRimMm: surface.rimMm,
+        topInteriorMm: surface.interiorMm,
+        rimStaircaseTagged: sud.rimStaircaseTagged ?? 0,
+        watertight: man.watertight,
+        selfIntersections: hits.real,
+        archFoldGe10: archFolds.edgesAtLeast10Deg,
+    };
+}
+
 function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     const q = ud.columnQuality;
     if (!q) return ["no-column-quality"];
@@ -180,8 +305,8 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxR1ChangePct ?? 0) > R_CHANGE_MAX_PCT + 1e-6) {
         misses.push(`r1 ${q.maxR1ChangePct?.toFixed(2)}%>${R_CHANGE_MAX_PCT}`);
     }
-    if ((q.maxR2ChangePct ?? 0) > R_CHANGE_MAX_PCT + 1e-6) {
-        misses.push(`r2 ${q.maxR2ChangePct?.toFixed(2)}%>${R_CHANGE_MAX_PCT}`);
+    if ((q.maxR2ChangePct ?? 0) > R2_CHANGE_MAX_PCT + 1e-6) {
+        misses.push(`r2 ${q.maxR2ChangePct?.toFixed(2)}%>${R2_CHANGE_MAX_PCT}`);
     }
     if ((q.maxHeadingChangeDeg ?? 0) > HEADING_MAX_DEG + 1e-6) {
         misses.push(`heading ${q.maxHeadingChangeDeg?.toFixed(2)}>${HEADING_MAX_DEG}`);
@@ -758,123 +883,36 @@ describe("S1 parametric wall", () => {
             z: pos![i * 3 + 2]!,
         }));
         const pattern = syntheticBottomPattern(rim3d, model.bounds, rim3d);
-        let rebuilt: BufferGeometry;
-        try {
-            rebuilt = reconstructProceduralWalls(model, {
-                corrections: neutralCorrections(),
-                bottomPattern: pattern,
-                bottomPatternLabel: PATTERN_SOURCE_SYNTHETIC,
-                flatPlantar: true,
-            });
-        } catch (err) {
-            throw new Error(`[S1-SAMPLE] reconstruct: ${String(err)}`);
-        }
-        const topN = (rebuilt.userData as { topVertexCount?: number }).topVertexCount ?? 0;
-        const outlineN = (rebuilt.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
-        const outlineStart = (rebuilt.userData as { outlineVertexStart?: number }).outlineVertexStart ?? topN;
-        const fold = foldReport(rebuilt, {
-            wholeInsole: true,
-            topVertexCount: topN,
-            outlineVertexCount: outlineN,
-            outlineVertexStart: outlineStart,
-        });
-        const hits = countSelfIntersections(rebuilt);
-        const man = reconstructionManifold(rebuilt);
-        const generatedOutline =
-            (rebuilt.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> }).outlineRing ??
-            pattern;
-        const reconSeam = outlineSeamDihedrals(rebuilt, generatedOutline, 1.25);
-        const archFolds = medialArchUpperWallFolds(
-            rebuilt,
-            model.bounds,
-            topN,
-            (rebuilt.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1,
-        );
-        const outlineDev = outlineExactOnBMm(rebuilt);
-        const plantarZ0 = plantarFlatDeltaMm(rebuilt);
-        const genMinWall = generatedMinWallMm(rebuilt);
-        const topStock = model.top.meshPositions ?? new Float32Array(0);
-        const topRecon = (rebuilt.getAttribute("position").array as Float32Array).slice(0, topStock.length);
-        const topDelta = maxVertexDeltaMm(topRecon, topStock);
-        const uvOk = zoneFixturesMapIdentically(
-            soleUvFrameFromOutline(model.outline),
-            soleUvFrameFromPolyline(model.outline.spline.controls),
-        );
-        const sud = rebuilt.userData as {
-            sliverMaxAspect?: number;
-            junctionSlivers?: number;
-            plantarOpenEdges?: number;
-            plantarMissingBoundary?: number;
-            maxOffPlaneMm?: number;
-            maxSidewaysMm?: number;
-            planReversals?: number;
-            chordCrossings?: number;
-            bottomPatternSource?: string;
-            columnQuality?: ColumnQualityUd;
+        const reconstructMode = (rimFairing: "exact" | "fair01"): BufferGeometry => {
+            try {
+                return reconstructProceduralWalls(model, {
+                    corrections: neutralCorrections(),
+                    bottomPattern: pattern,
+                    bottomPatternLabel: PATTERN_SOURCE_SYNTHETIC,
+                    flatPlantar: true,
+                    rimFairing,
+                });
+            } catch (err) {
+                throw new Error(`[S1-SAMPLE] reconstruct ${rimFairing}: ${String(err)}`);
+            }
         };
-        const misses: string[] = [];
-        if (hits.real !== 0) {
-            misses.push(
-                `xi=${hits.real} ${hits.byClass ? JSON.stringify(hits.byClass) : ""} ${
-                    hits.bySubClass ? JSON.stringify(hits.bySubClass) : ""
-                }`,
-            );
-        }
-        if (!man.watertight) misses.push(`open=${man.openEdges}`);
-        if (man.nonManifoldEdges !== 0) misses.push(`nonManifold=${man.nonManifoldEdges}`);
-        misses.push(...qualityMisses(sud));
-        if (archFolds.edgesAtLeast10Deg !== 0) {
-            misses.push(`medial-arch-upper≥10 ${JSON.stringify(archFolds.hardEdges ?? [])}`);
-        }
-        if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6) {
-            misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
-        }
-        if (outlineDev > 1e-3) misses.push(`outline-B ${outlineDev.toFixed(4)}`);
-        if (plantarZ0 > 1e-3) misses.push(`plantar-z0 ${plantarZ0.toFixed(4)}`);
-        if (topDelta > 1e-9) misses.push(`top-surface ${topDelta.toFixed(6)}`);
-        if (genMinWall < S1_MIN_WALL_MM) misses.push(`minWall ${genMinWall.toFixed(3)}`);
-        if ((sud.sliverMaxAspect ?? 0) > 20) misses.push(`sliver ${sud.sliverMaxAspect}`);
-        if ((sud.junctionSlivers ?? 0) !== 0) misses.push(`junction-slivers=${sud.junctionSlivers}`);
-        if ((sud.plantarOpenEdges ?? 0) !== 0) misses.push(`plantar-open=${sud.plantarOpenEdges}`);
-        if ((sud.plantarMissingBoundary ?? 0) !== 0) {
-            misses.push(`plantar-missing=${sud.plantarMissingBoundary}`);
-        }
-        if ((sud.maxOffPlaneMm ?? 0) > COLUMN_PLANARITY_LIMIT_MM) {
-            misses.push(`off-plane ${sud.maxOffPlaneMm}`);
-        }
-        const wind = windingReport(rebuilt);
-        if (!wind.consistent || wind.signedVolume <= 0 || wind.oppositeEdgeMismatch !== 0) {
-            misses.push(`winding vol=${wind.signedVolume.toFixed(1)} mismatch=${wind.oppositeEdgeMismatch}`);
-        }
-        if ((sud.planReversals ?? 0) !== 0) misses.push(`reversals=${sud.planReversals}`);
-        if ((sud.chordCrossings ?? 0) !== 0) misses.push(`crossings=${sud.chordCrossings}`);
-        if (!uvOk) misses.push("sole-UV");
-        if (sud.bottomPatternSource !== PATTERN_SOURCE_SYNTHETIC) {
-            misses.push(`pattern-source ${sud.bottomPatternSource}`);
-        }
+        const rebuilt = reconstructMode("exact");
+        const fair01Geo = reconstructMode("fair01");
+        const exactRep = sampleGateReport(rebuilt, model, pattern, "exact");
+        const fair01Rep = sampleGateReport(fair01Geo, model, pattern, "fair01");
+        const misses = exactRep.misses.slice();
         writeFileSync(
             "/tmp/s1-sample-top.json",
             JSON.stringify(
                 {
-                    selfIntersections: hits.real,
-                    byClass: hits.byClass,
-                    bySubClass: hits.bySubClass,
-                    watertight: man.watertight,
-                    openEdges: man.openEdges,
-                    foldGe10: fold.edgesAtLeast10Deg,
-                    columnQuality: sud.columnQuality,
-                    seamWorstDeg: Number(reconSeam.worstDeg.toFixed(3)),
-                    sliverMaxAspect: sud.sliverMaxAspect,
-                    outlineExactMm: outlineDev,
-                    plantarZ0,
-                    topDelta,
-                    minWall: genMinWall,
-                    patternSource: sud.bottomPatternSource,
+                    exact: exactRep,
+                    fair01: fair01Rep,
                 },
                 null,
                 2,
             ),
         );
+        console.log("[S1-SAMPLE-GATES]", JSON.stringify({ exact: exactRep, fair01: fair01Rep }, null, 2));
         const stl = Buffer.from(geometryToBinarySTL(rebuilt));
         mkdirSync("/opt/cursor/artifacts", { recursive: true });
         mkdirSync("/opt/cursor/artifacts/screenshots", { recursive: true });
@@ -894,6 +932,20 @@ describe("S1 parametric wall", () => {
         );
         const bottomRgb = renderMesh(afterPos, afterIdx, BOTTOM_VIEW, 900, 680);
         writeFileSync("/opt/cursor/artifacts/screenshots/bottom-view.png", encodePng(900, 680, bottomRgb));
+        const fairPos = fair01Geo.getAttribute("position").array as Float32Array;
+        const fairIdx = fair01Geo.getIndex()!.array;
+        writeFileSync(
+            "/opt/cursor/artifacts/screenshots/sample-top-exact-rearfoot.png",
+            encodePng(900, 680, renderMesh(afterPos, afterIdx, KENDON_REARFOOT, 900, 680)),
+        );
+        writeFileSync(
+            "/opt/cursor/artifacts/screenshots/sample-top-fair01-rearfoot.png",
+            encodePng(900, 680, renderMesh(fairPos, fairIdx, KENDON_REARFOOT, 900, 680)),
+        );
+        writeFileSync(
+            "/opt/cursor/artifacts/screenshots/sample-top-fair01-bottom.png",
+            encodePng(900, 680, renderMesh(fairPos, fairIdx, BOTTOM_VIEW, 900, 680)),
+        );
         const patternSign = medialYSignFromTopRim(rim3d, model.bounds);
         const curv = patternCurvatureReport(pattern, model.bounds, patternSign);
         const curveRgb = renderPatternCurvature(pattern, curv.k, curv.s, 900, 320, rim3d, curv.inflections);
@@ -963,15 +1015,21 @@ describe("S1 parametric wall", () => {
             );
         }
         writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.stl", stl);
+        writeFileSync("/opt/cursor/artifacts/sample-top-exact.stl", stl);
         const glb = await exportObjectToGlb(meshFromGeometry(rebuilt));
         writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.glb", Buffer.from(glb.arrayBuffer));
-        if (misses.length || hits.real !== 0) {
+        writeFileSync("/opt/cursor/artifacts/sample-top-exact.glb", Buffer.from(glb.arrayBuffer));
+        const fairStl = Buffer.from(geometryToBinarySTL(fair01Geo));
+        writeFileSync("/opt/cursor/artifacts/sample-top-fair01.stl", fairStl);
+        const fairGlb = await exportObjectToGlb(meshFromGeometry(fair01Geo));
+        writeFileSync("/opt/cursor/artifacts/sample-top-fair01.glb", Buffer.from(fairGlb.arrayBuffer));
+        if (misses.length || exactRep.selfIntersections !== 0) {
             throw new Error(
-                `[S1-SAMPLE] nonzero. STOP.\nmisses: ${misses.join("; ")}\n` +
-                    (hits.real ? siBreakdownMessage(hits, rebuilt, model, "[S1-SI] SAMPLE_Top") : ""),
+                `[S1-SAMPLE] nonzero. STOP.\nmisses: ${misses.join("; ")}\nfair01: ${fair01Rep.misses.join("; ")}`,
             );
         }
         rebuilt.dispose();
+        fair01Geo.dispose();
         original.dispose();
     }, 240_000);
 

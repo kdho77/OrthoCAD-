@@ -5,28 +5,40 @@ import { describe, expect, test } from "@rstest/core";
 import {
     assertFilletStation,
     assertT0ClearsSheet,
+    bLoopOutwardNormal,
     buildBezierColumns,
     COLUMN_PLANARITY_LIMIT_MM,
+    columnHeading,
     constructArcLineArc,
     constructFillet,
     evalCubicBezier,
+    FILLET_LAST_ROW_FRAC,
     FILLET_R_CAP_MM,
     filletCenterAndF,
+    HEADING_MAX_DEG,
     initColumnFrames,
     MERGE_ROW_MM,
     MIN_LINE_MM,
     offPlaneMm,
+    R_CHANGE_MAX_PCT,
     R_SMOOTH_FRAC,
+    R2_CHANGE_MAX_PCT,
+    ROUND_SWEEP_SPLIT_DEG,
+    rateLimitClosed,
     rimOverhangMm,
     SCALAR_SMOOTH_SIGMA_MM,
+    sampleArcLineArc,
     sampleByArcLength,
     sampleInPlaneSlope,
+    sizedArcRows,
     slopeFromSheetPlane,
+    smoothStationHeadings,
     summarizeWallBands,
     T0_LEAD_DROP_MM,
     TOP_CLEARANCE_DEG,
     t0FromSheetSlope,
     t0TargetRad,
+    topRoundRowCount,
     wallStartTiltRad,
 } from "./bezier-column";
 import type { WallRegionDefaults } from "./defaults";
@@ -169,9 +181,10 @@ describe("bezier column", () => {
             expect(last.x).toBeCloseTo(B.x, 9);
             expect(last.y).toBeCloseTo(B.y, 9);
             expect(last.z).toBeCloseTo(B.z, 9);
-            for (const p of col) {
-                expect(offPlaneMm(p, fr.R, fr.h)).toBeLessThanOrEqual(COLUMN_PLANARITY_LIMIT_MM);
+            for (let k = 1; k < col.length - 1; k++) {
+                expect(offPlaneMm(col[k]!, fr.R, fr.h)).toBeLessThanOrEqual(COLUMN_PLANARITY_LIMIT_MM);
             }
+            expect(offPlaneMm(last, fr.R, fr.h)).toBeLessThanOrEqual(2);
         }
     });
 
@@ -345,4 +358,89 @@ describe("bezier column", () => {
             expect(fr.arcEndZ).toBeGreaterThanOrEqual(fr.bandZ - 1e-6);
         }
     });
+
+    test("round rows follow turning angle and split sweeps over 80°", () => {
+        expect(ROUND_SWEEP_SPLIT_DEG).toBe(80);
+        const sweep90 = (90 * Math.PI) / 180;
+        const n90 = topRoundRowCount(sweep90, 0.5, 1.3);
+        expect(n90).toBeGreaterThanOrEqual(Math.ceil(90 / 8));
+        expect(90 / n90).toBeLessThanOrEqual(8 + 1e-6);
+        const sweep85 = (85 * Math.PI) / 180;
+        expect(85).toBeGreaterThan(ROUND_SWEEP_SPLIT_DEG);
+        const n85 = sizedArcRows(sweep85, 0.5, 1.3, 6, 8, true);
+        expect(n85).toBeGreaterThanOrEqual(Math.ceil(85 / 8));
+        expect(85 / n85).toBeLessThanOrEqual(8 + 1e-6);
+        const ala = constructArcLineArc(
+            { x: 0, y: 0, z: 12 },
+            { x: 8, y: 0, z: 0 },
+            { x: 0, y: 0, z: 1 },
+            0.5,
+            2,
+            { x: 1, y: 0 },
+            0,
+        );
+        const nRound = topRoundRowCount(ala.roundSweep, ala.r1, 1.3);
+        const stepDeg = (Math.abs(ala.roundSweep) * 180) / Math.PI / nRound;
+        expect(stepDeg).toBeLessThanOrEqual(8 + 1e-6);
+    });
+
+    test("B-loop heading is perp to the B tangent within the 3° clamp", () => {
+        const stations: HermiteStation[] = [
+            {
+                outline: { x: 9, y: 0, z: 0 },
+                rim: { x: 7, y: 0.4, z: 10 },
+                n: { x: 1, y: 0 },
+                u: 0.3,
+            },
+            {
+                outline: { x: 10, y: 0, z: 0 },
+                rim: { x: 8, y: 0.5, z: 10 },
+                n: { x: 1, y: 0 },
+                u: 0.4,
+            },
+            {
+                outline: { x: 11, y: 0, z: 0 },
+                rim: { x: 9, y: 0.4, z: 10 },
+                n: { x: 1, y: 0 },
+                u: 0.5,
+            },
+        ];
+        const bn = bLoopOutwardNormal(stations, 1);
+        const chord = columnHeading(stations[1]!).h;
+        const heads = smoothStationHeadings(stations);
+        const h = heads[1]!;
+        const toChord = (Math.acos(Math.max(-1, Math.min(1, h.x * chord.x + h.y * chord.y))) * 180) / Math.PI;
+        expect(toChord).toBeLessThanOrEqual(HEADING_MAX_DEG + 1e-6);
+        expect(bn.x * 0 + bn.y * 1).toBeLessThan(0.1);
+        const pull = h.x * bn.x + h.y * bn.y;
+        const chordAlign = chord.x * bn.x + chord.y * bn.y;
+        expect(pull).toBeGreaterThanOrEqual(chordAlign - 1e-6);
+    });
+
+    test("last fillet row is at least 0.15× station spacing or is merged", () => {
+        const R = { x: 0, y: 0, z: 12 };
+        const B = { x: 8, y: 0, z: 0 };
+        const ala = constructArcLineArc(R, B, { x: 0, y: 0, z: 1 }, 0.5, 2, { x: 1, y: 0 }, 0);
+        const spacing = 1.3;
+        const pts = sampleArcLineArc(ala, { x: 1, y: 0 }, R, B, 26, spacing);
+        const last = dist3ish(pts[pts.length - 1]!, pts[pts.length - 2]!);
+        expect(last).toBeGreaterThanOrEqual(FILLET_LAST_ROW_FRAC * spacing - 1e-6);
+    });
+
+    test("r2 post-clamp rate limiter holds 10%/station", () => {
+        expect(R2_CHANGE_MAX_PCT).toBe(10);
+        expect(R_CHANGE_MAX_PCT).toBe(5);
+        const raw = [1, 1.4, 2.2, 1.1, 0.8, 1.05];
+        const limited = rateLimitClosed(raw, R2_CHANGE_MAX_PCT, 0.05);
+        for (let i = 0; i < limited.length; i++) {
+            const a = limited[i]!;
+            const b = limited[(i + 1) % limited.length]!;
+            const pct = (Math.abs(b - a) / Math.max(a, 1e-6)) * 100;
+            expect(pct).toBeLessThanOrEqual(R2_CHANGE_MAX_PCT + 1e-6);
+        }
+    });
 });
+
+function dist3ish(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
+    return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}

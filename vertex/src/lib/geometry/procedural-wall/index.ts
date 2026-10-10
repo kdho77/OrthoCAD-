@@ -12,9 +12,11 @@ export {
     assertT0ClearsSheet,
     BAND_INSET_MIN_MM,
     BEZIER_HANDLE_FRAC,
+    bLoopOutwardNormal,
     COLUMN_PLANARITY_LIMIT_MM,
     type ColumnFrame,
     type ColumnQuality,
+    columnHeading,
     constructArcLineArc,
     constructFillet,
     constructOutsideRound,
@@ -23,6 +25,7 @@ export {
     FILLET_ASSERT_EPS,
     FILLET_B_MAX_DEG,
     FILLET_B_MIN_DEG,
+    FILLET_LAST_ROW_FRAC,
     FILLET_PSI_MAX_DEG,
     FILLET_PSI_MIN_DEG,
     FILLET_R_CAP_MM,
@@ -48,7 +51,9 @@ export {
     plantarFrameAt,
     R_CHANGE_MAX_PCT,
     R_SMOOTH_FRAC,
+    R2_CHANGE_MAX_PCT,
     ROUND_JOINT_MAX_DEG,
+    ROUND_SWEEP_SPLIT_DEG,
     rateLimitClosed,
     rimOverhangMm,
     SCALAR_SMOOTH_SIGMA_MM,
@@ -57,6 +62,7 @@ export {
     STATION_GAP_MULT,
     sampleByArcLength,
     sampleInPlaneSlope,
+    sizedArcRows,
     slopeFromSheetPlane,
     summarizeWallBands,
     T0_LEAD_DROP_MM,
@@ -67,6 +73,7 @@ export {
     t0LeadQ,
     t0TargetRad,
     tangentBandZ,
+    topRoundRowCount,
     U_BANDS,
     type WallBandRow,
     WELD_MM,
@@ -189,6 +196,7 @@ export {
     sheetBoundaryStats,
     stitchVertexDeltaMm,
     tieredHausdorffReport,
+    topSurfaceDeltas,
     windingReport,
 } from "./metrics";
 export { applyCurveModifiers } from "./modifiers";
@@ -223,7 +231,16 @@ export {
     PLANTAR_STEINER_MM,
     PLANTAR_STEINER_OUTLINE_FRAC,
 } from "./plantar-cdt";
-export { reconstructProceduralWalls } from "./reconstruct";
+export { type ReconstructOptions, reconstructProceduralWalls } from "./reconstruct";
+export {
+    fairRim01,
+    RIM_FAIR_MAX_MM,
+    RIM_TURN_EXEMPT_DEG,
+    type RimFairing,
+    rimTurningDeg,
+    stationsOnTaggedRim,
+    tagStaircaseRim,
+} from "./rim-fairing";
 export {
     assertClosedStationRing,
     assertPeriodicQuadStrip,

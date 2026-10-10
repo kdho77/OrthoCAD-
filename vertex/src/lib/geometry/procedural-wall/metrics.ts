@@ -689,6 +689,28 @@ export function maxVertexDeltaMm(a: Float32Array, b: Float32Array): number {
     return max;
 }
 
+/** Split top-surface identity: rim verts vs interior (3D mm). */
+export function topSurfaceDeltas(
+    recon: Float32Array,
+    stock: Float32Array,
+    rimLocal: number[],
+): { rimMm: number; interiorMm: number } {
+    const n = Math.min(recon.length, stock.length) / 3;
+    const rim = new Set(rimLocal);
+    let rimMm = 0;
+    let interiorMm = 0;
+    for (let i = 0; i < n; i++) {
+        const d = Math.hypot(
+            recon[i * 3]! - stock[i * 3]!,
+            recon[i * 3 + 1]! - stock[i * 3 + 1]!,
+            recon[i * 3 + 2]! - stock[i * 3 + 2]!,
+        );
+        if (rim.has(i)) rimMm = Math.max(rimMm, d);
+        else interiorMm = Math.max(interiorMm, d);
+    }
+    return { rimMm, interiorMm };
+}
+
 /** Max XY distance from the last wall row to the B(i) used for the CDT. */
 export function outlineExactOnBMm(reconstruction: BufferGeometry): number {
     const ring = (reconstruction.userData as { outlineRing?: Array<{ x: number; y: number }> }).outlineRing;
