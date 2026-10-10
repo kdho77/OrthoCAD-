@@ -497,10 +497,13 @@ export function fairMovedPattern(input: {
         ? [
               { ctrl: 20, wFair: 0.45, medial: true, lat: 36 },
               { ctrl: 18, wFair: 0.55, medial: true, lat: 48 },
+              { ctrl: 16, wFair: 0.7, medial: true, lat: 56 },
           ]
         : [
               { ctrl: 16, wFair: 0.55, medial: true, lat: 36 },
               { ctrl: 14, wFair: 0.7, medial: true, lat: 48 },
+              { ctrl: 12, wFair: 0.9, medial: true, lat: 56 },
+              { ctrl: 10, wFair: 1.1, medial: true, lat: 64 },
           ];
     let best = moved;
     let bestScore = Number.POSITIVE_INFINITY;
@@ -541,7 +544,46 @@ export function fairMovedPattern(input: {
         }
         if (score === 0) return out;
     }
+    if (input.bounds) {
+        const hygiene = movedPatternHygiene(best, input.bounds, sign);
+        if (hygiene.report.maxAbsDkDs > PATTERN_MAX_DKDS) {
+            best = laplacianClosedPlan(best, 4);
+            best = scaleToMinInset(best, rim, floorInset);
+        }
+    }
     return best;
+}
+
+function laplacianClosedPlan(loop: PolyPoint[], passes: number): PolyPoint[] {
+    let cur = loop.map((p) => ({ ...p, z: 0 }));
+    const n = cur.length;
+    if (n < 3) return cur;
+    for (let pass = 0; pass < passes; pass++) {
+        const next = cur.map((p, i) => {
+            const prev = cur[(i + n - 1) % n]!;
+            const nxt = cur[(i + 1) % n]!;
+            return {
+                x: p.x + 0.5 * (0.5 * (prev.x + nxt.x) - p.x),
+                y: p.y + 0.5 * (0.5 * (prev.y + nxt.y) - p.y),
+                z: 0,
+            };
+        });
+        cur = next;
+    }
+    return cur;
+}
+
+/** Even out moved-B station samples on the faired loop so outlineRing dk/ds stays ≤ 0.02. */
+export function smoothMovedStationOutline(stations: HermiteStation[], loop: PolyPoint[]): void {
+    if (stations.length < 3 || loop.length < 3) return;
+    const n = stations.length;
+    let pts = stations.map((s) => ({ ...s.outline, z: 0 }));
+    pts = laplacianClosedPlan(pts, 2);
+    for (let i = 0; i < n; i++) {
+        const snapped = nearestOnLoop(pts[i]!, loop);
+        stations[i]!.outline = { x: snapped.x, y: snapped.y, z: 0 };
+        stations[i]!.tB = nearestClosedArc01(loop, snapped);
+    }
 }
 
 export function limitStationSkew(

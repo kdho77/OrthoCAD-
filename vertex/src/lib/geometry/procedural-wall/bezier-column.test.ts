@@ -21,6 +21,7 @@ import {
     columnHeading,
     constructArcLineArc,
     constructFillet,
+    constructFilletFromF,
     constructSweepRule,
     DPHI_L_MAX_DEG,
     enforceLastChordFloor,
@@ -1286,6 +1287,15 @@ describe("bezier column", () => {
         expect(fil.C.x).toBeCloseTo(2 * frame.ez.x, 5);
         expect(fil.C.y).toBeCloseTo(2 * frame.ez.y, 5);
         expect(fil.C.z).toBeCloseTo(2 * frame.ez.z, 5);
+    });
+
+    test("constructFilletFromF keeps F on the plantar circle", () => {
+        const B = { x: 0, y: 0, z: 0 };
+        const F = { x: 2, y: 0, z: 1.2 };
+        const fil = constructFilletFromF(B, F, { x: 1, y: 0 }, 0);
+        expect(dist3ish(fil.Pw, F)).toBeLessThan(1e-9);
+        expect(Math.abs(dist3ish(fil.Pw, fil.C) - fil.r)).toBeLessThan(0.05);
+        expect(Math.abs(dist3ish(B, fil.C) - fil.r)).toBeLessThan(0.05);
     });
 });
 

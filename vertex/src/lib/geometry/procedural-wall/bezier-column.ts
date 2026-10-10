@@ -236,6 +236,8 @@ export interface ColumnFrame {
     sideSign?: 1 | -1;
     footLengthMm?: number;
     midWeight?: number;
+    /** Laplacian F; applyAla honors this instead of rebuilding F from r2. */
+    fLocked?: XYZ;
 }
 
 export interface SweepMidStyle {
@@ -693,6 +695,37 @@ export function constructFillet(
         ew: frame.ew,
         ez: frame.ez,
     };
+}
+
+/**
+ * Fillet circle through F, tangent to the plantar at B. r2 = (s²+z²)/(2z)
+ * in the plantar frame so F stays on the arc.
+ */
+export function constructFilletFromF(
+    B: XYZ,
+    F: XYZ,
+    h: { x: number; y: number },
+    plantarSlopeRad: number,
+    nPlantar?: XYZ,
+    rHint = 0,
+): ConstructedFillet {
+    const frame = resolvePlantarFrame(h, plantarSlopeRad, nPlantar);
+    const dlt = { x: F.x - B.x, y: F.y - B.y, z: F.z - B.z };
+    const s = dlt.x * frame.ew.x + dlt.y * frame.ew.y + dlt.z * frame.ew.z;
+    const z = dlt.x * frame.ez.x + dlt.y * frame.ez.y + dlt.z * frame.ez.z;
+    const r = z > 1e-9 ? (s * s + z * z) / (2 * z) : Math.max(rHint, 1e-6);
+    const tan = {
+        x: -(z - r) * frame.ew.x + s * frame.ez.x,
+        y: -(z - r) * frame.ew.y + s * frame.ez.y,
+        z: -(z - r) * frame.ew.z + s * frame.ez.z,
+    };
+    const U = hypot3(tan) > 1e-9 ? unit3(tan) : { x: 0, y: 0, z: 1 };
+    const fil = constructFillet(B, h, r, U, plantarSlopeRad, nPlantar);
+    const phiF = Math.atan2(z - r, s);
+    fil.Pw = { ...F };
+    fil.phiF = phiF;
+    fil.phi1 = phiF;
+    return fil;
 }
 
 export function filletPointAtPhi(fil: ConstructedFillet, phi: number): XYZ {
@@ -1226,7 +1259,26 @@ export function smoothFRing(frames: ColumnFrame[]): void {
         ) > RING_TURNING_MAX_DEG
     )
         applyLaplacian();
+    for (const fr of frames) fr.fLocked = { ...fr.F };
     for (const fr of frames) applyAlaToFrame(fr);
+    if (
+        ringTurningDeg(
+            frames.map((f) => f.F),
+            true,
+        ) > RING_TURNING_MAX_DEG
+    ) {
+        const r2s = frames.map((fr) => fr.rFillet);
+        const sm = periodicGaussian(
+            r2s,
+            frames.map((fr) => fr.R),
+            SCALAR_SMOOTH_SIGMA_MM,
+        );
+        for (let i = 0; i < frames.length; i++) {
+            frames[i]!.rFillet = Math.min(frames[i]!.rFillet, sm[i] ?? frames[i]!.rFillet);
+        }
+        for (const fr of frames) applyAlaToFrame(fr);
+    }
+    smoothEPhi(frames);
 }
 
 /**
@@ -2326,7 +2378,102 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     fr.lastDlRad = lastFilletDLRad(S, cosT);
     fr.obliqueFallback = !sw.converged && fr.headingObliqueDeg > OBLIQUE_WARN_DEG;
     fr.sweepRule = sw;
+    if (fr.fLocked) honorLockedF(fr, sw);
     return sweepToAla(sw, fr.h);
+}
+
+function lineFilletG1Deg(E: XYZ, F: XYZ, fil: ConstructedFillet): number {
+    const U = { x: E.x - F.x, y: E.y - F.y, z: E.z - F.z };
+    if (hypot3(U) < 1e-9) return 0;
+    const tF = filletTangentAtPhi(fil, fil.phiF);
+    const toward = tF.x * U.x + tF.y * U.y + tF.z * U.z < 0 ? { x: -tF.x, y: -tF.y, z: -tF.z } : tF;
+    return vecAngleDeg(unit3(U), toward);
+}
+
+function applyLockedFToSweep(fr: ColumnFrame, sw: SweepRule, F: XYZ): void {
+    const nB = fr.nB ?? fr.h;
+    const fil = constructFilletFromF(fr.B, F, nB, fr.plantarSlopeRad, fr.nPlantar, fr.rFillet);
+    const U = { x: fr.E.x - F.x, y: fr.E.y - F.y, z: fr.E.z - F.z };
+    const u = hypot3(U) > 1e-9 ? unit3(U) : sw.d;
+    const height = Math.max(fr.R.z - fr.B.z, 0.5);
+    const packed = scaleShortWallPack(height, fr.rTop, fil.r, minLineOfHeight(height), MIN_ROUND_R_MM);
+    fr.F = { ...F };
+    fr.U = u;
+    fr.rFillet = packed.r2;
+    fr.lineLengthMm = dist3(fr.E, F);
+    fr.g1FDeg = lineFilletG1Deg(fr.E, F, fil);
+    const dE = projectOntoSpan(u, sw.eW, sw.eN);
+    const tE = sweptRoundTangent(sw.eN, sw.eW, sw.phiRound1);
+    fr.g1EDeg = hypot3(dE) > 1e-9 ? vecAngleDeg(unit3(dE), tE) : 0;
+    sw.F = { ...F };
+    sw.d = u;
+    sw.fil = fil;
+    sw.C2 = fil.C;
+    sw.r2 = packed.r2;
+    sw.L = fr.lineLengthMm;
+    sw.filletSweep = Math.abs(fil.phi1 - fil.phi0);
+    sw.g1EDeg = fr.g1EDeg;
+    sw.g1FDeg = fr.g1FDeg;
+    sw.converged = fr.g1EDeg <= G1_MAX_DEG + 1e-6 && fr.g1FDeg <= G1_MAX_DEG + 1e-6;
+    fr.sweepRule = sw;
+    fr.filletSweepRad = sw.filletSweep;
+}
+
+function fBetweenEB(E: XYZ, F: XYZ, B: XYZ): boolean {
+    const ex = F.x - E.x;
+    const ey = F.y - E.y;
+    const ez = F.z - E.z;
+    const bx = B.x - E.x;
+    const by = B.y - E.y;
+    const bz = B.z - E.z;
+    const eb2 = bx * bx + by * by + bz * bz;
+    if (eb2 < 1e-12) return false;
+    const t = (ex * bx + ey * by + ez * bz) / eb2;
+    return t > 0.02 && t < 0.98;
+}
+
+function honorLockedF(fr: ColumnFrame, sw: SweepRule): void {
+    const locked = fr.fLocked;
+    if (!locked) return;
+    if (!fBetweenEB(fr.E, locked, fr.B)) return;
+    const nB = fr.nB ?? fr.h;
+    const fil = constructFilletFromF(fr.B, locked, nB, fr.plantarSlopeRad, fr.nPlantar, fr.rFillet);
+    const U = { x: fr.E.x - locked.x, y: fr.E.y - locked.y, z: fr.E.z - locked.z };
+    if (hypot3(U) < 1e-9) return;
+    const u = unit3(U);
+    const dE = projectOntoSpan(u, sw.eW, sw.eN);
+    const tE = sweptRoundTangent(sw.eN, sw.eW, sw.phiRound1);
+    const g1E = hypot3(dE) > 1e-9 ? vecAngleDeg(unit3(dE), tE) : 0;
+    const g1F = lineFilletG1Deg(fr.E, locked, fil);
+    if (g1E > G1_MAX_DEG + 1e-6 || g1F > G1_MAX_DEG + 1e-6) return;
+    applyLockedFToSweep(fr, sw, locked);
+}
+
+/** Laplacian on φ1 so the E ring plan-turn drops without moving R. */
+export function smoothEPhi(frames: ColumnFrame[]): void {
+    if (frames.length < 3) return;
+    for (let pass = 0; pass < 3; pass++) {
+        if (
+            ringTurningDeg(
+                frames.map((f) => f.E),
+                true,
+            ) <= RING_TURNING_MAX_DEG
+        )
+            break;
+        const raw = unwrapClosedRad(frames.map((f) => f.phiRound1));
+        const n = raw.length;
+        const next = raw.map((cur, i) => {
+            const prev = raw[(i + n - 1) % n]!;
+            const nxt = raw[(i + 1) % n]!;
+            return cur + 0.5 * (0.5 * (prev + nxt) - cur);
+        });
+        for (let i = 0; i < n; i++) {
+            const fr = frames[i]!;
+            fr.phiRound1Lock = next[i];
+            fr.phiRound1 = next[i]!;
+        }
+        for (const fr of frames) applyAlaToFrame(fr);
+    }
 }
 
 export function sampleTopRound(fr: ColumnFrame, nRows: number): { W: XYZ; pts: XYZ[] } {

@@ -30,6 +30,7 @@ export {
     columnHeading,
     constructArcLineArc,
     constructFillet,
+    constructFilletFromF,
     constructOutsideRound,
     constructSweepRule,
     DPHI_L_MAX_DEG,
@@ -132,6 +133,7 @@ export {
     sheetSlopeFromNormal,
     sizedArcRows,
     slopeFromSheetPlane,
+    smoothEPhi,
     smoothFRing,
     smoothPlantarNormalField,
     smoothRoundEndAngles,
@@ -355,6 +357,7 @@ export {
     scalePatternWidth,
     shiftPatternByRimFollow,
     signedRimInsetMm,
+    smoothMovedStationOutline,
     stockTargetsForFairedPattern,
 } from "./station-gates";
 export {

@@ -64,6 +64,7 @@ import {
     PATTERN_SOURCE_FAIRED_STOCK,
     scalePatternWidth,
     shiftPatternByRimFollow,
+    smoothMovedStationOutline,
 } from "./station-gates";
 import {
     applyStoredTB,
@@ -997,6 +998,10 @@ export function reconstructProceduralWalls(
     reparameterizeBArcLength(stations, hygiened.loop);
     limitStationSkew(stations, hygiened.loop, r1, r2);
     reparameterizeBArcLength(stations, hygiened.loop);
+    if (patternMoved) {
+        smoothMovedStationOutline(stations, hygiened.loop);
+        reparameterizeBArcLength(stations, hygiened.loop);
+    }
     assertClosedStationRing(stations, rimLocal);
     assertPreLoftStations(stations, r1, r2);
     {
