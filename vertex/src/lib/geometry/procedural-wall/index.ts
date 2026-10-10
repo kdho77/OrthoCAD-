@@ -213,6 +213,7 @@ export {
     assertPlantarDisk,
     buildGeneratedPlantar,
     collapseShortIEdges,
+    collarSteiner,
     I_COLLAPSE_MM,
     I_SLIVER_ASPECT,
     makePlantarSampler,

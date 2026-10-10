@@ -3,7 +3,7 @@
 
 import { countOpenNonBoundaryEdges, minDistToLoopXY, pointInPoly } from "./cdt-band";
 import { assertIEdges, assertLibraryDisk, libraryCdtInterior } from "./cdt-lib";
-import type { PolyPoint } from "./curves";
+import { type PolyPoint, polylineArcLengths, sampleClosedAtArc01 } from "./curves";
 import { sampleUvField } from "./extract";
 import { type DishZIndex, sampleDishZVertical } from "./height-xy";
 import { clipperRoundInset } from "./pattern-hygiene";
@@ -321,6 +321,30 @@ function minLoopEdge(loop: PolyPoint[]): number {
     return Number.isFinite(best) ? best : 1;
 }
 
+function resampleClosedSpacing(loop: PolyPoint[], spacingMm: number): PolyPoint[] {
+    const { total } = polylineArcLengths(loop);
+    const n = Math.max(3, Math.round(total / Math.max(spacingMm, 0.5)));
+    const out: PolyPoint[] = [];
+    for (let i = 0; i < n; i++) out.push({ ...sampleClosedAtArc01(loop, i / n), z: 0 });
+    return out;
+}
+
+/**
+ * Steiner collar ≥ 0.5 mm inside B. Breaks the 0.3 mm × 60 mm slivers a dense
+ * pair-insert ring makes when the hex grid cannot sit in the boundary band.
+ */
+export function collarSteiner(loop: PolyPoint[], keep: number, spacingMm: number): PolyPoint[] {
+    const insetMm = Math.max(keep + 0.15, 0.65);
+    try {
+        const inset = clipperRoundInset(loop, insetMm);
+        return resampleClosedSpacing(inset, spacingMm).filter(
+            (p) => pointInPoly(p.x, p.y, loop) && minDistToLoopXY(p.x, p.y, loop) >= keep,
+        );
+    } catch {
+        return [];
+    }
+}
+
 function cdtDiskOf(
     loop: PolyPoint[],
     extra: PolyPoint[],
@@ -335,14 +359,16 @@ function cdtDiskOf(
 } {
     const minEdge = minLoopEdge(loop);
     const dense = loop.length > 300 || minEdge < 0.75;
-    const keep = Math.max(PLANTAR_STEINER_EDGE_MIN_MM, dense ? Math.max(1.2, 2 * minEdge) : 0.5);
-    const step = Math.max(PLANTAR_STEINER_MM, keep * 1.5);
-    const steiner =
-        opts?.steiner === false || (dense && extra.length === 0)
-            ? []
-            : hexSteiner(loop, step, Math.max(margin, keep)).filter(
-                  (p) => minDistToLoopXY(p.x, p.y, loop) >= keep,
-              );
+    const keep = PLANTAR_STEINER_EDGE_MIN_MM;
+    const step = dense ? Math.max(1.2, keep * 2) : PLANTAR_STEINER_MM;
+    const wantSteiner = opts?.steiner !== false;
+    const hex = wantSteiner
+        ? hexSteiner(loop, step, Math.max(margin, keep)).filter(
+              (p) => minDistToLoopXY(p.x, p.y, loop) >= keep,
+          )
+        : [];
+    const collar = wantSteiner && dense ? collarSteiner(loop, keep, 0.9) : [];
+    const steiner = [...collar, ...hex];
     const points = [...loop, ...extra, ...steiner];
     nudgeInteriorDuplicates(points, loop.length);
     const faces = libraryCdtInterior(points, loop.length, extraEdges);
@@ -350,6 +376,25 @@ function cdtDiskOf(
     assertLibraryDisk(faces, loop.length);
     const sliverMaxAspect = assertBoundarySlivers(points, faces, loop);
     return { points, faces, steinerCount: steiner.length, sliverMaxAspect };
+}
+
+function tryInsetStrip(
+    loop: PolyPoint[],
+    margin: number,
+    insetMm: number,
+): {
+    points: PolyPoint[];
+    faces: Array<[number, number, number]>;
+    steinerCount: number;
+    sliverMaxAspect: number;
+    usedSliverFallback: boolean;
+} {
+    const inset = clipperRoundInset(loop, insetMm);
+    const extra: PolyPoint[] = inset.map((p) => ({ ...p, z: 0 }));
+    const extraEdges: Array<[number, number]> = [];
+    const nB = loop.length;
+    for (let i = 0; i < extra.length; i++) extraEdges.push([nB + i, nB + ((i + 1) % extra.length)]);
+    return { ...cdtDiskOf(loop, extra, extraEdges, margin), usedSliverFallback: true };
 }
 
 function triangulateWithOffsetFallback(
@@ -369,18 +414,16 @@ function triangulateWithOffsetFallback(
         if (!msg.includes("sliver") && !msg.includes("[S1-CDT]") && !msg.includes("[S1-B]")) {
             throw err;
         }
-        try {
-            return { ...cdtDiskOf(loop, [], [], margin, { steiner: false }), usedSliverFallback: false };
-        } catch {
-            /* dense B ring without Steiner still failed — try the inset strip */
+        const insets = [0.8, PLANTAR_FALLBACK_INSET_MM];
+        let last: unknown = err;
+        for (const insetMm of insets) {
+            try {
+                return tryInsetStrip(loop, margin, insetMm);
+            } catch (next) {
+                last = next;
+            }
         }
-        const inset = clipperRoundInset(loop, PLANTAR_FALLBACK_INSET_MM);
-        const extra: PolyPoint[] = inset.map((p) => ({ ...p, z: 0 }));
-        const extraEdges: Array<[number, number]> = [];
-        const nB = loop.length;
-        for (let i = 0; i < extra.length; i++) extraEdges.push([nB + i, nB + ((i + 1) % extra.length)]);
-        const disk = cdtDiskOf(loop, extra, extraEdges, margin);
-        return { ...disk, usedSliverFallback: true };
+        throw last;
     }
 }
 

@@ -7,6 +7,7 @@ import { assertIEdges } from "./cdt-lib";
 import {
     buildGeneratedPlantar,
     collapseShortIEdges,
+    collarSteiner,
     I_COLLAPSE_MM,
     I_SLIVER_ASPECT,
     makePlantarSampler,
@@ -142,6 +143,40 @@ describe("generated plantar CDT", () => {
         });
         expect(mesh.sliverMaxAspect).toBeLessThanOrEqual(I_SLIVER_ASPECT);
         expect(mesh.openEdges).toBe(0);
+    });
+
+    test("dense pair-insert B ring stays closed with aspect <= 20", () => {
+        const n = 420;
+        const boundary = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            const pinch = 1 + 0.22 * Math.cos(2 * a);
+            return { x: 55 * pinch * Math.cos(a), y: 22 * pinch * Math.sin(a), z: 0 };
+        });
+        let minEdge = Infinity;
+        for (let i = 0; i < n; i++) {
+            const a = boundary[i]!;
+            const b = boundary[(i + 1) % n]!;
+            minEdge = Math.min(minEdge, Math.hypot(b.x - a.x, b.y - a.y));
+        }
+        expect(minEdge).toBeGreaterThanOrEqual(0.3);
+        const collar = collarSteiner(boundary, PLANTAR_STEINER_EDGE_MIN_MM, 0.9);
+        expect(collar.length).toBeGreaterThan(20);
+        for (const p of collar) {
+            expect(minDistToLoopXY(p.x, p.y, boundary)).toBeGreaterThanOrEqual(PLANTAR_STEINER_EDGE_MIN_MM);
+        }
+        const mesh = buildGeneratedPlantar({
+            boundary,
+            dish: null,
+            zDelta: () => 0,
+        });
+        expect(mesh.openEdges).toBe(0);
+        expect(mesh.missingBoundary).toBe(0);
+        expect(mesh.steinerCount).toBeGreaterThan(collar.length);
+        expect(mesh.sliverMaxAspect).toBeLessThanOrEqual(I_SLIVER_ASPECT);
+        for (let i = boundary.length; i < mesh.points.length; i++) {
+            const p = mesh.points[i]!;
+            expect(minDistToLoopXY(p.x, p.y, boundary)).toBeGreaterThanOrEqual(PLANTAR_STEINER_EDGE_MIN_MM);
+        }
     });
 
     test("flat sampler ignores dish and starts at z=0", () => {
