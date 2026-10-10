@@ -1071,8 +1071,9 @@ export function floorR2OnLastStep(
 }
 
 /** Clamp r1 to posted H and |Δr1| ≤ 0.05. Smooth r2 with the last-step local floor; do not abs-shrink r2. */
-function enforceAbsRadiusRate(frames: ColumnFrame[]): void {
+function enforceAbsRadiusRate(frames: ColumnFrame[], movedAt?: (u: number) => boolean): void {
     if (frames.length < 2) return;
+    const movedB = movedAt ? frames.some((fr) => movedAt(fr.u)) : false;
     for (let pass = 0; pass < 8; pass++) {
         const r2Floors = frames.map((fr) => localR2MinMm(fr));
         const lim1 = rateLimitClosedAbs(
@@ -1083,11 +1084,17 @@ function enforceAbsRadiusRate(frames: ColumnFrame[]): void {
             R_ABS_RATE_MM,
             MIN_ROUND_R_MM,
         );
-        const lim2 = rateLimitClosedAbs(
-            frames.map((fr, i) => Math.max(fr.rFillet, r2Floors[i]!)),
-            R_ABS_RATE_MM,
-            r2Floors,
-        );
+        const lim2 = movedB
+            ? rateLimitClosedAbsRaise(
+                  frames.map((fr, i) => Math.max(fr.rFillet, r2Floors[i]!)),
+                  R_ABS_RATE_MM,
+                  r2Floors,
+              )
+            : rateLimitClosedAbs(
+                  frames.map((fr, i) => Math.max(fr.rFillet, r2Floors[i]!)),
+                  R_ABS_RATE_MM,
+                  r2Floors,
+              );
         for (let i = 0; i < frames.length; i++) {
             frames[i]!.rTop = lim1[i]!;
             frames[i]!.rFillet = Math.max(r2Floors[i]!, lim2[i]!);
@@ -3640,6 +3647,7 @@ export function buildBezierColumns(
     minWallMm = 0.8,
     nPlantars: XYZ[] = [],
     liveSheet = false,
+    movedAt?: (u: number) => boolean,
 ): BezierColumns {
     const regionDefault = stations.map((st) =>
         blendedFlareDeg(st.u, st.outline.y, defaults.flareDeg, defaults.medialYSign ?? 1),
@@ -3672,7 +3680,7 @@ export function buildBezierColumns(
     let nLineStar = piece.nLine;
     nWall = applyPieceCounts(frames, piece);
     raiseR1ForRoundRows(frames, piece.nRound, spacing / ASPECT_EVERYWHERE_MAX);
-    enforceAbsRadiusRate(frames);
+    enforceAbsRadiusRate(frames, movedAt);
     lockFilletSteal(frames, nFilStar);
     console.log(
         "[S1-NROUND]",
@@ -3691,7 +3699,7 @@ export function buildBezierColumns(
         JSON.stringify({ nRound: nRoundStar, nFil: nFilStar, nLine: nLineStar, nWall, nS: frames.length }),
     );
     guardFrames(frames, junctions, rimLoop, topZ, nWall, spacing, nRoundStar, nFilStar);
-    enforceAbsRadiusRate(frames);
+    enforceAbsRadiusRate(frames, movedAt);
     resampleIncidentNTop(frames, junctions, topZ, liveSheet);
     smoothRoundEndAngles(frames);
     piece = choosePieceCounts(frames, spacing);
@@ -3700,7 +3708,7 @@ export function buildBezierColumns(
     nLineStar = piece.nLine;
     nWall = applyPieceCounts(frames, piece);
     raiseR1ForRoundRows(frames, piece.nRound, spacing / ASPECT_EVERYWHERE_MAX);
-    enforceAbsRadiusRate(frames);
+    enforceAbsRadiusRate(frames, movedAt);
     lockFilletSteal(frames, nFilStar);
     console.log(
         "[S1-NROUND]",

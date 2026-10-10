@@ -1042,6 +1042,7 @@ export function reconstructProceduralWalls(
         flangeAngleDeg: flangeAng,
         footLengthMm: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
         flatPlantar,
+        movedAt: patternMovedAt,
     });
     assertPostLoftGates(grid.quality);
 

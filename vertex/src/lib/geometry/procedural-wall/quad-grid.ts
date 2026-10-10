@@ -274,6 +274,8 @@ export interface BuildQuadGridInput {
     flatPlantar?: boolean;
     /** Sample n_top from the live modified top sheet (t4 / lift / top posting). */
     liveSheet?: boolean;
+    /** Moved-B stations get the r2 abs rate (≤ 0.05 mm / station). */
+    movedAt?: (u: number) => boolean;
 }
 
 function headingOfStation(st: HermiteStation): { h: { x: number; y: number }; planLen: number } {
@@ -714,6 +716,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
             S1_MIN_WALL_MM,
             normals,
             input.liveSheet === true,
+            input.movedAt,
         );
     let built = buildCols(plantarSlopeRad, nPlantars);
     const extra = new Array(nS).fill(0);

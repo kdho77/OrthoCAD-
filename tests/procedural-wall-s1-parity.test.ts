@@ -14,6 +14,7 @@ import type { BufferGeometry } from "three";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { heelCupWidthLongitudinalEnvelope } from "@/lib/geometry/height-field";
 import {
     ACROSS_STATION_MAX_DEG,
     ACROSS_STATION_P99_MAX_DEG,
@@ -1110,7 +1111,14 @@ describe("S1 parametric wall", () => {
                 const ring = generatedOutline;
                 if (ring.length >= 8) {
                     const sign = (rebuilt.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1;
-                    const hy = movedPatternHygiene(ring, model.bounds, sign, { maxInflections: 4 });
+                    const movedAt =
+                        smoke.name === "width+5"
+                            ? () => true
+                            : (u: number) => heelCupWidthLongitudinalEnvelope(u) > 1e-6;
+                    const hy = movedPatternHygiene(ring, model.bounds, sign, {
+                        maxInflections: 4,
+                        movedAt,
+                    });
                     for (const m of hy.misses) smokeMiss.push(`${smoke.name} ${m}`);
                 }
                 if (smoke.name.startsWith("widen") && (sud.widenFollowFactor ?? 0) !== 1) {
