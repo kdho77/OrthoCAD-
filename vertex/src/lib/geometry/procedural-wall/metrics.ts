@@ -440,7 +440,16 @@ export function medialArchUpperWallFolds(
     let worst = 0;
     let hard = 0;
     let interior = 0;
-    const hardEdges: Array<{ a: number; b: number; deg: number; u: number; y: number; z: number }> = [];
+    const hardEdges: Array<{
+        a: number;
+        b: number;
+        deg: number;
+        u: number;
+        y: number;
+        z: number;
+        alongColumn: boolean;
+        kind: "along-column" | "across-station";
+    }> = [];
     for (const [key, faces] of edgeFaces) {
         if (faces.length !== 2) continue;
         const [sa, sb] = key.split(",").map(Number) as [number, number];
@@ -466,6 +475,8 @@ export function medialArchUpperWallFolds(
             const mx = 0.5 * (pos[sa * 3]! + pos[sb * 3]!);
             const my = 0.5 * (pos[sa * 3 + 1]! + pos[sb * 3 + 1]!);
             const mz = 0.5 * (pos[sa * 3 + 2]! + pos[sb * 3 + 2]!);
+            const dxy = Math.hypot(ux, uy);
+            const alongColumn = Math.abs(uz) >= dxy;
             hardEdges.push({
                 a: sa,
                 b: sb,
@@ -473,6 +484,8 @@ export function medialArchUpperWallFolds(
                 u: Number(((mx - bounds.minX) / length).toFixed(4)),
                 y: Number(my.toFixed(2)),
                 z: Number(mz.toFixed(2)),
+                alongColumn,
+                kind: alongColumn ? "along-column" : "across-station",
             });
         }
     }

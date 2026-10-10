@@ -8,33 +8,36 @@ import {
     bLoopOutwardNormal,
     buildBezierColumns,
     COLUMN_PLANARITY_LIMIT_MM,
+    clampLastFilletOutboard,
     columnHeading,
     constructArcLineArc,
     constructFillet,
     evalCubicBezier,
-    FILLET_LAST_ROW_FRAC,
     FILLET_R_CAP_MM,
     filletCenterAndF,
     HEADING_MAX_DEG,
     headingAllowanceDeg,
     initColumnFrames,
+    LAST_FILLET_S_MIN_MM,
+    LAST_FILLET_Z_MIN_MM,
     MERGE_ROW_MM,
     MIN_LINE_MM,
+    nTopFromSheetSlope,
     offPlaneMm,
     R_CHANGE_MAX_PCT,
     R_SMOOTH_FRAC,
     R2_CHANGE_MAX_PCT,
     R2_RATE_LIMIT_PCT,
     ROUND_SWEEP_SPLIT_DEG,
+    r1ForSheetSlope,
     rateLimitClosed,
     rateLimitClosedDown,
     rimOverhangMm,
     SCALAR_SMOOTH_SIGMA_MM,
-    sampleArcLineArc,
+    STEEP_SHEET_DEG,
     sampleByArcLength,
     sampleInPlaneSlope,
     sizedArcRows,
-    slideLastFilletOnColumn,
     slopeFromSheetPlane,
     smoothStationHeadings,
     summarizeWallBands,
@@ -415,22 +418,45 @@ describe("bezier column", () => {
         const h = heads[1]!;
         const toChord = (Math.acos(Math.max(-1, Math.min(1, h.x * chord.x + h.y * chord.y))) * 180) / Math.PI;
         expect(toChord).toBeLessThanOrEqual(HEADING_MAX_DEG + 1e-6);
-        expect(headingAllowanceDeg(2)).toBe(0);
+        expect(headingAllowanceDeg(2)).toBe(HEADING_MAX_DEG);
         expect(headingAllowanceDeg(12)).toBe(HEADING_MAX_DEG);
         expect(bn.x * 0 + bn.y * 1).toBeLessThan(0.1);
         expect(Math.hypot(h.x, h.y)).toBeCloseTo(1, 6);
         expect(Math.abs(bn.x)).toBeLessThan(0.2);
     });
 
-    test("last fillet row is at least 0.15× station spacing or is merged", () => {
-        const R = { x: 0, y: 0, z: 12 };
+    test("last fillet vertex stays on the wall side of B with z >= 0.05", () => {
         const B = { x: 8, y: 0, z: 0 };
-        const ala = constructArcLineArc(R, B, { x: 0, y: 0, z: 1 }, 0.5, 2, { x: 1, y: 0 }, 0);
-        const spacing = 1.3;
-        const pts = sampleArcLineArc(ala, { x: 1, y: 0 }, R, B, 26, spacing);
-        slideLastFilletOnColumn(pts, B, R, { x: 1, y: 0 }, spacing, false);
-        const last = dist3ish(pts[pts.length - 1]!, pts[pts.length - 2]!);
-        expect(last).toBeGreaterThanOrEqual(FILLET_LAST_ROW_FRAC * spacing - 1e-6);
+        const h = { x: 1, y: 0 };
+        const col = [{ x: 0, y: 0, z: 12 }, { x: 8.2, y: 0, z: 0.01 }, { ...B }];
+        clampLastFilletOutboard(col, B, h);
+        const last = col[1]!;
+        const sWall = (B.x - last.x) * h.x + (B.y - last.y) * h.y;
+        expect(sWall).toBeGreaterThanOrEqual(0);
+        expect(last.z).toBeGreaterThanOrEqual(LAST_FILLET_Z_MIN_MM - 1e-9);
+        expect(LAST_FILLET_S_MIN_MM).toBe(0.05);
+    });
+
+    test("steep top slope shrinks r1 and keeps n_top past vertical", () => {
+        expect(STEEP_SHEET_DEG).toBe(60);
+        const h = { x: 1, y: 0 };
+        const n60 = nTopFromSheetSlope((60 * Math.PI) / 180, h);
+        const n102 = nTopFromSheetSlope((102 * Math.PI) / 180, h);
+        expect(n60.z).toBeGreaterThan(0);
+        expect(n102.z).toBeLessThan(0);
+        expect(r1ForSheetSlope(0.5, (30 * Math.PI) / 180)).toBeCloseTo(0.5, 6);
+        expect(r1ForSheetSlope(0.5, (90 * Math.PI) / 180)).toBeLessThan(0.05);
+        const ala = constructArcLineArc(
+            { x: 0, y: 0, z: 12 },
+            { x: 8, y: 0, z: 0 },
+            { x: 0, y: 0, z: 1 },
+            0.5,
+            2,
+            h,
+            0,
+            (90 * Math.PI) / 180,
+        );
+        expect(ala.r1).toBeLessThan(0.1);
     });
 
     test("r2 post-clamp rate limiter holds 10%/station", () => {

@@ -149,15 +149,16 @@ export function rimJunctions(
         nx /= len;
         ny /= len;
         nz /= len;
-        if (nz < 0) {
-            nx = -nx;
-            ny = -ny;
-            nz = -nz;
-        }
         const ox = outboard[si]?.x ?? 1;
         const oy = outboard[si]?.y ?? 0;
-        const dzdn = Math.abs(nz) > 1e-6 ? -(nx * ox + ny * oy) / nz : 0;
-        const slopeRad = Math.atan(Math.abs(dzdn));
+        const ns = nx * ox + ny * oy;
+        let ts = -nz;
+        let tz = ns;
+        if (tz > 0) {
+            ts = -ts;
+            tz = -tz;
+        }
+        const slopeRad = Math.atan2(-tz, ts);
         const alpha = slopeRad + (TOP_CLEARANCE_DEG * Math.PI) / 180;
         return {
             planeN: { x: nx, y: ny, z: nz },
@@ -264,8 +265,6 @@ export interface BuildQuadGridInput {
     flangeAngleDeg?: number;
     footLengthMm?: number;
     flatPlantar?: boolean;
-    /** Exact-mode across-gate exemption at source-rim staircase verts. */
-    exemptAcross?: boolean[];
 }
 
 function headingOfStation(st: HermiteStation): { h: { x: number; y: number }; planLen: number } {
@@ -687,7 +686,6 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         nWall,
         plantarSlopeRad,
         S1_MIN_WALL_MM,
-        input.exemptAcross ?? [],
     );
     console.log(
         "[S1-MIN-WALL]",

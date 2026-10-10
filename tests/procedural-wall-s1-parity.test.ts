@@ -37,6 +37,7 @@ import {
     groundDriftMm,
     HEADING_MAX_DEG,
     heelInnerWidthAtU,
+    LAST_FILLET_Z_MIN_MM,
     LATERAL_K_SLACK,
     MIN_EDGE_MM,
     MIN_LINE_MM,
@@ -58,7 +59,6 @@ import {
     plantarFlatDeltaMm,
     R_CHANGE_MAX_PCT,
     R2_CHANGE_MAX_PCT,
-    RIM_FAIR_MAX_MM,
     ROUND_JOINT_MAX_DEG,
     reconstructionManifold,
     reconstructProceduralWalls,
@@ -145,10 +145,15 @@ type ColumnQualityUd = {
     maxToeSpacingRatio?: number;
     minForefootInsetMm?: number;
     maxAlaPackMm?: number;
+    maxSignedSeamDeg?: number;
+    flippedFaces?: number;
+    minLastRowSMm?: number;
+    minLastRowHeightMm?: number;
+    maxBFaceAspect?: number;
+    maxTopSheetEdgeDeg?: number;
 };
 
 type SampleGateReport = {
-    rimFairing: "exact" | "fair01";
     misses: string[];
     columnQuality: ColumnQualityUd | undefined;
     seamWorstDeg: number;
@@ -157,7 +162,6 @@ type SampleGateReport = {
     topDelta: number;
     topRimMm: number;
     topInteriorMm: number;
-    rimStaircaseTagged: number;
     watertight: boolean;
     selfIntersections: number;
     archFoldGe10: number;
@@ -167,7 +171,6 @@ function sampleGateReport(
     rebuilt: BufferGeometry,
     model: ReturnType<typeof extractTopOnlyModel>,
     pattern: Array<{ x: number; y: number; z: number }>,
-    rimFairing: "exact" | "fair01",
 ): SampleGateReport {
     const topN = (rebuilt.userData as { topVertexCount?: number }).topVertexCount ?? 0;
     const hits = countSelfIntersections(rebuilt);
@@ -203,7 +206,6 @@ function sampleGateReport(
         chordCrossings?: number;
         bottomPatternSource?: string;
         columnQuality?: ColumnQualityUd;
-        rimStaircaseTagged?: number;
     };
     const misses: string[] = [];
     if (hits.real !== 0) {
@@ -224,14 +226,7 @@ function sampleGateReport(
     }
     if (outlineDev > 1e-3) misses.push(`outline-B ${outlineDev.toFixed(4)}`);
     if (plantarZ0 > 1e-3) misses.push(`plantar-z0 ${plantarZ0.toFixed(4)}`);
-    if (rimFairing === "fair01") {
-        if (surface.interiorMm > 1e-9) misses.push(`top-interior ${surface.interiorMm.toFixed(6)}`);
-        if (surface.rimMm > RIM_FAIR_MAX_MM + 1e-6) {
-            misses.push(`top-rim ${surface.rimMm.toFixed(4)}>${RIM_FAIR_MAX_MM}`);
-        }
-    } else if (topDelta > 1e-9) {
-        misses.push(`top-surface ${topDelta.toFixed(6)}`);
-    }
+    if (topDelta > 1e-9) misses.push(`top-surface ${topDelta.toFixed(6)}`);
     if (genMinWall < S1_MIN_WALL_MM) misses.push(`minWall ${genMinWall.toFixed(3)}`);
     if ((sud.sliverMaxAspect ?? 0) > 20) misses.push(`sliver ${sud.sliverMaxAspect}`);
     if ((sud.junctionSlivers ?? 0) !== 0) misses.push(`junction-slivers=${sud.junctionSlivers}`);
@@ -253,7 +248,6 @@ function sampleGateReport(
         misses.push(`pattern-source ${sud.bottomPatternSource}`);
     }
     return {
-        rimFairing,
         misses,
         columnQuality: sud.columnQuality,
         seamWorstDeg: reconSeam.worstDeg,
@@ -262,7 +256,6 @@ function sampleGateReport(
         topDelta,
         topRimMm: surface.rimMm,
         topInteriorMm: surface.interiorMm,
-        rimStaircaseTagged: sud.rimStaircaseTagged ?? 0,
         watertight: man.watertight,
         selfIntersections: hits.real,
         archFoldGe10: archFolds.edgesAtLeast10Deg,
@@ -319,6 +312,22 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     }
     if ((q.maxAlaPackMm ?? 0) > 1e-6) {
         misses.push(`ala-pack ${q.maxAlaPackMm?.toFixed(3)}>0`);
+    }
+    if ((q.maxSignedSeamDeg ?? 0) > SEAM_B_LIMIT_DEG + 1e-6) {
+        misses.push(`signed-seam ${q.maxSignedSeamDeg?.toFixed(2)}>${SEAM_B_LIMIT_DEG}`);
+    }
+    if ((q.flippedFaces ?? 0) !== 0) misses.push(`flipped-faces=${q.flippedFaces}`);
+    if ((q.minLastRowSMm ?? 0) < 0 - 1e-9) {
+        misses.push(`last-row-s ${q.minLastRowSMm?.toFixed(3)}<0`);
+    }
+    if ((q.minLastRowHeightMm ?? 0) < LAST_FILLET_Z_MIN_MM - 1e-9) {
+        misses.push(`last-row-h ${q.minLastRowHeightMm?.toFixed(3)}<${LAST_FILLET_Z_MIN_MM}`);
+    }
+    if ((q.maxBFaceAspect ?? 0) > 20 + 1e-6) {
+        misses.push(`aspect-B ${q.maxBFaceAspect?.toFixed(2)}>20`);
+    }
+    if ((q.maxTopSheetEdgeDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
+        misses.push(`top-sheet ${q.maxTopSheetEdgeDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
     }
     return misses;
 }
@@ -883,36 +892,21 @@ describe("S1 parametric wall", () => {
             z: pos![i * 3 + 2]!,
         }));
         const pattern = syntheticBottomPattern(rim3d, model.bounds, rim3d);
-        const reconstructMode = (rimFairing: "exact" | "fair01"): BufferGeometry => {
-            try {
-                return reconstructProceduralWalls(model, {
-                    corrections: neutralCorrections(),
-                    bottomPattern: pattern,
-                    bottomPatternLabel: PATTERN_SOURCE_SYNTHETIC,
-                    flatPlantar: true,
-                    rimFairing,
-                });
-            } catch (err) {
-                throw new Error(`[S1-SAMPLE] reconstruct ${rimFairing}: ${String(err)}`);
-            }
-        };
-        const rebuilt = reconstructMode("exact");
-        const fair01Geo = reconstructMode("fair01");
-        const exactRep = sampleGateReport(rebuilt, model, pattern, "exact");
-        const fair01Rep = sampleGateReport(fair01Geo, model, pattern, "fair01");
+        let rebuilt: BufferGeometry;
+        try {
+            rebuilt = reconstructProceduralWalls(model, {
+                corrections: neutralCorrections(),
+                bottomPattern: pattern,
+                bottomPatternLabel: PATTERN_SOURCE_SYNTHETIC,
+                flatPlantar: true,
+            });
+        } catch (err) {
+            throw new Error(`[S1-SAMPLE] reconstruct: ${String(err)}`);
+        }
+        const exactRep = sampleGateReport(rebuilt, model, pattern);
         const misses = exactRep.misses.slice();
-        writeFileSync(
-            "/tmp/s1-sample-top.json",
-            JSON.stringify(
-                {
-                    exact: exactRep,
-                    fair01: fair01Rep,
-                },
-                null,
-                2,
-            ),
-        );
-        console.log("[S1-SAMPLE-GATES]", JSON.stringify({ exact: exactRep, fair01: fair01Rep }, null, 2));
+        writeFileSync("/tmp/s1-sample-top.json", JSON.stringify(exactRep, null, 2));
+        console.log("[S1-SAMPLE-GATES]", JSON.stringify(exactRep, null, 2));
         const stl = Buffer.from(geometryToBinarySTL(rebuilt));
         mkdirSync("/opt/cursor/artifacts", { recursive: true });
         mkdirSync("/opt/cursor/artifacts/screenshots", { recursive: true });
@@ -932,19 +926,9 @@ describe("S1 parametric wall", () => {
         );
         const bottomRgb = renderMesh(afterPos, afterIdx, BOTTOM_VIEW, 900, 680);
         writeFileSync("/opt/cursor/artifacts/screenshots/bottom-view.png", encodePng(900, 680, bottomRgb));
-        const fairPos = fair01Geo.getAttribute("position").array as Float32Array;
-        const fairIdx = fair01Geo.getIndex()!.array;
         writeFileSync(
-            "/opt/cursor/artifacts/screenshots/sample-top-exact-rearfoot.png",
+            "/opt/cursor/artifacts/screenshots/sample-top-synthetic-rearfoot.png",
             encodePng(900, 680, renderMesh(afterPos, afterIdx, KENDON_REARFOOT, 900, 680)),
-        );
-        writeFileSync(
-            "/opt/cursor/artifacts/screenshots/sample-top-fair01-rearfoot.png",
-            encodePng(900, 680, renderMesh(fairPos, fairIdx, KENDON_REARFOOT, 900, 680)),
-        );
-        writeFileSync(
-            "/opt/cursor/artifacts/screenshots/sample-top-fair01-bottom.png",
-            encodePng(900, 680, renderMesh(fairPos, fairIdx, BOTTOM_VIEW, 900, 680)),
         );
         const patternSign = medialYSignFromTopRim(rim3d, model.bounds);
         const curv = patternCurvatureReport(pattern, model.bounds, patternSign);
@@ -1015,21 +999,12 @@ describe("S1 parametric wall", () => {
             );
         }
         writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.stl", stl);
-        writeFileSync("/opt/cursor/artifacts/sample-top-exact.stl", stl);
         const glb = await exportObjectToGlb(meshFromGeometry(rebuilt));
         writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.glb", Buffer.from(glb.arrayBuffer));
-        writeFileSync("/opt/cursor/artifacts/sample-top-exact.glb", Buffer.from(glb.arrayBuffer));
-        const fairStl = Buffer.from(geometryToBinarySTL(fair01Geo));
-        writeFileSync("/opt/cursor/artifacts/sample-top-fair01.stl", fairStl);
-        const fairGlb = await exportObjectToGlb(meshFromGeometry(fair01Geo));
-        writeFileSync("/opt/cursor/artifacts/sample-top-fair01.glb", Buffer.from(fairGlb.arrayBuffer));
         if (misses.length || exactRep.selfIntersections !== 0) {
-            throw new Error(
-                `[S1-SAMPLE] nonzero. STOP.\nmisses: ${misses.join("; ")}\nfair01: ${fair01Rep.misses.join("; ")}`,
-            );
+            throw new Error(`[S1-SAMPLE] nonzero. STOP.\nmisses: ${misses.join("; ")}`);
         }
         rebuilt.dispose();
-        fair01Geo.dispose();
         original.dispose();
     }, 240_000);
 

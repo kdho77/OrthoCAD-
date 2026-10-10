@@ -59,6 +59,11 @@ export const R2_RATE_LIMIT_PCT = 7;
 export const FILLET_LAST_ROW_FRAC = 0.15;
 export const ROUND_SWEEP_SPLIT_DEG = 80;
 export const ALONG_JOINT_MIN_EDGE_MM = 1e-6;
+/** Last fillet vertex must sit this far outboard of B (along heading). */
+export const LAST_FILLET_S_MIN_MM = 0.05;
+export const LAST_FILLET_Z_MIN_MM = 0.05;
+/** Shrink r1 toward 0 and start the line on the sheet once the top slope is this steep. */
+export const STEEP_SHEET_DEG = 60;
 export const FILLET_B_MIN_DEG = -60;
 export const FILLET_B_MAX_DEG = 80;
 export const FILLET_PSI_MIN_DEG = 10;
@@ -94,6 +99,8 @@ export interface ColumnFrame {
     uTiltRad: number;
     /** TopSheet in-plane slope along +h (rad). */
     sheetSlopeRad: number;
+    /** Adjacent-face steepness used to start the round (rad, 0=flat, >π/2 past vertical). */
+    roundSlopeRad: number;
     /** False when neither a ray hit nor an adjacent-face plane was usable. */
     sheetSlopeValid: boolean;
     /** Plantar slope from horizontal along −h (rad), after fields. */
@@ -157,6 +164,13 @@ export interface ColumnQuality {
     maxToeSpacingRatio: number;
     minForefootInsetMm: number;
     maxAlaPackMm: number;
+    maxSignedSeamDeg: number;
+    flippedFaces: number;
+    minLastRowSMm: number;
+    minLastRowHeightMm: number;
+    maxBFaceAspect: number;
+    maxTopSheetEdgeDeg: number;
+    nRows: number;
 }
 
 export interface BezierColumns {
@@ -722,12 +736,37 @@ export interface ArcLineArc {
     phiFil1: number;
 }
 
-function projectNTop(nTopIn: XYZ, h: { x: number; y: number }): XYZ {
+function projectNTop(nTopIn: XYZ, h: { x: number; y: number }, preserveOrientation = false): XYZ {
     const raw = nTopIn.x || nTopIn.y || nTopIn.z ? nTopIn : { x: 0, y: 0, z: 1 };
     const ns = raw.x * h.x + raw.y * h.y;
     let nTop = unit3({ x: ns * h.x, y: ns * h.y, z: raw.z });
-    if (nTop.z < 0) nTop = { x: -nTop.x, y: -nTop.y, z: -nTop.z };
+    if (!preserveOrientation && nTop.z < 0) nTop = { x: -nTop.x, y: -nTop.y, z: -nTop.z };
     return nTop;
+}
+
+/**
+ * Drop-along-+h steepness from an adjacent-face normal (rad).
+ * 0 = horizontal, π/2 = vertical down, >π/2 = past vertical.
+ */
+export function sheetSlopeFromNormal(n: XYZ, h: { x: number; y: number }): number | null {
+    const ns = n.x * h.x + n.y * h.y;
+    const nz = n.z;
+    if (Math.abs(ns) < 1e-12 && Math.abs(nz) < 1e-12) return null;
+    return Math.atan2(ns, nz);
+}
+
+/** In-plane n_top for drop-along-+h steepness (allows past vertical). */
+export function nTopFromSheetSlope(slopeRad: number, h: { x: number; y: number }): XYZ {
+    const ns = Math.sin(slopeRad);
+    const nz = Math.cos(slopeRad);
+    return unit3({ x: ns * h.x, y: ns * h.y, z: nz });
+}
+
+export function r1ForSheetSlope(r1In: number, slopeRad: number): number {
+    const deg = (Math.abs(slopeRad) * 180) / Math.PI;
+    if (deg < STEEP_SHEET_DEG - 1e-9) return Math.max(MIN_ROUND_R_MM, r1In);
+    const t = Math.max(0, Math.min(1, (deg - STEEP_SHEET_DEG) / 30));
+    return Math.max(1e-3, r1In * (1 - t));
 }
 
 function szOf(p: XYZ, origin: XYZ, h: { x: number; y: number }): Sz {
@@ -795,9 +834,10 @@ function tryAlaRadii(
     nPlant: XYZ,
     r1: number,
     r2: number,
+    origin: XYZ,
 ): { C1: Sz; C2: Sz; hit: { n: Sz; T1: Sz; T2: Sz; L: number } } | null {
-    const R2 = szOf(R, R, h);
-    const B2 = szOf(B, R, h);
+    const R2 = szOf(R, origin, h);
+    const B2 = szOf(B, origin, h);
     const nTop2: Sz = { s: nTop.x * h.x + nTop.y * h.y, z: nTop.z };
     const nPlant2: Sz = { s: nPlant.x * h.x + nPlant.y * h.y, z: nPlant.z };
     const C1 = { s: R2.s - r1 * nTop2.s, z: R2.z - r1 * nTop2.z };
@@ -832,18 +872,21 @@ export function constructArcLineArc(
     r2In: number,
     hIn: { x: number; y: number },
     plantarSlopeRad = 0,
+    sheetSlopeRad?: number,
 ): ArcLineArc {
     const hl = Math.hypot(hIn.x, hIn.y) || 1;
     const h = { x: hIn.x / hl, y: hIn.y / hl };
-    const nTop = projectNTop(nTopIn, h);
+    const origin = B;
+    const steep = sheetSlopeRad != null && (Math.abs(sheetSlopeRad) * 180) / Math.PI >= STEEP_SHEET_DEG;
+    const nTop = sheetSlopeRad != null ? nTopFromSheetSlope(sheetSlopeRad, h) : projectNTop(nTopIn, h, steep);
     const frame = plantarFrameAt(h, plantarSlopeRad);
     const nPlant = unit3(frame.ez);
-    const planInset = Math.hypot(B.x - R.x, B.y - R.y);
     const height = Math.max(R.z - B.z, 0.5);
     const short = height <= SHORT_WALL_H_MM + 1e-9;
     const minL = short ? SHORT_MIN_L_MM : MIN_LINE_MM;
     let r1 = Math.max(MIN_ROUND_R_MM, r1In);
     let r2 = Math.max(0.05, r2In);
+    if (sheetSlopeRad != null) r1 = r1ForSheetSlope(r1, sheetSlopeRad);
     if (short) {
         const t = Math.max(0, Math.min(1, (height - (SHORT_WALL_H_MM - 1.2)) / 1.2));
         r1 = Math.min(r1, SHORT_R1_MM + (r1 - SHORT_R1_MM) * t);
@@ -856,17 +899,18 @@ export function constructArcLineArc(
         hit: { C1: Sz; C2: Sz; hit: { L: number } } | null,
     ): hit is { C1: Sz; C2: Sz; hit: { L: number } } =>
         Boolean(hit && hit.hit.L >= minL - 1e-9 && hit.C1.z + 1e-6 >= hit.C2.z);
-    let packed = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2);
+    let packed = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2, origin);
     if (!alaOk(packed)) {
         r1 = Math.min(r1, FILLET_R_CAP_MM);
         r2 = Math.min(r2, FILLET_R_CAP_MM);
-        packed = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2);
+        packed = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2, origin);
     }
+    const r1Floor = sheetSlopeRad != null ? 1e-3 : MIN_ROUND_R_MM;
     for (let i = 0; i < 48 && !alaOk(packed); i++) {
-        r1 = Math.max(MIN_ROUND_R_MM, r1 * 0.85);
+        r1 = Math.max(r1Floor, r1 * 0.85);
         r2 = Math.max(0.05, r2 * 0.85);
-        packed = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2);
-        if (r1 <= MIN_ROUND_R_MM + 1e-9 && r2 <= 0.05 + 1e-9) break;
+        packed = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2, origin);
+        if (r1 <= r1Floor + 1e-9 && r2 <= 0.05 + 1e-9) break;
     }
     if (!packed) {
         const T1 = { x: R.x - h.x * 1e-3, y: R.y - h.y * 1e-3, z: R.z };
@@ -907,8 +951,8 @@ export function constructArcLineArc(
     const phiRound1 = unwindDown(phiRound0, phiOf(hit.n));
     const phiFil0 = phiOf(hit.n);
     const phiFil1 = unwindDown(phiFil0, phiOf({ s: -nPlant2.s, z: -nPlant2.z }));
-    const T1 = xyzOnPlane(hit.T1, R, h);
-    const T2 = xyzOnPlane(hit.T2, R, h);
+    const T1 = xyzOnPlane(hit.T1, origin, h);
+    const T2 = xyzOnPlane(hit.T2, origin, h);
     const d = unit3({ x: T2.x - T1.x, y: T2.y - T1.y, z: T2.z - T1.z });
     let tStart = unit3({ x: -nTop.z * h.x, y: -nTop.z * h.y, z: nTop2.s });
     if (tStart.x * h.x + tStart.y * h.y > 0) tStart = { x: -tStart.x, y: -tStart.y, z: -tStart.z };
@@ -916,8 +960,8 @@ export function constructArcLineArc(
     const ds = d.x * h.x + d.y * h.y;
     const leanRad = Math.atan2(ds, Math.max(1e-9, -d.z));
     return {
-        C1: xyzOnPlane(C1, R, h),
-        C2: xyzOnPlane(C2, R, h),
+        C1: xyzOnPlane(C1, origin, h),
+        C2: xyzOnPlane(C2, origin, h),
         T1,
         T2,
         n,
@@ -961,14 +1005,7 @@ export function sampleArcLineArc(
         TOP_ROUND_MAX_STEP_DEG,
         true,
     );
-    const nFil = sizedArcRows(
-        ala.filletSweep,
-        ala.r2,
-        stationSpacing,
-        MIN_FILLET_RINGS,
-        FILLET_MAX_STEP_DEG,
-        true,
-    );
+    const nFil = sizedArcRows(ala.filletSweep, ala.r2, stationSpacing, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
     const nLine0 = lineRowCount(ala.L, stationSpacing);
     let nLine = nLine0;
     const total0 = nRound + nLine + nFil + 1;
@@ -1036,7 +1073,16 @@ export function assertOutsideRound(R: XYZ, rnd: OutsideRound, pts: XYZ[]): void 
 
 export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     const nUse = fr.nTopSmoothed ?? fr.nTop;
-    const ala = constructArcLineArc(fr.R, fr.B, nUse, fr.rTop, fr.rFillet, fr.h, fr.plantarSlopeRad);
+    const ala = constructArcLineArc(
+        fr.R,
+        fr.B,
+        nUse,
+        fr.rTop,
+        fr.rFillet,
+        fr.h,
+        fr.plantarSlopeRad,
+        fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
+    );
     fr.rTop = ala.r1;
     fr.rFillet = ala.r2;
     fr.E = { ...ala.T1 };
@@ -1225,24 +1271,18 @@ function dropShortEdges(pts: XYZ[], minMm: number): XYZ[] {
     return out;
 }
 
-function fitColumnCount(pts: XYZ[], n: number, keepFrom: number, minLastMm = 0, preferUntil = 0): XYZ[] {
+function fitColumnCount(pts: XYZ[], n: number, keepFrom: number): XYZ[] {
     const out = pts.map((p) => ({ ...p }));
     while (out.length < n) {
         let best = keepFrom;
         let bestD = -1;
-        const hi = preferUntil > keepFrom ? Math.min(preferUntil, out.length - 1) : out.length - 1;
-        const scan = (from: number, to: number): void => {
-            for (let i = from; i < to; i++) {
-                const d = dist3(out[i]!, out[i + 1]!);
-                if (i === out.length - 2 && minLastMm > 0 && d * 0.5 < minLastMm) continue;
-                if (d > bestD) {
-                    bestD = d;
-                    best = i;
-                }
+        for (let i = keepFrom; i < out.length - 1; i++) {
+            const d = dist3(out[i]!, out[i + 1]!);
+            if (d > bestD) {
+                bestD = d;
+                best = i;
             }
-        };
-        scan(keepFrom, hi);
-        if (bestD < 0) scan(keepFrom, out.length - 1);
+        }
         if (bestD < 0) break;
         const a = out[best]!;
         const b = out[best + 1]!;
@@ -1290,11 +1330,12 @@ function columnPoints(
             keepUntil = i;
         }
     }
-    const raw = fitColumnCount(assembled, nWall, keepFrom, FILLET_LAST_ROW_FRAC * _stationSpacing, keepUntil);
+    void keepUntil;
+    const raw = fitColumnCount(assembled, nWall, keepFrom);
     const out = raw.map((p, i) => {
         if (i === 0) return { ...fr.R };
         if (i === raw.length - 1) return { ...fr.B };
-        return projectToPlane(p, fr.R, fr.h);
+        return projectToPlane(p, fr.B, fr.h);
     });
     let eIdx = 0;
     let bestE = Infinity;
@@ -1459,7 +1500,7 @@ function rayHitsAlong(
 /** Sheet slope in the vertical R–B plane from an adjacent TopSheet face normal. */
 export function slopeFromSheetPlane(planeN: XYZ, h: { x: number; y: number }): number | null {
     const nz = planeN.z;
-    if (Math.abs(nz) < 1e-8) return null;
+    if (Math.abs(nz) < 1e-8) return sheetSlopeFromNormal(planeN, h);
     return Math.atan(-(planeN.x * h.x + planeN.y * h.y) / nz);
 }
 
@@ -1514,6 +1555,7 @@ export function assertT0ClearsSheet(frames: ColumnFrame[]): void {
     const bad: Array<{ u: number; sheet_h: number; line: number; lean: number; limit: number }> = [];
     for (const f of frames) {
         if (f.shortChord || !f.sheetSlopeValid) continue;
+        if ((Math.abs(f.sheetSlopeRad) * 180) / Math.PI >= STEEP_SHEET_DEG) continue;
         const row = {
             u: Number(f.u.toFixed(4)),
             sheet_h: Number(((f.sheetSlopeRad * 180) / Math.PI).toFixed(3)),
@@ -1548,11 +1590,9 @@ function headingAngle(a: { x: number; y: number }, b: { x: number; y: number }):
     return Math.acos(Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y)));
 }
 
-/** 0° on short chords (keeps B on-plane); full 3° once planLen ≥ 12 mm. */
 export function headingAllowanceDeg(planLen: number): number {
-    if (planLen <= 4) return 0;
-    if (planLen >= 12) return HEADING_MAX_DEG;
-    return HEADING_MAX_DEG * ((planLen - 4) / 8);
+    void planLen;
+    return HEADING_MAX_DEG;
 }
 
 function clampHeadingTo(
@@ -1568,6 +1608,39 @@ function clampHeadingTo(
     const y = ref.y + (h.y - ref.y) * t;
     const hl = Math.hypot(x, y) || 1;
     return { x: x / hl, y: y / hl };
+}
+
+function mixHeading(
+    a: { x: number; y: number },
+    b: { x: number; y: number },
+    t: number,
+): { x: number; y: number } {
+    const x = a.x + (b.x - a.x) * t;
+    const y = a.y + (b.y - a.y) * t;
+    const hl = Math.hypot(x, y) || 1;
+    return { x: x / hl, y: y / hl };
+}
+
+/** Signed plan offset from B along heading. Positive = toward R (wall side). */
+export function lastFilletSOutboard(p: XYZ, B: XYZ, h: { x: number; y: number }): number {
+    return (B.x - p.x) * h.x + (B.y - p.y) * h.y;
+}
+
+function lastFilletSample(fr: ColumnFrame, h: { x: number; y: number }): XYZ {
+    const nUse = fr.nTopSmoothed ?? fr.nTop;
+    const ala = constructArcLineArc(
+        fr.R,
+        fr.B,
+        nUse,
+        fr.rTop,
+        fr.rFillet,
+        h,
+        fr.plantarSlopeRad,
+        fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
+    );
+    const nFil = Math.max(2, filletRowCount(ala.filletSweep, ala.r2));
+    const phi = ala.phiFil0 + ((ala.phiFil1 - ala.phiFil0) * (nFil - 1)) / nFil;
+    return alaPoint(ala, h, ala.C2, ala.r2, phi);
 }
 
 /** CCW B-loop outward normal, flipped to agree with plan(B−R). */
@@ -1589,24 +1662,22 @@ export function bLoopOutwardNormal(stations: HermiteStation[], i: number): { x: 
 }
 
 /**
- * Heading = plan(B−R), corrected by the B-loop outward normal within 3°.
- * Gaussian-smooth the B-loop heading, then re-clamp. Extra jitter above the
- * geometric fan stays inside the 3°/station budget.
+ * Rotate each column plane about the vertical through B, toward perpendicular
+ * to the B-loop tangent, then Gaussian-smooth and re-clamp to 3° of plan(B−R).
+ * B stays in the plane because the plane origin is B.
  */
 export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: number; y: number }> {
     const n = stations.length;
     if (n === 0) return [];
     const chords = stations.map((st) => columnHeading(st));
-    // Heading stays plan(B−R). A B-normal pull takes B off the vertical
-    // plane and inverts the last fillet strip (seam-B → 180°, across-p100 → 70°+).
-    const corrected = chords.map((c) => ({ ...c.h }));
+    const raw = stations.map((_, i) => bLoopOutwardNormal(stations, i));
     const bLoop = stations.map((s) => s.outline);
     const sx = periodicGaussian(
-        corrected.map((h) => h.x),
+        raw.map((h) => h.x),
         bLoop,
     );
     const sy = periodicGaussian(
-        corrected.map((h) => h.y),
+        raw.map((h) => h.y),
         bLoop,
     );
     const out = sx.map((_, i) => {
@@ -1618,11 +1689,9 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
         for (let i = 0; i < n; i++) {
             const prev = out[(i + n - 1) % n]!;
             const cur = out[i]!;
-            const raw = headingAngle(chords[(i + n - 1) % n]!.h, chords[i]!.h);
             const ang = headingAngle(prev, cur);
-            const limit = Math.max(maxRad, raw);
-            if (ang <= limit + 1e-9) continue;
-            const t = limit / ang;
+            if (ang <= maxRad + 1e-9) continue;
+            const t = maxRad / ang;
             const x = prev.x + (cur.x - prev.x) * t;
             const y = prev.y + (cur.y - prev.y) * t;
             const hl = Math.hypot(x, y) || 1;
@@ -1631,6 +1700,48 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
     }
     for (let i = 0; i < n; i++) out[i] = clampHeadingTo(out[i]!, chords[i]!.h, HEADING_MAX_DEG);
     return out;
+}
+
+/** Shrink rotation about B if it would move the last fillet vertex inward. */
+export function reduceHeadingForLastFillet(
+    fr: ColumnFrame,
+    desired: { x: number; y: number },
+    chord: { x: number; y: number },
+): { x: number; y: number } {
+    const p0 = lastFilletSample(fr, chord);
+    const s0 = lastFilletSOutboard(p0, fr.B, chord);
+    const pDes = lastFilletSample(fr, desired);
+    const sDes = lastFilletSOutboard(pDes, fr.B, desired);
+    if (sDes + 1e-9 <= s0 + 1e-9 && sDes >= -1e-9 && pDes.z >= LAST_FILLET_Z_MIN_MM - 1e-9) {
+        return desired;
+    }
+    let lo = 0;
+    let hi = 1;
+    let best = chord;
+    for (let k = 0; k < 10; k++) {
+        const t = (lo + hi) * 0.5;
+        const h = mixHeading(chord, desired, t);
+        const p = lastFilletSample(fr, h);
+        const s = lastFilletSOutboard(p, fr.B, h);
+        if (s + 1e-9 <= s0 + 1e-9 && s >= -1e-9 && p.z >= LAST_FILLET_Z_MIN_MM - 1e-9) {
+            lo = t;
+            best = h;
+        } else {
+            hi = t;
+        }
+    }
+    return best;
+}
+
+export function clampLastFilletOutboard(col: XYZ[], B: XYZ, h: { x: number; y: number }): void {
+    if (col.length < 3) return;
+    const i = col.length - 2;
+    const p = col[i]!;
+    const s = lastFilletSOutboard(p, B, h);
+    const z2 = Math.max(p.z, LAST_FILLET_Z_MIN_MM);
+    if (s >= 0 && z2 <= p.z + 1e-12) return;
+    const s2 = s < 0 ? LAST_FILLET_S_MIN_MM : s;
+    col[i] = projectToPlane({ x: B.x - h.x * s2, y: B.y - h.y * s2, z: z2 }, B, h);
 }
 
 export function smoothNormalField(normals: XYZ[], rim: XYZ[], sigma = SCALAR_SMOOTH_SIGMA_MM): XYZ[] {
@@ -1719,6 +1830,23 @@ export function rateLimitClosed(vals: number[], maxPct: number, floor = 0): numb
         for (let i = n - 1; i >= 0; i--) {
             const j = (i + 1) % n;
             out[i] = pull(out[j]!, out[i]!);
+        }
+    }
+    return out;
+}
+
+/** Periodic angle limiter (radians) so adjacent stations stay within maxDeg. */
+export function rateLimitAngleClosed(vals: number[], maxDeg: number): number[] {
+    const n = vals.length;
+    const out = vals.slice();
+    if (n < 2) return out;
+    const maxRad = (Math.max(0, maxDeg) * Math.PI) / 180;
+    for (let pass = 0; pass < 8; pass++) {
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            const d = out[j]! - out[i]!;
+            if (Math.abs(d) <= maxRad + 1e-12) continue;
+            out[j] = out[i]! + Math.sign(d) * maxRad;
         }
     }
     return out;
@@ -1834,9 +1962,12 @@ export function initColumnFrames(
         const shortChord = chord.shortChord;
         const planLen = chord.planLen;
         const height = Math.max(R.z - B.z, 0.5);
-        const nTop = nTops[i]!;
         const sampled = sampleInPlaneSlope(R, h, topZ, _junctions[i]?.planeN);
         const sheetSlopeRad = sampled.valid ? sampled.slopeRad : 0;
+        const faceSteep = _junctions[i]?.planeN ? sheetSlopeFromNormal(_junctions[i].planeN, h) : null;
+        const useFace = faceSteep != null && Math.abs(faceSteep) > (8 * Math.PI) / 180;
+        const roundSlopeRad = useFace ? faceSteep : sheetSlopeRad;
+        const nTop = useFace || sampled.valid ? nTopFromSheetSlope(roundSlopeRad, h) : nTops[i]!;
         const plantar = plantarSlopeRad[i] ?? 0;
         const r = Math.min(
             FILLET_R_CAP_MM,
@@ -1855,7 +1986,8 @@ export function initColumnFrames(
             t0TiltRad: 0,
             uTiltRad: 0,
             sheetSlopeRad,
-            sheetSlopeValid: sampled.valid,
+            roundSlopeRad,
+            sheetSlopeValid: sampled.valid || faceSteep != null,
             plantarSlopeRad: plantar,
             rFillet: r,
             rTop,
@@ -1978,7 +2110,6 @@ export function buildBezierColumns(
     nWall: number,
     plantarSlopeRad: number[] = [],
     minWallMm = 0.8,
-    exemptAcross: boolean[] = [],
 ): BezierColumns {
     const regionDefault = stations.map((st) =>
         blendedFlareDeg(st.u, st.outline.y, defaults.flareDeg, defaults.medialYSign ?? 1),
@@ -2004,19 +2135,31 @@ export function buildBezierColumns(
             TOP_ROUND_MAX_STEP_DEG,
             true,
         );
-        const nFil = sizedArcRows(
-            ala.filletSweep,
-            ala.r2,
-            spacing,
-            MIN_FILLET_RINGS,
-            FILLET_MAX_STEP_DEG,
-            true,
-        );
+        const nFil = sizedArcRows(ala.filletSweep, ala.r2, spacing, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
         const nLine = lineRowCount(ala.L, spacing);
         nNeed = Math.max(nNeed, nRound + nLine + nFil + 1);
     }
     nWall = nNeed;
     guardFrames(frames, junctions, rimLoop, topZ, nWall, spacing);
+    const slopeLimited = rateLimitAngleClosed(
+        frames.map((f) => (f.sheetSlopeValid ? f.roundSlopeRad : 0)),
+        N_TOP_MAX_DEG,
+    );
+    for (let i = 0; i < frames.length; i++) {
+        const fr = frames[i]!;
+        if (!fr.sheetSlopeValid) continue;
+        fr.roundSlopeRad = slopeLimited[i]!;
+        fr.nTop = nTopFromSheetSlope(fr.roundSlopeRad, fr.h);
+        fr.nTopSmoothed = fr.nTop;
+    }
+    const desiredHeads = smoothStationHeadings(stations);
+    for (let i = 0; i < frames.length; i++) {
+        const fr = frames[i]!;
+        const chord = columnHeading(stations[i]!).h;
+        fr.h = reduceHeadingForLastFillet(fr, desiredHeads[i] ?? chord, chord);
+        if (fr.sheetSlopeValid) fr.nTop = nTopFromSheetSlope(fr.roundSlopeRad, fr.h);
+        applyAlaToFrame(fr);
+    }
     for (let pass = 0; pass < 8; pass++) {
         const lim1 = rateLimitClosed(
             frames.map((f) => f.rTop),
@@ -2045,12 +2188,16 @@ export function buildBezierColumns(
         const col = columnPoints(fr, nWall, spacing);
         col[0] = { ...fr.R };
         col[col.length - 1] = { ...fr.B };
+        clampLastFilletOutboard(col, fr.B, fr.h);
+        snapPlanMonotone(col, fr.R, fr.B, Math.max(1, col.length - 4));
+        col[0] = { ...fr.R };
+        col[col.length - 1] = { ...fr.B };
         assertRoundJoints(fr, col);
         fr.arcEndZ = col[col.length - 2]?.z ?? fr.B.z;
         for (let k = 1; k < col.length - 1; k++) {
-            maxOff = Math.max(maxOff, offPlaneMm(col[k]!, fr.R, fr.h));
+            maxOff = Math.max(maxOff, offPlaneMm(col[k]!, fr.B, fr.h));
         }
-        maxSide = Math.max(maxSide, offPlaneMm(col[col.length - 1]!, fr.R, fr.h));
+        maxSide = Math.max(maxSide, offPlaneMm(col[col.length - 1]!, fr.B, fr.h));
         xyz.push(col);
         const first = col[1] ?? fr.F;
         implied.push(
@@ -2062,8 +2209,6 @@ export function buildBezierColumns(
         const nxt = frames[(i + 1) % frames.length]!;
         maxTiltStep = Math.max(maxTiltStep, (Math.abs(nxt.leanRad - fr.leanRad) * 180) / Math.PI);
     }
-    // Last-interior slides to 0.15× spacing invert the B strip
-    // (across-p100 70–90°, seam-B 180°). Equal-φ fillet samples stay as-is.
     for (let i = 0; i < frames.length; i++) {
         const col = xyz[i]!;
         frames[i]!.arcEndZ = col[col.length - 2]?.z ?? frames[i]!.B.z;
@@ -2075,8 +2220,8 @@ export function buildBezierColumns(
         const fr = frames[i]!;
         const col = xyz[i]!;
         let off = 0;
-        for (let k = 1; k < col.length - 1; k++) off = Math.max(off, offPlaneMm(col[k]!, fr.R, fr.h));
-        const side = offPlaneMm(col[col.length - 1]!, fr.R, fr.h);
+        for (let k = 1; k < col.length - 1; k++) off = Math.max(off, offPlaneMm(col[k]!, fr.B, fr.h));
+        const side = offPlaneMm(col[col.length - 1]!, fr.B, fr.h);
         if (off > COLUMN_PLANARITY_LIMIT_MM) {
             bad.push({ i, u: Number(fr.u.toFixed(4)), off, side });
         }
@@ -2084,7 +2229,7 @@ export function buildBezierColumns(
     if (bad.length) {
         throw new Error(`[S1-COL] off-plane\n${JSON.stringify({ n: bad.length, sample: bad.slice(0, 8) })}`);
     }
-    const quality = columnProfileQuality(xyz, frames, exemptAcross);
+    const quality = columnProfileQuality(xyz, frames);
     console.log(
         "[S1-COL-Q]",
         JSON.stringify({
@@ -2310,11 +2455,7 @@ function densifyColumnsByAlong(xyz: XYZ[][], frames: ColumnFrame[], maxDeg: numb
     }
 }
 
-export function columnProfileQuality(
-    xyz: XYZ[][],
-    frames: ColumnFrame[],
-    exemptAcross: boolean[] = [],
-): ColumnQuality {
+export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): ColumnQuality {
     let maxAlong = 0;
     let worstAlong = { i: -1, j: -1, u: -1, deg: 0 };
     let maxTcol = 0;
@@ -2334,6 +2475,12 @@ export function columnProfileQuality(
     let maxToeRatio = 0;
     let minFore = Infinity;
     let maxPack = -Infinity;
+    let maxSignedSeam = 0;
+    let flippedFaces = 0;
+    let minLastS = Infinity;
+    let minLastH = Infinity;
+    let maxBAspect = 0;
+    let maxTopSheet = 0;
     let worstAcross = { i: -1, j: -1, u: -1, wrap: false, deg: 0 };
     const nS = xyz.length;
     const ds: number[] = [];
@@ -2369,7 +2516,23 @@ export function columnProfileQuality(
                 maxAlong = absDeg;
                 worstAlong = { i, j, u: Number(fr.u.toFixed(4)), deg: Number(absDeg.toFixed(2)) };
             }
-            if (j === 1) maxTopRound = Math.max(maxTopRound, Math.abs(deg));
+            if (j === 1) {
+                maxTopRound = Math.max(maxTopRound, Math.abs(deg));
+                if (fr.sheetSlopeValid) {
+                    const tSheet = nTopFromSheetSlope(fr.roundSlopeRad, fr.h);
+                    const sheetTan = unit3({
+                        x: -tSheet.z * fr.h.x,
+                        y: -tSheet.z * fr.h.y,
+                        z: tSheet.x * fr.h.x + tSheet.y * fr.h.y,
+                    });
+                    const first = unit3(t0);
+                    const topEdge = vecAngleDeg(sheetTan, first);
+                    maxTopSheet = Math.max(maxTopSheet, topEdge);
+                    maxTopRound = Math.max(maxTopRound, topEdge);
+                    maxAlong = Math.max(maxAlong, topEdge);
+                    if (topEdge > ALONG_JOINT_MAX_DEG + 1e-6) alongOver++;
+                }
+            }
             if (fr.roundRows && j === fr.roundRows) {
                 maxRoundWall = Math.max(maxRoundWall, Math.abs(deg));
             }
@@ -2423,7 +2586,6 @@ export function columnProfileQuality(
         const prv = xyz[(i + nS - 1) % nS]!;
         const rows = Math.min(col.length, nxt.length, prv.length);
         for (let j = 0; j < rows - 1; j++) {
-            if (j === 0 && (exemptAcross[i] || exemptAcross[(i + 1) % nS])) continue;
             const nL = faceN3(prv[j]!, col[j]!, col[j + 1]!);
             const nR = faceN3(col[j]!, nxt[j]!, col[j + 1]!);
             if (!nL || !nR) continue;
@@ -2439,6 +2601,28 @@ export function columnProfileQuality(
                     deg: Number(raw.toFixed(2)),
                 };
             }
+            if (dot3(nL, nR) < 0) flippedFaces++;
+        }
+        if (col.length >= 2) {
+            const last = col[col.length - 2]!;
+            const B = col[col.length - 1]!;
+            minLastS = Math.min(minLastS, lastFilletSOutboard(last, B, fr.h));
+            minLastH = Math.min(minLastH, last.z - B.z, dist3(last, B));
+            const nxtB = nxt[nxt.length - 1]!;
+            const a1 = dist3(last, B);
+            const a2 = dist3(B, nxtB);
+            const a3 = dist3(last, nxt[nxt.length - 2] ?? last);
+            const short = Math.min(a1, a2, a3);
+            const long = Math.max(a1, a2, a3);
+            if (short > 1e-9) maxBAspect = Math.max(maxBAspect, long / short);
+            const nSeam = faceN3(last, B, nxtB);
+            const nWall = faceN3(last, nxt[nxt.length - 2] ?? last, B);
+            if (nSeam && nWall) {
+                const cr = cross3(nSeam, nWall);
+                const edge = { x: nxtB.x - B.x, y: nxtB.y - B.y, z: nxtB.z - B.z };
+                const signed = Math.sign(dot3(cr, edge) || 1) * vecAngleDeg(nSeam, nWall);
+                maxSignedSeam = Math.max(maxSignedSeam, Math.abs(signed));
+            }
         }
     }
     acrossAll.sort((a, b) => a - b);
@@ -2448,6 +2632,18 @@ export function columnProfileQuality(
     const maxAcrossP99 = acrossAll[p99Idx] ?? 0;
     console.log("[S1-ALONG]", JSON.stringify(worstAlong));
     console.log("[S1-ACROSS]", JSON.stringify({ ...worstAcross, p99: Number(maxAcrossP99.toFixed(2)) }));
+    console.log(
+        "[S1-BSEAM]",
+        JSON.stringify({
+            signed: Number(maxSignedSeam.toFixed(2)),
+            flipped: flippedFaces,
+            minS: Number((Number.isFinite(minLastS) ? minLastS : 0).toFixed(3)),
+            minH: Number((Number.isFinite(minLastH) ? minLastH : 0).toFixed(3)),
+            aspectB: Number(maxBAspect.toFixed(2)),
+            topSheet: Number(maxTopSheet.toFixed(2)),
+            nRows: xyz[0]?.length ?? 0,
+        }),
+    );
     return {
         maxAlongJointDeg: maxAlong,
         maxTcolDeg: maxTcol,
@@ -2468,6 +2664,13 @@ export function columnProfileQuality(
         maxToeSpacingRatio: maxToeRatio,
         minForefootInsetMm: Number.isFinite(minFore) ? minFore : 0,
         maxAlaPackMm: Number.isFinite(maxPack) ? maxPack : 0,
+        maxSignedSeamDeg: maxSignedSeam,
+        flippedFaces,
+        minLastRowSMm: Number.isFinite(minLastS) ? minLastS : 0,
+        minLastRowHeightMm: Number.isFinite(minLastH) ? minLastH : 0,
+        maxBFaceAspect: maxBAspect,
+        maxTopSheetEdgeDeg: maxTopSheet,
+        nRows: xyz[0]?.length ?? 0,
     };
 }
 

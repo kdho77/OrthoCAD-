@@ -39,6 +39,8 @@ export {
     HEADING_MAX_DEG,
     headingAllowanceDeg,
     inwardOfOutline,
+    LAST_FILLET_S_MIN_MM,
+    LAST_FILLET_Z_MIN_MM,
     LINE_MAX_STEP_MM,
     MERGE_ROW_MM,
     MIN_EDGE_MM,
@@ -46,6 +48,7 @@ export {
     type MinWallClamp,
     N_TOP_MAX_DEG,
     N_TOP_PATCH_MM,
+    nTopFromSheetSlope,
     OUTLINE_STATION_SPACING_MM,
     offPlaneMm,
     periodicGaussian,
@@ -63,8 +66,10 @@ export {
     SEAM_B_LIMIT_DEG,
     SIDEWAYS_LIMIT_MM,
     STATION_GAP_MULT,
+    STEEP_SHEET_DEG,
     sampleByArcLength,
     sampleInPlaneSlope,
+    sheetSlopeFromNormal,
     sizedArcRows,
     slopeFromSheetPlane,
     summarizeWallBands,
@@ -235,15 +240,6 @@ export {
     PLANTAR_STEINER_OUTLINE_FRAC,
 } from "./plantar-cdt";
 export { type ReconstructOptions, reconstructProceduralWalls } from "./reconstruct";
-export {
-    fairRim01,
-    RIM_FAIR_MAX_MM,
-    RIM_TURN_EXEMPT_DEG,
-    type RimFairing,
-    rimTurningDeg,
-    stationsOnTaggedRim,
-    tagStaircaseRim,
-} from "./rim-fairing";
 export {
     assertClosedStationRing,
     assertPeriodicQuadStrip,
