@@ -31,6 +31,8 @@ import {
     densifyToeByExtent,
     ensureSourceRimStations,
     fillLargeStationGaps,
+    markSourceRimStations,
+    squarePairingsToB,
 } from "./densify-stations";
 import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
@@ -547,8 +549,10 @@ export function reconstructProceduralWalls(
     densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, 2, rimPts);
     ensureSourceRimStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, sourceRim);
+    markSourceRimStations(stations, rimLocal, sourceRim);
     stampMonotonicTB(stations, hygiened.loop);
     applyStoredTB(stations, hygiened.loop);
+    squarePairingsToB(stations, hygiened.loop);
     assertClosedStationRing(stations, rimLocal);
     {
         let minB = Infinity;

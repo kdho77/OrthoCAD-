@@ -7,7 +7,9 @@ import {
     ensureSourceRimStations,
     headingDeltaDeg,
     insertStationPair,
+    markSourceRimStations,
     PAIR_SPACING_MIN_MM,
+    squarePairingsToB,
 } from "./densify-stations";
 import type { HermiteStation } from "./loft";
 
@@ -99,5 +101,45 @@ describe("pair-insert densify", () => {
         expect(stations).toHaveLength(4);
         const mid = stations.find((s) => Math.abs(s.rim.x - 15) < 1e-6 && Math.abs(s.rim.y) < 1e-6);
         expect(mid).toBeTruthy();
+    });
+
+    test("squarePairingsToB slides B until cosT reaches 0.3", () => {
+        const stations: HermiteStation[] = [
+            station(0, 0, 8, 0, 0),
+            station(4, 0.2, 8, 6, 0.3),
+            station(8, 0, 8, 12, 0.6),
+            station(4, -2, 0, 6, 0.9),
+        ];
+        stations[0]!.tB = 0;
+        stations[1]!.tB = 0.25;
+        stations[2]!.tB = 0.5;
+        stations[3]!.tB = 0.75;
+        const pattern = [
+            { x: 0, y: 0, z: 0 },
+            { x: 4, y: 0.2, z: 0 },
+            { x: 8, y: 0, z: 0 },
+            { x: 4, y: -2, z: 0 },
+        ];
+        markSourceRimStations(stations, [0, 1, 2, 3], [0, 1, 2, 3]);
+        expect(stations.every((s) => s.sourceRim)).toBe(true);
+        squarePairingsToB(stations, pattern);
+        for (let i = 0; i < stations.length; i++) {
+            const dx = stations[i]!.outline.x - stations[i]!.rim.x;
+            const dy = stations[i]!.outline.y - stations[i]!.rim.y;
+            const len = Math.hypot(dx, dy) || 1;
+            const prev = stations[(i + stations.length - 1) % stations.length]!.outline;
+            const next = stations[(i + 1) % stations.length]!.outline;
+            const tx = next.x - prev.x;
+            const ty = next.y - prev.y;
+            const tl = Math.hypot(tx, ty) || 1;
+            let nx = ty / tl;
+            let ny = -tx / tl;
+            if (nx * (dx / len) + ny * (dy / len) < 0) {
+                nx = -nx;
+                ny = -ny;
+            }
+            const cosT = Math.max(0, (dx / len) * nx + (dy / len) * ny);
+            expect(cosT).toBeGreaterThanOrEqual(0.25);
+        }
     });
 });

@@ -2,6 +2,9 @@
 // See LICENSE file in the project root for full license information.
 
 import {
+    bLoopOutwardNormal,
+    COS_T_MIN,
+    columnHeading,
     FOREFOOT_INSET_MM,
     HEADING_MAX_DEG,
     OUTLINE_STATION_SPACING_MM,
@@ -494,8 +497,17 @@ export function ensureSourceRimStations(
             cur.tB ?? parameterOnClosedLoop(cur.outline, pattern),
             nxt.tB ?? parameterOnClosedLoop(nxt.outline, pattern),
         );
-        const B = { ...sampleClosedAtArc01(pattern, tB), z: 0 };
-        const st = stationFromPair(R, B, cur, nxt, bounds, tB);
+        let tUse = tB;
+        let B = { ...sampleClosedAtArc01(pattern, tUse), z: 0 };
+        const tooClose = (p: PolyPoint): boolean =>
+            Math.hypot(p.x - cur.outline.x, p.y - cur.outline.y) < PAIR_SPACING_MIN_MM ||
+            Math.hypot(p.x - nxt.outline.x, p.y - nxt.outline.y) < PAIR_SPACING_MIN_MM;
+        for (let k = 1; k <= 8 && tooClose(B); k++) {
+            tUse = midClosedParam(tUse, nxt.tB ?? parameterOnClosedLoop(nxt.outline, pattern));
+            B = { ...sampleClosedAtArc01(pattern, tUse), z: 0 };
+        }
+        const st = stationFromPair(R, B, cur, nxt, bounds, tUse);
+        st.sourceRim = true;
         splitTopBoundaryEdge(indices, rimLocal[bestI]!, rimLocal[(bestI + 1) % rimLocal.length]!, src);
         stations.splice(bestI + 1, 0, st);
         rimLocal.splice(bestI + 1, 0, src);
@@ -509,4 +521,79 @@ export function ensureSourceRimStations(
         );
     }
     return added;
+}
+
+export function markSourceRimStations(
+    stations: HermiteStation[],
+    rimLocal: number[],
+    sourceRim: number[],
+): void {
+    const have = new Set(sourceRim);
+    for (let i = 0; i < stations.length; i++) {
+        stations[i]!.sourceRim = have.has(rimLocal[i]!);
+    }
+}
+
+/**
+ * Slide B on the pattern toward square-to-B when |dot(h, nB)| < 0.3.
+ * R stays on the source rim; B stays on the pattern between its neighbors.
+ */
+export function squarePairingsToB(stations: HermiteStation[], pattern: PolyPoint[]): number {
+    if (stations.length < 3 || pattern.length < 3) return 0;
+    let moved = 0;
+    for (let pass = 0; pass < 3; pass++) {
+        for (let i = 0; i < stations.length; i++) {
+            const st = stations[i]!;
+            const nB = bLoopOutwardNormal(stations, i);
+            const h = columnHeading(st).h;
+            let n = { ...nB };
+            if (h.x * n.x + h.y * n.y < 0) n = { x: -n.x, y: -n.y };
+            const cosT = Math.max(0, Math.min(1, h.x * n.x + h.y * n.y));
+            if (cosT >= COS_T_MIN - 1e-9) continue;
+            const prev = stations[(i + stations.length - 1) % stations.length]!;
+            const next = stations[(i + 1) % stations.length]!;
+            const tPrev = prev.tB ?? parameterOnClosedLoop(prev.outline, pattern);
+            const tNext = next.tB ?? parameterOnClosedLoop(next.outline, pattern);
+            let t1 = tNext;
+            if (t1 < tPrev - 0.5) t1 += 1;
+            if (t1 > tPrev + 0.5) t1 -= 1;
+            const span = t1 - tPrev;
+            if (Math.abs(span) < 1e-6) continue;
+            let bestT = st.tB ?? parameterOnClosedLoop(st.outline, pattern);
+            let bestCos = cosT;
+            const steps = 20;
+            for (let k = 1; k < steps; k++) {
+                const raw = tPrev + (span * k) / steps;
+                const tUse = ((raw % 1) + 1) % 1;
+                const B = sampleClosedAtArc01(pattern, tUse);
+                if (
+                    Math.hypot(B.x - prev.outline.x, B.y - prev.outline.y) < PAIR_SPACING_MIN_MM ||
+                    Math.hypot(B.x - next.outline.x, B.y - next.outline.y) < PAIR_SPACING_MIN_MM
+                ) {
+                    continue;
+                }
+                const dx = B.x - st.rim.x;
+                const dy = B.y - st.rim.y;
+                const len = Math.hypot(dx, dy);
+                if (len < 1e-4) continue;
+                const hx = dx / len;
+                const hy = dy / len;
+                let nn = { ...nB };
+                if (hx * nn.x + hy * nn.y < 0) nn = { x: -nn.x, y: -nn.y };
+                const c = Math.max(0, Math.min(1, hx * nn.x + hy * nn.y));
+                if (c > bestCos + 1e-9) {
+                    bestCos = c;
+                    bestT = tUse;
+                }
+                if (c >= COS_T_MIN - 1e-9) break;
+            }
+            if (bestCos <= cosT + 1e-9) continue;
+            st.tB = ((bestT % 1) + 1) % 1;
+            const B = sampleClosedAtArc01(pattern, st.tB);
+            st.outline = { x: B.x, y: B.y, z: 0 };
+            moved++;
+        }
+    }
+    if (moved) console.log("[S1-SQUARE-B]", JSON.stringify({ moved, n: stations.length }));
+    return moved;
 }

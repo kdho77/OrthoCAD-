@@ -49,6 +49,8 @@ export interface HermiteStation {
     rim: PolyPoint;
     n: { x: number; y: number };
     u: number;
+    /** True when this station's R is an original TopSheet rim vertex. */
+    sourceRim?: boolean;
     /** Arc-length fraction of B on the faired pattern. Forward-only. */
     tB?: number;
     /** Natural plantar-boundary tangent in (n, z), when known. */
