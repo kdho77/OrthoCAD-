@@ -827,3 +827,148 @@ export function offsetClosedInward(poly: PolyPoint[], distMm: number): PolyPoint
         return { x: p.x - n.x * distMm, y: p.y - n.y * distMm, z: p.z };
     });
 }
+
+export const TB_SMOOTH_SIGMA_MM = 12;
+
+/** Closed-loop arc-length fraction of `p` on `loop`. */
+export function parameterOnClosedLoop(p: PolyPoint, loop: PolyPoint[]): number {
+    const { cum, total } = polylineArcLengths(loop);
+    if (total < 1e-12) return 0;
+    return nearestS01(p, loop, cum, total);
+}
+
+/** Gaussian-smooth unwrapped s01 along the rim, σ default 12 mm. */
+export function smoothClosedParameters(
+    s01: number[],
+    rim: PolyPoint[],
+    sigmaMm = TB_SMOOTH_SIGMA_MM,
+): number[] {
+    const n = s01.length;
+    if (n === 0) return [];
+    if (n < 3 || rim.length !== n) return s01.map((s) => ((s % 1) + 1) % 1);
+    const unwrapped = unwrapAllowPlateau(s01);
+    const ds = rim.map((p, i) => {
+        const q = rim[(i + 1) % n]!;
+        return Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z);
+    });
+    const period = ds.reduce((s, d) => s + d, 0);
+    if (period < 1e-9) return s01.map((s) => ((s % 1) + 1) % 1);
+    const cum = [0];
+    for (const d of ds) cum.push(cum[cum.length - 1]! + d);
+    const sig = Math.max(8, Math.min(15, sigmaMm));
+    const smoothed = unwrapped.map((_, i) => {
+        let s = 0;
+        let w = 0;
+        for (let j = 0; j < n; j++) {
+            let d = Math.abs(cum[j]! - cum[i]!);
+            d = Math.min(d, period - d);
+            const wt = Math.exp((-0.5 * d * d) / (sig * sig));
+            s += wt * unwrapped[j]!;
+            w += wt;
+        }
+        return w > 0 ? s / w : unwrapped[i]!;
+    });
+    return smoothed.map((s) => ((s % 1) + 1) % 1);
+}
+
+export function resampleBySmoothedParameter(
+    pts: PolyPoint[],
+    loop: PolyPoint[],
+    rim: PolyPoint[],
+    sigmaMm = TB_SMOOTH_SIGMA_MM,
+): PolyPoint[] {
+    if (pts.length < 3 || loop.length < 3) return pts.map((p) => ({ ...p }));
+    const s01 = pts.map((p) => parameterOnClosedLoop(p, loop));
+    const sm = smoothClosedParameters(s01, rim, sigmaMm);
+    return sm.map((s) => sampleClosedAtArc01(loop, s));
+}
+
+function extremumIndex(loop: PolyPoint[], pick: "minX" | "maxX"): number {
+    let best = 0;
+    for (let i = 1; i < loop.length; i++) {
+        const p = loop[i]!;
+        const b = loop[best]!;
+        if (pick === "minX" ? p.x < b.x : p.x > b.x) best = i;
+    }
+    return best;
+}
+
+function medialUIndex(
+    loop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    sign: 1 | -1,
+    targetU: number,
+): number {
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const yMid = loop.reduce((s, p) => s + p.y, 0) / Math.max(1, loop.length);
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const p = loop[i]!;
+        if ((p.y - yMid) * sign <= 0) continue;
+        const u = (p.x - bounds.minX) / length;
+        const d = Math.abs(u - targetU);
+        if (d < bestD) {
+            bestD = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+function featureS01Circuit(
+    loop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    sign: 1 | -1,
+    archU0: number,
+    archU1: number,
+): number[] {
+    const { cum, total } = polylineArcLengths(loop);
+    if (total < 1e-12) return [0, 0.25, 0.5, 0.75];
+    const sOf = (i: number) => cum[i]! / total;
+    const heel = sOf(extremumIndex(loop, "minX"));
+    const toe = sOf(extremumIndex(loop, "maxX"));
+    const arch0 = sOf(medialUIndex(loop, bounds, sign, archU0));
+    const arch1 = sOf(medialUIndex(loop, bounds, sign, archU1));
+    const raw = [heel, toe, arch1, arch0];
+    const unwrapped = unwrapAllowPlateau(raw.map((s) => (((s - heel) % 1) + 1) % 1));
+    unwrapped.sort((a, b) => a - b);
+    return unwrapped.map((s) => (((s + heel) % 1) + 1) % 1);
+}
+
+/**
+ * Arc-length-proportional B mapping between matched features: heel apex,
+ * medial-arch S ends, toe apex. Used when the pattern is not a parallel
+ * offset of the rim (the arch fan).
+ */
+export function mapLoopByMatchedFeatures(
+    src: PolyPoint[],
+    dst: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    sign: 1 | -1,
+    archU0 = 0.16,
+    archU1 = 0.62,
+): PolyPoint[] {
+    if (src.length < 3 || dst.length < 3) return src.map((p) => ({ ...p }));
+    const srcF = featureS01Circuit(src, bounds, sign, archU0, archU1);
+    const dstF = featureS01Circuit(dst, bounds, sign, archU0, archU1);
+    const nF = Math.min(srcF.length, dstF.length);
+    if (nF < 2) return src.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    const srcFu = unwrapAllowPlateau(srcF.slice(0, nF));
+    srcFu.push(srcFu[0]! + 1);
+    const dstFu = unwrapAllowPlateau(dstF.slice(0, nF));
+    dstFu.push(dstFu[0]! + 1);
+    return src.map((p) => {
+        let s = parameterOnClosedLoop(p, src);
+        while (s < srcFu[0]! - 0.5) s += 1;
+        while (s > srcFu[0]! + 0.5) s -= 1;
+        if (s < srcFu[0]!) s += 1;
+        let seg = 0;
+        while (seg < nF - 1 && srcFu[seg + 1]! < s) seg++;
+        const a = srcFu[seg]!;
+        const b = srcFu[seg + 1]!;
+        const span = Math.max(b - a, 1e-9);
+        const t = Math.max(0, Math.min(1, (s - a) / span));
+        return sampleClosedAtArc01(dst, dstFu[seg]! + (dstFu[seg + 1]! - dstFu[seg]!) * t);
+    });
+}

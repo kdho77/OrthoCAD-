@@ -1,10 +1,18 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { FOREFOOT_INSET_MM, OUTLINE_STATION_SPACING_MM, TOE_SPACING_EXTENT_FRAC } from "./bezier-column";
+import {
+    FOREFOOT_INSET_MM,
+    HEADING_MAX_DEG,
+    OUTLINE_STATION_SPACING_MM,
+    TOE_SPACING_EXTENT_FRAC,
+} from "./bezier-column";
 import type { PolyPoint } from "./curves";
 import type { HermiteStation } from "./loft";
 import { lerpClosedOnLoop } from "./stations";
+
+const ARCH_FAN_U0 = 0.16;
+const ARCH_FAN_U1 = 0.62;
 
 const HEEL_U_MAX = 0.22;
 const FORE_U_MIN = 0.78;
@@ -304,6 +312,93 @@ export function resampleStationsEvenly(
         outRim.push(mid);
     }
     if (outSt.length < 3) return;
+    stations.length = 0;
+    stations.push(...outSt);
+    rimLocal.length = 0;
+    rimLocal.push(...outRim);
+}
+
+function planHeading(st: HermiteStation): { x: number; y: number } {
+    const dx = st.outline.x - st.rim.x;
+    const dy = st.outline.y - st.rim.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-4) {
+        const nl = Math.hypot(st.n.x, st.n.y) || 1;
+        return { x: st.n.x / nl, y: st.n.y / nl };
+    }
+    return { x: dx / len, y: dy / len };
+}
+
+function headingDeltaDeg(a: HermiteStation, b: HermiteStation): number {
+    const ha = planHeading(a);
+    const hb = planHeading(b);
+    const d = Math.max(-1, Math.min(1, ha.x * hb.x + ha.y * hb.y));
+    return (Math.acos(d) * 180) / Math.PI;
+}
+
+/**
+ * Densify rim stations where columns fan (pattern not parallel to the rim).
+ * Density follows the pattern/rim length ratio and the 3° heading budget.
+ */
+export function densifyArchFanStations(
+    stations: HermiteStation[],
+    rimLocal: number[],
+    positions: number[],
+    indices: number[],
+    outlineLoop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+): void {
+    if (stations.length < 3) return;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const outSt: HermiteStation[] = [];
+    const outRim: number[] = [];
+    const n = stations.length;
+    for (let i = 0; i < n; i++) {
+        const cur = stations[i]!;
+        outSt.push(cur);
+        outRim.push(rimLocal[i]!);
+        const nxt = stations[(i + 1) % n]!;
+        const inArch =
+            (cur.u >= ARCH_FAN_U0 && cur.u <= ARCH_FAN_U1) || (nxt.u >= ARCH_FAN_U0 && nxt.u <= ARCH_FAN_U1);
+        const dsR = Math.hypot(nxt.rim.x - cur.rim.x, nxt.rim.y - cur.rim.y);
+        const dsB = Math.hypot(nxt.outline.x - cur.outline.x, nxt.outline.y - cur.outline.y);
+        const ratio = dsB / Math.max(dsR, 1e-6);
+        const head = headingDeltaDeg(cur, nxt);
+        const needHead = head > HEADING_MAX_DEG + 1e-6;
+        const needRatio = inArch && (ratio > 1.35 || ratio < 0.7) && dsR > 1.2;
+        if ((!needHead && !needRatio) || dsR < 0.4) continue;
+        const nFromHead = needHead ? Math.ceil(head / HEADING_MAX_DEG) - 1 : 0;
+        const nFromRatio = needRatio
+            ? Math.max(1, Math.round(Math.max(ratio, 1 / Math.max(ratio, 1e-6))))
+            : 0;
+        const nAdd = Math.min(8, Math.max(nFromHead, nFromRatio));
+        if (nAdd < 1) continue;
+        let prevRim = rimLocal[i]!;
+        const endRim = rimLocal[(i + 1) % n]!;
+        for (let k = 1; k <= nAdd; k++) {
+            const t = k / (nAdd + 1);
+            const R = {
+                x: cur.rim.x + (nxt.rim.x - cur.rim.x) * t,
+                y: cur.rim.y + (nxt.rim.y - cur.rim.y) * t,
+                z: cur.rim.z + (nxt.rim.z - cur.rim.z) * t,
+            };
+            const B = lerpClosedOnLoop(cur.outline, nxt.outline, t, outlineLoop);
+            const nx = cur.n.x + (nxt.n.x - cur.n.x) * t;
+            const ny = cur.n.y + (nxt.n.y - cur.n.y) * t;
+            const nl = Math.hypot(nx, ny) || 1;
+            const mid = positions.length / 3;
+            positions.push(R.x, R.y, R.z);
+            splitEdge(indices, prevRim, endRim, mid);
+            prevRim = mid;
+            outSt.push({
+                outline: B,
+                rim: R,
+                n: { x: nx / nl, y: ny / nl },
+                u: Math.max(0, Math.min(1, (B.x - bounds.minX) / length)),
+            });
+            outRim.push(mid);
+        }
+    }
     stations.length = 0;
     stations.push(...outSt);
     rimLocal.length = 0;

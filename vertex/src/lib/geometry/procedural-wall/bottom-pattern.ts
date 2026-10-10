@@ -4,13 +4,13 @@
 import { pointInPoly } from "./cdt-band";
 import {
     ensureCcw,
-    fitClosedC2Spline,
     type PolyPoint,
-    resampleClosedC2,
+    polylineArcLengths,
     resamplePolyline,
     startAtLowCurvature,
     startAtPosteriorHeel,
 } from "./curves";
+import { FAIRED_CONTROL_DEFAULT, fairedPattern } from "./faired-pattern";
 
 export const PATTERN_INSET_MM = 2;
 export const PATTERN_HEEL_INSET_MM = 8;
@@ -29,8 +29,10 @@ export const PATTERN_ARCH_U1 = 0.62;
 export const PATTERN_FORE_U0 = 0.76;
 export const PATTERN_SOURCE_SYNTHETIC = "synthetic";
 export const PATTERN_FEATURE_COUNT = 16;
+export const PATTERN_CONTROL_COUNT = FAIRED_CONTROL_DEFAULT;
+export const PATTERN_SILHOUETTE_MM = 1;
 /** Bound on |dk/ds| (1/mm²) so k(s) stays fair — no local curvature spikes. */
-export const PATTERN_MAX_DKDS = 0.08;
+export const PATTERN_MAX_DKDS = 0.02;
 export const MIDFOOT_U0 = 0.28;
 export const MIDFOOT_U1 = 0.48;
 
@@ -310,9 +312,8 @@ export function patternCurvatureReport(
 }
 
 /**
- * One fair closed curve through 16 features — not a per-region offset
- * blend. Heel (8 mm) tapers continuously into the forefoot (1 mm); the
- * medial arch is a single shallow S-curve. Periodic interpolating cubic.
+ * C∞ offset → few-control FAIRED approximating cubic (not an interpolant).
+ * Heel (8 mm) tapers into the forefoot (1 mm); the medial arch is one S.
  */
 export function syntheticBottomPattern(
     outline: PolyPoint[],
@@ -329,7 +330,7 @@ export function syntheticBottomPattern(
     const rim = resamplePolyline(loop, 96);
     const normals = smoothUnit2(
         rim.map((_, i) => unitInward(rim, i)),
-        8,
+        20,
     );
     const offset: PolyPoint[] = rim.map((p, i) => {
         const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
@@ -342,9 +343,68 @@ export function syntheticBottomPattern(
         }
         return q;
     });
-    const features = resamplePolyline(startAtPosteriorHeel(ensureCcw(offset)), PATTERN_FEATURE_COUNT);
-    const curve = resampleClosedC2(fitClosedC2Spline(features), Math.max(160, loop.length));
-    return makeLateralConvex(curve, sign);
+    const closed = startAtPosteriorHeel(ensureCcw(offset));
+    const { cum: offCum, total: offTotal } = polylineArcLengths(closed);
+    const s01Of = (p: PolyPoint): number => {
+        let bestS = 0;
+        let bestD = Infinity;
+        for (let i = 0; i < closed.length; i++) {
+            const a = closed[i]!;
+            const b = closed[(i + 1) % closed.length]!;
+            const ex = b.x - a.x;
+            const ey = b.y - a.y;
+            const len2 = ex * ex + ey * ey;
+            const t =
+                len2 > 1e-12 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
+            const d = (p.x - (a.x + ex * t)) ** 2 + (p.y - (a.y + ey * t)) ** 2;
+            if (d < bestD) {
+                bestD = d;
+                const seg = offCum[i + 1]! - offCum[i]!;
+                bestS = (offCum[i]! + t * seg) / Math.max(offTotal, 1e-12);
+            }
+        }
+        return ((bestS % 1) + 1) % 1;
+    };
+    const dense = resamplePolyline(closed, 36);
+    let heel = closed[0]!;
+    let toe = closed[0]!;
+    const archPts: PolyPoint[] = [];
+    for (const p of closed) {
+        if (p.x < heel.x) heel = p;
+        if (p.x > toe.x) toe = p;
+        const medial = (p.y - yMid) * sign > 0;
+        const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
+        if (medial && u >= PATTERN_ARCH_U0 && u <= PATTERN_ARCH_U1) archPts.push(p);
+    }
+    const targets = [
+        ...dense.map((p) => ({ point: p, weight: 1.2, s01: s01Of(p) })),
+        { point: heel, weight: 8, s01: s01Of(heel) },
+        { point: toe, weight: 20, s01: s01Of(toe) },
+        ...archPts
+            .filter((_, i) => i % Math.max(1, Math.floor(archPts.length / 8)) === 0)
+            .slice(0, 8)
+            .map((p) => ({ point: p, weight: 6, s01: s01Of(p) })),
+    ];
+    const fit = fairedPattern({
+        targets,
+        controlCount: 22,
+        wFit: 1,
+        wFair: 0.28,
+        sampleCount: Math.max(160, loop.length),
+        constraints: {
+            rim: loop,
+            minInsetMm: PATTERN_MIN_INSET_MM,
+            medialYSign: sign,
+            archU0: PATTERN_ARCH_U0,
+            archU1: PATTERN_ARCH_U1,
+            bounds,
+            lateralMinK: 0,
+            maxIters: 6,
+        },
+    });
+    const report = patternCurvatureReport(fit.samples, bounds, sign);
+    if (report.lateralMinK >= 0 && report.inflections === 2) return fit.samples;
+    return makeLateralConvex(fit.samples, sign);
 }
 
 /** Laplacian only concave lateral verts so the lateral side stays convex. */

@@ -6,12 +6,15 @@ import { FLARE_BOUNDS } from "./defaults";
 import {
     countPlanViewChordCrossings,
     FLARE_DEV_CAP_DEG,
+    mapLoopByMatchedFeatures,
     pairAtNativeTop,
     pairByHarmonic,
     pairByOutwardRay,
     raySegHit2D,
     smoothAndCapFlare,
+    smoothClosedParameters,
     spreadClosedOnLoop,
+    TB_SMOOTH_SIGMA_MM,
     unwrapStrictlyIncreasing,
 } from "./stations";
 
@@ -125,6 +128,29 @@ describe("outward-ray station pairing", () => {
         const capped = smoothAndCapFlare(outline, region, spiked);
         expect(capped.flare[3]!).toBeLessThanOrEqual(41 + FLARE_DEV_CAP_DEG);
         expect(capped.flare.some((f) => Math.abs(f - 41) < 1e-6 || f >= 41)).toBe(true);
+    });
+
+    test("smoothClosedParameters keeps a uniform circuit near the input", () => {
+        const n = 24;
+        const rim = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 30 * Math.cos(a), y: 18 * Math.sin(a), z: 4 };
+        });
+        const s01 = rim.map((_, i) => i / n);
+        s01[5] = (5 / n + 0.08) % 1;
+        const sm = smoothClosedParameters(s01, rim, TB_SMOOTH_SIGMA_MM);
+        expect(sm).toHaveLength(n);
+        for (const s of sm) {
+            expect(s).toBeGreaterThanOrEqual(0);
+            expect(s).toBeLessThan(1);
+        }
+        const mapped = mapLoopByMatchedFeatures(rim, rim, { minX: -30, maxX: 30 }, 1);
+        expect(mapped).toHaveLength(n);
+        let err = 0;
+        for (let i = 0; i < n; i++) {
+            err += Math.hypot(mapped[i]!.x - rim[i]!.x, mapped[i]!.y - rim[i]!.y);
+        }
+        expect(err / n).toBeLessThan(2);
     });
 
     test("spreadClosedOnLoop fans collapsed heel hits around the wrap", () => {

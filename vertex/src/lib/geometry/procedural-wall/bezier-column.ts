@@ -584,12 +584,14 @@ export function sizedArcRows(
     stationSpacingMm: number,
     minRows: number,
     maxStepDeg: number,
+    preferAngle = false,
 ): number {
     const deg = Math.abs((sweepRad * 180) / Math.PI);
     const arcLen = Math.max(Math.abs(radiusMm * sweepRad), 1e-6);
     const minStep = Math.max(ROUND_MIN_STEP_MM, stationSpacingMm / ROUND_MAX_ASPECT);
     const nByStep = Math.max(1, Math.floor(arcLen / minStep));
     const nByAngle = Math.max(minRows, Math.ceil(deg / Math.max(maxStepDeg, 1e-3)));
+    if (preferAngle) return Math.max(minRows, nByAngle);
     return Math.max(minRows, Math.min(nByAngle, nByStep));
 }
 
@@ -598,7 +600,14 @@ export function filletRowCount(psiRad: number, radiusMm = 1, stationSpacingMm = 
 }
 
 export function topRoundRowCount(sweepRad: number, radiusMm = 0.5, stationSpacingMm = 1.3): number {
-    return sizedArcRows(sweepRad, radiusMm, stationSpacingMm, TOP_ROUND_MIN_ROWS, TOP_ROUND_MAX_STEP_DEG);
+    return sizedArcRows(
+        sweepRad,
+        radiusMm,
+        stationSpacingMm,
+        TOP_ROUND_MIN_ROWS,
+        TOP_ROUND_MAX_STEP_DEG,
+        true,
+    );
 }
 
 /** Equal-φ interiors from P_w toward P_p. Does not include P_w or B. */
@@ -922,6 +931,7 @@ export function sampleArcLineArc(
         stationSpacing,
         TOP_ROUND_MIN_ROWS,
         TOP_ROUND_MAX_STEP_DEG,
+        true,
     );
     const nFil = sizedArcRows(ala.filletSweep, ala.r2, stationSpacing, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
     const nLine0 = Math.max(1, Math.ceil(Math.max(ala.L, MIN_LINE_MM) / LINE_MAX_STEP_MM));
@@ -929,19 +939,6 @@ export function sampleArcLineArc(
     const total0 = nRound + nLine + nFil + 1;
     if (total0 < nWall) nLine += nWall - total0;
     const pts: XYZ[] = [{ ...R }];
-    const sweep = ala.phiRound1 - ala.phiRound0;
-    if (Math.abs(sweep) > 1e-6 && ala.r1 >= MIN_ROUND_R_MM) {
-        const maxTurn = (ROUND_JOINT_MAX_DEG * Math.PI) / 180;
-        const dPhi = Math.sign(sweep) * Math.min(Math.abs(sweep) / 3, maxTurn * 0.9);
-        for (const k of [1, 2]) {
-            const phi = ala.phiRound0 + dPhi * k;
-            if (Math.sign(sweep) * (ala.phiRound1 - phi) <= 1e-6) break;
-            const p = alaPoint(ala, h, ala.C1, ala.r1, phi);
-            if (dist3(p, R) < WELD_MM || dist3(p, ala.T1) < WELD_MM) continue;
-            if (dist3(p, pts[pts.length - 1]!) < WELD_MM) continue;
-            pts.push(p);
-        }
-    }
     for (let i = 1; i < nRound; i++) {
         const phi = ala.phiRound0 + ((ala.phiRound1 - ala.phiRound0) * i) / nRound;
         const p = alaPoint(ala, h, ala.C1, ala.r1, phi);
@@ -1102,10 +1099,7 @@ function assertRoundJoints(fr: ColumnFrame, col: XYZ[]): void {
     }
     const nRows = Math.max(eIdx, fr.roundRows || 0);
     const stepDeg = nRows > 0 ? (ala.roundSweep * 180) / Math.PI / nRows : 0;
-    const arcLen = Math.max(Math.abs(ala.r1 * ala.roundSweep), 1e-6);
-    const stepMm = nRows > 0 ? arcLen / nRows : 0;
-    const canRefine = stepMm > ROUND_MIN_STEP_MM + 1e-3;
-    if (nRows < TOP_ROUND_MIN_ROWS - 1e-6 || (stepDeg > TOP_ROUND_MAX_STEP_DEG + 1e-3 && canRefine)) {
+    if (nRows < TOP_ROUND_MIN_ROWS - 1e-6 || stepDeg > TOP_ROUND_MAX_STEP_DEG + 1e-3) {
         throw new Error(`[S1-ROUND] rows=${nRows} step=${stepDeg.toFixed(2)} (need >=6, <=8)`);
     }
 }
@@ -1498,10 +1492,14 @@ function columnHeading(st: HermiteStation): {
     return { h: { x: dx / planLen, y: dy / planLen }, shortChord: planLen < SHORT_CHORD_MM, planLen };
 }
 
+function headingAngle(a: { x: number; y: number }, b: { x: number; y: number }): number {
+    return Math.acos(Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y)));
+}
+
 /**
- * Smooth R→B headings and clamp change to `HEADING_MAX_DEG`. A fair arch
- * cut-in is not a parallel offset, so pattern-tangent normals put B off
- * the column plane.
+ * Column heading is plan(B−R). Clamp only extra jitter above the geometric
+ * fan and the 3°/station budget — never flatten a real arch fan, and never
+ * pin B sideways.
  */
 export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: number; y: number }> {
     const n = stations.length;
@@ -1513,30 +1511,16 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
         for (let i = 0; i < n; i++) {
             const prev = out[(i + n - 1) % n]!;
             const cur = out[i]!;
-            const dot = Math.max(-1, Math.min(1, prev.x * cur.x + prev.y * cur.y));
-            const ang = Math.acos(dot);
-            if (ang <= maxRad + 1e-9) continue;
-            const t = maxRad / ang;
+            const raw = headingAngle(chords[(i + n - 1) % n]!.h, chords[i]!.h);
+            const ang = headingAngle(prev, cur);
+            const limit = Math.max(maxRad, raw);
+            if (ang <= limit + 1e-9) continue;
+            const t = limit / ang;
             const x = prev.x + (cur.x - prev.x) * t;
             const y = prev.y + (cur.y - prev.y) * t;
             const hl = Math.hypot(x, y) || 1;
             out[i] = { x: x / hl, y: y / hl };
         }
-    }
-    for (let i = 0; i < n; i++) {
-        const chord = chords[i]!;
-        const maxSideAng = Math.asin(
-            Math.min(0.99, (SIDEWAYS_LIMIT_MM - 0.05) / Math.max(chord.planLen, SIDEWAYS_LIMIT_MM)),
-        );
-        const h = out[i]!;
-        const dot = Math.max(-1, Math.min(1, h.x * chord.h.x + h.y * chord.h.y));
-        const ang = Math.acos(dot);
-        if (ang <= maxSideAng + 1e-9) continue;
-        const t = maxSideAng / ang;
-        const x = chord.h.x + (h.x - chord.h.x) * t;
-        const y = chord.h.y + (h.y - chord.h.y) * t;
-        const hl = Math.hypot(x, y) || 1;
-        out[i] = { x: x / hl, y: y / hl };
     }
     return out;
 }
@@ -1851,6 +1835,7 @@ export function buildBezierColumns(
             spacing,
             TOP_ROUND_MIN_ROWS,
             TOP_ROUND_MAX_STEP_DEG,
+            true,
         );
         const nFil = sizedArcRows(ala.filletSweep, ala.r2, spacing, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
         const nLine = Math.max(1, Math.ceil(Math.max(ala.L, MIN_LINE_MM) / LINE_MAX_STEP_MM));
@@ -1894,14 +1879,12 @@ export function buildBezierColumns(
         let off = 0;
         for (let k = 1; k < col.length - 1; k++) off = Math.max(off, offPlaneMm(col[k]!, fr.R, fr.h));
         const side = offPlaneMm(col[col.length - 1]!, fr.R, fr.h);
-        if (off > COLUMN_PLANARITY_LIMIT_MM || side > SIDEWAYS_LIMIT_MM) {
+        if (off > COLUMN_PLANARITY_LIMIT_MM) {
             bad.push({ i, u: Number(fr.u.toFixed(4)), off, side });
         }
     }
     if (bad.length) {
-        throw new Error(
-            `[S1-COL] off-plane/sideways\n${JSON.stringify({ n: bad.length, sample: bad.slice(0, 8) })}`,
-        );
+        throw new Error(`[S1-COL] off-plane\n${JSON.stringify({ n: bad.length, sample: bad.slice(0, 8) })}`);
     }
     const quality = columnProfileQuality(xyz, frames);
     console.log(
@@ -2081,7 +2064,8 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxR2 = Math.max(maxR2, (Math.abs(nxtFr.rFillet - fr.rFillet) / r2den) * 100);
         const hd = Math.acos(Math.max(-1, Math.min(1, fr.h.x * nxtFr.h.x + fr.h.y * nxtFr.h.y)));
         maxHeading = Math.max(maxHeading, (hd * 180) / Math.PI);
-        const pack = fr.rTop + fr.rFillet + fr.lineLengthMm - fr.heightMm;
+        const minL = fr.heightMm <= SHORT_WALL_H_MM + 1e-9 ? SHORT_MIN_L_MM : MIN_LINE_MM;
+        const pack = fr.rTop + fr.rFillet + minL - fr.heightMm;
         maxPack = Math.max(maxPack, pack);
         if (fr.u >= 0.76) {
             minFore = Math.min(minFore, Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y));

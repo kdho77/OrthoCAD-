@@ -25,7 +25,11 @@ import {
     snapToStep,
     type WallRegionDefaults,
 } from "./defaults";
-import { densifyHeelForefootStations, fillLargeStationGaps } from "./densify-stations";
+import {
+    densifyArchFanStations,
+    densifyHeelForefootStations,
+    fillLargeStationGaps,
+} from "./densify-stations";
 import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
 import { buildHermiteStations } from "./loft";
@@ -38,9 +42,12 @@ import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
 import { assertClosedStationRing, assertPeriodicQuadStrip, rotateStationRing } from "./ring-seam";
 import {
     countPlanViewChordCrossings,
+    mapLoopByMatchedFeatures,
     pairAtNativeTop,
+    resampleBySmoothedParameter,
     retargetPlantarFromE,
     spreadClosedOnLoop,
+    TB_SMOOTH_SIGMA_MM,
 } from "./stations";
 import type { StockWallModel } from "./types";
 
@@ -471,7 +478,9 @@ export function reconstructProceduralWalls(
         );
         return rnd.E;
     });
-    pairing.plantar = retargetPlantarFromE(E, hygiened.loop);
+    const featureB = mapLoopByMatchedFeatures(pairing.top, hygiened.loop, model.bounds, medialYSign);
+    const featureX = countPlanViewChordCrossings(featureB, pairing.top);
+    pairing.plantar = featureX === 0 ? featureB : retargetPlantarFromE(E, hygiened.loop);
     pairing.sidewaysSkewMm = pairing.plantar.map((p, i) => {
         const e = E[i]!;
         const n = pairing.normals[i] ?? { x: 0, y: 1 };
@@ -512,6 +521,21 @@ export function reconstructProceduralWalls(
         0.4,
     );
     for (let i = 0; i < stations.length; i++) stations[i]!.outline = spreadB[i]!;
+    const applySmoothedB = (): boolean => {
+        const before = stations.map((s) => ({ ...s.outline }));
+        const rim = stations.map((s) => s.rim);
+        const smoothed = resampleBySmoothedParameter(before, hygiened.loop, rim, TB_SMOOTH_SIGMA_MM);
+        const x = countPlanViewChordCrossings(
+            smoothed,
+            stations.map((s) => s.rim),
+        );
+        if (x !== 0) return false;
+        for (let i = 0; i < stations.length; i++) stations[i]!.outline = smoothed[i]!;
+        return true;
+    };
+    applySmoothedB();
+    densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
+    applySmoothedB();
     assertClosedStationRing(stations, rimLocal);
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,

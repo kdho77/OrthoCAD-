@@ -81,6 +81,7 @@ export {
     medialYSignFromTopRim,
     PATTERN_ARCH_INSET_MM,
     PATTERN_BLEND_MM,
+    PATTERN_CONTROL_COUNT,
     PATTERN_FEATURE_COUNT,
     PATTERN_FOREFOOT_INSET_MM,
     PATTERN_HEEL_INSET_MM,
@@ -88,6 +89,7 @@ export {
     PATTERN_INSET_MM,
     PATTERN_MAX_DKDS,
     PATTERN_MIN_INSET_MM,
+    PATTERN_SILHOUETTE_MM,
     PATTERN_SOURCE_SYNTHETIC,
     type PatternCurvatureReport,
     parseBottomPattern,
@@ -138,6 +140,12 @@ export {
     matchedLoftCurves,
     sampleUvField,
 } from "./extract";
+export {
+    FAIRED_CONTROL_DEFAULT,
+    type FairedPattern,
+    type FairedPatternInput,
+    fairedPattern,
+} from "./faired-pattern";
 export { evaluateHeelCupGate } from "./hermite";
 export {
     type ClassifiedHit,
@@ -228,14 +236,19 @@ export {
     countPlanViewChordCrossings,
     FLARE_DEV_CAP_DEG,
     type FlareCapReport,
+    mapLoopByMatchedFeatures,
     masterCurveRadii,
     pairAtNativeTop,
     pairByHarmonic,
     pairByOutwardRay,
+    parameterOnClosedLoop,
+    resampleBySmoothedParameter,
     retargetPlantarFromE,
     SKEW_LIMIT_MM,
     type StationPairing,
+    smoothClosedParameters,
     smoothClosedToMinRadius,
+    TB_SMOOTH_SIGMA_MM,
 } from "./stations";
 export type {
     BottomOutline,

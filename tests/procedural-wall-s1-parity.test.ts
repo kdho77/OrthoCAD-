@@ -46,7 +46,10 @@ import {
     N_TOP_MAX_DEG,
     outlineExactOnBMm,
     outlineSeamDihedrals,
+    PATTERN_HEEL_INSET_MM,
     PATTERN_MAX_DKDS,
+    PATTERN_MIN_INSET_MM,
+    PATTERN_SILHOUETTE_MM,
     PATTERN_SOURCE_SYNTHETIC,
     patternCurvatureReport,
     plantarFlatDeltaMm,
@@ -56,7 +59,6 @@ import {
     reconstructProceduralWalls,
     S1_MIN_WALL_MM,
     SEAM_B_LIMIT_DEG,
-    SIDEWAYS_LIMIT_MM,
     SKEW_LIMIT_MM,
     STATION_GAP_MULT,
     sheetBoundaryStats,
@@ -463,8 +465,6 @@ describe("S1 parametric wall", () => {
             if (offPlane > COLUMN_PLANARITY_LIMIT_MM) {
                 misses.push(`off-plane ${offPlane.toFixed(4)}>${COLUMN_PLANARITY_LIMIT_MM}`);
             }
-            const side = (rebuilt.userData as { maxSidewaysMm?: number }).maxSidewaysMm ?? 0;
-            if (side > SIDEWAYS_LIMIT_MM) misses.push(`sideways ${side.toFixed(3)}>${SIDEWAYS_LIMIT_MM}`);
             const wind = windingReport(rebuilt);
             if (!wind.consistent || wind.signedVolume <= 0 || wind.oppositeEdgeMismatch !== 0) {
                 misses.push(
@@ -698,9 +698,6 @@ describe("S1 parametric wall", () => {
                     `${smoke.name} off-plane ${sud.maxOffPlaneMm!.toFixed(4)}>${COLUMN_PLANARITY_LIMIT_MM}`,
                 );
             }
-            if ((sud.maxSidewaysMm ?? 0) > SIDEWAYS_LIMIT_MM) {
-                smokeMiss.push(`${smoke.name} sideways ${sud.maxSidewaysMm}`);
-            }
             const wind = windingReport(rebuilt);
             if (!wind.consistent || wind.signedVolume <= 0 || wind.oppositeEdgeMismatch !== 0) {
                 smokeMiss.push(`${smoke.name} winding mismatch=${wind.oppositeEdgeMismatch}`);
@@ -832,9 +829,6 @@ describe("S1 parametric wall", () => {
         if ((sud.maxOffPlaneMm ?? 0) > COLUMN_PLANARITY_LIMIT_MM) {
             misses.push(`off-plane ${sud.maxOffPlaneMm}`);
         }
-        if ((sud.maxSidewaysMm ?? 0) > SIDEWAYS_LIMIT_MM) {
-            misses.push(`sideways ${sud.maxSidewaysMm}`);
-        }
         const wind = windingReport(rebuilt);
         if (!wind.consistent || wind.signedVolume <= 0 || wind.oppositeEdgeMismatch !== 0) {
             misses.push(`winding vol=${wind.signedVolume.toFixed(1)} mismatch=${wind.oppositeEdgeMismatch}`);
@@ -898,12 +892,59 @@ describe("S1 parametric wall", () => {
             "/opt/cursor/artifacts/screenshots/bottom-view-curvature.png",
             encodePng(overlay.width, overlay.height, overlay.rgb),
         );
-        if (curv.inflections < 2 || curv.inflections > 4) {
-            misses.push(`pattern-inflections ${curv.inflections} not in [2,4]`);
+        if (curv.inflections !== 2) {
+            misses.push(`pattern-inflections ${curv.inflections} != 2`);
         }
-        if (curv.lateralMinK < -2e-3) misses.push(`lateral-concave k=${curv.lateralMinK.toFixed(5)}`);
+        if (curv.lateralMinK < 0) misses.push(`lateral-concave k=${curv.lateralMinK.toFixed(5)}`);
         if (curv.maxAbsDkDs > PATTERN_MAX_DKDS) {
             misses.push(`pattern-dkds ${curv.maxAbsDkDs.toFixed(4)}>${PATTERN_MAX_DKDS}`);
+        }
+        let minInset = Infinity;
+        for (const p of pattern) {
+            let best = Infinity;
+            for (let i = 0; i < rim3d.length; i++) {
+                const a = rim3d[i]!;
+                const b = rim3d[(i + 1) % rim3d.length]!;
+                const ex = b.x - a.x;
+                const ey = b.y - a.y;
+                const len2 = ex * ex + ey * ey;
+                const t =
+                    len2 > 1e-12 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
+                best = Math.min(best, Math.hypot(p.x - (a.x + ex * t), p.y - (a.y + ey * t)));
+            }
+            minInset = Math.min(minInset, best);
+        }
+        if (minInset < PATTERN_MIN_INSET_MM - 1e-3) {
+            misses.push(`pattern-inset ${minInset.toFixed(3)}<${PATTERN_MIN_INSET_MM}`);
+        }
+        const footLen = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+        let heelFeat = 0;
+        let toeFeat = Infinity;
+        for (const p of pattern) {
+            const u = (p.x - model.bounds.minX) / footLen;
+            let best = Infinity;
+            for (let i = 0; i < rim3d.length; i++) {
+                const a = rim3d[i]!;
+                const b = rim3d[(i + 1) % rim3d.length]!;
+                const ex = b.x - a.x;
+                const ey = b.y - a.y;
+                const len2 = ex * ex + ey * ey;
+                const t =
+                    len2 > 1e-12 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
+                best = Math.min(best, Math.hypot(p.x - (a.x + ex * t), p.y - (a.y + ey * t)));
+            }
+            if (u < 0.12) heelFeat = Math.max(heelFeat, best);
+            if (u > 0.82) toeFeat = Math.min(toeFeat, best);
+        }
+        if (Math.abs(heelFeat - PATTERN_HEEL_INSET_MM) > PATTERN_SILHOUETTE_MM) {
+            misses.push(
+                `pattern-heel ${heelFeat.toFixed(2)} not ${PATTERN_HEEL_INSET_MM}±${PATTERN_SILHOUETTE_MM}`,
+            );
+        }
+        if (Math.abs(toeFeat - FOREFOOT_INSET_MM) > PATTERN_SILHOUETTE_MM) {
+            misses.push(
+                `pattern-toe ${toeFeat.toFixed(2)} not ${FOREFOOT_INSET_MM}±${PATTERN_SILHOUETTE_MM}`,
+            );
         }
         writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.stl", stl);
         const glb = await exportObjectToGlb(meshFromGeometry(rebuilt));

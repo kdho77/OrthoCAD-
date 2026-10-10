@@ -69,10 +69,10 @@ describe("synthetic bottom pattern", () => {
         expect(maxC).toBeGreaterThan(PATTERN_HEEL_INSET_MM * 0.7);
         expect(medial).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.45);
         const curv = patternCurvatureReport(pattern, bounds, 1);
-        expect(curv.inflections).toBeGreaterThanOrEqual(2);
-        expect(curv.inflections).toBeLessThanOrEqual(4);
-        expect(curv.lateralMinK).toBeGreaterThan(-2e-3);
-        expect(curv.maxAbsDkDs).toBeLessThan(PATTERN_MAX_DKDS);
+        expect(curv.inflections).toBe(2);
+        expect(curv.lateralMinK).toBeGreaterThanOrEqual(0);
+        expect(curv.maxAbsDkDs).toBeLessThanOrEqual(PATTERN_MAX_DKDS);
+        expect(minC).toBeGreaterThanOrEqual(1 - 1e-3);
         const latBins = new Map<number, number[]>();
         for (const p of pattern) {
             const u = (p.x - bounds.minX) / length;
