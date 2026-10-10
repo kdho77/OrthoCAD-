@@ -469,10 +469,15 @@ export function syntheticBottomPattern(
         });
     let fit = fitOnce(22, 0.34);
     let out = makeLateralConvex(fit.samples, sign, 36, yMid);
-    const report = patternCurvatureReport(out, bounds, sign);
-    if (report.inflections >= 4) {
-        fit = fitOnce(PATTERN_CONTROL_RETRY, PATTERN_FAIR_RETRY_W);
-        out = makeLateralConvex(fit.samples, sign, 36, yMid);
+    const retries: Array<[number, number]> = [
+        [PATTERN_CONTROL_RETRY, PATTERN_FAIR_RETRY_W],
+        [PATTERN_CONTROL_RETRY, 0.7],
+        [12, 0.8],
+    ];
+    for (const [ctrl, wFair] of retries) {
+        if (patternCurvatureReport(out, bounds, sign).inflections <= 2) break;
+        fit = fitOnce(ctrl, wFair);
+        out = makeLateralConvex(fit.samples, sign, 48, yMid);
     }
     return out;
 }

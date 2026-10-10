@@ -1069,7 +1069,9 @@ function medianStationSpacing(stations: HermiteStation[]): number {
     if (stations.length < 2) return 1.3;
     const ds = stations.map((s, i) => {
         const n = stations[(i + 1) % stations.length]!;
-        return Math.hypot(n.rim.x - s.rim.x, n.rim.y - s.rim.y, n.rim.z - s.rim.z);
+        const dR = Math.hypot(n.rim.x - s.rim.x, n.rim.y - s.rim.y, n.rim.z - s.rim.z);
+        const dB = Math.hypot(n.outline.x - s.outline.x, n.outline.y - s.outline.y);
+        return Math.min(dR, dB);
     });
     ds.sort((a, b) => a - b);
     return ds[Math.floor(ds.length / 2)] ?? 1.3;
@@ -1598,28 +1600,27 @@ export function periodicGaussian(vals: number[], rim: XYZ[], sigma = SCALAR_SMOO
     });
 }
 
-/** Pull adjacent scalars until |Δ| / max(a,b) ≤ maxPct / 100. */
+/** Pull adjacent scalars until |Δ| / max(from, 1e-6) ≤ maxPct / 100. */
 export function rateLimitClosed(vals: number[], maxPct: number, floor = 0): number[] {
     const n = vals.length;
     const out = vals.map((v) => Math.max(floor, v));
     if (n < 2) return out;
     const f = Math.max(0, maxPct) / 100;
-    for (let pass = 0; pass < 24; pass++) {
-        let dirty = false;
+    const pull = (from: number, to: number): number => {
+        const den = Math.max(from, 1e-6);
+        const lo = den * (1 - f);
+        const hi = den * (1 + f);
+        return Math.max(floor, Math.min(hi, Math.max(lo, to)));
+    };
+    for (let pass = 0; pass < 6; pass++) {
         for (let i = 0; i < n; i++) {
             const j = (i + 1) % n;
-            const a = out[i]!;
-            const b = out[j]!;
-            const den = Math.max(Math.max(a, b), 1e-6);
-            if (Math.abs(b - a) <= den * f + 1e-12) continue;
-            const mid = 0.5 * (a + b);
-            const half = 0.5 * den * f;
-            const sign = b >= a ? 1 : -1;
-            out[i] = Math.max(floor, mid - sign * half);
-            out[j] = Math.max(floor, mid + sign * half);
-            dirty = true;
+            out[j] = pull(out[i]!, out[j]!);
         }
-        if (!dirty) break;
+        for (let i = n - 1; i >= 0; i--) {
+            const j = (i + 1) % n;
+            out[i] = pull(out[j]!, out[i]!);
+        }
     }
     return out;
 }
@@ -1799,10 +1800,12 @@ function applySmooth(
             rim,
         ),
     );
-    applyLimited(
-        frames.map((f) => f.rTop),
-        frames.map((f) => f.rFillet),
-    );
+    for (let pass = 0; pass < 4; pass++) {
+        applyLimited(
+            frames.map((f) => f.rTop),
+            frames.map((f) => f.rFillet),
+        );
+    }
     return { before, after: snapshotStationParams(frames) };
 }
 
@@ -1885,6 +1888,24 @@ export function buildBezierColumns(
     }
     nWall = nNeed;
     guardFrames(frames, junctions, rimLoop, topZ, nWall, spacing);
+    {
+        const lim1 = rateLimitClosed(
+            frames.map((f) => f.rTop),
+            R_CHANGE_MAX_PCT,
+            MIN_ROUND_R_MM,
+        );
+        const lim2 = rateLimitClosed(
+            frames.map((f) => f.rFillet),
+            R_CHANGE_MAX_PCT,
+            0.05,
+        );
+        for (let i = 0; i < frames.length; i++) {
+            const fr = frames[i]!;
+            fr.rTop = lim1[i]!;
+            fr.rFillet = lim2[i]!;
+            applyAlaToFrame(fr);
+        }
+    }
     const xyz: PolyPoint[][] = [];
     const implied: number[] = [];
     let maxOff = 0;
