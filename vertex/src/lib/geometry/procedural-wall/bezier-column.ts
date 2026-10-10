@@ -1526,7 +1526,7 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
     for (let i = 0; i < n; i++) {
         const chord = chords[i]!;
         const maxSideAng = Math.asin(
-            Math.min(0.99, SIDEWAYS_LIMIT_MM / Math.max(chord.planLen, SIDEWAYS_LIMIT_MM)),
+            Math.min(0.99, (SIDEWAYS_LIMIT_MM - 0.05) / Math.max(chord.planLen, SIDEWAYS_LIMIT_MM)),
         );
         const h = out[i]!;
         const dot = Math.max(-1, Math.min(1, h.x * chord.h.x + h.y * chord.h.y));
