@@ -41,9 +41,11 @@ export const ASPECT_ROUND_S1_MAX = 40;
 export const ASPECT_LAST_STRIP_MAX = 40;
 /** S1-acceptable last-fillet chord / C_MIN. 0.8–1.0 is logged for S2. */
 export const FIL_CHORD_S1_MIN = 0.8;
-/** First fillet step leaving F vs the line's last segment. */
-export const FILLET_FIRST_STEP_MIN_RATIO = 0.67;
+/** First fillet step leaving F vs the even fillet body step (cap only). */
+export const FILLET_FIRST_STEP_MIN_RATIO = 0.5;
 export const FILLET_FIRST_STEP_MAX_RATIO = 1.5;
+/** Adjacent-station first-step jump vs max(first_i, first_{i±1}). */
+export const FILLET_FIRST_STEP_NEIGHBOUR_FRAC = 0.3;
 /** Logged [S1-CHORD-FLOOR] stations may undershoot C_MIN, at most this fraction. */
 export const LAST_CHORD_FLOOR_MAX_FRAC = 0.05;
 /** Post-loft signed-dihedral cap. S1-stage p99 / E/F-turn stay 5 / 6.5. */
@@ -315,6 +317,10 @@ export interface ColumnQuality {
     maxStartIncidentDeg: number;
     /** min fillet-row Euclidean / C_MIN. Gate: ≥1. */
     minFilletChordOverCMin: number;
+    /** Max adjacent-step ratio along a column (fillet body, excluding reserved last). */
+    maxNeighbourColumnStepRatio: number;
+    /** Max |firstStep_i − firstStep_{i±1}| / max(first_i, first_{i±1}). */
+    maxFirstStepNeighbourFrac: number;
 }
 
 export interface BezierColumns {
@@ -359,6 +365,12 @@ export interface StationParamRow {
 
 function hypot3(a: XYZ): number {
     return Math.hypot(a.x, a.y, a.z);
+}
+
+function smoothstep01(e0: number, e1: number, x: number): number {
+    if (e0 === e1) return x < e0 ? 0 : 1;
+    const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+    return t * t * (3 - 2 * t);
 }
 
 function unit3(a: XYZ): XYZ {
@@ -1100,8 +1112,19 @@ function enforceAbsRadiusRate(frames: ColumnFrame[], movedAt?: (u: number) => bo
                   r2Floors,
               );
         for (let i = 0; i < frames.length; i++) {
-            frames[i]!.rTop = lim1[i]!;
-            frames[i]!.rFillet = movedB ? lim2[i]! : Math.max(r2Floors[i]!, lim2[i]!);
+            const fr = frames[i]!;
+            fr.rTop = lim1[i]!;
+            fr.rFillet = movedB ? lim2[i]! : Math.max(r2Floors[i]!, lim2[i]!);
+            fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
+            const packed = scaleShortWallPack(
+                fr.heightMm,
+                fr.rTop,
+                fr.rFillet,
+                minLineOfHeight(fr.heightMm),
+                MIN_ROUND_R_MM,
+            );
+            fr.rTop = packed.r1;
+            fr.rFillet = packed.r2;
         }
         for (const fr of frames) applyAlaToFrame(fr);
         let maxR1 = 0;
@@ -1109,6 +1132,63 @@ function enforceAbsRadiusRate(frames: ColumnFrame[], movedAt?: (u: number) => bo
             maxR1 = Math.max(maxR1, Math.abs(frames[(i + 1) % frames.length]!.rTop - frames[i]!.rTop));
         }
         if (maxR1 <= R_ABS_RATE_MM + 1e-9) break;
+    }
+}
+
+/**
+ * Laplacian-smooth F in the plantar frame (s, z) then re-solve r2 and U.
+ * Does not raise r2 globally — each station's r2 comes from its own F.
+ */
+export function smoothFRing(frames: ColumnFrame[]): void {
+    if (frames.length < 3) return;
+    for (let pass = 0; pass < 3; pass++) {
+        const plan = ringTurningDeg(
+            frames.map((f) => f.F),
+            true,
+        );
+        if (plan <= RING_TURNING_MAX_DEG + 1e-9) break;
+        const n = frames.length;
+        const sz = frames.map((fr) => {
+            const frame = resolvePlantarFrame(fr.nB ?? fr.h, fr.plantarSlopeRad, fr.nPlantar);
+            const d = { x: fr.F.x - fr.B.x, y: fr.F.y - fr.B.y, z: fr.F.z - fr.B.z };
+            return {
+                s: d.x * frame.ew.x + d.y * frame.ew.y + d.z * frame.ew.z,
+                z: d.x * frame.ez.x + d.y * frame.ez.y + d.z * frame.ez.z,
+                frame,
+            };
+        });
+        const next = sz.map((cur, i) => {
+            const prev = sz[(i + n - 1) % n]!;
+            const nxt = sz[(i + 1) % n]!;
+            return {
+                s: cur.s + 0.5 * (0.5 * (prev.s + nxt.s) - cur.s),
+                z: cur.z + 0.5 * (0.5 * (prev.z + nxt.z) - cur.z),
+            };
+        });
+        for (let i = 0; i < n; i++) {
+            const fr = frames[i]!;
+            const frame = sz[i]!.frame;
+            const s = next[i]!.s;
+            const z = next[i]!.z;
+            fr.F = {
+                x: fr.B.x + s * frame.ew.x + z * frame.ez.x,
+                y: fr.B.y + s * frame.ew.y + z * frame.ez.y,
+                z: fr.B.z + s * frame.ew.z + z * frame.ez.z,
+            };
+            const solved = z > 1e-9 ? (s * s + z * z) / (2 * z) : fr.rFillet;
+            const height = Math.max(fr.R.z - fr.B.z, 0.5);
+            const packed = scaleShortWallPack(
+                height,
+                fr.rTop,
+                Math.max(0, solved),
+                minLineOfHeight(height),
+                MIN_ROUND_R_MM,
+            );
+            fr.rFillet = packed.r2;
+            const U = { x: fr.E.x - fr.F.x, y: fr.E.y - fr.F.y, z: fr.E.z - fr.F.z };
+            if (hypot3(U) > 1e-9) fr.U = unit3(U);
+        }
+        for (const fr of frames) applyAlaToFrame(fr);
     }
 }
 
@@ -1281,25 +1361,31 @@ export function sampleFilletPiecePoints(
     const lastPhi = S > 1e-12 && dL > 1e-12 ? Math.min(dL, S / 2) : 0;
     const lastLen = Math.max(0, r2) * lastPhi;
     const bodyLen = Math.max(0, lF - lastLen);
-    const lastLine = nLine && nLine > 0 ? Math.max(0, L - steal) / nLine : 0;
-    let firstS = n > 0 ? bodyLen / n : 0;
-    if (lastLine > 1e-12 && n >= 2 && bodyLen > 1e-12) {
-        const lo = FILLET_FIRST_STEP_MIN_RATIO * lastLine;
-        const hi = FILLET_FIRST_STEP_MAX_RATIO * lastLine;
-        const equalChord = dist3(Fpiece, pointAt(bodyLen / n));
-        const target = Math.min(hi, Math.max(lo, equalChord));
+    const evenStep = n > 0 ? bodyLen / n : 0;
+    let firstS = evenStep;
+    if (n >= 2 && bodyLen > 1e-12) {
+        const equalChord = dist3(Fpiece, pointAt(evenStep));
         const minRest = (n - 1) * Math.max(cMin, 1e-6);
         const maxFirst = Math.max(1e-9, bodyLen - minRest);
+        const capS = Math.min(maxFirst, FILLET_FIRST_STEP_MAX_RATIO * evenStep);
+        const maxChordAvail = dist3(Fpiece, pointAt(Math.min(maxFirst, bodyLen * 0.85)));
+        let target = equalChord;
+        const w = smoothstep01(0, 1, (maxChordAvail - target) / Math.max(1e-9, 0.5 * target));
+        target = evenStep > 1e-12 ? target * w + dist3(Fpiece, pointAt(evenStep)) * (1 - w) : target;
         let a = 1e-9;
-        let b = Math.min(maxFirst, bodyLen * 0.85);
-        if (b > a && target <= dist3(Fpiece, pointAt(maxFirst)) + 1e-9) {
+        let b = capS;
+        if (b > a && target <= dist3(Fpiece, pointAt(capS)) + 1e-9) {
             for (let it = 0; it < 24; it++) {
                 const mid = 0.5 * (a + b);
                 if (dist3(Fpiece, pointAt(mid)) < target) a = mid;
                 else b = mid;
             }
-            firstS = Math.min(maxFirst, 0.5 * (a + b));
+            firstS = Math.min(capS, 0.5 * (a + b));
+        } else {
+            firstS = Math.min(capS, evenStep);
         }
+        firstS = evenStep + w * (firstS - evenStep);
+        firstS = Math.min(capS, Math.max(1e-9, firstS));
     }
     if (n >= 2 && firstS > 1e-12 && Math.abs(firstS - bodyLen / n) > 1e-12) {
         pts.push(pointAt(firstS));
@@ -1494,6 +1580,32 @@ export function packAlaRadii(
     return { r1, r2 };
 }
 
+/**
+ * Short-wall height budget: if r1+r2+minL exceeds 0.9 H, shrink r2 and minL
+ * by k and keep r1 at least the floor. Leaves 10% of H so the last strip
+ * cannot flip on the toe (x ~ 195–223).
+ */
+export function scaleShortWallPack(
+    height: number,
+    r1In: number,
+    r2In: number,
+    minLIn: number,
+    r1Floor: number,
+): { r1: number; r2: number; minL: number } {
+    const r1 = Math.max(r1Floor, r1In);
+    const r2 = Math.max(0, r2In);
+    const minL = Math.max(0, minLIn);
+    const pack = r1 + r2 + minL;
+    const budget = 0.9 * Math.max(height, 1e-9);
+    if (pack <= budget + 1e-12) return { r1, r2, minL };
+    const k = budget / pack;
+    return {
+        r1: Math.max(r1Floor, k * r1),
+        r2: r2 * k,
+        minL: minL * k,
+    };
+}
+
 export function clampR1ToBudget(
     r1: number,
     height: number,
@@ -1535,7 +1647,7 @@ export function constructArcLineArc(
     const nPlant = unit3(frame.ez);
     const height = Math.max(R.z - B.z, 0.5);
     const short = height <= SHORT_WALL_H_MM + 1e-9;
-    const minL = short ? SHORT_MIN_L_MM : MIN_LINE_MM;
+    let minL = short ? SHORT_MIN_L_MM : MIN_LINE_MM;
     const dLGuess = lastFilletDLRad(Math.PI / 2, cosT);
     const r2Min = lastFilletR2MinMm(stationSpacing, dLGuess);
     const r1Floor = MIN_ROUND_R_MM;
@@ -1552,6 +1664,10 @@ export function constructArcLineArc(
     r1 = packedRadii.r1;
     r2 = packedRadii.r2;
     r1 = clampR1ToBudget(r1, height, r2, minL, r1Floor);
+    const shortPack = scaleShortWallPack(height, r1, r2, minL, r1Floor);
+    r1 = shortPack.r1;
+    r2 = shortPack.r2;
+    minL = shortPack.minL;
     const alaOk = (
         hit: { C1: Sz; C2: Sz; hit: { L: number } } | null,
     ): hit is { C1: Sz; C2: Sz; hit: { L: number } } =>
@@ -1772,7 +1888,7 @@ export function constructSweepRule(
     const nPlant = unit3(frame.ez);
     const height = Math.max(R.z - B.z, 0.5);
     const short = height <= SHORT_WALL_H_MM + 1e-9;
-    const minL = short ? SHORT_MIN_L_MM : MIN_LINE_MM;
+    let minL = short ? SHORT_MIN_L_MM : MIN_LINE_MM;
     const seedCosT = Math.max(0, Math.min(1, h.x * nB.x + h.y * nB.y));
     const dLGuess = lastFilletDLRad(Math.PI / 2, seedCosT);
     const r2Min = lastFilletR2MinMm(localSpacing, dLGuess);
@@ -1789,6 +1905,10 @@ export function constructSweepRule(
     r1 = packedRadii.r1;
     r2 = packedRadii.r2;
     r1 = clampR1ToBudget(r1, height, r2, minL, r1Floor);
+    const shortPack = scaleShortWallPack(height, r1, r2, minL, r1Floor);
+    r1 = shortPack.r1;
+    r2 = shortPack.r2;
+    minL = shortPack.minL;
     const tInc = (planeN ? incidentFaceTangent(planeN, h) : incidentFaceTangent(eN, h)) ?? eW;
     let tStart = unit3(eW);
     if (dot3(tStart, tInc) < 0) tStart = { x: -tStart.x, y: -tStart.y, z: -tStart.z };
@@ -3741,6 +3861,7 @@ export function buildBezierColumns(
     );
     enforceLastChordFloor(frames, true);
     enforceAbsRadiusRate(frames, movedAt);
+    smoothFRing(frames);
     lockFilletSteal(frames, nFilStar);
     const xyz: PolyPoint[][] = [];
     const implied: number[] = [];
@@ -4250,6 +4371,10 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let maxRoundStepDeg = 0;
     let maxStartIncidentDeg = 0;
     let minFilletChordOverCMin = Infinity;
+    let maxNeighbourColumnStepRatio = 1;
+    let maxFirstStepNeighbourFrac = 0;
+    const firstSteps: number[] = [];
+    const foldAtU: Array<{ i: number; u: number; fold: number; across: number }> = [];
     const fallback: ObliqueFallbackRow[] = [];
     const stationSeam: number[] = [];
     let worstAcross = { i: -1, j: -1, u: -1, wrap: false, deg: 0 };
@@ -4332,6 +4457,17 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         }
         const nRnd = fr.nRoundFix || fr.roundRows || 0;
         const nLn = fr.nLineFix || 0;
+        const fIdx = nRnd + nLn;
+        if (fIdx >= 0 && fIdx + 1 < col.length) {
+            firstSteps[i] = dist3(col[fIdx]!, col[fIdx + 1]!);
+        }
+        for (let j = 1; j < col.length - 2; j++) {
+            const a = dist3(col[j - 1]!, col[j]!);
+            const b = dist3(col[j]!, col[j + 1]!);
+            const lo = Math.min(a, b);
+            const hi = Math.max(a, b);
+            if (lo > 1e-9) maxNeighbourColumnStepRatio = Math.max(maxNeighbourColumnStepRatio, hi / lo);
+        }
         if (nRnd > 0) {
             maxRoundStepDeg = Math.max(maxRoundStepDeg, (Math.abs(fr.roundSweepRad) * 180) / Math.PI / nRnd);
         }
@@ -4466,6 +4602,18 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             maxSignedFold = Math.max(maxSignedFold, foldAcross);
             if (foldAcross > SIGNED_FOLD_MAX_DEG + 1e-6) nFoldsOver90++;
             const raw = vecAngleDeg(nL, nR);
+            if (
+                (fr.u >= 0.17 && fr.u <= 0.19) ||
+                (fr.u >= 0.8 && fr.u <= 0.82) ||
+                (fr.u >= 0.06 && fr.u <= 0.08)
+            ) {
+                foldAtU.push({
+                    i,
+                    u: Number(fr.u.toFixed(4)),
+                    fold: Number(foldAcross.toFixed(2)),
+                    across: Number(raw.toFixed(2)),
+                });
+            }
             acrossAll.push(raw);
             if (raw > maxAcross) {
                 maxAcross = raw;
@@ -4649,6 +4797,23 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             }
         }
     }
+    for (let i = 0; i < nS; i++) {
+        const a = firstSteps[i] ?? 0;
+        const b = firstSteps[(i + 1) % nS] ?? 0;
+        const m = Math.max(a, b);
+        if (m > 1e-9) maxFirstStepNeighbourFrac = Math.max(maxFirstStepNeighbourFrac, Math.abs(a - b) / m);
+    }
+    console.log(
+        "[S1-FSTEP]",
+        JSON.stringify({
+            maxNeighbourStep: Number(maxNeighbourColumnStepRatio.toFixed(3)),
+            firstNeighbourFrac: Number(maxFirstStepNeighbourFrac.toFixed(3)),
+            nFirst: firstSteps.filter((s) => s > 0).length,
+        }),
+    );
+    if (foldAtU.length) {
+        console.log("[S1-FOLD-U]", JSON.stringify(foldAtU.slice(0, 24)));
+    }
     const maxETurning = ringTurningDeg(frames.map((f) => f.E));
     const maxFTurning = ringTurningDeg(frames.map((f) => f.F));
     const maxETurningPlan = ringTurningDeg(
@@ -4785,6 +4950,8 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxRoundStepDeg,
         maxStartIncidentDeg,
         minFilletChordOverCMin: Number.isFinite(minFilletChordOverCMin) ? minFilletChordOverCMin : 1,
+        maxNeighbourColumnStepRatio,
+        maxFirstStepNeighbourFrac,
     };
 }
 

@@ -75,6 +75,13 @@ describe("plantar posting", () => {
         expect(neg).toBeLessThan(0);
         expect(plantarZDelta(10, 20, bounds, input)).toBe(0);
         expect(plantarZDelta(10, -20, bounds, input)).toBe(0);
+        expect(
+            plantarZDelta(42, 0, bounds, {
+                ...input,
+                corrections: { ...input.corrections, archFillMm: 4 },
+                archGrindDepthMm: 3,
+            }),
+        ).toBe(0);
     });
 
     test("clampPostingOnTopSheet undoes downward posting only", () => {

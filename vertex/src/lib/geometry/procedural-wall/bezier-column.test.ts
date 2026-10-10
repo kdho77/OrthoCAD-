@@ -88,6 +88,7 @@ import {
     sampleFilletPiecePoints,
     sampleInPlaneSlope,
     sampleSweepRule,
+    scaleShortWallPack,
     sheetSlopeFromNormal,
     sizedArcRows,
     slopeFromSheetPlane,
@@ -1006,7 +1007,8 @@ describe("bezier column", () => {
         }
         expect(maxStep).toBeLessThan(0.6);
         for (const fr of frames) {
-            const keep = fr.heightMm <= SHORT_WALL_H_MM + 1e-9 ? SHORT_MIN_L_MM : MIN_LINE_MM;
+            const keep0 = fr.heightMm <= SHORT_WALL_H_MM + 1e-9 ? SHORT_MIN_L_MM : MIN_LINE_MM;
+            const keep = scaleShortWallPack(fr.heightMm, fr.rTop, fr.rFillet, keep0, MIN_ROUND_R_MM).minL;
             expect((fr.filletStealLock ?? 0) + keep).toBeLessThanOrEqual(fr.lineLengthMm + 1e-6);
             const budget = clampR1ToBudget(2, fr.heightMm, fr.rFillet, keep);
             expect(budget).toBeLessThanOrEqual(Math.max(MIN_ROUND_R_MM, fr.heightMm - keep) + 1e-6);
@@ -1232,7 +1234,7 @@ describe("bezier column", () => {
         expect(frames[0]!.nPlantar!.z).toBeCloseTo(1, 6);
     });
 
-    test("first fillet step leaving F matches the last line segment", () => {
+    test("first fillet step is the even fillet chord, capped at 1.5x", () => {
         const R = { x: 0, y: 0, z: 12 };
         const B = { x: 8, y: 0, z: 0 };
         const h = { x: 1, y: 0 };
@@ -1254,11 +1256,21 @@ describe("bezier column", () => {
         const dL = lastFilletDLRad(Math.abs(walk.phiB - walk.phiF), 1);
         const pts = sampleSweepRule(sw, R, B, counts.nWall, counts, dL, 2);
         const lineStart = counts.nRound;
-        const lastLine = dist3ish(pts[lineStart + counts.nLine - 1]!, pts[lineStart + counts.nLine]!);
-        const firstFil = dist3ish(pts[lineStart + counts.nLine]!, pts[lineStart + counts.nLine + 1]!);
-        const ratio = firstFil / lastLine;
+        const f0 = lineStart + counts.nLine;
+        const firstFil = dist3ish(pts[f0]!, pts[f0 + 1]!);
+        const nextFil = dist3ish(pts[f0 + 1]!, pts[f0 + 2]!);
+        const ratio = firstFil / nextFil;
         expect(ratio).toBeGreaterThanOrEqual(FILLET_FIRST_STEP_MIN_RATIO - 1e-6);
         expect(ratio).toBeLessThanOrEqual(FILLET_FIRST_STEP_MAX_RATIO + 1e-6);
+    });
+
+    test("scaleShortWallPack shrinks r2 and minL when pack exceeds 0.9 H", () => {
+        const packed = scaleShortWallPack(4, 1.2, 1.5, 1.2, 0.08);
+        expect(packed.r1 + packed.r2 + packed.minL).toBeLessThanOrEqual(0.9 * 4 + 1e-9);
+        expect(packed.r1).toBeGreaterThanOrEqual(0.08);
+        const idle = scaleShortWallPack(12, 0.5, 2, 1, 0.08);
+        expect(idle.r2).toBeCloseTo(2, 6);
+        expect(idle.minL).toBeCloseTo(1, 6);
     });
 
     test("fillet C2 sits on n_plantar and ew follows −h on the plane", () => {

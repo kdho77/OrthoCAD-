@@ -45,7 +45,7 @@ import { countJunctionBandSlivers, windingReport } from "./metrics";
 import {
     clampPostingOnTopSheet,
     type ProceduralModifierInput,
-    plantarZDelta,
+    type ProceduralWallStyle,
     postingZDelta,
 } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
@@ -91,8 +91,13 @@ export interface ReconstructOptions extends ProceduralModifierInput {
     bottomPatternSource?: string;
     /** `synthetic` until Kendon's pattern file arrives. */
     bottomPatternLabel?: string;
-    /** Flat ground plantar (z=0 + grind/arch fill). Dish sampling is skipped. */
+    /** Flat ground plantar (z=0). Dish sampling is skipped. */
     flatPlantar?: boolean;
+    /**
+     * Wall mid-style. The Print-step grinding dropdown selects this;
+     * grind/arch-fill no longer offset the plantar.
+     */
+    wallStyle?: ProceduralWallStyle;
     /**
      * Heel-widen follow. Default 1 when heelCupWidthMm ≠ 0 (B tracks the rim
      * plan displacement, then the faired-pattern QP). 0 = B fixed. Other
@@ -124,7 +129,9 @@ function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
     const whole = input.insoleWidthScale ?? 1;
     if (Number.isFinite(whole) && Math.abs(whole - 1) > 1e-12) return true;
     const c = input.corrections;
-    if (!c) return (input.thicknessMm ?? 0) !== (input.stockThicknessMm ?? input.thicknessMm ?? 0);
+    const thicknessChanged =
+        input.thicknessMm != null && input.thicknessMm !== (input.stockThicknessMm ?? input.thicknessMm);
+    if (!c) return thicknessChanged;
     return (
         c.heelCupWidthMm !== 0 ||
         c.heelCupDepthMm > 0 ||
@@ -134,7 +141,7 @@ function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
         c.heelCupHeightMm !== 0 ||
         c.forefootPostingDeg !== 0 ||
         c.rearfootPostingDeg !== 0 ||
-        (input.thicknessMm ?? 0) !== (input.stockThicknessMm ?? input.thicknessMm ?? 0)
+        thicknessChanged
     );
 }
 
@@ -158,11 +165,17 @@ function applyAnalyticTopDeltas(
     const c = input.corrections ?? zeroCorrections();
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
     const width = Math.max(1e-3, bounds.maxY - bounds.minY);
+    // Thickness delta only when thicknessMm is explicit. Smokes used to pass
+    // stockThicknessMm=3 with thickness omitted, so field defaulted to the
+    // 2 mm BASE_REFERENCE and the whole top (toe rim included) dropped 1 mm
+    // (2.315 → 1.315). The top stays put unless thickness is requested.
+    const requested = input.thicknessMm;
+    const stock = input.stockThicknessMm ?? requested ?? BASE_REFERENCE_THICKNESS_MM;
     const field: HeightFieldParams = {
         side: (input.medialYSign ?? 1) < 0 ? "right" : "left",
         lengthMm: length,
         widthMm: width,
-        thicknessMm: input.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
+        thicknessMm: requested ?? stock,
         corrections: c,
         elements: [],
         includeSkives: false,
@@ -171,7 +184,7 @@ function applyAnalyticTopDeltas(
     };
     const neutral: HeightFieldParams = {
         ...field,
-        thicknessMm: input.stockThicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
+        thicknessMm: stock,
         corrections: zeroCorrections(),
     };
     const minX = bounds.minX;
@@ -926,7 +939,6 @@ export function reconstructProceduralWalls(
         flatPlantar || !model.outline.meshPositions || !model.outline.meshIndices
             ? null
             : buildDishZIndex(model.outline.meshPositions, model.outline.meshIndices);
-    const rawZDelta = (x: number, y: number) => plantarZDelta(x, y, model.bounds, options);
     const outlineZ: PolyPoint[] = pairing.plantar.map((p) => ({
         x: p.x,
         y: p.y,
@@ -1023,7 +1035,7 @@ export function reconstructProceduralWalls(
         stations.map((s) => columnHeading(s).h),
         0,
     );
-    const zDelta = rawZDelta;
+    const zDelta = (): number => 0;
 
     const grid = buildQuadGrid({
         stations,
@@ -1036,7 +1048,6 @@ export function reconstructProceduralWalls(
         topZ,
         liveSheet: useLiveSheet,
         nWall: options.wallLayers ?? 26,
-        refineGrind: (options.archGrindDepthMm ?? 0) > 0,
         flangeHeightMm: flangeH,
         flangeLengthMm: flangeLen,
         flangeAngleDeg: flangeAng,
@@ -1050,6 +1061,19 @@ export function reconstructProceduralWalls(
     const nJ = grid.nJ;
     const generatedStart = positions.length / 3;
     for (let k = 0; k < grid.body.length; k++) positions.push(grid.body[k]!);
+    const refinedB = grid.refinedB ?? grid.outlineRing;
+    const bEdgeK = grid.bEdgeK ?? new Array(nS).fill(1);
+    const refinedOfStation = grid.refinedOfStation ?? [...Array(nS).keys()];
+    const stationOfRefined = grid.stationOfRefined ?? [...Array(nS).keys()];
+    const extraOfRefined: number[] = new Array(refinedB.length).fill(-1);
+    const extraBStart = positions.length / 3;
+    let extraCount = 0;
+    for (let ri = 0; ri < refinedB.length; ri++) {
+        if ((stationOfRefined[ri] ?? -1) >= 0) continue;
+        const p = refinedB[ri]!;
+        extraOfRefined[ri] = extraCount++;
+        positions.push(p.x, p.y, p.z);
+    }
     const plantarStart = positions.length / 3;
     const nBoundary = grid.plantar.boundaryCount;
     for (let i = nBoundary; i < grid.plantar.points.length; i++) {
@@ -1061,16 +1085,26 @@ export function reconstructProceduralWalls(
         if (j <= 0) return rimLocal[s]!;
         return generatedStart + (j - 1) * nS + s;
     };
+    const refinedVert = (ri: number): number => {
+        const r = ((ri % refinedB.length) + refinedB.length) % refinedB.length;
+        const st = stationOfRefined[r] ?? -1;
+        if (st >= 0) return gridVert(grid.innerRow, st);
+        return extraBStart + extraOfRefined[r]!;
+    };
     assertPeriodicQuadStrip(nS, nJ, gridVert);
     const plantarVert = (local: number): number => {
-        if (local < nBoundary) return gridVert(grid.innerRow, local);
+        if (local < nBoundary) return refinedVert(local);
         return plantarStart + (local - nBoundary);
     };
     const pushTri = (a: number, b: number, c: number): void => {
         if (a === b || b === c || c === a) return;
         indices.push(a, b, c);
     };
+    const lastStrip = nJ - 2;
+    const aboveStrip = lastStrip - 1;
+    const useRefinedStrip = refinedB.length !== nS || bEdgeK.some((k) => k > 1);
     for (let j = 0; j < nJ - 1; j++) {
+        if (useRefinedStrip && (j === lastStrip || j === aboveStrip)) continue;
         for (let i = 0; i < nS; i++) {
             const a = gridVert(j, i);
             const b = gridVert(j, i + 1);
@@ -1080,13 +1114,51 @@ export function reconstructProceduralWalls(
             pushTri(a, d, c);
         }
     }
+    if (useRefinedStrip) {
+        for (let i = 0; i < nS; i++) {
+            const ki = Math.max(1, bEdgeK[i] ?? 1);
+            const q0 = gridVert(aboveStrip, i);
+            const q1 = gridVert(aboveStrip, i + 1);
+            const p0 = gridVert(lastStrip, i);
+            const p1 = gridVert(lastStrip, i + 1);
+            const pChain = [p0];
+            for (let s = 1; s < ki; s++) {
+                const t = s / ki;
+                const ax = positions[p0 * 3]!;
+                const ay = positions[p0 * 3 + 1]!;
+                const az = positions[p0 * 3 + 2]!;
+                const bx = positions[p1 * 3]!;
+                const by = positions[p1 * 3 + 1]!;
+                const bz = positions[p1 * 3 + 2]!;
+                pChain.push(positions.length / 3);
+                positions.push(ax + t * (bx - ax), ay + t * (by - ay), az + t * (bz - az));
+            }
+            pChain.push(p1);
+            pushTri(q0, p1, q1);
+            for (let s = 0; s < ki; s++) pushTri(q0, pChain[s]!, pChain[s + 1]!);
+            const b0 = refinedOfStation[i]!;
+            const bChain: number[] = [];
+            for (let s = 0; s <= ki; s++) bChain.push(refinedVert(b0 + s));
+            for (let s = 0; s < ki; s++) {
+                const a = pChain[s]!;
+                const b = pChain[s + 1]!;
+                const c = bChain[s + 1]!;
+                const d = bChain[s]!;
+                pushTri(a, c, b);
+                pushTri(a, d, c);
+            }
+        }
+    }
+    if (nBoundary !== refinedB.length) {
+        throw new Error(`[S1-B] B-ring ${refinedB.length} != plantar boundary ${nBoundary}`);
+    }
     for (const f of grid.plantar.faces) {
         pushTri(plantarVert(f[0]!), plantarVert(f[2]!), plantarVert(f[1]!));
     }
 
     const plantarEnd = positions.length / 3;
     const bandVerts = new Set<number>();
-    for (let i = 0; i < nS; i++) bandVerts.add(gridVert(grid.innerRow, i));
+    for (let i = 0; i < refinedB.length; i++) bandVerts.add(refinedVert(i));
     const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ, bandVerts);
     assertGeneratedEdgesUsedTwice(indices, generatedStart, positions);
     const geo = new BufferGeometry();
@@ -1261,6 +1333,7 @@ export function reconstructProceduralWalls(
             movedAt: patternMovedAt,
         }),
         postingClamps,
+        wallStyle: options.wallStyle ?? "straight",
         maxBPlantarDeltaMm: grid.maxBPlantarDeltaMm,
         wallBelowPlantar: grid.wallBelowPlantar,
         heelWallHeightMm: (() => {

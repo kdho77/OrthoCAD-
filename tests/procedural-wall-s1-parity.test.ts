@@ -502,6 +502,9 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxStartIncidentDeg ?? 0) > ROUND_START_INCIDENT_MAX_DEG + 1e-6) {
         misses.push(`start-incident ${q.maxStartIncidentDeg?.toFixed(2)}>${ROUND_START_INCIDENT_MAX_DEG}`);
     }
+    if ((q.flippedFaces ?? 0) !== 0) {
+        misses.push(`flipped-faces=${q.flippedFaces}`);
+    }
     if ((q.minFilletChordOverCMin ?? 1) + 1e-3 < FIL_CHORD_S1_MIN) {
         misses.push(`fillet-chord ${q.minFilletChordOverCMin?.toFixed(3)}<${FIL_CHORD_S1_MIN}`);
     } else if ((q.minFilletChordOverCMin ?? 1) + 1e-3 < 1) {
@@ -1224,9 +1227,12 @@ describe("S1 parametric wall", () => {
             }
             if (!man.watertight) smokeMiss.push(`${smoke.name} open=${man.openEdges}`);
             if (minZ < -0.01) smokeMiss.push(`${smoke.name} min-z ${minZ.toFixed(3)}`);
-            if (smoke.name === "posting-4" || smoke.name === "heel-lift-10") {
+            if (smoke.name === "posting-4" || smoke.name === "heel-lift-10" || smoke.name === "grind-3") {
                 const flat = plantarFlatDeltaMm(rebuilt);
                 if (flat > 1e-3) smokeMiss.push(`${smoke.name} plantar-z0 ${flat.toFixed(4)}`);
+            }
+            if (smoke.name === "grind-3" && (sud.plantarAbsMaxZ ?? 0) > 1e-6) {
+                smokeMiss.push(`${smoke.name} plantar-|z| ${(sud.plantarAbsMaxZ ?? 0).toFixed(4)}`);
             }
             rebuilt.dispose();
         }

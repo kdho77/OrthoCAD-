@@ -71,6 +71,14 @@ export interface QuadGrid {
     quality: ColumnQuality;
     maxBPlantarDeltaMm: number;
     wallBelowPlantar: number;
+    /** Shared refined B-ring (stations + last-strip inserts). */
+    refinedB?: PolyPoint[];
+    /** Segments on B-edge i → i+1. */
+    bEdgeK?: number[];
+    /** Refined-ring index of original station i. */
+    refinedOfStation?: number[];
+    /** Station of each refined vert, or -1 for an insert. */
+    stationOfRefined?: number[];
 }
 
 export interface RimJunction {
@@ -266,7 +274,6 @@ export interface BuildQuadGridInput {
     zDelta: (x: number, y: number) => number;
     topZ: (x: number, y: number) => number | null;
     nWall?: number;
-    refineGrind?: boolean;
     flangeHeightMm?: number;
     flangeLengthMm?: number;
     flangeAngleDeg?: number;
@@ -640,12 +647,11 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     );
 
     const outlineB = stations.map((s) => ({ ...s.outline }));
-    const plantar = buildGeneratedPlantar({
+    let plantar = buildGeneratedPlantar({
         boundary: outlineB,
         dish: null,
         field: undefined,
         zDelta: input.zDelta,
-        refineGrind: input.refineGrind,
         marginMm: PLANTAR_MARGIN_MM,
         sampler,
         flat: true,
@@ -844,6 +850,50 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         throw new Error(`[S1-B] ${wallBelowPlantar} wall vertices below the plantar`);
     }
 
+    const refined = refineSharedBRing(columns, outlineRow, soleZ);
+    if (refined.ring.length !== nS) {
+        plantar = buildGeneratedPlantar({
+            boundary: refined.ring,
+            dish: null,
+            field: undefined,
+            zDelta: input.zDelta,
+            marginMm: PLANTAR_MARGIN_MM,
+            sampler,
+            flat: true,
+        });
+        fieldLift = plantar.extraLift;
+        soleZ = (x, y, fallback = 0) => sampler.z(x, y, fallback) + fieldLift;
+        for (let i = 0; i < refined.ring.length; i++) {
+            const p = refined.ring[i]!;
+            p.z = soleZ(p.x, p.y, p.z);
+            if (plantar.points[i]) {
+                plantar.points[i]!.x = p.x;
+                plantar.points[i]!.y = p.y;
+                plantar.points[i]!.z = p.z;
+            }
+        }
+        for (let i = refined.ring.length; i < plantar.points.length; i++) {
+            const p = plantar.points[i]!;
+            p.z = soleZ(p.x, p.y, p.z);
+        }
+        if (plantar.boundaryCount !== refined.ring.length) {
+            throw new Error(
+                `[S1-B] refined B-ring ${refined.ring.length} != plantar boundary ${plantar.boundaryCount}`,
+            );
+        }
+        for (let i = 0; i < nS; i++) {
+            const st = refined.refinedOfStation[i]!;
+            const B = refined.ring[st]!;
+            const last = columns[i]![outlineRow]!;
+            last.x = B.x;
+            last.y = B.y;
+            last.z = B.z;
+            outlineRing[i] = { ...B };
+            outlineB[i] = { ...B };
+            built.frames[i]!.bandZ = B.z;
+        }
+    }
+
     const body = new Float32Array(nS * (nJ - 1) * 3);
     for (let j = 1; j < nJ; j++) {
         for (let i = 0; i < nS; i++) {
@@ -879,5 +929,94 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         quality: built.quality,
         maxBPlantarDeltaMm,
         wallBelowPlantar,
+        refinedB: refined.ring,
+        bEdgeK: refined.k,
+        refinedOfStation: refined.refinedOfStation,
+        stationOfRefined: refined.stationOfRefined,
     };
+}
+
+const SLIVER_TAN = Math.tan((5 * Math.PI) / 180);
+
+function dist3q(a: PolyPoint, b: PolyPoint): number {
+    return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+function altitudeToSeg(p: PolyPoint, a: PolyPoint, b: PolyPoint): number {
+    const bx = b.x - a.x;
+    const by = b.y - a.y;
+    const bz = b.z - a.z;
+    const px = p.x - a.x;
+    const py = p.y - a.y;
+    const pz = p.z - a.z;
+    const bl2 = bx * bx + by * by + bz * bz;
+    if (bl2 < 1e-20) return Math.hypot(px, py, pz);
+    const t = Math.max(0, Math.min(1, (px * bx + py * by + pz * bz) / bl2));
+    return Math.hypot(px - bx * t, py - by * t, pz - bz * t);
+}
+
+function refineSharedBRing(
+    columns: PolyPoint[][],
+    outlineRow: number,
+    soleZ: (x: number, y: number, fallback?: number) => number,
+): {
+    ring: PolyPoint[];
+    k: number[];
+    refinedOfStation: number[];
+    stationOfRefined: number[];
+} {
+    const nS = columns.length;
+    const k = new Array<number>(nS).fill(1);
+    for (let i = 0; i < nS; i++) {
+        const B0 = columns[i]![outlineRow]!;
+        const B1 = columns[(i + 1) % nS]![outlineRow]!;
+        const P0 = columns[i]![Math.max(0, outlineRow - 1)]!;
+        const P1 = columns[(i + 1) % nS]![Math.max(0, outlineRow - 1)]!;
+        const width = dist3q(B0, B1);
+        const h = Math.min(altitudeToSeg(P0, B0, B1), altitudeToSeg(P1, B0, B1), dist3q(P0, B0));
+        k[i] = Math.max(1, Math.min(32, Math.ceil((width * SLIVER_TAN) / Math.max(h, 1e-6))));
+    }
+    for (let pass = 0; pass < nS; pass++) {
+        let dirty = false;
+        for (let i = 0; i < nS; i++) {
+            const nxt = (i + 1) % nS;
+            if (k[i]! > k[nxt]! + 1) {
+                k[nxt] = k[i]! - 1;
+                dirty = true;
+            } else if (k[nxt]! > k[i]! + 1) {
+                k[i] = k[nxt]! - 1;
+                dirty = true;
+            }
+        }
+        if (!dirty) break;
+    }
+    const ring: PolyPoint[] = [];
+    const refinedOfStation: number[] = new Array(nS);
+    const stationOfRefined: number[] = [];
+    for (let i = 0; i < nS; i++) {
+        const B0 = columns[i]![outlineRow]!;
+        const B1 = columns[(i + 1) % nS]![outlineRow]!;
+        refinedOfStation[i] = ring.length;
+        ring.push({ ...B0 });
+        stationOfRefined.push(i);
+        const ki = k[i]!;
+        for (let s = 1; s < ki; s++) {
+            const t = s / ki;
+            const x = B0.x + t * (B1.x - B0.x);
+            const y = B0.y + t * (B1.y - B0.y);
+            const z = soleZ(x, y, B0.z + t * (B1.z - B0.z));
+            ring.push({ x, y, z });
+            stationOfRefined.push(-1);
+        }
+    }
+    console.log(
+        "[S1-BRING]",
+        JSON.stringify({
+            nS,
+            nRefined: ring.length,
+            maxK: Math.max(...k),
+            extras: ring.length - nS,
+        }),
+    );
+    return { ring, k, refinedOfStation, stationOfRefined };
 }

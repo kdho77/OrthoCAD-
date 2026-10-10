@@ -3,11 +3,13 @@
 
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { heelCupDepthBowlDelta, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
-import { archGrindPlantarRaiseAt } from "@/lib/geometry/shape-finish-modifiers";
 import type { SideCorrections } from "@/types";
 import type { PolyPoint } from "./curves";
 import type { HermiteStation } from "./loft";
 import type { DeviceTypePreset, LateralFlangeParams, StockWallModel } from "./types";
+
+/** Print-step grinding dropdown → wall mid-style. */
+export type ProceduralWallStyle = "straight" | "round" | "hybrid";
 
 export interface ProceduralModifierInput {
     corrections?: SideCorrections;
@@ -16,8 +18,13 @@ export interface ProceduralModifierInput {
     /** Device preset. Accommodative uses the same stock defaults as functional. */
     deviceType?: DeviceTypePreset;
     lateralFlange?: Partial<LateralFlangeParams>;
-    /** Arch grind depth (mm) applied to the plantar sheet only. */
+    /**
+     * Legacy grind depth. Plantar stay at z=0; the Print-step grinding
+     * dropdown now selects {@link wallStyle}.
+     */
     archGrindDepthMm?: number;
+    /** Wall mid-style (straight / round / hybrid). */
+    wallStyle?: ProceduralWallStyle;
     /** High-rim medial side. +1 = +Y. */
     medialYSign?: 1 | -1;
     /**
@@ -117,33 +124,16 @@ export function postingZDelta(
 }
 
 /**
- * Bottom fields that may still offset the plantar sheet: zonal arch fill and
- * arch grind. Thickness, posting, and heel lift are top-only (bottom-stable).
+ * Plantar stays at z = 0. Grind and arch fill used to raise the sole; they
+ * now select wall style instead of offsetting the bottom.
  */
 export function plantarZDelta(
-    x: number,
-    y: number,
-    bounds: StockWallModel["bounds"],
-    input: ProceduralModifierInput,
+    _x: number,
+    _y: number,
+    _bounds: StockWallModel["bounds"],
+    _input: ProceduralModifierInput,
 ): number {
-    const c = input.corrections;
-    const minX = bounds.minX;
-    const length = Math.max(1e-3, bounds.maxX - minX);
-    const widCenter = (bounds.minY + bounds.maxY) * 0.5;
-    const halfW = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
-    const u = Math.max(0, Math.min(1, (x - minX) / length));
-    const vSigned = ((y - widCenter) / halfW) * (input.medialYSign ?? 1);
-    const av = Math.abs(vSigned);
-    let dz = 0;
-    if (c && c.archFillMm) {
-        const arch = Math.exp(-(((u - 0.42) / 0.16) ** 2));
-        const across = 1 - Math.min(1, av);
-        dz += c.archFillMm * arch * across;
-    }
-    if ((input.archGrindDepthMm ?? 0) > 0) {
-        dz += archGrindPlantarRaiseAt(u, av, input.archGrindDepthMm!);
-    }
-    return dz;
+    return 0;
 }
 
 export interface XYZ {
