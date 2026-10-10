@@ -99,6 +99,19 @@ import {
     renderPatternCurvature,
 } from "./helpers/render-png";
 
+function writeArtifact(relPath: string, data: Buffer | Uint8Array): void {
+    const slash = relPath.lastIndexOf("/");
+    const sub = slash >= 0 ? relPath.slice(0, slash) : "";
+    for (const root of ["/opt/cursor/artifacts", "/tmp/s1-stls"]) {
+        try {
+            mkdirSync(sub ? `${root}/${sub}` : root, { recursive: true });
+            writeFileSync(`${root}/${relPath}`, data);
+        } catch {
+            /* agent-store can be 0-byte */
+        }
+    }
+}
+
 async function loadFixture(path: string): Promise<BufferGeometry> {
     const buf = readFileSync(path);
     const group = await loadGlbFromBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
@@ -1091,18 +1104,16 @@ describe("S1 parametric wall", () => {
                 heelWallHeightMm: Number(heelRegionWallHeightMm(rebuilt, model.bounds).toFixed(4)),
                 plantarAbsMaxZ: Number((sud.plantarAbsMaxZ ?? 0).toFixed(6)),
             });
-            mkdirSync("/tmp/s1-stls", { recursive: true });
-            mkdirSync("/tmp/s1-stls/screenshots", { recursive: true });
-            writeFileSync(
-                `/tmp/s1-stls/procedural-${smoke.name.replace(/\+/g, "-")}.stl`,
+            writeArtifact(
+                `procedural-${smoke.name.replace(/\+/g, "-")}.stl`,
                 Buffer.from(geometryToBinarySTL(rebuilt)),
             );
             if (smoke.name === "widen+6" || smoke.name === "width+5") {
                 const pos = rebuilt.getAttribute("position")?.array as Float32Array;
                 const idx = rebuilt.getIndex()?.array;
                 if (pos && idx) {
-                    writeFileSync(
-                        `/tmp/s1-stls/screenshots/bottom-${smoke.name.replace(/\+/g, "")}.png`,
+                    writeArtifact(
+                        `screenshots/bottom-${smoke.name.replace(/\+/g, "")}.png`,
                         encodePng(900, 680, renderMesh(pos, idx, BOTTOM_VIEW, 900, 680)),
                     );
                 }
@@ -1361,9 +1372,9 @@ describe("S1 parametric wall", () => {
                 `pattern-toe ${toeFeat.toFixed(2)} not ${FOREFOOT_INSET_MM}±${PATTERN_SILHOUETTE_MM}`,
             );
         }
-        writeFileSync("/tmp/s1-stls/sample-top-synthetic.stl", stl);
+        writeArtifact("sample-top-synthetic.stl", stl);
         const glb = await exportObjectToGlb(meshFromGeometry(rebuilt));
-        writeFileSync("/tmp/s1-stls/sample-top-synthetic.glb", Buffer.from(glb.arrayBuffer));
+        writeArtifact("sample-top-synthetic.glb", Buffer.from(glb.arrayBuffer));
         if (misses.length || exactRep.selfIntersections !== 0) {
             throw new Error(`[S1-SAMPLE] nonzero. STOP.\nmisses: ${misses.join("; ")}`);
         }
@@ -1491,9 +1502,9 @@ describe("S1 parametric wall", () => {
                 writeFileSync(`/tmp/procedural-screenshots/${name}`, png);
             }
         }
-        writeFileSync("/tmp/s1-stls/procedural-default.stl", Buffer.from(geometryToBinarySTL(rebuilt)));
+        writeArtifact("procedural-default.stl", Buffer.from(geometryToBinarySTL(rebuilt)));
         const defaultGlb = await exportObjectToGlb(meshFromGeometry(rebuilt));
-        writeFileSync("/tmp/s1-stls/procedural-default.glb", Buffer.from(defaultGlb.arrayBuffer));
+        writeArtifact("procedural-default.glb", Buffer.from(defaultGlb.arrayBuffer));
         const defaultUd = rebuilt.userData as {
             columnQuality?: ColumnQualityUd;
             stationCount?: number;
