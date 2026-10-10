@@ -7,6 +7,7 @@ import {
     type ColumnQuality,
     FILLET_R_CAP_MM,
     type MinWallClamp,
+    N_TOP_PATCH_MM,
     SHORT_CHORD_MM,
     TOP_CLEARANCE_DEG as T0_CLEARANCE_DEG,
 } from "./bezier-column";
@@ -96,11 +97,28 @@ export function rimJunctions(
             list.push(t);
         }
     }
+    const patch = Math.max(0.5, N_TOP_PATCH_MM);
+    const patch2 = patch * patch;
     return rim.map((vi, si) => {
+        const Rx = pos[vi * 3]!;
+        const Ry = pos[vi * 3 + 1]!;
+        const Rz = pos[vi * 3 + 2]!;
+        const nearFaces = new Set<number>();
+        for (const [vj, faces] of vfaces) {
+            const dx = pos[vj * 3]! - Rx;
+            const dy = pos[vj * 3 + 1]! - Ry;
+            const dz = pos[vj * 3 + 2]! - Rz;
+            if (dx * dx + dy * dy + dz * dz <= patch2) {
+                for (const f of faces) nearFaces.add(f);
+            }
+        }
+        if (nearFaces.size === 0) {
+            for (const f of vfaces.get(vi) ?? []) nearFaces.add(f);
+        }
         let nx = 0;
         let ny = 0;
         let nz = 0;
-        for (const f of vfaces.get(vi) ?? []) {
+        for (const f of nearFaces) {
             const ia = indices[f]!;
             const ib = indices[f + 1]!;
             const ic = indices[f + 2]!;

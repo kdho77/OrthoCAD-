@@ -7,13 +7,14 @@ import {
     assertT0ClearsSheet,
     buildBezierColumns,
     COLUMN_PLANARITY_LIMIT_MM,
+    constructArcLineArc,
     constructFillet,
     evalCubicBezier,
     FILLET_R_CAP_MM,
     filletCenterAndF,
-    HANDLE_CHORD_CAP,
     initColumnFrames,
     MERGE_ROW_MM,
+    MIN_LINE_MM,
     offPlaneMm,
     R_SMOOTH_FRAC,
     rimOverhangMm,
@@ -25,7 +26,6 @@ import {
     T0_LEAD_DROP_MM,
     TOP_CLEARANCE_DEG,
     t0FromSheetSlope,
-    t0LeadQ,
     t0TargetRad,
     wallStartTiltRad,
 } from "./bezier-column";
@@ -103,23 +103,29 @@ describe("bezier column", () => {
         }
     });
 
-    test("handles are 0.35 of |R-F| and never exceed half the chord", () => {
-        const stations = [
-            station(-20, 0, 12, { x: 0, y: -1 }),
-            station(0, 8, 14, { x: 0, y: 1 }),
-            station(20, 0, 10, { x: 1, y: 0 }),
-        ];
-        const junctions = stations.map(() => ({ planeN: { x: 0, y: 0, z: 1 }, slopeRad: 0.2 }));
-        const frames = initColumnFrames(stations, junctions, defaults(), [20, 23, 18]);
-        for (const fr of frames) {
-            const Q = t0LeadQ(fr);
-            const rf = Math.hypot(Q.x - fr.F.x, Q.y - fr.F.y, Q.z - fr.F.z);
-            expect(fr.a).toBeLessThanOrEqual(HANDLE_CHORD_CAP * rf + 1e-9);
-            expect(fr.b).toBeLessThanOrEqual(HANDLE_CHORD_CAP * rf + 1e-9);
-            const p1s = (Q.x + fr.T0.x * fr.a - Q.x) * fr.h.x + (Q.y + fr.T0.y * fr.a - Q.y) * fr.h.y;
-            const planEB = Math.hypot(fr.B.x - Q.x, fr.B.y - Q.y);
-            expect(p1s).toBeLessThanOrEqual(planEB + 1e-6);
-        }
+    test("ALA is exterior tangent with L >= 0.5 and no cubic", () => {
+        const R = { x: 0, y: 0, z: 12 };
+        const B = { x: 8, y: 0, z: 0 };
+        const ala = constructArcLineArc(R, B, { x: 0, y: 0, z: 1 }, 0.5, 2, { x: 1, y: 0 }, 0);
+        expect(ala.L).toBeGreaterThanOrEqual(MIN_LINE_MM);
+        expect(ala.T1.x).toBeLessThan(ala.C1.x + 1e-6);
+        expect(ala.T2.z).toBeGreaterThan(B.z);
+        const dT = { x: ala.T2.x - ala.T1.x, y: ala.T2.y - ala.T1.y, z: ala.T2.z - ala.T1.z };
+        expect(dT.x * ala.n.x + dT.y * ala.n.y + dT.z * ala.n.z).toBeCloseTo(0, 5);
+        expect(ala.roundSweep).toBeGreaterThan(0);
+        expect(ala.filletSweep).toBeGreaterThan(0);
+        const tight = constructArcLineArc(
+            R,
+            { x: 0.2, y: 0, z: 6 },
+            { x: 0, y: 0, z: 1 },
+            3,
+            3,
+            { x: 1, y: 0 },
+            0,
+        );
+        expect(tight.L).toBeGreaterThanOrEqual(MIN_LINE_MM);
+        expect(tight.r1).toBeLessThan(3);
+        expect(tight.r2).toBeLessThan(3);
     });
 
     test("R and B never move; columns stay plan-monotone toward B", () => {
@@ -206,12 +212,11 @@ describe("bezier column", () => {
         );
         const fr = frames[0]!;
         expect((fr.sheetSlopeRad * 180) / Math.PI).toBeCloseTo(43, 0);
-        expect((fr.t0TiltRad * 180) / Math.PI).toBeCloseTo(-66, 0);
-        expect(fr.t0TiltRad).toBeLessThanOrEqual(
+        expect(fr.lineTiltRad).toBeLessThanOrEqual(
             fr.sheetSlopeRad - (TOP_CLEARANCE_DEG * Math.PI) / 180 + 1e-9,
         );
         expect(() => assertT0ClearsSheet(frames)).not.toThrow();
-        expect(() => assertT0ClearsSheet([{ ...fr, t0TiltRad: fr.sheetSlopeRad }])).toThrow(/\[S1-T0\]/);
+        expect(() => assertT0ClearsSheet([{ ...fr, lineTiltRad: fr.sheetSlopeRad }])).toThrow(/\[S1-T0\]/);
     });
 
     test("missed rays use adjacent-face plane; never default to 0", () => {
@@ -298,7 +303,7 @@ describe("bezier column", () => {
         for (const p of col.slice(1, 5)) {
             expect((p.x - R.x) * wOutx + (p.y - R.y) * wOuty).toBeGreaterThanOrEqual(-1e-6);
         }
-        expect((fr.t0TiltRad * 180) / Math.PI).toBeLessThanOrEqual(-60);
+        expect((fr.leanRad * 180) / Math.PI).toBeGreaterThan(5);
         expect(built.maxOffPlaneMm).toBeLessThanOrEqual(COLUMN_PLANARITY_LIMIT_MM);
         expect(built.maxSidewaysMm).toBeLessThanOrEqual(2);
     });

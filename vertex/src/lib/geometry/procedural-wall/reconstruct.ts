@@ -10,7 +10,7 @@ import {
 import { type HeightFieldParams, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SideCorrections } from "@/types";
-import { constructOutsideRound, t0TargetRad, WELD_MM } from "./bezier-column";
+import { constructArcLineArc, FILLET_R_CAP_MM, filletRadiusMm, WELD_MM } from "./bezier-column";
 import { assertCutInOnHighRimSide, medialYSignFromTopRim, parseBottomPattern } from "./bottom-pattern";
 import { ensureCcw, type PolyPoint, startAtPosteriorHeel } from "./curves";
 import {
@@ -19,7 +19,11 @@ import {
     snapToStep,
     type WallRegionDefaults,
 } from "./defaults";
-import { densifyHeelForefootStations, fillLargeStationGaps } from "./densify-stations";
+import {
+    densifyHeelForefootStations,
+    fillLargeStationGaps,
+    resampleStationsEvenly,
+} from "./densify-stations";
 import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
 import { buildHermiteStations } from "./loft";
@@ -418,21 +422,24 @@ export function reconstructProceduralWalls(
     pairing = collapsed.pairing;
     rimLocal = collapsed.rimLocal;
     const earlyJ = rimJunctions(positions, indices, rimLocal, pairing.normals);
-    const rTop = Math.min(3, Math.max(0, defaults.wallFilletTopMm || 0.5));
-    const t0Est = t0TargetRad(0, false, false, (24 * Math.PI) / 180);
+    const rTop = Math.min(FILLET_R_CAP_MM, Math.max(0, defaults.wallFilletTopMm || 0.5));
     const E: PolyPoint[] = pairing.top.map((R, i) => {
         const B = pairing.plantar[i]!;
         const dx = B.x - R.x;
         const dy = B.y - R.y;
         const len = Math.hypot(dx, dy) || 1;
-        const rnd = constructOutsideRound(
+        const height = Math.max(R.z - B.z, 0.5);
+        const rBot = Math.min(FILLET_R_CAP_MM, filletRadiusMm(height, len, Math.PI / 2));
+        const ala = constructArcLineArc(
             R,
+            B,
             earlyJ[i]?.planeN ?? { x: 0, y: 0, z: 1 },
-            { x: dx / len, y: dy / len },
             rTop,
-            t0Est,
+            rBot,
+            { x: dx / len, y: dy / len },
+            0,
         );
-        return rnd.E;
+        return ala.T1;
     });
     pairing.plantar = retargetPlantarFromE(E, hygiened.loop);
     pairing.sidewaysSkewMm = pairing.plantar.map((p, i) => {
@@ -468,6 +475,7 @@ export function reconstructProceduralWalls(
     densifyHeelForefootStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     applyOutlineClean(stations, rimLocal, indices);
     fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
+    resampleStationsEvenly(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,
         y: positions[i * 3 + 1]!,
@@ -554,7 +562,7 @@ export function reconstructProceduralWalls(
         loftN: nS,
         pairingMethod: pairing.method ?? "harmonic",
         medialYSign,
-        junctionRewrite: "planar-bezier",
+        junctionRewrite: "arc-line-arc",
         planReversals: grid.planReversals,
         columnQuality: grid.quality,
         maxAlongJointDeg: grid.quality?.maxAlongJointDeg,
@@ -577,9 +585,13 @@ export function reconstructProceduralWalls(
             heightMm: f.heightMm,
             sheetSlopeDeg: (f.sheetSlopeRad * 180) / Math.PI,
             t0TiltDeg: (f.t0TiltRad * 180) / Math.PI,
+            leanDeg: (f.leanRad * 180) / Math.PI,
+            lineTiltDeg: (f.lineTiltRad * 180) / Math.PI,
+            lineLengthMm: f.lineLengthMm,
             sheetSlopeValid: f.sheetSlopeValid,
             plantarSlopeDeg: (f.plantarSlopeRad * 180) / Math.PI,
             rFillet: f.rFillet,
+            rTop: f.rTop,
             bandZ: f.bandZ,
             bandInsetMm: f.bandInsetMm,
             arcEndZ: f.arcEndZ,

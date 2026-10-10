@@ -34,15 +34,18 @@ import {
     groundDriftMm,
     heelInnerWidthAtU,
     MIN_EDGE_MM,
+    MIN_LINE_MM,
     maxVertexDeltaMm,
     measureReconFlareDeg,
     medialArchUpperWallFolds,
     meshVertexMinZ,
     minWallThicknessMm,
+    N_TOP_MAX_DEG,
     outlineExactOnBMm,
     outlineSeamDihedrals,
     PATTERN_SOURCE_SYNTHETIC,
     plantarFlatDeltaMm,
+    R_CHANGE_MAX_PCT,
     ROUND_JOINT_MAX_DEG,
     reconstructionManifold,
     reconstructProceduralWalls,
@@ -114,6 +117,10 @@ type ColumnQualityUd = {
     maxRoundWallDeg?: number;
     minEdgeMm?: number;
     maxStationGapMult?: number;
+    minLineMm?: number;
+    maxNTopChangeDeg?: number;
+    maxR1ChangePct?: number;
+    maxR2ChangePct?: number;
 };
 
 function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
@@ -140,6 +147,18 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxStationGapMult ?? 0) > STATION_GAP_MULT + 1e-6) {
         misses.push(`station-gap ${q.maxStationGapMult?.toFixed(2)}x>${STATION_GAP_MULT}x`);
     }
+    if ((q.minLineMm ?? 0) < MIN_LINE_MM - 1e-9) {
+        misses.push(`line-L ${q.minLineMm?.toFixed(3)}<${MIN_LINE_MM}`);
+    }
+    if ((q.maxNTopChangeDeg ?? 0) > N_TOP_MAX_DEG + 1e-6) {
+        misses.push(`n_top ${q.maxNTopChangeDeg?.toFixed(2)}>${N_TOP_MAX_DEG}`);
+    }
+    if ((q.maxR1ChangePct ?? 0) > R_CHANGE_MAX_PCT + 1e-6) {
+        misses.push(`r1 ${q.maxR1ChangePct?.toFixed(2)}%>${R_CHANGE_MAX_PCT}`);
+    }
+    if ((q.maxR2ChangePct ?? 0) > R_CHANGE_MAX_PCT + 1e-6) {
+        misses.push(`r2 ${q.maxR2ChangePct?.toFixed(2)}%>${R_CHANGE_MAX_PCT}`);
+    }
     return misses;
 }
 
@@ -163,9 +182,9 @@ function readBinaryStl(buf: Buffer): { pos: Float32Array; idx: Uint32Array } {
 }
 
 const KENDON_REARFOOT = {
-    right: [0.22, 0.975, 0] as [number, number, number],
-    up: [-0.2, 0.045, 0.979] as [number, number, number],
-    light: [0.4, 0.2, 0.9] as [number, number, number],
+    right: [0.98, 0.2, 0] as [number, number, number],
+    up: [-0.065, 0.32, 0.945] as [number, number, number],
+    light: [0.25, 0.35, 0.9] as [number, number, number],
 };
 
 describe("S1 parametric wall", () => {

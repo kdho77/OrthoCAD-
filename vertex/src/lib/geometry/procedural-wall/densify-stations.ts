@@ -202,3 +202,79 @@ export function fillLargeStationGaps(
     rimLocal.length = 0;
     rimLocal.push(...outRim);
 }
+
+/**
+ * Redistribute R and B to even outline-arc-length spacing. New rim samples
+ * land on existing TopSheet rim edges (original verts stay put).
+ */
+export function resampleStationsEvenly(
+    stations: HermiteStation[],
+    rimLocal: number[],
+    positions: number[],
+    indices: number[],
+    outlineLoop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+): void {
+    const n = stations.length;
+    if (n < 3) return;
+    const segs: number[] = [];
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+        const a = stations[i]!.outline;
+        const b = stations[(i + 1) % n]!.outline;
+        const d = Math.hypot(b.x - a.x, b.y - a.y);
+        segs.push(d);
+        total += d;
+    }
+    if (total < 1e-6) return;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const outSt: HermiteStation[] = [];
+    const outRim: number[] = [];
+    let seg = 0;
+    let acc = 0;
+    for (let k = 0; k < n; k++) {
+        const target = (k / n) * total;
+        while (seg < n - 1 && acc + segs[seg]! < target - 1e-9) {
+            acc += segs[seg]!;
+            seg++;
+        }
+        const span = Math.max(segs[seg]!, 1e-9);
+        const t = Math.max(0, Math.min(1, (target - acc) / span));
+        const cur = stations[seg]!;
+        const nxt = stations[(seg + 1) % n]!;
+        if (t < 1e-6) {
+            outSt.push(cur);
+            outRim.push(rimLocal[seg]!);
+            continue;
+        }
+        const R = {
+            x: cur.rim.x + (nxt.rim.x - cur.rim.x) * t,
+            y: cur.rim.y + (nxt.rim.y - cur.rim.y) * t,
+            z: cur.rim.z + (nxt.rim.z - cur.rim.z) * t,
+        };
+        const chord = {
+            x: cur.outline.x + (nxt.outline.x - cur.outline.x) * t,
+            y: cur.outline.y + (nxt.outline.y - cur.outline.y) * t,
+            z: cur.outline.z + (nxt.outline.z - cur.outline.z) * t,
+        };
+        const B = nearestOnLoop(chord, outlineLoop);
+        const nx = cur.n.x + (nxt.n.x - cur.n.x) * t;
+        const ny = cur.n.y + (nxt.n.y - cur.n.y) * t;
+        const nl = Math.hypot(nx, ny) || 1;
+        const mid = positions.length / 3;
+        positions.push(R.x, R.y, R.z);
+        splitEdge(indices, rimLocal[seg]!, rimLocal[(seg + 1) % n]!, mid);
+        outSt.push({
+            outline: B,
+            rim: R,
+            n: { x: nx / nl, y: ny / nl },
+            u: Math.max(0, Math.min(1, (B.x - bounds.minX) / length)),
+        });
+        outRim.push(mid);
+    }
+    if (outSt.length < 3) return;
+    stations.length = 0;
+    stations.push(...outSt);
+    rimLocal.length = 0;
+    rimLocal.push(...outRim);
+}
