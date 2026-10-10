@@ -118,11 +118,19 @@ export function applyOutlineClean(
     stations: HermiteStation[],
     rimLocal: number[],
     indices?: number[],
+    preserveStations = false,
 ): { dropped: number } {
     const n = Math.min(stations.length, rimLocal.length);
     if (n < 3) return { dropped: 0 };
     const loop = stations.slice(0, n).map((s) => s.outline);
     const { points, keep } = cleanClosedLoop(loop);
+    if (preserveStations) {
+        for (let i = 0; i < n; i++) {
+            const k = keep.indexOf(i);
+            if (k >= 0) stations[i]!.outline = points[k]!;
+        }
+        return { dropped: 0 };
+    }
     if (keep.length === n) {
         for (let i = 0; i < n; i++) stations[i]!.outline = points[i]!;
         return { dropped: 0 };

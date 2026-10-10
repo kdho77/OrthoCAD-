@@ -29,6 +29,7 @@ import {
     densifyArchFanStations,
     densifyHeelForefootStations,
     densifyToeByExtent,
+    ensureSourceRimStations,
     fillLargeStationGaps,
 } from "./densify-stations";
 import { extractTopSheet } from "./extract";
@@ -39,7 +40,7 @@ import { countJunctionBandSlivers, windingReport } from "./metrics";
 import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
 import { hygieneBottomPattern } from "./pattern-hygiene";
-import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
+import { buildQuadGrid, rimJunctions } from "./quad-grid";
 import { assertClosedStationRing, assertPeriodicQuadStrip, rotateStationRing } from "./ring-seam";
 import {
     applyStoredTB,
@@ -448,22 +449,10 @@ export function reconstructProceduralWalls(
         assertCutInOnHighRimSide(hygiened.loop, rimPts, model.bounds, medialYSign);
     }
     let pairing = pairAtNativeTop(hygiened.loop, rimPts);
-    const ds: number[] = [];
-    for (let i = 0; i < pairing.top.length; i++) {
-        const a = pairing.top[i]!;
-        const b = pairing.top[(i + 1) % pairing.top.length]!;
-        ds.push(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
-    }
-    ds.sort((a, b) => a - b);
-    const median = ds[Math.floor(ds.length / 2)] ?? 1;
-    const collapsed = mergeCollapsedStations(
-        pairing,
-        rimLocal,
-        indices,
-        Math.max(STATION_MERGE_MM, 0.5 * median),
-    );
+    const collapsed = mergeCollapsedStations(pairing, rimLocal, indices, 1e-6);
     pairing = collapsed.pairing;
     rimLocal = collapsed.rimLocal;
+    const sourceRim = rimLocal.slice();
     const earlyJ = rimJunctions(
         positions,
         indices,
@@ -525,7 +514,7 @@ export function reconstructProceduralWalls(
         stations[i]!.tB = pairing.s01[i];
     }
     densifyHeelForefootStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
-    applyOutlineClean(stations, rimLocal, indices);
+    applyOutlineClean(stations, rimLocal, indices, true);
     fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, 2, rimPts);
     rotateStationRing(stations, rimLocal, model.bounds);
     const spreadB = spreadClosedOnLoop(
@@ -557,6 +546,7 @@ export function reconstructProceduralWalls(
     densifyToeByExtent(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, 2, rimPts);
+    ensureSourceRimStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, sourceRim);
     stampMonotonicTB(stations, hygiened.loop);
     applyStoredTB(stations, hygiened.loop);
     assertClosedStationRing(stations, rimLocal);
@@ -700,6 +690,10 @@ export function reconstructProceduralWalls(
         maxChordRiseDeg: grid.quality?.maxChordRiseDeg,
         lastSzMonotone: grid.quality?.lastSzMonotone,
         stationSpacingMm: grid.quality?.stationSpacingMm,
+        rowPieceIdentical: grid.quality?.rowPieceIdentical,
+        maxAlongRowDeg: grid.quality?.maxAlongRowDeg,
+        maxObliqueDeg: grid.quality?.maxObliqueDeg,
+        nObliqueWarn: grid.quality?.nObliqueWarn,
         maxFrameAngleDeg: grid.maxFrameAngleDeg,
         maxOffPlaneMm: grid.maxOffPlaneMm,
         maxSidewaysMm: grid.maxSidewaysMm,

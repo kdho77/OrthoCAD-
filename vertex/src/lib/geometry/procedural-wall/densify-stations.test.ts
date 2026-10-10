@@ -4,6 +4,7 @@
 import { describe, expect, test } from "@rstest/core";
 import {
     densifyArchFanStations,
+    ensureSourceRimStations,
     headingDeltaDeg,
     insertStationPair,
     PAIR_SPACING_MIN_MM,
@@ -68,5 +69,35 @@ describe("pair-insert densify", () => {
             const head = headingDeltaDeg(a, b);
             expect(head <= 3 + 1e-3 || ds <= 2 * PAIR_SPACING_MIN_MM + 1e-6).toBe(true);
         }
+    });
+
+    test("ensureSourceRimStations puts every source rim vertex on the ring", () => {
+        const stations: HermiteStation[] = [
+            station(0, 0, 10, 0, 0),
+            station(10, 0, 20, 0, 0.5),
+            station(5, 8, 15, 8, 0.25),
+        ];
+        const rimLocal = [0, 1, 2];
+        const positions = [10, 0, 8, 20, 0, 8, 15, 8, 8, 15, 0, 8];
+        const indices = [0, 1, 2];
+        const pattern = [
+            { x: 0, y: 0, z: 0 },
+            { x: 10, y: 0, z: 0 },
+            { x: 5, y: 8, z: 0 },
+        ];
+        const added = ensureSourceRimStations(
+            stations,
+            rimLocal,
+            positions,
+            indices,
+            pattern,
+            { minX: 0, maxX: 20 },
+            [0, 1, 2, 3],
+        );
+        expect(added).toBe(1);
+        expect(rimLocal).toContain(3);
+        expect(stations).toHaveLength(4);
+        const mid = stations.find((s) => Math.abs(s.rim.x - 15) < 1e-6 && Math.abs(s.rim.y) < 1e-6);
+        expect(mid).toBeTruthy();
     });
 });

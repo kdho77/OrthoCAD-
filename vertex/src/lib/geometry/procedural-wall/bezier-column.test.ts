@@ -9,6 +9,7 @@ import {
     buildBezierColumns,
     CHORD_RISE_MAX_DEG,
     COLUMN_PLANARITY_LIMIT_MM,
+    COS_T_MIN,
     clampLastFilletOutboard,
     columnHeading,
     constructArcLineArc,
@@ -25,6 +26,7 @@ import {
     LAST_FILLET_S_MIN_MM,
     LAST_FILLET_Z_MIN_MM,
     lastFilletCMinMm,
+    lastFilletDLRad,
     lastFilletPhis,
     lastFilletR2MinMm,
     MERGE_ROW_MM,
@@ -41,6 +43,7 @@ import {
     rateLimitClosedDown,
     rimOverhangMm,
     rotateColumnAboutB,
+    rowPieceId,
     SCALAR_SMOOTH_SIGMA_MM,
     STEEP_SHEET_DEG,
     sampleArcLineArc,
@@ -50,6 +53,7 @@ import {
     sizedArcRows,
     slopeFromSheetPlane,
     smoothStationHeadings,
+    squareHeadingToB,
     summarizeWallBands,
     T0_LEAD_DROP_MM,
     TOP_CLEARANCE_DEG,
@@ -567,6 +571,73 @@ describe("bezier column", () => {
             const pct = (Math.abs(b - a) / Math.max(a, 1e-6)) * 100;
             expect(pct).toBeLessThanOrEqual(R2_CHANGE_MAX_PCT + 1e-6);
         }
+    });
+
+    test("last-step dL is sized square to B and floors r2", () => {
+        const spacing = 1.3;
+        const S = Math.PI / 2;
+        const dLSq = lastFilletDLRad(S, 1);
+        const dLOb = lastFilletDLRad(S, 0.375);
+        expect(dLOb).toBeLessThan(dLSq);
+        expect((dLSq * 180) / Math.PI).toBeLessThanOrEqual(DPHI_L_MAX_DEG + 1e-9);
+        const r2Ob = lastFilletR2MinMm(spacing, dLOb);
+        const r2Sq = lastFilletR2MinMm(spacing, dLSq);
+        expect(r2Ob).toBeGreaterThan(r2Sq);
+        const ala = constructArcLineArc(
+            { x: 0, y: 0, z: 12 },
+            { x: 8, y: 0, z: 0 },
+            { x: 0, y: 0, z: 1 },
+            0.5,
+            0.05,
+            { x: 1, y: 0 },
+            0,
+            undefined,
+            spacing,
+            0.375,
+        );
+        expect(ala.r2).toBeGreaterThanOrEqual(r2Ob - 1e-6);
+    });
+
+    test("squareHeadingToB rotates only when cosT < 0.3", () => {
+        const nB = { x: 1, y: 0 };
+        const square = squareHeadingToB({ x: 1, y: 0 }, nB);
+        expect(square.rotated).toBe(false);
+        expect(square.cosT).toBeCloseTo(1, 6);
+        const ang = (68 * Math.PI) / 180;
+        const oblique = squareHeadingToB({ x: Math.cos(ang), y: Math.sin(ang) }, nB);
+        expect(oblique.rotated).toBe(false);
+        expect(oblique.cosT).toBeGreaterThan(COS_T_MIN - 1e-6);
+        const steep = (80 * Math.PI) / 180;
+        const fixed = squareHeadingToB({ x: Math.cos(steep), y: Math.sin(steep) }, nB);
+        expect(fixed.rotated).toBe(true);
+        expect(fixed.cosT).toBeGreaterThanOrEqual(COS_T_MIN - 1e-6);
+        expect(fixed.angleDeg).toBeLessThanOrEqual(73);
+    });
+
+    test("identical piece counts emit a fixed row-to-piece map", () => {
+        const R = { x: 0, y: 0, z: 12 };
+        const B = { x: 8, y: 0, z: 0 };
+        const h = { x: 1, y: 0 };
+        const ala = constructArcLineArc(R, B, { x: 0, y: 0, z: 1 }, 0.5, 2, h, 0);
+        const counts = { nRound: 8, nFil: 6, nLine: 10, nWall: 8 + 10 + 6 + 2 };
+        const pts = sampleArcLineArc(
+            ala,
+            h,
+            R,
+            B,
+            counts.nWall,
+            1.3,
+            counts,
+            lastFilletDLRad(ala.filletSweep, 1),
+        );
+        expect(pts).toHaveLength(counts.nWall);
+        expect(pts[0]).toEqual(R);
+        expect(pts[pts.length - 1]).toEqual(B);
+        expect(rowPieceId(0, counts)).toBe(0);
+        expect(rowPieceId(counts.nRound, counts)).toBe(1);
+        expect(rowPieceId(counts.nRound + counts.nLine, counts)).toBe(2);
+        expect(rowPieceId(counts.nWall - 2, counts)).toBe(3);
+        expect(rowPieceId(counts.nWall - 1, counts)).toBe(4);
     });
 });
 

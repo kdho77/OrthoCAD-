@@ -155,6 +155,8 @@ type ColumnQualityUd = {
     maxChordRiseDeg?: number;
     lastSzMonotone?: boolean;
     stationSpacingMm?: number;
+    rowPieceIdentical?: boolean;
+    maxAlongRowDeg?: number;
 };
 
 type SampleGateReport = {
@@ -337,6 +339,10 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     }
     if ((q.maxTopSheetEdgeDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
         misses.push(`top-sheet ${q.maxTopSheetEdgeDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
+    }
+    if (q.rowPieceIdentical === false) misses.push("row-to-piece");
+    if ((q.maxAlongRowDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
+        misses.push(`along-row ${q.maxAlongRowDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
     }
     return misses;
 }

@@ -448,3 +448,65 @@ export function densifyArchFanStations(
         if (added === 0) break;
     }
 }
+
+function distToSeg3(p: PolyPoint, a: PolyPoint, b: PolyPoint): number {
+    const hit = closestOnSegment(p, a, b);
+    return Math.hypot(p.x - hit.x, p.y - hit.y, p.z - hit.z);
+}
+
+/**
+ * Every source TopSheet rim vertex must remain a station so rows 0→1 stay a
+ * true quad strip. Extra stations already sit on straight source rim edges.
+ */
+export function ensureSourceRimStations(
+    stations: HermiteStation[],
+    rimLocal: number[],
+    positions: number[],
+    indices: number[],
+    pattern: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    sourceRim: number[],
+): number {
+    if (stations.length < 3 || sourceRim.length < 3) return 0;
+    const have = new Set(rimLocal);
+    let added = 0;
+    for (const src of sourceRim) {
+        if (have.has(src)) continue;
+        const R: PolyPoint = {
+            x: positions[src * 3]!,
+            y: positions[src * 3 + 1]!,
+            z: positions[src * 3 + 2]!,
+        };
+        let bestI = 0;
+        let bestD = Infinity;
+        for (let i = 0; i < stations.length; i++) {
+            const a = stations[i]!.rim;
+            const b = stations[(i + 1) % stations.length]!.rim;
+            const d = distToSeg3(R, a, b);
+            if (d < bestD) {
+                bestD = d;
+                bestI = i;
+            }
+        }
+        const cur = stations[bestI]!;
+        const nxt = stations[(bestI + 1) % stations.length]!;
+        const tB = midClosedParam(
+            cur.tB ?? parameterOnClosedLoop(cur.outline, pattern),
+            nxt.tB ?? parameterOnClosedLoop(nxt.outline, pattern),
+        );
+        const B = { ...sampleClosedAtArc01(pattern, tB), z: 0 };
+        const st = stationFromPair(R, B, cur, nxt, bounds, tB);
+        splitTopBoundaryEdge(indices, rimLocal[bestI]!, rimLocal[(bestI + 1) % rimLocal.length]!, src);
+        stations.splice(bestI + 1, 0, st);
+        rimLocal.splice(bestI + 1, 0, src);
+        have.add(src);
+        added++;
+    }
+    if (added) {
+        console.log(
+            "[S1-RIM-STATIONS]",
+            JSON.stringify({ added, n: stations.length, source: sourceRim.length }),
+        );
+    }
+    return added;
+}
