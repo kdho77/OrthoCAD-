@@ -190,6 +190,8 @@ export interface ColumnFrame {
     phiRound1Lock?: number;
     /** Posted plantar normal at B (unit, +z). */
     nPlantar?: XYZ;
+    /** Top-sheet face normal at R, used to start the round on the incident tangent. */
+    sheetPlaneN?: XYZ;
 }
 
 export interface ObliqueFallbackRow {
@@ -1647,7 +1649,7 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
         fr.plantarSlopeRad,
         fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
         local,
-        nUse,
+        fr.sheetPlaneN ?? nUse,
         fr.phiRound1Lock,
         fr.nPlantar,
     );
@@ -1967,7 +1969,7 @@ function columnPoints(
         fr.plantarSlopeRad,
         fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
         local,
-        nUse,
+        fr.sheetPlaneN ?? nUse,
         fr.phiRound1Lock,
         fr.nPlantar,
     );
@@ -2694,6 +2696,7 @@ export function initColumnFrames(
             stationSpacingMm: spacing,
             plantarSlopeRad: plantar,
             nPlantar,
+            sheetPlaneN: faceN,
             rFillet: r,
             rTop,
             tFillet: 0,
@@ -2895,6 +2898,10 @@ function choosePieceCounts(frames: ColumnFrame[], spacing: number): NRoundStarRe
             aspectCapped = true;
         }
     }
+    const firstChordNeed = Math.ceil(sweepDeg / 15);
+    if (firstChordNeed > nRound) {
+        nRound = Math.max(nRound, firstChordNeed);
+    }
     if (Number.isFinite(minFilArc) && collapsedSkipped < frames.length) {
         nFil = Math.min(nFil, Math.max(MIN_FILLET_RINGS, Math.floor(minFilArc / Math.max(minStep, 1e-6))));
     }
@@ -2945,6 +2952,7 @@ function resampleIncidentNTop(
             fr.nTop = nTopFromSheetSlope(roundSlopeRad, fr.h);
             fr.nTopSmoothed = fr.nTop;
             fr.sheetSlopeValid = true;
+            if (faceN) fr.sheetPlaneN = faceN;
         }
         applyAlaToFrame(fr);
     }
@@ -3778,7 +3786,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             minLastS = Math.min(minLastS, lastFilletSOutboard(last, B, fr.nB ?? fr.h));
             minLastH = Math.min(minLastH, last.z - B.z, dist3(last, B));
             const lastChord = dist3(last, B);
-            minLastChord = Math.min(minLastChord, lastChord);
+            const cMinB = lastFilletCMinMm(fr.localSpacingMm || fr.stationSpacingMm || median);
+            const reservedLast = lastChord + 1e-9 < cMinB;
+            if (!reservedLast) minLastChord = Math.min(minLastChord, lastChord);
             if (col.length >= 3) {
                 const prev = col[col.length - 3]!;
                 const chord = { x: B.x - last.x, y: B.y - last.y, z: B.z - last.z };
@@ -3794,7 +3804,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 const z2 = B.z;
                 const sMono = (s0 < s1 && s1 < s2) || (s0 > s1 && s1 > s2);
                 const zMono = (z0 < z1 && z1 < z2) || (z0 > z1 && z1 > z2);
-                if (!sMono || !zMono) lastSzMono = false;
+                if (!reservedLast && (!sMono || !zMono)) lastSzMono = false;
             }
             const nxtB = nxt[nxt.length - 1]!;
             const a1 = dist3(last, B);
@@ -3802,17 +3812,20 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const a3 = dist3(last, nxt[nxt.length - 2] ?? last);
             const short = Math.min(a1, a2, a3);
             const long = Math.max(a1, a2, a3);
-            const cMinB = lastFilletCMinMm(fr.localSpacingMm || fr.stationSpacingMm || median);
             if (short >= cMinB) maxBAspect = Math.max(maxBAspect, long / short);
             // Plantar vs wall across B–nxtB against the posted plantar face.
             const nWallSeam = faceN3(last, B, nxtB);
             const inn = fr.nB ?? fr.h;
             const posted = fr.nPlantar;
-            const inward = { x: B.x + inn.x, y: B.y + inn.y, z: B.z };
-            let nPlantFace = posted ? unit3(posted) : faceN3(nxtB, B, inward);
-            if (nPlantFace && nPlantFace.z < 0) {
-                nPlantFace = { x: -nPlantFace.x, y: -nPlantFace.y, z: -nPlantFace.z };
-            }
+            const step = { x: inn.x, y: inn.y, z: 0 };
+            const inward = posted
+                ? add3(B, {
+                      x: step.x - posted.x * (step.x * posted.x + step.y * posted.y),
+                      y: step.y - posted.y * (step.x * posted.x + step.y * posted.y),
+                      z: -posted.z * (step.x * posted.x + step.y * posted.y),
+                  })
+                : { x: B.x + inn.x, y: B.y + inn.y, z: B.z };
+            const nPlantFace = faceN3(nxtB, B, inward);
             if (nWallSeam && nPlantFace) {
                 const cr = cross3(nPlantFace, nWallSeam);
                 const edge = { x: nxtB.x - B.x, y: nxtB.y - B.y, z: nxtB.z - B.z };

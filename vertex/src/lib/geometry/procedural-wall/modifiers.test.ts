@@ -32,6 +32,10 @@ describe("plantar posting", () => {
         expect(postingClamps[0]!.droppedMm).toBeCloseTo(0.8, 5);
         expect(zDelta(7, 0)).toBeCloseTo(2.2, 5);
         expect(4 - zDelta(7, 0)).toBeCloseTo(1.8, 5);
+        const short = [station({ x: 10, y: 0, z: 1 }, { x: 7, y: 0, z: 0 })];
+        const idle = clampPostingOnStations(short, () => 0, 0.5, 0.5, 0.8);
+        expect(idle.postingClamps).toHaveLength(0);
+        expect(idle.zDelta(7, 0)).toBe(0);
     });
 
     test("plantarZDelta posting tilts across the foot", () => {

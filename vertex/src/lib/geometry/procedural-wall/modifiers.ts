@@ -166,13 +166,13 @@ export function clampPostingOnStations(
     const capDz: number[] = stations.map((st, i) => {
         const dz = zDelta(st.outline.x, st.outline.y);
         const maxDz = st.rim.z - st.outline.z - need;
-        if (dz > maxDz + 1e-9) {
+        if (dz > 0 && dz > maxDz + 1e-9) {
             postingClamps.push({
                 station: i,
                 u: st.u,
-                droppedMm: dz - maxDz,
+                droppedMm: dz - Math.max(0, maxDz),
             });
-            return maxDz;
+            return Math.max(0, maxDz);
         }
         return Number.POSITIVE_INFINITY;
     });
