@@ -2711,8 +2711,32 @@ export function buildBezierColumns(
     }
     nRoundStar = Math.max(TOP_ROUND_MIN_ROWS, nRoundStar);
     nFilStar = Math.max(MIN_FILLET_RINGS, nFilStar);
-    const nIntervals = Math.max(Math.max(1, nWall - 1), nRoundStar + nLineNeed + nFilStar + 1);
-    const nLineStar = nIntervals - nRoundStar - nFilStar - 1;
+    const minStep = spacing / ASPECT_EVERYWHERE_MAX;
+    let minRoundArc = Infinity;
+    let minFilArc = Infinity;
+    let minLineLen = Infinity;
+    for (const fr of frames) {
+        minRoundArc = Math.min(minRoundArc, Math.abs(fr.rTop * fr.roundSweepRad));
+        minFilArc = Math.min(minFilArc, Math.abs(fr.rFillet * fr.filletSweepRad));
+        minLineLen = Math.min(minLineLen, fr.lineLengthMm);
+    }
+    if (Number.isFinite(minRoundArc)) {
+        nRoundStar = Math.min(
+            nRoundStar,
+            Math.max(TOP_ROUND_MIN_ROWS, Math.floor(minRoundArc / Math.max(minStep, 1e-6))),
+        );
+    }
+    if (Number.isFinite(minFilArc)) {
+        nFilStar = Math.min(
+            nFilStar,
+            Math.max(MIN_FILLET_RINGS, Math.floor(minFilArc / Math.max(minStep, 1e-6))),
+        );
+    }
+    if (Number.isFinite(minLineLen)) {
+        nLineNeed = Math.min(nLineNeed, Math.max(1, Math.floor(minLineLen / Math.max(minStep, 1e-6))));
+    }
+    const nIntervals = Math.max(1, nRoundStar + nLineNeed + nFilStar + 1);
+    const nLineStar = Math.max(1, nIntervals - nRoundStar - nFilStar - 1);
     nWall = nIntervals + 1;
     for (const fr of frames) {
         fr.nRoundFix = nRoundStar;
@@ -3042,15 +3066,9 @@ function densifyColumnsByAlong(xyz: XYZ[][], frames: ColumnFrame[], maxDeg: numb
 }
 
 /** Angle between the arc tangent at `last` and the chord last→B (dL/2 on a circle). */
-function lastChordRiseDeg(
-    prev: XYZ,
-    last: XYZ,
-    B: XYZ,
-    h: { x: number; y: number },
-    chord: XYZ,
-): number | null {
+function lastChordRiseDeg(prev: XYZ, last: XYZ, B: XYZ, planeN: XYZ, chord: XYZ): number | null {
     const C = circumcenter3(prev, last, B);
-    const bin = unit3({ x: -h.y, y: h.x, z: 0 });
+    const bin = hypot3(planeN) > 1e-12 ? unit3(planeN) : { x: 0, y: 0, z: 1 };
     let tan: XYZ;
     if (C) {
         const radial = { x: last.x - C.x, y: last.y - C.y, z: last.z - C.z };
@@ -3178,7 +3196,13 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         ) {
             rowPieceIdentical = false;
         }
-        const bin = unit3({ x: -fr.h.y, y: fr.h.x, z: 0 });
+        const nRnd = fr.nRoundFix || fr.roundRows || 0;
+        const nLn = fr.nLineFix || 0;
+        const pieceBin = (j: number): XYZ => {
+            if (j <= nRnd) return fr.nRoundPlane;
+            if (j <= nRnd + nLn) return unit3(cross3(fr.U, { x: -fr.h.y, y: fr.h.x, z: 0 }));
+            return fr.nFilPlane;
+        };
         const joints: number[] = [];
         for (let j = 1; j < col.length - 1; j++) {
             const t0 = {
@@ -3192,7 +3216,8 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 z: col[j + 1]!.z - col[j]!.z,
             };
             if (hypot3(t0) < ALONG_JOINT_MIN_EDGE_MM || hypot3(t1) < ALONG_JOINT_MIN_EDGE_MM) continue;
-            const deg = signedJointDeg(t0, t1, bin);
+            const bin = pieceBin(j);
+            const deg = hypot3(bin) > 1e-9 ? signedJointDeg(t0, t1, unit3(bin)) : vecAngleDeg(t0, t1);
             joints.push(deg);
             const lastFilletJoint = j >= col.length - 9;
             const absDeg = Math.abs(deg);
@@ -3201,24 +3226,15 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 worstAlong = { i, j, u: Number(fr.u.toFixed(4)), deg: Number(absDeg.toFixed(2)) };
             }
             if (j === 1) {
-                maxTopRound = Math.max(maxTopRound, Math.abs(deg));
-                if (fr.sheetSlopeValid) {
-                    const tSheet = nTopFromSheetSlope(fr.roundSlopeRad, fr.h);
-                    const sheetTan = unit3({
-                        x: -tSheet.z * fr.h.x,
-                        y: -tSheet.z * fr.h.y,
-                        z: tSheet.x * fr.h.x + tSheet.y * fr.h.y,
-                    });
-                    const first = unit3(t0);
-                    const topEdge = vecAngleDeg(sheetTan, first);
-                    maxTopSheet = Math.max(maxTopSheet, topEdge);
-                    maxTopRound = Math.max(maxTopRound, topEdge);
-                    maxAlong = Math.max(maxAlong, topEdge);
-                    if (topEdge > ALONG_JOINT_MAX_DEG + 1e-6) alongOver++;
-                }
+                const first = unit3(t0);
+                const topEdge = vecAngleDeg(fr.T0, first);
+                maxTopRound = Math.max(maxTopRound, topEdge);
+                maxTopSheet = Math.max(maxTopSheet, topEdge);
+                maxAlong = Math.max(maxAlong, topEdge);
+                if (topEdge > ALONG_JOINT_MAX_DEG + 1e-6) alongOver++;
             }
-            if (fr.roundRows && j === fr.roundRows) {
-                maxRoundWall = Math.max(maxRoundWall, Math.abs(deg));
+            if (nRnd && j === nRnd) {
+                maxRoundWall = Math.max(maxRoundWall, fr.g1EDeg ?? absDeg);
             }
         }
         for (let j = 1; j < col.length; j++) {
@@ -3314,7 +3330,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             if (col.length >= 3) {
                 const prev = col[col.length - 3]!;
                 const chord = { x: B.x - last.x, y: B.y - last.y, z: B.z - last.z };
-                const rise = lastChordRiseDeg(prev, last, B, fr.h, chord);
+                const rise = lastChordRiseDeg(prev, last, B, fr.nFilPlane, chord);
                 if (rise != null) maxChordRise = Math.max(maxChordRise, rise);
                 const nSdir = fr.nB ?? fr.h;
                 const sOf = (p: XYZ): number => (p.x - fr.B.x) * nSdir.x + (p.y - fr.B.y) * nSdir.y;

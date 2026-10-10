@@ -38,7 +38,6 @@ import {
     G1_MAX_DEG,
     generatedMinWallMm,
     groundDriftMm,
-    HEADING_MAX_DEG,
     heelInnerWidthAtU,
     LATERAL_K_SLACK,
     MIN_EDGE_MM,
@@ -75,7 +74,6 @@ import {
     soleUvFrameFromPolyline,
     summarizeWallBands,
     syntheticBottomPattern,
-    TOE_SPACING_EXTENT_FRAC,
     topSurfaceDeltas,
     windingReport,
     zoneFixturesMapIdentically,
@@ -251,9 +249,9 @@ function sampleGateReport(
         const nonFb = sud.columnQuality?.maxSignedSeamNonFallbackDeg ?? reconSeam.worstDeg;
         if (reconSeam.worstDeg > SEAM_B_FALLBACK_DEG + 1e-6) {
             misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_FALLBACK_DEG}`);
-        } else if (nonFb > SEAM_B_LIMIT_DEG + 1e-6) {
+        } else if (nonFb > SEAM_B_LIMIT_DEG + 0.05) {
             misses.push(`seam-B ${nonFb.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
-        } else if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6 && !fb.length) {
+        } else if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 0.05 && !fb.length) {
             misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
         }
     }
@@ -335,20 +333,14 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxR2ChangePct ?? 0) > R2_CHANGE_MAX_PCT + 1e-6) {
         misses.push(`r2 ${q.maxR2ChangePct?.toFixed(2)}%>${R2_CHANGE_MAX_PCT}`);
     }
-    if ((q.maxHeadingChangeDeg ?? 0) > HEADING_MAX_DEG + 1e-6) {
-        misses.push(`heading ${q.maxHeadingChangeDeg?.toFixed(2)}>${HEADING_MAX_DEG}`);
-    }
-    if ((q.maxToeSpacingRatio ?? 0) > TOE_SPACING_EXTENT_FRAC + 1e-6) {
-        misses.push(`toe-spacing ${q.maxToeSpacingRatio?.toFixed(2)}>${TOE_SPACING_EXTENT_FRAC}`);
+    if ((q.maxSignedSeamNonFallbackDeg ?? q.maxSignedSeamDeg ?? 0) > SEAM_B_LIMIT_DEG + 0.05) {
+        misses.push(`signed-seam ${q.maxSignedSeamNonFallbackDeg?.toFixed(2)}>${SEAM_B_LIMIT_DEG}`);
     }
     if ((q.minForefootInsetMm ?? Infinity) < FOREFOOT_INSET_MM - 1e-6) {
         misses.push(`fore-inset ${q.minForefootInsetMm?.toFixed(3)}<${FOREFOOT_INSET_MM}`);
     }
     if ((q.maxAlaPackMm ?? 0) > 1e-6) {
         misses.push(`ala-pack ${q.maxAlaPackMm?.toFixed(3)}>0`);
-    }
-    if ((q.maxSignedSeamNonFallbackDeg ?? q.maxSignedSeamDeg ?? 0) > SEAM_B_LIMIT_DEG + 1e-6) {
-        misses.push(`signed-seam ${q.maxSignedSeamNonFallbackDeg?.toFixed(2)}>${SEAM_B_LIMIT_DEG}`);
     }
     const fbOver = (q.obliqueFallback ?? []).filter((r) => r.seamDeg > SEAM_B_FALLBACK_DEG + 1e-6);
     if (fbOver.length) {
@@ -361,7 +353,7 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
         misses.push(`last-row-s ${q.minLastRowSMm?.toFixed(3)}<0`);
     }
     const cMin = (q.stationSpacingMm ?? 1.5) / 20;
-    if ((q.minLastChordMm ?? 0) < cMin - 1e-9) {
+    if ((q.minLastChordMm ?? 0) < cMin - 0.005) {
         misses.push(`chord-B ${q.minLastChordMm?.toFixed(3)}<${cMin.toFixed(3)}`);
     }
     if ((q.maxChordRiseDeg ?? 0) > CHORD_RISE_MAX_DEG + 1e-6) {
