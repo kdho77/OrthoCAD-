@@ -1061,6 +1061,35 @@ export function maxR2RowsForSweep(
 
 export type ChordFloorReason = "rows" | "chord";
 
+/**
+ * Fillet sweep S(r2) after two ruling updates. Growing r2 moves F, which
+ * changes U and typically shrinks S. Holding U fixed makes S constant and
+ * the row-cap then slams r2 to the bisect floor.
+ */
+export function filletSweepAtR2(
+    B: XYZ,
+    nB: { x: number; y: number },
+    r2: number,
+    Uin: XYZ,
+    E: XYZ,
+    plantarSlopeRad: number,
+    nPlantar?: XYZ,
+): number {
+    const frame = resolvePlantarFrame(nB, plantarSlopeRad, nPlantar);
+    let U = Uin;
+    let S = 0;
+    for (let it = 0; it < 2; it++) {
+        const fil = constructFillet(B, nB, r2, U, plantarSlopeRad, nPlantar);
+        S = Math.abs(fil.phi1 - fil.phi0);
+        const next = { x: fil.Pw.x - E.x, y: fil.Pw.y - E.y, z: fil.Pw.z - E.z };
+        if (hypot3(next) < 1e-9) break;
+        const d = unit3(next);
+        const dFil = projectOntoSpan(d, frame.ew, frame.ez);
+        U = hypot3(dFil) > 1e-9 ? unit3({ x: -dFil.x, y: -dFil.y, z: -dFil.z }) : { x: 0, y: 0, z: 1 };
+    }
+    return S;
+}
+
 /** r2 = min(max(r2_design, r2_chordFloor), maxR2_rows). Never changes dL. */
 export function resolveLastR2(
     r2Design: number,
@@ -1579,10 +1608,7 @@ export function constructSweepRule(
         const cosT = planCosT(d, nB, h);
         const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S, cosT, r1Floor);
         const nFilUse = nFil && nFil > 0 ? nFil : MIN_FILLET_RINGS;
-        const evalS = (r: number): number => {
-            const f = constructFillet(B, nB, r, U, plantarSlopeRad, nPlant);
-            return Math.abs(f.phi1 - f.phi0);
-        };
+        const evalS = (r: number): number => filletSweepAtR2(B, nB, r, U, E, plantarSlopeRad, nPlant);
         const resolved = resolveLastR2(Math.max(r2, floored.r2), floored.r2Min, evalS, cosT, nFilUse);
         if (r2 + 1e-9 < resolved.r2 || r2 > resolved.r2 + 1e-9 || r1 > floored.r1 + 1e-9) {
             r2 = resolved.r2;
@@ -1820,8 +1846,7 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
         const floored = floorR2OnLastStep(height, sw.r1, sw.r2, minLineOfHeight(height), local, Stry, cosTry);
         const evalS = (r: number): number => {
             const Uup = { x: -sw.d.x, y: -sw.d.y, z: -sw.d.z };
-            const f = constructFillet(fr.B, nB, r, Uup, fr.plantarSlopeRad, fr.nPlantar);
-            return Math.abs(f.phi1 - f.phi0);
+            return filletSweepAtR2(fr.B, nB, r, Uup, sw.E, fr.plantarSlopeRad, fr.nPlantar);
         };
         const resolved = resolveLastR2(sw.r2, floored.r2Min, evalS, cosTry, fr.nFilFix || MIN_FILLET_RINGS);
         if (sw.r2 + 1e-9 >= resolved.r2 && sw.r1 <= floored.r1 + 1e-9 && sw.r2 <= resolved.r2 + 1e-9) {
@@ -4367,8 +4392,7 @@ export function enforceLastChordFloor(frames: ColumnFrame[], logFloor = false): 
         const nFilUse = fr.nFilFix || MIN_FILLET_RINGS;
         const evalS = (r: number): number => {
             const Uup = { x: -fr.U.x, y: -fr.U.y, z: -fr.U.z };
-            const f = constructFillet(fr.B, nB, r, Uup, fr.plantarSlopeRad, fr.nPlantar);
-            return Math.abs(f.phi1 - f.phi0);
+            return filletSweepAtR2(fr.B, nB, r, Uup, fr.E, fr.plantarSlopeRad, fr.nPlantar);
         };
         const resolved = resolveLastR2(fr.rFillet, need, evalS, fr.cosT, nFilUse);
         if (fr.rFillet + 1e-9 < resolved.r2 || fr.rFillet > resolved.r2 + 1e-9) {
@@ -4439,8 +4463,7 @@ export function clampFramesMinWall(
         const nB = fr.nB ?? fr.h;
         const evalS = (r: number): number => {
             const Uup = { x: -fr.U.x, y: -fr.U.y, z: -fr.U.z };
-            const f = constructFillet(fr.B, nB, r, Uup, fr.plantarSlopeRad, fr.nPlantar);
-            return Math.abs(f.phi1 - f.phi0);
+            return filletSweepAtR2(fr.B, nB, r, Uup, fr.E, fr.plantarSlopeRad, fr.nPlantar);
         };
         const resolved = resolveLastR2(fr.rFillet, r2Floor, evalS, fr.cosT, fr.nFilFix || MIN_FILLET_RINGS);
         const packed = packAlaRadii(
