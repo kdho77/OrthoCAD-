@@ -20,6 +20,7 @@ export {
     COS_T_MIN,
     type ColumnFrame,
     type ColumnQuality,
+    canonicalRoundPhi,
     columnHeading,
     constructArcLineArc,
     constructFillet,

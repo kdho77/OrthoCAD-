@@ -692,6 +692,8 @@ export function reconstructProceduralWalls(
         maxAspectEverywhere: grid.quality?.maxAspectEverywhere,
         maxAspectRound: grid.quality?.maxAspectRound,
         maxNeighbourSpacingRatio: grid.quality?.maxNeighbourSpacingRatio,
+        maxNeighbourSpacingRatioB: grid.quality?.maxNeighbourSpacingRatioB,
+        maxNeighbourSpacingRatioR: grid.quality?.maxNeighbourSpacingRatioR,
         maxETurningDeg: grid.quality?.maxETurningDeg,
         maxFTurningDeg: grid.quality?.maxFTurningDeg,
         maxSignedFoldDeg: grid.quality?.maxSignedFoldDeg,

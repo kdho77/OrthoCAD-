@@ -166,6 +166,8 @@ type ColumnQualityUd = {
     maxAspectEverywhere?: number;
     maxAspectRound?: number;
     maxNeighbourSpacingRatio?: number;
+    maxNeighbourSpacingRatioB?: number;
+    maxNeighbourSpacingRatioR?: number;
     maxETurningDeg?: number;
     maxFTurningDeg?: number;
     maxSignedFoldDeg?: number;
@@ -383,8 +385,8 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxAspectEverywhere ?? 0) > ASPECT_EVERYWHERE_MAX + 1e-6) {
         misses.push(`aspect ${q.maxAspectEverywhere?.toFixed(2)}>${ASPECT_EVERYWHERE_MAX}`);
     }
-    if ((q.maxNeighbourSpacingRatio ?? 0) > NEIGHBOUR_SPACING_RATIO + 1e-6) {
-        misses.push(`spacing-ratio ${q.maxNeighbourSpacingRatio?.toFixed(2)}>${NEIGHBOUR_SPACING_RATIO}`);
+    if ((q.maxNeighbourSpacingRatioB ?? 0) > NEIGHBOUR_SPACING_RATIO + 1e-6) {
+        misses.push(`spacing-ratio-B ${q.maxNeighbourSpacingRatioB?.toFixed(2)}>${NEIGHBOUR_SPACING_RATIO}`);
     }
     if ((q.maxETurningDeg ?? 0) > G1_MAX_DEG + 1e-6) {
         misses.push(`E-turn ${q.maxETurningDeg?.toFixed(2)}>${G1_MAX_DEG}`);

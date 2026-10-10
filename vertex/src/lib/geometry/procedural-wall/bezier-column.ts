@@ -237,6 +237,9 @@ export interface ColumnQuality {
     maxAspectEverywhere: number;
     maxAspectRound: number;
     maxNeighbourSpacingRatio: number;
+    /** B-ring neighbour spacing ratio (pass/fail). R stays diagnostic. */
+    maxNeighbourSpacingRatioB: number;
+    maxNeighbourSpacingRatioR: number;
     columnCrossings: number;
     maxSignedSeamNonFallbackDeg: number;
     maxETurningDeg: number;
@@ -1327,9 +1330,7 @@ export function constructSweepRule(
     let tStart = unit3(eW);
     if (dot3(tStart, tInc) < 0) tStart = { x: -tStart.x, y: -tStart.y, z: -tStart.z };
 
-    const locked = phiRound1Lock != null && Number.isFinite(phiRound1Lock);
-    const nIter = locked ? 3 : 2;
-    for (let iter = 0; iter < nIter; iter++) {
+    const step = (lockPhi?: number): void => {
         const dFil = projectOntoSpan(d, frame.ew, frame.ez);
         // constructFillet wants the wall direction at F (up the wall, F→E).
         const U = hypot3(dFil) > 1e-9 ? unit3({ x: -dFil.x, y: -dFil.y, z: -dFil.z }) : { x: 0, y: 0, z: 1 };
@@ -1341,11 +1342,10 @@ export function constructSweepRule(
             fil = constructFillet(B, nB, r2, U, plantarSlopeRad);
         }
         F = { ...fil.Pw };
-
         C1 = add3(R, eN, -r1);
         phiRound0 = 0;
-        if (locked) {
-            phiRound1 = phiRound1Lock as number;
+        if (lockPhi != null && Number.isFinite(lockPhi)) {
+            phiRound1 = lockPhi;
         } else {
             const dRnd = projectOntoSpan(d, eW, eN);
             const dRu = hypot3(dRnd) > 1e-9 ? unit3(dRnd) : { x: 0, y: 0, z: -1 };
@@ -1355,6 +1355,70 @@ export function constructSweepRule(
         E = sweptRoundPoint(C1, r1, eN, eW, phiRound1);
         const next = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
         if (hypot3(next) > 1e-9) d = unit3(next);
+    };
+    const measureG1 = (): { g1E: number; g1F: number } => {
+        const tE = sweptRoundTangent(eN, eW, phiRound1);
+        const tFPath = unit3({ x: -fil.d.x, y: -fil.d.y, z: -fil.d.z });
+        const dE = projectOntoSpan(d, eW, eN);
+        const dF = projectOntoSpan(d, frame.ew, frame.ez);
+        return {
+            g1E: hypot3(dE) > 1e-9 ? vecAngleDeg(unit3(dE), tE) : 0,
+            g1F: hypot3(dF) > 1e-9 ? vecAngleDeg(unit3(dF), tFPath) : 0,
+        };
+    };
+    const forceRulingToTE = (phi: number): void => {
+        E = sweptRoundPoint(C1, r1, eN, eW, phi);
+        const tE = sweptRoundTangent(eN, eW, phi);
+        const nRnd = unit3(cross3(eW, eN));
+        const toF = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
+        const alpha = hypot3(nRnd) > 1e-9 ? dot3(toF, nRnd) : 0;
+        const goal = {
+            x: tE.x + nRnd.x * alpha,
+            y: tE.y + nRnd.y * alpha,
+            z: tE.z + nRnd.z * alpha,
+        };
+        if (hypot3(goal) > 1e-9) d = unit3(goal);
+    };
+    const resolveLocked = (phi: number): { g1E: number; g1F: number } => {
+        for (let iter = 0; iter < 3; iter++) {
+            forceRulingToTE(phi);
+            step(phi);
+        }
+        return measureG1();
+    };
+
+    for (let iter = 0; iter < 2; iter++) step();
+    const freePhi = phiRound1;
+    const locked = phiRound1Lock != null && Number.isFinite(phiRound1Lock);
+    if (locked) {
+        let target = foldPhiToward(phiRound1Lock as number, freePhi);
+        target = Math.max(0.15, Math.min(Math.PI, target));
+        let g1 = resolveLocked(target);
+        if (g1.g1E > G1_MAX_DEG + 1e-6 || g1.g1F > G1_MAX_DEG + 1e-6) {
+            let lo = freePhi;
+            let hi = target;
+            let best = freePhi;
+            resolveLocked(freePhi);
+            for (let k = 0; k < 10; k++) {
+                const mid = 0.5 * (lo + hi);
+                const m = resolveLocked(mid);
+                if (m.g1E <= G1_MAX_DEG + 1e-6 && m.g1F <= G1_MAX_DEG + 1e-6) {
+                    lo = mid;
+                    best = mid;
+                    g1 = m;
+                } else {
+                    hi = mid;
+                }
+            }
+            if (g1.g1E > G1_MAX_DEG + 1e-6 || g1.g1F > G1_MAX_DEG + 1e-6) {
+                resolveLocked(freePhi);
+                target = freePhi;
+            } else {
+                target = best;
+                resolveLocked(target);
+            }
+        }
+        phiRound1 = target;
     }
 
     const tE = sweptRoundTangent(eN, eW, phiRound1);
@@ -2945,28 +3009,72 @@ export function buildBezierColumns(
     };
 }
 
-function unwrapClosedRad(phis: number[]): number[] {
+/** Sheet-to-wall branch: φ1 ∈ [0.15, π]. Mirrors inboard (negative) sweeps. */
+export function canonicalRoundPhi(phi: number): number {
+    let t = phi;
+    while (t < -Math.PI) t += Math.PI * 2;
+    while (t > Math.PI) t -= Math.PI * 2;
+    if (t < 0) t = -t;
+    if (t < 0.15) t = Math.PI / 2;
+    if (t > Math.PI) t = Math.PI;
+    return t;
+}
+
+function foldPhiToward(phi: number, ref: number): number {
+    let t = phi;
+    while (t - ref > Math.PI) t -= Math.PI * 2;
+    while (t - ref < -Math.PI) t += Math.PI * 2;
+    return t;
+}
+
+function foldClosedRad(phis: number[]): number[] {
     if (phis.length === 0) return [];
-    const out = [phis[0]!];
-    for (let i = 1; i < phis.length; i++) {
-        let t = phis[i]!;
-        const prev = out[i - 1]!;
-        while (t - prev > Math.PI) t -= Math.PI * 2;
-        while (t - prev < -Math.PI) t += Math.PI * 2;
-        out.push(t);
+    let sx = 0;
+    let sy = 0;
+    for (const p of phis) {
+        sx += Math.cos(p);
+        sy += Math.sin(p);
     }
-    return out;
+    const mean = Math.atan2(sy, sx);
+    return phis.map((p) => foldPhiToward(p, mean));
 }
 
 /** Smooth φ1 along the R ring (σ 12 mm), then re-solve each ruling with φ1 locked. */
 export function smoothRoundEndAngles(frames: ColumnFrame[], sigma = SCALAR_SMOOTH_SIGMA_MM): void {
     if (frames.length < 3) return;
-    for (const fr of frames) applyAlaToFrame(fr);
-    const raw = unwrapClosedRad(frames.map((f) => f.phiRound1));
+    for (const fr of frames) {
+        fr.phiRound1Lock = undefined;
+        applyAlaToFrame(fr);
+    }
+    const raw = foldClosedRad(frames.map((f) => canonicalRoundPhi(f.phiRound1)));
     const sm = periodicGaussian(
         raw,
         frames.map((f) => f.R),
         sigma,
+    ).map((p) => canonicalRoundPhi(p));
+    let rawMin = Infinity;
+    let rawMax = -Infinity;
+    let smMin = Infinity;
+    let smMax = -Infinity;
+    for (let i = 0; i < raw.length; i++) {
+        rawMin = Math.min(rawMin, raw[i]!);
+        rawMax = Math.max(rawMax, raw[i]!);
+        smMin = Math.min(smMin, sm[i]!);
+        smMax = Math.max(smMax, sm[i]!);
+    }
+    console.log(
+        "[S1-PHI1]",
+        JSON.stringify({
+            n: frames.length,
+            rawDeg: [
+                Number(((rawMin * 180) / Math.PI).toFixed(2)),
+                Number(((rawMax * 180) / Math.PI).toFixed(2)),
+            ],
+            smDeg: [
+                Number(((smMin * 180) / Math.PI).toFixed(2)),
+                Number(((smMax * 180) / Math.PI).toFixed(2)),
+            ],
+        }),
     );
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
@@ -3257,6 +3365,8 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let worstAlongRow = { i: -1, j: -1, deg: 0 };
     let worstAspect = { i: -1, j: -1, short: 0, long: 0, ratio: 0 };
     let worstRatio = { i: -1, lo: 0, hi: 0, ratio: 0, ring: "" };
+    let maxNeighbourRatioR = 0;
+    let maxNeighbourRatioB = 0;
     let maxOblique = 0;
     let nObliqueWarn = 0;
     let maxG1E = 0;
@@ -3287,6 +3397,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         const hi = Math.max(a, b);
         if (lo >= 2 * 0.3 - 1e-9) {
             const ratio = hi / lo;
+            if (ratio > maxNeighbourRatioR) maxNeighbourRatioR = ratio;
             if (ratio > maxNeighbourRatio) {
                 maxNeighbourRatio = ratio;
                 worstRatio = { i, lo, hi, ratio, ring: "R" };
@@ -3306,6 +3417,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         const hi = Math.max(a, b);
         if (lo >= 2 * 0.3 - 1e-9) {
             const ratio = hi / lo;
+            if (ratio > maxNeighbourRatioB) maxNeighbourRatioB = ratio;
             if (ratio > maxNeighbourRatio) {
                 maxNeighbourRatio = ratio;
                 worstRatio = { i, lo, hi, ratio, ring: "B" };
@@ -3591,6 +3703,8 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             aspectAll: Number(maxAspectAll.toFixed(2)),
             aspectRound: Number(maxAspectRound.toFixed(2)),
             neighbourRatio: Number(maxNeighbourRatio.toFixed(2)),
+            neighbourRatioB: Number(maxNeighbourRatioB.toFixed(2)),
+            neighbourRatioR: Number(maxNeighbourRatioR.toFixed(2)),
             colCross: columnCrossings,
             eTurn: Number(maxETurning.toFixed(2)),
             fTurn: Number(maxFTurning.toFixed(2)),
@@ -3643,6 +3757,8 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxAspectEverywhere: maxAspectAll,
         maxAspectRound,
         maxNeighbourSpacingRatio: maxNeighbourRatio,
+        maxNeighbourSpacingRatioB: maxNeighbourRatioB,
+        maxNeighbourSpacingRatioR: maxNeighbourRatioR,
         columnCrossings,
         maxSignedSeamNonFallbackDeg: maxSeamNonFb,
         maxETurningDeg: maxETurning,
