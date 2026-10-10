@@ -26,6 +26,7 @@ import {
     FILLET_R_CAP_MM,
     FILLET_STEP_MAX_DEG,
     filletCenterAndF,
+    filletPointAtPhi,
     floorR2OnLastStep,
     G1_MAX_DEG,
     HEADING_MAX_DEG,
@@ -67,6 +68,7 @@ import {
     sampleArcLineArc,
     sampleByArcLength,
     sampleInPlaneSlope,
+    sampleSweepRule,
     sheetSlopeFromNormal,
     sizedArcRows,
     slopeFromSheetPlane,
@@ -853,6 +855,27 @@ describe("bezier column", () => {
         const realS = Math.abs(sw.fil.phi1 - sw.fil.phi0);
         const need = lastFilletR2MinMm(local, lastFilletDLRad(realS, 1));
         expect(sw.r2).toBeGreaterThanOrEqual(need - 1e-6);
+        const dLReal = lastFilletDLRad(realS, 1);
+        const pts = sampleSweepRule(sw, { x: 0, y: 0, z: 12 }, { x: 8, y: 0, z: 0 }, 26, undefined, dLReal);
+        const last = pts[pts.length - 2]!;
+        const B = pts[pts.length - 1]!;
+        expect(dist3ish(last, B)).toBeGreaterThanOrEqual(lastFilletCMinMm(local) - 1e-3);
+    });
+
+    test("fillet samples stay above a 4deg posted plantar plane", () => {
+        const tilt = (4 * Math.PI) / 180;
+        const n = { x: 0, y: Math.sin(tilt), z: Math.cos(tilt) };
+        const B = { x: 0, y: 0, z: 0 };
+        const fil = constructFillet(B, { x: 1, y: 0 }, 2, { x: 0, y: 0, z: 1 }, 0, n);
+        assertFilletStation(fil, " posted-4");
+        const zDelta = (x: number, y: number) => -Math.tan(tilt) * y;
+        for (let i = 0; i <= 8; i++) {
+            const phi = fil.phi0 + ((fil.phi1 - fil.phi0) * i) / 8;
+            const p = filletPointAtPhi(fil, phi);
+            const sole = zDelta(p.x, p.y);
+            expect(p.z).toBeGreaterThanOrEqual(sole - 1e-6);
+            expect((p.x - B.x) * n.x + (p.y - B.y) * n.y + (p.z - B.z) * n.z).toBeGreaterThanOrEqual(-1e-6);
+        }
     });
 
     test("ensurePieceSpacing throws on a collapsed fillet row", () => {

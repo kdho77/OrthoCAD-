@@ -230,6 +230,31 @@ export function sampleGeneratedZ(
     return Math.max(0, z + zDelta(x, y));
 }
 
+/** Raise non-B wall verts that pierce the plantar. Never moves B or R. */
+export function liftWallVertsToPlantar(
+    columns: PolyPoint[][],
+    soleZ: (x: number, y: number, fallback?: number) => number,
+): { lifted: number; maxLiftMm: number } {
+    let lifted = 0;
+    let maxLiftMm = 0;
+    for (const col of columns) {
+        if (col.length < 3) continue;
+        for (let j = 1; j < col.length - 1; j++) {
+            const p = col[j]!;
+            const sole = soleZ(p.x, p.y, p.z);
+            const drop = sole - p.z;
+            if (drop <= 1e-9) continue;
+            col[j] = { x: p.x, y: p.y, z: sole };
+            lifted++;
+            maxLiftMm = Math.max(maxLiftMm, drop);
+        }
+    }
+    if (lifted) {
+        console.log("[S1-PLANTAR-LIFT]", JSON.stringify({ lifted, maxLiftMm: Number(maxLiftMm.toFixed(4)) }));
+    }
+    return { lifted, maxLiftMm };
+}
+
 function applyLateralFlange(
     columns: PolyPoint[][],
     stations: HermiteStation[],
@@ -672,7 +697,9 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         }),
     );
 
-    let nPlantars = stations.map((st) => plantarNormalAt(st.outline.x, st.outline.y, input.zDelta));
+    let nPlantars = stations.map((st) =>
+        plantarNormalAt(st.outline.x, st.outline.y, (x, y) => sampler.z(x, y, st.outline.z)),
+    );
     let plantarSlopeRad = stations.map((st, i) => {
         const dx = st.outline.x - st.rim.x;
         const dy = st.outline.y - st.rim.y;
@@ -738,7 +765,9 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
             const p = plantar.points[i]!;
             p.z = sampler2.z(p.x, p.y, p.z);
         }
-        nPlantars = stations.map((st) => plantarNormalAt(st.outline.x, st.outline.y, z2));
+        nPlantars = stations.map((st) =>
+            plantarNormalAt(st.outline.x, st.outline.y, (x, y) => sampler2.z(x, y, st.outline.z)),
+        );
         plantarSlopeRad = stations.map((st, i) => {
             const dx = st.outline.x - st.rim.x;
             const dy = st.outline.y - st.rim.y;
@@ -789,6 +818,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         built.frames[i]!.bandZ = B.z;
         built.frames[i]!.bandInsetMm = 0;
     }
+    liftWallVertsToPlantar(columns, soleZ);
 
     const implied = built.impliedSeamDeg;
     const flare = built.flareDeg;

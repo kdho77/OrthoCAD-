@@ -1769,28 +1769,9 @@ export function assertOutsideRound(R: XYZ, rnd: OutsideRound, pts: XYZ[]): void 
     }
 }
 
-export function applyAlaToFrame(fr: ColumnFrame, freezeLastR2 = false): ArcLineArc {
+function syncFrameFromSweep(fr: ColumnFrame, sw: SweepRule): void {
     const nUse = fr.nTopSmoothed ?? fr.nTop;
     const nB = fr.nB ?? fr.h;
-    const tRim = fr.tRim ?? { x: -fr.h.y, y: fr.h.x, z: 0 };
-    const local = localSpacingOf(fr);
-    const sw = constructSweepRule(
-        fr.R,
-        fr.B,
-        nUse,
-        fr.rTop,
-        fr.rFillet,
-        fr.h,
-        nB,
-        tRim,
-        fr.plantarSlopeRad,
-        fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
-        local,
-        fr.sheetPlaneN ?? nUse,
-        fr.phiRound1Lock,
-        fr.nPlantar,
-        freezeLastR2,
-    );
     const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
     fr.rTop = Math.max(MIN_ROUND_R_MM, sw.r1);
     fr.rFillet = sw.r2;
@@ -1826,6 +1807,31 @@ export function applyAlaToFrame(fr: ColumnFrame, freezeLastR2 = false): ArcLineA
     fr.cosT = cosT;
     fr.lastDlRad = lastFilletDLRad(S, cosT);
     fr.obliqueFallback = !sw.converged && fr.headingObliqueDeg > OBLIQUE_WARN_DEG;
+}
+
+export function applyAlaToFrame(fr: ColumnFrame, freezeLastR2 = false): ArcLineArc {
+    const nUse = fr.nTopSmoothed ?? fr.nTop;
+    const nB = fr.nB ?? fr.h;
+    const tRim = fr.tRim ?? { x: -fr.h.y, y: fr.h.x, z: 0 };
+    const local = localSpacingOf(fr);
+    const sw = constructSweepRule(
+        fr.R,
+        fr.B,
+        nUse,
+        fr.rTop,
+        fr.rFillet,
+        fr.h,
+        nB,
+        tRim,
+        fr.plantarSlopeRad,
+        fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
+        local,
+        fr.sheetPlaneN ?? nUse,
+        fr.phiRound1Lock,
+        fr.nPlantar,
+        freezeLastR2,
+    );
+    syncFrameFromSweep(fr, sw);
     return sweepToAla(sw, fr.h);
 }
 
@@ -2073,7 +2079,6 @@ function columnPoints(
     _nTopFix = 0,
     _nFilFix = 0,
 ): XYZ[] {
-    applyAlaToFrame(fr);
     const nUse = fr.nTopSmoothed ?? fr.nTop;
     const nB = fr.nB ?? fr.h;
     const tRim = fr.tRim ?? { x: -fr.h.y, y: fr.h.x, z: 0 };
@@ -2094,6 +2099,7 @@ function columnPoints(
         fr.phiRound1Lock,
         fr.nPlantar,
     );
+    syncFrameFromSweep(fr, sw);
     const nRound = _nTopFix || fr.nRoundFix || 0;
     const nFil = _nFilFix || fr.nFilFix || 0;
     const nLine = fr.nLineFix || 0;
@@ -2999,6 +3005,7 @@ function applySmooth(
         frames[i]!.rFillet = r2[i]!;
     }
     enforceAbsRadiusRate(frames);
+    enforceLastChordFloor(frames);
     return { before, after: snapshotStationParams(frames) };
 }
 
