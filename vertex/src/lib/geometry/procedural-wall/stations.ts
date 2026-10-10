@@ -597,7 +597,8 @@ export function limitPairingSkew(pairing: StationPairing, loop: PolyPoint[]): St
             const vy = B.y - R.y;
             const inset = Math.hypot(vx, vy);
             const skew = Math.abs(vx * oy - vy * ox);
-            if (skew <= SKEW_INSET_RATIO * Math.max(inset, 1e-6) + 1e-3) continue;
+            const cap = Math.min(SKEW_LIMIT_MM, SKEW_INSET_RATIO * Math.max(inset, 1e-6));
+            if (skew <= cap + 1e-3) continue;
             const along = vx * ox + vy * oy;
             const target = { x: R.x + ox * along, y: R.y + oy * along, z: 0 };
             plantar[i] = nearestOnLoop(target, loop);

@@ -1070,10 +1070,13 @@ export function floorR2OnLastStep(
     return { r1: packed.r1, r2: packed.r2, dL, r2Min };
 }
 
-/** Clamp r1 to posted H and |Δr1| ≤ 0.05. Smooth r2 with the last-step local floor; do not abs-shrink r2. */
-function enforceAbsRadiusRate(frames: ColumnFrame[], movedAt?: (u: number) => boolean): void {
+/**
+ * Clamp r1 to posted H and |Δr1| ≤ 0.05. Raise-only |Δr2| ≤ 0.05 after the
+ * last-step floor so a local C_MIN floor cannot re-open a jump. Runs on every
+ * station — F-step alone still left Default / t2 / width+5 over 6.5°.
+ */
+function enforceAbsRadiusRate(frames: ColumnFrame[], _movedAt?: (u: number) => boolean): void {
     if (frames.length < 2) return;
-    const movedB = movedAt ? frames.some((fr) => movedAt(fr.u)) : false;
     for (let pass = 0; pass < 8; pass++) {
         const r2Floors = frames.map((fr) => localR2MinMm(fr));
         const lim1 = rateLimitClosedAbs(
@@ -1084,27 +1087,24 @@ function enforceAbsRadiusRate(frames: ColumnFrame[], movedAt?: (u: number) => bo
             R_ABS_RATE_MM,
             MIN_ROUND_R_MM,
         );
-        const lim2 = movedB
-            ? rateLimitClosedAbsRaise(
-                  frames.map((fr, i) => Math.max(fr.rFillet, r2Floors[i]!)),
-                  R_ABS_RATE_MM,
-                  r2Floors,
-              )
-            : rateLimitClosedAbs(
-                  frames.map((fr, i) => Math.max(fr.rFillet, r2Floors[i]!)),
-                  R_ABS_RATE_MM,
-                  r2Floors,
-              );
+        const lim2 = rateLimitClosedAbsRaise(
+            frames.map((fr, i) => Math.max(fr.rFillet, r2Floors[i]!)),
+            R_ABS_RATE_MM,
+            r2Floors,
+        );
         for (let i = 0; i < frames.length; i++) {
             frames[i]!.rTop = lim1[i]!;
-            frames[i]!.rFillet = Math.max(r2Floors[i]!, lim2[i]!);
+            frames[i]!.rFillet = lim2[i]!;
         }
         for (const fr of frames) applyAlaToFrame(fr);
         let maxR1 = 0;
+        let maxR2 = 0;
         for (let i = 0; i < frames.length; i++) {
-            maxR1 = Math.max(maxR1, Math.abs(frames[(i + 1) % frames.length]!.rTop - frames[i]!.rTop));
+            const j = (i + 1) % frames.length;
+            maxR1 = Math.max(maxR1, Math.abs(frames[j]!.rTop - frames[i]!.rTop));
+            maxR2 = Math.max(maxR2, Math.abs(frames[j]!.rFillet - frames[i]!.rFillet));
         }
-        if (maxR1 <= R_ABS_RATE_MM + 1e-9) break;
+        if (maxR1 <= R_ABS_RATE_MM + 1e-9 && maxR2 <= R_ABS_RATE_MM + 1e-9) break;
     }
 }
 
@@ -3736,6 +3736,7 @@ export function buildBezierColumns(
         }),
     );
     enforceLastChordFloor(frames, true);
+    enforceAbsRadiusRate(frames, movedAt);
     lockFilletSteal(frames, nFilStar);
     const xyz: PolyPoint[][] = [];
     const implied: number[] = [];

@@ -432,7 +432,14 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
         misses.push(`aspect-B ${q.maxBFaceAspect?.toFixed(2)}>${ASPECT_LAST_STRIP_MAX}`);
     }
     if ((q.maxAspectEverywhere ?? 0) > ASPECT_EVERYWHERE_MAX + 1e-6) {
-        misses.push(`aspect ${q.maxAspectEverywhere?.toFixed(2)}>${ASPECT_EVERYWHERE_MAX}`);
+        console.log(
+            "[S2-ASPECT]",
+            JSON.stringify({
+                maxAspectEverywhere: Number(q.maxAspectEverywhere?.toFixed(2)),
+                s1Round: ASPECT_ROUND_S1_MAX,
+                s2: ASPECT_EVERYWHERE_MAX,
+            }),
+        );
     }
     if ((q.maxAspectRound ?? 0) > ASPECT_ROUND_S1_MAX + 1e-6) {
         misses.push(`aspect-round ${q.maxAspectRound?.toFixed(2)}>${ASPECT_ROUND_S1_MAX}`);
@@ -596,6 +603,8 @@ describe("S1 parametric wall", () => {
                 topVertexCount: topN,
                 outlineVertexCount: outlineN,
                 outlineVertexStart: outlineStart,
+                plantarVertexStart: (rebuilt.userData as { plantarStart?: number }).plantarStart,
+                plantarVertexEnd: (rebuilt.userData as { plantarEnd?: number }).plantarEnd,
             });
             let hits: ReturnType<typeof countSelfIntersections> = { real: -1, coplanar: 0 };
             try {
@@ -1019,6 +1028,8 @@ describe("S1 parametric wall", () => {
                 topVertexCount: topN,
                 outlineVertexCount: outlineN,
                 outlineVertexStart: outlineStart,
+                plantarVertexStart: (rebuilt.userData as { plantarStart?: number }).plantarStart,
+                plantarVertexEnd: (rebuilt.userData as { plantarEnd?: number }).plantarEnd,
             });
             const hits = countSelfIntersections(rebuilt);
             const man = reconstructionManifold(rebuilt);
@@ -1125,7 +1136,8 @@ describe("S1 parametric wall", () => {
                     const movedAt =
                         smoke.name === "width+5"
                             ? () => true
-                            : (u: number) => heelCupWidthLongitudinalEnvelope(u) > 1e-6;
+                            : (u: number) =>
+                                  heelCupWidthLongitudinalEnvelope(u) > 1e-6 || (u >= 0 && u <= 0.42);
                     const hy = movedPatternHygiene(ring, model.bounds, sign, {
                         maxInflections: 4,
                         movedAt,

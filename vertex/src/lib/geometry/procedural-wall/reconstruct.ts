@@ -449,8 +449,9 @@ function sanitizeMesh(
     }
     indices.length = 0;
     for (let i = 0; i < out.length; i++) indices.push(out[i]!);
-    // Last-strip k-grid is unit-tested (reconstruct-sliver.test.ts) but not
-    // applied here: full-mesh B-B fans still leave a generated edge used once.
+    if (bandVerts && bandVerts.size >= 2) {
+        splitAcuteTriangles(positions, indices, generatedStart, bandVerts);
+    }
     return { zeroArea, duplicates };
 }
 
@@ -844,7 +845,7 @@ export function reconstructProceduralWalls(
     const patternMovedAt = wholeWidth
         ? () => true
         : heelWiden
-          ? (u: number) => heelCupWidthLongitudinalEnvelope(u) > 1e-6
+          ? (u: number) => heelCupWidthLongitudinalEnvelope(u) > 1e-6 || u <= 0.42
           : undefined;
     if (patternMoved) {
         const movedHy = movedPatternHygiene(hygiened.loop, model.bounds, medialYSign, {

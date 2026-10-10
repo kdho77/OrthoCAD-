@@ -277,6 +277,10 @@ export interface FoldReportOptions {
     outlineVertexCount?: number;
     /** First outline-ring vertex id. Defaults to `topVertexCount` (legacy stitch). */
     outlineVertexStart?: number;
+    /** First generated-plantar interior vertex (after the B ring). */
+    plantarVertexStart?: number;
+    /** Exclusive end of generated-plantar verts. */
+    plantarVertexEnd?: number;
     /** When true, measure the whole insole (wall + plantar + new edges). */
     wholeInsole?: boolean;
 }
@@ -354,11 +358,15 @@ export function foldReport(reconstruction: BufferGeometry, opts?: FoldReportOpti
         const oneTop = topN > 0 && sa < topN !== sb < topN;
         const inOutline = (v: number) => outN > 0 && v >= outStart && v < outStart + outN;
         const oneOutline = inOutline(sa) !== inOutline(sb);
+        const pStart = opts?.plantarVertexStart ?? 0;
+        const pEnd = opts?.plantarVertexEnd ?? 0;
+        const inPlantarInterior = (v: number) => pEnd > pStart && v >= pStart && v < pEnd;
         if (opts?.wholeInsole) {
             const topFace = (f: number) =>
                 topN > 0 && idx[f]! < topN && idx[f + 1]! < topN && idx[f + 2]! < topN;
             if (topFace(f1) && topFace(f2)) continue;
             if (bothTop) continue;
+            if (inPlantarInterior(sa) && inPlantarInterior(sb)) continue;
         } else {
             const za = (z[sa]! - minZ) / span;
             const zb = (z[sb]! - minZ) / span;
