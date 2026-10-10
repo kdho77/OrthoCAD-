@@ -831,8 +831,9 @@ export function constructArcLineArc(
     let r1 = Math.max(MIN_ROUND_R_MM, r1In);
     let r2 = Math.max(0.05, r2In);
     if (short) {
-        r1 = Math.min(r1, SHORT_R1_MM);
-        r2 = Math.min(r2, SHORT_R2_MM);
+        const t = Math.max(0, Math.min(1, (height - (SHORT_WALL_H_MM - 1.2)) / 1.2));
+        r1 = Math.min(r1, SHORT_R1_MM + (r1 - SHORT_R1_MM) * t);
+        r2 = Math.min(r2, SHORT_R2_MM + (r2 - SHORT_R2_MM) * t);
     }
     const packedRadii = packAlaRadii(height, r1, r2, minL);
     r1 = packedRadii.r1;
@@ -1069,9 +1070,7 @@ function medianStationSpacing(stations: HermiteStation[]): number {
     if (stations.length < 2) return 1.3;
     const ds = stations.map((s, i) => {
         const n = stations[(i + 1) % stations.length]!;
-        const dR = Math.hypot(n.rim.x - s.rim.x, n.rim.y - s.rim.y, n.rim.z - s.rim.z);
-        const dB = Math.hypot(n.outline.x - s.outline.x, n.outline.y - s.outline.y);
-        return Math.min(dR, dB);
+        return Math.hypot(n.rim.x - s.rim.x, n.rim.y - s.rim.y, n.rim.z - s.rim.z);
     });
     ds.sort((a, b) => a - b);
     return ds[Math.floor(ds.length / 2)] ?? 1.3;
