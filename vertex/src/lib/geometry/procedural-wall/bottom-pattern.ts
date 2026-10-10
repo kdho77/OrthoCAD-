@@ -207,27 +207,6 @@ function smoothUnit2(ns: Array<{ x: number; y: number }>, passes: number): Array
     return cur;
 }
 
-/** Pull any interpolant overshoot back inside the rim. */
-function pinPatternInsideRim(curve: PolyPoint[], rim: PolyPoint[]): PolyPoint[] {
-    let cx = 0;
-    let cy = 0;
-    for (const p of rim) {
-        cx += p.x;
-        cy += p.y;
-    }
-    cx /= Math.max(1, rim.length);
-    cy /= Math.max(1, rim.length);
-    return curve.map((p) => {
-        if (pointInPoly(p.x, p.y, rim)) return p;
-        let q = p;
-        for (let t = 0.04; t <= 1; t += 0.04) {
-            q = { x: p.x + (cx - p.x) * t, y: p.y + (cy - p.y) * t, z: 0 };
-            if (pointInPoly(q.x, q.y, rim)) return q;
-        }
-        return q;
-    });
-}
-
 export interface PatternCurvatureReport {
     k: number[];
     s: number[];
@@ -331,7 +310,7 @@ export function patternCurvatureReport(
 }
 
 /**
- * One fair closed curve through ~16 features — not a per-region offset
+ * One fair closed curve through 16 features — not a per-region offset
  * blend. Heel (8 mm) tapers continuously into the forefoot (1 mm); the
  * medial arch is a single shallow S-curve. Periodic interpolating cubic.
  */
@@ -365,7 +344,30 @@ export function syntheticBottomPattern(
     });
     const features = resamplePolyline(startAtPosteriorHeel(ensureCcw(offset)), PATTERN_FEATURE_COUNT);
     const curve = resampleClosedC2(fitClosedC2Spline(features), Math.max(160, loop.length));
-    return pinPatternInsideRim(curve, loop);
+    return makeLateralConvex(curve, sign);
+}
+
+/** Laplacian only concave lateral verts so the lateral side stays convex. */
+function makeLateralConvex(loop: PolyPoint[], sign: MedialYSign, passes = 12): PolyPoint[] {
+    if (loop.length < 4) return loop;
+    const yMid = rimYMid(loop);
+    let cur = loop.map((p) => ({ ...p }));
+    for (let p = 0; p < passes; p++) {
+        const { k } = closedSignedCurvature(cur);
+        const next = cur.map((b, i) => {
+            if ((b.y - yMid) * sign > 0) return b;
+            if ((k[i] ?? 0) >= -1e-4) return b;
+            const a = cur[(i + cur.length - 1) % cur.length]!;
+            const c = cur[(i + 1) % cur.length]!;
+            return {
+                x: b.x * 0.5 + (a.x + c.x) * 0.25,
+                y: b.y * 0.5 + (a.y + c.y) * 0.25,
+                z: b.z,
+            };
+        });
+        cur = next;
+    }
+    return cur;
 }
 
 function asPoint(x: number, y: number, z = 0): PolyPoint {
