@@ -2952,6 +2952,30 @@ function setHandlesFromQF(fr: ColumnFrame): void {
     clampHandlesToChord(fr);
 }
 
+function sheetFrameAtR(
+    R: XYZ,
+    h: { x: number; y: number },
+    topZ: (x: number, y: number) => number | null,
+    junction?: ColumnJunction,
+    liveSheet = false,
+): LiveSheetAtR {
+    if (liveSheet) return liveSheetAtR(R, h, topZ, junction?.planeN);
+    const sampled = sampleInPlaneSlope(R, h, topZ, junction?.planeN);
+    const faceN = junction?.planeN;
+    const faceTilt = faceN ? sheetSlopeFromNormal(faceN, h) : null;
+    const roundSlopeRad = faceTilt != null ? faceTilt : sampled.valid ? -sampled.slopeRad : 0;
+    const valid = faceTilt != null || sampled.valid;
+    const nTop = valid ? nTopFromSheetSlope(roundSlopeRad, h) : { x: 0, y: 0, z: 1 };
+    return {
+        nTop,
+        tInc: valid ? incidentFaceTangent(nTop, h) : null,
+        sheetSlopeRad: sampled.valid ? sampled.slopeRad : faceN ? (slopeFromSheetPlane(faceN, h) ?? 0) : 0,
+        roundSlopeRad,
+        planeN: faceN ?? nTop,
+        valid,
+    };
+}
+
 export function initColumnFrames(
     stations: HermiteStation[],
     _junctions: ColumnJunction[],
@@ -2960,6 +2984,7 @@ export function initColumnFrames(
     topZ: (x: number, y: number) => number | null = () => null,
     plantarSlopeRad: number[] = [],
     nPlantars: XYZ[] = [],
+    liveSheet = false,
 ): ColumnFrame[] {
     const outline = stations.map((s) => s.outline);
     const nTops = smoothNormalField(
@@ -2994,7 +3019,7 @@ export function initColumnFrames(
         const shortChord = chord.shortChord;
         const planLen = chord.planLen;
         const height = Math.max(R.z - B.z, 0.5);
-        const live = liveSheetAtR(R, h, topZ, _junctions[i]?.planeN);
+        const live = sheetFrameAtR(R, h, topZ, _junctions[i], liveSheet);
         const sheetSlopeRad = live.valid ? live.sheetSlopeRad : 0;
         const roundSlopeRad = live.valid ? live.roundSlopeRad : 0;
         const nTop = live.valid ? live.nTop : nTops[i]!;
@@ -3269,10 +3294,11 @@ function resampleIncidentNTop(
     frames: ColumnFrame[],
     junctions: ColumnJunction[],
     topZ: (x: number, y: number) => number | null,
+    liveSheet = false,
 ): void {
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
-        const live = liveSheetAtR(fr.R, fr.h, topZ, junctions[i]?.planeN);
+        const live = sheetFrameAtR(fr.R, fr.h, topZ, junctions[i], liveSheet);
         if (live.valid) {
             fr.sheetSlopeRad = live.sheetSlopeRad;
             fr.roundSlopeRad = live.roundSlopeRad;
@@ -3295,6 +3321,7 @@ export function buildBezierColumns(
     plantarSlopeRad: number[] = [],
     minWallMm = 0.8,
     nPlantars: XYZ[] = [],
+    liveSheet = false,
 ): BezierColumns {
     const regionDefault = stations.map((st) =>
         blendedFlareDeg(st.u, st.outline.y, defaults.flareDeg, defaults.medialYSign ?? 1),
@@ -3303,7 +3330,16 @@ export function buildBezierColumns(
         stations.map((s) => s.outline),
         regionDefault,
     );
-    const frames = initColumnFrames(stations, junctions, defaults, flare, topZ, plantarSlopeRad, nPlantars);
+    const frames = initColumnFrames(
+        stations,
+        junctions,
+        defaults,
+        flare,
+        topZ,
+        plantarSlopeRad,
+        nPlantars,
+        liveSheet,
+    );
     const spacing = medianStationSpacing(stations);
     const minWallClamps = clampFramesMinWall(frames, topZ, minWallMm);
     enforceLastChordFloor(frames);
@@ -3311,7 +3347,7 @@ export function buildBezierColumns(
     enforceLastChordFloor(frames);
     console.log("[S1-SMOOTH] before", JSON.stringify(smoothLog.before));
     console.log("[S1-SMOOTH] after", JSON.stringify(smoothLog.after));
-    resampleIncidentNTop(frames, junctions, topZ);
+    resampleIncidentNTop(frames, junctions, topZ, liveSheet);
     let piece = choosePieceCounts(frames, spacing);
     let nRoundStar = piece.nRound;
     let nFilStar = piece.nFil;
@@ -3335,7 +3371,7 @@ export function buildBezierColumns(
     );
     guardFrames(frames, junctions, rimLoop, topZ, nWall, spacing, nRoundStar, nFilStar);
     enforceAbsRadiusRate(frames);
-    resampleIncidentNTop(frames, junctions, topZ);
+    resampleIncidentNTop(frames, junctions, topZ, liveSheet);
     smoothRoundEndAngles(frames);
     piece = choosePieceCounts(frames, spacing);
     nRoundStar = piece.nRound;

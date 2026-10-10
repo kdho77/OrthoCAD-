@@ -272,6 +272,8 @@ export interface BuildQuadGridInput {
     flangeAngleDeg?: number;
     footLengthMm?: number;
     flatPlantar?: boolean;
+    /** Sample n_top from the live modified top sheet (t4 / lift / posting). */
+    liveSheet?: boolean;
 }
 
 function headingOfStation(st: HermiteStation): { h: { x: number; y: number }; planLen: number } {
@@ -698,6 +700,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
             slopes,
             S1_MIN_WALL_MM,
             normals,
+            input.liveSheet === true,
         );
     let built = buildCols(plantarSlopeRad, nPlantars);
     const heightFlags = built.minWallClamps.filter((c) => c.postingHeightClamp && c.droppedMm > 1e-9);

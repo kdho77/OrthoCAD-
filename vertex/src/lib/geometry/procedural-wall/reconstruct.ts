@@ -597,14 +597,21 @@ export function reconstructProceduralWalls(
         0,
     );
     const rTop = Math.min(FILLET_R_CAP_MM, Math.max(0, defaults.wallFilletTopMm || 0.5));
+    const useLiveSheet = hasCurveOrTopModifiers(options);
     const E: PolyPoint[] = pairing.top.map((R, i) => {
         const B = pairing.plantar[i]!;
         const dx = B.x - R.x;
         const dy = B.y - R.y;
         const len = Math.hypot(dx, dy) || 1;
         const h = { x: dx / len, y: dy / len };
-        const live = liveSheetAtR(R, h, topZ, earlyJ[i]?.planeN);
-        const rnd = constructOutsideRound(R, live.nTop, h, rTop, -Math.PI / 2 + (24 * Math.PI) / 180);
+        const live = useLiveSheet ? liveSheetAtR(R, h, topZ, earlyJ[i]?.planeN) : null;
+        const rnd = constructOutsideRound(
+            R,
+            live?.nTop ?? earlyJ[i]?.planeN ?? { x: 0, y: 0, z: 1 },
+            h,
+            rTop,
+            -Math.PI / 2 + (24 * Math.PI) / 180,
+        );
         return rnd.E;
     });
     pairing.plantar = retargetPlantarFromE(E, hygiened.loop);
@@ -732,6 +739,7 @@ export function reconstructProceduralWalls(
         plantarField: model.outline.plantarZ,
         zDelta,
         topZ,
+        liveSheet: useLiveSheet,
         nWall: options.wallLayers ?? 26,
         refineGrind: (options.archGrindDepthMm ?? 0) > 0,
         flangeHeightMm: flangeH,
