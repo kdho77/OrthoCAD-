@@ -37,6 +37,7 @@ export {
     filletRadiusMm,
     HANDLE_CHORD_CAP,
     HEADING_MAX_DEG,
+    headingAllowanceDeg,
     inwardOfOutline,
     LINE_MAX_STEP_MM,
     MERGE_ROW_MM,

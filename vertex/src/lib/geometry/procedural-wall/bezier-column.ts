@@ -1539,6 +1539,13 @@ function headingAngle(a: { x: number; y: number }, b: { x: number; y: number }):
     return Math.acos(Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y)));
 }
 
+/** 0° on short chords (keeps B on-plane); full 3° once planLen ≥ 12 mm. */
+export function headingAllowanceDeg(planLen: number): number {
+    if (planLen <= 4) return 0;
+    if (planLen >= 12) return HEADING_MAX_DEG;
+    return HEADING_MAX_DEG * ((planLen - 4) / 8);
+}
+
 function clampHeadingTo(
     h: { x: number; y: number },
     ref: { x: number; y: number },
@@ -1582,10 +1589,12 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
     if (n === 0) return [];
     const chords = stations.map((st) => columnHeading(st));
     const corrected = chords.map((c, i) => {
+        const budget = headingAllowanceDeg(c.planLen);
+        if (budget < 1e-6) return { ...c.h };
         const bn = bLoopOutwardNormal(stations, i);
         const ang = (headingAngle(c.h, bn) * 180) / Math.PI;
-        if (c.planLen >= 8 && ang < 20) return clampHeadingTo(bn, c.h, HEADING_MAX_DEG);
-        return { ...c.h };
+        if (ang >= 20) return { ...c.h };
+        return clampHeadingTo(bn, c.h, budget);
     });
     const bLoop = stations.map((s) => s.outline);
     const sx = periodicGaussian(
@@ -1598,7 +1607,11 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
     );
     const out = sx.map((_, i) => {
         const hl = Math.hypot(sx[i]!, sy[i]!) || 1;
-        return clampHeadingTo({ x: sx[i]! / hl, y: sy[i]! / hl }, chords[i]!.h, HEADING_MAX_DEG);
+        return clampHeadingTo(
+            { x: sx[i]! / hl, y: sy[i]! / hl },
+            chords[i]!.h,
+            headingAllowanceDeg(chords[i]!.planLen),
+        );
     });
     const maxRad = (HEADING_MAX_DEG * Math.PI) / 180;
     for (let pass = 0; pass < 8; pass++) {
@@ -1616,7 +1629,9 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
             out[i] = { x: x / hl, y: y / hl };
         }
     }
-    for (let i = 0; i < n; i++) out[i] = clampHeadingTo(out[i]!, chords[i]!.h, HEADING_MAX_DEG);
+    for (let i = 0; i < n; i++) {
+        out[i] = clampHeadingTo(out[i]!, chords[i]!.h, headingAllowanceDeg(chords[i]!.planLen));
+    }
     return out;
 }
 
@@ -2170,22 +2185,26 @@ function ensureLastFilletRowHeight(xyz: XYZ[][], frames: ColumnFrame[], stationS
         if (fr.shortChord || fr.heightMm < SHORT_WALL_H_MM) continue;
         const B = col[col.length - 1]!;
         const prev2 = col[col.length - 3]!;
-        const span = dist3(prev2, B);
+        const last = col[col.length - 2]!;
+        if (dist3(last, B) >= minLast) continue;
+        const Bproj = projectToPlane(B, fr.R, fr.h);
+        const span = dist3(prev2, Bproj);
         if (span < minLast + 1e-9) continue;
-        if (dist3(col[col.length - 2]!, B) >= minLast) continue;
-        const vx = prev2.x - B.x;
-        const vy = prev2.y - B.y;
-        const vz = prev2.z - B.z;
+        const vx = prev2.x - Bproj.x;
+        const vy = prev2.y - Bproj.y;
+        const vz = prev2.z - Bproj.z;
         const L = Math.hypot(vx, vy, vz) || 1;
-        col[col.length - 2] = projectToPlane(
+        const slid = projectToPlane(
             {
-                x: B.x + (vx / L) * minLast,
-                y: B.y + (vy / L) * minLast,
-                z: B.z + (vz / L) * minLast,
+                x: Bproj.x + (vx / L) * minLast,
+                y: Bproj.y + (vy / L) * minLast,
+                z: Bproj.z + (vz / L) * minLast,
             },
             fr.R,
             fr.h,
         );
+        if (dist3(prev2, slid) < MIN_EDGE_MM) continue;
+        col[col.length - 2] = slid;
     }
 }
 
@@ -2246,6 +2265,7 @@ export function columnProfileQuality(
     exemptAcross: boolean[] = [],
 ): ColumnQuality {
     let maxAlong = 0;
+    let worstAlong = { i: -1, j: -1, u: -1, deg: 0 };
     let maxTcol = 0;
     let tColHits = 0;
     let reversals = 0;
@@ -2293,7 +2313,11 @@ export function columnProfileQuality(
             if (hypot3(t0) < ALONG_JOINT_MIN_EDGE_MM || hypot3(t1) < ALONG_JOINT_MIN_EDGE_MM) continue;
             const deg = signedJointDeg(t0, t1, bin);
             joints.push(deg);
-            maxAlong = Math.max(maxAlong, Math.abs(deg));
+            const absDeg = Math.abs(deg);
+            if (absDeg > maxAlong) {
+                maxAlong = absDeg;
+                worstAlong = { i, j, u: Number(fr.u.toFixed(4)), deg: Number(absDeg.toFixed(2)) };
+            }
             if (j === 1) maxTopRound = Math.max(maxTopRound, Math.abs(deg));
             if (fr.roundRows && j === fr.roundRows) {
                 maxRoundWall = Math.max(maxRoundWall, Math.abs(deg));
@@ -2371,6 +2395,7 @@ export function columnProfileQuality(
         ? Math.max(0, Math.min(acrossAll.length - 1, Math.ceil(0.99 * acrossAll.length) - 1))
         : 0;
     const maxAcrossP99 = acrossAll[p99Idx] ?? 0;
+    console.log("[S1-ALONG]", JSON.stringify(worstAlong));
     console.log("[S1-ACROSS]", JSON.stringify({ ...worstAcross, p99: Number(maxAcrossP99.toFixed(2)) }));
     return {
         maxAlongJointDeg: maxAlong,

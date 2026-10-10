@@ -16,6 +16,7 @@ import {
     FILLET_R_CAP_MM,
     filletCenterAndF,
     HEADING_MAX_DEG,
+    headingAllowanceDeg,
     initColumnFrames,
     MERGE_ROW_MM,
     MIN_LINE_MM,
@@ -413,6 +414,8 @@ describe("bezier column", () => {
         const h = heads[1]!;
         const toChord = (Math.acos(Math.max(-1, Math.min(1, h.x * chord.x + h.y * chord.y))) * 180) / Math.PI;
         expect(toChord).toBeLessThanOrEqual(HEADING_MAX_DEG + 1e-6);
+        expect(headingAllowanceDeg(2)).toBe(0);
+        expect(headingAllowanceDeg(12)).toBe(HEADING_MAX_DEG);
         expect(bn.x * 0 + bn.y * 1).toBeLessThan(0.1);
         expect(Math.hypot(h.x, h.y)).toBeCloseTo(1, 6);
         expect(Math.abs(bn.x)).toBeLessThan(0.2);
