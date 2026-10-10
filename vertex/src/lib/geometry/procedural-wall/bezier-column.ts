@@ -123,6 +123,10 @@ export interface ColumnFrame {
     leanRad: number;
     /** Line direction tilt from horizontal (rad). Negative is down. */
     lineTiltRad: number;
+    /** Designed outside-round sweep (rad). */
+    roundSweepRad: number;
+    /** Designed fillet sweep (rad). */
+    filletSweepRad: number;
 }
 
 export interface MinWallClamp {
@@ -955,7 +959,14 @@ export function sampleArcLineArc(
         TOP_ROUND_MAX_STEP_DEG,
         true,
     );
-    const nFil = sizedArcRows(ala.filletSweep, ala.r2, stationSpacing, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
+    const nFil = sizedArcRows(
+        ala.filletSweep,
+        ala.r2,
+        stationSpacing,
+        MIN_FILLET_RINGS,
+        FILLET_MAX_STEP_DEG,
+        true,
+    );
     const nLine0 = lineRowCount(ala.L, stationSpacing);
     let nLine = nLine0;
     const total0 = nRound + nLine + nFil + 1;
@@ -1044,6 +1055,8 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     fr.lineLengthMm = ala.L;
     fr.leanRad = ala.leanRad;
     fr.lineTiltRad = ala.lineTiltRad;
+    fr.roundSweepRad = ala.roundSweep;
+    fr.filletSweepRad = ala.filletSweep;
     return ala;
 }
 
@@ -1598,6 +1611,7 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
             out[i] = { x: x / hl, y: y / hl };
         }
     }
+    for (let i = 0; i < n; i++) out[i] = clampHeadingTo(out[i]!, chords[i]!.h, HEADING_MAX_DEG);
     return out;
 }
 
@@ -1687,6 +1701,26 @@ export function rateLimitClosed(vals: number[], maxPct: number, floor = 0): numb
         for (let i = n - 1; i >= 0; i--) {
             const j = (i + 1) % n;
             out[i] = pull(out[j]!, out[i]!);
+        }
+    }
+    return out;
+}
+
+/** Shrink only the larger neighbor so ALA cannot reopen a >maxPct jump. */
+export function rateLimitClosedDown(vals: number[], maxPct: number, floor = 0): number[] {
+    const n = vals.length;
+    const out = vals.map((v) => Math.max(floor, v));
+    if (n < 2) return out;
+    const f = Math.max(0, maxPct) / 100;
+    for (let pass = 0; pass < 8; pass++) {
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            const a = out[i]!;
+            const b = out[j]!;
+            const capFromA = Math.max(a, 1e-6) * (1 + f);
+            const capFromB = Math.max(b, 1e-6) * (1 + f);
+            if (b > capFromA) out[j] = Math.max(floor, capFromA);
+            if (a > capFromB) out[i] = Math.max(floor, capFromB);
         }
     }
     return out;
@@ -1824,6 +1858,8 @@ export function initColumnFrames(
             lineLengthMm: 0,
             leanRad: 0,
             lineTiltRad: -Math.PI / 2,
+            roundSweepRad: 0,
+            filletSweepRad: 0,
         };
         applyAlaToFrame(fr);
         return fr;
@@ -1849,7 +1885,7 @@ function applySmooth(
     const rim = frames.map((f) => f.R);
     const applyLimited = (r1: number[], r2: number[]): void => {
         const lim1 = rateLimitClosed(r1, R_CHANGE_MAX_PCT, MIN_ROUND_R_MM);
-        const lim2 = rateLimitClosed(r2, R2_CHANGE_MAX_PCT, 0.05);
+        const lim2 = rateLimitClosedDown(r2, R2_CHANGE_MAX_PCT, 0.05);
         for (let i = 0; i < frames.length; i++) {
             const fr = frames[i]!;
             fr.rTop = lim1[i]!;
@@ -1950,7 +1986,14 @@ export function buildBezierColumns(
             TOP_ROUND_MAX_STEP_DEG,
             true,
         );
-        const nFil = sizedArcRows(ala.filletSweep, ala.r2, spacing, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
+        const nFil = sizedArcRows(
+            ala.filletSweep,
+            ala.r2,
+            spacing,
+            MIN_FILLET_RINGS,
+            FILLET_MAX_STEP_DEG,
+            true,
+        );
         const nLine = lineRowCount(ala.L, spacing);
         nNeed = Math.max(nNeed, nRound + nLine + nFil + 1);
     }
@@ -1962,7 +2005,7 @@ export function buildBezierColumns(
             R_CHANGE_MAX_PCT,
             MIN_ROUND_R_MM,
         );
-        const lim2 = rateLimitClosed(
+        const lim2 = rateLimitClosedDown(
             frames.map((f) => f.rFillet),
             R2_CHANGE_MAX_PCT,
             0.05,
@@ -2001,7 +2044,7 @@ export function buildBezierColumns(
         const nxt = frames[(i + 1) % frames.length]!;
         maxTiltStep = Math.max(maxTiltStep, (Math.abs(nxt.leanRad - fr.leanRad) * 180) / Math.PI);
     }
-    mergeShortLastFilletRows(xyz, spacing);
+    ensureLastFilletRowHeight(xyz, frames, spacing);
     for (let i = 0; i < frames.length; i++) {
         const col = xyz[i]!;
         frames[i]!.arcEndZ = col[col.length - 2]?.z ?? frames[i]!.B.z;
@@ -2112,17 +2155,31 @@ function reportLeanVsBio(frames: ColumnFrame[], defaults: WallRegionDefaults, _b
     console.log("[S1-LEAN]", JSON.stringify(rows));
 }
 
-function mergeShortLastFilletRows(xyz: XYZ[][], stationSpacing: number): void {
+/** Keep nJ; slide the last interior away from B so the last row is ≥ 0.15× spacing. */
+function ensureLastFilletRowHeight(xyz: XYZ[][], frames: ColumnFrame[], stationSpacing: number): void {
     const minLast = FILLET_LAST_ROW_FRAC * stationSpacing;
-    for (let pass = 0; pass < 2; pass++) {
-        if (!xyz[0] || xyz[0].length < 4) return;
-        const anyShort = xyz.some(
-            (col) => col.length >= 4 && dist3(col[col.length - 2]!, col[col.length - 1]!) < minLast,
+    for (let i = 0; i < xyz.length; i++) {
+        const col = xyz[i]!;
+        const fr = frames[i]!;
+        if (col.length < 4) continue;
+        const B = col[col.length - 1]!;
+        const prev2 = col[col.length - 3]!;
+        const span = dist3(prev2, B);
+        if (span < minLast + 1e-9) continue;
+        if (dist3(col[col.length - 2]!, B) >= minLast) continue;
+        const vx = prev2.x - B.x;
+        const vy = prev2.y - B.y;
+        const vz = prev2.z - B.z;
+        const L = Math.hypot(vx, vy, vz) || 1;
+        col[col.length - 2] = projectToPlane(
+            {
+                x: B.x + (vx / L) * minLast,
+                y: B.y + (vy / L) * minLast,
+                z: B.z + (vz / L) * minLast,
+            },
+            fr.R,
+            fr.h,
         );
-        if (!anyShort) return;
-        for (const col of xyz) {
-            if (col.length >= 4) col.splice(col.length - 2, 1);
-        }
     }
 }
 
@@ -2198,7 +2255,8 @@ export function columnProfileQuality(
         const tCol = joints.reduce((s, d) => s + Math.abs(d), 0);
         maxTcol = Math.max(maxTcol, tCol);
         const sheetDeg = fr.sheetSlopeValid ? Math.abs((fr.sheetSlopeRad * 180) / Math.PI) : 0;
-        const bound = 180 + sheetDeg + T_COL_SLACK_DEG;
+        const designedSweep = (Math.abs(fr.roundSweepRad) + Math.abs(fr.filletSweepRad)) * (180 / Math.PI);
+        const bound = designedSweep * ALONG_JOINT_BUDGET_FRAC + sheetDeg + T_COL_SLACK_DEG;
         if (tCol > bound + 1e-6) tColHits++;
         const budget = Math.max(
             ALONG_JOINT_MAX_DEG,

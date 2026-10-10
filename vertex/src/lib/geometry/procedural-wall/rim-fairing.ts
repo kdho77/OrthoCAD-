@@ -8,7 +8,7 @@ export type RimFairing = "exact" | "fair01";
 export const RIM_TURN_EXEMPT_DEG = 15;
 export const RIM_FAIR_MAX_MM = 0.1;
 
-export function rimTurningDeg(pts: PolyPoint[], i: number): number {
+export function rimTurningDeg(pts: PolyPoint[], i: number, use3d = true): number {
     const n = pts.length;
     if (n < 3) return 0;
     const prev = pts[(i + n - 1) % n]!;
@@ -16,11 +16,13 @@ export function rimTurningDeg(pts: PolyPoint[], i: number): number {
     const next = pts[(i + 1) % n]!;
     const ax = cur.x - prev.x;
     const ay = cur.y - prev.y;
+    const az = use3d ? cur.z - prev.z : 0;
     const bx = next.x - cur.x;
     const by = next.y - cur.y;
-    const al = Math.hypot(ax, ay) || 1;
-    const bl = Math.hypot(bx, by) || 1;
-    const d = Math.max(-1, Math.min(1, (ax * bx + ay * by) / (al * bl)));
+    const bz = use3d ? next.z - cur.z : 0;
+    const al = Math.hypot(ax, ay, az) || 1;
+    const bl = Math.hypot(bx, by, bz) || 1;
+    const d = Math.max(-1, Math.min(1, (ax * bx + ay * by + az * bz) / (al * bl)));
     return (Math.acos(d) * 180) / Math.PI;
 }
 
@@ -44,8 +46,9 @@ export function fairRim01(pts: PolyPoint[], maxMm = RIM_FAIR_MAX_MM): PolyPoint[
             const dx = x - src[i]!.x;
             const dy = y - src[i]!.y;
             const d = Math.hypot(dx, dy);
-            if (d > maxMm) {
-                const s = maxMm / d;
+            const cap = maxMm * 0.999;
+            if (d > cap) {
+                const s = cap / d;
                 x = src[i]!.x + dx * s;
                 y = src[i]!.y + dy * s;
             }

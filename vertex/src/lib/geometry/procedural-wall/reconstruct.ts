@@ -433,6 +433,15 @@ export function reconstructProceduralWalls(
     const rimFairing: RimFairing = options.rimFairing ?? "exact";
     const staircaseMask = tagStaircaseRim(sourceRimPts, RIM_TURN_EXEMPT_DEG);
     const taggedSource = sourceRimPts.filter((_, i) => staircaseMask[i]);
+    const maxRimTurn = sourceRimPts.reduce((m, _, i) => Math.max(m, rimTurningDeg(sourceRimPts, i)), 0);
+    console.log(
+        "[S1-RIM-TURN]",
+        JSON.stringify({
+            tagged: taggedSource.length,
+            maxDeg: Number(maxRimTurn.toFixed(2)),
+            fairing: rimFairing,
+        }),
+    );
     const footLen = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
     const rimStaircaseVerts = sourceRimPts
         .map((p, i) => ({
