@@ -584,9 +584,9 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         input.nWall ?? 2 + TOP_ROUND_MIN_ROWS + WALL_MID_ROWS + 12,
         2 + TOP_ROUND_MIN_ROWS + WALL_MID_ROWS + 12,
     );
-    const nJ = nWall;
-    const outlineRow = nJ - 1;
-    const innerRow = outlineRow;
+    let nJ = nWall;
+    let outlineRow = nJ - 1;
+    let innerRow = outlineRow;
 
     const sampler = makePlantarSampler(
         stations.map((s) => s.outline),
@@ -676,6 +676,9 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     );
 
     const columns: PolyPoint[][] = built.xyz.map((col) => col.map((p) => ({ ...p })));
+    nJ = columns[0]?.length ?? nWall;
+    outlineRow = nJ - 1;
+    innerRow = outlineRow;
     applyLateralFlange(
         columns,
         stations,

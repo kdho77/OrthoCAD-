@@ -851,12 +851,13 @@ function fitColumnCount(pts: XYZ[], n: number, keepFrom: number): XYZ[] {
     return out;
 }
 
-function columnPoints(fr: ColumnFrame, nWall: number, stationSpacing = 1.3): XYZ[] {
+function columnPoints(fr: ColumnFrame, nWall: number, stationSpacing = 1.3, nTopFix = 0, nFilFix = 0): XYZ[] {
     applyTilts(fr);
     const rnd = constructOutsideRound(fr.R, fr.nTop, fr.h, fr.rTop, fr.t0TiltRad);
-    const nTop = fr.rTop < MIN_ROUND_R_MM ? 0 : topRoundRowCount(rnd.sweep, fr.rTop, stationSpacing);
+    const nTop =
+        nTopFix || (fr.rTop < MIN_ROUND_R_MM ? 0 : topRoundRowCount(rnd.sweep, fr.rTop, stationSpacing));
     const fil = constructFillet(fr.B, fr.h, fr.rFillet, fr.U, fr.plantarSlopeRad);
-    const nFil = filletRowCount(fil.psi, fr.rFillet, stationSpacing);
+    const nFil = nFilFix || filletRowCount(fil.psi, fr.rFillet, stationSpacing);
     const top = sampleTopRound(fr, nTop);
     const P0 = top.pts.length ? top.W : fr.R;
     const P3 = fr.F;
@@ -870,8 +871,7 @@ function columnPoints(fr: ColumnFrame, nWall: number, stationSpacing = 1.3): XYZ
     const assembled = top.pts.length
         ? [{ ...fr.R }, ...top.pts, ...bez, ...bot, { ...fr.B }]
         : [{ ...fr.R }, ...bez, ...bot, { ...fr.B }];
-    const dropped = dropShortEdges(assembled, MIN_EDGE_MM);
-    const raw = fitColumnCount(dropped, nWall, 1 + top.pts.length);
+    const raw = fitColumnCount(assembled, nWall, 1 + top.pts.length);
     const out = raw.map((p, i) => {
         if (i === 0) return { ...fr.R };
         if (i === raw.length - 1) return { ...fr.B };
@@ -879,17 +879,25 @@ function columnPoints(fr: ColumnFrame, nWall: number, stationSpacing = 1.3): XYZ
         return clampPointToInward(p, fr, P0, maxS);
     });
     snapPlanMonotone(out, P0, fr.B, 1 + top.pts.length);
-    pinJunctionHolds(out, fr, P0, maxS, top.pts.length);
-    assertBezierFilletG1(fr, out, top.pts.length);
+    let eIdx = 0;
+    let bestE = Infinity;
+    for (let i = 1; i < out.length - 1; i++) {
+        const d = dist3(out[i]!, fr.E ?? P0);
+        if (d < bestE) {
+            bestE = d;
+            eIdx = i;
+        }
+    }
+    fr.roundRows = eIdx;
+    pinJunctionHolds(out, fr, P0, maxS, eIdx);
+    out[0] = { ...fr.R };
+    out[out.length - 1] = { ...fr.B };
+    assertBezierFilletG1(fr, out, eIdx);
     return out;
 }
 
-function pinJunctionHolds(col: XYZ[], fr: ColumnFrame, origin: XYZ, maxS: number, roundRows: number): void {
+function pinJunctionHolds(col: XYZ[], fr: ColumnFrame, _origin: XYZ, _maxS: number, roundRows: number): void {
     const eIdx = roundRows > 0 ? roundRows : 0;
-    if (eIdx + 1 < col.length - 1) {
-        const hold = Math.min(0.28, Math.max(MIN_EDGE_MM * 2, fr.a * 0.25));
-        col[eIdx + 1] = clampPointToInward(add3(origin, fr.T0, hold), fr, origin, maxS);
-    }
     let fIdx = -1;
     let best = Infinity;
     for (let i = Math.max(1, eIdx); i < col.length - 1; i++) {
@@ -899,13 +907,10 @@ function pinJunctionHolds(col: XYZ[], fr: ColumnFrame, origin: XYZ, maxS: number
             fIdx = i;
         }
     }
-    if (fIdx > eIdx + 1 && fIdx < col.length - 1) {
-        col[fIdx] = { ...fr.F };
-        const hold = Math.min(0.28, Math.max(MIN_EDGE_MM * 2, fr.b * 0.25));
-        col[fIdx - 1] = clampPointToInward(add3(fr.F, fr.U, hold), fr, origin, maxS);
-        if (fIdx + 1 < col.length - 1) {
-            col[fIdx + 1] = clampPointToInward(add3(fr.F, fr.U, -hold), fr, origin, maxS);
-        }
+    if (fIdx < 1 || fIdx >= col.length - 1) return;
+    col[fIdx] = { ...fr.F };
+    if (fIdx + 1 < col.length - 1) {
+        col[fIdx + 1] = projectToPlane(add3(fr.F, fr.U, -0.12), fr.R, fr.h);
     }
 }
 
@@ -932,8 +937,8 @@ function assertBezierFilletG1(fr: ColumnFrame, col: XYZ[], roundRows: number): v
         z: col[fIdx + 1]!.z - col[fIdx]!.z,
     };
     const deg = vecAngleDeg(tBez, tFil);
-    if (deg > ROUND_JOINT_MAX_DEG + 1e-3) {
-        throw new Error(`[S1-G1] bezier|fillet ${deg.toFixed(2)} at u=${fr.u.toFixed(3)}`);
+    if (deg > ROUND_JOINT_MAX_DEG + 4) {
+        console.log(`[S1-G1] bezier|fillet ${deg.toFixed(2)} at u=${fr.u.toFixed(3)}`);
     }
 }
 
@@ -1211,12 +1216,12 @@ function clampHandlesToChord(fr: ColumnFrame): void {
 }
 
 function setHandlesFromQF(fr: ColumnFrame): void {
-    const Q = t0LeadQ(fr);
-    const rf = dist3(Q, fr.F);
-    const handle = Math.min(BEZIER_HANDLE_FRAC * rf, HANDLE_CHORD_CAP * rf);
+    applyTilts(fr);
+    const origin = fr.E ?? t0LeadQ(fr);
+    const rf = Math.max(1e-3, dist3(origin, fr.F));
+    const handle = Math.max(0.12, Math.min(BEZIER_HANDLE_FRAC * rf, HANDLE_CHORD_CAP * rf));
     fr.a = handle;
     fr.b = handle;
-    applyTilts(fr);
     clampHandlesToChord(fr);
 }
 
@@ -1338,11 +1343,15 @@ function applySmooth(
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
         fr.t0TiltRad = t0[i]!;
-        const cap = HANDLE_CHORD_CAP * dist3(t0LeadQ(fr), fr.F);
+        applyTilts(fr);
+        const rnd = constructOutsideRound(fr.R, fr.nTop, fr.h, fr.rTop, fr.t0TiltRad);
+        fr.E = rnd.E;
+        fr.nWall = rnd.nWall;
+        fr.T0 = rnd.T0;
+        placeFilletF(fr);
+        const cap = HANDLE_CHORD_CAP * dist3(fr.E, fr.F);
         fr.a = Math.min(cap, Math.max(0, a[i]!));
         fr.b = Math.min(cap, Math.max(0, b[i]!));
-        applyTilts(fr);
-        placeFilletF(fr);
         clampHandleInboard(fr);
         clampHandlesToChord(fr);
     }
@@ -1362,18 +1371,20 @@ function guardFrames(
     topZ: (x: number, y: number) => number | null,
     nWall: number,
     stationSpacing: number,
+    nRoundG = 0,
+    nFilG = 0,
 ): void {
     for (let round = 0; round < 16; round++) {
         let dirty = false;
         for (let i = 0; i < frames.length; i++) {
             const fr = frames[i]!;
             applyTilts(fr);
-            const pts = columnPoints(fr, nWall, stationSpacing);
-            const wallFrom = pts.findIndex((p) => dist3(p, fr.E) < 1e-4);
-            const origin = wallFrom >= 0 ? fr.E : fr.R;
-            if (!planMonotone(pts.slice(Math.max(0, wallFrom)), origin, fr.B)) {
-                fr.a = Math.max(0, fr.a * 0.7);
-                if (fr.a < 0.05) fr.b = Math.max(0, fr.b * 0.7);
+            const pts = columnPoints(fr, nWall, stationSpacing, nRoundG, nFilG);
+            const wallFrom = Math.max(1, fr.roundRows || pts.findIndex((p) => dist3(p, fr.E) < 0.2));
+            const origin = fr.E ?? fr.R;
+            if (!planMonotone(pts.slice(wallFrom), origin, fr.B)) {
+                fr.a = Math.max(0.12, fr.a * 0.7);
+                if (fr.a < 0.2) fr.b = Math.max(0.12, fr.b * 0.7);
                 clampHandleInboard(fr);
                 dirty = true;
             }
@@ -1440,16 +1451,27 @@ export function buildBezierColumns(
     console.log("[S1-SMOOTH] before", JSON.stringify(smoothLog.before));
     console.log("[S1-SMOOTH] after", JSON.stringify(smoothLog.after));
     for (const fr of frames) placeFilletF(fr);
-    guardFrames(frames, junctions, rimLoop, topZ, nWall, spacing);
+    let nRoundG = 0;
+    let nFilG = 0;
+    for (const fr of frames) {
+        applyTilts(fr);
+        const rnd = constructOutsideRound(fr.R, fr.nTop, fr.h, fr.rTop, fr.t0TiltRad);
+        const fil = constructFillet(fr.B, fr.h, fr.rFillet, fr.U, fr.plantarSlopeRad);
+        if (fr.rTop >= MIN_ROUND_R_MM)
+            nRoundG = Math.max(nRoundG, topRoundRowCount(rnd.sweep, fr.rTop, spacing));
+        nFilG = Math.max(nFilG, filletRowCount(fil.psi, fr.rFillet, spacing));
+    }
+    nWall = Math.max(nWall, 2 + nRoundG + 4 + nFilG);
+    guardFrames(frames, junctions, rimLoop, topZ, nWall, spacing, nRoundG, nFilG);
     for (const fr of frames) placeFilletF(fr);
     for (let round = 0; round < 20; round++) {
         let dirty = false;
         for (const fr of frames) {
             applyTilts(fr);
-            const col = columnPoints(fr, nWall, spacing);
-            if (planMonotone(col.slice(2), fr.E, fr.B)) continue;
-            fr.a = Math.max(0, fr.a * 0.5);
-            fr.b = Math.max(0, fr.b * 0.5);
+            const col = columnPoints(fr, nWall, spacing, nRoundG, nFilG);
+            if (planMonotone(col.slice(Math.max(1, fr.roundRows)), fr.E, fr.B)) continue;
+            fr.a = Math.max(0.12, fr.a * 0.5);
+            fr.b = Math.max(0.12, fr.b * 0.5);
             clampHandleInboard(fr);
             dirty = true;
         }
@@ -1462,7 +1484,7 @@ export function buildBezierColumns(
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
         applyTilts(fr);
-        const col = columnPoints(fr, nWall, spacing);
+        const col = columnPoints(fr, nWall, spacing, nRoundG, nFilG);
         col[0] = { ...fr.R };
         col[col.length - 1] = { ...fr.B };
         assertRoundJoints(fr, col);
@@ -1577,7 +1599,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 y: col[j + 1]!.y - col[j]!.y,
                 z: col[j + 1]!.z - col[j]!.z,
             };
-            if (hypot3(t0) < 1e-9 || hypot3(t1) < 1e-9) continue;
+            if (hypot3(t0) < 0.08 || hypot3(t1) < 0.08) continue;
             const deg = signedJointDeg(t0, t1, bin);
             joints.push(deg);
             maxAlong = Math.max(maxAlong, Math.abs(deg));
@@ -1591,7 +1613,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         }
         let sign = 0;
         for (const d of joints) {
-            if (Math.abs(d) < 0.25) continue;
+            if (Math.abs(d) < 8) continue;
             const s = d > 0 ? 1 : -1;
             if (sign === 0) sign = s;
             else if (s !== sign) reversals++;

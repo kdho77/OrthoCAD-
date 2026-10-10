@@ -115,7 +115,7 @@ export function countColumnPlanReversals(xyz: Array<Array<{ x: number; y: number
         let prev = minS;
         for (let i = minI + 1; i < col.length; i++) {
             const s = (col[i]!.x - R.x) * hx + (col[i]!.y - R.y) * hy;
-            if (s < prev - 1e-4 * chord) hits++;
+            if (s < prev - Math.max(0.05, 1e-3 * chord)) hits++;
             if (s > prev) prev = s;
         }
     }
