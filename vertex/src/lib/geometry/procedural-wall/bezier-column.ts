@@ -3178,6 +3178,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let lastSzMono = true;
     let rowPieceIdentical = true;
     let maxAlongRow = 0;
+    let worstAlongRow = { i: -1, j: -1, deg: 0 };
+    let worstAspect = { i: -1, j: -1, short: 0, long: 0, ratio: 0 };
+    let worstRatio = { i: -1, lo: 0, hi: 0, ratio: 0, ring: "" };
     let maxOblique = 0;
     let nObliqueWarn = 0;
     let maxG1E = 0;
@@ -3203,7 +3206,13 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         const b = ds[(i + nS - 1) % nS]!;
         const lo = Math.min(a, b);
         const hi = Math.max(a, b);
-        if (lo >= 2 * 0.3 - 1e-9) maxNeighbourRatio = Math.max(maxNeighbourRatio, hi / lo);
+        if (lo >= 2 * 0.3 - 1e-9) {
+            const ratio = hi / lo;
+            if (ratio > maxNeighbourRatio) {
+                maxNeighbourRatio = ratio;
+                worstRatio = { i, lo, hi, ratio, ring: "R" };
+            }
+        }
     }
     const dsB: number[] = [];
     for (let i = 0; i < nS; i++) {
@@ -3216,7 +3225,13 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         const b = dsB[(i + nS - 1) % nS]!;
         const lo = Math.min(a, b);
         const hi = Math.max(a, b);
-        if (lo >= 2 * 0.3 - 1e-9) maxNeighbourRatio = Math.max(maxNeighbourRatio, hi / lo);
+        if (lo >= 2 * 0.3 - 1e-9) {
+            const ratio = hi / lo;
+            if (ratio > maxNeighbourRatio) {
+                maxNeighbourRatio = ratio;
+                worstRatio = { i, lo, hi, ratio, ring: "B" };
+            }
+        }
     }
     const columnCrossings = countPlanViewChordCrossings(
         frames.map((f) => f.F),
@@ -3357,10 +3372,16 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const shortE = Math.min(e0, e1, e2, e3);
             const longE = Math.max(e0, e1, e2, e3);
             const cMinI = lastFilletCMinMm(fr.localSpacingMm || fr.stationSpacingMm || median);
-            if (shortE >= cMinI * 0.5) maxAspectAll = Math.max(maxAspectAll, longE / shortE);
+            if (shortE >= cMinI * 0.5) {
+                const aspect = longE / shortE;
+                if (aspect > maxAspectAll) {
+                    maxAspectAll = aspect;
+                    worstAspect = { i, j, short: shortE, long: longE, ratio: aspect };
+                }
+            }
         }
         const lineLo = nRnd + 1;
-        const lineHi = nRnd + nLn;
+        const lineHi = nRnd + nLn - 1;
         for (let j = 1; j < rows; j++) {
             if (j < lineLo || j > lineHi) continue;
             const a = col[j]!;
@@ -3368,8 +3389,12 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const below = j + 1 < rows ? faceN3(a, b, col[j + 1]!) : null;
             const above = faceN3(b, a, col[j - 1]!);
             if (!below || !above) continue;
-            const raw = vecAngleDeg(below, above);
-            maxAlongRow = Math.max(maxAlongRow, Math.min(raw, 180 - raw));
+            const fold = vecAngleDeg(below, above);
+            const raw = Math.min(fold, 180 - fold);
+            if (raw > maxAlongRow) {
+                maxAlongRow = raw;
+                worstAlongRow = { i, j, deg: raw };
+            }
         }
         if (col.length >= 2) {
             const last = col[col.length - 2]!;
@@ -3435,6 +3460,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         : 0;
     const maxAcrossP99 = acrossAll[p99Idx] ?? 0;
     console.log("[S1-ALONG]", JSON.stringify(worstAlong));
+    console.log("[S1-ALONG-ROW]", JSON.stringify(worstAlongRow));
+    console.log("[S1-ASPECT]", JSON.stringify(worstAspect));
+    console.log("[S1-RATIO]", JSON.stringify(worstRatio));
     console.log("[S1-ACROSS]", JSON.stringify({ ...worstAcross, p99: Number(maxAcrossP99.toFixed(2)) }));
     console.log(
         "[S1-BSEAM]",
