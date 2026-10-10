@@ -789,6 +789,23 @@ function nearestS01(p: PolyPoint, loop: PolyPoint[], cum: number[], total: numbe
     return ((bestS % 1) + 1) % 1;
 }
 
+/** Interpolate along the closed loop so new stations cannot collapse to one vertex. */
+export function lerpClosedOnLoop(a: PolyPoint, b: PolyPoint, t: number, loop: PolyPoint[]): PolyPoint {
+    if (loop.length < 2) {
+        return {
+            x: a.x + (b.x - a.x) * t,
+            y: a.y + (b.y - a.y) * t,
+            z: a.z + (b.z - a.z) * t,
+        };
+    }
+    const { cum, total } = polylineArcLengths(loop);
+    const sa = nearestS01(a, loop, cum, total);
+    let sb = nearestS01(b, loop, cum, total);
+    if (sb < sa - 0.5) sb += 1;
+    if (sb > sa + 0.5) sb -= 1;
+    return sampleClosedAtArc01(loop, sa + (sb - sa) * t);
+}
+
 function nearestIndex(loop: PolyPoint[], p: PolyPoint): number {
     let best = 0;
     let bestD = Infinity;

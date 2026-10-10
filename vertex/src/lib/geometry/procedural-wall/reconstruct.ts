@@ -35,7 +35,12 @@ import { applyOutlineClean } from "./outline-clean";
 import { hygieneBottomPattern } from "./pattern-hygiene";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
 import { assertClosedStationRing, assertPeriodicQuadStrip, rotateStationRing } from "./ring-seam";
-import { countPlanViewChordCrossings, pairAtNativeTop, retargetPlantarFromE } from "./stations";
+import {
+    countPlanViewChordCrossings,
+    pairAtNativeTop,
+    retargetPlantarFromE,
+    spreadClosedOnLoop,
+} from "./stations";
 import type { StockWallModel } from "./types";
 
 export interface ReconstructOptions extends ProceduralModifierInput {
@@ -496,6 +501,12 @@ export function reconstructProceduralWalls(
     applyOutlineClean(stations, rimLocal, indices);
     fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     rotateStationRing(stations, rimLocal, model.bounds);
+    const spreadB = spreadClosedOnLoop(
+        stations.map((s) => s.outline),
+        hygiened.loop,
+        0.4,
+    );
+    for (let i = 0; i < stations.length; i++) stations[i]!.outline = spreadB[i]!;
     assertClosedStationRing(stations, rimLocal);
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,

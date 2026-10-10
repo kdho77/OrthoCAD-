@@ -4,6 +4,7 @@
 import { OUTLINE_STATION_SPACING_MM } from "./bezier-column";
 import type { PolyPoint } from "./curves";
 import type { HermiteStation } from "./loft";
+import { lerpClosedOnLoop } from "./stations";
 
 const HEEL_U_MAX = 0.22;
 const FORE_U_MIN = 0.78;
@@ -12,30 +13,6 @@ function inDenseBand(ua: number, ub: number): boolean {
     const heel = ua <= HEEL_U_MAX && ub <= HEEL_U_MAX;
     const fore = ua >= FORE_U_MIN && ub >= FORE_U_MIN;
     return heel || fore;
-}
-
-function nearestOnLoop(origin: PolyPoint, loop: PolyPoint[]): PolyPoint {
-    let best = loop[0] ?? { x: origin.x, y: origin.y, z: origin.z };
-    let bestD = Infinity;
-    for (let i = 0; i < loop.length; i++) {
-        const a = loop[i]!;
-        const b = loop[(i + 1) % loop.length]!;
-        const ex = b.x - a.x;
-        const ey = b.y - a.y;
-        const len2 = ex * ex + ey * ey;
-        const t =
-            len2 > 1e-12
-                ? Math.max(0, Math.min(1, ((origin.x - a.x) * ex + (origin.y - a.y) * ey) / len2))
-                : 0;
-        const x = a.x + ex * t;
-        const y = a.y + ey * t;
-        const d = (x - origin.x) ** 2 + (y - origin.y) ** 2;
-        if (d < bestD) {
-            bestD = d;
-            best = { x, y, z: a.z + (b.z - a.z) * t };
-        }
-    }
-    return best;
 }
 
 function splitEdge(indices: number[], a: number, b: number, m: number): void {
@@ -95,12 +72,7 @@ export function densifyHeelForefootStations(
                 y: cur.rim.y + (nxt.rim.y - cur.rim.y) * t,
                 z: cur.rim.z + (nxt.rim.z - cur.rim.z) * t,
             };
-            const chord = {
-                x: cur.outline.x + (nxt.outline.x - cur.outline.x) * t,
-                y: cur.outline.y + (nxt.outline.y - cur.outline.y) * t,
-                z: cur.outline.z + (nxt.outline.z - cur.outline.z) * t,
-            };
-            const B = nearestOnLoop(chord, outlineLoop);
+            const B = lerpClosedOnLoop(cur.outline, nxt.outline, t, outlineLoop);
             const nx = cur.n.x + (nxt.n.x - cur.n.x) * t;
             const ny = cur.n.y + (nxt.n.y - cur.n.y) * t;
             const nl = Math.hypot(nx, ny) || 1;
@@ -179,12 +151,7 @@ export function fillLargeStationGaps(
                 y: cur.rim.y + (nxt.rim.y - cur.rim.y) * t,
                 z: cur.rim.z + (nxt.rim.z - cur.rim.z) * t,
             };
-            const chord = {
-                x: cur.outline.x + (nxt.outline.x - cur.outline.x) * t,
-                y: cur.outline.y + (nxt.outline.y - cur.outline.y) * t,
-                z: cur.outline.z + (nxt.outline.z - cur.outline.z) * t,
-            };
-            const B = nearestOnLoop(chord, outlineLoop);
+            const B = lerpClosedOnLoop(cur.outline, nxt.outline, t, outlineLoop);
             const nx = cur.n.x + (nxt.n.x - cur.n.x) * t;
             const ny = cur.n.y + (nxt.n.y - cur.n.y) * t;
             const nl = Math.hypot(nx, ny) || 1;
@@ -256,12 +223,7 @@ export function resampleStationsEvenly(
             y: cur.rim.y + (nxt.rim.y - cur.rim.y) * t,
             z: cur.rim.z + (nxt.rim.z - cur.rim.z) * t,
         };
-        const chord = {
-            x: cur.outline.x + (nxt.outline.x - cur.outline.x) * t,
-            y: cur.outline.y + (nxt.outline.y - cur.outline.y) * t,
-            z: cur.outline.z + (nxt.outline.z - cur.outline.z) * t,
-        };
-        const B = nearestOnLoop(chord, outlineLoop);
+        const B = lerpClosedOnLoop(cur.outline, nxt.outline, t, outlineLoop);
         const nx = cur.n.x + (nxt.n.x - cur.n.x) * t;
         const ny = cur.n.y + (nxt.n.y - cur.n.y) * t;
         const nl = Math.hypot(nx, ny) || 1;

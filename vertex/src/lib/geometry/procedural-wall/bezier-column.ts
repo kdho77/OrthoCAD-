@@ -908,7 +908,7 @@ export function sampleArcLineArc(
         const phi = ala.phiFil0 + ((ala.phiFil1 - ala.phiFil0) * i) / nFil;
         const p = alaPoint(ala, h, ala.C2, ala.r2, phi);
         if (dist3(p, pts[pts.length - 1]!) < MIN_EDGE_MM) continue;
-        if (dist3(p, B) < MIN_EDGE_MM) continue;
+        if (dist3(p, B) < MERGE_ROW_MM) continue;
         pts.push(p);
     }
     pts.push({ ...B });
