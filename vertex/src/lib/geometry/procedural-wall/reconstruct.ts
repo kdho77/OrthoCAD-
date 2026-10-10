@@ -25,7 +25,7 @@ import {
     snapToStep,
     type WallRegionDefaults,
 } from "./defaults";
-import { densifyHeelForefootStations, densifyToeByExtent, fillLargeStationGaps } from "./densify-stations";
+import { densifyHeelForefootStations, fillLargeStationGaps } from "./densify-stations";
 import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
 import { buildHermiteStations } from "./loft";
@@ -503,7 +503,6 @@ export function reconstructProceduralWalls(
         stations[i]!.rim = pairing.top[i]!;
     }
     densifyHeelForefootStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
-    densifyToeByExtent(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     applyOutlineClean(stations, rimLocal, indices);
     fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     rotateStationRing(stations, rimLocal, model.bounds);

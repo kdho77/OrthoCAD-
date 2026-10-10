@@ -929,12 +929,20 @@ export function sampleArcLineArc(
     const total0 = nRound + nLine + nFil + 1;
     if (total0 < nWall) nLine += nWall - total0;
     const pts: XYZ[] = [{ ...R }];
+    let addedRound = 0;
     for (let i = 1; i < nRound; i++) {
         const phi = ala.phiRound0 + ((ala.phiRound1 - ala.phiRound0) * i) / nRound;
         const p = alaPoint(ala, h, ala.C1, ala.r1, phi);
-        if (dist3(p, pts[pts.length - 1]!) < WELD_MM) continue;
-        if (dist3(p, pts[pts.length - 1]!) < ROUND_MIN_STEP_MM) continue;
+        const dPrev = dist3(p, pts[pts.length - 1]!);
+        if (dPrev < WELD_MM) continue;
+        if (addedRound > 0 && dPrev < ROUND_MIN_STEP_MM) continue;
         pts.push(p);
+        addedRound++;
+    }
+    if (pts.length === 1 && dist3(R, ala.T1) >= WELD_MM) {
+        const phi = ala.phiRound0 + (ala.phiRound1 - ala.phiRound0) * 0.5;
+        const mid = alaPoint(ala, h, ala.C1, ala.r1, phi);
+        if (dist3(mid, R) >= WELD_MM && dist3(mid, ala.T1) >= WELD_MM) pts.push(mid);
     }
     if (dist3(pts[pts.length - 1]!, ala.T1) >= WELD_MM) pts.push({ ...ala.T1 });
     else pts[pts.length - 1] = { ...ala.T1 };
@@ -1053,7 +1061,8 @@ function vecAngleDeg(a: XYZ, b: XYZ): number {
 
 function assertRoundJoints(fr: ColumnFrame, col: XYZ[]): void {
     if (col.length < 3 || !fr.roundRows) return;
-    const ala = constructArcLineArc(fr.R, fr.B, fr.nTop, fr.rTop, fr.rFillet, fr.h, fr.plantarSlopeRad);
+    const nUse = fr.nTopSmoothed ?? fr.nTop;
+    const ala = constructArcLineArc(fr.R, fr.B, nUse, fr.rTop, fr.rFillet, fr.h, fr.plantarSlopeRad);
     const tFirst = {
         x: col[1]!.x - col[0]!.x,
         y: col[1]!.y - col[0]!.y,
