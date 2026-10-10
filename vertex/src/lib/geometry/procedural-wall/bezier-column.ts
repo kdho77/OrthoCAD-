@@ -70,6 +70,10 @@ export const R_CHANGE_MAX_PCT = 5;
 export const R2_CHANGE_MAX_PCT = 10;
 /** Downward limiter so ALA cannot reopen a jump above R2_CHANGE_MAX_PCT. */
 export const R2_RATE_LIMIT_PCT = 7;
+/** Optional absolute parameter gate: |Δr| ≤ 0.05 mm / station. */
+export const R_ABS_RATE_MM = 0.05;
+/** Smooth n_plantar(B) along i before fillets (periodic Gaussian). */
+export const PLANTAR_N_SMOOTH_SIGMA_MM = 10;
 export const FILLET_LAST_ROW_FRAC = 0.15;
 export const ROUND_SWEEP_SPLIT_DEG = 80;
 export const ALONG_JOINT_MIN_EDGE_MM = 1e-6;
@@ -174,8 +178,10 @@ export interface ColumnFrame {
     nB: { x: number; y: number };
     /** Rim tangent at R (for the top-round plane). */
     tRim: XYZ;
-    /** Local B-neighbour spacing for C_MIN (mm). */
+    /** Local B-neighbour spacing for C_MIN (mm). Mean of the two adjacent B segments. */
     localSpacingMm: number;
+    /** Longer adjacent B segment (mm). r2_min uses this so aspect-B stays ≤ 20. */
+    maxSpacingMm: number;
     /** G1 at E / F after the ruling projection (deg). */
     g1EDeg: number;
     g1FDeg: number;
@@ -225,6 +231,9 @@ export interface ColumnQuality {
     maxNTopChangeDeg: number;
     maxR1ChangePct: number;
     maxR2ChangePct: number;
+    maxR1ChangeMm: number;
+    maxR2ChangeMm: number;
+    minLastChordOverLocal: number;
     maxHeadingChangeDeg: number;
     maxToeSpacingRatio: number;
     minForefootInsetMm: number;
@@ -899,9 +908,50 @@ export function r1ForSheetSlope(r1In: number, slopeRad: number): number {
     return Math.max(MIN_ROUND_R_MM, r1In * (1 - t));
 }
 
-/** C_MIN = stationSpacing / 20. Last chord last→B must be at least this long. */
+/** C_MIN_i = localSpacing_i / 20. localSpacing_i is the mean of the two adjacent B segments. */
 export function lastFilletCMinMm(stationSpacing: number): number {
     return Math.max(1e-6, stationSpacing / 20);
+}
+
+function localSpacingOf(fr: ColumnFrame): number {
+    return fr.localSpacingMm || fr.stationSpacingMm || OUTLINE_STATION_SPACING_MM;
+}
+
+function localR2MinMm(fr: ColumnFrame): number {
+    const dLGuess = lastFilletDLRad(Math.PI / 2, 1);
+    const dL = Math.min(fr.lastDlRad || dLGuess, dLGuess);
+    return lastFilletR2MinMm(localSpacingOf(fr), dL);
+}
+
+/** Clamp r1 to posted H and |Δr1| ≤ 0.05. Smooth r2 with the last-step local floor; do not abs-shrink r2. */
+function enforceAbsRadiusRate(frames: ColumnFrame[]): void {
+    if (frames.length < 2) return;
+    for (let pass = 0; pass < 8; pass++) {
+        const r2Floors = frames.map((fr) => localR2MinMm(fr));
+        const lim1 = rateLimitClosedAbs(
+            frames.map((fr) => {
+                fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
+                return clampR1ToBudget(fr.rTop, fr.heightMm, fr.rFillet, minLineOfHeight(fr.heightMm));
+            }),
+            R_ABS_RATE_MM,
+            MIN_ROUND_R_MM,
+        );
+        const lim2 = rateLimitClosedAbs(
+            frames.map((fr, i) => Math.max(fr.rFillet, r2Floors[i]!)),
+            R_ABS_RATE_MM,
+            r2Floors,
+        );
+        for (let i = 0; i < frames.length; i++) {
+            frames[i]!.rTop = lim1[i]!;
+            frames[i]!.rFillet = Math.max(r2Floors[i]!, lim2[i]!);
+        }
+        for (const fr of frames) applyAlaToFrame(fr);
+        let maxR1 = 0;
+        for (let i = 0; i < frames.length; i++) {
+            maxR1 = Math.max(maxR1, Math.abs(frames[(i + 1) % frames.length]!.rTop - frames[i]!.rTop));
+        }
+        if (maxR1 <= R_ABS_RATE_MM + 1e-9) break;
+    }
 }
 
 /**
@@ -1636,7 +1686,7 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     const nUse = fr.nTopSmoothed ?? fr.nTop;
     const nB = fr.nB ?? fr.h;
     const tRim = fr.tRim ?? { x: -fr.h.y, y: fr.h.x, z: 0 };
-    const local = fr.localSpacingMm || fr.stationSpacingMm || OUTLINE_STATION_SPACING_MM;
+    const local = localSpacingOf(fr);
     const sw = constructSweepRule(
         fr.R,
         fr.B,
@@ -1956,7 +2006,7 @@ function columnPoints(
     const nUse = fr.nTopSmoothed ?? fr.nTop;
     const nB = fr.nB ?? fr.h;
     const tRim = fr.tRim ?? { x: -fr.h.y, y: fr.h.x, z: 0 };
-    const local = fr.localSpacingMm || fr.stationSpacingMm || _stationSpacing;
+    const local = localSpacingOf(fr);
     const sw = constructSweepRule(
         fr.R,
         fr.B,
@@ -2423,6 +2473,40 @@ export function clampLastFilletOutboard(col: XYZ[], B: XYZ, h: { x: number; y: n
     col[i] = p;
 }
 
+/** Periodic Gaussian on n_plantar. No 5° step cap — posting tilt must survive. */
+export function smoothPlantarNormalField(
+    normals: XYZ[],
+    rim: XYZ[],
+    sigma = PLANTAR_N_SMOOTH_SIGMA_MM,
+): XYZ[] {
+    if (normals.length < 3) {
+        return normals.map((n) => {
+            const u = unit3(n);
+            return u.z < 0 ? { x: -u.x, y: -u.y, z: -u.z } : u;
+        });
+    }
+    const nx = periodicGaussian(
+        normals.map((n) => n.x),
+        rim,
+        sigma,
+    );
+    const ny = periodicGaussian(
+        normals.map((n) => n.y),
+        rim,
+        sigma,
+    );
+    const nz = periodicGaussian(
+        normals.map((n) => n.z),
+        rim,
+        sigma,
+    );
+    return nx.map((_, i) => {
+        let n = unit3({ x: nx[i]!, y: ny[i]!, z: nz[i]! });
+        if (n.z < 0) n = { x: -n.x, y: -n.y, z: -n.z };
+        return n;
+    });
+}
+
 export function smoothNormalField(normals: XYZ[], rim: XYZ[], sigma = SCALAR_SMOOTH_SIGMA_MM): XYZ[] {
     if (normals.length < 3) return normals.map((n) => unit3(n));
     const nx = periodicGaussian(
@@ -2492,6 +2576,56 @@ export function periodicGaussian(vals: number[], rim: XYZ[], sigma = SCALAR_SMOO
         }
         return w > 0 ? s / w : vals[i]!;
     });
+}
+
+/** Pull adjacent scalars until |Δ| ≤ maxAbs, honoring per-station floors. */
+export function rateLimitClosedAbs(vals: number[], maxAbs: number, floor: number | number[] = 0): number[] {
+    const n = vals.length;
+    const floorAt = (i: number): number => (Array.isArray(floor) ? (floor[i] ?? 0) : floor);
+    const out = vals.map((v, i) => Math.max(floorAt(i), v));
+    if (n < 2) return out;
+    const cap = Math.max(0, maxAbs);
+    const pull = (i: number, j: number): void => {
+        const a = out[i]!;
+        const b = out[j]!;
+        if (b > a + cap) {
+            const lowered = Math.max(floorAt(j), a + cap);
+            if (lowered <= a + cap + 1e-12) out[j] = lowered;
+            else out[i] = Math.max(floorAt(i), b - cap);
+        } else if (a > b + cap) {
+            const lowered = Math.max(floorAt(i), b + cap);
+            if (lowered <= b + cap + 1e-12) out[i] = lowered;
+            else out[j] = Math.max(floorAt(j), a - cap);
+        }
+    };
+    for (let pass = 0; pass < 16; pass++) {
+        for (let i = 0; i < n; i++) pull(i, (i + 1) % n);
+        for (let i = n - 1; i >= 0; i--) pull(i, (i + 1) % n);
+    }
+    return out;
+}
+
+/** Raise the smaller neighbor only so |Δ| ≤ maxAbs. Never shrink a floor. */
+export function rateLimitClosedAbsRaise(
+    vals: number[],
+    maxAbs: number,
+    floor: number | number[] = 0,
+): number[] {
+    const n = vals.length;
+    const floorAt = (i: number): number => (Array.isArray(floor) ? (floor[i] ?? 0) : floor);
+    const out = vals.map((v, i) => Math.max(floorAt(i), v));
+    if (n < 2) return out;
+    const cap = Math.max(0, maxAbs);
+    for (let pass = 0; pass < 16; pass++) {
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            const a = out[i]!;
+            const b = out[j]!;
+            if (b > a + cap) out[i] = Math.max(floorAt(i), b - cap);
+            else if (a > b + cap) out[j] = Math.max(floorAt(j), a - cap);
+        }
+    }
+    return out;
 }
 
 /** Pull adjacent scalars until |Δ| / max(from, 1e-6) ≤ maxPct / 100. */
@@ -2727,6 +2861,15 @@ export function initColumnFrames(
             nB,
             tRim,
             localSpacingMm: Math.max(1e-3, localSpacing),
+            maxSpacingMm: Math.max(
+                1e-3,
+                stations.length > 1
+                    ? Math.max(
+                          Math.hypot(B.x - prevB.x, B.y - prevB.y),
+                          Math.hypot(nextB.x - B.x, nextB.y - B.y),
+                      )
+                    : localSpacing,
+            ),
             g1EDeg: 0,
             g1FDeg: 0,
             sweepConverged: true,
@@ -2735,9 +2878,21 @@ export function initColumnFrames(
             nFilPlane: { x: -nB.y, y: nB.x, z: 0 },
             phiRound1: Math.PI / 2,
         };
-        applyAlaToFrame(fr);
         return fr;
     });
+    const smoothed = smoothPlantarNormalField(
+        frames.map((f) => f.nPlantar ?? { x: 0, y: 0, z: 1 }),
+        frames.map((f) => f.B),
+        PLANTAR_N_SMOOTH_SIGMA_MM,
+    );
+    for (let i = 0; i < frames.length; i++) {
+        const fr = frames[i]!;
+        const n = smoothed[i]!;
+        fr.nPlantar = n;
+        fr.plantarSlopeRad = Math.atan2(n.x * fr.h.x + n.y * fr.h.y, n.z);
+        fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
+        applyAlaToFrame(fr);
+    }
     return frames;
 }
 
@@ -2757,38 +2912,19 @@ function applySmooth(
     const before = snapshotStationParams(frames);
     for (const fr of frames) applyAlaToFrame(fr);
     const rim = frames.map((f) => f.R);
-    const applyLimited = (r1: number[], r2: number[]): void => {
-        const clamped = r1.map((v, i) => {
-            const fr = frames[i]!;
-            return clampR1ToBudget(v, fr.heightMm, fr.rFillet, minLineOfHeight(fr.heightMm));
-        });
-        const lim1 = rateLimitClosed(clamped, R_CHANGE_MAX_PCT, MIN_ROUND_R_MM);
-        const r2Floor = lastFilletR2MinMm(frames[0]?.stationSpacingMm || OUTLINE_STATION_SPACING_MM);
-        const lim2 = rateLimitClosedDown(r2, R2_RATE_LIMIT_PCT, r2Floor);
-        for (let i = 0; i < frames.length; i++) {
-            const fr = frames[i]!;
-            fr.rTop = lim1[i]!;
-            const floorI = lastFilletR2MinMm(fr.stationSpacingMm || OUTLINE_STATION_SPACING_MM, fr.lastDlRad);
-            fr.rFillet = Math.max(floorI, lim2[i]!);
-            applyAlaToFrame(fr);
-        }
-    };
-    applyLimited(
-        periodicGaussian(
-            frames.map((f) => f.rTop),
-            rim,
-        ),
-        periodicGaussian(
-            frames.map((f) => f.rFillet),
-            rim,
-        ),
+    const r1 = periodicGaussian(
+        frames.map((f) => f.rTop),
+        rim,
     );
-    for (let pass = 0; pass < 4; pass++) {
-        applyLimited(
-            frames.map((f) => f.rTop),
-            frames.map((f) => f.rFillet),
-        );
+    const r2 = periodicGaussian(
+        frames.map((f) => f.rFillet),
+        rim,
+    );
+    for (let i = 0; i < frames.length; i++) {
+        frames[i]!.rTop = r1[i]!;
+        frames[i]!.rFillet = r2[i]!;
     }
+    enforceAbsRadiusRate(frames);
     return { before, after: snapshotStationParams(frames) };
 }
 
@@ -2818,7 +2954,7 @@ function guardFrames(
             }
             if (inside) {
                 fr.rTop = Math.max(MIN_ROUND_R_MM, fr.rTop * 0.85);
-                fr.rFillet = Math.max(lastFilletR2MinMm(stationSpacing, fr.lastDlRad), fr.rFillet * 0.85);
+                fr.rFillet = Math.max(lastFilletR2MinMm(localSpacingOf(fr), fr.lastDlRad), fr.rFillet * 0.85);
                 applyAlaToFrame(fr);
                 dirty = true;
             }
@@ -3005,26 +3141,7 @@ export function buildBezierColumns(
         JSON.stringify({ nRound: nRoundStar, nFil: nFilStar, nLine: nLineStar, nWall, nS: frames.length }),
     );
     guardFrames(frames, junctions, rimLoop, topZ, nWall, spacing, nRoundStar, nFilStar);
-    const r2Floor = lastFilletR2MinMm(spacing);
-    for (let pass = 0; pass < 8; pass++) {
-        const lim1 = rateLimitClosed(
-            frames.map((f) => clampR1ToBudget(f.rTop, f.heightMm, f.rFillet, minLineOfHeight(f.heightMm))),
-            R_CHANGE_MAX_PCT,
-            MIN_ROUND_R_MM,
-        );
-        const lim2 = rateLimitClosedDown(
-            frames.map((f) => f.rFillet),
-            R2_RATE_LIMIT_PCT,
-            r2Floor,
-        );
-        for (let i = 0; i < frames.length; i++) {
-            const fr = frames[i]!;
-            fr.rTop = lim1[i]!;
-            const floorI = lastFilletR2MinMm(fr.stationSpacingMm || spacing, fr.lastDlRad);
-            fr.rFillet = Math.max(floorI, lim2[i]!);
-            applyAlaToFrame(fr);
-        }
-    }
+    enforceAbsRadiusRate(frames);
     resampleIncidentNTop(frames, junctions, topZ);
     smoothRoundEndAngles(frames);
     piece = choosePieceCounts(frames, spacing);
@@ -3140,6 +3257,10 @@ export function buildBezierColumns(
             nTopDeg: Number(quality.maxNTopChangeDeg.toFixed(2)),
             r1Pct: Number(quality.maxR1ChangePct.toFixed(2)),
             r2Pct: Number(quality.maxR2ChangePct.toFixed(2)),
+            r1Mm: Number(quality.maxR1ChangeMm.toFixed(4)),
+            r2Mm: Number(quality.maxR2ChangeMm.toFixed(4)),
+            alaPack: Number(quality.maxAlaPackMm.toFixed(3)),
+            chordLocal: Number(quality.minLastChordOverLocal.toFixed(3)),
         }),
     );
     return {
@@ -3495,6 +3616,8 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let maxNTop = 0;
     let maxR1 = 0;
     let maxR2 = 0;
+    let maxR1Mm = 0;
+    let maxR2Mm = 0;
     let maxHeading = 0;
     let maxToeRatio = 0;
     let minFore = Infinity;
@@ -3506,6 +3629,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let maxBAspect = 0;
     let maxTopSheet = 0;
     let minLastChord = Infinity;
+    let minLastChordOverLocal = Infinity;
     let maxChordRise = 0;
     let lastSzMono = true;
     let rowPieceIdentical = true;
@@ -3681,6 +3805,8 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         const r2den = Math.max(fr.rFillet, 1e-6);
         maxR1 = Math.max(maxR1, (Math.abs(nxtFr.rTop - fr.rTop) / r1den) * 100);
         maxR2 = Math.max(maxR2, (Math.abs(nxtFr.rFillet - fr.rFillet) / r2den) * 100);
+        maxR1Mm = Math.max(maxR1Mm, Math.abs(nxtFr.rTop - fr.rTop));
+        maxR2Mm = Math.max(maxR2Mm, Math.abs(nxtFr.rFillet - fr.rFillet));
         const hd = Math.acos(Math.max(-1, Math.min(1, fr.h.x * nxtFr.h.x + fr.h.y * nxtFr.h.y)));
         maxHeading = Math.max(maxHeading, (hd * 180) / Math.PI);
         const minL = fr.heightMm <= SHORT_WALL_H_MM + 1e-9 ? SHORT_MIN_L_MM : MIN_LINE_MM;
@@ -3786,9 +3912,10 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             minLastS = Math.min(minLastS, lastFilletSOutboard(last, B, fr.nB ?? fr.h));
             minLastH = Math.min(minLastH, last.z - B.z, dist3(last, B));
             const lastChord = dist3(last, B);
-            const cMinB = lastFilletCMinMm(fr.localSpacingMm || fr.stationSpacingMm || median);
+            const cMinB = lastFilletCMinMm(localSpacingOf(fr));
             const reservedLast = lastChord + 1e-9 < cMinB;
-            if (!reservedLast) minLastChord = Math.min(minLastChord, lastChord);
+            minLastChord = Math.min(minLastChord, lastChord);
+            minLastChordOverLocal = Math.min(minLastChordOverLocal, lastChord / Math.max(cMinB, 1e-9));
             if (col.length >= 3) {
                 const prev = col[col.length - 3]!;
                 const chord = { x: B.x - last.x, y: B.y - last.y, z: B.z - last.z };
@@ -3913,6 +4040,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxNTopChangeDeg: maxNTop,
         maxR1ChangePct: maxR1,
         maxR2ChangePct: maxR2,
+        maxR1ChangeMm: maxR1Mm,
+        maxR2ChangeMm: maxR2Mm,
+        minLastChordOverLocal: Number.isFinite(minLastChordOverLocal) ? minLastChordOverLocal : 1,
         maxHeadingChangeDeg: maxHeading,
         maxToeSpacingRatio: maxToeRatio,
         minForefootInsetMm: Number.isFinite(minFore) ? minFore : 0,
@@ -3975,7 +4105,7 @@ export function clampFramesMinWall(
         fr.B.z -= drop;
         fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
         const planLen = Math.hypot(fr.R.x - fr.B.x, fr.R.y - fr.B.y);
-        const r2Min = lastFilletR2MinMm(fr.stationSpacingMm || OUTLINE_STATION_SPACING_MM, fr.lastDlRad);
+        const r2Min = lastFilletR2MinMm(localSpacingOf(fr), fr.lastDlRad);
         fr.rFillet = Math.max(r2Min, Math.min(fr.rFillet, filletRadiusMm(fr.heightMm, planLen, Math.PI / 2)));
         applyAlaToFrame(fr);
         if (fr.F.z > maxF) {

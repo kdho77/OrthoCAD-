@@ -38,8 +38,10 @@ import {
     MIN_ROUND_R_MM,
     nTopFromSheetSlope,
     offPlaneMm,
+    PLANTAR_N_SMOOTH_SIGMA_MM,
     packAlaRadii,
     plantarFrameFromNormal,
+    R_ABS_RATE_MM,
     R_CHANGE_MAX_PCT,
     R_SMOOTH_FRAC,
     R1_HEIGHT_FRAC,
@@ -48,6 +50,8 @@ import {
     ROUND_SWEEP_SPLIT_DEG,
     r1ForSheetSlope,
     rateLimitClosed,
+    rateLimitClosedAbs,
+    rateLimitClosedAbsRaise,
     rateLimitClosedDown,
     rimOverhangMm,
     rotateColumnAboutB,
@@ -60,6 +64,7 @@ import {
     sheetSlopeFromNormal,
     sizedArcRows,
     slopeFromSheetPlane,
+    smoothPlantarNormalField,
     smoothStationHeadings,
     squareHeadingToB,
     summarizeWallBands,
@@ -777,6 +782,57 @@ describe("bezier column", () => {
         expect(packed.r1).toBeGreaterThanOrEqual(0.08 - 1e-9);
         expect(packed.r2).toBeGreaterThanOrEqual(0.05 - 1e-9);
         expect(packed.r1).toBeCloseTo(packed.r2, 5);
+    });
+
+    test("absolute |dr| limiter holds 0.05 mm/station", () => {
+        expect(R_ABS_RATE_MM).toBe(0.05);
+        const raw = [0.1, 0.8, 0.12, 0.11, 0.7, 0.13];
+        const limited = rateLimitClosedAbs(raw, R_ABS_RATE_MM, 0.08);
+        for (let i = 0; i < limited.length; i++) {
+            const a = limited[i]!;
+            const b = limited[(i + 1) % limited.length]!;
+            expect(Math.abs(b - a)).toBeLessThanOrEqual(R_ABS_RATE_MM + 1e-9);
+            expect(a).toBeGreaterThanOrEqual(0.08 - 1e-12);
+        }
+        const floors = [0.1, 0.8, 0.1, 0.1, 0.7, 0.1];
+        const raised = rateLimitClosedAbsRaise([0.1, 0.8, 0.1, 0.1, 0.7, 0.1], R_ABS_RATE_MM, floors);
+        for (let i = 0; i < raised.length; i++) {
+            const a = raised[i]!;
+            const b = raised[(i + 1) % raised.length]!;
+            expect(Math.abs(b - a)).toBeLessThanOrEqual(R_ABS_RATE_MM + 1e-9);
+            expect(a).toBeGreaterThanOrEqual(floors[i]! - 1e-12);
+        }
+    });
+
+    test("C_MIN_i is the mean of the two adjacent B segments / 20", () => {
+        const prev = 1.0;
+        const next = 1.6;
+        const local = 0.5 * (prev + next);
+        expect(lastFilletCMinMm(local)).toBeCloseTo(local / 20, 9);
+        const dL = lastFilletDLRad(Math.PI / 2, 1);
+        const r2Min = lastFilletR2MinMm(local, dL);
+        expect(r2Min).toBeCloseTo(lastFilletCMinMm(local) / (2 * Math.sin(dL / 2)), 9);
+        expect(lastFilletCMinMm(0.9)).toBeLessThan(lastFilletCMinMm(1.5));
+    });
+
+    test("n_plantar Gaussian σ=10 mm damps one-station noise", () => {
+        expect(PLANTAR_N_SMOOTH_SIGMA_MM).toBe(10);
+        const n = 24;
+        const rim = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 20 * Math.cos(a), y: 20 * Math.sin(a), z: 0 };
+        });
+        const raw = rim.map((_, i) => {
+            const tilt = i === 5 ? 0.35 : 0.04;
+            return { x: 0, y: tilt, z: Math.sqrt(1 - tilt * tilt) };
+        });
+        const smooth = smoothPlantarNormalField(raw, rim, PLANTAR_N_SMOOTH_SIGMA_MM);
+        expect(smooth[5]!.y).toBeLessThan(raw[5]!.y);
+        expect(smooth[5]!.y).toBeGreaterThan(0.04);
+        for (const nrm of smooth) {
+            expect(nrm.z).toBeGreaterThan(0);
+            expect(Math.hypot(nrm.x, nrm.y, nrm.z)).toBeCloseTo(1, 6);
+        }
     });
 
     test("fillet C2 sits on n_plantar and ew follows −h on the plane", () => {
