@@ -1588,14 +1588,9 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
     const n = stations.length;
     if (n === 0) return [];
     const chords = stations.map((st) => columnHeading(st));
-    const corrected = chords.map((c, i) => {
-        const budget = headingAllowanceDeg(c.planLen);
-        if (budget < 1e-6) return { ...c.h };
-        const bn = bLoopOutwardNormal(stations, i);
-        const ang = (headingAngle(c.h, bn) * 180) / Math.PI;
-        if (ang >= 20) return { ...c.h };
-        return clampHeadingTo(bn, c.h, budget);
-    });
+    // Heading stays plan(B−R). A B-normal pull takes B off the vertical
+    // plane and inverts the last fillet strip (seam-B → 180°, across-p100 → 70°+).
+    const corrected = chords.map((c) => ({ ...c.h }));
     const bLoop = stations.map((s) => s.outline);
     const sx = periodicGaussian(
         corrected.map((h) => h.x),
