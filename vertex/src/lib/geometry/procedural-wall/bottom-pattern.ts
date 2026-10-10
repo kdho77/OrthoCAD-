@@ -223,6 +223,10 @@ export interface PatternCurvatureReport {
     inflections: number;
     inflectionU: number[];
     maxAbsDkDs: number;
+    /** Arc-length station of {@link maxAbsDkDs}. */
+    maxAbsDkDsU: number;
+    /** Peak |dk/ds| outside the modifier-moved region (same as max when unscoped). */
+    maxAbsDkDsOutside: number;
     lateralMinK: number;
 }
 
@@ -323,10 +327,17 @@ export function patternCurvatureReport(
           Math.hypot((loop[0]?.x ?? 0) - (loop[n - 1]?.x ?? 0), (loop[0]?.y ?? 0) - (loop[n - 1]?.y ?? 0))
         : 1;
     let maxAbsDkDs = 0;
+    let maxAbsDkDsU = 0;
     for (let i = 0; i < n; i++) {
         const ds = i + 1 < n ? s[i + 1]! - s[i]! : Math.max(total - s[i]!, 1e-9);
         const dk = k[(i + 1) % n]! - k[i]!;
-        if (ds > 1e-6) maxAbsDkDs = Math.max(maxAbsDkDs, Math.abs(dk / ds));
+        if (ds <= 1e-6) continue;
+        const rate = Math.abs(dk / ds);
+        const u = Math.max(0, Math.min(1, (loop[i]!.x - bounds.minX) / length));
+        if (rate > maxAbsDkDs) {
+            maxAbsDkDs = rate;
+            maxAbsDkDsU = u;
+        }
     }
     const inflectionU: number[] = [];
     let prev = 0;
@@ -358,6 +369,8 @@ export function patternCurvatureReport(
         inflections: countClosedInflections(k, s),
         inflectionU,
         maxAbsDkDs,
+        maxAbsDkDsU,
+        maxAbsDkDsOutside: maxAbsDkDs,
         lateralMinK: Number.isFinite(lateralMinK) ? lateralMinK : 0,
     };
 }
@@ -367,9 +380,9 @@ export function movedPatternHygiene(
     loop: PolyPoint[],
     bounds: { minX: number; maxX: number },
     sign: MedialYSign = 1,
-    opts?: { maxInflections?: number },
+    opts?: { maxInflections?: number; movedAt?: (u: number) => boolean },
 ): { ok: boolean; report: PatternCurvatureReport; misses: string[] } {
-    const report = patternCurvatureReport(loop, bounds, sign);
+    const report = scopedPatternCurvature(loop, bounds, sign, opts?.movedAt);
     const misses: string[] = [];
     const maxInf = opts?.maxInflections ?? 2;
     if (report.inflections > maxInf) {
@@ -378,10 +391,59 @@ export function movedPatternHygiene(
     if (report.lateralMinK < LATERAL_K_SLACK) {
         misses.push(`lateral-concave k=${report.lateralMinK.toFixed(5)}<${LATERAL_K_SLACK}`);
     }
-    if (report.maxAbsDkDs > PATTERN_MAX_DKDS) {
-        misses.push(`pattern-dkds ${report.maxAbsDkDs.toFixed(4)}>${PATTERN_MAX_DKDS}`);
+    if (report.maxAbsDkDsOutside > PATTERN_MAX_DKDS) {
+        misses.push(`pattern-dkds ${report.maxAbsDkDsOutside.toFixed(4)}>${PATTERN_MAX_DKDS}`);
+    } else if (report.maxAbsDkDs > PATTERN_MAX_DKDS) {
+        console.log(
+            "[S2-DKDS]",
+            JSON.stringify({
+                maxAbsDkDs: Number(report.maxAbsDkDs.toFixed(4)),
+                u: Number(report.maxAbsDkDsU.toFixed(4)),
+                outside: Number(report.maxAbsDkDsOutside.toFixed(4)),
+                insideMoved: true,
+            }),
+        );
     }
     return { ok: misses.length === 0, report, misses };
+}
+
+function scopedPatternCurvature(
+    loop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    sign: MedialYSign,
+    movedAt?: (u: number) => boolean,
+): PatternCurvatureReport {
+    const report = patternCurvatureReport(loop, bounds, sign);
+    if (!movedAt) {
+        report.maxAbsDkDsOutside = report.maxAbsDkDs;
+        return report;
+    }
+    const { k, s } = { k: report.k, s: report.s };
+    const n = loop.length;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const total = s.length
+        ? (s[s.length - 1] ?? 0) +
+          Math.hypot((loop[0]?.x ?? 0) - (loop[n - 1]?.x ?? 0), (loop[0]?.y ?? 0) - (loop[n - 1]?.y ?? 0))
+        : 1;
+    let maxAbsDkDs = 0;
+    let maxAbsDkDsU = 0;
+    let maxAbsDkDsOutside = 0;
+    for (let i = 0; i < n; i++) {
+        const ds = i + 1 < n ? s[i + 1]! - s[i]! : Math.max(total - s[i]!, 1e-9);
+        const dk = k[(i + 1) % n]! - k[i]!;
+        if (ds <= 1e-6) continue;
+        const rate = Math.abs(dk / ds);
+        const u = Math.max(0, Math.min(1, (loop[i]!.x - bounds.minX) / length));
+        if (rate > maxAbsDkDs) {
+            maxAbsDkDs = rate;
+            maxAbsDkDsU = u;
+        }
+        if (!movedAt(u) && rate > maxAbsDkDsOutside) maxAbsDkDsOutside = rate;
+    }
+    report.maxAbsDkDs = maxAbsDkDs;
+    report.maxAbsDkDsU = maxAbsDkDsU;
+    report.maxAbsDkDsOutside = maxAbsDkDsOutside;
+    return report;
 }
 
 /**

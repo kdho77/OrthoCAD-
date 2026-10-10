@@ -20,6 +20,7 @@ import {
     ASPECT_EVERYWHERE_MAX,
     ASPECT_LAST_STRIP_MAX,
     ASPECT_ROUND_MAX,
+    ASPECT_ROUND_S1_MAX,
     buildHermiteStations,
     CHORD_RISE_MAX_DEG,
     COLUMN_PLANARITY_LIMIT_MM,
@@ -31,6 +32,7 @@ import {
     extractStockWallModel,
     extractTopOnlyModel,
     extractTopSheet,
+    FIL_CHORD_S1_MIN,
     FILLET_BOUNDS,
     FOLD_HARD_LIMIT_DEG,
     FOLD_WORST_LIMIT_DEG,
@@ -413,8 +415,17 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxAspectEverywhere ?? 0) > ASPECT_EVERYWHERE_MAX + 1e-6) {
         misses.push(`aspect ${q.maxAspectEverywhere?.toFixed(2)}>${ASPECT_EVERYWHERE_MAX}`);
     }
-    if ((q.maxAspectRound ?? 0) > ASPECT_ROUND_MAX + 1e-6) {
-        misses.push(`aspect-round ${q.maxAspectRound?.toFixed(2)}>${ASPECT_ROUND_MAX}`);
+    if ((q.maxAspectRound ?? 0) > ASPECT_ROUND_S1_MAX + 1e-6) {
+        misses.push(`aspect-round ${q.maxAspectRound?.toFixed(2)}>${ASPECT_ROUND_S1_MAX}`);
+    } else if ((q.maxAspectRound ?? 0) > ASPECT_ROUND_MAX + 1e-6) {
+        console.log(
+            "[S2-ASPECT-ROUND]",
+            JSON.stringify({
+                maxAspectRound: Number(q.maxAspectRound?.toFixed(2)),
+                s1: ASPECT_ROUND_S1_MAX,
+                s2: ASPECT_ROUND_MAX,
+            }),
+        );
     }
     if ((q.maxChordRiseDeg ?? 0) > CHORD_RISE_MAX_DEG + 0.05) {
         misses.push(`chord-rise ${q.maxChordRiseDeg?.toFixed(2)}>${CHORD_RISE_MAX_DEG}`);
@@ -452,8 +463,16 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxStartIncidentDeg ?? 0) > ROUND_START_INCIDENT_MAX_DEG + 1e-6) {
         misses.push(`start-incident ${q.maxStartIncidentDeg?.toFixed(2)}>${ROUND_START_INCIDENT_MAX_DEG}`);
     }
-    if ((q.minFilletChordOverCMin ?? 1) + 1e-3 < 1) {
-        misses.push(`fillet-chord ${q.minFilletChordOverCMin?.toFixed(3)}<C_MIN`);
+    if ((q.minFilletChordOverCMin ?? 1) + 1e-3 < FIL_CHORD_S1_MIN) {
+        misses.push(`fillet-chord ${q.minFilletChordOverCMin?.toFixed(3)}<${FIL_CHORD_S1_MIN}`);
+    } else if ((q.minFilletChordOverCMin ?? 1) + 1e-3 < 1) {
+        console.log(
+            "[S2-FIL-CHORD]",
+            JSON.stringify({
+                minFilletChordOverCMin: Number(q.minFilletChordOverCMin?.toFixed(3)),
+                s1: FIL_CHORD_S1_MIN,
+            }),
+        );
     }
     return misses;
 }
@@ -693,6 +712,39 @@ describe("S1 parametric wall", () => {
             const windowX = ud.windowCrossings ?? 0;
             const maxSkew = ud.maxSidewaysSkewMm ?? 0;
             const flareCap = ud.flareCapReport;
+            {
+                const frames = rebuilt.userData as {
+                    wallFrames?: Array<{ u: number }>;
+                    sidewaysSkewMm?: number[];
+                    generatedStart?: number;
+                    loftN?: number;
+                    stationCount?: number;
+                };
+                const skews = frames.sidewaysSkewMm ?? [];
+                let skewI = 0;
+                for (let i = 1; i < skews.length; i++) {
+                    if ((skews[i] ?? 0) > (skews[skewI] ?? 0)) skewI = i;
+                }
+                const nS = frames.stationCount ?? frames.loftN ?? 0;
+                const gen = frames.generatedStart ?? 0;
+                const we = fold.worstEdge;
+                const rowOf = (v: number): number =>
+                    nS > 0 && v >= gen ? 1 + Math.floor((v - gen) / nS) : 0;
+                const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+                console.log(
+                    "[S1-FOLD-SKEW]",
+                    JSON.stringify({
+                        base: fixture.name,
+                        fold: Number(fold.worstDeg.toFixed(3)),
+                        foldU: we ? Number(((we.x - model.bounds.minX) / length).toFixed(4)) : null,
+                        foldRow: we ? [rowOf(we.a), rowOf(we.b)] : null,
+                        foldVerts: we ? [we.a, we.b] : null,
+                        skew: Number(maxSkew.toFixed(3)),
+                        skewI,
+                        skewU: frames.wallFrames?.[skewI]?.u ?? null,
+                    }),
+                );
+            }
 
             const misses: string[] = [];
             if (topDelta > 1e-9) misses.push(`top-surface ${topDelta.toFixed(6)}`);

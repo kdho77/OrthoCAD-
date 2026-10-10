@@ -8,6 +8,7 @@ import {
     INFLECTION_K_EPS,
     INFLECTION_MIN_ARC_MM,
     medialYSignFromTopRim,
+    movedPatternHygiene,
     PATTERN_ARCH_INSET_MM,
     PATTERN_HEEL_INSET_MM,
     PATTERN_MAX_DKDS,
@@ -143,6 +144,27 @@ describe("synthetic bottom pattern", () => {
         for (let i = 8; i <= 14; i++) k[i] = -0.01;
         expect(s[15]! - s[8]!).toBeGreaterThan(INFLECTION_MIN_ARC_MM);
         expect(countClosedInflections(k, s, INFLECTION_K_EPS, INFLECTION_MIN_ARC_MM)).toBe(2);
+    });
+
+    test("dk/ds misses only outside the modifier-moved region", () => {
+        const n = 40;
+        const loop = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            const r = 40 + (i === 2 ? 8 : 0);
+            return { x: 100 + r * Math.cos(a), y: r * Math.sin(a), z: 0 };
+        });
+        const bounds = { minX: 50, maxX: 160 };
+        const all = movedPatternHygiene(loop, bounds, 1);
+        const heelOnly = movedPatternHygiene(loop, bounds, 1, {
+            movedAt: (u) => u < 0.35,
+        });
+        if (all.report.maxAbsDkDs > PATTERN_MAX_DKDS) {
+            expect(all.misses.some((m) => m.startsWith("pattern-dkds"))).toBe(true);
+        }
+        expect(heelOnly.report.maxAbsDkDsOutside).toBeLessThanOrEqual(all.report.maxAbsDkDs + 1e-12);
+        if (heelOnly.report.maxAbsDkDsOutside <= PATTERN_MAX_DKDS) {
+            expect(heelOnly.misses.some((m) => m.startsWith("pattern-dkds"))).toBe(false);
+        }
     });
 
     test("parses SVG polyline and JSON points", () => {

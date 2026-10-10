@@ -18,6 +18,7 @@ export const PLANTAR_FALLBACK_INSET_MM = 1.5;
 export const GRIND_REFINE_DZ_MM = 1.2;
 export const I_COLLAPSE_MM = 0.3;
 export const I_SLIVER_ASPECT = 20;
+export const SLIVER_MIN_ANGLE_DEG = 5;
 
 export interface GeneratedPlantar {
     points: PolyPoint[];
@@ -423,6 +424,37 @@ function faceAspect(
     return { short, long, aspect: short < 1e-9 ? Infinity : long / short };
 }
 
+export function faceMinAngleDeg(A: PolyPoint, B: PolyPoint, C: PolyPoint): number {
+    const e1 = Math.hypot(B.x - A.x, B.y - A.y);
+    const e2 = Math.hypot(C.x - B.x, C.y - B.y);
+    const e3 = Math.hypot(A.x - C.x, A.y - C.y);
+    if (e1 < 1e-12 || e2 < 1e-12 || e3 < 1e-12) return 0;
+    const ang = (a: number, b: number, c: number): number => {
+        const cos = (a * a + b * b - c * c) / (2 * a * b);
+        return (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI;
+    };
+    return Math.min(ang(e3, e1, e2), ang(e1, e2, e3), ang(e2, e3, e1));
+}
+
+export function maxBoundaryMinAngleDeg(
+    points: PolyPoint[],
+    faces: Array<[number, number, number]>,
+    boundary: PolyPoint[],
+    withinMm = PLANTAR_SLIVER_BAND_MM,
+): number {
+    let worst = 180;
+    for (const f of faces) {
+        const A = points[f[0]!]!;
+        const B = points[f[1]!]!;
+        const C = points[f[2]!]!;
+        const cx = (A.x + B.x + C.x) / 3;
+        const cy = (A.y + B.y + C.y) / 3;
+        if (minDistToLoopXY(cx, cy, boundary) > withinMm) continue;
+        worst = Math.min(worst, faceMinAngleDeg(A, B, C));
+    }
+    return worst;
+}
+
 function nearestOnLoopXY(
     x: number,
     y: number,
@@ -500,6 +532,7 @@ function sliverFillSteiner(
         const B = points[ib]!;
         const C = points[ic]!;
         const { aspect } = faceAspect(A, B, C);
+        const minAng = faceMinAngleDeg(A, B, C);
         const cx = (A.x + B.x + C.x) / 3;
         const cy = (A.y + B.y + C.y) / 3;
         if (aspect > worstAsp) {
@@ -508,10 +541,11 @@ function sliverFillSteiner(
                 ids: [ia, ib, ic],
                 kind: [ia < nOuter ? "B" : "S", ib < nOuter ? "B" : "S", ic < nOuter ? "B" : "S"],
                 aspect: Number(aspect.toFixed(2)),
+                minAngle: Number(minAng.toFixed(2)),
                 distB: Number(minDistToLoopXY(cx, cy, loop).toFixed(3)),
             };
         }
-        if (aspect <= limit) continue;
+        if (aspect <= limit && minAng >= SLIVER_MIN_ANGLE_DEG) continue;
         pushSteiner(extra, loop, cx, cy, keep);
         const pts = [A, B, C];
         for (let k = 0; k < 3; k++) {
@@ -559,6 +593,13 @@ function cdtDiskOf(
     let points: PolyPoint[] = [];
     let faces: Array<[number, number, number]> = [];
     let sliverMaxAspect = 1;
+    let best: {
+        points: PolyPoint[];
+        faces: Array<[number, number, number]>;
+        steinerCount: number;
+        sliverMaxAspect: number;
+        minAng: number;
+    } | null = null;
     for (let pass = 0; pass < 10; pass++) {
         const steiner = wantSteiner ? [...collar, ...inward, ...hex, ...refine] : [];
         points = [...loop, ...extra, ...steiner];
@@ -567,7 +608,20 @@ function cdtDiskOf(
         assertIEdges(faces, loop.length);
         assertLibraryDisk(faces, loop.length);
         sliverMaxAspect = maxBoundaryAspect(points, faces, loop, PLANTAR_SLIVER_BAND_MM);
-        if (sliverMaxAspect <= I_SLIVER_ASPECT) {
+        const minAng = maxBoundaryMinAngleDeg(points, faces, loop, PLANTAR_SLIVER_BAND_MM);
+        if (
+            sliverMaxAspect <= I_SLIVER_ASPECT &&
+            (!best || minAng > best.minAng || sliverMaxAspect < best.sliverMaxAspect)
+        ) {
+            best = {
+                points,
+                faces,
+                steinerCount: steiner.length,
+                sliverMaxAspect,
+                minAng,
+            };
+        }
+        if (sliverMaxAspect <= I_SLIVER_ASPECT && minAng >= SLIVER_MIN_ANGLE_DEG) {
             if (dense) {
                 console.log(
                     "[S1-CDT-STEINER]",
@@ -579,6 +633,7 @@ function cdtDiskOf(
                         inward: inward.length,
                         refine: refine.length,
                         aspect: Number(sliverMaxAspect.toFixed(2)),
+                        minAng: Number(minAng.toFixed(2)),
                         pass,
                     }),
                 );
@@ -592,6 +647,9 @@ function cdtDiskOf(
         }
         if (!filled.extra.length) break;
         refine.push(...filled.extra);
+    }
+    if (best) {
+        return best;
     }
     const steiner = wantSteiner ? [...collar, ...inward, ...hex, ...refine] : [];
     if (dense) {
@@ -707,12 +765,15 @@ export function buildGeneratedPlantar(input: {
     const boundary = input.boundary.map((p) => ({ ...p }));
     const mesh = triangulatePlantarXY(boundary, input.marginMm ?? PLANTAR_MARGIN_MM);
     const sampler = input.sampler;
+    let extraLift = 0;
     if (sampler) {
         for (const p of mesh.points) p.z = sampler.z(p.x, p.y, 0);
+        for (const p of mesh.points) extraLift = Math.max(extraLift, p.z < 0 ? -p.z : 0);
+        if (extraLift) for (const p of mesh.points) p.z += extraLift;
     } else {
         applyPlantarFields(mesh.points, boundary, input.dish, input.field, input.zDelta);
+        extraLift = reanchorPlantarMinZ(mesh.points);
     }
-    const extraLift = reanchorPlantarMinZ(mesh.points);
     assertPlantarDisk(mesh.faces, boundary.length);
     const hygiene = countOpenNonBoundaryEdges(mesh.faces, boundary.length);
     let minZ = Infinity;

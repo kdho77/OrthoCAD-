@@ -8,6 +8,7 @@ export {
     ASPECT_EVERYWHERE_MAX,
     ASPECT_LAST_STRIP_MAX,
     ASPECT_ROUND_MAX,
+    ASPECT_ROUND_S1_MAX,
     applyPlantarBandZ,
     applyTangentBandZ,
     assertFilletStation,
@@ -36,9 +37,12 @@ export {
     ensureColumnMinEdge,
     estimateBandInsetMm,
     evalCubicBezier,
+    FIL_CHORD_S1_MIN,
     FILLET_ASSERT_EPS,
     FILLET_B_MAX_DEG,
     FILLET_B_MIN_DEG,
+    FILLET_FIRST_STEP_MAX_RATIO,
+    FILLET_FIRST_STEP_MIN_RATIO,
     FILLET_LAST_ROW_FRAC,
     FILLET_PIECE_MIN_MM,
     FILLET_PSI_MAX_DEG,
@@ -297,6 +301,7 @@ export {
     buildGeneratedPlantar,
     collapseShortIEdges,
     collarSteiner,
+    faceMinAngleDeg,
     I_COLLAPSE_MM,
     I_SLIVER_ASPECT,
     inwardEdgeSteiner,
@@ -305,6 +310,7 @@ export {
     PLANTAR_STEINER_EDGE_MIN_MM,
     PLANTAR_STEINER_MM,
     PLANTAR_STEINER_OUTLINE_FRAC,
+    SLIVER_MIN_ANGLE_DEG,
 } from "./plantar-cdt";
 export { type ReconstructOptions, reconstructProceduralWalls } from "./reconstruct";
 export {

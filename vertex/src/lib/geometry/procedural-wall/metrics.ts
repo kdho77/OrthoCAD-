@@ -340,6 +340,7 @@ export function foldReport(reconstruction: BufferGeometry, opts?: FoldReportOpti
     let hard = 0;
     let interior = 0;
     let seamWorst = 0;
+    let worstEdge: FoldReport["worstEdge"];
     for (const [key, faces] of edgeFaces) {
         if (faces.length !== 2) continue;
         const [sa, sb] = key.split(",").map(Number) as [number, number];
@@ -376,11 +377,27 @@ export function foldReport(reconstruction: BufferGeometry, opts?: FoldReportOpti
             continue;
         }
         interior++;
-        if (deg > worst) worst = deg;
+        if (deg > worst) {
+            worst = deg;
+            worstEdge = {
+                a: sa,
+                b: sb,
+                deg,
+                x: 0.5 * (pos[sa * 3]! + pos[sb * 3]!),
+                y: 0.5 * (pos[sa * 3 + 1]! + pos[sb * 3 + 1]!),
+                z: 0.5 * (pos[sa * 3 + 2]! + pos[sb * 3 + 2]!),
+            };
+        }
         if (deg >= 10) hard++;
     }
 
-    return { worstDeg: worst, edgesAtLeast10Deg: hard, interiorEdgeCount: interior, seamWorstDeg: seamWorst };
+    return {
+        worstDeg: worst,
+        edgesAtLeast10Deg: hard,
+        interiorEdgeCount: interior,
+        seamWorstDeg: seamWorst,
+        worstEdge,
+    };
 }
 
 /**
@@ -940,6 +957,12 @@ export function countJunctionBandSlivers(
         const short = Math.min(e1, e2, e3);
         const long = Math.max(e1, e2, e3);
         if (short < 1e-9 || long / short > aspectLimit) n++;
+        else {
+            const ang = (u: number, v: number, w: number): number =>
+                (Math.acos(Math.max(-1, Math.min(1, (u * u + v * v - w * w) / (2 * u * v)))) * 180) / Math.PI;
+            const minAng = Math.min(ang(e3, e1, e2), ang(e1, e2, e3), ang(e2, e3, e1));
+            if (minAng < 5 - 1e-6) n++;
+        }
     }
     return n;
 }

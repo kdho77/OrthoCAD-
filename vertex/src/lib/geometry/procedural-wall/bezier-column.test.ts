@@ -26,6 +26,8 @@ import {
     enforceLastChordFloor,
     ensureColumnMinEdge,
     evalCubicBezier,
+    FILLET_FIRST_STEP_MAX_RATIO,
+    FILLET_FIRST_STEP_MIN_RATIO,
     FILLET_PIECE_MIN_MM,
     FILLET_R_CAP_MM,
     FILLET_ROW_STEP_MIN_DEG,
@@ -1199,6 +1201,64 @@ describe("bezier column", () => {
             expect(nrm.z).toBeGreaterThan(0);
             expect(Math.hypot(nrm.x, nrm.y, nrm.z)).toBeCloseTo(1, 6);
         }
+    });
+
+    test("initColumnFrames keeps the exact posted n_g", () => {
+        const n = 12;
+        const tilt = { x: 0, y: 0.25, z: Math.sqrt(1 - 0.0625) };
+        const stations: HermiteStation[] = [];
+        for (let i = 0; i < n; i++) {
+            const a = (i / n) * Math.PI * 2;
+            stations.push(
+                station(20 * Math.cos(a), 12 * Math.sin(a), 8, {
+                    x: Math.cos(a),
+                    y: Math.sin(a),
+                }),
+            );
+        }
+        const junctions = stations.map(() => ({ planeN: { x: 0, y: 0, z: 1 }, slopeRad: 0 }));
+        const nPlantars = stations.map((_, i) => (i === 3 ? tilt : { x: 0, y: 0, z: 1 }));
+        const frames = initColumnFrames(
+            stations,
+            junctions,
+            defaults(),
+            stations.map(() => 8),
+            () => null,
+            [],
+            nPlantars,
+        );
+        expect(frames[3]!.nPlantar!.y).toBeCloseTo(tilt.y, 6);
+        expect(frames[3]!.nPlantar!.z).toBeCloseTo(tilt.z, 6);
+        expect(frames[0]!.nPlantar!.z).toBeCloseTo(1, 6);
+    });
+
+    test("first fillet step leaving F matches the last line segment", () => {
+        const R = { x: 0, y: 0, z: 12 };
+        const B = { x: 8, y: 0, z: 0 };
+        const h = { x: 1, y: 0 };
+        const sw = constructSweepRule(
+            R,
+            B,
+            { x: 0, y: 0, z: 1 },
+            0.5,
+            2,
+            h,
+            h,
+            { x: 0, y: 1, z: 0 },
+            0,
+            undefined,
+            1.3,
+        );
+        const walk = filletWalkPhis(sw.fil.phi0, sw.fil.phi1, B, (phi) => filletPointAtPhi(sw.fil, phi));
+        const counts = { nRound: 8, nFil: 6, nLine: 10, nWall: 26 };
+        const dL = lastFilletDLRad(Math.abs(walk.phiB - walk.phiF), 1);
+        const pts = sampleSweepRule(sw, R, B, counts.nWall, counts, dL, 2);
+        const lineStart = counts.nRound;
+        const lastLine = dist3ish(pts[lineStart + counts.nLine - 1]!, pts[lineStart + counts.nLine]!);
+        const firstFil = dist3ish(pts[lineStart + counts.nLine]!, pts[lineStart + counts.nLine + 1]!);
+        const ratio = firstFil / lastLine;
+        expect(ratio).toBeGreaterThanOrEqual(FILLET_FIRST_STEP_MIN_RATIO - 1e-6);
+        expect(ratio).toBeLessThanOrEqual(FILLET_FIRST_STEP_MAX_RATIO + 1e-6);
     });
 
     test("fillet C2 sits on n_plantar and ew follows −h on the plane", () => {

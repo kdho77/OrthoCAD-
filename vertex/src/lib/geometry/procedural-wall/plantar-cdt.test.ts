@@ -8,12 +8,14 @@ import {
     buildGeneratedPlantar,
     collapseShortIEdges,
     collarSteiner,
+    faceMinAngleDeg,
     I_COLLAPSE_MM,
     I_SLIVER_ASPECT,
     inwardEdgeSteiner,
     makePlantarSampler,
     maxIAspect,
     PLANTAR_STEINER_EDGE_MIN_MM,
+    SLIVER_MIN_ANGLE_DEG,
 } from "./plantar-cdt";
 
 describe("generated plantar CDT", () => {
@@ -203,6 +205,36 @@ describe("generated plantar CDT", () => {
         expect(sampler.lift).toBeGreaterThan(0);
         for (const p of outline) {
             expect(sampler.z(p.x, p.y, 0)).toBeGreaterThanOrEqual(-1e-9);
+        }
+    });
+
+    test("sampler plantar keeps B bit-identical and min angle >= 5deg", () => {
+        const n = 36;
+        const boundary = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 24 * Math.cos(a), y: 14 * Math.sin(a), z: 0 };
+        });
+        const sampler = makePlantarSampler(boundary, null, undefined, (x) => 0.02 * x, { flat: true });
+        for (const p of boundary) p.z = sampler.z(p.x, p.y, 0);
+        const mesh = buildGeneratedPlantar({
+            boundary,
+            dish: null,
+            zDelta: (x) => 0.02 * x,
+            sampler,
+            flat: true,
+        });
+        expect(mesh.extraLift).toBeGreaterThanOrEqual(0);
+        for (let i = 0; i < n; i++) {
+            const B = mesh.points[i]!;
+            expect(B.x).toBe(boundary[i]!.x);
+            expect(B.y).toBe(boundary[i]!.y);
+            expect(B.z).toBeCloseTo(sampler.z(B.x, B.y, 0) + mesh.extraLift, 9);
+        }
+        for (const f of mesh.faces) {
+            const A = mesh.points[f[0]!]!;
+            const B = mesh.points[f[1]!]!;
+            const C = mesh.points[f[2]!]!;
+            expect(faceMinAngleDeg(A, B, C)).toBeGreaterThanOrEqual(SLIVER_MIN_ANGLE_DEG - 0.5);
         }
     });
 });

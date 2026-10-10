@@ -182,6 +182,8 @@ export interface FoldReport {
     stockSeamWorstDeg?: number;
     /** Edges at ≥10° (for medial-arch-upper dumps). */
     hardEdges?: Array<{ a: number; b: number; deg: number; u: number; y: number; z: number }>;
+    /** Worst interior fold location (vertex ids + midpoint). */
+    worstEdge?: { a: number; b: number; deg: number; x: number; y: number; z: number };
 }
 
 export interface ClinicalWallReport {

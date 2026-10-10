@@ -35,8 +35,15 @@ export const SEAM_B_FALLBACK_DEG = 9.5;
 export const NEIGHBOUR_SPACING_RATIO = 1.5;
 export const ASPECT_EVERYWHERE_MAX = 20;
 export const ASPECT_ROUND_MAX = 30;
+/** S1-acceptable round-strip aspect. 30–40 is logged for S2. */
+export const ASPECT_ROUND_S1_MAX = 40;
 /** Last B-strip faces may go to 40; every other strip stays at 20. */
 export const ASPECT_LAST_STRIP_MAX = 40;
+/** S1-acceptable last-fillet chord / C_MIN. 0.8–1.0 is logged for S2. */
+export const FIL_CHORD_S1_MIN = 0.8;
+/** First fillet step leaving F vs the line's last segment. */
+export const FILLET_FIRST_STEP_MIN_RATIO = 0.67;
+export const FILLET_FIRST_STEP_MAX_RATIO = 1.5;
 /** Logged [S1-CHORD-FLOOR] stations may undershoot C_MIN, at most this fraction. */
 export const LAST_CHORD_FLOOR_MAX_FRAC = 0.05;
 /** Post-loft signed-dihedral cap. S1-stage p99 / E/F-turn stay 5 / 6.5. */
@@ -688,6 +695,7 @@ export function assertFilletWalk(
     station = -1,
     planeN?: XYZ,
     center?: XYZ | null,
+    groundN?: XYZ,
 ): void {
     if (filletPts.length < 1 || dL < 1e-12 || r2 < 1e-12) return;
     const at = station >= 0 ? String(station) : "?";
@@ -713,7 +721,7 @@ export function assertFilletWalk(
     if (filletPts.length < 2) return;
     const prev = filletPts[filletPts.length - 2]!;
     const chord = { x: B.x - last.x, y: B.y - last.y, z: B.z - last.z };
-    const rise = lastChordRiseDeg(prev, last, B, planeN ?? { x: 0, y: 0, z: 1 }, chord, center);
+    const rise = lastChordRiseDeg(prev, last, B, planeN ?? { x: 0, y: 0, z: 1 }, chord, center, groundN);
     const designedRise = (dL * 90) / Math.PI;
     const onArc = center != null && r2 > 1e-9 && Math.abs(dist3(last, center) - r2) < 0.08;
     if (rise != null && !onArc && rise > CHORD_RISE_MAX_DEG + 1e-6) {
@@ -1232,6 +1240,7 @@ export function sampleFilletPiecePoints(
     dL: number,
     cMin: number,
     stealLock?: number,
+    nLine?: number,
 ): FilletPieceSample {
     const arcLen = Math.max(0, r2) * Math.max(0, S);
     const L = dist3(E, F);
@@ -1258,7 +1267,30 @@ export function sampleFilletPiecePoints(
     const lastPhi = S > 1e-12 && dL > 1e-12 ? Math.min(dL, S / 2) : 0;
     const lastLen = Math.max(0, r2) * lastPhi;
     const bodyLen = Math.max(0, lF - lastLen);
-    for (let k = 1; k <= n; k++) pts.push(pointAt((k * bodyLen) / n));
+    const lastLine = nLine && nLine > 0 ? Math.max(0, L - steal) / nLine : 0;
+    let firstS = n > 0 ? bodyLen / n : 0;
+    if (lastLine > 1e-12 && n >= 2 && bodyLen > 1e-12) {
+        const lo = FILLET_FIRST_STEP_MIN_RATIO * lastLine;
+        const hi = FILLET_FIRST_STEP_MAX_RATIO * lastLine;
+        const equal = pointAt(bodyLen / n);
+        const equalChord = dist3(Fpiece, equal);
+        const target = Math.min(hi, Math.max(lo, equalChord));
+        let a = 1e-9;
+        let b = Math.max(1e-9, bodyLen * 0.85);
+        for (let it = 0; it < 24; it++) {
+            const mid = 0.5 * (a + b);
+            if (dist3(Fpiece, pointAt(mid)) < target) a = mid;
+            else b = mid;
+        }
+        firstS = 0.5 * (a + b);
+    }
+    if (n >= 2 && firstS > 1e-12 && Math.abs(firstS - bodyLen / n) > 1e-12) {
+        pts.push(pointAt(firstS));
+        const rest = Math.max(0, bodyLen - firstS);
+        for (let k = 1; k <= n - 1; k++) pts.push(pointAt(firstS + (k * rest) / (n - 1)));
+    } else {
+        for (let k = 1; k <= n; k++) pts.push(pointAt((k * bodyLen) / n));
+    }
     return { Fpiece, stealMm: steal, lengthMm: lF, pts };
 }
 
@@ -1929,9 +1961,15 @@ export function sampleArcLineArc(
         nFil,
         dL,
         lastFilletCMinMm(stationSpacing),
+        undefined,
+        nLine,
     );
     if (S > 1e-12) {
-        assertFilletWalk(fil.pts, B, ala.r2, dL, station, { x: -h.y, y: h.x, z: 0 }, ala.C2);
+        assertFilletWalk(fil.pts, B, ala.r2, dL, station, { x: -h.y, y: h.x, z: 0 }, ala.C2, {
+            x: 0,
+            y: 0,
+            z: 1,
+        });
     }
     for (let k = 1; k <= nLine; k++) {
         const t = k / nLine;
@@ -1940,6 +1978,7 @@ export function sampleArcLineArc(
     for (const p of fil.pts) pts.push(p);
     pts.push({ ...B });
     ensureColumnMinEdge(pts, MIN_EDGE_MM);
+    matchFirstFilletStep(pts, nRound, nLine);
     return assertPieceSpacing(pts, MIN_EDGE_MM, station);
 }
 
@@ -2157,9 +2196,10 @@ export function sampleSweepRule(
         dL,
         lastFilletCMinMm(localSpacing),
         stealLock,
+        nLine,
     );
     if (S > 1e-12) {
-        assertFilletWalk(fil.pts, B, sw.r2, dL, station, sw.nFilPlane, sw.C2);
+        assertFilletWalk(fil.pts, B, sw.r2, dL, station, sw.nFilPlane, sw.C2, sw.nPlant);
     }
     for (let k = 1; k <= nLine; k++) {
         const t = k / nLine;
@@ -2168,7 +2208,30 @@ export function sampleSweepRule(
     for (const p of fil.pts) pts.push(p);
     pts.push({ ...B });
     ensureColumnMinEdge(pts, MIN_EDGE_MM);
+    matchFirstFilletStep(pts, nRound, nLine);
     return strictSpacing ? assertPieceSpacing(pts, MIN_EDGE_MM, station) : pts;
+}
+
+function matchFirstFilletStep(pts: XYZ[], nRound: number, nLine: number): void {
+    const fIdx = nRound + nLine;
+    const firstIdx = fIdx + 1;
+    if (fIdx < 1 || firstIdx >= pts.length - 1) return;
+    const lastLine = dist3(pts[fIdx - 1]!, pts[fIdx]!);
+    if (lastLine < 1e-12) return;
+    const first = dist3(pts[fIdx]!, pts[firstIdx]!);
+    const lo = FILLET_FIRST_STEP_MIN_RATIO * lastLine;
+    const hi = FILLET_FIRST_STEP_MAX_RATIO * lastLine;
+    if (first + 1e-9 >= lo && first <= hi + 1e-9) return;
+    const target = Math.min(hi, Math.max(lo, first));
+    const origin = pts[fIdx]!;
+    const cur = pts[firstIdx]!;
+    const dx = cur.x - origin.x;
+    const dy = cur.y - origin.y;
+    const dz = cur.z - origin.z;
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-12) return;
+    const s = target / len;
+    pts[firstIdx] = { x: origin.x + dx * s, y: origin.y + dy * s, z: origin.z + dz * s };
 }
 
 /** Walk a short interior sample toward the next point so the row map stays
@@ -3333,14 +3396,11 @@ export function initColumnFrames(
         };
         return fr;
     });
-    const smoothed = smoothPlantarNormalField(
-        frames.map((f) => f.nPlantar ?? { x: 0, y: 0, z: 1 }),
-        frames.map((f) => f.B),
-        PLANTAR_N_SMOOTH_SIGMA_MM,
-    );
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
-        const n = smoothed[i]!;
+        const raw = fr.nPlantar ?? { x: 0, y: 0, z: 1 };
+        let n = unit3(raw);
+        if (n.z < 0) n = { x: -n.x, y: -n.y, z: -n.z };
         fr.nPlantar = n;
         fr.plantarSlopeRad = Math.atan2(n.x * fr.h.x + n.y * fr.h.y, n.z);
         fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
@@ -4091,7 +4151,16 @@ function lastChordRiseDeg(
     planeN: XYZ,
     chord: XYZ,
     center?: XYZ | null,
+    groundN?: XYZ,
 ): number | null {
+    if (groundN && hypot3(groundN) > 1e-12) {
+        const g = unit3(groundN);
+        const cl = hypot3(chord);
+        if (cl < 1e-12) return null;
+        const along = Math.abs(dot3(chord, g));
+        const inP = Math.sqrt(Math.max(0, cl * cl - along * along));
+        return (Math.atan2(along, inP) * 180) / Math.PI;
+    }
     const C = (center && hypot3(center) > 1e-12 ? center : null) ?? circumcenter3(prev, last, B);
     const bin = hypot3(planeN) > 1e-12 ? unit3(planeN) : { x: 0, y: 0, z: 1 };
     let tan: XYZ;
@@ -4521,7 +4590,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                     r2 > 1e-9 &&
                     Math.abs(dist3(last, C2) - r2) < 0.08 &&
                     pointPastF(last, fr.E, fr.F);
-                const rise = onArc ? lastChordRiseDeg(prev, last, B, fr.nFilPlane, chord, C2) : null;
+                const rise = onArc
+                    ? lastChordRiseDeg(prev, last, B, fr.nFilPlane, chord, C2, fr.nPlantar)
+                    : null;
                 const designedRise = ((fr.lastDlRad ?? 0) * 90) / Math.PI;
                 if (rise != null) {
                     // Reserved last-step rise is dL/2 by construction. The 3D

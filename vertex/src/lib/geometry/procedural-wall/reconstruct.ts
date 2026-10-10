@@ -428,7 +428,122 @@ function sanitizeMesh(
     }
     indices.length = 0;
     for (let i = 0; i < out.length; i++) indices.push(out[i]!);
+    splitAcuteTriangles(positions, indices, generatedStart);
     return { zeroArea, duplicates };
+}
+
+const SLIVER_MIN_ANGLE_RAD = (5 * Math.PI) / 180;
+
+function triMinAngleRad(positions: number[], a: number, b: number, c: number): number {
+    const ax = positions[a * 3]!;
+    const ay = positions[a * 3 + 1]!;
+    const az = positions[a * 3 + 2]!;
+    const bx = positions[b * 3]!;
+    const by = positions[b * 3 + 1]!;
+    const bz = positions[b * 3 + 2]!;
+    const cx = positions[c * 3]!;
+    const cy = positions[c * 3 + 1]!;
+    const cz = positions[c * 3 + 2]!;
+    const ab = Math.hypot(bx - ax, by - ay, bz - az);
+    const bc = Math.hypot(cx - bx, cy - by, cz - bz);
+    const ca = Math.hypot(ax - cx, ay - cy, az - cz);
+    if (ab < 1e-12 || bc < 1e-12 || ca < 1e-12) return 0;
+    const ang = (u: number, v: number, w: number): number =>
+        Math.acos(Math.max(-1, Math.min(1, (u * u + v * v - w * w) / (2 * u * v))));
+    return Math.min(ang(ca, ab, bc), ang(ab, bc, ca), ang(bc, ca, ab));
+}
+
+function splitAcuteTriangles(
+    positions: number[],
+    indices: number[],
+    generatedStart = 0,
+    minRad = SLIVER_MIN_ANGLE_RAD,
+): void {
+    for (let pass = 0; pass < 12; pass++) {
+        const edgeFaces = new Map<string, number[]>();
+        for (let t = 0; t < indices.length; t += 3) {
+            const vs = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+            for (let k = 0; k < 3; k++) {
+                const a = vs[k]!;
+                const b = vs[(k + 1) % 3]!;
+                const key = a < b ? `${a},${b}` : `${b},${a}`;
+                const arr = edgeFaces.get(key);
+                if (arr) arr.push(t);
+                else edgeFaces.set(key, [t]);
+            }
+        }
+        let hit = -1;
+        let longA = 0;
+        let longB = 0;
+        for (let t = 0; t < indices.length; t += 3) {
+            const a = indices[t]!;
+            const b = indices[t + 1]!;
+            const c = indices[t + 2]!;
+            if (triMinAngleRad(positions, a, b, c) + 1e-12 >= minRad) continue;
+            const edges: Array<[number, number, number]> = [
+                [
+                    a,
+                    b,
+                    Math.hypot(
+                        positions[b * 3]! - positions[a * 3]!,
+                        positions[b * 3 + 1]! - positions[a * 3 + 1]!,
+                        positions[b * 3 + 2]! - positions[a * 3 + 2]!,
+                    ),
+                ],
+                [
+                    b,
+                    c,
+                    Math.hypot(
+                        positions[c * 3]! - positions[b * 3]!,
+                        positions[c * 3 + 1]! - positions[b * 3 + 1]!,
+                        positions[c * 3 + 2]! - positions[b * 3 + 2]!,
+                    ),
+                ],
+                [
+                    c,
+                    a,
+                    Math.hypot(
+                        positions[a * 3]! - positions[c * 3]!,
+                        positions[a * 3 + 1]! - positions[c * 3 + 1]!,
+                        positions[a * 3 + 2]! - positions[c * 3 + 2]!,
+                    ),
+                ],
+            ];
+            edges.sort((p, q) => q[2]! - p[2]!);
+            const pick = edges.find((e) => e[0]! >= generatedStart && e[1]! >= generatedStart);
+            if (!pick) continue;
+            longA = pick[0]!;
+            longB = pick[1]!;
+            hit = t;
+            break;
+        }
+        if (hit < 0) return;
+        const mid = positions.length / 3;
+        positions.push(
+            0.5 * (positions[longA * 3]! + positions[longB * 3]!),
+            0.5 * (positions[longA * 3 + 1]! + positions[longB * 3 + 1]!),
+            0.5 * (positions[longA * 3 + 2]! + positions[longB * 3 + 2]!),
+        );
+        const key = longA < longB ? `${longA},${longB}` : `${longB},${longA}`;
+        const faces = (edgeFaces.get(key) ?? [hit]).slice().sort((a, b) => b - a);
+        for (const t of faces) {
+            const vs = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+            let done = false;
+            for (let k = 0; k < 3; k++) {
+                const p = vs[k]!;
+                const q = vs[(k + 1) % 3]!;
+                const r = vs[(k + 2) % 3]!;
+                if ((p !== longA || q !== longB) && (p !== longB || q !== longA)) continue;
+                indices[t] = p;
+                indices[t + 1] = mid;
+                indices[t + 2] = r;
+                indices.push(mid, q, r);
+                done = true;
+                break;
+            }
+            if (!done) continue;
+        }
+    }
 }
 
 function meshMinZOf(positions: number[]): number {
@@ -615,9 +730,15 @@ export function reconstructProceduralWalls(
         });
     }
     medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
+    const patternMovedAt = wholeWidth
+        ? () => true
+        : heelWiden
+          ? (u: number) => heelCupWidthLongitudinalEnvelope(u) > 1e-6
+          : undefined;
     if (patternMoved) {
         const movedHy = movedPatternHygiene(hygiened.loop, model.bounds, medialYSign, {
             maxInflections: 4,
+            movedAt: patternMovedAt,
         });
         if (!movedHy.ok) {
             hygiened = {
@@ -966,7 +1087,13 @@ export function reconstructProceduralWalls(
         filletRing: grid.frames.map((f) => ({ ...f.F })),
         zeroAreaFaces: hygiene.zeroArea,
         duplicateFaces: hygiene.duplicates,
-        meshMinZ: meshMinZOf(positions),
+        meshMinZ: (() => {
+            const z = meshMinZOf(positions);
+            if (z < -1e-9) {
+                throw new Error(`[S1-Z] solid min z ${z.toFixed(6)} < 0`);
+            }
+            return z;
+        })(),
         generatedStart,
         generatedCount: positions.length / 3 - generatedStart,
         plantarStart,
@@ -1010,6 +1137,7 @@ export function reconstructProceduralWalls(
         insoleWidthScale: wholeWidth ? wholeScale : 1,
         patternHygiene: movedPatternHygiene(hygiened.loop, model.bounds, medialYSign, {
             maxInflections: 4,
+            movedAt: patternMovedAt,
         }),
         postingClamps: posting.postingClamps,
         maxBPlantarDeltaMm: grid.maxBPlantarDeltaMm,

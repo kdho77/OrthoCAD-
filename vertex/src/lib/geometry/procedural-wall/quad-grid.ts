@@ -644,10 +644,8 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         sampler,
         flat: true,
     });
-    if (plantar.extraLift) {
-        for (let i = 0; i < nS; i++) stations[i]!.outline.z += plantar.extraLift;
-        for (const p of outlineB) p.z += plantar.extraLift;
-    }
+    let fieldLift = plantar.extraLift;
+    let soleZ = (x: number, y: number, fallback = 0): number => sampler.z(x, y, fallback) + fieldLift;
     for (let i = 0; i < nS; i++) {
         const B = plantar.points[i]!;
         const st = stations[i]!.outline;
@@ -658,14 +656,23 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
                     `cdt=(${B.x.toFixed(3)},${B.y.toFixed(3)})`,
             );
         }
-        st.z = B.z;
-        outlineB[i]!.z = B.z;
+        st.z = soleZ(st.x, st.y, st.z);
+        outlineB[i]!.x = st.x;
+        outlineB[i]!.y = st.y;
+        outlineB[i]!.z = st.z;
+        B.x = st.x;
+        B.y = st.y;
+        B.z = st.z;
+    }
+    for (let i = nS; i < plantar.points.length; i++) {
+        const p = plantar.points[i]!;
+        p.z = soleZ(p.x, p.y, p.z);
     }
     console.log(
         "[S1-B]",
         JSON.stringify({
             n: nS,
-            extraLift: Number(plantar.extraLift.toFixed(4)),
+            extraLift: Number(fieldLift.toFixed(4)),
             openEdges: plantar.openEdges,
             missingBoundary: plantar.missingBoundary,
             sliverMaxAspect: Number(plantar.sliverMaxAspect.toFixed(2)),
@@ -674,18 +681,20 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         }),
     );
 
-    let nPlantars = stations.map((st) => plantarNormalAt(st.outline.x, st.outline.y, input.zDelta));
-    let plantarSlopeRad = stations.map((st, i) => {
-        const dx = st.outline.x - st.rim.x;
-        const dy = st.outline.y - st.rim.y;
-        const len = Math.hypot(dx, dy);
-        const hx = len < 1e-4 ? st.n.x : dx / len;
-        const hy = len < 1e-4 ? st.n.y : dy / len;
-        const nl = Math.hypot(hx, hy) || 1;
-        const n = nPlantars[i]!;
-        const ns = n.x * hx + n.y * hy;
-        return Math.atan2(ns, n.z);
-    });
+    const nGAt = (P: (x: number, y: number) => number) =>
+        stations.map((st) => plantarNormalAt(st.outline.x, st.outline.y, P));
+    const slopeAt = (normals: { x: number; y: number; z: number }[]) =>
+        stations.map((st, i) => {
+            const dx = st.outline.x - st.rim.x;
+            const dy = st.outline.y - st.rim.y;
+            const len = Math.hypot(dx, dy);
+            const hx = len < 1e-4 ? st.n.x : dx / len;
+            const hy = len < 1e-4 ? st.n.y : dy / len;
+            const n = normals[i]!;
+            return Math.atan2(n.x * hx + n.y * hy, n.z);
+        });
+    let nPlantars = nGAt((x, y) => soleZ(x, y, 0));
+    let plantarSlopeRad = slopeAt(nPlantars);
     const buildCols = (
         slopes: number[],
         normals: { x: number; y: number; z: number }[],
@@ -703,11 +712,24 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
             input.liveSheet === true,
         );
     let built = buildCols(plantarSlopeRad, nPlantars);
-    const heightFlags = built.minWallClamps.filter((c) => c.postingHeightClamp && c.droppedMm > 1e-9);
-    let soleZ = (x: number, y: number, fallback = 0): number => sampler.z(x, y, fallback);
+    const extra = new Array(nS).fill(0);
+    for (const f of built.minWallClamps) {
+        if (f.postingHeightClamp && f.droppedMm > 1e-9) {
+            extra[f.station] = Math.max(extra[f.station]!, f.droppedMm);
+        }
+    }
+    for (let i = 0; i < nS; i++) {
+        const B = stations[i]!.outline;
+        const R = stations[i]!.rim;
+        const top = input.topZ(R.x, R.y) ?? R.z;
+        const P = soleZ(B.x, B.y, B.z);
+        const need = S1_MIN_WALL_MM - (top - P);
+        if (need > 1e-9) extra[i] = Math.max(extra[i]!, need);
+    }
+    const heightFlags = extra
+        .map((droppedMm, station) => ({ station, droppedMm, postingHeightClamp: droppedMm > 1e-9 }))
+        .filter((c) => c.postingHeightClamp);
     if (heightFlags.length) {
-        const extra = new Array(nS).fill(0);
-        for (const f of heightFlags) extra[f.station] = Math.max(extra[f.station]!, f.droppedMm);
         const z2 = (x: number, y: number): number => {
             const z = input.zDelta(x, y);
             let best = 0;
@@ -730,27 +752,24 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
             z2,
             { flat: true },
         );
+        fieldLift = 0;
         soleZ = (x, y, fallback = 0) => sampler2.z(x, y, fallback);
         for (let i = 0; i < nS; i++) {
             const p = stations[i]!.outline;
-            p.z = sampler2.z(p.x, p.y, p.z);
+            p.z = soleZ(p.x, p.y, p.z);
             outlineB[i]!.z = p.z;
-            if (plantar.points[i]) plantar.points[i]!.z = p.z;
+            if (plantar.points[i]) {
+                plantar.points[i]!.x = p.x;
+                plantar.points[i]!.y = p.y;
+                plantar.points[i]!.z = p.z;
+            }
         }
         for (let i = nS; i < plantar.points.length; i++) {
             const p = plantar.points[i]!;
-            p.z = sampler2.z(p.x, p.y, p.z);
+            p.z = soleZ(p.x, p.y, p.z);
         }
-        nPlantars = stations.map((st) => plantarNormalAt(st.outline.x, st.outline.y, z2));
-        plantarSlopeRad = stations.map((st, i) => {
-            const dx = st.outline.x - st.rim.x;
-            const dy = st.outline.y - st.rim.y;
-            const len = Math.hypot(dx, dy);
-            const hx = len < 1e-4 ? st.n.x : dx / len;
-            const hy = len < 1e-4 ? st.n.y : dy / len;
-            const n = nPlantars[i]!;
-            return Math.atan2(n.x * hx + n.y * hy, n.z);
-        });
+        nPlantars = nGAt((x, y) => soleZ(x, y, 0));
+        plantarSlopeRad = slopeAt(nPlantars);
         built = buildCols(plantarSlopeRad, nPlantars);
     }
     console.log(
@@ -808,11 +827,11 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         for (let j = 1; j < col.length; j++) {
             const p = col[j]!;
             const sole = soleZ(p.x, p.y, p.z);
-            if (p.z < sole - 1e-3) wallBelowPlantar++;
+            if (p.z < sole - 1e-6) wallBelowPlantar++;
         }
     }
-    if (maxBPlantarDeltaMm > 1e-3) {
-        throw new Error(`[S1-B] |B.z - plantarZ| ${maxBPlantarDeltaMm.toFixed(4)} > 1e-3`);
+    if (maxBPlantarDeltaMm > 1e-6) {
+        throw new Error(`[S1-B] |B.z - plantarZ| ${maxBPlantarDeltaMm.toFixed(6)} > 1e-6`);
     }
     if (wallBelowPlantar) {
         throw new Error(`[S1-B] ${wallBelowPlantar} wall vertices below the plantar`);
