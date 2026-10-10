@@ -191,11 +191,6 @@ describe("generated plantar CDT", () => {
         const sampler = makePlantarSampler(outline, null, undefined, () => 0, { flat: true });
         expect(sampler.lift).toBe(0);
         expect(sampler.z(0, 0, 9)).toBe(0);
-        const posted = makePlantarSampler(outline, null, undefined, (_x, y) => y * 0.4, { flat: true });
-        expect(posted.lift).toBe(0);
-        expect(posted.z(0, 0)).toBe(0);
-        expect(posted.z(0, -8)).toBe(0);
-        expect(posted.z(0, 8)).toBeCloseTo(3.2, 6);
     });
 
     test("sampler applies fields and re-anchor before B", () => {

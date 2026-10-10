@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { MIN_FILLET_RINGS } from "./hermite";
-import { liftWallVertsToPlantar, rimJunctions, sampleBottomWallFillet } from "./quad-grid";
+import { rimJunctions, sampleBottomWallFillet } from "./quad-grid";
 
 describe("generated plantar quad grid", () => {
     test("bottom fillet is monotonic in n and ends at the outline", () => {
@@ -29,22 +29,5 @@ describe("generated plantar quad grid", () => {
         const junct = rimJunctions(pos, indices, [0], [{ x: 1, y: 0 }], 0);
         expect(junct[0]?.planeN.z).toBeLessThan(0);
         expect(Math.abs(((junct[0]?.slopeRad ?? 0) * 180) / Math.PI)).toBeGreaterThan(90);
-    });
-
-    test("liftWallVertsToPlantar never moves B and raises only piercing verts", () => {
-        const col = [
-            { x: 0, y: 0, z: 10 },
-            { x: 0.4, y: 0, z: -0.2 },
-            { x: 0.8, y: 0, z: 0.1 },
-            { x: 1, y: 0, z: 0 },
-        ];
-        const Bz = col[3]?.z;
-        const { lifted, maxLiftMm } = liftWallVertsToPlantar([col], () => 0);
-        expect(lifted).toBe(1);
-        expect(maxLiftMm).toBeCloseTo(0.2, 6);
-        expect(col[0]?.z).toBe(10);
-        expect(col[1]?.z).toBeCloseTo(0, 9);
-        expect(col[2]?.z).toBeCloseTo(0.1, 9);
-        expect(col[3]?.z).toBe(Bz);
     });
 });

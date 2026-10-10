@@ -17,7 +17,10 @@ import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import {
     ACROSS_STATION_MAX_DEG,
     ACROSS_STATION_P99_MAX_DEG,
+    ASPECT_EVERYWHERE_MAX,
+    ASPECT_LAST_STRIP_MAX,
     buildHermiteStations,
+    CHORD_RISE_MAX_DEG,
     COLUMN_PLANARITY_LIMIT_MM,
     CUP_BOWL,
     countDegenerateFaces,
@@ -37,6 +40,7 @@ import {
     generatedMinWallMm,
     groundDriftMm,
     heelInnerWidthAtU,
+    LAST_CHORD_FLOOR_MAX_FRAC,
     LATERAL_K_SLACK,
     MIN_EDGE_MM,
     MIN_LINE_MM,
@@ -141,6 +145,8 @@ type ColumnQualityUd = {
     maxR1ChangeMm?: number;
     maxR2ChangeMm?: number;
     minLastChordOverLocal?: number;
+    lastChordFloorStations?: number;
+    lastChordFloorFrac?: number;
     maxHeadingChangeDeg?: number;
     maxToeSpacingRatio?: number;
     minForefootInsetMm?: number;
@@ -345,6 +351,9 @@ function compactGateTable(
         aspectB: q?.maxBFaceAspect,
         chordB: q?.minLastChordMm,
         chordLocal: q?.minLastChordOverLocal,
+        chordFloor: q?.lastChordFloorStations,
+        chordFloorFrac: q?.lastChordFloorFrac,
+        chordRise: q?.maxChordRiseDeg,
         r1Pct: q?.maxR1ChangePct,
         r2Pct: q?.maxR2ChangePct,
         r1Abs: q?.maxR1ChangeMm,
@@ -380,7 +389,24 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
             `fallback-seam ${fbOver.map((r) => `${r.i}:${r.seamDeg}`).join(",")}>${SEAM_B_FALLBACK_DEG}`,
         );
     }
-    // aspect-B / chord-B are last-step targets (table diagnostics), not outcome gates.
+    if ((q.maxBFaceAspect ?? 0) > ASPECT_LAST_STRIP_MAX + 1e-6) {
+        misses.push(`aspect-B ${q.maxBFaceAspect?.toFixed(2)}>${ASPECT_LAST_STRIP_MAX}`);
+    }
+    if ((q.maxAspectEverywhere ?? 0) > ASPECT_EVERYWHERE_MAX + 1e-6) {
+        misses.push(`aspect ${q.maxAspectEverywhere?.toFixed(2)}>${ASPECT_EVERYWHERE_MAX}`);
+    }
+    if ((q.maxAspectRound ?? 0) > ASPECT_EVERYWHERE_MAX + 1e-6) {
+        misses.push(`aspect-round ${q.maxAspectRound?.toFixed(2)}>${ASPECT_EVERYWHERE_MAX}`);
+    }
+    if ((q.maxChordRiseDeg ?? 0) > CHORD_RISE_MAX_DEG + 0.05) {
+        misses.push(`chord-rise ${q.maxChordRiseDeg?.toFixed(2)}>${CHORD_RISE_MAX_DEG}`);
+    }
+    if ((q.minLastChordOverLocal ?? 1) + 1e-9 < 1) {
+        const frac = q.lastChordFloorFrac ?? 1;
+        if (frac > LAST_CHORD_FLOOR_MAX_FRAC + 1e-9) {
+            misses.push(`lastChord-floor ${(frac * 100).toFixed(1)}%>${LAST_CHORD_FLOOR_MAX_FRAC * 100}%`);
+        }
+    }
     if ((q.maxAlongRowDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
         misses.push(`along-row ${q.maxAlongRowDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
     }
@@ -401,9 +427,6 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     }
     if ((q.inwardWallFaces ?? 0) !== 0) {
         misses.push(`inward-faces=${q.inwardWallFaces}`);
-    }
-    if ((q.minLastChordOverLocal ?? 1) + 1e-3 < 1) {
-        misses.push(`lastChord/C_MIN ${q.minLastChordOverLocal?.toFixed(3)}<1`);
     }
     return misses;
 }

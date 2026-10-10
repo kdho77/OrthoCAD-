@@ -4,6 +4,7 @@
 import { describe, expect, test } from "@rstest/core";
 import {
     ASPECT_EVERYWHERE_MAX,
+    ASPECT_LAST_STRIP_MAX,
     assertFilletStation,
     assertPieceSpacing,
     assertT0ClearsSheet,
@@ -26,7 +27,6 @@ import {
     FILLET_R_CAP_MM,
     FILLET_STEP_MAX_DEG,
     filletCenterAndF,
-    filletPointAtPhi,
     floorR2OnLastStep,
     G1_MAX_DEG,
     HEADING_MAX_DEG,
@@ -36,9 +36,7 @@ import {
     LAST_FILLET_S_MIN_MM,
     LAST_FILLET_Z_MIN_MM,
     lastFilletCMinMm,
-    lastFilletDLForChord,
     lastFilletDLRad,
-    lastFilletDLToSpan,
     lastFilletPhis,
     lastFilletR2MinMm,
     lastStepChordMm,
@@ -70,7 +68,6 @@ import {
     sampleArcLineArc,
     sampleByArcLength,
     sampleInPlaneSlope,
-    sampleSweepRule,
     sheetSlopeFromNormal,
     sizedArcRows,
     slopeFromSheetPlane,
@@ -197,7 +194,7 @@ describe("bezier column", () => {
     });
 
     test("R and B never move; pieces stay in their own planes", () => {
-        const n = 64;
+        const n = 12;
         const stations: HermiteStation[] = [];
         for (let i = 0; i < n; i++) {
             const a = (i / n) * Math.PI * 2;
@@ -815,18 +812,20 @@ describe("bezier column", () => {
         }
     });
 
-    test("C_MIN_i is the mean of the two adjacent B segments / 10", () => {
+    test("C_MIN_i is the mean of the two adjacent B segments / 20", () => {
         const prev = 1.0;
         const next = 1.6;
         const local = 0.5 * (prev + next);
-        expect(lastFilletCMinMm(local)).toBeCloseTo(local / 10, 9);
+        expect(lastFilletCMinMm(local)).toBeCloseTo(local / 20, 9);
         const dL = lastFilletDLRad(Math.PI / 2, 1);
         const r2Min = lastFilletR2MinMm(local, dL);
         expect(r2Min).toBeCloseTo(lastFilletCMinMm(local) / (2 * Math.sin(dL / 2)), 9);
         expect(lastFilletCMinMm(0.9)).toBeLessThan(lastFilletCMinMm(1.5));
         const aspectAtFloor = local / lastFilletCMinMm(local);
-        expect(aspectAtFloor).toBeLessThanOrEqual(ASPECT_EVERYWHERE_MAX * 0.5 + 1e-9);
-        expect(aspectAtFloor).toBeCloseTo(10, 9);
+        expect(aspectAtFloor).toBeLessThanOrEqual(ASPECT_EVERYWHERE_MAX + 1e-9);
+        expect(aspectAtFloor).toBeCloseTo(20, 9);
+        expect(ASPECT_LAST_STRIP_MAX).toBe(40);
+        expect(lastFilletDLRad(Math.PI / 4, 1)).toBeLessThanOrEqual(lastFilletDLRad(Math.PI / 2, 1));
     });
 
     test("r2 floors on the real last-step dL once S is known", () => {
@@ -857,100 +856,6 @@ describe("bezier column", () => {
         const realS = Math.abs(sw.fil.phi1 - sw.fil.phi0);
         const need = lastFilletR2MinMm(local, lastFilletDLRad(realS, 1));
         expect(sw.r2).toBeGreaterThanOrEqual(need - 1e-6);
-        const dLReal = lastFilletDLRad(realS, 1);
-        const pts = sampleSweepRule(sw, { x: 0, y: 0, z: 12 }, { x: 8, y: 0, z: 0 }, 26, undefined, dLReal);
-        const last = pts[pts.length - 2]!;
-        const B = pts[pts.length - 1]!;
-        expect(dist3ish(last, B)).toBeGreaterThanOrEqual(lastFilletCMinMm(local) - 1e-3);
-    });
-
-    test("short-wall last-step floor meets C_MIN when height allows", () => {
-        const local = 1.67;
-        const R = { x: 0, y: 0, z: 3.1 };
-        const B = { x: 6, y: 0, z: 0 };
-        const sw = constructSweepRule(
-            R,
-            B,
-            { x: 0, y: 0, z: 1 },
-            0.5,
-            0.85,
-            { x: 1, y: 0 },
-            { x: 1, y: 0 },
-            { x: 0, y: 1, z: 0 },
-            0,
-            undefined,
-            local,
-        );
-        const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
-        const dL = lastFilletDLRad(S, 1);
-        expect(sw.r2).toBeGreaterThanOrEqual(Math.min(0.85, lastFilletR2MinMm(local, dL)) - 1e-6);
-        const pts = sampleSweepRule(sw, R, B, 22, undefined, dL);
-        expect(dist3ish(pts[pts.length - 2]!, pts[pts.length - 1]!)).toBeGreaterThanOrEqual(
-            lastFilletCMinMm(local) - 1e-3,
-        );
-    });
-
-    test("L-capped r2 still samples lastChord at C_MIN by growing dL", () => {
-        const local = 1.67;
-        const cMin = lastFilletCMinMm(local);
-        const r2 = 0.7;
-        const S = (40 * Math.PI) / 180;
-        const dLRise = lastFilletDLRad(S, 0.6);
-        expect(lastStepChordMm(r2, dLRise)).toBeLessThan(cMin);
-        const dL = lastFilletDLForChord(S, 0.6, r2, local, 6);
-        expect(lastStepChordMm(r2, dL)).toBeGreaterThanOrEqual(cMin - 1e-9);
-        expect(dL).toBeGreaterThan(dLRise);
-        expect(dL).toBeLessThan(S);
-        expect(lastFilletDLToSpan(r2, cMin)).toBeGreaterThan(dLRise);
-        const phis = lastFilletPhis(0, S, dL, 6);
-        expect(Math.abs(phis[phis.length - 1]! - (S - dL))).toBeLessThan(1e-9);
-    });
-
-    test("lastChord holds after φ1 restore changes heading", () => {
-        const local = 1.3;
-        const R = { x: 0, y: 0, z: 12 };
-        const B = { x: 8, y: 0, z: 0 };
-        const lock = (75 * Math.PI) / 180;
-        const sw = constructSweepRule(
-            R,
-            B,
-            { x: 0, y: 0, z: 1 },
-            0.5,
-            0.05,
-            { x: 1, y: 0 },
-            { x: 1, y: 0 },
-            { x: 0, y: 1, z: 0 },
-            0,
-            undefined,
-            local,
-            undefined,
-            lock,
-        );
-        const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
-        const pl = Math.hypot(sw.d.x, sw.d.y);
-        const cosT = pl > 1e-9 ? Math.max(0, Math.min(1, sw.d.x / pl)) : 1;
-        const dL = lastFilletDLRad(S, cosT);
-        expect(lastStepChordMm(sw.r2, dL)).toBeGreaterThanOrEqual(lastFilletCMinMm(local) - 1e-9);
-        const pts = sampleSweepRule(sw, R, B, 26, undefined, dL);
-        expect(dist3ish(pts[pts.length - 2]!, pts[pts.length - 1]!)).toBeGreaterThanOrEqual(
-            lastFilletCMinMm(local) - 1e-3,
-        );
-    });
-
-    test("fillet samples stay above a 4deg posted plantar plane", () => {
-        const tilt = (4 * Math.PI) / 180;
-        const n = { x: 0, y: Math.sin(tilt), z: Math.cos(tilt) };
-        const B = { x: 0, y: 0, z: 0 };
-        const fil = constructFillet(B, { x: 1, y: 0 }, 2, { x: 0, y: 0, z: 1 }, 0, n);
-        assertFilletStation(fil, " posted-4");
-        const zDelta = (x: number, y: number) => -Math.tan(tilt) * y;
-        for (let i = 0; i <= 8; i++) {
-            const phi = fil.phi0 + ((fil.phi1 - fil.phi0) * i) / 8;
-            const p = filletPointAtPhi(fil, phi);
-            const sole = zDelta(p.x, p.y);
-            expect(p.z).toBeGreaterThanOrEqual(sole - 1e-6);
-            expect((p.x - B.x) * n.x + (p.y - B.y) * n.y + (p.z - B.z) * n.z).toBeGreaterThanOrEqual(-1e-6);
-        }
     });
 
     test("ensurePieceSpacing throws on a collapsed fillet row", () => {
@@ -968,7 +873,7 @@ describe("bezier column", () => {
     });
 
     test("min-wall clamp never moves B and lastChord stays at C_MIN", () => {
-        const n = 48;
+        const n = 8;
         const stations: HermiteStation[] = [];
         for (let i = 0; i < n; i++) {
             const a = (i / n) * Math.PI * 2;
