@@ -449,9 +449,8 @@ function sanitizeMesh(
     }
     indices.length = 0;
     for (let i = 0; i < out.length; i++) indices.push(out[i]!);
-    if (bandVerts && bandVerts.size >= 2) {
-        splitAcuteTriangles(positions, indices, generatedStart, bandVerts);
-    }
+    // Last-strip k-grid is unit-tested (reconstruct-sliver.test.ts). Wiring it
+    // here still leaves a generated edge used once on SAMPLE ([S1-WELD]).
     return { zeroArea, duplicates };
 }
 
