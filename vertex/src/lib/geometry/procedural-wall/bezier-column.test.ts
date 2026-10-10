@@ -24,10 +24,12 @@ import {
     DPHI_L_MAX_DEG,
     enforceLastChordFloor,
     evalCubicBezier,
+    FILLET_PIECE_MIN_MM,
     FILLET_R_CAP_MM,
     FILLET_ROW_STEP_MIN_DEG,
     FILLET_STEP_MAX_DEG,
     filletCenterAndF,
+    filletPieceLengthMm,
     floorR2OnLastStep,
     G1_MAX_DEG,
     HEADING_MAX_DEG,
@@ -57,6 +59,7 @@ import {
     R1_HEIGHT_FRAC,
     R2_CHANGE_MAX_PCT,
     R2_RATE_LIMIT_PCT,
+    ROUND_START_INCIDENT_MAX_DEG,
     ROUND_SWEEP_SPLIT_DEG,
     r1ForSheetSlope,
     rateLimitClosed,
@@ -68,9 +71,12 @@ import {
     rotateColumnAboutB,
     rowPieceId,
     SCALAR_SMOOTH_SIGMA_MM,
+    SECANT_FAR_MM,
+    SECANT_NEAR_MM,
     STEEP_SHEET_DEG,
     sampleArcLineArc,
     sampleByArcLength,
+    sampleFilletPiecePoints,
     sampleInPlaneSlope,
     sheetSlopeFromNormal,
     sizedArcRows,
@@ -816,7 +822,7 @@ describe("bezier column", () => {
         }
     });
 
-    test("liveSheetAtR prefers the final top sheet over a cached junction plane", () => {
+    test("liveSheetAtR uses the incident top face as the primary start tangent", () => {
         const R = { x: 0, y: 0, z: 10 };
         const h = { x: 1, y: 0 };
         const topZ = (x: number) => 10 - 0.05 * x;
@@ -824,8 +830,39 @@ describe("bezier column", () => {
         const live = liveSheetAtR(R, h, topZ, steep);
         expect(live.valid).toBe(true);
         const cached = sheetSlopeFromNormal(steep, h)!;
-        expect(Math.abs(live.roundSlopeRad)).toBeLessThan(Math.abs(cached) - 0.4);
-        expect(live.tInc).not.toBeNull();
+        expect(live.roundSlopeRad).toBeCloseTo(cached, 6);
+        const tInc = incidentFaceTangent(steep, h)!;
+        const got = live.tInc!;
+        const dot = Math.max(
+            -1,
+            Math.min(
+                1,
+                (got.x * tInc.x + got.y * tInc.y + got.z * tInc.z) /
+                    (Math.hypot(got.x, got.y, got.z) * Math.hypot(tInc.x, tInc.y, tInc.z)),
+            ),
+        );
+        expect((Math.acos(dot) * 180) / Math.PI).toBeLessThan(ROUND_START_INCIDENT_MAX_DEG);
+        const secant = liveSheetAtR(R, h, topZ);
+        expect(secant.valid).toBe(true);
+        expect(Math.abs(secant.roundSlopeRad)).toBeLessThan(Math.abs(cached) - 0.4);
+    });
+
+    test("sampleInPlaneSlope uses plus[0] at 0.25-0.5 mm and never plusFar", () => {
+        expect(SECANT_NEAR_MM).toBe(0.25);
+        expect(SECANT_FAR_MM).toBe(0.5);
+        const R = { x: 0, y: 0, z: 10 };
+        const h = { x: 1, y: 0 };
+        const hits: number[] = [];
+        const topZ = (x: number) => {
+            hits.push(Math.abs(x - R.x));
+            return 10 - 0.2 * (x - R.x);
+        };
+        const s = sampleInPlaneSlope(R, h, topZ);
+        expect(s.valid).toBe(true);
+        const secants = hits.filter((d) => d > 1e-9);
+        expect(secants[0]).toBeGreaterThanOrEqual(SECANT_NEAR_MM - 1e-9);
+        expect(secants[0]).toBeLessThanOrEqual(SECANT_FAR_MM + 1e-9);
+        expect(secants.some((d) => d > SECANT_FAR_MM + 1e-9)).toBe(false);
     });
 
     test("C_MIN_i is the mean of the two adjacent B segments / 20", () => {
@@ -844,32 +881,60 @@ describe("bezier column", () => {
         expect(lastFilletDLRad(Math.PI / 4, 1)).toBeLessThanOrEqual(lastFilletDLRad(Math.PI / 2, 1));
     });
 
-    test("maxR2_rows is the largest r2 that keeps fillet rows at >= 1.5deg", () => {
-        expect(FILLET_ROW_STEP_MIN_DEG).toBe(1.5);
+    test("resolveLastR2 is max(design, chordFloor); 1.5deg row cap is retired", () => {
         const evalS = (r2: number) => Math.max(0.12, Math.PI / 2 - 0.5 * r2);
         const nFil = 6;
-        const maxR = maxR2RowsForSweep(evalS, 1, nFil, 0.05, 4);
-        const S = evalS(maxR);
-        const dL = lastFilletDLRad(S, 1);
-        expect((S - dL) / nFil).toBeGreaterThanOrEqual((FILLET_ROW_STEP_MIN_DEG * Math.PI) / 180 - 1e-6);
-        const over = maxR2RowsForSweep(evalS, 1, nFil, maxR + 0.2, maxR + 0.2);
-        const Sover = evalS(over);
-        expect((Sover - lastFilletDLRad(Sover, 1)) / nFil).toBeLessThan(
-            (FILLET_ROW_STEP_MIN_DEG * Math.PI) / 180 + 1e-4,
-        );
-        const resolved = resolveLastR2(0.2, 3.5, evalS, 1, nFil);
-        expect(resolved.reason).toBe("rows");
-        expect(resolved.r2).toBeLessThanOrEqual(resolved.maxR2Rows + 1e-12);
-        expect(resolved.r2).toBeLessThan(3.5);
-        const tight = resolveLastR2(3.2, 0.2, evalS, 1, nFil);
-        expect(tight.r2).toBeLessThan(3.2);
-        const sTight = evalS(tight.r2);
-        expect((sTight - lastFilletDLRad(sTight, 1)) / nFil).toBeGreaterThanOrEqual(
-            (FILLET_ROW_STEP_MIN_DEG * Math.PI) / 180 - 1e-6,
-        );
+        const floor = resolveLastR2(0.2, 3.5, evalS, 1, nFil);
+        expect(floor.reason).toBe("chord");
+        expect(floor.r2).toBeCloseTo(3.5, 6);
+        const keep = resolveLastR2(3.2, 0.2, evalS, 1, nFil);
+        expect(keep.r2).toBeCloseTo(3.2, 6);
+        expect(keep.reason).toBeUndefined();
         const pinned = resolveLastR2(0.2, 0.2, evalS, 1, nFil);
         expect(pinned.r2).toBeCloseTo(0.2, 6);
-        expect(pinned.reason).toBeUndefined();
+        expect(FILLET_ROW_STEP_MIN_DEG).toBe(1.5);
+        expect(maxR2RowsForSweep(evalS, 1, nFil, 0.05, 4)).toBeGreaterThan(0);
+    });
+
+    test("fillet piece is l_f = max(r2 S, nFil C_MIN + last, 0.5) with equal arc-length rows", () => {
+        expect(FILLET_PIECE_MIN_MM).toBe(0.5);
+        const r2 = 1;
+        const S = 0.2;
+        const nFil = 6;
+        const cMin = 0.08;
+        const dL = lastFilletDLRad(S, 1);
+        const lF = filletPieceLengthMm(r2, S, nFil, cMin, dL);
+        expect(lF).toBeGreaterThanOrEqual(nFil * cMin - 1e-12);
+        expect(lF).toBeGreaterThanOrEqual(FILLET_PIECE_MIN_MM - 1e-12);
+        const E = { x: 0, y: 0, z: 4 };
+        const F = { x: 3, y: 0, z: 1 };
+        const B = { x: 3 + r2 * Math.sin(S), y: 0, z: 1 - r2 * (1 - Math.cos(S)) };
+        const fil = sampleFilletPiecePoints(
+            E,
+            F,
+            r2,
+            S,
+            0,
+            S,
+            (phi) => ({
+                x: F.x + r2 * Math.sin(phi),
+                y: 0,
+                z: F.z - r2 * (1 - Math.cos(phi)),
+            }),
+            nFil,
+            dL,
+            cMin,
+        );
+        expect(fil.stealMm).toBeGreaterThan(0);
+        expect(fil.pts).toHaveLength(nFil);
+        expect(fil.lengthMm).toBeCloseTo(lF, 6);
+        expect(dist3ish(fil.Fpiece, F)).toBeCloseTo(fil.stealMm, 5);
+        expect(dist3ish(fil.pts[nFil - 1]!, B)).toBeGreaterThan(0);
+        const tinyS = 0.04;
+        const short = lastFilletDLRad(tinyS, 1);
+        expect(short + 1e-12).toBeGreaterThanOrEqual(tinyS / 2);
+        const oneStep = filletPieceLengthMm(r2, tinyS, nFil, cMin, short);
+        expect(oneStep).toBeGreaterThanOrEqual(nFil * cMin + r2 * tinyS - 1e-9);
     });
 
     test("r2 floors on the real last-step dL once S is known", () => {

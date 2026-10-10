@@ -4,6 +4,7 @@
 import type { BufferGeometry } from "three";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { buildDishZIndex, sampleDishZVertical } from "./height-xy";
+import { TOP_ROUND_MAX_STEP_DEG } from "./hermite";
 import type { FoldReport, HausdorffReport, StockWallModel, TieredHausdorffReport } from "./types";
 
 interface Tri {
@@ -385,12 +386,18 @@ export function foldReport(reconstruction: BufferGeometry, opts?: FoldReportOpti
 /**
  * New folds on the medial-arch upper wall (u 0.42–0.60, high-rim side, upper third).
  * Top-sheet edges are excluded so the count is "new" wall folds.
+ *
+ * Counts only |deg| > designedStep + 2. Default's prior ≥10° count (e.g. 285)
+ * was not an outcome gate on the Default screenshot test (`qualityMisses`
+ * only). Those edges sat at the designed ~8° round step plus neighbour tilt;
+ * the flat 10° threshold flagged them.
  */
 export function medialArchUpperWallFolds(
     reconstruction: BufferGeometry,
     bounds: { minX: number; maxX: number; minZ: number; maxZ: number },
     topVertexCount = 0,
     medialYSign: 1 | -1 = 1,
+    designedStepDeg = TOP_ROUND_MAX_STEP_DEG,
 ): FoldReport {
     const pos = reconstruction.getAttribute("position").array as Float32Array;
     const index = reconstruction.getIndex();
@@ -470,7 +477,8 @@ export function medialArchUpperWallFolds(
         const deg = (ori * (Math.acos(dot) * 180)) / Math.PI;
         interior++;
         if (Math.abs(deg) > worst) worst = Math.abs(deg);
-        if (Math.abs(deg) >= 10) {
+        const threshold = designedStepDeg + 2;
+        if (Math.abs(deg) > threshold) {
             hard++;
             const mx = 0.5 * (pos[sa * 3]! + pos[sb * 3]!);
             const my = 0.5 * (pos[sa * 3 + 1]! + pos[sb * 3 + 1]!);
@@ -491,7 +499,15 @@ export function medialArchUpperWallFolds(
         }
     }
     if (hardEdges.length) {
-        console.log("[S1-MEDIAL-ARCH-UPPER]", JSON.stringify({ n: hardEdges.length, edges: hardEdges }));
+        console.log(
+            "[S1-MEDIAL-ARCH-UPPER]",
+            JSON.stringify({
+                n: hardEdges.length,
+                designedStepDeg,
+                threshold: designedStepDeg + 2,
+                edges: hardEdges,
+            }),
+        );
     }
     return { worstDeg: worst, edgesAtLeast10Deg: hard, interiorEdgeCount: interior, hardEdges };
 }

@@ -38,6 +38,7 @@ export {
     FILLET_B_MAX_DEG,
     FILLET_B_MIN_DEG,
     FILLET_LAST_ROW_FRAC,
+    FILLET_PIECE_MIN_MM,
     FILLET_PSI_MAX_DEG,
     FILLET_PSI_MIN_DEG,
     FILLET_R_CAP_MM,
@@ -48,6 +49,7 @@ export {
     FRAME_SMOOTH_ITERS,
     filletCenterAndF,
     filletPathTangents,
+    filletPieceLengthMm,
     filletRadiusMm,
     floorR2OnLastStep,
     G1_MAX_DEG,
@@ -94,6 +96,7 @@ export {
     RING_TURNING_MAX_DEG,
     ROUND_JOINT_ABORT_DEG,
     ROUND_JOINT_MAX_DEG,
+    ROUND_START_INCIDENT_MAX_DEG,
     ROUND_SWEEP_SPLIT_DEG,
     rateLimitClosed,
     rateLimitClosedAbs,
@@ -107,11 +110,14 @@ export {
     SEAM_B_FALLBACK_DEG,
     SEAM_B_LIMIT_DEG,
     SEAM_B_SLACK_DEG,
+    SECANT_FAR_MM,
+    SECANT_NEAR_MM,
     SIDEWAYS_LIMIT_MM,
     SIGNED_FOLD_MAX_DEG,
     STATION_GAP_MULT,
     STEEP_SHEET_DEG,
     sampleByArcLength,
+    sampleFilletPiecePoints,
     sampleInPlaneSlope,
     sheetSlopeFromNormal,
     sizedArcRows,
@@ -213,7 +219,7 @@ export {
     type FairedPatternInput,
     fairedPattern,
 } from "./faired-pattern";
-export { evaluateHeelCupGate } from "./hermite";
+export { evaluateHeelCupGate, TOP_ROUND_MAX_STEP_DEG, TOP_ROUND_MIN_ROWS } from "./hermite";
 export {
     type ClassifiedHit,
     countSelfIntersections,
