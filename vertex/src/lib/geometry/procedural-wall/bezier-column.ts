@@ -54,6 +54,8 @@ export const N_TOP_PATCH_MM = 2;
 export const N_TOP_MAX_DEG = 5;
 export const R_CHANGE_MAX_PCT = 5;
 export const R2_CHANGE_MAX_PCT = 10;
+/** Downward limiter so ALA cannot reopen a jump above R2_CHANGE_MAX_PCT. */
+export const R2_RATE_LIMIT_PCT = 7;
 export const FILLET_LAST_ROW_FRAC = 0.15;
 export const ROUND_SWEEP_SPLIT_DEG = 80;
 export const ALONG_JOINT_MIN_EDGE_MM = 1e-6;
@@ -1580,9 +1582,10 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
     if (n === 0) return [];
     const chords = stations.map((st) => columnHeading(st));
     const corrected = chords.map((c, i) => {
-        const deg = HEADING_MAX_DEG * Math.min(1, Math.max(0, (c.planLen - 1.5) / 6));
-        if (deg < 1e-6) return { ...c.h };
-        return clampHeadingTo(bLoopOutwardNormal(stations, i), c.h, deg);
+        const bn = bLoopOutwardNormal(stations, i);
+        const ang = (headingAngle(c.h, bn) * 180) / Math.PI;
+        if (c.planLen >= 8 && ang < 20) return clampHeadingTo(bn, c.h, HEADING_MAX_DEG);
+        return { ...c.h };
     });
     const bLoop = stations.map((s) => s.outline);
     const sx = periodicGaussian(
@@ -1887,7 +1890,7 @@ function applySmooth(
     const rim = frames.map((f) => f.R);
     const applyLimited = (r1: number[], r2: number[]): void => {
         const lim1 = rateLimitClosed(r1, R_CHANGE_MAX_PCT, MIN_ROUND_R_MM);
-        const lim2 = rateLimitClosedDown(r2, Math.min(R2_CHANGE_MAX_PCT, 8), 0.05);
+        const lim2 = rateLimitClosedDown(r2, R2_RATE_LIMIT_PCT, 0.05);
         for (let i = 0; i < frames.length; i++) {
             const fr = frames[i]!;
             fr.rTop = lim1[i]!;
@@ -2009,7 +2012,7 @@ export function buildBezierColumns(
         );
         const lim2 = rateLimitClosedDown(
             frames.map((f) => f.rFillet),
-            Math.min(R2_CHANGE_MAX_PCT, 8),
+            R2_RATE_LIMIT_PCT,
             0.05,
         );
         for (let i = 0; i < frames.length; i++) {
@@ -2047,7 +2050,6 @@ export function buildBezierColumns(
         maxTiltStep = Math.max(maxTiltStep, (Math.abs(nxt.leanRad - fr.leanRad) * 180) / Math.PI);
     }
     ensureLastFilletRowHeight(xyz, frames, spacing);
-    densifyColumnsByAlong(xyz, frames, ALONG_JOINT_MAX_DEG);
     for (let i = 0; i < frames.length; i++) {
         const col = xyz[i]!;
         frames[i]!.arcEndZ = col[col.length - 2]?.z ?? frames[i]!.B.z;

@@ -23,8 +23,10 @@ import {
     R_CHANGE_MAX_PCT,
     R_SMOOTH_FRAC,
     R2_CHANGE_MAX_PCT,
+    R2_RATE_LIMIT_PCT,
     ROUND_SWEEP_SPLIT_DEG,
     rateLimitClosed,
+    rateLimitClosedDown,
     rimOverhangMm,
     SCALAR_SMOOTH_SIGMA_MM,
     sampleArcLineArc,
@@ -428,12 +430,20 @@ describe("bezier column", () => {
 
     test("r2 post-clamp rate limiter holds 10%/station", () => {
         expect(R2_CHANGE_MAX_PCT).toBe(10);
+        expect(R2_RATE_LIMIT_PCT).toBeLessThanOrEqual(R2_CHANGE_MAX_PCT);
         expect(R_CHANGE_MAX_PCT).toBe(5);
         const raw = [1, 1.4, 2.2, 1.1, 0.8, 1.05];
         const limited = rateLimitClosed(raw, R2_CHANGE_MAX_PCT, 0.05);
         for (let i = 0; i < limited.length; i++) {
             const a = limited[i]!;
             const b = limited[(i + 1) % limited.length]!;
+            const pct = (Math.abs(b - a) / Math.max(a, 1e-6)) * 100;
+            expect(pct).toBeLessThanOrEqual(R2_CHANGE_MAX_PCT + 1e-6);
+        }
+        const down = rateLimitClosedDown(raw, R2_RATE_LIMIT_PCT, 0.05);
+        for (let i = 0; i < down.length; i++) {
+            const a = down[i]!;
+            const b = down[(i + 1) % down.length]!;
             const pct = (Math.abs(b - a) / Math.max(a, 1e-6)) * 100;
             expect(pct).toBeLessThanOrEqual(R2_CHANGE_MAX_PCT + 1e-6);
         }
