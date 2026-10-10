@@ -929,15 +929,27 @@ export function sampleArcLineArc(
     const total0 = nRound + nLine + nFil + 1;
     if (total0 < nWall) nLine += nWall - total0;
     const pts: XYZ[] = [{ ...R }];
-    let addedRound = 0;
+    const sweep = ala.phiRound1 - ala.phiRound0;
+    if (Math.abs(sweep) > 1e-6 && ala.r1 >= MIN_ROUND_R_MM) {
+        const maxTurn = (ROUND_JOINT_MAX_DEG * Math.PI) / 180;
+        const dPhi = Math.sign(sweep) * Math.min(Math.abs(sweep) / 3, maxTurn * 0.9);
+        for (const k of [1, 2]) {
+            const phi = ala.phiRound0 + dPhi * k;
+            if (Math.sign(sweep) * (ala.phiRound1 - phi) <= 1e-6) break;
+            const p = alaPoint(ala, h, ala.C1, ala.r1, phi);
+            if (dist3(p, R) < WELD_MM || dist3(p, ala.T1) < WELD_MM) continue;
+            if (dist3(p, pts[pts.length - 1]!) < WELD_MM) continue;
+            pts.push(p);
+        }
+    }
     for (let i = 1; i < nRound; i++) {
         const phi = ala.phiRound0 + ((ala.phiRound1 - ala.phiRound0) * i) / nRound;
         const p = alaPoint(ala, h, ala.C1, ala.r1, phi);
         const dPrev = dist3(p, pts[pts.length - 1]!);
         if (dPrev < WELD_MM) continue;
-        if (addedRound > 0 && dPrev < ROUND_MIN_STEP_MM) continue;
+        if (dPrev < ROUND_MIN_STEP_MM) continue;
+        if (dist3(p, ala.T1) < WELD_MM) continue;
         pts.push(p);
-        addedRound++;
     }
     if (pts.length === 1 && dist3(R, ala.T1) >= WELD_MM) {
         const phi = ala.phiRound0 + (ala.phiRound1 - ala.phiRound0) * 0.5;
