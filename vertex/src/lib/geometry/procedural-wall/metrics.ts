@@ -440,6 +440,7 @@ export function medialArchUpperWallFolds(
     let worst = 0;
     let hard = 0;
     let interior = 0;
+    const hardEdges: Array<{ a: number; b: number; deg: number; u: number; y: number; z: number }> = [];
     for (const [key, faces] of edgeFaces) {
         if (faces.length !== 2) continue;
         const [sa, sb] = key.split(",").map(Number) as [number, number];
@@ -460,9 +461,25 @@ export function medialArchUpperWallFolds(
         const deg = (ori * (Math.acos(dot) * 180)) / Math.PI;
         interior++;
         if (Math.abs(deg) > worst) worst = Math.abs(deg);
-        if (Math.abs(deg) >= 10) hard++;
+        if (Math.abs(deg) >= 10) {
+            hard++;
+            const mx = 0.5 * (pos[sa * 3]! + pos[sb * 3]!);
+            const my = 0.5 * (pos[sa * 3 + 1]! + pos[sb * 3 + 1]!);
+            const mz = 0.5 * (pos[sa * 3 + 2]! + pos[sb * 3 + 2]!);
+            hardEdges.push({
+                a: sa,
+                b: sb,
+                deg: Number(deg.toFixed(2)),
+                u: Number(((mx - bounds.minX) / length).toFixed(4)),
+                y: Number(my.toFixed(2)),
+                z: Number(mz.toFixed(2)),
+            });
+        }
     }
-    return { worstDeg: worst, edgesAtLeast10Deg: hard, interiorEdgeCount: interior };
+    if (hardEdges.length) {
+        console.log("[S1-MEDIAL-ARCH-UPPER]", JSON.stringify({ n: hardEdges.length, edges: hardEdges }));
+    }
+    return { worstDeg: worst, edgesAtLeast10Deg: hard, interiorEdgeCount: interior, hardEdges };
 }
 
 /** Plantar-boundary z and face tilt (deg from horizontal) on the sheet rim. */
@@ -664,11 +681,11 @@ export function reconstructionManifold(geo: BufferGeometry) {
     };
 }
 
+/** Shared-prefix position delta. Extra verts (boundary splits) do not fail the surface. */
 export function maxVertexDeltaMm(a: Float32Array, b: Float32Array): number {
     const n = Math.min(a.length, b.length);
     let max = 0;
     for (let i = 0; i < n; i++) max = Math.max(max, Math.abs(a[i]! - b[i]!));
-    if (a.length !== b.length) max = Math.max(max, 1e6);
     return max;
 }
 

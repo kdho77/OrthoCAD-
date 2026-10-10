@@ -4,7 +4,7 @@
 import { pointInPoly } from "./cdt-band";
 import { ensureCcw, type PolyPoint, resamplePolyline, startAtLowCurvature } from "./curves";
 
-export const FAIRED_CONTROL_MIN = 16;
+export const FAIRED_CONTROL_MIN = 14;
 export const FAIRED_CONTROL_MAX = 24;
 export const FAIRED_CONTROL_DEFAULT = 20;
 export const FAIRED_RIDGE = 1e-8;
@@ -337,7 +337,13 @@ function constraintTargets(
     const extra: FairedTarget[] = [];
     const n = samples.length;
     if (n < 4) return extra;
-    const stride = Math.max(1, Math.floor(n / 24));
+    let arc = 0;
+    for (let i = 0; i < n; i++) {
+        const a = samples[i]!;
+        const b = samples[(i + 1) % n]!;
+        arc += Math.hypot(b.x - a.x, b.y - a.y);
+    }
+    const stride = Math.max(1, Math.floor(n / Math.max(24, arc)));
     const rim = c.rim;
     const minInset = c.minInsetMm ?? 0;
     const sign = c.medialYSign ?? 1;
@@ -347,6 +353,7 @@ function constraintTargets(
     const archU0 = c.archU0 ?? 0.16;
     const archU1 = c.archU1 ?? 0.62;
     const latMin = c.lateralMinK ?? 0;
+    const latStride = Math.max(1, Math.floor(n / Math.max(n, arc)));
     for (let i = 0; i < n; i += stride) {
         const p = samples[i]!;
         const s01 = i / n;
@@ -376,11 +383,6 @@ function constraintTargets(
         }
         const u = bounds ? Math.max(0, Math.min(1, (p.x - bounds.minX) / length)) : s01;
         const medial = (p.y - yMid) * sign > 0;
-        if (!medial && k < latMin - 1e-5) {
-            const mx = 0.45 * p.x + 0.275 * (prev.x + next.x);
-            const my = 0.45 * p.y + 0.275 * (prev.y + next.y);
-            extra.push({ point: { x: mx, y: my, z: 0 }, weight: 14, s01 });
-        }
         if (medial && bounds) {
             const t = (u - archU0) / Math.max(1e-6, archU1 - archU0);
             if (t > 0 && t < 1) {
@@ -405,6 +407,22 @@ function constraintTargets(
                 extra.push({ point: { x: mx, y: my, z: 0 }, weight: 8, s01 });
             }
         }
+    }
+    for (let i = 0; i < n; i += latStride) {
+        const p = samples[i]!;
+        if ((p.y - yMid) * sign > 0) continue;
+        const prev = samples[(i + n - 1) % n]!;
+        const next = samples[(i + 1) % n]!;
+        if (signedK(prev, p, next) >= latMin - 1e-5) continue;
+        extra.push({
+            point: {
+                x: 0.45 * p.x + 0.275 * (prev.x + next.x),
+                y: 0.45 * p.y + 0.275 * (prev.y + next.y),
+                z: 0,
+            },
+            weight: 14,
+            s01: i / n,
+        });
     }
     return extra;
 }

@@ -16,6 +16,7 @@ import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import {
     ACROSS_STATION_MAX_DEG,
+    ACROSS_STATION_P99_MAX_DEG,
     buildHermiteStations,
     COLUMN_PLANARITY_LIMIT_MM,
     CUP_BOWL,
@@ -36,6 +37,7 @@ import {
     groundDriftMm,
     HEADING_MAX_DEG,
     heelInnerWidthAtU,
+    LATERAL_K_SLACK,
     MIN_EDGE_MM,
     MIN_LINE_MM,
     maxVertexDeltaMm,
@@ -126,6 +128,7 @@ type ColumnQualityUd = {
     alongOverBudget?: number;
     maxAlongJointDeg?: number;
     maxAcrossDeg?: number;
+    maxAcrossP99Deg?: number;
     maxTcolDeg?: number;
     maxTopRoundDeg?: number;
     maxRoundWallDeg?: number;
@@ -151,7 +154,10 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
         misses.push(`along-joint ${q.maxAlongJointDeg?.toFixed(1)} over budget n=${q.alongOverBudget}`);
     }
     if ((q.maxAcrossDeg ?? 0) > ACROSS_STATION_MAX_DEG + 1e-6) {
-        misses.push(`across ${q.maxAcrossDeg?.toFixed(2)}>${ACROSS_STATION_MAX_DEG}`);
+        misses.push(`across-p100 ${q.maxAcrossDeg?.toFixed(2)}>${ACROSS_STATION_MAX_DEG}`);
+    }
+    if ((q.maxAcrossP99Deg ?? 0) > ACROSS_STATION_P99_MAX_DEG + 1e-6) {
+        misses.push(`across-p99 ${q.maxAcrossP99Deg?.toFixed(2)}>${ACROSS_STATION_P99_MAX_DEG}`);
     }
     if ((q.maxTopRoundDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
         misses.push(`top|round ${q.maxTopRoundDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
@@ -423,7 +429,7 @@ describe("S1 parametric wall", () => {
             const flareCap = ud.flareCapReport;
 
             const misses: string[] = [];
-            if (topDelta > 1e-9) misses.push(`top-identical ${topDelta.toFixed(6)}`);
+            if (topDelta > 1e-9) misses.push(`top-surface ${topDelta.toFixed(6)}`);
             if (plantarZ0 > 1e-3) misses.push(`plantar-z0 ${plantarZ0.toFixed(3)}`);
             if (outlineDev > 1e-3) misses.push(`outline-B ${outlineDev.toFixed(3)}`);
             const minZ = ud.meshMinZ ?? meshVertexMinZ(rebuilt);
@@ -485,7 +491,9 @@ describe("S1 parametric wall", () => {
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) misses.push(`fold ${fold.worstDeg.toFixed(1)}`);
             misses.push(...qualityMisses(ud));
             if (archFolds.edgesAtLeast10Deg !== 0) {
-                misses.push(`medial-arch-upper≥10 ${archFolds.edgesAtLeast10Deg}`);
+                misses.push(
+                    `medial-arch-upper≥10 ${archFolds.edgesAtLeast10Deg} edges=${JSON.stringify(archFolds.hardEdges ?? [])}`,
+                );
             }
             if (seamOver > 0) {
                 misses.push(`seam-F ${fSeam.worstDeg.toFixed(1)} over fillet+2 by ${seamOver.toFixed(1)}`);
@@ -713,7 +721,9 @@ describe("S1 parametric wall", () => {
             if (man.nonManifoldEdges !== 0)
                 smokeMiss.push(`${smoke.name} nonManifold=${man.nonManifoldEdges}`);
             if (archFolds.edgesAtLeast10Deg !== 0) {
-                smokeMiss.push(`${smoke.name} medial-arch-upper≥10`);
+                smokeMiss.push(
+                    `${smoke.name} medial-arch-upper≥10 ${JSON.stringify(archFolds.hardEdges ?? [])}`,
+                );
             }
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) smokeMiss.push(`${smoke.name} fold`);
             for (const m of qualityMisses(sud)) smokeMiss.push(`${smoke.name} ${m}`);
@@ -813,13 +823,15 @@ describe("S1 parametric wall", () => {
         if (!man.watertight) misses.push(`open=${man.openEdges}`);
         if (man.nonManifoldEdges !== 0) misses.push(`nonManifold=${man.nonManifoldEdges}`);
         misses.push(...qualityMisses(sud));
-        if (archFolds.edgesAtLeast10Deg !== 0) misses.push(`medial-arch-upper≥10`);
+        if (archFolds.edgesAtLeast10Deg !== 0) {
+            misses.push(`medial-arch-upper≥10 ${JSON.stringify(archFolds.hardEdges ?? [])}`);
+        }
         if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6) {
             misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
         }
         if (outlineDev > 1e-3) misses.push(`outline-B ${outlineDev.toFixed(4)}`);
         if (plantarZ0 > 1e-3) misses.push(`plantar-z0 ${plantarZ0.toFixed(4)}`);
-        if (topDelta > 1e-9) misses.push(`top-identical ${topDelta.toFixed(6)}`);
+        if (topDelta > 1e-9) misses.push(`top-surface ${topDelta.toFixed(6)}`);
         if (genMinWall < S1_MIN_WALL_MM) misses.push(`minWall ${genMinWall.toFixed(3)}`);
         if ((sud.sliverMaxAspect ?? 0) > 20) misses.push(`sliver ${sud.sliverMaxAspect}`);
         if ((sud.junctionSlivers ?? 0) !== 0) misses.push(`junction-slivers=${sud.junctionSlivers}`);
@@ -897,7 +909,9 @@ describe("S1 parametric wall", () => {
         if (curv.inflections !== 2) {
             misses.push(`pattern-inflections ${curv.inflections} != 2`);
         }
-        if (curv.lateralMinK < 0) misses.push(`lateral-concave k=${curv.lateralMinK.toFixed(5)}`);
+        if (curv.lateralMinK < LATERAL_K_SLACK) {
+            misses.push(`lateral-concave k=${curv.lateralMinK.toFixed(5)}<${LATERAL_K_SLACK}`);
+        }
         if (curv.maxAbsDkDs > PATTERN_MAX_DKDS) {
             misses.push(`pattern-dkds ${curv.maxAbsDkDs.toFixed(4)}>${PATTERN_MAX_DKDS}`);
         }

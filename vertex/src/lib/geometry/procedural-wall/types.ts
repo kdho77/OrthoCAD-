@@ -180,6 +180,8 @@ export interface FoldReport {
     seamWorstDeg?: number;
     /** Stock seam dihedral at the same outline stations (deg). */
     stockSeamWorstDeg?: number;
+    /** Edges at ≥10° (for medial-arch-upper dumps). */
+    hardEdges?: Array<{ a: number; b: number; deg: number; u: number; y: number; z: number }>;
 }
 
 export interface ClinicalWallReport {

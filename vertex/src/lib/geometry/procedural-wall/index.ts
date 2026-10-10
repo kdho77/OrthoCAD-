@@ -3,6 +3,7 @@
 
 export {
     ACROSS_STATION_MAX_DEG,
+    ACROSS_STATION_P99_MAX_DEG,
     ALONG_JOINT_MAX_DEG,
     applyPlantarBandZ,
     applyTangentBandZ,
@@ -48,6 +49,7 @@ export {
     R_CHANGE_MAX_PCT,
     R_SMOOTH_FRAC,
     ROUND_JOINT_MAX_DEG,
+    rateLimitClosed,
     rimOverhangMm,
     SCALAR_SMOOTH_SIGMA_MM,
     SEAM_B_LIMIT_DEG,
@@ -76,6 +78,9 @@ export {
     countClosedInflections,
     fairInsetMm,
     fairLateralInsetMm,
+    INFLECTION_K_EPS,
+    INFLECTION_MIN_ARC_MM,
+    LATERAL_K_SLACK,
     type MedialYSign,
     medialYSignFromPattern,
     medialYSignFromTopRim,

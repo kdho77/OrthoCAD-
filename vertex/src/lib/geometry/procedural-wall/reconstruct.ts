@@ -28,6 +28,7 @@ import {
 import {
     densifyArchFanStations,
     densifyHeelForefootStations,
+    densifyToeByExtent,
     fillLargeStationGaps,
 } from "./densify-stations";
 import { extractTopSheet } from "./extract";
@@ -508,9 +509,9 @@ export function reconstructProceduralWalls(
         stations[i]!.outline = outlineZ[i]!;
         stations[i]!.rim = pairing.top[i]!;
     }
-    densifyHeelForefootStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
+    densifyHeelForefootStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     applyOutlineClean(stations, rimLocal, indices);
-    fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
+    fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, 2, rimPts);
     rotateStationRing(stations, rimLocal, model.bounds);
     const spreadB = spreadClosedOnLoop(
         stations.map((s) => s.outline),
@@ -531,11 +532,9 @@ export function reconstructProceduralWalls(
         return true;
     };
     applySmoothedB();
-    for (let pass = 0; pass < 4; pass++) {
-        const n0 = stations.length;
-        densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
-        if (stations.length === n0) break;
-    }
+    densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
+    densifyToeByExtent(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
+    densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     assertClosedStationRing(stations, rimLocal);
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,
@@ -629,6 +628,7 @@ export function reconstructProceduralWalls(
         columnQuality: grid.quality,
         maxAlongJointDeg: grid.quality?.maxAlongJointDeg,
         maxAcrossStationDeg: grid.quality?.maxAcrossDeg,
+        maxAcrossP99Deg: grid.quality?.maxAcrossP99Deg,
         maxTcolDeg: grid.quality?.maxTcolDeg,
         columnReversals: grid.quality?.reversals,
         maxTopRoundDeg: grid.quality?.maxTopRoundDeg,

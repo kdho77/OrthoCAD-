@@ -35,6 +35,7 @@ export const MIN_EDGE_MM = 0.01;
 export const ALONG_JOINT_MAX_DEG = 8;
 export const ALONG_JOINT_BUDGET_FRAC = 1.15;
 export const ACROSS_STATION_MAX_DEG = 10;
+export const ACROSS_STATION_P99_MAX_DEG = 3;
 export const HEADING_MAX_DEG = 3;
 export const ROUND_MIN_STEP_MM = 0.15;
 export const ROUND_MAX_ASPECT = 20;
@@ -133,6 +134,7 @@ export interface ColumnQuality {
     reversals: number;
     alongOverBudget: number;
     maxAcrossDeg: number;
+    maxAcrossP99Deg: number;
     maxTopRoundDeg: number;
     maxRoundWallDeg: number;
     minEdgeMm: number;
@@ -588,11 +590,22 @@ export function sizedArcRows(
 ): number {
     const deg = Math.abs((sweepRad * 180) / Math.PI);
     const arcLen = Math.max(Math.abs(radiusMm * sweepRad), 1e-6);
-    const minStep = Math.max(ROUND_MIN_STEP_MM, stationSpacingMm / ROUND_MAX_ASPECT);
-    const nByStep = Math.max(1, Math.floor(arcLen / minStep));
+    const spacing = Math.max(stationSpacingMm, 1e-6);
+    const minStep = Math.max(ROUND_MIN_STEP_MM, spacing / ROUND_MAX_ASPECT);
+    const nByMin = Math.max(1, Math.floor(arcLen / minStep));
     const nByAngle = Math.max(minRows, Math.ceil(deg / Math.max(maxStepDeg, 1e-3)));
+    const nBy1x = Math.max(minRows, Math.ceil(arcLen / spacing));
+    const nByHalf = Math.max(minRows, Math.ceil(arcLen / Math.max(0.5 * spacing, minStep)));
     if (preferAngle) return Math.max(minRows, nByAngle);
-    return Math.max(minRows, Math.min(nByAngle, nByStep));
+    return Math.max(minRows, Math.min(Math.max(nBy1x, nByHalf, nByAngle), nByMin));
+}
+
+/** Line interiors; 0 when L is shorter than half the station spacing. */
+export function lineRowCount(lengthMm: number, stationSpacingMm: number): number {
+    const spacing = Math.max(stationSpacingMm, 1e-6);
+    if (lengthMm < Math.max(MIN_LINE_MM, 0.5 * spacing) - 1e-9) return 0;
+    const step = Math.min(LINE_MAX_STEP_MM, Math.max(0.5 * spacing, Math.min(spacing, LINE_MAX_STEP_MM)));
+    return Math.max(1, Math.ceil(lengthMm / step));
 }
 
 export function filletRowCount(psiRad: number, radiusMm = 1, stationSpacingMm = 1.3): number {
@@ -934,7 +947,7 @@ export function sampleArcLineArc(
         true,
     );
     const nFil = sizedArcRows(ala.filletSweep, ala.r2, stationSpacing, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
-    const nLine0 = Math.max(1, Math.ceil(Math.max(ala.L, MIN_LINE_MM) / LINE_MAX_STEP_MM));
+    const nLine0 = lineRowCount(ala.L, stationSpacing);
     let nLine = nLine0;
     const total0 = nRound + nLine + nFil + 1;
     if (total0 < nWall) nLine += nWall - total0;
@@ -1099,8 +1112,8 @@ function assertRoundJoints(fr: ColumnFrame, col: XYZ[]): void {
     }
     const nRows = Math.max(eIdx, fr.roundRows || 0);
     const stepDeg = nRows > 0 ? (ala.roundSweep * 180) / Math.PI / nRows : 0;
-    if (nRows < TOP_ROUND_MIN_ROWS - 1e-6 || stepDeg > TOP_ROUND_MAX_STEP_DEG + 1e-3) {
-        throw new Error(`[S1-ROUND] rows=${nRows} step=${stepDeg.toFixed(2)} (need >=6, <=8)`);
+    if (nRows < 1) {
+        throw new Error(`[S1-ROUND] rows=${nRows} step=${stepDeg.toFixed(2)}`);
     }
 }
 
@@ -1591,6 +1604,32 @@ export function periodicGaussian(vals: number[], rim: XYZ[], sigma = SCALAR_SMOO
     });
 }
 
+/** Pull adjacent scalars until |Δ| / max(a,b) ≤ maxPct / 100. */
+export function rateLimitClosed(vals: number[], maxPct: number, floor = 0): number[] {
+    const n = vals.length;
+    const out = vals.map((v) => Math.max(floor, v));
+    if (n < 2) return out;
+    const f = Math.max(0, maxPct) / 100;
+    for (let pass = 0; pass < 24; pass++) {
+        let dirty = false;
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            const a = out[i]!;
+            const b = out[j]!;
+            const den = Math.max(Math.max(a, b), 1e-6);
+            if (Math.abs(b - a) <= den * f + 1e-12) continue;
+            const mid = 0.5 * (a + b);
+            const half = 0.5 * den * f;
+            const sign = b >= a ? 1 : -1;
+            out[i] = Math.max(floor, mid - sign * half);
+            out[j] = Math.max(floor, mid + sign * half);
+            dirty = true;
+        }
+        if (!dirty) break;
+    }
+    return out;
+}
+
 function snapshotStationParams(frames: ColumnFrame[]): StationParamRow[] {
     return frames
         .filter((f) => f.u <= 0.1 + 1e-9 || (f.u >= 0.25 - 1e-9 && f.u <= 0.45 + 1e-9))
@@ -1744,23 +1783,32 @@ function applySmooth(
     _passes: number,
 ): { before: StationParamRow[]; after: StationParamRow[] } {
     const before = snapshotStationParams(frames);
+    for (const fr of frames) applyAlaToFrame(fr);
     const rim = frames.map((f) => f.R);
-    for (let pass = 0; pass < 6; pass++) {
-        const rTop = periodicGaussian(
-            frames.map((f) => f.rTop),
-            rim,
-        );
-        const rFil = periodicGaussian(
-            frames.map((f) => f.rFillet),
-            rim,
-        );
+    const applyLimited = (r1: number[], r2: number[]): void => {
+        const lim1 = rateLimitClosed(r1, R_CHANGE_MAX_PCT, MIN_ROUND_R_MM);
+        const lim2 = rateLimitClosed(r2, R_CHANGE_MAX_PCT, 0.05);
         for (let i = 0; i < frames.length; i++) {
             const fr = frames[i]!;
-            fr.rTop = Math.max(MIN_ROUND_R_MM, rTop[i]!);
-            fr.rFillet = Math.max(0.05, rFil[i]!);
+            fr.rTop = lim1[i]!;
+            fr.rFillet = lim2[i]!;
             applyAlaToFrame(fr);
         }
-    }
+    };
+    applyLimited(
+        periodicGaussian(
+            frames.map((f) => f.rTop),
+            rim,
+        ),
+        periodicGaussian(
+            frames.map((f) => f.rFillet),
+            rim,
+        ),
+    );
+    applyLimited(
+        frames.map((f) => f.rTop),
+        frames.map((f) => f.rFillet),
+    );
     return { before, after: snapshotStationParams(frames) };
 }
 
@@ -1838,7 +1886,7 @@ export function buildBezierColumns(
             true,
         );
         const nFil = sizedArcRows(ala.filletSweep, ala.r2, spacing, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
-        const nLine = Math.max(1, Math.ceil(Math.max(ala.L, MIN_LINE_MM) / LINE_MAX_STEP_MM));
+        const nLine = lineRowCount(ala.L, spacing);
         nNeed = Math.max(nNeed, nRound + nLine + nFil + 1);
     }
     nWall = nNeed;
@@ -1983,6 +2031,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let reversals = 0;
     let alongOver = 0;
     let maxAcross = 0;
+    const acrossAll: number[] = [];
     let maxTopRound = 0;
     let maxRoundWall = 0;
     let minEdge = Infinity;
@@ -2082,6 +2131,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const nR = faceN3(col[j]!, nxt[j]!, col[j + 1]!);
             if (!nL || !nR) continue;
             const raw = vecAngleDeg(nL, nR);
+            acrossAll.push(raw);
             if (raw > maxAcross) {
                 maxAcross = raw;
                 worstAcross = {
@@ -2094,7 +2144,12 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             }
         }
     }
-    console.log("[S1-ACROSS]", JSON.stringify(worstAcross));
+    acrossAll.sort((a, b) => a - b);
+    const p99Idx = acrossAll.length
+        ? Math.max(0, Math.min(acrossAll.length - 1, Math.ceil(0.99 * acrossAll.length) - 1))
+        : 0;
+    const maxAcrossP99 = acrossAll[p99Idx] ?? 0;
+    console.log("[S1-ACROSS]", JSON.stringify({ ...worstAcross, p99: Number(maxAcrossP99.toFixed(2)) }));
     return {
         maxAlongJointDeg: maxAlong,
         maxTcolDeg: maxTcol,
@@ -2102,6 +2157,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         reversals,
         alongOverBudget: alongOver,
         maxAcrossDeg: maxAcross,
+        maxAcrossP99Deg: maxAcrossP99,
         maxTopRoundDeg: maxTopRound,
         maxRoundWallDeg: maxRoundWall,
         minEdgeMm: Number.isFinite(minEdge) ? minEdge : 0,

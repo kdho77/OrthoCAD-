@@ -33,6 +33,14 @@ export const PATTERN_CONTROL_COUNT = FAIRED_CONTROL_DEFAULT;
 export const PATTERN_SILHOUETTE_MM = 1;
 /** Bound on |dk/ds| (1/mm²) so k(s) stays fair — no local curvature spikes. */
 export const PATTERN_MAX_DKDS = 0.02;
+/** Sign change counts only where |k| exceeds this for ≥ INFLECTION_MIN_ARC_MM. */
+export const INFLECTION_K_EPS = 0.002;
+export const INFLECTION_MIN_ARC_MM = 3;
+/** Lateral slack: k ≥ this, or the QP holds k ≥ 0 every 1 mm. */
+export const LATERAL_K_SLACK = -0.005;
+export const PATTERN_LATERAL_K_SAMPLE_MM = 1;
+export const PATTERN_FAIR_RETRY_W = 0.55;
+export const PATTERN_CONTROL_RETRY = 14;
 export const MIDFOOT_U0 = 0.28;
 export const MIDFOOT_U1 = 0.48;
 
@@ -240,28 +248,63 @@ export function closedSignedCurvature(loop: PolyPoint[]): { k: number[]; s: numb
     return { k, s };
 }
 
-export function countClosedInflections(k: number[], eps = 2e-3): number {
+/**
+ * Count closed-curve inflections with hysteresis: a sign change only counts
+ * where |k| > `eps` for at least `minArcMm` of arc on each side.
+ */
+export function countClosedInflections(
+    k: number[],
+    s?: number[],
+    eps = INFLECTION_K_EPS,
+    minArcMm = INFLECTION_MIN_ARC_MM,
+): number {
     const n = k.length;
-    let first = 0;
-    let start = -1;
-    for (let i = 0; i < n; i++) {
-        if (Math.abs(k[i]!) >= eps) {
-            first = Math.sign(k[i]!);
-            start = i;
-            break;
+    if (n < 3) return 0;
+    const ds = new Array<number>(n).fill(1);
+    if (s && s.length === n) {
+        for (let i = 0; i < n - 1; i++) ds[i] = Math.max(s[i + 1]! - s[i]!, 1e-9);
+        ds[n - 1] = Math.max(s[1]! - s[0]!, 1e-9);
+    }
+    const runs: Array<{ sign: number; arc: number }> = [];
+    let sign = 0;
+    let arc = 0;
+    const flush = (): void => {
+        if (sign !== 0 && arc >= minArcMm - 1e-9) runs.push({ sign, arc });
+        sign = 0;
+        arc = 0;
+    };
+    for (let t = 0; t < n; t++) {
+        const ki = k[t]!;
+        if (Math.abs(ki) < eps) {
+            flush();
+            continue;
+        }
+        const sg = Math.sign(ki);
+        if (sign === 0) {
+            sign = sg;
+            arc = ds[t]!;
+        } else if (sg === sign) {
+            arc += ds[t]!;
+        } else {
+            flush();
+            sign = sg;
+            arc = ds[t]!;
         }
     }
-    if (start < 0) return 0;
-    let prev = first;
+    flush();
+    const merged: Array<{ sign: number; arc: number }> = [];
+    for (const r of runs) {
+        const last = merged[merged.length - 1];
+        if (last && last.sign === r.sign) last.arc += r.arc;
+        else merged.push({ ...r });
+    }
+    if (merged.length >= 2 && merged[0]!.sign === merged[merged.length - 1]!.sign) {
+        merged[0]!.arc += merged.pop()!.arc;
+    }
+    if (merged.length < 2) return 0;
     let count = 0;
-    for (let t = 1; t <= n; t++) {
-        const ki = k[(start + t) % n]!;
-        if (Math.abs(ki) < eps) continue;
-        const sg = Math.sign(ki);
-        if (sg !== prev) {
-            count++;
-            prev = sg;
-        }
+    for (let i = 0; i < merged.length; i++) {
+        if (merged[i]!.sign !== merged[(i + 1) % merged.length]!.sign) count++;
     }
     return count;
 }
@@ -287,12 +330,20 @@ export function patternCurvatureReport(
     }
     const inflectionU: number[] = [];
     let prev = 0;
+    let runArc = 0;
     for (let i = 0; i < n; i++) {
-        if (Math.abs(k[i]!) < 2e-3) continue;
-        const sg = Math.sign(k[i]!);
-        if (prev && sg !== prev) {
-            inflectionU.push(Math.max(0, Math.min(1, (loop[i]!.x - bounds.minX) / length)));
+        if (Math.abs(k[i]!) < INFLECTION_K_EPS) {
+            prev = 0;
+            runArc = 0;
+            continue;
         }
+        const sg = Math.sign(k[i]!);
+        const ds = i + 1 < n ? s[i + 1]! - s[i]! : Math.max(total - s[i]!, 1e-9);
+        if (prev && sg !== prev && runArc >= INFLECTION_MIN_ARC_MM) {
+            inflectionU.push(Math.max(0, Math.min(1, (loop[i]!.x - bounds.minX) / length)));
+            runArc = 0;
+        }
+        runArc += ds;
         prev = sg;
     }
     let lateralMinK = Infinity;
@@ -304,7 +355,7 @@ export function patternCurvatureReport(
     return {
         k,
         s,
-        inflections: countClosedInflections(k),
+        inflections: countClosedInflections(k, s),
         inflectionU,
         maxAbsDkDs,
         lateralMinK: Number.isFinite(lateralMinK) ? lateralMinK : 0,
@@ -397,24 +448,33 @@ export function syntheticBottomPattern(
             .slice(0, 8)
             .map((p) => ({ point: p, weight: 6, s01: s01Of(p) })),
     ];
-    const fit = fairedPattern({
-        targets,
-        controlCount: 22,
-        wFit: 1,
-        wFair: 0.34,
-        sampleCount: Math.max(160, loop.length),
-        constraints: {
-            rim: loop,
-            minInsetMm: PATTERN_MIN_INSET_MM,
-            medialYSign: sign,
-            archU0: PATTERN_ARCH_U0,
-            archU1: PATTERN_ARCH_U1,
-            bounds,
-            lateralMinK: 0,
-            maxIters: 6,
-        },
-    });
-    return makeLateralConvex(fit.samples, sign, 36, yMid);
+    const sampleCount = Math.max(160, Math.ceil(offTotal / PATTERN_LATERAL_K_SAMPLE_MM));
+    const fitOnce = (controlCount: number, wFair: number) =>
+        fairedPattern({
+            targets,
+            controlCount,
+            wFit: 1,
+            wFair,
+            sampleCount,
+            constraints: {
+                rim: loop,
+                minInsetMm: PATTERN_MIN_INSET_MM,
+                medialYSign: sign,
+                archU0: PATTERN_ARCH_U0,
+                archU1: PATTERN_ARCH_U1,
+                bounds,
+                lateralMinK: 0,
+                maxIters: 6,
+            },
+        });
+    let fit = fitOnce(22, 0.34);
+    let out = makeLateralConvex(fit.samples, sign, 36, yMid);
+    const report = patternCurvatureReport(out, bounds, sign);
+    if (report.inflections >= 4) {
+        fit = fitOnce(PATTERN_CONTROL_RETRY, PATTERN_FAIR_RETRY_W);
+        out = makeLateralConvex(fit.samples, sign, 36, yMid);
+    }
+    return out;
 }
 
 /** Laplacian only concave lateral verts so the lateral side stays convex. */
@@ -431,7 +491,7 @@ function makeLateralConvex(
         const { k } = closedSignedCurvature(cur);
         const next = cur.map((b, i) => {
             if ((b.y - yMid) * sign > 0) return b;
-            if ((k[i] ?? 0) >= 1e-4) return b;
+            if ((k[i] ?? 0) >= LATERAL_K_SLACK) return b;
             const a = cur[(i + cur.length - 1) % cur.length]!;
             const c = cur[(i + 1) % cur.length]!;
             return {

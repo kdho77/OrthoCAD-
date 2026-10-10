@@ -4,6 +4,9 @@
 import { describe, expect, test } from "@rstest/core";
 import {
     assertCutInOnHighRimSide,
+    countClosedInflections,
+    INFLECTION_K_EPS,
+    INFLECTION_MIN_ARC_MM,
     medialYSignFromTopRim,
     PATTERN_ARCH_INSET_MM,
     PATTERN_HEEL_INSET_MM,
@@ -127,6 +130,19 @@ describe("synthetic bottom pattern", () => {
         }
         expect(medialNeg).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.45);
         expect(lateralPos).toBeLessThan(PATTERN_ARCH_INSET_MM * 0.35);
+    });
+
+    test("inflection hysteresis ignores |k| flicker shorter than 3 mm", () => {
+        const n = 40;
+        const k = new Array<number>(n).fill(0.01);
+        const s = k.map((_, i) => i);
+        k[10] = -0.01;
+        k[11] = -0.01;
+        expect(s[12]! - s[10]!).toBeLessThan(INFLECTION_MIN_ARC_MM);
+        expect(countClosedInflections(k, s, INFLECTION_K_EPS, INFLECTION_MIN_ARC_MM)).toBe(0);
+        for (let i = 8; i <= 14; i++) k[i] = -0.01;
+        expect(s[15]! - s[8]!).toBeGreaterThan(INFLECTION_MIN_ARC_MM);
+        expect(countClosedInflections(k, s, INFLECTION_K_EPS, INFLECTION_MIN_ARC_MM)).toBe(2);
     });
 
     test("parses SVG polyline and JSON points", () => {
