@@ -869,7 +869,7 @@ describe("bezier column", () => {
                 0.01,
                 7,
             ),
-        ).toThrow(/\[S1-I\] collapsed fillet row at station 7/);
+        ).toThrow(/\[S1-I\] collapsed fillet row at station 7 pair 0-1/);
     });
 
     test("min-wall clamp never moves B and lastChord stays at C_MIN", () => {

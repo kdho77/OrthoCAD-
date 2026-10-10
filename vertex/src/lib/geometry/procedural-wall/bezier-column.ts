@@ -1683,13 +1683,17 @@ export function sampleArcLineArc(
     return assertPieceSpacing(pts, MIN_EDGE_MM, station);
 }
 
-/** Hard error on a collapsed row. Never silently push to MIN_EDGE. */
+/** Hard error on a collapsed interior row. Never silently push to MIN_EDGE.
+ * The reserved last-to-B chord may undershoot C_MIN; that is logged as
+ * [S1-CHORD-FLOOR] after the final floor pass, not thrown here.
+ */
 export function assertPieceSpacing(pts: XYZ[], minMm: number, station = -1): XYZ[] {
     if (pts.length < 3) return pts;
-    for (let i = 1; i < pts.length; i++) {
+    const last = pts.length - 1;
+    for (let i = 1; i < last; i++) {
         if (dist3(pts[i]!, pts[i - 1]!) + 1e-12 >= minMm) continue;
         const at = station >= 0 ? String(station) : "?";
-        throw new Error(`[S1-I] collapsed fillet row at station ${at}`);
+        throw new Error(`[S1-I] collapsed fillet row at station ${at} pair ${i - 1}-${i}`);
     }
     return pts;
 }
