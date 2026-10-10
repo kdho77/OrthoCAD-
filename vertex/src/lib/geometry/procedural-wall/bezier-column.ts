@@ -1392,7 +1392,6 @@ export function constructSweepRule(
     const locked = phiRound1Lock != null && Number.isFinite(phiRound1Lock);
     if (locked) {
         let target = foldPhiToward(phiRound1Lock as number, freePhi);
-        target = Math.max(0.15, Math.min(Math.PI, target));
         let g1 = resolveLocked(target);
         if (g1.g1E > G1_MAX_DEG + 1e-6 || g1.g1F > G1_MAX_DEG + 1e-6) {
             let lo = freePhi;
@@ -3009,14 +3008,12 @@ export function buildBezierColumns(
     };
 }
 
-/** Sheet-to-wall branch: φ1 ∈ [0.15, π]. Mirrors inboard (negative) sweeps. */
+/** Wrap φ1 to (−π, π]. Same point as φ+2πk; does not mirror across eN. */
 export function canonicalRoundPhi(phi: number): number {
     let t = phi;
-    while (t < -Math.PI) t += Math.PI * 2;
-    while (t > Math.PI) t -= Math.PI * 2;
-    if (t < 0) t = -t;
-    if (t < 0.15) t = Math.PI / 2;
-    if (t > Math.PI) t = Math.PI;
+    const twopi = Math.PI * 2;
+    while (t <= -Math.PI) t += twopi;
+    while (t > Math.PI) t -= twopi;
     return t;
 }
 
@@ -3051,7 +3048,7 @@ export function smoothRoundEndAngles(frames: ColumnFrame[], sigma = SCALAR_SMOOT
         raw,
         frames.map((f) => f.R),
         sigma,
-    ).map((p) => canonicalRoundPhi(p));
+    ).map((p, i) => foldPhiToward(p, raw[i]!));
     let rawMin = Infinity;
     let rawMax = -Infinity;
     let smMin = Infinity;
