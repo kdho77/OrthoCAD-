@@ -3,7 +3,7 @@
 
 import { countOpenNonBoundaryEdges, minDistToLoopXY, pointInPoly } from "./cdt-band";
 import { assertIEdges, assertLibraryDisk, libraryCdtInterior } from "./cdt-lib";
-import { type PolyPoint, polylineArcLengths, sampleClosedAtArc01 } from "./curves";
+import { type PolyPoint, polygonSignedArea, polylineArcLengths, sampleClosedAtArc01 } from "./curves";
 import { sampleUvField } from "./extract";
 import { type DishZIndex, sampleDishZVertical } from "./height-xy";
 import { clipperRoundInset } from "./pattern-hygiene";
@@ -345,6 +345,117 @@ export function collarSteiner(loop: PolyPoint[], keep: number, spacingMm: number
     }
 }
 
+/**
+ * One Steiner per I edge, inset along the interior normal. Does not depend on
+ * Clipper or a hex seed, so a dense pair-insert ring still gets a collar when
+ * the plantar disk's point-in-poly tests reject the grid.
+ */
+export function inwardEdgeSteiner(loop: PolyPoint[], dist: number, keep: number): PolyPoint[] {
+    const n = loop.length;
+    const out: PolyPoint[] = [];
+    for (let i = 0; i < n; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % n]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 1e-9) continue;
+        const midX = (a.x + b.x) * 0.5;
+        const midY = (a.y + b.y) * 0.5;
+        const nx = -dy / len;
+        const ny = dx / len;
+        for (const s of [1, -1]) {
+            const x = midX + s * nx * dist;
+            const y = midY + s * ny * dist;
+            if (!pointInPoly(x, y, loop)) continue;
+            if (minDistToLoopXY(x, y, loop) < keep) continue;
+            out.push({ x, y, z: 0 });
+            break;
+        }
+    }
+    return out;
+}
+
+function faceAspect(
+    A: PolyPoint,
+    B: PolyPoint,
+    C: PolyPoint,
+): { short: number; long: number; aspect: number } {
+    const e1 = Math.hypot(B.x - A.x, B.y - A.y);
+    const e2 = Math.hypot(C.x - B.x, C.y - B.y);
+    const e3 = Math.hypot(A.x - C.x, A.y - C.y);
+    const short = Math.min(e1, e2, e3);
+    const long = Math.max(e1, e2, e3);
+    return { short, long, aspect: short < 1e-9 ? Infinity : long / short };
+}
+
+function pushSteiner(out: PolyPoint[], loop: PolyPoint[], x: number, y: number, keep: number): void {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (!pointInPoly(x, y, loop)) return;
+    if (minDistToLoopXY(x, y, loop) < keep) return;
+    out.push({ x, y, z: 0 });
+}
+
+function sliverFillSteiner(
+    points: PolyPoint[],
+    faces: Array<[number, number, number]>,
+    loop: PolyPoint[],
+    keep: number,
+    limit: number,
+): { extra: PolyPoint[]; worst: Record<string, unknown> | null } {
+    const nOuter = loop.length;
+    const extra: PolyPoint[] = [];
+    const seen = new Set<string>();
+    const dist = Math.max(keep + 0.15, 0.65);
+    let worstAsp = 1;
+    let worst: Record<string, unknown> | null = null;
+    for (const f of faces) {
+        const ia = f[0]!;
+        const ib = f[1]!;
+        const ic = f[2]!;
+        const A = points[ia]!;
+        const B = points[ib]!;
+        const C = points[ic]!;
+        const { aspect } = faceAspect(A, B, C);
+        const cx = (A.x + B.x + C.x) / 3;
+        const cy = (A.y + B.y + C.y) / 3;
+        if (aspect > worstAsp) {
+            worstAsp = aspect;
+            worst = {
+                ids: [ia, ib, ic],
+                kind: [ia < nOuter ? "B" : "S", ib < nOuter ? "B" : "S", ic < nOuter ? "B" : "S"],
+                aspect: Number(aspect.toFixed(2)),
+                distB: Number(minDistToLoopXY(cx, cy, loop).toFixed(3)),
+            };
+        }
+        if (aspect <= limit) continue;
+        pushSteiner(extra, loop, cx, cy, keep);
+        const ids = [ia, ib, ic];
+        const pts = [A, B, C];
+        for (let k = 0; k < 3; k++) {
+            const i = ids[k]!;
+            const j = ids[(k + 1) % 3]!;
+            const a = pts[k]!;
+            const b = pts[(k + 1) % 3]!;
+            const third = pts[(k + 2) % 3]!;
+            const midX = (a.x + b.x) * 0.5;
+            const midY = (a.y + b.y) * 0.5;
+            const tx = third.x - midX;
+            const ty = third.y - midY;
+            const tlen = Math.hypot(tx, ty);
+            if (tlen > 1e-9) {
+                pushSteiner(extra, loop, midX + (tx / tlen) * dist, midY + (ty / tlen) * dist, keep);
+            }
+            if (i >= nOuter || j >= nOuter) continue;
+            if ((i + 1) % nOuter !== j && (j + 1) % nOuter !== i) continue;
+            const key = i < j ? `${i},${j}` : `${j},${i}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+        }
+    }
+    return { extra, worst };
+}
+
 function cdtDiskOf(
     loop: PolyPoint[],
     extra: PolyPoint[],
@@ -368,13 +479,62 @@ function cdtDiskOf(
           )
         : [];
     const collar = wantSteiner && dense ? collarSteiner(loop, keep, 0.9) : [];
-    const steiner = [...collar, ...hex];
-    const points = [...loop, ...extra, ...steiner];
-    nudgeInteriorDuplicates(points, loop.length);
-    const faces = libraryCdtInterior(points, loop.length, extraEdges);
-    assertIEdges(faces, loop.length);
-    assertLibraryDisk(faces, loop.length);
-    const sliverMaxAspect = assertBoundarySlivers(points, faces, loop);
+    const inward = wantSteiner && dense ? inwardEdgeSteiner(loop, Math.max(keep + 0.15, 0.65), keep) : [];
+    const refine: PolyPoint[] = [];
+    let points: PolyPoint[] = [];
+    let faces: Array<[number, number, number]> = [];
+    let sliverMaxAspect = 1;
+    for (let pass = 0; pass < 6; pass++) {
+        const steiner = wantSteiner ? [...collar, ...inward, ...hex, ...refine] : [];
+        points = [...loop, ...extra, ...steiner];
+        nudgeInteriorDuplicates(points, loop.length);
+        faces = libraryCdtInterior(points, loop.length, extraEdges);
+        assertIEdges(faces, loop.length);
+        assertLibraryDisk(faces, loop.length);
+        sliverMaxAspect = maxBoundaryAspect(points, faces, loop, PLANTAR_SLIVER_BAND_MM);
+        if (sliverMaxAspect <= I_SLIVER_ASPECT) {
+            if (dense) {
+                console.log(
+                    "[S1-CDT-STEINER]",
+                    JSON.stringify({
+                        n: loop.length,
+                        area: Number(polygonSignedArea(loop).toFixed(1)),
+                        hex: hex.length,
+                        collar: collar.length,
+                        inward: inward.length,
+                        refine: refine.length,
+                        aspect: Number(sliverMaxAspect.toFixed(2)),
+                        pass,
+                    }),
+                );
+            }
+            return { points, faces, steinerCount: steiner.length, sliverMaxAspect };
+        }
+        if (!wantSteiner) break;
+        const filled = sliverFillSteiner(points, faces, loop, keep, I_SLIVER_ASPECT);
+        if (dense && pass === 0) {
+            console.log("[S1-CDT-SLIVER]", JSON.stringify(filled.worst));
+        }
+        if (!filled.extra.length) break;
+        refine.push(...filled.extra);
+    }
+    const steiner = wantSteiner ? [...collar, ...inward, ...hex, ...refine] : [];
+    if (dense) {
+        console.log(
+            "[S1-CDT-STEINER]",
+            JSON.stringify({
+                n: loop.length,
+                area: Number(polygonSignedArea(loop).toFixed(1)),
+                hex: hex.length,
+                collar: collar.length,
+                inward: inward.length,
+                refine: refine.length,
+                aspect: Number(sliverMaxAspect.toFixed(2)),
+                failed: true,
+            }),
+        );
+    }
+    assertBoundarySlivers(points, faces, loop);
     return { points, faces, steinerCount: steiner.length, sliverMaxAspect };
 }
 

@@ -216,6 +216,7 @@ export {
     collarSteiner,
     I_COLLAPSE_MM,
     I_SLIVER_ASPECT,
+    inwardEdgeSteiner,
     makePlantarSampler,
     PLANTAR_MARGIN_MM,
     PLANTAR_STEINER_EDGE_MIN_MM,

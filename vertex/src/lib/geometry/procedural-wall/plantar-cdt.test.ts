@@ -10,6 +10,7 @@ import {
     collarSteiner,
     I_COLLAPSE_MM,
     I_SLIVER_ASPECT,
+    inwardEdgeSteiner,
     makePlantarSampler,
     maxIAspect,
     PLANTAR_STEINER_EDGE_MIN_MM,
@@ -160,7 +161,9 @@ describe("generated plantar CDT", () => {
         }
         expect(minEdge).toBeGreaterThanOrEqual(0.3);
         const collar = collarSteiner(boundary, PLANTAR_STEINER_EDGE_MIN_MM, 0.9);
+        const inward = inwardEdgeSteiner(boundary, 0.65, PLANTAR_STEINER_EDGE_MIN_MM);
         expect(collar.length).toBeGreaterThan(20);
+        expect(inward.length).toBeGreaterThan(n * 0.8);
         for (const p of collar) {
             expect(minDistToLoopXY(p.x, p.y, boundary)).toBeGreaterThanOrEqual(PLANTAR_STEINER_EDGE_MIN_MM);
         }
