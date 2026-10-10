@@ -292,16 +292,50 @@ export function assertBoundarySlivers(
     return aspect;
 }
 
-function nudgeInteriorDuplicates(points: PolyPoint[], nOuter: number, tol = 0.045): void {
+function nudgeInteriorDuplicates(
+    points: PolyPoint[],
+    nOuter: number,
+    loop?: PolyPoint[],
+    keep = 0,
+    tol = 0.045,
+): void {
     for (let i = 0; i < points.length; i++) {
         for (let j = Math.max(i + 1, nOuter); j < points.length; j++) {
             const a = points[i]!;
             const b = points[j]!;
             const d = Math.hypot(b.x - a.x, b.y - a.y);
             if (d >= tol) continue;
-            const ang = (j * 2.399963) % (Math.PI * 2);
-            b.x += Math.cos(ang) * tol;
-            b.y += Math.sin(ang) * tol;
+            let nx: number;
+            let ny: number;
+            if (loop) {
+                const hit = nearestOnLoopXY(b.x, b.y, loop);
+                let vx = b.x - hit.x;
+                let vy = b.y - hit.y;
+                let vlen = Math.hypot(vx, vy);
+                if (vlen < 1e-12) {
+                    const e = loop[(hit.i + 1) % loop.length]!;
+                    const dx = e.x - loop[hit.i]!.x;
+                    const dy = e.y - loop[hit.i]!.y;
+                    const elen = Math.hypot(dx, dy) || 1;
+                    vx = -dy / elen;
+                    vy = dx / elen;
+                    vlen = 1;
+                }
+                const ux = vx / vlen;
+                const uy = vy / vlen;
+                const side = j % 2 === 0 ? 1 : -1;
+                nx = b.x + ux * tol + side * -uy * tol * 0.5;
+                ny = b.y + uy * tol + side * ux * tol * 0.5;
+            } else {
+                const ang = (j * 2.399963) % (Math.PI * 2);
+                nx = b.x + Math.cos(ang) * tol;
+                ny = b.y + Math.sin(ang) * tol;
+            }
+            if (loop && keep > 0) {
+                if (!pointInPoly(nx, ny, loop) || minDistToLoopXY(nx, ny, loop) < keep) continue;
+            }
+            b.x = nx;
+            b.y = ny;
         }
     }
 }
@@ -389,11 +423,61 @@ function faceAspect(
     return { short, long, aspect: short < 1e-9 ? Infinity : long / short };
 }
 
+function nearestOnLoopXY(
+    x: number,
+    y: number,
+    loop: PolyPoint[],
+): { x: number; y: number; i: number; d: number } {
+    let best = { x: loop[0]!.x, y: loop[0]!.y, i: 0, d: Infinity };
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const len2 = ex * ex + ey * ey;
+        const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((x - a.x) * ex + (y - a.y) * ey) / len2)) : 0;
+        const px = a.x + ex * t;
+        const py = a.y + ey * t;
+        const d = Math.hypot(x - px, y - py);
+        if (d < best.d) best = { x: px, y: py, i, d };
+    }
+    return best;
+}
+
+function projectInsideKeep(loop: PolyPoint[], x: number, y: number, keep: number): PolyPoint | null {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const hit = nearestOnLoopXY(x, y, loop);
+    const tryAt = (px: number, py: number): PolyPoint | null => {
+        if (!pointInPoly(px, py, loop)) return null;
+        if (minDistToLoopXY(px, py, loop) < keep - 1e-9) return null;
+        return { x: px, y: py, z: 0 };
+    };
+    if (hit.d >= keep) return tryAt(x, y);
+    let vx = x - hit.x;
+    let vy = y - hit.y;
+    let vlen = Math.hypot(vx, vy);
+    if (vlen < 1e-12) {
+        const a = loop[hit.i]!;
+        const b = loop[(hit.i + 1) % loop.length]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy) || 1;
+        vx = -dy / len;
+        vy = dx / len;
+        vlen = 1;
+    }
+    const ux = vx / vlen;
+    const uy = vy / vlen;
+    for (const s of [1, -1]) {
+        const p = tryAt(hit.x + s * ux * (keep + 1e-6), hit.y + s * uy * (keep + 1e-6));
+        if (p) return p;
+    }
+    return null;
+}
+
 function pushSteiner(out: PolyPoint[], loop: PolyPoint[], x: number, y: number, keep: number): void {
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    if (!pointInPoly(x, y, loop)) return;
-    if (minDistToLoopXY(x, y, loop) < keep) return;
-    out.push({ x, y, z: 0 });
+    const p = projectInsideKeep(loop, x, y, keep);
+    if (p) out.push(p);
 }
 
 function sliverFillSteiner(
@@ -405,7 +489,6 @@ function sliverFillSteiner(
 ): { extra: PolyPoint[]; worst: Record<string, unknown> | null } {
     const nOuter = loop.length;
     const extra: PolyPoint[] = [];
-    const seen = new Set<string>();
     const dist = Math.max(keep + 0.15, 0.65);
     let worstAsp = 1;
     let worst: Record<string, unknown> | null = null;
@@ -430,11 +513,8 @@ function sliverFillSteiner(
         }
         if (aspect <= limit) continue;
         pushSteiner(extra, loop, cx, cy, keep);
-        const ids = [ia, ib, ic];
         const pts = [A, B, C];
         for (let k = 0; k < 3; k++) {
-            const i = ids[k]!;
-            const j = ids[(k + 1) % 3]!;
             const a = pts[k]!;
             const b = pts[(k + 1) % 3]!;
             const third = pts[(k + 2) % 3]!;
@@ -446,11 +526,6 @@ function sliverFillSteiner(
             if (tlen > 1e-9) {
                 pushSteiner(extra, loop, midX + (tx / tlen) * dist, midY + (ty / tlen) * dist, keep);
             }
-            if (i >= nOuter || j >= nOuter) continue;
-            if ((i + 1) % nOuter !== j && (j + 1) % nOuter !== i) continue;
-            const key = i < j ? `${i},${j}` : `${j},${i}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
         }
     }
     return { extra, worst };
@@ -484,10 +559,10 @@ function cdtDiskOf(
     let points: PolyPoint[] = [];
     let faces: Array<[number, number, number]> = [];
     let sliverMaxAspect = 1;
-    for (let pass = 0; pass < 6; pass++) {
+    for (let pass = 0; pass < 10; pass++) {
         const steiner = wantSteiner ? [...collar, ...inward, ...hex, ...refine] : [];
         points = [...loop, ...extra, ...steiner];
-        nudgeInteriorDuplicates(points, loop.length);
+        nudgeInteriorDuplicates(points, loop.length, loop, keep);
         faces = libraryCdtInterior(points, loop.length, extraEdges);
         assertIEdges(faces, loop.length);
         assertLibraryDisk(faces, loop.length);
@@ -571,7 +646,7 @@ function triangulateWithOffsetFallback(
         return { ...cdtDiskOf(loop, [], [], margin), usedSliverFallback: false };
     } catch (err) {
         const msg = String(err);
-        if (!msg.includes("sliver") && !msg.includes("[S1-CDT]") && !msg.includes("[S1-B]")) {
+        if (!msg.includes("[S1-CDT]") && !msg.includes("[S1-I]")) {
             throw err;
         }
         const insets = [0.8, PLANTAR_FALLBACK_INSET_MM];
