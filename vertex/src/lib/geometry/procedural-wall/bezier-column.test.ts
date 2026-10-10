@@ -6,6 +6,7 @@ import {
     ASPECT_EVERYWHERE_MAX,
     ASPECT_LAST_STRIP_MAX,
     assertFilletStation,
+    assertFilletWalk,
     assertPieceSpacing,
     assertT0ClearsSheet,
     bLoopOutwardNormal,
@@ -31,6 +32,8 @@ import {
     FILLET_STEP_MAX_DEG,
     filletCenterAndF,
     filletPieceLengthMm,
+    filletPointAtPhi,
+    filletWalkPhis,
     floorR2OnLastStep,
     G1_MAX_DEG,
     HEADING_MAX_DEG,
@@ -82,6 +85,7 @@ import {
     sampleByArcLength,
     sampleFilletPiecePoints,
     sampleInPlaneSlope,
+    sampleSweepRule,
     sheetSlopeFromNormal,
     sizedArcRows,
     slopeFromSheetPlane,
@@ -475,6 +479,13 @@ describe("bezier column", () => {
         expect(fil.C.x).toBeCloseTo(5, 5);
         expect(fil.C.z).toBeCloseTo(2, 5);
         expect(fil.psi).toBeCloseTo(Math.PI / 2, 5);
+        expect(fil.phiB).toBeCloseTo(-Math.PI / 2, 9);
+        expect(fil.phiF).toBeCloseTo(0, 9);
+        expect(dist3ish(filletPointAtPhi(fil, fil.phiB), B)).toBeLessThan(1e-6);
+        expect(dist3ish(filletPointAtPhi(fil, fil.phiF), fil.Pw)).toBeLessThan(1e-6);
+        const walk = filletWalkPhis(fil.phi0, fil.phi1, B, (phi) => filletPointAtPhi(fil, phi));
+        expect(walk.phiF).toBeCloseTo(fil.phiF, 9);
+        expect(walk.phiB).toBeCloseTo(fil.phiB, 9);
         expect(() => assertFilletStation(fil)).not.toThrow();
     });
 
@@ -998,6 +1009,89 @@ describe("bezier column", () => {
             const budget = clampR1ToBudget(2, fr.heightMm, fr.rFillet, keep);
             expect(budget).toBeLessThanOrEqual(Math.max(MIN_ROUND_R_MM, fr.heightMm - keep) + 1e-6);
         }
+    });
+
+    test("sweep-rule and arc-line-arc emit identically ordered fillet rows", () => {
+        const R = { x: 0, y: 0, z: 12 };
+        const B = { x: 8, y: 0, z: 0 };
+        const h = { x: 1, y: 0 };
+        const sw = constructSweepRule(
+            R,
+            B,
+            { x: 0, y: 0, z: 1 },
+            0.5,
+            2,
+            h,
+            h,
+            { x: 0, y: 1, z: 0 },
+            0,
+            undefined,
+            1.3,
+        );
+        const walk = filletWalkPhis(sw.fil.phi0, sw.fil.phi1, B, (phi) => filletPointAtPhi(sw.fil, phi));
+        expect(walk.phiF).toBeCloseTo(sw.fil.phiF, 9);
+        expect(walk.phiB).toBeCloseTo(sw.fil.phiB, 9);
+        expect(dist3ish(filletPointAtPhi(sw.fil, walk.phiF), sw.F)).toBeLessThan(1e-6);
+        expect(dist3ish(filletPointAtPhi(sw.fil, walk.phiB), B)).toBeLessThan(1e-6);
+        const counts = { nRound: 8, nFil: 6, nLine: 10, nWall: 26 };
+        const dL = lastFilletDLRad(Math.abs(walk.phiB - walk.phiF), 1);
+        const sweepPts = sampleSweepRule(sw, R, B, counts.nWall, counts, dL, 4);
+        const ala = constructArcLineArc(R, B, { x: 0, y: 0, z: 1 }, 0.5, 2, h, 0, undefined, 1.3);
+        const alaPts = sampleArcLineArc(ala, h, R, B, counts.nWall, 1.3, counts, dL, 4);
+        const flippedPts = sampleArcLineArc(
+            { ...ala, phiFil0: ala.phiFil1, phiFil1: ala.phiFil0 },
+            h,
+            R,
+            B,
+            counts.nWall,
+            1.3,
+            counts,
+            dL,
+            4,
+        );
+        const sweepFil = sweepPts.slice(counts.nRound + counts.nLine + 1, -1);
+        const alaFil = alaPts.slice(counts.nRound + counts.nLine + 1, -1);
+        const flippedFil = flippedPts.slice(counts.nRound + counts.nLine + 1, -1);
+        expect(sweepFil).toHaveLength(counts.nFil);
+        expect(alaFil).toHaveLength(counts.nFil);
+        const assertOrdered = (
+            rows: { x: number; y: number; z: number }[],
+            F: { x: number; y: number; z: number },
+            r2: number,
+        ): void => {
+            expect(dist3ish(rows[0]!, F)).toBeLessThan(dist3ish(rows[0]!, B));
+            expect(dist3ish(rows[rows.length - 1]!, B)).toBeLessThan(dist3ish(rows[0]!, B));
+            expect(dist3ish(rows[rows.length - 1]!, B)).toBeLessThan(r2 * dL + 1e-6);
+            for (let i = 0; i < rows.length; i++) {
+                const nextZ = i + 1 < rows.length ? rows[i + 1]!.z : B.z;
+                expect(rows[i]!.z).toBeGreaterThan(nextZ);
+                if (i + 1 < rows.length) {
+                    expect(dist3ish(rows[i + 1]!, B)).toBeLessThan(dist3ish(rows[i]!, B));
+                }
+            }
+        };
+        assertOrdered(sweepFil, sw.F, sw.r2);
+        assertOrdered(alaFil, ala.T2, ala.r2);
+        for (let i = 0; i < alaFil.length; i++) {
+            expect(alaFil[i]!.x).toBeCloseTo(flippedFil[i]!.x, 6);
+            expect(alaFil[i]!.y).toBeCloseTo(flippedFil[i]!.y, 6);
+            expect(alaFil[i]!.z).toBeCloseTo(flippedFil[i]!.z, 6);
+        }
+        const reversed = sampleFilletPiecePoints(
+            sw.E,
+            sw.F,
+            sw.r2,
+            Math.abs(sw.fil.phi1 - sw.fil.phi0),
+            sw.fil.phi0,
+            sw.fil.phi1,
+            (phi) => filletPointAtPhi(sw.fil, phi),
+            counts.nFil,
+            dL,
+            lastFilletCMinMm(1.3),
+        );
+        expect(() => assertFilletWalk(reversed.pts, B, sw.r2, dL, 4, sw.nFilPlane, sw.C2)).toThrow(
+            /\[S1-FIL\] reversed fillet at station 4/,
+        );
     });
 
     test("r2 floors on the real last-step dL once S is known", () => {

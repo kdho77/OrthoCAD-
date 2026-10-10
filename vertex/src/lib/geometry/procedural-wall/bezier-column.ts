@@ -587,8 +587,13 @@ export interface ConstructedFillet {
     psi: number;
     t: number;
     r: number;
+    /** Construction sweep B → F (increasing). */
     phi0: number;
     phi1: number;
+    /** Fillet walk start at F. */
+    phiF: number;
+    /** Fillet walk end at B (reserved last step). */
+    phiB: number;
     ew: XYZ;
     ez: XYZ;
 }
@@ -610,7 +615,8 @@ export function filletRadiusMm(heightMm: number, wallLen: number, psi: number): 
 
 /**
  * Exact fillet: P_p = B, K = B + t e_w, P_w = K + t d, C = B + r n_plantar.
- * phi: −90 → −b about C, sweep +psi. F := P_w.
+ * Construction φ: −90 (B) → −b (F) about C, sweep +psi. F := P_w.
+ * Walk ends are named: phiF at F, phiB at B. Samplers always walk F → B.
  */
 export function constructFillet(
     B: XYZ,
@@ -630,6 +636,8 @@ export function constructFillet(
     const K = add3(Pp, frame.ew, t);
     const Pw = add3(K, d, t);
     const C = add3(Pp, frame.ez, rr);
+    const phiB = -Math.PI / 2;
+    const phiF = -b;
     return {
         Pp,
         K,
@@ -640,8 +648,10 @@ export function constructFillet(
         psi,
         t,
         r: rr,
-        phi0: -Math.PI / 2,
-        phi1: -b,
+        phi0: phiB,
+        phi1: phiF,
+        phiF,
+        phiB,
         ew: frame.ew,
         ez: frame.ez,
     };
@@ -653,6 +663,48 @@ export function filletPointAtPhi(fil: ConstructedFillet, phi: number): XYZ {
         y: fil.C.y + fil.r * (Math.cos(phi) * fil.ew.y + Math.sin(phi) * fil.ez.y),
         z: fil.C.z + fil.r * (Math.cos(phi) * fil.ew.z + Math.sin(phi) * fil.ez.z),
     };
+}
+
+/** Resolve which construction φ sits on B so the walk is always F → B. */
+export function filletWalkPhis(
+    phi0: number,
+    phi1: number,
+    B: XYZ,
+    pointOnArc: (phi: number) => XYZ,
+): { phiF: number; phiB: number } {
+    const atB0 = dist3(pointOnArc(phi0), B) < dist3(pointOnArc(phi1), B);
+    return { phiF: atB0 ? phi1 : phi0, phiB: atB0 ? phi0 : phi1 };
+}
+
+/**
+ * Per-station fillet walk: z decreases toward B, last sample is the reserved
+ * step, chord rise into B is ≤ 6°. Throws `[S1-FIL] reversed fillet at station i`.
+ */
+export function assertFilletWalk(
+    filletPts: XYZ[],
+    B: XYZ,
+    r2: number,
+    dL: number,
+    station = -1,
+    planeN?: XYZ,
+    center?: XYZ | null,
+): void {
+    if (filletPts.length < 1 || dL < 1e-12 || r2 < 1e-12) return;
+    const at = station >= 0 ? String(station) : "?";
+    const fail = (): never => {
+        throw new Error(`[S1-FIL] reversed fillet at station ${at}`);
+    };
+    for (let i = 1; i < filletPts.length; i++) {
+        if (!(filletPts[i]!.z < filletPts[i - 1]!.z - 1e-12)) fail();
+    }
+    const last = filletPts[filletPts.length - 1]!;
+    if (last.z + 1e-12 < B.z) fail();
+    if (dist3(last, B) > r2 * dL + 1e-6) fail();
+    if (filletPts.length < 2) return;
+    const prev = filletPts[filletPts.length - 2]!;
+    const chord = { x: B.x - last.x, y: B.y - last.y, z: B.z - last.z };
+    const rise = lastChordRiseDeg(prev, last, B, planeN ?? { x: 0, y: 0, z: 1 }, chord, center);
+    if (rise != null && rise > CHORD_RISE_MAX_DEG + 1e-6) fail();
 }
 
 export function assertFilletStation(fil: ConstructedFillet, label = ""): void {
@@ -827,10 +879,11 @@ export function topRoundRowCount(sweepRad: number, radiusMm = 0.5, stationSpacin
 function sampleFilletEqualPhi(fr: ColumnFrame, nInterior: number): XYZ[] {
     applyTilts(fr);
     const fil = constructFillet(fr.B, fr.h, fr.rFillet, fr.U, fr.plantarSlopeRad, fr.nPlantar);
+    const walk = filletWalkPhis(fil.phi0, fil.phi1, fr.B, (phi) => filletPointAtPhi(fil, phi));
     const count = Math.max(filletRowCount(fil.psi), nInterior);
     const rings: XYZ[] = [];
     for (let i = 1; i <= count; i++) {
-        const phi = fil.phi1 + ((fil.phi0 - fil.phi1) * i) / (count + 1);
+        const phi = walk.phiF + ((walk.phiB - walk.phiF) * i) / (count + 1);
         rings.push(filletPointAtPhi(fil, phi));
     }
     return rings;
@@ -1794,7 +1847,7 @@ export function constructSweepRule(
     };
 }
 
-function sweepToAla(sw: SweepRule, h: { x: number; y: number }): ArcLineArc {
+export function sweepToAla(sw: SweepRule, h: { x: number; y: number }): ArcLineArc {
     return {
         C1: sw.C1,
         C2: sw.C2,
@@ -1814,8 +1867,8 @@ function sweepToAla(sw: SweepRule, h: { x: number; y: number }): ArcLineArc {
         lineTiltRad: sw.lineTiltRad,
         phiRound0: sw.phiRound0,
         phiRound1: sw.phiRound1,
-        phiFil0: sw.fil.phi0,
-        phiFil1: sw.fil.phi1,
+        phiFil0: sw.fil.phiF,
+        phiFil1: sw.fil.phiB,
     };
 }
 
@@ -1834,7 +1887,8 @@ export function sampleArcLineArc(
     const nRound =
         counts?.nRound ??
         Math.max(TOP_ROUND_MIN_ROWS, Math.ceil(Math.abs(ala.roundSweep) / Math.max(stepDeg, 1e-9)));
-    const S = Math.abs(ala.phiFil1 - ala.phiFil0);
+    const walk = filletWalkPhis(ala.phiFil0, ala.phiFil1, B, (phi) => alaPoint(ala, h, ala.C2, ala.r2, phi));
+    const S = Math.abs(walk.phiB - walk.phiF);
     const dL = dLRad && dLRad > 1e-12 ? dLRad : lastFilletDLRad(S, 1);
     const nFil =
         counts?.nFil ??
@@ -1852,13 +1906,16 @@ export function sampleArcLineArc(
         ala.T2,
         ala.r2,
         S,
-        ala.phiFil0,
-        ala.phiFil1,
+        walk.phiF,
+        walk.phiB,
         (phi) => alaPoint(ala, h, ala.C2, ala.r2, phi),
         nFil,
         dL,
         lastFilletCMinMm(stationSpacing),
     );
+    if (S > 1e-12) {
+        assertFilletWalk(fil.pts, B, ala.r2, dL, station, { x: -h.y, y: h.x, z: 0 }, ala.C2);
+    }
     for (let k = 1; k <= nLine; k++) {
         const t = k / nLine;
         pts.push(lerp3(ala.T1, fil.Fpiece, t));
@@ -2057,7 +2114,8 @@ export function sampleSweepRule(
     const nRound =
         counts?.nRound ??
         Math.max(TOP_ROUND_MIN_ROWS, Math.ceil(Math.abs(sw.roundSweep) / Math.max(stepDeg, 1e-9)));
-    const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
+    const walk = filletWalkPhis(sw.fil.phi0, sw.fil.phi1, B, (phi) => filletPointAtPhi(sw.fil, phi));
+    const S = Math.abs(walk.phiB - walk.phiF);
     const dL = dLRad && dLRad > 1e-12 ? dLRad : lastFilletDLRad(S, 1);
     const nFil =
         counts?.nFil ??
@@ -2075,14 +2133,17 @@ export function sampleSweepRule(
         sw.F,
         sw.r2,
         S,
-        sw.fil.phi0,
-        sw.fil.phi1,
+        walk.phiF,
+        walk.phiB,
         (phi) => filletPointAtPhi(sw.fil, phi),
         nFil,
         dL,
         lastFilletCMinMm(localSpacing),
         stealLock,
     );
+    if (S > 1e-12) {
+        assertFilletWalk(fil.pts, B, sw.r2, dL, station, sw.nFilPlane, sw.C2);
+    }
     for (let k = 1; k <= nLine; k++) {
         const t = k / nLine;
         pts.push(lerp3(sw.E, fil.Fpiece, t));

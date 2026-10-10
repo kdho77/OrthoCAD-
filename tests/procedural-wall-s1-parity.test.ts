@@ -874,6 +874,7 @@ describe("S1 parametric wall", () => {
         const results: Array<Record<string, number | string | boolean>> = [];
         const smokeMiss: string[] = [];
         const smokeBreakdowns: string[] = [];
+        const seamBRequiredSmokes = ["widen+6", "width+5"] as const;
         for (const smoke of smokes) {
             let rebuilt: BufferGeometry;
             try {
@@ -1120,6 +1121,11 @@ describe("S1 parametric wall", () => {
             rebuilt.dispose();
         }
         writeFileSync("/tmp/s1-smoke.json", JSON.stringify(results, null, 2));
+        for (const name of seamBRequiredSmokes) {
+            if (!results.some((row) => row.name === name)) {
+                smokeMiss.push(`${name} missing from seam-B gate`);
+            }
+        }
         if (smokeBreakdowns.length || smokeMiss.length) {
             throw new Error(
                 `[S1-SMOKE] nonzero. STOP.\n` +
