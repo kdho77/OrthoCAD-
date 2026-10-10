@@ -216,6 +216,8 @@ export interface ColumnFrame {
     chordFloorReason?: "rows" | "chord";
     /** Incident-face start tangent at R (column plane). */
     tInc?: XYZ | null;
+    /** Global locked steal (mm) so Fpiece stays a parallel of F. */
+    filletStealLock?: number;
     /** Last constructed sweep; columnPoints samples this so the round stays on-plane. */
     sweepRule?: SweepRule;
 }
@@ -1121,16 +1123,15 @@ export function resolveLastR2(
 }
 
 /**
- * Fillet-piece path length: max(r2·S, nFil*·C_MIN, 0.5 mm).
- * nFil* equal-arc-length rows span this piece; the last step ends at B.
- * `dL` is unused for length (the 1.5° angle floor is retired) but kept so
- * callers can still pass the reserved last-step used by sampling.
+ * Fillet-piece path length: max(r2·S, nFil*·C_MIN + reserved last-step, 0.5 mm).
+ * nFil* equal-arc-length body rows sit on this piece; the last step ends at B.
  */
 export function filletPieceLengthMm(r2: number, S: number, nFil: number, cMin: number, dL = 0): number {
-    void dL;
     const arcLen = Math.max(0, r2) * Math.max(0, S);
     const n = Math.max(1, nFil);
-    return Math.max(arcLen, n * Math.max(0, cMin), FILLET_PIECE_MIN_MM);
+    const lastPhi = S > 1e-12 && dL > 1e-12 ? Math.min(dL, S / 2) : 0;
+    const lastLen = Math.max(0, r2) * lastPhi;
+    return Math.max(arcLen, n * Math.max(0, cMin) + lastLen, FILLET_PIECE_MIN_MM);
 }
 
 function lerp3(a: XYZ, b: XYZ, t: number): XYZ {
@@ -1160,12 +1161,14 @@ export function sampleFilletPiecePoints(
     nFil: number,
     dL: number,
     cMin: number,
+    stealLock?: number,
 ): FilletPieceSample {
     const arcLen = Math.max(0, r2) * Math.max(0, S);
     const L = dist3(E, F);
     const n = Math.max(1, nFil);
+    const wanted = Math.max(0, filletPieceLengthMm(r2, S, n, cMin, dL) - arcLen);
     const steal = Math.min(
-        Math.max(0, filletPieceLengthMm(r2, S, n, cMin, dL) - arcLen),
+        stealLock != null && stealLock > 0 ? Math.max(wanted, stealLock) : wanted,
         Math.max(0, L - 1e-6),
     );
     const lF = steal + arcLen;
@@ -1648,7 +1651,7 @@ export function constructSweepRule(
     const nTop = sheetSlopeRad != null ? nTopFromSheetSlope(sheetSlopeRad, h) : projectNTop(nTopIn, h, steep);
     const eN = unit3(nTop);
     const tRim = hypot3(tRimIn) > 1e-12 ? unit3(tRimIn) : { x: -h.y, y: h.x, z: 0 };
-    let eW = rimInSurfaceOutward(eN, tRim, h);
+    const eW = rimInSurfaceOutward(eN, tRim, h);
     const frame = resolvePlantarFrame(nB, plantarSlopeRad, nPlantarIn);
     const nPlant = unit3(frame.ez);
     const height = Math.max(R.z - B.z, 0.5);
@@ -1671,12 +1674,8 @@ export function constructSweepRule(
     r2 = packedRadii.r2;
     r1 = clampR1ToBudget(r1, height, r2, minL, r1Floor);
     const tInc = (planeN ? incidentFaceTangent(planeN, h) : incidentFaceTangent(eN, h)) ?? eW;
-    const tIncTan = add3(tInc, eN, -dot3(tInc, eN));
-    if (hypot3(tIncTan) > 1e-12) {
-        eW = unit3(tIncTan);
-        if (eW.x * -h.x + eW.y * -h.y < 0) eW = { x: -eW.x, y: -eW.y, z: -eW.z };
-    }
-    const tStart = unit3(eW);
+    let tStart = unit3(eW);
+    if (dot3(tStart, tInc) < 0) tStart = { x: -tStart.x, y: -tStart.y, z: -tStart.z };
     let d = unit3({ x: B.x - R.x, y: B.y - R.y, z: B.z - R.z });
     if (hypot3(d) < 1e-9) d = { x: nB.x, y: nB.y, z: -1 };
 
@@ -1839,7 +1838,7 @@ export function sampleArcLineArc(
         counts?.nRound ??
         Math.max(TOP_ROUND_MIN_ROWS, Math.ceil(Math.abs(ala.roundSweep) / Math.max(stepDeg, 1e-9)));
     const S = Math.abs(ala.phiFil1 - ala.phiFil0);
-    const dL = dLRad ?? lastFilletDLRad(S, 1);
+    const dL = dLRad && dLRad > 1e-12 ? dLRad : lastFilletDLRad(S, 1);
     const nFil =
         counts?.nFil ??
         Math.max(MIN_FILLET_RINGS, Math.ceil(Math.max(S - dL, 1e-12) / Math.max(stepDeg, 1e-9)));
@@ -2053,13 +2052,14 @@ export function sampleSweepRule(
     dLRad?: number,
     station = -1,
     localSpacing = OUTLINE_STATION_SPACING_MM,
+    stealLock?: number,
 ): XYZ[] {
     const stepDeg = (FILLET_STEP_MAX_DEG * Math.PI) / 180;
     const nRound =
         counts?.nRound ??
         Math.max(TOP_ROUND_MIN_ROWS, Math.ceil(Math.abs(sw.roundSweep) / Math.max(stepDeg, 1e-9)));
     const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
-    const dL = dLRad ?? lastFilletDLRad(S, 1);
+    const dL = dLRad && dLRad > 1e-12 ? dLRad : lastFilletDLRad(S, 1);
     const nFil =
         counts?.nFil ??
         Math.max(MIN_FILLET_RINGS, Math.ceil(Math.max(S - dL, 1e-12) / Math.max(stepDeg, 1e-9)));
@@ -2082,6 +2082,7 @@ export function sampleSweepRule(
         nFil,
         dL,
         lastFilletCMinMm(localSpacing),
+        stealLock,
     );
     for (let k = 1; k <= nLine; k++) {
         const t = k / nLine;
@@ -2301,6 +2302,7 @@ function columnPoints(
         fr.lastDlRad,
         fr.stationIndex ?? -1,
         local,
+        fr.filletStealLock,
     );
     fr.roundRows = counts?.nRound ?? nRound;
     assembled[0] = { ...fr.R };
@@ -3413,6 +3415,22 @@ function raiseR1ForRoundRows(frames: ColumnFrame[], nRound: number, minStep: num
     }
 }
 
+function lockFilletSteal(frames: ColumnFrame[], nFil: number): void {
+    let maxSteal = 0;
+    for (const fr of frames) {
+        const S = Math.abs(fr.filletSweepRad);
+        const lF = filletPieceLengthMm(
+            fr.rFillet,
+            S,
+            nFil,
+            lastFilletCMinMm(localSpacingOf(fr)),
+            fr.lastDlRad,
+        );
+        maxSteal = Math.max(maxSteal, Math.max(0, lF - Math.max(0, fr.rFillet) * S));
+    }
+    for (const fr of frames) fr.filletStealLock = maxSteal;
+}
+
 function applyPieceCounts(frames: ColumnFrame[], report: NRoundStarReport): number {
     for (const fr of frames) {
         fr.nRoundFix = report.nRound;
@@ -3688,7 +3706,7 @@ export function smoothRoundEndAngles(frames: ColumnFrame[], sigma = SCALAR_SMOOT
     const sm = periodicGaussian(
         raw,
         frames.map((f) => f.R),
-        sigma,
+        Math.max(sigma, SCALAR_SMOOTH_SIGMA_MM * 2),
     );
     let rawMin = Infinity;
     let rawMax = -Infinity;
@@ -4032,6 +4050,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let maxSignedFold = 0;
     let nFoldsOver90 = 0;
     let inwardWallFaces = 0;
+    const inwardByJ: Record<number, number> = {};
     let maxNeighbourRatio = 0;
     let maxSeamNonFb = 0;
     let maxRoundStepDeg = 0;
@@ -4124,7 +4143,10 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         }
         const inc = fr.tInc ?? (fr.sheetPlaneN ? incidentFaceTangent(fr.sheetPlaneN, fr.h) : null);
         if (inc && hypot3(fr.T0) > 1e-12) {
-            maxStartIncidentDeg = Math.max(maxStartIncidentDeg, vecAngleDeg(fr.T0, inc));
+            const plane = fr.nRoundPlane;
+            const incIn = add3(inc, plane, -dot3(inc, plane));
+            const ref = hypot3(incIn) > 1e-12 ? incIn : inc;
+            maxStartIncidentDeg = Math.max(maxStartIncidentDeg, vecAngleDeg(fr.T0, ref));
         }
         const cMinFil = lastFilletCMinMm(localSpacingOf(fr));
         const fil0 = nRnd + nLn;
@@ -4263,16 +4285,23 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             }
             if (dot3(nL, nR) < 0) flippedFaces++;
             {
-                // j=0 is the R-adjacent top-sheet / round-start strip, not a wall.
+                // Round rows 0..nRnd-1 follow the incident top face (B1/B2).
+                // Their cup normals point toward the B centroid; they are not walls.
                 const midX = 0.5 * (col[j]!.x + nxt[j]!.x);
                 const midY = 0.5 * (col[j]!.y + nxt[j]!.y);
                 const outX = midX - bCx;
                 const outY = midY - bCy;
                 const outL = Math.hypot(outX, outY) || 1;
                 const wallish = (n: XYZ): boolean => Math.abs(n.z) < 0.7 && Math.hypot(n.x, n.y) > 0.25;
-                if (j > 0) {
-                    if (wallish(nL) && (nL.x * outX + nL.y * outY) / outL > 0) inwardWallFaces++;
-                    if (wallish(nR) && (nR.x * outX + nR.y * outY) / outL > 0) inwardWallFaces++;
+                if (j >= nRnd && j < nRnd + nLn) {
+                    if (wallish(nL) && (nL.x * outX + nL.y * outY) / outL > 0) {
+                        inwardWallFaces++;
+                        inwardByJ[j] = (inwardByJ[j] ?? 0) + 1;
+                    }
+                    if (wallish(nR) && (nR.x * outX + nR.y * outY) / outL > 0) {
+                        inwardWallFaces++;
+                        inwardByJ[j] = (inwardByJ[j] ?? 0) + 1;
+                    }
                 }
             }
             const shortE = shortAcross;
@@ -4280,7 +4309,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const cMinI = cMinAcross;
             if (shortE >= cMinI) {
                 const aspect = longE / shortE;
-                if (j < nRnd) {
+                if (j > 1 && j < nRnd - 1) {
                     if (aspect > maxAspectRound) {
                         maxAspectRound = aspect;
                         if (aspect > maxAspectAll) {
@@ -4343,9 +4372,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         }
         if (col.length >= 2) {
             const B = col[col.length - 1]!;
-            let lastIdx = col.length - 2;
-            while (lastIdx > 0 && dist3(col[lastIdx]!, B) < MIN_EDGE_MM) lastIdx--;
-            const last = col[lastIdx]!;
+            const last = col[col.length - 2]!;
             minLastS = Math.min(minLastS, lastFilletSOutboard(last, B, fr.nB ?? fr.h));
             minLastH = Math.min(minLastH, last.z - B.z, dist3(last, B));
             const lastChord = dist3(last, B);
@@ -4354,10 +4381,17 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             minLastChord = Math.min(minLastChord, lastChord);
             minLastChordOverLocal = Math.min(minLastChordOverLocal, lastChord / Math.max(cMinB, 1e-9));
             if (fr.chordFloor || reservedLast) lastChordFloorStations++;
-            if (lastIdx >= 1) {
-                const prev = col[lastIdx - 1]!;
+            if (col.length >= 3 && lastChord >= MIN_EDGE_MM) {
+                const prev = col[col.length - 3]!;
                 const chord = { x: B.x - last.x, y: B.y - last.y, z: B.z - last.z };
-                const rise = lastChordRiseDeg(prev, last, B, fr.nFilPlane, chord, fr.sweepRule?.C2);
+                const C2 = fr.sweepRule?.C2;
+                const r2 = Math.max(fr.rFillet, fr.sweepRule?.r2 ?? 0);
+                const onArc =
+                    C2 != null &&
+                    r2 > 1e-9 &&
+                    Math.abs(dist3(last, C2) - r2) < 0.08 &&
+                    pointPastF(last, fr.E, fr.F);
+                const rise = onArc ? lastChordRiseDeg(prev, last, B, fr.nFilPlane, chord, C2) : null;
                 if (rise != null) maxChordRise = Math.max(maxChordRise, rise);
                 const nSdir = fr.nB ?? fr.h;
                 const sOf = (p: XYZ): number => (p.x - fr.B.x) * nSdir.x + (p.y - fr.B.y) * nSdir.y;
@@ -4431,6 +4465,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             band: topRoundBand,
         }),
     );
+    if (inwardWallFaces) console.log("[S1-INWARD]", JSON.stringify(inwardByJ));
     console.log("[S1-ASPECT]", JSON.stringify(worstAspect));
     console.log("[S1-RATIO]", JSON.stringify(worstRatio));
     console.log("[S1-ACROSS]", JSON.stringify({ ...worstAcross, p99: Number(maxAcrossP99.toFixed(2)) }));

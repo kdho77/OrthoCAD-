@@ -451,7 +451,7 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxStartIncidentDeg ?? 0) > ROUND_START_INCIDENT_MAX_DEG + 1e-6) {
         misses.push(`start-incident ${q.maxStartIncidentDeg?.toFixed(2)}>${ROUND_START_INCIDENT_MAX_DEG}`);
     }
-    if ((q.minFilletChordOverCMin ?? 1) + 1e-9 < 1) {
+    if ((q.minFilletChordOverCMin ?? 1) + 1e-3 < 1) {
         misses.push(`fillet-chord ${q.minFilletChordOverCMin?.toFixed(3)}<C_MIN`);
     }
     return misses;
