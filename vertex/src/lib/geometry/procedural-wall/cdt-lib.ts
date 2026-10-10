@@ -10,29 +10,8 @@ function orient2(ax: number, ay: number, bx: number, by: number, cx: number, cy:
     return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
 }
 
-function turningNumber(pts: PolyPoint[], n: number): number {
-    let sum = 0;
-    for (let i = 0; i < n; i++) {
-        const a = pts[(i + n - 1) % n]!;
-        const b = pts[i]!;
-        const c = pts[(i + 1) % n]!;
-        const v1x = b.x - a.x;
-        const v1y = b.y - a.y;
-        const v2x = c.x - b.x;
-        const v2y = c.y - b.y;
-        sum += Math.atan2(v1x * v2y - v1y * v2x, v1x * v2x + v1y * v2y);
-    }
-    return sum / (Math.PI * 2);
-}
-
 function edgeKey(a: number, b: number): string {
     return a < b ? `${a},${b}` : `${b},${a}`;
-}
-
-function usesInteriorBoundaryWalk(a: number, b: number, c: number, nOuter: number, step: number): boolean {
-    const walk = (p: number, q: number): boolean =>
-        p < nOuter && q < nOuter && q === (p + step + nOuter) % nOuter;
-    return walk(a, b) || walk(b, c) || walk(c, a);
 }
 
 /**
@@ -70,8 +49,10 @@ export function libraryCdtInterior(
         }
     }
     const outer = points.slice(0, nOuter);
-    const step = turningNumber(points, nOuter) >= 0 ? 1 : -1;
-    const faces: Array<[number, number, number]> = [];
+    const iEdges = new Set<string>();
+    for (let i = 0; i < nOuter; i++) iEdges.add(edgeKey(i, (i + 1) % nOuter));
+    const all: Array<[number, number, number]> = [];
+    const edgeFaces = new Map<string, number[]>();
     const tri = del.triangles;
     for (let t = 0; t < tri.length; t += 3) {
         const a = tri[t]!;
@@ -80,46 +61,56 @@ export function libraryCdtInterior(
         const A = points[a]!;
         const B = points[b]!;
         const C = points[c]!;
-        const cx = (A.x + B.x + C.x) / 3;
-        const cy = (A.y + B.y + C.y) / 3;
         const oriented: [number, number, number] =
             orient2(A.x, A.y, B.x, B.y, C.x, C.y) > 0 ? [a, b, c] : [a, c, b];
-        const inside = pointInPoly(cx, cy, outer);
-        const keepSliver = usesInteriorBoundaryWalk(oriented[0], oriented[1], oriented[2], nOuter, step);
-        if (!inside && !keepSliver) continue;
-        faces.push(oriented);
-    }
-    const have = faceEdgeSet(faces);
-    const cover = new Map<string, [number, number, number]>();
-    for (let t = 0; t < tri.length; t += 3) {
-        const a = tri[t]!;
-        const b = tri[t + 1]!;
-        const c = tri[t + 2]!;
-        const A = points[a]!;
-        const B = points[b]!;
-        const C = points[c]!;
-        const oriented: [number, number, number] =
-            orient2(A.x, A.y, B.x, B.y, C.x, C.y) > 0 ? [a, b, c] : [a, c, b];
+        const fi = all.length;
+        all.push(oriented);
         for (const [p, q] of [
             [oriented[0], oriented[1]],
             [oriented[1], oriented[2]],
             [oriented[2], oriented[0]],
         ] as const) {
-            if (p >= nOuter || q >= nOuter) continue;
-            if (q !== (p + step + nOuter) % nOuter && p !== (q + step + nOuter) % nOuter) continue;
-            cover.set(edgeKey(p, q), oriented);
+            const k = edgeKey(p, q);
+            let list = edgeFaces.get(k);
+            if (!list) {
+                list = [];
+                edgeFaces.set(k, list);
+            }
+            list.push(fi);
         }
     }
-    for (let i = 0; i < nOuter; i++) {
-        const j = (i + 1) % nOuter;
-        const k = edgeKey(i, j);
-        if (have.has(k)) continue;
-        const f = cover.get(k);
-        if (!f) continue;
-        faces.push(f);
-        have.add(k);
+    let seed = -1;
+    for (let i = 0; i < all.length; i++) {
+        const f = all[i]!;
+        const A = points[f[0]!]!;
+        const B = points[f[1]!]!;
+        const C = points[f[2]!]!;
+        if (pointInPoly((A.x + B.x + C.x) / 3, (A.y + B.y + C.y) / 3, outer)) {
+            seed = i;
+            break;
+        }
     }
-    return faces;
+    if (seed < 0) return [];
+    const seen = new Set<number>([seed]);
+    const stack = [seed];
+    while (stack.length) {
+        const fi = stack.pop()!;
+        const f = all[fi]!;
+        for (const [p, q] of [
+            [f[0]!, f[1]!],
+            [f[1]!, f[2]!],
+            [f[2]!, f[0]!],
+        ] as const) {
+            const k = edgeKey(p, q);
+            if (iEdges.has(k)) continue;
+            for (const n of edgeFaces.get(k) ?? []) {
+                if (seen.has(n)) continue;
+                seen.add(n);
+                stack.push(n);
+            }
+        }
+    }
+    return [...seen].map((i) => all[i]!);
 }
 
 function faceEdgeSet(faces: Array<[number, number, number]>): Set<string> {
