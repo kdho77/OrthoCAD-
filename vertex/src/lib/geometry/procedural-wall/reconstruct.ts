@@ -10,7 +10,7 @@ import {
 import { type HeightFieldParams, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SideCorrections } from "@/types";
-import { constructOutsideRound, FILLET_R_CAP_MM, WELD_MM } from "./bezier-column";
+import { columnHeading, constructOutsideRound, FILLET_R_CAP_MM, WELD_MM } from "./bezier-column";
 import {
     assertCutInOnHighRimSide,
     medialYSignFromPattern,
@@ -464,7 +464,19 @@ export function reconstructProceduralWalls(
     );
     pairing = collapsed.pairing;
     rimLocal = collapsed.rimLocal;
-    const earlyJ = rimJunctions(positions, indices, rimLocal, pairing.normals, 0);
+    const earlyJ = rimJunctions(
+        positions,
+        indices,
+        rimLocal,
+        pairing.top.map((R, i) => {
+            const B = pairing.plantar[i]!;
+            const dx = B.x - R.x;
+            const dy = B.y - R.y;
+            const len = Math.hypot(dx, dy);
+            return len < 1e-4 ? (pairing.normals[i] ?? { x: 1, y: 0 }) : { x: dx / len, y: dy / len };
+        }),
+        0,
+    );
     const rTop = Math.min(FILLET_R_CAP_MM, Math.max(0, defaults.wallFilletTopMm || 0.5));
     const E: PolyPoint[] = pairing.top.map((R, i) => {
         const B = pairing.plantar[i]!;
@@ -587,7 +599,7 @@ export function reconstructProceduralWalls(
         positions,
         indices,
         rimLocal,
-        stations.map((s) => s.n),
+        stations.map((s) => columnHeading(s).h),
         0,
     );
     const topHeight = buildXyHeightIndex(Float32Array.from(positions), indices);
@@ -684,6 +696,10 @@ export function reconstructProceduralWalls(
         maxBFaceAspect: grid.quality?.maxBFaceAspect,
         maxTopSheetEdgeDeg: grid.quality?.maxTopSheetEdgeDeg,
         nRows: grid.quality?.nRows,
+        minLastChordMm: grid.quality?.minLastChordMm,
+        maxChordRiseDeg: grid.quality?.maxChordRiseDeg,
+        lastSzMonotone: grid.quality?.lastSzMonotone,
+        stationSpacingMm: grid.quality?.stationSpacingMm,
         maxFrameAngleDeg: grid.maxFrameAngleDeg,
         maxOffPlaneMm: grid.maxOffPlaneMm,
         maxSidewaysMm: grid.maxSidewaysMm,

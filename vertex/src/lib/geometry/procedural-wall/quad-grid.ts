@@ -151,7 +151,7 @@ export function rimJunctions(
             ny += fy;
             nz += fz;
         }
-        if (bestAbs > (8 * Math.PI) / 180) {
+        if (bestAbs >= 0) {
             nx = bestN.x;
             ny = bestN.y;
             nz = bestN.z;

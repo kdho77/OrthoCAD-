@@ -18,6 +18,7 @@ import {
     ACROSS_STATION_MAX_DEG,
     ACROSS_STATION_P99_MAX_DEG,
     buildHermiteStations,
+    CHORD_RISE_MAX_DEG,
     COLUMN_PLANARITY_LIMIT_MM,
     CUP_BOWL,
     countDegenerateFaces,
@@ -37,7 +38,6 @@ import {
     groundDriftMm,
     HEADING_MAX_DEG,
     heelInnerWidthAtU,
-    LAST_FILLET_Z_MIN_MM,
     LATERAL_K_SLACK,
     MIN_EDGE_MM,
     MIN_LINE_MM,
@@ -151,6 +151,10 @@ type ColumnQualityUd = {
     minLastRowHeightMm?: number;
     maxBFaceAspect?: number;
     maxTopSheetEdgeDeg?: number;
+    minLastChordMm?: number;
+    maxChordRiseDeg?: number;
+    lastSzMonotone?: boolean;
+    stationSpacingMm?: number;
 };
 
 type SampleGateReport = {
@@ -320,9 +324,14 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.minLastRowSMm ?? 0) < 0 - 1e-9) {
         misses.push(`last-row-s ${q.minLastRowSMm?.toFixed(3)}<0`);
     }
-    if ((q.minLastRowHeightMm ?? 0) < LAST_FILLET_Z_MIN_MM - 1e-9) {
-        misses.push(`last-row-h ${q.minLastRowHeightMm?.toFixed(3)}<${LAST_FILLET_Z_MIN_MM}`);
+    const cMin = (q.stationSpacingMm ?? 1.5) / 20;
+    if ((q.minLastChordMm ?? 0) < cMin - 1e-9) {
+        misses.push(`chord-B ${q.minLastChordMm?.toFixed(3)}<${cMin.toFixed(3)}`);
     }
+    if ((q.maxChordRiseDeg ?? 0) > CHORD_RISE_MAX_DEG + 1e-6) {
+        misses.push(`chord-rise ${q.maxChordRiseDeg?.toFixed(2)}>${CHORD_RISE_MAX_DEG}`);
+    }
+    if (q.lastSzMonotone === false) misses.push("last-sz-monotone");
     if ((q.maxBFaceAspect ?? 0) > 20 + 1e-6) {
         misses.push(`aspect-B ${q.maxBFaceAspect?.toFixed(2)}>20`);
     }

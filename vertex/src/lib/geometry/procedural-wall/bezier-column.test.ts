@@ -7,19 +7,26 @@ import {
     assertT0ClearsSheet,
     bLoopOutwardNormal,
     buildBezierColumns,
+    CHORD_RISE_MAX_DEG,
     COLUMN_PLANARITY_LIMIT_MM,
     clampLastFilletOutboard,
     columnHeading,
     constructArcLineArc,
     constructFillet,
+    DPHI_L_MAX_DEG,
     evalCubicBezier,
     FILLET_R_CAP_MM,
+    FILLET_STEP_MAX_DEG,
     filletCenterAndF,
     HEADING_MAX_DEG,
     headingAllowanceDeg,
+    incidentFaceTangent,
     initColumnFrames,
     LAST_FILLET_S_MIN_MM,
     LAST_FILLET_Z_MIN_MM,
+    lastFilletCMinMm,
+    lastFilletPhis,
+    lastFilletR2MinMm,
     MERGE_ROW_MM,
     MIN_LINE_MM,
     nTopFromSheetSlope,
@@ -36,6 +43,7 @@ import {
     rotateColumnAboutB,
     SCALAR_SMOOTH_SIGMA_MM,
     STEEP_SHEET_DEG,
+    sampleArcLineArc,
     sampleByArcLength,
     sampleInPlaneSlope,
     sheetSlopeFromNormal,
@@ -146,7 +154,7 @@ describe("bezier column", () => {
         );
         expect(tight.L).toBeGreaterThanOrEqual(MIN_LINE_MM);
         expect(tight.r1).toBeLessThan(3);
-        expect(tight.r2).toBeLessThan(3);
+        expect(tight.r2).toBeGreaterThanOrEqual(lastFilletR2MinMm(1.5) - 1e-9);
         const zeroInset = constructArcLineArc(
             { x: 0, y: 0, z: 2 },
             { x: 0, y: 0, z: 0 },
@@ -479,6 +487,65 @@ describe("bezier column", () => {
             (90 * Math.PI) / 180,
         );
         expect(ala.r1).toBeLessThan(0.1);
+    });
+
+    test("last fillet uses reserved dL on the exact arc and floors r2", () => {
+        expect(DPHI_L_MAX_DEG).toBe(12);
+        expect(FILLET_STEP_MAX_DEG).toBe(8);
+        expect(CHORD_RISE_MAX_DEG).toBe(6);
+        const spacing = 1.3;
+        const r2Min = lastFilletR2MinMm(spacing);
+        const cMin = lastFilletCMinMm(spacing);
+        const R = { x: 0, y: 0, z: 12 };
+        const B = { x: 8, y: 0, z: 0 };
+        const h = { x: 1, y: 0 };
+        const ala = constructArcLineArc(R, B, { x: 0, y: 0, z: 1 }, 0.5, 0.05, h, 0, undefined, spacing);
+        expect(ala.r2).toBeGreaterThanOrEqual(r2Min - 1e-9);
+        const phis = lastFilletPhis(ala.phiFil0, ala.phiFil1);
+        expect(phis.length).toBeGreaterThanOrEqual(6);
+        const pts = sampleArcLineArc(ala, h, R, B, 24, spacing);
+        expect(pts[pts.length - 1]).toEqual(B);
+        const last = pts[pts.length - 2]!;
+        expect(dist3ish(last, B)).toBeGreaterThanOrEqual(cMin - 1e-6);
+        expect(dist3ish(last, ala.C2)).toBeCloseTo(ala.r2, 5);
+        const radial = { x: last.x - ala.C2.x, y: last.y - ala.C2.y, z: last.z - ala.C2.z };
+        const tan = { x: -radial.z * h.x, y: -radial.z * h.y, z: radial.x * h.x + radial.y * h.y };
+        const chord = { x: B.x - last.x, y: B.y - last.y, z: B.z - last.z };
+        const tl = Math.hypot(tan.x, tan.y, tan.z) || 1;
+        const cl = Math.hypot(chord.x, chord.y, chord.z) || 1;
+        const sign = tan.x * chord.x + tan.y * chord.y + tan.z * chord.z < 0 ? -1 : 1;
+        const rise =
+            (Math.acos(
+                Math.max(
+                    -1,
+                    Math.min(1, (sign * (tan.x * chord.x + tan.y * chord.y + tan.z * chord.z)) / (tl * cl)),
+                ),
+            ) *
+                180) /
+            Math.PI;
+        expect(rise).toBeLessThanOrEqual(CHORD_RISE_MAX_DEG + 1e-3);
+    });
+
+    test("incident-face tangent and nTop share the normal-tilt convention", () => {
+        const h = { x: 1, y: 0 };
+        const tilt = (15 * Math.PI) / 180;
+        const n = nTopFromSheetSlope(tilt, h);
+        const fromFace = sheetSlopeFromNormal(n, h);
+        expect(fromFace).not.toBeNull();
+        expect(((fromFace ?? 0) * 180) / Math.PI).toBeCloseTo(15, 5);
+        const T = incidentFaceTangent(n, h);
+        expect(T).not.toBeNull();
+        const tStart = {
+            x: -n.z * h.x,
+            y: -n.z * h.y,
+            z: n.x * h.x + n.y * h.y,
+        };
+        const tl = Math.hypot(tStart.x, tStart.y, tStart.z) || 1;
+        const t = { x: tStart.x / tl, y: tStart.y / tl, z: tStart.z / tl };
+        const flipped = t.x * h.x + t.y * h.y > 0 ? { x: -t.x, y: -t.y, z: -t.z } : t;
+        expect(T!.x).toBeCloseTo(flipped.x, 6);
+        expect(T!.y).toBeCloseTo(flipped.y, 6);
+        expect(T!.z).toBeCloseTo(flipped.z, 6);
     });
 
     test("r2 post-clamp rate limiter holds 10%/station", () => {
