@@ -171,9 +171,12 @@ type ColumnQualityUd = {
     maxNeighbourSpacingRatioR?: number;
     maxETurningDeg?: number;
     maxFTurningDeg?: number;
-    maxTopG1AtRDeg?: number;
     maxSignedFoldDeg?: number;
     nFoldsOver90?: number;
+    inwardWallFaces?: number;
+    nRoundSetter?: number;
+    nRoundSetterU?: number;
+    nRoundCollapsedSkipped?: number;
     nRows?: number;
     columnCrossings?: number;
     maxSignedSeamNonFallbackDeg?: number;
@@ -324,7 +327,6 @@ function compactGateTable(
         g1E: q?.maxG1EDeg,
         g1F: q?.maxG1FDeg,
         topRound: q?.maxTopRoundDeg,
-        topG1R: q?.maxTopG1AtRDeg,
         topSheet: q?.maxTopSheetEdgeDeg,
         crossings: q?.columnCrossings,
         fold: q?.maxSignedFoldDeg,
@@ -333,6 +335,11 @@ function compactGateTable(
         spacingB: q?.maxNeighbourSpacingRatioB,
         spacingR: q?.maxNeighbourSpacingRatioR,
         fallback: q?.obliqueFallback?.length ?? 0,
+        foldCap: SIGNED_FOLD_MAX_DEG,
+        inward: q?.inwardWallFaces,
+        nRoundSetter: extra.nRoundSetter ?? q?.nRoundSetter,
+        nRoundSetterU: extra.nRoundSetterU ?? q?.nRoundSetterU,
+        nRoundCollapsed: extra.nRoundCollapsed ?? q?.nRoundCollapsedSkipped,
         misses: extra.misses,
     };
 }
@@ -347,8 +354,8 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxAcrossP99Deg ?? 0) > ACROSS_STATION_P99_MAX_DEG + 1e-6) {
         misses.push(`across-p99 ${q.maxAcrossP99Deg?.toFixed(2)}>${ACROSS_STATION_P99_MAX_DEG}`);
     }
-    if ((q.maxTopG1AtRDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
-        misses.push(`top-G1-R ${q.maxTopG1AtRDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
+    if ((q.maxTopRoundDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
+        misses.push(`top|round ${q.maxTopRoundDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
     }
     if ((q.maxRoundWallDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
         misses.push(`round|wall ${q.maxRoundWallDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
@@ -401,7 +408,9 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxBFaceAspect ?? 0) > 20 + 1e-6) {
         misses.push(`aspect-B ${q.maxBFaceAspect?.toFixed(2)}>20`);
     }
-    // first-chord top-sheet is table-only; top G1 at R is the analytic gate.
+    if ((q.maxTopSheetEdgeDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
+        misses.push(`top-sheet ${q.maxTopSheetEdgeDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
+    }
     if (q.rowPieceIdentical === false) misses.push("row-to-piece");
     if ((q.maxAlongRowDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
         misses.push(`along-row ${q.maxAlongRowDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
@@ -432,6 +441,9 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     }
     if ((q.columnCrossings ?? 0) !== 0) {
         misses.push(`column-cross=${q.columnCrossings}`);
+    }
+    if ((q.inwardWallFaces ?? 0) !== 0) {
+        misses.push(`inward-faces=${q.inwardWallFaces}`);
     }
     return misses;
 }
@@ -1037,12 +1049,18 @@ describe("S1 parametric wall", () => {
             nRound?: number;
             nLine?: number;
             nFil?: number;
+            nRoundSetter?: number;
+            nRoundSetterU?: number;
+            nRoundCollapsedSkipped?: number;
         };
         const sampleTable = compactGateTable("SAMPLE", exactRep.columnQuality, {
             nS: sampleUd.stationCount,
             nRound: sampleUd.nRound,
             nLine: sampleUd.nLine,
             nFil: sampleUd.nFil,
+            nRoundSetter: sampleUd.nRoundSetter,
+            nRoundSetterU: sampleUd.nRoundSetterU,
+            nRoundCollapsed: sampleUd.nRoundCollapsedSkipped,
             misses: exactRep.misses.join("; "),
         });
         writeFileSync(
@@ -1283,12 +1301,18 @@ describe("S1 parametric wall", () => {
             nRound?: number;
             nLine?: number;
             nFil?: number;
+            nRoundSetter?: number;
+            nRoundSetterU?: number;
+            nRoundCollapsedSkipped?: number;
         };
         const defaultTable = compactGateTable("Default", defaultUd.columnQuality, {
             nS: defaultUd.stationCount,
             nRound: defaultUd.nRound,
             nLine: defaultUd.nLine,
             nFil: defaultUd.nFil,
+            nRoundSetter: defaultUd.nRoundSetter,
+            nRoundSetterU: defaultUd.nRoundSetterU,
+            nRoundCollapsed: defaultUd.nRoundCollapsedSkipped,
             misses: qualityMisses(defaultUd).join("; "),
         });
         writeFileSync(

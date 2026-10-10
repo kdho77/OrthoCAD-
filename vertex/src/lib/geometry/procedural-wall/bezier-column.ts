@@ -35,19 +35,17 @@ export const SEAM_B_FALLBACK_DEG = 9.5;
 export const NEIGHBOUR_SPACING_RATIO = 1.5;
 export const ASPECT_EVERYWHERE_MAX = 20;
 export const ASPECT_ROUND_MAX = 30;
-export const SIGNED_FOLD_MAX_DEG = 90;
+/** Post-loft signed-dihedral cap. S1-stage p99 / E/F-turn stay 5 / 6.5. */
+export const SIGNED_FOLD_MAX_DEG = 150;
 export const WELD_MM = 1e-3;
 export const MIN_EDGE_MM = 0.01;
 export const ALONG_JOINT_MAX_DEG = 8;
 export const ALONG_JOINT_BUDGET_FRAC = 1.15;
 export const ACROSS_STATION_MAX_DEG = 10;
-/** Across p99 after the pre-ruling E/F frame smooth. */
-export const ACROSS_STATION_P99_MAX_DEG = 3;
-/** E/F ring turning after the pre-ruling E/F frame smooth. */
-export const RING_TURNING_MAX_DEG = 3;
-export const WOUT_SMOOTH_SIGMA_MM = 10;
-export const NTOP_SMOOTH_SIGMA_MM = 6;
-export const F_FRAME_SMOOTH_SIGMA_MM = 10;
+/** S1-stage across p99. Step 2 tightens back to 3°. */
+export const ACROSS_STATION_P99_MAX_DEG = 5;
+/** S1-stage E/F ring turning. Step 2 tightens back to 3°. */
+export const RING_TURNING_MAX_DEG = 6.5;
 export const HEADING_MAX_DEG = 3;
 export const ROUND_MIN_STEP_MM = 0.15;
 export const ROUND_MAX_ASPECT = 20;
@@ -148,12 +146,6 @@ export interface ColumnFrame {
     nTop: XYZ;
     nTopSmoothed: XYZ;
     wOut: { x: number; y: number };
-    /** 3D in-surface outward (n_top × t_rim), after the pre-ruling smooth. */
-    wOut3: XYZ;
-    /** Plantar normal at B (for the F-side frame smooth). */
-    nPlant: XYZ;
-    /** When set, constructSweepRule uses the smoothed n_top / wOut / nB. */
-    frameLocked: boolean;
     nWall: XYZ;
     roundRows: number;
     /** External-tangent length (signed; negative if unordered). */
@@ -258,10 +250,12 @@ export interface ColumnQuality {
     maxSignedSeamNonFallbackDeg: number;
     maxETurningDeg: number;
     maxFTurningDeg: number;
-    /** Analytic G1 at R: sheet incident tangent vs round start (T0). */
-    maxTopG1AtRDeg: number;
     maxSignedFoldDeg: number;
     nFoldsOver90: number;
+    inwardWallFaces: number;
+    nRoundSetter?: number;
+    nRoundSetterU?: number;
+    nRoundCollapsedSkipped?: number;
     obliqueFallback: ObliqueFallbackRow[];
 }
 
@@ -277,7 +271,20 @@ export interface BezierColumns {
     flareCapReport: ReturnType<typeof smoothAndCapFlare>["report"];
     minWallClamps: MinWallClamp[];
     quality: ColumnQuality;
+    nRoundReport?: NRoundStarReport;
     smoothLog?: { before: StationParamRow[]; after: StationParamRow[] };
+}
+
+export interface NRoundStarReport {
+    nRound: number;
+    nFil: number;
+    nLine: number;
+    setter: number;
+    setterU: number;
+    sweepDeg: number;
+    collapsedSkipped: number;
+    aspectCapped: boolean;
+    aspectStation: number;
 }
 
 export interface StationParamRow {
@@ -1221,16 +1228,6 @@ export function offPlaneNormalMm(p: XYZ, origin: XYZ, n: XYZ): number {
     return Math.abs((p.x - origin.x) * n.x + (p.y - origin.y) * n.y + (p.z - origin.z) * n.z);
 }
 
-/** Drop the n_top component and flip so wOut agrees with −h. */
-export function reorthoWOut(wIn: XYZ, nTop: XYZ, h: { x: number; y: number }): XYZ {
-    const n = unit3(nTop);
-    let w = add3(wIn, n, -dot3(wIn, n));
-    if (hypot3(w) < 1e-12) w = { x: -h.x, y: -h.y, z: 0 };
-    w = unit3(w);
-    if (w.x * -h.x + w.y * -h.y < 0) w = { x: -w.x, y: -w.y, z: -w.z };
-    return w;
-}
-
 /** In-surface outward at the rim: nTop × T_rim, flipped to agree with −h. */
 export function rimInSurfaceOutward(nTop: XYZ, tRim: XYZ, h: { x: number; y: number }): XYZ {
     let w = cross3(nTop, tRim);
@@ -1313,7 +1310,6 @@ export function constructSweepRule(
     localSpacing = OUTLINE_STATION_SPACING_MM,
     planeN?: XYZ,
     phiRound1Lock?: number,
-    frameLock?: { nTop?: XYZ; wOut?: XYZ },
 ): SweepRule {
     const hl = Math.hypot(hIn.x, hIn.y) || 1;
     const h = { x: hIn.x / hl, y: hIn.y / hl };
@@ -1321,14 +1317,10 @@ export function constructSweepRule(
     let nB = { x: nBIn.x / nl, y: nBIn.y / nl };
     if (nB.x * h.x + nB.y * h.y < 0) nB = { x: -nB.x, y: -nB.y };
     const steep = sheetSlopeRad != null && (Math.abs(sheetSlopeRad) * 180) / Math.PI >= STEEP_SHEET_DEG;
-    const nTop = frameLock?.nTop
-        ? unit3(frameLock.nTop)
-        : sheetSlopeRad != null
-          ? nTopFromSheetSlope(sheetSlopeRad, h)
-          : projectNTop(nTopIn, h, steep);
+    const nTop = sheetSlopeRad != null ? nTopFromSheetSlope(sheetSlopeRad, h) : projectNTop(nTopIn, h, steep);
     const eN = unit3(nTop);
     const tRim = hypot3(tRimIn) > 1e-12 ? unit3(tRimIn) : { x: -h.y, y: h.x, z: 0 };
-    const eW = frameLock?.wOut ? reorthoWOut(frameLock.wOut, eN, h) : rimInSurfaceOutward(eN, tRim, h);
+    const eW = rimInSurfaceOutward(eN, tRim, h);
     const frame = plantarFrameAt(nB, plantarSlopeRad);
     const nPlant = unit3(frame.ez);
     const height = Math.max(R.z - B.z, 0.5);
@@ -1574,14 +1566,6 @@ export function assertOutsideRound(R: XYZ, rnd: OutsideRound, pts: XYZ[]): void 
     }
 }
 
-function frameLockOf(fr: ColumnFrame): { nTop?: XYZ; wOut?: XYZ } | undefined {
-    if (!fr.frameLocked) return undefined;
-    return {
-        nTop: fr.nTopSmoothed ?? fr.nTop,
-        wOut: fr.wOut3 ?? rimInSurfaceOutward(fr.nTopSmoothed ?? fr.nTop, fr.tRim, fr.h),
-    };
-}
-
 export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     const nUse = fr.nTopSmoothed ?? fr.nTop;
     const nB = fr.nB ?? fr.h;
@@ -1597,11 +1581,10 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
         nB,
         tRim,
         fr.plantarSlopeRad,
-        fr.frameLocked ? undefined : fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
+        fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
         local,
         nUse,
         fr.phiRound1Lock,
-        frameLockOf(fr),
     );
     const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
     fr.lastDlRad = lastFilletDLRad(S, 1);
@@ -1610,11 +1593,9 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     fr.E = { ...sw.E };
     fr.F = { ...sw.F };
     fr.nTop = sw.nTop;
-    fr.nTopSmoothed = fr.frameLocked ? nUse : sw.nTop;
+    fr.nTopSmoothed = nUse;
     fr.nWall = sw.nRoundPlane;
     fr.wOut = { x: sw.eW.x, y: sw.eW.y };
-    fr.wOut3 = sw.eW;
-    fr.nPlant = sw.nPlant;
     fr.T0 = sw.tStart;
     fr.U = sw.d;
     fr.t0TiltRad = Math.atan2(sw.tStart.z, Math.hypot(sw.tStart.x, sw.tStart.y));
@@ -1919,11 +1900,10 @@ function columnPoints(
         nB,
         tRim,
         fr.plantarSlopeRad,
-        fr.frameLocked ? undefined : fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
+        fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
         local,
         nUse,
         fr.phiRound1Lock,
-        frameLockOf(fr),
     );
     const nRound = _nTopFix || fr.nRoundFix || 0;
     const nFil = _nFilFix || fr.nFilFix || 0;
@@ -2375,30 +2355,6 @@ export function clampLastFilletOutboard(col: XYZ[], B: XYZ, h: { x: number; y: n
     col[i] = p;
 }
 
-/** Periodic Gaussian on a vector field. Re-normalises; does not flip. */
-export function smoothVectorField(vecs: XYZ[], rim: XYZ[], sigma = SCALAR_SMOOTH_SIGMA_MM): XYZ[] {
-    if (vecs.length < 3) return vecs.map((v) => unit3(v));
-    const nx = periodicGaussian(
-        vecs.map((v) => v.x),
-        rim,
-        sigma,
-    );
-    const ny = periodicGaussian(
-        vecs.map((v) => v.y),
-        rim,
-        sigma,
-    );
-    const nz = periodicGaussian(
-        vecs.map((v) => v.z),
-        rim,
-        sigma,
-    );
-    return nx.map((_, i) => {
-        const v = { x: nx[i]!, y: ny[i]!, z: nz[i]! };
-        return hypot3(v) < 1e-12 ? unit3(vecs[i]!) : unit3(v);
-    });
-}
-
 export function smoothNormalField(normals: XYZ[], rim: XYZ[], sigma = SCALAR_SMOOTH_SIGMA_MM): XYZ[] {
     if (normals.length < 3) return normals.map((n) => unit3(n));
     const nx = periodicGaussian(
@@ -2683,9 +2639,6 @@ export function initColumnFrames(
             nTop,
             nTopSmoothed: nTop,
             wOut: { x: -h.x, y: -h.y },
-            wOut3: { x: -h.x, y: -h.y, z: 0 },
-            nPlant: { x: 0, y: 0, z: 1 },
-            frameLocked: false,
             nWall: { x: 0, y: 0, z: 1 },
             roundRows: TOP_ROUND_MIN_ROWS,
             lineLengthMm: 0,
@@ -2798,105 +2751,89 @@ function guardFrames(
     }
 }
 
-function rateLimitSignedClosed(vals: number[], maxPct: number): number[] {
-    const n = vals.length;
-    const out = vals.slice();
-    if (n < 2) return out;
-    const f = Math.max(0, maxPct) / 100;
-    const pull = (from: number, to: number): number => {
-        const den = Math.max(Math.abs(from), 1e-6);
-        const lo = from - den * f;
-        const hi = from + den * f;
-        return Math.max(lo, Math.min(hi, to));
-    };
-    for (let pass = 0; pass < 6; pass++) {
-        for (let i = 0; i < n; i++) {
-            const j = (i + 1) % n;
-            out[j] = pull(out[i]!, out[j]!);
-        }
-        for (let i = n - 1; i >= 0; i--) {
-            const j = (i + 1) % n;
-            out[i] = pull(out[j]!, out[i]!);
-        }
-    }
-    return out;
+/** A station too short to vote on nRound* / nFil* / nLine*. */
+export function isCollapsedColumn(fr: ColumnFrame): boolean {
+    const plan = Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y);
+    return Boolean(fr.shortChord) || plan < SHORT_CHORD_MM || fr.heightMm < 1;
 }
 
-/**
- * Smooth the E/F frame before the ruling solve, periodic in rim arc-length.
- * wOut from n_top × t (σ 10 mm), n_top (σ 6 mm), r1 + φ1 (σ 12 mm, 5%/station),
- * then B-loop / plantar normals (σ 10 mm). Rebuild E/F with G1 ≤ 3°.
- */
-export function smoothEfFrame(frames: ColumnFrame[]): void {
-    if (frames.length < 3) return;
-    const rim = frames.map((f) => f.R);
-    const nTop0 = frames.map((f, i) => {
-        const prev = frames[(i + frames.length - 1) % frames.length]!;
-        const next = frames[(i + 1) % frames.length]!;
-        let t = unit3({
-            x: next.R.x - prev.R.x,
-            y: next.R.y - prev.R.y,
-            z: next.R.z - prev.R.z,
-        });
-        if (hypot3(t) < 1e-12) t = f.tRim;
-        f.tRim = t;
-        return unit3(f.nTopSmoothed ?? f.nTop);
-    });
-    const wRaw = nTop0.map((n, i) => rimInSurfaceOutward(n, frames[i]!.tRim, frames[i]!.h));
-    const wSm = smoothVectorField(wRaw, rim, WOUT_SMOOTH_SIGMA_MM).map((w, i) =>
-        reorthoWOut(w, nTop0[i]!, frames[i]!.h),
-    );
-    const nSm = smoothVectorField(nTop0, rim, NTOP_SMOOTH_SIGMA_MM).map((n, i) => {
-        let u = unit3(n);
-        if (dot3(u, nTop0[i]!) < 0) u = { x: -u.x, y: -u.y, z: -u.z };
-        return u;
-    });
-    const wOut = wSm.map((w, i) => reorthoWOut(w, nSm[i]!, frames[i]!.h));
-    const r1 = rateLimitClosed(
-        periodicGaussian(
-            frames.map((f) => f.rTop),
-            rim,
-            SCALAR_SMOOTH_SIGMA_MM,
-        ),
-        R_CHANGE_MAX_PCT,
-        MIN_ROUND_R_MM,
-    );
-    const phiRaw = unwrapClosedRad(frames.map((f) => f.phiRound1 || f.roundSweepRad));
-    const phiSm = rateLimitSignedClosed(
-        periodicGaussian(phiRaw, rim, SCALAR_SMOOTH_SIGMA_MM),
-        R_CHANGE_MAX_PCT,
-    );
-    const nB0 = frames.map((f) => unit3({ x: f.nB.x, y: f.nB.y, z: 0 }));
-    const nBSm = smoothVectorField(nB0, rim, F_FRAME_SMOOTH_SIGMA_MM);
-    const nPlant0 = frames.map((f) => {
-        const pf = plantarFrameAt(f.nB, f.plantarSlopeRad);
-        return unit3(f.nPlant && hypot3(f.nPlant) > 1e-9 ? f.nPlant : pf.ez);
-    });
-    const nPlantSm = smoothVectorField(nPlant0, rim, F_FRAME_SMOOTH_SIGMA_MM);
+function choosePieceCounts(frames: ColumnFrame[], spacing: number): NRoundStarReport {
+    const stepRad = (FILLET_STEP_MAX_DEG * Math.PI) / 180;
+    const minStep = spacing / ASPECT_EVERYWHERE_MAX;
+    let nRound = TOP_ROUND_MIN_ROWS;
+    let nFil = MIN_FILLET_RINGS;
+    let nLineNeed = 1;
+    let maxNeedR = 0;
+    let setter = -1;
+    let setterU = 0;
+    let sweepDeg = 0;
+    let collapsedSkipped = 0;
+    let minRoundArc = Infinity;
+    let minFilArc = Infinity;
+    let minLineLen = Infinity;
+    let aspectStation = -1;
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
-        const nB = nBSm[i]!;
-        const nl = Math.hypot(nB.x, nB.y) || 1;
-        let nb = { x: nB.x / nl, y: nB.y / nl };
-        if (nb.x * fr.h.x + nb.y * fr.h.y < 0) nb = { x: -nb.x, y: -nb.y };
-        fr.nB = nb;
-        const np = unit3(nPlantSm[i]!);
-        const w = { x: -nb.x, y: -nb.y };
-        fr.nPlant = np;
-        fr.plantarSlopeRad = Math.atan2(np.x * w.x + np.y * w.y, np.z);
-        fr.nTop = nSm[i]!;
-        fr.nTopSmoothed = nSm[i]!;
-        fr.wOut3 = wOut[i]!;
-        fr.wOut = { x: fr.wOut3.x, y: fr.wOut3.y };
-        fr.rTop = r1[i]!;
-        fr.phiRound1Lock = phiSm[i]!;
-        fr.phiRound1 = phiSm[i]!;
-        fr.roundSweepRad = Math.abs(phiSm[i]!);
-        fr.frameLocked = true;
-        applyAlaToFrame(fr);
-        fr.phiRound1Lock = fr.phiRound1;
-        fr.roundSweepRad = Math.abs(fr.phiRound1);
+        if (isCollapsedColumn(fr)) {
+            collapsedSkipped++;
+            continue;
+        }
+        const needR = Math.ceil(Math.abs(fr.roundSweepRad) / Math.max(stepRad, 1e-9));
+        if (needR > maxNeedR) {
+            maxNeedR = needR;
+            setter = i;
+            setterU = fr.u;
+            sweepDeg = (Math.abs(fr.roundSweepRad) * 180) / Math.PI;
+        }
+        const S = Math.abs(fr.filletSweepRad);
+        const dL = fr.lastDlRad || lastFilletDLRad(S, 1);
+        nFil = Math.max(nFil, Math.ceil(Math.max(S - dL, 1e-12) / Math.max(stepRad, 1e-9)));
+        nLineNeed = Math.max(nLineNeed, lineRowCount(fr.lineLengthMm, spacing));
+        const ra = Math.abs(fr.rTop * fr.roundSweepRad);
+        if (ra < minRoundArc) {
+            minRoundArc = ra;
+            aspectStation = i;
+        }
+        minFilArc = Math.min(minFilArc, Math.abs(fr.rFillet * fr.filletSweepRad));
+        minLineLen = Math.min(minLineLen, fr.lineLengthMm);
     }
+    nRound = Math.max(TOP_ROUND_MIN_ROWS, maxNeedR);
+    nFil = Math.max(MIN_FILLET_RINGS, nFil);
+    let aspectCapped = false;
+    if (Number.isFinite(minRoundArc) && collapsedSkipped < frames.length) {
+        const capped = Math.max(TOP_ROUND_MIN_ROWS, Math.floor(minRoundArc / Math.max(minStep, 1e-6)));
+        if (capped < nRound) {
+            nRound = capped;
+            aspectCapped = true;
+        }
+    }
+    if (Number.isFinite(minFilArc) && collapsedSkipped < frames.length) {
+        nFil = Math.min(nFil, Math.max(MIN_FILLET_RINGS, Math.floor(minFilArc / Math.max(minStep, 1e-6))));
+    }
+    if (Number.isFinite(minLineLen) && collapsedSkipped < frames.length) {
+        nLineNeed = Math.min(nLineNeed, Math.max(1, Math.floor(minLineLen / Math.max(minStep, 1e-6))));
+    }
+    return {
+        nRound,
+        nFil,
+        nLine: Math.max(1, nLineNeed),
+        setter,
+        setterU,
+        sweepDeg,
+        collapsedSkipped,
+        aspectCapped,
+        aspectStation,
+    };
+}
+
+function applyPieceCounts(frames: ColumnFrame[], report: NRoundStarReport): number {
+    for (const fr of frames) {
+        fr.nRoundFix = report.nRound;
+        fr.nFilFix = report.nFil;
+        fr.nLineFix = report.nLine;
+        fr.roundRows = report.nRound;
+    }
+    return report.nRound + report.nLine + report.nFil + 2;
 }
 
 /**
@@ -2926,54 +2863,24 @@ export function buildBezierColumns(
     const smoothLog = applySmooth(frames, FRAME_SMOOTH_ITERS);
     console.log("[S1-SMOOTH] before", JSON.stringify(smoothLog.before));
     console.log("[S1-SMOOTH] after", JSON.stringify(smoothLog.after));
-    smoothEfFrame(frames);
-    const stepRad = (FILLET_STEP_MAX_DEG * Math.PI) / 180;
-    let nRoundStar = TOP_ROUND_MIN_ROWS;
-    let nFilStar = MIN_FILLET_RINGS;
-    let nLineNeed = 1;
-    for (const fr of frames) {
-        const ala = applyAlaToFrame(fr);
-        nRoundStar = Math.max(nRoundStar, Math.ceil(Math.abs(ala.roundSweep) / Math.max(stepRad, 1e-9)));
-        const S = Math.abs(ala.phiFil1 - ala.phiFil0);
-        const dL = lastFilletDLRad(S, 1);
-        nFilStar = Math.max(nFilStar, Math.ceil(Math.max(S - dL, 1e-12) / Math.max(stepRad, 1e-9)));
-        nLineNeed = Math.max(nLineNeed, lineRowCount(ala.L, spacing));
-    }
-    nRoundStar = Math.max(TOP_ROUND_MIN_ROWS, nRoundStar);
-    nFilStar = Math.max(MIN_FILLET_RINGS, nFilStar);
-    const minStep = spacing / ASPECT_EVERYWHERE_MAX;
-    let minRoundArc = Infinity;
-    let minFilArc = Infinity;
-    let minLineLen = Infinity;
-    for (const fr of frames) {
-        minRoundArc = Math.min(minRoundArc, Math.abs(fr.rTop * fr.roundSweepRad));
-        minFilArc = Math.min(minFilArc, Math.abs(fr.rFillet * fr.filletSweepRad));
-        minLineLen = Math.min(minLineLen, fr.lineLengthMm);
-    }
-    if (Number.isFinite(minRoundArc)) {
-        nRoundStar = Math.min(
-            nRoundStar,
-            Math.max(TOP_ROUND_MIN_ROWS, Math.floor(minRoundArc / Math.max(minStep, 1e-6))),
-        );
-    }
-    if (Number.isFinite(minFilArc)) {
-        nFilStar = Math.min(
-            nFilStar,
-            Math.max(MIN_FILLET_RINGS, Math.floor(minFilArc / Math.max(minStep, 1e-6))),
-        );
-    }
-    if (Number.isFinite(minLineLen)) {
-        nLineNeed = Math.min(nLineNeed, Math.max(1, Math.floor(minLineLen / Math.max(minStep, 1e-6))));
-    }
-    const nIntervals = Math.max(1, nRoundStar + nLineNeed + nFilStar + 1);
-    let nLineStar = Math.max(1, nIntervals - nRoundStar - nFilStar - 1);
-    nWall = nIntervals + 1;
-    for (const fr of frames) {
-        fr.nRoundFix = nRoundStar;
-        fr.nFilFix = nFilStar;
-        fr.nLineFix = nLineStar;
-        fr.roundRows = nRoundStar;
-    }
+    for (const fr of frames) applyAlaToFrame(fr);
+    let piece = choosePieceCounts(frames, spacing);
+    let nRoundStar = piece.nRound;
+    let nFilStar = piece.nFil;
+    let nLineStar = piece.nLine;
+    nWall = applyPieceCounts(frames, piece);
+    console.log(
+        "[S1-NROUND]",
+        JSON.stringify({
+            nRound: piece.nRound,
+            setter: piece.setter,
+            u: Number(piece.setterU.toFixed(4)),
+            sweepDeg: Number(piece.sweepDeg.toFixed(2)),
+            collapsedSkipped: piece.collapsedSkipped,
+            aspectCapped: piece.aspectCapped,
+            aspectStation: piece.aspectStation,
+        }),
+    );
     console.log(
         "[S1-PIECES]",
         JSON.stringify({ nRound: nRoundStar, nFil: nFilStar, nLine: nLineStar, nWall, nS: frames.length }),
@@ -3008,53 +2915,36 @@ export function buildBezierColumns(
         }
     }
     smoothRoundEndAngles(frames);
-    {
-        const minStep2 = spacing / ASPECT_EVERYWHERE_MAX;
-        let nR = TOP_ROUND_MIN_ROWS;
-        let nF = MIN_FILLET_RINGS;
-        let nL = 1;
-        let minRa = Infinity;
-        let minFa = Infinity;
-        let minLn = Infinity;
-        for (const fr of frames) {
-            nR = Math.max(nR, Math.ceil(Math.abs(fr.roundSweepRad) / Math.max(stepRad, 1e-9)));
-            const S = Math.abs(fr.filletSweepRad);
-            nF = Math.max(nF, Math.ceil(Math.max(S - (fr.lastDlRad || 0), 1e-12) / Math.max(stepRad, 1e-9)));
-            nL = Math.max(nL, lineRowCount(fr.lineLengthMm, spacing));
-            minRa = Math.min(minRa, Math.abs(fr.rTop * fr.roundSweepRad));
-            minFa = Math.min(minFa, Math.abs(fr.rFillet * fr.filletSweepRad));
-            minLn = Math.min(minLn, fr.lineLengthMm);
-        }
-        if (Number.isFinite(minRa)) {
-            nR = Math.min(nR, Math.max(TOP_ROUND_MIN_ROWS, Math.floor(minRa / Math.max(minStep2, 1e-6))));
-        }
-        if (Number.isFinite(minFa)) {
-            nF = Math.min(nF, Math.max(MIN_FILLET_RINGS, Math.floor(minFa / Math.max(minStep2, 1e-6))));
-        }
-        if (Number.isFinite(minLn)) {
-            nL = Math.min(nL, Math.max(1, Math.floor(minLn / Math.max(minStep2, 1e-6))));
-        }
-        nRoundStar = nR;
-        nFilStar = nF;
-        nLineStar = Math.max(1, nL);
-        nWall = nRoundStar + nLineStar + nFilStar + 2;
-        for (const fr of frames) {
-            fr.nRoundFix = nRoundStar;
-            fr.nFilFix = nFilStar;
-            fr.nLineFix = nLineStar;
-            fr.roundRows = nRoundStar;
-        }
-        console.log(
-            "[S1-PIECES-FINAL]",
-            JSON.stringify({
-                nRound: nRoundStar,
-                nFil: nFilStar,
-                nLine: nLineStar,
-                nWall,
-                nS: frames.length,
-            }),
-        );
-    }
+    piece = choosePieceCounts(frames, spacing);
+    nRoundStar = piece.nRound;
+    nFilStar = piece.nFil;
+    nLineStar = piece.nLine;
+    nWall = applyPieceCounts(frames, piece);
+    console.log(
+        "[S1-NROUND]",
+        JSON.stringify({
+            nRound: piece.nRound,
+            setter: piece.setter,
+            u: Number(piece.setterU.toFixed(4)),
+            sweepDeg: Number(piece.sweepDeg.toFixed(2)),
+            collapsedSkipped: piece.collapsedSkipped,
+            aspectCapped: piece.aspectCapped,
+            aspectStation: piece.aspectStation,
+            pass: "final",
+        }),
+    );
+    console.log(
+        "[S1-PIECES-FINAL]",
+        JSON.stringify({
+            nRound: nRoundStar,
+            nFil: nFilStar,
+            nLine: nLineStar,
+            nWall,
+            nS: frames.length,
+            setter: piece.setter,
+            collapsedSkipped: piece.collapsedSkipped,
+        }),
+    );
     const xyz: PolyPoint[][] = [];
     const implied: number[] = [];
     let maxOff = 0;
@@ -3118,6 +3008,9 @@ export function buildBezierColumns(
         throw new Error(`[S1-COL] off-plane\n${JSON.stringify({ n: bad.length, sample: bad.slice(0, 8) })}`);
     }
     const quality = columnProfileQuality(xyz, frames);
+    quality.nRoundSetter = piece.setter;
+    quality.nRoundSetterU = piece.setterU;
+    quality.nRoundCollapsedSkipped = piece.collapsedSkipped;
     console.log(
         "[S1-COL-Q]",
         JSON.stringify({
@@ -3149,6 +3042,7 @@ export function buildBezierColumns(
         flareCapReport: report,
         minWallClamps,
         quality,
+        nRoundReport: piece,
         smoothLog,
     };
 }
@@ -3513,11 +3407,11 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let nObliqueWarn = 0;
     let maxG1E = 0;
     let maxG1F = 0;
-    let maxTopG1AtR = 0;
     let maxAspectAll = 0;
     let maxAspectRound = 0;
     let maxSignedFold = 0;
     let nFoldsOver90 = 0;
+    let inwardWallFaces = 0;
     let maxNeighbourRatio = 0;
     let maxSeamNonFb = 0;
     const fallback: ObliqueFallbackRow[] = [];
@@ -3571,6 +3465,14 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         frames.map((f) => f.F),
         frames.map((f) => f.E),
     );
+    let bCx = 0;
+    let bCy = 0;
+    for (const fr of frames) {
+        bCx += fr.B.x;
+        bCy += fr.B.y;
+    }
+    bCx /= Math.max(1, nS);
+    bCy /= Math.max(1, nS);
     for (let i = 0; i < nS; i++) {
         const col = xyz[i]!;
         const fr = frames[i]!;
@@ -3578,11 +3480,6 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         if ((fr.headingObliqueDeg ?? 0) > OBLIQUE_WARN_DEG) nObliqueWarn++;
         maxG1E = Math.max(maxG1E, fr.g1EDeg ?? 0);
         maxG1F = Math.max(maxG1F, fr.g1FDeg ?? 0);
-        {
-            const eW = hypot3(fr.wOut3) ? unit3(fr.wOut3) : unit3({ x: fr.wOut.x, y: fr.wOut.y, z: 0 });
-            const tRound = sweptRoundTangent(fr.nTopSmoothed ?? fr.nTop, eW, 0);
-            maxTopG1AtR = Math.max(maxTopG1AtR, vecAngleDeg(fr.T0, tRound));
-        }
         const counts0: ColumnPieceCounts = {
             nRound: frames[0]!.nRoundFix || frames[0]!.roundRows || 0,
             nFil: frames[0]!.nFilFix || 0,
@@ -3719,6 +3616,14 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 };
             }
             if (dot3(nL, nR) < 0) flippedFaces++;
+            {
+                const midX = 0.5 * (col[j]!.x + nxt[j]!.x);
+                const midY = 0.5 * (col[j]!.y + nxt[j]!.y);
+                const outX = midX - bCx;
+                const outY = midY - bCy;
+                if (nL.x * outX + nL.y * outY < 0) inwardWallFaces++;
+                if (nR.x * outX + nR.y * outY < 0) inwardWallFaces++;
+            }
             const shortE = shortAcross;
             const longE = Math.max(e0, e1, e2, e3);
             const cMinI = cMinAcross;
@@ -3858,6 +3763,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             fTurn: Number(maxFTurning.toFixed(2)),
             fold: Number(maxSignedFold.toFixed(2)),
             folds90: nFoldsOver90,
+            inward: inwardWallFaces,
             seamNonFb: Number(maxSeamNonFb.toFixed(2)),
             fallback: fallback.length,
         }),
@@ -3911,9 +3817,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxSignedSeamNonFallbackDeg: maxSeamNonFb,
         maxETurningDeg: maxETurning,
         maxFTurningDeg: maxFTurning,
-        maxTopG1AtRDeg: maxTopG1AtR,
         maxSignedFoldDeg: maxSignedFold,
         nFoldsOver90,
+        inwardWallFaces,
         obliqueFallback: fallback,
     };
 }

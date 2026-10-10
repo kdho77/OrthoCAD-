@@ -34,11 +34,21 @@ import { countJunctionBandSlivers, windingReport } from "./metrics";
 import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
 import { hygieneBottomPattern } from "./pattern-hygiene";
-import { buildQuadGrid, rimJunctions } from "./quad-grid";
+import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
 import { assertClosedStationRing, assertPeriodicQuadStrip, rotateStationRing } from "./ring-seam";
+import {
+    assertPostLoftGates,
+    assertPreLoftStations,
+    fairedPlantarFromStock,
+    filletRadiiFromDefaults,
+    limitStationSkew,
+    minInsetForLeanMm,
+    PATTERN_SOURCE_FAIRED_STOCK,
+} from "./station-gates";
 import {
     applyStoredTB,
     countPlanViewChordCrossings,
+    limitPairingSkew,
     pairAtNativeTop,
     reparameterizeBArcLength,
     retargetPlantarFromE,
@@ -424,26 +434,42 @@ export function reconstructProceduralWalls(
         ensureCcw(model.outline.spline.controls.map((p) => ({ ...p }))),
         model.bounds,
     );
+    const rimPlan = rimPts.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    const { r1, r2 } = filletRadiiFromDefaults(defaults);
+    const legacyFaired = !patternPts?.length;
     const rawOutline = patternPts?.length
         ? startAtLowCurvature(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))), model.bounds)
-        : stockOutline;
-    const rimPlan = rimPts.map((p) => ({ x: p.x, y: p.y, z: 0 }));
-    const patternLabel = options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : "stock");
+        : startAtLowCurvature(
+              ensureCcw(
+                  fairedPlantarFromStock({
+                      stock: stockOutline,
+                      rim: rimPlan,
+                      r1,
+                      r2,
+                      bounds: model.bounds,
+                      medialYSign,
+                  }),
+              ),
+              model.bounds,
+          );
+    const patternLabel =
+        options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : PATTERN_SOURCE_FAIRED_STOCK);
     const hygiened = hygieneBottomPattern(rawOutline, {
         rimPlan,
-        requireInsideRim: Boolean(patternPts?.length),
-        clearanceMm: patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : undefined,
+        requireInsideRim: true,
+        clearanceMm:
+            patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
         source: patternLabel,
         resampleN: Math.max(160, rawOutline.length, rimPts.length),
-        keepFair: patternLabel === PATTERN_SOURCE_SYNTHETIC,
+        keepFair: true,
     });
-    if (patternPts?.length) {
-        medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
-        options.medialYSign = medialYSign;
-        defaults.medialYSign = medialYSign;
+    medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
+    options.medialYSign = medialYSign;
+    defaults.medialYSign = medialYSign;
+    if (patternPts?.length || legacyFaired) {
         assertCutInOnHighRimSide(hygiened.loop, rimPts, model.bounds, medialYSign);
     }
-    let pairing = pairAtNativeTop(hygiened.loop, rimPts);
+    let pairing = limitPairingSkew(pairAtNativeTop(hygiened.loop, rimPts), hygiened.loop);
     const collapsed = mergeCollapsedStations(pairing, rimLocal, indices, 1e-6);
     pairing = collapsed.pairing;
     rimLocal = collapsed.rimLocal;
@@ -477,6 +503,7 @@ export function reconstructProceduralWalls(
         return rnd.E;
     });
     pairing.plantar = retargetPlantarFromE(E, hygiened.loop);
+    pairing = limitPairingSkew(pairing, hygiened.loop);
     pairing.sidewaysSkewMm = pairing.plantar.map((p, i) => {
         const e = E[i]!;
         const n = pairing.normals[i] ?? { x: 0, y: 1 };
@@ -542,7 +569,11 @@ export function reconstructProceduralWalls(
     applyStoredTB(stations, hygiened.loop);
     applySmoothedB();
     reparameterizeBArcLength(stations, hygiened.loop);
+    limitStationSkew(stations, hygiened.loop);
+    stampMonotonicTB(stations, hygiened.loop);
+    applyStoredTB(stations, hygiened.loop);
     assertClosedStationRing(stations, rimLocal);
+    assertPreLoftStations(stations, r1, r2);
     {
         let minB = Infinity;
         let maxHead = 0;
@@ -605,6 +636,7 @@ export function reconstructProceduralWalls(
         footLengthMm: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
         flatPlantar,
     });
+    assertPostLoftGates(grid.quality);
 
     const nS = grid.nS;
     const nJ = grid.nJ;
@@ -699,9 +731,12 @@ export function reconstructProceduralWalls(
         maxNeighbourSpacingRatioR: grid.quality?.maxNeighbourSpacingRatioR,
         maxETurningDeg: grid.quality?.maxETurningDeg,
         maxFTurningDeg: grid.quality?.maxFTurningDeg,
-        maxTopG1AtRDeg: grid.quality?.maxTopG1AtRDeg,
         maxSignedFoldDeg: grid.quality?.maxSignedFoldDeg,
         nFoldsOver90: grid.quality?.nFoldsOver90,
+        inwardWallFaces: grid.quality?.inwardWallFaces,
+        nRoundSetter: grid.quality?.nRoundSetter,
+        nRoundSetterU: grid.quality?.nRoundSetterU,
+        nRoundCollapsedSkipped: grid.quality?.nRoundCollapsedSkipped,
         columnCrossings: grid.quality?.columnCrossings,
         maxSignedSeamNonFallbackDeg: grid.quality?.maxSignedSeamNonFallbackDeg,
         obliqueFallback: grid.quality?.obliqueFallback,

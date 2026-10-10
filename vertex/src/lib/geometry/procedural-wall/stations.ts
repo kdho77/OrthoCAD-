@@ -18,6 +18,7 @@ export const FLARE_DEV_CAP_DEG = 25;
 export const FLARE_SMOOTH_DEG_PER_5MM = 5;
 export const CROSSING_WINDOW = 20;
 export const SKEW_LIMIT_MM = 2;
+export const SKEW_INSET_RATIO = 0.5;
 
 export interface RayHit {
     point: PolyPoint;
@@ -574,6 +575,45 @@ export function pairAtNativeTop(plantarLoop: PolyPoint[], topLoop: PolyPoint[]):
         masterMinRadiusMm: minRadiusMm,
         waistMinRadiusMm,
         maxSepMm: maxSep,
+    };
+}
+
+/** Slide B onto the pairing normal through R so |skew| ≤ 0.5 × plan inset. */
+export function limitPairingSkew(pairing: StationPairing, loop: PolyPoint[]): StationPairing {
+    const n = Math.min(pairing.top.length, pairing.plantar.length, pairing.normals.length);
+    if (n < 3 || loop.length < 3) return pairing;
+    const plantar = pairing.plantar.map((p) => ({ ...p }));
+    for (let pass = 0; pass < 4; pass++) {
+        let moved = 0;
+        for (let i = 0; i < n; i++) {
+            const R = pairing.top[i]!;
+            const B = plantar[i]!;
+            const nx = pairing.normals[i]!.x;
+            const ny = pairing.normals[i]!.y;
+            const nl = Math.hypot(nx, ny) || 1;
+            const ox = nx / nl;
+            const oy = ny / nl;
+            const vx = B.x - R.x;
+            const vy = B.y - R.y;
+            const inset = Math.hypot(vx, vy);
+            const skew = Math.abs(vx * oy - vy * ox);
+            if (skew <= SKEW_INSET_RATIO * Math.max(inset, 1e-6) + 1e-3) continue;
+            const along = vx * ox + vy * oy;
+            const target = { x: R.x + ox * along, y: R.y + oy * along, z: 0 };
+            plantar[i] = nearestOnLoop(target, loop);
+            moved++;
+        }
+        if (!moved) break;
+    }
+    const sidewaysSkewMm = columnSidewaysSkewMm(plantar, pairing.top, pairing.normals);
+    let maxSkewMm = 0;
+    for (const d of sidewaysSkewMm) if (d > maxSkewMm) maxSkewMm = d;
+    return {
+        ...pairing,
+        plantar,
+        sidewaysSkewMm,
+        maxSkewMm,
+        chordCrossings: countPlanViewChordCrossings(plantar, pairing.top),
     };
 }
 
