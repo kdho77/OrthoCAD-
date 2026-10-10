@@ -1091,10 +1091,10 @@ describe("S1 parametric wall", () => {
                 heelWallHeightMm: Number(heelRegionWallHeightMm(rebuilt, model.bounds).toFixed(4)),
                 plantarAbsMaxZ: Number((sud.plantarAbsMaxZ ?? 0).toFixed(6)),
             });
-            mkdirSync("/opt/cursor/artifacts", { recursive: true });
-            mkdirSync("/opt/cursor/artifacts/screenshots", { recursive: true });
+            mkdirSync("/tmp/s1-stls", { recursive: true });
+            mkdirSync("/tmp/s1-stls/screenshots", { recursive: true });
             writeFileSync(
-                `/opt/cursor/artifacts/procedural-${smoke.name.replace(/\+/g, "-")}.stl`,
+                `/tmp/s1-stls/procedural-${smoke.name.replace(/\+/g, "-")}.stl`,
                 Buffer.from(geometryToBinarySTL(rebuilt)),
             );
             if (smoke.name === "widen+6" || smoke.name === "width+5") {
@@ -1102,7 +1102,7 @@ describe("S1 parametric wall", () => {
                 const idx = rebuilt.getIndex()?.array;
                 if (pos && idx) {
                     writeFileSync(
-                        `/opt/cursor/artifacts/screenshots/bottom-${smoke.name.replace(/\+/g, "")}.png`,
+                        `/tmp/s1-stls/screenshots/bottom-${smoke.name.replace(/\+/g, "")}.png`,
                         encodePng(900, 680, renderMesh(pos, idx, BOTTOM_VIEW, 900, 680)),
                     );
                 }
@@ -1274,38 +1274,35 @@ describe("S1 parametric wall", () => {
         );
         console.log("[S1-SAMPLE-GATES]", JSON.stringify(sampleTable, null, 2));
         const stl = Buffer.from(geometryToBinarySTL(rebuilt));
-        mkdirSync("/opt/cursor/artifacts", { recursive: true });
-        mkdirSync("/opt/cursor/artifacts/screenshots", { recursive: true });
-        const beforePath = "/opt/cursor/artifacts/sample-top-synthetic.stl";
+        mkdirSync("/tmp/s1-stls", { recursive: true });
+        mkdirSync("/tmp/s1-stls/screenshots", { recursive: true });
+        const beforePath = "/tmp/s1-stls/sample-top-synthetic.stl";
         if (existsSync(beforePath)) {
             const prev = readBinaryStl(readFileSync(beforePath));
             writeFileSync(
-                "/opt/cursor/artifacts/screenshots/rearfoot-before.png",
+                "/tmp/s1-stls/screenshots/rearfoot-before.png",
                 encodePng(900, 680, renderMesh(prev.pos, prev.idx, KENDON_REARFOOT, 900, 680)),
             );
         }
         const afterPos = rebuilt.getAttribute("position").array as Float32Array;
         const afterIdx = rebuilt.getIndex()!.array;
         writeFileSync(
-            "/opt/cursor/artifacts/screenshots/rearfoot-after.png",
+            "/tmp/s1-stls/screenshots/rearfoot-after.png",
             encodePng(900, 680, renderMesh(afterPos, afterIdx, KENDON_REARFOOT, 900, 680)),
         );
         const bottomRgb = renderMesh(afterPos, afterIdx, BOTTOM_VIEW, 900, 680);
-        writeFileSync("/opt/cursor/artifacts/screenshots/bottom-view.png", encodePng(900, 680, bottomRgb));
+        writeFileSync("/tmp/s1-stls/screenshots/bottom-view.png", encodePng(900, 680, bottomRgb));
         writeFileSync(
-            "/opt/cursor/artifacts/screenshots/sample-top-synthetic-rearfoot.png",
+            "/tmp/s1-stls/screenshots/sample-top-synthetic-rearfoot.png",
             encodePng(900, 680, renderMesh(afterPos, afterIdx, KENDON_REARFOOT, 900, 680)),
         );
         const patternSign = medialYSignFromTopRim(rim3d, model.bounds);
         const curv = patternCurvatureReport(pattern, model.bounds, patternSign);
         const curveRgb = renderPatternCurvature(pattern, curv.k, curv.s, 900, 320, rim3d, curv.inflections);
-        writeFileSync(
-            "/opt/cursor/artifacts/screenshots/pattern-curvature.png",
-            encodePng(900, 320, curveRgb),
-        );
+        writeFileSync("/tmp/s1-stls/screenshots/pattern-curvature.png", encodePng(900, 320, curveRgb));
         const overlay = compositeBottomAndCurvature(bottomRgb, 900, 680, curveRgb, 900, 320);
         writeFileSync(
-            "/opt/cursor/artifacts/screenshots/bottom-view-curvature.png",
+            "/tmp/s1-stls/screenshots/bottom-view-curvature.png",
             encodePng(overlay.width, overlay.height, overlay.rgb),
         );
         if (curv.inflections !== 2) {
@@ -1364,9 +1361,9 @@ describe("S1 parametric wall", () => {
                 `pattern-toe ${toeFeat.toFixed(2)} not ${FOREFOOT_INSET_MM}±${PATTERN_SILHOUETTE_MM}`,
             );
         }
-        writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.stl", stl);
+        writeFileSync("/tmp/s1-stls/sample-top-synthetic.stl", stl);
         const glb = await exportObjectToGlb(meshFromGeometry(rebuilt));
-        writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.glb", Buffer.from(glb.arrayBuffer));
+        writeFileSync("/tmp/s1-stls/sample-top-synthetic.glb", Buffer.from(glb.arrayBuffer));
         if (misses.length || exactRep.selfIntersections !== 0) {
             throw new Error(`[S1-SAMPLE] nonzero. STOP.\nmisses: ${misses.join("; ")}`);
         }
@@ -1480,9 +1477,9 @@ describe("S1 parametric wall", () => {
                 light: [0.2, 0.2, 1] as [number, number, number],
             },
         ];
-        const shotDir = "/opt/cursor/artifacts/screenshots";
+        const shotDir = "/tmp/s1-stls/screenshots";
         mkdirSync(shotDir, { recursive: true });
-        mkdirSync("/opt/cursor/artifacts", { recursive: true });
+        mkdirSync("/tmp/s1-stls", { recursive: true });
         mkdirSync("/tmp/procedural-screenshots", { recursive: true });
         for (const v of views) {
             const rgb = renderMesh(pos, idx, { right: v.right, up: v.up, light: v.light }, 720, 540);
@@ -1494,12 +1491,9 @@ describe("S1 parametric wall", () => {
                 writeFileSync(`/tmp/procedural-screenshots/${name}`, png);
             }
         }
-        writeFileSync(
-            "/opt/cursor/artifacts/procedural-default.stl",
-            Buffer.from(geometryToBinarySTL(rebuilt)),
-        );
+        writeFileSync("/tmp/s1-stls/procedural-default.stl", Buffer.from(geometryToBinarySTL(rebuilt)));
         const defaultGlb = await exportObjectToGlb(meshFromGeometry(rebuilt));
-        writeFileSync("/opt/cursor/artifacts/procedural-default.glb", Buffer.from(defaultGlb.arrayBuffer));
+        writeFileSync("/tmp/s1-stls/procedural-default.glb", Buffer.from(defaultGlb.arrayBuffer));
         const defaultUd = rebuilt.userData as {
             columnQuality?: ColumnQualityUd;
             stationCount?: number;
