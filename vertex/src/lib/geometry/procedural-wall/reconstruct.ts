@@ -593,6 +593,7 @@ export function reconstructProceduralWalls(
             r2,
             bounds: model.bounds,
             medialYSign,
+            mode: wholeWidth ? "width" : "heel",
         });
     }
     const clearance = adjustPatternForClearance({
@@ -615,7 +616,9 @@ export function reconstructProceduralWalls(
     }
     medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
     if (patternMoved) {
-        const movedHy = movedPatternHygiene(hygiened.loop, model.bounds, medialYSign);
+        const movedHy = movedPatternHygiene(hygiened.loop, model.bounds, medialYSign, {
+            maxInflections: 4,
+        });
         if (!movedHy.ok) {
             hygiened = {
                 ...hygiened,
@@ -626,6 +629,7 @@ export function reconstructProceduralWalls(
                     r2,
                     bounds: model.bounds,
                     medialYSign,
+                    mode: wholeWidth ? "width" : "heel",
                 }),
             };
             medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
@@ -1004,7 +1008,9 @@ export function reconstructProceduralWalls(
         patternClearanceStations: clearance.stations,
         widenFollowFactor: followFactor,
         insoleWidthScale: wholeWidth ? wholeScale : 1,
-        patternHygiene: movedPatternHygiene(hygiened.loop, model.bounds, medialYSign),
+        patternHygiene: movedPatternHygiene(hygiened.loop, model.bounds, medialYSign, {
+            maxInflections: 4,
+        }),
         postingClamps: posting.postingClamps,
         maxBPlantarDeltaMm: grid.maxBPlantarDeltaMm,
         wallBelowPlantar: grid.wallBelowPlantar,

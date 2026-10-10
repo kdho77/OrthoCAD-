@@ -2,13 +2,21 @@
 // See LICENSE file in the project root for full license information.
 
 import { type ColumnQuality, columnHeading, FILLET_R_CAP_MM, MIN_ROUND_R_MM } from "./bezier-column";
-import { LATERAL_K_SLACK, makeLateralConvex, movedPatternHygiene, PATTERN_MAX_DKDS } from "./bottom-pattern";
+import {
+    LATERAL_K_SLACK,
+    makeLateralConvex,
+    movedPatternHygiene,
+    PATTERN_ARCH_U0,
+    PATTERN_ARCH_U1,
+    PATTERN_MAX_DKDS,
+} from "./bottom-pattern";
 import { pointInPoly } from "./cdt-band";
 import {
     ensureCcw,
     nearestClosedArc01,
     type PolyPoint,
     polylineArcLengths,
+    resamplePolyline,
     sampleClosedAtArc01,
     startAtLowCurvature,
 } from "./curves";
@@ -447,26 +455,62 @@ export function fairMovedPattern(input: {
     r2: number;
     bounds?: { minX: number; maxX: number };
     medialYSign?: 1 | -1;
+    /** `width` tracks the scaled silhouette more tightly so pairing stays. */
+    mode?: "heel" | "width";
 }): PolyPoint[] {
     const rim = startAtLowCurvature(ensureCcw(input.rim.map((p) => ({ ...p, z: 0 }))));
-    const targets = startAtLowCurvature(ensureCcw(input.pattern.map((p) => ({ ...p, z: 0 }))));
-    if (targets.length < 3 || rim.length < 3) return targets;
+    const moved = startAtLowCurvature(ensureCcw(input.pattern.map((p) => ({ ...p, z: 0 }))));
+    if (moved.length < 3 || rim.length < 3) return moved;
     const floorInset = minInsetForLeanMm(input.r1, input.r2, 0);
     const sign = input.medialYSign ?? 1;
-    const attempts: Array<{ ctrl: number; wFair: number; medial: boolean }> = [
-        { ctrl: 16, wFair: 0.65, medial: false },
-        { ctrl: 14, wFair: 0.75, medial: true },
-        { ctrl: 12, wFair: 0.85, medial: true },
-    ];
-    let best = targets;
+    const yMid = moved.reduce((s, p) => s + p.y, 0) / moved.length;
+    const length = input.bounds ? Math.max(1e-3, input.bounds.maxX - input.bounds.minX) : 1;
+    const dense = resamplePolyline(moved, 36);
+    let heel = moved[0]!;
+    let toe = moved[0]!;
+    const arch: PolyPoint[] = [];
+    for (const p of moved) {
+        if (p.x < heel.x) heel = p;
+        if (p.x > toe.x) toe = p;
+        if (!input.bounds) continue;
+        const u = Math.max(0, Math.min(1, (p.x - input.bounds.minX) / length));
+        if ((p.y - yMid) * sign > 0 && u >= PATTERN_ARCH_U0 && u <= PATTERN_ARCH_U1) arch.push(p);
+    }
+    const sOf = (p: PolyPoint) => nearestClosedArc01(moved, p);
+    const widthMode = input.mode === "width";
+    const targets = widthMode
+        ? [
+              ...resamplePolyline(moved, 64).map((p) => ({ point: p, weight: 1.6, s01: sOf(p) })),
+              { point: heel, weight: 8, s01: sOf(heel) },
+              { point: toe, weight: 16, s01: sOf(toe) },
+          ]
+        : [
+              ...dense.map((p) => ({ point: p, weight: 1.2, s01: sOf(p) })),
+              { point: heel, weight: 8, s01: sOf(heel) },
+              { point: toe, weight: 20, s01: sOf(toe) },
+              ...arch
+                  .filter((_, i) => i % Math.max(1, Math.floor(arch.length / 8)) === 0)
+                  .slice(0, 8)
+                  .map((p) => ({ point: p, weight: 6, s01: sOf(p) })),
+          ];
+    const attempts: Array<{ ctrl: number; wFair: number; medial: boolean; lat: number }> = widthMode
+        ? [
+              { ctrl: 20, wFair: 0.45, medial: true, lat: 36 },
+              { ctrl: 18, wFair: 0.55, medial: true, lat: 48 },
+          ]
+        : [
+              { ctrl: 16, wFair: 0.55, medial: true, lat: 36 },
+              { ctrl: 14, wFair: 0.7, medial: true, lat: 48 },
+          ];
+    let best = moved;
     let bestScore = Number.POSITIVE_INFINITY;
     for (const attempt of attempts) {
         const fit = fairedPattern({
-            targets: targets.map((p) => ({ point: p, weight: 1 })),
+            targets,
             controlCount: attempt.ctrl,
             wFit: 1,
             wFair: attempt.wFair,
-            sampleCount: Math.max(160, targets.length, rim.length),
+            sampleCount: Math.max(160, moved.length, rim.length),
             constraints: {
                 rim,
                 minInsetMm: floorInset + 0.02,
@@ -478,7 +522,8 @@ export function fairMovedPattern(input: {
         let out = makeLateralConvex(
             fit.samples.map((p) => ({ x: p.x, y: p.y, z: 0 })),
             sign,
-            36,
+            attempt.lat,
+            yMid,
         );
         out = scaleToMinInset(out, rim, floorInset);
         if (!input.bounds) {

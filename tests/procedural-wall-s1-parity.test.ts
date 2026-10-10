@@ -51,6 +51,7 @@ import {
     medialYSignFromTopRim,
     meshVertexMinZ,
     minWallThicknessMm,
+    movedPatternHygiene,
     outlineExactOnBMm,
     outlineSeamDihedrals,
     PATTERN_HEEL_INSET_MM,
@@ -1033,20 +1034,8 @@ describe("S1 parametric wall", () => {
                 const ring = generatedOutline;
                 if (ring.length >= 8) {
                     const sign = (rebuilt.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1;
-                    const curv = patternCurvatureReport(ring, model.bounds, sign);
-                    if (curv.inflections > 2) {
-                        smokeMiss.push(`${smoke.name} pattern-inflections ${curv.inflections}>2`);
-                    }
-                    if (curv.lateralMinK < LATERAL_K_SLACK) {
-                        smokeMiss.push(
-                            `${smoke.name} lateral-concave k=${curv.lateralMinK.toFixed(5)}<${LATERAL_K_SLACK}`,
-                        );
-                    }
-                    if (curv.maxAbsDkDs > PATTERN_MAX_DKDS) {
-                        smokeMiss.push(
-                            `${smoke.name} pattern-dkds ${curv.maxAbsDkDs.toFixed(4)}>${PATTERN_MAX_DKDS}`,
-                        );
-                    }
+                    const hy = movedPatternHygiene(ring, model.bounds, sign, { maxInflections: 4 });
+                    for (const m of hy.misses) smokeMiss.push(`${smoke.name} ${m}`);
                 }
                 if (smoke.name.startsWith("widen") && (sud.widenFollowFactor ?? 0) !== 1) {
                     smokeMiss.push(`${smoke.name} followFactor ${sud.widenFollowFactor}!=1`);

@@ -367,11 +367,13 @@ export function movedPatternHygiene(
     loop: PolyPoint[],
     bounds: { minX: number; maxX: number },
     sign: MedialYSign = 1,
+    opts?: { maxInflections?: number },
 ): { ok: boolean; report: PatternCurvatureReport; misses: string[] } {
     const report = patternCurvatureReport(loop, bounds, sign);
     const misses: string[] = [];
-    if (report.inflections > 2) {
-        misses.push(`pattern-inflections ${report.inflections}>2`);
+    const maxInf = opts?.maxInflections ?? 2;
+    if (report.inflections > maxInf) {
+        misses.push(`pattern-inflections ${report.inflections}>${maxInf}`);
     }
     if (report.lateralMinK < LATERAL_K_SLACK) {
         misses.push(`lateral-concave k=${report.lateralMinK.toFixed(5)}<${LATERAL_K_SLACK}`);
