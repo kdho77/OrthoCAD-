@@ -1595,16 +1595,15 @@ export function constructSweepRule(
             const S = Math.abs(fil.phi1 - fil.phi0);
             const cosT = planCosT(d, nB, h);
             // Keep current r1 so identical nRound samples do not collapse.
-            // Last-step height comes from L down to MIN_LINE (0.5), not the short-wall 1 mm reserve.
-            const lastStepMinL = MIN_LINE_MM;
-            const floored = floorR2OnLastStep(height, r1, r2, lastStepMinL, localSpacing, S, cosT, r1);
+            // Height for the last-step floor comes from L (L >= minL) only.
+            const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S, cosT, r1);
             if (r2 + 1e-9 >= floored.r2Min && r1 <= floored.r1 + 1e-9) break;
             const trialR1 = floored.r1;
             const trialR2 = floored.r2;
             const trialC1 = add3(R, eN, -trialR1);
             const trialE = sweptRoundPoint(trialC1, trialR1, eN, eW, phiRound1);
             const trialFil = constructFillet(B, nB, trialR2, frozenU, plantarSlopeRad, nPlant);
-            if (dist3(trialE, trialFil.Pw) + 1e-9 < MIN_LINE_MM) {
+            if (dist3(trialE, trialFil.Pw) + 1e-9 < minL) {
                 let lo = r2;
                 let hi = trialR2;
                 for (let k = 0; k < 8; k++) {
@@ -4280,7 +4279,7 @@ export function enforceLastChordFloor(frames: ColumnFrame[]): void {
                 fr.heightMm,
                 fr.rTop,
                 fr.rFillet,
-                MIN_LINE_MM,
+                minLineOfHeight(fr.heightMm),
                 local,
                 S,
                 fr.cosT,
