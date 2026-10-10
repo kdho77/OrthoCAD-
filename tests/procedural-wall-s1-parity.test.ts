@@ -190,8 +190,8 @@ const KENDON_REARFOOT = {
 
 const BOTTOM_VIEW = {
     right: [1, 0, 0] as [number, number, number],
-    up: [0, 1, 0] as [number, number, number],
-    light: [0.15, 0.25, 0.95] as [number, number, number],
+    up: [0, -1, 0] as [number, number, number],
+    light: [0.15, 0.25, -0.95] as [number, number, number],
 };
 
 describe("S1 parametric wall", () => {

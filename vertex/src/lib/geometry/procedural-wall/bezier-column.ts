@@ -773,12 +773,23 @@ export function constructArcLineArc(
     const nTop = projectNTop(nTopIn, h);
     const frame = plantarFrameAt(h, plantarSlopeRad);
     const nPlant = unit3(frame.ez);
+    const planInset = Math.hypot(B.x - R.x, B.y - R.y);
     const height = Math.max(R.z - B.z, 0.5);
-    const rCap = Math.max(0.05, (height - MIN_LINE_MM) * 0.35);
-    let r1 = Math.min(Math.max(MIN_ROUND_R_MM, r1In), rCap);
-    let r2 = Math.min(Math.max(0.05, r2In), rCap);
+    const span = Math.hypot(planInset, height);
+    const rCap = Math.max(0.05, (span - MIN_LINE_MM) * 0.35);
+    let r1 = Math.max(MIN_ROUND_R_MM, r1In);
+    let r2 = Math.max(0.05, r2In);
+    const alaOk = (
+        hit: { C1: Sz; C2: Sz; hit: { L: number } } | null,
+    ): hit is { C1: Sz; C2: Sz; hit: { L: number } } =>
+        Boolean(hit && hit.hit.L >= MIN_LINE_MM && hit.C1.z + 1e-6 >= hit.C2.z);
     let packed = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2);
-    for (let i = 0; i < 48 && (!packed || packed.hit.L < MIN_LINE_MM); i++) {
+    if (!alaOk(packed)) {
+        r1 = Math.min(r1, rCap);
+        r2 = Math.min(r2, rCap);
+        packed = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2);
+    }
+    for (let i = 0; i < 48 && !alaOk(packed); i++) {
         r1 = Math.max(MIN_ROUND_R_MM, r1 * 0.85);
         r2 = Math.max(0.05, r2 * 0.85);
         packed = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2);
@@ -1410,13 +1421,19 @@ function columnHeading(st: HermiteStation): {
     const dx = st.outline.x - st.rim.x;
     const dy = st.outline.y - st.rim.y;
     const planLen = Math.hypot(dx, dy);
-    if (planLen < 1e-4) {
-        const nx = st.n.x;
-        const ny = st.n.y;
+    if (planLen < SHORT_CHORD_MM) {
+        let nx = st.n.x;
+        let ny = st.n.y;
         const nl = Math.hypot(nx, ny) || 1;
-        return { h: { x: nx / nl, y: ny / nl }, shortChord: true, planLen };
+        nx /= nl;
+        ny /= nl;
+        if (planLen > 1e-6 && dx * nx + dy * ny < 0) {
+            nx = -nx;
+            ny = -ny;
+        }
+        return { h: { x: nx, y: ny }, shortChord: true, planLen };
     }
-    return { h: { x: dx / planLen, y: dy / planLen }, shortChord: planLen < SHORT_CHORD_MM, planLen };
+    return { h: { x: dx / planLen, y: dy / planLen }, shortChord: false, planLen };
 }
 
 export function smoothNormalField(normals: XYZ[], rim: XYZ[], sigma = SCALAR_SMOOTH_SIGMA_MM): XYZ[] {
@@ -1635,7 +1652,7 @@ function applySmooth(
 ): { before: StationParamRow[]; after: StationParamRow[] } {
     const before = snapshotStationParams(frames);
     const rim = frames.map((f) => f.R);
-    for (let pass = 0; pass < 4; pass++) {
+    for (let pass = 0; pass < 6; pass++) {
         const rTop = periodicGaussian(
             frames.map((f) => f.rTop),
             rim,

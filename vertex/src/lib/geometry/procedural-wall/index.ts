@@ -77,6 +77,7 @@ export {
     PATTERN_HEEL_INSET_MM,
     PATTERN_HEEL_LATERAL_INSET_MM,
     PATTERN_INSET_MM,
+    PATTERN_MIN_INSET_MM,
     PATTERN_SOURCE_SYNTHETIC,
     parseBottomPattern,
     syntheticBottomPattern,

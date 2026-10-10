@@ -127,7 +127,7 @@ describe("bezier column", () => {
         expect(tight.r1).toBeLessThan(3);
         expect(tight.r2).toBeLessThan(3);
         const zeroInset = constructArcLineArc(
-            { x: 0, y: 0, z: 4 },
+            { x: 0, y: 0, z: 2 },
             { x: 0, y: 0, z: 0 },
             { x: 0, y: 0, z: 1 },
             3,

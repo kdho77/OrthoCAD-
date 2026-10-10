@@ -15,6 +15,8 @@ export const PATTERN_HEEL_INSET_MM = 8;
 export const PATTERN_HEEL_LATERAL_INSET_MM = 2;
 export const PATTERN_ARCH_INSET_MM = 28;
 export const PATTERN_FOREFOOT_INSET_MM = 0;
+/** Numerical floor so zero-inset columns keep a defined inward heading. */
+export const PATTERN_MIN_INSET_MM = 0.35;
 export const PATTERN_BLEND_MM = 18;
 export const PATTERN_HEEL_U1 = 0.16;
 export const PATTERN_ARCH_U0 = 0.18;
@@ -168,7 +170,7 @@ function regionInsetMm(u: number, y: number, yMid: number, sign: MedialYSign, le
         w.fore * PATTERN_FOREFOOT_INSET_MM;
     const extra =
         (y - yMid) * sign > 0 ? (PATTERN_ARCH_INSET_MM - PATTERN_HEEL_LATERAL_INSET_MM) * archWindow(u) : 0;
-    return base + extra;
+    return Math.max(PATTERN_MIN_INSET_MM, base + extra);
 }
 
 /**
@@ -198,11 +200,7 @@ export function syntheticBottomPattern(
     for (let i = 0; i < n; i++) {
         const p = loop[i]!;
         const m = miterInward(i, loop);
-        const d = insets[i]!;
-        if (d <= 1e-6) {
-            offset.push({ x: p.x, y: p.y, z: 0 });
-            continue;
-        }
+        const d = Math.max(PATTERN_MIN_INSET_MM, insets[i]!);
         const q = { x: p.x + m.x * d, y: p.y + m.y * d, z: 0 };
         if (!pointInPoly(q.x, q.y, loop)) {
             offset.push({ x: p.x - m.x * d, y: p.y - m.y * d, z: 0 });
