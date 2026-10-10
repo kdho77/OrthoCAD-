@@ -120,6 +120,14 @@ export function makePlantarSampler(
 ): PlantarSampler {
     const raw = (x: number, y: number, fallback = 0): number =>
         (opts?.flat ? 0 : stockDishZ(x, y, dish, field, fallback)) + zDelta(x, y);
+    // Flat S1 path sits on the table per-point. A global lift equal to the
+    // posted low-side drop would raise the toe and park E under the sole.
+    if (opts?.flat) {
+        return {
+            lift: 0,
+            z: (x, y, fallback = 0) => Math.max(0, raw(x, y, fallback)),
+        };
+    }
     let minZ = Infinity;
     for (const p of outline) minZ = Math.min(minZ, raw(p.x, p.y, p.z));
     const probes = hexSteiner(outline, Math.max(PLANTAR_STEINER_MM, 3), 1);
