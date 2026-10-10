@@ -83,17 +83,13 @@ export function syntheticBottomPattern(
     for (let i = 0; i < n; i++) {
         const p = loop[i]!;
         const m = miterInward(i, loop);
-        let d = insets[i]!;
-        let q = { x: p.x + m.x * d, y: p.y + m.y * d, z: 0 };
-        while (d > PATTERN_INSET_MM * 0.8 && !pointInPoly(q.x, q.y, loop)) {
-            d *= 0.85;
-            q = { x: p.x + m.x * d, y: p.y + m.y * d, z: 0 };
-        }
+        const d = insets[i]!;
+        const q = { x: p.x + m.x * d, y: p.y + m.y * d, z: 0 };
         if (!pointInPoly(q.x, q.y, loop)) {
-            const u = edgeInward(loop[(i + n - 1) % n]!, p, loop);
-            q = { x: p.x + u.x * PATTERN_INSET_MM, y: p.y + u.y * PATTERN_INSET_MM, z: 0 };
+            offset.push({ x: p.x - m.x * d, y: p.y - m.y * d, z: 0 });
+        } else {
+            offset.push(q);
         }
-        offset.push(q);
     }
     const spline = fitClosedC2Spline(offset);
     return resampleClosedC2(spline, Math.max(160, n));
