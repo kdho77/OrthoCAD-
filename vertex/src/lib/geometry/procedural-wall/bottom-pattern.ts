@@ -127,11 +127,19 @@ function miterInward(i: number, outline: PolyPoint[]): { x: number; y: number } 
     const c = outline[(i + 1) % n]!;
     const n1 = edgeInward(a, b, outline);
     const n2 = edgeInward(b, c, outline);
+    const denom = 1 + n1.x * n2.x + n1.y * n2.y;
     const mx = n1.x + n2.x;
     const my = n1.y + n2.y;
-    const len = Math.hypot(mx, my);
-    if (len < 1e-8) return n1;
-    return { x: mx / len, y: my / len };
+    if (Math.abs(denom) < 1e-4) {
+        const len = Math.hypot(mx, my) || 1;
+        return { x: mx / len, y: my / len };
+    }
+    const sx = mx / denom;
+    const sy = my / denom;
+    const len = Math.hypot(sx, sy);
+    const cap = 1.85;
+    if (len > cap) return { x: (sx / len) * cap, y: (sy / len) * cap };
+    return { x: sx, y: sy };
 }
 
 function archWindow(u: number): number {
