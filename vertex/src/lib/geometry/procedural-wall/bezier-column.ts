@@ -1619,37 +1619,9 @@ function clampHeadingTo(
     return { x: x / hl, y: y / hl };
 }
 
-function mixHeading(
-    a: { x: number; y: number },
-    b: { x: number; y: number },
-    t: number,
-): { x: number; y: number } {
-    const x = a.x + (b.x - a.x) * t;
-    const y = a.y + (b.y - a.y) * t;
-    const hl = Math.hypot(x, y) || 1;
-    return { x: x / hl, y: y / hl };
-}
-
 /** Signed plan offset from B along heading. Positive = toward R (outboard / wall side). */
 export function lastFilletSOutboard(p: XYZ, B: XYZ, h: { x: number; y: number }): number {
     return (B.x - p.x) * h.x + (B.y - p.y) * h.y;
-}
-
-function lastFilletSample(fr: ColumnFrame, h: { x: number; y: number }): XYZ {
-    const nUse = fr.nTopSmoothed ?? fr.nTop;
-    const ala = constructArcLineArc(
-        fr.R,
-        fr.B,
-        nUse,
-        fr.rTop,
-        fr.rFillet,
-        h,
-        fr.plantarSlopeRad,
-        fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
-    );
-    const nFil = Math.max(2, filletRowCount(ala.filletSweep, ala.r2));
-    const phi = ala.phiFil0 + ((ala.phiFil1 - ala.phiFil0) * (nFil - 1)) / nFil;
-    return alaPoint(ala, h, ala.C2, ala.r2, phi);
 }
 
 /** CCW B-loop outward normal, flipped to agree with plan(B−R). */
@@ -1711,34 +1683,75 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
     return out;
 }
 
-/** Shrink rotation about B if it would move the last fillet vertex inward. */
-export function reduceHeadingForLastFillet(
-    fr: ColumnFrame,
-    desired: { x: number; y: number },
+function signedHeadingDelta(from: { x: number; y: number }, to: { x: number; y: number }): number {
+    return Math.atan2(from.x * to.y - from.y * to.x, from.x * to.x + from.y * to.y);
+}
+
+function rotateXyAboutB(p: XYZ, B: XYZ, ang: number): XYZ {
+    const dx = p.x - B.x;
+    const dy = p.y - B.y;
+    const c = Math.cos(ang);
+    const s = Math.sin(ang);
+    return { x: B.x + c * dx - s * dy, y: B.y + s * dx + c * dy, z: p.z };
+}
+
+function headingRotated(h: { x: number; y: number }, ang: number): { x: number; y: number } {
+    const c = Math.cos(ang);
+    const s = Math.sin(ang);
+    const x = c * h.x - s * h.y;
+    const y = s * h.x + c * h.y;
+    const hl = Math.hypot(x, y) || 1;
+    return { x: x / hl, y: y / hl };
+}
+
+/**
+ * Rotate a chord-built column about the vertical through B toward `desired`.
+ * B stays put. Rotation is reduced if the last fillet would go inward or
+ * drop below the s/z clamp. Interiors stay in the rotated B-plane.
+ */
+export function rotateColumnAboutB(
+    col: XYZ[],
+    B: XYZ,
+    R: XYZ,
     chord: { x: number; y: number },
+    desired: { x: number; y: number },
 ): { x: number; y: number } {
-    const p0 = lastFilletSample(fr, chord);
-    const s0 = lastFilletSOutboard(p0, fr.B, chord);
-    const ok = (s: number, z: number): boolean =>
-        s + 1e-9 >= s0 && s >= LAST_FILLET_S_MIN_MM - 1e-9 && z >= LAST_FILLET_Z_MIN_MM - 1e-9;
-    const pDes = lastFilletSample(fr, desired);
-    const sDes = lastFilletSOutboard(pDes, fr.B, desired);
-    if (ok(sDes, pDes.z)) return desired;
+    if (col.length < 3) return { ...chord };
+    const original = col.map((p) => ({ ...p }));
+    const maxRad = (HEADING_MAX_DEG * Math.PI) / 180;
+    let ang = signedHeadingDelta(chord, desired);
+    ang = Math.max(-maxRad, Math.min(maxRad, ang));
+    const p0 = original[original.length - 2]!;
+    const s0 = lastFilletSOutboard(p0, B, chord);
+    const apply = (t: number): { x: number; y: number } => {
+        const a = ang * t;
+        const h = headingRotated(chord, a);
+        for (let i = 1; i < col.length - 1; i++) col[i] = rotateXyAboutB(original[i]!, B, a);
+        col[0] = { ...R };
+        col[col.length - 1] = { ...B };
+        return h;
+    };
+    const ok = (h: { x: number; y: number }): boolean => {
+        const p = col[col.length - 2]!;
+        const s = lastFilletSOutboard(p, B, h);
+        return s + 1e-9 >= s0 && s >= LAST_FILLET_S_MIN_MM - 1e-9 && p.z >= LAST_FILLET_Z_MIN_MM - 1e-9;
+    };
+    const hDes = apply(1);
+    if (ok(hDes)) return hDes;
     let lo = 0;
     let hi = 1;
-    let best = chord;
+    let best = apply(0);
     for (let k = 0; k < 10; k++) {
         const t = (lo + hi) * 0.5;
-        const h = mixHeading(chord, desired, t);
-        const p = lastFilletSample(fr, h);
-        const s = lastFilletSOutboard(p, fr.B, h);
-        if (ok(s, p.z)) {
+        const h = apply(t);
+        if (ok(h)) {
             lo = t;
             best = h;
         } else {
             hi = t;
         }
     }
+    apply(lo);
     return best;
 }
 
@@ -1749,11 +1762,7 @@ export function clampLastFilletOutboard(col: XYZ[], B: XYZ, h: { x: number; y: n
     const s = lastFilletSOutboard(p, B, h);
     const z2 = Math.max(p.z, LAST_FILLET_Z_MIN_MM);
     if (s >= LAST_FILLET_S_MIN_MM - 1e-9 && z2 <= p.z + 1e-12) return;
-    if (s >= 0) {
-        col[i] = { ...p, z: z2 };
-        return;
-    }
-    const s2 = LAST_FILLET_S_MIN_MM;
+    const s2 = s >= 0 ? Math.max(s, LAST_FILLET_S_MIN_MM) : LAST_FILLET_S_MIN_MM;
     col[i] = projectToPlane({ x: B.x - h.x * s2, y: B.y - h.y * s2, z: z2 }, B, h);
 }
 
@@ -1971,12 +1980,11 @@ export function initColumnFrames(
         stations.map((st, i) => unit3(_junctions[i]?.planeN ?? { x: 0, y: 0, z: 1 })),
         stations.map((st) => st.rim),
     );
-    const headings = smoothStationHeadings(stations);
     const frames = stations.map((st, i) => {
         const R = { ...st.rim };
         const B = { ...st.outline };
         const chord = columnHeading(st);
-        const h = headings[i] ?? chord.h;
+        const h = chord.h;
         const shortChord = chord.shortChord;
         const planLen = chord.planLen;
         const height = Math.max(R.z - B.z, 0.5);
@@ -2171,13 +2179,6 @@ export function buildBezierColumns(
         fr.nTopSmoothed = fr.nTop;
     }
     const desiredHeads = smoothStationHeadings(stations);
-    for (let i = 0; i < frames.length; i++) {
-        const fr = frames[i]!;
-        const chord = columnHeading(stations[i]!).h;
-        fr.h = reduceHeadingForLastFillet(fr, desiredHeads[i] ?? chord, chord);
-        if (fr.sheetSlopeValid) fr.nTop = nTopFromSheetSlope(fr.roundSlopeRad, fr.h);
-        applyAlaToFrame(fr);
-    }
     const nTopLimited = limitNormalSteps(
         frames.map((f) => f.nTop),
         N_TOP_MAX_DEG,
@@ -2221,6 +2222,12 @@ export function buildBezierColumns(
         const col = columnPoints(fr, nWall, spacing);
         col[0] = { ...fr.R };
         col[col.length - 1] = { ...fr.B };
+        const chord = columnHeading(stations[i]!).h;
+        fr.h = rotateColumnAboutB(col, fr.B, fr.R, chord, desiredHeads[i] ?? chord);
+        if (fr.sheetSlopeValid) {
+            fr.nTop = nTopFromSheetSlope(fr.roundSlopeRad, fr.h);
+            fr.nTopSmoothed = fr.nTop;
+        }
         clampLastFilletOutboard(col, fr.B, fr.h);
         col[col.length - 1] = { ...fr.B };
         assertRoundJoints(fr, col);
@@ -2240,9 +2247,17 @@ export function buildBezierColumns(
         const nxt = frames[(i + 1) % frames.length]!;
         maxTiltStep = Math.max(maxTiltStep, (Math.abs(nxt.leanRad - fr.leanRad) * 180) / Math.PI);
     }
+    const nTopAfter = limitNormalSteps(
+        frames.map((f) => f.nTop),
+        N_TOP_MAX_DEG,
+        false,
+    );
     for (let i = 0; i < frames.length; i++) {
         const col = xyz[i]!;
-        frames[i]!.arcEndZ = col[col.length - 2]?.z ?? frames[i]!.B.z;
+        const fr = frames[i]!;
+        fr.nTop = nTopAfter[i]!;
+        fr.nTopSmoothed = fr.nTop;
+        fr.arcEndZ = col[col.length - 2]?.z ?? fr.B.z;
     }
     assertT0ClearsSheet(frames);
     reportLeanVsBio(frames, defaults, flare);

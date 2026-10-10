@@ -33,6 +33,7 @@ import {
     rateLimitClosed,
     rateLimitClosedDown,
     rimOverhangMm,
+    rotateColumnAboutB,
     SCALAR_SMOOTH_SIGMA_MM,
     STEEP_SHEET_DEG,
     sampleByArcLength,
@@ -436,6 +437,23 @@ describe("bezier column", () => {
         expect(sWall).toBeGreaterThanOrEqual(0);
         expect(last.z).toBeGreaterThanOrEqual(LAST_FILLET_Z_MIN_MM - 1e-9);
         expect(LAST_FILLET_S_MIN_MM).toBe(0.05);
+    });
+
+    test("column rotation about B keeps B fixed and last fillet outboard", () => {
+        const R = { x: 0, y: 0, z: 12 };
+        const B = { x: 8, y: 0, z: 0 };
+        const chord = { x: 1, y: 0 };
+        const col = [R, { x: 4, y: 0, z: 6 }, { x: 7.8, y: 0, z: 0.2 }, B];
+        const desired = { x: Math.cos(0.04), y: Math.sin(0.04) };
+        const h = rotateColumnAboutB(col, B, R, chord, desired);
+        expect(col[0]).toEqual(R);
+        expect(col[col.length - 1]).toEqual(B);
+        const last = col[col.length - 2]!;
+        expect((B.x - last.x) * h.x + (B.y - last.y) * h.y).toBeGreaterThanOrEqual(
+            LAST_FILLET_S_MIN_MM - 1e-6,
+        );
+        const toChord = (Math.acos(Math.max(-1, Math.min(1, h.x * chord.x + h.y * chord.y))) * 180) / Math.PI;
+        expect(toChord).toBeLessThanOrEqual(HEADING_MAX_DEG + 1e-6);
     });
 
     test("steep top slope shrinks r1 and keeps n_top past vertical", () => {

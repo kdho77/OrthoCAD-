@@ -116,9 +116,13 @@ export function rimJunctions(
         if (nearFaces.size === 0) {
             for (const f of vfaces.get(vi) ?? []) nearFaces.add(f);
         }
+        const ox = outboard[si]?.x ?? 1;
+        const oy = outboard[si]?.y ?? 0;
         let nx = 0;
         let ny = 0;
         let nz = 0;
+        let bestAbs = -1;
+        let bestN = { x: 0, y: 0, z: 1 };
         for (const f of nearFaces) {
             const ia = indices[f]!;
             const ib = indices[f + 1]!;
@@ -136,16 +140,27 @@ export function rimJunctions(
             const fy = uz * vx - ux * vz;
             const fz = ux * vy - uy * vx;
             // Keep past-vertical faces (nz < 0). Flipping them hid the 8→102° cup curl.
+            const fl = Math.hypot(fx, fy, fz) || 1;
+            const fn = { x: fx / fl, y: fy / fl, z: fz / fl };
+            const steep = Math.abs(Math.atan2(fn.x * ox + fn.y * oy, fn.z));
+            if (steep > bestAbs) {
+                bestAbs = steep;
+                bestN = fn;
+            }
             nx += fx;
             ny += fy;
             nz += fz;
         }
-        const len = Math.hypot(nx, ny, nz) || 1;
-        nx /= len;
-        ny /= len;
-        nz /= len;
-        const ox = outboard[si]?.x ?? 1;
-        const oy = outboard[si]?.y ?? 0;
+        if (bestAbs > (8 * Math.PI) / 180) {
+            nx = bestN.x;
+            ny = bestN.y;
+            nz = bestN.z;
+        } else {
+            const len = Math.hypot(nx, ny, nz) || 1;
+            nx /= len;
+            ny /= len;
+            nz /= len;
+        }
         const ns = nx * ox + ny * oy;
         const slopeRad = Math.atan2(ns, nz);
         const alpha = slopeRad + (TOP_CLEARANCE_DEG * Math.PI) / 180;

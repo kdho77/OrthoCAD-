@@ -63,6 +63,7 @@ export {
     rateLimitClosed,
     rateLimitClosedDown,
     rimOverhangMm,
+    rotateColumnAboutB,
     SCALAR_SMOOTH_SIGMA_MM,
     SEAM_B_LIMIT_DEG,
     SIDEWAYS_LIMIT_MM,
