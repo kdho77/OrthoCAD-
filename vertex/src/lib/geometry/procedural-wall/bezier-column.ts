@@ -1099,7 +1099,7 @@ export function resolveLastR2(
     nFil: number,
 ): { r2: number; maxR2Rows: number; r2ChordFloor: number; reason?: ChordFloorReason } {
     const wanted = Math.max(r2Design, r2ChordFloor);
-    const r2Lo = Math.min(Math.max(1e-4, r2Design), Math.max(1e-4, r2ChordFloor), 0.05);
+    const r2Lo = Math.max(1e-4, r2Design);
     const maxR2Rows = maxR2RowsForSweep(evalS, cosT, nFil, r2Lo, wanted);
     const r2 = Math.min(wanted, maxR2Rows);
     if (r2ChordFloor > maxR2Rows + 1e-9) {
@@ -1606,10 +1606,11 @@ export function constructSweepRule(
         fil = constructFillet(B, nB, r2, U, plantarSlopeRad, nPlant);
         const S = Math.abs(fil.phi1 - fil.phi0);
         const cosT = planCosT(d, nB, h);
+        const r2Design = r2;
         const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S, cosT, r1Floor);
         const nFilUse = nFil && nFil > 0 ? nFil : MIN_FILLET_RINGS;
         const evalS = (r: number): number => filletSweepAtR2(B, nB, r, U, E, plantarSlopeRad, nPlant);
-        const resolved = resolveLastR2(Math.max(r2, floored.r2), floored.r2Min, evalS, cosT, nFilUse);
+        const resolved = resolveLastR2(r2Design, floored.r2Min, evalS, cosT, nFilUse);
         if (r2 + 1e-9 < resolved.r2 || r2 > resolved.r2 + 1e-9 || r1 > floored.r1 + 1e-9) {
             r2 = resolved.r2;
             const packed = packAlaRadii(height, floored.r1, r2, minL, r2, r1Floor);
