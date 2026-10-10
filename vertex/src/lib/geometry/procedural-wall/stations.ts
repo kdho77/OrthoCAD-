@@ -728,7 +728,65 @@ export function retargetPlantarFromE(E: PolyPoint[], plantarLoop: PolyPoint[]): 
         const p = hit?.point ?? near;
         out.push({ x: p.x, y: p.y, z: p.z });
     }
+    return spreadClosedOnLoop(out, plantarLoop, 0.4);
+}
+
+/** Keep closed B samples strictly increasing on `loop` with a minimum arc gap. */
+export function spreadClosedOnLoop(pts: PolyPoint[], loop: PolyPoint[], minMm: number): PolyPoint[] {
+    const n = pts.length;
+    if (n < 3 || loop.length < 3) return pts.map((p) => ({ ...p }));
+    const { cum, total } = polylineArcLengths(loop);
+    if (total < 1e-6) return pts.map((p) => ({ ...p }));
+    const s01 = pts.map((p) => nearestS01(p, loop, cum, total));
+    const outS = unwrapAllowPlateau(s01);
+    const minS = Math.min(0.25 / n, minMm / total);
+    for (let i = 1; i < n; i++) {
+        if (outS[i]! < outS[i - 1]! + minS) outS[i] = outS[i - 1]! + minS;
+    }
+    const span = outS[n - 1]! - outS[0]!;
+    const room = 1 - minS;
+    if (span > room && span > 1e-9) {
+        const t0 = outS[0]!;
+        for (let i = 1; i < n; i++) outS[i] = t0 + ((outS[i]! - t0) / span) * room;
+    }
+    return outS.map((s) => sampleClosedAtArc01(loop, ((s % 1) + 1) % 1));
+}
+
+/** Unwrap a closed s01 circuit; equal hits stay on the same lap (no +1 jump). */
+function unwrapAllowPlateau(s01: number[]): number[] {
+    const n = s01.length;
+    const out = new Array<number>(n);
+    out[0] = s01[0]!;
+    for (let i = 1; i < n; i++) {
+        let s = s01[i]!;
+        const prev = out[i - 1]!;
+        while (s < prev - 0.5) s += 1;
+        while (s > prev + 0.5) s -= 1;
+        out[i] = s;
+    }
     return out;
+}
+
+function nearestS01(p: PolyPoint, loop: PolyPoint[], cum: number[], total: number): number {
+    let bestS = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const len2 = ex * ex + ey * ey;
+        const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
+        const x = a.x + ex * t;
+        const y = a.y + ey * t;
+        const d = (x - p.x) ** 2 + (y - p.y) ** 2;
+        if (d < bestD) {
+            bestD = d;
+            const seg = cum[i + 1]! - cum[i]!;
+            bestS = (cum[i]! + t * seg) / total;
+        }
+    }
+    return ((bestS % 1) + 1) % 1;
 }
 
 function nearestIndex(loop: PolyPoint[], p: PolyPoint): number {

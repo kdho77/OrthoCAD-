@@ -11,6 +11,7 @@ import {
     pairByOutwardRay,
     raySegHit2D,
     smoothAndCapFlare,
+    spreadClosedOnLoop,
     unwrapStrictlyIncreasing,
 } from "./stations";
 
@@ -124,5 +125,20 @@ describe("outward-ray station pairing", () => {
         const capped = smoothAndCapFlare(outline, region, spiked);
         expect(capped.flare[3]!).toBeLessThanOrEqual(41 + FLARE_DEV_CAP_DEG);
         expect(capped.flare.some((f) => Math.abs(f - 41) < 1e-6 || f >= 41)).toBe(true);
+    });
+
+    test("spreadClosedOnLoop fans collapsed heel hits around the wrap", () => {
+        const loop = Array.from({ length: 40 }, (_, i) => {
+            const a = (i / 40) * Math.PI * 2;
+            return { x: 20 * Math.cos(a), y: 12 * Math.sin(a), z: 0 };
+        });
+        const apex = loop[0]!;
+        const pts = loop.map((p, i) => (i < 6 || i > 36 ? { ...apex } : { ...p }));
+        const spread = spreadClosedOnLoop(pts, loop, 0.4);
+        for (let i = 0; i < spread.length; i++) {
+            const a = spread[i]!;
+            const b = spread[(i + 1) % spread.length]!;
+            expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeGreaterThan(0.15);
+        }
     });
 });

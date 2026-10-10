@@ -1881,6 +1881,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let maxNTop = 0;
     let maxR1 = 0;
     let maxR2 = 0;
+    let worstAcross = { i: -1, j: -1, u: -1, wrap: false, deg: 0 };
     const nS = xyz.length;
     const ds: number[] = [];
     for (let i = 0; i < nS; i++) {
@@ -1957,9 +1958,19 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const nR = faceN3(col[j]!, nxt[j]!, col[j + 1]!);
             if (!nL || !nR) continue;
             const raw = vecAngleDeg(nL, nR);
-            maxAcross = Math.max(maxAcross, raw);
+            if (raw > maxAcross) {
+                maxAcross = raw;
+                worstAcross = {
+                    i,
+                    j,
+                    u: Number(fr.u.toFixed(4)),
+                    wrap: i === nS - 1,
+                    deg: Number(raw.toFixed(2)),
+                };
+            }
         }
     }
+    console.log("[S1-ACROSS]", JSON.stringify(worstAcross));
     return {
         maxAlongJointDeg: maxAlong,
         maxTcolDeg: maxTcol,
