@@ -383,6 +383,7 @@ function sanitizeMesh(
     generatedStart = 0,
     nS = 0,
     nJ = 0,
+    bandVerts?: Set<number>,
 ): { zeroArea: number; duplicates: number } {
     const nWallRows = Math.max(0, nJ - 1);
     const remap = weldGenerated(positions, generatedStart, nS, nWallRows);
@@ -428,7 +429,7 @@ function sanitizeMesh(
     }
     indices.length = 0;
     for (let i = 0; i < out.length; i++) indices.push(out[i]!);
-    splitAcuteTriangles(positions, indices, generatedStart);
+    splitAcuteTriangles(positions, indices, generatedStart, bandVerts);
     return { zeroArea, duplicates };
 }
 
@@ -457,6 +458,7 @@ function splitAcuteTriangles(
     positions: number[],
     indices: number[],
     generatedStart = 0,
+    bandVerts?: Set<number>,
     minRad = SLIVER_MIN_ANGLE_RAD,
 ): void {
     const edgeKey = (a: number, b: number): string => (a < b ? `${a},${b}` : `${b},${a}`);
@@ -472,6 +474,7 @@ function splitAcuteTriangles(
             const a = indices[t]!;
             const b = indices[t + 1]!;
             const c = indices[t + 2]!;
+            if (bandVerts && !bandVerts.has(a) && !bandVerts.has(b) && !bandVerts.has(c)) continue;
             if (triMinAngleRad(positions, a, b, c) + 1e-12 >= minRad) continue;
             const edges: Array<[number, number, number]> = [
                 [a, b, edgeLen(a, b)],
@@ -968,7 +971,9 @@ export function reconstructProceduralWalls(
     }
 
     const plantarEnd = positions.length / 3;
-    const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ);
+    const bandVerts = new Set<number>();
+    for (let i = 0; i < nS; i++) bandVerts.add(gridVert(grid.innerRow, i));
+    const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ, bandVerts);
     assertGeneratedEdgesUsedTwice(indices, generatedStart);
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
