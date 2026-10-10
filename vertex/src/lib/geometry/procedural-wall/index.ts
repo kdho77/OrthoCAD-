@@ -42,6 +42,7 @@ export {
     LAST_FILLET_S_MIN_MM,
     LAST_FILLET_Z_MIN_MM,
     LINE_MAX_STEP_MM,
+    limitNormalSteps,
     MERGE_ROW_MM,
     MIN_EDGE_MM,
     MIN_LINE_MM,

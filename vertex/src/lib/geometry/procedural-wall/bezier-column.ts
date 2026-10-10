@@ -1566,7 +1566,16 @@ export function assertT0ClearsSheet(frames: ColumnFrame[]): void {
         rows.push(row);
         if (f.lineTiltRad > f.sheetSlopeRad - clear + 1e-5) bad.push(row);
     }
+    const medial = frames
+        .filter((f) => f.u >= 0.38 && f.u <= 0.56)
+        .map((f) => ({
+            u: Number(f.u.toFixed(3)),
+            sheet: Number(((f.sheetSlopeRad * 180) / Math.PI).toFixed(1)),
+            round: Number(((f.roundSlopeRad * 180) / Math.PI).toFixed(1)),
+            r1: Number(f.rTop.toFixed(3)),
+        }));
     console.log("[S1-T0]", JSON.stringify({ n: rows.length, bad: bad.length, sample: rows.slice(0, 8) }));
+    console.log("[S1-ROUND-SLOPE]", JSON.stringify(medial));
 }
 
 export function columnHeading(st: HermiteStation): {
@@ -1621,7 +1630,7 @@ function mixHeading(
     return { x: x / hl, y: y / hl };
 }
 
-/** Signed plan offset from B along heading. Positive = toward R (wall side). */
+/** Signed plan offset from B along heading. Positive = toward R (outboard / wall side). */
 export function lastFilletSOutboard(p: XYZ, B: XYZ, h: { x: number; y: number }): number {
     return (B.x - p.x) * h.x + (B.y - p.y) * h.y;
 }
@@ -1710,11 +1719,11 @@ export function reduceHeadingForLastFillet(
 ): { x: number; y: number } {
     const p0 = lastFilletSample(fr, chord);
     const s0 = lastFilletSOutboard(p0, fr.B, chord);
+    const ok = (s: number, z: number): boolean =>
+        s + 1e-9 >= s0 && s >= LAST_FILLET_S_MIN_MM - 1e-9 && z >= LAST_FILLET_Z_MIN_MM - 1e-9;
     const pDes = lastFilletSample(fr, desired);
     const sDes = lastFilletSOutboard(pDes, fr.B, desired);
-    if (sDes + 1e-9 <= s0 + 1e-9 && sDes >= -1e-9 && pDes.z >= LAST_FILLET_Z_MIN_MM - 1e-9) {
-        return desired;
-    }
+    if (ok(sDes, pDes.z)) return desired;
     let lo = 0;
     let hi = 1;
     let best = chord;
@@ -1723,7 +1732,7 @@ export function reduceHeadingForLastFillet(
         const h = mixHeading(chord, desired, t);
         const p = lastFilletSample(fr, h);
         const s = lastFilletSOutboard(p, fr.B, h);
-        if (s + 1e-9 <= s0 + 1e-9 && s >= -1e-9 && p.z >= LAST_FILLET_Z_MIN_MM - 1e-9) {
+        if (ok(s, p.z)) {
             lo = t;
             best = h;
         } else {
@@ -1739,8 +1748,12 @@ export function clampLastFilletOutboard(col: XYZ[], B: XYZ, h: { x: number; y: n
     const p = col[i]!;
     const s = lastFilletSOutboard(p, B, h);
     const z2 = Math.max(p.z, LAST_FILLET_Z_MIN_MM);
-    if (s >= 0 && z2 <= p.z + 1e-12) return;
-    const s2 = s < 0 ? LAST_FILLET_S_MIN_MM : s;
+    if (s >= LAST_FILLET_S_MIN_MM - 1e-9 && z2 <= p.z + 1e-12) return;
+    if (s >= 0) {
+        col[i] = { ...p, z: z2 };
+        return;
+    }
+    const s2 = LAST_FILLET_S_MIN_MM;
     col[i] = projectToPlane({ x: B.x - h.x * s2, y: B.y - h.y * s2, z: z2 }, B, h);
 }
 
@@ -1766,8 +1779,13 @@ export function smoothNormalField(normals: XYZ[], rim: XYZ[], sigma = SCALAR_SMO
         if (n.z < 0) n = { x: -n.x, y: -n.y, z: -n.z };
         return n;
     });
-    const maxRad = (N_TOP_MAX_DEG * Math.PI) / 180;
-    const out = raw.map((n) => ({ ...n }));
+    return limitNormalSteps(raw, N_TOP_MAX_DEG, true);
+}
+
+/** Cap adjacent n_top steps. Past-vertical sheets keep nz < 0 when flipDown is false. */
+export function limitNormalSteps(normals: XYZ[], maxDeg: number, flipDown = false): XYZ[] {
+    const maxRad = (maxDeg * Math.PI) / 180;
+    const out = normals.map((n) => unit3(n));
     for (let pass = 0; pass < 8; pass++) {
         for (let i = 0; i < out.length; i++) {
             const prev = out[(i + out.length - 1) % out.length]!;
@@ -1780,7 +1798,7 @@ export function smoothNormalField(normals: XYZ[], rim: XYZ[], sigma = SCALAR_SMO
                 y: prev.y + (cur.y - prev.y) * t,
                 z: prev.z + (cur.z - prev.z) * t,
             });
-            if (n.z < 0) n = { x: -n.x, y: -n.y, z: -n.z };
+            if (flipDown && n.z < 0) n = { x: -n.x, y: -n.y, z: -n.z };
             out[i] = n;
         }
     }
@@ -2160,6 +2178,21 @@ export function buildBezierColumns(
         if (fr.sheetSlopeValid) fr.nTop = nTopFromSheetSlope(fr.roundSlopeRad, fr.h);
         applyAlaToFrame(fr);
     }
+    const nTopLimited = limitNormalSteps(
+        frames.map((f) => f.nTop),
+        N_TOP_MAX_DEG,
+        false,
+    );
+    for (let i = 0; i < frames.length; i++) {
+        const fr = frames[i]!;
+        fr.nTop = nTopLimited[i]!;
+        fr.nTopSmoothed = fr.nTop;
+        if (fr.sheetSlopeValid) {
+            const face = sheetSlopeFromNormal(fr.nTop, fr.h);
+            if (face != null) fr.roundSlopeRad = face;
+        }
+        applyAlaToFrame(fr);
+    }
     for (let pass = 0; pass < 8; pass++) {
         const lim1 = rateLimitClosed(
             frames.map((f) => f.rTop),
@@ -2189,8 +2222,6 @@ export function buildBezierColumns(
         col[0] = { ...fr.R };
         col[col.length - 1] = { ...fr.B };
         clampLastFilletOutboard(col, fr.B, fr.h);
-        snapPlanMonotone(col, fr.R, fr.B, Math.max(1, col.length - 4));
-        col[0] = { ...fr.R };
         col[col.length - 1] = { ...fr.B };
         assertRoundJoints(fr, col);
         fr.arcEndZ = col[col.length - 2]?.z ?? fr.B.z;

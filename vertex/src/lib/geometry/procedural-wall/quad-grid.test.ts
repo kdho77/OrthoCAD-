@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { MIN_FILLET_RINGS } from "./hermite";
-import { sampleBottomWallFillet } from "./quad-grid";
+import { rimJunctions, sampleBottomWallFillet } from "./quad-grid";
 
 describe("generated plantar quad grid", () => {
     test("bottom fillet is monotonic in n and ends at the outline", () => {
@@ -21,5 +21,13 @@ describe("generated plantar quad grid", () => {
         expect(last?.z).toBeCloseTo(P1.z, 6);
         expect(first && first.n < P1.n).toBe(true);
         expect(first && first.z > P1.z).toBe(true);
+    });
+
+    test("rim junctions keep past-vertical adjacent faces", () => {
+        const pos = [0, 0, 0, 0.1, 0.5, -1, 0.1, -0.5, -1];
+        const indices = [0, 1, 2];
+        const junct = rimJunctions(pos, indices, [0], [{ x: 1, y: 0 }], 0);
+        expect(junct[0]?.planeN.z).toBeLessThan(0);
+        expect(Math.abs(((junct[0]?.slopeRad ?? 0) * 180) / Math.PI)).toBeGreaterThan(90);
     });
 });

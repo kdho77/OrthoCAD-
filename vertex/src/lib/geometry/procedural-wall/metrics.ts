@@ -476,7 +476,8 @@ export function medialArchUpperWallFolds(
             const my = 0.5 * (pos[sa * 3 + 1]! + pos[sb * 3 + 1]!);
             const mz = 0.5 * (pos[sa * 3 + 2]! + pos[sb * 3 + 2]!);
             const dxy = Math.hypot(ux, uy);
-            const alongColumn = Math.abs(uz) >= dxy;
+            // Same-row vertices (small |Δz|) are the along-column crease.
+            const alongColumn = Math.abs(uz) < dxy;
             hardEdges.push({
                 a: sa,
                 b: sb,

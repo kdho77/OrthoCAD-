@@ -37,6 +37,7 @@ import {
     STEEP_SHEET_DEG,
     sampleByArcLength,
     sampleInPlaneSlope,
+    sheetSlopeFromNormal,
     sizedArcRows,
     slopeFromSheetPlane,
     smoothStationHeadings,
@@ -444,6 +445,9 @@ describe("bezier column", () => {
         const n102 = nTopFromSheetSlope((102 * Math.PI) / 180, h);
         expect(n60.z).toBeGreaterThan(0);
         expect(n102.z).toBeLessThan(0);
+        const face102 = sheetSlopeFromNormal(n102, h);
+        expect(face102).not.toBeNull();
+        expect(((face102 ?? 0) * 180) / Math.PI).toBeCloseTo(102, 4);
         expect(r1ForSheetSlope(0.5, (30 * Math.PI) / 180)).toBeCloseTo(0.5, 6);
         expect(r1ForSheetSlope(0.5, (90 * Math.PI) / 180)).toBeLessThan(0.05);
         const ala = constructArcLineArc(

@@ -588,6 +588,7 @@ export function reconstructProceduralWalls(
         indices,
         rimLocal,
         stations.map((s) => s.n),
+        0,
     );
     const topHeight = buildXyHeightIndex(Float32Array.from(positions), indices);
     const topZ = (x: number, y: number) => sampleXyHeight(topHeight, x, y, "max");
