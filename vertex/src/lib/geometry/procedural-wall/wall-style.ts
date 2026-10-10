@@ -457,6 +457,46 @@ export function sampleCubicUniformT(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, n: numbe
     return pts;
 }
 
+export function sampleCubicAtT(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, ts: number[]): XYZ[] {
+    if (!ts.length) return [];
+    return ts.map((t, i) =>
+        i === ts.length - 1 ? { ...P3 } : evalCubicHermite(P0, P1, P2, P3, Math.max(0, Math.min(1, t))),
+    );
+}
+
+/** Equal-turning Hermite parameters (includes F, excludes E). */
+export function cubicTurningTValues(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, n: number): number[] {
+    if (n < 1) return [];
+    const steps = WALL_MID_TURN_DENSE;
+    const acc = [0];
+    let prevTan = cubicHermiteTangent(P0, P1, P2, P3, 0);
+    for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const tan = cubicHermiteTangent(P0, P1, P2, P3, t);
+        acc.push(acc[i - 1]! + vecAngleDeg(prevTan, tan));
+        prevTan = tan;
+    }
+    const total = acc[steps]!;
+    const ts: number[] = [];
+    if (total < 1e-6) {
+        for (let k = 1; k <= n; k++) ts.push(k / n);
+        return ts;
+    }
+    for (let k = 1; k <= n; k++) {
+        const target = (k / n) * total;
+        let i = 1;
+        while (i < acc.length && acc[i]! < target) i++;
+        const a = acc[i - 1]!;
+        const b = acc[i] ?? a;
+        const u = b > a + 1e-12 ? (target - a) / (b - a) : 0;
+        const t0 = (i - 1) / steps;
+        const t1 = i / steps;
+        ts.push(k === n ? 1 : t0 + (t1 - t0) * u);
+    }
+    ts[ts.length - 1] = 1;
+    return ts;
+}
+
 /** Rows by equal turning. Includes F, excludes E. Invert 256 dense samples. */
 export function sampleCubicByTurning(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, n: number): XYZ[] {
     if (n < 1) return [];
@@ -769,6 +809,7 @@ export interface MidStyleSample {
 export interface MidStyleLock {
     lambda?: number;
     theta?: number;
+    ts?: number[];
     w?: number;
 }
 
@@ -875,7 +916,10 @@ export function sampleWallMidStyle(
         }
     }
     const ctrl = hermiteControls(E, F, tE, tF, lambda);
-    const pts = sampleCubicUniformT(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, n);
+    const pts =
+        lock?.ts && lock.ts.length === n
+            ? sampleCubicAtT(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, lock.ts)
+            : sampleCubicByTurning(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, n);
     const chordOff = cubicMaxChordOffset(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3);
     const plan = planBoundsOf(pts, R, F, outward, params.planOutMm);
     const g1 = g1OfCubic(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF);
@@ -891,7 +935,7 @@ export function sampleWallMidStyle(
         t: dist3(ctrl.P2, F),
         g1EDeg: g1.e,
         g1FDeg: g1.f,
-        rowNeed: cubicRowCountByUniformT(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF),
+        rowNeed: cubicRowCountByTurning(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF),
         chordOffsetMm: chordOff,
         planOffsetMm: plan.offsetMax,
         planAngleDeg: planAng,

@@ -15,6 +15,8 @@ import { countColumnPlanReversals, type HermiteStation } from "./loft";
 import { countPlanViewChordCrossings, smoothAndCapFlare } from "./stations";
 import {
     clampSagitta,
+    cubicTurningTValues,
+    hermiteControls,
     lambdaFromTheta,
     type MidStyleLimit,
     type MidStyleLock,
@@ -280,6 +282,7 @@ export interface ColumnFrame {
     midTheta?: number;
     midBeta?: number;
     midChordMm?: number;
+    midTs?: number[];
 }
 
 export interface SweepMidStyle {
@@ -2369,23 +2372,11 @@ function applyPhiFLock(fr: ColumnFrame, sw: SweepRule, phiF: number): void {
     const F = filletPointAtPhi(fil, phiF);
     if (dist3(fr.E, F) < MIN_LINE_MM - 1e-9) return;
     if (!fBetweenEB(fr.E, F, fr.B)) return;
-    const nB = fr.nB ?? fr.h;
-    const rebuilt = constructFilletFromF(fr.B, F, nB, fr.plantarSlopeRad, fr.nPlantar, fil.r, fr.E);
-    const height = Math.max(fr.R.z - fr.B.z, 0.5);
-    const r2Min = lastFilletR2MinMm(localSpacingOf(fr), fr.lastDlRad);
-    const packed = scaleShortWallPack(
-        height,
-        fr.rTop,
-        Math.max(r2Min, rebuilt.r),
-        minLineOfHeight(height),
-        MIN_ROUND_R_MM,
-    );
-    sw.fil = rebuilt;
-    sw.C2 = rebuilt.C;
-    sw.r2 = packed.r2;
+    fil.phiF = phiF;
+    fil.phi1 = phiF;
+    fil.Pw = { ...F };
     sw.F = { ...F };
     fr.F = { ...F };
-    fr.rFillet = packed.r2;
     fr.phiFLock = phiF;
     const U = { x: fr.E.x - F.x, y: fr.E.y - F.y, z: fr.E.z - F.z };
     if (hypot3(U) > 1e-9) {
@@ -2395,7 +2386,7 @@ function applyPhiFLock(fr: ColumnFrame, sw: SweepRule, phiF: number): void {
     }
     sw.L = dist3(fr.E, F);
     fr.lineLengthMm = sw.L;
-    sw.filletSweep = Math.abs(rebuilt.phi1 - rebuilt.phi0);
+    sw.filletSweep = Math.abs(fil.phi1 - fil.phi0);
     fr.filletSweepRad = sw.filletSweep;
 }
 
@@ -2995,8 +2986,8 @@ function columnPoints(
             g1Out,
             offsetOut,
             lock:
-                fr.midTheta != null || fr.midWLock != null
-                    ? { lambda: fr.midWLock, theta: fr.midTheta }
+                fr.midTheta != null || fr.midWLock != null || fr.midTs
+                    ? { lambda: fr.midWLock, theta: fr.midTheta, ts: fr.midTs }
                     : undefined,
         },
     );
@@ -4196,16 +4187,61 @@ function midStyleEnds(fr: ColumnFrame): { E: XYZ; Fpiece: XYZ; tE: XYZ; tF: XYZ 
     };
 }
 
-function stylePackOk(fr: ColumnFrame): boolean {
+function stylePackState(fr: ColumnFrame): {
+    r1: number;
+    r2: number;
+    L: number;
+    height: number;
+    minL: number;
+} {
     const height = Math.max(fr.heightMm, 1e-9);
     const minL = minLineOfHeight(height);
-    const L = Math.max(dist3(fr.E, fr.F), minL);
+    return { r1: fr.rTop, r2: fr.rFillet, L: dist3(fr.E, fr.F), height, minL };
+}
+
+function stylePackOk(
+    fr: ColumnFrame,
+    baseline?: { r1: number; r2: number; L: number; height: number; minL: number },
+): boolean {
+    const cur = stylePackState(fr);
     const r2Min = lastFilletR2MinMm(localSpacingOf(fr), fr.lastDlRad);
-    if (fr.rTop < MIN_ROUND_R_MM - 1e-9) return false;
-    if (fr.rFillet < r2Min - 1e-9) return false;
-    if (fr.rTop + fr.rFillet + L > 0.9 * height + 1e-9) return false;
-    if (dist3(fr.E, fr.F) < minL - 1e-9) return false;
-    return true;
+    if (cur.r1 < MIN_ROUND_R_MM - 1e-9) return false;
+    if (cur.r2 < r2Min - 1e-9) return false;
+    if (cur.L < cur.minL - 1e-9) return false;
+    const pack = cur.r1 + cur.r2 + Math.max(cur.L, cur.minL);
+    if (pack <= 0.9 * cur.height + 1e-9) return true;
+    if (!baseline) return false;
+    const basePack = baseline.r1 + baseline.r2 + Math.max(baseline.L, baseline.minL);
+    return pack <= basePack + 1e-6;
+}
+
+function smoothMonotoneTurningT(rows: number[][], rim: XYZ[]): number[][] {
+    const n = rows.length;
+    if (!n) return rows;
+    const nRow = rows[0]?.length ?? 0;
+    if (nRow < 1) return rows;
+    const out = rows.map((r) => r.slice());
+    for (let k = 0; k < nRow; k++) {
+        const col = rows.map((r) => r[k] ?? 1);
+        const sm = periodicGaussian(col, rim, WALL_MID_SMOOTH_SIGMA_MM);
+        for (let i = 0; i < n; i++) out[i]![k] = sm[i] ?? out[i]![k]!;
+    }
+    for (let i = 0; i < n; i++) {
+        const ts = out[i]!;
+        for (let k = 0; k < nRow; k++) ts[k] = Math.max(1e-4, Math.min(1, ts[k] ?? 1));
+        ts[nRow - 1] = 1;
+        for (let k = 1; k < nRow; k++) {
+            if ((ts[k] ?? 1) <= (ts[k - 1] ?? 0) + 1e-5) ts[k] = Math.min(1, (ts[k - 1] ?? 0) + 1e-4);
+        }
+        const last = ts[nRow - 1] ?? 1;
+        if (last > 1 + 1e-9 || last < 1 - 1e-6) {
+            const t0 = ts[0] ?? 1e-4;
+            const span = Math.max(1e-6, last - t0);
+            for (let k = 0; k < nRow; k++) ts[k] = t0 + ((1 - t0) * ((ts[k] ?? 1) - t0)) / span;
+        }
+        ts[nRow - 1] = 1;
+    }
+    return out;
 }
 
 function applyStyleTilt(fr: ColumnFrame, theta: number): void {
@@ -4275,16 +4311,18 @@ function prepareStyledMid(
         return rateLimitClosedAbs(sm, rateRad, 0);
     };
     const applyAll = (th: number[]): void => {
+        const bases = frames.map((fr) => stylePackState(fr));
         for (let i = 0; i < n; i++) applyStyleTilt(frames[i]!, th[i] ?? 0);
         for (let i = 0; i < n; i++) {
             const fr = frames[i]!;
-            if (stylePackOk(fr)) continue;
+            const base = bases[i]!;
+            if (stylePackOk(fr, base)) continue;
             let lo = 0;
             let hi = th[i] ?? 0;
             for (let k = 0; k < 10; k++) {
                 const mid = 0.5 * (lo + hi);
                 applyStyleTilt(fr, mid);
-                if (stylePackOk(fr)) lo = mid;
+                if (stylePackOk(fr, base)) lo = mid;
                 else hi = mid;
             }
             applyStyleTilt(fr, lo);
@@ -4292,6 +4330,7 @@ function prepareStyledMid(
         }
     };
     theta = rebuildTheta(beta);
+    const thetaRawMax = Math.max(...theta, 0);
     applyAll(theta);
     for (let pass = 0; pass < 6; pass++) {
         const fTurn = ringTurningDeg(
@@ -4407,6 +4446,21 @@ function prepareStyledMid(
     }
     const nLineStar = Math.max(nLine, nLineNeed);
     for (const fr of frames) fr.nLineFix = nLineStar;
+    const rawT: number[][] = [];
+    for (let i = 0; i < n; i++) {
+        const fr = frames[i]!;
+        const en = midStyleEnds(fr);
+        if (!en || nLineStar < 1) {
+            rawT.push(
+                Array.from({ length: Math.max(1, nLineStar) }, (_, k) => (k + 1) / Math.max(1, nLineStar)),
+            );
+            continue;
+        }
+        const ctrl = hermiteControls(en.E, en.Fpiece, en.tE, en.tF, fr.midWLock ?? WALL_LAMBDA_MIN);
+        rawT.push(cubicTurningTValues(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, nLineStar));
+    }
+    const smT = smoothMonotoneTurningT(rawT, rim);
+    for (let i = 0; i < n; i++) frames[i]!.midTs = smT[i];
     const over = g1Stations.filter(
         (s) => s.e > WALL_STYLE_G1_MAX_DEG + 1e-6 || s.f > WALL_STYLE_G1_MAX_DEG + 1e-6,
     );
@@ -4423,6 +4477,7 @@ function prepareStyledMid(
             g1Over: over.length,
             planOver30: planWide.length,
             thetaDegMax: Number(((Math.max(...theta, 0) * 180) / Math.PI).toFixed(3)),
+            thetaDegRawMax: Number(((thetaRawMax * 180) / Math.PI).toFixed(3)),
         }),
     );
     if (over.length) console.log("[S1-G1-OUT]", JSON.stringify(over.slice(0, 24)));
