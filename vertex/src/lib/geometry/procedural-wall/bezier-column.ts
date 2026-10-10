@@ -2098,14 +2098,13 @@ export function sampleSweepRule(
 export function ensureColumnMinEdge(pts: XYZ[], minMm: number): void {
     for (let i = 1; i < pts.length - 1; i++) {
         const prev = pts[i - 1]!;
-        const cur = pts[i]!;
-        if (dist3(prev, cur) + 1e-12 >= minMm) continue;
-        const nxt = pts[i + 1]!;
-        const room = dist3(cur, nxt);
-        const need = minMm - dist3(prev, cur);
-        if (room < need + 1e-12) continue;
-        const t = need / room;
-        pts[i] = lerp3(cur, nxt, t);
+        if (dist3(prev, pts[i]!) + 1e-12 >= minMm) continue;
+        let target = i + 1;
+        while (target < pts.length && dist3(prev, pts[target]!) + 1e-12 < minMm) target++;
+        if (target >= pts.length) continue;
+        const span = dist3(prev, pts[target]!);
+        if (span < minMm) continue;
+        pts[i] = lerp3(prev, pts[target]!, minMm / span);
     }
 }
 
