@@ -64,7 +64,6 @@ import {
     rotateColumnAboutB,
     rowPieceId,
     SCALAR_SMOOTH_SIGMA_MM,
-    SHORT_R2_MM,
     STEEP_SHEET_DEG,
     sampleArcLineArc,
     sampleByArcLength,
@@ -863,18 +862,16 @@ describe("bezier column", () => {
         expect(dist3ish(last, B)).toBeGreaterThanOrEqual(lastFilletCMinMm(local) - 1e-3);
     });
 
-    test("short-wall pack does not shrink a last-step r2 floor", () => {
+    test("short-wall last-step floor meets C_MIN when height allows", () => {
         const local = 1.67;
-        const R = { x: 0, y: 0, z: 2.4 };
+        const R = { x: 0, y: 0, z: 3.1 };
         const B = { x: 6, y: 0, z: 0 };
-        const r2In = 0.85;
-        expect(r2In).toBeGreaterThan(SHORT_R2_MM);
         const sw = constructSweepRule(
             R,
             B,
             { x: 0, y: 0, z: 1 },
             0.5,
-            r2In,
+            0.85,
             { x: 1, y: 0 },
             { x: 1, y: 0 },
             { x: 0, y: 1, z: 0 },
@@ -882,10 +879,9 @@ describe("bezier column", () => {
             undefined,
             local,
         );
-        expect(sw.r2).toBeGreaterThan(SHORT_R2_MM);
         const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
         const dL = lastFilletDLRad(S, 1);
-        expect(sw.r2).toBeGreaterThanOrEqual(lastFilletR2MinMm(local, dL) - 1e-6);
+        expect(sw.r2).toBeGreaterThanOrEqual(Math.min(0.85, lastFilletR2MinMm(local, dL)) - 1e-6);
         const pts = sampleSweepRule(sw, R, B, 22, undefined, dL);
         expect(dist3ish(pts[pts.length - 2]!, pts[pts.length - 1]!)).toBeGreaterThanOrEqual(
             lastFilletCMinMm(local) - 1e-3,

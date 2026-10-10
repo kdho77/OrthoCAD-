@@ -1249,8 +1249,7 @@ export function constructArcLineArc(
     if (short) {
         const t = Math.max(0, Math.min(1, (height - (SHORT_WALL_H_MM - 1.2)) / 1.2));
         r1 = Math.min(r1, SHORT_R1_MM + (r1 - SHORT_R1_MM) * t);
-        // Height comes from L then r1. Never shrink a last-step r2 floor.
-        r2 = Math.max(r2Min, r2In);
+        r2 = Math.min(r2, Math.max(r2Min, SHORT_R2_MM + (r2 - SHORT_R2_MM) * t));
     }
     r2 = Math.max(r2Min, r2);
     const packedRadii = packAlaRadii(height, r1, r2, minL, r2Min, r1Floor);
@@ -1490,8 +1489,7 @@ export function constructSweepRule(
     if (short) {
         const t = Math.max(0, Math.min(1, (height - (SHORT_WALL_H_MM - 1.2)) / 1.2));
         r1 = Math.min(r1, SHORT_R1_MM + (r1 - SHORT_R1_MM) * t);
-        // Height comes from L then r1. Never shrink a last-step r2 floor.
-        r2 = Math.max(r2Min, r2In);
+        r2 = Math.min(r2, Math.max(r2Min, SHORT_R2_MM + (r2 - SHORT_R2_MM) * t));
     }
     const packedRadii = packAlaRadii(height, r1, r2, minL, r2Min, r1Floor);
     r1 = packedRadii.r1;
