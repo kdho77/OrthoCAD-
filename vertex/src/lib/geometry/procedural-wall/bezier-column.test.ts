@@ -36,7 +36,9 @@ import {
     LAST_FILLET_S_MIN_MM,
     LAST_FILLET_Z_MIN_MM,
     lastFilletCMinMm,
+    lastFilletDLForChord,
     lastFilletDLRad,
+    lastFilletDLToSpan,
     lastFilletPhis,
     lastFilletR2MinMm,
     lastStepChordMm,
@@ -886,6 +888,22 @@ describe("bezier column", () => {
         expect(dist3ish(pts[pts.length - 2]!, pts[pts.length - 1]!)).toBeGreaterThanOrEqual(
             lastFilletCMinMm(local) - 1e-3,
         );
+    });
+
+    test("L-capped r2 still samples lastChord at C_MIN by growing dL", () => {
+        const local = 1.67;
+        const cMin = lastFilletCMinMm(local);
+        const r2 = 0.7;
+        const S = (40 * Math.PI) / 180;
+        const dLRise = lastFilletDLRad(S, 0.6);
+        expect(lastStepChordMm(r2, dLRise)).toBeLessThan(cMin);
+        const dL = lastFilletDLForChord(S, 0.6, r2, local, 6);
+        expect(lastStepChordMm(r2, dL)).toBeGreaterThanOrEqual(cMin - 1e-9);
+        expect(dL).toBeGreaterThan(dLRise);
+        expect(dL).toBeLessThan(S);
+        expect(lastFilletDLToSpan(r2, cMin)).toBeGreaterThan(dLRise);
+        const phis = lastFilletPhis(0, S, dL, 6);
+        expect(Math.abs(phis[phis.length - 1]! - (S - dL))).toBeLessThan(1e-9);
     });
 
     test("lastChord holds after φ1 restore changes heading", () => {

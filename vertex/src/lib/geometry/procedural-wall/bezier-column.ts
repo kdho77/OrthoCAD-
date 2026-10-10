@@ -941,6 +941,29 @@ export function lastStepChordMm(r2: number, dLRad: number): number {
     return 2 * Math.max(r2, 0) * Math.sin(Math.max(dLRad, 1e-9) / 2);
 }
 
+/** Δφ that makes 2 r2 sin(dL/2) span C_MIN. π when r2 is too small for any angle. */
+export function lastFilletDLToSpan(r2: number, cMin: number): number {
+    const half = Math.max(cMin, 1e-9) / (2 * Math.max(r2, 1e-9));
+    if (half >= 1) return Math.PI;
+    return 2 * Math.asin(Math.min(0.999999, half));
+}
+
+/** Reserved last-step Δφ: rise-limited dL, grown if r2 cannot span C_MIN at that step. */
+export function lastFilletDLForChord(
+    S: number,
+    cosT: number,
+    r2: number,
+    localSpacing: number,
+    nFil = MIN_FILLET_RINGS,
+): number {
+    const cMin = lastFilletCMinMm(localSpacing);
+    const rise = lastFilletDLRad(S, cosT);
+    const need = lastFilletDLToSpan(r2, cMin);
+    const remainMin = Math.max(1e-4, nFil * (MIN_EDGE_MM / Math.max(r2, 1e-6)));
+    const cap = Math.max(0, Math.abs(S) - remainMin);
+    return Math.min(Math.max(rise, need), cap);
+}
+
 /**
  * Grow r2 to the real last-step floor. Height comes from L (kept ≥ minL), then r1.
  */
@@ -1021,7 +1044,7 @@ export function lastFilletPhis(phi0: number, phi1: number, dLRad?: number, nFil?
     const sign = Math.sign(phi1 - phi0) || 1;
     const dPhiLMax = (DPHI_L_MAX_DEG * Math.PI) / 180;
     const stepMax = (FILLET_STEP_MAX_DEG * Math.PI) / 180;
-    const dL = Math.min(dLRad ?? dPhiLMax, S / 2);
+    const dL = Math.min(dLRad ?? Math.min(dPhiLMax, S / 2), Math.max(0, S - 1e-4));
     const n = Math.max(MIN_FILLET_RINGS, nFil ?? Math.ceil(Math.max(S - dL, 1e-12) / stepMax));
     const phis: number[] = [];
     for (let k = 1; k <= n; k++) phis.push(phi0 + (sign * (S - dL) * k) / n);
@@ -1571,14 +1594,35 @@ export function constructSweepRule(
         for (let grow = 0; grow < 6; grow++) {
             const S = Math.abs(fil.phi1 - fil.phi0);
             const cosT = planCosT(d, nB, h);
-            const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S, cosT, r1Floor);
+            // Keep current r1 so identical nRound samples do not collapse.
+            // Last-step height comes from L down to MIN_LINE (0.5), not the short-wall 1 mm reserve.
+            const lastStepMinL = MIN_LINE_MM;
+            const floored = floorR2OnLastStep(height, r1, r2, lastStepMinL, localSpacing, S, cosT, r1);
             if (r2 + 1e-9 >= floored.r2Min && r1 <= floored.r1 + 1e-9) break;
             const trialR1 = floored.r1;
             const trialR2 = floored.r2;
             const trialC1 = add3(R, eN, -trialR1);
             const trialE = sweptRoundPoint(trialC1, trialR1, eN, eW, phiRound1);
             const trialFil = constructFillet(B, nB, trialR2, frozenU, plantarSlopeRad, nPlant);
-            if (dist3(trialE, trialFil.Pw) + 1e-9 < minL) break;
+            if (dist3(trialE, trialFil.Pw) + 1e-9 < MIN_LINE_MM) {
+                let lo = r2;
+                let hi = trialR2;
+                for (let k = 0; k < 8; k++) {
+                    const mid = 0.5 * (lo + hi);
+                    const midFil = constructFillet(B, nB, mid, frozenU, plantarSlopeRad, nPlant);
+                    if (dist3(trialE, midFil.Pw) + 1e-9 < minL) hi = mid;
+                    else lo = mid;
+                }
+                if (lo > r2 + 1e-9) {
+                    grew = true;
+                    r2 = lo;
+                    fil = constructFillet(B, nB, r2, frozenU, plantarSlopeRad, nPlant);
+                    F = { ...fil.Pw };
+                    const next = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
+                    if (hypot3(next) > 1e-9) d = unit3(next);
+                }
+                break;
+            }
             grew = true;
             r1 = trialR1;
             r2 = trialR2;
@@ -1610,12 +1654,20 @@ export function constructSweepRule(
             E = sweptRoundPoint(C1, r1, eN, eW, phiRound1);
             return measureG1();
         };
+        const lastChordOk = (): boolean => {
+            const next = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
+            if (hypot3(next) > 1e-9) d = unit3(next);
+            const S = Math.abs(fil.phi1 - fil.phi0);
+            const dL = lastFilletDLForChord(S, planCosT(d, nB, h), r2, localSpacing);
+            return lastStepChordMm(r2, dL) + 1e-9 >= lastFilletCMinMm(localSpacing);
+        };
         const g1Aim = measureG1();
         if (g1Aim.g1E > G1_MAX_DEG + 1e-6 || g1Aim.g1F > G1_MAX_DEG + 1e-6) {
             let bestPhi = prePhi;
             let bestScore = Math.max(g1Aim.g1E, g1Aim.g1F);
             for (let k = -16; k <= 16; k++) {
                 const m = applyPhiKeepFillet(prePhi + (k * Math.PI) / 180);
+                if (!lastChordOk()) continue;
                 const score = Math.max(m.g1E, m.g1F);
                 if (score < bestScore) {
                     bestScore = score;
@@ -1715,7 +1767,8 @@ export function sampleArcLineArc(
         counts?.nRound ??
         Math.max(TOP_ROUND_MIN_ROWS, Math.ceil(Math.abs(ala.roundSweep) / Math.max(stepDeg, 1e-9)));
     const S = Math.abs(ala.phiFil1 - ala.phiFil0);
-    const dL = dLRad ?? lastFilletDLRad(S, 1);
+    const nFilGuess = counts?.nFil ?? MIN_FILLET_RINGS;
+    const dL = dLRad ?? lastFilletDLForChord(S, 1, ala.r2, stationSpacing, nFilGuess);
     const nFil =
         counts?.nFil ??
         Math.max(MIN_FILLET_RINGS, Math.ceil(Math.max(S - dL, 1e-12) / Math.max(stepDeg, 1e-9)));
@@ -1882,16 +1935,19 @@ export function sampleSweepRule(
     counts?: ColumnPieceCounts,
     dLRad?: number,
     station = -1,
+    localSpacing = OUTLINE_STATION_SPACING_MM,
 ): XYZ[] {
     const stepDeg = (FILLET_STEP_MAX_DEG * Math.PI) / 180;
     const nRound =
         counts?.nRound ??
         Math.max(TOP_ROUND_MIN_ROWS, Math.ceil(Math.abs(sw.roundSweep) / Math.max(stepDeg, 1e-9)));
     const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
-    const dL = dLRad ?? lastFilletDLRad(S, 1);
+    const nFilGuess = counts?.nFil ?? MIN_FILLET_RINGS;
+    const dL = lastFilletDLForChord(S, 1, sw.r2, localSpacing, nFilGuess);
+    const dLUse = Math.max(dLRad ?? 0, dL);
     const nFil =
         counts?.nFil ??
-        Math.max(MIN_FILLET_RINGS, Math.ceil(Math.max(S - dL, 1e-12) / Math.max(stepDeg, 1e-9)));
+        Math.max(MIN_FILLET_RINGS, Math.ceil(Math.max(S - dLUse, 1e-12) / Math.max(stepDeg, 1e-9)));
     let nLine = counts?.nLine ?? lineRowCount(sw.L, Math.max(sw.L, 1e-6));
     const total = nRound + nLine + nFil + 2;
     if (!counts && total < nWall) nLine += nWall - total;
@@ -1908,11 +1964,22 @@ export function sampleSweepRule(
             z: sw.E.z + (sw.F.z - sw.E.z) * t,
         });
     }
-    const filPhis = lastFilletPhis(sw.fil.phi1, sw.fil.phi0, dL, nFil);
+    const filPhis = lastFilletPhis(sw.fil.phi1, sw.fil.phi0, dLUse, nFil);
     for (let k = 0; k < filPhis.length; k++) {
         pts.push(filletPointAtPhi(sw.fil, filPhis[k]!));
     }
     pts.push({ ...B });
+    const last = pts[pts.length - 2];
+    const cMin = lastFilletCMinMm(localSpacing);
+    if (last && dist3(last, B) + 1e-9 < cMin) {
+        const need = lastFilletDLToSpan(sw.r2, cMin);
+        const sign = Math.sign(sw.fil.phi1 - sw.fil.phi0) || 1;
+        const snapped = filletPointAtPhi(sw.fil, sw.fil.phi0 + sign * need);
+        const prev = pts[pts.length - 3];
+        if (!prev || dist3(prev, snapped) + 1e-12 >= MIN_EDGE_MM) {
+            pts[pts.length - 2] = snapped;
+        }
+    }
     return assertPieceSpacing(pts, MIN_EDGE_MM, station);
 }
 
@@ -2123,7 +2190,7 @@ function columnPoints(
             freezeLastR2,
         );
         syncFrameFromSweep(fr, sw);
-        return sampleSweepRule(sw, fr.R, fr.B, nWall, counts, fr.lastDlRad, fr.stationIndex ?? -1);
+        return sampleSweepRule(sw, fr.R, fr.B, nWall, counts, fr.lastDlRad, fr.stationIndex ?? -1, local);
     };
     let assembled: XYZ[];
     try {
@@ -4204,10 +4271,29 @@ export function enforceLastChordFloor(frames: ColumnFrame[]): void {
         fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
         const local = localSpacingOf(fr);
         const cMin = lastFilletCMinMm(local);
-        const dL = lastFilletDLRad(fr.filletSweepRad, fr.cosT);
+        const S = fr.filletSweepRad;
+        const nFil = fr.nFilFix || MIN_FILLET_RINGS;
+        const dLRise = lastFilletDLRad(S, fr.cosT);
+        const need = lastFilletR2MinMm(local, dLRise);
+        if (fr.rFillet + 1e-9 < need) {
+            const floored = floorR2OnLastStep(
+                fr.heightMm,
+                fr.rTop,
+                fr.rFillet,
+                MIN_LINE_MM,
+                local,
+                S,
+                fr.cosT,
+                fr.rTop,
+            );
+            fr.rTop = floored.r1;
+            fr.rFillet = floored.r2;
+            applyAlaToFrame(fr);
+            fr.B.z = Bz0;
+            fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
+        }
+        const dL = lastFilletDLForChord(fr.filletSweepRad, fr.cosT, fr.rFillet, local, nFil);
         fr.lastDlRad = dL;
-        const need = lastFilletR2MinMm(local, dL);
-        if (fr.rFillet + 1e-9 < need) fr.rFillet = need;
         const chord = lastStepChordMm(fr.rFillet, dL);
         if (chord + 1e-4 < cMin) {
             const at = fr.stationIndex ?? i;
