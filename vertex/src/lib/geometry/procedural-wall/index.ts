@@ -107,6 +107,7 @@ export {
     closedCurvatureRadii,
     fitClosedC2Spline,
     lowCurvatureStartIndex,
+    resampleClosedBSpline,
     resampleClosedC2,
     resamplePolyline,
     rotateClosed,

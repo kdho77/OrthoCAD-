@@ -6,6 +6,7 @@ import {
     ensureCcw,
     fitClosedC2Spline,
     type PolyPoint,
+    resampleClosedBSpline,
     resampleClosedC2,
     resamplePolyline,
     startAtLowCurvature,
@@ -27,7 +28,7 @@ export const PATTERN_ARCH_U0 = 0.16;
 export const PATTERN_ARCH_U1 = 0.62;
 export const PATTERN_FORE_U0 = 0.76;
 export const PATTERN_SOURCE_SYNTHETIC = "synthetic";
-export const PATTERN_FEATURE_COUNT = 14;
+export const PATTERN_FEATURE_COUNT = 16;
 /** Bound on |dk/ds| (1/mm²) so k(s) stays fair — no local curvature spikes. */
 export const PATTERN_MAX_DKDS = 0.05;
 export const MIDFOOT_U0 = 0.28;
@@ -181,6 +182,17 @@ export function fairInsetMm(u: number, medial: boolean): number {
     return Math.max(PATTERN_MIN_INSET_MM, dLat + (PATTERN_ARCH_INSET_MM - dLat) * bump);
 }
 
+/**
+ * Approximating cubics sit inside the control hull. Park the toe-box
+ * controls near the rim so the curve lands at ~1 mm; heel and arch stay
+ * at the design inset.
+ */
+function controlInsetMm(u: number, medial: boolean): number {
+    const d = fairInsetMm(u, medial);
+    if (u >= PATTERN_FORE_U0) return 0.12;
+    return d;
+}
+
 function unitInward(outline: PolyPoint[], i: number): { x: number; y: number } {
     const n = edgeInward(outline[(i + outline.length - 1) % outline.length]!, outline[i]!, outline);
     const m = edgeInward(outline[i]!, outline[(i + 1) % outline.length]!, outline);
@@ -211,22 +223,24 @@ interface PatternFeatureSpec {
     medial?: boolean;
 }
 
-/** Heel apex, toe apex, six lateral, six medial — 14 interpolating features. */
+/** Heel apex, toe apex, lateral taper, medial S — 16 interpolating features. */
 function featureSpecs(): PatternFeatureSpec[] {
     return [
         { u: 0 },
         { u: 0.1, medial: false },
-        { u: 0.26, medial: false },
-        { u: 0.44, medial: false },
-        { u: 0.62, medial: false },
-        { u: 0.8, medial: false },
-        { u: 0.93, medial: false },
+        { u: 0.28, medial: false },
+        { u: 0.48, medial: false },
+        { u: 0.68, medial: false },
+        { u: 0.82, medial: false },
+        { u: 0.92, medial: false },
+        { u: 0.98, medial: false },
         { u: 1 },
-        { u: 0.93, medial: true },
-        { u: 0.8, medial: true },
-        { u: 0.62, medial: true },
-        { u: 0.44, medial: true },
-        { u: 0.26, medial: true },
+        { u: 0.98, medial: true },
+        { u: 0.92, medial: true },
+        { u: 0.82, medial: true },
+        { u: 0.48, medial: true },
+        { u: 0.34, medial: true },
+        { u: 0.2, medial: true },
         { u: 0.1, medial: true },
     ];
 }
@@ -395,9 +409,9 @@ export function patternCurvatureReport(
 }
 
 /**
- * One fair closed curve through ~14 feature offsets — not a per-vertex
+ * One fair closed curve through ~16 feature offsets — not a per-vertex
  * region-blend. Heel (8 mm) tapers continuously into the forefoot (1 mm);
- * the medial arch is a single shallow S-curve. Periodic cubic C2 interpolant.
+ * the medial arch is a single shallow S-curve. Periodic approximating cubic.
  */
 export function syntheticBottomPattern(
     outline: PolyPoint[],
@@ -423,7 +437,7 @@ export function syntheticBottomPattern(
         const n = normals[idx]!;
         const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
         const medial = spec.medial ?? (p.y - yMid) * sign > 0;
-        const d = fairInsetMm(spec.medial === undefined ? spec.u : u, medial);
+        const d = controlInsetMm(spec.medial === undefined ? spec.u : u, medial);
         const q = { x: p.x + n.x * d, y: p.y + n.y * d, z: 0 };
         if (!pointInPoly(q.x, q.y, loop)) {
             features.push({ x: p.x - n.x * d, y: p.y - n.y * d, z: 0 });
@@ -432,13 +446,35 @@ export function syntheticBottomPattern(
         }
     }
     const ordered = orderCcwAroundCentroid(dedupeFeatures(features));
+    const nOut = Math.max(160, loop.length);
     if (ordered.length < 8) {
-        return resampleClosedC2(
-            fitClosedC2Spline(ordered.length ? ordered : loop),
-            Math.max(160, loop.length),
+        return pinPatternInsideRim(
+            resampleClosedC2(fitClosedC2Spline(ordered.length ? ordered : loop), nOut),
+            loop,
         );
     }
-    return resampleClosedC2(fitClosedC2Spline(ordered), Math.max(160, loop.length));
+    return pinPatternInsideRim(resampleClosedBSpline(ordered, nOut), loop);
+}
+
+/** Pull any hull overshoot back inside the rim without changing the fair shape. */
+function pinPatternInsideRim(curve: PolyPoint[], rim: PolyPoint[]): PolyPoint[] {
+    let cx = 0;
+    let cy = 0;
+    for (const p of rim) {
+        cx += p.x;
+        cy += p.y;
+    }
+    cx /= Math.max(1, rim.length);
+    cy /= Math.max(1, rim.length);
+    return curve.map((p) => {
+        if (pointInPoly(p.x, p.y, rim)) return p;
+        let q = p;
+        for (let t = 0.04; t <= 1; t += 0.04) {
+            q = { x: p.x + (cx - p.x) * t, y: p.y + (cy - p.y) * t, z: 0 };
+            if (pointInPoly(q.x, q.y, rim)) return q;
+        }
+        return q;
+    });
 }
 
 function asPoint(x: number, y: number, z = 0): PolyPoint {

@@ -283,6 +283,19 @@ function interpolatingControls(points: PolyPoint[]): PolyPoint[] {
     return out;
 }
 
+/**
+ * Approximating periodic cubic B-spline through `controls` (the curve stays
+ * in the control hull — no interpolant overshoot).
+ */
+export function resampleClosedBSpline(controls: PolyPoint[], n: number): PolyPoint[] {
+    if (controls.length === 0 || n <= 0) return [];
+    if (controls.length < 3) return resamplePolyline(controls, n);
+    const dense: PolyPoint[] = [];
+    const denseN = Math.max(n * 4, controls.length * 8);
+    for (let i = 0; i < denseN; i++) dense.push(samplePeriodicBSpline(controls, i / denseN));
+    return startAtLowCurvature(ensureCcw(resamplePolyline(dense, n)));
+}
+
 /** Arc-length-ish resample of the closed C2 interpolating B-spline. */
 export function resampleClosedC2(spline: ClosedC2Spline, n: number): PolyPoint[] {
     const controls = spline.controls;
