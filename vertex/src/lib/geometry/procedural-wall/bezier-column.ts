@@ -876,7 +876,7 @@ export function constructArcLineArc(
 ): ArcLineArc {
     const hl = Math.hypot(hIn.x, hIn.y) || 1;
     const h = { x: hIn.x / hl, y: hIn.y / hl };
-    const origin = B;
+    const origin = R;
     const steep = sheetSlopeRad != null && (Math.abs(sheetSlopeRad) * 180) / Math.PI >= STEEP_SHEET_DEG;
     const nTop = sheetSlopeRad != null ? nTopFromSheetSlope(sheetSlopeRad, h) : projectNTop(nTopIn, h, steep);
     const frame = plantarFrameAt(h, plantarSlopeRad);
@@ -1335,7 +1335,7 @@ function columnPoints(
     const out = raw.map((p, i) => {
         if (i === 0) return { ...fr.R };
         if (i === raw.length - 1) return { ...fr.B };
-        return projectToPlane(p, fr.B, fr.h);
+        return projectToPlane(p, fr.R, fr.h);
     });
     let eIdx = 0;
     let bestE = Infinity;
@@ -1758,12 +1758,27 @@ export function rotateColumnAboutB(
 export function clampLastFilletOutboard(col: XYZ[], B: XYZ, h: { x: number; y: number }): void {
     if (col.length < 3) return;
     const i = col.length - 2;
-    const p = col[i]!;
-    const s = lastFilletSOutboard(p, B, h);
-    const z2 = Math.max(p.z, LAST_FILLET_Z_MIN_MM);
-    if (s >= LAST_FILLET_S_MIN_MM - 1e-9 && z2 <= p.z + 1e-12) return;
-    const s2 = s >= 0 ? Math.max(s, LAST_FILLET_S_MIN_MM) : LAST_FILLET_S_MIN_MM;
-    col[i] = projectToPlane({ x: B.x - h.x * s2, y: B.y - h.y * s2, z: z2 }, B, h);
+    const prev = col[i - 1]!;
+    const vx = B.x - prev.x;
+    const vy = B.y - prev.y;
+    const vz = B.z - prev.z;
+    const len = Math.hypot(vx, vy, vz);
+    if (len < 1e-9) return;
+    const zNeed = vz < -1e-12 ? (LAST_FILLET_Z_MIN_MM * len) / Math.abs(vz) : LAST_FILLET_Z_MIN_MM;
+    const minDist = Math.max(LAST_FILLET_S_MIN_MM, LAST_FILLET_Z_MIN_MM, zNeed);
+    if (minDist >= len - 1e-9) return;
+    const t = 1 - minDist / len;
+    const p = { x: prev.x + vx * t, y: prev.y + vy * t, z: prev.z + vz * t };
+    if (
+        vecAngleDeg(
+            { x: p.x - prev.x, y: p.y - prev.y, z: p.z - prev.z },
+            { x: B.x - p.x, y: B.y - p.y, z: B.z - p.z },
+        ) >
+        ROUND_JOINT_MAX_DEG + 1e-3
+    ) {
+        return;
+    }
+    col[i] = p;
 }
 
 export function smoothNormalField(normals: XYZ[], rim: XYZ[], sigma = SCALAR_SMOOTH_SIGMA_MM): XYZ[] {
@@ -2178,7 +2193,6 @@ export function buildBezierColumns(
         fr.nTop = nTopFromSheetSlope(fr.roundSlopeRad, fr.h);
         fr.nTopSmoothed = fr.nTop;
     }
-    const desiredHeads = smoothStationHeadings(stations);
     const nTopLimited = limitNormalSteps(
         frames.map((f) => f.nTop),
         N_TOP_MAX_DEG,
@@ -2222,14 +2236,7 @@ export function buildBezierColumns(
         const col = columnPoints(fr, nWall, spacing);
         col[0] = { ...fr.R };
         col[col.length - 1] = { ...fr.B };
-        const chord = columnHeading(stations[i]!).h;
-        fr.h = rotateColumnAboutB(col, fr.B, fr.R, chord, desiredHeads[i] ?? chord);
-        if (fr.sheetSlopeValid) {
-            fr.nTop = nTopFromSheetSlope(fr.roundSlopeRad, fr.h);
-            fr.nTopSmoothed = fr.nTop;
-        }
-        clampLastFilletOutboard(col, fr.B, fr.h);
-        col[col.length - 1] = { ...fr.B };
+        fr.h = columnHeading(stations[i]!).h;
         assertRoundJoints(fr, col);
         fr.arcEndZ = col[col.length - 2]?.z ?? fr.B.z;
         for (let k = 1; k < col.length - 1; k++) {
