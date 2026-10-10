@@ -739,7 +739,7 @@ export function spreadClosedOnLoop(pts: PolyPoint[], loop: PolyPoint[], minMm: n
     if (total < 1e-6) return pts.map((p) => ({ ...p }));
     const s01 = pts.map((p) => nearestS01(p, loop, cum, total));
     const outS = unwrapAllowPlateau(s01);
-    const minS = Math.min(0.25 / n, minMm / total);
+    const minS = minMm / total;
     for (let i = 1; i < n; i++) {
         if (outS[i]! < outS[i - 1]! + minS) outS[i] = outS[i - 1]! + minS;
     }

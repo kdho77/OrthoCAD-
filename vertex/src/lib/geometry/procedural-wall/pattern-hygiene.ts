@@ -98,6 +98,35 @@ export function clipperRoundInset(loop: PolyPoint[], deltaMm: number): PolyPoint
     return ensureCcw(oriented);
 }
 
+function smoothHeelBand(loop: PolyPoint[], uMax: number, passes: number): PolyPoint[] {
+    if (loop.length < 4) return loop;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const p of loop) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+    }
+    const length = Math.max(1e-3, maxX - minX);
+    let cur = loop.map((p) => ({ ...p }));
+    for (let pass = 0; pass < passes; pass++) {
+        const next = cur.map((p) => ({ ...p }));
+        for (let i = 0; i < cur.length; i++) {
+            const u = (cur[i]!.x - minX) / length;
+            if (u > uMax) continue;
+            const a = cur[(i + cur.length - 1) % cur.length]!;
+            const b = cur[i]!;
+            const c = cur[(i + 1) % cur.length]!;
+            next[i] = {
+                x: 0.5 * b.x + 0.25 * (a.x + c.x),
+                y: 0.5 * b.y + 0.25 * (a.y + c.y),
+                z: b.z,
+            };
+        }
+        cur = next;
+    }
+    return cur;
+}
+
 export function assertInsideRim(
     pattern: PolyPoint[],
     rimPlan: PolyPoint[],
@@ -149,7 +178,7 @@ export function hygieneBottomPattern(
         );
     }
     const n = Math.max(opts?.resampleN ?? 0, 160, smoothed.length);
-    const resampled = resampleClosedC2(fitClosedC2Spline(smoothed), n);
+    const resampled = smoothHeelBand(resampleClosedC2(fitClosedC2Spline(smoothed), n), 0.18, 8);
     if (opts?.requireInsideRim && opts.rimPlan?.length) {
         assertInsideRim(resampled, opts.rimPlan, opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM);
     }
