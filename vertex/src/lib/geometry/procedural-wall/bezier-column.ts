@@ -694,11 +694,14 @@ export function assertFilletWalk(
     const fail = (): never => {
         throw new Error(`[S1-FIL] reversed fillet at station ${at}`);
     };
+    const up = center ? { x: center.x - B.x, y: center.y - B.y, z: center.z - B.z } : { x: 0, y: 0, z: 1 };
+    const upL = Math.hypot(up.x, up.y, up.z) || 1;
+    const filZ = (p: XYZ): number => ((p.x - B.x) * up.x + (p.y - B.y) * up.y + (p.z - B.z) * up.z) / upL;
     for (let i = 1; i < filletPts.length; i++) {
-        if (!(filletPts[i]!.z < filletPts[i - 1]!.z - 1e-12)) fail();
+        if (!(filZ(filletPts[i]!) < filZ(filletPts[i - 1]!) - 1e-12)) fail();
     }
     const last = filletPts[filletPts.length - 1]!;
-    if (last.z + 1e-12 < B.z) fail();
+    if (filZ(last) + 1e-12 < 0) fail();
     if (dist3(last, B) > r2 * dL + 1e-6) fail();
     if (filletPts.length < 2) return;
     const prev = filletPts[filletPts.length - 2]!;
