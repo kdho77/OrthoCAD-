@@ -2062,7 +2062,8 @@ export function buildBezierColumns(
         const nxt = frames[(i + 1) % frames.length]!;
         maxTiltStep = Math.max(maxTiltStep, (Math.abs(nxt.leanRad - fr.leanRad) * 180) / Math.PI);
     }
-    ensureLastFilletRowHeight(xyz, frames, spacing);
+    // Last-interior slides to 0.15× spacing invert the B strip
+    // (across-p100 70–90°, seam-B 180°). Equal-φ fillet samples stay as-is.
     for (let i = 0; i < frames.length; i++) {
         const col = xyz[i]!;
         frames[i]!.arcEndZ = col[col.length - 2]?.z ?? frames[i]!.B.z;
@@ -2235,7 +2236,7 @@ function lastAlongDeg(col: XYZ[], fr: ColumnFrame, j: number): number {
 }
 
 /** Keep nJ; slide the last interior away from B so the last row is ≥ 0.15× spacing. */
-function ensureLastFilletRowHeight(xyz: XYZ[][], frames: ColumnFrame[], stationSpacing: number): void {
+export function ensureLastFilletRowHeight(xyz: XYZ[][], frames: ColumnFrame[], stationSpacing: number): void {
     const nS = xyz.length;
     const saved = xyz.map((col) => (col.length >= 2 ? { ...col[col.length - 2]! } : null));
     const slidAt = new Array<boolean>(nS).fill(false);
