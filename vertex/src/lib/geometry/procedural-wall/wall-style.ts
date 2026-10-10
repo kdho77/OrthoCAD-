@@ -68,10 +68,10 @@ export function hybridBulgeAt(
 
 export function midStyleWeight(heightMm: number, bulge: number): number {
     const b = Math.max(0, Math.min(1, bulge));
-    return Math.max(
-        0,
-        Math.min(WALL_W_MAX, b * smoothstep01(WALL_H_SMOOTH_LO_MM, WALL_H_SMOOTH_HI_MM, heightMm)),
-    );
+    const h = smoothstep01(WALL_H_SMOOTH_LO_MM, WALL_H_SMOOTH_HI_MM, heightMm);
+    // Default bulge 0.6 reaches w = 0.9 on tall walls so the conic can hit the
+    // chord-offset bound. Lower bulge scales down from that.
+    return Math.max(0, Math.min(WALL_W_MAX, WALL_W_MAX * (b / WALL_BULGE_DEFAULT) * h));
 }
 
 function hypot3(a: XYZ): number {
@@ -251,6 +251,9 @@ export interface MidStyleSample {
     weight: number;
     M: XYZ | null;
     bulge: number;
+    chordOffsetMm?: number;
+    planOffsetMm?: number;
+    limit?: "none" | "w" | "chord" | "plan";
 }
 
 /**
@@ -278,21 +281,50 @@ export function sampleWallMidStyle(
     const nx = outward.x / nl;
     const ny = outward.y / nl;
     const maxOff = Math.min(WALL_BULGE_OFFSET_FRAC * chord, WALL_BULGE_OFFSET_MAX_MM);
-    const designedOff = maxOff * Math.max(bulgeAtStation, 0);
-    if (designedOff < 1e-4) {
-        return { pts: sampleStraightMid(E, F, n), weight: 0, M: null, bulge: bulgeAtStation };
+    if (maxOff * Math.max(bulgeAtStation, 0) < 1e-4) {
+        return {
+            pts: sampleStraightMid(E, F, n),
+            weight: 0,
+            M: null,
+            bulge: bulgeAtStation,
+            chordOffsetMm: 0,
+            planOffsetMm: 0,
+            limit: "none",
+        };
     }
-    const M = { x: mid.x + nx * designedOff, y: mid.y + ny * designedOff, z: mid.z };
-    let w = midStyleWeight(heightMm, Math.max(bulgeAtStation, 1e-3));
-    if (bulgeAtStation <= 1e-9) {
-        w = Math.min(w, 0.15);
-        w = clampWeightForChordOffset(E, M, F, w, Math.min(maxOff, 0.25));
-    } else {
-        w = clampWeightForChordOffset(E, M, F, w, maxOff);
-    }
+    let wWanted = midStyleWeight(heightMm, Math.max(bulgeAtStation, 1e-3));
+    if (bulgeAtStation <= 1e-9) wWanted = Math.min(wWanted, 0.15);
+    const M = { x: mid.x + nx * maxOff, y: mid.y + ny * maxOff, z: mid.z };
+    let w = clampWeightForChordOffset(E, M, F, wWanted, maxOff);
+    const afterChord = w;
     w = bisectWeightForPlan(E, M, F, R, w, n, outward, params.planOutMm);
-    if (w <= 1e-6) return { pts: sampleStraightMid(E, F, n), weight: 0, M, bulge: bulgeAtStation };
-    return { pts: sampleConicByArcLength(E, M, F, w, n), weight: w, M, bulge: bulgeAtStation };
+    if (w <= 1e-6) {
+        return {
+            pts: sampleStraightMid(E, F, n),
+            weight: 0,
+            M,
+            bulge: bulgeAtStation,
+            chordOffsetMm: 0,
+            planOffsetMm: 0,
+            limit: "plan",
+        };
+    }
+    const pts = sampleConicByArcLength(E, M, F, w, n);
+    const chordOff = chordOffsetAtMid(E, M, F, w);
+    const plan = planBoundsOf(pts, R, F, outward, params.planOutMm);
+    let limit: "none" | "w" | "chord" | "plan" = "none";
+    if (w + 1e-6 < afterChord) limit = "plan";
+    else if (afterChord + 1e-6 < wWanted) limit = "chord";
+    else if (wWanted + 1e-6 < WALL_W_MAX) limit = "w";
+    return {
+        pts,
+        weight: w,
+        M,
+        bulge: bulgeAtStation,
+        chordOffsetMm: chordOff,
+        planOffsetMm: plan.offsetMax,
+        limit,
+    };
 }
 
 export function stationBulge(params: WallStyleParams, u: number, sideSign: 1 | -1, lengthMm: number): number {

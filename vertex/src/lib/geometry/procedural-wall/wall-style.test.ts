@@ -36,7 +36,7 @@ describe("wall style mid-piece", () => {
     test("mid-style weight is 0 on short walls and capped at 0.9", () => {
         expect(midStyleWeight(2, 0.6)).toBe(0);
         expect(midStyleWeight(20, 1)).toBe(WALL_W_MAX);
-        expect(midStyleWeight(12, 0.6)).toBeCloseTo(0.6, 6);
+        expect(midStyleWeight(12, 0.6)).toBeCloseTo(WALL_W_MAX, 6);
     });
 
     test("rational quadratic is G1 at E and F when M is the tangent intersection", () => {

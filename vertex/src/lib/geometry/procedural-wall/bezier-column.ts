@@ -236,6 +236,9 @@ export interface ColumnFrame {
     sideSign?: 1 | -1;
     footLengthMm?: number;
     midWeight?: number;
+    midChordOffMm?: number;
+    midPlanOffMm?: number;
+    midLimit?: "none" | "w" | "chord" | "plan";
     /** Laplacian F; applyAla honors this instead of rebuilding F from r2. */
     fLocked?: XYZ;
 }
@@ -247,6 +250,7 @@ export interface SweepMidStyle {
     outward: { x: number; y: number };
     weightOut?: { value: number };
     g1Out?: { e: number; f: number };
+    offsetOut?: { chord: number; plan: number; limit: "none" | "w" | "chord" | "plan" };
 }
 
 export interface ObliqueFallbackRow {
@@ -2606,6 +2610,11 @@ export function sampleSweepRule(
         bulge,
     );
     if (midStyle?.weightOut) midStyle.weightOut.value = mid.weight;
+    if (midStyle?.offsetOut) {
+        midStyle.offsetOut.chord = mid.chordOffsetMm ?? 0;
+        midStyle.offsetOut.plan = mid.planOffsetMm ?? 0;
+        midStyle.offsetOut.limit = mid.limit ?? "none";
+    }
     if (midStyle?.g1Out) {
         const acute = (a: XYZ, b: XYZ): number => Math.min(vecAngleDeg(a, b), 180 - vecAngleDeg(a, b));
         if (mid.M) {
@@ -2861,6 +2870,7 @@ function columnPoints(
     const bulge = stationBulge(style, fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250);
     const weightOut = { value: 0 };
     const g1Out = { e: fr.g1EDeg, f: fr.g1FDeg };
+    const offsetOut = { chord: 0, plan: 0, limit: "none" as const };
     const assembled = sampleSweepRule(
         sw,
         fr.R,
@@ -2879,9 +2889,13 @@ function columnPoints(
             outward: { x: fr.wOut.x, y: fr.wOut.y },
             weightOut,
             g1Out,
+            offsetOut,
         },
     );
     fr.midWeight = weightOut.value;
+    fr.midChordOffMm = offsetOut.chord;
+    fr.midPlanOffMm = offsetOut.plan;
+    fr.midLimit = offsetOut.limit;
     fr.roundRows = counts?.nRound ?? nRound;
     assembled[0] = { ...fr.R };
     assembled[assembled.length - 1] = { ...fr.B };
@@ -4226,7 +4240,6 @@ export function buildBezierColumns(
         const fr = frames[i]!;
         fr.arcEndZ = col[col.length - 2]?.z ?? fr.B.z;
     }
-    smoothMedialArchLineRows(xyz, frames);
     assertT0ClearsSheet(frames);
     reportLeanVsBio(frames, defaults, flare);
     const bad: Array<{ i: number; u: number; off: number; side: number }> = [];
@@ -4530,40 +4543,6 @@ export function ensureLastFilletRowHeight(xyz: XYZ[][], frames: ColumnFrame[], s
         if (across > ACROSS_STATION_MAX_DEG || along > ALONG_JOINT_MAX_DEG) {
             col[col.length - 2] = saved[i]!;
         }
-    }
-}
-
-/** Light across-station Laplacian on E→F line rows in the medial-arch upper wall. */
-function smoothMedialArchLineRows(xyz: XYZ[][], frames: ColumnFrame[]): void {
-    const nS = xyz.length;
-    if (nS < 3 || !xyz[0] || xyz[0].length < 5) return;
-    const nRows = xyz[0].length;
-    const inBand = frames.map((fr) => fr.u >= 0.4 && fr.u <= 0.62);
-    for (let j = 1; j < nRows - 1; j++) {
-        const next: XYZ[] = [];
-        for (let i = 0; i < nS; i++) {
-            const cur = xyz[i]![j]!;
-            if (!inBand[i]) {
-                next.push({ ...cur });
-                continue;
-            }
-            const fr = frames[i]!;
-            const nRnd = fr.nRoundFix || fr.roundRows || 0;
-            const nLn = fr.nLineFix || 0;
-            if (j < nRnd || j > nRnd + nLn) {
-                next.push({ ...cur });
-                continue;
-            }
-            const prev = xyz[(i + nS - 1) % nS]![j]!;
-            const nxt = xyz[(i + 1) % nS]![j]!;
-            const p = {
-                x: cur.x + 0.5 * (0.5 * (prev.x + nxt.x) - cur.x),
-                y: cur.y + 0.5 * (0.5 * (prev.y + nxt.y) - cur.y),
-                z: cur.z + 0.5 * (0.5 * (prev.z + nxt.z) - cur.z),
-            };
-            next.push(projectToPlane(p, fr.R, fr.h));
-        }
-        for (let i = 0; i < nS; i++) xyz[i]![j] = next[i]!;
     }
 }
 

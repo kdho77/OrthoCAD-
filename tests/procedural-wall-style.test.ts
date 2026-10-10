@@ -148,15 +148,15 @@ describe("procedural wall styles", () => {
             const views = [
                 {
                     name: "side",
-                    right: [1, 0, 0] as [number, number, number],
+                    right: [0.82, 0.57, 0] as [number, number, number],
                     up: [0, 0, 1] as [number, number, number],
-                    light: [0.3, 0.6, 0.7] as [number, number, number],
+                    light: [0.25, 0.55, 0.8] as [number, number, number],
                 },
                 {
                     name: "medial",
-                    right: [0, 1, 0] as [number, number, number],
+                    right: [0.18, 0.98, 0] as [number, number, number],
                     up: [0, 0, 1] as [number, number, number],
-                    light: [0.6, 0.2, 0.7] as [number, number, number],
+                    light: [0.15, 0.7, 0.7] as [number, number, number],
                 },
             ];
             for (const v of views) {
@@ -164,12 +164,100 @@ describe("procedural wall styles", () => {
                 writeArtifact(`procedural-default-${style}-${v.name}.png`, encodePng(720, 540, rgb));
             }
         }
+        const sectionAt = (geo: BufferGeometry, x0: number): Array<{ y: number; z: number }> => {
+            const pos = geo.getAttribute("position").array as Float32Array;
+            const idx = geo.getIndex()!.array;
+            const segs: Array<{ y: number; z: number }> = [];
+            for (let f = 0; f < idx.length; f += 3) {
+                const pts = [0, 1, 2].map((k) => {
+                    const i = idx[f + k]!;
+                    return { x: pos[i * 3]!, y: pos[i * 3 + 1]!, z: pos[i * 3 + 2]! };
+                });
+                for (let e = 0; e < 3; e++) {
+                    const a = pts[e]!;
+                    const b = pts[(e + 1) % 3]!;
+                    if ((a.x - x0) * (b.x - x0) > 0) continue;
+                    const t = Math.abs(b.x - a.x) < 1e-9 ? 0 : (x0 - a.x) / (b.x - a.x);
+                    if (t < -1e-6 || t > 1 + 1e-6) continue;
+                    segs.push({ y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t });
+                }
+            }
+            return segs;
+        };
+        const drawSection = (
+            packs: Array<{ pts: Array<{ y: number; z: number }>; rgb: [number, number, number] }>,
+            w = 720,
+            h = 420,
+        ): Uint8Array => {
+            const rgb = new Uint8Array(w * h * 3).fill(18);
+            let minY = Infinity;
+            let maxY = -Infinity;
+            let minZ = Infinity;
+            let maxZ = -Infinity;
+            for (const p of packs) {
+                for (const q of p.pts) {
+                    minY = Math.min(minY, q.y);
+                    maxY = Math.max(maxY, q.y);
+                    minZ = Math.min(minZ, q.z);
+                    maxZ = Math.max(maxZ, q.z);
+                }
+            }
+            const sx = (w - 24) / Math.max(1e-3, maxY - minY);
+            const sz = (h - 24) / Math.max(1e-3, maxZ - minZ);
+            const s = Math.min(sx, sz);
+            const put = (yy: number, zz: number, col: [number, number, number]): void => {
+                const px = Math.round(12 + (yy - minY) * s);
+                const py = Math.round(h - 12 - (zz - minZ) * s);
+                if (px < 0 || py < 0 || px >= w || py >= h) return;
+                const o = (py * w + px) * 3;
+                rgb[o] = col[0];
+                rgb[o + 1] = col[1];
+                rgb[o + 2] = col[2];
+            };
+            for (const p of packs) {
+                for (const q of p.pts) put(q.y, q.z, p.rgb);
+            }
+            return encodePng(w, h, rgb);
+        };
+        const midX = 0.5 * (model.bounds.minX + model.bounds.maxX);
+        const heelX = model.bounds.minX + 0.12 * (model.bounds.maxX - model.bounds.minX);
+        const colors: Record<Style, [number, number, number]> = {
+            straight: [180, 180, 180],
+            round: [80, 200, 255],
+            hybrid: [255, 140, 70],
+        };
+        for (const [name, x0] of [
+            ["midfoot", midX],
+            ["heel", heelX],
+        ] as const) {
+            writeArtifact(
+                `procedural-default-section-${name}.png`,
+                drawSection(styles.map((s) => ({ pts: sectionAt(geos[s]!, x0), rgb: colors[s] }))),
+            );
+        }
         console.log(
             "[S1-WALL-STYLE]",
             JSON.stringify(
                 styles.map((s) => {
-                    const frames = (geos[s]!.userData.wallFrames ?? []) as Array<{ midWeight?: number }>;
+                    const frames = (geos[s]!.userData.wallFrames ?? []) as Array<{
+                        midWeight?: number;
+                        midChordOffMm?: number;
+                        midPlanOffMm?: number;
+                        midLimit?: string;
+                        heightMm?: number;
+                    }>;
                     const weights = frames.map((f) => f.midWeight ?? 0);
+                    const chords = frames.map((f) => f.midChordOffMm ?? 0);
+                    const plans = frames.map((f) => f.midPlanOffMm ?? 0);
+                    const limits: Record<string, number> = {};
+                    for (const f of frames) {
+                        const k = f.midLimit ?? "none";
+                        limits[k] = (limits[k] ?? 0) + 1;
+                    }
+                    const med = (a: number[]): number => {
+                        const b = [...a].sort((x, y) => x - y);
+                        return b[Math.floor(b.length / 2)] ?? 0;
+                    };
                     return {
                         style: s,
                         g1E: geos[s]!.userData.columnQuality?.maxG1EDeg,
@@ -182,6 +270,11 @@ describe("procedural wall styles", () => {
                         topVsStraight: s === "straight" ? 0 : topDeltaMm(geos[s]!, straight),
                         midWmax: weights.length ? Math.max(...weights) : 0,
                         midWmean: weights.length ? weights.reduce((a, b) => a + b, 0) / weights.length : 0,
+                        chordOffMax: chords.length ? Math.max(...chords) : 0,
+                        chordOffMed: med(chords),
+                        planOffMax: plans.length ? Math.max(...plans) : 0,
+                        planOffMed: med(plans),
+                        limits,
                     };
                 }),
             ),
