@@ -1498,47 +1498,19 @@ function columnHeading(st: HermiteStation): {
     return { h: { x: dx / planLen, y: dy / planLen }, shortChord: planLen < SHORT_CHORD_MM, planLen };
 }
 
-function outlineInward(outline: PolyPoint[], i: number): { x: number; y: number } {
-    const n = outline.length;
-    const a = outline[(i + n - 1) % n]!;
-    const b = outline[i]!;
-    const c = outline[(i + 1) % n]!;
-    const t1x = b.x - a.x;
-    const t1y = b.y - a.y;
-    const t2x = c.x - b.x;
-    const t2y = c.y - b.y;
-    const tx = t1x + t2x;
-    const ty = t1y + t2y;
-    const tl = Math.hypot(tx, ty);
-    let nx = tl > 1e-9 ? -ty / tl : -t1y;
-    let ny = tl > 1e-9 ? tx / tl : t1x;
-    const nl = Math.hypot(nx, ny) || 1;
-    nx /= nl;
-    ny /= nl;
-    let cx = 0;
-    let cy = 0;
-    for (const p of outline) {
-        cx += p.x;
-        cy += p.y;
-    }
-    cx /= Math.max(1, outline.length);
-    cy /= Math.max(1, outline.length);
-    if ((b.x - cx) * nx + (b.y - cy) * ny > 0) {
-        nx = -nx;
-        ny = -ny;
-    }
-    return { x: nx, y: ny };
-}
-
-/** Curvature-aware outline normals, then clamp heading change to `HEADING_MAX_DEG`. */
+/**
+ * Curvature-aware R→B headings (not pattern-tangent normals). A fair
+ * arch cut-in is not a parallel offset, so pattern normals put B 20 mm
+ * off the column plane. Clamp change to `HEADING_MAX_DEG`.
+ */
 export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: number; y: number }> {
     const n = stations.length;
     if (n === 0) return [];
-    const outline = stations.map((s) => s.outline);
-    const raw = outline.map((_, i) => outlineInward(outline, i));
-    const radii = closedCurvatureRadii(outline);
-    const ds = outline.map((p, i) => {
-        const q = outline[(i + 1) % n]!;
+    const raw = stations.map((st) => columnHeading(st).h);
+    const rim = stations.map((s) => s.rim);
+    const radii = closedCurvatureRadii(rim);
+    const ds = rim.map((p, i) => {
+        const q = rim[(i + 1) % n]!;
         return Math.hypot(q.x - p.x, q.y - p.y);
     });
     const period = ds.reduce((s, d) => s + d, 0);
