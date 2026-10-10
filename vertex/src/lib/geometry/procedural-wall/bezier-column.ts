@@ -2092,23 +2092,6 @@ function columnPoints(
     const nB = fr.nB ?? fr.h;
     const tRim = fr.tRim ?? { x: -fr.h.y, y: fr.h.x, z: 0 };
     const local = localSpacingOf(fr);
-    const sw = constructSweepRule(
-        fr.R,
-        fr.B,
-        nUse,
-        fr.rTop,
-        fr.rFillet,
-        fr.h,
-        nB,
-        tRim,
-        fr.plantarSlopeRad,
-        fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
-        local,
-        fr.sheetPlaneN ?? nUse,
-        fr.phiRound1Lock,
-        fr.nPlantar,
-    );
-    syncFrameFromSweep(fr, sw);
     const nRound = _nTopFix || fr.nRoundFix || 0;
     const nFil = _nFilFix || fr.nFilFix || 0;
     const nLine = fr.nLineFix || 0;
@@ -2121,7 +2104,34 @@ function columnPoints(
                   nWall,
               }
             : undefined;
-    const assembled = sampleSweepRule(sw, fr.R, fr.B, nWall, counts, fr.lastDlRad, fr.stationIndex ?? -1);
+    const assemble = (freezeLastR2: boolean): XYZ[] => {
+        const sw = constructSweepRule(
+            fr.R,
+            fr.B,
+            nUse,
+            fr.rTop,
+            fr.rFillet,
+            fr.h,
+            nB,
+            tRim,
+            fr.plantarSlopeRad,
+            fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
+            local,
+            fr.sheetPlaneN ?? nUse,
+            fr.phiRound1Lock,
+            fr.nPlantar,
+            freezeLastR2,
+        );
+        syncFrameFromSweep(fr, sw);
+        return sampleSweepRule(sw, fr.R, fr.B, nWall, counts, fr.lastDlRad, fr.stationIndex ?? -1);
+    };
+    let assembled: XYZ[];
+    try {
+        assembled = assemble(false);
+    } catch (err) {
+        if (!String(err).includes("[S1-I] collapsed fillet row")) throw err;
+        assembled = assemble(true);
+    }
     fr.roundRows = counts?.nRound ?? nRound;
     assembled[0] = { ...fr.R };
     assembled[assembled.length - 1] = { ...fr.B };
