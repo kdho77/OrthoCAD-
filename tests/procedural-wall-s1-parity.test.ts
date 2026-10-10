@@ -19,6 +19,7 @@ import {
     ACROSS_STATION_P99_MAX_DEG,
     ASPECT_EVERYWHERE_MAX,
     ASPECT_LAST_STRIP_MAX,
+    ASPECT_ROUND_MAX,
     buildHermiteStations,
     CHORD_RISE_MAX_DEG,
     COLUMN_PLANARITY_LIMIT_MM,
@@ -395,8 +396,8 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxAspectEverywhere ?? 0) > ASPECT_EVERYWHERE_MAX + 1e-6) {
         misses.push(`aspect ${q.maxAspectEverywhere?.toFixed(2)}>${ASPECT_EVERYWHERE_MAX}`);
     }
-    if ((q.maxAspectRound ?? 0) > ASPECT_EVERYWHERE_MAX + 1e-6) {
-        misses.push(`aspect-round ${q.maxAspectRound?.toFixed(2)}>${ASPECT_EVERYWHERE_MAX}`);
+    if ((q.maxAspectRound ?? 0) > ASPECT_ROUND_MAX + 1e-6) {
+        misses.push(`aspect-round ${q.maxAspectRound?.toFixed(2)}>${ASPECT_ROUND_MAX}`);
     }
     if ((q.maxChordRiseDeg ?? 0) > CHORD_RISE_MAX_DEG + 0.05) {
         misses.push(`chord-rise ${q.maxChordRiseDeg?.toFixed(2)}>${CHORD_RISE_MAX_DEG}`);
