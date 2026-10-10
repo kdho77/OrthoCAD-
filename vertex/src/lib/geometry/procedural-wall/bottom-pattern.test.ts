@@ -32,22 +32,24 @@ describe("synthetic bottom pattern", () => {
         const n = 80;
         const outline = Array.from({ length: n }, (_, i) => {
             const a = (i / n) * Math.PI * 2;
-            return { x: 80 + 70 * Math.cos(a), y: 28 * Math.sin(a), z: 0 };
+            return { x: 120 + 110 * Math.cos(a), y: 42 * Math.sin(a), z: 0 };
         });
-        const bounds = { minX: 10, maxX: 150 };
+        const bounds = { minX: 10, maxX: 230 };
         const raw = syntheticBottomPattern(outline, bounds);
         const pattern = hygieneBottomPattern(raw, { rimPlan: outline, requireInsideRim: true }).loop;
         expect(pattern.length).toBeGreaterThan(80);
         expect(Math.abs(turning(pattern) - 1)).toBeLessThan(0.05);
         let minC = Infinity;
         let maxC = 0;
-        let medial = Infinity;
+        let medial = 0;
+        const length = bounds.maxX - bounds.minX;
         for (const p of pattern) {
             expect(pointInPoly(p.x, p.y, outline)).toBe(true);
             const c = minDistToLoopXY(p.x, p.y, outline);
             minC = Math.min(minC, c);
             maxC = Math.max(maxC, c);
-            if (p.y > 8) medial = Math.min(medial, c);
+            const u = (p.x - bounds.minX) / length;
+            if (p.y > 8 && u > 0.22 && u < 0.55) medial = Math.max(medial, c);
         }
         expect(minC).toBeGreaterThan(PATTERN_FOREFOOT_INSET_MM * 0.45);
         expect(maxC).toBeGreaterThan(PATTERN_HEEL_LATERAL_INSET_MM + 1.5);
