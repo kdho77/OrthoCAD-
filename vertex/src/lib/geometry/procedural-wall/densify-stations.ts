@@ -131,7 +131,7 @@ export function insertStationPair(
     bounds: { minX: number; maxX: number },
     i: number,
     rimLoop?: PolyPoint[],
-): void {
+): boolean {
     const n = stations.length;
     const cur = stations[i]!;
     const nxt = stations[(i + 1) % n]!;
@@ -154,17 +154,27 @@ export function insertStationPair(
     );
     const Rwant = sampleClosedAtArc01(sampleRim, tR);
     const R = closestOnSegment(Rwant, Ra, Rb);
-    const tB = midClosedParam(
-        parameterOnClosedLoop(cur.outline, pattern),
-        parameterOnClosedLoop(nxt.outline, pattern),
-    );
+    const tB0 = parameterOnClosedLoop(cur.outline, pattern);
+    const tB1 = parameterOnClosedLoop(nxt.outline, pattern);
+    let span = tB1 - tB0;
+    if (span < -0.5) span += 1;
+    if (span > 0.5) span -= 1;
+    if (Math.abs(span) < 1e-6) return false;
+    const tB = midClosedParam(tB0, tB1);
     const B = sampleClosedAtArc01(pattern, tB);
+    if (
+        Math.hypot(B.x - cur.outline.x, B.y - cur.outline.y) < PAIR_SPACING_MIN_MM ||
+        Math.hypot(B.x - nxt.outline.x, B.y - nxt.outline.y) < PAIR_SPACING_MIN_MM
+    ) {
+        return false;
+    }
     const mid = positions.length / 3;
     positions.push(R.x, R.y, R.z);
     splitTopBoundaryEdge(indices, prevRim, endRim, mid);
     const st = stationFromPair(R, B, cur, nxt, bounds);
     stations.splice(i + 1, 0, st);
     rimLocal.splice(i + 1, 0, mid);
+    return true;
 }
 
 function insertWhere(
@@ -187,13 +197,15 @@ function insertWhere(
         const dsR = Math.hypot(nxt.rim.x - cur.rim.x, nxt.rim.y - cur.rim.y, nxt.rim.z - cur.rim.z);
         const dsB = Math.hypot(nxt.outline.x - cur.outline.x, nxt.outline.y - cur.outline.y);
         const nAdd = want(cur, nxt, dsR, dsB);
-        if (nAdd < 1) {
+        if (nAdd < 1 || Math.min(dsR, dsB) < 2 * PAIR_SPACING_MIN_MM - 1e-9) {
             i++;
             continue;
         }
-        const before = stations.length;
-        insertStationPair(stations, rimLocal, positions, indices, pattern, bounds, i, rimLoop);
-        added += stations.length - before;
+        if (!insertStationPair(stations, rimLocal, positions, indices, pattern, bounds, i, rimLoop)) {
+            i++;
+            continue;
+        }
+        added++;
         i += 2;
         if (stations.length > n0 * 8 + 400) break;
     }

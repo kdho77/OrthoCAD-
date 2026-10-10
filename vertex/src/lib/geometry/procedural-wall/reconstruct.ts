@@ -536,6 +536,35 @@ export function reconstructProceduralWalls(
     densifyToeByExtent(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     assertClosedStationRing(stations, rimLocal);
+    {
+        let minB = Infinity;
+        let maxHead = 0;
+        for (let i = 0; i < stations.length; i++) {
+            const a = stations[i]!;
+            const b = stations[(i + 1) % stations.length]!;
+            minB = Math.min(minB, Math.hypot(b.outline.x - a.outline.x, b.outline.y - a.outline.y));
+            const dx0 = a.outline.x - a.rim.x;
+            const dy0 = a.outline.y - a.rim.y;
+            const dx1 = b.outline.x - b.rim.x;
+            const dy1 = b.outline.y - b.rim.y;
+            const l0 = Math.hypot(dx0, dy0) || 1;
+            const l1 = Math.hypot(dx1, dy1) || 1;
+            const d = Math.max(-1, Math.min(1, (dx0 * dx1 + dy0 * dy1) / (l0 * l1)));
+            maxHead = Math.max(maxHead, (Math.acos(d) * 180) / Math.PI);
+        }
+        console.log(
+            "[S1-PAIRS]",
+            JSON.stringify({
+                n: stations.length,
+                minB: Number(minB.toFixed(3)),
+                maxHead: Number(maxHead.toFixed(2)),
+                crossings: countPlanViewChordCrossings(
+                    stations.map((s) => s.outline),
+                    stations.map((s) => s.rim),
+                ),
+            }),
+        );
+    }
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,
         y: positions[i * 3 + 1]!,

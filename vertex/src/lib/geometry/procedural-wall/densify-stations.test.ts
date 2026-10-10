@@ -66,7 +66,7 @@ describe("pair-insert densify", () => {
                 Math.hypot(b.outline.x - a.outline.x, b.outline.y - a.outline.y),
             );
             const head = headingDeltaDeg(a, b);
-            expect(head <= 3 + 1e-3 || ds <= PAIR_SPACING_MIN_MM + 1e-6).toBe(true);
+            expect(head <= 3 + 1e-3 || ds <= 2 * PAIR_SPACING_MIN_MM + 1e-6).toBe(true);
         }
     });
 });
