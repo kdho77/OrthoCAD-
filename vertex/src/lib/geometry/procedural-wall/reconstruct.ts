@@ -18,7 +18,7 @@ import {
     PATTERN_SOURCE_SYNTHETIC,
     parseBottomPattern,
 } from "./bottom-pattern";
-import { ensureCcw, type PolyPoint, startAtLowCurvature } from "./curves";
+import { ensureCcw, type PolyPoint, sampleClosedAtArc01, startAtLowCurvature } from "./curves";
 import {
     type DeviceTypePreset,
     LATERAL_FLANGE_BOUNDS,
@@ -42,11 +42,13 @@ import { hygieneBottomPattern } from "./pattern-hygiene";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
 import { assertClosedStationRing, assertPeriodicQuadStrip, rotateStationRing } from "./ring-seam";
 import {
+    applyStoredTB,
     countPlanViewChordCrossings,
     pairAtNativeTop,
-    resampleBySmoothedParameter,
     retargetPlantarFromE,
+    smoothClosedParameters,
     spreadClosedOnLoop,
+    stampMonotonicTB,
     TB_SMOOTH_SIGMA_MM,
 } from "./stations";
 import type { StockWallModel } from "./types";
@@ -508,6 +510,7 @@ export function reconstructProceduralWalls(
         if (nn) stations[i]!.n = nn;
         stations[i]!.outline = outlineZ[i]!;
         stations[i]!.rim = pairing.top[i]!;
+        stations[i]!.tB = pairing.s01[i];
     }
     densifyHeelForefootStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     applyOutlineClean(stations, rimLocal, indices);
@@ -519,22 +522,30 @@ export function reconstructProceduralWalls(
         0.4,
     );
     for (let i = 0; i < stations.length; i++) stations[i]!.outline = spreadB[i]!;
+    stampMonotonicTB(stations, hygiened.loop);
+    applyStoredTB(stations, hygiened.loop);
     const applySmoothedB = (): boolean => {
-        const before = stations.map((s) => ({ ...s.outline }));
         const rim = stations.map((s) => s.rim);
-        const smoothed = resampleBySmoothedParameter(before, hygiened.loop, rim, TB_SMOOTH_SIGMA_MM);
+        const s01 = stations.map((s) => s.tB ?? 0);
+        const sm = smoothClosedParameters(s01, rim, TB_SMOOTH_SIGMA_MM);
+        const pts = sm.map((t) => sampleClosedAtArc01(hygiened.loop, t));
         const x = countPlanViewChordCrossings(
-            smoothed,
+            pts,
             stations.map((s) => s.rim),
         );
         if (x !== 0) return false;
-        for (let i = 0; i < stations.length; i++) stations[i]!.outline = smoothed[i]!;
+        for (let i = 0; i < stations.length; i++) {
+            stations[i]!.outline = { ...pts[i]!, z: 0 };
+            stations[i]!.tB = sm[i];
+        }
         return true;
     };
     applySmoothedB();
     densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     densifyToeByExtent(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
+    stampMonotonicTB(stations, hygiened.loop);
+    applyStoredTB(stations, hygiened.loop);
     assertClosedStationRing(stations, rimLocal);
     {
         let minB = Infinity;

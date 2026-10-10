@@ -871,6 +871,37 @@ export function smoothClosedParameters(
     return smoothed.map((s) => ((s % 1) + 1) % 1);
 }
 
+/** Walk the ring forward so t_B cannot jump across a pinch. */
+export function stampMonotonicTB(
+    stations: Array<{ outline: PolyPoint; tB?: number }>,
+    loop: PolyPoint[],
+): void {
+    if (stations.length < 2 || loop.length < 3) return;
+    const { cum, total } = polylineArcLengths(loop);
+    if (total < 1e-9) return;
+    let prev = stations[0]!.tB ?? nearestS01(stations[0]!.outline, loop, cum, total);
+    stations[0]!.tB = ((prev % 1) + 1) % 1;
+    const maxStep = Math.max(0.08, 2 / stations.length);
+    for (let i = 1; i < stations.length; i++) {
+        const stored = stations[i]!.tB;
+        let t = stored ?? nearestS01(stations[i]!.outline, loop, cum, total);
+        while (t < prev - 1e-9) t += 1;
+        if (t - prev > maxStep + 1e-9 || t < prev - 1e-9) {
+            t = prev + Math.min(maxStep, Math.max(1e-4, 1 / stations.length));
+        }
+        stations[i]!.tB = ((t % 1) + 1) % 1;
+        prev = t;
+    }
+}
+
+export function applyStoredTB(stations: Array<{ outline: PolyPoint; tB?: number }>, loop: PolyPoint[]): void {
+    for (const s of stations) {
+        if (s.tB === undefined) continue;
+        const p = sampleClosedAtArc01(loop, s.tB);
+        s.outline = { x: p.x, y: p.y, z: 0 };
+    }
+}
+
 export function resampleBySmoothedParameter(
     pts: PolyPoint[],
     loop: PolyPoint[],

@@ -103,6 +103,7 @@ function stationFromPair(
     cur: HermiteStation,
     nxt: HermiteStation,
     bounds: { minX: number; maxX: number },
+    tB?: number,
 ): HermiteStation {
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
     const nx = cur.n.x + nxt.n.x;
@@ -113,6 +114,7 @@ function stationFromPair(
         rim: R,
         n: { x: nx / nl, y: ny / nl },
         u: Math.max(0, Math.min(1, (B.x - bounds.minX) / length)),
+        tB,
     };
 }
 
@@ -154,14 +156,14 @@ export function insertStationPair(
     );
     const Rwant = sampleClosedAtArc01(sampleRim, tR);
     const R = closestOnSegment(Rwant, Ra, Rb);
-    const tB0 = parameterOnClosedLoop(cur.outline, pattern);
-    const tB1 = parameterOnClosedLoop(nxt.outline, pattern);
+    const tB0 = cur.tB ?? parameterOnClosedLoop(cur.outline, pattern);
+    const tB1 = nxt.tB ?? parameterOnClosedLoop(nxt.outline, pattern);
     let span = tB1 - tB0;
     if (span < -0.5) span += 1;
     if (span > 0.5) span -= 1;
     if (Math.abs(span) < 1e-6) return false;
     const tB = midClosedParam(tB0, tB1);
-    const B = sampleClosedAtArc01(pattern, tB);
+    const B = { ...sampleClosedAtArc01(pattern, tB), z: 0 };
     if (
         Math.hypot(B.x - cur.outline.x, B.y - cur.outline.y) < PAIR_SPACING_MIN_MM ||
         Math.hypot(B.x - nxt.outline.x, B.y - nxt.outline.y) < PAIR_SPACING_MIN_MM
@@ -171,7 +173,7 @@ export function insertStationPair(
     const mid = positions.length / 3;
     positions.push(R.x, R.y, R.z);
     splitTopBoundaryEdge(indices, prevRim, endRim, mid);
-    const st = stationFromPair(R, B, cur, nxt, bounds);
+    const st = stationFromPair(R, B, cur, nxt, bounds, tB);
     stations.splice(i + 1, 0, st);
     rimLocal.splice(i + 1, 0, mid);
     return true;

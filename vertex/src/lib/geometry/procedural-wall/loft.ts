@@ -49,6 +49,8 @@ export interface HermiteStation {
     rim: PolyPoint;
     n: { x: number; y: number };
     u: number;
+    /** Arc-length fraction of B on the faired pattern. Forward-only. */
+    tB?: number;
     /** Natural plantar-boundary tangent in (n, z), when known. */
     t0?: { n: number; z: number };
     /** Top-sheet boundary-face slope in (n, z), pointing down the wall. */
