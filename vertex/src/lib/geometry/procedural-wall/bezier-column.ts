@@ -1006,11 +1006,6 @@ export function sampleArcLineArc(
         if (dist3(p, B) < MIN_EDGE_MM) continue;
         pts.push(p);
     }
-    const minLast = FILLET_LAST_ROW_FRAC * stationSpacing;
-    while (pts.length >= 3 && dist3(pts[pts.length - 1]!, B) < minLast) {
-        if (dist3(pts[pts.length - 1]!, ala.T2) < WELD_MM) break;
-        pts.pop();
-    }
     pts.push({ ...B });
     return dropShortEdges(pts, MIN_EDGE_MM);
 }
@@ -2174,12 +2169,44 @@ function lastRowAcrossDeg(xyz: XYZ[][], i: number): number {
     const nS = xyz.length;
     const col = xyz[i]!;
     const nxt = xyz[(i + 1) % nS]!;
-    const j = Math.min(col.length, nxt.length) - 2;
+    const prv = xyz[(i + nS - 1) % nS]!;
+    const j = Math.min(col.length, nxt.length, prv.length) - 2;
     if (j < 0) return 0;
-    const nL = faceN3(col[j]!, nxt[j]!, col[j + 1]!);
-    const nR = faceN3(col[j]!, nxt[j]!, nxt[j + 1]!);
+    const nL = faceN3(prv[j]!, col[j]!, col[j + 1]!);
+    const nR = faceN3(col[j]!, nxt[j]!, col[j + 1]!);
     if (!nL || !nR) return 0;
     return vecAngleDeg(nL, nR);
+}
+
+export function slideLastFilletOnColumn(
+    col: XYZ[],
+    B: XYZ,
+    R: XYZ,
+    h: { x: number; y: number },
+    stationSpacing: number,
+    project: boolean,
+): boolean {
+    const minLast = FILLET_LAST_ROW_FRAC * stationSpacing;
+    if (col.length < 4) return false;
+    const prev2 = col[col.length - 3]!;
+    const last = col[col.length - 2]!;
+    if (dist3(last, B) >= minLast) return false;
+    const Bref = project ? projectToPlane(B, R, h) : B;
+    const span = dist3(prev2, Bref);
+    if (span < minLast + 1e-9) return false;
+    const vx = prev2.x - Bref.x;
+    const vy = prev2.y - Bref.y;
+    const vz = prev2.z - Bref.z;
+    const L = Math.hypot(vx, vy, vz) || 1;
+    let slid: XYZ = {
+        x: Bref.x + (vx / L) * minLast,
+        y: Bref.y + (vy / L) * minLast,
+        z: Bref.z + (vz / L) * minLast,
+    };
+    if (project) slid = projectToPlane(slid, R, h);
+    if (dist3(prev2, slid) < MIN_EDGE_MM) return false;
+    col[col.length - 2] = slid;
+    return true;
 }
 
 function lastAlongDeg(col: XYZ[], fr: ColumnFrame, j: number): number {
@@ -2201,7 +2228,6 @@ function lastAlongDeg(col: XYZ[], fr: ColumnFrame, j: number): number {
 
 /** Keep nJ; slide the last interior away from B so the last row is ≥ 0.15× spacing. */
 function ensureLastFilletRowHeight(xyz: XYZ[][], frames: ColumnFrame[], stationSpacing: number): void {
-    const minLast = FILLET_LAST_ROW_FRAC * stationSpacing;
     const nS = xyz.length;
     const saved = xyz.map((col) => (col.length >= 2 ? { ...col[col.length - 2]! } : null));
     const slidAt = new Array<boolean>(nS).fill(false);
@@ -2210,29 +2236,7 @@ function ensureLastFilletRowHeight(xyz: XYZ[][], frames: ColumnFrame[], stationS
         const fr = frames[i]!;
         if (col.length < 4) continue;
         if (fr.shortChord || fr.heightMm < SHORT_WALL_H_MM) continue;
-        const B = col[col.length - 1]!;
-        const prev2 = col[col.length - 3]!;
-        const last = col[col.length - 2]!;
-        if (dist3(last, B) >= minLast) continue;
-        const Bproj = projectToPlane(B, fr.R, fr.h);
-        const span = dist3(prev2, Bproj);
-        if (span < minLast + 1e-9) continue;
-        const vx = prev2.x - Bproj.x;
-        const vy = prev2.y - Bproj.y;
-        const vz = prev2.z - Bproj.z;
-        const L = Math.hypot(vx, vy, vz) || 1;
-        const slid = projectToPlane(
-            {
-                x: Bproj.x + (vx / L) * minLast,
-                y: Bproj.y + (vy / L) * minLast,
-                z: Bproj.z + (vz / L) * minLast,
-            },
-            fr.R,
-            fr.h,
-        );
-        if (dist3(prev2, slid) < MIN_EDGE_MM) continue;
-        col[col.length - 2] = slid;
-        slidAt[i] = true;
+        slidAt[i] = slideLastFilletOnColumn(col, col[col.length - 1]!, fr.R, fr.h, stationSpacing, true);
     }
     for (let i = 0; i < nS; i++) {
         if (!slidAt[i] || !saved[i]) continue;

@@ -34,6 +34,7 @@ import {
     sampleByArcLength,
     sampleInPlaneSlope,
     sizedArcRows,
+    slideLastFilletOnColumn,
     slopeFromSheetPlane,
     smoothStationHeadings,
     summarizeWallBands,
@@ -427,6 +428,7 @@ describe("bezier column", () => {
         const ala = constructArcLineArc(R, B, { x: 0, y: 0, z: 1 }, 0.5, 2, { x: 1, y: 0 }, 0);
         const spacing = 1.3;
         const pts = sampleArcLineArc(ala, { x: 1, y: 0 }, R, B, 26, spacing);
+        slideLastFilletOnColumn(pts, B, R, { x: 1, y: 0 }, spacing, false);
         const last = dist3ish(pts[pts.length - 1]!, pts[pts.length - 2]!);
         expect(last).toBeGreaterThanOrEqual(FILLET_LAST_ROW_FRAC * spacing - 1e-6);
     });
