@@ -1090,34 +1090,14 @@ export function outlineSeamDihedrals(
     const ud = geo.userData as { outlineVertexStart?: number; outlineVertexCount?: number };
     const start = ud.outlineVertexStart;
     const nRing = ud.outlineVertexCount;
-    const n = outline.length >= 3 ? outline.length : nRing && nRing >= 3 ? nRing : 0;
+    const n = nRing && nRing >= 3 ? nRing : outline.length;
     const empty = { worstDeg: 0, meanDeg: 0, perStation: Array.from({ length: n }, () => 0) };
     if (!index || n < 3) return empty;
     const idx = index.array;
-    const useSupplied =
-        outline.length >= 3 &&
-        (typeof start !== "number" ||
-            !nRing ||
-            nRing !== outline.length ||
-            Math.hypot(
-                (outline[0]?.x ?? 0) - pos[start! * 3]!,
-                (outline[0]?.y ?? 0) - pos[start! * 3 + 1]!,
-                (outline[0]?.z ?? 0) - pos[start! * 3 + 2]!,
-            ) > 0.5);
-    const nearest = (p: { x: number; y: number; z: number }): number => {
-        let best = 0;
-        let bestD = Infinity;
-        const nV = pos.length / 3;
-        for (let i = 0; i < nV; i++) {
-            const d = Math.hypot(pos[i * 3]! - p.x, pos[i * 3 + 1]! - p.y, pos[i * 3 + 2]! - p.z);
-            if (d < bestD) {
-                bestD = d;
-                best = i;
-            }
-        }
-        return best;
-    };
-    const suppliedVerts = useSupplied ? outline.map(nearest) : null;
+    const meanZ = outline.length > 0 ? outline.reduce((s, p) => s + p.z, 0) / outline.length : 0;
+    const filStart = (ud as { filletVertexStart?: number }).filletVertexStart;
+    const filN = (ud as { filletVertexCount?: number }).filletVertexCount;
+    const useFillet = meanZ > 0.15 && typeof filStart === "number" && filN === n;
     const edgeFaces = new Map<string, number[]>();
     for (let f = 0; f < idx.length; f += 3) {
         const a = idx[f]!;
@@ -1139,8 +1119,8 @@ export function outlineSeamDihedrals(
     }
     const perStation = Array.from({ length: n }, () => 0);
     const ringIndex = (i: number): [number, number] | null => {
-        if (suppliedVerts) {
-            return [suppliedVerts[i]!, suppliedVerts[(i + 1) % n]!];
+        if (useFillet && typeof filStart === "number" && filN) {
+            return [filStart + i, filStart + ((i + 1) % filN)];
         }
         if (typeof start === "number" && nRing && nRing >= 3) {
             return [start + i, start + ((i + 1) % nRing)];

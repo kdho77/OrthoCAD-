@@ -1189,7 +1189,7 @@ export function smoothFRing(frames: ColumnFrame[]): void {
             frames.map((f) => f.F),
             true,
         );
-        if (plan <= RING_TURNING_MAX_DEG + 1e-9) break;
+        if (plan <= RING_TURNING_MAX_DEG + 1e-9 && pass > 0) break;
         applyLaplacian();
     }
     for (const fr of frames) applyAlaToFrame(fr);
@@ -3914,14 +3914,15 @@ export function buildBezierColumns(
         maxSide = Math.max(maxSide, offPlaneMm(col[col.length - 1]!, fr.B, fr.h));
         xyz.push(col);
         const first = col[1] ?? fr.F;
+        const nxt = frames[(i + 1) % frames.length]!;
+        const leanStep = (Math.abs(nxt.leanRad - fr.leanRad) * 180) / Math.PI;
         implied.push(
             filletImpliedSeamDeg(
                 { n: Math.hypot(fr.T0.x, fr.T0.y), z: fr.T0.z },
                 { n: Math.hypot(first.x - fr.R.x, first.y - fr.R.y), z: first.z - fr.R.z },
-            ),
+            ) + leanStep,
         );
-        const nxt = frames[(i + 1) % frames.length]!;
-        maxTiltStep = Math.max(maxTiltStep, (Math.abs(nxt.leanRad - fr.leanRad) * 180) / Math.PI);
+        maxTiltStep = Math.max(maxTiltStep, leanStep);
     }
     for (let i = 0; i < frames.length; i++) {
         const col = xyz[i]!;

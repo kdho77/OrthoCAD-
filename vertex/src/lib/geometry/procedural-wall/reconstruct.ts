@@ -1182,6 +1182,8 @@ export function reconstructProceduralWalls(
         console.log("[S2-JUNCTION-ANG]", JSON.stringify({ n: junctionMinAngle, minDeg: 5 }));
     }
     const junctionSlivers = countJunctionBandSlivers(geo, iVerts, 40);
+    const fRowJ =
+        (grid.frames[0]?.nRoundFix || grid.frames[0]?.roundRows || 0) + (grid.frames[0]?.nLineFix || 0);
     geo.userData = {
         wallModel: "procedural",
         stockId: model.id,
@@ -1304,6 +1306,8 @@ export function reconstructProceduralWalls(
         outlineRing: grid.outlineRing,
         outlineVertexStart: generatedStart + Math.max(0, grid.outlineRow - 1) * nS,
         outlineVertexCount: nS,
+        filletVertexStart: generatedStart + Math.max(0, fRowJ - 1) * nS,
+        filletVertexCount: nS,
         bandTiltDegMax: grid.bandTiltDegMax,
         masterMinRadiusMm: pairing.masterMinRadiusMm,
         waistMinRadiusMm: pairing.waistMinRadiusMm,

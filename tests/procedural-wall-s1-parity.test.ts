@@ -676,11 +676,33 @@ describe("S1 parametric wall", () => {
                     .filletRing ?? [];
             const fSeam = filletRing.length ? outlineSeamDihedrals(rebuilt, filletRing, 1.25) : reconSeam;
             let seamOver = 0;
+            let seamOverI = 0;
             const nSeam = fSeam.perStation.length;
             for (let i = 0; i < nSeam; i++) {
                 const allow = (implied[i] ?? 0) + 2;
-                seamOver = Math.max(seamOver, fSeam.perStation[i]! - allow);
+                const over = fSeam.perStation[i]! - allow;
+                if (over > seamOver) {
+                    seamOver = over;
+                    seamOverI = i;
+                }
             }
+            console.log(
+                "[S1-SEAM-F]",
+                JSON.stringify({
+                    worst: Number(fSeam.worstDeg.toFixed(3)),
+                    over: Number(seamOver.toFixed(3)),
+                    i: seamOverI,
+                    seam: Number((fSeam.perStation[seamOverI] ?? 0).toFixed(3)),
+                    implied: Number((implied[seamOverI] ?? 0).toFixed(3)),
+                    allow: Number(((implied[seamOverI] ?? 0) + 2).toFixed(3)),
+                    fMeanZ: filletRing.length
+                        ? Number((filletRing.reduce((s, p) => s + p.z, 0) / filletRing.length).toFixed(3))
+                        : null,
+                    nSeam,
+                    nImplied: implied.length,
+                    bWorst: Number(reconSeam.worstDeg.toFixed(3)),
+                }),
+            );
             const stitchDelta = 0;
             const designedStep =
                 (rebuilt.userData as { columnQuality?: { maxRoundStepDeg?: number } }).columnQuality
