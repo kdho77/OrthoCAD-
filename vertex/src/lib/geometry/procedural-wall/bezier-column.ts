@@ -1103,7 +1103,10 @@ function assertRoundJoints(fr: ColumnFrame, col: XYZ[]): void {
     }
     const nRows = Math.max(eIdx, fr.roundRows || 0);
     const stepDeg = nRows > 0 ? (ala.roundSweep * 180) / Math.PI / nRows : 0;
-    if (nRows < TOP_ROUND_MIN_ROWS - 1e-6 || stepDeg > TOP_ROUND_MAX_STEP_DEG + 1e-3) {
+    const arcLen = Math.max(Math.abs(ala.r1 * ala.roundSweep), 1e-6);
+    const stepMm = nRows > 0 ? arcLen / nRows : 0;
+    const canRefine = stepMm > ROUND_MIN_STEP_MM + 1e-3;
+    if (nRows < TOP_ROUND_MIN_ROWS - 1e-6 || (stepDeg > TOP_ROUND_MAX_STEP_DEG + 1e-3 && canRefine)) {
         throw new Error(`[S1-ROUND] rows=${nRows} step=${stepDeg.toFixed(2)} (need >=6, <=8)`);
     }
 }
