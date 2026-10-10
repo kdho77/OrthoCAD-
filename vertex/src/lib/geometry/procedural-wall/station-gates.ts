@@ -14,6 +14,7 @@ import type { WallRegionDefaults } from "./defaults";
 import { fairedPattern } from "./faired-pattern";
 import type { HermiteStation } from "./loft";
 import { outwardNormal } from "./measure";
+import { enforceMinRimInset } from "./pattern-hygiene";
 import { nearestRayHitOnLoop, spreadClosedOnLoop } from "./stations";
 
 export const PATTERN_SOURCE_FAIRED_STOCK = "faired-stock";
@@ -295,23 +296,27 @@ export function fairedPlantarFromStock(input: StockFairedInput): PolyPoint[] {
     const rim = startAtLowCurvature(ensureCcw(input.rim.map((p) => ({ ...p, z: 0 }))));
     const stock = startAtLowCurvature(ensureCcw(input.stock.map((p) => ({ ...p, z: 0 }))));
     const targets = stockTargetsForFairedPattern(stock, rim, input.r1, input.r2);
-    const minInsetMm = minInsetForLeanMm(input.r1, input.r2, allowedLeanRad(LEAN_INSET_MM + 1));
+    const floorInset = minInsetForLeanMm(input.r1, input.r2, 0);
     const fit = fairedPattern({
         targets,
         controlCount: 20,
         wFit: 1,
-        wFair: 0.35,
+        wFair: 0.5,
         sampleCount: Math.max(160, targets.length, rim.length),
         constraints: {
             rim,
-            minInsetMm,
+            minInsetMm: floorInset + 0.02,
             medialYSign: input.medialYSign,
             bounds: input.bounds,
             lateralMinK: 0,
             maxIters: 10,
         },
     });
-    return fit.samples.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    return enforceMinRimInset(
+        fit.samples.map((p) => ({ x: p.x, y: p.y, z: 0 })),
+        rim,
+        floorInset,
+    );
 }
 
 export function limitStationSkew(

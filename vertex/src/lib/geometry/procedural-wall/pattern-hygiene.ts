@@ -16,6 +16,8 @@ import { masterCurveRadii, smoothClosedToMinRadius } from "./stations";
 export const PATTERN_MIN_RADIUS_MM = 3;
 export const PATTERN_RIM_CLEARANCE_MM = 0.5;
 export const PATTERN_SOURCE_SYNTHETIC = "synthetic";
+/** Extra inset so resample / fairing cannot land 1e-4 mm short of the rim gate. */
+export const RIM_INSET_SLACK_MM = 0.02;
 
 export interface HygieneReport {
     loop: PolyPoint[];
@@ -134,6 +136,97 @@ function smoothHeelBand(loop: PolyPoint[], uMax: number, passes: number): PolyPo
     return cur;
 }
 
+function nearestOnLoopXY(origin: PolyPoint, loop: PolyPoint[]): PolyPoint {
+    let best = loop[0] ?? { x: origin.x, y: origin.y, z: 0 };
+    let bestD = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const len2 = ex * ex + ey * ey;
+        const t =
+            len2 > 1e-12
+                ? Math.max(0, Math.min(1, ((origin.x - a.x) * ex + (origin.y - a.y) * ey) / len2))
+                : 0;
+        const x = a.x + ex * t;
+        const y = a.y + ey * t;
+        const d = (x - origin.x) ** 2 + (y - origin.y) ** 2;
+        if (d < bestD) {
+            bestD = d;
+            best = { x, y, z: 0 };
+        }
+    }
+    return best;
+}
+
+function rimCentroid(rim: PolyPoint[]): { x: number; y: number } {
+    let x = 0;
+    let y = 0;
+    for (const p of rim) {
+        x += p.x;
+        y += p.y;
+    }
+    const n = Math.max(1, rim.length);
+    return { x: x / n, y: y / n };
+}
+
+/**
+ * If any sample sits short of the rim gate, inset the whole pattern by the
+ * deficit. A uniform Clipper offset keeps the faired shape; per-vertex snaps
+ * kink the toe and drive E/F turning.
+ */
+export function enforceMinRimInset(pattern: PolyPoint[], rim: PolyPoint[], minInsetMm: number): PolyPoint[] {
+    if (pattern.length < 3 || rim.length < 3 || minInsetMm <= 0) return pattern;
+    const need = minInsetMm + RIM_INSET_SLACK_MM;
+    let minIn = Infinity;
+    for (const p of pattern) {
+        const d = minDistToLoopXY(p.x, p.y, rim);
+        const inset = pointInPoly(p.x, p.y, rim) ? d : -d;
+        if (inset < minIn) minIn = inset;
+    }
+    if (minIn >= need - 1e-9) return pattern.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    const extra = need - minIn;
+    try {
+        const inseted = clipperRoundInset(pattern, extra);
+        if (inseted.length >= 3) {
+            let after = Infinity;
+            for (const p of inseted) {
+                const d = minDistToLoopXY(p.x, p.y, rim);
+                const inset = pointInPoly(p.x, p.y, rim) ? d : -d;
+                if (inset < after) after = inset;
+            }
+            if (after >= minInsetMm - 1e-6) return inseted.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+        }
+    } catch {
+        /* fall through to the local walk */
+    }
+    const c = rimCentroid(rim);
+    return pattern.map((p) => {
+        let q = { x: p.x, y: p.y, z: 0 };
+        for (let iter = 0; iter < 16; iter++) {
+            const d = minDistToLoopXY(q.x, q.y, rim);
+            const inside = pointInPoly(q.x, q.y, rim);
+            const inset = inside ? d : -d;
+            if (inset >= need - 1e-9) return q;
+            const near = nearestOnLoopXY(q, rim);
+            let vx = inside ? q.x - near.x : c.x - near.x;
+            let vy = inside ? q.y - near.y : c.y - near.y;
+            if (Math.hypot(vx, vy) < 1e-9) {
+                vx = c.x - near.x;
+                vy = c.y - near.y;
+            }
+            const vl = Math.hypot(vx, vy) || 1;
+            q = {
+                x: q.x + (vx / vl) * Math.max(need - inset, 0.05),
+                y: q.y + (vy / vl) * Math.max(need - inset, 0.05),
+                z: 0,
+            };
+        }
+        return q;
+    });
+}
+
 export function assertInsideRim(
     pattern: PolyPoint[],
     rimPlan: PolyPoint[],
@@ -186,7 +279,15 @@ export function hygieneBottomPattern(
         const resampled = resamplePolyline(unioned, n);
         const minRadiusMm = masterCurveRadii(resampled).minRadiusMm;
         if (opts.requireInsideRim && opts.rimPlan?.length) {
-            assertInsideRim(resampled, opts.rimPlan, opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM);
+            const clearance = opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM;
+            const cleared = enforceMinRimInset(resampled, opts.rimPlan, clearance);
+            assertInsideRim(cleared, opts.rimPlan, clearance);
+            return {
+                loop: cleared,
+                turning: turningNumber(cleared),
+                minRadiusMm,
+                source: opts.source ?? "pattern",
+            };
         }
         return {
             loop: resampled,

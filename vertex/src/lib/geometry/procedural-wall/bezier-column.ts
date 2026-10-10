@@ -865,7 +865,7 @@ export function r1ForSheetSlope(r1In: number, slopeRad: number): number {
     const deg = (Math.abs(slopeRad) * 180) / Math.PI;
     if (deg < STEEP_SHEET_DEG - 1e-9) return Math.max(MIN_ROUND_R_MM, r1In);
     const t = Math.max(0, Math.min(1, (deg - STEEP_SHEET_DEG) / 30));
-    return Math.max(1e-3, r1In * (1 - t));
+    return Math.max(MIN_ROUND_R_MM, r1In * (1 - t));
 }
 
 /** C_MIN = stationSpacing / 20. Last chord last→B must be at least this long. */
@@ -1092,7 +1092,7 @@ export function constructArcLineArc(
     const minL = short ? SHORT_MIN_L_MM : MIN_LINE_MM;
     const dLGuess = lastFilletDLRad(Math.PI / 2, cosT);
     const r2Min = lastFilletR2MinMm(stationSpacing, dLGuess);
-    const r1Floor = sheetSlopeRad != null ? 1e-3 : MIN_ROUND_R_MM;
+    const r1Floor = MIN_ROUND_R_MM;
     let r1 = Math.max(r1Floor, r1In);
     let r2 = Math.max(r2Min, r2In);
     if (sheetSlopeRad != null) r1 = r1ForSheetSlope(r1, sheetSlopeRad);
@@ -1328,7 +1328,7 @@ export function constructSweepRule(
     const minL = short ? SHORT_MIN_L_MM : MIN_LINE_MM;
     const dLGuess = lastFilletDLRad(Math.PI / 2, 1);
     const r2Min = lastFilletR2MinMm(localSpacing, dLGuess);
-    const r1Floor = sheetSlopeRad != null ? 1e-3 : MIN_ROUND_R_MM;
+    const r1Floor = MIN_ROUND_R_MM;
     let r1 = Math.max(r1Floor, r1In);
     let r2 = Math.max(r2Min, r2In);
     if (sheetSlopeRad != null) r1 = r1ForSheetSlope(r1, sheetSlopeRad);
@@ -1588,7 +1588,7 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     );
     const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
     fr.lastDlRad = lastFilletDLRad(S, 1);
-    fr.rTop = sw.r1;
+    fr.rTop = Math.max(MIN_ROUND_R_MM, sw.r1);
     fr.rFillet = sw.r2;
     fr.E = { ...sw.E };
     fr.F = { ...sw.F };
@@ -2754,7 +2754,9 @@ function guardFrames(
 /** A station too short to vote on nRound* / nFil* / nLine*. */
 export function isCollapsedColumn(fr: ColumnFrame): boolean {
     const plan = Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y);
-    return Boolean(fr.shortChord) || plan < SHORT_CHORD_MM || fr.heightMm < 1;
+    return (
+        Boolean(fr.shortChord) || plan < SHORT_CHORD_MM || fr.heightMm < 1 || fr.rTop < MIN_ROUND_R_MM - 1e-9
+    );
 }
 
 function maxValidatedRingMm(frames: ColumnFrame[], fallback: number): number {
@@ -2802,12 +2804,13 @@ function choosePieceCounts(frames: ColumnFrame[], spacing: number): NRoundStarRe
         nFil = Math.max(nFil, Math.ceil(Math.max(S - dL, 1e-12) / Math.max(stepRad, 1e-9)));
         nLineNeed = Math.max(nLineNeed, lineRowCount(fr.lineLengthMm, spacing));
         const ra = Math.abs(fr.rTop * fr.roundSweepRad);
-        if (ra < minRoundArc) {
+        if (ra >= minStep && ra < minRoundArc) {
             minRoundArc = ra;
             aspectStation = i;
         }
-        minFilArc = Math.min(minFilArc, Math.abs(fr.rFillet * fr.filletSweepRad));
-        minLineLen = Math.min(minLineLen, fr.lineLengthMm);
+        const fa = Math.abs(fr.rFillet * fr.filletSweepRad);
+        if (fa >= minStep) minFilArc = Math.min(minFilArc, fa);
+        if (fr.lineLengthMm >= lineMinStep) minLineLen = Math.min(minLineLen, fr.lineLengthMm);
     }
     nRound = Math.max(TOP_ROUND_MIN_ROWS, maxNeedR);
     nFil = Math.max(MIN_FILLET_RINGS, nFil);

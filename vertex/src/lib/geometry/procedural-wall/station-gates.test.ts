@@ -75,7 +75,7 @@ describe("station-gates", () => {
         expect(samples.length).toBeGreaterThan(80);
         let minIn = Infinity;
         for (const p of samples) minIn = Math.min(minIn, signedRimInsetMm(p, rim));
-        expect(minIn).toBeGreaterThanOrEqual(MIN_INSET_FLOOR_MM - 0.05);
+        expect(minIn).toBeGreaterThanOrEqual(MIN_INSET_FLOOR_MM - 1e-3);
     });
 
     test("PRE-LOFT names the failing station", () => {

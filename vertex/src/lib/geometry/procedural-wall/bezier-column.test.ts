@@ -34,6 +34,7 @@ import {
     lastFilletR2MinMm,
     MERGE_ROW_MM,
     MIN_LINE_MM,
+    MIN_ROUND_R_MM,
     nTopFromSheetSlope,
     offPlaneMm,
     R_CHANGE_MAX_PCT,
@@ -602,7 +603,7 @@ describe("bezier column", () => {
         expect(face102).not.toBeNull();
         expect(((face102 ?? 0) * 180) / Math.PI).toBeCloseTo(102, 4);
         expect(r1ForSheetSlope(0.5, (30 * Math.PI) / 180)).toBeCloseTo(0.5, 6);
-        expect(r1ForSheetSlope(0.5, (90 * Math.PI) / 180)).toBeLessThan(0.05);
+        expect(r1ForSheetSlope(0.5, (90 * Math.PI) / 180)).toBe(MIN_ROUND_R_MM);
         const ala = constructArcLineArc(
             { x: 0, y: 0, z: 12 },
             { x: 8, y: 0, z: 0 },
