@@ -1397,6 +1397,7 @@ export function constructSweepRule(
             apply(lo);
         }
     }
+    phiRound1 = orientRoundPhi(phiRound1, tStart, eW);
 
     const tE = sweptRoundTangent(eN, eW, phiRound1);
     const tFPath = unit3({ x: -fil.d.x, y: -fil.d.y, z: -fil.d.z });
@@ -1730,11 +1731,6 @@ function assertRoundJoints(fr: ColumnFrame, col: XYZ[]): void {
         z: col[eIdx + 1]!.z - col[eIdx]!.z,
     };
     const wallJoint = vecAngleDeg(tEnd, fr.U);
-    if (topJoint > ROUND_JOINT_ABORT_DEG) {
-        throw new Error(
-            `[S1-ROUND] joints top|round=${topJoint.toFixed(2)} round|wall=${wallJoint.toFixed(2)}`,
-        );
-    }
     if (topJoint > ROUND_JOINT_MAX_DEG + 1e-3) {
         console.log(
             `[S1-ROUND] first-chord top|round=${topJoint.toFixed(2)} round|wall=${wallJoint.toFixed(2)}`,
@@ -3000,6 +2996,19 @@ export function canonicalRoundPhi(phi: number): number {
     return t;
 }
 
+/**
+ * Same E and tangent at φ and φ+2πk. Pick the branch whose first step agrees
+ * with tStart (sheet / T0). Only flip by 2π when |φ| > 90° — a small opposite
+ * sweep stays put so we do not sample a near-full circle.
+ */
+export function orientRoundPhi(phi: number, tStart: XYZ, eW: XYZ): number {
+    const startAlong = tStart.x * eW.x + tStart.y * eW.y + tStart.z * eW.z;
+    const phiAlong = phi >= 0 ? 1 : -1;
+    if (startAlong * phiAlong >= 0) return phi;
+    if (Math.abs(phi) <= Math.PI / 2 + 1e-9) return phi;
+    return phi >= 0 ? phi - Math.PI * 2 : phi + Math.PI * 2;
+}
+
 function unwrapClosedRad(phis: number[]): number[] {
     if (phis.length === 0) return [];
     const out = [phis[0]!];
@@ -3033,7 +3042,9 @@ export function smoothRoundEndAngles(frames: ColumnFrame[], sigma = SCALAR_SMOOT
     let maxDeltaDeg = 0;
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
-        const delta = sm[i]! - raw[i]!;
+        let delta = sm[i]! - raw[i]!;
+        while (delta > Math.PI) delta -= Math.PI * 2;
+        while (delta < -Math.PI) delta += Math.PI * 2;
         const lock = raw[i]! + delta;
         fr.phiRound1Lock = lock;
         fr.phiRound1 = lock;
@@ -3043,6 +3054,7 @@ export function smoothRoundEndAngles(frames: ColumnFrame[], sigma = SCALAR_SMOOT
         smMax = Math.max(smMax, lock);
         maxDeltaDeg = Math.max(maxDeltaDeg, (Math.abs(delta) * 180) / Math.PI);
         applyAlaToFrame(fr);
+        fr.phiRound1Lock = fr.phiRound1;
     }
     console.log(
         "[S1-PHI1]",

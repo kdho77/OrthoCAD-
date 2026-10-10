@@ -36,6 +36,7 @@ import {
     MIN_LINE_MM,
     nTopFromSheetSlope,
     offPlaneMm,
+    orientRoundPhi,
     R_CHANGE_MAX_PCT,
     R_SMOOTH_FRAC,
     R2_CHANGE_MAX_PCT,
@@ -291,6 +292,16 @@ describe("bezier column", () => {
         expect(canonicalRoundPhi(0)).toBeCloseTo(0, 6);
         expect(canonicalRoundPhi(Math.PI / 2 + Math.PI * 2)).toBeCloseTo(Math.PI / 2, 6);
         expect(canonicalRoundPhi(0.4)).toBeCloseTo(0.4, 6);
+    });
+
+    test("orientRoundPhi flips a large opposite sweep by 2π so the first step agrees with T0", () => {
+        const eW = { x: 1, y: 0, z: 0 };
+        const tPos = { x: 1, y: 0, z: 0 };
+        expect(orientRoundPhi(-3.0, tPos, eW)).toBeCloseTo(-3.0 + Math.PI * 2, 6);
+        expect(orientRoundPhi(2.8, tPos, eW)).toBeCloseTo(2.8, 6);
+        expect(orientRoundPhi(-0.2, tPos, eW)).toBeCloseTo(-0.2, 6);
+        const tNeg = { x: -1, y: 0, z: 0 };
+        expect(orientRoundPhi(3.0, tNeg, eW)).toBeCloseTo(3.0 - Math.PI * 2, 6);
     });
 
     test("locked φ1 far from the free solve blends back so G1 stays ≤3", () => {
