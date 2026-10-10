@@ -23,6 +23,7 @@ import {
     constructSweepRule,
     DPHI_L_MAX_DEG,
     enforceLastChordFloor,
+    ensureColumnMinEdge,
     evalCubicBezier,
     FILLET_PIECE_MIN_MM,
     FILLET_R_CAP_MM,
@@ -1027,6 +1028,18 @@ describe("bezier column", () => {
         const realS = Math.abs(sw.fil.phi1 - sw.fil.phi0);
         const need = lastFilletR2MinMm(local, lastFilletDLRad(realS, 1));
         expect(sw.r2).toBeGreaterThanOrEqual(need - 1e-6);
+    });
+
+    test("ensureColumnMinEdge walks a short first chord without dropping a row", () => {
+        const pts = [
+            { x: 0, y: 0, z: 0 },
+            { x: 0.002, y: 0, z: 0 },
+            { x: 1, y: 0, z: 0 },
+            { x: 2, y: 0, z: 0 },
+        ];
+        ensureColumnMinEdge(pts, 0.01);
+        expect(pts).toHaveLength(4);
+        expect(dist3ish(pts[0]!, pts[1]!)).toBeGreaterThanOrEqual(0.01 - 1e-9);
     });
 
     test("ensurePieceSpacing throws on a collapsed fillet row", () => {

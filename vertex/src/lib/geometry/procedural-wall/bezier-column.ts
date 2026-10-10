@@ -1865,10 +1865,11 @@ export function sampleArcLineArc(
     }
     for (const p of fil.pts) pts.push(p);
     pts.push({ ...B });
+    ensureColumnMinEdge(pts, MIN_EDGE_MM);
     return assertPieceSpacing(pts, MIN_EDGE_MM, station);
 }
 
-/** Hard error on a collapsed interior row. Never silently push to MIN_EDGE.
+/** Hard error on a collapsed interior row after the min-edge walk.
  * The reserved last-to-B chord may undershoot C_MIN; that is logged as
  * [S1-CHORD-FLOOR] after the final floor pass, not thrown here.
  */
@@ -2050,6 +2051,7 @@ export function sampleSweepRule(
     station = -1,
     localSpacing = OUTLINE_STATION_SPACING_MM,
     stealLock?: number,
+    strictSpacing = true,
 ): XYZ[] {
     const stepDeg = (FILLET_STEP_MAX_DEG * Math.PI) / 180;
     const nRound =
@@ -2087,7 +2089,24 @@ export function sampleSweepRule(
     }
     for (const p of fil.pts) pts.push(p);
     pts.push({ ...B });
-    return assertPieceSpacing(pts, MIN_EDGE_MM, station);
+    ensureColumnMinEdge(pts, MIN_EDGE_MM);
+    return strictSpacing ? assertPieceSpacing(pts, MIN_EDGE_MM, station) : pts;
+}
+
+/** Walk a short interior sample toward the next point so the row map stays
+ * identical when nRound-star / nFil-star is larger than a collapsed station can hold. */
+export function ensureColumnMinEdge(pts: XYZ[], minMm: number): void {
+    for (let i = 1; i < pts.length - 1; i++) {
+        const prev = pts[i - 1]!;
+        const cur = pts[i]!;
+        if (dist3(prev, cur) + 1e-12 >= minMm) continue;
+        const nxt = pts[i + 1]!;
+        const room = dist3(cur, nxt);
+        const need = minMm - dist3(prev, cur);
+        if (room < need + 1e-12) continue;
+        const t = need / room;
+        pts[i] = lerp3(cur, nxt, t);
+    }
 }
 
 function scale3(a: XYZ, s: number): XYZ {
@@ -2300,6 +2319,7 @@ function columnPoints(
         fr.stationIndex ?? -1,
         local,
         fr.filletStealLock,
+        !isCollapsedColumn(fr),
     );
     fr.roundRows = counts?.nRound ?? nRound;
     assembled[0] = { ...fr.R };
@@ -3323,8 +3343,14 @@ function guardFrames(
 /** A station too short to vote on nRound* / nFil* / nLine*. */
 export function isCollapsedColumn(fr: ColumnFrame): boolean {
     const plan = Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y);
+    const nR = Math.max(1, fr.nRoundFix || fr.roundRows || TOP_ROUND_MIN_ROWS);
+    const roundArc = Math.max(0, fr.rTop) * Math.abs(fr.roundSweepRad);
     return (
-        Boolean(fr.shortChord) || plan < SHORT_CHORD_MM || fr.heightMm < 1 || fr.rTop < MIN_ROUND_R_MM - 1e-9
+        Boolean(fr.shortChord) ||
+        plan < SHORT_CHORD_MM ||
+        fr.heightMm < 1 ||
+        fr.rTop < MIN_ROUND_R_MM - 1e-9 ||
+        roundArc + 1e-12 < nR * MIN_EDGE_MM
     );
 }
 

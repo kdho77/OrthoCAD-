@@ -32,6 +32,7 @@ export {
     constructSweepRule,
     DPHI_L_MAX_DEG,
     enforceLastChordFloor,
+    ensureColumnMinEdge,
     estimateBandInsetMm,
     evalCubicBezier,
     FILLET_ASSERT_EPS,
