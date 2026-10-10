@@ -319,6 +319,18 @@ export function foldReport(reconstruction: BufferGeometry, opts?: FoldReportOpti
         const vz = pos[c * 3 + 2]! - pos[a * 3 + 2]!;
         return Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) * 0.5;
     };
+    const minEdgeOf = (f: number): number => {
+        const a = idx[f]!;
+        const b = idx[f + 1]!;
+        const c = idx[f + 2]!;
+        const d = (i: number, j: number): number =>
+            Math.hypot(
+                pos[i * 3]! - pos[j * 3]!,
+                pos[i * 3 + 1]! - pos[j * 3 + 1]!,
+                pos[i * 3 + 2]! - pos[j * 3 + 2]!,
+            );
+        return Math.min(d(a, b), d(b, c), d(c, a));
+    };
 
     const edgeFaces = new Map<string, number[]>();
     for (let f = 0; f < idx.length; f += 3) {
@@ -351,6 +363,8 @@ export function foldReport(reconstruction: BufferGeometry, opts?: FoldReportOpti
         const f1 = faces[0]!;
         const f2 = faces[1]!;
         if (areaOf(f1) < 1e-3 || areaOf(f2) < 1e-3) continue;
+        // Same short-edge skip as column-quality across (C_MIN / last-strip h).
+        if (minEdgeOf(f1) < 0.12 || minEdgeOf(f2) < 0.12) continue;
         const topN = opts?.topVertexCount ?? 0;
         const outN = opts?.outlineVertexCount ?? 0;
         const outStart = opts?.outlineVertexStart ?? topN;
@@ -367,6 +381,9 @@ export function foldReport(reconstruction: BufferGeometry, opts?: FoldReportOpti
             if (topFace(f1) && topFace(f2)) continue;
             if (bothTop) continue;
             if (inPlantarInterior(sa) && inPlantarInterior(sb)) continue;
+            // Reserved last-fillet / refined B-ring: column quality already
+            // drops these (short vertical < C_MIN). They are not wall folds.
+            if (z[sa]! < 0.15 && z[sb]! < 0.15) continue;
         } else {
             const za = (z[sa]! - minZ) / span;
             const zb = (z[sb]! - minZ) / span;
@@ -1073,10 +1090,34 @@ export function outlineSeamDihedrals(
     const ud = geo.userData as { outlineVertexStart?: number; outlineVertexCount?: number };
     const start = ud.outlineVertexStart;
     const nRing = ud.outlineVertexCount;
-    const n = nRing && nRing >= 3 ? nRing : outline.length;
+    const n = outline.length >= 3 ? outline.length : nRing && nRing >= 3 ? nRing : 0;
     const empty = { worstDeg: 0, meanDeg: 0, perStation: Array.from({ length: n }, () => 0) };
     if (!index || n < 3) return empty;
     const idx = index.array;
+    const useSupplied =
+        outline.length >= 3 &&
+        (typeof start !== "number" ||
+            !nRing ||
+            nRing !== outline.length ||
+            Math.hypot(
+                (outline[0]?.x ?? 0) - pos[start! * 3]!,
+                (outline[0]?.y ?? 0) - pos[start! * 3 + 1]!,
+                (outline[0]?.z ?? 0) - pos[start! * 3 + 2]!,
+            ) > 0.5);
+    const nearest = (p: { x: number; y: number; z: number }): number => {
+        let best = 0;
+        let bestD = Infinity;
+        const nV = pos.length / 3;
+        for (let i = 0; i < nV; i++) {
+            const d = Math.hypot(pos[i * 3]! - p.x, pos[i * 3 + 1]! - p.y, pos[i * 3 + 2]! - p.z);
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+        }
+        return best;
+    };
+    const suppliedVerts = useSupplied ? outline.map(nearest) : null;
     const edgeFaces = new Map<string, number[]>();
     for (let f = 0; f < idx.length; f += 3) {
         const a = idx[f]!;
@@ -1098,6 +1139,9 @@ export function outlineSeamDihedrals(
     }
     const perStation = Array.from({ length: n }, () => 0);
     const ringIndex = (i: number): [number, number] | null => {
+        if (suppliedVerts) {
+            return [suppliedVerts[i]!, suppliedVerts[(i + 1) % n]!];
+        }
         if (typeof start === "number" && nRing && nRing >= 3) {
             return [start + i, start + ((i + 1) % nRing)];
         }

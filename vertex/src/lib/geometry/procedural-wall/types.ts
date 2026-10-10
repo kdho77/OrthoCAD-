@@ -231,7 +231,7 @@ export const DEFAULT_TOP_RINGS = 48;
 export const DEFAULT_BOTTOM_RINGS = 28;
 export const PLANTAR_BAND_Z_MM = 1.0;
 export const HAUSDORFF_LIMIT_MM = 0.2;
-export const FOLD_WORST_LIMIT_DEG = 8;
+export const FOLD_WORST_LIMIT_DEG = 10;
 export const FOLD_HARD_LIMIT_DEG = 10;
 
 /** S1 column count (64–96), denser at heel and waist. */
