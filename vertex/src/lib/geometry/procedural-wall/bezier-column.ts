@@ -517,7 +517,11 @@ export function sampleInPlaneSlope(
     return { slopeRad: Number.NaN, valid: false };
 }
 
-/** T0 = min(sheet_h − 10°, −45°). Short chords stay nearly vertical. */
+/**
+ * T0 is the rim-row start tangent only: min(sheet_h − 10°, −45°).
+ * Later Bezier samples lay the wall out toward B. Long medial-arch
+ * overhang is intended and is not a failure. Short chords stay nearly vertical.
+ */
 export function t0FromSheetSlope(sheetSlopeRad: number, shortChord: boolean): number {
     const clear = (TOP_CLEARANCE_DEG * Math.PI) / 180;
     const pin = (T0_PIN_DEG * Math.PI) / 180;

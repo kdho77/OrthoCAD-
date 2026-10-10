@@ -2,7 +2,12 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import { PATTERN_ARCH_INSET_MM, PATTERN_INSET_MM, syntheticBottomPattern } from "./bottom-pattern";
+import {
+    PATTERN_ARCH_INSET_MM,
+    PATTERN_INSET_MM,
+    parseBottomPattern,
+    syntheticBottomPattern,
+} from "./bottom-pattern";
 import { minDistToLoopXY, pointInPoly } from "./cdt-band";
 
 function turning(loop: Array<{ x: number; y: number }>): number {
@@ -44,5 +49,21 @@ describe("synthetic bottom pattern", () => {
         expect(minC).toBeGreaterThan(PATTERN_INSET_MM * 0.55);
         expect(maxC).toBeGreaterThan(PATTERN_INSET_MM + 1.5);
         expect(medial).toBeGreaterThan(PATTERN_INSET_MM * 0.55);
+    });
+
+    test("parses SVG polyline and JSON points", () => {
+        const svg = parseBottomPattern('<polyline points="0,0 10,0 10,6 0,6"/>');
+        expect(svg).toHaveLength(4);
+        expect(svg[2]).toEqual({ x: 10, y: 6, z: 0 });
+        const json = parseBottomPattern(
+            JSON.stringify([
+                { x: 1, y: 2 },
+                { x: 3, y: 4 },
+            ]),
+        );
+        expect(json).toEqual([
+            { x: 1, y: 2, z: 0 },
+            { x: 3, y: 4, z: 0 },
+        ]);
     });
 });

@@ -403,6 +403,30 @@ function smoothInsets(insets: number[], frac = I_SMOOTH_FRAC): void {
     for (let i = 0; i < n; i++) insets[i] = next[i]!;
 }
 
+function smoothDirs(dirs: Array<{ x: number; y: number }>, frac = I_SMOOTH_FRAC): void {
+    const n = dirs.length;
+    if (n < 3) return;
+    const next = dirs.map((d) => ({ ...d }));
+    for (let i = 0; i < n; i++) {
+        const a = dirs[(i + n - 1) % n]!;
+        const b = dirs[i]!;
+        const c = dirs[(i + 1) % n]!;
+        let mx = 0.5 * b.x + 0.25 * a.x + 0.25 * c.x;
+        let my = 0.5 * b.y + 0.25 * a.y + 0.25 * c.y;
+        const dx = mx - b.x;
+        const dy = my - b.y;
+        const maxStep = frac * (Math.hypot(b.x, b.y) || 1);
+        const step = Math.hypot(dx, dy);
+        if (step > maxStep) {
+            mx = b.x + (dx * maxStep) / step;
+            my = b.y + (dy * maxStep) / step;
+        }
+        const len = Math.hypot(mx, my) || 1;
+        next[i] = { x: mx / len, y: my / len };
+    }
+    for (let i = 0; i < n; i++) dirs[i] = next[i]!;
+}
+
 export interface InnerRingPlacement {
     ring: PolyPoint[];
     dirs: Array<{ x: number; y: number }>;
@@ -449,24 +473,33 @@ export function assertSimpleInnerRing(ring: PolyPoint[], outline: PolyPoint[]): 
 
 /**
  * Simple inner band ring I: offset each B along the outline inward by
- * max(r, 1.5). Crossing stations shrink d; d is Laplacian-smoothed at most
- * 10% per station. I stays ≥ 1.0 mm from the outline; min edge ≥ 0.05 mm.
- * Stations are not welded.
+ * max(r, 1.5). Crossing / folded stations shrink d (locally, then globally);
+ * d is Laplacian-smoothed at most 10% per station. I stays ≥ 1.0 mm from the
+ * outline; min edge ≥ 0.05 mm. Stations are not welded.
  */
 export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlacement {
     const outline = stations.map((s) => s.outline);
     const n = outline.length;
     const dirs: Array<{ x: number; y: number }> = [];
     const insets: number[] = [];
+    const initial: number[] = [];
     for (let i = 0; i < n; i++) {
         const st = stations[i]!;
         const { planLen } = headingOfStation(st);
         const r = estimateFilletRadius(st, planLen);
         dirs.push(outlineInward(i, outline));
-        insets.push(Math.max(r, BAND_INSET_FLOOR_MM));
+        const d = Math.max(r, BAND_INSET_FLOOR_MM);
+        insets.push(d);
+        initial.push(d);
     }
-    for (let pass = 0; pass < 48; pass++) {
+    for (let i = 0; i < 8; i++) {
+        smoothDirs(dirs);
+        smoothInsets(insets);
+    }
+    for (let pass = 0; pass < 64; pass++) {
         const ring = bandFromInsets(outline, dirs, insets);
+        const tn = turningNumber(ring);
+        const folded = Math.abs(tn - 1) > 0.05;
         const bad = new Set<number>();
         const pushOut = new Set<number>();
         for (let i = 0; i < n; i++) {
@@ -477,30 +510,50 @@ export function placeSimpleInnerRing(stations: HermiteStation[]): InnerRingPlace
             else if (clearance < I_CLEARANCE_MM) pushOut.add(i);
         }
         for (const i of ringIntersectsOutline(ring, outline)) bad.add(i);
-        if (bad.size === 0 && pushOut.size === 0) {
+        if (bad.size === 0 && pushOut.size === 0 && !folded) {
             if (pass === 0 || pass % 4 === 3) break;
             smoothInsets(insets);
             continue;
         }
         let changed = false;
-        for (const i of bad) {
-            const next = Math.max(I_CLEARANCE_MM, insets[i]! * 0.8);
-            if (next < insets[i]! - 1e-6) {
-                insets[i] = next;
-                changed = true;
+        if (folded || bad.size > 0) {
+            if (folded && bad.size === 0) {
+                for (let i = 0; i < n; i++) {
+                    const next = Math.max(I_CLEARANCE_MM, insets[i]! * 0.92);
+                    if (next < insets[i]! - 1e-6) {
+                        insets[i] = next;
+                        changed = true;
+                    }
+                }
+            } else {
+                for (const i of bad) {
+                    const next = Math.max(I_CLEARANCE_MM, insets[i]! * 0.8);
+                    if (next < insets[i]! - 1e-6) {
+                        insets[i] = next;
+                        changed = true;
+                    }
+                }
             }
         }
         for (const i of pushOut) {
-            if (bad.has(i)) continue;
-            const cap = Math.max(insets[i]!, BAND_INSET_FLOOR_MM) * 1.15;
-            const next = Math.min(cap, insets[i]! * 1.08);
+            if (bad.has(i) || folded) continue;
+            const cap = Math.max(initial[i]!, BAND_INSET_FLOOR_MM);
+            const next = Math.min(cap, insets[i]! * 1.06);
             if (next > insets[i]! + 1e-6) {
                 insets[i] = next;
                 changed = true;
             }
         }
-        if (!changed) break;
-        if (pass % 3 === 2) smoothInsets(insets);
+        if (!changed) {
+            if (folded) {
+                for (let i = 0; i < n; i++) insets[i] = I_CLEARANCE_MM;
+            }
+            break;
+        }
+        if (pass % 2 === 1) {
+            smoothInsets(insets);
+            smoothDirs(dirs);
+        }
     }
     const ring = bandFromInsets(outline, dirs, insets);
     const shortAt = shortEdgeStation(ring);

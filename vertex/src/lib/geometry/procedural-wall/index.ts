@@ -38,6 +38,7 @@ export {
 export {
     PATTERN_ARCH_INSET_MM,
     PATTERN_INSET_MM,
+    parseBottomPattern,
     syntheticBottomPattern,
 } from "./bottom-pattern";
 export {

@@ -10,6 +10,7 @@ import {
 import { type HeightFieldParams, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SideCorrections } from "@/types";
+import { parseBottomPattern } from "./bottom-pattern";
 import { ensureCcw, type PolyPoint, startAtPosteriorHeel } from "./curves";
 import {
     type DeviceTypePreset,
@@ -37,6 +38,8 @@ export interface ReconstructOptions extends ProceduralModifierInput {
     sourceField?: HeightFieldParams;
     /** Separate bottom-pattern outline in the same frame as TopSheet. */
     bottomPattern?: PolyPoint[];
+    /** SVG / DXF / JSON polyline for `bottomPattern` when points are not already parsed. */
+    bottomPatternSource?: string;
     /** Flat ground plantar (z=0 + posting/grind). Dish sampling is skipped. */
     flatPlantar?: boolean;
 }
@@ -249,7 +252,12 @@ export function reconstructProceduralWalls(
 ): BufferGeometry {
     const preset = options.deviceType ?? "functional";
     const defaults = defaultsFromModel(model, preset);
-    const flatPlantar = Boolean(options.flatPlantar || options.bottomPattern);
+    const patternPts = options.bottomPattern?.length
+        ? options.bottomPattern
+        : options.bottomPatternSource
+          ? parseBottomPattern(options.bottomPatternSource)
+          : null;
+    const flatPlantar = Boolean(options.flatPlantar || patternPts?.length);
     const flangeH = flatPlantar
         ? 0
         : snapToStep(options.lateralFlange?.heightMm ?? 0, LATERAL_FLANGE_BOUNDS.heightMm);
@@ -303,8 +311,8 @@ export function reconstructProceduralWalls(
     const stockOutline = startAtPosteriorHeel(
         ensureCcw(model.outline.spline.controls.map((p) => ({ ...p }))),
     );
-    const outlineLoop = options.bottomPattern?.length
-        ? startAtPosteriorHeel(ensureCcw(options.bottomPattern.map((p) => ({ ...p, z: 0 }))))
+    const outlineLoop = patternPts?.length
+        ? startAtPosteriorHeel(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))))
         : stockOutline;
     let pairing = pairAtNativeTop(outlineLoop, rimPts);
     const collapsed = mergeCollapsedStations(pairing, rimLocal, indices);
