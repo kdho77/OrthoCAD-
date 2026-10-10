@@ -699,6 +699,7 @@ export function reconstructProceduralWalls(
         maxNeighbourSpacingRatioR: grid.quality?.maxNeighbourSpacingRatioR,
         maxETurningDeg: grid.quality?.maxETurningDeg,
         maxFTurningDeg: grid.quality?.maxFTurningDeg,
+        maxTopG1AtRDeg: grid.quality?.maxTopG1AtRDeg,
         maxSignedFoldDeg: grid.quality?.maxSignedFoldDeg,
         nFoldsOver90: grid.quality?.nFoldsOver90,
         columnCrossings: grid.quality?.columnCrossings,

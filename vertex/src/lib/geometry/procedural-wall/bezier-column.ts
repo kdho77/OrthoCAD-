@@ -41,10 +41,13 @@ export const MIN_EDGE_MM = 0.01;
 export const ALONG_JOINT_MAX_DEG = 8;
 export const ALONG_JOINT_BUDGET_FRAC = 1.15;
 export const ACROSS_STATION_MAX_DEG = 10;
-/** S1-stage across p99. Step 2 tightens back to 3°. */
-export const ACROSS_STATION_P99_MAX_DEG = 5;
-/** S1-stage E/F ring turning. Step 2 tightens back to 3°. */
-export const RING_TURNING_MAX_DEG = 6.5;
+/** Across p99 after the pre-ruling E/F frame smooth. */
+export const ACROSS_STATION_P99_MAX_DEG = 3;
+/** E/F ring turning after the pre-ruling E/F frame smooth. */
+export const RING_TURNING_MAX_DEG = 3;
+export const WOUT_SMOOTH_SIGMA_MM = 10;
+export const NTOP_SMOOTH_SIGMA_MM = 6;
+export const F_FRAME_SMOOTH_SIGMA_MM = 10;
 export const HEADING_MAX_DEG = 3;
 export const ROUND_MIN_STEP_MM = 0.15;
 export const ROUND_MAX_ASPECT = 20;
@@ -145,6 +148,12 @@ export interface ColumnFrame {
     nTop: XYZ;
     nTopSmoothed: XYZ;
     wOut: { x: number; y: number };
+    /** 3D in-surface outward (n_top × t_rim), after the pre-ruling smooth. */
+    wOut3: XYZ;
+    /** Plantar normal at B (for the F-side frame smooth). */
+    nPlant: XYZ;
+    /** When set, constructSweepRule uses the smoothed n_top / wOut / nB. */
+    frameLocked: boolean;
     nWall: XYZ;
     roundRows: number;
     /** External-tangent length (signed; negative if unordered). */
@@ -249,6 +258,8 @@ export interface ColumnQuality {
     maxSignedSeamNonFallbackDeg: number;
     maxETurningDeg: number;
     maxFTurningDeg: number;
+    /** Analytic G1 at R: sheet incident tangent vs round start (T0). */
+    maxTopG1AtRDeg: number;
     maxSignedFoldDeg: number;
     nFoldsOver90: number;
     obliqueFallback: ObliqueFallbackRow[];
@@ -1210,6 +1221,16 @@ export function offPlaneNormalMm(p: XYZ, origin: XYZ, n: XYZ): number {
     return Math.abs((p.x - origin.x) * n.x + (p.y - origin.y) * n.y + (p.z - origin.z) * n.z);
 }
 
+/** Drop the n_top component and flip so wOut agrees with −h. */
+export function reorthoWOut(wIn: XYZ, nTop: XYZ, h: { x: number; y: number }): XYZ {
+    const n = unit3(nTop);
+    let w = add3(wIn, n, -dot3(wIn, n));
+    if (hypot3(w) < 1e-12) w = { x: -h.x, y: -h.y, z: 0 };
+    w = unit3(w);
+    if (w.x * -h.x + w.y * -h.y < 0) w = { x: -w.x, y: -w.y, z: -w.z };
+    return w;
+}
+
 /** In-surface outward at the rim: nTop × T_rim, flipped to agree with −h. */
 export function rimInSurfaceOutward(nTop: XYZ, tRim: XYZ, h: { x: number; y: number }): XYZ {
     let w = cross3(nTop, tRim);
@@ -1292,6 +1313,7 @@ export function constructSweepRule(
     localSpacing = OUTLINE_STATION_SPACING_MM,
     planeN?: XYZ,
     phiRound1Lock?: number,
+    frameLock?: { nTop?: XYZ; wOut?: XYZ },
 ): SweepRule {
     const hl = Math.hypot(hIn.x, hIn.y) || 1;
     const h = { x: hIn.x / hl, y: hIn.y / hl };
@@ -1299,10 +1321,14 @@ export function constructSweepRule(
     let nB = { x: nBIn.x / nl, y: nBIn.y / nl };
     if (nB.x * h.x + nB.y * h.y < 0) nB = { x: -nB.x, y: -nB.y };
     const steep = sheetSlopeRad != null && (Math.abs(sheetSlopeRad) * 180) / Math.PI >= STEEP_SHEET_DEG;
-    const nTop = sheetSlopeRad != null ? nTopFromSheetSlope(sheetSlopeRad, h) : projectNTop(nTopIn, h, steep);
+    const nTop = frameLock?.nTop
+        ? unit3(frameLock.nTop)
+        : sheetSlopeRad != null
+          ? nTopFromSheetSlope(sheetSlopeRad, h)
+          : projectNTop(nTopIn, h, steep);
     const eN = unit3(nTop);
     const tRim = hypot3(tRimIn) > 1e-12 ? unit3(tRimIn) : { x: -h.y, y: h.x, z: 0 };
-    const eW = rimInSurfaceOutward(eN, tRim, h);
+    const eW = frameLock?.wOut ? reorthoWOut(frameLock.wOut, eN, h) : rimInSurfaceOutward(eN, tRim, h);
     const frame = plantarFrameAt(nB, plantarSlopeRad);
     const nPlant = unit3(frame.ez);
     const height = Math.max(R.z - B.z, 0.5);
@@ -1548,6 +1574,14 @@ export function assertOutsideRound(R: XYZ, rnd: OutsideRound, pts: XYZ[]): void 
     }
 }
 
+function frameLockOf(fr: ColumnFrame): { nTop?: XYZ; wOut?: XYZ } | undefined {
+    if (!fr.frameLocked) return undefined;
+    return {
+        nTop: fr.nTopSmoothed ?? fr.nTop,
+        wOut: fr.wOut3 ?? rimInSurfaceOutward(fr.nTopSmoothed ?? fr.nTop, fr.tRim, fr.h),
+    };
+}
+
 export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     const nUse = fr.nTopSmoothed ?? fr.nTop;
     const nB = fr.nB ?? fr.h;
@@ -1563,10 +1597,11 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
         nB,
         tRim,
         fr.plantarSlopeRad,
-        fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
+        fr.frameLocked ? undefined : fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
         local,
         nUse,
         fr.phiRound1Lock,
+        frameLockOf(fr),
     );
     const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
     fr.lastDlRad = lastFilletDLRad(S, 1);
@@ -1575,9 +1610,11 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     fr.E = { ...sw.E };
     fr.F = { ...sw.F };
     fr.nTop = sw.nTop;
-    fr.nTopSmoothed = nUse;
+    fr.nTopSmoothed = fr.frameLocked ? nUse : sw.nTop;
     fr.nWall = sw.nRoundPlane;
     fr.wOut = { x: sw.eW.x, y: sw.eW.y };
+    fr.wOut3 = sw.eW;
+    fr.nPlant = sw.nPlant;
     fr.T0 = sw.tStart;
     fr.U = sw.d;
     fr.t0TiltRad = Math.atan2(sw.tStart.z, Math.hypot(sw.tStart.x, sw.tStart.y));
@@ -1882,10 +1919,11 @@ function columnPoints(
         nB,
         tRim,
         fr.plantarSlopeRad,
-        fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
+        fr.frameLocked ? undefined : fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
         local,
         nUse,
         fr.phiRound1Lock,
+        frameLockOf(fr),
     );
     const nRound = _nTopFix || fr.nRoundFix || 0;
     const nFil = _nFilFix || fr.nFilFix || 0;
@@ -2337,6 +2375,30 @@ export function clampLastFilletOutboard(col: XYZ[], B: XYZ, h: { x: number; y: n
     col[i] = p;
 }
 
+/** Periodic Gaussian on a vector field. Re-normalises; does not flip. */
+export function smoothVectorField(vecs: XYZ[], rim: XYZ[], sigma = SCALAR_SMOOTH_SIGMA_MM): XYZ[] {
+    if (vecs.length < 3) return vecs.map((v) => unit3(v));
+    const nx = periodicGaussian(
+        vecs.map((v) => v.x),
+        rim,
+        sigma,
+    );
+    const ny = periodicGaussian(
+        vecs.map((v) => v.y),
+        rim,
+        sigma,
+    );
+    const nz = periodicGaussian(
+        vecs.map((v) => v.z),
+        rim,
+        sigma,
+    );
+    return nx.map((_, i) => {
+        const v = { x: nx[i]!, y: ny[i]!, z: nz[i]! };
+        return hypot3(v) < 1e-12 ? unit3(vecs[i]!) : unit3(v);
+    });
+}
+
 export function smoothNormalField(normals: XYZ[], rim: XYZ[], sigma = SCALAR_SMOOTH_SIGMA_MM): XYZ[] {
     if (normals.length < 3) return normals.map((n) => unit3(n));
     const nx = periodicGaussian(
@@ -2621,6 +2683,9 @@ export function initColumnFrames(
             nTop,
             nTopSmoothed: nTop,
             wOut: { x: -h.x, y: -h.y },
+            wOut3: { x: -h.x, y: -h.y, z: 0 },
+            nPlant: { x: 0, y: 0, z: 1 },
+            frameLocked: false,
             nWall: { x: 0, y: 0, z: 1 },
             roundRows: TOP_ROUND_MIN_ROWS,
             lineLengthMm: 0,
@@ -2733,6 +2798,107 @@ function guardFrames(
     }
 }
 
+function rateLimitSignedClosed(vals: number[], maxPct: number): number[] {
+    const n = vals.length;
+    const out = vals.slice();
+    if (n < 2) return out;
+    const f = Math.max(0, maxPct) / 100;
+    const pull = (from: number, to: number): number => {
+        const den = Math.max(Math.abs(from), 1e-6);
+        const lo = from - den * f;
+        const hi = from + den * f;
+        return Math.max(lo, Math.min(hi, to));
+    };
+    for (let pass = 0; pass < 6; pass++) {
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            out[j] = pull(out[i]!, out[j]!);
+        }
+        for (let i = n - 1; i >= 0; i--) {
+            const j = (i + 1) % n;
+            out[i] = pull(out[j]!, out[i]!);
+        }
+    }
+    return out;
+}
+
+/**
+ * Smooth the E/F frame before the ruling solve, periodic in rim arc-length.
+ * wOut from n_top × t (σ 10 mm), n_top (σ 6 mm), r1 + φ1 (σ 12 mm, 5%/station),
+ * then B-loop / plantar normals (σ 10 mm). Rebuild E/F with G1 ≤ 3°.
+ */
+export function smoothEfFrame(frames: ColumnFrame[]): void {
+    if (frames.length < 3) return;
+    const rim = frames.map((f) => f.R);
+    const nTop0 = frames.map((f, i) => {
+        const prev = frames[(i + frames.length - 1) % frames.length]!;
+        const next = frames[(i + 1) % frames.length]!;
+        let t = unit3({
+            x: next.R.x - prev.R.x,
+            y: next.R.y - prev.R.y,
+            z: next.R.z - prev.R.z,
+        });
+        if (hypot3(t) < 1e-12) t = f.tRim;
+        f.tRim = t;
+        return unit3(f.nTopSmoothed ?? f.nTop);
+    });
+    const wRaw = nTop0.map((n, i) => rimInSurfaceOutward(n, frames[i]!.tRim, frames[i]!.h));
+    const wSm = smoothVectorField(wRaw, rim, WOUT_SMOOTH_SIGMA_MM).map((w, i) =>
+        reorthoWOut(w, nTop0[i]!, frames[i]!.h),
+    );
+    const nSm = smoothVectorField(nTop0, rim, NTOP_SMOOTH_SIGMA_MM).map((n, i) => {
+        let u = unit3(n);
+        if (dot3(u, nTop0[i]!) < 0) u = { x: -u.x, y: -u.y, z: -u.z };
+        return u;
+    });
+    const wOut = wSm.map((w, i) => reorthoWOut(w, nSm[i]!, frames[i]!.h));
+    const r1 = rateLimitClosed(
+        periodicGaussian(
+            frames.map((f) => f.rTop),
+            rim,
+            SCALAR_SMOOTH_SIGMA_MM,
+        ),
+        R_CHANGE_MAX_PCT,
+        MIN_ROUND_R_MM,
+    );
+    const phiRaw = unwrapClosedRad(frames.map((f) => f.phiRound1 || f.roundSweepRad));
+    const phiSm = rateLimitSignedClosed(
+        periodicGaussian(phiRaw, rim, SCALAR_SMOOTH_SIGMA_MM),
+        R_CHANGE_MAX_PCT,
+    );
+    const nB0 = frames.map((f) => unit3({ x: f.nB.x, y: f.nB.y, z: 0 }));
+    const nBSm = smoothVectorField(nB0, rim, F_FRAME_SMOOTH_SIGMA_MM);
+    const nPlant0 = frames.map((f) => {
+        const pf = plantarFrameAt(f.nB, f.plantarSlopeRad);
+        return unit3(f.nPlant && hypot3(f.nPlant) > 1e-9 ? f.nPlant : pf.ez);
+    });
+    const nPlantSm = smoothVectorField(nPlant0, rim, F_FRAME_SMOOTH_SIGMA_MM);
+    for (let i = 0; i < frames.length; i++) {
+        const fr = frames[i]!;
+        const nB = nBSm[i]!;
+        const nl = Math.hypot(nB.x, nB.y) || 1;
+        let nb = { x: nB.x / nl, y: nB.y / nl };
+        if (nb.x * fr.h.x + nb.y * fr.h.y < 0) nb = { x: -nb.x, y: -nb.y };
+        fr.nB = nb;
+        const np = unit3(nPlantSm[i]!);
+        const w = { x: -nb.x, y: -nb.y };
+        fr.nPlant = np;
+        fr.plantarSlopeRad = Math.atan2(np.x * w.x + np.y * w.y, np.z);
+        fr.nTop = nSm[i]!;
+        fr.nTopSmoothed = nSm[i]!;
+        fr.wOut3 = wOut[i]!;
+        fr.wOut = { x: fr.wOut3.x, y: fr.wOut3.y };
+        fr.rTop = r1[i]!;
+        fr.phiRound1Lock = phiSm[i]!;
+        fr.phiRound1 = phiSm[i]!;
+        fr.roundSweepRad = Math.abs(phiSm[i]!);
+        fr.frameLocked = true;
+        applyAlaToFrame(fr);
+        fr.phiRound1Lock = fr.phiRound1;
+        fr.roundSweepRad = Math.abs(fr.phiRound1);
+    }
+}
+
 /**
  * Sweep+rule columns: top round in span(wOut, nTop), fillet in span(nB, z),
  * ruled E→F by station index. R and B never move.
@@ -2760,6 +2926,7 @@ export function buildBezierColumns(
     const smoothLog = applySmooth(frames, FRAME_SMOOTH_ITERS);
     console.log("[S1-SMOOTH] before", JSON.stringify(smoothLog.before));
     console.log("[S1-SMOOTH] after", JSON.stringify(smoothLog.after));
+    smoothEfFrame(frames);
     const stepRad = (FILLET_STEP_MAX_DEG * Math.PI) / 180;
     let nRoundStar = TOP_ROUND_MIN_ROWS;
     let nFilStar = MIN_FILLET_RINGS;
@@ -3346,6 +3513,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let nObliqueWarn = 0;
     let maxG1E = 0;
     let maxG1F = 0;
+    let maxTopG1AtR = 0;
     let maxAspectAll = 0;
     let maxAspectRound = 0;
     let maxSignedFold = 0;
@@ -3410,6 +3578,10 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         if ((fr.headingObliqueDeg ?? 0) > OBLIQUE_WARN_DEG) nObliqueWarn++;
         maxG1E = Math.max(maxG1E, fr.g1EDeg ?? 0);
         maxG1F = Math.max(maxG1F, fr.g1FDeg ?? 0);
+        {
+            const tInc = incidentFaceTangent(fr.nTopSmoothed ?? fr.nTop, fr.h);
+            if (tInc) maxTopG1AtR = Math.max(maxTopG1AtR, vecAngleDeg(fr.T0, tInc));
+        }
         const counts0: ColumnPieceCounts = {
             nRound: frames[0]!.nRoundFix || frames[0]!.roundRows || 0,
             nFil: frames[0]!.nFilFix || 0,
@@ -3738,6 +3910,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxSignedSeamNonFallbackDeg: maxSeamNonFb,
         maxETurningDeg: maxETurning,
         maxFTurningDeg: maxFTurning,
+        maxTopG1AtRDeg: maxTopG1AtR,
         maxSignedFoldDeg: maxSignedFold,
         nFoldsOver90,
         obliqueFallback: fallback,

@@ -171,6 +171,7 @@ type ColumnQualityUd = {
     maxNeighbourSpacingRatioR?: number;
     maxETurningDeg?: number;
     maxFTurningDeg?: number;
+    maxTopG1AtRDeg?: number;
     maxSignedFoldDeg?: number;
     nFoldsOver90?: number;
     nRows?: number;
@@ -323,6 +324,7 @@ function compactGateTable(
         g1E: q?.maxG1EDeg,
         g1F: q?.maxG1FDeg,
         topRound: q?.maxTopRoundDeg,
+        topG1R: q?.maxTopG1AtRDeg,
         topSheet: q?.maxTopSheetEdgeDeg,
         crossings: q?.columnCrossings,
         fold: q?.maxSignedFoldDeg,
@@ -345,8 +347,8 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxAcrossP99Deg ?? 0) > ACROSS_STATION_P99_MAX_DEG + 1e-6) {
         misses.push(`across-p99 ${q.maxAcrossP99Deg?.toFixed(2)}>${ACROSS_STATION_P99_MAX_DEG}`);
     }
-    if ((q.maxTopRoundDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
-        misses.push(`top|round ${q.maxTopRoundDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
+    if ((q.maxTopG1AtRDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
+        misses.push(`top-G1-R ${q.maxTopG1AtRDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
     }
     if ((q.maxRoundWallDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
         misses.push(`round|wall ${q.maxRoundWallDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
@@ -399,9 +401,7 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxBFaceAspect ?? 0) > 20 + 1e-6) {
         misses.push(`aspect-B ${q.maxBFaceAspect?.toFixed(2)}>20`);
     }
-    if ((q.maxTopSheetEdgeDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
-        misses.push(`top-sheet ${q.maxTopSheetEdgeDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
-    }
+    // first-chord top-sheet is table-only; top G1 at R is the analytic gate.
     if (q.rowPieceIdentical === false) misses.push("row-to-piece");
     if ((q.maxAlongRowDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
         misses.push(`along-row ${q.maxAlongRowDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);

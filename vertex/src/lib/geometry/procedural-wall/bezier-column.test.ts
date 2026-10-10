@@ -44,6 +44,7 @@ import {
     r1ForSheetSlope,
     rateLimitClosed,
     rateLimitClosedDown,
+    reorthoWOut,
     rimOverhangMm,
     rotateColumnAboutB,
     rowPieceId,
@@ -55,6 +56,7 @@ import {
     sheetSlopeFromNormal,
     sizedArcRows,
     slopeFromSheetPlane,
+    smoothEfFrame,
     smoothStationHeadings,
     squareHeadingToB,
     summarizeWallBands,
@@ -283,6 +285,47 @@ describe("bezier column", () => {
         expect(locked.phiRound1).toBeCloseTo(free.phiRound1 + Math.PI / 180, 5);
         expect(locked.g1EDeg).toBeLessThanOrEqual(G1_MAX_DEG + 1e-3);
         expect(locked.g1FDeg).toBeLessThanOrEqual(G1_MAX_DEG + 1e-3);
+    });
+
+    test("reorthoWOut drops the n_top component and faces outward", () => {
+        const nTop = { x: 0, y: 0, z: 1 };
+        const h = { x: 1, y: 0 };
+        const w = reorthoWOut({ x: 0.2, y: 1, z: 0.4 }, nTop, h);
+        expect(w.z).toBeCloseTo(0, 6);
+        expect(w.x).toBeLessThan(0);
+        expect(Math.hypot(w.x, w.y, w.z)).toBeCloseTo(1, 6);
+    });
+
+    test("smoothEfFrame locks a periodic frame and keeps wOut ⟂ n_top", () => {
+        const n = 24;
+        const stations: HermiteStation[] = [];
+        for (let i = 0; i < n; i++) {
+            const a = (i / n) * Math.PI * 2;
+            stations.push(
+                station(30 * Math.cos(a), 30 * Math.sin(a), 10, { x: Math.cos(a), y: Math.sin(a) }),
+            );
+        }
+        const junctions = stations.map((_, i) => {
+            const wobble = 0.15 * Math.sin(i * 1.7);
+            return { planeN: { x: wobble, y: 0, z: 1 }, slopeRad: 0.1 + wobble };
+        });
+        const frames = initColumnFrames(
+            stations,
+            junctions,
+            defaults(),
+            stations.map(() => 20),
+            () => 10,
+            stations.map(() => 0),
+        );
+        smoothEfFrame(frames);
+        expect(frames.every((f) => f.frameLocked)).toBe(true);
+        for (const fr of frames) {
+            const nTop = fr.nTopSmoothed;
+            const w = fr.wOut3;
+            expect(Math.abs(nTop.x * w.x + nTop.y * w.y + nTop.z * w.z)).toBeLessThan(1e-6);
+            expect(fr.g1EDeg).toBeLessThanOrEqual(G1_MAX_DEG + 1e-3);
+            expect(fr.g1FDeg).toBeLessThanOrEqual(G1_MAX_DEG + 1e-3);
+        }
     });
 
     test("canonicalRoundPhi wraps to [0, 2π) without mirroring across eN", () => {
