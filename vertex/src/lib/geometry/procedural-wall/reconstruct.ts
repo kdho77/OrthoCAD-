@@ -495,13 +495,25 @@ type JunctionBand = {
     b1: number;
     wall: number[];
     plantar: number[];
-    faces: Set<number>;
+    wallFaces: Set<number>;
 };
+
+function chainOnEdge(chain: number[], u: number, v: number): number[] | null {
+    if (chain[0] === u && chain[chain.length - 1] === v) return chain;
+    if (chain[0] === v && chain[chain.length - 1] === u) return chain.slice().reverse();
+    return null;
+}
+
+function fanSplitFace(c: number, chain: number[], out: number[]): void {
+    for (let s = 0; s < chain.length - 1; s++) {
+        out.push(chain[s]!, chain[s + 1]!, c);
+    }
+}
 
 /**
  * C_MIN = spacing/20 makes the last strip a ~20:1 ribbon (min angle ≈ 2.86°).
- * Longest-edge splits keep that corner. Subdivide each flat B-B quad into a
- * k-grid along the ring so every child has min angle ≥ 5°.
+ * Remesh each flat B-B quad as a k-grid and fan every other face that shared
+ * the split P-P / B-B so generated edges stay used twice.
  */
 export function splitAcuteTriangles(
     positions: number[],
@@ -524,14 +536,14 @@ export function splitAcuteTriangles(
         const key = edgeKey(b0, b1);
         let rec = bands.get(key);
         if (!rec) {
-            rec = { b0, b1, wall: [], plantar: [], faces: new Set() };
+            rec = { b0, b1, wall: [], plantar: [], wallFaces: new Set() };
             bands.set(key, rec);
         }
-        rec.faces.add(t);
         const third = vs.find((v) => v !== b0 && v !== b1);
         if (third == null) continue;
         if (vertZ(positions, third) > Math.max(vertZ(positions, b0), vertZ(positions, b1)) + 1e-4) {
             rec.wall.push(third);
+            rec.wallFaces.add(t);
         } else {
             rec.plantar.push(third);
         }
@@ -542,9 +554,10 @@ export function splitAcuteTriangles(
         const n = (bandVerts.has(a) ? 1 : 0) + (bandVerts.has(b) ? 1 : 0) + (bandVerts.has(c) ? 1 : 0);
         if (n === 1) oneBand.push({ t, a, b, c });
     }
-    const drop = new Set<number>();
-    const add: number[] = [];
     const tanMin = Math.tan(minRad);
+    const splitChains = new Map<string, number[]>();
+    const gridFaces = new Set<number>();
+    const add: number[] = [];
     for (const rec of bands.values()) {
         let pa = rec.wall[0];
         if (pa == null) continue;
@@ -563,6 +576,7 @@ export function splitAcuteTriangles(
             rec.wall.some((p) => triMinAngleRad(positions, p, b0, b1) + 1e-12 < minRad) ||
             rec.plantar.some((s) => triMinAngleRad(positions, b0, b1, s) + 1e-12 < minRad);
         let pb: number | undefined;
+        let oneT: number | undefined;
         for (const f of oneBand) {
             const vs = [f.a, f.b, f.c];
             if (!vs.includes(pa)) continue;
@@ -570,7 +584,7 @@ export function splitAcuteTriangles(
             const other = vs.find((v) => v !== pa && v !== b0 && v !== b1);
             if (other != null && !bandVerts.has(other)) {
                 pb = other;
-                drop.add(f.t);
+                oneT = f.t;
                 break;
             }
         }
@@ -580,29 +594,42 @@ export function splitAcuteTriangles(
         );
         const width = triEdgeLen(positions, b0, b1);
         if (!acute && h >= width * tanMin - 1e-9) continue;
-        const k = Math.max(2, Math.min(8, Math.ceil((width * tanMin) / Math.max(h, 1e-6))));
+        const k = Math.max(2, Math.min(32, Math.ceil((width * tanMin) / Math.max(h, 1e-6))));
         const bRing = [b0];
         const pRing = [pa];
         for (let s = 1; s < k; s++) {
-            const t = s / k;
-            bRing.push(lerpVert(positions, b0, b1, t));
-            pRing.push(pb != null ? lerpVert(positions, pa, pb, t) : pa);
+            const tt = s / k;
+            bRing.push(lerpVert(positions, b0, b1, tt));
+            pRing.push(pb != null ? lerpVert(positions, pa, pb, tt) : pa);
         }
         bRing.push(b1);
         pRing.push(pb ?? pa);
+        splitChains.set(edgeKey(b0, b1), bRing);
+        if (pb != null) splitChains.set(edgeKey(pa, pb), pRing);
         for (let s = 0; s < k; s++) {
             add.push(pRing[s]!, pRing[s + 1]!, bRing[s + 1]!);
             add.push(pRing[s]!, bRing[s + 1]!, bRing[s]!);
-            for (const sVert of rec.plantar) {
-                add.push(bRing[s]!, bRing[s + 1]!, sVert);
-            }
         }
-        for (const t of rec.faces) drop.add(t);
+        for (const t of rec.wallFaces) gridFaces.add(t);
+        if (oneT != null) gridFaces.add(oneT);
     }
-    if (!drop.size) return;
+    if (!splitChains.size) return;
+    for (let t = 0; t < indices.length; t += 3) {
+        if (gridFaces.has(t)) continue;
+        const [a, b, c] = faceOf(t);
+        const ab = chainOnEdge(splitChains.get(edgeKey(a, b)) ?? [], a, b);
+        const bc = chainOnEdge(splitChains.get(edgeKey(b, c)) ?? [], b, c);
+        const ca = chainOnEdge(splitChains.get(edgeKey(c, a)) ?? [], c, a);
+        const n = (ab ? 1 : 0) + (bc ? 1 : 0) + (ca ? 1 : 0);
+        if (n !== 1) continue;
+        gridFaces.add(t);
+        if (ab) fanSplitFace(c, ab, add);
+        else if (bc) fanSplitFace(a, bc, add);
+        else if (ca) fanSplitFace(b, ca, add);
+    }
     const next: number[] = [];
     for (let t = 0; t < indices.length; t += 3) {
-        if (drop.has(t)) continue;
+        if (gridFaces.has(t)) continue;
         next.push(indices[t]!, indices[t + 1]!, indices[t + 2]!);
     }
     for (let i = 0; i < add.length; i++) next.push(add[i]!);

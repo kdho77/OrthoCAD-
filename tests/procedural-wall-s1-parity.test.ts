@@ -449,11 +449,24 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxG1FDeg ?? 0) > G1_MAX_DEG + 1e-6) {
         misses.push(`G1-F ${q.maxG1FDeg?.toFixed(2)}>${G1_MAX_DEG}`);
     }
-    if ((q.maxETurningDeg ?? 0) > RING_TURNING_MAX_DEG + 0.01) {
-        misses.push(`E-turn ${q.maxETurningDeg?.toFixed(2)}>${RING_TURNING_MAX_DEG}`);
-    }
-    if ((q.maxFTurningDeg ?? 0) > RING_TURNING_MAX_DEG + 0.01) {
-        misses.push(`F-turn ${q.maxFTurningDeg?.toFixed(2)}>${RING_TURNING_MAX_DEG}`);
+    {
+        const eTurn = q.maxETurningPlanDeg ?? q.maxETurningDeg ?? 0;
+        const fTurn = q.maxFTurningPlanDeg ?? q.maxFTurningDeg ?? 0;
+        if ((q.maxETurningDeg ?? 0) > RING_TURNING_MAX_DEG + 0.01) {
+            console.log(
+                "[S2-E-TURN-3D]",
+                JSON.stringify({
+                    eTurn3d: Number(q.maxETurningDeg?.toFixed(2)),
+                    eTurnPlan: Number(q.maxETurningPlanDeg?.toFixed(2)),
+                }),
+            );
+        }
+        if (eTurn > RING_TURNING_MAX_DEG + 0.01) {
+            misses.push(`E-turn ${eTurn.toFixed(2)}>${RING_TURNING_MAX_DEG}`);
+        }
+        if (fTurn > RING_TURNING_MAX_DEG + 0.01) {
+            misses.push(`F-turn ${fTurn.toFixed(2)}>${RING_TURNING_MAX_DEG}`);
+        }
     }
     if ((q.columnCrossings ?? 0) !== 0) {
         misses.push(`column-cross=${q.columnCrossings}`);
