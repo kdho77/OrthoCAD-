@@ -3352,6 +3352,13 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const nL = faceN3(prv[j]!, col[j]!, col[j + 1]!);
             const nR = faceN3(col[j]!, nxt[j]!, col[j + 1]!);
             if (!nL || !nR) continue;
+            const e0 = dist3(col[j]!, nxt[j]!);
+            const e1 = dist3(nxt[j]!, nxt[j + 1]!);
+            const e2 = dist3(nxt[j + 1]!, col[j + 1]!);
+            const e3 = dist3(col[j + 1]!, col[j]!);
+            const shortAcross = Math.min(e0, e1, e2, e3);
+            const cMinAcross = lastFilletCMinMm(fr.localSpacingMm || fr.stationSpacingMm || median);
+            if (shortAcross < cMinAcross) continue;
             const raw = vecAngleDeg(nL, nR);
             acrossAll.push(raw);
             if (raw > maxAcross) {
@@ -3365,13 +3372,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 };
             }
             if (dot3(nL, nR) < 0) flippedFaces++;
-            const e0 = dist3(col[j]!, nxt[j]!);
-            const e1 = dist3(nxt[j]!, nxt[j + 1]!);
-            const e2 = dist3(nxt[j + 1]!, col[j + 1]!);
-            const e3 = dist3(col[j + 1]!, col[j]!);
-            const shortE = Math.min(e0, e1, e2, e3);
+            const shortE = shortAcross;
             const longE = Math.max(e0, e1, e2, e3);
-            const cMinI = lastFilletCMinMm(fr.localSpacingMm || fr.stationSpacingMm || median);
+            const cMinI = cMinAcross;
             if (shortE >= cMinI) {
                 const aspect = longE / shortE;
                 if (aspect > maxAspectAll) {

@@ -561,30 +561,34 @@ export function evenSplitSourceEdges(
     for (let pass = 0; pass < 4; pass++) {
         const n0 = stations.length;
         const edgeLen: number[] = [];
+        const bLen: number[] = [];
         for (let i = 0; i < n0; i++) {
             const a = stations[i]!.rim;
             const b = stations[(i + 1) % n0]!.rim;
             edgeLen.push(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+            const ba = stations[i]!.outline;
+            const bb = stations[(i + 1) % n0]!.outline;
+            bLen.push(Math.hypot(bb.x - ba.x, bb.y - ba.y));
         }
         const sorted = edgeLen.slice().sort((a, b) => a - b);
         const median = sorted[Math.floor(sorted.length / 2)] ?? OUTLINE_STATION_SPACING_MM;
         const minE = sorted[0] ?? median;
-        let target = targetMm ?? Math.max(0.6, Math.min(1.5, median));
+        let target = targetMm ?? Math.max(0.6, Math.min(1, median));
         if (minE > PAIR_SPACING_MIN_MM && minE * NEIGHBOUR_SPACING_RATIO < target) {
             target = Math.max(PAIR_SPACING_MIN_MM * 2, minE * NEIGHBOUR_SPACING_RATIO);
         }
         const ks: number[] = [];
         for (let i = 0; i < n0; i++) {
-            const L = edgeLen[i]!;
-            const prevL = edgeLen[(i + n0 - 1) % n0]!;
-            const nextL = edgeLen[(i + 1) % n0]!;
+            const L = Math.max(edgeLen[i]!, bLen[i]!);
+            const prevL = Math.max(edgeLen[(i + n0 - 1) % n0]!, bLen[(i + n0 - 1) % n0]!);
+            const nextL = Math.max(edgeLen[(i + 1) % n0]!, bLen[(i + 1) % n0]!);
             const neigh = Math.max(PAIR_SPACING_MIN_MM, Math.min(prevL, nextL));
             const ratioCap = neigh * NEIGHBOUR_SPACING_RATIO;
             let k = Math.max(0, Math.round(L / Math.max(target, 1e-6)) - 1);
             if (L > ratioCap + 1e-9) {
                 k = Math.max(k, Math.ceil(L / ratioCap - 1e-9) - 1);
             }
-            const kMax = Math.max(0, Math.floor(L / PAIR_SPACING_MIN_MM + 1e-9) - 1);
+            const kMax = Math.max(0, Math.floor(edgeLen[i]! / PAIR_SPACING_MIN_MM + 1e-9) - 1);
             ks.push(Math.min(k, kMax));
         }
         let passAdded = 0;
