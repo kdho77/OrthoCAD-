@@ -312,7 +312,7 @@ export {
     PLANTAR_STEINER_OUTLINE_FRAC,
     SLIVER_MIN_ANGLE_DEG,
 } from "./plantar-cdt";
-export { type ReconstructOptions, reconstructProceduralWalls } from "./reconstruct";
+export { type ReconstructOptions, reconstructProceduralWalls, splitAcuteTriangles } from "./reconstruct";
 export {
     assertClosedStationRing,
     assertPeriodicQuadStrip,

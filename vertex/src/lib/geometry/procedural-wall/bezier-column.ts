@@ -297,6 +297,9 @@ export interface ColumnQuality {
     maxSignedSeamNonFallbackDeg: number;
     maxETurningDeg: number;
     maxFTurningDeg: number;
+    /** Plan-view E/F ring turning (posted Z does not count). */
+    maxETurningPlanDeg: number;
+    maxFTurningPlanDeg: number;
     maxSignedFoldDeg: number;
     nFoldsOver90: number;
     inwardWallFaces: number;
@@ -3910,7 +3913,7 @@ export function smoothRoundEndAngles(frames: ColumnFrame[], sigma = SCALAR_SMOOT
     );
 }
 
-function ringTurningDeg(pts: XYZ[]): number {
+function ringTurningDeg(pts: XYZ[], plan = false): number {
     const n = pts.length;
     if (n < 3) return 0;
     let max = 0;
@@ -3918,8 +3921,8 @@ function ringTurningDeg(pts: XYZ[]): number {
         const a = pts[(i + n - 1) % n]!;
         const b = pts[i]!;
         const c = pts[(i + 1) % n]!;
-        const t0 = { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
-        const t1 = { x: c.x - b.x, y: c.y - b.y, z: c.z - b.z };
+        const t0 = plan ? { x: b.x - a.x, y: b.y - a.y, z: 0 } : { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
+        const t1 = plan ? { x: c.x - b.x, y: c.y - b.y, z: 0 } : { x: c.x - b.x, y: c.y - b.y, z: c.z - b.z };
         if (hypot3(t0) < 1e-9 || hypot3(t1) < 1e-9) continue;
         max = Math.max(max, vecAngleDeg(t0, t1));
     }
@@ -4635,6 +4638,14 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     }
     const maxETurning = ringTurningDeg(frames.map((f) => f.E));
     const maxFTurning = ringTurningDeg(frames.map((f) => f.F));
+    const maxETurningPlan = ringTurningDeg(
+        frames.map((f) => f.E),
+        true,
+    );
+    const maxFTurningPlan = ringTurningDeg(
+        frames.map((f) => f.F),
+        true,
+    );
     acrossAll.sort((a, b) => a - b);
     const p99Idx = acrossAll.length
         ? Math.max(0, Math.min(acrossAll.length - 1, Math.ceil(0.99 * acrossAll.length) - 1))
@@ -4683,6 +4694,8 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             colCross: columnCrossings,
             eTurn: Number(maxETurning.toFixed(2)),
             fTurn: Number(maxFTurning.toFixed(2)),
+            eTurnPlan: Number(maxETurningPlan.toFixed(2)),
+            fTurnPlan: Number(maxFTurningPlan.toFixed(2)),
             fold: Number(maxSignedFold.toFixed(2)),
             folds90: nFoldsOver90,
             inward: inwardWallFaces,
@@ -4749,6 +4762,8 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxSignedSeamNonFallbackDeg: maxSeamNonFb,
         maxETurningDeg: maxETurning,
         maxFTurningDeg: maxFTurning,
+        maxETurningPlanDeg: maxETurningPlan,
+        maxFTurningPlanDeg: maxFTurningPlan,
         maxSignedFoldDeg: maxSignedFold,
         nFoldsOver90,
         inwardWallFaces,

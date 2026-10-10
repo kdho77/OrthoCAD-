@@ -180,6 +180,8 @@ type ColumnQualityUd = {
     maxNeighbourSpacingRatioR?: number;
     maxETurningDeg?: number;
     maxFTurningDeg?: number;
+    maxETurningPlanDeg?: number;
+    maxFTurningPlanDeg?: number;
     maxSignedFoldDeg?: number;
     nFoldsOver90?: number;
     inwardWallFaces?: number;
@@ -348,6 +350,8 @@ function compactGateTable(
         acrossP100: q?.maxAcrossDeg,
         eTurn: q?.maxETurningDeg,
         fTurn: q?.maxFTurningDeg,
+        eTurnPlan: q?.maxETurningPlanDeg,
+        fTurnPlan: q?.maxFTurningPlanDeg,
         g1E: q?.maxG1EDeg,
         g1F: q?.maxG1FDeg,
         topRound: q?.maxTopRoundDeg,

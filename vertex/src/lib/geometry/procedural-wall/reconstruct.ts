@@ -435,113 +435,179 @@ function sanitizeMesh(
 
 const SLIVER_MIN_ANGLE_RAD = (5 * Math.PI) / 180;
 
+function triEdgeLen(positions: number[], a: number, b: number): number {
+    return Math.hypot(
+        positions[b * 3]! - positions[a * 3]!,
+        positions[b * 3 + 1]! - positions[a * 3 + 1]!,
+        positions[b * 3 + 2]! - positions[a * 3 + 2]!,
+    );
+}
+
+function triCornerAngleRad(u: number, v: number, w: number): number {
+    if (u < 1e-12 || v < 1e-12) return 0;
+    return Math.acos(Math.max(-1, Math.min(1, (u * u + v * v - w * w) / (2 * u * v))));
+}
+
 function triMinAngleRad(positions: number[], a: number, b: number, c: number): number {
+    const ab = triEdgeLen(positions, a, b);
+    const bc = triEdgeLen(positions, b, c);
+    const ca = triEdgeLen(positions, c, a);
+    if (ab < 1e-12 || bc < 1e-12 || ca < 1e-12) return 0;
+    return Math.min(
+        triCornerAngleRad(ca, ab, bc),
+        triCornerAngleRad(ab, bc, ca),
+        triCornerAngleRad(bc, ca, ab),
+    );
+}
+
+function vertZ(positions: number[], i: number): number {
+    return positions[i * 3 + 2]!;
+}
+
+function altitudeToEdge(positions: number[], p: number, a: number, b: number): number {
     const ax = positions[a * 3]!;
     const ay = positions[a * 3 + 1]!;
     const az = positions[a * 3 + 2]!;
-    const bx = positions[b * 3]!;
-    const by = positions[b * 3 + 1]!;
-    const bz = positions[b * 3 + 2]!;
-    const cx = positions[c * 3]!;
-    const cy = positions[c * 3 + 1]!;
-    const cz = positions[c * 3 + 2]!;
-    const ab = Math.hypot(bx - ax, by - ay, bz - az);
-    const bc = Math.hypot(cx - bx, cy - by, cz - bz);
-    const ca = Math.hypot(ax - cx, ay - cy, az - cz);
-    if (ab < 1e-12 || bc < 1e-12 || ca < 1e-12) return 0;
-    const ang = (u: number, v: number, w: number): number =>
-        Math.acos(Math.max(-1, Math.min(1, (u * u + v * v - w * w) / (2 * u * v))));
-    return Math.min(ang(ca, ab, bc), ang(ab, bc, ca), ang(bc, ca, ab));
+    const bx = positions[b * 3]! - ax;
+    const by = positions[b * 3 + 1]! - ay;
+    const bz = positions[b * 3 + 2]! - az;
+    const px = positions[p * 3]! - ax;
+    const py = positions[p * 3 + 1]! - ay;
+    const pz = positions[p * 3 + 2]! - az;
+    const bl2 = bx * bx + by * by + bz * bz;
+    if (bl2 < 1e-20) return Math.hypot(px, py, pz);
+    const t = Math.max(0, Math.min(1, (px * bx + py * by + pz * bz) / bl2));
+    return Math.hypot(px - bx * t, py - by * t, pz - bz * t);
 }
 
-function splitAcuteTriangles(
+function lerpVert(positions: number[], a: number, b: number, t: number): number {
+    const mid = positions.length / 3;
+    positions.push(
+        positions[a * 3]! + t * (positions[b * 3]! - positions[a * 3]!),
+        positions[a * 3 + 1]! + t * (positions[b * 3 + 1]! - positions[a * 3 + 1]!),
+        positions[a * 3 + 2]! + t * (positions[b * 3 + 2]! - positions[a * 3 + 2]!),
+    );
+    return mid;
+}
+
+type JunctionBand = {
+    b0: number;
+    b1: number;
+    wall: number[];
+    plantar: number[];
+    faces: Set<number>;
+};
+
+/**
+ * C_MIN = spacing/20 makes the last strip a ~20:1 ribbon (min angle ≈ 2.86°).
+ * Longest-edge splits keep that corner. Subdivide each flat B-B quad into a
+ * k-grid along the ring so every child has min angle ≥ 5°.
+ */
+export function splitAcuteTriangles(
     positions: number[],
     indices: number[],
-    generatedStart = 0,
+    _generatedStart = 0,
     bandVerts?: Set<number>,
     minRad = SLIVER_MIN_ANGLE_RAD,
 ): void {
+    if (!bandVerts || bandVerts.size < 2) return;
     const edgeKey = (a: number, b: number): string => (a < b ? `${a},${b}` : `${b},${a}`);
-    const edgeLen = (a: number, b: number): number =>
-        Math.hypot(
-            positions[b * 3]! - positions[a * 3]!,
-            positions[b * 3 + 1]! - positions[a * 3 + 1]!,
-            positions[b * 3 + 2]! - positions[a * 3 + 2]!,
-        );
-    for (let pass = 0; pass < 8; pass++) {
-        const split = new Map<string, [number, number]>();
-        for (let t = 0; t < indices.length; t += 3) {
-            const a = indices[t]!;
-            const b = indices[t + 1]!;
-            const c = indices[t + 2]!;
-            if (bandVerts && !bandVerts.has(a) && !bandVerts.has(b) && !bandVerts.has(c)) continue;
-            if (triMinAngleRad(positions, a, b, c) + 1e-12 >= minRad) continue;
-            const edges: Array<[number, number, number]> = [
-                [a, b, edgeLen(a, b)],
-                [b, c, edgeLen(b, c)],
-                [c, a, edgeLen(c, a)],
-            ];
-            edges.sort((p, q) => q[2]! - p[2]!);
-            const pick = edges.find((e) => e[0]! >= generatedStart && e[1]! >= generatedStart);
-            if (!pick) continue;
-            split.set(edgeKey(pick[0]!, pick[1]!), [pick[0]!, pick[1]!]);
+    const bands = new Map<string, JunctionBand>();
+    const faceOf = (t: number): [number, number, number] => [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+    for (let t = 0; t < indices.length; t += 3) {
+        const [a, b, c] = faceOf(t);
+        const vs = [a, b, c];
+        const on = vs.filter((v) => bandVerts.has(v));
+        if (on.length < 2) continue;
+        const b0 = on[0]!;
+        const b1 = on[1]!;
+        const key = edgeKey(b0, b1);
+        let rec = bands.get(key);
+        if (!rec) {
+            rec = { b0, b1, wall: [], plantar: [], faces: new Set() };
+            bands.set(key, rec);
         }
-        if (!split.size) return;
-        if (positions.length / 3 > generatedStart + 200_000) return;
-        const midOf = new Map<string, number>();
-        for (const [key, [a, b]] of split) {
-            const mid = positions.length / 3;
-            positions.push(
-                0.5 * (positions[a * 3]! + positions[b * 3]!),
-                0.5 * (positions[a * 3 + 1]! + positions[b * 3 + 1]!),
-                0.5 * (positions[a * 3 + 2]! + positions[b * 3 + 2]!),
-            );
-            midOf.set(key, mid);
+        rec.faces.add(t);
+        const third = vs.find((v) => v !== b0 && v !== b1);
+        if (third == null) continue;
+        if (vertZ(positions, third) > Math.max(vertZ(positions, b0), vertZ(positions, b1)) + 1e-4) {
+            rec.wall.push(third);
+        } else {
+            rec.plantar.push(third);
         }
-        const next: number[] = [];
-        const push = (a: number, b: number, c: number): void => {
-            next.push(a, b, c);
-        };
-        for (let t = 0; t < indices.length; t += 3) {
-            const p = indices[t]!;
-            const q = indices[t + 1]!;
-            const r = indices[t + 2]!;
-            const pq = midOf.get(edgeKey(p, q));
-            const qr = midOf.get(edgeKey(q, r));
-            const rp = midOf.get(edgeKey(r, p));
-            const n = (pq != null ? 1 : 0) + (qr != null ? 1 : 0) + (rp != null ? 1 : 0);
-            if (n === 0) push(p, q, r);
-            else if (n === 1 && pq != null) {
-                push(p, pq, r);
-                push(pq, q, r);
-            } else if (n === 1 && qr != null) {
-                push(p, q, qr);
-                push(p, qr, r);
-            } else if (n === 1 && rp != null) {
-                push(p, q, rp);
-                push(q, r, rp);
-            } else if (n === 2 && pq != null && qr != null && rp == null) {
-                push(p, pq, r);
-                push(pq, q, qr);
-                push(pq, qr, r);
-            } else if (n === 2 && qr != null && rp != null && pq == null) {
-                push(p, q, rp);
-                push(q, qr, rp);
-                push(qr, r, rp);
-            } else if (n === 2 && rp != null && pq != null && qr == null) {
-                push(p, pq, rp);
-                push(pq, q, r);
-                push(pq, r, rp);
-            } else if (pq != null && qr != null && rp != null) {
-                push(p, pq, rp);
-                push(pq, q, qr);
-                push(rp, qr, r);
-                push(pq, qr, rp);
+    }
+    const oneBand: Array<{ t: number; a: number; b: number; c: number }> = [];
+    for (let t = 0; t < indices.length; t += 3) {
+        const [a, b, c] = faceOf(t);
+        const n = (bandVerts.has(a) ? 1 : 0) + (bandVerts.has(b) ? 1 : 0) + (bandVerts.has(c) ? 1 : 0);
+        if (n === 1) oneBand.push({ t, a, b, c });
+    }
+    const drop = new Set<number>();
+    const add: number[] = [];
+    const tanMin = Math.tan(minRad);
+    for (const rec of bands.values()) {
+        let pa = rec.wall[0];
+        if (pa == null) continue;
+        for (let i = 1; i < rec.wall.length; i++) {
+            const v = rec.wall[i]!;
+            if (vertZ(positions, v) > vertZ(positions, pa)) pa = v;
+        }
+        let b0 = rec.b0;
+        let b1 = rec.b1;
+        if (triEdgeLen(positions, pa, b0) > triEdgeLen(positions, pa, b1)) {
+            const swap = b0;
+            b0 = b1;
+            b1 = swap;
+        }
+        const acute =
+            rec.wall.some((p) => triMinAngleRad(positions, p, b0, b1) + 1e-12 < minRad) ||
+            rec.plantar.some((s) => triMinAngleRad(positions, b0, b1, s) + 1e-12 < minRad);
+        let pb: number | undefined;
+        for (const f of oneBand) {
+            const vs = [f.a, f.b, f.c];
+            if (!vs.includes(pa)) continue;
+            if (!vs.includes(b0) && !vs.includes(b1)) continue;
+            const other = vs.find((v) => v !== pa && v !== b0 && v !== b1);
+            if (other != null && !bandVerts.has(other)) {
+                pb = other;
+                drop.add(f.t);
+                break;
             }
         }
-        indices.length = 0;
-        for (let i = 0; i < next.length; i++) indices.push(next[i]!);
+        const h = Math.min(
+            altitudeToEdge(positions, pa, b0, b1),
+            pb != null ? altitudeToEdge(positions, pb, b0, b1) : Infinity,
+        );
+        const width = triEdgeLen(positions, b0, b1);
+        if (!acute && h >= width * tanMin - 1e-9) continue;
+        const k = Math.max(2, Math.min(8, Math.ceil((width * tanMin) / Math.max(h, 1e-6))));
+        const bRing = [b0];
+        const pRing = [pa];
+        for (let s = 1; s < k; s++) {
+            const t = s / k;
+            bRing.push(lerpVert(positions, b0, b1, t));
+            pRing.push(pb != null ? lerpVert(positions, pa, pb, t) : pa);
+        }
+        bRing.push(b1);
+        pRing.push(pb ?? pa);
+        for (let s = 0; s < k; s++) {
+            add.push(pRing[s]!, pRing[s + 1]!, bRing[s + 1]!);
+            add.push(pRing[s]!, bRing[s + 1]!, bRing[s]!);
+            for (const sVert of rec.plantar) {
+                add.push(bRing[s]!, bRing[s + 1]!, sVert);
+            }
+        }
+        for (const t of rec.faces) drop.add(t);
     }
+    if (!drop.size) return;
+    const next: number[] = [];
+    for (let t = 0; t < indices.length; t += 3) {
+        if (drop.has(t)) continue;
+        next.push(indices[t]!, indices[t + 1]!, indices[t + 2]!);
+    }
+    for (let i = 0; i < add.length; i++) next.push(add[i]!);
+    indices.length = 0;
+    for (let i = 0; i < next.length; i++) indices.push(next[i]!);
 }
 
 function meshMinZOf(positions: number[]): number {
@@ -1031,6 +1097,8 @@ export function reconstructProceduralWalls(
         maxNeighbourSpacingRatioR: grid.quality?.maxNeighbourSpacingRatioR,
         maxETurningDeg: grid.quality?.maxETurningDeg,
         maxFTurningDeg: grid.quality?.maxFTurningDeg,
+        maxETurningPlanDeg: grid.quality?.maxETurningPlanDeg,
+        maxFTurningPlanDeg: grid.quality?.maxFTurningPlanDeg,
         maxSignedFoldDeg: grid.quality?.maxSignedFoldDeg,
         nFoldsOver90: grid.quality?.nFoldsOver90,
         inwardWallFaces: grid.quality?.inwardWallFaces,
