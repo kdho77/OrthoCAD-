@@ -159,20 +159,28 @@ export function clampPostingOnStations(
     r1: number,
     r2: number,
     minWallMm: number,
+    extraNeedMm: ReadonlyArray<{ station: number; extraMm: number }> = [],
 ): { zDelta: (x: number, y: number) => number; postingClamps: PostingClamp[] } {
     if (stations.length < 1) return { zDelta, postingClamps: [] };
+    const extra = new Array(stations.length).fill(0);
+    for (const e of extraNeedMm) {
+        if (e.station >= 0 && e.station < extra.length) {
+            extra[e.station] = Math.max(extra[e.station]!, e.extraMm);
+        }
+    }
     const need = minWallMm + r1 + r2;
     const postingClamps: PostingClamp[] = [];
     const capDz: number[] = stations.map((st, i) => {
         const dz = zDelta(st.outline.x, st.outline.y);
-        const maxDz = st.rim.z - st.outline.z - need;
-        if (dz > 0 && dz > maxDz + 1e-9) {
+        const maxDz = st.rim.z - st.outline.z - need - extra[i]!;
+        if ((dz > 0 && dz > maxDz + 1e-9) || extra[i]! > 1e-9) {
+            const cap = extra[i]! > 1e-9 ? Math.min(dz, Math.max(0, maxDz)) : Math.max(0, maxDz);
             postingClamps.push({
                 station: i,
                 u: st.u,
-                droppedMm: dz - Math.max(0, maxDz),
+                droppedMm: Math.max(0, dz - cap),
             });
-            return Math.max(0, maxDz);
+            return cap;
         }
         return Number.POSITIVE_INFINITY;
     });

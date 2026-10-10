@@ -69,6 +69,8 @@ export interface QuadGrid {
     outlineRing: PolyPoint[];
     minWallClamps: MinWallClamp[];
     quality: ColumnQuality;
+    maxBPlantarDeltaMm: number;
+    wallBelowPlantar: number;
 }
 
 export interface RimJunction {
@@ -670,8 +672,8 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         }),
     );
 
-    const nPlantars = stations.map((st) => plantarNormalAt(st.outline.x, st.outline.y, input.zDelta));
-    const plantarSlopeRad = stations.map((st, i) => {
+    let nPlantars = stations.map((st) => plantarNormalAt(st.outline.x, st.outline.y, input.zDelta));
+    let plantarSlopeRad = stations.map((st, i) => {
         const dx = st.outline.x - st.rim.x;
         const dy = st.outline.y - st.rim.y;
         const len = Math.hypot(dx, dy);
@@ -682,22 +684,78 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         const ns = n.x * hx + n.y * hy;
         return Math.atan2(ns, n.z);
     });
-    const built = buildBezierColumns(
-        stations,
-        input.junctions,
-        input.defaults,
-        input.rimLoop,
-        input.topZ,
-        nWall,
-        plantarSlopeRad,
-        S1_MIN_WALL_MM,
-        nPlantars,
-    );
+    const buildCols = (
+        slopes: number[],
+        normals: { x: number; y: number; z: number }[],
+    ): ReturnType<typeof buildBezierColumns> =>
+        buildBezierColumns(
+            stations,
+            input.junctions,
+            input.defaults,
+            input.rimLoop,
+            input.topZ,
+            nWall,
+            slopes,
+            S1_MIN_WALL_MM,
+            normals,
+        );
+    let built = buildCols(plantarSlopeRad, nPlantars);
+    const heightFlags = built.minWallClamps.filter((c) => c.postingHeightClamp && c.droppedMm > 1e-9);
+    let soleZ = (x: number, y: number, fallback = 0): number => sampler.z(x, y, fallback);
+    if (heightFlags.length) {
+        const extra = new Array(nS).fill(0);
+        for (const f of heightFlags) extra[f.station] = Math.max(extra[f.station]!, f.droppedMm);
+        const z2 = (x: number, y: number): number => {
+            const z = input.zDelta(x, y);
+            let best = 0;
+            let bestD = Number.POSITIVE_INFINITY;
+            for (let i = 0; i < nS; i++) {
+                const p = stations[i]!.outline;
+                const d = (p.x - x) ** 2 + (p.y - y) ** 2;
+                if (d < bestD) {
+                    bestD = d;
+                    best = i;
+                }
+            }
+            const e = extra[best]!;
+            return e > 1e-9 && z > 0 ? Math.max(0, z - e) : z;
+        };
+        const sampler2 = makePlantarSampler(
+            stations.map((s) => s.outline),
+            input.flatPlantar ? null : input.dish,
+            input.flatPlantar ? undefined : input.plantarField,
+            z2,
+            { flat: true },
+        );
+        soleZ = (x, y, fallback = 0) => sampler2.z(x, y, fallback);
+        for (let i = 0; i < nS; i++) {
+            const p = stations[i]!.outline;
+            p.z = sampler2.z(p.x, p.y, p.z);
+            outlineB[i]!.z = p.z;
+            if (plantar.points[i]) plantar.points[i]!.z = p.z;
+        }
+        for (let i = nS; i < plantar.points.length; i++) {
+            const p = plantar.points[i]!;
+            p.z = sampler2.z(p.x, p.y, p.z);
+        }
+        nPlantars = stations.map((st) => plantarNormalAt(st.outline.x, st.outline.y, z2));
+        plantarSlopeRad = stations.map((st, i) => {
+            const dx = st.outline.x - st.rim.x;
+            const dy = st.outline.y - st.rim.y;
+            const len = Math.hypot(dx, dy);
+            const hx = len < 1e-4 ? st.n.x : dx / len;
+            const hy = len < 1e-4 ? st.n.y : dy / len;
+            const n = nPlantars[i]!;
+            return Math.atan2(n.x * hx + n.y * hy, n.z);
+        });
+        built = buildCols(plantarSlopeRad, nPlantars);
+    }
     console.log(
         "[S1-MIN-WALL]",
         JSON.stringify({
             n: built.minWallClamps.length,
             sample: built.minWallClamps.slice(0, 8),
+            postingHeightFlags: heightFlags.length,
         }),
     );
 
@@ -737,6 +795,26 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     const report = built.flareCapReport;
     const outlineRing = columns.map((col) => ({ ...col[outlineRow]! }));
 
+    let maxBPlantarDeltaMm = 0;
+    let wallBelowPlantar = 0;
+    for (let i = 0; i < nS; i++) {
+        const B = outlineRing[i]!;
+        const pz = soleZ(B.x, B.y, B.z);
+        maxBPlantarDeltaMm = Math.max(maxBPlantarDeltaMm, Math.abs(B.z - pz));
+        const col = columns[i]!;
+        for (let j = 1; j < col.length; j++) {
+            const p = col[j]!;
+            const sole = soleZ(p.x, p.y, p.z);
+            if (p.z < sole - 1e-3) wallBelowPlantar++;
+        }
+    }
+    if (maxBPlantarDeltaMm > 1e-3) {
+        throw new Error(`[S1-B] |B.z - plantarZ| ${maxBPlantarDeltaMm.toFixed(4)} > 1e-3`);
+    }
+    if (wallBelowPlantar) {
+        throw new Error(`[S1-B] ${wallBelowPlantar} wall vertices below the plantar`);
+    }
+
     const body = new Float32Array(nS * (nJ - 1) * 3);
     for (let j = 1; j < nJ; j++) {
         for (let i = 0; i < nS; i++) {
@@ -770,5 +848,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         outlineRing,
         minWallClamps: built.minWallClamps,
         quality: built.quality,
+        maxBPlantarDeltaMm,
+        wallBelowPlantar,
     };
 }

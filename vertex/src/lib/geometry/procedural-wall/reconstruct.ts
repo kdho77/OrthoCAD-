@@ -248,7 +248,24 @@ function mergeCollapsedStations(
     };
 }
 
-function weldGenerated(positions: number[], generatedStart: number, weldMm = WELD_MM): number[] {
+function wallStationRow(
+    i: number,
+    generatedStart: number,
+    nS: number,
+    nWallRows: number,
+): { station: number; row: number } | null {
+    const local = i - generatedStart;
+    if (local < 0 || local >= nS * nWallRows) return null;
+    return { station: local % nS, row: Math.floor(local / nS) };
+}
+
+function weldGenerated(
+    positions: number[],
+    generatedStart: number,
+    nS: number,
+    nWallRows: number,
+    weldMm = WELD_MM,
+): number[] {
     const n = positions.length / 3;
     const remap = Array.from({ length: n }, (_, i) => i);
     const cell = Math.max(weldMm, 1e-4);
@@ -285,9 +302,13 @@ function weldGenerated(positions: number[], generatedStart: number, weldMm = WEL
     };
     const lim2 = weldMm * weldMm;
     for (let i = generatedStart; i < n; i++) {
+        const ki = wallStationRow(i, generatedStart, nS, nWallRows);
+        if (!ki) continue;
         let keep = i;
         for (const j of nearby(i)) {
-            if (j >= i) continue;
+            if (j >= i || j < generatedStart) continue;
+            const kj = wallStationRow(j, generatedStart, nS, nWallRows);
+            if (!kj || kj.station !== ki.station || kj.row !== ki.row) continue;
             const dx = positions[i * 3]! - positions[j * 3]!;
             const dy = positions[i * 3 + 1]! - positions[j * 3 + 1]!;
             const dz = positions[i * 3 + 2]! - positions[j * 3 + 2]!;
@@ -298,15 +319,52 @@ function weldGenerated(positions: number[], generatedStart: number, weldMm = WEL
         }
         remap[i] = keep;
     }
+    const owner = new Map<number, number>();
+    for (let i = generatedStart; i < generatedStart + nS * nWallRows; i++) {
+        const r = remap[i]!;
+        const s = (i - generatedStart) % nS;
+        const prev = owner.get(r);
+        if (prev != null && prev !== s) {
+            throw new Error(`[S1-WELD] generated vertex shared by stations ${prev} and ${s}`);
+        }
+        owner.set(r, s);
+    }
     return remap;
+}
+
+function assertGeneratedEdgesUsedTwice(indices: number[], generatedStart: number): void {
+    const use = new Map<string, number>();
+    const bump = (a: number, b: number): void => {
+        if (a < generatedStart || b < generatedStart) return;
+        const lo = Math.min(a, b);
+        const hi = Math.max(a, b);
+        const k = `${lo},${hi}`;
+        use.set(k, (use.get(k) ?? 0) + 1);
+    };
+    for (let t = 0; t < indices.length; t += 3) {
+        const a = indices[t]!;
+        const b = indices[t + 1]!;
+        const c = indices[t + 2]!;
+        bump(a, b);
+        bump(b, c);
+        bump(c, a);
+    }
+    for (const [e, c] of use) {
+        if (c !== 2) {
+            throw new Error(`[S1-WELD] generated edge ${e} used ${c} times`);
+        }
+    }
 }
 
 function sanitizeMesh(
     positions: number[],
     indices: number[],
     generatedStart = 0,
+    nS = 0,
+    nJ = 0,
 ): { zeroArea: number; duplicates: number } {
-    const remap = weldGenerated(positions, generatedStart);
+    const nWallRows = Math.max(0, nJ - 1);
+    const remap = weldGenerated(positions, generatedStart, nS, nWallRows);
     for (let t = 0; t < indices.length; t++) indices[t] = remap[indices[t]!]!;
     const seen = new Set<string>();
     const out: number[] = [];
@@ -720,7 +778,8 @@ export function reconstructProceduralWalls(
         pushTri(plantarVert(f[0]!), plantarVert(f[2]!), plantarVert(f[1]!));
     }
 
-    const hygiene = sanitizeMesh(positions, indices, generatedStart);
+    const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ);
+    assertGeneratedEdgesUsedTwice(indices, generatedStart);
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
     geo.setIndex(indices);
@@ -871,6 +930,8 @@ export function reconstructProceduralWalls(
         patternClearanceStations: clearance.stations,
         widenFollowFactor: followFactor,
         postingClamps: posting.postingClamps,
+        maxBPlantarDeltaMm: grid.maxBPlantarDeltaMm,
+        wallBelowPlantar: grid.wallBelowPlantar,
     };
     return geo;
 }

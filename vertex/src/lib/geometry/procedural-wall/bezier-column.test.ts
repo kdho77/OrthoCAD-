@@ -3,7 +3,9 @@
 
 import { describe, expect, test } from "@rstest/core";
 import {
+    ASPECT_EVERYWHERE_MAX,
     assertFilletStation,
+    assertPieceSpacing,
     assertT0ClearsSheet,
     bLoopOutwardNormal,
     buildBezierColumns,
@@ -11,6 +13,7 @@ import {
     COLUMN_PLANARITY_LIMIT_MM,
     COS_T_MIN,
     canonicalRoundPhi,
+    clampFramesMinWall,
     clampLastFilletOutboard,
     clampR1ToBudget,
     columnHeading,
@@ -18,10 +21,12 @@ import {
     constructFillet,
     constructSweepRule,
     DPHI_L_MAX_DEG,
+    enforceLastChordFloor,
     evalCubicBezier,
     FILLET_R_CAP_MM,
     FILLET_STEP_MAX_DEG,
     filletCenterAndF,
+    floorR2OnLastStep,
     G1_MAX_DEG,
     HEADING_MAX_DEG,
     headingAllowanceDeg,
@@ -33,6 +38,7 @@ import {
     lastFilletDLRad,
     lastFilletPhis,
     lastFilletR2MinMm,
+    lastStepChordMm,
     MERGE_ROW_MM,
     MIN_LINE_MM,
     MIN_ROUND_R_MM,
@@ -773,7 +779,7 @@ describe("bezier column", () => {
         expect(rowPieceId(counts.nWall - 1, counts)).toBe(4);
     });
 
-    test("r1 budget is 0.3 H and ala-pack shrinks both radii", () => {
+    test("r1 budget is 0.3 H and ala-pack takes height from L then r1", () => {
         expect(R1_HEIGHT_FRAC).toBe(0.3);
         expect(clampR1ToBudget(5, 10, 1, 0.5)).toBeCloseTo(3, 6);
         expect(clampR1ToBudget(2, 10, 8, 1.5)).toBeCloseTo(0.5, 6);
@@ -781,7 +787,8 @@ describe("bezier column", () => {
         expect(packed.r1 + packed.r2).toBeLessThanOrEqual(2 + 1e-9);
         expect(packed.r1).toBeGreaterThanOrEqual(0.08 - 1e-9);
         expect(packed.r2).toBeGreaterThanOrEqual(0.05 - 1e-9);
-        expect(packed.r1).toBeCloseTo(packed.r2, 5);
+        expect(packed.r1).toBeLessThan(packed.r2);
+        expect(packed.r1).toBeCloseTo(0.08, 5);
     });
 
     test("absolute |dr| limiter holds 0.05 mm/station", () => {
@@ -804,15 +811,93 @@ describe("bezier column", () => {
         }
     });
 
-    test("C_MIN_i is the mean of the two adjacent B segments / 20", () => {
+    test("C_MIN_i is the mean of the two adjacent B segments / 10", () => {
         const prev = 1.0;
         const next = 1.6;
         const local = 0.5 * (prev + next);
-        expect(lastFilletCMinMm(local)).toBeCloseTo(local / 20, 9);
+        expect(lastFilletCMinMm(local)).toBeCloseTo(local / 10, 9);
         const dL = lastFilletDLRad(Math.PI / 2, 1);
         const r2Min = lastFilletR2MinMm(local, dL);
         expect(r2Min).toBeCloseTo(lastFilletCMinMm(local) / (2 * Math.sin(dL / 2)), 9);
         expect(lastFilletCMinMm(0.9)).toBeLessThan(lastFilletCMinMm(1.5));
+        const aspectAtFloor = local / lastFilletCMinMm(local);
+        expect(aspectAtFloor).toBeLessThanOrEqual(ASPECT_EVERYWHERE_MAX * 0.5 + 1e-9);
+        expect(aspectAtFloor).toBeCloseTo(10, 9);
+    });
+
+    test("r2 floors on the real last-step dL once S is known", () => {
+        const local = 1.3;
+        const S = Math.PI / 4;
+        const cosT = 0.6;
+        const dL = lastFilletDLRad(S, cosT);
+        expect(dL).toBeLessThan(lastFilletDLRad(Math.PI / 2, 1));
+        const floored = floorR2OnLastStep(12, 0.5, 0.05, 0.5, local, S, cosT);
+        expect(floored.dL).toBeCloseTo(dL, 9);
+        expect(floored.r2).toBeGreaterThanOrEqual(floored.r2Min - 1e-12);
+        expect(lastStepChordMm(floored.r2, floored.dL)).toBeGreaterThanOrEqual(
+            lastFilletCMinMm(local) - 1e-9,
+        );
+        const sw = constructSweepRule(
+            { x: 0, y: 0, z: 12 },
+            { x: 8, y: 0, z: 0 },
+            { x: 0, y: 0, z: 1 },
+            0.5,
+            0.05,
+            { x: 1, y: 0 },
+            { x: 1, y: 0 },
+            { x: 0, y: 1, z: 0 },
+            0,
+            undefined,
+            local,
+        );
+        const realS = Math.abs(sw.fil.phi1 - sw.fil.phi0);
+        const need = lastFilletR2MinMm(local, lastFilletDLRad(realS, 1));
+        expect(sw.r2).toBeGreaterThanOrEqual(need - 1e-6);
+    });
+
+    test("ensurePieceSpacing throws on a collapsed fillet row", () => {
+        expect(() =>
+            assertPieceSpacing(
+                [
+                    { x: 0, y: 0, z: 0 },
+                    { x: 0.001, y: 0, z: 0 },
+                    { x: 1, y: 0, z: 0 },
+                ],
+                0.01,
+                7,
+            ),
+        ).toThrow(/\[S1-I\] collapsed fillet row at station 7/);
+    });
+
+    test("min-wall clamp never moves B and lastChord stays at C_MIN", () => {
+        const n = 8;
+        const stations: HermiteStation[] = [];
+        for (let i = 0; i < n; i++) {
+            const a = (i / n) * Math.PI * 2;
+            stations.push(
+                station(20 * Math.cos(a), 12 * Math.sin(a), 4, {
+                    x: Math.cos(a),
+                    y: Math.sin(a),
+                }),
+            );
+        }
+        const junctions = stations.map(() => ({ planeN: { x: 0, y: 0, z: 1 }, slopeRad: 0 }));
+        const frames = initColumnFrames(
+            stations,
+            junctions,
+            defaults(),
+            stations.map(() => 8),
+        );
+        const Bz = frames.map((f) => f.B.z);
+        clampFramesMinWall(frames, () => 2.2, 1.5);
+        for (let i = 0; i < frames.length; i++) {
+            expect(frames[i]!.B.z).toBeCloseTo(Bz[i]!, 9);
+        }
+        enforceLastChordFloor(frames);
+        for (const fr of frames) {
+            const cMin = lastFilletCMinMm(fr.localSpacingMm);
+            expect(lastStepChordMm(fr.rFillet, fr.lastDlRad)).toBeGreaterThanOrEqual(cMin - 1e-6);
+        }
     });
 
     test("n_plantar Gaussian σ=10 mm damps one-station noise", () => {

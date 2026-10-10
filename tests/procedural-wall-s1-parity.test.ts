@@ -239,6 +239,8 @@ function sampleGateReport(
         chordCrossings?: number;
         bottomPatternSource?: string;
         columnQuality?: ColumnQualityUd;
+        maxBPlantarDeltaMm?: number;
+        wallBelowPlantar?: number;
     };
     const misses: string[] = [];
     if (hits.real !== 0) {
@@ -283,6 +285,10 @@ function sampleGateReport(
         misses.push(`winding vol=${wind.signedVolume.toFixed(1)} mismatch=${wind.oppositeEdgeMismatch}`);
     }
     if ((sud.chordCrossings ?? 0) !== 0) misses.push(`crossings=${sud.chordCrossings}`);
+    if ((sud.maxBPlantarDeltaMm ?? 0) > 1e-3) {
+        misses.push(`B-plantar ${sud.maxBPlantarDeltaMm!.toFixed(4)}`);
+    }
+    if ((sud.wallBelowPlantar ?? 0) > 0) misses.push(`wall-below-plantar=${sud.wallBelowPlantar}`);
     if (!uvOk) misses.push("sole-UV");
     if (sud.bottomPatternSource !== PATTERN_SOURCE_SYNTHETIC) {
         misses.push(`pattern-source ${sud.bottomPatternSource}`);
@@ -395,6 +401,9 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     }
     if ((q.inwardWallFaces ?? 0) !== 0) {
         misses.push(`inward-faces=${q.inwardWallFaces}`);
+    }
+    if ((q.minLastChordOverLocal ?? 1) + 1e-9 < 1) {
+        misses.push(`lastChord/C_MIN ${q.minLastChordOverLocal?.toFixed(3)}<1`);
     }
     return misses;
 }
@@ -600,6 +609,8 @@ describe("S1 parametric wall", () => {
                     cappedStations?: number[];
                     maxDeviationDeg?: number;
                 };
+                maxBPlantarDeltaMm?: number;
+                wallBelowPlantar?: number;
             };
             console.log(
                 "[S1-HARMONIC]",
@@ -691,6 +702,10 @@ describe("S1 parametric wall", () => {
             }
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) misses.push(`fold ${fold.worstDeg.toFixed(1)}`);
             misses.push(...qualityMisses(ud));
+            if ((ud.maxBPlantarDeltaMm ?? 0) > 1e-3) {
+                misses.push(`B-plantar ${ud.maxBPlantarDeltaMm!.toFixed(4)}`);
+            }
+            if ((ud.wallBelowPlantar ?? 0) > 0) misses.push(`wall-below-plantar=${ud.wallBelowPlantar}`);
             if (archFolds.edgesAtLeast10Deg !== 0) {
                 misses.push(
                     `medial-arch-upper≥10 ${archFolds.edgesAtLeast10Deg} edges=${JSON.stringify(archFolds.hardEdges ?? [])}`,
@@ -857,6 +872,8 @@ describe("S1 parametric wall", () => {
                 patternClearanceStations?: number[];
                 widenFollowFactor?: number;
                 postingClamps?: Array<{ station: number; u: number; droppedMm: number }>;
+                maxBPlantarDeltaMm?: number;
+                wallBelowPlantar?: number;
             };
             const chordX = sud.chordCrossings ?? -1;
             const maxSkew = sud.maxSidewaysSkewMm ?? 0;
@@ -951,6 +968,12 @@ describe("S1 parametric wall", () => {
             }
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) smokeMiss.push(`${smoke.name} fold`);
             for (const m of qMiss) smokeMiss.push(`${smoke.name} ${m}`);
+            if ((sud.maxBPlantarDeltaMm ?? 0) > 1e-3) {
+                smokeMiss.push(`${smoke.name} B-plantar ${sud.maxBPlantarDeltaMm!.toFixed(4)}`);
+            }
+            if ((sud.wallBelowPlantar ?? 0) > 0) {
+                smokeMiss.push(`${smoke.name} wall-below-plantar=${sud.wallBelowPlantar}`);
+            }
             {
                 const fb = sud.columnQuality?.obliqueFallback ?? [];
                 const nonFb = sud.columnQuality?.maxSignedSeamNonFallbackDeg ?? reconSeam.worstDeg;
