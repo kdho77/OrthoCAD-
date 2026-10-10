@@ -107,24 +107,23 @@ function lerp3(a: XYZ, b: XYZ, t: number): XYZ {
     return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };
 }
 
-/** Closest intersection of lines E+s tE and F+t tF. Null if parallel. */
+/** Closest intersection of lines E+s tE and F+t tF. Null if parallel or skew. */
 export function intersectTangentLines(E: XYZ, tE: XYZ, F: XYZ, tF: XYZ): XYZ | null {
     const d = unit3(tE);
     const e = unit3(tF);
     const w0 = sub3(E, F);
-    const a = dot3(d, d);
     const b = dot3(d, e);
-    const c = dot3(e, e);
-    const den = a * c - b * b;
-    if (Math.abs(den) < 1e-12) return null;
-    const s = (b * dot3(e, w0) - c * dot3(d, w0)) / den;
-    const t = (a * dot3(e, w0) - b * dot3(d, w0)) / den;
-    if (s < 1e-6) return null;
-    const towardE = dot3(e, sub3(E, F));
-    if (towardE > 0 && t < 1e-6) return null;
-    if (towardE < 0 && t > -1e-6) return null;
+    const den = 1 - b * b;
+    if (Math.abs(den) < 1e-10) return null;
+    const s = (b * dot3(e, w0) - dot3(d, w0)) / den;
+    const t = (dot3(e, w0) - b * dot3(d, w0)) / den;
+    if (s < 0.15) return null;
     const p0 = add3(E, d, s);
     const p1 = add3(F, e, t);
+    const gap = dist3(p0, p1);
+    if (gap > 0.6) return null;
+    const minS = Math.max(0.15, (0.5 * gap) / Math.tan((Math.PI / 180) * 1) + 1e-6);
+    if (s < minS) return null;
     return scale3(add3(p0, p1), 0.5);
 }
 
@@ -256,13 +255,13 @@ export interface MidStyleSample {
 
 /**
  * E→F mid-style. Straight = ruled line. Round/hybrid = rational quadratic
- * through the E/F tangent intersection, G1 at both ends.
+ * with outward control M. End tangents are EM/FM (G1 of the conic).
  */
 export function sampleWallMidStyle(
     E: XYZ,
     F: XYZ,
-    tE: XYZ,
-    tF: XYZ,
+    _tE: XYZ,
+    _tF: XYZ,
     R: XYZ,
     n: number,
     heightMm: number,
@@ -270,15 +269,27 @@ export function sampleWallMidStyle(
     params: WallStyleParams,
     bulgeAtStation: number,
 ): MidStyleSample {
-    if (params.style === "straight" || bulgeAtStation <= 1e-9 || n < 1) {
+    if (params.style === "straight" || n < 1) {
         return { pts: sampleStraightMid(E, F, n), weight: 0, M: null, bulge: 0 };
     }
-    const M = intersectTangentLines(E, tE, F, tF);
-    if (!M) return { pts: sampleStraightMid(E, F, n), weight: 0, M: null, bulge: bulgeAtStation };
     const chord = dist3(E, F);
+    const mid = lerp3(E, F, 0.5);
+    const nl = Math.hypot(outward.x, outward.y) || 1;
+    const nx = outward.x / nl;
+    const ny = outward.y / nl;
     const maxOff = Math.min(WALL_BULGE_OFFSET_FRAC * chord, WALL_BULGE_OFFSET_MAX_MM);
-    let w = midStyleWeight(heightMm, bulgeAtStation);
-    w = clampWeightForChordOffset(E, M, F, w, maxOff);
+    const designedOff = maxOff * Math.max(bulgeAtStation, 0);
+    if (designedOff < 1e-4) {
+        return { pts: sampleStraightMid(E, F, n), weight: 0, M: null, bulge: bulgeAtStation };
+    }
+    const M = { x: mid.x + nx * designedOff, y: mid.y + ny * designedOff, z: mid.z };
+    let w = midStyleWeight(heightMm, Math.max(bulgeAtStation, 1e-3));
+    if (bulgeAtStation <= 1e-9) {
+        w = Math.min(w, 0.15);
+        w = clampWeightForChordOffset(E, M, F, w, Math.min(maxOff, 0.25));
+    } else {
+        w = clampWeightForChordOffset(E, M, F, w, maxOff);
+    }
     w = bisectWeightForPlan(E, M, F, R, w, n, outward, params.planOutMm);
     if (w <= 1e-6) return { pts: sampleStraightMid(E, F, n), weight: 0, M, bulge: bulgeAtStation };
     return { pts: sampleConicByArcLength(E, M, F, w, n), weight: w, M, bulge: bulgeAtStation };

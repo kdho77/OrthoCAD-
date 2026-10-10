@@ -84,6 +84,28 @@ describe("wall style mid-piece", () => {
         expect(bound.offsetMax).toBeLessThanOrEqual(2 + 1e-6);
     });
 
+    test("parallel end tangents still emit an outward conic on round", () => {
+        const E = { x: 0, y: 0, z: 10 };
+        const F = { x: 0, y: 0, z: 2 };
+        const tE = { x: 0, y: 0, z: -1 };
+        const tF = { x: 0, y: 0, z: 1 };
+        const pts = sampleWallMidStyle(
+            E,
+            F,
+            tE,
+            tF,
+            { x: 0, y: 0, z: 12 },
+            6,
+            14,
+            { x: 1, y: 0 },
+            resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 2 }),
+            0.6,
+        );
+        expect(pts.weight).toBeGreaterThan(0.05);
+        expect(pts.M).not.toBeNull();
+        expect(chordOffsetAtMid(E, pts.M!, F, pts.weight)).toBeGreaterThan(0.05);
+    });
+
     test("stationBulge is 0 on straight and ramps on hybrid", () => {
         const straight = resolveWallStyleParams({ style: "straight" });
         const hybrid = resolveWallStyleParams({ style: "hybrid", bulge: 0.6 });

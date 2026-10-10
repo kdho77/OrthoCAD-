@@ -167,17 +167,23 @@ describe("procedural wall styles", () => {
         console.log(
             "[S1-WALL-STYLE]",
             JSON.stringify(
-                styles.map((s) => ({
-                    style: s,
-                    g1E: geos[s]!.userData.columnQuality?.maxG1EDeg,
-                    g1F: geos[s]!.userData.columnQuality?.maxG1FDeg,
-                    across: geos[s]!.userData.columnQuality?.maxAcrossDeg,
-                    p99: geos[s]!.userData.columnQuality?.maxAcrossP99Deg,
-                    eTurn: geos[s]!.userData.columnQuality?.maxETurningPlanDeg,
-                    fTurn: geos[s]!.userData.columnQuality?.maxFTurningPlanDeg,
-                    plantar: plantarFlatDeltaMm(geos[s]!),
-                    topVsStraight: s === "straight" ? 0 : topDeltaMm(geos[s]!, straight),
-                })),
+                styles.map((s) => {
+                    const frames = (geos[s]!.userData.wallFrames ?? []) as Array<{ midWeight?: number }>;
+                    const weights = frames.map((f) => f.midWeight ?? 0);
+                    return {
+                        style: s,
+                        g1E: geos[s]!.userData.columnQuality?.maxG1EDeg,
+                        g1F: geos[s]!.userData.columnQuality?.maxG1FDeg,
+                        across: geos[s]!.userData.columnQuality?.maxAcrossDeg,
+                        p99: geos[s]!.userData.columnQuality?.maxAcrossP99Deg,
+                        eTurn: geos[s]!.userData.columnQuality?.maxETurningPlanDeg,
+                        fTurn: geos[s]!.userData.columnQuality?.maxFTurningPlanDeg,
+                        plantar: plantarFlatDeltaMm(geos[s]!),
+                        topVsStraight: s === "straight" ? 0 : topDeltaMm(geos[s]!, straight),
+                        midWmax: weights.length ? Math.max(...weights) : 0,
+                        midWmean: weights.length ? weights.reduce((a, b) => a + b, 0) / weights.length : 0,
+                    };
+                }),
             ),
         );
         if (misses.length) throw new Error(`[S1-STYLE] ${misses.join(" | ")}`);

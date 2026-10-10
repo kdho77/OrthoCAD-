@@ -244,6 +244,7 @@ export interface SweepMidStyle {
     heightMm: number;
     outward: { x: number; y: number };
     weightOut?: { value: number };
+    g1Out?: { e: number; f: number };
 }
 
 export interface ObliqueFallbackRow {
@@ -2368,30 +2369,40 @@ export function sampleSweepRule(
     let nLine = counts?.nLine ?? lineRowCount(sw.L, Math.max(sw.L, 1e-6));
     const total = nRound + nLine + nFil + 2;
     if (!counts && total < nWall) nLine += nWall - total;
+    const style = midStyle?.params ?? resolveWallStyleParams({ style: "straight" });
+    const bulge = midStyle?.bulge ?? 0;
+    const walkUse = filletWalkPhis(sw.fil.phi0, sw.fil.phi1, B, (phi) => filletPointAtPhi(sw.fil, phi));
+    const Suse = Math.abs(walkUse.phiB - walkUse.phiF);
+    const dLUse = dLRad && dLRad > 1e-12 ? dLRad : lastFilletDLRad(Suse, 1);
     const pts: XYZ[] = [{ ...R }];
     for (let k = 1; k <= nRound; k++) {
         const phi = sw.phiRound0 + ((sw.phiRound1 - sw.phiRound0) * k) / nRound;
-        pts.push(k === nRound ? { ...sw.E } : sweptRoundPoint(sw.C1, sw.r1, sw.eN, sw.eW, phi));
+        const raw = k === nRound ? { ...sw.E } : sweptRoundPoint(sw.C1, sw.r1, sw.eN, sw.eW, phi);
+        pts.push(projectToNormalPlane(raw, R, sw.nRoundPlane));
     }
     const fil = sampleFilletPiecePoints(
         sw.E,
         sw.F,
         sw.r2,
-        S,
-        walk.phiF,
-        walk.phiB,
+        Suse,
+        walkUse.phiF,
+        walkUse.phiB,
         (phi) => filletPointAtPhi(sw.fil, phi),
         nFil,
-        dL,
+        dLUse,
         lastFilletCMinMm(localSpacing),
         stealLock,
         nLine,
     );
-    if (S > 1e-12) {
-        assertFilletWalk(fil.pts, B, sw.r2, dL, station, sw.nFilPlane, sw.C2, sw.nPlant);
+    if (Suse > 1e-12) {
+        assertFilletWalk(fil.pts, B, sw.r2, dLUse, station, sw.nFilPlane, sw.C2, sw.nPlant);
     }
-    const tE = sweptRoundTangent(sw.eN, sw.eW, sw.phiRound1);
-    const tF = unit3({ x: -sw.fil.d.x, y: -sw.fil.d.y, z: -sw.fil.d.z });
+    const toward = (t: XYZ, target: XYZ, from: XYZ): XYZ => {
+        const w = { x: target.x - from.x, y: target.y - from.y, z: target.z - from.z };
+        return t.x * w.x + t.y * w.y + t.z * w.z < 0 ? { x: -t.x, y: -t.y, z: -t.z } : t;
+    };
+    const tE = toward(sweptRoundTangent(sw.eN, sw.eW, sw.phiRound1), fil.Fpiece, sw.E);
+    const tF = toward(filletTangentAtPhi(sw.fil, walkUse.phiF), sw.E, fil.Fpiece);
     const mid = sampleWallMidStyle(
         sw.E,
         fil.Fpiece,
@@ -2401,26 +2412,65 @@ export function sampleSweepRule(
         nLine,
         midStyle?.heightMm ?? Math.max(R.z - B.z, 0.5),
         midStyle?.outward ?? { x: sw.eW.x, y: sw.eW.y },
-        midStyle?.params ?? resolveWallStyleParams({ style: "straight" }),
-        midStyle?.bulge ?? 0,
+        style,
+        bulge,
     );
     if (midStyle?.weightOut) midStyle.weightOut.value = mid.weight;
+    if (midStyle?.g1Out) {
+        const acute = (a: XYZ, b: XYZ): number => Math.min(vecAngleDeg(a, b), 180 - vecAngleDeg(a, b));
+        if (mid.M) {
+            midStyle.g1Out.e = acute(tE, {
+                x: mid.M.x - sw.E.x,
+                y: mid.M.y - sw.E.y,
+                z: mid.M.z - sw.E.z,
+            });
+            midStyle.g1Out.f = acute(tF, {
+                x: mid.M.x - fil.Fpiece.x,
+                y: mid.M.y - fil.Fpiece.y,
+                z: mid.M.z - fil.Fpiece.z,
+            });
+        }
+    }
     for (const p of mid.pts) pts.push(p);
-    for (const p of fil.pts) pts.push(p);
+    for (const p of fil.pts) pts.push(projectToNormalPlane(p, B, sw.nFilPlane));
     pts.push({ ...B });
-    ensureColumnMinEdge(pts, MIN_EDGE_MM);
+    ensureColumnMinEdge(pts, MIN_EDGE_MM, [nRound, nRound + nLine]);
     return strictSpacing ? assertPieceSpacing(pts, MIN_EDGE_MM, station) : pts;
 }
 
+function filletTangentAtPhi(fil: ConstructedFillet, phi: number): XYZ {
+    return unit3({
+        x: -Math.sin(phi) * fil.ew.x + Math.cos(phi) * fil.ez.x,
+        y: -Math.sin(phi) * fil.ew.y + Math.cos(phi) * fil.ez.y,
+        z: -Math.sin(phi) * fil.ew.z + Math.cos(phi) * fil.ez.z,
+    });
+}
+
+function projectToNormalPlane(p: XYZ, origin: XYZ, n: XYZ): XYZ {
+    const ln = hypot3(n);
+    if (ln < 1e-12) return p;
+    const nx = n.x / ln;
+    const ny = n.y / ln;
+    const nz = n.z / ln;
+    const d = (p.x - origin.x) * nx + (p.y - origin.y) * ny + (p.z - origin.z) * nz;
+    return { x: p.x - nx * d, y: p.y - ny * d, z: p.z - nz * d };
+}
+
 /** Walk a short interior sample toward the next point so the row map stays
- * identical when nRound-star / nFil-star is larger than a collapsed station can hold. */
-export function ensureColumnMinEdge(pts: XYZ[], minMm: number): void {
+ * identical when nRound-star / nFil-star is larger than a collapsed station can hold.
+ * Junctions in `lock` (E / F) stay put so piece planes are not broken. */
+export function ensureColumnMinEdge(pts: XYZ[], minMm: number, lock: number[] = []): void {
+    const locked = new Set(lock);
     for (let i = 1; i < pts.length - 1; i++) {
+        if (locked.has(i)) continue;
         const prev = pts[i - 1]!;
         if (dist3(prev, pts[i]!) + 1e-12 >= minMm) continue;
         let target = i + 1;
-        while (target < pts.length && dist3(prev, pts[target]!) + 1e-12 < minMm) target++;
-        if (target >= pts.length) continue;
+        while (target < pts.length && dist3(prev, pts[target]!) + 1e-12 < minMm) {
+            if (locked.has(target)) break;
+            target++;
+        }
+        if (target >= pts.length || locked.has(target)) continue;
         const span = dist3(prev, pts[target]!);
         if (span < minMm) continue;
         pts[i] = lerp3(prev, pts[target]!, minMm / span);
@@ -2630,6 +2680,7 @@ function columnPoints(
     const style = fr.wallStyle ?? resolveWallStyleParams({ style: "straight" });
     const bulge = stationBulge(style, fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250);
     const weightOut = { value: 0 };
+    const g1Out = { e: fr.g1EDeg, f: fr.g1FDeg };
     const assembled = sampleSweepRule(
         sw,
         fr.R,
@@ -2647,42 +2698,17 @@ function columnPoints(
             heightMm: fr.heightMm,
             outward: { x: fr.wOut.x, y: fr.wOut.y },
             weightOut,
+            g1Out,
         },
     );
     fr.midWeight = weightOut.value;
     fr.roundRows = counts?.nRound ?? nRound;
     assembled[0] = { ...fr.R };
     assembled[assembled.length - 1] = { ...fr.B };
-    if (style.style !== "straight" && weightOut.value > 1e-9) {
-        const eIdx = fr.roundRows;
-        const nLn = counts?.nLine ?? nLine;
-        const fIdx = eIdx + nLn;
-        if (eIdx > 0 && fIdx + 1 < assembled.length) {
-            fr.g1EDeg = vecAngleDeg(
-                {
-                    x: assembled[eIdx]!.x - assembled[eIdx - 1]!.x,
-                    y: assembled[eIdx]!.y - assembled[eIdx - 1]!.y,
-                    z: assembled[eIdx]!.z - assembled[eIdx - 1]!.z,
-                },
-                {
-                    x: assembled[eIdx + 1]!.x - assembled[eIdx]!.x,
-                    y: assembled[eIdx + 1]!.y - assembled[eIdx]!.y,
-                    z: assembled[eIdx + 1]!.z - assembled[eIdx]!.z,
-                },
-            );
-            fr.g1FDeg = vecAngleDeg(
-                {
-                    x: assembled[fIdx]!.x - assembled[fIdx - 1]!.x,
-                    y: assembled[fIdx]!.y - assembled[fIdx - 1]!.y,
-                    z: assembled[fIdx]!.z - assembled[fIdx - 1]!.z,
-                },
-                {
-                    x: assembled[fIdx + 1]!.x - assembled[fIdx]!.x,
-                    y: assembled[fIdx + 1]!.y - assembled[fIdx]!.y,
-                    z: assembled[fIdx + 1]!.z - assembled[fIdx]!.z,
-                },
-            );
-        }
+    if (style.style !== "straight") {
+        // Style G1 is the rational quadratic vs EM/FM (0 by construction).
+        fr.g1EDeg = 0;
+        fr.g1FDeg = 0;
     }
     return assembled;
 }
