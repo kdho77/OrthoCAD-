@@ -1387,44 +1387,40 @@ export function constructSweepRule(
         const next = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
         if (hypot3(next) > 1e-9) d = unit3(next);
     };
+    for (let iter = 0; iter < 2; iter++) step();
     const locked = phiRound1Lock != null && Number.isFinite(phiRound1Lock);
-    if (locked && frameLock) {
-        for (let iter = 0; iter < 5; iter++) step(phiRound1Lock as number);
-    } else {
-        for (let iter = 0; iter < 2; iter++) step();
-        if (locked) {
-            const freePhi = phiRound1;
-            let delta = (phiRound1Lock as number) - freePhi;
-            while (delta > Math.PI) delta -= Math.PI * 2;
-            while (delta < -Math.PI) delta += Math.PI * 2;
-            const apply = (shift: number): { g1E: number; g1F: number } => {
-                const target = freePhi + shift;
-                for (let iter = 0; iter < 3; iter++) step(target);
-                const tEm = sweptRoundTangent(eN, eW, phiRound1);
-                const tFm = unit3({ x: -fil.d.x, y: -fil.d.y, z: -fil.d.z });
-                const dEm = projectOntoSpan(d, eW, eN);
-                const dFm = projectOntoSpan(d, frame.ew, frame.ez);
-                return {
-                    g1E: hypot3(dEm) > 1e-9 ? vecAngleDeg(unit3(dEm), tEm) : 0,
-                    g1F: hypot3(dFm) > 1e-9 ? vecAngleDeg(unit3(dFm), tFm) : 0,
-                };
+    if (locked) {
+        const freePhi = phiRound1;
+        let delta = (phiRound1Lock as number) - freePhi;
+        while (delta > Math.PI) delta -= Math.PI * 2;
+        while (delta < -Math.PI) delta += Math.PI * 2;
+        const apply = (shift: number): { g1E: number; g1F: number } => {
+            const target = freePhi + shift;
+            for (let iter = 0; iter < 3; iter++) step(target);
+            const tEm = sweptRoundTangent(eN, eW, phiRound1);
+            const tFm = unit3({ x: -fil.d.x, y: -fil.d.y, z: -fil.d.z });
+            const dEm = projectOntoSpan(d, eW, eN);
+            const dFm = projectOntoSpan(d, frame.ew, frame.ez);
+            return {
+                g1E: hypot3(dEm) > 1e-9 ? vecAngleDeg(unit3(dEm), tEm) : 0,
+                g1F: hypot3(dFm) > 1e-9 ? vecAngleDeg(unit3(dFm), tFm) : 0,
             };
-            let g1 = apply(delta);
-            if (g1.g1E > G1_MAX_DEG + 1e-6 || g1.g1F > G1_MAX_DEG + 1e-6) {
-                let lo = 0;
-                let hi = delta;
-                for (let k = 0; k < 10; k++) {
-                    const mid = 0.5 * (lo + hi);
-                    const m = apply(mid);
-                    if (m.g1E <= G1_MAX_DEG + 1e-6 && m.g1F <= G1_MAX_DEG + 1e-6) {
-                        lo = mid;
-                        g1 = m;
-                    } else {
-                        hi = mid;
-                    }
+        };
+        let g1 = apply(delta);
+        if (g1.g1E > G1_MAX_DEG + 1e-6 || g1.g1F > G1_MAX_DEG + 1e-6) {
+            let lo = 0;
+            let hi = delta;
+            for (let k = 0; k < 10; k++) {
+                const mid = 0.5 * (lo + hi);
+                const m = apply(mid);
+                if (m.g1E <= G1_MAX_DEG + 1e-6 && m.g1F <= G1_MAX_DEG + 1e-6) {
+                    lo = mid;
+                    g1 = m;
+                } else {
+                    hi = mid;
                 }
-                apply(lo);
             }
+            apply(lo);
         }
     }
 
