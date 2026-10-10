@@ -146,9 +146,11 @@ export function fillLargeStationGaps(
     const n0 = stations.length;
     const spacing: number[] = [];
     for (let i = 0; i < n0; i++) {
-        const a = stations[i]!.outline;
-        const b = stations[(i + 1) % n0]!.outline;
-        spacing.push(Math.hypot(b.x - a.x, b.y - a.y));
+        const a = stations[i]!;
+        const b = stations[(i + 1) % n0]!;
+        const dB = Math.hypot(b.outline.x - a.outline.x, b.outline.y - a.outline.y);
+        const dR = Math.hypot(b.rim.x - a.rim.x, b.rim.y - a.rim.y, b.rim.z - a.rim.z);
+        spacing.push(Math.max(dB, dR));
     }
     const sorted = spacing.slice().sort((x, y) => x - y);
     const median = sorted[Math.floor(sorted.length / 2)] ?? 1.3;
@@ -162,7 +164,9 @@ export function fillLargeStationGaps(
         outSt.push(cur);
         outRim.push(rimLocal[i]!);
         const nxt = stations[(i + 1) % n]!;
-        const dist = Math.hypot(nxt.outline.x - cur.outline.x, nxt.outline.y - cur.outline.y);
+        const distB = Math.hypot(nxt.outline.x - cur.outline.x, nxt.outline.y - cur.outline.y);
+        const distR = Math.hypot(nxt.rim.x - cur.rim.x, nxt.rim.y - cur.rim.y, nxt.rim.z - cur.rim.z);
+        const dist = Math.max(distB, distR);
         const need = dist > cap || (spansCreaseU(cur.u, nxt.u) && dist > Math.max(8, 1.2 * median));
         if (!need || dist < 1e-4) continue;
         const nAdd = Math.min(6, Math.max(1, Math.ceil(dist / cap) - 1));

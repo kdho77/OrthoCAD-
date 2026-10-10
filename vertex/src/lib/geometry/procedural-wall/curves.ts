@@ -27,6 +27,12 @@ export function ensureCcw(points: PolyPoint[]): PolyPoint[] {
 /** Rotate a closed loop so index 0 is the posterior heel (min X, then mid Y). */
 export function startAtPosteriorHeel(points: PolyPoint[]): PolyPoint[] {
     if (points.length === 0) return [];
+    const k = posteriorHeelIndex(points);
+    return points.slice(k).concat(points.slice(0, k));
+}
+
+export function posteriorHeelIndex(points: PolyPoint[]): number {
+    if (points.length === 0) return 0;
     let best = 0;
     for (let i = 1; i < points.length; i++) {
         const p = points[i]!;
@@ -35,7 +41,85 @@ export function startAtPosteriorHeel(points: PolyPoint[]): PolyPoint[] {
             best = i;
         }
     }
-    return points.slice(best).concat(points.slice(0, best));
+    return best;
+}
+
+/** Circumradius of the (i-1, i, i+1) triplet. Larger = lower curvature. */
+export function closedCurvatureRadii(points: PolyPoint[]): number[] {
+    const n = points.length;
+    const out = new Array<number>(n).fill(Number.POSITIVE_INFINITY);
+    for (let i = 0; i < n; i++) {
+        const a = points[(i + n - 1) % n]!;
+        const b = points[i]!;
+        const c = points[(i + 1) % n]!;
+        const ab = Math.hypot(b.x - a.x, b.y - a.y);
+        const bc = Math.hypot(c.x - b.x, c.y - b.y);
+        const ca = Math.hypot(a.x - c.x, a.y - c.y);
+        const area2 = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+        if (area2 < 1e-10 || ab < 1e-9 || bc < 1e-9) continue;
+        out[i] = (ab * bc * ca) / (2 * area2);
+    }
+    return out;
+}
+
+const LOW_CURVE_U0 = 0.32;
+const LOW_CURVE_U1 = 0.5;
+
+/**
+ * Index of a low-curvature vertex, preferring the lateral midfoot so the
+ * closed-ring seam is not at the heel apex.
+ */
+export function lowCurvatureStartIndex(points: PolyPoint[], bounds?: { minX: number; maxX: number }): number {
+    const n = points.length;
+    if (n === 0) return 0;
+    let minX = bounds?.minX ?? Infinity;
+    let maxX = bounds?.maxX ?? -Infinity;
+    if (!bounds) {
+        for (const p of points) {
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+        }
+    }
+    const length = Math.max(1e-3, maxX - minX);
+    const radii = closedCurvatureRadii(points);
+    let best = 0;
+    let bestR = -1;
+    let found = false;
+    for (let i = 0; i < n; i++) {
+        const u = (points[i]!.x - minX) / length;
+        if (u < LOW_CURVE_U0 || u > LOW_CURVE_U1) continue;
+        if (radii[i]! > bestR) {
+            bestR = radii[i]!;
+            best = i;
+            found = true;
+        }
+    }
+    if (!found) {
+        for (let i = 0; i < n; i++) {
+            if (radii[i]! > bestR) {
+                bestR = radii[i]!;
+                best = i;
+            }
+        }
+    }
+    return best;
+}
+
+/** Rotate a closed loop so index 0 is a low-curvature midfoot vertex. */
+export function startAtLowCurvature(
+    points: PolyPoint[],
+    bounds?: { minX: number; maxX: number },
+): PolyPoint[] {
+    if (points.length === 0) return [];
+    const k = lowCurvatureStartIndex(points, bounds);
+    return points.slice(k).concat(points.slice(0, k));
+}
+
+export function rotateClosed<T>(items: T[], start: number): T[] {
+    const n = items.length;
+    if (n === 0) return [];
+    const k = ((start % n) + n) % n;
+    return items.slice(k).concat(items.slice(0, k));
 }
 
 export function polylineArcLengths(points: PolyPoint[]): { cum: number[]; total: number } {
@@ -208,7 +292,7 @@ export function resampleClosedC2(spline: ClosedC2Spline, n: number): PolyPoint[]
     const dense: PolyPoint[] = [];
     const denseN = Math.max(n * 4, controls.length * 2);
     for (let i = 0; i < denseN; i++) dense.push(samplePeriodicBSpline(bctrl, i / denseN));
-    return startAtPosteriorHeel(ensureCcw(resamplePolyline(dense, n)));
+    return startAtLowCurvature(ensureCcw(resamplePolyline(dense, n)));
 }
 
 /** Rotate `b` so station 0 matches `a` (min sum of XY distances over cyclic shifts). */

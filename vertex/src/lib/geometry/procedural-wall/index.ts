@@ -91,7 +91,16 @@ export {
     insertConstraintEdges,
 } from "./cdt-band";
 export { assertIEdges, assertLibraryDisk, assertRemainingIEdges, libraryCdtInterior } from "./cdt-lib";
-export { fitClosedC2Spline, resampleClosedC2, resamplePolyline } from "./curves";
+export {
+    closedCurvatureRadii,
+    fitClosedC2Spline,
+    lowCurvatureStartIndex,
+    resampleClosedC2,
+    resamplePolyline,
+    rotateClosed,
+    startAtLowCurvature,
+    startAtPosteriorHeel,
+} from "./curves";
 export {
     applyMeasuredUnclamped,
     blendedFlareCurvature,
@@ -187,6 +196,12 @@ export {
     PLANTAR_STEINER_OUTLINE_FRAC,
 } from "./plantar-cdt";
 export { reconstructProceduralWalls } from "./reconstruct";
+export {
+    assertClosedStationRing,
+    assertPeriodicQuadStrip,
+    RING_WRAP_MIN_MM,
+    rotateStationRing,
+} from "./ring-seam";
 export {
     mapZoneFixtures,
     soleUvFrameFromOutline,

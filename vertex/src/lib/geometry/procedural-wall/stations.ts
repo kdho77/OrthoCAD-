@@ -8,6 +8,7 @@ import {
     resampleClosedC2,
     resamplePolyline,
     sampleClosedAtArc01,
+    startAtLowCurvature,
 } from "./curves";
 import { outwardNormal } from "./measure";
 
@@ -344,7 +345,7 @@ function seedMidline(
     topLoop: PolyPoint[],
     n: number,
 ): { mid: PolyPoint[]; maxSep: number } {
-    const plantar = resamplePolyline(smoothClosedToMinRadius(plantarLoop, 12, n), n);
+    const plantar = startAtLowCurvature(resamplePolyline(smoothClosedToMinRadius(plantarLoop, 12, n), n));
     const c = centroidOf(plantar);
     const normals = smoothNormals(
         plantar.map((_, i) => outwardNormal(plantar, i, c)),

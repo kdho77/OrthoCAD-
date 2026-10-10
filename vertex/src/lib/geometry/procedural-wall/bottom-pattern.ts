@@ -7,7 +7,7 @@ import {
     fitClosedC2Spline,
     type PolyPoint,
     resampleClosedC2,
-    startAtPosteriorHeel,
+    startAtLowCurvature,
 } from "./curves";
 
 export const PATTERN_INSET_MM = 2;
@@ -185,7 +185,7 @@ export function syntheticBottomPattern(
     rim3d?: PolyPoint[],
     side?: "left" | "right",
 ): PolyPoint[] {
-    const loop = startAtPosteriorHeel(ensureCcw(outline.map((p) => ({ ...p, z: 0 }))));
+    const loop = startAtLowCurvature(ensureCcw(outline.map((p) => ({ ...p, z: 0 }))), bounds);
     const n = loop.length;
     if (n < 3) return loop;
     const heightSrc = rim3d?.length ? rim3d : outline;

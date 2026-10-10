@@ -17,7 +17,7 @@ import {
     PATTERN_SOURCE_SYNTHETIC,
     parseBottomPattern,
 } from "./bottom-pattern";
-import { ensureCcw, type PolyPoint, startAtPosteriorHeel } from "./curves";
+import { ensureCcw, type PolyPoint, startAtLowCurvature } from "./curves";
 import {
     type DeviceTypePreset,
     LATERAL_FLANGE_BOUNDS,
@@ -34,6 +34,7 @@ import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
 import { hygieneBottomPattern } from "./pattern-hygiene";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
+import { assertClosedStationRing, assertPeriodicQuadStrip, rotateStationRing } from "./ring-seam";
 import { countPlanViewChordCrossings, pairAtNativeTop, retargetPlantarFromE } from "./stations";
 import type { StockWallModel } from "./types";
 
@@ -95,7 +96,7 @@ function orderRimLocal(pos: Float32Array, rimLocal: number[]): number[] {
         i,
     }));
     const ccw = ensureCcw(pts);
-    const started = startAtPosteriorHeel(ccw);
+    const started = startAtLowCurvature(ccw);
     return started.map((p) => (p as { i: number }).i);
 }
 
@@ -183,6 +184,26 @@ function mergeCollapsedStations(
             continue;
         }
         keep.push(i);
+    }
+    if (keep.length >= 3) {
+        const first = keep[0]!;
+        const last = keep[keep.length - 1]!;
+        const ta = pairing.top[first]!;
+        const tb = pairing.top[last]!;
+        const pa = pairing.plantar[first]!;
+        const pb = pairing.plantar[last]!;
+        const dR = Math.hypot(tb.x - ta.x, tb.y - ta.y, tb.z - ta.z);
+        const dB = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+        if (dR < minDist || dB < minDist) {
+            const from = rimLocal[last]!;
+            const to = rimLocal[first]!;
+            if (from !== to) {
+                for (let k = 0; k < indices.length; k++) {
+                    if (indices[k] === from) indices[k] = to;
+                }
+            }
+            keep.pop();
+        }
     }
     if (keep.length < 3 || keep.length === n) return { pairing, rimLocal };
     const pick = <T>(arr: T[]): T[] => keep.map((i) => arr[i]!);
@@ -388,11 +409,12 @@ export function reconstructProceduralWalls(
         indices.push(topIdx[i]!, topIdx[i + 1]!, topIdx[i + 2]!);
     }
 
-    const stockOutline = startAtPosteriorHeel(
+    const stockOutline = startAtLowCurvature(
         ensureCcw(model.outline.spline.controls.map((p) => ({ ...p }))),
+        model.bounds,
     );
     const rawOutline = patternPts?.length
-        ? startAtPosteriorHeel(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))))
+        ? startAtLowCurvature(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))), model.bounds)
         : stockOutline;
     const rimPlan = rimPts.map((p) => ({ x: p.x, y: p.y, z: 0 }));
     const patternLabel = options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : "stock");
@@ -473,6 +495,8 @@ export function reconstructProceduralWalls(
     densifyHeelForefootStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     applyOutlineClean(stations, rimLocal, indices);
     fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
+    rotateStationRing(stations, rimLocal, model.bounds);
+    assertClosedStationRing(stations, rimLocal);
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,
         y: positions[i * 3 + 1]!,
@@ -521,6 +545,7 @@ export function reconstructProceduralWalls(
         if (j <= 0) return rimLocal[s]!;
         return generatedStart + (j - 1) * nS + s;
     };
+    assertPeriodicQuadStrip(nS, nJ, gridVert);
     const plantarVert = (local: number): number => {
         if (local < nBoundary) return gridVert(grid.innerRow, local);
         return plantarStart + (local - nBoundary);
