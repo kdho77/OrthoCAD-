@@ -2442,36 +2442,86 @@ function fBetweenEB(E: XYZ, F: XYZ, B: XYZ): boolean {
     return t > 0.02 && t < 0.98;
 }
 
+function refitEToF(fr: ColumnFrame, sw: SweepRule, F: XYZ): void {
+    let E = { ...sw.E };
+    let phi = sw.phiRound1;
+    for (let k = 0; k < 4; k++) {
+        const U = { x: E.x - F.x, y: E.y - F.y, z: E.z - F.z };
+        if (hypot3(U) < 1e-9) break;
+        const d = projectOntoSpan(unit3(U), sw.eW, sw.eN);
+        if (hypot3(d) < 1e-9) break;
+        const target = Math.atan2(-dot3(d, sw.eN), dot3(d, sw.eW));
+        phi = unwindSweep(0, target);
+        if (Math.abs(phi) < 1e-4) phi = Math.PI / 2;
+        E = sweptRoundPoint(sw.C1, sw.r1, sw.eN, sw.eW, phi);
+    }
+    sw.E = { ...E };
+    sw.phiRound1 = phi;
+    sw.roundSweep = Math.abs(phi - sw.phiRound0);
+    fr.E = { ...E };
+    fr.phiRound1 = phi;
+    fr.phiRound1Lock = phi;
+    fr.roundSweepRad = sw.roundSweep;
+}
+
 function honorLockedF(fr: ColumnFrame, sw: SweepRule): void {
     const locked = fr.fLocked;
     if (!locked) return;
-    const alaF = { ...sw.F };
-    const tE = sweptRoundTangent(sw.eN, sw.eW, sw.phiRound1);
-    const g1EOf = (F: XYZ): number => {
-        const U = { x: fr.E.x - F.x, y: fr.E.y - F.y, z: fr.E.z - F.z };
-        if (hypot3(U) < 1e-9) return 180;
-        const dE = projectOntoSpan(unit3(U), sw.eW, sw.eN);
-        return hypot3(dE) > 1e-9 ? vecAngleDeg(unit3(dE), tE) : 0;
+    if (!fBetweenEB(sw.E, locked, fr.B) && !fBetweenEB(fr.E, locked, fr.B)) return;
+    const snap = {
+        E: { ...sw.E },
+        F: { ...sw.F },
+        phi: sw.phiRound1,
+        fil: sw.fil,
+        d: { ...sw.d },
+        C2: { ...sw.C2 },
+        r2: sw.r2,
+        L: sw.L,
+        filletSweep: sw.filletSweep,
+        g1E: sw.g1EDeg,
+        g1F: sw.g1FDeg,
+        converged: sw.converged,
+        frE: { ...fr.E },
+        frF: { ...fr.F },
+        frPhi: fr.phiRound1,
+        frPhiLock: fr.phiRound1Lock,
+        frU: { ...fr.U },
+        frR2: fr.rFillet,
+        frG1E: fr.g1EDeg,
+        frG1F: fr.g1FDeg,
+        frL: fr.lineLengthMm,
+        frSweep: fr.filletSweepRad,
+        frRound: fr.roundSweepRad,
     };
-    const ok = (F: XYZ): boolean => fBetweenEB(fr.E, F, fr.B) && g1EOf(F) <= G1_MAX_DEG + 1e-6;
-    if (ok(locked)) {
-        applyLockedFToSweep(fr, sw, locked);
-        return;
-    }
-    let lo = 0;
-    let hi = 1;
-    let best = alaF;
-    for (let k = 0; k < 14; k++) {
-        const mid = 0.5 * (lo + hi);
-        const cand = lerp3(alaF, locked, mid);
-        if (ok(cand)) {
-            lo = mid;
-            best = cand;
-        } else {
-            hi = mid;
-        }
-    }
-    if (dist3(best, alaF) > 1e-6) applyLockedFToSweep(fr, sw, best);
+    refitEToF(fr, sw, locked);
+    applyLockedFToSweep(fr, sw, locked);
+    const g1Ok = fr.g1EDeg <= G1_MAX_DEG + 0.5 && fr.g1FDeg <= G1_MAX_DEG + 0.5;
+    if (g1Ok && fBetweenEB(fr.E, locked, fr.B)) return;
+    sw.E = snap.E;
+    sw.F = snap.F;
+    sw.phiRound1 = snap.phi;
+    sw.fil = snap.fil;
+    sw.d = snap.d;
+    sw.C2 = snap.C2;
+    sw.r2 = snap.r2;
+    sw.L = snap.L;
+    sw.filletSweep = snap.filletSweep;
+    sw.g1EDeg = snap.g1E;
+    sw.g1FDeg = snap.g1F;
+    sw.converged = snap.converged;
+    sw.roundSweep = Math.abs(snap.phi - sw.phiRound0);
+    fr.E = snap.frE;
+    fr.F = snap.frF;
+    fr.phiRound1 = snap.frPhi;
+    fr.phiRound1Lock = snap.frPhiLock;
+    fr.U = snap.frU;
+    fr.rFillet = snap.frR2;
+    fr.g1EDeg = snap.frG1E;
+    fr.g1FDeg = snap.frG1F;
+    fr.lineLengthMm = snap.frL;
+    fr.filletSweepRad = snap.frSweep;
+    fr.roundSweepRad = snap.frRound;
+    fr.sweepRule = sw;
 }
 
 /** Laplacian on φ1 so the E ring plan-turn drops without moving R. */

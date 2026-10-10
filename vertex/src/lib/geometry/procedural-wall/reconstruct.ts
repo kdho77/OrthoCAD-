@@ -1000,6 +1000,7 @@ export function reconstructProceduralWalls(
     reparameterizeBArcLength(stations, hygiened.loop);
     if (patternMoved) {
         smoothMovedStationOutline(stations, hygiened.loop);
+        limitStationSkew(stations, hygiened.loop, r1, r2);
         reparameterizeBArcLength(stations, hygiened.loop);
     }
     assertClosedStationRing(stations, rimLocal);

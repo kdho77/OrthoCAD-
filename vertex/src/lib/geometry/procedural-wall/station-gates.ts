@@ -578,7 +578,7 @@ export function smoothMovedStationOutline(stations: HermiteStation[], loop: Poly
     if (stations.length < 3 || loop.length < 3) return;
     const n = stations.length;
     let pts = stations.map((s) => ({ ...s.outline, z: 0 }));
-    pts = laplacianClosedPlan(pts, 5);
+    pts = laplacianClosedPlan(pts, 2);
     for (let i = 0; i < n; i++) {
         const snapped = nearestOnLoop(pts[i]!, loop);
         stations[i]!.outline = { x: snapped.x, y: snapped.y, z: 0 };
