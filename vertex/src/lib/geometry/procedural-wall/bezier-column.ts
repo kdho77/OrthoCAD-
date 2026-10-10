@@ -1225,19 +1225,24 @@ function dropShortEdges(pts: XYZ[], minMm: number): XYZ[] {
     return out;
 }
 
-function fitColumnCount(pts: XYZ[], n: number, keepFrom: number, minLastMm = 0): XYZ[] {
+function fitColumnCount(pts: XYZ[], n: number, keepFrom: number, minLastMm = 0, preferUntil = 0): XYZ[] {
     const out = pts.map((p) => ({ ...p }));
     while (out.length < n) {
         let best = keepFrom;
         let bestD = -1;
-        for (let i = keepFrom; i < out.length - 1; i++) {
-            const d = dist3(out[i]!, out[i + 1]!);
-            if (i === out.length - 2 && minLastMm > 0 && d * 0.5 < minLastMm) continue;
-            if (d > bestD) {
-                bestD = d;
-                best = i;
+        const hi = preferUntil > keepFrom ? Math.min(preferUntil, out.length - 1) : out.length - 1;
+        const scan = (from: number, to: number): void => {
+            for (let i = from; i < to; i++) {
+                const d = dist3(out[i]!, out[i + 1]!);
+                if (i === out.length - 2 && minLastMm > 0 && d * 0.5 < minLastMm) continue;
+                if (d > bestD) {
+                    bestD = d;
+                    best = i;
+                }
             }
-        }
+        };
+        scan(keepFrom, hi);
+        if (bestD < 0) scan(keepFrom, out.length - 1);
         if (bestD < 0) break;
         const a = out[best]!;
         const b = out[best + 1]!;
@@ -1276,7 +1281,16 @@ function columnPoints(
             keepFrom = i;
         }
     }
-    const raw = fitColumnCount(assembled, nWall, keepFrom, FILLET_LAST_ROW_FRAC * _stationSpacing);
+    let keepUntil = assembled.length - 2;
+    let bestT2 = Infinity;
+    for (let i = keepFrom; i < assembled.length - 1; i++) {
+        const d = dist3(assembled[i]!, ala.T2);
+        if (d < bestT2) {
+            bestT2 = d;
+            keepUntil = i;
+        }
+    }
+    const raw = fitColumnCount(assembled, nWall, keepFrom, FILLET_LAST_ROW_FRAC * _stationSpacing, keepUntil);
     const out = raw.map((p, i) => {
         if (i === 0) return { ...fr.R };
         if (i === raw.length - 1) return { ...fr.B };
