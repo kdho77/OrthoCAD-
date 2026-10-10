@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { closedCurvatureRadii, type PolyPoint } from "./curves";
+import type { PolyPoint } from "./curves";
 import { blendedFlareDeg, FLARE_BOUNDS, type WallRegionDefaults } from "./defaults";
 import {
     FILLET_MAX_HEIGHT_FRAC,
@@ -1499,45 +1499,16 @@ function columnHeading(st: HermiteStation): {
 }
 
 /**
- * Curvature-aware R→B headings (not pattern-tangent normals). A fair
- * arch cut-in is not a parallel offset, so pattern normals put B 20 mm
- * off the column plane. Clamp change to `HEADING_MAX_DEG`.
+ * Smooth R→B headings and clamp change to `HEADING_MAX_DEG`. A fair arch
+ * cut-in is not a parallel offset, so pattern-tangent normals put B off
+ * the column plane. Pin each heading so B stays within `SIDEWAYS_LIMIT_MM`.
  */
 export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: number; y: number }> {
     const n = stations.length;
     if (n === 0) return [];
-    const raw = stations.map((st) => columnHeading(st).h);
-    const rim = stations.map((s) => s.rim);
-    const radii = closedCurvatureRadii(rim);
-    const ds = rim.map((p, i) => {
-        const q = rim[(i + 1) % n]!;
-        return Math.hypot(q.x - p.x, q.y - p.y);
-    });
-    const period = ds.reduce((s, d) => s + d, 0);
-    const cum = [0];
-    for (const d of ds) cum.push(cum[cum.length - 1]! + d);
-    const filtered = raw.map((_, i) => {
-        const sig = Math.max(6, Math.min(16, 0.2 * (Number.isFinite(radii[i]!) ? radii[i]! : 12)));
-        const k0 = 1 / Math.max(radii[i]!, 1);
-        let sx = 0;
-        let sy = 0;
-        for (let j = 0; j < n; j++) {
-            let d = Math.abs(cum[j]! - cum[i]!);
-            d = Math.min(d, period - d);
-            const kj = 1 / Math.max(radii[j]!, 1);
-            const dk = k0 - kj;
-            const wt = Math.exp((-0.5 * d * d) / (sig * sig)) * Math.exp((-0.5 * dk * dk) / 0.0016);
-            sx += wt * raw[j]!.x;
-            sy += wt * raw[j]!.y;
-        }
-        const hl = Math.hypot(sx, sy) || 1;
-        let h = { x: sx / hl, y: sy / hl };
-        const chord = columnHeading(stations[i]!);
-        if (h.x * chord.h.x + h.y * chord.h.y < 0) h = { x: -h.x, y: -h.y };
-        return h;
-    });
+    const chords = stations.map((st) => columnHeading(st));
+    const out = chords.map((c) => ({ ...c.h }));
     const maxRad = (HEADING_MAX_DEG * Math.PI) / 180;
-    const out = filtered.map((h) => ({ ...h }));
     for (let pass = 0; pass < 8; pass++) {
         for (let i = 0; i < n; i++) {
             const prev = out[(i + n - 1) % n]!;
@@ -1551,6 +1522,21 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
             const hl = Math.hypot(x, y) || 1;
             out[i] = { x: x / hl, y: y / hl };
         }
+    }
+    for (let i = 0; i < n; i++) {
+        const chord = chords[i]!;
+        const maxSideAng = Math.asin(
+            Math.min(0.99, SIDEWAYS_LIMIT_MM / Math.max(chord.planLen, SIDEWAYS_LIMIT_MM)),
+        );
+        const h = out[i]!;
+        const dot = Math.max(-1, Math.min(1, h.x * chord.h.x + h.y * chord.h.y));
+        const ang = Math.acos(dot);
+        if (ang <= maxSideAng + 1e-9) continue;
+        const t = maxSideAng / ang;
+        const x = chord.h.x + (h.x - chord.h.x) * t;
+        const y = chord.h.y + (h.y - chord.h.y) * t;
+        const hl = Math.hypot(x, y) || 1;
+        out[i] = { x: x / hl, y: y / hl };
     }
     return out;
 }
@@ -1875,6 +1861,7 @@ export function buildBezierColumns(
     const xyz: PolyPoint[][] = [];
     const implied: number[] = [];
     let maxOff = 0;
+    let maxSide = 0;
     let maxTiltStep = 0;
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
@@ -1883,7 +1870,10 @@ export function buildBezierColumns(
         col[col.length - 1] = { ...fr.B };
         assertRoundJoints(fr, col);
         fr.arcEndZ = col[col.length - 2]?.z ?? fr.B.z;
-        for (const p of col) maxOff = Math.max(maxOff, offPlaneMm(p, fr.R, fr.h));
+        for (let k = 1; k < col.length - 1; k++) {
+            maxOff = Math.max(maxOff, offPlaneMm(col[k]!, fr.R, fr.h));
+        }
+        maxSide = Math.max(maxSide, offPlaneMm(col[col.length - 1]!, fr.R, fr.h));
         xyz.push(col);
         const first = col[1] ?? fr.F;
         implied.push(
@@ -1902,9 +1892,10 @@ export function buildBezierColumns(
         const fr = frames[i]!;
         const col = xyz[i]!;
         let off = 0;
-        for (const p of col) off = Math.max(off, offPlaneMm(p, fr.R, fr.h));
-        if (off > COLUMN_PLANARITY_LIMIT_MM || off > SIDEWAYS_LIMIT_MM) {
-            bad.push({ i, u: Number(fr.u.toFixed(4)), off, side: off });
+        for (let k = 1; k < col.length - 1; k++) off = Math.max(off, offPlaneMm(col[k]!, fr.R, fr.h));
+        const side = offPlaneMm(col[col.length - 1]!, fr.R, fr.h);
+        if (off > COLUMN_PLANARITY_LIMIT_MM || side > SIDEWAYS_LIMIT_MM) {
+            bad.push({ i, u: Number(fr.u.toFixed(4)), off, side });
         }
     }
     if (bad.length) {
@@ -1938,7 +1929,7 @@ export function buildBezierColumns(
         planReversals: countColumnPlanReversals(xyz),
         maxFrameAngleDeg: maxTiltStep,
         maxOffPlaneMm: maxOff,
-        maxSidewaysMm: maxOff,
+        maxSidewaysMm: maxSide,
         frames,
         flareDeg: frames.map((f) => (f.leanRad * 180) / Math.PI),
         flareCapReport: report,
