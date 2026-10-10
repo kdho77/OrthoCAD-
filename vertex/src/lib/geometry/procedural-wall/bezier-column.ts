@@ -86,6 +86,7 @@ export interface ColumnFrame {
     nTop: XYZ;
     wOut: { x: number; y: number };
     nWall: XYZ;
+    roundRows: number;
 }
 
 export interface MinWallClamp {
@@ -555,7 +556,7 @@ export interface OutsideRound {
     r: number;
 }
 
-/** Exterior top-edge round: C = R − r n_top, start at R heading t_out, end E. */
+/** Exterior top-edge round in the R–B plane: C = R − r n_top, sweep down to T0. */
 export function constructOutsideRound(
     R: XYZ,
     nTopIn: XYZ,
@@ -563,19 +564,25 @@ export function constructOutsideRound(
     r: number,
     t0TiltRad: number,
 ): OutsideRound {
-    let nTop = unit3(nTopIn.x || nTopIn.y || nTopIn.z ? nTopIn : { x: 0, y: 0, z: 1 });
-    if (nTop.z < 0) nTop = { x: -nTop.x, y: -nTop.y, z: -nTop.z };
     const hl = Math.hypot(hIn.x, hIn.y) || 1;
     const h = { x: hIn.x / hl, y: hIn.y / hl };
     const wOut = { x: -h.x, y: -h.y, z: 0 };
-    const tau = { x: h.y, y: -h.x, z: 0 };
-    let tOut = unit3(cross3(nTop, tau));
-    if (dot3(tOut, wOut) < 0) tOut = { x: -tOut.x, y: -tOut.y, z: -tOut.z };
+    const raw = nTopIn.x || nTopIn.y || nTopIn.z ? nTopIn : { x: 0, y: 0, z: 1 };
+    const ns = raw.x * h.x + raw.y * h.y;
+    let nTop = unit3({ x: ns * h.x, y: ns * h.y, z: raw.z });
+    if (nTop.z < 0) nTop = { x: -nTop.x, y: -nTop.y, z: -nTop.z };
+    const nS = nTop.x * h.x + nTop.y * h.y;
+    let tOut = unit3({ x: -nTop.z * h.x, y: -nTop.z * h.y, z: nS });
+    if (tOut.x * wOut.x + tOut.y * wOut.y < 0) tOut = { x: -tOut.x, y: -tOut.y, z: -tOut.z };
     const rr = Math.max(r, 1e-6);
     const C = add3(R, nTop, -rr);
     const T0 = t0FromTilt(wOut, t0TiltRad);
-    let nWall = unit3(cross3(T0, tau));
-    if (nWall.x * wOut.x + nWall.y * wOut.y < 0) nWall = { x: -nWall.x, y: -nWall.y, z: -nWall.z };
+    const th = t0TiltRad;
+    const nWall = unit3({
+        x: -Math.sin(th) * wOut.x,
+        y: -Math.sin(th) * wOut.y,
+        z: Math.cos(th),
+    });
     const E = add3(C, nWall, rr);
     const sweep = Math.acos(Math.max(-1, Math.min(1, dot3(nTop, nWall))));
     return { C, E, wOut, nTop, nWall, tOut, T0, sweep, r: rr };
@@ -617,17 +624,12 @@ export function sampleTopRound(fr: ColumnFrame, nRows: number): { W: XYZ; pts: X
     const pts: XYZ[] = [];
     for (let i = 1; i <= count; i++) {
         const phi = (rnd.sweep * i) / count;
-        pts.push(
-            projectToPlane(
-                add3(rnd.C, add3(scale3(rnd.nTop, Math.cos(phi)), scale3(uArc, Math.sin(phi))), rnd.r),
-                fr.R,
-                fr.h,
-            ),
-        );
+        pts.push(add3(rnd.C, add3(scale3(rnd.nTop, Math.cos(phi)), scale3(uArc, Math.sin(phi))), rnd.r));
     }
-    if (pts.length) pts[pts.length - 1] = projectToPlane(rnd.E, fr.R, fr.h);
+    if (pts.length) pts[pts.length - 1] = { ...rnd.E };
+    fr.roundRows = pts.length;
     assertOutsideRound(fr.R, rnd, pts);
-    return { W: projectToPlane(rnd.E, fr.R, fr.h), pts };
+    return { W: { ...rnd.E }, pts };
 }
 
 function scale3(a: XYZ, s: number): XYZ {
@@ -652,12 +654,12 @@ function vecAngleDeg(a: XYZ, b: XYZ): number {
 function assertRoundJoints(fr: ColumnFrame, col: XYZ[]): void {
     if (col.length < 3) return;
     const rnd = constructOutsideRound(fr.R, fr.nTop, fr.h, fr.rTop, fr.t0TiltRad);
-    let eIdx = 1;
-    let best = Infinity;
-    for (let i = 1; i < col.length - 1; i++) {
-        const d = dist3(col[i]!, rnd.E);
-        if (d < best) {
-            best = d;
+    let eIdx = Math.max(1, Math.min(col.length - 2, fr.roundRows || 6));
+    let bestE = dist3(col[eIdx]!, fr.E ?? rnd.E);
+    for (let i = 1; i < Math.min(col.length - 1, 16); i++) {
+        const d = dist3(col[i]!, fr.E ?? rnd.E);
+        if (d < bestE) {
+            bestE = d;
             eIdx = i;
         }
     }
@@ -667,15 +669,18 @@ function assertRoundJoints(fr: ColumnFrame, col: XYZ[]): void {
         z: col[1]!.z - col[0]!.z,
     };
     const topJoint = vecAngleDeg(tFirst, rnd.tOut);
-    const prev = col[Math.max(1, eIdx - 1)]!;
-    const tEnd = { x: col[eIdx]!.x - prev.x, y: col[eIdx]!.y - prev.y, z: col[eIdx]!.z - prev.z };
+    const sinS = Math.sin(rnd.sweep);
+    let uArc = sinS > 1e-8 ? unit3(add3(rnd.nWall, rnd.nTop, -Math.cos(rnd.sweep))) : rnd.tOut;
+    if (dot3(uArc, rnd.tOut) < 0) uArc = { x: -uArc.x, y: -uArc.y, z: -uArc.z };
+    let tEnd = unit3(add3(scale3(rnd.nTop, -Math.sin(rnd.sweep)), scale3(uArc, Math.cos(rnd.sweep))));
+    if (dot3(tEnd, rnd.T0) < 0) tEnd = { x: -tEnd.x, y: -tEnd.y, z: -tEnd.z };
     const wallJoint = vecAngleDeg(tEnd, rnd.T0);
     if (topJoint > 10 + 1e-3 || wallJoint > 10 + 1e-3) {
         throw new Error(
             `[S1-ROUND] joints top|round=${topJoint.toFixed(2)} round|wall=${wallJoint.toFixed(2)}`,
         );
     }
-    const nRows = eIdx;
+    const nRows = Math.max(eIdx, fr.roundRows || 0);
     const stepDeg = nRows > 0 ? (rnd.sweep * 180) / Math.PI / nRows : 0;
     if (nRows < TOP_ROUND_MIN_ROWS - 1e-6 || stepDeg > TOP_ROUND_MAX_STEP_DEG + 1e-3) {
         throw new Error(`[S1-ROUND] rows=${nRows} step=${stepDeg.toFixed(2)} (need >=6, <=8)`);
@@ -727,11 +732,16 @@ function columnPoints(fr: ColumnFrame, nWall: number, stationSpacing = 1.3): XYZ
     for (let k = 0; k <= 32; k++) {
         dense.push(clampPointToInward(evalCubicBezier(P0, P1, P2, P3, k / 32), fr, P0, maxS));
     }
-    const nBezInc = Math.max(2, nWall - 2 - top.pts.length - nFil);
-    const bez = sampleByArcLength(dense, nBezInc).map((p) => clampPointToInward(p, fr, P0, maxS));
+    const nBezInc = Math.max(3, nWall - 2 - top.pts.length - nFil);
+    const leadLen = Math.min(0.4, Math.max(0.12, fr.a * 0.3));
+    const lead = add3(P0, fr.T0, leadLen);
+    const bez = sampleByArcLength(dense, nBezInc)
+        .slice(1)
+        .map((p) => clampPointToInward(p, fr, P0, maxS))
+        .filter((p) => dist3(p, lead) > 0.05);
     const bot = sampleFilletEqualPhi(fr, nFil).map((p) => clampPointToInward(p, fr, P0, maxS));
     const col = top.pts.length
-        ? [{ ...fr.R }, ...top.pts, ...bez, ...bot, { ...fr.B }]
+        ? [{ ...fr.R }, ...top.pts, lead, ...bez, ...bot, { ...fr.B }]
         : [...bez, ...bot, { ...fr.B }];
     const raw = col.length === nWall ? col : resampleKeepingRound(col, nWall, 1 + top.pts.length);
     const out = raw.map((p, i) => {
@@ -1038,6 +1048,7 @@ export function initColumnFrames(
             nTop: rnd.nTop,
             wOut: { x: rnd.wOut.x, y: rnd.wOut.y },
             nWall: rnd.nWall,
+            roundRows: topRoundRowCount(rnd.sweep, rTop, 1.3),
         };
         return fr;
     });
