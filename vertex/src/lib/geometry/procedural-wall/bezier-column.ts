@@ -1421,19 +1421,13 @@ function columnHeading(st: HermiteStation): {
     const dx = st.outline.x - st.rim.x;
     const dy = st.outline.y - st.rim.y;
     const planLen = Math.hypot(dx, dy);
-    if (planLen < SHORT_CHORD_MM) {
-        let nx = st.n.x;
-        let ny = st.n.y;
+    if (planLen < 1e-4) {
+        const nx = st.n.x;
+        const ny = st.n.y;
         const nl = Math.hypot(nx, ny) || 1;
-        nx /= nl;
-        ny /= nl;
-        if (planLen > 1e-6 && dx * nx + dy * ny < 0) {
-            nx = -nx;
-            ny = -ny;
-        }
-        return { h: { x: nx, y: ny }, shortChord: true, planLen };
+        return { h: { x: nx / nl, y: ny / nl }, shortChord: true, planLen };
     }
-    return { h: { x: dx / planLen, y: dy / planLen }, shortChord: false, planLen };
+    return { h: { x: dx / planLen, y: dy / planLen }, shortChord: planLen < SHORT_CHORD_MM, planLen };
 }
 
 export function smoothNormalField(normals: XYZ[], rim: XYZ[], sigma = SCALAR_SMOOTH_SIGMA_MM): XYZ[] {
