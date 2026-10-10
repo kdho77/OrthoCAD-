@@ -818,6 +818,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         built.frames[i]!.bandZ = B.z;
         built.frames[i]!.bandInsetMm = 0;
     }
+    liftWallVertsToPlantar(columns, soleZ);
 
     const implied = built.impliedSeamDeg;
     const flare = built.flareDeg;
