@@ -487,6 +487,7 @@ function splitAcuteTriangles(
             split.set(edgeKey(pick[0]!, pick[1]!), [pick[0]!, pick[1]!]);
         }
         if (!split.size) return;
+        if (positions.length / 3 > generatedStart + 200_000) return;
         const midOf = new Map<string, number>();
         for (const [key, [a, b]] of split) {
             const mid = positions.length / 3;
