@@ -10,7 +10,7 @@ import {
 import { type HeightFieldParams, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SideCorrections } from "@/types";
-import { constructOutsideRound, t0FromSheetSlope } from "./bezier-column";
+import { constructOutsideRound, t0TargetRad, WELD_MM } from "./bezier-column";
 import { assertCutInOnHighRimSide, medialYSignFromTopRim, parseBottomPattern } from "./bottom-pattern";
 import { ensureCcw, type PolyPoint, startAtPosteriorHeel } from "./curves";
 import {
@@ -19,7 +19,7 @@ import {
     snapToStep,
     type WallRegionDefaults,
 } from "./defaults";
-import { densifyHeelForefootStations } from "./densify-stations";
+import { densifyHeelForefootStations, fillLargeStationGaps } from "./densify-stations";
 import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
 import { buildHermiteStations } from "./loft";
@@ -194,7 +194,66 @@ function mergeCollapsedStations(
     };
 }
 
-function sanitizeMesh(positions: number[], indices: number[]): { zeroArea: number; duplicates: number } {
+function weldGenerated(positions: number[], generatedStart: number, weldMm = WELD_MM): number[] {
+    const n = positions.length / 3;
+    const remap = Array.from({ length: n }, (_, i) => i);
+    const cell = Math.max(weldMm, 1e-4);
+    const buckets = new Map<string, number[]>();
+    const keyOf = (i: number): string => {
+        const x = Math.floor(positions[i * 3]! / cell);
+        const y = Math.floor(positions[i * 3 + 1]! / cell);
+        const z = Math.floor(positions[i * 3 + 2]! / cell);
+        return `${x},${y},${z}`;
+    };
+    for (let i = 0; i < n; i++) {
+        const k = keyOf(i);
+        let list = buckets.get(k);
+        if (!list) {
+            list = [];
+            buckets.set(k, list);
+        }
+        list.push(i);
+    }
+    const nearby = (i: number): number[] => {
+        const x = Math.floor(positions[i * 3]! / cell);
+        const y = Math.floor(positions[i * 3 + 1]! / cell);
+        const z = Math.floor(positions[i * 3 + 2]! / cell);
+        const out: number[] = [];
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    const hit = buckets.get(`${x + dx},${y + dy},${z + dz}`);
+                    if (hit) out.push(...hit);
+                }
+            }
+        }
+        return out;
+    };
+    const lim2 = weldMm * weldMm;
+    for (let i = generatedStart; i < n; i++) {
+        let keep = i;
+        for (const j of nearby(i)) {
+            if (j >= i) continue;
+            const dx = positions[i * 3]! - positions[j * 3]!;
+            const dy = positions[i * 3 + 1]! - positions[j * 3 + 1]!;
+            const dz = positions[i * 3 + 2]! - positions[j * 3 + 2]!;
+            if (dx * dx + dy * dy + dz * dz <= lim2) {
+                keep = j;
+                break;
+            }
+        }
+        remap[i] = keep;
+    }
+    return remap;
+}
+
+function sanitizeMesh(
+    positions: number[],
+    indices: number[],
+    generatedStart = 0,
+): { zeroArea: number; duplicates: number } {
+    const remap = weldGenerated(positions, generatedStart);
+    for (let t = 0; t < indices.length; t++) indices[t] = remap[indices[t]!]!;
     const seen = new Set<string>();
     const out: number[] = [];
     let zeroArea = 0;
@@ -360,7 +419,7 @@ export function reconstructProceduralWalls(
     rimLocal = collapsed.rimLocal;
     const earlyJ = rimJunctions(positions, indices, rimLocal, pairing.normals);
     const rTop = Math.min(3, Math.max(0, defaults.wallFilletTopMm || 0.5));
-    const t0Est = t0FromSheetSlope(0, false);
+    const t0Est = t0TargetRad(0, false, false, (24 * Math.PI) / 180);
     const E: PolyPoint[] = pairing.top.map((R, i) => {
         const B = pairing.plantar[i]!;
         const dx = B.x - R.x;
@@ -408,6 +467,7 @@ export function reconstructProceduralWalls(
     }
     densifyHeelForefootStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     applyOutlineClean(stations, rimLocal, indices);
+    fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,
         y: positions[i * 3 + 1]!,
@@ -478,7 +538,7 @@ export function reconstructProceduralWalls(
         pushTri(plantarVert(f[0]!), plantarVert(f[2]!), plantarVert(f[1]!));
     }
 
-    const hygiene = sanitizeMesh(positions, indices);
+    const hygiene = sanitizeMesh(positions, indices, generatedStart);
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
     geo.setIndex(indices);
@@ -496,6 +556,15 @@ export function reconstructProceduralWalls(
         medialYSign,
         junctionRewrite: "planar-bezier",
         planReversals: grid.planReversals,
+        columnQuality: grid.quality,
+        maxAlongJointDeg: grid.quality?.maxAlongJointDeg,
+        maxAcrossStationDeg: grid.quality?.maxAcrossDeg,
+        maxTcolDeg: grid.quality?.maxTcolDeg,
+        columnReversals: grid.quality?.reversals,
+        maxTopRoundDeg: grid.quality?.maxTopRoundDeg,
+        maxRoundWallDeg: grid.quality?.maxRoundWallDeg,
+        minColumnEdgeMm: grid.quality?.minEdgeMm,
+        maxStationGapMult: grid.quality?.maxStationGapMult,
         maxFrameAngleDeg: grid.maxFrameAngleDeg,
         maxOffPlaneMm: grid.maxOffPlaneMm,
         maxSidewaysMm: grid.maxSidewaysMm,

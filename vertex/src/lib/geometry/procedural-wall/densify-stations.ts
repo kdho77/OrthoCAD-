@@ -122,3 +122,83 @@ export function densifyHeelForefootStations(
     rimLocal.length = 0;
     rimLocal.push(...outRim);
 }
+
+const CREASE_U_LO = 0.36;
+const CREASE_U_HI = 0.39;
+
+function spansCreaseU(ua: number, ub: number): boolean {
+    const lo = Math.min(ua, ub);
+    const hi = Math.max(ua, ub);
+    return lo <= CREASE_U_HI && hi >= CREASE_U_LO;
+}
+
+/** Split any station gap larger than 2× median; always densify u 0.36–0.39. */
+export function fillLargeStationGaps(
+    stations: HermiteStation[],
+    rimLocal: number[],
+    positions: number[],
+    indices: number[],
+    outlineLoop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    maxMult = 2,
+): void {
+    if (stations.length < 3) return;
+    const n0 = stations.length;
+    const spacing: number[] = [];
+    for (let i = 0; i < n0; i++) {
+        const a = stations[i]!.outline;
+        const b = stations[(i + 1) % n0]!.outline;
+        spacing.push(Math.hypot(b.x - a.x, b.y - a.y));
+    }
+    const sorted = spacing.slice().sort((x, y) => x - y);
+    const median = sorted[Math.floor(sorted.length / 2)] ?? 1.3;
+    const cap = Math.max(OUTLINE_STATION_SPACING_MM, maxMult * median);
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const outSt: HermiteStation[] = [];
+    const outRim: number[] = [];
+    const n = stations.length;
+    for (let i = 0; i < n; i++) {
+        const cur = stations[i]!;
+        outSt.push(cur);
+        outRim.push(rimLocal[i]!);
+        const nxt = stations[(i + 1) % n]!;
+        const dist = Math.hypot(nxt.outline.x - cur.outline.x, nxt.outline.y - cur.outline.y);
+        const need = dist > cap || (spansCreaseU(cur.u, nxt.u) && dist > Math.max(8, 1.2 * median));
+        if (!need || dist < 1e-4) continue;
+        const nAdd = Math.min(6, Math.max(1, Math.ceil(dist / cap) - 1));
+        let prevRim = rimLocal[i]!;
+        const endRim = rimLocal[(i + 1) % n]!;
+        for (let k = 1; k <= nAdd; k++) {
+            const t = k / (nAdd + 1);
+            const R = {
+                x: cur.rim.x + (nxt.rim.x - cur.rim.x) * t,
+                y: cur.rim.y + (nxt.rim.y - cur.rim.y) * t,
+                z: cur.rim.z + (nxt.rim.z - cur.rim.z) * t,
+            };
+            const chord = {
+                x: cur.outline.x + (nxt.outline.x - cur.outline.x) * t,
+                y: cur.outline.y + (nxt.outline.y - cur.outline.y) * t,
+                z: cur.outline.z + (nxt.outline.z - cur.outline.z) * t,
+            };
+            const B = nearestOnLoop(chord, outlineLoop);
+            const nx = cur.n.x + (nxt.n.x - cur.n.x) * t;
+            const ny = cur.n.y + (nxt.n.y - cur.n.y) * t;
+            const nl = Math.hypot(nx, ny) || 1;
+            const mid = positions.length / 3;
+            positions.push(R.x, R.y, R.z);
+            splitEdge(indices, prevRim, endRim, mid);
+            prevRim = mid;
+            outSt.push({
+                outline: B,
+                rim: R,
+                n: { x: nx / nl, y: ny / nl },
+                u: Math.max(0, Math.min(1, (B.x - bounds.minX) / length)),
+            });
+            outRim.push(mid);
+        }
+    }
+    stations.length = 0;
+    stations.push(...outSt);
+    rimLocal.length = 0;
+    rimLocal.push(...outRim);
+}

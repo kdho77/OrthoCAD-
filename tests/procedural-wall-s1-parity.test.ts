@@ -8,12 +8,13 @@
  * path unchanged. All behind wallModel:'procedural'.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import {
+    ACROSS_STATION_MAX_DEG,
     buildHermiteStations,
     COLUMN_PLANARITY_LIMIT_MM,
     CUP_BOWL,
@@ -32,6 +33,7 @@ import {
     generatedMinWallMm,
     groundDriftMm,
     heelInnerWidthAtU,
+    MIN_EDGE_MM,
     maxVertexDeltaMm,
     measureReconFlareDeg,
     medialArchUpperWallFolds,
@@ -41,12 +43,14 @@ import {
     outlineSeamDihedrals,
     PATTERN_SOURCE_SYNTHETIC,
     plantarFlatDeltaMm,
+    ROUND_JOINT_MAX_DEG,
     reconstructionManifold,
     reconstructProceduralWalls,
     S1_MIN_WALL_MM,
     SEAM_B_LIMIT_DEG,
     SIDEWAYS_LIMIT_MM,
     SKEW_LIMIT_MM,
+    STATION_GAP_MULT,
     sheetBoundaryStats,
     soleUvFrameFromOutline,
     soleUvFrameFromPolyline,
@@ -98,6 +102,71 @@ function outlineOf(model: ReturnType<typeof extractStockWallModel>) {
 function rimOf(model: ReturnType<typeof extractStockWallModel>) {
     return model.trim.spline.controls;
 }
+
+type ColumnQualityUd = {
+    reversals?: number;
+    tColBoundHits?: number;
+    alongOverBudget?: number;
+    maxAlongJointDeg?: number;
+    maxAcrossDeg?: number;
+    maxTcolDeg?: number;
+    maxTopRoundDeg?: number;
+    maxRoundWallDeg?: number;
+    minEdgeMm?: number;
+    maxStationGapMult?: number;
+};
+
+function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
+    const q = ud.columnQuality;
+    if (!q) return ["no-column-quality"];
+    const misses: string[] = [];
+    if ((q.reversals ?? 0) !== 0) misses.push(`reversals=${q.reversals}`);
+    if ((q.tColBoundHits ?? 0) !== 0) misses.push(`Tcol-bound=${q.tColBoundHits}`);
+    if ((q.alongOverBudget ?? 0) !== 0) {
+        misses.push(`along-joint ${q.maxAlongJointDeg?.toFixed(1)} over budget n=${q.alongOverBudget}`);
+    }
+    if ((q.maxAcrossDeg ?? 0) > ACROSS_STATION_MAX_DEG + 1e-6) {
+        misses.push(`across ${q.maxAcrossDeg?.toFixed(2)}>${ACROSS_STATION_MAX_DEG}`);
+    }
+    if ((q.maxTopRoundDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
+        misses.push(`top|round ${q.maxTopRoundDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
+    }
+    if ((q.maxRoundWallDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
+        misses.push(`round|wall ${q.maxRoundWallDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
+    }
+    if ((q.minEdgeMm ?? 0) < MIN_EDGE_MM - 1e-9) {
+        misses.push(`min-edge ${q.minEdgeMm?.toFixed(4)}<${MIN_EDGE_MM}`);
+    }
+    if ((q.maxStationGapMult ?? 0) > STATION_GAP_MULT + 1e-6) {
+        misses.push(`station-gap ${q.maxStationGapMult?.toFixed(2)}x>${STATION_GAP_MULT}x`);
+    }
+    return misses;
+}
+
+function readBinaryStl(buf: Buffer): { pos: Float32Array; idx: Uint32Array } {
+    const n = buf.readUInt32LE(80);
+    const pos = new Float32Array(n * 9);
+    const idx = new Uint32Array(n * 3);
+    let o = 84;
+    for (let i = 0; i < n; i++) {
+        o += 12;
+        for (let k = 0; k < 9; k++) {
+            pos[i * 9 + k] = buf.readFloatLE(o);
+            o += 4;
+        }
+        idx[i * 3] = i * 3;
+        idx[i * 3 + 1] = i * 3 + 1;
+        idx[i * 3 + 2] = i * 3 + 2;
+        o += 2;
+    }
+    return { pos, idx };
+}
+
+const KENDON_REARFOOT = {
+    right: [0.22, 0.975, 0] as [number, number, number],
+    up: [-0.2, 0.045, 0.979] as [number, number, number],
+    light: [0.4, 0.2, 0.9] as [number, number, number],
+};
 
 describe("S1 parametric wall", () => {
     const fixtures = listStockBaseFixtures();
@@ -257,6 +326,7 @@ describe("S1 parametric wall", () => {
                 maxSidewaysSkewMm?: number;
                 pairingMonotonic?: boolean;
                 missedRays?: number;
+                columnQuality?: ColumnQualityUd;
                 planReversals?: number;
                 zeroAreaFaces?: number;
                 duplicateFaces?: number;
@@ -360,7 +430,7 @@ describe("S1 parametric wall", () => {
                 misses.push(`minWall ${Math.min(minWall, genMinWall).toFixed(3)}`);
             }
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) misses.push(`fold ${fold.worstDeg.toFixed(1)}`);
-            if (fold.edgesAtLeast10Deg !== 0) misses.push(`fold≥10 ${fold.edgesAtLeast10Deg}`);
+            misses.push(...qualityMisses(ud));
             if (archFolds.edgesAtLeast10Deg !== 0) {
                 misses.push(`medial-arch-upper≥10 ${archFolds.edgesAtLeast10Deg}`);
             }
@@ -516,6 +586,7 @@ describe("S1 parametric wall", () => {
                 maxFrameAngleDeg?: number;
                 maxOffPlaneMm?: number;
                 maxSidewaysMm?: number;
+                columnQuality?: ColumnQualityUd;
             };
             const chordX = sud.chordCrossings ?? -1;
             const maxSkew = sud.maxSidewaysSkewMm ?? 0;
@@ -595,7 +666,7 @@ describe("S1 parametric wall", () => {
                 smokeMiss.push(`${smoke.name} medial-arch-upper≥10`);
             }
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) smokeMiss.push(`${smoke.name} fold`);
-            if (fold.edgesAtLeast10Deg !== 0) smokeMiss.push(`${smoke.name} fold≥10`);
+            for (const m of qualityMisses(sud)) smokeMiss.push(`${smoke.name} ${m}`);
             if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6) {
                 smokeMiss.push(`${smoke.name} seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
             }
@@ -679,6 +750,7 @@ describe("S1 parametric wall", () => {
             planReversals?: number;
             chordCrossings?: number;
             bottomPatternSource?: string;
+            columnQuality?: ColumnQualityUd;
         };
         const misses: string[] = [];
         if (hits.real !== 0) {
@@ -690,7 +762,7 @@ describe("S1 parametric wall", () => {
         }
         if (!man.watertight) misses.push(`open=${man.openEdges}`);
         if (man.nonManifoldEdges !== 0) misses.push(`nonManifold=${man.nonManifoldEdges}`);
-        if (fold.edgesAtLeast10Deg !== 0) misses.push(`fold≥10=${fold.edgesAtLeast10Deg}`);
+        misses.push(...qualityMisses(sud));
         if (archFolds.edgesAtLeast10Deg !== 0) misses.push(`medial-arch-upper≥10`);
         if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6) {
             misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
@@ -731,6 +803,7 @@ describe("S1 parametric wall", () => {
                     watertight: man.watertight,
                     openEdges: man.openEdges,
                     foldGe10: fold.edgesAtLeast10Deg,
+                    columnQuality: sud.columnQuality,
                     seamWorstDeg: Number(reconSeam.worstDeg.toFixed(3)),
                     sliverMaxAspect: sud.sliverMaxAspect,
                     outlineExactMm: outlineDev,
@@ -745,6 +818,21 @@ describe("S1 parametric wall", () => {
         );
         const stl = Buffer.from(geometryToBinarySTL(rebuilt));
         mkdirSync("/opt/cursor/artifacts", { recursive: true });
+        mkdirSync("/opt/cursor/artifacts/screenshots", { recursive: true });
+        const beforePath = "/opt/cursor/artifacts/sample-top-synthetic.stl";
+        if (existsSync(beforePath)) {
+            const prev = readBinaryStl(readFileSync(beforePath));
+            writeFileSync(
+                "/opt/cursor/artifacts/screenshots/rearfoot-before.png",
+                encodePng(900, 680, renderMesh(prev.pos, prev.idx, KENDON_REARFOOT, 900, 680)),
+            );
+        }
+        const afterPos = rebuilt.getAttribute("position").array as Float32Array;
+        const afterIdx = rebuilt.getIndex()!.array;
+        writeFileSync(
+            "/opt/cursor/artifacts/screenshots/rearfoot-after.png",
+            encodePng(900, 680, renderMesh(afterPos, afterIdx, KENDON_REARFOOT, 900, 680)),
+        );
         writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.stl", stl);
         if (misses.length || hits.real !== 0) {
             throw new Error(

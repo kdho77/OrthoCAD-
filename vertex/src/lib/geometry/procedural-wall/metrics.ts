@@ -450,8 +450,7 @@ export function medialArchUpperWallFolds(
         const n2 = faceNormal(pos, idx[faces[1]!]!, idx[faces[1]! + 1]!, idx[faces[1]! + 2]!);
         if (!n1 || !n2) continue;
         const dot = Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]));
-        const raw = (Math.acos(dot) * 180) / Math.PI;
-        const deg = Math.min(raw, 180 - raw);
+        const deg = (Math.acos(dot) * 180) / Math.PI;
         interior++;
         if (deg > worst) worst = deg;
         if (deg >= 10) hard++;

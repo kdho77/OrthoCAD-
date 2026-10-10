@@ -4,6 +4,7 @@
 import {
     buildBezierColumns,
     type ColumnFrame,
+    type ColumnQuality,
     FILLET_R_CAP_MM,
     type MinWallClamp,
     SHORT_CHORD_MM,
@@ -65,6 +66,7 @@ export interface QuadGrid {
     /** Outline-row vertices, exactly BottomOutline station samples. */
     outlineRing: PolyPoint[];
     minWallClamps: MinWallClamp[];
+    quality: ColumnQuality;
 }
 
 export interface RimJunction {
@@ -738,5 +740,6 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         bandTiltDegMax: 0,
         outlineRing,
         minWallClamps: built.minWallClamps,
+        quality: built.quality,
     };
 }

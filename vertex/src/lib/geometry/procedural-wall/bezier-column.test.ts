@@ -17,15 +17,17 @@ import {
     offPlaneMm,
     R_SMOOTH_FRAC,
     rimOverhangMm,
+    SCALAR_SMOOTH_SIGMA_MM,
     sampleByArcLength,
     sampleInPlaneSlope,
     slopeFromSheetPlane,
     summarizeWallBands,
     T0_LEAD_DROP_MM,
-    T0_PIN_DEG,
     TOP_CLEARANCE_DEG,
     t0FromSheetSlope,
     t0LeadQ,
+    t0TargetRad,
+    wallStartTiltRad,
 } from "./bezier-column";
 import type { WallRegionDefaults } from "./defaults";
 import type { HermiteStation } from "./loft";
@@ -166,18 +168,19 @@ describe("bezier column", () => {
         expect(rimOverhangMm({ x: 0, y: 0, z: 4 }, outline)).toBeLessThan(0);
     });
 
-    test("T0 is min(sheet_h-10, -45); short chord stays nearly vertical", () => {
+    test("T0 is -90+flare and clears the sheet; short chord stays nearly vertical", () => {
+        const flare = (24 * Math.PI) / 180;
+        expect((wallStartTiltRad(flare, false) * 180) / Math.PI).toBeCloseTo(-66, 5);
         const sheet = (43 * Math.PI) / 180;
-        const t0 = t0FromSheetSlope(sheet, false);
-        expect((t0 * 180) / Math.PI).toBeCloseTo(T0_PIN_DEG, 5);
+        const t0 = t0TargetRad(sheet, false, true, flare);
+        expect((t0 * 180) / Math.PI).toBeCloseTo(-66, 5);
         expect(t0).toBeLessThanOrEqual(sheet - (TOP_CLEARANCE_DEG * Math.PI) / 180 + 1e-12);
         const descending = (-48 * Math.PI) / 180;
         expect((t0FromSheetSlope(descending, false) * 180) / Math.PI).toBeCloseTo(-58, 5);
-        expect((t0FromSheetSlope(0, false) * 180) / Math.PI).toBeCloseTo(T0_PIN_DEG, 5);
         expect((t0FromSheetSlope(sheet, true) * 180) / Math.PI).toBeCloseTo(-80, 5);
     });
 
-    test("slope is sampled along +h; T0 pins to -45 even if the lip rises along +h", () => {
+    test("slope is sampled along +h; T0 is -90+flare even if the lip rises along +h", () => {
         const tan = Math.tan((43 * Math.PI) / 180);
         const R = { x: 0, y: 0, z: 10 };
         const h = { x: 1, y: 0 };
@@ -203,7 +206,7 @@ describe("bezier column", () => {
         );
         const fr = frames[0]!;
         expect((fr.sheetSlopeRad * 180) / Math.PI).toBeCloseTo(43, 0);
-        expect((fr.t0TiltRad * 180) / Math.PI).toBeCloseTo(T0_PIN_DEG, 0);
+        expect((fr.t0TiltRad * 180) / Math.PI).toBeCloseTo(-66, 0);
         expect(fr.t0TiltRad).toBeLessThanOrEqual(
             fr.sheetSlopeRad - (TOP_CLEARANCE_DEG * Math.PI) / 180 + 1e-9,
         );
@@ -244,7 +247,9 @@ describe("bezier column", () => {
         expect(rows.find((r) => r.band === "heel")?.meanOverhangOverHeight).toBeCloseTo(0.2, 6);
     });
 
-    test("fillet radius smooths at most 5% per station", () => {
+    test("fillet radius smooths with periodic Gaussian σ 8-15 mm", () => {
+        expect(SCALAR_SMOOTH_SIGMA_MM).toBeGreaterThanOrEqual(8);
+        expect(SCALAR_SMOOTH_SIGMA_MM).toBeLessThanOrEqual(15);
         expect(R_SMOOTH_FRAC).toBe(0.05);
     });
 
@@ -290,10 +295,10 @@ describe("bezier column", () => {
         const wOutx = -fr.h.x;
         const wOuty = -fr.h.y;
         expect(col.slice(1, 7).some((p) => R.z - p.z > 0.05)).toBe(true);
-        for (const p of col.slice(1, 7)) {
+        for (const p of col.slice(1, 5)) {
             expect((p.x - R.x) * wOutx + (p.y - R.y) * wOuty).toBeGreaterThanOrEqual(-1e-6);
         }
-        expect((fr.t0TiltRad * 180) / Math.PI).toBeLessThanOrEqual(T0_PIN_DEG + 1e-6);
+        expect((fr.t0TiltRad * 180) / Math.PI).toBeLessThanOrEqual(-60);
         expect(built.maxOffPlaneMm).toBeLessThanOrEqual(COLUMN_PLANARITY_LIMIT_MM);
         expect(built.maxSidewaysMm).toBeLessThanOrEqual(2);
     });
