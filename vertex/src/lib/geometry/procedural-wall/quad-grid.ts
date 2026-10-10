@@ -818,7 +818,6 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         built.frames[i]!.bandZ = B.z;
         built.frames[i]!.bandInsetMm = 0;
     }
-    liftWallVertsToPlantar(columns, soleZ);
 
     const implied = built.impliedSeamDeg;
     const flare = built.flareDeg;
@@ -827,6 +826,8 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
 
     let maxBPlantarDeltaMm = 0;
     let wallBelowPlantar = 0;
+    let maxBelowMm = 0;
+    let belowAt = { i: -1, j: -1, u: 0 };
     for (let i = 0; i < nS; i++) {
         const B = outlineRing[i]!;
         const pz = soleZ(B.x, B.y, B.z);
@@ -835,14 +836,23 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         for (let j = 1; j < col.length; j++) {
             const p = col[j]!;
             const sole = soleZ(p.x, p.y, p.z);
-            if (p.z < sole - 1e-3) wallBelowPlantar++;
+            const drop = sole - p.z;
+            if (drop <= 1e-3) continue;
+            wallBelowPlantar++;
+            if (drop > maxBelowMm) {
+                maxBelowMm = drop;
+                belowAt = { i, j, u: stations[i]!.u };
+            }
         }
     }
     if (maxBPlantarDeltaMm > 1e-3) {
         throw new Error(`[S1-B] |B.z - plantarZ| ${maxBPlantarDeltaMm.toFixed(4)} > 1e-3`);
     }
     if (wallBelowPlantar) {
-        throw new Error(`[S1-B] ${wallBelowPlantar} wall vertices below the plantar`);
+        throw new Error(
+            `[S1-B] ${wallBelowPlantar} wall vertices below the plantar ` +
+                `(max ${maxBelowMm.toFixed(4)} mm at i=${belowAt.i} j=${belowAt.j} u=${belowAt.u.toFixed(3)})`,
+        );
     }
 
     const body = new Float32Array(nS * (nJ - 1) * 3);

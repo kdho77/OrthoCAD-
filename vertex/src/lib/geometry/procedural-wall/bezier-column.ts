@@ -2960,16 +2960,14 @@ export function initColumnFrames(
         };
         return fr;
     });
-    const smoothed = smoothPlantarNormalField(
-        frames.map((f) => f.nPlantar ?? { x: 0, y: 0, z: 1 }),
-        frames.map((f) => f.B),
-        PLANTAR_N_SMOOTH_SIGMA_MM,
-    );
+    // Use the raw sole normal for C2. σ=10 flattening of an analytic posting
+    // tilt parks the last fillet under the height field (B stays on the sole).
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
-        const n = smoothed[i]!;
-        fr.nPlantar = n;
-        fr.plantarSlopeRad = Math.atan2(n.x * fr.h.x + n.y * fr.h.y, n.z);
+        const n = unit3(fr.nPlantar ?? { x: 0, y: 0, z: 1 });
+        fr.nPlantar = n.z < 0 ? { x: -n.x, y: -n.y, z: -n.z } : n;
+        const use = fr.nPlantar;
+        fr.plantarSlopeRad = Math.atan2(use.x * fr.h.x + use.y * fr.h.y, use.z);
         fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
         applyAlaToFrame(fr);
     }
