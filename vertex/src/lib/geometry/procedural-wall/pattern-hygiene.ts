@@ -98,6 +98,47 @@ export function clipperRoundInset(loop: PolyPoint[], deltaMm: number): PolyPoint
     return ensureCcw(oriented);
 }
 
+function nearestOnLoopXY(x: number, y: number, loop: PolyPoint[]): PolyPoint {
+    let best = loop[0] ?? { x, y, z: 0 };
+    let bestD = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const len2 = ex * ex + ey * ey;
+        const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((x - a.x) * ex + (y - a.y) * ey) / len2)) : 0;
+        const px = a.x + ex * t;
+        const py = a.y + ey * t;
+        const d = (px - x) ** 2 + (py - y) ** 2;
+        if (d < bestD) {
+            bestD = d;
+            best = { x: px, y: py, z: a.z + (b.z - a.z) * t };
+        }
+    }
+    return best;
+}
+
+function pullInsideLoop(loop: PolyPoint[], container: PolyPoint[]): PolyPoint[] {
+    if (container.length < 3) return loop;
+    let cx = 0;
+    let cy = 0;
+    for (const p of container) {
+        cx += p.x;
+        cy += p.y;
+    }
+    cx /= container.length;
+    cy /= container.length;
+    return loop.map((p) => {
+        if (pointInPoly(p.x, p.y, container)) return p;
+        const near = nearestOnLoopXY(p.x, p.y, container);
+        const dx = cx - near.x;
+        const dy = cy - near.y;
+        const len = Math.hypot(dx, dy) || 1;
+        return { x: near.x + (dx / len) * 0.05, y: near.y + (dy / len) * 0.05, z: p.z };
+    });
+}
+
 export function assertInsideRim(
     pattern: PolyPoint[],
     rimPlan: PolyPoint[],
@@ -149,7 +190,7 @@ export function hygieneBottomPattern(
         );
     }
     const n = Math.max(opts?.resampleN ?? 0, 160, smoothed.length);
-    const resampled = resampleClosedC2(fitClosedC2Spline(smoothed), n);
+    const resampled = pullInsideLoop(resampleClosedC2(fitClosedC2Spline(smoothed), n), smoothed);
     if (opts?.requireInsideRim && opts.rimPlan?.length) {
         assertInsideRim(resampled, opts.rimPlan, opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM);
     }
