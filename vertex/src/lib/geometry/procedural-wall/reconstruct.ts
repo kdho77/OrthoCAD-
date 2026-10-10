@@ -904,7 +904,7 @@ export function reconstructProceduralWalls(
         maxSidewaysMm: grid.maxSidewaysMm,
         winding: windingReport(geo),
         nJ: grid.nJ,
-        filletRowStart: Math.max(0, grid.outlineRow - 3),
+        filletRowStart: Math.max(0, grid.outlineRow - Math.max(1, grid.frames[0]?.nFilFix || 3)),
         wallFrames: grid.frames.map((f) => ({
             u: f.u,
             overhangMm: f.overhangMm,

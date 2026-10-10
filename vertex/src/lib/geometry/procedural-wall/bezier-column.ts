@@ -1167,10 +1167,7 @@ export function sampleFilletPiecePoints(
     const L = dist3(E, F);
     const n = Math.max(1, nFil);
     const wanted = Math.max(0, filletPieceLengthMm(r2, S, n, cMin, dL) - arcLen);
-    const steal = Math.min(
-        stealLock != null && stealLock > 0 ? Math.max(wanted, stealLock) : wanted,
-        Math.max(0, L - 1e-6),
-    );
+    const steal = Math.min(stealLock != null ? Math.max(0, stealLock) : wanted, Math.max(0, L - 1e-6));
     const lF = steal + arcLen;
     const tF = L > 1e-12 ? (L - steal) / L : 1;
     const Fpiece = lerp3(E, F, tF);
@@ -3409,13 +3406,20 @@ function raiseR1ForRoundRows(frames: ColumnFrame[], nRound: number, minStep: num
         const r1Edge = MIN_EDGE_MM / (2 * Math.sin(Math.max(step, 1e-9) / 2));
         const need = Math.max(r1Arc, r1Edge, MIN_ROUND_R_MM);
         if (fr.rTop + 1e-9 >= need) continue;
-        const budget = Math.min(FILLET_R_CAP_MM, Math.max(MIN_ROUND_R_MM, R1_HEIGHT_FRAC * fr.heightMm));
-        fr.rTop = Math.min(need, budget);
+        const budget = clampR1ToBudget(need, fr.heightMm, fr.rFillet, minLineOfHeight(fr.heightMm));
+        if (budget <= fr.rTop + 1e-9) continue;
+        fr.rTop = budget;
         applyAlaToFrame(fr);
     }
 }
 
-function lockFilletSteal(frames: ColumnFrame[], nFil: number): void {
+/**
+ * Lock a common line-tail steal so Fpiece is a parallel of F.
+ * Short walls that cannot afford the lock keep a min-L remnant; the leftover
+ * cap is Gaussian-smoothed so the Fpiece ring does not cliff.
+ */
+export function lockFilletSteal(frames: ColumnFrame[], nFil: number): void {
+    if (!frames.length) return;
     let maxSteal = 0;
     for (const fr of frames) {
         const S = Math.abs(fr.filletSweepRad);
@@ -3426,9 +3430,25 @@ function lockFilletSteal(frames: ColumnFrame[], nFil: number): void {
             lastFilletCMinMm(localSpacingOf(fr)),
             fr.lastDlRad,
         );
-        maxSteal = Math.max(maxSteal, Math.max(0, lF - Math.max(0, fr.rFillet) * S));
+        const wanted = Math.max(0, lF - Math.max(0, fr.rFillet) * S);
+        const keep = minLineOfHeight(fr.heightMm);
+        const cap = Math.max(0, fr.lineLengthMm - keep);
+        maxSteal = Math.max(maxSteal, Math.min(wanted, cap));
     }
-    for (const fr of frames) fr.filletStealLock = maxSteal;
+    const capped = frames.map((fr) => {
+        const keep = minLineOfHeight(fr.heightMm);
+        return Math.min(maxSteal, Math.max(0, fr.lineLengthMm - keep));
+    });
+    const sm = periodicGaussian(
+        capped,
+        frames.map((fr) => fr.R),
+        SCALAR_SMOOTH_SIGMA_MM,
+    );
+    for (let i = 0; i < frames.length; i++) {
+        const keep = minLineOfHeight(frames[i]!.heightMm);
+        const cap = Math.max(0, frames[i]!.lineLengthMm - keep);
+        frames[i]!.filletStealLock = Math.min(Math.max(sm[i] ?? 0, 0), cap);
+    }
 }
 
 function applyPieceCounts(frames: ColumnFrame[], report: NRoundStarReport): number {
@@ -3510,6 +3530,7 @@ export function buildBezierColumns(
     let nLineStar = piece.nLine;
     nWall = applyPieceCounts(frames, piece);
     raiseR1ForRoundRows(frames, piece.nRound, spacing / ASPECT_EVERYWHERE_MAX);
+    lockFilletSteal(frames, nFilStar);
     console.log(
         "[S1-NROUND]",
         JSON.stringify({
@@ -3536,6 +3557,7 @@ export function buildBezierColumns(
     nLineStar = piece.nLine;
     nWall = applyPieceCounts(frames, piece);
     raiseR1ForRoundRows(frames, piece.nRound, spacing / ASPECT_EVERYWHERE_MAX);
+    lockFilletSteal(frames, nFilStar);
     console.log(
         "[S1-NROUND]",
         JSON.stringify({
@@ -3562,6 +3584,7 @@ export function buildBezierColumns(
         }),
     );
     enforceLastChordFloor(frames, true);
+    lockFilletSteal(frames, nFilStar);
     const xyz: PolyPoint[][] = [];
     const implied: number[] = [];
     let maxOff = 0;
@@ -3977,9 +4000,14 @@ function lastChordRiseDeg(
     } else {
         tan = { x: last.x - prev.x, y: last.y - prev.y, z: last.z - prev.z };
     }
-    if (hypot3(tan) < 1e-12 || hypot3(chord) < 1e-12) return null;
-    if (dot3(tan, chord) < 0) tan = { x: -tan.x, y: -tan.y, z: -tan.z };
-    return vecAngleDeg(tan, chord);
+    let chordUse = chord;
+    if (hypot3(bin) > 1e-12) {
+        const inPlane = add3(chord, bin, -dot3(chord, bin));
+        if (hypot3(inPlane) > 1e-12) chordUse = inPlane;
+    }
+    if (hypot3(tan) < 1e-12 || hypot3(chordUse) < 1e-12) return null;
+    if (dot3(tan, chordUse) < 0) tan = { x: -tan.x, y: -tan.y, z: -tan.z };
+    return vecAngleDeg(tan, chordUse);
 }
 
 function circumcenter3(a: XYZ, b: XYZ, c: XYZ): XYZ | null {

@@ -70,6 +70,7 @@ export {
     lastStepChordMm,
     limitNormalSteps,
     liveSheetAtR,
+    lockFilletSteal,
     MERGE_ROW_MM,
     MIN_EDGE_MM,
     MIN_LINE_MM,

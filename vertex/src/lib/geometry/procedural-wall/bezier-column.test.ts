@@ -44,6 +44,7 @@ import {
     lastFilletR2MinMm,
     lastStepChordMm,
     liveSheetAtR,
+    lockFilletSteal,
     MERGE_ROW_MM,
     MIN_LINE_MM,
     MIN_ROUND_R_MM,
@@ -73,6 +74,8 @@ import {
     SCALAR_SMOOTH_SIGMA_MM,
     SECANT_FAR_MM,
     SECANT_NEAR_MM,
+    SHORT_MIN_L_MM,
+    SHORT_WALL_H_MM,
     STEEP_SHEET_DEG,
     sampleArcLineArc,
     sampleByArcLength,
@@ -936,6 +939,60 @@ describe("bezier column", () => {
         const oneStep = filletPieceLengthMm(r2, tinyS, nFil, cMin, short);
         expect(oneStep).toBeGreaterThanOrEqual(nFil * cMin + r2 * Math.min(short, tinyS / 2) - 1e-9);
         expect(oneStep).toBeGreaterThanOrEqual(r2 * tinyS - 1e-9);
+        const locked = sampleFilletPiecePoints(
+            E,
+            F,
+            r2,
+            S,
+            0,
+            S,
+            (phi) => ({
+                x: F.x + r2 * Math.sin(phi),
+                y: 0,
+                z: F.z - r2 * (1 - Math.cos(phi)),
+            }),
+            nFil,
+            dL,
+            cMin,
+            1.1,
+        );
+        expect(locked.stealMm).toBeCloseTo(1.1, 6);
+        expect(dist3ish(locked.Fpiece, F)).toBeCloseTo(1.1, 5);
+    });
+
+    test("locked fillet steal is a parallel of F and r1 raise keeps min L", () => {
+        const n = 12;
+        const stations: HermiteStation[] = [];
+        for (let i = 0; i < n; i++) {
+            const a = (i / n) * Math.PI * 2;
+            const tall = i < 6;
+            stations.push(
+                station(20 * Math.cos(a), 12 * Math.sin(a), tall ? 12 : 2.2, {
+                    x: Math.cos(a),
+                    y: Math.sin(a),
+                }),
+            );
+        }
+        const junctions = stations.map(() => ({ planeN: { x: 0, y: 0, z: 1 }, slopeRad: 0 }));
+        const frames = initColumnFrames(
+            stations,
+            junctions,
+            defaults(),
+            stations.map(() => 8),
+        );
+        for (const fr of frames) {
+            fr.nFilFix = 6;
+            fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
+        }
+        lockFilletSteal(frames, 6);
+        const steals = frames.map((fr) => fr.filletStealLock ?? 0);
+        expect(Math.max(...steals) - Math.min(...steals)).toBeLessThan(1.2);
+        for (const fr of frames) {
+            const keep = fr.heightMm <= SHORT_WALL_H_MM + 1e-9 ? SHORT_MIN_L_MM : MIN_LINE_MM;
+            expect((fr.filletStealLock ?? 0) + keep).toBeLessThanOrEqual(fr.lineLengthMm + 1e-6);
+            const budget = clampR1ToBudget(2, fr.heightMm, fr.rFillet, keep);
+            expect(budget).toBeLessThanOrEqual(Math.max(MIN_ROUND_R_MM, fr.heightMm - keep) + 1e-6);
+        }
     });
 
     test("r2 floors on the real last-step dL once S is known", () => {
