@@ -17,7 +17,8 @@ import {
     reconstructProceduralWalls,
     WALL_MID_DIHEDRAL_MAX_DEG,
     WALL_MID_TURN_MAX_DEG,
-    WALL_STYLE_ACROSS_P99_MAX_DEG,
+    WALL_STYLE_ACROSS_P99_BLOCK_DEG,
+    WALL_STYLE_ACROSS_P100_BLOCK_DEG,
     WALL_STYLE_G1_MAX_DEG,
 } from "@/lib/geometry/procedural-wall";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
@@ -80,7 +81,14 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             maxAlongRowDeg?: number;
             maxMidAcrossP99Deg?: number;
         };
-        wallFrames?: Array<{ u: number; midWeight?: number; overhangMm?: number }>;
+        wallFrames?: Array<{
+            u: number;
+            midWeight?: number;
+            overhangMm?: number;
+            g1EDeg?: number;
+            g1FDeg?: number;
+            midFlagged?: boolean;
+        }>;
         medialYSign?: 1 | -1;
         footLengthMm?: number;
         stationCount?: number;
@@ -92,17 +100,17 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
     const misses: string[] = [];
     const g1Cap = style === "straight" ? G1_MAX_DEG : WALL_STYLE_G1_MAX_DEG;
     if ((q.maxG1EDeg ?? 0) > g1Cap + 1e-6) misses.push(`G1-E ${q.maxG1EDeg?.toFixed(2)}>${g1Cap}`);
-    const g1FCap = style === "straight" ? G1_MAX_DEG : 4;
-    if ((q.maxG1FDeg ?? 0) > g1FCap + 1e-6) misses.push(`G1-F ${q.maxG1FDeg?.toFixed(2)}>${g1FCap}`);
+    if ((q.maxG1FDeg ?? 0) > g1Cap + 1e-6) misses.push(`G1-F ${q.maxG1FDeg?.toFixed(2)}>${g1Cap}`);
     const acrossP99 =
         style === "straight" ? (q.maxAcrossP99Deg ?? 0) : (q.maxMidAcrossP99Deg ?? q.maxAcrossP99Deg ?? 0);
-    const acrossP99Cap =
-        style === "straight" ? ACROSS_STATION_P99_MAX_DEG : Math.max(WALL_STYLE_ACROSS_P99_MAX_DEG, 6);
-    if (acrossP99 > acrossP99Cap + 0.15) {
-        misses.push(`across-p99 ${acrossP99.toFixed(2)}`);
+    const acrossP99Cap = style === "straight" ? ACROSS_STATION_P99_MAX_DEG : WALL_STYLE_ACROSS_P99_BLOCK_DEG;
+    if (acrossP99 > acrossP99Cap + 1e-6) {
+        misses.push(`across-p99 ${acrossP99.toFixed(2)}>${acrossP99Cap}`);
     }
-    if (style === "straight" && (q.maxAcrossDeg ?? 0) > ACROSS_STATION_MAX_DEG + 0.05) {
-        misses.push(`across-p100 ${q.maxAcrossDeg?.toFixed(2)}`);
+    const acrossP100 = q.maxAcrossDeg ?? 0;
+    const acrossP100Cap = style === "straight" ? ACROSS_STATION_MAX_DEG : WALL_STYLE_ACROSS_P100_BLOCK_DEG;
+    if (acrossP100 > acrossP100Cap + 1e-6) {
+        misses.push(`across-p100 ${acrossP100.toFixed(2)}>${acrossP100Cap}`);
     }
     const eTurn = q.maxETurningPlanDeg ?? q.maxETurningDeg ?? 0;
     const fTurn = q.maxFTurningPlanDeg ?? q.maxFTurningDeg ?? 0;
@@ -111,7 +119,7 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
     if (style !== "straight") {
         const midTurn = q.maxMidRowTurnDeg ?? 0;
         const midDihedral = q.maxMidRowDihedralDeg ?? q.maxAlongRowDeg ?? 0;
-        if (midTurn > WALL_MID_TURN_MAX_DEG + 0.25) {
+        if (midTurn > WALL_MID_TURN_MAX_DEG + 1e-6) {
             misses.push(`mid-row-turn ${midTurn.toFixed(2)}>${WALL_MID_TURN_MAX_DEG}`);
         }
         if (midDihedral > WALL_MID_DIHEDRAL_MAX_DEG + 1e-6) {
@@ -131,6 +139,25 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
         if (rim > 1e-3) misses.push(`rim-vs-straight ${rim.toFixed(4)}`);
     }
     const frames = ud.wallFrames ?? [];
+    if (style !== "straight" && frames.length) {
+        const g1Hits = frames
+            .map((f, i) => ({
+                i,
+                u: f.u,
+                e: f.g1EDeg ?? 0,
+                f: f.g1FDeg ?? 0,
+                flagged: !!f.midFlagged,
+            }))
+            .filter((s) => s.e > WALL_STYLE_G1_MAX_DEG + 1e-6 || s.f > WALL_STYLE_G1_MAX_DEG + 1e-6);
+        if (g1Hits.length) {
+            misses.push(
+                `g1Out ${g1Hits.length} stn ${g1Hits
+                    .slice(0, 8)
+                    .map((s) => `${s.i}@${s.u.toFixed(3)} e=${s.e.toFixed(2)} f=${s.f.toFixed(2)}`)
+                    .join(",")}`,
+            );
+        }
+    }
     if (style === "hybrid" && frames.length) {
         const heel = frames.filter((f) => f.u <= 0.12);
         const midfoot = frames.filter((f) => f.u >= 0.5 && f.u <= 0.7);
@@ -219,8 +246,8 @@ describe("procedural wall styles", () => {
                 segs: Array<{ y0: number; z0: number; y1: number; z1: number }>;
                 rgb: [number, number, number];
             }>,
-            w = 1600,
-            h = 1200,
+            w = 2560,
+            h = 1920,
             zoomWall = true,
         ): Uint8Array => {
             const rgb = new Uint8Array(w * h * 3).fill(18);
@@ -343,6 +370,10 @@ describe("procedural wall styles", () => {
                 midPlanOffMm?: number;
                 midLimit?: string;
                 heightMm?: number;
+                g1EDeg?: number;
+                g1FDeg?: number;
+                midFlagged?: boolean;
+                u?: number;
             }>;
             const weights = frames.map((f) => f.midWeight ?? 0);
             const chords = frames.map((f) => f.midChordOffMm ?? 0);
@@ -378,6 +409,16 @@ describe("procedural wall styles", () => {
                 planOffMed: med(plans),
                 limits,
                 limiter,
+                flagged: frames.filter((f) => f.midFlagged).length,
+                g1Over: frames
+                    .map((f, i) => ({
+                        i,
+                        u: Number((f.u ?? 0).toFixed(4)),
+                        e: Number((f.g1EDeg ?? 0).toFixed(3)),
+                        f: Number((f.g1FDeg ?? 0).toFixed(3)),
+                        flagged: !!f.midFlagged,
+                    }))
+                    .filter((s) => s.e > 1 + 1e-6 || s.f > 1 + 1e-6 || s.flagged),
             };
         });
         console.log("[S1-WALL-STYLE]", JSON.stringify(styleReport));

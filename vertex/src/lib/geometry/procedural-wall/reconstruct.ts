@@ -1287,6 +1287,10 @@ export function reconstructProceduralWalls(
             midChordOffMm: f.midChordOffMm ?? 0,
             midPlanOffMm: f.midPlanOffMm ?? 0,
             midLimit: f.midLimit ?? "none",
+            g1EDeg: f.g1EDeg ?? 0,
+            g1FDeg: f.g1FDeg ?? 0,
+            midFlagged: f.midFlagged ?? false,
+            thetaEDeg: (f.phiRound1 * 180) / Math.PI,
         })),
         t0Log: grid.frames.map((f) => ({
             u: Number(f.u.toFixed(4)),

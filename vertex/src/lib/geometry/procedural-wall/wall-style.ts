@@ -17,9 +17,13 @@ export const WALL_W_MAX = 0.9;
 /** Keep a tiny weight so a valid G1 M never collapses onto the chord. */
 export const WALL_W_MIN = 1e-3;
 export const WALL_STYLE_G1_MAX_DEG = 1;
+export const WALL_MID_TURN_TARGET_DEG = 3;
 export const WALL_MID_TURN_MAX_DEG = 4;
 export const WALL_MID_DIHEDRAL_MAX_DEG = 4;
+/** Target, not blocking. */
 export const WALL_STYLE_ACROSS_P99_MAX_DEG = 3;
+export const WALL_STYLE_ACROSS_P99_BLOCK_DEG = 5;
+export const WALL_STYLE_ACROSS_P100_BLOCK_DEG = 8;
 export const WALL_MID_SMOOTH_SIGMA_MM = 10;
 export const WALL_MID_ROW_CAP = 32;
 export const HYBRID_SWITCH_U_MEDIAL = 0.3;
@@ -132,24 +136,23 @@ function orientToward(t: XYZ, target: XYZ, from: XYZ): XYZ {
     return dot3(t, w) < 0 ? scale3(t, -1) : t;
 }
 
-/** Closest intersection of lines E+s tE and F+t tF. Null if parallel or skew. */
+/** Closest intersection of rays E+s tE and F+t tF. Null if parallel, skew, or behind E. */
 export function intersectTangentLines(E: XYZ, tE: XYZ, F: XYZ, tF: XYZ): XYZ | null {
-    const d = unit3(tE);
-    const e = unit3(tF);
+    const d = orientToward(unit3(tE), F, E);
+    const e = orientToward(unit3(tF), E, F);
     const w0 = sub3(E, F);
     const b = dot3(d, e);
     const den = 1 - b * b;
-    if (Math.abs(den) < 1e-10) return null;
+    if (Math.abs(den) < 1e-6 || Math.abs(b) > 0.999) return null;
     const s = (b * dot3(e, w0) - dot3(d, w0)) / den;
     const t = (dot3(e, w0) - b * dot3(d, w0)) / den;
-    if (s < 0.15) return null;
+    if (s < 0.15 || t < 0.15) return null;
     const p0 = add3(E, d, s);
     const p1 = add3(F, e, t);
-    const gap = dist3(p0, p1);
-    if (gap > 0.6) return null;
-    const minS = Math.max(0.15, (0.5 * gap) / Math.tan((Math.PI / 180) * 1) + 1e-6);
-    if (s < minS) return null;
-    return scale3(add3(p0, p1), 0.5);
+    const M = scale3(add3(p0, p1), 0.5);
+    const g1 = g1OfConic(E, M, F, d, e);
+    if (g1.e > WALL_STYLE_G1_MAX_DEG + 1e-6 || g1.f > WALL_STYLE_G1_MAX_DEG + 1e-6) return null;
+    return M;
 }
 
 export interface G1Control {
@@ -279,6 +282,65 @@ export function sampleConicByArcLength(E: XYZ, M: XYZ, F: XYZ, w: number, n: num
     return pts;
 }
 
+function conicTangent(E: XYZ, M: XYZ, F: XYZ, w: number, t: number): XYZ {
+    const u = 1 - t;
+    const nx = u * u * E.x + 2 * u * t * w * M.x + t * t * F.x;
+    const ny = u * u * E.y + 2 * u * t * w * M.y + t * t * F.y;
+    const nz = u * u * E.z + 2 * u * t * w * M.z + t * t * F.z;
+    const den = u * u + 2 * u * t * w + t * t;
+    const dnx = -2 * u * E.x + 2 * (1 - 2 * t) * w * M.x + 2 * t * F.x;
+    const dny = -2 * u * E.y + 2 * (1 - 2 * t) * w * M.y + 2 * t * F.y;
+    const dnz = -2 * u * E.z + 2 * (1 - 2 * t) * w * M.z + 2 * t * F.z;
+    const dden = -2 * u + 2 * (1 - 2 * t) * w + 2 * t;
+    return { x: dnx * den - nx * dden, y: dny * den - ny * dden, z: dnz * den - nz * dden };
+}
+
+function conicTurningTotal(E: XYZ, M: XYZ, F: XYZ, w: number, steps = 48): number {
+    let total = 0;
+    let prev = conicTangent(E, M, F, w, 0);
+    for (let i = 1; i <= steps; i++) {
+        const tan = conicTangent(E, M, F, w, i / steps);
+        total += acuteVecDeg(prev, tan);
+        prev = tan;
+    }
+    return total;
+}
+
+/** Rows so adjacent samples turn by the same angle. Includes F, excludes E. */
+export function sampleConicByTurning(E: XYZ, M: XYZ, F: XYZ, w: number, n: number): XYZ[] {
+    if (n < 1) return [];
+    const steps = Math.max(64, n * 16);
+    const dense: XYZ[] = [];
+    const acc = [0];
+    let prevTan = conicTangent(E, M, F, w, 0);
+    for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const p = evalRationalQuadratic(E, M, F, w, t);
+        if (i > 0) {
+            const tan = conicTangent(E, M, F, w, t);
+            acc.push(acc[i - 1]! + acuteVecDeg(prevTan, tan));
+            prevTan = tan;
+        }
+        dense.push(p);
+    }
+    const total = acc[steps]!;
+    if (total < 1e-6) return sampleStraightMid(E, F, n);
+    const pts: XYZ[] = [];
+    for (let k = 1; k <= n; k++) {
+        const target = (k / n) * total;
+        let i = 1;
+        while (i < acc.length && acc[i]! < target) i++;
+        const a = acc[i - 1]!;
+        const b = acc[i] ?? a;
+        const u = b > a + 1e-12 ? (target - a) / (b - a) : 0;
+        pts.push(k === n ? { ...F } : lerp3(dense[i - 1]!, dense[i] ?? F, u));
+    }
+    let minSp = pts.length ? dist3(E, pts[0]!) : Infinity;
+    for (let i = 1; i < pts.length; i++) minSp = Math.min(minSp, dist3(pts[i]!, pts[i - 1]!));
+    if (minSp < 0.01) return sampleConicByArcLength(E, M, F, w, n);
+    return pts;
+}
+
 export function maxPolylineTurnDeg(pts: XYZ[]): number {
     let max = 0;
     for (let i = 1; i < pts.length - 1; i++) {
@@ -287,26 +349,19 @@ export function maxPolylineTurnDeg(pts: XYZ[]): number {
     return max;
 }
 
-/** Rows so adjacent conic samples turn by at most maxDeg. Includes F, excludes E. */
+/** Rows by equal turning. Target ~3°, then raise until the gate (≤4°) holds. */
 export function conicRowCountByTurning(
     E: XYZ,
     M: XYZ,
     F: XYZ,
     w: number,
     maxDeg = WALL_MID_TURN_MAX_DEG,
+    targetDeg = WALL_MID_TURN_TARGET_DEG,
 ): number {
-    const probe = [E];
-    for (let i = 1; i <= 32; i++) probe.push(evalRationalQuadratic(E, M, F, w, i / 32));
-    const total = (() => {
-        let s = 0;
-        for (let i = 1; i < probe.length - 1; i++) {
-            s += acuteVecDeg(sub3(probe[i]!, probe[i - 1]!), sub3(probe[i + 1]!, probe[i]!));
-        }
-        return s;
-    })();
-    let n = Math.max(2, Math.ceil(total / Math.max(maxDeg, 1e-3)));
+    const total = conicTurningTotal(E, M, F, w);
+    let n = Math.max(2, Math.ceil(total / Math.max(targetDeg, 1e-3)));
     for (let k = 0; k < 8; k++) {
-        const pts = [E, ...sampleConicByArcLength(E, M, F, w, n)];
+        const pts = [E, ...sampleConicByTurning(E, M, F, w, n)];
         const turn = maxPolylineTurnDeg(pts);
         if (turn <= maxDeg + 1e-6 || n >= WALL_MID_ROW_CAP) return Math.min(WALL_MID_ROW_CAP, n);
         n = Math.min(WALL_MID_ROW_CAP, Math.max(n + 1, Math.ceil((n * turn) / maxDeg)));
@@ -359,7 +414,7 @@ export function bisectWeightForPlan(
     planOutMm: number,
 ): number {
     const ok = (ww: number): boolean =>
-        planBoundsOf(sampleConicByArcLength(E, M, F, ww, n), R, F, outward, planOutMm).ok;
+        planBoundsOf(sampleConicByTurning(E, M, F, ww, n), R, F, outward, planOutMm).ok;
     if (ok(w)) return w;
     let lo = 0;
     let hi = w;
@@ -390,10 +445,11 @@ export interface MidStyleSample {
     chordOffsetMm?: number;
     planOffsetMm?: number;
     limit?: "none" | "w" | "chord" | "plan";
+    flagged?: boolean;
 }
 
 export interface MidStyleLock {
-    M: XYZ;
+    M?: XYZ;
     w: number;
 }
 
@@ -414,9 +470,17 @@ function clampMidWeight(
     return { w, afterChord };
 }
 
+function lineG1(E: XYZ, F: XYZ, tE: XYZ, tF: XYZ): { e: number; f: number } {
+    return {
+        e: acuteVecDeg(sub3(F, E), tE),
+        f: acuteVecDeg(sub3(E, F), tF),
+    };
+}
+
 /**
  * E→F mid-style. Straight = ruled line. Round/hybrid = rational quadratic
- * whose control M lies on the E and F tangents (G1). Bounds shrink w only.
+ * whose control M is the E/F tangent intersection. Bounds shrink w only.
+ * Never invents an off-tangent M.
  */
 export function sampleWallMidStyle(
     E: XYZ,
@@ -432,14 +496,21 @@ export function sampleWallMidStyle(
     lock?: MidStyleLock,
 ): MidStyleSample {
     if (params.style === "straight" || n < 1) {
-        return { pts: sampleStraightMid(E, F, n), weight: 0, M: null, bulge: 0, g1EDeg: 0, g1FDeg: 0 };
+        const g1 = lineG1(E, F, tE, tF);
+        return {
+            pts: sampleStraightMid(E, F, n),
+            weight: 0,
+            M: null,
+            bulge: 0,
+            g1EDeg: g1.e,
+            g1FDeg: g1.f,
+        };
     }
     const chord = dist3(E, F);
     const maxOff = Math.min(WALL_BULGE_OFFSET_FRAC * chord, WALL_BULGE_OFFSET_MAX_MM);
-    const ctrl = lock?.M
-        ? { M: lock.M, s: dist3(lock.M, E), t: dist3(lock.M, F) }
-        : g1ControlPoint(E, tE, F, tF);
-    if (!ctrl) {
+    const M = intersectTangentLines(E, tE, F, tF);
+    if (!M) {
+        const g1 = lineG1(E, F, tE, tF);
         return {
             pts: sampleStraightMid(E, F, n),
             weight: 0,
@@ -448,16 +519,16 @@ export function sampleWallMidStyle(
             chordOffsetMm: 0,
             planOffsetMm: 0,
             limit: "none",
-            g1EDeg: 0,
-            g1FDeg: 0,
+            g1EDeg: g1.e,
+            g1FDeg: g1.f,
             rowNeed: n,
+            flagged: true,
         };
     }
-    const M = ctrl.M;
     let wWanted = lock?.w ?? midStyleWeight(heightMm, Math.max(bulgeAtStation, 0));
     if (lock?.w == null && bulgeAtStation <= 1e-9) wWanted = WALL_W_MIN;
     const { w, afterChord } = clampMidWeight(E, M, F, R, wWanted, n, outward, params.planOutMm, maxOff);
-    const pts = sampleConicByArcLength(E, M, F, w, n);
+    const pts = sampleConicByTurning(E, M, F, w, n);
     const chordOff = chordOffsetAtMid(E, M, F, w);
     const plan = planBoundsOf(pts, R, F, outward, params.planOutMm);
     const g1 = g1OfConic(E, M, F, tE, tF);
@@ -470,14 +541,15 @@ export function sampleWallMidStyle(
         weight: w,
         M,
         bulge: bulgeAtStation,
-        s: ctrl.s,
-        t: ctrl.t,
+        s: dist3(M, E),
+        t: dist3(M, F),
         g1EDeg: g1.e,
         g1FDeg: g1.f,
         rowNeed: conicRowCountByTurning(E, M, F, w),
         chordOffsetMm: chordOff,
         planOffsetMm: plan.offsetMax,
         limit,
+        flagged: false,
     };
 }
 

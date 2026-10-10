@@ -14,7 +14,7 @@ import {
     midStyleWeight,
     planBoundsOf,
     resolveWallStyleParams,
-    sampleConicByArcLength,
+    sampleConicByTurning,
     sampleWallMidStyle,
     stationBulge,
     WALL_BULGE_OFFSET_FRAC,
@@ -75,8 +75,8 @@ describe("wall style mid-piece", () => {
         const pts = sampleWallMidStyle(
             E,
             F,
-            { x: 1, y: 0, z: 0 },
-            { x: -1, y: 0, z: 0 },
+            { x: 1, y: 0, z: -1 },
+            { x: 1, y: 0, z: 1 },
             { x: 0, y: 0, z: 12 },
             6,
             12,
@@ -89,7 +89,7 @@ describe("wall style mid-piece", () => {
         expect(bound.offsetMax).toBeLessThanOrEqual(2 + 1e-6);
     });
 
-    test("parallel end tangents stay G1 and do not invent an off-tangent M", () => {
+    test("parallel end tangents do not invent an off-tangent M", () => {
         const E = { x: 0, y: 0, z: 10 };
         const F = { x: 0, y: 0, z: 2 };
         const tE = { x: 0, y: 0, z: -1 };
@@ -106,12 +106,37 @@ describe("wall style mid-piece", () => {
             resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 2 }),
             0.6,
         );
-        const ctrl = g1ControlPoint(E, tE, F, tF);
-        expect(ctrl).not.toBeNull();
-        const g1 = g1OfConic(E, ctrl!.M, F, tE, tF);
-        expect(g1.e).toBeLessThan(1);
+        expect(intersectTangentLines(E, tE, F, tF)).toBeNull();
+        expect(pts.M).toBeNull();
+        expect(pts.weight).toBe(0);
+        expect(pts.flagged).toBe(true);
+    });
+
+    test("sampleWallMidStyle M is the tangent intersection", () => {
+        const E = { x: 0, y: 0, z: 14 };
+        const F = { x: 0, y: 0, z: 2 };
+        const tE = { x: 1, y: 0, z: -1 };
+        const tF = { x: 1, y: 0, z: 1 };
+        const hit = intersectTangentLines(E, tE, F, tF);
+        const pts = sampleWallMidStyle(
+            E,
+            F,
+            tE,
+            tF,
+            { x: 0, y: 0, z: 16 },
+            8,
+            14,
+            { x: 1, y: 0 },
+            resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 2 }),
+            0.6,
+        );
+        expect(hit).not.toBeNull();
         expect(pts.M).not.toBeNull();
+        expect(pts.M!.x).toBeCloseTo(hit!.x, 6);
+        expect(pts.M!.y).toBeCloseTo(hit!.y, 6);
+        expect(pts.M!.z).toBeCloseTo(hit!.z, 6);
         expect(g1OfConic(E, pts.M!, F, tE, tF).e).toBeLessThan(1);
+        expect(g1OfConic(E, pts.M!, F, tE, tF).f).toBeLessThan(1);
     });
 
     test("G1 M stays on the E/F tangents; bounds shrink w only", () => {
@@ -148,7 +173,7 @@ describe("wall style mid-piece", () => {
         const M = { x: 6, y: 0, z: 8 };
         const n = conicRowCountByTurning(E, M, F, 0.9, WALL_MID_TURN_MAX_DEG);
         expect(n).toBeGreaterThan(4);
-        const pts = [{ x: 0, y: 0, z: 14 }, ...sampleConicByArcLength(E, M, F, 0.9, n)];
+        const pts = [{ x: 0, y: 0, z: 14 }, ...sampleConicByTurning(E, M, F, 0.9, n)];
         let max = 0;
         for (let i = 1; i < pts.length - 1; i++) {
             const a = pts[i]!;
