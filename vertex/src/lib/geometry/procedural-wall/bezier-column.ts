@@ -1575,16 +1575,6 @@ export function constructSweepRule(
         const cosT = planCosT(d, nB, h);
         return lastStepChordMm(r2, lastFilletDLRad(S, cosT)) + 1e-9 >= lastFilletCMinMm(localSpacing);
     };
-    const trialKeepU = (
-        trialR1: number,
-        trialR2: number,
-        trialPhi: number,
-    ): { C1: XYZ; E: XYZ; fil: ConstructedFillet; L: number } => {
-        const trialC1 = add3(R, eN, -trialR1);
-        const trialE = sweptRoundPoint(trialC1, trialR1, eN, eW, trialPhi);
-        const trialFil = constructFillet(B, nB, trialR2, frozenU, plantarSlopeRad, nPlant);
-        return { C1: trialC1, E: trialE, fil: trialFil, L: dist3(trialE, trialFil.Pw) };
-    };
     const floorLastStepKeepU = (): boolean => {
         let grew = false;
         for (let grow = 0; grow < 6; grow++) {
@@ -1592,30 +1582,18 @@ export function constructSweepRule(
             const cosT = planCosT(d, nB, h);
             const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S, cosT, r1Floor);
             if (r2 + 1e-9 >= floored.r2Min && r1 <= floored.r1 + 1e-9) break;
-            let trialR1 = floored.r1;
+            const trialR1 = floored.r1;
             const trialR2 = floored.r2;
-            let trialPhi = phiRound1;
-            let trial = trialKeepU(trialR1, trialR2, trialPhi);
-            if (trial.L + 1e-9 < minL && trialR1 > r1Floor + 1e-9) {
-                trialR1 = r1Floor;
-                trial = trialKeepU(trialR1, trialR2, trialPhi);
-            }
-            if (trial.L + 1e-9 < minL) {
-                const pulled = phiRound0 + 0.35 * (phiRound1 - phiRound0);
-                const pullTrial = trialKeepU(trialR1, trialR2, pulled);
-                if (pullTrial.L + 1e-9 >= minL) {
-                    trialPhi = pulled;
-                    trial = pullTrial;
-                }
-            }
-            if (trial.L + 1e-9 < minL) break;
+            const trialC1 = add3(R, eN, -trialR1);
+            const trialE = sweptRoundPoint(trialC1, trialR1, eN, eW, phiRound1);
+            const trialFil = constructFillet(B, nB, trialR2, frozenU, plantarSlopeRad, nPlant);
+            if (dist3(trialE, trialFil.Pw) + 1e-9 < minL) break;
             grew = true;
             r1 = trialR1;
             r2 = trialR2;
-            phiRound1 = trialPhi;
-            C1 = trial.C1;
-            E = trial.E;
-            fil = trial.fil;
+            C1 = trialC1;
+            E = trialE;
+            fil = trialFil;
             F = { ...fil.Pw };
             const next = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
             if (hypot3(next) > 1e-9) d = unit3(next);
