@@ -5,7 +5,6 @@ import { describe, expect, test } from "@rstest/core";
 import {
     assertFilletStation,
     assertT0ClearsSheet,
-    BEZIER_HANDLE_FRAC,
     buildBezierColumns,
     COLUMN_PLANARITY_LIMIT_MM,
     constructFillet,
