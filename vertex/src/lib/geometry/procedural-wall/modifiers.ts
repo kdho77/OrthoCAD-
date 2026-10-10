@@ -40,8 +40,8 @@ function clonePoly(pts: PolyPoint[]): PolyPoint[] {
  * Widen and cup depth move only TrimCurve / BottomOutline. Nothing deforms
  * wall vertices — the wall is regenerated from the moved curves.
  *
- * Thickness and heel lift raise the trim (top) only; the plantar outline
- * stays on the ground (bottom-stable).
+ * Thickness, heel lift, and posting raise the trim (top) only. The plantar
+ * outline and B stay on the print bed (z = 0).
  */
 export function applyCurveModifiers(
     model: StockWallModel,
@@ -78,15 +78,47 @@ export function applyCurveModifiers(
         if (c && c.heelLiftMm > 0) {
             t.z += heelLiftDeltaAt(u, c.heelLiftMm);
         }
+        if (c && (c.rearfootPostingDeg || c.forefootPostingDeg)) {
+            t.z += postingZDelta(o.x, o.y, model.bounds, input);
+        }
         if (dThick) t.z += dThick;
     }
     return { trim, outline };
 }
 
 /**
- * Bottom fields (thickness, zonal, posting, grind) act on the extracted
- * plantar sheet vertices. Thickness is bottom-stable (sheet Z unchanged;
- * the top expands). Zonal = arch fill. Posting / grind offset sheet Z.
+ * Rearfoot / forefoot wedge on the top sheet. Never applied to the plantar or B —
+ * the print bed stays flat and the walls span top → z = 0.
+ */
+export function postingZDelta(
+    x: number,
+    y: number,
+    bounds: StockWallModel["bounds"],
+    input: ProceduralModifierInput,
+): number {
+    const c = input.corrections;
+    if (!c || (!c.rearfootPostingDeg && !c.forefootPostingDeg)) return 0;
+    const minX = bounds.minX;
+    const length = Math.max(1e-3, bounds.maxX - minX);
+    const widCenter = (bounds.minY + bounds.maxY) * 0.5;
+    const halfW = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
+    const u = Math.max(0, Math.min(1, (x - minX) / length));
+    const vSigned = ((y - widCenter) / halfW) * (input.medialYSign ?? 1);
+    let dz = 0;
+    if (c.rearfootPostingDeg) {
+        const heel = 1 - Math.max(0, Math.min(1, (u - 0.05) / 0.35));
+        dz += Math.tan((c.rearfootPostingDeg * Math.PI) / 180) * vSigned * halfW * heel;
+    }
+    if (c.forefootPostingDeg) {
+        const fore = Math.max(0, Math.min(1, (u - 0.62) / 0.28));
+        dz += Math.tan((c.forefootPostingDeg * Math.PI) / 180) * vSigned * halfW * fore;
+    }
+    return dz;
+}
+
+/**
+ * Bottom fields that may still offset the plantar sheet: zonal arch fill and
+ * arch grind. Thickness, posting, and heel lift are top-only (bottom-stable).
  */
 export function plantarZDelta(
     x: number,
@@ -103,14 +135,6 @@ export function plantarZDelta(
     const vSigned = ((y - widCenter) / halfW) * (input.medialYSign ?? 1);
     const av = Math.abs(vSigned);
     let dz = 0;
-    if (c && c.rearfootPostingDeg) {
-        const heel = 1 - Math.max(0, Math.min(1, (u - 0.05) / 0.35));
-        dz += Math.tan((c.rearfootPostingDeg * Math.PI) / 180) * vSigned * halfW * heel;
-    }
-    if (c && c.forefootPostingDeg) {
-        const fore = Math.max(0, Math.min(1, (u - 0.62) / 0.28));
-        dz += Math.tan((c.forefootPostingDeg * Math.PI) / 180) * vSigned * halfW * fore;
-    }
     if (c && c.archFillMm) {
         const arch = Math.exp(-(((u - 0.42) / 0.16) ** 2));
         const across = 1 - Math.min(1, av);
@@ -160,8 +184,60 @@ export function plantarNormalAt(
 }
 
 /**
- * Wrap posting so wall height R.z − B.z never drops below minWall + r1 + r2.
- * Interior samples inherit the nearest station's raise cap.
+ * Raise starved rim / top-sheet vertices so top.z − 0 ≥ minWall + r1 + r2.
+ * `droppedMm` is the downward posting that was refused. Interior verts inherit
+ * the nearest rim station's raise.
+ */
+export function clampPostingOnTopSheet(
+    topPos: Float32Array,
+    rimLocal: number[],
+    r1: number,
+    r2: number,
+    minWallMm: number,
+    bounds?: { minX: number; maxX: number },
+): PostingClamp[] {
+    const n = rimLocal.length;
+    if (n < 1) return [];
+    const need = minWallMm + r1 + r2;
+    const raise = new Array<number>(n).fill(0);
+    const postingClamps: PostingClamp[] = [];
+    const length = bounds ? Math.max(1e-3, bounds.maxX - bounds.minX) : 1;
+    for (let i = 0; i < n; i++) {
+        const vi = rimLocal[i]!;
+        const z = topPos[vi * 3 + 2]!;
+        if (z >= need - 1e-9) continue;
+        const droppedMm = need - z;
+        raise[i] = droppedMm;
+        const x = topPos[vi * 3]!;
+        const u = bounds ? Math.max(0, Math.min(1, (x - bounds.minX) / length)) : i / n;
+        postingClamps.push({ station: i, u, droppedMm });
+    }
+    if (!postingClamps.length) return [];
+    const count = (topPos.length / 3) | 0;
+    for (let v = 0; v < count; v++) {
+        const x = topPos[v * 3]!;
+        const y = topPos[v * 3 + 1]!;
+        let best = 0;
+        let bestD = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < n; i++) {
+            const vi = rimLocal[i]!;
+            const dx = topPos[vi * 3]! - x;
+            const dy = topPos[vi * 3 + 1]! - y;
+            const d = dx * dx + dy * dy;
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+        }
+        const add = raise[best]!;
+        if (add > 0) topPos[v * 3 + 2] += add;
+    }
+    return postingClamps;
+}
+
+/**
+ * Legacy plantar-raise cap. Reconstruct clamps posting on the top sheet instead
+ * ({@link clampPostingOnTopSheet}); B stays at z = 0.
  */
 export function clampPostingOnStations(
     stations: HermiteStation[],

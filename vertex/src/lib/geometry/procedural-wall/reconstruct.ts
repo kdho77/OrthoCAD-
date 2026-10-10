@@ -42,7 +42,7 @@ import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy
 import { buildHermiteStations } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
 import { countJunctionBandSlivers, windingReport } from "./metrics";
-import { clampPostingOnStations, type ProceduralModifierInput, plantarZDelta } from "./modifiers";
+import { clampPostingOnTopSheet, type ProceduralModifierInput, plantarZDelta } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
 import { hygieneBottomPattern } from "./pattern-hygiene";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
@@ -86,7 +86,7 @@ export interface ReconstructOptions extends ProceduralModifierInput {
     bottomPatternSource?: string;
     /** `synthetic` until Kendon's pattern file arrives. */
     bottomPatternLabel?: string;
-    /** Flat ground plantar (z=0 + posting/grind). Dish sampling is skipped. */
+    /** Flat ground plantar (z=0 + grind/arch fill). Dish sampling is skipped. */
     flatPlantar?: boolean;
     /**
      * Heel-widen follow. Default 1 when heelCupWidthMm ≠ 0 (B tracks the rim
@@ -700,6 +700,22 @@ export function reconstructProceduralWalls(
     }
 
     rimLocal = orderRimLocal(topPos, rimLocal);
+    const { r1, r2 } = filletRadiiFromDefaults(defaults);
+    const postingClamps = clampPostingOnTopSheet(topPos, rimLocal, r1, r2, S1_MIN_WALL_MM, model.bounds);
+    if (postingClamps.length) {
+        console.log(
+            "[S1-POSTING]",
+            JSON.stringify({
+                clamps: postingClamps.length,
+                maxDroppedMm: Number(postingClamps.reduce((m, c) => Math.max(m, c.droppedMm), 0).toFixed(4)),
+                sample: postingClamps.slice(0, 8).map((c) => ({
+                    station: c.station,
+                    u: Number(c.u.toFixed(4)),
+                    droppedMm: Number(c.droppedMm.toFixed(4)),
+                })),
+            }),
+        );
+    }
     const rimPts: PolyPoint[] = rimLocal.map((i) => ({
         x: topPos[i * 3]!,
         y: topPos[i * 3 + 1]!,
@@ -731,7 +747,6 @@ export function reconstructProceduralWalls(
               }))
             : liveRimPlan;
     const patternRim = stockRimPlan.length >= 3 ? stockRimPlan : liveRimPlan;
-    const { r1, r2 } = filletRadiiFromDefaults(defaults);
     const legacyFaired = !patternPts?.length;
     const rawOutline = patternPts?.length
         ? startAtLowCurvature(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))), model.bounds)
@@ -994,8 +1009,7 @@ export function reconstructProceduralWalls(
         stations.map((s) => columnHeading(s).h),
         0,
     );
-    const posting = clampPostingOnStations(stations, rawZDelta, r1, r2, S1_MIN_WALL_MM);
-    const zDelta = posting.zDelta;
+    const zDelta = rawZDelta;
 
     const grid = buildQuadGrid({
         stations,
@@ -1231,9 +1245,49 @@ export function reconstructProceduralWalls(
             maxInflections: 4,
             movedAt: patternMovedAt,
         }),
-        postingClamps: posting.postingClamps,
+        postingClamps,
         maxBPlantarDeltaMm: grid.maxBPlantarDeltaMm,
         wallBelowPlantar: grid.wallBelowPlantar,
+        heelWallHeightMm: (() => {
+            let h = 0;
+            for (const st of stations) {
+                if (st.u <= 0.25) h = Math.max(h, st.rim.z - st.outline.z);
+            }
+            return h;
+        })(),
+        plantarAbsMaxZ: grid.plantar.points.reduce((m, p) => Math.max(m, Math.abs(p.z)), 0),
     };
+    const liftMm = options.corrections?.heelLiftMm ?? 0;
+    const postDeg =
+        (options.corrections?.rearfootPostingDeg ?? 0) || (options.corrections?.forefootPostingDeg ?? 0);
+    if (liftMm > 0 || postDeg) {
+        let heelWall = 0;
+        let maxBz = Number.NEGATIVE_INFINITY;
+        let minBz = Number.POSITIVE_INFINITY;
+        for (const st of stations) {
+            maxBz = Math.max(maxBz, st.outline.z);
+            minBz = Math.min(minBz, st.outline.z);
+            if (st.u <= 0.25) heelWall = Math.max(heelWall, st.rim.z - st.outline.z);
+        }
+        let plantarAbs = 0;
+        for (const p of grid.plantar.points) plantarAbs = Math.max(plantarAbs, Math.abs(p.z));
+        console.log(
+            liftMm > 0 ? "[S1-LIFT]" : "[S1-POSTING-FLAT]",
+            JSON.stringify({
+                heelLiftMm: liftMm,
+                postingDeg: {
+                    rear: options.corrections?.rearfootPostingDeg ?? 0,
+                    fore: options.corrections?.forefootPostingDeg ?? 0,
+                },
+                meshMinZ: geo.userData.meshMinZ,
+                plantarAbsMaxZ: Number(plantarAbs.toFixed(6)),
+                Bz: { min: Number(minBz.toFixed(6)), max: Number(maxBz.toFixed(6)) },
+                heelWallHeightMm: Number(heelWall.toFixed(4)),
+                postingClamps: postingClamps.length,
+                liftOnPlantar: false,
+                postingOnPlantar: false,
+            }),
+        );
+    }
     return geo;
 }

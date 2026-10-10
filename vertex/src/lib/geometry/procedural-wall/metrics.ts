@@ -877,6 +877,32 @@ export function plantarFlatDeltaMm(
     return max;
 }
 
+/** Heel-region wall height: max top z − min B z for stations with u ≤ heelU. */
+export function heelRegionWallHeightMm(
+    geo: BufferGeometry,
+    bounds: { minX: number; maxX: number },
+    heelU = 0.25,
+): number {
+    const pos = geo.getAttribute("position").array as Float32Array;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const outline =
+        (geo.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> }).outlineRing ?? [];
+    const topN = (geo.userData as { topVertexCount?: number }).topVertexCount ?? 0;
+    let maxTop = Number.NEGATIVE_INFINITY;
+    let minB = Number.POSITIVE_INFINITY;
+    for (const p of outline) {
+        if ((p.x - bounds.minX) / length > heelU) continue;
+        minB = Math.min(minB, p.z);
+    }
+    for (let i = 0; i < topN; i++) {
+        const x = pos[i * 3]!;
+        if ((x - bounds.minX) / length > heelU) continue;
+        maxTop = Math.max(maxTop, pos[i * 3 + 2]!);
+    }
+    if (!Number.isFinite(maxTop) || !Number.isFinite(minB)) return 0;
+    return maxTop - minB;
+}
+
 export function meshVertexMinZ(geo: BufferGeometry): number {
     const pos = geo.getAttribute("position").array as Float32Array;
     let minZ = Infinity;

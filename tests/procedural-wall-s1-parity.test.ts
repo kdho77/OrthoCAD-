@@ -43,6 +43,7 @@ import {
     generatedMinWallMm,
     groundDriftMm,
     heelInnerWidthAtU,
+    heelRegionWallHeightMm,
     LAST_CHORD_FLOOR_MAX_FRAC,
     LATERAL_K_SLACK,
     MIN_EDGE_MM,
@@ -1044,6 +1045,8 @@ describe("S1 parametric wall", () => {
                 postingClamps?: Array<{ station: number; u: number; droppedMm: number }>;
                 maxBPlantarDeltaMm?: number;
                 wallBelowPlantar?: number;
+                plantarAbsMaxZ?: number;
+                heelWallHeightMm?: number;
             };
             const chordX = sud.chordCrossings ?? -1;
             const maxSkew = sud.maxSidewaysSkewMm ?? 0;
@@ -1083,6 +1086,9 @@ describe("S1 parametric wall", () => {
                 followFactor: sud.widenFollowFactor ?? 0,
                 insoleWidthScale: sud.insoleWidthScale ?? 1,
                 postingClamps: sud.postingClamps?.length ?? 0,
+                plantarFlatMm: Number(plantarFlatDeltaMm(rebuilt).toFixed(6)),
+                heelWallHeightMm: Number(heelRegionWallHeightMm(rebuilt, model.bounds).toFixed(4)),
+                plantarAbsMaxZ: Number((sud.plantarAbsMaxZ ?? 0).toFixed(6)),
             });
             mkdirSync("/opt/cursor/artifacts", { recursive: true });
             mkdirSync("/opt/cursor/artifacts/screenshots", { recursive: true });
@@ -1187,6 +1193,10 @@ describe("S1 parametric wall", () => {
             }
             if (!man.watertight) smokeMiss.push(`${smoke.name} open=${man.openEdges}`);
             if (minZ < -0.01) smokeMiss.push(`${smoke.name} min-z ${minZ.toFixed(3)}`);
+            if (smoke.name === "posting-4" || smoke.name === "heel-lift-10") {
+                const flat = plantarFlatDeltaMm(rebuilt);
+                if (flat > 1e-3) smokeMiss.push(`${smoke.name} plantar-z0 ${flat.toFixed(4)}`);
+            }
             rebuilt.dispose();
         }
         writeFileSync("/tmp/s1-smoke.json", JSON.stringify(results, null, 2));

@@ -255,6 +255,7 @@ export {
     groundDriftMm,
     hausdorffReport,
     heelInnerWidthAtU,
+    heelRegionWallHeightMm,
     maxVertexDeltaMm,
     measureReconFlareDeg,
     medialArchUpperWallFolds,
@@ -274,8 +275,10 @@ export {
 export {
     applyCurveModifiers,
     clampPostingOnStations,
+    clampPostingOnTopSheet,
     plantarNormalAt,
     plantarZDelta,
+    postingZDelta,
 } from "./modifiers";
 export {
     applyOutlineClean,

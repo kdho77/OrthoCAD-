@@ -3,7 +3,13 @@
 
 import { describe, expect, test } from "@rstest/core";
 import type { HermiteStation } from "./loft";
-import { clampPostingOnStations, plantarNormalAt, plantarZDelta } from "./modifiers";
+import {
+    clampPostingOnStations,
+    clampPostingOnTopSheet,
+    plantarNormalAt,
+    plantarZDelta,
+    postingZDelta,
+} from "./modifiers";
 
 function station(
     R: { x: number; y: number; z: number },
@@ -43,9 +49,9 @@ describe("plantar posting", () => {
         expect(forced.zDelta(7, 0)).toBeLessThan(2.2);
     });
 
-    test("plantarZDelta posting tilts across the foot", () => {
+    test("postingZDelta tilts the top; plantarZDelta stays 0", () => {
         const bounds = { minX: 0, maxX: 100, minY: -20, maxY: 20 };
-        const pos = plantarZDelta(10, 20, bounds, {
+        const input = {
             corrections: {
                 forefootPostingDeg: 0,
                 rearfootPostingDeg: 4,
@@ -56,32 +62,29 @@ describe("plantar posting", () => {
                 heelCupDepthMm: 0,
                 heelCupHeightMm: 0,
                 heelCupWidthMm: 0,
-                heelLiftMm: 0,
+                heelLiftMm: 10,
                 apexMoveMm: 0,
                 medialFlangeMm: 0,
                 lateralFlangeMm: 0,
             },
-            medialYSign: 1,
-        });
-        const neg = plantarZDelta(10, -20, bounds, {
-            corrections: {
-                forefootPostingDeg: 0,
-                rearfootPostingDeg: 4,
-                medialSkiveMm: 0,
-                lateralSkiveMm: 0,
-                archFillMm: 0,
-                archHeightMm: 0,
-                heelCupDepthMm: 0,
-                heelCupHeightMm: 0,
-                heelCupWidthMm: 0,
-                heelLiftMm: 0,
-                apexMoveMm: 0,
-                medialFlangeMm: 0,
-                lateralFlangeMm: 0,
-            },
-            medialYSign: 1,
-        });
+            medialYSign: 1 as const,
+        };
+        const pos = postingZDelta(10, 20, bounds, input);
+        const neg = postingZDelta(10, -20, bounds, input);
         expect(pos).toBeGreaterThan(0);
         expect(neg).toBeLessThan(0);
+        expect(plantarZDelta(10, 20, bounds, input)).toBe(0);
+        expect(plantarZDelta(10, -20, bounds, input)).toBe(0);
+    });
+
+    test("clampPostingOnTopSheet raises a starved rim so top-0 >= minWall+r1+r2", () => {
+        const topPos = new Float32Array([10, 0, 1, 0, 0, 4]);
+        const clamps = clampPostingOnTopSheet(topPos, [0], 0.5, 0.5, 0.8);
+        expect(clamps).toHaveLength(1);
+        expect(clamps[0]!.droppedMm).toBeCloseTo(0.8, 5);
+        expect(topPos[2]).toBeCloseTo(1.8, 5);
+        expect(topPos[5]).toBeCloseTo(4.8, 5);
+        const idle = clampPostingOnTopSheet(new Float32Array([10, 0, 4]), [0], 0.5, 0.5, 0.8);
+        expect(idle).toHaveLength(0);
     });
 });

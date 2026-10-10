@@ -272,7 +272,7 @@ export interface BuildQuadGridInput {
     flangeAngleDeg?: number;
     footLengthMm?: number;
     flatPlantar?: boolean;
-    /** Sample n_top from the live modified top sheet (t4 / lift / posting). */
+    /** Sample n_top from the live modified top sheet (t4 / lift / top posting). */
     liveSheet?: boolean;
 }
 
@@ -630,7 +630,11 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     }
     console.log(
         "[S1-ORDER]",
-        JSON.stringify({ fieldsBeforeBF: true, lift: Number(sampler.lift.toFixed(4)) }),
+        JSON.stringify({
+            fieldsBeforeBF: true,
+            lift: Number(sampler.lift.toFixed(4)),
+            postingOnPlantar: false,
+        }),
     );
 
     const outlineB = stations.map((s) => ({ ...s.outline }));
