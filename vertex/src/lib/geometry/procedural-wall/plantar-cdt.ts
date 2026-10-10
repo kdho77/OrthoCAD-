@@ -311,20 +311,38 @@ export function assertPlantarDisk(faces: Array<[number, number, number]>, nBound
     assertLibraryDisk(faces, nBoundary);
 }
 
+function minLoopEdge(loop: PolyPoint[]): number {
+    let best = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        best = Math.min(best, Math.hypot(b.x - a.x, b.y - a.y));
+    }
+    return Number.isFinite(best) ? best : 1;
+}
+
 function cdtDiskOf(
     loop: PolyPoint[],
     extra: PolyPoint[],
     extraEdges: Array<[number, number]>,
     margin: number,
+    opts?: { steiner?: boolean },
 ): {
     points: PolyPoint[];
     faces: Array<[number, number, number]>;
     steinerCount: number;
     sliverMaxAspect: number;
 } {
-    const steiner = hexSteiner(loop, PLANTAR_STEINER_MM, margin).filter(
-        (p) => minDistToLoopXY(p.x, p.y, loop) >= PLANTAR_STEINER_EDGE_MIN_MM,
-    );
+    const minEdge = minLoopEdge(loop);
+    const dense = loop.length > 300 || minEdge < 0.75;
+    const keep = Math.max(PLANTAR_STEINER_EDGE_MIN_MM, dense ? Math.max(1.2, 2 * minEdge) : 0.5);
+    const step = Math.max(PLANTAR_STEINER_MM, keep * 1.5);
+    const steiner =
+        opts?.steiner === false || (dense && extra.length === 0)
+            ? []
+            : hexSteiner(loop, step, Math.max(margin, keep)).filter(
+                  (p) => minDistToLoopXY(p.x, p.y, loop) >= keep,
+              );
     const points = [...loop, ...extra, ...steiner];
     nudgeInteriorDuplicates(points, loop.length);
     const faces = libraryCdtInterior(points, loop.length, extraEdges);
@@ -350,6 +368,11 @@ function triangulateWithOffsetFallback(
         const msg = String(err);
         if (!msg.includes("sliver") && !msg.includes("[S1-CDT]") && !msg.includes("[S1-B]")) {
             throw err;
+        }
+        try {
+            return { ...cdtDiskOf(loop, [], [], margin, { steiner: false }), usedSliverFallback: false };
+        } catch {
+            /* dense B ring without Steiner still failed — try the inset strip */
         }
         const inset = clipperRoundInset(loop, PLANTAR_FALLBACK_INSET_MM);
         const extra: PolyPoint[] = inset.map((p) => ({ ...p, z: 0 }));
