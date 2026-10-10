@@ -343,7 +343,19 @@ export function syntheticBottomPattern(
         }
         return q;
     });
-    const closed = startAtPosteriorHeel(ensureCcw(offset));
+    let closed = startAtPosteriorHeel(ensureCcw(offset));
+    for (let pass = 0; pass < 4; pass++) {
+        closed = closed.map((b, i) => {
+            const a = closed[(i + closed.length - 1) % closed.length]!;
+            const c = closed[(i + 1) % closed.length]!;
+            return {
+                x: b.x * 0.6 + (a.x + c.x) * 0.2,
+                y: b.y * 0.6 + (a.y + c.y) * 0.2,
+                z: 0,
+            };
+        });
+    }
+    closed = startAtPosteriorHeel(ensureCcw(closed));
     const { cum: offCum, total: offTotal } = polylineArcLengths(closed);
     const s01Of = (p: PolyPoint): number => {
         let bestS = 0;
@@ -389,7 +401,7 @@ export function syntheticBottomPattern(
         targets,
         controlCount: 22,
         wFit: 1,
-        wFair: 0.28,
+        wFair: 0.34,
         sampleCount: Math.max(160, loop.length),
         constraints: {
             rim: loop,
@@ -402,26 +414,29 @@ export function syntheticBottomPattern(
             maxIters: 6,
         },
     });
-    const report = patternCurvatureReport(fit.samples, bounds, sign);
-    if (report.lateralMinK >= 0 && report.inflections === 2) return fit.samples;
-    return makeLateralConvex(fit.samples, sign);
+    return makeLateralConvex(fit.samples, sign, 36, yMid);
 }
 
 /** Laplacian only concave lateral verts so the lateral side stays convex. */
-function makeLateralConvex(loop: PolyPoint[], sign: MedialYSign, passes = 12): PolyPoint[] {
+function makeLateralConvex(
+    loop: PolyPoint[],
+    sign: MedialYSign,
+    passes = 12,
+    yMidHint?: number,
+): PolyPoint[] {
     if (loop.length < 4) return loop;
-    const yMid = rimYMid(loop);
+    const yMid = yMidHint ?? rimYMid(loop);
     let cur = loop.map((p) => ({ ...p }));
     for (let p = 0; p < passes; p++) {
         const { k } = closedSignedCurvature(cur);
         const next = cur.map((b, i) => {
             if ((b.y - yMid) * sign > 0) return b;
-            if ((k[i] ?? 0) >= -1e-4) return b;
+            if ((k[i] ?? 0) >= 1e-4) return b;
             const a = cur[(i + cur.length - 1) % cur.length]!;
             const c = cur[(i + 1) % cur.length]!;
             return {
-                x: b.x * 0.5 + (a.x + c.x) * 0.25,
-                y: b.y * 0.5 + (a.y + c.y) * 0.25,
+                x: b.x * 0.3 + (a.x + c.x) * 0.35,
+                y: b.y * 0.3 + (a.y + c.y) * 0.35,
                 z: b.z,
             };
         });

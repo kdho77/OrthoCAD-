@@ -364,15 +364,16 @@ export function densifyArchFanStations(
         const dsB = Math.hypot(nxt.outline.x - cur.outline.x, nxt.outline.y - cur.outline.y);
         const ratio = dsB / Math.max(dsR, 1e-6);
         const head = headingDeltaDeg(cur, nxt);
-        const needHead = head > HEADING_MAX_DEG + 1e-6;
-        const needRatio = inArch && (ratio > 1.35 || ratio < 0.7) && dsR > 1.2;
-        if ((!needHead && !needRatio) || dsR < 0.4) continue;
+        const needHead = head > HEADING_MAX_DEG + 1e-6 && dsB > 0.9;
+        const needRatio = inArch && (ratio > 1.5 || ratio < 0.65) && dsB > 1.2;
+        if (!needHead && !needRatio) continue;
         const nFromHead = needHead ? Math.ceil(head / HEADING_MAX_DEG) - 1 : 0;
         const nFromRatio = needRatio
             ? Math.max(1, Math.round(Math.max(ratio, 1 / Math.max(ratio, 1e-6))))
             : 0;
-        const nAdd = Math.min(8, Math.max(nFromHead, nFromRatio));
+        const nAdd = Math.min(2, Math.max(nFromHead, nFromRatio));
         if (nAdd < 1) continue;
+        if (dsB / (nAdd + 1) < 0.5) continue;
         let prevRim = rimLocal[i]!;
         const endRim = rimLocal[(i + 1) % n]!;
         for (let k = 1; k <= nAdd; k++) {

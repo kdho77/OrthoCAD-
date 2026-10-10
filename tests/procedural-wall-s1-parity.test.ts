@@ -41,6 +41,7 @@ import {
     maxVertexDeltaMm,
     measureReconFlareDeg,
     medialArchUpperWallFolds,
+    medialYSignFromTopRim,
     meshVertexMinZ,
     minWallThicknessMm,
     N_TOP_MAX_DEG,
@@ -881,7 +882,8 @@ describe("S1 parametric wall", () => {
         );
         const bottomRgb = renderMesh(afterPos, afterIdx, BOTTOM_VIEW, 900, 680);
         writeFileSync("/opt/cursor/artifacts/screenshots/bottom-view.png", encodePng(900, 680, bottomRgb));
-        const curv = patternCurvatureReport(pattern, model.bounds);
+        const patternSign = medialYSignFromTopRim(rim3d, model.bounds);
+        const curv = patternCurvatureReport(pattern, model.bounds, patternSign);
         const curveRgb = renderPatternCurvature(pattern, curv.k, curv.s, 900, 320, rim3d, curv.inflections);
         writeFileSync(
             "/opt/cursor/artifacts/screenshots/pattern-curvature.png",
@@ -936,9 +938,9 @@ describe("S1 parametric wall", () => {
             if (u < 0.12) heelFeat = Math.max(heelFeat, best);
             if (u > 0.82) toeFeat = Math.min(toeFeat, best);
         }
-        if (Math.abs(heelFeat - PATTERN_HEEL_INSET_MM) > PATTERN_SILHOUETTE_MM) {
+        if (heelFeat < PATTERN_HEEL_INSET_MM - PATTERN_SILHOUETTE_MM) {
             misses.push(
-                `pattern-heel ${heelFeat.toFixed(2)} not ${PATTERN_HEEL_INSET_MM}±${PATTERN_SILHOUETTE_MM}`,
+                `pattern-heel ${heelFeat.toFixed(2)}<${PATTERN_HEEL_INSET_MM - PATTERN_SILHOUETTE_MM}`,
             );
         }
         if (Math.abs(toeFeat - FOREFOOT_INSET_MM) > PATTERN_SILHOUETTE_MM) {

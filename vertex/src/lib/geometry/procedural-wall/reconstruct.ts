@@ -42,7 +42,6 @@ import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
 import { assertClosedStationRing, assertPeriodicQuadStrip, rotateStationRing } from "./ring-seam";
 import {
     countPlanViewChordCrossings,
-    mapLoopByMatchedFeatures,
     pairAtNativeTop,
     resampleBySmoothedParameter,
     retargetPlantarFromE,
@@ -478,9 +477,7 @@ export function reconstructProceduralWalls(
         );
         return rnd.E;
     });
-    const featureB = mapLoopByMatchedFeatures(pairing.top, hygiened.loop, model.bounds, medialYSign);
-    const featureX = countPlanViewChordCrossings(featureB, pairing.top);
-    pairing.plantar = featureX === 0 ? featureB : retargetPlantarFromE(E, hygiened.loop);
+    pairing.plantar = retargetPlantarFromE(E, hygiened.loop);
     pairing.sidewaysSkewMm = pairing.plantar.map((p, i) => {
         const e = E[i]!;
         const n = pairing.normals[i] ?? { x: 0, y: 1 };
@@ -534,8 +531,11 @@ export function reconstructProceduralWalls(
         return true;
     };
     applySmoothedB();
-    densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
-    applySmoothedB();
+    for (let pass = 0; pass < 4; pass++) {
+        const n0 = stations.length;
+        densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
+        if (stations.length === n0) break;
+    }
     assertClosedStationRing(stations, rimLocal);
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,
