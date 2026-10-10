@@ -173,6 +173,7 @@ type ColumnQualityUd = {
     maxFTurningDeg?: number;
     maxSignedFoldDeg?: number;
     nFoldsOver90?: number;
+    nRows?: number;
     columnCrossings?: number;
     maxSignedSeamNonFallbackDeg?: number;
     obliqueFallback?: Array<{
@@ -300,6 +301,37 @@ function sampleGateReport(
         selfIntersections: hits.real,
         archFoldGe10: archFolds.edgesAtLeast10Deg,
         obliqueFallback: sud.columnQuality?.obliqueFallback ?? [],
+    };
+}
+
+function compactGateTable(
+    name: string,
+    q: ColumnQualityUd | undefined,
+    extra: Record<string, number | string | boolean | undefined> = {},
+): Record<string, number | string | boolean | undefined> {
+    return {
+        name,
+        nS: extra.nS,
+        nRound: extra.nRound,
+        nLine: extra.nLine,
+        nFil: extra.nFil,
+        nRows: q?.nRows,
+        acrossP99: q?.maxAcrossP99Deg,
+        acrossP100: q?.maxAcrossDeg,
+        eTurn: q?.maxETurningDeg,
+        fTurn: q?.maxFTurningDeg,
+        g1E: q?.maxG1EDeg,
+        g1F: q?.maxG1FDeg,
+        topRound: q?.maxTopRoundDeg,
+        topSheet: q?.maxTopSheetEdgeDeg,
+        crossings: q?.columnCrossings,
+        fold: q?.maxSignedFoldDeg,
+        aspectRound: q?.maxAspectRound,
+        aspect: q?.maxAspectEverywhere,
+        spacingB: q?.maxNeighbourSpacingRatioB,
+        spacingR: q?.maxNeighbourSpacingRatioR,
+        fallback: q?.obliqueFallback?.length ?? 0,
+        misses: extra.misses,
     };
 }
 
@@ -853,12 +885,17 @@ describe("S1 parametric wall", () => {
                 maxFrameAngleDeg?: number;
                 maxOffPlaneMm?: number;
                 maxSidewaysMm?: number;
+                stationCount?: number;
+                nRound?: number;
+                nLine?: number;
+                nFil?: number;
                 columnQuality?: ColumnQualityUd;
             };
             const chordX = sud.chordCrossings ?? -1;
             const maxSkew = sud.maxSidewaysSkewMm ?? 0;
             const minZ = sud.meshMinZ ?? meshVertexMinZ(rebuilt);
             const degenerates = countDegenerateFaces(rebuilt);
+            const qMiss = qualityMisses(sud);
             results.push({
                 smoke: smoke.name,
                 selfIntersections: hits.real,
@@ -881,6 +918,13 @@ describe("S1 parametric wall", () => {
                 zeroArea: degenerates.zeroArea,
                 duplicateFaces: degenerates.duplicates,
                 bandTilt: Number((sud.bandTiltDegMax ?? 0).toFixed(2)),
+                ...compactGateTable(smoke.name, sud.columnQuality, {
+                    nS: sud.stationCount,
+                    nRound: sud.nRound,
+                    nLine: sud.nLine,
+                    nFil: sud.nFil,
+                    misses: qMiss.join("; "),
+                }),
             });
             if (hits.real !== 0) {
                 const cls = hits.byClass
@@ -931,7 +975,7 @@ describe("S1 parametric wall", () => {
                 );
             }
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) smokeMiss.push(`${smoke.name} fold`);
-            for (const m of qualityMisses(sud)) smokeMiss.push(`${smoke.name} ${m}`);
+            for (const m of qMiss) smokeMiss.push(`${smoke.name} ${m}`);
             {
                 const fb = sud.columnQuality?.obliqueFallback ?? [];
                 const nonFb = sud.columnQuality?.maxSignedSeamNonFallbackDeg ?? reconSeam.worstDeg;
@@ -988,8 +1032,24 @@ describe("S1 parametric wall", () => {
         }
         const exactRep = sampleGateReport(rebuilt, model, pattern);
         const misses = exactRep.misses.slice();
-        writeFileSync("/tmp/s1-sample-top.json", JSON.stringify(exactRep, null, 2));
-        console.log("[S1-SAMPLE-GATES]", JSON.stringify(exactRep, null, 2));
+        const sampleUd = rebuilt.userData as {
+            stationCount?: number;
+            nRound?: number;
+            nLine?: number;
+            nFil?: number;
+        };
+        const sampleTable = compactGateTable("SAMPLE", exactRep.columnQuality, {
+            nS: sampleUd.stationCount,
+            nRound: sampleUd.nRound,
+            nLine: sampleUd.nLine,
+            nFil: sampleUd.nFil,
+            misses: exactRep.misses.join("; "),
+        });
+        writeFileSync(
+            "/tmp/s1-sample-top.json",
+            JSON.stringify({ ...exactRep, gateTable: sampleTable }, null, 2),
+        );
+        console.log("[S1-SAMPLE-GATES]", JSON.stringify(sampleTable, null, 2));
         const stl = Buffer.from(geometryToBinarySTL(rebuilt));
         mkdirSync("/opt/cursor/artifacts", { recursive: true });
         mkdirSync("/opt/cursor/artifacts/screenshots", { recursive: true });
@@ -1217,9 +1277,25 @@ describe("S1 parametric wall", () => {
         );
         const defaultGlb = await exportObjectToGlb(meshFromGeometry(rebuilt));
         writeFileSync("/opt/cursor/artifacts/procedural-default.glb", Buffer.from(defaultGlb.arrayBuffer));
-        const defaultQ = (rebuilt.userData as { columnQuality?: ColumnQualityUd }).columnQuality;
-        writeFileSync("/tmp/s1-default.json", JSON.stringify({ columnQuality: defaultQ }, null, 2));
-        console.log("[S1-DEFAULT-GATES]", JSON.stringify({ columnQuality: defaultQ }, null, 2));
+        const defaultUd = rebuilt.userData as {
+            columnQuality?: ColumnQualityUd;
+            stationCount?: number;
+            nRound?: number;
+            nLine?: number;
+            nFil?: number;
+        };
+        const defaultTable = compactGateTable("Default", defaultUd.columnQuality, {
+            nS: defaultUd.stationCount,
+            nRound: defaultUd.nRound,
+            nLine: defaultUd.nLine,
+            nFil: defaultUd.nFil,
+            misses: qualityMisses(defaultUd).join("; "),
+        });
+        writeFileSync(
+            "/tmp/s1-default.json",
+            JSON.stringify({ columnQuality: defaultUd.columnQuality, gateTable: defaultTable }, null, 2),
+        );
+        console.log("[S1-DEFAULT-GATES]", JSON.stringify(defaultTable, null, 2));
         rebuilt.dispose();
         raw.dispose();
     }, 120_000);

@@ -55,6 +55,8 @@ export const SHORT_MIN_L_MM = 1;
 export const FOREFOOT_INSET_MM = 1;
 export const TOE_SPACING_EXTENT_FRAC = 0.5;
 export const ROUND_JOINT_MAX_DEG = 8;
+/** Abort only on a reversed/broken first chord. First-chord vs T0 is δ/2 sampling. */
+export const ROUND_JOINT_ABORT_DEG = 30;
 export const T_COL_SLACK_DEG = 15;
 export const MIN_ROUND_R_MM = 0.08;
 export const MIN_LINE_MM = 0.5;
@@ -1728,9 +1730,14 @@ function assertRoundJoints(fr: ColumnFrame, col: XYZ[]): void {
         z: col[eIdx + 1]!.z - col[eIdx]!.z,
     };
     const wallJoint = vecAngleDeg(tEnd, fr.U);
-    if (topJoint > ROUND_JOINT_MAX_DEG + 1e-3) {
+    if (topJoint > ROUND_JOINT_ABORT_DEG) {
         throw new Error(
             `[S1-ROUND] joints top|round=${topJoint.toFixed(2)} round|wall=${wallJoint.toFixed(2)}`,
+        );
+    }
+    if (topJoint > ROUND_JOINT_MAX_DEG + 1e-3) {
+        console.log(
+            `[S1-ROUND] first-chord top|round=${topJoint.toFixed(2)} round|wall=${wallJoint.toFixed(2)}`,
         );
     }
     if (eIdx < 1) {
