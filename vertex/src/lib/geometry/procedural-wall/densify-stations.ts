@@ -573,7 +573,7 @@ export function evenSplitSourceEdges(
         const sorted = edgeLen.slice().sort((a, b) => a - b);
         const median = sorted[Math.floor(sorted.length / 2)] ?? OUTLINE_STATION_SPACING_MM;
         const minE = sorted[0] ?? median;
-        let target = targetMm ?? Math.max(0.6, Math.min(1, median));
+        let target = targetMm ?? Math.max(0.6, Math.min(1.5, median));
         if (minE > PAIR_SPACING_MIN_MM && minE * NEIGHBOUR_SPACING_RATIO < target) {
             target = Math.max(PAIR_SPACING_MIN_MM * 2, minE * NEIGHBOUR_SPACING_RATIO);
         }

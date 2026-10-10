@@ -2693,6 +2693,13 @@ export function buildBezierColumns(
     );
     const frames = initColumnFrames(stations, junctions, defaults, flare, topZ, plantarSlopeRad);
     const spacing = medianStationSpacing(stations);
+    let maxRing = spacing;
+    for (let i = 0; i < frames.length; i++) {
+        const a = frames[i]!.R;
+        const b = frames[(i + 1) % frames.length]!.R;
+        maxRing = Math.max(maxRing, dist3(a, b));
+    }
+    const rowSpacing = Math.max(spacing, OUTLINE_STATION_SPACING_MM);
     const minWallClamps = clampFramesMinWall(frames, topZ, minWallMm);
     const smoothLog = applySmooth(frames, FRAME_SMOOTH_ITERS);
     console.log("[S1-SMOOTH] before", JSON.stringify(smoothLog.before));
@@ -2707,11 +2714,11 @@ export function buildBezierColumns(
         const S = Math.abs(ala.phiFil1 - ala.phiFil0);
         const dL = lastFilletDLRad(S, 1);
         nFilStar = Math.max(nFilStar, Math.ceil(Math.max(S - dL, 1e-12) / Math.max(stepRad, 1e-9)));
-        nLineNeed = Math.max(nLineNeed, lineRowCount(ala.L, spacing));
+        nLineNeed = Math.max(nLineNeed, lineRowCount(ala.L, rowSpacing));
     }
     nRoundStar = Math.max(TOP_ROUND_MIN_ROWS, nRoundStar);
     nFilStar = Math.max(MIN_FILLET_RINGS, nFilStar);
-    const minStep = spacing / ASPECT_EVERYWHERE_MAX;
+    const minStep = maxRing / ASPECT_EVERYWHERE_MAX;
     let minRoundArc = Infinity;
     let minFilArc = Infinity;
     let minLineLen = Infinity;
@@ -2778,7 +2785,7 @@ export function buildBezierColumns(
         }
     }
     {
-        const minStep2 = spacing / ASPECT_EVERYWHERE_MAX;
+        const minStep2 = maxRing / ASPECT_EVERYWHERE_MAX;
         let nR = TOP_ROUND_MIN_ROWS;
         let nF = MIN_FILLET_RINGS;
         let nL = 1;
@@ -2789,7 +2796,7 @@ export function buildBezierColumns(
             nR = Math.max(nR, Math.ceil(Math.abs(fr.roundSweepRad) / Math.max(stepRad, 1e-9)));
             const S = Math.abs(fr.filletSweepRad);
             nF = Math.max(nF, Math.ceil(Math.max(S - (fr.lastDlRad || 0), 1e-12) / Math.max(stepRad, 1e-9)));
-            nL = Math.max(nL, lineRowCount(fr.lineLengthMm, spacing));
+            nL = Math.max(nL, lineRowCount(fr.lineLengthMm, rowSpacing));
             minRa = Math.min(minRa, Math.abs(fr.rTop * fr.roundSweepRad));
             minFa = Math.min(minFa, Math.abs(fr.rFillet * fr.filletSweepRad));
             minLn = Math.min(minLn, fr.lineLengthMm);
