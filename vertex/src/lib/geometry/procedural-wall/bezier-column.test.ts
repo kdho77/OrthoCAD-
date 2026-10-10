@@ -862,6 +862,37 @@ describe("bezier column", () => {
         expect(dist3ish(last, B)).toBeGreaterThanOrEqual(lastFilletCMinMm(local) - 1e-3);
     });
 
+    test("lastChord holds after φ1 restore changes heading", () => {
+        const local = 1.3;
+        const R = { x: 0, y: 0, z: 12 };
+        const B = { x: 8, y: 0, z: 0 };
+        const lock = (75 * Math.PI) / 180;
+        const sw = constructSweepRule(
+            R,
+            B,
+            { x: 0, y: 0, z: 1 },
+            0.5,
+            0.05,
+            { x: 1, y: 0 },
+            { x: 1, y: 0 },
+            { x: 0, y: 1, z: 0 },
+            0,
+            undefined,
+            local,
+            undefined,
+            lock,
+        );
+        const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
+        const pl = Math.hypot(sw.d.x, sw.d.y);
+        const cosT = pl > 1e-9 ? Math.max(0, Math.min(1, sw.d.x / pl)) : 1;
+        const dL = lastFilletDLRad(S, cosT);
+        expect(lastStepChordMm(sw.r2, dL)).toBeGreaterThanOrEqual(lastFilletCMinMm(local) - 1e-9);
+        const pts = sampleSweepRule(sw, R, B, 26, undefined, dL);
+        expect(dist3ish(pts[pts.length - 2]!, pts[pts.length - 1]!)).toBeGreaterThanOrEqual(
+            lastFilletCMinMm(local) - 1e-3,
+        );
+    });
+
     test("fillet samples stay above a 4deg posted plantar plane", () => {
         const tilt = (4 * Math.PI) / 180;
         const n = { x: 0, y: Math.sin(tilt), z: Math.cos(tilt) };

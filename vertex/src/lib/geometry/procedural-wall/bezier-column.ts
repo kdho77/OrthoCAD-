@@ -1563,34 +1563,29 @@ export function constructSweepRule(
         }
     }
 
-    // Floor r2 on the converged S. Rebuild the fillet with the same U so S does not chase.
-    const preFloorPhi = phiRound1;
-    if (!freezeLastR2) {
-        const U = filletU();
-        const S0 = Math.abs(fil.phi1 - fil.phi0);
-        for (let grow = 0; grow < 3; grow++) {
+    // Floor r2 on the real last step. U is frozen so S does not chase when r2 grows.
+    // φ1 restore changes heading (cosT) and therefore dL — re-floor after that.
+    const frozenU = filletU();
+    const floorLastStepKeepU = (): boolean => {
+        let grew = false;
+        for (let grow = 0; grow < 6; grow++) {
+            const S = Math.abs(fil.phi1 - fil.phi0);
             const cosT = planCosT(d, nB, h);
-            const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S0, cosT, r1Floor);
+            const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S, cosT, r1Floor);
             if (r2 + 1e-9 >= floored.r2Min && r1 <= floored.r1 + 1e-9) break;
+            grew = true;
             r1 = floored.r1;
             r2 = floored.r2;
             C1 = add3(R, eN, -r1);
             E = sweptRoundPoint(C1, r1, eN, eW, phiRound1);
-            fil = constructFillet(B, nB, r2, U, plantarSlopeRad, nPlant);
+            fil = constructFillet(B, nB, r2, frozenU, plantarSlopeRad, nPlant);
             F = { ...fil.Pw };
             const next = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
             if (hypot3(next) > 1e-9) d = unit3(next);
         }
-        const dL = lastFilletDLRad(S0, planCosT(d, nB, h));
-        const need = lastFilletR2MinMm(localSpacing, dL);
-        if (r2 + 1e-9 < need) {
-            r2 = need;
-            fil = constructFillet(B, nB, r2, U, plantarSlopeRad, nPlant);
-            F = { ...fil.Pw };
-        }
-    }
-
-    if (!freezeLastR2) {
+        return grew;
+    };
+    const restorePhiKeepFillet = (prePhi: number): void => {
         const measureG1 = (): { g1E: number; g1F: number } => {
             const next = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
             if (hypot3(next) > 1e-9) d = unit3(next);
@@ -1611,20 +1606,28 @@ export function constructSweepRule(
         };
         const g1Aim = measureG1();
         if (g1Aim.g1E > G1_MAX_DEG + 1e-6 || g1Aim.g1F > G1_MAX_DEG + 1e-6) {
-            const free = preFloorPhi;
-            let bestPhi = free;
+            let bestPhi = prePhi;
             let bestScore = Math.max(g1Aim.g1E, g1Aim.g1F);
             for (let k = -16; k <= 16; k++) {
-                const m = applyPhiKeepFillet(free + (k * Math.PI) / 180);
+                const m = applyPhiKeepFillet(prePhi + (k * Math.PI) / 180);
                 const score = Math.max(m.g1E, m.g1F);
                 if (score < bestScore) {
                     bestScore = score;
-                    bestPhi = free + (k * Math.PI) / 180;
+                    bestPhi = prePhi + (k * Math.PI) / 180;
                 }
             }
             applyPhiKeepFillet(bestPhi);
         }
+    };
+    if (!freezeLastR2) {
+        for (let pass = 0; pass < 3; pass++) {
+            const prePhi = phiRound1;
+            const grew = floorLastStepKeepU();
+            restorePhiKeepFillet(prePhi);
+            if (!grew && pass > 0) break;
+        }
     }
+    floorLastStepKeepU();
 
     const tE = sweptRoundTangent(eN, eW, phiRound1);
     const tFPath = unit3({ x: -fil.d.x, y: -fil.d.y, z: -fil.d.z });
@@ -2116,6 +2119,18 @@ function columnPoints(
     fr.roundRows = counts?.nRound ?? nRound;
     assembled[0] = { ...fr.R };
     assembled[assembled.length - 1] = { ...fr.B };
+    if (assembled.length >= 2) {
+        const last = assembled[assembled.length - 2]!;
+        const B = assembled[assembled.length - 1]!;
+        const cMin = lastFilletCMinMm(local);
+        const chord = dist3(last, B);
+        if (chord + 1e-4 < cMin) {
+            const at = fr.stationIndex ?? -1;
+            throw new Error(
+                `[S1-I] lastChord ${chord.toFixed(4)} < C_MIN ${cMin.toFixed(4)} at station ${at}`,
+            );
+        }
+    }
     return assembled;
 }
 
