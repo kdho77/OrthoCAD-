@@ -861,9 +861,13 @@ export function plantarFlatDeltaMm(
 ): number {
     const pos = geo.getAttribute("position").array as Float32Array;
     const plantarStart = (geo.userData as { plantarStart?: number }).plantarStart ?? 0;
+    const plantarEnd =
+        (geo.userData as { plantarEnd?: number }).plantarEnd ??
+        plantarStart + ((geo.userData as { plantarVertexCount?: number }).plantarVertexCount ?? 0);
     const n = pos.length / 3;
+    const end = plantarEnd > plantarStart ? Math.min(n, plantarEnd) : n;
     let max = 0;
-    for (let i = plantarStart; i < n; i++) {
+    for (let i = plantarStart; i < end; i++) {
         const x = pos[i * 3]!;
         const y = pos[i * 3 + 1]!;
         const z = pos[i * 3 + 2]!;

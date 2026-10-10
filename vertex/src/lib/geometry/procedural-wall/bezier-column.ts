@@ -1272,17 +1272,20 @@ export function sampleFilletPiecePoints(
     if (lastLine > 1e-12 && n >= 2 && bodyLen > 1e-12) {
         const lo = FILLET_FIRST_STEP_MIN_RATIO * lastLine;
         const hi = FILLET_FIRST_STEP_MAX_RATIO * lastLine;
-        const equal = pointAt(bodyLen / n);
-        const equalChord = dist3(Fpiece, equal);
+        const equalChord = dist3(Fpiece, pointAt(bodyLen / n));
         const target = Math.min(hi, Math.max(lo, equalChord));
+        const minRest = (n - 1) * Math.max(cMin, 1e-6);
+        const maxFirst = Math.max(1e-9, bodyLen - minRest);
         let a = 1e-9;
-        let b = Math.max(1e-9, bodyLen * 0.85);
-        for (let it = 0; it < 24; it++) {
-            const mid = 0.5 * (a + b);
-            if (dist3(Fpiece, pointAt(mid)) < target) a = mid;
-            else b = mid;
+        let b = Math.min(maxFirst, bodyLen * 0.85);
+        if (b > a && target <= dist3(Fpiece, pointAt(maxFirst)) + 1e-9) {
+            for (let it = 0; it < 24; it++) {
+                const mid = 0.5 * (a + b);
+                if (dist3(Fpiece, pointAt(mid)) < target) a = mid;
+                else b = mid;
+            }
+            firstS = Math.min(maxFirst, 0.5 * (a + b));
         }
-        firstS = 0.5 * (a + b);
     }
     if (n >= 2 && firstS > 1e-12 && Math.abs(firstS - bodyLen / n) > 1e-12) {
         pts.push(pointAt(firstS));
@@ -1978,7 +1981,6 @@ export function sampleArcLineArc(
     for (const p of fil.pts) pts.push(p);
     pts.push({ ...B });
     ensureColumnMinEdge(pts, MIN_EDGE_MM);
-    matchFirstFilletStep(pts, nRound, nLine);
     return assertPieceSpacing(pts, MIN_EDGE_MM, station);
 }
 
@@ -2208,30 +2210,7 @@ export function sampleSweepRule(
     for (const p of fil.pts) pts.push(p);
     pts.push({ ...B });
     ensureColumnMinEdge(pts, MIN_EDGE_MM);
-    matchFirstFilletStep(pts, nRound, nLine);
     return strictSpacing ? assertPieceSpacing(pts, MIN_EDGE_MM, station) : pts;
-}
-
-function matchFirstFilletStep(pts: XYZ[], nRound: number, nLine: number): void {
-    const fIdx = nRound + nLine;
-    const firstIdx = fIdx + 1;
-    if (fIdx < 1 || firstIdx >= pts.length - 1) return;
-    const lastLine = dist3(pts[fIdx - 1]!, pts[fIdx]!);
-    if (lastLine < 1e-12) return;
-    const first = dist3(pts[fIdx]!, pts[firstIdx]!);
-    const lo = FILLET_FIRST_STEP_MIN_RATIO * lastLine;
-    const hi = FILLET_FIRST_STEP_MAX_RATIO * lastLine;
-    if (first + 1e-9 >= lo && first <= hi + 1e-9) return;
-    const target = Math.min(hi, Math.max(lo, first));
-    const origin = pts[fIdx]!;
-    const cur = pts[firstIdx]!;
-    const dx = cur.x - origin.x;
-    const dy = cur.y - origin.y;
-    const dz = cur.z - origin.z;
-    const len = Math.hypot(dx, dy, dz);
-    if (len < 1e-12) return;
-    const s = target / len;
-    pts[firstIdx] = { x: origin.x + dx * s, y: origin.y + dy * s, z: origin.z + dz * s };
 }
 
 /** Walk a short interior sample toward the next point so the row map stays

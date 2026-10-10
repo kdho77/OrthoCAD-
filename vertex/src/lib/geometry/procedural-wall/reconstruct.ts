@@ -459,90 +459,84 @@ function splitAcuteTriangles(
     generatedStart = 0,
     minRad = SLIVER_MIN_ANGLE_RAD,
 ): void {
-    for (let pass = 0; pass < 12; pass++) {
-        const edgeFaces = new Map<string, number[]>();
-        for (let t = 0; t < indices.length; t += 3) {
-            const vs = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
-            for (let k = 0; k < 3; k++) {
-                const a = vs[k]!;
-                const b = vs[(k + 1) % 3]!;
-                const key = a < b ? `${a},${b}` : `${b},${a}`;
-                const arr = edgeFaces.get(key);
-                if (arr) arr.push(t);
-                else edgeFaces.set(key, [t]);
-            }
-        }
-        let hit = -1;
-        let longA = 0;
-        let longB = 0;
+    const edgeKey = (a: number, b: number): string => (a < b ? `${a},${b}` : `${b},${a}`);
+    const edgeLen = (a: number, b: number): number =>
+        Math.hypot(
+            positions[b * 3]! - positions[a * 3]!,
+            positions[b * 3 + 1]! - positions[a * 3 + 1]!,
+            positions[b * 3 + 2]! - positions[a * 3 + 2]!,
+        );
+    for (let pass = 0; pass < 8; pass++) {
+        const split = new Map<string, [number, number]>();
         for (let t = 0; t < indices.length; t += 3) {
             const a = indices[t]!;
             const b = indices[t + 1]!;
             const c = indices[t + 2]!;
             if (triMinAngleRad(positions, a, b, c) + 1e-12 >= minRad) continue;
             const edges: Array<[number, number, number]> = [
-                [
-                    a,
-                    b,
-                    Math.hypot(
-                        positions[b * 3]! - positions[a * 3]!,
-                        positions[b * 3 + 1]! - positions[a * 3 + 1]!,
-                        positions[b * 3 + 2]! - positions[a * 3 + 2]!,
-                    ),
-                ],
-                [
-                    b,
-                    c,
-                    Math.hypot(
-                        positions[c * 3]! - positions[b * 3]!,
-                        positions[c * 3 + 1]! - positions[b * 3 + 1]!,
-                        positions[c * 3 + 2]! - positions[b * 3 + 2]!,
-                    ),
-                ],
-                [
-                    c,
-                    a,
-                    Math.hypot(
-                        positions[a * 3]! - positions[c * 3]!,
-                        positions[a * 3 + 1]! - positions[c * 3 + 1]!,
-                        positions[a * 3 + 2]! - positions[c * 3 + 2]!,
-                    ),
-                ],
+                [a, b, edgeLen(a, b)],
+                [b, c, edgeLen(b, c)],
+                [c, a, edgeLen(c, a)],
             ];
             edges.sort((p, q) => q[2]! - p[2]!);
             const pick = edges.find((e) => e[0]! >= generatedStart && e[1]! >= generatedStart);
             if (!pick) continue;
-            longA = pick[0]!;
-            longB = pick[1]!;
-            hit = t;
-            break;
+            split.set(edgeKey(pick[0]!, pick[1]!), [pick[0]!, pick[1]!]);
         }
-        if (hit < 0) return;
-        const mid = positions.length / 3;
-        positions.push(
-            0.5 * (positions[longA * 3]! + positions[longB * 3]!),
-            0.5 * (positions[longA * 3 + 1]! + positions[longB * 3 + 1]!),
-            0.5 * (positions[longA * 3 + 2]! + positions[longB * 3 + 2]!),
-        );
-        const key = longA < longB ? `${longA},${longB}` : `${longB},${longA}`;
-        const faces = (edgeFaces.get(key) ?? [hit]).slice().sort((a, b) => b - a);
-        for (const t of faces) {
-            const vs = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
-            let done = false;
-            for (let k = 0; k < 3; k++) {
-                const p = vs[k]!;
-                const q = vs[(k + 1) % 3]!;
-                const r = vs[(k + 2) % 3]!;
-                if ((p !== longA || q !== longB) && (p !== longB || q !== longA)) continue;
-                indices[t] = p;
-                indices[t + 1] = mid;
-                indices[t + 2] = r;
-                indices.push(mid, q, r);
-                done = true;
-                break;
+        if (!split.size) return;
+        const midOf = new Map<string, number>();
+        for (const [key, [a, b]] of split) {
+            const mid = positions.length / 3;
+            positions.push(
+                0.5 * (positions[a * 3]! + positions[b * 3]!),
+                0.5 * (positions[a * 3 + 1]! + positions[b * 3 + 1]!),
+                0.5 * (positions[a * 3 + 2]! + positions[b * 3 + 2]!),
+            );
+            midOf.set(key, mid);
+        }
+        const next: number[] = [];
+        const push = (a: number, b: number, c: number): void => {
+            next.push(a, b, c);
+        };
+        for (let t = 0; t < indices.length; t += 3) {
+            const p = indices[t]!;
+            const q = indices[t + 1]!;
+            const r = indices[t + 2]!;
+            const pq = midOf.get(edgeKey(p, q));
+            const qr = midOf.get(edgeKey(q, r));
+            const rp = midOf.get(edgeKey(r, p));
+            const n = (pq != null ? 1 : 0) + (qr != null ? 1 : 0) + (rp != null ? 1 : 0);
+            if (n === 0) push(p, q, r);
+            else if (n === 1 && pq != null) {
+                push(p, pq, r);
+                push(pq, q, r);
+            } else if (n === 1 && qr != null) {
+                push(p, q, qr);
+                push(p, qr, r);
+            } else if (n === 1 && rp != null) {
+                push(p, q, rp);
+                push(q, r, rp);
+            } else if (n === 2 && pq != null && qr != null && rp == null) {
+                push(p, pq, r);
+                push(pq, q, qr);
+                push(pq, qr, r);
+            } else if (n === 2 && qr != null && rp != null && pq == null) {
+                push(p, q, rp);
+                push(q, qr, rp);
+                push(qr, r, rp);
+            } else if (n === 2 && rp != null && pq != null && qr == null) {
+                push(p, pq, rp);
+                push(pq, q, r);
+                push(pq, r, rp);
+            } else if (pq != null && qr != null && rp != null) {
+                push(p, pq, rp);
+                push(pq, q, qr);
+                push(rp, qr, r);
+                push(pq, qr, rp);
             }
-            if (!done) continue;
         }
+        indices.length = 0;
+        for (let i = 0; i < next.length; i++) indices.push(next[i]!);
     }
 }
 
@@ -973,6 +967,7 @@ export function reconstructProceduralWalls(
         pushTri(plantarVert(f[0]!), plantarVert(f[2]!), plantarVert(f[1]!));
     }
 
+    const plantarEnd = positions.length / 3;
     const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ);
     assertGeneratedEdgesUsedTwice(indices, generatedStart);
     const geo = new BufferGeometry();
@@ -1097,6 +1092,7 @@ export function reconstructProceduralWalls(
         generatedStart,
         generatedCount: positions.length / 3 - generatedStart,
         plantarStart,
+        plantarEnd,
         outlineRow: grid.outlineRow,
         innerRow: grid.innerRow,
         fieldsBeforeBF: grid.fieldsBeforeBF,
