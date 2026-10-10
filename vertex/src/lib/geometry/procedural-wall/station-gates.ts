@@ -547,7 +547,7 @@ export function fairMovedPattern(input: {
     if (input.bounds) {
         const hygiene = movedPatternHygiene(best, input.bounds, sign);
         if (hygiene.report.maxAbsDkDs > PATTERN_MAX_DKDS) {
-            best = laplacianClosedPlan(best, 4);
+            best = laplacianClosedPlan(best, 6);
             best = scaleToMinInset(best, rim, floorInset);
         }
     }
@@ -578,7 +578,7 @@ export function smoothMovedStationOutline(stations: HermiteStation[], loop: Poly
     if (stations.length < 3 || loop.length < 3) return;
     const n = stations.length;
     let pts = stations.map((s) => ({ ...s.outline, z: 0 }));
-    pts = laplacianClosedPlan(pts, 2);
+    pts = laplacianClosedPlan(pts, 5);
     for (let i = 0; i < n; i++) {
         const snapped = nearestOnLoop(pts[i]!, loop);
         stations[i]!.outline = { x: snapped.x, y: snapped.y, z: 0 };

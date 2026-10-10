@@ -708,6 +708,7 @@ export function constructFilletFromF(
     plantarSlopeRad: number,
     nPlantar?: XYZ,
     rHint = 0,
+    E?: XYZ,
 ): ConstructedFillet {
     const frame = resolvePlantarFrame(h, plantarSlopeRad, nPlantar);
     const dlt = { x: F.x - B.x, y: F.y - B.y, z: F.z - B.z };
@@ -715,11 +716,20 @@ export function constructFilletFromF(
     const z = dlt.x * frame.ez.x + dlt.y * frame.ez.y + dlt.z * frame.ez.z;
     const r = z > 1e-9 ? (s * s + z * z) / (2 * z) : Math.max(rHint, 1e-6);
     const tan = {
-        x: -(z - r) * frame.ew.x + s * frame.ez.x,
-        y: -(z - r) * frame.ew.y + s * frame.ez.y,
-        z: -(z - r) * frame.ew.z + s * frame.ez.z,
+        x: (z - r) * frame.ew.x - s * frame.ez.x,
+        y: (z - r) * frame.ew.y - s * frame.ez.y,
+        z: (z - r) * frame.ew.z - s * frame.ez.z,
     };
-    const U = hypot3(tan) > 1e-9 ? unit3(tan) : { x: 0, y: 0, z: 1 };
+    let U = hypot3(tan) > 1e-9 ? unit3(tan) : { x: 0, y: 0, z: 1 };
+    if (E) {
+        const toE = { x: E.x - F.x, y: E.y - F.y, z: E.z - F.z };
+        if (hypot3(toE) > 1e-9) {
+            U = unit3(toE);
+            if (U.x * tan.x + U.y * tan.y + U.z * tan.z < 0) {
+                U = { x: -U.x, y: -U.y, z: -U.z };
+            }
+        }
+    }
     const fil = constructFillet(B, h, r, U, plantarSlopeRad, nPlantar);
     const phiF = Math.atan2(z - r, s);
     fil.Pw = { ...F };
@@ -2392,7 +2402,7 @@ function lineFilletG1Deg(E: XYZ, F: XYZ, fil: ConstructedFillet): number {
 
 function applyLockedFToSweep(fr: ColumnFrame, sw: SweepRule, F: XYZ): void {
     const nB = fr.nB ?? fr.h;
-    const fil = constructFilletFromF(fr.B, F, nB, fr.plantarSlopeRad, fr.nPlantar, fr.rFillet);
+    const fil = constructFilletFromF(fr.B, F, nB, fr.plantarSlopeRad, fr.nPlantar, fr.rFillet, fr.E);
     const U = { x: fr.E.x - F.x, y: fr.E.y - F.y, z: fr.E.z - F.z };
     const u = hypot3(U) > 1e-9 ? unit3(U) : sw.d;
     const height = Math.max(fr.R.z - fr.B.z, 0.5);
@@ -2435,18 +2445,33 @@ function fBetweenEB(E: XYZ, F: XYZ, B: XYZ): boolean {
 function honorLockedF(fr: ColumnFrame, sw: SweepRule): void {
     const locked = fr.fLocked;
     if (!locked) return;
-    if (!fBetweenEB(fr.E, locked, fr.B)) return;
-    const nB = fr.nB ?? fr.h;
-    const fil = constructFilletFromF(fr.B, locked, nB, fr.plantarSlopeRad, fr.nPlantar, fr.rFillet);
-    const U = { x: fr.E.x - locked.x, y: fr.E.y - locked.y, z: fr.E.z - locked.z };
-    if (hypot3(U) < 1e-9) return;
-    const u = unit3(U);
-    const dE = projectOntoSpan(u, sw.eW, sw.eN);
+    const alaF = { ...sw.F };
     const tE = sweptRoundTangent(sw.eN, sw.eW, sw.phiRound1);
-    const g1E = hypot3(dE) > 1e-9 ? vecAngleDeg(unit3(dE), tE) : 0;
-    const g1F = lineFilletG1Deg(fr.E, locked, fil);
-    if (g1E > G1_MAX_DEG + 1e-6 || g1F > G1_MAX_DEG + 1e-6) return;
-    applyLockedFToSweep(fr, sw, locked);
+    const g1EOf = (F: XYZ): number => {
+        const U = { x: fr.E.x - F.x, y: fr.E.y - F.y, z: fr.E.z - F.z };
+        if (hypot3(U) < 1e-9) return 180;
+        const dE = projectOntoSpan(unit3(U), sw.eW, sw.eN);
+        return hypot3(dE) > 1e-9 ? vecAngleDeg(unit3(dE), tE) : 0;
+    };
+    const ok = (F: XYZ): boolean => fBetweenEB(fr.E, F, fr.B) && g1EOf(F) <= G1_MAX_DEG + 1e-6;
+    if (ok(locked)) {
+        applyLockedFToSweep(fr, sw, locked);
+        return;
+    }
+    let lo = 0;
+    let hi = 1;
+    let best = alaF;
+    for (let k = 0; k < 14; k++) {
+        const mid = 0.5 * (lo + hi);
+        const cand = lerp3(alaF, locked, mid);
+        if (ok(cand)) {
+            lo = mid;
+            best = cand;
+        } else {
+            hi = mid;
+        }
+    }
+    if (dist3(best, alaF) > 1e-6) applyLockedFToSweep(fr, sw, best);
 }
 
 /** Laplacian on φ1 so the E ring plan-turn drops without moving R. */
@@ -2454,6 +2479,7 @@ export function smoothEPhi(frames: ColumnFrame[]): void {
     if (frames.length < 3) return;
     for (let pass = 0; pass < 3; pass++) {
         if (
+            pass > 0 &&
             ringTurningDeg(
                 frames.map((f) => f.E),
                 true,
