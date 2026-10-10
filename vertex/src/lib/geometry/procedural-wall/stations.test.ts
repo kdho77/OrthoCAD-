@@ -11,6 +11,7 @@ import {
     pairByHarmonic,
     pairByOutwardRay,
     raySegHit2D,
+    reparameterizeBArcLength,
     smoothAndCapFlare,
     smoothClosedParameters,
     spreadClosedOnLoop,
@@ -165,6 +166,40 @@ describe("outward-ray station pairing", () => {
             const a = spread[i]!;
             const b = spread[(i + 1) % spread.length]!;
             expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeGreaterThan(0.15);
+        }
+    });
+
+    test("reparameterizeBArcLength equalizes B and stays monotone", () => {
+        const n = 20;
+        const loop = Array.from({ length: 80 }, (_, i) => {
+            const a = (i / 80) * Math.PI * 2;
+            return { x: 20 * Math.cos(a), y: 12 * Math.sin(a), z: 0 };
+        });
+        const stations = Array.from({ length: n }, (_, i) => {
+            const t = i === 4 ? 0.08 : i / n;
+            const p = loop[Math.round(t * 80) % 80]!;
+            const a = (i / n) * Math.PI * 2;
+            return {
+                tB: t,
+                outline: { x: p.x, y: p.y, z: 0 },
+                rim: { x: 24 * Math.cos(a), y: 15 * Math.sin(a), z: 8 },
+            };
+        });
+        const ok = reparameterizeBArcLength(stations, loop);
+        expect(ok).toBe(true);
+        const ds: number[] = [];
+        for (let i = 0; i < n; i++) {
+            const a = stations[i]!.outline;
+            const b = stations[(i + 1) % n]!.outline;
+            ds.push(Math.hypot(b.x - a.x, b.y - a.y));
+        }
+        const lo = Math.min(...ds);
+        const hi = Math.max(...ds);
+        expect(hi / lo).toBeLessThanOrEqual(1.5);
+        const t = stations.map((s) => s.tB ?? 0);
+        for (let i = 1; i < n; i++) {
+            const d = (t[i]! - t[i - 1]! + 1) % 1;
+            expect(d).toBeGreaterThan(0);
         }
     });
 });

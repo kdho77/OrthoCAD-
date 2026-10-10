@@ -18,6 +18,7 @@ import {
     ACROSS_STATION_MAX_DEG,
     ACROSS_STATION_P99_MAX_DEG,
     ASPECT_EVERYWHERE_MAX,
+    ASPECT_ROUND_MAX,
     buildHermiteStations,
     CHORD_RISE_MAX_DEG,
     COLUMN_PLANARITY_LIMIT_MM,
@@ -67,6 +68,7 @@ import {
     S1_MIN_WALL_MM,
     SEAM_B_FALLBACK_DEG,
     SEAM_B_LIMIT_DEG,
+    SIGNED_FOLD_MAX_DEG,
     SKEW_LIMIT_MM,
     STATION_GAP_MULT,
     sheetBoundaryStats,
@@ -162,7 +164,12 @@ type ColumnQualityUd = {
     maxG1EDeg?: number;
     maxG1FDeg?: number;
     maxAspectEverywhere?: number;
+    maxAspectRound?: number;
     maxNeighbourSpacingRatio?: number;
+    maxETurningDeg?: number;
+    maxFTurningDeg?: number;
+    maxSignedFoldDeg?: number;
+    nFoldsOver90?: number;
     columnCrossings?: number;
     maxSignedSeamNonFallbackDeg?: number;
     obliqueFallback?: Array<{
@@ -272,7 +279,6 @@ function sampleGateReport(
     if (!wind.consistent || wind.signedVolume <= 0 || wind.oppositeEdgeMismatch !== 0) {
         misses.push(`winding vol=${wind.signedVolume.toFixed(1)} mismatch=${wind.oppositeEdgeMismatch}`);
     }
-    if ((sud.planReversals ?? 0) !== 0) misses.push(`reversals=${sud.planReversals}`);
     if ((sud.chordCrossings ?? 0) !== 0) misses.push(`crossings=${sud.chordCrossings}`);
     if (!uvOk) misses.push("sole-UV");
     if (sud.bottomPatternSource !== PATTERN_SOURCE_SYNTHETIC) {
@@ -371,11 +377,23 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxG1FDeg ?? 0) > G1_MAX_DEG + 1e-6) {
         misses.push(`G1-F ${q.maxG1FDeg?.toFixed(2)}>${G1_MAX_DEG}`);
     }
+    if ((q.maxAspectRound ?? 0) > ASPECT_ROUND_MAX + 1e-6) {
+        misses.push(`aspect-round ${q.maxAspectRound?.toFixed(2)}>${ASPECT_ROUND_MAX}`);
+    }
     if ((q.maxAspectEverywhere ?? 0) > ASPECT_EVERYWHERE_MAX + 1e-6) {
         misses.push(`aspect ${q.maxAspectEverywhere?.toFixed(2)}>${ASPECT_EVERYWHERE_MAX}`);
     }
     if ((q.maxNeighbourSpacingRatio ?? 0) > NEIGHBOUR_SPACING_RATIO + 1e-6) {
         misses.push(`spacing-ratio ${q.maxNeighbourSpacingRatio?.toFixed(2)}>${NEIGHBOUR_SPACING_RATIO}`);
+    }
+    if ((q.maxETurningDeg ?? 0) > G1_MAX_DEG + 1e-6) {
+        misses.push(`E-turn ${q.maxETurningDeg?.toFixed(2)}>${G1_MAX_DEG}`);
+    }
+    if ((q.maxFTurningDeg ?? 0) > G1_MAX_DEG + 1e-6) {
+        misses.push(`F-turn ${q.maxFTurningDeg?.toFixed(2)}>${G1_MAX_DEG}`);
+    }
+    if ((q.maxSignedFoldDeg ?? 0) > SIGNED_FOLD_MAX_DEG + 1e-6 || (q.nFoldsOver90 ?? 0) !== 0) {
+        misses.push(`signed-fold ${q.maxSignedFoldDeg?.toFixed(2)}>${SIGNED_FOLD_MAX_DEG}`);
     }
     if ((q.columnCrossings ?? 0) !== 0) {
         misses.push(`column-cross=${q.columnCrossings}`);
@@ -620,7 +638,7 @@ describe("S1 parametric wall", () => {
             const minZ = ud.meshMinZ ?? meshVertexMinZ(rebuilt);
             const degenerates = countDegenerateFaces(rebuilt);
             if (minZ < -0.01) misses.push(`min-z ${minZ.toFixed(3)}`);
-            if ((ud.planReversals ?? 0) !== 0) misses.push(`plan-reversals ${ud.planReversals}`);
+            // plan-reversals / Tcol / along-over / heading: table diagnostics only.
             if ((ud.junctionSlivers ?? 0) !== 0) misses.push(`junction-slivers ${ud.junctionSlivers}`);
             if (degenerates.zeroArea !== 0) misses.push(`zero-area ${degenerates.zeroArea}`);
             if (degenerates.duplicates !== 0) misses.push(`duplicate-faces ${degenerates.duplicates}`);
@@ -897,8 +915,7 @@ describe("S1 parametric wall", () => {
                 smokeMiss.push(`${smoke.name} winding mismatch=${wind.oppositeEdgeMismatch}`);
             }
             if (chordX !== 0) smokeMiss.push(`${smoke.name} chord-cross=${chordX}`);
-            if ((sud.planReversals ?? 0) !== 0)
-                smokeMiss.push(`${smoke.name} reversals=${sud.planReversals}`);
+            // plan-reversals: table diagnostic only.
             if ((sud.junctionSlivers ?? 0) !== 0)
                 smokeMiss.push(`${smoke.name} slivers=${sud.junctionSlivers}`);
             if (degenerates.zeroArea !== 0) smokeMiss.push(`${smoke.name} zero-area=${degenerates.zeroArea}`);

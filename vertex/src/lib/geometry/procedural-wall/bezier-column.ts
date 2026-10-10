@@ -34,6 +34,8 @@ export const G1_MAX_DEG = 3;
 export const SEAM_B_FALLBACK_DEG = 9.5;
 export const NEIGHBOUR_SPACING_RATIO = 1.5;
 export const ASPECT_EVERYWHERE_MAX = 20;
+export const ASPECT_ROUND_MAX = 30;
+export const SIGNED_FOLD_MAX_DEG = 90;
 export const WELD_MM = 1e-3;
 export const MIN_EDGE_MM = 0.01;
 export const ALONG_JOINT_MAX_DEG = 8;
@@ -174,6 +176,10 @@ export interface ColumnFrame {
     obliqueFallback: boolean;
     nRoundPlane: XYZ;
     nFilPlane: XYZ;
+    /** Designed top-round end angle (rad). */
+    phiRound1: number;
+    /** Sticky lock after the periodic φ1 smooth. */
+    phiRound1Lock?: number;
 }
 
 export interface ObliqueFallbackRow {
@@ -229,9 +235,14 @@ export interface ColumnQuality {
     maxG1EDeg: number;
     maxG1FDeg: number;
     maxAspectEverywhere: number;
+    maxAspectRound: number;
     maxNeighbourSpacingRatio: number;
     columnCrossings: number;
     maxSignedSeamNonFallbackDeg: number;
+    maxETurningDeg: number;
+    maxFTurningDeg: number;
+    maxSignedFoldDeg: number;
+    nFoldsOver90: number;
     obliqueFallback: ObliqueFallbackRow[];
 }
 
@@ -1272,6 +1283,7 @@ export function constructSweepRule(
     sheetSlopeRad?: number,
     localSpacing = OUTLINE_STATION_SPACING_MM,
     planeN?: XYZ,
+    phiRound1Lock?: number,
 ): SweepRule {
     const hl = Math.hypot(hIn.x, hIn.y) || 1;
     const h = { x: hIn.x / hl, y: hIn.y / hl };
@@ -1315,7 +1327,9 @@ export function constructSweepRule(
     let tStart = unit3(eW);
     if (dot3(tStart, tInc) < 0) tStart = { x: -tStart.x, y: -tStart.y, z: -tStart.z };
 
-    for (let iter = 0; iter < 2; iter++) {
+    const locked = phiRound1Lock != null && Number.isFinite(phiRound1Lock);
+    const nIter = locked ? 3 : 2;
+    for (let iter = 0; iter < nIter; iter++) {
         const dFil = projectOntoSpan(d, frame.ew, frame.ez);
         // constructFillet wants the wall direction at F (up the wall, F→E).
         const U = hypot3(dFil) > 1e-9 ? unit3({ x: -dFil.x, y: -dFil.y, z: -dFil.z }) : { x: 0, y: 0, z: 1 };
@@ -1329,11 +1343,15 @@ export function constructSweepRule(
         F = { ...fil.Pw };
 
         C1 = add3(R, eN, -r1);
-        const dRnd = projectOntoSpan(d, eW, eN);
-        const dRu = hypot3(dRnd) > 1e-9 ? unit3(dRnd) : { x: 0, y: 0, z: -1 };
         phiRound0 = 0;
-        phiRound1 = unwindSweep(0, Math.atan2(-dot3(dRu, eN), dot3(dRu, eW)));
-        if (Math.abs(phiRound1) < 1e-4) phiRound1 = Math.PI / 2;
+        if (locked) {
+            phiRound1 = phiRound1Lock as number;
+        } else {
+            const dRnd = projectOntoSpan(d, eW, eN);
+            const dRu = hypot3(dRnd) > 1e-9 ? unit3(dRnd) : { x: 0, y: 0, z: -1 };
+            phiRound1 = unwindSweep(0, Math.atan2(-dot3(dRu, eN), dot3(dRu, eW)));
+            if (Math.abs(phiRound1) < 1e-4) phiRound1 = Math.PI / 2;
+        }
         E = sweptRoundPoint(C1, r1, eN, eW, phiRound1);
         const next = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
         if (hypot3(next) > 1e-9) d = unit3(next);
@@ -1507,6 +1525,7 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
         fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
         local,
         nUse,
+        fr.phiRound1Lock,
     );
     const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
     fr.lastDlRad = lastFilletDLRad(S, 1);
@@ -1532,6 +1551,7 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     fr.sweepConverged = sw.converged;
     fr.nRoundPlane = sw.nRoundPlane;
     fr.nFilPlane = sw.nFilPlane;
+    fr.phiRound1 = sw.phiRound1;
     const planD = { x: sw.d.x, y: sw.d.y };
     const pl = Math.hypot(planD.x, planD.y);
     const hx = pl > 1e-9 ? planD.x / pl : fr.h.x;
@@ -1824,6 +1844,7 @@ function columnPoints(
         fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
         local,
         nUse,
+        fr.phiRound1Lock,
     );
     const nRound = _nTopFix || fr.nRoundFix || 0;
     const nFil = _nFilFix || fr.nFilFix || 0;
@@ -2581,6 +2602,7 @@ export function initColumnFrames(
             obliqueFallback: false,
             nRoundPlane: { x: -h.y, y: h.x, z: 0 },
             nFilPlane: { x: -nB.y, y: nB.x, z: 0 },
+            phiRound1: Math.PI / 2,
         };
         applyAlaToFrame(fr);
         return fr;
@@ -2777,6 +2799,7 @@ export function buildBezierColumns(
             applyAlaToFrame(fr);
         }
     }
+    smoothRoundEndAngles(frames);
     {
         const minStep2 = spacing / ASPECT_EVERYWHERE_MAX;
         let nR = TOP_ROUND_MIN_ROWS;
@@ -2920,6 +2943,59 @@ export function buildBezierColumns(
         quality,
         smoothLog,
     };
+}
+
+function unwrapClosedRad(phis: number[]): number[] {
+    if (phis.length === 0) return [];
+    const out = [phis[0]!];
+    for (let i = 1; i < phis.length; i++) {
+        let t = phis[i]!;
+        const prev = out[i - 1]!;
+        while (t - prev > Math.PI) t -= Math.PI * 2;
+        while (t - prev < -Math.PI) t += Math.PI * 2;
+        out.push(t);
+    }
+    return out;
+}
+
+/** Smooth φ1 along the R ring (σ 12 mm), then re-solve each ruling with φ1 locked. */
+export function smoothRoundEndAngles(frames: ColumnFrame[], sigma = SCALAR_SMOOTH_SIGMA_MM): void {
+    if (frames.length < 3) return;
+    for (const fr of frames) applyAlaToFrame(fr);
+    const raw = unwrapClosedRad(frames.map((f) => f.phiRound1));
+    const sm = periodicGaussian(
+        raw,
+        frames.map((f) => f.R),
+        sigma,
+    );
+    for (let i = 0; i < frames.length; i++) {
+        const fr = frames[i]!;
+        fr.phiRound1Lock = sm[i];
+        fr.phiRound1 = sm[i]!;
+        applyAlaToFrame(fr);
+    }
+}
+
+function ringTurningDeg(pts: XYZ[]): number {
+    const n = pts.length;
+    if (n < 3) return 0;
+    let max = 0;
+    for (let i = 0; i < n; i++) {
+        const a = pts[(i + n - 1) % n]!;
+        const b = pts[i]!;
+        const c = pts[(i + 1) % n]!;
+        const t0 = { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
+        const t1 = { x: c.x - b.x, y: c.y - b.y, z: c.z - b.z };
+        if (hypot3(t0) < 1e-9 || hypot3(t1) < 1e-9) continue;
+        max = Math.max(max, vecAngleDeg(t0, t1));
+    }
+    return max;
+}
+
+function signedFaceFoldDeg(nL: XYZ, nR: XYZ, edge: XYZ): number {
+    const cr = cross3(nL, nR);
+    const signed = Math.sign(dot3(cr, edge) || 1) * vecAngleDeg(nL, nR);
+    return signed;
 }
 
 function signedJointDeg(a: XYZ, b: XYZ, binormal: XYZ): number {
@@ -3186,6 +3262,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let maxG1E = 0;
     let maxG1F = 0;
     let maxAspectAll = 0;
+    let maxAspectRound = 0;
+    let maxSignedFold = 0;
+    let nFoldsOver90 = 0;
     let maxNeighbourRatio = 0;
     let maxSeamNonFb = 0;
     const fallback: ObliqueFallbackRow[] = [];
@@ -3225,8 +3304,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         const b = dsB[(i + nS - 1) % nS]!;
         const lo = Math.min(a, b);
         const hi = Math.max(a, b);
-        const rLo = Math.min(ds[i]!, ds[(i + nS - 1) % nS]!);
-        if (lo >= 2 * 0.3 - 1e-9 && rLo >= 2 * 0.3 - 1e-9) {
+        if (lo >= 2 * 0.3 - 1e-9) {
             const ratio = hi / lo;
             if (ratio > maxNeighbourRatio) {
                 maxNeighbourRatio = ratio;
@@ -3360,6 +3438,14 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const shortAcross = Math.min(e0, e1, e2, e3);
             const cMinAcross = lastFilletCMinMm(fr.localSpacingMm || fr.stationSpacingMm || median);
             if (shortAcross < cMinAcross) continue;
+            const edgeAcross = {
+                x: nxt[j]!.x - col[j]!.x,
+                y: nxt[j]!.y - col[j]!.y,
+                z: nxt[j]!.z - col[j]!.z,
+            };
+            const foldAcross = signedFaceFoldDeg(nL, nR, edgeAcross);
+            maxSignedFold = Math.max(maxSignedFold, foldAcross);
+            if (foldAcross > SIGNED_FOLD_MAX_DEG + 1e-6) nFoldsOver90++;
             const raw = vecAngleDeg(nL, nR);
             acrossAll.push(raw);
             if (raw > maxAcross) {
@@ -3376,11 +3462,20 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const shortE = shortAcross;
             const longE = Math.max(e0, e1, e2, e3);
             const cMinI = cMinAcross;
-            if (j > 0 && j < rows - 2 && shortE >= cMinI) {
+            if (shortE >= cMinI) {
                 const aspect = longE / shortE;
-                if (aspect > maxAspectAll) {
-                    maxAspectAll = aspect;
-                    worstAspect = { i, j, short: shortE, long: longE, ratio: aspect };
+                if (j < nRnd) {
+                    if (aspect > maxAspectRound) {
+                        maxAspectRound = aspect;
+                        if (aspect > maxAspectAll) {
+                            worstAspect = { i, j, short: shortE, long: longE, ratio: aspect };
+                        }
+                    }
+                } else if (j < rows - 2) {
+                    if (aspect > maxAspectAll) {
+                        maxAspectAll = aspect;
+                        worstAspect = { i, j, short: shortE, long: longE, ratio: aspect };
+                    }
                 }
             }
         }
@@ -3395,6 +3490,10 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             if (!below || !above) continue;
             const fold = vecAngleDeg(below, above);
             const raw = Math.min(fold, 180 - fold);
+            const edgeAlong = { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
+            const signedAlong = signedFaceFoldDeg(below, above, edgeAlong);
+            maxSignedFold = Math.max(maxSignedFold, signedAlong);
+            if (signedAlong > SIGNED_FOLD_MAX_DEG + 1e-6) nFoldsOver90++;
             if (raw > maxAlongRow) {
                 maxAlongRow = raw;
                 worstAlongRow = { i, j, deg: raw };
@@ -3458,6 +3557,8 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             }
         }
     }
+    const maxETurning = ringTurningDeg(frames.map((f) => f.E));
+    const maxFTurning = ringTurningDeg(frames.map((f) => f.F));
     acrossAll.sort((a, b) => a - b);
     const p99Idx = acrossAll.length
         ? Math.max(0, Math.min(acrossAll.length - 1, Math.ceil(0.99 * acrossAll.length) - 1))
@@ -3488,8 +3589,13 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             g1E: Number(maxG1E.toFixed(2)),
             g1F: Number(maxG1F.toFixed(2)),
             aspectAll: Number(maxAspectAll.toFixed(2)),
+            aspectRound: Number(maxAspectRound.toFixed(2)),
             neighbourRatio: Number(maxNeighbourRatio.toFixed(2)),
             colCross: columnCrossings,
+            eTurn: Number(maxETurning.toFixed(2)),
+            fTurn: Number(maxFTurning.toFixed(2)),
+            fold: Number(maxSignedFold.toFixed(2)),
+            folds90: nFoldsOver90,
             seamNonFb: Number(maxSeamNonFb.toFixed(2)),
             fallback: fallback.length,
         }),
@@ -3535,9 +3641,14 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxG1EDeg: maxG1E,
         maxG1FDeg: maxG1F,
         maxAspectEverywhere: maxAspectAll,
+        maxAspectRound,
         maxNeighbourSpacingRatio: maxNeighbourRatio,
         columnCrossings,
         maxSignedSeamNonFallbackDeg: maxSeamNonFb,
+        maxETurningDeg: maxETurning,
+        maxFTurningDeg: maxFTurning,
+        maxSignedFoldDeg: maxSignedFold,
+        nFoldsOver90,
         obliqueFallback: fallback,
     };
 }

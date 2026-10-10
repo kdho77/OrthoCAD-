@@ -40,6 +40,7 @@ import {
     applyStoredTB,
     countPlanViewChordCrossings,
     pairAtNativeTop,
+    reparameterizeBArcLength,
     retargetPlantarFromE,
     smoothClosedParameters,
     spreadClosedOnLoop,
@@ -540,6 +541,7 @@ export function reconstructProceduralWalls(
     stampMonotonicTB(stations, hygiened.loop);
     applyStoredTB(stations, hygiened.loop);
     applySmoothedB();
+    reparameterizeBArcLength(stations, hygiened.loop);
     assertClosedStationRing(stations, rimLocal);
     {
         let minB = Infinity;
@@ -688,7 +690,12 @@ export function reconstructProceduralWalls(
         maxG1EDeg: grid.quality?.maxG1EDeg,
         maxG1FDeg: grid.quality?.maxG1FDeg,
         maxAspectEverywhere: grid.quality?.maxAspectEverywhere,
+        maxAspectRound: grid.quality?.maxAspectRound,
         maxNeighbourSpacingRatio: grid.quality?.maxNeighbourSpacingRatio,
+        maxETurningDeg: grid.quality?.maxETurningDeg,
+        maxFTurningDeg: grid.quality?.maxFTurningDeg,
+        maxSignedFoldDeg: grid.quality?.maxSignedFoldDeg,
+        nFoldsOver90: grid.quality?.nFoldsOver90,
         columnCrossings: grid.quality?.columnCrossings,
         maxSignedSeamNonFallbackDeg: grid.quality?.maxSignedSeamNonFallbackDeg,
         obliqueFallback: grid.quality?.obliqueFallback,

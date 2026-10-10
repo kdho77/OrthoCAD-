@@ -245,6 +245,45 @@ describe("bezier column", () => {
         expect(Math.abs(sw.F.y - B.y)).toBeLessThan(1e-6);
     });
 
+    test("locked φ1 re-solves the ruling and keeps G1 at E", () => {
+        const R = { x: 0, y: 1, z: 12 };
+        const B = { x: 8, y: 0, z: 0 };
+        const nB = { x: 1, y: 0 };
+        const h = { x: 8, y: -1 };
+        const hl = Math.hypot(h.x, h.y);
+        const free = constructSweepRule(
+            R,
+            B,
+            { x: 0, y: 0, z: 1 },
+            0.5,
+            1.2,
+            { x: h.x / hl, y: h.y / hl },
+            nB,
+            { x: 0, y: 1, z: 0 },
+            0,
+            0,
+            1.3,
+        );
+        const locked = constructSweepRule(
+            R,
+            B,
+            { x: 0, y: 0, z: 1 },
+            0.5,
+            1.2,
+            { x: h.x / hl, y: h.y / hl },
+            nB,
+            { x: 0, y: 1, z: 0 },
+            0,
+            0,
+            1.3,
+            undefined,
+            free.phiRound1 + Math.PI / 180,
+        );
+        expect(locked.phiRound1).toBeCloseTo(free.phiRound1 + Math.PI / 180, 6);
+        expect(locked.g1EDeg).toBeLessThanOrEqual(G1_MAX_DEG + 1e-3);
+        expect(locked.g1FDeg).toBeLessThanOrEqual(G1_MAX_DEG + 1e-3);
+    });
+
     test("rim overhang is positive when the rim sits outside the outline", () => {
         const outline = [
             { x: -1, y: -1, z: 0 },
