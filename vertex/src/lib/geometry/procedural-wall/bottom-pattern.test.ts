@@ -7,7 +7,9 @@ import {
     medialYSignFromTopRim,
     PATTERN_ARCH_INSET_MM,
     PATTERN_HEEL_INSET_MM,
+    PATTERN_MAX_DKDS,
     parseBottomPattern,
+    patternCurvatureReport,
     syntheticBottomPattern,
 } from "./bottom-pattern";
 import { minDistToLoopXY, pointInPoly } from "./cdt-band";
@@ -41,6 +43,7 @@ describe("synthetic bottom pattern", () => {
             rimPlan: outline,
             requireInsideRim: true,
             clearanceMm: 0,
+            keepFair: true,
         }).loop;
         expect(pattern.length).toBeGreaterThan(80);
         expect(Math.abs(turning(pattern) - 1)).toBeLessThan(0.05);
@@ -65,6 +68,29 @@ describe("synthetic bottom pattern", () => {
         expect(heelC).toBeGreaterThan(PATTERN_HEEL_INSET_MM * 0.7);
         expect(maxC).toBeGreaterThan(PATTERN_HEEL_INSET_MM * 0.7);
         expect(medial).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.45);
+        const curv = patternCurvatureReport(pattern, bounds, 1);
+        expect(curv.inflections).toBe(2);
+        expect(curv.lateralMinK).toBeGreaterThan(-5e-4);
+        expect(curv.maxAbsDkDs).toBeLessThan(PATTERN_MAX_DKDS);
+        const latBins = new Map<number, number[]>();
+        for (const p of pattern) {
+            const u = (p.x - bounds.minX) / length;
+            if (p.y > 0) continue;
+            const bin = Math.round(u * 20);
+            const list = latBins.get(bin) ?? [];
+            list.push(minDistToLoopXY(p.x, p.y, outline));
+            latBins.set(bin, list);
+        }
+        const latMean: number[] = [];
+        for (let b = 0; b <= 20; b++) {
+            const list = latBins.get(b);
+            if (!list?.length) continue;
+            latMean.push(list.reduce((s, v) => s + v, 0) / list.length);
+        }
+        for (let i = 1; i < latMean.length - 1; i++) {
+            const bump = latMean[i]! - 0.5 * (latMean[i - 1]! + latMean[i + 1]!);
+            expect(bump).toBeLessThan(1.2);
+        }
     });
 
     test("cut-in follows the high midfoot rim, not +Y", () => {
@@ -84,6 +110,7 @@ describe("synthetic bottom pattern", () => {
             rimPlan: outline,
             requireInsideRim: true,
             clearanceMm: 0,
+            keepFair: true,
         }).loop;
         assertCutInOnHighRimSide(pattern, outline, bounds, -1);
         const length = bounds.maxX - bounds.minX;

@@ -3,7 +3,14 @@
 
 import { EndType, FillRule, inflatePathsD, isPositiveD, JoinType, unionD } from "clipper2-ts";
 import { minDistToLoopXY, pointInPoly } from "./cdt-band";
-import { ensureCcw, fitClosedC2Spline, type PolyPoint, polygonSignedArea, resampleClosedC2 } from "./curves";
+import {
+    ensureCcw,
+    fitClosedC2Spline,
+    type PolyPoint,
+    polygonSignedArea,
+    resampleClosedC2,
+    resamplePolyline,
+} from "./curves";
 import { masterCurveRadii, smoothClosedToMinRadius } from "./stations";
 
 export const PATTERN_MIN_RADIUS_MM = 3;
@@ -163,12 +170,35 @@ export function hygieneBottomPattern(
         clearanceMm?: number;
         source?: string;
         resampleN?: number;
+        /** Keep a fair few-control spline; do not re-interpolate or Laplacian the heel. */
+        keepFair?: boolean;
     },
 ): HygieneReport {
-    const unioned = clipperUnion(loop);
+    const sourceLoop = ensureCcw(loop.map((p) => ({ ...p, z: 0 })));
+    const tn0 = turningNumber(sourceLoop);
+    const unioned = Math.abs(tn0 - 1) < 0.05 && opts?.keepFair ? sourceLoop : clipperUnion(sourceLoop);
     const tn = turningNumber(unioned);
     if (Math.abs(tn - 1) > 0.05) {
         throw new Error(`[S1-PATTERN] turning number ${tn.toFixed(3)} is not +1 after Clipper2 union`);
+    }
+    if (opts?.keepFair) {
+        const n = Math.max(opts.resampleN ?? 0, 160, unioned.length);
+        const resampled = resamplePolyline(unioned, n);
+        const minRadiusMm = masterCurveRadii(resampled).minRadiusMm;
+        if (minRadiusMm + 1e-6 < PATTERN_MIN_RADIUS_MM) {
+            throw new Error(
+                `[S1-PATTERN] min radius of curvature ${minRadiusMm.toFixed(2)} < ${PATTERN_MIN_RADIUS_MM} mm`,
+            );
+        }
+        if (opts.requireInsideRim && opts.rimPlan?.length) {
+            assertInsideRim(resampled, opts.rimPlan, opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM);
+        }
+        return {
+            loop: resampled,
+            turning: turningNumber(resampled),
+            minRadiusMm,
+            source: opts.source ?? "pattern",
+        };
     }
     const smoothed = smoothClosedToMinRadius(unioned, PATTERN_MIN_RADIUS_MM, unioned.length);
     const minRadiusMm = masterCurveRadii(smoothed).minRadiusMm;

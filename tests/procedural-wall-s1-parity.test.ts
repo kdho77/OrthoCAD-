@@ -29,10 +29,12 @@ import {
     FILLET_BOUNDS,
     FOLD_HARD_LIMIT_DEG,
     FOLD_WORST_LIMIT_DEG,
+    FOREFOOT_INSET_MM,
     foldReport,
     formatSiBreakdown,
     generatedMinWallMm,
     groundDriftMm,
+    HEADING_MAX_DEG,
     heelInnerWidthAtU,
     MIN_EDGE_MM,
     MIN_LINE_MM,
@@ -44,7 +46,9 @@ import {
     N_TOP_MAX_DEG,
     outlineExactOnBMm,
     outlineSeamDihedrals,
+    PATTERN_MAX_DKDS,
     PATTERN_SOURCE_SYNTHETIC,
+    patternCurvatureReport,
     plantarFlatDeltaMm,
     R_CHANGE_MAX_PCT,
     ROUND_JOINT_MAX_DEG,
@@ -60,6 +64,7 @@ import {
     soleUvFrameFromPolyline,
     summarizeWallBands,
     syntheticBottomPattern,
+    TOE_SPACING_EXTENT_FRAC,
     windingReport,
     zoneFixturesMapIdentically,
 } from "@/lib/geometry/procedural-wall";
@@ -69,7 +74,12 @@ import { extractMergedGeometry, loadGlbFromBuffer, reorientToFootprintFrame } fr
 import type { SideCorrections } from "@/types";
 import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
 import { loadSampleTopGlb } from "./helpers/load-sample-top-glb";
-import { encodePng, renderMesh } from "./helpers/render-png";
+import {
+    compositeBottomAndCurvature,
+    encodePng,
+    renderMesh,
+    renderPatternCurvature,
+} from "./helpers/render-png";
 
 async function loadFixture(path: string): Promise<BufferGeometry> {
     const buf = readFileSync(path);
@@ -122,6 +132,10 @@ type ColumnQualityUd = {
     maxNTopChangeDeg?: number;
     maxR1ChangePct?: number;
     maxR2ChangePct?: number;
+    maxHeadingChangeDeg?: number;
+    maxToeSpacingRatio?: number;
+    minForefootInsetMm?: number;
+    maxAlaPackMm?: number;
 };
 
 function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
@@ -159,6 +173,18 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     }
     if ((q.maxR2ChangePct ?? 0) > R_CHANGE_MAX_PCT + 1e-6) {
         misses.push(`r2 ${q.maxR2ChangePct?.toFixed(2)}%>${R_CHANGE_MAX_PCT}`);
+    }
+    if ((q.maxHeadingChangeDeg ?? 0) > HEADING_MAX_DEG + 1e-6) {
+        misses.push(`heading ${q.maxHeadingChangeDeg?.toFixed(2)}>${HEADING_MAX_DEG}`);
+    }
+    if ((q.maxToeSpacingRatio ?? 0) > TOE_SPACING_EXTENT_FRAC + 1e-6) {
+        misses.push(`toe-spacing ${q.maxToeSpacingRatio?.toFixed(2)}>${TOE_SPACING_EXTENT_FRAC}`);
+    }
+    if ((q.minForefootInsetMm ?? Infinity) < FOREFOOT_INSET_MM - 1e-6) {
+        misses.push(`fore-inset ${q.minForefootInsetMm?.toFixed(3)}<${FOREFOOT_INSET_MM}`);
+    }
+    if ((q.maxAlaPackMm ?? 0) > 1e-6) {
+        misses.push(`ala-pack ${q.maxAlaPackMm?.toFixed(3)}>0`);
     }
     return misses;
 }
@@ -859,10 +885,24 @@ describe("S1 parametric wall", () => {
             "/opt/cursor/artifacts/screenshots/rearfoot-after.png",
             encodePng(900, 680, renderMesh(afterPos, afterIdx, KENDON_REARFOOT, 900, 680)),
         );
+        const bottomRgb = renderMesh(afterPos, afterIdx, BOTTOM_VIEW, 900, 680);
+        writeFileSync("/opt/cursor/artifacts/screenshots/bottom-view.png", encodePng(900, 680, bottomRgb));
+        const curv = patternCurvatureReport(pattern, model.bounds);
+        const curveRgb = renderPatternCurvature(pattern, curv.k, curv.s, 900, 320, rim3d, curv.inflections);
         writeFileSync(
-            "/opt/cursor/artifacts/screenshots/bottom-view.png",
-            encodePng(900, 680, renderMesh(afterPos, afterIdx, BOTTOM_VIEW, 900, 680)),
+            "/opt/cursor/artifacts/screenshots/pattern-curvature.png",
+            encodePng(900, 320, curveRgb),
         );
+        const overlay = compositeBottomAndCurvature(bottomRgb, 900, 680, curveRgb, 900, 320);
+        writeFileSync(
+            "/opt/cursor/artifacts/screenshots/bottom-view-curvature.png",
+            encodePng(overlay.width, overlay.height, overlay.rgb),
+        );
+        if (curv.inflections !== 2) misses.push(`pattern-inflections ${curv.inflections}!=2`);
+        if (curv.lateralMinK < -5e-4) misses.push(`lateral-concave k=${curv.lateralMinK.toFixed(5)}`);
+        if (curv.maxAbsDkDs > PATTERN_MAX_DKDS) {
+            misses.push(`pattern-dkds ${curv.maxAbsDkDs.toFixed(4)}>${PATTERN_MAX_DKDS}`);
+        }
         writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.stl", stl);
         const glb = await exportObjectToGlb(meshFromGeometry(rebuilt));
         writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.glb", Buffer.from(glb.arrayBuffer));

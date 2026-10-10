@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import type { PolyPoint } from "./curves";
+import { closedCurvatureRadii, type PolyPoint } from "./curves";
 import { blendedFlareDeg, FLARE_BOUNDS, type WallRegionDefaults } from "./defaults";
 import {
     FILLET_MAX_HEIGHT_FRAC,
@@ -34,7 +34,16 @@ export const WELD_MM = 1e-3;
 export const MIN_EDGE_MM = 0.01;
 export const ALONG_JOINT_MAX_DEG = 8;
 export const ALONG_JOINT_BUDGET_FRAC = 1.15;
-export const ACROSS_STATION_MAX_DEG = 3;
+export const ACROSS_STATION_MAX_DEG = 10;
+export const HEADING_MAX_DEG = 3;
+export const ROUND_MIN_STEP_MM = 0.15;
+export const ROUND_MAX_ASPECT = 20;
+export const SHORT_WALL_H_MM = 3.2;
+export const SHORT_R1_MM = 0.5;
+export const SHORT_R2_MM = 0.7;
+export const SHORT_MIN_L_MM = 1;
+export const FOREFOOT_INSET_MM = 1;
+export const TOE_SPACING_EXTENT_FRAC = 0.5;
 export const ROUND_JOINT_MAX_DEG = 8;
 export const T_COL_SLACK_DEG = 15;
 export const MIN_ROUND_R_MM = 0.08;
@@ -132,6 +141,10 @@ export interface ColumnQuality {
     maxNTopChangeDeg: number;
     maxR1ChangePct: number;
     maxR2ChangePct: number;
+    maxHeadingChangeDeg: number;
+    maxToeSpacingRatio: number;
+    minForefootInsetMm: number;
+    maxAlaPackMm: number;
 }
 
 export interface BezierColumns {
@@ -567,13 +580,17 @@ export function filletCenterAndF(
 
 export function sizedArcRows(
     sweepRad: number,
-    _radiusMm: number,
-    _stationSpacingMm: number,
+    radiusMm: number,
+    stationSpacingMm: number,
     minRows: number,
     maxStepDeg: number,
 ): number {
     const deg = Math.abs((sweepRad * 180) / Math.PI);
-    return Math.max(minRows, Math.ceil(deg / Math.max(maxStepDeg, 1e-3)));
+    const arcLen = Math.max(Math.abs(radiusMm * sweepRad), 1e-6);
+    const minStep = Math.max(ROUND_MIN_STEP_MM, stationSpacingMm / ROUND_MAX_ASPECT);
+    const nByStep = Math.max(1, Math.floor(arcLen / minStep));
+    const nByAngle = Math.max(minRows, Math.ceil(deg / Math.max(maxStepDeg, 1e-3)));
+    return Math.max(minRows, Math.min(nByAngle, nByStep));
 }
 
 export function filletRowCount(psiRad: number, radiusMm = 1, stationSpacingMm = 1.3): number {
@@ -754,10 +771,22 @@ function tryAlaRadii(
     return { C1, C2, hit };
 }
 
+function packAlaRadii(height: number, r1In: number, r2In: number, minL: number): { r1: number; r2: number } {
+    let r1 = Math.max(MIN_ROUND_R_MM, r1In);
+    let r2 = Math.max(0.05, r2In);
+    const room = Math.max(0.1, height - minL);
+    if (r1 + r2 > room) {
+        const s = room / (r1 + r2);
+        r1 = Math.max(MIN_ROUND_R_MM, r1 * s);
+        r2 = Math.max(0.05, r2 * s);
+    }
+    return { r1, r2 };
+}
+
 /**
  * ARC-LINE-ARC in the column plane (s inward, z up).
  * C1 = R − r1 n_top; C2 = B + r2 n_plantar; body is the exterior common tangent.
- * Never falls back to a cubic. If L < 0.5 mm, r1 and r2 shrink together.
+ * L never reaches 0. Short walls (H ~ 2.2) use r1 ~ 0.5, r2 ~ 0.7, L >= 1, r1+r2+L <= H.
  */
 export function constructArcLineArc(
     R: XYZ,
@@ -775,18 +804,25 @@ export function constructArcLineArc(
     const nPlant = unit3(frame.ez);
     const planInset = Math.hypot(B.x - R.x, B.y - R.y);
     const height = Math.max(R.z - B.z, 0.5);
-    const span = Math.hypot(planInset, height);
-    const rCap = Math.max(0.05, (span - MIN_LINE_MM) * 0.35);
+    const short = height <= SHORT_WALL_H_MM + 1e-9;
+    const minL = short ? SHORT_MIN_L_MM : MIN_LINE_MM;
     let r1 = Math.max(MIN_ROUND_R_MM, r1In);
     let r2 = Math.max(0.05, r2In);
+    if (short) {
+        r1 = Math.min(r1, SHORT_R1_MM);
+        r2 = Math.min(r2, SHORT_R2_MM);
+    }
+    const packedRadii = packAlaRadii(height, r1, r2, minL);
+    r1 = packedRadii.r1;
+    r2 = packedRadii.r2;
     const alaOk = (
         hit: { C1: Sz; C2: Sz; hit: { L: number } } | null,
     ): hit is { C1: Sz; C2: Sz; hit: { L: number } } =>
-        Boolean(hit && hit.hit.L >= MIN_LINE_MM && hit.C1.z + 1e-6 >= hit.C2.z);
+        Boolean(hit && hit.hit.L >= minL - 1e-9 && hit.C1.z + 1e-6 >= hit.C2.z);
     let packed = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2);
     if (!alaOk(packed)) {
-        r1 = Math.min(r1, rCap);
-        r2 = Math.min(r2, rCap);
+        r1 = Math.min(r1, FILLET_R_CAP_MM);
+        r2 = Math.min(r2, FILLET_R_CAP_MM);
         packed = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2);
     }
     for (let i = 0; i < 48 && !alaOk(packed); i++) {
@@ -814,7 +850,7 @@ export function constructArcLineArc(
             nPlant,
             tStart,
             d,
-            L: Math.max(MIN_LINE_MM, dist3(T1, T2)),
+            L: Math.max(minL, dist3(T1, T2)),
             r1,
             r2,
             roundSweep: 1e-3,
@@ -852,7 +888,7 @@ export function constructArcLineArc(
         nPlant,
         tStart,
         d,
-        L: hit.L,
+        L: Math.max(minL, hit.L),
         r1,
         r2,
         roundSweep: Math.abs(phiRound0 - phiRound1),
@@ -878,9 +914,16 @@ export function sampleArcLineArc(
     R: XYZ,
     B: XYZ,
     nWall: number,
+    stationSpacing = 1.3,
 ): XYZ[] {
-    const nRound = sizedArcRows(ala.roundSweep, ala.r1, 1, TOP_ROUND_MIN_ROWS, TOP_ROUND_MAX_STEP_DEG);
-    const nFil = sizedArcRows(ala.filletSweep, ala.r2, 1, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
+    const nRound = sizedArcRows(
+        ala.roundSweep,
+        ala.r1,
+        stationSpacing,
+        TOP_ROUND_MIN_ROWS,
+        TOP_ROUND_MAX_STEP_DEG,
+    );
+    const nFil = sizedArcRows(ala.filletSweep, ala.r2, stationSpacing, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
     const nLine0 = Math.max(1, Math.ceil(Math.max(ala.L, MIN_LINE_MM) / LINE_MAX_STEP_MM));
     let nLine = nLine0;
     const total0 = nRound + nLine + nFil + 1;
@@ -889,10 +932,11 @@ export function sampleArcLineArc(
     for (let i = 1; i < nRound; i++) {
         const phi = ala.phiRound0 + ((ala.phiRound1 - ala.phiRound0) * i) / nRound;
         const p = alaPoint(ala, h, ala.C1, ala.r1, phi);
-        if (dist3(p, pts[pts.length - 1]!) < MIN_EDGE_MM) continue;
+        if (dist3(p, pts[pts.length - 1]!) < WELD_MM) continue;
+        if (dist3(p, pts[pts.length - 1]!) < ROUND_MIN_STEP_MM) continue;
         pts.push(p);
     }
-    if (dist3(pts[pts.length - 1]!, ala.T1) >= MIN_EDGE_MM) pts.push({ ...ala.T1 });
+    if (dist3(pts[pts.length - 1]!, ala.T1) >= WELD_MM) pts.push({ ...ala.T1 });
     else pts[pts.length - 1] = { ...ala.T1 };
     for (let i = 1; i < nLine; i++) {
         const t = i / nLine;
@@ -940,13 +984,14 @@ export function assertOutsideRound(R: XYZ, rnd: OutsideRound, pts: XYZ[]): void 
 }
 
 export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
-    const ala = constructArcLineArc(fr.R, fr.B, fr.nTop, fr.rTop, fr.rFillet, fr.h, fr.plantarSlopeRad);
+    const nUse = fr.nTopSmoothed ?? fr.nTop;
+    const ala = constructArcLineArc(fr.R, fr.B, nUse, fr.rTop, fr.rFillet, fr.h, fr.plantarSlopeRad);
     fr.rTop = ala.r1;
     fr.rFillet = ala.r2;
     fr.E = { ...ala.T1 };
     fr.F = { ...ala.T2 };
     fr.nTop = ala.nTop;
-    if (!fr.nTopSmoothed) fr.nTopSmoothed = ala.nTop;
+    fr.nTopSmoothed = nUse;
     fr.nWall = ala.n;
     fr.wOut = { x: -fr.h.x, y: -fr.h.y };
     fr.T0 = ala.tStart;
@@ -1165,7 +1210,7 @@ function columnPoints(
     _nFilFix = 0,
 ): XYZ[] {
     const ala = applyAlaToFrame(fr);
-    const assembled = sampleArcLineArc(ala, fr.h, fr.R, fr.B, nWall);
+    const assembled = sampleArcLineArc(ala, fr.h, fr.R, fr.B, nWall, _stationSpacing);
     const keepFrom = Math.max(
         1,
         assembled.findIndex((p) => dist3(p, ala.T1) < 0.2),
@@ -1430,6 +1475,91 @@ function columnHeading(st: HermiteStation): {
     return { h: { x: dx / planLen, y: dy / planLen }, shortChord: planLen < SHORT_CHORD_MM, planLen };
 }
 
+function outlineInward(outline: PolyPoint[], i: number): { x: number; y: number } {
+    const n = outline.length;
+    const a = outline[(i + n - 1) % n]!;
+    const b = outline[i]!;
+    const c = outline[(i + 1) % n]!;
+    const t1x = b.x - a.x;
+    const t1y = b.y - a.y;
+    const t2x = c.x - b.x;
+    const t2y = c.y - b.y;
+    const tx = t1x + t2x;
+    const ty = t1y + t2y;
+    const tl = Math.hypot(tx, ty);
+    let nx = tl > 1e-9 ? -ty / tl : -t1y;
+    let ny = tl > 1e-9 ? tx / tl : t1x;
+    const nl = Math.hypot(nx, ny) || 1;
+    nx /= nl;
+    ny /= nl;
+    let cx = 0;
+    let cy = 0;
+    for (const p of outline) {
+        cx += p.x;
+        cy += p.y;
+    }
+    cx /= Math.max(1, outline.length);
+    cy /= Math.max(1, outline.length);
+    if ((b.x - cx) * nx + (b.y - cy) * ny > 0) {
+        nx = -nx;
+        ny = -ny;
+    }
+    return { x: nx, y: ny };
+}
+
+/** Curvature-aware outline normals, then clamp heading change to `HEADING_MAX_DEG`. */
+export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: number; y: number }> {
+    const n = stations.length;
+    if (n === 0) return [];
+    const outline = stations.map((s) => s.outline);
+    const raw = outline.map((_, i) => outlineInward(outline, i));
+    const radii = closedCurvatureRadii(outline);
+    const ds = outline.map((p, i) => {
+        const q = outline[(i + 1) % n]!;
+        return Math.hypot(q.x - p.x, q.y - p.y);
+    });
+    const period = ds.reduce((s, d) => s + d, 0);
+    const cum = [0];
+    for (const d of ds) cum.push(cum[cum.length - 1]! + d);
+    const filtered = raw.map((_, i) => {
+        const sig = Math.max(6, Math.min(16, 0.2 * (Number.isFinite(radii[i]!) ? radii[i]! : 12)));
+        const k0 = 1 / Math.max(radii[i]!, 1);
+        let sx = 0;
+        let sy = 0;
+        for (let j = 0; j < n; j++) {
+            let d = Math.abs(cum[j]! - cum[i]!);
+            d = Math.min(d, period - d);
+            const kj = 1 / Math.max(radii[j]!, 1);
+            const dk = k0 - kj;
+            const wt = Math.exp((-0.5 * d * d) / (sig * sig)) * Math.exp((-0.5 * dk * dk) / 0.0016);
+            sx += wt * raw[j]!.x;
+            sy += wt * raw[j]!.y;
+        }
+        const hl = Math.hypot(sx, sy) || 1;
+        let h = { x: sx / hl, y: sy / hl };
+        const chord = columnHeading(stations[i]!);
+        if (h.x * chord.h.x + h.y * chord.h.y < 0) h = { x: -h.x, y: -h.y };
+        return h;
+    });
+    const maxRad = (HEADING_MAX_DEG * Math.PI) / 180;
+    const out = filtered.map((h) => ({ ...h }));
+    for (let pass = 0; pass < 8; pass++) {
+        for (let i = 0; i < n; i++) {
+            const prev = out[(i + n - 1) % n]!;
+            const cur = out[i]!;
+            const dot = Math.max(-1, Math.min(1, prev.x * cur.x + prev.y * cur.y));
+            const ang = Math.acos(dot);
+            if (ang <= maxRad + 1e-9) continue;
+            const t = maxRad / ang;
+            const x = prev.x + (cur.x - prev.x) * t;
+            const y = prev.y + (cur.y - prev.y) * t;
+            const hl = Math.hypot(x, y) || 1;
+            out[i] = { x: x / hl, y: y / hl };
+        }
+    }
+    return out;
+}
+
 export function smoothNormalField(normals: XYZ[], rim: XYZ[], sigma = SCALAR_SMOOTH_SIGMA_MM): XYZ[] {
     if (normals.length < 3) return normals.map((n) => unit3(n));
     const nx = periodicGaussian(
@@ -1577,10 +1707,14 @@ export function initColumnFrames(
         stations.map((st, i) => unit3(_junctions[i]?.planeN ?? { x: 0, y: 0, z: 1 })),
         stations.map((st) => st.rim),
     );
+    const headings = smoothStationHeadings(stations);
     const frames = stations.map((st, i) => {
         const R = { ...st.rim };
         const B = { ...st.outline };
-        const { h, shortChord, planLen } = columnHeading(st);
+        const chord = columnHeading(st);
+        const h = headings[i] ?? chord.h;
+        const shortChord = chord.shortChord;
+        const planLen = chord.planLen;
         const height = Math.max(R.z - B.z, 0.5);
         const nTop = nTops[i]!;
         const sampled = sampleInPlaneSlope(R, h, topZ, _junctions[i]?.planeN);
@@ -1730,8 +1864,14 @@ export function buildBezierColumns(
     let nNeed = nWall;
     for (const fr of frames) {
         const ala = applyAlaToFrame(fr);
-        const nRound = sizedArcRows(ala.roundSweep, ala.r1, 1, TOP_ROUND_MIN_ROWS, TOP_ROUND_MAX_STEP_DEG);
-        const nFil = sizedArcRows(ala.filletSweep, ala.r2, 1, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
+        const nRound = sizedArcRows(
+            ala.roundSweep,
+            ala.r1,
+            spacing,
+            TOP_ROUND_MIN_ROWS,
+            TOP_ROUND_MAX_STEP_DEG,
+        );
+        const nFil = sizedArcRows(ala.filletSweep, ala.r2, spacing, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
         const nLine = Math.max(1, Math.ceil(Math.max(ala.L, MIN_LINE_MM) / LINE_MAX_STEP_MM));
         nNeed = Math.max(nNeed, nRound + nLine + nFil + 1);
     }
@@ -1881,6 +2021,10 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let maxNTop = 0;
     let maxR1 = 0;
     let maxR2 = 0;
+    let maxHeading = 0;
+    let maxToeRatio = 0;
+    let minFore = Infinity;
+    let maxPack = -Infinity;
     let worstAcross = { i: -1, j: -1, u: -1, wrap: false, deg: 0 };
     const nS = xyz.length;
     const ds: number[] = [];
@@ -1949,6 +2093,16 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         const r2den = Math.max(fr.rFillet, 1e-6);
         maxR1 = Math.max(maxR1, (Math.abs(nxtFr.rTop - fr.rTop) / r1den) * 100);
         maxR2 = Math.max(maxR2, (Math.abs(nxtFr.rFillet - fr.rFillet) / r2den) * 100);
+        const hd = Math.acos(Math.max(-1, Math.min(1, fr.h.x * nxtFr.h.x + fr.h.y * nxtFr.h.y)));
+        maxHeading = Math.max(maxHeading, (hd * 180) / Math.PI);
+        const pack = fr.rTop + fr.rFillet + fr.lineLengthMm - fr.heightMm;
+        maxPack = Math.max(maxPack, pack);
+        if (fr.u >= 0.76) {
+            minFore = Math.min(minFore, Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y));
+            const ext = Math.max(1e-3, Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y));
+            const gap = Math.hypot(nxtFr.B.x - fr.B.x, nxtFr.B.y - fr.B.y);
+            maxToeRatio = Math.max(maxToeRatio, gap / ext);
+        }
         if (nS < 2 || !xyz[(i + 1) % nS] || col.length < 2) continue;
         const nxt = xyz[(i + 1) % nS]!;
         const prv = xyz[(i + nS - 1) % nS]!;
@@ -1986,6 +2140,10 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxNTopChangeDeg: maxNTop,
         maxR1ChangePct: maxR1,
         maxR2ChangePct: maxR2,
+        maxHeadingChangeDeg: maxHeading,
+        maxToeSpacingRatio: maxToeRatio,
+        minForefootInsetMm: Number.isFinite(minFore) ? minFore : 0,
+        maxAlaPackMm: Number.isFinite(maxPack) ? maxPack : 0,
     };
 }
 

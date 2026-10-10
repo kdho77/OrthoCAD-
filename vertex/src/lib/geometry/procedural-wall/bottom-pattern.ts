@@ -7,6 +7,7 @@ import {
     fitClosedC2Spline,
     type PolyPoint,
     resampleClosedC2,
+    resamplePolyline,
     startAtLowCurvature,
 } from "./curves";
 
@@ -14,15 +15,21 @@ export const PATTERN_INSET_MM = 2;
 export const PATTERN_HEEL_INSET_MM = 8;
 export const PATTERN_HEEL_LATERAL_INSET_MM = 2;
 export const PATTERN_ARCH_INSET_MM = 28;
-export const PATTERN_FOREFOOT_INSET_MM = 0;
-/** Numerical floor so zero-inset columns keep a defined inward heading. */
-export const PATTERN_MIN_INSET_MM = 0.35;
+/** Constant toe-box inset so the forefoot matches the top outline. */
+export const PATTERN_FOREFOOT_INSET_MM = 1;
+/** Floor under every region; the toe box is exactly `PATTERN_FOREFOOT_INSET_MM`. */
+export const PATTERN_MIN_INSET_MM = 1;
 export const PATTERN_BLEND_MM = 18;
 export const PATTERN_HEEL_U1 = 0.16;
-export const PATTERN_ARCH_U0 = 0.18;
-export const PATTERN_ARCH_U1 = 0.58;
+/** Arch cut-in starts just ahead of the heel. */
+export const PATTERN_ARCH_U0 = 0.16;
+/** Arch cut-in ends behind the ball. */
+export const PATTERN_ARCH_U1 = 0.62;
 export const PATTERN_FORE_U0 = 0.76;
 export const PATTERN_SOURCE_SYNTHETIC = "synthetic";
+export const PATTERN_FEATURE_COUNT = 14;
+/** Bound on |dk/ds| (1/mm²) so k(s) stays fair — no local curvature spikes. */
+export const PATTERN_MAX_DKDS = 0.05;
 export const MIDFOOT_U0 = 0.28;
 export const MIDFOOT_U1 = 0.48;
 
@@ -61,6 +68,36 @@ export function medialYSignFromTopRim(
         return -1;
     }
     return sign;
+}
+
+/** Medial is the midfoot side where the pattern sits farther inboard of the rim. */
+export function medialYSignFromPattern(
+    pattern: PolyPoint[],
+    rim: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+): MedialYSign {
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const yMid = rimYMid(rim.length ? rim : pattern);
+    let pos = 0;
+    let neg = 0;
+    let nPos = 0;
+    let nNeg = 0;
+    for (const p of pattern) {
+        const u = (p.x - bounds.minX) / length;
+        if (u < MIDFOOT_U0 || u > MIDFOOT_U1) continue;
+        const c = minDistToLoopXY(p.x, p.y, rim.length ? rim : pattern);
+        if (p.y >= yMid) {
+            pos += c;
+            nPos++;
+        } else {
+            neg += c;
+            nNeg++;
+        }
+    }
+    if (!nPos && !nNeg) return 1;
+    const posM = nPos ? pos / nPos : 0;
+    const negM = nNeg ? neg / nNeg : 0;
+    return negM > posM + 1e-6 ? -1 : 1;
 }
 
 /** Deepest midfoot pattern clearance must sit on the high-rim (medial) side. */
@@ -120,69 +157,247 @@ function edgeInward(a: PolyPoint, b: PolyPoint, outline: PolyPoint[]): { x: numb
     return { x: nx, y: ny };
 }
 
-function miterInward(i: number, outline: PolyPoint[]): { x: number; y: number } {
-    const n = outline.length;
-    const a = outline[(i + n - 1) % n]!;
-    const b = outline[i]!;
-    const c = outline[(i + 1) % n]!;
-    const n1 = edgeInward(a, b, outline);
-    const n2 = edgeInward(b, c, outline);
-    const denom = 1 + n1.x * n2.x + n1.y * n2.y;
-    const mx = n1.x + n2.x;
-    const my = n1.y + n2.y;
-    if (Math.abs(denom) < 1e-4) {
-        const len = Math.hypot(mx, my) || 1;
-        return { x: mx / len, y: my / len };
-    }
-    const sx = mx / denom;
-    const sy = my / denom;
-    const len = Math.hypot(sx, sy);
-    const cap = 1.85;
-    if (len > cap) return { x: (sx / len) * cap, y: (sy / len) * cap };
-    return { x: sx, y: sy };
-}
-
-function archWindow(u: number): number {
-    const t = (u - PATTERN_ARCH_U0) / (PATTERN_ARCH_U1 - PATTERN_ARCH_U0);
-    if (t <= 0 || t >= 1) return 0;
-    return 0.5 - 0.5 * Math.cos(2 * Math.PI * t);
-}
-
-/** C2 at 0 and 1: first and second derivatives vanish. */
-function smootherstep(t: number): number {
-    const x = Math.max(0, Math.min(1, t));
-    return x * x * x * (x * (x * 6 - 15) + 10);
-}
-
-function regionWeights(u: number, lengthMm: number): { heel: number; mid: number; fore: number } {
-    const du = Math.max(1e-3, PATTERN_BLEND_MM / Math.max(lengthMm, 1));
-    let heel = 0;
-    if (u <= PATTERN_HEEL_U1) heel = 1;
-    else if (u < PATTERN_HEEL_U1 + du) heel = 1 - smootherstep((u - PATTERN_HEEL_U1) / du);
-    let fore = 0;
-    if (u >= PATTERN_FORE_U0) fore = 1;
-    else if (u > PATTERN_FORE_U0 - du) fore = smootherstep((u - (PATTERN_FORE_U0 - du)) / du);
-    const mid = Math.max(0, 1 - heel - fore);
-    const sum = heel + mid + fore;
-    return { heel: heel / sum, mid: mid / sum, fore: fore / sum };
-}
-
-function regionInsetMm(u: number, y: number, yMid: number, sign: MedialYSign, lengthMm: number): number {
-    const w = regionWeights(u, lengthMm);
-    const base =
-        w.heel * PATTERN_HEEL_INSET_MM +
-        w.mid * PATTERN_HEEL_LATERAL_INSET_MM +
-        w.fore * PATTERN_FOREFOOT_INSET_MM;
-    const extra =
-        (y - yMid) * sign > 0 ? (PATTERN_ARCH_INSET_MM - PATTERN_HEEL_LATERAL_INSET_MM) * archWindow(u) : 0;
-    return Math.max(PATTERN_MIN_INSET_MM, base + extra);
+/**
+ * C∞ lateral taper: 8 mm at the heel, 1 mm at the toe. No region steps.
+ * `(0.5 + 0.5 cos(πu))²` holds the heel width, then falls smoothly.
+ */
+export function fairLateralInsetMm(u: number): number {
+    const t = Math.max(0, Math.min(1, u));
+    const w = 0.5 + 0.5 * Math.cos(Math.PI * t);
+    return PATTERN_FOREFOOT_INSET_MM + (PATTERN_HEEL_INSET_MM - PATTERN_FOREFOOT_INSET_MM) * w * w;
 }
 
 /**
- * Synthetic bottom-pattern (Kendon markup): TopSheet rim plan projection
- * with an 8 mm radial heel-counter inset, midfoot ~2 mm plus the medial-arch
- * cut-in (~28 mm), and ~0 mm at the toe box so it sits full-width. C2
- * smootherstep blends over ~18 mm. Labeled `synthetic`.
+ * Medial arch as one long shallow C2 bump on the lateral taper.
+ * `sin⁴(πt)` is C2 at the ends (value and first two derivatives vanish).
+ */
+export function fairInsetMm(u: number, medial: boolean): number {
+    const dLat = fairLateralInsetMm(u);
+    if (!medial) return Math.max(PATTERN_MIN_INSET_MM, dLat);
+    const span = PATTERN_ARCH_U1 - PATTERN_ARCH_U0;
+    const t = (u - PATTERN_ARCH_U0) / span;
+    if (t <= 0 || t >= 1) return Math.max(PATTERN_MIN_INSET_MM, dLat);
+    const bump = Math.sin(Math.PI * t) ** 4;
+    return Math.max(PATTERN_MIN_INSET_MM, dLat + (PATTERN_ARCH_INSET_MM - dLat) * bump);
+}
+
+function unitInward(outline: PolyPoint[], i: number): { x: number; y: number } {
+    const n = edgeInward(outline[(i + outline.length - 1) % outline.length]!, outline[i]!, outline);
+    const m = edgeInward(outline[i]!, outline[(i + 1) % outline.length]!, outline);
+    const x = n.x + m.x;
+    const y = n.y + m.y;
+    const len = Math.hypot(x, y) || 1;
+    return { x: x / len, y: y / len };
+}
+
+function smoothUnit2(ns: Array<{ x: number; y: number }>, passes: number): Array<{ x: number; y: number }> {
+    let cur = ns.map((n) => ({ ...n }));
+    for (let p = 0; p < passes; p++) {
+        const next = cur.map((n, i) => {
+            const a = cur[(i + cur.length - 1) % cur.length]!;
+            const c = cur[(i + 1) % cur.length]!;
+            const x = n.x * 0.5 + (a.x + c.x) * 0.25;
+            const y = n.y * 0.5 + (a.y + c.y) * 0.25;
+            const len = Math.hypot(x, y) || 1;
+            return { x: x / len, y: y / len };
+        });
+        cur = next;
+    }
+    return cur;
+}
+
+interface PatternFeatureSpec {
+    u: number;
+    medial?: boolean;
+}
+
+/** Heel apex, toe apex, six lateral, six medial — 14 interpolating features. */
+function featureSpecs(): PatternFeatureSpec[] {
+    return [
+        { u: 0 },
+        { u: 0.1, medial: false },
+        { u: 0.26, medial: false },
+        { u: 0.44, medial: false },
+        { u: 0.62, medial: false },
+        { u: 0.8, medial: false },
+        { u: 0.93, medial: false },
+        { u: 1 },
+        { u: 0.93, medial: true },
+        { u: 0.8, medial: true },
+        { u: 0.62, medial: true },
+        { u: 0.44, medial: true },
+        { u: 0.26, medial: true },
+        { u: 0.1, medial: true },
+    ];
+}
+
+function pickRimIndex(
+    rim: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    yMid: number,
+    sign: MedialYSign,
+    spec: PatternFeatureSpec,
+): number {
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    if (spec.medial === undefined) {
+        const wantMin = spec.u < 0.5;
+        let best = 0;
+        for (let i = 1; i < rim.length; i++) {
+            const p = rim[i]!;
+            const b = rim[best]!;
+            const betterX = wantMin ? p.x < b.x - 1e-9 : p.x > b.x + 1e-9;
+            const tie = Math.abs(p.x - b.x) <= 1e-9 && Math.abs(p.y - yMid) < Math.abs(b.y - yMid);
+            if (betterX || tie) best = i;
+        }
+        return best;
+    }
+    let best = 0;
+    let bestScore = Infinity;
+    for (let i = 0; i < rim.length; i++) {
+        const p = rim[i]!;
+        const u = (p.x - bounds.minX) / length;
+        const medial = (p.y - yMid) * sign > 0;
+        let score = Math.abs(u - spec.u);
+        if (medial !== spec.medial) score += 2;
+        if (score < bestScore) {
+            bestScore = score;
+            best = i;
+        }
+    }
+    return best;
+}
+
+function orderCcwAroundCentroid(pts: PolyPoint[]): PolyPoint[] {
+    if (pts.length < 3) return pts;
+    let cx = 0;
+    let cy = 0;
+    for (const p of pts) {
+        cx += p.x;
+        cy += p.y;
+    }
+    cx /= pts.length;
+    cy /= pts.length;
+    const sorted = pts
+        .slice()
+        .sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
+    return ensureCcw(sorted);
+}
+
+function dedupeFeatures(pts: PolyPoint[], minDist = 2): PolyPoint[] {
+    const out: PolyPoint[] = [];
+    for (const p of pts) {
+        if (out.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < minDist)) continue;
+        out.push(p);
+    }
+    return out;
+}
+
+export interface PatternCurvatureReport {
+    k: number[];
+    s: number[];
+    inflections: number;
+    inflectionU: number[];
+    maxAbsDkDs: number;
+    lateralMinK: number;
+}
+
+/** Signed polyline curvature k = Δθ / Δs. Positive is left-turning (CCW convex). */
+export function closedSignedCurvature(loop: PolyPoint[]): { k: number[]; s: number[] } {
+    const n = loop.length;
+    const k = new Array<number>(n).fill(0);
+    const s = new Array<number>(n).fill(0);
+    let acc = 0;
+    for (let i = 0; i < n; i++) {
+        const a = loop[(i + n - 1) % n]!;
+        const b = loop[i]!;
+        const c = loop[(i + 1) % n]!;
+        const ab = Math.hypot(b.x - a.x, b.y - a.y);
+        const bc = Math.hypot(c.x - b.x, c.y - b.y);
+        const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+        const dot = (b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y);
+        const ang = Math.atan2(cross, dot);
+        k[i] = ang / Math.max(0.5 * (ab + bc), 1e-9);
+        s[i] = acc;
+        acc += bc;
+    }
+    return { k, s };
+}
+
+export function countClosedInflections(k: number[], eps = 5e-4): number {
+    const n = k.length;
+    let first = 0;
+    let start = -1;
+    for (let i = 0; i < n; i++) {
+        if (Math.abs(k[i]!) >= eps) {
+            first = Math.sign(k[i]!);
+            start = i;
+            break;
+        }
+    }
+    if (start < 0) return 0;
+    let prev = first;
+    let count = 0;
+    for (let t = 1; t <= n; t++) {
+        const ki = k[(start + t) % n]!;
+        if (Math.abs(ki) < eps) continue;
+        const sg = Math.sign(ki);
+        if (sg !== prev) {
+            count++;
+            prev = sg;
+        }
+    }
+    return count;
+}
+
+export function patternCurvatureReport(
+    loop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    sign: MedialYSign = 1,
+): PatternCurvatureReport {
+    const { k, s } = closedSignedCurvature(loop);
+    const n = loop.length;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const yMid = rimYMid(loop);
+    const total = s.length
+        ? (s[s.length - 1] ?? 0) +
+          Math.hypot((loop[0]?.x ?? 0) - (loop[n - 1]?.x ?? 0), (loop[0]?.y ?? 0) - (loop[n - 1]?.y ?? 0))
+        : 1;
+    let maxAbsDkDs = 0;
+    for (let i = 0; i < n; i++) {
+        const ds = i + 1 < n ? s[i + 1]! - s[i]! : Math.max(total - s[i]!, 1e-9);
+        const dk = k[(i + 1) % n]! - k[i]!;
+        if (ds > 1e-6) maxAbsDkDs = Math.max(maxAbsDkDs, Math.abs(dk / ds));
+    }
+    const inflectionU: number[] = [];
+    let prev = 0;
+    for (let i = 0; i < n; i++) {
+        if (Math.abs(k[i]!) < 5e-4) continue;
+        const sg = Math.sign(k[i]!);
+        if (prev && sg !== prev) {
+            inflectionU.push(Math.max(0, Math.min(1, (loop[i]!.x - bounds.minX) / length)));
+        }
+        prev = sg;
+    }
+    let lateralMinK = Infinity;
+    for (let i = 0; i < n; i++) {
+        const p = loop[i]!;
+        if ((p.y - yMid) * sign > 0) continue;
+        lateralMinK = Math.min(lateralMinK, k[i]!);
+    }
+    return {
+        k,
+        s,
+        inflections: countClosedInflections(k),
+        inflectionU,
+        maxAbsDkDs,
+        lateralMinK: Number.isFinite(lateralMinK) ? lateralMinK : 0,
+    };
+}
+
+/**
+ * One fair closed curve through ~14 feature offsets — not a per-vertex
+ * region-blend. Heel (8 mm) tapers continuously into the forefoot (1 mm);
+ * the medial arch is a single shallow S-curve. Periodic cubic C2 interpolant.
  */
 export function syntheticBottomPattern(
     outline: PolyPoint[],
@@ -190,31 +405,40 @@ export function syntheticBottomPattern(
     rim3d?: PolyPoint[],
     side?: "left" | "right",
 ): PolyPoint[] {
-    const loop = startAtLowCurvature(ensureCcw(outline.map((p) => ({ ...p, z: 0 }))), bounds);
-    const n = loop.length;
-    if (n < 3) return loop;
+    const loop = ensureCcw(outline.map((p) => ({ ...p, z: 0 })));
+    if (loop.length < 3) return loop;
     const heightSrc = rim3d?.length ? rim3d : outline;
     const sign = medialYSignFromTopRim(heightSrc, bounds, side);
     const yMid = rimYMid(heightSrc);
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
-    const insets = loop.map((p) => {
+    const rim = resamplePolyline(startAtLowCurvature(loop, bounds), Math.max(96, Math.min(160, loop.length)));
+    const normals = smoothUnit2(
+        rim.map((_, i) => unitInward(rim, i)),
+        4,
+    );
+    const features: PolyPoint[] = [];
+    for (const spec of featureSpecs()) {
+        const idx = pickRimIndex(rim, bounds, yMid, sign, spec);
+        const p = rim[idx]!;
+        const n = normals[idx]!;
         const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
-        return regionInsetMm(u, p.y, yMid, sign, length);
-    });
-    const offset: PolyPoint[] = [];
-    for (let i = 0; i < n; i++) {
-        const p = loop[i]!;
-        const m = miterInward(i, loop);
-        const d = Math.max(PATTERN_MIN_INSET_MM, insets[i]!);
-        const q = { x: p.x + m.x * d, y: p.y + m.y * d, z: 0 };
+        const medial = spec.medial ?? (p.y - yMid) * sign > 0;
+        const d = fairInsetMm(spec.medial === undefined ? spec.u : u, medial);
+        const q = { x: p.x + n.x * d, y: p.y + n.y * d, z: 0 };
         if (!pointInPoly(q.x, q.y, loop)) {
-            offset.push({ x: p.x - m.x * d, y: p.y - m.y * d, z: 0 });
+            features.push({ x: p.x - n.x * d, y: p.y - n.y * d, z: 0 });
         } else {
-            offset.push(q);
+            features.push(q);
         }
     }
-    const spline = fitClosedC2Spline(offset);
-    return resampleClosedC2(spline, Math.max(160, n));
+    const ordered = orderCcwAroundCentroid(dedupeFeatures(features));
+    if (ordered.length < 8) {
+        return resampleClosedC2(
+            fitClosedC2Spline(ordered.length ? ordered : loop),
+            Math.max(160, loop.length),
+        );
+    }
+    return resampleClosedC2(fitClosedC2Spline(ordered), Math.max(160, loop.length));
 }
 
 function asPoint(x: number, y: number, z = 0): PolyPoint {

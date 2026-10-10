@@ -13,6 +13,7 @@ import type { SideCorrections } from "@/types";
 import { constructOutsideRound, FILLET_R_CAP_MM, WELD_MM } from "./bezier-column";
 import {
     assertCutInOnHighRimSide,
+    medialYSignFromPattern,
     medialYSignFromTopRim,
     PATTERN_SOURCE_SYNTHETIC,
     parseBottomPattern,
@@ -24,7 +25,7 @@ import {
     snapToStep,
     type WallRegionDefaults,
 } from "./defaults";
-import { densifyHeelForefootStations, fillLargeStationGaps } from "./densify-stations";
+import { densifyHeelForefootStations, densifyToeByExtent, fillLargeStationGaps } from "./densify-stations";
 import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
 import { buildHermiteStations } from "./loft";
@@ -354,7 +355,7 @@ export function reconstructProceduralWalls(
                   z: model.top.meshPositions![i * 3 + 2]!,
               }))
             : [];
-    const medialYSign = medialYSignFromTopRim(peekRim, model.bounds);
+    let medialYSign = medialYSignFromTopRim(peekRim, model.bounds);
     options.medialYSign = medialYSign;
     const defaults = defaultsFromModel(model, preset);
     defaults.medialYSign = medialYSign;
@@ -429,8 +430,12 @@ export function reconstructProceduralWalls(
         clearanceMm: patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : undefined,
         source: patternLabel,
         resampleN: Math.max(160, rawOutline.length, rimPts.length),
+        keepFair: patternLabel === PATTERN_SOURCE_SYNTHETIC,
     });
     if (patternPts?.length) {
+        medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
+        options.medialYSign = medialYSign;
+        defaults.medialYSign = medialYSign;
         assertCutInOnHighRimSide(hygiened.loop, rimPts, model.bounds, medialYSign);
     }
     let pairing = pairAtNativeTop(hygiened.loop, rimPts);
@@ -498,6 +503,7 @@ export function reconstructProceduralWalls(
         stations[i]!.rim = pairing.top[i]!;
     }
     densifyHeelForefootStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
+    densifyToeByExtent(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     applyOutlineClean(stations, rimLocal, indices);
     fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     rotateStationRing(stations, rimLocal, model.bounds);

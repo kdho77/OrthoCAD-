@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { OUTLINE_STATION_SPACING_MM } from "./bezier-column";
+import { FOREFOOT_INSET_MM, OUTLINE_STATION_SPACING_MM, TOE_SPACING_EXTENT_FRAC } from "./bezier-column";
 import type { PolyPoint } from "./curves";
 import type { HermiteStation } from "./loft";
 import { lerpClosedOnLoop } from "./stations";
@@ -63,6 +63,71 @@ export function densifyHeelForefootStations(
         const dist = Math.hypot(nxt.outline.x - cur.outline.x, nxt.outline.y - cur.outline.y);
         if (dist <= OUTLINE_STATION_SPACING_MM || dist > 8) continue;
         const nAdd = Math.min(4, Math.ceil(dist / OUTLINE_STATION_SPACING_MM) - 1);
+        let prevRim = rimLocal[i]!;
+        const endRim = rimLocal[(i + 1) % n]!;
+        for (let k = 1; k <= nAdd; k++) {
+            const t = k / (nAdd + 1);
+            const R = {
+                x: cur.rim.x + (nxt.rim.x - cur.rim.x) * t,
+                y: cur.rim.y + (nxt.rim.y - cur.rim.y) * t,
+                z: cur.rim.z + (nxt.rim.z - cur.rim.z) * t,
+            };
+            const B = lerpClosedOnLoop(cur.outline, nxt.outline, t, outlineLoop);
+            const nx = cur.n.x + (nxt.n.x - cur.n.x) * t;
+            const ny = cur.n.y + (nxt.n.y - cur.n.y) * t;
+            const nl = Math.hypot(nx, ny) || 1;
+            const mid = positions.length / 3;
+            positions.push(R.x, R.y, R.z);
+            splitEdge(indices, prevRim, endRim, mid);
+            prevRim = mid;
+            outSt.push({
+                outline: B,
+                rim: R,
+                n: { x: nx / nl, y: ny / nl },
+                u: Math.max(0, Math.min(1, (B.x - bounds.minX) / length)),
+            });
+            outRim.push(mid);
+        }
+    }
+    stations.length = 0;
+    stations.push(...outSt);
+    rimLocal.length = 0;
+    rimLocal.push(...outRim);
+}
+
+const TOE_U_MIN = 0.76;
+
+/**
+ * Resample the toe so station spacing ≤ 0.5× the profile's plan inset.
+ * After the 1 mm toe pin the extent is small; dense stations keep heading stable.
+ */
+export function densifyToeByExtent(
+    stations: HermiteStation[],
+    rimLocal: number[],
+    positions: number[],
+    indices: number[],
+    outlineLoop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+): void {
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const outSt: HermiteStation[] = [];
+    const outRim: number[] = [];
+    const n = stations.length;
+    for (let i = 0; i < n; i++) {
+        const cur = stations[i]!;
+        outSt.push(cur);
+        outRim.push(rimLocal[i]!);
+        const nxt = stations[(i + 1) % n]!;
+        if (cur.u < TOE_U_MIN && nxt.u < TOE_U_MIN) continue;
+        const dist = Math.hypot(nxt.outline.x - cur.outline.x, nxt.outline.y - cur.outline.y);
+        const ext = Math.max(
+            FOREFOOT_INSET_MM,
+            Math.hypot(cur.outline.x - cur.rim.x, cur.outline.y - cur.rim.y),
+            Math.hypot(nxt.outline.x - nxt.rim.x, nxt.outline.y - nxt.rim.y),
+        );
+        const cap = Math.max(0.35, TOE_SPACING_EXTENT_FRAC * ext);
+        if (dist <= cap || dist > 8) continue;
+        const nAdd = Math.min(6, Math.ceil(dist / cap) - 1);
         let prevRim = rimLocal[i]!;
         const endRim = rimLocal[(i + 1) % n]!;
         for (let k = 1; k <= nAdd; k++) {

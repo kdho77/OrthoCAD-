@@ -187,3 +187,195 @@ export function renderMesh(
     }
     return rgb;
 }
+
+function setPixel(
+    rgb: Uint8Array,
+    width: number,
+    height: number,
+    x: number,
+    y: number,
+    color: [number, number, number],
+): void {
+    const px = Math.round(x);
+    const py = Math.round(y);
+    if (px < 0 || py < 0 || px >= width || py >= height) return;
+    const i = (py * width + px) * 3;
+    rgb[i] = color[0];
+    rgb[i + 1] = color[1];
+    rgb[i + 2] = color[2];
+}
+
+function drawLine(
+    rgb: Uint8Array,
+    width: number,
+    height: number,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    color: [number, number, number],
+): void {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy)));
+    for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        setPixel(rgb, width, height, x0 + dx * t, y0 + dy * t, color);
+    }
+}
+
+function drawPolyline(
+    rgb: Uint8Array,
+    width: number,
+    height: number,
+    pts: Array<{ x: number; y: number }>,
+    color: [number, number, number],
+    closed = false,
+): void {
+    for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i]!;
+        const b = pts[i + 1]!;
+        drawLine(rgb, width, height, a.x, a.y, b.x, b.y, color);
+    }
+    if (closed && pts.length > 2) {
+        const a = pts[pts.length - 1]!;
+        const b = pts[0]!;
+        drawLine(rgb, width, height, a.x, a.y, b.x, b.y, color);
+    }
+}
+
+function projectPlan(
+    pts: Array<{ x: number; y: number }>,
+    left: number,
+    top: number,
+    boxW: number,
+    boxH: number,
+    pad = 16,
+): Array<{ x: number; y: number }> {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of pts) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    const scale = Math.min(
+        (boxW - 2 * pad) / Math.max(1e-6, maxX - minX),
+        (boxH - 2 * pad) / Math.max(1e-6, maxY - minY),
+    );
+    const ox = left + (boxW - scale * (maxX - minX)) / 2;
+    const oy = top + (boxH - scale * (maxY - minY)) / 2;
+    return pts.map((p) => ({
+        x: ox + (p.x - minX) * scale,
+        y: oy + boxH - pad - (p.y - minY) * scale,
+    }));
+}
+
+/**
+ * Plan view of the pattern (lime) over the rim (gray) plus k(s) along the
+ * closed curve. Inflections marked in red. Overlay for Kendon's fair-curve gate.
+ */
+export function renderPatternCurvature(
+    pattern: Array<{ x: number; y: number }>,
+    k: number[],
+    s: number[],
+    width: number,
+    height: number,
+    rim?: Array<{ x: number; y: number }>,
+    inflections = 0,
+): Uint8Array {
+    const rgb = new Uint8Array(width * height * 3);
+    rgb.fill(36);
+    const planW = Math.floor(width * 0.48);
+    const plotLeft = planW + 12;
+    const plotW = width - plotLeft - 16;
+    const plotTop = 24;
+    const plotH = height - 48;
+    if (rim?.length) {
+        drawPolyline(rgb, width, height, projectPlan(rim, 8, 8, planW - 8, height - 16), [90, 90, 90], true);
+    }
+    drawPolyline(
+        rgb,
+        width,
+        height,
+        projectPlan(pattern, 8, 8, planW - 8, height - 16),
+        [180, 255, 40],
+        true,
+    );
+
+    let kMin = 0;
+    let kMax = 0;
+    for (const ki of k) {
+        if (ki < kMin) kMin = ki;
+        if (ki > kMax) kMax = ki;
+    }
+    const pad = Math.max(0.01, 0.1 * (kMax - kMin));
+    kMin -= pad;
+    kMax += pad;
+    const sMax = s.length ? Math.max(s[s.length - 1] ?? 1, 1e-6) : 1;
+    const xAt = (sv: number) => plotLeft + (sv / sMax) * plotW;
+    const yAt = (kv: number) => plotTop + plotH - ((kv - kMin) / Math.max(1e-9, kMax - kMin)) * plotH;
+    drawLine(rgb, width, height, plotLeft, yAt(0), plotLeft + plotW, yAt(0), [80, 80, 80]);
+    drawLine(rgb, width, height, plotLeft, plotTop, plotLeft, plotTop + plotH, [80, 80, 80]);
+    const kPts = k.map((ki, i) => ({ x: xAt(s[i] ?? 0), y: yAt(ki) }));
+    drawPolyline(rgb, width, height, kPts, [80, 220, 255], false);
+    if (kPts.length > 1) {
+        drawLine(
+            rgb,
+            width,
+            height,
+            kPts[kPts.length - 1]!.x,
+            kPts[kPts.length - 1]!.y,
+            kPts[0]!.x,
+            kPts[0]!.y,
+            [80, 220, 255],
+        );
+    }
+    let prev = 0;
+    for (let i = 0; i < k.length; i++) {
+        const ki = k[i]!;
+        if (Math.abs(ki) < 5e-4) continue;
+        const sg = Math.sign(ki);
+        if (prev && sg !== prev) {
+            const p = kPts[i]!;
+            drawLine(rgb, width, height, p.x - 4, p.y - 4, p.x + 4, p.y + 4, [255, 70, 70]);
+            drawLine(rgb, width, height, p.x - 4, p.y + 4, p.x + 4, p.y - 4, [255, 70, 70]);
+        }
+        prev = sg;
+    }
+    void inflections;
+    return rgb;
+}
+
+/** Stack a mesh render over the pattern+k(s) overlay. */
+export function compositeBottomAndCurvature(
+    meshRgb: Uint8Array,
+    meshW: number,
+    meshH: number,
+    curveRgb: Uint8Array,
+    curveW: number,
+    curveH: number,
+): { rgb: Uint8Array; width: number; height: number } {
+    const width = Math.max(meshW, curveW);
+    const height = meshH + curveH;
+    const rgb = new Uint8Array(width * height * 3);
+    rgb.fill(18);
+    const blit = (src: Uint8Array, sw: number, sh: number, dy: number) => {
+        const ox = Math.floor((width - sw) / 2);
+        for (let y = 0; y < sh; y++) {
+            for (let x = 0; x < sw; x++) {
+                const si = (y * sw + x) * 3;
+                const di = ((y + dy) * width + (x + ox)) * 3;
+                rgb[di] = src[si]!;
+                rgb[di + 1] = src[si + 1]!;
+                rgb[di + 2] = src[si + 2]!;
+            }
+        }
+    };
+    blit(meshRgb, meshW, meshH, 0);
+    blit(curveRgb, curveW, curveH, meshH);
+    return { rgb, width, height };
+}
