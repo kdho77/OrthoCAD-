@@ -1611,11 +1611,7 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
     );
     const out = sx.map((_, i) => {
         const hl = Math.hypot(sx[i]!, sy[i]!) || 1;
-        return clampHeadingTo(
-            { x: sx[i]! / hl, y: sy[i]! / hl },
-            chords[i]!.h,
-            headingAllowanceDeg(chords[i]!.planLen),
-        );
+        return clampHeadingTo({ x: sx[i]! / hl, y: sy[i]! / hl }, chords[i]!.h, HEADING_MAX_DEG);
     });
     const maxRad = (HEADING_MAX_DEG * Math.PI) / 180;
     for (let pass = 0; pass < 8; pass++) {
@@ -1633,9 +1629,7 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
             out[i] = { x: x / hl, y: y / hl };
         }
     }
-    for (let i = 0; i < n; i++) {
-        out[i] = clampHeadingTo(out[i]!, chords[i]!.h, headingAllowanceDeg(chords[i]!.planLen));
-    }
+    for (let i = 0; i < n; i++) out[i] = clampHeadingTo(out[i]!, chords[i]!.h, HEADING_MAX_DEG);
     return out;
 }
 
