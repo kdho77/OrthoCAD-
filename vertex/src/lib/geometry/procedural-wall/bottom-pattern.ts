@@ -362,6 +362,26 @@ export function patternCurvatureReport(
     };
 }
 
+/** Lateral convex, one medial S, C2 — the follow-mode pattern gate. */
+export function movedPatternHygiene(
+    loop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    sign: MedialYSign = 1,
+): { ok: boolean; report: PatternCurvatureReport; misses: string[] } {
+    const report = patternCurvatureReport(loop, bounds, sign);
+    const misses: string[] = [];
+    if (report.inflections > 2) {
+        misses.push(`pattern-inflections ${report.inflections}>2`);
+    }
+    if (report.lateralMinK < LATERAL_K_SLACK) {
+        misses.push(`lateral-concave k=${report.lateralMinK.toFixed(5)}<${LATERAL_K_SLACK}`);
+    }
+    if (report.maxAbsDkDs > PATTERN_MAX_DKDS) {
+        misses.push(`pattern-dkds ${report.maxAbsDkDs.toFixed(4)}>${PATTERN_MAX_DKDS}`);
+    }
+    return { ok: misses.length === 0, report, misses };
+}
+
 /**
  * C∞ offset → few-control FAIRED approximating cubic (not an interpolant).
  * Heel (8 mm) tapers into the forefoot (1 mm); the medial arch is one S.
@@ -483,7 +503,7 @@ export function syntheticBottomPattern(
 }
 
 /** Laplacian only concave lateral verts so the lateral side stays convex. */
-function makeLateralConvex(
+export function makeLateralConvex(
     loop: PolyPoint[],
     sign: MedialYSign,
     passes = 12,

@@ -11,6 +11,7 @@ import {
     resampleClosedC2,
     resamplePolyline,
 } from "./curves";
+import { scaleToMinInset } from "./faired-pattern";
 import { masterCurveRadii, smoothClosedToMinRadius } from "./stations";
 
 export const PATTERN_MIN_RADIUS_MM = 3;
@@ -176,7 +177,12 @@ function rimCentroid(rim: PolyPoint[]): { x: number; y: number } {
  * deficit. A uniform Clipper offset keeps the faired shape; per-vertex snaps
  * kink the toe and drive E/F turning.
  */
-export function enforceMinRimInset(pattern: PolyPoint[], rim: PolyPoint[], minInsetMm: number): PolyPoint[] {
+export function enforceMinRimInset(
+    pattern: PolyPoint[],
+    rim: PolyPoint[],
+    minInsetMm: number,
+    opts?: { smooth?: boolean },
+): PolyPoint[] {
     if (pattern.length < 3 || rim.length < 3 || minInsetMm <= 0) return pattern;
     const need = minInsetMm + RIM_INSET_SLACK_MM;
     let minIn = Infinity;
@@ -199,8 +205,9 @@ export function enforceMinRimInset(pattern: PolyPoint[], rim: PolyPoint[], minIn
             if (after >= minInsetMm - 1e-6) return inseted.map((p) => ({ x: p.x, y: p.y, z: 0 }));
         }
     } catch {
-        /* fall through to the local walk */
+        /* fall through */
     }
+    if (opts?.smooth) return scaleToMinInset(pattern, rim, minInsetMm);
     const c = rimCentroid(rim);
     return pattern.map((p) => {
         let q = { x: p.x, y: p.y, z: 0 };
@@ -280,7 +287,7 @@ export function hygieneBottomPattern(
         const minRadiusMm = masterCurveRadii(resampled).minRadiusMm;
         if (opts.requireInsideRim && opts.rimPlan?.length) {
             const clearance = opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM;
-            const cleared = enforceMinRimInset(resampled, opts.rimPlan, clearance);
+            const cleared = enforceMinRimInset(resampled, opts.rimPlan, clearance, { smooth: true });
             assertInsideRim(cleared, opts.rimPlan, clearance);
             return {
                 loop: cleared,

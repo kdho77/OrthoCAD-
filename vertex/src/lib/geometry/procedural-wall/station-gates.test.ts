@@ -2,6 +2,8 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
+import { heelCupWidthLongitudinalEnvelope } from "@/lib/geometry/height-field";
+import { movedPatternHygiene } from "./bottom-pattern";
 import type { HermiteStation } from "./loft";
 import {
     adjustPatternForClearance,
@@ -150,22 +152,25 @@ describe("station-gates", () => {
     });
 
     test("blended follow and width scale stay one smooth curve after the fair QP", () => {
+        const bounds = { minX: -40, maxX: 40 };
         const rim = oval(40, 20, 48);
         const pattern = oval(30, 15, 48);
         const rimAfter = rim.map((p) => ({ x: p.x, y: p.y * 1.12, z: 0 }));
         const raw = shiftPatternByRimFollow(pattern, rim, rimAfter, (p) => {
             const u = Math.max(0, Math.min(1, (p.x + 40) / 80));
-            return u < 0.4 ? 1 : 0;
+            return heelCupWidthLongitudinalEnvelope(u);
         });
         const faired = fairMovedPattern({
             pattern: raw,
             rim: rimAfter,
             r1: 0.5,
             r2: 0.7,
-            bounds: { minX: -40, maxX: 40 },
+            bounds,
             medialYSign: 1,
         });
         expect(faired.length).toBeGreaterThan(8);
+        const heelHy = movedPatternHygiene(faired, bounds, 1);
+        expect(heelHy.misses, heelHy.misses.join("; ")).toEqual([]);
         const scaled = scalePatternWidth(pattern, 1.05, 0);
         const mid = pattern[Math.floor(pattern.length / 4)]!;
         const midS = scaled[Math.floor(scaled.length / 4)]!;
@@ -176,10 +181,12 @@ describe("station-gates", () => {
             rim: scalePatternWidth(rim, 1.05, 0),
             r1: 0.5,
             r2: 0.7,
-            bounds: { minX: -40, maxX: 40 },
+            bounds,
             medialYSign: 1,
         });
         expect(whole.length).toBeGreaterThan(8);
+        const widthHy = movedPatternHygiene(whole, bounds, 1);
+        expect(widthHy.misses, widthHy.misses.join("; ")).toEqual([]);
         let maxJump = 0;
         for (let i = 0; i < whole.length; i++) {
             const a = whole[i]!;

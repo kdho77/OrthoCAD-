@@ -2,16 +2,18 @@
 // See LICENSE file in the project root for full license information.
 
 import { type ColumnQuality, columnHeading, FILLET_R_CAP_MM, MIN_ROUND_R_MM } from "./bezier-column";
+import { LATERAL_K_SLACK, makeLateralConvex, movedPatternHygiene, PATTERN_MAX_DKDS } from "./bottom-pattern";
 import { pointInPoly } from "./cdt-band";
 import {
     ensureCcw,
+    nearestClosedArc01,
     type PolyPoint,
     polylineArcLengths,
     sampleClosedAtArc01,
     startAtLowCurvature,
 } from "./curves";
 import type { WallRegionDefaults } from "./defaults";
-import { fairedPattern } from "./faired-pattern";
+import { fairedPattern, scaleToMinInset } from "./faired-pattern";
 import type { HermiteStation } from "./loft";
 import { outwardNormal } from "./measure";
 import { enforceMinRimInset } from "./pattern-hygiene";
@@ -410,8 +412,9 @@ export function shiftPatternByRimFollow(
         const s01 = (cum[i] ?? 0) / den;
         const f = factorAt(p, s01);
         if (!Number.isFinite(f) || f === 0) return { ...p };
-        const a = sampleClosedAtArc01(before, s01);
-        const b = sampleClosedAtArc01(after, s01);
+        const sRim = nearestClosedArc01(before, p);
+        const a = sampleClosedAtArc01(before, sRim);
+        const b = sampleClosedAtArc01(after, sRim);
         return {
             x: p.x + (b.x - a.x) * f,
             y: p.y + (b.y - a.y) * f,
@@ -434,8 +437,8 @@ export function scalePatternWidth(pattern: PolyPoint[], scale: number, centerY: 
 
 /**
  * Re-fit moved B targets through the faired-pattern QP so the result is one
- * smooth curve (lateral convex, single medial S, C2). Clearance QP still runs
- * afterwards.
+ * smooth curve (lateral convex, single medial S, C2). Targets are not the
+ * finished pattern. Clearance QP still runs afterwards.
  */
 export function fairMovedPattern(input: {
     pattern: PolyPoint[];
@@ -449,26 +452,51 @@ export function fairMovedPattern(input: {
     const targets = startAtLowCurvature(ensureCcw(input.pattern.map((p) => ({ ...p, z: 0 }))));
     if (targets.length < 3 || rim.length < 3) return targets;
     const floorInset = minInsetForLeanMm(input.r1, input.r2, 0);
-    const fit = fairedPattern({
-        targets: targets.map((p) => ({ point: p, weight: 1 })),
-        controlCount: 20,
-        wFit: 1,
-        wFair: 0.55,
-        sampleCount: Math.max(160, targets.length, rim.length),
-        constraints: {
-            rim,
-            minInsetMm: floorInset + 0.02,
-            medialYSign: input.medialYSign,
-            bounds: input.bounds,
-            lateralMinK: 0,
-            maxIters: 10,
-        },
-    });
-    return enforceMinRimInset(
-        fit.samples.map((p) => ({ x: p.x, y: p.y, z: 0 })),
-        rim,
-        floorInset,
-    );
+    const sign = input.medialYSign ?? 1;
+    const attempts: Array<{ ctrl: number; wFair: number; medial: boolean }> = [
+        { ctrl: 16, wFair: 0.65, medial: false },
+        { ctrl: 14, wFair: 0.75, medial: true },
+        { ctrl: 12, wFair: 0.85, medial: true },
+    ];
+    let best = targets;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (const attempt of attempts) {
+        const fit = fairedPattern({
+            targets: targets.map((p) => ({ point: p, weight: 1 })),
+            controlCount: attempt.ctrl,
+            wFit: 1,
+            wFair: attempt.wFair,
+            sampleCount: Math.max(160, targets.length, rim.length),
+            constraints: {
+                rim,
+                minInsetMm: floorInset + 0.02,
+                lateralMinK: 0,
+                maxIters: 10,
+                ...(attempt.medial && input.bounds ? { medialYSign: sign, bounds: input.bounds } : {}),
+            },
+        });
+        let out = makeLateralConvex(
+            fit.samples.map((p) => ({ x: p.x, y: p.y, z: 0 })),
+            sign,
+            36,
+        );
+        out = scaleToMinInset(out, rim, floorInset);
+        if (!input.bounds) {
+            best = out;
+            continue;
+        }
+        const hygiene = movedPatternHygiene(out, input.bounds, sign);
+        const score =
+            (hygiene.report.inflections > 2 ? 10 + hygiene.report.inflections : 0) +
+            (hygiene.report.lateralMinK < LATERAL_K_SLACK ? 5 : 0) +
+            (hygiene.report.maxAbsDkDs > PATTERN_MAX_DKDS ? 3 : 0);
+        if (score < bestScore) {
+            bestScore = score;
+            best = out;
+        }
+        if (score === 0) return out;
+    }
+    return best;
 }
 
 export function limitStationSkew(

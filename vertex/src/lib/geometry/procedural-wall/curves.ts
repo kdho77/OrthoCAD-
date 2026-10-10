@@ -134,6 +134,38 @@ export function polylineArcLengths(points: PolyPoint[]): { cum: number[]; total:
     return { cum, total: cum[n]! };
 }
 
+/** Arc-length fraction of the nearest point on a closed polyline. */
+export function nearestClosedArc01(points: PolyPoint[], p: PolyPoint): number {
+    if (points.length === 0) return 0;
+    if (points.length === 1) return 0;
+    const { cum, total } = polylineArcLengths(points);
+    const den = Math.max(total, 1e-12);
+    let bestS = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < points.length; i++) {
+        const a = points[i]!;
+        const b = points[(i + 1) % points.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const ez = b.z - a.z;
+        const len2 = ex * ex + ey * ey + ez * ez;
+        const t =
+            len2 > 1e-12
+                ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey + (p.z - a.z) * ez) / len2))
+                : 0;
+        const dx = p.x - (a.x + ex * t);
+        const dy = p.y - (a.y + ey * t);
+        const dz = p.z - (a.z + ez * t);
+        const d = dx * dx + dy * dy + dz * dz;
+        if (d < bestD) {
+            bestD = d;
+            const seg = (cum[i + 1] ?? total) - (cum[i] ?? 0);
+            bestS = ((cum[i] ?? 0) + t * seg) / den;
+        }
+    }
+    return ((bestS % 1) + 1) % 1;
+}
+
 /** Sample a closed polyline at arc-length fraction `s01` ∈ [0, 1). */
 export function sampleClosedAtArc01(points: PolyPoint[], s01: number): PolyPoint {
     if (points.length === 0) return { x: 0, y: 0, z: 0 };

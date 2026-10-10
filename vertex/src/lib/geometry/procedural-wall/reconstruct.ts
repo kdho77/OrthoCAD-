@@ -25,6 +25,7 @@ import {
     assertCutInOnHighRimSide,
     medialYSignFromPattern,
     medialYSignFromTopRim,
+    movedPatternHygiene,
     PATTERN_SOURCE_SYNTHETIC,
     parseBottomPattern,
 } from "./bottom-pattern";
@@ -613,6 +614,23 @@ export function reconstructProceduralWalls(
         });
     }
     medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
+    if (patternMoved) {
+        const movedHy = movedPatternHygiene(hygiened.loop, model.bounds, medialYSign);
+        if (!movedHy.ok) {
+            hygiened = {
+                ...hygiened,
+                loop: fairMovedPattern({
+                    pattern: hygiened.loop,
+                    rim: liveRimPlan,
+                    r1,
+                    r2,
+                    bounds: model.bounds,
+                    medialYSign,
+                }),
+            };
+            medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
+        }
+    }
     options.medialYSign = medialYSign;
     defaults.medialYSign = medialYSign;
     if (patternPts?.length || legacyFaired) {
@@ -986,6 +1004,7 @@ export function reconstructProceduralWalls(
         patternClearanceStations: clearance.stations,
         widenFollowFactor: followFactor,
         insoleWidthScale: wholeWidth ? wholeScale : 1,
+        patternHygiene: movedPatternHygiene(hygiened.loop, model.bounds, medialYSign),
         postingClamps: posting.postingClamps,
         maxBPlantarDeltaMm: grid.maxBPlantarDeltaMm,
         wallBelowPlantar: grid.wallBelowPlantar,
