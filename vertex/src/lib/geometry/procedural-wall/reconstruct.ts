@@ -536,6 +536,10 @@ export function reconstructProceduralWalls(
     applySmoothedB();
     ensureSourceRimStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, sourceRim);
     evenSplitSourceEdges(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
+    stampMonotonicTB(stations, hygiened.loop);
+    applyStoredTB(stations, hygiened.loop);
+    applySmoothedB();
+    evenSplitSourceEdges(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     markSourceRimStations(stations, rimLocal, sourceRim);
     stampMonotonicTB(stations, hygiened.loop);
     applyStoredTB(stations, hygiened.loop);

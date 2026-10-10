@@ -583,7 +583,7 @@ export function evenSplitSourceEdges(
             const prevL = Math.max(edgeLen[(i + n0 - 1) % n0]!, bLen[(i + n0 - 1) % n0]!);
             const nextL = Math.max(edgeLen[(i + 1) % n0]!, bLen[(i + 1) % n0]!);
             const neigh = Math.max(PAIR_SPACING_MIN_MM, Math.min(prevL, nextL));
-            const ratioCap = neigh * NEIGHBOUR_SPACING_RATIO;
+            const ratioCap = neigh * 1.35;
             let k = Math.max(0, Math.round(L / Math.max(target, 1e-6)) - 1);
             if (L > ratioCap + 1e-9) {
                 k = Math.max(k, Math.ceil(L / ratioCap - 1e-9) - 1);
