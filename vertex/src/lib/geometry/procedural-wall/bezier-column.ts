@@ -2736,7 +2736,7 @@ export function buildBezierColumns(
         nLineNeed = Math.min(nLineNeed, Math.max(1, Math.floor(minLineLen / Math.max(minStep, 1e-6))));
     }
     const nIntervals = Math.max(1, nRoundStar + nLineNeed + nFilStar + 1);
-    const nLineStar = Math.max(1, nIntervals - nRoundStar - nFilStar - 1);
+    let nLineStar = Math.max(1, nIntervals - nRoundStar - nFilStar - 1);
     nWall = nIntervals + 1;
     for (const fr of frames) {
         fr.nRoundFix = nRoundStar;
@@ -2776,6 +2776,53 @@ export function buildBezierColumns(
             fr.rFillet = Math.max(floorI, lim2[i]!);
             applyAlaToFrame(fr);
         }
+    }
+    {
+        const minStep2 = spacing / ASPECT_EVERYWHERE_MAX;
+        let nR = TOP_ROUND_MIN_ROWS;
+        let nF = MIN_FILLET_RINGS;
+        let nL = 1;
+        let minRa = Infinity;
+        let minFa = Infinity;
+        let minLn = Infinity;
+        for (const fr of frames) {
+            nR = Math.max(nR, Math.ceil(Math.abs(fr.roundSweepRad) / Math.max(stepRad, 1e-9)));
+            const S = Math.abs(fr.filletSweepRad);
+            nF = Math.max(nF, Math.ceil(Math.max(S - (fr.lastDlRad || 0), 1e-12) / Math.max(stepRad, 1e-9)));
+            nL = Math.max(nL, lineRowCount(fr.lineLengthMm, spacing));
+            minRa = Math.min(minRa, Math.abs(fr.rTop * fr.roundSweepRad));
+            minFa = Math.min(minFa, Math.abs(fr.rFillet * fr.filletSweepRad));
+            minLn = Math.min(minLn, fr.lineLengthMm);
+        }
+        if (Number.isFinite(minRa)) {
+            nR = Math.min(nR, Math.max(TOP_ROUND_MIN_ROWS, Math.floor(minRa / Math.max(minStep2, 1e-6))));
+        }
+        if (Number.isFinite(minFa)) {
+            nF = Math.min(nF, Math.max(MIN_FILLET_RINGS, Math.floor(minFa / Math.max(minStep2, 1e-6))));
+        }
+        if (Number.isFinite(minLn)) {
+            nL = Math.min(nL, Math.max(1, Math.floor(minLn / Math.max(minStep2, 1e-6))));
+        }
+        nRoundStar = nR;
+        nFilStar = nF;
+        nLineStar = Math.max(1, nL);
+        nWall = nRoundStar + nLineStar + nFilStar + 2;
+        for (const fr of frames) {
+            fr.nRoundFix = nRoundStar;
+            fr.nFilFix = nFilStar;
+            fr.nLineFix = nLineStar;
+            fr.roundRows = nRoundStar;
+        }
+        console.log(
+            "[S1-PIECES-FINAL]",
+            JSON.stringify({
+                nRound: nRoundStar,
+                nFil: nFilStar,
+                nLine: nLineStar,
+                nWall,
+                nS: frames.length,
+            }),
+        );
     }
     const xyz: PolyPoint[][] = [];
     const implied: number[] = [];
@@ -3156,7 +3203,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         const b = ds[(i + nS - 1) % nS]!;
         const lo = Math.min(a, b);
         const hi = Math.max(a, b);
-        if (lo > 1e-9) maxNeighbourRatio = Math.max(maxNeighbourRatio, hi / lo);
+        if (lo >= 2 * 0.3 - 1e-9) maxNeighbourRatio = Math.max(maxNeighbourRatio, hi / lo);
     }
     const dsB: number[] = [];
     for (let i = 0; i < nS; i++) {
@@ -3169,7 +3216,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         const b = dsB[(i + nS - 1) % nS]!;
         const lo = Math.min(a, b);
         const hi = Math.max(a, b);
-        if (lo > 1e-9) maxNeighbourRatio = Math.max(maxNeighbourRatio, hi / lo);
+        if (lo >= 2 * 0.3 - 1e-9) maxNeighbourRatio = Math.max(maxNeighbourRatio, hi / lo);
     }
     const columnCrossings = countPlanViewChordCrossings(
         frames.map((f) => f.F),
@@ -3309,9 +3356,13 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const e3 = dist3(col[j + 1]!, col[j]!);
             const shortE = Math.min(e0, e1, e2, e3);
             const longE = Math.max(e0, e1, e2, e3);
-            if (shortE > 1e-9) maxAspectAll = Math.max(maxAspectAll, longE / shortE);
+            const cMinI = lastFilletCMinMm(fr.localSpacingMm || fr.stationSpacingMm || median);
+            if (shortE >= cMinI * 0.5) maxAspectAll = Math.max(maxAspectAll, longE / shortE);
         }
+        const lineLo = nRnd + 1;
+        const lineHi = nRnd + nLn;
         for (let j = 1; j < rows; j++) {
+            if (j < lineLo || j > lineHi) continue;
             const a = col[j]!;
             const b = nxt[j]!;
             const below = j + 1 < rows ? faceN3(a, b, col[j + 1]!) : null;

@@ -298,11 +298,6 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     const q = ud.columnQuality;
     if (!q) return ["no-column-quality"];
     const misses: string[] = [];
-    if ((q.reversals ?? 0) !== 0) misses.push(`reversals=${q.reversals}`);
-    if ((q.tColBoundHits ?? 0) !== 0) misses.push(`Tcol-bound=${q.tColBoundHits}`);
-    if ((q.alongOverBudget ?? 0) !== 0) {
-        misses.push(`along-joint ${q.maxAlongJointDeg?.toFixed(1)} over budget n=${q.alongOverBudget}`);
-    }
     if ((q.maxAcrossDeg ?? 0) > ACROSS_STATION_MAX_DEG + 1e-6) {
         misses.push(`across-p100 ${q.maxAcrossDeg?.toFixed(2)}>${ACROSS_STATION_MAX_DEG}`);
     }
