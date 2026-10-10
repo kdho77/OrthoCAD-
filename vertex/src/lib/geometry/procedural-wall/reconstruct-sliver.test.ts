@@ -40,14 +40,14 @@ describe("splitAcuteTriangles", () => {
         const before = new BufferGeometry();
         before.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
         before.setIndex(indices.slice());
-        expect(countJunctionBandSlivers(before, band, 20)).toBeGreaterThan(0);
+        expect(countJunctionBandSlivers(before, band, 20, 5)).toBeGreaterThan(0);
 
         splitAcuteTriangles(positions, indices, 0, band);
 
         const after = new BufferGeometry();
         after.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
         after.setIndex(indices);
-        expect(countJunctionBandSlivers(after, band, 20)).toBe(0);
+        expect(countJunctionBandSlivers(after, band, 20, 5)).toBe(0);
         for (const [key, n] of edgeUses(indices)) {
             const [a, b] = key.split(",").map(Number);
             if ((a ?? 0) >= 7 || (b ?? 0) >= 7) expect(n).toBe(2);

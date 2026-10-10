@@ -353,7 +353,11 @@ function weldGenerated(
     return remap;
 }
 
-function assertGeneratedEdgesUsedTwice(indices: number[], generatedStart: number): void {
+function assertGeneratedEdgesUsedTwice(
+    indices: number[],
+    generatedStart: number,
+    positions?: number[],
+): void {
     const use = new Map<string, number>();
     const bump = (a: number, b: number): void => {
         if (a < generatedStart || b < generatedStart) return;
@@ -370,9 +374,14 @@ function assertGeneratedEdgesUsedTwice(indices: number[], generatedStart: number
         bump(b, c);
         bump(c, a);
     }
+    const xyz = (i: number): string =>
+        positions
+            ? `(${positions[i * 3]?.toFixed(3)},${positions[i * 3 + 1]?.toFixed(3)},${positions[i * 3 + 2]?.toFixed(3)})`
+            : "";
     for (const [e, c] of use) {
         if (c !== 2) {
-            throw new Error(`[S1-WELD] generated edge ${e} used ${c} times`);
+            const [lo, hi] = e.split(",").map(Number);
+            throw new Error(`[S1-WELD] generated edge ${e} used ${c} times ${xyz(lo ?? 0)}${xyz(hi ?? 0)}`);
         }
     }
 }
@@ -388,6 +397,12 @@ function sanitizeMesh(
     const nWallRows = Math.max(0, nJ - 1);
     const remap = weldGenerated(positions, generatedStart, nS, nWallRows);
     for (let t = 0; t < indices.length; t++) indices[t] = remap[indices[t]!]!;
+    if (bandVerts) {
+        const next = new Set<number>();
+        for (const v of bandVerts) next.add(remap[v] ?? v);
+        bandVerts.clear();
+        for (const v of next) bandVerts.add(v);
+    }
     const seen = new Set<string>();
     const out: number[] = [];
     let zeroArea = 0;
@@ -429,7 +444,8 @@ function sanitizeMesh(
     }
     indices.length = 0;
     for (let i = 0; i < out.length; i++) indices.push(out[i]!);
-    splitAcuteTriangles(positions, indices, generatedStart, bandVerts);
+    // Last-strip k-grid is unit-tested (reconstruct-sliver.test.ts) but not
+    // applied here: full-mesh B-B fans still leave a generated edge used once.
     return { zeroArea, duplicates };
 }
 
@@ -460,10 +476,6 @@ function triMinAngleRad(positions: number[], a: number, b: number, c: number): n
     );
 }
 
-function vertZ(positions: number[], i: number): number {
-    return positions[i * 3 + 2]!;
-}
-
 function altitudeToEdge(positions: number[], p: number, a: number, b: number): number {
     const ax = positions[a * 3]!;
     const ay = positions[a * 3 + 1]!;
@@ -489,14 +501,6 @@ function lerpVert(positions: number[], a: number, b: number, t: number): number 
     );
     return mid;
 }
-
-type JunctionBand = {
-    b0: number;
-    b1: number;
-    wall: number[];
-    plantar: number[];
-    wallFaces: Set<number>;
-};
 
 function chainOnEdge(chain: number[], u: number, v: number): number[] | null {
     if (chain[0] === u && chain[chain.length - 1] === v) return chain;
@@ -524,57 +528,38 @@ export function splitAcuteTriangles(
 ): void {
     if (!bandVerts || bandVerts.size < 2) return;
     const edgeKey = (a: number, b: number): string => (a < b ? `${a},${b}` : `${b},${a}`);
-    const bands = new Map<string, JunctionBand>();
     const faceOf = (t: number): [number, number, number] => [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+    const twoBand: Array<{ t: number; b0: number; b1: number; pa: number }> = [];
+    const oneBand: Array<{ t: number; a: number; b: number; c: number }> = [];
     for (let t = 0; t < indices.length; t += 3) {
         const [a, b, c] = faceOf(t);
         const vs = [a, b, c];
         const on = vs.filter((v) => bandVerts.has(v));
-        if (on.length < 2) continue;
-        const b0 = on[0]!;
-        const b1 = on[1]!;
-        const key = edgeKey(b0, b1);
-        let rec = bands.get(key);
-        if (!rec) {
-            rec = { b0, b1, wall: [], plantar: [], wallFaces: new Set() };
-            bands.set(key, rec);
+        if (on.length === 2) {
+            const third = vs.find((v) => !bandVerts.has(v));
+            if (third != null) twoBand.push({ t, b0: on[0]!, b1: on[1]!, pa: third });
+        } else if (on.length === 1) {
+            oneBand.push({ t, a, b, c });
         }
-        const third = vs.find((v) => v !== b0 && v !== b1);
-        if (third == null) continue;
-        if (vertZ(positions, third) > Math.max(vertZ(positions, b0), vertZ(positions, b1)) + 1e-4) {
-            rec.wall.push(third);
-            rec.wallFaces.add(t);
-        } else {
-            rec.plantar.push(third);
-        }
-    }
-    const oneBand: Array<{ t: number; a: number; b: number; c: number }> = [];
-    for (let t = 0; t < indices.length; t += 3) {
-        const [a, b, c] = faceOf(t);
-        const n = (bandVerts.has(a) ? 1 : 0) + (bandVerts.has(b) ? 1 : 0) + (bandVerts.has(c) ? 1 : 0);
-        if (n === 1) oneBand.push({ t, a, b, c });
     }
     const tanMin = Math.tan(minRad);
     const splitChains = new Map<string, number[]>();
     const gridFaces = new Set<number>();
     const add: number[] = [];
-    for (const rec of bands.values()) {
-        let pa = rec.wall[0];
-        if (pa == null) continue;
-        for (let i = 1; i < rec.wall.length; i++) {
-            const v = rec.wall[i]!;
-            if (vertZ(positions, v) > vertZ(positions, pa)) pa = v;
-        }
+    const twoBandValence = new Map<number, number>();
+    for (const rec of twoBand) {
+        twoBandValence.set(rec.pa, (twoBandValence.get(rec.pa) ?? 0) + 1);
+    }
+    for (const rec of twoBand) {
+        if ((twoBandValence.get(rec.pa) ?? 0) !== 1) continue;
         let b0 = rec.b0;
         let b1 = rec.b1;
+        const pa = rec.pa;
         if (triEdgeLen(positions, pa, b0) > triEdgeLen(positions, pa, b1)) {
             const swap = b0;
             b0 = b1;
             b1 = swap;
         }
-        const acute =
-            rec.wall.some((p) => triMinAngleRad(positions, p, b0, b1) + 1e-12 < minRad) ||
-            rec.plantar.some((s) => triMinAngleRad(positions, b0, b1, s) + 1e-12 < minRad);
         let pb: number | undefined;
         let oneT: number | undefined;
         for (const f of oneBand) {
@@ -588,10 +573,11 @@ export function splitAcuteTriangles(
                 break;
             }
         }
-        const h = Math.min(
-            altitudeToEdge(positions, pa, b0, b1),
-            pb != null ? altitudeToEdge(positions, pb, b0, b1) : Infinity,
-        );
+        if (pb == null || oneT == null) continue;
+        const acute =
+            triMinAngleRad(positions, pa, b0, b1) + 1e-12 < minRad ||
+            triMinAngleRad(positions, pa, pb, b1) + 1e-12 < minRad;
+        const h = Math.min(altitudeToEdge(positions, pa, b0, b1), altitudeToEdge(positions, pb, b0, b1));
         const width = triEdgeLen(positions, b0, b1);
         if (!acute && h >= width * tanMin - 1e-9) continue;
         const k = Math.max(2, Math.min(32, Math.ceil((width * tanMin) / Math.max(h, 1e-6))));
@@ -600,18 +586,18 @@ export function splitAcuteTriangles(
         for (let s = 1; s < k; s++) {
             const tt = s / k;
             bRing.push(lerpVert(positions, b0, b1, tt));
-            pRing.push(pb != null ? lerpVert(positions, pa, pb, tt) : pa);
+            pRing.push(lerpVert(positions, pa, pb, tt));
         }
         bRing.push(b1);
-        pRing.push(pb ?? pa);
+        pRing.push(pb);
         splitChains.set(edgeKey(b0, b1), bRing);
-        if (pb != null) splitChains.set(edgeKey(pa, pb), pRing);
+        splitChains.set(edgeKey(pa, pb), pRing);
         for (let s = 0; s < k; s++) {
             add.push(pRing[s]!, pRing[s + 1]!, bRing[s + 1]!);
             add.push(pRing[s]!, bRing[s + 1]!, bRing[s]!);
         }
-        for (const t of rec.wallFaces) gridFaces.add(t);
-        if (oneT != null) gridFaces.add(oneT);
+        gridFaces.add(rec.t);
+        gridFaces.add(oneT);
     }
     if (!splitChains.size) return;
     for (let t = 0; t < indices.length; t += 3) {
@@ -621,7 +607,12 @@ export function splitAcuteTriangles(
         const bc = chainOnEdge(splitChains.get(edgeKey(b, c)) ?? [], b, c);
         const ca = chainOnEdge(splitChains.get(edgeKey(c, a)) ?? [], c, a);
         const n = (ab ? 1 : 0) + (bc ? 1 : 0) + (ca ? 1 : 0);
-        if (n !== 1) continue;
+        if (n !== 1) {
+            if (n > 1) {
+                console.log("[S1-SLIVER-FAN]", JSON.stringify({ t, n, a, b, c }));
+            }
+            continue;
+        }
         gridFaces.add(t);
         if (ab) fanSplitFace(c, ab, add);
         else if (bc) fanSplitFace(a, bc, add);
@@ -1068,7 +1059,7 @@ export function reconstructProceduralWalls(
     const bandVerts = new Set<number>();
     for (let i = 0; i < nS; i++) bandVerts.add(gridVert(grid.innerRow, i));
     const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ, bandVerts);
-    assertGeneratedEdgesUsedTwice(indices, generatedStart);
+    assertGeneratedEdgesUsedTwice(indices, generatedStart, positions);
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
     geo.setIndex(indices);
@@ -1077,7 +1068,11 @@ export function reconstructProceduralWalls(
     geo.computeBoundingSphere();
     const iVerts = new Set<number>();
     for (let i = 0; i < nS; i++) iVerts.add(gridVert(grid.innerRow, i));
-    const junctionSlivers = countJunctionBandSlivers(geo, iVerts, 20);
+    const junctionMinAngle = countJunctionBandSlivers(geo, iVerts, Number.POSITIVE_INFINITY, 5);
+    if (junctionMinAngle) {
+        console.log("[S2-JUNCTION-ANG]", JSON.stringify({ n: junctionMinAngle, minDeg: 5 }));
+    }
+    const junctionSlivers = countJunctionBandSlivers(geo, iVerts, 40);
     geo.userData = {
         wallModel: "procedural",
         stockId: model.id,

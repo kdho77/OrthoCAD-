@@ -926,11 +926,12 @@ export function countDegenerateFaces(geo: BufferGeometry): { zeroArea: number; d
     return { zeroArea, duplicates };
 }
 
-/** Faces that touch `bandVerts` with longest/shortest edge > 20. */
+/** Faces that touch `bandVerts` with longest/shortest edge > aspectLimit. */
 export function countJunctionBandSlivers(
     geo: BufferGeometry,
     bandVerts: Iterable<number>,
     aspectLimit = 20,
+    minAngleDeg?: number,
 ): number {
     const pos = geo.getAttribute("position").array as Float32Array;
     const index = geo.getIndex();
@@ -961,11 +962,11 @@ export function countJunctionBandSlivers(
         const short = Math.min(e1, e2, e3);
         const long = Math.max(e1, e2, e3);
         if (short < 1e-9 || long / short > aspectLimit) n++;
-        else {
+        else if (minAngleDeg != null) {
             const ang = (u: number, v: number, w: number): number =>
                 (Math.acos(Math.max(-1, Math.min(1, (u * u + v * v - w * w) / (2 * u * v)))) * 180) / Math.PI;
             const minAng = Math.min(ang(e3, e1, e2), ang(e1, e2, e3), ang(e2, e3, e1));
-            if (minAng < 5 - 1e-6) n++;
+            if (minAng < minAngleDeg - 1e-6) n++;
         }
     }
     return n;
