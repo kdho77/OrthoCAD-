@@ -312,8 +312,8 @@ export function g1OfCubic(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, tE: XYZ, tF: XYZ):
 }
 
 export function inflectionNormal(tE: XYZ, tF: XYZ, outward: { x: number; y: number }): XYZ {
-    const n = cross3(tE, tF);
-    if (hypot3(n) > 1e-10) return unit3(n);
+    const n = cross3(unit3(tE), unit3(tF));
+    if (hypot3(n) > 1e-8) return unit3(n);
     const h = { x: outward.x, y: outward.y, z: 0 };
     const hz = cross3(h, { x: 0, y: 0, z: 1 });
     if (hypot3(hz) > 1e-10) return unit3(hz);
@@ -330,19 +330,42 @@ export function cubicHasInflection(
     outward: { x: number; y: number },
     samples = WALL_MID_INFL_SAMPLES,
 ): boolean {
-    const n = inflectionNormal(tE, tF, outward);
-    let sign = 0;
+    const n = inflectionNormal(unit3(tE), unit3(tF), outward);
+    const out3 = { x: outward.x, y: outward.y, z: 0 };
+    const ks: number[] = [];
+    let pos = 0;
+    let neg = 0;
     for (let i = 0; i <= samples; i++) {
         const t = i / samples;
         const d1 = cubicHermiteTangent(P0, P1, P2, P3, t);
         const d2 = cubicHermiteSecond(P0, P1, P2, P3, t);
-        const k = dot3(cross3(d1, d2), n);
-        if (Math.abs(k) < 1e-12) continue;
+        ks.push(dot3(cross3(d1, d2), n));
+        const p = evalCubicHermite(P0, P1, P2, P3, t);
+        const s = signedChordOffset(p, P0, P3, out3);
+        if (s > pos) pos = s;
+        if (-s > neg) neg = -s;
+    }
+    const maxAbs = Math.max(...ks.map((k) => Math.abs(k)), 0);
+    const eps = Math.max(1e-8, 0.02 * maxAbs);
+    let sign = 0;
+    let flipped = false;
+    for (const k of ks) {
+        if (Math.abs(k) < eps) continue;
         const s = k > 0 ? 1 : -1;
         if (sign === 0) sign = s;
-        else if (s !== sign) return true;
+        else if (s !== sign) flipped = true;
     }
-    return false;
+    // A nearly-straight cubic with 2–3° end-tangent mismatch has a
+    // mathematical sign flip and ~0.02 mm lobes. Flag only a visible S.
+    const vis = 0.25;
+    return flipped && pos > vis && neg > vis;
+}
+
+function signedChordOffset(p: XYZ, a: XYZ, b: XYZ, n: XYZ): number {
+    const ab = sub3(b, a);
+    const len2 = dot3(ab, ab);
+    const t = len2 < 1e-16 ? 0 : dot3(sub3(p, a), ab) / len2;
+    return dot3(sub3(p, add3(a, ab, t)), n);
 }
 
 function pointToLineDist(p: XYZ, a: XYZ, b: XYZ): number {

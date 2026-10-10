@@ -175,6 +175,21 @@ describe("wall style mid-piece", () => {
         expect(mid.pts[1]!.z).toBeCloseTo(6, 6);
     });
 
+    test("tiny nearly-straight wiggle is not [RND-INFL]; a two-sided lobe is", () => {
+        const E = { x: 133.837, y: 42.692, z: 7.923 };
+        const F = { x: 134.021, y: 40.423, z: 1.08 };
+        const tE = { x: 0.05, y: -0.3264, z: -0.9439 };
+        const tF = { x: 0.0801, y: -0.3007, z: -0.9504 };
+        const tiny = hermiteControls(E, F, tE, tF, WALL_LAMBDA_MIN);
+        expect(cubicHasInflection(tiny.P0, tiny.P1, tiny.P2, tiny.P3, tE, tF, { x: 1, y: 0 })).toBe(false);
+        const A = { x: 0, y: 0, z: 10 };
+        const B = { x: 0, y: 0, z: 0 };
+        const sE = { x: 1, y: 0, z: -0.3 };
+        const sF = { x: 1, y: 0, z: -0.3 };
+        const ess = hermiteControls(A, B, sE, sF, 0.55);
+        expect(cubicHasInflection(ess.P0, ess.P1, ess.P2, ess.P3, sE, sF, { x: 1, y: 0 })).toBe(true);
+    });
+
     test("plan angle is the xy angle between tE and tF", () => {
         expect(planAngleDeg({ x: 1, y: 0, z: -1 }, { x: 0, y: 1, z: -1 })).toBeCloseTo(90, 4);
         expect(planAngleDeg({ x: 1, y: 0, z: 0 }, { x: 1, y: 0, z: -4 })).toBeCloseTo(0, 4);

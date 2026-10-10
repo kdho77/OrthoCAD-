@@ -4240,13 +4240,7 @@ function prepareStyledMid(
         fr.midLimit = locked.limit ?? "none";
         fr.midChordOffMm = locked.chordOffsetMm ?? 0;
         fr.midPlanOffMm = locked.planOffsetMm ?? 0;
-        if (locked.flagged) {
-            nFlagged++;
-            console.log(
-                "[RND-INFL]",
-                JSON.stringify({ i, u: Number(fr.u.toFixed(4)), lambda: locked.lambda }),
-            );
-        }
+        if (locked.flagged) nFlagged++;
         nLineNeed = Math.max(nLineNeed, locked.rowNeed ?? nLine);
         const g1e = locked.g1EDeg ?? 0;
         const g1f = locked.g1FDeg ?? 0;

@@ -1291,6 +1291,8 @@ export function reconstructProceduralWalls(
             g1FDeg: f.g1FDeg ?? 0,
             midFlagged: f.midFlagged ?? false,
             midPlanAngleDeg: f.midPlanAngleDeg ?? 0,
+            midTE: f.midTE,
+            midTF: f.midTF,
             thetaEDeg: (f.phiRound1 * 180) / Math.PI,
         })),
         t0Log: grid.frames.map((f) => ({

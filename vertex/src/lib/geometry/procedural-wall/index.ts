@@ -415,6 +415,7 @@ export {
 export {
     acuteVecDeg,
     conicRowCountByTurning,
+    cubicHasInflection,
     cubicRowCountByTurning,
     g1ControlPoint,
     g1OfConic,
@@ -424,6 +425,7 @@ export {
     HYBRID_SWITCH_U_MEDIAL,
     hermiteControls,
     hybridBulgeAt,
+    inflectionNormal,
     intersectTangentLines,
     type MidStyleSample,
     midStyleLambda,
