@@ -1048,7 +1048,10 @@ export function maxR2RowsForSweep(
         return (S - dL) / n >= minStep - 1e-12;
     };
     if (ok(hi0)) return hi0;
-    if (!ok(lo0)) return lo0;
+    // Whole range is over-packed: keep the high end. Returning lo would smash
+    // r2 to the search floor (1e-4 on the modifier shrink path) and collapse
+    // the first-fillet Euclidean chord.
+    if (!ok(lo0)) return hi0;
     let lo = lo0;
     let hi = hi0;
     for (let k = 0; k < 24; k++) {
@@ -1099,7 +1102,17 @@ export function resolveLastR2(
     nFil: number,
 ): { r2: number; maxR2Rows: number; r2ChordFloor: number; reason?: ChordFloorReason } {
     const wanted = Math.max(r2Design, r2ChordFloor);
-    const r2Lo = Math.max(1e-4, r2Design);
+    const minStep = (FILLET_ROW_STEP_MIN_DEG * Math.PI) / 180;
+    const n = Math.max(1, nFil);
+    const sDesign = Math.max(0, evalS(r2Design));
+    const dL0 = lastFilletDLRad(sDesign, cosT);
+    const step0 = (sDesign - dL0) / n;
+    // Pin the search floor at design when it already packs ≥1.5°. Allow a
+    // shrink below design only when that station is already over-packed,
+    // and only then if some smaller r2 actually recovers the 1.5° floor
+    // (maxR2RowsForSweep keeps `wanted` when the whole range fails).
+    const designOk = step0 >= minStep - 1e-12;
+    const r2Lo = designOk ? Math.max(1e-4, r2Design) : 1e-4;
     const maxR2Rows = maxR2RowsForSweep(evalS, cosT, nFil, r2Lo, wanted);
     const r2 = Math.min(wanted, maxR2Rows);
     if (r2ChordFloor > maxR2Rows + 1e-9) {

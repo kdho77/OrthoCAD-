@@ -861,6 +861,15 @@ describe("bezier column", () => {
         expect(resolved.reason).toBe("rows");
         expect(resolved.r2).toBeLessThanOrEqual(resolved.maxR2Rows + 1e-12);
         expect(resolved.r2).toBeLessThan(3.5);
+        const tight = resolveLastR2(3.2, 0.2, evalS, 1, nFil);
+        expect(tight.r2).toBeLessThan(3.2);
+        const sTight = evalS(tight.r2);
+        expect((sTight - lastFilletDLRad(sTight, 1)) / nFil).toBeGreaterThanOrEqual(
+            (FILLET_ROW_STEP_MIN_DEG * Math.PI) / 180 - 1e-6,
+        );
+        const pinned = resolveLastR2(0.2, 0.2, evalS, 1, nFil);
+        expect(pinned.r2).toBeCloseTo(0.2, 6);
+        expect(pinned.reason).toBeUndefined();
     });
 
     test("r2 floors on the real last-step dL once S is known", () => {
