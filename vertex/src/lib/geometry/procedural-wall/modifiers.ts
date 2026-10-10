@@ -6,6 +6,7 @@ import { heelCupDepthBowlDelta, heelCupWidthScaleFactor } from "@/lib/geometry/h
 import { archGrindPlantarRaiseAt } from "@/lib/geometry/shape-finish-modifiers";
 import type { SideCorrections } from "@/types";
 import type { PolyPoint } from "./curves";
+import type { HermiteStation } from "./loft";
 import type { DeviceTypePreset, LateralFlangeParams, StockWallModel } from "./types";
 
 export interface ProceduralModifierInput {
@@ -109,4 +110,86 @@ export function plantarZDelta(
         dz += archGrindPlantarRaiseAt(u, av, input.archGrindDepthMm!);
     }
     return dz;
+}
+
+export interface XYZ {
+    x: number;
+    y: number;
+    z: number;
+}
+
+export interface PostingClamp {
+    station: number;
+    u: number;
+    droppedMm: number;
+}
+
+/** Finite-difference n_plantar of the posted sheet z = z0 + zDelta. */
+export function plantarNormalAt(
+    x: number,
+    y: number,
+    zDelta: (x: number, y: number) => number,
+    eps = 0.5,
+): XYZ {
+    const h = Math.max(1e-3, eps);
+    const zx = (zDelta(x + h, y) - zDelta(x - h, y)) / (2 * h);
+    const zy = (zDelta(x, y + h) - zDelta(x, y - h)) / (2 * h);
+    let nx = -zx;
+    let ny = -zy;
+    let nz = 1;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nx /= len;
+    ny /= len;
+    nz /= len;
+    if (nz < 0) {
+        nx = -nx;
+        ny = -ny;
+        nz = -nz;
+    }
+    return { x: nx, y: ny, z: nz };
+}
+
+/**
+ * Wrap posting so wall height R.z − B.z never drops below minWall + r1 + r2.
+ * Interior samples inherit the nearest station's raise cap.
+ */
+export function clampPostingOnStations(
+    stations: HermiteStation[],
+    zDelta: (x: number, y: number) => number,
+    r1: number,
+    r2: number,
+    minWallMm: number,
+): { zDelta: (x: number, y: number) => number; postingClamps: PostingClamp[] } {
+    if (stations.length < 1) return { zDelta, postingClamps: [] };
+    const need = minWallMm + r1 + r2;
+    const postingClamps: PostingClamp[] = [];
+    const capDz: number[] = stations.map((st, i) => {
+        const dz = zDelta(st.outline.x, st.outline.y);
+        const maxDz = st.rim.z - st.outline.z - need;
+        if (dz > maxDz + 1e-9) {
+            postingClamps.push({
+                station: i,
+                u: st.u,
+                droppedMm: dz - maxDz,
+            });
+            return maxDz;
+        }
+        return Number.POSITIVE_INFINITY;
+    });
+    if (!postingClamps.length) return { zDelta, postingClamps };
+    const wrapped = (x: number, y: number): number => {
+        const dz = zDelta(x, y);
+        let best = 0;
+        let bestD = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < stations.length; i++) {
+            const p = stations[i]!.outline;
+            const d = (p.x - x) ** 2 + (p.y - y) ** 2;
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+        }
+        return Math.min(dz, capDz[best]!);
+    };
+    return { zDelta: wrapped, postingClamps };
 }

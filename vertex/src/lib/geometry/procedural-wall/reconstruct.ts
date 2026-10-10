@@ -31,12 +31,13 @@ import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy
 import { buildHermiteStations } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
 import { countJunctionBandSlivers, windingReport } from "./metrics";
-import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
+import { clampPostingOnStations, type ProceduralModifierInput, plantarZDelta } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
 import { hygieneBottomPattern } from "./pattern-hygiene";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
 import { assertClosedStationRing, assertPeriodicQuadStrip, rotateStationRing } from "./ring-seam";
 import {
+    adjustPatternForClearance,
     assertPostLoftGates,
     assertPreLoftStations,
     fairedPlantarFromStock,
@@ -44,6 +45,7 @@ import {
     limitStationSkew,
     minInsetForLeanMm,
     PATTERN_SOURCE_FAIRED_STOCK,
+    shiftPatternByRimFollow,
 } from "./station-gates";
 import {
     applyStoredTB,
@@ -57,7 +59,7 @@ import {
     stampMonotonicTB,
     TB_SMOOTH_SIGMA_MM,
 } from "./stations";
-import type { StockWallModel } from "./types";
+import { S1_MIN_WALL_MM, type StockWallModel } from "./types";
 
 export interface ReconstructOptions extends ProceduralModifierInput {
     n?: number;
@@ -73,6 +75,11 @@ export interface ReconstructOptions extends ProceduralModifierInput {
     bottomPatternLabel?: string;
     /** Flat ground plantar (z=0 + posting/grind). Dish sampling is skipped. */
     flatPlantar?: boolean;
+    /**
+     * Heel-widen: shift B by the rim's plan displacement × followFactor.
+     * 0 = Windows-fixed (default).
+     */
+    widenFollowFactor?: number;
 }
 
 function zeroCorrections(): SideCorrections {
@@ -434,7 +441,20 @@ export function reconstructProceduralWalls(
         ensureCcw(model.outline.spline.controls.map((p) => ({ ...p }))),
         model.bounds,
     );
-    const rimPlan = rimPts.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    const liveRimPlan = rimPts.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    const stockRimLocal =
+        model.top.meshPositions && model.top.rimLocal
+            ? orderRimLocal(model.top.meshPositions, model.top.rimLocal)
+            : [];
+    const stockRimPlan =
+        stockRimLocal.length >= 3
+            ? stockRimLocal.map((i) => ({
+                  x: model.top.meshPositions![i * 3]!,
+                  y: model.top.meshPositions![i * 3 + 1]!,
+                  z: 0,
+              }))
+            : liveRimPlan;
+    const patternRim = stockRimPlan.length >= 3 ? stockRimPlan : liveRimPlan;
     const { r1, r2 } = filletRadiiFromDefaults(defaults);
     const legacyFaired = !patternPts?.length;
     const rawOutline = patternPts?.length
@@ -443,7 +463,7 @@ export function reconstructProceduralWalls(
               ensureCcw(
                   fairedPlantarFromStock({
                       stock: stockOutline,
-                      rim: rimPlan,
+                      rim: patternRim,
                       r1,
                       r2,
                       bounds: model.bounds,
@@ -454,8 +474,8 @@ export function reconstructProceduralWalls(
           );
     const patternLabel =
         options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : PATTERN_SOURCE_FAIRED_STOCK);
-    const hygiened = hygieneBottomPattern(rawOutline, {
-        rimPlan,
+    let hygiened = hygieneBottomPattern(rawOutline, {
+        rimPlan: patternRim,
         requireInsideRim: true,
         clearanceMm:
             patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
@@ -463,6 +483,29 @@ export function reconstructProceduralWalls(
         resampleN: Math.max(160, rawOutline.length, rimPts.length),
         keepFair: true,
     });
+    const followFactor = options.widenFollowFactor ?? 0;
+    let patternLoop = hygiened.loop;
+    if (followFactor !== 0) {
+        patternLoop = shiftPatternByRimFollow(patternLoop, patternRim, liveRimPlan, followFactor);
+    }
+    const clearance = adjustPatternForClearance({
+        pattern: patternLoop,
+        rim: liveRimPlan,
+        r1,
+        r2,
+    });
+    patternLoop = clearance.loop;
+    if (clearance.adjusted || followFactor !== 0) {
+        hygiened = hygieneBottomPattern(patternLoop, {
+            rimPlan: liveRimPlan,
+            requireInsideRim: true,
+            clearanceMm:
+                patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
+            source: patternLabel,
+            resampleN: Math.max(160, patternLoop.length, rimPts.length),
+            keepFair: true,
+        });
+    }
     medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
     options.medialYSign = medialYSign;
     defaults.medialYSign = medialYSign;
@@ -518,7 +561,7 @@ export function reconstructProceduralWalls(
         flatPlantar || !model.outline.meshPositions || !model.outline.meshIndices
             ? null
             : buildDishZIndex(model.outline.meshPositions, model.outline.meshIndices);
-    const zDelta = (x: number, y: number) => plantarZDelta(x, y, model.bounds, options);
+    const rawZDelta = (x: number, y: number) => plantarZDelta(x, y, model.bounds, options);
     const outlineZ: PolyPoint[] = pairing.plantar.map((p) => ({
         x: p.x,
         y: p.y,
@@ -617,6 +660,8 @@ export function reconstructProceduralWalls(
     );
     const topHeight = buildXyHeightIndex(Float32Array.from(positions), indices);
     const topZ = (x: number, y: number) => sampleXyHeight(topHeight, x, y, "max");
+    const posting = clampPostingOnStations(stations, rawZDelta, r1, r2, S1_MIN_WALL_MM);
+    const zDelta = posting.zDelta;
 
     const grid = buildQuadGrid({
         stations,
@@ -822,6 +867,10 @@ export function reconstructProceduralWalls(
         measuredVsBound: defaults.report,
         flareDiagnostics: defaults.flareDiagnostics,
         manifoldHint: analyzeManifold(geo),
+        patternAdjustedForClearance: clearance.flag,
+        patternClearanceStations: clearance.stations,
+        widenFollowFactor: followFactor,
+        postingClamps: posting.postingClamps,
     };
     return geo;
 }

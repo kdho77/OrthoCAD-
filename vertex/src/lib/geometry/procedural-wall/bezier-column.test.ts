@@ -12,6 +12,7 @@ import {
     COS_T_MIN,
     canonicalRoundPhi,
     clampLastFilletOutboard,
+    clampR1ToBudget,
     columnHeading,
     constructArcLineArc,
     constructFillet,
@@ -37,8 +38,11 @@ import {
     MIN_ROUND_R_MM,
     nTopFromSheetSlope,
     offPlaneMm,
+    packAlaRadii,
+    plantarFrameFromNormal,
     R_CHANGE_MAX_PCT,
     R_SMOOTH_FRAC,
+    R1_HEIGHT_FRAC,
     R2_CHANGE_MAX_PCT,
     R2_RATE_LIMIT_PCT,
     ROUND_SWEEP_SPLIT_DEG,
@@ -762,6 +766,32 @@ describe("bezier column", () => {
         expect(rowPieceId(counts.nRound + counts.nLine, counts)).toBe(2);
         expect(rowPieceId(counts.nWall - 2, counts)).toBe(3);
         expect(rowPieceId(counts.nWall - 1, counts)).toBe(4);
+    });
+
+    test("r1 budget is 0.3 H and ala-pack shrinks both radii", () => {
+        expect(R1_HEIGHT_FRAC).toBe(0.3);
+        expect(clampR1ToBudget(5, 10, 1, 0.5)).toBeCloseTo(3, 6);
+        expect(clampR1ToBudget(2, 10, 8, 1.5)).toBeCloseTo(0.5, 6);
+        const packed = packAlaRadii(3, 2, 2, 1, 0.05, 0.08);
+        expect(packed.r1 + packed.r2).toBeLessThanOrEqual(2 + 1e-9);
+        expect(packed.r1).toBeGreaterThanOrEqual(0.08 - 1e-9);
+        expect(packed.r2).toBeGreaterThanOrEqual(0.05 - 1e-9);
+        expect(packed.r1).toBeCloseTo(packed.r2, 5);
+    });
+
+    test("fillet C2 sits on n_plantar and ew follows −h on the plane", () => {
+        const n = { x: 0, y: 0.3, z: Math.sqrt(1 - 0.09) };
+        const h = { x: 1, y: 0 };
+        const frame = plantarFrameFromNormal(h, n);
+        expect(frame.ez.y).toBeGreaterThan(0);
+        expect(frame.ez.z).toBeGreaterThan(0);
+        expect(frame.ew.x).toBeLessThan(0);
+        const B = { x: 0, y: 0, z: 0 };
+        const U = { x: 0, y: 0, z: 1 };
+        const fil = constructFillet(B, h, 2, U, 0, n);
+        expect(fil.C.x).toBeCloseTo(2 * frame.ez.x, 5);
+        expect(fil.C.y).toBeCloseTo(2 * frame.ez.y, 5);
+        expect(fil.C.z).toBeCloseTo(2 * frame.ez.z, 5);
     });
 });
 

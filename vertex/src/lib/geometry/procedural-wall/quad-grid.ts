@@ -25,6 +25,7 @@ import {
     TOP_ROUND_MIN_ROWS,
 } from "./hermite";
 import type { HermiteStation } from "./loft";
+import { plantarNormalAt } from "./modifiers";
 import { segIntersect } from "./outline-clean";
 import {
     buildGeneratedPlantar,
@@ -669,17 +670,17 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         }),
     );
 
-    const plantarSlopeRad = stations.map((st) => {
+    const nPlantars = stations.map((st) => plantarNormalAt(st.outline.x, st.outline.y, input.zDelta));
+    const plantarSlopeRad = stations.map((st, i) => {
         const dx = st.outline.x - st.rim.x;
         const dy = st.outline.y - st.rim.y;
         const len = Math.hypot(dx, dy);
         const hx = len < 1e-4 ? st.n.x : dx / len;
         const hy = len < 1e-4 ? st.n.y : dy / len;
         const nl = Math.hypot(hx, hy) || 1;
-        const s = 1.5;
-        const zB = sampler.z(st.outline.x, st.outline.y, st.outline.z);
-        const z1 = sampler.z(st.outline.x + (hx / nl) * s, st.outline.y + (hy / nl) * s, st.outline.z);
-        return Math.atan((z1 - zB) / s);
+        const n = nPlantars[i]!;
+        const ns = n.x * hx + n.y * hy;
+        return Math.atan2(ns, n.z);
     });
     const built = buildBezierColumns(
         stations,
@@ -690,6 +691,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         nWall,
         plantarSlopeRad,
         S1_MIN_WALL_MM,
+        nPlantars,
     );
     console.log(
         "[S1-MIN-WALL]",

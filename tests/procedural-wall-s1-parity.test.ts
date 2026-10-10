@@ -902,6 +902,10 @@ describe("S1 parametric wall", () => {
                 nLine?: number;
                 nFil?: number;
                 columnQuality?: ColumnQualityUd;
+                patternAdjustedForClearance?: string | null;
+                patternClearanceStations?: number[];
+                widenFollowFactor?: number;
+                postingClamps?: Array<{ station: number; u: number; droppedMm: number }>;
             };
             const chordX = sud.chordCrossings ?? -1;
             const maxSkew = sud.maxSidewaysSkewMm ?? 0;
@@ -937,7 +941,17 @@ describe("S1 parametric wall", () => {
                     nFil: sud.nFil,
                     misses: qMiss.join("; "),
                 }),
+                patternAdjusted: sud.patternAdjustedForClearance ?? "",
+                followFactor: sud.widenFollowFactor ?? 0,
+                postingClamps: sud.postingClamps?.length ?? 0,
             });
+            if (smoke.name === "widen+6") {
+                mkdirSync("/opt/cursor/artifacts", { recursive: true });
+                writeFileSync(
+                    "/opt/cursor/artifacts/procedural-widen-6.stl",
+                    Buffer.from(geometryToBinarySTL(rebuilt)),
+                );
+            }
             if (hits.real !== 0) {
                 const cls = hits.byClass
                     ? Object.entries(hits.byClass)

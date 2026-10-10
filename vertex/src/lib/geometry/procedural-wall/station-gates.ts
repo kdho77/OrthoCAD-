@@ -24,6 +24,8 @@ export const LEAN_MAX_DEG = 45;
 export const SKEW_INSET_RATIO = 0.5;
 export const PRELOFT_HEADING_MAX_DEG = 15;
 export const POSTLOFT_DIHEDRAL_MAX_DEG = 150;
+/** High-weight targets so a clearance QP stays on the current B. */
+export const CLEARANCE_TARGET_WEIGHT = 24;
 
 export interface StockFairedInput {
     stock: PolyPoint[];
@@ -317,6 +319,101 @@ export function fairedPlantarFromStock(input: StockFairedInput): PolyPoint[] {
         rim,
         floorInset,
     );
+}
+
+export interface PatternClearanceResult {
+    loop: PolyPoint[];
+    adjusted: boolean;
+    stations: number[];
+    flag: string | null;
+}
+
+/**
+ * B is user-owned and stays put. Re-solve the faired QP only when a sample
+ * violates `inset >= max(1.0, r1+r2(1−sin lean))`. Targets = current B at
+ * high weight; the inset constraint stays active.
+ */
+export function adjustPatternForClearance(input: {
+    pattern: PolyPoint[];
+    rim: PolyPoint[];
+    r1: number;
+    r2: number;
+}): PatternClearanceResult {
+    const pattern = input.pattern.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    if (pattern.length < 3 || input.rim.length < 3) {
+        return { loop: pattern, adjusted: false, stations: [], flag: null };
+    }
+    const rim = startAtLowCurvature(ensureCcw(input.rim.map((p) => ({ ...p, z: 0 }))));
+    const violators: number[] = [];
+    for (let i = 0; i < pattern.length; i++) {
+        const inset = signedRimInsetMm(pattern[i]!, rim);
+        const need = minInsetAtStationMm(inset, input.r1, input.r2);
+        if (inset + 1e-3 < need) violators.push(i);
+    }
+    if (!violators.length) {
+        return { loop: pattern, adjusted: false, stations: [], flag: null };
+    }
+    const floorInset = minInsetForLeanMm(input.r1, input.r2, 0);
+    const fit = fairedPattern({
+        targets: pattern.map((p) => ({ point: p, weight: CLEARANCE_TARGET_WEIGHT })),
+        controlCount: 20,
+        wFit: 1,
+        wFair: 0.5,
+        sampleCount: Math.max(160, pattern.length, rim.length),
+        constraints: {
+            rim,
+            minInsetMm: floorInset + 0.02,
+            maxIters: 10,
+        },
+    });
+    const loop = enforceMinRimInset(
+        fit.samples.map((p) => ({ x: p.x, y: p.y, z: 0 })),
+        rim,
+        floorInset,
+    );
+    const shown = violators.slice(0, 12).join(", ");
+    const extra = violators.length > 12 ? ` (+${violators.length - 12})` : "";
+    return {
+        loop,
+        adjusted: true,
+        stations: violators,
+        flag: `pattern adjusted for clearance at ${shown}${extra}`,
+    };
+}
+
+/**
+ * Optional heel-widen link: shift B by the rim's plan displacement × followFactor.
+ * Default followFactor = 0 (Windows-fixed). Same arc-parameter s01 on both rims.
+ */
+export function shiftPatternByRimFollow(
+    pattern: PolyPoint[],
+    rimBefore: PolyPoint[],
+    rimAfter: PolyPoint[],
+    followFactor: number,
+): PolyPoint[] {
+    if (
+        !Number.isFinite(followFactor) ||
+        followFactor === 0 ||
+        pattern.length < 3 ||
+        rimBefore.length < 3 ||
+        rimAfter.length < 3
+    ) {
+        return pattern.map((p) => ({ ...p }));
+    }
+    const before = startAtLowCurvature(ensureCcw(rimBefore.map((p) => ({ ...p, z: 0 }))));
+    const after = startAtLowCurvature(ensureCcw(rimAfter.map((p) => ({ ...p, z: 0 }))));
+    const { cum, total } = polylineArcLengths(pattern);
+    const den = Math.max(total, 1e-9);
+    return pattern.map((p, i) => {
+        const s01 = (cum[i] ?? 0) / den;
+        const a = sampleClosedAtArc01(before, s01);
+        const b = sampleClosedAtArc01(after, s01);
+        return {
+            x: p.x + (b.x - a.x) * followFactor,
+            y: p.y + (b.y - a.y) * followFactor,
+            z: p.z,
+        };
+    });
 }
 
 export function limitStationSkew(

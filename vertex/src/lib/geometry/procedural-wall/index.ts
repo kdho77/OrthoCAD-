@@ -21,6 +21,7 @@ export {
     type ColumnFrame,
     type ColumnQuality,
     canonicalRoundPhi,
+    clampR1ToBudget,
     columnHeading,
     constructArcLineArc,
     constructFillet,
@@ -69,10 +70,13 @@ export {
     nTopFromSheetSlope,
     OUTLINE_STATION_SPACING_MM,
     offPlaneMm,
+    packAlaRadii,
     periodicGaussian,
     plantarFrameAt,
+    plantarFrameFromNormal,
     R_CHANGE_MAX_PCT,
     R_SMOOTH_FRAC,
+    R1_HEIGHT_FRAC,
     R2_CHANGE_MAX_PCT,
     R2_RATE_LIMIT_PCT,
     RING_TURNING_MAX_DEG,
@@ -233,7 +237,12 @@ export {
     topSurfaceDeltas,
     windingReport,
 } from "./metrics";
-export { applyCurveModifiers } from "./modifiers";
+export {
+    applyCurveModifiers,
+    clampPostingOnStations,
+    plantarNormalAt,
+    plantarZDelta,
+} from "./modifiers";
 export {
     applyOutlineClean,
     cleanClosedLoop,
@@ -282,9 +291,11 @@ export {
     zoneFixturesMapIdentically,
 } from "./sole-uv";
 export {
+    adjustPatternForClearance,
     allowedLeanRad,
     assertPostLoftGates,
     assertPreLoftStations,
+    CLEARANCE_TARGET_WEIGHT,
     columnInsetSkew,
     fairedPlantarFromStock,
     filletRadiiFromDefaults,
@@ -297,6 +308,7 @@ export {
     PATTERN_SOURCE_FAIRED_STOCK,
     POSTLOFT_DIHEDRAL_MAX_DEG,
     PRELOFT_HEADING_MAX_DEG,
+    shiftPatternByRimFollow,
     signedRimInsetMm,
     stockTargetsForFairedPattern,
 } from "./station-gates";

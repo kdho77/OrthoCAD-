@@ -4,6 +4,7 @@
 import { describe, expect, test } from "@rstest/core";
 import type { HermiteStation } from "./loft";
 import {
+    adjustPatternForClearance,
     allowedLeanRad,
     assertPostLoftGates,
     assertPreLoftStations,
@@ -14,6 +15,7 @@ import {
     MIN_INSET_FLOOR_MM,
     minInsetForLeanMm,
     POSTLOFT_DIHEDRAL_MAX_DEG,
+    shiftPatternByRimFollow,
     signedRimInsetMm,
     stockTargetsForFairedPattern,
 } from "./station-gates";
@@ -113,5 +115,35 @@ describe("station-gates", () => {
         const { insetMm, skewMm } = columnInsetSkew(R, B, { x: 1, y: 0 });
         expect(insetMm).toBeCloseTo(3, 6);
         expect(skewMm).toBeCloseTo(0, 6);
+    });
+
+    test("clearance QP names the violating stations and leaves a valid loop alone", () => {
+        const rim = oval(40, 20, 48);
+        const ok = oval(30, 14, 48);
+        const clean = adjustPatternForClearance({ pattern: ok, rim, r1: 0.5, r2: 0.7 });
+        expect(clean.adjusted).toBe(false);
+        expect(clean.flag).toBeNull();
+        const tight = oval(39.6, 19.6, 48);
+        const hit = adjustPatternForClearance({ pattern: tight, rim, r1: 0.5, r2: 0.7 });
+        expect(hit.adjusted).toBe(true);
+        expect(hit.stations.length).toBeGreaterThan(0);
+        expect(hit.flag).toMatch(/^pattern adjusted for clearance at /);
+        let minIn = Infinity;
+        for (const p of hit.loop) minIn = Math.min(minIn, signedRimInsetMm(p, rim));
+        expect(minIn).toBeGreaterThanOrEqual(MIN_INSET_FLOOR_MM - 1e-3);
+    });
+
+    test("followFactor 0 keeps B fixed and 1 tracks the rim plan displacement", () => {
+        const rim = oval(40, 20, 32);
+        const pattern = oval(30, 15, 32);
+        const rimAfter = rim.map((p) => ({ x: p.x + 3, y: p.y - 1, z: 0 }));
+        const frozen = shiftPatternByRimFollow(pattern, rim, rimAfter, 0);
+        expect(frozen[0]!.x).toBeCloseTo(pattern[0]!.x, 6);
+        expect(frozen[0]!.y).toBeCloseTo(pattern[0]!.y, 6);
+        const linked = shiftPatternByRimFollow(pattern, rim, rimAfter, 1);
+        expect(linked[0]!.x).toBeCloseTo(pattern[0]!.x + 3, 5);
+        expect(linked[0]!.y).toBeCloseTo(pattern[0]!.y - 1, 5);
+        const half = shiftPatternByRimFollow(pattern, rim, rimAfter, 0.5);
+        expect(half[4]!.x).toBeCloseTo(pattern[4]!.x + 1.5, 5);
     });
 });
