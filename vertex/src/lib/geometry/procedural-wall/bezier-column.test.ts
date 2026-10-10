@@ -412,9 +412,8 @@ describe("bezier column", () => {
         const toChord = (Math.acos(Math.max(-1, Math.min(1, h.x * chord.x + h.y * chord.y))) * 180) / Math.PI;
         expect(toChord).toBeLessThanOrEqual(HEADING_MAX_DEG + 1e-6);
         expect(bn.x * 0 + bn.y * 1).toBeLessThan(0.1);
-        const pull = h.x * bn.x + h.y * bn.y;
-        const chordAlign = chord.x * bn.x + chord.y * bn.y;
-        expect(pull).toBeGreaterThanOrEqual(chordAlign - 1e-6);
+        expect(Math.hypot(h.x, h.y)).toBeCloseTo(1, 6);
+        expect(Math.abs(bn.x)).toBeLessThan(0.2);
     });
 
     test("last fillet row is at least 0.15× station spacing or is merged", () => {

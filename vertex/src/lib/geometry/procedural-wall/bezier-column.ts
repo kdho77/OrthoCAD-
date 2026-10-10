@@ -1579,9 +1579,11 @@ export function smoothStationHeadings(stations: HermiteStation[]): Array<{ x: nu
     const n = stations.length;
     if (n === 0) return [];
     const chords = stations.map((st) => columnHeading(st));
-    const corrected = chords.map((c, i) =>
-        clampHeadingTo(bLoopOutwardNormal(stations, i), c.h, HEADING_MAX_DEG),
-    );
+    const corrected = chords.map((c, i) => {
+        const deg = HEADING_MAX_DEG * Math.min(1, Math.max(0, (c.planLen - 1.5) / 6));
+        if (deg < 1e-6) return { ...c.h };
+        return clampHeadingTo(bLoopOutwardNormal(stations, i), c.h, deg);
+    });
     const bLoop = stations.map((s) => s.outline);
     const sx = periodicGaussian(
         corrected.map((h) => h.x),
@@ -1885,7 +1887,7 @@ function applySmooth(
     const rim = frames.map((f) => f.R);
     const applyLimited = (r1: number[], r2: number[]): void => {
         const lim1 = rateLimitClosed(r1, R_CHANGE_MAX_PCT, MIN_ROUND_R_MM);
-        const lim2 = rateLimitClosedDown(r2, R2_CHANGE_MAX_PCT, 0.05);
+        const lim2 = rateLimitClosedDown(r2, Math.min(R2_CHANGE_MAX_PCT, 8), 0.05);
         for (let i = 0; i < frames.length; i++) {
             const fr = frames[i]!;
             fr.rTop = lim1[i]!;
@@ -2007,7 +2009,7 @@ export function buildBezierColumns(
         );
         const lim2 = rateLimitClosedDown(
             frames.map((f) => f.rFillet),
-            R2_CHANGE_MAX_PCT,
+            Math.min(R2_CHANGE_MAX_PCT, 8),
             0.05,
         );
         for (let i = 0; i < frames.length; i++) {
@@ -2045,6 +2047,7 @@ export function buildBezierColumns(
         maxTiltStep = Math.max(maxTiltStep, (Math.abs(nxt.leanRad - fr.leanRad) * 180) / Math.PI);
     }
     ensureLastFilletRowHeight(xyz, frames, spacing);
+    densifyColumnsByAlong(xyz, frames, ALONG_JOINT_MAX_DEG);
     for (let i = 0; i < frames.length; i++) {
         const col = xyz[i]!;
         frames[i]!.arcEndZ = col[col.length - 2]?.z ?? frames[i]!.B.z;
@@ -2162,6 +2165,7 @@ function ensureLastFilletRowHeight(xyz: XYZ[][], frames: ColumnFrame[], stationS
         const col = xyz[i]!;
         const fr = frames[i]!;
         if (col.length < 4) continue;
+        if (fr.shortChord || fr.heightMm < SHORT_WALL_H_MM) continue;
         const B = col[col.length - 1]!;
         const prev2 = col[col.length - 3]!;
         const span = dist3(prev2, B);
@@ -2180,6 +2184,57 @@ function ensureLastFilletRowHeight(xyz: XYZ[][], frames: ColumnFrame[], stationS
             fr.R,
             fr.h,
         );
+    }
+}
+
+function densifyColumnsByAlong(xyz: XYZ[][], frames: ColumnFrame[], maxDeg: number): void {
+    const nS = xyz.length;
+    if (nS === 0 || !xyz[0] || xyz[0].length < 4) return;
+    for (let pass = 0; pass < 8; pass++) {
+        let worstI = 0;
+        let worstJ = -1;
+        let worst = 0;
+        for (let i = 0; i < nS; i++) {
+            const col = xyz[i]!;
+            const fr = frames[i]!;
+            const bin = unit3({ x: -fr.h.y, y: fr.h.x, z: 0 });
+            for (let j = 1; j < col.length - 1; j++) {
+                const t0 = {
+                    x: col[j]!.x - col[j - 1]!.x,
+                    y: col[j]!.y - col[j - 1]!.y,
+                    z: col[j]!.z - col[j - 1]!.z,
+                };
+                const t1 = {
+                    x: col[j + 1]!.x - col[j]!.x,
+                    y: col[j + 1]!.y - col[j]!.y,
+                    z: col[j + 1]!.z - col[j]!.z,
+                };
+                if (hypot3(t0) < ALONG_JOINT_MIN_EDGE_MM || hypot3(t1) < ALONG_JOINT_MIN_EDGE_MM) continue;
+                const deg = Math.abs(signedJointDeg(t0, t1, bin));
+                if (deg > worst) {
+                    worst = deg;
+                    worstI = i;
+                    worstJ = j;
+                }
+            }
+        }
+        if (worst <= maxDeg + 1e-3 || worstJ < 1) return;
+        const col0 = xyz[worstI]!;
+        const d0 = dist3(col0[worstJ - 1]!, col0[worstJ]!);
+        const d1 = dist3(col0[worstJ]!, col0[worstJ + 1]!);
+        const splitAfter = d1 >= d0;
+        for (let i = 0; i < xyz.length; i++) {
+            const col = xyz[i]!;
+            const fr = frames[i]!;
+            const a = splitAfter ? col[worstJ]! : col[worstJ - 1]!;
+            const b = splitAfter ? col[worstJ + 1]! : col[worstJ]!;
+            const mid = projectToPlane(
+                { x: 0.5 * (a.x + b.x), y: 0.5 * (a.y + b.y), z: 0.5 * (a.z + b.z) },
+                fr.R,
+                fr.h,
+            );
+            col.splice(splitAfter ? worstJ + 1 : worstJ, 0, mid);
+        }
     }
 }
 
