@@ -73,6 +73,7 @@ export {
     R_SMOOTH_FRAC,
     R2_CHANGE_MAX_PCT,
     R2_RATE_LIMIT_PCT,
+    RING_TURNING_MAX_DEG,
     ROUND_JOINT_MAX_DEG,
     ROUND_SWEEP_SPLIT_DEG,
     rateLimitClosed,

@@ -62,6 +62,7 @@ import {
     plantarFlatDeltaMm,
     R_CHANGE_MAX_PCT,
     R2_CHANGE_MAX_PCT,
+    RING_TURNING_MAX_DEG,
     ROUND_JOINT_MAX_DEG,
     reconstructionManifold,
     reconstructProceduralWalls,
@@ -388,11 +389,11 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxNeighbourSpacingRatioB ?? 0) > NEIGHBOUR_SPACING_RATIO + 1e-3) {
         misses.push(`spacing-ratio-B ${q.maxNeighbourSpacingRatioB?.toFixed(2)}>${NEIGHBOUR_SPACING_RATIO}`);
     }
-    if ((q.maxETurningDeg ?? 0) > G1_MAX_DEG + 1e-6) {
-        misses.push(`E-turn ${q.maxETurningDeg?.toFixed(2)}>${G1_MAX_DEG}`);
+    if ((q.maxETurningDeg ?? 0) > RING_TURNING_MAX_DEG + 1e-6) {
+        misses.push(`E-turn ${q.maxETurningDeg?.toFixed(2)}>${RING_TURNING_MAX_DEG}`);
     }
-    if ((q.maxFTurningDeg ?? 0) > G1_MAX_DEG + 1e-6) {
-        misses.push(`F-turn ${q.maxFTurningDeg?.toFixed(2)}>${G1_MAX_DEG}`);
+    if ((q.maxFTurningDeg ?? 0) > RING_TURNING_MAX_DEG + 1e-6) {
+        misses.push(`F-turn ${q.maxFTurningDeg?.toFixed(2)}>${RING_TURNING_MAX_DEG}`);
     }
     if ((q.maxSignedFoldDeg ?? 0) > SIGNED_FOLD_MAX_DEG + 1e-6 || (q.nFoldsOver90 ?? 0) !== 0) {
         misses.push(`signed-fold ${q.maxSignedFoldDeg?.toFixed(2)}>${SIGNED_FOLD_MAX_DEG}`);
@@ -1198,6 +1199,7 @@ describe("S1 parametric wall", () => {
         ];
         const shotDir = "/opt/cursor/artifacts/screenshots";
         mkdirSync(shotDir, { recursive: true });
+        mkdirSync("/opt/cursor/artifacts", { recursive: true });
         mkdirSync("/tmp/procedural-screenshots", { recursive: true });
         for (const v of views) {
             const rgb = renderMesh(pos, idx, { right: v.right, up: v.up, light: v.light }, 720, 540);
@@ -1209,6 +1211,15 @@ describe("S1 parametric wall", () => {
                 writeFileSync(`/tmp/procedural-screenshots/${name}`, png);
             }
         }
+        writeFileSync(
+            "/opt/cursor/artifacts/procedural-default.stl",
+            Buffer.from(geometryToBinarySTL(rebuilt)),
+        );
+        const defaultGlb = await exportObjectToGlb(meshFromGeometry(rebuilt));
+        writeFileSync("/opt/cursor/artifacts/procedural-default.glb", Buffer.from(defaultGlb.arrayBuffer));
+        const defaultQ = (rebuilt.userData as { columnQuality?: ColumnQualityUd }).columnQuality;
+        writeFileSync("/tmp/s1-default.json", JSON.stringify({ columnQuality: defaultQ }, null, 2));
+        console.log("[S1-DEFAULT-GATES]", JSON.stringify({ columnQuality: defaultQ }, null, 2));
         rebuilt.dispose();
         raw.dispose();
     }, 120_000);

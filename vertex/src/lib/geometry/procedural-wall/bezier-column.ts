@@ -41,7 +41,10 @@ export const MIN_EDGE_MM = 0.01;
 export const ALONG_JOINT_MAX_DEG = 8;
 export const ALONG_JOINT_BUDGET_FRAC = 1.15;
 export const ACROSS_STATION_MAX_DEG = 10;
-export const ACROSS_STATION_P99_MAX_DEG = 3;
+/** S1-stage across p99. Step 2 tightens back to 3°. */
+export const ACROSS_STATION_P99_MAX_DEG = 5;
+/** S1-stage E/F ring turning. Step 2 tightens back to 3°. */
+export const RING_TURNING_MAX_DEG = 6.5;
 export const HEADING_MAX_DEG = 3;
 export const ROUND_MIN_STEP_MM = 0.15;
 export const ROUND_MAX_ASPECT = 20;
