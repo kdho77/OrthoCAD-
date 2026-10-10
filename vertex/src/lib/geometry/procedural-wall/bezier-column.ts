@@ -1268,11 +1268,12 @@ export function constructArcLineArc(
     }
     if (packed) {
         const nPlant2a: Sz = { s: nPlant.x * h.x + nPlant.y * h.y, z: nPlant.z };
-        const phi0a = phiOf(packed.hit.n);
-        const phi1a = unwindDown(phi0a, phiOf({ s: -nPlant2a.s, z: -nPlant2a.z }));
-        const Sa = Math.abs(phi1a - phi0a);
-        const floored = floorR2OnLastStep(height, r1, r2, minL, stationSpacing, Sa, cosT, r1Floor);
-        if (r2 + 1e-9 < floored.r2Min || r1 > floored.r1 + 1e-9) {
+        for (let grow = 0; grow < 4; grow++) {
+            const phi0a = phiOf(packed.hit.n);
+            const phi1a = unwindDown(phi0a, phiOf({ s: -nPlant2a.s, z: -nPlant2a.z }));
+            const Sa = Math.abs(phi1a - phi0a);
+            const floored = floorR2OnLastStep(height, r1, r2, minL, stationSpacing, Sa, cosT, r1Floor);
+            if (r2 + 1e-9 >= floored.r2Min && r1 <= floored.r1 + 1e-9) break;
             r1 = floored.r1;
             r2 = floored.r2;
             let grown = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2, origin);
@@ -1281,6 +1282,7 @@ export function constructArcLineArc(
                 if (alaOk(grown)) r1 = r1Floor;
             }
             if (alaOk(grown)) packed = grown;
+            else break;
         }
     }
     if (!packed) {
@@ -1504,15 +1506,15 @@ export function constructSweepRule(
         const dFil = projectOntoSpan(d, frame.ew, frame.ez);
         // constructFillet wants the wall direction at F (up the wall, F→E).
         const U = hypot3(dFil) > 1e-9 ? unit3({ x: -dFil.x, y: -dFil.y, z: -dFil.z }) : { x: 0, y: 0, z: 1 };
-        fil = constructFillet(B, nB, r2, U, plantarSlopeRad, nPlant);
-        const S = Math.abs(fil.phi1 - fil.phi0);
-        const cosT = planCosT(d, nB, h);
-        const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S, cosT, r1Floor);
-        if (r2 + 1e-9 < floored.r2Min || r1 > floored.r1 + 1e-9) {
+        for (let grow = 0; grow < 4; grow++) {
+            fil = constructFillet(B, nB, r2, U, plantarSlopeRad, nPlant);
+            const S = Math.abs(fil.phi1 - fil.phi0);
+            const cosT = planCosT(d, nB, h);
+            const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S, cosT, r1Floor);
+            if (r2 + 1e-9 >= floored.r2Min && r1 <= floored.r1 + 1e-9) break;
             r1 = floored.r1;
             r2 = floored.r2;
             C1 = add3(R, eN, -r1);
-            fil = constructFillet(B, nB, r2, U, plantarSlopeRad, nPlant);
         }
         F = { ...fil.Pw };
         C1 = add3(R, eN, -r1);
@@ -1730,7 +1732,7 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
         fr.phiRound1Lock,
         fr.nPlantar,
     );
-    for (let pass = 0; pass < 2; pass++) {
+    for (let pass = 0; pass < 4; pass++) {
         const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
         const cosT = planCosT(sw.d, nB, fr.h);
         const floored = floorR2OnLastStep(
@@ -4146,32 +4148,30 @@ export function enforceLastChordFloor(frames: ColumnFrame[]): void {
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
         const Bz0 = fr.B.z;
-        applyAlaToFrame(fr);
-        fr.B.z = Bz0;
-        fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
         const local = localSpacingOf(fr);
         const cMin = lastFilletCMinMm(local);
-        const S = fr.filletSweepRad;
-        const dL = lastFilletDLRad(S, fr.cosT);
-        fr.lastDlRad = dL;
-        const need = lastFilletR2MinMm(local, dL);
-        if (fr.rFillet + 1e-9 < need) {
+        for (let pass = 0; pass < 4; pass++) {
+            applyAlaToFrame(fr);
+            fr.B.z = Bz0;
+            fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
+            const chord = lastStepChordMm(fr.rFillet, fr.lastDlRad);
+            if (chord + 1e-9 >= cMin) break;
             const floored = floorR2OnLastStep(
                 fr.heightMm,
                 fr.rTop,
                 fr.rFillet,
                 minLineOfHeight(fr.heightMm),
                 local,
-                S,
+                fr.filletSweepRad,
                 fr.cosT,
             );
             fr.rTop = floored.r1;
             fr.rFillet = floored.r2;
             fr.lastDlRad = floored.dL;
-            applyAlaToFrame(fr);
-            fr.B.z = Bz0;
-            fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
         }
+        applyAlaToFrame(fr);
+        fr.B.z = Bz0;
+        fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
         const chord = lastStepChordMm(fr.rFillet, fr.lastDlRad);
         if (chord + 1e-9 < cMin) {
             const at = fr.stationIndex ?? i;

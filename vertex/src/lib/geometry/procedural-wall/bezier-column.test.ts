@@ -193,7 +193,7 @@ describe("bezier column", () => {
     });
 
     test("R and B never move; pieces stay in their own planes", () => {
-        const n = 12;
+        const n = 64;
         const stations: HermiteStation[] = [];
         for (let i = 0; i < n; i++) {
             const a = (i / n) * Math.PI * 2;
@@ -870,7 +870,7 @@ describe("bezier column", () => {
     });
 
     test("min-wall clamp never moves B and lastChord stays at C_MIN", () => {
-        const n = 8;
+        const n = 48;
         const stations: HermiteStation[] = [];
         for (let i = 0; i < n; i++) {
             const a = (i / n) * Math.PI * 2;
