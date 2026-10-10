@@ -1200,7 +1200,16 @@ export function smoothFRing(frames: ColumnFrame[]): void {
             if (hypot3(U) > 1e-9) fr.U = unit3(U);
         }
     };
-    for (let pass = 0; pass < 3; pass++) applyLaplacian();
+    for (let pass = 0; pass < 3; pass++) {
+        applyLaplacian();
+        if (
+            ringTurningDeg(
+                frames.map((f) => f.F),
+                true,
+            ) <= RING_TURNING_MAX_DEG
+        )
+            break;
+    }
     const r2s = frames.map((fr) => fr.rFillet);
     const sm = periodicGaussian(
         r2s,
@@ -1210,6 +1219,13 @@ export function smoothFRing(frames: ColumnFrame[]): void {
     for (let i = 0; i < frames.length; i++) {
         frames[i]!.rFillet = Math.min(frames[i]!.rFillet, sm[i] ?? frames[i]!.rFillet);
     }
+    if (
+        ringTurningDeg(
+            frames.map((f) => f.F),
+            true,
+        ) > RING_TURNING_MAX_DEG
+    )
+        applyLaplacian();
     for (const fr of frames) applyAlaToFrame(fr);
 }
 
@@ -2377,8 +2393,7 @@ export function sampleSweepRule(
     const pts: XYZ[] = [{ ...R }];
     for (let k = 1; k <= nRound; k++) {
         const phi = sw.phiRound0 + ((sw.phiRound1 - sw.phiRound0) * k) / nRound;
-        const raw = k === nRound ? { ...sw.E } : sweptRoundPoint(sw.C1, sw.r1, sw.eN, sw.eW, phi);
-        pts.push(projectToNormalPlane(raw, R, sw.nRoundPlane));
+        pts.push(k === nRound ? { ...sw.E } : sweptRoundPoint(sw.C1, sw.r1, sw.eN, sw.eW, phi));
     }
     const fil = sampleFilletPiecePoints(
         sw.E,
@@ -2432,9 +2447,9 @@ export function sampleSweepRule(
         }
     }
     for (const p of mid.pts) pts.push(p);
-    for (const p of fil.pts) pts.push(projectToNormalPlane(p, B, sw.nFilPlane));
+    for (const p of fil.pts) pts.push(p);
     pts.push({ ...B });
-    ensureColumnMinEdge(pts, MIN_EDGE_MM, [nRound, nRound + nLine]);
+    ensureColumnMinEdge(pts, MIN_EDGE_MM);
     return strictSpacing ? assertPieceSpacing(pts, MIN_EDGE_MM, station) : pts;
 }
 
@@ -2444,16 +2459,6 @@ function filletTangentAtPhi(fil: ConstructedFillet, phi: number): XYZ {
         y: -Math.sin(phi) * fil.ew.y + Math.cos(phi) * fil.ez.y,
         z: -Math.sin(phi) * fil.ew.z + Math.cos(phi) * fil.ez.z,
     });
-}
-
-function projectToNormalPlane(p: XYZ, origin: XYZ, n: XYZ): XYZ {
-    const ln = hypot3(n);
-    if (ln < 1e-12) return p;
-    const nx = n.x / ln;
-    const ny = n.y / ln;
-    const nz = n.z / ln;
-    const d = (p.x - origin.x) * nx + (p.y - origin.y) * ny + (p.z - origin.z) * nz;
-    return { x: p.x - nx * d, y: p.y - ny * d, z: p.z - nz * d };
 }
 
 /** Walk a short interior sample toward the next point so the row map stays
