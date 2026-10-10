@@ -534,6 +534,131 @@ export function markSourceRimStations(
     }
 }
 
+function wrapParamDelta(a: number, b: number): number {
+    let span = b - a;
+    if (span < -0.5) span += 1;
+    if (span > 0.5) span -= 1;
+    return span;
+}
+
+/**
+ * Even k-splits of each source rim edge. k = max(0, round(L / target) − 1)
+ * so extras never cluster. B is the interpolated harmonic t_B on the pattern.
+ */
+export function evenSplitSourceEdges(
+    stations: HermiteStation[],
+    rimLocal: number[],
+    positions: number[],
+    indices: number[],
+    pattern: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    rimLoop?: PolyPoint[],
+    targetMm?: number,
+): number {
+    if (stations.length < 3) return 0;
+    let added = 0;
+    for (let pass = 0; pass < 2; pass++) {
+        const n0 = stations.length;
+        const edgeLen: number[] = [];
+        for (let i = 0; i < n0; i++) {
+            const a = stations[i]!.rim;
+            const b = stations[(i + 1) % n0]!.rim;
+            edgeLen.push(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+        }
+        const sorted = edgeLen.slice().sort((a, b) => a - b);
+        const median = sorted[Math.floor(sorted.length / 2)] ?? OUTLINE_STATION_SPACING_MM;
+        const minE = sorted[0] ?? median;
+        let target = targetMm ?? Math.max(0.6, Math.min(1.5, median));
+        if (minE > PAIR_SPACING_MIN_MM && minE * 1.5 < target) {
+            target = Math.max(0.6, minE * 1.5);
+        }
+        const ks: number[] = [];
+        for (let i = 0; i < n0; i++) {
+            const k = Math.max(0, Math.round(edgeLen[i]! / Math.max(target, 1e-6)) - 1);
+            const cur = stations[i]!;
+            const nxt = stations[(i + 1) % n0]!;
+            const dB = Math.hypot(nxt.outline.x - cur.outline.x, nxt.outline.y - cur.outline.y);
+            const kB = Math.max(0, Math.floor(dB / PAIR_SPACING_MIN_MM) - 1);
+            ks.push(Math.min(k, kB));
+        }
+        let passAdded = 0;
+        for (let i = n0 - 1; i >= 0; i--) {
+            const k = ks[i]!;
+            if (k < 1) continue;
+            passAdded += insertEvenK(stations, rimLocal, positions, indices, pattern, bounds, i, k, rimLoop);
+        }
+        added += passAdded;
+        if (passAdded === 0) break;
+    }
+    if (added) {
+        console.log("[S1-EVEN-SPLIT]", JSON.stringify({ added, n: stations.length }));
+    }
+    return added;
+}
+
+function insertEvenK(
+    stations: HermiteStation[],
+    rimLocal: number[],
+    positions: number[],
+    indices: number[],
+    pattern: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    i: number,
+    k: number,
+    _rimLoop?: PolyPoint[],
+): number {
+    const n = stations.length;
+    const cur = stations[i]!;
+    const nxt = stations[(i + 1) % n]!;
+    const prevRim = rimLocal[i]!;
+    const endRim = rimLocal[(i + 1) % n]!;
+    const Ra: PolyPoint = {
+        x: positions[prevRim * 3]!,
+        y: positions[prevRim * 3 + 1]!,
+        z: positions[prevRim * 3 + 2]!,
+    };
+    const Rb: PolyPoint = {
+        x: positions[endRim * 3]!,
+        y: positions[endRim * 3 + 1]!,
+        z: positions[endRim * 3 + 2]!,
+    };
+    const tB0 = cur.tB ?? parameterOnClosedLoop(cur.outline, pattern);
+    const tB1 = nxt.tB ?? parameterOnClosedLoop(nxt.outline, pattern);
+    const span = wrapParamDelta(tB0, tB1);
+    if (Math.abs(span) < 1e-6) return 0;
+    let inserted = 0;
+    let edgeStart = prevRim;
+    let insertAt = i;
+    for (let j = 1; j <= k; j++) {
+        const t = j / (k + 1);
+        const R: PolyPoint = {
+            x: Ra.x + (Rb.x - Ra.x) * t,
+            y: Ra.y + (Rb.y - Ra.y) * t,
+            z: Ra.z + (Rb.z - Ra.z) * t,
+        };
+        const tB = (((tB0 + span * t) % 1) + 1) % 1;
+        const B = { ...sampleClosedAtArc01(pattern, tB), z: 0 };
+        const left = stations[insertAt]!;
+        const right = stations[(insertAt + 1) % stations.length]!;
+        if (
+            Math.hypot(B.x - left.outline.x, B.y - left.outline.y) < PAIR_SPACING_MIN_MM ||
+            Math.hypot(B.x - right.outline.x, B.y - right.outline.y) < PAIR_SPACING_MIN_MM
+        ) {
+            continue;
+        }
+        const mid = positions.length / 3;
+        positions.push(R.x, R.y, R.z);
+        splitTopBoundaryEdge(indices, edgeStart, endRim, mid);
+        const st = stationFromPair(R, B, left, right, bounds, tB);
+        stations.splice(insertAt + 1, 0, st);
+        rimLocal.splice(insertAt + 1, 0, mid);
+        insertAt++;
+        edgeStart = mid;
+        inserted++;
+    }
+    return inserted;
+}
+
 /**
  * Slide B on the pattern toward square-to-B when |dot(h, nB)| < 0.3.
  * R stays on the source rim; B stays on the pattern between its neighbors.

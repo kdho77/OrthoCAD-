@@ -25,14 +25,7 @@ import {
     snapToStep,
     type WallRegionDefaults,
 } from "./defaults";
-import {
-    densifyArchFanStations,
-    densifyHeelForefootStations,
-    densifyToeByExtent,
-    ensureSourceRimStations,
-    fillLargeStationGaps,
-    markSourceRimStations,
-} from "./densify-stations";
+import { ensureSourceRimStations, evenSplitSourceEdges, markSourceRimStations } from "./densify-stations";
 import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
 import { buildHermiteStations } from "./loft";
@@ -514,9 +507,7 @@ export function reconstructProceduralWalls(
         stations[i]!.rim = pairing.top[i]!;
         stations[i]!.tB = pairing.s01[i];
     }
-    densifyHeelForefootStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     applyOutlineClean(stations, rimLocal, indices, true);
-    fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, 2, rimPts);
     rotateStationRing(stations, rimLocal, model.bounds);
     const spreadB = spreadClosedOnLoop(
         stations.map((s) => s.outline),
@@ -543,14 +534,12 @@ export function reconstructProceduralWalls(
         return true;
     };
     applySmoothedB();
-    densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
-    densifyToeByExtent(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
-    densifyArchFanStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
-    fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, 2, rimPts);
     ensureSourceRimStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, sourceRim);
+    evenSplitSourceEdges(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     markSourceRimStations(stations, rimLocal, sourceRim);
     stampMonotonicTB(stations, hygiened.loop);
     applyStoredTB(stations, hygiened.loop);
+    applySmoothedB();
     assertClosedStationRing(stations, rimLocal);
     {
         let minB = Infinity;
@@ -669,7 +658,7 @@ export function reconstructProceduralWalls(
         loftN: nS,
         pairingMethod: pairing.method ?? "harmonic",
         medialYSign,
-        junctionRewrite: "arc-line-arc",
+        junctionRewrite: "sweep-rule",
         planReversals: grid.planReversals,
         columnQuality: grid.quality,
         maxAlongJointDeg: grid.quality?.maxAlongJointDeg,
@@ -696,6 +685,13 @@ export function reconstructProceduralWalls(
         maxAlongRowDeg: grid.quality?.maxAlongRowDeg,
         maxObliqueDeg: grid.quality?.maxObliqueDeg,
         nObliqueWarn: grid.quality?.nObliqueWarn,
+        maxG1EDeg: grid.quality?.maxG1EDeg,
+        maxG1FDeg: grid.quality?.maxG1FDeg,
+        maxAspectEverywhere: grid.quality?.maxAspectEverywhere,
+        maxNeighbourSpacingRatio: grid.quality?.maxNeighbourSpacingRatio,
+        columnCrossings: grid.quality?.columnCrossings,
+        maxSignedSeamNonFallbackDeg: grid.quality?.maxSignedSeamNonFallbackDeg,
+        obliqueFallback: grid.quality?.obliqueFallback,
         maxFrameAngleDeg: grid.maxFrameAngleDeg,
         maxOffPlaneMm: grid.maxOffPlaneMm,
         maxSidewaysMm: grid.maxSidewaysMm,

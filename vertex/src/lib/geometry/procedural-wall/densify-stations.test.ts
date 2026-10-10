@@ -5,6 +5,7 @@ import { describe, expect, test } from "@rstest/core";
 import {
     densifyArchFanStations,
     ensureSourceRimStations,
+    evenSplitSourceEdges,
     headingDeltaDeg,
     insertStationPair,
     markSourceRimStations,
@@ -101,6 +102,50 @@ describe("pair-insert densify", () => {
         expect(stations).toHaveLength(4);
         const mid = stations.find((s) => Math.abs(s.rim.x - 15) < 1e-6 && Math.abs(s.rim.y) < 1e-6);
         expect(mid).toBeTruthy();
+    });
+
+    test("evenSplitSourceEdges inserts k even R samples, never clustered", () => {
+        const stations: HermiteStation[] = [
+            station(0, 0, 0, 0, 0),
+            station(12, 0, 12, 0, 0.5),
+            station(6, 8, 6, 8, 0.25),
+        ];
+        stations[0]!.tB = 0;
+        stations[1]!.tB = 0.5;
+        stations[2]!.tB = 0.25;
+        const rimLocal = [0, 1, 2];
+        const positions = [0, 0, 8, 12, 0, 8, 6, 8, 8];
+        const indices = [0, 1, 2];
+        const pattern = [
+            { x: 0, y: 0, z: 0 },
+            { x: 12, y: 0, z: 0 },
+            { x: 6, y: 8, z: 0 },
+        ];
+        const n0 = stations.length;
+        evenSplitSourceEdges(
+            stations,
+            rimLocal,
+            positions,
+            indices,
+            pattern,
+            { minX: 0, maxX: 12 },
+            undefined,
+            4,
+        );
+        expect(stations.length).toBeGreaterThan(n0);
+        const onLong: number[] = [];
+        for (const s of stations) {
+            if (Math.abs(s.rim.y) < 1e-6 && s.rim.x > 0.1 && s.rim.x < 11.9) {
+                onLong.push(s.rim.x);
+            }
+        }
+        onLong.sort((a, b) => a - b);
+        expect(onLong.length).toBeGreaterThanOrEqual(2);
+        const gaps: number[] = [];
+        for (let i = 1; i < onLong.length; i++) gaps.push(onLong[i]! - onLong[i - 1]!);
+        const minG = Math.min(...gaps);
+        const maxG = Math.max(...gaps);
+        expect(maxG / minG).toBeLessThanOrEqual(1.5 + 1e-6);
     });
 
     test("squarePairingsToB slides B until cosT reaches 0.3", () => {

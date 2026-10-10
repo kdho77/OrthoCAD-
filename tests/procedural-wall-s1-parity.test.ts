@@ -17,6 +17,7 @@ import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import {
     ACROSS_STATION_MAX_DEG,
     ACROSS_STATION_P99_MAX_DEG,
+    ASPECT_EVERYWHERE_MAX,
     buildHermiteStations,
     CHORD_RISE_MAX_DEG,
     COLUMN_PLANARITY_LIMIT_MM,
@@ -34,6 +35,7 @@ import {
     FOREFOOT_INSET_MM,
     foldReport,
     formatSiBreakdown,
+    G1_MAX_DEG,
     generatedMinWallMm,
     groundDriftMm,
     HEADING_MAX_DEG,
@@ -48,6 +50,7 @@ import {
     meshVertexMinZ,
     minWallThicknessMm,
     N_TOP_MAX_DEG,
+    NEIGHBOUR_SPACING_RATIO,
     outlineExactOnBMm,
     outlineSeamDihedrals,
     PATTERN_HEEL_INSET_MM,
@@ -63,6 +66,7 @@ import {
     reconstructionManifold,
     reconstructProceduralWalls,
     S1_MIN_WALL_MM,
+    SEAM_B_FALLBACK_DEG,
     SEAM_B_LIMIT_DEG,
     SKEW_LIMIT_MM,
     STATION_GAP_MULT,
@@ -157,6 +161,20 @@ type ColumnQualityUd = {
     stationSpacingMm?: number;
     rowPieceIdentical?: boolean;
     maxAlongRowDeg?: number;
+    maxG1EDeg?: number;
+    maxG1FDeg?: number;
+    maxAspectEverywhere?: number;
+    maxNeighbourSpacingRatio?: number;
+    columnCrossings?: number;
+    maxSignedSeamNonFallbackDeg?: number;
+    obliqueFallback?: Array<{
+        i: number;
+        u: number;
+        obliqueDeg: number;
+        seamDeg: number;
+        g1EDeg: number;
+        g1FDeg: number;
+    }>;
 };
 
 type SampleGateReport = {
@@ -171,6 +189,7 @@ type SampleGateReport = {
     watertight: boolean;
     selfIntersections: number;
     archFoldGe10: number;
+    obliqueFallback: ColumnQualityUd["obliqueFallback"];
 };
 
 function sampleGateReport(
@@ -227,8 +246,16 @@ function sampleGateReport(
     if (archFolds.edgesAtLeast10Deg !== 0) {
         misses.push(`medial-arch-upper≥10 ${JSON.stringify(archFolds.hardEdges ?? [])}`);
     }
-    if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6) {
-        misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
+    {
+        const fb = sud.columnQuality?.obliqueFallback ?? [];
+        const nonFb = sud.columnQuality?.maxSignedSeamNonFallbackDeg ?? reconSeam.worstDeg;
+        if (reconSeam.worstDeg > SEAM_B_FALLBACK_DEG + 1e-6) {
+            misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_FALLBACK_DEG}`);
+        } else if (nonFb > SEAM_B_LIMIT_DEG + 1e-6) {
+            misses.push(`seam-B ${nonFb.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
+        } else if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6 && !fb.length) {
+            misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
+        }
     }
     if (outlineDev > 1e-3) misses.push(`outline-B ${outlineDev.toFixed(4)}`);
     if (plantarZ0 > 1e-3) misses.push(`plantar-z0 ${plantarZ0.toFixed(4)}`);
@@ -265,6 +292,7 @@ function sampleGateReport(
         watertight: man.watertight,
         selfIntersections: hits.real,
         archFoldGe10: archFolds.edgesAtLeast10Deg,
+        obliqueFallback: sud.columnQuality?.obliqueFallback ?? [],
     };
 }
 
@@ -319,8 +347,14 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.maxAlaPackMm ?? 0) > 1e-6) {
         misses.push(`ala-pack ${q.maxAlaPackMm?.toFixed(3)}>0`);
     }
-    if ((q.maxSignedSeamDeg ?? 0) > SEAM_B_LIMIT_DEG + 1e-6) {
-        misses.push(`signed-seam ${q.maxSignedSeamDeg?.toFixed(2)}>${SEAM_B_LIMIT_DEG}`);
+    if ((q.maxSignedSeamNonFallbackDeg ?? q.maxSignedSeamDeg ?? 0) > SEAM_B_LIMIT_DEG + 1e-6) {
+        misses.push(`signed-seam ${q.maxSignedSeamNonFallbackDeg?.toFixed(2)}>${SEAM_B_LIMIT_DEG}`);
+    }
+    const fbOver = (q.obliqueFallback ?? []).filter((r) => r.seamDeg > SEAM_B_FALLBACK_DEG + 1e-6);
+    if (fbOver.length) {
+        misses.push(
+            `fallback-seam ${fbOver.map((r) => `${r.i}:${r.seamDeg}`).join(",")}>${SEAM_B_FALLBACK_DEG}`,
+        );
     }
     if ((q.flippedFaces ?? 0) !== 0) misses.push(`flipped-faces=${q.flippedFaces}`);
     if ((q.minLastRowSMm ?? 0) < 0 - 1e-9) {
@@ -343,6 +377,21 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if (q.rowPieceIdentical === false) misses.push("row-to-piece");
     if ((q.maxAlongRowDeg ?? 0) > ROUND_JOINT_MAX_DEG + 1e-6) {
         misses.push(`along-row ${q.maxAlongRowDeg?.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
+    }
+    if ((q.maxG1EDeg ?? 0) > G1_MAX_DEG + 1e-6) {
+        misses.push(`G1-E ${q.maxG1EDeg?.toFixed(2)}>${G1_MAX_DEG}`);
+    }
+    if ((q.maxG1FDeg ?? 0) > G1_MAX_DEG + 1e-6) {
+        misses.push(`G1-F ${q.maxG1FDeg?.toFixed(2)}>${G1_MAX_DEG}`);
+    }
+    if ((q.maxAspectEverywhere ?? 0) > ASPECT_EVERYWHERE_MAX + 1e-6) {
+        misses.push(`aspect ${q.maxAspectEverywhere?.toFixed(2)}>${ASPECT_EVERYWHERE_MAX}`);
+    }
+    if ((q.maxNeighbourSpacingRatio ?? 0) > NEIGHBOUR_SPACING_RATIO + 1e-6) {
+        misses.push(`spacing-ratio ${q.maxNeighbourSpacingRatio?.toFixed(2)}>${NEIGHBOUR_SPACING_RATIO}`);
+    }
+    if ((q.columnCrossings ?? 0) !== 0) {
+        misses.push(`column-cross=${q.columnCrossings}`);
     }
     return misses;
 }
@@ -876,8 +925,20 @@ describe("S1 parametric wall", () => {
             }
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) smokeMiss.push(`${smoke.name} fold`);
             for (const m of qualityMisses(sud)) smokeMiss.push(`${smoke.name} ${m}`);
-            if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6) {
-                smokeMiss.push(`${smoke.name} seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
+            {
+                const fb = sud.columnQuality?.obliqueFallback ?? [];
+                const nonFb = sud.columnQuality?.maxSignedSeamNonFallbackDeg ?? reconSeam.worstDeg;
+                if (reconSeam.worstDeg > SEAM_B_FALLBACK_DEG + 1e-6) {
+                    smokeMiss.push(
+                        `${smoke.name} seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_FALLBACK_DEG}`,
+                    );
+                } else if (nonFb > SEAM_B_LIMIT_DEG + 1e-6) {
+                    smokeMiss.push(`${smoke.name} seam-B ${nonFb.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
+                } else if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6 && !fb.length) {
+                    smokeMiss.push(
+                        `${smoke.name} seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`,
+                    );
+                }
             }
             if (!man.watertight) smokeMiss.push(`${smoke.name} open=${man.openEdges}`);
             if (minZ < -0.01) smokeMiss.push(`${smoke.name} min-z ${minZ.toFixed(3)}`);

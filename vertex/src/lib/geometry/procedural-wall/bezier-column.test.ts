@@ -14,11 +14,13 @@ import {
     columnHeading,
     constructArcLineArc,
     constructFillet,
+    constructSweepRule,
     DPHI_L_MAX_DEG,
     evalCubicBezier,
     FILLET_R_CAP_MM,
     FILLET_STEP_MAX_DEG,
     filletCenterAndF,
+    G1_MAX_DEG,
     HEADING_MAX_DEG,
     headingAllowanceDeg,
     incidentFaceTangent,
@@ -173,7 +175,7 @@ describe("bezier column", () => {
         expect(zeroInset.r2).toBeLessThan(3);
     });
 
-    test("R and B never move; columns stay plan-monotone toward B", () => {
+    test("R and B never move; pieces stay in their own planes", () => {
         const n = 12;
         const stations: HermiteStation[] = [];
         for (let i = 0; i < n; i++) {
@@ -190,6 +192,7 @@ describe("bezier column", () => {
         const built = buildBezierColumns(stations, junctions, defaults(), rimLoop, () => 12, 24);
         expect(built.planReversals).toBe(0);
         expect(built.maxOffPlaneMm).toBeLessThanOrEqual(COLUMN_PLANARITY_LIMIT_MM);
+        expect(built.quality.columnCrossings).toBe(0);
         for (let i = 0; i < n; i++) {
             const col = built.xyz[i]!;
             const R = stations[i]!.rim;
@@ -202,11 +205,44 @@ describe("bezier column", () => {
             expect(last.x).toBeCloseTo(B.x, 9);
             expect(last.y).toBeCloseTo(B.y, 9);
             expect(last.z).toBeCloseTo(B.z, 9);
-            for (let k = 1; k < col.length - 1; k++) {
-                expect(offPlaneMm(col[k]!, fr.R, fr.h)).toBeLessThanOrEqual(COLUMN_PLANARITY_LIMIT_MM);
+            const nRnd = fr.nRoundFix;
+            for (let k = 1; k <= nRnd && k < col.length - 1; k++) {
+                const d =
+                    (col[k]!.x - fr.R.x) * fr.nRoundPlane.x +
+                    (col[k]!.y - fr.R.y) * fr.nRoundPlane.y +
+                    (col[k]!.z - fr.R.z) * fr.nRoundPlane.z;
+                expect(Math.abs(d)).toBeLessThanOrEqual(COLUMN_PLANARITY_LIMIT_MM);
             }
-            expect(offPlaneMm(last, fr.R, fr.h)).toBeLessThanOrEqual(2);
+            expect(fr.g1EDeg).toBeLessThanOrEqual(G1_MAX_DEG + 0.5);
+            expect(fr.g1FDeg).toBeLessThanOrEqual(G1_MAX_DEG + 0.5);
         }
+    });
+
+    test("sweep+rule fillet is square to B and G1 to the ruling", () => {
+        const R = { x: 0, y: 1, z: 12 };
+        const B = { x: 8, y: 0, z: 0 };
+        const nB = { x: 1, y: 0 };
+        const h = { x: 8, y: -1 };
+        const hl = Math.hypot(h.x, h.y);
+        const sw = constructSweepRule(
+            R,
+            B,
+            { x: 0, y: 0, z: 1 },
+            0.5,
+            1.2,
+            { x: h.x / hl, y: h.y / hl },
+            nB,
+            { x: 0, y: 1, z: 0 },
+            0,
+            0,
+            1.3,
+        );
+        expect(sw.converged).toBe(true);
+        expect(sw.g1EDeg).toBeLessThanOrEqual(G1_MAX_DEG + 1e-3);
+        expect(sw.g1FDeg).toBeLessThanOrEqual(G1_MAX_DEG + 1e-3);
+        const filOff = (sw.F.x - B.x) * -nB.y + (sw.F.y - B.y) * nB.x;
+        expect(Math.abs(filOff)).toBeLessThan(1e-6);
+        expect(Math.abs(sw.F.y - B.y)).toBeLessThan(1e-6);
     });
 
     test("rim overhang is positive when the rim sits outside the outline", () => {
