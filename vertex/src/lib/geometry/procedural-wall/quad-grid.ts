@@ -636,7 +636,18 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         }),
     );
 
-    const plantarSlopeRad = stations.map(() => 0);
+    const plantarSlopeRad = stations.map((st) => {
+        const dx = st.outline.x - st.rim.x;
+        const dy = st.outline.y - st.rim.y;
+        const len = Math.hypot(dx, dy);
+        const hx = len < 1e-4 ? st.n.x : dx / len;
+        const hy = len < 1e-4 ? st.n.y : dy / len;
+        const nl = Math.hypot(hx, hy) || 1;
+        const s = 1.5;
+        const zB = sampler.z(st.outline.x, st.outline.y, st.outline.z);
+        const z1 = sampler.z(st.outline.x + (hx / nl) * s, st.outline.y + (hy / nl) * s, st.outline.z);
+        return Math.atan((z1 - zB) / s);
+    });
     const built = buildBezierColumns(
         stations,
         input.junctions,

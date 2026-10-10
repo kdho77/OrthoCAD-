@@ -12,7 +12,7 @@ export async function loadSampleTopGlb() {
     const group = await loadGlbFromBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
     const merged = extractMergedGeometry(group);
     if (!merged) throw new Error("SAMPLE_Top.glb produced no geometry");
-    const reoriented = reorientToFootprintFrame(merged.geometry);
+    const reoriented = reorientToFootprintFrame(merged.geometry, { preserveAuthorZ: true });
     merged.geometry.dispose();
     return reoriented;
 }

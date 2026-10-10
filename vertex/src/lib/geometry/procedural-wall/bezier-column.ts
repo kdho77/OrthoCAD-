@@ -21,6 +21,12 @@ export const TOP_CLEARANCE_DEG = 10;
 export const T0_PIN_DEG = -45;
 export const FILLET_R_CAP_MM = 3;
 export const R_SMOOTH_FRAC = 0.05;
+export const FILLET_B_MIN_DEG = -60;
+export const FILLET_B_MAX_DEG = 80;
+export const FILLET_PSI_MIN_DEG = 10;
+export const FILLET_PSI_MAX_DEG = 150;
+export const T0_LEAD_DROP_MM = 1;
+export const FILLET_ASSERT_EPS = 1e-6;
 export const BAND_INSET_MIN_MM = 0.35;
 export const SHORT_CHORD_MM = 0.5;
 export const COLUMN_PLANARITY_LIMIT_MM = 0.01;
@@ -152,16 +158,51 @@ function t0FromTilt(h: { x: number; y: number }, tiltRad: number): XYZ {
     return unit3({ x: h.x * c, y: h.y * c, z: s });
 }
 
-/** In-plane U: up, tilted toward −h (toward R) by flare. */
-function uFromTilt(h: { x: number; y: number }, flareRad: number): XYZ {
-    const s = Math.sin(Math.abs(flareRad));
-    const c = Math.cos(Math.abs(flareRad));
-    return unit3({ x: -h.x * s, y: -h.y * s, z: c });
+export interface PlantarFrame {
+    w: XYZ;
+    ew: XYZ;
+    ez: XYZ;
+}
+
+/** w = unit horizontal B → plan(R) = −h. */
+export function columnW(h: { x: number; y: number }): XYZ {
+    return { x: -h.x, y: -h.y, z: 0 };
+}
+
+/**
+ * Local (w, z) after the plantar slope along −w replaces world-horizontal.
+ * e_z = n_plantar(B); e_w is the plantar-horizontal toward +w.
+ */
+export function plantarFrameAt(h: { x: number; y: number }, plantarSlopeRad: number): PlantarFrame {
+    const w = columnW(h);
+    const ca = Math.cos(plantarSlopeRad);
+    const sa = Math.sin(plantarSlopeRad);
+    return {
+        w,
+        ew: { x: ca * w.x, y: ca * w.y, z: -sa },
+        ez: { x: sa * w.x, y: sa * w.y, z: ca },
+    };
+}
+
+export function clampFilletB(bRad: number): number {
+    const lo = ((FILLET_B_MIN_DEG + 1e-3) * Math.PI) / 180;
+    const hi = ((FILLET_B_MAX_DEG - 1e-3) * Math.PI) / 180;
+    return Math.max(lo, Math.min(hi, bRad));
+}
+
+export function filletDir(b: number, frame: PlantarFrame): XYZ {
+    const sb = Math.sin(b);
+    const cb = Math.cos(b);
+    return unit3({
+        x: sb * frame.ew.x + cb * frame.ez.x,
+        y: sb * frame.ew.y + cb * frame.ez.y,
+        z: sb * frame.ew.z + cb * frame.ez.z,
+    });
 }
 
 function applyTilts(fr: ColumnFrame): void {
     fr.T0 = t0FromTilt(fr.h, fr.t0TiltRad);
-    fr.U = uFromTilt(fr.h, fr.uTiltRad);
+    fr.U = filletDir(fr.uTiltRad, plantarFrameAt(fr.h, fr.plantarSlopeRad));
 }
 
 function projectToPlane(p: XYZ, R: XYZ, h: { x: number; y: number }): XYZ {
@@ -239,24 +280,141 @@ export function sampleByArcLength(pts: XYZ[], n: number): XYZ[] {
     return out;
 }
 
-function rot90ccw(s: number, z: number): { s: number; z: number } {
-    return { s: -z, z: s };
-}
-
 function unit2(s: number, z: number): { s: number; z: number } {
     const l = Math.hypot(s, z) || 1;
     return { s: s / l, z: z / l };
 }
 
-/** Path tangent leaving F (continuation of −U) and arriving at B (opposite plantar −h). */
+export interface ConstructedFillet {
+    Pp: XYZ;
+    K: XYZ;
+    Pw: XYZ;
+    C: XYZ;
+    d: XYZ;
+    b: number;
+    psi: number;
+    t: number;
+    r: number;
+    phi0: number;
+    phi1: number;
+    ew: XYZ;
+    ez: XYZ;
+}
+
+export function leanFromVertical(U: XYZ, frame: PlantarFrame): number {
+    return Math.atan2(
+        U.x * frame.ew.x + U.y * frame.ew.y + U.z * frame.ew.z,
+        U.x * frame.ez.x + U.y * frame.ez.y + U.z * frame.ez.z,
+    );
+}
+
+export function filletRadiusMm(heightMm: number, wallLen: number, psi: number): number {
+    const half = Math.max(Math.tan(psi / 2), 1e-6);
+    return Math.max(
+        0.05,
+        Math.min(FILLET_MAX_HEIGHT_FRAC * Math.max(heightMm, 0.5), FILLET_R_CAP_MM, wallLen / (2 * half)),
+    );
+}
+
+/**
+ * Exact fillet: P_p = B, K = B + t e_w, P_w = K + t d, C = B + r n_plantar.
+ * phi: −90 → −b about C, sweep +psi. F := P_w.
+ */
+export function constructFillet(
+    B: XYZ,
+    h: { x: number; y: number },
+    r: number,
+    U: XYZ,
+    plantarSlopeRad: number,
+): ConstructedFillet {
+    const frame = plantarFrameAt(h, plantarSlopeRad);
+    const b = clampFilletB(leanFromVertical(U, frame));
+    const psi = Math.PI / 2 - b;
+    const rr = Math.max(r, 1e-6);
+    const t = rr * Math.tan(psi / 2);
+    const d = filletDir(b, frame);
+    const Pp = { x: B.x, y: B.y, z: B.z };
+    const K = add3(Pp, frame.ew, t);
+    const Pw = add3(K, d, t);
+    const C = add3(Pp, frame.ez, rr);
+    return {
+        Pp,
+        K,
+        Pw,
+        C,
+        d,
+        b,
+        psi,
+        t,
+        r: rr,
+        phi0: -Math.PI / 2,
+        phi1: -b,
+        ew: frame.ew,
+        ez: frame.ez,
+    };
+}
+
+export function filletPointAtPhi(fil: ConstructedFillet, phi: number): XYZ {
+    return {
+        x: fil.C.x + fil.r * (Math.cos(phi) * fil.ew.x + Math.sin(phi) * fil.ez.x),
+        y: fil.C.y + fil.r * (Math.cos(phi) * fil.ew.y + Math.sin(phi) * fil.ez.y),
+        z: fil.C.z + fil.r * (Math.cos(phi) * fil.ew.z + Math.sin(phi) * fil.ez.z),
+    };
+}
+
+export function assertFilletStation(fil: ConstructedFillet, label = ""): void {
+    const eps = FILLET_ASSERT_EPS;
+    const dPp = dist3(fil.Pp, fil.C);
+    const dPw = dist3(fil.Pw, fil.C);
+    if (Math.abs(dPp - fil.r) > eps || Math.abs(dPw - fil.r) > eps) {
+        throw new Error(`[S1-FILLET] |P-C|!=r${label} Pp=${dPp} Pw=${dPw} r=${fil.r}`);
+    }
+    const tPp = unit3({
+        x: -Math.sin(fil.phi0) * fil.ew.x + Math.cos(fil.phi0) * fil.ez.x,
+        y: -Math.sin(fil.phi0) * fil.ew.y + Math.cos(fil.phi0) * fil.ez.y,
+        z: -Math.sin(fil.phi0) * fil.ew.z + Math.cos(fil.phi0) * fil.ez.z,
+    });
+    const dotZ = tPp.x * fil.ez.x + tPp.y * fil.ez.y + tPp.z * fil.ez.z;
+    if (Math.abs(dotZ) > eps) {
+        throw new Error(`[S1-FILLET] tangent at Pp not (1,0)${label} dotZ=${dotZ}`);
+    }
+    const tPw = unit3({
+        x: -Math.sin(fil.phi1) * fil.ew.x + Math.cos(fil.phi1) * fil.ez.x,
+        y: -Math.sin(fil.phi1) * fil.ew.y + Math.cos(fil.phi1) * fil.ez.y,
+        z: -Math.sin(fil.phi1) * fil.ew.z + Math.cos(fil.phi1) * fil.ez.z,
+    });
+    const dotD = tPw.x * fil.d.x + tPw.y * fil.d.y + tPw.z * fil.d.z;
+    if (dotD < 0.9999) {
+        throw new Error(`[S1-FILLET] tangent at Pw·d=${dotD}${label}`);
+    }
+    if (!(fil.phi1 > fil.phi0 + 1e-9)) {
+        throw new Error(`[S1-FILLET] phi not increasing${label} ${fil.phi0} → ${fil.phi1}`);
+    }
+    const nCheck = 8;
+    for (let i = 0; i < nCheck; i++) {
+        const phi = fil.phi0 + ((fil.phi1 - fil.phi0) * i) / (nCheck - 1);
+        const p = filletPointAtPhi(fil, phi);
+        const above = (p.x - fil.Pp.x) * fil.ez.x + (p.y - fil.Pp.y) * fil.ez.y + (p.z - fil.Pp.z) * fil.ez.z;
+        if (above < -eps) {
+            throw new Error(`[S1-FILLET] arc below plantar${label} above=${above}`);
+        }
+        if (Math.abs(fil.ez.x) + Math.abs(fil.ez.y) < 1e-3 && p.z < fil.Pp.z - eps) {
+            throw new Error(`[S1-FILLET] arc z < z_B${label} z=${p.z} zB=${fil.Pp.z}`);
+        }
+    }
+}
+
+/** Path tangent leaving F (continuation of −U) and arriving at B (plantar-horizontal). */
 export function filletPathTangents(
     h: { x: number; y: number },
     U: XYZ,
     plantarSlopeRad: number,
 ): { tf: { s: number; z: number }; tb: { s: number; z: number } } {
-    const us = U.x * h.x + U.y * h.y;
-    const tf = unit2(-us, -U.z);
-    const tb = unit2(Math.cos(plantarSlopeRad), -Math.sin(plantarSlopeRad));
+    const fil = constructFillet({ x: 0, y: 0, z: 0 }, h, 1, U, plantarSlopeRad);
+    const us = fil.d.x * h.x + fil.d.y * h.y;
+    const tf = unit2(-us, -fil.d.z);
+    const ewS = fil.ew.x * h.x + fil.ew.y * h.y;
+    const tb = unit2(-ewS, -fil.ew.z);
     return { tf, tb };
 }
 
@@ -320,42 +478,35 @@ export function filletCenterAndF(
     U: XYZ,
     plantarSlopeRad: number,
 ): { C: { s: number; z: number }; F: XYZ; theta: number } {
-    const { tf, tb } = filletPathTangents(h, U, plantarSlopeRad);
-    const nF = rot90ccw(tf.s, tf.z);
-    const nB = rot90ccw(tb.s, tb.z);
-    const sB = 0;
-    const C = { s: sB + r * nB.s, z: B.z + r * nB.z };
-    const F = {
-        x: B.x + h.x * r * (nB.s - nF.s),
-        y: B.y + h.y * r * (nB.s - nF.s),
-        z: B.z + r * (nB.z - nF.z),
-    };
-    const start = Math.atan2(-nF.z, -nF.s);
-    let end = Math.atan2(-nB.z, -nB.s);
-    while (end < start) end += Math.PI * 2;
-    return { C, F, theta: end - start };
+    const fil = constructFillet(B, h, r, U, plantarSlopeRad);
+    const s = (fil.C.x - B.x) * h.x + (fil.C.y - B.y) * h.y;
+    return { C: { s, z: fil.C.z }, F: fil.Pw, theta: fil.psi };
 }
 
-function sampleFilletFB(fr: ColumnFrame, nInterior: number): XYZ[] {
+/** Equal-φ interiors from P_w toward P_p. Does not include P_w or B. */
+function sampleFilletEqualPhi(fr: ColumnFrame, nInterior: number): XYZ[] {
     applyTilts(fr);
-    const { C, theta } = filletCenterAndF(fr.B, fr.h, fr.rFillet, fr.U, fr.plantarSlopeRad);
-    const { tf } = filletPathTangents(fr.h, fr.U, fr.plantarSlopeRad);
-    const nF = rot90ccw(tf.s, tf.z);
-    const start = Math.atan2(-nF.z, -nF.s);
-    const rings: XYZ[] = [];
+    const fil = constructFillet(fr.B, fr.h, fr.rFillet, fr.U, fr.plantarSlopeRad);
     const count = Math.max(MIN_FILLET_RINGS, nInterior);
-    const r = Math.max(fr.rFillet, 1e-6);
-    const floorZ = fr.B.z;
+    const rings: XYZ[] = [];
     for (let i = 1; i <= count; i++) {
-        const phi = start + (theta * i) / (count + 1);
-        const s = C.s + r * Math.cos(phi);
-        rings.push({
-            x: fr.B.x + fr.h.x * s,
-            y: fr.B.y + fr.h.y * s,
-            z: Math.max(C.z + r * Math.sin(phi), floorZ),
-        });
+        const phi = fil.phi1 + ((fil.phi0 - fil.phi1) * i) / (count + 1);
+        rings.push(filletPointAtPhi(fil, phi));
     }
     return rings;
+}
+
+export function t0LeadQ(fr: ColumnFrame): XYZ {
+    applyTilts(fr);
+    const tz = fr.T0.z;
+    if (fr.shortChord || tz >= -1e-6) return { ...fr.R };
+    if (fr.R.z - fr.F.z < T0_LEAD_DROP_MM + 0.25) return { ...fr.R };
+    const Q = projectToPlane(add3(fr.R, fr.T0, T0_LEAD_DROP_MM / Math.abs(tz)), fr.R, fr.h);
+    if (Q.z <= fr.F.z + 0.15) return { ...fr.R };
+    const sQ = (Q.x - fr.R.x) * fr.h.x + (Q.y - fr.R.y) * fr.h.y;
+    const sF = (fr.F.x - fr.R.x) * fr.h.x + (fr.F.y - fr.R.y) * fr.h.y;
+    if (sQ <= 1e-4 || sQ >= sF - 1e-4) return { ...fr.R };
+    return Q;
 }
 
 function planMonotone(pts: XYZ[], R: XYZ, B: XYZ): boolean {
@@ -373,7 +524,9 @@ function planMonotone(pts: XYZ[], R: XYZ, B: XYZ): boolean {
 
 function columnPoints(fr: ColumnFrame, nWall: number): XYZ[] {
     applyTilts(fr);
-    const P0 = fr.R;
+    const Q = t0LeadQ(fr);
+    const hasLead = dist3(Q, fr.R) > 0.2;
+    const P0 = Q;
     const P3 = fr.F;
     const P1 = add3(P0, fr.T0, fr.a);
     const P2 = add3(P3, fr.U, fr.b);
@@ -382,10 +535,30 @@ function columnPoints(fr: ColumnFrame, nWall: number): XYZ[] {
         dense.push(projectToPlane(evalCubicBezier(P0, P1, P2, P3, k / 32), fr.R, fr.h));
     }
     const nFil = MIN_FILLET_RINGS;
-    const nBez = Math.max(4, nWall - 2 - nFil);
-    const bez = sampleByArcLength(dense, nBez + 1);
-    const fil = sampleFilletFB(fr, nFil).map((p) => projectToPlane(p, fr.R, fr.h));
-    const col = [...bez, ...fil, { ...fr.B }];
+    const nT0 = hasLead ? Math.max(1, Math.min(3, nWall - 8)) : 0;
+    const nBezInc = hasLead ? Math.max(2, nWall - 2 - nT0 - nFil) : Math.max(2, nWall - 1 - nFil);
+    const t0pts: XYZ[] = [];
+    if (nT0 > 0) {
+        for (let i = 1; i <= nT0; i++) {
+            const t = i / (nT0 + 1);
+            t0pts.push(
+                projectToPlane(
+                    {
+                        x: fr.R.x + (Q.x - fr.R.x) * t,
+                        y: fr.R.y + (Q.y - fr.R.y) * t,
+                        z: fr.R.z + (Q.z - fr.R.z) * t,
+                    },
+                    fr.R,
+                    fr.h,
+                ),
+            );
+        }
+    }
+    const bez = sampleByArcLength(dense, nBezInc);
+    const fil = sampleFilletEqualPhi(fr, nFil).map((p) => projectToPlane(p, fr.R, fr.h));
+    const col = hasLead
+        ? [{ ...fr.R }, ...t0pts, ...bez, ...fil, { ...fr.B }]
+        : [...bez, ...fil, { ...fr.B }];
     const raw = col.length === nWall ? col : sampleByArcLength(col, nWall);
     const out = raw.map((p, i) => {
         if (i === 0) return { ...fr.R };
@@ -590,12 +763,24 @@ export function smoothFilletRadii(frames: ColumnFrame[], frac = R_SMOOTH_FRAC): 
 
 export function placeFilletF(fr: ColumnFrame): void {
     applyTilts(fr);
-    if (fr.shortChord) {
-        fr.F = { x: fr.B.x, y: fr.B.y, z: fr.B.z + fr.rFillet };
-        return;
-    }
-    const placed = filletCenterAndF(fr.B, fr.h, fr.rFillet, fr.U, fr.plantarSlopeRad);
-    fr.F = projectToPlane(placed.F, fr.R, fr.h);
+    fr.uTiltRad = clampFilletB(fr.uTiltRad);
+    applyTilts(fr);
+    const planLen = Math.hypot(fr.R.x - fr.B.x, fr.R.y - fr.B.y);
+    const psi = Math.PI / 2 - fr.uTiltRad;
+    fr.rFillet = Math.min(fr.rFillet, filletRadiusMm(fr.heightMm, planLen, psi));
+    const fil = constructFillet(fr.B, fr.h, fr.rFillet, fr.U, fr.plantarSlopeRad);
+    fr.uTiltRad = fil.b;
+    fr.U = fil.d;
+    fr.F = projectToPlane(fil.Pw, fr.R, fr.h);
+}
+
+function setHandlesFromQF(fr: ColumnFrame): void {
+    const Q = t0LeadQ(fr);
+    const rf = dist3(Q, fr.F);
+    const handle = Math.min(BEZIER_HANDLE_FRAC * rf, HANDLE_CHORD_CAP * rf);
+    fr.a = handle;
+    fr.b = handle;
+    applyTilts(fr);
 }
 
 export function initColumnFrames(
@@ -612,20 +797,20 @@ export function initColumnFrames(
         const B = { ...st.outline };
         const { h, shortChord, planLen } = columnHeading(st);
         const height = Math.max(R.z - B.z, 0.5);
-        const rawR = Math.min(FILLET_MAX_HEIGHT_FRAC * height, FILLET_R_CAP_MM);
-        const r = shortChord ? Math.min(rawR, 0.4) : Math.min(rawR, Math.max(0.15, planLen * 0.8));
         const sampled = sampleInPlaneSlope(R, h, topZ, _junctions[i]?.planeN);
         const sheetSlopeRad = sampled.valid ? sampled.slopeRad : 0;
         const t0TiltRad = t0TargetRad(sheetSlopeRad, shortChord, sampled.valid);
-        const flare = ((flareDeg[i] ?? 0) * Math.PI) / 180;
+        const flare = clampFilletB(((flareDeg[i] ?? 0) * Math.PI) / 180);
         const plantar = plantarSlopeRad[i] ?? 0;
+        const psi = Math.PI / 2 - flare;
+        const r = filletRadiusMm(height, planLen, psi);
         const fr: ColumnFrame = {
             R,
             B,
             F: { x: B.x, y: B.y, z: B.z + r },
             h,
             T0: t0FromTilt(h, t0TiltRad),
-            U: uFromTilt(h, flare),
+            U: filletDir(flare, plantarFrameAt(h, plantar)),
             a: 0,
             b: 0,
             t0TiltRad,
@@ -647,11 +832,7 @@ export function initColumnFrames(
     smoothFilletRadii(frames);
     for (const fr of frames) {
         placeFilletF(fr);
-        const rf = dist3(fr.R, fr.F);
-        const handle = Math.min(BEZIER_HANDLE_FRAC * rf, HANDLE_CHORD_CAP * rf);
-        fr.a = handle;
-        fr.b = handle;
-        applyTilts(fr);
+        setHandlesFromQF(fr);
     }
     return frames;
 }
@@ -690,7 +871,7 @@ function applySmooth(frames: ColumnFrame[], passes: number): void {
         if (fr.sheetSlopeValid) fr.t0TiltRad = targets[i]! + Math.min(0, sm[i]!);
         else fr.t0TiltRad = targets[i]!;
         fr.uTiltRad = ut[i]!;
-        const cap = HANDLE_CHORD_CAP * dist3(fr.R, fr.F);
+        const cap = HANDLE_CHORD_CAP * dist3(t0LeadQ(fr), fr.F);
         fr.a = Math.min(cap, Math.max(0, a[i]!));
         fr.b = Math.min(cap, Math.max(0, b[i]!));
         clampHandleInboard(fr);
@@ -759,7 +940,9 @@ export function buildBezierColumns(
     const frames = initColumnFrames(stations, junctions, defaults, flare, topZ, plantarSlopeRad);
     const minWallClamps = clampFramesMinWall(frames, topZ, minWallMm);
     applySmooth(frames, FRAME_SMOOTH_ITERS);
+    for (const fr of frames) placeFilletF(fr);
     guardFrames(frames, junctions, rimLoop, topZ, nWall);
+    for (const fr of frames) placeFilletF(fr);
     for (let round = 0; round < 20; round++) {
         let dirty = false;
         for (const fr of frames) {
@@ -797,6 +980,14 @@ export function buildBezierColumns(
     }
     pinT0(frames);
     assertT0ClearsSheet(frames);
+    for (let i = 0; i < frames.length; i++) {
+        const fr = frames[i]!;
+        applyTilts(fr);
+        assertFilletStation(
+            constructFillet(fr.B, fr.h, fr.rFillet, fr.U, fr.plantarSlopeRad),
+            ` i=${i} u=${fr.u.toFixed(3)}`,
+        );
+    }
     return {
         xyz,
         impliedSeamDeg: implied,
@@ -824,11 +1015,14 @@ export function clampFramesMinWall(
         const drop = fr.F.z - maxF;
         fr.B.z -= drop;
         fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
+        const planLen = Math.hypot(fr.R.x - fr.B.x, fr.R.y - fr.B.y);
+        fr.rFillet = filletRadiusMm(fr.heightMm, planLen, Math.PI / 2 - clampFilletB(fr.uTiltRad));
         placeFilletF(fr);
         if (fr.F.z > maxF) {
             fr.B.z -= fr.F.z - maxF;
+            fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
+            fr.rFillet = filletRadiusMm(fr.heightMm, planLen, Math.PI / 2 - clampFilletB(fr.uTiltRad));
             placeFilletF(fr);
-            fr.F.z = Math.min(fr.F.z, maxF);
         }
         clamps.push({ station: i, u: fr.u, droppedMm: drop });
     }

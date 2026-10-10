@@ -10,12 +10,12 @@ import {
     startAtPosteriorHeel,
 } from "./curves";
 
-export const PATTERN_INSET_MM = 3;
-export const PATTERN_HEEL_LATERAL_INSET_MM = 3;
-export const PATTERN_ARCH_INSET_MM = 15;
+export const PATTERN_INSET_MM = 2;
+export const PATTERN_HEEL_LATERAL_INSET_MM = 2;
+export const PATTERN_ARCH_INSET_MM = 28;
 export const PATTERN_FOREFOOT_INSET_MM = 2;
-export const PATTERN_ARCH_U0 = 0.22;
-export const PATTERN_ARCH_U1 = 0.55;
+export const PATTERN_ARCH_U0 = 0.18;
+export const PATTERN_ARCH_U1 = 0.58;
 export const PATTERN_FORE_U0 = 0.78;
 export const PATTERN_SOURCE_SYNTHETIC = "synthetic";
 
@@ -65,8 +65,9 @@ function regionInsetMm(u: number, y: number): number {
 
 /**
  * Synthetic bottom-pattern until Kendon's file arrives: the TopSheet rim's
- * plan projection offset inward by heel/lateral ~3 mm, medial arch ~15 mm,
- * forefoot ~2 mm. Labeled `synthetic`.
+ * plan projection offset inward by heel/lateral/forefoot ~2 mm (1–3 mm),
+ * and a smooth C2 medial-arch cut-in of ~28 mm (25–30 mm) at its deepest.
+ * Labeled `synthetic`.
  */
 export function syntheticBottomPattern(
     outline: PolyPoint[],

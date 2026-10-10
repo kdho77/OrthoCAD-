@@ -3,10 +3,12 @@
 
 import { describe, expect, test } from "@rstest/core";
 import {
+    assertFilletStation,
     assertT0ClearsSheet,
     BEZIER_HANDLE_FRAC,
     buildBezierColumns,
     COLUMN_PLANARITY_LIMIT_MM,
+    constructFillet,
     evalCubicBezier,
     FILLET_R_CAP_MM,
     filletCenterAndF,
@@ -20,9 +22,11 @@ import {
     sampleInPlaneSlope,
     slopeFromSheetPlane,
     summarizeWallBands,
+    T0_LEAD_DROP_MM,
     T0_PIN_DEG,
     TOP_CLEARANCE_DEG,
     t0FromSheetSlope,
+    t0LeadQ,
 } from "./bezier-column";
 import type { WallRegionDefaults } from "./defaults";
 import type { HermiteStation } from "./loft";
@@ -106,7 +110,8 @@ describe("bezier column", () => {
         const junctions = stations.map(() => ({ planeN: { x: 0, y: 0, z: 1 }, slopeRad: 0.2 }));
         const frames = initColumnFrames(stations, junctions, defaults(), [20, 23, 18]);
         for (const fr of frames) {
-            const rf = Math.hypot(fr.R.x - fr.F.x, fr.R.y - fr.F.y, fr.R.z - fr.F.z);
+            const Q = t0LeadQ(fr);
+            const rf = Math.hypot(Q.x - fr.F.x, Q.y - fr.F.y, Q.z - fr.F.z);
             expect(fr.a).toBeLessThanOrEqual(HANDLE_CHORD_CAP * rf + 1e-9);
             expect(fr.b).toBeLessThanOrEqual(HANDLE_CHORD_CAP * rf + 1e-9);
             expect(fr.a).toBeCloseTo(Math.min(BEZIER_HANDLE_FRAC * rf, HANDLE_CHORD_CAP * rf), 6);
@@ -251,6 +256,46 @@ describe("bezier column", () => {
         expect(placed.F.z).toBeCloseTo(2, 5);
         expect(placed.theta).toBeCloseTo(Math.PI / 2, 5);
         expect(FILLET_R_CAP_MM).toBe(3);
+        const fil = constructFillet(B, h, 2, U, 0);
+        expect(fil.Pp).toEqual(B);
+        expect(fil.Pw.x).toBeCloseTo(3, 5);
+        expect(fil.Pw.z).toBeCloseTo(2, 5);
+        expect(fil.C.x).toBeCloseTo(5, 5);
+        expect(fil.C.z).toBeCloseTo(2, 5);
+        expect(fil.psi).toBeCloseTo(Math.PI / 2, 5);
+        expect(() => assertFilletStation(fil)).not.toThrow();
+    });
+
+    test("T0 lead drops 1 mm along T0 before the Bezier", () => {
+        expect(T0_LEAD_DROP_MM).toBe(1);
+        const st: HermiteStation = {
+            outline: { x: 8, y: 0, z: 0 },
+            rim: { x: 0, y: 0, z: 12 },
+            n: { x: -1, y: 0 },
+            u: 0.1,
+        };
+        const built = buildBezierColumns(
+            [st],
+            [{ planeN: { x: 0, y: 0, z: 1 }, slopeRad: 0 }],
+            defaults(),
+            [st.rim],
+            () => 12,
+            16,
+        );
+        const col = built.xyz[0]!;
+        const R = col[0]!;
+        const q = col[1]!;
+        expect(R.z - q.z).toBeGreaterThan(0.15);
+        expect(q.z).toBeGreaterThan(R.z - T0_LEAD_DROP_MM - 0.15);
+        const fr = built.frames[0]!;
+        const step = {
+            x: q.x - R.x,
+            y: q.y - R.y,
+            z: q.z - R.z,
+        };
+        const len = Math.hypot(step.x, step.y, step.z) || 1;
+        const dot = (step.x / len) * fr.T0.x + (step.y / len) * fr.T0.y + (step.z / len) * fr.T0.z;
+        expect(dot).toBeGreaterThan(0.995);
     });
 
     test("fillet samples never drop below the tangent band z", () => {

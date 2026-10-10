@@ -1,6 +1,6 @@
+import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import * as THREE from "three";
 import { sealInternalSlits, sealInternalSlitsSafe } from "@/lib/geometry/bottom-mesh-clean";
 
 const loader = new GLTFLoader();
@@ -459,7 +459,18 @@ export function mirrorGeometry(geometry: THREE.BufferGeometry): THREE.BufferGeom
  * is a reflection (odd permutation) the triangle winding is reversed so normals
  * stay outward.
  */
-export function reorientToFootprintFrame(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+export interface ReorientToFootprintOptions {
+    /**
+     * Top-only input: keep the author's vertical values so the pattern plane
+     * can sit at z = 0. Do not subtract the TopSheet min Z.
+     */
+    preserveAuthorZ?: boolean;
+}
+
+export function reorientToFootprintFrame(
+    geometry: THREE.BufferGeometry,
+    opts?: ReorientToFootprintOptions,
+): THREE.BufferGeometry {
     const indexed = geometry.index ? geometry : geometry.clone().toNonIndexed();
     const working = geometry.index ? geometry : indexed;
     working.computeBoundingBox();
@@ -483,7 +494,9 @@ export function reorientToFootprintFrame(geometry: THREE.BufferGeometry): THREE.
     for (let i = 0; i < count; i++) {
         out[i * 3] = src.getComponent(i, lengthAxis) - min[lengthAxis]!; // X = length, 0..len
         out[i * 3 + 1] = src.getComponent(i, widthAxis) - widthCenter; // Y = width, centered
-        out[i * 3 + 2] = src.getComponent(i, thickAxis) - min[thickAxis]!; // Z = height, 0..thick
+        out[i * 3 + 2] = opts?.preserveAuthorZ
+            ? src.getComponent(i, thickAxis)
+            : src.getComponent(i, thickAxis) - min[thickAxis]!;
     }
 
     const result = new THREE.BufferGeometry();
