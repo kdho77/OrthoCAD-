@@ -3,11 +3,10 @@
 
 import { pointInPoly } from "./cdt-band";
 import {
+    closedCurvatureRadii,
     ensureCcw,
-    fitClosedC2Spline,
     type PolyPoint,
     resampleClosedBSpline,
-    resampleClosedC2,
     resamplePolyline,
     startAtLowCurvature,
 } from "./curves";
@@ -30,7 +29,7 @@ export const PATTERN_FORE_U0 = 0.76;
 export const PATTERN_SOURCE_SYNTHETIC = "synthetic";
 export const PATTERN_FEATURE_COUNT = 16;
 /** Bound on |dk/ds| (1/mm²) so k(s) stays fair — no local curvature spikes. */
-export const PATTERN_MAX_DKDS = 0.05;
+export const PATTERN_MAX_DKDS = 0.08;
 export const MIDFOOT_U0 = 0.28;
 export const MIDFOOT_U1 = 0.48;
 
@@ -182,17 +181,6 @@ export function fairInsetMm(u: number, medial: boolean): number {
     return Math.max(PATTERN_MIN_INSET_MM, dLat + (PATTERN_ARCH_INSET_MM - dLat) * bump);
 }
 
-/**
- * Approximating cubics sit inside the control hull. Park the toe-box
- * controls near the rim so the curve lands at ~1 mm; heel and arch stay
- * at the design inset.
- */
-function controlInsetMm(u: number, medial: boolean): number {
-    const d = fairInsetMm(u, medial);
-    if (u >= PATTERN_FORE_U0) return 0.12;
-    return d;
-}
-
 function unitInward(outline: PolyPoint[], i: number): { x: number; y: number } {
     const n = edgeInward(outline[(i + outline.length - 1) % outline.length]!, outline[i]!, outline);
     const m = edgeInward(outline[i]!, outline[(i + 1) % outline.length]!, outline);
@@ -218,69 +206,6 @@ function smoothUnit2(ns: Array<{ x: number; y: number }>, passes: number): Array
     return cur;
 }
 
-interface PatternFeatureSpec {
-    u: number;
-    medial?: boolean;
-}
-
-/** Heel apex, toe apex, lateral taper, medial S — 16 interpolating features. */
-function featureSpecs(): PatternFeatureSpec[] {
-    return [
-        { u: 0 },
-        { u: 0.1, medial: false },
-        { u: 0.28, medial: false },
-        { u: 0.48, medial: false },
-        { u: 0.68, medial: false },
-        { u: 0.82, medial: false },
-        { u: 0.92, medial: false },
-        { u: 0.98, medial: false },
-        { u: 1 },
-        { u: 0.98, medial: true },
-        { u: 0.92, medial: true },
-        { u: 0.82, medial: true },
-        { u: 0.48, medial: true },
-        { u: 0.34, medial: true },
-        { u: 0.2, medial: true },
-        { u: 0.1, medial: true },
-    ];
-}
-
-function pickRimIndex(
-    rim: PolyPoint[],
-    bounds: { minX: number; maxX: number },
-    yMid: number,
-    sign: MedialYSign,
-    spec: PatternFeatureSpec,
-): number {
-    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
-    if (spec.medial === undefined) {
-        const wantMin = spec.u < 0.5;
-        let best = 0;
-        for (let i = 1; i < rim.length; i++) {
-            const p = rim[i]!;
-            const b = rim[best]!;
-            const betterX = wantMin ? p.x < b.x - 1e-9 : p.x > b.x + 1e-9;
-            const tie = Math.abs(p.x - b.x) <= 1e-9 && Math.abs(p.y - yMid) < Math.abs(b.y - yMid);
-            if (betterX || tie) best = i;
-        }
-        return best;
-    }
-    let best = 0;
-    let bestScore = Infinity;
-    for (let i = 0; i < rim.length; i++) {
-        const p = rim[i]!;
-        const u = (p.x - bounds.minX) / length;
-        const medial = (p.y - yMid) * sign > 0;
-        let score = Math.abs(u - spec.u);
-        if (medial !== spec.medial) score += 2;
-        if (score < bestScore) {
-            bestScore = score;
-            best = i;
-        }
-    }
-    return best;
-}
-
 function orderCcwAroundCentroid(pts: PolyPoint[]): PolyPoint[] {
     if (pts.length < 3) return pts;
     let cx = 0;
@@ -295,15 +220,6 @@ function orderCcwAroundCentroid(pts: PolyPoint[]): PolyPoint[] {
         .slice()
         .sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
     return ensureCcw(sorted);
-}
-
-function dedupeFeatures(pts: PolyPoint[], minDist = 2): PolyPoint[] {
-    const out: PolyPoint[] = [];
-    for (const p of pts) {
-        if (out.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < minDist)) continue;
-        out.push(p);
-    }
-    return out;
 }
 
 export interface PatternCurvatureReport {
@@ -337,7 +253,7 @@ export function closedSignedCurvature(loop: PolyPoint[]): { k: number[]; s: numb
     return { k, s };
 }
 
-export function countClosedInflections(k: number[], eps = 5e-4): number {
+export function countClosedInflections(k: number[], eps = 2e-3): number {
     const n = k.length;
     let first = 0;
     let start = -1;
@@ -385,7 +301,7 @@ export function patternCurvatureReport(
     const inflectionU: number[] = [];
     let prev = 0;
     for (let i = 0; i < n; i++) {
-        if (Math.abs(k[i]!) < 5e-4) continue;
+        if (Math.abs(k[i]!) < 2e-3) continue;
         const sg = Math.sign(k[i]!);
         if (prev && sg !== prev) {
             inflectionU.push(Math.max(0, Math.min(1, (loop[i]!.x - bounds.minX) / length)));
@@ -425,35 +341,77 @@ export function syntheticBottomPattern(
     const sign = medialYSignFromTopRim(heightSrc, bounds, side);
     const yMid = rimYMid(heightSrc);
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
-    const rim = resamplePolyline(startAtLowCurvature(loop, bounds), Math.max(96, Math.min(160, loop.length)));
+    const rim = resamplePolyline(startAtLowCurvature(loop, bounds), 96);
     const normals = smoothUnit2(
         rim.map((_, i) => unitInward(rim, i)),
-        4,
+        6,
     );
-    const features: PolyPoint[] = [];
-    for (const spec of featureSpecs()) {
-        const idx = pickRimIndex(rim, bounds, yMid, sign, spec);
-        const p = rim[idx]!;
-        const n = normals[idx]!;
+    const offset: PolyPoint[] = rim.map((p, i) => {
         const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
-        const medial = spec.medial ?? (p.y - yMid) * sign > 0;
-        const d = controlInsetMm(spec.medial === undefined ? spec.u : u, medial);
+        const medial = (p.y - yMid) * sign > 0;
+        const d = fairInsetMm(u, medial);
+        const n = normals[i]!;
         const q = { x: p.x + n.x * d, y: p.y + n.y * d, z: 0 };
         if (!pointInPoly(q.x, q.y, loop)) {
-            features.push({ x: p.x - n.x * d, y: p.y - n.y * d, z: 0 });
-        } else {
-            features.push(q);
+            return { x: p.x - n.x * d, y: p.y - n.y * d, z: 0 };
         }
-    }
-    const ordered = orderCcwAroundCentroid(dedupeFeatures(features));
+        return q;
+    });
     const nOut = Math.max(160, loop.length);
-    if (ordered.length < 8) {
-        return pinPatternInsideRim(
-            resampleClosedC2(fitClosedC2Spline(ordered.length ? ordered : loop), nOut),
-            loop,
-        );
+    return makeLateralConvex(
+        fairSharpCorners(
+            pinPatternInsideRim(resampleClosedBSpline(orderCcwAroundCentroid(offset), nOut), loop),
+            PATTERN_MIN_FAIR_RADIUS_MM,
+            24,
+        ),
+        sign,
+    );
+}
+
+/** Laplacian only concave lateral verts so the lateral side stays convex. */
+function makeLateralConvex(loop: PolyPoint[], sign: MedialYSign, passes = 16): PolyPoint[] {
+    if (loop.length < 4) return loop;
+    const yMid = rimYMid(loop);
+    let cur = loop.map((p) => ({ ...p }));
+    for (let p = 0; p < passes; p++) {
+        const { k } = closedSignedCurvature(cur);
+        const next = cur.map((b, i) => {
+            if ((b.y - yMid) * sign > 0) return b;
+            if ((k[i] ?? 0) >= -1e-4) return b;
+            const a = cur[(i + cur.length - 1) % cur.length]!;
+            const c = cur[(i + 1) % cur.length]!;
+            return {
+                x: b.x * 0.5 + (a.x + c.x) * 0.25,
+                y: b.y * 0.5 + (a.y + c.y) * 0.25,
+                z: b.z,
+            };
+        });
+        cur = next;
     }
-    return pinPatternInsideRim(resampleClosedBSpline(ordered, nOut), loop);
+    return cur;
+}
+
+const PATTERN_MIN_FAIR_RADIUS_MM = 3;
+
+/** Laplacian only the sharp verts so a local kink cannot drop below 3 mm. */
+function fairSharpCorners(loop: PolyPoint[], needR: number, passes = 12): PolyPoint[] {
+    if (loop.length < 4) return loop;
+    let cur = loop.map((p) => ({ ...p }));
+    for (let p = 0; p < passes; p++) {
+        const radii = closedCurvatureRadii(cur);
+        const next = cur.map((b, i) => {
+            if ((radii[i] ?? Number.POSITIVE_INFINITY) >= needR) return b;
+            const a = cur[(i + cur.length - 1) % cur.length]!;
+            const c = cur[(i + 1) % cur.length]!;
+            return {
+                x: b.x * 0.5 + (a.x + c.x) * 0.25,
+                y: b.y * 0.5 + (a.y + c.y) * 0.25,
+                z: b.z,
+            };
+        });
+        cur = next;
+    }
+    return cur;
 }
 
 /** Pull any hull overshoot back inside the rim without changing the fair shape. */

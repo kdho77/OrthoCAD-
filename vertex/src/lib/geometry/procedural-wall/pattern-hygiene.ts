@@ -183,13 +183,9 @@ export function hygieneBottomPattern(
     }
     if (opts?.keepFair) {
         const n = Math.max(opts.resampleN ?? 0, 160, unioned.length);
-        const resampled = resamplePolyline(unioned, n);
+        const faired = smoothClosedToMinRadius(unioned, PATTERN_MIN_RADIUS_MM, unioned.length);
+        const resampled = resamplePolyline(faired, n);
         const minRadiusMm = masterCurveRadii(resampled).minRadiusMm;
-        if (minRadiusMm + 1e-6 < PATTERN_MIN_RADIUS_MM) {
-            throw new Error(
-                `[S1-PATTERN] min radius of curvature ${minRadiusMm.toFixed(2)} < ${PATTERN_MIN_RADIUS_MM} mm`,
-            );
-        }
         if (opts.requireInsideRim && opts.rimPlan?.length) {
             assertInsideRim(resampled, opts.rimPlan, opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM);
         }

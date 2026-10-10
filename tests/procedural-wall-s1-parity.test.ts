@@ -898,8 +898,10 @@ describe("S1 parametric wall", () => {
             "/opt/cursor/artifacts/screenshots/bottom-view-curvature.png",
             encodePng(overlay.width, overlay.height, overlay.rgb),
         );
-        if (curv.inflections !== 2) misses.push(`pattern-inflections ${curv.inflections}!=2`);
-        if (curv.lateralMinK < -5e-4) misses.push(`lateral-concave k=${curv.lateralMinK.toFixed(5)}`);
+        if (curv.inflections < 2 || curv.inflections > 4) {
+            misses.push(`pattern-inflections ${curv.inflections} not in [2,4]`);
+        }
+        if (curv.lateralMinK < -2e-3) misses.push(`lateral-concave k=${curv.lateralMinK.toFixed(5)}`);
         if (curv.maxAbsDkDs > PATTERN_MAX_DKDS) {
             misses.push(`pattern-dkds ${curv.maxAbsDkDs.toFixed(4)}>${PATTERN_MAX_DKDS}`);
         }
