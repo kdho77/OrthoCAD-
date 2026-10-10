@@ -25,6 +25,7 @@ import {
     enforceLastChordFloor,
     evalCubicBezier,
     FILLET_R_CAP_MM,
+    FILLET_ROW_STEP_MIN_DEG,
     FILLET_STEP_MAX_DEG,
     filletCenterAndF,
     floorR2OnLastStep,
@@ -40,9 +41,11 @@ import {
     lastFilletPhis,
     lastFilletR2MinMm,
     lastStepChordMm,
+    liveSheetAtR,
     MERGE_ROW_MM,
     MIN_LINE_MM,
     MIN_ROUND_R_MM,
+    maxR2RowsForSweep,
     nTopFromSheetSlope,
     offPlaneMm,
     PLANTAR_N_SMOOTH_SIGMA_MM,
@@ -60,6 +63,7 @@ import {
     rateLimitClosedAbs,
     rateLimitClosedAbsRaise,
     rateLimitClosedDown,
+    resolveLastR2,
     rimOverhangMm,
     rotateColumnAboutB,
     rowPieceId,
@@ -812,6 +816,18 @@ describe("bezier column", () => {
         }
     });
 
+    test("liveSheetAtR prefers the final top sheet over a cached junction plane", () => {
+        const R = { x: 0, y: 0, z: 10 };
+        const h = { x: 1, y: 0 };
+        const topZ = (x: number) => 10 - 0.05 * x;
+        const steep = nTopFromSheetSlope((80 * Math.PI) / 180, h);
+        const live = liveSheetAtR(R, h, topZ, steep);
+        expect(live.valid).toBe(true);
+        const cached = sheetSlopeFromNormal(steep, h)!;
+        expect(Math.abs(live.roundSlopeRad)).toBeLessThan(Math.abs(cached) - 0.4);
+        expect(live.tInc).not.toBeNull();
+    });
+
     test("C_MIN_i is the mean of the two adjacent B segments / 20", () => {
         const prev = 1.0;
         const next = 1.6;
@@ -826,6 +842,25 @@ describe("bezier column", () => {
         expect(aspectAtFloor).toBeCloseTo(20, 9);
         expect(ASPECT_LAST_STRIP_MAX).toBe(40);
         expect(lastFilletDLRad(Math.PI / 4, 1)).toBeLessThanOrEqual(lastFilletDLRad(Math.PI / 2, 1));
+    });
+
+    test("maxR2_rows is the largest r2 that keeps fillet rows at >= 1.5deg", () => {
+        expect(FILLET_ROW_STEP_MIN_DEG).toBe(1.5);
+        const evalS = (r2: number) => Math.max(0.12, Math.PI / 2 - 0.5 * r2);
+        const nFil = 6;
+        const maxR = maxR2RowsForSweep(evalS, 1, nFil, 0.05, 4);
+        const S = evalS(maxR);
+        const dL = lastFilletDLRad(S, 1);
+        expect((S - dL) / nFil).toBeGreaterThanOrEqual((FILLET_ROW_STEP_MIN_DEG * Math.PI) / 180 - 1e-6);
+        const over = maxR2RowsForSweep(evalS, 1, nFil, maxR + 0.2, maxR + 0.2);
+        const Sover = evalS(over);
+        expect((Sover - lastFilletDLRad(Sover, 1)) / nFil).toBeLessThan(
+            (FILLET_ROW_STEP_MIN_DEG * Math.PI) / 180 + 1e-4,
+        );
+        const resolved = resolveLastR2(0.2, 3.5, evalS, 1, nFil);
+        expect(resolved.reason).toBe("rows");
+        expect(resolved.r2).toBeLessThanOrEqual(resolved.maxR2Rows + 1e-12);
+        expect(resolved.r2).toBeLessThan(3.5);
     });
 
     test("r2 floors on the real last-step dL once S is known", () => {

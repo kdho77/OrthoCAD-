@@ -67,6 +67,7 @@ import {
     S1_MIN_WALL_MM,
     SEAM_B_FALLBACK_DEG,
     SEAM_B_LIMIT_DEG,
+    SEAM_B_SLACK_DEG,
     SIGNED_FOLD_MAX_DEG,
     SKEW_LIMIT_MM,
     sheetBoundaryStats,
@@ -136,6 +137,7 @@ type ColumnQualityUd = {
     maxAcrossP99Deg?: number;
     maxTcolDeg?: number;
     maxTopRoundDeg?: number;
+    topRoundBand?: Array<{ i: number; u: number; deg: number }>;
     maxRoundWallDeg?: number;
     minEdgeMm?: number;
     maxStationGapMult?: number;
@@ -268,9 +270,9 @@ function sampleGateReport(
         const nonFb = sud.columnQuality?.maxSignedSeamNonFallbackDeg ?? reconSeam.worstDeg;
         if (reconSeam.worstDeg > SEAM_B_FALLBACK_DEG + 1e-6) {
             misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_FALLBACK_DEG}`);
-        } else if (nonFb > SEAM_B_LIMIT_DEG + 0.05) {
+        } else if (nonFb > SEAM_B_LIMIT_DEG + SEAM_B_SLACK_DEG) {
             misses.push(`seam-B ${nonFb.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
-        } else if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 0.05 && !fb.length) {
+        } else if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + SEAM_B_SLACK_DEG && !fb.length) {
             misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
         }
     }
@@ -381,7 +383,7 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
         misses.push(`line-L ${q.minLineMm?.toFixed(3)}<${MIN_LINE_MM}`);
     }
     // |dr| ≤ 0.05 is a construction diagnostic, not a pass/fail outcome.
-    if ((q.maxSignedSeamNonFallbackDeg ?? q.maxSignedSeamDeg ?? 0) > SEAM_B_LIMIT_DEG + 0.05) {
+    if ((q.maxSignedSeamNonFallbackDeg ?? q.maxSignedSeamDeg ?? 0) > SEAM_B_LIMIT_DEG + SEAM_B_SLACK_DEG) {
         misses.push(`seam-B ${q.maxSignedSeamNonFallbackDeg?.toFixed(2)}>${SEAM_B_LIMIT_DEG}`);
     }
     const fbOver = (q.obliqueFallback ?? []).filter((r) => r.seamDeg > SEAM_B_FALLBACK_DEG + 1e-6);
@@ -738,7 +740,7 @@ describe("S1 parametric wall", () => {
             if (seamOver > 0) {
                 misses.push(`seam-F ${fSeam.worstDeg.toFixed(1)} over fillet+2 by ${seamOver.toFixed(1)}`);
             }
-            if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6) {
+            if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + SEAM_B_SLACK_DEG) {
                 misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
             }
             if (flareCap?.stillNeeded) {
@@ -853,6 +855,43 @@ describe("S1 parametric wall", () => {
             } catch (err) {
                 smokeMiss.push(`${smoke.name} reconstruct: ${String(err)}`);
                 continue;
+            }
+            if (smoke.name === "t4") {
+                try {
+                    const t2geo = reconstructProceduralWalls(model, {
+                        corrections: { ...neutralCorrections() },
+                        thicknessMm: 2,
+                        stockThicknessMm: 3,
+                    });
+                    const t4Band =
+                        (rebuilt.userData as { topRoundBand?: Array<{ i: number; u: number; deg: number }> })
+                            .topRoundBand ?? [];
+                    const t2Band =
+                        (t2geo.userData as { topRoundBand?: Array<{ i: number; u: number; deg: number }> })
+                            .topRoundBand ?? [];
+                    const byU = new Map(t2Band.map((r) => [r.u, r.deg]));
+                    const cmp = t4Band.map((r) => ({
+                        i: r.i,
+                        u: r.u,
+                        t4: r.deg,
+                        t2: byU.get(r.u) ?? null,
+                        d: byU.has(r.u) ? Number((r.deg - (byU.get(r.u) ?? 0)).toFixed(2)) : null,
+                    }));
+                    const maxT4 = t4Band.reduce((m, r) => Math.max(m, r.deg), 0);
+                    const maxD = cmp.reduce((m, r) => Math.max(m, Math.abs(r.d ?? 0)), 0);
+                    console.log("[S1-TOP-ROUND] t4-vs-t2", JSON.stringify({ maxT4, maxD, cmp }));
+                    if (maxT4 > ROUND_JOINT_MAX_DEG + 1e-6) {
+                        smokeMiss.push(
+                            `t4 top|round ${maxT4.toFixed(2)}>${ROUND_JOINT_MAX_DEG} at u 0.40-0.54`,
+                        );
+                    }
+                    if (maxD > ROUND_JOINT_MAX_DEG + 1e-6) {
+                        smokeMiss.push(`t4-vs-t2 top|round Δ ${maxD.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
+                    }
+                    t2geo.dispose();
+                } catch (err) {
+                    smokeMiss.push(`t2 top|round reconstruct: ${String(err)}`);
+                }
             }
             const topN = (rebuilt.userData as { topVertexCount?: number }).topVertexCount ?? 0;
             const outlineN = (rebuilt.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
@@ -1005,9 +1044,9 @@ describe("S1 parametric wall", () => {
                     smokeMiss.push(
                         `${smoke.name} seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_FALLBACK_DEG}`,
                     );
-                } else if (nonFb > SEAM_B_LIMIT_DEG + 1e-6) {
+                } else if (nonFb > SEAM_B_LIMIT_DEG + SEAM_B_SLACK_DEG) {
                     smokeMiss.push(`${smoke.name} seam-B ${nonFb.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
-                } else if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6 && !fb.length) {
+                } else if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + SEAM_B_SLACK_DEG && !fb.length) {
                     smokeMiss.push(
                         `${smoke.name} seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`,
                     );

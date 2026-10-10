@@ -10,7 +10,13 @@ import {
 import { type HeightFieldParams, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SideCorrections } from "@/types";
-import { columnHeading, constructOutsideRound, FILLET_R_CAP_MM, WELD_MM } from "./bezier-column";
+import {
+    columnHeading,
+    constructOutsideRound,
+    FILLET_R_CAP_MM,
+    liveSheetAtR,
+    WELD_MM,
+} from "./bezier-column";
 import {
     assertCutInOnHighRimSide,
     medialYSignFromPattern,
@@ -575,6 +581,8 @@ export function reconstructProceduralWalls(
     pairing = collapsed.pairing;
     rimLocal = collapsed.rimLocal;
     const sourceRim = rimLocal.slice();
+    const topHeight = buildXyHeightIndex(Float32Array.from(positions), indices);
+    const topZ = (x: number, y: number) => sampleXyHeight(topHeight, x, y, "max");
     const earlyJ = rimJunctions(
         positions,
         indices,
@@ -594,13 +602,9 @@ export function reconstructProceduralWalls(
         const dx = B.x - R.x;
         const dy = B.y - R.y;
         const len = Math.hypot(dx, dy) || 1;
-        const rnd = constructOutsideRound(
-            R,
-            earlyJ[i]?.planeN ?? { x: 0, y: 0, z: 1 },
-            { x: dx / len, y: dy / len },
-            rTop,
-            -Math.PI / 2 + (24 * Math.PI) / 180,
-        );
+        const h = { x: dx / len, y: dy / len };
+        const live = liveSheetAtR(R, h, topZ, earlyJ[i]?.planeN);
+        const rnd = constructOutsideRound(R, live.nTop, h, rTop, -Math.PI / 2 + (24 * Math.PI) / 180);
         return rnd.E;
     });
     pairing.plantar = retargetPlantarFromE(E, hygiened.loop);
@@ -716,8 +720,6 @@ export function reconstructProceduralWalls(
         stations.map((s) => columnHeading(s).h),
         0,
     );
-    const topHeight = buildXyHeightIndex(Float32Array.from(positions), indices);
-    const topZ = (x: number, y: number) => sampleXyHeight(topHeight, x, y, "max");
     const posting = clampPostingOnStations(stations, rawZDelta, r1, r2, S1_MIN_WALL_MM);
     const zDelta = posting.zDelta;
 
@@ -804,6 +806,7 @@ export function reconstructProceduralWalls(
         maxTcolDeg: grid.quality?.maxTcolDeg,
         columnReversals: grid.quality?.reversals,
         maxTopRoundDeg: grid.quality?.maxTopRoundDeg,
+        topRoundBand: grid.quality?.topRoundBand,
         maxRoundWallDeg: grid.quality?.maxRoundWallDeg,
         minColumnEdgeMm: grid.quality?.minEdgeMm,
         maxStationGapMult: grid.quality?.maxStationGapMult,

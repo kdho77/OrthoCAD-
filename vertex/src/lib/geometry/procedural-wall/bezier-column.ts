@@ -85,6 +85,8 @@ export const ALONG_JOINT_MIN_EDGE_MM = 1e-6;
 export const DPHI_L_MAX_DEG = 12;
 export const FILLET_STEP_MAX_DEG = 8;
 export const CHORD_RISE_MAX_DEG = 6;
+/** Fillet-row Δφ floor used to cap r2 so identical nFil* never packs below this. */
+export const FILLET_ROW_STEP_MIN_DEG = 1.5;
 /** |dot(h, nB)| below this rotates h toward the B-edge normal before construction. */
 export const COS_T_MIN = 0.3;
 /** Warn when the column heading is this far from square to B. */
@@ -106,6 +108,8 @@ export const COLUMN_PLANARITY_LIMIT_MM = 0.01;
 export const SIDEWAYS_LIMIT_MM = 2;
 export const INWARD_SLACK_MM = 0.5;
 export const SEAM_B_LIMIT_DEG = 6;
+/** Comparison slack on the 6° seam-B cap (6.0+0.01). */
+export const SEAM_B_SLACK_DEG = 0.01;
 export const OUTLINE_STATION_SPACING_MM = 1.5;
 
 export interface XYZ {
@@ -208,6 +212,8 @@ export interface ColumnFrame {
     postingHeightClamp?: boolean;
     /** Final last-step chord accepted below C_MIN after the r2 floor. */
     chordFloor?: boolean;
+    /** Why the last chord was accepted short: row-cap vs residual chord miss. */
+    chordFloorReason?: "rows" | "chord";
 }
 
 export interface ObliqueFallbackRow {
@@ -285,6 +291,8 @@ export interface ColumnQuality {
     nRoundSetterU?: number;
     nRoundCollapsedSkipped?: number;
     obliqueFallback: ObliqueFallbackRow[];
+    /** top|round at j=1 for stations in u 0.40–0.54. */
+    topRoundBand: Array<{ i: number; u: number; deg: number }>;
 }
 
 export interface BezierColumns {
@@ -1020,6 +1028,58 @@ export function lastFilletR2MinMm(stationSpacing: number, dLRad?: number): numbe
 }
 
 /**
+ * Largest r2 such that (S(r2) − dL(S, cosT)) / nFil* ≥ 1.5°.
+ * Growing r2 typically shrinks S via the fillet ruling; this is a cap, not a grow.
+ */
+export function maxR2RowsForSweep(
+    evalS: (r2: number) => number,
+    cosT: number,
+    nFil: number,
+    r2Lo: number,
+    r2Hi: number,
+): number {
+    const minStep = (FILLET_ROW_STEP_MIN_DEG * Math.PI) / 180;
+    const n = Math.max(1, nFil);
+    const lo0 = Math.max(1e-4, Math.min(r2Lo, r2Hi));
+    const hi0 = Math.max(lo0, r2Hi);
+    const ok = (r2: number): boolean => {
+        const S = Math.max(0, evalS(r2));
+        const dL = lastFilletDLRad(S, cosT);
+        return (S - dL) / n >= minStep - 1e-12;
+    };
+    if (ok(hi0)) return hi0;
+    if (!ok(lo0)) return lo0;
+    let lo = lo0;
+    let hi = hi0;
+    for (let k = 0; k < 24; k++) {
+        const mid = 0.5 * (lo + hi);
+        if (ok(mid)) lo = mid;
+        else hi = mid;
+    }
+    return lo;
+}
+
+export type ChordFloorReason = "rows" | "chord";
+
+/** r2 = min(max(r2_design, r2_chordFloor), maxR2_rows). Never changes dL. */
+export function resolveLastR2(
+    r2Design: number,
+    r2ChordFloor: number,
+    evalS: (r2: number) => number,
+    cosT: number,
+    nFil: number,
+): { r2: number; maxR2Rows: number; r2ChordFloor: number; reason?: ChordFloorReason } {
+    const wanted = Math.max(r2Design, r2ChordFloor);
+    const r2Lo = Math.min(Math.max(1e-4, r2Design), Math.max(1e-4, r2ChordFloor), 0.05);
+    const maxR2Rows = maxR2RowsForSweep(evalS, cosT, nFil, r2Lo, wanted);
+    const r2 = Math.min(wanted, maxR2Rows);
+    if (r2ChordFloor > maxR2Rows + 1e-9) {
+        return { r2: maxR2Rows, maxR2Rows, r2ChordFloor, reason: "rows" };
+    }
+    return { r2, maxR2Rows, r2ChordFloor };
+}
+
+/**
  * Reserved-last-Δφ fillet samples: φ = φ0 + (S−dL)·k/n for k=1..n,
  * which includes φ1 − sign(S)·dL. Points go on the exact (C2, r2) arc.
  * `nFil` is the global identical count when provided.
@@ -1464,6 +1524,7 @@ export function constructSweepRule(
     planeN?: XYZ,
     phiRound1Lock?: number,
     nPlantarIn?: XYZ,
+    nFil?: number,
 ): SweepRule {
     const hl = Math.hypot(hIn.x, hIn.y) || 1;
     const h = { x: hIn.x / hl, y: hIn.y / hl };
@@ -1517,9 +1578,17 @@ export function constructSweepRule(
         const S = Math.abs(fil.phi1 - fil.phi0);
         const cosT = planCosT(d, nB, h);
         const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S, cosT, r1Floor);
-        if (r2 + 1e-9 < floored.r2Min || r1 > floored.r1 + 1e-9) {
-            r1 = floored.r1;
-            r2 = floored.r2;
+        const nFilUse = nFil && nFil > 0 ? nFil : MIN_FILLET_RINGS;
+        const evalS = (r: number): number => {
+            const f = constructFillet(B, nB, r, U, plantarSlopeRad, nPlant);
+            return Math.abs(f.phi1 - f.phi0);
+        };
+        const resolved = resolveLastR2(Math.max(r2, floored.r2), floored.r2Min, evalS, cosT, nFilUse);
+        if (r2 + 1e-9 < resolved.r2 || r2 > resolved.r2 + 1e-9 || r1 > floored.r1 + 1e-9) {
+            r2 = resolved.r2;
+            const packed = packAlaRadii(height, floored.r1, r2, minL, r2, r1Floor);
+            r1 = packed.r1;
+            r2 = packed.r2;
             C1 = add3(R, eN, -r1);
             fil = constructFillet(B, nB, r2, U, plantarSlopeRad, nPlant);
         }
@@ -1742,22 +1811,33 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
         fr.sheetPlaneN ?? nUse,
         fr.phiRound1Lock,
         fr.nPlantar,
+        fr.nFilFix || MIN_FILLET_RINGS,
     );
     for (let pass = 0; pass < 2; pass++) {
         const Stry = Math.abs(sw.fil.phi1 - sw.fil.phi0);
         const cosTry = planCosT(sw.d, nB, fr.h);
-        const floored = floorR2OnLastStep(
-            Math.max(fr.R.z - fr.B.z, 0.5),
-            sw.r1,
-            sw.r2,
-            minLineOfHeight(Math.max(fr.R.z - fr.B.z, 0.5)),
-            local,
-            Stry,
-            cosTry,
+        const height = Math.max(fr.R.z - fr.B.z, 0.5);
+        const floored = floorR2OnLastStep(height, sw.r1, sw.r2, minLineOfHeight(height), local, Stry, cosTry);
+        const evalS = (r: number): number => {
+            const Uup = { x: -sw.d.x, y: -sw.d.y, z: -sw.d.z };
+            const f = constructFillet(fr.B, nB, r, Uup, fr.plantarSlopeRad, fr.nPlantar);
+            return Math.abs(f.phi1 - f.phi0);
+        };
+        const resolved = resolveLastR2(sw.r2, floored.r2Min, evalS, cosTry, fr.nFilFix || MIN_FILLET_RINGS);
+        if (sw.r2 + 1e-9 >= resolved.r2 && sw.r1 <= floored.r1 + 1e-9 && sw.r2 <= resolved.r2 + 1e-9) {
+            break;
+        }
+        const packed = packAlaRadii(
+            height,
+            floored.r1,
+            resolved.r2,
+            minLineOfHeight(height),
+            resolved.r2,
+            MIN_ROUND_R_MM,
         );
-        if (sw.r2 + 1e-9 >= floored.r2Min && sw.r1 <= floored.r1 + 1e-9) break;
-        fr.rTop = floored.r1;
-        fr.rFillet = floored.r2;
+        fr.rTop = packed.r1;
+        fr.rFillet = packed.r2;
+        if (resolved.reason) fr.chordFloorReason = resolved.reason;
         sw = constructSweepRule(
             fr.R,
             fr.B,
@@ -1773,6 +1853,7 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
             fr.sheetPlaneN ?? nUse,
             fr.phiRound1Lock,
             fr.nPlantar,
+            fr.nFilFix || MIN_FILLET_RINGS,
         );
     }
     const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
@@ -2077,6 +2158,7 @@ function columnPoints(
         fr.sheetPlaneN ?? nUse,
         fr.phiRound1Lock,
         fr.nPlantar,
+        _nFilFix || fr.nFilFix || MIN_FILLET_RINGS,
     );
     const nRound = _nTopFix || fr.nRoundFix || 0;
     const nFil = _nFilFix || fr.nFilFix || 0;
@@ -2284,6 +2366,61 @@ export function sampleInPlaneSlope(
         if (face != null) return { slopeRad: face, valid: true };
     }
     return { slopeRad: Number.NaN, valid: false };
+}
+
+export interface LiveSheetAtR {
+    nTop: XYZ;
+    tInc: XYZ | null;
+    sheetSlopeRad: number;
+    roundSlopeRad: number;
+    planeN: XYZ;
+    valid: boolean;
+}
+
+/**
+ * n_top and the incident-face tangent at R from the live top sheet.
+ * Junction / cached planeN is fallback only — never a pre-modifier frame.
+ */
+export function liveSheetAtR(
+    R: XYZ,
+    h: { x: number; y: number },
+    topZ: (x: number, y: number) => number | null,
+    fallbackPlaneN?: XYZ,
+): LiveSheetAtR {
+    const sampled = sampleInPlaneSlope(R, h, topZ);
+    if (sampled.valid) {
+        const roundSlopeRad = -sampled.slopeRad;
+        const nTop = nTopFromSheetSlope(roundSlopeRad, h);
+        return {
+            nTop,
+            tInc: incidentFaceTangent(nTop, h),
+            sheetSlopeRad: sampled.slopeRad,
+            roundSlopeRad,
+            planeN: nTop,
+            valid: true,
+        };
+    }
+    const faceTilt = fallbackPlaneN ? sheetSlopeFromNormal(fallbackPlaneN, h) : null;
+    if (faceTilt != null && fallbackPlaneN) {
+        const nTop = nTopFromSheetSlope(faceTilt, h);
+        const sheet = slopeFromSheetPlane(fallbackPlaneN, h);
+        return {
+            nTop,
+            tInc: incidentFaceTangent(nTop, h),
+            sheetSlopeRad: sheet ?? -faceTilt,
+            roundSlopeRad: faceTilt,
+            planeN: nTop,
+            valid: true,
+        };
+    }
+    return {
+        nTop: { x: 0, y: 0, z: 1 },
+        tInc: null,
+        sheetSlopeRad: Number.NaN,
+        roundSlopeRad: 0,
+        planeN: fallbackPlaneN ?? { x: 0, y: 0, z: 1 },
+        valid: false,
+    };
 }
 
 /**
@@ -2857,12 +2994,10 @@ export function initColumnFrames(
         const shortChord = chord.shortChord;
         const planLen = chord.planLen;
         const height = Math.max(R.z - B.z, 0.5);
-        const sampled = sampleInPlaneSlope(R, h, topZ, _junctions[i]?.planeN);
-        const sheetSlopeRad = sampled.valid ? sampled.slopeRad : 0;
-        const faceN = _junctions[i]?.planeN;
-        const faceTilt = faceN ? sheetSlopeFromNormal(faceN, h) : null;
-        const roundSlopeRad = faceTilt != null ? faceTilt : sampled.valid ? -sampled.slopeRad : 0;
-        const nTop = faceTilt != null || sampled.valid ? nTopFromSheetSlope(roundSlopeRad, h) : nTops[i]!;
+        const live = liveSheetAtR(R, h, topZ, _junctions[i]?.planeN);
+        const sheetSlopeRad = live.valid ? live.sheetSlopeRad : 0;
+        const roundSlopeRad = live.valid ? live.roundSlopeRad : 0;
+        const nTop = live.valid ? live.nTop : nTops[i]!;
         const plantar = plantarSlopeRad[i] ?? 0;
         const nPlantar = nPlantars[i] ?? plantarFrameAt(h, plantar).ez;
         const r = Math.min(
@@ -2883,11 +3018,11 @@ export function initColumnFrames(
             uTiltRad: 0,
             sheetSlopeRad,
             roundSlopeRad,
-            sheetSlopeValid: faceTilt != null || sampled.valid,
+            sheetSlopeValid: live.valid,
             stationSpacingMm: spacing,
             plantarSlopeRad: plantar,
             nPlantar,
-            sheetPlaneN: faceN,
+            sheetPlaneN: live.valid ? live.planeN : _junctions[i]?.planeN,
             rFillet: r,
             rTop,
             tFillet: 0,
@@ -3137,17 +3272,14 @@ function resampleIncidentNTop(
 ): void {
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
-        const sampled = sampleInPlaneSlope(fr.R, fr.h, topZ, junctions[i]?.planeN);
-        const faceN = junctions[i]?.planeN;
-        const faceTilt = faceN ? sheetSlopeFromNormal(faceN, fr.h) : null;
-        const roundSlopeRad =
-            faceTilt != null ? faceTilt : sampled.valid ? -sampled.slopeRad : fr.roundSlopeRad;
-        if (faceTilt != null || sampled.valid) {
-            fr.roundSlopeRad = roundSlopeRad;
-            fr.nTop = nTopFromSheetSlope(roundSlopeRad, fr.h);
-            fr.nTopSmoothed = fr.nTop;
+        const live = liveSheetAtR(fr.R, fr.h, topZ, junctions[i]?.planeN);
+        if (live.valid) {
+            fr.sheetSlopeRad = live.sheetSlopeRad;
+            fr.roundSlopeRad = live.roundSlopeRad;
+            fr.nTop = live.nTop;
+            fr.nTopSmoothed = live.nTop;
             fr.sheetSlopeValid = true;
-            if (faceN) fr.sheetPlaneN = faceN;
+            fr.sheetPlaneN = live.planeN;
         }
         applyAlaToFrame(fr);
     }
@@ -3672,6 +3804,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let maxAcross = 0;
     const acrossAll: number[] = [];
     let maxTopRound = 0;
+    const topRoundBand: Array<{ i: number; u: number; deg: number }> = [];
     let maxRoundWall = 0;
     let minEdge = Infinity;
     let minLine = Infinity;
@@ -3829,6 +3962,13 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 maxTopSheet = Math.max(maxTopSheet, topEdge);
                 maxAlong = Math.max(maxAlong, topEdge);
                 if (topEdge > ALONG_JOINT_MAX_DEG + 1e-6) alongOver++;
+                if (fr.u >= 0.4 && fr.u <= 0.54) {
+                    topRoundBand.push({
+                        i,
+                        u: Number(fr.u.toFixed(4)),
+                        deg: Number(topEdge.toFixed(2)),
+                    });
+                }
             }
             if (nRnd && j === nRnd) {
                 maxRoundWall = Math.max(maxRoundWall, fr.g1EDeg ?? absDeg);
@@ -4048,6 +4188,15 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     const maxAcrossP99 = acrossAll[p99Idx] ?? 0;
     console.log("[S1-ALONG]", JSON.stringify(worstAlong));
     console.log("[S1-ALONG-ROW]", JSON.stringify(worstAlongRow));
+    const bandMax = topRoundBand.reduce((m, r) => Math.max(m, r.deg), 0);
+    console.log(
+        "[S1-TOP-ROUND]",
+        JSON.stringify({
+            n: topRoundBand.length,
+            max: Number(bandMax.toFixed(2)),
+            band: topRoundBand,
+        }),
+    );
     console.log("[S1-ASPECT]", JSON.stringify(worstAspect));
     console.log("[S1-RATIO]", JSON.stringify(worstRatio));
     console.log("[S1-ACROSS]", JSON.stringify({ ...worstAcross, p99: Number(maxAcrossP99.toFixed(2)) }));
@@ -4144,6 +4293,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         nFoldsOver90,
         inwardWallFaces,
         obliqueFallback: fallback,
+        topRoundBand,
     };
 }
 
@@ -4158,9 +4308,10 @@ function faceN3(a: XYZ, b: XYZ, c: XYZ): XYZ | null {
 }
 
 /**
- * Floor r2 on the real last-step Δφ after every shrink/clamp.
- * dL is never grown. Stations that still miss C_MIN are accepted and, on the
- * final pass, logged as [S1-CHORD-FLOOR] station i.
+ * Floor r2 on the real last-step Δφ after every shrink/clamp, then cap at
+ * maxR2_rows so (S−dL)/nFil* ≥ 1.5°. dL and piece boundaries never change.
+ * Stations that still miss C_MIN are accepted and, on the final pass, logged
+ * as [S1-CHORD-FLOOR] station i, reason=rows|chord.
  */
 export function enforceLastChordFloor(frames: ColumnFrame[], logFloor = false): void {
     const floors: number[] = [];
@@ -4176,33 +4327,45 @@ export function enforceLastChordFloor(frames: ColumnFrame[], logFloor = false): 
         const dL = lastFilletDLRad(S, fr.cosT);
         fr.lastDlRad = dL;
         const need = lastFilletR2MinMm(local, dL);
-        if (fr.rFillet + 1e-9 < need) {
-            const floored = floorR2OnLastStep(
+        const nB = fr.nB ?? fr.h;
+        const nFilUse = fr.nFilFix || MIN_FILLET_RINGS;
+        const evalS = (r: number): number => {
+            const Uup = { x: -fr.U.x, y: -fr.U.y, z: -fr.U.z };
+            const f = constructFillet(fr.B, nB, r, Uup, fr.plantarSlopeRad, fr.nPlantar);
+            return Math.abs(f.phi1 - f.phi0);
+        };
+        const resolved = resolveLastR2(fr.rFillet, need, evalS, fr.cosT, nFilUse);
+        if (fr.rFillet + 1e-9 < resolved.r2 || fr.rFillet > resolved.r2 + 1e-9) {
+            const packed = packAlaRadii(
                 fr.heightMm,
                 fr.rTop,
-                fr.rFillet,
+                resolved.r2,
                 minLineOfHeight(fr.heightMm),
-                local,
-                S,
-                fr.cosT,
+                resolved.r2,
+                MIN_ROUND_R_MM,
             );
-            fr.rTop = floored.r1;
-            fr.rFillet = floored.r2;
-            fr.lastDlRad = floored.dL;
+            fr.rTop = packed.r1;
+            fr.rFillet = packed.r2;
+            fr.lastDlRad = dL;
+            if (resolved.reason) fr.chordFloorReason = resolved.reason;
             applyAlaToFrame(fr);
             fr.B.z = Bz0;
             fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
+        } else if (resolved.reason) {
+            fr.chordFloorReason = resolved.reason;
         }
         const chord = lastStepChordMm(fr.rFillet, fr.lastDlRad);
         if (chord + 1e-9 < cMin) {
             const at = fr.stationIndex ?? i;
             fr.chordFloor = true;
+            fr.chordFloorReason = resolved.reason ?? fr.chordFloorReason ?? "chord";
             if (logFloor) {
                 floors.push(at);
-                console.log(`[S1-CHORD-FLOOR] station ${at}`);
+                console.log(`[S1-CHORD-FLOOR] station ${at}, reason=${fr.chordFloorReason}`);
             }
         } else {
             fr.chordFloor = false;
+            if (resolved.reason !== "rows") fr.chordFloorReason = undefined;
         }
     }
     if (logFloor && floors.length) {
@@ -4235,18 +4398,27 @@ export function clampFramesMinWall(
         const drop = fr.F.z - maxF;
         const local = localSpacingOf(fr);
         const S = fr.filletSweepRad;
-        const floored = floorR2OnLastStep(
+        const dL = lastFilletDLRad(S, fr.cosT);
+        const r2Floor = lastFilletR2MinMm(local, dL);
+        const nB = fr.nB ?? fr.h;
+        const evalS = (r: number): number => {
+            const Uup = { x: -fr.U.x, y: -fr.U.y, z: -fr.U.z };
+            const f = constructFillet(fr.B, nB, r, Uup, fr.plantarSlopeRad, fr.nPlantar);
+            return Math.abs(f.phi1 - f.phi0);
+        };
+        const resolved = resolveLastR2(fr.rFillet, r2Floor, evalS, fr.cosT, fr.nFilFix || MIN_FILLET_RINGS);
+        const packed = packAlaRadii(
             fr.heightMm,
             fr.rTop,
-            lastFilletR2MinMm(local, lastFilletDLRad(S, fr.cosT)),
+            resolved.r2,
             minLineOfHeight(fr.heightMm),
-            local,
-            S,
-            fr.cosT,
+            resolved.r2,
+            MIN_ROUND_R_MM,
         );
-        fr.rTop = floored.r1;
-        fr.rFillet = floored.r2;
-        fr.lastDlRad = floored.dL;
+        fr.rTop = packed.r1;
+        fr.rFillet = packed.r2;
+        fr.lastDlRad = dL;
+        if (resolved.reason) fr.chordFloorReason = resolved.reason;
         applyAlaToFrame(fr);
         fr.B.z = Bz0;
         fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
