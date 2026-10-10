@@ -4,11 +4,13 @@
 import { describe, expect, test } from "@rstest/core";
 import {
     PATTERN_ARCH_INSET_MM,
-    PATTERN_INSET_MM,
+    PATTERN_FOREFOOT_INSET_MM,
+    PATTERN_HEEL_LATERAL_INSET_MM,
     parseBottomPattern,
     syntheticBottomPattern,
 } from "./bottom-pattern";
 import { minDistToLoopXY, pointInPoly } from "./cdt-band";
+import { hygieneBottomPattern } from "./pattern-hygiene";
 
 function turning(loop: Array<{ x: number; y: number }>): number {
     let sum = 0;
@@ -33,7 +35,8 @@ describe("synthetic bottom pattern", () => {
             return { x: 80 + 70 * Math.cos(a), y: 28 * Math.sin(a), z: 0 };
         });
         const bounds = { minX: 10, maxX: 150 };
-        const pattern = syntheticBottomPattern(outline, bounds);
+        const raw = syntheticBottomPattern(outline, bounds);
+        const pattern = hygieneBottomPattern(raw, { rimPlan: outline, requireInsideRim: true }).loop;
         expect(pattern.length).toBeGreaterThan(80);
         expect(Math.abs(turning(pattern) - 1)).toBeLessThan(0.05);
         let minC = Infinity;
@@ -46,9 +49,9 @@ describe("synthetic bottom pattern", () => {
             maxC = Math.max(maxC, c);
             if (p.y > 8) medial = Math.min(medial, c);
         }
-        expect(minC).toBeGreaterThan(PATTERN_INSET_MM * 0.55);
-        expect(maxC).toBeGreaterThan(PATTERN_INSET_MM + 1.5);
-        expect(medial).toBeGreaterThan(PATTERN_INSET_MM * 0.55);
+        expect(minC).toBeGreaterThan(PATTERN_FOREFOOT_INSET_MM * 0.45);
+        expect(maxC).toBeGreaterThan(PATTERN_HEEL_LATERAL_INSET_MM + 1.5);
+        expect(medial).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.45);
     });
 
     test("parses SVG polyline and JSON points", () => {

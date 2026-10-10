@@ -10,10 +10,14 @@ import {
     startAtPosteriorHeel,
 } from "./curves";
 
-export const PATTERN_INSET_MM = 6;
-export const PATTERN_ARCH_INSET_MM = 12;
+export const PATTERN_INSET_MM = 3;
+export const PATTERN_HEEL_LATERAL_INSET_MM = 3;
+export const PATTERN_ARCH_INSET_MM = 15;
+export const PATTERN_FOREFOOT_INSET_MM = 2;
 export const PATTERN_ARCH_U0 = 0.22;
 export const PATTERN_ARCH_U1 = 0.55;
+export const PATTERN_FORE_U0 = 0.78;
+export const PATTERN_SOURCE_SYNTHETIC = "synthetic";
 
 function edgeInward(a: PolyPoint, b: PolyPoint, outline: PolyPoint[]): { x: number; y: number } {
     const ex = b.x - a.x;
@@ -52,9 +56,17 @@ function archWindow(u: number): number {
     return 0.5 - 0.5 * Math.cos(2 * Math.PI * t);
 }
 
+function regionInsetMm(u: number, y: number): number {
+    const tFore = Math.max(0, Math.min(1, (u - PATTERN_FORE_U0) / (1 - PATTERN_FORE_U0)));
+    const base = PATTERN_HEEL_LATERAL_INSET_MM * (1 - tFore) + PATTERN_FOREFOOT_INSET_MM * tFore;
+    const extra = y > 0 ? (PATTERN_ARCH_INSET_MM - PATTERN_HEEL_LATERAL_INSET_MM) * archWindow(u) : 0;
+    return base + extra;
+}
+
 /**
- * Synthetic bottom-pattern until Kendon's file arrives: C2 offset of the
- * Default outline, ~6 mm inward, ~12 mm at the medial arch cut-in.
+ * Synthetic bottom-pattern until Kendon's file arrives: the TopSheet rim's
+ * plan projection offset inward by heel/lateral ~3 mm, medial arch ~15 mm,
+ * forefoot ~2 mm. Labeled `synthetic`.
  */
 export function syntheticBottomPattern(
     outline: PolyPoint[],
@@ -66,8 +78,7 @@ export function syntheticBottomPattern(
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
     const insets = loop.map((p) => {
         const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
-        const extra = p.y > 0 ? (PATTERN_ARCH_INSET_MM - PATTERN_INSET_MM) * archWindow(u) : 0;
-        return PATTERN_INSET_MM + extra;
+        return regionInsetMm(u, p.y);
     });
     for (let pass = 0; pass < 6; pass++) {
         const next = insets.slice();

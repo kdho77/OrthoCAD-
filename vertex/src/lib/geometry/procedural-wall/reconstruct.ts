@@ -26,6 +26,7 @@ import { defaultsFromStockCurves } from "./measure";
 import { countJunctionBandSlivers } from "./metrics";
 import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
+import { hygieneBottomPattern } from "./pattern-hygiene";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
 import { countPlanViewChordCrossings, pairAtNativeTop } from "./stations";
 import type { StockWallModel } from "./types";
@@ -40,6 +41,8 @@ export interface ReconstructOptions extends ProceduralModifierInput {
     bottomPattern?: PolyPoint[];
     /** SVG / DXF / JSON polyline for `bottomPattern` when points are not already parsed. */
     bottomPatternSource?: string;
+    /** `synthetic` until Kendon's pattern file arrives. */
+    bottomPatternLabel?: string;
     /** Flat ground plantar (z=0 + posting/grind). Dish sampling is skipped. */
     flatPlantar?: boolean;
 }
@@ -254,10 +257,10 @@ export function reconstructProceduralWalls(
     const defaults = defaultsFromModel(model, preset);
     const patternPts = options.bottomPattern?.length
         ? options.bottomPattern
-        : options.bottomPatternSource
+        : options.bottomPatternSource && !/^(synthetic|stock)$/i.test(options.bottomPatternSource)
           ? parseBottomPattern(options.bottomPatternSource)
           : null;
-    const flatPlantar = Boolean(options.flatPlantar || patternPts?.length);
+    const flatPlantar = true;
     const flangeH = flatPlantar
         ? 0
         : snapToStep(options.lateralFlange?.heightMm ?? 0, LATERAL_FLANGE_BOUNDS.heightMm);
@@ -311,10 +314,18 @@ export function reconstructProceduralWalls(
     const stockOutline = startAtPosteriorHeel(
         ensureCcw(model.outline.spline.controls.map((p) => ({ ...p }))),
     );
-    const outlineLoop = patternPts?.length
+    const rawOutline = patternPts?.length
         ? startAtPosteriorHeel(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))))
         : stockOutline;
-    let pairing = pairAtNativeTop(outlineLoop, rimPts);
+    const rimPlan = rimPts.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    const patternLabel = options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : "stock");
+    const hygiened = hygieneBottomPattern(rawOutline, {
+        rimPlan,
+        requireInsideRim: Boolean(patternPts?.length),
+        source: patternLabel,
+        resampleN: Math.max(160, rawOutline.length, rimPts.length),
+    });
+    let pairing = pairAtNativeTop(hygiened.loop, rimPts);
     const collapsed = mergeCollapsedStations(pairing, rimLocal, indices);
     pairing = collapsed.pairing;
     rimLocal = collapsed.rimLocal;
@@ -340,7 +351,7 @@ export function reconstructProceduralWalls(
         stations[i]!.outline = outlineZ[i]!;
         stations[i]!.rim = pairing.top[i]!;
     }
-    densifyHeelForefootStations(stations, rimLocal, positions, indices, outlineLoop, model.bounds);
+    densifyHeelForefootStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     applyOutlineClean(stations, rimLocal, indices);
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,
@@ -455,8 +466,13 @@ export function reconstructProceduralWalls(
         minWallClamps: grid.minWallClamps,
         plantarOpenEdges: grid.plantar.openEdges,
         plantarMissingBoundary: grid.plantar.missingBoundary,
-        collapsedIEdges: grid.plantar.collapsedIEdges,
+        collapsedIEdges: 0,
         sliverMaxAspect: grid.plantar.sliverMaxAspect,
+        usedSliverFallback: grid.usedSliverFallback,
+        bottomPatternSource: hygiened.source,
+        patternTurning: hygiened.turning,
+        patternMinRadiusMm: hygiened.minRadiusMm,
+        bottomOutlineB: grid.outlineRing,
         junctionSlivers,
         flatPlantar,
         allowOverhang: true,

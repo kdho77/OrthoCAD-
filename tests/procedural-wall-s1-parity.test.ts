@@ -20,15 +20,16 @@ import {
     countDegenerateFaces,
     countSelfIntersections,
     cupHeightAtU,
-    dishInteriorDeltaMm,
     evaluateHeelCupGate,
     extractStockWallModel,
+    extractTopOnlyModel,
     extractTopSheet,
     FILLET_BOUNDS,
     FOLD_HARD_LIMIT_DEG,
     FOLD_WORST_LIMIT_DEG,
     foldReport,
     formatSiBreakdown,
+    generatedMinWallMm,
     groundDriftMm,
     heelInnerWidthAtU,
     maxVertexDeltaMm,
@@ -36,8 +37,10 @@ import {
     medialArchUpperWallFolds,
     meshVertexMinZ,
     minWallThicknessMm,
-    outlineRingDeviationMm,
+    outlineExactOnBMm,
     outlineSeamDihedrals,
+    PATTERN_SOURCE_SYNTHETIC,
+    plantarFlatDeltaMm,
     reconstructionManifold,
     reconstructProceduralWalls,
     S1_MIN_WALL_MM,
@@ -50,9 +53,11 @@ import {
     zoneFixturesMapIdentically,
 } from "@/lib/geometry/procedural-wall";
 import { listStockBaseFixtures } from "@/lib/geometry/procedural-wall/catalog";
+import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { extractMergedGeometry, loadGlbFromBuffer, reorientToFootprintFrame } from "@/lib/library/loaders";
 import type { SideCorrections } from "@/types";
 import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
+import { loadSampleTopGlb } from "./helpers/load-sample-top-glb";
 import { encodePng, renderMesh } from "./helpers/render-png";
 
 async function loadFixture(path: string): Promise<BufferGeometry> {
@@ -135,8 +140,8 @@ describe("S1 parametric wall", () => {
                 topStock.length,
             );
             const topDelta = maxVertexDeltaMm(topRecon, topStock);
-            const dishDelta = dishInteriorDeltaMm(rebuilt, model);
-            const outlineDev = outlineRingDeviationMm(rebuilt, model);
+            const outlineDev = outlineExactOnBMm(rebuilt);
+            const plantarZ0 = plantarFlatDeltaMm(rebuilt);
 
             const man = reconstructionManifold(rebuilt);
             const outlineN = (rebuilt.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
@@ -286,9 +291,8 @@ describe("S1 parametric wall", () => {
 
             const misses: string[] = [];
             if (topDelta > 1e-9) misses.push(`top-identical ${topDelta.toFixed(6)}`);
-            const plantarDelta = dishDelta;
-            if (plantarDelta > 0.05) misses.push(`plantar-dish ${plantarDelta.toFixed(3)}`);
-            if (outlineDev > 1e-3) misses.push(`outline ${outlineDev.toFixed(3)}`);
+            if (plantarZ0 > 1e-3) misses.push(`plantar-z0 ${plantarZ0.toFixed(3)}`);
+            if (outlineDev > 1e-3) misses.push(`outline-B ${outlineDev.toFixed(3)}`);
             const minZ = ud.meshMinZ ?? meshVertexMinZ(rebuilt);
             const degenerates = countDegenerateFaces(rebuilt);
             if (minZ < -0.01) misses.push(`min-z ${minZ.toFixed(3)}`);
@@ -335,12 +339,10 @@ describe("S1 parametric wall", () => {
             if (windowX !== 0) misses.push(`window-cross ${windowX}`);
             if (maxSkew > SKEW_LIMIT_MM) misses.push(`skew ${maxSkew.toFixed(2)}`);
             if (ud.pairingMonotonic === false) misses.push("pairing-not-monotonic");
-            const bandTilt = ud.bandTiltDegMax ?? boundary.tiltDegMax;
-            if (boundary.zMax > 2.0 + 1e-3) misses.push(`plantar-boundary-z ${boundary.zMax.toFixed(2)}`);
-            if (bandTilt > 30 + 1e-3) {
-                misses.push(`plantar-boundary-tilt ${bandTilt.toFixed(1)}`);
+            const genMinWall = generatedMinWallMm(rebuilt);
+            if (Math.min(minWall, genMinWall) < S1_MIN_WALL_MM) {
+                misses.push(`minWall ${Math.min(minWall, genMinWall).toFixed(3)}`);
             }
-            if (minWall < S1_MIN_WALL_MM) misses.push(`minWall ${minWall.toFixed(3)}`);
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) misses.push(`fold ${fold.worstDeg.toFixed(1)}`);
             if (fold.edgesAtLeast10Deg !== 0) misses.push(`fold≥10 ${fold.edgesAtLeast10Deg}`);
             if (archFolds.edgesAtLeast10Deg !== 0) {
@@ -372,7 +374,7 @@ describe("S1 parametric wall", () => {
             const row = {
                 base: fixture.name,
                 topDelta: Number(topDelta.toFixed(6)),
-                plantarMax: Number(plantarDelta.toFixed(4)),
+                plantarZ0: Number(plantarZ0.toFixed(4)),
                 plantarHaus: Number(haus.plantar.maxMm.toFixed(4)),
                 outlineMax: Number(outlineDev.toFixed(4)),
                 groundDrift: Number(drift.toFixed(4)),
@@ -416,16 +418,6 @@ describe("S1 parametric wall", () => {
             rows.push(row);
             writeFileSync("/tmp/s1-parity.json", JSON.stringify({ rows, reports }, null, 2));
             expect(FOLD_HARD_LIMIT_DEG).toBe(10);
-            if (ud.dishLost || model.outline.dishLost) {
-                throw new Error(
-                    `[S1-PAIR] trimmed plantar cannot meet tilt<=30 without losing the stock dish ` +
-                        `(flood=${ud.floodFaceCount ?? model.outline.floodFaceCount} zSpan=${(
-                            ud.floodZSpanMm ?? model.outline.floodZSpanMm ?? 0
-                        ).toFixed(
-                            2,
-                        )} interior=${ud.interiorFaceCount ?? model.outline.interiorFaceCount}). REAL STOP.`,
-                );
-            }
             if (chordX !== 0) {
                 throw new Error(
                     `[S1-PAIR] harmonic pairing still left ${chordX} plan-view chord crossings on ${fixture.name} ` +
@@ -580,9 +572,6 @@ describe("S1 parametric wall", () => {
             }
             if (!man.watertight) smokeMiss.push(`${smoke.name} open=${man.openEdges}`);
             if (minZ < -0.01) smokeMiss.push(`${smoke.name} min-z ${minZ.toFixed(3)}`);
-            if ((sud.bandTiltDegMax ?? 0) > 30 + 1e-3) {
-                smokeMiss.push(`${smoke.name} band-tilt ${sud.bandTiltDegMax!.toFixed(1)}`);
-            }
             rebuilt.dispose();
         }
         writeFileSync("/tmp/s1-smoke.json", JSON.stringify(results, null, 2));
@@ -596,19 +585,29 @@ describe("S1 parametric wall", () => {
         original.dispose();
     }, 240_000);
 
-    test("smoke: synthetic flat-plantar bottom pattern", async () => {
-        const original = await loadProductionDefaultGlb({ slot: "left" });
-        const model = extractStockWallModel(original, { id: "default", name: "Default" });
-        const pattern = syntheticBottomPattern(outlineOf(model), model.bounds);
+    test("SAMPLE_Top + synthetic pattern", async () => {
+        const original = await loadSampleTopGlb();
+        const model = extractTopOnlyModel(original, { id: "sample-top", name: "SAMPLE_Top" });
+        const pos = model.top.meshPositions;
+        const rimLocal = model.top.rimLocal ?? [];
+        expect(pos?.length).toBe(7809 * 3);
+        expect(rimLocal.length).toBe(446);
+        const rimPlan = rimLocal.map((i) => ({
+            x: pos![i * 3]!,
+            y: pos![i * 3 + 1]!,
+            z: 0,
+        }));
+        const pattern = syntheticBottomPattern(rimPlan, model.bounds);
         let rebuilt: BufferGeometry;
         try {
             rebuilt = reconstructProceduralWalls(model, {
                 corrections: neutralCorrections(),
                 bottomPattern: pattern,
+                bottomPatternLabel: PATTERN_SOURCE_SYNTHETIC,
                 flatPlantar: true,
             });
         } catch (err) {
-            throw new Error(`[S1-PATTERN] reconstruct: ${String(err)}`);
+            throw new Error(`[S1-SAMPLE] reconstruct: ${String(err)}`);
         }
         const topN = (rebuilt.userData as { topVertexCount?: number }).topVertexCount ?? 0;
         const outlineN = (rebuilt.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
@@ -625,14 +624,26 @@ describe("S1 parametric wall", () => {
             (rebuilt.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> }).outlineRing ??
             pattern;
         const reconSeam = outlineSeamDihedrals(rebuilt, generatedOutline, 1.25);
+        const archFolds = medialArchUpperWallFolds(rebuilt, model.bounds, topN);
+        const outlineDev = outlineExactOnBMm(rebuilt);
+        const plantarZ0 = plantarFlatDeltaMm(rebuilt);
+        const genMinWall = generatedMinWallMm(rebuilt);
+        const topStock = model.top.meshPositions ?? new Float32Array(0);
+        const topRecon = (rebuilt.getAttribute("position").array as Float32Array).slice(0, topStock.length);
+        const topDelta = maxVertexDeltaMm(topRecon, topStock);
+        const uvOk = zoneFixturesMapIdentically(
+            soleUvFrameFromOutline(model.outline),
+            soleUvFrameFromPolyline(model.outline.spline.controls),
+        );
         const sud = rebuilt.userData as {
-            bandTiltDegMax?: number;
             sliverMaxAspect?: number;
             junctionSlivers?: number;
-            collapsedIEdges?: number;
             plantarOpenEdges?: number;
             plantarMissingBoundary?: number;
             maxOffPlaneMm?: number;
+            planReversals?: number;
+            chordCrossings?: number;
+            bottomPatternSource?: string;
         };
         const misses: string[] = [];
         if (hits.real !== 0) {
@@ -643,11 +654,14 @@ describe("S1 parametric wall", () => {
             );
         }
         if (!man.watertight) misses.push(`open=${man.openEdges}`);
+        if (man.nonManifoldEdges !== 0) misses.push(`nonManifold=${man.nonManifoldEdges}`);
         if (fold.edgesAtLeast10Deg !== 0) misses.push(`fold≥10=${fold.edgesAtLeast10Deg}`);
+        if (archFolds.edgesAtLeast10Deg !== 0) misses.push(`medial-arch-upper≥10`);
         if (reconSeam.worstDeg > 5 + 1e-6) misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>5`);
-        if ((sud.bandTiltDegMax ?? 0) > 30 + 1e-3) {
-            misses.push(`band-tilt ${sud.bandTiltDegMax!.toFixed(1)}`);
-        }
+        if (outlineDev > 1e-3) misses.push(`outline-B ${outlineDev.toFixed(4)}`);
+        if (plantarZ0 > 1e-3) misses.push(`plantar-z0 ${plantarZ0.toFixed(4)}`);
+        if (topDelta > 1e-9) misses.push(`top-identical ${topDelta.toFixed(6)}`);
+        if (genMinWall < S1_MIN_WALL_MM) misses.push(`minWall ${genMinWall.toFixed(3)}`);
         if ((sud.sliverMaxAspect ?? 0) > 20) misses.push(`sliver ${sud.sliverMaxAspect}`);
         if ((sud.junctionSlivers ?? 0) !== 0) misses.push(`junction-slivers=${sud.junctionSlivers}`);
         if ((sud.plantarOpenEdges ?? 0) !== 0) misses.push(`plantar-open=${sud.plantarOpenEdges}`);
@@ -657,8 +671,14 @@ describe("S1 parametric wall", () => {
         if ((sud.maxOffPlaneMm ?? 0) > COLUMN_PLANARITY_LIMIT_MM) {
             misses.push(`off-plane ${sud.maxOffPlaneMm}`);
         }
+        if ((sud.planReversals ?? 0) !== 0) misses.push(`reversals=${sud.planReversals}`);
+        if ((sud.chordCrossings ?? 0) !== 0) misses.push(`crossings=${sud.chordCrossings}`);
+        if (!uvOk) misses.push("sole-UV");
+        if (sud.bottomPatternSource !== PATTERN_SOURCE_SYNTHETIC) {
+            misses.push(`pattern-source ${sud.bottomPatternSource}`);
+        }
         writeFileSync(
-            "/tmp/s1-pattern.json",
+            "/tmp/s1-sample-top.json",
             JSON.stringify(
                 {
                     selfIntersections: hits.real,
@@ -668,19 +688,24 @@ describe("S1 parametric wall", () => {
                     openEdges: man.openEdges,
                     foldGe10: fold.edgesAtLeast10Deg,
                     seamWorstDeg: Number(reconSeam.worstDeg.toFixed(3)),
-                    bandTilt: Number((sud.bandTiltDegMax ?? 0).toFixed(2)),
                     sliverMaxAspect: sud.sliverMaxAspect,
-                    collapsedIEdges: sud.collapsedIEdges,
-                    junctionSlivers: sud.junctionSlivers,
+                    outlineExactMm: outlineDev,
+                    plantarZ0,
+                    topDelta,
+                    minWall: genMinWall,
+                    patternSource: sud.bottomPatternSource,
                 },
                 null,
                 2,
             ),
         );
+        const stl = Buffer.from(geometryToBinarySTL(rebuilt));
+        mkdirSync("/opt/cursor/artifacts", { recursive: true });
+        writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.stl", stl);
         if (misses.length || hits.real !== 0) {
             throw new Error(
-                `[S1-PATTERN] nonzero. STOP.\nmisses: ${misses.join("; ")}\n` +
-                    (hits.real ? siBreakdownMessage(hits, rebuilt, model, "[S1-SI] pattern") : ""),
+                `[S1-SAMPLE] nonzero. STOP.\nmisses: ${misses.join("; ")}\n` +
+                    (hits.real ? siBreakdownMessage(hits, rebuilt, model, "[S1-SI] SAMPLE_Top") : ""),
             );
         }
         rebuilt.dispose();
@@ -722,21 +747,21 @@ describe("S1 parametric wall", () => {
         raw.dispose();
     }, 120_000);
 
-    test("lateral flange height 0 is identity; no posterior flange param", async () => {
+    test("lateral flange is off on the flat plantar", async () => {
         const raw = await loadProductionDefaultGlb({ slot: "left" });
         const model = extractStockWallModel(raw, { id: "default", name: "Default" });
         const a = reconstructProceduralWalls(model);
         const b = reconstructProceduralWalls(model, {
             lateralFlange: { heightMm: 0, lengthMm: 40, angleDeg: 10 },
         });
-        const pa = a.getAttribute("position").array as Float32Array;
-        const pb = b.getAttribute("position").array as Float32Array;
-        expect(maxVertexDeltaMm(pa, pb)).toBeLessThan(1e-9);
         const c = reconstructProceduralWalls(model, {
             lateralFlange: { heightMm: 6, lengthMm: 40, angleDeg: 10 },
         });
+        const pa = a.getAttribute("position").array as Float32Array;
+        const pb = b.getAttribute("position").array as Float32Array;
         const pc = c.getAttribute("position").array as Float32Array;
-        expect(maxVertexDeltaMm(pa, pc)).toBeGreaterThan(0.2);
+        expect(maxVertexDeltaMm(pa, pb)).toBeLessThan(1e-9);
+        expect(maxVertexDeltaMm(pa, pc)).toBeLessThan(1e-9);
         a.dispose();
         b.dispose();
         c.dispose();

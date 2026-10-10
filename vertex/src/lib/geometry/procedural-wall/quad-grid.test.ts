@@ -3,8 +3,7 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { MIN_FILLET_RINGS } from "./hermite";
-import type { HermiteStation } from "./loft";
-import { I_CLEARANCE_MM, I_MIN_EDGE_MM, placeSimpleInnerRing, sampleBottomWallFillet } from "./quad-grid";
+import { sampleBottomWallFillet } from "./quad-grid";
 
 describe("generated plantar quad grid", () => {
     test("bottom fillet is monotonic in n and ends at the outline", () => {
@@ -22,25 +21,5 @@ describe("generated plantar quad grid", () => {
         expect(last?.z).toBeCloseTo(P1.z, 6);
         expect(first && first.n < P1.n).toBe(true);
         expect(first && first.z > P1.z).toBe(true);
-    });
-
-    test("inner ring I is simple, cleared, and min-edge safe", () => {
-        const n = 32;
-        const stations: HermiteStation[] = [];
-        for (let i = 0; i < n; i++) {
-            const a = (i / n) * Math.PI * 2;
-            const ox = 30 * Math.cos(a);
-            const oy = 16 * Math.sin(a);
-            stations.push({
-                outline: { x: ox, y: oy, z: 0 },
-                rim: { x: ox + Math.cos(a) * 4, y: oy + Math.sin(a) * 4, z: 12 },
-                n: { x: Math.cos(a), y: Math.sin(a) },
-                u: i / n,
-            });
-        }
-        const placed = placeSimpleInnerRing(stations);
-        expect(placed.minEdgeMm).toBeGreaterThanOrEqual(I_MIN_EDGE_MM);
-        expect(placed.minClearanceMm).toBeGreaterThanOrEqual(I_CLEARANCE_MM - 1e-6);
-        expect(Math.abs(placed.turning - 1)).toBeLessThan(0.05);
     });
 });

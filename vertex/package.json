@@ -40,6 +40,7 @@
         "@trpc/react-query": "^11.0.0-rc.660",
         "@trpc/server": "^11.0.0-rc.660",
         "class-variance-authority": "^0.7.1",
+        "clipper2-ts": "^2.0.1-18",
         "clsx": "^2.1.1",
         "delaunator": "^5.1.0",
         "lucide-react": "^0.456.0",

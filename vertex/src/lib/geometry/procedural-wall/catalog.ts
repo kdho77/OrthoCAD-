@@ -21,6 +21,7 @@ export function listStockBaseFixtures(): StockBaseFixture[] {
     if (existsSync(FIXTURE_DIR)) {
         for (const file of readdirSync(FIXTURE_DIR).sort()) {
             if (!/\.glb$/i.test(file)) continue;
+            if (/^SAMPLE_/i.test(file)) continue;
             const id = basename(file, ".glb")
                 .toLowerCase()
                 .replace(/[^a-z0-9]+/g, "-");

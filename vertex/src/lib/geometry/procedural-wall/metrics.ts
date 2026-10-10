@@ -662,6 +662,31 @@ export function maxVertexDeltaMm(a: Float32Array, b: Float32Array): number {
     return max;
 }
 
+/** Max XY distance from the last wall row to the B(i) used for the CDT. */
+export function outlineExactOnBMm(reconstruction: BufferGeometry): number {
+    const ring = (reconstruction.userData as { outlineRing?: Array<{ x: number; y: number }> }).outlineRing;
+    const b = (reconstruction.userData as { bottomOutlineB?: Array<{ x: number; y: number }> })
+        .bottomOutlineB;
+    if (!ring?.length || !b?.length || ring.length !== b.length) {
+        return ring?.length && b?.length ? Infinity : 0;
+    }
+    let max = 0;
+    for (let i = 0; i < ring.length; i++) {
+        max = Math.max(max, Math.hypot(ring[i]!.x - b[i]!.x, ring[i]!.y - b[i]!.y));
+    }
+    return max;
+}
+
+export function generatedMinWallMm(reconstruction: BufferGeometry): number {
+    const frames =
+        (reconstruction.userData as { wallFrames?: Array<{ heightMm?: number }> }).wallFrames ?? [];
+    let min = Infinity;
+    for (const f of frames) {
+        if (typeof f.heightMm === "number") min = Math.min(min, f.heightMm);
+    }
+    return Number.isFinite(min) ? min : 0;
+}
+
 /** Max XY distance from the generated outline ring to BottomOutline. */
 export function outlineRingDeviationMm(reconstruction: BufferGeometry, model: StockWallModel): number {
     const ring = (reconstruction.userData as { outlineRing?: Array<{ x: number; y: number }> }).outlineRing;
@@ -730,6 +755,26 @@ export function dishInteriorDeltaMm(
     }
     void insetMm;
     return n ? max : 0;
+}
+
+/** Max |plantar z| on generated plantar verts where the field delta is ~0. */
+export function plantarFlatDeltaMm(
+    geo: BufferGeometry,
+    zDelta: (x: number, y: number) => number = () => 0,
+    eps = 1e-6,
+): number {
+    const pos = geo.getAttribute("position").array as Float32Array;
+    const plantarStart = (geo.userData as { plantarStart?: number }).plantarStart ?? 0;
+    const n = pos.length / 3;
+    let max = 0;
+    for (let i = plantarStart; i < n; i++) {
+        const x = pos[i * 3]!;
+        const y = pos[i * 3 + 1]!;
+        const z = pos[i * 3 + 2]!;
+        if (Math.abs(zDelta(x, y)) > eps) continue;
+        max = Math.max(max, Math.abs(z));
+    }
+    return max;
 }
 
 export function meshVertexMinZ(geo: BufferGeometry): number {

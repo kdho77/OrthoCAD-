@@ -690,6 +690,33 @@ export function extractTopSheet(geo: BufferGeometry): {
     return copyTopMesh(geo);
 }
 
+/**
+ * Top-only GLB (Kendon SAMPLE_Top): the entire mesh is the TopSheet.
+ * Outline is the rim plan at z=0 until a bottom-pattern is supplied.
+ */
+export function extractTopOnlyModel(geo: BufferGeometry, meta: { id: string; name: string }): StockWallModel {
+    const count = geo.getAttribute("position")?.count ?? 0;
+    geo.userData = { ...geo.userData, topVertexCount: count, topOnly: true };
+    const model = extractStockWallModel(geo, meta);
+    if (model.top.meshPositions && model.top.rimLocal?.length) {
+        const pos = model.top.meshPositions;
+        const rim = model.top.rimLocal.map((i) => ({
+            x: pos[i * 3]!,
+            y: pos[i * 3 + 1]!,
+            z: 0,
+        }));
+        const spline = fitClosedC2Spline(rim);
+        model.outline.spline = spline;
+        model.outline.sourceCount = rim.length;
+        model.outline.meshPositions = undefined;
+        model.outline.meshIndices = undefined;
+        model.outline.rimLocal = undefined;
+        model.outline.dishLost = false;
+        model.outline.plantarZ = buildUvField(rim);
+    }
+    return model;
+}
+
 function packSheetPoints(positions: Float32Array): PolyPoint[] {
     const out: PolyPoint[] = [];
     for (let i = 0; i < positions.length; i += 3) {

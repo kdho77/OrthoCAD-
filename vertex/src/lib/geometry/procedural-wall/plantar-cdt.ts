@@ -2,16 +2,19 @@
 // See LICENSE file in the project root for full license information.
 
 import { countOpenNonBoundaryEdges, minDistToLoopXY, pointInPoly } from "./cdt-band";
-import { assertIEdges, assertLibraryDisk, assertRemainingIEdges, libraryCdtInterior } from "./cdt-lib";
+import { assertIEdges, assertLibraryDisk, libraryCdtInterior } from "./cdt-lib";
 import type { PolyPoint } from "./curves";
 import { sampleUvField } from "./extract";
 import { type DishZIndex, sampleDishZVertical } from "./height-xy";
+import { clipperRoundInset } from "./pattern-hygiene";
 import type { UvHeightField } from "./types";
 
 export const PLANTAR_STEINER_MM = 1.8;
-export const PLANTAR_MARGIN_MM = 1.5;
+export const PLANTAR_MARGIN_MM = 0.5;
 export const PLANTAR_STEINER_OUTLINE_FRAC = 0.75;
 export const PLANTAR_STEINER_EDGE_MIN_MM = 0.5;
+export const PLANTAR_SLIVER_BAND_MM = 2;
+export const PLANTAR_FALLBACK_INSET_MM = 1.5;
 export const GRIND_REFINE_DZ_MM = 1.2;
 export const I_COLLAPSE_MM = 0.3;
 export const I_SLIVER_ASPECT = 20;
@@ -28,6 +31,7 @@ export interface GeneratedPlantar {
     extraLift: number;
     collapsedIEdges: number;
     sliverMaxAspect: number;
+    usedSliverFallback: boolean;
 }
 
 export interface PlantarSampler {
@@ -54,7 +58,7 @@ export function hexSteiner(
     margin = PLANTAR_MARGIN_MM,
     inner?: PolyPoint[],
 ): PolyPoint[] {
-    const outlineKeep = Math.max(step * PLANTAR_STEINER_OUTLINE_FRAC, PLANTAR_STEINER_EDGE_MIN_MM, margin);
+    const outlineKeep = PLANTAR_STEINER_EDGE_MIN_MM;
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -194,10 +198,6 @@ function findRoot(parent: number[], i: number): number {
     return x;
 }
 
-function edgeKey(a: number, b: number): string {
-    return a < b ? `${a},${b}` : `${b},${a}`;
-}
-
 /**
  * After the CDT, weld I edges shorter than 0.3 mm so triangles next to I
  * cannot form slivers. Wall stations stay 1:1; only the plantar disk merges.
@@ -237,12 +237,23 @@ export function maxIAspect(
     faces: Array<[number, number, number]>,
     nOuter: number,
 ): number {
+    return maxBoundaryAspect(points, faces, points.slice(0, nOuter), PLANTAR_SLIVER_BAND_MM);
+}
+
+export function maxBoundaryAspect(
+    points: PolyPoint[],
+    faces: Array<[number, number, number]>,
+    boundary: PolyPoint[],
+    withinMm = PLANTAR_SLIVER_BAND_MM,
+): number {
     let best = 1;
     for (const f of faces) {
-        if (f[0]! >= nOuter && f[1]! >= nOuter && f[2]! >= nOuter) continue;
         const A = points[f[0]!]!;
         const B = points[f[1]!]!;
         const C = points[f[2]!]!;
+        const cx = (A.x + B.x + C.x) / 3;
+        const cy = (A.y + B.y + C.y) / 3;
+        if (minDistToLoopXY(cx, cy, boundary) > withinMm) continue;
         const e1 = Math.hypot(B.x - A.x, B.y - A.y);
         const e2 = Math.hypot(C.x - B.x, C.y - B.y);
         const e3 = Math.hypot(A.x - C.x, A.y - C.y);
@@ -263,49 +274,22 @@ export function assertISlivers(
     nOuter: number,
     limit = I_SLIVER_ASPECT,
 ): number {
-    const aspect = maxIAspect(points, faces, nOuter);
-    if (aspect > limit) {
-        throw new Error(`[S1-I] CDT sliver aspect ${aspect.toFixed(1)} > ${limit} next to I`);
-    }
-    return aspect;
+    return assertBoundarySlivers(points, faces, points.slice(0, nOuter), limit);
 }
 
-function diskAgainstRemaining(
+export function assertBoundarySlivers(
+    points: PolyPoint[],
     faces: Array<[number, number, number]>,
-    nOuter: number,
-    parent: number[],
-): { open: number; missingBoundary: number; nonManifold: number } {
-    const bound = new Set<string>();
-    for (let i = 0; i < nOuter; i++) {
-        const a = findRoot(parent, i);
-        const b = findRoot(parent, (i + 1) % nOuter);
-        if (a !== b) bound.add(edgeKey(a, b));
+    boundary: PolyPoint[],
+    limit = I_SLIVER_ASPECT,
+): number {
+    const aspect = maxBoundaryAspect(points, faces, boundary, PLANTAR_SLIVER_BAND_MM);
+    if (aspect > limit) {
+        throw new Error(
+            `[S1-B] CDT sliver aspect ${aspect.toFixed(1)} > ${limit} within ${PLANTAR_SLIVER_BAND_MM} mm of B`,
+        );
     }
-    const use = new Map<string, number>();
-    for (const f of faces) {
-        for (const [a, b] of [
-            [f[0]!, f[1]!],
-            [f[1]!, f[2]!],
-            [f[2]!, f[0]!],
-        ] as Array<[number, number]>) {
-            const k = edgeKey(a, b);
-            use.set(k, (use.get(k) ?? 0) + 1);
-        }
-    }
-    let open = 0;
-    let nonManifold = 0;
-    let missingBoundary = 0;
-    for (const [k, n] of use) {
-        if (n === 1) {
-            if (!bound.has(k)) open++;
-        } else if (n !== 2) {
-            nonManifold++;
-        }
-    }
-    for (const k of bound) {
-        if ((use.get(k) ?? 0) !== 1) missingBoundary++;
-    }
-    return { open, missingBoundary, nonManifold };
+    return aspect;
 }
 
 function nudgeInteriorDuplicates(points: PolyPoint[], nOuter: number, tol = 0.045): void {
@@ -327,10 +311,60 @@ export function assertPlantarDisk(faces: Array<[number, number, number]>, nBound
     assertLibraryDisk(faces, nBoundary);
 }
 
+function cdtDiskOf(
+    loop: PolyPoint[],
+    extra: PolyPoint[],
+    extraEdges: Array<[number, number]>,
+    margin: number,
+): {
+    points: PolyPoint[];
+    faces: Array<[number, number, number]>;
+    steinerCount: number;
+    sliverMaxAspect: number;
+} {
+    const steiner = hexSteiner(loop, PLANTAR_STEINER_MM, margin).filter(
+        (p) => minDistToLoopXY(p.x, p.y, loop) >= PLANTAR_STEINER_EDGE_MIN_MM,
+    );
+    const points = [...loop, ...extra, ...steiner];
+    nudgeInteriorDuplicates(points, loop.length);
+    const faces = libraryCdtInterior(points, loop.length, extraEdges);
+    assertIEdges(faces, loop.length);
+    assertLibraryDisk(faces, loop.length);
+    const sliverMaxAspect = assertBoundarySlivers(points, faces, loop);
+    return { points, faces, steinerCount: steiner.length, sliverMaxAspect };
+}
+
+function triangulateWithOffsetFallback(
+    loop: PolyPoint[],
+    margin: number,
+): {
+    points: PolyPoint[];
+    faces: Array<[number, number, number]>;
+    steinerCount: number;
+    sliverMaxAspect: number;
+    usedSliverFallback: boolean;
+} {
+    try {
+        return { ...cdtDiskOf(loop, [], [], margin), usedSliverFallback: false };
+    } catch (err) {
+        const msg = String(err);
+        if (!msg.includes("sliver") && !msg.includes("[S1-CDT]") && !msg.includes("[S1-B]")) {
+            throw err;
+        }
+        const inset = clipperRoundInset(loop, PLANTAR_FALLBACK_INSET_MM);
+        const extra: PolyPoint[] = inset.map((p) => ({ ...p, z: 0 }));
+        const extraEdges: Array<[number, number]> = [];
+        const nB = loop.length;
+        for (let i = 0; i < extra.length; i++) extraEdges.push([nB + i, nB + ((i + 1) % extra.length)]);
+        const disk = cdtDiskOf(loop, extra, extraEdges, margin);
+        return { ...disk, usedSliverFallback: true };
+    }
+}
+
 /**
- * Constrained Delaunay of the inner band ring I + Steiner inside I.
- * Boundary vertices stay at 0..n-1 and are never split. The structured
- * band is not a CDT constraint.
+ * Constrained Delaunay of B(i) + Steiner inside B. Boundary vertices stay at
+ * 0..n-1 and are never split or welded. If B itself makes slivers, fall back
+ * to a Clipper2 round-join inset plus a constrained strip CDT.
  */
 export function triangulatePlantarXY(
     boundary: PolyPoint[],
@@ -343,35 +377,19 @@ export function triangulatePlantarXY(
     steinerCount: number;
     collapsedIEdges: number;
     sliverMaxAspect: number;
+    usedSliverFallback: boolean;
 } {
     const loop = boundary.map((p) => ({ ...p, z: 0 }));
-    const steiner = hexSteiner(loop, PLANTAR_STEINER_MM, margin).filter(
-        (p) => minDistToLoopXY(p.x, p.y, loop) >= PLANTAR_STEINER_EDGE_MIN_MM,
-    );
-    const points = [...loop, ...steiner];
-    nudgeInteriorDuplicates(points, loop.length);
-    let faces = libraryCdtInterior(points, loop.length);
-    assertIEdges(faces, loop.length);
-    assertLibraryDisk(faces, loop.length);
-    const collapsed = collapseShortIEdges(points, faces, loop.length);
-    faces = collapsed.faces;
-    assertRemainingIEdges(faces, loop.length, collapsed.parent);
-    const hygiene = diskAgainstRemaining(faces, loop.length, collapsed.parent);
-    if (hygiene.open !== 0 || hygiene.missingBoundary !== 0 || hygiene.nonManifold !== 0) {
-        throw new Error(
-            `[S1-CDT] collapsed disk failed: open=${hygiene.open} ` +
-                `missingBoundary=${hygiene.missingBoundary} nonManifold=${hygiene.nonManifold}`,
-        );
-    }
-    const sliverMaxAspect = assertISlivers(points, faces, loop.length);
+    const mesh = triangulateWithOffsetFallback(loop, margin);
     return {
-        points,
-        faces,
+        points: mesh.points,
+        faces: mesh.faces,
         boundaryCount: loop.length,
         bandCount: 0,
-        steinerCount: steiner.length,
-        collapsedIEdges: collapsed.collapsed,
-        sliverMaxAspect,
+        steinerCount: mesh.steinerCount,
+        collapsedIEdges: 0,
+        sliverMaxAspect: mesh.sliverMaxAspect,
+        usedSliverFallback: mesh.usedSliverFallback,
     };
 }
 
@@ -410,5 +428,6 @@ export function buildGeneratedPlantar(input: {
         extraLift,
         collapsedIEdges: mesh.collapsedIEdges,
         sliverMaxAspect: mesh.sliverMaxAspect,
+        usedSliverFallback: mesh.usedSliverFallback,
     };
 }

@@ -37,7 +37,10 @@ export {
 } from "./bezier-column";
 export {
     PATTERN_ARCH_INSET_MM,
+    PATTERN_FOREFOOT_INSET_MM,
+    PATTERN_HEEL_LATERAL_INSET_MM,
     PATTERN_INSET_MM,
+    PATTERN_SOURCE_SYNTHETIC,
     parseBottomPattern,
     syntheticBottomPattern,
 } from "./bottom-pattern";
@@ -70,6 +73,7 @@ export {
 export {
     extractPlantarSheet,
     extractStockWallModel,
+    extractTopOnlyModel,
     extractTopSheet,
     matchedLoftCurves,
     sampleUvField,
@@ -95,6 +99,7 @@ export {
     cupHeightAtU,
     dishInteriorDeltaMm,
     foldReport,
+    generatedMinWallMm,
     groundDriftMm,
     hausdorffReport,
     heelInnerWidthAtU,
@@ -103,8 +108,10 @@ export {
     medialArchUpperWallFolds,
     meshVertexMinZ,
     minWallThicknessMm,
+    outlineExactOnBMm,
     outlineRingDeviationMm,
     outlineSeamDihedrals,
+    plantarFlatDeltaMm,
     reconstructionManifold,
     sheetBoundaryStats,
     stitchVertexDeltaMm,
@@ -119,6 +126,14 @@ export {
     OUTLINE_DEDUPE_MM,
     OUTLINE_NUDGE_MM,
 } from "./outline-clean";
+export {
+    assertInsideRim,
+    clipperRoundInset,
+    clipperUnion,
+    hygieneBottomPattern,
+    PATTERN_MIN_RADIUS_MM,
+    PATTERN_RIM_CLEARANCE_MM,
+} from "./pattern-hygiene";
 export { assertNonCrossing, buildPlanformFrame } from "./planform";
 export {
     assertPlantarDisk,

@@ -28,16 +28,9 @@ import {
     type GeneratedPlantar,
     makePlantarSampler,
     PLANTAR_MARGIN_MM,
-    type PlantarSampler,
 } from "./plantar-cdt";
 import type { FlareCapReport } from "./stations";
 import { S1_MIN_WALL_MM, type UvHeightField } from "./types";
-
-export const BAND_ROWS = 3;
-export const BAND_INSET_FLOOR_MM = 1.5;
-export const I_CLEARANCE_MM = 1.0;
-export const I_MIN_EDGE_MM = 0.05;
-export const I_SMOOTH_FRAC = 0.1;
 
 export const PLANTAR_RINGS = 0;
 export const WALL_MID_ROWS = 8;
@@ -55,6 +48,7 @@ export interface QuadGrid {
     outlineRow: number;
     innerRow: number;
     innerRing: PolyPoint[];
+    usedSliverFallback: boolean;
     fieldsBeforeBF: boolean;
     impliedSeamDeg: number[];
     flareDeg: number[];
@@ -189,21 +183,6 @@ export function sampleBottomWallFillet(P1: NZ, radiusMm: number, circMm: number)
         rings[rings.length - 1] = { n: P1.n, z: P1.z };
     }
     return rings;
-}
-
-function tiltFromHorizontal(a: PolyPoint, b: PolyPoint, c: PolyPoint): number {
-    const ux = b.x - a.x;
-    const uy = b.y - a.y;
-    const uz = b.z - a.z;
-    const vx = c.x - a.x;
-    const vy = c.y - a.y;
-    const vz = c.z - a.z;
-    const nx = uy * vz - uz * vy;
-    const ny = uz * vx - ux * vz;
-    const nz = ux * vy - uy * vx;
-    const len = Math.hypot(nx, ny, nz);
-    if (len < 1e-12) return 0;
-    return (Math.acos(Math.max(-1, Math.min(1, Math.abs(nz / len)))) * 180) / Math.PI;
 }
 
 export function sampleGeneratedZ(
@@ -592,24 +571,20 @@ export function placeStructuredBandRing(stations: HermiteStation[]): PolyPoint[]
     return placeSimpleInnerRing(stations).ring;
 }
 
-function sampleBandZ(sampler: PlantarSampler, x: number, y: number, extraLift: number): number {
-    return sampler.z(x, y, 0) + extraLift;
-}
-
 export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     const stations = input.stations;
     const nS = stations.length;
     const nWall = Math.max(10, input.nWall ?? 1 + MIN_FILLET_RINGS + WALL_MID_ROWS + MIN_FILLET_RINGS);
-    const nJ = nWall + BAND_ROWS;
-    const outlineRow = nWall - 1;
-    const innerRow = nJ - 1;
+    const nJ = nWall;
+    const outlineRow = nJ - 1;
+    const innerRow = outlineRow;
 
     const sampler = makePlantarSampler(
         stations.map((s) => s.outline),
         input.flatPlantar ? null : input.dish,
         input.flatPlantar ? undefined : input.plantarField,
         input.zDelta,
-        { flat: Boolean(input.flatPlantar) },
+        { flat: true },
     );
     for (let i = 0; i < nS; i++) {
         const p = stations[i]!.outline;
@@ -620,37 +595,44 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         JSON.stringify({ fieldsBeforeBF: true, lift: Number(sampler.lift.toFixed(4)) }),
     );
 
-    const placed = placeSimpleInnerRing(stations);
-    const innerRing = placed.ring.map((p) => ({
-        ...p,
-        z: sampler.z(p.x, p.y, 0),
-    }));
+    const outlineB = stations.map((s) => ({ ...s.outline }));
     const plantar = buildGeneratedPlantar({
-        boundary: innerRing,
-        dish: input.dish,
-        field: input.plantarField,
+        boundary: outlineB,
+        dish: null,
+        field: undefined,
         zDelta: input.zDelta,
         refineGrind: input.refineGrind,
         marginMm: PLANTAR_MARGIN_MM,
         sampler,
-        flat: Boolean(input.flatPlantar),
+        flat: true,
     });
     if (plantar.extraLift) {
         for (let i = 0; i < nS; i++) stations[i]!.outline.z += plantar.extraLift;
-        for (const p of innerRing) p.z += plantar.extraLift;
+        for (const p of outlineB) p.z += plantar.extraLift;
+    }
+    for (let i = 0; i < nS; i++) {
+        const B = plantar.points[i]!;
+        const st = stations[i]!.outline;
+        if (Math.hypot(B.x - st.x, B.y - st.y) > 1e-6) {
+            throw new Error(
+                `[S1-B] CDT boundary != B at station ${i}: ` +
+                    `B=(${st.x.toFixed(3)},${st.y.toFixed(3)}) ` +
+                    `cdt=(${B.x.toFixed(3)},${B.y.toFixed(3)})`,
+            );
+        }
+        st.z = B.z;
+        outlineB[i]!.z = B.z;
     }
     console.log(
-        "[S1-I]",
+        "[S1-B]",
         JSON.stringify({
-            simple: true,
-            minEdgeMm: Number(placed.minEdgeMm.toFixed(3)),
-            turning: Number(placed.turning.toFixed(3)),
-            minClearanceMm: Number(placed.minClearanceMm.toFixed(3)),
+            n: nS,
             extraLift: Number(plantar.extraLift.toFixed(4)),
             openEdges: plantar.openEdges,
             missingBoundary: plantar.missingBoundary,
-            collapsedIEdges: plantar.collapsedIEdges,
             sliverMaxAspect: Number(plantar.sliverMaxAspect.toFixed(2)),
+            usedSliverFallback: plantar.usedSliverFallback,
+            steiner: plantar.steinerCount,
         }),
     );
 
@@ -684,43 +666,26 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         input.footLengthMm ?? 250,
     );
     for (let i = 0; i < nS; i++) {
-        const B = columns[i]![outlineRow]!;
-        const dir = placed.dirs[i]!;
-        const dI = placed.insets[i]!;
-        built.frames[i]!.bandInsetMm = dI;
-        for (let k = 1; k <= BAND_ROWS; k++) {
-            const d = (dI * k) / BAND_ROWS;
-            const x = B.x + dir.x * d;
-            const y = B.y + dir.y * d;
-            const z = sampleBandZ(sampler, x, y, plantar.extraLift);
-            columns[i]!.push({ x, y, z });
-        }
-        const last = columns[i]![innerRow]!;
-        built.frames[i]!.bandZ = columns[i]![outlineRow + 1]?.z ?? last.z;
-        const I = plantar.points[i]!;
-        if (Math.hypot(last.x - I.x, last.y - I.y) > 1e-3) {
+        const last = columns[i]![outlineRow]!;
+        const B = plantar.points[i]!;
+        if (Math.hypot(last.x - B.x, last.y - B.y) > 1e-3) {
             throw new Error(
-                `[S1-I] last band row != I at station ${i}: ` +
+                `[S1-B] last wall row != B at station ${i}: ` +
                     `row=(${last.x.toFixed(3)},${last.y.toFixed(3)}) ` +
-                    `I=(${I.x.toFixed(3)},${I.y.toFixed(3)})`,
+                    `B=(${B.x.toFixed(3)},${B.y.toFixed(3)})`,
             );
         }
-        last.z = I.z;
+        last.x = B.x;
+        last.y = B.y;
+        last.z = B.z;
+        built.frames[i]!.bandZ = B.z;
+        built.frames[i]!.bandInsetMm = 0;
     }
 
     const implied = built.impliedSeamDeg;
     const flare = built.flareDeg;
     const report = built.flareCapReport;
     const outlineRing = columns.map((col) => ({ ...col[outlineRow]! }));
-
-    let bandTiltDegMax = 0;
-    for (let i = 0; i < nS; i++) {
-        const a = columns[i]![outlineRow]!;
-        const b = columns[(i + 1) % nS]![outlineRow]!;
-        const c = columns[i]![outlineRow + 1]!;
-        const d = columns[(i + 1) % nS]![outlineRow + 1]!;
-        bandTiltDegMax = Math.max(bandTiltDegMax, tiltFromHorizontal(a, b, c), tiltFromHorizontal(a, c, d));
-    }
 
     const body = new Float32Array(nS * (nJ - 1) * 3);
     for (let j = 1; j < nJ; j++) {
@@ -739,7 +704,8 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         plantar,
         outlineRow,
         innerRow,
-        innerRing: innerRing.map((p) => ({ ...p })),
+        innerRing: outlineB.map((p) => ({ ...p })),
+        usedSliverFallback: plantar.usedSliverFallback,
         fieldsBeforeBF: true,
         impliedSeamDeg: implied,
         flareDeg: flare,
@@ -749,7 +715,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         maxOffPlaneMm: built.maxOffPlaneMm,
         frames: built.frames,
         chordCrossings: 0,
-        bandTiltDegMax,
+        bandTiltDegMax: 0,
         outlineRing,
         minWallClamps: built.minWallClamps,
     };
