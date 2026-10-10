@@ -20,6 +20,11 @@ export interface ProceduralModifierInput {
     archGrindDepthMm?: number;
     /** High-rim medial side. +1 = +Y. */
     medialYSign?: 1 | -1;
+    /**
+     * Whole-insole width scale (1 = unchanged). Same factor and medial-lateral
+     * centre as the top. Heel widen uses heelCupWidthMm + follow=1 instead.
+     */
+    insoleWidthScale?: number;
 }
 
 export interface ModifiedCurves {
@@ -59,6 +64,11 @@ export function applyCurveModifiers(
             const scale = heelCupWidthScaleFactor(u, c.heelCupWidthMm);
             o.y = widCenter + (o.y - widCenter) * scale;
             t.y = widCenter + (t.y - widCenter) * scale;
+        }
+        const whole = input.insoleWidthScale ?? 1;
+        if (Number.isFinite(whole) && Math.abs(whole - 1) > 1e-12) {
+            o.y = widCenter + (o.y - widCenter) * whole;
+            t.y = widCenter + (t.y - widCenter) * whole;
         }
         if (c && c.heelCupDepthMm > 0) {
             const halfW = Math.max(1e-3, (model.bounds.maxY - model.bounds.minY) * 0.5);

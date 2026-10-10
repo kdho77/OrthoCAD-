@@ -934,7 +934,8 @@ describe("bezier column", () => {
         const short = lastFilletDLRad(tinyS, 1);
         expect(short + 1e-12).toBeGreaterThanOrEqual(tinyS / 2);
         const oneStep = filletPieceLengthMm(r2, tinyS, nFil, cMin, short);
-        expect(oneStep).toBeGreaterThanOrEqual(nFil * cMin + r2 * tinyS - 1e-9);
+        expect(oneStep).toBeGreaterThanOrEqual(nFil * cMin - 1e-9);
+        expect(oneStep).toBeGreaterThanOrEqual(r2 * tinyS - 1e-9);
     });
 
     test("r2 floors on the real last-step dL once S is known", () => {

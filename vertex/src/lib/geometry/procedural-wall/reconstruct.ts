@@ -7,7 +7,11 @@ import {
     BASE_REFERENCE_THICKNESS_MM,
     correctionDeltaAt,
 } from "@/lib/geometry/base-modifier";
-import { type HeightFieldParams, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import {
+    type HeightFieldParams,
+    heelCupWidthLongitudinalEnvelope,
+    heelCupWidthScaleFactor,
+} from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SideCorrections } from "@/types";
 import {
@@ -47,10 +51,12 @@ import {
     assertPostLoftGates,
     assertPreLoftStations,
     fairedPlantarFromStock,
+    fairMovedPattern,
     filletRadiiFromDefaults,
     limitStationSkew,
     minInsetForLeanMm,
     PATTERN_SOURCE_FAIRED_STOCK,
+    scalePatternWidth,
     shiftPatternByRimFollow,
 } from "./station-gates";
 import {
@@ -82,8 +88,10 @@ export interface ReconstructOptions extends ProceduralModifierInput {
     /** Flat ground plantar (z=0 + posting/grind). Dish sampling is skipped. */
     flatPlantar?: boolean;
     /**
-     * Heel-widen: shift B by the rim's plan displacement × followFactor.
-     * 0 = Windows-fixed (default).
+     * Heel-widen follow. Default 1 when heelCupWidthMm ≠ 0 (B tracks the rim
+     * plan displacement, then the faired-pattern QP). 0 = B fixed. Other
+     * modifiers and trimline edits stay at 0. Whole-insole width uses
+     * {@link insoleWidthScale} instead.
      */
     widenFollowFactor?: number;
 }
@@ -107,6 +115,8 @@ function zeroCorrections(): SideCorrections {
 }
 
 function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
+    const whole = input.insoleWidthScale ?? 1;
+    if (Number.isFinite(whole) && Math.abs(whole - 1) > 1e-12) return true;
     const c = input.corrections;
     if (!c) return (input.thicknessMm ?? 0) !== (input.stockThicknessMm ?? input.thicknessMm ?? 0);
     return (
@@ -171,6 +181,10 @@ function applyAnalyticTopDeltas(
         if (c.heelCupWidthMm !== 0) {
             const scale = heelCupWidthScaleFactor(u, c.heelCupWidthMm);
             pos[i * 3 + 1] = widCenter + (y - widCenter) * scale;
+        }
+        const whole = input.insoleWidthScale ?? 1;
+        if (Number.isFinite(whole) && Math.abs(whole - 1) > 1e-12) {
+            pos[i * 3 + 1] = widCenter + ((pos[i * 3 + 1] ?? y) - widCenter) * whole;
         }
     }
 }
@@ -547,10 +561,38 @@ export function reconstructProceduralWalls(
         resampleN: Math.max(160, rawOutline.length, rimPts.length),
         keepFair: true,
     });
-    const followFactor = options.widenFollowFactor ?? 0;
+    const heelWiden = (options.corrections?.heelCupWidthMm ?? 0) !== 0;
+    const wholeScale = options.insoleWidthScale ?? 1;
+    const wholeWidth = Number.isFinite(wholeScale) && Math.abs(wholeScale - 1) > 1e-12;
+    const followFactor = wholeWidth
+        ? 0
+        : heelWiden
+          ? (options.widenFollowFactor ?? 1)
+          : (options.widenFollowFactor ?? 0);
     let patternLoop = hygiened.loop;
-    if (followFactor !== 0) {
-        patternLoop = shiftPatternByRimFollow(patternLoop, patternRim, liveRimPlan, followFactor);
+    let patternMoved = false;
+    if (wholeWidth) {
+        const cy = 0.5 * (model.bounds.minY + model.bounds.maxY);
+        patternLoop = scalePatternWidth(patternLoop, wholeScale, cy);
+        patternMoved = true;
+    } else if (followFactor !== 0) {
+        const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+        const minX = model.bounds.minX;
+        patternLoop = shiftPatternByRimFollow(patternLoop, patternRim, liveRimPlan, (p) => {
+            const u = Math.max(0, Math.min(1, (p.x - minX) / length));
+            return followFactor * heelCupWidthLongitudinalEnvelope(u);
+        });
+        patternMoved = true;
+    }
+    if (patternMoved) {
+        patternLoop = fairMovedPattern({
+            pattern: patternLoop,
+            rim: liveRimPlan,
+            r1,
+            r2,
+            bounds: model.bounds,
+            medialYSign,
+        });
     }
     const clearance = adjustPatternForClearance({
         pattern: patternLoop,
@@ -559,7 +601,7 @@ export function reconstructProceduralWalls(
         r2,
     });
     patternLoop = clearance.loop;
-    if (clearance.adjusted || followFactor !== 0) {
+    if (clearance.adjusted || patternMoved) {
         hygiened = hygieneBottomPattern(patternLoop, {
             rimPlan: liveRimPlan,
             requireInsideRim: true,
@@ -943,6 +985,7 @@ export function reconstructProceduralWalls(
         patternAdjustedForClearance: clearance.flag,
         patternClearanceStations: clearance.stations,
         widenFollowFactor: followFactor,
+        insoleWidthScale: wholeWidth ? wholeScale : 1,
         postingClamps: posting.postingClamps,
         maxBPlantarDeltaMm: grid.maxBPlantarDeltaMm,
         wallBelowPlantar: grid.wallBelowPlantar,

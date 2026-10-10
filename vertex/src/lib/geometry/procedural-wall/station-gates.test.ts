@@ -10,11 +10,13 @@ import {
     assertPreLoftStations,
     columnInsetSkew,
     fairedPlantarFromStock,
+    fairMovedPattern,
     LEAN_INSET_MM,
     LEAN_MAX_DEG,
     MIN_INSET_FLOOR_MM,
     minInsetForLeanMm,
     POSTLOFT_DIHEDRAL_MAX_DEG,
+    scalePatternWidth,
     shiftPatternByRimFollow,
     signedRimInsetMm,
     stockTargetsForFairedPattern,
@@ -145,5 +147,45 @@ describe("station-gates", () => {
         expect(linked[0]!.y).toBeCloseTo(pattern[0]!.y - 1, 5);
         const half = shiftPatternByRimFollow(pattern, rim, rimAfter, 0.5);
         expect(half[4]!.x).toBeCloseTo(pattern[4]!.x + 1.5, 5);
+    });
+
+    test("blended follow and width scale stay one smooth curve after the fair QP", () => {
+        const rim = oval(40, 20, 48);
+        const pattern = oval(30, 15, 48);
+        const rimAfter = rim.map((p) => ({ x: p.x, y: p.y * 1.12, z: 0 }));
+        const raw = shiftPatternByRimFollow(pattern, rim, rimAfter, (p) => {
+            const u = Math.max(0, Math.min(1, (p.x + 40) / 80));
+            return u < 0.4 ? 1 : 0;
+        });
+        const faired = fairMovedPattern({
+            pattern: raw,
+            rim: rimAfter,
+            r1: 0.5,
+            r2: 0.7,
+            bounds: { minX: -40, maxX: 40 },
+            medialYSign: 1,
+        });
+        expect(faired.length).toBeGreaterThan(8);
+        const scaled = scalePatternWidth(pattern, 1.05, 0);
+        const mid = pattern[Math.floor(pattern.length / 4)]!;
+        const midS = scaled[Math.floor(scaled.length / 4)]!;
+        expect(midS.y).toBeCloseTo(mid.y * 1.05, 6);
+        expect(midS.x).toBeCloseTo(mid.x, 6);
+        const whole = fairMovedPattern({
+            pattern: scaled,
+            rim: scalePatternWidth(rim, 1.05, 0),
+            r1: 0.5,
+            r2: 0.7,
+            bounds: { minX: -40, maxX: 40 },
+            medialYSign: 1,
+        });
+        expect(whole.length).toBeGreaterThan(8);
+        let maxJump = 0;
+        for (let i = 0; i < whole.length; i++) {
+            const a = whole[i]!;
+            const b = whole[(i + 1) % whole.length]!;
+            maxJump = Math.max(maxJump, Math.hypot(b.x - a.x, b.y - a.y));
+        }
+        expect(maxJump).toBeLessThan(8);
     });
 });

@@ -859,9 +859,11 @@ describe("S1 parametric wall", () => {
             patch: Partial<SideCorrections>;
             thicknessMm?: number;
             archGrindDepthMm?: number;
+            insoleWidthScale?: number;
         }> = [
             { name: "widen+6", patch: { heelCupWidthMm: 6 } },
             { name: "widen+10", patch: { heelCupWidthMm: 10 } },
+            { name: "width+5", patch: {}, insoleWidthScale: 1.05 },
             { name: "t2", patch: {}, thicknessMm: 2 },
             { name: "t4", patch: {}, thicknessMm: 4 },
             { name: "heel-lift-10", patch: { heelLiftMm: 10 } },
@@ -879,6 +881,7 @@ describe("S1 parametric wall", () => {
                     thicknessMm: smoke.thicknessMm,
                     stockThicknessMm: 3,
                     archGrindDepthMm: smoke.archGrindDepthMm,
+                    insoleWidthScale: smoke.insoleWidthScale,
                 });
             } catch (err) {
                 smokeMiss.push(`${smoke.name} reconstruct: ${String(err)}`);
@@ -966,6 +969,7 @@ describe("S1 parametric wall", () => {
                 patternAdjustedForClearance?: string | null;
                 patternClearanceStations?: number[];
                 widenFollowFactor?: number;
+                insoleWidthScale?: number;
                 postingClamps?: Array<{ station: number; u: number; droppedMm: number }>;
                 maxBPlantarDeltaMm?: number;
                 wallBelowPlantar?: number;
@@ -1006,13 +1010,51 @@ describe("S1 parametric wall", () => {
                 }),
                 patternAdjusted: sud.patternAdjustedForClearance ?? "",
                 followFactor: sud.widenFollowFactor ?? 0,
+                insoleWidthScale: sud.insoleWidthScale ?? 1,
                 postingClamps: sud.postingClamps?.length ?? 0,
             });
             mkdirSync("/opt/cursor/artifacts", { recursive: true });
+            mkdirSync("/opt/cursor/artifacts/screenshots", { recursive: true });
             writeFileSync(
                 `/opt/cursor/artifacts/procedural-${smoke.name.replace(/\+/g, "-")}.stl`,
                 Buffer.from(geometryToBinarySTL(rebuilt)),
             );
+            if (smoke.name === "widen+6" || smoke.name === "width+5") {
+                const pos = rebuilt.getAttribute("position")?.array as Float32Array;
+                const idx = rebuilt.getIndex()?.array;
+                if (pos && idx) {
+                    writeFileSync(
+                        `/opt/cursor/artifacts/screenshots/bottom-${smoke.name.replace(/\+/g, "")}.png`,
+                        encodePng(900, 680, renderMesh(pos, idx, BOTTOM_VIEW, 900, 680)),
+                    );
+                }
+            }
+            if (smoke.name.startsWith("widen") || smoke.name === "width+5") {
+                const ring = generatedOutline;
+                if (ring.length >= 8) {
+                    const sign = (rebuilt.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1;
+                    const curv = patternCurvatureReport(ring, model.bounds, sign);
+                    if (curv.inflections > 2) {
+                        smokeMiss.push(`${smoke.name} pattern-inflections ${curv.inflections}>2`);
+                    }
+                    if (curv.lateralMinK < LATERAL_K_SLACK) {
+                        smokeMiss.push(
+                            `${smoke.name} lateral-concave k=${curv.lateralMinK.toFixed(5)}<${LATERAL_K_SLACK}`,
+                        );
+                    }
+                    if (curv.maxAbsDkDs > PATTERN_MAX_DKDS) {
+                        smokeMiss.push(
+                            `${smoke.name} pattern-dkds ${curv.maxAbsDkDs.toFixed(4)}>${PATTERN_MAX_DKDS}`,
+                        );
+                    }
+                }
+                if (smoke.name.startsWith("widen") && (sud.widenFollowFactor ?? 0) !== 1) {
+                    smokeMiss.push(`${smoke.name} followFactor ${sud.widenFollowFactor}!=1`);
+                }
+                if (smoke.name === "width+5" && Math.abs((sud.insoleWidthScale ?? 1) - 1.05) > 1e-9) {
+                    smokeMiss.push(`${smoke.name} insoleWidthScale ${sud.insoleWidthScale}!=1.05`);
+                }
+            }
             if (hits.real !== 0) {
                 const cls = hits.byClass
                     ? Object.entries(hits.byClass)

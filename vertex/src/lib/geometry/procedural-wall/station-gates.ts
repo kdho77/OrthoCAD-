@@ -381,23 +381,25 @@ export function adjustPatternForClearance(input: {
     };
 }
 
+export type FollowAmount = number | ((p: PolyPoint, s01: number) => number);
+
 /**
- * Optional heel-widen link: shift B by the rim's plan displacement × followFactor.
- * Default followFactor = 0 (Windows-fixed). Same arc-parameter s01 on both rims.
+ * Heel-widen / width-follow targets: shift B by the rim's plan displacement
+ * × follow amount. Pass a function to blend the follow to 0 at the heel
+ * envelope edges. Same arc-parameter s01 on both rims. These are QP targets,
+ * not the finished pattern — call {@link fairMovedPattern} next.
  */
 export function shiftPatternByRimFollow(
     pattern: PolyPoint[],
     rimBefore: PolyPoint[],
     rimAfter: PolyPoint[],
-    followFactor: number,
+    followFactor: FollowAmount,
 ): PolyPoint[] {
-    if (
-        !Number.isFinite(followFactor) ||
-        followFactor === 0 ||
-        pattern.length < 3 ||
-        rimBefore.length < 3 ||
-        rimAfter.length < 3
-    ) {
+    const factorAt =
+        typeof followFactor === "function"
+            ? followFactor
+            : () => (Number.isFinite(followFactor) ? followFactor : 0);
+    if (pattern.length < 3 || rimBefore.length < 3 || rimAfter.length < 3) {
         return pattern.map((p) => ({ ...p }));
     }
     const before = startAtLowCurvature(ensureCcw(rimBefore.map((p) => ({ ...p, z: 0 }))));
@@ -406,14 +408,67 @@ export function shiftPatternByRimFollow(
     const den = Math.max(total, 1e-9);
     return pattern.map((p, i) => {
         const s01 = (cum[i] ?? 0) / den;
+        const f = factorAt(p, s01);
+        if (!Number.isFinite(f) || f === 0) return { ...p };
         const a = sampleClosedAtArc01(before, s01);
         const b = sampleClosedAtArc01(after, s01);
         return {
-            x: p.x + (b.x - a.x) * followFactor,
-            y: p.y + (b.y - a.y) * followFactor,
+            x: p.x + (b.x - a.x) * f,
+            y: p.y + (b.y - a.y) * f,
             z: p.z,
         };
     });
+}
+
+/** Whole-insole width: scale B about the same medial-lateral centre as the top. */
+export function scalePatternWidth(pattern: PolyPoint[], scale: number, centerY: number): PolyPoint[] {
+    if (!Number.isFinite(scale) || Math.abs(scale - 1) < 1e-12) {
+        return pattern.map((p) => ({ ...p }));
+    }
+    return pattern.map((p) => ({
+        x: p.x,
+        y: centerY + (p.y - centerY) * scale,
+        z: p.z,
+    }));
+}
+
+/**
+ * Re-fit moved B targets through the faired-pattern QP so the result is one
+ * smooth curve (lateral convex, single medial S, C2). Clearance QP still runs
+ * afterwards.
+ */
+export function fairMovedPattern(input: {
+    pattern: PolyPoint[];
+    rim: PolyPoint[];
+    r1: number;
+    r2: number;
+    bounds?: { minX: number; maxX: number };
+    medialYSign?: 1 | -1;
+}): PolyPoint[] {
+    const rim = startAtLowCurvature(ensureCcw(input.rim.map((p) => ({ ...p, z: 0 }))));
+    const targets = startAtLowCurvature(ensureCcw(input.pattern.map((p) => ({ ...p, z: 0 }))));
+    if (targets.length < 3 || rim.length < 3) return targets;
+    const floorInset = minInsetForLeanMm(input.r1, input.r2, 0);
+    const fit = fairedPattern({
+        targets: targets.map((p) => ({ point: p, weight: 1 })),
+        controlCount: 20,
+        wFit: 1,
+        wFair: 0.55,
+        sampleCount: Math.max(160, targets.length, rim.length),
+        constraints: {
+            rim,
+            minInsetMm: floorInset + 0.02,
+            medialYSign: input.medialYSign,
+            bounds: input.bounds,
+            lateralMinK: 0,
+            maxIters: 10,
+        },
+    });
+    return enforceMinRimInset(
+        fit.samples.map((p) => ({ x: p.x, y: p.y, z: 0 })),
+        rim,
+        floorInset,
+    );
 }
 
 export function limitStationSkew(
