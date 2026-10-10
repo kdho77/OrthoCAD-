@@ -2170,10 +2170,42 @@ function reportLeanVsBio(frames: ColumnFrame[], defaults: WallRegionDefaults, _b
     console.log("[S1-LEAN]", JSON.stringify(rows));
 }
 
+function lastRowAcrossDeg(xyz: XYZ[][], i: number): number {
+    const nS = xyz.length;
+    const col = xyz[i]!;
+    const nxt = xyz[(i + 1) % nS]!;
+    const j = Math.min(col.length, nxt.length) - 2;
+    if (j < 0) return 0;
+    const nL = faceN3(col[j]!, nxt[j]!, col[j + 1]!);
+    const nR = faceN3(col[j]!, nxt[j]!, nxt[j + 1]!);
+    if (!nL || !nR) return 0;
+    return vecAngleDeg(nL, nR);
+}
+
+function lastAlongDeg(col: XYZ[], fr: ColumnFrame, j: number): number {
+    if (j < 1 || j >= col.length - 1) return 0;
+    const bin = unit3({ x: -fr.h.y, y: fr.h.x, z: 0 });
+    const t0 = {
+        x: col[j]!.x - col[j - 1]!.x,
+        y: col[j]!.y - col[j - 1]!.y,
+        z: col[j]!.z - col[j - 1]!.z,
+    };
+    const t1 = {
+        x: col[j + 1]!.x - col[j]!.x,
+        y: col[j + 1]!.y - col[j]!.y,
+        z: col[j + 1]!.z - col[j]!.z,
+    };
+    if (hypot3(t0) < ALONG_JOINT_MIN_EDGE_MM || hypot3(t1) < ALONG_JOINT_MIN_EDGE_MM) return 0;
+    return Math.abs(signedJointDeg(t0, t1, bin));
+}
+
 /** Keep nJ; slide the last interior away from B so the last row is ≥ 0.15× spacing. */
 function ensureLastFilletRowHeight(xyz: XYZ[][], frames: ColumnFrame[], stationSpacing: number): void {
     const minLast = FILLET_LAST_ROW_FRAC * stationSpacing;
-    for (let i = 0; i < xyz.length; i++) {
+    const nS = xyz.length;
+    const saved = xyz.map((col) => (col.length >= 2 ? { ...col[col.length - 2]! } : null));
+    const slidAt = new Array<boolean>(nS).fill(false);
+    for (let i = 0; i < nS; i++) {
         const col = xyz[i]!;
         const fr = frames[i]!;
         if (col.length < 4) continue;
@@ -2200,6 +2232,17 @@ function ensureLastFilletRowHeight(xyz: XYZ[][], frames: ColumnFrame[], stationS
         );
         if (dist3(prev2, slid) < MIN_EDGE_MM) continue;
         col[col.length - 2] = slid;
+        slidAt[i] = true;
+    }
+    for (let i = 0; i < nS; i++) {
+        if (!slidAt[i] || !saved[i]) continue;
+        const col = xyz[i]!;
+        const fr = frames[i]!;
+        const across = Math.max(lastRowAcrossDeg(xyz, i), lastRowAcrossDeg(xyz, (i + nS - 1) % nS));
+        const along = Math.max(lastAlongDeg(col, fr, col.length - 2), lastAlongDeg(col, fr, col.length - 3));
+        if (across > ACROSS_STATION_MAX_DEG || along > ALONG_JOINT_MAX_DEG) {
+            col[col.length - 2] = saved[i]!;
+        }
     }
 }
 
