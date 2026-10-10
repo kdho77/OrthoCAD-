@@ -32,7 +32,6 @@ import {
     ensureSourceRimStations,
     fillLargeStationGaps,
     markSourceRimStations,
-    squarePairingsToB,
 } from "./densify-stations";
 import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
@@ -552,7 +551,6 @@ export function reconstructProceduralWalls(
     markSourceRimStations(stations, rimLocal, sourceRim);
     stampMonotonicTB(stations, hygiened.loop);
     applyStoredTB(stations, hygiened.loop);
-    squarePairingsToB(stations, hygiened.loop);
     assertClosedStationRing(stations, rimLocal);
     {
         let minB = Infinity;

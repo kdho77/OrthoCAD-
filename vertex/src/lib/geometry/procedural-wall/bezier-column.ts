@@ -1190,7 +1190,7 @@ export function sampleArcLineArc(
 
 function ensurePieceSpacing(pts: XYZ[], minMm: number, h: { x: number; y: number }, origin: XYZ): XYZ[] {
     if (pts.length < 3) return pts;
-    for (let i = 1; i < pts.length - 2; i++) {
+    for (let i = 1; i < pts.length - 1; i++) {
         const prev = pts[i - 1]!;
         const cur = pts[i]!;
         if (dist3(cur, prev) + 1e-12 >= minMm) continue;
@@ -1329,16 +1329,13 @@ function assertRoundJoints(fr: ColumnFrame, col: XYZ[]): void {
         fr.stationSpacingMm || OUTLINE_STATION_SPACING_MM,
         fr.cosT ?? 1,
     );
-    const roundEnd = Math.max(1, Math.min(col.length - 2, fr.nRoundFix || fr.roundRows || 6));
     const R0 = col[0]!;
-    let first = 1;
-    while (first <= roundEnd && dist3(col[first]!, R0) < MIN_EDGE_MM) first++;
     const tFirst = {
-        x: col[first]!.x - R0.x,
-        y: col[first]!.y - R0.y,
-        z: col[first]!.z - R0.z,
+        x: col[1]!.x - R0.x,
+        y: col[1]!.y - R0.y,
+        z: col[1]!.z - R0.z,
     };
-    const topJoint = first > roundEnd || hypot3(tFirst) < MIN_EDGE_MM ? 0 : vecAngleDeg(tFirst, ala.tStart);
+    const topJoint = dist3(col[1]!, R0) < MIN_EDGE_MM ? 0 : vecAngleDeg(tFirst, ala.tStart);
     let eIdx = Math.max(1, Math.min(col.length - 2, fr.roundRows || 6));
     let bestE = dist3(col[eIdx]!, ala.T1);
     for (let i = 1; i < Math.min(col.length - 1, 24); i++) {
@@ -1516,67 +1513,6 @@ function columnPoints(
     out[0] = { ...fr.R };
     out[out.length - 1] = { ...fr.B };
     return out;
-}
-
-function rimEdgeT(R: XYZ, left: XYZ, right: XYZ): number {
-    const ex = right.x - left.x;
-    const ey = right.y - left.y;
-    const ez = right.z - left.z;
-    const len2 = ex * ex + ey * ey + ez * ez;
-    if (len2 < 1e-18) return 0.5;
-    const t = ((R.x - left.x) * ex + (R.y - left.y) * ey + (R.z - left.z) * ez) / len2;
-    return Math.max(0, Math.min(1, t));
-}
-
-/**
- * Extra stations split source-rim edges. Their round rows lie on the ruled
- * surface between the flanking source columns so rows 0→nRound stay a quad
- * strip; density then changes in the line.
- */
-function interpolateExtraRoundRows(xyz: XYZ[][], frames: ColumnFrame[], stations: HermiteStation[]): void {
-    const n = xyz.length;
-    if (n < 3) return;
-    const sourceAt = stations.map((s) => Boolean(s.sourceRim));
-    if (sourceAt.filter(Boolean).length < 3) return;
-    const nRound = frames[0]?.nRoundFix || 0;
-    const nLine = frames[0]?.nLineFix || 0;
-    if (nRound < 1 || nLine < 1) return;
-    for (let i = 0; i < n; i++) {
-        if (sourceAt[i]) continue;
-        let left = (i + n - 1) % n;
-        while (!sourceAt[left] && left !== i) left = (left + n - 1) % n;
-        let right = (i + 1) % n;
-        while (!sourceAt[right] && right !== i) right = (right + 1) % n;
-        if (left === i || right === i || left === right) continue;
-        const col = xyz[i]!;
-        const L = xyz[left]!;
-        const Rcol = xyz[right]!;
-        const t = rimEdgeT(frames[i]!.R, frames[left]!.R, frames[right]!.R);
-        const rows = Math.min(nRound, col.length - 2, L.length - 2, Rcol.length - 2);
-        for (let k = 1; k <= rows; k++) {
-            const a = L[k]!;
-            const b = Rcol[k]!;
-            const p = {
-                x: a.x + (b.x - a.x) * t,
-                y: a.y + (b.y - a.y) * t,
-                z: a.z + (b.z - a.z) * t,
-            };
-            col[k] = projectToPlane(p, frames[i]!.R, frames[i]!.h);
-        }
-        const T1 = col[nRound]!;
-        const T2 = col[nRound + nLine] ?? frames[i]!.F;
-        for (let k = 1; k <= nLine; k++) {
-            const s = k / nLine;
-            const p = {
-                x: T1.x + (T2.x - T1.x) * s,
-                y: T1.y + (T2.y - T1.y) * s,
-                z: T1.z + (T2.z - T1.z) * s,
-            };
-            col[nRound + k] = projectToPlane(p, frames[i]!.R, frames[i]!.h);
-        }
-        col[0] = { ...frames[i]!.R };
-        col[col.length - 1] = { ...frames[i]!.B };
-    }
 }
 
 function pinJunctionHolds(col: XYZ[], fr: ColumnFrame, _origin: XYZ, _maxS: number, roundRows: number): void {
@@ -1851,15 +1787,6 @@ function clampHeadingTo(
 /** Signed plan offset from B along heading. Positive = toward R (outboard / wall side). */
 export function lastFilletSOutboard(p: XYZ, B: XYZ, h: { x: number; y: number }): number {
     return (B.x - p.x) * h.x + (B.y - p.y) * h.y;
-}
-
-function localBGapMm(stations: HermiteStation[], i: number): number {
-    const n = stations.length;
-    if (n < 2) return 0;
-    const B = stations[i]!.outline;
-    const prev = stations[(i + n - 1) % n]!.outline;
-    const next = stations[(i + 1) % n]!.outline;
-    return Math.max(Math.hypot(B.x - prev.x, B.y - prev.y), Math.hypot(next.x - B.x, next.y - B.y));
 }
 
 /** CCW B-loop outward normal, flipped to agree with plan(B−R). */
@@ -2281,7 +2208,7 @@ export function initColumnFrames(
             sheetSlopeRad,
             roundSlopeRad,
             sheetSlopeValid: faceTilt != null || sampled.valid,
-            stationSpacingMm: Math.max(spacing, localBGapMm(stations, i)),
+            stationSpacingMm: spacing,
             plantarSlopeRad: plantar,
             rFillet: r,
             rTop,
@@ -2430,9 +2357,7 @@ export function buildBezierColumns(
     let nRoundStar = TOP_ROUND_MIN_ROWS;
     let nFilStar = MIN_FILLET_RINGS;
     let nLineNeed = 1;
-    const sourceFrames = frames.filter((_, i) => stations[i]?.sourceRim);
-    const countFrom = sourceFrames.length >= 3 ? sourceFrames : frames;
-    for (const fr of countFrom) {
+    for (const fr of frames) {
         const ala = applyAlaToFrame(fr);
         nRoundStar = Math.max(nRoundStar, Math.ceil(Math.abs(ala.roundSweep) / Math.max(stepRad, 1e-9)));
         const S = Math.abs(ala.phiFil1 - ala.phiFil0);
@@ -2511,7 +2436,6 @@ export function buildBezierColumns(
         const nxt = frames[(i + 1) % frames.length]!;
         maxTiltStep = Math.max(maxTiltStep, (Math.abs(nxt.leanRad - fr.leanRad) * 180) / Math.PI);
     }
-    interpolateExtraRoundRows(xyz, frames, stations);
     for (let i = 0; i < frames.length; i++) {
         const col = xyz[i]!;
         const fr = frames[i]!;
