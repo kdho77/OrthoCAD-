@@ -10,8 +10,13 @@ import {
 import { type HeightFieldParams, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SideCorrections } from "@/types";
-import { constructArcLineArc, FILLET_R_CAP_MM, filletRadiusMm, WELD_MM } from "./bezier-column";
-import { assertCutInOnHighRimSide, medialYSignFromTopRim, parseBottomPattern } from "./bottom-pattern";
+import { constructOutsideRound, FILLET_R_CAP_MM, WELD_MM } from "./bezier-column";
+import {
+    assertCutInOnHighRimSide,
+    medialYSignFromTopRim,
+    PATTERN_SOURCE_SYNTHETIC,
+    parseBottomPattern,
+} from "./bottom-pattern";
 import { ensureCcw, type PolyPoint, startAtPosteriorHeel } from "./curves";
 import {
     type DeviceTypePreset,
@@ -19,11 +24,7 @@ import {
     snapToStep,
     type WallRegionDefaults,
 } from "./defaults";
-import {
-    densifyHeelForefootStations,
-    fillLargeStationGaps,
-    resampleStationsEvenly,
-} from "./densify-stations";
+import { densifyHeelForefootStations, fillLargeStationGaps } from "./densify-stations";
 import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
 import { buildHermiteStations } from "./loft";
@@ -398,6 +399,7 @@ export function reconstructProceduralWalls(
     const hygiened = hygieneBottomPattern(rawOutline, {
         rimPlan,
         requireInsideRim: Boolean(patternPts?.length),
+        clearanceMm: patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : undefined,
         source: patternLabel,
         resampleN: Math.max(160, rawOutline.length, rimPts.length),
     });
@@ -421,25 +423,21 @@ export function reconstructProceduralWalls(
     );
     pairing = collapsed.pairing;
     rimLocal = collapsed.rimLocal;
-    const earlyJ = rimJunctions(positions, indices, rimLocal, pairing.normals);
+    const earlyJ = rimJunctions(positions, indices, rimLocal, pairing.normals, 0);
     const rTop = Math.min(FILLET_R_CAP_MM, Math.max(0, defaults.wallFilletTopMm || 0.5));
     const E: PolyPoint[] = pairing.top.map((R, i) => {
         const B = pairing.plantar[i]!;
         const dx = B.x - R.x;
         const dy = B.y - R.y;
         const len = Math.hypot(dx, dy) || 1;
-        const height = Math.max(R.z - B.z, 0.5);
-        const rBot = Math.min(FILLET_R_CAP_MM, filletRadiusMm(height, len, Math.PI / 2));
-        const ala = constructArcLineArc(
+        const rnd = constructOutsideRound(
             R,
-            B,
             earlyJ[i]?.planeN ?? { x: 0, y: 0, z: 1 },
-            rTop,
-            rBot,
             { x: dx / len, y: dy / len },
-            0,
+            rTop,
+            -Math.PI / 2 + (24 * Math.PI) / 180,
         );
-        return ala.T1;
+        return rnd.E;
     });
     pairing.plantar = retargetPlantarFromE(E, hygiened.loop);
     pairing.sidewaysSkewMm = pairing.plantar.map((p, i) => {
@@ -475,7 +473,6 @@ export function reconstructProceduralWalls(
     densifyHeelForefootStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     applyOutlineClean(stations, rimLocal, indices);
     fillLargeStationGaps(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
-    resampleStationsEvenly(stations, rimLocal, positions, indices, hygiened.loop, model.bounds);
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,
         y: positions[i * 3 + 1]!,

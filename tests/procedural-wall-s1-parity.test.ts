@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import {
     ACROSS_STATION_MAX_DEG,
@@ -185,6 +186,12 @@ const KENDON_REARFOOT = {
     right: [0.98, 0.2, 0] as [number, number, number],
     up: [-0.065, 0.32, 0.945] as [number, number, number],
     light: [0.25, 0.35, 0.9] as [number, number, number],
+};
+
+const BOTTOM_VIEW = {
+    right: [1, 0, 0] as [number, number, number],
+    up: [0, 1, 0] as [number, number, number],
+    light: [0.15, 0.25, 0.95] as [number, number, number],
 };
 
 describe("S1 parametric wall", () => {
@@ -852,7 +859,13 @@ describe("S1 parametric wall", () => {
             "/opt/cursor/artifacts/screenshots/rearfoot-after.png",
             encodePng(900, 680, renderMesh(afterPos, afterIdx, KENDON_REARFOOT, 900, 680)),
         );
+        writeFileSync(
+            "/opt/cursor/artifacts/screenshots/bottom-view.png",
+            encodePng(900, 680, renderMesh(afterPos, afterIdx, BOTTOM_VIEW, 900, 680)),
+        );
         writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.stl", stl);
+        const glb = await exportObjectToGlb(meshFromGeometry(rebuilt));
+        writeFileSync("/opt/cursor/artifacts/sample-top-synthetic.glb", Buffer.from(glb.arrayBuffer));
         if (misses.length || hits.real !== 0) {
             throw new Error(
                 `[S1-SAMPLE] nonzero. STOP.\nmisses: ${misses.join("; ")}\n` +

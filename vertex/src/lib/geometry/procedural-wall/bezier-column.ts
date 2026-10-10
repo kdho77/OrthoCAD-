@@ -99,6 +99,7 @@ export interface ColumnFrame {
     /** Outside-round end = wall start (T1). */
     E: XYZ;
     nTop: XYZ;
+    nTopSmoothed: XYZ;
     wOut: { x: number; y: number };
     nWall: XYZ;
     roundRows: number;
@@ -772,8 +773,10 @@ export function constructArcLineArc(
     const nTop = projectNTop(nTopIn, h);
     const frame = plantarFrameAt(h, plantarSlopeRad);
     const nPlant = unit3(frame.ez);
-    let r1 = Math.max(MIN_ROUND_R_MM, r1In);
-    let r2 = Math.max(0.05, r2In);
+    const height = Math.max(R.z - B.z, 0.5);
+    const rCap = Math.max(0.05, (height - MIN_LINE_MM) * 0.35);
+    let r1 = Math.min(Math.max(MIN_ROUND_R_MM, r1In), rCap);
+    let r2 = Math.min(Math.max(0.05, r2In), rCap);
     let packed = tryAlaRadii(R, B, h, nTop, nPlant, r1, r2);
     for (let i = 0; i < 48 && (!packed || packed.hit.L < MIN_LINE_MM); i++) {
         r1 = Math.max(MIN_ROUND_R_MM, r1 * 0.85);
@@ -932,6 +935,7 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     fr.E = { ...ala.T1 };
     fr.F = { ...ala.T2 };
     fr.nTop = ala.nTop;
+    if (!fr.nTopSmoothed) fr.nTopSmoothed = ala.nTop;
     fr.nWall = ala.n;
     fr.wOut = { x: -fr.h.x, y: -fr.h.y };
     fr.T0 = ala.tStart;
@@ -1415,6 +1419,49 @@ function columnHeading(st: HermiteStation): {
     return { h: { x: dx / planLen, y: dy / planLen }, shortChord: planLen < SHORT_CHORD_MM, planLen };
 }
 
+export function smoothNormalField(normals: XYZ[], rim: XYZ[], sigma = SCALAR_SMOOTH_SIGMA_MM): XYZ[] {
+    if (normals.length < 3) return normals.map((n) => unit3(n));
+    const nx = periodicGaussian(
+        normals.map((n) => n.x),
+        rim,
+        sigma,
+    );
+    const ny = periodicGaussian(
+        normals.map((n) => n.y),
+        rim,
+        sigma,
+    );
+    const nz = periodicGaussian(
+        normals.map((n) => n.z),
+        rim,
+        sigma,
+    );
+    const raw = nx.map((_, i) => {
+        let n = unit3({ x: nx[i]!, y: ny[i]!, z: nz[i]! });
+        if (n.z < 0) n = { x: -n.x, y: -n.y, z: -n.z };
+        return n;
+    });
+    const maxRad = (N_TOP_MAX_DEG * Math.PI) / 180;
+    const out = raw.map((n) => ({ ...n }));
+    for (let pass = 0; pass < 8; pass++) {
+        for (let i = 0; i < out.length; i++) {
+            const prev = out[(i + out.length - 1) % out.length]!;
+            const cur = out[i]!;
+            const ang = Math.acos(Math.max(-1, Math.min(1, dot3(prev, cur))));
+            if (ang <= maxRad + 1e-9) continue;
+            const t = maxRad / ang;
+            let n = unit3({
+                x: prev.x + (cur.x - prev.x) * t,
+                y: prev.y + (cur.y - prev.y) * t,
+                z: prev.z + (cur.z - prev.z) * t,
+            });
+            if (n.z < 0) n = { x: -n.x, y: -n.y, z: -n.z };
+            out[i] = n;
+        }
+    }
+    return out;
+}
+
 export function periodicGaussian(vals: number[], rim: XYZ[], sigma = SCALAR_SMOOTH_SIGMA_MM): number[] {
     const n = vals.length;
     if (n === 0) return [];
@@ -1515,12 +1562,16 @@ export function initColumnFrames(
     plantarSlopeRad: number[] = [],
 ): ColumnFrame[] {
     const outline = stations.map((s) => s.outline);
+    const nTops = smoothNormalField(
+        stations.map((st, i) => unit3(_junctions[i]?.planeN ?? { x: 0, y: 0, z: 1 })),
+        stations.map((st) => st.rim),
+    );
     const frames = stations.map((st, i) => {
         const R = { ...st.rim };
         const B = { ...st.outline };
         const { h, shortChord, planLen } = columnHeading(st);
         const height = Math.max(R.z - B.z, 0.5);
-        const nTop = unit3(_junctions[i]?.planeN ?? { x: 0, y: 0, z: 1 });
+        const nTop = nTops[i]!;
         const sampled = sampleInPlaneSlope(R, h, topZ, _junctions[i]?.planeN);
         const sheetSlopeRad = sampled.valid ? sampled.slopeRad : 0;
         const plantar = plantarSlopeRad[i] ?? 0;
@@ -1555,6 +1606,7 @@ export function initColumnFrames(
             arcEndZ: B.z,
             E: { ...R },
             nTop,
+            nTopSmoothed: nTop,
             wOut: { x: -h.x, y: -h.y },
             nWall: { x: 0, y: 0, z: 1 },
             roundRows: TOP_ROUND_MIN_ROWS,
@@ -1877,7 +1929,10 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         }
         minLine = Math.min(minLine, fr.lineLengthMm);
         const nxtFr = frames[(i + 1) % nS]!;
-        maxNTop = Math.max(maxNTop, vecAngleDeg(fr.nTop, nxtFr.nTop));
+        maxNTop = Math.max(
+            maxNTop,
+            vecAngleDeg(fr.nTopSmoothed ?? fr.nTop, nxtFr.nTopSmoothed ?? nxtFr.nTop),
+        );
         const r1den = Math.max(fr.rTop, 1e-6);
         const r2den = Math.max(fr.rFillet, 1e-6);
         maxR1 = Math.max(maxR1, (Math.abs(nxtFr.rTop - fr.rTop) / r1den) * 100);

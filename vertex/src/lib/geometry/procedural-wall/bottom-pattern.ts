@@ -11,12 +11,15 @@ import {
 } from "./curves";
 
 export const PATTERN_INSET_MM = 2;
+export const PATTERN_HEEL_INSET_MM = 8;
 export const PATTERN_HEEL_LATERAL_INSET_MM = 2;
 export const PATTERN_ARCH_INSET_MM = 28;
-export const PATTERN_FOREFOOT_INSET_MM = 2;
+export const PATTERN_FOREFOOT_INSET_MM = 0;
+export const PATTERN_BLEND_MM = 18;
+export const PATTERN_HEEL_U1 = 0.16;
 export const PATTERN_ARCH_U0 = 0.18;
 export const PATTERN_ARCH_U1 = 0.58;
-export const PATTERN_FORE_U0 = 0.78;
+export const PATTERN_FORE_U0 = 0.76;
 export const PATTERN_SOURCE_SYNTHETIC = "synthetic";
 export const MIDFOOT_U0 = 0.28;
 export const MIDFOOT_U1 = 0.48;
@@ -138,19 +141,41 @@ function archWindow(u: number): number {
     return 0.5 - 0.5 * Math.cos(2 * Math.PI * t);
 }
 
-function regionInsetMm(u: number, y: number, yMid: number, sign: MedialYSign): number {
-    const tFore = Math.max(0, Math.min(1, (u - PATTERN_FORE_U0) / (1 - PATTERN_FORE_U0)));
-    const base = PATTERN_HEEL_LATERAL_INSET_MM * (1 - tFore) + PATTERN_FOREFOOT_INSET_MM * tFore;
+/** C2 at 0 and 1: first and second derivatives vanish. */
+function smootherstep(t: number): number {
+    const x = Math.max(0, Math.min(1, t));
+    return x * x * x * (x * (x * 6 - 15) + 10);
+}
+
+function regionWeights(u: number, lengthMm: number): { heel: number; mid: number; fore: number } {
+    const du = Math.max(1e-3, PATTERN_BLEND_MM / Math.max(lengthMm, 1));
+    let heel = 0;
+    if (u <= PATTERN_HEEL_U1) heel = 1;
+    else if (u < PATTERN_HEEL_U1 + du) heel = 1 - smootherstep((u - PATTERN_HEEL_U1) / du);
+    let fore = 0;
+    if (u >= PATTERN_FORE_U0) fore = 1;
+    else if (u > PATTERN_FORE_U0 - du) fore = smootherstep((u - (PATTERN_FORE_U0 - du)) / du);
+    const mid = Math.max(0, 1 - heel - fore);
+    const sum = heel + mid + fore;
+    return { heel: heel / sum, mid: mid / sum, fore: fore / sum };
+}
+
+function regionInsetMm(u: number, y: number, yMid: number, sign: MedialYSign, lengthMm: number): number {
+    const w = regionWeights(u, lengthMm);
+    const base =
+        w.heel * PATTERN_HEEL_INSET_MM +
+        w.mid * PATTERN_HEEL_LATERAL_INSET_MM +
+        w.fore * PATTERN_FOREFOOT_INSET_MM;
     const extra =
         (y - yMid) * sign > 0 ? (PATTERN_ARCH_INSET_MM - PATTERN_HEEL_LATERAL_INSET_MM) * archWindow(u) : 0;
     return base + extra;
 }
 
 /**
- * Synthetic bottom-pattern until Kendon's file arrives: the TopSheet rim's
- * plan projection offset inward by heel/lateral/forefoot ~2 mm (1–3 mm),
- * and a smooth C2 medial-arch cut-in of ~28 mm (25–30 mm) at its deepest.
- * Labeled `synthetic`.
+ * Synthetic bottom-pattern (Kendon markup): TopSheet rim plan projection
+ * with an 8 mm radial heel-counter inset, midfoot ~2 mm plus the medial-arch
+ * cut-in (~28 mm), and ~0 mm at the toe box so it sits full-width. C2
+ * smootherstep blends over ~18 mm. Labeled `synthetic`.
  */
 export function syntheticBottomPattern(
     outline: PolyPoint[],
@@ -167,23 +192,17 @@ export function syntheticBottomPattern(
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
     const insets = loop.map((p) => {
         const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
-        return regionInsetMm(u, p.y, yMid, sign);
+        return regionInsetMm(u, p.y, yMid, sign, length);
     });
-    for (let pass = 0; pass < 6; pass++) {
-        const next = insets.slice();
-        for (let i = 0; i < n; i++) {
-            const a = insets[(i + n - 1) % n]!;
-            const b = insets[i]!;
-            const c = insets[(i + 1) % n]!;
-            next[i] = 0.5 * b + 0.25 * a + 0.25 * c;
-        }
-        for (let i = 0; i < n; i++) insets[i] = next[i]!;
-    }
     const offset: PolyPoint[] = [];
     for (let i = 0; i < n; i++) {
         const p = loop[i]!;
         const m = miterInward(i, loop);
         const d = insets[i]!;
+        if (d <= 1e-6) {
+            offset.push({ x: p.x, y: p.y, z: 0 });
+            continue;
+        }
         const q = { x: p.x + m.x * d, y: p.y + m.y * d, z: 0 };
         if (!pointInPoly(q.x, q.y, loop)) {
             offset.push({ x: p.x - m.x * d, y: p.y - m.y * d, z: 0 });

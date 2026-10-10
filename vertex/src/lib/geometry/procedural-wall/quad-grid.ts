@@ -85,6 +85,7 @@ export function rimJunctions(
     indices: ArrayLike<number>,
     rim: number[],
     outboard: Array<{ x: number; y: number }>,
+    patchMm = N_TOP_PATCH_MM,
 ): RimJunction[] {
     const vfaces = new Map<number, number[]>();
     for (let t = 0; t < indices.length; t += 3) {
@@ -97,7 +98,7 @@ export function rimJunctions(
             list.push(t);
         }
     }
-    const patch = Math.max(0.5, N_TOP_PATCH_MM);
+    const patch = Math.max(0, patchMm);
     const patch2 = patch * patch;
     return rim.map((vi, si) => {
         const Rx = pos[vi * 3]!;

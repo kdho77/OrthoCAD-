@@ -106,12 +106,12 @@ export function assertInsideRim(
     if (rimPlan.length < 3) return;
     for (let i = 0; i < pattern.length; i++) {
         const p = pattern[i]!;
-        if (!pointInPoly(p.x, p.y, rimPlan)) {
+        const d = minDistToLoopXY(p.x, p.y, rimPlan);
+        if (!pointInPoly(p.x, p.y, rimPlan) && d > 1e-4) {
             throw new Error(
                 `[S1-PATTERN] station ${i} (${p.x.toFixed(2)},${p.y.toFixed(2)}) is outside the TopSheet rim`,
             );
         }
-        const d = minDistToLoopXY(p.x, p.y, rimPlan);
         if (d < clearanceMm - 1e-6) {
             throw new Error(
                 `[S1-PATTERN] station ${i} (${p.x.toFixed(2)},${p.y.toFixed(2)}) is ` +
@@ -131,6 +131,7 @@ export function hygieneBottomPattern(
     opts?: {
         rimPlan?: PolyPoint[];
         requireInsideRim?: boolean;
+        clearanceMm?: number;
         source?: string;
         resampleN?: number;
     },
@@ -150,7 +151,7 @@ export function hygieneBottomPattern(
     const n = Math.max(opts?.resampleN ?? 0, 160, smoothed.length);
     const resampled = resampleClosedC2(fitClosedC2Spline(smoothed), n);
     if (opts?.requireInsideRim && opts.rimPlan?.length) {
-        assertInsideRim(resampled, opts.rimPlan);
+        assertInsideRim(resampled, opts.rimPlan, opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM);
     }
     const source = opts?.source ?? "pattern";
     return { loop: resampled, turning: turningNumber(resampled), minRadiusMm, source };

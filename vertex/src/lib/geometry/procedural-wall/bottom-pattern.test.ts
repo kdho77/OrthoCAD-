@@ -6,8 +6,7 @@ import {
     assertCutInOnHighRimSide,
     medialYSignFromTopRim,
     PATTERN_ARCH_INSET_MM,
-    PATTERN_FOREFOOT_INSET_MM,
-    PATTERN_HEEL_LATERAL_INSET_MM,
+    PATTERN_HEEL_INSET_MM,
     parseBottomPattern,
     syntheticBottomPattern,
 } from "./bottom-pattern";
@@ -38,23 +37,33 @@ describe("synthetic bottom pattern", () => {
         });
         const bounds = { minX: 10, maxX: 230 };
         const raw = syntheticBottomPattern(outline, bounds);
-        const pattern = hygieneBottomPattern(raw, { rimPlan: outline, requireInsideRim: true }).loop;
+        const pattern = hygieneBottomPattern(raw, {
+            rimPlan: outline,
+            requireInsideRim: true,
+            clearanceMm: 0,
+        }).loop;
         expect(pattern.length).toBeGreaterThan(80);
         expect(Math.abs(turning(pattern) - 1)).toBeLessThan(0.05);
         let minC = Infinity;
         let maxC = 0;
         let medial = 0;
+        let heelC = 0;
+        let foreC = Infinity;
         const length = bounds.maxX - bounds.minX;
         for (const p of pattern) {
-            expect(pointInPoly(p.x, p.y, outline)).toBe(true);
+            expect(pointInPoly(p.x, p.y, outline) || minDistToLoopXY(p.x, p.y, outline) < 1e-3).toBe(true);
             const c = minDistToLoopXY(p.x, p.y, outline);
             minC = Math.min(minC, c);
             maxC = Math.max(maxC, c);
             const u = (p.x - bounds.minX) / length;
             if (p.y > 8 && u > 0.22 && u < 0.55) medial = Math.max(medial, c);
+            if (u < 0.12) heelC = Math.max(heelC, c);
+            if (u > 0.82) foreC = Math.min(foreC, c);
         }
-        expect(minC).toBeGreaterThan(PATTERN_FOREFOOT_INSET_MM * 0.45);
-        expect(maxC).toBeGreaterThan(PATTERN_HEEL_LATERAL_INSET_MM + 1.5);
+        expect(foreC).toBeLessThan(1.5);
+        expect(minC).toBeLessThan(1.5);
+        expect(heelC).toBeGreaterThan(PATTERN_HEEL_INSET_MM * 0.7);
+        expect(maxC).toBeGreaterThan(PATTERN_HEEL_INSET_MM * 0.7);
         expect(medial).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.45);
     });
 
@@ -71,7 +80,11 @@ describe("synthetic bottom pattern", () => {
         const bounds = { minX: 10, maxX: 230 };
         expect(medialYSignFromTopRim(outline, bounds)).toBe(-1);
         const raw = syntheticBottomPattern(outline, bounds, outline);
-        const pattern = hygieneBottomPattern(raw, { rimPlan: outline, requireInsideRim: true }).loop;
+        const pattern = hygieneBottomPattern(raw, {
+            rimPlan: outline,
+            requireInsideRim: true,
+            clearanceMm: 0,
+        }).loop;
         assertCutInOnHighRimSide(pattern, outline, bounds, -1);
         const length = bounds.maxX - bounds.minX;
         let medialNeg = 0;
