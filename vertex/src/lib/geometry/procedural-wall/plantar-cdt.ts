@@ -518,6 +518,7 @@ function sliverFillSteiner(
     loop: PolyPoint[],
     keep: number,
     limit: number,
+    minAngOnly = false,
 ): { extra: PolyPoint[]; worst: Record<string, unknown> | null } {
     const nOuter = loop.length;
     const extra: PolyPoint[] = [];
@@ -545,7 +546,11 @@ function sliverFillSteiner(
                 distB: Number(minDistToLoopXY(cx, cy, loop).toFixed(3)),
             };
         }
-        if (aspect <= limit && minAng >= SLIVER_MIN_ANGLE_DEG) continue;
+        if (minAngOnly) {
+            if (minAng >= SLIVER_MIN_ANGLE_DEG) continue;
+        } else if (aspect <= limit) {
+            continue;
+        }
         pushSteiner(extra, loop, cx, cy, keep);
         const pts = [A, B, C];
         for (let k = 0; k < 3; k++) {
@@ -563,6 +568,47 @@ function sliverFillSteiner(
         }
     }
     return { extra, worst };
+}
+
+function refineMinAngle(
+    loop: PolyPoint[],
+    extra: PolyPoint[],
+    extraEdges: Array<[number, number]>,
+    keep: number,
+    baseSteiner: PolyPoint[],
+    seed: {
+        points: PolyPoint[];
+        faces: Array<[number, number, number]>;
+        steinerCount: number;
+        sliverMaxAspect: number;
+    },
+    wantSteiner: boolean,
+): {
+    points: PolyPoint[];
+    faces: Array<[number, number, number]>;
+    steinerCount: number;
+    sliverMaxAspect: number;
+} {
+    if (!wantSteiner) return seed;
+    let good = seed;
+    const refine: PolyPoint[] = [];
+    for (let pass = 0; pass < 4; pass++) {
+        const minAng = maxBoundaryMinAngleDeg(good.points, good.faces, loop, PLANTAR_SLIVER_BAND_MM);
+        if (minAng >= SLIVER_MIN_ANGLE_DEG) return good;
+        const filled = sliverFillSteiner(good.points, good.faces, loop, keep, I_SLIVER_ASPECT, true);
+        if (!filled.extra.length) return good;
+        refine.push(...filled.extra);
+        const steiner = [...baseSteiner, ...refine];
+        const points = [...loop, ...extra, ...steiner];
+        nudgeInteriorDuplicates(points, loop.length, loop, keep);
+        const faces = libraryCdtInterior(points, loop.length, extraEdges);
+        assertIEdges(faces, loop.length);
+        assertLibraryDisk(faces, loop.length);
+        const aspect = maxBoundaryAspect(points, faces, loop, PLANTAR_SLIVER_BAND_MM);
+        if (aspect > I_SLIVER_ASPECT) return good;
+        good = { points, faces, steinerCount: steiner.length, sliverMaxAspect: aspect };
+    }
+    return good;
 }
 
 function cdtDiskOf(
@@ -621,7 +667,7 @@ function cdtDiskOf(
                 minAng,
             };
         }
-        if (sliverMaxAspect <= I_SLIVER_ASPECT && minAng >= SLIVER_MIN_ANGLE_DEG) {
+        if (sliverMaxAspect <= I_SLIVER_ASPECT) {
             if (dense) {
                 console.log(
                     "[S1-CDT-STEINER]",
@@ -638,7 +684,16 @@ function cdtDiskOf(
                     }),
                 );
             }
-            return { points, faces, steinerCount: steiner.length, sliverMaxAspect };
+            const angled = refineMinAngle(
+                loop,
+                extra,
+                extraEdges,
+                keep,
+                [...collar, ...inward, ...hex, ...refine],
+                { points, faces, steinerCount: steiner.length, sliverMaxAspect },
+                wantSteiner,
+            );
+            return angled;
         }
         if (!wantSteiner) break;
         const filled = sliverFillSteiner(points, faces, loop, keep, I_SLIVER_ASPECT);
@@ -649,7 +704,15 @@ function cdtDiskOf(
         refine.push(...filled.extra);
     }
     if (best) {
-        return best;
+        return refineMinAngle(
+            loop,
+            extra,
+            extraEdges,
+            keep,
+            [...collar, ...inward, ...hex, ...refine],
+            best,
+            wantSteiner,
+        );
     }
     const steiner = wantSteiner ? [...collar, ...inward, ...hex, ...refine] : [];
     if (dense) {
