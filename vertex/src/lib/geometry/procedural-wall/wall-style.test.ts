@@ -5,16 +5,21 @@ import { describe, expect, test } from "@rstest/core";
 import {
     chordOffsetAtMid,
     clampWeightForChordOffset,
+    conicRowCountByTurning,
     evalRationalQuadratic,
+    g1ControlPoint,
+    g1OfConic,
     hybridBulgeAt,
     intersectTangentLines,
     midStyleWeight,
     planBoundsOf,
     resolveWallStyleParams,
+    sampleConicByArcLength,
     sampleWallMidStyle,
     stationBulge,
     WALL_BULGE_OFFSET_FRAC,
     WALL_BULGE_OFFSET_MAX_MM,
+    WALL_MID_TURN_MAX_DEG,
     WALL_W_MAX,
 } from "./wall-style";
 
@@ -84,7 +89,7 @@ describe("wall style mid-piece", () => {
         expect(bound.offsetMax).toBeLessThanOrEqual(2 + 1e-6);
     });
 
-    test("parallel end tangents still emit an outward conic on round", () => {
+    test("parallel end tangents stay G1 and do not invent an off-tangent M", () => {
         const E = { x: 0, y: 0, z: 10 };
         const F = { x: 0, y: 0, z: 2 };
         const tE = { x: 0, y: 0, z: -1 };
@@ -101,30 +106,65 @@ describe("wall style mid-piece", () => {
             resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 2 }),
             0.6,
         );
-        expect(pts.weight).toBeGreaterThan(0.05);
+        const ctrl = g1ControlPoint(E, tE, F, tF);
+        expect(ctrl).not.toBeNull();
+        const g1 = g1OfConic(E, ctrl!.M, F, tE, tF);
+        expect(g1.e).toBeLessThan(1);
         expect(pts.M).not.toBeNull();
-        expect(chordOffsetAtMid(E, pts.M!, F, pts.weight)).toBeGreaterThan(0.05);
+        expect(g1OfConic(E, pts.M!, F, tE, tF).e).toBeLessThan(1);
     });
 
-    test("tall-wall round chord offset approaches min(0.25|EF|, 3 mm)", () => {
+    test("G1 M stays on the E/F tangents; bounds shrink w only", () => {
         const E = { x: 0, y: 0, z: 14 };
         const F = { x: 0, y: 0, z: 2 };
-        const bound = Math.min(WALL_BULGE_OFFSET_FRAC * 12, WALL_BULGE_OFFSET_MAX_MM);
+        const tE = { x: 1, y: 0, z: -1 };
+        const tF = { x: 1, y: 0, z: 1 };
+        const ctrl = g1ControlPoint(E, tE, F, tF);
+        expect(ctrl).not.toBeNull();
         const pts = sampleWallMidStyle(
             E,
             F,
-            { x: 0, y: 0, z: -1 },
-            { x: 0, y: 0, z: 1 },
+            tE,
+            tF,
             { x: 0, y: 0, z: 16 },
             8,
             14,
             { x: 1, y: 0 },
-            resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 4 }),
+            resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 2 }),
             0.6,
         );
-        expect(pts.weight).toBeCloseTo(WALL_W_MAX, 2);
-        expect(pts.chordOffsetMm ?? 0).toBeGreaterThan(bound * 0.85);
+        expect(pts.M).not.toBeNull();
+        const g1 = g1OfConic(E, pts.M!, F, tE, tF);
+        expect(g1.e).toBeLessThan(1);
+        expect(g1.f).toBeLessThan(1);
+        expect(pts.planOffsetMm ?? 0).toBeLessThanOrEqual(2 + 1e-6);
+        const bound = Math.min(WALL_BULGE_OFFSET_FRAC * 12, WALL_BULGE_OFFSET_MAX_MM);
         expect(pts.chordOffsetMm ?? 0).toBeLessThanOrEqual(bound + 1e-6);
+    });
+
+    test("conic rows densify until turning is <= 4 deg", () => {
+        const E = { x: 0, y: 0, z: 14 };
+        const F = { x: 0, y: 0, z: 2 };
+        const M = { x: 6, y: 0, z: 8 };
+        const n = conicRowCountByTurning(E, M, F, 0.9, WALL_MID_TURN_MAX_DEG);
+        expect(n).toBeGreaterThan(4);
+        const pts = [{ x: 0, y: 0, z: 14 }, ...sampleConicByArcLength(E, M, F, 0.9, n)];
+        let max = 0;
+        for (let i = 1; i < pts.length - 1; i++) {
+            const a = pts[i]!;
+            const b = pts[i - 1]!;
+            const c = pts[i + 1]!;
+            const u = { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+            const v = { x: c.x - a.x, y: c.y - a.y, z: c.z - a.z };
+            const du = Math.hypot(u.x, u.y, u.z) || 1;
+            const dv = Math.hypot(v.x, v.y, v.z) || 1;
+            const ang =
+                (Math.acos(Math.max(-1, Math.min(1, (u.x * v.x + u.y * v.y + u.z * v.z) / (du * dv)))) *
+                    180) /
+                Math.PI;
+            max = Math.max(max, Math.min(ang, 180 - ang));
+        }
+        expect(max).toBeLessThanOrEqual(WALL_MID_TURN_MAX_DEG + 0.05);
     });
 
     test("stationBulge is 0 on straight and ramps on hybrid", () => {

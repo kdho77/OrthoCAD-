@@ -413,6 +413,10 @@ export {
     S1_PROFILE_RESIDUAL_MM,
 } from "./types";
 export {
+    acuteVecDeg,
+    conicRowCountByTurning,
+    g1ControlPoint,
+    g1OfConic,
     HYBRID_BLEND_MM,
     HYBRID_SWITCH_U_LATERAL,
     HYBRID_SWITCH_U_MEDIAL,
@@ -424,6 +428,10 @@ export {
     sampleWallMidStyle,
     stationBulge,
     WALL_BULGE_DEFAULT,
+    WALL_MID_DIHEDRAL_MAX_DEG,
+    WALL_MID_TURN_MAX_DEG,
     WALL_PLAN_OUT_DEFAULT_MM,
+    WALL_STYLE_ACROSS_P99_MAX_DEG,
+    WALL_STYLE_G1_MAX_DEG,
     type WallStyleParams,
 } from "./wall-style";

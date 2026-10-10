@@ -13,7 +13,19 @@ import {
 } from "./hermite";
 import { countColumnPlanReversals, type HermiteStation } from "./loft";
 import { countPlanViewChordCrossings, smoothAndCapFlare } from "./stations";
-import { resolveWallStyleParams, sampleWallMidStyle, stationBulge, type WallStyleParams } from "./wall-style";
+import {
+    g1ControlPoint,
+    g1OfConic,
+    type MidStyleLock,
+    resolveWallStyleParams,
+    sampleWallMidStyle,
+    stationBulge,
+    WALL_MID_SMOOTH_SIGMA_MM,
+    WALL_MID_TURN_MAX_DEG,
+    WALL_STYLE_G1_MAX_DEG,
+    WALL_W_MIN,
+    type WallStyleParams,
+} from "./wall-style";
 
 export interface ColumnJunction {
     planeN: XYZ;
@@ -239,6 +251,14 @@ export interface ColumnFrame {
     midChordOffMm?: number;
     midPlanOffMm?: number;
     midLimit?: "none" | "w" | "chord" | "plan";
+    /** Locked G1 control after ring-smooth (round/hybrid). */
+    midM?: XYZ;
+    midS?: number;
+    midT?: number;
+    midWLock?: number;
+    midTE?: XYZ;
+    midTF?: XYZ;
+    midForceStraight?: boolean;
     /** Laplacian F; applyAla honors this instead of rebuilding F from r2. */
     fLocked?: XYZ;
 }
@@ -251,6 +271,7 @@ export interface SweepMidStyle {
     weightOut?: { value: number };
     g1Out?: { e: number; f: number };
     offsetOut?: { chord: number; plan: number; limit: "none" | "w" | "chord" | "plan" };
+    lock?: MidStyleLock;
 }
 
 export interface ObliqueFallbackRow {
@@ -307,6 +328,12 @@ export interface ColumnQuality {
     stationSpacingMm: number;
     rowPieceIdentical: boolean;
     maxAlongRowDeg: number;
+    /** Max turning between adjacent mid-style (conic) rows. Gate: ≤4. */
+    maxMidRowTurnDeg: number;
+    /** Max adjacent-row dihedral on the mid-style strip. Gate: ≤4. */
+    maxMidRowDihedralDeg: number;
+    /** Across p99 on mid-style rows only. */
+    maxMidAcrossP99Deg: number;
     maxObliqueDeg: number;
     nObliqueWarn: number;
     maxG1EDeg: number;
@@ -2608,6 +2635,7 @@ export function sampleSweepRule(
         midStyle?.outward ?? { x: sw.eW.x, y: sw.eW.y },
         style,
         bulge,
+        midStyle?.lock,
     );
     if (midStyle?.weightOut) midStyle.weightOut.value = mid.weight;
     if (midStyle?.offsetOut) {
@@ -2616,24 +2644,26 @@ export function sampleSweepRule(
         midStyle.offsetOut.limit = mid.limit ?? "none";
     }
     if (midStyle?.g1Out) {
-        const acute = (a: XYZ, b: XYZ): number => Math.min(vecAngleDeg(a, b), 180 - vecAngleDeg(a, b));
+        midStyle.g1Out.e = mid.g1EDeg ?? 0;
+        midStyle.g1Out.f = mid.g1FDeg ?? 0;
         if (mid.M) {
-            midStyle.g1Out.e = acute(tE, {
-                x: mid.M.x - sw.E.x,
-                y: mid.M.y - sw.E.y,
-                z: mid.M.z - sw.E.z,
-            });
-            midStyle.g1Out.f = acute(tF, {
+            const g1 = g1OfConic(sw.E, mid.M, fil.Fpiece, tE, tF);
+            midStyle.g1Out.e = g1.e;
+            const fm = {
                 x: mid.M.x - fil.Fpiece.x,
                 y: mid.M.y - fil.Fpiece.y,
                 z: mid.M.z - fil.Fpiece.z,
-            });
+            };
+            const fmP = projectOntoSpan(fm, sw.fil.ew, sw.fil.ez);
+            const tFp = projectOntoSpan(tF, sw.fil.ew, sw.fil.ez);
+            const deg = hypot3(fmP) > 1e-9 && hypot3(tFp) > 1e-9 ? vecAngleDeg(unit3(fmP), unit3(tFp)) : g1.f;
+            midStyle.g1Out.f = Math.min(deg, 180 - deg);
         }
     }
     for (const p of mid.pts) pts.push(p);
     for (const p of fil.pts) pts.push(p);
     pts.push({ ...B });
-    ensureColumnMinEdge(pts, MIN_EDGE_MM);
+    ensureColumnMinEdge(pts, MIN_EDGE_MM, [nRound, nRound + nLine]);
     return strictSpacing ? assertPieceSpacing(pts, MIN_EDGE_MM, station) : pts;
 }
 
@@ -2890,6 +2920,7 @@ function columnPoints(
             weightOut,
             g1Out,
             offsetOut,
+            lock: fr.midM ? { M: fr.midM, w: fr.midWLock ?? 0 } : undefined,
         },
     );
     fr.midWeight = weightOut.value;
@@ -2900,9 +2931,8 @@ function columnPoints(
     assembled[0] = { ...fr.R };
     assembled[assembled.length - 1] = { ...fr.B };
     if (style.style !== "straight") {
-        // Style G1 is the rational quadratic vs EM/FM (0 by construction).
-        fr.g1EDeg = 0;
-        fr.g1FDeg = 0;
+        fr.g1EDeg = g1Out.e;
+        fr.g1FDeg = g1Out.f;
     }
     return assembled;
 }
@@ -4051,6 +4081,146 @@ export function lockFilletSteal(frames: ColumnFrame[], nFil: number): void {
     }
 }
 
+function midStyleEnds(fr: ColumnFrame): { E: XYZ; Fpiece: XYZ; tE: XYZ; tF: XYZ } | null {
+    applyAlaToFrame(fr);
+    const sw = fr.sweepRule;
+    if (!sw) return null;
+    const local = localSpacingOf(fr);
+    const walk = filletWalkPhis(sw.fil.phi0, sw.fil.phi1, fr.B, (phi) => filletPointAtPhi(sw.fil, phi));
+    const S = Math.abs(walk.phiB - walk.phiF);
+    const dL = fr.lastDlRad && fr.lastDlRad > 1e-12 ? fr.lastDlRad : lastFilletDLRad(S, 1);
+    const nFil = Math.max(1, fr.nFilFix || MIN_FILLET_RINGS);
+    const nLine = Math.max(1, fr.nLineFix || 1);
+    const fil = sampleFilletPiecePoints(
+        sw.E,
+        sw.F,
+        sw.r2,
+        S,
+        walk.phiF,
+        walk.phiB,
+        (phi) => filletPointAtPhi(sw.fil, phi),
+        nFil,
+        dL,
+        lastFilletCMinMm(local),
+        fr.filletStealLock,
+        nLine,
+    );
+    const toward = (t: XYZ, target: XYZ, from: XYZ): XYZ => {
+        const w = { x: target.x - from.x, y: target.y - from.y, z: target.z - from.z };
+        return t.x * w.x + t.y * w.y + t.z * w.z < 0 ? { x: -t.x, y: -t.y, z: -t.z } : t;
+    };
+    return {
+        E: sw.E,
+        Fpiece: fil.Fpiece,
+        tE: toward(sweptRoundTangent(sw.eN, sw.eW, sw.phiRound1), fil.Fpiece, sw.E),
+        tF: toward(filletTangentAtPhi(sw.fil, walk.phiF), sw.E, fil.Fpiece),
+    };
+}
+
+/**
+ * Place M on E/F tangents, smooth w and M-offset along the ring, then raise
+ * nLine* so every conic row turns ≤4°. Bounds shrink w only.
+ */
+function prepareStyledMid(
+    frames: ColumnFrame[],
+    nWall: number,
+    nRound: number,
+    nFil: number,
+    nLine: number,
+): number {
+    const style = frames[0]?.wallStyle ?? resolveWallStyleParams({ style: "straight" });
+    if (style.style === "straight" || !frames.length) return nWall;
+    const ends = frames.map((fr) => midStyleEnds(fr));
+    const rawW: number[] = [];
+    const rawS: number[] = [];
+    const rawT: number[] = [];
+    const rawM: Array<XYZ | null> = [];
+    for (let i = 0; i < frames.length; i++) {
+        const fr = frames[i]!;
+        const en = ends[i];
+        const bulge = stationBulge(style, fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250);
+        if (!en) {
+            rawW.push(0);
+            rawS.push(0);
+            rawT.push(0);
+            rawM.push(null);
+            continue;
+        }
+        const mid = sampleWallMidStyle(
+            en.E,
+            en.Fpiece,
+            en.tE,
+            en.tF,
+            fr.R,
+            Math.max(1, fr.nLineFix || nLine),
+            fr.heightMm,
+            { x: fr.wOut.x, y: fr.wOut.y },
+            style,
+            bulge,
+        );
+        rawW.push(mid.weight);
+        rawS.push(mid.s ?? 0);
+        rawT.push(mid.t ?? 0);
+        rawM.push(mid.M);
+        fr.midTE = en.tE;
+        fr.midTF = en.tF;
+    }
+    const rim = frames.map((fr) => fr.R);
+    const smW = periodicGaussian(rawW, rim, WALL_MID_SMOOTH_SIGMA_MM);
+    const smS = periodicGaussian(rawS, rim, WALL_MID_SMOOTH_SIGMA_MM);
+    const smT = periodicGaussian(rawT, rim, WALL_MID_SMOOTH_SIGMA_MM);
+    let nLineNeed = nLine;
+    for (let i = 0; i < frames.length; i++) {
+        const fr = frames[i]!;
+        const en = ends[i];
+        const M0 = rawM[i];
+        if (!en || !M0) continue;
+        const tE = unit3(fr.midTE ?? en.tE);
+        const tF = unit3(fr.midTF ?? en.tF);
+        const snap = g1ControlPoint(en.E, tE, en.Fpiece, tF);
+        const pE = add3(en.E, tE, Math.max(0.15, smS[i] ?? rawS[i]!));
+        // M stays on the E tangent (G1-E). Use the smoothed offset so neighbouring
+        // stations do not cliff; snap only when that would beat G1-F and still hold G1-E.
+        let M = pE;
+        if (snap && g1OfConic(en.E, pE, en.Fpiece, tE, tF).f > WALL_STYLE_G1_MAX_DEG + 1e-6) {
+            const g1Ix = g1OfConic(en.E, snap.M, en.Fpiece, tE, tF);
+            if (g1Ix.e <= WALL_STYLE_G1_MAX_DEG + 1e-6) M = snap.M;
+        }
+        const bulge = stationBulge(style, fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250);
+        const locked = sampleWallMidStyle(
+            en.E,
+            en.Fpiece,
+            tE,
+            tF,
+            fr.R,
+            Math.max(1, fr.nLineFix || nLine),
+            fr.heightMm,
+            { x: fr.wOut.x, y: fr.wOut.y },
+            style,
+            bulge,
+            { M, w: Math.max(WALL_W_MIN, smW[i] ?? rawW[i]!) },
+        );
+        if (!locked.M) continue;
+        fr.midM = locked.M;
+        fr.midWLock = locked.weight;
+        fr.midS = locked.s;
+        fr.midT = locked.t;
+        fr.midWeight = locked.weight;
+        nLineNeed = Math.max(nLineNeed, locked.rowNeed ?? nLine);
+    }
+    const nLineStar = Math.max(nLine, nLineNeed);
+    for (const fr of frames) fr.nLineFix = nLineStar;
+    console.log(
+        "[S1-MID-STYLE]",
+        JSON.stringify({
+            nLine: nLineStar,
+            turnCap: WALL_MID_TURN_MAX_DEG,
+            sigma: WALL_MID_SMOOTH_SIGMA_MM,
+        }),
+    );
+    return nRound + nLineStar + nFil + 2;
+}
+
 function applyPieceCounts(frames: ColumnFrame[], report: NRoundStarReport): number {
     for (const fr of frames) {
         fr.nRoundFix = report.nRound;
@@ -4200,6 +4370,8 @@ export function buildBezierColumns(
     enforceAbsRadiusRate(frames, movedAt);
     smoothFRing(frames);
     lockFilletSteal(frames, nFilStar);
+    nWall = prepareStyledMid(frames, nWall, nRoundStar, nFilStar, nLineStar);
+    nLineStar = frames[0]?.nLineFix || nLineStar;
     const xyz: PolyPoint[][] = [];
     const implied: number[] = [];
     let maxOff = 0;
@@ -4689,6 +4861,8 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let lastSzMono = true;
     let rowPieceIdentical = true;
     let maxAlongRow = 0;
+    let maxMidRowTurn = 0;
+    const midAcrossAll: number[] = [];
     let worstAlongRow = { i: -1, j: -1, deg: 0 };
     let worstAspect = { i: -1, j: -1, short: 0, long: 0, ratio: 0 };
     let worstRatio = { i: -1, lo: 0, hi: 0, ratio: 0, ring: "" };
@@ -4868,6 +5042,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             if (nRnd && j === nRnd) {
                 maxRoundWall = Math.max(maxRoundWall, fr.g1EDeg ?? absDeg);
             }
+            if (j > nRnd && j < nRnd + nLn) {
+                maxMidRowTurn = Math.max(maxMidRowTurn, absDeg);
+            }
         }
         for (let j = 1; j < col.length; j++) {
             minEdge = Math.min(minEdge, dist3(col[j]!, col[j - 1]!));
@@ -4953,6 +5130,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 });
             }
             acrossAll.push(raw);
+            if (j > nRnd && j < nRnd + nLn) midAcrossAll.push(raw);
             if (raw > maxAcross) {
                 maxAcross = raw;
                 worstAcross = {
@@ -5167,6 +5345,11 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         ? Math.max(0, Math.min(acrossAll.length - 1, Math.ceil(0.99 * acrossAll.length) - 1))
         : 0;
     const maxAcrossP99 = acrossAll[p99Idx] ?? 0;
+    midAcrossAll.sort((a, b) => a - b);
+    const midP99Idx = midAcrossAll.length
+        ? Math.max(0, Math.min(midAcrossAll.length - 1, Math.ceil(0.99 * midAcrossAll.length) - 1))
+        : 0;
+    const maxMidAcrossP99 = midAcrossAll[midP99Idx] ?? 0;
     console.log("[S1-ALONG]", JSON.stringify(worstAlong));
     console.log("[S1-ALONG-ROW]", JSON.stringify(worstAlongRow));
     const bandMax = topRoundBand.reduce((m, r) => Math.max(m, r.deg), 0);
@@ -5265,6 +5448,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         stationSpacingMm: median,
         rowPieceIdentical,
         maxAlongRowDeg: maxAlongRow,
+        maxMidRowTurnDeg: maxMidRowTurn,
+        maxMidRowDihedralDeg: maxAlongRow,
+        maxMidAcrossP99Deg: maxMidAcrossP99,
         maxObliqueDeg: maxOblique,
         nObliqueWarn,
         maxG1EDeg: maxG1E,

@@ -14,6 +14,14 @@ export const WALL_PLAN_OUT_DEFAULT_MM = 2;
 export const WALL_BULGE_OFFSET_FRAC = 0.25;
 export const WALL_BULGE_OFFSET_MAX_MM = 3;
 export const WALL_W_MAX = 0.9;
+/** Keep a tiny weight so a valid G1 M never collapses onto the chord. */
+export const WALL_W_MIN = 1e-3;
+export const WALL_STYLE_G1_MAX_DEG = 1;
+export const WALL_MID_TURN_MAX_DEG = 4;
+export const WALL_MID_DIHEDRAL_MAX_DEG = 4;
+export const WALL_STYLE_ACROSS_P99_MAX_DEG = 3;
+export const WALL_MID_SMOOTH_SIGMA_MM = 10;
+export const WALL_MID_ROW_CAP = 32;
 export const HYBRID_SWITCH_U_MEDIAL = 0.3;
 export const HYBRID_SWITCH_U_LATERAL = 0.28;
 export const HYBRID_BLEND_MM = 20;
@@ -107,6 +115,23 @@ function lerp3(a: XYZ, b: XYZ, t: number): XYZ {
     return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };
 }
 
+function cross3(a: XYZ, b: XYZ): XYZ {
+    return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
+}
+
+export function acuteVecDeg(a: XYZ, b: XYZ): number {
+    const du = hypot3(a) || 1;
+    const dv = hypot3(b) || 1;
+    const c = Math.max(-1, Math.min(1, dot3(a, b) / (du * dv)));
+    const deg = (Math.acos(c) * 180) / Math.PI;
+    return Math.min(deg, 180 - deg);
+}
+
+function orientToward(t: XYZ, target: XYZ, from: XYZ): XYZ {
+    const w = sub3(target, from);
+    return dot3(t, w) < 0 ? scale3(t, -1) : t;
+}
+
 /** Closest intersection of lines E+s tE and F+t tF. Null if parallel or skew. */
 export function intersectTangentLines(E: XYZ, tE: XYZ, F: XYZ, tF: XYZ): XYZ | null {
     const d = unit3(tE);
@@ -125,6 +150,77 @@ export function intersectTangentLines(E: XYZ, tE: XYZ, F: XYZ, tF: XYZ): XYZ | n
     const minS = Math.max(0.15, (0.5 * gap) / Math.tan((Math.PI / 180) * 1) + 1e-6);
     if (s < minS) return null;
     return scale3(add3(p0, p1), 0.5);
+}
+
+export interface G1Control {
+    M: XYZ;
+    s: number;
+    t: number;
+    gap: number;
+    tE: XYZ;
+    tF: XYZ;
+}
+
+function closestLineParams(
+    E: XYZ,
+    d: XYZ,
+    F: XYZ,
+    e: XYZ,
+): { s: number; t: number; p0: XYZ; p1: XYZ; gap: number } | null {
+    const w0 = sub3(E, F);
+    const b = dot3(d, e);
+    const den = 1 - b * b;
+    if (Math.abs(den) < 1e-10) return null;
+    const s = (b * dot3(e, w0) - dot3(d, w0)) / den;
+    const t = (dot3(e, w0) - b * dot3(d, w0)) / den;
+    const p0 = add3(E, d, s);
+    const p1 = add3(F, e, t);
+    return { s, t, p0, p1, gap: dist3(p0, p1) };
+}
+
+/**
+ * M on the E tangent and (as far as the F tangent allows) on the F tangent.
+ * Never slides M off tE to meet a bound — callers reduce w instead.
+ */
+export function g1ControlPoint(E: XYZ, tE: XYZ, F: XYZ, tF: XYZ): G1Control | null {
+    const d = orientToward(unit3(tE), F, E);
+    const e = orientToward(unit3(tF), E, F);
+    const tan1 = Math.tan((Math.PI / 180) * WALL_STYLE_G1_MAX_DEG);
+    const hit = closestLineParams(E, d, F, e);
+    if (hit && hit.s >= 0.15 && hit.t >= 0.15) {
+        const angE = (hit.gap * 0.5) / Math.max(hit.s, 1e-9);
+        const angF = (hit.gap * 0.5) / Math.max(hit.t, 1e-9);
+        if (angE <= tan1 && angF <= tan1) {
+            const M = scale3(add3(hit.p0, hit.p1), 0.5);
+            return { M, s: dist3(M, E), t: dist3(M, F), gap: hit.gap, tE: d, tF: e };
+        }
+    }
+    const onRay = (): G1Control => {
+        const s = Math.max(0.15, 0.35 * dist3(E, F));
+        const M = add3(E, d, s);
+        return { M, s, t: dist3(M, F), gap: dist3(M, add3(F, e, s)), tE: d, tF: e };
+    };
+    const ef = sub3(F, E);
+    let n = cross3(d, ef);
+    if (hypot3(n) < 1e-10) n = cross3(d, e);
+    if (hypot3(n) < 1e-10) return onRay();
+    n = unit3(n);
+    const ePlane = sub3(e, scale3(n, dot3(e, n)));
+    if (hypot3(ePlane) < 1e-10) return onRay();
+    const eUse = unit3(ePlane);
+    const plane = closestLineParams(E, d, F, eUse);
+    if (plane && plane.s >= 0.15 && plane.t >= 0.15) {
+        const M = add3(E, d, plane.s);
+        return { M, s: plane.s, t: dist3(M, F), gap: plane.gap, tE: d, tF: e };
+    }
+    return onRay();
+}
+
+export function g1OfConic(E: XYZ, M: XYZ, F: XYZ, tE: XYZ, tF: XYZ): { e: number; f: number } {
+    return {
+        e: acuteVecDeg(sub3(M, E), tE),
+        f: acuteVecDeg(sub3(M, F), tF),
+    };
 }
 
 /** Rational quadratic (E, M, F) with end weights 1 and control weight w. */
@@ -181,6 +277,41 @@ export function sampleConicByArcLength(E: XYZ, M: XYZ, F: XYZ, w: number, n: num
         pts.push(k === n ? { ...F } : lerp3(dense[i - 1]!, dense[i] ?? F, t));
     }
     return pts;
+}
+
+export function maxPolylineTurnDeg(pts: XYZ[]): number {
+    let max = 0;
+    for (let i = 1; i < pts.length - 1; i++) {
+        max = Math.max(max, acuteVecDeg(sub3(pts[i]!, pts[i - 1]!), sub3(pts[i + 1]!, pts[i]!)));
+    }
+    return max;
+}
+
+/** Rows so adjacent conic samples turn by at most maxDeg. Includes F, excludes E. */
+export function conicRowCountByTurning(
+    E: XYZ,
+    M: XYZ,
+    F: XYZ,
+    w: number,
+    maxDeg = WALL_MID_TURN_MAX_DEG,
+): number {
+    const probe = [E];
+    for (let i = 1; i <= 32; i++) probe.push(evalRationalQuadratic(E, M, F, w, i / 32));
+    const total = (() => {
+        let s = 0;
+        for (let i = 1; i < probe.length - 1; i++) {
+            s += acuteVecDeg(sub3(probe[i]!, probe[i - 1]!), sub3(probe[i + 1]!, probe[i]!));
+        }
+        return s;
+    })();
+    let n = Math.max(2, Math.ceil(total / Math.max(maxDeg, 1e-3)));
+    for (let k = 0; k < 8; k++) {
+        const pts = [E, ...sampleConicByArcLength(E, M, F, w, n)];
+        const turn = maxPolylineTurnDeg(pts);
+        if (turn <= maxDeg + 1e-6 || n >= WALL_MID_ROW_CAP) return Math.min(WALL_MID_ROW_CAP, n);
+        n = Math.min(WALL_MID_ROW_CAP, Math.max(n + 1, Math.ceil((n * turn) / maxDeg)));
+    }
+    return n;
 }
 
 export interface PlanBoundReport {
@@ -251,37 +382,64 @@ export interface MidStyleSample {
     weight: number;
     M: XYZ | null;
     bulge: number;
+    s?: number;
+    t?: number;
+    g1EDeg?: number;
+    g1FDeg?: number;
+    rowNeed?: number;
     chordOffsetMm?: number;
     planOffsetMm?: number;
     limit?: "none" | "w" | "chord" | "plan";
 }
 
+export interface MidStyleLock {
+    M: XYZ;
+    w: number;
+}
+
+function clampMidWeight(
+    E: XYZ,
+    M: XYZ,
+    F: XYZ,
+    R: XYZ,
+    wWanted: number,
+    n: number,
+    outward: { x: number; y: number },
+    planOutMm: number,
+    maxOff: number,
+): { w: number; afterChord: number } {
+    const w0 = Math.max(WALL_W_MIN, Math.min(WALL_W_MAX, wWanted));
+    const afterChord = clampWeightForChordOffset(E, M, F, w0, maxOff);
+    const w = Math.max(WALL_W_MIN, bisectWeightForPlan(E, M, F, R, afterChord, n, outward, planOutMm));
+    return { w, afterChord };
+}
+
 /**
  * E→F mid-style. Straight = ruled line. Round/hybrid = rational quadratic
- * with outward control M. End tangents are EM/FM (G1 of the conic).
+ * whose control M lies on the E and F tangents (G1). Bounds shrink w only.
  */
 export function sampleWallMidStyle(
     E: XYZ,
     F: XYZ,
-    _tE: XYZ,
-    _tF: XYZ,
+    tE: XYZ,
+    tF: XYZ,
     R: XYZ,
     n: number,
     heightMm: number,
     outward: { x: number; y: number },
     params: WallStyleParams,
     bulgeAtStation: number,
+    lock?: MidStyleLock,
 ): MidStyleSample {
     if (params.style === "straight" || n < 1) {
-        return { pts: sampleStraightMid(E, F, n), weight: 0, M: null, bulge: 0 };
+        return { pts: sampleStraightMid(E, F, n), weight: 0, M: null, bulge: 0, g1EDeg: 0, g1FDeg: 0 };
     }
     const chord = dist3(E, F);
-    const mid = lerp3(E, F, 0.5);
-    const nl = Math.hypot(outward.x, outward.y) || 1;
-    const nx = outward.x / nl;
-    const ny = outward.y / nl;
     const maxOff = Math.min(WALL_BULGE_OFFSET_FRAC * chord, WALL_BULGE_OFFSET_MAX_MM);
-    if (maxOff * Math.max(bulgeAtStation, 0) < 1e-4) {
+    const ctrl = lock?.M
+        ? { M: lock.M, s: dist3(lock.M, E), t: dist3(lock.M, F) }
+        : g1ControlPoint(E, tE, F, tF);
+    if (!ctrl) {
         return {
             pts: sampleStraightMid(E, F, n),
             weight: 0,
@@ -290,31 +448,19 @@ export function sampleWallMidStyle(
             chordOffsetMm: 0,
             planOffsetMm: 0,
             limit: "none",
+            g1EDeg: 0,
+            g1FDeg: 0,
+            rowNeed: n,
         };
     }
-    let wWanted = midStyleWeight(heightMm, Math.max(bulgeAtStation, 1e-3));
-    if (bulgeAtStation <= 1e-9) wWanted = Math.min(wWanted, 0.15);
-    // Mid-offset = w/(1+w)·|M−chord|. At w=0.9 that is 0.47·|M−chord|, so M
-    // must sit past the bound for the curve to reach min(0.25|EF|, 3 mm).
-    const mDist = (maxOff * (1 + WALL_W_MAX)) / WALL_W_MAX;
-    const M = { x: mid.x + nx * mDist, y: mid.y + ny * mDist, z: mid.z };
-    let w = clampWeightForChordOffset(E, M, F, wWanted, maxOff);
-    const afterChord = w;
-    w = bisectWeightForPlan(E, M, F, R, w, n, outward, params.planOutMm);
-    if (w <= 1e-6) {
-        return {
-            pts: sampleStraightMid(E, F, n),
-            weight: 0,
-            M,
-            bulge: bulgeAtStation,
-            chordOffsetMm: 0,
-            planOffsetMm: 0,
-            limit: "plan",
-        };
-    }
+    const M = ctrl.M;
+    let wWanted = lock?.w ?? midStyleWeight(heightMm, Math.max(bulgeAtStation, 0));
+    if (lock?.w == null && bulgeAtStation <= 1e-9) wWanted = WALL_W_MIN;
+    const { w, afterChord } = clampMidWeight(E, M, F, R, wWanted, n, outward, params.planOutMm, maxOff);
     const pts = sampleConicByArcLength(E, M, F, w, n);
     const chordOff = chordOffsetAtMid(E, M, F, w);
     const plan = planBoundsOf(pts, R, F, outward, params.planOutMm);
+    const g1 = g1OfConic(E, M, F, tE, tF);
     let limit: "none" | "w" | "chord" | "plan" = "none";
     if (w + 1e-6 < afterChord) limit = "plan";
     else if (afterChord + 1e-6 < wWanted) limit = "chord";
@@ -324,6 +470,11 @@ export function sampleWallMidStyle(
         weight: w,
         M,
         bulge: bulgeAtStation,
+        s: ctrl.s,
+        t: ctrl.t,
+        g1EDeg: g1.e,
+        g1FDeg: g1.f,
+        rowNeed: conicRowCountByTurning(E, M, F, w),
         chordOffsetMm: chordOff,
         planOffsetMm: plan.offsetMax,
         limit,
