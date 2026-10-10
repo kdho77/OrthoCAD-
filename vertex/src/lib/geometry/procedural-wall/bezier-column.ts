@@ -3372,7 +3372,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const shortE = Math.min(e0, e1, e2, e3);
             const longE = Math.max(e0, e1, e2, e3);
             const cMinI = lastFilletCMinMm(fr.localSpacingMm || fr.stationSpacingMm || median);
-            if (shortE >= cMinI * 0.5) {
+            if (shortE >= cMinI) {
                 const aspect = longE / shortE;
                 if (aspect > maxAspectAll) {
                     maxAspectAll = aspect;
