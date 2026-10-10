@@ -164,28 +164,38 @@ describe("procedural wall styles", () => {
                 writeArtifact(`procedural-default-${style}-${v.name}.png`, encodePng(720, 540, rgb));
             }
         }
-        const sectionAt = (geo: BufferGeometry, x0: number): Array<{ y: number; z: number }> => {
+        const sectionSegs = (
+            geo: BufferGeometry,
+            x0: number,
+        ): Array<{ y0: number; z0: number; y1: number; z1: number }> => {
             const pos = geo.getAttribute("position").array as Float32Array;
             const idx = geo.getIndex()!.array;
-            const segs: Array<{ y: number; z: number }> = [];
+            const segs: Array<{ y0: number; z0: number; y1: number; z1: number }> = [];
             for (let f = 0; f < idx.length; f += 3) {
                 const pts = [0, 1, 2].map((k) => {
                     const i = idx[f + k]!;
                     return { x: pos[i * 3]!, y: pos[i * 3 + 1]!, z: pos[i * 3 + 2]! };
                 });
+                const hits: Array<{ y: number; z: number }> = [];
                 for (let e = 0; e < 3; e++) {
                     const a = pts[e]!;
                     const b = pts[(e + 1) % 3]!;
                     if ((a.x - x0) * (b.x - x0) > 0) continue;
                     const t = Math.abs(b.x - a.x) < 1e-9 ? 0 : (x0 - a.x) / (b.x - a.x);
                     if (t < -1e-6 || t > 1 + 1e-6) continue;
-                    segs.push({ y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t });
+                    hits.push({ y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t });
+                }
+                if (hits.length >= 2) {
+                    segs.push({ y0: hits[0]!.y, z0: hits[0]!.z, y1: hits[1]!.y, z1: hits[1]!.z });
                 }
             }
             return segs;
         };
         const drawSection = (
-            packs: Array<{ pts: Array<{ y: number; z: number }>; rgb: [number, number, number] }>,
+            packs: Array<{
+                segs: Array<{ y0: number; z0: number; y1: number; z1: number }>;
+                rgb: [number, number, number];
+            }>,
             w = 720,
             h = 420,
         ): Uint8Array => {
@@ -195,32 +205,63 @@ describe("procedural wall styles", () => {
             let minZ = Infinity;
             let maxZ = -Infinity;
             for (const p of packs) {
-                for (const q of p.pts) {
-                    minY = Math.min(minY, q.y);
-                    maxY = Math.max(maxY, q.y);
-                    minZ = Math.min(minZ, q.z);
-                    maxZ = Math.max(maxZ, q.z);
+                for (const q of p.segs) {
+                    minY = Math.min(minY, q.y0, q.y1);
+                    maxY = Math.max(maxY, q.y0, q.y1);
+                    minZ = Math.min(minZ, q.z0, q.z1);
+                    maxZ = Math.max(maxZ, q.z0, q.z1);
                 }
             }
             const sx = (w - 24) / Math.max(1e-3, maxY - minY);
             const sz = (h - 24) / Math.max(1e-3, maxZ - minZ);
             const s = Math.min(sx, sz);
-            const put = (yy: number, zz: number, col: [number, number, number]): void => {
-                const px = Math.round(12 + (yy - minY) * s);
-                const py = Math.round(h - 12 - (zz - minZ) * s);
-                if (px < 0 || py < 0 || px >= w || py >= h) return;
-                const o = (py * w + px) * 3;
-                rgb[o] = col[0];
-                rgb[o + 1] = col[1];
-                rgb[o + 2] = col[2];
+            const put = (cx: number, cy: number, col: [number, number, number]): void => {
+                for (let dy = -1; dy <= 1; dy++) {
+                    for (let dx = -1; dx <= 1; dx++) {
+                        const px = cx + dx;
+                        const py = cy + dy;
+                        if (px < 0 || py < 0 || px >= w || py >= h) continue;
+                        const o = (py * w + px) * 3;
+                        rgb[o] = col[0];
+                        rgb[o + 1] = col[1];
+                        rgb[o + 2] = col[2];
+                    }
+                }
+            };
+            const toPx = (yy: number, zz: number): [number, number] => [
+                Math.round(12 + (yy - minY) * s),
+                Math.round(h - 12 - (zz - minZ) * s),
+            ];
+            const stroke = (
+                y0: number,
+                z0: number,
+                y1: number,
+                z1: number,
+                col: [number, number, number],
+            ): void => {
+                const [x0, yy0] = toPx(y0, z0);
+                const [x1, yy1] = toPx(y1, z1);
+                const n = Math.max(1, Math.hypot(x1 - x0, yy1 - yy0));
+                const steps = Math.max(1, Math.ceil(n));
+                for (let i = 0; i <= steps; i++) {
+                    const t = i / steps;
+                    put(Math.round(x0 + (x1 - x0) * t), Math.round(yy0 + (yy1 - yy0) * t), col);
+                }
             };
             for (const p of packs) {
-                for (const q of p.pts) put(q.y, q.z, p.rgb);
+                for (const q of p.segs) stroke(q.y0, q.z0, q.y1, q.z1, p.rgb);
             }
             return encodePng(w, h, rgb);
         };
-        const midX = 0.5 * (model.bounds.minX + model.bounds.maxX);
-        const heelX = model.bounds.minX + 0.12 * (model.bounds.maxX - model.bounds.minX);
+        const pos0 = straight.getAttribute("position").array as Float32Array;
+        let meshMinX = Infinity;
+        let meshMaxX = -Infinity;
+        for (let i = 0; i < pos0.length; i += 3) {
+            meshMinX = Math.min(meshMinX, pos0[i]!);
+            meshMaxX = Math.max(meshMaxX, pos0[i]!);
+        }
+        const midX = 0.5 * (meshMinX + meshMaxX);
+        const heelX = meshMinX + 0.12 * (meshMaxX - meshMinX);
         const colors: Record<Style, [number, number, number]> = {
             straight: [180, 180, 180],
             round: [80, 200, 255],
@@ -232,52 +273,54 @@ describe("procedural wall styles", () => {
         ] as const) {
             writeArtifact(
                 `procedural-default-section-${name}.png`,
-                drawSection(styles.map((s) => ({ pts: sectionAt(geos[s]!, x0), rgb: colors[s] }))),
+                drawSection(styles.map((s) => ({ segs: sectionSegs(geos[s]!, x0), rgb: colors[s] }))),
             );
         }
-        console.log(
-            "[S1-WALL-STYLE]",
-            JSON.stringify(
-                styles.map((s) => {
-                    const frames = (geos[s]!.userData.wallFrames ?? []) as Array<{
-                        midWeight?: number;
-                        midChordOffMm?: number;
-                        midPlanOffMm?: number;
-                        midLimit?: string;
-                        heightMm?: number;
-                    }>;
-                    const weights = frames.map((f) => f.midWeight ?? 0);
-                    const chords = frames.map((f) => f.midChordOffMm ?? 0);
-                    const plans = frames.map((f) => f.midPlanOffMm ?? 0);
-                    const limits: Record<string, number> = {};
-                    for (const f of frames) {
-                        const k = f.midLimit ?? "none";
-                        limits[k] = (limits[k] ?? 0) + 1;
-                    }
-                    const med = (a: number[]): number => {
-                        const b = [...a].sort((x, y) => x - y);
-                        return b[Math.floor(b.length / 2)] ?? 0;
-                    };
-                    return {
-                        style: s,
-                        g1E: geos[s]!.userData.columnQuality?.maxG1EDeg,
-                        g1F: geos[s]!.userData.columnQuality?.maxG1FDeg,
-                        across: geos[s]!.userData.columnQuality?.maxAcrossDeg,
-                        p99: geos[s]!.userData.columnQuality?.maxAcrossP99Deg,
-                        eTurn: geos[s]!.userData.columnQuality?.maxETurningPlanDeg,
-                        fTurn: geos[s]!.userData.columnQuality?.maxFTurningPlanDeg,
-                        plantar: plantarFlatDeltaMm(geos[s]!),
-                        topVsStraight: s === "straight" ? 0 : topDeltaMm(geos[s]!, straight),
-                        midWmax: weights.length ? Math.max(...weights) : 0,
-                        midWmean: weights.length ? weights.reduce((a, b) => a + b, 0) / weights.length : 0,
-                        chordOffMax: chords.length ? Math.max(...chords) : 0,
-                        chordOffMed: med(chords),
-                        planOffMax: plans.length ? Math.max(...plans) : 0,
-                        planOffMed: med(plans),
-                        limits,
-                    };
-                }),
-            ),
+        const styleReport = styles.map((s) => {
+            const frames = (geos[s]!.userData.wallFrames ?? []) as Array<{
+                midWeight?: number;
+                midChordOffMm?: number;
+                midPlanOffMm?: number;
+                midLimit?: string;
+                heightMm?: number;
+            }>;
+            const weights = frames.map((f) => f.midWeight ?? 0);
+            const chords = frames.map((f) => f.midChordOffMm ?? 0);
+            const plans = frames.map((f) => f.midPlanOffMm ?? 0);
+            const limits: Record<string, number> = {};
+            for (const f of frames) {
+                const k = f.midLimit ?? "none";
+                limits[k] = (limits[k] ?? 0) + 1;
+            }
+            const med = (a: number[]): number => {
+                const b = [...a].sort((x, y) => x - y);
+                return b[Math.floor(b.length / 2)] ?? 0;
+            };
+            const limiter = Object.entries(limits).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "none";
+            return {
+                style: s,
+                g1E: geos[s]!.userData.columnQuality?.maxG1EDeg,
+                g1F: geos[s]!.userData.columnQuality?.maxG1FDeg,
+                across: geos[s]!.userData.columnQuality?.maxAcrossDeg,
+                p99: geos[s]!.userData.columnQuality?.maxAcrossP99Deg,
+                eTurn: geos[s]!.userData.columnQuality?.maxETurningPlanDeg,
+                fTurn: geos[s]!.userData.columnQuality?.maxFTurningPlanDeg,
+                plantar: plantarFlatDeltaMm(geos[s]!),
+                topVsStraight: s === "straight" ? 0 : topDeltaMm(geos[s]!, straight),
+                midWmax: weights.length ? Math.max(...weights) : 0,
+                midWmean: weights.length ? weights.reduce((a, b) => a + b, 0) / weights.length : 0,
+                chordOffMax: chords.length ? Math.max(...chords) : 0,
+                chordOffMed: med(chords),
+                planOffMax: plans.length ? Math.max(...plans) : 0,
+                planOffMed: med(plans),
+                limits,
+                limiter,
+            };
+        });
+        console.log("[S1-WALL-STYLE]", JSON.stringify(styleReport));
+        writeArtifact(
+            "procedural-default-style-report.json",
+            Buffer.from(`${JSON.stringify(styleReport, null, 2)}\n`),
         );
         if (misses.length) throw new Error(`[S1-STYLE] ${misses.join(" | ")}`);
         for (const g of Object.values(geos)) g?.dispose();

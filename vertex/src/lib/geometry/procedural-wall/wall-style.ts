@@ -294,7 +294,10 @@ export function sampleWallMidStyle(
     }
     let wWanted = midStyleWeight(heightMm, Math.max(bulgeAtStation, 1e-3));
     if (bulgeAtStation <= 1e-9) wWanted = Math.min(wWanted, 0.15);
-    const M = { x: mid.x + nx * maxOff, y: mid.y + ny * maxOff, z: mid.z };
+    // Mid-offset = w/(1+w)·|M−chord|. At w=0.9 that is 0.47·|M−chord|, so M
+    // must sit past the bound for the curve to reach min(0.25|EF|, 3 mm).
+    const mDist = (maxOff * (1 + WALL_W_MAX)) / WALL_W_MAX;
+    const M = { x: mid.x + nx * mDist, y: mid.y + ny * mDist, z: mid.z };
     let w = clampWeightForChordOffset(E, M, F, wWanted, maxOff);
     const afterChord = w;
     w = bisectWeightForPlan(E, M, F, R, w, n, outward, params.planOutMm);

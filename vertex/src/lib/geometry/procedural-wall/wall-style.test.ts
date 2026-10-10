@@ -106,6 +106,27 @@ describe("wall style mid-piece", () => {
         expect(chordOffsetAtMid(E, pts.M!, F, pts.weight)).toBeGreaterThan(0.05);
     });
 
+    test("tall-wall round chord offset approaches min(0.25|EF|, 3 mm)", () => {
+        const E = { x: 0, y: 0, z: 14 };
+        const F = { x: 0, y: 0, z: 2 };
+        const bound = Math.min(WALL_BULGE_OFFSET_FRAC * 12, WALL_BULGE_OFFSET_MAX_MM);
+        const pts = sampleWallMidStyle(
+            E,
+            F,
+            { x: 0, y: 0, z: -1 },
+            { x: 0, y: 0, z: 1 },
+            { x: 0, y: 0, z: 16 },
+            8,
+            14,
+            { x: 1, y: 0 },
+            resolveWallStyleParams({ style: "round", bulge: 0.6, planOutMm: 4 }),
+            0.6,
+        );
+        expect(pts.weight).toBeCloseTo(WALL_W_MAX, 2);
+        expect(pts.chordOffsetMm ?? 0).toBeGreaterThan(bound * 0.85);
+        expect(pts.chordOffsetMm ?? 0).toBeLessThanOrEqual(bound + 1e-6);
+    });
+
     test("stationBulge is 0 on straight and ramps on hybrid", () => {
         const straight = resolveWallStyleParams({ style: "straight" });
         const hybrid = resolveWallStyleParams({ style: "hybrid", bulge: 0.6 });
