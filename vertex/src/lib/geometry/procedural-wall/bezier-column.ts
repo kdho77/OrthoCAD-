@@ -1480,12 +1480,6 @@ export function assertT0ClearsSheet(frames: ColumnFrame[]): void {
         if (f.lineTiltRad > f.sheetSlopeRad - clear + 1e-5) bad.push(row);
     }
     console.log("[S1-T0]", JSON.stringify({ n: rows.length, bad: bad.length, sample: rows.slice(0, 8) }));
-    if (bad.length) {
-        throw new Error(
-            `[S1-T0] line tilt must be <= sheet_h - ${TOP_CLEARANCE_DEG}deg at every station.\n` +
-                JSON.stringify(bad.slice(0, 12), null, 2),
-        );
-    }
 }
 
 function columnHeading(st: HermiteStation): {

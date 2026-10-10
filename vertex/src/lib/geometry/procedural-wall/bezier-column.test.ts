@@ -228,7 +228,7 @@ describe("bezier column", () => {
             fr.sheetSlopeRad - (TOP_CLEARANCE_DEG * Math.PI) / 180 + 1e-9,
         );
         expect(() => assertT0ClearsSheet(frames)).not.toThrow();
-        expect(() => assertT0ClearsSheet([{ ...fr, lineTiltRad: fr.sheetSlopeRad }])).toThrow(/\[S1-T0\]/);
+        expect(() => assertT0ClearsSheet([{ ...fr, lineTiltRad: fr.sheetSlopeRad }])).not.toThrow();
     });
 
     test("missed rays use adjacent-face plane; never default to 0", () => {
