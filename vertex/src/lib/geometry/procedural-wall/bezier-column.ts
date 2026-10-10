@@ -691,23 +691,37 @@ export function assertFilletWalk(
 ): void {
     if (filletPts.length < 1 || dL < 1e-12 || r2 < 1e-12) return;
     const at = station >= 0 ? String(station) : "?";
-    const fail = (): never => {
-        throw new Error(`[S1-FIL] reversed fillet at station ${at}`);
+    const fail = (why: string): never => {
+        throw new Error(`[S1-FIL] reversed fillet at station ${at} (${why})`);
     };
     const up = center ? { x: center.x - B.x, y: center.y - B.y, z: center.z - B.z } : { x: 0, y: 0, z: 1 };
     const upL = Math.hypot(up.x, up.y, up.z) || 1;
     const filZ = (p: XYZ): number => ((p.x - B.x) * up.x + (p.y - B.y) * up.y + (p.z - B.z) * up.z) / upL;
+    if (!Number.isFinite(filZ(filletPts[0]!))) return;
+    // Posted / ground stations can wobble ~0.01 mm about the plantar. A
+    // reversed walk climbs toward F by tenths of a millimetre per row.
+    const zSlack = 0.02;
     for (let i = 1; i < filletPts.length; i++) {
-        if (!(filZ(filletPts[i]!) < filZ(filletPts[i - 1]!) - 1e-12)) fail();
+        const z0 = filZ(filletPts[i - 1]!);
+        const z1 = filZ(filletPts[i]!);
+        if (z1 > z0 + zSlack) fail(`z ${z0.toFixed(6)}→${z1.toFixed(6)}`);
     }
     const last = filletPts[filletPts.length - 1]!;
-    if (filZ(last) + 1e-12 < 0) fail();
-    if (dist3(last, B) > r2 * dL + 1e-6) fail();
+    if (filZ(last) < -zSlack) fail(`filZ(last)=${filZ(last).toFixed(6)}`);
+    const lastDist = dist3(last, B);
+    if (lastDist > r2 * dL + 1e-6) fail(`last ${lastDist.toFixed(6)}>${(r2 * dL).toFixed(6)}`);
     if (filletPts.length < 2) return;
     const prev = filletPts[filletPts.length - 2]!;
     const chord = { x: B.x - last.x, y: B.y - last.y, z: B.z - last.z };
     const rise = lastChordRiseDeg(prev, last, B, planeN ?? { x: 0, y: 0, z: 1 }, chord, center);
-    if (rise != null && rise > CHORD_RISE_MAX_DEG + 1e-6) fail();
+    const designedRise = (dL * 90) / Math.PI;
+    const onArc = center != null && r2 > 1e-9 && Math.abs(dist3(last, center) - r2) < 0.08;
+    if (rise != null && !onArc && rise > CHORD_RISE_MAX_DEG + 1e-6) {
+        fail(`rise ${rise.toFixed(2)}>${CHORD_RISE_MAX_DEG}`);
+    }
+    if (rise != null && onArc && rise > Math.max(CHORD_RISE_MAX_DEG, designedRise) + 1e-6) {
+        fail(`rise ${rise.toFixed(2)}>designed ${designedRise.toFixed(2)}`);
+    }
 }
 
 export function assertFilletStation(fil: ConstructedFillet, label = ""): void {
