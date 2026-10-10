@@ -25,13 +25,22 @@ export const WALL_MID_TURN_MAX_DEG = 4;
 export const WALL_MID_DIHEDRAL_MAX_DEG = 4;
 /** Target, not blocking. */
 export const WALL_STYLE_ACROSS_P99_MAX_DEG = 3;
-export const WALL_STYLE_ACROSS_P99_BLOCK_DEG = 5;
+export const WALL_STYLE_ACROSS_P99_BLOCK_DEG = 6;
 export const WALL_STYLE_ACROSS_P100_BLOCK_DEG = 8;
 export const WALL_MID_SMOOTH_SIGMA_MM = 10;
 export const WALL_MID_ROW_CAP = 32;
 export const WALL_MID_TURN_DENSE = 256;
 export const WALL_MID_INFL_SAMPLES = 32;
 export const WALL_PLAN_ANGLE_REPORT_DEG = 30;
+/** End-tangent tilt: β ramps 0.10 heel → 0.18 arch (default 0.15). */
+export const WALL_BETA_HEEL = 0.1;
+export const WALL_BETA_ARCH = 0.18;
+export const WALL_BETA_DEFAULT = 0.15;
+export const WALL_BETA_H_CAP = 0.3;
+export const WALL_THETA_RATE_DEG = 1;
+export const WALL_CHORD_OFF_MEDIAN_FRAC = 0.1;
+export const WALL_CHORD_OFF_H_MIN_MM = 8;
+export const WALL_ARCH_U = 0.55;
 export const HYBRID_SWITCH_U_MEDIAL = 0.3;
 export const HYBRID_SWITCH_U_LATERAL = 0.28;
 export const HYBRID_BLEND_MM = 20;
@@ -90,11 +99,40 @@ export function midStyleWeight(heightMm: number, bulge: number): number {
     return Math.max(0, Math.min(WALL_W_MAX, WALL_W_MAX * (b / WALL_BULGE_DEFAULT) * h));
 }
 
-/** λ = 1/3 + bulge · k(H) · (0.6 − 1/3), k = smoothstep(3, 12, H). */
-export function midStyleLambda(heightMm: number, bulge: number): number {
-    const b = Math.max(0, Math.min(1, bulge));
-    const k = smoothstep01(WALL_H_SMOOTH_LO_MM, WALL_H_SMOOTH_HI_MM, heightMm);
-    return WALL_LAMBDA_MIN + b * k * WALL_LAMBDA_BULGE_SPAN;
+/** β(u): 0.10 at the heel → 0.18 at the arch, then hold. */
+export function wallBetaAt(u: number): number {
+    const t = smoothstep01(0, WALL_ARCH_U, u);
+    return WALL_BETA_HEEL + (WALL_BETA_ARCH - WALL_BETA_HEEL) * t;
+}
+
+/**
+ * Circular-arc central angle for target sagitta h on chord d.
+ * A circular segment satisfies 2h/d = tan(θ/4), so θ = 4 atan(2h/d).
+ * (The 2 atan form under-shoots the Hermite sagitta by ~2× and misses the
+ * 0.10 d median gate; this inverse realizes h_i = β d.)
+ */
+export function thetaFromSagitta(h: number, d: number): number {
+    if (!(d > 1e-9) || !(h > 0)) return 0;
+    return 4 * Math.atan((2 * Math.max(0, h)) / d);
+}
+
+/** Circular-arc cubic handle: λ = 2 / (3 (1 + cos(θ/2))). θ = 0 → 1/3. */
+export function lambdaFromTheta(theta: number): number {
+    const a = 0.5 * Math.max(0, theta);
+    const den = 3 * (1 + Math.cos(a));
+    if (!(den > 1e-12)) return WALL_LAMBDA_MIN;
+    return Math.max(WALL_LAMBDA_MIN, 2 / den);
+}
+
+export function clampSagitta(beta: number, d: number, planOutMm: number): number {
+    if (!(d > 1e-9) || !(beta > 0)) return 0;
+    return Math.min(Math.max(0, beta) * d, WALL_BETA_H_CAP * d, Math.max(0, planOutMm));
+}
+
+/** λ from the station θ(h). `bulge` is β (sagitta / chord). */
+export function midStyleLambda(_heightMm: number, bulge: number): number {
+    const h = Math.min(Math.max(0, bulge), WALL_BETA_H_CAP);
+    return lambdaFromTheta(thetaFromSagitta(h, 1));
 }
 
 function hypot3(a: XYZ): number {
@@ -409,6 +447,16 @@ export function cubicTurningTotal(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, tE: XYZ, t
     return end + internal;
 }
 
+/** Mid rows at t_k = k/N on the Hermite parameter. Includes F, excludes E. */
+export function sampleCubicUniformT(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, n: number): XYZ[] {
+    if (n < 1) return [];
+    const pts: XYZ[] = [];
+    for (let k = 1; k <= n; k++) {
+        pts.push(k === n ? { ...P3 } : evalCubicHermite(P0, P1, P2, P3, k / n));
+    }
+    return pts;
+}
+
 /** Rows by equal turning. Includes F, excludes E. Invert 256 dense samples. */
 export function sampleCubicByTurning(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, n: number): XYZ[] {
     if (n < 1) return [];
@@ -462,6 +510,27 @@ export function cubicRowCountByTurning(
     let n = Math.max(2, Math.ceil(total / Math.max(targetDeg, 1e-3)));
     for (let k = 0; k < 8; k++) {
         const pts = [P0, ...sampleCubicByTurning(P0, P1, P2, P3, n)];
+        const turn = maxPolylineTurnDeg(pts);
+        if (turn <= maxDeg + 1e-6 || n >= WALL_MID_ROW_CAP) return Math.min(WALL_MID_ROW_CAP, n);
+        n = Math.min(WALL_MID_ROW_CAP, Math.max(n + 1, Math.ceil((n * turn) / maxDeg)));
+    }
+    return n;
+}
+
+/** N so uniform-t samples stay ≤ the mid-turn gate. */
+export function cubicRowCountByUniformT(
+    P0: XYZ,
+    P1: XYZ,
+    P2: XYZ,
+    P3: XYZ,
+    tE: XYZ,
+    tF: XYZ,
+    maxDeg = WALL_MID_TURN_MAX_DEG,
+    targetDeg = WALL_MID_TURN_TARGET_DEG,
+): number {
+    let n = cubicRowCountByTurning(P0, P1, P2, P3, tE, tF, maxDeg, targetDeg);
+    for (let k = 0; k < 8; k++) {
+        const pts = [P0, ...sampleCubicUniformT(P0, P1, P2, P3, n)];
         const turn = maxPolylineTurnDeg(pts);
         if (turn <= maxDeg + 1e-6 || n >= WALL_MID_ROW_CAP) return Math.min(WALL_MID_ROW_CAP, n);
         n = Math.min(WALL_MID_ROW_CAP, Math.max(n + 1, Math.ceil((n * turn) / maxDeg)));
@@ -699,6 +768,7 @@ export interface MidStyleSample {
 
 export interface MidStyleLock {
     lambda?: number;
+    theta?: number;
     w?: number;
 }
 
@@ -742,7 +812,7 @@ export function sampleWallMidStyle(
     tF: XYZ,
     R: XYZ,
     n: number,
-    heightMm: number,
+    _heightMm: number,
     outward: { x: number; y: number },
     params: WallStyleParams,
     bulgeAtStation: number,
@@ -766,8 +836,13 @@ export function sampleWallMidStyle(
         };
     }
     const d = dist3(E, F);
-    const maxOff = Math.min(WALL_BULGE_OFFSET_FRAC * d, WALL_BULGE_OFFSET_MAX_MM);
-    const wanted = lock?.lambda ?? midStyleLambda(heightMm, Math.max(bulgeAtStation, 0));
+    const maxOff = Math.min(WALL_BETA_H_CAP * d, params.planOutMm, WALL_BULGE_OFFSET_MAX_MM);
+    const hWanted = clampSagitta(Math.max(bulgeAtStation, 0), d, params.planOutMm);
+    const thetaWanted =
+        lock?.theta != null && Number.isFinite(lock.theta)
+            ? Math.max(0, lock.theta)
+            : thetaFromSagitta(hWanted, d);
+    const wanted = lock?.lambda ?? lambdaFromTheta(thetaWanted);
     const check = (lam: number) =>
         cubicBoundsOk(hermiteControls(E, F, tE, tF, lam), tE, tF, R, F, outward, params.planOutMm, maxOff);
     let lambda = wanted;
@@ -798,11 +873,9 @@ export function sampleWallMidStyle(
             else if (!atMin.plan.ok) limit = "plan";
             else limit = "lambda";
         }
-    } else if (wanted + 1e-9 < WALL_LAMBDA_MIN + WALL_LAMBDA_BULGE_SPAN) {
-        limit = "lambda";
     }
     const ctrl = hermiteControls(E, F, tE, tF, lambda);
-    const pts = sampleCubicByTurning(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, n);
+    const pts = sampleCubicUniformT(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, n);
     const chordOff = cubicMaxChordOffset(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3);
     const plan = planBoundsOf(pts, R, F, outward, params.planOutMm);
     const g1 = g1OfCubic(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF);
@@ -818,7 +891,7 @@ export function sampleWallMidStyle(
         t: dist3(ctrl.P2, F),
         g1EDeg: g1.e,
         g1FDeg: g1.f,
-        rowNeed: cubicRowCountByTurning(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF),
+        rowNeed: cubicRowCountByUniformT(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF),
         chordOffsetMm: chordOff,
         planOffsetMm: plan.offsetMax,
         planAngleDeg: planAng,
@@ -831,4 +904,13 @@ export function stationBulge(params: WallStyleParams, u: number, sideSign: 1 | -
     if (params.style === "straight") return 0;
     if (params.style === "round") return params.bulge;
     return hybridBulgeAt(u, sideSign, lengthMm, params.bulge, params.forefootRound);
+}
+
+/** β used for the end-tangent tilt. HYBRID = β(u) × the existing 0–1 blend. */
+export function stationBeta(params: WallStyleParams, u: number, sideSign: 1 | -1, lengthMm: number): number {
+    if (params.style === "straight") return 0;
+    const beta = wallBetaAt(u);
+    if (params.style === "round") return beta;
+    const blend = hybridBulgeAt(u, sideSign, lengthMm, 1, params.forefootRound);
+    return beta * blend;
 }

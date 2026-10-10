@@ -15,6 +15,8 @@ import {
     RING_TURNING_MAX_DEG,
     reconstructionManifold,
     reconstructProceduralWalls,
+    WALL_CHORD_OFF_H_MIN_MM,
+    WALL_CHORD_OFF_MEDIAN_FRAC,
     WALL_MID_DIHEDRAL_MAX_DEG,
     WALL_MID_TURN_MAX_DEG,
     WALL_PLAN_ANGLE_REPORT_DEG,
@@ -91,6 +93,10 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             g1FDeg?: number;
             midFlagged?: boolean;
             midPlanAngleDeg?: number;
+            heightMm?: number;
+            midChordOffMm?: number;
+            midChordMm?: number;
+            lineLengthMm?: number;
         }>;
         medialYSign?: 1 | -1;
         footLengthMm?: number;
@@ -161,6 +167,20 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
                     .map((s) => `${s.i}@${s.u.toFixed(3)} e=${s.e.toFixed(2)} f=${s.f.toFixed(2)}`)
                     .join(",")}`,
             );
+        }
+    }
+    if (style === "round" && frames.length) {
+        const tall = frames.filter((f) => (f.heightMm ?? 0) >= WALL_CHORD_OFF_H_MIN_MM);
+        const ratios = tall.map((f) => {
+            const d = Math.max(f.midChordMm ?? f.lineLengthMm ?? 0, 1e-6);
+            return (f.midChordOffMm ?? 0) / d;
+        });
+        if (ratios.length) {
+            const sorted = [...ratios].sort((a, b) => a - b);
+            const med = sorted[Math.floor(sorted.length / 2)] ?? 0;
+            if (med + 1e-9 < WALL_CHORD_OFF_MEDIAN_FRAC) {
+                misses.push(`chordOff-med ${med.toFixed(3)}d<${WALL_CHORD_OFF_MEDIAN_FRAC}d`);
+            }
         }
     }
     if (style === "hybrid" && frames.length) {
@@ -354,14 +374,16 @@ describe("procedural wall styles", () => {
         }
         const midX = 0.5 * (meshMinX + meshMaxX);
         const heelX = meshMinX + 0.12 * (meshMaxX - meshMinX);
+        const archX = meshMinX + 0.35 * (meshMaxX - meshMinX);
         const colors: Record<Style, [number, number, number]> = {
             straight: [180, 180, 180],
             round: [80, 200, 255],
             hybrid: [255, 140, 70],
         };
         for (const [name, x0] of [
-            ["midfoot", midX],
             ["heel", heelX],
+            ["arch", archX],
+            ["midfoot", midX],
         ] as const) {
             writeArtifact(
                 `procedural-default-section-${name}.png`,
@@ -372,6 +394,9 @@ describe("procedural wall styles", () => {
             const frames = (geos[s]!.userData.wallFrames ?? []) as Array<{
                 midWeight?: number;
                 midChordOffMm?: number;
+                midChordMm?: number;
+                midThetaDeg?: number;
+                midBeta?: number;
                 midPlanOffMm?: number;
                 midLimit?: string;
                 heightMm?: number;
@@ -380,6 +405,7 @@ describe("procedural wall styles", () => {
                 midFlagged?: boolean;
                 midPlanAngleDeg?: number;
                 u?: number;
+                lineLengthMm?: number;
             }>;
             const weights = frames.map((f) => f.midWeight ?? 0);
             const chords = frames.map((f) => f.midChordOffMm ?? 0);
@@ -418,6 +444,16 @@ describe("procedural wall styles", () => {
                 midWmean: weights.length ? weights.reduce((a, b) => a + b, 0) / weights.length : 0,
                 chordOffMax: chords.length ? Math.max(...chords) : 0,
                 chordOffMed: med(chords),
+                chordOffMedFrac: (() => {
+                    const tall = frames.filter((f) => (f.heightMm ?? 0) >= 8);
+                    const rs = tall.map((f) => {
+                        const d = Math.max(f.midChordMm ?? f.lineLengthMm ?? 0, 1e-6);
+                        return (f.midChordOffMm ?? 0) / d;
+                    });
+                    return rs.length ? med(rs) : 0;
+                })(),
+                thetaDegMax: frames.length ? Math.max(...frames.map((f) => f.midThetaDeg ?? 0)) : 0,
+                betaMax: frames.length ? Math.max(...frames.map((f) => f.midBeta ?? 0)) : 0,
                 planOffMax: plans.length ? Math.max(...plans) : 0,
                 planOffMed: med(plans),
                 limits,

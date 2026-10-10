@@ -14,19 +14,23 @@ import {
 import { countColumnPlanReversals, type HermiteStation } from "./loft";
 import { countPlanViewChordCrossings, smoothAndCapFlare } from "./stations";
 import {
+    clampSagitta,
+    lambdaFromTheta,
     type MidStyleLimit,
     type MidStyleLock,
-    midStyleLambda,
     planAngleDeg,
     resolveWallStyleParams,
     sampleWallMidStyle,
+    stationBeta,
     stationBulge,
+    thetaFromSagitta,
     WALL_LAMBDA_MIN,
     WALL_MID_SMOOTH_SIGMA_MM,
     WALL_MID_TURN_MAX_DEG,
     WALL_MID_TURN_TARGET_DEG,
     WALL_PLAN_ANGLE_REPORT_DEG,
     WALL_STYLE_G1_MAX_DEG,
+    WALL_THETA_RATE_DEG,
     type WallStyleParams,
 } from "./wall-style";
 
@@ -270,6 +274,12 @@ export interface ColumnFrame {
     midForceStraight?: boolean;
     /** Laplacian F; applyAla honors this instead of rebuilding F from r2. */
     fLocked?: XYZ;
+    /** φ at E / F after the F-ring fair, before the style tilt. */
+    stylePhiE0?: number;
+    stylePhiF0?: number;
+    midTheta?: number;
+    midBeta?: number;
+    midChordMm?: number;
 }
 
 export interface SweepMidStyle {
@@ -2359,11 +2369,24 @@ function applyPhiFLock(fr: ColumnFrame, sw: SweepRule, phiF: number): void {
     const F = filletPointAtPhi(fil, phiF);
     if (dist3(fr.E, F) < MIN_LINE_MM - 1e-9) return;
     if (!fBetweenEB(fr.E, F, fr.B)) return;
-    fil.phiF = phiF;
-    fil.phi1 = phiF;
-    fil.Pw = { ...F };
+    const nB = fr.nB ?? fr.h;
+    const rebuilt = constructFilletFromF(fr.B, F, nB, fr.plantarSlopeRad, fr.nPlantar, fil.r, fr.E);
+    const height = Math.max(fr.R.z - fr.B.z, 0.5);
+    const r2Min = lastFilletR2MinMm(localSpacingOf(fr), fr.lastDlRad);
+    const packed = scaleShortWallPack(
+        height,
+        fr.rTop,
+        Math.max(r2Min, rebuilt.r),
+        minLineOfHeight(height),
+        MIN_ROUND_R_MM,
+    );
+    sw.fil = rebuilt;
+    sw.C2 = rebuilt.C;
+    sw.r2 = packed.r2;
     sw.F = { ...F };
     fr.F = { ...F };
+    fr.rFillet = packed.r2;
+    fr.phiFLock = phiF;
     const U = { x: fr.E.x - F.x, y: fr.E.y - F.y, z: fr.E.z - F.z };
     if (hypot3(U) > 1e-9) {
         const u = unit3(U);
@@ -2372,7 +2395,7 @@ function applyPhiFLock(fr: ColumnFrame, sw: SweepRule, phiF: number): void {
     }
     sw.L = dist3(fr.E, F);
     fr.lineLengthMm = sw.L;
-    sw.filletSweep = Math.abs(fil.phi1 - fil.phi0);
+    sw.filletSweep = Math.abs(rebuilt.phi1 - rebuilt.phi0);
     fr.filletSweepRad = sw.filletSweep;
 }
 
@@ -2483,9 +2506,9 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     if (styleLock && fr.phiRound1Lock != null && Number.isFinite(fr.phiRound1Lock)) {
         applyThetaELock(fr, sw, fr.phiRound1Lock);
     }
-    // φF is faired by the existing F-ring Laplacian. Applying a per-station
-    // φF lock here pulled F off that ring and folded the midfoot. Recompute
-    // M from the locked θ_E and the Laplacian F / fillet tangent.
+    if (styleLock && fr.phiFLock != null && Number.isFinite(fr.phiFLock)) {
+        applyPhiFLock(fr, sw, fr.phiFLock);
+    }
     return sweepToAla(sw, fr.h);
 }
 
@@ -2971,7 +2994,10 @@ function columnPoints(
             weightOut,
             g1Out,
             offsetOut,
-            lock: fr.midWLock != null ? { lambda: fr.midWLock } : undefined,
+            lock:
+                fr.midTheta != null || fr.midWLock != null
+                    ? { lambda: fr.midWLock, theta: fr.midTheta }
+                    : undefined,
         },
     );
     fr.midWeight = weightOut.value;
@@ -4170,10 +4196,49 @@ function midStyleEnds(fr: ColumnFrame): { E: XYZ; Fpiece: XYZ; tE: XYZ; tF: XYZ 
     };
 }
 
+function stylePackOk(fr: ColumnFrame): boolean {
+    const height = Math.max(fr.heightMm, 1e-9);
+    const minL = minLineOfHeight(height);
+    const L = Math.max(dist3(fr.E, fr.F), minL);
+    const r2Min = lastFilletR2MinMm(localSpacingOf(fr), fr.lastDlRad);
+    if (fr.rTop < MIN_ROUND_R_MM - 1e-9) return false;
+    if (fr.rFillet < r2Min - 1e-9) return false;
+    if (fr.rTop + fr.rFillet + L > 0.9 * height + 1e-9) return false;
+    if (dist3(fr.E, fr.F) < minL - 1e-9) return false;
+    return true;
+}
+
+function applyStyleTilt(fr: ColumnFrame, theta: number): void {
+    const baseE = fr.stylePhiE0;
+    const baseF = fr.stylePhiF0;
+    if (baseE == null || baseF == null || !(theta > 1e-12)) {
+        fr.phiRound1Lock = baseE;
+        fr.phiFLock = undefined;
+        applyAlaToFrame(fr);
+        return;
+    }
+    const half = 0.5 * theta;
+    fr.phiRound1Lock = baseE - half;
+    fr.phiFLock = baseF + half;
+    applyAlaToFrame(fr);
+}
+
+function ringTurnAt(pts: XYZ[], i: number, plan = false): number {
+    const n = pts.length;
+    if (n < 3) return 0;
+    const a = pts[(i + n - 1) % n]!;
+    const b = pts[i]!;
+    const c = pts[(i + 1) % n]!;
+    const t0 = plan ? { x: b.x - a.x, y: b.y - a.y, z: 0 } : { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
+    const t1 = plan ? { x: c.x - b.x, y: c.y - b.y, z: 0 } : { x: c.x - b.x, y: c.y - b.y, z: c.z - b.z };
+    if (hypot3(t0) < 1e-9 || hypot3(t1) < 1e-9) return 0;
+    return vecAngleDeg(t0, t1);
+}
+
 /**
- * Cubic Hermite mid-piece. tE / tF come from the built arcs and are not
- * modified. Smooth only λ(i), then rebuild P1 / P2 on those rays.
- * Rows by equal turning; nLine* is the max over stations.
+ * Cubic Hermite mid-piece. Bulge is an end-tangent tilt: φ_E −= θ/2,
+ * φ_F += θ/2, then λ = 2/(3(1+cos(θ/2))). Smooth / rate-limit θ only.
+ * Mid rows at t_k = k/N; N is the max uniform-t need over stations.
  */
 function prepareStyledMid(
     frames: ColumnFrame[],
@@ -4184,14 +4249,84 @@ function prepareStyledMid(
 ): number {
     const style = frames[0]?.wallStyle ?? resolveWallStyleParams({ style: "straight" });
     if (style.style === "straight" || !frames.length) return nWall;
-    const rawL: number[] = [];
+    const n = frames.length;
+    const beta0: number[] = [];
     for (const fr of frames) {
+        fr.phiFLock = undefined;
         applyAlaToFrame(fr);
-        const bulge = stationBulge(style, fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250);
-        rawL.push(midStyleLambda(fr.heightMm, bulge));
+        fr.stylePhiE0 = fr.phiRound1;
+        fr.stylePhiF0 = fr.sweepRule?.fil.phiF;
+        beta0.push(stationBeta(style, fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250));
     }
     const rim = frames.map((fr) => fr.R);
-    const smL = periodicGaussian(rawL, rim, WALL_MID_SMOOTH_SIGMA_MM);
+    const rateRad = (WALL_THETA_RATE_DEG * Math.PI) / 180;
+    const beta = beta0.slice();
+    let theta: number[] = new Array(n).fill(0);
+    let nRndF = 0;
+    const rebuildTheta = (betas: number[]): number[] => {
+        const raw: number[] = [];
+        for (let i = 0; i < n; i++) {
+            const fr = frames[i]!;
+            const d = dist3(fr.E, fr.F);
+            const h = clampSagitta(betas[i] ?? 0, d, style.planOutMm);
+            raw.push(thetaFromSagitta(h, d));
+        }
+        const sm = periodicGaussian(raw, rim, WALL_MID_SMOOTH_SIGMA_MM);
+        return rateLimitClosedAbs(sm, rateRad, 0);
+    };
+    const applyAll = (th: number[]): void => {
+        for (let i = 0; i < n; i++) applyStyleTilt(frames[i]!, th[i] ?? 0);
+        for (let i = 0; i < n; i++) {
+            const fr = frames[i]!;
+            if (stylePackOk(fr)) continue;
+            let lo = 0;
+            let hi = th[i] ?? 0;
+            for (let k = 0; k < 10; k++) {
+                const mid = 0.5 * (lo + hi);
+                applyStyleTilt(fr, mid);
+                if (stylePackOk(fr)) lo = mid;
+                else hi = mid;
+            }
+            applyStyleTilt(fr, lo);
+            th[i] = lo;
+        }
+    };
+    theta = rebuildTheta(beta);
+    applyAll(theta);
+    for (let pass = 0; pass < 6; pass++) {
+        const fTurn = ringTurningDeg(
+            frames.map((f) => f.F),
+            true,
+        );
+        if (fTurn <= RING_TURNING_MAX_DEG + 1e-6) break;
+        const fs = frames.map((f) => f.F);
+        let hit = false;
+        for (let i = 0; i < n; i++) {
+            const loc = Math.max(ringTurnAt(fs, i, true), ringTurnAt(fs, i, false));
+            if (loc <= RING_TURNING_MAX_DEG + 1e-6) continue;
+            hit = true;
+            nRndF++;
+            beta[i] = 0.5 * (beta[i] ?? 0);
+            console.log(
+                "[RND-F]",
+                JSON.stringify({
+                    i,
+                    u: Number(frames[i]!.u.toFixed(4)),
+                    fTurn: Number(loc.toFixed(3)),
+                    beta: Number((beta[i] ?? 0).toFixed(4)),
+                    thetaDeg: Number((((theta[i] ?? 0) * 180) / Math.PI).toFixed(3)),
+                }),
+            );
+        }
+        if (!hit) break;
+        for (const fr of frames) {
+            fr.phiRound1Lock = fr.stylePhiE0;
+            fr.phiFLock = undefined;
+            applyAlaToFrame(fr);
+        }
+        theta = rebuildTheta(beta);
+        applyAll(theta);
+    }
     let nLineNeed = nLine;
     let nFlagged = 0;
     const g1Stations: Array<{
@@ -4204,16 +4339,19 @@ function prepareStyledMid(
         flagged: boolean;
     }> = [];
     const planWide: Array<{ i: number; u: number; plan: number }> = [];
-    for (let i = 0; i < frames.length; i++) {
+    for (let i = 0; i < n; i++) {
         const fr = frames[i]!;
         const bulge = stationBulge(style, fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250);
-        applyAlaToFrame(fr);
         const en = midStyleEnds(fr);
         if (!en) {
             fr.midWLock = WALL_LAMBDA_MIN;
+            fr.midTheta = 0;
+            fr.midBeta = 0;
             fr.midFlagged = false;
             continue;
         }
+        const th = theta[i] ?? 0;
+        const lam = lambdaFromTheta(th);
         const locked = sampleWallMidStyle(
             en.E,
             en.Fpiece,
@@ -4225,11 +4363,14 @@ function prepareStyledMid(
             { x: fr.wOut.x, y: fr.wOut.y },
             style,
             bulge,
-            { lambda: Math.max(WALL_LAMBDA_MIN, smL[i] ?? rawL[i]!) },
+            { theta: th, lambda: lam },
         );
         fr.midP1 = locked.P1;
         fr.midP2 = locked.P2;
         fr.midWLock = locked.lambda;
+        fr.midTheta = th;
+        fr.midBeta = beta[i] ?? 0;
+        fr.midChordMm = dist3(en.E, en.Fpiece);
         fr.midS = locked.s;
         fr.midT = locked.t;
         fr.midWeight = locked.lambda;
@@ -4276,9 +4417,12 @@ function prepareStyledMid(
             turnTarget: WALL_MID_TURN_TARGET_DEG,
             turnCap: WALL_MID_TURN_MAX_DEG,
             sigma: WALL_MID_SMOOTH_SIGMA_MM,
+            thetaRateDeg: WALL_THETA_RATE_DEG,
             flagged: nFlagged,
+            rndF: nRndF,
             g1Over: over.length,
             planOver30: planWide.length,
+            thetaDegMax: Number(((Math.max(...theta, 0) * 180) / Math.PI).toFixed(3)),
         }),
     );
     if (over.length) console.log("[S1-G1-OUT]", JSON.stringify(over.slice(0, 24)));

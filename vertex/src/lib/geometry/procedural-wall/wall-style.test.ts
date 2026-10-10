@@ -8,17 +8,24 @@ import {
     g1OfCubic,
     hermiteControls,
     hybridBulgeAt,
+    lambdaFromTheta,
     midStyleLambda,
     planAngleDeg,
     planBoundsOf,
     resolveWallStyleParams,
     sampleCubicByTurning,
+    sampleCubicUniformT,
     sampleWallMidStyle,
+    stationBeta,
     stationBulge,
-    WALL_BULGE_OFFSET_FRAC,
+    thetaFromSagitta,
+    WALL_BETA_ARCH,
+    WALL_BETA_H_CAP,
+    WALL_BETA_HEEL,
     WALL_BULGE_OFFSET_MAX_MM,
     WALL_LAMBDA_MIN,
     WALL_MID_TURN_MAX_DEG,
+    wallBetaAt,
 } from "./wall-style";
 
 describe("wall style mid-piece", () => {
@@ -36,10 +43,28 @@ describe("wall style mid-piece", () => {
         expect(hybridBulgeAt(0.29, -1, 250, 0.6)).toBeGreaterThan(hybridBulgeAt(0.29, 1, 250, 0.6));
     });
 
-    test("lambda is 1/3 on short or zero-bulge walls and rises with bulge·k(H)", () => {
-        expect(midStyleLambda(2, 0.6)).toBeCloseTo(WALL_LAMBDA_MIN, 6);
+    test("lambda is 1/3 at theta 0 and follows the circular-arc handle", () => {
+        expect(lambdaFromTheta(0)).toBeCloseTo(WALL_LAMBDA_MIN, 6);
         expect(midStyleLambda(20, 0)).toBeCloseTo(WALL_LAMBDA_MIN, 6);
-        expect(midStyleLambda(12, 0.6)).toBeCloseTo(WALL_LAMBDA_MIN + 0.6 * (0.6 - 1 / 3), 6);
+        const th = thetaFromSagitta(0.15, 1);
+        expect(lambdaFromTheta(th)).toBeCloseTo(2 / (3 * (1 + Math.cos(th / 2))), 6);
+        expect(wallBetaAt(0)).toBeCloseTo(WALL_BETA_HEEL, 6);
+        expect(wallBetaAt(0.7)).toBeCloseTo(WALL_BETA_ARCH, 6);
+        expect(stationBeta(resolveWallStyleParams({ style: "straight" }), 0.6, 1, 250)).toBe(0);
+        expect(stationBeta(resolveWallStyleParams({ style: "hybrid" }), 0.05, 1, 250)).toBeLessThan(1e-6);
+    });
+
+    test("uniform-t samples sit on the Hermite parameter", () => {
+        const E = { x: 0, y: 0, z: 10 };
+        const F = { x: 0, y: 0, z: 0 };
+        const tE = { x: 1, y: 0, z: -1 };
+        const tF = { x: -1, y: 0, z: -1 };
+        const ctrl = hermiteControls(E, F, tE, tF, lambdaFromTheta(thetaFromSagitta(0.15, 10)));
+        const pts = sampleCubicUniformT(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, 4);
+        expect(pts).toHaveLength(4);
+        expect(pts[3]!.z).toBeCloseTo(0, 6);
+        const mid = sampleCubicUniformT(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, 2)[0]!;
+        expect(mid.x).toBeGreaterThan(0);
     });
 
     test("cubic Hermite is G1 at E and F even when the tangent rays are skew", () => {
@@ -95,7 +120,7 @@ describe("wall style mid-piece", () => {
         expect(Math.hypot(eDir.y, fDir.y)).toBeLessThan(1e-9);
         expect(mid.lambda).toBeGreaterThanOrEqual(WALL_LAMBDA_MIN - 1e-9);
         expect(mid.planOffsetMm ?? 0).toBeLessThanOrEqual(4 + 1e-6);
-        const bound = Math.min(WALL_BULGE_OFFSET_FRAC * 12, WALL_BULGE_OFFSET_MAX_MM);
+        const bound = Math.min(WALL_BETA_H_CAP * 12, WALL_BULGE_OFFSET_MAX_MM);
         expect(mid.chordOffsetMm ?? 0).toBeLessThanOrEqual(bound + 1e-6);
         const plan = planBoundsOf(mid.pts, { x: 0, y: 0, z: 16 }, F, { x: 1, y: 0 }, 4);
         expect(plan.insetMin).toBeGreaterThanOrEqual(-1e-6);
