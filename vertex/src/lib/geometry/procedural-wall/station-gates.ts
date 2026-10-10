@@ -3,11 +3,18 @@
 
 import { type ColumnQuality, columnHeading, FILLET_R_CAP_MM, MIN_ROUND_R_MM } from "./bezier-column";
 import { pointInPoly } from "./cdt-band";
-import { ensureCcw, type PolyPoint, startAtLowCurvature } from "./curves";
+import {
+    ensureCcw,
+    type PolyPoint,
+    polylineArcLengths,
+    sampleClosedAtArc01,
+    startAtLowCurvature,
+} from "./curves";
 import type { WallRegionDefaults } from "./defaults";
 import { fairedPattern } from "./faired-pattern";
 import type { HermiteStation } from "./loft";
 import { outwardNormal } from "./measure";
+import { nearestRayHitOnLoop, spreadClosedOnLoop } from "./stations";
 
 export const PATTERN_SOURCE_FAIRED_STOCK = "faired-stock";
 export const MIN_INSET_FLOOR_MM = 1;
@@ -112,9 +119,11 @@ export function allowedLeanRad(insetMm: number): number {
 }
 
 export function filletRadiiFromDefaults(defaults: WallRegionDefaults): { r1: number; r2: number } {
+    const r1In = defaults.wallFilletTopMm > 0 ? defaults.wallFilletTopMm : 0.5;
+    const r2In = defaults.wallFilletBottomMm > 0 ? defaults.wallFilletBottomMm : 0.05;
     return {
-        r1: Math.min(FILLET_R_CAP_MM, Math.max(MIN_ROUND_R_MM, defaults.wallFilletTopMm || 0.5)),
-        r2: Math.min(FILLET_R_CAP_MM, Math.max(0.05, defaults.wallFilletBottomMm || 0.7)),
+        r1: Math.min(FILLET_R_CAP_MM, Math.max(MIN_ROUND_R_MM, r1In)),
+        r2: Math.min(FILLET_R_CAP_MM, Math.max(0.05, r2In)),
     };
 }
 
@@ -150,6 +159,98 @@ export function columnInsetSkew(
         skewMm: Math.abs(dx * oy - dy * ox),
         outward: { x: ox, y: oy },
     };
+}
+
+/** Tangential leftover vs the harmonic pairing normal (same as columnSidewaysSkewMm). */
+export function pairingSkewMm(R: PolyPoint, B: PolyPoint, n: { x: number; y: number }): number {
+    const nl = Math.hypot(n.x, n.y) || 1;
+    return Math.abs((R.x - B.x) * (n.y / nl) - (R.y - B.y) * (n.x / nl));
+}
+
+function nearestS01(p: PolyPoint, loop: PolyPoint[]): number {
+    const { cum, total } = polylineArcLengths(loop);
+    if (total < 1e-12) return 0;
+    let bestS = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const len2 = ex * ex + ey * ey;
+        const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
+        const d = (p.x - (a.x + ex * t)) ** 2 + (p.y - (a.y + ey * t)) ** 2;
+        if (d < bestD) {
+            bestD = d;
+            const seg = cum[i + 1]! - cum[i]!;
+            bestS = (cum[i]! + t * seg) / total;
+        }
+    }
+    return ((bestS % 1) + 1) % 1;
+}
+
+function slideAlongLoop(
+    R: PolyPoint,
+    B0: PolyPoint,
+    nPair: { x: number; y: number },
+    outward: { x: number; y: number },
+    loop: PolyPoint[],
+    minInset: number,
+): PolyPoint {
+    const s0 = nearestS01(B0, loop);
+    const { total } = polylineArcLengths(loop);
+    if (total < 1e-6) return B0;
+    const inn = { x: -outward.x, y: -outward.y };
+    const ray = nearestRayHitOnLoop(R, inn, loop, 1) ?? nearestRayHitOnLoop(R, inn, loop, -1);
+    if (ray && ray.t > 0.5 && ray.t < 80) {
+        const inset = columnInsetSkew(R, ray.point, outward).insetMm;
+        const skew = columnInsetSkew(R, ray.point, outward).skewMm;
+        const cap = SKEW_INSET_RATIO * Math.max(inset, 0);
+        const ox = B0.x - R.x;
+        const oy = B0.y - R.y;
+        const ol = Math.hypot(ox, oy) || 1;
+        const nx = ray.point.x - R.x;
+        const ny = ray.point.y - R.y;
+        const nl = Math.hypot(nx, ny) || 1;
+        const keepDir = (ox * nx + oy * ny) / (ol * nl) >= 0.5;
+        if (keepDir && inset + 1e-3 >= minInset && skew <= cap + 1e-3) {
+            return { x: ray.point.x, y: ray.point.y, z: 0 };
+        }
+    }
+    let best = B0;
+    let bestSkew = pairingSkewMm(R, B0, nPair);
+    const inset0 = columnInsetSkew(R, B0, outward).insetMm;
+    let found =
+        pairingSkewMm(R, B0, nPair) <= SKEW_INSET_RATIO * Math.max(inset0, 0) + 1e-3 &&
+        inset0 >= minInset - 1e-3;
+    if (found) return B0;
+    for (const windowMm of [8, 16, 32, Math.min(60, total * 0.25)]) {
+        const windowS = windowMm / total;
+        const steps = 36;
+        for (let k = -steps; k <= steps; k++) {
+            if (k === 0) continue;
+            const p = sampleClosedAtArc01(loop, s0 + (k / steps) * windowS);
+            const inset = columnInsetSkew(R, p, outward).insetMm;
+            if (inset + 1e-3 < minInset) continue;
+            const skew = pairingSkewMm(R, p, nPair);
+            const cap = SKEW_INSET_RATIO * Math.max(inset, 0);
+            if (skew <= cap + 1e-3) {
+                const d = Math.hypot(p.x - B0.x, p.y - B0.y);
+                const score = d + skew;
+                const bestD = Math.hypot(best.x - B0.x, best.y - B0.y) + bestSkew;
+                if (!found || score < bestD) {
+                    best = { x: p.x, y: p.y, z: 0 };
+                    bestSkew = skew;
+                    found = true;
+                }
+            } else if (!found && skew < bestSkew && inset >= minInset - 1e-3) {
+                best = { x: p.x, y: p.y, z: 0 };
+                bestSkew = skew;
+            }
+        }
+        if (found) break;
+    }
+    return { x: best.x, y: best.y, z: 0 };
 }
 
 function unitInwardAtRim(rim: PolyPoint[], x: number, y: number): { x: number; y: number } {
@@ -213,7 +314,12 @@ export function fairedPlantarFromStock(input: StockFairedInput): PolyPoint[] {
     return fit.samples.map((p) => ({ x: p.x, y: p.y, z: 0 }));
 }
 
-export function limitStationSkew(stations: HermiteStation[], loop: PolyPoint[]): void {
+export function limitStationSkew(
+    stations: HermiteStation[],
+    loop: PolyPoint[],
+    r1: number,
+    r2: number,
+): void {
     if (stations.length < 3 || loop.length < 3) return;
     const rim = stations.map((s) => s.rim);
     const c = centroidOf(rim);
@@ -221,17 +327,74 @@ export function limitStationSkew(stations: HermiteStation[], loop: PolyPoint[]):
         const st = stations[i]!;
         const out = outwardNormal(rim, i, c);
         const { insetMm, skewMm } = columnInsetSkew(st.rim, st.outline, out);
-        const cap = SKEW_INSET_RATIO * Math.max(insetMm, MIN_INSET_FLOOR_MM);
-        if (skewMm <= cap + 1e-3) continue;
-        const inn = { x: -out.x, y: -out.y };
-        const keep = Math.max(insetMm, MIN_INSET_FLOOR_MM);
-        const target = {
-            x: st.rim.x + inn.x * keep,
-            y: st.rim.y + inn.y * keep,
-            z: 0,
-        };
-        const snapped = nearestOnLoop(target, loop);
-        st.outline = { x: snapped.x, y: snapped.y, z: 0 };
+        const cap = SKEW_INSET_RATIO * Math.max(insetMm, 0);
+        if (skewMm <= cap + 1e-3 && insetMm >= MIN_INSET_FLOOR_MM - 1e-3) continue;
+        const need = Math.max(MIN_INSET_FLOOR_MM, minInsetAtStationMm(insetMm, r1, r2));
+        st.outline = slideAlongLoop(st.rim, st.outline, out, out, loop, need);
+        const dx = st.outline.x - st.rim.x;
+        const dy = st.outline.y - st.rim.y;
+        const hl = Math.hypot(dx, dy);
+        if (hl > 1e-6) st.n = { x: dx / hl, y: dy / hl };
+        st.tB = nearestS01(st.outline, loop);
+    }
+    repairNeighbourHeading(stations, loop, r1, r2);
+}
+
+function headingDeg(a: HermiteStation, b: HermiteStation): number {
+    const h0 = columnHeading(a).h;
+    const h1 = columnHeading(b).h;
+    return (Math.acos(Math.max(-1, Math.min(1, h0.x * h1.x + h0.y * h1.y))) * 180) / Math.PI;
+}
+
+function pullHeading(st: HermiteStation, ref: HermiteStation, loop: PolyPoint[]): boolean {
+    const h0 = columnHeading(ref).h;
+    const h1 = columnHeading(st).h;
+    const ang = Math.acos(Math.max(-1, Math.min(1, h0.x * h1.x + h0.y * h1.y)));
+    const maxRad = (PRELOFT_HEADING_MAX_DEG * Math.PI) / 180;
+    if (ang <= maxRad + 1e-9) return false;
+    const t = maxRad / Math.max(ang, 1e-9);
+    const hx = h0.x + (h1.x - h0.x) * t;
+    const hy = h0.y + (h1.y - h0.y) * t;
+    const hl = Math.hypot(hx, hy) || 1;
+    const len = Math.max(0.8, Math.hypot(st.outline.x - st.rim.x, st.outline.y - st.rim.y));
+    const target = { x: st.rim.x + (hx / hl) * len, y: st.rim.y + (hy / hl) * len, z: 0 };
+    const snapped = nearestOnLoop(target, loop);
+    st.outline = { x: snapped.x, y: snapped.y, z: 0 };
+    const dx = st.outline.x - st.rim.x;
+    const dy = st.outline.y - st.rim.y;
+    const nl = Math.hypot(dx, dy);
+    if (nl > 1e-6) st.n = { x: dx / nl, y: dy / nl };
+    st.tB = nearestS01(st.outline, loop);
+    return true;
+}
+
+function repairNeighbourHeading(stations: HermiteStation[], loop: PolyPoint[], r1: number, r2: number): void {
+    void r1;
+    void r2;
+    for (let pass = 0; pass < 8; pass++) {
+        let moved = 0;
+        for (let i = 0; i < stations.length; i++) {
+            const a = stations[i]!;
+            const b = stations[(i + 1) % stations.length]!;
+            if (headingDeg(a, b) <= PRELOFT_HEADING_MAX_DEG + 1e-3) continue;
+            if (pullHeading(b, a, loop)) moved++;
+            if (headingDeg(a, b) > PRELOFT_HEADING_MAX_DEG + 1e-3 && pullHeading(a, b, loop)) moved++;
+        }
+        if (!moved) break;
+    }
+    const spread = spreadClosedOnLoop(
+        stations.map((s) => s.outline),
+        loop,
+        0.4,
+    );
+    for (let i = 0; i < stations.length; i++) {
+        const p = spread[i]!;
+        stations[i]!.outline = { x: p.x, y: p.y, z: 0 };
+        const dx = p.x - stations[i]!.rim.x;
+        const dy = p.y - stations[i]!.rim.y;
+        const hl = Math.hypot(dx, dy);
+        if (hl > 1e-6) stations[i]!.n = { x: dx / hl, y: dy / hl };
+        stations[i]!.tB = nearestS01(p, loop);
     }
 }
 

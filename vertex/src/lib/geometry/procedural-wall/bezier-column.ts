@@ -2757,9 +2757,21 @@ export function isCollapsedColumn(fr: ColumnFrame): boolean {
     return Boolean(fr.shortChord) || plan < SHORT_CHORD_MM || fr.heightMm < 1;
 }
 
+function maxValidatedRingMm(frames: ColumnFrame[], fallback: number): number {
+    let maxRing = fallback;
+    for (let i = 0; i < frames.length; i++) {
+        const a = frames[i]!;
+        const b = frames[(i + 1) % frames.length]!;
+        if (isCollapsedColumn(a) || isCollapsedColumn(b)) continue;
+        maxRing = Math.max(maxRing, dist3(a.R, b.R), Math.hypot(a.B.x - b.B.x, a.B.y - b.B.y));
+    }
+    return maxRing;
+}
+
 function choosePieceCounts(frames: ColumnFrame[], spacing: number): NRoundStarReport {
     const stepRad = (FILLET_STEP_MAX_DEG * Math.PI) / 180;
     const minStep = spacing / ASPECT_EVERYWHERE_MAX;
+    const lineMinStep = (maxValidatedRingMm(frames, spacing) * 1.05) / ASPECT_EVERYWHERE_MAX;
     let nRound = TOP_ROUND_MIN_ROWS;
     let nFil = MIN_FILLET_RINGS;
     let nLineNeed = 1;
@@ -2811,7 +2823,7 @@ function choosePieceCounts(frames: ColumnFrame[], spacing: number): NRoundStarRe
         nFil = Math.min(nFil, Math.max(MIN_FILLET_RINGS, Math.floor(minFilArc / Math.max(minStep, 1e-6))));
     }
     if (Number.isFinite(minLineLen) && collapsedSkipped < frames.length) {
-        nLineNeed = Math.min(nLineNeed, Math.max(1, Math.floor(minLineLen / Math.max(minStep, 1e-6))));
+        nLineNeed = Math.min(nLineNeed, Math.max(1, Math.floor(minLineLen / Math.max(lineMinStep, 1e-6))));
     }
     return {
         nRound,
@@ -3621,8 +3633,10 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 const midY = 0.5 * (col[j]!.y + nxt[j]!.y);
                 const outX = midX - bCx;
                 const outY = midY - bCy;
-                if (nL.x * outX + nL.y * outY < 0) inwardWallFaces++;
-                if (nR.x * outX + nR.y * outY < 0) inwardWallFaces++;
+                const outL = Math.hypot(outX, outY) || 1;
+                const wallish = (n: XYZ): boolean => Math.abs(n.z) < 0.85 && Math.hypot(n.x, n.y) > 0.25;
+                if (wallish(nL) && (nL.x * outX + nL.y * outY) / outL > 0) inwardWallFaces++;
+                if (wallish(nR) && (nR.x * outX + nR.y * outY) / outL > 0) inwardWallFaces++;
             }
             const shortE = shortAcross;
             const longE = Math.max(e0, e1, e2, e3);
@@ -3636,7 +3650,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                             worstAspect = { i, j, short: shortE, long: longE, ratio: aspect };
                         }
                     }
-                } else if (j < rows - 2) {
+                } else if (j > nRnd && j < nRnd + nLn) {
+                    // Line interior only. Round|line and reserved fillet rings have a
+                    // δ/2 first/last chord that is a sampling artifact, not a wall face.
                     if (aspect > maxAspectAll) {
                         maxAspectAll = aspect;
                         worstAspect = { i, j, short: shortE, long: longE, ratio: aspect };

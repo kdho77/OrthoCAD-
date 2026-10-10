@@ -569,9 +569,8 @@ export function reconstructProceduralWalls(
     applyStoredTB(stations, hygiened.loop);
     applySmoothedB();
     reparameterizeBArcLength(stations, hygiened.loop);
-    limitStationSkew(stations, hygiened.loop);
-    stampMonotonicTB(stations, hygiened.loop);
-    applyStoredTB(stations, hygiened.loop);
+    limitStationSkew(stations, hygiened.loop, r1, r2);
+    reparameterizeBArcLength(stations, hygiened.loop);
     assertClosedStationRing(stations, rimLocal);
     assertPreLoftStations(stations, r1, r2);
     {
