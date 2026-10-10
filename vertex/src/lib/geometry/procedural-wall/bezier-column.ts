@@ -947,7 +947,6 @@ export function sampleArcLineArc(
         const p = alaPoint(ala, h, ala.C1, ala.r1, phi);
         const dPrev = dist3(p, pts[pts.length - 1]!);
         if (dPrev < WELD_MM) continue;
-        if (dPrev < ROUND_MIN_STEP_MM) continue;
         if (dist3(p, ala.T1) < WELD_MM) continue;
         pts.push(p);
     }
