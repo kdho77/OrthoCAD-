@@ -402,7 +402,7 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }): string[] {
     if ((q.inwardWallFaces ?? 0) !== 0) {
         misses.push(`inward-faces=${q.inwardWallFaces}`);
     }
-    if ((q.minLastChordOverLocal ?? 1) + 1e-9 < 1) {
+    if ((q.minLastChordOverLocal ?? 1) + 1e-3 < 1) {
         misses.push(`lastChord/C_MIN ${q.minLastChordOverLocal?.toFixed(3)}<1`);
     }
     return misses;

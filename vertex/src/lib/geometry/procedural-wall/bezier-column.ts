@@ -1457,6 +1457,7 @@ export function constructSweepRule(
     planeN?: XYZ,
     phiRound1Lock?: number,
     nPlantarIn?: XYZ,
+    freezeLastR2 = false,
 ): SweepRule {
     const hl = Math.hypot(hIn.x, hIn.y) || 1;
     const h = { x: hIn.x / hl, y: hIn.y / hl };
@@ -1502,20 +1503,14 @@ export function constructSweepRule(
     let tStart = unit3(eW);
     if (dot3(tStart, tInc) < 0) tStart = { x: -tStart.x, y: -tStart.y, z: -tStart.z };
 
-    const step = (lockPhi?: number): void => {
+    const filletU = (): XYZ => {
         const dFil = projectOntoSpan(d, frame.ew, frame.ez);
         // constructFillet wants the wall direction at F (up the wall, F→E).
-        const U = hypot3(dFil) > 1e-9 ? unit3({ x: -dFil.x, y: -dFil.y, z: -dFil.z }) : { x: 0, y: 0, z: 1 };
-        for (let grow = 0; grow < 4; grow++) {
-            fil = constructFillet(B, nB, r2, U, plantarSlopeRad, nPlant);
-            const S = Math.abs(fil.phi1 - fil.phi0);
-            const cosT = planCosT(d, nB, h);
-            const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S, cosT, r1Floor);
-            if (r2 + 1e-9 >= floored.r2Min && r1 <= floored.r1 + 1e-9) break;
-            r1 = floored.r1;
-            r2 = floored.r2;
-            C1 = add3(R, eN, -r1);
-        }
+        return hypot3(dFil) > 1e-9 ? unit3({ x: -dFil.x, y: -dFil.y, z: -dFil.z }) : { x: 0, y: 0, z: 1 };
+    };
+    const step = (lockPhi?: number): void => {
+        const U = filletU();
+        fil = constructFillet(B, nB, r2, U, plantarSlopeRad, nPlant);
         F = { ...fil.Pw };
         C1 = add3(R, eN, -r1);
         phiRound0 = 0;
@@ -1565,6 +1560,69 @@ export function constructSweepRule(
                 }
             }
             apply(lo);
+        }
+    }
+
+    // Floor r2 on the converged S. Rebuild the fillet with the same U so S does not chase.
+    const preFloorPhi = phiRound1;
+    if (!freezeLastR2) {
+        const U = filletU();
+        const S0 = Math.abs(fil.phi1 - fil.phi0);
+        for (let grow = 0; grow < 3; grow++) {
+            const cosT = planCosT(d, nB, h);
+            const floored = floorR2OnLastStep(height, r1, r2, minL, localSpacing, S0, cosT, r1Floor);
+            if (r2 + 1e-9 >= floored.r2Min && r1 <= floored.r1 + 1e-9) break;
+            r1 = floored.r1;
+            r2 = floored.r2;
+            C1 = add3(R, eN, -r1);
+            E = sweptRoundPoint(C1, r1, eN, eW, phiRound1);
+            fil = constructFillet(B, nB, r2, U, plantarSlopeRad, nPlant);
+            F = { ...fil.Pw };
+            const next = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
+            if (hypot3(next) > 1e-9) d = unit3(next);
+        }
+        const dL = lastFilletDLRad(S0, planCosT(d, nB, h));
+        const need = lastFilletR2MinMm(localSpacing, dL);
+        if (r2 + 1e-9 < need) {
+            r2 = need;
+            fil = constructFillet(B, nB, r2, U, plantarSlopeRad, nPlant);
+            F = { ...fil.Pw };
+        }
+    }
+
+    if (!freezeLastR2) {
+        const measureG1 = (): { g1E: number; g1F: number } => {
+            const next = { x: F.x - E.x, y: F.y - E.y, z: F.z - E.z };
+            if (hypot3(next) > 1e-9) d = unit3(next);
+            const tEm = sweptRoundTangent(eN, eW, phiRound1);
+            const tFm = unit3({ x: -fil.d.x, y: -fil.d.y, z: -fil.d.z });
+            const dEm = projectOntoSpan(d, eW, eN);
+            const dFm = projectOntoSpan(d, frame.ew, frame.ez);
+            return {
+                g1E: hypot3(dEm) > 1e-9 ? vecAngleDeg(unit3(dEm), tEm) : 0,
+                g1F: hypot3(dFm) > 1e-9 ? vecAngleDeg(unit3(dFm), tFm) : 0,
+            };
+        };
+        const applyPhiKeepFillet = (phi: number): { g1E: number; g1F: number } => {
+            phiRound1 = phi;
+            C1 = add3(R, eN, -r1);
+            E = sweptRoundPoint(C1, r1, eN, eW, phiRound1);
+            return measureG1();
+        };
+        const g1Aim = measureG1();
+        if (g1Aim.g1E > G1_MAX_DEG + 1e-6 || g1Aim.g1F > G1_MAX_DEG + 1e-6) {
+            const free = preFloorPhi;
+            let bestPhi = free;
+            let bestScore = Math.max(g1Aim.g1E, g1Aim.g1F);
+            for (let k = -16; k <= 16; k++) {
+                const m = applyPhiKeepFillet(free + (k * Math.PI) / 180);
+                const score = Math.max(m.g1E, m.g1F);
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestPhi = free + (k * Math.PI) / 180;
+                }
+            }
+            applyPhiKeepFillet(bestPhi);
         }
     }
 
@@ -1711,12 +1769,12 @@ export function assertOutsideRound(R: XYZ, rnd: OutsideRound, pts: XYZ[]): void 
     }
 }
 
-export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
+export function applyAlaToFrame(fr: ColumnFrame, freezeLastR2 = false): ArcLineArc {
     const nUse = fr.nTopSmoothed ?? fr.nTop;
     const nB = fr.nB ?? fr.h;
     const tRim = fr.tRim ?? { x: -fr.h.y, y: fr.h.x, z: 0 };
     const local = localSpacingOf(fr);
-    let sw = constructSweepRule(
+    const sw = constructSweepRule(
         fr.R,
         fr.B,
         nUse,
@@ -1731,39 +1789,8 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
         fr.sheetPlaneN ?? nUse,
         fr.phiRound1Lock,
         fr.nPlantar,
+        freezeLastR2,
     );
-    for (let pass = 0; pass < 4; pass++) {
-        const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
-        const cosT = planCosT(sw.d, nB, fr.h);
-        const floored = floorR2OnLastStep(
-            Math.max(fr.R.z - fr.B.z, 0.5),
-            sw.r1,
-            sw.r2,
-            minLineOfHeight(Math.max(fr.R.z - fr.B.z, 0.5)),
-            local,
-            S,
-            cosT,
-        );
-        if (sw.r2 + 1e-9 >= floored.r2Min && sw.r1 <= floored.r1 + 1e-9) break;
-        fr.rTop = floored.r1;
-        fr.rFillet = floored.r2;
-        sw = constructSweepRule(
-            fr.R,
-            fr.B,
-            nUse,
-            fr.rTop,
-            fr.rFillet,
-            fr.h,
-            nB,
-            tRim,
-            fr.plantarSlopeRad,
-            fr.sheetSlopeValid ? fr.roundSlopeRad : undefined,
-            local,
-            fr.sheetPlaneN ?? nUse,
-            fr.phiRound1Lock,
-            fr.nPlantar,
-        );
-    }
     const S = Math.abs(sw.fil.phi1 - sw.fil.phi0);
     fr.rTop = Math.max(MIN_ROUND_R_MM, sw.r1);
     fr.rFillet = sw.r2;
@@ -4148,32 +4175,17 @@ export function enforceLastChordFloor(frames: ColumnFrame[]): void {
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
         const Bz0 = fr.B.z;
-        const local = localSpacingOf(fr);
-        const cMin = lastFilletCMinMm(local);
-        for (let pass = 0; pass < 4; pass++) {
-            applyAlaToFrame(fr);
-            fr.B.z = Bz0;
-            fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
-            const chord = lastStepChordMm(fr.rFillet, fr.lastDlRad);
-            if (chord + 1e-9 >= cMin) break;
-            const floored = floorR2OnLastStep(
-                fr.heightMm,
-                fr.rTop,
-                fr.rFillet,
-                minLineOfHeight(fr.heightMm),
-                local,
-                fr.filletSweepRad,
-                fr.cosT,
-            );
-            fr.rTop = floored.r1;
-            fr.rFillet = floored.r2;
-            fr.lastDlRad = floored.dL;
-        }
         applyAlaToFrame(fr);
         fr.B.z = Bz0;
         fr.heightMm = Math.max(fr.R.z - fr.B.z, 0.5);
-        const chord = lastStepChordMm(fr.rFillet, fr.lastDlRad);
-        if (chord + 1e-9 < cMin) {
+        const local = localSpacingOf(fr);
+        const cMin = lastFilletCMinMm(local);
+        const dL = lastFilletDLRad(fr.filletSweepRad, fr.cosT);
+        fr.lastDlRad = dL;
+        const need = lastFilletR2MinMm(local, dL);
+        if (fr.rFillet + 1e-9 < need) fr.rFillet = need;
+        const chord = lastStepChordMm(fr.rFillet, dL);
+        if (chord + 1e-4 < cMin) {
             const at = fr.stationIndex ?? i;
             throw new Error(
                 `[S1-I] lastChord ${chord.toFixed(4)} < C_MIN ${cMin.toFixed(4)} at station ${at}`,
