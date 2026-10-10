@@ -81,6 +81,11 @@ export interface ColumnFrame {
     bandInsetMm: number;
     /** Last fillet-sample z before B. */
     arcEndZ: number;
+    /** Outside-round end = wall start. */
+    E: XYZ;
+    nTop: XYZ;
+    wOut: { x: number; y: number };
+    nWall: XYZ;
 }
 
 export interface MinWallClamp {
@@ -113,6 +118,14 @@ function unit3(a: XYZ): XYZ {
 
 function add3(a: XYZ, b: XYZ, s = 1): XYZ {
     return { x: a.x + b.x * s, y: a.y + b.y * s, z: a.z + b.z * s };
+}
+
+function dot3(a: XYZ, b: XYZ): number {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function cross3(a: XYZ, b: XYZ): XYZ {
+    return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
 }
 
 function dist3(a: XYZ, b: XYZ): number {
@@ -214,7 +227,9 @@ export function filletDir(b: number, frame: PlantarFrame): XYZ {
 }
 
 function applyTilts(fr: ColumnFrame): void {
-    fr.T0 = t0FromTilt(fr.h, fr.t0TiltRad);
+    const w = fr.wOut ?? { x: -fr.h.x, y: -fr.h.y };
+    fr.wOut = w;
+    fr.T0 = t0FromTilt(w, fr.t0TiltRad);
     fr.U = filletDir(fr.uTiltRad, plantarFrameAt(fr.h, fr.plantarSlopeRad));
 }
 
@@ -496,14 +511,23 @@ export function filletCenterAndF(
     return { C: { s, z: fil.C.z }, F: fil.Pw, theta: fil.psi };
 }
 
-export function filletRowCount(psiRad: number): number {
-    const deg = Math.abs((psiRad * 180) / Math.PI);
-    return Math.max(MIN_FILLET_RINGS, Math.ceil(deg / FILLET_MAX_STEP_DEG));
+export function sizedArcRows(
+    sweepRad: number,
+    _radiusMm: number,
+    _stationSpacingMm: number,
+    minRows: number,
+    maxStepDeg: number,
+): number {
+    const deg = Math.abs((sweepRad * 180) / Math.PI);
+    return Math.max(minRows, Math.ceil(deg / Math.max(maxStepDeg, 1e-3)));
 }
 
-export function topRoundRowCount(sweepRad: number): number {
-    const deg = Math.abs((sweepRad * 180) / Math.PI);
-    return Math.max(TOP_ROUND_MIN_ROWS, Math.ceil(deg / TOP_ROUND_MAX_STEP_DEG));
+export function filletRowCount(psiRad: number, radiusMm = 1, stationSpacingMm = 1.3): number {
+    return sizedArcRows(psiRad, radiusMm, stationSpacingMm, MIN_FILLET_RINGS, FILLET_MAX_STEP_DEG);
+}
+
+export function topRoundRowCount(sweepRad: number, radiusMm = 0.5, stationSpacingMm = 1.3): number {
+    return sizedArcRows(sweepRad, radiusMm, stationSpacingMm, TOP_ROUND_MIN_ROWS, TOP_ROUND_MAX_STEP_DEG);
 }
 
 /** Equal-φ interiors from P_w toward P_p. Does not include P_w or B. */
@@ -519,41 +543,143 @@ function sampleFilletEqualPhi(fr: ColumnFrame, nInterior: number): XYZ[] {
     return rings;
 }
 
-function hzPoint(R: XYZ, h: { x: number; y: number }, sh: number, sz: number): XYZ {
-    return { x: R.x + h.x * sh, y: R.y + h.y * sh, z: R.z + sz };
+export interface OutsideRound {
+    C: XYZ;
+    E: XYZ;
+    wOut: XYZ;
+    nTop: XYZ;
+    nWall: XYZ;
+    tOut: XYZ;
+    T0: XYZ;
+    sweep: number;
+    r: number;
+}
+
+/** Exterior top-edge round: C = R − r n_top, start at R heading t_out, end E. */
+export function constructOutsideRound(
+    R: XYZ,
+    nTopIn: XYZ,
+    hIn: { x: number; y: number },
+    r: number,
+    t0TiltRad: number,
+): OutsideRound {
+    let nTop = unit3(nTopIn.x || nTopIn.y || nTopIn.z ? nTopIn : { x: 0, y: 0, z: 1 });
+    if (nTop.z < 0) nTop = { x: -nTop.x, y: -nTop.y, z: -nTop.z };
+    const hl = Math.hypot(hIn.x, hIn.y) || 1;
+    const h = { x: hIn.x / hl, y: hIn.y / hl };
+    const wOut = { x: -h.x, y: -h.y, z: 0 };
+    const tau = { x: h.y, y: -h.x, z: 0 };
+    let tOut = unit3(cross3(nTop, tau));
+    if (dot3(tOut, wOut) < 0) tOut = { x: -tOut.x, y: -tOut.y, z: -tOut.z };
+    const rr = Math.max(r, 1e-6);
+    const C = add3(R, nTop, -rr);
+    const T0 = t0FromTilt(wOut, t0TiltRad);
+    let nWall = unit3(cross3(T0, tau));
+    if (nWall.x * wOut.x + nWall.y * wOut.y < 0) nWall = { x: -nWall.x, y: -nWall.y, z: -nWall.z };
+    const E = add3(C, nWall, rr);
+    const sweep = Math.acos(Math.max(-1, Math.min(1, dot3(nTop, nWall))));
+    return { C, E, wOut, nTop, nWall, tOut, T0, sweep, r: rr };
+}
+
+export function assertOutsideRound(R: XYZ, rnd: OutsideRound, pts: XYZ[]): void {
+    const check = [R, ...pts, rnd.E];
+    for (const p of check) {
+        const d = (p.x - R.x) * rnd.wOut.x + (p.y - R.y) * rnd.wOut.y;
+        if (d < -1e-6) {
+            throw new Error(`[S1-ROUND] point inboard of R d=${d.toFixed(6)}`);
+        }
+    }
+    const n = Math.max(2, pts.length);
+    let prevZ = rnd.nTop.z;
+    const endZ = rnd.nWall.z;
+    const rising = endZ > prevZ;
+    for (let i = 1; i <= n; i++) {
+        const t = i / n;
+        const z = rnd.nTop.z * (1 - t) + rnd.nWall.z * t;
+        if (rising ? z + 1e-6 < prevZ : z - 1e-6 > prevZ) {
+            throw new Error(`[S1-ROUND] normal z not monotone ${prevZ} → ${z}`);
+        }
+        prevZ = z;
+    }
 }
 
 export function sampleTopRound(fr: ColumnFrame, nRows: number): { W: XYZ; pts: XYZ[] } {
     applyTilts(fr);
-    const r = Math.max(fr.rTop, 1e-6);
-    const alpha = fr.sheetSlopeValid ? fr.sheetSlopeRad : 0;
-    const theta = Math.min(fr.t0TiltRad, alpha - (TOP_CLEARANCE_DEG * Math.PI) / 180);
-    const Ch = r * Math.sin(alpha);
-    const Cz = -r * Math.cos(alpha);
-    const Wh = Ch - r * Math.sin(theta);
-    const Wz = Cz + r * Math.cos(theta);
-    const planLen = Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y);
-    const sF = (fr.F.x - fr.R.x) * fr.h.x + (fr.F.y - fr.R.y) * fr.h.y;
-    const sW = Math.max(0, Math.min(Wh, planLen, Math.max(0, sF - 0.05)));
-    const zW = Math.min(fr.R.z + Wz, fr.R.z - 0.05);
-    if (zW <= fr.F.z + 0.1) {
-        return { W: { ...fr.R }, pts: [] };
-    }
-    const W = projectToPlane(hzPoint(fr.R, fr.h, sW, zW - fr.R.z), fr.R, fr.h);
-    const start = Math.atan2(Math.cos(alpha), -Math.sin(alpha));
-    let end = Math.atan2(Math.cos(theta), -Math.sin(theta));
-    const twoPi = Math.PI * 2;
-    while (end > start) end -= twoPi;
+    const rnd = constructOutsideRound(fr.R, fr.nTop, fr.h, fr.rTop, fr.t0TiltRad);
+    fr.E = rnd.E;
+    fr.nTop = rnd.nTop;
+    fr.wOut = { x: rnd.wOut.x, y: rnd.wOut.y };
+    fr.nWall = rnd.nWall;
     const count = Math.max(TOP_ROUND_MIN_ROWS, nRows);
+    const sinS = Math.sin(rnd.sweep);
+    let uArc = sinS > 1e-8 ? unit3(add3(rnd.nWall, rnd.nTop, -Math.cos(rnd.sweep))) : rnd.tOut;
+    if (dot3(uArc, rnd.tOut) < 0) uArc = { x: -uArc.x, y: -uArc.y, z: -uArc.z };
     const pts: XYZ[] = [];
     for (let i = 1; i <= count; i++) {
-        const phi = start + ((end - start) * i) / count;
+        const phi = (rnd.sweep * i) / count;
         pts.push(
-            projectToPlane(hzPoint(fr.R, fr.h, Ch + r * Math.cos(phi), Cz + r * Math.sin(phi)), fr.R, fr.h),
+            projectToPlane(
+                add3(rnd.C, add3(scale3(rnd.nTop, Math.cos(phi)), scale3(uArc, Math.sin(phi))), rnd.r),
+                fr.R,
+                fr.h,
+            ),
         );
     }
-    if (pts.length) pts[pts.length - 1] = { ...W };
-    return { W, pts };
+    if (pts.length) pts[pts.length - 1] = projectToPlane(rnd.E, fr.R, fr.h);
+    assertOutsideRound(fr.R, rnd, pts);
+    return { W: projectToPlane(rnd.E, fr.R, fr.h), pts };
+}
+
+function scale3(a: XYZ, s: number): XYZ {
+    return { x: a.x * s, y: a.y * s, z: a.z * s };
+}
+
+function medianStationSpacing(stations: HermiteStation[]): number {
+    if (stations.length < 2) return 1.3;
+    const ds = stations.map((s, i) => {
+        const n = stations[(i + 1) % stations.length]!;
+        return Math.hypot(n.rim.x - s.rim.x, n.rim.y - s.rim.y, n.rim.z - s.rim.z);
+    });
+    ds.sort((a, b) => a - b);
+    return ds[Math.floor(ds.length / 2)] ?? 1.3;
+}
+
+function vecAngleDeg(a: XYZ, b: XYZ): number {
+    const d = Math.max(-1, Math.min(1, dot3(unit3(a), unit3(b))));
+    return (Math.acos(d) * 180) / Math.PI;
+}
+
+function assertRoundJoints(fr: ColumnFrame, col: XYZ[]): void {
+    if (col.length < 3) return;
+    const rnd = constructOutsideRound(fr.R, fr.nTop, fr.h, fr.rTop, fr.t0TiltRad);
+    let eIdx = 1;
+    let best = Infinity;
+    for (let i = 1; i < col.length - 1; i++) {
+        const d = dist3(col[i]!, rnd.E);
+        if (d < best) {
+            best = d;
+            eIdx = i;
+        }
+    }
+    const tFirst = {
+        x: col[1]!.x - col[0]!.x,
+        y: col[1]!.y - col[0]!.y,
+        z: col[1]!.z - col[0]!.z,
+    };
+    const topJoint = vecAngleDeg(tFirst, rnd.tOut);
+    const prev = col[Math.max(1, eIdx - 1)]!;
+    const tEnd = { x: col[eIdx]!.x - prev.x, y: col[eIdx]!.y - prev.y, z: col[eIdx]!.z - prev.z };
+    const wallJoint = vecAngleDeg(tEnd, rnd.T0);
+    if (topJoint > 10 + 1e-3 || wallJoint > 10 + 1e-3) {
+        throw new Error(
+            `[S1-ROUND] joints top|round=${topJoint.toFixed(2)} round|wall=${wallJoint.toFixed(2)}`,
+        );
+    }
+    const nRows = eIdx;
+    const stepDeg = nRows > 0 ? (rnd.sweep * 180) / Math.PI / nRows : 0;
+    if (nRows < TOP_ROUND_MIN_ROWS - 1e-6 || stepDeg > TOP_ROUND_MAX_STEP_DEG + 1e-3) {
+        throw new Error(`[S1-ROUND] rows=${nRows} step=${stepDeg.toFixed(2)} (need >=6, <=8)`);
+    }
 }
 
 export function t0LeadQ(fr: ColumnFrame): XYZ {
@@ -578,59 +704,68 @@ function planS(p: XYZ, R: XYZ, h: { x: number; y: number }): number {
     return (p.x - R.x) * h.x + (p.y - R.y) * h.y;
 }
 
-function clampPointToInward(p: XYZ, fr: ColumnFrame, maxS: number): XYZ {
-    const s = planS(p, fr.R, fr.h);
+function clampPointToInward(p: XYZ, fr: ColumnFrame, origin: XYZ, maxS: number): XYZ {
+    const s = planS(p, origin, fr.h);
     if (s <= maxS) return projectToPlane(p, fr.R, fr.h);
-    return projectToPlane({ x: fr.R.x + fr.h.x * maxS, y: fr.R.y + fr.h.y * maxS, z: p.z }, fr.R, fr.h);
+    return projectToPlane({ x: origin.x + fr.h.x * maxS, y: origin.y + fr.h.y * maxS, z: p.z }, fr.R, fr.h);
 }
 
-function columnPoints(fr: ColumnFrame, nWall: number): XYZ[] {
+function columnPoints(fr: ColumnFrame, nWall: number, stationSpacing = 1.3): XYZ[] {
     applyTilts(fr);
-    const sweep = Math.abs(fr.t0TiltRad - (fr.sheetSlopeValid ? fr.sheetSlopeRad : 0));
-    const nTop = topRoundRowCount(sweep);
+    const rnd = constructOutsideRound(fr.R, fr.nTop, fr.h, fr.rTop, fr.t0TiltRad);
+    const nTop = topRoundRowCount(rnd.sweep, fr.rTop, stationSpacing);
     const fil = constructFillet(fr.B, fr.h, fr.rFillet, fr.U, fr.plantarSlopeRad);
-    const nFil = filletRowCount(fil.psi);
+    const nFil = filletRowCount(fil.psi, fr.rFillet, stationSpacing);
     const top = sampleTopRound(fr, nTop);
     const P0 = top.pts.length ? top.W : fr.R;
     const P3 = fr.F;
     const P1 = add3(P0, fr.T0, fr.a);
     const P2 = add3(P3, fr.U, fr.b);
-    const planLen = Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y);
-    const maxS = planLen + fr.tFillet + INWARD_SLACK_MM;
+    const planEB = Math.hypot(fr.B.x - P0.x, fr.B.y - P0.y);
+    const maxS = planEB + INWARD_SLACK_MM;
     const dense: XYZ[] = [];
     for (let k = 0; k <= 32; k++) {
-        dense.push(clampPointToInward(evalCubicBezier(P0, P1, P2, P3, k / 32), fr, maxS));
+        dense.push(clampPointToInward(evalCubicBezier(P0, P1, P2, P3, k / 32), fr, P0, maxS));
     }
     const nBezInc = Math.max(2, nWall - 2 - top.pts.length - nFil);
-    const bez = sampleByArcLength(dense, nBezInc).map((p) => clampPointToInward(p, fr, maxS));
-    const bot = sampleFilletEqualPhi(fr, nFil).map((p) => clampPointToInward(p, fr, maxS));
+    const bez = sampleByArcLength(dense, nBezInc).map((p) => clampPointToInward(p, fr, P0, maxS));
+    const bot = sampleFilletEqualPhi(fr, nFil).map((p) => clampPointToInward(p, fr, P0, maxS));
     const col = top.pts.length
         ? [{ ...fr.R }, ...top.pts, ...bez, ...bot, { ...fr.B }]
         : [...bez, ...bot, { ...fr.B }];
-    const raw = col.length === nWall ? col : sampleByArcLength(col, nWall);
+    const raw = col.length === nWall ? col : resampleKeepingRound(col, nWall, 1 + top.pts.length);
     const out = raw.map((p, i) => {
         if (i === 0) return { ...fr.R };
         if (i === raw.length - 1) return { ...fr.B };
-        return clampPointToInward(p, fr, maxS);
+        if (i <= top.pts.length) return projectToPlane(p, fr.R, fr.h);
+        return clampPointToInward(p, fr, P0, maxS);
     });
-    snapPlanMonotone(out, fr.R, fr.B);
+    snapPlanMonotone(out, P0, fr.B, 1 + top.pts.length);
     return out;
 }
 
-function snapPlanMonotone(pts: XYZ[], R: XYZ, B: XYZ): void {
-    const dx = B.x - R.x;
-    const dy = B.y - R.y;
+function resampleKeepingRound(pts: XYZ[], n: number, wallStart: number): XYZ[] {
+    if (pts.length === n) return pts;
+    const head = pts.slice(0, wallStart);
+    const tail = pts.slice(wallStart);
+    const need = Math.max(2, n - head.length);
+    return [...head, ...sampleByArcLength(tail, need).slice(1)];
+}
+
+function snapPlanMonotone(pts: XYZ[], origin: XYZ, B: XYZ, from = 1): void {
+    const dx = B.x - origin.x;
+    const dy = B.y - origin.y;
     const chord = Math.hypot(dx, dy);
     if (chord < 1e-6) return;
     const hx = dx / chord;
     const hy = dy / chord;
     let prevS = 0;
-    for (let i = 1; i < pts.length - 1; i++) {
+    for (let i = from; i < pts.length - 1; i++) {
         const p = pts[i]!;
-        const s = (p.x - R.x) * hx + (p.y - R.y) * hy;
+        const s = (p.x - origin.x) * hx + (p.y - origin.y) * hy;
         if (s < prevS) {
-            p.x = R.x + hx * prevS;
-            p.y = R.y + hy * prevS;
+            p.x = origin.x + hx * prevS;
+            p.y = origin.y + hy * prevS;
         } else {
             prevS = s;
         }
@@ -826,17 +961,16 @@ export function placeFilletF(fr: ColumnFrame): void {
 function clampHandlesToChord(fr: ColumnFrame): void {
     applyTilts(fr);
     const W = t0LeadQ(fr);
-    const planLen = Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y);
+    const planEB = Math.hypot(fr.B.x - W.x, fr.B.y - W.y);
     const chord = Math.max(dist3(W, fr.F), 1e-6);
     fr.a = Math.min(fr.a, HANDLE_CHORD_CAP * chord);
     fr.b = Math.min(fr.b, HANDLE_CHORD_CAP * chord);
     const t0h = fr.T0.x * fr.h.x + fr.T0.y * fr.h.y;
-    const sW = planS(W, fr.R, fr.h);
-    if (t0h > 1e-9) fr.a = Math.min(fr.a, Math.max(0, (planLen - sW) / t0h));
-    if (t0h < -1e-9) fr.a = Math.min(fr.a, Math.max(0, (0 - sW) / t0h));
+    const sW = planS(W, W, fr.h);
+    if (t0h > 1e-9) fr.a = Math.min(fr.a, Math.max(0, (planEB - sW) / t0h));
     const uh = fr.U.x * fr.h.x + fr.U.y * fr.h.y;
-    const sF = planS(fr.F, fr.R, fr.h);
-    if (uh > 1e-9) fr.b = Math.min(fr.b, Math.max(0, (planLen - sF) / uh));
+    const sF = planS(fr.F, W, fr.h);
+    if (uh > 1e-9) fr.b = Math.min(fr.b, Math.max(0, (planEB - sF) / uh));
     if (uh < -1e-9) fr.b = Math.min(fr.b, Math.max(0, (0 - sF) / uh));
     fr.a = Math.max(0, fr.a);
     fr.b = Math.max(0, fr.b);
@@ -866,6 +1000,7 @@ export function initColumnFrames(
         const B = { ...st.outline };
         const { h, shortChord, planLen } = columnHeading(st);
         const height = Math.max(R.z - B.z, 0.5);
+        const nTop = unit3(_junctions[i]?.planeN ?? { x: 0, y: 0, z: 1 });
         const sampled = sampleInPlaneSlope(R, h, topZ, _junctions[i]?.planeN);
         const sheetSlopeRad = sampled.valid ? sampled.slopeRad : 0;
         const t0TiltRad = t0TargetRad(sheetSlopeRad, shortChord, sampled.valid);
@@ -873,12 +1008,14 @@ export function initColumnFrames(
         const plantar = plantarSlopeRad[i] ?? 0;
         const psi = Math.PI / 2 - flare;
         const r = filletRadiusMm(height, planLen, psi);
+        const rTop = Math.min(FILLET_R_CAP_MM, Math.max(0, _defaults.wallFilletTopMm || 0.5));
+        const rnd = constructOutsideRound(R, nTop, h, rTop, t0TiltRad);
         const fr: ColumnFrame = {
             R,
             B,
             F: { x: B.x, y: B.y, z: B.z + r },
             h,
-            T0: t0FromTilt(h, t0TiltRad),
+            T0: rnd.T0,
             U: filletDir(flare, plantarFrameAt(h, plantar)),
             a: 0,
             b: 0,
@@ -888,7 +1025,7 @@ export function initColumnFrames(
             sheetSlopeValid: sampled.valid,
             plantarSlopeRad: plantar,
             rFillet: r,
-            rTop: Math.min(FILLET_R_CAP_MM, Math.max(0, _defaults.wallFilletTopMm || 0.5)),
+            rTop,
             tFillet: 0,
             u: st.u,
             shortChord,
@@ -897,6 +1034,10 @@ export function initColumnFrames(
             bandZ: B.z,
             bandInsetMm: estimateBandInsetMm(r, Math.PI / 2),
             arcEndZ: B.z,
+            E: rnd.E,
+            nTop: rnd.nTop,
+            wOut: { x: rnd.wOut.x, y: rnd.wOut.y },
+            nWall: rnd.nWall,
         };
         return fr;
     });
@@ -958,14 +1099,17 @@ function guardFrames(
     rimLoop: PolyPoint[],
     topZ: (x: number, y: number) => number | null,
     nWall: number,
+    stationSpacing: number,
 ): void {
     for (let round = 0; round < 16; round++) {
         let dirty = false;
         for (let i = 0; i < frames.length; i++) {
             const fr = frames[i]!;
             applyTilts(fr);
-            const pts = columnPoints(fr, nWall);
-            if (!planMonotone(pts, fr.R, fr.B)) {
+            const pts = columnPoints(fr, nWall, stationSpacing);
+            const wallFrom = pts.findIndex((p) => dist3(p, fr.E) < 1e-4);
+            const origin = wallFrom >= 0 ? fr.E : fr.R;
+            if (!planMonotone(pts.slice(Math.max(0, wallFrom)), origin, fr.B)) {
                 fr.a = Math.max(0, fr.a * 0.7);
                 if (fr.a < 0.05) fr.b = Math.max(0, fr.b * 0.7);
                 clampHandleInboard(fr);
@@ -973,7 +1117,8 @@ function guardFrames(
             }
             const junct = junctions[i]!;
             let inside = false;
-            for (let j = 1; j < pts.length - 1; j++) {
+            const start = Math.max(1, wallFrom);
+            for (let j = start; j < pts.length - 1; j++) {
                 if (rowInsideTop(pts[j]!, fr.R, junct.planeN, rimLoop, topZ)) {
                     inside = true;
                     break;
@@ -981,7 +1126,6 @@ function guardFrames(
             }
             if (inside) {
                 fr.a = Math.max(0, fr.a * 0.7);
-                fr.t0TiltRad = Math.max(-Math.PI * 0.48, fr.t0TiltRad - (3 * Math.PI) / 180);
                 applyTilts(fr);
                 clampHandlesToChord(fr);
                 dirty = true;
@@ -1006,30 +1150,40 @@ export function buildBezierColumns(
     plantarSlopeRad: number[] = [],
     minWallMm = 0.8,
 ): BezierColumns {
-    const regionDefault = stations.map((st) => blendedFlareDeg(st.u, st.outline.y, defaults.flareDeg));
+    const regionDefault = stations.map((st) =>
+        blendedFlareDeg(st.u, st.outline.y, defaults.flareDeg, defaults.medialYSign ?? 1),
+    );
     const { flare, report } = smoothAndCapFlare(
         stations.map((s) => s.outline),
         regionDefault,
     );
     const frames = initColumnFrames(stations, junctions, defaults, flare, topZ, plantarSlopeRad);
+    const spacing = medianStationSpacing(stations);
     let nNeed = nWall;
     for (const fr of frames) {
         applyTilts(fr);
-        const sweep = Math.abs(fr.t0TiltRad - (fr.sheetSlopeValid ? fr.sheetSlopeRad : 0));
+        const rnd = constructOutsideRound(fr.R, fr.nTop, fr.h, fr.rTop, fr.t0TiltRad);
         const fil = constructFillet(fr.B, fr.h, fr.rFillet, fr.U, fr.plantarSlopeRad);
-        nNeed = Math.max(nNeed, 2 + topRoundRowCount(sweep) + 4 + filletRowCount(fil.psi));
+        nNeed = Math.max(
+            nNeed,
+            2 +
+                topRoundRowCount(rnd.sweep, fr.rTop, spacing) +
+                4 +
+                filletRowCount(fil.psi, fr.rFillet, spacing),
+        );
     }
     nWall = nNeed;
     const minWallClamps = clampFramesMinWall(frames, topZ, minWallMm);
     applySmooth(frames, FRAME_SMOOTH_ITERS);
     for (const fr of frames) placeFilletF(fr);
-    guardFrames(frames, junctions, rimLoop, topZ, nWall);
+    guardFrames(frames, junctions, rimLoop, topZ, nWall, spacing);
     for (const fr of frames) placeFilletF(fr);
     for (let round = 0; round < 20; round++) {
         let dirty = false;
         for (const fr of frames) {
             applyTilts(fr);
-            if (planMonotone(columnPoints(fr, nWall), fr.R, fr.B)) continue;
+            const col = columnPoints(fr, nWall, spacing);
+            if (planMonotone(col.slice(2), fr.E, fr.B)) continue;
             fr.a = Math.max(0, fr.a * 0.5);
             fr.b = Math.max(0, fr.b * 0.5);
             clampHandleInboard(fr);
@@ -1044,9 +1198,10 @@ export function buildBezierColumns(
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
         applyTilts(fr);
-        const col = columnPoints(fr, nWall);
+        const col = columnPoints(fr, nWall, spacing);
         col[0] = { ...fr.R };
         col[col.length - 1] = { ...fr.B };
+        assertRoundJoints(fr, col);
         fr.arcEndZ = col[col.length - 2]?.z ?? fr.B.z;
         for (const p of col) maxOff = Math.max(maxOff, offPlaneMm(p, fr.R, fr.h));
         xyz.push(col);

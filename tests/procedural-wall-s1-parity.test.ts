@@ -229,7 +229,12 @@ describe("S1 parametric wall", () => {
                 seamOver = Math.max(seamOver, fSeam.perStation[i]! - allow);
             }
             const stitchDelta = 0;
-            const archFolds = medialArchUpperWallFolds(rebuilt, model.bounds, topN);
+            const archFolds = medialArchUpperWallFolds(
+                rebuilt,
+                model.bounds,
+                topN,
+                (rebuilt.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1,
+            );
             const boundary = sheetBoundaryStats(
                 model.outline.meshPositions,
                 model.outline.meshIndices,
@@ -491,7 +496,12 @@ describe("S1 parametric wall", () => {
             const hits = countSelfIntersections(rebuilt);
             const man = reconstructionManifold(rebuilt);
             const drift = groundDriftMm(rebuilt, outlineOf(model));
-            const archFolds = medialArchUpperWallFolds(rebuilt, model.bounds, topN);
+            const archFolds = medialArchUpperWallFolds(
+                rebuilt,
+                model.bounds,
+                topN,
+                (rebuilt.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1,
+            );
             const generatedOutline =
                 (rebuilt.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> })
                     .outlineRing ?? outlineOf(model);
@@ -611,12 +621,12 @@ describe("S1 parametric wall", () => {
         const rimLocal = model.top.rimLocal ?? [];
         expect(pos?.length).toBe(7809 * 3);
         expect(rimLocal.length).toBe(446);
-        const rimPlan = rimLocal.map((i) => ({
+        const rim3d = rimLocal.map((i) => ({
             x: pos![i * 3]!,
             y: pos![i * 3 + 1]!,
-            z: 0,
+            z: pos![i * 3 + 2]!,
         }));
-        const pattern = syntheticBottomPattern(rimPlan, model.bounds);
+        const pattern = syntheticBottomPattern(rim3d, model.bounds, rim3d);
         let rebuilt: BufferGeometry;
         try {
             rebuilt = reconstructProceduralWalls(model, {
@@ -643,7 +653,12 @@ describe("S1 parametric wall", () => {
             (rebuilt.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> }).outlineRing ??
             pattern;
         const reconSeam = outlineSeamDihedrals(rebuilt, generatedOutline, 1.25);
-        const archFolds = medialArchUpperWallFolds(rebuilt, model.bounds, topN);
+        const archFolds = medialArchUpperWallFolds(
+            rebuilt,
+            model.bounds,
+            topN,
+            (rebuilt.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1,
+        );
         const outlineDev = outlineExactOnBMm(rebuilt);
         const plantarZ0 = plantarFlatDeltaMm(rebuilt);
         const genMinWall = generatedMinWallMm(rebuilt);

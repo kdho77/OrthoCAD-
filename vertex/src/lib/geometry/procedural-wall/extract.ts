@@ -623,7 +623,7 @@ export function extractStockWallModel(
                 0,
                 Math.min(1, (col.outline.x - bounds.minX) / Math.max(1e-3, bounds.maxX - bounds.minX)),
             );
-            return blendedFlareDeg(u, col.outline.y, defaults.flareDeg);
+            return blendedFlareDeg(u, col.outline.y, defaults.flareDeg, defaults.medialYSign ?? 1);
         }),
         cupHeightMm: planform.columns.map((col) => col.rim.z - col.outline.z),
         filletMm: defaults.wallFilletBottomMm,

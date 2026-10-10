@@ -3,6 +3,8 @@
 
 import { describe, expect, test } from "@rstest/core";
 import {
+    assertCutInOnHighRimSide,
+    medialYSignFromTopRim,
     PATTERN_ARCH_INSET_MM,
     PATTERN_FOREFOOT_INSET_MM,
     PATTERN_HEEL_LATERAL_INSET_MM,
@@ -54,6 +56,36 @@ describe("synthetic bottom pattern", () => {
         expect(minC).toBeGreaterThan(PATTERN_FOREFOOT_INSET_MM * 0.45);
         expect(maxC).toBeGreaterThan(PATTERN_HEEL_LATERAL_INSET_MM + 1.5);
         expect(medial).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.45);
+    });
+
+    test("cut-in follows the high midfoot rim, not +Y", () => {
+        const n = 80;
+        const outline = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            const y = 42 * Math.sin(a);
+            const x = 120 + 110 * Math.cos(a);
+            const u = (x - 10) / 220;
+            const z = u > 0.28 && u < 0.48 && y < 0 ? 18 : 6;
+            return { x, y, z };
+        });
+        const bounds = { minX: 10, maxX: 230 };
+        expect(medialYSignFromTopRim(outline, bounds)).toBe(-1);
+        const raw = syntheticBottomPattern(outline, bounds, outline);
+        const pattern = hygieneBottomPattern(raw, { rimPlan: outline, requireInsideRim: true }).loop;
+        assertCutInOnHighRimSide(pattern, outline, bounds, -1);
+        const length = bounds.maxX - bounds.minX;
+        let medialNeg = 0;
+        let lateralPos = 0;
+        for (const p of pattern) {
+            const c = minDistToLoopXY(p.x, p.y, outline);
+            const u = (p.x - bounds.minX) / length;
+            if (u > 0.22 && u < 0.55) {
+                if (p.y < -8) medialNeg = Math.max(medialNeg, c);
+                if (p.y > 8) lateralPos = Math.max(lateralPos, c);
+            }
+        }
+        expect(medialNeg).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.45);
+        expect(lateralPos).toBeLessThan(PATTERN_ARCH_INSET_MM * 0.35);
     });
 
     test("parses SVG polyline and JSON points", () => {

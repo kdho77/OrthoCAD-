@@ -708,6 +708,41 @@ export function smoothAndCapFlare(
     };
 }
 
+/**
+ * B is the pattern hit from E along the pattern's inward normal (planar pair).
+ */
+export function retargetPlantarFromE(E: PolyPoint[], plantarLoop: PolyPoint[]): PolyPoint[] {
+    if (E.length < 3 || plantarLoop.length < 3) return E.map((p) => ({ ...p }));
+    const c = centroidOf(plantarLoop);
+    const out: PolyPoint[] = [];
+    for (const e of E) {
+        const near = nearestOnLoop(e, plantarLoop);
+        const n = outwardNormal(plantarLoop, nearestIndex(plantarLoop, near), c);
+        const inward = { x: -n.x, y: -n.y };
+        const hit = nearerHit(
+            nearestRayHitOnLoop(e, inward, plantarLoop, 1),
+            nearestRayHitOnLoop(e, inward, plantarLoop, -1),
+            Math.max(8, Math.hypot(near.x - e.x, near.y - e.y) * 4 + 8),
+        );
+        const p = hit?.point ?? near;
+        out.push({ x: p.x, y: p.y, z: p.z });
+    }
+    return out;
+}
+
+function nearestIndex(loop: PolyPoint[], p: PolyPoint): number {
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const d = (loop[i]!.x - p.x) ** 2 + (loop[i]!.y - p.y) ** 2;
+        if (d < bestD) {
+            bestD = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
 export function offsetClosedInward(poly: PolyPoint[], distMm: number): PolyPoint[] {
     if (poly.length < 3) return poly.map((p) => ({ ...p }));
     const c = centroidOf(poly);

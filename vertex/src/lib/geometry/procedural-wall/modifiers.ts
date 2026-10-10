@@ -17,6 +17,8 @@ export interface ProceduralModifierInput {
     lateralFlange?: Partial<LateralFlangeParams>;
     /** Arch grind depth (mm) applied to the plantar sheet only. */
     archGrindDepthMm?: number;
+    /** High-rim medial side. +1 = +Y. */
+    medialYSign?: 1 | -1;
 }
 
 export interface ModifiedCurves {
@@ -87,7 +89,7 @@ export function plantarZDelta(
     const widCenter = (bounds.minY + bounds.maxY) * 0.5;
     const halfW = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
     const u = Math.max(0, Math.min(1, (x - minX) / length));
-    const vSigned = (y - widCenter) / halfW;
+    const vSigned = ((y - widCenter) / halfW) * (input.medialYSign ?? 1);
     const av = Math.abs(vSigned);
     let dz = 0;
     if (c && c.rearfootPostingDeg) {

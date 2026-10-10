@@ -383,13 +383,14 @@ export function foldReport(reconstruction: BufferGeometry, opts?: FoldReportOpti
 }
 
 /**
- * New folds on the medial-arch upper wall (u 0.42–0.60, +Y, upper third).
+ * New folds on the medial-arch upper wall (u 0.42–0.60, high-rim side, upper third).
  * Top-sheet edges are excluded so the count is "new" wall folds.
  */
 export function medialArchUpperWallFolds(
     reconstruction: BufferGeometry,
     bounds: { minX: number; maxX: number; minZ: number; maxZ: number },
     topVertexCount = 0,
+    medialYSign: 1 | -1 = 1,
 ): FoldReport {
     const pos = reconstruction.getAttribute("position").array as Float32Array;
     const index = reconstruction.getIndex();
@@ -403,7 +404,7 @@ export function medialArchUpperWallFolds(
         const z = pos[v * 3 + 2]!;
         const u = (x - bounds.minX) / length;
         const zf = (z - bounds.minZ) / zSpan;
-        return u >= 0.42 && u <= 0.6 && y > 0 && zf >= 0.55;
+        return u >= 0.42 && u <= 0.6 && y * medialYSign > 0 && zf >= 0.55;
     };
     const areaOf = (f: number): number => {
         const a = idx[f]!;
@@ -998,12 +999,15 @@ export interface WindingReport {
     consistent: boolean;
 }
 
-/** Outward winding: positive volume and every edge used once in each direction. */
+/** Outward winding: positive volume and every welded-mesh edge used once each way. */
 export function windingReport(geo: BufferGeometry): WindingReport {
     const pos = geo.getAttribute("position").array as Float32Array;
     const index = geo.getIndex();
     if (!index) return { signedVolume: 0, oppositeEdgeMismatch: 0, consistent: false };
     const idx = index.array;
+    const q = 1e-4;
+    const weldOf = (i: number): string =>
+        `${Math.round(pos[i * 3]! / q)},${Math.round(pos[i * 3 + 1]! / q)},${Math.round(pos[i * 3 + 2]! / q)}`;
     const directed = new Map<string, number>();
     let vol6 = 0;
     for (let t = 0; t < idx.length; t += 3) {
@@ -1020,24 +1024,30 @@ export function windingReport(geo: BufferGeometry): WindingReport {
         const cy = pos[c * 3 + 1]!;
         const cz = pos[c * 3 + 2]!;
         vol6 += ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
-        for (const [p, q] of [
-            [a, b],
-            [b, c],
-            [c, a],
+        const wa = weldOf(a);
+        const wb = weldOf(b);
+        const wc = weldOf(c);
+        for (const [p, qid] of [
+            [wa, wb],
+            [wb, wc],
+            [wc, wa],
         ] as const) {
-            const k = `${p}>${q}`;
+            if (p === qid) continue;
+            const k = `${p}>${qid}`;
             directed.set(k, (directed.get(k) ?? 0) + 1);
         }
     }
     let mismatch = 0;
     const seen = new Set<string>();
     for (const key of directed.keys()) {
-        const [p, q] = key.split(">").map(Number) as [number, number];
-        const und = p < q ? `${p},${q}` : `${q},${p}`;
+        const sep = key.indexOf(">");
+        const p = key.slice(0, sep);
+        const qq = key.slice(sep + 1);
+        const und = p < qq ? `${p}|${qq}` : `${qq}|${p}`;
         if (seen.has(und)) continue;
         seen.add(und);
-        const fwd = directed.get(`${p}>${q}`) ?? 0;
-        const back = directed.get(`${q}>${p}`) ?? 0;
+        const fwd = directed.get(`${p}>${qq}`) ?? 0;
+        const back = directed.get(`${qq}>${p}`) ?? 0;
         if (fwd !== 1 || back !== 1) mismatch++;
     }
     const signedVolume = vol6 / 6;

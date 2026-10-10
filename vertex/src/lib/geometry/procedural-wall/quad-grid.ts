@@ -209,12 +209,13 @@ function applyLateralFlange(
     flangeLen: number,
     flangeAng: number,
     footLengthMm: number,
+    medialYSign: 1 | -1 = 1,
 ): void {
     if (flangeH <= 0) return;
     const tan = Math.tan((flangeAng * Math.PI) / 180);
     for (let i = 0; i < columns.length; i++) {
         const st = stations[i]!;
-        const env = lateralFlangeEnvelope(st.u, st.outline.y, flangeLen, footLengthMm);
+        const env = lateralFlangeEnvelope(st.u, st.outline.y, flangeLen, footLengthMm, medialYSign);
         if (env <= 0) continue;
         const extra = env * flangeH * tan;
         const col = columns[i]!;
@@ -681,6 +682,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         input.flangeLengthMm ?? 40,
         input.flangeAngleDeg ?? 10,
         input.footLengthMm ?? 250,
+        input.defaults.medialYSign ?? 1,
     );
     for (let i = 0; i < nS; i++) {
         const last = columns[i]![outlineRow]!;

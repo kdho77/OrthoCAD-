@@ -76,8 +76,8 @@ export const MAX_FILLET_ASPECT = 20;
 export const FILLET_RING_TARGET = 4;
 export const MIN_FILLET_RINGS = 6;
 export const FILLET_MAX_STEP_DEG = 8;
-export const TOP_ROUND_MIN_ROWS = 4;
-export const TOP_ROUND_MAX_STEP_DEG = 10;
+export const TOP_ROUND_MIN_ROWS = 6;
+export const TOP_ROUND_MAX_STEP_DEG = 8;
 export const FILLET_MAX_HEIGHT_FRAC = 0.4;
 
 export function unitNZ(t: NZ): NZ {

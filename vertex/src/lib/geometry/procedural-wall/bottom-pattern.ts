@@ -18,6 +18,88 @@ export const PATTERN_ARCH_U0 = 0.18;
 export const PATTERN_ARCH_U1 = 0.58;
 export const PATTERN_FORE_U0 = 0.78;
 export const PATTERN_SOURCE_SYNTHETIC = "synthetic";
+export const MIDFOOT_U0 = 0.28;
+export const MIDFOOT_U1 = 0.48;
+
+/** +1 when the higher midfoot rim is on +Y; never a hardcoded axis. */
+export type MedialYSign = 1 | -1;
+
+function rimYMid(rim: PolyPoint[]): number {
+    if (!rim.length) return 0;
+    let s = 0;
+    for (const p of rim) s += p.y;
+    return s / rim.length;
+}
+
+/**
+ * Medial is the side where the top's arch rim is highest at midfoot.
+ * `side` is only a hint: the high rim wins if they disagree. Flat-Z → +1.
+ */
+export function medialYSignFromTopRim(
+    rim3d: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    side?: "left" | "right",
+): MedialYSign {
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const yMid = rimYMid(rim3d);
+    let maxPos = -Infinity;
+    let maxNeg = -Infinity;
+    for (const p of rim3d) {
+        const u = (p.x - bounds.minX) / length;
+        if (u < MIDFOOT_U0 || u > MIDFOOT_U1) continue;
+        if (p.y >= yMid) maxPos = Math.max(maxPos, p.z);
+        else maxNeg = Math.max(maxNeg, p.z);
+    }
+    let sign: MedialYSign = 1;
+    if (Number.isFinite(maxPos) && Number.isFinite(maxNeg) && maxNeg > maxPos + 1e-6) sign = -1;
+    if (side === "right" && sign === 1 && !(Number.isFinite(maxPos) && Number.isFinite(maxNeg))) {
+        return -1;
+    }
+    return sign;
+}
+
+/** Deepest midfoot pattern clearance must sit on the high-rim (medial) side. */
+export function assertCutInOnHighRimSide(
+    pattern: PolyPoint[],
+    rim3d: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    sign: MedialYSign,
+): void {
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const yMid = rimYMid(rim3d);
+    let best = -Infinity;
+    let bestSide = 0;
+    for (const p of pattern) {
+        const u = (p.x - bounds.minX) / length;
+        if (u < MIDFOOT_U0 || u > MIDFOOT_U1) continue;
+        const c = minDistToLoopXY(p.x, p.y, rim3d);
+        if (c > best) {
+            best = c;
+            bestSide = p.y - yMid;
+        }
+    }
+    if (best < 4) return;
+    if (bestSide * sign <= 0) {
+        throw new Error(
+            `[S1-MEDIAL] cut-in side ${bestSide >= 0 ? "+" : "-"}Y != high-rim sign ${sign} ` +
+                `(clearance ${best.toFixed(2)} mm)`,
+        );
+    }
+}
+
+function minDistToLoopXY(x: number, y: number, loop: PolyPoint[]): number {
+    let best = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const len2 = ex * ex + ey * ey;
+        const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((x - a.x) * ex + (y - a.y) * ey) / len2)) : 0;
+        best = Math.min(best, Math.hypot(x - (a.x + ex * t), y - (a.y + ey * t)));
+    }
+    return best;
+}
 
 function edgeInward(a: PolyPoint, b: PolyPoint, outline: PolyPoint[]): { x: number; y: number } {
     const ex = b.x - a.x;
@@ -56,10 +138,11 @@ function archWindow(u: number): number {
     return 0.5 - 0.5 * Math.cos(2 * Math.PI * t);
 }
 
-function regionInsetMm(u: number, y: number): number {
+function regionInsetMm(u: number, y: number, yMid: number, sign: MedialYSign): number {
     const tFore = Math.max(0, Math.min(1, (u - PATTERN_FORE_U0) / (1 - PATTERN_FORE_U0)));
     const base = PATTERN_HEEL_LATERAL_INSET_MM * (1 - tFore) + PATTERN_FOREFOOT_INSET_MM * tFore;
-    const extra = y > 0 ? (PATTERN_ARCH_INSET_MM - PATTERN_HEEL_LATERAL_INSET_MM) * archWindow(u) : 0;
+    const extra =
+        (y - yMid) * sign > 0 ? (PATTERN_ARCH_INSET_MM - PATTERN_HEEL_LATERAL_INSET_MM) * archWindow(u) : 0;
     return base + extra;
 }
 
@@ -72,14 +155,19 @@ function regionInsetMm(u: number, y: number): number {
 export function syntheticBottomPattern(
     outline: PolyPoint[],
     bounds: { minX: number; maxX: number },
+    rim3d?: PolyPoint[],
+    side?: "left" | "right",
 ): PolyPoint[] {
     const loop = startAtPosteriorHeel(ensureCcw(outline.map((p) => ({ ...p, z: 0 }))));
     const n = loop.length;
     if (n < 3) return loop;
+    const heightSrc = rim3d?.length ? rim3d : outline;
+    const sign = medialYSignFromTopRim(heightSrc, bounds, side);
+    const yMid = rimYMid(heightSrc);
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
     const insets = loop.map((p) => {
         const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
-        return regionInsetMm(u, p.y);
+        return regionInsetMm(u, p.y, yMid, sign);
     });
     for (let pass = 0; pass < 6; pass++) {
         const next = insets.slice();

@@ -10,7 +10,8 @@ import {
 import { type HeightFieldParams, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import type { SideCorrections } from "@/types";
-import { parseBottomPattern } from "./bottom-pattern";
+import { constructOutsideRound, t0FromSheetSlope } from "./bezier-column";
+import { assertCutInOnHighRimSide, medialYSignFromTopRim, parseBottomPattern } from "./bottom-pattern";
 import { ensureCcw, type PolyPoint, startAtPosteriorHeel } from "./curves";
 import {
     type DeviceTypePreset,
@@ -28,7 +29,7 @@ import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
 import { hygieneBottomPattern } from "./pattern-hygiene";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
-import { countPlanViewChordCrossings, pairAtNativeTop } from "./stations";
+import { countPlanViewChordCrossings, pairAtNativeTop, retargetPlantarFromE } from "./stations";
 import type { StockWallModel } from "./types";
 
 export interface ReconstructOptions extends ProceduralModifierInput {
@@ -102,7 +103,7 @@ function applyAnalyticTopDeltas(
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
     const width = Math.max(1e-3, bounds.maxY - bounds.minY);
     const field: HeightFieldParams = {
-        side: "left",
+        side: (input.medialYSign ?? 1) < 0 ? "right" : "left",
         lengthMm: length,
         widthMm: width,
         thicknessMm: input.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
@@ -125,7 +126,7 @@ function applyAnalyticTopDeltas(
         const x = pos[i * 3]!;
         const y = pos[i * 3 + 1]!;
         const u = Math.max(0, Math.min(1, (x - minX) / length));
-        const vSigned = Math.max(-1, Math.min(1, (y - widCenter) / halfW));
+        const vSigned = Math.max(-1, Math.min(1, ((y - widCenter) / halfW) * (input.medialYSign ?? 1)));
         pos[i * 3 + 2]! += correctionDeltaAt(u, vSigned, field, neutral);
         if (c.heelCupWidthMm !== 0) {
             const scale = heelCupWidthScaleFactor(u, c.heelCupWidthMm);
@@ -153,6 +154,7 @@ function mergeCollapsedStations(
     pairing: ReturnType<typeof pairAtNativeTop>,
     rimLocal: number[],
     indices: number[],
+    minDist = STATION_MERGE_MM,
 ): { pairing: ReturnType<typeof pairAtNativeTop>; rimLocal: number[] } {
     const n = Math.min(pairing.top.length, rimLocal.length, pairing.plantar.length);
     if (n < 3) return { pairing, rimLocal };
@@ -165,7 +167,7 @@ function mergeCollapsedStations(
         const prev = keep[keep.length - 1]!;
         const a = pairing.top[prev]!;
         const b = pairing.top[i]!;
-        if (Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) < STATION_MERGE_MM) {
+        if (Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) < minDist) {
             const from = rimLocal[i]!;
             const to = rimLocal[prev]!;
             if (from !== to) {
@@ -254,7 +256,18 @@ export function reconstructProceduralWalls(
     options: ReconstructOptions = {},
 ): BufferGeometry {
     const preset = options.deviceType ?? "functional";
+    const peekRim =
+        model.top.meshPositions && model.top.rimLocal
+            ? model.top.rimLocal.map((i) => ({
+                  x: model.top.meshPositions![i * 3]!,
+                  y: model.top.meshPositions![i * 3 + 1]!,
+                  z: model.top.meshPositions![i * 3 + 2]!,
+              }))
+            : [];
+    const medialYSign = medialYSignFromTopRim(peekRim, model.bounds);
+    options.medialYSign = medialYSign;
     const defaults = defaultsFromModel(model, preset);
+    defaults.medialYSign = medialYSign;
     const patternPts = options.bottomPattern?.length
         ? options.bottomPattern
         : options.bottomPatternSource && !/^(synthetic|stock)$/i.test(options.bottomPatternSource)
@@ -325,10 +338,52 @@ export function reconstructProceduralWalls(
         source: patternLabel,
         resampleN: Math.max(160, rawOutline.length, rimPts.length),
     });
+    if (patternPts?.length) {
+        assertCutInOnHighRimSide(hygiened.loop, rimPts, model.bounds, medialYSign);
+    }
     let pairing = pairAtNativeTop(hygiened.loop, rimPts);
-    const collapsed = mergeCollapsedStations(pairing, rimLocal, indices);
+    const ds: number[] = [];
+    for (let i = 0; i < pairing.top.length; i++) {
+        const a = pairing.top[i]!;
+        const b = pairing.top[(i + 1) % pairing.top.length]!;
+        ds.push(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+    }
+    ds.sort((a, b) => a - b);
+    const median = ds[Math.floor(ds.length / 2)] ?? 1;
+    const collapsed = mergeCollapsedStations(
+        pairing,
+        rimLocal,
+        indices,
+        Math.max(STATION_MERGE_MM, 0.5 * median),
+    );
     pairing = collapsed.pairing;
     rimLocal = collapsed.rimLocal;
+    const earlyJ = rimJunctions(positions, indices, rimLocal, pairing.normals);
+    const rTop = Math.min(3, Math.max(0, defaults.wallFilletTopMm || 0.5));
+    const t0Est = t0FromSheetSlope(0, false);
+    const E: PolyPoint[] = pairing.top.map((R, i) => {
+        const B = pairing.plantar[i]!;
+        const dx = B.x - R.x;
+        const dy = B.y - R.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const rnd = constructOutsideRound(
+            R,
+            earlyJ[i]?.planeN ?? { x: 0, y: 0, z: 1 },
+            { x: dx / len, y: dy / len },
+            rTop,
+            t0Est,
+        );
+        return rnd.E;
+    });
+    pairing.plantar = retargetPlantarFromE(E, hygiened.loop);
+    pairing.sidewaysSkewMm = pairing.plantar.map((p, i) => {
+        const e = E[i]!;
+        const n = pairing.normals[i] ?? { x: 0, y: 1 };
+        const vx = p.x - e.x;
+        const vy = p.y - e.y;
+        return Math.abs(vx * -n.y + vy * n.x);
+    });
+    pairing.maxSkewMm = pairing.sidewaysSkewMm.reduce((m, d) => Math.max(m, d), 0);
     pairing.chordCrossings = countPlanViewChordCrossings(pairing.plantar, pairing.top);
 
     const dish =
@@ -438,6 +493,7 @@ export function reconstructProceduralWalls(
         stockId: model.id,
         loftN: nS,
         pairingMethod: pairing.method ?? "harmonic",
+        medialYSign,
         junctionRewrite: "planar-bezier",
         planReversals: grid.planReversals,
         maxFrameAngleDeg: grid.maxFrameAngleDeg,

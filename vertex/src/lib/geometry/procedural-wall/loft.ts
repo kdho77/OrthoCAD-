@@ -95,14 +95,28 @@ export function countColumnPlanReversals(xyz: Array<Array<{ x: number; y: number
     let hits = 0;
     for (const col of xyz) {
         if (!col || col.length < 2) continue;
-        const dx = col[col.length - 1]!.x - col[0]!.x;
-        const dy = col[col.length - 1]!.y - col[0]!.y;
+        const R = col[0]!;
+        const B = col[col.length - 1]!;
+        const dx = B.x - R.x;
+        const dy = B.y - R.y;
         const chord = Math.hypot(dx, dy);
         if (chord < 1e-6) continue;
-        for (let i = 1; i < col.length; i++) {
-            const sx = col[i]!.x - col[i - 1]!.x;
-            const sy = col[i]!.y - col[i - 1]!.y;
-            if (sx * dx + sy * dy < -1e-4 * chord) hits++;
+        const hx = dx / chord;
+        const hy = dy / chord;
+        let minS = Infinity;
+        let minI = 0;
+        for (let i = 0; i < col.length; i++) {
+            const s = (col[i]!.x - R.x) * hx + (col[i]!.y - R.y) * hy;
+            if (s < minS) {
+                minS = s;
+                minI = i;
+            }
+        }
+        let prev = minS;
+        for (let i = minI + 1; i < col.length; i++) {
+            const s = (col[i]!.x - R.x) * hx + (col[i]!.y - R.y) * hy;
+            if (s < prev - 1e-4 * chord) hits++;
+            if (s > prev) prev = s;
         }
     }
     return hits;
@@ -179,6 +193,7 @@ function applyFlangeAndScale(
     flangeLen: number,
     flangeAng: number,
     footLengthMm: number,
+    medialYSign: 1 | -1 = 1,
 ): { n: number; z: number } {
     let out = p;
     if (hScale < 0.999 && t > 0 && t < 1) {
@@ -188,7 +203,7 @@ function applyFlangeAndScale(
         };
     }
     if (flangeH > 0) {
-        const env = lateralFlangeEnvelope(st.u, st.outline.y, flangeLen, footLengthMm);
+        const env = lateralFlangeEnvelope(st.u, st.outline.y, flangeLen, footLengthMm, medialYSign);
         if (env > 0 && t > 0 && t < 1) {
             const extra = env * flangeH * Math.tan((flangeAng * Math.PI) / 180) * Math.sin(Math.PI * t);
             out = { n: out.n + extra, z: out.z };
@@ -213,7 +228,7 @@ function buildStationColumn(
     const height = r.z - o.z;
     const chordN = (r.x - o.x) * st.n.x + (r.y - o.y) * st.n.y;
     const hScale = wallHeightScale(st.u);
-    const curvature = blendedFlareCurvature(st.u, o.y, defaults.flareCurvature);
+    const curvature = blendedFlareCurvature(st.u, o.y, defaults.flareCurvature, defaults.medialYSign ?? 1);
     const localH = Math.max(height, 0.5);
     const maxR = FILLET_MAX_HEIGHT_FRAC * localH;
     /** Real bottom fillet so row 0 starts tangent to the dish band (not r=0). */
@@ -249,7 +264,18 @@ function buildStationColumn(
     for (let i = 1; i < nMid; i++) {
         const t = clusteredWallT(i, nMid, filletBot, filletTop, Math.max(height, 1));
         let p = evalWallProfile(hermiteStart, T0, hermiteEnd, T1, t, bowl);
-        p = applyFlangeAndScale(p, t, st, chordN, hScale, flangeH, flangeLen, flangeAng, footLengthMm);
+        p = applyFlangeAndScale(
+            p,
+            t,
+            st,
+            chordN,
+            hScale,
+            flangeH,
+            flangeLen,
+            flangeAng,
+            footLengthMm,
+            defaults.medialYSign ?? 1,
+        );
         p = {
             n: p.n,
             z: Math.max(hermiteStart.z, Math.min(hermiteEnd.z, p.z)),
@@ -364,7 +390,7 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
     const circMm = polylineCircMm(input.stations.map((s) => s.outline));
     const xyz: Array<Array<{ x: number; y: number; z: number }>> = new Array(nS);
     const regionDefault = input.stations.map((st) =>
-        blendedFlareDeg(st.u, st.outline.y, input.defaults.flareDeg),
+        blendedFlareDeg(st.u, st.outline.y, input.defaults.flareDeg, input.defaults.medialYSign ?? 1),
     );
     const { flare: flareAlong, report: flareCapReport } = smoothAndCapFlare(
         input.stations.map((s) => s.outline),

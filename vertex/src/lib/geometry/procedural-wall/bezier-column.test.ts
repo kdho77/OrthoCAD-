@@ -55,6 +55,7 @@ function defaults(): WallRegionDefaults {
         lateralFlangeAngleDeg: 10,
         report: [],
         flareDiagnostics: [],
+        medialYSign: 1,
     };
 }
 
@@ -113,10 +114,9 @@ describe("bezier column", () => {
             const rf = Math.hypot(Q.x - fr.F.x, Q.y - fr.F.y, Q.z - fr.F.z);
             expect(fr.a).toBeLessThanOrEqual(HANDLE_CHORD_CAP * rf + 1e-9);
             expect(fr.b).toBeLessThanOrEqual(HANDLE_CHORD_CAP * rf + 1e-9);
-            const p1s = (Q.x + fr.T0.x * fr.a - fr.R.x) * fr.h.x + (Q.y + fr.T0.y * fr.a - fr.R.y) * fr.h.y;
-            const planLen = Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y);
-            expect(p1s).toBeGreaterThanOrEqual(-1e-6);
-            expect(p1s).toBeLessThanOrEqual(planLen + 1e-6);
+            const p1s = (Q.x + fr.T0.x * fr.a - Q.x) * fr.h.x + (Q.y + fr.T0.y * fr.a - Q.y) * fr.h.y;
+            const planEB = Math.hypot(fr.B.x - Q.x, fr.B.y - Q.y);
+            expect(p1s).toBeLessThanOrEqual(planEB + 1e-6);
         }
     });
 
@@ -268,7 +268,7 @@ describe("bezier column", () => {
         expect(() => assertFilletStation(fil)).not.toThrow();
     });
 
-    test("top-edge round drops from R and T0 stays steep", () => {
+    test("top-edge round is outside R and T0 stays steep", () => {
         expect(T0_LEAD_DROP_MM).toBe(1);
         const st: HermiteStation = {
             outline: { x: 8, y: 0, z: 0 },
@@ -286,8 +286,13 @@ describe("bezier column", () => {
         );
         const col = built.xyz[0]!;
         const R = col[0]!;
-        expect(col.slice(1, 5).some((p) => R.z - p.z > 0.05)).toBe(true);
         const fr = built.frames[0]!;
+        const wOutx = -fr.h.x;
+        const wOuty = -fr.h.y;
+        expect(col.slice(1, 7).some((p) => R.z - p.z > 0.05)).toBe(true);
+        for (const p of col.slice(1, 7)) {
+            expect((p.x - R.x) * wOutx + (p.y - R.y) * wOuty).toBeGreaterThanOrEqual(-1e-6);
+        }
         expect((fr.t0TiltRad * 180) / Math.PI).toBeLessThanOrEqual(T0_PIN_DEG + 1e-6);
         expect(built.maxOffPlaneMm).toBeLessThanOrEqual(COLUMN_PLANARITY_LIMIT_MM);
         expect(built.maxSidewaysMm).toBeLessThanOrEqual(2);

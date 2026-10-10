@@ -93,6 +93,8 @@ export interface WallRegionDefaults {
     lateralFlangeAngleDeg: number;
     report: MeasuredVsBoundRow[];
     flareDiagnostics: FlareRegionDiagnostic[];
+    /** +1 when medial is +Y (high midfoot rim). Never a hardcoded axis. */
+    medialYSign: 1 | -1;
 }
 
 export function clampToBound(measured: number | null, spec: BoundSpec): { value: number; clamped: boolean } {
@@ -239,12 +241,13 @@ export function resolveWallDefaults(
         lateralFlangeAngleDeg: LATERAL_FLANGE_BOUNDS.angleDeg.recommended,
         report,
         flareDiagnostics,
+        medialYSign: 1,
     };
 }
 
 /**
- * Smooth region weights at a planform station. +Y is medial after
- * `reorientToFootprintFrame`. Forefoot is a wall-height taper, not a flare step.
+ * Smooth region weights at a planform station. Medial is the high-arch-rim
+ * side (`medialYSign`), not a hardcoded +Y. Forefoot is a height taper.
  *
  * CAD-owned boundaries (u along length, heel = 0):
  *   posterior heel  u < 0.10
@@ -252,14 +255,14 @@ export function resolveWallDefaults(
  *   arch / midfoot  0.22 … 0.60
  *   forefoot        u > 0.62 (height → 0)
  */
-export function regionWeights(u: number, y: number): Record<FlareRegionId, number> {
+export function regionWeights(u: number, y: number, medialYSign: 1 | -1 = 1): Record<FlareRegionId, number> {
     const uu = Math.max(0, Math.min(1, u));
     const heel = 1 - smoothstep(0.16, 0.26, uu);
     const posterior = (1 - smoothstep(0.06, 0.14, uu)) * heel;
     const heelSide = heel * (1 - posterior);
     const mid = (1 - heel) * (1 - smoothstep(0.56, 0.68, uu));
     const fore = smoothstep(0.56, 0.68, uu);
-    const medial = smoothstep(-4, 4, y);
+    const medial = smoothstep(-4, 4, y * medialYSign);
     const lateral = 1 - medial;
     return {
         heelPosterior: posterior,
@@ -272,8 +275,13 @@ export function regionWeights(u: number, y: number): Record<FlareRegionId, numbe
 }
 
 /** C1-blended flare (deg from vertical). Forefoot does not contribute a flare step. */
-export function blendedFlareDeg(u: number, y: number, flare: WallRegionDefaults["flareDeg"]): number {
-    return blendRegionScalar(u, y, flare);
+export function blendedFlareDeg(
+    u: number,
+    y: number,
+    flare: WallRegionDefaults["flareDeg"],
+    medialYSign: 1 | -1 = 1,
+): number {
+    return blendRegionScalar(u, y, flare, medialYSign);
 }
 
 /** C1-blended flare-curvature (0 = linear chord, >0 = stock bowl). */
@@ -281,16 +289,18 @@ export function blendedFlareCurvature(
     u: number,
     y: number,
     curvature: WallRegionDefaults["flareCurvature"],
+    medialYSign: 1 | -1 = 1,
 ): number {
-    return blendRegionScalar(u, y, curvature);
+    return blendRegionScalar(u, y, curvature, medialYSign);
 }
 
 function blendRegionScalar(
     u: number,
     y: number,
     values: Record<Exclude<FlareRegionId, "forefoot">, number>,
+    medialYSign: 1 | -1 = 1,
 ): number {
-    const w = regionWeights(u, y);
+    const w = regionWeights(u, y, medialYSign);
     const num =
         w.heelPosterior * values.heelPosterior +
         w.heelMedial * values.heelMedial +
@@ -316,12 +326,18 @@ export function heelBowlMix(u: number): number {
  * Additive lateral flange envelope in [0, 1]. Height 0 must be an identity
  * (caller skips the offset). No posterior flange.
  */
-export function lateralFlangeEnvelope(u: number, y: number, lengthMm: number, footLengthMm: number): number {
-    if (y >= 0) return 0;
+export function lateralFlangeEnvelope(
+    u: number,
+    y: number,
+    lengthMm: number,
+    footLengthMm: number,
+    medialYSign: 1 | -1 = 1,
+): number {
+    if (y * medialYSign >= 0) return 0;
     const half = Math.max(20, Math.min(80, lengthMm)) / Math.max(footLengthMm, 1) / 2;
     const center = 0.22;
     const t = 1 - smoothstep(0, half, Math.abs(u - center));
-    const lat = 1 - smoothstep(-2, 6, y);
+    const lat = 1 - smoothstep(-2, 6, y * medialYSign);
     return t * lat;
 }
 

@@ -1,6 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { medialYSignFromTopRim } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import {
     type FlareProfileKind,
@@ -56,8 +57,8 @@ export function outwardNormal(
     return { x: nx, y: ny };
 }
 
-function dominantRegion(u: number, y: number): FlareRegionId {
-    const w = regionWeights(u, y);
+function dominantRegion(u: number, y: number, medialYSign: 1 | -1 = 1): FlareRegionId {
+    const w = regionWeights(u, y, medialYSign);
     let best: FlareRegionId = "forefoot";
     let bestW = -1;
     for (const k of Object.keys(w) as FlareRegionId[]) {
@@ -114,12 +115,13 @@ function weightedMean(
     region: Exclude<FlareRegionId, "forefoot">,
     pick: (s: StationSample) => number,
     minWeight = 0.35,
+    medialYSign: 1 | -1 = 1,
 ): number | null {
     let s = 0;
     let w = 0;
     for (const st of samples) {
-        if (dominantRegion(st.u, st.y) === "forefoot") continue;
-        const ww = regionWeights(st.u, st.y)[region];
+        if (dominantRegion(st.u, st.y, medialYSign) === "forefoot") continue;
+        const ww = regionWeights(st.u, st.y, medialYSign)[region];
         const v = pick(st);
         if (ww < minWeight || !Number.isFinite(v)) continue;
         s += v * ww;
@@ -139,6 +141,7 @@ export function measureRegionFeatures(
     outline: PolyPoint[],
     bounds: StockWallModel["bounds"],
     wallOffsets?: { topMm: number[]; botMm: number[] },
+    medialYSign: 1 | -1 = 1,
 ): RegionMeasurements {
     const stations = measureStations(trim, outline, bounds, wallOffsets);
     const heelH = stations.filter((s) => s.u < 0.22 && s.cupHeightMm > 2).map((s) => s.cupHeightMm);
@@ -150,14 +153,21 @@ export function measureRegionFeatures(
 
     return {
         flareDeg: {
-            heelPosterior: weightedMean(stations, "heelPosterior", (s) => s.flareDeg) ?? undefined,
-            heelMedial: weightedMean(stations, "heelMedial", (s) => s.flareDeg) ?? undefined,
-            heelLateral: weightedMean(stations, "heelLateral", (s) => s.flareDeg) ?? undefined,
-            medialArch: weightedMean(stations, "medialArch", (s) => s.flareDeg) ?? undefined,
-            lateralMidfoot: weightedMean(stations, "lateralMidfoot", (s) => s.flareDeg) ?? undefined,
+            heelPosterior:
+                weightedMean(stations, "heelPosterior", (s) => s.flareDeg, 0.35, medialYSign) ?? undefined,
+            heelMedial:
+                weightedMean(stations, "heelMedial", (s) => s.flareDeg, 0.35, medialYSign) ?? undefined,
+            heelLateral:
+                weightedMean(stations, "heelLateral", (s) => s.flareDeg, 0.35, medialYSign) ?? undefined,
+            medialArch:
+                weightedMean(stations, "medialArch", (s) => s.flareDeg, 0.35, medialYSign) ?? undefined,
+            lateralMidfoot:
+                weightedMean(stations, "lateralMidfoot", (s) => s.flareDeg, 0.35, medialYSign) ?? undefined,
         },
-        filletTopMm: weightedMean(stations, "heelPosterior", (s) => s.filletTopMm, 0.15) ?? undefined,
-        filletBottomMm: weightedMean(stations, "heelPosterior", (s) => s.filletBotMm, 0.15) ?? undefined,
+        filletTopMm:
+            weightedMean(stations, "heelPosterior", (s) => s.filletTopMm, 0.15, medialYSign) ?? undefined,
+        filletBottomMm:
+            weightedMean(stations, "heelPosterior", (s) => s.filletBotMm, 0.15, medialYSign) ?? undefined,
         cupBowlFactor,
     };
 }
@@ -182,6 +192,7 @@ const PROFILE_REGIONS: Array<Exclude<FlareRegionId, "forefoot">> = [
 export function diagnoseFlareProfiles(
     stations: StationSample[],
     bands: StationBandFlare[],
+    medialYSign: 1 | -1 = 1,
 ): FlareRegionDiagnostic[] {
     const n = Math.min(stations.length, bands.length);
     const out: FlareRegionDiagnostic[] = [];
@@ -191,8 +202,8 @@ export function diagnoseFlareProfiles(
         let w = 0;
         for (let i = 0; i < n; i++) {
             const st = stations[i]!;
-            if (dominantRegion(st.u, st.y) === "forefoot") continue;
-            const ww = regionWeights(st.u, st.y)[region];
+            if (dominantRegion(st.u, st.y, medialYSign) === "forefoot") continue;
+            const ww = regionWeights(st.u, st.y, medialYSign)[region];
             if (ww < 0.35) continue;
             const b = bands[i]!;
             if (!Number.isFinite(b.lowerThirdDeg) || !Number.isFinite(b.upperThirdDeg)) continue;
@@ -226,12 +237,16 @@ export function defaultsFromStockCurves(
     wallOffsets?: { topMm: number[]; botMm: number[] },
     bandFlares?: StationBandFlare[],
 ): WallRegionDefaults {
-    const measured = measureRegionFeatures(trim, outline, bounds, wallOffsets);
+    const sign = medialYSignFromTopRim(trim, bounds);
+    const measured = measureRegionFeatures(trim, outline, bounds, wallOffsets, sign);
     if (bandFlares && bandFlares.length) {
         measured.flareDiagnostics = diagnoseFlareProfiles(
             measureStations(trim, outline, bounds, wallOffsets),
             bandFlares,
+            sign,
         );
     }
-    return resolveWallDefaults(measured, "functional");
+    const defaults = resolveWallDefaults(measured, "functional");
+    defaults.medialYSign = sign;
+    return defaults;
 }
