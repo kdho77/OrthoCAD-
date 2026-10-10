@@ -820,8 +820,9 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         }
         last.x = B.x;
         last.y = B.y;
-        last.z = B.z;
-        built.frames[i]!.bandZ = B.z;
+        last.z = 0;
+        B.z = 0;
+        built.frames[i]!.bandZ = 0;
         built.frames[i]!.bandInsetMm = 0;
     }
 
@@ -887,13 +888,16 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
             const last = columns[i]![outlineRow]!;
             last.x = B.x;
             last.y = B.y;
-            last.z = B.z;
-            outlineRing[i] = { ...B };
-            outlineB[i] = { ...B };
-            built.frames[i]!.bandZ = B.z;
+            last.z = 0;
+            B.z = 0;
+            outlineRing[i] = { ...B, z: 0 };
+            outlineB[i] = { ...B, z: 0 };
+            built.frames[i]!.bandZ = 0;
         }
     }
 
+    for (const p of plantar.points) p.z = 0;
+    for (const p of refined.ring) p.z = 0;
     const body = new Float32Array(nS * (nJ - 1) * 3);
     for (let j = 1; j < nJ; j++) {
         for (let i = 0; i < nS; i++) {
@@ -901,7 +905,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
             const o = ((j - 1) * nS + i) * 3;
             body[o] = p.x;
             body[o + 1] = p.y;
-            body[o + 2] = p.z;
+            body[o + 2] = j === outlineRow ? 0 : p.z;
         }
     }
     return {
@@ -1004,8 +1008,7 @@ function refineSharedBRing(
             const t = s / ki;
             const x = B0.x + t * (B1.x - B0.x);
             const y = B0.y + t * (B1.y - B0.y);
-            const z = soleZ(x, y, B0.z + t * (B1.z - B0.z));
-            ring.push({ x, y, z });
+            ring.push({ x, y, z: 0 });
             stationOfRefined.push(-1);
         }
     }

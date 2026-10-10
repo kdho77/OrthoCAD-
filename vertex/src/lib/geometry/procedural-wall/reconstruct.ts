@@ -924,7 +924,9 @@ export function reconstructProceduralWalls(
         return rnd.E;
     });
     pairing.plantar = retargetPlantarFromE(E, hygiened.loop);
-    pairing = limitPairingSkew(pairing, hygiened.loop);
+    const rimTop = pairing.top;
+    pairing = limitPairingSkew({ ...pairing, top: E }, hygiened.loop);
+    pairing.top = rimTop;
     pairing.sidewaysSkewMm = pairing.plantar.map((p, i) => {
         const e = E[i]!;
         const n = pairing.normals[i] ?? { x: 0, y: 1 };
@@ -942,7 +944,7 @@ export function reconstructProceduralWalls(
     const outlineZ: PolyPoint[] = pairing.plantar.map((p) => ({
         x: p.x,
         y: p.y,
-        z: p.z,
+        z: 0,
     }));
     pairing.plantar = outlineZ;
 
@@ -1061,6 +1063,12 @@ export function reconstructProceduralWalls(
     const nJ = grid.nJ;
     const generatedStart = positions.length / 3;
     for (let k = 0; k < grid.body.length; k++) positions.push(grid.body[k]!);
+    {
+        const bRow = Math.max(0, grid.outlineRow - 1);
+        for (let i = 0; i < nS; i++) {
+            positions[(generatedStart + bRow * nS + i) * 3 + 2] = 0;
+        }
+    }
     const refinedB = grid.refinedB ?? grid.outlineRing;
     const bEdgeK = grid.bEdgeK ?? new Array(nS).fill(1);
     const refinedOfStation = grid.refinedOfStation ?? [...Array(nS).keys()];
@@ -1078,8 +1086,10 @@ export function reconstructProceduralWalls(
     const nBoundary = grid.plantar.boundaryCount;
     for (let i = nBoundary; i < grid.plantar.points.length; i++) {
         const p = grid.plantar.points[i]!;
-        positions.push(p.x, p.y, p.z);
+        positions.push(p.x, p.y, 0);
     }
+    const plantarEnd = positions.length / 3;
+    for (let i = extraBStart; i < plantarEnd; i++) positions[i * 3 + 2] = 0;
     const gridVert = (j: number, i: number): number => {
         const s = ((i % nS) + nS) % nS;
         if (j <= 0) return rimLocal[s]!;
@@ -1155,8 +1165,6 @@ export function reconstructProceduralWalls(
     for (const f of grid.plantar.faces) {
         pushTri(plantarVert(f[0]!), plantarVert(f[2]!), plantarVert(f[1]!));
     }
-
-    const plantarEnd = positions.length / 3;
     const bandVerts = new Set<number>();
     for (let i = 0; i < refinedB.length; i++) bandVerts.add(refinedVert(i));
     const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ, bandVerts);

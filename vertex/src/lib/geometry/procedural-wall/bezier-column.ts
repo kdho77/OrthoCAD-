@@ -1141,12 +1141,7 @@ function enforceAbsRadiusRate(frames: ColumnFrame[], movedAt?: (u: number) => bo
  */
 export function smoothFRing(frames: ColumnFrame[]): void {
     if (frames.length < 3) return;
-    for (let pass = 0; pass < 3; pass++) {
-        const plan = ringTurningDeg(
-            frames.map((f) => f.F),
-            true,
-        );
-        if (plan <= RING_TURNING_MAX_DEG + 1e-9) break;
+    const applyLaplacian = (): void => {
         const n = frames.length;
         const sz = frames.map((fr) => {
             const frame = resolvePlantarFrame(fr.nB ?? fr.h, fr.plantarSlopeRad, fr.nPlantar);
@@ -1188,8 +1183,16 @@ export function smoothFRing(frames: ColumnFrame[]): void {
             const U = { x: fr.E.x - fr.F.x, y: fr.E.y - fr.F.y, z: fr.E.z - fr.F.z };
             if (hypot3(U) > 1e-9) fr.U = unit3(U);
         }
-        for (const fr of frames) applyAlaToFrame(fr);
+    };
+    for (let pass = 0; pass < 3; pass++) {
+        const plan = ringTurningDeg(
+            frames.map((f) => f.F),
+            true,
+        );
+        if (plan <= RING_TURNING_MAX_DEG + 1e-9) break;
+        applyLaplacian();
     }
+    for (const fr of frames) applyAlaToFrame(fr);
 }
 
 /**
@@ -1386,6 +1389,29 @@ export function sampleFilletPiecePoints(
         }
         firstS = evenStep + w * (firstS - evenStep);
         firstS = Math.min(capS, Math.max(1e-9, firstS));
+        const minChord = FIL_CHORD_S1_MIN * Math.max(cMin, 1e-9);
+        const minBodyChord = (fs: number): number => {
+            let m = dist3(Fpiece, pointAt(fs));
+            const rest = Math.max(0, bodyLen - fs);
+            const denom = Math.max(1, n - 1);
+            for (let k = 1; k <= n - 1; k++) {
+                m = Math.min(
+                    m,
+                    dist3(pointAt(fs + ((k - 1) * rest) / denom), pointAt(fs + (k * rest) / denom)),
+                );
+            }
+            return m;
+        };
+        if (minBodyChord(firstS) + 1e-9 < minChord) {
+            let lo = evenStep;
+            let hi = firstS;
+            for (let it = 0; it < 16; it++) {
+                const mid = 0.5 * (lo + hi);
+                if (minBodyChord(mid) + 1e-9 < minChord) hi = mid;
+                else lo = mid;
+            }
+            firstS = minBodyChord(lo) + 1e-9 < minChord ? evenStep : lo;
+        }
     }
     if (n >= 2 && firstS > 1e-12 && Math.abs(firstS - bodyLen / n) > 1e-12) {
         pts.push(pointAt(firstS));

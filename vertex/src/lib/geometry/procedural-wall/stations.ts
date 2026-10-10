@@ -578,11 +578,14 @@ export function pairAtNativeTop(plantarLoop: PolyPoint[], topLoop: PolyPoint[]):
     };
 }
 
-/** Slide B onto the pairing normal through R so |skew| ≤ 0.5 × plan inset. */
+/** Slide B onto the pairing normal through R so |skew| ≤ min(2 mm, 0.5 × plan inset).
+ * Keep a candidate only when it does not add plan-view chord crossings.
+ */
 export function limitPairingSkew(pairing: StationPairing, loop: PolyPoint[]): StationPairing {
     const n = Math.min(pairing.top.length, pairing.plantar.length, pairing.normals.length);
     if (n < 3 || loop.length < 3) return pairing;
     const plantar = pairing.plantar.map((p) => ({ ...p }));
+    let crossings = countPlanViewChordCrossings(plantar, pairing.top);
     for (let pass = 0; pass < 4; pass++) {
         let moved = 0;
         for (let i = 0; i < n; i++) {
@@ -597,11 +600,35 @@ export function limitPairingSkew(pairing: StationPairing, loop: PolyPoint[]): St
             const vy = B.y - R.y;
             const inset = Math.hypot(vx, vy);
             const skew = Math.abs(vx * oy - vy * ox);
-            if (skew <= SKEW_INSET_RATIO * Math.max(inset, 1e-6) + 1e-3) continue;
+            const cap = Math.min(SKEW_LIMIT_MM, SKEW_INSET_RATIO * Math.max(inset, 1e-6));
+            if (skew <= cap + 1e-3) continue;
             const along = vx * ox + vy * oy;
             const target = { x: R.x + ox * along, y: R.y + oy * along, z: 0 };
-            plantar[i] = nearestOnLoop(target, loop);
-            moved++;
+            let lo = 0;
+            let hi = 1;
+            let best = B;
+            for (let it = 0; it < 8; it++) {
+                const mid = 0.5 * (lo + hi);
+                const trial = nearestOnLoop(
+                    { x: B.x + (target.x - B.x) * mid, y: B.y + (target.y - B.y) * mid, z: 0 },
+                    loop,
+                );
+                const next = plantar.map((p, k) => (k === i ? trial : p));
+                const nextX = countPlanViewChordCrossings(next, pairing.top);
+                if (nextX <= crossings) {
+                    lo = mid;
+                    best = trial;
+                } else {
+                    hi = mid;
+                }
+            }
+            const next = plantar.map((p, k) => (k === i ? best : p));
+            const nextX = countPlanViewChordCrossings(next, pairing.top);
+            if (nextX <= crossings && (best.x !== B.x || best.y !== B.y)) {
+                plantar[i] = best;
+                crossings = nextX;
+                moved++;
+            }
         }
         if (!moved) break;
     }
