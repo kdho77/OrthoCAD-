@@ -23,7 +23,7 @@ import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
 import { buildHermiteStations } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
-import { countJunctionBandSlivers } from "./metrics";
+import { countJunctionBandSlivers, windingReport } from "./metrics";
 import { type ProceduralModifierInput, plantarZDelta } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
 import { hygieneBottomPattern } from "./pattern-hygiene";
@@ -377,7 +377,7 @@ export function reconstructProceduralWalls(
         plantarField: model.outline.plantarZ,
         zDelta,
         topZ,
-        nWall: options.wallLayers ?? 16,
+        nWall: options.wallLayers ?? 26,
         refineGrind: (options.archGrindDepthMm ?? 0) > 0,
         flangeHeightMm: flangeH,
         flangeLengthMm: flangeLen,
@@ -415,12 +415,12 @@ export function reconstructProceduralWalls(
             const b = gridVert(j, i + 1);
             const c = gridVert(j + 1, i + 1);
             const d = gridVert(j + 1, i);
-            pushTri(a, b, c);
-            pushTri(a, c, d);
+            pushTri(a, c, b);
+            pushTri(a, d, c);
         }
     }
     for (const f of grid.plantar.faces) {
-        pushTri(plantarVert(f[0]!), plantarVert(f[1]!), plantarVert(f[2]!));
+        pushTri(plantarVert(f[0]!), plantarVert(f[2]!), plantarVert(f[1]!));
     }
 
     const hygiene = sanitizeMesh(positions, indices);
@@ -442,6 +442,8 @@ export function reconstructProceduralWalls(
         planReversals: grid.planReversals,
         maxFrameAngleDeg: grid.maxFrameAngleDeg,
         maxOffPlaneMm: grid.maxOffPlaneMm,
+        maxSidewaysMm: grid.maxSidewaysMm,
+        winding: windingReport(geo),
         nJ: grid.nJ,
         filletRowStart: Math.max(0, grid.outlineRow - 3),
         wallFrames: grid.frames.map((f) => ({

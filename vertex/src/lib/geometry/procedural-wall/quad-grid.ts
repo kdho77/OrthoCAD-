@@ -20,6 +20,7 @@ import {
     MIN_FILLET_RING_SPACING_MM,
     MIN_FILLET_RINGS,
     type NZ,
+    TOP_ROUND_MIN_ROWS,
 } from "./hermite";
 import type { HermiteStation } from "./loft";
 import { segIntersect } from "./outline-clean";
@@ -56,6 +57,7 @@ export interface QuadGrid {
     planReversals: number;
     maxFrameAngleDeg: number;
     maxOffPlaneMm: number;
+    maxSidewaysMm: number;
     frames: ColumnFrame[];
     chordCrossings: number;
     /** Max tilt (deg from horizontal) of the first plantar ring off BottomOutline. */
@@ -574,7 +576,11 @@ export function placeStructuredBandRing(stations: HermiteStation[]): PolyPoint[]
 export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     const stations = input.stations;
     const nS = stations.length;
-    const nWall = Math.max(10, input.nWall ?? 1 + MIN_FILLET_RINGS + WALL_MID_ROWS + MIN_FILLET_RINGS);
+    const nWall = Math.max(
+        26,
+        input.nWall ?? 2 + TOP_ROUND_MIN_ROWS + WALL_MID_ROWS + 12,
+        2 + TOP_ROUND_MIN_ROWS + WALL_MID_ROWS + 12,
+    );
     const nJ = nWall;
     const outlineRow = nJ - 1;
     const innerRow = outlineRow;
@@ -724,6 +730,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         planReversals: built.planReversals,
         maxFrameAngleDeg: built.maxFrameAngleDeg,
         maxOffPlaneMm: built.maxOffPlaneMm,
+        maxSidewaysMm: built.maxSidewaysMm,
         frames: built.frames,
         chordCrossings: 0,
         bandTiltDegMax: 0,

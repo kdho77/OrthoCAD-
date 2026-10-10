@@ -114,7 +114,10 @@ describe("bezier column", () => {
             const rf = Math.hypot(Q.x - fr.F.x, Q.y - fr.F.y, Q.z - fr.F.z);
             expect(fr.a).toBeLessThanOrEqual(HANDLE_CHORD_CAP * rf + 1e-9);
             expect(fr.b).toBeLessThanOrEqual(HANDLE_CHORD_CAP * rf + 1e-9);
-            expect(fr.a).toBeCloseTo(Math.min(BEZIER_HANDLE_FRAC * rf, HANDLE_CHORD_CAP * rf), 6);
+            const p1s = (Q.x + fr.T0.x * fr.a - fr.R.x) * fr.h.x + (Q.y + fr.T0.y * fr.a - fr.R.y) * fr.h.y;
+            const planLen = Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y);
+            expect(p1s).toBeGreaterThanOrEqual(-1e-6);
+            expect(p1s).toBeLessThanOrEqual(planLen + 1e-6);
         }
     });
 
@@ -132,7 +135,7 @@ describe("bezier column", () => {
         }
         const junctions = stations.map(() => ({ planeN: { x: 0, y: 0, z: 1 }, slopeRad: 0.15 }));
         const rimLoop = stations.map((s) => s.rim);
-        const built = buildBezierColumns(stations, junctions, defaults(), rimLoop, () => 12, 14);
+        const built = buildBezierColumns(stations, junctions, defaults(), rimLoop, () => 12, 24);
         expect(built.planReversals).toBe(0);
         expect(built.maxOffPlaneMm).toBeLessThanOrEqual(COLUMN_PLANARITY_LIMIT_MM);
         for (let i = 0; i < n; i++) {
@@ -266,7 +269,7 @@ describe("bezier column", () => {
         expect(() => assertFilletStation(fil)).not.toThrow();
     });
 
-    test("T0 lead drops 1 mm along T0 before the Bezier", () => {
+    test("top-edge round drops from R and T0 stays steep", () => {
         expect(T0_LEAD_DROP_MM).toBe(1);
         const st: HermiteStation = {
             outline: { x: 8, y: 0, z: 0 },
@@ -280,22 +283,15 @@ describe("bezier column", () => {
             defaults(),
             [st.rim],
             () => 12,
-            16,
+            24,
         );
         const col = built.xyz[0]!;
         const R = col[0]!;
-        const q = col[1]!;
-        expect(R.z - q.z).toBeGreaterThan(0.15);
-        expect(q.z).toBeGreaterThan(R.z - T0_LEAD_DROP_MM - 0.15);
+        expect(col.slice(1, 5).some((p) => R.z - p.z > 0.05)).toBe(true);
         const fr = built.frames[0]!;
-        const step = {
-            x: q.x - R.x,
-            y: q.y - R.y,
-            z: q.z - R.z,
-        };
-        const len = Math.hypot(step.x, step.y, step.z) || 1;
-        const dot = (step.x / len) * fr.T0.x + (step.y / len) * fr.T0.y + (step.z / len) * fr.T0.z;
-        expect(dot).toBeGreaterThan(0.995);
+        expect((fr.t0TiltRad * 180) / Math.PI).toBeLessThanOrEqual(T0_PIN_DEG + 1e-6);
+        expect(built.maxOffPlaneMm).toBeLessThanOrEqual(COLUMN_PLANARITY_LIMIT_MM);
+        expect(built.maxSidewaysMm).toBeLessThanOrEqual(2);
     });
 
     test("fillet samples never drop below the tangent band z", () => {
@@ -316,7 +312,7 @@ describe("bezier column", () => {
             defaults(),
             stations.map((s) => s.rim),
             () => 12,
-            14,
+            24,
         );
         for (const fr of built.frames) {
             expect(fr.bandZ).toBeGreaterThanOrEqual(fr.B.z - 1e-6);

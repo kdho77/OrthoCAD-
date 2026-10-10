@@ -33,6 +33,8 @@ export {
     plantarFrameAt,
     R_SMOOTH_FRAC,
     rimOverhangMm,
+    SEAM_B_LIMIT_DEG,
+    SIDEWAYS_LIMIT_MM,
     sampleByArcLength,
     sampleInPlaneSlope,
     slopeFromSheetPlane,
@@ -127,6 +129,7 @@ export {
     sheetBoundaryStats,
     stitchVertexDeltaMm,
     tieredHausdorffReport,
+    windingReport,
 } from "./metrics";
 export { applyCurveModifiers } from "./modifiers";
 export {

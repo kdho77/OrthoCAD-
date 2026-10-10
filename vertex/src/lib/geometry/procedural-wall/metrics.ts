@@ -353,6 +353,9 @@ export function foldReport(reconstruction: BufferGeometry, opts?: FoldReportOpti
         const inOutline = (v: number) => outN > 0 && v >= outStart && v < outStart + outN;
         const oneOutline = inOutline(sa) !== inOutline(sb);
         if (opts?.wholeInsole) {
+            const topFace = (f: number) =>
+                topN > 0 && idx[f]! < topN && idx[f + 1]! < topN && idx[f + 2]! < topN;
+            if (topFace(f1) && topFace(f2)) continue;
             if (bothTop) continue;
         } else {
             const za = (z[sa]! - minZ) / span;
@@ -924,13 +927,17 @@ export function heelInnerWidthAtU(
  */
 export function outlineSeamDihedrals(
     geo: BufferGeometry,
-    outline: Array<{ x: number; y: number; z: number }>,
-    tolMm = 0.85,
+    outline: Array<{ x: number; y: number; z: number }> = [],
+    _tolMm = 0.85,
 ): { worstDeg: number; meanDeg: number; perStation: number[] } {
     const pos = geo.getAttribute("position").array as Float32Array;
     const index = geo.getIndex();
-    const empty = { worstDeg: 0, meanDeg: 0, perStation: outline.map(() => 0) };
-    if (!index || outline.length === 0) return empty;
+    const ud = geo.userData as { outlineVertexStart?: number; outlineVertexCount?: number };
+    const start = ud.outlineVertexStart;
+    const nRing = ud.outlineVertexCount;
+    const n = nRing && nRing >= 3 ? nRing : outline.length;
+    const empty = { worstDeg: 0, meanDeg: 0, perStation: Array.from({ length: n }, () => 0) };
+    if (!index || n < 3) return empty;
     const idx = index.array;
     const edgeFaces = new Map<string, number[]>();
     for (let f = 0; f < idx.length; f += 3) {
@@ -951,31 +958,26 @@ export function outlineSeamDihedrals(
             faces.push(f);
         }
     }
-    const perStation = outline.map(() => 0);
-    const tol2 = tolMm * tolMm;
-    for (const [key, faces] of edgeFaces) {
-        if (faces.length !== 2) continue;
-        const [sa, sb] = key.split(",").map(Number) as [number, number];
-        const mx = (pos[sa * 3]! + pos[sb * 3]!) * 0.5;
-        const my = (pos[sa * 3 + 1]! + pos[sb * 3 + 1]!) * 0.5;
-        const mz = (pos[sa * 3 + 2]! + pos[sb * 3 + 2]!) * 0.5;
-        let bestI = -1;
-        let bestD = tol2;
-        for (let i = 0; i < outline.length; i++) {
-            const o = outline[i]!;
-            const d = (o.x - mx) ** 2 + (o.y - my) ** 2 + (o.z - mz) ** 2;
-            if (d < bestD) {
-                bestD = d;
-                bestI = i;
-            }
+    const perStation = Array.from({ length: n }, () => 0);
+    const ringIndex = (i: number): [number, number] | null => {
+        if (typeof start === "number" && nRing && nRing >= 3) {
+            return [start + i, start + ((i + 1) % nRing)];
         }
-        if (bestI < 0) continue;
+        return null;
+    };
+    for (let i = 0; i < n; i++) {
+        const pair = ringIndex(i);
+        let faces: number[] | undefined;
+        if (pair) {
+            const [sa, sb] = pair;
+            faces = edgeFaces.get(sa < sb ? `${sa},${sb}` : `${sb},${sa}`);
+        }
+        if (!faces || faces.length !== 2) continue;
         const n1 = faceNormal(pos, idx[faces[0]!]!, idx[faces[0]! + 1]!, idx[faces[0]! + 2]!);
         const n2 = faceNormal(pos, idx[faces[1]!]!, idx[faces[1]! + 1]!, idx[faces[1]! + 2]!);
         if (!n1 || !n2) continue;
         const dot = Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]));
-        const deg = Math.min((Math.acos(dot) * 180) / Math.PI, 180 - (Math.acos(dot) * 180) / Math.PI);
-        if (deg > perStation[bestI]!) perStation[bestI] = deg;
+        perStation[i] = (Math.acos(dot) * 180) / Math.PI;
     }
     let worst = 0;
     let sum = 0;
@@ -988,6 +990,62 @@ export function outlineSeamDihedrals(
         }
     }
     return { worstDeg: worst, meanDeg: c ? sum / c : 0, perStation };
+}
+
+export interface WindingReport {
+    signedVolume: number;
+    oppositeEdgeMismatch: number;
+    consistent: boolean;
+}
+
+/** Outward winding: positive volume and every edge used once in each direction. */
+export function windingReport(geo: BufferGeometry): WindingReport {
+    const pos = geo.getAttribute("position").array as Float32Array;
+    const index = geo.getIndex();
+    if (!index) return { signedVolume: 0, oppositeEdgeMismatch: 0, consistent: false };
+    const idx = index.array;
+    const directed = new Map<string, number>();
+    let vol6 = 0;
+    for (let t = 0; t < idx.length; t += 3) {
+        const a = idx[t]!;
+        const b = idx[t + 1]!;
+        const c = idx[t + 2]!;
+        const ax = pos[a * 3]!;
+        const ay = pos[a * 3 + 1]!;
+        const az = pos[a * 3 + 2]!;
+        const bx = pos[b * 3]!;
+        const by = pos[b * 3 + 1]!;
+        const bz = pos[b * 3 + 2]!;
+        const cx = pos[c * 3]!;
+        const cy = pos[c * 3 + 1]!;
+        const cz = pos[c * 3 + 2]!;
+        vol6 += ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
+        for (const [p, q] of [
+            [a, b],
+            [b, c],
+            [c, a],
+        ] as const) {
+            const k = `${p}>${q}`;
+            directed.set(k, (directed.get(k) ?? 0) + 1);
+        }
+    }
+    let mismatch = 0;
+    const seen = new Set<string>();
+    for (const key of directed.keys()) {
+        const [p, q] = key.split(">").map(Number) as [number, number];
+        const und = p < q ? `${p},${q}` : `${q},${p}`;
+        if (seen.has(und)) continue;
+        seen.add(und);
+        const fwd = directed.get(`${p}>${q}`) ?? 0;
+        const back = directed.get(`${q}>${p}`) ?? 0;
+        if (fwd !== 1 || back !== 1) mismatch++;
+    }
+    const signedVolume = vol6 / 6;
+    return {
+        signedVolume,
+        oppositeEdgeMismatch: mismatch,
+        consistent: signedVolume > 0 && mismatch === 0,
+    };
 }
 
 export function measureReconFlareDeg(

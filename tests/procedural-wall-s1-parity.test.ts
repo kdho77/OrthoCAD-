@@ -44,12 +44,15 @@ import {
     reconstructionManifold,
     reconstructProceduralWalls,
     S1_MIN_WALL_MM,
+    SEAM_B_LIMIT_DEG,
+    SIDEWAYS_LIMIT_MM,
     SKEW_LIMIT_MM,
     sheetBoundaryStats,
     soleUvFrameFromOutline,
     soleUvFrameFromPolyline,
     summarizeWallBands,
     syntheticBottomPattern,
+    windingReport,
     zoneFixturesMapIdentically,
 } from "@/lib/geometry/procedural-wall";
 import { listStockBaseFixtures } from "@/lib/geometry/procedural-wall/catalog";
@@ -333,6 +336,14 @@ describe("S1 parametric wall", () => {
             if (offPlane > COLUMN_PLANARITY_LIMIT_MM) {
                 misses.push(`off-plane ${offPlane.toFixed(4)}>${COLUMN_PLANARITY_LIMIT_MM}`);
             }
+            const side = (rebuilt.userData as { maxSidewaysMm?: number }).maxSidewaysMm ?? 0;
+            if (side > SIDEWAYS_LIMIT_MM) misses.push(`sideways ${side.toFixed(3)}>${SIDEWAYS_LIMIT_MM}`);
+            const wind = windingReport(rebuilt);
+            if (!wind.consistent || wind.signedVolume <= 0 || wind.oppositeEdgeMismatch !== 0) {
+                misses.push(
+                    `winding vol=${wind.signedVolume.toFixed(1)} mismatch=${wind.oppositeEdgeMismatch}`,
+                );
+            }
             if (chordX !== 0 || loftChordX !== 0) {
                 misses.push(`chord-cross ${chordX}/${loftChordX}`);
             }
@@ -351,8 +362,8 @@ describe("S1 parametric wall", () => {
             if (seamOver > 0) {
                 misses.push(`seam-F ${fSeam.worstDeg.toFixed(1)} over fillet+2 by ${seamOver.toFixed(1)}`);
             }
-            if (reconSeam.worstDeg > 5 + 1e-6) {
-                misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>5`);
+            if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6) {
+                misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
             }
             if (flareCap?.stillNeeded) {
                 misses.push(
@@ -494,6 +505,7 @@ describe("S1 parametric wall", () => {
                 bandTiltDegMax?: number;
                 maxFrameAngleDeg?: number;
                 maxOffPlaneMm?: number;
+                maxSidewaysMm?: number;
             };
             const chordX = sud.chordCrossings ?? -1;
             const maxSkew = sud.maxSidewaysSkewMm ?? 0;
@@ -553,6 +565,13 @@ describe("S1 parametric wall", () => {
                     `${smoke.name} off-plane ${sud.maxOffPlaneMm!.toFixed(4)}>${COLUMN_PLANARITY_LIMIT_MM}`,
                 );
             }
+            if ((sud.maxSidewaysMm ?? 0) > SIDEWAYS_LIMIT_MM) {
+                smokeMiss.push(`${smoke.name} sideways ${sud.maxSidewaysMm}`);
+            }
+            const wind = windingReport(rebuilt);
+            if (!wind.consistent || wind.signedVolume <= 0 || wind.oppositeEdgeMismatch !== 0) {
+                smokeMiss.push(`${smoke.name} winding mismatch=${wind.oppositeEdgeMismatch}`);
+            }
             if (chordX !== 0) smokeMiss.push(`${smoke.name} chord-cross=${chordX}`);
             if ((sud.planReversals ?? 0) !== 0)
                 smokeMiss.push(`${smoke.name} reversals=${sud.planReversals}`);
@@ -567,8 +586,8 @@ describe("S1 parametric wall", () => {
             }
             if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) smokeMiss.push(`${smoke.name} fold`);
             if (fold.edgesAtLeast10Deg !== 0) smokeMiss.push(`${smoke.name} fold≥10`);
-            if (reconSeam.worstDeg > 5 + 1e-6) {
-                smokeMiss.push(`${smoke.name} seam-B ${reconSeam.worstDeg.toFixed(1)}>5`);
+            if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6) {
+                smokeMiss.push(`${smoke.name} seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
             }
             if (!man.watertight) smokeMiss.push(`${smoke.name} open=${man.openEdges}`);
             if (minZ < -0.01) smokeMiss.push(`${smoke.name} min-z ${minZ.toFixed(3)}`);
@@ -641,6 +660,7 @@ describe("S1 parametric wall", () => {
             plantarOpenEdges?: number;
             plantarMissingBoundary?: number;
             maxOffPlaneMm?: number;
+            maxSidewaysMm?: number;
             planReversals?: number;
             chordCrossings?: number;
             bottomPatternSource?: string;
@@ -657,7 +677,9 @@ describe("S1 parametric wall", () => {
         if (man.nonManifoldEdges !== 0) misses.push(`nonManifold=${man.nonManifoldEdges}`);
         if (fold.edgesAtLeast10Deg !== 0) misses.push(`fold≥10=${fold.edgesAtLeast10Deg}`);
         if (archFolds.edgesAtLeast10Deg !== 0) misses.push(`medial-arch-upper≥10`);
-        if (reconSeam.worstDeg > 5 + 1e-6) misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>5`);
+        if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + 1e-6) {
+            misses.push(`seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
+        }
         if (outlineDev > 1e-3) misses.push(`outline-B ${outlineDev.toFixed(4)}`);
         if (plantarZ0 > 1e-3) misses.push(`plantar-z0 ${plantarZ0.toFixed(4)}`);
         if (topDelta > 1e-9) misses.push(`top-identical ${topDelta.toFixed(6)}`);
@@ -670,6 +692,13 @@ describe("S1 parametric wall", () => {
         }
         if ((sud.maxOffPlaneMm ?? 0) > COLUMN_PLANARITY_LIMIT_MM) {
             misses.push(`off-plane ${sud.maxOffPlaneMm}`);
+        }
+        if ((sud.maxSidewaysMm ?? 0) > SIDEWAYS_LIMIT_MM) {
+            misses.push(`sideways ${sud.maxSidewaysMm}`);
+        }
+        const wind = windingReport(rebuilt);
+        if (!wind.consistent || wind.signedVolume <= 0 || wind.oppositeEdgeMismatch !== 0) {
+            misses.push(`winding vol=${wind.signedVolume.toFixed(1)} mismatch=${wind.oppositeEdgeMismatch}`);
         }
         if ((sud.planReversals ?? 0) !== 0) misses.push(`reversals=${sud.planReversals}`);
         if ((sud.chordCrossings ?? 0) !== 0) misses.push(`crossings=${sud.chordCrossings}`);
