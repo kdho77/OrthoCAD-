@@ -627,6 +627,16 @@ export function profileAreaBetween(
     const fr = stationSzFrame(R, B, h);
     const a = round.map((p) => toSz(p, fr.origin, fr.h));
     const b = straight.map((p) => toSz(p, fr.origin, fr.h));
+    const n = Math.min(a.length, b.length);
+    if (n >= 2 && a.length === b.length) {
+        let area = 0;
+        for (let i = 0; i < n - 1; i++) {
+            const ds = 0.5 * (a[i]!.s - b[i]!.s + (a[i + 1]!.s - b[i + 1]!.s));
+            const dz = 0.5 * (a[i]!.z - a[i + 1]!.z + (b[i]!.z - b[i + 1]!.z));
+            area += ds * dz;
+        }
+        return area;
+    }
     const ring = [...a, ...b.slice().reverse()];
     let area = 0;
     for (let i = 0; i < ring.length; i++) {
@@ -1019,13 +1029,15 @@ export function rebuildSplineStation(
     const poly = buildSplinePolygon(E, B, R, fr.h, tE, Math.max(0, a), Math.max(0, g), c);
     let use = poly;
     let gg = Math.max(0, g);
-    for (let i = 0; i < 12; i++) {
+    let aa = Math.max(0, a);
+    for (let i = 0; i < 16; i++) {
         const m = measureOf(use, E, B, R, fr.h, tE);
         if (m.sMin >= SPLINE_S_MIN_MM - 1e-9) break;
-        gg *= 0.85;
-        use = buildSplinePolygon(E, B, R, fr.h, tE, Math.max(0, a), gg, c);
+        if (gg > 1e-4) gg *= 0.85;
+        else aa *= 0.9;
+        use = buildSplinePolygon(E, B, R, fr.h, tE, aa, gg, c);
     }
-    return finishSolve(input, use, Math.max(0, a), gg, c, beta, false, extraUse);
+    return finishSolve(input, use, aa, gg, c, beta, false, extraUse);
 }
 
 export interface SplineDensityTable {

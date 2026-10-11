@@ -5079,7 +5079,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const L = evaluated
             ? (sampled.L[i] ?? 1)
             : (sampledStraight.L[i] ?? Math.hypot(fr.B.x - fr.E.x, fr.B.y - fr.E.y, fr.B.z - fr.E.z));
-        const area = profileAreaBetween(col, straightCols[i]!, fr.R, fr.B, fr.h);
+        const area = profileAreaBetween(used, straightPts, fr.R, fr.B, fr.h);
         fr.g1EDeg = g1C;
         fr.g1FDeg = sol.seamBDeg;
         fr.midFlagged = sol.infl;
