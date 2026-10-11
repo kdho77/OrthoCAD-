@@ -306,14 +306,14 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         if (outline) {
             const widthId = shoeWidthForSide(design, side);
             const heelW = layout.widthMm * 0.62;
-            const scaled = applyShoeWidthToPoints(outline, widthId, {
+            const scaledPts = applyShoeWidthToPoints(outline.points, widthId, {
                 ballWidthMm: layout.widthMm,
                 heelWidthMm: heelW,
                 minX: b.minX,
                 lengthMm: Math.max(1e-3, b.maxX - b.minX),
                 heelOverrideMm: design.corrections[side]?.heelCupWidthMm,
             });
-            useBaseOutlineStore.getState().setOutline(lookupKey, scaled);
+            useBaseOutlineStore.getState().setOutline(lookupKey, { points: scaledPts });
         }
     }, [
         assetId,

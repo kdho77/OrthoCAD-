@@ -65,6 +65,18 @@ describe("shoe width rule", () => {
         expect(corrections).toEqual({ archHeightMm: 6, heelCupDepthMm: 14, medialSkiveMm: 3 });
     });
 
+    test("non-array outline is a no-op (does not throw)", () => {
+        const curve = { points: [{ x: 0, y: 10 }] };
+        expect(() =>
+            applyShoeWidthToPoints(curve as unknown as { x: number; y: number }[], "wide", {
+                ballWidthMm: 95,
+                heelWidthMm: 59,
+                minX: 0,
+                lengthMm: 260,
+            }),
+        ).not.toThrow();
+    });
+
     test("unlocked L/R widths stay independent", () => {
         const design = {
             shoeWidth: "wide" as const,

@@ -88,12 +88,20 @@ export function applyShoeWidthToPoints<T extends { x: number; y: number }>(
         heelOverrideMm?: number;
     },
 ): T[] {
+    if (!Array.isArray(pts) || pts.length === 0) return pts;
     if (width === "medium" && !(opts.heelOverrideMm && Math.abs(opts.heelOverrideMm) > 1e-6)) return pts;
     const yMid = pts.reduce((s, p) => s + p.y, 0) / Math.max(1, pts.length);
     return pts.map((p) => {
         const u = (p.x - opts.minX) / Math.max(1e-3, opts.lengthMm);
         const s = shoeWidthScaleAtU(u, opts.ballWidthMm, opts.heelWidthMm, width, opts.heelOverrideMm);
-        return { ...p, y: yMid + (p.y - yMid) * s };
+        const y = yMid + (p.y - yMid) * s;
+        const clone = (p as { clone?: () => T }).clone;
+        if (typeof clone === "function") {
+            const next = clone.call(p);
+            (next as { y: number }).y = y;
+            return next;
+        }
+        return { ...p, y };
     });
 }
 

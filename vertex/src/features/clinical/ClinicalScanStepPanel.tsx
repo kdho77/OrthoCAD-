@@ -3,10 +3,15 @@
 
 import { ScanImport } from "@/features/scans/ScanImport";
 import { evaluateScanStepGate } from "@/lib/clinical/clinical-step-gates";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useScanStore } from "@/stores/scan-store";
 
 export function ClinicalScanStepPanel() {
     const scans = useScanStore((s) => s.scans);
+    const footSideExplicitlyChosen = useClinicalWorkflowStore((s) => s.footSideExplicitlyChosen);
+    const placementFoot = useClinicalWorkflowStore((s) => s.elementPlacementFoot);
+    void footSideExplicitlyChosen;
+    void placementFoot;
     const scanGate = evaluateScanStepGate();
 
     return (

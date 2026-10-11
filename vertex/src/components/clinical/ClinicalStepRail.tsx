@@ -15,6 +15,8 @@ export function ClinicalStepRail() {
     const completedSteps = useClinicalWorkflowStore((s) => s.completedSteps);
     const nextBlockReason = useClinicalWorkflowStore((s) => s.nextBlockReason);
     const scanGateStickyReason = useClinicalWorkflowStore((s) => s.scanGateStickyReason);
+    const footSideExplicitlyChosen = useClinicalWorkflowStore((s) => s.footSideExplicitlyChosen);
+    void footSideExplicitlyChosen;
     const setStep = useClinicalWorkflowStore((s) => s.setStep);
 
     const stepState = (id: ClinicalStepId) => {
@@ -85,6 +87,8 @@ function stepIndex(step: ClinicalStepId): number {
 export function ClinicalStepFooter() {
     const step = useClinicalWorkflowStore((s) => s.step);
     const nextBlockReason = useClinicalWorkflowStore((s) => s.nextBlockReason);
+    const footSideExplicitlyChosen = useClinicalWorkflowStore((s) => s.footSideExplicitlyChosen);
+    void footSideExplicitlyChosen;
     const goNext = useClinicalWorkflowStore((s) => s.goNext);
     const goBack = useClinicalWorkflowStore((s) => s.goBack);
     const atFirst = step === "scan";
