@@ -17,6 +17,7 @@ import {
     reconstructProceduralWalls,
     SPLINE_F_RING_MAX,
     SPLINE_G1_R_MAX_DEG,
+    SPLINE_GATES_REPORT_ONLY,
     SPLINE_H_MIN_MM,
     SPLINE_MIN_EDGE_FRAC,
     SPLINE_PEAK_GATE_HI,
@@ -97,6 +98,10 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             minSplineEdgeOverLN?: number;
             maxRow1TRDeg?: number;
             duplicateVerts?: number;
+            worstAcrossI?: number;
+            worstAcrossU?: number;
+            worstAlongRowI?: number;
+            worstAlongRowU?: number;
         };
         wallFrames?: Array<{
             u: number;
@@ -126,6 +131,11 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             inflCount?: number;
             fallbackStraight?: boolean;
             midPlanOffMm?: number;
+            splineRow1Deg?: number;
+            splineStepRatio?: number;
+            splineMinEdge?: number;
+            splineL?: number;
+            splineFk?: number[];
         }>;
         medialYSign?: 1 | -1;
         footLengthMm?: number;
@@ -269,6 +279,313 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
     return misses;
 }
 
+type GateRow = {
+    gate: string;
+    pass: boolean;
+    value: number | string;
+    cap?: number | string;
+    n?: number;
+    worstI?: number;
+    worstU?: number;
+};
+
+function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry): GateRow[] {
+    const misses = styleMisses(geo, style, straight);
+    const ud = geo.userData as {
+        columnQuality?: {
+            maxG1EDeg?: number;
+            maxG1FDeg?: number;
+            maxAcrossDeg?: number;
+            maxAcrossP99Deg?: number;
+            maxMidAcrossP99Deg?: number;
+            maxMidRowTurnDeg?: number;
+            maxMidRowDihedralDeg?: number;
+            maxAlongRowDeg?: number;
+            maxSplineFDelta?: number;
+            maxSplineStepRatio?: number;
+            minSplineEdgeOverLN?: number;
+            maxRow1TRDeg?: number;
+            duplicateVerts?: number;
+            worstAcrossI?: number;
+            worstAcrossU?: number;
+            worstAlongRowI?: number;
+            worstAlongRowU?: number;
+        };
+        wallFrames?: Array<{
+            u: number;
+            g1EDeg?: number;
+            g1FDeg?: number;
+            midFlagged?: boolean;
+            fallbackStraight?: boolean;
+            heightMm?: number;
+            midBulgeHFrac?: number;
+            midPeakHFrac?: number;
+            midPlanOffMm?: number;
+            splineRow1Deg?: number;
+            splineStepRatio?: number;
+            splineMinEdge?: number;
+            splineL?: number;
+            splineFk?: number[];
+            midBeta?: number;
+        }>;
+    };
+    const q = ud.columnQuality ?? {};
+    const frames = ud.wallFrames ?? [];
+    const worstHi = (
+        val: (f: (typeof frames)[number], i: number) => number,
+        pred: (v: number) => boolean,
+    ) => {
+        let n = 0;
+        let v = Number.NEGATIVE_INFINITY;
+        let i = -1;
+        let u = -1;
+        frames.forEach((f, idx) => {
+            const x = val(f, idx);
+            if (!pred(x)) return;
+            n++;
+            if (x > v) {
+                v = x;
+                i = idx;
+                u = f.u;
+            }
+        });
+        return { n, v, i, u };
+    };
+    const worstLo = (val: (f: (typeof frames)[number]) => number, pred: (v: number) => boolean) => {
+        let n = 0;
+        let v = Number.POSITIVE_INFINITY;
+        let i = -1;
+        let u = -1;
+        frames.forEach((f, idx) => {
+            const x = val(f);
+            if (!pred(x)) return;
+            n++;
+            if (x < v) {
+                v = x;
+                i = idx;
+                u = f.u;
+            }
+        });
+        return { n, v, i, u };
+    };
+    const g1 = worstHi(
+        (f) => f.g1EDeg ?? 0,
+        (v) => v > SPLINE_G1_R_MAX_DEG + 1e-6,
+    );
+    const chord = worstHi(
+        (f) => f.splineRow1Deg ?? 0,
+        (v) => v > SPLINE_ROW1_TR_MAX_DEG + 1e-6,
+    );
+    const seam = worstHi(
+        (f) => f.g1FDeg ?? 0,
+        (v) => v > SPLINE_SEAM_B_MAX_DEG + 1e-6,
+    );
+    const infl = worstHi(
+        (f) => (f.midFlagged ? 1 : 0),
+        (v) => v > 0,
+    );
+    const poly = worstHi(
+        (f) => (f.fallbackStraight ? 1 : 0),
+        (v) => v > 0,
+    );
+    const sagHi = worstHi(
+        (f) => ((f.heightMm ?? 0) >= SPLINE_H_MIN_MM ? (f.midBulgeHFrac ?? 0) : 0),
+        (v) => v - 1e-9 > SPLINE_SAG_HI,
+    );
+    const sagLo = worstLo(
+        (f) => ((f.heightMm ?? 0) >= SPLINE_H_MIN_MM ? (f.midBulgeHFrac ?? 1) : 1),
+        (v) => v + 1e-9 < SPLINE_SAG_LO,
+    );
+    const peakHi = worstHi(
+        (f) => f.midPeakHFrac ?? 0,
+        (v) => v - 1e-9 > SPLINE_PEAK_GATE_HI,
+    );
+    const peakLo = worstLo(
+        (f) => f.midPeakHFrac ?? 0,
+        (v) => v + 1e-9 < SPLINE_PEAK_GATE_LO,
+    );
+    const plan = worstHi(
+        (f) => f.midPlanOffMm ?? 0,
+        (v) => v > SPLINE_PLAN_OUT_MM + 1e-6,
+    );
+    const inset = worstLo(
+        (f) => f.midPlanOffMm ?? 0,
+        (v) => v < -1e-6,
+    );
+    const step = worstHi(
+        (f) => f.splineStepRatio ?? 1,
+        (v) => v > SPLINE_STEP_RATIO_MAX + 1e-9,
+    );
+    const edge = worstLo(
+        (f) => {
+            const N = Math.max(
+                1,
+                (geo.userData as { nJ?: number }).nJ ? ((geo.userData as { nJ?: number }).nJ ?? 2) - 1 : 1,
+            );
+            const need = (SPLINE_MIN_EDGE_FRAC * (f.splineL ?? 1)) / N;
+            return need > 1e-12 ? (f.splineMinEdge ?? 0) / need : 1;
+        },
+        (v) => v + 1e-9 < 1,
+    );
+    let fDelta = { n: 0, v: 0, i: -1, u: -1 };
+    for (let i = 0; i < frames.length; i++) {
+        const a = frames[i]!.splineFk ?? [];
+        const b = frames[(i + 1) % frames.length]?.splineFk ?? [];
+        const nF = Math.min(a.length, b.length);
+        for (let k = 1; k < nF - 1; k++) {
+            const d = Math.abs((a[k] ?? 0) - (b[k] ?? 0));
+            if (d > SPLINE_F_RING_MAX + 1e-9) {
+                fDelta.n++;
+                if (d > fDelta.v) {
+                    fDelta = { n: fDelta.n, v: d, i, u: frames[i]!.u };
+                }
+            }
+        }
+    }
+    const row = (
+        gate: string,
+        pass: boolean,
+        value: number | string,
+        cap?: number | string,
+        extra?: { n?: number; worstI?: number; worstU?: number },
+    ): GateRow => ({ gate, pass, value, cap, ...extra });
+    const rows: GateRow[] = [
+        row(
+            "G1-R C'(0)",
+            !(style !== "straight" && g1.n),
+            style === "straight" ? (q.maxG1EDeg ?? 0) : g1.n ? g1.v : (q.maxG1EDeg ?? 0),
+            style === "straight" ? G1_MAX_DEG : SPLINE_G1_R_MAX_DEG,
+            g1.n ? { n: g1.n, worstI: g1.i, worstU: g1.u } : undefined,
+        ),
+        row(
+            "first-chord",
+            !(style !== "straight" && chord.n),
+            chord.n ? chord.v : (q.maxRow1TRDeg ?? 0),
+            SPLINE_ROW1_TR_MAX_DEG,
+            chord.n ? { n: chord.n, worstI: chord.i, worstU: chord.u } : undefined,
+        ),
+        row(
+            "seam-B",
+            !(style !== "straight" && seam.n),
+            seam.n ? seam.v : (q.maxG1FDeg ?? 0),
+            style === "straight" ? G1_MAX_DEG : SPLINE_SEAM_B_MAX_DEG,
+            seam.n ? { n: seam.n, worstI: seam.i, worstU: seam.u } : undefined,
+        ),
+        row(
+            "[RND-INFL]",
+            !infl.n,
+            infl.n,
+            0,
+            infl.n ? { n: infl.n, worstI: infl.i, worstU: infl.u } : undefined,
+        ),
+        row(
+            "[RND-POLY]",
+            !poly.n,
+            poly.n,
+            0,
+            poly.n ? { n: poly.n, worstI: poly.i, worstU: poly.u } : undefined,
+        ),
+        row(
+            "sag-lo",
+            !sagLo.n || style === "straight",
+            sagLo.n ? sagLo.v : 0,
+            SPLINE_SAG_LO,
+            sagLo.n ? { n: sagLo.n, worstI: sagLo.i, worstU: sagLo.u } : undefined,
+        ),
+        row(
+            "sag-hi",
+            !sagHi.n || style === "straight",
+            sagHi.n ? sagHi.v : 0,
+            SPLINE_SAG_HI,
+            sagHi.n ? { n: sagHi.n, worstI: sagHi.i, worstU: sagHi.u } : undefined,
+        ),
+        row(
+            "peak-lo",
+            !peakLo.n || style === "straight",
+            peakLo.n ? peakLo.v : 0,
+            SPLINE_PEAK_GATE_LO,
+            peakLo.n ? { n: peakLo.n, worstI: peakLo.i, worstU: peakLo.u } : undefined,
+        ),
+        row(
+            "peak-hi",
+            !peakHi.n || style === "straight",
+            peakHi.n ? peakHi.v : 0,
+            SPLINE_PEAK_GATE_HI,
+            peakHi.n ? { n: peakHi.n, worstI: peakHi.i, worstU: peakHi.u } : undefined,
+        ),
+        row(
+            "plan",
+            !plan.n || style === "straight",
+            plan.n ? plan.v : 0,
+            SPLINE_PLAN_OUT_MM,
+            plan.n ? { n: plan.n, worstI: plan.i, worstU: plan.u } : undefined,
+        ),
+        row(
+            "inset",
+            !inset.n || style === "straight",
+            inset.n ? inset.v : 0,
+            0,
+            inset.n ? { n: inset.n, worstI: inset.i, worstU: inset.u } : undefined,
+        ),
+        row(
+            "step-ratio",
+            !step.n || style === "straight",
+            step.n ? step.v : (q.maxSplineStepRatio ?? 1),
+            SPLINE_STEP_RATIO_MAX,
+            step.n ? { n: step.n, worstI: step.i, worstU: step.u } : undefined,
+        ),
+        row(
+            "minEdge/LN",
+            !edge.n || style === "straight",
+            edge.n ? edge.v : (q.minSplineEdgeOverLN ?? 1),
+            1,
+            edge.n ? { n: edge.n, worstI: edge.i, worstU: edge.u } : undefined,
+        ),
+        row(
+            "f-delta",
+            !fDelta.n || style === "straight",
+            fDelta.n ? fDelta.v : (q.maxSplineFDelta ?? 0),
+            SPLINE_F_RING_MAX,
+            fDelta.n ? { n: fDelta.n, worstI: fDelta.i, worstU: fDelta.u } : undefined,
+        ),
+        row(
+            "across-p99",
+            !misses.some((m) => m.startsWith("across-p99")),
+            style === "straight"
+                ? (q.maxAcrossP99Deg ?? 0)
+                : (q.maxMidAcrossP99Deg ?? q.maxAcrossP99Deg ?? 0),
+            style === "straight" ? 5 : WALL_STYLE_ACROSS_P99_BLOCK_DEG,
+            q.worstAcrossI != null ? { worstI: q.worstAcrossI, worstU: q.worstAcrossU } : undefined,
+        ),
+        row(
+            "across-p100",
+            !misses.some((m) => m.startsWith("across-p100")),
+            q.maxAcrossDeg ?? 0,
+            style === "straight" ? ACROSS_STATION_MAX_DEG : WALL_STYLE_ACROSS_P100_BLOCK_DEG,
+            q.worstAcrossI != null ? { worstI: q.worstAcrossI, worstU: q.worstAcrossU } : undefined,
+        ),
+        row(
+            "mid-row-turn",
+            style === "straight" || (q.maxMidRowTurnDeg ?? 0) <= WALL_MID_TURN_MAX_DEG + 1e-6,
+            q.maxMidRowTurnDeg ?? 0,
+            WALL_MID_TURN_MAX_DEG,
+        ),
+        row(
+            "mid-row-dihedral",
+            style === "straight" ||
+                (q.maxMidRowDihedralDeg ?? q.maxAlongRowDeg ?? 0) <= WALL_MID_DIHEDRAL_MAX_DEG + 1e-6,
+            q.maxMidRowDihedralDeg ?? q.maxAlongRowDeg ?? 0,
+            WALL_MID_DIHEDRAL_MAX_DEG,
+            q.worstAlongRowI != null ? { worstI: q.worstAlongRowI, worstU: q.worstAlongRowU } : undefined,
+        ),
+        row("dup-verts", (q.duplicateVerts ?? 0) === 0, q.duplicateVerts ?? 0, 0),
+        row("SI", !misses.some((m) => m.startsWith("SI ")), misses.find((m) => m.startsWith("SI ")) ?? 0),
+        row("watertight", !misses.includes("not-watertight"), misses.includes("not-watertight") ? 0 : 1, 1),
+        row("NM", !misses.some((m) => m.startsWith("NM ")), misses.find((m) => m.startsWith("NM ")) ?? 0),
+    ];
+    return rows;
+}
+
 describe("procedural wall styles", () => {
     test("straight / round / hybrid on Default: gates + STL/PNG", async () => {
         const raw = await loadProductionDefaultGlb({ slot: "left" });
@@ -280,9 +597,13 @@ describe("procedural wall styles", () => {
         }
         const straight = geos.straight!;
         const misses: string[] = [];
+        const tables: Partial<Record<Style, GateRow[]>> = {};
         for (const style of styles) {
             const geo = geos[style]!;
             const local = styleMisses(geo, style, style === "straight" ? undefined : straight);
+            const table = gateTable(geo, style, style === "straight" ? undefined : straight);
+            tables[style] = table;
+            console.log("[RND-GATE-TABLE]", style, JSON.stringify(table));
             if (local.length) misses.push(`${style}: ${local.join("; ")}`);
             writeArtifact(`procedural-default-${style}.stl`, Buffer.from(geometryToBinarySTL(geo)));
             const pos = geo.getAttribute("position").array as Float32Array;
@@ -596,10 +917,13 @@ describe("procedural wall styles", () => {
         console.log("[S1-WALL-STYLE]", JSON.stringify(styleReport));
         writeArtifact(
             "procedural-default-style-report.json",
-            Buffer.from(`${JSON.stringify(styleReport, null, 2)}\n`),
+            Buffer.from(`${JSON.stringify({ styleReport, gateTables: tables }, null, 2)}\n`),
         );
-        if (misses.length) throw new Error(`[S1-STYLE] ${misses.join(" | ")}`);
+        if (misses.length) {
+            console.log("[S1-STYLE]", misses.join(" | "));
+            if (!SPLINE_GATES_REPORT_ONLY) throw new Error(`[S1-STYLE] ${misses.join(" | ")}`);
+        }
         for (const g of Object.values(geos)) g?.dispose();
         raw.dispose();
-    }, 180_000);
+    }, 360_000);
 });

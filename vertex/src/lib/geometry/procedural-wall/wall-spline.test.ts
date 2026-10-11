@@ -4,8 +4,10 @@
 import { describe, expect, test } from "@rstest/core";
 import {
     buildSplineDensityTable,
+    denseCPrime0,
     enforceMonotoneF,
     evalClampedCubic,
+    g1CPrime0Deg,
     invertDensityW,
     printSplineGates,
     SPLINE_KNOTS,
@@ -75,6 +77,9 @@ describe("clamped cubic wall spline", () => {
         const e = { x: P[1]!.x - P[0]!.x, y: P[1]!.y - P[0]!.y, z: P[1]!.z - P[0]!.z };
         const den = Math.hypot(d.x, d.y, d.z) * Math.hypot(e.x, e.y, e.z) || 1;
         expect((d.x * e.x + d.y * e.y + d.z * e.z) / den).toBeGreaterThan(0.99);
+        const c0 = denseCPrime0(P);
+        expect(c0.x * e.x + c0.y * e.y + c0.z * e.z).toBeGreaterThan(0);
+        expect(g1CPrime0Deg(P, { x: -1, y: 0, z: -1 }, { x: 1, y: 0 })).toBeLessThan(1);
     });
 
     test("corner-cut box expected: H12/Ls2 15% and H8 20%", () => {

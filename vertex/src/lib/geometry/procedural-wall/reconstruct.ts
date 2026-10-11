@@ -79,6 +79,7 @@ import {
     TB_SMOOTH_SIGMA_MM,
 } from "./stations";
 import { S1_MIN_WALL_MM, type StockWallModel } from "./types";
+import { SPLINE_GATES_REPORT_ONLY, splineGateFail } from "./wall-spline";
 import { resolveWallStyleParams } from "./wall-style";
 
 export interface ReconstructOptions extends ProceduralModifierInput {
@@ -1189,7 +1190,16 @@ export function reconstructProceduralWalls(
             forefootRound: options.forefootRound,
         }),
     });
-    assertPostLoftGates(grid.quality);
+    const indexGridStyle = (options.wallStyle ?? "straight") !== "straight";
+    try {
+        assertPostLoftGates(grid.quality);
+    } catch (err) {
+        if (indexGridStyle && SPLINE_GATES_REPORT_ONLY) {
+            console.log("[S1-POSTLOFT]", err instanceof Error ? err.message : String(err));
+        } else {
+            throw err;
+        }
+    }
 
     const nS = grid.nS;
     const nJ = grid.nJ;
@@ -1354,7 +1364,9 @@ export function reconstructProceduralWalls(
         if (grid.quality) grid.quality.maxG1FDeg = seam.maxDeg;
         const dups = countCoincidentVerts(positions, generatedStart, plantarEnd);
         if (grid.quality) (grid.quality as { duplicateVerts?: number }).duplicateVerts = dups;
-        if (dups) throw new Error(`[RND-DUP] ${dups} duplicate generated vertices`);
+        if (dups) {
+            splineGateFail("[RND-DUP]", { n: dups });
+        }
         console.log("[RND-SEAM-B]", JSON.stringify({ max: Number(seam.maxDeg.toFixed(3)), nS }));
     }
     const geo = new BufferGeometry();

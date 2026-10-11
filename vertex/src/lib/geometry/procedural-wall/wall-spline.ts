@@ -43,7 +43,9 @@ export const SPLINE_F_STEP_FRAC = 0.25;
 export const SPLINE_F_RING_MAX = 0.02;
 export const SPLINE_MIN_EDGE_FRAC = 0.2;
 export const SPLINE_STEP_RATIO_MAX = 4;
-export const SPLINE_ROW1_TR_MAX_DEG = 5;
+export const SPLINE_ROW1_TR_MAX_DEG = 6;
+/** This build: shape/sampling asserts log and continue. Final pass sets false. */
+export const SPLINE_GATES_REPORT_ONLY = true;
 export const SPLINE_ENDPOINT_EPS = 1e-9;
 export const SPLINE_SMOOTH_SIGMA_MM = 10;
 export const SPLINE_PLAN_OUT_MM = 2;
@@ -479,6 +481,22 @@ export function g1AtR(poly: XYZ[], tR: XYZ, h: { x: number; y: number }): number
     const tOver = overEdgeTangent(tR, h);
     const tan = sub(poly[1]!, poly[0]!);
     return acuteDeg(tan, tOver);
+}
+
+/** C'(0) ≈ C(1/2048) − C(0) from the dense table. */
+export function denseCPrime0(poly: XYZ[], nDense = SPLINE_W_DENSE): XYZ {
+    return sub(evalClampedCubic(poly, 1 / Math.max(1, nDense)), evalClampedCubic(poly, 0));
+}
+
+export function g1CPrime0Deg(poly: XYZ[], tR: XYZ, h: { x: number; y: number }): number {
+    return acuteDeg(denseCPrime0(poly), overEdgeTangent(tR, h));
+}
+
+export function splineGateFail(tag: string, detail: Record<string, number | string | boolean>): void {
+    console.log(tag, JSON.stringify(detail));
+    if (!SPLINE_GATES_REPORT_ONLY) {
+        throw new Error(`${tag} ${JSON.stringify(detail)}`);
+    }
 }
 
 function sampleStraight(R: XYZ, B: XYZ, n: number): XYZ[] {

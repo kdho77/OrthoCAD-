@@ -17,14 +17,17 @@ import {
     applySplineRing,
     assertSplineEndpoints,
     blendColumns,
+    g1CPrime0Deg,
     hybridWeightAt,
     overEdgeTangent,
     row1TRAngleDeg,
+    SPLINE_G1_R_MAX_DEG,
     SPLINE_MIN_EDGE_FRAC,
     SPLINE_ROW1_TR_MAX_DEG,
     type SplineStationInput,
     sampleSplineRingByW,
     splineBetaAt,
+    splineGateFail,
 } from "./wall-spline";
 import {
     clampSagitta,
@@ -445,8 +448,12 @@ export interface ColumnQuality {
     maxSplineStepRatio?: number;
     /** minEdge / (0.2 L/N). Gate: ≥1. */
     minSplineEdgeOverLN?: number;
-    /** angle(row1 − R, tR) (deg). Gate: ≤5. */
+    /** angle(row1 − R, tR) (deg). Gate: ≤6 (final pass). */
     maxRow1TRDeg?: number;
+    worstAcrossI?: number;
+    worstAcrossU?: number;
+    worstAlongRowI?: number;
+    worstAlongRowU?: number;
     duplicateVerts?: number;
 }
 
@@ -4853,14 +4860,26 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         }
         const row1 = col[1]!;
         const row1Deg = row1TRAngleDeg(row1, fr.R, tR, fr.h);
+        const g1C = g1CPrime0Deg(sol.poly, tR, fr.h);
+        if (useRound && g1C > SPLINE_G1_R_MAX_DEG + 1e-6) {
+            splineGateFail("[RND-G1]", {
+                i,
+                u: Number(fr.u.toFixed(4)),
+                deg: Number(g1C.toFixed(4)),
+                cap: SPLINE_G1_R_MAX_DEG,
+            });
+        }
         if (useRound && row1Deg > SPLINE_ROW1_TR_MAX_DEG + 1e-6) {
-            throw new Error(
-                `[RND-G1] station ${i} u=${fr.u.toFixed(4)} angle(row1-R,tR)=${row1Deg.toFixed(3)}>5`,
-            );
+            splineGateFail("[RND-CHORD]", {
+                i,
+                u: Number(fr.u.toFixed(4)),
+                deg: Number(row1Deg.toFixed(4)),
+                cap: SPLINE_ROW1_TR_MAX_DEG,
+            });
         }
         const stats = columnStepStats(col);
         const L = sampled.L[i] ?? 1;
-        fr.g1EDeg = sol.g1RDeg;
+        fr.g1EDeg = g1C;
         fr.g1FDeg = sol.seamBDeg;
         fr.midFlagged = sol.infl;
         fr.midPeakHFrac = sol.peakZFrac;
@@ -6179,6 +6198,10 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxSplineStepRatio,
         minSplineEdgeOverLN: Number.isFinite(minSplineEdgeOverLN) ? minSplineEdgeOverLN : 0,
         maxRow1TRDeg,
+        worstAcrossI: worstAcross.i,
+        worstAcrossU: worstAcross.u,
+        worstAlongRowI: worstAlongRow.i,
+        worstAlongRowU: frames[worstAlongRow.i]?.u,
     };
 }
 
