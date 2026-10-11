@@ -30,4 +30,37 @@ describe("generated plantar quad grid", () => {
         expect(junct[0]?.planeN.z).toBeLessThan(0);
         expect(Math.abs(((junct[0]?.slopeRad ?? 0) * 180) / Math.PI)).toBeGreaterThan(90);
     });
+
+    test("edgePlaneN is the top face sharing the rim edge", () => {
+        const pos = [0, 0, 2, 2, 0, 2, 1, 1, 2.5, 0, 2, 2];
+        const indices = [0, 1, 2, 0, 3, 1];
+        const junct = rimJunctions(
+            pos,
+            indices,
+            [0, 1],
+            [
+                { x: 0, y: -1 },
+                { x: 0, y: -1 },
+            ],
+            0,
+        );
+        const n = junct[0]?.edgePlaneN;
+        expect(n).toBeDefined();
+        if (!n) return;
+        const len = Math.hypot(n.x, n.y, n.z);
+        expect(len).toBeCloseTo(1, 6);
+        const ax = 2;
+        const ay = 0;
+        const az = 0;
+        const bx = 1;
+        const by = 1;
+        const bz = 0.5;
+        const fx = ay * bz - az * by;
+        const fy = az * bx - ax * bz;
+        const fz = ax * by - ay * bx;
+        const fl = Math.hypot(fx, fy, fz) || 1;
+        const want = { x: fx / fl, y: fy / fl, z: fz / fl };
+        const dot = Math.abs(n.x * want.x + n.y * want.y + n.z * want.z);
+        expect(dot).toBeGreaterThan(0.999);
+    });
 });

@@ -3,6 +3,9 @@
 
 import { describe, expect, test } from "@rstest/core";
 import {
+    analyticG1BDeg,
+    analyticG1EDeg,
+    analyticG1RDeg,
     assertInversionOk,
     buildJointFromTheta,
     buildPolylineDensityTable,
@@ -27,6 +30,7 @@ import {
     RND_E_ANG_MAX_DEG,
     RND_E_POS_EPS,
     SPLINE_CHORD_MIN_MM,
+    SPLINE_G1_ANALYTIC_MAX_DEG,
     SPLINE_GATES_REPORT_ONLY,
     SPLINE_INFL_TURN_MIN_DEG,
     SPLINE_KNOTS,
@@ -35,11 +39,15 @@ import {
     SPLINE_LIP_MS_SLACK_MM,
     SPLINE_LIP_S_SLACK_MM,
     SPLINE_N_MAX,
+    SPLINE_SHORT_LS_CROSS_MM,
     SPLINE_SHORT_LS_MM,
+    SPLINE_SHORT_RAMP_LB_MM,
+    SPLINE_WR_STEP_MAX,
     type SplineStationInput,
     samplePolylineAtArcFractions,
     samplePolylinesByW,
     sampleSplineRingByW,
+    shortLsWeights,
     signedTurnSz,
     solveLipParabolaJoint,
     solveSplineStation,
@@ -444,6 +452,36 @@ describe("quadratic wall parabola", () => {
         expect(pts[0]!.z).toBeCloseTo(10, 9);
         expect(pts[2]!.z).toBeCloseTo(0, 9);
         expect(pts.length).toBe(3);
+    });
+
+    test("analytic G1-R/E/B are ~0 when the joint uses tR_face", () => {
+        const tR = { s: -1, z: 0 };
+        const joint = buildJointFromTheta(tR, 12, 10, 0.5, Math.PI / 2, 0.5);
+        expect(analyticG1RDeg(tR, joint.tR)).toBeLessThan(SPLINE_G1_ANALYTIC_MAX_DEG);
+        expect(analyticG1EDeg(joint)).toBeLessThan(SPLINE_G1_ANALYTIC_MAX_DEG);
+        expect(analyticG1BDeg(joint, { s: 1, z: 0 })).toBeLessThan(SPLINE_G1_ANALYTIC_MAX_DEG);
+        expect(analyticG1RDeg({ s: -Math.SQRT1_2, z: -Math.SQRT1_2 }, joint.tR)).toBeGreaterThan(40);
+    });
+
+    test("short-Ls ROUND ramp is a 30 mm smoothstep around Ls=3, |dw|<=0.08", () => {
+        const n = 240;
+        const period = 240;
+        const arc = Array.from({ length: n }, (_, i) => (i * period) / n);
+        const Ls = arc.map((s) => {
+            const d = Math.min(s, period - s);
+            return d < 20 ? 1.2 : 8;
+        });
+        const w = shortLsWeights(Ls, arc, period);
+        expect(w.length).toBe(n);
+        expect(Math.max(...w)).toBeGreaterThan(0.95);
+        expect(Math.min(...w)).toBeLessThan(0.05);
+        let maxDw = 0;
+        for (let i = 0; i < n; i++) {
+            maxDw = Math.max(maxDw, Math.abs((w[(i + 1) % n] ?? 0) - (w[i] ?? 0)));
+        }
+        expect(maxDw).toBeLessThanOrEqual(SPLINE_WR_STEP_MAX + 1e-9);
+        expect(SPLINE_SHORT_RAMP_LB_MM).toBe(30);
+        expect(SPLINE_SHORT_LS_CROSS_MM).toBe(3);
     });
 
     test("inactive station skips spline evaluation", () => {

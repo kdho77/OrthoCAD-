@@ -85,6 +85,8 @@ export interface QuadGrid {
 export interface RimJunction {
     /** Upward TopSheet plane normal at the rim vertex. */
     planeN: { x: number; y: number; z: number };
+    /** Normal of the unique top face sharing rim edge (vi, vi+1). */
+    edgePlaneN: { x: number; y: number; z: number };
     /** Rim slope from horizontal in the outboard direction (rad). */
     slopeRad: number;
     /** Start tangent in (outboard n, z): rotated down by slope+5°. */
@@ -176,8 +178,36 @@ export function rimJunctions(
         const ns = nx * ox + ny * oy;
         const slopeRad = Math.atan2(ns, nz);
         const alpha = slopeRad + (TOP_CLEARANCE_DEG * Math.PI) / 180;
+        const vj = rim[(si + 1) % rim.length]!;
+        let edgeN = { x: nx, y: ny, z: nz };
+        if (vi !== vj) {
+            for (const f of vfaces.get(vi) ?? []) {
+                const ia = indices[f]!;
+                const ib = indices[f + 1]!;
+                const ic = indices[f + 2]!;
+                const hasI = ia === vi || ib === vi || ic === vi;
+                const hasJ = ia === vj || ib === vj || ic === vj;
+                if (!hasI || !hasJ) continue;
+                const ax = pos[ia * 3]!;
+                const ay = pos[ia * 3 + 1]!;
+                const az = pos[ia * 3 + 2]!;
+                const ux = pos[ib * 3]! - ax;
+                const uy = pos[ib * 3 + 1]! - ay;
+                const uz = pos[ib * 3 + 2]! - az;
+                const vx = pos[ic * 3]! - ax;
+                const vy = pos[ic * 3 + 1]! - ay;
+                const vz = pos[ic * 3 + 2]! - az;
+                const fx = uy * vz - uz * vy;
+                const fy = uz * vx - ux * vz;
+                const fz = ux * vy - uy * vx;
+                const fl = Math.hypot(fx, fy, fz) || 1;
+                edgeN = { x: fx / fl, y: fy / fl, z: fz / fl };
+                break;
+            }
+        }
         return {
             planeN: { x: nx, y: ny, z: nz },
+            edgePlaneN: edgeN,
             slopeRad,
             tStart: { n: Math.cos(alpha), z: -Math.sin(alpha) },
         };

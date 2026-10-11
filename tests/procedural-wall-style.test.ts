@@ -20,6 +20,8 @@ import {
     SPLINE_CHORD_MIN_MM,
     SPLINE_F_RING_MAX,
     SPLINE_FACE_DOT_MIN,
+    SPLINE_G1_ANALYTIC_MAX_DEG,
+    SPLINE_G1_MESH_MAX_DEG,
     SPLINE_G1_R_MAX_DEG,
     SPLINE_GATES_REPORT_ONLY,
     SPLINE_H_MIN_MM,
@@ -149,6 +151,11 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             worstAlongRowU?: number;
             maxWRStep?: number;
             maxHybridW?: number;
+            maxG1RAnalyticDeg?: number;
+            maxG1EAnalyticDeg?: number;
+            maxG1BAnalyticDeg?: number;
+            maxG1RMeshDeg?: number;
+            i0Dump?: unknown;
         };
         wallFrames?: Array<{
             u: number;
@@ -178,6 +185,10 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             inflCount?: number;
             maxOppTurnDeg?: number;
             splineG1EDeg?: number;
+            splineG1RAnalyticDeg?: number;
+            splineG1EAnalyticDeg?: number;
+            splineG1BAnalyticDeg?: number;
+            splineG1RMeshDeg?: number;
             splineLambda?: number;
             splineLipTurnDeg?: number;
             splineTRS?: number;
@@ -204,9 +215,14 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
     };
     const q = ud.columnQuality ?? {};
     const misses: string[] = [];
-    const g1ECap = style === "straight" ? G1_MAX_DEG : SPLINE_G1_R_MAX_DEG;
+    const g1ECap = style === "straight" ? G1_MAX_DEG : SPLINE_G1_MESH_MAX_DEG;
     const g1FCap = style === "straight" ? G1_MAX_DEG : SPLINE_G1_R_MAX_DEG;
-    if ((q.maxG1EDeg ?? 0) > g1ECap + 1e-6) misses.push(`G1-R ${q.maxG1EDeg?.toFixed(2)}>${g1ECap}`);
+    if (style === "straight" && (q.maxG1EDeg ?? 0) > g1ECap + 1e-6) {
+        misses.push(`G1-R ${q.maxG1EDeg?.toFixed(2)}>${g1ECap}`);
+    }
+    if (style !== "straight" && (q.maxG1RMeshDeg ?? 0) > SPLINE_G1_MESH_MAX_DEG + 1e-6) {
+        misses.push(`G1-R_m ${q.maxG1RMeshDeg?.toFixed(2)}>${SPLINE_G1_MESH_MAX_DEG}`);
+    }
     if ((q.maxG1FDeg ?? 0) > g1FCap + 1e-6) misses.push(`seam-B ${q.maxG1FDeg?.toFixed(2)}>${g1FCap}`);
     const acrossP99 =
         style === "straight" ? (q.maxAcrossP99Deg ?? 0) : (q.maxMidAcrossP99Deg ?? q.maxAcrossP99Deg ?? 0);
@@ -290,17 +306,27 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             return body || lip;
         });
         if (sMinHits.length) misses.push(`sMin ${sMinHits.length} <${SPLINE_S_MIN_MM}`);
-        const g1Hits = frames.filter((f) => (f.g1EDeg ?? 0) > SPLINE_G1_R_MAX_DEG + 1e-6);
-        if (g1Hits.length) {
-            misses.push(`G1-R ${g1Hits.length} >${SPLINE_G1_R_MAX_DEG}`);
+        const g1RaHits = frames.filter(
+            (f) => (f.splineG1RAnalyticDeg ?? 0) > SPLINE_G1_ANALYTIC_MAX_DEG + 1e-6,
+        );
+        if (g1RaHits.length) {
+            misses.push(`G1-R_a ${g1RaHits.length} >${SPLINE_G1_ANALYTIC_MAX_DEG}`);
         }
-        const seamHits = frames.filter((f) => (f.g1FDeg ?? 0) > SPLINE_G1_R_MAX_DEG + 1e-6);
-        if (seamHits.length) {
-            misses.push(`G1-B ${seamHits.length} >${SPLINE_G1_R_MAX_DEG}`);
+        const g1EaHits = frames.filter(
+            (f) => (f.splineG1EAnalyticDeg ?? 0) > SPLINE_G1_ANALYTIC_MAX_DEG + 1e-6,
+        );
+        if (g1EaHits.length) {
+            misses.push(`G1-E_a ${g1EaHits.length} >${SPLINE_G1_ANALYTIC_MAX_DEG}`);
         }
-        const g1EHits = frames.filter((f) => (f.splineG1EDeg ?? 0) > SPLINE_G1_R_MAX_DEG + 1e-6);
-        if (g1EHits.length) {
-            misses.push(`G1-E ${g1EHits.length} >${SPLINE_G1_R_MAX_DEG}`);
+        const g1BaHits = frames.filter(
+            (f) => (f.splineG1BAnalyticDeg ?? 0) > SPLINE_G1_ANALYTIC_MAX_DEG + 1e-6,
+        );
+        if (g1BaHits.length) {
+            misses.push(`G1-B_a ${g1BaHits.length} >${SPLINE_G1_ANALYTIC_MAX_DEG}`);
+        }
+        const g1RmHits = frames.filter((f) => (f.splineG1RMeshDeg ?? 0) > SPLINE_G1_MESH_MAX_DEG + 1e-6);
+        if (g1RmHits.length) {
+            misses.push(`G1-R_m ${g1RmHits.length} >${SPLINE_G1_MESH_MAX_DEG}`);
         }
     }
     if (style === "hybrid" && frames.length) {
@@ -364,6 +390,10 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             worstMidRowTurnK?: number;
             worstMidRowTurnU?: number;
             nLipFail?: number;
+            maxG1RAnalyticDeg?: number;
+            maxG1EAnalyticDeg?: number;
+            maxG1BAnalyticDeg?: number;
+            maxG1RMeshDeg?: number;
         };
         wallFrames?: Array<{
             u: number;
@@ -397,6 +427,10 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             splineLipTurnK?: number;
             splineG1EDeg?: number;
             splineG1BDeg?: number;
+            splineG1RAnalyticDeg?: number;
+            splineG1EAnalyticDeg?: number;
+            splineG1BAnalyticDeg?: number;
+            splineG1RMeshDeg?: number;
             maxOppTurnDeg?: number;
             splineSMinLip?: number;
             splineSMinBody?: number;
@@ -449,9 +483,9 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         });
         return { n, v, i, u };
     };
-    const g1 = worstHi(
-        (f) => f.g1EDeg ?? 0,
-        (v) => v > SPLINE_G1_R_MAX_DEG + 1e-6,
+    const g1Rm = worstHi(
+        (f) => f.splineG1RMeshDeg ?? 0,
+        (v) => v > SPLINE_G1_MESH_MAX_DEG + 1e-6,
     );
     const chord = worstHi(
         (f) => f.splineRow1Deg ?? 0,
@@ -459,10 +493,6 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
     );
     const seam = worstHi(
         (f) => f.g1FDeg ?? 0,
-        (v) => v > SPLINE_G1_R_MAX_DEG + 1e-6,
-    );
-    const g1EJoint = worstHi(
-        (f) => f.splineG1EDeg ?? 0,
         (v) => v > SPLINE_G1_R_MAX_DEG + 1e-6,
     );
     const infl = worstHi(
@@ -544,18 +574,11 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
     ): GateRow => ({ gate, pass, value, cap, ...extra });
     const rows: GateRow[] = [
         row(
-            "G1-R",
-            !(style !== "straight" && g1.n),
-            style === "straight" ? (q.maxG1EDeg ?? 0) : g1.n ? g1.v : (q.maxG1EDeg ?? 0),
-            style === "straight" ? G1_MAX_DEG : SPLINE_G1_R_MAX_DEG,
-            g1.n ? { n: g1.n, worstI: g1.i, worstU: g1.u } : undefined,
-        ),
-        row(
-            "G1-E",
-            !(style !== "straight" && g1EJoint.n),
-            g1EJoint.n ? g1EJoint.v : 0,
-            SPLINE_G1_R_MAX_DEG,
-            g1EJoint.n ? { n: g1EJoint.n, worstI: g1EJoint.i, worstU: g1EJoint.u } : undefined,
+            "G1-R_m",
+            style === "straight" || !g1Rm.n,
+            style === "straight" ? (q.maxG1EDeg ?? 0) : g1Rm.n ? g1Rm.v : (q.maxG1RMeshDeg ?? 0),
+            style === "straight" ? G1_MAX_DEG : SPLINE_G1_MESH_MAX_DEG,
+            g1Rm.n ? { n: g1Rm.n, worstI: g1Rm.i, worstU: g1Rm.u } : undefined,
         ),
         row(
             "first-chord",
@@ -746,6 +769,69 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
     return rows;
 }
 
+function analyticGateTable(geo: BufferGeometry, style: Style): GateRow[] {
+    const ud = geo.userData as {
+        columnQuality?: {
+            maxG1RAnalyticDeg?: number;
+            maxG1EAnalyticDeg?: number;
+            maxG1BAnalyticDeg?: number;
+        };
+        wallFrames?: Array<{
+            u: number;
+            splineG1RAnalyticDeg?: number;
+            splineG1EAnalyticDeg?: number;
+            splineG1BAnalyticDeg?: number;
+        }>;
+    };
+    const q = ud.columnQuality ?? {};
+    const frames = ud.wallFrames ?? [];
+    const worst = (val: (f: (typeof frames)[number]) => number) => {
+        let n = 0;
+        let v = Number.NEGATIVE_INFINITY;
+        let i = -1;
+        let u = -1;
+        frames.forEach((f, idx) => {
+            const x = val(f);
+            if (x <= SPLINE_G1_ANALYTIC_MAX_DEG + 1e-6) return;
+            n++;
+            if (x > v) {
+                v = x;
+                i = idx;
+                u = f.u;
+            }
+        });
+        return { n, v, i, u };
+    };
+    const row = (
+        gate: string,
+        hit: { n: number; v: number; i: number; u: number },
+        fallback: number,
+    ): GateRow => ({
+        gate,
+        pass: style === "straight" || !hit.n,
+        value: style === "straight" ? 0 : hit.n ? hit.v : fallback,
+        cap: SPLINE_G1_ANALYTIC_MAX_DEG,
+        ...(hit.n ? { n: hit.n, worstI: hit.i, worstU: hit.u } : {}),
+    });
+    return [
+        row(
+            "G1-R_a",
+            worst((f) => f.splineG1RAnalyticDeg ?? 0),
+            q.maxG1RAnalyticDeg ?? 0,
+        ),
+        row(
+            "G1-E_a",
+            worst((f) => f.splineG1EAnalyticDeg ?? 0),
+            q.maxG1EAnalyticDeg ?? 0,
+        ),
+        row(
+            "G1-B_a",
+            worst((f) => f.splineG1BAnalyticDeg ?? 0),
+            q.maxG1BAnalyticDeg ?? 0,
+        ),
+    ];
+}
+
 describe("procedural wall styles", () => {
     test("straight / round / hybrid on Default: gates + STL/PNG", async () => {
         const raw = await loadProductionDefaultGlb({ slot: "left" });
@@ -758,11 +844,19 @@ describe("procedural wall styles", () => {
         const straight = geos.straight!;
         const misses: string[] = [];
         const tables: Partial<Record<Style, GateRow[]>> = {};
+        const analyticTables: Partial<Record<Style, GateRow[]>> = {};
+        const meshTables: Partial<Record<Style, GateRow[]>> = {};
         for (const style of styles) {
             const geo = geos[style]!;
             const local = styleMisses(geo, style, style === "straight" ? undefined : straight);
-            const table = gateTable(geo, style, style === "straight" ? undefined : straight);
+            const analytic = analyticGateTable(geo, style);
+            const mesh = gateTable(geo, style, style === "straight" ? undefined : straight);
+            const table = [...analytic, ...mesh];
             tables[style] = table;
+            analyticTables[style] = analytic;
+            meshTables[style] = mesh;
+            console.log("[RND-ANALYTIC-TABLE]", style, JSON.stringify(analytic));
+            console.log("[RND-MESH-TABLE]", style, JSON.stringify(mesh));
             console.log("[RND-GATE-TABLE]", style, JSON.stringify(table));
             const missRows = table
                 .filter((r) => !r.pass && r.gate !== "kappa-ratio")
@@ -1282,6 +1376,14 @@ describe("procedural wall styles", () => {
             };
         });
         console.log("[S1-WALL-STYLE]", JSON.stringify(styleReport));
+        const i0Dump = styles.map((s) => ({
+            style: s,
+            dump:
+                (geos[s]!.userData as { columnQuality?: { i0Dump?: unknown } }).columnQuality?.i0Dump ??
+                (geos[s]!.userData as { wallFrames?: Array<{ i0Dump?: unknown }> }).wallFrames?.[0]?.i0Dump ??
+                null,
+        }));
+        console.log("[RND-I0-DUMP]", JSON.stringify(i0Dump));
         const rndDump = styles.map((s) => {
             const ud = geos[s]!.userData as {
                 rndIndex?: unknown;
@@ -1392,7 +1494,7 @@ describe("procedural wall styles", () => {
             writeArtifact(
                 "procedural-default-style-report.json",
                 Buffer.from(
-                    `${JSON.stringify({ styleReport, gateTables: tables, rndDump, stlGates, hard }, null, 2)}\n`,
+                    `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, hard, i0Dump }, null, 2)}\n`,
                 ),
             );
             throw new Error(`[STL-GATE] ${hard.join(" | ")}`);
@@ -1440,7 +1542,7 @@ describe("procedural wall styles", () => {
             writeArtifact(
                 "procedural-default-style-report.json",
                 Buffer.from(
-                    `${JSON.stringify({ styleReport, gateTables: tables, rndDump, stlGates, hard }, null, 2)}\n`,
+                    `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, hard, i0Dump }, null, 2)}\n`,
                 ),
             );
             throw new Error(`[STL-GATE] ${hard.join(" | ")}`);
@@ -1506,7 +1608,7 @@ describe("procedural wall styles", () => {
         writeArtifact(
             "procedural-default-style-report.json",
             Buffer.from(
-                `${JSON.stringify({ styleReport, gateTables: tables, rndDump, stlGates, jointReport }, null, 2)}\n`,
+                `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, jointReport, i0Dump }, null, 2)}\n`,
             ),
         );
         if (misses.length) {

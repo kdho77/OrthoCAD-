@@ -14,6 +14,9 @@ import {
 import { countColumnPlanReversals, type HermiteStation } from "./loft";
 import { countPlanViewChordCrossings, smoothAndCapFlare } from "./stations";
 import {
+    analyticG1BDeg,
+    analyticG1EDeg,
+    analyticG1RDeg,
     applySplineRing,
     assertInversionOk,
     blendColumnsSz,
@@ -23,13 +26,14 @@ import {
     columnRowTurns,
     columnZMonotone,
     curveSTFromPolyline,
-    g1AtE,
+    fromSz,
     type HybridArchInfo,
     hybridArchWeightAtS,
     invertDensityW,
     jointDensityTable,
     type LipParabolaJoint,
     liftLipParabola,
+    lipCPrimeSz,
     lipTurnTargetFromLambda,
     maxClosedStep,
     medialArchFromLoop,
@@ -40,6 +44,7 @@ import {
     nearestPointIndex,
     overEdgeTangent,
     periodicGaussian1d,
+    plantarDirInColumn,
     polylineInflReport,
     profileAreaBetween,
     quadSignedOnWall,
@@ -47,9 +52,11 @@ import {
     row1TRAngleDeg,
     SPLINE_CHORD_MIN_MM,
     SPLINE_FACE_DOT_MIN,
-    SPLINE_G1_R_MAX_DEG,
+    SPLINE_G1_ANALYTIC_MAX_DEG,
+    SPLINE_G1_MESH_MAX_DEG,
     SPLINE_INFL_TURN_MIN_DEG,
     SPLINE_LAMBDA,
+    SPLINE_LIP_ASPECT_MAX,
     SPLINE_LIP_S_SLACK_MM,
     SPLINE_LIP_TURN_ROWS,
     SPLINE_N_MAX,
@@ -68,6 +75,7 @@ import {
     splineRhoNeed,
     stationSampleNeed,
     stationSzFrame,
+    szToXyz,
     toSz,
     tRInSz,
     wallRowOutward,
@@ -102,6 +110,22 @@ import {
 export interface ColumnJunction {
     planeN: XYZ;
     slopeRad: number;
+    /** Top-face normal on rim edge (R_i, R_{i+1}). */
+    edgePlaneN?: XYZ;
+}
+
+export interface StationI0Dump {
+    R: XYZ;
+    tR_face: XYZ;
+    tR: XYZ;
+    Cprime0: XYZ;
+    theta: number;
+    E: XYZ;
+    tE: XYZ;
+    M: XYZ;
+    rows: XYZ[];
+    nTopFace: XYZ | null;
+    nWallFace: XYZ | null;
 }
 
 export const FRAME_SMOOTH_ITERS = 16;
@@ -314,6 +338,8 @@ export interface ColumnFrame {
     chordFloorReason?: "rows" | "chord";
     /** Incident-face start tangent at R (column plane). */
     tInc?: XYZ | null;
+    /** Normal of the top face sharing rim edge (R_i, R_{i+1}). */
+    rimEdgeN?: XYZ;
     /** Global locked steal (mm) so Fpiece stays a parallel of F. */
     filletStealLock?: number;
     /** Last constructed sweep; columnPoints samples this so the round stays on-plane. */
@@ -409,6 +435,11 @@ export interface ColumnFrame {
     splineLambda?: number;
     splineG1EDeg?: number;
     splineG1BDeg?: number;
+    splineG1RAnalyticDeg?: number;
+    splineG1EAnalyticDeg?: number;
+    splineG1BAnalyticDeg?: number;
+    splineG1RMeshDeg?: number;
+    i0Dump?: StationI0Dump;
     splineTRS?: number;
     splineTRZ?: number;
     splineLs?: number;
@@ -560,6 +591,11 @@ export interface ColumnQuality {
     faceFlips?: Array<{ i: number; k: number }>;
     sMinAll?: number;
     nLipFail?: number;
+    maxG1RAnalyticDeg?: number;
+    maxG1EAnalyticDeg?: number;
+    maxG1BAnalyticDeg?: number;
+    maxG1RMeshDeg?: number;
+    i0Dump?: StationI0Dump;
 }
 
 export interface BezierColumns {
@@ -4054,6 +4090,7 @@ export function initColumnFrames(
             plantarSlopeRad: plantar,
             nPlantar,
             sheetPlaneN: live.valid ? live.planeN : _junctions[i]?.planeN,
+            rimEdgeN: _junctions[i]?.edgePlaneN,
             tInc: live.tInc,
             rFillet: r,
             rTop,
@@ -4920,13 +4957,10 @@ function nLipFromFrames(frames: ColumnFrame[]): number {
     return Math.max(0, fr?.nLip ?? fr?.nRoundFix ?? fr?.roundRows ?? 0);
 }
 
-/** Incident top-sheet face tangent at R after modifiers; never the (−h, 0) default. */
+/** tR_face: incident top face on rim edge (R_i, R_{i+1}) ∩ column plane, over-edge. */
 function refreshIncidentTR(fr: ColumnFrame): XYZ {
-    const plane = fr.nTop ?? fr.nTopSmoothed ?? fr.sheetPlaneN;
-    const t =
-        (plane ? incidentFaceTangent(plane, fr.h) : null) ??
-        (fr.nTopSmoothed ? incidentFaceTangent(fr.nTopSmoothed, fr.h) : null) ??
-        (fr.sheetPlaneN ? incidentFaceTangent(fr.sheetPlaneN, fr.h) : null);
+    const plane = fr.rimEdgeN ?? fr.sheetPlaneN;
+    const t = plane ? incidentFaceTangent(plane, fr.h) : null;
     if (!t) {
         throw new Error(`[RND-E] ${JSON.stringify({ reason: "missing-tR", i: fr.stationIndex, u: fr.u })}`);
     }
@@ -5103,11 +5137,12 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     const nRound = fullRound.map((col, i) => {
         if (!active[i]) return 0;
         const st = curveSTFromPolyline(col);
-        return stationSampleNeed(st.S, st.T).n;
+        const lipS = (joints[i]?.r1 ?? 0) * Math.abs(joints[i]?.lipTurn ?? 0);
+        return stationSampleNeed(st.S, st.T, lipS).n;
     });
     const nStraightNeed = fullStraight.map((col) => {
         const st = curveSTFromPolyline(col);
-        return stationSampleNeed(st.S, st.T).n;
+        return stationSampleNeed(st.S, st.T, 0).n;
     });
     const nI = nRound.map((n, i) => Math.max(n, nStraightNeed[i] ?? 0));
     const maxNi = nI.reduce((m, n) => Math.max(m, n), 1);
@@ -5174,7 +5209,8 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const w = wR[i] ?? 0;
         const stR = curveSTFromPolyline(fullRound[i]!);
         const stS = curveSTFromPolyline(fullStraight[i]!);
-        const table = jointDensityTable(stS, stR, w, N);
+        const lipS = (joints[i]?.r1 ?? 0) * Math.abs(joints[i]?.lipTurn ?? 0);
+        const table = jointDensityTable(stS, stR, w, N, lipS);
         const fk = f[i] ?? Array.from({ length: N + 1 }, (_, k) => k / Math.max(N, 1));
         const alphas: number[] = [];
         for (let k = 0; k <= N; k++) {
@@ -5187,8 +5223,9 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         sampledRound.push(roundPts);
         sampledStraight.push(straightPts);
         sampledL.push(stR.S[stR.S.length - 1] ?? 1);
-        if (active[i]) assertInversionOk(roundPts, sampledL[i] ?? 1, N, i);
-        assertInversionOk(straightPts, stS.S[stS.S.length - 1] ?? 1, N, i);
+        const lipK = nearestPointIndex(roundPts, parabolaE[i] ?? fr.E);
+        if (active[i]) assertInversionOk(roundPts, sampledL[i] ?? 1, N, i, lipK);
+        assertInversionOk(straightPts, stS.S[stS.S.length - 1] ?? 1, N, i, 0);
     }
     let endOk = 0;
     const sBoundRows: Array<{ i: number; u: number; sag: number; g: number; eb: number }> = [];
@@ -5196,7 +5233,6 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const fr = frames[i]!;
         const sol = solves[i]!;
         const tR = inputs[i]!.tR;
-        const tE = inputs[i]!.tE ?? frameBodyTE(fr);
         const evaluated = active[i]!;
         if (evaluated) {
             const e0 = parabolaE[i] ?? fr.E;
@@ -5245,49 +5281,52 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const row1 = col[1] ?? col[0]!;
         const row1Deg = row1TRAngleDeg(row1, fr.R, tR, fr.h);
         const joint = joints[i]!;
-        const tP3 = {
-            x: fr.h.x * joint.tP.s,
-            y: fr.h.y * joint.tP.s,
-            z: joint.tP.z,
-        };
-        const g1R = row1Deg;
-        const g1E = (() => {
-            if (kE >= col.length - 1) return evaluated ? g1AtE(sol.poly, tE, fr.h) : 0;
-            const d = {
-                x: col[kE + 1]!.x - col[kE]!.x,
-                y: col[kE + 1]!.y - col[kE]!.y,
-                z: col[kE + 1]!.z - col[kE]!.z,
-            };
-            const deg = vecAngleDeg(d, tP3);
-            return Math.min(deg, 180 - deg);
-        })();
+        const tRFace = tRInSz(tR, fr.h);
+        const g1Ra = analyticG1RDeg(tRFace, joint.tR);
+        const g1Ea = analyticG1EDeg(joint);
+        const g1Ba = analyticG1BDeg(joint, plantarDirInColumn(fr.nPlantar, fr.h));
+        const nxtR = frames[(i + 1) % nS]!.R;
+        const nWallFace = faceN3(fr.R, nxtR, row1);
+        const nTopFace = fr.rimEdgeN ?? null;
+        const g1Rm =
+            nTopFace && nWallFace
+                ? Math.min(vecAngleDeg(nTopFace, nWallFace), 180 - vecAngleDeg(nTopFace, nWallFace))
+                : 0;
         const g1B = seamBDeg(col);
-        const g1C = g1R;
-        if (evaluated && g1R > SPLINE_G1_R_MAX_DEG + 1e-6) {
-            splineGateFail("[RND-G1]", {
+        if (evaluated && g1Ra > SPLINE_G1_ANALYTIC_MAX_DEG + 1e-6) {
+            splineGateFail("[RND-G1-A]", {
                 i,
                 u: Number(fr.u.toFixed(4)),
                 at: "R",
-                deg: Number(g1R.toFixed(4)),
-                cap: SPLINE_G1_R_MAX_DEG,
+                deg: Number(g1Ra.toFixed(4)),
+                cap: SPLINE_G1_ANALYTIC_MAX_DEG,
             });
         }
-        if (evaluated && g1E > SPLINE_G1_R_MAX_DEG + 1e-6) {
-            splineGateFail("[RND-G1]", {
+        if (evaluated && g1Ea > SPLINE_G1_ANALYTIC_MAX_DEG + 1e-6) {
+            splineGateFail("[RND-G1-A]", {
                 i,
                 u: Number(fr.u.toFixed(4)),
                 at: "E",
-                deg: Number(g1E.toFixed(4)),
-                cap: SPLINE_G1_R_MAX_DEG,
+                deg: Number(g1Ea.toFixed(4)),
+                cap: SPLINE_G1_ANALYTIC_MAX_DEG,
             });
         }
-        if (evaluated && g1B > SPLINE_G1_R_MAX_DEG + 1e-6) {
-            splineGateFail("[RND-G1]", {
+        if (evaluated && g1Ba > SPLINE_G1_ANALYTIC_MAX_DEG + 1e-6) {
+            splineGateFail("[RND-G1-A]", {
                 i,
                 u: Number(fr.u.toFixed(4)),
                 at: "B",
-                deg: Number(g1B.toFixed(4)),
-                cap: SPLINE_G1_R_MAX_DEG,
+                deg: Number(g1Ba.toFixed(4)),
+                cap: SPLINE_G1_ANALYTIC_MAX_DEG,
+            });
+        }
+        if (evaluated && g1Rm > SPLINE_G1_MESH_MAX_DEG + 1e-6) {
+            splineGateFail("[RND-G1-M]", {
+                i,
+                u: Number(fr.u.toFixed(4)),
+                at: "R",
+                deg: Number(g1Rm.toFixed(4)),
+                cap: SPLINE_G1_MESH_MAX_DEG,
             });
         }
         if (evaluated && row1Deg > SPLINE_ROW1_TR_MAX_DEG + 1e-6) {
@@ -5342,10 +5381,14 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
                 infl: inflCount,
             });
         }
-        fr.g1EDeg = g1C;
+        fr.g1EDeg = g1Ra;
         fr.g1FDeg = g1B;
-        fr.splineG1EDeg = g1E;
-        fr.splineG1BDeg = g1B;
+        fr.splineG1EDeg = g1Ea;
+        fr.splineG1BDeg = g1Ba;
+        fr.splineG1RAnalyticDeg = g1Ra;
+        fr.splineG1EAnalyticDeg = g1Ea;
+        fr.splineG1BAnalyticDeg = g1Ba;
+        fr.splineG1RMeshDeg = g1Rm;
         fr.midFlagged = inflCount > 0;
         fr.midPeakHFrac = sol.peakZFrac;
         fr.midBulgeHFrac = bulgeVsStraightFrac(used, straightPts, fr.heightMm);
@@ -5392,6 +5435,41 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineShort = (Ls[i] ?? 0) < SPLINE_SHORT_LS_MM;
         fr.splineLambda = joint.lambda;
         fr.nLip = kE;
+        if (i === 0) {
+            const sz = stationSzFrame(fr.R, fr.B, fr.h);
+            const dump: StationI0Dump = {
+                R: { ...fr.R },
+                tR_face: { ...tR },
+                tR: szToXyz(joint.tR, fr.h),
+                Cprime0: szToXyz(lipCPrimeSz(joint.tR, 0), fr.h),
+                theta: joint.lipTurn,
+                E: fromSz(joint.E, sz.origin, sz.h),
+                tE: szToXyz(joint.tP, fr.h),
+                M: fromSz(joint.M, sz.origin, sz.h),
+                rows: col.slice(0, 6).map((p) => ({ ...p })),
+                nTopFace: nTopFace ? { ...nTopFace } : null,
+                nWallFace: nWallFace ? { ...nWallFace } : null,
+            };
+            fr.i0Dump = dump;
+            console.log(
+                "[RND-I0]",
+                JSON.stringify({
+                    R: dump.R,
+                    tR_face: dump.tR_face,
+                    tR: dump.tR,
+                    Cprime0: dump.Cprime0,
+                    theta: Number(dump.theta.toFixed(6)),
+                    E: dump.E,
+                    tE: dump.tE,
+                    M: dump.M,
+                    rows: dump.rows,
+                    nTopFace: dump.nTopFace,
+                    nWallFace: dump.nWallFace,
+                    g1R_a: Number(g1Ra.toFixed(4)),
+                    g1R_m: Number(g1Rm.toFixed(4)),
+                }),
+            );
+        }
         const rhoNeed = splineRhoNeed(L, N);
         const rhoMin = evaluated ? minRhoFirstArc(used) : Number.POSITIVE_INFINITY;
         fr.splineRhoNeed = rhoNeed;
@@ -5694,6 +5772,7 @@ function resampleIncidentNTop(
             fr.nTopSmoothed = live.nTop;
             fr.sheetSlopeValid = true;
             fr.sheetPlaneN = live.planeN;
+            fr.rimEdgeN = junctions[i]?.edgePlaneN ?? fr.rimEdgeN;
             fr.tInc = live.tInc;
         }
         applyAlaToFrame(fr);
@@ -6521,7 +6600,13 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             if (nRnd && j === nRnd) {
                 maxRoundWall = Math.max(maxRoundWall, fr.g1EDeg ?? absDeg);
             }
-            if (styledSplineWalls(frames) || (j > nRnd && j < nRnd + nLn)) {
+            if (styledSplineWalls(frames)) {
+                const chordTurn = Math.min(vecAngleDeg(t0, t1), 180 - vecAngleDeg(t0, t1));
+                if (chordTurn > maxMidRowTurn) {
+                    maxMidRowTurn = chordTurn;
+                    worstMidRowTurn = { i, j, u: Number(fr.u.toFixed(4)), deg: Number(chordTurn.toFixed(2)) };
+                }
+            } else if (j > nRnd && j < nRnd + nLn) {
                 if (absDeg > maxMidRowTurn) {
                     maxMidRowTurn = absDeg;
                     worstMidRowTurn = { i, j, u: Number(fr.u.toFixed(4)), deg: Number(absDeg.toFixed(2)) };
@@ -6649,7 +6734,17 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const cMinI = cMinAcross;
             if (shortE >= cMinI) {
                 const aspect = longE / shortE;
-                if (j > 1 && j < nRnd - 1) {
+                const nLipQ = styledSplineWalls(frames) ? (fr.nLip ?? 0) : 0;
+                if (nLipQ && j < nLipQ) {
+                    if (aspect > SPLINE_LIP_ASPECT_MAX) {
+                        if (aspect > maxAspectRound) {
+                            maxAspectRound = aspect;
+                            if (aspect > maxAspectAll) {
+                                worstAspect = { i, j, short: shortE, long: longE, ratio: aspect };
+                            }
+                        }
+                    }
+                } else if (j > 1 && j < nRnd - 1) {
                     if (aspect > maxAspectRound) {
                         maxAspectRound = aspect;
                         if (aspect > maxAspectAll) {
@@ -6911,6 +7006,10 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let sMinAll = Number.POSITIVE_INFINITY;
     let nLipFail = 0;
     let maxWRStep = 0;
+    let maxG1RAnalyticDeg = 0;
+    let maxG1EAnalyticDeg = 0;
+    let maxG1BAnalyticDeg = 0;
+    let maxG1RMeshDeg = 0;
     if (styledSplineWalls(frames)) {
         for (let i = 0; i < nS; i++) {
             const fr = frames[i]!;
@@ -6987,6 +7086,12 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             }
         }
         maxWRStep = frames[0]?.splineMaxWRStep ?? maxClosedStep(frames.map((fr) => fr.splineWR ?? 0));
+        for (const fr of frames) {
+            maxG1RAnalyticDeg = Math.max(maxG1RAnalyticDeg, fr.splineG1RAnalyticDeg ?? 0);
+            maxG1EAnalyticDeg = Math.max(maxG1EAnalyticDeg, fr.splineG1EAnalyticDeg ?? 0);
+            maxG1BAnalyticDeg = Math.max(maxG1BAnalyticDeg, fr.splineG1BAnalyticDeg ?? 0);
+            maxG1RMeshDeg = Math.max(maxG1RMeshDeg, fr.splineG1RMeshDeg ?? 0);
+        }
         const maxHybridW = frames[0]?.splineWMax ?? 0;
         console.log(
             "[RND-TOPO]",
@@ -7116,6 +7221,11 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         faceFlips,
         sMinAll,
         nLipFail,
+        maxG1RAnalyticDeg,
+        maxG1EAnalyticDeg,
+        maxG1BAnalyticDeg,
+        maxG1RMeshDeg,
+        i0Dump: frames[0]?.i0Dump,
     };
 }
 

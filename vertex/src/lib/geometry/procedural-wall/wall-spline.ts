@@ -78,10 +78,14 @@ export const SPLINE_LAMBDA_HI = 0.65;
 /** r1 = this × heel edge thickness (default thickness 1 mm → r1 = 0.5). */
 export const ROUND_R1_OVER_HEEL = 0.5;
 export const HEEL_EDGE_THICKNESS_MM = 1;
-/** Ls below this blends the station to STRAIGHT. */
+/** Hard skip: do not evaluate ROUND when Ls is below this. */
 export const SPLINE_SHORT_LS_MM = 2;
-/** Rim-arc smoothstep around a short station. */
+/** Kept for callers; short-Ls ROUND ramp now uses SPLINE_SHORT_RAMP_LB_MM. */
 export const SPLINE_SHORT_BLEND_MM = 15;
+/** Short-Ls ROUND ramp is centered where smoothed Ls crosses this. */
+export const SPLINE_SHORT_LS_CROSS_MM = 3;
+/** Analytic short-Ls ramp length (mm of rim arc), no Gaussian. */
+export const SPLINE_SHORT_RAMP_LB_MM = 30;
 /** Medial-arch ramp length, inside [u_a0, u_a1]. Analytic HYBRID w uses this Lb. */
 export const HYBRID_ARCH_LB_MM = 30;
 /** Kept for callers; HYBRID w no longer min()s Lb with a span fraction. */
@@ -90,6 +94,10 @@ export const HYBRID_ARCH_LB_FRAC = 0.3;
 export const RND_E_POS_EPS = 1e-9;
 /** [RND-E]: angle(tE, M − E) must stay under this. */
 export const RND_E_ANG_MAX_DEG = 0.1;
+/** Analytic G1-R/E/B from the curve objects. */
+export const SPLINE_G1_ANALYTIC_MAX_DEG = 0.1;
+/** Mesh G1-R_m: dihedral of incident top face vs first wall face. */
+export const SPLINE_G1_MESH_MAX_DEG = 4;
 /** INFL: both sides of a sign change must be at least this. */
 export const SPLINE_INFL_TURN_MIN_DEG = 0.2;
 /** Cap the lip so M.s ≤ Ls − this. */
@@ -109,6 +117,10 @@ export const SPLINE_N_MAX = 128;
 /** ds_t = clamp(this × ρ, SPLINE_DS_FLOOR_MM, L/SPLINE_N_MIN_DIV). */
 export const SPLINE_DS_TURN_RAD = 0.0611;
 export const SPLINE_DS_FLOOR_MM = 0.04;
+/** Lip-only ds floor. Body keeps SPLINE_DS_FLOOR_MM. */
+export const SPLINE_DS_LIP_FLOOR_MM = 0.025;
+/** Lip-row face aspect allowance. */
+export const SPLINE_LIP_ASPECT_MAX = 60;
 export const SPLINE_N_MIN_DIV = 24;
 /** Absolute chord floor. Replaces 0.2 L/N. */
 export const SPLINE_CHORD_MIN_MM = 0.03;
@@ -501,6 +513,56 @@ export function assertLipParabolaJoint(joint: LipParabolaJoint): void {
     }
 }
 
+/** C_lip'(α) = rotate(tR, α) in the column (s, z) plane. */
+export function lipCPrimeSz(tR: Sz, alpha: number): Sz {
+    return alpha <= 1e-12 ? unitSz(tR) : unitSz(rotateSz(tR, alpha));
+}
+
+export function szToXyz(t: Sz, h: { x: number; y: number }): XYZ {
+    return { x: h.x * t.s, y: h.y * t.s, z: t.z };
+}
+
+/** G1-R_a = angle(tR_face, C_lip'(0+)). */
+export function analyticG1RDeg(tRFace: Sz, tRUsed: Sz): number {
+    return (Math.abs(signedTurnSz(unitSz(tRFace), unitSz(tRUsed))) * 180) / Math.PI;
+}
+
+/** G1-E_a = angle(C_lip'(θ), C_par'(0)). */
+export function analyticG1EDeg(joint: LipParabolaJoint): number {
+    const me = { s: joint.M.s - joint.E.s, z: joint.M.z - joint.E.z };
+    if (hypot2(me.s, me.z) < 1e-15) return 0;
+    return (Math.abs(signedTurnSz(joint.tP, unitSz(me))) * 180) / Math.PI;
+}
+
+/** G1-B_a = angle(C_par'(1), plantar direction in the column plane). */
+export function analyticG1BDeg(joint: LipParabolaJoint, plantar: Sz = { s: 1, z: 0 }): number {
+    const tEnd = { s: joint.Ls - joint.M.s, z: -joint.M.z };
+    if (hypot2(tEnd.s, tEnd.z) < 1e-15) return 0;
+    return (Math.abs(signedTurnSz(unitSz(tEnd), unitSz(plantar))) * 180) / Math.PI;
+}
+
+/** Plantar ∩ column plane, pointing inboard (+s). */
+export function plantarDirInColumn(nPlantar: XYZ | undefined, h: { x: number; y: number }): Sz {
+    if (!nPlantar) return { s: 1, z: 0 };
+    const nCol = { x: -h.y, y: h.x, z: 0 };
+    const d = {
+        x: nPlantar.y * nCol.z - nPlantar.z * nCol.y,
+        y: nPlantar.z * nCol.x - nPlantar.x * nCol.z,
+        z: nPlantar.x * nCol.y - nPlantar.y * nCol.x,
+    };
+    let s = d.x * h.x + d.y * h.y;
+    let z = d.z;
+    const l = hypot2(s, z);
+    if (l < 1e-12) return { s: 1, z: 0 };
+    s /= l;
+    z /= l;
+    if (s < 0) {
+        s = -s;
+        z = -z;
+    }
+    return { s, z };
+}
+
 /**
  * Pre-smoothing θ target from λ: tP0 = unit(M0 − R), M0 = (λ Ls, 0).
  * Zero if the signed turn tR→tP0 is ≤ 0. Cap so M.s ≤ Ls − 0.5.
@@ -786,19 +848,50 @@ export function medialArchFromLoop(
     };
 }
 
-/** Short-wall wR: 0 where Ls < 2 mm, smoothstep over 15 mm of rim. */
+/** Short-wall wR: analytic smoothstep, Lb=30 mm, centered on smoothed-Ls = 3 mm. */
 export function shortLsWeights(Ls: number[], arc: number[], period: number): number[] {
     const n = Ls.length;
     const out = new Array<number>(n).fill(1);
     if (n === 0) return out;
+    const p = Math.max(period, 1e-9);
+    const lsSm = periodicGaussian1d(Ls, arc, SPLINE_SMOOTH_SIGMA_MM, p);
+    const lo = SPLINE_SHORT_LS_CROSS_MM;
+    const half = 0.5 * SPLINE_SHORT_RAMP_LB_MM;
+    const crossings: Array<{ s: number; rising: boolean }> = [];
     for (let i = 0; i < n; i++) {
-        let w = 1;
-        for (let j = 0; j < n; j++) {
-            if ((Ls[j] ?? 0) >= SPLINE_SHORT_LS_MM - 1e-9) continue;
-            const d = closedArcDist(arc[i] ?? 0, arc[j] ?? 0, period);
-            w *= smoothstep01(0, SPLINE_SHORT_BLEND_MM, d);
+        const a = lsSm[i] ?? 0;
+        const b = lsSm[(i + 1) % n] ?? a;
+        if ((a - lo) * (b - lo) > 0) continue;
+        if (Math.abs(a - lo) < 1e-12 && Math.abs(b - lo) < 1e-12) continue;
+        const sa = arc[i] ?? 0;
+        const sb = i + 1 < n ? (arc[i + 1] ?? sa) : sa + Math.max(p - sa, 0);
+        const span = sb - sa;
+        const t = Math.abs(b - a) > 1e-12 ? (lo - a) / (b - a) : 0;
+        crossings.push({ s: sa + Math.max(0, Math.min(1, t)) * span, rising: b > a });
+    }
+    if (!crossings.length) {
+        const allShort = lsSm.every((v) => (v ?? 0) < lo - 1e-9);
+        return new Array<number>(n).fill(allShort ? 0 : 1);
+    }
+    const wrap = (d: number): number => {
+        let x = d;
+        if (x > 0.5 * p) x -= p;
+        if (x < -0.5 * p) x += p;
+        return x;
+    };
+    for (let i = 0; i < n; i++) {
+        const s = arc[i] ?? 0;
+        let best = crossings[0]!;
+        let bestAbs = Number.POSITIVE_INFINITY;
+        for (const c of crossings) {
+            const ad = Math.abs(wrap(s - c.s));
+            if (ad < bestAbs) {
+                bestAbs = ad;
+                best = c;
+            }
         }
-        out[i] = w;
+        const u = smoothstep01(-half, half, wrap(s - best.s));
+        out[i] = Math.max(0, Math.min(1, best.rising ? u : 1 - u));
     }
     return out;
 }
@@ -860,20 +953,27 @@ export function rhoFromSegment(dS: number, dTdeg: number): number {
     return dS / dTrad;
 }
 
-export function dsTarget(rho: number, L: number): number {
-    const hi = Math.max(L / SPLINE_N_MIN_DIV, SPLINE_DS_FLOOR_MM);
+export function dsTarget(rho: number, L: number, floorMm = SPLINE_DS_FLOOR_MM): number {
+    const fl = Math.max(1e-9, floorMm);
+    const hi = Math.max(L / SPLINE_N_MIN_DIV, fl);
     const raw = Number.isFinite(rho) ? SPLINE_DS_TURN_RAD * rho : Number.POSITIVE_INFINITY;
-    return clampNum(raw, SPLINE_DS_FLOOR_MM, hi);
+    return clampNum(raw, fl, hi);
 }
 
-export function stationSampleNeed(S: number[], T: number[]): { n: number; L: number; integral: number } {
+export function stationSampleNeed(
+    S: number[],
+    T: number[],
+    lipS = 0,
+): { n: number; L: number; integral: number } {
     const nSeg = Math.max(1, S.length - 1);
     const L = S[nSeg] ?? 0;
     let integral = 0;
     for (let j = 1; j <= nSeg; j++) {
         const dS = (S[j] ?? 0) - (S[j - 1] ?? 0);
         const dT = (T[j] ?? 0) - (T[j - 1] ?? 0);
-        integral += dS / Math.max(dsTarget(rhoFromSegment(dS, dT), L), 1e-16);
+        const sMid = 0.5 * ((S[j - 1] ?? 0) + (S[j] ?? 0));
+        const floor = sMid <= lipS + 1e-12 ? SPLINE_DS_LIP_FLOOR_MM : SPLINE_DS_FLOOR_MM;
+        integral += dS / Math.max(dsTarget(rhoFromSegment(dS, dT), L, floor), 1e-16);
     }
     return { n: Math.max(1, Math.ceil(integral - 1e-12)), L, integral };
 }
@@ -1622,6 +1722,7 @@ function finishTurnDensity(
     T: number[],
     N: number,
     nNeed: number,
+    lipS = 0,
 ): SplineDensityTable {
     const nSeg = Math.max(1, S.length - 1);
     const L = S[nSeg] ?? 0;
@@ -1633,7 +1734,9 @@ function finishTurnDensity(
     for (let j = 1; j <= nSeg; j++) {
         const dS = (S[j] ?? 0) - (S[j - 1] ?? 0);
         const dT = (T[j] ?? 0) - (T[j - 1] ?? 0);
-        const q = 1 / Math.max(dsTarget(rhoFromSegment(dS, dT), L), 1e-16) + pad;
+        const sMid = 0.5 * ((S[j - 1] ?? 0) + (S[j] ?? 0));
+        const floor = sMid <= lipS + 1e-12 ? SPLINE_DS_LIP_FLOOR_MM : SPLINE_DS_FLOOR_MM;
+        const q = 1 / Math.max(dsTarget(rhoFromSegment(dS, dT), L, floor), 1e-16) + pad;
         const inc = q * dS;
         add.push(inc);
         Z += inc;
@@ -1689,11 +1792,15 @@ export function curveSTFromPolyline(
     return { u, S, T };
 }
 
-function tableFromST(st: { u: number[]; S: number[]; T: number[] }, N?: number): SplineDensityTable {
-    const need = stationSampleNeed(st.S, st.T);
+function tableFromST(
+    st: { u: number[]; S: number[]; T: number[] },
+    N?: number,
+    lipS = 0,
+): SplineDensityTable {
+    const need = stationSampleNeed(st.S, st.T, lipS);
     const nUse = Math.min(need.n, SPLINE_N_MAX);
     const nShared = Math.max(1, Math.min(SPLINE_N_MAX, N ?? nUse));
-    return finishTurnDensity(st.u, st.S, st.T, nShared, need.n);
+    return finishTurnDensity(st.u, st.S, st.T, nShared, need.n, lipS);
 }
 
 /** 2048-point S, T on the cubic; turn-bounded W. */
@@ -1786,10 +1893,10 @@ export function columnChordsOk(pts: XYZ[], _L?: number, _N?: number): boolean {
     return true;
 }
 
-/** Hard stop on chords shorter than 0.03 mm (logs in the report-only build). */
-export function assertInversionOk(pts: XYZ[], L: number, N: number, i: number): void {
-    const need = SPLINE_CHORD_MIN_MM;
+/** Hard stop on chords shorter than the row floor (logs in the report-only build). */
+export function assertInversionOk(pts: XYZ[], L: number, N: number, i: number, lipK = 0): void {
     for (let k = 1; k < pts.length; k++) {
+        const need = k <= lipK ? SPLINE_DS_LIP_FLOOR_MM : SPLINE_DS_FLOOR_MM;
         const e = hypot3(sub(pts[k]!, pts[k - 1]!));
         if (e + 1e-15 < need) {
             splineGateFail("[RND-INV]", { i, k, chord: e, need, L, N });
@@ -1971,14 +2078,16 @@ export function samplePolylinesByW(cols: XYZ[][], N: number, f: number[][]): { p
 }
 
 /** Per-segment 1/ds_t on a uniform normalized-arc grid. */
-export function qOnNormalizedArc(S: number[], T: number[], nGrid = SPLINE_W_DENSE): number[] {
+export function qOnNormalizedArc(S: number[], T: number[], nGrid = SPLINE_W_DENSE, lipS = 0): number[] {
     const nSeg = Math.max(1, S.length - 1);
     const L = Math.max(S[nSeg] ?? 0, 1e-16);
     const qSeg: number[] = [];
     for (let j = 1; j <= nSeg; j++) {
         const dS = (S[j] ?? 0) - (S[j - 1] ?? 0);
         const dT = (T[j] ?? 0) - (T[j - 1] ?? 0);
-        qSeg.push(1 / Math.max(dsTarget(rhoFromSegment(dS, dT), L), 1e-16));
+        const sMid = 0.5 * ((S[j - 1] ?? 0) + (S[j] ?? 0));
+        const floor = sMid <= lipS + 1e-12 ? SPLINE_DS_LIP_FLOOR_MM : SPLINE_DS_FLOOR_MM;
+        qSeg.push(1 / Math.max(dsTarget(rhoFromSegment(dS, dT), L, floor), 1e-16));
     }
     const out: number[] = [];
     for (let i = 0; i < nGrid; i++) {
@@ -2022,15 +2131,16 @@ export function jointDensityTable(
     stR: { S: number[]; T: number[] },
     w: number,
     N: number,
+    lipS = 0,
 ): SplineDensityTable {
-    const qS = qOnNormalizedArc(stS.S, stS.T);
-    const qR = qOnNormalizedArc(stR.S, stR.T);
+    const qS = qOnNormalizedArc(stS.S, stS.T, SPLINE_W_DENSE, 0);
+    const qR = qOnNormalizedArc(stR.S, stR.T, SPLINE_W_DENSE, lipS);
     const n = Math.min(qS.length, qR.length);
     const ww = Math.max(0, Math.min(1, w));
     const q: number[] = [];
     for (let i = 0; i < n; i++) q.push((1 - ww) * (qS[i] ?? 0) + ww * (qR[i] ?? 0));
-    const nS = stationSampleNeed(stS.S, stS.T).n;
-    const nR = stationSampleNeed(stR.S, stR.T).n;
+    const nS = stationSampleNeed(stS.S, stS.T, 0).n;
+    const nR = stationSampleNeed(stR.S, stR.T, lipS).n;
     const nNeed = Math.max(1, Math.ceil((1 - ww) * nS + ww * nR));
     return finishNormalizedDensity(q, N, nNeed);
 }
