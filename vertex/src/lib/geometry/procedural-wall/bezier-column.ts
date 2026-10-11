@@ -15,16 +15,11 @@ import { countColumnPlanReversals, type HermiteStation } from "./loft";
 import { countPlanViewChordCrossings, smoothAndCapFlare } from "./stations";
 import {
     clampSagitta,
-    closestCubicT,
-    cubicTurningTValues,
-    evalCubicHermite,
     lambdaFromTheta,
     type MidStyleLimit,
     type MidStyleLock,
-    maxPolylineTurnDeg,
     planAngleDeg,
     resolveWallStyleParams,
-    sampleCubicAtT,
     sampleWallMidStyle,
     stationBeta,
     stationBulge,
@@ -4224,8 +4219,7 @@ function ringTurnAt(pts: XYZ[], i: number, plan = false): number {
 /**
  * Cubic Hermite mid-piece. Bulge is an end-tangent tilt: φ_E −= θ
  * (E-only; F stays on the Laplacian ring). λ = 2/(3(1+cos(θ/2))).
- * Smooth / rate-limit θ only. Mid rows at t_k = k/N, then each row's
- * t is Gaussian-smoothed along i (σ 10 mm, monotone, on-Hermite).
+ * Smooth / rate-limit θ only. Mid rows at t_k = k/N on every station.
  */
 function prepareStyledMid(
     frames: ColumnFrame[],
@@ -4421,72 +4415,12 @@ function prepareStyledMid(
     return nRound + nLineStar + nFil + 2;
 }
 
-/**
- * Mid rows at t_k = k/N (N = max uniform-t need). Then smooth each row's
- * t along i (σ 10 mm) and project the faired ring back onto the Hermite
- * so the loft crease drops without leaving the column. E/F stay put.
- * A station that would exceed the mid-turn gate reverts to t = k/N.
- */
+/** Shared t_k = k/N on every station. N is the max uniform-t need. */
 function assignStyledMidTs(frames: ColumnFrame[], nLine: number): void {
     if ((frames[0]?.wallStyle?.style ?? "straight") === "straight") return;
-    const n = frames.length;
-    if (n < 3 || nLine < 2) return;
-    const rim = frames.map((fr) => fr.R);
-    const ctrls = frames.map((fr) => ({
-        P0: fr.E,
-        P1: fr.midP1 ?? fr.E,
-        P2: fr.midP2 ?? fr.F,
-        P3: fr.F,
-    }));
-    const uniform = uniformMidTValues(nLine);
-    const ts: number[][] = [];
-    for (let i = 0; i < n; i++) {
-        const c = ctrls[i]!;
-        const turning = cubicTurningTValues(c.P0, c.P1, c.P2, c.P3, nLine);
-        ts.push(turning.length === nLine ? turning : uniform.slice());
-    }
-    for (let k = 0; k < nLine - 1; k++) {
-        const col: number[] = [];
-        for (let i = 0; i < n; i++) col.push(ts[i]![k] ?? uniform[k]!);
-        const sm = periodicGaussian(col, rim, WALL_MID_SMOOTH_SIGMA_MM);
-        for (let i = 0; i < n; i++) ts[i]![k] = sm[i] ?? ts[i]![k]!;
-    }
-    for (let k = 0; k < nLine - 1; k++) {
-        const xs: number[] = [];
-        const ys: number[] = [];
-        const zs: number[] = [];
-        for (let i = 0; i < n; i++) {
-            const c = ctrls[i]!;
-            const p = evalCubicHermite(c.P0, c.P1, c.P2, c.P3, ts[i]![k]!);
-            xs.push(p.x);
-            ys.push(p.y);
-            zs.push(p.z);
-        }
-        const sx = periodicGaussian(xs, rim, WALL_MID_SMOOTH_SIGMA_MM);
-        const sy = periodicGaussian(ys, rim, WALL_MID_SMOOTH_SIGMA_MM);
-        const sz = periodicGaussian(zs, rim, WALL_MID_SMOOTH_SIGMA_MM);
-        for (let i = 0; i < n; i++) {
-            const c = ctrls[i]!;
-            const tLo = k === 0 ? 1e-3 : ts[i]![k - 1]! + 1e-3;
-            const tHi = (ts[i]![k + 1] ?? 1) - 1e-3;
-            if (!(tHi > tLo)) continue;
-            const proj = closestCubicT(c.P0, c.P1, c.P2, c.P3, { x: sx[i]!, y: sy[i]!, z: sz[i]! }, tLo, tHi);
-            ts[i]![k] = proj;
-        }
-    }
-    for (let i = 0; i < n; i++) {
-        const row = ts[i]!;
-        let prev = 0;
-        for (let k = 0; k < nLine; k++) {
-            const cap = k === nLine - 1 ? 1 : 1 - 1e-4 * (nLine - 1 - k);
-            row[k] = Math.max(prev + 1e-4, Math.min(cap, row[k] ?? uniform[k]!));
-            prev = row[k]!;
-        }
-        row[nLine - 1] = 1;
-        const c = ctrls[i]!;
-        const pts = [c.P0, ...sampleCubicAtT(c.P0, c.P1, c.P2, c.P3, row)];
-        frames[i]!.midTs = maxPolylineTurnDeg(pts) > WALL_MID_TURN_MAX_DEG + 1e-6 ? uniform.slice() : row;
-    }
+    if (nLine < 1) return;
+    const ts = uniformMidTValues(nLine);
+    for (const fr of frames) fr.midTs = ts.slice();
 }
 
 function applyPieceCounts(frames: ColumnFrame[], report: NRoundStarReport): number {
