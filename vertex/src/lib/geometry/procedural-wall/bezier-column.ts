@@ -20,12 +20,15 @@ import {
     type MidStyleLock,
     planAngleDeg,
     resolveWallStyleParams,
+    sampleCubicAtT,
     sampleWallMidStyle,
     stationBeta,
     stationBulge,
     thetaFromSagitta,
     uniformMidTValues,
     WALL_LAMBDA_MIN,
+    WALL_MID_DIHEDRAL_MAX_DEG,
+    WALL_MID_ROW_CAP,
     WALL_MID_SMOOTH_SIGMA_MM,
     WALL_MID_TURN_MAX_DEG,
     WALL_MID_TURN_TARGET_DEG,
@@ -4388,9 +4391,9 @@ function prepareStyledMid(
             );
         }
     }
-    const nLineStar = Math.max(nLine, nLineNeed);
+    let nLineStar = Math.max(nLine, nLineNeed);
+    nLineStar = assignStyledMidTs(frames, nLineStar);
     for (const fr of frames) fr.nLineFix = nLineStar;
-    assignStyledMidTs(frames, nLineStar);
     const over = g1Stations.filter(
         (s) => s.e > WALL_STYLE_G1_MAX_DEG + 1e-6 || s.f > WALL_STYLE_G1_MAX_DEG + 1e-6,
     );
@@ -4415,12 +4418,55 @@ function prepareStyledMid(
     return nRound + nLineStar + nFil + 2;
 }
 
-/** Shared t_k = k/N on every station. N is the max uniform-t need. */
-function assignStyledMidTs(frames: ColumnFrame[], nLine: number): void {
-    if ((frames[0]?.wallStyle?.style ?? "straight") === "straight") return;
-    if (nLine < 1) return;
+function midStripDihedralDeg(frames: ColumnFrame[], nLine: number): number {
     const ts = uniformMidTValues(nLine);
-    for (const fr of frames) fr.midTs = ts.slice();
+    const cols = frames.map((fr) => {
+        const P0 = fr.E;
+        const P1 = fr.midP1 ?? fr.E;
+        const P2 = fr.midP2 ?? fr.F;
+        const P3 = fr.F;
+        return [P0, ...sampleCubicAtT(P0, P1, P2, P3, ts)];
+    });
+    let max = 0;
+    const nS = cols.length;
+    for (let i = 0; i < nS; i++) {
+        const col = cols[i]!;
+        const nxt = cols[(i + 1) % nS]!;
+        const rows = Math.min(col.length, nxt.length);
+        for (let j = 1; j < rows - 1; j++) {
+            const a = col[j]!;
+            const b = nxt[j]!;
+            const below = faceN3(a, b, col[j + 1]!);
+            const above = faceN3(b, a, col[j - 1]!);
+            if (!below || !above) continue;
+            const fold = vecAngleDeg(below, above);
+            max = Math.max(max, Math.min(fold, 180 - fold));
+        }
+    }
+    return max;
+}
+
+/** Shared t_k = k/N. Densify N until the loft crease proxy is ≤ 4°. */
+function assignStyledMidTs(frames: ColumnFrame[], nLine: number): number {
+    if ((frames[0]?.wallStyle?.style ?? "straight") === "straight") return nLine;
+    let n = Math.max(1, nLine);
+    let proxy = midStripDihedralDeg(frames, n);
+    while (proxy > WALL_MID_DIHEDRAL_MAX_DEG + 1e-6 && n < WALL_MID_ROW_CAP) {
+        const next = Math.min(
+            WALL_MID_ROW_CAP,
+            Math.max(n + 1, Math.ceil((n * proxy) / WALL_MID_DIHEDRAL_MAX_DEG)),
+        );
+        if (next <= n) break;
+        n = next;
+        proxy = midStripDihedralDeg(frames, n);
+    }
+    const ts = uniformMidTValues(n);
+    for (const fr of frames) {
+        fr.nLineFix = n;
+        fr.midTs = ts.slice();
+    }
+    console.log("[S1-MID-T]", JSON.stringify({ nLine: n, dihedralProxy: Number(proxy.toFixed(3)) }));
+    return n;
 }
 
 function applyPieceCounts(frames: ColumnFrame[], report: NRoundStarReport): number {
