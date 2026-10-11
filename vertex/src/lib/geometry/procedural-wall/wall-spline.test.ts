@@ -4,6 +4,7 @@
 import { describe, expect, test } from "@rstest/core";
 import {
     assertInversionOk,
+    buildJointFromTheta,
     buildPolylineDensityTable,
     columnChordsOk,
     controlPointsSpaced,
@@ -11,14 +12,20 @@ import {
     enforceMonotoneF,
     evalClampedCubic,
     evalQuadraticBezier,
+    HYBRID_ARCH_LB_MM,
     hybridArchWeight,
+    hybridArchWeightAtS,
     invertDensityW,
     jointDensityTable,
+    lipArcEnd,
+    lipTurnTargetFromLambda,
     minSOfSamples,
     parabolaHandleM,
     polylineInflReport,
     printSplineGates,
     qOnNormalizedArc,
+    RND_E_ANG_MAX_DEG,
+    RND_E_POS_EPS,
     SPLINE_CHORD_MIN_MM,
     SPLINE_GATES_REPORT_ONLY,
     SPLINE_INFL_TURN_MIN_DEG,
@@ -326,11 +333,12 @@ describe("quadratic wall parabola", () => {
         expect(M.z).toBeCloseTo(0, 5);
         expect(M.x).toBeGreaterThan(E.x);
         expect(M.x).toBeLessThan(B.x);
-        const arch = { uA0: 0.2, uA1: 0.55, sA0: 20, sA1: 80, lbMm: 20, lbU: 0.12 };
+        const arch = { uA0: 0.2, uA1: 0.55, sA0: 0, sA1: 127, lbMm: HYBRID_ARCH_LB_MM, lbU: 0.12 };
         expect(hybridArchWeight(0.1, 1, arch)).toBe(0);
-        expect(hybridArchWeight(0.38, 1, arch)).toBeGreaterThan(0.9);
+        expect(hybridArchWeight(0.38, 1, arch)).toBe(1);
         expect(hybridArchWeight(0.38, -1, arch)).toBe(0);
         expect(hybridArchWeight(0.7, 1, arch)).toBe(0);
+        expect(hybridArchWeightAtS(63.5, arch, 1)).toBe(1);
         const g = stationGates(sol, 0.35, 1);
         expect(g.misses.some((m) => m.startsWith("sag"))).toBe(false);
         expect(g.misses.some((m) => m.startsWith("kappa"))).toBe(false);
@@ -358,6 +366,24 @@ describe("quadratic wall parabola", () => {
         expect(alreadyIn.lipTurn).toBe(0);
         expect(alreadyIn.E.s).toBeCloseTo(0, 8);
         expect(alreadyIn.E.z).toBeCloseTo(H, 8);
+    });
+
+    test("one-source theta: E and tE from the same sweep; lambda does not move M", () => {
+        const H = 12;
+        const Ls = 10;
+        const r1 = 0.5;
+        const tR = { s: -1, z: 0 };
+        const raw = lipTurnTargetFromLambda(tR, H, Ls, r1, SPLINE_LAMBDA);
+        const a = buildJointFromTheta(tR, H, Ls, r1, raw.theta, 0.35);
+        const b = buildJointFromTheta(tR, H, Ls, r1, raw.theta, 0.65);
+        expect(a.E.s).toBeCloseTo(b.E.s, 12);
+        expect(a.E.z).toBeCloseTo(b.E.z, 12);
+        expect(a.M.s).toBeCloseTo(b.M.s, 12);
+        const lipEnd = lipArcEnd({ s: 0, z: H }, tR, r1, a.lipTurn);
+        expect(Math.hypot(lipEnd.s - a.E.s, lipEnd.z - a.E.z)).toBeLessThan(RND_E_POS_EPS);
+        const me = { s: a.M.s - a.E.s, z: a.M.z - a.E.z };
+        const ang = (Math.abs(signedTurnSz(a.tP, me)) * 180) / Math.PI;
+        expect(ang).toBeLessThan(RND_E_ANG_MAX_DEG);
     });
 
     test("INFL counts a sign change only if both |turn| >= 0.2 deg", () => {

@@ -147,6 +147,8 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             worstAcrossU?: number;
             worstAlongRowI?: number;
             worstAlongRowU?: number;
+            maxWRStep?: number;
+            maxHybridW?: number;
         };
         wallFrames?: Array<{
             u: number;
@@ -698,6 +700,18 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             q.worstAlongRowI != null
                 ? { worstI: q.worstAlongRowI, worstK: q.worstAlongRowK, worstU: q.worstAlongRowU }
                 : undefined,
+        ),
+        row(
+            "|dw|",
+            style === "straight" || (q.maxWRStep ?? 0) <= SPLINE_WR_STEP_MAX + 1e-9,
+            q.maxWRStep ?? 0,
+            SPLINE_WR_STEP_MAX,
+        ),
+        row(
+            "w_max",
+            style !== "hybrid" || Math.abs((q.maxHybridW ?? 0) - 1) <= 1e-9,
+            q.maxHybridW ?? (style === "round" ? 1 : 0),
+            style === "hybrid" ? 1 : "n/a",
         ),
         row("dup-verts", (q.duplicateVerts ?? 0) === 0, q.duplicateVerts ?? 0, 0),
         row(

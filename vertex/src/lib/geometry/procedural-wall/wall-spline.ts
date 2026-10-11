@@ -70,7 +70,7 @@ export const SPLINE_LIP_S_SLACK_MM = 0.1;
 /** g bisect bracket [0, this × |EB|]. */
 export const SPLINE_G_HI_FRAC = 0.5;
 /** Neighbouring hybrid/short weights may differ by at most this. */
-export const SPLINE_WR_STEP_MAX = 0.03;
+export const SPLINE_WR_STEP_MAX = 0.08;
 /** Quadratic handle: M_s = s_E + λ (Ls − s_E). */
 export const SPLINE_LAMBDA = 0.5;
 export const SPLINE_LAMBDA_LO = 0.35;
@@ -82,10 +82,14 @@ export const HEEL_EDGE_THICKNESS_MM = 1;
 export const SPLINE_SHORT_LS_MM = 2;
 /** Rim-arc smoothstep around a short station. */
 export const SPLINE_SHORT_BLEND_MM = 15;
-/** Medial-arch ramp length, inside [u_a0, u_a1]. */
-export const HYBRID_ARCH_LB_MM = 20;
-/** Lb = min(HYBRID_ARCH_LB_MM, this × arch length) so w reaches 1. */
+/** Medial-arch ramp length, inside [u_a0, u_a1]. Analytic HYBRID w uses this Lb. */
+export const HYBRID_ARCH_LB_MM = 30;
+/** Kept for callers; HYBRID w no longer min()s Lb with a span fraction. */
 export const HYBRID_ARCH_LB_FRAC = 0.3;
+/** [RND-E]: |C_lip(end) − C_par(0)| must stay under this. */
+export const RND_E_POS_EPS = 1e-9;
+/** [RND-E]: angle(tE, M − E) must stay under this. */
+export const RND_E_ANG_MAX_DEG = 0.1;
 /** INFL: both sides of a sign change must be at least this. */
 export const SPLINE_INFL_TURN_MIN_DEG = 0.2;
 /** Cap the lip so M.s ≤ Ls − this. */
@@ -433,27 +437,121 @@ export function plantarHit(E: Sz, tP: Sz): Sz | null {
     return { s: E.s + t * tP.s, z: 0 };
 }
 
-function jointFromAlpha(
-    R: Sz,
+/** Infinite line (E, tE) ∩ z = 0. */
+export function plantarLineHit(E: Sz, tE: Sz): Sz | null {
+    if (Math.abs(tE.z) < 1e-9) return null;
+    const t = -E.z / tE.z;
+    return { s: E.s + t * tE.s, z: 0 };
+}
+
+/**
+ * After smoothing, θ is the only source: E = lip(R, tR, r1, θ), tE = rotate(tR, θ),
+ * M = line(E, tE) ∩ z=0. λ is not used for geometry.
+ */
+export function buildJointFromTheta(
     tR: Sz,
-    r1: number,
-    alpha: number,
-    lambda: number,
+    H: number,
     Ls: number,
-): {
-    E: Sz;
-    M: Sz;
-    tP: Sz;
-} {
-    const tP = alpha <= 1e-12 ? tR : unitSz(rotateSz(tR, alpha));
-    const E = alpha <= 1e-12 ? { ...R } : lipArcEnd(R, tR, r1, alpha);
-    return { E, M: plantarHit(E, tP) ?? { s: lambda * Ls, z: 0 }, tP };
+    r1: number,
+    theta: number,
+    lambda = SPLINE_LAMBDA,
+): LipParabolaJoint {
+    const r = Math.max(r1, 1e-6);
+    const tRu = unitSz(tR);
+    let alpha = theta;
+    let zeroLip = false;
+    if (alpha <= 1e-12) {
+        alpha = 0;
+        zeroLip = true;
+    }
+    const R: Sz = { s: 0, z: H };
+    const tE = alpha <= 1e-12 ? tRu : unitSz(rotateSz(tRu, alpha));
+    const E = alpha <= 1e-12 ? { ...R } : lipArcEnd(R, tRu, r, alpha);
+    const M = plantarLineHit(E, tE);
+    if (!M) {
+        throw new Error(`[RND-E] ${JSON.stringify({ reason: "no-plantar-hit", theta: alpha })}`);
+    }
+    const joint: LipParabolaJoint = {
+        E,
+        M,
+        tR: tRu,
+        tP: tE,
+        lambda: clampLambda(lambda),
+        lipTurn: alpha,
+        r1: r,
+        H,
+        Ls,
+        zeroLip,
+        capped: false,
+    };
+    assertLipParabolaJoint(joint);
+    return joint;
+}
+
+export function assertLipParabolaJoint(joint: LipParabolaJoint): void {
+    const R: Sz = { s: 0, z: joint.H };
+    const lipEnd =
+        joint.zeroLip || joint.lipTurn <= 1e-12 ? { ...R } : lipArcEnd(R, joint.tR, joint.r1, joint.lipTurn);
+    const dE = hypot2(lipEnd.s - joint.E.s, lipEnd.z - joint.E.z);
+    const me = { s: joint.M.s - joint.E.s, z: joint.M.z - joint.E.z };
+    const meL = hypot2(me.s, me.z);
+    const ang = meL < 1e-15 ? 0 : (Math.abs(signedTurnSz(joint.tP, unitSz(me))) * 180) / Math.PI;
+    if (dE >= RND_E_POS_EPS || ang >= RND_E_ANG_MAX_DEG) {
+        throw new Error(`[RND-E] ${JSON.stringify({ dE, ang, lipTurn: joint.lipTurn })}`);
+    }
+}
+
+/**
+ * Pre-smoothing θ target from λ: tP0 = unit(M0 − R), M0 = (λ Ls, 0).
+ * Zero if the signed turn tR→tP0 is ≤ 0. Cap so M.s ≤ Ls − 0.5.
+ */
+export function lipTurnTargetFromLambda(
+    tR: Sz,
+    H: number,
+    Ls: number,
+    r1: number,
+    lambda = SPLINE_LAMBDA,
+): { theta: number; zeroLip: boolean; capped: boolean } {
+    const lam = clampLambda(lambda);
+    const tRu = unitSz(tR);
+    const R: Sz = { s: 0, z: H };
+    const M0: Sz = { s: lam * Math.max(Ls, 0), z: 0 };
+    const tP0 = unitSz({ s: M0.s - R.s, z: M0.z - R.z });
+    let alpha = signedTurnSz(tRu, tP0);
+    if (alpha <= 1e-12) {
+        return { theta: 0, zeroLip: true, capped: false };
+    }
+    const r = Math.max(r1, 1e-6);
+    const capMs = Ls - SPLINE_LIP_MS_SLACK_MM;
+    const mOf = (a: number): Sz | null => {
+        const tE = a <= 1e-12 ? tRu : unitSz(rotateSz(tRu, a));
+        const E = a <= 1e-12 ? { ...R } : lipArcEnd(R, tRu, r, a);
+        return plantarLineHit(E, tE);
+    };
+    const M0hit = mOf(alpha);
+    let capped = false;
+    if (M0hit && M0hit.s > capMs + 1e-9) {
+        let lo = 0;
+        let hi = alpha;
+        for (let i = 0; i < 40; i++) {
+            const mid = 0.5 * (lo + hi);
+            const Mm = mOf(mid);
+            if (Mm && Mm.s > capMs + 1e-9) hi = mid;
+            else lo = mid;
+        }
+        alpha = lo;
+        capped = true;
+        if (alpha <= 1e-12) {
+            return { theta: 0, zeroLip: true, capped: true };
+        }
+    }
+    return { theta: alpha, zeroLip: false, capped };
 }
 
 /**
  * Lip-to-parabola joint in the column (s, z) frame.
- * tP = normalize(M0 − R), M0 = (λ Ls, 0). Zero lip when tR→tP turn ≤ 0.
- * M = (E, tP) ∩ z=0. Cap α so M.s ≤ Ls − 0.5.
+ * Omit lipTurn to take the λ-target θ (pre-smoothing). Pass lipTurn to rebuild
+ * from that θ only — λ is never used for tE / M after smoothing.
  */
 export function solveLipParabolaJoint(
     tR: Sz,
@@ -463,58 +561,12 @@ export function solveLipParabolaJoint(
     lambda = SPLINE_LAMBDA,
     lipTurn?: number,
 ): LipParabolaJoint {
-    const lam = clampLambda(lambda);
-    const R: Sz = { s: 0, z: H };
-    const tRu = unitSz(tR);
-    const M0: Sz = { s: lam * Math.max(Ls, 0), z: 0 };
-    const tP0 = unitSz({ s: M0.s - R.s, z: M0.z - R.z });
-    let alpha = lipTurn ?? signedTurnSz(tRu, tP0);
-    let zeroLip = false;
-    if (alpha <= 1e-12) {
-        alpha = 0;
-        zeroLip = true;
+    if (lipTurn != null) {
+        return buildJointFromTheta(tR, H, Ls, r1, lipTurn, lambda);
     }
-    const capMs = Ls - SPLINE_LIP_MS_SLACK_MM;
-    const apply = (a: number) => jointFromAlpha(R, tRu, Math.max(r1, 1e-6), a, lam, Ls);
-    let built = apply(alpha);
-    let capped = false;
-    if (built.M.s > capMs + 1e-9 && alpha > 0) {
-        let lo = 0;
-        let hi = alpha;
-        for (let i = 0; i < 40; i++) {
-            const mid = 0.5 * (lo + hi);
-            if (apply(mid).M.s > capMs + 1e-9) hi = mid;
-            else lo = mid;
-        }
-        alpha = lo;
-        built = apply(alpha);
-        capped = true;
-        if (alpha <= 1e-12) {
-            alpha = 0;
-            zeroLip = true;
-            built = apply(0);
-        }
-    }
-    if (built.M.s + 1e-9 < built.E.s) {
-        built = { ...built, M: { s: built.E.s, z: 0 } };
-    }
-    if (built.M.s > Ls + 1e-9) {
-        built = { ...built, M: { s: Math.max(built.E.s, Math.min(Ls, capMs)), z: 0 } };
-        capped = true;
-    }
-    return {
-        E: built.E,
-        M: built.M,
-        tR: tRu,
-        tP: built.tP,
-        lambda: lam,
-        lipTurn: alpha,
-        r1: Math.max(r1, 1e-6),
-        H,
-        Ls,
-        zeroLip,
-        capped,
-    };
+    const raw = lipTurnTargetFromLambda(tR, H, Ls, r1, lambda);
+    const joint = buildJointFromTheta(tR, H, Ls, r1, raw.theta, lambda);
+    return { ...joint, zeroLip: raw.zeroLip || joint.zeroLip, capped: raw.capped };
 }
 
 export function sampleLipArc(R: Sz, tR: Sz, r1: number, alpha: number, n = 48): Sz[] {
@@ -533,7 +585,7 @@ export function liftLipParabola(
     h: { x: number; y: number },
     B: XYZ,
     R: XYZ,
-): { lip: XYZ[]; body: XYZ[]; E: XYZ; M: XYZ } {
+): { lip: XYZ[]; body: XYZ[]; composite: XYZ[]; E: XYZ; M: XYZ } {
     const Rsz: Sz = { s: 0, z: joint.H };
     const lip = sampleLipArc(Rsz, joint.tR, joint.r1, joint.lipTurn).map((p) => fromSz(p, origin, h));
     const E = fromSz(joint.E, origin, h);
@@ -544,7 +596,8 @@ export function liftLipParabola(
     } else {
         lip.push({ ...R });
     }
-    return { lip, body: sampleQuadraticDense(E, M, B), E, M };
+    const body = sampleQuadraticDense(E, M, B);
+    return { lip, body, composite: concatProfiles(lip, body), E, M };
 }
 
 export function sampleQuadraticDense(P0: XYZ, P1: XYZ, P2: XYZ, n = SPLINE_DENSE): XYZ[] {
@@ -589,7 +642,7 @@ export function hybridArchWeightAtS(s: number, arch: HybridArchSpan, sideSign: 1
     if (sideSign < 0) return 0;
     const span = arch.sA1 - arch.sA0;
     if (span <= 1e-6) return 0;
-    const lb = Math.min(arch.lbMm, HYBRID_ARCH_LB_FRAC * span);
+    const lb = arch.lbMm;
     return smoothstep01(arch.sA0, arch.sA0 + lb, s) * (1 - smoothstep01(arch.sA1 - lb, arch.sA1, s));
 }
 
@@ -601,7 +654,7 @@ export function hybridArchWeight(
     if (sideSign < 0 || !arch) return 0;
     const span = arch.uA1 - arch.uA0;
     if (span <= 1e-6) return 0;
-    const lb = Math.min(arch.lbU, HYBRID_ARCH_LB_FRAC * span);
+    const lb = arch.lbU;
     return smoothstep01(arch.uA0, arch.uA0 + lb, u) * (1 - smoothstep01(arch.uA1 - lb, arch.uA1, u));
 }
 
@@ -694,7 +747,7 @@ export function medialArchFromLoop(
         uA1 = tmpU;
     }
     const spanS = sA1 - sA0;
-    const lbMm = Math.min(HYBRID_ARCH_LB_MM, HYBRID_ARCH_LB_FRAC * Math.max(spanS, 0));
+    const lbMm = HYBRID_ARCH_LB_MM;
     const lbU = spanS > 1e-9 ? (lbMm / spanS) * (uA1 - uA0) : 0;
     const atS = (sTarget: number): { i: number; u: number; s: number; p: XYZ } => {
         let best = 0;
@@ -1504,7 +1557,7 @@ function finishSolve(
 
 /**
  * Body E→B: one quadratic Bezier P0=E, P1=M, P2=B.
- * Lip + M from solveLipParabolaJoint (tP = normalize(M0−R), M = (E,tP)∩z=0).
+ * Lip + M from the λ-target θ, then one-source rebuild (tE = rotate(tR, θ)).
  */
 export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const { R, B } = input;

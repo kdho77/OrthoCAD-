@@ -18,17 +18,19 @@ import {
     assertInversionOk,
     blendColumnsSz,
     bodyTangentFromE,
+    buildJointFromTheta,
     bulgeVsStraightFrac,
     columnRowTurns,
     columnZMonotone,
-    concatProfiles,
     curveSTFromPolyline,
     g1AtE,
     type HybridArchInfo,
     hybridArchWeightAtS,
     invertDensityW,
     jointDensityTable,
+    type LipParabolaJoint,
     liftLipParabola,
+    lipTurnTargetFromLambda,
     maxClosedStep,
     medialArchFromLoop,
     midArcKappaMaxMean,
@@ -62,7 +64,6 @@ import {
     samplePolylineAtArcFractions,
     seamBDeg,
     shortLsWeights,
-    solveLipParabolaJoint,
     splineGateFail,
     splineRhoNeed,
     stationSampleNeed,
@@ -71,7 +72,6 @@ import {
     tRInSz,
     wallRowOutward,
     wallStripVolume,
-    widenClosedRamp,
 } from "./wall-spline";
 import {
     clampSagitta,
@@ -404,6 +404,7 @@ export interface ColumnFrame {
     splineLipTurnK?: number;
     splineLipTurnDeg?: number;
     splineMaxWRStep?: number;
+    splineWMax?: number;
     splineShort?: boolean;
     splineLambda?: number;
     splineG1EDeg?: number;
@@ -552,6 +553,7 @@ export interface ColumnQuality {
     duplicateVerts?: number;
     dVPred?: number;
     maxWRStep?: number;
+    maxHybridW?: number;
     nColZFail?: number;
     nColQuadFail?: number;
     nFaceFlips?: number;
@@ -2668,6 +2670,7 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     if (styleLock && fr.styleBPrime != null && Number.isFinite(fr.styleBPrime)) {
         applyFilletResolve(fr, fr.styleBPrime);
     }
+    fr.tInc = incidentFaceTangent(sw.nTop, fr.h) ?? incidentFaceTangent(fr.sheetPlaneN ?? sw.nTop, fr.h);
     return sweepToAla(sw, fr.h);
 }
 
@@ -4917,30 +4920,45 @@ function nLipFromFrames(frames: ColumnFrame[]): number {
     return Math.max(0, fr?.nLip ?? fr?.nRoundFix ?? fr?.roundRows ?? 0);
 }
 
+/** Incident top-sheet face tangent at R after modifiers; never the (−h, 0) default. */
+function refreshIncidentTR(fr: ColumnFrame): XYZ {
+    const plane = fr.nTop ?? fr.nTopSmoothed ?? fr.sheetPlaneN;
+    const t =
+        (plane ? incidentFaceTangent(plane, fr.h) : null) ??
+        (fr.nTopSmoothed ? incidentFaceTangent(fr.nTopSmoothed, fr.h) : null) ??
+        (fr.sheetPlaneN ? incidentFaceTangent(fr.sheetPlaneN, fr.h) : null);
+    if (!t) {
+        throw new Error(`[RND-E] ${JSON.stringify({ reason: "missing-tR", i: fr.stationIndex, u: fr.u })}`);
+    }
+    fr.tInc = t;
+    return t;
+}
+
 function frameTR(fr: ColumnFrame): XYZ {
-    return (
-        fr.tInc ??
-        (fr.sheetPlaneN ? incidentFaceTangent(fr.sheetPlaneN, fr.h) : null) ?? {
-            x: -fr.h.x,
-            y: -fr.h.y,
-            z: 0,
-        }
-    );
+    return refreshIncidentTR(fr);
 }
 
 function frameR1(fr: ColumnFrame): number {
     return Math.max(MIN_ROUND_R_MM, fr.rTop || 0.5);
 }
 
-/** Top-round R→E into tP, then one quadratic E→M→B from the (s, z) joint. */
+/** Top-round R→E into tE, then one quadratic E→M→B from the smoothed θ. */
 function roundLipAndParabola(
     fr: ColumnFrame,
+    theta: number,
     lambda = SPLINE_LAMBDA,
-    lipTurn?: number,
-): { lip: XYZ[]; body: XYZ[]; E: XYZ; M: XYZ; r1: number; joint: ReturnType<typeof solveLipParabolaJoint> } {
+): {
+    lip: XYZ[];
+    body: XYZ[];
+    composite: XYZ[];
+    E: XYZ;
+    M: XYZ;
+    r1: number;
+    joint: LipParabolaJoint;
+} {
     const r1 = frameR1(fr);
     const sz = stationSzFrame(fr.R, fr.B, fr.h);
-    const joint = solveLipParabolaJoint(tRInSz(frameTR(fr), fr.h), sz.H, sz.Ls, r1, lambda, lipTurn);
+    const joint = buildJointFromTheta(tRInSz(frameTR(fr), fr.h), sz.H, sz.Ls, r1, theta, lambda);
     const lifted = liftLipParabola(joint, sz.origin, sz.h, fr.B, fr.R);
     return { ...lifted, r1, joint };
 }
@@ -4951,12 +4969,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     if (style === "straight" || !frames.length) return;
     const nLipOrig = Math.max(1, frames[0]!.nRoundFix || frames[0]!.roundRows || 0);
     const inputs: SplineStationInput[] = frames.map((fr) => {
-        const tR = fr.tInc ??
-            (fr.sheetPlaneN ? incidentFaceTangent(fr.sheetPlaneN, fr.h) : null) ?? {
-                x: -fr.h.x,
-                y: -fr.h.y,
-                z: 0,
-            };
+        const tR = refreshIncidentTR(fr);
         return {
             R: fr.R,
             B: fr.B,
@@ -5043,35 +5056,35 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     const lambdaSm = periodicGaussian1d(lambdaRaw, arc, SPLINE_SMOOTH_SIGMA_MM, period);
     const alphaRaw = frames.map((fr, i) => {
         const sz = stationSzFrame(fr.R, fr.B, fr.h);
-        return solveLipParabolaJoint(
+        return lipTurnTargetFromLambda(
             tRInSz(frameTR(fr), fr.h),
             sz.H,
             sz.Ls,
             frameR1(fr),
             lambdaSm[i] ?? SPLINE_LAMBDA,
-        ).lipTurn;
+        ).theta;
     });
     const alphaSm = periodicGaussian1d(alphaRaw, arc, SPLINE_SMOOTH_SIGMA_MM, period);
     const fullRound: XYZ[][] = [];
     const fullStraight: XYZ[][] = [];
     const parabolaE: XYZ[] = [];
     const parabolaM: XYZ[] = [];
-    const joints: ReturnType<typeof solveLipParabolaJoint>[] = [];
+    const joints: LipParabolaJoint[] = [];
     for (let i = 0; i < nS; i++) {
         const fr = frames[i]!;
         const col = straightCols[i]!;
-        const built = roundLipAndParabola(fr, lambdaSm[i] ?? SPLINE_LAMBDA, alphaSm[i]);
+        const built = roundLipAndParabola(fr, alphaSm[i] ?? 0, lambdaSm[i] ?? SPLINE_LAMBDA);
         joints.push(built.joint);
         parabolaE.push(built.E);
         parabolaM.push(built.M);
         fr.E = built.E;
         fr.rTop = built.r1;
-        fr.splineLambda = built.joint.lambda;
+        fr.splineLambda = lambdaSm[i] ?? SPLINE_LAMBDA;
         fr.splineLipTurnDeg = (built.joint.lipTurn * 180) / Math.PI;
         fr.splineTRS = built.joint.tR.s;
         fr.splineTRZ = built.joint.tR.z;
         fr.splineLs = built.joint.Ls;
-        const profile = concatProfiles(built.lip, built.body);
+        const profile = built.composite;
         if (profile.length) {
             profile[0] = { ...fr.R };
             profile[profile.length - 1] = { ...fr.B };
@@ -5128,24 +5141,33 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         if (style !== "hybrid") return 1;
         return arch ? hybridArchWeightAtS(arc[i] ?? 0, arch, side) : 0;
     });
-    const rawW = shortRaw.map((s, i) => (s ?? 0) * (rawHybrid[i] ?? 0));
-    const wR = widenClosedRamp(rawW, arc, period, SPLINE_WR_STEP_MAX);
+    const wR = shortRaw.map((s, i) => (s ?? 0) * (rawHybrid[i] ?? 0));
     if (style === "hybrid") {
         for (let i = 0; i < nS; i++) {
             if ((frames[i]!.sideSign ?? 1) < 0) wR[i] = 0;
         }
+        const wMax = rawHybrid.reduce((m, v) => Math.max(m, v), 0);
+        console.log("[HYB-WMAX]", JSON.stringify({ wMax: Number(wMax.toFixed(6)), lbMm: arch?.lbMm ?? 0 }));
+        if (wMax < 1 - 1e-9) {
+            splineGateFail("[RND-WMAX]", { wMax: Number(wMax.toFixed(6)), cap: 1 });
+        }
+        if (frames[0]) frames[0].splineWMax = wMax;
     }
     const straightSpliced: PolyPoint[][] = Array.from({ length: nS }, () => []);
     const sampledRound: XYZ[][] = [];
     const sampledStraight: XYZ[][] = [];
     const sampledL: number[] = [];
-    const sampledAlpha: number[][] = [];
-    const lipAlpha: number[] = [];
     const maxWRStep = maxClosedStep(wR);
     console.log(
         "[RND-WR-STEP]",
         JSON.stringify({ max: Number(maxWRStep.toFixed(4)), cap: SPLINE_WR_STEP_MAX }),
     );
+    if (maxWRStep > SPLINE_WR_STEP_MAX + 1e-9) {
+        splineGateFail("[RND-WR-STEP]", {
+            max: Number(maxWRStep.toFixed(4)),
+            cap: SPLINE_WR_STEP_MAX,
+        });
+    }
     for (let i = 0; i < nS; i++) {
         const fr = frames[i]!;
         const hybridW = 1;
@@ -5165,13 +5187,6 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         sampledRound.push(roundPts);
         sampledStraight.push(straightPts);
         sampledL.push(stR.S[stR.S.length - 1] ?? 1);
-        sampledAlpha.push(alphas);
-        const eIdx = Math.max(0, Math.min(nLipOrig, (straightCols[i]?.length ?? 1) - 1));
-        const lipOnly = (straightCols[i] ?? []).slice(0, eIdx + 1);
-        const lipST = curveSTFromPolyline(lipOnly.length > 1 ? lipOnly : [fr.R, fr.E]);
-        const lipLen = lipST.S[lipST.S.length - 1] ?? 0;
-        const fullLen = Math.max(stR.S[stR.S.length - 1] ?? 0, 1e-12);
-        lipAlpha.push(Math.max(0, Math.min(1, lipLen / fullLen)));
         if (active[i]) assertInversionOk(roundPts, sampledL[i] ?? 1, N, i);
         assertInversionOk(straightPts, stS.S[stS.S.length - 1] ?? 1, N, i);
     }
@@ -5220,21 +5235,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             strCol[strCol.length - 1] = { ...fr.B };
         }
         straightSpliced[i] = strCol;
-        const alphas = sampledAlpha[i] ?? [];
-        const aE = lipAlpha[i] ?? 0;
-        let kE = nearestPointIndex(roundPts, fr.E);
-        if (alphas.length) {
-            let best = 0;
-            let bestD = Number.POSITIVE_INFINITY;
-            for (let k = 0; k < alphas.length; k++) {
-                const d = Math.abs((alphas[k] ?? 0) - aE);
-                if (d < bestD) {
-                    bestD = d;
-                    best = k;
-                }
-            }
-            kE = best;
-        }
+        const kE = nearestPointIndex(roundPts, fr.E);
         const bodyPts = col.slice(kE);
         const lipPts = col.slice(0, kE + 1);
         const lipS = minSAndIndex(lipPts, fr.R, fr.B, fr.h);
@@ -6986,11 +6987,13 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             }
         }
         maxWRStep = frames[0]?.splineMaxWRStep ?? maxClosedStep(frames.map((fr) => fr.splineWR ?? 0));
+        const maxHybridW = frames[0]?.splineWMax ?? 0;
         console.log(
             "[RND-TOPO]",
             JSON.stringify({
                 dVPred: Number(dVPred.toFixed(2)),
                 maxWRStep: Number(maxWRStep.toFixed(4)),
+                maxHybridW: Number(maxHybridW.toFixed(4)),
                 nColZFail,
                 nColQuadFail,
                 nFaceFlips,
@@ -7106,6 +7109,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         worstMidRowTurnU: worstMidRowTurn.u,
         dVPred,
         maxWRStep,
+        maxHybridW: frames[0]?.splineWMax,
         nColZFail,
         nColQuadFail,
         nFaceFlips,
