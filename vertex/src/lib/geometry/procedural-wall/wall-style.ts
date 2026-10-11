@@ -106,14 +106,14 @@ export function wallBetaAt(u: number): number {
 }
 
 /**
- * Circular-arc central angle for target sagitta h on chord d.
- * A circular segment satisfies 2h/d = tan(θ/4), so θ = 4 atan(2h/d).
- * (The 2 atan form under-shoots the Hermite sagitta by ~2× and misses the
- * 0.10 d median gate; this inverse realizes h_i = β d.)
+ * E-only tilt that realizes sagitta h on chord d.
+ * With tF along the chord, offset/d = (1/4) tan(α/2) and λ = 2/(3(1+cos α)),
+ * so α = 2 atan(4h/d). The written 2 atan(2h/d) is the two-end circular
+ * form; F stays on the faired ring so only E is tilted.
  */
 export function thetaFromSagitta(h: number, d: number): number {
     if (!(d > 1e-9) || !(h > 0)) return 0;
-    return 4 * Math.atan((2 * Math.max(0, h)) / d);
+    return 2 * Math.atan((4 * Math.max(0, h)) / d);
 }
 
 /** Circular-arc cubic handle: λ = 2 / (3 (1 + cos(θ/2))). θ = 0 → 1/3. */

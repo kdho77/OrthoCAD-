@@ -4209,9 +4209,9 @@ function stylePackOk(
     if (cur.L < cur.minL - 1e-9) return false;
     const pack = cur.r1 + cur.r2 + Math.max(cur.L, cur.minL);
     if (pack <= 0.9 * cur.height + 1e-9) return true;
-    if (!baseline) return true;
+    if (!baseline) return false;
     const basePack = baseline.r1 + baseline.r2 + Math.max(baseline.L, baseline.minL);
-    return pack <= basePack + 0.25;
+    return pack <= basePack + 1e-6;
 }
 
 function applyStyleTilt(fr: ColumnFrame, theta: number): void {
@@ -4223,21 +4223,12 @@ function applyStyleTilt(fr: ColumnFrame, theta: number): void {
         applyAlaToFrame(fr);
         return;
     }
-    const half = 0.5 * theta;
-    // φE −= θ/2 leans tE outward. φF −= θ/2 so tF_travel (E→F) leans in.
-    fr.phiRound1Lock = baseE - half;
-    fr.phiFLock = baseF - half;
+    // E-only: φE −= θ leans tE outward. F stays on the Laplacian ring so
+    // F-turn and plantar G1 at B stay the faired ALA. θ is the E-only
+    // angle that realizes the target sagitta.
+    fr.phiRound1Lock = baseE - theta;
+    fr.phiFLock = undefined;
     applyAlaToFrame(fr);
-    const height = Math.max(fr.heightMm, 1e-9);
-    const minL = minLineOfHeight(height);
-    const L = dist3(fr.E, fr.F);
-    const budget = 0.9 * height;
-    if (fr.rTop + fr.rFillet + Math.max(L, minL) > budget + 1e-9) {
-        const packed = scaleShortWallPack(height, fr.rTop, fr.rFillet, Math.max(L, minL), MIN_ROUND_R_MM);
-        fr.rTop = packed.r1;
-        fr.rFillet = packed.r2;
-        applyAlaToFrame(fr);
-    }
 }
 
 function ringTurnAt(pts: XYZ[], i: number, plan = false): number {
