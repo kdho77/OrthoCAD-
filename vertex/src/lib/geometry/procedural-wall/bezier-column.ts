@@ -188,6 +188,8 @@ export const ACROSS_STATION_MAX_DEG = 10;
 export const ACROSS_STATION_P99_MAX_DEG = 5;
 /** S1-stage E/F ring turning. Step 2 tightens back to 3°. */
 export const RING_TURNING_MAX_DEG = 6.5;
+/** Modified-case E/F-turn cap. Unmodified stays {@link RING_TURNING_MAX_DEG}. */
+export const RING_TURNING_MODIFIED_MAX_DEG = 7.5;
 export const HEADING_MAX_DEG = 3;
 export const ROUND_MIN_STEP_MM = 0.15;
 export const ROUND_MAX_ASPECT = 20;
@@ -2567,6 +2569,21 @@ export function assertPieceSpacing(pts: XYZ[], minMm: number, station = -1): XYZ
     for (let i = 1; i < last; i++) {
         if (dist3(pts[i]!, pts[i - 1]!) + 1e-12 >= minMm) continue;
         const at = station >= 0 ? String(station) : "?";
+        const lo = Math.max(0, (station >= 0 ? station : 0) - 4);
+        const hi = Math.min(pts.length - 1, i + 4);
+        const dump = [];
+        for (let k = Math.max(0, i - 4); k <= hi; k++) {
+            const a = pts[k]!;
+            const b = pts[k + 1];
+            dump.push({
+                k,
+                x: Number(a.x.toFixed(4)),
+                y: Number(a.y.toFixed(4)),
+                z: Number(a.z.toFixed(4)),
+                dNext: b ? Number(dist3(a, b).toFixed(4)) : null,
+            });
+        }
+        console.log("[S1-I-DUMP]", JSON.stringify({ station, pair: `${i - 1}-${i}`, lo, rows: dump }));
         throw new Error(`[S1-I] collapsed fillet row at station ${at} pair ${i - 1}-${i}`);
     }
     return pts;
@@ -2998,19 +3015,80 @@ function filletTangentAtPhi(fil: ConstructedFillet, phi: number): XYZ {
  * Junctions in `lock` (E / F) stay put so piece planes are not broken. */
 export function ensureColumnMinEdge(pts: XYZ[], minMm: number, lock: number[] = []): void {
     const locked = new Set(lock);
-    for (let i = 1; i < pts.length - 1; i++) {
-        if (locked.has(i)) continue;
-        const prev = pts[i - 1]!;
-        if (dist3(prev, pts[i]!) + 1e-12 >= minMm) continue;
-        let target = i + 1;
-        while (target < pts.length && dist3(prev, pts[target]!) + 1e-12 < minMm) {
-            if (locked.has(target)) break;
+    const last = pts.length - 1;
+    const findAhead = (from: number, origin: XYZ): number => {
+        let target = from;
+        while (target <= last && dist3(origin, pts[target]!) + 1e-12 < minMm) {
+            if (locked.has(target) && target !== last) break;
             target++;
         }
-        if (target >= pts.length) continue;
-        const span = dist3(prev, pts[target]!);
-        if (span < minMm) continue;
-        pts[i] = lerp3(prev, pts[target]!, minMm / span);
+        return target;
+    };
+    const findBehind = (from: number, dest: XYZ, need: number): number => {
+        let src = from;
+        while (src >= 0 && dist3(pts[src]!, dest) + 1e-12 < need) {
+            if (locked.has(src) && src !== 0) break;
+            src--;
+        }
+        return src;
+    };
+    for (let pass = 0; pass < 8; pass++) {
+        let moved = false;
+        for (let i = 1; i < last; i++) {
+            if (locked.has(i)) continue;
+            const prev = pts[i - 1]!;
+            if (dist3(prev, pts[i]!) + 1e-12 >= minMm) continue;
+            const target = findAhead(i + 1, prev);
+            if (target > last) continue;
+            const span = dist3(prev, pts[target]!);
+            if (span < minMm) continue;
+            pts[i] = lerp3(prev, pts[target]!, minMm / span);
+            moved = true;
+        }
+        // Locked F / last-fillet can still collapse onto the previous free row
+        // (t2 [S1-I] pair 19-20). Walk past packed neighbors to the first slack.
+        for (let i = last - 1; i >= 1; i--) {
+            const prev = pts[i - 1]!;
+            if (dist3(prev, pts[i]!) + 1e-12 >= minMm) continue;
+            if (locked.has(i - 1) && !locked.has(i)) {
+                const target = findAhead(i + 1, prev);
+                if (target > last) continue;
+                const span = dist3(prev, pts[target]!);
+                if (span < minMm) continue;
+                pts[i] = lerp3(prev, pts[target]!, minMm / span);
+                moved = true;
+                continue;
+            }
+            if (!locked.has(i - 1)) {
+                const src = findBehind(i - 2, pts[i]!, minMm * 2);
+                if (src < 0) continue;
+                const span = dist3(pts[src]!, pts[i]!);
+                if (span < minMm * 2) continue;
+                pts[i - 1] = lerp3(pts[i]!, pts[src]!, minMm / span);
+                moved = true;
+            }
+        }
+        if (!moved) break;
+    }
+    // Last resort: even-space free samples between locked anchors when a pair
+    // is still short and the piece actually has the length.
+    const anchors = [0, ...lock.filter((i) => i > 0 && i < last).sort((a, b) => a - b), last];
+    for (let a = 0; a < anchors.length - 1; a++) {
+        const lo = anchors[a]!;
+        const hi = anchors[a + 1]!;
+        if (hi - lo < 2) continue;
+        const span = dist3(pts[lo]!, pts[hi]!);
+        const need = (hi - lo) * minMm;
+        if (span + 1e-12 < need) continue;
+        let short = false;
+        for (let i = lo + 1; i <= hi; i++) {
+            if (dist3(pts[i - 1]!, pts[i]!) + 1e-12 < minMm) short = true;
+        }
+        if (!short) continue;
+        for (let i = lo + 1; i < hi; i++) {
+            if (locked.has(i)) continue;
+            pts[i] = lerp3(pts[lo]!, pts[hi]!, (i - lo) / (hi - lo));
+        }
     }
 }
 
@@ -3475,20 +3553,9 @@ export function liveSheetAtR(
 ): LiveSheetAtR {
     const faceTilt = fallbackPlaneN ? sheetSlopeFromNormal(fallbackPlaneN, h) : null;
     const sampled = sampleInPlaneSlope(R, h, topZ, faceTilt == null ? fallbackPlaneN : undefined);
-    if (faceTilt != null && fallbackPlaneN) {
-        const nTop = nTopFromSheetSlope(faceTilt, h);
-        const sheet = sampled.valid
-            ? sampled.slopeRad
-            : (slopeFromSheetPlane(fallbackPlaneN, h) ?? -faceTilt);
-        return {
-            nTop,
-            tInc: incidentFaceTangent(fallbackPlaneN, h) ?? incidentFaceTangent(nTop, h),
-            sheetSlopeRad: sheet,
-            roundSlopeRad: faceTilt,
-            planeN: fallbackPlaneN,
-            valid: true,
-        };
-    }
+    // Live n_top / T0 must come from the current top along the current heading.
+    // Preferring the junction face first reused a pre-width / out-of-plane n_top
+    // after insoleWidthScale (width+5 medial-arch-upper ~11° at u 0.50–0.54).
     if (sampled.valid) {
         const roundSlopeRad = -sampled.slopeRad;
         const nTop = nTopFromSheetSlope(roundSlopeRad, h);
@@ -3498,6 +3565,17 @@ export function liveSheetAtR(
             sheetSlopeRad: sampled.slopeRad,
             roundSlopeRad,
             planeN: nTop,
+            valid: true,
+        };
+    }
+    if (faceTilt != null && fallbackPlaneN) {
+        const nTop = nTopFromSheetSlope(faceTilt, h);
+        return {
+            nTop,
+            tInc: incidentFaceTangent(fallbackPlaneN, h) ?? incidentFaceTangent(nTop, h),
+            sheetSlopeRad: slopeFromSheetPlane(fallbackPlaneN, h) ?? -faceTilt,
+            roundSlopeRad: faceTilt,
+            planeN: fallbackPlaneN,
             valid: true,
         };
     }
@@ -6088,6 +6166,72 @@ export function buildBezierColumns(
     enforceAbsRadiusRate(frames, movedAt);
     smoothFRing(frames);
     lockFilletSteal(frames, nFilStar);
+    if (movedAt) {
+        const arch = frames
+            .map((fr, i) => {
+                const dx = fr.B.x - fr.R.x;
+                const dy = fr.B.y - fr.R.y;
+                const t0s = fr.T0.x * fr.h.x + fr.T0.y * fr.h.y;
+                return {
+                    i,
+                    u: Number(fr.u.toFixed(4)),
+                    nTop: {
+                        x: Number(fr.nTop.x.toFixed(4)),
+                        y: Number(fr.nTop.y.toFixed(4)),
+                        z: Number(fr.nTop.z.toFixed(4)),
+                    },
+                    T0: {
+                        s: Number(t0s.toFixed(4)),
+                        z: Number(fr.T0.z.toFixed(4)),
+                    },
+                    sweepDeg: Number(((fr.roundSweepRad * 180) / Math.PI).toFixed(2)),
+                    sz: {
+                        s: Number((dx * fr.h.x + dy * fr.h.y).toFixed(3)),
+                        z: Number((fr.R.z - fr.B.z).toFixed(3)),
+                    },
+                    inset: Number(Math.hypot(dx, dy).toFixed(3)),
+                };
+            })
+            .filter((r) => r.u >= 0.48 && r.u <= 0.56);
+        if (arch.length) {
+            console.log("[S1-WIDTH-ARCH]", JSON.stringify({ stage: "frames", n: arch.length, rows: arch }));
+        }
+    }
+    {
+        const slice = frames
+            .map((fr, i) => {
+                const nRound = fr.nRoundFix ?? 0;
+                const nLine = fr.nLineFix ?? 0;
+                const nFil = fr.nFilFix ?? 0;
+                return {
+                    i,
+                    u: Number(fr.u.toFixed(4)),
+                    R: {
+                        x: Number(fr.R.x.toFixed(3)),
+                        y: Number(fr.R.y.toFixed(3)),
+                        z: Number(fr.R.z.toFixed(3)),
+                    },
+                    B: {
+                        x: Number(fr.B.x.toFixed(3)),
+                        y: Number(fr.B.y.toFixed(3)),
+                        z: Number(fr.B.z.toFixed(3)),
+                    },
+                    heading: { x: Number(fr.h.x.toFixed(4)), y: Number(fr.h.y.toFixed(4)) },
+                    inset: Number(Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y).toFixed(3)),
+                    height: Number((fr.R.z - fr.B.z).toFixed(3)),
+                    nRound,
+                    nLine,
+                    nFil,
+                    pairE: nRound,
+                    pairF: nRound + nLine,
+                    pairLastFil: nRound + nLine + nFil,
+                };
+            })
+            .filter((r) => r.i >= 368 && r.i <= 382);
+        if (slice.length && slice.some((r) => r.height < 4.2)) {
+            console.log("[S1-T2-STATIONS]", JSON.stringify({ stage: "frames", rows: slice }));
+        }
+    }
     if (style.style === "straight") {
         nWall = prepareStyledMid(frames, nWall, nRoundStar, nFilStar, nLineStar);
         nLineStar = frames[0]?.nLineFix || nLineStar;

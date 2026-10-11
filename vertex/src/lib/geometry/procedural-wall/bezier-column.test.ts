@@ -841,29 +841,21 @@ describe("bezier column", () => {
         }
     });
 
-    test("liveSheetAtR uses the incident top face as the primary start tangent", () => {
+    test("liveSheetAtR samples the live top; junction is fallback only", () => {
         const R = { x: 0, y: 0, z: 10 };
         const h = { x: 1, y: 0 };
         const topZ = (x: number) => 10 - 0.05 * x;
         const steep = nTopFromSheetSlope((80 * Math.PI) / 180, h);
         const live = liveSheetAtR(R, h, topZ, steep);
         expect(live.valid).toBe(true);
-        const cached = sheetSlopeFromNormal(steep, h)!;
-        expect(live.roundSlopeRad).toBeCloseTo(cached, 6);
-        const tInc = incidentFaceTangent(steep, h)!;
-        const got = live.tInc!;
-        const dot = Math.max(
-            -1,
-            Math.min(
-                1,
-                (got.x * tInc.x + got.y * tInc.y + got.z * tInc.z) /
-                    (Math.hypot(got.x, got.y, got.z) * Math.hypot(tInc.x, tInc.y, tInc.z)),
-            ),
-        );
-        expect((Math.acos(dot) * 180) / Math.PI).toBeLessThan(ROUND_START_INCIDENT_MAX_DEG);
         const secant = liveSheetAtR(R, h, topZ);
         expect(secant.valid).toBe(true);
+        expect(live.roundSlopeRad).toBeCloseTo(secant.roundSlopeRad, 6);
+        const cached = sheetSlopeFromNormal(steep, h)!;
         expect(Math.abs(secant.roundSlopeRad)).toBeLessThan(Math.abs(cached) - 0.4);
+        const fallback = liveSheetAtR(R, h, () => null, steep);
+        expect(fallback.valid).toBe(true);
+        expect(fallback.roundSlopeRad).toBeCloseTo(cached, 6);
     });
 
     test("sampleInPlaneSlope uses plus[0] at 0.25-0.5 mm and never plusFar", () => {
@@ -1139,6 +1131,18 @@ describe("bezier column", () => {
         ensureColumnMinEdge(pts, 0.01);
         expect(pts).toHaveLength(4);
         expect(dist3ish(pts[0]!, pts[1]!)).toBeGreaterThanOrEqual(0.01 - 1e-9);
+    });
+
+    test("ensureColumnMinEdge separates a locked-F pile at pair 19-20", () => {
+        const pts: Array<{ x: number; y: number; z: number }> = [];
+        for (let i = 0; i <= 22; i++) {
+            if (i <= 18) pts.push({ x: i * 0.2, y: 0, z: 10 - i * 0.2 });
+            else if (i === 22) pts.push({ x: 4.2, y: 0, z: 0 });
+            else pts.push({ x: 3.6002 + (i - 19) * 0.0002, y: 0, z: 6.4 });
+        }
+        ensureColumnMinEdge(pts, 0.01, [8, 18]);
+        expect(() => assertPieceSpacing(pts, 0.01, 372)).not.toThrow();
+        expect(dist3ish(pts[19]!, pts[20]!)).toBeGreaterThanOrEqual(0.01 - 1e-9);
     });
 
     test("ensurePieceSpacing throws on a collapsed fillet row", () => {

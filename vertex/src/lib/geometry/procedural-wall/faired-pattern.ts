@@ -36,6 +36,8 @@ export interface FairedPatternInput {
     wFair?: number;
     sampleCount?: number;
     constraints?: FairedConstraints;
+    /** Skip the post-QP geometric shrink. Moved-B refit re-solves the QP instead. */
+    skipPostScale?: boolean;
 }
 
 export interface FairedPattern {
@@ -470,7 +472,7 @@ export function fairedPattern(input: FairedPatternInput): FairedPattern {
     let samples = startAtLowCurvature(ensureCcw(resamplePolyline(dense, nSample)));
     const rim = input.constraints?.rim;
     const minInset = input.constraints?.minInsetMm ?? 0;
-    if (rim && rim.length >= 3 && minInset > 0) {
+    if (rim && rim.length >= 3 && minInset > 0 && !input.skipPostScale) {
         samples = scaleToMinInset(samples, rim, minInset);
     }
     return {

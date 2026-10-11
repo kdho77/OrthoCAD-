@@ -1227,6 +1227,47 @@ export function reconstructProceduralWalls(
         reparameterizeBArcLength(stations, hygiened.loop);
     }
     assertClosedStationRing(stations, rimLocal);
+    {
+        const thicknessChanged =
+            options.thicknessMm != null &&
+            options.thicknessMm !== (options.stockThicknessMm ?? options.thicknessMm);
+        if (thicknessChanged) {
+            const slice = stations
+                .map((st, i) => {
+                    const dx = st.outline.x - st.rim.x;
+                    const dy = st.outline.y - st.rim.y;
+                    const h = columnHeading(st).h;
+                    return {
+                        i,
+                        u: Number(st.u.toFixed(4)),
+                        R: {
+                            x: Number(st.rim.x.toFixed(3)),
+                            y: Number(st.rim.y.toFixed(3)),
+                            z: Number(st.rim.z.toFixed(3)),
+                        },
+                        B: {
+                            x: Number(st.outline.x.toFixed(3)),
+                            y: Number(st.outline.y.toFixed(3)),
+                            z: Number(st.outline.z.toFixed(3)),
+                        },
+                        heading: { x: Number(h.x.toFixed(4)), y: Number(h.y.toFixed(4)) },
+                        inset: Number(Math.hypot(dx, dy).toFixed(3)),
+                        pair: i,
+                    };
+                })
+                .filter((r) => r.i >= 368 && r.i <= 382);
+            if (slice.length) {
+                console.log(
+                    "[S1-T2-STATIONS]",
+                    JSON.stringify({
+                        stage: "preloft",
+                        thicknessMm: options.thicknessMm,
+                        rows: slice,
+                    }),
+                );
+            }
+        }
+    }
     assertPreLoftStations(stations, r1, r2);
     {
         let minB = Infinity;
@@ -1297,6 +1338,77 @@ export function reconstructProceduralWalls(
         }),
     });
     const indexGridStyle = (options.wallStyle ?? "straight") !== "straight";
+    if (wholeWidth) {
+        const arch = grid.frames
+            .map((fr, i) => {
+                const dx = fr.B.x - fr.R.x;
+                const dy = fr.B.y - fr.R.y;
+                const plan = Math.hypot(dx, dy) || 1;
+                const t0s = fr.T0.x * fr.h.x + fr.T0.y * fr.h.y;
+                return {
+                    i,
+                    u: Number(fr.u.toFixed(4)),
+                    nTop: {
+                        x: Number(fr.nTop.x.toFixed(4)),
+                        y: Number(fr.nTop.y.toFixed(4)),
+                        z: Number(fr.nTop.z.toFixed(4)),
+                    },
+                    T0: {
+                        s: Number(t0s.toFixed(4)),
+                        z: Number(fr.T0.z.toFixed(4)),
+                    },
+                    sweepDeg: Number(((fr.roundSweepRad * 180) / Math.PI).toFixed(2)),
+                    sz: {
+                        s: Number((dx * fr.h.x + dy * fr.h.y).toFixed(3)),
+                        z: Number((fr.R.z - fr.B.z).toFixed(3)),
+                    },
+                    inset: Number(plan.toFixed(3)),
+                };
+            })
+            .filter((r) => r.u >= 0.48 && r.u <= 0.56);
+        console.log("[S1-WIDTH-ARCH]", JSON.stringify({ scale: wholeScale, n: arch.length, rows: arch }));
+    }
+    const thicknessChanged =
+        options.thicknessMm != null &&
+        options.thicknessMm !== (options.stockThicknessMm ?? options.thicknessMm);
+    if (thicknessChanged) {
+        const slice = grid.frames
+            .map((fr, i) => {
+                const nRound = fr.nRoundFix ?? 0;
+                const nLine = fr.nLineFix ?? 0;
+                const nFil = fr.nFilFix ?? 0;
+                return {
+                    i,
+                    u: Number(fr.u.toFixed(4)),
+                    R: {
+                        x: Number(fr.R.x.toFixed(3)),
+                        y: Number(fr.R.y.toFixed(3)),
+                        z: Number(fr.R.z.toFixed(3)),
+                    },
+                    B: {
+                        x: Number(fr.B.x.toFixed(3)),
+                        y: Number(fr.B.y.toFixed(3)),
+                        z: Number(fr.B.z.toFixed(3)),
+                    },
+                    heading: { x: Number(fr.h.x.toFixed(4)), y: Number(fr.h.y.toFixed(4)) },
+                    inset: Number(Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y).toFixed(3)),
+                    height: Number((fr.R.z - fr.B.z).toFixed(3)),
+                    nRound,
+                    nLine,
+                    nFil,
+                    pairE: nRound,
+                    pairF: nRound + nLine,
+                    pairLastFil: nRound + nLine + nFil,
+                };
+            })
+            .filter((r) => r.i >= 374 && r.i <= 382);
+        if (slice.length) {
+            console.log(
+                "[S1-T2-STATIONS]",
+                JSON.stringify({ thicknessMm: options.thicknessMm, rows: slice }),
+            );
+        }
+    }
     try {
         assertPostLoftGates(grid.quality);
     } catch (err) {

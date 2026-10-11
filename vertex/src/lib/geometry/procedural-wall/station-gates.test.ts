@@ -18,6 +18,7 @@ import {
     MIN_INSET_FLOOR_MM,
     minInsetForLeanMm,
     POSTLOFT_DIHEDRAL_MAX_DEG,
+    refitMinInsetThroughQp,
     scalePatternWidth,
     shiftPatternByRimFollow,
     signedRimInsetMm,
@@ -135,6 +136,17 @@ describe("station-gates", () => {
         let minIn = Infinity;
         for (const p of hit.loop) minIn = Math.min(minIn, signedRimInsetMm(p, rim));
         expect(minIn).toBeGreaterThanOrEqual(MIN_INSET_FLOOR_MM - 1e-3);
+    });
+
+    test("min-inset refit stays in the faired QP and meets the floor", () => {
+        const rim = oval(40, 20, 64);
+        const tight = oval(39.2, 19.2, 64);
+        const out = refitMinInsetThroughQp(tight, rim, MIN_INSET_FLOOR_MM);
+        let minIn = Infinity;
+        for (const p of out) minIn = Math.min(minIn, signedRimInsetMm(p, rim));
+        expect(minIn).toBeGreaterThanOrEqual(MIN_INSET_FLOOR_MM - 1e-3);
+        const hy = movedPatternHygiene(out, { minX: -40, maxX: 40 }, 1);
+        expect(hy.report.maxAbsDkDs).toBeLessThanOrEqual(0.02 + 1e-6);
     });
 
     test("followFactor 0 keeps B fixed and 1 tracks the rim plan displacement", () => {

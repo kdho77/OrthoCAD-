@@ -21,7 +21,7 @@ import {
     startAtLowCurvature,
 } from "./curves";
 import type { WallRegionDefaults } from "./defaults";
-import { fairedPattern, scaleToMinInset } from "./faired-pattern";
+import { fairedPattern } from "./faired-pattern";
 import type { HermiteStation } from "./loft";
 import { outwardNormal } from "./measure";
 import { enforceMinRimInset } from "./pattern-hygiene";
@@ -370,13 +370,14 @@ export function adjustPatternForClearance(input: {
         wFit: 1,
         wFair: 0.5,
         sampleCount: Math.max(160, pattern.length, rim.length),
+        skipPostScale: true,
         constraints: {
             rim,
             minInsetMm: floorInset + 0.02,
             maxIters: 10,
         },
     });
-    const loop = enforceMinRimInset(
+    const loop = refitMinInsetThroughQp(
         fit.samples.map((p) => ({ x: p.x, y: p.y, z: 0 })),
         rim,
         floorInset,
@@ -429,6 +430,78 @@ export function shiftPatternByRimFollow(
             z: p.z,
         };
     });
+}
+
+/** Re-solve inset through the faired QP. Do not geometrically shrink — that spikes dk/ds. */
+export function refitMinInsetThroughQp(
+    loop: PolyPoint[],
+    rim: PolyPoint[],
+    minInsetMm: number,
+    opts?: {
+        bounds?: { minX: number; maxX: number };
+        medialYSign?: 1 | -1;
+        wFair?: number;
+    },
+): PolyPoint[] {
+    let pts = loop.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    if (pts.length < 3 || rim.length < 3 || minInsetMm <= 0) return pts;
+    for (let attempt = 0; attempt < 5; attempt++) {
+        let worst = Infinity;
+        for (const p of pts) worst = Math.min(worst, signedRimInsetMm(p, rim));
+        if (worst >= minInsetMm - 1e-4) break;
+        const slack = minInsetMm + 0.06 + attempt * 0.05;
+        const wFair = Math.max(opts?.wFair ?? 0.65, 0.55 + attempt * 0.08);
+        const targets = pts.map((p) => {
+            const inset = signedRimInsetMm(p, rim);
+            if (inset >= slack - 1e-4) return { point: p, weight: 2.2 };
+            const inn = unitInwardAtRim(rim, p.x, p.y);
+            const push = slack - inset + 0.12;
+            return {
+                point: { x: p.x + inn.x * push, y: p.y + inn.y * push, z: 0 },
+                weight: 18,
+            };
+        });
+        const fit = fairedPattern({
+            targets,
+            controlCount: 20,
+            wFit: 1,
+            wFair,
+            sampleCount: Math.max(160, pts.length, rim.length),
+            skipPostScale: true,
+            constraints: {
+                rim,
+                minInsetMm: slack,
+                maxIters: 14,
+                ...(opts?.bounds && opts.medialYSign
+                    ? { bounds: opts.bounds, medialYSign: opts.medialYSign }
+                    : {}),
+            },
+        });
+        pts = fit.samples.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    }
+    let worst = Infinity;
+    for (const p of pts) worst = Math.min(worst, signedRimInsetMm(p, rim));
+    if (worst < minInsetMm - 1e-4) return pts;
+    const polish = fairedPattern({
+        targets: pts.map((p) => ({ point: p, weight: 3.2 })),
+        controlCount: 20,
+        wFit: 1,
+        wFair: Math.max(opts?.wFair ?? 0.65, 0.95),
+        sampleCount: Math.max(160, pts.length, rim.length),
+        skipPostScale: true,
+        constraints: {
+            rim,
+            minInsetMm,
+            maxIters: 8,
+            ...(opts?.bounds && opts.medialYSign
+                ? { bounds: opts.bounds, medialYSign: opts.medialYSign }
+                : {}),
+        },
+    });
+    const smoothed = polish.samples.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    let polishedWorst = Infinity;
+    for (const p of smoothed) polishedWorst = Math.min(polishedWorst, signedRimInsetMm(p, rim));
+    return polishedWorst >= minInsetMm - 1e-4 ? smoothed : pts;
 }
 
 /** Whole-insole width: scale B about the same medial-lateral centre as the top. */
@@ -514,6 +587,7 @@ export function fairMovedPattern(input: {
             wFit: 1,
             wFair: attempt.wFair,
             sampleCount: Math.max(160, moved.length, rim.length),
+            skipPostScale: true,
             constraints: {
                 rim,
                 minInsetMm: floorInset + 0.02,
@@ -528,7 +602,11 @@ export function fairMovedPattern(input: {
             attempt.lat,
             yMid,
         );
-        out = scaleToMinInset(out, rim, floorInset);
+        out = refitMinInsetThroughQp(out, rim, floorInset, {
+            bounds: input.bounds,
+            medialYSign: sign,
+            wFair: attempt.wFair,
+        });
         if (!input.bounds) {
             best = out;
             continue;
@@ -547,8 +625,11 @@ export function fairMovedPattern(input: {
     if (input.bounds) {
         const hygiene = movedPatternHygiene(best, input.bounds, sign);
         if (hygiene.report.maxAbsDkDs > PATTERN_MAX_DKDS) {
-            best = laplacianClosedPlan(best, 6);
-            best = scaleToMinInset(best, rim, floorInset);
+            best = refitMinInsetThroughQp(best, rim, floorInset, {
+                bounds: input.bounds,
+                medialYSign: sign,
+                wFair: 0.95,
+            });
         }
     }
     return best;
@@ -586,13 +667,7 @@ export function smoothMovedStationOutline(stations: HermiteStation[], loop: Poly
     }
 }
 
-export function limitStationSkew(
-    stations: HermiteStation[],
-    loop: PolyPoint[],
-    r1: number,
-    r2: number,
-): void {
-    if (stations.length < 3 || loop.length < 3) return;
+function slideSkewStations(stations: HermiteStation[], loop: PolyPoint[], r1: number, r2: number): void {
     const rim = stations.map((s) => s.rim);
     const c = centroidOf(rim);
     for (let i = 0; i < stations.length; i++) {
@@ -609,7 +684,19 @@ export function limitStationSkew(
         if (hl > 1e-6) st.n = { x: dx / hl, y: dy / hl };
         st.tB = nearestS01(st.outline, loop);
     }
+}
+
+export function limitStationSkew(
+    stations: HermiteStation[],
+    loop: PolyPoint[],
+    r1: number,
+    r2: number,
+): void {
+    if (stations.length < 3 || loop.length < 3) return;
+    slideSkewStations(stations, loop, r1, r2);
     repairNeighbourHeading(stations, loop, r1, r2);
+    // spreadClosedOnLoop can put skew back over 0.5 inset; slide once more.
+    slideSkewStations(stations, loop, r1, r2);
 }
 
 function headingDeg(a: HermiteStation, b: HermiteStation): number {
