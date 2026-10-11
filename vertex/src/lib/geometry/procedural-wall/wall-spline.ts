@@ -1335,13 +1335,16 @@ export function columnChordsOk(pts: XYZ[], _L?: number, _N?: number): boolean {
     return true;
 }
 
-/** Hard stop on chords shorter than 0.03 mm. */
+/** Hard stop on chords shorter than 0.03 mm (logs in the report-only build). */
 export function assertInversionOk(pts: XYZ[], L: number, N: number, i: number): void {
     const need = SPLINE_CHORD_MIN_MM;
     for (let k = 1; k < pts.length; k++) {
         const e = hypot3(sub(pts[k]!, pts[k - 1]!));
         if (e + 1e-15 < need) {
-            throw new Error(`[RND-INV] ${JSON.stringify({ i, k, chord: e, need, L, N })}`);
+            splineGateFail("[RND-INV]", { i, k, chord: e, need, L, N });
+            if (!SPLINE_GATES_REPORT_ONLY) {
+                throw new Error(`[RND-INV] ${JSON.stringify({ i, k, chord: e, need, L, N })}`);
+            }
         }
     }
 }
@@ -1545,8 +1548,9 @@ export function finishNormalizedDensity(qGrid: number[], N: number, nNeed: numbe
     const W = [0];
     const add: number[] = [];
     let Z = 0;
+    const pad = Math.max(0, N - nNeed);
     for (let j = 0; j < nGrid; j++) {
-        const inc = Math.max(qGrid[j] ?? 0, 1e-16) / nGrid;
+        const inc = (Math.max(qGrid[j] ?? 0, 1e-16) + pad) / nGrid;
         add.push(inc);
         Z += inc;
         u.push((j + 1) / nGrid);
