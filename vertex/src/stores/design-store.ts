@@ -396,6 +396,19 @@ export interface ViewerSettings {
     showScans: boolean;
     /** Active named camera view (for UI + planar editing constraint). */
     view: CameraView;
+    /**
+     * S0 Option B preview: `'procedural'` rebuilds the unmodified stock base
+     * from TopSurface + BottomOutline (viewer-only). Default `'legacy'` keeps
+     * today's sidewall-deform path. Not persisted; never touches modifiers/export.
+     */
+    wallModel?: "legacy" | "procedural";
+    /** Print-step grinding dropdown → wall mid-style. Viewer-only. */
+    wallStyle?: "straight" | "round" | "hybrid";
+    /** Viewer-only device-type preset for the procedural wall. Not persisted. */
+    deviceType?: "functional" | "accommodative";
+    lateralFlangeHeightMm?: number;
+    lateralFlangeLengthMm?: number;
+    lateralFlangeAngleDeg?: number;
 }
 
 export type TransformMode = "translate" | "rotate" | "scale";
@@ -531,6 +544,7 @@ export const useDesignStore = create<DesignStore>()(
                 showRight: true,
                 showScans: true,
                 view: "iso",
+                wallModel: "legacy",
             },
             selectedElementId: null,
             transformMode: "translate",

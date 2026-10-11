@@ -29,7 +29,8 @@ interface PrintingPanelProps {
 
 export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: PrintingPanelProps) {
     const { user, license } = useAuthStore();
-    const { design, exportSide, setExportSide } = useDesignStore();
+    const { design, exportSide, setExportSide, setViewer, viewer } = useDesignStore();
+    const wallStyle = viewer.wallStyle ?? "straight";
     const printRecipe = migratePrintRecipe(design.printRecipe);
     const recipeInfillPct = Math.round(infillFractionFromRecipe(printRecipe) * 100);
     const [layerHeight, setLayerHeight] = useState(0.3);
@@ -46,10 +47,7 @@ export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: Pri
     });
 
     const presets = useMemo(() => presetsForMethod(design.method), [design.method]);
-    const defaultPreset = useMemo(
-        () => presets.find((p) => p.beltAngleDeg) ?? presets[0],
-        [presets],
-    );
+    const defaultPreset = useMemo(() => presets.find((p) => p.beltAngleDeg) ?? presets[0], [presets]);
     const [presetId, setPresetId] = useState(defaultPreset?.id ?? "");
     const preset = presets.find((p) => p.id === presetId) ?? defaultPreset;
 
@@ -150,38 +148,73 @@ export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: Pri
             ) : null}
 
             {!showPrimaryOnly ? (
-            <div className="space-y-1.5">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {isCnc ? "Mill preset" : "Printer preset"}
+                <div className="space-y-1.5">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        {isCnc ? "Mill preset" : "Printer preset"}
+                    </div>
+                    {presets.map((p) => (
+                        <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => setPresetId(p.id)}
+                            className={cn(
+                                "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left text-xs",
+                                presetId === p.id
+                                    ? "border-primary bg-primary/10 text-foreground"
+                                    : "border-border bg-background text-muted-foreground",
+                            )}
+                        >
+                            {isCnc ? <Cpu className="h-3.5 w-3.5" /> : <Printer className="h-3.5 w-3.5" />}
+                            {p.name}
+                            {p.beltAngleDeg ? (
+                                <span className="ml-auto rounded bg-muted px-1 text-[10px]">
+                                    belt {p.beltAngleDeg}°
+                                </span>
+                            ) : null}
+                        </button>
+                    ))}
                 </div>
-                {presets.map((p) => (
-                    <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => setPresetId(p.id)}
-                        className={cn(
-                            "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left text-xs",
-                            presetId === p.id
-                                ? "border-primary bg-primary/10 text-foreground"
-                                : "border-border bg-background text-muted-foreground",
-                        )}
-                    >
-                        {isCnc ? <Cpu className="h-3.5 w-3.5" /> : <Printer className="h-3.5 w-3.5" />}
-                        {p.name}
-                        {p.beltAngleDeg ? (
-                            <span className="ml-auto rounded bg-muted px-1 text-[10px]">
-                                belt {p.beltAngleDeg}°
-                            </span>
-                        ) : null}
-                    </button>
-                ))}
-            </div>
             ) : showPrimaryOnly && preset ? (
                 <p className="text-[10px] text-muted-foreground">
                     Preset: <span className="text-foreground">{preset.name}</span>
                     {preset.beltAngleDeg ? ` · belt ${preset.beltAngleDeg}°` : ""}
                 </p>
             ) : null}
+
+            {!showPrimaryOnly && (
+                <div className="space-y-1.5">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Grinding
+                    </div>
+                    <div className="flex gap-2">
+                        {(["straight", "round", "hybrid"] as const).map((t) => (
+                            <button
+                                key={t}
+                                type="button"
+                                onClick={() => {
+                                    setViewer({ wallStyle: t });
+                                    setGrindingStyle(
+                                        t === "straight"
+                                            ? { type: "straight", angle_degrees: 8 }
+                                            : { type: "rounded", radius_mm: 3 },
+                                    );
+                                }}
+                                className={cn(
+                                    "flex-1 rounded-md border px-2 py-1 text-xs capitalize",
+                                    wallStyle === t
+                                        ? "border-primary bg-primary/10"
+                                        : "border-border bg-background text-muted-foreground",
+                                )}
+                            >
+                                {t}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                        Wall mid-style. Bottom stays flat; top and rim stay put.
+                    </div>
+                </div>
+            )}
 
             {!showPrimaryOnly && isBeltPreset && (
                 <div className="space-y-1.5">

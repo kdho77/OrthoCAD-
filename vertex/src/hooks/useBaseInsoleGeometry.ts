@@ -13,6 +13,7 @@ import {
 } from "@/lib/geometry/base-asset";
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { extractStockWallModel, reconstructProceduralWalls } from "@/lib/geometry/procedural-wall";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
@@ -48,6 +49,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const stockBaseLoading = useDesignStore((s) => s.stockBaseLoading);
     const stockBaseResolutionState = useDesignStore((s) => s.stockBaseResolutionState);
     const setBaseMeshLoading = useDesignStore((s) => s.setBaseMeshLoading);
+    const wallModel = useDesignStore((s) => s.viewer.wallModel ?? "legacy");
+    const wallStyle = useDesignStore((s) => s.viewer.wallStyle ?? "straight");
+    const deviceType = useDesignStore((s) => s.viewer.deviceType ?? "functional");
+    const lateralFlangeHeightMm = useDesignStore((s) => s.viewer.lateralFlangeHeightMm ?? 0);
+    const lateralFlangeLengthMm = useDesignStore((s) => s.viewer.lateralFlangeLengthMm ?? 40);
+    const lateralFlangeAngleDeg = useDesignStore((s) => s.viewer.lateralFlangeAngleDeg ?? 10);
 
     const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
@@ -231,10 +238,48 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     }, [assetId, side, layout.lengthMm, layout.widthMm, layout.usMenSize, building, design]);
 
     // Re-apply modifiers whenever corrections / elements / thickness change.
+    // `wallModel: 'procedural'` is viewer-only (S1): loft from planform columns.
+    // Widen / cup / lift move only the curves; profile interiors rescale affinely.
+    // Export / legacy modifier paths are unchanged.
     // biome-ignore lint/correctness/useExhaustiveDependencies: preview patches + live draft trimline are intentional triggers
     useEffect(() => {
         const raw = baseGeoRef.current;
         if (!assetId || !raw) return;
+        if (wallModel === "procedural") {
+            const extracted = extractStockWallModel(raw, {
+                id: assetId,
+                name: getDesignBase(design, side)?.name ?? assetId,
+            });
+            const committedThickness = design.paired
+                ? side === "left"
+                    ? design.paired.leftThicknessMm
+                    : design.paired.rightThicknessMm
+                : design.thicknessMm;
+            const thicknessMm = thicknessPreview ?? committedThickness;
+            const field = baseModifierField(design, side, thicknessMm);
+            const rebuilt = reconstructProceduralWalls(extracted, {
+                corrections: field.corrections,
+                thicknessMm,
+                stockThicknessMm: field.thicknessMm > 0 ? 3 : field.thicknessMm,
+                sourceGeometry: raw,
+                sourceField: field,
+                deviceType,
+                lateralFlange: {
+                    heightMm: lateralFlangeHeightMm,
+                    lengthMm: lateralFlangeLengthMm,
+                    angleDeg: lateralFlangeAngleDeg,
+                },
+                archGrindDepthMm: 0,
+                wallStyle,
+            });
+            if (outRef.current && outRef.current !== workRef.current) {
+                outRef.current.dispose();
+            }
+            outRef.current = rebuilt;
+            setGeometry(rebuilt);
+            setBaseMeshLoading(side, false);
+            return;
+        }
         // Paired workspace: per-side committed thickness (matches export path).
         const committedThickness = design.paired
             ? side === "left"
@@ -292,6 +337,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         building,
         setBaseMeshLoading,
         side,
+        wallModel,
+        wallStyle,
+        deviceType,
+        lateralFlangeHeightMm,
+        lateralFlangeLengthMm,
+        lateralFlangeAngleDeg,
     ]);
 
     useEffect(
