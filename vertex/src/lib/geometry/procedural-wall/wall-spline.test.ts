@@ -95,8 +95,8 @@ describe("clamped cubic wall spline", () => {
         const h12 = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
         printCorner("H12-Ls2-15", h12);
         expect(h12.o).toBeCloseTo(1.08, 2);
-        expect(h12.peakZFrac).toBeGreaterThanOrEqual(0.45 - 0.06);
-        expect(h12.peakZFrac).toBeLessThanOrEqual(0.55 + 0.06);
+        expect(h12.peakZFrac).toBeGreaterThanOrEqual(0.5 - 0.05);
+        expect(h12.peakZFrac).toBeLessThanOrEqual(0.5 + 0.05);
         expect(h12.o).toBeLessThanOrEqual(2);
 
         const h8 = solveSplineStation(station(0.55, 1, 8, 2, { s: -1, z: -0.2 }));
@@ -175,6 +175,7 @@ describe("clamped cubic wall spline", () => {
         expect(table.W[table.W.length - 1]!).toBeCloseTo(1, 2);
         expect(table.fillPasses).toBeGreaterThan(0);
         expect(table.fillPasses).toBeLessThanOrEqual(20);
+        expect(table.alpha === 0 || table.alpha === 0.75).toBe(true);
     });
 
     test("invertDensityW lerps the W table, never u = k/N", () => {
@@ -192,11 +193,11 @@ describe("clamped cubic wall spline", () => {
         expect(Math.abs(u - 0.5)).toBeGreaterThan(0.1);
     });
 
-    test("healthy invert N=34 keeps chords; short chords throw [RND-INV]", () => {
+    test("healthy invert N=48 keeps chords; short chords throw [RND-INV]", () => {
         const heel = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
         expect(heel.o).toBeGreaterThan(0.05);
         expect(heel.a).toBeGreaterThan(0.05);
-        const N = 34;
+        const N = 48;
         const ring = sampleSplineRingByW([heel.poly], N, [heel.poly[0]!]);
         const pts = ring.pts[0]!;
         const L = ring.L[0]!;

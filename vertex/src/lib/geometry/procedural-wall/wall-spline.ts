@@ -29,19 +29,27 @@ export const SPLINE_ZX_GAP = 0.4;
 export const SPLINE_O_FLOOR_FRAC = 0.08;
 /** o_target = β k(H) H × this. */
 export const SPLINE_O_TARGET_FRAC = 0.6;
+/** Gate: o/H ∈ [this, SPLINE_O_H_HI] where H ≥ 6. */
+export const SPLINE_O_H_LO = 0.07;
+export const SPLINE_O_H_HI = 0.18;
 export const SPLINE_W_EPS = 1e-9;
+/** zy bisect target: z(min s) / H. */
+export const SPLINE_PEAK_TARGET = 0.5;
 export const SPLINE_PEAK_LO = 0.45;
 export const SPLINE_PEAK_HI = 0.55;
 export const SPLINE_PEAK_GATE_LO = 0.4;
 export const SPLINE_PEAK_GATE_HI = 0.6;
+/** vs-STRAIGHT / vs-chord sagitta — report-only. */
 export const SPLINE_SAG_LO = 0.15;
 export const SPLINE_SAG_HI = 0.25;
 export const SPLINE_H_MIN_MM = 6;
 export const SPLINE_BISECT = 30;
 export const SPLINE_DENSE = 512;
 export const SPLINE_W_DENSE = 2048;
-export const SPLINE_W_ALPHA = 0.6;
+export const SPLINE_W_ALPHA = 0.75;
 export const SPLINE_W_THETA_MIN_DEG = 1;
+/** ROUND/HYBRID column intervals. Endpoints stay R, B by index. */
+export const SPLINE_N = 48;
 export const SPLINE_R_CAP = 4.5;
 export const SPLINE_R_FILL_ITERS = 20;
 export const SPLINE_F_RING_MAX = 0.02;
@@ -379,15 +387,26 @@ export function splineSagitta(
     const n = chordOutwardNormal(R, B, h);
     const H = Math.max(R.z - B.z, 1e-6);
     let sag = 0;
-    let peakZ = 0.5 * H;
     for (const p of samples) {
-        const off = signedChordOffset(p, R, B, n);
-        if (off >= sag) {
-            sag = off;
-            peakZ = p.z - B.z;
+        sag = Math.max(sag, signedChordOffset(p, R, B, n));
+    }
+    return { sag, peakZFrac: peakZFracAtMinS(samples, R, B, h) };
+}
+
+/** z of the most-outward sample (min s), as a fraction of H. */
+export function peakZFracAtMinS(samples: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: number }): number {
+    const fr = stationSzFrame(R, B, h);
+    const H = Math.max(fr.H, 1e-6);
+    let minS = Number.POSITIVE_INFINITY;
+    let zAt = 0.5 * H;
+    for (const p of samples) {
+        const sz = toSz(p, fr.origin, fr.h);
+        if (sz.s <= minS) {
+            minS = sz.s;
+            zAt = sz.z;
         }
     }
-    return { sag, peakZFrac: peakZ / H };
+    return zAt / H;
 }
 
 export function polygonConvex(poly: XYZ[], h: { x: number; y: number }): boolean {
@@ -608,8 +627,9 @@ function finishSolve(
 }
 
 /**
- * Drive o from o_target = β k(H) H × 0.6, clamp to [0, o_max].
- * zy ∈ [0.2, 0.6] bisects peak vs chord RB to 0.45 H (gate 0.45–0.55 H).
+ * Drive o from o_target = β k(H) H × 0.6, clamp to [0, o_max] (planOut 2).
+ * zy ∈ [0.2, 0.6] bisects z(min s) to 0.50 H (gate 0.40–0.60 H where H≥6).
+ * zx = min(0.9, zy + 0.4).
  */
 export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const { R, B, tR } = input;
@@ -619,7 +639,7 @@ export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const tSz = tRInSz(tR, fr.h);
     const tRAngleDeg = tRAngleBelowHorizontalDeg(tSz);
     const oTarget = splineOTarget(input.u, H);
-    const targetPeak = SPLINE_PEAK_LO;
+    const targetPeak = SPLINE_PEAK_TARGET;
 
     const tryAt = (o: number, zy: number, aOverride?: number) => {
         const poly = buildSplinePolygon(R, B, fr.h, tR, o, zy, aOverride);
@@ -715,27 +735,11 @@ export interface SplineDensityTable {
     fillPasses: number;
 }
 
-/** 2048-point S, T; water-fill r≤4.5 in arc length; W = cumsum(r s). */
-export function buildSplineDensityTable(poly: XYZ[], nDense = SPLINE_W_DENSE): SplineDensityTable {
-    const n = Math.max(1, nDense);
-    const u: number[] = [];
-    const pts: XYZ[] = [];
-    for (let i = 0; i <= n; i++) {
-        const ui = i / n;
-        u.push(ui);
-        pts.push(evalClampedCubic(poly, ui));
-    }
-    const S = [0];
-    for (let i = 1; i <= n; i++) S.push(S[i - 1]! + hypot3(sub(pts[i]!, pts[i - 1]!)));
-    const T = [0];
-    let prev = splineTangent(poly, 0);
-    for (let i = 1; i <= n; i++) {
-        const tan = splineTangent(poly, i / n);
-        T.push(T[i - 1]! + vecAngleDeg(prev, tan));
-        prev = tan;
-    }
-    const L = S[n]!;
-    const Theta = T[n]!;
+/** Water-fill r≤4.5; W = cumsum(r s). Shared by cubic and polyline tables. */
+function finishDensity(u: number[], S: number[], T: number[]): SplineDensityTable {
+    const n = Math.max(1, S.length - 1);
+    const L = S[n] ?? 0;
+    const Theta = T[n] ?? 0;
     const alpha = Theta < SPLINE_W_THETA_MIN_DEG ? 0 : SPLINE_W_ALPHA;
     const s: number[] = [];
     const r: number[] = [];
@@ -765,6 +769,78 @@ export function buildSplineDensityTable(poly: XYZ[], nDense = SPLINE_W_DENSE): S
     for (let j = 1; j <= n; j++) W.push((W[j - 1] ?? 0) + (r[j - 1] ?? 0) * (s[j - 1] ?? 0));
     W[0] = 0;
     return { u, S, T, W, L, Theta, alpha, maxR, fillPasses };
+}
+
+/** 2048-point S, T on the cubic; water-fill r≤4.5; W = cumsum(r s). */
+export function buildSplineDensityTable(poly: XYZ[], nDense = SPLINE_W_DENSE): SplineDensityTable {
+    const n = Math.max(1, nDense);
+    const u: number[] = [];
+    const pts: XYZ[] = [];
+    for (let i = 0; i <= n; i++) {
+        const ui = i / n;
+        u.push(ui);
+        pts.push(evalClampedCubic(poly, ui));
+    }
+    const S = [0];
+    for (let i = 1; i <= n; i++) S.push(S[i - 1]! + hypot3(sub(pts[i]!, pts[i - 1]!)));
+    const T = [0];
+    let prev = splineTangent(poly, 0);
+    for (let i = 1; i <= n; i++) {
+        const tan = splineTangent(poly, i / n);
+        T.push(T[i - 1]! + vecAngleDeg(prev, tan));
+        prev = tan;
+    }
+    return finishDensity(u, S, T);
+}
+
+/** Densify a polyline by arc length, then the same W table (α=0.75, cap 4.5). */
+export function buildPolylineDensityTable(col: XYZ[], nDense = SPLINE_W_DENSE): SplineDensityTable {
+    const dense = densifyPolyline(col, nDense);
+    const n = Math.max(1, dense.length - 1);
+    const u = dense.map((_, i) => i / n);
+    const S = [0];
+    for (let i = 1; i <= n; i++) S.push(S[i - 1]! + hypot3(sub(dense[i]!, dense[i - 1]!)));
+    const T = [0];
+    let prev = sub(dense[1] ?? dense[0]!, dense[0]!);
+    for (let i = 1; i <= n; i++) {
+        const tan = i < n ? sub(dense[i + 1]!, dense[i]!) : sub(dense[i]!, dense[i - 1]!);
+        T.push(T[i - 1]! + vecAngleDeg(prev, tan));
+        prev = tan;
+    }
+    return finishDensity(u, S, T);
+}
+
+export function densifyPolyline(col: XYZ[], nDense = SPLINE_W_DENSE): XYZ[] {
+    if (col.length < 2) return col.map((p) => ({ ...p }));
+    const acc = [0];
+    for (let i = 1; i < col.length; i++) acc.push(acc[i - 1]! + hypot3(sub(col[i]!, col[i - 1]!)));
+    const L = acc[acc.length - 1] ?? 0;
+    const n = Math.max(1, nDense);
+    const out: XYZ[] = [];
+    for (let k = 0; k <= n; k++) {
+        const target = L > 1e-16 ? (k / n) * L : 0;
+        let i = 1;
+        while (i < acc.length && (acc[i] ?? 0) < target) i++;
+        const a = acc[i - 1] ?? 0;
+        const b = acc[i] ?? a;
+        const t = b > a ? (target - a) / (b - a) : 0;
+        const p0 = col[i - 1] ?? col[0]!;
+        const p1 = col[i] ?? p0;
+        out.push(lerp(p0, p1, t));
+    }
+    out[0] = { ...col[0]! };
+    out[n] = { ...col[col.length - 1]! };
+    return out;
+}
+
+export function evalDensePolyline(dense: XYZ[], u: number): XYZ {
+    if (!dense.length) return { x: 0, y: 0, z: 0 };
+    if (dense.length === 1 || u <= 0) return { ...dense[0]! };
+    if (u >= 1) return { ...dense[dense.length - 1]! };
+    const n = dense.length - 1;
+    const x = u * n;
+    const i = Math.max(0, Math.min(n - 1, Math.floor(x)));
+    return lerp(dense[i]!, dense[i + 1] ?? dense[i]!, x - i);
 }
 
 /**
@@ -860,6 +936,37 @@ export function row1TRAngleDeg(row1: XYZ, R: XYZ, tR: XYZ, h: { x: number; y: nu
     return acuteDeg(sub(row1, R), overEdgeTangent(tR, h));
 }
 
+/** f_k = k/N, Gaussian-smoothed along the rim. Shared by ROUND and STRAIGHT W. */
+export function ringFValues(nS: number, N: number, rim: XYZ[]): number[][] {
+    const denom = Math.max(N, 1);
+    const f: number[][] = [];
+    for (let i = 0; i < nS; i++) {
+        const row: number[] = [];
+        for (let k = 0; k <= N; k++) row.push(k / denom);
+        f.push(row);
+    }
+    if (nS < 1) return f;
+    const arc: number[] = [0];
+    for (let i = 1; i < nS; i++) {
+        const a = rim[i - 1] ?? rim[0]!;
+        const b = rim[i] ?? a;
+        arc.push(arc[i - 1]! + Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+    }
+    let period = arc[nS - 1] ?? 0;
+    if (nS > 1) {
+        const a = rim[0]!;
+        const b = rim[nS - 1]!;
+        period += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    }
+    for (let k = 1; k < N; k++) {
+        const vals = f.map((row) => row[k]!);
+        const sm = periodicGaussian1d(vals, arc, SPLINE_SMOOTH_SIGMA_MM, period);
+        for (let i = 0; i < nS; i++) f[i]![k] = sm[i]!;
+    }
+    for (let i = 0; i < nS; i++) f[i] = enforceMonotoneF(f[i]!, N);
+    return f;
+}
+
 /**
  * Shared N. Smooth f_k = k/N along the rim (no f-gap). Invert each W(u).
  * Rows 0 and N are C(0)=R and C(1)=B.
@@ -869,6 +976,7 @@ export function sampleSplineRingByW(
     N: number,
     rim: XYZ[],
     active?: boolean[],
+    fIn?: number[][],
 ): { pts: XYZ[][]; f: number[][]; u: number[][]; L: number[]; Theta: number[] } {
     const nS = polys.length;
     const tables = polys.map((p, i) => {
@@ -887,36 +995,18 @@ export function sampleSplineRingByW(
         }
         return buildSplineDensityTable(p);
     });
-    const f: number[][] = [];
-    const denom = Math.max(N, 1);
-    for (let i = 0; i < nS; i++) {
-        const row: number[] = [];
-        for (let k = 0; k <= N; k++) row.push(k / denom);
-        f.push(row);
-    }
-    const arc: number[] = [0];
-    for (let i = 1; i < nS; i++) {
-        const a = rim[i - 1] ?? rim[0]!;
-        const b = rim[i] ?? a;
-        arc.push(arc[i - 1]! + Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
-    }
-    let period = arc[nS - 1] ?? 0;
-    if (nS > 1) {
-        const a = rim[0]!;
-        const b = rim[nS - 1]!;
-        period += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
-    }
-    for (let k = 1; k < N; k++) {
-        const vals = f.map((row) => row[k]!);
-        const sm = periodicGaussian1d(vals, arc, SPLINE_SMOOTH_SIGMA_MM, period);
-        for (let i = 0; i < nS; i++) f[i]![k] = sm[i]!;
-    }
+    const f = fIn ?? ringFValues(nS, N, rim);
     const u: number[][] = [];
     const pts: XYZ[][] = [];
     const L: number[] = [];
     const Theta: number[] = [];
     for (let i = 0; i < nS; i++) {
-        const fk = enforceMonotoneF(f[i]!, N);
+        const fk =
+            f[i] ??
+            enforceMonotoneF(
+                Array.from({ length: N + 1 }, (_, k) => k / Math.max(N, 1)),
+                N,
+            );
         f[i] = fk;
         const ui: number[] = [];
         const pi: XYZ[] = [];
@@ -945,6 +1035,33 @@ export function sampleSplineRingByW(
         Theta.push(table.Theta);
     }
     return { pts, f, u, L, Theta };
+}
+
+/** Same f / α / cap / N as the cubic sampler, on STRAIGHT polylines. */
+export function samplePolylinesByW(cols: XYZ[][], N: number, f: number[][]): { pts: XYZ[][]; L: number[] } {
+    const nS = cols.length;
+    const pts: XYZ[][] = [];
+    const L: number[] = [];
+    for (let i = 0; i < nS; i++) {
+        const col = cols[i] ?? [];
+        const dense = densifyPolyline(col, SPLINE_W_DENSE);
+        const table = buildPolylineDensityTable(col);
+        const fk =
+            f[i] ??
+            enforceMonotoneF(
+                Array.from({ length: N + 1 }, (_, k) => k / Math.max(N, 1)),
+                N,
+            );
+        const pi: XYZ[] = [];
+        for (let k = 0; k <= N; k++) {
+            if (k === 0) pi.push({ ...(col[0] ?? dense[0]!) });
+            else if (k === N) pi.push({ ...(col[col.length - 1] ?? dense[dense.length - 1]!) });
+            else pi.push(evalDensePolyline(dense, invertDensityW(table, fk[k]!)));
+        }
+        pts.push(pi);
+        L.push(table.L);
+    }
+    return { pts, L };
 }
 
 export function splineTurningTValues(poly: XYZ[], n: number): number[] {
@@ -1036,10 +1153,13 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
     if (s.infl) misses.push("[RND-INFL]");
     if (s.fallbackStraight) misses.push("[RND-POLY]");
     if (!s.convex) misses.push("not-convex");
-    if (s.peakZFrac + 1e-9 < SPLINE_PEAK_GATE_LO || s.peakZFrac - 1e-9 > SPLINE_PEAK_GATE_HI) {
+    if (
+        s.H >= SPLINE_H_MIN_MM &&
+        (s.peakZFrac + 1e-9 < SPLINE_PEAK_GATE_LO || s.peakZFrac - 1e-9 > SPLINE_PEAK_GATE_HI)
+    ) {
         misses.push(`peak ${s.peakZFrac.toFixed(3)}`);
     }
-    // vs-chord sagitta is report-only. Bulge vs STRAIGHT is gated after sampling.
+    // vs-chord sagitta and vs-STRAIGHT bulge are report-only. o/H is gated after sampling.
     if (s.g1RDeg > SPLINE_G1_R_MAX_DEG + 1e-6) misses.push(`G1-R ${s.g1RDeg.toFixed(3)}`);
     if (s.seamBDeg > SPLINE_SEAM_B_MAX_DEG + 1e-6) misses.push(`seam-B ${s.seamBDeg.toFixed(3)}`);
     if (s.maxTurnDeg > SPLINE_TURN_MAX_DEG + 1e-6) misses.push(`turn ${s.maxTurnDeg.toFixed(3)}`);

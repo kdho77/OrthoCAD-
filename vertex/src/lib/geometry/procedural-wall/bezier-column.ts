@@ -24,14 +24,18 @@ import {
     hybridWeightAt,
     overEdgeTangent,
     periodicGaussian1d,
+    ringFValues,
     row1TRAngleDeg,
     SPLINE_FLAT_MM,
     SPLINE_G1_R_MAX_DEG,
     SPLINE_MIN_EDGE_FRAC,
+    SPLINE_N,
     SPLINE_R_CAP,
     SPLINE_ROW1_TR_MAX_DEG,
     SPLINE_SMOOTH_SIGMA_MM,
+    SPLINE_TURN_MAX_DEG,
     type SplineStationInput,
+    samplePolylinesByW,
     sampleSplineRingByW,
     splineBetaAt,
     splineGateFail,
@@ -4854,12 +4858,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     if (steep.length) console.log("[RND-STEEP]", JSON.stringify(steep));
     const polyN = solves.filter((s) => s.fallbackStraight).length;
     console.log("[RND-POLY]", JSON.stringify({ n: polyN, nS: frames.length, steep: steep.length }));
-    const N = Math.max(1, (xyz[0]?.length ?? 1) - 1);
-    for (const col of xyz) {
-        if (col.length !== N + 1) {
-            throw new Error(`[RND-N] column length ${col.length} != N+1=${N + 1}`);
-        }
-    }
+    const N = SPLINE_N;
     const nS = frames.length;
     const straightCols = xyz.map((col) => col.map((p) => ({ x: p.x, y: p.y, z: p.z })));
     const reasons: string[][] = solves.map((sol) => {
@@ -4881,12 +4880,16 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             );
         }
     }
+    const rim = frames.map((fr) => fr.R);
+    const f = ringFValues(nS, N, rim);
     const sampled = sampleSplineRingByW(
         solves.map((s) => s.poly),
         N,
-        frames.map((fr) => fr.R),
+        rim,
         active,
+        f,
     );
+    const sampledStraight = samplePolylinesByW(straightCols, N, f);
     for (let i = 0; i < nS; i++) {
         if (!active[i]) continue;
         assertInversionOk(sampled.pts[i]!, sampled.L[i] ?? 1, N, i);
@@ -4909,7 +4912,6 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     for (let i = 0; i < nS; i++) {
         const fr = frames[i]!;
         const sol = solves[i]!;
-        const col = xyz[i]!;
         const tR = inputs[i]!.tR;
         const evaluated = active[i]!;
         if (evaluated) {
@@ -4918,16 +4920,22 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         }
         const hybridW =
             style === "hybrid" ? hybridWeightAt(fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250) : 1;
-        const w = (wR[i] ?? 0) * hybridW;
-        const roundPts = evaluated ? sampled.pts[i]! : col;
-        if (w > 1e-6) {
-            if (w < 1 - 1e-6) {
-                const blended = blendColumns(col, roundPts, w);
-                for (let k = 1; k < N; k++) col[k] = blended[k]!;
-            } else {
-                for (let k = 1; k < N; k++) col[k] = roundPts[k]!;
-            }
+        const wRaw = wR[i] ?? 0;
+        const w = wRaw * hybridW;
+        const roundPts = evaluated ? sampled.pts[i]! : sampledStraight.pts[i]!;
+        const straightPts = sampledStraight.pts[i]!;
+        const blend = wRaw < 1 - 1e-6 || hybridW < 1 - 1e-6;
+        let used: XYZ[];
+        if (w <= 1e-6) used = straightPts;
+        else if (blend && w < 1 - 1e-6) used = blendColumns(straightPts, roundPts, w);
+        else used = roundPts;
+        const col: PolyPoint[] = [];
+        for (let k = 0; k <= N; k++) {
+            if (k === 0) col.push({ ...fr.R });
+            else if (k === N) col.push({ ...fr.B });
+            else col.push({ ...(used[k] ?? straightPts[k]!) });
         }
+        xyz[i] = col;
         const row1 = col[1]!;
         const row1Deg = row1TRAngleDeg(row1, fr.R, tR, fr.h);
         const g1C = evaluated ? g1CPrime0Deg(sol.poly, tR, fr.h) : 0;
@@ -4950,12 +4958,12 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const stats = columnStepStats(col);
         const L = evaluated
             ? (sampled.L[i] ?? 1)
-            : Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y, fr.B.z - fr.R.z);
+            : (sampledStraight.L[i] ?? Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y, fr.B.z - fr.R.z));
         fr.g1EDeg = g1C;
         fr.g1FDeg = sol.seamBDeg;
         fr.midFlagged = sol.infl;
         fr.midPeakHFrac = sol.peakZFrac;
-        fr.midBulgeHFrac = bulgeVsStraightFrac(col, straightCols[i]!, fr.heightMm);
+        fr.midBulgeHFrac = bulgeVsStraightFrac(col, straightPts, fr.heightMm);
         fr.midBeta = splineBetaAt(fr.u) * w;
         fr.midChordOffMm = sol.sagitta;
         fr.midChordMm = Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y, fr.B.z - fr.R.z);
@@ -4975,7 +4983,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineStepRatio = stats.stepRatio;
         fr.splineRow1Deg = row1Deg;
         fr.splineFlat = !evaluated;
-        fr.splineWR = wR[i] ?? 0;
+        fr.splineWR = wRaw;
         fr.splineFlatReason = evaluated ? "" : reasons[i]!.join("+") || "flat";
         fr.tInc = overEdgeTangent(tR, fr.h);
     }
@@ -5025,6 +5033,57 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             raised: false,
         }),
     );
+    const row24 = rowTurnMax[24] ?? 0;
+    if (row24 > SPLINE_TURN_MAX_DEG + 1e-6) {
+        let spikeI = -1;
+        let spikeTurn = 0;
+        for (let i = 0; i < nS; i++) {
+            if (!active[i]) continue;
+            const t = columnRowTurns(xyz[i]!)[24] ?? 0;
+            if (t >= spikeTurn) {
+                spikeTurn = t;
+                spikeI = i;
+            }
+        }
+        const fr = frames[spikeI];
+        console.log(
+            "[RND-ROW24]",
+            JSON.stringify({
+                turn: Number(row24.toFixed(4)),
+                i: spikeI,
+                u: Number((fr?.u ?? 0).toFixed(4)),
+                o: Number((fr?.splineO ?? 0).toFixed(4)),
+                a: Number((fr?.splineA ?? 0).toFixed(4)),
+                zy: Number((fr?.splineZy ?? 0).toFixed(4)),
+                tRAngleDeg: Number((fr?.splineTRAngleDeg ?? 0).toFixed(3)),
+            }),
+        );
+    } else {
+        console.log("[RND-ROW24]", JSON.stringify({ turn: Number(row24.toFixed(4)), ok: true }));
+    }
+    const fr436 = frames[436];
+    const row1_436 = fr436?.splineRow1Deg ?? 0;
+    if (fr436 && row1_436 > SPLINE_TURN_MAX_DEG + 1e-6) {
+        console.log(
+            "[RND-I436]",
+            JSON.stringify({
+                splineRow1: Number(row1_436.toFixed(4)),
+                u: Number(fr436.u.toFixed(4)),
+                o: Number((fr436.splineO ?? 0).toFixed(4)),
+                a: Number((fr436.splineA ?? 0).toFixed(4)),
+                zy: Number((fr436.splineZy ?? 0).toFixed(4)),
+                tRAngleDeg: Number((fr436.splineTRAngleDeg ?? 0).toFixed(3)),
+            }),
+        );
+    } else {
+        console.log(
+            "[RND-I436]",
+            JSON.stringify({
+                splineRow1: Number(row1_436.toFixed(4)),
+                ok: row1_436 <= SPLINE_TURN_MAX_DEG + 1e-6,
+            }),
+        );
+    }
     const countWhy = (tag: string) => reasons.filter((r) => r.includes(tag)).length;
     const sorted = (xs: number[]) => {
         const s = xs.slice().sort((a, b) => a - b);

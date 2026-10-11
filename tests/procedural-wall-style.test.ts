@@ -20,12 +20,12 @@ import {
     SPLINE_GATES_REPORT_ONLY,
     SPLINE_H_MIN_MM,
     SPLINE_MIN_EDGE_FRAC,
+    SPLINE_O_H_HI,
+    SPLINE_O_H_LO,
     SPLINE_PEAK_GATE_HI,
     SPLINE_PEAK_GATE_LO,
     SPLINE_PLAN_OUT_MM,
     SPLINE_ROW1_TR_MAX_DEG,
-    SPLINE_SAG_HI,
-    SPLINE_SAG_LO,
     SPLINE_SEAM_B_MAX_DEG,
     WALL_MID_DIHEDRAL_MAX_DEG,
     WALL_MID_TURN_MAX_DEG,
@@ -227,13 +227,13 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
         }
         const styled = frames.filter((f) => (f.midWeight ?? 0) > 0.5 && !f.splineFlat && !f.fallbackStraight);
         const tall = styled.filter((f) => (f.heightMm ?? 0) >= SPLINE_H_MIN_MM);
-        const bulgeH = tall.map((f) => f.midBulgeHFrac ?? 0);
+        const oH = tall.map((f) => (f.o ?? 0) / Math.max(f.heightMm ?? 1e-6, 1e-6));
         const peakH = tall.map((f) => f.midPeakHFrac ?? 0);
-        if (bulgeH.length) {
-            const p10 = pct(bulgeH, 0.1);
-            const p90 = pct(bulgeH, 0.9);
-            if (p10 + 1e-9 < SPLINE_SAG_LO || p90 - 1e-9 > SPLINE_SAG_HI) {
-                misses.push(`bulge p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)}`);
+        if (oH.length) {
+            const p10 = pct(oH, 0.1);
+            const p90 = pct(oH, 0.9);
+            if (p10 + 1e-9 < SPLINE_O_H_LO || p90 - 1e-9 > SPLINE_O_H_HI) {
+                misses.push(`o/H p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)}`);
             }
         }
         if (peakH.length) {
@@ -394,13 +394,14 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
     );
     const bulgeGated = (f: (typeof frames)[number]): boolean =>
         !f.splineFlat && (f.midWeight ?? 0) > 0.5 && (f.heightMm ?? 0) >= SPLINE_H_MIN_MM;
+    const oHOf = (f: (typeof frames)[number]): number => (f.o ?? 0) / Math.max(f.heightMm ?? 1e-6, 1e-6);
     const sagHi = worstHi(
-        (f) => (bulgeGated(f) ? (f.midBulgeHFrac ?? 0) : 0),
-        (v) => v - 1e-9 > SPLINE_SAG_HI,
+        (f) => (bulgeGated(f) ? oHOf(f) : 0),
+        (v) => v - 1e-9 > SPLINE_O_H_HI,
     );
     const sagLo = worstLo(
-        (f) => (bulgeGated(f) ? (f.midBulgeHFrac ?? 1) : 1),
-        (v) => v + 1e-9 < SPLINE_SAG_LO,
+        (f) => (bulgeGated(f) ? oHOf(f) : 1),
+        (v) => v + 1e-9 < SPLINE_O_H_LO,
     );
     const sagChordHi = worstHi(
         (f) => {
@@ -410,12 +411,14 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         },
         (_v) => false,
     );
+    const peakGated = (f: (typeof frames)[number]): boolean =>
+        !f.splineFlat && (f.heightMm ?? 0) >= SPLINE_H_MIN_MM;
     const peakHi = worstHi(
-        (f) => f.midPeakHFrac ?? 0,
+        (f) => (peakGated(f) ? (f.midPeakHFrac ?? 0) : 0),
         (v) => v - 1e-9 > SPLINE_PEAK_GATE_HI,
     );
     const peakLo = worstLo(
-        (f) => f.midPeakHFrac ?? 0,
+        (f) => (peakGated(f) ? (f.midPeakHFrac ?? 1) : 1),
         (v) => v + 1e-9 < SPLINE_PEAK_GATE_LO,
     );
     const plan = worstHi(
@@ -496,20 +499,31 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             poly.n ? { n: poly.n, worstI: poly.i, worstU: poly.u } : undefined,
         ),
         row(
-            "bulge-lo",
+            "o/H-lo",
             !sagLo.n || style === "straight",
             sagLo.n ? sagLo.v : 0,
-            SPLINE_SAG_LO,
+            SPLINE_O_H_LO,
             sagLo.n ? { n: sagLo.n, worstI: sagLo.i, worstU: sagLo.u } : undefined,
         ),
         row(
-            "bulge-hi",
+            "o/H-hi",
             !sagHi.n || style === "straight",
             sagHi.n ? sagHi.v : 0,
-            SPLINE_SAG_HI,
+            SPLINE_O_H_HI,
             sagHi.n ? { n: sagHi.n, worstI: sagHi.i, worstU: sagHi.u } : undefined,
         ),
         row("sag-chord", true, sagChordHi.v || 0, "report-only"),
+        row(
+            "vs-straight",
+            true,
+            (() => {
+                const xs = frames
+                    .filter((f) => !f.splineFlat && (f.heightMm ?? 0) >= SPLINE_H_MIN_MM)
+                    .map((f) => f.midBulgeHFrac ?? 0);
+                return xs.length ? Math.max(...xs) : 0;
+            })(),
+            "report-only",
+        ),
         row(
             "peak-lo",
             !peakLo.n || style === "straight",
