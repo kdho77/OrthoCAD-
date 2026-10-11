@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useBaseInsoleGeometry } from "@/hooks/useBaseInsoleGeometry";
 import { sideOffsetX } from "@/lib/geometry/layout";
+import { isCoarsePointerDevice } from "@/lib/geometry/procedural-wall/preview-loft-queue";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { useDesignStore } from "@/stores/design-store";
 import { usePerformanceStore } from "@/stores/performance-store";
@@ -117,7 +118,7 @@ export function BaseInsoleMesh({
                 receiveShadow
             />
             {/* Edge extract is expensive on large bases — only when idle. */}
-            {!interacting && !heightmap ? (
+            {!interacting && !heightmap && !isCoarsePointerDevice() ? (
                 <lineSegments position={[-layout.lengthMm / 2, offsetX, 0]}>
                     <edgesGeometry args={[geometry, 35]} />
                     <lineBasicMaterial color={sideColors[side]} transparent opacity={0.35} />

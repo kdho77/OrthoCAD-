@@ -58,4 +58,19 @@ describe("bottom pattern store", () => {
         expect(useBottomPatternStore.getState().getPattern("left")).toBeNull();
         useBottomPatternStore.getState().clear();
     });
+
+    test("setPattern clears generatedKey so a user edit relofts", () => {
+        useBottomPatternStore.getState().clear();
+        useBottomPatternStore.getState().ensureGenerated("left", "sample-top:p:full_contact", [
+            { x: 0, y: 0, z: 0 },
+            { x: 1, y: 0, z: 0 },
+            { x: 1, y: 1, z: 0 },
+        ]);
+        expect(useBottomPatternStore.getState().generatedKey.left).toBe("sample-top:p:full_contact");
+        useBottomPatternStore.getState().setPattern("left", {
+            points: [new THREE.Vector3(3, 0, 0), new THREE.Vector3(4, 0, 0), new THREE.Vector3(4, 1, 0)],
+        });
+        expect(useBottomPatternStore.getState().generatedKey.left).toBeUndefined();
+        useBottomPatternStore.getState().clear();
+    });
 });

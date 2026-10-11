@@ -15,6 +15,7 @@ import {
 } from "@/lib/geometry/procedural-wall";
 import {
     buildFairedPatternFromTop,
+    buildProceduralViewerPattern,
     reconstructProceduralPreview,
     SAMPLE_TOP_ASSET_ID,
     SAMPLE_TOP_NAME,
@@ -43,6 +44,19 @@ describe("SAMPLE_Top faired preview inputs", () => {
         expect(prefab?.archMm).toBeGreaterThan(PATTERN_ARCH_INSET_MM);
         expect(fairInsetMm(0.4, true, prefab)).toBeGreaterThan(fairInsetMm(0.4, true));
     });
+
+    test("viewer pattern is the faired outline and does not loft walls", async () => {
+        const buf = readFileSync(SAMPLE_TOP_PATH);
+        const geo = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        const started = performance.now();
+        const pattern = buildProceduralViewerPattern(geo, "full_contact");
+        const elapsedMs = performance.now() - started;
+        expect(pattern.length).toBeGreaterThan(16);
+        expect(elapsedMs).toBeLessThan(15_000);
+        geo.dispose();
+    }, 30_000);
 
     test("SAMPLE_Top reconstructs for Full Contact, Prefab 3D, Flat, and Custom", async () => {
         const buf = readFileSync(SAMPLE_TOP_PATH);

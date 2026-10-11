@@ -12,6 +12,7 @@ import {
     PencilLine,
     PenTool,
     Rotate3d,
+    RotateCcw,
     Scale3d,
     Scissors,
     Spline,
@@ -21,6 +22,11 @@ import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
+import { isCoarsePointerDevice } from "@/lib/geometry/procedural-wall/preview-loft-queue";
+import {
+    previewLoftProgressLabel,
+    viewerLoftOverlayState,
+} from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
@@ -29,6 +35,7 @@ import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/d
 import { useKernelStore } from "@/stores/kernel-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
+import { retryPreviewLoft, usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
@@ -143,13 +150,18 @@ export function Viewer3D() {
     const showScans = viewer.showScans ?? true;
     const showLeftInsole = viewer.showLeft && !hideInsoleForMarkers;
     const showRightInsole = viewer.showRight && !hideInsoleForMarkers;
-    // Prefer an empty viewport + loading cue over the parametric placeholder outline
-    // while SAMPLE_Top is still loading.
-    const baseGeometryLoading =
-        showBase &&
-        (stockBaseLoading ||
-            (viewer.showLeft && baseMeshLoadingBySide.left) ||
-            (viewer.showRight && baseMeshLoadingBySide.right));
+    const loftPhaseBySide = usePreviewLoftStatusStore((s) => s.phaseBySide);
+    const loftError = usePreviewLoftStatusStore((s) => s.error);
+    const loftOverlay = viewerLoftOverlayState({
+        showBase,
+        showLeft: viewer.showLeft,
+        showRight: viewer.showRight,
+        stockBaseLoading,
+        loadingBySide: baseMeshLoadingBySide,
+        phaseBySide: loftPhaseBySide,
+        error: loftError,
+    });
+    const loftProgress = previewLoftProgressLabel(loftPhaseBySide, isCoarsePointerDevice());
     // Select primitives only — returning a fresh object from a zustand selector
     // causes an infinite re-render loop (React #185) once registration completes.
     const registrationError = useScanStore((s) => {
@@ -242,10 +254,10 @@ export function Viewer3D() {
                     <ScanPlaneSliceTool />
                     <ScanRotateTool />
                     <ScanTransformTool />
-                    {!hideInsoleForMarkers && !baseGeometryLoading ? <ElementMarkers /> : null}
+                    {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
                     <MeshEditTools />
-                    {!baseGeometryLoading ? <TrimlineEditTools /> : null}
-                    {!baseGeometryLoading ? <BottomPatternEditTools /> : null}
+                    {!loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
+                    {!loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
@@ -316,15 +328,41 @@ export function Viewer3D() {
                 />
             </div>
 
-            {baseGeometryLoading ? (
+            {loftOverlay.showBanner ? (
                 <div
-                    className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[hsl(222_28%_7%/0.55)]"
-                    role="status"
+                    className={
+                        loftOverlay.blockViewport
+                            ? "absolute inset-0 z-10 flex items-center justify-center bg-[hsl(222_28%_7%/0.55)]"
+                            : "pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2"
+                    }
+                    role={loftOverlay.kind === "error" ? "alert" : "status"}
                     aria-live="polite"
                 >
-                    <div className="flex items-center gap-2 rounded-md border border-border/60 bg-panel/90 px-3 py-2 text-[12px] font-medium text-foreground shadow backdrop-blur">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-400" />
-                        Loading base…
+                    <div
+                        className={
+                            loftOverlay.kind === "error"
+                                ? "flex max-w-[min(92vw,28rem)] flex-col gap-2 rounded-md border border-red-500/50 bg-red-950/80 px-3 py-2 text-[12px] font-medium text-red-100 shadow backdrop-blur"
+                                : "flex max-w-[min(92vw,28rem)] items-center gap-2 rounded-md border border-border/60 bg-panel/90 px-3 py-2 text-[12px] font-medium text-foreground shadow backdrop-blur"
+                        }
+                    >
+                        {loftOverlay.kind === "error" ? (
+                            <>
+                                <span className="break-words">{loftError ?? "Failed to load the base."}</span>
+                                <button
+                                    type="button"
+                                    className="inline-flex items-center justify-center gap-1 rounded bg-red-900/70 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide hover:bg-red-800/80"
+                                    onClick={() => retryPreviewLoft()}
+                                >
+                                    <RotateCcw className="h-3 w-3" />
+                                    Retry
+                                </button>
+                            </>
+                        ) : (
+                            <>
+                                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-cyan-400" />
+                                <span>{loftProgress}</span>
+                            </>
+                        )}
                     </div>
                 </div>
             ) : null}

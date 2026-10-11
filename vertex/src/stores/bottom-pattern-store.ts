@@ -31,9 +31,14 @@ export const useBottomPatternStore = create<BottomPatternStore>((set, get) => ({
     generatedKey: {},
 
     setPattern: (side, curve) =>
-        set((s) => ({
-            patterns: { ...s.patterns, [side]: cloneTrimline(curve) },
-        })),
+        set((s) => {
+            const generatedKey = { ...s.generatedKey };
+            delete generatedKey[side];
+            return {
+                patterns: { ...s.patterns, [side]: cloneTrimline(curve) },
+                generatedKey,
+            };
+        }),
 
     ensureGenerated: (side, key, points) => {
         const existing = get().patterns[side];

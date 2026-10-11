@@ -103,7 +103,17 @@ function BottomPatternOverlay({
         () => curve.points.map((p) => new THREE.Vector3(p.x, p.y, p.z + 0.8)),
         [curve.points],
     );
-    const outlineColor = isEditing ? (isDragging ? "#ef4444" : "#22d3ee") : "#14b8a6";
+    const outlineColor = isEditing ? (isDragging ? "#ef4444" : "#22d3ee") : "#3d9a3c";
+    const fillShape = useMemo(() => {
+        if (curve.points.length < 3) return null;
+        const shape = new THREE.Shape();
+        shape.moveTo(curve.points[0].x, curve.points[0].y);
+        for (let i = 1; i < curve.points.length; i++) {
+            shape.lineTo(curve.points[i].x, curve.points[i].y);
+        }
+        shape.closePath();
+        return shape;
+    }, [curve.points]);
 
     const getWorldMatrix = useCallback((): THREE.Matrix4 => {
         if (groupRef.current) {
@@ -252,6 +262,12 @@ function BottomPatternOverlay({
 
     return (
         <group ref={groupRef} position={[-centerX, offsetY, 0]}>
+            {fillShape ? (
+                <mesh renderOrder={8} onPointerDown={onPickPointerDown}>
+                    <shapeGeometry args={[fillShape]} />
+                    <meshBasicMaterial color="#3d9a3c" side={THREE.DoubleSide} />
+                </mesh>
+            ) : null}
             <mesh renderOrder={100} geometry={pickTubeGeo} onPointerDown={onPickPointerDown}>
                 <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
             </mesh>

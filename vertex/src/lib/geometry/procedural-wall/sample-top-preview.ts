@@ -2,8 +2,14 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
+import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
-import { extractMergedGeometry, loadGlbFromBuffer, reorientToFootprintFrame } from "@/lib/library/loaders";
+import {
+    extractMergedGeometry,
+    loadGlbFromBuffer,
+    mirrorGeometry,
+    reorientToFootprintFrame,
+} from "@/lib/library/loaders";
 import type { ScanPattern, SideCorrections } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
@@ -33,22 +39,58 @@ export async function sampleTopFromArrayBuffer(buffer: ArrayBuffer): Promise<Buf
     return reoriented;
 }
 
+/** Drop the cached SAMPLE_Top mesh so a Retry can refetch after a failed load. */
+export function resetSampleTopGeometryCache(): void {
+    cachedNative?.dispose();
+    cachedNative = null;
+    inflight = null;
+}
+
 /** Load the bundled top-only SAMPLE_Top.glb (cloned; caller owns the result). */
 export async function loadSampleTopGeometry(): Promise<BufferGeometry> {
     if (cachedNative) return cachedNative.clone();
     if (!inflight) {
         inflight = (async () => {
-            const res = await fetch(SAMPLE_TOP_PUBLIC_PATH);
-            if (!res.ok) {
-                throw new Error(`SAMPLE_Top.glb missing at ${SAMPLE_TOP_PUBLIC_PATH} (${res.status})`);
+            try {
+                const res = await fetch(SAMPLE_TOP_PUBLIC_PATH);
+                if (!res.ok) {
+                    throw new StockGlbLoadError(SAMPLE_TOP_PUBLIC_PATH, `HTTP ${res.status}`);
+                }
+                const parsed = await sampleTopFromArrayBuffer(await res.arrayBuffer());
+                cachedNative = parsed;
+                return parsed;
+            } catch (e) {
+                inflight = null;
+                if (e instanceof StockGlbLoadError) throw e;
+                throw new StockGlbLoadError(SAMPLE_TOP_PUBLIC_PATH, e);
             }
-            const parsed = await sampleTopFromArrayBuffer(await res.arrayBuffer());
-            cachedNative = parsed;
-            return parsed;
         })();
     }
     const native = await inflight;
     return native.clone();
+}
+
+/** Viewer-only: SAMPLE_Top rim → faired B. Does not loft walls. */
+export function buildProceduralViewerPattern(topGeo: BufferGeometry, scanPattern?: ScanPattern): PolyPoint[] {
+    const model = extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+    return buildFairedPatternFromTop(model, scanPattern);
+}
+
+/** Print / STL: loft the approved solid. Same reconstruct math as the frozen STLs. */
+export async function buildProceduralExportSolid(
+    options: ProceduralPreviewOptions & { mirrored?: boolean } = {},
+): Promise<{ model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry }> {
+    let raw = await loadSampleTopGeometry();
+    if (options.mirrored) {
+        const mirrored = mirrorGeometry(raw);
+        raw.dispose();
+        raw = mirrored;
+    }
+    try {
+        return reconstructProceduralPreview(raw, options);
+    } finally {
+        raw.dispose();
+    }
 }
 
 /** Fair the SAMPLE_Top rim: ~0 toe inset, heel ~8 mm, medial arch cut-in. */

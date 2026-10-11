@@ -753,7 +753,10 @@ async function resolveStockFetchUrl(base: DesignBase): Promise<string | null> {
     const glbPath = (base.glbPath && base.glbPath.trim()) || BUILTIN_DEFAULT_STOCK.glbPath;
     stockGlbLog(`resolveStockFetchUrl() glb_path = "${glbPath}" (assetId=${base.assetId})`);
 
-    if (isSampleTopStockBase({ assetId: base.assetId, glbPath, name: base.name })) {
+    if (
+        isSampleTopStockBase({ assetId: base.assetId, glbPath, name: base.name }) ||
+        isBuiltinDefaultStockBase({ assetId: base.assetId, glbPath, name: base.name })
+    ) {
         return SAMPLE_TOP_PUBLIC_PATH;
     }
 
