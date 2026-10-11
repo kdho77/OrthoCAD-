@@ -400,9 +400,13 @@ export interface ViewerSettings {
      * S0 Option B preview: `'procedural'` rebuilds the unmodified stock base
      * from TopSurface + BottomOutline (viewer-only). Default `'legacy'` keeps
      * today's sidewall-deform path. Not persisted; never touches modifiers/export.
+     * Set from the Print-step Wall model control or `?wallModel=procedural`.
      */
     wallModel?: "legacy" | "procedural";
-    /** Print-step grinding dropdown → wall mid-style. Viewer-only. */
+    /**
+     * Print-step grinding dropdown → wall mid-style. Viewer-only.
+     * Applied only when `wallModel === "procedural"` (also `?wallStyle=`).
+     */
     wallStyle?: "straight" | "round" | "hybrid";
     /** Viewer-only device-type preset for the procedural wall. Not persisted. */
     deviceType?: "functional" | "accommodative";

@@ -413,6 +413,7 @@ export {
     S1_MIN_WALL_MM,
     S1_PROFILE_RESIDUAL_MM,
 } from "./types";
+export { applyViewerWallFlagFromSearch, parseViewerWallFlag } from "./viewer-wall-flag";
 export {
     analyticG1BDeg,
     analyticG1EDeg,

@@ -1,9 +1,16 @@
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
 import { Cpu, Download, Lock, Play, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
 import { exportGcode, type GrindingStyleInput, generateHybridGcode } from "@/features/exports/export-service";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
+import {
+    ProceduralWallPreviewControls,
+    type ProceduralWallStyleChoice,
+} from "@/features/exports/procedural-wall-preview-controls";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/chili3d/kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
@@ -25,12 +32,20 @@ interface PrintingPanelProps {
     clinicalMode?: boolean;
     /** Clinical print step: only foot side + Prepare for print (AC7). */
     primaryOnly?: boolean;
+    /**
+     * Show the existing viewer.wallModel flag + grinding dropdown.
+     * Defaults on for the full panel; the clinical Print step mounts it once above.
+     */
+    showWallPreview?: boolean;
 }
 
-export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: PrintingPanelProps) {
+export function PrintingPanel({
+    clinicalMode = false,
+    primaryOnly = false,
+    showWallPreview,
+}: PrintingPanelProps) {
     const { user, license } = useAuthStore();
-    const { design, exportSide, setExportSide, setViewer, viewer } = useDesignStore();
-    const wallStyle = viewer.wallStyle ?? "straight";
+    const { design, exportSide, setExportSide, setViewer } = useDesignStore();
     const printRecipe = migratePrintRecipe(design.printRecipe);
     const recipeInfillPct = Math.round(infillFractionFromRecipe(printRecipe) * 100);
     const [layerHeight, setLayerHeight] = useState(0.3);
@@ -128,6 +143,14 @@ export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: Pri
     };
 
     const showPrimaryOnly = clinicalMode && primaryOnly;
+    const showProceduralWallControls = showWallPreview ?? !showPrimaryOnly;
+
+    const onWallStyle = (t: ProceduralWallStyleChoice) => {
+        setViewer({ wallStyle: t });
+        setGrindingStyle(
+            t === "straight" ? { type: "straight", angle_degrees: 8 } : { type: "rounded", radius_mm: 3 },
+        );
+    };
 
     return (
         <div className="space-y-3">
@@ -181,40 +204,7 @@ export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: Pri
                 </p>
             ) : null}
 
-            {!showPrimaryOnly && (
-                <div className="space-y-1.5">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        Grinding
-                    </div>
-                    <div className="flex gap-2">
-                        {(["straight", "round", "hybrid"] as const).map((t) => (
-                            <button
-                                key={t}
-                                type="button"
-                                onClick={() => {
-                                    setViewer({ wallStyle: t });
-                                    setGrindingStyle(
-                                        t === "straight"
-                                            ? { type: "straight", angle_degrees: 8 }
-                                            : { type: "rounded", radius_mm: 3 },
-                                    );
-                                }}
-                                className={cn(
-                                    "flex-1 rounded-md border px-2 py-1 text-xs capitalize",
-                                    wallStyle === t
-                                        ? "border-primary bg-primary/10"
-                                        : "border-border bg-background text-muted-foreground",
-                                )}
-                            >
-                                {t}
-                            </button>
-                        ))}
-                    </div>
-                    <div className="text-[10px] text-muted-foreground">
-                        Wall mid-style. Bottom stays flat; top and rim stay put.
-                    </div>
-                </div>
-            )}
+            {showProceduralWallControls ? <ProceduralWallPreviewControls onWallStyle={onWallStyle} /> : null}
 
             {!showPrimaryOnly && isBeltPreset && (
                 <div className="space-y-1.5">

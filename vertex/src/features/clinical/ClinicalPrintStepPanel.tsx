@@ -24,7 +24,7 @@ export function ClinicalPrintStepPanel() {
             </div>
 
             <ActiveFootSideBar />
-            <PrintingPanel clinicalMode primaryOnly />
+            <PrintingPanel clinicalMode primaryOnly showWallPreview />
 
             <button
                 type="button"
@@ -41,7 +41,7 @@ export function ClinicalPrintStepPanel() {
             {advancedOpen ? (
                 <div className="space-y-3 rounded-md border border-border bg-background/40 p-2">
                     {shouldShowShapeFinishInPrintAdvanced() ? <ShapeFinishPanel /> : null}
-                    <PrintingPanel />
+                    <PrintingPanel showWallPreview={false} />
                     <ExportPanel />
                 </div>
             ) : null}
