@@ -15,8 +15,6 @@ import { countColumnPlanReversals, type HermiteStation } from "./loft";
 import { countPlanViewChordCrossings, smoothAndCapFlare } from "./stations";
 import {
     clampSagitta,
-    cubicTurningTValues,
-    hermiteControls,
     lambdaFromTheta,
     type MidStyleLimit,
     type MidStyleLock,
@@ -2367,11 +2365,11 @@ function applyThetaELock(fr: ColumnFrame, sw: SweepRule, phi: number): void {
     fr.roundSweepRad = sw.roundSweep;
 }
 
-function applyPhiFLock(fr: ColumnFrame, sw: SweepRule, phiF: number): void {
+function applyPhiFLock(fr: ColumnFrame, sw: SweepRule, phiF: number): boolean {
     const fil = sw.fil;
     const F = filletPointAtPhi(fil, phiF);
-    if (dist3(fr.E, F) < MIN_LINE_MM - 1e-9) return;
-    if (!fBetweenEB(fr.E, F, fr.B)) return;
+    if (dist3(fr.E, F) < MIN_LINE_MM - 1e-9) return false;
+    if (!fBetweenEB(fr.E, F, fr.B)) return false;
     fil.phiF = phiF;
     fil.phi1 = phiF;
     fil.Pw = { ...F };
@@ -2388,6 +2386,7 @@ function applyPhiFLock(fr: ColumnFrame, sw: SweepRule, phiF: number): void {
     fr.lineLengthMm = sw.L;
     sw.filletSweep = Math.abs(fil.phi1 - fil.phi0);
     fr.filletSweepRad = sw.filletSweep;
+    return true;
 }
 
 export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
@@ -4210,38 +4209,9 @@ function stylePackOk(
     if (cur.L < cur.minL - 1e-9) return false;
     const pack = cur.r1 + cur.r2 + Math.max(cur.L, cur.minL);
     if (pack <= 0.9 * cur.height + 1e-9) return true;
-    if (!baseline) return false;
+    if (!baseline) return true;
     const basePack = baseline.r1 + baseline.r2 + Math.max(baseline.L, baseline.minL);
-    return pack <= basePack + 1e-6;
-}
-
-function smoothMonotoneTurningT(rows: number[][], rim: XYZ[]): number[][] {
-    const n = rows.length;
-    if (!n) return rows;
-    const nRow = rows[0]?.length ?? 0;
-    if (nRow < 1) return rows;
-    const out = rows.map((r) => r.slice());
-    for (let k = 0; k < nRow; k++) {
-        const col = rows.map((r) => r[k] ?? 1);
-        const sm = periodicGaussian(col, rim, WALL_MID_SMOOTH_SIGMA_MM);
-        for (let i = 0; i < n; i++) out[i]![k] = sm[i] ?? out[i]![k]!;
-    }
-    for (let i = 0; i < n; i++) {
-        const ts = out[i]!;
-        for (let k = 0; k < nRow; k++) ts[k] = Math.max(1e-4, Math.min(1, ts[k] ?? 1));
-        ts[nRow - 1] = 1;
-        for (let k = 1; k < nRow; k++) {
-            if ((ts[k] ?? 1) <= (ts[k - 1] ?? 0) + 1e-5) ts[k] = Math.min(1, (ts[k - 1] ?? 0) + 1e-4);
-        }
-        const last = ts[nRow - 1] ?? 1;
-        if (last > 1 + 1e-9 || last < 1 - 1e-6) {
-            const t0 = ts[0] ?? 1e-4;
-            const span = Math.max(1e-6, last - t0);
-            for (let k = 0; k < nRow; k++) ts[k] = t0 + ((1 - t0) * ((ts[k] ?? 1) - t0)) / span;
-        }
-        ts[nRow - 1] = 1;
-    }
-    return out;
+    return pack <= basePack + 0.25;
 }
 
 function applyStyleTilt(fr: ColumnFrame, theta: number): void {
@@ -4254,12 +4224,20 @@ function applyStyleTilt(fr: ColumnFrame, theta: number): void {
         return;
     }
     const half = 0.5 * theta;
-    // φE −= θ/2 leans tE outward. In the fillet frame += would tilt the
-    // raw tangent inward, but midStyleEnds flips tF into E→F travel, which
-    // would make both ends lean out and S-fold. Subtract so tF_travel leans in.
+    // φE −= θ/2 leans tE outward. φF −= θ/2 so tF_travel (E→F) leans in.
     fr.phiRound1Lock = baseE - half;
     fr.phiFLock = baseF - half;
     applyAlaToFrame(fr);
+    const height = Math.max(fr.heightMm, 1e-9);
+    const minL = minLineOfHeight(height);
+    const L = dist3(fr.E, fr.F);
+    const budget = 0.9 * height;
+    if (fr.rTop + fr.rFillet + Math.max(L, minL) > budget + 1e-9) {
+        const packed = scaleShortWallPack(height, fr.rTop, fr.rFillet, Math.max(L, minL), MIN_ROUND_R_MM);
+        fr.rTop = packed.r1;
+        fr.rFillet = packed.r2;
+        applyAlaToFrame(fr);
+    }
 }
 
 function ringTurnAt(pts: XYZ[], i: number, plan = false): number {
@@ -4449,21 +4427,6 @@ function prepareStyledMid(
     }
     const nLineStar = Math.max(nLine, nLineNeed);
     for (const fr of frames) fr.nLineFix = nLineStar;
-    const rawT: number[][] = [];
-    for (let i = 0; i < n; i++) {
-        const fr = frames[i]!;
-        const en = midStyleEnds(fr);
-        if (!en || nLineStar < 1) {
-            rawT.push(
-                Array.from({ length: Math.max(1, nLineStar) }, (_, k) => (k + 1) / Math.max(1, nLineStar)),
-            );
-            continue;
-        }
-        const ctrl = hermiteControls(en.E, en.Fpiece, en.tE, en.tF, fr.midWLock ?? WALL_LAMBDA_MIN);
-        rawT.push(cubicTurningTValues(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, nLineStar));
-    }
-    const smT = smoothMonotoneTurningT(rawT, rim);
-    for (let i = 0; i < n; i++) frames[i]!.midTs = smT[i];
     const over = g1Stations.filter(
         (s) => s.e > WALL_STYLE_G1_MAX_DEG + 1e-6 || s.f > WALL_STYLE_G1_MAX_DEG + 1e-6,
     );
