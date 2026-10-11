@@ -41,6 +41,7 @@ import {
     type ShoeSizeSystem,
     usMenToUk,
 } from "@/lib/geometry/shoe-size";
+import { normalizeShoeWidth } from "@/lib/geometry/shoe-width";
 import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { isSupabaseConfigured } from "@/lib/supabase";
@@ -431,7 +432,7 @@ export interface DesignStore {
     setUkShoeSize: (ukSize: number) => void;
     /** Change foot length in mm and auto-scale. */
     setFootLengthMm: (mm: number) => void;
-    setShoeWidth: (width: "narrow" | "medium" | "wide" | "extra_wide") => void;
+    setShoeWidth: (width: "narrow" | "medium" | "wide" | "extra_wide", side?: Side) => void;
 
     /** Patch corrections for a side. When linked, mirrors to the other side. */
     updateCorrection: (side: Side, patch: Partial<SideCorrections>) => void;
@@ -481,7 +482,7 @@ export interface DesignStore {
     applyCorrectionPreset: (
         payload: CorrectionPresetPayload,
         mode: CorrectionPresetApplyMode,
-        options?: { includeElements?: boolean; activeSide?: Side },
+        options?: { includeElements?: boolean; activeSide?: Side; label?: string },
     ) => void;
 
     setViewer: (patch: Partial<ViewerSettings>) => void;
@@ -608,13 +609,22 @@ export const useDesignStore = create<DesignStore>()(
                     design: { ...s.design, corrections: { ...s.design.corrections, unit } },
                 })),
             setLinked: (linked) =>
-                set((s) => ({
-                    design: {
-                        ...s.design,
-                        corrections: { ...s.design.corrections, linked },
-                        paired: s.design.paired ? { ...s.design.paired, linked } : undefined,
-                    },
-                })),
+                set((s) => {
+                    const leftWidth = normalizeShoeWidth(
+                        linked ? (s.design.shoeWidthBySide?.left ?? s.design.shoeWidth) : s.design.shoeWidth,
+                    );
+                    return {
+                        design: {
+                            ...s.design,
+                            shoeWidth: linked ? leftWidth : s.design.shoeWidth,
+                            shoeWidthBySide: linked
+                                ? { left: leftWidth, right: leftWidth }
+                                : s.design.shoeWidthBySide,
+                            corrections: { ...s.design.corrections, linked },
+                            paired: s.design.paired ? { ...s.design.paired, linked } : undefined,
+                        },
+                    };
+                }),
 
             setUsShoeSize: (menSize) =>
                 set((s) => {
@@ -668,10 +678,26 @@ export const useDesignStore = create<DesignStore>()(
                     };
                 }),
 
-            setShoeWidth: (width) =>
-                set((s) => ({
-                    design: { ...s.design, shoeWidth: width },
-                })),
+            setShoeWidth: (width, side) =>
+                set((s) => {
+                    const linked = s.design.corrections.linked;
+                    if (linked || !side) {
+                        return {
+                            design: {
+                                ...s.design,
+                                shoeWidth: width,
+                                shoeWidthBySide: { left: width, right: width },
+                            },
+                        };
+                    }
+                    return {
+                        design: {
+                            ...s.design,
+                            shoeWidth: side === "left" ? width : s.design.shoeWidth,
+                            shoeWidthBySide: { ...s.design.shoeWidthBySide, [side]: width },
+                        },
+                    };
+                }),
 
             updateShapeFinish: (side, patch) =>
                 set((s) => {

@@ -34,7 +34,7 @@ import {
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
-import { applyShoeWidthToPoints, normalizeShoeWidth } from "@/lib/geometry/shoe-width";
+import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
@@ -304,7 +304,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         useBaseBoundsStore.getState().setBounds(lookupKey, b);
         const outline = extractMeshOutline(sized);
         if (outline) {
-            const widthId = normalizeShoeWidth(design.shoeWidth);
+            const widthId = shoeWidthForSide(design, side);
             const heelW = layout.widthMm * 0.62;
             const scaled = applyShoeWidthToPoints(outline, widthId, {
                 ballWidthMm: layout.widthMm,
@@ -315,7 +315,18 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             });
             useBaseOutlineStore.getState().setOutline(lookupKey, scaled);
         }
-    }, [assetId, side, layout.lengthMm, layout.widthMm, layout.usMenSize, design.shoeWidth, building]);
+    }, [
+        assetId,
+        side,
+        layout.lengthMm,
+        layout.widthMm,
+        layout.usMenSize,
+        design.shoeWidth,
+        design.shoeWidthBySide,
+        design.corrections.linked,
+        design.corrections[side]?.heelCupWidthMm,
+        building,
+    ]);
 
     // Re-apply modifiers whenever corrections / elements / thickness change.
     // `wallModel: 'procedural'` is viewer-only (S1): loft from planform columns.
@@ -336,7 +347,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             const draft = useMeshEditStore.getState().getActiveDraftBottomPattern(side);
             const stored = useBottomPatternStore.getState().getPattern(side);
             const heelW = field.corrections?.heelCupWidthMm ?? 0;
-            const widthId = normalizeShoeWidth(design.shoeWidth);
+            const widthId = shoeWidthForSide(design, side);
             const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}:w${widthId}`;
             const edited = draft ?? (generatedPatternKey === patternKey ? null : stored);
             if (!draft && generatedPatternKey !== patternKey) {
@@ -541,6 +552,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.corrections,
         design.elements,
         design.pattern,
+        design.shoeWidth,
+        design.shoeWidthBySide,
         correctionPreview,
         thicknessPreview,
         elementPreviews,

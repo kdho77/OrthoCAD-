@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { AlertCircle, Check } from "lucide-react";
+import { AlertCircle, Check, CircleDot } from "lucide-react";
 import { evaluateNextGate, evaluateStepComplete } from "@/lib/clinical/clinical-step-gates";
 import { cn } from "@/lib/utils";
 import {
@@ -56,6 +56,8 @@ export function ClinicalStepRail() {
                         >
                             {state === "completed" ? (
                                 <Check className="h-3 w-3 shrink-0" aria-hidden />
+                            ) : state === "current" ? (
+                                <CircleDot className="h-3 w-3 shrink-0" aria-hidden />
                             ) : state === "attention" ? (
                                 <AlertCircle className="h-3 w-3 shrink-0" aria-hidden />
                             ) : (

@@ -243,6 +243,24 @@ export function captureCorrectionPresetFromDesign(design: DesignState): Correcti
     };
 }
 
+/** Keys a preset wrote — used to mark slider origin until the user edits them. */
+export function correctionPresetOriginKeys(
+    payload: CorrectionPresetPayload,
+    linked: boolean,
+): { left: (keyof SideCorrections)[]; right: (keyof SideCorrections)[] } {
+    const left = payload.corrections?.left
+        ? (Object.keys(payload.corrections.left) as (keyof SideCorrections)[])
+        : [];
+    const rightPatch = payload.corrections?.right
+        ? (Object.keys(payload.corrections.right) as (keyof SideCorrections)[])
+        : [];
+    if (linked) {
+        const keys = left.length > 0 ? left : rightPatch;
+        return { left: keys, right: [...keys] };
+    }
+    return { left, right: rightPatch };
+}
+
 export interface ApplyCorrectionPresetOptions {
     mode: CorrectionPresetApplyMode;
     /** When true, replace/merge elements for affected sides. */

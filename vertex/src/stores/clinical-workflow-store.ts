@@ -53,6 +53,12 @@ export type CorrectionsSectionKey = "pronationSupination" | "skive" | string;
 
 export type ElementPlacementFoot = "left" | "right" | "both";
 
+export interface CorrectionPresetOrigin {
+    name: string;
+    mode: "merge" | "replace";
+    keys: { left: string[]; right: string[] };
+}
+
 interface ClinicalWorkflowStore {
     step: ClinicalStepId;
     /** Steps the user advanced past via successful Next (no environment auto-complete). */
@@ -65,9 +71,14 @@ interface ClinicalWorkflowStore {
     nextBlockReason: string | null;
     elementPlacementFoot: ElementPlacementFoot;
     pendingCorrectionSections: CorrectionsSectionKey[];
+    /** Last applied correction preset — keys stay marked until the user edits them. */
+    correctionPresetOrigin: CorrectionPresetOrigin | null;
     setStep: (step: ClinicalStepId) => void;
     acknowledgeExplicitFootSide: (side: "left" | "right") => void;
+    acknowledgePairAssignment: () => void;
     setElementPlacementFoot: (foot: ElementPlacementFoot) => void;
+    setCorrectionPresetOrigin: (origin: CorrectionPresetOrigin | null) => void;
+    clearCorrectionPresetOriginKey: (side: "left" | "right", key: string) => void;
     goNext: () => void;
     goBack: () => void;
     consumePendingCorrectionSections: () => CorrectionsSectionKey[];
@@ -117,10 +128,30 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
     nextBlockReason: null,
     elementPlacementFoot: "left",
     pendingCorrectionSections: [],
+    correctionPresetOrigin: null,
     acknowledgeExplicitFootSide: (side) =>
         set({
             footSideExplicitlyChosen: true,
             elementPlacementFoot: side,
+        }),
+    acknowledgePairAssignment: () =>
+        set({
+            footSideExplicitlyChosen: true,
+            elementPlacementFoot: "both",
+        }),
+    setCorrectionPresetOrigin: (origin) => set({ correctionPresetOrigin: origin }),
+    clearCorrectionPresetOriginKey: (side, key) =>
+        set((s) => {
+            const origin = s.correctionPresetOrigin;
+            if (!origin) return s;
+            const nextKeys = origin.keys[side].filter((k) => k !== key);
+            if (nextKeys.length === origin.keys[side].length) return s;
+            return {
+                correctionPresetOrigin: {
+                    ...origin,
+                    keys: { ...origin.keys, [side]: nextKeys },
+                },
+            };
         }),
     setStep: (step) => {
         const next = normalizeClinicalStep(step);

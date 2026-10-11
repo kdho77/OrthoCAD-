@@ -432,6 +432,8 @@ export function CorrectionsPanel() {
     const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
     const workflowStep = useClinicalWorkflowStore((s) => s.step);
     const pendingCorrectionSections = useClinicalWorkflowStore((s) => s.pendingCorrectionSections);
+    const presetOrigin = useClinicalWorkflowStore((s) => s.correctionPresetOrigin);
+    const clearPresetKey = useClinicalWorkflowStore((s) => s.clearCorrectionPresetOriginKey);
     const productionMethod = useProductionMethodForActiveFoot();
     const showShellThickness = productionMethod === "printing_shell";
     const design = useDesignStore((s) => s.design);
@@ -520,7 +522,7 @@ export function CorrectionsPanel() {
                 />
             ) : (
                 <p className="text-[10px] text-muted-foreground">
-                    Shell thickness is available when production method is Printing — Shell (left sidebar).
+                    Shell thickness is available when production method is Printing — Shell (Setup).
                 </p>
             )}
 
@@ -610,6 +612,18 @@ export function CorrectionsPanel() {
                                         max={f.max}
                                         step={0.5}
                                         unit={f.unit ?? "mm"}
+                                        defaultValue={0}
+                                        originLabel={
+                                            presetOrigin?.keys[side].includes(f.key)
+                                                ? `from ${presetOrigin.name}`
+                                                : undefined
+                                        }
+                                        onReset={() => {
+                                            updateCorrection(side, {
+                                                [f.key]: 0,
+                                            } as Partial<SideCorrections>);
+                                            clearPresetKey(side, f.key);
+                                        }}
                                         onPreview={(v) =>
                                             previewCorrection(side, {
                                                 [f.key]: v,
@@ -623,6 +637,7 @@ export function CorrectionsPanel() {
                                                 [f.key]: v,
                                             } as Partial<SideCorrections>);
                                             clearCorrectionPreview();
+                                            clearPresetKey(side, f.key);
                                         }}
                                     />
                                 ))}

@@ -55,7 +55,8 @@ export function HardnessStepPanel() {
 
             <p className="text-[11px] text-muted-foreground">
                 Selected: <span className="font-medium text-foreground">{active}</span> ({pct}% gyroid infill
-                target for server manufacture).
+                target for server manufacture). Hardness applies to the whole device for now — per-region
+                print settings will land here when models can be split.
             </p>
         </div>
     );

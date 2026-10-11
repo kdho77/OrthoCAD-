@@ -42,9 +42,11 @@ import {
     usShoeSizeOptions,
 } from "@/lib/geometry/shoe-size";
 import {
+    hasHeelWidthOverride,
     normalizeShoeWidth,
     SHOE_WIDTH_LABELS,
     type ShoeWidthId,
+    shoeWidthForSide,
     shoeWidthHint,
 } from "@/lib/geometry/shoe-width";
 import { mergePrefabLibrary, STOCK_PREFABS } from "@/lib/library/manifest";
@@ -86,7 +88,8 @@ export function LeftSidebar({
     const setTarget = useMeshEditStore((s) => s.setTarget);
     const merged = mergePrefabLibrary(customPrefabs);
     const [saveOpen, setSaveOpen] = useState(false);
-    const [saveSide, setSaveSide] = useState<Side>("left");
+    const [saveSide, setSaveSide] = useState<Side | "both">("left");
+    const placementFoot = useClinicalWorkflowStore((s) => s.elementPlacementFoot);
     const uploadRef = useRef<HTMLInputElement>(null);
     const [uploadBusy, setUploadBusy] = useState(false);
     const [uploadError, setUploadError] = useState<string | null>(null);
@@ -200,24 +203,30 @@ export function LeftSidebar({
                             </button>
                         ))}
                     </div>
-                    <div className="mt-2 flex gap-1">
-                        {(["left", "right"] as Side[]).map((s) => (
-                            <Button
-                                key={s}
-                                size="sm"
-                                variant="secondary"
-                                className="h-7 flex-1 gap-1 text-[11px]"
-                                onClick={() => {
-                                    setSaveSide(s);
-                                    setTarget({ type: "insole", side: s });
-                                    setSaveOpen(true);
-                                }}
-                            >
-                                <Save className="h-3 w-3" />
-                                Save {s}…
-                            </Button>
-                        ))}
-                    </div>
+                    <Button
+                        size="sm"
+                        variant="secondary"
+                        className="mt-2 h-7 w-full gap-1 text-[11px]"
+                        onClick={() => {
+                            const side =
+                                placementFoot === "right"
+                                    ? "right"
+                                    : placementFoot === "both"
+                                      ? "both"
+                                      : "left";
+                            setSaveSide(side);
+                            if (side !== "both") setTarget({ type: "insole", side });
+                            setSaveOpen(true);
+                        }}
+                    >
+                        <Save className="h-3 w-3" />
+                        Save to library
+                        {placementFoot === "both"
+                            ? " (Pair)"
+                            : placementFoot === "right"
+                              ? " (Right)"
+                              : " (Left)"}
+                    </Button>
                 </Section>
             ) : null}
 
@@ -528,39 +537,59 @@ function ShoeSizeSelect({
 }
 
 function ShoeWidthSelect() {
-    const width = useDesignStore((s) => normalizeShoeWidth(s.design.shoeWidth));
+    const linked = useDesignStore((s) => s.design.corrections.linked);
+    const design = useDesignStore((s) => s.design);
     const setShoeWidth = useDesignStore((s) => s.setShoeWidth);
-    const heelOverride = useDesignStore((s) => s.design.corrections.left.heelCupWidthMm);
     const ids: ShoeWidthId[] = ["narrow", "medium", "wide", "extra_wide"];
-    return (
-        <div className="space-y-1.5">
-            <div className="grid grid-cols-2 gap-1">
-                {ids.map((id) => (
+
+    const renderGrid = (side?: Side) => {
+        const width = side ? shoeWidthForSide(design, side) : normalizeShoeWidth(design.shoeWidth);
+        const heelOverride = hasHeelWidthOverride(
+            side ? design.corrections[side].heelCupWidthMm : design.corrections.left.heelCupWidthMm,
+        );
+        return (
+            <div className="space-y-1">
+                {side ? (
+                    <p className="text-[10px] font-medium uppercase text-muted-foreground">
+                        {side === "left" ? "Left" : "Right"}
+                    </p>
+                ) : null}
+                <div className="grid grid-cols-2 gap-1">
+                    {ids.map((id) => (
+                        <button
+                            key={id}
+                            type="button"
+                            onClick={() => setShoeWidth(id, side)}
+                            className={cn(
+                                "rounded border px-1 py-1 text-center text-[10px]",
+                                width === id
+                                    ? "border-primary bg-primary/10 text-primary"
+                                    : "border-border text-muted-foreground",
+                            )}
+                        >
+                            {SHOE_WIDTH_LABELS[id]}
+                        </button>
+                    ))}
+                </div>
+                <p className="text-[10px] text-muted-foreground">{shoeWidthHint(width)}</p>
+                {heelOverride ? (
                     <button
-                        key={id}
                         type="button"
-                        onClick={() => setShoeWidth(id)}
-                        className={cn(
-                            "rounded border px-1 py-1 text-center text-[10px]",
-                            width === id
-                                ? "border-primary bg-primary/10 text-primary"
-                                : "border-border text-muted-foreground",
-                        )}
+                        onClick={() => useClinicalWorkflowStore.getState().setStep("corrections")}
+                        className="text-[10px] text-amber-200/90 underline-offset-2 hover:underline"
                     >
-                        {SHOE_WIDTH_LABELS[id]}
+                        Heel width set in Corrections
                     </button>
-                ))}
+                ) : null}
             </div>
-            <p className="text-[10px] text-muted-foreground">{shoeWidthHint(width)}</p>
-            {heelOverride ? (
-                <button
-                    type="button"
-                    onClick={() => useClinicalWorkflowStore.getState().setStep("corrections")}
-                    className="text-[10px] text-amber-200/90 underline-offset-2 hover:underline"
-                >
-                    Heel width set in Corrections
-                </button>
-            ) : null}
+        );
+    };
+
+    if (linked) return <div className="space-y-1.5">{renderGrid()}</div>;
+    return (
+        <div className="grid grid-cols-2 gap-2">
+            {renderGrid("left")}
+            {renderGrid("right")}
         </div>
     );
 }

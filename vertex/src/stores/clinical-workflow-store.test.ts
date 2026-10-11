@@ -17,6 +17,16 @@ describe("clinical workflow steps", () => {
         ]);
     });
 
+    test("pair assignment defaults Editing to Both", () => {
+        useClinicalWorkflowStore.setState({
+            elementPlacementFoot: "left",
+            footSideExplicitlyChosen: false,
+        });
+        useClinicalWorkflowStore.getState().acknowledgePairAssignment();
+        expect(useClinicalWorkflowStore.getState().elementPlacementFoot).toBe("both");
+        expect(useClinicalWorkflowStore.getState().footSideExplicitlyChosen).toBe(true);
+    });
+
     test("blocked Next stays enabled and jumps to Scan", () => {
         useClinicalWorkflowStore.setState({
             step: "setup",
@@ -25,6 +35,6 @@ describe("clinical workflow steps", () => {
         });
         useClinicalWorkflowStore.getState().goNext();
         expect(useClinicalWorkflowStore.getState().step).toBe("scan");
-        expect(useClinicalWorkflowStore.getState().nextBlockReason).toMatch(/Left or Right/i);
+        expect(useClinicalWorkflowStore.getState().nextBlockReason).toMatch(/Left, Right, or Pair/i);
     });
 });

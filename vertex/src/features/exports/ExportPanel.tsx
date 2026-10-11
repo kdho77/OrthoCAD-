@@ -1,5 +1,6 @@
 import { Boxes, CheckCircle2, Download, FileCode2, Loader2, Lock, TriangleAlert } from "lucide-react";
 import { useState } from "react";
+import { CaseOrderSummary } from "@/components/clinical/CaseOrderSummary";
 import { Button } from "@/components/ui/button";
 import { exportDesign } from "@/features/exports/export-service";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
@@ -68,6 +69,7 @@ export function ExportPanel() {
 
     return (
         <div className="space-y-3">
+            <CaseOrderSummary />
             <div className="rounded-md border border-border bg-background/50 p-2 text-xs">
                 <div className="flex justify-between">
                     <span className="text-muted-foreground">Token balance</span>

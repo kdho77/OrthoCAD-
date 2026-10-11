@@ -2,7 +2,11 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import { applyCorrectionPresetToDesign, VERTEX_STARTER_PRESETS } from "@/lib/clinical/correction-presets";
+import {
+    applyCorrectionPresetToDesign,
+    correctionPresetOriginKeys,
+    VERTEX_STARTER_PRESETS,
+} from "@/lib/clinical/correction-presets";
 import type { DesignState, ElementKind } from "@/types";
 
 function testDesign(): DesignState {
@@ -101,5 +105,12 @@ describe("correction presets", () => {
         });
         const kinds = next.elements.map((e) => e.kind);
         expect(kinds).toContain("dancers_pad" satisfies ElementKind);
+    });
+
+    test("origin keys mark the fields a linked preset wrote", () => {
+        const pf = VERTEX_STARTER_PRESETS.find((p) => p.id === "vertex-pf")!;
+        const keys = correctionPresetOriginKeys(pf.payload, true);
+        expect(keys.left).toEqual(expect.arrayContaining(["archFillMm", "heelCupDepthMm", "archHeightMm"]));
+        expect(keys.right).toEqual(keys.left);
     });
 });

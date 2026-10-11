@@ -7,7 +7,9 @@ import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
 import {
     type CorrectionPresetPayload,
     captureCorrectionPresetFromDesign,
+    correctionPresetOriginKeys,
 } from "@/lib/clinical/correction-presets";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useCorrectionPresetStore } from "@/stores/correction-preset-store";
 import { useDesignStore } from "@/stores/design-store";
 
@@ -36,17 +38,31 @@ export function CorrectionPresetsPanel() {
 
     const captured = useMemo(() => captureCorrectionPresetFromDesign(design), [design]);
 
+    const recordOrigin = (payload: CorrectionPresetPayload, mode: ApplyMode, label: string) => {
+        const linked = useDesignStore.getState().design.corrections.linked;
+        useClinicalWorkflowStore.getState().setCorrectionPresetOrigin({
+            name: label,
+            mode,
+            keys: correctionPresetOriginKeys(payload, linked),
+        });
+    };
+
     const apply = (payload: CorrectionPresetPayload, mode: ApplyMode, label: string) => {
         if (mode === "replace") {
             setPendingReplace({ name: label, payload });
             return;
         }
-        applyPreset(payload, "merge", { activeSide: activeFoot });
+        applyPreset(payload, "merge", { activeSide: activeFoot, label });
+        recordOrigin(payload, "merge", label);
     };
 
     const confirmReplace = () => {
         if (!pendingReplace) return;
-        applyPreset(pendingReplace.payload, "replace", { activeSide: activeFoot });
+        applyPreset(pendingReplace.payload, "replace", {
+            activeSide: activeFoot,
+            label: pendingReplace.name,
+        });
+        recordOrigin(pendingReplace.payload, "replace", pendingReplace.name);
         setPendingReplace(null);
     };
 

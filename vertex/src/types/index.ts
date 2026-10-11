@@ -263,6 +263,11 @@ export interface DesignState {
     footLengthMm?: number;
     /** Last width vs Medium. Forefoot Δ −5/0/+5/+10 mm; heel capped ±2 mm. */
     shoeWidth?: "narrow" | "medium" | "wide" | "extra_wide";
+    /** Per-foot width when L/R corrections are unlinked. Linked designs use `shoeWidth`. */
+    shoeWidthBySide?: {
+        left?: "narrow" | "medium" | "wide" | "extra_wide";
+        right?: "narrow" | "medium" | "wide" | "extra_wide";
+    };
     corrections: Corrections;
     elements: PlacedElement[];
     /** User-edited insole outline curves — persisted with the design. */

@@ -104,3 +104,26 @@ export function shoeWidthHint(width: ShoeWidthId): string {
     if (width === "medium") return "Medium: 0 mm forefoot, 0 mm heel";
     return `${SHOE_WIDTH_LABELS[width]}: ${sign(d)} mm forefoot, ${sign(heel)} mm heel`;
 }
+
+export function hasHeelWidthOverride(mm?: number | null): boolean {
+    return mm != null && Number.isFinite(mm) && Math.abs(mm) > 1e-6;
+}
+
+export interface ShoeWidthDesignSlice {
+    shoeWidth?: string | null;
+    shoeWidthBySide?: { left?: string | null; right?: string | null };
+    corrections?: { linked?: boolean };
+}
+
+export function shoeWidthForSide(design: ShoeWidthDesignSlice, side: "left" | "right"): ShoeWidthId {
+    if (design.corrections?.linked !== false) return normalizeShoeWidth(design.shoeWidth);
+    return normalizeShoeWidth(design.shoeWidthBySide?.[side] ?? design.shoeWidth);
+}
+
+/** Linked: one label. Unlocked with different L/R: "L Wide / R Medium". */
+export function formatShoeWidthSummary(design: ShoeWidthDesignSlice): string {
+    const left = shoeWidthForSide(design, "left");
+    const right = shoeWidthForSide(design, "right");
+    if (design.corrections?.linked !== false || left === right) return SHOE_WIDTH_LABELS[left];
+    return `L ${SHOE_WIDTH_LABELS[left]} / R ${SHOE_WIDTH_LABELS[right]}`;
+}

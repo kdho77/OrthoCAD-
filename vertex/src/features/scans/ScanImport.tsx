@@ -45,6 +45,7 @@ import {
 import { type SuggestedScanLandmarks, suggestScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { cn } from "@/lib/utils";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import {
     getScanRegistrationMatrix,
@@ -286,6 +287,29 @@ export function ScanImport() {
     const [sizeAcceptedByScanId, setSizeAcceptedByScanId] = useState<Record<string, boolean>>({});
     const [matchBusyId, setMatchBusyId] = useState<string | null>(null);
     const [importSideChoice, setImportSideChoice] = useState<ImportSideChoice | null>(null);
+    const acknowledgeExplicitFootSide = useClinicalWorkflowStore((s) => s.acknowledgeExplicitFootSide);
+    const acknowledgePairAssignment = useClinicalWorkflowStore((s) => s.acknowledgePairAssignment);
+    const setLinked = useDesignStore((s) => s.setLinked);
+
+    const chooseImportSide = (choice: ImportSideChoice) => {
+        setImportSideChoice(choice);
+        if (choice === "pair") {
+            acknowledgePairAssignment();
+            setLinked(true);
+        } else {
+            acknowledgeExplicitFootSide(choice);
+        }
+    };
+
+    const syncPairEditing = () => {
+        const all = useScanStore.getState().scans;
+        const hasL = all.some((scan) => scan.side === "left");
+        const hasR = all.some((scan) => scan.side === "right");
+        if (hasL && hasR) {
+            acknowledgePairAssignment();
+            setLinked(true);
+        }
+    };
 
     const applySizeSuggestion = (scanId: string, suggestion: SizeSuggestion) => {
         const system = sizeSystem ?? "us";
@@ -497,6 +521,7 @@ export function ScanImport() {
                     window.setTimeout(() => setCleanupBusy(false), 0);
                 }
             }
+            syncPairEditing();
         } catch (e) {
             setError(e instanceof Error ? e.message : "Import failed");
             setCleanupBusy(false);
@@ -517,7 +542,7 @@ export function ScanImport() {
                         <button
                             key={choice}
                             type="button"
-                            onClick={() => setImportSideChoice(choice)}
+                            onClick={() => chooseImportSide(choice)}
                             className={cn(
                                 "rounded px-1 py-1.5 text-[10px] capitalize",
                                 importSideChoice === choice

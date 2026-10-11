@@ -4,8 +4,11 @@
 import { describe, expect, test } from "@rstest/core";
 import { insoleLayoutForUsMenSize } from "./shoe-size";
 import {
+    applyShoeWidthToPoints,
+    formatShoeWidthSummary,
     SHOE_WIDTH_HEEL_CAP_MM,
     shoeWidthBallScale,
+    shoeWidthForSide,
     shoeWidthHeelScale,
     shoeWidthScaleAtU,
 } from "./shoe-width";
@@ -43,5 +46,34 @@ describe("shoe width rule", () => {
 
     test("length is unchanged — scale is Y-only", () => {
         expect(shoeWidthBallScale(95, "wide")).toBeCloseTo(100 / 95, 6);
+    });
+
+    test("outline X is unchanged and correction millimetre values stay put", () => {
+        const pts = [
+            { x: 0, y: 10 },
+            { x: 130, y: 40 },
+            { x: 260, y: -10 },
+        ];
+        const corrections = { archHeightMm: 6, heelCupDepthMm: 14, medialSkiveMm: 3 };
+        const out = applyShoeWidthToPoints(pts, "wide", {
+            ballWidthMm: 95,
+            heelWidthMm: 59,
+            minX: 0,
+            lengthMm: 260,
+        });
+        expect(out.map((p) => p.x)).toEqual(pts.map((p) => p.x));
+        expect(corrections).toEqual({ archHeightMm: 6, heelCupDepthMm: 14, medialSkiveMm: 3 });
+    });
+
+    test("unlocked L/R widths stay independent", () => {
+        const design = {
+            shoeWidth: "wide" as const,
+            shoeWidthBySide: { left: "wide" as const, right: "narrow" as const },
+            corrections: { linked: false },
+        };
+        expect(shoeWidthForSide(design, "left")).toBe("wide");
+        expect(shoeWidthForSide(design, "right")).toBe("narrow");
+        expect(formatShoeWidthSummary(design)).toBe("L Wide / R Narrow");
+        expect(formatShoeWidthSummary({ ...design, corrections: { linked: true } })).toBe("Wide");
     });
 });
