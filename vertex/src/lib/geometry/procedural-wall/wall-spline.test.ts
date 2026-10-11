@@ -147,7 +147,7 @@ describe("clamped cubic wall spline", () => {
         );
         expect(f[0]).toBe(0);
         expect(f[N]).toBe(1);
-        for (let k = 1; k <= N; k++) expect(f[k]!).toBeGreaterThanOrEqual(f[k - 1]! + 0.25 / N - 1e-12);
+        for (let k = 1; k <= N; k++) expect(f[k]!).toBeGreaterThanOrEqual(f[k - 1]! + 0.6 / N - 1e-12);
         const u0 = invertDensityW(table, 0);
         const u1 = invertDensityW(table, 1);
         expect(u0).toBe(0);
@@ -165,6 +165,20 @@ describe("clamped cubic wall spline", () => {
         expect(ring.pts[0]![0]!.z).toBeCloseTo(sol.poly[0]!.z, 9);
         expect(ring.pts[0]![N]!.z).toBeCloseTo(sol.poly[sol.poly.length - 1]!.z, 9);
         expect(Math.abs(ring.f[0]![5]! - ring.f[1]![5]!)).toBeLessThanOrEqual(0.02);
+    });
+
+    test("enforceMonotoneF gaps 0.6/N then renormalizes", () => {
+        const N = 10;
+        const tight = Array.from({ length: N + 1 }, (_, k) => 0.05 * k);
+        const f = enforceMonotoneF(tight, N);
+        expect(f[0]).toBe(0);
+        expect(f[N]).toBe(1);
+        for (let k = 1; k <= N; k++) expect(f[k]!).toBeGreaterThanOrEqual(f[k - 1]! + 0.6 / N - 1e-12);
+        const bunched = [0, 0.01, 0.02, 0.03, 0.04, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
+        const g = enforceMonotoneF(bunched, N);
+        expect(g[0]).toBe(0);
+        expect(g[N]).toBe(1);
+        for (let k = 1; k <= N; k++) expect(g[k]!).toBeGreaterThanOrEqual(g[k - 1]! + 0.6 / N - 1e-12);
     });
 
     test("invertDensityW lerps the W table, never u = k/N", () => {
@@ -218,6 +232,7 @@ describe("clamped cubic wall spline", () => {
                 stepRatio: Number((hi / lo).toFixed(4)),
             }),
         );
+        expect(() => assertInversionOk(pts, L, N, 0)).not.toThrow();
         expect(
             (() => {
                 try {

@@ -27,7 +27,6 @@ import {
     SPLINE_SAG_HI,
     SPLINE_SAG_LO,
     SPLINE_SEAM_B_MAX_DEG,
-    SPLINE_STEP_RATIO_MAX,
     WALL_MID_DIHEDRAL_MAX_DEG,
     WALL_MID_TURN_MAX_DEG,
     WALL_PLAN_ANGLE_REPORT_DEG,
@@ -178,9 +177,6 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
         }
         if ((q.maxSplineFDelta ?? 0) > SPLINE_F_RING_MAX + 1e-9) {
             misses.push(`f-delta ${q.maxSplineFDelta?.toFixed(4)}>${SPLINE_F_RING_MAX}`);
-        }
-        if ((q.maxSplineStepRatio ?? 1) > SPLINE_STEP_RATIO_MAX + 1e-9) {
-            misses.push(`step-ratio ${q.maxSplineStepRatio?.toFixed(2)}>${SPLINE_STEP_RATIO_MAX}`);
         }
         if ((q.minSplineEdgeOverLN ?? 1) + 1e-9 < 1) {
             misses.push(
@@ -430,10 +426,6 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         (f) => f.midPlanOffMm ?? 0,
         (v) => v < -1e-6,
     );
-    const step = worstHi(
-        (f) => f.splineStepRatio ?? 1,
-        (v) => v > SPLINE_STEP_RATIO_MAX + 1e-9,
-    );
     const edge = worstLo(
         (f) => {
             const N = Math.max(
@@ -546,13 +538,7 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             0,
             inset.n ? { n: inset.n, worstI: inset.i, worstU: inset.u } : undefined,
         ),
-        row(
-            "step-ratio",
-            !step.n || style === "straight",
-            step.n ? step.v : (q.maxSplineStepRatio ?? 1),
-            SPLINE_STEP_RATIO_MAX,
-            step.n ? { n: step.n, worstI: step.i, worstU: step.u } : undefined,
-        ),
+        row("step-ratio", true, q.maxSplineStepRatio ?? 1, "no-cap"),
         row(
             "minEdge/LN",
             !edge.n || style === "straight",

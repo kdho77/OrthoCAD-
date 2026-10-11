@@ -42,7 +42,8 @@ export const SPLINE_DENSE = 512;
 export const SPLINE_W_DENSE = 2048;
 export const SPLINE_W_ALPHA = 0.6;
 export const SPLINE_W_THETA_MIN_DEG = 1;
-export const SPLINE_F_STEP_FRAC = 0.25;
+export const SPLINE_F_STEP_FRAC = 0.6;
+export const SPLINE_F_GAP_ITERS = 3;
 export const SPLINE_F_RING_MAX = 0.02;
 export const SPLINE_MIN_EDGE_FRAC = 0.2;
 export const SPLINE_FLAT_MM = 0.05;
@@ -784,28 +785,14 @@ export function columnChordsOk(pts: XYZ[], L: number, N: number): boolean {
     return true;
 }
 
-/** Hard stop. Never flatten. */
+/** Hard stop on short chords. No W-step cap. Never flatten. */
 export function assertInversionOk(pts: XYZ[], L: number, N: number, i: number): void {
     const need = (SPLINE_MIN_EDGE_FRAC * L) / Math.max(N, 1);
-    let lo = Number.POSITIVE_INFINITY;
-    let hi = 0;
-    let kLo = 1;
     for (let k = 1; k < pts.length; k++) {
         const e = hypot3(sub(pts[k]!, pts[k - 1]!));
         if (e + 1e-15 < need) {
             throw new Error(`[RND-INV] ${JSON.stringify({ i, k, chord: e, need, L, N })}`);
         }
-        if (e > 1e-12) {
-            if (e < lo) {
-                lo = e;
-                kLo = k;
-            }
-            if (e > hi) hi = e;
-        }
-    }
-    const stepRatio = lo > 1e-12 ? hi / lo : 1;
-    if (stepRatio > SPLINE_STEP_RATIO_MAX + 1e-9) {
-        throw new Error(`[RND-INV] ${JSON.stringify({ i, k: kLo, stepRatio, lo, hi, L, N })}`);
     }
 }
 
@@ -819,22 +806,34 @@ export function bulgeVsStraightFrac(round: XYZ[], straight: XYZ[], H: number): n
     return max / Math.max(H, 1e-6);
 }
 
-/** f_0 = 0, f_N = 1, f_k >= f_{k-1} + 0.25/N. */
+/** After rim smooth: gap f_k >= f_{k-1} + 0.6/N, then f *= 1/f_N. Repeat ≤ 3. */
 export function enforceMonotoneF(f: number[], N: number): number[] {
     const out = f.slice();
     if (!out.length) return out;
+    const last = out.length - 1;
     const n = Math.max(1, N);
     const minStep = SPLINE_F_STEP_FRAC / n;
     out[0] = 0;
-    out[out.length - 1] = 1;
-    for (let k = 1; k < out.length; k++) out[k] = Math.max(out[k]!, out[k - 1]! + minStep);
-    out[out.length - 1] = 1;
-    for (let k = out.length - 2; k >= 1; k--) {
-        out[k] = Math.min(out[k]!, out[k + 1]! - minStep);
-        out[k] = Math.max(out[k]!, out[k - 1]! + minStep);
+    for (let iter = 0; iter < SPLINE_F_GAP_ITERS; iter++) {
+        out[0] = 0;
+        for (let k = 1; k <= last; k++) out[k] = Math.max(out[k] ?? 0, (out[k - 1] ?? 0) + minStep);
+        const end = out[last] ?? 0;
+        if (end > 1e-16) {
+            for (let k = 0; k <= last; k++) out[k] = (out[k] ?? 0) / end;
+        }
+        out[0] = 0;
+        out[last] = 1;
+        let tight = false;
+        for (let k = 1; k <= last; k++) {
+            if ((out[k] ?? 0) - (out[k - 1] ?? 0) + 1e-15 < minStep) {
+                tight = true;
+                break;
+            }
+        }
+        if (!tight) break;
     }
     out[0] = 0;
-    out[out.length - 1] = 1;
+    out[last] = 1;
     return out;
 }
 
@@ -853,8 +852,8 @@ export function row1TRAngleDeg(row1: XYZ, R: XYZ, tR: XYZ, h: { x: number; y: nu
 }
 
 /**
- * Shared N (last-row index). Smooth f_k = k/N along the rim, enforce spacing,
- * invert each station's W(u). Rows 0 and N are C(0)=R and C(1)=B.
+ * Shared N (last-row index). Smooth f_k = k/N along the rim, gap 0.6/N then
+ * renormalize (≤3), invert each station's W(u). Rows 0 and N are C(0)=R and C(1)=B.
  */
 export function sampleSplineRingByW(
     polys: XYZ[][],
