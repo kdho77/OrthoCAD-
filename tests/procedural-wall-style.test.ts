@@ -341,6 +341,7 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             worstAcrossU?: number;
             worstAlongRowI?: number;
             worstAlongRowU?: number;
+            nLipFail?: number;
         };
         wallFrames?: Array<{
             u: number;
@@ -366,6 +367,9 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             splineCorner?: boolean;
             splineRhoMin?: number;
             splineRhoNeed?: number;
+            splineKappaRatio?: number;
+            splineKappaE?: number;
+            splineLipOk?: boolean;
             o?: number;
             a?: number;
         }>;
@@ -447,6 +451,14 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
     const sMin = worstLo(
         (f) => f.midPlanOffMm ?? 0,
         (v) => v < SPLINE_S_MIN_MM - 1e-6,
+    );
+    const kappa = worstHi(
+        (f) => (wrGated(f) ? (f.splineKappaRatio ?? 1) : 1),
+        (v) => v > 2 + 1e-6,
+    );
+    const lip = worstHi(
+        (f) => (wrGated(f) && f.splineLipOk === false ? 1 : 0),
+        (v) => v > 0,
     );
     const edge = worstLo(
         (f) => {
@@ -542,6 +554,20 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             sMin.n ? sMin.v : 0,
             SPLINE_S_MIN_MM,
             sMin.n ? { n: sMin.n, worstI: sMin.i, worstU: sMin.u } : undefined,
+        ),
+        row(
+            "kappa-ratio",
+            !kappa.n || style === "straight",
+            kappa.n ? kappa.v : 0,
+            2,
+            kappa.n ? { n: kappa.n, worstI: kappa.i, worstU: kappa.u } : undefined,
+        ),
+        row(
+            "lip-ok",
+            !lip.n || style === "straight",
+            lip.n ? lip.v : (q.nLipFail ?? 0),
+            0,
+            lip.n ? { n: lip.n, worstI: lip.i, worstU: lip.u } : undefined,
         ),
         row(
             "vs-straight",
