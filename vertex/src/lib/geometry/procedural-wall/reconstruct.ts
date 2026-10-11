@@ -1558,6 +1558,11 @@ export function reconstructProceduralWalls(
             splineFlat: f.splineFlat ?? false,
             splineWR: f.splineWR ?? 0,
             splineFlatReason: f.splineFlatReason ?? "",
+            splineCorner: f.splineCorner ?? false,
+            splineRhoMin: f.splineRhoMin,
+            splineRhoNeed: f.splineRhoNeed,
+            splineOMin: f.splineOMin,
+            splinePeakClosest: f.splinePeakClosest ?? false,
         })),
         rndIndex: (grid as { rndIndex?: unknown }).rndIndex,
         rndEndOk: {

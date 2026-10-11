@@ -18,14 +18,22 @@ export interface XYZ {
 export const SPLINE_DEGREE = 3;
 export const SPLINE_KNOTS = [0, 0, 0, 0, 1 / 3, 2 / 3, 1, 1, 1, 1];
 export const SPLINE_A_FRAC = 0.25;
-export const SPLINE_P1_O_FRAC = 0.5;
+/** a = min(this × o/|tR.s|, SPLINE_P1_Z_FRAC × (1−zx) H/|tR.z|). */
+export const SPLINE_P1_O_FRAC = 0.9;
 export const SPLINE_P1_Z_FRAC = 0.9;
 export const SPLINE_BETA_HEEL = 0.15;
 export const SPLINE_BETA_ARCH = 0.2;
-export const SPLINE_ZY_LO = 0.2;
-export const SPLINE_ZY_HI = 0.6;
-export const SPLINE_ZX_MAX = 0.9;
-export const SPLINE_ZX_GAP = 0.4;
+export const SPLINE_ZY_LO = 0.1;
+/** zyHi = zx − this. */
+export const SPLINE_ZY_GAP = 0.2;
+/** zx = clamp(1 − this × o/H, SPLINE_ZX_LO, SPLINE_ZX_HI). */
+export const SPLINE_ZX_O_COEF = 1.5;
+export const SPLINE_ZX_LO = 0.55;
+export const SPLINE_ZX_HI = 0.92;
+/** Kept for call-sites that still pass a fixed zy ceiling. */
+export const SPLINE_ZY_HI = 0.72;
+export const SPLINE_ZX_MAX = 0.92;
+export const SPLINE_ZX_GAP = 0.2;
 export const SPLINE_O_FLOOR_FRAC = 0.08;
 /** o_target = β k(H) H × this. */
 export const SPLINE_O_TARGET_FRAC = 0.6;
@@ -49,8 +57,14 @@ export const SPLINE_W_DENSE = 2048;
 export const SPLINE_W_ALPHA = 0.75;
 export const SPLINE_W_THETA_MIN_DEG = 1;
 /** ROUND/HYBRID column intervals. Endpoints stay R, B by index. */
-export const SPLINE_N = 48;
+export const SPLINE_N = 64;
 export const SPLINE_R_CAP = 4.5;
+/** First-chord 4° in radians — used in ρ_need = L / (r_cap N this). */
+export const SPLINE_RHO_TURN_RAD = 0.0698;
+/** o_min = ρ_need / this. */
+export const SPLINE_RHO_O_SCALE = 0.65;
+/** Min ρ over this leading arc fraction ≥ ρ_need. */
+export const SPLINE_RHO_ARC_FRAC = 0.2;
 export const SPLINE_R_FILL_ITERS = 20;
 export const SPLINE_F_RING_MAX = 0.02;
 export const SPLINE_MIN_EDGE_FRAC = 0.2;
@@ -108,6 +122,11 @@ export interface SplineSolve {
     maxTurnDeg: number;
     tRAngleDeg: number;
     oMax: number;
+    oMin: number;
+    rhoNeed: number;
+    rhoMin: number;
+    corner: boolean;
+    peakClosest: boolean;
     steep: boolean;
     fallbackStraight: boolean;
 }
@@ -252,8 +271,14 @@ function chordFrame(H: number, Ls: number): { C: Sz; n: Sz; tUp: Sz } {
     return { C, n, tUp };
 }
 
-export function splineZx(zy: number): number {
-    return Math.min(SPLINE_ZX_MAX, zy + SPLINE_ZX_GAP);
+function clampNum(x: number, lo: number, hi: number): number {
+    return Math.max(lo, Math.min(hi, x));
+}
+
+/** zx = clamp(1 − 1.5 o/H, 0.55, 0.92). Independent of zy. */
+export function splineZx(o: number, H: number): number {
+    const h = Math.max(H, 1e-9);
+    return clampNum(1 - SPLINE_ZX_O_COEF * (o / h), SPLINE_ZX_LO, SPLINE_ZX_HI);
 }
 
 /** Unit over-edge tR in the column (s, z) plane. */
@@ -270,11 +295,54 @@ export function tRAngleBelowHorizontalDeg(tSz: Sz): number {
     return (Math.atan2(Math.abs(tSz.z), Math.abs(tSz.s)) * 180) / Math.PI;
 }
 
+/** a = min(0.9 o/|tR.s|, 0.9 (1−zx) H/|tR.z|). */
 export function splineA(o: number, zx: number, H: number, tSz: Sz): number {
-    let a = SPLINE_A_FRAC * H;
+    let a = Number.POSITIVE_INFINITY;
     if (Math.abs(tSz.s) > 1e-14) a = Math.min(a, (SPLINE_P1_O_FRAC * o) / Math.abs(tSz.s));
     if (Math.abs(tSz.z) > 1e-14) a = Math.min(a, (SPLINE_P1_Z_FRAC * (1 - zx) * H) / Math.abs(tSz.z));
+    if (!Number.isFinite(a)) a = 0;
     return Math.max(0, a);
+}
+
+export function splineRhoNeed(L: number, n = SPLINE_N): number {
+    return L / (SPLINE_R_CAP * n * SPLINE_RHO_TURN_RAD);
+}
+
+export function splineOMinFromL(L: number, n = SPLINE_N): number {
+    return splineRhoNeed(L, n) / SPLINE_RHO_O_SCALE;
+}
+
+/** Min discrete radius of curvature on the leading `frac` of polyline arc. */
+export function minRhoFirstArc(samples: XYZ[], frac = SPLINE_RHO_ARC_FRAC): number {
+    if (samples.length < 3) return Number.POSITIVE_INFINITY;
+    const ds: number[] = [0];
+    for (let i = 1; i < samples.length; i++) ds.push(hypot3(sub(samples[i]!, samples[i - 1]!)));
+    let L = 0;
+    for (const d of ds) L += d;
+    const cut = frac * Math.max(L, 1e-12);
+    let s = 0;
+    let minRho = Number.POSITIVE_INFINITY;
+    for (let i = 1; i < samples.length - 1; i++) {
+        s += ds[i]!;
+        if (s > cut) break;
+        const a = samples[i - 1]!;
+        const b = samples[i]!;
+        const c = samples[i + 1]!;
+        const v1 = sub(b, a);
+        const v2 = sub(c, b);
+        const l1 = hypot3(v1);
+        const l2 = hypot3(v2);
+        if (l1 < 1e-12 || l2 < 1e-12) continue;
+        const cos = Math.max(-1, Math.min(1, dot(v1, v2) / (l1 * l2)));
+        const dth = Math.acos(cos);
+        if (dth < 1e-8) continue;
+        minRho = Math.min(minRho, (0.5 * (l1 + l2)) / dth);
+    }
+    return minRho;
+}
+
+export function minRhoFirstArcOfPoly(poly: XYZ[], frac = SPLINE_RHO_ARC_FRAC): number {
+    return minRhoFirstArc(sampleSplineDense(poly), frac);
 }
 
 export function splineC(Ls: number, o: number): number {
@@ -305,7 +373,7 @@ export function buildSplinePolygon(
     const fr = stationSzFrame(R, B, h);
     const tOver = overEdgeTangent(tR, fr.h);
     const tSz = tRInSz(tR, fr.h);
-    const zx = splineZx(zy);
+    const zx = splineZx(o, fr.H);
     const a = aOverride ?? splineA(o, zx, fr.H, tSz);
     const c = splineC(fr.Ls, o);
     const P0 = { ...R };
@@ -553,6 +621,13 @@ function measureOf(poly: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: number }, tR:
     };
 }
 
+interface SplineSolveExtra {
+    corner: boolean;
+    oMin: number;
+    rhoNeed: number;
+    peakClosest?: boolean;
+}
+
 function finishSolve(
     input: SplineStationInput,
     poly: XYZ[],
@@ -563,13 +638,22 @@ function finishSolve(
     tRAngleDeg: number,
     steep: boolean,
     fallback: boolean,
+    extra: SplineSolveExtra,
 ): SplineSolve {
     const { R, B, tR } = input;
     const fr = stationSzFrame(R, B, input.h);
     const H = input.heightMm ?? fr.H;
-    const zx = splineZx(zy);
+    const zx = splineZx(o, H);
     const c = splineC(fr.Ls, o);
     const m = measureOf(poly, R, B, fr.h, tR);
+    const rhoMin = fallback ? Number.POSITIVE_INFINITY : minRhoFirstArc(m.dense);
+    const extraFields = {
+        oMin: extra.oMin,
+        rhoNeed: extra.rhoNeed,
+        rhoMin,
+        corner: extra.corner,
+        peakClosest: extra.peakClosest ?? false,
+    };
     if (fallback) {
         return {
             pts: sampleStraight(R, B, 16),
@@ -596,6 +680,7 @@ function finishSolve(
             oMax,
             steep,
             fallbackStraight: true,
+            ...extraFields,
         };
     }
     return {
@@ -623,13 +708,14 @@ function finishSolve(
         oMax,
         steep,
         fallbackStraight: false,
+        ...extraFields,
     };
 }
 
 /**
- * Drive o from o_target = β k(H) H × 0.6, clamp to [0, o_max] (planOut 2).
- * zy ∈ [0.2, 0.6] bisects z(min s) to 0.50 H (gate 0.40–0.60 H where H≥6).
- * zx = min(0.9, zy + 0.4).
+ * Drive o = clamp(max(o_target, o_min), 0, o_max).
+ * zx = clamp(1 − 1.5 o/H, 0.55, 0.92).
+ * zy bisects in [0.10, zx − 0.20] for z(min s) = 0.50 H ± 0.05.
  */
 export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const { R, B, tR } = input;
@@ -639,37 +725,72 @@ export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const tSz = tRInSz(tR, fr.h);
     const tRAngleDeg = tRAngleBelowHorizontalDeg(tSz);
     const oTarget = splineOTarget(input.u, H);
-    const targetPeak = SPLINE_PEAK_TARGET;
+    const L = hypot3(sub(B, R));
+    const rhoNeed = splineRhoNeed(L);
+    const oMin = splineOMinFromL(L);
+    const oWish = Math.max(oTarget, oMin);
+    const zxWish = splineZx(oWish, H);
+    const oMax = Math.max(0, splineOMax(zxWish, H, tSz, planOut));
+    const corner = oMin > oMax + 1e-12 || H < SPLINE_H_MIN_MM;
+    const o = clampNum(Math.max(oTarget, oMin), 0, oMax);
+    const zx = splineZx(o, H);
+    const a = splineA(o, zx, H, tSz);
+    const extra: SplineSolveExtra = { corner, oMin, rhoNeed };
 
-    const tryAt = (o: number, zy: number, aOverride?: number) => {
-        const poly = buildSplinePolygon(R, B, fr.h, tR, o, zy, aOverride);
+    const tryAt = (oo: number, zy: number, aOverride?: number) => {
+        const poly = buildSplinePolygon(R, B, fr.h, tR, oo, zy, aOverride);
         return { poly, m: measureOf(poly, R, B, fr.h, tR) };
     };
 
-    const oAtZy = (zy: number): { o: number; oMax: number; steep: boolean } => {
-        const oMax = Math.max(0, splineOMax(splineZx(zy), H, tSz, planOut));
-        const o = Math.max(0, Math.min(oTarget, oMax));
-        return { o, oMax, steep: oTarget > oMax + 1e-9 };
-    };
-
-    let zyLo = SPLINE_ZY_LO;
-    let zyHi = SPLINE_ZY_HI;
+    const zyLo0 = SPLINE_ZY_LO;
+    const zyHi0 = Math.max(zyLo0, zx - SPLINE_ZY_GAP);
+    let zyLo = zyLo0;
+    let zyHi = zyHi0;
     let zy = zyLo;
-    let inner = oAtZy(zy);
     for (let i = 0; i < SPLINE_BISECT; i++) {
         zy = 0.5 * (zyLo + zyHi);
-        inner = oAtZy(zy);
-        const { m } = tryAt(inner.o, zy);
-        if (m.peakZFrac < targetPeak) zyLo = zy;
+        const { m } = tryAt(o, zy);
+        if (m.peakZFrac < SPLINE_PEAK_TARGET) zyLo = zy;
         else zyHi = zy;
     }
     zy = 0.5 * (zyLo + zyHi);
-    inner = oAtZy(zy);
-
-    const { o, oMax, steep } = inner;
-    const zx = splineZx(zy);
-    const a = splineA(o, zx, H, tSz);
-    const { poly, m } = tryAt(o, zy);
+    let { poly, m } = tryAt(o, zy);
+    if (m.peakZFrac + 1e-9 < SPLINE_PEAK_LO || m.peakZFrac - 1e-9 > SPLINE_PEAK_HI) {
+        let bestZy = zy;
+        let bestPeak = m.peakZFrac;
+        let bestErr = Math.abs(bestPeak - SPLINE_PEAK_TARGET);
+        let bestPoly = poly;
+        let bestM = m;
+        for (const zc of [zyLo0, zyHi0]) {
+            const trial = tryAt(o, zc);
+            const err = Math.abs(trial.m.peakZFrac - SPLINE_PEAK_TARGET);
+            if (err < bestErr) {
+                bestErr = err;
+                bestZy = zc;
+                bestPeak = trial.m.peakZFrac;
+                bestPoly = trial.poly;
+                bestM = trial.m;
+            }
+        }
+        zy = bestZy;
+        poly = bestPoly;
+        m = bestM;
+        extra.peakClosest = true;
+        console.log(
+            "[RND-PEAK]",
+            JSON.stringify({
+                u: Number(input.u.toFixed(4)),
+                H: Number(H.toFixed(4)),
+                zy: Number(zy.toFixed(4)),
+                zx: Number(zx.toFixed(4)),
+                peakZFrac: Number(bestPeak.toFixed(4)),
+                target: SPLINE_PEAK_TARGET,
+                zyLo: Number(zyLo0.toFixed(4)),
+                zyHi: Number(zyHi0.toFixed(4)),
+            }),
+        );
+    }
+    const steep = oTarget > oMax + 1e-9;
     if (steep) {
         console.log(
             "[RND-STEEP]",
@@ -684,7 +805,7 @@ export function solveSplineStation(input: SplineStationInput): SplineSolve {
         );
     }
     const fallback = o <= 1e-9 && !m.convex;
-    return finishSolve(input, poly, o, zy, a, oMax, tRAngleDeg, steep, fallback);
+    return finishSolve(input, poly, o, zy, a, oMax, tRAngleDeg, steep, fallback, extra);
 }
 
 /** Rebuild a station from ring-smoothed o, zy, a. c stays on its formula. */
@@ -693,6 +814,7 @@ export function rebuildSplineStation(
     o: number,
     zy: number,
     a: number,
+    extra?: Partial<SplineSolveExtra>,
 ): SplineSolve {
     const { R, B, tR } = input;
     const planOut = input.planOutMm ?? SPLINE_PLAN_OUT_MM;
@@ -700,9 +822,13 @@ export function rebuildSplineStation(
     const H = input.heightMm ?? fr.H;
     const tSz = tRInSz(tR, fr.h);
     const tRAngleDeg = tRAngleBelowHorizontalDeg(tSz);
-    const zx = splineZx(zy);
+    const L = hypot3(sub(B, R));
+    const rhoNeed = extra?.rhoNeed ?? splineRhoNeed(L);
+    const oMin = extra?.oMin ?? splineOMinFromL(L);
+    const zx = splineZx(o, H);
     const oMax = splineOMax(zx, H, tSz, planOut);
-    const poly = buildSplinePolygon(R, B, fr.h, tR, o, zy, a);
+    const zyUse = clampNum(zy, SPLINE_ZY_LO, Math.max(SPLINE_ZY_LO, zx - SPLINE_ZY_GAP));
+    const poly = buildSplinePolygon(R, B, fr.h, tR, o, zyUse, a);
     const m = measureOf(poly, R, B, fr.h, tR);
     const oTarget = splineOTarget(input.u, H);
     const steep = oTarget > oMax + 1e-9 || m.infl;
@@ -720,7 +846,12 @@ export function rebuildSplineStation(
             }),
         );
     }
-    return finishSolve(input, poly, o, zy, a, oMax, tRAngleDeg, steep, o <= 1e-9 && !m.convex);
+    return finishSolve(input, poly, o, zyUse, a, oMax, tRAngleDeg, steep, o <= 1e-9 && !m.convex, {
+        corner: extra?.corner ?? (oMin > oMax + 1e-12 || H < SPLINE_H_MIN_MM),
+        oMin,
+        rhoNeed,
+        peakClosest: extra?.peakClosest ?? false,
+    });
 }
 
 export interface SplineDensityTable {
@@ -1165,6 +1296,9 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
     if (s.maxTurnDeg > SPLINE_TURN_MAX_DEG + 1e-6) misses.push(`turn ${s.maxTurnDeg.toFixed(3)}`);
     if (s.insetMin < -1e-6) misses.push(`inset ${s.insetMin.toFixed(4)}`);
     if (s.planOffset > SPLINE_PLAN_OUT_MM + 1e-6) misses.push(`plan ${s.planOffset.toFixed(3)}`);
+    if (s.H >= SPLINE_H_MIN_MM && !s.corner && Number.isFinite(s.rhoMin) && s.rhoMin + 1e-9 < s.rhoNeed) {
+        misses.push(`rho ${s.rhoMin.toFixed(3)}<${s.rhoNeed.toFixed(3)}`);
+    }
     return {
         u,
         side,
@@ -1248,6 +1382,11 @@ export function applySplineRing(inputs: SplineStationInput[]): SplineSolve[] {
         period,
     );
     return inputs.map((inp, i) =>
-        rebuildSplineStation(inp, oSm[i] ?? 0, zySm[i] ?? SPLINE_ZY_LO, aSm[i] ?? 0),
+        rebuildSplineStation(inp, oSm[i] ?? 0, zySm[i] ?? SPLINE_ZY_LO, aSm[i] ?? 0, {
+            corner: solved[i]!.corner,
+            oMin: solved[i]!.oMin,
+            rhoNeed: solved[i]!.rhoNeed,
+            peakClosest: solved[i]!.peakClosest,
+        }),
     );
 }

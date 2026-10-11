@@ -13,13 +13,18 @@ import {
     g1CPrime0Deg,
     invertDensityW,
     printSplineGates,
-    SPLINE_FLAT_MM,
     SPLINE_KNOTS,
+    SPLINE_N,
     type SplineStationInput,
     sampleSplineRingByW,
     solveSplineStation,
+    splineA,
+    splineOMinFromL,
     splineOTarget,
+    splineRhoNeed,
+    splineZx,
     stationGates,
+    tRInSz,
 } from "./wall-spline";
 
 function station(
@@ -95,20 +100,29 @@ describe("clamped cubic wall spline", () => {
         const h12 = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
         printCorner("H12-Ls2-15", h12);
         expect(h12.o).toBeCloseTo(1.08, 2);
-        expect(h12.peakZFrac).toBeGreaterThanOrEqual(0.5 - 0.05);
-        expect(h12.peakZFrac).toBeLessThanOrEqual(0.5 + 0.05);
+        expect(h12.zx).toBeCloseTo(splineZx(h12.o, 12), 6);
+        if (h12.peakClosest) {
+            expect(h12.zy).toBeCloseTo(0.1, 2);
+        } else {
+            expect(h12.peakZFrac).toBeGreaterThanOrEqual(0.5 - 0.05);
+            expect(h12.peakZFrac).toBeLessThanOrEqual(0.5 + 0.05);
+        }
         expect(h12.o).toBeLessThanOrEqual(2);
 
         const h8 = solveSplineStation(station(0.55, 1, 8, 2, { s: -1, z: -0.2 }));
         printCorner("H8-20", h8);
-        expect(h8.o).toBeCloseTo(splineOTarget(0.55, 8), 2);
+        const o8 = Math.max(splineOTarget(0.55, 8), splineOMinFromL(Math.hypot(2, 8)));
+        expect(h8.o).toBeCloseTo(o8, 2);
         expect(h8.o).toBeGreaterThan(0.05);
         expect(h8.a).toBeGreaterThan(0.05);
+        expect(h8.zx).toBeCloseTo(splineZx(h8.o, 8), 6);
+        expect(h8.corner).toBe(false);
 
         const toe = solveSplineStation(station(0.9, 1, 2, 1, { s: -1, z: -0.1 }));
         printCorner("H2-toe", toe);
-        expect(toe.o).toBeLessThan(SPLINE_FLAT_MM);
-        expect(toe.a).toBeLessThan(SPLINE_FLAT_MM);
+        expect(toe.corner).toBe(true);
+        expect(splineOTarget(0.9, 2)).toBe(0);
+        expect(toe.o).toBeCloseTo(Math.min(splineOMinFromL(Math.hypot(1, 2)), toe.oMax), 2);
     });
 
     test("three Default-like stations: heel 0.12 med, arch 0.35 med, lat mid 0.55", () => {
@@ -124,8 +138,9 @@ describe("clamped cubic wall spline", () => {
             printSplineGates({ ...g, u: c.input.u });
             printCorner(c.name, sol);
             const peakOnly = g.misses.every((m) => m.startsWith("peak"));
-            const zyMaxed = sol.zy >= 0.6 - 1e-6;
-            if (!g.pass && !(peakOnly && zyMaxed)) misses.push(`${c.name}: ${g.misses.join(",")}`);
+            if (!g.pass && !(peakOnly && sol.peakClosest)) {
+                misses.push(`${c.name}: ${g.misses.join(",")}`);
+            }
         }
         expect(misses).toEqual([]);
     });
@@ -193,11 +208,12 @@ describe("clamped cubic wall spline", () => {
         expect(Math.abs(u - 0.5)).toBeGreaterThan(0.1);
     });
 
-    test("healthy invert N=48 keeps chords; short chords throw [RND-INV]", () => {
+    test("healthy invert N=64 keeps chords; short chords throw [RND-INV]", () => {
         const heel = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
         expect(heel.o).toBeGreaterThan(0.05);
         expect(heel.a).toBeGreaterThan(0.05);
-        const N = 48;
+        const N = SPLINE_N;
+        expect(N).toBe(64);
         const ring = sampleSplineRingByW([heel.poly], N, [heel.poly[0]!]);
         const pts = ring.pts[0]!;
         const L = ring.L[0]!;
@@ -265,6 +281,28 @@ describe("clamped cubic wall spline", () => {
                 10,
             ),
         ).toBe(false);
+    });
+
+    test("corner zx/a/o_min and H<6 force corner-out", () => {
+        expect(splineZx(1.08, 12)).toBeCloseTo(Math.max(0.55, Math.min(0.92, 1 - 1.5 * (1.08 / 12))), 8);
+        const tSz = tRInSz({ x: -1, y: 0, z: -0.2 }, { x: 1, y: 0 });
+        const zx = splineZx(1.08, 12);
+        const a = splineA(1.08, zx, 12, tSz);
+        const aExpect = Math.min((0.9 * 1.08) / Math.abs(tSz.s), (0.9 * (1 - zx) * 12) / Math.abs(tSz.z));
+        expect(a).toBeCloseTo(aExpect, 6);
+
+        const short = solveSplineStation(station(0.9, 1, 5, 1.5, { s: -1, z: -0.2 }));
+        expect(short.H).toBeLessThan(6);
+        expect(short.corner).toBe(true);
+
+        const steep = solveSplineStation(station(0, 1, 12, 2, { s: -0.05, z: -1 }));
+        expect(steep.oMin).toBeGreaterThan(steep.oMax);
+        expect(steep.corner).toBe(true);
+
+        const heel = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
+        expect(heel.corner).toBe(false);
+        expect(heel.rhoMin).toBeGreaterThanOrEqual(heel.rhoNeed - 1e-6);
+        expect(heel.rhoNeed).toBeCloseTo(splineRhoNeed(Math.hypot(2, 12)), 6);
     });
 
     test("inactive station skips spline evaluation", () => {

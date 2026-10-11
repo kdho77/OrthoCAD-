@@ -96,6 +96,9 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             maxSplineStepRatio?: number;
             minSplineEdgeOverLN?: number;
             maxRow1TRDeg?: number;
+            minSplineRhoOverNeed?: number;
+            nSplineRhoFail?: number;
+            nSplineCorner?: number;
             duplicateVerts?: number;
             worstAcrossI?: number;
             worstAcrossU?: number;
@@ -303,6 +306,9 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             maxSplineStepRatio?: number;
             minSplineEdgeOverLN?: number;
             maxRow1TRDeg?: number;
+            minSplineRhoOverNeed?: number;
+            nSplineRhoFail?: number;
+            nSplineCorner?: number;
             duplicateVerts?: number;
             worstAcrossI?: number;
             worstAcrossU?: number;
@@ -329,6 +335,9 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             midChordOffMm?: number;
             splineFlat?: boolean;
             splineWR?: number;
+            splineCorner?: boolean;
+            splineRhoMin?: number;
+            splineRhoNeed?: number;
             o?: number;
             a?: number;
         }>;
@@ -437,6 +446,15 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             );
             const need = (SPLINE_MIN_EDGE_FRAC * (f.splineL ?? 1)) / N;
             return need > 1e-12 ? (f.splineMinEdge ?? 0) / need : 1;
+        },
+        (v) => v + 1e-9 < 1,
+    );
+    const rhoLo = worstLo(
+        (f) => {
+            if (f.splineFlat || f.splineCorner) return 1;
+            const need = f.splineRhoNeed ?? 0;
+            const rho = f.splineRhoMin ?? Number.POSITIVE_INFINITY;
+            return need > 1e-12 ? rho / need : 1;
         },
         (v) => v + 1e-9 < 1,
     );
@@ -568,6 +586,13 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             fDelta.n ? { n: fDelta.n, worstI: fDelta.i, worstU: fDelta.u } : undefined,
         ),
         row(
+            "rho-first20",
+            !rhoLo.n || style === "straight",
+            rhoLo.n ? rhoLo.v : (q.minSplineRhoOverNeed ?? 0),
+            1,
+            rhoLo.n ? { n: rhoLo.n, worstI: rhoLo.i, worstU: rhoLo.u } : { n: q.nSplineCorner ?? 0 },
+        ),
+        row(
             "across-p99",
             !misses.some((m) => m.startsWith("across-p99")),
             style === "straight"
@@ -691,6 +716,71 @@ describe("procedural wall styles", () => {
                 const rgb = renderMesh(pos, idx, { right: v.right, up: v.up, light: v.light }, 960, 720);
                 writeArtifact(`procedural-default-${style}-${v.name}.png`, encodePng(960, 720, rgb));
             }
+        }
+        {
+            type BlendFr = {
+                u?: number;
+                midWeight?: number;
+                splineWR?: number;
+                splineRow1Deg?: number;
+                splineCorner?: boolean;
+                splineFlat?: boolean;
+            };
+            const roundFr = ((geos.round!.userData as { wallFrames?: BlendFr[] }).wallFrames ??
+                []) as BlendFr[];
+            const hybFr = ((geos.hybrid!.userData as { wallFrames?: BlendFr[] }).wallFrames ??
+                []) as BlendFr[];
+            const hybQ =
+                (geos.hybrid!.userData as { columnQuality?: Record<string, number | undefined> })
+                    .columnQuality ?? {};
+            const rndQ =
+                (geos.round!.userData as { columnQuality?: Record<string, number | undefined> })
+                    .columnQuality ?? {};
+            const inBlend = (f: BlendFr | undefined): boolean =>
+                !!f && ((f.midWeight ?? 1) < 1 - 1e-6 || (f.splineWR ?? 1) < 1 - 1e-6);
+            const hybChord = hybFr
+                .map((f, i) => ({
+                    i,
+                    u: Number((f.u ?? 0).toFixed(4)),
+                    deg: f.splineRow1Deg ?? 0,
+                    w: f.midWeight ?? 1,
+                    wR: f.splineWR ?? 1,
+                }))
+                .filter((r) => r.deg > SPLINE_ROW1_TR_MAX_DEG + 1e-6);
+            const rndChordI = new Set(
+                roundFr
+                    .map((f, i) => ({ i, deg: f.splineRow1Deg ?? 0 }))
+                    .filter((r) => r.deg > SPLINE_ROW1_TR_MAX_DEG + 1e-6)
+                    .map((r) => r.i),
+            );
+            const onlyHybChord = hybChord.filter((r) => !rndChordI.has(r.i));
+            const onlyHybBlend = onlyHybChord.filter((r) => inBlend(hybFr[r.i]));
+            const acrossI = hybQ.worstAcrossI ?? -1;
+            const alongI = hybQ.worstAlongRowI ?? -1;
+            const hybMiss = styleMisses(geos.hybrid!, "hybrid", geos.straight);
+            const rndMiss = styleMisses(geos.round!, "round", geos.straight);
+            const onlyHybGates = hybMiss.filter((m) => !rndMiss.includes(m));
+            console.log(
+                "[RND-HYBRID-BLEND]",
+                JSON.stringify({
+                    nBlend: hybFr.filter(inBlend).length,
+                    onlyHybridGates: onlyHybGates,
+                    onlyHybridChord: onlyHybChord.slice(0, 24),
+                    onlyHybridChordInBlend: onlyHybBlend.slice(0, 24),
+                    across: {
+                        hyb: hybQ.maxAcrossDeg ?? 0,
+                        rnd: rndQ.maxAcrossDeg ?? 0,
+                        worstI: acrossI,
+                        inBlend: inBlend(hybFr[acrossI]),
+                    },
+                    along: {
+                        hyb: hybQ.maxMidRowDihedralDeg ?? 0,
+                        rnd: rndQ.maxMidRowDihedralDeg ?? 0,
+                        worstI: alongI,
+                        inBlend: inBlend(hybFr[alongI]),
+                    },
+                }),
+            );
         }
         const sectionSegs = (
             geo: BufferGeometry,

@@ -22,12 +22,14 @@ import {
     columnRowTurns,
     g1CPrime0Deg,
     hybridWeightAt,
+    minRhoFirstArcOfPoly,
     overEdgeTangent,
     periodicGaussian1d,
     ringFValues,
     row1TRAngleDeg,
     SPLINE_FLAT_MM,
     SPLINE_G1_R_MAX_DEG,
+    SPLINE_H_MIN_MM,
     SPLINE_MIN_EDGE_FRAC,
     SPLINE_N,
     SPLINE_R_CAP,
@@ -39,6 +41,7 @@ import {
     sampleSplineRingByW,
     splineBetaAt,
     splineGateFail,
+    splineRhoNeed,
 } from "./wall-spline";
 import {
     clampSagitta,
@@ -347,6 +350,11 @@ export interface ColumnFrame {
     splineFlat?: boolean;
     splineWR?: number;
     splineFlatReason?: string;
+    splineCorner?: boolean;
+    splineRhoMin?: number;
+    splineRhoNeed?: number;
+    splineOMin?: number;
+    splinePeakClosest?: boolean;
 }
 
 export interface SweepMidStyle {
@@ -464,6 +472,10 @@ export interface ColumnQuality {
     minSplineEdgeOverLN?: number;
     /** angle(row1 − R, tR) (deg). Gate: ≤6 (final pass). */
     maxRow1TRDeg?: number;
+    /** min ρ / ρ_need over the first 20% of arc. Gate: ≥1 (report). */
+    minSplineRhoOverNeed?: number;
+    nSplineRhoFail?: number;
+    nSplineCorner?: number;
     worstAcrossI?: number;
     worstAcrossU?: number;
     worstAlongRowI?: number;
@@ -4894,7 +4906,19 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         if (!active[i]) continue;
         assertInversionOk(sampled.pts[i]!, sampled.L[i] ?? 1, N, i);
     }
-    const rawWR = active.map((ok) => (ok ? 1 : 0));
+    const rawWR = active.map((ok, i) => (ok && !solves[i]!.corner ? 1 : 0));
+    const cornerList = solves
+        .map((s, i) => ({
+            i,
+            u: Number(frames[i]!.u.toFixed(4)),
+            H: Number((frames[i]!.heightMm ?? s.H).toFixed(4)),
+            tRAngleDeg: Number(s.tRAngleDeg.toFixed(3)),
+            oMin: Number(s.oMin.toFixed(4)),
+            oMax: Number(s.oMax.toFixed(4)),
+            reason: s.H < SPLINE_H_MIN_MM ? "H<6" : "o_min>o_max",
+        }))
+        .filter((_, i) => solves[i]!.corner);
+    console.log("[RND-CORNER]", JSON.stringify({ n: cornerList.length, stations: cornerList }));
     const arc: number[] = [0];
     for (let i = 1; i < nS; i++) {
         const a = frames[i - 1]!.R;
@@ -4985,6 +5009,23 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineFlat = !evaluated;
         fr.splineWR = wRaw;
         fr.splineFlatReason = evaluated ? "" : reasons[i]!.join("+") || "flat";
+        fr.splineCorner = sol.corner;
+        fr.splineOMin = sol.oMin;
+        fr.splinePeakClosest = sol.peakClosest;
+        const rhoL = L;
+        const rhoNeed = splineRhoNeed(rhoL);
+        const rhoMin = evaluated ? minRhoFirstArcOfPoly(sol.poly) : Number.POSITIVE_INFINITY;
+        fr.splineRhoNeed = rhoNeed;
+        fr.splineRhoMin = rhoMin;
+        if (evaluated && !sol.corner && rhoMin + 1e-9 < rhoNeed) {
+            splineGateFail("[RND-RHO]", {
+                i,
+                u: Number(fr.u.toFixed(4)),
+                rhoMin: Number(rhoMin.toFixed(4)),
+                rhoNeed: Number(rhoNeed.toFixed(4)),
+                L: Number(rhoL.toFixed(4)),
+            });
+        }
         fr.tInc = overEdgeTangent(tR, fr.h);
     }
     const rowTurnMax: number[] = [];
@@ -5063,27 +5104,57 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     }
     const fr436 = frames[436];
     const row1_436 = fr436?.splineRow1Deg ?? 0;
-    if (fr436 && row1_436 > SPLINE_TURN_MAX_DEG + 1e-6) {
-        console.log(
-            "[RND-I436]",
-            JSON.stringify({
-                splineRow1: Number(row1_436.toFixed(4)),
-                u: Number(fr436.u.toFixed(4)),
-                o: Number((fr436.splineO ?? 0).toFixed(4)),
-                a: Number((fr436.splineA ?? 0).toFixed(4)),
-                zy: Number((fr436.splineZy ?? 0).toFixed(4)),
-                tRAngleDeg: Number((fr436.splineTRAngleDeg ?? 0).toFixed(3)),
-            }),
-        );
-    } else {
-        console.log(
-            "[RND-I436]",
-            JSON.stringify({
-                splineRow1: Number(row1_436.toFixed(4)),
-                ok: row1_436 <= SPLINE_TURN_MAX_DEG + 1e-6,
-            }),
-        );
-    }
+    console.log(
+        "[RND-I436]",
+        JSON.stringify({
+            splineRow1: Number(row1_436.toFixed(4)),
+            u: Number((fr436?.u ?? 0).toFixed(4)),
+            H: Number((fr436?.heightMm ?? 0).toFixed(4)),
+            o: Number((fr436?.splineO ?? 0).toFixed(4)),
+            a: Number((fr436?.splineA ?? 0).toFixed(4)),
+            zy: Number((fr436?.splineZy ?? 0).toFixed(4)),
+            tRAngleDeg: Number((fr436?.splineTRAngleDeg ?? 0).toFixed(3)),
+            wR: Number((fr436?.splineWR ?? 0).toFixed(4)),
+            corner: !!fr436?.splineCorner,
+            ok: row1_436 <= SPLINE_TURN_MAX_DEG + 1e-6,
+        }),
+    );
+    const rhoRows = frames
+        .map((fr, i) => ({
+            i,
+            u: Number(fr.u.toFixed(4)),
+            rhoMin: fr.splineRhoMin ?? Number.POSITIVE_INFINITY,
+            rhoNeed: fr.splineRhoNeed ?? 0,
+            corner: !!fr.splineCorner,
+            flat: !!fr.splineFlat,
+        }))
+        .filter((r) => !r.flat && !r.corner);
+    const rhoFail = rhoRows.filter((r) => r.rhoMin + 1e-9 < r.rhoNeed);
+    const worstRho = rhoRows.reduce(
+        (best, r) => {
+            const ratio = r.rhoNeed > 1e-12 ? r.rhoMin / r.rhoNeed : Number.POSITIVE_INFINITY;
+            return ratio < best.ratio ? { ...r, ratio } : best;
+        },
+        { i: -1, u: 0, rhoMin: Number.POSITIVE_INFINITY, rhoNeed: 0, ratio: Number.POSITIVE_INFINITY },
+    );
+    console.log(
+        "[RND-RHO-SUM]",
+        JSON.stringify({
+            n: rhoRows.length,
+            nFail: rhoFail.length,
+            worstI: worstRho.i,
+            worstU: worstRho.u,
+            rhoMin: Number((Number.isFinite(worstRho.rhoMin) ? worstRho.rhoMin : 0).toFixed(4)),
+            rhoNeed: Number(worstRho.rhoNeed.toFixed(4)),
+            ratio: Number((Number.isFinite(worstRho.ratio) ? worstRho.ratio : 0).toFixed(4)),
+            fail: rhoFail.slice(0, 16).map((r) => ({
+                i: r.i,
+                u: r.u,
+                rhoMin: Number(r.rhoMin.toFixed(4)),
+                rhoNeed: Number(r.rhoNeed.toFixed(4)),
+            })),
+        }),
+    );
     const countWhy = (tag: string) => reasons.filter((r) => r.includes(tag)).length;
     const sorted = (xs: number[]) => {
         const s = xs.slice().sort((a, b) => a - b);
@@ -6328,12 +6399,23 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let maxSplineStepRatio = 1;
     let minSplineEdgeOverLN = Infinity;
     let maxRow1TRDeg = 0;
+    let minSplineRhoOverNeed = Infinity;
+    let nSplineRhoFail = 0;
+    let nSplineCorner = 0;
     if (styledSplineWalls(frames)) {
         for (let i = 0; i < nS; i++) {
             const fr = frames[i]!;
             const nxt = frames[(i + 1) % nS]!;
             maxSplineStepRatio = Math.max(maxSplineStepRatio, fr.splineStepRatio ?? 1);
             maxRow1TRDeg = Math.max(maxRow1TRDeg, fr.splineRow1Deg ?? 0);
+            if (fr.splineCorner) nSplineCorner++;
+            const rhoNeed = fr.splineRhoNeed ?? 0;
+            const rho = fr.splineRhoMin ?? Number.POSITIVE_INFINITY;
+            if (!fr.splineFlat && !fr.splineCorner && rhoNeed > 1e-12) {
+                const ratio = rho / rhoNeed;
+                minSplineRhoOverNeed = Math.min(minSplineRhoOverNeed, ratio);
+                if (ratio + 1e-9 < 1) nSplineRhoFail++;
+            }
             const col = xyz[i]!;
             const N = Math.max(1, col.length - 1);
             const L = fr.splineL ?? 1;
@@ -6356,6 +6438,11 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                     (Number.isFinite(minSplineEdgeOverLN) ? minSplineEdgeOverLN : 0).toFixed(3),
                 ),
                 row1TR: Number(maxRow1TRDeg.toFixed(3)),
+                rhoOverNeed: Number(
+                    (Number.isFinite(minSplineRhoOverNeed) ? minSplineRhoOverNeed : 0).toFixed(3),
+                ),
+                rhoFail: nSplineRhoFail,
+                corner: nSplineCorner,
             }),
         );
     }
@@ -6429,6 +6516,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxSplineStepRatio,
         minSplineEdgeOverLN: Number.isFinite(minSplineEdgeOverLN) ? minSplineEdgeOverLN : 0,
         maxRow1TRDeg,
+        minSplineRhoOverNeed: Number.isFinite(minSplineRhoOverNeed) ? minSplineRhoOverNeed : 0,
+        nSplineRhoFail,
+        nSplineCorner,
         worstAcrossI: worstAcross.i,
         worstAcrossU: worstAcross.u,
         worstAlongRowI: worstAlongRow.i,
