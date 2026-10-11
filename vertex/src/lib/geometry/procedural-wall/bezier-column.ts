@@ -4186,34 +4186,6 @@ function midStyleEnds(fr: ColumnFrame): { E: XYZ; Fpiece: XYZ; tE: XYZ; tF: XYZ 
     };
 }
 
-function stylePackState(fr: ColumnFrame): {
-    r1: number;
-    r2: number;
-    L: number;
-    height: number;
-    minL: number;
-} {
-    const height = Math.max(fr.heightMm, 1e-9);
-    const minL = minLineOfHeight(height);
-    return { r1: fr.rTop, r2: fr.rFillet, L: dist3(fr.E, fr.F), height, minL };
-}
-
-function stylePackOk(
-    fr: ColumnFrame,
-    baseline?: { r1: number; r2: number; L: number; height: number; minL: number },
-): boolean {
-    const cur = stylePackState(fr);
-    const r2Min = lastFilletR2MinMm(localSpacingOf(fr), fr.lastDlRad);
-    if (cur.r1 < MIN_ROUND_R_MM - 1e-9) return false;
-    if (cur.r2 < r2Min - 1e-9) return false;
-    if (cur.L < cur.minL - 1e-9) return false;
-    const pack = cur.r1 + cur.r2 + Math.max(cur.L, cur.minL);
-    if (pack <= 0.9 * cur.height + 1e-9) return true;
-    if (!baseline) return false;
-    const basePack = baseline.r1 + baseline.r2 + Math.max(baseline.L, baseline.minL);
-    return pack <= basePack + 1e-6;
-}
-
 function applyStyleTilt(fr: ColumnFrame, theta: number): void {
     const baseE = fr.stylePhiE0;
     const baseF = fr.stylePhiF0;
@@ -4283,18 +4255,17 @@ function prepareStyledMid(
         return rateLimitClosedAbs(sm, rateRad, 0);
     };
     const applyAll = (th: number[]): void => {
-        const bases = frames.map((fr) => stylePackState(fr));
         for (let i = 0; i < n; i++) applyStyleTilt(frames[i]!, th[i] ?? 0);
         for (let i = 0; i < n; i++) {
             const fr = frames[i]!;
-            const base = bases[i]!;
-            if (stylePackOk(fr, base)) continue;
+            const minL = minLineOfHeight(Math.max(fr.heightMm, 1e-9));
+            if (dist3(fr.E, fr.F) >= minL - 1e-9) continue;
             let lo = 0;
             let hi = th[i] ?? 0;
             for (let k = 0; k < 10; k++) {
                 const mid = 0.5 * (lo + hi);
                 applyStyleTilt(fr, mid);
-                if (stylePackOk(fr, base)) lo = mid;
+                if (dist3(fr.E, fr.F) >= minL - 1e-9) lo = mid;
                 else hi = mid;
             }
             applyStyleTilt(fr, lo);
