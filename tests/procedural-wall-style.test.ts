@@ -1057,9 +1057,25 @@ describe("procedural wall styles", () => {
                 residualStations?: Array<{ i: number; u: number }>;
                 wallFrames?: Array<{ R?: { x: number; y: number; z: number } }>;
             };
-            const residualPts = (arch.residualStations ?? [])
-                .map((r) => arch.wallFrames?.[r.i]?.R)
+            const residualRaw = (
+                (arch.residualStations ?? []) as Array<{
+                    i: number;
+                    g1Rm?: number;
+                    turn?: number;
+                    along?: number;
+                }>
+            ).map((r) => ({
+                r,
+                worst: Math.max(r.g1Rm ?? 0, r.turn ?? 0, r.along ?? 0),
+                p: arch.wallFrames?.[r.i]?.R,
+            }));
+            const residualOver8 = residualRaw
+                .filter((x) => x.p && x.worst > 8 + 1e-6)
+                .sort((a, b) => b.worst - a.worst);
+            const residualPts = residualOver8
+                .map((x) => x.p)
                 .filter((p): p is { x: number; y: number; z: number } => !!p);
+            const residualTicks = residualPts.slice(0, 10);
             for (const v of views) {
                 const view = { right: v.right, up: v.up, light: v.light };
                 const focus =
@@ -1095,6 +1111,18 @@ describe("procedural wall styles", () => {
                         960,
                         720,
                         residualPts.map((m) => projectViewPoint(m, view, 960, 720, b)),
+                        [255, 56, 56],
+                        false,
+                    );
+                }
+                if (residualTicks.length) {
+                    drawStationMarks(
+                        rgb,
+                        960,
+                        720,
+                        residualTicks.map((m) => projectViewPoint(m, view, 960, 720, b)),
+                        [255, 56, 56],
+                        true,
                     );
                 }
                 writeArtifact(`procedural-default-${style}-${v.name}.png`, encodePng(960, 720, rgb));

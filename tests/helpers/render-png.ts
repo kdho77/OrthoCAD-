@@ -148,20 +148,23 @@ export function drawRampMarks(
     }
 }
 
-/** Residual-station ticks: vertical tick plus an X at the projected R. */
+/** Residual-station marks: X at the projected R; optional full-height tick. */
 export function drawStationMarks(
     rgb: Uint8Array,
     width: number,
     height: number,
     marks: Array<{ x: number; y: number }>,
     color: [number, number, number] = [255, 56, 56],
+    fullTick = false,
 ): void {
     for (const m of marks) {
-        drawLine(rgb, width, height, m.x, 6, m.x, height - 6, color);
+        if (fullTick) {
+            drawLine(rgb, width, height, m.x, 6, m.x, height - 6, color);
+            drawLine(rgb, width, height, m.x - 7, 10, m.x + 7, 10, color);
+            drawLine(rgb, width, height, m.x - 7, height - 10, m.x + 7, height - 10, color);
+        }
         drawLine(rgb, width, height, m.x - 8, m.y - 8, m.x + 8, m.y + 8, color);
         drawLine(rgb, width, height, m.x - 8, m.y + 8, m.x + 8, m.y - 8, color);
-        drawLine(rgb, width, height, m.x - 7, 10, m.x + 7, 10, color);
-        drawLine(rgb, width, height, m.x - 7, height - 10, m.x + 7, height - 10, color);
     }
 }
 
