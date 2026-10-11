@@ -15,11 +15,21 @@ import {
     RING_TURNING_MAX_DEG,
     reconstructionManifold,
     reconstructProceduralWalls,
+    WALL_BULGE_H_HI,
+    WALL_BULGE_H_LO,
+    WALL_BULGE_H_MIN_MM,
     WALL_CHORD_OFF_H_MIN_MM,
     WALL_CHORD_OFF_MEDIAN_FRAC,
+    WALL_END_RATIO_HI,
+    WALL_END_RATIO_LO,
+    WALL_KAPPA_F_MAX,
     WALL_MID_DIHEDRAL_MAX_DEG,
     WALL_MID_TURN_MAX_DEG,
+    WALL_PEAK_H_HI,
+    WALL_PEAK_H_LO,
     WALL_PLAN_ANGLE_REPORT_DEG,
+    WALL_SSTAR_HI,
+    WALL_SSTAR_LO,
     WALL_STYLE_ACROSS_P99_BLOCK_DEG,
     WALL_STYLE_ACROSS_P100_BLOCK_DEG,
     WALL_STYLE_G1_MAX_DEG,
@@ -97,6 +107,14 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             midChordOffMm?: number;
             midChordMm?: number;
             lineLengthMm?: number;
+            midSStar?: number;
+            midKappaF?: number;
+            midKappaFil?: number;
+            midEndRatio?: number;
+            midPeakHFrac?: number;
+            midBulgeHFrac?: number;
+            midBeta?: number;
+            sideSign?: 1 | -1;
         }>;
         medialYSign?: 1 | -1;
         footLengthMm?: number;
@@ -148,9 +166,81 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
         if (rim > 1e-3) misses.push(`rim-vs-straight ${rim.toFixed(4)}`);
     }
     const frames = ud.wallFrames ?? [];
+    const pct = (vals: number[], p: number): number => {
+        if (!vals.length) return 0;
+        const s = [...vals].sort((a, b) => a - b);
+        const i = Math.max(0, Math.min(s.length - 1, Math.floor(p * (s.length - 1))));
+        return s[i]!;
+    };
     if (style !== "straight" && frames.length) {
         const infl = frames.filter((f) => f.midFlagged);
         if (infl.length) misses.push(`[RND-INFL] ${infl.length}`);
+        const styled = frames.filter((f) => (f.midBeta ?? 0) > 1e-4);
+        const stars = styled.map((f) => f.midSStar ?? 0).filter((v) => Number.isFinite(v));
+        if (stars.length) {
+            const p10 = pct(stars, 0.1);
+            const p90 = pct(stars, 0.9);
+            if (p10 + 1e-9 < WALL_SSTAR_LO || p90 - 1e-9 > WALL_SSTAR_HI) {
+                misses.push(
+                    `s* p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)} not in ${WALL_SSTAR_LO}-${WALL_SSTAR_HI}`,
+                );
+            }
+        }
+        const kappaHits = styled.filter((f) => {
+            const df = Math.abs((f.midKappaF ?? 0) - (f.midKappaFil ?? 0));
+            return df > WALL_KAPPA_F_MAX + 1e-9;
+        });
+        if (kappaHits.length) {
+            misses.push(`kappaF ${kappaHits.length} |Δκ|>${WALL_KAPPA_F_MAX}`);
+        }
+        const ratios = styled.map((f) => f.midEndRatio ?? 1).filter((v) => Number.isFinite(v) && v < 1e6);
+        if (ratios.length) {
+            const p10 = pct(ratios, 0.1);
+            const p90 = pct(ratios, 0.9);
+            if (p10 + 1e-9 < WALL_END_RATIO_LO || p90 - 1e-9 > WALL_END_RATIO_HI) {
+                misses.push(
+                    `tE/tF ${p10.toFixed(2)}-${p90.toFixed(2)} not in ${WALL_END_RATIO_LO}-${WALL_END_RATIO_HI}`,
+                );
+            }
+        }
+        const tall = styled.filter((f) => (f.heightMm ?? 0) >= WALL_BULGE_H_MIN_MM);
+        const bulgeH = tall.map((f) => f.midBulgeHFrac ?? 0);
+        const peakH = tall.map((f) => f.midPeakHFrac ?? 0);
+        if (bulgeH.length) {
+            const p10 = pct(bulgeH, 0.1);
+            const p90 = pct(bulgeH, 0.9);
+            if (p10 + 1e-9 < WALL_BULGE_H_LO || p90 - 1e-9 > WALL_BULGE_H_HI) {
+                misses.push(
+                    `bulgeH p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)} not in ${WALL_BULGE_H_LO}-${WALL_BULGE_H_HI}`,
+                );
+            }
+        }
+        if (peakH.length) {
+            const p10 = pct(peakH, 0.1);
+            const p90 = pct(peakH, 0.9);
+            if (p10 + 1e-9 < WALL_PEAK_H_LO || p90 - 1e-9 > WALL_PEAK_H_HI) {
+                misses.push(
+                    `peakH p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)} not in ${WALL_PEAK_H_LO}-${WALL_PEAK_H_HI}`,
+                );
+            }
+        }
+        const latMid = tall.filter((f) => (f.sideSign ?? 1) < 0 && (f.u ?? 0) >= 0.45 && (f.u ?? 0) <= 0.75);
+        if (latMid.length) {
+            const bh = latMid.map((f) => f.midBulgeHFrac ?? 0);
+            const ph = latMid.map((f) => f.midPeakHFrac ?? 0);
+            const b10 = pct(bh, 0.1);
+            const b90 = pct(bh, 0.9);
+            const p10 = pct(ph, 0.1);
+            const p90 = pct(ph, 0.9);
+            if (b10 + 1e-9 < WALL_BULGE_H_LO || b90 - 1e-9 > WALL_BULGE_H_HI) {
+                misses.push(`lat-mid bulgeH ${b10.toFixed(3)}-${b90.toFixed(3)}`);
+            }
+            if (p10 + 1e-9 < WALL_PEAK_H_LO || p90 - 1e-9 > WALL_PEAK_H_HI) {
+                misses.push(`lat-mid peakH ${p10.toFixed(3)}-${p90.toFixed(3)}`);
+            }
+        } else if (style === "round") {
+            misses.push("lat-mid H>=6 missing");
+        }
         const g1Hits = frames
             .map((f, i) => ({
                 i,
@@ -380,15 +470,27 @@ describe("procedural wall styles", () => {
             round: [80, 200, 255],
             hybrid: [255, 140, 70],
         };
+        const medialSign = ((straight.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) >= 0 ? 1 : -1;
+        const sideOf = (
+            segs: Array<{ y0: number; z0: number; y1: number; z1: number }>,
+            side: "medial" | "lateral",
+        ) => {
+            const sign = side === "medial" ? medialSign : -medialSign;
+            return segs.filter((q) => q.y0 * sign >= -1e-6 || q.y1 * sign >= -1e-6);
+        };
         for (const [name, x0] of [
             ["heel", heelX],
             ["arch", archX],
             ["midfoot", midX],
         ] as const) {
-            writeArtifact(
-                `procedural-default-section-${name}.png`,
-                drawSection(styles.map((s) => ({ segs: sectionSegs(geos[s]!, x0), rgb: colors[s] }))),
-            );
+            const packs = styles.map((s) => ({ segs: sectionSegs(geos[s]!, x0), rgb: colors[s] }));
+            writeArtifact(`procedural-default-section-${name}.png`, drawSection(packs));
+            for (const side of ["medial", "lateral"] as const) {
+                writeArtifact(
+                    `procedural-default-section-${name}-${side}.png`,
+                    drawSection(packs.map((p) => ({ segs: sideOf(p.segs, side), rgb: p.rgb }))),
+                );
+            }
         }
         const styleReport = styles.map((s) => {
             const frames = (geos[s]!.userData.wallFrames ?? []) as Array<{
@@ -406,6 +508,15 @@ describe("procedural wall styles", () => {
                 midPlanAngleDeg?: number;
                 u?: number;
                 lineLengthMm?: number;
+                midSStar?: number;
+                midKappaF?: number;
+                midKappaFil?: number;
+                midEndRatio?: number;
+                midPeakHFrac?: number;
+                midBulgeHFrac?: number;
+                thetaEDeg?: number;
+                thetaFDeg?: number;
+                sideSign?: 1 | -1;
             }>;
             const weights = frames.map((f) => f.midWeight ?? 0);
             const chords = frames.map((f) => f.midChordOffMm ?? 0);
@@ -459,6 +570,35 @@ describe("procedural wall styles", () => {
                 limits,
                 limiter,
                 flagged: frames.filter((f) => f.midFlagged).length,
+                sStarP10: (() => {
+                    const a = frames.filter((f) => (f.midBeta ?? 0) > 1e-4).map((f) => f.midSStar ?? 0);
+                    const b = [...a].sort((x, y) => x - y);
+                    return b[Math.floor(0.1 * Math.max(0, b.length - 1))] ?? 0;
+                })(),
+                sStarP90: (() => {
+                    const a = frames.filter((f) => (f.midBeta ?? 0) > 1e-4).map((f) => f.midSStar ?? 0);
+                    const b = [...a].sort((x, y) => x - y);
+                    return b[Math.floor(0.9 * Math.max(0, b.length - 1))] ?? 0;
+                })(),
+                bulgeHP50: med(
+                    frames
+                        .filter((f) => (f.heightMm ?? 0) >= 6 && (f.midBeta ?? 0) > 1e-4)
+                        .map((f) => f.midBulgeHFrac ?? 0),
+                ),
+                peakHP50: med(
+                    frames
+                        .filter((f) => (f.heightMm ?? 0) >= 6 && (f.midBeta ?? 0) > 1e-4)
+                        .map((f) => f.midPeakHFrac ?? 0),
+                ),
+                kappaFMax: Math.max(
+                    0,
+                    ...frames.map((f) => Math.abs((f.midKappaF ?? 0) - (f.midKappaFil ?? 0))),
+                ),
+                endRatioMed: med(
+                    frames.filter((f) => (f.midBeta ?? 0) > 1e-4).map((f) => f.midEndRatio ?? 1),
+                ),
+                thetaEDegMax: frames.length ? Math.max(...frames.map((f) => f.thetaEDeg ?? 0)) : 0,
+                thetaFDegMax: frames.length ? Math.max(...frames.map((f) => f.thetaFDeg ?? 0)) : 0,
                 planOver30: planStations.filter((p) => p.plan > WALL_PLAN_ANGLE_REPORT_DEG + 1e-6),
                 af6037caG1_22_26: {
                     note: "At af6037ca, 450/452 stations flagged (skew tE/tF, no 3D M) and fell back to a chord with G1 22–26°. Listed with current u and tE/tF plan angle.",

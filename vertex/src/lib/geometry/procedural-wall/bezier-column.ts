@@ -18,6 +18,7 @@ import {
     lambdaFromTheta,
     type MidStyleLimit,
     type MidStyleLock,
+    peakHeightFrac,
     planAngleDeg,
     resolveWallStyleParams,
     sampleCubicAtT,
@@ -281,10 +282,29 @@ export interface ColumnFrame {
     /** φ at E / F after the F-ring fair, before the style tilt. */
     stylePhiE0?: number;
     stylePhiF0?: number;
+    /** Untilted plantar snapshot used to re-solve F (zF, frame, r2 bounds). */
+    styleZf?: number;
+    styleB0?: number;
+    styleR2Floor?: number;
+    styleR2Max?: number;
+    styleEw?: XYZ;
+    styleEz?: XYZ;
+    styleU0?: XYZ;
+    /** Solved fillet lean b′; applyAla re-solves the fillet from this (not φF). */
+    styleBPrime?: number;
     midTheta?: number;
+    midThetaE?: number;
+    midThetaF?: number;
     midBeta?: number;
     midChordMm?: number;
     midTs?: number[];
+    midTrim?: number;
+    midSStar?: number;
+    midKappaF?: number;
+    midKappaFil?: number;
+    midEndRatio?: number;
+    midPeakHFrac?: number;
+    midBulgeHFrac?: number;
 }
 
 export interface SweepMidStyle {
@@ -2500,8 +2520,9 @@ export function applyAlaToFrame(fr: ColumnFrame): ArcLineArc {
     if (styleLock && fr.phiRound1Lock != null && Number.isFinite(fr.phiRound1Lock)) {
         applyThetaELock(fr, sw, fr.phiRound1Lock);
     }
-    if (styleLock && fr.phiFLock != null && Number.isFinite(fr.phiFLock)) {
-        applyPhiFLock(fr, sw, fr.phiFLock);
+    // Style F-tilt re-solves the fillet (r2′, C′, F′). Never applyPhiFLock.
+    if (styleLock && fr.styleBPrime != null && Number.isFinite(fr.styleBPrime)) {
+        applyFilletResolve(fr, fr.styleBPrime);
     }
     return sweepToAla(sw, fr.h);
 }
@@ -2990,7 +3011,7 @@ function columnPoints(
             offsetOut,
             lock:
                 fr.midTheta != null || fr.midWLock != null || fr.midTs
-                    ? { lambda: fr.midWLock, theta: fr.midTheta, ts: fr.midTs }
+                    ? { lambda: fr.midWLock, theta: fr.midTheta, ts: fr.midTs, trim: fr.midTrim }
                     : undefined,
         },
     );
@@ -4190,21 +4211,202 @@ function midStyleEnds(fr: ColumnFrame): { E: XYZ; Fpiece: XYZ; tE: XYZ; tF: XYZ 
     };
 }
 
-function applyStyleTilt(fr: ColumnFrame, theta: number): void {
-    const baseE = fr.stylePhiE0;
-    const baseF = fr.stylePhiF0;
-    if (baseE == null || baseF == null || !(theta > 1e-12)) {
-        fr.phiRound1Lock = baseE;
-        fr.phiFLock = undefined;
-        applyAlaToFrame(fr);
-        return;
+function stylePlantarFrame(fr: ColumnFrame): PlantarFrame {
+    if (fr.styleEw && fr.styleEz) {
+        return { w: fr.styleEw, ew: fr.styleEw, ez: fr.styleEz };
     }
-    // E-only: φE −= θ leans tE outward. F stays on the Laplacian ring so
-    // F-turn and plantar G1 at B stay the faired ALA. θ is the E-only
-    // angle that realizes the target sagitta.
-    fr.phiRound1Lock = baseE - theta;
+    return resolvePlantarFrame(fr.nB ?? fr.h, fr.plantarSlopeRad, fr.nPlantar);
+}
+
+function snapshotStyleFillet(fr: ColumnFrame): void {
+    const frame = resolvePlantarFrame(fr.nB ?? fr.h, fr.plantarSlopeRad, fr.nPlantar);
+    const F0 = fr.fLocked ?? fr.F;
+    const dlt = { x: F0.x - fr.B.x, y: F0.y - fr.B.y, z: F0.z - fr.B.z };
+    const zF = dlt.x * frame.ez.x + dlt.y * frame.ez.y + dlt.z * frame.ez.z;
+    const height = Math.max(fr.heightMm, 0.5);
+    const packed = scaleShortWallPack(height, fr.rTop, fr.rFillet, minLineOfHeight(height), MIN_ROUND_R_MM);
+    fr.styleZf = zF;
+    fr.styleB0 = leanFromVertical(fr.U, frame);
+    fr.styleEw = frame.ew;
+    fr.styleEz = frame.ez;
+    fr.styleU0 = hypot3(fr.U) > 1e-9 ? unit3(fr.U) : filletDir(fr.styleB0, frame);
+    fr.styleR2Max = Math.min(FILLET_R_CAP_MM, FILLET_MAX_HEIGHT_FRAC * height);
+    fr.styleR2Floor = packed.r2;
+}
+
+function styleBPrimeCaps(fr: ColumnFrame): { bMin: number; bMax: number; zF: number; r2Floor: number } {
+    const zF = Math.max(fr.styleZf ?? 0, 1e-6);
+    const r2Max = Math.max(fr.styleR2Max ?? FILLET_R_CAP_MM, zF + 1e-6);
+    const r2Floor = Math.max(1e-6, fr.styleR2Floor ?? MIN_ROUND_R_MM);
+    const argMax = Math.max(-1, Math.min(1, 1 - zF / r2Max));
+    const bMax = clampFilletB(Math.asin(argMax));
+    let bMin = clampFilletB(((FILLET_B_MIN_DEG + 1e-3) * Math.PI) / 180);
+    const argMin = 1 - zF / r2Floor;
+    if (argMin > -1 && argMin < 1) bMin = Math.max(bMin, Math.asin(argMin));
+    return { bMin, bMax, zF, r2Floor };
+}
+
+function polarR2FromZf(zF: number, b: number): number {
+    const den = 1 - Math.sin(b);
+    return den > 1e-9 ? zF / den : Number.POSITIVE_INFINITY;
+}
+
+function polarFilletF(fr: ColumnFrame, b: number, r2: number): { C: XYZ; F: XYZ } {
+    const frame = stylePlantarFrame(fr);
+    const C = add3(fr.B, frame.ez, r2);
+    return {
+        C,
+        F: {
+            x: C.x + r2 * (Math.cos(-b) * frame.ew.x + Math.sin(-b) * frame.ez.x),
+            y: C.y + r2 * (Math.cos(-b) * frame.ew.y + Math.sin(-b) * frame.ez.y),
+            z: C.z + r2 * (Math.cos(-b) * frame.ew.z + Math.sin(-b) * frame.ez.z),
+        },
+    };
+}
+
+/** Keep B, plantar frame and zF fixed: r2′ = zF/(1−sin b′); C′ = B + r2′ ez; F′ on the circle. */
+function applyFilletResolve(fr: ColumnFrame, bPrime: number): boolean {
+    const sw = fr.sweepRule;
+    if (!sw || fr.styleZf == null) return false;
+    const frame = stylePlantarFrame(fr);
+    const { bMin, bMax, zF, r2Floor } = styleBPrimeCaps(fr);
+    const b = Math.max(bMin, Math.min(bMax, bPrime));
+    let r2 = polarR2FromZf(zF, b);
+    if (!Number.isFinite(r2)) return false;
+    r2 = Math.max(r2Floor, r2);
+    const { C, F } = polarFilletF(fr, b, r2);
+    const minL = minLineOfHeight(Math.max(fr.heightMm, 1e-9));
+    if (dist3(fr.E, F) < minL - 1e-9) return false;
+    if (!fBetweenEB(fr.E, F, fr.B)) return false;
+    const Ufil = filletDir(b, frame);
+    const fil = constructFillet(fr.B, fr.nB ?? fr.h, r2, Ufil, fr.plantarSlopeRad, fr.nPlantar);
+    fil.C = C;
+    fil.r = r2;
+    fil.b = b;
+    fil.psi = Math.PI / 2 - b;
+    fil.phiF = -b;
+    fil.phi1 = -b;
+    fil.Pw = { ...F };
+    fil.ew = frame.ew;
+    fil.ez = frame.ez;
+    const U = { x: fr.E.x - F.x, y: fr.E.y - F.y, z: fr.E.z - F.z };
+    const u = hypot3(U) > 1e-9 ? unit3(U) : sw.d;
+    fr.F = { ...F };
+    fr.U = u;
+    fr.rFillet = r2;
+    fr.lineLengthMm = dist3(fr.E, F);
+    fr.g1FDeg = lineFilletG1Deg(fr.E, F, fil);
+    const dE = projectOntoSpan(u, sw.eW, sw.eN);
+    const tE = sweptRoundTangent(sw.eN, sw.eW, sw.phiRound1);
+    fr.g1EDeg = hypot3(dE) > 1e-9 ? vecAngleDeg(unit3(dE), tE) : 0;
+    sw.F = { ...F };
+    sw.d = u;
+    sw.fil = fil;
+    sw.C2 = C;
+    sw.r2 = r2;
+    sw.L = fr.lineLengthMm;
+    sw.filletSweep = Math.abs(fil.phi1 - fil.phi0);
+    sw.g1EDeg = fr.g1EDeg;
+    sw.g1FDeg = fr.g1FDeg;
+    sw.converged = fr.g1EDeg <= G1_MAX_DEG + 1e-6 && fr.g1FDeg <= G1_MAX_DEG + 1e-6;
+    fr.sweepRule = sw;
+    fr.filletSweepRad = sw.filletSweep;
+    return true;
+}
+
+/**
+ * b′ = b_chord + θ_F, with θ_F = δ + θ/2 and δ = angle(old U, new E→F).
+ * Fixed point: b′ = lean(F′→E) + θ_F. Cap at asin(1 − zF/r2max).
+ */
+function solveStyleBPrime(
+    fr: ColumnFrame,
+    thetaF: number,
+): { bPrime: number; thetaF: number; capped: boolean } {
+    const frame = stylePlantarFrame(fr);
+    const { bMin, bMax, zF, r2Floor } = styleBPrimeCaps(fr);
+    const E = fr.E;
+    let b = Math.max(bMin, Math.min(bMax, (fr.styleB0 ?? 0) + thetaF));
+    let capped = false;
+    for (let k = 0; k < 12; k++) {
+        const r2 = Math.max(r2Floor, polarR2FromZf(zF, b));
+        if (!Number.isFinite(r2)) {
+            b = bMax;
+            capped = true;
+            break;
+        }
+        const { F } = polarFilletF(fr, b, r2);
+        const up = { x: E.x - F.x, y: E.y - F.y, z: E.z - F.z };
+        if (hypot3(up) < 1e-9) break;
+        const bChord = leanFromVertical(unit3(up), frame);
+        let next = bChord + thetaF;
+        if (next > bMax + 1e-12) {
+            next = bMax;
+            capped = true;
+        }
+        if (next < bMin) next = bMin;
+        if (Math.abs(next - b) < 1e-8) {
+            b = next;
+            break;
+        }
+        b = next;
+    }
+    const r2 = Math.max(r2Floor, polarR2FromZf(zF, b));
+    const { F } = polarFilletF(fr, b, Number.isFinite(r2) ? r2 : r2Floor);
+    const up = { x: E.x - F.x, y: E.y - F.y, z: E.z - F.z };
+    const bChord = hypot3(up) > 1e-9 ? leanFromVertical(unit3(up), frame) : (fr.styleB0 ?? 0);
+    const achieved = b - bChord;
+    if (b >= bMax - 1e-9 && thetaF > achieved + 1e-9) capped = true;
+    return { bPrime: b, thetaF: Math.max(0, achieved), capped };
+}
+
+function applyStyleTilt(
+    fr: ColumnFrame,
+    thetaE: number,
+    thetaF: number,
+): { thetaE: number; thetaF: number; capped: boolean } {
+    const baseE = fr.stylePhiE0;
     fr.phiFLock = undefined;
+    if (baseE == null || (!(thetaE > 1e-12) && !(thetaF > 1e-12))) {
+        fr.phiRound1Lock = baseE;
+        fr.styleBPrime = undefined;
+        applyAlaToFrame(fr);
+        return { thetaE: 0, thetaF: 0, capped: false };
+    }
+    let tE = Math.max(0, thetaE);
+    let tF = Math.max(0, thetaF);
+    fr.phiRound1Lock = baseE - tE;
+    fr.styleBPrime = undefined;
     applyAlaToFrame(fr);
+    const solved = solveStyleBPrime(fr, tF);
+    fr.styleBPrime = solved.bPrime;
+    if (!applyFilletResolve(fr, solved.bPrime)) {
+        let lo = 0;
+        let hi = tF;
+        for (let k = 0; k < 10; k++) {
+            const mid = 0.5 * (lo + hi);
+            const tryB = solveStyleBPrime(fr, mid);
+            fr.styleBPrime = tryB.bPrime;
+            if (applyFilletResolve(fr, tryB.bPrime)) lo = mid;
+            else hi = mid;
+        }
+        const last = solveStyleBPrime(fr, lo);
+        fr.styleBPrime = last.bPrime;
+        applyFilletResolve(fr, last.bPrime);
+        const shortfall = Math.max(0, tF - last.thetaF);
+        tF = last.thetaF;
+        tE += shortfall;
+        fr.phiRound1Lock = baseE - tE;
+        applyAlaToFrame(fr);
+        return { thetaE: tE, thetaF: tF, capped: true };
+    }
+    if (solved.capped) {
+        const shortfall = Math.max(0, tF - solved.thetaF);
+        tF = solved.thetaF;
+        tE += shortfall;
+        fr.phiRound1Lock = baseE - tE;
+        applyAlaToFrame(fr);
+    }
+    return { thetaE: tE, thetaF: tF, capped: solved.capped };
 }
 
 function ringTurnAt(pts: XYZ[], i: number, plan = false): number {
@@ -4220,9 +4422,9 @@ function ringTurnAt(pts: XYZ[], i: number, plan = false): number {
 }
 
 /**
- * Cubic Hermite mid-piece. Bulge is an end-tangent tilt: φ_E −= θ
- * (E-only; F stays on the Laplacian ring). λ = 2/(3(1+cos(θ/2))).
- * Smooth / rate-limit θ only. Mid rows at t_k = k/N on every station.
+ * Cubic Hermite mid-piece. Split θ_E = θ_F = 2 atan(2h/d). F-tilt re-solves
+ * the fillet (r2′, C′, F′) with zF held; never applyPhiFLock. Smooth / rate-
+ * limit θ_F. Mid rows at t_k = k/N on every station.
  */
 function prepareStyledMid(
     frames: ColumnFrame[],
@@ -4235,50 +4437,74 @@ function prepareStyledMid(
     if (style.style === "straight" || !frames.length) return nWall;
     const n = frames.length;
     const beta0: number[] = [];
+    const d0: number[] = [];
     for (const fr of frames) {
         fr.phiFLock = undefined;
+        fr.styleBPrime = undefined;
         applyAlaToFrame(fr);
         fr.stylePhiE0 = fr.phiRound1;
         fr.stylePhiF0 = fr.sweepRule?.fil.phiF;
+        snapshotStyleFillet(fr);
+        d0.push(dist3(fr.E, fr.F));
         beta0.push(stationBeta(style, fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250));
     }
     const rim = frames.map((fr) => fr.R);
     const rateRad = (WALL_THETA_RATE_DEG * Math.PI) / 180;
     const beta = beta0.slice();
-    let theta: number[] = new Array(n).fill(0);
+    const thetaE = new Array(n).fill(0);
+    const thetaF = new Array(n).fill(0);
     let nRndF = 0;
-    const rebuildTheta = (betas: number[]): number[] => {
+    const rawAlpha = (betas: number[]): number[] => {
         const raw: number[] = [];
         for (let i = 0; i < n; i++) {
-            const fr = frames[i]!;
-            const d = dist3(fr.E, fr.F);
+            const d = Math.max(d0[i] ?? dist3(frames[i]!.E, frames[i]!.F), 1e-9);
             const h = clampSagitta(betas[i] ?? 0, d, style.planOutMm);
             raw.push(thetaFromSagitta(h, d));
         }
-        const sm = periodicGaussian(raw, rim, WALL_MID_SMOOTH_SIGMA_MM);
+        return raw;
+    };
+    const rebuildThetaF = (betas: number[]): number[] => {
+        const sm = periodicGaussian(rawAlpha(betas), rim, WALL_MID_SMOOTH_SIGMA_MM);
         return rateLimitClosedAbs(sm, rateRad, 0);
     };
-    const applyAll = (th: number[]): void => {
-        for (let i = 0; i < n; i++) applyStyleTilt(frames[i]!, th[i] ?? 0);
+    const applyAll = (tE: number[], tF: number[]): void => {
+        for (let i = 0; i < n; i++) {
+            const out = applyStyleTilt(frames[i]!, tE[i] ?? 0, tF[i] ?? 0);
+            tE[i] = out.thetaE;
+            tF[i] = out.thetaF;
+        }
         for (let i = 0; i < n; i++) {
             const fr = frames[i]!;
             const minL = minLineOfHeight(Math.max(fr.heightMm, 1e-9));
             if (dist3(fr.E, fr.F) >= minL - 1e-9) continue;
             let lo = 0;
-            let hi = th[i] ?? 0;
+            let hi = Math.max(tE[i] ?? 0, tF[i] ?? 0);
+            const rE = (tE[i] ?? 0) / Math.max(hi, 1e-12);
+            const rF = (tF[i] ?? 0) / Math.max(hi, 1e-12);
             for (let k = 0; k < 10; k++) {
                 const mid = 0.5 * (lo + hi);
-                applyStyleTilt(fr, mid);
+                applyStyleTilt(fr, mid * rE, mid * rF);
                 if (dist3(fr.E, fr.F) >= minL - 1e-9) lo = mid;
                 else hi = mid;
             }
-            applyStyleTilt(fr, lo);
-            th[i] = lo;
+            const last = applyStyleTilt(fr, lo * rE, lo * rF);
+            tE[i] = last.thetaE;
+            tF[i] = last.thetaF;
         }
     };
-    theta = rebuildTheta(beta);
-    const thetaRawMax = Math.max(...theta, 0);
-    applyAll(theta);
+    const splitFromBeta = (betas: number[]): void => {
+        const a = rawAlpha(betas);
+        const tf = rebuildThetaF(betas);
+        for (let i = 0; i < n; i++) {
+            const tot = 2 * (a[i] ?? 0);
+            const f = Math.max(0, Math.min(tot, tf[i] ?? 0));
+            thetaF[i] = f;
+            thetaE[i] = Math.max(0, tot - f);
+        }
+    };
+    splitFromBeta(beta);
+    const thetaRawMax = Math.max(...rawAlpha(beta), 0);
+    applyAll(thetaE, thetaF);
     for (let pass = 0; pass < 6; pass++) {
         const fTurn = ringTurningDeg(
             frames.map((f) => f.F),
@@ -4300,7 +4526,7 @@ function prepareStyledMid(
                     u: Number(frames[i]!.u.toFixed(4)),
                     fTurn: Number(loc.toFixed(3)),
                     beta: Number((beta[i] ?? 0).toFixed(4)),
-                    thetaDeg: Number((((theta[i] ?? 0) * 180) / Math.PI).toFixed(3)),
+                    thetaFDeg: Number((((thetaF[i] ?? 0) * 180) / Math.PI).toFixed(3)),
                 }),
             );
         }
@@ -4308,13 +4534,15 @@ function prepareStyledMid(
         for (const fr of frames) {
             fr.phiRound1Lock = fr.stylePhiE0;
             fr.phiFLock = undefined;
+            fr.styleBPrime = undefined;
             applyAlaToFrame(fr);
         }
-        theta = rebuildTheta(beta);
-        applyAll(theta);
+        splitFromBeta(beta);
+        applyAll(thetaE, thetaF);
     }
     let nLineNeed = nLine;
     let nFlagged = 0;
+    const inflStations: Array<{ i: number; u: number; kappaMin: number; sStar: number }> = [];
     const g1Stations: Array<{
         i: number;
         u: number;
@@ -4332,12 +4560,16 @@ function prepareStyledMid(
         if (!en) {
             fr.midWLock = WALL_LAMBDA_MIN;
             fr.midTheta = 0;
+            fr.midThetaE = 0;
+            fr.midThetaF = 0;
             fr.midBeta = 0;
             fr.midFlagged = false;
             continue;
         }
-        const th = theta[i] ?? 0;
-        const lam = lambdaFromTheta(th);
+        const tE = thetaE[i] ?? 0;
+        const tF = thetaF[i] ?? 0;
+        const included = tE + tF;
+        const lam = lambdaFromTheta(included);
         const locked = sampleWallMidStyle(
             en.E,
             en.Fpiece,
@@ -4349,12 +4581,14 @@ function prepareStyledMid(
             { x: fr.wOut.x, y: fr.wOut.y },
             style,
             bulge,
-            { theta: th, lambda: lam },
+            { theta: included, lambda: lam },
         );
         fr.midP1 = locked.P1;
         fr.midP2 = locked.P2;
         fr.midWLock = locked.lambda;
-        fr.midTheta = th;
+        fr.midTheta = included;
+        fr.midThetaE = tE;
+        fr.midThetaF = tF;
         fr.midBeta = beta[i] ?? 0;
         fr.midChordMm = dist3(en.E, en.Fpiece);
         fr.midS = locked.s;
@@ -4367,7 +4601,23 @@ function prepareStyledMid(
         fr.midLimit = locked.limit ?? "none";
         fr.midChordOffMm = locked.chordOffsetMm ?? 0;
         fr.midPlanOffMm = locked.planOffsetMm ?? 0;
-        if (locked.flagged) nFlagged++;
+        fr.midTrim = locked.trim ?? 1;
+        fr.midSStar = locked.sStar;
+        fr.midKappaF = locked.kappaF;
+        const kFil = 1 / Math.max(fr.rFillet, 1e-6);
+        fr.midKappaFil = (locked.kappaF ?? 0) < 0 ? -kFil : kFil;
+        fr.midEndRatio = locked.endRatio;
+        fr.midPeakHFrac = peakHeightFrac(en.E, locked.P1, locked.P2, en.Fpiece, fr.B.z, fr.heightMm);
+        fr.midBulgeHFrac = (locked.chordOffsetMm ?? 0) / Math.max(fr.heightMm, 1e-6);
+        if (locked.flagged) {
+            nFlagged++;
+            inflStations.push({
+                i,
+                u: Number(fr.u.toFixed(4)),
+                kappaMin: Number((locked.kappaMin ?? 0).toFixed(5)),
+                sStar: Number((locked.sStar ?? 0).toFixed(3)),
+            });
+        }
         nLineNeed = Math.max(nLineNeed, locked.rowNeed ?? nLine);
         const g1e = locked.g1EDeg ?? 0;
         const g1f = locked.g1FDeg ?? 0;
@@ -4397,6 +4647,8 @@ function prepareStyledMid(
     const over = g1Stations.filter(
         (s) => s.e > WALL_STYLE_G1_MAX_DEG + 1e-6 || s.f > WALL_STYLE_G1_MAX_DEG + 1e-6,
     );
+    if (nFlagged)
+        console.log("[RND-INFL]", JSON.stringify({ n: nFlagged, stations: inflStations.slice(0, 24) }));
     console.log(
         "[S1-MID-STYLE]",
         JSON.stringify({
@@ -4409,7 +4661,8 @@ function prepareStyledMid(
             rndF: nRndF,
             g1Over: over.length,
             planOver30: planWide.length,
-            thetaDegMax: Number(((Math.max(...theta, 0) * 180) / Math.PI).toFixed(3)),
+            thetaFDegMax: Number(((Math.max(...thetaF, 0) * 180) / Math.PI).toFixed(3)),
+            thetaEDegMax: Number(((Math.max(...thetaE, 0) * 180) / Math.PI).toFixed(3)),
             thetaDegRawMax: Number(((thetaRawMax * 180) / Math.PI).toFixed(3)),
         }),
     );

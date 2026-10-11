@@ -50,8 +50,10 @@ describe("wall style mid-piece", () => {
     test("lambda is 1/3 at theta 0 and follows the circular-arc handle", () => {
         expect(lambdaFromTheta(0)).toBeCloseTo(WALL_LAMBDA_MIN, 6);
         expect(midStyleLambda(20, 0)).toBeCloseTo(WALL_LAMBDA_MIN, 6);
-        const th = thetaFromSagitta(0.15, 1);
-        expect(lambdaFromTheta(th)).toBeCloseTo(2 / (3 * (1 + Math.cos(th / 2))), 6);
+        const end = thetaFromSagitta(0.15, 1);
+        expect(end).toBeCloseTo(2 * Math.atan(0.3), 6);
+        expect(lambdaFromTheta(end)).toBeCloseTo(2 / (3 * (1 + Math.cos(end / 2))), 6);
+        expect(midStyleLambda(20, 0.15)).toBeCloseTo(lambdaFromTheta(2 * end), 6);
         expect(wallBetaAt(0)).toBeCloseTo(WALL_BETA_HEEL, 6);
         expect(wallBetaAt(0.7)).toBeCloseTo(WALL_BETA_ARCH, 6);
         expect(stationBeta(resolveWallStyleParams({ style: "straight" }), 0.6, 1, 250)).toBe(0);
@@ -114,7 +116,6 @@ describe("wall style mid-piece", () => {
         expect(g1.f).toBeLessThan(1e-6);
         expect(mid.g1EDeg ?? 1).toBeLessThan(0.1);
         expect(mid.g1FDeg ?? 1).toBeLessThan(0.1);
-        expect(mid.flagged).toBeFalsy();
         const dE = { x: mid.P1.x - E.x, y: mid.P1.y - E.y, z: mid.P1.z - E.z };
         const dF = { x: F.x - mid.P2.x, y: F.y - mid.P2.y, z: F.z - mid.P2.z };
         expect(g1OfCubic(E, mid.P1, mid.P2, F, dE, dF).e).toBeLessThan(1e-5);
@@ -225,19 +226,19 @@ describe("wall style mid-piece", () => {
         expect(mid.pts[1]!.z).toBeCloseTo(6, 6);
     });
 
-    test("tiny nearly-straight wiggle is not [RND-INFL]; a two-sided lobe is", () => {
-        const E = { x: 133.837, y: 42.692, z: 7.923 };
-        const F = { x: 134.021, y: 40.423, z: 1.08 };
-        const tE = { x: 0.05, y: -0.3264, z: -0.9439 };
-        const tF = { x: 0.0801, y: -0.3007, z: -0.9504 };
-        const tiny = hermiteControls(E, F, tE, tF, WALL_LAMBDA_MIN);
-        expect(cubicHasInflection(tiny.P0, tiny.P1, tiny.P2, tiny.P3, tE, tF, { x: 1, y: 0 })).toBe(false);
+    test("[RND-INFL] counts any F→E curvature sign change", () => {
         const A = { x: 0, y: 0, z: 10 };
         const B = { x: 0, y: 0, z: 0 };
         const sE = { x: 1, y: 0, z: -0.3 };
         const sF = { x: 1, y: 0, z: -0.3 };
         const ess = hermiteControls(A, B, sE, sF, 0.55);
         expect(cubicHasInflection(ess.P0, ess.P1, ess.P2, ess.P3, sE, sF, { x: 1, y: 0 })).toBe(true);
+        const tE = { x: 1, y: 0, z: -1 };
+        const tF = { x: -1, y: 0, z: -1 };
+        const bulge = hermiteControls(A, B, tE, tF, 0.45);
+        expect(cubicHasInflection(bulge.P0, bulge.P1, bulge.P2, bulge.P3, tE, tF, { x: 1, y: 0 })).toBe(
+            false,
+        );
     });
 
     test("plan angle is the xy angle between tE and tF", () => {

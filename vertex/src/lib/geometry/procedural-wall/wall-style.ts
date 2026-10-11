@@ -40,6 +40,18 @@ export const WALL_BETA_H_CAP = 0.3;
 export const WALL_THETA_RATE_DEG = 1;
 export const WALL_CHORD_OFF_MEDIAN_FRAC = 0.1;
 export const WALL_CHORD_OFF_H_MIN_MM = 8;
+export const WALL_SSTAR_LO = 0.4;
+export const WALL_SSTAR_HI = 0.6;
+export const WALL_AB_TRIM_LO = 0.8;
+export const WALL_AB_TRIM_HI = 1.25;
+export const WALL_KAPPA_F_MAX = 0.05;
+export const WALL_END_RATIO_LO = 0.6;
+export const WALL_END_RATIO_HI = 1.6;
+export const WALL_BULGE_H_LO = 0.15;
+export const WALL_BULGE_H_HI = 0.25;
+export const WALL_PEAK_H_LO = 0.4;
+export const WALL_PEAK_H_HI = 0.6;
+export const WALL_BULGE_H_MIN_MM = 6;
 export const WALL_ARCH_U = 0.55;
 export const HYBRID_SWITCH_U_MEDIAL = 0.3;
 export const HYBRID_SWITCH_U_LATERAL = 0.28;
@@ -106,14 +118,12 @@ export function wallBetaAt(u: number): number {
 }
 
 /**
- * E-only tilt that realizes sagitta h on chord d.
- * With tF along the chord, offset/d = (1/4) tan(α/2) and λ = 2/(3(1+cos α)),
- * so α = 2 atan(4h/d). The written 2 atan(2h/d) is the two-end circular
- * form; F stays on the faired ring so only E is tilted.
+ * Two-end circular lean: each end tilts α = 2 atan(2h/d) from the chord
+ * so h/d = (1/2) tan(α/2). Included angle is 2α.
  */
 export function thetaFromSagitta(h: number, d: number): number {
     if (!(d > 1e-9) || !(h > 0)) return 0;
-    return 2 * Math.atan((4 * Math.max(0, h)) / d);
+    return 2 * Math.atan((2 * Math.max(0, h)) / d);
 }
 
 /** Circular-arc cubic handle: λ = 2 / (3 (1 + cos(θ/2))). θ = 0 → 1/3. */
@@ -129,10 +139,10 @@ export function clampSagitta(beta: number, d: number, planOutMm: number): number
     return Math.min(Math.max(0, beta) * d, WALL_BETA_H_CAP * d, Math.max(0, planOutMm));
 }
 
-/** λ from the station θ(h). `bulge` is β (sagitta / chord). */
+/** λ from the station θ(h). `bulge` is β (sagitta / chord). Included = 2α. */
 export function midStyleLambda(_heightMm: number, bulge: number): number {
     const h = Math.min(Math.max(0, bulge), WALL_BETA_H_CAP);
-    return lambdaFromTheta(thetaFromSagitta(h, 1));
+    return lambdaFromTheta(2 * thetaFromSagitta(h, 1));
 }
 
 function hypot3(a: XYZ): number {
@@ -293,23 +303,33 @@ export function hermiteControls(
     tE: XYZ,
     tF: XYZ,
     lambda: number,
+    trim = 1,
 ): {
     P0: XYZ;
     P1: XYZ;
     P2: XYZ;
     P3: XYZ;
     d: number;
+    a: number;
+    b: number;
+    trim: number;
 } {
     const d = dist3(E, F);
-    const a = Math.max(0, lambda) * d;
+    const r = Math.max(WALL_AB_TRIM_LO, Math.min(WALL_AB_TRIM_HI, trim));
+    const s = Math.sqrt(r);
+    const a = Math.max(0, lambda) * d * s;
+    const b = (Math.max(0, lambda) * d) / s;
     const uE = unit3(tE);
     const uF = unit3(tF);
     return {
         P0: { ...E },
         P1: add3(E, uE, a),
-        P2: add3(F, uF, -a),
+        P2: add3(F, uF, -b),
         P3: { ...F },
         d,
+        a,
+        b,
+        trim: r,
     };
 }
 
@@ -393,10 +413,123 @@ export function cubicHasInflection(
         if (sign === 0) sign = s;
         else if (s !== sign) flipped = true;
     }
-    // A nearly-straight cubic with 2–3° end-tangent mismatch has a
-    // mathematical sign flip and ~0.02 mm lobes. Flag only a visible S.
-    const vis = 0.25;
-    return flipped && pos > vis && neg > vis;
+    // Any F→E curvature sign change is an S. [RND-INFL] must count it.
+    return flipped;
+}
+
+export function cubicOutwardNormal(
+    P0: XYZ,
+    P1: XYZ,
+    P2: XYZ,
+    P3: XYZ,
+    tE: XYZ,
+    tF: XYZ,
+    outward: { x: number; y: number },
+): XYZ {
+    let n = inflectionNormal(unit3(tE), unit3(tF), outward);
+    const mid = evalCubicHermite(P0, P1, P2, P3, 0.5);
+    const out3 = { x: outward.x, y: outward.y, z: 0 };
+    if (signedChordOffset(mid, P0, P3, n) < 0) n = scale3(n, -1);
+    if (signedChordOffset(mid, P0, P3, out3) > 0 && dot3(n, out3) < 0) n = scale3(n, -1);
+    return n;
+}
+
+export function cubicSignedKappa(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, t: number, n: XYZ): number {
+    const d1 = cubicHermiteTangent(P0, P1, P2, P3, t);
+    const d2 = cubicHermiteSecond(P0, P1, P2, P3, t);
+    const den = hypot3(d1) ** 3;
+    if (!(den > 1e-16)) return 0;
+    return dot3(cross3(d1, d2), n) / den;
+}
+
+export function cubicMinOutwardKappa(
+    P0: XYZ,
+    P1: XYZ,
+    P2: XYZ,
+    P3: XYZ,
+    tE: XYZ,
+    tF: XYZ,
+    outward: { x: number; y: number },
+    samples = WALL_MID_INFL_SAMPLES,
+): number {
+    const n = cubicOutwardNormal(P0, P1, P2, P3, tE, tF, outward);
+    let min = Infinity;
+    for (let i = 0; i <= samples; i++) {
+        min = Math.min(min, cubicSignedKappa(P0, P1, P2, P3, i / samples, n));
+    }
+    return Number.isFinite(min) ? min : 0;
+}
+
+/** Chord parameter of the max offset (E=0, F=1). */
+export function cubicSStar(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, samples = 48): number {
+    let bestT = 0.5;
+    let best = -1;
+    for (let i = 0; i <= samples; i++) {
+        const t = i / samples;
+        const off = pointToLineDist(evalCubicHermite(P0, P1, P2, P3, t), P0, P3);
+        if (off >= best) {
+            best = off;
+            bestT = t;
+        }
+    }
+    let span = 1 / samples;
+    for (let r = 0; r < 4; r++) {
+        const a = Math.max(0, bestT - span);
+        const b = Math.min(1, bestT + span);
+        span = (b - a) / 8;
+        for (let i = 0; i <= 8; i++) {
+            const t = a + span * i;
+            const off = pointToLineDist(evalCubicHermite(P0, P1, P2, P3, t), P0, P3);
+            if (off >= best) {
+                best = off;
+                bestT = t;
+            }
+        }
+    }
+    return bestT;
+}
+
+/** a/b trim in [0.8, 1.25] so s* sits near 0.5. */
+export function trimHermiteToCenterSStar(
+    E: XYZ,
+    F: XYZ,
+    tE: XYZ,
+    tF: XYZ,
+    lambda: number,
+): { ctrl: ReturnType<typeof hermiteControls>; sStar: number } {
+    const target = 0.5;
+    let lo = WALL_AB_TRIM_LO;
+    let hi = WALL_AB_TRIM_HI;
+    let best = hermiteControls(E, F, tE, tF, lambda, 1);
+    let sStar = cubicSStar(best.P0, best.P1, best.P2, best.P3);
+    if (sStar >= WALL_SSTAR_LO - 1e-6 && sStar <= WALL_SSTAR_HI + 1e-6) {
+        return { ctrl: best, sStar };
+    }
+    for (let i = 0; i < 14; i++) {
+        const mid = 0.5 * (lo + hi);
+        const ctrl = hermiteControls(E, F, tE, tF, lambda, mid);
+        const s = cubicSStar(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3);
+        best = ctrl;
+        sStar = s;
+        if (s < target) lo = mid;
+        else hi = mid;
+    }
+    return { ctrl: best, sStar };
+}
+
+export function endTiltRatio(tE: XYZ, tF: XYZ, E: XYZ, F: XYZ): number {
+    const chord = sub3(F, E);
+    const a = acuteVecDeg(tE, chord);
+    const b = acuteVecDeg(tF, chord);
+    if (!(b > 1e-9)) return a > 1e-9 ? Infinity : 1;
+    return a / b;
+}
+
+export function peakHeightFrac(P0: XYZ, P1: XYZ, P2: XYZ, P3: XYZ, zB: number, heightMm: number): number {
+    const s = cubicSStar(P0, P1, P2, P3);
+    const p = evalCubicHermite(P0, P1, P2, P3, s);
+    const h = Math.max(heightMm, 1e-6);
+    return (p.z - zB) / h;
 }
 
 function signedChordOffset(p: XYZ, a: XYZ, b: XYZ, n: XYZ): number {
@@ -844,6 +977,13 @@ export interface MidStyleSample {
     planAngleDeg?: number;
     limit?: MidStyleLimit;
     flagged?: boolean;
+    sStar?: number;
+    kappaF?: number;
+    kappaMin?: number;
+    endRatio?: number;
+    trim?: number;
+    peakHFrac?: number;
+    bulgeHFrac?: number;
 }
 
 export interface MidStyleLock {
@@ -851,6 +991,7 @@ export interface MidStyleLock {
     theta?: number;
     ts?: number[];
     w?: number;
+    trim?: number;
 }
 
 function lineG1(E: XYZ, F: XYZ, tE: XYZ, tF: XYZ): { e: number; f: number } {
@@ -919,13 +1060,21 @@ export function sampleWallMidStyle(
     const d = dist3(E, F);
     const maxOff = Math.min(WALL_BETA_H_CAP * d, params.planOutMm, WALL_BULGE_OFFSET_MAX_MM);
     const hWanted = clampSagitta(Math.max(bulgeAtStation, 0), d, params.planOutMm);
-    const thetaWanted =
-        lock?.theta != null && Number.isFinite(lock.theta)
-            ? Math.max(0, lock.theta)
-            : thetaFromSagitta(hWanted, d);
-    const wanted = lock?.lambda ?? lambdaFromTheta(thetaWanted);
-    const check = (lam: number) =>
-        cubicBoundsOk(hermiteControls(E, F, tE, tF, lam), tE, tF, R, F, outward, params.planOutMm, maxOff);
+    const endLean = thetaFromSagitta(hWanted, d);
+    const included =
+        lock?.theta != null && Number.isFinite(lock.theta) ? Math.max(0, lock.theta) : 2 * endLean;
+    const wanted = lock?.lambda ?? lambdaFromTheta(included);
+    const check = (lam: number, trim = 1) =>
+        cubicBoundsOk(
+            hermiteControls(E, F, tE, tF, lam, trim),
+            tE,
+            tF,
+            R,
+            F,
+            outward,
+            params.planOutMm,
+            maxOff,
+        );
     let lambda = wanted;
     let limit: MidStyleLimit = "none";
     let flagged = false;
@@ -955,7 +1104,19 @@ export function sampleWallMidStyle(
             else limit = "lambda";
         }
     }
-    const ctrl = hermiteControls(E, F, tE, tF, lambda);
+    const trimmed = trimHermiteToCenterSStar(E, F, tE, tF, lambda);
+    let ctrl = check(lambda, trimmed.ctrl.trim).ok ? trimmed.ctrl : hermiteControls(E, F, tE, tF, lambda);
+    if (lock?.trim != null && Number.isFinite(lock.trim)) {
+        const forced = hermiteControls(E, F, tE, tF, lambda, lock.trim);
+        if (check(lambda, forced.trim).ok) ctrl = forced;
+    }
+    const nOut = cubicOutwardNormal(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF, outward);
+    const kappaMin = cubicMinOutwardKappa(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF, outward);
+    const infl = cubicHasInflection(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF, outward);
+    if (infl || kappaMin < -1e-8) {
+        flagged = true;
+        limit = "infl";
+    }
     const pts =
         lock?.ts && lock.ts.length === n
             ? sampleCubicAtT(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, lock.ts)
@@ -963,6 +1124,8 @@ export function sampleWallMidStyle(
     const chordOff = cubicMaxChordOffset(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3);
     const plan = planBoundsOf(pts, R, F, outward, params.planOutMm);
     const g1 = g1OfCubic(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF);
+    const sStar = cubicSStar(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3);
+    const H = Math.max(_heightMm, 1e-6);
     return {
         pts,
         weight: lambda,
@@ -981,6 +1144,13 @@ export function sampleWallMidStyle(
         planAngleDeg: planAng,
         limit,
         flagged,
+        sStar,
+        kappaF: cubicSignedKappa(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, 1, nOut),
+        kappaMin,
+        endRatio: endTiltRatio(tE, tF, E, F),
+        trim: ctrl.trim,
+        peakHFrac: peakHeightFrac(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, F.z, H),
+        bulgeHFrac: chordOff / H,
     };
 }
 
