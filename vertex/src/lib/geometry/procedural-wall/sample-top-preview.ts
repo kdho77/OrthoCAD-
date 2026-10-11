@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
-import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { extractMergedGeometry, loadGlbFromBuffer, reorientToFootprintFrame } from "@/lib/library/loaders";
 import type { SideCorrections } from "@/types";
 import { PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
@@ -67,8 +67,6 @@ export interface ProceduralPreviewOptions {
     corrections?: Partial<SideCorrections>;
     thicknessMm?: number;
     stockThicknessMm?: number;
-    sourceGeometry?: BufferGeometry;
-    sourceField?: HeightFieldParams;
     bottomPattern?: PolyPoint[];
     wallStyle?: ProceduralWallStyle;
     deviceType?: "functional" | "accommodative";
@@ -79,6 +77,8 @@ export interface ProceduralPreviewOptions {
 /**
  * Viewer reconstruct for procedural mode: top-only SAMPLE_Top + faired B.
  * Same inputs as the approved SAMPLE_Top + synthetic-pattern STLs.
+ * Do not pass sourceGeometry — extractTopSheet after applyBaseModifiers is the
+ * stock Default path and yields a 0-station ring on a top-only mesh.
  */
 export function reconstructProceduralPreview(
     topGeo: BufferGeometry,
@@ -86,12 +86,12 @@ export function reconstructProceduralPreview(
 ): { model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry } {
     const model = extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
     const pattern = options.bottomPattern?.length ? options.bottomPattern : buildFairedPatternFromTop(model);
+    const thicknessMm = options.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
+    const stockThicknessMm = options.stockThicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
     const geometry = reconstructProceduralWalls(model, {
         corrections: options.corrections as SideCorrections | undefined,
-        thicknessMm: options.thicknessMm,
-        stockThicknessMm: options.stockThicknessMm,
-        sourceGeometry: options.sourceGeometry,
-        sourceField: options.sourceField,
+        thicknessMm,
+        stockThicknessMm,
         bottomPattern: pattern,
         bottomPatternLabel: PATTERN_SOURCE_SYNTHETIC,
         flatPlantar: true,

@@ -12,7 +12,7 @@ import {
     stockBaseNeedsServerResolution,
 } from "@/lib/geometry/base-asset";
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
-import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall";
 import {
     loadSampleTopGeometry,
@@ -237,7 +237,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         const native = nativeGeoRef.current;
         if (!native || (!assetId && !procedural)) return;
         const ref = getDesignBase(design, side);
-        const sized = scaleGeometryToInsoleSize(native, layout.lengthMm, layout.widthMm);
+        // Procedural preview keeps native SAMPLE_Top (the approved STL input).
+        // Shoe-size scale on a top-only sheet is a display concern for legacy Default.
+        const sized = procedural
+            ? native.clone()
+            : scaleGeometryToInsoleSize(native, layout.lengthMm, layout.widthMm);
         if (baseGeoRef.current && baseGeoRef.current !== native) {
             baseGeoRef.current.dispose();
         }
@@ -266,45 +270,65 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     // biome-ignore lint/correctness/useExhaustiveDependencies: preview patches + live draft trimline are intentional triggers
     useEffect(() => {
         const raw = baseGeoRef.current;
-        if (!assetId || !raw) return;
+        if ((!assetId && wallModel !== "procedural") || !raw) return;
         if (wallModel === "procedural") {
             const committedThickness = design.paired
                 ? side === "left"
                     ? design.paired.leftThicknessMm
                     : design.paired.rightThicknessMm
                 : design.thicknessMm;
-            const thicknessMm = thicknessPreview ?? committedThickness;
+            const thicknessMm = thicknessPreview ?? committedThickness ?? BASE_REFERENCE_THICKNESS_MM;
             const field = baseModifierField(design, side, thicknessMm);
             const draft = useMeshEditStore.getState().getActiveDraftBottomPattern(side);
             const stored = useBottomPatternStore.getState().getPattern(side);
             const edited = draft ?? stored;
-            const preview = reconstructProceduralPreview(raw, {
-                corrections: field.corrections,
-                thicknessMm,
-                stockThicknessMm: field.thicknessMm > 0 ? 3 : field.thicknessMm,
-                sourceGeometry: raw,
-                sourceField: field,
-                deviceType,
-                lateralFlange: {
-                    heightMm: lateralFlangeHeightMm,
-                    lengthMm: lateralFlangeLengthMm,
-                    angleDeg: lateralFlangeAngleDeg,
-                },
-                archGrindDepthMm: 0,
-                wallStyle,
-                ...(edited ? { bottomPattern: curveToPolyPoints(edited) } : {}),
-            });
-            const patternKey = `${layout.lengthMm}:${layout.widthMm}:${isMirroredForLoad ? "m" : "p"}`;
-            if (!edited) {
-                useBottomPatternStore.getState().ensureGenerated(side, patternKey, preview.pattern);
-            }
-            if (outRef.current && outRef.current !== workRef.current) {
-                outRef.current.dispose();
-            }
-            outRef.current = preview.geometry;
-            setGeometry(preview.geometry);
-            setBaseMeshLoading(side, false);
-            return;
+            let cancelled = false;
+            setBaseMeshLoading(side, true);
+            const timer = window.setTimeout(() => {
+                if (cancelled) return;
+                try {
+                    const preview = reconstructProceduralPreview(raw, {
+                        corrections: field.corrections,
+                        thicknessMm,
+                        stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
+                        deviceType,
+                        lateralFlange: {
+                            heightMm: lateralFlangeHeightMm,
+                            lengthMm: lateralFlangeLengthMm,
+                            angleDeg: lateralFlangeAngleDeg,
+                        },
+                        archGrindDepthMm: 0,
+                        wallStyle,
+                        ...(edited ? { bottomPattern: curveToPolyPoints(edited) } : {}),
+                    });
+                    if (cancelled) {
+                        preview.geometry.dispose();
+                        return;
+                    }
+                    const patternKey = `${SAMPLE_TOP_ASSET_ID}:${isMirroredForLoad ? "m" : "p"}`;
+                    if (!edited) {
+                        useBottomPatternStore.getState().ensureGenerated(side, patternKey, preview.pattern);
+                    }
+                    if (outRef.current && outRef.current !== workRef.current) {
+                        outRef.current.dispose();
+                    }
+                    outRef.current = preview.geometry;
+                    setGeometry(preview.geometry);
+                } catch (e) {
+                    if (cancelled) return;
+                    stockDebug("procedural SAMPLE_Top reconstruct failed", {
+                        side,
+                        message: e instanceof Error ? e.message : String(e),
+                    });
+                    setGeometry(null);
+                } finally {
+                    if (!cancelled) setBaseMeshLoading(side, false);
+                }
+            }, 0);
+            return () => {
+                cancelled = true;
+                window.clearTimeout(timer);
+            };
         }
         // Paired workspace: per-side committed thickness (matches export path).
         const committedThickness = design.paired

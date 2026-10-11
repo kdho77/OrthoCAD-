@@ -13,6 +13,7 @@ import {
 } from "@/lib/geometry/procedural-wall";
 import {
     buildFairedPatternFromTop,
+    reconstructProceduralPreview,
     SAMPLE_TOP_ASSET_ID,
     SAMPLE_TOP_NAME,
     sampleTopFromArrayBuffer,
@@ -72,4 +73,18 @@ describe("SAMPLE_Top faired preview inputs", () => {
         expect(PATTERN_SOURCE_SYNTHETIC).toBe("synthetic");
         geo.dispose();
     }, 60_000);
+
+    test("reconstructProceduralPreview lofts SAMPLE_Top + faired pattern (S1 inputs)", async () => {
+        const buf = readFileSync(SAMPLE_TOP_PATH);
+        const geo = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        const preview = reconstructProceduralPreview(geo, { wallStyle: "round" });
+        const stations = (preview.geometry.userData as { stationCount?: number }).stationCount ?? 0;
+        expect(stations).toBeGreaterThan(3);
+        expect(preview.pattern.length).toBeGreaterThan(16);
+        expect(preview.geometry.getAttribute("position")?.count ?? 0).toBeGreaterThan(1000);
+        preview.geometry.dispose();
+        geo.dispose();
+    }, 180_000);
 });
