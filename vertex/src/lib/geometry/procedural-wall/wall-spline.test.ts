@@ -31,6 +31,25 @@ function station(
     };
 }
 
+function printCorner(name: string, sol: ReturnType<typeof solveSplineStation>): void {
+    const row = {
+        o: Number(sol.o.toFixed(4)),
+        zy: Number(sol.zy.toFixed(4)),
+        zx: Number(sol.zx.toFixed(4)),
+        a: Number(sol.a.toFixed(4)),
+        sag: Number(sol.sagitta.toFixed(4)),
+        sagH: Number(sol.sagFrac.toFixed(4)),
+        peakH: Number(sol.peakZFrac.toFixed(4)),
+        plan: Number(sol.planOffset.toFixed(4)),
+        convex: sol.convex,
+        infl: sol.inflCount,
+        tRAngle: Number(sol.tRAngleDeg.toFixed(3)),
+        steep: sol.steep,
+        poly: sol.fallbackStraight,
+    };
+    console.log(`[RND-CORNER] ${name}`, JSON.stringify(row));
+}
+
 describe("clamped cubic wall spline", () => {
     test("clamped cubic hits P0 at 0 and P5 at 1; G1 along P0P1", () => {
         const P = [
@@ -54,6 +73,21 @@ describe("clamped cubic wall spline", () => {
         expect((d.x * e.x + d.y * e.y + d.z * e.z) / den).toBeGreaterThan(0.99);
     });
 
+    test("corner-cut box expected: H12/Ls2 15% and H8 20%", () => {
+        const h12 = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
+        printCorner("H12-Ls2-15", h12);
+        expect(h12.o).toBeCloseTo(1.11, 1);
+        expect(h12.sagitta).toBeCloseTo(1.8, 1);
+        expect(h12.peakZFrac).toBeCloseTo(0.45, 1);
+        expect(h12.planOffset).toBeCloseTo(1.06, 1);
+
+        const h8In = station(0.55, 1, 8, 2, { s: -1, z: -0.2 });
+        h8In.targetSagMm = 0.2 * 8;
+        const h8 = solveSplineStation(h8In);
+        printCorner("H8-20", h8);
+        expect(h8.o).toBeCloseTo(0.99, 1);
+    });
+
     test("three Default-like stations: heel 0.12 med, arch 0.35 med, lat mid 0.55", () => {
         const cases: Array<{ name: string; input: SplineStationInput }> = [
             { name: "heel-med-u0.12", input: station(0.12, 1, 12, 2.2, { s: -1, z: -0.2 }) },
@@ -65,25 +99,7 @@ describe("clamped cubic wall spline", () => {
             const sol = solveSplineStation(c.input);
             const g = stationGates(sol, c.input.u, c.input.sideSign);
             printSplineGates({ ...g, u: c.input.u });
-            console.log(
-                `[RND-STATION-NAME] ${c.name}`,
-                JSON.stringify({
-                    gamma: Number(sol.gamma.toFixed(4)),
-                    asym: Number(sol.asym.toFixed(4)),
-                    a: Number(sol.a.toFixed(4)),
-                    sagFrac: Number(sol.sagFrac.toFixed(4)),
-                    peak: Number(sol.peakZFrac.toFixed(4)),
-                    g1R: Number(sol.g1RDeg.toFixed(4)),
-                    seamB: Number(sol.seamBDeg.toFixed(4)),
-                    infl: sol.infl,
-                    convex: sol.convex,
-                    inset: Number(sol.insetMin.toFixed(4)),
-                    plan: Number(sol.planOffset.toFixed(4)),
-                    turn: Number(sol.maxTurnDeg.toFixed(3)),
-                    poly: sol.fallbackStraight,
-                    misses: g.misses,
-                }),
-            );
+            printCorner(c.name, sol);
             if (!g.pass) misses.push(`${c.name}: ${g.misses.join(",")}`);
         }
         expect(misses).toEqual([]);

@@ -14,6 +14,15 @@ import {
 import { countColumnPlanReversals, type HermiteStation } from "./loft";
 import { countPlanViewChordCrossings, smoothAndCapFlare } from "./stations";
 import {
+    applySplineRing,
+    blendColumns,
+    hybridWeightAt,
+    type SplineStationInput,
+    sampleSplineAtT,
+    splineBetaAt,
+    splineTurningTValues,
+} from "./wall-spline";
+import {
     clampSagitta,
     lambdaFromTheta,
     type MidStyleLimit,
@@ -305,6 +314,13 @@ export interface ColumnFrame {
     midEndRatio?: number;
     midPeakHFrac?: number;
     midBulgeHFrac?: number;
+    splineO?: number;
+    splineZy?: number;
+    splineA?: number;
+    splineSteep?: boolean;
+    splineTRAngleDeg?: number;
+    splineInflCount?: number;
+    splineFallback?: boolean;
 }
 
 export interface SweepMidStyle {
@@ -4732,6 +4748,78 @@ function applyPieceCounts(frames: ColumnFrame[], report: NRoundStarReport): numb
     return report.nRound + report.nLine + report.nFil + 2;
 }
 
+/** Replace STRAIGHT R→B columns with the corner-cut-box spline (round/hybrid). */
+function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
+    const style = frames[0]?.wallStyle?.style ?? "straight";
+    if (style === "straight" || !frames.length) return;
+    const inputs: SplineStationInput[] = frames.map((fr) => {
+        const tR = fr.tInc ??
+            (fr.sheetPlaneN ? incidentFaceTangent(fr.sheetPlaneN, fr.h) : null) ?? {
+                x: -fr.h.x,
+                y: -fr.h.y,
+                z: 0,
+            };
+        return {
+            R: fr.R,
+            B: fr.B,
+            h: fr.h,
+            tR,
+            u: fr.u,
+            sideSign: fr.sideSign ?? 1,
+            planOutMm: 2,
+            heightMm: fr.heightMm,
+        };
+    });
+    const solves = applySplineRing(inputs);
+    const steep = solves
+        .map((s, i) => ({
+            i,
+            u: Number(frames[i]!.u.toFixed(4)),
+            tRAngleDeg: Number(s.tRAngleDeg.toFixed(3)),
+            o: Number(s.o.toFixed(4)),
+        }))
+        .filter((_, i) => solves[i]!.steep);
+    if (steep.length) console.log("[RND-STEEP]", JSON.stringify(steep));
+    const polyN = solves.filter((s) => s.fallbackStraight).length;
+    console.log("[RND-POLY]", JSON.stringify({ n: polyN, nS: frames.length, steep: steep.length }));
+    for (let i = 0; i < frames.length; i++) {
+        const fr = frames[i]!;
+        const sol = solves[i]!;
+        const straight = xyz[i]!;
+        const n = straight.length;
+        const w = style === "hybrid" ? hybridWeightAt(fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250) : 1;
+        let pts: XYZ[];
+        if (sol.fallbackStraight || w < 1e-6) {
+            pts = straight.map((p) => ({ ...p }));
+        } else {
+            const ts = splineTurningTValues(sol.poly, n);
+            pts = sampleSplineAtT(sol.poly, ts);
+            if (w < 1 - 1e-6) pts = blendColumns(straight, pts, w);
+        }
+        pts[0] = { ...fr.R };
+        pts[pts.length - 1] = { ...fr.B };
+        xyz[i] = pts;
+        fr.g1EDeg = sol.g1RDeg;
+        fr.g1FDeg = sol.seamBDeg;
+        fr.midFlagged = sol.infl;
+        fr.midPeakHFrac = sol.peakZFrac;
+        fr.midBulgeHFrac = sol.sagFrac;
+        fr.midBeta = splineBetaAt(fr.u) * w;
+        fr.midChordOffMm = sol.sagitta;
+        fr.midChordMm = Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y, fr.B.z - fr.R.z);
+        fr.midPlanOffMm = sol.planOffset;
+        fr.midLimit = sol.steep ? "steep" : sol.fallbackStraight ? "poly" : "ok";
+        fr.midWeight = w;
+        fr.splineO = sol.o;
+        fr.splineZy = sol.zy;
+        fr.splineA = sol.a;
+        fr.splineSteep = sol.steep;
+        fr.splineTRAngleDeg = sol.tRAngleDeg;
+        fr.splineInflCount = sol.inflCount;
+        fr.splineFallback = sol.fallbackStraight;
+    }
+}
+
 /**
  * Sweep+rule columns: top round in span(wOut, nTop), fillet in span(nB, z),
  * ruled E→F by station index. R and B never move.
@@ -4871,8 +4959,10 @@ export function buildBezierColumns(
     enforceAbsRadiusRate(frames, movedAt);
     smoothFRing(frames);
     lockFilletSteal(frames, nFilStar);
-    nWall = prepareStyledMid(frames, nWall, nRoundStar, nFilStar, nLineStar);
-    nLineStar = frames[0]?.nLineFix || nLineStar;
+    if (style.style === "straight") {
+        nWall = prepareStyledMid(frames, nWall, nRoundStar, nFilStar, nLineStar);
+        nLineStar = frames[0]?.nLineFix || nLineStar;
+    }
     const xyz: PolyPoint[][] = [];
     const implied: number[] = [];
     let maxOff = 0;
@@ -4942,6 +5032,7 @@ export function buildBezierColumns(
     if (bad.length) {
         throw new Error(`[S1-COL] off-plane\n${JSON.stringify({ n: bad.length, sample: bad.slice(0, 8) })}`);
     }
+    applySplineWalls(xyz, frames);
     const quality = columnProfileQuality(xyz, frames);
     quality.nRoundSetter = piece.setter;
     quality.nRoundSetterU = piece.setterU;

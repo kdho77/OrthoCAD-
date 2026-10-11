@@ -15,25 +15,19 @@ import {
     RING_TURNING_MAX_DEG,
     reconstructionManifold,
     reconstructProceduralWalls,
-    WALL_BULGE_H_HI,
-    WALL_BULGE_H_LO,
-    WALL_BULGE_H_MIN_MM,
-    WALL_CHORD_OFF_H_MIN_MM,
-    WALL_CHORD_OFF_MEDIAN_FRAC,
-    WALL_END_RATIO_HI,
-    WALL_END_RATIO_LO,
-    WALL_KAPPA_F_MAX,
+    SPLINE_G1_R_MAX_DEG,
+    SPLINE_H_MIN_MM,
+    SPLINE_PEAK_GATE_HI,
+    SPLINE_PEAK_GATE_LO,
+    SPLINE_PLAN_OUT_MM,
+    SPLINE_SAG_HI,
+    SPLINE_SAG_LO,
+    SPLINE_SEAM_B_MAX_DEG,
     WALL_MID_DIHEDRAL_MAX_DEG,
     WALL_MID_TURN_MAX_DEG,
-    WALL_PEAK_H_HI,
-    WALL_PEAK_H_LO,
     WALL_PLAN_ANGLE_REPORT_DEG,
-    WALL_SSTAR_HI,
-    WALL_SSTAR_LO,
     WALL_STYLE_ACROSS_P99_BLOCK_DEG,
     WALL_STYLE_ACROSS_P100_BLOCK_DEG,
-    WALL_STYLE_G1_MAX_DEG,
-    WALL_STYLE_G1_OUT_MAX_DEG,
 } from "@/lib/geometry/procedural-wall";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
@@ -115,6 +109,14 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             midBulgeHFrac?: number;
             midBeta?: number;
             sideSign?: 1 | -1;
+            o?: number;
+            zy?: number;
+            a?: number;
+            steep?: boolean;
+            tRAngleDeg?: number;
+            inflCount?: number;
+            fallbackStraight?: boolean;
+            midPlanOffMm?: number;
         }>;
         medialYSign?: 1 | -1;
         footLengthMm?: number;
@@ -125,9 +127,10 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
     };
     const q = ud.columnQuality ?? {};
     const misses: string[] = [];
-    const g1Cap = style === "straight" ? G1_MAX_DEG : WALL_STYLE_G1_MAX_DEG;
-    if ((q.maxG1EDeg ?? 0) > g1Cap + 1e-6) misses.push(`G1-E ${q.maxG1EDeg?.toFixed(2)}>${g1Cap}`);
-    if ((q.maxG1FDeg ?? 0) > g1Cap + 1e-6) misses.push(`G1-F ${q.maxG1FDeg?.toFixed(2)}>${g1Cap}`);
+    const g1ECap = style === "straight" ? G1_MAX_DEG : SPLINE_G1_R_MAX_DEG;
+    const g1FCap = style === "straight" ? G1_MAX_DEG : SPLINE_SEAM_B_MAX_DEG;
+    if ((q.maxG1EDeg ?? 0) > g1ECap + 1e-6) misses.push(`G1-R ${q.maxG1EDeg?.toFixed(2)}>${g1ECap}`);
+    if ((q.maxG1FDeg ?? 0) > g1FCap + 1e-6) misses.push(`seam-B ${q.maxG1FDeg?.toFixed(2)}>${g1FCap}`);
     const acrossP99 =
         style === "straight" ? (q.maxAcrossP99Deg ?? 0) : (q.maxMidAcrossP99Deg ?? q.maxAcrossP99Deg ?? 0);
     const acrossP99Cap = style === "straight" ? ACROSS_STATION_P99_MAX_DEG : WALL_STYLE_ACROSS_P99_BLOCK_DEG;
@@ -175,102 +178,52 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
     if (style !== "straight" && frames.length) {
         const infl = frames.filter((f) => f.midFlagged);
         if (infl.length) misses.push(`[RND-INFL] ${infl.length}`);
-        const styled = frames.filter((f) => (f.midBeta ?? 0) > 1e-4);
-        const stars = styled.map((f) => f.midSStar ?? 0).filter((v) => Number.isFinite(v));
-        if (stars.length) {
-            const p10 = pct(stars, 0.1);
-            const p90 = pct(stars, 0.9);
-            if (p10 + 1e-9 < WALL_SSTAR_LO || p90 - 1e-9 > WALL_SSTAR_HI) {
-                misses.push(
-                    `s* p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)} not in ${WALL_SSTAR_LO}-${WALL_SSTAR_HI}`,
-                );
-            }
+        const poly = frames.filter((f) => f.fallbackStraight);
+        if (poly.length) misses.push(`[RND-POLY] ${poly.length}`);
+        const steep = frames.filter((f) => f.steep);
+        if (steep.length) {
+            console.log(
+                "[RND-STEEP]",
+                JSON.stringify(
+                    steep.map((f) => ({
+                        u: Number(f.u.toFixed(4)),
+                        tRAngleDeg: Number((f.tRAngleDeg ?? 0).toFixed(3)),
+                        o: Number((f.o ?? 0).toFixed(4)),
+                    })),
+                ),
+            );
         }
-        const kappaHits = styled.filter((f) => {
-            const df = Math.abs((f.midKappaF ?? 0) - (f.midKappaFil ?? 0));
-            return df > WALL_KAPPA_F_MAX + 1e-9;
-        });
-        if (kappaHits.length) {
-            misses.push(`kappaF ${kappaHits.length} |Δκ|>${WALL_KAPPA_F_MAX}`);
-        }
-        const ratios = styled.map((f) => f.midEndRatio ?? 1).filter((v) => Number.isFinite(v) && v < 1e6);
-        if (ratios.length) {
-            const p10 = pct(ratios, 0.1);
-            const p90 = pct(ratios, 0.9);
-            if (p10 + 1e-9 < WALL_END_RATIO_LO || p90 - 1e-9 > WALL_END_RATIO_HI) {
-                misses.push(
-                    `tE/tF ${p10.toFixed(2)}-${p90.toFixed(2)} not in ${WALL_END_RATIO_LO}-${WALL_END_RATIO_HI}`,
-                );
-            }
-        }
-        const tall = styled.filter((f) => (f.heightMm ?? 0) >= WALL_BULGE_H_MIN_MM);
-        const bulgeH = tall.map((f) => f.midBulgeHFrac ?? 0);
+        const styled = frames.filter((f) => (f.midBeta ?? 0) > 1e-4 && !f.fallbackStraight);
+        const tall = styled.filter((f) => (f.heightMm ?? 0) >= SPLINE_H_MIN_MM);
+        const sagH = tall.map((f) => f.midBulgeHFrac ?? 0);
         const peakH = tall.map((f) => f.midPeakHFrac ?? 0);
-        if (bulgeH.length) {
-            const p10 = pct(bulgeH, 0.1);
-            const p90 = pct(bulgeH, 0.9);
-            if (p10 + 1e-9 < WALL_BULGE_H_LO || p90 - 1e-9 > WALL_BULGE_H_HI) {
-                misses.push(
-                    `bulgeH p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)} not in ${WALL_BULGE_H_LO}-${WALL_BULGE_H_HI}`,
-                );
+        if (sagH.length) {
+            const p10 = pct(sagH, 0.1);
+            const p90 = pct(sagH, 0.9);
+            if (p10 + 1e-9 < SPLINE_SAG_LO || p90 - 1e-9 > SPLINE_SAG_HI) {
+                misses.push(`sag p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)}`);
             }
         }
         if (peakH.length) {
             const p10 = pct(peakH, 0.1);
             const p90 = pct(peakH, 0.9);
-            if (p10 + 1e-9 < WALL_PEAK_H_LO || p90 - 1e-9 > WALL_PEAK_H_HI) {
-                misses.push(
-                    `peakH p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)} not in ${WALL_PEAK_H_LO}-${WALL_PEAK_H_HI}`,
-                );
+            if (p10 + 1e-9 < SPLINE_PEAK_GATE_LO || p90 - 1e-9 > SPLINE_PEAK_GATE_HI) {
+                misses.push(`peak p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)}`);
             }
         }
-        const latMid = tall.filter((f) => (f.sideSign ?? 1) < 0 && (f.u ?? 0) >= 0.45 && (f.u ?? 0) <= 0.75);
-        if (latMid.length) {
-            const bh = latMid.map((f) => f.midBulgeHFrac ?? 0);
-            const ph = latMid.map((f) => f.midPeakHFrac ?? 0);
-            const b10 = pct(bh, 0.1);
-            const b90 = pct(bh, 0.9);
-            const p10 = pct(ph, 0.1);
-            const p90 = pct(ph, 0.9);
-            if (b10 + 1e-9 < WALL_BULGE_H_LO || b90 - 1e-9 > WALL_BULGE_H_HI) {
-                misses.push(`lat-mid bulgeH ${b10.toFixed(3)}-${b90.toFixed(3)}`);
-            }
-            if (p10 + 1e-9 < WALL_PEAK_H_LO || p90 - 1e-9 > WALL_PEAK_H_HI) {
-                misses.push(`lat-mid peakH ${p10.toFixed(3)}-${p90.toFixed(3)}`);
-            }
-        } else if (style === "round") {
-            misses.push("lat-mid H>=6 missing");
+        const insetHits = frames.filter((f) => (f.midPlanOffMm ?? 0) < -1e-6);
+        if (insetHits.length) misses.push(`inset ${insetHits.length}`);
+        const planHits = frames.filter((f) => (f.midPlanOffMm ?? 0) > SPLINE_PLAN_OUT_MM + 1e-6);
+        if (planHits.length) {
+            misses.push(`plan ${planHits.length} >${SPLINE_PLAN_OUT_MM}`);
         }
-        const g1Hits = frames
-            .map((f, i) => ({
-                i,
-                u: f.u,
-                e: f.g1EDeg ?? 0,
-                f: f.g1FDeg ?? 0,
-                flagged: !!f.midFlagged,
-            }))
-            .filter((s) => s.e > WALL_STYLE_G1_OUT_MAX_DEG + 1e-6 || s.f > WALL_STYLE_G1_OUT_MAX_DEG + 1e-6);
+        const g1Hits = frames.filter((f) => (f.g1EDeg ?? 0) > SPLINE_G1_R_MAX_DEG + 1e-6);
         if (g1Hits.length) {
-            misses.push(
-                `g1Out ${g1Hits.length} stn ${g1Hits
-                    .slice(0, 8)
-                    .map((s) => `${s.i}@${s.u.toFixed(3)} e=${s.e.toFixed(2)} f=${s.f.toFixed(2)}`)
-                    .join(",")}`,
-            );
+            misses.push(`G1-R ${g1Hits.length} >${SPLINE_G1_R_MAX_DEG}`);
         }
-    }
-    if (style === "round" && frames.length) {
-        const tall = frames.filter((f) => (f.heightMm ?? 0) >= WALL_CHORD_OFF_H_MIN_MM);
-        const ratios = tall.map((f) => {
-            const d = Math.max(f.midChordMm ?? f.lineLengthMm ?? 0, 1e-6);
-            return (f.midChordOffMm ?? 0) / d;
-        });
-        if (ratios.length) {
-            const sorted = [...ratios].sort((a, b) => a - b);
-            const med = sorted[Math.floor(sorted.length / 2)] ?? 0;
-            if (med + 1e-9 < WALL_CHORD_OFF_MEDIAN_FRAC) {
-                misses.push(`chordOff-med ${med.toFixed(3)}d<${WALL_CHORD_OFF_MEDIAN_FRAC}d`);
-            }
+        const seamHits = frames.filter((f) => (f.g1FDeg ?? 0) > SPLINE_SEAM_B_MAX_DEG + 1e-6);
+        if (seamHits.length) {
+            misses.push(`seam-B ${seamHits.length} >${SPLINE_SEAM_B_MAX_DEG}`);
         }
     }
     if (style === "hybrid" && frames.length) {

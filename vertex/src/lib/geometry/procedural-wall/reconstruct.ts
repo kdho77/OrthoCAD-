@@ -1306,6 +1306,13 @@ export function reconstructProceduralWalls(
             midPeakHFrac: f.midPeakHFrac ?? 0,
             midBulgeHFrac: f.midBulgeHFrac ?? 0,
             sideSign: f.sideSign ?? 1,
+            o: f.splineO ?? 0,
+            zy: f.splineZy ?? 0,
+            a: f.splineA ?? 0,
+            steep: f.splineSteep ?? false,
+            tRAngleDeg: f.splineTRAngleDeg ?? 0,
+            inflCount: f.splineInflCount ?? 0,
+            fallbackStraight: f.splineFallback ?? false,
         })),
         t0Log: grid.frames.map((f) => ({
             u: Number(f.u.toFixed(4)),

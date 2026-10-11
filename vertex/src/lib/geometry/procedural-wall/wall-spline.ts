@@ -18,11 +18,15 @@ export interface XYZ {
 export const SPLINE_DEGREE = 3;
 export const SPLINE_KNOTS = [0, 0, 0, 0, 1 / 3, 2 / 3, 1, 1, 1, 1];
 export const SPLINE_A_FRAC = 0.25;
-export const SPLINE_C_FRAC = 0.25;
+export const SPLINE_P1_O_FRAC = 0.5;
+export const SPLINE_P1_Z_FRAC = 0.9;
 export const SPLINE_BETA_HEEL = 0.15;
 export const SPLINE_BETA_ARCH = 0.2;
-export const SPLINE_ASYM_LO = -0.5;
-export const SPLINE_ASYM_HI = 0.5;
+export const SPLINE_ZY_LO = 0.2;
+export const SPLINE_ZY_HI = 0.6;
+export const SPLINE_ZX_MAX = 0.9;
+export const SPLINE_ZX_GAP = 0.4;
+export const SPLINE_O_FLOOR_FRAC = 0.08;
 export const SPLINE_PEAK_LO = 0.45;
 export const SPLINE_PEAK_HI = 0.55;
 export const SPLINE_PEAK_GATE_LO = 0.4;
@@ -53,13 +57,16 @@ export interface SplineStationInput {
     sideSign: 1 | -1;
     planOutMm?: number;
     heightMm?: number;
+    /** Override sag target (mm). Production uses β k(H) H. */
+    targetSagMm?: number;
 }
 
 export interface SplineSolve {
     pts: XYZ[];
     poly: XYZ[];
-    gamma: number;
-    asym: number;
+    o: number;
+    zy: number;
+    zx: number;
     a: number;
     c: number;
     H: number;
@@ -70,10 +77,14 @@ export interface SplineSolve {
     g1RDeg: number;
     seamBDeg: number;
     infl: boolean;
+    inflCount: number;
     convex: boolean;
     insetMin: number;
     planOffset: number;
     maxTurnDeg: number;
+    tRAngleDeg: number;
+    oMax: number;
+    steep: boolean;
     fallbackStraight: boolean;
 }
 
@@ -81,8 +92,9 @@ export interface SplineGatePrint {
     u: number;
     side: 1 | -1;
     H: number;
-    gamma: number;
-    asym: number;
+    o: number;
+    zy: number;
+    zx: number;
     a: number;
     sagitta: number;
     sagFrac: number;
@@ -90,10 +102,13 @@ export interface SplineGatePrint {
     g1RDeg: number;
     seamBDeg: number;
     infl: number;
+    inflCount: number;
     convex: boolean;
     insetMin: number;
     planOffset: number;
     maxTurnDeg: number;
+    tRAngleDeg: number;
+    steep: boolean;
     fallbackStraight: boolean;
     pass: boolean;
     misses: string[];
@@ -207,28 +222,69 @@ function chordFrame(H: number, Ls: number): { C: Sz; n: Sz; tUp: Sz } {
     return { C, n, tUp };
 }
 
+export function splineZx(zy: number): number {
+    return Math.min(SPLINE_ZX_MAX, zy + SPLINE_ZX_GAP);
+}
+
+/** Unit over-edge tR in the column (s, z) plane. */
+export function tRInSz(tR: XYZ, h: { x: number; y: number }): Sz {
+    const tOver = overEdgeTangent(tR, h);
+    const s = tOver.x * h.x + tOver.y * h.y;
+    const z = tOver.z;
+    const l = hypot2(s, z) || 1;
+    return { s: s / l, z: z / l };
+}
+
+/** tR angle below horizontal (deg). tan = |tR.z| / |tR.s|. */
+export function tRAngleBelowHorizontalDeg(tSz: Sz): number {
+    return (Math.atan2(Math.abs(tSz.z), Math.abs(tSz.s)) * 180) / Math.PI;
+}
+
+export function splineA(o: number, zx: number, H: number, tSz: Sz): number {
+    let a = SPLINE_A_FRAC * H;
+    if (Math.abs(tSz.s) > 1e-14) a = Math.min(a, (SPLINE_P1_O_FRAC * o) / Math.abs(tSz.s));
+    if (Math.abs(tSz.z) > 1e-14) a = Math.min(a, (SPLINE_P1_Z_FRAC * (1 - zx) * H) / Math.abs(tSz.z));
+    return Math.max(0, a);
+}
+
+export function splineC(Ls: number, o: number): number {
+    return 0.5 * (Ls + o);
+}
+
+export function splineOMax(zx: number, H: number, tSz: Sz, planOut: number): number {
+    const tanAng = Math.abs(tSz.s) < 1e-14 ? Number.POSITIVE_INFINITY : Math.abs(tSz.z) / Math.abs(tSz.s);
+    const geom =
+        Number.isFinite(tanAng) && tanAng > 1e-14 ? ((1 - zx) * H) / tanAng : Number.POSITIVE_INFINITY;
+    return Math.min(planOut, geom);
+}
+
+/**
+ * Corner-cut box in (s, z): R=(0,H), B=(Ls,0), outward −s.
+ * P0=R, P1=R+a tR, P2=X=(-o,zx H), P3=Y=(-o,zy H), P4=Q=(Ls-c,0), P5=B.
+ * a and c follow the formulas unless `aOverride` is set (ring-smoothed a).
+ */
 export function buildSplinePolygon(
     R: XYZ,
     B: XYZ,
     h: { x: number; y: number },
     tR: XYZ,
-    a: number,
-    gamma: number,
-    asym: number,
+    o: number,
+    zy: number,
+    aOverride?: number,
 ): XYZ[] {
     const fr = stationSzFrame(R, B, h);
     const tOver = overEdgeTangent(tR, fr.h);
+    const tSz = tRInSz(tR, fr.h);
+    const zx = splineZx(zy);
+    const a = aOverride ?? splineA(o, zx, fr.H, tSz);
+    const c = splineC(fr.Ls, o);
     const P0 = { ...R };
     const P1 = add(R, tOver, a);
-    const P4 = { x: B.x - fr.h.x * SPLINE_C_FRAC * fr.H, y: B.y - fr.h.y * SPLINE_C_FRAC * fr.H, z: B.z };
+    const P2 = fromSz({ s: -o, z: zx * fr.H }, fr.origin, fr.h);
+    const P3 = fromSz({ s: -o, z: zy * fr.H }, fr.origin, fr.h);
+    const P4 = fromSz({ s: fr.Ls - c, z: 0 }, fr.origin, fr.h);
     const P5 = { ...B };
-    const { C, n, tUp } = chordFrame(fr.H, fr.Ls);
-    const up2 = (fr.H / 6) * (1 + asym);
-    const up3 = (fr.H / 6) * (1 - asym);
-    const p2 = { s: C.s + gamma * n.s + up2 * tUp.s, z: C.z + gamma * n.z + up2 * tUp.z };
-    const p3 = { s: C.s + gamma * n.s - up3 * tUp.s, z: C.z + gamma * n.z - up3 * tUp.z };
-    const origin = fr.origin;
-    return [P0, P1, fromSz(p2, origin, fr.h), fromSz(p3, origin, fr.h), P4, P5];
+    return [P0, P1, P2, P3, P4, P5];
 }
 
 /** Clamped cubic B-spline. Knots [0,0,0,0, 1/3, 2/3, 1,1,1,1]. */
@@ -329,7 +385,7 @@ export function polygonConvex(poly: XYZ[], h: { x: number; y: number }): boolean
     return sign !== 0 || sz.length < 3;
 }
 
-export function polylineInfl(samples: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: number }): boolean {
+export function polylineInflCount(samples: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: number }): number {
     const n = chordOutwardNormal(R, B, h);
     const ks: number[] = [];
     for (let i = 1; i < samples.length - 1; i++) {
@@ -348,13 +404,21 @@ export function polylineInfl(samples: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: 
     const maxAbs = Math.max(...ks.map((k) => Math.abs(k)), 0);
     const eps = Math.max(1e-10, 0.02 * maxAbs);
     let sign = 0;
+    let flips = 0;
     for (const k of ks) {
         if (Math.abs(k) < eps) continue;
         const s = k > 0 ? 1 : -1;
         if (sign === 0) sign = s;
-        else if (s !== sign) return true;
+        else if (s !== sign) {
+            flips++;
+            sign = s;
+        }
     }
-    return false;
+    return flips;
+}
+
+export function polylineInfl(samples: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: number }): boolean {
+    return polylineInflCount(samples, R, B, h) > 0;
 }
 
 export function planBounds(
@@ -418,11 +482,13 @@ function measureOf(poly: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: number }, tR:
     const dense = sampleSplineDense(poly);
     const sag = splineSagitta(dense, R, B, h);
     const plan = planBounds(dense, R, B, h);
+    const inflCount = polylineInflCount(dense, R, B, h);
     return {
         dense,
         ...sag,
         ...plan,
-        infl: polylineInfl(dense, R, B, h),
+        inflCount,
+        infl: inflCount > 0,
         convex: polygonConvex(poly, h),
         g1RDeg: g1AtR(poly, tR, h),
         seamBDeg: seamBDeg(dense),
@@ -430,128 +496,203 @@ function measureOf(poly: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: number }, tR:
     };
 }
 
+function finishSolve(
+    input: SplineStationInput,
+    poly: XYZ[],
+    o: number,
+    zy: number,
+    a: number,
+    oMax: number,
+    tRAngleDeg: number,
+    steep: boolean,
+    fallback: boolean,
+): SplineSolve {
+    const { R, B, tR } = input;
+    const fr = stationSzFrame(R, B, input.h);
+    const H = input.heightMm ?? fr.H;
+    const zx = splineZx(zy);
+    const c = splineC(fr.Ls, o);
+    const m = measureOf(poly, R, B, fr.h, tR);
+    if (fallback) {
+        return {
+            pts: sampleStraight(R, B, 16),
+            poly: [R, lerp(R, B, 0.2), lerp(R, B, 0.4), lerp(R, B, 0.6), lerp(R, B, 0.8), B],
+            o: 0,
+            zy,
+            zx,
+            a: 0,
+            c,
+            H,
+            Ls: fr.Ls,
+            sagitta: 0,
+            sagFrac: 0,
+            peakZFrac: 0.5,
+            g1RDeg: 0,
+            seamBDeg: 0,
+            infl: false,
+            inflCount: 0,
+            convex: true,
+            insetMin: 0,
+            planOffset: 0,
+            maxTurnDeg: 0,
+            tRAngleDeg,
+            oMax,
+            steep,
+            fallbackStraight: true,
+        };
+    }
+    return {
+        pts: m.dense,
+        poly,
+        o,
+        zy,
+        zx,
+        a,
+        c,
+        H,
+        Ls: fr.Ls,
+        sagitta: m.sag,
+        sagFrac: m.sag / H,
+        peakZFrac: m.peakZFrac,
+        g1RDeg: m.g1RDeg,
+        seamBDeg: m.seamBDeg,
+        infl: m.infl,
+        inflCount: m.inflCount,
+        convex: m.convex,
+        insetMin: m.insetMin,
+        planOffset: m.offsetMax,
+        maxTurnDeg: m.maxTurnDeg,
+        tRAngleDeg,
+        oMax,
+        steep,
+        fallbackStraight: false,
+    };
+}
+
 /**
- * Per-station solve: gamma (sagitta), then asym (peak z), then plan bounds,
- * then convexity (reduce a, then gamma). 30 bisections each.
+ * Nested monotone bisections on the corner-cut box.
+ * Outer zy ∈ [0.2, 0.6] for peak vs chord RB ∈ [0.45, 0.55] H.
+ * Inner o ∈ [0, o_max] for sag = β k(H) H. Convexity only lowers o.
  */
 export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const { R, B, tR } = input;
     const planOut = input.planOutMm ?? SPLINE_PLAN_OUT_MM;
     const fr = stationSzFrame(R, B, input.h);
     const H = input.heightMm ?? fr.H;
-    const a0 = SPLINE_A_FRAC * H;
-    const targetSag = splineBetaAt(input.u) * splineHeightScale(H) * H;
-    const targetPeak = 0.5;
+    const tSz = tRInSz(tR, fr.h);
+    const tRAngleDeg = tRAngleBelowHorizontalDeg(tSz);
+    const targetSag = input.targetSagMm ?? splineBetaAt(input.u) * splineHeightScale(H) * H;
+    const targetPeak = SPLINE_PEAK_LO;
 
-    const tryAt = (a: number, gamma: number, asym: number) => {
-        const poly = buildSplinePolygon(R, B, fr.h, tR, a, gamma, asym);
+    const tryAt = (o: number, zy: number, aOverride?: number) => {
+        const poly = buildSplinePolygon(R, B, fr.h, tR, o, zy, aOverride);
         return { poly, m: measureOf(poly, R, B, fr.h, tR) };
     };
 
-    let a = a0;
-    let gamma = Math.max(0, targetSag);
-    let asym = 0;
-    const gMax = Math.max(targetSag * 4, H);
-
-    const bisectGamma = (lo: number, hi: number, want: number, asymUse: number, aUse: number): number => {
-        let l = lo;
-        let h = hi;
-        let best = l;
-        for (let i = 0; i < SPLINE_BISECT; i++) {
-            const mid = 0.5 * (l + h);
-            const { m } = tryAt(aUse, mid, asymUse);
-            best = mid;
-            if (m.sag < want) l = mid;
-            else h = mid;
-        }
-        return best;
-    };
-
-    gamma = bisectGamma(0, gMax, targetSag, asym, a);
-
-    const bisectAsym = (gammaUse: number, aUse: number): number => {
-        let lo = SPLINE_ASYM_LO;
-        let hi = SPLINE_ASYM_HI;
+    const bisectO = (zy: number): { o: number; oMax: number; steep: boolean } => {
+        const zx = splineZx(zy);
+        const oMax = Math.max(0, splineOMax(zx, H, tSz, planOut));
+        const oFloor = H >= SPLINE_H_MIN_MM - 1e-9 ? Math.min(SPLINE_O_FLOOR_FRAC * H, oMax) : 0;
+        let lo = 0;
+        let hi = oMax;
         let best = 0;
         for (let i = 0; i < SPLINE_BISECT; i++) {
             const mid = 0.5 * (lo + hi);
-            const { m } = tryAt(aUse, gammaUse, mid);
+            const { m } = tryAt(mid, zy);
             best = mid;
-            if (m.peakZFrac < targetPeak) lo = mid;
+            if (m.sag < targetSag) lo = mid;
             else hi = mid;
         }
-        return best;
+        let o = Math.max(best, oFloor);
+        if (o > oMax) o = oMax;
+        const { m } = tryAt(o, zy);
+        const steep = m.sag + 1e-4 < targetSag && o >= oMax - 1e-9;
+        return { o, oMax, steep };
     };
-    asym = bisectAsym(gamma, a);
-    gamma = bisectGamma(0, gMax, targetSag, asym, a);
-    asym = bisectAsym(gamma, a);
 
-    const boundsOk = (g: number, aUse: number, as: number): boolean => {
-        const { m } = tryAt(aUse, g, as);
-        return m.insetMin >= -1e-6 && m.offsetMax <= planOut + 1e-6;
-    };
-    if (!boundsOk(gamma, a, asym)) {
-        let lo = 0;
-        let hi = gamma;
-        for (let i = 0; i < SPLINE_BISECT; i++) {
-            const mid = 0.5 * (lo + hi);
-            if (boundsOk(mid, a, asym)) lo = mid;
-            else hi = mid;
-        }
-        gamma = lo;
+    let zyLo = SPLINE_ZY_LO;
+    let zyHi = SPLINE_ZY_HI;
+    let zy = zyLo;
+    let inner = bisectO(zy);
+    for (let i = 0; i < SPLINE_BISECT; i++) {
+        zy = 0.5 * (zyLo + zyHi);
+        inner = bisectO(zy);
+        const { m } = tryAt(inner.o, zy);
+        if (m.peakZFrac < targetPeak) zyLo = zy;
+        else zyHi = zy;
     }
+    zy = 0.5 * (zyLo + zyHi);
+    inner = bisectO(zy);
 
-    const convexOk = (aUse: number, g: number, as: number): boolean => tryAt(aUse, g, as).m.convex;
-    if (!convexOk(a, gamma, asym)) {
-        let lo = 0.05 * a0;
-        let hi = a;
-        if (convexOk(lo, gamma, asym)) {
+    let { o, oMax, steep } = inner;
+    if (!tryAt(o, zy).m.convex) {
+        let lo = 0;
+        let hi = o;
+        if (tryAt(0, zy).m.convex) {
             for (let i = 0; i < SPLINE_BISECT; i++) {
                 const mid = 0.5 * (lo + hi);
-                if (convexOk(mid, gamma, asym)) lo = mid;
+                if (tryAt(mid, zy).m.convex) lo = mid;
                 else hi = mid;
             }
-            a = lo;
+            o = lo;
         } else {
-            a = lo;
-            let glo = 0;
-            let ghi = gamma;
-            if (convexOk(a, 0, asym)) {
-                for (let i = 0; i < SPLINE_BISECT; i++) {
-                    const mid = 0.5 * (glo + ghi);
-                    if (convexOk(a, mid, asym)) glo = mid;
-                    else ghi = mid;
-                }
-                gamma = glo;
-            } else {
-                gamma = 0;
-            }
+            o = 0;
         }
     }
 
-    const { poly, m } = tryAt(a, gamma, asym);
-    const fallback = gamma <= 1e-9 && !m.convex;
-    return {
-        pts: fallback ? sampleStraight(R, B, 16) : m.dense,
-        poly: fallback ? [R, lerp(R, B, 0.2), lerp(R, B, 0.4), lerp(R, B, 0.6), lerp(R, B, 0.8), B] : poly,
-        gamma: fallback ? 0 : gamma,
-        asym: fallback ? 0 : asym,
-        a: fallback ? 0 : a,
-        c: SPLINE_C_FRAC * H,
-        H,
-        Ls: fr.Ls,
-        sagitta: fallback ? 0 : m.sag,
-        sagFrac: fallback ? 0 : m.sag / H,
-        peakZFrac: fallback ? 0.5 : m.peakZFrac,
-        g1RDeg: fallback ? 0 : m.g1RDeg,
-        seamBDeg: fallback ? 0 : m.seamBDeg,
-        infl: fallback ? false : m.infl,
-        convex: fallback ? true : m.convex,
-        insetMin: fallback ? 0 : m.insetMin,
-        planOffset: fallback ? 0 : m.offsetMax,
-        maxTurnDeg: fallback ? 0 : m.maxTurnDeg,
-        fallbackStraight: fallback,
-    };
+    const zx = splineZx(zy);
+    const a = splineA(o, zx, H, tSz);
+    const { poly, m } = tryAt(o, zy);
+    if (steep) {
+        console.log(
+            "[RND-STEEP]",
+            JSON.stringify({
+                u: Number(input.u.toFixed(4)),
+                tRAngleDeg: Number(tRAngleDeg.toFixed(3)),
+                o: Number(o.toFixed(4)),
+                oMax: Number(oMax.toFixed(4)),
+                sag: Number(m.sag.toFixed(4)),
+                targetSag: Number(targetSag.toFixed(4)),
+            }),
+        );
+    }
+    const fallback = o <= 1e-9 && !m.convex;
+    return finishSolve(input, poly, o, zy, a, oMax, tRAngleDeg, steep, fallback);
+}
+
+/** Rebuild a station from ring-smoothed o, zy, a. c stays on its formula. */
+export function rebuildSplineStation(
+    input: SplineStationInput,
+    o: number,
+    zy: number,
+    a: number,
+): SplineSolve {
+    const { R, B, tR } = input;
+    const planOut = input.planOutMm ?? SPLINE_PLAN_OUT_MM;
+    const fr = stationSzFrame(R, B, input.h);
+    const H = input.heightMm ?? fr.H;
+    const tSz = tRInSz(tR, fr.h);
+    const tRAngleDeg = tRAngleBelowHorizontalDeg(tSz);
+    const zx = splineZx(zy);
+    const oMax = splineOMax(zx, H, tSz, planOut);
+    const poly = buildSplinePolygon(R, B, fr.h, tR, o, zy, a);
+    const m = measureOf(poly, R, B, fr.h, tR);
+    const targetSag = splineBetaAt(input.u) * splineHeightScale(H) * H;
+    const steep = (m.sag + 1e-4 < targetSag && o >= oMax - 1e-9) || m.infl;
+    if (steep) {
+        console.log(
+            "[RND-STEEP]",
+            JSON.stringify({
+                u: Number(input.u.toFixed(4)),
+                tRAngleDeg: Number(tRAngleDeg.toFixed(3)),
+                o: Number(o.toFixed(4)),
+                oMax: Number(oMax.toFixed(4)),
+                sag: Number(m.sag.toFixed(4)),
+                rebuild: true,
+            }),
+        );
+    }
+    return finishSolve(input, poly, o, zy, a, oMax, tRAngleDeg, steep, o <= 1e-9 && !m.convex);
 }
 
 export function splineTurningTValues(poly: XYZ[], n: number): number[] {
@@ -593,10 +734,15 @@ export function sampleSplineAtT(poly: XYZ[], ts: number[]): XYZ[] {
     });
 }
 
-export function periodicGaussian1d(vals: number[], arc: number[], sigma = SPLINE_SMOOTH_SIGMA_MM): number[] {
+export function periodicGaussian1d(
+    vals: number[],
+    arc: number[],
+    sigma = SPLINE_SMOOTH_SIGMA_MM,
+    periodOpt?: number,
+): number[] {
     const n = vals.length;
     if (n < 3) return vals.slice();
-    const period = arc[arc.length - 1]! || 1;
+    const period = periodOpt ?? arc[arc.length - 1] ?? 1;
     const sig = Math.max(1e-3, sigma);
     return vals.map((_, i) => {
         let s = 0;
@@ -604,7 +750,7 @@ export function periodicGaussian1d(vals: number[], arc: number[], sigma = SPLINE
         const ci = arc[i]!;
         for (let j = 0; j < n; j++) {
             let d = Math.abs(arc[j]! - ci);
-            d = Math.min(d, period - d);
+            d = Math.min(d, Math.max(period - d, 0));
             const wt = Math.exp((-0.5 * d * d) / (sig * sig));
             s += wt * vals[j]!;
             w += wt;
@@ -655,8 +801,9 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
         u,
         side,
         H: s.H,
-        gamma: s.gamma,
-        asym: s.asym,
+        o: s.o,
+        zy: s.zy,
+        zx: s.zx,
         a: s.a,
         sagitta: s.sagitta,
         sagFrac: s.sagFrac,
@@ -664,10 +811,13 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
         g1RDeg: s.g1RDeg,
         seamBDeg: s.seamBDeg,
         infl: s.infl ? 1 : 0,
+        inflCount: s.inflCount,
         convex: s.convex,
         insetMin: s.insetMin,
         planOffset: s.planOffset,
         maxTurnDeg: s.maxTurnDeg,
+        tRAngleDeg: s.tRAngleDeg,
+        steep: s.steep,
         fallbackStraight: s.fallbackStraight,
         pass: misses.length === 0,
         misses,
@@ -695,4 +845,41 @@ export function blendColumns(straight: XYZ[], round: XYZ[], w: number): XYZ[] {
 
 export function columnConvex(samples: XYZ[], h: { x: number; y: number }): boolean {
     return polygonConvex(samples, h);
+}
+
+/** Smooth o, zy, a on the closed rim (σ = 10 mm) and rebuild each station. */
+export function applySplineRing(inputs: SplineStationInput[]): SplineSolve[] {
+    const solved = inputs.map((inp) => solveSplineStation(inp));
+    const n = solved.length;
+    if (n === 0) return solved;
+    const rim: number[] = [0];
+    for (let i = 1; i < n; i++) {
+        const a = inputs[i - 1]!.R;
+        const b = inputs[i]!.R;
+        rim.push(rim[i - 1]! + Math.hypot(b.x - a.x, b.y - a.y));
+    }
+    const period =
+        (rim[n - 1] ?? 0) +
+        Math.hypot(inputs[0]!.R.x - inputs[n - 1]!.R.x, inputs[0]!.R.y - inputs[n - 1]!.R.y);
+    const oSm = periodicGaussian1d(
+        solved.map((s) => s.o),
+        rim,
+        SPLINE_SMOOTH_SIGMA_MM,
+        period,
+    );
+    const zySm = periodicGaussian1d(
+        solved.map((s) => s.zy),
+        rim,
+        SPLINE_SMOOTH_SIGMA_MM,
+        period,
+    );
+    const aSm = periodicGaussian1d(
+        solved.map((s) => s.a),
+        rim,
+        SPLINE_SMOOTH_SIGMA_MM,
+        period,
+    );
+    return inputs.map((inp, i) =>
+        rebuildSplineStation(inp, oSm[i] ?? 0, zySm[i] ?? SPLINE_ZY_LO, aSm[i] ?? 0),
+    );
 }
