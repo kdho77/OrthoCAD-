@@ -414,9 +414,11 @@ export {
 } from "./types";
 export {
     acuteVecDeg,
+    closestCubicT,
     conicRowCountByTurning,
     cubicHasInflection,
     cubicRowCountByTurning,
+    cubicRowCountByUniformT,
     cubicTurningTValues,
     g1ControlPoint,
     g1OfConic,
@@ -443,6 +445,7 @@ export {
     stationBeta,
     stationBulge,
     thetaFromSagitta,
+    uniformMidTValues,
     WALL_BETA_ARCH,
     WALL_BETA_DEFAULT,
     WALL_BETA_HEEL,

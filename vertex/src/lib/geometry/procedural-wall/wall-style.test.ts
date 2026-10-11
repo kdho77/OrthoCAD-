@@ -3,8 +3,11 @@
 
 import { describe, expect, test } from "@rstest/core";
 import {
+    closestCubicT,
     cubicHasInflection,
     cubicRowCountByTurning,
+    cubicRowCountByUniformT,
+    evalCubicHermite,
     g1OfCubic,
     hermiteControls,
     hybridBulgeAt,
@@ -19,6 +22,7 @@ import {
     stationBeta,
     stationBulge,
     thetaFromSagitta,
+    uniformMidTValues,
     WALL_BETA_ARCH,
     WALL_BETA_H_CAP,
     WALL_BETA_HEEL,
@@ -65,6 +69,27 @@ describe("wall style mid-piece", () => {
         expect(pts[3]!.z).toBeCloseTo(0, 6);
         const mid = sampleCubicUniformT(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, 2)[0]!;
         expect(mid.x).toBeGreaterThan(0);
+        expect(uniformMidTValues(4)).toEqual([0.25, 0.5, 0.75, 1]);
+        const p = evalCubicHermite(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, 0.4);
+        expect(closestCubicT(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, p)).toBeCloseTo(0.4, 3);
+        const nU = cubicRowCountByUniformT(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, tE, tF, WALL_MID_TURN_MAX_DEG);
+        const uni = [E, ...sampleCubicUniformT(ctrl.P0, ctrl.P1, ctrl.P2, ctrl.P3, nU)];
+        let maxU = 0;
+        for (let i = 1; i < uni.length - 1; i++) {
+            const a = uni[i]!;
+            const b = uni[i - 1]!;
+            const c = uni[i + 1]!;
+            const u = { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+            const v = { x: c.x - a.x, y: c.y - a.y, z: c.z - a.z };
+            const du = Math.hypot(u.x, u.y, u.z) || 1;
+            const dv = Math.hypot(v.x, v.y, v.z) || 1;
+            const ang =
+                (Math.acos(Math.max(-1, Math.min(1, (u.x * v.x + u.y * v.y + u.z * v.z) / (du * dv)))) *
+                    180) /
+                Math.PI;
+            maxU = Math.max(maxU, Math.min(ang, 180 - ang));
+        }
+        expect(maxU).toBeLessThanOrEqual(WALL_MID_TURN_MAX_DEG + 0.05);
     });
 
     test("cubic Hermite is G1 at E and F even when the tangent rays are skew", () => {
