@@ -21,6 +21,7 @@ import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
+import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
 import { cn } from "@/lib/utils";
@@ -337,7 +338,7 @@ export function Viewer3D() {
                 {designMode.mode === "base" ? (
                     <span className="flex w-fit items-center gap-1 rounded bg-violet-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         <Layers className="h-3 w-3" />
-                        Base: {designMode.baseName ?? "custom GLB"}
+                        Base: {wallModel === "procedural" ? SAMPLE_TOP_NAME : (designMode.baseName ?? "custom GLB")}
                         {modifiersActive ? " · modifiers applied" : ""}
                     </span>
                 ) : (
