@@ -3,8 +3,9 @@
 
 import { Footprints } from "lucide-react";
 import { ActiveFootSideBar } from "@/features/clinical/ActiveFootSideBar";
-import { evaluateScanStepGate } from "@/lib/clinical/clinical-step-gates";
+import { ScanImport } from "@/features/scans/ScanImport";
 import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
+import { evaluateScanStepGate } from "@/lib/clinical/clinical-step-gates";
 import { useScanStore } from "@/stores/scan-store";
 import { SIDE_LABELS } from "@/types";
 
@@ -16,11 +17,10 @@ export function ClinicalScanStepPanel() {
     return (
         <div className="space-y-3 text-xs">
             <ActiveFootSideBar />
+            <ScanImport />
             <p className="text-muted-foreground leading-relaxed">
-                Import a foot scan from the <strong className="font-medium text-foreground">Import</strong>{" "}
-                section in the left panel. Choose{" "}
-                <strong className="font-medium text-foreground">Left</strong>,{" "}
-                <strong className="font-medium text-foreground">Right</strong>, or{" "}
+                Import a foot scan below. Assign <strong className="font-medium text-foreground">Left</strong>
+                , <strong className="font-medium text-foreground">Right</strong>, or{" "}
                 <strong className="font-medium text-foreground">Pair</strong> before attaching files — scans
                 are never silently assigned to the left foot.
             </p>
@@ -39,7 +39,7 @@ export function ClinicalScanStepPanel() {
 
             {scans.length === 0 ? (
                 <p className="rounded-md border border-dashed border-border px-2 py-3 text-center text-muted-foreground">
-                    No scans attached yet — you can continue to Shape when the base is ready.
+                    No scans attached yet — you can continue to Setup when the base is ready.
                 </p>
             ) : (
                 <ul className="space-y-1">

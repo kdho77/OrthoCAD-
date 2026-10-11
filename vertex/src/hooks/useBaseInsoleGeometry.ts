@@ -34,6 +34,7 @@ import {
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import { applyShoeWidthToPoints, normalizeShoeWidth } from "@/lib/geometry/shoe-width";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
@@ -302,8 +303,19 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         const b = computeBaseBounds(sized, lookupKey);
         useBaseBoundsStore.getState().setBounds(lookupKey, b);
         const outline = extractMeshOutline(sized);
-        if (outline) useBaseOutlineStore.getState().setOutline(lookupKey, outline);
-    }, [assetId, side, layout.lengthMm, layout.widthMm, layout.usMenSize, building]);
+        if (outline) {
+            const widthId = normalizeShoeWidth(design.shoeWidth);
+            const heelW = layout.widthMm * 0.62;
+            const scaled = applyShoeWidthToPoints(outline, widthId, {
+                ballWidthMm: layout.widthMm,
+                heelWidthMm: heelW,
+                minX: b.minX,
+                lengthMm: Math.max(1e-3, b.maxX - b.minX),
+                heelOverrideMm: design.corrections[side]?.heelCupWidthMm,
+            });
+            useBaseOutlineStore.getState().setOutline(lookupKey, scaled);
+        }
+    }, [assetId, side, layout.lengthMm, layout.widthMm, layout.usMenSize, design.shoeWidth, building]);
 
     // Re-apply modifiers whenever corrections / elements / thickness change.
     // `wallModel: 'procedural'` is viewer-only (S1): loft from planform columns.
@@ -324,17 +336,26 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             const draft = useMeshEditStore.getState().getActiveDraftBottomPattern(side);
             const stored = useBottomPatternStore.getState().getPattern(side);
             const heelW = field.corrections?.heelCupWidthMm ?? 0;
-            const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}`;
+            const widthId = normalizeShoeWidth(design.shoeWidth);
+            const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}:w${widthId}`;
             const edited = draft ?? (generatedPatternKey === patternKey ? null : stored);
             if (!draft && generatedPatternKey !== patternKey) {
                 try {
-                    useBottomPatternStore
-                        .getState()
-                        .ensureGenerated(
-                            side,
-                            patternKey,
-                            buildProceduralViewerPattern(raw, design.pattern, field.corrections),
-                        );
+                    const rawPattern = buildProceduralViewerPattern(raw, design.pattern, field.corrections);
+                    let minX = Infinity;
+                    let maxX = -Infinity;
+                    for (const p of rawPattern) {
+                        minX = Math.min(minX, p.x);
+                        maxX = Math.max(maxX, p.x);
+                    }
+                    const sizedPattern = applyShoeWidthToPoints(rawPattern, widthId, {
+                        ballWidthMm: layout.widthMm,
+                        heelWidthMm: layout.widthMm * 0.62,
+                        minX,
+                        lengthMm: Math.max(1e-3, maxX - minX),
+                        heelOverrideMm: heelW,
+                    });
+                    useBottomPatternStore.getState().ensureGenerated(side, patternKey, sizedPattern);
                 } catch (e) {
                     stockDebug("procedural viewer pattern failed", {
                         side,

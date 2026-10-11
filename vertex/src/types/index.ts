@@ -261,6 +261,8 @@ export interface DesignState {
     ukSize?: number;
     /** Foot length in mm (Mondopoint-style). Used when `sizeSystem` is `"mm"`. */
     footLengthMm?: number;
+    /** Last width vs Medium. Forefoot Δ −5/0/+5/+10 mm; heel capped ±2 mm. */
+    shoeWidth?: "narrow" | "medium" | "wide" | "extra_wide";
     corrections: Corrections;
     elements: PlacedElement[];
     /** User-edited insole outline curves — persisted with the design. */

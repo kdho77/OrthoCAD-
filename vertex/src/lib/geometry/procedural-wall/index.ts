@@ -187,6 +187,7 @@ export {
     PATTERN_MIN_INSET_MM,
     PATTERN_SILHOUETTE_MM,
     PATTERN_SOURCE_SYNTHETIC,
+    PATTERN_TRACE_HAUSDORFF_MM,
     type PatternCurvatureReport,
     parseBottomPattern,
     patternCurvatureReport,
@@ -654,3 +655,9 @@ export {
     type WallStyleParams,
     wallBetaAt,
 } from "./wall-style";
+export {
+    cleanWindowsTracePx,
+    fitWindowsTraceToRim,
+    polylineHausdorffMm,
+    smoothedWindowsTraceCanonical,
+} from "./windows-trace";

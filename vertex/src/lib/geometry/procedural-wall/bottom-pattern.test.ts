@@ -1,6 +1,8 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import {
     assertCutInOnHighRimSide,
@@ -11,6 +13,7 @@ import {
     medialYSignFromTopRim,
     movedPatternHygiene,
     PATTERN_ARCH_INSET_MM,
+    PATTERN_FOREFOOT_INSET_MM,
     PATTERN_HEEL_INSET_MM,
     PATTERN_MAX_DKDS,
     parseBottomPattern,
@@ -19,6 +22,7 @@ import {
 } from "./bottom-pattern";
 import { minDistToLoopXY, pointInPoly } from "./cdt-band";
 import { hygieneBottomPattern } from "./pattern-hygiene";
+import { cleanWindowsTracePx, fitWindowsTraceToRim, smoothedWindowsTraceCanonical } from "./windows-trace";
 
 function turning(loop: Array<{ x: number; y: number }>): number {
     let sum = 0;
@@ -43,7 +47,7 @@ describe("synthetic bottom pattern", () => {
             return { x: 120 + 110 * Math.cos(a), y: 42 * Math.sin(a), z: 0 };
         });
         const bounds = { minX: 10, maxX: 230 };
-        const raw = syntheticBottomPattern(outline, bounds);
+        const raw = syntheticBottomPattern(outline, bounds, outline, undefined, { source: "analytic" });
         const rawCurv = patternCurvatureReport(raw, bounds, 1);
         expect(rawCurv.inflections).toBe(2);
         expect(rawCurv.maxAbsDkDs).toBeLessThanOrEqual(PATTERN_MAX_DKDS + 0.005);
@@ -114,7 +118,7 @@ describe("synthetic bottom pattern", () => {
         });
         const bounds = { minX: 10, maxX: 230 };
         expect(medialYSignFromTopRim(outline, bounds)).toBe(-1);
-        const raw = syntheticBottomPattern(outline, bounds, outline);
+        const raw = syntheticBottomPattern(outline, bounds, outline, undefined, { source: "analytic" });
         const pattern = hygieneBottomPattern(raw, {
             rimPlan: outline,
             requireInsideRim: true,
@@ -185,6 +189,47 @@ describe("synthetic bottom pattern", () => {
             { x: 1, y: 2, z: 0 },
             { x: 3, y: 4, z: 0 },
         ]);
+    });
+
+    test("parses the Windows GREEN_PATTERN DXF and drops the junk tail", () => {
+        const dxf = readFileSync(resolve(process.cwd(), "tests/fixtures/windows-bottom-pattern.dxf"), "utf8");
+        const raw = parseBottomPattern(dxf);
+        expect(raw.length).toBeGreaterThan(200);
+        const clean = cleanWindowsTracePx(raw);
+        expect(clean.every((p) => !(p.x < 8 && p.y < 20))).toBe(true);
+        expect(clean.length).toBeGreaterThan(200);
+        expect(raw.length).toBeGreaterThanOrEqual(clean.length);
+    });
+
+    test("Windows trace length-matches the rim and mirrors with medial sign", () => {
+        const n = 80;
+        const outline = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 120 + 110 * Math.cos(a), y: 42 * Math.sin(a), z: 0 };
+        });
+        const bounds = { minX: 10, maxX: 230 };
+        const left = fitWindowsTraceToRim(outline, bounds, 1);
+        const right = fitWindowsTraceToRim(outline, bounds, -1);
+        expect(left).toBeTruthy();
+        expect(right).toBeTruthy();
+        const span = (pts: Array<{ x: number }>) => {
+            let lo = Infinity;
+            let hi = -Infinity;
+            for (const p of pts) {
+                lo = Math.min(lo, p.x);
+                hi = Math.max(hi, p.x);
+            }
+            return { lo, hi, len: hi - lo };
+        };
+        const target = bounds.maxX - bounds.minX - PATTERN_HEEL_INSET_MM - PATTERN_FOREFOOT_INSET_MM;
+        expect(Math.abs(span(left!.smoothed).len - target)).toBeLessThan(0.35);
+        expect(span(left!.smoothed).lo).toBeGreaterThan(bounds.minX + PATTERN_HEEL_INSET_MM - 0.6);
+        expect(right!.mirrored).toBe(true);
+        expect(left!.mirrored).toBe(false);
+        const yL = left!.smoothed.reduce((s, p) => s + p.y, 0) / left!.smoothed.length;
+        const yR = right!.smoothed.reduce((s, p) => s + p.y, 0) / right!.smoothed.length;
+        expect(Math.abs(yL + yR)).toBeLessThan(2);
+        expect(smoothedWindowsTraceCanonical().length).toBeGreaterThan(80);
     });
 
     test("plan inset d(u) is unchanged when only heel width scale changes W away from u_pk", () => {

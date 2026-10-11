@@ -461,7 +461,7 @@ export function Viewer3D() {
                     icon={
                         showLeftInsole ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
                     }
-                    label="Left"
+                    label="Show left"
                 />
                 <ToggleButton
                     active={showRightInsole}
@@ -472,7 +472,7 @@ export function Viewer3D() {
                     icon={
                         showRightInsole ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
                     }
-                    label="Right"
+                    label="Show right"
                 />
                 <ToggleButton
                     active={showScans && hasScans}
@@ -480,12 +480,16 @@ export function Viewer3D() {
                     icon={showScans ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
                     label="Scan"
                 />
-                <ToggleButton
-                    active={showPerf}
-                    onClick={() => setShowPerf(!showPerf)}
-                    icon={<Activity className="h-3.5 w-3.5" />}
-                    label="FPS Monitor"
-                />
+                {typeof window !== "undefined" &&
+                (window.localStorage.getItem("chili3d:dev") === "1" ||
+                    new URLSearchParams(window.location.search).has("dev")) ? (
+                    <ToggleButton
+                        active={showPerf}
+                        onClick={() => setShowPerf(!showPerf)}
+                        icon={<Activity className="h-3.5 w-3.5" />}
+                        label="FPS Monitor"
+                    />
+                ) : null}
             </div>
 
             {/* Scan selection toolbar — rotate appears only while a scan is selected */}

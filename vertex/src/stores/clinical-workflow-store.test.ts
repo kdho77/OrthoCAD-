@@ -2,17 +2,29 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import { CLINICAL_STEPS } from "./clinical-workflow-store";
+import { CLINICAL_STEPS, useClinicalWorkflowStore } from "./clinical-workflow-store";
 
 describe("clinical workflow steps", () => {
-    test("Scan > Shape > Corrections > Elements > Hardness > Print", () => {
+    test("Scan > Setup > Base > Corrections > Elements > Print > Export", () => {
         expect(CLINICAL_STEPS.map((s) => s.id)).toEqual([
             "scan",
-            "shape",
+            "setup",
+            "base",
             "corrections",
             "elements",
-            "hardness",
             "print",
+            "export",
         ]);
+    });
+
+    test("blocked Next stays enabled and jumps to Scan", () => {
+        useClinicalWorkflowStore.setState({
+            step: "setup",
+            footSideExplicitlyChosen: false,
+            nextBlockReason: null,
+        });
+        useClinicalWorkflowStore.getState().goNext();
+        expect(useClinicalWorkflowStore.getState().step).toBe("scan");
+        expect(useClinicalWorkflowStore.getState().nextBlockReason).toMatch(/Left or Right/i);
     });
 });

@@ -8,15 +8,34 @@ import {
     scanGateBlocksLaterSteps,
 } from "@/lib/clinical/clinical-step-gates";
 
-export type ClinicalStepId = "scan" | "shape" | "corrections" | "elements" | "hardness" | "print";
+export type ClinicalStepId = "scan" | "setup" | "base" | "corrections" | "elements" | "print" | "export";
+
+/** Map retired step ids so persisted / older calls still resolve. */
+export function normalizeClinicalStep(step: string): ClinicalStepId {
+    if (step === "shape") return "base";
+    if (step === "hardness") return "print";
+    if (
+        step === "scan" ||
+        step === "setup" ||
+        step === "base" ||
+        step === "corrections" ||
+        step === "elements" ||
+        step === "print" ||
+        step === "export"
+    ) {
+        return step;
+    }
+    return "scan";
+}
 
 export const CLINICAL_STEPS: { id: ClinicalStepId; label: string; short: string }[] = [
     { id: "scan", label: "Scan", short: "Scan" },
-    { id: "shape", label: "Shape", short: "Shape" },
+    { id: "setup", label: "Setup", short: "Setup" },
+    { id: "base", label: "Base", short: "Base" },
     { id: "corrections", label: "Corrections", short: "Corrections" },
     { id: "elements", label: "Elements", short: "Elements" },
-    { id: "hardness", label: "Hardness", short: "Hardness" },
-    { id: "print", label: "Print / Export", short: "Print" },
+    { id: "print", label: "Print", short: "Print" },
+    { id: "export", label: "Export", short: "Export" },
 ];
 
 /** All parametric-correction section keys — opened when entering Corrections. */
@@ -104,12 +123,13 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
             elementPlacementFoot: side,
         }),
     setStep: (step) => {
-        const sticky = applyScanStickyReason(step);
+        const next = normalizeClinicalStep(step);
+        const sticky = applyScanStickyReason(next);
         set({
-            step,
+            step: next,
             scanGateStickyReason: sticky,
             nextBlockReason: sticky,
-            pendingCorrectionSections: sectionsForStep(step),
+            pendingCorrectionSections: sectionsForStep(next),
         });
     },
     setElementPlacementFoot: (foot) => set({ elementPlacementFoot: foot }),
@@ -117,10 +137,11 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         const current = get().step;
         const gate = evaluateNextGate(current);
         if (!gate.ok) {
-            const sticky = current === "scan" || stepIndex(current) > stepIndex("scan") ? gate.reason : null;
             set({
+                step: "scan",
                 nextBlockReason: gate.reason,
-                scanGateStickyReason: sticky ?? get().scanGateStickyReason,
+                scanGateStickyReason: gate.reason,
+                pendingCorrectionSections: sectionsForStep("scan"),
             });
             return;
         }

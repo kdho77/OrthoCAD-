@@ -4,7 +4,11 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
-import { extractTopOnlyModel } from "@/lib/geometry/procedural-wall";
+import {
+    extractTopOnlyModel,
+    fitWindowsTraceToRim,
+    medialYSignFromTopRim,
+} from "@/lib/geometry/procedural-wall";
 import {
     buildFairedPatternFromTop,
     SAMPLE_TOP_ASSET_ID,
@@ -19,7 +23,8 @@ const PRIMARY: [number, number, number] = [14, 165, 233];
 function writeFilledPattern(
     rim: Array<{ x: number; y: number }>,
     pattern: Array<{ x: number; y: number }>,
-    bounds: { minX: number; maxX: number },
+    _bounds: { minX: number; maxX: number },
+    overlay?: Array<{ x: number; y: number }>,
 ): Uint8Array {
     const width = 420;
     const height = 720;
@@ -29,7 +34,7 @@ function writeFilledPattern(
     let maxX = -Infinity;
     let minY = Infinity;
     let maxY = -Infinity;
-    for (const p of [...rim, ...pattern]) {
+    for (const p of [...rim, ...pattern, ...(overlay ?? [])]) {
         minX = Math.min(minX, p.x);
         maxX = Math.max(maxX, p.x);
         minY = Math.min(minY, p.y);
@@ -102,6 +107,7 @@ function writeFilledPattern(
         }
     };
     stroke(rim, [160, 160, 160]);
+    if (overlay?.length) stroke(overlay, [132, 204, 22]);
     stroke(pattern, PRIMARY);
     return encodePng(width, height, rgb);
 }
@@ -119,8 +125,10 @@ describe("bottom pattern CAD render", () => {
         const rim = rimLocal.map((i) => ({
             x: pos[i * 3] ?? 0,
             y: pos[i * 3 + 1] ?? 0,
+            z: pos[i * 3 + 2] ?? 0,
         }));
-        const png = writeFilledPattern(rim, pattern, model.bounds);
+        const placed = fitWindowsTraceToRim(rim, model.bounds, medialYSignFromTopRim(rim, model.bounds));
+        const png = writeFilledPattern(rim, pattern, model.bounds, placed?.smoothed);
         expect(png.length).toBeGreaterThan(100);
         for (const root of ["/opt/cursor/artifacts", "/tmp/s1-stls"]) {
             mkdirSync(root, { recursive: true });

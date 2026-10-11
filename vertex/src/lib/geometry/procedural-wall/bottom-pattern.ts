@@ -11,7 +11,8 @@ import {
     startAtLowCurvature,
     startAtPosteriorHeel,
 } from "./curves";
-import { fairedPattern } from "./faired-pattern";
+import { fairedPattern, scaleToMinInset } from "./faired-pattern";
+import { fitWindowsTraceToRim, PATTERN_TRACE_HAUSDORFF_MM, s01Along } from "./windows-trace";
 
 export const PATTERN_INSET_MM = 2;
 /** Heel-band inset both sides (u 0.00–0.22). */
@@ -201,6 +202,22 @@ export interface FairInsetOptions {
     archScale?: number;
     /** Local rim width W(u). When set, D = 0.45 × W(u_pk) unless archMm is set. */
     widthAtU?: (u: number) => number;
+    /**
+     * `windows` (default Full Contact): QP-fit the scaled Windows DXF trace.
+     * `analytic`: regional inset offsets (ellipse tests / Flat / Prefab).
+     */
+    source?: "windows" | "analytic";
+}
+
+export { PATTERN_TRACE_HAUSDORFF_MM };
+
+function shouldUseWindowsTrace(insets?: FairInsetOptions): boolean {
+    if (insets?.source === "analytic") return false;
+    if (insets?.source === "windows") return true;
+    if (insets && (insets.heelMm != null || insets.archMm != null || insets.forefootMm != null)) {
+        return false;
+    }
+    return true;
 }
 
 /** Full Contact / Custom keep the approved fair; Prefab 3D / Flat vary inset only. */
@@ -575,9 +592,87 @@ function scopedPatternCurvature(
     return report;
 }
 
+function qpFitClosedTargets(
+    closed: PolyPoint[],
+    loop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    sign: MedialYSign,
+    yMid: number,
+    minInsetMm: number,
+    extraWeight = true,
+): PolyPoint[] {
+    const { total: offTotal } = polylineArcLengths(closed);
+    const s01Of = (p: PolyPoint) => s01Along(closed, p);
+    const dense = resamplePolyline(closed, extraWeight ? 96 : 48);
+    let heel = closed[0]!;
+    let toe = closed[0]!;
+    const archPts: PolyPoint[] = [];
+    const heelPts: PolyPoint[] = [];
+    const forePts: PolyPoint[] = [];
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    for (const p of closed) {
+        if (p.x < heel.x) heel = p;
+        if (p.x > toe.x) toe = p;
+        const medial = (p.y - yMid) * sign > 0;
+        const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
+        if (medial && u >= PATTERN_ARCH_U0 && u <= PATTERN_ARCH_U1) archPts.push(p);
+        if (u <= 0.22) heelPts.push(p);
+        if (u >= 0.68) forePts.push(p);
+    }
+    const pick = (pts: PolyPoint[], n: number) =>
+        pts.filter((_, i) => i % Math.max(1, Math.floor(pts.length / n)) === 0).slice(0, n);
+    const targets = [
+        ...dense.map((p) => ({ point: p, weight: extraWeight ? 4 : 1.2, s01: s01Of(p) })),
+        { point: heel, weight: 10, s01: s01Of(heel) },
+        { point: toe, weight: 28, s01: s01Of(toe) },
+        ...pick(archPts, 8).map((p) => ({ point: p, weight: extraWeight ? 8 : 6, s01: s01Of(p) })),
+        ...pick(heelPts, 6).map((p) => ({ point: p, weight: 8, s01: s01Of(p) })),
+        ...pick(forePts, 10).map((p) => ({ point: p, weight: extraWeight ? 20 : 16, s01: s01Of(p) })),
+    ];
+    const sampleCount = Math.max(160, Math.ceil(offTotal / PATTERN_LATERAL_K_SAMPLE_MM));
+    const fitOnce = (controlCount: number, wFair: number, skipPostScale = extraWeight) =>
+        fairedPattern({
+            targets,
+            controlCount,
+            wFit: 1,
+            wFair,
+            sampleCount,
+            skipPostScale,
+            constraints: {
+                rim: loop,
+                minInsetMm,
+                medialYSign: sign,
+                archU0: PATTERN_ARCH_U0,
+                archU1: PATTERN_ARCH_U1,
+                bounds,
+                lateralMinK: 0,
+                maxIters: extraWeight ? 4 : 6,
+            },
+        });
+    let fit = fitOnce(PATTERN_CONTROL_MAX, extraWeight ? 0.08 : 0.28);
+    let out = makeLateralConvex(fit.samples, sign, extraWeight ? 16 : 36);
+    if (!extraWeight) {
+        const retries: Array<[number, number]> = [
+            [PATTERN_CONTROL_COUNT, PATTERN_FAIR_RETRY_W],
+            [PATTERN_CONTROL_RETRY, 0.7],
+            [PATTERN_CONTROL_MAX, 0.4],
+        ];
+        for (const [ctrl, wFair] of retries) {
+            if (patternCurvatureReport(out, bounds, sign).inflections === 2) break;
+            fit = fitOnce(ctrl, wFair, false);
+            out = makeLateralConvex(fit.samples, sign, 48);
+        }
+    } else {
+        out = scaleToMinInset(out, loop, minInsetMm);
+        out = makeLateralConvex(out, sign, 36);
+    }
+    return out;
+}
+
 /**
- * C2 offset → 16–20 control FAIRED approximating cubic (not an interpolant).
- * Heel 6 mm (posterior 4.5), lateral mid 3.5–4.5, fore 0.5; medial arch is one S.
+ * C2 QP → 16–20 control FAIRED approximating cubic (not an interpolant).
+ * Full Contact uses the scaled Windows DXF as the shape target; presets keep
+ * the regional inset offset.
  */
 export function syntheticBottomPattern(
     outline: PolyPoint[],
@@ -591,6 +686,27 @@ export function syntheticBottomPattern(
     const heightSrc = rim3d?.length ? rim3d : outline;
     const sign = medialYSignFromTopRim(heightSrc, bounds, side);
     const yMid = rimYMid(heightSrc);
+    const minInset = insets?.minMm ?? PATTERN_MIN_INSET_MM;
+    if (shouldUseWindowsTrace(insets)) {
+        const placed = fitWindowsTraceToRim(loop, bounds, sign, {
+            heelInsetMm: insets?.heelMm ?? PATTERN_HEEL_INSET_MM,
+            toeInsetMm: insets?.forefootMm ?? PATTERN_FOREFOOT_INSET_MM,
+            foreInsetMm: insets?.forefootMm ?? PATTERN_FOREFOOT_INSET_MM,
+        });
+        if (placed && placed.smoothed.length >= 8) {
+            return qpFitClosedTargets(placed.smoothed, loop, bounds, sign, yMid, minInset, true);
+        }
+    }
+    return analyticOffsetPattern(loop, bounds, sign, yMid, insets);
+}
+
+function analyticOffsetPattern(
+    loop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    sign: MedialYSign,
+    yMid: number,
+    insets?: FairInsetOptions,
+): PolyPoint[] {
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
     const rim = resamplePolyline(loop, 96);
     const normals = smoothUnit2(
@@ -623,83 +739,15 @@ export function syntheticBottomPattern(
         });
     }
     closed = startAtPosteriorHeel(ensureCcw(closed));
-    const { cum: offCum, total: offTotal } = polylineArcLengths(closed);
-    const s01Of = (p: PolyPoint): number => {
-        let bestS = 0;
-        let bestD = Infinity;
-        for (let i = 0; i < closed.length; i++) {
-            const a = closed[i]!;
-            const b = closed[(i + 1) % closed.length]!;
-            const ex = b.x - a.x;
-            const ey = b.y - a.y;
-            const len2 = ex * ex + ey * ey;
-            const t =
-                len2 > 1e-12 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
-            const d = (p.x - (a.x + ex * t)) ** 2 + (p.y - (a.y + ey * t)) ** 2;
-            if (d < bestD) {
-                bestD = d;
-                const seg = offCum[i + 1]! - offCum[i]!;
-                bestS = (offCum[i]! + t * seg) / Math.max(offTotal, 1e-12);
-            }
-        }
-        return ((bestS % 1) + 1) % 1;
-    };
-    const dense = resamplePolyline(closed, 48);
-    let heel = closed[0]!;
-    let toe = closed[0]!;
-    const archPts: PolyPoint[] = [];
-    const heelPts: PolyPoint[] = [];
-    const forePts: PolyPoint[] = [];
-    for (const p of closed) {
-        if (p.x < heel.x) heel = p;
-        if (p.x > toe.x) toe = p;
-        const medial = (p.y - yMid) * sign > 0;
-        const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
-        if (medial && u >= PATTERN_ARCH_U0 && u <= PATTERN_ARCH_U1) archPts.push(p);
-        if (u <= 0.22) heelPts.push(p);
-        if (u >= 0.68) forePts.push(p);
-    }
-    const pick = (pts: PolyPoint[], n: number) =>
-        pts.filter((_, i) => i % Math.max(1, Math.floor(pts.length / n)) === 0).slice(0, n);
-    const targets = [
-        ...dense.map((p) => ({ point: p, weight: 1.2, s01: s01Of(p) })),
-        { point: heel, weight: 10, s01: s01Of(heel) },
-        { point: toe, weight: 28, s01: s01Of(toe) },
-        ...pick(archPts, 8).map((p) => ({ point: p, weight: 6, s01: s01Of(p) })),
-        ...pick(heelPts, 6).map((p) => ({ point: p, weight: 8, s01: s01Of(p) })),
-        ...pick(forePts, 10).map((p) => ({ point: p, weight: 16, s01: s01Of(p) })),
-    ];
-    const sampleCount = Math.max(160, Math.ceil(offTotal / PATTERN_LATERAL_K_SAMPLE_MM));
-    const fitOnce = (controlCount: number, wFair: number) =>
-        fairedPattern({
-            targets,
-            controlCount,
-            wFit: 1,
-            wFair,
-            sampleCount,
-            constraints: {
-                rim: loop,
-                minInsetMm: insets?.minMm ?? PATTERN_MIN_INSET_MM,
-                medialYSign: sign,
-                archU0: PATTERN_ARCH_U0,
-                archU1: PATTERN_ARCH_U1,
-                bounds,
-                lateralMinK: 0,
-                maxIters: 6,
-            },
-        });
-    let fit = fitOnce(PATTERN_CONTROL_MAX, 0.28);
-    let out = makeLateralConvex(fit.samples, sign, 36, yMid);
-    const retries: Array<[number, number]> = [
-        [PATTERN_CONTROL_COUNT, PATTERN_FAIR_RETRY_W],
-        [PATTERN_CONTROL_RETRY, 0.7],
-        [PATTERN_CONTROL_MAX, 0.4],
-    ];
-    for (const [ctrl, wFair] of retries) {
-        if (patternCurvatureReport(out, bounds, sign).inflections === 2) break;
-        fit = fitOnce(ctrl, wFair);
-        out = makeLateralConvex(fit.samples, sign, 48, yMid);
-    }
+    let out = qpFitClosedTargets(
+        closed,
+        loop,
+        bounds,
+        sign,
+        yMid,
+        insets?.minMm ?? PATTERN_MIN_INSET_MM,
+        false,
+    );
     if (patternCurvatureReport(out, bounds, sign).inflections !== 2) {
         const scaled = { ...insetOpts, archScale: 0.9 };
         const scaledOffset: PolyPoint[] = rim.map((p, i) => {
@@ -725,46 +773,15 @@ export function syntheticBottomPattern(
                 };
             });
         }
-        const { cum: scCum, total: scTotal } = polylineArcLengths(scaledClosed);
-        const s01Scaled = (p: PolyPoint): number => {
-            let bestS = 0;
-            let bestD = Infinity;
-            for (let i = 0; i < scaledClosed.length; i++) {
-                const a = scaledClosed[i]!;
-                const b = scaledClosed[(i + 1) % scaledClosed.length]!;
-                const ex = b.x - a.x;
-                const ey = b.y - a.y;
-                const len2 = ex * ex + ey * ey;
-                const t =
-                    len2 > 1e-12 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
-                const d = (p.x - (a.x + ex * t)) ** 2 + (p.y - (a.y + ey * t)) ** 2;
-                if (d < bestD) {
-                    bestD = d;
-                    const seg = scCum[i + 1]! - scCum[i]!;
-                    bestS = (scCum[i]! + t * seg) / Math.max(scTotal, 1e-12);
-                }
-            }
-            return ((bestS % 1) + 1) % 1;
-        };
-        const scaledTargets = scaledClosed.map((p) => ({ point: p, weight: 1.2, s01: s01Scaled(p) }));
-        fit = fairedPattern({
-            targets: scaledTargets,
-            controlCount: PATTERN_CONTROL_COUNT,
-            wFit: 1,
-            wFair: 0.55,
-            sampleCount,
-            constraints: {
-                rim: loop,
-                minInsetMm: insets?.minMm ?? PATTERN_MIN_INSET_MM,
-                medialYSign: sign,
-                archU0: PATTERN_ARCH_U0,
-                archU1: PATTERN_ARCH_U1,
-                bounds,
-                lateralMinK: 0,
-                maxIters: 6,
-            },
-        });
-        out = makeLateralConvex(fit.samples, sign, 48, yMid);
+        out = qpFitClosedTargets(
+            scaledClosed,
+            loop,
+            bounds,
+            sign,
+            yMid,
+            insets?.minMm ?? PATTERN_MIN_INSET_MM,
+            false,
+        );
     }
     return out;
 }
@@ -866,11 +883,19 @@ function parseSvgPath(source: string): PolyPoint[] {
 function parseDxfPolyline(source: string): PolyPoint[] {
     const lines = source.split(/\r?\n/).map((s) => s.trim());
     const out: PolyPoint[] = [];
+    let inPoly = false;
     let expecting = "";
     let x = 0;
     for (let i = 0; i < lines.length; i++) {
         const code = lines[i]!;
         const val = lines[i + 1];
+        if (code === "0") {
+            inPoly = val === "LWPOLYLINE" || val === "POLYLINE";
+            expecting = "";
+            i++;
+            continue;
+        }
+        if (!inPoly) continue;
         if (code === "10") {
             x = Number(val);
             expecting = "y";

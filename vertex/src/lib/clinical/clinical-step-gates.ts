@@ -34,7 +34,7 @@ export function isReadyToShape(): StepGateResult {
         return { ok: false, reason: stockBaseError };
     }
     if (!designHasBase(design) || designNeedsDefaultStockResolution(design)) {
-        return { ok: false, reason: "Stock base is not ready yet — check the left panel." };
+        return { ok: false, reason: "Stock base is not ready yet — wait for the insole to load." };
     }
     return { ok: true };
 }
@@ -71,16 +71,20 @@ export function evaluateScanStepGate(): StepGateResult {
  * Whether a step may show a completed checkmark.
  * Shape / Corrections / Elements / Hardness are never auto-complete from base-load alone — only via `completedSteps`.
  */
-export function evaluateStepComplete(step: ClinicalStepId, completedSteps: ClinicalStepId[]): boolean {
-    if (completedSteps.includes(step)) return true;
-    if (step === "scan") return evaluateScanStepGate().ok;
+export function evaluateStepComplete(
+    step: ClinicalStepId | string,
+    completedSteps: ClinicalStepId[],
+): boolean {
+    const id = step === "shape" ? "base" : step === "hardness" ? "print" : step;
+    if (completedSteps.includes(id as ClinicalStepId)) return true;
+    if (id === "scan") return evaluateScanStepGate().ok;
     return false;
 }
 
 /** Gate for leaving the current step via Next. */
 export function evaluateNextGate(fromStep: ClinicalStepId): StepGateResult {
     if (fromStep === "scan") return evaluateScanStepGate();
-    return { ok: true };
+    return scanGateBlocksLaterSteps();
 }
 
 /** Steps after Scan require the scan gate to stay satisfied (sticky failure when jumping ahead). */

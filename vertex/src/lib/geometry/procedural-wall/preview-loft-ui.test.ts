@@ -74,7 +74,7 @@ describe("preview loft overlay", () => {
 
     test("viewer lofts only on the Print step", () => {
         expect(shouldLoftProceduralViewer("scan", "procedural")).toBe(false);
-        expect(shouldLoftProceduralViewer("shape", "procedural")).toBe(false);
+        expect(shouldLoftProceduralViewer("base", "procedural")).toBe(false);
         expect(shouldLoftProceduralViewer("corrections", "procedural")).toBe(false);
         expect(shouldLoftProceduralViewer("print", "procedural")).toBe(true);
         expect(shouldLoftProceduralViewer("print", "legacy")).toBe(false);

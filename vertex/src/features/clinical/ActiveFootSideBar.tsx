@@ -3,7 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
-import { useClinicalWorkflowStore, type ElementPlacementFoot } from "@/stores/clinical-workflow-store";
+import { type ElementPlacementFoot, useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { SIDE_LABELS, type Side } from "@/types";
@@ -52,7 +52,7 @@ export function ActiveFootSideBar({ allowBothWhenLinked = false }: ActiveFootSid
                     className="h-8 flex-1 text-[11px]"
                     onClick={() => pickSide(s)}
                 >
-                    {SIDE_LABELS[s]} foot
+                    {SIDE_LABELS[s]}
                 </Button>
             ))}
             {showBoth ? (
@@ -62,7 +62,7 @@ export function ActiveFootSideBar({ allowBothWhenLinked = false }: ActiveFootSid
                     className="h-8 w-full text-[11px]"
                     onClick={() => pickBoth()}
                 >
-                    Both feet (linked L+R)
+                    Both (linked)
                 </Button>
             ) : null}
         </div>

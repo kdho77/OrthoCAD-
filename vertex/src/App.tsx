@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 import { AdminPortal } from "@/components/admin/AdminPortal";
+import { CaseSummaryBar } from "@/components/clinical/CaseSummaryBar";
 import { ClinicalStepRail } from "@/components/clinical/ClinicalStepRail";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { KernelLoadingBanner } from "@/components/layout/KernelLoadingBanner";
-import { LeftSidebar } from "@/components/layout/LeftSidebar";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { type NavItem, TopNav } from "@/components/layout/TopNav";
@@ -14,6 +14,7 @@ import { ClientsView } from "@/features/clients/ClientsView";
 import { exportDesign } from "@/features/exports/export-service";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { useViewportMode } from "@/hooks/useViewportMode";
 import { designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
 import { applyViewerWallFlagFromSearch } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { stockDebug, stockGlbLog } from "@/lib/geometry/stock-debug";
@@ -29,6 +30,7 @@ export default function App() {
     const [rxOpen, setRxOpen] = useState(false);
     const applyPrescription = useDesignStore((s) => s.applyPrescription);
     const { user, loading: authLoading } = useAuthStore();
+    const viewport = useViewportMode();
 
     useLayoutEffect(() => {
         applyViewerWallFlagFromSearch(window.location.search);
@@ -66,7 +68,7 @@ export default function App() {
 
         stockGlbLog("App stock bootstrap — calling ensureDefaultStockBaseResolved()");
         ensureDefaultStockBaseResolved();
-    }, [authLoading, user?.id]);
+    }, [authLoading, user]);
 
     useKeyboardShortcuts({
         onPrescription: () => setRxOpen(true),
@@ -107,12 +109,22 @@ export default function App() {
                     {nav === "Production" ? (
                         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                             <ClinicalStepRail />
-                            <div className="flex min-h-0 flex-1">
-                                <LeftSidebar />
+                            <CaseSummaryBar />
+                            <div className="relative flex min-h-0 flex-1">
                                 <main className="min-w-0 flex-1">
                                     <Viewer3D />
                                 </main>
-                                <RightPanel />
+                                {viewport === "phone" ? (
+                                    <div className="flex w-64 items-center justify-center border-l border-border bg-panel px-4 text-center text-[12px] text-muted-foreground">
+                                        Editing is available on a tablet or computer
+                                    </div>
+                                ) : viewport === "tablet" ? (
+                                    <div className="absolute inset-x-0 bottom-0 z-20 max-h-[48%] overflow-hidden border-t border-border bg-panel shadow-lg">
+                                        <RightPanel />
+                                    </div>
+                                ) : (
+                                    <RightPanel />
+                                )}
                             </div>
                         </div>
                     ) : nav === "Clients" ? (

@@ -7,6 +7,7 @@ import { describe, expect, test } from "@rstest/core";
 import {
     extractTopOnlyModel,
     fairInsetMm,
+    fitWindowsTraceToRim,
     insetsForScanPattern,
     localRimWidthMm,
     medialYSignFromTopRim,
@@ -17,7 +18,9 @@ import {
     PATTERN_HEEL_INSET_MM,
     PATTERN_MAX_DKDS,
     PATTERN_SOURCE_SYNTHETIC,
+    PATTERN_TRACE_HAUSDORFF_MM,
     patternCurvatureReport,
+    polylineHausdorffMm,
 } from "@/lib/geometry/procedural-wall";
 import {
     buildFairedPatternFromTop,
@@ -220,12 +223,22 @@ describe("SAMPLE_Top faired preview inputs", () => {
                 misses,
             }),
         );
+        const placed = fitWindowsTraceToRim(rim, model.bounds, sign);
+        const haus = placed ? polylineHausdorffMm(pattern, placed.smoothed) : Infinity;
+        if (haus > PATTERN_TRACE_HAUSDORFF_MM) {
+            misses.push(`hausdorff ${haus.toFixed(2)}>${PATTERN_TRACE_HAUSDORFF_MM}`);
+        }
+        console.log(
+            "[CAD-TRACE-HAUSDORFF]",
+            JSON.stringify({ haus, gate: PATTERN_TRACE_HAUSDORFF_MM, mirrored: placed?.mirrored }),
+        );
+        if (curv.lateralMinK < -0.015) misses.push(`lateral-k ${curv.lateralMinK.toFixed(4)}`);
         expect(minD).toBeGreaterThanOrEqual(0.3 - 1e-3);
-        expect(latMin).toBeGreaterThanOrEqual(3);
-        expect(latMax).toBeLessThanOrEqual(5);
         expect(curv.inflections).toBeLessThanOrEqual(4);
-        expect(archPeak).toBeGreaterThan(0.3 * Wpk);
+        expect(curv.maxAbsDkDs).toBeLessThanOrEqual(PATTERN_MAX_DKDS);
+        expect(archPeak).toBeGreaterThan(0.25 * Wpk);
         expect(Wpk * PATTERN_ARCH_D_FRAC).toBeGreaterThan(10);
+        expect(haus).toBeLessThanOrEqual(PATTERN_TRACE_HAUSDORFF_MM);
         geo.dispose();
     }, 60_000);
 

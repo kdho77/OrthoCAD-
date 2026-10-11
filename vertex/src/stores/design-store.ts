@@ -159,6 +159,7 @@ export function defaultDesign(): DesignState {
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
         sizeSystem: DEFAULT_SHOE_SIZE_SYSTEM,
         usMenSize: DEFAULT_US_MEN_SIZE,
+        shoeWidth: "medium",
         corrections: {
             unit: "mm",
             linked: true,
@@ -430,6 +431,7 @@ export interface DesignStore {
     setUkShoeSize: (ukSize: number) => void;
     /** Change foot length in mm and auto-scale. */
     setFootLengthMm: (mm: number) => void;
+    setShoeWidth: (width: "narrow" | "medium" | "wide" | "extra_wide") => void;
 
     /** Patch corrections for a side. When linked, mirrors to the other side. */
     updateCorrection: (side: Side, patch: Partial<SideCorrections>) => void;
@@ -665,6 +667,11 @@ export const useDesignStore = create<DesignStore>()(
                         }),
                     };
                 }),
+
+            setShoeWidth: (width) =>
+                set((s) => ({
+                    design: { ...s.design, shoeWidth: width },
+                })),
 
             updateShapeFinish: (side, patch) =>
                 set((s) => {
