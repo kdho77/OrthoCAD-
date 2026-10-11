@@ -7,7 +7,6 @@ import {
     analyticG1EDeg,
     analyticG1RDeg,
     assertInversionOk,
-    blendColumnsGraph,
     buildJointFromTheta,
     buildPolylineDensityTable,
     chooseRimDiagonal,
@@ -34,12 +33,9 @@ import {
     qOnNormalizedArc,
     RND_E_ANG_MAX_DEG,
     RND_E_POS_EPS,
-    ringFValues,
     SPLINE_CHORD_MIN_MM,
-    SPLINE_F_PIN_FROM_B,
     SPLINE_G1_ANALYTIC_MAX_DEG,
     SPLINE_GATES_REPORT_ONLY,
-    SPLINE_INFL_ACCEPT_DEG,
     SPLINE_INFL_TURN_MIN_DEG,
     SPLINE_KNOTS,
     SPLINE_KNOTS_5,
@@ -66,7 +62,6 @@ import {
     splineBetaAt,
     stationGates,
     stationSampleNeed,
-    zAt45FromVertical,
 } from "./wall-spline";
 
 function station(
@@ -525,22 +520,8 @@ describe("quadratic wall parabola", () => {
         expect(Math.hypot(landed[4]!.x - B.x, landed[4]!.y - B.y, landed[4]!.z - B.z)).toBeLessThan(1e-9);
     });
 
-    test("landing fractions pin the last 3 from B and clamp step ratio", () => {
-        expect(SPLINE_F_PIN_FROM_B).toBe(3);
+    test("landing fractions clamp last-10% step ratio without pinning last-3 f", () => {
         expect(SPLINE_LANDING_STEP_RATIO).toBeCloseTo(1.3);
-        const rim = [
-            { x: 0, y: 0, z: 10 },
-            { x: 4, y: 0, z: 10 },
-            { x: 8, y: 1, z: 10 },
-            { x: 4, y: 3, z: 10 },
-        ];
-        const N = 10;
-        const f = ringFValues(rim.length, N, rim, SPLINE_F_PIN_FROM_B);
-        for (const row of f) {
-            expect(row[N]).toBe(1);
-            expect(row[N - 1]).toBeCloseTo((N - 1) / N, 12);
-            expect(row[N - 2]).toBeCloseTo((N - 2) / N, 12);
-        }
         const u = [0, 0.2, 0.4, 0.6, 0.91, 0.92, 1];
         const c = clampLandingFractions(u, 1.3, 0.9);
         expect(c[0]).toBe(0);
@@ -553,20 +534,7 @@ describe("quadratic wall parabola", () => {
         }
     });
 
-    test("graph blend joins at z_L and rim diagonal prefers the smaller top dihedral", () => {
-        const R = { x: 0, y: 0, z: 10 };
-        const B = { x: 10, y: 0, z: 0 };
-        const h = { x: 1, y: 0 };
-        const straight = [R, { x: 0.2, y: 0, z: 8 }, { x: 2, y: 0, z: 5 }, { x: 6, y: 0, z: 2 }, B];
-        const round = [R, { x: -0.4, y: 0, z: 8 }, { x: 1.2, y: 0, z: 5 }, { x: 5.5, y: 0, z: 2 }, B];
-        const zL = Math.max(
-            zAt45FromVertical(straight.slice(1), { x: 0, y: 0, z: 0 }, h),
-            zAt45FromVertical(round.slice(1), { x: 0, y: 0, z: 0 }, h),
-        );
-        const blend = blendColumnsGraph(straight, round, 0.5, R, B, h, 1, zL);
-        expect(blend.length).toBe(5);
-        expect(blend[0]!.z).toBeCloseTo(R.z, 9);
-        expect(blend[4]!.z).toBeCloseTo(B.z, 9);
+    test("rim diagonal prefers the smaller max dihedral to the top face", () => {
         const nTop = { x: 0, y: 0, z: 1 };
         const pick = chooseRimDiagonal(
             { x: 0, y: 0, z: 10 },
@@ -577,7 +545,14 @@ describe("quadratic wall parabola", () => {
         );
         expect(pick.diag === 0 || pick.diag === 1).toBe(true);
         expect(pick.deg).toBeLessThan(90);
-        expect(SPLINE_INFL_ACCEPT_DEG).toBe(0.5);
+        const flipped = chooseRimDiagonal(
+            { x: 0, y: 0, z: 10 },
+            { x: 1, y: 0, z: 10 },
+            { x: 0.05, y: -0.8, z: 9.1 },
+            { x: 0.95, y: 0.05, z: 9.4 },
+            nTop,
+        );
+        expect(flipped.deg).toBeLessThanOrEqual(pick.deg + 90);
     });
 
     test("inactive station skips spline evaluation", () => {

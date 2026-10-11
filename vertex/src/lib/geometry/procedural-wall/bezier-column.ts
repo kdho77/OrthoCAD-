@@ -19,7 +19,6 @@ import {
     analyticG1RDeg,
     applySplineRing,
     assertInversionOk,
-    blendColumnsGraph,
     blendColumnsSz,
     bodyTangentFromE,
     buildJointFromTheta,
@@ -52,13 +51,9 @@ import {
     row1TRAngleDeg,
     SPLINE_CHORD_MIN_MM,
     SPLINE_DS_FLOOR_MM,
-    SPLINE_F_PIN_FROM_B,
     SPLINE_FACE_DOT_MIN,
-    SPLINE_FREEZE_MISS_MAX_DEG,
-    SPLINE_FREEZE_MISS_STATIONS,
     SPLINE_G1_ANALYTIC_MAX_DEG,
     SPLINE_G1_MESH_MAX_DEG,
-    SPLINE_INFL_ACCEPT_DEG,
     SPLINE_INFL_TURN_MIN_DEG,
     SPLINE_LAMBDA,
     SPLINE_LANDING_TAIL_ROWS,
@@ -88,7 +83,6 @@ import {
     tRInSz,
     wallRowOutward,
     wallStripVolume,
-    zAt45FromVertical,
 } from "./wall-spline";
 import {
     clampSagitta,
@@ -481,7 +475,6 @@ export interface ColumnFrame {
     splineLandingAlongDeg?: number;
     splineMaxTurnDeg?: number;
     splineMaxAlongDeg?: number;
-    inflRemainder?: boolean;
 }
 
 export interface SweepMidStyle {
@@ -640,17 +633,15 @@ export interface ColumnQuality {
     maxLandingAlongDeg?: number;
     residualStations?: ResidualStation[];
     freezeOk?: boolean;
-    inflRemainder?: Array<{ i: number; u: number; maxOpp: number }>;
 }
 
 export interface ResidualStation {
     i: number;
     u: number;
-    g1Rm: number;
     turn: number;
     along: number;
-    landingTurn: number;
-    landingAlong: number;
+    infl: number;
+    maxOpp: number;
 }
 
 export interface BezierColumns {
@@ -5258,7 +5249,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     }
     const rim = frames.map((fr) => fr.R);
     const fLip = ringFValues(nS, NL, rim);
-    const fBody = ringFValues(nS, NB, rim, SPLINE_F_PIN_FROM_B);
+    const fBody = ringFValues(nS, NB, rim);
     const f = frames.map((_, i) => {
         const a = fLip[i] ?? [];
         const b = fBody[i] ?? [];
@@ -5383,14 +5374,8 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const blend = wRaw < 1 - 1e-6 || hybridW < 1 - 1e-6;
         let used: XYZ[];
         if (w <= 1e-6) used = straightPts;
-        else if (blend && w < 1 - 1e-6) {
-            const sz = stationSzFrame(fr.R, fr.B, fr.h);
-            const zL = Math.max(
-                zAt45FromVertical(straightPts.slice(NL), sz.origin, sz.h),
-                zAt45FromVertical(roundPts.slice(NL), sz.origin, sz.h),
-            );
-            used = blendColumnsGraph(straightPts, roundPts, w, fr.R, fr.B, fr.h, NL, zL);
-        } else used = roundPts;
+        else if (blend && w < 1 - 1e-6) used = blendColumnsSz(straightPts, roundPts, w, fr.R, fr.B, fr.h);
+        else used = roundPts;
         const col: PolyPoint[] = used.map((p) => ({ ...p }));
         if (col.length) {
             col[0] = { ...fr.R };
@@ -5418,13 +5403,12 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const g1Ea = analyticG1EDeg(joint);
         const g1Ba = analyticG1BDeg(joint, plantarDirInColumn(fr.nPlantar, fr.h));
         const nxtR = frames[(i + 1) % nS]!.R;
-        const nxtRow1 = (xyz[(i + 1) % nS] ?? col)[1] ?? nxtR;
+        // First-loop G1-R_m is provisional: nxt row1 is not finished yet.
+        const nWallFace = faceN3(nxtR, fr.R, row1);
         const nTopFace = fr.rimEdgeN ?? null;
-        const rimPick = chooseRimDiagonal(fr.R, nxtR, row1, nxtRow1, nTopFace);
-        fr.rimDiag = rimPick.diag;
-        const nWallFace = rimPick.nWall;
-        const g1Dot = rimPick.dot;
-        const g1Rm = rimPick.deg;
+        const g1Dot = nTopFace && nWallFace ? dot3(nTopFace, nWallFace) : 1;
+        const g1Rm =
+            nTopFace && nWallFace ? (Math.acos(Math.max(-1, Math.min(1, g1Dot))) * 180) / Math.PI : 0;
         g1Dots.push(g1Dot);
         const g1B = seamBDeg(col);
         if (evaluated && g1Ra > SPLINE_G1_ANALYTIC_MAX_DEG + 1e-6) {
@@ -5488,16 +5472,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const kappaRatio = midArcKappaRatio(bodyPts.length >= 3 ? bodyPts : col);
         const infl = polylineInflReport(used, fr.R, fr.B, fr.h);
         const inflCount = infl.inflCount;
-        const blending = evaluated && wRaw > 1e-6 && wRaw < 1 - 1e-6;
-        if (blending && infl.maxOppTurnDeg >= SPLINE_INFL_TURN_MIN_DEG) {
-            splineGateFail("[RND-BLEND-INFL]", {
-                i,
-                u: Number(fr.u.toFixed(4)),
-                opp: Number(infl.maxOppTurnDeg.toFixed(4)),
-                cap: SPLINE_INFL_TURN_MIN_DEG,
-            });
-        }
-        if (evaluated && w > 0.05 && infl.maxOppTurnDeg >= SPLINE_INFL_ACCEPT_DEG) {
+        if (evaluated && w > 0.05 && inflCount > 0) {
             splineGateFail("[RND-INFL]", {
                 i,
                 u: Number(fr.u.toFixed(4)),
@@ -5506,11 +5481,15 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
                 w: Number(w.toFixed(4)),
             });
         }
-        fr.inflRemainder =
-            evaluated &&
-            !blending &&
-            infl.maxOppTurnDeg >= SPLINE_INFL_TURN_MIN_DEG &&
-            infl.maxOppTurnDeg < SPLINE_INFL_ACCEPT_DEG;
+        if (evaluated && wRaw > 1e-6 && wRaw < 1 - 1e-6 && infl.maxOppTurnDeg >= SPLINE_INFL_TURN_MIN_DEG) {
+            splineGateFail("[RND-SHORT]", {
+                i,
+                u: Number(fr.u.toFixed(4)),
+                wR: Number(wRaw.toFixed(4)),
+                opp: Number(infl.maxOppTurnDeg.toFixed(4)),
+                infl: inflCount,
+            });
+        }
         fr.g1EDeg = g1Ra;
         fr.g1FDeg = g1B;
         fr.splineG1EDeg = g1Ea;
@@ -5519,7 +5498,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineG1EAnalyticDeg = g1Ea;
         fr.splineG1BAnalyticDeg = g1Ba;
         fr.splineG1RMeshDeg = g1Rm;
-        fr.midFlagged = infl.maxOppTurnDeg >= SPLINE_INFL_ACCEPT_DEG;
+        fr.midFlagged = inflCount > 0;
         const landingFrom = Math.max(0, col.length - 1 - SPLINE_LANDING_TAIL_ROWS);
         let landTurn = 0;
         for (let t = 0; t < turns.length; t++) {
@@ -7353,63 +7332,39 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         );
     }
     const residualStations: ResidualStation[] = [];
-    const inflRemainder: Array<{ i: number; u: number; maxOpp: number }> = [];
     if (styledSplineWalls(frames)) {
         for (let i = 0; i < nS; i++) {
             const fr = frames[i]!;
             maxLandingTurn = Math.max(maxLandingTurn, fr.splineLandingTurnDeg ?? 0);
-            const g1Rm = fr.splineG1RMeshDeg ?? 0;
             const turn = fr.splineMaxTurnDeg ?? 0;
             const along = fr.splineMaxAlongDeg ?? 0;
-            const land = fr.splineLandingTurnDeg ?? 0;
-            const landAlong = fr.splineLandingAlongDeg ?? 0;
-            if (
-                g1Rm > SPLINE_G1_MESH_MAX_DEG + 1e-6 ||
-                turn > SPLINE_TURN_MAX_DEG + 1e-6 ||
-                along > SPLINE_TURN_MAX_DEG + 1e-6
-            ) {
+            const infl = fr.splineInflCount ?? 0;
+            const maxOpp = fr.splineMaxOppTurn ?? 0;
+            if (turn > SPLINE_TURN_MAX_DEG + 1e-6 || along > SPLINE_TURN_MAX_DEG + 1e-6 || infl > 0) {
                 residualStations.push({
                     i,
                     u: Number(fr.u.toFixed(4)),
-                    g1Rm: Number(g1Rm.toFixed(4)),
                     turn: Number(turn.toFixed(4)),
                     along: Number(along.toFixed(4)),
-                    landingTurn: Number(land.toFixed(4)),
-                    landingAlong: Number(landAlong.toFixed(4)),
-                });
-            }
-            if (fr.inflRemainder) {
-                inflRemainder.push({
-                    i,
-                    u: Number(fr.u.toFixed(4)),
-                    maxOpp: Number((fr.splineMaxOppTurn ?? 0).toFixed(4)),
+                    infl,
+                    maxOpp: Number(maxOpp.toFixed(4)),
                 });
             }
         }
     }
-    const freezeMisses = residualStations.filter((r) => {
-        const worst = Math.max(r.g1Rm, r.turn, r.along);
-        return worst > SPLINE_G1_MESH_MAX_DEG + 1e-6;
-    });
     const freezeP99 = styledSplineWalls(frames) ? maxMidAcrossP99 || maxAcrossP99 : maxAcrossP99;
-    const freezeOk =
-        freezeP99 <= WALL_STYLE_ACROSS_P99_BLOCK_DEG + 1e-6 &&
-        freezeMisses.length <= SPLINE_FREEZE_MISS_STATIONS &&
-        freezeMisses.every((r) => Math.max(r.g1Rm, r.turn, r.along) <= SPLINE_FREEZE_MISS_MAX_DEG + 1e-6);
+    const freezeOk = freezeP99 <= WALL_STYLE_ACROSS_P99_BLOCK_DEG + 1e-6;
     if (styledSplineWalls(frames)) {
         console.log(
             "[RND-FREEZE]",
             JSON.stringify({
-                n: freezeMisses.length,
-                capN: SPLINE_FREEZE_MISS_STATIONS,
-                capDeg: SPLINE_FREEZE_MISS_MAX_DEG,
                 p99: Number(freezeP99.toFixed(4)),
                 p99Cap: WALL_STYLE_ACROSS_P99_BLOCK_DEG,
                 ok: freezeOk,
-                residuals: freezeMisses.slice(0, 16),
-                inflRemainder: inflRemainder.slice(0, 16),
                 landingTurn: Number(maxLandingTurn.toFixed(4)),
                 landingAlong: Number(maxLandingAlong.toFixed(4)),
+                nResidual: residualStations.length,
+                residuals: residualStations.slice(0, 24),
             }),
         );
     }
@@ -7520,7 +7475,6 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxLandingAlongDeg: maxLandingAlong,
         residualStations,
         freezeOk,
-        inflRemainder,
     };
 }
 

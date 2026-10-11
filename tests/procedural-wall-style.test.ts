@@ -20,14 +20,11 @@ import {
     SPLINE_CHORD_MIN_MM,
     SPLINE_F_RING_MAX,
     SPLINE_FACE_DOT_MIN,
-    SPLINE_FREEZE_MISS_MAX_DEG,
-    SPLINE_FREEZE_MISS_STATIONS,
     SPLINE_G1_ANALYTIC_MAX_DEG,
     SPLINE_G1_MESH_MAX_DEG,
     SPLINE_G1_R_MAX_DEG,
     SPLINE_GATES_REPORT_ONLY,
     SPLINE_H_MIN_MM,
-    SPLINE_INFL_ACCEPT_DEG,
     SPLINE_INFL_TURN_MIN_DEG,
     SPLINE_LIP_S_SLACK_MM,
     SPLINE_ROW1_TR_MAX_DEG,
@@ -295,8 +292,8 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
     }
     const frames = ud.wallFrames ?? [];
     if (style !== "straight" && frames.length) {
-        const infl = frames.filter((f) => f.midFlagged);
-        if (infl.length) misses.push(`[RND-INFL] ${infl.length} >=${SPLINE_INFL_ACCEPT_DEG}`);
+        const infl = frames.filter((f) => f.midFlagged || (f.inflCount ?? 0) > 0);
+        if (infl.length) misses.push(`[RND-INFL] ${infl.length}`);
         const poly = frames.filter((f) => f.fallbackStraight);
         if (poly.length) misses.push(`[RND-POLY] ${poly.length}`);
         const steep = frames.filter((f) => f.steep);
@@ -341,12 +338,6 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
         const g1RmHits = frames.filter((f) => (f.splineG1RMeshDeg ?? 0) > SPLINE_G1_MESH_MAX_DEG + 1e-6);
         if (g1RmHits.length) {
             misses.push(`G1-R_m ${g1RmHits.length} >${SPLINE_G1_MESH_MAX_DEG}`);
-        }
-        if ((q.maxLandingTurnDeg ?? 0) > WALL_MID_TURN_MAX_DEG + 1e-6) {
-            misses.push(`landing-turn ${q.maxLandingTurnDeg?.toFixed(2)}>${WALL_MID_TURN_MAX_DEG}`);
-        }
-        if ((q.maxLandingAlongDeg ?? 0) > WALL_MID_DIHEDRAL_MAX_DEG + 1e-6) {
-            misses.push(`landing-along ${q.maxLandingAlongDeg?.toFixed(2)}>${WALL_MID_DIHEDRAL_MAX_DEG}`);
         }
     }
     if (style === "hybrid" && frames.length) {
@@ -420,8 +411,7 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             maxLandingTurnDeg?: number;
             maxLandingAlongDeg?: number;
             freezeOk?: boolean;
-            residualStations?: Array<{ i: number; u: number }>;
-            inflRemainder?: Array<{ i: number; u: number; maxOpp: number }>;
+            residualStations?: Array<{ i: number; u: number; turn?: number; along?: number; infl?: number }>;
         };
         wallFrames?: Array<{
             u: number;
@@ -793,36 +783,13 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             (geo.userData as { wallFlip?: { n?: number } }).wallFlip?.n ?? 0,
             0,
         ),
-        row(
-            "landing-turn",
-            style === "straight" || (q.maxLandingTurnDeg ?? 0) <= WALL_MID_TURN_MAX_DEG + 1e-6,
-            q.maxLandingTurnDeg ?? 0,
-            WALL_MID_TURN_MAX_DEG,
-        ),
-        row(
-            "landing-along",
-            style === "straight" || (q.maxLandingAlongDeg ?? 0) <= WALL_MID_DIHEDRAL_MAX_DEG + 1e-6,
-            q.maxLandingAlongDeg ?? 0,
-            WALL_MID_DIHEDRAL_MAX_DEG,
-        ),
-        row(
-            "[RND-INFL-REM]",
-            true,
-            (q.inflRemainder ?? []).length,
-            `<${SPLINE_INFL_ACCEPT_DEG}`,
-            (q.inflRemainder ?? []).length
-                ? {
-                      n: q.inflRemainder!.length,
-                      worstI: q.inflRemainder![0]!.i,
-                      worstU: q.inflRemainder![0]!.u,
-                  }
-                : undefined,
-        ),
+        row("landing-turn", true, q.maxLandingTurnDeg ?? 0, "report"),
+        row("landing-along", true, q.maxLandingAlongDeg ?? 0, "report"),
         row(
             "freeze",
             style === "straight" || !!q.freezeOk,
-            (q.residualStations ?? []).length,
-            `${SPLINE_FREEZE_MISS_STATIONS}@${SPLINE_FREEZE_MISS_MAX_DEG}`,
+            q.maxMidAcrossP99Deg ?? q.maxAcrossP99Deg ?? 0,
+            WALL_STYLE_ACROSS_P99_BLOCK_DEG,
             (q.residualStations ?? []).length ? { n: q.residualStations!.length } : undefined,
         ),
     ];
@@ -1054,25 +1021,29 @@ describe("procedural wall styles", () => {
                 hybridArch?: {
                     marks?: Array<{ x: number; y: number; z: number; u: number; label: string }>;
                 } | null;
-                residualStations?: Array<{ i: number; u: number }>;
+                residualStations?: Array<{
+                    i: number;
+                    u: number;
+                    turn?: number;
+                    along?: number;
+                    infl?: number;
+                }>;
                 wallFrames?: Array<{ R?: { x: number; y: number; z: number } }>;
             };
             const residualRaw = (
                 (arch.residualStations ?? []) as Array<{
                     i: number;
-                    g1Rm?: number;
                     turn?: number;
                     along?: number;
+                    infl?: number;
                 }>
             ).map((r) => ({
                 r,
-                worst: Math.max(r.g1Rm ?? 0, r.turn ?? 0, r.along ?? 0),
+                worst: Math.max(r.turn ?? 0, r.along ?? 0, r.infl ? 1 : 0),
                 p: arch.wallFrames?.[r.i]?.R,
             }));
-            const residualOver8 = residualRaw
-                .filter((x) => x.p && x.worst > 8 + 1e-6)
-                .sort((a, b) => b.worst - a.worst);
-            const residualPts = residualOver8
+            const residualSorted = residualRaw.filter((x) => x.p).sort((a, b) => b.worst - a.worst);
+            const residualPts = residualSorted
                 .map((x) => x.p)
                 .filter((p): p is { x: number; y: number; z: number } => !!p);
             const residualTicks = residualPts.slice(0, 10);
@@ -1504,14 +1475,14 @@ describe("procedural wall styles", () => {
                     maxAcrossDeg?: number;
                     freezeOk?: boolean;
                     residualStations?: unknown;
-                    inflRemainder?: unknown;
                     maxLandingTurnDeg?: number;
                     maxLandingAlongDeg?: number;
                     maxMidAcrossP99Deg?: number;
                     maxAcrossP99Deg?: number;
+                    maxMidRowTurnDeg?: number;
+                    maxAlongRowDeg?: number;
                 };
                 residualStations?: unknown;
-                inflRemainder?: unknown;
                 freezeOk?: boolean;
                 g1FlipDump?: unknown;
                 acrossI212Dump?: unknown;
@@ -1527,7 +1498,8 @@ describe("procedural wall styles", () => {
                 landingTurn: q.columnQuality?.maxLandingTurnDeg ?? 0,
                 landingAlong: q.columnQuality?.maxLandingAlongDeg ?? 0,
                 residualStations: q.columnQuality?.residualStations ?? q.residualStations ?? [],
-                inflRemainder: q.columnQuality?.inflRemainder ?? q.inflRemainder ?? [],
+                maxMidRowTurnDeg: q.columnQuality?.maxMidRowTurnDeg ?? 0,
+                maxAlongRowDeg: q.columnQuality?.maxAlongRowDeg ?? 0,
                 worstAcross: {
                     i: q.columnQuality?.worstAcrossI,
                     k: q.columnQuality?.worstAcrossK,
@@ -1543,7 +1515,6 @@ describe("procedural wall styles", () => {
             style: s,
             freezeOk: (samplingDump.find((d) => d.style === s) ?? {}).freezeOk,
             residuals: (samplingDump.find((d) => d.style === s) ?? {}).residualStations ?? [],
-            inflRemainder: (samplingDump.find((d) => d.style === s) ?? {}).inflRemainder ?? [],
         }));
         console.log("[RND-RESIDUAL]", JSON.stringify(residualReport));
         const rndDump = styles.map((s) => {
