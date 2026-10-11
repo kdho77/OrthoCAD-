@@ -4254,8 +4254,11 @@ function applyStyleTilt(fr: ColumnFrame, theta: number): void {
         return;
     }
     const half = 0.5 * theta;
+    // φE −= θ/2 leans tE outward. In the fillet frame += would tilt the
+    // raw tangent inward, but midStyleEnds flips tF into E→F travel, which
+    // would make both ends lean out and S-fold. Subtract so tF_travel leans in.
     fr.phiRound1Lock = baseE - half;
-    fr.phiFLock = baseF + half;
+    fr.phiFLock = baseF - half;
     applyAlaToFrame(fr);
 }
 
