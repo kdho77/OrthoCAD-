@@ -16,20 +16,25 @@ import {
     jointDensityTable,
     minSOfSamples,
     parabolaHandleM,
+    polylineInflReport,
     printSplineGates,
     qOnNormalizedArc,
     SPLINE_CHORD_MIN_MM,
     SPLINE_GATES_REPORT_ONLY,
+    SPLINE_INFL_TURN_MIN_DEG,
     SPLINE_KNOTS,
     SPLINE_KNOTS_5,
     SPLINE_LAMBDA,
+    SPLINE_LIP_MS_SLACK_MM,
+    SPLINE_LIP_S_SLACK_MM,
     SPLINE_N_MAX,
-    SPLINE_S_MIN_MM,
     SPLINE_SHORT_LS_MM,
     type SplineStationInput,
     samplePolylineAtArcFractions,
     samplePolylinesByW,
     sampleSplineRingByW,
+    signedTurnSz,
+    solveLipParabolaJoint,
     solveSplineStation,
     splineBetaAt,
     stationGates,
@@ -142,7 +147,8 @@ describe("quadratic wall parabola", () => {
             const g = stationGates(sol, c.input.u, c.input.sideSign);
             printSplineGates({ ...g, u: c.input.u });
             printCorner(c.name, sol);
-            expect(sol.sMin).toBeGreaterThanOrEqual(SPLINE_S_MIN_MM - 1e-6);
+            const r1 = c.input.r1 ?? 0.5;
+            expect(sol.sMin).toBeGreaterThanOrEqual(-(r1 + SPLINE_LIP_S_SLACK_MM) - 1e-6);
             expect(sol.convex).toBe(true);
             const hard = g.misses.filter((m) => m.startsWith("sMin") || m === "not-convex");
             if (hard.length) misses.push(`${c.name}: ${hard.join(",")}`);
@@ -328,6 +334,62 @@ describe("quadratic wall parabola", () => {
         const g = stationGates(sol, 0.35, 1);
         expect(g.misses.some((m) => m.startsWith("sag"))).toBe(false);
         expect(g.misses.some((m) => m.startsWith("kappa"))).toBe(false);
+    });
+
+    test("lip-parabola joint: tP from M0, zero lip when tR is already inward", () => {
+        const H = 12;
+        const Ls = 10;
+        const r1 = 0.5;
+        const tR = { s: -1, z: 0 };
+        const joint = solveLipParabolaJoint(tR, H, Ls, r1, SPLINE_LAMBDA);
+        expect(joint.zeroLip).toBe(false);
+        expect(joint.lipTurn).toBeGreaterThan(Math.PI / 2);
+        expect(joint.E.z).toBeLessThan(H);
+        expect(joint.M.z).toBeCloseTo(0, 8);
+        expect(joint.M.s).toBeGreaterThanOrEqual(joint.E.s - 1e-9);
+        expect(joint.M.s).toBeLessThanOrEqual(Ls - SPLINE_LIP_MS_SLACK_MM + 1e-6);
+        const tP0 = { s: SPLINE_LAMBDA * Ls, z: -H };
+        const want = Math.atan2(tR.s * tP0.z - tR.z * tP0.s, tR.s * tP0.s + tR.z * tP0.z);
+        expect(
+            signedTurnSz(tR, { s: tP0.s / Math.hypot(tP0.s, tP0.z), z: tP0.z / Math.hypot(tP0.s, tP0.z) }),
+        ).toBeCloseTo(want, 8);
+        const alreadyIn = solveLipParabolaJoint({ s: 0.4, z: -0.9 }, H, Ls, r1, SPLINE_LAMBDA);
+        expect(alreadyIn.zeroLip).toBe(true);
+        expect(alreadyIn.lipTurn).toBe(0);
+        expect(alreadyIn.E.s).toBeCloseTo(0, 8);
+        expect(alreadyIn.E.z).toBeCloseTo(H, 8);
+    });
+
+    test("INFL counts a sign change only if both |turn| >= 0.2 deg", () => {
+        const R = { x: 0, y: 0, z: 10 };
+        const B = { x: 8, y: 0, z: 0 };
+        const h = { x: 1, y: 0 };
+        const oneWay = [
+            { x: 0, y: 0, z: 10 },
+            { x: -1, y: 0, z: 6 },
+            { x: 2, y: 0, z: 3 },
+            { x: 8, y: 0, z: 0 },
+        ];
+        const one = polylineInflReport(oneWay, R, B, h);
+        expect(one.inflCount).toBe(0);
+        const flip = [
+            { x: 0, y: 0, z: 10 },
+            { x: -2, y: 0, z: 7 },
+            { x: 3, y: 0, z: 5 },
+            { x: -1, y: 0, z: 2 },
+            { x: 8, y: 0, z: 0 },
+        ];
+        const two = polylineInflReport(flip, R, B, h);
+        expect(two.inflCount).toBeGreaterThan(0);
+        expect(two.maxOppTurnDeg).toBeGreaterThanOrEqual(SPLINE_INFL_TURN_MIN_DEG);
+        const tiny = [
+            { x: 0, y: 0, z: 10 },
+            { x: 0.0001, y: 0, z: 8 },
+            { x: 4, y: 0, z: 4 },
+            { x: 8, y: 0, z: 0 },
+        ];
+        const micro = polylineInflReport(tiny, R, B, h);
+        expect(micro.inflCount).toBe(0);
     });
 
     test("joint density samples both polylines at the same normalized-arc fractions", () => {

@@ -26,7 +26,6 @@ import {
     SPLINE_LIP_S_SLACK_MM,
     SPLINE_ROW1_TR_MAX_DEG,
     SPLINE_S_MIN_MM,
-    SPLINE_SEAM_B_MAX_DEG,
     SPLINE_SHORT_LS_MM,
     SPLINE_VOL_ERR_FRAC,
     SPLINE_WR_STEP_MAX,
@@ -175,6 +174,12 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             steep?: boolean;
             tRAngleDeg?: number;
             inflCount?: number;
+            maxOppTurnDeg?: number;
+            splineG1EDeg?: number;
+            splineLambda?: number;
+            splineLipTurnDeg?: number;
+            splineTRS?: number;
+            splineTRZ?: number;
             fallbackStraight?: boolean;
             midPlanOffMm?: number;
             splineRow1Deg?: number;
@@ -198,7 +203,7 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
     const q = ud.columnQuality ?? {};
     const misses: string[] = [];
     const g1ECap = style === "straight" ? G1_MAX_DEG : SPLINE_G1_R_MAX_DEG;
-    const g1FCap = style === "straight" ? G1_MAX_DEG : SPLINE_SEAM_B_MAX_DEG;
+    const g1FCap = style === "straight" ? G1_MAX_DEG : SPLINE_G1_R_MAX_DEG;
     if ((q.maxG1EDeg ?? 0) > g1ECap + 1e-6) misses.push(`G1-R ${q.maxG1EDeg?.toFixed(2)}>${g1ECap}`);
     if ((q.maxG1FDeg ?? 0) > g1FCap + 1e-6) misses.push(`seam-B ${q.maxG1FDeg?.toFixed(2)}>${g1FCap}`);
     const acrossP99 =
@@ -287,9 +292,13 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
         if (g1Hits.length) {
             misses.push(`G1-R ${g1Hits.length} >${SPLINE_G1_R_MAX_DEG}`);
         }
-        const seamHits = frames.filter((f) => (f.g1FDeg ?? 0) > SPLINE_SEAM_B_MAX_DEG + 1e-6);
+        const seamHits = frames.filter((f) => (f.g1FDeg ?? 0) > SPLINE_G1_R_MAX_DEG + 1e-6);
         if (seamHits.length) {
-            misses.push(`seam-B ${seamHits.length} >${SPLINE_SEAM_B_MAX_DEG}`);
+            misses.push(`G1-B ${seamHits.length} >${SPLINE_G1_R_MAX_DEG}`);
+        }
+        const g1EHits = frames.filter((f) => (f.splineG1EDeg ?? 0) > SPLINE_G1_R_MAX_DEG + 1e-6);
+        if (g1EHits.length) {
+            misses.push(`G1-E ${g1EHits.length} >${SPLINE_G1_R_MAX_DEG}`);
         }
     }
     if (style === "hybrid" && frames.length) {
@@ -384,6 +393,9 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             splineLipOk?: boolean;
             splineLipTurnMax?: number;
             splineLipTurnK?: number;
+            splineG1EDeg?: number;
+            splineG1BDeg?: number;
+            maxOppTurnDeg?: number;
             splineSMinLip?: number;
             splineSMinBody?: number;
             splineSMinK?: number;
@@ -445,7 +457,11 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
     );
     const seam = worstHi(
         (f) => f.g1FDeg ?? 0,
-        (v) => v > SPLINE_SEAM_B_MAX_DEG + 1e-6,
+        (v) => v > SPLINE_G1_R_MAX_DEG + 1e-6,
+    );
+    const g1EJoint = worstHi(
+        (f) => f.splineG1EDeg ?? 0,
+        (v) => v > SPLINE_G1_R_MAX_DEG + 1e-6,
     );
     const infl = worstHi(
         (f) => (f.midFlagged ? 1 : 0),
@@ -526,11 +542,18 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
     ): GateRow => ({ gate, pass, value, cap, ...extra });
     const rows: GateRow[] = [
         row(
-            "G1-R C'(0)",
+            "G1-R",
             !(style !== "straight" && g1.n),
             style === "straight" ? (q.maxG1EDeg ?? 0) : g1.n ? g1.v : (q.maxG1EDeg ?? 0),
             style === "straight" ? G1_MAX_DEG : SPLINE_G1_R_MAX_DEG,
             g1.n ? { n: g1.n, worstI: g1.i, worstU: g1.u } : undefined,
+        ),
+        row(
+            "G1-E",
+            !(style !== "straight" && g1EJoint.n),
+            g1EJoint.n ? g1EJoint.v : 0,
+            SPLINE_G1_R_MAX_DEG,
+            g1EJoint.n ? { n: g1EJoint.n, worstI: g1EJoint.i, worstU: g1EJoint.u } : undefined,
         ),
         row(
             "first-chord",
@@ -540,10 +563,10 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             chord.n ? { n: chord.n, worstI: chord.i, worstU: chord.u } : undefined,
         ),
         row(
-            "seam-B",
+            "G1-B",
             !(style !== "straight" && seam.n),
             seam.n ? seam.v : (q.maxG1FDeg ?? 0),
-            style === "straight" ? G1_MAX_DEG : SPLINE_SEAM_B_MAX_DEG,
+            style === "straight" ? G1_MAX_DEG : SPLINE_G1_R_MAX_DEG,
             seam.n ? { n: seam.n, worstI: seam.i, worstU: seam.u } : undefined,
         ),
         row(
@@ -804,6 +827,35 @@ describe("procedural wall styles", () => {
                 style,
                 JSON.stringify({ n: blendList.length, stations: blendList.slice(0, 48) }),
             );
+            const jointDump = (
+                (
+                    geo.userData as {
+                        wallFrames?: Array<{
+                            u?: number;
+                            splineLambda?: number;
+                            splineLipTurnDeg?: number;
+                            splineTRS?: number;
+                            splineTRZ?: number;
+                            splineWR?: number;
+                            splineLs?: number;
+                        }>;
+                    }
+                ).wallFrames ?? []
+            )
+                .map((f, i) => ({
+                    i,
+                    u: Number((f.u ?? 0).toFixed(4)),
+                    lambda: Number((f.splineLambda ?? 0).toFixed(4)),
+                    lipTurn: Number((f.splineLipTurnDeg ?? 0).toFixed(3)),
+                    tR: {
+                        s: Number((f.splineTRS ?? 0).toFixed(4)),
+                        z: Number((f.splineTRZ ?? 0).toFixed(4)),
+                    },
+                    wR: Number((f.splineWR ?? 0).toFixed(4)),
+                    Ls: Number((f.splineLs ?? 0).toFixed(4)),
+                }))
+                .filter((r) => r.i >= 188 && r.i <= 196);
+            console.log("[RND-JOINT-I]", style, JSON.stringify(jointDump));
             if (local.length) misses.push(`${style}: ${local.join("; ")}`);
             (geo.userData as { stlPath?: string }).stlPath = `/tmp/s1-stls/procedural-default-${style}.stl`;
             const pos = geo.getAttribute("position").array as Float32Array;

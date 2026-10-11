@@ -28,6 +28,7 @@ import {
     hybridArchWeightAtS,
     invertDensityW,
     jointDensityTable,
+    liftLipParabola,
     maxClosedStep,
     medialArchFromLoop,
     midArcKappaMaxMean,
@@ -36,8 +37,8 @@ import {
     minSAndIndex,
     nearestPointIndex,
     overEdgeTangent,
-    parabolaHandleM,
-    polylineInflCount,
+    periodicGaussian1d,
+    polylineInflReport,
     profileAreaBetween,
     quadSignedOnWall,
     ringFValues,
@@ -45,6 +46,7 @@ import {
     SPLINE_CHORD_MIN_MM,
     SPLINE_FACE_DOT_MIN,
     SPLINE_G1_R_MAX_DEG,
+    SPLINE_INFL_TURN_MIN_DEG,
     SPLINE_LAMBDA,
     SPLINE_LIP_S_SLACK_MM,
     SPLINE_LIP_TURN_ROWS,
@@ -53,16 +55,20 @@ import {
     SPLINE_ROW1_TR_MAX_DEG,
     SPLINE_S_MIN_MM,
     SPLINE_SHORT_LS_MM,
+    SPLINE_SMOOTH_SIGMA_MM,
     SPLINE_TURN_MAX_DEG,
     SPLINE_WR_STEP_MAX,
     type SplineStationInput,
     samplePolylineAtArcFractions,
-    sampleQuadraticDense,
+    seamBDeg,
     shortLsWeights,
+    solveLipParabolaJoint,
     splineGateFail,
     splineRhoNeed,
     stationSampleNeed,
     stationSzFrame,
+    toSz,
+    tRInSz,
     wallRowOutward,
     wallStripVolume,
     widenClosedRamp,
@@ -365,6 +371,7 @@ export interface ColumnFrame {
     splineSteep?: boolean;
     splineTRAngleDeg?: number;
     splineInflCount?: number;
+    splineMaxOppTurn?: number;
     splineFallback?: boolean;
     splineFk?: number[];
     splineL?: number;
@@ -395,9 +402,15 @@ export interface ColumnFrame {
     splineLipOk?: boolean;
     splineLipTurnMax?: number;
     splineLipTurnK?: number;
+    splineLipTurnDeg?: number;
     splineMaxWRStep?: number;
     splineShort?: boolean;
     splineLambda?: number;
+    splineG1EDeg?: number;
+    splineG1BDeg?: number;
+    splineTRS?: number;
+    splineTRZ?: number;
+    splineLs?: number;
     hybridArch?: HybridArchInfo;
     nLip?: number;
 }
@@ -4903,47 +4916,32 @@ function nLipFromFrames(frames: ColumnFrame[]): number {
     return Math.max(0, fr?.nLip ?? fr?.nRoundFix ?? fr?.roundRows ?? 0);
 }
 
-function unwindPhi(from: number, to: number): number {
-    let t = to;
-    while (t <= from + 1e-12) t += Math.PI * 2;
-    while (t > from + Math.PI * 2 + 1e-12) t -= Math.PI * 2;
-    if (t - from > Math.PI + 1e-6) t -= Math.PI * 2;
-    return t;
+function frameTR(fr: ColumnFrame): XYZ {
+    return (
+        fr.tInc ??
+        (fr.sheetPlaneN ? incidentFaceTangent(fr.sheetPlaneN, fr.h) : null) ?? {
+            x: -fr.h.x,
+            y: -fr.h.y,
+            z: 0,
+        }
+    );
 }
 
-/** Top-round R→E into (M−E), then one quadratic E→M→B. */
+function frameR1(fr: ColumnFrame): number {
+    return Math.max(MIN_ROUND_R_MM, fr.rTop || 0.5);
+}
+
+/** Top-round R→E into tP, then one quadratic E→M→B from the (s, z) joint. */
 function roundLipAndParabola(
     fr: ColumnFrame,
     lambda = SPLINE_LAMBDA,
-): { lip: XYZ[]; body: XYZ[]; E: XYZ; M: XYZ; r1: number } {
-    const r1 = Math.max(MIN_ROUND_R_MM, fr.rTop || 0.5);
-    const sw = fr.sweepRule;
-    const eN = sw?.eN ?? unit3(fr.nTop ?? { x: 0, y: 0, z: 1 });
-    const tRim = fr.tInc ?? { x: -fr.h.y, y: fr.h.x, z: 0 };
-    const eW = sw?.eW ?? rimInSurfaceOutward(eN, tRim, fr.h);
-    const C1 = add3(fr.R, eN, -r1);
-    let phi = sw?.phiRound1 ?? Math.PI / 2;
-    let E = sweptRoundPoint(C1, r1, eN, eW, phi);
-    let M = parabolaHandleM(E, fr.B, fr.R, fr.h, lambda);
-    for (let iter = 0; iter < 8; iter++) {
-        const d = { x: M.x - E.x, y: M.y - E.y, z: M.z - E.z };
-        const dRnd = projectOntoSpan(d, eW, eN);
-        const dRu = hypot3(dRnd) > 1e-9 ? unit3(dRnd) : { x: 0, y: 0, z: -1 };
-        let next = unwindPhi(0, Math.atan2(-dot3(dRu, eN), dot3(dRu, eW)));
-        if (Math.abs(next) < 1e-4) next = Math.PI / 2;
-        phi = next;
-        E = sweptRoundPoint(C1, r1, eN, eW, phi);
-        M = parabolaHandleM(E, fr.B, fr.R, fr.h, lambda);
-    }
-    const nLip = 48;
-    const lip: XYZ[] = [];
-    for (let i = 0; i <= nLip; i++) lip.push(sweptRoundPoint(C1, r1, eN, eW, (phi * i) / nLip));
-    if (lip.length) {
-        lip[0] = { ...fr.R };
-        lip[lip.length - 1] = { ...E };
-    }
-    const body = sampleQuadraticDense(E, M, fr.B);
-    return { lip, body, E, M, r1 };
+    lipTurn?: number,
+): { lip: XYZ[]; body: XYZ[]; E: XYZ; M: XYZ; r1: number; joint: ReturnType<typeof solveLipParabolaJoint> } {
+    const r1 = frameR1(fr);
+    const sz = stationSzFrame(fr.R, fr.B, fr.h);
+    const joint = solveLipParabolaJoint(tRInSz(frameTR(fr), fr.h), sz.H, sz.Ls, r1, lambda, lipTurn);
+    const lifted = liftLipParabola(joint, sz.origin, sz.h, fr.B, fr.R);
+    return { ...lifted, r1, joint };
 }
 
 /** Sample the whole R→B profile; HYBRID blends at shared joint-q arc fractions. */
@@ -5040,18 +5038,38 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         return why;
     });
     const active = frames.map((_, i) => (Ls[i] ?? 0) >= SPLINE_SHORT_LS_MM);
+    const lambdaRaw = frames.map(() => SPLINE_LAMBDA);
+    const lambdaSm = periodicGaussian1d(lambdaRaw, arc, SPLINE_SMOOTH_SIGMA_MM, period);
+    const alphaRaw = frames.map((fr, i) => {
+        const sz = stationSzFrame(fr.R, fr.B, fr.h);
+        return solveLipParabolaJoint(
+            tRInSz(frameTR(fr), fr.h),
+            sz.H,
+            sz.Ls,
+            frameR1(fr),
+            lambdaSm[i] ?? SPLINE_LAMBDA,
+        ).lipTurn;
+    });
+    const alphaSm = periodicGaussian1d(alphaRaw, arc, SPLINE_SMOOTH_SIGMA_MM, period);
     const fullRound: XYZ[][] = [];
     const fullStraight: XYZ[][] = [];
     const parabolaE: XYZ[] = [];
     const parabolaM: XYZ[] = [];
+    const joints: ReturnType<typeof solveLipParabolaJoint>[] = [];
     for (let i = 0; i < nS; i++) {
         const fr = frames[i]!;
         const col = straightCols[i]!;
-        const built = roundLipAndParabola(fr, SPLINE_LAMBDA);
+        const built = roundLipAndParabola(fr, lambdaSm[i] ?? SPLINE_LAMBDA, alphaSm[i]);
+        joints.push(built.joint);
         parabolaE.push(built.E);
         parabolaM.push(built.M);
         fr.E = built.E;
         fr.rTop = built.r1;
+        fr.splineLambda = built.joint.lambda;
+        fr.splineLipTurnDeg = (built.joint.lipTurn * 180) / Math.PI;
+        fr.splineTRS = built.joint.tR.s;
+        fr.splineTRZ = built.joint.tR.z;
+        fr.splineLs = built.joint.Ls;
         const profile = concatProfiles(built.lip, built.body);
         if (profile.length) {
             profile[0] = { ...fr.R };
@@ -5224,12 +5242,49 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const sMinK = bodyS.sMin <= lipS.sMin ? kE + bodyS.k : lipS.k;
         const row1 = col[1] ?? col[0]!;
         const row1Deg = row1TRAngleDeg(row1, fr.R, tR, fr.h);
-        const g1C = evaluated ? g1AtE(sol.poly, tE, fr.h) : 0;
-        if (evaluated && g1C > SPLINE_G1_R_MAX_DEG + 1e-6) {
+        const joint = joints[i]!;
+        const tP3 = {
+            x: fr.h.x * joint.tP.s,
+            y: fr.h.y * joint.tP.s,
+            z: joint.tP.z,
+        };
+        const g1R = row1Deg;
+        const g1E = (() => {
+            if (kE >= col.length - 1) return evaluated ? g1AtE(sol.poly, tE, fr.h) : 0;
+            const d = {
+                x: col[kE + 1]!.x - col[kE]!.x,
+                y: col[kE + 1]!.y - col[kE]!.y,
+                z: col[kE + 1]!.z - col[kE]!.z,
+            };
+            const deg = vecAngleDeg(d, tP3);
+            return Math.min(deg, 180 - deg);
+        })();
+        const g1B = seamBDeg(col);
+        const g1C = g1R;
+        if (evaluated && g1R > SPLINE_G1_R_MAX_DEG + 1e-6) {
             splineGateFail("[RND-G1]", {
                 i,
                 u: Number(fr.u.toFixed(4)),
-                deg: Number(g1C.toFixed(4)),
+                at: "R",
+                deg: Number(g1R.toFixed(4)),
+                cap: SPLINE_G1_R_MAX_DEG,
+            });
+        }
+        if (evaluated && g1E > SPLINE_G1_R_MAX_DEG + 1e-6) {
+            splineGateFail("[RND-G1]", {
+                i,
+                u: Number(fr.u.toFixed(4)),
+                at: "E",
+                deg: Number(g1E.toFixed(4)),
+                cap: SPLINE_G1_R_MAX_DEG,
+            });
+        }
+        if (evaluated && g1B > SPLINE_G1_R_MAX_DEG + 1e-6) {
+            splineGateFail("[RND-G1]", {
+                i,
+                u: Number(fr.u.toFixed(4)),
+                at: "B",
+                deg: Number(g1B.toFixed(4)),
                 cap: SPLINE_G1_R_MAX_DEG,
             });
         }
@@ -5265,17 +5320,30 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const area = profileAreaBetween(used, straightPts, fr.R, fr.B, fr.h);
         const kappaMean = midArcKappaMaxMean(bodyPts.length >= 3 ? bodyPts : col);
         const kappaRatio = midArcKappaRatio(bodyPts.length >= 3 ? bodyPts : col);
-        const inflCount = polylineInflCount(used, fr.R, fr.B, fr.h);
+        const infl = polylineInflReport(used, fr.R, fr.B, fr.h);
+        const inflCount = infl.inflCount;
         if (evaluated && w > 0.05 && inflCount > 0) {
             splineGateFail("[RND-INFL]", {
                 i,
                 u: Number(fr.u.toFixed(4)),
                 infl: inflCount,
+                maxOpp: Number(infl.maxOppTurnDeg.toFixed(4)),
                 w: Number(w.toFixed(4)),
             });
         }
+        if (evaluated && wRaw > 1e-6 && wRaw < 1 - 1e-6 && infl.maxOppTurnDeg >= SPLINE_INFL_TURN_MIN_DEG) {
+            splineGateFail("[RND-SHORT]", {
+                i,
+                u: Number(fr.u.toFixed(4)),
+                wR: Number(wRaw.toFixed(4)),
+                opp: Number(infl.maxOppTurnDeg.toFixed(4)),
+                infl: inflCount,
+            });
+        }
         fr.g1EDeg = g1C;
-        fr.g1FDeg = sol.seamBDeg;
+        fr.g1FDeg = g1B;
+        fr.splineG1EDeg = g1E;
+        fr.splineG1BDeg = g1B;
         fr.midFlagged = inflCount > 0;
         fr.midPeakHFrac = sol.peakZFrac;
         fr.midBulgeHFrac = bulgeVsStraightFrac(used, straightPts, fr.heightMm);
@@ -5291,6 +5359,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineSteep = sol.steep;
         fr.splineTRAngleDeg = sol.tRAngleDeg;
         fr.splineInflCount = inflCount;
+        fr.splineMaxOppTurn = infl.maxOppTurnDeg;
         fr.splineFallback = sol.fallbackStraight;
         fr.splineFk = f[i];
         fr.splineL = L;
@@ -5319,7 +5388,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineLipTurnMax = lipTurnMax;
         fr.splineLipTurnK = lipTurnK;
         fr.splineShort = (Ls[i] ?? 0) < SPLINE_SHORT_LS_MM;
-        fr.splineLambda = SPLINE_LAMBDA;
+        fr.splineLambda = joint.lambda;
         fr.nLip = kE;
         const rhoNeed = splineRhoNeed(L, N);
         const rhoMin = evaluated ? minRhoFirstArc(used) : Number.POSITIVE_INFINITY;
@@ -5545,6 +5614,61 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             g: sorted(solves.map((s) => s.g)),
         }),
     );
+    const jointI: Array<{
+        i: number;
+        u: number;
+        lambda: number;
+        lipTurn: number;
+        tR: { s: number; z: number };
+        wR: number;
+        Ls: number;
+    }> = [];
+    for (let i = 188; i <= 196; i++) {
+        const fr = frames[i];
+        if (!fr) continue;
+        jointI.push({
+            i,
+            u: Number(fr.u.toFixed(4)),
+            lambda: Number((fr.splineLambda ?? 0).toFixed(4)),
+            lipTurn: Number((fr.splineLipTurnDeg ?? 0).toFixed(3)),
+            tR: { s: Number((fr.splineTRS ?? 0).toFixed(4)), z: Number((fr.splineTRZ ?? 0).toFixed(4)) },
+            wR: Number((fr.splineWR ?? 0).toFixed(4)),
+            Ls: Number((Ls[i] ?? 0).toFixed(4)),
+        });
+    }
+    if (jointI.length) console.log("[RND-JOINT-I]", JSON.stringify(jointI));
+    if (style === "hybrid") {
+        let best = 0;
+        let bestD = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < nS; i++) {
+            const d = Math.abs((frames[i]!.u ?? 0) - 0.44);
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+        }
+        const col = xyz[best] ?? [];
+        const fr = frames[best]!;
+        const sz = stationSzFrame(fr.R, fr.B, fr.h);
+        const turns = columnRowTurns(col);
+        const k13 = turns[12] ?? 0;
+        const rows = col.map((p, k) => {
+            const q = toSz(p, sz.origin, sz.h);
+            return { k, s: Number(q.s.toFixed(4)), z: Number(q.z.toFixed(4)) };
+        });
+        console.log(
+            "[HYB-U044]",
+            JSON.stringify({
+                i: best,
+                u: Number(fr.u.toFixed(4)),
+                k: 13,
+                turn: Number(k13.toFixed(4)),
+                persist: k13 > SPLINE_TURN_MAX_DEG + 1e-6,
+                wR: Number((fr.splineWR ?? 0).toFixed(4)),
+                rows,
+            }),
+        );
+    }
 }
 
 /**

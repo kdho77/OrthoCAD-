@@ -84,6 +84,12 @@ export const SPLINE_SHORT_LS_MM = 2;
 export const SPLINE_SHORT_BLEND_MM = 15;
 /** Medial-arch ramp length, inside [u_a0, u_a1]. */
 export const HYBRID_ARCH_LB_MM = 20;
+/** Lb = min(HYBRID_ARCH_LB_MM, this × arch length) so w reaches 1. */
+export const HYBRID_ARCH_LB_FRAC = 0.3;
+/** INFL: both sides of a sign change must be at least this. */
+export const SPLINE_INFL_TURN_MIN_DEG = 0.2;
+/** Cap the lip so M.s ≤ Ls − this. */
+export const SPLINE_LIP_MS_SLACK_MM = 0.5;
 export const SPLINE_FACE_DOT_MIN = -0.2;
 export const SPLINE_VOL_ERR_FRAC = 0.01;
 export const SPLINE_H_MIN_MM = 6;
@@ -174,6 +180,7 @@ export interface SplineSolve {
     seamBDeg: number;
     infl: boolean;
     inflCount: number;
+    maxOppTurnDeg: number;
     convex: boolean;
     insetMin: number;
     planOffset: number;
@@ -211,6 +218,7 @@ export interface SplineGatePrint {
     seamBDeg: number;
     infl: number;
     inflCount: number;
+    maxOppTurnDeg: number;
     convex: boolean;
     insetMin: number;
     planOffset: number;
@@ -353,7 +361,13 @@ export function quadraticBezierTangent(P0: XYZ, P1: XYZ, P2: XYZ, t: number): XY
     };
 }
 
-/** M = (s_E + λ (Ls − s_E), 0) in the column (s, z) frame. */
+/** M0 = (λ Ls, 0) in the column (s, z) frame. */
+export function parabolaHandleM0(B: XYZ, R: XYZ, h: { x: number; y: number }, lambda = SPLINE_LAMBDA): XYZ {
+    const fr = stationSzFrame(R, B, h);
+    return fromSz({ s: clampLambda(lambda) * fr.Ls, z: 0 }, fr.origin, fr.h);
+}
+
+/** Legacy M = (s_E + λ (Ls − s_E), 0). Prefer solveLipParabolaJoint. */
 export function parabolaHandleM(
     E: XYZ,
     B: XYZ,
@@ -365,6 +379,172 @@ export function parabolaHandleM(
     const sE = toSz(E, fr.origin, fr.h).s;
     const lam = clampLambda(lambda);
     return fromSz({ s: sE + lam * (fr.Ls - sE), z: 0 }, fr.origin, fr.h);
+}
+
+export interface LipParabolaJoint {
+    E: Sz;
+    M: Sz;
+    tR: Sz;
+    tP: Sz;
+    lambda: number;
+    lipTurn: number;
+    r1: number;
+    H: number;
+    Ls: number;
+    zeroLip: boolean;
+    capped: boolean;
+}
+
+function rotate90CcwSz(t: Sz): Sz {
+    return { s: -t.z, z: t.s };
+}
+
+function rotateSz(t: Sz, ang: number): Sz {
+    const c = Math.cos(ang);
+    const s = Math.sin(ang);
+    return { s: t.s * c - t.z * s, z: t.s * s + t.z * c };
+}
+
+function unitSz(t: Sz): Sz {
+    const l = hypot2(t.s, t.z) || 1;
+    return { s: t.s / l, z: t.z / l };
+}
+
+/** Signed CCW turn from `from` to `to` in the (s, z) plane. */
+export function signedTurnSz(from: Sz, to: Sz): number {
+    return Math.atan2(from.s * to.z - from.z * to.s, from.s * to.s + from.z * to.z);
+}
+
+/** Circular lip: E = R + r1 sin(α) tR + r1 (1−cos(α)) n, n = rotate90CCW(tR). */
+export function lipArcEnd(R: Sz, tR: Sz, r1: number, alpha: number): Sz {
+    const n = rotate90CcwSz(tR);
+    const sA = Math.sin(alpha);
+    const cA = Math.cos(alpha);
+    return {
+        s: R.s + r1 * sA * tR.s + r1 * (1 - cA) * n.s,
+        z: R.z + r1 * sA * tR.z + r1 * (1 - cA) * n.z,
+    };
+}
+
+export function plantarHit(E: Sz, tP: Sz): Sz | null {
+    if (Math.abs(tP.z) < 1e-9) return null;
+    const t = -E.z / tP.z;
+    if (t < -1e-9) return null;
+    return { s: E.s + t * tP.s, z: 0 };
+}
+
+function jointFromAlpha(
+    R: Sz,
+    tR: Sz,
+    r1: number,
+    alpha: number,
+    lambda: number,
+    Ls: number,
+): {
+    E: Sz;
+    M: Sz;
+    tP: Sz;
+} {
+    const tP = alpha <= 1e-12 ? tR : unitSz(rotateSz(tR, alpha));
+    const E = alpha <= 1e-12 ? { ...R } : lipArcEnd(R, tR, r1, alpha);
+    return { E, M: plantarHit(E, tP) ?? { s: lambda * Ls, z: 0 }, tP };
+}
+
+/**
+ * Lip-to-parabola joint in the column (s, z) frame.
+ * tP = normalize(M0 − R), M0 = (λ Ls, 0). Zero lip when tR→tP turn ≤ 0.
+ * M = (E, tP) ∩ z=0. Cap α so M.s ≤ Ls − 0.5.
+ */
+export function solveLipParabolaJoint(
+    tR: Sz,
+    H: number,
+    Ls: number,
+    r1: number,
+    lambda = SPLINE_LAMBDA,
+    lipTurn?: number,
+): LipParabolaJoint {
+    const lam = clampLambda(lambda);
+    const R: Sz = { s: 0, z: H };
+    const tRu = unitSz(tR);
+    const M0: Sz = { s: lam * Math.max(Ls, 0), z: 0 };
+    const tP0 = unitSz({ s: M0.s - R.s, z: M0.z - R.z });
+    let alpha = lipTurn ?? signedTurnSz(tRu, tP0);
+    let zeroLip = false;
+    if (alpha <= 1e-12) {
+        alpha = 0;
+        zeroLip = true;
+    }
+    const capMs = Ls - SPLINE_LIP_MS_SLACK_MM;
+    const apply = (a: number) => jointFromAlpha(R, tRu, Math.max(r1, 1e-6), a, lam, Ls);
+    let built = apply(alpha);
+    let capped = false;
+    if (built.M.s > capMs + 1e-9 && alpha > 0) {
+        let lo = 0;
+        let hi = alpha;
+        for (let i = 0; i < 40; i++) {
+            const mid = 0.5 * (lo + hi);
+            if (apply(mid).M.s > capMs + 1e-9) hi = mid;
+            else lo = mid;
+        }
+        alpha = lo;
+        built = apply(alpha);
+        capped = true;
+        if (alpha <= 1e-12) {
+            alpha = 0;
+            zeroLip = true;
+            built = apply(0);
+        }
+    }
+    if (built.M.s + 1e-9 < built.E.s) {
+        built = { ...built, M: { s: built.E.s, z: 0 } };
+    }
+    if (built.M.s > Ls + 1e-9) {
+        built = { ...built, M: { s: Math.max(built.E.s, Math.min(Ls, capMs)), z: 0 } };
+        capped = true;
+    }
+    return {
+        E: built.E,
+        M: built.M,
+        tR: tRu,
+        tP: built.tP,
+        lambda: lam,
+        lipTurn: alpha,
+        r1: Math.max(r1, 1e-6),
+        H,
+        Ls,
+        zeroLip,
+        capped,
+    };
+}
+
+export function sampleLipArc(R: Sz, tR: Sz, r1: number, alpha: number, n = 48): Sz[] {
+    if (alpha <= 1e-12) return [{ ...R }];
+    const out: Sz[] = [];
+    const nUse = Math.max(1, n);
+    for (let i = 0; i <= nUse; i++) {
+        out.push(i === 0 ? { ...R } : lipArcEnd(R, tR, r1, (alpha * i) / nUse));
+    }
+    return out;
+}
+
+export function liftLipParabola(
+    joint: LipParabolaJoint,
+    origin: XYZ,
+    h: { x: number; y: number },
+    B: XYZ,
+    R: XYZ,
+): { lip: XYZ[]; body: XYZ[]; E: XYZ; M: XYZ } {
+    const Rsz: Sz = { s: 0, z: joint.H };
+    const lip = sampleLipArc(Rsz, joint.tR, joint.r1, joint.lipTurn).map((p) => fromSz(p, origin, h));
+    const E = fromSz(joint.E, origin, h);
+    const M = fromSz(joint.M, origin, h);
+    if (lip.length) {
+        lip[0] = { ...R };
+        lip[lip.length - 1] = { ...E };
+    } else {
+        lip.push({ ...R });
+    }
+    return { lip, body: sampleQuadraticDense(E, M, B), E, M };
 }
 
 export function sampleQuadraticDense(P0: XYZ, P1: XYZ, P2: XYZ, n = SPLINE_DENSE): XYZ[] {
@@ -409,7 +589,7 @@ export function hybridArchWeightAtS(s: number, arch: HybridArchSpan, sideSign: 1
     if (sideSign < 0) return 0;
     const span = arch.sA1 - arch.sA0;
     if (span <= 1e-6) return 0;
-    const lb = Math.min(arch.lbMm, 0.5 * span);
+    const lb = Math.min(arch.lbMm, HYBRID_ARCH_LB_FRAC * span);
     return smoothstep01(arch.sA0, arch.sA0 + lb, s) * (1 - smoothstep01(arch.sA1 - lb, arch.sA1, s));
 }
 
@@ -421,7 +601,7 @@ export function hybridArchWeight(
     if (sideSign < 0 || !arch) return 0;
     const span = arch.uA1 - arch.uA0;
     if (span <= 1e-6) return 0;
-    const lb = Math.min(arch.lbU, 0.5 * span);
+    const lb = Math.min(arch.lbU, HYBRID_ARCH_LB_FRAC * span);
     return smoothstep01(arch.uA0, arch.uA0 + lb, u) * (1 - smoothstep01(arch.uA1 - lb, arch.uA1, u));
 }
 
@@ -514,7 +694,7 @@ export function medialArchFromLoop(
         uA1 = tmpU;
     }
     const spanS = sA1 - sA0;
-    const lbMm = Math.min(HYBRID_ARCH_LB_MM, 0.5 * Math.max(spanS, 0));
+    const lbMm = Math.min(HYBRID_ARCH_LB_MM, HYBRID_ARCH_LB_FRAC * Math.max(spanS, 0));
     const lbU = spanS > 1e-9 ? (lbMm / spanS) * (uA1 - uA0) : 0;
     const atS = (sTarget: number): { i: number; u: number; s: number; p: XYZ } => {
         let best = 0;
@@ -1030,36 +1210,82 @@ export function polygonConvex(poly: XYZ[], h: { x: number; y: number }): boolean
     return sign !== 0 || sz.length < 3;
 }
 
-export function polylineInflCount(samples: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: number }): number {
-    const n = chordOutwardNormal(R, B, h);
-    const ks: number[] = [];
-    for (let i = 1; i < samples.length - 1; i++) {
-        const a = samples[i - 1]!;
-        const b = samples[i]!;
-        const c = samples[i + 1]!;
-        const d1 = sub(b, a);
-        const d2 = sub(c, b);
-        const cr = {
-            x: d1.y * d2.z - d1.z * d2.y,
-            y: d1.z * d2.x - d1.x * d2.z,
-            z: d1.x * d2.y - d1.y * d2.x,
-        };
-        ks.push(dot(cr, n));
+/** Signed (s, z) turn at each interior vertex, degrees. */
+export function polylineSignedTurnsDeg(
+    samples: XYZ[],
+    R: XYZ,
+    B: XYZ,
+    h: { x: number; y: number },
+): number[] {
+    const fr = stationSzFrame(R, B, h);
+    const sz = samples.map((p) => toSz(p, fr.origin, fr.h));
+    const turns: number[] = [];
+    for (let i = 1; i < sz.length - 1; i++) {
+        const d1 = { s: sz[i]!.s - sz[i - 1]!.s, z: sz[i]!.z - sz[i - 1]!.z };
+        const d2 = { s: sz[i + 1]!.s - sz[i]!.s, z: sz[i + 1]!.z - sz[i]!.z };
+        if (hypot2(d1.s, d1.z) < 1e-14 || hypot2(d2.s, d2.z) < 1e-14) {
+            turns.push(0);
+            continue;
+        }
+        turns.push((signedTurnSz(unitSz(d1), unitSz(d2)) * 180) / Math.PI);
     }
-    const maxAbs = Math.max(...ks.map((k) => Math.abs(k)), 0);
-    const eps = Math.max(1e-10, 0.02 * maxAbs);
-    let sign = 0;
-    let flips = 0;
-    for (const k of ks) {
-        if (Math.abs(k) < eps) continue;
-        const s = k > 0 ? 1 : -1;
-        if (sign === 0) sign = s;
-        else if (s !== sign) {
-            flips++;
-            sign = s;
+    return turns;
+}
+
+export interface InflReport {
+    inflCount: number;
+    maxOppTurnDeg: number;
+    turns: number[];
+}
+
+/**
+ * Sign change only if |turn| ≥ 0.2° on both sides.
+ * maxOppTurnDeg is the largest opposite-sense |turn|.
+ */
+export function polylineInflReport(
+    samples: XYZ[],
+    R: XYZ,
+    B: XYZ,
+    h: { x: number; y: number },
+    minDeg = SPLINE_INFL_TURN_MIN_DEG,
+): InflReport {
+    const turns = polylineSignedTurnsDeg(samples, R, B, h);
+    let pos = 0;
+    let neg = 0;
+    for (const t of turns) {
+        if (Math.abs(t) < minDeg) continue;
+        if (t > 0) pos++;
+        else neg++;
+    }
+    let dom = 0;
+    if (pos || neg) dom = pos >= neg ? 1 : -1;
+    else {
+        let biggest = 0;
+        for (const t of turns) {
+            if (Math.abs(t) > Math.abs(biggest)) biggest = t;
+        }
+        if (Math.abs(biggest) > 1e-12) dom = biggest > 0 ? 1 : -1;
+    }
+    let maxOpp = 0;
+    for (const t of turns) {
+        if (dom !== 0 && t * dom < 0) maxOpp = Math.max(maxOpp, Math.abs(t));
+    }
+    let inflCount = 0;
+    let prev = 0;
+    for (const t of turns) {
+        if (Math.abs(t) < minDeg) continue;
+        const s = t > 0 ? 1 : -1;
+        if (prev === 0) prev = s;
+        else if (s !== prev) {
+            inflCount++;
+            prev = s;
         }
     }
-    return flips;
+    return { inflCount, maxOppTurnDeg: maxOpp, turns };
+}
+
+export function polylineInflCount(samples: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: number }): number {
+    return polylineInflReport(samples, R, B, h).inflCount;
 }
 
 export function polylineInfl(samples: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: number }): boolean {
@@ -1154,14 +1380,15 @@ function measureOf(poly: XYZ[], E: XYZ, B: XYZ, R: XYZ, h: { x: number; y: numbe
             : sampleSplineDense(poly);
     const sag = splineSagitta(dense, E, B, h, R);
     const plan = planBounds(dense, R, B, h);
-    const inflCount = polylineInflCount(dense, E, B, h);
+    const infl = polylineInflReport(dense, E, B, h);
     return {
         dense,
         ...sag,
         ...plan,
-        inflCount,
-        infl: inflCount > 0,
-        convex: inflCount === 0,
+        inflCount: infl.inflCount,
+        maxOppTurnDeg: infl.maxOppTurnDeg,
+        infl: infl.inflCount > 0,
+        convex: infl.inflCount === 0,
         g1RDeg: g1AtE(poly, tE, h),
         seamBDeg: seamBDeg(dense),
         maxTurnDeg: maxPolylineTurn(dense),
@@ -1217,6 +1444,7 @@ function finishSolve(
               insetMin: 0,
               offsetMax: 0,
               inflCount: 0,
+              maxOppTurnDeg: 0,
               infl: false,
               convex: true,
               g1RDeg: 0,
@@ -1261,6 +1489,7 @@ function finishSolve(
         seamBDeg: m.seamBDeg,
         infl: m.infl,
         inflCount: m.inflCount,
+        maxOppTurnDeg: m.maxOppTurnDeg,
         convex: m.convex,
         insetMin: m.insetMin,
         planOffset: m.offsetMax,
@@ -1275,32 +1504,34 @@ function finishSolve(
 
 /**
  * Body E→B: one quadratic Bezier P0=E, P1=M, P2=B.
- * M sits on the plantar at s = s_E + λ (Ls − s_E), λ = 0.5.
+ * Lip + M from solveLipParabolaJoint (tP = normalize(M0−R), M = (E,tP)∩z=0).
  */
 export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const { R, B } = input;
     const r1 = input.r1 ?? ROUND_R1_OVER_HEEL * HEEL_EDGE_THICKNESS_MM;
-    const E = input.E ?? lipEndFromR(R, input.h, r1);
     const fr = stationSzFrame(R, B, input.h);
-    const M = parabolaHandleM(E, B, R, fr.h, SPLINE_LAMBDA);
+    const tSz = tRInSz(input.tR, fr.h);
+    const joint = solveLipParabolaJoint(tSz, fr.H, fr.Ls, r1, SPLINE_LAMBDA);
+    const E = fromSz(joint.E, fr.origin, fr.h);
+    const M = fromSz(joint.M, fr.origin, fr.h);
     const tE = bodyTangentFromE(E, B, fr.h, input.tE ?? sub(M, E));
     void tE;
     const eb = hypot3(sub(B, E));
-    const beta = SPLINE_LAMBDA;
+    const beta = joint.lambda;
     const extra: SplineSolveExtra = {
         corner: false,
         oMin: 0,
         rhoNeed: splineRhoNeed(eb),
         eb,
-        r1,
+        r1: joint.r1,
         beta,
         sBound: false,
     };
     if (fr.Ls < SPLINE_SHORT_LS_MM) {
-        return finishSolve(input, [E, B], 0, 0, 0, beta, true, extra);
+        return finishSolve({ ...input, E, tE, r1: joint.r1 }, [E, B], 0, 0, 0, beta, true, extra);
     }
     const a = hypot3(sub(M, E));
-    return finishSolve(input, [E, M, { ...B }], a, 0, 0, beta, false, extra);
+    return finishSolve({ ...input, E, tE, r1: joint.r1 }, [E, M, { ...B }], a, 0, 0, beta, false, extra);
 }
 
 /** Rebuild is a no-op for the quadratic; g/a are unused. */
@@ -1852,8 +2083,11 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
     if (s.fallbackStraight) misses.push("[RND-POLY]");
     if (!s.convex) misses.push("not-convex");
     if (s.inflCount > 0) misses.push(`sign-changes ${s.inflCount}`);
+    if (s.maxOppTurnDeg >= SPLINE_INFL_TURN_MIN_DEG) {
+        misses.push(`opp-turn ${s.maxOppTurnDeg.toFixed(3)}`);
+    }
     if (s.g1RDeg > SPLINE_G1_R_MAX_DEG + 1e-6) misses.push(`G1-E ${s.g1RDeg.toFixed(3)}`);
-    if (s.seamBDeg > SPLINE_SEAM_B_MAX_DEG + 1e-6) misses.push(`seam-B ${s.seamBDeg.toFixed(3)}`);
+    if (s.seamBDeg > SPLINE_G1_R_MAX_DEG + 1e-6) misses.push(`G1-B ${s.seamBDeg.toFixed(3)}`);
     if (s.maxTurnDeg > SPLINE_TURN_MAX_DEG + 1e-6) misses.push(`turn ${s.maxTurnDeg.toFixed(3)}`);
     return {
         u,
@@ -1877,6 +2111,7 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
         seamBDeg: s.seamBDeg,
         infl: s.infl ? 1 : 0,
         inflCount: s.inflCount,
+        maxOppTurnDeg: s.maxOppTurnDeg,
         convex: s.convex,
         insetMin: s.insetMin,
         planOffset: s.planOffset,
@@ -2034,7 +2269,7 @@ export function columnConvex(samples: XYZ[], h: { x: number; y: number }): boole
     return polygonConvex(samples, h);
 }
 
-/** Per-station quadratic. No ring g/a fair — λ is fixed. */
+/** Per-station quadratic. λ and lip turn are faired on the rim before build. */
 export function applySplineRing(inputs: SplineStationInput[]): SplineSolve[] {
     return inputs.map((inp) => solveSplineStation(inp));
 }
