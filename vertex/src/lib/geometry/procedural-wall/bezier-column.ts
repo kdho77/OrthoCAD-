@@ -411,6 +411,7 @@ export interface ColumnFrame {
     splineTRS?: number;
     splineTRZ?: number;
     splineLs?: number;
+    splineSzRows?: Array<{ k: number; s: number; z: number }>;
     hybridArch?: HybridArchInfo;
     nLip?: number;
 }
@@ -5668,6 +5669,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
                 rows,
             }),
         );
+        fr.splineSzRows = rows;
     }
 }
 

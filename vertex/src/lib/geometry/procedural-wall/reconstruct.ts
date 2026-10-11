@@ -1693,6 +1693,7 @@ export function reconstructProceduralWalls(
             splineTRS: f.splineTRS ?? 0,
             splineTRZ: f.splineTRZ ?? 0,
             splineLs: f.splineLs ?? 0,
+            splineSzRows: f.splineSzRows,
             nLip: f.nLip ?? 0,
             splineShort: f.splineShort ?? false,
         })),

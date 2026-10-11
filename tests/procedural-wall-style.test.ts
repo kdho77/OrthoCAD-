@@ -1434,10 +1434,65 @@ describe("procedural wall styles", () => {
         for (const style of styles) {
             writeArtifact(`procedural-default-${style}.stl`, stlBufs[style]!);
         }
+        const jointReport = styles.map((s) => {
+            const frames = geos[s]!.userData as {
+                wallFrames?: Array<{
+                    u?: number;
+                    splineLambda?: number;
+                    splineLipTurnDeg?: number;
+                    splineTRS?: number;
+                    splineTRZ?: number;
+                    splineWR?: number;
+                    splineLs?: number;
+                    splineSzRows?: Array<{ k: number; s: number; z: number }>;
+                    maxOppTurnDeg?: number;
+                }>;
+                hybridArch?: { uA0?: number; uA1?: number; lbMm?: number } | null;
+                columnQuality?: { worstAcrossI?: number; worstAcrossK?: number; worstAcrossU?: number };
+            };
+            const wall = frames.wallFrames ?? [];
+            const i188 = wall
+                .map((f, i) => ({
+                    i,
+                    u: Number((f.u ?? 0).toFixed(4)),
+                    lambda: Number((f.splineLambda ?? 0).toFixed(4)),
+                    lipTurn: Number((f.splineLipTurnDeg ?? 0).toFixed(3)),
+                    tR: {
+                        s: Number((f.splineTRS ?? 0).toFixed(4)),
+                        z: Number((f.splineTRZ ?? 0).toFixed(4)),
+                    },
+                    wR: Number((f.splineWR ?? 0).toFixed(4)),
+                    Ls: Number((f.splineLs ?? 0).toFixed(4)),
+                    maxOpp: Number((f.maxOppTurnDeg ?? 0).toFixed(3)),
+                }))
+                .filter((r) => r.i >= 188 && r.i <= 196);
+            let u044: unknown = null;
+            if (s === "hybrid") {
+                let best = 0;
+                let bestD = Number.POSITIVE_INFINITY;
+                for (let i = 0; i < wall.length; i++) {
+                    const d = Math.abs((wall[i]!.u ?? 0) - 0.44);
+                    if (d < bestD) {
+                        bestD = d;
+                        best = i;
+                    }
+                }
+                const q = frames.columnQuality ?? {};
+                u044 = {
+                    i: best,
+                    u: Number((wall[best]?.u ?? 0).toFixed(4)),
+                    wR: Number((wall[best]?.splineWR ?? 0).toFixed(4)),
+                    across: { i: q.worstAcrossI, k: q.worstAcrossK, u: q.worstAcrossU },
+                    rows: wall[best]?.splineSzRows ?? [],
+                    arch: frames.hybridArch ?? null,
+                };
+            }
+            return { style: s, i188, u044 };
+        });
         writeArtifact(
             "procedural-default-style-report.json",
             Buffer.from(
-                `${JSON.stringify({ styleReport, gateTables: tables, rndDump, stlGates }, null, 2)}\n`,
+                `${JSON.stringify({ styleReport, gateTables: tables, rndDump, stlGates, jointReport }, null, 2)}\n`,
             ),
         );
         if (misses.length) {
