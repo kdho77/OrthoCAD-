@@ -16,6 +16,7 @@ import logging
 import os
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.models.requests import GenerateSolidRequest
@@ -36,6 +37,21 @@ app = FastAPI(
     title="OrthoCAD Hybrid Manufacturing Service",
     version="0.2.0",
     description="Finished STL validation + belt transform + slicing for orthotic manufacturing.",
+)
+
+def _cors_origins() -> list[str]:
+    raw = os.environ.get("CORS_ORIGINS") or os.environ.get("CORS_ORIGIN") or "*"
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+    return origins or ["*"]
+
+
+_cors = _cors_origins()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -187,7 +203,15 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
                 pass
 
 
+def listen_port() -> int:
+    for key in ("X_ZOHO_CATALYST_LISTEN_PORT", "PORT"):
+        raw = os.environ.get(key, "").strip()
+        if raw.isdigit():
+            return int(raw)
+    return 8001
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=listen_port(), reload=True)

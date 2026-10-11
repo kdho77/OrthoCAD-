@@ -1,0 +1,7 @@
+{
+    "command": "sh -c 'npx tsx server/src/index.ts'",
+    "build_path": ".",
+    "stack": "node22",
+    "memory": 512,
+    "catalyst_auth": false
+}

@@ -140,6 +140,10 @@ Required environment variables (Vercel dashboard):
 
 See `vertex/vercel.json` and `vertex/api/trpc/[[...trpc]].ts` (the fully self-contained Vercel handler) for implementation details. There is no `functions` config: Vercel traces node_modules (including Prisma engines) automatically, and `[[...trpc]].ts` must remain the only file under `api/`.
 
+### Catalyst Development pilot (Slate + AppSail)
+
+Bounded pilot only — see [`docs/catalyst/README.md`](../docs/catalyst/README.md). Vercel production, DNS, and custom domains stay unchanged. Do not deploy without a Catalyst CLI token.
+
 ### Render (full stack)
 
 Blueprint at repo root (`render.yaml`):

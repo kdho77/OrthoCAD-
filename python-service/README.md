@@ -37,12 +37,16 @@ When `MANUFACTURING_INTERNAL_API_KEY` is unset (local dev), auth is skipped.
 
 Unknown `preset_id` values with `output_type=gcode` fall back to STL passthrough.
 
+AppSail’s 30s request timeout vs these endpoints: [`docs/catalyst/manufacturing-30s.md`](../docs/catalyst/manufacturing-30s.md). Re-measure with `python3 scripts/measure_appsail_timeout.py`.
+
 ## Environment
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MANUFACTURING_INTERNAL_API_KEY` | Shared secret for Node → Python auth | (unset in dev) |
-| `PORT` | HTTP port | `8001` |
+| `PORT` | HTTP port (local / Docker) | `8001` |
+| `X_ZOHO_CATALYST_LISTEN_PORT` | AppSail listen port (overrides `PORT`) | `9000` |
+| `CORS_ORIGIN` / `CORS_ORIGINS` | Comma-separated browser origins (Slate ↔ AppSail) | `*` |
 
 ## Local development
 

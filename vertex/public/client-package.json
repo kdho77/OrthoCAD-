@@ -1,0 +1,6 @@
+{
+    "name": "orthocad-web",
+    "version": "0.0.1",
+    "homepage": "/",
+    "login_redirect": "/"
+}

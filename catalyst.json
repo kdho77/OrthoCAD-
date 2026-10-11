@@ -1,0 +1,31 @@
+{
+    "project": {
+        "name": "orthocad",
+        "id": "123088000000017001",
+        "org": "942536996",
+        "dc": "US"
+    },
+    "appsail": [
+        {
+            "name": "vertex-api",
+            "source": "vertex",
+            "stack": "node22",
+            "command": "sh -c 'npx tsx server/src/index.ts'",
+            "memory": 512
+        },
+        {
+            "name": "vertex-manufacturing",
+            "source": "python-service",
+            "runtime": "container",
+            "dockerfile": "python-service/Dockerfile",
+            "memory": 2048
+        }
+    ],
+    "slate": [
+        {
+            "name": "orthocad-web",
+            "source": "vertex",
+            "framework": "react-vite"
+        }
+    ]
+}

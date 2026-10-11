@@ -14,5 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Default command runs the FastAPI service
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# AppSail injects X_ZOHO_CATALYST_LISTEN_PORT (default 9000) and kills the
+# instance if nothing is bound within 10s. Local docker still defaults to 8001.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${X_ZOHO_CATALYST_LISTEN_PORT:-${PORT:-8001}}"]

@@ -22,12 +22,11 @@
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createFetchContext } from "../../server/src/context.js";
+import { resolveAllowOrigin } from "../../server/src/lib/cors.js";
 import { validateServerEnv } from "../../server/src/lib/env.js";
 import { appRouter } from "../../server/src/routers/index.js";
 
 validateServerEnv();
-
-const corsOrigin = process.env.CORS_ORIGIN ?? "*";
 
 // Disable body parsing so tRPC receives the raw JSON payload from httpBatchLink.
 export const config = {
@@ -48,9 +47,10 @@ function resolveTrpcEndpoint(pathname: string): string {
     return "/trpc";
 }
 
-function withCors(response: Response): Response {
+function withCors(response: Response, requestOrigin?: string): Response {
     const headers = new Headers(response.headers);
-    headers.set("Access-Control-Allow-Origin", corsOrigin);
+    headers.set("Access-Control-Allow-Origin", resolveAllowOrigin(requestOrigin, process.env.CORS_ORIGIN));
+    headers.set("Vary", "Origin");
     headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     headers.set("Access-Control-Allow-Headers", "Content-Type,Authorization");
     return new Response(response.body, {
@@ -73,9 +73,10 @@ function trpcErrorBody(message: string): string {
 
 async function handleTrpcRequest(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
+    const requestOrigin = request.headers.get("origin") ?? undefined;
 
     if (request.method === "OPTIONS") {
-        return withCors(new Response(null, { status: 204 }));
+        return withCors(new Response(null, { status: 204 }), requestOrigin);
     }
 
     try {
@@ -94,7 +95,7 @@ async function handleTrpcRequest(request: Request): Promise<Response> {
                 });
             },
         });
-        return withCors(response);
+        return withCors(response, requestOrigin);
     } catch (error) {
         // fetchRequestHandler formats procedure/context errors as JSON itself,
         // so reaching here means something lower-level failed (e.g. Prisma
@@ -108,6 +109,7 @@ async function handleTrpcRequest(request: Request): Promise<Response> {
                 status: 500,
                 headers: { "Content-Type": "application/json" },
             }),
+            requestOrigin,
         );
     }
 }
@@ -188,7 +190,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         }
         res.status(500);
         res.setHeader("Content-Type", "application/json");
-        res.setHeader("Access-Control-Allow-Origin", corsOrigin);
+        res.setHeader(
+            "Access-Control-Allow-Origin",
+            resolveAllowOrigin(
+                typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+                process.env.CORS_ORIGIN,
+            ),
+        );
         res.end(trpcErrorBody(err instanceof Error ? err.message : "Internal Server Error"));
     }
 }

@@ -1,0 +1,7 @@
+framework = "react-vite"
+deployment_name = "orthocad-web"
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200
