@@ -2604,7 +2604,6 @@ export function blendColumnsGraph(
     const sS = szList(straight, fr.origin, fr.h);
     const sR = szList(round, fr.origin, fr.h);
     const out: XYZ[] = [];
-    let joined = false;
     for (let k = 0; k < n; k++) {
         if (k === 0) {
             out.push({ ...straight[0]! });
@@ -2621,14 +2620,7 @@ export function blendColumnsGraph(
             continue;
         }
         const zRef = (1 - w) * (sS[k]?.z ?? 0) + w * (sR[k]?.z ?? 0);
-        const useUpper = !joined && zRef >= zL - 1e-9;
-        if (!useUpper && !joined) {
-            const sJoin = (1 - w) * interpSAtZ(sS, zL) + w * interpSAtZ(sR, zL);
-            out.push(fromSz({ s: sJoin, z: zL }, fr.origin, fr.h));
-            joined = true;
-            continue;
-        }
-        if (useUpper) {
+        if (zRef >= zL - 1e-9) {
             const s = (1 - w) * interpSAtZ(sS, zRef) + w * interpSAtZ(sR, zRef);
             out.push(fromSz({ s, z: zRef }, fr.origin, fr.h));
         } else {
@@ -2649,6 +2641,23 @@ export function blendColumnsGraph(
                     fr.origin,
                     fr.h,
                 );
+            }
+        }
+        const eZ = nLip >= 0 && nLip < out.length ? toSz(out[nLip]!, fr.origin, fr.h).z : Number.NaN;
+        if (Number.isFinite(eZ) && zL < eZ - 1e-6) {
+            let best = -1;
+            let bestD = Number.POSITIVE_INFINITY;
+            for (let k = nLip + 1; k < out.length - 1; k++) {
+                const z = toSz(out[k]!, fr.origin, fr.h).z;
+                const d = Math.abs(z - zL);
+                if (d < bestD) {
+                    bestD = d;
+                    best = k;
+                }
+            }
+            if (best > nLip) {
+                const sJoin = (1 - w) * interpSAtZ(sS, zL) + w * interpSAtZ(sR, zL);
+                out[best] = fromSz({ s: sJoin, z: zL }, fr.origin, fr.h);
             }
         }
     }
