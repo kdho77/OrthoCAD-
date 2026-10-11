@@ -5298,9 +5298,9 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const fkLip = fLip[i] ?? Array.from({ length: NL + 1 }, (_, k) => k / Math.max(NL, 1));
         const fkBody = fBody[i] ?? Array.from({ length: NB + 1 }, (_, k) => k / Math.max(NB, 1));
         const rLip = sampleLipEqualAngle(joints[i]!, sz.origin, sz.h, fr.R, NL, fkLip);
-        const rBody = samplePolylineBlock(roundBodies[i]!, NB, fkBody, SPLINE_DS_FLOOR_MM, true);
+        const rBody = samplePolylineBlock(roundBodies[i]!, NB, fkBody, SPLINE_DS_FLOOR_MM);
         const sLip = samplePolylineAtArcFractions(straightLips[i]!, fkLip);
-        const sBody = samplePolylineBlock(straightBodies[i]!, NB, fkBody, SPLINE_DS_FLOOR_MM, true);
+        const sBody = samplePolylineBlock(straightBodies[i]!, NB, fkBody, SPLINE_DS_FLOOR_MM);
         const eR = parabolaE[i] ?? fr.E;
         const eS = straightE[i] ?? eR;
         const dRLip = rowEErr(rLip, eR, NL);
