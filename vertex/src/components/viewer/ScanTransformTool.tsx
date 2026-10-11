@@ -70,6 +70,7 @@ export function ScanTransformTool() {
         sliceDraft != null ||
         rotateDraft != null ||
         editMode === "edit-trimline" ||
+        editMode === "edit-bottom-pattern" ||
         editMode === "trim";
 
     const pickScan = useCallback(

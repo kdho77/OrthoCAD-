@@ -330,6 +330,16 @@ export {
     rotateStationRing,
 } from "./ring-seam";
 export {
+    buildFairedPatternFromTop,
+    loadSampleTopGeometry,
+    type ProceduralPreviewOptions,
+    reconstructProceduralPreview,
+    SAMPLE_TOP_ASSET_ID,
+    SAMPLE_TOP_NAME,
+    SAMPLE_TOP_PUBLIC_PATH,
+    sampleTopFromArrayBuffer,
+} from "./sample-top-preview";
+export {
     mapZoneFixtures,
     soleUvFrameFromOutline,
     soleUvFrameFromPolyline,

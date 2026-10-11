@@ -13,7 +13,11 @@ import {
 } from "@/lib/geometry/base-asset";
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
-import { extractStockWallModel, reconstructProceduralWalls } from "@/lib/geometry/procedural-wall";
+import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall";
+import {
+    loadSampleTopGeometry,
+    SAMPLE_TOP_ASSET_ID,
+} from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
@@ -22,6 +26,7 @@ import { mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBaseBoundsStore } from "@/stores/base-bounds-store";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
+import { curveToPolyPoints, useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
@@ -55,6 +60,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const lateralFlangeHeightMm = useDesignStore((s) => s.viewer.lateralFlangeHeightMm ?? 0);
     const lateralFlangeLengthMm = useDesignStore((s) => s.viewer.lateralFlangeLengthMm ?? 40);
     const lateralFlangeAngleDeg = useDesignStore((s) => s.viewer.lateralFlangeAngleDeg ?? 10);
+    const bottomPattern = useBottomPatternStore((s) => s.patterns[side]);
+    const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
 
     const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
@@ -72,7 +79,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
 
     // Load the raw base mesh whenever the referenced asset (or its mirrored variant) changes.
     // Include url so stock bases upgrade from the sync stub to the server row re-trigger load.
-    const loadKey = assetId ? `${assetId}:${isMirroredForLoad ? "m" : "p"}:${baseUrl ?? ""}` : null;
+    const procedural = wallModel === "procedural";
+    const loadKey = procedural
+        ? `${SAMPLE_TOP_ASSET_ID}:${side}:${isMirroredForLoad ? "m" : "p"}`
+        : assetId
+          ? `${assetId}:${isMirroredForLoad ? "m" : "p"}:${baseUrl ?? ""}`
+          : null;
     // biome-ignore lint/correctness/useExhaustiveDependencies: loadKey captures asset + mirror variant
     useEffect(() => {
         let cancelled = false;
@@ -104,7 +116,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             ref.glbPath.length > 0 &&
             (hasUrl || !isApiConfigured() || !isLocalPlaceholderGlbPath(ref.glbPath));
         const awaitingResolution =
-            isStock && (stockBaseNeedsServerResolution(ref) || !hasUrl || !hasRealGlbPath);
+            !procedural && isStock && (stockBaseNeedsServerResolution(ref) || !hasUrl || !hasRealGlbPath);
 
         if (awaitingResolution) {
             stockResolveLog("useBaseInsoleGeometry waiting for stock resolution", {
@@ -143,12 +155,20 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             hasUrl,
             glbPath: ref.glbPath,
         });
-        void loadBaseGeometry(ref, {
-            // sealBottomSlits disabled on viewer load — too expensive for 208k-vertex
-            // bottom mesh on main thread. Sealing runs on export path only via
-            // sealInternalSlitsSafe. See: vertex/IMPLEMENTATION_NOTES.md — geometry worker TODO
-            sealBottomSlits: false,
-        })
+        const loadGeo = procedural
+            ? loadSampleTopGeometry().then((geo) => {
+                  if (!isMirroredForLoad) return geo;
+                  const mirrored = mirrorGeometry(geo);
+                  geo.dispose();
+                  return mirrored;
+              })
+            : loadBaseGeometry(ref, {
+                  // sealBottomSlits disabled on viewer load — too expensive for 208k-vertex
+                  // bottom mesh on main thread. Sealing runs on export path only via
+                  // sealInternalSlitsSafe. See: vertex/IMPLEMENTATION_NOTES.md — geometry worker TODO
+                  sealBottomSlits: false,
+              });
+        void loadGeo
             .then((geo) => {
                 if (cancelled) {
                     geo?.dispose();
@@ -215,7 +235,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     // biome-ignore lint/correctness/useExhaustiveDependencies: rebuild when native load finishes (building→false)
     useEffect(() => {
         const native = nativeGeoRef.current;
-        if (!native || !assetId) return;
+        if (!native || (!assetId && !procedural)) return;
         const ref = getDesignBase(design, side);
         const sized = scaleGeometryToInsoleSize(native, layout.lengthMm, layout.widthMm);
         if (baseGeoRef.current && baseGeoRef.current !== native) {
@@ -228,7 +248,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         }
 
         const cacheKey = ref ? getBaseCacheKey(ref) : null;
-        const lookupKey = cacheKey ?? ref?.assetId ?? assetId;
+        const lookupKey = procedural
+            ? `${SAMPLE_TOP_ASSET_ID}:${side}:${isMirroredForLoad ? "m" : "p"}`
+            : (cacheKey ?? ref?.assetId ?? assetId);
         // Invalidate prior size so outline/bounds refresh for the new footprint.
         clearBaseBoundsCache(lookupKey);
         const b = computeBaseBounds(sized, lookupKey);
@@ -246,10 +268,6 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         const raw = baseGeoRef.current;
         if (!assetId || !raw) return;
         if (wallModel === "procedural") {
-            const extracted = extractStockWallModel(raw, {
-                id: assetId,
-                name: getDesignBase(design, side)?.name ?? assetId,
-            });
             const committedThickness = design.paired
                 ? side === "left"
                     ? design.paired.leftThicknessMm
@@ -257,7 +275,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 : design.thicknessMm;
             const thicknessMm = thicknessPreview ?? committedThickness;
             const field = baseModifierField(design, side, thicknessMm);
-            const rebuilt = reconstructProceduralWalls(extracted, {
+            const draft = useMeshEditStore.getState().getActiveDraftBottomPattern(side);
+            const stored = useBottomPatternStore.getState().getPattern(side);
+            const edited = draft ?? stored;
+            const preview = reconstructProceduralPreview(raw, {
                 corrections: field.corrections,
                 thicknessMm,
                 stockThicknessMm: field.thicknessMm > 0 ? 3 : field.thicknessMm,
@@ -271,12 +292,17 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 },
                 archGrindDepthMm: 0,
                 wallStyle,
+                ...(edited ? { bottomPattern: curveToPolyPoints(edited) } : {}),
             });
+            const patternKey = `${layout.lengthMm}:${layout.widthMm}:${isMirroredForLoad ? "m" : "p"}`;
+            if (!edited) {
+                useBottomPatternStore.getState().ensureGenerated(side, patternKey, preview.pattern);
+            }
             if (outRef.current && outRef.current !== workRef.current) {
                 outRef.current.dispose();
             }
-            outRef.current = rebuilt;
-            setGeometry(rebuilt);
+            outRef.current = preview.geometry;
+            setGeometry(preview.geometry);
             setBaseMeshLoading(side, false);
             return;
         }
@@ -343,6 +369,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         lateralFlangeHeightMm,
         lateralFlangeLengthMm,
         lateralFlangeAngleDeg,
+        bottomPattern,
+        bottomPatternEdit,
     ]);
 
     useEffect(

@@ -14,6 +14,7 @@ import {
     Rotate3d,
     Scale3d,
     Scissors,
+    Spline,
     X,
 } from "lucide-react";
 import { Suspense, useEffect, useRef } from "react";
@@ -30,6 +31,7 @@ import { usePerformanceStore } from "@/stores/performance-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
+import { BottomPatternEditTools } from "./BottomPatternEditTools";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
@@ -94,10 +96,15 @@ export function Viewer3D() {
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
     const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
+    const beginBottomPatternEdit = useMeshEditStore((s) => s.beginBottomPatternEdit);
     const target = useMeshEditStore((s) => s.target);
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
+    const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
+    const confirmBottomPatternEdit = useMeshEditStore((s) => s.confirmBottomPatternEdit);
+    const cancelBottomPatternEdit = useMeshEditStore((s) => s.cancelBottomPatternEdit);
+    const wallModel = viewer.wallModel ?? "legacy";
     const editSide = resolveDefaultEditSide(viewer, target);
     const designMode = resolveDesignMode(design);
     const showBase = designMode.mode === "base";
@@ -237,6 +244,7 @@ export function Viewer3D() {
                     {!hideInsoleForMarkers && !baseGeometryLoading ? <ElementMarkers /> : null}
                     <MeshEditTools />
                     {!baseGeometryLoading ? <TrimlineEditTools /> : null}
+                    {!baseGeometryLoading ? <BottomPatternEditTools /> : null}
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
@@ -342,6 +350,11 @@ export function Viewer3D() {
                     <span className="w-fit rounded bg-orange-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Editing trimline · {trimlineEdit.side}
                         {viewer.view !== "iso" ? " · plane-locked" : ""}
+                    </span>
+                ) : null}
+                {editMode === "edit-bottom-pattern" && bottomPatternEdit ? (
+                    <span className="w-fit rounded bg-teal-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Editing bottom pattern · {bottomPatternEdit.side}
                     </span>
                 ) : null}
                 {hideInsoleForMarkers && !placingArchOnly ? (
@@ -517,6 +530,14 @@ export function Viewer3D() {
                         icon={<PencilLine className="h-3.5 w-3.5" />}
                         label="Edit trimline"
                     />
+                    {wallModel === "procedural" ? (
+                        <ModeButton
+                            active={editMode === "edit-bottom-pattern"}
+                            onClick={() => beginBottomPatternEdit(editSide)}
+                            icon={<Spline className="h-3.5 w-3.5" />}
+                            label="Edit bottom pattern"
+                        />
+                    ) : null}
                     <ModeButton
                         active={editMode === "trim"}
                         onClick={() => {
@@ -550,6 +571,26 @@ export function Viewer3D() {
                                 variant="ghost"
                                 className="h-7 text-[11px]"
                                 onClick={cancelTrimlineEdit}
+                            >
+                                Cancel
+                            </Button>
+                        </>
+                    ) : null}
+                    {editMode === "edit-bottom-pattern" && bottomPatternEdit ? (
+                        <>
+                            <Button
+                                size="sm"
+                                variant="default"
+                                className="h-7 text-[11px]"
+                                onClick={confirmBottomPatternEdit}
+                            >
+                                Confirm
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-[11px]"
+                                onClick={cancelBottomPatternEdit}
                             >
                                 Cancel
                             </Button>

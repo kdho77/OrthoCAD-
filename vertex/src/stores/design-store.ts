@@ -397,9 +397,9 @@ export interface ViewerSettings {
     /** Active named camera view (for UI + planar editing constraint). */
     view: CameraView;
     /**
-     * S0 Option B preview: `'procedural'` rebuilds the unmodified stock base
-     * from TopSurface + BottomOutline (viewer-only). Default `'legacy'` keeps
-     * today's sidewall-deform path. Not persisted; never touches modifiers/export.
+     * S0 Option B preview: `'procedural'` rebuilds from SAMPLE_Top + the faired
+     * bottom pattern (viewer-only). Default `'legacy'` keeps today's Default
+     * stock base. Not persisted; never touches modifiers/export.
      * Set from the Print-step Wall model control or `?wallModel=procedural`.
      */
     wallModel?: "legacy" | "procedural";

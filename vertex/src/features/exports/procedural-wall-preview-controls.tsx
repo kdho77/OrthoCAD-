@@ -71,7 +71,8 @@ export function ProceduralWallPreviewControls({ onWallStyle }: ProceduralWallPre
                         ))}
                     </div>
                     <div className="text-[10px] text-muted-foreground">
-                        Wall mid-style. Bottom stays flat; top and rim stay put. Viewer-only preview.
+                        SAMPLE_Top + faired bottom pattern (heel ~8 mm, ~0 toe inset). Overlay is independent
+                        of the top trimline.
                     </div>
                 </>
             ) : (
