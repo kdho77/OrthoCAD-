@@ -1619,11 +1619,27 @@ export function widenClosedRamp(
     return out.map((v) => clampNum(v, 0, 1));
 }
 
-export function columnZMonotone(col: XYZ[]): boolean {
+export function columnZMonotone(col: XYZ[], slopMm = 0.05): boolean {
     for (let k = 1; k < col.length; k++) {
-        if ((col[k]!.z ?? 0) > (col[k - 1]!.z ?? 0) + 1e-6) return false;
+        if ((col[k]!.z ?? 0) > (col[k - 1]!.z ?? 0) + slopMm) return false;
     }
     return true;
+}
+
+export function cross3(a: XYZ, b: XYZ): XYZ {
+    return {
+        x: a.y * b.z - a.z * b.y,
+        y: a.z * b.x - a.x * b.z,
+        z: a.x * b.y - a.y * b.x,
+    };
+}
+
+/** Signed area of (a,c,b)+(a,d,c) on the wall plane (normal = outward). */
+export function quadSignedOnWall(a: XYZ, b: XYZ, c: XYZ, d: XYZ, outward: XYZ): number {
+    const ac = sub(c, a);
+    const n1 = cross3(ac, sub(b, a));
+    const n2 = cross3(sub(d, a), ac);
+    return 0.5 * (dot(n1, outward) + dot(n2, outward));
 }
 
 export function wallRowOutward(h: { x: number; y: number }, tRow: XYZ): XYZ {

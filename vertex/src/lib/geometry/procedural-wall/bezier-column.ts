@@ -30,7 +30,7 @@ import {
     minRhoFirstArcOfPoly,
     overEdgeTangent,
     profileAreaBetween,
-    quadSignedAreaSz,
+    quadSignedOnWall,
     ringFValues,
     row1TRAngleDeg,
     SPLINE_CHORD_MIN_MM,
@@ -5075,13 +5075,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const L = evaluated
             ? (sampled.L[i] ?? 1)
             : (sampledStraight.L[i] ?? Math.hypot(fr.B.x - fr.E.x, fr.B.y - fr.E.y, fr.B.z - fr.E.z));
-        const area = profileAreaBetween(
-            evaluated ? [...lip.slice(-1), ...roundPts.slice(1)] : straightCols[i]!,
-            straightCols[i]!,
-            fr.R,
-            fr.B,
-            fr.h,
-        );
+        const area = profileAreaBetween(col, straightCols[i]!, fr.R, fr.B, fr.h);
         fr.g1EDeg = g1C;
         fr.g1FDeg = sol.seamBDeg;
         fr.midFlagged = sol.infl;
@@ -6570,7 +6564,14 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const fr = frames[i]!;
             const col = xyz[i]!;
             const nxt = xyz[(i + 1) % nS]!;
-            dVPred += (fr.splineProfileArea ?? 0) * Math.max(fr.localSpacingMm, 1e-6);
+            const iN = (i + 1) % nS;
+            const dsB = Math.hypot(fr.B.x - frames[iN]!.B.x, fr.B.y - frames[iN]!.B.y);
+            const dsR = Math.hypot(
+                fr.R.x - frames[iN]!.R.x,
+                fr.R.y - frames[iN]!.R.y,
+                fr.R.z - frames[iN]!.R.z,
+            );
+            dVPred += (fr.splineProfileArea ?? 0) * Math.max(0.5 * (dsB + dsR), 1e-6);
             sMinAll = Math.min(sMinAll, fr.splineSMin ?? 0);
             if (fr.splineLipOk === false) nLipFail++;
             if (!columnZMonotone(col)) nColZFail++;
@@ -6580,18 +6581,22 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 const b = nxt[k]!;
                 const c = nxt[k + 1]!;
                 const d = col[k + 1]!;
-                const area = quadSignedAreaSz(a, b, c, d, fr.h);
-                if (area <= 0) nColQuadFail++;
                 const tRow = {
                     x: 0.5 * (c.x + d.x - a.x - b.x),
                     y: 0.5 * (c.y + d.y - a.y - b.y),
                     z: 0.5 * (c.z + d.z - a.z - b.z),
                 };
                 const outward = wallRowOutward(fr.h, tRow);
+                const area = quadSignedOnWall(a, b, c, d, outward);
+                if (area <= 0) nColQuadFail++;
                 const n1 = faceN3(a, c, b);
                 const n2 = faceN3(a, d, c);
-                const bad = (n: XYZ | null): boolean =>
-                    !!n && n.x * outward.x + n.y * outward.y + n.z * outward.z <= SPLINE_FACE_DOT_MIN;
+                const bad = (n: XYZ | null): boolean => {
+                    if (!n) return false;
+                    const nl = Math.hypot(n.x, n.y, n.z);
+                    if (nl < 1e-10) return false;
+                    return (n.x * outward.x + n.y * outward.y + n.z * outward.z) / nl <= SPLINE_FACE_DOT_MIN;
+                };
                 if (bad(n1) || bad(n2)) {
                     nFaceFlips++;
                     if (faceFlips.length < 64) faceFlips.push({ i, k });
