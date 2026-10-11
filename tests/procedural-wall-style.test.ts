@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, test } from "@rstest/core";
@@ -43,6 +44,9 @@ import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb"
 import { encodePng, renderMesh } from "./helpers/render-png";
 
 type Style = "straight" | "round" | "hybrid";
+
+/** Legacy-map STRAIGHT STL. ROUND/HYBRID must not change this bytes. */
+const STRAIGHT_STL_MD5 = "053d39a5dfd7c889f6b67d0d3fe2d57e";
 
 type StlGate = {
     style: string;
@@ -1215,13 +1219,21 @@ describe("procedural wall styles", () => {
             );
             throw new Error(`[STL-GATE] ${hard.join(" | ")}`);
         }
+        mkdirSync("/tmp/s1-stls", { recursive: true });
+        const stlBufs: Partial<Record<Style, Buffer>> = {};
         for (const style of styles) {
             const geo = geos[style]!;
-            writeArtifact(`procedural-default-${style}.stl`, Buffer.from(geometryToBinarySTL(geo)));
+            const buf = Buffer.from(geometryToBinarySTL(geo));
+            stlBufs[style] = buf;
+            writeFileSync(`/tmp/s1-stls/procedural-default-${style}.stl`, buf);
+        }
+        for (const style of styles) {
+            const buf = stlBufs[style]!;
             const stlPath = `/tmp/s1-stls/procedural-default-${style}.stl`;
             const gate = loadStlGates(style, stlPath, style === "straight" ? undefined : straightStl);
             stlGates[style] = gate;
-            console.log("[STL-GATE]", style, JSON.stringify(gate));
+            const md5 = createHash("md5").update(buf).digest("hex");
+            console.log("[STL-GATE]", style, JSON.stringify({ ...gate, md5 }));
             const add = (
                 gateName: string,
                 pass: boolean,
@@ -1234,9 +1246,29 @@ describe("procedural wall styles", () => {
             add("stl-winding", gate.winding, gate.winding ? 1 : 0, 1);
             add("stl-bodies", gate.bodies === 1, gate.bodies, 1);
             add("volume-vs-straight", true, gate.volumeDeltaPct ?? 0, "report-only");
+            if (style === "straight") {
+                add("straight-md5", md5 === STRAIGHT_STL_MD5, md5, STRAIGHT_STL_MD5);
+                if (md5 !== STRAIGHT_STL_MD5) {
+                    hard.push(`straight: md5 ${md5} != ${STRAIGHT_STL_MD5}`);
+                }
+            }
             if (!gate.watertight) hard.push(`${style}: stl not watertight`);
-            if (!gate.winding) hard.push(`${style}: stl winding inconsistent`);
+            if (!gate.winding) {
+                hard.push(`${style}: G-WIND trimesh is_winding_consistent=false`);
+            }
             if (gate.bodies !== 1) hard.push(`${style}: stl bodies=${gate.bodies}`);
+        }
+        if (hard.length) {
+            writeArtifact(
+                "procedural-default-style-report.json",
+                Buffer.from(
+                    `${JSON.stringify({ styleReport, gateTables: tables, rndDump, stlGates, hard }, null, 2)}\n`,
+                ),
+            );
+            throw new Error(`[STL-GATE] ${hard.join(" | ")}`);
+        }
+        for (const style of styles) {
+            writeArtifact(`procedural-default-${style}.stl`, stlBufs[style]!);
         }
         writeArtifact(
             "procedural-default-style-report.json",
@@ -1247,9 +1279,6 @@ describe("procedural wall styles", () => {
         if (misses.length) {
             console.log("[S1-STYLE]", misses.join(" | "));
             if (!SPLINE_GATES_REPORT_ONLY) throw new Error(`[S1-STYLE] ${misses.join(" | ")}`);
-        }
-        if (hard.length) {
-            throw new Error(`[STL-GATE] ${hard.join(" | ")}`);
         }
         for (const g of Object.values(geos)) g?.dispose();
         raw.dispose();
