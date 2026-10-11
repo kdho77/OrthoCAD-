@@ -53,6 +53,7 @@ import {
     splineRhoNeed,
     stationSampleNeed,
     wallRowOutward,
+    wallStripVolume,
     widenClosedRamp,
 } from "./wall-spline";
 import {
@@ -374,6 +375,7 @@ export interface ColumnFrame {
     splineKappaE?: number;
     splineEB?: number;
     splineProfileArea?: number;
+    splineStripVol?: number;
     splineLipOk?: boolean;
     splineMaxWRStep?: number;
     nLip?: number;
@@ -5003,6 +5005,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         period += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
     }
     const wR = widenClosedRamp(rawWR, arc, period, SPLINE_WR_STEP_MAX);
+    const straightSpliced: PolyPoint[][] = Array.from({ length: nS }, () => []);
     const maxWRStep = maxClosedStep(wR);
     console.log(
         "[RND-WR-STEP]",
@@ -5042,6 +5045,16 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         }
         col[0] = { ...fr.R };
         xyz[i] = col;
+        const strCol: PolyPoint[] = [];
+        for (const p of lip) strCol.push({ ...p });
+        if (!strCol.length) strCol.push({ ...fr.E });
+        else strCol[strCol.length - 1] = { ...fr.E };
+        for (let k = 1; k <= N; k++) {
+            if (k === N) strCol.push({ ...fr.B });
+            else strCol.push({ ...(straightPts[k] ?? lip[lip.length - 1] ?? fr.E) });
+        }
+        strCol[0] = { ...fr.R };
+        straightSpliced[i] = strCol;
         const row1 = col[1] ?? col[0]!;
         const row1Deg = row1TRAngleDeg(row1, fr.R, tR, fr.h);
         const g1C = evaluated ? g1AtE(sol.poly, tE, fr.h) : 0;
@@ -5126,6 +5139,15 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.tInc = overEdgeTangent(tR, fr.h);
     }
     if (frames[0]) frames[0].splineMaxWRStep = maxWRStep;
+    for (let i = 0; i < nS; i++) {
+        const iN = (i + 1) % nS;
+        frames[i]!.splineStripVol = wallStripVolume(
+            xyz[i]!,
+            xyz[iN]!,
+            straightSpliced[i]!,
+            straightSpliced[iN]!,
+        );
+    }
     const rowTurnMax: number[] = [];
     const firstOver: Array<{ i: number; u: number; deg: number; chord: number }> = [];
     let firstMax = 0;
@@ -6570,7 +6592,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const nxt = xyz[(i + 1) % nS]!;
             const iN = (i + 1) % nS;
             const dsB = Math.hypot(fr.B.x - frames[iN]!.B.x, fr.B.y - frames[iN]!.B.y);
-            dVPred += (fr.splineProfileArea ?? 0) * Math.max(dsB, 1e-6);
+            dVPred += fr.splineStripVol ?? (fr.splineProfileArea ?? 0) * Math.max(dsB, 1e-6);
             sMinAll = Math.min(sMinAll, fr.splineSMin ?? 0);
             if (fr.splineLipOk === false) nLipFail++;
             if (!columnZMonotone(col)) nColZFail++;

@@ -627,16 +627,6 @@ export function profileAreaBetween(
     const fr = stationSzFrame(R, B, h);
     const a = round.map((p) => toSz(p, fr.origin, fr.h));
     const b = straight.map((p) => toSz(p, fr.origin, fr.h));
-    const n = Math.min(a.length, b.length);
-    if (n >= 2 && a.length === b.length) {
-        let area = 0;
-        for (let i = 0; i < n - 1; i++) {
-            const ds = 0.5 * (a[i]!.s - b[i]!.s + (a[i + 1]!.s - b[i + 1]!.s));
-            const dz = 0.5 * (a[i]!.z - a[i + 1]!.z + (b[i]!.z - b[i + 1]!.z));
-            area += ds * dz;
-        }
-        return area;
-    }
     const ring = [...a, ...b.slice().reverse()];
     let area = 0;
     for (let i = 0; i < ring.length; i++) {
@@ -645,6 +635,44 @@ export function profileAreaBetween(
         area += p.s * q.z - q.s * p.z;
     }
     return 0.5 * area;
+}
+
+function tet6(a: XYZ, b: XYZ, c: XYZ, d: XYZ): number {
+    const ab = sub(b, a);
+    const ac = sub(c, a);
+    const ad = sub(d, a);
+    return (
+        ab.x * (ac.y * ad.z - ac.z * ad.y) -
+        ab.y * (ac.x * ad.z - ac.z * ad.x) +
+        ab.z * (ac.x * ad.y - ac.y * ad.x)
+    );
+}
+
+/** Signed volume of the prism between two triangles (same winding as pushQuad). */
+export function prismVolume(a: XYZ, b: XYZ, c: XYZ, a2: XYZ, b2: XYZ, c2: XYZ): number {
+    return (tet6(a, b, c, a2) + tet6(b, c, a2, b2) + tet6(c, a2, b2, c2)) / 6;
+}
+
+/**
+ * Volume between two same-topology wall columns (ROUND vs STRAIGHT), using the
+ * fixed (a,c,b)+(a,d,c) diagonal. This is the 3D form of profile-area × arc.
+ */
+export function wallStripVolume(roundA: XYZ[], roundB: XYZ[], straightA: XYZ[], straightB: XYZ[]): number {
+    const n = Math.min(roundA.length, roundB.length, straightA.length, straightB.length) - 1;
+    let vol = 0;
+    for (let k = 0; k < n; k++) {
+        const a = roundA[k]!;
+        const b = roundB[k]!;
+        const c = roundB[k + 1]!;
+        const d = roundA[k + 1]!;
+        const a2 = straightA[k]!;
+        const b2 = straightB[k]!;
+        const c2 = straightB[k + 1]!;
+        const d2 = straightA[k + 1]!;
+        vol += prismVolume(a, c, b, a2, c2, b2);
+        vol += prismVolume(a, d, c, a2, d2, c2);
+    }
+    return vol;
 }
 
 /** z of the most-outward sample (min s), as a fraction of H. */
