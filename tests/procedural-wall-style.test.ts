@@ -229,15 +229,15 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
                 ),
             );
         }
-        const styled = frames.filter((f) => (f.midBeta ?? 0) > 1e-4 && !f.fallbackStraight);
+        const styled = frames.filter((f) => (f.midWeight ?? 0) > 0.5 && !f.splineFlat && !f.fallbackStraight);
         const tall = styled.filter((f) => (f.heightMm ?? 0) >= SPLINE_H_MIN_MM);
-        const sagH = tall.map((f) => f.midBulgeHFrac ?? 0);
+        const bulgeH = tall.map((f) => f.midBulgeHFrac ?? 0);
         const peakH = tall.map((f) => f.midPeakHFrac ?? 0);
-        if (sagH.length) {
-            const p10 = pct(sagH, 0.1);
-            const p90 = pct(sagH, 0.9);
+        if (bulgeH.length) {
+            const p10 = pct(bulgeH, 0.1);
+            const p90 = pct(bulgeH, 0.9);
             if (p10 + 1e-9 < SPLINE_SAG_LO || p90 - 1e-9 > SPLINE_SAG_HI) {
-                misses.push(`sag p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)}`);
+                misses.push(`bulge p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)}`);
             }
         }
         if (peakH.length) {
@@ -329,6 +329,8 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             splineL?: number;
             splineFk?: number[];
             midBeta?: number;
+            midWeight?: number;
+            midChordOffMm?: number;
             splineFlat?: boolean;
             splineWR?: number;
             o?: number;
@@ -394,13 +396,23 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         (f) => (f.fallbackStraight ? 1 : 0),
         (v) => v > 0,
     );
+    const bulgeGated = (f: (typeof frames)[number]): boolean =>
+        !f.splineFlat && (f.midWeight ?? 0) > 0.5 && (f.heightMm ?? 0) >= SPLINE_H_MIN_MM;
     const sagHi = worstHi(
-        (f) => ((f.heightMm ?? 0) >= SPLINE_H_MIN_MM ? (f.midBulgeHFrac ?? 0) : 0),
+        (f) => (bulgeGated(f) ? (f.midBulgeHFrac ?? 0) : 0),
         (v) => v - 1e-9 > SPLINE_SAG_HI,
     );
     const sagLo = worstLo(
-        (f) => ((f.heightMm ?? 0) >= SPLINE_H_MIN_MM ? (f.midBulgeHFrac ?? 1) : 1),
+        (f) => (bulgeGated(f) ? (f.midBulgeHFrac ?? 1) : 1),
         (v) => v + 1e-9 < SPLINE_SAG_LO,
+    );
+    const sagChordHi = worstHi(
+        (f) => {
+            const h = f.heightMm ?? 0;
+            if (h < SPLINE_H_MIN_MM) return 0;
+            return (f.midChordOffMm ?? 0) / h;
+        },
+        (_v) => false,
     );
     const peakHi = worstHi(
         (f) => f.midPeakHFrac ?? 0,
@@ -492,19 +504,20 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             poly.n ? { n: poly.n, worstI: poly.i, worstU: poly.u } : undefined,
         ),
         row(
-            "sag-lo",
+            "bulge-lo",
             !sagLo.n || style === "straight",
             sagLo.n ? sagLo.v : 0,
             SPLINE_SAG_LO,
             sagLo.n ? { n: sagLo.n, worstI: sagLo.i, worstU: sagLo.u } : undefined,
         ),
         row(
-            "sag-hi",
+            "bulge-hi",
             !sagHi.n || style === "straight",
             sagHi.n ? sagHi.v : 0,
             SPLINE_SAG_HI,
             sagHi.n ? { n: sagHi.n, worstI: sagHi.i, worstU: sagHi.u } : undefined,
         ),
+        row("sag-chord", true, sagChordHi.v || 0, "report-only"),
         row(
             "peak-lo",
             !peakLo.n || style === "straight",
@@ -629,6 +642,7 @@ describe("procedural wall styles", () => {
                             u?: number;
                             o?: number;
                             a?: number;
+                            heightMm?: number;
                             splineFlat?: boolean;
                             splineWR?: number;
                         }>;
@@ -640,10 +654,20 @@ describe("procedural wall styles", () => {
                     u: Number((f.u ?? 0).toFixed(4)),
                     o: Number((f.o ?? 0).toFixed(4)),
                     a: Number((f.a ?? 0).toFixed(4)),
+                    H: Number((f.heightMm ?? 0).toFixed(3)),
                     wR: Number((f.splineWR ?? 0).toFixed(4)),
                     flat: !!f.splineFlat,
                 }))
                 .filter((f) => f.flat);
+            console.log(
+                "[RND-FLAT-COUNT]",
+                style,
+                JSON.stringify({
+                    n: flatList.length,
+                    hLt3: flatList.filter((f) => f.H < 3).length,
+                    hGe3: flatList.filter((f) => f.H >= 3).length,
+                }),
+            );
             console.log("[RND-FLAT-LIST]", style, JSON.stringify(flatList));
             if (local.length) misses.push(`${style}: ${local.join("; ")}`);
             writeArtifact(`procedural-default-${style}.stl`, Buffer.from(geometryToBinarySTL(geo)));
@@ -964,6 +988,7 @@ describe("procedural wall styles", () => {
                     u?: number;
                     o?: number;
                     a?: number;
+                    heightMm?: number;
                     zy?: number;
                     tRAngleDeg?: number;
                     splineFlat?: boolean;
@@ -977,6 +1002,7 @@ describe("procedural wall styles", () => {
                     u: Number((f.u ?? 0).toFixed(4)),
                     o: Number((f.o ?? 0).toFixed(4)),
                     a: Number((f.a ?? 0).toFixed(4)),
+                    H: Number((f.heightMm ?? 0).toFixed(3)),
                     wR: Number((f.splineWR ?? 0).toFixed(4)),
                     reason: f.splineFlatReason ?? "",
                 }))

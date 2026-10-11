@@ -27,6 +27,9 @@ export const SPLINE_ZY_HI = 0.6;
 export const SPLINE_ZX_MAX = 0.9;
 export const SPLINE_ZX_GAP = 0.4;
 export const SPLINE_O_FLOOR_FRAC = 0.08;
+/** o_target = β k(H) H × this. */
+export const SPLINE_O_TARGET_FRAC = 0.6;
+export const SPLINE_W_EPS = 1e-9;
 export const SPLINE_PEAK_LO = 0.45;
 export const SPLINE_PEAK_HI = 0.55;
 export const SPLINE_PEAK_GATE_LO = 0.4;
@@ -177,8 +180,14 @@ export function splineBetaAt(u: number): number {
     return SPLINE_BETA_HEEL + (SPLINE_BETA_ARCH - SPLINE_BETA_HEEL) * t;
 }
 
+/** k(H) = smoothstep(3, 12, H). */
 export function splineHeightScale(heightMm: number): number {
     return smoothstep01(WALL_H_SMOOTH_LO_MM, WALL_H_SMOOTH_HI_MM, heightMm);
+}
+
+/** o_target = β(u) k(H) H × 0.6. */
+export function splineOTarget(u: number, heightMm: number): number {
+    return splineBetaAt(u) * splineHeightScale(heightMm) * heightMm * SPLINE_O_TARGET_FRAC;
 }
 
 export function projectToColumnPlane(v: XYZ, h: { x: number; y: number }): XYZ {
@@ -598,9 +607,8 @@ function finishSolve(
 }
 
 /**
- * Nested monotone bisections on the corner-cut box.
- * Outer zy ∈ [0.2, 0.6] for peak vs chord RB ∈ [0.45, 0.55] H.
- * Inner o ∈ [0, o_max] for sag = β k(H) H. Convexity only lowers o.
+ * Drive o from o_target = β k(H) H × 0.6, clamp to [0, o_max].
+ * zy ∈ [0.2, 0.6] bisects peak vs chord RB to 0.45 H (gate 0.45–0.55 H).
  */
 export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const { R, B, tR } = input;
@@ -609,7 +617,7 @@ export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const H = input.heightMm ?? fr.H;
     const tSz = tRInSz(tR, fr.h);
     const tRAngleDeg = tRAngleBelowHorizontalDeg(tSz);
-    const targetSag = input.targetSagMm ?? splineBetaAt(input.u) * splineHeightScale(H) * H;
+    const oTarget = splineOTarget(input.u, H);
     const targetPeak = SPLINE_PEAK_LO;
 
     const tryAt = (o: number, zy: number, aOverride?: number) => {
@@ -617,57 +625,27 @@ export function solveSplineStation(input: SplineStationInput): SplineSolve {
         return { poly, m: measureOf(poly, R, B, fr.h, tR) };
     };
 
-    const bisectO = (zy: number): { o: number; oMax: number; steep: boolean } => {
-        const zx = splineZx(zy);
-        const oMax = Math.max(0, splineOMax(zx, H, tSz, planOut));
-        const oFloor = H >= SPLINE_H_MIN_MM - 1e-9 ? Math.min(SPLINE_O_FLOOR_FRAC * H, oMax) : 0;
-        let lo = 0;
-        let hi = oMax;
-        let best = 0;
-        for (let i = 0; i < SPLINE_BISECT; i++) {
-            const mid = 0.5 * (lo + hi);
-            const { m } = tryAt(mid, zy);
-            best = mid;
-            if (m.sag < targetSag) lo = mid;
-            else hi = mid;
-        }
-        let o = Math.max(best, oFloor);
-        if (o > oMax) o = oMax;
-        const { m } = tryAt(o, zy);
-        const steep = m.sag + 1e-4 < targetSag && o >= oMax - 1e-9;
-        return { o, oMax, steep };
+    const oAtZy = (zy: number): { o: number; oMax: number; steep: boolean } => {
+        const oMax = Math.max(0, splineOMax(splineZx(zy), H, tSz, planOut));
+        const o = Math.max(0, Math.min(oTarget, oMax));
+        return { o, oMax, steep: oTarget > oMax + 1e-9 };
     };
 
     let zyLo = SPLINE_ZY_LO;
     let zyHi = SPLINE_ZY_HI;
     let zy = zyLo;
-    let inner = bisectO(zy);
+    let inner = oAtZy(zy);
     for (let i = 0; i < SPLINE_BISECT; i++) {
         zy = 0.5 * (zyLo + zyHi);
-        inner = bisectO(zy);
+        inner = oAtZy(zy);
         const { m } = tryAt(inner.o, zy);
         if (m.peakZFrac < targetPeak) zyLo = zy;
         else zyHi = zy;
     }
     zy = 0.5 * (zyLo + zyHi);
-    inner = bisectO(zy);
+    inner = oAtZy(zy);
 
-    let { o, oMax, steep } = inner;
-    if (!tryAt(o, zy).m.convex) {
-        let lo = 0;
-        let hi = o;
-        if (tryAt(0, zy).m.convex) {
-            for (let i = 0; i < SPLINE_BISECT; i++) {
-                const mid = 0.5 * (lo + hi);
-                if (tryAt(mid, zy).m.convex) lo = mid;
-                else hi = mid;
-            }
-            o = lo;
-        } else {
-            o = 0;
-        }
-    }
-
+    const { o, oMax, steep } = inner;
     const zx = splineZx(zy);
     const a = splineA(o, zx, H, tSz);
     const { poly, m } = tryAt(o, zy);
@@ -679,8 +657,8 @@ export function solveSplineStation(input: SplineStationInput): SplineSolve {
                 tRAngleDeg: Number(tRAngleDeg.toFixed(3)),
                 o: Number(o.toFixed(4)),
                 oMax: Number(oMax.toFixed(4)),
+                oTarget: Number(oTarget.toFixed(4)),
                 sag: Number(m.sag.toFixed(4)),
-                targetSag: Number(targetSag.toFixed(4)),
             }),
         );
     }
@@ -705,8 +683,8 @@ export function rebuildSplineStation(
     const oMax = splineOMax(zx, H, tSz, planOut);
     const poly = buildSplinePolygon(R, B, fr.h, tR, o, zy, a);
     const m = measureOf(poly, R, B, fr.h, tR);
-    const targetSag = splineBetaAt(input.u) * splineHeightScale(H) * H;
-    const steep = (m.sag + 1e-4 < targetSag && o >= oMax - 1e-9) || m.infl;
+    const oTarget = splineOTarget(input.u, H);
+    const steep = oTarget > oMax + 1e-9 || m.infl;
     if (steep) {
         console.log(
             "[RND-STEEP]",
@@ -715,6 +693,7 @@ export function rebuildSplineStation(
                 tRAngleDeg: Number(tRAngleDeg.toFixed(3)),
                 o: Number(o.toFixed(4)),
                 oMax: Number(oMax.toFixed(4)),
+                oTarget: Number(oTarget.toFixed(4)),
                 sag: Number(m.sag.toFixed(4)),
                 rebuild: true,
             }),
@@ -759,25 +738,32 @@ export function buildSplineDensityTable(poly: XYZ[], nDense = SPLINE_W_DENSE): S
     for (let i = 0; i <= n; i++) {
         const sTerm = L > 1e-16 ? S[i]! / L : (u[i] ?? 0);
         const tTerm = Theta > 1e-16 ? T[i]! / Theta : 0;
-        W.push((1 - alpha) * sTerm + alpha * tTerm);
+        W.push((1 - alpha) * sTerm + alpha * tTerm + SPLINE_W_EPS * i);
     }
     W[0] = 0;
-    W[n] = 1;
     return { u, S, T, W, L, Theta, alpha };
 }
 
-/** Invert W(f) by linear interpolation on the 2048-point table. Never u = k/N. */
+/**
+ * Binary-search W and lerp u between the bracketing samples.
+ * Never u = f or u = k/N.
+ */
 export function invertDensityW(table: SplineDensityTable, f: number): number {
     const target = Math.max(0, Math.min(1, f));
     if (target <= 0) return 0;
     if (target >= 1) return 1;
     const W = table.W;
-    let i = 1;
-    while (i < W.length && (W[i] ?? 1) < target) i++;
+    let lo = 0;
+    let hi = W.length - 1;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if ((W[mid] ?? 0) < target) lo = mid + 1;
+        else hi = mid;
+    }
+    const i = Math.max(1, lo);
     const a = W[i - 1]!;
     const b = W[i] ?? a;
-    if (b <= a + 1e-16) return table.u[i - 1] ?? 0;
-    const t = (target - a) / (b - a);
+    const t = b > a ? (target - a) / (b - a) : 0;
     const u0 = table.u[i - 1]!;
     const u1 = table.u[i] ?? u0;
     return u0 + (u1 - u0) * t;
@@ -796,6 +782,41 @@ export function columnChordsOk(pts: XYZ[], L: number, N: number): boolean {
         if (hypot3(sub(pts[k]!, pts[k - 1]!)) + 1e-15 < need) return false;
     }
     return true;
+}
+
+/** Hard stop. Never flatten. */
+export function assertInversionOk(pts: XYZ[], L: number, N: number, i: number): void {
+    const need = (SPLINE_MIN_EDGE_FRAC * L) / Math.max(N, 1);
+    let lo = Number.POSITIVE_INFINITY;
+    let hi = 0;
+    let kLo = 1;
+    for (let k = 1; k < pts.length; k++) {
+        const e = hypot3(sub(pts[k]!, pts[k - 1]!));
+        if (e + 1e-15 < need) {
+            throw new Error(`[RND-INV] ${JSON.stringify({ i, k, chord: e, need, L, N })}`);
+        }
+        if (e > 1e-12) {
+            if (e < lo) {
+                lo = e;
+                kLo = k;
+            }
+            if (e > hi) hi = e;
+        }
+    }
+    const stepRatio = lo > 1e-12 ? hi / lo : 1;
+    if (stepRatio > SPLINE_STEP_RATIO_MAX + 1e-9) {
+        throw new Error(`[RND-INV] ${JSON.stringify({ i, k: kLo, stepRatio, lo, hi, L, N })}`);
+    }
+}
+
+/** Max |ROUND − STRAIGHT| at the same row index, as a fraction of H. */
+export function bulgeVsStraightFrac(round: XYZ[], straight: XYZ[], H: number): number {
+    const n = Math.min(round.length, straight.length);
+    let max = 0;
+    for (let k = 1; k < n - 1; k++) {
+        max = Math.max(max, hypot3(sub(round[k]!, straight[k]!)));
+    }
+    return max / Math.max(H, 1e-6);
 }
 
 /** f_0 = 0, f_N = 1, f_k >= f_{k-1} + 0.25/N. */
@@ -1000,11 +1021,7 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
     if (s.peakZFrac + 1e-9 < SPLINE_PEAK_GATE_LO || s.peakZFrac - 1e-9 > SPLINE_PEAK_GATE_HI) {
         misses.push(`peak ${s.peakZFrac.toFixed(3)}`);
     }
-    if (s.H >= SPLINE_H_MIN_MM - 1e-9) {
-        if (s.sagFrac + 1e-9 < SPLINE_SAG_LO || s.sagFrac - 1e-9 > SPLINE_SAG_HI) {
-            misses.push(`sag ${s.sagFrac.toFixed(3)}`);
-        }
-    }
+    // vs-chord sagitta is report-only. Bulge vs STRAIGHT is gated after sampling.
     if (s.g1RDeg > SPLINE_G1_R_MAX_DEG + 1e-6) misses.push(`G1-R ${s.g1RDeg.toFixed(3)}`);
     if (s.seamBDeg > SPLINE_SEAM_B_MAX_DEG + 1e-6) misses.push(`seam-B ${s.seamBDeg.toFixed(3)}`);
     if (s.maxTurnDeg > SPLINE_TURN_MAX_DEG + 1e-6) misses.push(`turn ${s.maxTurnDeg.toFixed(3)}`);

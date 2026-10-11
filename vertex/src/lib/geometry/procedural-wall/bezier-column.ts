@@ -15,10 +15,10 @@ import { countColumnPlanReversals, type HermiteStation } from "./loft";
 import { countPlanViewChordCrossings, smoothAndCapFlare } from "./stations";
 import {
     applySplineRing,
+    assertInversionOk,
     assertSplineEndpoints,
     blendColumns,
-    columnChordsOk,
-    controlPointsSpaced,
+    bulgeVsStraightFrac,
     g1CPrime0Deg,
     hybridWeightAt,
     overEdgeTangent,
@@ -4804,7 +4804,7 @@ function columnStepStats(col: XYZ[]): { minEdge: number; stepRatio: number } {
     };
 }
 
-function logRndFlat(i: number, u: number, o: number, a: number, reason: string): void {
+function logRndFlat(i: number, u: number, o: number, a: number, H: number, reason: string): void {
     console.log(
         "[RND-FLAT]",
         JSON.stringify({
@@ -4812,6 +4812,7 @@ function logRndFlat(i: number, u: number, o: number, a: number, reason: string):
             u: Number(u.toFixed(4)),
             o: Number(o.toFixed(4)),
             a: Number(a.toFixed(4)),
+            H: Number(H.toFixed(3)),
             reason,
         }),
     );
@@ -4858,18 +4859,24 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         }
     }
     const nS = frames.length;
+    const straightCols = xyz.map((col) => col.map((p) => ({ x: p.x, y: p.y, z: p.z })));
     const reasons: string[][] = solves.map((sol) => {
         const why: string[] = [];
-        if (sol.fallbackStraight) why.push("poly");
         if (sol.o < SPLINE_FLAT_MM) why.push("o");
         if (sol.a < SPLINE_FLAT_MM) why.push("a");
-        if (!controlPointsSpaced(sol.poly)) why.push("ctrl");
         return why;
     });
     const active = reasons.map((why) => why.length === 0);
     for (let i = 0; i < nS; i++) {
         if (reasons[i]!.length) {
-            logRndFlat(i, frames[i]!.u, solves[i]!.o, solves[i]!.a, reasons[i]!.join("+"));
+            logRndFlat(
+                i,
+                frames[i]!.u,
+                solves[i]!.o,
+                solves[i]!.a,
+                frames[i]!.heightMm,
+                reasons[i]!.join("+"),
+            );
         }
     }
     const sampled = sampleSplineRingByW(
@@ -4880,12 +4887,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     );
     for (let i = 0; i < nS; i++) {
         if (!active[i]) continue;
-        const L = sampled.L[i] ?? 1;
-        if (!columnChordsOk(sampled.pts[i]!, L, N)) {
-            reasons[i]!.push("chord");
-            active[i] = false;
-            logRndFlat(i, frames[i]!.u, solves[i]!.o, solves[i]!.a, "chord");
-        }
+        assertInversionOk(sampled.pts[i]!, sampled.L[i] ?? 1, N, i);
     }
     const rawWR = active.map((ok) => (ok ? 1 : 0));
     const arc: number[] = [0];
@@ -4951,7 +4953,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.g1FDeg = sol.seamBDeg;
         fr.midFlagged = sol.infl;
         fr.midPeakHFrac = sol.peakZFrac;
-        fr.midBulgeHFrac = sol.sagFrac;
+        fr.midBulgeHFrac = bulgeVsStraightFrac(col, straightCols[i]!, fr.heightMm);
         fr.midBeta = splineBetaAt(fr.u) * w;
         fr.midChordOffMm = sol.sagitta;
         fr.midChordMm = Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y, fr.B.z - fr.R.z);
@@ -4993,9 +4995,6 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             reasons: {
                 o: countWhy("o"),
                 a: countWhy("a"),
-                ctrl: countWhy("ctrl"),
-                chord: countWhy("chord"),
-                poly: countWhy("poly"),
             },
             o: sorted(solves.map((s) => s.o)),
             a: sorted(solves.map((s) => s.a)),

@@ -414,8 +414,10 @@ export {
 } from "./types";
 export {
     applySplineRing,
+    assertInversionOk,
     blendColumns,
     buildSplinePolygon,
+    bulgeVsStraightFrac,
     columnChordsOk,
     controlPointsSpaced,
     evalClampedCubic,
@@ -434,6 +436,7 @@ export {
     SPLINE_H_MIN_MM,
     SPLINE_KNOTS,
     SPLINE_MIN_EDGE_FRAC,
+    SPLINE_O_TARGET_FRAC,
     SPLINE_PEAK_GATE_HI,
     SPLINE_PEAK_GATE_LO,
     SPLINE_PLAN_OUT_MM,
@@ -444,6 +447,7 @@ export {
     SPLINE_STEP_RATIO_MAX,
     solveSplineStation,
     splineBetaAt,
+    splineOTarget,
     stationGates,
 } from "./wall-spline";
 export {
