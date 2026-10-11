@@ -20,6 +20,8 @@ import {
     blendColumns,
     bulgeVsStraightFrac,
     columnRowTurns,
+    curveSTFromCubic,
+    curveSTFromPolyline,
     g1CPrime0Deg,
     hybridWeightAt,
     minRhoFirstArcOfPoly,
@@ -27,11 +29,11 @@ import {
     periodicGaussian1d,
     ringFValues,
     row1TRAngleDeg,
+    SPLINE_CHORD_MIN_MM,
+    SPLINE_FLAT_H_MM,
     SPLINE_FLAT_MM,
     SPLINE_G1_R_MAX_DEG,
-    SPLINE_H_MIN_MM,
-    SPLINE_MIN_EDGE_FRAC,
-    SPLINE_N,
+    SPLINE_N_MAX,
     SPLINE_R_CAP,
     SPLINE_ROW1_TR_MAX_DEG,
     SPLINE_SMOOTH_SIGMA_MM,
@@ -42,6 +44,7 @@ import {
     splineBetaAt,
     splineGateFail,
     splineRhoNeed,
+    stationSampleNeed,
 } from "./wall-spline";
 import {
     clampSagitta,
@@ -355,6 +358,7 @@ export interface ColumnFrame {
     splineRhoNeed?: number;
     splineOMin?: number;
     splinePeakClosest?: boolean;
+    splineNi?: number;
 }
 
 export interface SweepMidStyle {
@@ -468,14 +472,18 @@ export interface ColumnQuality {
     maxSplineFDelta?: number;
     /** In-column adjacent-step ratio. Gate: ≤4. */
     maxSplineStepRatio?: number;
-    /** minEdge / (0.2 L/N). Gate: ≥1. */
+    /** minEdge / 0.03 mm. Gate: ≥1. */
     minSplineEdgeOverLN?: number;
     /** angle(row1 − R, tR) (deg). Gate: ≤6 (final pass). */
     maxRow1TRDeg?: number;
-    /** min ρ / ρ_need over the first 20% of arc. Gate: ≥1 (report). */
+    /** min ρ / ρ_need over the first 20% of arc. Report-only; eval at wR ≥ 0.5. */
     minSplineRhoOverNeed?: number;
     nSplineRhoFail?: number;
     nSplineCorner?: number;
+    /** Shared turn-bounded column count. */
+    splineN?: number;
+    splineMaxNi?: number;
+    splineMaxNiU?: number;
     worstAcrossI?: number;
     worstAcrossU?: number;
     worstAlongRowI?: number;
@@ -4870,13 +4878,13 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     if (steep.length) console.log("[RND-STEEP]", JSON.stringify(steep));
     const polyN = solves.filter((s) => s.fallbackStraight).length;
     console.log("[RND-POLY]", JSON.stringify({ n: polyN, nS: frames.length, steep: steep.length }));
-    const N = SPLINE_N;
     const nS = frames.length;
     const straightCols = xyz.map((col) => col.map((p) => ({ x: p.x, y: p.y, z: p.z })));
-    const reasons: string[][] = solves.map((sol) => {
+    const reasons: string[][] = solves.map((sol, i) => {
         const why: string[] = [];
         if (sol.o < SPLINE_FLAT_MM) why.push("o");
         if (sol.a < SPLINE_FLAT_MM) why.push("a");
+        if ((frames[i]!.heightMm ?? sol.H) < SPLINE_FLAT_H_MM) why.push("H");
         return why;
     });
     const active = reasons.map((why) => why.length === 0);
@@ -4892,6 +4900,39 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             );
         }
     }
+    const nRound = solves.map((s, i) => {
+        if (!active[i]) return 0;
+        const st = curveSTFromCubic(s.poly);
+        return stationSampleNeed(st.S, st.T).n;
+    });
+    const nStraight = straightCols.map((col) => {
+        const st = curveSTFromPolyline(col);
+        return stationSampleNeed(st.S, st.T).n;
+    });
+    const nI = nRound.map((n, i) => Math.max(n, nStraight[i] ?? 0));
+    const maxNi = nI.reduce((m, n) => Math.max(m, n), 1);
+    let maxI = 0;
+    for (let i = 0; i < nS; i++) {
+        if ((nI[i] ?? 0) >= (nI[maxI] ?? 0)) maxI = i;
+    }
+    const over128 = nI
+        .map((n, i) => ({ i, u: Number(frames[i]!.u.toFixed(4)), n }))
+        .filter((r) => r.n > SPLINE_N_MAX);
+    const N = Math.min(SPLINE_N_MAX, maxNi);
+    console.log(
+        "[RND-N]",
+        JSON.stringify({
+            N,
+            maxNi,
+            maxI,
+            maxU: Number(frames[maxI]!.u.toFixed(4)),
+            nOver128: over128.length,
+            over128: over128.slice(0, 16),
+        }),
+    );
+    if (over128.length) {
+        console.log("[RND-N-CAP]", JSON.stringify(over128));
+    }
     const rim = frames.map((fr) => fr.R);
     const f = ringFValues(nS, N, rim);
     const sampled = sampleSplineRingByW(
@@ -4903,22 +4944,10 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     );
     const sampledStraight = samplePolylinesByW(straightCols, N, f);
     for (let i = 0; i < nS; i++) {
-        if (!active[i]) continue;
-        assertInversionOk(sampled.pts[i]!, sampled.L[i] ?? 1, N, i);
+        if (active[i]) assertInversionOk(sampled.pts[i]!, sampled.L[i] ?? 1, N, i);
+        assertInversionOk(sampledStraight.pts[i]!, sampledStraight.L[i] ?? 1, N, i);
     }
-    const rawWR = active.map((ok, i) => (ok && !solves[i]!.corner ? 1 : 0));
-    const cornerList = solves
-        .map((s, i) => ({
-            i,
-            u: Number(frames[i]!.u.toFixed(4)),
-            H: Number((frames[i]!.heightMm ?? s.H).toFixed(4)),
-            tRAngleDeg: Number(s.tRAngleDeg.toFixed(3)),
-            oMin: Number(s.oMin.toFixed(4)),
-            oMax: Number(s.oMax.toFixed(4)),
-            reason: s.H < SPLINE_H_MIN_MM ? "H<6" : "o_min>o_max",
-        }))
-        .filter((_, i) => solves[i]!.corner);
-    console.log("[RND-CORNER]", JSON.stringify({ n: cornerList.length, stations: cornerList }));
+    const rawWR = active.map((ok) => (ok ? 1 : 0));
     const arc: number[] = [0];
     for (let i = 1; i < nS; i++) {
         const a = frames[i - 1]!.R;
@@ -5009,31 +5038,34 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineFlat = !evaluated;
         fr.splineWR = wRaw;
         fr.splineFlatReason = evaluated ? "" : reasons[i]!.join("+") || "flat";
-        fr.splineCorner = sol.corner;
-        fr.splineOMin = sol.oMin;
+        fr.splineCorner = false;
+        fr.splineOMin = 0;
         fr.splinePeakClosest = sol.peakClosest;
+        fr.splineNi = nI[i] ?? 0;
         const rhoL = L;
-        const rhoNeed = splineRhoNeed(rhoL);
+        const rhoNeed = splineRhoNeed(rhoL, N);
         const rhoMin = evaluated ? minRhoFirstArcOfPoly(sol.poly) : Number.POSITIVE_INFINITY;
         fr.splineRhoNeed = rhoNeed;
         fr.splineRhoMin = rhoMin;
-        if (evaluated && !sol.corner && rhoMin + 1e-9 < rhoNeed) {
-            splineGateFail("[RND-RHO]", {
-                i,
-                u: Number(fr.u.toFixed(4)),
-                rhoMin: Number(rhoMin.toFixed(4)),
-                rhoNeed: Number(rhoNeed.toFixed(4)),
-                L: Number(rhoL.toFixed(4)),
-            });
-        }
         fr.tInc = overEdgeTangent(tR, fr.h);
     }
     const rowTurnMax: number[] = [];
     const firstOver: Array<{ i: number; u: number; deg: number; chord: number }> = [];
     let firstMax = 0;
     let firstI = -1;
+    const blendZone: Array<{ i: number; u: number; wR: number; w: number }> = [];
     for (let i = 0; i < nS; i++) {
-        if (!active[i]) continue;
+        const fr = frames[i]!;
+        const wR = fr.splineWR ?? 0;
+        const w = fr.midWeight ?? 0;
+        if (wR < 1 - 1e-6 || w < 1 - 1e-6) {
+            blendZone.push({
+                i,
+                u: Number(fr.u.toFixed(4)),
+                wR: Number(wR.toFixed(4)),
+                w: Number(w.toFixed(4)),
+            });
+        }
         const col = xyz[i]!;
         const turns = columnRowTurns(col);
         for (let k = 0; k < turns.length; k++) {
@@ -5119,16 +5151,23 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             ok: row1_436 <= SPLINE_TURN_MAX_DEG + 1e-6,
         }),
     );
+    console.log(
+        "[RND-BLEND]",
+        JSON.stringify({
+            n: blendZone.length,
+            stations: blendZone.slice(0, 48),
+        }),
+    );
     const rhoRows = frames
         .map((fr, i) => ({
             i,
             u: Number(fr.u.toFixed(4)),
             rhoMin: fr.splineRhoMin ?? Number.POSITIVE_INFINITY,
             rhoNeed: fr.splineRhoNeed ?? 0,
-            corner: !!fr.splineCorner,
+            wR: fr.splineWR ?? 0,
             flat: !!fr.splineFlat,
         }))
-        .filter((r) => !r.flat && !r.corner);
+        .filter((r) => !r.flat && r.wR >= 0.5);
     const rhoFail = rhoRows.filter((r) => r.rhoMin + 1e-9 < r.rhoNeed);
     const worstRho = rhoRows.reduce(
         (best, r) => {
@@ -5173,6 +5212,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             reasons: {
                 o: countWhy("o"),
                 a: countWhy("a"),
+                H: countWhy("H"),
             },
             o: sorted(solves.map((s) => s.o)),
             a: sorted(solves.map((s) => s.a)),
@@ -6402,6 +6442,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let minSplineRhoOverNeed = Infinity;
     let nSplineRhoFail = 0;
     let nSplineCorner = 0;
+    let splineN = 0;
+    let splineMaxNi = 0;
+    let splineMaxNiU = 0;
     if (styledSplineWalls(frames)) {
         for (let i = 0; i < nS; i++) {
             const fr = frames[i]!;
@@ -6411,17 +6454,17 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             if (fr.splineCorner) nSplineCorner++;
             const rhoNeed = fr.splineRhoNeed ?? 0;
             const rho = fr.splineRhoMin ?? Number.POSITIVE_INFINITY;
-            if (!fr.splineFlat && !fr.splineCorner && rhoNeed > 1e-12) {
+            if (!fr.splineFlat && (fr.splineWR ?? 0) >= 0.5 && rhoNeed > 1e-12) {
                 const ratio = rho / rhoNeed;
                 minSplineRhoOverNeed = Math.min(minSplineRhoOverNeed, ratio);
                 if (ratio + 1e-9 < 1) nSplineRhoFail++;
             }
             const col = xyz[i]!;
             const N = Math.max(1, col.length - 1);
-            const L = fr.splineL ?? 1;
-            const need = (SPLINE_MIN_EDGE_FRAC * L) / N;
             const minE = fr.splineMinEdge ?? 0;
-            if (need > 1e-12) minSplineEdgeOverLN = Math.min(minSplineEdgeOverLN, minE / need);
+            if (SPLINE_CHORD_MIN_MM > 1e-12) {
+                minSplineEdgeOverLN = Math.min(minSplineEdgeOverLN, minE / SPLINE_CHORD_MIN_MM);
+            }
             const fa = fr.splineFk ?? [];
             const fb = nxt.splineFk ?? [];
             const nF = Math.min(fa.length, fb.length);
@@ -6429,9 +6472,20 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 maxSplineFDelta = Math.max(maxSplineFDelta, Math.abs((fa[k] ?? 0) - (fb[k] ?? 0)));
             }
         }
+        for (let i = 0; i < nS; i++) {
+            const ni = frames[i]!.splineNi ?? 0;
+            if (ni >= splineMaxNi) {
+                splineMaxNi = ni;
+                splineMaxNiU = frames[i]!.u;
+            }
+        }
+        splineN = Math.min(SPLINE_N_MAX, Math.max(1, splineMaxNi));
         console.log(
             "[RND-SAMPLE]",
             JSON.stringify({
+                N: splineN,
+                maxNi: splineMaxNi,
+                maxNiU: Number(splineMaxNiU.toFixed(4)),
                 maxFDelta: Number(maxSplineFDelta.toFixed(4)),
                 stepRatio: Number(maxSplineStepRatio.toFixed(3)),
                 minEdgeOverLN: Number(
@@ -6519,6 +6573,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         minSplineRhoOverNeed: Number.isFinite(minSplineRhoOverNeed) ? minSplineRhoOverNeed : 0,
         nSplineRhoFail,
         nSplineCorner,
+        splineN,
+        splineMaxNi,
+        splineMaxNiU,
         worstAcrossI: worstAcross.i,
         worstAcrossU: worstAcross.u,
         worstAlongRowI: worstAlongRow.i,

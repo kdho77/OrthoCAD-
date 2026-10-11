@@ -56,19 +56,27 @@ export const SPLINE_DENSE = 512;
 export const SPLINE_W_DENSE = 2048;
 export const SPLINE_W_ALPHA = 0.75;
 export const SPLINE_W_THETA_MIN_DEG = 1;
-/** ROUND/HYBRID column intervals. Endpoints stay R, B by index. */
+/** Fallback column count when a caller does not pass a computed N. */
 export const SPLINE_N = 64;
+/** Shared N cap for the turn-bounded sampler. */
+export const SPLINE_N_MAX = 128;
+/** ds_t = clamp(this × ρ, SPLINE_DS_FLOOR_MM, L/SPLINE_N_MIN_DIV). */
+export const SPLINE_DS_TURN_RAD = 0.0611;
+export const SPLINE_DS_FLOOR_MM = 0.04;
+export const SPLINE_N_MIN_DIV = 24;
+/** Absolute chord floor. Replaces 0.2 L/N. */
+export const SPLINE_CHORD_MIN_MM = 0.03;
 export const SPLINE_R_CAP = 4.5;
-/** First-chord 4° in radians — used in ρ_need = L / (r_cap N this). */
+/** Report-only ρ_need = L / (r_cap N this). */
 export const SPLINE_RHO_TURN_RAD = 0.0698;
-/** o_min = ρ_need / this. */
 export const SPLINE_RHO_O_SCALE = 0.65;
-/** Min ρ over this leading arc fraction ≥ ρ_need. */
 export const SPLINE_RHO_ARC_FRAC = 0.2;
 export const SPLINE_R_FILL_ITERS = 20;
 export const SPLINE_F_RING_MAX = 0.02;
 export const SPLINE_MIN_EDGE_FRAC = 0.2;
 export const SPLINE_FLAT_MM = 0.05;
+/** Real [RND-FLAT] also at H below this (o_target is already 0). */
+export const SPLINE_FLAT_H_MM = 3;
 export const SPLINE_STEP_RATIO_MAX = 4;
 export const SPLINE_ROW1_TR_MAX_DEG = 6;
 /** This build: shape/sampling asserts log and continue. Final pass sets false. */
@@ -306,6 +314,30 @@ export function splineA(o: number, zx: number, H: number, tSz: Sz): number {
 
 export function splineRhoNeed(L: number, n = SPLINE_N): number {
     return L / (SPLINE_R_CAP * n * SPLINE_RHO_TURN_RAD);
+}
+
+export function rhoFromSegment(dS: number, dTdeg: number): number {
+    const dTrad = (dTdeg * Math.PI) / 180;
+    if (dTrad < 1e-12 || dS < 1e-16) return Number.POSITIVE_INFINITY;
+    return dS / dTrad;
+}
+
+export function dsTarget(rho: number, L: number): number {
+    const hi = Math.max(L / SPLINE_N_MIN_DIV, SPLINE_DS_FLOOR_MM);
+    const raw = Number.isFinite(rho) ? SPLINE_DS_TURN_RAD * rho : Number.POSITIVE_INFINITY;
+    return clampNum(raw, SPLINE_DS_FLOOR_MM, hi);
+}
+
+export function stationSampleNeed(S: number[], T: number[]): { n: number; L: number; integral: number } {
+    const nSeg = Math.max(1, S.length - 1);
+    const L = S[nSeg] ?? 0;
+    let integral = 0;
+    for (let j = 1; j <= nSeg; j++) {
+        const dS = (S[j] ?? 0) - (S[j - 1] ?? 0);
+        const dT = (T[j] ?? 0) - (T[j - 1] ?? 0);
+        integral += dS / Math.max(dsTarget(rhoFromSegment(dS, dT), L), 1e-16);
+    }
+    return { n: Math.max(1, Math.ceil(integral - 1e-12)), L, integral };
 }
 
 export function splineOMinFromL(L: number, n = SPLINE_N): number {
@@ -713,7 +745,7 @@ function finishSolve(
 }
 
 /**
- * Drive o = clamp(max(o_target, o_min), 0, o_max).
+ * Drive o = clamp(o_target, 0, o_max = planOut 2 mm). No o_min / corner-out.
  * zx = clamp(1 − 1.5 o/H, 0.55, 0.92).
  * zy bisects in [0.10, zx − 0.20] for z(min s) = 0.50 H ± 0.05.
  */
@@ -726,16 +758,11 @@ export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const tRAngleDeg = tRAngleBelowHorizontalDeg(tSz);
     const oTarget = splineOTarget(input.u, H);
     const L = hypot3(sub(B, R));
-    const rhoNeed = splineRhoNeed(L);
-    const oMin = splineOMinFromL(L);
-    const oWish = Math.max(oTarget, oMin);
-    const zxWish = splineZx(oWish, H);
-    const oMax = Math.max(0, splineOMax(zxWish, H, tSz, planOut));
-    const corner = oMin > oMax + 1e-12 || H < SPLINE_H_MIN_MM;
-    const o = clampNum(Math.max(oTarget, oMin), 0, oMax);
+    const oMax = Math.max(0, planOut);
+    const o = clampNum(oTarget, 0, oMax);
     const zx = splineZx(o, H);
     const a = splineA(o, zx, H, tSz);
-    const extra: SplineSolveExtra = { corner, oMin, rhoNeed };
+    const extra: SplineSolveExtra = { corner: false, oMin: 0, rhoNeed: splineRhoNeed(L) };
 
     const tryAt = (oo: number, zy: number, aOverride?: number) => {
         const poly = buildSplinePolygon(R, B, fr.h, tR, oo, zy, aOverride);
@@ -824,9 +851,9 @@ export function rebuildSplineStation(
     const tRAngleDeg = tRAngleBelowHorizontalDeg(tSz);
     const L = hypot3(sub(B, R));
     const rhoNeed = extra?.rhoNeed ?? splineRhoNeed(L);
-    const oMin = extra?.oMin ?? splineOMinFromL(L);
+    const oMin = extra?.oMin ?? 0;
     const zx = splineZx(o, H);
-    const oMax = splineOMax(zx, H, tSz, planOut);
+    const oMax = Math.max(0, planOut);
     const zyUse = clampNum(zy, SPLINE_ZY_LO, Math.max(SPLINE_ZY_LO, zx - SPLINE_ZY_GAP));
     const poly = buildSplinePolygon(R, B, fr.h, tR, o, zyUse, a);
     const m = measureOf(poly, R, B, fr.h, tR);
@@ -847,7 +874,7 @@ export function rebuildSplineStation(
         );
     }
     return finishSolve(input, poly, o, zyUse, a, oMax, tRAngleDeg, steep, o <= 1e-9 && !m.convex, {
-        corner: extra?.corner ?? (oMin > oMax + 1e-12 || H < SPLINE_H_MIN_MM),
+        corner: false,
         oMin,
         rhoNeed,
         peakClosest: extra?.peakClosest ?? false,
@@ -861,49 +888,51 @@ export interface SplineDensityTable {
     W: number[];
     L: number;
     Theta: number;
-    alpha: number;
-    maxR: number;
-    fillPasses: number;
+    alpha?: number;
+    maxR?: number;
+    fillPasses?: number;
+    nNeed?: number;
+    N?: number;
 }
 
-/** Water-fill r≤4.5; W = cumsum(r s). Shared by cubic and polyline tables. */
-function finishDensity(u: number[], S: number[], T: number[]): SplineDensityTable {
-    const n = Math.max(1, S.length - 1);
-    const L = S[n] ?? 0;
-    const Theta = T[n] ?? 0;
-    const alpha = Theta < SPLINE_W_THETA_MIN_DEG ? 0 : SPLINE_W_ALPHA;
-    const s: number[] = [];
-    const r: number[] = [];
-    for (let j = 1; j <= n; j++) {
+/**
+ * Turn-bounded density: ds_t = clamp(0.0611 ρ, 0.04, L/24),
+ * q = 1/ds_t + (N − n_i)/L, W = normalized ∫ q ds.
+ */
+function finishTurnDensity(
+    u: number[],
+    S: number[],
+    T: number[],
+    N: number,
+    nNeed: number,
+): SplineDensityTable {
+    const nSeg = Math.max(1, S.length - 1);
+    const L = S[nSeg] ?? 0;
+    const Theta = T[nSeg] ?? 0;
+    const pad = L > 1e-16 ? (N - nNeed) / L : 0;
+    const W = [0];
+    let Z = 0;
+    const add: number[] = [];
+    for (let j = 1; j <= nSeg; j++) {
         const dS = (S[j] ?? 0) - (S[j - 1] ?? 0);
         const dT = (T[j] ?? 0) - (T[j - 1] ?? 0);
-        const sj = L > 1e-16 ? dS / L : 1 / n;
-        const rho = (1 - alpha) * sj + (Theta > 1e-16 ? (alpha * dT) / Theta : 0);
-        s.push(sj);
-        r.push(sj > 1e-16 ? rho / sj : 1);
+        const q = 1 / Math.max(dsTarget(rhoFromSegment(dS, dT), L), 1e-16) + pad;
+        const inc = q * dS;
+        add.push(inc);
+        Z += inc;
     }
-    let fillPasses = 0;
-    let maxR = 0;
-    for (let pass = 0; pass < SPLINE_R_FILL_ITERS; pass++) {
-        fillPasses = pass + 1;
-        for (let j = 0; j < n; j++) r[j] = Math.min(r[j] ?? 1, SPLINE_R_CAP);
-        let Z = 0;
-        for (let j = 0; j < n; j++) Z += (r[j] ?? 0) * (s[j] ?? 0);
-        if (Z > 1e-16) {
-            for (let j = 0; j < n; j++) r[j] = (r[j] ?? 0) / Z;
-        }
-        maxR = 0;
-        for (let j = 0; j < n; j++) maxR = Math.max(maxR, r[j] ?? 0);
-        if (maxR <= SPLINE_R_CAP + 1e-6) break;
+    for (let j = 1; j <= nSeg; j++) {
+        W.push((W[j - 1] ?? 0) + (Z > 1e-16 ? (add[j - 1] ?? 0) / Z : 1 / nSeg));
     }
-    const W = [0];
-    for (let j = 1; j <= n; j++) W.push((W[j - 1] ?? 0) + (r[j - 1] ?? 0) * (s[j - 1] ?? 0));
     W[0] = 0;
-    return { u, S, T, W, L, Theta, alpha, maxR, fillPasses };
+    if (W.length) W[W.length - 1] = 1;
+    return { u, S, T, W, L, Theta, alpha: 0, maxR: 0, fillPasses: 0, nNeed, N };
 }
 
-/** 2048-point S, T on the cubic; water-fill r≤4.5; W = cumsum(r s). */
-export function buildSplineDensityTable(poly: XYZ[], nDense = SPLINE_W_DENSE): SplineDensityTable {
+export function curveSTFromCubic(
+    poly: XYZ[],
+    nDense = SPLINE_W_DENSE,
+): { u: number[]; S: number[]; T: number[] } {
     const n = Math.max(1, nDense);
     const u: number[] = [];
     const pts: XYZ[] = [];
@@ -921,11 +950,13 @@ export function buildSplineDensityTable(poly: XYZ[], nDense = SPLINE_W_DENSE): S
         T.push(T[i - 1]! + vecAngleDeg(prev, tan));
         prev = tan;
     }
-    return finishDensity(u, S, T);
+    return { u, S, T };
 }
 
-/** Densify a polyline by arc length, then the same W table (α=0.75, cap 4.5). */
-export function buildPolylineDensityTable(col: XYZ[], nDense = SPLINE_W_DENSE): SplineDensityTable {
+export function curveSTFromPolyline(
+    col: XYZ[],
+    nDense = SPLINE_W_DENSE,
+): { u: number[]; S: number[]; T: number[] } {
     const dense = densifyPolyline(col, nDense);
     const n = Math.max(1, dense.length - 1);
     const u = dense.map((_, i) => i / n);
@@ -938,7 +969,32 @@ export function buildPolylineDensityTable(col: XYZ[], nDense = SPLINE_W_DENSE): 
         T.push(T[i - 1]! + vecAngleDeg(prev, tan));
         prev = tan;
     }
-    return finishDensity(u, S, T);
+    return { u, S, T };
+}
+
+function tableFromST(st: { u: number[]; S: number[]; T: number[] }, N?: number): SplineDensityTable {
+    const need = stationSampleNeed(st.S, st.T);
+    const nUse = Math.min(need.n, SPLINE_N_MAX);
+    const nShared = Math.max(1, Math.min(SPLINE_N_MAX, N ?? nUse));
+    return finishTurnDensity(st.u, st.S, st.T, nShared, need.n);
+}
+
+/** 2048-point S, T on the cubic; turn-bounded W. */
+export function buildSplineDensityTable(
+    poly: XYZ[],
+    nDense = SPLINE_W_DENSE,
+    N?: number,
+): SplineDensityTable {
+    return tableFromST(curveSTFromCubic(poly, nDense), N);
+}
+
+/** Densify a polyline by arc length, then the same turn-bounded W table. */
+export function buildPolylineDensityTable(
+    col: XYZ[],
+    nDense = SPLINE_W_DENSE,
+    N?: number,
+): SplineDensityTable {
+    return tableFromST(curveSTFromPolyline(col, nDense), N);
 }
 
 export function densifyPolyline(col: XYZ[], nDense = SPLINE_W_DENSE): XYZ[] {
@@ -1006,17 +1062,16 @@ export function controlPointsSpaced(poly: XYZ[], minMm = SPLINE_FLAT_MM): boolea
     return true;
 }
 
-export function columnChordsOk(pts: XYZ[], L: number, N: number): boolean {
-    const need = (SPLINE_MIN_EDGE_FRAC * L) / Math.max(N, 1);
+export function columnChordsOk(pts: XYZ[], _L?: number, _N?: number): boolean {
     for (let k = 1; k < pts.length; k++) {
-        if (hypot3(sub(pts[k]!, pts[k - 1]!)) + 1e-15 < need) return false;
+        if (hypot3(sub(pts[k]!, pts[k - 1]!)) + 1e-15 < SPLINE_CHORD_MIN_MM) return false;
     }
     return true;
 }
 
-/** Hard stop on short chords. No W-step cap. Never flatten. */
+/** Hard stop on chords shorter than 0.03 mm. */
 export function assertInversionOk(pts: XYZ[], L: number, N: number, i: number): void {
-    const need = (SPLINE_MIN_EDGE_FRAC * L) / Math.max(N, 1);
+    const need = SPLINE_CHORD_MIN_MM;
     for (let k = 1; k < pts.length; k++) {
         const e = hypot3(sub(pts[k]!, pts[k - 1]!));
         if (e + 1e-15 < need) {
@@ -1124,7 +1179,7 @@ export function sampleSplineRingByW(
                 fillPasses: 0,
             };
         }
-        return buildSplineDensityTable(p);
+        return buildSplineDensityTable(p, SPLINE_W_DENSE, N);
     });
     const f = fIn ?? ringFValues(nS, N, rim);
     const u: number[][] = [];
@@ -1168,7 +1223,7 @@ export function sampleSplineRingByW(
     return { pts, f, u, L, Theta };
 }
 
-/** Same f / α / cap / N as the cubic sampler, on STRAIGHT polylines. */
+/** Same shared-N turn-bounded W as the cubic sampler, on STRAIGHT polylines. */
 export function samplePolylinesByW(cols: XYZ[][], N: number, f: number[][]): { pts: XYZ[][]; L: number[] } {
     const nS = cols.length;
     const pts: XYZ[][] = [];
@@ -1176,7 +1231,7 @@ export function samplePolylinesByW(cols: XYZ[][], N: number, f: number[][]): { p
     for (let i = 0; i < nS; i++) {
         const col = cols[i] ?? [];
         const dense = densifyPolyline(col, SPLINE_W_DENSE);
-        const table = buildPolylineDensityTable(col);
+        const table = buildPolylineDensityTable(col, SPLINE_W_DENSE, N);
         const fk =
             f[i] ??
             enforceMonotoneF(
@@ -1296,9 +1351,6 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
     if (s.maxTurnDeg > SPLINE_TURN_MAX_DEG + 1e-6) misses.push(`turn ${s.maxTurnDeg.toFixed(3)}`);
     if (s.insetMin < -1e-6) misses.push(`inset ${s.insetMin.toFixed(4)}`);
     if (s.planOffset > SPLINE_PLAN_OUT_MM + 1e-6) misses.push(`plan ${s.planOffset.toFixed(3)}`);
-    if (s.H >= SPLINE_H_MIN_MM && !s.corner && Number.isFinite(s.rhoMin) && s.rhoMin + 1e-9 < s.rhoNeed) {
-        misses.push(`rho ${s.rhoMin.toFixed(3)}<${s.rhoNeed.toFixed(3)}`);
-    }
     return {
         u,
         side,

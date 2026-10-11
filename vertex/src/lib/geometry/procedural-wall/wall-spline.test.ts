@@ -7,23 +7,24 @@ import {
     buildSplineDensityTable,
     columnChordsOk,
     controlPointsSpaced,
+    curveSTFromPolyline,
     denseCPrime0,
     enforceMonotoneF,
     evalClampedCubic,
     g1CPrime0Deg,
     invertDensityW,
     printSplineGates,
+    SPLINE_CHORD_MIN_MM,
     SPLINE_KNOTS,
-    SPLINE_N,
+    SPLINE_N_MAX,
     type SplineStationInput,
     sampleSplineRingByW,
     solveSplineStation,
     splineA,
-    splineOMinFromL,
     splineOTarget,
-    splineRhoNeed,
     splineZx,
     stationGates,
+    stationSampleNeed,
     tRInSz,
 } from "./wall-spline";
 
@@ -63,7 +64,7 @@ function printCorner(name: string, sol: ReturnType<typeof solveSplineStation>): 
         steep: sol.steep,
         poly: sol.fallbackStraight,
     };
-    console.log(`[RND-CORNER] ${name}`, JSON.stringify(row));
+    console.log(`[RND-SOLVE] ${name}`, JSON.stringify(row));
 }
 
 describe("clamped cubic wall spline", () => {
@@ -111,8 +112,7 @@ describe("clamped cubic wall spline", () => {
 
         const h8 = solveSplineStation(station(0.55, 1, 8, 2, { s: -1, z: -0.2 }));
         printCorner("H8-20", h8);
-        const o8 = Math.max(splineOTarget(0.55, 8), splineOMinFromL(Math.hypot(2, 8)));
-        expect(h8.o).toBeCloseTo(o8, 2);
+        expect(h8.o).toBeCloseTo(splineOTarget(0.55, 8), 2);
         expect(h8.o).toBeGreaterThan(0.05);
         expect(h8.a).toBeGreaterThan(0.05);
         expect(h8.zx).toBeCloseTo(splineZx(h8.o, 8), 6);
@@ -120,9 +120,9 @@ describe("clamped cubic wall spline", () => {
 
         const toe = solveSplineStation(station(0.9, 1, 2, 1, { s: -1, z: -0.1 }));
         printCorner("H2-toe", toe);
-        expect(toe.corner).toBe(true);
+        expect(toe.corner).toBe(false);
         expect(splineOTarget(0.9, 2)).toBe(0);
-        expect(toe.o).toBeCloseTo(Math.min(splineOMinFromL(Math.hypot(1, 2)), toe.oMax), 2);
+        expect(toe.o).toBe(0);
     });
 
     test("three Default-like stations: heel 0.12 med, arch 0.35 med, lat mid 0.55", () => {
@@ -155,7 +155,8 @@ describe("clamped cubic wall spline", () => {
             expect(table.W[i]!).toBeGreaterThan(table.W[i - 1]!);
         }
         expect(table.L).toBeGreaterThan(1);
-        expect(table.maxR).toBeLessThanOrEqual(4.5 + 1e-6);
+        expect(table.nNeed ?? 0).toBeGreaterThan(0);
+        expect(table.N ?? 0).toBeLessThanOrEqual(SPLINE_N_MAX);
         const N = 20;
         const f = enforceMonotoneF(
             Array.from({ length: N + 1 }, (_, k) => k / N),
@@ -182,15 +183,21 @@ describe("clamped cubic wall spline", () => {
         expect(Math.abs(ring.f[0]![5]! - ring.f[1]![5]!)).toBeLessThanOrEqual(0.02);
     });
 
-    test("density cap water-fills r to <= 4.5", () => {
+    test("turn-bounded W uses ds_t floor and pad to shared N", () => {
         const sol = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
         const table = buildSplineDensityTable(sol.poly);
-        expect(table.maxR).toBeLessThanOrEqual(4.5 + 1e-6);
         expect(table.W[0]).toBe(0);
         expect(table.W[table.W.length - 1]!).toBeCloseTo(1, 2);
-        expect(table.fillPasses).toBeGreaterThan(0);
-        expect(table.fillPasses).toBeLessThanOrEqual(20);
-        expect(table.alpha === 0 || table.alpha === 0.75).toBe(true);
+        expect(table.fillPasses).toBe(0);
+        expect(table.nNeed ?? 0).toBeGreaterThan(0);
+        expect(table.N ?? 0).toBeLessThanOrEqual(SPLINE_N_MAX);
+        const st = curveSTFromPolyline([
+            { x: 0, y: 0, z: 10 },
+            { x: 3, y: 0, z: 0 },
+        ]);
+        expect(stationSampleNeed(st.S, st.T).n).toBe(24);
+        const shared = buildSplineDensityTable(sol.poly, undefined, 50);
+        expect(shared.N).toBe(50);
     });
 
     test("invertDensityW lerps the W table, never u = k/N", () => {
@@ -208,16 +215,16 @@ describe("clamped cubic wall spline", () => {
         expect(Math.abs(u - 0.5)).toBeGreaterThan(0.1);
     });
 
-    test("healthy invert N=64 keeps chords; short chords throw [RND-INV]", () => {
+    test("healthy invert keeps chords >= 0.03 mm; short chords throw [RND-INV]", () => {
         const heel = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
         expect(heel.o).toBeGreaterThan(0.05);
         expect(heel.a).toBeGreaterThan(0.05);
-        const N = SPLINE_N;
-        expect(N).toBe(64);
+        const table = buildSplineDensityTable(heel.poly);
+        const N = Math.min(SPLINE_N_MAX, Math.max(8, table.nNeed ?? 24));
         const ring = sampleSplineRingByW([heel.poly], N, [heel.poly[0]!]);
         const pts = ring.pts[0]!;
         const L = ring.L[0]!;
-        const need = (0.2 * L) / N;
+        const need = SPLINE_CHORD_MIN_MM;
         let lo = Number.POSITIVE_INFINITY;
         let hi = 0;
         for (let k = 1; k < pts.length; k++) {
@@ -239,6 +246,7 @@ describe("clamped cubic wall spline", () => {
                 a: Number(heel.a.toFixed(4)),
                 L: Number(L.toFixed(4)),
                 N,
+                nNeed: table.nNeed,
                 need: Number(need.toFixed(4)),
                 lo: Number(lo.toFixed(4)),
                 hi: Number(hi.toFixed(4)),
@@ -283,7 +291,7 @@ describe("clamped cubic wall spline", () => {
         ).toBe(false);
     });
 
-    test("corner zx/a/o_min and H<6 force corner-out", () => {
+    test("zx/a follow 0.9 o and 1.5 o/H; o is clamp(o_target, 0, planOut)", () => {
         expect(splineZx(1.08, 12)).toBeCloseTo(Math.max(0.55, Math.min(0.92, 1 - 1.5 * (1.08 / 12))), 8);
         const tSz = tRInSz({ x: -1, y: 0, z: -0.2 }, { x: 1, y: 0 });
         const zx = splineZx(1.08, 12);
@@ -293,16 +301,16 @@ describe("clamped cubic wall spline", () => {
 
         const short = solveSplineStation(station(0.9, 1, 5, 1.5, { s: -1, z: -0.2 }));
         expect(short.H).toBeLessThan(6);
-        expect(short.corner).toBe(true);
+        expect(short.corner).toBe(false);
+        expect(short.o).toBeCloseTo(Math.min(splineOTarget(0.9, 5), 2), 2);
 
         const steep = solveSplineStation(station(0, 1, 12, 2, { s: -0.05, z: -1 }));
-        expect(steep.oMin).toBeGreaterThan(steep.oMax);
-        expect(steep.corner).toBe(true);
+        expect(steep.corner).toBe(false);
+        expect(steep.o).toBeLessThanOrEqual(steep.oMax + 1e-9);
 
         const heel = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
         expect(heel.corner).toBe(false);
-        expect(heel.rhoMin).toBeGreaterThanOrEqual(heel.rhoNeed - 1e-6);
-        expect(heel.rhoNeed).toBeCloseTo(splineRhoNeed(Math.hypot(2, 12)), 6);
+        expect(heel.o).toBeCloseTo(splineOTarget(0, 12), 2);
     });
 
     test("inactive station skips spline evaluation", () => {

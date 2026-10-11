@@ -1563,6 +1563,7 @@ export function reconstructProceduralWalls(
             splineRhoNeed: f.splineRhoNeed,
             splineOMin: f.splineOMin,
             splinePeakClosest: f.splinePeakClosest ?? false,
+            splineNi: f.splineNi ?? 0,
         })),
         rndIndex: (grid as { rndIndex?: unknown }).rndIndex,
         rndEndOk: {

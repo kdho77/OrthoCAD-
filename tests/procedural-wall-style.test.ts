@@ -15,11 +15,11 @@ import {
     RING_TURNING_MAX_DEG,
     reconstructionManifold,
     reconstructProceduralWalls,
+    SPLINE_CHORD_MIN_MM,
     SPLINE_F_RING_MAX,
     SPLINE_G1_R_MAX_DEG,
     SPLINE_GATES_REPORT_ONLY,
     SPLINE_H_MIN_MM,
-    SPLINE_MIN_EDGE_FRAC,
     SPLINE_O_H_HI,
     SPLINE_O_H_LO,
     SPLINE_PEAK_GATE_HI,
@@ -99,6 +99,9 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             minSplineRhoOverNeed?: number;
             nSplineRhoFail?: number;
             nSplineCorner?: number;
+            splineN?: number;
+            splineMaxNi?: number;
+            splineMaxNiU?: number;
             duplicateVerts?: number;
             worstAcrossI?: number;
             worstAcrossU?: number;
@@ -182,9 +185,7 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             misses.push(`f-delta ${q.maxSplineFDelta?.toFixed(4)}>${SPLINE_F_RING_MAX}`);
         }
         if ((q.minSplineEdgeOverLN ?? 1) + 1e-9 < 1) {
-            misses.push(
-                `minEdge ${((q.minSplineEdgeOverLN ?? 0) * SPLINE_MIN_EDGE_FRAC).toFixed(3)}<${SPLINE_MIN_EDGE_FRAC} L/N`,
-            );
+            misses.push(`minEdge ${(q.minSplineEdgeOverLN ?? 0).toFixed(3)}<1 × ${SPLINE_CHORD_MIN_MM} mm`);
         }
         if ((q.maxRow1TRDeg ?? 0) > SPLINE_ROW1_TR_MAX_DEG + 1e-6) {
             misses.push(`row1-tR ${q.maxRow1TRDeg?.toFixed(2)}>${SPLINE_ROW1_TR_MAX_DEG}`);
@@ -228,7 +229,7 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
                 ),
             );
         }
-        const styled = frames.filter((f) => (f.midWeight ?? 0) > 0.5 && !f.splineFlat && !f.fallbackStraight);
+        const styled = frames.filter((f) => (f.splineWR ?? 0) >= 0.5 && !f.splineFlat && !f.fallbackStraight);
         const tall = styled.filter((f) => (f.heightMm ?? 0) >= SPLINE_H_MIN_MM);
         const oH = tall.map((f) => (f.o ?? 0) / Math.max(f.heightMm ?? 1e-6, 1e-6));
         const peakH = tall.map((f) => f.midPeakHFrac ?? 0);
@@ -309,6 +310,9 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             minSplineRhoOverNeed?: number;
             nSplineRhoFail?: number;
             nSplineCorner?: number;
+            splineN?: number;
+            splineMaxNi?: number;
+            splineMaxNiU?: number;
             duplicateVerts?: number;
             worstAcrossI?: number;
             worstAcrossU?: number;
@@ -401,8 +405,9 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         (f) => (f.fallbackStraight ? 1 : 0),
         (v) => v > 0,
     );
+    const wrGated = (f: (typeof frames)[number]): boolean => !f.splineFlat && (f.splineWR ?? 0) >= 0.5;
     const bulgeGated = (f: (typeof frames)[number]): boolean =>
-        !f.splineFlat && (f.midWeight ?? 0) > 0.5 && (f.heightMm ?? 0) >= SPLINE_H_MIN_MM;
+        wrGated(f) && (f.heightMm ?? 0) >= SPLINE_H_MIN_MM;
     const oHOf = (f: (typeof frames)[number]): number => (f.o ?? 0) / Math.max(f.heightMm ?? 1e-6, 1e-6);
     const sagHi = worstHi(
         (f) => (bulgeGated(f) ? oHOf(f) : 0),
@@ -421,7 +426,7 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         (_v) => false,
     );
     const peakGated = (f: (typeof frames)[number]): boolean =>
-        !f.splineFlat && (f.heightMm ?? 0) >= SPLINE_H_MIN_MM;
+        wrGated(f) && (f.heightMm ?? 0) >= SPLINE_H_MIN_MM;
     const peakHi = worstHi(
         (f) => (peakGated(f) ? (f.midPeakHFrac ?? 0) : 0),
         (v) => v - 1e-9 > SPLINE_PEAK_GATE_HI,
@@ -440,18 +445,14 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
     );
     const edge = worstLo(
         (f) => {
-            const N = Math.max(
-                1,
-                (geo.userData as { nJ?: number }).nJ ? ((geo.userData as { nJ?: number }).nJ ?? 2) - 1 : 1,
-            );
-            const need = (SPLINE_MIN_EDGE_FRAC * (f.splineL ?? 1)) / N;
+            const need = SPLINE_CHORD_MIN_MM;
             return need > 1e-12 ? (f.splineMinEdge ?? 0) / need : 1;
         },
         (v) => v + 1e-9 < 1,
     );
     const rhoLo = worstLo(
         (f) => {
-            if (f.splineFlat || f.splineCorner) return 1;
+            if (f.splineFlat || (f.splineWR ?? 0) < 0.5) return 1;
             const need = f.splineRhoNeed ?? 0;
             const rho = f.splineRhoMin ?? Number.POSITIVE_INFINITY;
             return need > 1e-12 ? rho / need : 1;
@@ -572,7 +573,7 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         ),
         row("step-ratio", true, q.maxSplineStepRatio ?? 1, "no-cap"),
         row(
-            "minEdge/LN",
+            "minEdge",
             !edge.n || style === "straight",
             edge.n ? edge.v : (q.minSplineEdgeOverLN ?? 1),
             1,
@@ -587,9 +588,9 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         ),
         row(
             "rho-first20",
-            !rhoLo.n || style === "straight",
+            true,
             rhoLo.n ? rhoLo.v : (q.minSplineRhoOverNeed ?? 0),
-            1,
+            "report-only",
             rhoLo.n ? { n: rhoLo.n, worstI: rhoLo.i, worstU: rhoLo.u } : { n: q.nSplineCorner ?? 0 },
         ),
         row(
@@ -660,6 +661,21 @@ describe("procedural wall styles", () => {
             const table = gateTable(geo, style, style === "straight" ? undefined : straight);
             tables[style] = table;
             console.log("[RND-GATE-TABLE]", style, JSON.stringify(table));
+            const qN =
+                (
+                    geo.userData as {
+                        columnQuality?: { splineN?: number; splineMaxNi?: number; splineMaxNiU?: number };
+                    }
+                ).columnQuality ?? {};
+            console.log(
+                "[RND-N-REPORT]",
+                style,
+                JSON.stringify({
+                    N: qN.splineN ?? 0,
+                    maxNi: qN.splineMaxNi ?? 0,
+                    maxNiU: Number((qN.splineMaxNiU ?? 0).toFixed(4)),
+                }),
+            );
             const frames =
                 (
                     geo.userData as {
@@ -668,8 +684,10 @@ describe("procedural wall styles", () => {
                             o?: number;
                             a?: number;
                             heightMm?: number;
+                            midWeight?: number;
                             splineFlat?: boolean;
                             splineWR?: number;
+                            splineNi?: number;
                         }>;
                     }
                 ).wallFrames ?? [];
@@ -694,6 +712,20 @@ describe("procedural wall styles", () => {
                 }),
             );
             console.log("[RND-FLAT-LIST]", style, JSON.stringify(flatList));
+            const blendList = frames
+                .map((f, i) => ({
+                    i,
+                    u: Number((f.u ?? 0).toFixed(4)),
+                    wR: Number((f.splineWR ?? 0).toFixed(4)),
+                    w: Number((f.midWeight ?? 0).toFixed(4)),
+                    nI: f.splineNi ?? 0,
+                }))
+                .filter((f) => f.wR < 1 - 1e-6 || f.w < 1 - 1e-6);
+            console.log(
+                "[RND-BLEND-REPORT]",
+                style,
+                JSON.stringify({ n: blendList.length, stations: blendList.slice(0, 48) }),
+            );
             if (local.length) misses.push(`${style}: ${local.join("; ")}`);
             writeArtifact(`procedural-default-${style}.stl`, Buffer.from(geometryToBinarySTL(geo)));
             const pos = geo.getAttribute("position").array as Float32Array;
