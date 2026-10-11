@@ -293,6 +293,111 @@ function mergeCollapsedStations(
     };
 }
 
+function wallVertLookup(
+    generatedStart: number,
+    bRingStart: number,
+    rimLocal: number[],
+    nS: number,
+    nJ: number,
+    indexGrid: boolean,
+): (v: number) => { station: number; row: number } | null {
+    const rimOf = new Map<number, number>();
+    for (let s = 0; s < nS; s++) rimOf.set(rimLocal[s]!, s);
+    return (v: number) => {
+        const rimS = rimOf.get(v);
+        if (rimS != null) return { station: rimS, row: 0 };
+        if (indexGrid && v >= bRingStart && v < bRingStart + nS) {
+            return { station: v - bRingStart, row: nJ - 1 };
+        }
+        const bodyCount = (indexGrid ? Math.max(0, nJ - 2) : Math.max(0, nJ - 1)) * nS;
+        if (v >= generatedStart && v < generatedStart + bodyCount) {
+            const local = v - generatedStart;
+            return { station: local % nS, row: 1 + Math.floor(local / nS) };
+        }
+        return null;
+    };
+}
+
+/** Directed-edge mismatches on wall triangles, tagged by station/row. */
+function flippedWallFaces(
+    positions: number[],
+    indices: number[],
+    lookup: (v: number) => { station: number; row: number } | null,
+    nJ: number,
+    frames: Array<{ u: number; splineWR?: number; midWeight?: number }>,
+): {
+    n: number;
+    rim: number;
+    body: number;
+    bot: number;
+    blend: number;
+    sample: Array<{ i: number; j: number; u: number; where: string; wR: number; w: number }>;
+} {
+    const q = 1e-4;
+    const keyOf = (i: number): string =>
+        `${Math.round(positions[i * 3]! / q)},${Math.round(positions[i * 3 + 1]! / q)},${Math.round(positions[i * 3 + 2]! / q)}`;
+    const directed = new Map<string, number>();
+    const owner = new Map<string, { i: number; j: number }>();
+    for (let t = 0; t < indices.length; t += 3) {
+        const vs = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+        const loc = vs.map(lookup);
+        if (loc.some((p) => !p)) continue;
+        const stations = loc.map((p) => p!.station);
+        const rows = loc.map((p) => p!.row);
+        const i = stations[0]!;
+        const j = Math.min(rows[0]!, rows[1]!, rows[2]!);
+        const keys = vs.map(keyOf);
+        for (let e = 0; e < 3; e++) {
+            const p = keys[e]!;
+            const qq = keys[(e + 1) % 3]!;
+            if (p === qq) continue;
+            const k = `${p}>${qq}`;
+            directed.set(k, (directed.get(k) ?? 0) + 1);
+            if (!owner.has(k)) owner.set(k, { i, j });
+        }
+    }
+    const seen = new Set<string>();
+    const sample: Array<{ i: number; j: number; u: number; where: string; wR: number; w: number }> = [];
+    let n = 0;
+    let rim = 0;
+    let body = 0;
+    let bot = 0;
+    let blend = 0;
+    for (const key of directed.keys()) {
+        const sep = key.indexOf(">");
+        const p = key.slice(0, sep);
+        const qq = key.slice(sep + 1);
+        const und = p < qq ? `${p}|${qq}` : `${qq}|${p}`;
+        if (seen.has(und)) continue;
+        seen.add(und);
+        const fwd = directed.get(`${p}>${qq}`) ?? 0;
+        const back = directed.get(`${qq}>${p}`) ?? 0;
+        if (fwd === 1 && back === 1) continue;
+        const at = owner.get(`${p}>${qq}`) ?? owner.get(`${qq}>${p}`);
+        if (!at) continue;
+        n++;
+        const fr = frames[at.i];
+        const wR = fr?.splineWR ?? 1;
+        const w = fr?.midWeight ?? 1;
+        const where = at.j <= 0 ? "rim" : at.j >= nJ - 2 ? "bot" : "body";
+        if (where === "rim") rim++;
+        else if (where === "bot") bot++;
+        else body++;
+        if (wR < 1 - 1e-6 || w < 1 - 1e-6) blend++;
+        if (sample.length < 24) {
+            sample.push({
+                i: at.i,
+                j: at.j,
+                u: Number((fr?.u ?? 0).toFixed(4)),
+                where,
+                wR: Number(wR.toFixed(4)),
+                w: Number(w.toFixed(4)),
+            });
+        }
+    }
+    return { n, rim, body, bot, blend, sample };
+}
+
 function wallStationRow(
     i: number,
     generatedStart: number,
@@ -1342,9 +1447,12 @@ export function reconstructProceduralWalls(
         return dx * dx + dy * dy + dz * dz;
     };
     const pushQuad = (a: number, b: number, c: number, d: number): void => {
+        // Same winding as STRAIGHT: (a,c,b)+(a,d,c). The shorter diagonal
+        // must use (a,d,b)+(b,d,c), not (a,b,d)+(b,c,d) — that pair is reversed
+        // and is what made ROUND/HYBRID is_winding_consistent = false.
         if (indexGrid && dist2(b, d) < dist2(a, c)) {
-            pushTri(a, b, d);
-            pushTri(b, c, d);
+            pushTri(a, d, b);
+            pushTri(b, d, c);
             return;
         }
         pushTri(a, c, b);
@@ -1421,6 +1529,17 @@ export function reconstructProceduralWalls(
             splineGateFail("[RND-DUP]", { n: dups });
         }
         console.log("[RND-SEAM-B]", JSON.stringify({ max: Number(seam.maxDeg.toFixed(3)), nS }));
+    }
+    const wallFlip = flippedWallFaces(
+        positions,
+        indices,
+        wallVertLookup(generatedStart, bRingStart, rimLocal, nS, nJ, indexGrid),
+        nJ,
+        grid.frames,
+    );
+    console.log("[RND-WIND]", JSON.stringify(wallFlip));
+    if (grid.quality) {
+        (grid.quality as { nFlippedWallFaces?: number }).nFlippedWallFaces = wallFlip.n;
     }
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
@@ -1501,6 +1620,7 @@ export function reconstructProceduralWalls(
         maxOffPlaneMm: grid.maxOffPlaneMm,
         maxSidewaysMm: grid.maxSidewaysMm,
         winding: windingReport(geo),
+        wallFlip,
         nJ: grid.nJ,
         filletRowStart: Math.max(0, grid.outlineRow - Math.max(1, grid.frames[0]?.nFilFix || 3)),
         wallFrames: grid.frames.map((f) => ({

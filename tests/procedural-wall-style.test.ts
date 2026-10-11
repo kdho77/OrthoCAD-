@@ -1,7 +1,9 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import {
@@ -32,12 +34,47 @@ import {
     WALL_PLAN_ANGLE_REPORT_DEG,
     WALL_STYLE_ACROSS_P99_BLOCK_DEG,
     WALL_STYLE_ACROSS_P100_BLOCK_DEG,
+    windingReport,
 } from "@/lib/geometry/procedural-wall";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
 import { encodePng, renderMesh } from "./helpers/render-png";
 
 type Style = "straight" | "round" | "hybrid";
+
+type StlGate = {
+    style: string;
+    watertight: boolean;
+    winding: boolean;
+    bodies: number;
+    volume: number | null;
+    straightVolume: number | null;
+    volumeDelta: number | null;
+    volumeDeltaPct: number | null;
+};
+
+function loadStlGates(style: Style, stlPath: string, straightPath?: string): StlGate {
+    const helper = resolve(process.cwd(), "tests/helpers/stl-gates.py");
+    const args = [helper, style, stlPath];
+    if (straightPath) args.push(straightPath);
+    const run = (): StlGate => {
+        const out = execFileSync("python3", args, { encoding: "utf8" });
+        return JSON.parse(out) as StlGate;
+    };
+    try {
+        return run();
+    } catch (err) {
+        const stdout = (err as { stdout?: string }).stdout?.trim();
+        if (stdout) {
+            try {
+                return JSON.parse(stdout) as StlGate;
+            } catch {
+                /* fall through */
+            }
+        }
+        throw err;
+    }
+}
 
 function writeArtifact(relPath: string, data: Buffer | Uint8Array): void {
     const slash = relPath.lastIndexOf("/");
@@ -197,6 +234,14 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
     const man = reconstructionManifold(geo);
     if (!man.watertight) misses.push("not-watertight");
     if (man.nonManifoldEdges !== 0) misses.push(`NM ${man.nonManifoldEdges}`);
+    const wind =
+        (ud as { winding?: { consistent?: boolean; oppositeEdgeMismatch?: number; signedVolume?: number } })
+            .winding ?? windingReport(geo);
+    if (!wind.consistent) {
+        misses.push(`winding mismatch=${wind.oppositeEdgeMismatch} vol=${wind.signedVolume.toFixed(1)}`);
+    }
+    const flipN = (ud as { wallFlip?: { n?: number } }).wallFlip?.n ?? 0;
+    if (flipN > 0) misses.push(`flipped-wall ${flipN}`);
     if (plantarFlatDeltaMm(geo) > 1e-3) misses.push(`plantar-z ${plantarFlatDeltaMm(geo).toFixed(4)}`);
     if (straight) {
         const top = topDeltaMm(geo, straight);
@@ -639,6 +684,19 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         row("SI", !misses.some((m) => m.startsWith("SI ")), misses.find((m) => m.startsWith("SI ")) ?? 0),
         row("watertight", !misses.includes("not-watertight"), misses.includes("not-watertight") ? 0 : 1, 1),
         row("NM", !misses.some((m) => m.startsWith("NM ")), misses.find((m) => m.startsWith("NM ")) ?? 0),
+        row(
+            "winding",
+            !misses.some((m) => m.startsWith("winding ")),
+            (geo.userData as { winding?: { oppositeEdgeMismatch?: number } }).winding?.oppositeEdgeMismatch ??
+                0,
+            0,
+        ),
+        row(
+            "flipped-wall",
+            !misses.some((m) => m.startsWith("flipped-wall ")),
+            (geo.userData as { wallFlip?: { n?: number } }).wallFlip?.n ?? 0,
+            0,
+        ),
     ];
     return rows;
 }
@@ -727,7 +785,9 @@ describe("procedural wall styles", () => {
                 JSON.stringify({ n: blendList.length, stations: blendList.slice(0, 48) }),
             );
             if (local.length) misses.push(`${style}: ${local.join("; ")}`);
-            writeArtifact(`procedural-default-${style}.stl`, Buffer.from(geometryToBinarySTL(geo)));
+            const stlBytes = Buffer.from(geometryToBinarySTL(geo));
+            writeArtifact(`procedural-default-${style}.stl`, stlBytes);
+            (geo.userData as { stlPath?: string }).stlPath = `/tmp/s1-stls/procedural-default-${style}.stl`;
             const pos = geo.getAttribute("position").array as Float32Array;
             const idx = geo.getIndex()!.array as Uint32Array;
             const views = [
@@ -1131,13 +1191,46 @@ describe("procedural wall styles", () => {
                 .filter((_, i) => ud.wallFrames?.[i]?.splineFlat);
             return { style: s, rndIndex: ud.rndIndex, rndEndOk: ud.rndEndOk, flats };
         });
+        const straightStl = "/tmp/s1-stls/procedural-default-straight.stl";
+        const stlGates: Partial<Record<Style, StlGate>> = {};
+        const hard: string[] = [];
+        for (const style of styles) {
+            const stlPath = `/tmp/s1-stls/procedural-default-${style}.stl`;
+            const gate = loadStlGates(style, stlPath, style === "straight" ? undefined : straightStl);
+            stlGates[style] = gate;
+            console.log("[STL-GATE]", style, JSON.stringify(gate));
+            const add = (
+                gateName: string,
+                pass: boolean,
+                value: number | string,
+                cap?: number | string,
+            ): void => {
+                tables[style]?.push({ gate: gateName, pass, value, cap });
+            };
+            add("stl-watertight", gate.watertight, gate.watertight ? 1 : 0, 1);
+            add("stl-winding", gate.winding, gate.winding ? 1 : 0, 1);
+            add("stl-bodies", gate.bodies === 1, gate.bodies, 1);
+            add("volume-vs-straight", true, gate.volumeDeltaPct ?? 0, "report-only");
+            if (!gate.watertight) hard.push(`${style}: stl not watertight`);
+            if (!gate.winding) hard.push(`${style}: stl winding inconsistent`);
+            if (gate.bodies !== 1) hard.push(`${style}: stl bodies=${gate.bodies}`);
+            const local = misses.filter(
+                (m) => m.startsWith(`${style}: `) && /winding |flipped-wall /.test(m),
+            );
+            hard.push(...local);
+        }
         writeArtifact(
             "procedural-default-style-report.json",
-            Buffer.from(`${JSON.stringify({ styleReport, gateTables: tables, rndDump }, null, 2)}\n`),
+            Buffer.from(
+                `${JSON.stringify({ styleReport, gateTables: tables, rndDump, stlGates }, null, 2)}\n`,
+            ),
         );
         if (misses.length) {
             console.log("[S1-STYLE]", misses.join(" | "));
             if (!SPLINE_GATES_REPORT_ONLY) throw new Error(`[S1-STYLE] ${misses.join(" | ")}`);
+        }
+        if (hard.length) {
+            throw new Error(`[STL-GATE] ${hard.join(" | ")}`);
         }
         for (const g of Object.values(geos)) g?.dispose();
         raw.dispose();

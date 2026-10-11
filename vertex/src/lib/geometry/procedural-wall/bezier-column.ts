@@ -480,6 +480,7 @@ export interface ColumnQuality {
     minSplineRhoOverNeed?: number;
     nSplineRhoFail?: number;
     nSplineCorner?: number;
+    nFlippedWallFaces?: number;
     /** Shared turn-bounded column count. */
     splineN?: number;
     splineMaxNi?: number;
