@@ -413,6 +413,22 @@ export {
     S1_PROFILE_RESIDUAL_MM,
 } from "./types";
 export {
+    blendColumns,
+    buildSplinePolygon,
+    evalClampedCubic,
+    hybridWeightAt,
+    printSplineGates,
+    SPLINE_A_FRAC,
+    SPLINE_BETA_ARCH,
+    SPLINE_BETA_HEEL,
+    SPLINE_DENSE,
+    SPLINE_KNOTS,
+    SPLINE_PLAN_OUT_MM,
+    solveSplineStation,
+    splineBetaAt,
+    stationGates,
+} from "./wall-spline";
+export {
     acuteVecDeg,
     closestCubicT,
     conicRowCountByTurning,
