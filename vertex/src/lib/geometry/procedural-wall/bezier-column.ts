@@ -340,6 +340,7 @@ export interface ColumnFrame {
     splineRow1Deg?: number;
     splineFlat?: boolean;
     splineWR?: number;
+    splineFlatReason?: string;
 }
 
 export interface SweepMidStyle {
@@ -4971,9 +4972,35 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineRow1Deg = row1Deg;
         fr.splineFlat = !evaluated;
         fr.splineWR = wR[i] ?? 0;
+        fr.splineFlatReason = evaluated ? "" : reasons[i]!.join("+") || "flat";
         fr.tInc = overEdgeTangent(tR, fr.h);
     }
+    const countWhy = (tag: string) => reasons.filter((r) => r.includes(tag)).length;
+    const sorted = (xs: number[]) => {
+        const s = xs.slice().sort((a, b) => a - b);
+        return {
+            min: Number((s[0] ?? 0).toFixed(4)),
+            med: Number((s[Math.floor(s.length / 2)] ?? 0).toFixed(4)),
+            max: Number((s[s.length - 1] ?? 0).toFixed(4)),
+        };
+    };
     console.log("[RND-END-OK]", JSON.stringify({ n: endOk, nS, flat: nS - endOk, ran: endOk > 0 }));
+    console.log(
+        "[RND-FLAT-SUM]",
+        JSON.stringify({
+            nS,
+            nFlat: nS - endOk,
+            reasons: {
+                o: countWhy("o"),
+                a: countWhy("a"),
+                ctrl: countWhy("ctrl"),
+                chord: countWhy("chord"),
+                poly: countWhy("poly"),
+            },
+            o: sorted(solves.map((s) => s.o)),
+            a: sorted(solves.map((s) => s.a)),
+        }),
+    );
 }
 
 /**

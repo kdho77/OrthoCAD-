@@ -956,9 +956,36 @@ describe("procedural wall styles", () => {
             };
         });
         console.log("[S1-WALL-STYLE]", JSON.stringify(styleReport));
+        const rndDump = styles.map((s) => {
+            const ud = geos[s]!.userData as {
+                rndIndex?: unknown;
+                rndEndOk?: unknown;
+                wallFrames?: Array<{
+                    u?: number;
+                    o?: number;
+                    a?: number;
+                    zy?: number;
+                    tRAngleDeg?: number;
+                    splineFlat?: boolean;
+                    splineWR?: number;
+                    splineFlatReason?: string;
+                }>;
+            };
+            const flats = (ud.wallFrames ?? [])
+                .map((f, i) => ({
+                    i,
+                    u: Number((f.u ?? 0).toFixed(4)),
+                    o: Number((f.o ?? 0).toFixed(4)),
+                    a: Number((f.a ?? 0).toFixed(4)),
+                    wR: Number((f.splineWR ?? 0).toFixed(4)),
+                    reason: f.splineFlatReason ?? "",
+                }))
+                .filter((_, i) => ud.wallFrames?.[i]?.splineFlat);
+            return { style: s, rndIndex: ud.rndIndex, rndEndOk: ud.rndEndOk, flats };
+        });
         writeArtifact(
             "procedural-default-style-report.json",
-            Buffer.from(`${JSON.stringify({ styleReport, gateTables: tables }, null, 2)}\n`),
+            Buffer.from(`${JSON.stringify({ styleReport, gateTables: tables, rndDump }, null, 2)}\n`),
         );
         if (misses.length) {
             console.log("[S1-STYLE]", misses.join(" | "));

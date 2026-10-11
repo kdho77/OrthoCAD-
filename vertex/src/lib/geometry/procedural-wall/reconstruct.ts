@@ -1314,19 +1314,18 @@ export function reconstructProceduralWalls(
                     newVertexRowN: false,
                 };
             });
-        console.log(
-            "[RND-INDEX]",
-            JSON.stringify({
-                generatedStart,
-                bRingStart,
-                nS,
-                nJ,
-                N,
-                edge8077: describeVert(8077),
-                edge8078: describeVert(8078),
-                around,
-            }),
-        );
+        const rndIndex = {
+            generatedStart,
+            bRingStart,
+            nS,
+            nJ,
+            N,
+            edge8077: describeVert(8077),
+            edge8078: describeVert(8078),
+            around,
+        };
+        console.log("[RND-INDEX]", JSON.stringify(rndIndex));
+        (grid as { rndIndex?: typeof rndIndex }).rndIndex = rndIndex;
     }
     const plantarVert = (local: number): number => {
         if (local < nBoundary) return refinedVert(local);
@@ -1558,7 +1557,15 @@ export function reconstructProceduralWalls(
             splineRow1Deg: f.splineRow1Deg,
             splineFlat: f.splineFlat ?? false,
             splineWR: f.splineWR ?? 0,
+            splineFlatReason: f.splineFlatReason ?? "",
         })),
+        rndIndex: (grid as { rndIndex?: unknown }).rndIndex,
+        rndEndOk: {
+            n: grid.frames.filter((f) => !f.splineFlat).length,
+            nS,
+            flat: grid.frames.filter((f) => f.splineFlat).length,
+            ran: grid.frames.some((f) => !f.splineFlat),
+        },
         t0Log: grid.frames.map((f) => ({
             u: Number(f.u.toFixed(4)),
             sheet_h: Number(((f.sheetSlopeRad * 180) / Math.PI).toFixed(3)),
