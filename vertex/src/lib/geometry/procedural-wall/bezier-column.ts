@@ -29,10 +29,9 @@ import {
     fromSz,
     type HybridArchInfo,
     hybridArchWeightAtS,
-    invertDensityW,
-    jointDensityTable,
     type LipParabolaJoint,
     liftLipParabola,
+    lipBlockCount,
     lipCPrimeSz,
     lipTurnTargetFromLambda,
     maxClosedStep,
@@ -41,7 +40,6 @@ import {
     midArcKappaRatio,
     minRhoFirstArc,
     minSAndIndex,
-    nearestPointIndex,
     overEdgeTangent,
     periodicGaussian1d,
     plantarDirInColumn,
@@ -51,6 +49,7 @@ import {
     ringFValues,
     row1TRAngleDeg,
     SPLINE_CHORD_MIN_MM,
+    SPLINE_DS_FLOOR_MM,
     SPLINE_FACE_DOT_MIN,
     SPLINE_G1_ANALYTIC_MAX_DEG,
     SPLINE_G1_MESH_MAX_DEG,
@@ -68,7 +67,9 @@ import {
     SPLINE_TURN_MAX_DEG,
     SPLINE_WR_STEP_MAX,
     type SplineStationInput,
+    sampleLipEqualAngle,
     samplePolylineAtArcFractions,
+    samplePolylineBlock,
     seamBDeg,
     shortLsWeights,
     splineGateFail,
@@ -126,6 +127,22 @@ export interface StationI0Dump {
     rows: XYZ[];
     nTopFace: XYZ | null;
     nWallFace: XYZ | null;
+    g1R_m_dot?: number;
+}
+
+export interface G1FlipDump {
+    i: number;
+    i1: number;
+    dot: number;
+    rowsI: XYZ[];
+    rowsI1: XYZ[];
+}
+
+export interface AcrossI212Row {
+    i: number;
+    k: number;
+    s: number;
+    z: number;
 }
 
 export const FRAME_SMOOTH_ITERS = 16;
@@ -440,6 +457,10 @@ export interface ColumnFrame {
     splineG1BAnalyticDeg?: number;
     splineG1RMeshDeg?: number;
     i0Dump?: StationI0Dump;
+    splineNL?: number;
+    splineNB?: number;
+    g1FlipDump?: G1FlipDump[];
+    acrossI212Dump?: AcrossI212Row[];
     splineTRS?: number;
     splineTRZ?: number;
     splineLs?: number;
@@ -596,6 +617,10 @@ export interface ColumnQuality {
     maxG1BAnalyticDeg?: number;
     maxG1RMeshDeg?: number;
     i0Dump?: StationI0Dump;
+    splineNL?: number;
+    splineNB?: number;
+    g1FlipDump?: G1FlipDump[];
+    acrossI212Dump?: AcrossI212Row[];
 }
 
 export interface BezierColumns {
@@ -4997,7 +5022,22 @@ function roundLipAndParabola(
     return { ...lifted, r1, joint };
 }
 
-/** Sample the whole R→B profile; HYBRID blends at shared joint-q arc fractions. */
+/** Lip[0..NL-1] + body[0..NB] so row NL is the body start (E). */
+function concatColumnBlocks(lip: XYZ[], body: XYZ[]): XYZ[] {
+    const out: XYZ[] = [];
+    for (let k = 0; k < Math.max(0, lip.length - 1); k++) out.push({ ...lip[k]! });
+    for (const p of body) out.push({ ...p });
+    if (!body.length && lip.length) out.push({ ...lip[lip.length - 1]! });
+    return out;
+}
+
+function rowEErr(col: XYZ[] | undefined, E: XYZ, NL: number): number {
+    const p = col?.[NL];
+    if (!p) return Number.POSITIVE_INFINITY;
+    return hypot3({ x: p.x - E.x, y: p.y - E.y, z: p.z - E.z });
+}
+
+/** Shared lip/body block rows. HYBRID/short-Ls blend per row after both pieces share NL/NB. */
 function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     const style = frames[0]?.wallStyle?.style ?? "straight";
     if (style === "straight" || !frames.length) return;
@@ -5104,10 +5144,21 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     const parabolaE: XYZ[] = [];
     const parabolaM: XYZ[] = [];
     const joints: LipParabolaJoint[] = [];
+    const roundBodies: XYZ[][] = [];
+    const straightLips: XYZ[][] = [];
+    const straightBodies: XYZ[][] = [];
+    const straightE: XYZ[] = [];
     for (let i = 0; i < nS; i++) {
         const fr = frames[i]!;
         const col = straightCols[i]!;
+        const nRnd = Math.max(1, fr.nRoundFix || fr.roundRows || nLipOrig);
+        const eIdx = Math.max(0, Math.min(col.length - 1, nRnd));
+        const sE = col[eIdx] ? { ...col[eIdx]! } : { ...fr.E };
+        straightE.push(sE);
+        straightLips.push(col.slice(0, eIdx + 1).map((p) => ({ ...p })));
+        straightBodies.push(col.slice(eIdx).map((p) => ({ ...p })));
         const built = roundLipAndParabola(fr, alphaSm[i] ?? 0, lambdaSm[i] ?? SPLINE_LAMBDA);
+        roundBodies.push(built.body.map((p) => ({ ...p })));
         joints.push(built.joint);
         parabolaE.push(built.E);
         parabolaM.push(built.M);
@@ -5134,17 +5185,16 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             fullStraight[i]![fullStraight[i]!.length - 1] = { ...fr.B };
         }
     }
-    const nRound = fullRound.map((col, i) => {
-        if (!active[i]) return 0;
-        const st = curveSTFromPolyline(col);
-        const lipS = (joints[i]?.r1 ?? 0) * Math.abs(joints[i]?.lipTurn ?? 0);
-        return stationSampleNeed(st.S, st.T, lipS).n;
-    });
-    const nStraightNeed = fullStraight.map((col) => {
+    const NL = lipBlockCount(alphaSm);
+    const nBodyRound = roundBodies.map((col) => {
         const st = curveSTFromPolyline(col);
         return stationSampleNeed(st.S, st.T, 0).n;
     });
-    const nI = nRound.map((n, i) => Math.max(n, nStraightNeed[i] ?? 0));
+    const nBodyStraight = straightBodies.map((col) => {
+        const st = curveSTFromPolyline(col);
+        return stationSampleNeed(st.S, st.T, 0).n;
+    });
+    const nI = nBodyRound.map((n, i) => Math.max(n, nBodyStraight[i] ?? 0));
     const maxNi = nI.reduce((m, n) => Math.max(m, n), 1);
     let maxI = 0;
     for (let i = 0; i < nS; i++) {
@@ -5153,11 +5203,14 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     const over128 = nI
         .map((n, i) => ({ i, u: Number(frames[i]!.u.toFixed(4)), n }))
         .filter((r) => r.n > SPLINE_N_MAX);
-    const N = Math.min(SPLINE_N_MAX, maxNi);
+    const NB = Math.min(SPLINE_N_MAX, maxNi);
+    const N = NL + NB;
     console.log(
         "[RND-N]",
         JSON.stringify({
             N,
+            NL,
+            NB,
             maxNi,
             maxI,
             maxU: Number(frames[maxI]!.u.toFixed(4)),
@@ -5169,8 +5222,23 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     if (over128.length) {
         console.log("[RND-N-CAP]", JSON.stringify(over128));
     }
+    if (frames[0]) {
+        frames[0].splineNL = NL;
+        frames[0].splineNB = NB;
+    }
     const rim = frames.map((fr) => fr.R);
-    const f = ringFValues(nS, N, rim);
+    const fLip = ringFValues(nS, NL, rim);
+    const fBody = ringFValues(nS, NB, rim);
+    const f = frames.map((_, i) => {
+        const a = fLip[i] ?? [];
+        const b = fBody[i] ?? [];
+        const out: number[] = [];
+        const nL = Math.max(NL, 1);
+        const nB = Math.max(NB, 1);
+        for (let k = 0; k <= NL; k++) out.push(((a[k] ?? k / nL) * NL) / Math.max(N, 1));
+        for (let k = 1; k <= NB; k++) out.push((NL + (b[k] ?? k / nB) * NB) / Math.max(N, 1));
+        return out;
+    });
     const rawHybrid = frames.map((fr, i) => {
         const side = fr.sideSign ?? 1;
         if (style !== "hybrid") return 1;
@@ -5205,29 +5273,57 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     }
     for (let i = 0; i < nS; i++) {
         const fr = frames[i]!;
-        const hybridW = 1;
-        const w = wR[i] ?? 0;
-        const stR = curveSTFromPolyline(fullRound[i]!);
-        const stS = curveSTFromPolyline(fullStraight[i]!);
-        const lipS = (joints[i]?.r1 ?? 0) * Math.abs(joints[i]?.lipTurn ?? 0);
-        const table = jointDensityTable(stS, stR, w, N, lipS);
-        const fk = f[i] ?? Array.from({ length: N + 1 }, (_, k) => k / Math.max(N, 1));
-        const alphas: number[] = [];
-        for (let k = 0; k <= N; k++) {
-            if (k === 0) alphas.push(0);
-            else if (k === N) alphas.push(1);
-            else alphas.push(invertDensityW(table, fk[k]!));
+        const sz = stationSzFrame(fr.R, fr.B, fr.h);
+        const fkLip = fLip[i] ?? Array.from({ length: NL + 1 }, (_, k) => k / Math.max(NL, 1));
+        const fkBody = fBody[i] ?? Array.from({ length: NB + 1 }, (_, k) => k / Math.max(NB, 1));
+        const rLip = sampleLipEqualAngle(joints[i]!, sz.origin, sz.h, fr.R, NL, fkLip);
+        const rBody = samplePolylineBlock(roundBodies[i]!, NB, fkBody, SPLINE_DS_FLOOR_MM);
+        const sLip = samplePolylineAtArcFractions(straightLips[i]!, fkLip);
+        const sBody = samplePolylineBlock(straightBodies[i]!, NB, fkBody, SPLINE_DS_FLOOR_MM);
+        const eR = parabolaE[i] ?? fr.E;
+        const eS = straightE[i] ?? eR;
+        const dRLip = rowEErr(rLip, eR, NL);
+        const dRBody = rowEErr(rBody, eR, 0);
+        const dSLip = rowEErr(sLip, eS, sLip.length - 1);
+        const dSBody = rowEErr(sBody, eS, 0);
+        if (dRLip > 1e-9 || dRBody > 1e-9) {
+            splineGateFail("[RND-E-ROW]", {
+                i,
+                side: "round",
+                dLip: Number(dRLip.toExponential(3)),
+                dBody: Number(dRBody.toExponential(3)),
+            });
         }
-        const roundPts = samplePolylineAtArcFractions(fullRound[i]!, alphas);
-        const straightPts = samplePolylineAtArcFractions(fullStraight[i]!, alphas);
+        if (dSLip > 1e-9 || dSBody > 1e-9) {
+            splineGateFail("[RND-E-ROW]", {
+                i,
+                side: "straight",
+                dLip: Number(dSLip.toExponential(3)),
+                dBody: Number(dSBody.toExponential(3)),
+            });
+        }
+        const roundPts = concatColumnBlocks(rLip, rBody);
+        const straightPts = concatColumnBlocks(sLip, sBody);
+        const dRE = rowEErr(roundPts, eR, NL);
+        const dSE = rowEErr(straightPts, eS, NL);
+        if (dRE > 1e-9 || dSE > 1e-9) {
+            splineGateFail("[RND-E-ROW]", {
+                i,
+                concat: true,
+                dRE: Number(dRE.toExponential(3)),
+                dSE: Number(dSE.toExponential(3)),
+            });
+        }
         sampledRound.push(roundPts);
         sampledStraight.push(straightPts);
+        const stR = curveSTFromPolyline(fullRound[i]!);
+        const stS = curveSTFromPolyline(fullStraight[i]!);
         sampledL.push(stR.S[stR.S.length - 1] ?? 1);
-        const lipK = nearestPointIndex(roundPts, parabolaE[i] ?? fr.E);
-        if (active[i]) assertInversionOk(roundPts, sampledL[i] ?? 1, N, i, lipK);
-        assertInversionOk(straightPts, stS.S[stS.S.length - 1] ?? 1, N, i, 0);
+        if (active[i]) assertInversionOk(roundPts, sampledL[i] ?? 1, N, i, NL, null);
+        assertInversionOk(straightPts, stS.S[stS.S.length - 1] ?? 1, N, i, NL, null);
     }
     let endOk = 0;
+    const g1Dots: number[] = [];
     const sBoundRows: Array<{ i: number; u: number; sag: number; g: number; eb: number }> = [];
     for (let i = 0; i < nS; i++) {
         const fr = frames[i]!;
@@ -5271,7 +5367,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             strCol[strCol.length - 1] = { ...fr.B };
         }
         straightSpliced[i] = strCol;
-        const kE = nearestPointIndex(roundPts, fr.E);
+        const kE = NL;
         const bodyPts = col.slice(kE);
         const lipPts = col.slice(0, kE + 1);
         const lipS = minSAndIndex(lipPts, fr.R, fr.B, fr.h);
@@ -5286,12 +5382,13 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const g1Ea = analyticG1EDeg(joint);
         const g1Ba = analyticG1BDeg(joint, plantarDirInColumn(fr.nPlantar, fr.h));
         const nxtR = frames[(i + 1) % nS]!.R;
-        const nWallFace = faceN3(fr.R, nxtR, row1);
+        // Opposite shared-edge winding vs the top face: (R_{i+1}, R_i, row1).
+        const nWallFace = faceN3(nxtR, fr.R, row1);
         const nTopFace = fr.rimEdgeN ?? null;
+        const g1Dot = nTopFace && nWallFace ? dot3(nTopFace, nWallFace) : 1;
         const g1Rm =
-            nTopFace && nWallFace
-                ? Math.min(vecAngleDeg(nTopFace, nWallFace), 180 - vecAngleDeg(nTopFace, nWallFace))
-                : 0;
+            nTopFace && nWallFace ? (Math.acos(Math.max(-1, Math.min(1, g1Dot))) * 180) / Math.PI : 0;
+        g1Dots.push(g1Dot);
         const g1B = seamBDeg(col);
         if (evaluated && g1Ra > SPLINE_G1_ANALYTIC_MAX_DEG + 1e-6) {
             splineGateFail("[RND-G1-A]", {
@@ -5449,6 +5546,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
                 rows: col.slice(0, 6).map((p) => ({ ...p })),
                 nTopFace: nTopFace ? { ...nTopFace } : null,
                 nWallFace: nWallFace ? { ...nWallFace } : null,
+                g1R_m_dot: g1Dot,
             };
             fr.i0Dump = dump;
             console.log(
@@ -5467,6 +5565,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
                     nWallFace: dump.nWallFace,
                     g1R_a: Number(g1Ra.toFixed(4)),
                     g1R_m: Number(g1Rm.toFixed(4)),
+                    g1R_m_dot: Number(g1Dot.toFixed(6)),
                 }),
             );
         }
@@ -5493,6 +5592,60 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
                     lim: Number(lipLimit.toFixed(4)),
                 });
             }
+        }
+    }
+    const g1Flips: G1FlipDump[] = [];
+    for (let i = 0; i < nS; i++) {
+        if ((g1Dots[i] ?? 1) >= 0) continue;
+        const i1 = (i + 1) % nS;
+        const dump: G1FlipDump = {
+            i,
+            i1,
+            dot: g1Dots[i] ?? 0,
+            rowsI: (xyz[i] ?? []).slice(0, 4).map((p) => ({ ...p })),
+            rowsI1: (xyz[i1] ?? []).slice(0, 4).map((p) => ({ ...p })),
+        };
+        g1Flips.push(dump);
+        console.log("[RND-G1-FLIP]", JSON.stringify(dump));
+    }
+    if (frames[0]) frames[0].g1FlipDump = g1Flips;
+    if (nS > 212) {
+        const i212 = 212;
+        const col212 = xyz[i212] ?? [];
+        const nxt212 = xyz[(i212 + 1) % nS] ?? [];
+        const prv212 = xyz[(i212 + nS - 1) % nS] ?? [];
+        let worstAcross212 = 0;
+        const rows212 = Math.min(col212.length, nxt212.length, prv212.length);
+        for (let k = 0; k < rows212 - 1; k++) {
+            const nL = faceN3(prv212[k]!, col212[k]!, col212[k + 1]!);
+            const nR = faceN3(col212[k]!, nxt212[k]!, col212[k + 1]!);
+            if (!nL || !nR) continue;
+            worstAcross212 = Math.max(worstAcross212, vecAngleDeg(nL, nR));
+        }
+        if (worstAcross212 > 8 + 1e-9) {
+            const dump: AcrossI212Row[] = [];
+            for (let i = 210; i <= 214; i++) {
+                const fr = frames[i];
+                const col = xyz[i];
+                if (!fr || !col) continue;
+                const sz = stationSzFrame(fr.R, fr.B, fr.h);
+                for (let k = 30; k <= 38; k++) {
+                    const p = col[k];
+                    if (!p) continue;
+                    const q = toSz(p, sz.origin, sz.h);
+                    dump.push({
+                        i,
+                        k,
+                        s: Number(q.s.toFixed(4)),
+                        z: Number(q.z.toFixed(4)),
+                    });
+                }
+            }
+            console.log(
+                "[RND-ACROSS-I212]",
+                JSON.stringify({ worst: Number(worstAcross212.toFixed(4)), dump }),
+            );
+            if (frames[0]) frames[0].acrossI212Dump = dump;
         }
     }
     console.log("[RND-SBOUND]", JSON.stringify({ n: 0, dropped: true }));
@@ -7044,7 +7197,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 splineMaxNiU = frames[i]!.u;
             }
         }
-        splineN = Math.min(SPLINE_N_MAX, Math.max(1, splineMaxNi));
+        splineN = Math.max(1, (xyz[0]?.length ?? 1) - 1);
         for (let i = 0; i < nS; i++) {
             const fr = frames[i]!;
             const col = xyz[i]!;
@@ -7226,6 +7379,10 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         maxG1BAnalyticDeg,
         maxG1RMeshDeg,
         i0Dump: frames[0]?.i0Dump,
+        splineNL: frames[0]?.splineNL,
+        splineNB: frames[0]?.splineNB,
+        g1FlipDump: frames[0]?.g1FlipDump,
+        acrossI212Dump: frames[0]?.acrossI212Dump,
     };
 }
 

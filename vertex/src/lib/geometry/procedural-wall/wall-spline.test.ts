@@ -15,12 +15,14 @@ import {
     enforceMonotoneF,
     evalClampedCubic,
     evalQuadraticBezier,
+    fromSz,
     HYBRID_ARCH_LB_MM,
     hybridArchWeight,
     hybridArchWeightAtS,
     invertDensityW,
     jointDensityTable,
     lipArcEnd,
+    lipBlockCount,
     lipTurnTargetFromLambda,
     minSOfSamples,
     parabolaHandleM,
@@ -36,6 +38,7 @@ import {
     SPLINE_KNOTS,
     SPLINE_KNOTS_5,
     SPLINE_LAMBDA,
+    SPLINE_LIP_ANGLE_DEG,
     SPLINE_LIP_MS_SLACK_MM,
     SPLINE_LIP_S_SLACK_MM,
     SPLINE_N_MAX,
@@ -44,7 +47,9 @@ import {
     SPLINE_SHORT_RAMP_LB_MM,
     SPLINE_WR_STEP_MAX,
     type SplineStationInput,
+    sampleLipEqualAngle,
     samplePolylineAtArcFractions,
+    samplePolylineBlock,
     samplePolylinesByW,
     sampleSplineRingByW,
     shortLsWeights,
@@ -463,7 +468,7 @@ describe("quadratic wall parabola", () => {
         expect(analyticG1RDeg({ s: -Math.SQRT1_2, z: -Math.SQRT1_2 }, joint.tR)).toBeGreaterThan(40);
     });
 
-    test("short-Ls ROUND ramp is a 30 mm smoothstep around Ls=3, |dw|<=0.08", () => {
+    test("short-Ls ROUND ramp is a 32 mm smoothstep around Ls=3, |dw|<=0.08", () => {
         const n = 240;
         const period = 240;
         const arc = Array.from({ length: n }, (_, i) => (i * period) / n);
@@ -480,8 +485,33 @@ describe("quadratic wall parabola", () => {
             maxDw = Math.max(maxDw, Math.abs((w[(i + 1) % n] ?? 0) - (w[i] ?? 0)));
         }
         expect(maxDw).toBeLessThanOrEqual(SPLINE_WR_STEP_MAX + 1e-9);
-        expect(SPLINE_SHORT_RAMP_LB_MM).toBe(30);
+        expect(SPLINE_SHORT_RAMP_LB_MM).toBe(32);
         expect(SPLINE_SHORT_LS_CROSS_MM).toBe(3);
+    });
+
+    test("lip block count is max ceil(theta / 3.5 deg) and row NL locks to E", () => {
+        expect(lipBlockCount([])).toBe(1);
+        expect(lipBlockCount([0])).toBe(1);
+        const theta = (117 * Math.PI) / 180;
+        expect(lipBlockCount([theta, 0.1])).toBe(Math.ceil(117 / SPLINE_LIP_ANGLE_DEG));
+        const tR = { s: -0.15, z: 0.9887 };
+        const joint = buildJointFromTheta(tR, 12, 10, 0.5, theta, 0.5);
+        const NL = lipBlockCount([joint.lipTurn]);
+        const origin = { x: 0, y: 0, z: 0 };
+        const h = { x: 1, y: 0 };
+        const R = { x: 0, y: 0, z: 12 };
+        const E = fromSz(joint.E, origin, h);
+        const lip = sampleLipEqualAngle(joint, origin, h, R, NL);
+        expect(lip.length).toBe(NL + 1);
+        expect(Math.hypot(lip[0]!.x - R.x, lip[0]!.y - R.y, lip[0]!.z - R.z)).toBeLessThan(1e-9);
+        expect(Math.hypot(lip[NL]!.x - E.x, lip[NL]!.y - E.y, lip[NL]!.z - E.z)).toBeLessThan(1e-9);
+        const body = [{ ...E }, { x: E.x + 3, y: 0, z: 6 }, { x: E.x + 10, y: 0, z: 0 }];
+        const f = Array.from({ length: 5 }, (_, k) => k / 4);
+        const sampled = samplePolylineBlock(body, 4, f, 0.04);
+        expect(sampled.length).toBe(5);
+        expect(Math.hypot(sampled[0]!.x - E.x, sampled[0]!.y - E.y, sampled[0]!.z - E.z)).toBeLessThan(1e-9);
+        const B = body[body.length - 1]!;
+        expect(Math.hypot(sampled[4]!.x - B.x, sampled[4]!.y - B.y, sampled[4]!.z - B.z)).toBeLessThan(1e-9);
     });
 
     test("inactive station skips spline evaluation", () => {

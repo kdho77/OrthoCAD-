@@ -1384,6 +1384,40 @@ describe("procedural wall styles", () => {
                 null,
         }));
         console.log("[RND-I0-DUMP]", JSON.stringify(i0Dump));
+        const samplingDump = styles.map((s) => {
+            const q = geos[s]!.userData as {
+                columnQuality?: {
+                    g1FlipDump?: unknown;
+                    acrossI212Dump?: unknown;
+                    splineNL?: number;
+                    splineNB?: number;
+                    splineN?: number;
+                    maxG1RMeshDeg?: number;
+                    worstAcrossI?: number;
+                    worstAcrossK?: number;
+                    worstAcrossU?: number;
+                    maxAcrossDeg?: number;
+                };
+                g1FlipDump?: unknown;
+                acrossI212Dump?: unknown;
+            };
+            return {
+                style: s,
+                NL: q.columnQuality?.splineNL ?? 0,
+                NB: q.columnQuality?.splineNB ?? 0,
+                N: q.columnQuality?.splineN ?? 0,
+                maxG1RMeshDeg: q.columnQuality?.maxG1RMeshDeg ?? 0,
+                worstAcross: {
+                    i: q.columnQuality?.worstAcrossI,
+                    k: q.columnQuality?.worstAcrossK,
+                    u: q.columnQuality?.worstAcrossU,
+                    deg: q.columnQuality?.maxAcrossDeg,
+                },
+                g1FlipDump: q.columnQuality?.g1FlipDump ?? q.g1FlipDump ?? null,
+                acrossI212Dump: q.columnQuality?.acrossI212Dump ?? q.acrossI212Dump ?? null,
+            };
+        });
+        console.log("[RND-SAMPLING-DUMP]", JSON.stringify(samplingDump));
         const rndDump = styles.map((s) => {
             const ud = geos[s]!.userData as {
                 rndIndex?: unknown;
@@ -1494,7 +1528,7 @@ describe("procedural wall styles", () => {
             writeArtifact(
                 "procedural-default-style-report.json",
                 Buffer.from(
-                    `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, hard, i0Dump }, null, 2)}\n`,
+                    `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, hard, i0Dump, samplingDump }, null, 2)}\n`,
                 ),
             );
             throw new Error(`[STL-GATE] ${hard.join(" | ")}`);
@@ -1542,7 +1576,7 @@ describe("procedural wall styles", () => {
             writeArtifact(
                 "procedural-default-style-report.json",
                 Buffer.from(
-                    `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, hard, i0Dump }, null, 2)}\n`,
+                    `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, hard, i0Dump, samplingDump }, null, 2)}\n`,
                 ),
             );
             throw new Error(`[STL-GATE] ${hard.join(" | ")}`);
@@ -1608,7 +1642,7 @@ describe("procedural wall styles", () => {
         writeArtifact(
             "procedural-default-style-report.json",
             Buffer.from(
-                `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, jointReport, i0Dump }, null, 2)}\n`,
+                `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, jointReport, i0Dump, samplingDump }, null, 2)}\n`,
             ),
         );
         if (misses.length) {

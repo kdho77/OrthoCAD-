@@ -85,7 +85,9 @@ export const SPLINE_SHORT_BLEND_MM = 15;
 /** Short-Ls ROUND ramp is centered where smoothed Ls crosses this. */
 export const SPLINE_SHORT_LS_CROSS_MM = 3;
 /** Analytic short-Ls ramp length (mm of rim arc), no Gaussian. */
-export const SPLINE_SHORT_RAMP_LB_MM = 30;
+export const SPLINE_SHORT_RAMP_LB_MM = 32;
+/** Shared lip-block step: NL = max_i ceil(θ_i / this). */
+export const SPLINE_LIP_ANGLE_DEG = 3.5;
 /** Medial-arch ramp length, inside [u_a0, u_a1]. Analytic HYBRID w uses this Lb. */
 export const HYBRID_ARCH_LB_MM = 30;
 /** Kept for callers; HYBRID w no longer min()s Lb with a span fraction. */
@@ -1894,9 +1896,18 @@ export function columnChordsOk(pts: XYZ[], _L?: number, _N?: number): boolean {
 }
 
 /** Hard stop on chords shorter than the row floor (logs in the report-only build). */
-export function assertInversionOk(pts: XYZ[], L: number, N: number, i: number, lipK = 0): void {
+export function assertInversionOk(
+    pts: XYZ[],
+    L: number,
+    N: number,
+    i: number,
+    lipK = 0,
+    lipFloorMm: number | null = SPLINE_DS_LIP_FLOOR_MM,
+): void {
     for (let k = 1; k < pts.length; k++) {
-        const need = k <= lipK ? SPLINE_DS_LIP_FLOOR_MM : SPLINE_DS_FLOOR_MM;
+        const inLip = k <= lipK;
+        if (inLip && (lipFloorMm == null || lipFloorMm <= 0)) continue;
+        const need = inLip ? (lipFloorMm ?? SPLINE_DS_LIP_FLOOR_MM) : SPLINE_DS_FLOOR_MM;
         const e = hypot3(sub(pts[k]!, pts[k - 1]!));
         if (e + 1e-15 < need) {
             splineGateFail("[RND-INV]", { i, k, chord: e, need, L, N });
@@ -2143,6 +2154,64 @@ export function jointDensityTable(
     const nR = stationSampleNeed(stR.S, stR.T, lipS).n;
     const nNeed = Math.max(1, Math.ceil((1 - ww) * nS + ww * nR));
     return finishNormalizedDensity(q, N, nNeed);
+}
+
+/** NL = max_i ceil(θ_i / 3.5°). At least one lip step. */
+export function lipBlockCount(thetas: number[]): number {
+    let n = 1;
+    for (const th of thetas) {
+        if (th <= 1e-12) continue;
+        n = Math.max(n, Math.ceil((Math.abs(th) * 180) / Math.PI / SPLINE_LIP_ANGLE_DEG));
+    }
+    return Math.max(1, n);
+}
+
+/** Equal-angle lip rows. k = 0 → R, k = NL → E. `f` is the smoothed k/NL table. */
+export function sampleLipEqualAngle(
+    joint: LipParabolaJoint,
+    origin: XYZ,
+    h: { x: number; y: number },
+    R: XYZ,
+    NL: number,
+    f?: number[],
+): XYZ[] {
+    const E = fromSz(joint.E, origin, h);
+    const pts: XYZ[] = [];
+    const denom = Math.max(NL, 1);
+    for (let k = 0; k <= NL; k++) {
+        if (k === 0) {
+            pts.push({ ...R });
+            continue;
+        }
+        if (k === NL) {
+            pts.push({ ...E });
+            continue;
+        }
+        const frac = f?.[k] ?? k / denom;
+        const a = Math.max(0, Math.min(1, frac)) * joint.lipTurn;
+        pts.push(fromSz(lipArcEnd({ s: 0, z: joint.H }, joint.tR, joint.r1, a), origin, h));
+    }
+    return pts;
+}
+
+/** Turn-bounded + uniform-filler sample of one block. Endpoints by index. */
+export function samplePolylineBlock(col: XYZ[], N: number, f: number[], floorMm = SPLINE_DS_FLOOR_MM): XYZ[] {
+    const n = Math.max(1, N);
+    if (col.length < 2) {
+        const p = col[0] ?? { x: 0, y: 0, z: 0 };
+        return Array.from({ length: n + 1 }, () => ({ ...p }));
+    }
+    const st = curveSTFromPolyline(col);
+    const lipS = floorMm < SPLINE_DS_FLOOR_MM - 1e-15 ? Number.POSITIVE_INFINITY : 0;
+    const table = tableFromST(st, n, lipS);
+    const dense = densifyPolyline(col, SPLINE_W_DENSE);
+    const pts: XYZ[] = [];
+    for (let k = 0; k <= n; k++) {
+        if (k === 0) pts.push({ ...col[0]! });
+        else if (k === n) pts.push({ ...col[col.length - 1]! });
+        else pts.push(evalDensePolyline(dense, invertDensityW(table, f[k] ?? k / n)));
+    }
+    return pts;
 }
 
 export function samplePolylineAtArcFractions(col: XYZ[], alphas: number[]): XYZ[] {
