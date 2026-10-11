@@ -19,16 +19,18 @@ import {
     reconstructProceduralWalls,
     SPLINE_CHORD_MIN_MM,
     SPLINE_F_RING_MAX,
+    SPLINE_FACE_DOT_MIN,
     SPLINE_G1_R_MAX_DEG,
     SPLINE_GATES_REPORT_ONLY,
     SPLINE_H_MIN_MM,
-    SPLINE_O_H_HI,
-    SPLINE_O_H_LO,
-    SPLINE_PEAK_GATE_HI,
-    SPLINE_PEAK_GATE_LO,
-    SPLINE_PLAN_OUT_MM,
     SPLINE_ROW1_TR_MAX_DEG,
+    SPLINE_S_MIN_MM,
+    SPLINE_SAG_EB_MIN_MM,
+    SPLINE_SAG_HI,
+    SPLINE_SAG_LO,
     SPLINE_SEAM_B_MAX_DEG,
+    SPLINE_VOL_ERR_FRAC,
+    SPLINE_WR_STEP_MAX,
     WALL_MID_DIHEDRAL_MAX_DEG,
     WALL_MID_TURN_MAX_DEG,
     WALL_PLAN_ANGLE_REPORT_DEG,
@@ -250,12 +252,6 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
         if (rim > 1e-3) misses.push(`rim-vs-straight ${rim.toFixed(4)}`);
     }
     const frames = ud.wallFrames ?? [];
-    const pct = (vals: number[], p: number): number => {
-        if (!vals.length) return 0;
-        const s = [...vals].sort((a, b) => a - b);
-        const i = Math.max(0, Math.min(s.length - 1, Math.floor(p * (s.length - 1))));
-        return s[i]!;
-    };
     if (style !== "straight" && frames.length) {
         const infl = frames.filter((f) => f.midFlagged);
         if (infl.length) misses.push(`[RND-INFL] ${infl.length}`);
@@ -274,30 +270,8 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
                 ),
             );
         }
-        const styled = frames.filter((f) => (f.splineWR ?? 0) >= 0.5 && !f.splineFlat && !f.fallbackStraight);
-        const tall = styled.filter((f) => (f.heightMm ?? 0) >= SPLINE_H_MIN_MM);
-        const oH = tall.map((f) => (f.o ?? 0) / Math.max(f.heightMm ?? 1e-6, 1e-6));
-        const peakH = tall.map((f) => f.midPeakHFrac ?? 0);
-        if (oH.length) {
-            const p10 = pct(oH, 0.1);
-            const p90 = pct(oH, 0.9);
-            if (p10 + 1e-9 < SPLINE_O_H_LO || p90 - 1e-9 > SPLINE_O_H_HI) {
-                misses.push(`o/H p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)}`);
-            }
-        }
-        if (peakH.length) {
-            const p10 = pct(peakH, 0.1);
-            const p90 = pct(peakH, 0.9);
-            if (p10 + 1e-9 < SPLINE_PEAK_GATE_LO || p90 - 1e-9 > SPLINE_PEAK_GATE_HI) {
-                misses.push(`peak p10-p90 ${p10.toFixed(3)}-${p90.toFixed(3)}`);
-            }
-        }
-        const insetHits = frames.filter((f) => (f.midPlanOffMm ?? 0) < -1e-6);
-        if (insetHits.length) misses.push(`inset ${insetHits.length}`);
-        const planHits = frames.filter((f) => (f.midPlanOffMm ?? 0) > SPLINE_PLAN_OUT_MM + 1e-6);
-        if (planHits.length) {
-            misses.push(`plan ${planHits.length} >${SPLINE_PLAN_OUT_MM}`);
-        }
+        const sMinHits = frames.filter((f) => (f.midPlanOffMm ?? 0) < SPLINE_S_MIN_MM - 1e-6);
+        if (sMinHits.length) misses.push(`sMin ${sMinHits.length} <${SPLINE_S_MIN_MM}`);
         const g1Hits = frames.filter((f) => (f.g1EDeg ?? 0) > SPLINE_G1_R_MAX_DEG + 1e-6);
         if (g1Hits.length) {
             misses.push(`G1-R ${g1Hits.length} >${SPLINE_G1_R_MAX_DEG}`);
@@ -382,6 +356,7 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             midBeta?: number;
             midWeight?: number;
             midChordOffMm?: number;
+            midChordMm?: number;
             splineFlat?: boolean;
             splineWR?: number;
             splineCorner?: boolean;
@@ -451,42 +426,23 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         (v) => v > 0,
     );
     const wrGated = (f: (typeof frames)[number]): boolean => !f.splineFlat && (f.splineWR ?? 0) >= 0.5;
-    const bulgeGated = (f: (typeof frames)[number]): boolean =>
-        wrGated(f) && (f.heightMm ?? 0) >= SPLINE_H_MIN_MM;
-    const oHOf = (f: (typeof frames)[number]): number => (f.o ?? 0) / Math.max(f.heightMm ?? 1e-6, 1e-6);
+    const sagOf = (f: (typeof frames)[number]): number => {
+        const eb = Math.max(f.midChordMm ?? 0, 1e-6);
+        return (f.midChordOffMm ?? 0) / eb;
+    };
+    const sagGated = (f: (typeof frames)[number]): boolean =>
+        wrGated(f) && (f.midChordMm ?? 0) >= SPLINE_SAG_EB_MIN_MM;
     const sagHi = worstHi(
-        (f) => (bulgeGated(f) ? oHOf(f) : 0),
-        (v) => v - 1e-9 > SPLINE_O_H_HI,
+        (f) => (sagGated(f) ? sagOf(f) : 0),
+        (v) => v - 1e-9 > SPLINE_SAG_HI,
     );
     const sagLo = worstLo(
-        (f) => (bulgeGated(f) ? oHOf(f) : 1),
-        (v) => v + 1e-9 < SPLINE_O_H_LO,
+        (f) => (sagGated(f) ? sagOf(f) : 1),
+        (v) => v + 1e-9 < SPLINE_SAG_LO,
     );
-    const sagChordHi = worstHi(
-        (f) => {
-            const h = f.heightMm ?? 0;
-            if (h < SPLINE_H_MIN_MM) return 0;
-            return (f.midChordOffMm ?? 0) / h;
-        },
-        (_v) => false,
-    );
-    const peakGated = (f: (typeof frames)[number]): boolean =>
-        wrGated(f) && (f.heightMm ?? 0) >= SPLINE_H_MIN_MM;
-    const peakHi = worstHi(
-        (f) => (peakGated(f) ? (f.midPeakHFrac ?? 0) : 0),
-        (v) => v - 1e-9 > SPLINE_PEAK_GATE_HI,
-    );
-    const peakLo = worstLo(
-        (f) => (peakGated(f) ? (f.midPeakHFrac ?? 1) : 1),
-        (v) => v + 1e-9 < SPLINE_PEAK_GATE_LO,
-    );
-    const plan = worstHi(
+    const sMin = worstLo(
         (f) => f.midPlanOffMm ?? 0,
-        (v) => v > SPLINE_PLAN_OUT_MM + 1e-6,
-    );
-    const inset = worstLo(
-        (f) => f.midPlanOffMm ?? 0,
-        (v) => v < -1e-6,
+        (v) => v < SPLINE_S_MIN_MM - 1e-6,
     );
     const edge = worstLo(
         (f) => {
@@ -563,20 +519,26 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             poly.n ? { n: poly.n, worstI: poly.i, worstU: poly.u } : undefined,
         ),
         row(
-            "o/H-lo",
+            "sag-lo",
             !sagLo.n || style === "straight",
             sagLo.n ? sagLo.v : 0,
-            SPLINE_O_H_LO,
+            SPLINE_SAG_LO,
             sagLo.n ? { n: sagLo.n, worstI: sagLo.i, worstU: sagLo.u } : undefined,
         ),
         row(
-            "o/H-hi",
+            "sag-hi",
             !sagHi.n || style === "straight",
             sagHi.n ? sagHi.v : 0,
-            SPLINE_O_H_HI,
+            SPLINE_SAG_HI,
             sagHi.n ? { n: sagHi.n, worstI: sagHi.i, worstU: sagHi.u } : undefined,
         ),
-        row("sag-chord", true, sagChordHi.v || 0, "report-only"),
+        row(
+            "sMin",
+            !sMin.n || style === "straight",
+            sMin.n ? sMin.v : 0,
+            SPLINE_S_MIN_MM,
+            sMin.n ? { n: sMin.n, worstI: sMin.i, worstU: sMin.u } : undefined,
+        ),
         row(
             "vs-straight",
             true,
@@ -587,34 +549,6 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
                 return xs.length ? Math.max(...xs) : 0;
             })(),
             "report-only",
-        ),
-        row(
-            "peak-lo",
-            !peakLo.n || style === "straight",
-            peakLo.n ? peakLo.v : 0,
-            SPLINE_PEAK_GATE_LO,
-            peakLo.n ? { n: peakLo.n, worstI: peakLo.i, worstU: peakLo.u } : undefined,
-        ),
-        row(
-            "peak-hi",
-            !peakHi.n || style === "straight",
-            peakHi.n ? peakHi.v : 0,
-            SPLINE_PEAK_GATE_HI,
-            peakHi.n ? { n: peakHi.n, worstI: peakHi.i, worstU: peakHi.u } : undefined,
-        ),
-        row(
-            "plan",
-            !plan.n || style === "straight",
-            plan.n ? plan.v : 0,
-            SPLINE_PLAN_OUT_MM,
-            plan.n ? { n: plan.n, worstI: plan.i, worstU: plan.u } : undefined,
-        ),
-        row(
-            "inset",
-            !inset.n || style === "straight",
-            inset.n ? inset.v : 0,
-            0,
-            inset.n ? { n: inset.n, worstI: inset.i, worstU: inset.u } : undefined,
         ),
         row("step-ratio", true, q.maxSplineStepRatio ?? 1, "no-cap"),
         row(
@@ -785,8 +719,6 @@ describe("procedural wall styles", () => {
                 JSON.stringify({ n: blendList.length, stations: blendList.slice(0, 48) }),
             );
             if (local.length) misses.push(`${style}: ${local.join("; ")}`);
-            const stlBytes = Buffer.from(geometryToBinarySTL(geo));
-            writeArtifact(`procedural-default-${style}.stl`, stlBytes);
             (geo.userData as { stlPath?: string }).stlPath = `/tmp/s1-stls/procedural-default-${style}.stl`;
             const pos = geo.getAttribute("position").array as Float32Array;
             const idx = geo.getIndex()!.array as Uint32Array;
@@ -798,10 +730,16 @@ describe("procedural wall styles", () => {
                     light: [0.25, 0.55, 0.8] as [number, number, number],
                 },
                 {
-                    name: "medial",
-                    right: [0.18, 0.98, 0] as [number, number, number],
-                    up: [0, 0, 1] as [number, number, number],
-                    light: [0.15, 0.7, 0.7] as [number, number, number],
+                    name: "bottom34",
+                    right: [0.88, 0.47, 0] as [number, number, number],
+                    up: [0.2, -0.38, -0.9] as [number, number, number],
+                    light: [0.2, 0.15, -0.97] as [number, number, number],
+                },
+                {
+                    name: "arch-below",
+                    right: [0.12, 0.99, 0] as [number, number, number],
+                    up: [0.1, -0.01, -0.995] as [number, number, number],
+                    light: [0.12, 0.28, -0.95] as [number, number, number],
                 },
             ];
             for (const v of views) {
@@ -1194,7 +1132,92 @@ describe("procedural wall styles", () => {
         const straightStl = "/tmp/s1-stls/procedural-default-straight.stl";
         const stlGates: Partial<Record<Style, StlGate>> = {};
         const hard: string[] = [];
+        const straightWind =
+            (
+                geos.straight!.userData as {
+                    winding?: { consistent?: boolean; oppositeEdgeMismatch?: number; signedVolume?: number };
+                }
+            ).winding ?? windingReport(geos.straight!);
+        const straightVol = straightWind.signedVolume ?? 0;
         for (const style of styles) {
+            const q =
+                (
+                    geos[style]!.userData as {
+                        columnQuality?: {
+                            nFaceFlips?: number;
+                            nColZFail?: number;
+                            nColQuadFail?: number;
+                            dVPred?: number;
+                            maxWRStep?: number;
+                            faceFlips?: Array<{ i: number; k: number }>;
+                        };
+                    }
+                ).columnQuality ?? {};
+            const wind =
+                (
+                    geos[style]!.userData as {
+                        winding?: {
+                            consistent?: boolean;
+                            oppositeEdgeMismatch?: number;
+                            signedVolume?: number;
+                        };
+                    }
+                ).winding ?? windingReport(geos[style]!);
+            const add = (
+                gateName: string,
+                pass: boolean,
+                value: number | string,
+                cap?: number | string,
+            ): void => {
+                tables[style]?.push({ gate: gateName, pass, value, cap });
+            };
+            const gWind =
+                !!wind.consistent && (wind.oppositeEdgeMismatch ?? 1) === 0 && (wind.signedVolume ?? 0) > 0;
+            add("G-WIND", gWind, wind.oppositeEdgeMismatch ?? -1, 0);
+            if (!gWind) {
+                hard.push(`${style}: G-WIND mismatch=${wind.oppositeEdgeMismatch} vol=${wind.signedVolume}`);
+            }
+            const nFace = q.nFaceFlips ?? 0;
+            add("G-FACE", nFace === 0 || style === "straight", nFace, `n·out>${SPLINE_FACE_DOT_MIN}`);
+            if (style !== "straight" && nFace > 0) {
+                hard.push(`${style}: G-FACE flips=${nFace} ${JSON.stringify(q.faceFlips ?? [])}`);
+            }
+            const colFail = (q.nColZFail ?? 0) + (q.nColQuadFail ?? 0);
+            add("G-COL", colFail === 0 || style === "straight", colFail, 0);
+            if (style !== "straight" && colFail > 0) {
+                hard.push(`${style}: G-COL zFail=${q.nColZFail} quadFail=${q.nColQuadFail}`);
+            }
+            const dV = q.dVPred ?? 0;
+            const vol = wind.signedVolume ?? 0;
+            const volErr = style === "straight" ? 0 : Math.abs(vol - straightVol - dV);
+            const volCap = SPLINE_VOL_ERR_FRAC * Math.max(straightVol, 1e-6);
+            const gVol = style === "straight" || volErr <= volCap;
+            add("G-VOL", gVol, volErr, volCap);
+            add("dV_pred", true, dV, "mm3");
+            add(
+                "max-wR-step",
+                (q.maxWRStep ?? 0) <= SPLINE_WR_STEP_MAX + 1e-9,
+                q.maxWRStep ?? 0,
+                SPLINE_WR_STEP_MAX,
+            );
+            if (!gVol) {
+                hard.push(
+                    `${style}: G-VOL |${vol.toFixed(1)}-${straightVol.toFixed(1)}-${dV.toFixed(1)}|=${volErr.toFixed(1)} > ${volCap.toFixed(1)}`,
+                );
+            }
+        }
+        if (hard.length) {
+            writeArtifact(
+                "procedural-default-style-report.json",
+                Buffer.from(
+                    `${JSON.stringify({ styleReport, gateTables: tables, rndDump, stlGates, hard }, null, 2)}\n`,
+                ),
+            );
+            throw new Error(`[STL-GATE] ${hard.join(" | ")}`);
+        }
+        for (const style of styles) {
+            const geo = geos[style]!;
+            writeArtifact(`procedural-default-${style}.stl`, Buffer.from(geometryToBinarySTL(geo)));
             const stlPath = `/tmp/s1-stls/procedural-default-${style}.stl`;
             const gate = loadStlGates(style, stlPath, style === "straight" ? undefined : straightStl);
             stlGates[style] = gate;
@@ -1214,14 +1237,6 @@ describe("procedural wall styles", () => {
             if (!gate.watertight) hard.push(`${style}: stl not watertight`);
             if (!gate.winding) hard.push(`${style}: stl winding inconsistent`);
             if (gate.bodies !== 1) hard.push(`${style}: stl bodies=${gate.bodies}`);
-            const wind = (
-                geos[style]!.userData as {
-                    winding?: { consistent?: boolean; oppositeEdgeMismatch?: number };
-                }
-            ).winding;
-            if (wind && !wind.consistent) {
-                hard.push(`${style}: winding mismatch=${wind.oppositeEdgeMismatch}`);
-            }
         }
         writeArtifact(
             "procedural-default-style-report.json",

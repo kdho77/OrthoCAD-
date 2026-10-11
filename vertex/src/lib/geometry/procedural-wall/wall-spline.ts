@@ -1,13 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import {
-    hybridBulgeAt,
-    smoothstep01,
-    WALL_ARCH_U,
-    WALL_H_SMOOTH_HI_MM,
-    WALL_H_SMOOTH_LO_MM,
-} from "./wall-style";
+import { hybridBulgeAt, smoothstep01, WALL_H_SMOOTH_HI_MM, WALL_H_SMOOTH_LO_MM } from "./wall-style";
 
 export interface XYZ {
     x: number;
@@ -17,12 +11,18 @@ export interface XYZ {
 
 export const SPLINE_DEGREE = 3;
 export const SPLINE_KNOTS = [0, 0, 0, 0, 1 / 3, 2 / 3, 1, 1, 1, 1];
-export const SPLINE_A_FRAC = 0.25;
-/** a = min(this × o/|tR.s|, SPLINE_P1_Z_FRAC × (1−zx) H/|tR.z|). */
+/** 5-point body polygon E, E+a tE, X, Q, B. */
+export const SPLINE_KNOTS_5 = [0, 0, 0, 0, 0.5, 1, 1, 1, 1];
+export const SPLINE_A_FRAC = 0.35;
+/** a = max(SPLINE_A_FRAC × |EB|, this × r1). */
+export const SPLINE_A_R1_MULT = 3;
+export const SPLINE_C_FRAC = 0.5;
 export const SPLINE_P1_O_FRAC = 0.9;
 export const SPLINE_P1_Z_FRAC = 0.9;
-export const SPLINE_BETA_HEEL = 0.15;
-export const SPLINE_BETA_ARCH = 0.2;
+/** β: 0.12 heel, 0.15 elsewhere, 0.18 arch/midfoot. */
+export const SPLINE_BETA_HEEL = 0.12;
+export const SPLINE_BETA_DEFAULT = 0.15;
+export const SPLINE_BETA_ARCH = 0.18;
 export const SPLINE_ZY_LO = 0.1;
 /** zyHi = zx − this. */
 export const SPLINE_ZY_GAP = 0.2;
@@ -47,9 +47,24 @@ export const SPLINE_PEAK_LO = 0.45;
 export const SPLINE_PEAK_HI = 0.55;
 export const SPLINE_PEAK_GATE_LO = 0.4;
 export const SPLINE_PEAK_GATE_HI = 0.6;
-/** vs-STRAIGHT / vs-chord sagitta — report-only. */
-export const SPLINE_SAG_LO = 0.15;
-export const SPLINE_SAG_HI = 0.25;
+/** Sagitta / |EB| where |EB| ≥ 6 mm. */
+export const SPLINE_SAG_LO = 0.12;
+export const SPLINE_SAG_HI = 0.22;
+export const SPLINE_SAG_EB_MIN_MM = 6;
+/** Never outboard of R. */
+export const SPLINE_S_MIN_MM = -0.1;
+/** [RND-FLAT] only where |EB| < this. */
+export const SPLINE_FLAT_EB_MM = 2;
+/** max/min |κ| on the middle 80% of the body arc. */
+export const SPLINE_KAPPA_RATIO_MAX = 2;
+export const SPLINE_KAPPA_MID_LO = 0.1;
+export const SPLINE_KAPPA_MID_HI = 0.9;
+/** Body-side κ near E ≥ this / r1, or 3 rows after E turn ≤ 4°. */
+export const SPLINE_LIP_KAPPA_OVER_R1 = 0.1;
+export const SPLINE_LIP_TURN_ROWS = 3;
+export const SPLINE_WR_STEP_MAX = 0.05;
+export const SPLINE_FACE_DOT_MIN = -0.2;
+export const SPLINE_VOL_ERR_FRAC = 0.01;
 export const SPLINE_H_MIN_MM = 6;
 export const SPLINE_BISECT = 30;
 export const SPLINE_DENSE = 512;
@@ -75,7 +90,7 @@ export const SPLINE_R_FILL_ITERS = 20;
 export const SPLINE_F_RING_MAX = 0.02;
 export const SPLINE_MIN_EDGE_FRAC = 0.2;
 export const SPLINE_FLAT_MM = 0.05;
-/** Real [RND-FLAT] also at H below this (o_target is already 0). */
+/** Legacy H floor; FLAT is now |EB| < SPLINE_FLAT_EB_MM only. */
 export const SPLINE_FLAT_H_MM = 3;
 export const SPLINE_STEP_RATIO_MAX = 4;
 export const SPLINE_ROW1_TR_MAX_DEG = 6;
@@ -103,7 +118,12 @@ export interface SplineStationInput {
     sideSign: 1 | -1;
     planOutMm?: number;
     heightMm?: number;
-    /** Override sag target (mm). Production uses β k(H) H. */
+    /** Top-round end. Synthesized from R + r1 if omitted (unit tests). */
+    E?: XYZ;
+    /** Body-start tangent at E (column plane). */
+    tE?: XYZ;
+    r1?: number;
+    /** Override sag target (mm). Production uses β |EB|. */
     targetSagMm?: number;
 }
 
@@ -115,6 +135,13 @@ export interface SplineSolve {
     zx: number;
     a: number;
     c: number;
+    g: number;
+    beta: number;
+    eb: number;
+    sMin: number;
+    kappaRatio: number;
+    kappaE: number;
+    r1: number;
     H: number;
     Ls: number;
     sagitta: number;
@@ -147,6 +174,11 @@ export interface SplineGatePrint {
     zy: number;
     zx: number;
     a: number;
+    g: number;
+    beta: number;
+    eb: number;
+    sMin: number;
+    kappaRatio: number;
     sagitta: number;
     sagFrac: number;
     peakZFrac: number;
@@ -210,10 +242,19 @@ function acuteDeg(a: XYZ, b: XYZ): number {
     return Math.min(d, 180 - d);
 }
 
-/** β: 0.15 heel → 0.20 arch/midfoot, both sides. */
+/** β: 0.12 heel, 0.18 arch/midfoot, 0.15 elsewhere. */
 export function splineBetaAt(u: number): number {
-    const t = smoothstep01(0, WALL_ARCH_U, u);
-    return SPLINE_BETA_HEEL + (SPLINE_BETA_ARCH - SPLINE_BETA_HEEL) * t;
+    const heel = 1 - smoothstep01(0.05, 0.18, u);
+    const arch = smoothstep01(0.22, 0.32, u) * (1 - smoothstep01(0.62, 0.75, u));
+    return (
+        SPLINE_BETA_DEFAULT +
+        (SPLINE_BETA_HEEL - SPLINE_BETA_DEFAULT) * heel +
+        (SPLINE_BETA_ARCH - SPLINE_BETA_DEFAULT) * arch
+    );
+}
+
+export function splineKnotsFor(nPoints: number): number[] {
+    return nPoints <= 5 ? SPLINE_KNOTS_5 : SPLINE_KNOTS;
 }
 
 /** k(H) = smoothstep(3, 12, H). */
@@ -388,37 +429,64 @@ export function splineOMax(zx: number, H: number, tSz: Sz, planOut: number): num
     return Math.min(planOut, geom);
 }
 
-/**
- * Corner-cut box in (s, z): R=(0,H), B=(Ls,0), outward −s.
- * P0=R, P1=R+a tR, P2=X=(-o,zx H), P3=Y=(-o,zy H), P4=Q=(Ls-c,0), P5=B.
- * a and c follow the formulas unless `aOverride` is set (ring-smoothed a).
- */
-export function buildSplinePolygon(
-    R: XYZ,
-    B: XYZ,
-    h: { x: number; y: number },
-    tR: XYZ,
-    o: number,
-    zy: number,
-    aOverride?: number,
-): XYZ[] {
-    const fr = stationSzFrame(R, B, h);
-    const tOver = overEdgeTangent(tR, fr.h);
-    const tSz = tRInSz(tR, fr.h);
-    const zx = splineZx(o, fr.H);
-    const a = aOverride ?? splineA(o, zx, fr.H, tSz);
-    const c = splineC(fr.Ls, o);
-    const P0 = { ...R };
-    const P1 = add(R, tOver, a);
-    const P2 = fromSz({ s: -o, z: zx * fr.H }, fr.origin, fr.h);
-    const P3 = fromSz({ s: -o, z: zy * fr.H }, fr.origin, fr.h);
-    const P4 = fromSz({ s: fr.Ls - c, z: 0 }, fr.origin, fr.h);
-    const P5 = { ...B };
-    return [P0, P1, P2, P3, P4, P5];
+/** Synthesize a 90° top-round end when the caller has no sweep E. */
+export function lipEndFromR(R: XYZ, h: { x: number; y: number }, r1: number): XYZ {
+    const r = Math.max(r1, 1e-6);
+    const hl = Math.hypot(h.x, h.y) || 1;
+    return { x: R.x + (h.x / hl) * r, y: R.y + (h.y / hl) * r, z: R.z - r };
 }
 
-/** Clamped cubic B-spline. Knots [0,0,0,0, 1/3, 2/3, 1,1,1,1]. */
-export function evalClampedCubic(points: XYZ[], t: number, knots: number[] = SPLINE_KNOTS): XYZ {
+export function bodyTangentFromE(E: XYZ, B: XYZ, h: { x: number; y: number }, tE?: XYZ): XYZ {
+    if (tE && hypot3(tE) > 1e-12) return projectToColumnPlane(tE, h);
+    const hl = Math.hypot(h.x, h.y) || 1;
+    return projectToColumnPlane({ x: (h.x / hl) * 0.2, y: (h.y / hl) * 0.2, z: -1 }, h);
+}
+
+/** Outward (−s) unit normal of chord AB in the column plane. */
+export function chordOutwardNormalBetween(A: XYZ, B: XYZ, h: { x: number; y: number }, R: XYZ): XYZ {
+    const fr = stationSzFrame(R, B, h);
+    const a = toSz(A, fr.origin, fr.h);
+    const b = toSz(B, fr.origin, fr.h);
+    let ns = -(b.z - a.z);
+    let nz = b.s - a.s;
+    const nl = hypot2(ns, nz) || 1;
+    ns /= nl;
+    nz /= nl;
+    if (ns > 0) {
+        ns = -ns;
+        nz = -nz;
+    }
+    return unit({ x: fr.h.x * ns, y: fr.h.y * ns, z: nz });
+}
+
+/**
+ * Body polygon: E, E+a tE, X, Q, B.
+ * Q = (Ls − c, 0), c = 0.5 Ls. X = mid(EB) + g n_out(EB).
+ */
+export function buildSplinePolygon(
+    E: XYZ,
+    B: XYZ,
+    R: XYZ,
+    h: { x: number; y: number },
+    tE: XYZ,
+    a: number,
+    g: number,
+    c: number,
+): XYZ[] {
+    const fr = stationSzFrame(R, B, h);
+    const t = bodyTangentFromE(E, B, fr.h, tE);
+    const n = chordOutwardNormalBetween(E, B, fr.h, R);
+    const mid = lerp(E, B, 0.5);
+    const qS = fr.Ls - c;
+    return [E, add(E, t, a), add(mid, n, g), fromSz({ s: qS, z: 0 }, fr.origin, fr.h), { ...B }];
+}
+
+/** Clamped cubic B-spline. 6-pt knots [0,0,0,0,1/3,2/3,1…] or 5-pt [0,0,0,0,1/2,1…]. */
+export function evalClampedCubic(
+    points: XYZ[],
+    t: number,
+    knots: number[] = splineKnotsFor(points.length),
+): XYZ {
     const n = points.length - 1;
     const p = SPLINE_DEGREE;
     const u = Math.max(0, Math.min(1, t));
@@ -445,7 +513,11 @@ export function evalClampedCubic(points: XYZ[], t: number, knots: number[] = SPL
     return d[p]!;
 }
 
-export function splineTangent(points: XYZ[], t: number, knots: number[] = SPLINE_KNOTS): XYZ {
+export function splineTangent(
+    points: XYZ[],
+    t: number,
+    knots: number[] = splineKnotsFor(points.length),
+): XYZ {
     const e = 1e-4;
     const t0 = Math.max(0, Math.min(1, t));
     const a = evalClampedCubic(points, Math.max(0, t0 - e), knots);
@@ -477,20 +549,92 @@ export function chordOutwardNormal(R: XYZ, B: XYZ, h: { x: number; y: number }):
 
 export function splineSagitta(
     samples: XYZ[],
-    R: XYZ,
+    A: XYZ,
     B: XYZ,
     h: { x: number; y: number },
+    R?: XYZ,
 ): {
     sag: number;
     peakZFrac: number;
 } {
-    const n = chordOutwardNormal(R, B, h);
-    const H = Math.max(R.z - B.z, 1e-6);
+    const origin = R ?? A;
+    const n = chordOutwardNormalBetween(A, B, h, origin);
     let sag = 0;
     for (const p of samples) {
-        sag = Math.max(sag, signedChordOffset(p, R, B, n));
+        sag = Math.max(sag, signedChordOffset(p, A, B, n));
     }
-    return { sag, peakZFrac: peakZFracAtMinS(samples, R, B, h) };
+    return { sag, peakZFrac: peakZFracAtMinS(samples, origin, B, h) };
+}
+
+export function minSOfSamples(samples: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: number }): number {
+    const fr = stationSzFrame(R, B, h);
+    let minS = Number.POSITIVE_INFINITY;
+    for (const p of samples) minS = Math.min(minS, toSz(p, fr.origin, fr.h).s);
+    return Number.isFinite(minS) ? minS : 0;
+}
+
+/** Discrete |κ| samples along a polyline, with arc-length parameter in [0,1]. */
+export function polylineAbsKappa(samples: XYZ[]): { s: number; k: number }[] {
+    if (samples.length < 3) return [];
+    const acc = [0];
+    for (let i = 1; i < samples.length; i++)
+        acc.push(acc[i - 1]! + hypot3(sub(samples[i]!, samples[i - 1]!)));
+    const L = acc[acc.length - 1] ?? 0;
+    const out: { s: number; k: number }[] = [];
+    for (let i = 1; i < samples.length - 1; i++) {
+        const v1 = sub(samples[i]!, samples[i - 1]!);
+        const v2 = sub(samples[i + 1]!, samples[i]!);
+        const l1 = hypot3(v1);
+        const l2 = hypot3(v2);
+        if (l1 < 1e-12 || l2 < 1e-12) continue;
+        const cos = Math.max(-1, Math.min(1, dot(v1, v2) / (l1 * l2)));
+        const dth = Math.acos(cos);
+        const k = dth / Math.max(0.5 * (l1 + l2), 1e-12);
+        out.push({ s: L > 1e-12 ? acc[i]! / L : 0, k });
+    }
+    return out;
+}
+
+export function midArcKappaRatio(samples: XYZ[], lo = SPLINE_KAPPA_MID_LO, hi = SPLINE_KAPPA_MID_HI): number {
+    const ks = polylineAbsKappa(samples).filter((r) => r.s >= lo && r.s <= hi);
+    if (ks.length < 2) return 1;
+    let mn = Number.POSITIVE_INFINITY;
+    let mx = 0;
+    for (const r of ks) {
+        if (r.k < 1e-5) continue;
+        mn = Math.min(mn, r.k);
+        mx = Math.max(mx, r.k);
+    }
+    if (!Number.isFinite(mn) || mn < 1e-8) return mx > 1e-8 ? Number.POSITIVE_INFINITY : 1;
+    return mx / mn;
+}
+
+export function kappaNearStart(samples: XYZ[], frac = 0.08): number {
+    const ks = polylineAbsKappa(samples).filter((r) => r.s <= frac);
+    let mx = 0;
+    for (const r of ks) mx = Math.max(mx, r.k);
+    return mx;
+}
+
+/** Signed area between two (s,z) profiles that share endpoints. */
+export function profileAreaBetween(
+    round: XYZ[],
+    straight: XYZ[],
+    R: XYZ,
+    B: XYZ,
+    h: { x: number; y: number },
+): number {
+    const fr = stationSzFrame(R, B, h);
+    const a = round.map((p) => toSz(p, fr.origin, fr.h));
+    const b = straight.map((p) => toSz(p, fr.origin, fr.h));
+    const ring = [...a, ...b.slice().reverse()];
+    let area = 0;
+    for (let i = 0; i < ring.length; i++) {
+        const p = ring[i]!;
+        const q = ring[(i + 1) % ring.length]!;
+        area += p.s * q.z - q.s * p.z;
+    }
+    return 0.5 * area;
 }
 
 /** z of the most-outward sample (min s), as a fraction of H. */
@@ -613,6 +757,10 @@ export function g1AtR(poly: XYZ[], tR: XYZ, h: { x: number; y: number }): number
     return acuteDeg(tan, tOver);
 }
 
+export function g1AtE(poly: XYZ[], tE: XYZ, h: { x: number; y: number }): number {
+    return acuteDeg(sub(poly[1]!, poly[0]!), projectToColumnPlane(tE, h));
+}
+
 /** C'(0) ≈ C(1/2048) − C(0) from the dense table. */
 export function denseCPrime0(poly: XYZ[], nDense = SPLINE_W_DENSE): XYZ {
     return sub(evalClampedCubic(poly, 1 / Math.max(1, nDense)), evalClampedCubic(poly, 0));
@@ -635,21 +783,24 @@ function sampleStraight(R: XYZ, B: XYZ, n: number): XYZ[] {
     return pts;
 }
 
-function measureOf(poly: XYZ[], R: XYZ, B: XYZ, h: { x: number; y: number }, tR: XYZ) {
+function measureOf(poly: XYZ[], E: XYZ, B: XYZ, R: XYZ, h: { x: number; y: number }, tE: XYZ) {
     const dense = sampleSplineDense(poly);
-    const sag = splineSagitta(dense, R, B, h);
+    const sag = splineSagitta(dense, E, B, h, R);
     const plan = planBounds(dense, R, B, h);
-    const inflCount = polylineInflCount(dense, R, B, h);
+    const inflCount = polylineInflCount(dense, E, B, h);
     return {
         dense,
         ...sag,
         ...plan,
         inflCount,
         infl: inflCount > 0,
-        convex: polygonConvex(poly, h),
-        g1RDeg: g1AtR(poly, tR, h),
+        convex: inflCount === 0,
+        g1RDeg: g1AtE(poly, tE, h),
         seamBDeg: seamBDeg(dense),
         maxTurnDeg: maxPolylineTurn(dense),
+        sMin: minSOfSamples(dense, R, B, h),
+        kappaRatio: midArcKappaRatio(dense),
+        kappaE: kappaNearStart(dense),
     };
 }
 
@@ -658,75 +809,81 @@ interface SplineSolveExtra {
     oMin: number;
     rhoNeed: number;
     peakClosest?: boolean;
+    g?: number;
+    c?: number;
+    beta?: number;
+    eb?: number;
+    r1?: number;
+}
+
+function stationEnds(input: SplineStationInput): { E: XYZ; tE: XYZ; r1: number } {
+    const r1 = input.r1 ?? 0.5;
+    const E = input.E ?? lipEndFromR(input.R, input.h, r1);
+    const tE = bodyTangentFromE(E, input.B, input.h, input.tE);
+    return { E, tE, r1 };
 }
 
 function finishSolve(
     input: SplineStationInput,
     poly: XYZ[],
-    o: number,
-    zy: number,
     a: number,
-    oMax: number,
-    tRAngleDeg: number,
-    steep: boolean,
+    g: number,
+    c: number,
+    beta: number,
     fallback: boolean,
     extra: SplineSolveExtra,
 ): SplineSolve {
-    const { R, B, tR } = input;
+    const { R, B } = input;
+    const { E, tE, r1 } = stationEnds(input);
     const fr = stationSzFrame(R, B, input.h);
     const H = input.heightMm ?? fr.H;
-    const zx = splineZx(o, H);
-    const c = splineC(fr.Ls, o);
-    const m = measureOf(poly, R, B, fr.h, tR);
-    const rhoMin = fallback ? Number.POSITIVE_INFINITY : minRhoFirstArc(m.dense);
+    const tSz = tRInSz(input.tR, fr.h);
+    const tRAngleDeg = tRAngleBelowHorizontalDeg(tSz);
+    const eb = extra.eb ?? hypot3(sub(B, E));
+    const m = fallback
+        ? {
+              dense: sampleStraight(E, B, 16),
+              sag: 0,
+              peakZFrac: 0.5,
+              insetMin: 0,
+              offsetMax: 0,
+              inflCount: 0,
+              infl: false,
+              convex: true,
+              g1RDeg: 0,
+              seamBDeg: 0,
+              maxTurnDeg: 0,
+              sMin: minSOfSamples([E, B], R, B, fr.h),
+              kappaRatio: 1,
+              kappaE: 0,
+          }
+        : measureOf(poly, E, B, R, fr.h, tE);
     const extraFields = {
         oMin: extra.oMin,
         rhoNeed: extra.rhoNeed,
-        rhoMin,
+        rhoMin: fallback ? Number.POSITIVE_INFINITY : minRhoFirstArc(m.dense),
         corner: extra.corner,
         peakClosest: extra.peakClosest ?? false,
     };
-    if (fallback) {
-        return {
-            pts: sampleStraight(R, B, 16),
-            poly: [R, lerp(R, B, 0.2), lerp(R, B, 0.4), lerp(R, B, 0.6), lerp(R, B, 0.8), B],
-            o: 0,
-            zy,
-            zx,
-            a: 0,
-            c,
-            H,
-            Ls: fr.Ls,
-            sagitta: 0,
-            sagFrac: 0,
-            peakZFrac: 0.5,
-            g1RDeg: 0,
-            seamBDeg: 0,
-            infl: false,
-            inflCount: 0,
-            convex: true,
-            insetMin: 0,
-            planOffset: 0,
-            maxTurnDeg: 0,
-            tRAngleDeg,
-            oMax,
-            steep,
-            fallbackStraight: true,
-            ...extraFields,
-        };
-    }
     return {
-        pts: m.dense,
-        poly,
-        o,
-        zy,
-        zx,
-        a,
+        pts: fallback ? sampleStraight(E, B, 16) : m.dense,
+        poly: fallback ? [E, lerp(E, B, 0.25), lerp(E, B, 0.5), lerp(E, B, 0.75), B] : poly,
+        o: 0,
+        zy: 0,
+        zx: 0,
+        a: fallback ? 0 : a,
         c,
+        g: fallback ? 0 : g,
+        beta,
+        eb,
+        sMin: m.sMin,
+        kappaRatio: m.kappaRatio,
+        kappaE: m.kappaE,
+        r1,
         H,
         Ls: fr.Ls,
         sagitta: m.sag,
-        sagFrac: m.sag / H,
+        sagFrac: eb > 1e-9 ? m.sag / eb : 0,
         peakZFrac: m.peakZFrac,
         g1RDeg: m.g1RDeg,
         seamBDeg: m.seamBDeg,
@@ -737,148 +894,138 @@ function finishSolve(
         planOffset: m.offsetMax,
         maxTurnDeg: m.maxTurnDeg,
         tRAngleDeg,
-        oMax,
-        steep,
-        fallbackStraight: false,
+        oMax: 0,
+        steep: false,
+        fallbackStraight: fallback,
         ...extraFields,
     };
 }
 
 /**
- * Drive o = clamp(o_target, 0, o_max = planOut 2 mm). No o_min / corner-out.
- * zx = clamp(1 − 1.5 o/H, 0.55, 0.92).
- * zy bisects in [0.10, zx − 0.20] for z(min s) = 0.50 H ± 0.05.
+ * Body E→B: 5-point cubic. Bisect g for sag = β|EB|, clamp s ≥ −0.1,
+ * then bisect a/c so mid-arc max/min κ ≤ 2.
  */
 export function solveSplineStation(input: SplineStationInput): SplineSolve {
-    const { R, B, tR } = input;
-    const planOut = input.planOutMm ?? SPLINE_PLAN_OUT_MM;
+    const { R, B } = input;
+    const { E, tE, r1 } = stationEnds(input);
     const fr = stationSzFrame(R, B, input.h);
-    const H = input.heightMm ?? fr.H;
-    const tSz = tRInSz(tR, fr.h);
-    const tRAngleDeg = tRAngleBelowHorizontalDeg(tSz);
-    const oTarget = splineOTarget(input.u, H);
-    const L = hypot3(sub(B, R));
-    const oMax = Math.max(0, planOut);
-    const o = clampNum(oTarget, 0, oMax);
-    const zx = splineZx(o, H);
-    const a = splineA(o, zx, H, tSz);
-    const extra: SplineSolveExtra = { corner: false, oMin: 0, rhoNeed: splineRhoNeed(L) };
+    const eb = hypot3(sub(B, E));
+    const beta = splineBetaAt(input.u);
+    const extra: SplineSolveExtra = {
+        corner: false,
+        oMin: 0,
+        rhoNeed: splineRhoNeed(eb),
+        eb,
+        r1,
+        beta,
+    };
+    if (eb < SPLINE_FLAT_EB_MM) {
+        return finishSolve(input, [E, B], 0, 0, SPLINE_C_FRAC * fr.Ls, beta, true, extra);
+    }
+    const c0 = SPLINE_C_FRAC * fr.Ls;
+    const a0 = Math.max(SPLINE_A_FRAC * eb, SPLINE_A_R1_MULT * r1);
+    const targetSag = input.targetSagMm ?? beta * eb;
 
-    const tryAt = (oo: number, zy: number, aOverride?: number) => {
-        const poly = buildSplinePolygon(R, B, fr.h, tR, oo, zy, aOverride);
-        return { poly, m: measureOf(poly, R, B, fr.h, tR) };
+    const at = (aa: number, gg: number, cc: number) => {
+        const poly = buildSplinePolygon(E, B, R, fr.h, tE, Math.max(0, aa), gg, cc);
+        return { poly, m: measureOf(poly, E, B, R, fr.h, tE) };
     };
 
-    const zyLo0 = SPLINE_ZY_LO;
-    const zyHi0 = Math.max(zyLo0, zx - SPLINE_ZY_GAP);
-    let zyLo = zyLo0;
-    let zyHi = zyHi0;
-    let zy = zyLo;
-    for (let i = 0; i < SPLINE_BISECT; i++) {
-        zy = 0.5 * (zyLo + zyHi);
-        const { m } = tryAt(o, zy);
-        if (m.peakZFrac < SPLINE_PEAK_TARGET) zyLo = zy;
-        else zyHi = zy;
-    }
-    zy = 0.5 * (zyLo + zyHi);
-    let { poly, m } = tryAt(o, zy);
-    if (m.peakZFrac + 1e-9 < SPLINE_PEAK_LO || m.peakZFrac - 1e-9 > SPLINE_PEAK_HI) {
-        let bestZy = zy;
-        let bestPeak = m.peakZFrac;
-        let bestErr = Math.abs(bestPeak - SPLINE_PEAK_TARGET);
-        let bestPoly = poly;
-        let bestM = m;
-        for (const zc of [zyLo0, zyHi0]) {
-            const trial = tryAt(o, zc);
-            const err = Math.abs(trial.m.peakZFrac - SPLINE_PEAK_TARGET);
-            if (err < bestErr) {
-                bestErr = err;
-                bestZy = zc;
-                bestPeak = trial.m.peakZFrac;
-                bestPoly = trial.poly;
-                bestM = trial.m;
-            }
+    let a = a0;
+    let g = 0;
+    const sag0 = at(a, 0, c0).m.sag;
+    if (sag0 < targetSag) {
+        let gLo = 0;
+        let gHi = Math.max(eb, 1e-3);
+        for (let i = 0; i < SPLINE_BISECT; i++) {
+            g = 0.5 * (gLo + gHi);
+            if (at(a, g, c0).m.sag < targetSag) gLo = g;
+            else gHi = g;
         }
-        zy = bestZy;
-        poly = bestPoly;
-        m = bestM;
-        extra.peakClosest = true;
-        console.log(
-            "[RND-PEAK]",
-            JSON.stringify({
-                u: Number(input.u.toFixed(4)),
-                H: Number(H.toFixed(4)),
-                zy: Number(zy.toFixed(4)),
-                zx: Number(zx.toFixed(4)),
-                peakZFrac: Number(bestPeak.toFixed(4)),
-                target: SPLINE_PEAK_TARGET,
-                zyLo: Number(zyLo0.toFixed(4)),
-                zyHi: Number(zyHi0.toFixed(4)),
-            }),
-        );
+        g = 0.5 * (gLo + gHi);
+    } else {
+        let aLo = 0.25 * a0;
+        let aHi = a0;
+        for (let i = 0; i < SPLINE_BISECT; i++) {
+            a = 0.5 * (aLo + aHi);
+            if (at(a, 0, c0).m.sag > targetSag) aHi = a;
+            else aLo = a;
+        }
+        a = 0.5 * (aLo + aHi);
+        g = 0;
     }
-    const steep = oTarget > oMax + 1e-9;
-    if (steep) {
-        console.log(
-            "[RND-STEEP]",
-            JSON.stringify({
-                u: Number(input.u.toFixed(4)),
-                tRAngleDeg: Number(tRAngleDeg.toFixed(3)),
-                o: Number(o.toFixed(4)),
-                oMax: Number(oMax.toFixed(4)),
-                oTarget: Number(oTarget.toFixed(4)),
-                sag: Number(m.sag.toFixed(4)),
-            }),
-        );
+    for (let i = 0; i < 16; i++) {
+        const { m } = at(a, g, c0);
+        if (m.sMin >= SPLINE_S_MIN_MM - 1e-9) break;
+        if (g > 1e-4) g *= 0.85;
+        else a *= 0.9;
     }
-    const fallback = o <= 1e-9 && !m.convex;
-    return finishSolve(input, poly, o, zy, a, oMax, tRAngleDeg, steep, fallback, extra);
+
+    let best = at(a, g, c0);
+    let bestRatio = best.m.kappaRatio;
+    let aLo = Math.max(0.35 * a0, 1.2 * r1);
+    let aHi = Math.max(aLo * 1.01, 2.2 * a0);
+    for (let i = 0; i < SPLINE_BISECT; i++) {
+        const mid = 0.5 * (aLo + aHi);
+        const trial = at(mid, g, c0);
+        if (trial.m.kappaRatio < bestRatio && trial.m.sMin >= SPLINE_S_MIN_MM - 1e-6) {
+            bestRatio = trial.m.kappaRatio;
+            best = trial;
+            a = mid;
+        }
+        const left = at(0.5 * (aLo + mid), g, c0);
+        const right = at(0.5 * (mid + aHi), g, c0);
+        if (left.m.kappaRatio < right.m.kappaRatio) aHi = mid;
+        else aLo = mid;
+    }
+    if (best.m.sMin < SPLINE_S_MIN_MM - 1e-9) {
+        for (let i = 0; i < 12 && best.m.sMin < SPLINE_S_MIN_MM - 1e-9; i++) {
+            if (g > 1e-4) g *= 0.85;
+            else a *= 0.9;
+            best = at(a, g, c0);
+        }
+    }
+    return finishSolve(input, best.poly, a, g, c0, beta, false, extra);
 }
 
-/** Rebuild a station from ring-smoothed o, zy, a. c stays on its formula. */
+/** Rebuild a station from ring-smoothed g, a. c stays 0.5 Ls. */
 export function rebuildSplineStation(
     input: SplineStationInput,
-    o: number,
-    zy: number,
+    g: number,
+    _zy: number,
     a: number,
     extra?: Partial<SplineSolveExtra>,
 ): SplineSolve {
-    const { R, B, tR } = input;
-    const planOut = input.planOutMm ?? SPLINE_PLAN_OUT_MM;
+    const { R, B } = input;
+    const { E, tE, r1 } = stationEnds(input);
     const fr = stationSzFrame(R, B, input.h);
-    const H = input.heightMm ?? fr.H;
-    const tSz = tRInSz(tR, fr.h);
-    const tRAngleDeg = tRAngleBelowHorizontalDeg(tSz);
-    const L = hypot3(sub(B, R));
-    const rhoNeed = extra?.rhoNeed ?? splineRhoNeed(L);
-    const oMin = extra?.oMin ?? 0;
-    const zx = splineZx(o, H);
-    const oMax = Math.max(0, planOut);
-    const zyUse = clampNum(zy, SPLINE_ZY_LO, Math.max(SPLINE_ZY_LO, zx - SPLINE_ZY_GAP));
-    const poly = buildSplinePolygon(R, B, fr.h, tR, o, zyUse, a);
-    const m = measureOf(poly, R, B, fr.h, tR);
-    const oTarget = splineOTarget(input.u, H);
-    const steep = oTarget > oMax + 1e-9 || m.infl;
-    if (steep) {
-        console.log(
-            "[RND-STEEP]",
-            JSON.stringify({
-                u: Number(input.u.toFixed(4)),
-                tRAngleDeg: Number(tRAngleDeg.toFixed(3)),
-                o: Number(o.toFixed(4)),
-                oMax: Number(oMax.toFixed(4)),
-                oTarget: Number(oTarget.toFixed(4)),
-                sag: Number(m.sag.toFixed(4)),
-                rebuild: true,
-            }),
-        );
-    }
-    return finishSolve(input, poly, o, zyUse, a, oMax, tRAngleDeg, steep, o <= 1e-9 && !m.convex, {
+    const eb = extra?.eb ?? hypot3(sub(B, E));
+    const beta = extra?.beta ?? splineBetaAt(input.u);
+    const c = extra?.c ?? SPLINE_C_FRAC * fr.Ls;
+    const extraUse: SplineSolveExtra = {
         corner: false,
-        oMin,
-        rhoNeed,
+        oMin: extra?.oMin ?? 0,
+        rhoNeed: extra?.rhoNeed ?? splineRhoNeed(eb),
         peakClosest: extra?.peakClosest ?? false,
-    });
+        g,
+        c,
+        beta,
+        eb,
+        r1,
+    };
+    if (eb < SPLINE_FLAT_EB_MM) {
+        return finishSolve(input, [E, B], 0, 0, c, beta, true, extraUse);
+    }
+    const poly = buildSplinePolygon(E, B, R, fr.h, tE, Math.max(0, a), Math.max(0, g), c);
+    let use = poly;
+    let gg = Math.max(0, g);
+    for (let i = 0; i < 12; i++) {
+        const m = measureOf(use, E, B, R, fr.h, tE);
+        if (m.sMin >= SPLINE_S_MIN_MM - 1e-9) break;
+        gg *= 0.85;
+        use = buildSplinePolygon(E, B, R, fr.h, tE, Math.max(0, a), gg, c);
+    }
+    return finishSolve(input, use, Math.max(0, a), gg, c, beta, false, extraUse);
 }
 
 export interface SplineDensityTable {
@@ -1339,18 +1486,23 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
     if (s.infl) misses.push("[RND-INFL]");
     if (s.fallbackStraight) misses.push("[RND-POLY]");
     if (!s.convex) misses.push("not-convex");
-    if (
-        s.H >= SPLINE_H_MIN_MM &&
-        (s.peakZFrac + 1e-9 < SPLINE_PEAK_GATE_LO || s.peakZFrac - 1e-9 > SPLINE_PEAK_GATE_HI)
-    ) {
-        misses.push(`peak ${s.peakZFrac.toFixed(3)}`);
+    if (s.inflCount > 0) misses.push(`sign-changes ${s.inflCount}`);
+    if (s.sMin < SPLINE_S_MIN_MM - 1e-9) misses.push(`sMin ${s.sMin.toFixed(3)}`);
+    if (s.eb >= SPLINE_SAG_EB_MIN_MM && !s.fallbackStraight) {
+        if (s.sagFrac + 1e-9 < SPLINE_SAG_LO || s.sagFrac - 1e-9 > SPLINE_SAG_HI) {
+            misses.push(`sag ${s.sagFrac.toFixed(3)}`);
+        }
     }
-    // vs-chord sagitta and vs-STRAIGHT bulge are report-only. o/H is gated after sampling.
-    if (s.g1RDeg > SPLINE_G1_R_MAX_DEG + 1e-6) misses.push(`G1-R ${s.g1RDeg.toFixed(3)}`);
+    if (s.g1RDeg > SPLINE_G1_R_MAX_DEG + 1e-6) misses.push(`G1-E ${s.g1RDeg.toFixed(3)}`);
     if (s.seamBDeg > SPLINE_SEAM_B_MAX_DEG + 1e-6) misses.push(`seam-B ${s.seamBDeg.toFixed(3)}`);
     if (s.maxTurnDeg > SPLINE_TURN_MAX_DEG + 1e-6) misses.push(`turn ${s.maxTurnDeg.toFixed(3)}`);
-    if (s.insetMin < -1e-6) misses.push(`inset ${s.insetMin.toFixed(4)}`);
-    if (s.planOffset > SPLINE_PLAN_OUT_MM + 1e-6) misses.push(`plan ${s.planOffset.toFixed(3)}`);
+    if (s.kappaRatio > SPLINE_KAPPA_RATIO_MAX + 1e-6) {
+        misses.push(`kappa-ratio ${s.kappaRatio.toFixed(2)}`);
+    }
+    const lipNeed = SPLINE_LIP_KAPPA_OVER_R1 / Math.max(s.r1, 1e-6);
+    if (!s.fallbackStraight && s.kappaE + 1e-9 < lipNeed) {
+        misses.push(`lip-kappa ${s.kappaE.toFixed(3)}<${lipNeed.toFixed(3)}`);
+    }
     return {
         u,
         side,
@@ -1359,6 +1511,11 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
         zy: s.zy,
         zx: s.zx,
         a: s.a,
+        g: s.g,
+        beta: s.beta,
+        eb: s.eb,
+        sMin: s.sMin,
+        kappaRatio: s.kappaRatio,
         sagitta: s.sagitta,
         sagFrac: s.sagFrac,
         peakZFrac: s.peakZFrac,
@@ -1397,11 +1554,108 @@ export function blendColumns(straight: XYZ[], round: XYZ[], w: number): XYZ[] {
     return out;
 }
 
+/** Lerp in the column (s, z) plane, then pin endpoints. */
+export function blendColumnsSz(
+    straight: XYZ[],
+    round: XYZ[],
+    w: number,
+    R: XYZ,
+    B: XYZ,
+    h: { x: number; y: number },
+): XYZ[] {
+    const fr = stationSzFrame(R, B, h);
+    const n = Math.min(straight.length, round.length);
+    const out: XYZ[] = [];
+    for (let i = 0; i < n; i++) {
+        const a = toSz(straight[i]!, fr.origin, fr.h);
+        const b = toSz(round[i]!, fr.origin, fr.h);
+        out.push(fromSz({ s: a.s + (b.s - a.s) * w, z: a.z + (b.z - a.z) * w }, fr.origin, fr.h));
+    }
+    if (out.length) {
+        out[0] = { ...straight[0]! };
+        out[out.length - 1] = { ...straight[straight.length - 1]! };
+    }
+    return out;
+}
+
+export function maxClosedStep(vals: number[]): number {
+    let max = 0;
+    const n = vals.length;
+    if (n < 2) return 0;
+    for (let i = 0; i < n; i++) {
+        max = Math.max(max, Math.abs((vals[i] ?? 0) - (vals[(i + 1) % n] ?? 0)));
+    }
+    return max;
+}
+
+/** Widen a closed 0–1 ramp until neighbouring steps are ≤ maxStep. */
+export function widenClosedRamp(
+    raw: number[],
+    arc: number[],
+    period: number,
+    maxStep = SPLINE_WR_STEP_MAX,
+    sigma0 = SPLINE_SMOOTH_SIGMA_MM,
+): number[] {
+    let sigma = Math.max(1e-3, sigma0);
+    let out = periodicGaussian1d(raw, arc, sigma, period);
+    for (let iter = 0; iter < 14 && maxClosedStep(out) > maxStep + 1e-9; iter++) {
+        sigma *= 1.45;
+        out = periodicGaussian1d(raw, arc, sigma, period);
+    }
+    for (let pass = 0; pass < 48 && maxClosedStep(out) > maxStep + 1e-9; pass++) {
+        const n = out.length;
+        const next = out.slice();
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            const d = (next[j] ?? 0) - (next[i] ?? 0);
+            if (Math.abs(d) <= maxStep + 1e-9) continue;
+            const mid = 0.5 * ((next[i] ?? 0) + (next[j] ?? 0));
+            const half = 0.5 * maxStep * Math.sign(d || 1);
+            next[i] = mid - half;
+            next[j] = mid + half;
+        }
+        out = next;
+    }
+    return out.map((v) => clampNum(v, 0, 1));
+}
+
+export function columnZMonotone(col: XYZ[]): boolean {
+    for (let k = 1; k < col.length; k++) {
+        if ((col[k]!.z ?? 0) > (col[k - 1]!.z ?? 0) + 1e-6) return false;
+    }
+    return true;
+}
+
+export function wallRowOutward(h: { x: number; y: number }, tRow: XYZ): XYZ {
+    const hl = Math.hypot(h.x, h.y) || 1;
+    const hx = h.x / hl;
+    const hy = h.y / hl;
+    const ts = tRow.x * hx + tRow.y * hy;
+    const tz = tRow.z;
+    let out = { x: -hx * tz, y: -hy * tz, z: ts };
+    const plan = out.x * -hx + out.y * -hy;
+    if (plan < 0) out = scale(out, -1);
+    return unit(out);
+}
+
+export function quadSignedAreaSz(a: XYZ, b: XYZ, c: XYZ, d: XYZ, h: { x: number; y: number }): number {
+    const hl = Math.hypot(h.x, h.y) || 1;
+    const hx = h.x / hl;
+    const hy = h.y / hl;
+    const sz = (p: XYZ): Sz => ({ s: p.x * hx + p.y * hy, z: p.z });
+    const A = sz(a);
+    const B = sz(b);
+    const C = sz(c);
+    const D = sz(d);
+    const tri = (p: Sz, q: Sz, r: Sz): number => (q.s - p.s) * (r.z - p.z) - (q.z - p.z) * (r.s - p.s);
+    return 0.5 * (tri(A, C, B) + tri(A, D, C));
+}
+
 export function columnConvex(samples: XYZ[], h: { x: number; y: number }): boolean {
     return polygonConvex(samples, h);
 }
 
-/** Smooth o, zy, a on the closed rim (σ = 10 mm) and rebuild each station. */
+/** Smooth g, a on the closed rim (σ = 10 mm) and rebuild each station. */
 export function applySplineRing(inputs: SplineStationInput[]): SplineSolve[] {
     const solved = inputs.map((inp) => solveSplineStation(inp));
     const n = solved.length;
@@ -1415,14 +1669,8 @@ export function applySplineRing(inputs: SplineStationInput[]): SplineSolve[] {
     const period =
         (rim[n - 1] ?? 0) +
         Math.hypot(inputs[0]!.R.x - inputs[n - 1]!.R.x, inputs[0]!.R.y - inputs[n - 1]!.R.y);
-    const oSm = periodicGaussian1d(
-        solved.map((s) => s.o),
-        rim,
-        SPLINE_SMOOTH_SIGMA_MM,
-        period,
-    );
-    const zySm = periodicGaussian1d(
-        solved.map((s) => s.zy),
+    const gSm = periodicGaussian1d(
+        solved.map((s) => s.g),
         rim,
         SPLINE_SMOOTH_SIGMA_MM,
         period,
@@ -1434,11 +1682,15 @@ export function applySplineRing(inputs: SplineStationInput[]): SplineSolve[] {
         period,
     );
     return inputs.map((inp, i) =>
-        rebuildSplineStation(inp, oSm[i] ?? 0, zySm[i] ?? SPLINE_ZY_LO, aSm[i] ?? 0, {
+        rebuildSplineStation(inp, gSm[i] ?? 0, 0, aSm[i] ?? 0, {
             corner: solved[i]!.corner,
             oMin: solved[i]!.oMin,
             rhoNeed: solved[i]!.rhoNeed,
             peakClosest: solved[i]!.peakClosest,
+            beta: solved[i]!.beta,
+            eb: solved[i]!.eb,
+            c: solved[i]!.c,
+            r1: solved[i]!.r1,
         }),
     );
 }

@@ -1441,21 +1441,8 @@ export function reconstructProceduralWalls(
         if (a === b || b === c || c === a) return;
         indices.push(a, b, c);
     };
-    const dist2 = (ia: number, ib: number): number => {
-        const dx = positions[ia * 3]! - positions[ib * 3]!;
-        const dy = positions[ia * 3 + 1]! - positions[ib * 3 + 1]!;
-        const dz = positions[ia * 3 + 2]! - positions[ib * 3 + 2]!;
-        return dx * dx + dy * dy + dz * dz;
-    };
     const pushQuad = (a: number, b: number, c: number, d: number): void => {
-        // Same winding as STRAIGHT: (a,c,b)+(a,d,c). The shorter diagonal
-        // must use (a,d,b)+(b,d,c), not (a,b,d)+(b,c,d) — that pair is reversed
-        // and is what made ROUND/HYBRID is_winding_consistent = false.
-        if (indexGrid && dist2(b, d) < dist2(a, c)) {
-            pushTri(a, d, b);
-            pushTri(b, d, c);
-            return;
-        }
+        // Fixed diagonal (i,k)-(i+1,k+1) = a-c on every wall quad.
         pushTri(a, c, b);
         pushTri(a, d, c);
     };
@@ -1685,6 +1672,13 @@ export function reconstructProceduralWalls(
             splineOMin: f.splineOMin,
             splinePeakClosest: f.splinePeakClosest ?? false,
             splineNi: f.splineNi ?? 0,
+            splineG: f.splineG ?? 0,
+            splineSMin: f.splineSMin ?? 0,
+            splineKappaRatio: f.splineKappaRatio ?? 1,
+            splineKappaE: f.splineKappaE ?? 0,
+            splineEB: f.splineEB ?? 0,
+            splineLipOk: f.splineLipOk ?? true,
+            nLip: f.nLip ?? 0,
         })),
         rndIndex: (grid as { rndIndex?: unknown }).rndIndex,
         rndEndOk: {

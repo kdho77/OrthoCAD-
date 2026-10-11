@@ -81,6 +81,7 @@ export function renderMesh(
     width: number,
     height: number,
     baseColor: [number, number, number] = [150, 90, 220],
+    background = 140,
 ): Uint8Array {
     const { right, up, light } = view;
     const fwd = [
@@ -125,7 +126,7 @@ export function renderMesh(
     ];
 
     const rgb = new Uint8Array(width * height * 3);
-    rgb.fill(18);
+    rgb.fill(background);
     const zbuf = new Float32Array(width * height).fill(-Infinity);
 
     for (let f = 0; f < index.length; f += 3) {

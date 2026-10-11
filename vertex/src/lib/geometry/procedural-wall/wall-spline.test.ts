@@ -8,24 +8,24 @@ import {
     columnChordsOk,
     controlPointsSpaced,
     curveSTFromPolyline,
-    denseCPrime0,
     enforceMonotoneF,
     evalClampedCubic,
-    g1CPrime0Deg,
     invertDensityW,
+    midArcKappaRatio,
+    minSOfSamples,
     printSplineGates,
     SPLINE_CHORD_MIN_MM,
+    SPLINE_FLAT_EB_MM,
     SPLINE_KNOTS,
+    SPLINE_KNOTS_5,
     SPLINE_N_MAX,
+    SPLINE_S_MIN_MM,
     type SplineStationInput,
     sampleSplineRingByW,
     solveSplineStation,
-    splineA,
-    splineOTarget,
-    splineZx,
+    splineBetaAt,
     stationGates,
     stationSampleNeed,
-    tRInSz,
 } from "./wall-spline";
 
 function station(
@@ -43,32 +43,45 @@ function station(
         tR: { x: tR.s / hl, y: 0, z: tR.z / hl },
         u,
         sideSign: side,
-        planOutMm: 2,
         heightMm: H,
+        r1: 0.5,
     };
 }
 
 function printCorner(name: string, sol: ReturnType<typeof solveSplineStation>): void {
     const row = {
-        o: Number(sol.o.toFixed(4)),
-        zy: Number(sol.zy.toFixed(4)),
-        zx: Number(sol.zx.toFixed(4)),
         a: Number(sol.a.toFixed(4)),
+        g: Number(sol.g.toFixed(4)),
+        beta: Number(sol.beta.toFixed(4)),
+        eb: Number(sol.eb.toFixed(4)),
         sag: Number(sol.sagitta.toFixed(4)),
-        sagH: Number(sol.sagFrac.toFixed(4)),
-        peakH: Number(sol.peakZFrac.toFixed(4)),
-        plan: Number(sol.planOffset.toFixed(4)),
+        sagFrac: Number(sol.sagFrac.toFixed(4)),
+        sMin: Number(sol.sMin.toFixed(4)),
+        kappaRatio: Number(sol.kappaRatio.toFixed(3)),
+        kappaE: Number(sol.kappaE.toFixed(4)),
         convex: sol.convex,
         infl: sol.inflCount,
-        tRAngle: Number(sol.tRAngleDeg.toFixed(3)),
-        steep: sol.steep,
         poly: sol.fallbackStraight,
     };
     console.log(`[RND-SOLVE] ${name}`, JSON.stringify(row));
 }
 
 describe("clamped cubic wall spline", () => {
-    test("clamped cubic hits P0 at 0 and P5 at 1; G1 along P0P1", () => {
+    test("5-point cubic hits E at 0 and B at 1; 6-point still G1 along P0P1", () => {
+        const P5 = [
+            { x: 0.5, y: 0, z: 9.5 },
+            { x: 1.2, y: 0, z: 8 },
+            { x: 0.2, y: 0, z: 5 },
+            { x: 1.5, y: 0, z: 0 },
+            { x: 3, y: 0, z: 0 },
+        ];
+        const a = evalClampedCubic(P5, 0, SPLINE_KNOTS_5);
+        const b = evalClampedCubic(P5, 1, SPLINE_KNOTS_5);
+        expect(a.x).toBeCloseTo(0.5, 6);
+        expect(b.x).toBeCloseTo(3, 6);
+        expect(a.z).toBeCloseTo(9.5, 6);
+        expect(b.z).toBeCloseTo(0, 6);
+
         const P = [
             { x: 0, y: 0, z: 10 },
             { x: -1, y: 0, z: 9 },
@@ -77,59 +90,41 @@ describe("clamped cubic wall spline", () => {
             { x: 1, y: 0, z: 0 },
             { x: 2, y: 0, z: 0 },
         ];
-        const a = evalClampedCubic(P, 0, SPLINE_KNOTS);
-        const b = evalClampedCubic(P, 1, SPLINE_KNOTS);
-        expect(a.z).toBeCloseTo(10, 6);
-        expect(b.z).toBeCloseTo(0, 6);
-        expect(a.x).toBeCloseTo(0, 6);
-        expect(b.x).toBeCloseTo(2, 6);
+        const p0 = evalClampedCubic(P, 0, SPLINE_KNOTS);
+        const p1 = evalClampedCubic(P, 1, SPLINE_KNOTS);
+        expect(p0.z).toBeCloseTo(10, 6);
+        expect(p1.x).toBeCloseTo(2, 6);
         const near = evalClampedCubic(P, 1e-3, SPLINE_KNOTS);
-        const d = { x: near.x - a.x, y: near.y - a.y, z: near.z - a.z };
+        const d = { x: near.x - p0.x, y: near.y - p0.y, z: near.z - p0.z };
         const e = { x: P[1]!.x - P[0]!.x, y: P[1]!.y - P[0]!.y, z: P[1]!.z - P[0]!.z };
         const den = Math.hypot(d.x, d.y, d.z) * Math.hypot(e.x, e.y, e.z) || 1;
         expect((d.x * e.x + d.y * e.y + d.z * e.z) / den).toBeGreaterThan(0.99);
-        const c0 = denseCPrime0(P);
-        expect(c0.x * e.x + c0.y * e.y + c0.z * e.z).toBeGreaterThan(0);
-        expect(g1CPrime0Deg(P, { x: -1, y: 0, z: -1 }, { x: 1, y: 0 })).toBeLessThan(1);
     });
 
-    test("o is driven: heel 0.15 k(H) H 0.6, arch 0.20; H<3 is zero", () => {
-        expect(splineOTarget(0, 12)).toBeCloseTo(1.08, 6);
-        expect(splineOTarget(0.55, 8)).toBeCloseTo(0.2 * (5 / 9) ** 2 * (3 - 10 / 9) * 8 * 0.6, 6);
-        expect(splineOTarget(0.9, 2)).toBe(0);
+    test("beta is 0.12 heel, 0.18 arch/midfoot, 0.15 elsewhere; FLAT iff |EB|<2", () => {
+        expect(splineBetaAt(0)).toBeCloseTo(0.12, 2);
+        expect(splineBetaAt(0.4)).toBeCloseTo(0.18, 2);
+        expect(splineBetaAt(0.9)).toBeCloseTo(0.15, 2);
 
-        const h12 = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
-        printCorner("H12-Ls2-15", h12);
-        expect(h12.o).toBeCloseTo(1.08, 2);
-        expect(h12.zx).toBeCloseTo(splineZx(h12.o, 12), 6);
-        if (h12.peakClosest) {
-            expect(h12.zy).toBeCloseTo(0.1, 2);
-        } else {
-            expect(h12.peakZFrac).toBeGreaterThanOrEqual(0.5 - 0.05);
-            expect(h12.peakZFrac).toBeLessThanOrEqual(0.5 + 0.05);
-        }
-        expect(h12.o).toBeLessThanOrEqual(2);
+        const heel = solveSplineStation(station(0, 1, 12, 8, { s: -1, z: -0.2 }));
+        printCorner("heel", heel);
+        expect(heel.fallbackStraight).toBe(false);
+        expect(heel.poly.length).toBe(5);
+        expect(heel.sMin).toBeGreaterThanOrEqual(SPLINE_S_MIN_MM - 1e-6);
+        expect(heel.eb).toBeGreaterThan(SPLINE_FLAT_EB_MM);
+        expect(heel.sagFrac).toBeGreaterThan(0.05);
 
-        const h8 = solveSplineStation(station(0.55, 1, 8, 2, { s: -1, z: -0.2 }));
-        printCorner("H8-20", h8);
-        expect(h8.o).toBeCloseTo(splineOTarget(0.55, 8), 2);
-        expect(h8.o).toBeGreaterThan(0.05);
-        expect(h8.a).toBeGreaterThan(0.05);
-        expect(h8.zx).toBeCloseTo(splineZx(h8.o, 8), 6);
-        expect(h8.corner).toBe(false);
-
-        const toe = solveSplineStation(station(0.9, 1, 2, 1, { s: -1, z: -0.1 }));
-        printCorner("H2-toe", toe);
-        expect(toe.corner).toBe(false);
-        expect(splineOTarget(0.9, 2)).toBe(0);
-        expect(toe.o).toBe(0);
+        const flat = solveSplineStation(station(0.9, 1, 2, 1.2, { s: -1, z: -0.1 }));
+        printCorner("flat-eb", flat);
+        expect(flat.eb).toBeLessThan(SPLINE_FLAT_EB_MM);
+        expect(flat.fallbackStraight).toBe(true);
     });
 
-    test("three Default-like stations: heel 0.12 med, arch 0.35 med, lat mid 0.55", () => {
+    test("three Default-like stations stay convex with s >= -0.1", () => {
         const cases: Array<{ name: string; input: SplineStationInput }> = [
-            { name: "heel-med-u0.12", input: station(0.12, 1, 12, 2.2, { s: -1, z: -0.2 }) },
-            { name: "arch-med-u0.35", input: station(0.35, 1, 12, 2.6, { s: -1, z: -0.18 }) },
-            { name: "lat-mid-u0.55", input: station(0.55, -1, 8, 1.8, { s: -1, z: -0.2 }) },
+            { name: "heel-med-u0.12", input: station(0.12, 1, 12, 8, { s: -1, z: -0.2 }) },
+            { name: "arch-med-u0.35", input: station(0.35, 1, 12, 10, { s: -1, z: -0.18 }) },
+            { name: "lat-mid-u0.55", input: station(0.55, -1, 8, 7, { s: -1, z: -0.2 }) },
         ];
         const misses: string[] = [];
         for (const c of cases) {
@@ -137,16 +132,16 @@ describe("clamped cubic wall spline", () => {
             const g = stationGates(sol, c.input.u, c.input.sideSign);
             printSplineGates({ ...g, u: c.input.u });
             printCorner(c.name, sol);
-            const peakOnly = g.misses.every((m) => m.startsWith("peak"));
-            if (!g.pass && !(peakOnly && sol.peakClosest)) {
-                misses.push(`${c.name}: ${g.misses.join(",")}`);
-            }
+            expect(sol.sMin).toBeGreaterThanOrEqual(SPLINE_S_MIN_MM - 1e-6);
+            expect(sol.convex).toBe(true);
+            const hard = g.misses.filter((m) => m.startsWith("sMin") || m === "not-convex");
+            if (hard.length) misses.push(`${c.name}: ${hard.join(",")}`);
         }
         expect(misses).toEqual([]);
     });
 
     test("W(u) table is strictly increasing and invert is not u = f", () => {
-        const sol = solveSplineStation(station(0.35, 1, 12, 2.6, { s: -1, z: -0.18 }));
+        const sol = solveSplineStation(station(0.35, 1, 12, 10, { s: -1, z: -0.18 }));
         const table = buildSplineDensityTable(sol.poly);
         expect(table.W[0]).toBe(0);
         expect(table.W[table.W.length - 1]!).toBeGreaterThan(table.W[table.W.length - 2]!);
@@ -184,7 +179,7 @@ describe("clamped cubic wall spline", () => {
     });
 
     test("turn-bounded W uses ds_t floor and pad to shared N", () => {
-        const sol = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
+        const sol = solveSplineStation(station(0, 1, 12, 8, { s: -1, z: -0.2 }));
         const table = buildSplineDensityTable(sol.poly);
         expect(table.W[0]).toBe(0);
         expect(table.W[table.W.length - 1]!).toBeCloseTo(1, 2);
@@ -198,6 +193,10 @@ describe("clamped cubic wall spline", () => {
         expect(stationSampleNeed(st.S, st.T).n).toBe(24);
         const shared = buildSplineDensityTable(sol.poly, undefined, 50);
         expect(shared.N).toBe(50);
+        expect(midArcKappaRatio(sol.pts)).toBeGreaterThan(0);
+        expect(
+            minSOfSamples(sol.pts, sol.pts[0]!, sol.pts[sol.pts.length - 1]!, { x: 1, y: 0 }),
+        ).toBeLessThan(2);
     });
 
     test("invertDensityW lerps the W table, never u = k/N", () => {
@@ -216,8 +215,8 @@ describe("clamped cubic wall spline", () => {
     });
 
     test("healthy invert keeps chords >= 0.03 mm; short chords throw [RND-INV]", () => {
-        const heel = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
-        expect(heel.o).toBeGreaterThan(0.05);
+        const heel = solveSplineStation(station(0, 1, 12, 8, { s: -1, z: -0.2 }));
+        expect(heel.fallbackStraight).toBe(false);
         expect(heel.a).toBeGreaterThan(0.05);
         const table = buildSplineDensityTable(heel.poly);
         const N = Math.min(SPLINE_N_MAX, Math.max(8, table.nNeed ?? 24));
@@ -242,8 +241,8 @@ describe("clamped cubic wall spline", () => {
         console.log(
             "[RND-INV-PROBE]",
             JSON.stringify({
-                o: Number(heel.o.toFixed(4)),
                 a: Number(heel.a.toFixed(4)),
+                g: Number(heel.g.toFixed(4)),
                 L: Number(L.toFixed(4)),
                 N,
                 nNeed: table.nNeed,
@@ -291,30 +290,8 @@ describe("clamped cubic wall spline", () => {
         ).toBe(false);
     });
 
-    test("zx/a follow 0.9 o and 1.5 o/H; o is clamp(o_target, 0, planOut)", () => {
-        expect(splineZx(1.08, 12)).toBeCloseTo(Math.max(0.55, Math.min(0.92, 1 - 1.5 * (1.08 / 12))), 8);
-        const tSz = tRInSz({ x: -1, y: 0, z: -0.2 }, { x: 1, y: 0 });
-        const zx = splineZx(1.08, 12);
-        const a = splineA(1.08, zx, 12, tSz);
-        const aExpect = Math.min((0.9 * 1.08) / Math.abs(tSz.s), (0.9 * (1 - zx) * 12) / Math.abs(tSz.z));
-        expect(a).toBeCloseTo(aExpect, 6);
-
-        const short = solveSplineStation(station(0.9, 1, 5, 1.5, { s: -1, z: -0.2 }));
-        expect(short.H).toBeLessThan(6);
-        expect(short.corner).toBe(false);
-        expect(short.o).toBeCloseTo(Math.min(splineOTarget(0.9, 5), 2), 2);
-
-        const steep = solveSplineStation(station(0, 1, 12, 2, { s: -0.05, z: -1 }));
-        expect(steep.corner).toBe(false);
-        expect(steep.o).toBeLessThanOrEqual(steep.oMax + 1e-9);
-
-        const heel = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
-        expect(heel.corner).toBe(false);
-        expect(heel.o).toBeCloseTo(splineOTarget(0, 12), 2);
-    });
-
     test("inactive station skips spline evaluation", () => {
-        const sol = solveSplineStation(station(0.35, 1, 12, 2.6, { s: -1, z: -0.18 }));
+        const sol = solveSplineStation(station(0.35, 1, 12, 10, { s: -1, z: -0.18 }));
         const N = 8;
         const ring = sampleSplineRingByW([sol.poly], N, [sol.poly[0]!], [false]);
         expect(ring.pts[0]![1]!.x).toBe(sol.poly[0]!.x);
