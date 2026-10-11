@@ -42,6 +42,7 @@ export const SPLINE_W_THETA_MIN_DEG = 1;
 export const SPLINE_F_STEP_FRAC = 0.25;
 export const SPLINE_F_RING_MAX = 0.02;
 export const SPLINE_MIN_EDGE_FRAC = 0.2;
+export const SPLINE_FLAT_MM = 0.05;
 export const SPLINE_STEP_RATIO_MAX = 4;
 export const SPLINE_ROW1_TR_MAX_DEG = 6;
 /** This build: shape/sampling asserts log and continue. Final pass sets false. */
@@ -765,6 +766,7 @@ export function buildSplineDensityTable(poly: XYZ[], nDense = SPLINE_W_DENSE): S
     return { u, S, T, W, L, Theta, alpha };
 }
 
+/** Invert W(f) by linear interpolation on the 2048-point table. Never u = k/N. */
 export function invertDensityW(table: SplineDensityTable, f: number): number {
     const target = Math.max(0, Math.min(1, f));
     if (target <= 0) return 0;
@@ -774,10 +776,26 @@ export function invertDensityW(table: SplineDensityTable, f: number): number {
     while (i < W.length && (W[i] ?? 1) < target) i++;
     const a = W[i - 1]!;
     const b = W[i] ?? a;
-    const t = b > a + 1e-16 ? (target - a) / (b - a) : 0;
+    if (b <= a + 1e-16) return table.u[i - 1] ?? 0;
+    const t = (target - a) / (b - a);
     const u0 = table.u[i - 1]!;
     const u1 = table.u[i] ?? u0;
     return u0 + (u1 - u0) * t;
+}
+
+export function controlPointsSpaced(poly: XYZ[], minMm = SPLINE_FLAT_MM): boolean {
+    for (let i = 1; i < poly.length; i++) {
+        if (hypot3(sub(poly[i]!, poly[i - 1]!)) < minMm) return false;
+    }
+    return true;
+}
+
+export function columnChordsOk(pts: XYZ[], L: number, N: number): boolean {
+    const need = (SPLINE_MIN_EDGE_FRAC * L) / Math.max(N, 1);
+    for (let k = 1; k < pts.length; k++) {
+        if (hypot3(sub(pts[k]!, pts[k - 1]!)) + 1e-15 < need) return false;
+    }
+    return true;
 }
 
 /** f_0 = 0, f_N = 1, f_k >= f_{k-1} + 0.25/N. */
@@ -821,9 +839,15 @@ export function sampleSplineRingByW(
     polys: XYZ[][],
     N: number,
     rim: XYZ[],
+    active?: boolean[],
 ): { pts: XYZ[][]; f: number[][]; u: number[][]; L: number[]; Theta: number[] } {
     const nS = polys.length;
-    const tables = polys.map((p) => buildSplineDensityTable(p));
+    const tables = polys.map((p, i) => {
+        if (active && !active[i]) {
+            return { u: [0, 1], S: [0, 1], T: [0, 0], W: [0, 1], L: 1, Theta: 0, alpha: 0 };
+        }
+        return buildSplineDensityTable(p);
+    });
     const f: number[][] = [];
     const denom = Math.max(N, 1);
     for (let i = 0; i < nS; i++) {
@@ -859,6 +883,7 @@ export function sampleSplineRingByW(
         const pi: XYZ[] = [];
         const poly = polys[i]!;
         const table = tables[i]!;
+        const skip = Boolean(active && !active[i]);
         for (let k = 0; k <= N; k++) {
             if (k === 0) {
                 ui.push(0);
@@ -866,6 +891,9 @@ export function sampleSplineRingByW(
             } else if (k === N) {
                 ui.push(1);
                 pi.push({ ...poly[poly.length - 1]! });
+            } else if (skip) {
+                ui.push(fk[k]!);
+                pi.push({ ...poly[0]! });
             } else {
                 const uk = invertDensityW(table, fk[k]!);
                 ui.push(uk);

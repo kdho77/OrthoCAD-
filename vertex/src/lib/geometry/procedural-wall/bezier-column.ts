@@ -17,13 +17,18 @@ import {
     applySplineRing,
     assertSplineEndpoints,
     blendColumns,
+    columnChordsOk,
+    controlPointsSpaced,
     g1CPrime0Deg,
     hybridWeightAt,
     overEdgeTangent,
+    periodicGaussian1d,
     row1TRAngleDeg,
+    SPLINE_FLAT_MM,
     SPLINE_G1_R_MAX_DEG,
     SPLINE_MIN_EDGE_FRAC,
     SPLINE_ROW1_TR_MAX_DEG,
+    SPLINE_SMOOTH_SIGMA_MM,
     type SplineStationInput,
     sampleSplineRingByW,
     splineBetaAt,
@@ -333,6 +338,8 @@ export interface ColumnFrame {
     splineMinEdge?: number;
     splineStepRatio?: number;
     splineRow1Deg?: number;
+    splineFlat?: boolean;
+    splineWR?: number;
 }
 
 export interface SweepMidStyle {
@@ -4796,6 +4803,19 @@ function columnStepStats(col: XYZ[]): { minEdge: number; stepRatio: number } {
     };
 }
 
+function logRndFlat(i: number, u: number, o: number, a: number, reason: string): void {
+    console.log(
+        "[RND-FLAT]",
+        JSON.stringify({
+            i,
+            u: Number(u.toFixed(4)),
+            o: Number(o.toFixed(4)),
+            a: Number(a.toFixed(4)),
+            reason,
+        }),
+    );
+}
+
 /** Replace STRAIGHT interiors with W(u) spline samples. Rows 0 and N stay by index. */
 function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     const style = frames[0]?.wallStyle?.style ?? "straight";
@@ -4836,22 +4856,67 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             throw new Error(`[RND-N] column length ${col.length} != N+1=${N + 1}`);
         }
     }
+    const nS = frames.length;
+    const reasons: string[][] = solves.map((sol) => {
+        const why: string[] = [];
+        if (sol.fallbackStraight) why.push("poly");
+        if (sol.o < SPLINE_FLAT_MM) why.push("o");
+        if (sol.a < SPLINE_FLAT_MM) why.push("a");
+        if (!controlPointsSpaced(sol.poly)) why.push("ctrl");
+        return why;
+    });
+    const active = reasons.map((why) => why.length === 0);
+    for (let i = 0; i < nS; i++) {
+        if (reasons[i]!.length) {
+            logRndFlat(i, frames[i]!.u, solves[i]!.o, solves[i]!.a, reasons[i]!.join("+"));
+        }
+    }
     const sampled = sampleSplineRingByW(
         solves.map((s) => s.poly),
         N,
         frames.map((fr) => fr.R),
+        active,
     );
-    for (let i = 0; i < frames.length; i++) {
+    for (let i = 0; i < nS; i++) {
+        if (!active[i]) continue;
+        const L = sampled.L[i] ?? 1;
+        if (!columnChordsOk(sampled.pts[i]!, L, N)) {
+            reasons[i]!.push("chord");
+            active[i] = false;
+            logRndFlat(i, frames[i]!.u, solves[i]!.o, solves[i]!.a, "chord");
+        }
+    }
+    const rawWR = active.map((ok) => (ok ? 1 : 0));
+    const arc: number[] = [0];
+    for (let i = 1; i < nS; i++) {
+        const a = frames[i - 1]!.R;
+        const b = frames[i]!.R;
+        arc.push(arc[i - 1]! + Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+    }
+    let period = arc[nS - 1] ?? 0;
+    if (nS > 1) {
+        const a = frames[0]!.R;
+        const b = frames[nS - 1]!.R;
+        period += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    }
+    const wR = periodicGaussian1d(rawWR, arc, SPLINE_SMOOTH_SIGMA_MM, period);
+    let endOk = 0;
+    for (let i = 0; i < nS; i++) {
         const fr = frames[i]!;
         const sol = solves[i]!;
         const col = xyz[i]!;
         const tR = inputs[i]!.tR;
-        assertSplineEndpoints(sol.poly, fr.R, fr.B);
-        const w = style === "hybrid" ? hybridWeightAt(fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250) : 1;
-        const useRound = !sol.fallbackStraight && w > 1e-6;
-        if (useRound) {
-            const roundPts = sampled.pts[i]!;
-            if (style === "hybrid" && w < 1 - 1e-6) {
+        const evaluated = active[i]!;
+        if (evaluated) {
+            assertSplineEndpoints(sol.poly, fr.R, fr.B);
+            endOk++;
+        }
+        const hybridW =
+            style === "hybrid" ? hybridWeightAt(fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250) : 1;
+        const w = (wR[i] ?? 0) * hybridW;
+        const roundPts = evaluated ? sampled.pts[i]! : col;
+        if (w > 1e-6) {
+            if (w < 1 - 1e-6) {
                 const blended = blendColumns(col, roundPts, w);
                 for (let k = 1; k < N; k++) col[k] = blended[k]!;
             } else {
@@ -4860,8 +4925,8 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         }
         const row1 = col[1]!;
         const row1Deg = row1TRAngleDeg(row1, fr.R, tR, fr.h);
-        const g1C = g1CPrime0Deg(sol.poly, tR, fr.h);
-        if (useRound && g1C > SPLINE_G1_R_MAX_DEG + 1e-6) {
+        const g1C = evaluated ? g1CPrime0Deg(sol.poly, tR, fr.h) : 0;
+        if (evaluated && g1C > SPLINE_G1_R_MAX_DEG + 1e-6) {
             splineGateFail("[RND-G1]", {
                 i,
                 u: Number(fr.u.toFixed(4)),
@@ -4869,7 +4934,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
                 cap: SPLINE_G1_R_MAX_DEG,
             });
         }
-        if (useRound && row1Deg > SPLINE_ROW1_TR_MAX_DEG + 1e-6) {
+        if (evaluated && row1Deg > SPLINE_ROW1_TR_MAX_DEG + 1e-6) {
             splineGateFail("[RND-CHORD]", {
                 i,
                 u: Number(fr.u.toFixed(4)),
@@ -4878,7 +4943,9 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             });
         }
         const stats = columnStepStats(col);
-        const L = sampled.L[i] ?? 1;
+        const L = evaluated
+            ? (sampled.L[i] ?? 1)
+            : Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y, fr.B.z - fr.R.z);
         fr.g1EDeg = g1C;
         fr.g1FDeg = sol.seamBDeg;
         fr.midFlagged = sol.infl;
@@ -4888,7 +4955,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.midChordOffMm = sol.sagitta;
         fr.midChordMm = Math.hypot(fr.B.x - fr.R.x, fr.B.y - fr.R.y, fr.B.z - fr.R.z);
         fr.midPlanOffMm = sol.planOffset;
-        fr.midLimit = sol.steep ? "steep" : sol.fallbackStraight ? "poly" : "ok";
+        fr.midLimit = !evaluated ? "flat" : sol.steep ? "steep" : sol.fallbackStraight ? "poly" : "ok";
         fr.midWeight = w;
         fr.splineO = sol.o;
         fr.splineZy = sol.zy;
@@ -4902,8 +4969,11 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineMinEdge = stats.minEdge;
         fr.splineStepRatio = stats.stepRatio;
         fr.splineRow1Deg = row1Deg;
+        fr.splineFlat = !evaluated;
+        fr.splineWR = wR[i] ?? 0;
         fr.tInc = overEdgeTangent(tR, fr.h);
     }
+    console.log("[RND-END-OK]", JSON.stringify({ n: endOk, nS, flat: nS - endOk, ran: endOk > 0 }));
 }
 
 /**
@@ -5123,6 +5193,34 @@ export function buildBezierColumns(
     quality.nRoundSetter = piece.setter;
     quality.nRoundSetterU = piece.setterU;
     quality.nRoundCollapsedSkipped = piece.collapsedSkipped;
+    if (styledSplineWalls(frames) && frames[416]) {
+        const fr = frames[416]!;
+        if (fr.splineFlat) {
+            console.log(
+                "[RND-I416]",
+                JSON.stringify({
+                    flat: true,
+                    u: Number(fr.u.toFixed(4)),
+                    o: Number((fr.splineO ?? 0).toFixed(4)),
+                    a: Number((fr.splineA ?? 0).toFixed(4)),
+                }),
+            );
+        } else {
+            console.log(
+                "[RND-I416]",
+                JSON.stringify({
+                    u: Number(fr.u.toFixed(4)),
+                    o: Number((fr.splineO ?? 0).toFixed(4)),
+                    a: Number((fr.splineA ?? 0).toFixed(4)),
+                    zy: Number((fr.splineZy ?? 0).toFixed(4)),
+                    tRAngleDeg: Number((fr.splineTRAngleDeg ?? 0).toFixed(3)),
+                    midRowDihedral: Number((quality.maxMidRowDihedralDeg ?? 0).toFixed(3)),
+                    worstAlongRowI: quality.worstAlongRowI,
+                    worstAlongRowU: quality.worstAlongRowU,
+                }),
+            );
+        }
+    }
     console.log(
         "[S1-COL-Q]",
         JSON.stringify({

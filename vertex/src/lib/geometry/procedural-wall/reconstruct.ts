@@ -1274,6 +1274,60 @@ export function reconstructProceduralWalls(
         return extraBStart + extraOfRefined[r]!;
     };
     assertPeriodicQuadStrip(nS, nJ, gridVert);
+    if (indexGrid) {
+        const N = nJ - 1;
+        const describeVert = (v: number): { v: number; kind: string; station?: number; row?: number } => {
+            const rimAt = rimLocal.indexOf(v);
+            if (rimAt >= 0) return { v, kind: "rim", station: rimAt, row: 0 };
+            if (v >= bRingStart && v < bRingStart + nS) {
+                return { v, kind: "bring", station: v - bRingStart, row: N };
+            }
+            const bodyCount = bodyRows * nS;
+            if (v >= generatedStart && v < generatedStart + bodyCount) {
+                const local = v - generatedStart;
+                return { v, kind: "body", station: local % nS, row: 1 + Math.floor(local / nS) };
+            }
+            return { v, kind: "other" };
+        };
+        const seeds = new Set<number>();
+        for (const v of [8077, 8078]) {
+            const d = describeVert(v);
+            if (d.station != null) {
+                for (let dS = -2; dS <= 2; dS++) seeds.add((((d.station + dS) % nS) + nS) % nS);
+            }
+        }
+        if (!seeds.size) {
+            for (let s = 0; s < Math.min(5, nS); s++) seeds.add(s);
+        }
+        const around = [...seeds]
+            .sort((a, b) => a - b)
+            .map((s) => {
+                const row0 = rimLocal[s]!;
+                const rowN = bRingStart + s;
+                return {
+                    s,
+                    row0,
+                    rowN,
+                    row0IsRim: row0 === gridVert(0, s),
+                    rowNIsBRing: rowN === gridVert(N, s),
+                    newVertexRow0: false,
+                    newVertexRowN: false,
+                };
+            });
+        console.log(
+            "[RND-INDEX]",
+            JSON.stringify({
+                generatedStart,
+                bRingStart,
+                nS,
+                nJ,
+                N,
+                edge8077: describeVert(8077),
+                edge8078: describeVert(8078),
+                around,
+            }),
+        );
+    }
     const plantarVert = (local: number): number => {
         if (local < nBoundary) return refinedVert(local);
         return plantarStart + (local - nBoundary);
@@ -1502,6 +1556,8 @@ export function reconstructProceduralWalls(
             splineMinEdge: f.splineMinEdge,
             splineStepRatio: f.splineStepRatio,
             splineRow1Deg: f.splineRow1Deg,
+            splineFlat: f.splineFlat ?? false,
+            splineWR: f.splineWR ?? 0,
         })),
         t0Log: grid.frames.map((f) => ({
             u: Number(f.u.toFixed(4)),

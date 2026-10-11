@@ -136,6 +136,8 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             splineMinEdge?: number;
             splineL?: number;
             splineFk?: number[];
+            splineFlat?: boolean;
+            splineWR?: number;
         }>;
         medialYSign?: 1 | -1;
         footLengthMm?: number;
@@ -327,6 +329,10 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             splineL?: number;
             splineFk?: number[];
             midBeta?: number;
+            splineFlat?: boolean;
+            splineWR?: number;
+            o?: number;
+            a?: number;
         }>;
     };
     const q = ud.columnQuality ?? {};
@@ -579,6 +585,18 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             q.worstAlongRowI != null ? { worstI: q.worstAlongRowI, worstU: q.worstAlongRowU } : undefined,
         ),
         row("dup-verts", (q.duplicateVerts ?? 0) === 0, q.duplicateVerts ?? 0, 0),
+        row(
+            "[RND-FLAT]",
+            true,
+            style === "straight" ? 0 : frames.filter((f) => f.splineFlat).length,
+            undefined,
+            (() => {
+                const flats = frames.map((f, i) => ({ f, i })).filter((x) => x.f.splineFlat);
+                return flats.length
+                    ? { n: flats.length, worstI: flats[0]!.i, worstU: flats[0]!.f.u }
+                    : undefined;
+            })(),
+        ),
         row("SI", !misses.some((m) => m.startsWith("SI ")), misses.find((m) => m.startsWith("SI ")) ?? 0),
         row("watertight", !misses.includes("not-watertight"), misses.includes("not-watertight") ? 0 : 1, 1),
         row("NM", !misses.some((m) => m.startsWith("NM ")), misses.find((m) => m.startsWith("NM ")) ?? 0),
@@ -604,6 +622,29 @@ describe("procedural wall styles", () => {
             const table = gateTable(geo, style, style === "straight" ? undefined : straight);
             tables[style] = table;
             console.log("[RND-GATE-TABLE]", style, JSON.stringify(table));
+            const frames =
+                (
+                    geo.userData as {
+                        wallFrames?: Array<{
+                            u?: number;
+                            o?: number;
+                            a?: number;
+                            splineFlat?: boolean;
+                            splineWR?: number;
+                        }>;
+                    }
+                ).wallFrames ?? [];
+            const flatList = frames
+                .map((f, i) => ({
+                    i,
+                    u: Number((f.u ?? 0).toFixed(4)),
+                    o: Number((f.o ?? 0).toFixed(4)),
+                    a: Number((f.a ?? 0).toFixed(4)),
+                    wR: Number((f.splineWR ?? 0).toFixed(4)),
+                    flat: !!f.splineFlat,
+                }))
+                .filter((f) => f.flat);
+            console.log("[RND-FLAT-LIST]", style, JSON.stringify(flatList));
             if (local.length) misses.push(`${style}: ${local.join("; ")}`);
             writeArtifact(`procedural-default-${style}.stl`, Buffer.from(geometryToBinarySTL(geo)));
             const pos = geo.getAttribute("position").array as Float32Array;

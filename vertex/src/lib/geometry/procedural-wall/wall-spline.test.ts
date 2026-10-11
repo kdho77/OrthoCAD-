@@ -4,12 +4,15 @@
 import { describe, expect, test } from "@rstest/core";
 import {
     buildSplineDensityTable,
+    columnChordsOk,
+    controlPointsSpaced,
     denseCPrime0,
     enforceMonotoneF,
     evalClampedCubic,
     g1CPrime0Deg,
     invertDensityW,
     printSplineGates,
+    SPLINE_FLAT_MM,
     SPLINE_KNOTS,
     type SplineStationInput,
     sampleSplineRingByW,
@@ -137,5 +140,70 @@ describe("clamped cubic wall spline", () => {
         expect(ring.pts[0]![0]!.z).toBeCloseTo(sol.poly[0]!.z, 9);
         expect(ring.pts[0]![N]!.z).toBeCloseTo(sol.poly[sol.poly.length - 1]!.z, 9);
         expect(Math.abs(ring.f[0]![5]! - ring.f[1]![5]!)).toBeLessThanOrEqual(0.02);
+    });
+
+    test("invertDensityW lerps the W table, never u = k/N", () => {
+        const table = {
+            u: [0, 0.25, 0.5, 0.75, 1],
+            S: [0, 1, 2, 3, 4],
+            T: [0, 0, 0, 0, 0],
+            W: [0, 0.1, 0.2, 0.8, 1],
+            L: 4,
+            Theta: 0,
+            alpha: 0,
+        };
+        const u = invertDensityW(table, 0.5);
+        expect(u).toBeCloseTo(0.5 + (0.75 - 0.5) * ((0.5 - 0.2) / (0.8 - 0.2)), 8);
+        expect(Math.abs(u - 0.5)).toBeGreaterThan(0.1);
+    });
+
+    test("control spacing and short chords mark [RND-FLAT]", () => {
+        const collapsed = [
+            { x: 0, y: 0, z: 10 },
+            { x: 0, y: 0, z: 10 },
+            { x: -2, y: 0, z: 7 },
+            { x: -2, y: 0, z: 3 },
+            { x: 1, y: 0, z: 0 },
+            { x: 2, y: 0, z: 0 },
+        ];
+        expect(controlPointsSpaced(collapsed)).toBe(false);
+        const ok = [
+            { x: 0, y: 0, z: 10 },
+            { x: -1, y: 0, z: 9 },
+            { x: -2, y: 0, z: 7 },
+            { x: -2, y: 0, z: 3 },
+            { x: 1, y: 0, z: 0 },
+            { x: 2, y: 0, z: 0 },
+        ];
+        expect(controlPointsSpaced(ok, SPLINE_FLAT_MM)).toBe(true);
+        expect(
+            columnChordsOk(
+                [
+                    { x: 0, y: 0, z: 0 },
+                    { x: 0.001, y: 0, z: 0 },
+                ],
+                10,
+                10,
+            ),
+        ).toBe(false);
+        expect(
+            columnChordsOk(
+                [
+                    { x: 0, y: 0, z: 0 },
+                    { x: 1, y: 0, z: 0 },
+                ],
+                10,
+                10,
+            ),
+        ).toBe(true);
+    });
+
+    test("inactive station skips spline evaluation", () => {
+        const sol = solveSplineStation(station(0.35, 1, 12, 2.6, { s: -1, z: -0.18 }));
+        const N = 8;
+        const ring = sampleSplineRingByW([sol.poly], N, [sol.poly[0]!], [false]);
+        expect(ring.pts[0]![1]!.x).toBe(sol.poly[0]!.x);
+        expect(ring.pts[0]![1]!.z).toBe(sol.poly[0]!.z);
+        expect(ring.pts[0]![N]!.z).toBe(sol.poly[sol.poly.length - 1]!.z);
     });
 });
