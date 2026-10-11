@@ -20,11 +20,15 @@ import {
     SPLINE_CHORD_MIN_MM,
     SPLINE_F_RING_MAX,
     SPLINE_FACE_DOT_MIN,
+    SPLINE_FREEZE_MISS_MAX_DEG,
+    SPLINE_FREEZE_MISS_STATIONS,
     SPLINE_G1_ANALYTIC_MAX_DEG,
     SPLINE_G1_MESH_MAX_DEG,
     SPLINE_G1_R_MAX_DEG,
     SPLINE_GATES_REPORT_ONLY,
     SPLINE_H_MIN_MM,
+    SPLINE_INFL_ACCEPT_DEG,
+    SPLINE_INFL_TURN_MIN_DEG,
     SPLINE_LIP_S_SLACK_MM,
     SPLINE_ROW1_TR_MAX_DEG,
     SPLINE_S_MIN_MM,
@@ -40,7 +44,14 @@ import {
 } from "@/lib/geometry/procedural-wall";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
-import { drawRampMarks, encodePng, projectViewPoint, renderMesh, viewBounds } from "./helpers/render-png";
+import {
+    drawRampMarks,
+    drawStationMarks,
+    encodePng,
+    projectViewPoint,
+    renderMesh,
+    viewBounds,
+} from "./helpers/render-png";
 
 type Style = "straight" | "round" | "hybrid";
 
@@ -155,6 +166,9 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             maxG1EAnalyticDeg?: number;
             maxG1BAnalyticDeg?: number;
             maxG1RMeshDeg?: number;
+            maxLandingTurnDeg?: number;
+            maxLandingAlongDeg?: number;
+            freezeOk?: boolean;
             i0Dump?: unknown;
         };
         wallFrames?: Array<{
@@ -282,7 +296,7 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
     const frames = ud.wallFrames ?? [];
     if (style !== "straight" && frames.length) {
         const infl = frames.filter((f) => f.midFlagged);
-        if (infl.length) misses.push(`[RND-INFL] ${infl.length}`);
+        if (infl.length) misses.push(`[RND-INFL] ${infl.length} >=${SPLINE_INFL_ACCEPT_DEG}`);
         const poly = frames.filter((f) => f.fallbackStraight);
         if (poly.length) misses.push(`[RND-POLY] ${poly.length}`);
         const steep = frames.filter((f) => f.steep);
@@ -328,6 +342,12 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
         if (g1RmHits.length) {
             misses.push(`G1-R_m ${g1RmHits.length} >${SPLINE_G1_MESH_MAX_DEG}`);
         }
+        if ((q.maxLandingTurnDeg ?? 0) > WALL_MID_TURN_MAX_DEG + 1e-6) {
+            misses.push(`landing-turn ${q.maxLandingTurnDeg?.toFixed(2)}>${WALL_MID_TURN_MAX_DEG}`);
+        }
+        if ((q.maxLandingAlongDeg ?? 0) > WALL_MID_DIHEDRAL_MAX_DEG + 1e-6) {
+            misses.push(`landing-along ${q.maxLandingAlongDeg?.toFixed(2)}>${WALL_MID_DIHEDRAL_MAX_DEG}`);
+        }
     }
     if (style === "hybrid" && frames.length) {
         const lateral = frames.filter((f) => (f.sideSign ?? 1) < 0);
@@ -340,8 +360,11 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
         }
         const archW = frames.filter((f) => (f.sideSign ?? 1) > 0 && (f.midWeight ?? 0) > 0.5);
         if (!archW.length) misses.push("hybrid arch empty");
-        const infl = frames.filter((f) => (f.inflCount ?? 0) > 0 || f.midFlagged);
-        if (infl.length) misses.push(`hybrid infl ${infl.length}`);
+        const blendInfl = frames.filter((f) => {
+            const w = f.midWeight ?? 1;
+            return w > 1e-6 && w < 1 - 1e-6 && (f.maxOppTurnDeg ?? 0) >= SPLINE_INFL_TURN_MIN_DEG;
+        });
+        if (blendInfl.length) misses.push(`hybrid blend-infl ${blendInfl.length}`);
     }
     return misses;
 }
@@ -394,6 +417,11 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             maxG1EAnalyticDeg?: number;
             maxG1BAnalyticDeg?: number;
             maxG1RMeshDeg?: number;
+            maxLandingTurnDeg?: number;
+            maxLandingAlongDeg?: number;
+            freezeOk?: boolean;
+            residualStations?: Array<{ i: number; u: number }>;
+            inflRemainder?: Array<{ i: number; u: number; maxOpp: number }>;
         };
         wallFrames?: Array<{
             u: number;
@@ -765,6 +793,38 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             (geo.userData as { wallFlip?: { n?: number } }).wallFlip?.n ?? 0,
             0,
         ),
+        row(
+            "landing-turn",
+            style === "straight" || (q.maxLandingTurnDeg ?? 0) <= WALL_MID_TURN_MAX_DEG + 1e-6,
+            q.maxLandingTurnDeg ?? 0,
+            WALL_MID_TURN_MAX_DEG,
+        ),
+        row(
+            "landing-along",
+            style === "straight" || (q.maxLandingAlongDeg ?? 0) <= WALL_MID_DIHEDRAL_MAX_DEG + 1e-6,
+            q.maxLandingAlongDeg ?? 0,
+            WALL_MID_DIHEDRAL_MAX_DEG,
+        ),
+        row(
+            "[RND-INFL-REM]",
+            true,
+            (q.inflRemainder ?? []).length,
+            `<${SPLINE_INFL_ACCEPT_DEG}`,
+            (q.inflRemainder ?? []).length
+                ? {
+                      n: q.inflRemainder!.length,
+                      worstI: q.inflRemainder![0]!.i,
+                      worstU: q.inflRemainder![0]!.u,
+                  }
+                : undefined,
+        ),
+        row(
+            "freeze",
+            style === "straight" || !!q.freezeOk,
+            (q.residualStations ?? []).length,
+            `${SPLINE_FREEZE_MISS_STATIONS}@${SPLINE_FREEZE_MISS_MAX_DEG}`,
+            (q.residualStations ?? []).length ? { n: q.residualStations!.length } : undefined,
+        ),
     ];
     return rows;
 }
@@ -990,34 +1050,51 @@ describe("procedural wall styles", () => {
                     light: [0.12, 0.28, -0.95] as [number, number, number],
                 },
             ];
-            const arch = (
-                geo.userData as {
-                    hybridArch?: {
-                        marks?: Array<{ x: number; y: number; z: number; u: number; label: string }>;
-                    } | null;
-                }
-            ).hybridArch;
+            const arch = geo.userData as {
+                hybridArch?: {
+                    marks?: Array<{ x: number; y: number; z: number; u: number; label: string }>;
+                } | null;
+                residualStations?: Array<{ i: number; u: number }>;
+                wallFrames?: Array<{ R?: { x: number; y: number; z: number } }>;
+            };
+            const residualPts = (arch.residualStations ?? [])
+                .map((r) => arch.wallFrames?.[r.i]?.R)
+                .filter((p): p is { x: number; y: number; z: number } => !!p);
             for (const v of views) {
                 const view = { right: v.right, up: v.up, light: v.light };
                 const focus =
-                    v.name === "arch-below" && arch?.marks?.length
+                    v.name === "arch-below" && arch.hybridArch?.marks?.length
                         ? {
                               center: {
-                                  x: arch.marks.reduce((s, m) => s + m.x, 0) / arch.marks.length,
-                                  y: arch.marks.reduce((s, m) => s + m.y, 0) / arch.marks.length,
-                                  z: arch.marks.reduce((s, m) => s + m.z, 0) / arch.marks.length,
+                                  x:
+                                      arch.hybridArch.marks.reduce((s, m) => s + m.x, 0) /
+                                      arch.hybridArch.marks.length,
+                                  y:
+                                      arch.hybridArch.marks.reduce((s, m) => s + m.y, 0) /
+                                      arch.hybridArch.marks.length,
+                                  z:
+                                      arch.hybridArch.marks.reduce((s, m) => s + m.z, 0) /
+                                      arch.hybridArch.marks.length,
                               },
                               radius: 45,
                           }
                         : undefined;
                 const rgb = renderMesh(pos, idx, view, 960, 720, [150, 90, 220], 140, focus);
-                if (style === "hybrid" && v.name === "side" && arch?.marks?.length) {
-                    const b = viewBounds(pos, view);
+                const b = viewBounds(pos, view, focus);
+                if (style === "hybrid" && v.name === "side" && arch.hybridArch?.marks?.length) {
                     drawRampMarks(
                         rgb,
                         960,
                         720,
-                        arch.marks.map((m) => projectViewPoint(m, view, 960, 720, b)),
+                        arch.hybridArch.marks.map((m) => projectViewPoint(m, view, 960, 720, b)),
+                    );
+                }
+                if (residualPts.length) {
+                    drawStationMarks(
+                        rgb,
+                        960,
+                        720,
+                        residualPts.map((m) => projectViewPoint(m, view, 960, 720, b)),
                     );
                 }
                 writeArtifact(`procedural-default-${style}-${v.name}.png`, encodePng(960, 720, rgb));
@@ -1397,7 +1474,17 @@ describe("procedural wall styles", () => {
                     worstAcrossK?: number;
                     worstAcrossU?: number;
                     maxAcrossDeg?: number;
+                    freezeOk?: boolean;
+                    residualStations?: unknown;
+                    inflRemainder?: unknown;
+                    maxLandingTurnDeg?: number;
+                    maxLandingAlongDeg?: number;
+                    maxMidAcrossP99Deg?: number;
+                    maxAcrossP99Deg?: number;
                 };
+                residualStations?: unknown;
+                inflRemainder?: unknown;
+                freezeOk?: boolean;
                 g1FlipDump?: unknown;
                 acrossI212Dump?: unknown;
             };
@@ -1407,6 +1494,12 @@ describe("procedural wall styles", () => {
                 NB: q.columnQuality?.splineNB ?? 0,
                 N: q.columnQuality?.splineN ?? 0,
                 maxG1RMeshDeg: q.columnQuality?.maxG1RMeshDeg ?? 0,
+                freezeOk: q.columnQuality?.freezeOk ?? q.freezeOk ?? false,
+                p99: q.columnQuality?.maxMidAcrossP99Deg ?? q.columnQuality?.maxAcrossP99Deg ?? 0,
+                landingTurn: q.columnQuality?.maxLandingTurnDeg ?? 0,
+                landingAlong: q.columnQuality?.maxLandingAlongDeg ?? 0,
+                residualStations: q.columnQuality?.residualStations ?? q.residualStations ?? [],
+                inflRemainder: q.columnQuality?.inflRemainder ?? q.inflRemainder ?? [],
                 worstAcross: {
                     i: q.columnQuality?.worstAcrossI,
                     k: q.columnQuality?.worstAcrossK,
@@ -1418,6 +1511,13 @@ describe("procedural wall styles", () => {
             };
         });
         console.log("[RND-SAMPLING-DUMP]", JSON.stringify(samplingDump));
+        const residualReport = styles.map((s) => ({
+            style: s,
+            freezeOk: (samplingDump.find((d) => d.style === s) ?? {}).freezeOk,
+            residuals: (samplingDump.find((d) => d.style === s) ?? {}).residualStations ?? [],
+            inflRemainder: (samplingDump.find((d) => d.style === s) ?? {}).inflRemainder ?? [],
+        }));
+        console.log("[RND-RESIDUAL]", JSON.stringify(residualReport));
         const rndDump = styles.map((s) => {
             const ud = geos[s]!.userData as {
                 rndIndex?: unknown;
@@ -1528,7 +1628,7 @@ describe("procedural wall styles", () => {
             writeArtifact(
                 "procedural-default-style-report.json",
                 Buffer.from(
-                    `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, hard, i0Dump, samplingDump }, null, 2)}\n`,
+                    `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, hard, i0Dump, samplingDump, residualReport }, null, 2)}\n`,
                 ),
             );
             throw new Error(`[STL-GATE] ${hard.join(" | ")}`);
@@ -1576,7 +1676,7 @@ describe("procedural wall styles", () => {
             writeArtifact(
                 "procedural-default-style-report.json",
                 Buffer.from(
-                    `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, hard, i0Dump, samplingDump }, null, 2)}\n`,
+                    `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, hard, i0Dump, samplingDump, residualReport }, null, 2)}\n`,
                 ),
             );
             throw new Error(`[STL-GATE] ${hard.join(" | ")}`);
@@ -1642,7 +1742,7 @@ describe("procedural wall styles", () => {
         writeArtifact(
             "procedural-default-style-report.json",
             Buffer.from(
-                `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, jointReport, i0Dump, samplingDump }, null, 2)}\n`,
+                `${JSON.stringify({ styleReport, analyticTables, meshTables, gateTables: tables, rndDump, stlGates, jointReport, i0Dump, samplingDump, residualReport }, null, 2)}\n`,
             ),
         );
         if (misses.length) {

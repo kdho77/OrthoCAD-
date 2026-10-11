@@ -1456,7 +1456,12 @@ export function reconstructProceduralWalls(
             const b = gridVert(j, i + 1);
             const c = gridVert(j + 1, i + 1);
             const d = gridVert(j + 1, i);
-            pushQuad(a, b, c, d);
+            if (j === 0 && indexGrid && (grid.frames[i]?.rimDiag ?? 0) === 1) {
+                pushTri(a, b, d);
+                pushTri(b, c, d);
+            } else {
+                pushQuad(a, b, c, d);
+            }
         }
     }
     if (useRefinedStrip) {
@@ -1556,6 +1561,11 @@ export function reconstructProceduralWalls(
         i0Dump: grid.quality?.i0Dump ?? grid.frames[0]?.i0Dump,
         g1FlipDump: grid.quality?.g1FlipDump ?? grid.frames[0]?.g1FlipDump,
         acrossI212Dump: grid.quality?.acrossI212Dump ?? grid.frames[0]?.acrossI212Dump,
+        residualStations: grid.quality?.residualStations,
+        freezeOk: grid.quality?.freezeOk,
+        inflRemainder: grid.quality?.inflRemainder,
+        maxLandingTurnDeg: grid.quality?.maxLandingTurnDeg,
+        maxLandingAlongDeg: grid.quality?.maxLandingAlongDeg,
         maxAlongJointDeg: grid.quality?.maxAlongJointDeg,
         maxAcrossStationDeg: grid.quality?.maxAcrossDeg,
         maxAcrossP99Deg: grid.quality?.maxAcrossP99Deg,
@@ -1707,6 +1717,13 @@ export function reconstructProceduralWalls(
             splineLs: f.splineLs ?? 0,
             splineSzRows: f.splineSzRows,
             nLip: f.nLip ?? 0,
+            R: { x: f.R.x, y: f.R.y, z: f.R.z },
+            rimDiag: f.rimDiag ?? 0,
+            splineLandingTurnDeg: f.splineLandingTurnDeg ?? 0,
+            splineLandingAlongDeg: f.splineLandingAlongDeg ?? 0,
+            splineMaxTurnDeg: f.splineMaxTurnDeg ?? 0,
+            splineMaxAlongDeg: f.splineMaxAlongDeg ?? 0,
+            inflRemainder: !!f.inflRemainder,
             splineShort: f.splineShort ?? false,
         })),
         hybridArch: grid.frames[0]?.hybridArch ?? null,

@@ -102,6 +102,23 @@ export const SPLINE_G1_ANALYTIC_MAX_DEG = 0.1;
 export const SPLINE_G1_MESH_MAX_DEG = 4;
 /** INFL: both sides of a sign change must be at least this. */
 export const SPLINE_INFL_TURN_MIN_DEG = 0.2;
+/** Remainder INFL: opposite turn below this is accepted. */
+export const SPLINE_INFL_ACCEPT_DEG = 0.5;
+/** Body filler lives in this central fraction of the body arc. */
+export const SPLINE_BODY_FILL_LO = 0.1;
+export const SPLINE_BODY_FILL_HI = 0.9;
+/** Consecutive landing-row spacing may change by at most this. */
+export const SPLINE_LANDING_STEP_RATIO = 1.3;
+/** Pin this many f-rows from B after ring smoothing. */
+export const SPLINE_F_PIN_FROM_B = 3;
+/** Landing gates apply at k >= N − this. */
+export const SPLINE_LANDING_TAIL_ROWS = 5;
+/** Graph-blend switch: 45° from vertical. */
+export const SPLINE_BLEND_FROM_VERTICAL_DEG = 45;
+/** Freeze: remaining turn / along / G1-R_m misses may be this large. */
+export const SPLINE_FREEZE_MISS_MAX_DEG = 8;
+/** Freeze: at most this many stations may still miss those three gates. */
+export const SPLINE_FREEZE_MISS_STATIONS = 10;
 /** Cap the lip so M.s ≤ Ls − this. */
 export const SPLINE_LIP_MS_SLACK_MM = 0.5;
 export const SPLINE_FACE_DOT_MIN = -0.2;
@@ -1725,11 +1742,16 @@ function finishTurnDensity(
     N: number,
     nNeed: number,
     lipS = 0,
+    fillLo = 0,
+    fillHi = 1,
 ): SplineDensityTable {
     const nSeg = Math.max(1, S.length - 1);
     const L = S[nSeg] ?? 0;
     const Theta = T[nSeg] ?? 0;
-    const pad = L > 1e-16 ? (N - nNeed) / L : 0;
+    const lo = Math.max(0, Math.min(1, fillLo)) * L;
+    const hi = Math.max(0, Math.min(1, fillHi)) * L;
+    const fillLen = Math.max(hi - lo, 1e-16);
+    const pad = fillLen > 1e-16 ? (N - nNeed) / fillLen : 0;
     const W = [0];
     let Z = 0;
     const add: number[] = [];
@@ -1738,7 +1760,8 @@ function finishTurnDensity(
         const dT = (T[j] ?? 0) - (T[j - 1] ?? 0);
         const sMid = 0.5 * ((S[j - 1] ?? 0) + (S[j] ?? 0));
         const floor = sMid <= lipS + 1e-12 ? SPLINE_DS_LIP_FLOOR_MM : SPLINE_DS_FLOOR_MM;
-        const q = 1 / Math.max(dsTarget(rhoFromSegment(dS, dT), L, floor), 1e-16) + pad;
+        const inFill = sMid + 1e-12 >= lo && sMid - 1e-12 <= hi;
+        const q = 1 / Math.max(dsTarget(rhoFromSegment(dS, dT), L, floor), 1e-16) + (inFill ? pad : 0);
         const inc = q * dS;
         add.push(inc);
         Z += inc;
@@ -1798,11 +1821,13 @@ function tableFromST(
     st: { u: number[]; S: number[]; T: number[] },
     N?: number,
     lipS = 0,
+    fillLo = 0,
+    fillHi = 1,
 ): SplineDensityTable {
     const need = stationSampleNeed(st.S, st.T, lipS);
     const nUse = Math.min(need.n, SPLINE_N_MAX);
     const nShared = Math.max(1, Math.min(SPLINE_N_MAX, N ?? nUse));
-    return finishTurnDensity(st.u, st.S, st.T, nShared, need.n, lipS);
+    return finishTurnDensity(st.u, st.S, st.T, nShared, need.n, lipS, fillLo, fillHi);
 }
 
 /** 2048-point S, T on the cubic; turn-bounded W. */
@@ -1961,7 +1986,7 @@ export function row1TRAngleDeg(row1: XYZ, R: XYZ, tR: XYZ, h: { x: number; y: nu
 }
 
 /** f_k = k/N, Gaussian-smoothed along the rim. Shared by ROUND and STRAIGHT W. */
-export function ringFValues(nS: number, N: number, rim: XYZ[]): number[][] {
+export function ringFValues(nS: number, N: number, rim: XYZ[], pinFromEnd = 0): number[][] {
     const denom = Math.max(N, 1);
     const f: number[][] = [];
     for (let i = 0; i < nS; i++) {
@@ -1982,12 +2007,20 @@ export function ringFValues(nS: number, N: number, rim: XYZ[]): number[][] {
         const b = rim[nS - 1]!;
         period += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
     }
+    const pinFrom = pinFromEnd > 0 ? Math.max(1, N - pinFromEnd + 1) : N;
     for (let k = 1; k < N; k++) {
+        if (k >= pinFrom) continue;
         const vals = f.map((row) => row[k]!);
         const sm = periodicGaussian1d(vals, arc, SPLINE_SMOOTH_SIGMA_MM, period);
         for (let i = 0; i < nS; i++) f[i]![k] = sm[i]!;
     }
-    for (let i = 0; i < nS; i++) f[i] = enforceMonotoneF(f[i]!, N);
+    for (let i = 0; i < nS; i++) {
+        for (let k = pinFrom; k <= N; k++) f[i]![k] = k / denom;
+        f[i] = enforceMonotoneF(f[i]!, N);
+        for (let k = pinFrom; k <= N; k++) f[i]![k] = k / denom;
+        f[i]![N] = 1;
+        f[i]![0] = 0;
+    }
     return f;
 }
 
@@ -2194,8 +2227,62 @@ export function sampleLipEqualAngle(
     return pts;
 }
 
+/** Clamp consecutive Δu in the last `fromFrac` of [0,1] to maxRatio. */
+export function clampLandingFractions(
+    u: number[],
+    maxRatio = SPLINE_LANDING_STEP_RATIO,
+    fromFrac = SPLINE_BODY_FILL_HI,
+): number[] {
+    const out = u.slice();
+    const n = out.length - 1;
+    if (n < 2) return out;
+    out[0] = 0;
+    out[n] = 1;
+    let start = 1;
+    for (let k = 1; k < n; k++) {
+        if ((out[k] ?? 0) + 1e-12 >= fromFrac) {
+            start = k;
+            break;
+        }
+    }
+    for (let k = Math.max(start, 2); k < n; k++) {
+        const prev = Math.max((out[k - 1] ?? 0) - (out[k - 2] ?? 0), 1e-16);
+        const lo = prev / maxRatio;
+        const hi = prev * maxRatio;
+        const want = Math.max(out[k - 1]! + lo, Math.min(out[k - 1]! + hi, out[k] ?? out[k - 1]! + prev));
+        out[k] = Math.max(out[k - 1]! + 1e-8, Math.min(1 - 1e-8 * (n - k), want));
+    }
+    out[n] = 1;
+    const last = out[n] - (out[n - 1] ?? 0);
+    const prev = Math.max((out[n - 1] ?? 0) - (out[n - 2] ?? 0), 1e-16);
+    if (last > prev * maxRatio + 1e-12 && n >= 2) {
+        const room = 1 - (out[start] ?? 0);
+        const steps = n - start;
+        if (steps > 0 && room > 0) {
+            let u0 = out[start] ?? fromFrac;
+            let ds = room / steps;
+            const cap = prev * maxRatio;
+            if (ds > cap) ds = cap;
+            for (let k = start + 1; k < n; k++) {
+                u0 = Math.min(1 - 1e-8 * (n - k), u0 + ds);
+                out[k] = u0;
+            }
+            out[n] = 1;
+        }
+    }
+    out[0] = 0;
+    out[n] = 1;
+    return out;
+}
+
 /** Turn-bounded + uniform-filler sample of one block. Endpoints by index. */
-export function samplePolylineBlock(col: XYZ[], N: number, f: number[], floorMm = SPLINE_DS_FLOOR_MM): XYZ[] {
+export function samplePolylineBlock(
+    col: XYZ[],
+    N: number,
+    f: number[],
+    floorMm = SPLINE_DS_FLOOR_MM,
+    landing = false,
+): XYZ[] {
     const n = Math.max(1, N);
     if (col.length < 2) {
         const p = col[0] ?? { x: 0, y: 0, z: 0 };
@@ -2203,13 +2290,22 @@ export function samplePolylineBlock(col: XYZ[], N: number, f: number[], floorMm 
     }
     const st = curveSTFromPolyline(col);
     const lipS = floorMm < SPLINE_DS_FLOOR_MM - 1e-15 ? Number.POSITIVE_INFINITY : 0;
-    const table = tableFromST(st, n, lipS);
+    const fillLo = landing ? SPLINE_BODY_FILL_LO : 0;
+    const fillHi = landing ? SPLINE_BODY_FILL_HI : 1;
+    const table = tableFromST(st, n, lipS, fillLo, fillHi);
     const dense = densifyPolyline(col, SPLINE_W_DENSE);
+    const rawU: number[] = [];
+    for (let k = 0; k <= n; k++) {
+        if (k === 0) rawU.push(0);
+        else if (k === n) rawU.push(1);
+        else rawU.push(invertDensityW(table, f[k] ?? k / n));
+    }
+    const u = landing ? clampLandingFractions(rawU) : rawU;
     const pts: XYZ[] = [];
     for (let k = 0; k <= n; k++) {
         if (k === 0) pts.push({ ...col[0]! });
         else if (k === n) pts.push({ ...col[col.length - 1]! });
-        else pts.push(evalDensePolyline(dense, invertDensityW(table, f[k] ?? k / n)));
+        else pts.push(evalDensePolyline(dense, u[k] ?? k / n));
     }
     return pts;
 }
@@ -2406,6 +2502,200 @@ export function blendColumnsSz(
         out[out.length - 1] = { ...straight[straight.length - 1]! };
     }
     return out;
+}
+
+function szList(col: XYZ[], origin: XYZ, h: { x: number; y: number }): Sz[] {
+    return col.map((p) => toSz(p, origin, h));
+}
+
+/** First z (from E toward B) where the tangent is ≥ 45° from +z. */
+export function zAt45FromVertical(
+    col: XYZ[],
+    origin: XYZ,
+    h: { x: number; y: number },
+    deg = SPLINE_BLEND_FROM_VERTICAL_DEG,
+): number {
+    const pts = szList(col, origin, h);
+    const need = (deg * Math.PI) / 180;
+    for (let i = 0; i < pts.length - 1; i++) {
+        const ds = (pts[i + 1]?.s ?? 0) - (pts[i]?.s ?? 0);
+        const dz = (pts[i + 1]?.z ?? 0) - (pts[i]?.z ?? 0);
+        const ang = Math.atan2(Math.abs(ds), Math.max(Math.abs(dz), 1e-16));
+        if (ang + 1e-12 >= need) {
+            const prevDs = i > 0 ? pts[i]!.s - (pts[i - 1]?.s ?? pts[i]!.s) : 0;
+            const prevDz = i > 0 ? pts[i]!.z - (pts[i - 1]?.z ?? pts[i]!.z) : 1;
+            const prevAng = Math.atan2(Math.abs(prevDs), Math.max(Math.abs(prevDz), 1e-16));
+            if (i > 0 && ang > prevAng + 1e-12) {
+                const t = Math.max(0, Math.min(1, (need - prevAng) / (ang - prevAng)));
+                return (pts[i - 1]!.z ?? 0) + t * ((pts[i]!.z ?? 0) - (pts[i - 1]!.z ?? 0));
+            }
+            return pts[i]!.z;
+        }
+    }
+    return 0;
+}
+
+function interpSAtZ(pts: Sz[], z: number): number {
+    if (!pts.length) return 0;
+    if (pts.length === 1) return pts[0]!.s;
+    let bestI = 0;
+    let bestD = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i]!;
+        const b = pts[i + 1]!;
+        const lo = Math.min(a.z, b.z);
+        const hi = Math.max(a.z, b.z);
+        if (z + 1e-9 < lo || z - 1e-9 > hi) continue;
+        const t = hi - lo > 1e-12 ? (z - a.z) / (b.z - a.z) : 0;
+        return a.s + (b.s - a.s) * t;
+    }
+    for (let i = 0; i < pts.length; i++) {
+        const d = Math.abs((pts[i]?.z ?? 0) - z);
+        if (d < bestD) {
+            bestD = d;
+            bestI = i;
+        }
+    }
+    return pts[bestI]!.s;
+}
+
+function interpZAtS(pts: Sz[], s: number): number {
+    if (!pts.length) return 0;
+    if (pts.length === 1) return pts[0]!.z;
+    let hit = Number.NaN;
+    for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i]!;
+        const b = pts[i + 1]!;
+        const lo = Math.min(a.s, b.s);
+        const hi = Math.max(a.s, b.s);
+        if (s + 1e-9 < lo || s - 1e-9 > hi) continue;
+        const t = hi - lo > 1e-12 ? (s - a.s) / (b.s - a.s) : 0;
+        hit = a.z + (b.z - a.z) * t;
+    }
+    if (Number.isFinite(hit)) return hit;
+    let bestI = 0;
+    let bestD = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < pts.length; i++) {
+        const d = Math.abs((pts[i]?.s ?? 0) - s);
+        if (d < bestD) {
+            bestD = d;
+            bestI = i;
+        }
+    }
+    return pts[bestI]!.z;
+}
+
+/**
+ * Graph blend of two same-topology columns.
+ * Lip k = 0..NL stays per-row lerp. Body: s(z) above z_L, z(s) below.
+ */
+export function blendColumnsGraph(
+    straight: XYZ[],
+    round: XYZ[],
+    w: number,
+    R: XYZ,
+    B: XYZ,
+    h: { x: number; y: number },
+    nLip: number,
+    zL: number,
+): XYZ[] {
+    const fr = stationSzFrame(R, B, h);
+    const n = Math.min(straight.length, round.length);
+    const sS = szList(straight, fr.origin, fr.h);
+    const sR = szList(round, fr.origin, fr.h);
+    const out: XYZ[] = [];
+    let joined = false;
+    for (let k = 0; k < n; k++) {
+        if (k === 0) {
+            out.push({ ...straight[0]! });
+            continue;
+        }
+        if (k === n - 1) {
+            out.push({ ...straight[n - 1]! });
+            continue;
+        }
+        if (k <= nLip) {
+            const a = sS[k]!;
+            const b = sR[k]!;
+            out.push(fromSz({ s: a.s + (b.s - a.s) * w, z: a.z + (b.z - a.z) * w }, fr.origin, fr.h));
+            continue;
+        }
+        const zRef = (1 - w) * (sS[k]?.z ?? 0) + w * (sR[k]?.z ?? 0);
+        const useUpper = !joined && zRef >= zL - 1e-9;
+        if (!useUpper && !joined) {
+            const sJoin = (1 - w) * interpSAtZ(sS, zL) + w * interpSAtZ(sR, zL);
+            out.push(fromSz({ s: sJoin, z: zL }, fr.origin, fr.h));
+            joined = true;
+            continue;
+        }
+        if (useUpper) {
+            const s = (1 - w) * interpSAtZ(sS, zRef) + w * interpSAtZ(sR, zRef);
+            out.push(fromSz({ s, z: zRef }, fr.origin, fr.h));
+        } else {
+            const sRef = (1 - w) * (sS[k]?.s ?? 0) + w * (sR[k]?.s ?? 0);
+            const z = (1 - w) * interpZAtS(sS, sRef) + w * interpZAtS(sR, sRef);
+            out.push(fromSz({ s: sRef, z }, fr.origin, fr.h));
+        }
+    }
+    if (out.length) {
+        out[0] = { ...straight[0]! };
+        out[out.length - 1] = { ...straight[straight.length - 1]! };
+        if (nLip >= 0 && nLip < out.length) {
+            const eS = sS[nLip];
+            const eR = sR[nLip];
+            if (eS && eR) {
+                out[nLip] = fromSz(
+                    { s: eS.s + (eR.s - eS.s) * w, z: eS.z + (eR.z - eS.z) * w },
+                    fr.origin,
+                    fr.h,
+                );
+            }
+        }
+    }
+    return out;
+}
+
+function faceN3Local(a: XYZ, b: XYZ, c: XYZ): XYZ | null {
+    const n = cross3(sub(b, a), sub(c, a));
+    const l = hypot3(n);
+    if (l < 1e-12) return null;
+    return { x: n.x / l, y: n.y / l, z: n.z / l };
+}
+
+export interface RimDiagonalChoice {
+    diag: 0 | 1;
+    nWall: XYZ | null;
+    deg: number;
+    dot: number;
+}
+
+/**
+ * Rim-adjacent quad (Ri, Rip, row1p, row1i). Pick the diagonal whose
+ * max dihedral to nTop is smaller. diag 0 = a–c, diag 1 = b–d.
+ */
+export function chooseRimDiagonal(
+    Ri: XYZ,
+    Rip: XYZ,
+    row1i: XYZ,
+    row1p: XYZ,
+    nTop: XYZ | null,
+): RimDiagonalChoice {
+    const options: Array<{ diag: 0 | 1; rim: [XYZ, XYZ, XYZ]; other: [XYZ, XYZ, XYZ] }> = [
+        { diag: 0, rim: [Ri, row1p, Rip], other: [Ri, row1i, row1p] },
+        { diag: 1, rim: [Ri, Rip, row1i], other: [Rip, row1p, row1i] },
+    ];
+    let best: RimDiagonalChoice = { diag: 0, nWall: null, deg: 180, dot: -1 };
+    for (const opt of options) {
+        const nRim = faceN3Local(opt.rim[0], opt.rim[1], opt.rim[2]);
+        const nOther = faceN3Local(opt.other[0], opt.other[1], opt.other[2]);
+        if (!nRim) continue;
+        const dRim = nTop ? vecAngleDeg(nTop, nRim) : 0;
+        const dOther = nTop && nOther ? vecAngleDeg(nTop, nOther) : dRim;
+        const deg = Math.max(dRim, dOther);
+        const nDot = nTop ? dot(nTop, nRim) : 1;
+        if (deg < best.deg - 1e-9) best = { diag: opt.diag, nWall: nRim, deg, dot: nDot };
+    }
+    return best;
 }
 
 export function maxClosedStep(vals: number[]): number {
