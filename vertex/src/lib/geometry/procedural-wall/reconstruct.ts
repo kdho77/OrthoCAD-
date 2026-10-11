@@ -372,7 +372,8 @@ function flippedWallFaces(
         seen.add(und);
         const fwd = directed.get(`${p}>${qq}`) ?? 0;
         const back = directed.get(`${qq}>${p}`) ?? 0;
-        if (fwd === 1 && back === 1) continue;
+        // 1+0 is the rim/plantar seam (opposite half is on the top sheet or sole).
+        if ((fwd === 1 && back === 1) || fwd + back === 1) continue;
         const at = owner.get(`${p}>${qq}`) ?? owner.get(`${qq}>${p}`);
         if (!at) continue;
         n++;

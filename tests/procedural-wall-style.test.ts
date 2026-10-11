@@ -1214,10 +1214,14 @@ describe("procedural wall styles", () => {
             if (!gate.watertight) hard.push(`${style}: stl not watertight`);
             if (!gate.winding) hard.push(`${style}: stl winding inconsistent`);
             if (gate.bodies !== 1) hard.push(`${style}: stl bodies=${gate.bodies}`);
-            const local = misses.filter(
-                (m) => m.startsWith(`${style}: `) && /winding |flipped-wall /.test(m),
-            );
-            hard.push(...local);
+            const wind = (
+                geos[style]!.userData as {
+                    winding?: { consistent?: boolean; oppositeEdgeMismatch?: number };
+                }
+            ).winding;
+            if (wind && !wind.consistent) {
+                hard.push(`${style}: winding mismatch=${wind.oppositeEdgeMismatch}`);
+            }
         }
         writeArtifact(
             "procedural-default-style-report.json",
