@@ -16,7 +16,6 @@ import { countPlanViewChordCrossings, smoothAndCapFlare } from "./stations";
 import {
     applySplineRing,
     assertInversionOk,
-    assertSplineEndpoints,
     blendColumnsSz,
     bodyTangentFromE,
     bulgeVsStraightFrac,
@@ -25,39 +24,45 @@ import {
     concatProfiles,
     curveSTFromPolyline,
     g1AtE,
-    hybridWeightAt,
+    type HybridArchInfo,
+    hybridArchWeightAtS,
     invertDensityW,
     jointDensityTable,
     maxClosedStep,
+    medialArchFromLoop,
     midArcKappaMaxMean,
     midArcKappaRatio,
-    minRhoFirstArcOfPoly,
+    minRhoFirstArc,
     minSAndIndex,
     nearestPointIndex,
     overEdgeTangent,
+    parabolaHandleM,
+    polylineInflCount,
     profileAreaBetween,
     quadSignedOnWall,
     ringFValues,
     row1TRAngleDeg,
     SPLINE_CHORD_MIN_MM,
     SPLINE_FACE_DOT_MIN,
-    SPLINE_FLAT_EB_MM,
     SPLINE_G1_R_MAX_DEG,
+    SPLINE_LAMBDA,
     SPLINE_LIP_S_SLACK_MM,
     SPLINE_LIP_TURN_ROWS,
     SPLINE_N_MAX,
     SPLINE_R_CAP,
     SPLINE_ROW1_TR_MAX_DEG,
     SPLINE_S_MIN_MM,
-    SPLINE_SAG_LO,
+    SPLINE_SHORT_LS_MM,
     SPLINE_TURN_MAX_DEG,
     SPLINE_WR_STEP_MAX,
     type SplineStationInput,
     samplePolylineAtArcFractions,
-    sampleSplineDense,
+    sampleQuadraticDense,
+    shortLsWeights,
     splineGateFail,
     splineRhoNeed,
     stationSampleNeed,
+    stationSzFrame,
     wallRowOutward,
     wallStripVolume,
     widenClosedRamp,
@@ -391,6 +396,9 @@ export interface ColumnFrame {
     splineLipTurnMax?: number;
     splineLipTurnK?: number;
     splineMaxWRStep?: number;
+    splineShort?: boolean;
+    splineLambda?: number;
+    hybridArch?: HybridArchInfo;
     nLip?: number;
 }
 
@@ -4877,20 +4885,6 @@ function columnStepStats(col: XYZ[]): { minEdge: number; stepRatio: number } {
     };
 }
 
-function logRndFlat(i: number, u: number, eb: number, a: number, H: number, reason: string): void {
-    console.log(
-        "[RND-FLAT]",
-        JSON.stringify({
-            i,
-            u: Number(u.toFixed(4)),
-            eb: Number(eb.toFixed(4)),
-            a: Number(a.toFixed(4)),
-            H: Number(H.toFixed(3)),
-            reason,
-        }),
-    );
-}
-
 function frameBodyTE(fr: ColumnFrame): XYZ {
     const sw = fr.sweepRule;
     if (sw) {
@@ -4907,6 +4901,49 @@ function frameBodyTE(fr: ColumnFrame): XYZ {
 function nLipFromFrames(frames: ColumnFrame[]): number {
     const fr = frames[0];
     return Math.max(0, fr?.nLip ?? fr?.nRoundFix ?? fr?.roundRows ?? 0);
+}
+
+function unwindPhi(from: number, to: number): number {
+    let t = to;
+    while (t <= from + 1e-12) t += Math.PI * 2;
+    while (t > from + Math.PI * 2 + 1e-12) t -= Math.PI * 2;
+    if (t - from > Math.PI + 1e-6) t -= Math.PI * 2;
+    return t;
+}
+
+/** Top-round R→E into (M−E), then one quadratic E→M→B. */
+function roundLipAndParabola(
+    fr: ColumnFrame,
+    lambda = SPLINE_LAMBDA,
+): { lip: XYZ[]; body: XYZ[]; E: XYZ; M: XYZ; r1: number } {
+    const r1 = Math.max(MIN_ROUND_R_MM, fr.rTop || 0.5);
+    const sw = fr.sweepRule;
+    const eN = sw?.eN ?? unit3(fr.nTop ?? { x: 0, y: 0, z: 1 });
+    const tRim = fr.tInc ?? { x: -fr.h.y, y: fr.h.x, z: 0 };
+    const eW = sw?.eW ?? rimInSurfaceOutward(eN, tRim, fr.h);
+    const C1 = add3(fr.R, eN, -r1);
+    let phi = sw?.phiRound1 ?? Math.PI / 2;
+    let E = sweptRoundPoint(C1, r1, eN, eW, phi);
+    let M = parabolaHandleM(E, fr.B, fr.R, fr.h, lambda);
+    for (let iter = 0; iter < 8; iter++) {
+        const d = { x: M.x - E.x, y: M.y - E.y, z: M.z - E.z };
+        const dRnd = projectOntoSpan(d, eW, eN);
+        const dRu = hypot3(dRnd) > 1e-9 ? unit3(dRnd) : { x: 0, y: 0, z: -1 };
+        let next = unwindPhi(0, Math.atan2(-dot3(dRu, eN), dot3(dRu, eW)));
+        if (Math.abs(next) < 1e-4) next = Math.PI / 2;
+        phi = next;
+        E = sweptRoundPoint(C1, r1, eN, eW, phi);
+        M = parabolaHandleM(E, fr.B, fr.R, fr.h, lambda);
+    }
+    const nLip = 48;
+    const lip: XYZ[] = [];
+    for (let i = 0; i <= nLip; i++) lip.push(sweptRoundPoint(C1, r1, eN, eW, (phi * i) / nLip));
+    if (lip.length) {
+        lip[0] = { ...fr.R };
+        lip[lip.length - 1] = { ...E };
+    }
+    const body = sampleQuadraticDense(E, M, fr.B);
+    return { lip, body, E, M, r1 };
 }
 
 /** Sample the whole R→B profile; HYBRID blends at shared joint-q arc fractions. */
@@ -4934,47 +4971,93 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             heightMm: fr.heightMm,
         };
     });
-    const solves = applySplineRing(inputs);
-    const polyN = solves.filter((s) => s.fallbackStraight).length;
-    console.log("[RND-POLY]", JSON.stringify({ n: polyN, nS: frames.length }));
     const nS = frames.length;
     const straightCols = xyz.map((col) => col.map((p) => ({ x: p.x, y: p.y, z: p.z })));
-    const reasons: string[][] = solves.map((sol) => {
-        const why: string[] = [];
-        if (sol.eb < SPLINE_FLAT_EB_MM) why.push("eb");
-        return why;
-    });
-    const active = reasons.map((why) => why.length === 0);
+    const arc: number[] = [0];
+    for (let i = 1; i < nS; i++) {
+        const a = frames[i - 1]!.R;
+        const b = frames[i]!.R;
+        arc.push(arc[i - 1]! + Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+    }
+    let period = arc[nS - 1] ?? 0;
+    if (nS > 1) {
+        const a = frames[0]!.R;
+        const b = frames[nS - 1]!.R;
+        period += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    }
+    const Ls = frames.map((fr) => stationSzFrame(fr.R, fr.B, fr.h).Ls);
+    const shortRaw = shortLsWeights(Ls, arc, period);
+    const shortN = Ls.filter((v) => v < SPLINE_SHORT_LS_MM - 1e-9).length;
     for (let i = 0; i < nS; i++) {
-        if (reasons[i]!.length) {
-            logRndFlat(
-                i,
-                frames[i]!.u,
-                solves[i]!.eb,
-                solves[i]!.a,
-                frames[i]!.heightMm,
-                reasons[i]!.join("+"),
+        if ((Ls[i] ?? 0) < SPLINE_SHORT_LS_MM - 1e-9) {
+            console.log(
+                "[RND-SHORT]",
+                JSON.stringify({
+                    i,
+                    u: Number(frames[i]!.u.toFixed(4)),
+                    Ls: Number((Ls[i] ?? 0).toFixed(4)),
+                    wR: Number((shortRaw[i] ?? 0).toFixed(4)),
+                }),
             );
         }
     }
+    console.log("[RND-SHORT]", JSON.stringify({ n: shortN, nS }));
+    const arch =
+        style === "hybrid"
+            ? medialArchFromLoop(
+                  frames.map((fr) => fr.B),
+                  frames.map((fr) => fr.u),
+                  frames.map((fr) => fr.sideSign ?? 1),
+                  arc,
+                  period,
+                  (frames.find((f) => (f.sideSign ?? 1) > 0)?.R.y ?? 1) >= 0 ? 1 : -1,
+              )
+            : null;
+    if (style === "hybrid") {
+        console.log(
+            "[HYB-ARCH]",
+            JSON.stringify(
+                arch
+                    ? {
+                          uA0: Number(arch.uA0.toFixed(4)),
+                          uA1: Number(arch.uA1.toFixed(4)),
+                          lbMm: Number(arch.lbMm.toFixed(3)),
+                          marks: arch.marks.map((m) => ({
+                              label: m.label,
+                              u: Number(m.u.toFixed(4)),
+                          })),
+                      }
+                    : { found: false },
+            ),
+        );
+    }
+    const solves = applySplineRing(inputs);
+    const polyN = solves.filter((s) => s.fallbackStraight).length;
+    console.log("[RND-POLY]", JSON.stringify({ n: polyN, nS }));
+    const reasons: string[][] = frames.map((fr, i) => {
+        const why: string[] = [];
+        if ((Ls[i] ?? 0) < SPLINE_SHORT_LS_MM) why.push("short-ls");
+        return why;
+    });
+    const active = frames.map((_, i) => (Ls[i] ?? 0) >= SPLINE_SHORT_LS_MM);
     const fullRound: XYZ[][] = [];
     const fullStraight: XYZ[][] = [];
+    const parabolaE: XYZ[] = [];
+    const parabolaM: XYZ[] = [];
     for (let i = 0; i < nS; i++) {
         const fr = frames[i]!;
-        const sol = solves[i]!;
         const col = straightCols[i]!;
-        const eIdx = Math.max(0, Math.min(nLipOrig, col.length - 1));
-        const lip = col.slice(0, eIdx + 1).map((p) => ({ ...p }));
-        if (lip.length) {
-            lip[0] = { ...fr.R };
-            lip[lip.length - 1] = { ...fr.E };
+        const built = roundLipAndParabola(fr, SPLINE_LAMBDA);
+        parabolaE.push(built.E);
+        parabolaM.push(built.M);
+        fr.E = built.E;
+        fr.rTop = built.r1;
+        const profile = concatProfiles(built.lip, built.body);
+        if (profile.length) {
+            profile[0] = { ...fr.R };
+            profile[profile.length - 1] = { ...fr.B };
         }
-        const body = active[i] ? sampleSplineDense(sol.poly) : [{ ...fr.E }, { ...fr.B }];
-        if (body.length) {
-            body[0] = { ...fr.E };
-            body[body.length - 1] = { ...fr.B };
-        }
-        fullRound.push(active[i] ? concatProfiles(lip, body) : col.map((p) => ({ ...p })));
+        fullRound.push(active[i] ? profile : col.map((p) => ({ ...p })));
         fullStraight.push(col.map((p) => ({ ...p })));
         if (fullRound[i]!.length) {
             fullRound[i]![0] = { ...fr.R };
@@ -5021,20 +5104,16 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     }
     const rim = frames.map((fr) => fr.R);
     const f = ringFValues(nS, N, rim);
-    const rawWR = active.map((ok) => (ok ? 1 : 0));
-    const arc: number[] = [0];
-    for (let i = 1; i < nS; i++) {
-        const a = frames[i - 1]!.R;
-        const b = frames[i]!.R;
-        arc.push(arc[i - 1]! + Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+    const rawHybrid = frames.map((fr, i) => {
+        const side = fr.sideSign ?? 1;
+        if (style !== "hybrid") return 1;
+        return arch ? hybridArchWeightAtS(arc[i] ?? 0, arch, side) : 0;
+    });
+    const rawW = shortRaw.map((s, i) => (s ?? 0) * (rawHybrid[i] ?? 0));
+    const wR = widenClosedRamp(rawW, arc, period, SPLINE_WR_STEP_MAX);
+    for (let i = 0; i < nS; i++) {
+        if ((frames[i]!.sideSign ?? 1) < 0) wR[i] = 0;
     }
-    let period = arc[nS - 1] ?? 0;
-    if (nS > 1) {
-        const a = frames[0]!.R;
-        const b = frames[nS - 1]!.R;
-        period += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
-    }
-    const wR = widenClosedRamp(rawWR, arc, period, SPLINE_WR_STEP_MAX);
     const straightSpliced: PolyPoint[][] = Array.from({ length: nS }, () => []);
     const sampledRound: XYZ[][] = [];
     const sampledStraight: XYZ[][] = [];
@@ -5048,9 +5127,8 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     );
     for (let i = 0; i < nS; i++) {
         const fr = frames[i]!;
-        const hybridW =
-            style === "hybrid" ? hybridWeightAt(fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250) : 1;
-        const w = (wR[i] ?? 0) * hybridW;
+        const hybridW = 1;
+        const w = wR[i] ?? 0;
         const stR = curveSTFromPolyline(fullRound[i]!);
         const stS = curveSTFromPolyline(fullStraight[i]!);
         const table = jointDensityTable(stS, stR, w, N);
@@ -5085,13 +5163,23 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const tE = inputs[i]!.tE ?? frameBodyTE(fr);
         const evaluated = active[i]!;
         if (evaluated) {
-            assertSplineEndpoints(sol.poly, fr.E, fr.B);
+            const e0 = parabolaE[i] ?? fr.E;
+            const m0 = parabolaM[i];
+            if (m0) {
+                const dE = hypot3({
+                    x: e0.x - fr.E.x,
+                    y: e0.y - fr.E.y,
+                    z: e0.z - fr.E.z,
+                });
+                if (dE > 1e-6) {
+                    splineGateFail("[RND-END]", { i, dE: Number(dE.toFixed(6)) });
+                }
+            }
             endOk++;
         }
-        const hybridW =
-            style === "hybrid" ? hybridWeightAt(fr.u, fr.sideSign ?? 1, fr.footLengthMm ?? 250) : 1;
+        const hybridW = 1;
         const wRaw = wR[i] ?? 0;
-        const w = wRaw * hybridW;
+        const w = wRaw;
         const roundPts = sampledRound[i]!;
         const straightPts = sampledStraight[i]!;
         const blend = wRaw < 1 - 1e-6 || hybridW < 1 - 1e-6;
@@ -5175,32 +5263,32 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const area = profileAreaBetween(used, straightPts, fr.R, fr.B, fr.h);
         const kappaMean = midArcKappaMaxMean(bodyPts.length >= 3 ? bodyPts : col);
         const kappaRatio = midArcKappaRatio(bodyPts.length >= 3 ? bodyPts : col);
-        if (sol.sBound && evaluated) {
-            sBoundRows.push({
+        const inflCount = polylineInflCount(used, fr.R, fr.B, fr.h);
+        if (evaluated && inflCount > 0) {
+            splineGateFail("[RND-INFL]", {
                 i,
                 u: Number(fr.u.toFixed(4)),
-                sag: Number(sol.sagFrac.toFixed(4)),
-                g: Number(sol.g.toFixed(4)),
-                eb: Number(sol.eb.toFixed(4)),
+                infl: inflCount,
+                w: Number(w.toFixed(4)),
             });
         }
         fr.g1EDeg = g1C;
         fr.g1FDeg = sol.seamBDeg;
-        fr.midFlagged = sol.infl;
+        fr.midFlagged = inflCount > 0;
         fr.midPeakHFrac = sol.peakZFrac;
         fr.midBulgeHFrac = bulgeVsStraightFrac(used, straightPts, fr.heightMm);
         fr.midBeta = sol.beta * w;
         fr.midChordOffMm = sol.sagitta;
         fr.midChordMm = sol.eb;
         fr.midPlanOffMm = bodyS.sMin;
-        fr.midLimit = !evaluated ? "flat" : sol.sBound ? "sbound" : sol.fallbackStraight ? "poly" : "ok";
+        fr.midLimit = !evaluated ? "short" : sol.fallbackStraight ? "poly" : "ok";
         fr.midWeight = w;
         fr.splineO = sol.sagitta;
         fr.splineZy = sol.g;
         fr.splineA = sol.a;
         fr.splineSteep = sol.steep;
         fr.splineTRAngleDeg = sol.tRAngleDeg;
-        fr.splineInflCount = sol.inflCount;
+        fr.splineInflCount = inflCount;
         fr.splineFallback = sol.fallbackStraight;
         fr.splineFk = f[i];
         fr.splineL = L;
@@ -5209,7 +5297,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineRow1Deg = row1Deg;
         fr.splineFlat = !evaluated;
         fr.splineWR = wRaw;
-        fr.splineFlatReason = evaluated ? "" : reasons[i]!.join("+") || "flat";
+        fr.splineFlatReason = evaluated ? "" : reasons[i]!.join("+") || "short";
         fr.splineCorner = false;
         fr.splineOMin = bodyS.sMin;
         fr.splinePeakClosest = false;
@@ -5219,7 +5307,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineSMinLip = lipS.sMin;
         fr.splineSMinBody = bodyS.sMin;
         fr.splineSMinK = sMinK;
-        fr.splineSBound = !!sol.sBound;
+        fr.splineSBound = false;
         fr.splineKappaRatio = kappaRatio;
         fr.splineKappaMaxMean = kappaMean;
         fr.splineKappaE = sol.kappaE;
@@ -5228,9 +5316,11 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineLipOk = lipTurnOk;
         fr.splineLipTurnMax = lipTurnMax;
         fr.splineLipTurnK = lipTurnK;
+        fr.splineShort = (Ls[i] ?? 0) < SPLINE_SHORT_LS_MM;
+        fr.splineLambda = SPLINE_LAMBDA;
         fr.nLip = kE;
         const rhoNeed = splineRhoNeed(L, N);
-        const rhoMin = evaluated ? minRhoFirstArcOfPoly(sol.poly) : Number.POSITIVE_INFINITY;
+        const rhoMin = evaluated ? minRhoFirstArc(used) : Number.POSITIVE_INFINITY;
         fr.splineRhoNeed = rhoNeed;
         fr.splineRhoMin = rhoMin;
         fr.tInc = overEdgeTangent(tR, fr.h);
@@ -5252,18 +5342,30 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
                     lim: Number(lipLimit.toFixed(4)),
                 });
             }
-            if (!sol.sBound && sol.eb >= 6 && sol.sagFrac + 1e-9 < SPLINE_SAG_LO) {
-                splineGateFail("[RND-SAG-LO]", {
-                    i,
-                    u: Number(fr.u.toFixed(4)),
-                    sag: Number(sol.sagFrac.toFixed(4)),
-                    eb: Number(sol.eb.toFixed(4)),
-                });
-            }
         }
     }
-    console.log("[RND-SBOUND]", JSON.stringify({ n: sBoundRows.length, stations: sBoundRows.slice(0, 32) }));
-    if (frames[0]) frames[0].splineMaxWRStep = maxWRStep;
+    console.log("[RND-SBOUND]", JSON.stringify({ n: 0, dropped: true }));
+    if (frames[0]) {
+        frames[0].splineMaxWRStep = maxWRStep;
+        if (arch) {
+            const marks = arch.marks.map((m) => {
+                let best = 0;
+                let bestD = Number.POSITIVE_INFINITY;
+                for (let i = 0; i < nS; i++) {
+                    const d = Math.abs((arc[i] ?? 0) - m.s);
+                    if (d < bestD) {
+                        bestD = d;
+                        best = i;
+                    }
+                }
+                const R = frames[best]!.R;
+                return { ...m, x: R.x, y: R.y, z: R.z, u: frames[best]!.u };
+            });
+            const info = { ...arch, marks };
+            for (const fr of frames) fr.hybridArch = info;
+        }
+    }
+    void sBoundRows;
     for (let i = 0; i < nS; i++) {
         const iN = (i + 1) % nS;
         frames[i]!.splineStripVol = wallStripVolume(

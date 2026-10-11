@@ -1686,7 +1686,9 @@ export function reconstructProceduralWalls(
             splineLipTurnMax: f.splineLipTurnMax ?? 0,
             splineLipTurnK: f.splineLipTurnK ?? 0,
             nLip: f.nLip ?? 0,
+            splineShort: f.splineShort ?? false,
         })),
+        hybridArch: grid.frames[0]?.hybridArch ?? null,
         rndIndex: (grid as { rndIndex?: unknown }).rndIndex,
         rndEndOk: {
             n: grid.frames.filter((f) => !f.splineFlat).length,

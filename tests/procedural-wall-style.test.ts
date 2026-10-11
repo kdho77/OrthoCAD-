@@ -13,7 +13,6 @@ import {
     countSelfIntersections,
     extractStockWallModel,
     G1_MAX_DEG,
-    hybridBulgeAt,
     plantarFlatDeltaMm,
     RING_TURNING_MAX_DEG,
     reconstructionManifold,
@@ -24,14 +23,11 @@ import {
     SPLINE_G1_R_MAX_DEG,
     SPLINE_GATES_REPORT_ONLY,
     SPLINE_H_MIN_MM,
-    SPLINE_KAPPA_MAX_MEAN,
     SPLINE_LIP_S_SLACK_MM,
     SPLINE_ROW1_TR_MAX_DEG,
     SPLINE_S_MIN_MM,
-    SPLINE_SAG_EB_MIN_MM,
-    SPLINE_SAG_HI,
-    SPLINE_SAG_LO,
     SPLINE_SEAM_B_MAX_DEG,
+    SPLINE_SHORT_LS_MM,
     SPLINE_VOL_ERR_FRAC,
     SPLINE_WR_STEP_MAX,
     WALL_MID_DIHEDRAL_MAX_DEG,
@@ -43,7 +39,7 @@ import {
 } from "@/lib/geometry/procedural-wall";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
-import { encodePng, renderMesh } from "./helpers/render-png";
+import { drawRampMarks, encodePng, projectViewPoint, renderMesh, viewBounds } from "./helpers/render-png";
 
 type Style = "straight" | "round" | "hybrid";
 
@@ -297,20 +293,18 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
         }
     }
     if (style === "hybrid" && frames.length) {
-        const heel = frames.filter((f) => f.u <= 0.12);
-        const midfoot = frames.filter((f) => f.u >= 0.5 && f.u <= 0.7);
-        if (heel.some((f) => hybridBulgeAt(f.u, 1, 250, 0.6) > 1e-6)) {
-            misses.push("hybrid heel bulge");
+        const lateral = frames.filter((f) => (f.sideSign ?? 1) < 0);
+        if (lateral.some((f) => (f.midWeight ?? 0) > 1e-3)) {
+            misses.push("hybrid lateral weight");
         }
-        if (midfoot.length && midfoot.every((f) => hybridBulgeAt(f.u, 1, 250, 0.6) < 0.5)) {
-            misses.push("hybrid midfoot not round");
+        const heel = frames.filter((f) => f.u <= 0.12 && (f.sideSign ?? 1) > 0);
+        if (heel.some((f) => (f.midWeight ?? 0) > 1e-3)) {
+            misses.push("hybrid heel weight");
         }
-        const us = [0, 0.15, 0.25, 0.35, 0.5, 0.7, 0.9];
-        for (let i = 1; i < us.length; i++) {
-            if (hybridBulgeAt(us[i]!, 1, 250, 0.6) + 1e-9 < hybridBulgeAt(us[i - 1]!, 1, 250, 0.6)) {
-                misses.push("bulge-not-monotone");
-            }
-        }
+        const archW = frames.filter((f) => (f.sideSign ?? 1) > 0 && (f.midWeight ?? 0) > 0.5);
+        if (!archW.length) misses.push("hybrid arch empty");
+        const infl = frames.filter((f) => (f.inflCount ?? 0) > 0 || f.midFlagged);
+        if (infl.length) misses.push(`hybrid infl ${infl.length}`);
     }
     return misses;
 }
@@ -394,6 +388,8 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             splineSMinBody?: number;
             splineSMinK?: number;
             splineSBound?: boolean;
+            splineShort?: boolean;
+            splineFlatReason?: string;
             nLip?: number;
             rTop?: number;
             o?: number;
@@ -460,24 +456,9 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         (v) => v > 0,
     );
     const wrGated = (f: (typeof frames)[number]): boolean => !f.splineFlat && (f.splineWR ?? 0) >= 0.5;
-    const sagOf = (f: (typeof frames)[number]): number => {
-        const eb = Math.max(f.midChordMm ?? 0, 1e-6);
-        return (f.midChordOffMm ?? 0) / eb;
-    };
-    const sagGated = (f: (typeof frames)[number]): boolean =>
-        wrGated(f) && !f.splineSBound && (f.midChordMm ?? 0) >= SPLINE_SAG_EB_MIN_MM;
-    const sagHi = worstHi(
-        (f) => (sagGated(f) ? sagOf(f) : 0),
-        (v) => v - 1e-9 > SPLINE_SAG_HI,
-    );
-    const sagLo = worstLo(
-        (f) => (sagGated(f) ? sagOf(f) : 1),
-        (v) => v + 1e-9 < SPLINE_SAG_LO,
-    );
-    const sBound = worstHi(
-        (f) => (wrGated(f) && f.splineSBound ? 1 : 0),
-        (v) => v > 0,
-    );
+    const shortHits = frames
+        .map((f, i) => ({ f, i }))
+        .filter(({ f }) => !!f.splineShort || f.splineFlatReason === "short-ls");
     const sMin = worstLo(
         (f) => {
             if (!wrGated(f)) return 0;
@@ -500,17 +481,6 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
                 : best;
         },
         { n: 0, v: 0, i: -1, u: -1, k: 0 },
-    );
-    const kappa = worstHi(
-        (f) => (wrGated(f) ? (f.splineKappaRatio ?? 1) : 1),
-        (v) => v > 2 + 1e-6,
-    );
-    const kappaMean = worstHi(
-        (f) => {
-            if (!wrGated(f) || sagOf(f) + 1e-9 < SPLINE_SAG_LO) return 1;
-            return f.splineKappaMaxMean ?? 1;
-        },
-        (v) => v > SPLINE_KAPPA_MAX_MEAN + 1e-6,
     );
     const lip = worstHi(
         (f) => (wrGated(f) && f.splineLipOk === false ? (f.splineLipTurnMax ?? 5) : 0),
@@ -591,25 +561,13 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             poly.n ? { n: poly.n, worstI: poly.i, worstU: poly.u } : undefined,
         ),
         row(
-            "sag-lo",
-            !sagLo.n || style === "straight",
-            sagLo.n ? sagLo.v : 0,
-            SPLINE_SAG_LO,
-            sagLo.n ? { n: sagLo.n, worstI: sagLo.i, worstU: sagLo.u } : undefined,
-        ),
-        row(
-            "sag-hi",
-            !sagHi.n || style === "straight",
-            sagHi.n ? sagHi.v : 0,
-            SPLINE_SAG_HI,
-            sagHi.n ? { n: sagHi.n, worstI: sagHi.i, worstU: sagHi.u } : undefined,
-        ),
-        row(
-            "[RND-SBOUND]",
+            "[RND-SHORT]",
             true,
-            sBound.n,
-            "accepted",
-            sBound.n ? { n: sBound.n, worstI: sBound.i, worstU: sBound.u } : undefined,
+            shortHits.length,
+            SPLINE_SHORT_LS_MM,
+            shortHits.length
+                ? { n: shortHits.length, worstI: shortHits[0]!.i, worstU: shortHits[0]!.f.u }
+                : undefined,
         ),
         row(
             "sMin-body",
@@ -633,20 +591,6 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
                       worstU: sMinLipWorst.u,
                   }
                 : undefined,
-        ),
-        row(
-            "kappa-ratio",
-            true,
-            kappa.n ? kappa.v : 0,
-            "report-only",
-            kappa.n ? { n: kappa.n, worstI: kappa.i, worstU: kappa.u } : undefined,
-        ),
-        row(
-            "kappa-max-mean",
-            !kappaMean.n || style === "straight",
-            kappaMean.n ? kappaMean.v : 0,
-            SPLINE_KAPPA_MAX_MEAN,
-            kappaMean.n ? { n: kappaMean.n, worstI: kappaMean.i, worstU: kappaMean.u } : undefined,
         ),
         row(
             "lip-rows",
@@ -864,12 +808,14 @@ describe("procedural wall styles", () => {
             (geo.userData as { stlPath?: string }).stlPath = `/tmp/s1-stls/procedural-default-${style}.stl`;
             const pos = geo.getAttribute("position").array as Float32Array;
             const idx = geo.getIndex()!.array as Uint32Array;
+            const medialY = ((geo.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) >= 0 ? 1 : -1;
+            const sideRight: [number, number, number] = medialY > 0 ? [1, 0, 0] : [-1, 0, 0];
             const views = [
                 {
                     name: "side",
-                    right: [0.82, 0.57, 0] as [number, number, number],
+                    right: sideRight,
                     up: [0, 0, 1] as [number, number, number],
-                    light: [0.25, 0.55, 0.8] as [number, number, number],
+                    light: [0.15, 0.55 * medialY, 0.82] as [number, number, number],
                 },
                 {
                     name: "bottom34",
@@ -884,8 +830,36 @@ describe("procedural wall styles", () => {
                     light: [0.12, 0.28, -0.95] as [number, number, number],
                 },
             ];
+            const arch = (
+                geo.userData as {
+                    hybridArch?: {
+                        marks?: Array<{ x: number; y: number; z: number; u: number; label: string }>;
+                    } | null;
+                }
+            ).hybridArch;
             for (const v of views) {
-                const rgb = renderMesh(pos, idx, { right: v.right, up: v.up, light: v.light }, 960, 720);
+                const view = { right: v.right, up: v.up, light: v.light };
+                const focus =
+                    v.name === "arch-below" && arch?.marks?.length
+                        ? {
+                              center: {
+                                  x: arch.marks.reduce((s, m) => s + m.x, 0) / arch.marks.length,
+                                  y: arch.marks.reduce((s, m) => s + m.y, 0) / arch.marks.length,
+                                  z: arch.marks.reduce((s, m) => s + m.z, 0) / arch.marks.length,
+                              },
+                              radius: 45,
+                          }
+                        : undefined;
+                const rgb = renderMesh(pos, idx, view, 960, 720, [150, 90, 220], 140, focus);
+                if (style === "hybrid" && v.name === "side" && arch?.marks?.length) {
+                    const b = viewBounds(pos, view);
+                    drawRampMarks(
+                        rgb,
+                        960,
+                        720,
+                        arch.marks.map((m) => projectViewPoint(m, view, 960, 720, b)),
+                    );
+                }
                 writeArtifact(`procedural-default-${style}-${v.name}.png`, encodePng(960, 720, rgb));
             }
         }

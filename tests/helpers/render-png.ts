@@ -74,6 +74,80 @@ export interface RenderView {
 /**
  * Render triangles orthographically. Positions packed xyz. Returns RGB buffer.
  */
+export interface ViewFocus {
+    center: { x: number; y: number; z: number };
+    radius: number;
+}
+
+export function projectViewPoint(
+    p: { x: number; y: number; z: number },
+    view: RenderView,
+    width: number,
+    height: number,
+    bounds: { minX: number; maxX: number; minY: number; maxY: number },
+): { x: number; y: number } {
+    const { right, up } = view;
+    const px = p.x * right[0] + p.y * right[1] + p.z * right[2];
+    const py = p.x * up[0] + p.y * up[1] + p.z * up[2];
+    const margin = 8;
+    const scale = Math.min(
+        (width - 2 * margin) / Math.max(1e-6, bounds.maxX - bounds.minX),
+        (height - 2 * margin) / Math.max(1e-6, bounds.maxY - bounds.minY),
+    );
+    const ox = (width - scale * (bounds.maxX - bounds.minX)) / 2;
+    const oy = (height - scale * (bounds.maxY - bounds.minY)) / 2;
+    return {
+        x: ox + (px - bounds.minX) * scale,
+        y: height - (oy + (py - bounds.minY) * scale),
+    };
+}
+
+export function viewBounds(
+    pos: Float32Array,
+    view: RenderView,
+    focus?: ViewFocus,
+): { minX: number; maxX: number; minY: number; maxY: number } {
+    const { right, up } = view;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    const n = pos.length / 3;
+    for (let i = 0; i < n; i++) {
+        const x = pos[i * 3]!;
+        const y = pos[i * 3 + 1]!;
+        const z = pos[i * 3 + 2]!;
+        if (focus) {
+            const d = Math.hypot(x - focus.center.x, y - focus.center.y, z - focus.center.z);
+            if (d > focus.radius) continue;
+        }
+        const px = x * right[0] + y * right[1] + z * right[2];
+        const py = x * up[0] + y * up[1] + z * up[2];
+        if (px < minX) minX = px;
+        if (px > maxX) maxX = px;
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
+    }
+    if (!Number.isFinite(minX)) {
+        return viewBounds(pos, view);
+    }
+    return { minX, maxX, minY, maxY };
+}
+
+export function drawRampMarks(
+    rgb: Uint8Array,
+    width: number,
+    height: number,
+    marks: Array<{ x: number; y: number }>,
+    color: [number, number, number] = [255, 230, 40],
+): void {
+    for (const m of marks) {
+        drawLine(rgb, width, height, m.x, 8, m.x, height - 8, color);
+        drawLine(rgb, width, height, m.x - 6, 12, m.x + 6, 12, color);
+        drawLine(rgb, width, height, m.x - 6, height - 12, m.x + 6, height - 12, color);
+    }
+}
+
 export function renderMesh(
     pos: Float32Array,
     index: ArrayLike<number>,
@@ -82,6 +156,7 @@ export function renderMesh(
     height: number,
     baseColor: [number, number, number] = [150, 90, 220],
     background = 140,
+    focus?: ViewFocus,
 ): Uint8Array {
     const { right, up, light } = view;
     const fwd = [
@@ -94,10 +169,11 @@ export function renderMesh(
     const sx = new Float32Array(n);
     const sy = new Float32Array(n);
     const sz = new Float32Array(n);
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
+    const bounds = viewBounds(pos, view, focus);
+    const minX = bounds.minX;
+    const maxX = bounds.maxX;
+    const minY = bounds.minY;
+    const maxY = bounds.maxY;
     for (let i = 0; i < n; i++) {
         const x = pos[i * 3]!,
             y = pos[i * 3 + 1]!,
@@ -108,10 +184,6 @@ export function renderMesh(
         sx[i] = px;
         sy[i] = py;
         sz[i] = pz;
-        if (px < minX) minX = px;
-        if (px > maxX) maxX = px;
-        if (py < minY) minY = py;
-        if (py > maxY) maxY = py;
     }
     const margin = 8;
     const scale = Math.min(

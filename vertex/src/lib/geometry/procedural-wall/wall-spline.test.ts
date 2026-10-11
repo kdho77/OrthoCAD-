@@ -4,30 +4,31 @@
 import { describe, expect, test } from "@rstest/core";
 import {
     assertInversionOk,
-    buildSplineDensityTable,
+    buildPolylineDensityTable,
     columnChordsOk,
     controlPointsSpaced,
     curveSTFromPolyline,
     enforceMonotoneF,
     evalClampedCubic,
+    evalQuadraticBezier,
+    hybridArchWeight,
     invertDensityW,
     jointDensityTable,
-    midArcKappaMaxMean,
-    midArcKappaRatio,
     minSOfSamples,
+    parabolaHandleM,
     printSplineGates,
     qOnNormalizedArc,
     SPLINE_CHORD_MIN_MM,
-    SPLINE_FLAT_EB_MM,
-    SPLINE_G_HI_FRAC,
     SPLINE_GATES_REPORT_ONLY,
-    SPLINE_KAPPA_MAX_MEAN,
     SPLINE_KNOTS,
     SPLINE_KNOTS_5,
+    SPLINE_LAMBDA,
     SPLINE_N_MAX,
     SPLINE_S_MIN_MM,
+    SPLINE_SHORT_LS_MM,
     type SplineStationInput,
     samplePolylineAtArcFractions,
+    samplePolylinesByW,
     sampleSplineRingByW,
     solveSplineStation,
     splineBetaAt,
@@ -73,7 +74,7 @@ function printCorner(name: string, sol: ReturnType<typeof solveSplineStation>): 
     console.log(`[RND-SOLVE] ${name}`, JSON.stringify(row));
 }
 
-describe("clamped cubic wall spline", () => {
+describe("quadratic wall parabola", () => {
     test("5-point cubic hits E at 0 and B at 1; 6-point still G1 along P0P1", () => {
         const P5 = [
             { x: 0.5, y: 0, z: 9.5 },
@@ -108,23 +109,25 @@ describe("clamped cubic wall spline", () => {
         expect((d.x * e.x + d.y * e.y + d.z * e.z) / den).toBeGreaterThan(0.99);
     });
 
-    test("beta is 0.12 heel, 0.18 arch/midfoot, 0.15 elsewhere; FLAT iff |EB|<2", () => {
+    test("quadratic E-M-B hits E and B; short Ls falls back", () => {
         expect(splineBetaAt(0)).toBeCloseTo(0.12, 2);
-        expect(splineBetaAt(0.4)).toBeCloseTo(0.18, 2);
-        expect(splineBetaAt(0.9)).toBeCloseTo(0.15, 2);
-
         const heel = solveSplineStation(station(0, 1, 12, 8, { s: -1, z: -0.2 }));
         printCorner("heel", heel);
         expect(heel.fallbackStraight).toBe(false);
-        expect(heel.poly.length).toBe(5);
-        expect(heel.sMin).toBeGreaterThanOrEqual(SPLINE_S_MIN_MM - 1e-6);
-        expect(heel.eb).toBeGreaterThan(SPLINE_FLAT_EB_MM);
-        expect(heel.sagFrac).toBeGreaterThan(0.05);
-
-        const flat = solveSplineStation(station(0.9, 1, 2, 1.2, { s: -1, z: -0.1 }));
-        printCorner("flat-eb", flat);
-        expect(flat.eb).toBeLessThan(SPLINE_FLAT_EB_MM);
-        expect(flat.fallbackStraight).toBe(true);
+        expect(heel.poly.length).toBe(3);
+        const E = heel.poly[0]!;
+        const M = heel.poly[1]!;
+        const B = heel.poly[2]!;
+        const p0 = evalQuadraticBezier(E, M, B, 0);
+        const p1 = evalQuadraticBezier(E, M, B, 1);
+        expect(p0.x).toBeCloseTo(E.x, 6);
+        expect(p1.x).toBeCloseTo(B.x, 6);
+        expect(p1.z).toBeCloseTo(0, 6);
+        expect(M.z).toBeCloseTo(0, 5);
+        const short = solveSplineStation(station(0.9, 1, 8, 1.2, { s: -1, z: -0.1 }));
+        printCorner("short-ls", short);
+        expect(short.Ls).toBeLessThan(SPLINE_SHORT_LS_MM);
+        expect(short.fallbackStraight).toBe(true);
     });
 
     test("three Default-like stations stay convex with s >= -0.1", () => {
@@ -149,7 +152,7 @@ describe("clamped cubic wall spline", () => {
 
     test("W(u) table is strictly increasing and invert is not u = f", () => {
         const sol = solveSplineStation(station(0.35, 1, 12, 10, { s: -1, z: -0.18 }));
-        const table = buildSplineDensityTable(sol.poly);
+        const table = buildPolylineDensityTable(sol.pts);
         expect(table.W[0]).toBe(0);
         expect(table.W[table.W.length - 1]!).toBeGreaterThan(table.W[table.W.length - 2]!);
         expect(table.W[table.W.length - 1]!).toBeCloseTo(1, 2);
@@ -178,16 +181,25 @@ describe("clamped cubic wall spline", () => {
             if (Math.abs(uk - f[k]!) > 1e-4) offUniform++;
         }
         expect(offUniform).toBeGreaterThan(0);
-        const ring = sampleSplineRingByW([sol.poly, sol.poly], N, [sol.pts[0]!, sol.pts[0]!]);
+        const fRing = [
+            enforceMonotoneF(
+                Array.from({ length: N + 1 }, (_, k) => k / N),
+                N,
+            ),
+            enforceMonotoneF(
+                Array.from({ length: N + 1 }, (_, k) => k / N),
+                N,
+            ),
+        ];
+        const ring = samplePolylinesByW([sol.pts, sol.pts], N, fRing);
         expect(ring.pts[0]!.length).toBe(N + 1);
-        expect(ring.pts[0]![0]!.z).toBeCloseTo(sol.poly[0]!.z, 9);
-        expect(ring.pts[0]![N]!.z).toBeCloseTo(sol.poly[sol.poly.length - 1]!.z, 9);
-        expect(Math.abs(ring.f[0]![5]! - ring.f[1]![5]!)).toBeLessThanOrEqual(0.02);
+        expect(ring.pts[0]![0]!.z).toBeCloseTo(sol.pts[0]!.z, 9);
+        expect(ring.pts[0]![N]!.z).toBeCloseTo(sol.pts[sol.pts.length - 1]!.z, 9);
     });
 
     test("turn-bounded W uses ds_t floor and pad to shared N", () => {
         const sol = solveSplineStation(station(0, 1, 12, 8, { s: -1, z: -0.2 }));
-        const table = buildSplineDensityTable(sol.poly);
+        const table = buildPolylineDensityTable(sol.pts);
         expect(table.W[0]).toBe(0);
         expect(table.W[table.W.length - 1]!).toBeCloseTo(1, 2);
         expect(table.fillPasses).toBe(0);
@@ -198,9 +210,8 @@ describe("clamped cubic wall spline", () => {
             { x: 3, y: 0, z: 0 },
         ]);
         expect(stationSampleNeed(st.S, st.T).n).toBe(24);
-        const shared = buildSplineDensityTable(sol.poly, undefined, 50);
+        const shared = buildPolylineDensityTable(sol.pts, undefined, 50);
         expect(shared.N).toBe(50);
-        expect(midArcKappaRatio(sol.pts)).toBeGreaterThan(0);
         expect(
             minSOfSamples(sol.pts, sol.pts[0]!, sol.pts[sol.pts.length - 1]!, { x: 1, y: 0 }),
         ).toBeLessThan(2);
@@ -225,9 +236,14 @@ describe("clamped cubic wall spline", () => {
         const heel = solveSplineStation(station(0, 1, 12, 8, { s: -1, z: -0.2 }));
         expect(heel.fallbackStraight).toBe(false);
         expect(heel.a).toBeGreaterThan(0.05);
-        const table = buildSplineDensityTable(heel.poly);
+        const table = buildPolylineDensityTable(heel.pts);
         const N = Math.min(SPLINE_N_MAX, Math.max(8, table.nNeed ?? 24));
-        const ring = sampleSplineRingByW([heel.poly], N, [heel.poly[0]!]);
+        const ring = samplePolylinesByW([heel.pts], N, [
+            enforceMonotoneF(
+                Array.from({ length: N + 1 }, (_, k) => k / N),
+                N,
+            ),
+        ]);
         const pts = ring.pts[0]!;
         const L = ring.L[0]!;
         const need = SPLINE_CHORD_MIN_MM;
@@ -296,18 +312,22 @@ describe("clamped cubic wall spline", () => {
         ).toBe(false);
     });
 
-    test("kappa_max/mean is finite on the mid-body; old ratio stays report-only", () => {
+    test("M is on the plantar between s_E and Ls; hybrid arch is medial-only", () => {
         const sol = solveSplineStation(station(0.35, 1, 12, 10, { s: -1, z: -0.18 }));
-        const km = midArcKappaMaxMean(sol.pts);
-        expect(Number.isFinite(km)).toBe(true);
-        expect(km).toBeGreaterThan(0);
-        expect(sol.kappaMaxMean).toBeGreaterThan(0);
-        expect(sol.g).toBeLessThanOrEqual(SPLINE_G_HI_FRAC * sol.eb + 1e-6);
+        const E = sol.poly[0]!;
+        const B = sol.poly[2]!;
+        const M = parabolaHandleM(E, B, sol.pts[0] ?? E, { x: 1, y: 0 }, SPLINE_LAMBDA);
+        expect(M.z).toBeCloseTo(0, 5);
+        expect(M.x).toBeGreaterThan(E.x);
+        expect(M.x).toBeLessThan(B.x);
+        const arch = { uA0: 0.2, uA1: 0.55, sA0: 20, sA1: 80, lbMm: 20, lbU: 0.12 };
+        expect(hybridArchWeight(0.1, 1, arch)).toBe(0);
+        expect(hybridArchWeight(0.38, 1, arch)).toBeGreaterThan(0.9);
+        expect(hybridArchWeight(0.38, -1, arch)).toBe(0);
+        expect(hybridArchWeight(0.7, 1, arch)).toBe(0);
         const g = stationGates(sol, 0.35, 1);
-        expect(g.misses.some((m) => m.startsWith("kappa-ratio"))).toBe(false);
-        if (sol.sagFrac + 1e-9 >= 0.12) {
-            expect(sol.kappaMaxMean).toBeLessThanOrEqual(SPLINE_KAPPA_MAX_MEAN + 0.5);
-        }
+        expect(g.misses.some((m) => m.startsWith("sag"))).toBe(false);
+        expect(g.misses.some((m) => m.startsWith("kappa"))).toBe(false);
     });
 
     test("joint density samples both polylines at the same normalized-arc fractions", () => {

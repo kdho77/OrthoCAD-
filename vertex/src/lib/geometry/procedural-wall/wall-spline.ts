@@ -1,7 +1,8 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { hybridBulgeAt, smoothstep01, WALL_H_SMOOTH_HI_MM, WALL_H_SMOOTH_LO_MM } from "./wall-style";
+import { patternCurvatureReport } from "./bottom-pattern";
+import { smoothstep01, WALL_H_SMOOTH_HI_MM, WALL_H_SMOOTH_LO_MM } from "./wall-style";
 
 export interface XYZ {
     x: number;
@@ -68,7 +69,21 @@ export const SPLINE_LIP_TURN_ROWS = 3;
 export const SPLINE_LIP_S_SLACK_MM = 0.1;
 /** g bisect bracket [0, this × |EB|]. */
 export const SPLINE_G_HI_FRAC = 0.5;
-export const SPLINE_WR_STEP_MAX = 0.05;
+/** Neighbouring hybrid/short weights may differ by at most this. */
+export const SPLINE_WR_STEP_MAX = 0.03;
+/** Quadratic handle: M_s = s_E + λ (Ls − s_E). */
+export const SPLINE_LAMBDA = 0.5;
+export const SPLINE_LAMBDA_LO = 0.35;
+export const SPLINE_LAMBDA_HI = 0.65;
+/** r1 = this × heel edge thickness (default thickness 1 mm → r1 = 0.5). */
+export const ROUND_R1_OVER_HEEL = 0.5;
+export const HEEL_EDGE_THICKNESS_MM = 1;
+/** Ls below this blends the station to STRAIGHT. */
+export const SPLINE_SHORT_LS_MM = 2;
+/** Rim-arc smoothstep around a short station. */
+export const SPLINE_SHORT_BLEND_MM = 15;
+/** Medial-arch ramp length, inside [u_a0, u_a1]. */
+export const HYBRID_ARCH_LB_MM = 20;
 export const SPLINE_FACE_DOT_MIN = -0.2;
 export const SPLINE_VOL_ERR_FRAC = 0.01;
 export const SPLINE_H_MIN_MM = 6;
@@ -314,6 +329,243 @@ export function toSz(p: XYZ, origin: XYZ, h: { x: number; y: number }): Sz {
 
 export function fromSz(sz: Sz, origin: XYZ, h: { x: number; y: number }): XYZ {
     return { x: origin.x + h.x * sz.s, y: origin.y + h.y * sz.s, z: origin.z + sz.z };
+}
+
+export function clampLambda(lambda: number): number {
+    return clampNum(lambda, SPLINE_LAMBDA_LO, SPLINE_LAMBDA_HI);
+}
+
+/** P(t) = (1−t)² P0 + 2(1−t)t P1 + t² P2. */
+export function evalQuadraticBezier(P0: XYZ, P1: XYZ, P2: XYZ, t: number): XYZ {
+    const u = 1 - t;
+    return {
+        x: u * u * P0.x + 2 * u * t * P1.x + t * t * P2.x,
+        y: u * u * P0.y + 2 * u * t * P1.y + t * t * P2.y,
+        z: u * u * P0.z + 2 * u * t * P1.z + t * t * P2.z,
+    };
+}
+
+export function quadraticBezierTangent(P0: XYZ, P1: XYZ, P2: XYZ, t: number): XYZ {
+    return {
+        x: 2 * (1 - t) * (P1.x - P0.x) + 2 * t * (P2.x - P1.x),
+        y: 2 * (1 - t) * (P1.y - P0.y) + 2 * t * (P2.y - P1.y),
+        z: 2 * (1 - t) * (P1.z - P0.z) + 2 * t * (P2.z - P1.z),
+    };
+}
+
+/** M = (s_E + λ (Ls − s_E), 0) in the column (s, z) frame. */
+export function parabolaHandleM(
+    E: XYZ,
+    B: XYZ,
+    R: XYZ,
+    h: { x: number; y: number },
+    lambda = SPLINE_LAMBDA,
+): XYZ {
+    const fr = stationSzFrame(R, B, h);
+    const sE = toSz(E, fr.origin, fr.h).s;
+    const lam = clampLambda(lambda);
+    return fromSz({ s: sE + lam * (fr.Ls - sE), z: 0 }, fr.origin, fr.h);
+}
+
+export function sampleQuadraticDense(P0: XYZ, P1: XYZ, P2: XYZ, n = SPLINE_DENSE): XYZ[] {
+    const pts: XYZ[] = [];
+    const nUse = Math.max(1, n);
+    for (let i = 0; i <= nUse; i++) pts.push(evalQuadraticBezier(P0, P1, P2, i / nUse));
+    pts[0] = { ...P0 };
+    pts[pts.length - 1] = { ...P2 };
+    return pts;
+}
+
+export interface HybridArchSpan {
+    uA0: number;
+    uA1: number;
+    sA0: number;
+    sA1: number;
+    lbMm: number;
+    lbU: number;
+}
+
+export interface HybridArchMark {
+    u: number;
+    s: number;
+    x: number;
+    y: number;
+    z: number;
+    label: "u_a0" | "u_a0+Lb" | "u_a1-Lb" | "u_a1";
+}
+
+export interface HybridArchInfo extends HybridArchSpan {
+    marks: HybridArchMark[];
+}
+
+function closedArcDist(a: number, b: number, period: number): number {
+    const p = Math.max(period, 1e-9);
+    let d = Math.abs(a - b);
+    d = Math.min(d, p - d);
+    return d;
+}
+
+export function hybridArchWeightAtS(s: number, arch: HybridArchSpan, sideSign: 1 | -1): number {
+    if (sideSign < 0) return 0;
+    const span = arch.sA1 - arch.sA0;
+    if (span <= 1e-6) return 0;
+    const lb = Math.min(arch.lbMm, 0.5 * span);
+    return smoothstep01(arch.sA0, arch.sA0 + lb, s) * (1 - smoothstep01(arch.sA1 - lb, arch.sA1, s));
+}
+
+export function hybridArchWeight(
+    u: number,
+    sideSign: 1 | -1,
+    arch: HybridArchSpan | null | undefined,
+): number {
+    if (sideSign < 0 || !arch) return 0;
+    const span = arch.uA1 - arch.uA0;
+    if (span <= 1e-6) return 0;
+    const lb = Math.min(arch.lbU, 0.5 * span);
+    return smoothstep01(arch.uA0, arch.uA0 + lb, u) * (1 - smoothstep01(arch.uA1 - lb, arch.uA1, u));
+}
+
+/**
+ * Medial cut-in between the faired pattern's two inflections.
+ * u_a0 is posterior, u_a1 anterior. Lateral weight is always 0.
+ */
+export function medialArchFromLoop(
+    loop: XYZ[],
+    us: number[],
+    sideSigns: Array<1 | -1>,
+    arc: number[],
+    period: number,
+    medialSign: 1 | -1,
+): HybridArchInfo | null {
+    if (loop.length < 4) return null;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const p of loop) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+    }
+    const report = patternCurvatureReport(loop, { minX, maxX }, medialSign);
+    const medialU = report.inflectionU.filter((u) => {
+        let best = 0;
+        let bestD = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < us.length; i++) {
+            const d = Math.abs((us[i] ?? 0) - u);
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+        }
+        return (sideSigns[best] ?? 1) > 0;
+    });
+    const raw = (medialU.length >= 2 ? medialU : report.inflectionU).slice().sort((a, b) => a - b);
+    if (raw.length < 2) return null;
+    let uA0 = raw[0]!;
+    let uA1 = raw[raw.length - 1]!;
+    if (raw.length > 2) {
+        let bestSpan = -1;
+        for (let i = 0; i < raw.length - 1; i++) {
+            const a = raw[i]!;
+            const b = raw[i + 1]!;
+            const mid = 0.5 * (a + b);
+            let midI = 0;
+            let midD = Number.POSITIVE_INFINITY;
+            for (let j = 0; j < us.length; j++) {
+                const d = Math.abs((us[j] ?? 0) - mid);
+                if (d < midD) {
+                    midD = d;
+                    midI = j;
+                }
+            }
+            if ((sideSigns[midI] ?? 1) < 0) continue;
+            const span = b - a;
+            if (span > bestSpan) {
+                bestSpan = span;
+                uA0 = a;
+                uA1 = b;
+            }
+        }
+    }
+    if (uA1 <= uA0 + 1e-6) return null;
+    const nearest = (u: number, medialOnly: boolean): number => {
+        let best = 0;
+        let bestD = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < us.length; i++) {
+            if (medialOnly && (sideSigns[i] ?? 1) < 0) continue;
+            const d = Math.abs((us[i] ?? 0) - u);
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+        }
+        return best;
+    };
+    const i0 = nearest(uA0, true);
+    const i1 = nearest(uA1, true);
+    let sA0 = arc[i0] ?? 0;
+    let sA1 = arc[i1] ?? sA0;
+    if (sA1 < sA0) {
+        const tmpS = sA0;
+        const tmpU = uA0;
+        sA0 = sA1;
+        sA1 = tmpS;
+        uA0 = uA1;
+        uA1 = tmpU;
+    }
+    const spanS = sA1 - sA0;
+    const lbMm = Math.min(HYBRID_ARCH_LB_MM, 0.5 * Math.max(spanS, 0));
+    const lbU = spanS > 1e-9 ? (lbMm / spanS) * (uA1 - uA0) : 0;
+    const atS = (sTarget: number): { i: number; u: number; s: number; p: XYZ } => {
+        let best = 0;
+        let bestD = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < arc.length; i++) {
+            const d = Math.abs((arc[i] ?? 0) - sTarget);
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+        }
+        return { i: best, u: us[best] ?? 0, s: arc[best] ?? sTarget, p: loop[best]! };
+    };
+    const p0 = atS(sA0);
+    const p1 = atS(sA0 + lbMm);
+    const p2 = atS(sA1 - lbMm);
+    const p3 = atS(sA1);
+    const mark = (hit: { u: number; s: number; p: XYZ }, label: HybridArchMark["label"]): HybridArchMark => ({
+        u: hit.u,
+        s: hit.s,
+        x: hit.p.x,
+        y: hit.p.y,
+        z: hit.p.z,
+        label,
+    });
+    void period;
+    void closedArcDist;
+    return {
+        uA0,
+        uA1,
+        sA0,
+        sA1,
+        lbMm,
+        lbU,
+        marks: [mark(p0, "u_a0"), mark(p1, "u_a0+Lb"), mark(p2, "u_a1-Lb"), mark(p3, "u_a1")],
+    };
+}
+
+/** Short-wall wR: 0 where Ls < 2 mm, smoothstep over 15 mm of rim. */
+export function shortLsWeights(Ls: number[], arc: number[], period: number): number[] {
+    const n = Ls.length;
+    const out = new Array<number>(n).fill(1);
+    if (n === 0) return out;
+    for (let i = 0; i < n; i++) {
+        let w = 1;
+        for (let j = 0; j < n; j++) {
+            if ((Ls[j] ?? 0) >= SPLINE_SHORT_LS_MM - 1e-9) continue;
+            const d = closedArcDist(arc[i] ?? 0, arc[j] ?? 0, period);
+            w *= smoothstep01(0, SPLINE_SHORT_BLEND_MM, d);
+        }
+        out[i] = w;
+    }
+    return out;
 }
 
 function chordFrame(H: number, Ls: number): { C: Sz; n: Sz; tUp: Sz } {
@@ -890,7 +1142,14 @@ function sampleStraight(R: XYZ, B: XYZ, n: number): XYZ[] {
 }
 
 function measureOf(poly: XYZ[], E: XYZ, B: XYZ, R: XYZ, h: { x: number; y: number }, tE: XYZ) {
-    const dense = sampleSplineDense(poly);
+    const dense =
+        poly.length <= 3
+            ? sampleQuadraticDense(
+                  poly[0]!,
+                  poly[1] ?? lerp(poly[0]!, poly[poly.length - 1]!, 0.5),
+                  poly[poly.length - 1]!,
+              )
+            : sampleSplineDense(poly);
     const sag = splineSagitta(dense, E, B, h, R);
     const plan = planBounds(dense, R, B, h);
     const inflCount = polylineInflCount(dense, E, B, h);
@@ -925,7 +1184,7 @@ interface SplineSolveExtra {
 }
 
 function stationEnds(input: SplineStationInput): { E: XYZ; tE: XYZ; r1: number } {
-    const r1 = input.r1 ?? 0.5;
+    const r1 = input.r1 ?? ROUND_R1_OVER_HEEL * HEEL_EDGE_THICKNESS_MM;
     const E = input.E ?? lipEndFromR(input.R, input.h, r1);
     const tE = bodyTangentFromE(E, input.B, input.h, input.tE);
     return { E, tE, r1 };
@@ -1013,15 +1272,19 @@ function finishSolve(
 }
 
 /**
- * Body E→B: 5-point cubic. Bisect g for sag = β|EB| in [0, 0.5|EB|],
- * clamp s ≥ −0.1 (mark [RND-SBOUND]), then bisect a so mid-arc κ_max/κ_mean ≤ 3.
+ * Body E→B: one quadratic Bezier P0=E, P1=M, P2=B.
+ * M sits on the plantar at s = s_E + λ (Ls − s_E), λ = 0.5.
  */
 export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const { R, B } = input;
-    const { E, tE, r1 } = stationEnds(input);
+    const r1 = input.r1 ?? ROUND_R1_OVER_HEEL * HEEL_EDGE_THICKNESS_MM;
+    const E = input.E ?? lipEndFromR(R, input.h, r1);
     const fr = stationSzFrame(R, B, input.h);
+    const M = parabolaHandleM(E, B, R, fr.h, SPLINE_LAMBDA);
+    const tE = bodyTangentFromE(E, B, fr.h, input.tE ?? sub(M, E));
+    void tE;
     const eb = hypot3(sub(B, E));
-    const beta = splineBetaAt(input.u);
+    const beta = SPLINE_LAMBDA;
     const extra: SplineSolveExtra = {
         corner: false,
         oMin: 0,
@@ -1031,120 +1294,22 @@ export function solveSplineStation(input: SplineStationInput): SplineSolve {
         beta,
         sBound: false,
     };
-    if (eb < SPLINE_FLAT_EB_MM) {
-        return finishSolve(input, [E, B], 0, 0, SPLINE_C_FRAC * fr.Ls, beta, true, extra);
+    if (fr.Ls < SPLINE_SHORT_LS_MM) {
+        return finishSolve(input, [E, B], 0, 0, 0, beta, true, extra);
     }
-    const c0 = SPLINE_C_FRAC * fr.Ls;
-    const a0 = Math.max(SPLINE_A_FRAC * eb, SPLINE_A_R1_MULT * r1);
-    const targetSag = input.targetSagMm ?? beta * eb;
-
-    const at = (aa: number, gg: number, cc: number) => {
-        const poly = buildSplinePolygon(E, B, R, fr.h, tE, Math.max(0, aa), gg, cc);
-        return { poly, m: measureOf(poly, E, B, R, fr.h, tE) };
-    };
-
-    let a = a0;
-    let g = 0;
-    const sag0 = at(a, 0, c0).m.sag;
-    if (sag0 < targetSag) {
-        let gLo = 0;
-        let gHi = Math.max(SPLINE_G_HI_FRAC * eb, 1e-3);
-        for (let i = 0; i < SPLINE_BISECT; i++) {
-            g = 0.5 * (gLo + gHi);
-            if (at(a, g, c0).m.sag < targetSag) gLo = g;
-            else gHi = g;
-        }
-        g = 0.5 * (gLo + gHi);
-    } else {
-        let aLo = 0.25 * a0;
-        let aHi = a0;
-        for (let i = 0; i < SPLINE_BISECT; i++) {
-            a = 0.5 * (aLo + aHi);
-            if (at(a, 0, c0).m.sag > targetSag) aHi = a;
-            else aLo = a;
-        }
-        a = 0.5 * (aLo + aHi);
-        g = 0;
-    }
-    if (at(a, g, c0).m.sMin < SPLINE_S_MIN_MM - 1e-9) extra.sBound = true;
-    for (let i = 0; i < 16; i++) {
-        const { m } = at(a, g, c0);
-        if (m.sMin >= SPLINE_S_MIN_MM - 1e-9) break;
-        extra.sBound = true;
-        if (g > 1e-4) g *= 0.85;
-        else a *= 0.9;
-    }
-
-    let best = at(a, g, c0);
-    let bestRatio = best.m.kappaMaxMean;
-    let aLo = Math.max(0.35 * a0, 1.2 * r1);
-    let aHi = Math.max(aLo * 1.01, 2.2 * a0);
-    for (let i = 0; i < SPLINE_BISECT; i++) {
-        const mid = 0.5 * (aLo + aHi);
-        const trial = at(mid, g, c0);
-        if (trial.m.kappaMaxMean < bestRatio && trial.m.sMin >= SPLINE_S_MIN_MM - 1e-6) {
-            bestRatio = trial.m.kappaMaxMean;
-            best = trial;
-            a = mid;
-        }
-        const left = at(0.5 * (aLo + mid), g, c0);
-        const right = at(0.5 * (mid + aHi), g, c0);
-        if (left.m.kappaMaxMean < right.m.kappaMaxMean) aHi = mid;
-        else aLo = mid;
-    }
-    if (best.m.sMin < SPLINE_S_MIN_MM - 1e-9) {
-        extra.sBound = true;
-        for (let i = 0; i < 12 && best.m.sMin < SPLINE_S_MIN_MM - 1e-9; i++) {
-            if (g > 1e-4) g *= 0.85;
-            else a *= 0.9;
-            best = at(a, g, c0);
-        }
-    }
-    return finishSolve(input, best.poly, a, g, c0, beta, false, extra);
+    const a = hypot3(sub(M, E));
+    return finishSolve(input, [E, M, { ...B }], a, 0, 0, beta, false, extra);
 }
 
-/** Rebuild a station from ring-smoothed g, a. c stays 0.5 Ls. */
+/** Rebuild is a no-op for the quadratic; g/a are unused. */
 export function rebuildSplineStation(
     input: SplineStationInput,
-    g: number,
+    _g: number,
     _zy: number,
-    a: number,
-    extra?: Partial<SplineSolveExtra>,
+    _a: number,
+    _extra?: Partial<SplineSolveExtra>,
 ): SplineSolve {
-    const { R, B } = input;
-    const { E, tE, r1 } = stationEnds(input);
-    const fr = stationSzFrame(R, B, input.h);
-    const eb = extra?.eb ?? hypot3(sub(B, E));
-    const beta = extra?.beta ?? splineBetaAt(input.u);
-    const c = extra?.c ?? SPLINE_C_FRAC * fr.Ls;
-    const extraUse: SplineSolveExtra = {
-        corner: false,
-        oMin: extra?.oMin ?? 0,
-        rhoNeed: extra?.rhoNeed ?? splineRhoNeed(eb),
-        peakClosest: extra?.peakClosest ?? false,
-        g,
-        c,
-        beta,
-        eb,
-        r1,
-        sBound: extra?.sBound ?? false,
-    };
-    if (eb < SPLINE_FLAT_EB_MM) {
-        return finishSolve(input, [E, B], 0, 0, c, beta, true, extraUse);
-    }
-    const poly = buildSplinePolygon(E, B, R, fr.h, tE, Math.max(0, a), Math.max(0, g), c);
-    let use = poly;
-    let gg = Math.max(0, g);
-    let aa = Math.max(0, a);
-    for (let i = 0; i < 16; i++) {
-        const m = measureOf(use, E, B, R, fr.h, tE);
-        if (m.sMin >= SPLINE_S_MIN_MM - 1e-9) break;
-        extraUse.sBound = true;
-        if (gg > 1e-4) gg *= 0.85;
-        else aa *= 0.9;
-        use = buildSplinePolygon(E, B, R, fr.h, tE, aa, gg, c);
-    }
-    return finishSolve(input, use, aa, gg, c, beta, false, extraUse);
+    return solveSplineStation(input);
 }
 
 export interface SplineDensityTable {
@@ -1685,23 +1850,9 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
     if (s.fallbackStraight) misses.push("[RND-POLY]");
     if (!s.convex) misses.push("not-convex");
     if (s.inflCount > 0) misses.push(`sign-changes ${s.inflCount}`);
-    if (s.sMin < SPLINE_S_MIN_MM - 1e-9) misses.push(`sMin ${s.sMin.toFixed(3)}`);
-    if (s.sBound) misses.push("[RND-SBOUND]");
-    if (s.eb >= SPLINE_SAG_EB_MIN_MM && !s.fallbackStraight && !s.sBound) {
-        if (s.sagFrac + 1e-9 < SPLINE_SAG_LO || s.sagFrac - 1e-9 > SPLINE_SAG_HI) {
-            misses.push(`sag ${s.sagFrac.toFixed(3)}`);
-        }
-    }
     if (s.g1RDeg > SPLINE_G1_R_MAX_DEG + 1e-6) misses.push(`G1-E ${s.g1RDeg.toFixed(3)}`);
     if (s.seamBDeg > SPLINE_SEAM_B_MAX_DEG + 1e-6) misses.push(`seam-B ${s.seamBDeg.toFixed(3)}`);
     if (s.maxTurnDeg > SPLINE_TURN_MAX_DEG + 1e-6) misses.push(`turn ${s.maxTurnDeg.toFixed(3)}`);
-    if (
-        !s.fallbackStraight &&
-        s.sagFrac + 1e-9 >= SPLINE_SAG_LO &&
-        s.kappaMaxMean > SPLINE_KAPPA_MAX_MEAN + 1e-6
-    ) {
-        misses.push(`kappa-max-mean ${s.kappaMaxMean.toFixed(2)}`);
-    }
     return {
         u,
         side,
@@ -1740,8 +1891,17 @@ export function printSplineGates(g: SplineGatePrint): void {
     console.log("[RND-STATION]", JSON.stringify(g));
 }
 
-export function hybridWeightAt(u: number, sideSign: 1 | -1, lengthMm: number, forefootRound = true): number {
-    return hybridBulgeAt(u, sideSign, lengthMm, 1, forefootRound);
+export function hybridWeightAt(
+    u: number,
+    sideSign: 1 | -1,
+    lengthMm: number,
+    arch?: HybridArchSpan | null,
+    forefootRound = true,
+): number {
+    if (arch) return hybridArchWeight(u, sideSign, arch);
+    void lengthMm;
+    void forefootRound;
+    return 0;
 }
 
 export function blendColumns(straight: XYZ[], round: XYZ[], w: number): XYZ[] {
@@ -1872,43 +2032,7 @@ export function columnConvex(samples: XYZ[], h: { x: number; y: number }): boole
     return polygonConvex(samples, h);
 }
 
-/** Smooth g, a on the closed rim (σ = 10 mm) and rebuild each station. */
+/** Per-station quadratic. No ring g/a fair — λ is fixed. */
 export function applySplineRing(inputs: SplineStationInput[]): SplineSolve[] {
-    const solved = inputs.map((inp) => solveSplineStation(inp));
-    const n = solved.length;
-    if (n === 0) return solved;
-    const rim: number[] = [0];
-    for (let i = 1; i < n; i++) {
-        const a = inputs[i - 1]!.R;
-        const b = inputs[i]!.R;
-        rim.push(rim[i - 1]! + Math.hypot(b.x - a.x, b.y - a.y));
-    }
-    const period =
-        (rim[n - 1] ?? 0) +
-        Math.hypot(inputs[0]!.R.x - inputs[n - 1]!.R.x, inputs[0]!.R.y - inputs[n - 1]!.R.y);
-    const gSm = periodicGaussian1d(
-        solved.map((s) => s.g),
-        rim,
-        SPLINE_SMOOTH_SIGMA_MM,
-        period,
-    );
-    const aSm = periodicGaussian1d(
-        solved.map((s) => s.a),
-        rim,
-        SPLINE_SMOOTH_SIGMA_MM,
-        period,
-    );
-    return inputs.map((inp, i) =>
-        rebuildSplineStation(inp, gSm[i] ?? 0, 0, aSm[i] ?? 0, {
-            corner: solved[i]!.corner,
-            oMin: solved[i]!.oMin,
-            rhoNeed: solved[i]!.rhoNeed,
-            peakClosest: solved[i]!.peakClosest,
-            beta: solved[i]!.beta,
-            eb: solved[i]!.eb,
-            c: solved[i]!.c,
-            r1: solved[i]!.r1,
-            sBound: solved[i]!.sBound,
-        }),
-    );
+    return inputs.map((inp) => solveSplineStation(inp));
 }
