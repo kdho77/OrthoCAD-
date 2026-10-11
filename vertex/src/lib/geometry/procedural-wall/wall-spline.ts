@@ -762,9 +762,7 @@ export function buildSplineDensityTable(poly: XYZ[], nDense = SPLINE_W_DENSE): S
         if (maxR <= SPLINE_R_CAP + 1e-6) break;
     }
     const W = [0];
-    for (let j = 1; j <= n; j++) {
-        W.push((W[j - 1] ?? 0) + (r[j - 1] ?? 0) * (s[j - 1] ?? 0) + SPLINE_W_EPS * j);
-    }
+    for (let j = 1; j <= n; j++) W.push((W[j - 1] ?? 0) + (r[j - 1] ?? 0) * (s[j - 1] ?? 0));
     W[0] = 0;
     return { u, S, T, W, L, Theta, alpha, maxR, fillPasses };
 }
