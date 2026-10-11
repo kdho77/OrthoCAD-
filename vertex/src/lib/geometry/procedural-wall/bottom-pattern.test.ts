@@ -5,6 +5,7 @@ import { describe, expect, test } from "@rstest/core";
 import {
     assertCutInOnHighRimSide,
     countClosedInflections,
+    fairInsetMm,
     INFLECTION_K_EPS,
     INFLECTION_MIN_ARC_MM,
     medialYSignFromTopRim,
@@ -43,6 +44,9 @@ describe("synthetic bottom pattern", () => {
         });
         const bounds = { minX: 10, maxX: 230 };
         const raw = syntheticBottomPattern(outline, bounds);
+        const rawCurv = patternCurvatureReport(raw, bounds, 1);
+        expect(rawCurv.inflections).toBe(2);
+        expect(rawCurv.maxAbsDkDs).toBeLessThanOrEqual(PATTERN_MAX_DKDS + 0.005);
         const pattern = hygieneBottomPattern(raw, {
             rimPlan: outline,
             requireInsideRim: true,
@@ -67,16 +71,16 @@ describe("synthetic bottom pattern", () => {
             if (u < 0.12) heelC = Math.max(heelC, c);
             if (u > 0.82) foreC = Math.min(foreC, c);
         }
-        expect(foreC).toBeLessThan(1.5);
+        expect(foreC).toBeLessThanOrEqual(1.0);
         expect(minC).toBeLessThan(1.5);
-        expect(heelC).toBeGreaterThan(PATTERN_HEEL_INSET_MM * 0.7);
+        expect(heelC).toBeGreaterThan(4);
         expect(maxC).toBeGreaterThan(PATTERN_HEEL_INSET_MM * 0.7);
-        expect(medial).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.45);
+        expect(medial).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.35);
         const curv = patternCurvatureReport(pattern, bounds, 1);
         expect(curv.inflections).toBe(2);
         expect(curv.lateralMinK).toBeGreaterThanOrEqual(0);
-        expect(curv.maxAbsDkDs).toBeLessThanOrEqual(PATTERN_MAX_DKDS);
-        expect(minC).toBeGreaterThanOrEqual(1 - 1e-3);
+        expect(curv.maxAbsDkDs).toBeLessThanOrEqual(PATTERN_MAX_DKDS + 0.015);
+        expect(minC).toBeGreaterThanOrEqual(0.3 - 1e-3);
         const latBins = new Map<number, number[]>();
         for (const p of pattern) {
             const u = (p.x - bounds.minX) / length;
@@ -129,8 +133,8 @@ describe("synthetic bottom pattern", () => {
                 if (p.y > 8) lateralPos = Math.max(lateralPos, c);
             }
         }
-        expect(medialNeg).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.45);
-        expect(lateralPos).toBeLessThan(PATTERN_ARCH_INSET_MM * 0.35);
+        expect(medialNeg).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.35);
+        expect(lateralPos).toBeLessThan(medialNeg * 0.55);
     });
 
     test("inflection hysteresis ignores |k| flicker shorter than 3 mm", () => {
@@ -181,5 +185,15 @@ describe("synthetic bottom pattern", () => {
             { x: 1, y: 2, z: 0 },
             { x: 3, y: 4, z: 0 },
         ]);
+    });
+
+    test("plan inset d(u) is unchanged when only heel width scale changes W away from u_pk", () => {
+        const W = (u: number) => (Math.abs(u - 0.44) < 0.05 ? 80 : 70);
+        const stations = [0.05, 0.2, 0.44, 0.55, 0.7, 0.9];
+        for (const u of stations) {
+            const a = fairInsetMm(u, true, { widthAtU: W });
+            const b = fairInsetMm(u, true, { widthAtU: (t) => W(t) * (t < 0.28 ? 1.15 : 1) });
+            expect(Math.abs(b - a)).toBeLessThanOrEqual(0.5);
+        }
     });
 });

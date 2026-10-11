@@ -24,13 +24,19 @@ export function RightPanel() {
                         <div className="space-y-3">
                             <ActiveFootSideBar allowBothWhenLinked />
                             <CorrectionPresetsPanel />
-                            <CorrectionsPanel />
                             <TrimPresetsPanel />
                             {shouldShowShapeFinishOnShapeStep() ? <ShapeFinishPanel /> : null}
                             <p className="text-[10px] text-muted-foreground">
-                                Fine-tune outline with <span className="text-foreground">Edit trimline</span> in the
-                                viewer after choosing a trim preset.
+                                Fine-tune outline with <span className="text-foreground">Edit trimline</span>{" "}
+                                in the viewer after choosing a trim preset. Parametric sliders are on the
+                                Corrections step.
                             </p>
+                        </div>
+                    ) : null}
+                    {step === "corrections" ? (
+                        <div className="space-y-3">
+                            <ActiveFootSideBar allowBothWhenLinked />
+                            <CorrectionsPanel />
                         </div>
                     ) : null}
                     {step === "elements" ? (

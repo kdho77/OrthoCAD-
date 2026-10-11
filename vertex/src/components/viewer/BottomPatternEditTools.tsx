@@ -103,7 +103,7 @@ function BottomPatternOverlay({
         () => curve.points.map((p) => new THREE.Vector3(p.x, p.y, p.z + 0.8)),
         [curve.points],
     );
-    const outlineColor = isEditing ? (isDragging ? "#ef4444" : "#22d3ee") : "#3d9a3c";
+    const outlineColor = isEditing ? (isDragging ? "#ef4444" : "#22d3ee") : "#0EA5E9";
     const fillShape = useMemo(() => {
         if (curve.points.length < 3) return null;
         const shape = new THREE.Shape();
@@ -265,7 +265,7 @@ function BottomPatternOverlay({
             {fillShape ? (
                 <mesh renderOrder={8} onPointerDown={onPickPointerDown}>
                     <shapeGeometry args={[fillShape]} />
-                    <meshBasicMaterial color="#3d9a3c" side={THREE.DoubleSide} />
+                    <meshBasicMaterial color="#0EA5E9" side={THREE.DoubleSide} />
                 </mesh>
             ) : null}
             <mesh renderOrder={100} geometry={pickTubeGeo} onPointerDown={onPickPointerDown}>

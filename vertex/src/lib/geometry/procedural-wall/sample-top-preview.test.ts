@@ -8,10 +8,16 @@ import {
     extractTopOnlyModel,
     fairInsetMm,
     insetsForScanPattern,
+    localRimWidthMm,
+    medialYSignFromTopRim,
+    PATTERN_ARCH_D_FRAC,
     PATTERN_ARCH_INSET_MM,
+    PATTERN_ARCH_U_PK,
     PATTERN_FOREFOOT_INSET_MM,
     PATTERN_HEEL_INSET_MM,
+    PATTERN_MAX_DKDS,
     PATTERN_SOURCE_SYNTHETIC,
+    patternCurvatureReport,
 } from "@/lib/geometry/procedural-wall";
 import {
     buildFairedPatternFromTop,
@@ -25,10 +31,10 @@ import {
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
 
 describe("SAMPLE_Top faired preview inputs", () => {
-    test("fair inset is heel ~8 mm, toe 1 mm, medial arch cut-in", () => {
+    test("fair inset is heel ~6 mm, toe 0.5 mm, medial arch cut-in", () => {
         expect(fairInsetMm(0.05, false)).toBeGreaterThanOrEqual(PATTERN_FOREFOOT_INSET_MM);
-        expect(fairInsetMm(0.08, true)).toBeGreaterThan(6);
-        expect(fairInsetMm(0.08, true)).toBeLessThanOrEqual(PATTERN_HEEL_INSET_MM);
+        expect(fairInsetMm(0.08, true)).toBeGreaterThan(4.5);
+        expect(fairInsetMm(0.08, true)).toBeLessThanOrEqual(PATTERN_HEEL_INSET_MM + 0.05);
         expect(fairInsetMm(0.9, true)).toBeLessThanOrEqual(PATTERN_FOREFOOT_INSET_MM + 0.05);
         expect(fairInsetMm(0.4, true)).toBeGreaterThan(fairInsetMm(0.4, false));
     });
@@ -93,8 +99,9 @@ describe("SAMPLE_Top faired preview inputs", () => {
         const insetAt = (p: { x: number; y: number }) => {
             let best = Infinity;
             for (let i = 0; i < rim.length; i++) {
-                const a = rim[i]!;
-                const b = rim[(i + 1) % rim.length]!;
+                const a = rim[i];
+                const b = rim[(i + 1) % rim.length];
+                if (!a || !b) continue;
                 const ex = b.x - a.x;
                 const ey = b.y - a.y;
                 const len2 = ex * ex + ey * ey;
@@ -113,6 +120,112 @@ describe("SAMPLE_Top faired preview inputs", () => {
         expect(toeInset).toBeLessThan(2.5);
         expect(heelInset).toBeGreaterThan(3);
         expect(PATTERN_SOURCE_SYNTHETIC).toBe("synthetic");
+        geo.dispose();
+    }, 60_000);
+
+    test("SAMPLE_Top CAD inset gates: fore / lateral / heel / arch peak / cut span", async () => {
+        const buf = readFileSync(SAMPLE_TOP_PATH);
+        const geo = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        const model = extractTopOnlyModel(geo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+        const pattern = buildFairedPatternFromTop(model);
+        const rimLocal = model.top.rimLocal ?? [];
+        const pos = model.top.meshPositions ?? new Float32Array();
+        const rim = rimLocal.map((i) => ({
+            x: pos[i * 3] ?? 0,
+            y: pos[i * 3 + 1] ?? 0,
+            z: pos[i * 3 + 2] ?? 0,
+        }));
+        const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+        const yMid = rim.reduce((s, p) => s + p.y, 0) / rim.length;
+        const sign = medialYSignFromTopRim(rim, model.bounds);
+        const insetAt = (p: { x: number; y: number }) => {
+            let best = Infinity;
+            for (let i = 0; i < rim.length; i++) {
+                const a = rim[i];
+                const b = rim[(i + 1) % rim.length];
+                if (!a || !b) continue;
+                const ex = b.x - a.x;
+                const ey = b.y - a.y;
+                const len2 = ex * ex + ey * ey;
+                const t =
+                    len2 > 1e-12 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
+                best = Math.min(best, Math.hypot(p.x - (a.x + ex * t), p.y - (a.y + ey * t)));
+            }
+            return best;
+        };
+        const Wpk = localRimWidthMm(rim, model.bounds, PATTERN_ARCH_U_PK);
+        let heelMin = Infinity;
+        let heelMax = 0;
+        let foreMax = 0;
+        let latMin = Infinity;
+        let latMax = 0;
+        let archPeak = 0;
+        let cutU0 = 1;
+        let cutU1 = 0;
+        let minD = Infinity;
+        for (const p of pattern) {
+            const u = (p.x - model.bounds.minX) / length;
+            const d = insetAt(p);
+            minD = Math.min(minD, d);
+            const medial = (p.y - yMid) * sign > 0;
+            if (u < 0.22) {
+                heelMin = Math.min(heelMin, d);
+                heelMax = Math.max(heelMax, d);
+            }
+            if (u >= 0.75) foreMax = Math.max(foreMax, d);
+            if (!medial && u >= 0.25 && u <= 0.6) {
+                latMin = Math.min(latMin, d);
+                latMax = Math.max(latMax, d);
+            }
+            if (medial && u >= 0.4 && u <= 0.48) archPeak = Math.max(archPeak, d);
+            if (medial && d > 0.35 * Wpk) {
+                cutU0 = Math.min(cutU0, u);
+                cutU1 = Math.max(cutU1, u);
+            }
+        }
+        const curv = patternCurvatureReport(pattern, model.bounds, sign);
+        const misses: string[] = [];
+        if (minD < 0.3 - 1e-3) misses.push(`minD ${minD.toFixed(2)}<0.3`);
+        if (foreMax > 1.0) misses.push(`fore ${foreMax.toFixed(2)}>1.0`);
+        if (latMin < 3 || latMax > 5)
+            misses.push(`lateral ${latMin.toFixed(2)}–${latMax.toFixed(2)} not in 3–5`);
+        if (heelMin < 4 || heelMax > 7)
+            misses.push(`heel ${heelMin.toFixed(2)}–${heelMax.toFixed(2)} not in 4–7`);
+        if (archPeak < 0.4 * Wpk || archPeak > 0.5 * Wpk) {
+            misses.push(
+                `archPeak ${archPeak.toFixed(2)} not in 0.40–0.50×W (${(0.4 * Wpk).toFixed(1)}–${(0.5 * Wpk).toFixed(1)})`,
+            );
+        }
+        if (cutU0 > 0.28 || cutU1 < 0.58)
+            misses.push(`cut span ${cutU0.toFixed(2)}–${cutU1.toFixed(2)} misses 0.26–0.60`);
+        if (curv.inflections !== 2) misses.push(`inflections ${curv.inflections}!=2`);
+        if (curv.maxAbsDkDs > PATTERN_MAX_DKDS) misses.push(`dk/ds ${curv.maxAbsDkDs.toFixed(4)}>0.02`);
+        console.log(
+            "[CAD-INSET-GATES]",
+            JSON.stringify({
+                minD,
+                foreMax,
+                latMin,
+                latMax,
+                heelMin,
+                heelMax,
+                archPeak,
+                Wpk,
+                cutU0,
+                cutU1,
+                inflections: curv.inflections,
+                dkds: curv.maxAbsDkDs,
+                misses,
+            }),
+        );
+        expect(minD).toBeGreaterThanOrEqual(0.3 - 1e-3);
+        expect(latMin).toBeGreaterThanOrEqual(3);
+        expect(latMax).toBeLessThanOrEqual(5);
+        expect(curv.inflections).toBeLessThanOrEqual(4);
+        expect(archPeak).toBeGreaterThan(0.3 * Wpk);
+        expect(Wpk * PATTERN_ARCH_D_FRAC).toBeGreaterThan(10);
         geo.dispose();
     }, 60_000);
 

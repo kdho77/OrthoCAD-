@@ -11,26 +11,41 @@ import {
     startAtLowCurvature,
     startAtPosteriorHeel,
 } from "./curves";
-import { FAIRED_CONTROL_DEFAULT, fairedPattern } from "./faired-pattern";
+import { fairedPattern } from "./faired-pattern";
 
 export const PATTERN_INSET_MM = 2;
-export const PATTERN_HEEL_INSET_MM = 8;
+/** Heel-band inset both sides (u 0.00–0.22). */
+export const PATTERN_HEEL_INSET_MM = 6;
 export const PATTERN_HEEL_LATERAL_INSET_MM = 2;
+/** Posterior heel (u < 0.04). */
+export const PATTERN_POSTERIOR_INSET_MM = 4.5;
+/** Fallback medial-arch D when local rim width is unknown. */
 export const PATTERN_ARCH_INSET_MM = 28;
-/** Constant toe-box inset so the forefoot matches the top outline. */
-export const PATTERN_FOREFOOT_INSET_MM = 1;
-/** Floor under every region; the toe box is exactly `PATTERN_FOREFOOT_INSET_MM`. */
-export const PATTERN_MIN_INSET_MM = 1;
+/** Forefoot both sides (u 0.62–1.00). Toe u>0.95 may rise toward 1 mm. */
+export const PATTERN_FOREFOOT_INSET_MM = 0.5;
+/** Floor under every region. */
+export const PATTERN_MIN_INSET_MM = 0.3;
+export const PATTERN_LATERAL_MID_MIN_MM = 3.5;
+export const PATTERN_LATERAL_MID_MAX_MM = 4.5;
+export const PATTERN_ARCH_U_PK = 0.44;
+export const PATTERN_ARCH_D_FRAC = 0.45;
+/** Anterior half-width of the medial arch bump (reaches u 0.62). */
+export const PATTERN_ARCH_ANTERIOR = 0.18;
+/**
+ * Posterior half-width. Spec text is 0.12 (start 0.32); 0.18 is required so the
+ * cut-in covers the 0.26–0.60 gate while still peaking at u_pk.
+ */
+export const PATTERN_ARCH_POSTERIOR = 0.18;
 export const PATTERN_BLEND_MM = 18;
-export const PATTERN_HEEL_U1 = 0.16;
-/** Arch cut-in starts just ahead of the heel. */
-export const PATTERN_ARCH_U0 = 0.16;
-/** Arch cut-in ends behind the ball. */
+export const PATTERN_HEEL_U1 = 0.22;
+/** Arch cut-in starts just ahead of the heel-band fade. */
+export const PATTERN_ARCH_U0 = 0.24;
+/** Arch cut-in ends at the ball. */
 export const PATTERN_ARCH_U1 = 0.62;
-export const PATTERN_FORE_U0 = 0.76;
+export const PATTERN_FORE_U0 = 0.62;
 export const PATTERN_SOURCE_SYNTHETIC = "synthetic";
 export const PATTERN_FEATURE_COUNT = 16;
-export const PATTERN_CONTROL_COUNT = FAIRED_CONTROL_DEFAULT;
+export const PATTERN_CONTROL_COUNT = 18;
 export const PATTERN_SILHOUETTE_MM = 1;
 /** Bound on |dk/ds| (1/mm²) so k(s) stays fair — no local curvature spikes. */
 export const PATTERN_MAX_DKDS = 0.02;
@@ -41,7 +56,9 @@ export const INFLECTION_MIN_ARC_MM = 3;
 export const LATERAL_K_SLACK = -0.005;
 export const PATTERN_LATERAL_K_SAMPLE_MM = 1;
 export const PATTERN_FAIR_RETRY_W = 0.55;
-export const PATTERN_CONTROL_RETRY = 14;
+export const PATTERN_CONTROL_RETRY = 16;
+export const PATTERN_CONTROL_MIN = 16;
+export const PATTERN_CONTROL_MAX = 20;
 export const MIDFOOT_U0 = 0.28;
 export const MIDFOOT_U1 = 0.48;
 
@@ -179,6 +196,11 @@ export interface FairInsetOptions {
     archMm?: number;
     forefootMm?: number;
     minMm?: number;
+    posteriorMm?: number;
+    /** Scale on medial-arch D (1 = spec). Reduced when inflections ≠ 2. */
+    archScale?: number;
+    /** Local rim width W(u). When set, D = 0.45 × W(u_pk) unless archMm is set. */
+    widthAtU?: (u: number) => number;
 }
 
 /** Full Contact / Custom keep the approved fair; Prefab 3D / Flat vary inset only. */
@@ -193,28 +215,110 @@ export function insetsForScanPattern(pattern?: ScanPattern): FairInsetOptions | 
     return undefined;
 }
 
-export function fairLateralInsetMm(u: number, opts?: FairInsetOptions): number {
-    const t = Math.max(0, Math.min(1, u));
-    const w = 0.5 + 0.5 * Math.cos(Math.PI * t);
-    const heel = opts?.heelMm ?? PATTERN_HEEL_INSET_MM;
-    const fore = opts?.forefootMm ?? PATTERN_FOREFOOT_INSET_MM;
-    return fore + (heel - fore) * w * w;
+function clamp01(t: number): number {
+    return Math.max(0, Math.min(1, t));
+}
+
+function smoothstep01(e0: number, e1: number, x: number): number {
+    const t = clamp01((x - e0) / Math.max(1e-9, e1 - e0));
+    return t * t * (3 - 2 * t);
+}
+
+/** Local rim width W(u) from plan points near station u. */
+export function localRimWidthMm(
+    rim: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    u: number,
+    band = 0.03,
+): number {
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of rim) {
+        const pu = (p.x - bounds.minX) / length;
+        if (Math.abs(pu - u) > band) continue;
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+    }
+    if (!Number.isFinite(minY) || maxY - minY < 1e-3) {
+        let best = Infinity;
+        for (const p of rim) {
+            const pu = (p.x - bounds.minX) / length;
+            const du = Math.abs(pu - u);
+            if (du < best) {
+                best = du;
+                minY = p.y;
+                maxY = p.y;
+            }
+        }
+        for (const p of rim) {
+            const pu = (p.x - bounds.minX) / length;
+            if (Math.abs(pu - u) > Math.max(band, best + 0.02)) continue;
+            minY = Math.min(minY, p.y);
+            maxY = Math.max(maxY, p.y);
+        }
+    }
+    return Math.max(1e-3, maxY - minY);
+}
+
+/** cos⁴(πs/2) bump; |s|≤1. Asymmetric half-widths about u_pk. */
+export function archBumpAt(u: number): number {
+    const half = u >= PATTERN_ARCH_U_PK ? PATTERN_ARCH_ANTERIOR : PATTERN_ARCH_POSTERIOR;
+    const s = (u - PATTERN_ARCH_U_PK) / half;
+    if (Math.abs(s) >= 1) return 0;
+    const c = Math.cos((Math.PI * s) / 2);
+    return c * c * c * c;
+}
+
+function heelBandMm(u: number, heelMm: number, posteriorMm: number): number {
+    const rise = smoothstep01(0, 0.04, u);
+    const hold = posteriorMm + (heelMm - posteriorMm) * rise;
+    return hold * (1 - smoothstep01(0.18, 0.26, u));
+}
+
+function lateralMidfootMm(u: number, foreMm: number, midLo: number, midHi: number): number {
+    if (u >= 0.68) {
+        if (u > 0.95) return foreMm + (1 - foreMm) * smoothstep01(0.95, 1, u);
+        return foreMm;
+    }
+    if (u >= 0.62) return midLo + (foreMm - midLo) * smoothstep01(0.62, 0.68, u);
+    if (u >= 0.2) return midHi + (midLo - midHi) * ((u - 0.2) / (0.62 - 0.2));
+    return midHi;
 }
 
 /**
- * Medial arch as one long shallow C2 bump on the lateral taper.
- * `sin⁴(πt)` is C2 at the ends (value and first two derivatives vanish).
+ * Plan inset from the rim along the inward normal. Heel band + lateral midfoot
+ * + forefoot. Medial arch is added in {@link fairInsetMm}.
+ */
+export function fairLateralInsetMm(u: number, opts?: FairInsetOptions): number {
+    const t = clamp01(u);
+    const heel = opts?.heelMm ?? PATTERN_HEEL_INSET_MM;
+    const fore = opts?.forefootMm ?? PATTERN_FOREFOOT_INSET_MM;
+    const heelScale = heel / PATTERN_HEEL_INSET_MM;
+    const posterior = opts?.posteriorMm ?? PATTERN_POSTERIOR_INSET_MM * heelScale;
+    const midLo = PATTERN_LATERAL_MID_MIN_MM * (opts?.heelMm != null ? Math.min(1, heelScale) : 1);
+    const midHi = PATTERN_LATERAL_MID_MAX_MM * (opts?.heelMm != null ? Math.min(1, heelScale) : 1);
+    const heelPart = heelBandMm(t, heel, posterior);
+    const latPart = lateralMidfootMm(t, fore, midLo, midHi);
+    return heelPart + latPart * smoothstep01(0.18, 0.26, t);
+}
+
+/**
+ * d(u, side): heel 6 mm (posterior 4.5), lateral mid 3.5–4.5, fore 0.5,
+ * medial arch D·cos⁴ on top of the heel-band baseline. D = 0.45·W(u_pk).
  */
 export function fairInsetMm(u: number, medial: boolean, opts?: FairInsetOptions): number {
-    const dLat = fairLateralInsetMm(u, opts);
     const minMm = opts?.minMm ?? PATTERN_MIN_INSET_MM;
+    const dLat = fairLateralInsetMm(u, opts);
     if (!medial) return Math.max(minMm, dLat);
-    const span = PATTERN_ARCH_U1 - PATTERN_ARCH_U0;
-    const t = (u - PATTERN_ARCH_U0) / span;
-    if (t <= 0 || t >= 1) return Math.max(minMm, dLat);
-    const bump = Math.sin(Math.PI * t) ** 4;
-    const archMm = opts?.archMm ?? PATTERN_ARCH_INSET_MM;
-    return Math.max(minMm, dLat + (archMm - dLat) * bump);
+    const Wpk = opts?.widthAtU?.(PATTERN_ARCH_U_PK);
+    const D0 =
+        opts?.archMm ??
+        (Number.isFinite(Wpk) && (Wpk ?? 0) > 1
+            ? PATTERN_ARCH_D_FRAC * (Wpk as number)
+            : PATTERN_ARCH_INSET_MM);
+    const D = D0 * (opts?.archScale ?? 1);
+    return Math.max(minMm, dLat + D * archBumpAt(u));
 }
 
 function unitInward(outline: PolyPoint[], i: number): { x: number; y: number } {
@@ -472,8 +576,8 @@ function scopedPatternCurvature(
 }
 
 /**
- * C∞ offset → few-control FAIRED approximating cubic (not an interpolant).
- * Heel (8 mm) tapers into the forefoot (1 mm); the medial arch is one S.
+ * C2 offset → 16–20 control FAIRED approximating cubic (not an interpolant).
+ * Heel 6 mm (posterior 4.5), lateral mid 3.5–4.5, fore 0.5; medial arch is one S.
  */
 export function syntheticBottomPattern(
     outline: PolyPoint[],
@@ -493,10 +597,12 @@ export function syntheticBottomPattern(
         rim.map((_, i) => unitInward(rim, i)),
         20,
     );
+    const widthAtU = (u: number) => localRimWidthMm(loop, bounds, u);
+    const insetOpts = { ...insets, widthAtU };
     const offset: PolyPoint[] = rim.map((p, i) => {
         const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
         const medial = (p.y - yMid) * sign > 0;
-        const d = Math.max(insets?.minMm ?? PATTERN_MIN_INSET_MM, fairInsetMm(u, medial, insets));
+        const d = Math.max(insetOpts.minMm ?? PATTERN_MIN_INSET_MM, fairInsetMm(u, medial, insetOpts));
         const n = normals[i]!;
         const q = { x: p.x + n.x * d, y: p.y + n.y * d, z: 0 };
         if (!pointInPoly(q.x, q.y, loop)) {
@@ -538,25 +644,30 @@ export function syntheticBottomPattern(
         }
         return ((bestS % 1) + 1) % 1;
     };
-    const dense = resamplePolyline(closed, 36);
+    const dense = resamplePolyline(closed, 48);
     let heel = closed[0]!;
     let toe = closed[0]!;
     const archPts: PolyPoint[] = [];
+    const heelPts: PolyPoint[] = [];
+    const forePts: PolyPoint[] = [];
     for (const p of closed) {
         if (p.x < heel.x) heel = p;
         if (p.x > toe.x) toe = p;
         const medial = (p.y - yMid) * sign > 0;
         const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
         if (medial && u >= PATTERN_ARCH_U0 && u <= PATTERN_ARCH_U1) archPts.push(p);
+        if (u <= 0.22) heelPts.push(p);
+        if (u >= 0.68) forePts.push(p);
     }
+    const pick = (pts: PolyPoint[], n: number) =>
+        pts.filter((_, i) => i % Math.max(1, Math.floor(pts.length / n)) === 0).slice(0, n);
     const targets = [
         ...dense.map((p) => ({ point: p, weight: 1.2, s01: s01Of(p) })),
-        { point: heel, weight: 8, s01: s01Of(heel) },
-        { point: toe, weight: 20, s01: s01Of(toe) },
-        ...archPts
-            .filter((_, i) => i % Math.max(1, Math.floor(archPts.length / 8)) === 0)
-            .slice(0, 8)
-            .map((p) => ({ point: p, weight: 6, s01: s01Of(p) })),
+        { point: heel, weight: 10, s01: s01Of(heel) },
+        { point: toe, weight: 28, s01: s01Of(toe) },
+        ...pick(archPts, 8).map((p) => ({ point: p, weight: 6, s01: s01Of(p) })),
+        ...pick(heelPts, 6).map((p) => ({ point: p, weight: 8, s01: s01Of(p) })),
+        ...pick(forePts, 10).map((p) => ({ point: p, weight: 16, s01: s01Of(p) })),
     ];
     const sampleCount = Math.max(160, Math.ceil(offTotal / PATTERN_LATERAL_K_SAMPLE_MM));
     const fitOnce = (controlCount: number, wFair: number) =>
@@ -577,16 +688,82 @@ export function syntheticBottomPattern(
                 maxIters: 6,
             },
         });
-    let fit = fitOnce(22, 0.34);
+    let fit = fitOnce(PATTERN_CONTROL_MAX, 0.28);
     let out = makeLateralConvex(fit.samples, sign, 36, yMid);
     const retries: Array<[number, number]> = [
-        [PATTERN_CONTROL_RETRY, PATTERN_FAIR_RETRY_W],
+        [PATTERN_CONTROL_COUNT, PATTERN_FAIR_RETRY_W],
         [PATTERN_CONTROL_RETRY, 0.7],
-        [12, 0.8],
+        [PATTERN_CONTROL_MAX, 0.4],
     ];
     for (const [ctrl, wFair] of retries) {
-        if (patternCurvatureReport(out, bounds, sign).inflections <= 2) break;
+        if (patternCurvatureReport(out, bounds, sign).inflections === 2) break;
         fit = fitOnce(ctrl, wFair);
+        out = makeLateralConvex(fit.samples, sign, 48, yMid);
+    }
+    if (patternCurvatureReport(out, bounds, sign).inflections !== 2) {
+        const scaled = { ...insetOpts, archScale: 0.9 };
+        const scaledOffset: PolyPoint[] = rim.map((p, i) => {
+            const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
+            const medial = (p.y - yMid) * sign > 0;
+            const d = Math.max(scaled.minMm ?? PATTERN_MIN_INSET_MM, fairInsetMm(u, medial, scaled));
+            const n = normals[i]!;
+            const q = { x: p.x + n.x * d, y: p.y + n.y * d, z: 0 };
+            if (!pointInPoly(q.x, q.y, loop)) {
+                return { x: p.x - n.x * d, y: p.y - n.y * d, z: 0 };
+            }
+            return q;
+        });
+        let scaledClosed = startAtPosteriorHeel(ensureCcw(scaledOffset));
+        for (let pass = 0; pass < 4; pass++) {
+            scaledClosed = scaledClosed.map((b, i) => {
+                const a = scaledClosed[(i + scaledClosed.length - 1) % scaledClosed.length]!;
+                const c = scaledClosed[(i + 1) % scaledClosed.length]!;
+                return {
+                    x: b.x * 0.6 + (a.x + c.x) * 0.2,
+                    y: b.y * 0.6 + (a.y + c.y) * 0.2,
+                    z: 0,
+                };
+            });
+        }
+        const { cum: scCum, total: scTotal } = polylineArcLengths(scaledClosed);
+        const s01Scaled = (p: PolyPoint): number => {
+            let bestS = 0;
+            let bestD = Infinity;
+            for (let i = 0; i < scaledClosed.length; i++) {
+                const a = scaledClosed[i]!;
+                const b = scaledClosed[(i + 1) % scaledClosed.length]!;
+                const ex = b.x - a.x;
+                const ey = b.y - a.y;
+                const len2 = ex * ex + ey * ey;
+                const t =
+                    len2 > 1e-12 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
+                const d = (p.x - (a.x + ex * t)) ** 2 + (p.y - (a.y + ey * t)) ** 2;
+                if (d < bestD) {
+                    bestD = d;
+                    const seg = scCum[i + 1]! - scCum[i]!;
+                    bestS = (scCum[i]! + t * seg) / Math.max(scTotal, 1e-12);
+                }
+            }
+            return ((bestS % 1) + 1) % 1;
+        };
+        const scaledTargets = scaledClosed.map((p) => ({ point: p, weight: 1.2, s01: s01Scaled(p) }));
+        fit = fairedPattern({
+            targets: scaledTargets,
+            controlCount: PATTERN_CONTROL_COUNT,
+            wFit: 1,
+            wFair: 0.55,
+            sampleCount,
+            constraints: {
+                rim: loop,
+                minInsetMm: insets?.minMm ?? PATTERN_MIN_INSET_MM,
+                medialYSign: sign,
+                archU0: PATTERN_ARCH_U0,
+                archU1: PATTERN_ARCH_U1,
+                bounds,
+                lateralMinK: 0,
+                maxIters: 6,
+            },
+        });
         out = makeLateralConvex(fit.samples, sign, 48, yMid);
     }
     return out;

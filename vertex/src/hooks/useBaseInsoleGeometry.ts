@@ -323,13 +323,18 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             const field = baseModifierField(design, side, thicknessMm);
             const draft = useMeshEditStore.getState().getActiveDraftBottomPattern(side);
             const stored = useBottomPatternStore.getState().getPattern(side);
-            const patternKey = autoPatternKey(isMirroredForLoad, design.pattern);
+            const heelW = field.corrections?.heelCupWidthMm ?? 0;
+            const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}`;
             const edited = draft ?? (generatedPatternKey === patternKey ? null : stored);
             if (!draft && generatedPatternKey !== patternKey) {
                 try {
                     useBottomPatternStore
                         .getState()
-                        .ensureGenerated(side, patternKey, buildProceduralViewerPattern(raw, design.pattern));
+                        .ensureGenerated(
+                            side,
+                            patternKey,
+                            buildProceduralViewerPattern(raw, design.pattern, field.corrections),
+                        );
                 } catch (e) {
                     stockDebug("procedural viewer pattern failed", {
                         side,

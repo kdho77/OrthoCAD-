@@ -4,6 +4,7 @@
 import type { BufferGeometry } from "three";
 import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import { heelCupWidthLongitudinalEnvelope, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
 import {
     extractMergedGeometry,
     loadGlbFromBuffer,
@@ -16,6 +17,7 @@ import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel } from "./extract";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
+import { shiftPatternByRimFollow } from "./station-gates";
 import type { StockWallModel } from "./types";
 import type { ProceduralWallStyle } from "./wall-style";
 
@@ -71,9 +73,43 @@ export async function loadSampleTopGeometry(): Promise<BufferGeometry> {
 }
 
 /** Viewer-only: SAMPLE_Top rim → faired B. Does not loft walls. */
-export function buildProceduralViewerPattern(topGeo: BufferGeometry, scanPattern?: ScanPattern): PolyPoint[] {
+export function buildProceduralViewerPattern(
+    topGeo: BufferGeometry,
+    scanPattern?: ScanPattern,
+    corrections?: Partial<SideCorrections>,
+): PolyPoint[] {
     const model = extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
-    return buildFairedPatternFromTop(model, scanPattern);
+    const pattern = buildFairedPatternFromTop(model, scanPattern);
+    return followViewerPattern(pattern, model, corrections);
+}
+
+/** Linked heel-widen follow on the viewer pattern (no loft). */
+export function followViewerPattern(
+    pattern: PolyPoint[],
+    model: StockWallModel,
+    corrections?: Partial<SideCorrections>,
+): PolyPoint[] {
+    const heel = corrections?.heelCupWidthMm ?? 0;
+    if (!heel || pattern.length < 3) return pattern;
+    const pos = model.top.meshPositions;
+    const rimLocal = model.top.rimLocal ?? [];
+    if (!pos || rimLocal.length < 8) return pattern;
+    const rim = rimLocal.map((i) => ({
+        x: pos[i * 3] ?? 0,
+        y: pos[i * 3 + 1] ?? 0,
+        z: 0,
+    }));
+    const yMid = rim.reduce((s, p) => s + p.y, 0) / rim.length;
+    const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+    const live = rim.map((p) => {
+        const u = Math.max(0, Math.min(1, (p.x - model.bounds.minX) / length));
+        const s = heelCupWidthScaleFactor(u, heel);
+        return { x: p.x, y: yMid + (p.y - yMid) * s, z: 0 };
+    });
+    return shiftPatternByRimFollow(pattern, rim, live, (p) => {
+        const u = Math.max(0, Math.min(1, (p.x - model.bounds.minX) / length));
+        return heelCupWidthLongitudinalEnvelope(u);
+    });
 }
 
 /** Print / STL: loft the approved solid. Same reconstruct math as the frozen STLs. */

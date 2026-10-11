@@ -69,7 +69,7 @@ export function evaluateScanStepGate(): StepGateResult {
 
 /**
  * Whether a step may show a completed checkmark.
- * Shape / Elements / Hardness are never auto-complete from base-load alone — only via `completedSteps`.
+ * Shape / Corrections / Elements / Hardness are never auto-complete from base-load alone — only via `completedSteps`.
  */
 export function evaluateStepComplete(step: ClinicalStepId, completedSteps: ClinicalStepId[]): boolean {
     if (completedSteps.includes(step)) return true;

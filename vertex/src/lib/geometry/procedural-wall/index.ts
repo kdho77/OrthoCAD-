@@ -156,6 +156,7 @@ export {
     wallStartTiltRad,
 } from "./bezier-column";
 export {
+    archBumpAt,
     assertCutInOnHighRimSide,
     closedSignedCurvature,
     countClosedInflections,
@@ -166,12 +167,15 @@ export {
     INFLECTION_MIN_ARC_MM,
     insetsForScanPattern,
     LATERAL_K_SLACK,
+    localRimWidthMm,
     type MedialYSign,
     makeLateralConvex,
     medialYSignFromPattern,
     medialYSignFromTopRim,
     movedPatternHygiene,
+    PATTERN_ARCH_D_FRAC,
     PATTERN_ARCH_INSET_MM,
+    PATTERN_ARCH_U_PK,
     PATTERN_BLEND_MM,
     PATTERN_CONTROL_COUNT,
     PATTERN_FEATURE_COUNT,

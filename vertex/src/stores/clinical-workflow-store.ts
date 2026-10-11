@@ -8,14 +8,25 @@ import {
     scanGateBlocksLaterSteps,
 } from "@/lib/clinical/clinical-step-gates";
 
-export type ClinicalStepId = "scan" | "shape" | "elements" | "hardness" | "print";
+export type ClinicalStepId = "scan" | "shape" | "corrections" | "elements" | "hardness" | "print";
 
 export const CLINICAL_STEPS: { id: ClinicalStepId; label: string; short: string }[] = [
     { id: "scan", label: "Scan", short: "Scan" },
     { id: "shape", label: "Shape", short: "Shape" },
+    { id: "corrections", label: "Corrections", short: "Corrections" },
     { id: "elements", label: "Elements", short: "Elements" },
     { id: "hardness", label: "Hardness", short: "Hardness" },
     { id: "print", label: "Print / Export", short: "Print" },
+];
+
+/** All parametric-correction section keys — opened when entering Corrections. */
+export const CORRECTIONS_STEP_SECTIONS: CorrectionsSectionKey[] = [
+    "Arch",
+    "Heel",
+    "Flanges",
+    "Posting",
+    "pronationSupination",
+    "skive",
 ];
 
 /** Corrections collapsible section keys (see CorrectionsPanel GROUPS + wedge/skive). */
@@ -60,7 +71,7 @@ function prevStep(current: ClinicalStepId): ClinicalStepId {
 }
 
 function sectionsForStep(step: ClinicalStepId): CorrectionsSectionKey[] {
-    if (step === "shape") return ["Arch", "pronationSupination"];
+    if (step === "corrections") return [...CORRECTIONS_STEP_SECTIONS];
     return [];
 }
 

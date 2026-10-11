@@ -3,11 +3,11 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
 import {
     type CorrectionPresetPayload,
     captureCorrectionPresetFromDesign,
 } from "@/lib/clinical/correction-presets";
-import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
 import { useCorrectionPresetStore } from "@/stores/correction-preset-store";
 import { useDesignStore } from "@/stores/design-store";
 
@@ -86,7 +86,7 @@ export function CorrectionPresetsPanel() {
 
             <PresetGroup
                 title="My presets"
-                emptyCopy="No saved presets yet — adjust Shape corrections and use Save current."
+                emptyCopy="No saved presets yet — adjust Corrections and use Save current."
                 items={userPresets.map((p) => ({
                     id: p.id,
                     name: p.name,
@@ -165,7 +165,9 @@ export function CorrectionPresetsPanel() {
                         placeholder="Preset name"
                     />
                     <div className="flex justify-end gap-2 pt-2">
-                        <Button variant="ghost" size="sm" onClick={() => setPendingRename(null)}>Cancel</Button>
+                        <Button variant="ghost" size="sm" onClick={() => setPendingRename(null)}>
+                            Cancel
+                        </Button>
                         <Button
                             size="sm"
                             disabled={!renameValue.trim()}
@@ -234,48 +236,48 @@ function PresetGroup({
             ) : (
                 <div className="flex flex-col gap-1">
                     {items.map((item) => (
-                            <div
-                                key={item.id}
-                                className="flex items-center gap-1 rounded border border-border bg-panel px-1 py-0.5"
+                        <div
+                            key={item.id}
+                            className="flex items-center gap-1 rounded border border-border bg-panel px-1 py-0.5"
+                        >
+                            <span className="flex-1 truncate px-1 text-[11px]" title={item.name}>
+                                {item.name}
+                            </span>
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-[10px]"
+                                onClick={() => onApply(item.payload, "merge", item.name)}
                             >
-                                <span className="flex-1 truncate px-1 text-[11px]" title={item.name}>
-                                    {item.name}
-                                </span>
-                                <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    className="h-7 text-[10px]"
-                                    onClick={() => onApply(item.payload, "merge", item.name)}
-                                >
-                                    Merge
-                                </Button>
-                                <Button
-                                    size="sm"
-                                    variant="secondary"
-                                    className="h-7 text-[10px]"
-                                    onClick={() => onApply(item.payload, "replace", item.name)}
-                                >
-                                    Replace
-                                </Button>
-                                {item.scope === "user" && onStartRename && onDelete ? (
-                                    <>
-                                        <button
-                                            type="button"
-                                            className="px-1 text-[10px] text-muted-foreground hover:text-foreground"
-                                            onClick={() => onStartRename(item.id, item.name)}
-                                        >
-                                            Rename
-                                        </button>
-                                        <button
-                                            type="button"
-                                            className="rounded p-1 text-muted-foreground hover:text-destructive"
-                                            onClick={() => onDelete(item.id)}
-                                        >
-                                            <Trash2 className="h-3 w-3" />
-                                        </button>
-                                    </>
-                                ) : null}
-                            </div>
+                                Merge
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="secondary"
+                                className="h-7 text-[10px]"
+                                onClick={() => onApply(item.payload, "replace", item.name)}
+                            >
+                                Replace
+                            </Button>
+                            {item.scope === "user" && onStartRename && onDelete ? (
+                                <>
+                                    <button
+                                        type="button"
+                                        className="px-1 text-[10px] text-muted-foreground hover:text-foreground"
+                                        onClick={() => onStartRename(item.id, item.name)}
+                                    >
+                                        Rename
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="rounded p-1 text-muted-foreground hover:text-destructive"
+                                        onClick={() => onDelete(item.id)}
+                                    >
+                                        <Trash2 className="h-3 w-3" />
+                                    </button>
+                                </>
+                            ) : null}
+                        </div>
                     ))}
                 </div>
             )}

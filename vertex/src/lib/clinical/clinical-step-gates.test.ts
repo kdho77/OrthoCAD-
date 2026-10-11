@@ -75,6 +75,7 @@ describe("clinical step gates", () => {
         useClinicalWorkflowStore.setState({ footSideExplicitlyChosen: true });
         expect(evaluateStepComplete("shape", [])).toBe(false);
         expect(evaluateStepComplete("shape", ["shape"])).toBe(true);
+        expect(evaluateStepComplete("corrections", [])).toBe(false);
         expect(evaluateStepComplete("elements", [])).toBe(false);
         expect(evaluateStepComplete("hardness", [])).toBe(false);
     });
