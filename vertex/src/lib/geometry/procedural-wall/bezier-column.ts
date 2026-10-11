@@ -5039,6 +5039,8 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     const sampledRound: XYZ[][] = [];
     const sampledStraight: XYZ[][] = [];
     const sampledL: number[] = [];
+    const sampledAlpha: number[][] = [];
+    const lipAlpha: number[] = [];
     const maxWRStep = maxClosedStep(wR);
     console.log(
         "[RND-WR-STEP]",
@@ -5064,6 +5066,13 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         sampledRound.push(roundPts);
         sampledStraight.push(straightPts);
         sampledL.push(stR.S[stR.S.length - 1] ?? 1);
+        sampledAlpha.push(alphas);
+        const eIdx = Math.max(0, Math.min(nLipOrig, (straightCols[i]?.length ?? 1) - 1));
+        const lipOnly = (straightCols[i] ?? []).slice(0, eIdx + 1);
+        const lipST = curveSTFromPolyline(lipOnly.length > 1 ? lipOnly : [fr.R, fr.E]);
+        const lipLen = lipST.S[lipST.S.length - 1] ?? 0;
+        const fullLen = Math.max(stR.S[stR.S.length - 1] ?? 0, 1e-12);
+        lipAlpha.push(Math.max(0, Math.min(1, lipLen / fullLen)));
         if (active[i]) assertInversionOk(roundPts, sampledL[i] ?? 1, N, i);
         assertInversionOk(straightPts, stS.S[stS.S.length - 1] ?? 1, N, i);
     }
@@ -5102,7 +5111,21 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
             strCol[strCol.length - 1] = { ...fr.B };
         }
         straightSpliced[i] = strCol;
-        const kE = nearestPointIndex(roundPts, fr.E);
+        const alphas = sampledAlpha[i] ?? [];
+        const aE = lipAlpha[i] ?? 0;
+        let kE = nearestPointIndex(roundPts, fr.E);
+        if (alphas.length) {
+            let best = 0;
+            let bestD = Number.POSITIVE_INFINITY;
+            for (let k = 0; k < alphas.length; k++) {
+                const d = Math.abs((alphas[k] ?? 0) - aE);
+                if (d < bestD) {
+                    bestD = d;
+                    best = k;
+                }
+            }
+            kE = best;
+        }
         const bodyPts = col.slice(kE);
         const lipPts = col.slice(0, kE + 1);
         const lipS = minSAndIndex(lipPts, fr.R, fr.B, fr.h);
