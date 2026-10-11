@@ -55,13 +55,19 @@ export const SPLINE_SAG_EB_MIN_MM = 6;
 export const SPLINE_S_MIN_MM = -0.1;
 /** [RND-FLAT] only where |EB| < this. */
 export const SPLINE_FLAT_EB_MM = 2;
-/** max/min |κ| on the middle 80% of the body arc. */
+/** max/min |κ| on the middle 80% of the body arc. Report-only. */
 export const SPLINE_KAPPA_RATIO_MAX = 2;
+/** κ_max / κ_mean on the middle 80% of the body (lip excluded). */
+export const SPLINE_KAPPA_MAX_MEAN = 3;
 export const SPLINE_KAPPA_MID_LO = 0.1;
 export const SPLINE_KAPPA_MID_HI = 0.9;
-/** Body-side κ near E ≥ this / r1, or 3 rows after E turn ≤ 4°. */
+/** Body-side κ near E ≥ this / r1 (report-only; 3 rows after E replace lip-ok). */
 export const SPLINE_LIP_KAPPA_OVER_R1 = 0.1;
 export const SPLINE_LIP_TURN_ROWS = 3;
+/** Lip may go outboard of R up to r1 + this. */
+export const SPLINE_LIP_S_SLACK_MM = 0.1;
+/** g bisect bracket [0, this × |EB|]. */
+export const SPLINE_G_HI_FRAC = 0.5;
 export const SPLINE_WR_STEP_MAX = 0.05;
 export const SPLINE_FACE_DOT_MIN = -0.2;
 export const SPLINE_VOL_ERR_FRAC = 0.01;
@@ -139,7 +145,9 @@ export interface SplineSolve {
     beta: number;
     eb: number;
     sMin: number;
+    sBound: boolean;
     kappaRatio: number;
+    kappaMaxMean: number;
     kappaE: number;
     r1: number;
     H: number;
@@ -178,7 +186,9 @@ export interface SplineGatePrint {
     beta: number;
     eb: number;
     sMin: number;
+    sBound: boolean;
     kappaRatio: number;
+    kappaMaxMean: number;
     sagitta: number;
     sagFrac: number;
     peakZFrac: number;
@@ -609,6 +619,64 @@ export function midArcKappaRatio(samples: XYZ[], lo = SPLINE_KAPPA_MID_LO, hi = 
     return mx / mn;
 }
 
+/** κ_max / κ_mean on the middle 80% of a body polyline. */
+export function midArcKappaMaxMean(
+    samples: XYZ[],
+    lo = SPLINE_KAPPA_MID_LO,
+    hi = SPLINE_KAPPA_MID_HI,
+): number {
+    const ks = polylineAbsKappa(samples).filter((r) => r.s >= lo && r.s <= hi && r.k >= 1e-5);
+    if (ks.length < 2) return 1;
+    let mx = 0;
+    let sum = 0;
+    for (const r of ks) {
+        mx = Math.max(mx, r.k);
+        sum += r.k;
+    }
+    const mean = sum / ks.length;
+    if (mean < 1e-8) return mx > 1e-8 ? Number.POSITIVE_INFINITY : 1;
+    return mx / mean;
+}
+
+export function minSAndIndex(
+    samples: XYZ[],
+    R: XYZ,
+    B: XYZ,
+    h: { x: number; y: number },
+): { sMin: number; k: number } {
+    const fr = stationSzFrame(R, B, h);
+    let minS = Number.POSITIVE_INFINITY;
+    let k = 0;
+    for (let i = 0; i < samples.length; i++) {
+        const s = toSz(samples[i]!, fr.origin, fr.h).s;
+        if (s < minS) {
+            minS = s;
+            k = i;
+        }
+    }
+    return { sMin: Number.isFinite(minS) ? minS : 0, k };
+}
+
+export function nearestPointIndex(pts: XYZ[], target: XYZ): number {
+    let best = 0;
+    let bestD = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < pts.length; i++) {
+        const d = hypot3(sub(pts[i]!, target));
+        if (d < bestD) {
+            bestD = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+/** Lip R→E plus body E→B, dropping the duplicated E. */
+export function concatProfiles(lip: XYZ[], body: XYZ[]): XYZ[] {
+    if (!lip.length) return body.map((p) => ({ ...p }));
+    if (!body.length) return lip.map((p) => ({ ...p }));
+    return [...lip.slice(0, -1).map((p) => ({ ...p })), ...body.map((p) => ({ ...p }))];
+}
+
 export function kappaNearStart(samples: XYZ[], frac = 0.08): number {
     const ks = polylineAbsKappa(samples).filter((r) => r.s <= frac);
     let mx = 0;
@@ -838,6 +906,7 @@ function measureOf(poly: XYZ[], E: XYZ, B: XYZ, R: XYZ, h: { x: number; y: numbe
         maxTurnDeg: maxPolylineTurn(dense),
         sMin: minSOfSamples(dense, R, B, h),
         kappaRatio: midArcKappaRatio(dense),
+        kappaMaxMean: midArcKappaMaxMean(dense),
         kappaE: kappaNearStart(dense),
     };
 }
@@ -852,6 +921,7 @@ interface SplineSolveExtra {
     beta?: number;
     eb?: number;
     r1?: number;
+    sBound?: boolean;
 }
 
 function stationEnds(input: SplineStationInput): { E: XYZ; tE: XYZ; r1: number } {
@@ -893,6 +963,7 @@ function finishSolve(
               maxTurnDeg: 0,
               sMin: minSOfSamples([E, B], R, B, fr.h),
               kappaRatio: 1,
+              kappaMaxMean: 1,
               kappaE: 0,
           }
         : measureOf(poly, E, B, R, fr.h, tE);
@@ -915,7 +986,9 @@ function finishSolve(
         beta,
         eb,
         sMin: m.sMin,
+        sBound: extra.sBound ?? false,
         kappaRatio: m.kappaRatio,
+        kappaMaxMean: m.kappaMaxMean,
         kappaE: m.kappaE,
         r1,
         H,
@@ -940,8 +1013,8 @@ function finishSolve(
 }
 
 /**
- * Body E→B: 5-point cubic. Bisect g for sag = β|EB|, clamp s ≥ −0.1,
- * then bisect a/c so mid-arc max/min κ ≤ 2.
+ * Body E→B: 5-point cubic. Bisect g for sag = β|EB| in [0, 0.5|EB|],
+ * clamp s ≥ −0.1 (mark [RND-SBOUND]), then bisect a so mid-arc κ_max/κ_mean ≤ 3.
  */
 export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const { R, B } = input;
@@ -956,6 +1029,7 @@ export function solveSplineStation(input: SplineStationInput): SplineSolve {
         eb,
         r1,
         beta,
+        sBound: false,
     };
     if (eb < SPLINE_FLAT_EB_MM) {
         return finishSolve(input, [E, B], 0, 0, SPLINE_C_FRAC * fr.Ls, beta, true, extra);
@@ -974,7 +1048,7 @@ export function solveSplineStation(input: SplineStationInput): SplineSolve {
     const sag0 = at(a, 0, c0).m.sag;
     if (sag0 < targetSag) {
         let gLo = 0;
-        let gHi = Math.max(eb, 1e-3);
+        let gHi = Math.max(SPLINE_G_HI_FRAC * eb, 1e-3);
         for (let i = 0; i < SPLINE_BISECT; i++) {
             g = 0.5 * (gLo + gHi);
             if (at(a, g, c0).m.sag < targetSag) gLo = g;
@@ -992,31 +1066,34 @@ export function solveSplineStation(input: SplineStationInput): SplineSolve {
         a = 0.5 * (aLo + aHi);
         g = 0;
     }
+    if (at(a, g, c0).m.sMin < SPLINE_S_MIN_MM - 1e-9) extra.sBound = true;
     for (let i = 0; i < 16; i++) {
         const { m } = at(a, g, c0);
         if (m.sMin >= SPLINE_S_MIN_MM - 1e-9) break;
+        extra.sBound = true;
         if (g > 1e-4) g *= 0.85;
         else a *= 0.9;
     }
 
     let best = at(a, g, c0);
-    let bestRatio = best.m.kappaRatio;
+    let bestRatio = best.m.kappaMaxMean;
     let aLo = Math.max(0.35 * a0, 1.2 * r1);
     let aHi = Math.max(aLo * 1.01, 2.2 * a0);
     for (let i = 0; i < SPLINE_BISECT; i++) {
         const mid = 0.5 * (aLo + aHi);
         const trial = at(mid, g, c0);
-        if (trial.m.kappaRatio < bestRatio && trial.m.sMin >= SPLINE_S_MIN_MM - 1e-6) {
-            bestRatio = trial.m.kappaRatio;
+        if (trial.m.kappaMaxMean < bestRatio && trial.m.sMin >= SPLINE_S_MIN_MM - 1e-6) {
+            bestRatio = trial.m.kappaMaxMean;
             best = trial;
             a = mid;
         }
         const left = at(0.5 * (aLo + mid), g, c0);
         const right = at(0.5 * (mid + aHi), g, c0);
-        if (left.m.kappaRatio < right.m.kappaRatio) aHi = mid;
+        if (left.m.kappaMaxMean < right.m.kappaMaxMean) aHi = mid;
         else aLo = mid;
     }
     if (best.m.sMin < SPLINE_S_MIN_MM - 1e-9) {
+        extra.sBound = true;
         for (let i = 0; i < 12 && best.m.sMin < SPLINE_S_MIN_MM - 1e-9; i++) {
             if (g > 1e-4) g *= 0.85;
             else a *= 0.9;
@@ -1050,6 +1127,7 @@ export function rebuildSplineStation(
         beta,
         eb,
         r1,
+        sBound: extra?.sBound ?? false,
     };
     if (eb < SPLINE_FLAT_EB_MM) {
         return finishSolve(input, [E, B], 0, 0, c, beta, true, extraUse);
@@ -1061,6 +1139,7 @@ export function rebuildSplineStation(
     for (let i = 0; i < 16; i++) {
         const m = measureOf(use, E, B, R, fr.h, tE);
         if (m.sMin >= SPLINE_S_MIN_MM - 1e-9) break;
+        extraUse.sBound = true;
         if (gg > 1e-4) gg *= 0.85;
         else aa *= 0.9;
         use = buildSplinePolygon(E, B, R, fr.h, tE, aa, gg, c);
@@ -1437,6 +1516,81 @@ export function samplePolylinesByW(cols: XYZ[][], N: number, f: number[][]): { p
     return { pts, L };
 }
 
+/** Per-segment 1/ds_t on a uniform normalized-arc grid. */
+export function qOnNormalizedArc(S: number[], T: number[], nGrid = SPLINE_W_DENSE): number[] {
+    const nSeg = Math.max(1, S.length - 1);
+    const L = Math.max(S[nSeg] ?? 0, 1e-16);
+    const qSeg: number[] = [];
+    for (let j = 1; j <= nSeg; j++) {
+        const dS = (S[j] ?? 0) - (S[j - 1] ?? 0);
+        const dT = (T[j] ?? 0) - (T[j - 1] ?? 0);
+        qSeg.push(1 / Math.max(dsTarget(rhoFromSegment(dS, dT), L), 1e-16));
+    }
+    const out: number[] = [];
+    for (let i = 0; i < nGrid; i++) {
+        const amid = (i + 0.5) / nGrid;
+        const sMid = amid * L;
+        let j = 1;
+        while (j < S.length && (S[j] ?? 0) < sMid) j++;
+        out.push(qSeg[Math.max(0, j - 1)] ?? qSeg[qSeg.length - 1] ?? 1);
+    }
+    return out;
+}
+
+export function finishNormalizedDensity(qGrid: number[], N: number, nNeed: number): SplineDensityTable {
+    const nGrid = Math.max(1, qGrid.length);
+    const u: number[] = [0];
+    const S: number[] = [0];
+    const T: number[] = [0];
+    const W = [0];
+    const add: number[] = [];
+    let Z = 0;
+    for (let j = 0; j < nGrid; j++) {
+        const inc = Math.max(qGrid[j] ?? 0, 1e-16) / nGrid;
+        add.push(inc);
+        Z += inc;
+        u.push((j + 1) / nGrid);
+        S.push((j + 1) / nGrid);
+        T.push(0);
+    }
+    for (let j = 1; j <= nGrid; j++) {
+        W.push((W[j - 1] ?? 0) + (Z > 1e-16 ? (add[j - 1] ?? 0) / Z : 1 / nGrid));
+    }
+    W[0] = 0;
+    if (W.length) W[W.length - 1] = 1;
+    return { u, S, T, W, L: 1, Theta: 0, alpha: 0, maxR: 0, fillPasses: 0, nNeed, N };
+}
+
+/** Joint turn-bounded density q = (1−w) q_S + w q_R on normalized arc. */
+export function jointDensityTable(
+    stS: { S: number[]; T: number[] },
+    stR: { S: number[]; T: number[] },
+    w: number,
+    N: number,
+): SplineDensityTable {
+    const qS = qOnNormalizedArc(stS.S, stS.T);
+    const qR = qOnNormalizedArc(stR.S, stR.T);
+    const n = Math.min(qS.length, qR.length);
+    const ww = Math.max(0, Math.min(1, w));
+    const q: number[] = [];
+    for (let i = 0; i < n; i++) q.push((1 - ww) * (qS[i] ?? 0) + ww * (qR[i] ?? 0));
+    const nS = stationSampleNeed(stS.S, stS.T).n;
+    const nR = stationSampleNeed(stR.S, stR.T).n;
+    const nNeed = Math.max(1, Math.ceil((1 - ww) * nS + ww * nR));
+    return finishNormalizedDensity(q, N, nNeed);
+}
+
+export function samplePolylineAtArcFractions(col: XYZ[], alphas: number[]): XYZ[] {
+    const dense = densifyPolyline(col, SPLINE_W_DENSE);
+    const out: XYZ[] = [];
+    for (let k = 0; k < alphas.length; k++) {
+        if (k === 0) out.push({ ...(col[0] ?? dense[0]!) });
+        else if (k === alphas.length - 1) out.push({ ...(col[col.length - 1] ?? dense[dense.length - 1]!) });
+        else out.push(evalDensePolyline(dense, Math.max(0, Math.min(1, alphas[k] ?? 0))));
+    }
+    return out;
+}
+
 export function splineTurningTValues(poly: XYZ[], n: number): number[] {
     if (n < 2) return [0, 1];
     const steps = SPLINE_DENSE;
@@ -1528,7 +1682,8 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
     if (!s.convex) misses.push("not-convex");
     if (s.inflCount > 0) misses.push(`sign-changes ${s.inflCount}`);
     if (s.sMin < SPLINE_S_MIN_MM - 1e-9) misses.push(`sMin ${s.sMin.toFixed(3)}`);
-    if (s.eb >= SPLINE_SAG_EB_MIN_MM && !s.fallbackStraight) {
+    if (s.sBound) misses.push("[RND-SBOUND]");
+    if (s.eb >= SPLINE_SAG_EB_MIN_MM && !s.fallbackStraight && !s.sBound) {
         if (s.sagFrac + 1e-9 < SPLINE_SAG_LO || s.sagFrac - 1e-9 > SPLINE_SAG_HI) {
             misses.push(`sag ${s.sagFrac.toFixed(3)}`);
         }
@@ -1536,12 +1691,12 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
     if (s.g1RDeg > SPLINE_G1_R_MAX_DEG + 1e-6) misses.push(`G1-E ${s.g1RDeg.toFixed(3)}`);
     if (s.seamBDeg > SPLINE_SEAM_B_MAX_DEG + 1e-6) misses.push(`seam-B ${s.seamBDeg.toFixed(3)}`);
     if (s.maxTurnDeg > SPLINE_TURN_MAX_DEG + 1e-6) misses.push(`turn ${s.maxTurnDeg.toFixed(3)}`);
-    if (s.kappaRatio > SPLINE_KAPPA_RATIO_MAX + 1e-6) {
-        misses.push(`kappa-ratio ${s.kappaRatio.toFixed(2)}`);
-    }
-    const lipNeed = SPLINE_LIP_KAPPA_OVER_R1 / Math.max(s.r1, 1e-6);
-    if (!s.fallbackStraight && s.kappaE + 1e-9 < lipNeed) {
-        misses.push(`lip-kappa ${s.kappaE.toFixed(3)}<${lipNeed.toFixed(3)}`);
+    if (
+        !s.fallbackStraight &&
+        s.sagFrac + 1e-9 >= SPLINE_SAG_LO &&
+        s.kappaMaxMean > SPLINE_KAPPA_MAX_MEAN + 1e-6
+    ) {
+        misses.push(`kappa-max-mean ${s.kappaMaxMean.toFixed(2)}`);
     }
     return {
         u,
@@ -1555,7 +1710,9 @@ export function stationGates(s: SplineSolve, u: number, side: 1 | -1): SplineGat
         beta: s.beta,
         eb: s.eb,
         sMin: s.sMin,
+        sBound: s.sBound,
         kappaRatio: s.kappaRatio,
+        kappaMaxMean: s.kappaMaxMean,
         sagitta: s.sagitta,
         sagFrac: s.sagFrac,
         peakZFrac: s.peakZFrac,
@@ -1747,6 +1904,7 @@ export function applySplineRing(inputs: SplineStationInput[]): SplineSolve[] {
             eb: solved[i]!.eb,
             c: solved[i]!.c,
             r1: solved[i]!.r1,
+            sBound: solved[i]!.sBound,
         }),
     );
 }

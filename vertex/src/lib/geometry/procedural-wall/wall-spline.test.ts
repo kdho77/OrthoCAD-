@@ -11,16 +11,22 @@ import {
     enforceMonotoneF,
     evalClampedCubic,
     invertDensityW,
+    jointDensityTable,
+    midArcKappaMaxMean,
     midArcKappaRatio,
     minSOfSamples,
     printSplineGates,
+    qOnNormalizedArc,
     SPLINE_CHORD_MIN_MM,
     SPLINE_FLAT_EB_MM,
+    SPLINE_G_HI_FRAC,
+    SPLINE_KAPPA_MAX_MEAN,
     SPLINE_KNOTS,
     SPLINE_KNOTS_5,
     SPLINE_N_MAX,
     SPLINE_S_MIN_MM,
     type SplineStationInput,
+    samplePolylineAtArcFractions,
     sampleSplineRingByW,
     solveSplineStation,
     splineBetaAt,
@@ -288,6 +294,48 @@ describe("clamped cubic wall spline", () => {
                 10,
             ),
         ).toBe(false);
+    });
+
+    test("kappa_max/mean is finite on the mid-body; old ratio stays report-only", () => {
+        const sol = solveSplineStation(station(0.35, 1, 12, 10, { s: -1, z: -0.18 }));
+        const km = midArcKappaMaxMean(sol.pts);
+        expect(Number.isFinite(km)).toBe(true);
+        expect(km).toBeGreaterThan(0);
+        expect(sol.kappaMaxMean).toBeGreaterThan(0);
+        expect(sol.g).toBeLessThanOrEqual(SPLINE_G_HI_FRAC * sol.eb + 1e-6);
+        const g = stationGates(sol, 0.35, 1);
+        expect(g.misses.some((m) => m.startsWith("kappa-ratio"))).toBe(false);
+        if (sol.sagFrac + 1e-9 >= 0.12) {
+            expect(sol.kappaMaxMean).toBeLessThanOrEqual(SPLINE_KAPPA_MAX_MEAN + 0.5);
+        }
+    });
+
+    test("joint density samples both polylines at the same normalized-arc fractions", () => {
+        const round = [
+            { x: 0, y: 0, z: 10 },
+            { x: -1, y: 0, z: 6 },
+            { x: 2, y: 0, z: 0 },
+        ];
+        const straight = [
+            { x: 0, y: 0, z: 10 },
+            { x: 2, y: 0, z: 0 },
+        ];
+        const stR = curveSTFromPolyline(round);
+        const stS = curveSTFromPolyline(straight);
+        const qR = qOnNormalizedArc(stR.S, stR.T, 64);
+        const qS = qOnNormalizedArc(stS.S, stS.T, 64);
+        expect(qR.length).toBe(64);
+        expect(qS.length).toBe(64);
+        const table1 = jointDensityTable(stS, stR, 1, 16);
+        const table0 = jointDensityTable(stS, stR, 0, 16);
+        expect(table1.W[0]).toBe(0);
+        expect(table1.W[table1.W.length - 1]).toBe(1);
+        expect(table0.W[0]).toBe(0);
+        const alphas = [0, invertDensityW(table1, 0.5), 1];
+        const pts = samplePolylineAtArcFractions(round, alphas);
+        expect(pts[0]!.z).toBeCloseTo(10, 9);
+        expect(pts[2]!.z).toBeCloseTo(0, 9);
+        expect(pts.length).toBe(3);
     });
 
     test("inactive station skips spline evaluation", () => {

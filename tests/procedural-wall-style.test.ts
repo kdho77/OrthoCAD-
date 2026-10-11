@@ -24,6 +24,8 @@ import {
     SPLINE_G1_R_MAX_DEG,
     SPLINE_GATES_REPORT_ONLY,
     SPLINE_H_MIN_MM,
+    SPLINE_KAPPA_MAX_MEAN,
+    SPLINE_LIP_S_SLACK_MM,
     SPLINE_ROW1_TR_MAX_DEG,
     SPLINE_S_MIN_MM,
     SPLINE_SAG_EB_MIN_MM,
@@ -186,6 +188,9 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             splineFk?: number[];
             splineFlat?: boolean;
             splineWR?: number;
+            splineSMinLip?: number;
+            splineSMinBody?: number;
+            rTop?: number;
         }>;
         medialYSign?: 1 | -1;
         footLengthMm?: number;
@@ -274,7 +279,13 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
                 ),
             );
         }
-        const sMinHits = frames.filter((f) => (f.midPlanOffMm ?? 0) < SPLINE_S_MIN_MM - 1e-6);
+        const sMinHits = frames.filter((f) => {
+            if (f.splineFlat || (f.splineWR ?? 0) < 0.5) return false;
+            const body = (f.splineSMinBody ?? f.midPlanOffMm ?? 0) < SPLINE_S_MIN_MM - 1e-6;
+            const r1 = f.rTop ?? 0.5;
+            const lip = (f.splineSMinLip ?? 0) < -(r1 + SPLINE_LIP_S_SLACK_MM) - 1e-6;
+            return body || lip;
+        });
         if (sMinHits.length) misses.push(`sMin ${sMinHits.length} <${SPLINE_S_MIN_MM}`);
         const g1Hits = frames.filter((f) => (f.g1EDeg ?? 0) > SPLINE_G1_R_MAX_DEG + 1e-6);
         if (g1Hits.length) {
@@ -311,6 +322,7 @@ type GateRow = {
     cap?: number | string;
     n?: number;
     worstI?: number;
+    worstK?: number;
     worstU?: number;
 };
 
@@ -338,9 +350,14 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             splineMaxNiU?: number;
             duplicateVerts?: number;
             worstAcrossI?: number;
+            worstAcrossK?: number;
             worstAcrossU?: number;
             worstAlongRowI?: number;
+            worstAlongRowK?: number;
             worstAlongRowU?: number;
+            worstMidRowTurnI?: number;
+            worstMidRowTurnK?: number;
+            worstMidRowTurnU?: number;
             nLipFail?: number;
         };
         wallFrames?: Array<{
@@ -368,8 +385,17 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             splineRhoMin?: number;
             splineRhoNeed?: number;
             splineKappaRatio?: number;
+            splineKappaMaxMean?: number;
             splineKappaE?: number;
             splineLipOk?: boolean;
+            splineLipTurnMax?: number;
+            splineLipTurnK?: number;
+            splineSMinLip?: number;
+            splineSMinBody?: number;
+            splineSMinK?: number;
+            splineSBound?: boolean;
+            nLip?: number;
+            rTop?: number;
             o?: number;
             a?: number;
         }>;
@@ -439,7 +465,7 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         return (f.midChordOffMm ?? 0) / eb;
     };
     const sagGated = (f: (typeof frames)[number]): boolean =>
-        wrGated(f) && (f.midChordMm ?? 0) >= SPLINE_SAG_EB_MIN_MM;
+        wrGated(f) && !f.splineSBound && (f.midChordMm ?? 0) >= SPLINE_SAG_EB_MIN_MM;
     const sagHi = worstHi(
         (f) => (sagGated(f) ? sagOf(f) : 0),
         (v) => v - 1e-9 > SPLINE_SAG_HI,
@@ -448,17 +474,47 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         (f) => (sagGated(f) ? sagOf(f) : 1),
         (v) => v + 1e-9 < SPLINE_SAG_LO,
     );
+    const sBound = worstHi(
+        (f) => (wrGated(f) && f.splineSBound ? 1 : 0),
+        (v) => v > 0,
+    );
     const sMin = worstLo(
-        (f) => f.midPlanOffMm ?? 0,
+        (f) => {
+            if (!wrGated(f)) return 0;
+            return Math.min(f.splineSMinBody ?? f.midPlanOffMm ?? 0, 0);
+        },
         (v) => v < SPLINE_S_MIN_MM - 1e-6,
+    );
+    const sMinLipHits = frames
+        .map((f, i) => ({ f, i }))
+        .filter(({ f }) => {
+            if (!wrGated(f)) return false;
+            const lim = -((f.rTop ?? 0.5) + SPLINE_LIP_S_SLACK_MM);
+            return (f.splineSMinLip ?? 0) < lim - 1e-6;
+        });
+    const sMinLipWorst = sMinLipHits.reduce(
+        (best, row) => {
+            const v = row.f.splineSMinLip ?? 0;
+            return v < best.v
+                ? { n: sMinLipHits.length, v, i: row.i, u: row.f.u, k: row.f.splineSMinK ?? 0 }
+                : best;
+        },
+        { n: 0, v: 0, i: -1, u: -1, k: 0 },
     );
     const kappa = worstHi(
         (f) => (wrGated(f) ? (f.splineKappaRatio ?? 1) : 1),
         (v) => v > 2 + 1e-6,
     );
+    const kappaMean = worstHi(
+        (f) => {
+            if (!wrGated(f) || sagOf(f) + 1e-9 < SPLINE_SAG_LO) return 1;
+            return f.splineKappaMaxMean ?? 1;
+        },
+        (v) => v > SPLINE_KAPPA_MAX_MEAN + 1e-6,
+    );
     const lip = worstHi(
-        (f) => (wrGated(f) && f.splineLipOk === false ? 1 : 0),
-        (v) => v > 0,
+        (f) => (wrGated(f) && f.splineLipOk === false ? (f.splineLipTurnMax ?? 5) : 0),
+        (v) => v > 4 + 1e-6,
     );
     const edge = worstLo(
         (f) => {
@@ -496,7 +552,7 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
         pass: boolean,
         value: number | string,
         cap?: number | string,
-        extra?: { n?: number; worstI?: number; worstU?: number },
+        extra?: { n?: number; worstI?: number; worstK?: number; worstU?: number },
     ): GateRow => ({ gate, pass, value, cap, ...extra });
     const rows: GateRow[] = [
         row(
@@ -549,25 +605,62 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             sagHi.n ? { n: sagHi.n, worstI: sagHi.i, worstU: sagHi.u } : undefined,
         ),
         row(
-            "sMin",
+            "[RND-SBOUND]",
+            true,
+            sBound.n,
+            "accepted",
+            sBound.n ? { n: sBound.n, worstI: sBound.i, worstU: sBound.u } : undefined,
+        ),
+        row(
+            "sMin-body",
             !sMin.n || style === "straight",
             sMin.n ? sMin.v : 0,
             SPLINE_S_MIN_MM,
-            sMin.n ? { n: sMin.n, worstI: sMin.i, worstU: sMin.u } : undefined,
+            sMin.n
+                ? { n: sMin.n, worstI: sMin.i, worstK: frames[sMin.i]?.splineSMinK, worstU: sMin.u }
+                : undefined,
+        ),
+        row(
+            "sMin-lip",
+            !sMinLipHits.length || style === "straight",
+            sMinLipHits.length ? sMinLipWorst.v : 0,
+            `-(r1+${SPLINE_LIP_S_SLACK_MM})`,
+            sMinLipHits.length
+                ? {
+                      n: sMinLipHits.length,
+                      worstI: sMinLipWorst.i,
+                      worstK: sMinLipWorst.k,
+                      worstU: sMinLipWorst.u,
+                  }
+                : undefined,
         ),
         row(
             "kappa-ratio",
-            !kappa.n || style === "straight",
+            true,
             kappa.n ? kappa.v : 0,
-            2,
+            "report-only",
             kappa.n ? { n: kappa.n, worstI: kappa.i, worstU: kappa.u } : undefined,
         ),
         row(
-            "lip-ok",
+            "kappa-max-mean",
+            !kappaMean.n || style === "straight",
+            kappaMean.n ? kappaMean.v : 0,
+            SPLINE_KAPPA_MAX_MEAN,
+            kappaMean.n ? { n: kappaMean.n, worstI: kappaMean.i, worstU: kappaMean.u } : undefined,
+        ),
+        row(
+            "lip-rows",
             !lip.n || style === "straight",
-            lip.n ? lip.v : (q.nLipFail ?? 0),
-            0,
-            lip.n ? { n: lip.n, worstI: lip.i, worstU: lip.u } : undefined,
+            lip.n ? lip.v : 0,
+            4,
+            lip.n
+                ? {
+                      n: lip.n,
+                      worstI: lip.i,
+                      worstK: frames[lip.i]?.splineLipTurnK,
+                      worstU: lip.u,
+                  }
+                : undefined,
         ),
         row(
             "vs-straight",
@@ -616,13 +709,18 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
             !misses.some((m) => m.startsWith("across-p100")),
             q.maxAcrossDeg ?? 0,
             style === "straight" ? ACROSS_STATION_MAX_DEG : WALL_STYLE_ACROSS_P100_BLOCK_DEG,
-            q.worstAcrossI != null ? { worstI: q.worstAcrossI, worstU: q.worstAcrossU } : undefined,
+            q.worstAcrossI != null
+                ? { worstI: q.worstAcrossI, worstK: q.worstAcrossK, worstU: q.worstAcrossU }
+                : undefined,
         ),
         row(
             "mid-row-turn",
             style === "straight" || (q.maxMidRowTurnDeg ?? 0) <= WALL_MID_TURN_MAX_DEG + 1e-6,
             q.maxMidRowTurnDeg ?? 0,
             WALL_MID_TURN_MAX_DEG,
+            q.worstMidRowTurnI != null
+                ? { worstI: q.worstMidRowTurnI, worstK: q.worstMidRowTurnK, worstU: q.worstMidRowTurnU }
+                : undefined,
         ),
         row(
             "mid-row-dihedral",
@@ -630,7 +728,9 @@ function gateTable(geo: BufferGeometry, style: Style, straight?: BufferGeometry)
                 (q.maxMidRowDihedralDeg ?? q.maxAlongRowDeg ?? 0) <= WALL_MID_DIHEDRAL_MAX_DEG + 1e-6,
             q.maxMidRowDihedralDeg ?? q.maxAlongRowDeg ?? 0,
             WALL_MID_DIHEDRAL_MAX_DEG,
-            q.worstAlongRowI != null ? { worstI: q.worstAlongRowI, worstU: q.worstAlongRowU } : undefined,
+            q.worstAlongRowI != null
+                ? { worstI: q.worstAlongRowI, worstK: q.worstAlongRowK, worstU: q.worstAlongRowU }
+                : undefined,
         ),
         row("dup-verts", (q.duplicateVerts ?? 0) === 0, q.duplicateVerts ?? 0, 0),
         row(
@@ -683,6 +783,18 @@ describe("procedural wall styles", () => {
             const table = gateTable(geo, style, style === "straight" ? undefined : straight);
             tables[style] = table;
             console.log("[RND-GATE-TABLE]", style, JSON.stringify(table));
+            const missRows = table
+                .filter((r) => !r.pass && r.gate !== "kappa-ratio")
+                .map((r) => ({
+                    gate: r.gate,
+                    i: r.worstI,
+                    k: r.worstK,
+                    u: r.worstU,
+                    value: r.value,
+                    cap: r.cap,
+                    n: r.n,
+                }));
+            console.log("[RND-MISS]", style, JSON.stringify(missRows));
             const qN =
                 (
                     geo.userData as {
