@@ -19,6 +19,7 @@ import {
     assertSplineEndpoints,
     blendColumns,
     bulgeVsStraightFrac,
+    columnRowTurns,
     g1CPrime0Deg,
     hybridWeightAt,
     overEdgeTangent,
@@ -27,6 +28,7 @@ import {
     SPLINE_FLAT_MM,
     SPLINE_G1_R_MAX_DEG,
     SPLINE_MIN_EDGE_FRAC,
+    SPLINE_R_CAP,
     SPLINE_ROW1_TR_MAX_DEG,
     SPLINE_SMOOTH_SIGMA_MM,
     type SplineStationInput,
@@ -4977,6 +4979,52 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         fr.splineFlatReason = evaluated ? "" : reasons[i]!.join("+") || "flat";
         fr.tInc = overEdgeTangent(tR, fr.h);
     }
+    const rowTurnMax: number[] = [];
+    const firstOver: Array<{ i: number; u: number; deg: number; chord: number }> = [];
+    let firstMax = 0;
+    let firstI = -1;
+    for (let i = 0; i < nS; i++) {
+        if (!active[i]) continue;
+        const col = xyz[i]!;
+        const turns = columnRowTurns(col);
+        for (let k = 0; k < turns.length; k++) {
+            rowTurnMax[k] = Math.max(rowTurnMax[k] ?? 0, turns[k] ?? 0);
+        }
+        const deg = frames[i]!.splineRow1Deg ?? 0;
+        const chord = col.length > 1 ? dist3(col[1]!, col[0]!) : 0;
+        if (deg > firstMax) {
+            firstMax = deg;
+            firstI = i;
+        }
+        if (deg > SPLINE_ROW1_TR_MAX_DEG + 1e-6) {
+            firstOver.push({
+                i,
+                u: Number(frames[i]!.u.toFixed(4)),
+                deg: Number(deg.toFixed(4)),
+                chord: Number(chord.toFixed(4)),
+            });
+        }
+    }
+    const worstK = rowTurnMax.reduce((best, v, k) => (v > (rowTurnMax[best] ?? 0) ? k : best), 0);
+    console.log(
+        "[RND-ROW-TURN]",
+        JSON.stringify({
+            max: Number((rowTurnMax[worstK] ?? 0).toFixed(4)),
+            worstK: worstK + 1,
+            perRow: rowTurnMax.map((v) => Number(v.toFixed(3))),
+        }),
+    );
+    console.log(
+        "[RND-FIRST-CHORD]",
+        JSON.stringify({
+            maxDeg: Number(firstMax.toFixed(4)),
+            worstI: firstI,
+            nOver6: firstOver.length,
+            over: firstOver.slice(0, 16),
+            rCap: SPLINE_R_CAP,
+            raised: false,
+        }),
+    );
     const countWhy = (tag: string) => reasons.filter((r) => r.includes(tag)).length;
     const sorted = (xs: number[]) => {
         const s = xs.slice().sort((a, b) => a - b);

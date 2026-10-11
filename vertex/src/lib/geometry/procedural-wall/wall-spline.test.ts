@@ -140,6 +140,7 @@ describe("clamped cubic wall spline", () => {
             expect(table.W[i]!).toBeGreaterThan(table.W[i - 1]!);
         }
         expect(table.L).toBeGreaterThan(1);
+        expect(table.maxR).toBeLessThanOrEqual(5 + 1e-6);
         const N = 20;
         const f = enforceMonotoneF(
             Array.from({ length: N + 1 }, (_, k) => k / N),
@@ -147,7 +148,6 @@ describe("clamped cubic wall spline", () => {
         );
         expect(f[0]).toBe(0);
         expect(f[N]).toBe(1);
-        for (let k = 1; k <= N; k++) expect(f[k]!).toBeGreaterThanOrEqual(f[k - 1]! + 0.6 / N - 1e-12);
         const u0 = invertDensityW(table, 0);
         const u1 = invertDensityW(table, 1);
         expect(u0).toBe(0);
@@ -167,18 +167,14 @@ describe("clamped cubic wall spline", () => {
         expect(Math.abs(ring.f[0]![5]! - ring.f[1]![5]!)).toBeLessThanOrEqual(0.02);
     });
 
-    test("enforceMonotoneF gaps 0.6/N then renormalizes", () => {
-        const N = 10;
-        const tight = Array.from({ length: N + 1 }, (_, k) => 0.05 * k);
-        const f = enforceMonotoneF(tight, N);
-        expect(f[0]).toBe(0);
-        expect(f[N]).toBe(1);
-        for (let k = 1; k <= N; k++) expect(f[k]!).toBeGreaterThanOrEqual(f[k - 1]! + 0.6 / N - 1e-12);
-        const bunched = [0, 0.01, 0.02, 0.03, 0.04, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
-        const g = enforceMonotoneF(bunched, N);
-        expect(g[0]).toBe(0);
-        expect(g[N]).toBe(1);
-        for (let k = 1; k <= N; k++) expect(g[k]!).toBeGreaterThanOrEqual(g[k - 1]! + 0.6 / N - 1e-12);
+    test("density cap water-fills r to <= 5", () => {
+        const sol = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
+        const table = buildSplineDensityTable(sol.poly);
+        expect(table.maxR).toBeLessThanOrEqual(5 + 1e-6);
+        expect(table.W[0]).toBe(0);
+        expect(table.W[table.W.length - 1]!).toBeCloseTo(1, 2);
+        expect(table.fillPasses).toBeGreaterThan(0);
+        expect(table.fillPasses).toBeLessThanOrEqual(20);
     });
 
     test("invertDensityW lerps the W table, never u = k/N", () => {

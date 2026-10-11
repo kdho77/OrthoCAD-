@@ -42,8 +42,8 @@ export const SPLINE_DENSE = 512;
 export const SPLINE_W_DENSE = 2048;
 export const SPLINE_W_ALPHA = 0.6;
 export const SPLINE_W_THETA_MIN_DEG = 1;
-export const SPLINE_F_STEP_FRAC = 0.6;
-export const SPLINE_F_GAP_ITERS = 3;
+export const SPLINE_R_CAP = 5;
+export const SPLINE_R_FILL_ITERS = 20;
 export const SPLINE_F_RING_MAX = 0.02;
 export const SPLINE_MIN_EDGE_FRAC = 0.2;
 export const SPLINE_FLAT_MM = 0.05;
@@ -711,9 +711,11 @@ export interface SplineDensityTable {
     L: number;
     Theta: number;
     alpha: number;
+    maxR: number;
+    fillPasses: number;
 }
 
-/** 2048 uniform-u samples: cumulative arc S(u), |turning| T(u), mix W(u). */
+/** 2048-point S, T; water-fill r≤5 in arc length; W = cumsum(r s). */
 export function buildSplineDensityTable(poly: XYZ[], nDense = SPLINE_W_DENSE): SplineDensityTable {
     const n = Math.max(1, nDense);
     const u: number[] = [];
@@ -735,14 +737,36 @@ export function buildSplineDensityTable(poly: XYZ[], nDense = SPLINE_W_DENSE): S
     const L = S[n]!;
     const Theta = T[n]!;
     const alpha = Theta < SPLINE_W_THETA_MIN_DEG ? 0 : SPLINE_W_ALPHA;
-    const W: number[] = [];
-    for (let i = 0; i <= n; i++) {
-        const sTerm = L > 1e-16 ? S[i]! / L : (u[i] ?? 0);
-        const tTerm = Theta > 1e-16 ? T[i]! / Theta : 0;
-        W.push((1 - alpha) * sTerm + alpha * tTerm + SPLINE_W_EPS * i);
+    const s: number[] = [];
+    const r: number[] = [];
+    for (let j = 1; j <= n; j++) {
+        const dS = (S[j] ?? 0) - (S[j - 1] ?? 0);
+        const dT = (T[j] ?? 0) - (T[j - 1] ?? 0);
+        const sj = L > 1e-16 ? dS / L : 1 / n;
+        const rho = (1 - alpha) * sj + (Theta > 1e-16 ? (alpha * dT) / Theta : 0);
+        s.push(sj);
+        r.push(sj > 1e-16 ? rho / sj : 1);
+    }
+    let fillPasses = 0;
+    let maxR = 0;
+    for (let pass = 0; pass < SPLINE_R_FILL_ITERS; pass++) {
+        fillPasses = pass + 1;
+        for (let j = 0; j < n; j++) r[j] = Math.min(r[j] ?? 1, SPLINE_R_CAP);
+        let Z = 0;
+        for (let j = 0; j < n; j++) Z += (r[j] ?? 0) * (s[j] ?? 0);
+        if (Z > 1e-16) {
+            for (let j = 0; j < n; j++) r[j] = (r[j] ?? 0) / Z;
+        }
+        maxR = 0;
+        for (let j = 0; j < n; j++) maxR = Math.max(maxR, r[j] ?? 0);
+        if (maxR <= SPLINE_R_CAP + 1e-6) break;
+    }
+    const W = [0];
+    for (let j = 1; j <= n; j++) {
+        W.push((W[j - 1] ?? 0) + (r[j - 1] ?? 0) * (s[j - 1] ?? 0) + SPLINE_W_EPS * j);
     }
     W[0] = 0;
-    return { u, S, T, W, L, Theta, alpha };
+    return { u, S, T, W, L, Theta, alpha, maxR, fillPasses };
 }
 
 /**
@@ -806,35 +830,22 @@ export function bulgeVsStraightFrac(round: XYZ[], straight: XYZ[], H: number): n
     return max / Math.max(H, 1e-6);
 }
 
-/** After rim smooth: gap f_k >= f_{k-1} + 0.6/N, then f *= 1/f_N. Repeat ≤ 3. */
-export function enforceMonotoneF(f: number[], N: number): number[] {
+/** Pin endpoints only. No f-space gap rule. */
+export function enforceMonotoneF(f: number[], _N: number): number[] {
     const out = f.slice();
     if (!out.length) return out;
-    const last = out.length - 1;
-    const n = Math.max(1, N);
-    const minStep = SPLINE_F_STEP_FRAC / n;
     out[0] = 0;
-    for (let iter = 0; iter < SPLINE_F_GAP_ITERS; iter++) {
-        out[0] = 0;
-        for (let k = 1; k <= last; k++) out[k] = Math.max(out[k] ?? 0, (out[k - 1] ?? 0) + minStep);
-        const end = out[last] ?? 0;
-        if (end > 1e-16) {
-            for (let k = 0; k <= last; k++) out[k] = (out[k] ?? 0) / end;
-        }
-        out[0] = 0;
-        out[last] = 1;
-        let tight = false;
-        for (let k = 1; k <= last; k++) {
-            if ((out[k] ?? 0) - (out[k - 1] ?? 0) + 1e-15 < minStep) {
-                tight = true;
-                break;
-            }
-        }
-        if (!tight) break;
-    }
-    out[0] = 0;
-    out[last] = 1;
+    out[out.length - 1] = 1;
     return out;
+}
+
+/** Interior turning (deg) at each row k = 1 … n-1. */
+export function columnRowTurns(pts: XYZ[]): number[] {
+    const turns: number[] = [];
+    for (let k = 1; k < pts.length - 1; k++) {
+        turns.push(acuteDeg(sub(pts[k]!, pts[k - 1]!), sub(pts[k + 1]!, pts[k]!)));
+    }
+    return turns;
 }
 
 export function assertSplineEndpoints(poly: XYZ[], R: XYZ, B: XYZ): void {
@@ -852,8 +863,8 @@ export function row1TRAngleDeg(row1: XYZ, R: XYZ, tR: XYZ, h: { x: number; y: nu
 }
 
 /**
- * Shared N (last-row index). Smooth f_k = k/N along the rim, gap 0.6/N then
- * renormalize (≤3), invert each station's W(u). Rows 0 and N are C(0)=R and C(1)=B.
+ * Shared N. Smooth f_k = k/N along the rim (no f-gap). Invert each W(u).
+ * Rows 0 and N are C(0)=R and C(1)=B.
  */
 export function sampleSplineRingByW(
     polys: XYZ[][],
@@ -864,7 +875,17 @@ export function sampleSplineRingByW(
     const nS = polys.length;
     const tables = polys.map((p, i) => {
         if (active && !active[i]) {
-            return { u: [0, 1], S: [0, 1], T: [0, 0], W: [0, 1], L: 1, Theta: 0, alpha: 0 };
+            return {
+                u: [0, 1],
+                S: [0, 1],
+                T: [0, 0],
+                W: [0, 1],
+                L: 1,
+                Theta: 0,
+                alpha: 0,
+                maxR: 1,
+                fillPasses: 0,
+            };
         }
         return buildSplineDensityTable(p);
     });
