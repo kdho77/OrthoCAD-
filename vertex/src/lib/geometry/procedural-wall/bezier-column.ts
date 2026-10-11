@@ -5111,8 +5111,10 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     });
     const rawW = shortRaw.map((s, i) => (s ?? 0) * (rawHybrid[i] ?? 0));
     const wR = widenClosedRamp(rawW, arc, period, SPLINE_WR_STEP_MAX);
-    for (let i = 0; i < nS; i++) {
-        if ((frames[i]!.sideSign ?? 1) < 0) wR[i] = 0;
+    if (style === "hybrid") {
+        for (let i = 0; i < nS; i++) {
+            if ((frames[i]!.sideSign ?? 1) < 0) wR[i] = 0;
+        }
     }
     const straightSpliced: PolyPoint[][] = Array.from({ length: nS }, () => []);
     const sampledRound: XYZ[][] = [];
@@ -5264,7 +5266,7 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         const kappaMean = midArcKappaMaxMean(bodyPts.length >= 3 ? bodyPts : col);
         const kappaRatio = midArcKappaRatio(bodyPts.length >= 3 ? bodyPts : col);
         const inflCount = polylineInflCount(used, fr.R, fr.B, fr.h);
-        if (evaluated && inflCount > 0) {
+        if (evaluated && w > 0.05 && inflCount > 0) {
             splineGateFail("[RND-INFL]", {
                 i,
                 u: Number(fr.u.toFixed(4)),
