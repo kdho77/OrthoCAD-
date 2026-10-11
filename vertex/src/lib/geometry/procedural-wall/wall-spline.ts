@@ -669,8 +669,8 @@ export function wallStripVolume(roundA: XYZ[], roundB: XYZ[], straightA: XYZ[], 
         const b2 = straightB[k]!;
         const c2 = straightB[k + 1]!;
         const d2 = straightA[k + 1]!;
-        vol += prismVolume(a, c, b, a2, c2, b2);
-        vol += prismVolume(a, d, c, a2, d2, c2);
+        vol -= prismVolume(a, c, b, a2, c2, b2);
+        vol -= prismVolume(a, d, c, a2, d2, c2);
     }
     return vol;
 }
