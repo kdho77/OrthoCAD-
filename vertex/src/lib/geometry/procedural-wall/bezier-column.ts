@@ -4413,6 +4413,46 @@ function prepareStyledMid(
     return nRound + nLineStar + nFil + 2;
 }
 
+/** Fair interior mid-row rings along i so loft dihedral stays ≤ 4°. E and F stay put. */
+function fairStyledMidRows(xyz: XYZ[][], frames: ColumnFrame[]): void {
+    if ((frames[0]?.wallStyle?.style ?? "straight") === "straight") return;
+    const n = xyz.length;
+    if (n < 3) return;
+    const nRound = frames[0]!.nRoundFix || 0;
+    const nLine = frames[0]!.nLineFix || 0;
+    if (nLine < 2) return;
+    const rim = frames.map((fr) => fr.R);
+    const eIdx = nRound;
+    const fIdx = nRound + nLine;
+    for (let j = eIdx + 1; j < fIdx; j++) {
+        const xs: number[] = [];
+        const ys: number[] = [];
+        const zs: number[] = [];
+        let ok = true;
+        for (let i = 0; i < n; i++) {
+            const p = xyz[i]![j];
+            if (!p) {
+                ok = false;
+                break;
+            }
+            xs.push(p.x);
+            ys.push(p.y);
+            zs.push(p.z);
+        }
+        if (!ok) continue;
+        const sx = periodicGaussian(xs, rim, WALL_MID_SMOOTH_SIGMA_MM);
+        const sy = periodicGaussian(ys, rim, WALL_MID_SMOOTH_SIGMA_MM);
+        const sz = periodicGaussian(zs, rim, WALL_MID_SMOOTH_SIGMA_MM);
+        for (let i = 0; i < n; i++) {
+            const p = xyz[i]![j];
+            if (!p) continue;
+            p.x = sx[i] ?? p.x;
+            p.y = sy[i] ?? p.y;
+            p.z = sz[i] ?? p.z;
+        }
+    }
+}
+
 function applyPieceCounts(frames: ColumnFrame[], report: NRoundStarReport): number {
     for (const fr of frames) {
         fr.nRoundFix = report.nRound;
@@ -4588,6 +4628,11 @@ export function buildBezierColumns(
         }
         maxSide = Math.max(maxSide, offPlaneMm(col[col.length - 1]!, fr.B, fr.h));
         xyz.push(col);
+    }
+    fairStyledMidRows(xyz, frames);
+    for (let i = 0; i < frames.length; i++) {
+        const fr = frames[i]!;
+        const col = xyz[i]!;
         const first = col[1] ?? fr.F;
         const nxt = frames[(i + 1) % frames.length]!;
         const leanStep = (Math.abs(nxt.leanRad - fr.leanRad) * 180) / Math.PI;
