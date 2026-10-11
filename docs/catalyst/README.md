@@ -1,6 +1,6 @@
 # OrthoCAD Catalyst pilot (Development only)
 
-Approved bounded pilot: host the **web OrthoCAD SPA on Catalyst Slate**, and the **Node tRPC API + Python manufacturing service on AppSail**. Vercel production is unchanged. This repo does **not** deploy — a Catalyst CLI token is required and is not stored here.
+Approved bounded pilot: prove **hosting** — SPA on Catalyst Slate, optional **short** AppSail routes. **G-code and `manufacturing.generateSolid` stay on Render.** No synchronous long routes on AppSail. Vercel production is unchanged. This repo does **not** deploy. A later Development deploy waits for a CLI token **and** Kendon enabling Slate/AppSail (**Start Exploring**).
 
 Confirmed account (MCP, 2026-10-11):
 
@@ -24,16 +24,17 @@ Identity files (seeded from MCP so `catalyst deploy` can link after login; the C
 
 ## Mapping
 
-| Piece | Catalyst service | Source | Runtime |
-| --- | --- | --- | --- |
-| SPA (Vite/React in `vertex/`) | Slate (`orthocad-web`) | `vertex` | `react-vite` |
-| tRPC API | AppSail `vertex-api` | `vertex` | managed Node 22 |
-| Manufacturing | AppSail `vertex-manufacturing` | `python-service` | OCI container (`Dockerfile`), or managed Python 3.11 fallback |
-| Database | **external Postgres** | Supabase today; Neon considered | not Catalyst Data Store |
-| Auth | **existing Supabase Auth** | `catalyst_auth: false` | do not enable Catalyst SSO |
-| Files | **existing Supabase Storage** | see [dependencies.md](./dependencies.md) | Stratus is optional later |
+| Piece | Pilot host | Notes |
+| --- | --- | --- |
+| SPA (Vite/React in `vertex/`) | Slate `orthocad-web` | Hosting proof. Config is in `catalyst.json`; do not deploy until token + Start Exploring. |
+| Short tRPC (`user.health`, CRUD, STL prepare/upload URL, `getGcodeDownloadUrl`) | Render today; AppSail `vertex-api` only if every handler stays well under 30 s | Do not point the browser at an AppSail API that still runs `generateSolid`. |
+| `manufacturing.generateSolid` + Python `POST /manufacture` G-code | **Render** (`vertex-manufacturing`) | GM: stay on Render. Do **not** deploy `python-service` to AppSail for this pilot. See [async-jobs.md](./async-jobs.md). |
+| Preview wall reconstruct | Browser worker | ~25 s/foot. Not an AppSail route. |
+| Database | **Postgres on Supabase** | Pilot does not move the DB. Neon is a **later, separate** step — do not fold it in. |
+| Auth | **Supabase Auth** (stays) | `catalyst_auth: false`. Pilot proves hosting only. |
+| Files | **Supabase Storage** (stays) | See [dependencies.md](./dependencies.md). No Stratus cutover. |
 
-Cross-origin: Slate is `*.onslate.com`, AppSail is `*.catalystappsail.com`. The Node API echoes `CORS_ORIGIN` (comma-separated). Set `catalyst_auth` to `false` on both AppSail services so Catalyst SSO does not intercept Supabase JWTs. After the first Slate deploy, add that exact origin to `CORS_ORIGIN` and to Console → Authentication → Whitelisting (CORS toggle).
+Cross-origin: Slate is `*.onslate.com`, AppSail is `*.catalystappsail.com`. The Node API echoes `CORS_ORIGIN` (comma-separated). **Order for a later dev deploy:** deploy first, **then** set `CORS_ORIGIN` / `VITE_API_URL` from the assigned hosts (and whitelist the Slate origin). Do not invent those URLs before the first deploy.
 
 ## AppSail limits (pilot)
 
@@ -41,12 +42,12 @@ Documented platform limits ([AppSail basics](https://docs.catalyst.zoho.com/en/s
 
 | Limit | Value | OrthoCAD impact |
 | --- | --- | --- |
-| Request timeout | **30s** | `POST /manufacture` G-code on production-density meshes is **over 30s**. See [manufacturing-30s.md](./manufacturing-30s.md). |
-| Scale-to-zero | after **5 min** idle | Cold start on the next request; manufacturing must still finish inside 30s after listen. |
+| Request timeout | **30s** | Why G-code / `generateSolid` stay on Render. See [manufacturing-30s.md](./manufacturing-30s.md) and [async-jobs.md](./async-jobs.md). |
+| Scale-to-zero | after **5 min** idle | Cold start on the next short request only. G-code is not on AppSail. |
 | Max instances | **5** per app (raise via support) | Fine for internal use. |
-| Services per project | **5** | This pilot uses 2 AppSail + 1 Slate. |
-| Listen window | **10s** | Do **not** run `prisma migrate deploy` in the start command. Migrate as a pre-deploy step. |
-| Default memory / disk | 512 MB / 256 MB | API stays 512 MB; manufacturing is set to 2048 MB. |
+| Services per project | **5** | Pilot: Slate + optional 1 short AppSail API. Do not add manufacturing AppSail. |
+| Listen window | **10s** | Do **not** run `prisma migrate deploy` in the start command. |
+| Default memory / disk | 512 MB / 256 MB | Short API only if AppSail is used. Manufacturing RAM stays on Render. |
 | Custom domains | 1 per Slate app; max 5 per application; **no apex**; Zoho SSL up to 48h | Not used. No DNS cutover. Vercel production stays put. |
 
 ## Setup (no secrets in git)
@@ -54,29 +55,25 @@ Documented platform limits ([AppSail basics](https://docs.catalyst.zoho.com/en/s
 1. Install CLI ≥ 1.27.2: `npm install -g zcatalyst-cli`
 2. `catalyst login --dc us -ni` (browser OAuth; needs a human)
 3. Confirm `catalyst whoami` and that `.catalystrc` points at `orthocad` / Development
-4. One-time console: project → Slate → **Start Exploring**; same for AppSail
-5. Set AppSail env vars **in the Catalyst console** (do not commit values). Required keys:
+4. **Kendon:** project → Slate → **Start Exploring**; same for AppSail. Required before any remote deploy.
+5. Console env vars (no values in git), **after** the first deploy when hosts exist — see deploy order below.
 
-**vertex-api**
+**vertex-api** (only if a short-route AppSail API is deployed later)
 
-- `DATABASE_URL`, `DIRECT_URL` (Postgres; keep Supabase or point at Neon)
-- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
-- `CORS_ORIGIN` — `http://localhost:5180,<slate-https-origin>`
-- `MANUFACTURING_SERVICE_URL` — AppSail manufacturing origin (no trailing slash)
-- `MANUFACTURING_INTERNAL_API_KEY` (generate; share with manufacturing)
+- `DATABASE_URL`, `DIRECT_URL` — existing **non-production** Supabase Postgres (not a Neon cutover; not production)
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — **Supabase Auth stays**
+- `CORS_ORIGIN` — set **after** deploy, once the Slate origin is known
+- `MANUFACTURING_SERVICE_URL` — **Render** manufacturing origin (not AppSail)
+- `MANUFACTURING_INTERNAL_API_KEY` (shared with Render manufacturing)
 - `AI_PROVIDER`, `AI_API_KEY` (optional)
-- `STORAGE_BUCKET`, `MANUFACTURING_BUCKET`, `STOCK_STORAGE_BUCKET` (optional overrides)
+- `STORAGE_BUCKET`, `MANUFACTURING_BUCKET`, `STOCK_STORAGE_BUCKET` (optional; **Supabase Storage stays**)
 
-**vertex-manufacturing**
-
-- `MANUFACTURING_INTERNAL_API_KEY`
-- `CORS_ORIGIN` (optional; browser does not call this service today)
-- `X_ZOHO_CATALYST_LISTEN_PORT` is injected by the platform
+**Do not deploy `vertex-manufacturing` to AppSail** in this pilot.
 
 **orthocad-web (Slate, build-time only)**
 
-- `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
-- `VITE_API_URL` — `https://vertex-api-<ZAID>.development.catalystappsail.com/trpc`
+- `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` — **Supabase Auth stays**
+- `VITE_API_URL` — set **after** deploy. For generateSolid, keep pointing at **Render** tRPC (or a host that still calls Render manufacturing).
 - `VITE_STOCK_STORAGE_BUCKET` (optional)
 
 Do not put secrets in `app-config.json` `env_variables`. A linked CLI deploy **replaces** console env vars with that object (an empty object wipes runtime vars).
@@ -114,40 +111,38 @@ catalyst serve -ni
 
 That serves Slate + AppSail locally; managed Catalyst services proxy to Development. Do **not** use `catalyst serve` as a substitute for `npm run test` / `npm run check`.
 
-Prisma: `npm run db:push` or `npx prisma migrate deploy` **before** the process listens. AppSail kills instances that are not listening within 10s.
+Prisma: never put `prisma migrate deploy` in an AppSail start command (10 s listen window). When you migrate, use a **non-production** database only.
 
-## Deploy to Development (token required — do not run yet)
+## Deploy to Development (later — do not run in this PR)
 
-Vercel production, DNS, and custom domains stay untouched. Target **Development only**.
+Blocked until (a) a Catalyst CLI token exists and (b) Kendon has enabled Slate and AppSail (**Start Exploring**). Vercel production, DNS, and custom domains stay untouched. Target **Development only**. **Do not deploy manufacturing to AppSail.**
+
+**Order:**
+
+1. **First deploy** Slate (and, if used, a short-route AppSail API). No `CORS_ORIGIN` / `VITE_API_URL` guesses before hosts exist.
+2. **Then set** `CORS_ORIGIN` and `VITE_API_URL` from the assigned Slate / API hosts. Rebuild Slate if the API URL is a build-time Vite var. Keep `VITE_API_URL` / `MANUFACTURING_SERVICE_URL` on **Render** for `generateSolid` / G-code.
+3. **`prisma migrate deploy` only against a non-production DB.** Never the production Supabase/Vercel database. Never in the AppSail start command.
 
 ```bash
-# 0. Login (human)
+# 0. Human, after token + Start Exploring
 catalyst login --dc us -ni
 
-# 1. Pre-deploy migrate (external Postgres). Never put this in the start command.
-cd vertex && npx prisma migrate deploy && cd ..
-
-# 2. Local verify
-catalyst serve -ni
-# curl AppSail health: GET /trpc/user.health  and  GET /health
-
-# 3. Slate (SPA)
+# 1. First deploy — Slate hosting proof
 cd vertex && npm run build && mkdir -p dist/.catalyst && \
   cp .catalyst/slate-config.toml dist/.catalyst/slate-config.toml && cd ..
 catalyst deploy slate orthocad-web -ni
 
-# 4. API (managed Node)
-catalyst deploy appsail --name vertex-api \
-  --build-path "$(pwd)/vertex" --stack node22 \
-  --command "sh -c 'npx tsx server/src/index.ts'" -ni
+# Optional short-route API only (no generateSolid traffic)
+# catalyst deploy appsail --name vertex-api --build-path "$(pwd)/vertex" --stack node22 \
+#   --command "sh -c 'npx tsx server/src/index.ts'" -ni
 
-# 5. Manufacturing (OCI, linux/amd64)
-docker build --platform linux/amd64 -t orthocad-manufacturing:local python-service
-catalyst deploy appsail --name vertex-manufacturing \
-  --source docker://orthocad-manufacturing:local -ni
+# 2. Then set CORS_ORIGIN and VITE_API_URL from the assigned hosts (console / rebuild)
+
+# 3. Migrate only a non-production Postgres (not production, not a Neon cutover)
+# cd vertex && DATABASE_URL=... DIRECT_URL=... npx prisma migrate deploy
 ```
 
-After deploy: set `CORS_ORIGIN` and `VITE_API_URL` to the real hosts, rebuild Slate, smoke-test login + `user.health` + a coupon `/manufacture`. Do **not** map a custom domain. Do **not** promote to Production.
+Do **not** map a custom domain. Do **not** promote to Production. Do **not** `catalyst deploy` `vertex-manufacturing`.
 
 ## What this pilot does not do
 
@@ -155,4 +150,6 @@ After deploy: set `CORS_ORIGIN` and `VITE_API_URL` to the real hosts, rebuild Sl
 - No Vercel / DNS / paid-plan changes
 - No secrets in git
 - No Catalyst Data Store, Catalyst Auth, or Stratus cutover
+- No Neon cutover (later, separate)
+- No async job implementation ([async-jobs.md](./async-jobs.md) is scope only)
 - No self-trigger on CI or Vercel status events

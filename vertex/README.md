@@ -142,7 +142,7 @@ See `vertex/vercel.json` and `vertex/api/trpc/[[...trpc]].ts` (the fully self-co
 
 ### Catalyst Development pilot (Slate + AppSail)
 
-Bounded pilot only — see [`docs/catalyst/README.md`](../docs/catalyst/README.md). Vercel production, DNS, and custom domains stay unchanged. Do not deploy without a Catalyst CLI token.
+Bounded hosting pilot only — see [`docs/catalyst/README.md`](../docs/catalyst/README.md). G-code and `generateSolid` stay on Render. Vercel production, DNS, and custom domains stay unchanged. Deploy later, after a CLI token and Slate/AppSail **Start Exploring**.
 
 ### Render (full stack)
 

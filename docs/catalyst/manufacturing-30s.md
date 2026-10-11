@@ -10,9 +10,11 @@ PYTHONPATH=python-service python3 python-service/scripts/measure_appsail_timeout
 
 Thresholds used in the script: `OK` < 20s, `NEAR_30S` ≥ 20s, `OVER_30S` ≥ 30s.
 
+**GM (pilot):** G-code and `manufacturing.generateSolid` **stay on Render**. No synchronous long routes on AppSail. Submit-then-poll is scoped in [async-jobs.md](./async-jobs.md) only — not built.
+
 ## Finding
 
-**`POST /manufacture` with `output_type=gcode` on a production-density mesh does not fit in 30s.**
+**`POST /manufacture` with `output_type=gcode` on a production-density mesh does not fit in AppSail’s 30s.** It **does** fit a 15-minute Catalyst Job/Event/Cron clock (~194 s) but **not** the 512 MB function memory / zip runtime. Keep Render.
 
 - Measured **1.608 s/layer** belt-wall slice on `tests/fixtures/Default.glb` (85,759 faces, 43,699 verts).
 - After a 45° belt transform that mesh spans **35.7 mm** in Z → **~119 layers** at 0.3 mm → **~194 s** estimated G-code. **OVER_30S**.
@@ -62,13 +64,15 @@ Related, not manufacturing compute:
 
 `Default.glb` is the production stock-base mesh (not a finished watertight manufacturing STL). It is the best in-repo stand-in for face count. A finished insole STL is the same order of magnitude or denser after client export; treat **~194 s** as the conservative G-code number, not the coupon **7 ms**.
 
-## Mitigations (do not implement in this PR)
+## Pilot decision and later options
 
-1. **Async job + poll (recommended).** `generateSolid` enqueues work (Catalyst Job Scheduling targeting the manufacturing AppSail, or an in-process worker on a dedicated instance that you keep warm). Return `{ jobId, status: "queued" }` inside a few hundred ms. Client polls `getJob(jobId)` or a signed Storage object. Survives the 30s cap and the 5-minute scale-to-zero (the job run is a new request, or a long-lived instance if support raises idle).
-2. **Keep manufacturing off AppSail for G-code.** Leave the Python service on Render (or another host without a 30s cap) for the pilot; only put `/health` + STL passthrough on Catalyst.
-3. **Split the job.** One request per layer-batch or per foot, each < 20 s, stitch in the Node API. Still fails for Default.glb-scale (1.6 s × 20 layers ≈ 32 s) unless batches are small.
-4. **Decimate before slice.** Remesh the finished STL to a face budget that stays under ~0.15 s/layer (~20 s / 120 layers). Quality risk; measure on real exports first.
-5. **Do not move preview wall reconstruct to AppSail** as a synchronous route. 25 s/foot is already NEAR_30S with no slice/G-code on top.
-6. **Ask Zoho support** for a timeout increase (some AppSail caps can be raised). Do not block the pilot on that.
+**This pilot:** keep G-code / `generateSolid` on **Render**. Do not deploy `python-service` to AppSail. Do not add sync long routes on AppSail. Wall reconstruct stays in the browser worker.
 
-Until (1) or (2) lands, the Development AppSail manufacturing service is only safe for **health checks, STL passthrough, and coupon-sized G-code**.
+Later options (see [async-jobs.md](./async-jobs.md); **do not implement here**):
+
+1. Submit-then-poll, worker still on Render (or a Job Scheduling webhook to Render).
+2. Catalyst Job function — 15 min timeout would cover ~194 s, but 128–512 MB and no OCI image do not match this slicer.
+3. Job Scheduling → AppSail `/manufacture` — still a 30 s HTTP request. Reject.
+4. Split / decimate — quality risk; not the pilot path.
+
+Until an async path exists, AppSail is only for **hosting proof** (Slate + optional short routes).

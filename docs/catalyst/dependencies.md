@@ -1,23 +1,23 @@
 # DB, auth, and storage inventory (Catalyst pilot)
 
-The database **stays Postgres**. Catalyst Data Store (ZCQL) is not Postgres and would force a Prisma/RPC rewrite — out of scope. A **Neon** move is considered as a later host change of the same Postgres URL pair (`DATABASE_URL` + `DIRECT_URL`). No data migration is required for the Slate/AppSail pilot.
+The database **stays Postgres on Supabase** for this pilot. Catalyst Data Store (ZCQL) is not Postgres and is out of scope. **Neon is a later, separate step** — do not fold it into the hosting pilot (no URL swap, no RPC port, no hostname-rewriter removal).
 
-Every **Supabase Auth** and **Supabase Storage** dependency is flagged below. None of these move to Catalyst Auth or Stratus in this pilot.
+**GM:** **Supabase Auth and Supabase Storage stay.** The pilot only proves hosting (Slate / optional short AppSail). Every Auth and Storage call site is still flagged below. None move to Catalyst Auth or Stratus.
 
 ## Database (Postgres — keep)
 
 | Item | Where | Supabase-specific? | Catalyst note |
 | --- | --- | --- | --- |
-| Prisma datasource `postgresql` | `vertex/prisma/schema.prisma` | Provider-agnostic SQL | Works against Supabase, Neon, RDS, or local Postgres |
-| `DATABASE_URL` (pooled) / `DIRECT_URL` (direct) | `vertex/.env.example`, Render, Vercel | Today these are Supabase pooler + direct hosts | Point at Neon if we switch; AppSail is a normal outbound TLS client |
-| Host rewrite for invalid `postgres.{ref}` | `vertex/server/src/lib/prisma.ts` | **Yes — Supabase hostname heuristics** | Harmless on Neon if URLs are already correct; do not remove until Supabase is gone |
-| `extractSupabaseProjectRef` / `db.{ref}.supabase.co` | same | **Yes** | Neon does not need this |
+| Prisma datasource `postgresql` | `vertex/prisma/schema.prisma` | Provider-agnostic SQL | Stays on Supabase Postgres for this pilot |
+| `DATABASE_URL` (pooled) / `DIRECT_URL` (direct) | `vertex/.env.example`, Render, Vercel | Today these are Supabase pooler + direct hosts | Keep pointing at **non-production** Supabase for any Catalyst-side migrate. Neon later, not here. |
+| Host rewrite for invalid `postgres.{ref}` | `vertex/server/src/lib/prisma.ts` | **Yes — Supabase hostname heuristics** | Leave as-is. Neon cleanup is a later step. |
+| `extractSupabaseProjectRef` / `db.{ref}.supabase.co` | same | **Yes** | Leave as-is. |
 | Application tables (`users`, `licenses`, `clients`, `designs`, `scans`, `corrections`, `elements`, `productions`, `exports`, `prescriptions`, `custom_elements`, `custom_prefabs`, `audit_logs`, `stock_bases`, …) | Prisma schema | No | Stay on Postgres |
-| Security-definer RPCs | `vertex/server/supabase/rpcs/*.sql` | **Yes — created in Supabase Postgres** | Port the SQL to Neon (or any Postgres) before cutting over. Names: `vertex_ensure_app_user`, `vertex_assert_active_license`, `vertex_grant_admin_tokens`, `vertex_save_design`, `vertex_create_stock_base`, `vertex_update_stock_base`, `vertex_delete_stock_base`, `vertex_ensure_default_stock_base`, `vertex_charge_library_save`, `vertex_charge_ai_prescription`, `vertex_authorize_export`, `vertex_charge_manufacturing_hybrid`, `vertex_deduct_user_tokens` |
-| RLS mentioned on `stock_bases` | schema comments | **Yes — Supabase RLS** | App uses the service role, so RLS is defense-in-depth. Neon would need equivalent policies or rely on the API |
-| `User.id` mirrors `auth.users` UUID | Prisma `User` | **Yes — Supabase Auth identity** | Neon-only DB still needs those UUIDs from Supabase Auth (or a new IdP) |
+| Security-definer RPCs | `vertex/server/supabase/rpcs/*.sql` | **Yes — created in Supabase Postgres** | Stay on Supabase. Names: `vertex_ensure_app_user`, `vertex_assert_active_license`, `vertex_grant_admin_tokens`, `vertex_save_design`, `vertex_create_stock_base`, `vertex_update_stock_base`, `vertex_delete_stock_base`, `vertex_ensure_default_stock_base`, `vertex_charge_library_save`, `vertex_charge_ai_prescription`, `vertex_authorize_export`, `vertex_charge_manufacturing_hybrid`, `vertex_deduct_user_tokens` |
+| RLS mentioned on `stock_bases` | schema comments | **Yes — Supabase RLS** | App uses the service role; RLS is defense-in-depth. Unchanged. |
+| `User.id` mirrors `auth.users` UUID | Prisma `User` | **Yes — Supabase Auth identity** | **Supabase Auth stays** for the pilot. |
 
-**Neon move (considered, not in this PR):** keep Prisma + the RPC SQL; change `DATABASE_URL` / `DIRECT_URL`; drop the Supabase hostname rewriter once URLs are Neon. Auth and Storage can stay on Supabase independently.
+**Neon (later, not this pilot):** keep Prisma + the RPC SQL, then change `DATABASE_URL` / `DIRECT_URL` and drop the Supabase hostname rewriter. Do not start that work here. Auth and Storage can remain on Supabase even after a Neon DB move.
 
 **Do not use:** Catalyst Data Store / ZCQL, Catalyst NoSQL, Catalyst Cache (not Redis; we have no BullMQ here anyway).
 
@@ -56,5 +56,7 @@ Stratus is an optional later replacement behind an S3-like adapter. Not in this 
 ## What stays off Catalyst
 
 - Vercel production SPA + optional Vercel tRPC (`vertex/api/trpc`, `vertex/vercel.json`) — **untouched**
-- Render blueprint (`render.yaml`) — still the documented full-stack fallback
+- Render blueprint (`render.yaml`) — **G-code / `generateSolid` stay here** for the pilot
 - No custom domain, no DNS, no paid Catalyst upgrades in this PR
+- No Neon cutover
+- No Catalyst Job / async-poll implementation
