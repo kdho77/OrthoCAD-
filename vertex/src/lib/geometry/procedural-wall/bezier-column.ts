@@ -4884,6 +4884,11 @@ function frameBodyTE(fr: ColumnFrame): XYZ {
     return bodyTangentFromE(fr.E, fr.B, fr.h, fr.midTE);
 }
 
+function nLipFromFrames(frames: ColumnFrame[]): number {
+    const fr = frames[0];
+    return Math.max(0, fr?.nLip ?? fr?.nRoundFix ?? fr?.roundRows ?? 0);
+}
+
 /** Keep the STRAIGHT R→E lip; replace E→B with the shared-W cubic body. */
 function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     const style = frames[0]?.wallStyle?.style ?? "straight";
@@ -5025,18 +5030,17 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         if (w <= 1e-6) used = straightPts;
         else if (blend && w < 1 - 1e-6) used = blendColumnsSz(straightPts, roundPts, w, fr.R, fr.B, fr.h);
         else used = roundPts;
-        const lip = straightCols[i]!.slice(0, nLip);
+        const eIdx = Math.max(0, Math.min(nLip, straightCols[i]!.length - 1));
+        const lip = straightCols[i]!.slice(0, eIdx + 1);
         const col: PolyPoint[] = [];
         for (const p of lip) col.push({ ...p });
-        for (let k = 0; k <= N; k++) {
-            if (k === 0) {
-                if (!col.length) col.push({ ...fr.E });
-                continue;
-            }
+        if (!col.length) col.push({ ...fr.E });
+        else col[col.length - 1] = { ...fr.E };
+        for (let k = 1; k <= N; k++) {
             if (k === N) col.push({ ...fr.B });
             else col.push({ ...(used[k] ?? straightPts[k]!) });
         }
-        if (col.length) col[0] = { ...fr.R };
+        col[0] = { ...fr.R };
         xyz[i] = col;
         const row1 = col[1] ?? col[0]!;
         const row1Deg = row1TRAngleDeg(row1, fr.R, tR, fr.h);
@@ -6566,17 +6570,14 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             const nxt = xyz[(i + 1) % nS]!;
             const iN = (i + 1) % nS;
             const dsB = Math.hypot(fr.B.x - frames[iN]!.B.x, fr.B.y - frames[iN]!.B.y);
-            const dsR = Math.hypot(
-                fr.R.x - frames[iN]!.R.x,
-                fr.R.y - frames[iN]!.R.y,
-                fr.R.z - frames[iN]!.R.z,
-            );
-            dVPred += (fr.splineProfileArea ?? 0) * Math.max(0.5 * (dsB + dsR), 1e-6);
+            dVPred += (fr.splineProfileArea ?? 0) * Math.max(dsB, 1e-6);
             sMinAll = Math.min(sMinAll, fr.splineSMin ?? 0);
             if (fr.splineLipOk === false) nLipFail++;
             if (!columnZMonotone(col)) nColZFail++;
             const nK = Math.min(col.length, nxt.length) - 1;
+            const body0 = fr.nLip ?? nLipFromFrames(frames);
             for (let k = 0; k < nK; k++) {
+                if (k < body0) continue;
                 const a = col[k]!;
                 const b = nxt[k]!;
                 const c = nxt[k + 1]!;
