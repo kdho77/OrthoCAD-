@@ -12,6 +12,7 @@ import {
     X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -22,9 +23,11 @@ import {
     selectCustomPrefab,
     uploadBaseGlb,
 } from "@/features/library/custom-library-service";
-import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
 import { ScanImport } from "@/features/scans/ScanImport";
+import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
+import { stockBaseDisplayName } from "@/lib/geometry/base-asset";
+import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-id";
 import {
     DEFAULT_US_MEN_SIZE,
     footLengthMmOptions,
@@ -38,7 +41,6 @@ import {
     usMenToUk,
     usShoeSizeOptions,
 } from "@/lib/geometry/shoe-size";
-import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
 import { mergePrefabLibrary, STOCK_PREFABS } from "@/lib/library/manifest";
 import { cn } from "@/lib/utils";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
@@ -125,7 +127,7 @@ export function LeftSidebar() {
     const onPattern = async (id: string, stock: boolean) => {
         const side = getActiveFootSide();
         if (stock) {
-            // Scan pattern only — the mandatory GLB stock base is never cleared here.
+            // Pattern presets drive the faired bottom on SAMPLE_Top; the GLB stays.
             setPattern(id as ScanPattern);
             setTarget({ type: "insole", side });
         } else {
@@ -146,11 +148,10 @@ export function LeftSidebar() {
                 {usingStockBase ? (
                     <p className="mb-1.5 text-[10px] text-muted-foreground">
                         Base:{" "}
-                        {design.base?.name ??
-                            design.paired?.leftBase?.name ??
-                            design.paired?.rightBase?.name ??
-                            "Stock GLB"}{" "}
-                        · patterns adjust scan metadata only
+                        {stockBaseDisplayName(
+                            design.base ?? design.paired?.leftBase ?? design.paired?.rightBase,
+                        ) || SAMPLE_TOP_NAME}{" "}
+                        · Full Contact / Prefab 3D / Flat reshape the faired bottom
                     </p>
                 ) : null}
                 <div className="grid grid-cols-2 gap-1.5">

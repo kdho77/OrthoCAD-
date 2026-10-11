@@ -1,6 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import type { ScanPattern } from "@/types";
 import { pointInPoly } from "./cdt-band";
 import {
     ensureCcw,
@@ -172,24 +173,47 @@ function edgeInward(a: PolyPoint, b: PolyPoint, outline: PolyPoint[]): { x: numb
  * C∞ lateral taper: 8 mm at the heel, 1 mm at the toe. No region steps.
  * `(0.5 + 0.5 cos(πu))²` holds the heel width, then falls smoothly.
  */
-export function fairLateralInsetMm(u: number): number {
+/** Optional inset overrides for Pattern presets. Omit for the approved Full Contact fair. */
+export interface FairInsetOptions {
+    heelMm?: number;
+    archMm?: number;
+    forefootMm?: number;
+    minMm?: number;
+}
+
+/** Full Contact / Custom keep the approved fair; Prefab 3D / Flat vary inset only. */
+export function insetsForScanPattern(pattern?: ScanPattern): FairInsetOptions | undefined {
+    if (pattern === "flat") {
+        return { heelMm: 2, archMm: 2, forefootMm: 2, minMm: 2 };
+    }
+    if (pattern === "prefab_3d") {
+        return { heelMm: 10, archMm: 36, forefootMm: 2, minMm: 1 };
+    }
+    return undefined;
+}
+
+export function fairLateralInsetMm(u: number, opts?: FairInsetOptions): number {
     const t = Math.max(0, Math.min(1, u));
     const w = 0.5 + 0.5 * Math.cos(Math.PI * t);
-    return PATTERN_FOREFOOT_INSET_MM + (PATTERN_HEEL_INSET_MM - PATTERN_FOREFOOT_INSET_MM) * w * w;
+    const heel = opts?.heelMm ?? PATTERN_HEEL_INSET_MM;
+    const fore = opts?.forefootMm ?? PATTERN_FOREFOOT_INSET_MM;
+    return fore + (heel - fore) * w * w;
 }
 
 /**
  * Medial arch as one long shallow C2 bump on the lateral taper.
  * `sin⁴(πt)` is C2 at the ends (value and first two derivatives vanish).
  */
-export function fairInsetMm(u: number, medial: boolean): number {
-    const dLat = fairLateralInsetMm(u);
-    if (!medial) return Math.max(PATTERN_MIN_INSET_MM, dLat);
+export function fairInsetMm(u: number, medial: boolean, opts?: FairInsetOptions): number {
+    const dLat = fairLateralInsetMm(u, opts);
+    const minMm = opts?.minMm ?? PATTERN_MIN_INSET_MM;
+    if (!medial) return Math.max(minMm, dLat);
     const span = PATTERN_ARCH_U1 - PATTERN_ARCH_U0;
     const t = (u - PATTERN_ARCH_U0) / span;
-    if (t <= 0 || t >= 1) return Math.max(PATTERN_MIN_INSET_MM, dLat);
+    if (t <= 0 || t >= 1) return Math.max(minMm, dLat);
     const bump = Math.sin(Math.PI * t) ** 4;
-    return Math.max(PATTERN_MIN_INSET_MM, dLat + (PATTERN_ARCH_INSET_MM - dLat) * bump);
+    const archMm = opts?.archMm ?? PATTERN_ARCH_INSET_MM;
+    return Math.max(minMm, dLat + (archMm - dLat) * bump);
 }
 
 function unitInward(outline: PolyPoint[], i: number): { x: number; y: number } {
@@ -455,6 +479,7 @@ export function syntheticBottomPattern(
     bounds: { minX: number; maxX: number },
     rim3d?: PolyPoint[],
     side?: "left" | "right",
+    insets?: FairInsetOptions,
 ): PolyPoint[] {
     const loop = startAtLowCurvature(ensureCcw(outline.map((p) => ({ ...p, z: 0 }))), bounds);
     if (loop.length < 3) return loop;
@@ -470,7 +495,7 @@ export function syntheticBottomPattern(
     const offset: PolyPoint[] = rim.map((p, i) => {
         const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
         const medial = (p.y - yMid) * sign > 0;
-        const d = Math.max(PATTERN_MIN_INSET_MM, fairInsetMm(u, medial));
+        const d = Math.max(insets?.minMm ?? PATTERN_MIN_INSET_MM, fairInsetMm(u, medial, insets));
         const n = normals[i]!;
         const q = { x: p.x + n.x * d, y: p.y + n.y * d, z: 0 };
         if (!pointInPoly(q.x, q.y, loop)) {
@@ -542,7 +567,7 @@ export function syntheticBottomPattern(
             sampleCount,
             constraints: {
                 rim: loop,
-                minInsetMm: PATTERN_MIN_INSET_MM,
+                minInsetMm: insets?.minMm ?? PATTERN_MIN_INSET_MM,
                 medialYSign: sign,
                 archU0: PATTERN_ARCH_U0,
                 archU1: PATTERN_ARCH_U1,

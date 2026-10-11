@@ -105,7 +105,7 @@ export function Viewer3D() {
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
     const confirmBottomPatternEdit = useMeshEditStore((s) => s.confirmBottomPatternEdit);
     const cancelBottomPatternEdit = useMeshEditStore((s) => s.cancelBottomPatternEdit);
-    const wallModel = viewer.wallModel ?? "legacy";
+    const wallModel = viewer.wallModel ?? "procedural";
     const editSide = resolveDefaultEditSide(viewer, target);
     const designMode = resolveDesignMode(design);
     const showBase = designMode.mode === "base";
@@ -144,7 +144,7 @@ export function Viewer3D() {
     const showLeftInsole = viewer.showLeft && !hideInsoleForMarkers;
     const showRightInsole = viewer.showRight && !hideInsoleForMarkers;
     // Prefer an empty viewport + loading cue over the parametric placeholder outline
-    // while the Default Stock Base GLB is still resolving/downloading.
+    // while SAMPLE_Top is still loading.
     const baseGeometryLoading =
         showBase &&
         (stockBaseLoading ||
@@ -338,7 +338,12 @@ export function Viewer3D() {
                 {designMode.mode === "base" ? (
                     <span className="flex w-fit items-center gap-1 rounded bg-violet-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         <Layers className="h-3 w-3" />
-                        Base: {wallModel === "procedural" ? SAMPLE_TOP_NAME : (designMode.baseName ?? "custom GLB")}
+                        Base:{" "}
+                        {wallModel === "procedural"
+                            ? SAMPLE_TOP_NAME
+                            : /default stock base/i.test(designMode.baseName ?? "")
+                              ? SAMPLE_TOP_NAME
+                              : (designMode.baseName ?? SAMPLE_TOP_NAME)}
                         {modifiersActive ? " · modifiers applied" : ""}
                     </span>
                 ) : (

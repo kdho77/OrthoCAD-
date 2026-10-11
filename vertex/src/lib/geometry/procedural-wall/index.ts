@@ -159,10 +159,12 @@ export {
     assertCutInOnHighRimSide,
     closedSignedCurvature,
     countClosedInflections,
+    type FairInsetOptions,
     fairInsetMm,
     fairLateralInsetMm,
     INFLECTION_K_EPS,
     INFLECTION_MIN_ARC_MM,
+    insetsForScanPattern,
     LATERAL_K_SLACK,
     type MedialYSign,
     makeLateralConvex,
@@ -331,13 +333,16 @@ export {
     rotateStationRing,
 } from "./ring-seam";
 export {
+    SAMPLE_TOP_ASSET_ID,
+    SAMPLE_TOP_GLB_PATH,
+    SAMPLE_TOP_NAME,
+    SAMPLE_TOP_PUBLIC_PATH,
+} from "./sample-top-id";
+export {
     buildFairedPatternFromTop,
     loadSampleTopGeometry,
     type ProceduralPreviewOptions,
     reconstructProceduralPreview,
-    SAMPLE_TOP_ASSET_ID,
-    SAMPLE_TOP_NAME,
-    SAMPLE_TOP_PUBLIC_PATH,
     sampleTopFromArrayBuffer,
 } from "./sample-top-preview";
 export {

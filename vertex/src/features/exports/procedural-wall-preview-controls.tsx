@@ -14,72 +14,42 @@ interface ProceduralWallPreviewControlsProps {
 }
 
 /**
- * Print-step controls for the existing viewer.wallModel flag.
- * Grinding Straight / Round / Hybrid only applies when the flag is procedural.
+ * Print-step grinding dropdown. Procedural walls are on by default (SAMPLE_Top +
+ * faired pattern, Grinding Straight). Legacy Default.glb is not a selectable stock.
  */
 export function ProceduralWallPreviewControls({ onWallStyle }: ProceduralWallPreviewControlsProps) {
-    const wallModel = useDesignStore((s) => s.viewer.wallModel ?? "legacy");
     const wallStyle = useDesignStore((s) => s.viewer.wallStyle ?? "straight");
     const setViewer = useDesignStore((s) => s.setViewer);
-    const procedural = wallModel === "procedural";
 
     return (
         <div className="space-y-1.5">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Wall model
+                Grinding
             </div>
             <div className="flex gap-2">
-                {(["legacy", "procedural"] as const).map((mode) => (
+                {WALL_STYLES.map((t) => (
                     <button
-                        key={mode}
+                        key={t}
                         type="button"
-                        onClick={() => setViewer({ wallModel: mode })}
+                        onClick={() => {
+                            setViewer({ wallModel: "procedural", wallStyle: t });
+                            onWallStyle?.(t);
+                        }}
                         className={cn(
                             "flex-1 rounded-md border px-2 py-1 text-xs capitalize",
-                            wallModel === mode
+                            wallStyle === t
                                 ? "border-primary bg-primary/10"
                                 : "border-border bg-background text-muted-foreground",
                         )}
                     >
-                        {mode}
+                        {t}
                     </button>
                 ))}
             </div>
-            {procedural ? (
-                <>
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        Grinding
-                    </div>
-                    <div className="flex gap-2">
-                        {WALL_STYLES.map((t) => (
-                            <button
-                                key={t}
-                                type="button"
-                                onClick={() => {
-                                    setViewer({ wallStyle: t });
-                                    onWallStyle?.(t);
-                                }}
-                                className={cn(
-                                    "flex-1 rounded-md border px-2 py-1 text-xs capitalize",
-                                    wallStyle === t
-                                        ? "border-primary bg-primary/10"
-                                        : "border-border bg-background text-muted-foreground",
-                                )}
-                            >
-                                {t}
-                            </button>
-                        ))}
-                    </div>
-                    <div className="text-[10px] text-muted-foreground">
-                        SAMPLE_Top + faired bottom pattern (heel ~8 mm, ~0 toe inset). Overlay is independent
-                        of the top trimline.
-                    </div>
-                </>
-            ) : (
-                <div className="text-[10px] text-muted-foreground">
-                    Procedural walls stay off until this flag is set. Export still uses the stock mesh.
-                </div>
-            )}
+            <div className="text-[10px] text-muted-foreground">
+                SAMPLE_Top + faired bottom pattern (heel ~8 mm, ~0 toe inset). Overlay is independent of the
+                top trimline. Grinding default is Straight.
+            </div>
         </div>
     );
 }

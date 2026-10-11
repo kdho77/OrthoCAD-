@@ -54,7 +54,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const stockBaseLoading = useDesignStore((s) => s.stockBaseLoading);
     const stockBaseResolutionState = useDesignStore((s) => s.stockBaseResolutionState);
     const setBaseMeshLoading = useDesignStore((s) => s.setBaseMeshLoading);
-    const wallModel = useDesignStore((s) => s.viewer.wallModel ?? "legacy");
+    const wallModel = useDesignStore((s) => s.viewer.wallModel ?? "procedural");
     const wallStyle = useDesignStore((s) => s.viewer.wallStyle ?? "straight");
     const deviceType = useDesignStore((s) => s.viewer.deviceType ?? "functional");
     const lateralFlangeHeightMm = useDesignStore((s) => s.viewer.lateralFlangeHeightMm ?? 0);
@@ -107,7 +107,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         }
 
         const isStock = isStockDesignBase(ref);
-        const hasUrl = Boolean(ref.url && /^https?:\/\//i.test(ref.url));
+        const hasUrl = Boolean(ref.url && (/^https?:\/\//i.test(ref.url) || ref.url.startsWith("/")));
         // An authoritative (signed/public https) URL means the glbPath is a real
         // storage key — even when it is literally "Templates/Default.glb". Without a
         // URL we keep the bundled-placeholder guard so server mode never fetches public/.
@@ -299,13 +299,14 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         },
                         archGrindDepthMm: 0,
                         wallStyle,
+                        scanPattern: design.pattern,
                         ...(edited ? { bottomPattern: curveToPolyPoints(edited) } : {}),
                     });
                     if (cancelled) {
                         preview.geometry.dispose();
                         return;
                     }
-                    const patternKey = `${SAMPLE_TOP_ASSET_ID}:${isMirroredForLoad ? "m" : "p"}`;
+                    const patternKey = `${SAMPLE_TOP_ASSET_ID}:${isMirroredForLoad ? "m" : "p"}:${design.pattern}`;
                     if (!edited) {
                         useBottomPatternStore.getState().ensureGenerated(side, patternKey, preview.pattern);
                     }
@@ -395,6 +396,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         lateralFlangeAngleDeg,
         bottomPattern,
         bottomPatternEdit,
+        design.pattern,
     ]);
 
     useEffect(

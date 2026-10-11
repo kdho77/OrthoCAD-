@@ -26,7 +26,7 @@ const INFLUENCE_RADIUS = 12;
 
 /** Fair bottom-pattern overlay — independent of the top trimline. */
 export function BottomPatternEditTools() {
-    const wallModel = useDesignStore((s) => s.viewer.wallModel ?? "legacy");
+    const wallModel = useDesignStore((s) => s.viewer.wallModel ?? "procedural");
     const viewer = useDesignStore((s) => s.viewer);
     const placingMarkers = useScanStore((s) => s.placementMode != null);
     if (wallModel !== "procedural" || placingMarkers) return null;

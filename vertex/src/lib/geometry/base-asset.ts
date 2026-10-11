@@ -5,6 +5,12 @@ import type { BufferGeometry } from "three";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
+import {
+    SAMPLE_TOP_ASSET_ID,
+    SAMPLE_TOP_GLB_PATH,
+    SAMPLE_TOP_NAME,
+    SAMPLE_TOP_PUBLIC_PATH,
+} from "@/lib/geometry/procedural-wall/sample-top-id";
 import { getSideShapeFinish } from "@/lib/geometry/shape-finish-modifiers";
 import {
     classifyStockUrl,
@@ -55,32 +61,53 @@ export function getDesignBase(design: DesignState, side?: Side): DesignBase | nu
 }
 
 // --- Stock base resolution (direct public Supabase Storage) ---------------------------
-// The default stock base GLB lives in the PUBLIC `stock-bases` bucket at
-// `Templates/Default.glb`. Because the bucket is public, its URL is deterministic
-// and fetchable without auth, signing, or the backend tRPC route. We therefore
-// resolve stock bases entirely client-side via the public Storage URL and NEVER
-// call trpc.stock.* (the Vercel /trpc route returns HTML, breaking JSON parsing).
+// The app default stock base is the bundled top-only SAMPLE_Top.glb at
+// `public/Templates/SAMPLE_Top.glb`. Legacy Default.glb (top + bottom) is
+// test-only — never resolved as the stock base. Custom UUID stock rows still
+// resolve from the public `stock-bases` bucket without tRPC.
 
-export const DEFAULT_STOCK_BASE_ID = "stock-default";
+export const DEFAULT_STOCK_BASE_ID = SAMPLE_TOP_ASSET_ID;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Local offline dev placeholder metadata (public/Templates/Default.glb). */
+/** Bundled SAMPLE_Top stock (public/Templates/SAMPLE_Top.glb). */
 export const BUILTIN_DEFAULT_STOCK: { id: string; name: string; glbPath: string } = {
-    id: DEFAULT_STOCK_BASE_ID,
-    name: "Default Stock Base (offline)",
-    glbPath: "Templates/Default.glb",
+    id: SAMPLE_TOP_ASSET_ID,
+    name: SAMPLE_TOP_NAME,
+    glbPath: SAMPLE_TOP_GLB_PATH,
 };
 
+/** Legacy Default.glb id kept so persisted sessions and tests can be recognized. */
+export const LEGACY_DEFAULT_STOCK_BASE_ID = "stock-default";
+
+/** True when the base is the bundled SAMPLE_Top stock (app default). */
+export function isSampleTopStockBase(
+    base: Pick<DesignBase, "assetId" | "glbPath" | "name"> | null | undefined,
+): boolean {
+    if (!base) return false;
+    if (base.assetId === SAMPLE_TOP_ASSET_ID) return true;
+    const path = (base.glbPath ?? "").replace(/^\/+/, "");
+    if (/(?:^|\/)(?:Templates\/)?SAMPLE_Top\.glb$/i.test(path)) return true;
+    const bareName = (base.name ?? "").replace(/\s*\((Left|Right)\)\s*$/i, "").trim();
+    return /^sample_top$/i.test(bareName);
+}
+
 function hasAuthoritativeStockUrl(base: DesignBase): boolean {
-    return Boolean(base.url && /^https?:\/\//i.test(base.url));
+    return Boolean(base.url && isFetchableStockUrl(base.url));
+}
+
+/** https Storage URLs or bundled public paths such as `/Templates/SAMPLE_Top.glb`. */
+export function isFetchableStockUrl(url?: string | null): boolean {
+    if (!url) return false;
+    return /^https?:\/\//i.test(url) || url.startsWith("/");
 }
 
 /** True when a design base references a stock template (even if `source` was lost on persist). */
 export function isStockDesignBase(base: DesignBase | null | undefined): boolean {
     if (!base) return false;
     if (base.source === "stock") return true;
-    if (base.assetId === DEFAULT_STOCK_BASE_ID || base.assetId.startsWith("stock-")) return true;
+    if (isSampleTopStockBase(base)) return true;
+    if (base.assetId === LEGACY_DEFAULT_STOCK_BASE_ID || base.assetId.startsWith("stock-")) return true;
     if (base.mirrored !== undefined || base.mirroredFrom) return true;
     if (base.primarySide !== undefined) return true;
     return false;
@@ -119,9 +146,10 @@ export function stockBaseNeedsServerResolution(base: DesignBase): boolean {
     // "Templates/Default.glb". The Supabase Storage key can legitimately match the
     // bundled placeholder name, so the path string alone must NOT mark it as local.
     if (!base.offlinePlaceholder && base.glbPath && hasAuthoritativeStockUrl(base)) return false;
+    if (isSampleTopStockBase(base)) return false;
     if (base.offlinePlaceholder && base.glbPath && isLocalPlaceholderGlbPath(base.glbPath)) return false;
     if (base.offlinePlaceholder) return true;
-    if (base.assetId === DEFAULT_STOCK_BASE_ID || base.assetId.startsWith("stock-")) return true;
+    if (base.assetId === LEGACY_DEFAULT_STOCK_BASE_ID || base.assetId.startsWith("stock-")) return true;
     if (!base.glbPath) return true;
     if (!hasAuthoritativeStockUrl(base)) return true;
     return false;
@@ -137,6 +165,10 @@ export function stockBaseNeedsServerResolution(base: DesignBase): boolean {
 function baseRequiresDefaultStockResolution(base: DesignBase): boolean {
     // A user custom-library prefab loads via the library store — never override it.
     if (base.source === "custom") return false;
+    // Bundled SAMPLE_Top is local — never fetch Default.glb for it.
+    if (isSampleTopStockBase(base)) return false;
+    // Legacy Default.glb must be swapped for SAMPLE_Top on the default load path.
+    if (isBuiltinDefaultStockBase(base)) return true;
     // Offline fallback bases are intentionally local — leave them alone.
     if (base.resolutionFallback) return false;
     // A stock base carrying a real storage key + authoritative (https) URL is done.
@@ -147,10 +179,21 @@ function baseRequiresDefaultStockResolution(base: DesignBase): boolean {
 }
 
 /**
- * True when the design's stock base still needs server resolution.
- * Used to trigger applyDefaultStockBase after auth, on new designs, and on rehydrate.
+ * True when any design base is the legacy Default.glb / "Default Stock Base".
+ */
+export function designUsesLegacyDefaultStock(design: DesignState): boolean {
+    const bases = [design.base, design.paired?.leftBase, design.paired?.rightBase].filter(
+        (b): b is DesignBase => Boolean(b),
+    );
+    return bases.some((b) => isBuiltinDefaultStockBase(b) && !isSampleTopStockBase(b));
+}
+
+/**
+ * True when the design's stock base still needs SAMPLE_Top applied (legacy Default
+ * or an unresolved placeholder). Custom library prefabs are left alone.
  */
 export function designNeedsDefaultStockResolution(design: DesignState): boolean {
+    if (designUsesLegacyDefaultStock(design)) return true;
     if (!isApiConfigured()) return false;
 
     const bases = [design.base, design.paired?.leftBase, design.paired?.rightBase].filter(
@@ -179,7 +222,9 @@ export function sanitizeStockBaseForServerMode(base: DesignBase): DesignBase {
     if (!isApiConfigured() || !isStockDesignBase(base)) return base;
     if (base.resolutionFallback) return base;
 
-    const isPlaceholderId = base.assetId === DEFAULT_STOCK_BASE_ID || base.assetId.startsWith("stock-");
+    if (isSampleTopStockBase(base)) return base;
+    const isPlaceholderId =
+        base.assetId === LEGACY_DEFAULT_STOCK_BASE_ID || base.assetId.startsWith("stock-");
     // Real UUID rows that already carry glbPath + https URL are fully resolved.
     if (!isPlaceholderId && !stockBaseNeedsServerResolution(base)) return base;
 
@@ -187,8 +232,9 @@ export function sanitizeStockBaseForServerMode(base: DesignBase): DesignBase {
     return {
         ...rest,
         assetId:
-            base.assetId === DEFAULT_STOCK_BASE_ID || isLocalPlaceholderGlbPath(base.glbPath)
-                ? DEFAULT_STOCK_BASE_ID
+            base.assetId === LEGACY_DEFAULT_STOCK_BASE_ID ||
+            /(?:^|\/)Default\.glb$/i.test((base.glbPath ?? "").replace(/^\/+/, ""))
+                ? LEGACY_DEFAULT_STOCK_BASE_ID
                 : base.assetId,
     };
 }
@@ -219,7 +265,8 @@ export function isBuiltinDefaultStockBase(
     base: Pick<DesignBase, "assetId" | "glbPath" | "name"> | null | undefined,
 ): boolean {
     if (!base) return false;
-    if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
+    if (isSampleTopStockBase(base)) return false;
+    if (base.assetId === LEGACY_DEFAULT_STOCK_BASE_ID) return true;
     const path = (base.glbPath ?? "").replace(/^\/+/, "");
     if (
         /(?:^|\/)(?:Templates\/)?Default\.glb$/i.test(path) ||
@@ -363,43 +410,65 @@ export function sanitizeDesignStockBases(design: DesignState): DesignState {
 }
 
 /**
- * Synchronous default stock base for new designs.
- *
- * When the API/Supabase is configured, returns a **non-loadable pending stub**
- * (no glbPath/url) so the viewer shows a loading state until
- * `applyDefaultStockBase()` resolves the real server GLB. Offline / no-API
- * builds get the public-URL fallback immediately.
+ * Bundled SAMPLE_Top stock — immediately loadable from `public/Templates`.
+ * Never pending, never fetched from the stock_bases "Default Stock Base" row.
  */
-export function getDefaultStockBaseSync(): DesignBase {
-    if (!isApiConfigured()) {
-        return getOfflineFallbackStockBase();
-    }
+export function getSampleTopStockBase(): DesignBase {
     return {
-        assetId: DEFAULT_STOCK_BASE_ID,
-        name: "Default Stock Base",
+        assetId: SAMPLE_TOP_ASSET_ID,
+        name: SAMPLE_TOP_NAME,
         source: "stock",
-        primarySide: DEFAULT_STOCK_PRIMARY_SIDE,
-    };
-}
-
-/**
- * Offline / degraded-mode fallback with a fetchable public Storage URL.
- * Used when the API is not configured, or when server resolution fails without
- * Supabase and we still need a loadable base.
- */
-export function getOfflineFallbackStockBase(): DesignBase {
-    const glbPath = BUILTIN_DEFAULT_STOCK.glbPath;
-    const url = getStockBasePublicUrl(glbPath);
-    return {
-        assetId: DEFAULT_STOCK_BASE_ID,
-        name: BUILTIN_DEFAULT_STOCK.name,
-        source: "stock",
-        glbPath,
-        ...(url ? { url } : {}),
+        glbPath: SAMPLE_TOP_GLB_PATH,
+        url: SAMPLE_TOP_PUBLIC_PATH,
         primarySide: DEFAULT_STOCK_PRIMARY_SIDE,
         offlinePlaceholder: true,
         resolutionFallback: true,
     };
+}
+
+/**
+ * Synchronous default stock base for new designs: SAMPLE_Top + faired pattern.
+ */
+export function getDefaultStockBaseSync(): DesignBase {
+    return getSampleTopStockBase();
+}
+
+/**
+ * Offline / degraded-mode fallback — same bundled SAMPLE_Top.
+ */
+export function getOfflineFallbackStockBase(): DesignBase {
+    return getSampleTopStockBase();
+}
+
+/** Replace leftover Default.glb / "Default Stock Base" pairs with SAMPLE_Top L+R. */
+export function replaceBuiltinDefaultWithSampleTop(design: DesignState): DesignState {
+    if (designHasBase(design) && !designUsesLegacyDefaultStock(design)) return design;
+    const { left, right } = createDefaultStockPairedBases(getSampleTopStockBase());
+    return {
+        ...design,
+        base: left,
+        customPrefabId: left.assetId,
+        customPrefabName: left.name,
+        paired: {
+            leftBase: left,
+            rightBase: right,
+            leftThicknessMm:
+                design.paired?.leftThicknessMm ?? design.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
+            rightThicknessMm:
+                design.paired?.rightThicknessMm ?? design.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
+            leftMethod: design.paired?.leftMethod ?? design.method,
+            rightMethod: design.paired?.rightMethod ?? design.method,
+            linked: design.paired?.linked ?? false,
+        },
+    };
+}
+
+/** Sidebar / viewer label — never "Default Stock Base". */
+export function stockBaseDisplayName(base: DesignBase | null | undefined): string {
+    if (!base) return SAMPLE_TOP_NAME;
+    if (isSampleTopStockBase(base) || isBuiltinDefaultStockBase(base)) return SAMPLE_TOP_NAME;
+    const bare = (base.name ?? "").replace(/\s*\((Left|Right)\)\s*$/i, "").trim();
+    return bare || SAMPLE_TOP_NAME;
 }
 
 /** Build a design patch with paired L/R bases from the offline fallback (Left + mirrored Right). */
@@ -487,19 +556,27 @@ function stockRowToDesignBase(item: StockBaseRow): DesignBase {
  * resolution robust to a broken/absent backend tRPC route.
  */
 export async function resolveStockBase(assetId: string): Promise<DesignBase> {
-    const useDefault =
-        assetId === DEFAULT_STOCK_BASE_ID || assetId.startsWith("stock-") || !UUID_RE.test(assetId);
+    const useSampleTop =
+        assetId === SAMPLE_TOP_ASSET_ID ||
+        assetId === LEGACY_DEFAULT_STOCK_BASE_ID ||
+        assetId.startsWith("stock-") ||
+        !UUID_RE.test(assetId);
 
-    stockResolveLog("resolveStockBase() start", { assetId, useDefault });
+    stockResolveLog("resolveStockBase() start", { assetId, useSampleTop });
     stockFixLog("resolveStockBase() start", {
         assetId,
-        useDefault,
+        useSampleTop,
         supabaseConfigured: isSupabaseConfigured(),
     });
 
-    let id = useDefault ? DEFAULT_STOCK_BASE_ID : assetId;
+    if (useSampleTop) {
+        stockResolveLog("resolveStockBase() — bundled SAMPLE_Top (no Default.glb)");
+        return getSampleTopStockBase();
+    }
+
+    let id = assetId;
     let glbPath = BUILTIN_DEFAULT_STOCK.glbPath;
-    let name = "Default Stock Base";
+    let name = SAMPLE_TOP_NAME;
     let primarySide: string | null = DEFAULT_STOCK_PRIMARY_SIDE;
 
     // Best-effort: enrich with the real row (id + glb_path) from the table.
@@ -508,7 +585,7 @@ export async function resolveStockBase(assetId: string): Promise<DesignBase> {
     if (isSupabaseConfigured()) {
         try {
             const row = await Promise.race([
-                queryStockBaseRow(assetId, useDefault),
+                queryStockBaseRow(assetId, false),
                 new Promise<never>((_, reject) => {
                     const timer = globalThis.setTimeout(
                         () => reject(new Error("stock_bases query timed out after 8000ms")),
@@ -525,6 +602,10 @@ export async function resolveStockBase(assetId: string): Promise<DesignBase> {
             name = row.name || name;
             primarySide = row.primarySide ?? primarySide;
             stockResolveLog("resolveStockBase() table row", { id, glbPath, name, primarySide });
+            if (isBuiltinDefaultStockBase({ assetId: id, glbPath, name })) {
+                stockResolveLog("resolveStockBase() — UUID row is legacy Default; using SAMPLE_Top");
+                return getSampleTopStockBase();
+            }
         } catch (e) {
             // RLS-blocked / missing row / removed UUID / timeout: fall through to the known
             // default glb_path. The public URL still works for the default GLB.
@@ -578,7 +659,7 @@ export async function resolveDefaultStockBase(): Promise<DesignBase> {
         apiConfigured: isApiConfigured(),
         apiUrl: import.meta.env.VITE_API_URL ?? "/trpc (same-origin)",
     });
-    return resolveStockBase(DEFAULT_STOCK_BASE_ID);
+    return getSampleTopStockBase();
 }
 
 /** True when the design already references a GLB base (stock or custom). */
@@ -648,7 +729,7 @@ export function stockBaseRequiresAutoMirror(base: DesignBase | null): boolean {
         return primary.toLowerCase() === "right" || primary.toLowerCase() === "left";
     }
 
-    if (base.assetId === DEFAULT_STOCK_BASE_ID) return true;
+    if (base.assetId === SAMPLE_TOP_ASSET_ID || base.assetId === LEGACY_DEFAULT_STOCK_BASE_ID) return true;
     if (base.glbPath && /default/i.test(base.glbPath) && !isLocalPlaceholderGlbPath(base.glbPath))
         return true;
 
@@ -671,6 +752,10 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 async function resolveStockFetchUrl(base: DesignBase): Promise<string | null> {
     const glbPath = (base.glbPath && base.glbPath.trim()) || BUILTIN_DEFAULT_STOCK.glbPath;
     stockGlbLog(`resolveStockFetchUrl() glb_path = "${glbPath}" (assetId=${base.assetId})`);
+
+    if (isSampleTopStockBase({ assetId: base.assetId, glbPath, name: base.name })) {
+        return SAMPLE_TOP_PUBLIC_PATH;
+    }
 
     const url = getStockBasePublicUrl(glbPath);
     if (url) {

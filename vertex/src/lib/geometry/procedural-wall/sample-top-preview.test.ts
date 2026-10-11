@@ -7,6 +7,8 @@ import { describe, expect, test } from "@rstest/core";
 import {
     extractTopOnlyModel,
     fairInsetMm,
+    insetsForScanPattern,
+    PATTERN_ARCH_INSET_MM,
     PATTERN_FOREFOOT_INSET_MM,
     PATTERN_HEEL_INSET_MM,
     PATTERN_SOURCE_SYNTHETIC,
@@ -28,6 +30,18 @@ describe("SAMPLE_Top faired preview inputs", () => {
         expect(fairInsetMm(0.08, true)).toBeLessThanOrEqual(PATTERN_HEEL_INSET_MM);
         expect(fairInsetMm(0.9, true)).toBeLessThanOrEqual(PATTERN_FOREFOOT_INSET_MM + 0.05);
         expect(fairInsetMm(0.4, true)).toBeGreaterThan(fairInsetMm(0.4, false));
+    });
+
+    test("Pattern presets vary faired inset; Full Contact / Custom keep approved defaults", () => {
+        expect(insetsForScanPattern("full_contact")).toBeUndefined();
+        expect(insetsForScanPattern("custom")).toBeUndefined();
+        expect(insetsForScanPattern()).toBeUndefined();
+        const flat = insetsForScanPattern("flat");
+        expect(flat?.archMm).toBe(2);
+        expect(fairInsetMm(0.4, true, flat)).toBeLessThan(fairInsetMm(0.4, true));
+        const prefab = insetsForScanPattern("prefab_3d");
+        expect(prefab?.archMm).toBeGreaterThan(PATTERN_ARCH_INSET_MM);
+        expect(fairInsetMm(0.4, true, prefab)).toBeGreaterThan(fairInsetMm(0.4, true));
     });
 
     test("SAMPLE_Top builds a faired pattern inside the top rim", async () => {

@@ -44,7 +44,7 @@ describe("viewer wall flag", () => {
         expect(useDesignStore.getState().viewer.wallModel).toBe("procedural");
     });
 
-    test("ignored query keys leave the default legacy flag", () => {
+    test("ignored query keys leave the store flag unchanged", () => {
         expect(applyViewerWallFlagFromSearch("?foo=bar")).toBe(false);
         expect(useDesignStore.getState().viewer.wallModel).toBe("legacy");
     });

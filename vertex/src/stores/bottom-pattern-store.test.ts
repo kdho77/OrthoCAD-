@@ -41,4 +41,21 @@ describe("bottom pattern store", () => {
         useMeshEditStore.getState().resetEdits();
         useBottomPatternStore.getState().clear();
     });
+
+    test("Full Contact / Prefab 3D / Flat clear generated B so SAMPLE_Top rebuilds", () => {
+        useBottomPatternStore.getState().setPattern("left", {
+            points: [new THREE.Vector3(1, 0, 0), new THREE.Vector3(2, 0, 0), new THREE.Vector3(2, 1, 0)],
+        });
+        expect(useBottomPatternStore.getState().getPattern("left")).toBeTruthy();
+        useDesignStore.getState().setPattern("full_contact");
+        expect(useBottomPatternStore.getState().getPattern("left")).toBeNull();
+        useBottomPatternStore.getState().setPattern("left", {
+            points: [new THREE.Vector3(1, 0, 0), new THREE.Vector3(2, 0, 0), new THREE.Vector3(2, 1, 0)],
+        });
+        useDesignStore.getState().setPattern("custom");
+        expect(useBottomPatternStore.getState().getPattern("left")?.points).toHaveLength(3);
+        useDesignStore.getState().setPattern("prefab_3d");
+        expect(useBottomPatternStore.getState().getPattern("left")).toBeNull();
+        useBottomPatternStore.getState().clear();
+    });
 });

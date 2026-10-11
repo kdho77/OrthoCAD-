@@ -34,8 +34,7 @@ export default function App() {
         applyViewerWallFlagFromSearch(window.location.search);
     }, []);
 
-    // Resolve the default stock base from the server once auth is ready.
-    // Single authoritative bootstrap path for Supabase deployments — avoids the rehydrate/auth race.
+    // Apply SAMPLE_Top (and migrate leftover Default.glb) once auth is ready.
     useEffect(() => {
         const bootstrapDesign = useDesignStore.getState().design;
         const bootstrapBase = bootstrapDesign.paired?.rightBase ?? bootstrapDesign.base;

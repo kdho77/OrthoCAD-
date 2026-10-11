@@ -4,18 +4,21 @@
 import type { BufferGeometry } from "three";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { extractMergedGeometry, loadGlbFromBuffer, reorientToFootprintFrame } from "@/lib/library/loaders";
-import type { SideCorrections } from "@/types";
-import { PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
+import type { ScanPattern, SideCorrections } from "@/types";
+import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel } from "./extract";
 import { reconstructProceduralWalls } from "./reconstruct";
+import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import type { StockWallModel } from "./types";
 import type { ProceduralWallStyle } from "./wall-style";
 
-/** Bundled top-only input that produced the approved procedural STLs. */
-export const SAMPLE_TOP_PUBLIC_PATH = "/Templates/SAMPLE_Top.glb";
-export const SAMPLE_TOP_ASSET_ID = "sample-top";
-export const SAMPLE_TOP_NAME = "SAMPLE_Top";
+export {
+    SAMPLE_TOP_ASSET_ID,
+    SAMPLE_TOP_GLB_PATH,
+    SAMPLE_TOP_NAME,
+    SAMPLE_TOP_PUBLIC_PATH,
+} from "./sample-top-id";
 
 let cachedNative: BufferGeometry | null = null;
 let inflight: Promise<BufferGeometry> | null = null;
@@ -49,7 +52,7 @@ export async function loadSampleTopGeometry(): Promise<BufferGeometry> {
 }
 
 /** Fair the SAMPLE_Top rim: ~0 toe inset, heel ~8 mm, medial arch cut-in. */
-export function buildFairedPatternFromTop(model: StockWallModel): PolyPoint[] {
+export function buildFairedPatternFromTop(model: StockWallModel, pattern?: ScanPattern): PolyPoint[] {
     const pos = model.top.meshPositions;
     const rimLocal = model.top.rimLocal ?? [];
     if (!pos || rimLocal.length < 8) {
@@ -60,7 +63,7 @@ export function buildFairedPatternFromTop(model: StockWallModel): PolyPoint[] {
         y: pos[i * 3 + 1] ?? 0,
         z: pos[i * 3 + 2] ?? 0,
     }));
-    return syntheticBottomPattern(rim3d, model.bounds, rim3d);
+    return syntheticBottomPattern(rim3d, model.bounds, rim3d, undefined, insetsForScanPattern(pattern));
 }
 
 export interface ProceduralPreviewOptions {
@@ -72,6 +75,8 @@ export interface ProceduralPreviewOptions {
     deviceType?: "functional" | "accommodative";
     lateralFlange?: { heightMm: number; lengthMm: number; angleDeg: number };
     archGrindDepthMm?: number;
+    /** Pattern preset (Full Contact / Prefab 3D / Flat / Custom) drives faired B. */
+    scanPattern?: ScanPattern;
 }
 
 /**
@@ -85,7 +90,9 @@ export function reconstructProceduralPreview(
     options: ProceduralPreviewOptions = {},
 ): { model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry } {
     const model = extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
-    const pattern = options.bottomPattern?.length ? options.bottomPattern : buildFairedPatternFromTop(model);
+    const pattern = options.bottomPattern?.length
+        ? options.bottomPattern
+        : buildFairedPatternFromTop(model, options.scanPattern);
     const thicknessMm = options.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
     const stockThicknessMm = options.stockThicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
     const geometry = reconstructProceduralWalls(model, {
