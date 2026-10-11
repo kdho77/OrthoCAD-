@@ -376,6 +376,119 @@ function weldGenerated(
     return remap;
 }
 
+function countCoincidentVerts(positions: number[], start: number, end: number, eps = 1e-9): number {
+    const cell = Math.max(eps, 1e-6);
+    const buckets = new Map<string, number[]>();
+    for (let i = start; i < end; i++) {
+        const x = Math.floor(positions[i * 3]! / cell);
+        const y = Math.floor(positions[i * 3 + 1]! / cell);
+        const z = Math.floor(positions[i * 3 + 2]! / cell);
+        const k = `${x},${y},${z}`;
+        const list = buckets.get(k) ?? [];
+        list.push(i);
+        buckets.set(k, list);
+    }
+    const lim2 = eps * eps;
+    let dups = 0;
+    const seen = new Set<number>();
+    for (let i = start; i < end; i++) {
+        if (seen.has(i)) continue;
+        const x0 = Math.floor(positions[i * 3]! / cell);
+        const y0 = Math.floor(positions[i * 3 + 1]! / cell);
+        const z0 = Math.floor(positions[i * 3 + 2]! / cell);
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    const hit = buckets.get(`${x0 + dx},${y0 + dy},${z0 + dz}`);
+                    if (!hit) continue;
+                    for (const j of hit) {
+                        if (j <= i) continue;
+                        const dxv = positions[i * 3]! - positions[j * 3]!;
+                        const dyv = positions[i * 3 + 1]! - positions[j * 3 + 1]!;
+                        const dzv = positions[i * 3 + 2]! - positions[j * 3 + 2]!;
+                        if (dxv * dxv + dyv * dyv + dzv * dzv <= lim2) {
+                            dups++;
+                            seen.add(j);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return dups;
+}
+
+/** Last wall edge vs adjacent plantar-face plane (deg). */
+function measureSeamBFromPlantar(
+    positions: number[],
+    indices: number[],
+    bRingStart: number,
+    nS: number,
+    lastWallOf: (i: number) => number,
+): { maxDeg: number; perStation: number[] } {
+    const faceOf = new Map<string, number[][]>();
+    const key = (a: number, b: number): string => (a < b ? `${a},${b}` : `${b},${a}`);
+    const add = (a: number, b: number, tri: number[]): void => {
+        const k = key(a, b);
+        const list = faceOf.get(k) ?? [];
+        list.push(tri);
+        faceOf.set(k, list);
+    };
+    for (let t = 0; t < indices.length; t += 3) {
+        const a = indices[t]!;
+        const b = indices[t + 1]!;
+        const c = indices[t + 2]!;
+        const tri = [a, b, c];
+        add(a, b, tri);
+        add(b, c, tri);
+        add(c, a, tri);
+    }
+    const xyz = (i: number) => ({
+        x: positions[i * 3]!,
+        y: positions[i * 3 + 1]!,
+        z: positions[i * 3 + 2]!,
+    });
+    const perStation: number[] = [];
+    let maxDeg = 0;
+    for (let i = 0; i < nS; i++) {
+        const b0 = bRingStart + i;
+        const b1 = bRingStart + ((i + 1) % nS);
+        const last = lastWallOf(i);
+        const lastN = lastWallOf((i + 1) % nS);
+        const faces = faceOf.get(key(b0, b1)) ?? [];
+        const edge = faces.find((tri) => !tri.includes(last) && !tri.includes(lastN)) ?? faces[0];
+        let n = { x: 0, y: 0, z: 1 };
+        if (edge) {
+            const p0 = xyz(edge[0]!);
+            const p1 = xyz(edge[1]!);
+            const p2 = xyz(edge[2]!);
+            const ux = p1.x - p0.x;
+            const uy = p1.y - p0.y;
+            const uz = p1.z - p0.z;
+            const vx = p2.x - p0.x;
+            const vy = p2.y - p0.y;
+            const vz = p2.z - p0.z;
+            const nx = uy * vz - uz * vy;
+            const ny = uz * vx - ux * vz;
+            const nz = ux * vy - uy * vx;
+            const nl = Math.hypot(nx, ny, nz) || 1;
+            n = { x: nx / nl, y: ny / nl, z: nz / nl };
+            if (n.z < 0) n = { x: -n.x, y: -n.y, z: -n.z };
+        }
+        const P = xyz(last);
+        const B = xyz(b0);
+        const ex = B.x - P.x;
+        const ey = B.y - P.y;
+        const ez = B.z - P.z;
+        const el = Math.hypot(ex, ey, ez) || 1;
+        const sin = Math.abs((ex * n.x + ey * n.y + ez * n.z) / el);
+        const deg = (Math.asin(Math.min(1, sin)) * 180) / Math.PI;
+        perStation.push(deg);
+        maxDeg = Math.max(maxDeg, deg);
+    }
+    return { maxDeg, perStation };
+}
+
 function assertGeneratedEdgesUsedTwice(
     indices: number[],
     generatedStart: number,
@@ -416,15 +529,18 @@ function sanitizeMesh(
     nS = 0,
     nJ = 0,
     bandVerts?: Set<number>,
+    skipWeld = false,
 ): { zeroArea: number; duplicates: number } {
     const nWallRows = Math.max(0, nJ - 1);
-    const remap = weldGenerated(positions, generatedStart, nS, nWallRows);
-    for (let t = 0; t < indices.length; t++) indices[t] = remap[indices[t]!]!;
-    if (bandVerts) {
-        const next = new Set<number>();
-        for (const v of bandVerts) next.add(remap[v] ?? v);
-        bandVerts.clear();
-        for (const v of next) bandVerts.add(v);
+    if (!skipWeld) {
+        const remap = weldGenerated(positions, generatedStart, nS, nWallRows);
+        for (let t = 0; t < indices.length; t++) indices[t] = remap[indices[t]!]!;
+        if (bandVerts) {
+            const next = new Set<number>();
+            for (const v of bandVerts) next.add(remap[v] ?? v);
+            bandVerts.clear();
+            for (const v of next) bandVerts.add(v);
+        }
     }
     const seen = new Set<string>();
     const out: number[] = [];
@@ -1077,9 +1193,14 @@ export function reconstructProceduralWalls(
 
     const nS = grid.nS;
     const nJ = grid.nJ;
+    const indexGrid = (grid.frames[0]?.wallStyle?.style ?? "straight") !== "straight";
     const generatedStart = positions.length / 3;
-    for (let k = 0; k < grid.body.length; k++) positions.push(grid.body[k]!);
-    {
+    const bodyStride = nS * 3;
+    const bodyRows = indexGrid ? Math.max(0, nJ - 2) : Math.max(0, nJ - 1);
+    for (let r = 0; r < bodyRows; r++) {
+        for (let c = 0; c < bodyStride; c++) positions.push(grid.body[r * bodyStride + c]!);
+    }
+    if (!indexGrid) {
         const bRow = Math.max(0, grid.outlineRow - 1);
         for (let i = 0; i < nS; i++) {
             positions[(generatedStart + bRow * nS + i) * 3 + 2] = 0;
@@ -1092,26 +1213,51 @@ export function reconstructProceduralWalls(
     const extraOfRefined: number[] = new Array(refinedB.length).fill(-1);
     const extraBStart = positions.length / 3;
     let extraCount = 0;
-    for (let ri = 0; ri < refinedB.length; ri++) {
-        if ((stationOfRefined[ri] ?? -1) >= 0) continue;
-        const p = refinedB[ri]!;
-        extraOfRefined[ri] = extraCount++;
-        positions.push(p.x, p.y, p.z);
+    if (!indexGrid) {
+        for (let ri = 0; ri < refinedB.length; ri++) {
+            if ((stationOfRefined[ri] ?? -1) >= 0) continue;
+            const p = refinedB[ri]!;
+            extraOfRefined[ri] = extraCount++;
+            positions.push(p.x, p.y, p.z);
+        }
     }
-    const plantarStart = positions.length / 3;
     const nBoundary = grid.plantar.boundaryCount;
-    for (let i = nBoundary; i < grid.plantar.points.length; i++) {
-        const p = grid.plantar.points[i]!;
-        positions.push(p.x, p.y, 0);
+    let bRingStart = extraBStart;
+    let plantarStart = extraBStart;
+    if (indexGrid) {
+        if (nBoundary !== nS) {
+            throw new Error(`[S1-B] B-ring ${nS} != plantar boundary ${nBoundary}`);
+        }
+        bRingStart = positions.length / 3;
+        for (let i = 0; i < nS; i++) {
+            const p = grid.plantar.points[i] ?? grid.outlineRing[i]!;
+            positions.push(p.x, p.y, 0);
+        }
+        plantarStart = positions.length / 3;
+        for (let i = nBoundary; i < grid.plantar.points.length; i++) {
+            const p = grid.plantar.points[i]!;
+            positions.push(p.x, p.y, 0);
+        }
+    } else {
+        plantarStart = positions.length / 3;
+        for (let i = nBoundary; i < grid.plantar.points.length; i++) {
+            const p = grid.plantar.points[i]!;
+            positions.push(p.x, p.y, 0);
+        }
     }
     const plantarEnd = positions.length / 3;
     for (let i = extraBStart; i < plantarEnd; i++) positions[i * 3 + 2] = 0;
     const gridVert = (j: number, i: number): number => {
         const s = ((i % nS) + nS) % nS;
         if (j <= 0) return rimLocal[s]!;
+        if (indexGrid && j >= nJ - 1) return bRingStart + s;
         return generatedStart + (j - 1) * nS + s;
     };
     const refinedVert = (ri: number): number => {
+        if (indexGrid) {
+            const r = ((ri % nS) + nS) % nS;
+            return bRingStart + r;
+        }
         const r = ((ri % refinedB.length) + refinedB.length) % refinedB.length;
         const st = stationOfRefined[r] ?? -1;
         if (st >= 0) return gridVert(grid.innerRow, st);
@@ -1126,9 +1272,24 @@ export function reconstructProceduralWalls(
         if (a === b || b === c || c === a) return;
         indices.push(a, b, c);
     };
+    const dist2 = (ia: number, ib: number): number => {
+        const dx = positions[ia * 3]! - positions[ib * 3]!;
+        const dy = positions[ia * 3 + 1]! - positions[ib * 3 + 1]!;
+        const dz = positions[ia * 3 + 2]! - positions[ib * 3 + 2]!;
+        return dx * dx + dy * dy + dz * dz;
+    };
+    const pushQuad = (a: number, b: number, c: number, d: number): void => {
+        if (indexGrid && dist2(b, d) < dist2(a, c)) {
+            pushTri(a, b, d);
+            pushTri(b, c, d);
+            return;
+        }
+        pushTri(a, c, b);
+        pushTri(a, d, c);
+    };
     const lastStrip = nJ - 2;
     const aboveStrip = lastStrip - 1;
-    const useRefinedStrip = refinedB.length !== nS || bEdgeK.some((k) => k > 1);
+    const useRefinedStrip = !indexGrid && (refinedB.length !== nS || bEdgeK.some((k) => k > 1));
     for (let j = 0; j < nJ - 1; j++) {
         if (useRefinedStrip && (j === lastStrip || j === aboveStrip)) continue;
         for (let i = 0; i < nS; i++) {
@@ -1136,8 +1297,7 @@ export function reconstructProceduralWalls(
             const b = gridVert(j, i + 1);
             const c = gridVert(j + 1, i + 1);
             const d = gridVert(j + 1, i);
-            pushTri(a, c, b);
-            pushTri(a, d, c);
+            pushQuad(a, b, c, d);
         }
     }
     if (useRefinedStrip) {
@@ -1175,16 +1335,28 @@ export function reconstructProceduralWalls(
             }
         }
     }
-    if (nBoundary !== refinedB.length) {
-        throw new Error(`[S1-B] B-ring ${refinedB.length} != plantar boundary ${nBoundary}`);
+    if (nBoundary !== (indexGrid ? nS : refinedB.length)) {
+        throw new Error(`[S1-B] B-ring ${indexGrid ? nS : refinedB.length} != plantar boundary ${nBoundary}`);
     }
     for (const f of grid.plantar.faces) {
         pushTri(plantarVert(f[0]!), plantarVert(f[2]!), plantarVert(f[1]!));
     }
     const bandVerts = new Set<number>();
-    for (let i = 0; i < refinedB.length; i++) bandVerts.add(refinedVert(i));
-    const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ, bandVerts);
+    for (let i = 0; i < (indexGrid ? nS : refinedB.length); i++) bandVerts.add(refinedVert(i));
+    const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ, bandVerts, indexGrid);
     assertGeneratedEdgesUsedTwice(indices, generatedStart, positions);
+    if (indexGrid) {
+        const seam = measureSeamBFromPlantar(positions, indices, bRingStart, nS, (i) => gridVert(nJ - 2, i));
+        for (let i = 0; i < nS; i++) {
+            const fr = grid.frames[i]!;
+            fr.g1FDeg = seam.perStation[i] ?? seam.maxDeg;
+        }
+        if (grid.quality) grid.quality.maxG1FDeg = seam.maxDeg;
+        const dups = countCoincidentVerts(positions, generatedStart, plantarEnd);
+        if (grid.quality) (grid.quality as { duplicateVerts?: number }).duplicateVerts = dups;
+        if (dups) throw new Error(`[RND-DUP] ${dups} duplicate generated vertices`);
+        console.log("[RND-SEAM-B]", JSON.stringify({ max: Number(seam.maxDeg.toFixed(3)), nS }));
+    }
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
     geo.setIndex(indices);
@@ -1313,6 +1485,11 @@ export function reconstructProceduralWalls(
             tRAngleDeg: f.splineTRAngleDeg ?? 0,
             inflCount: f.splineInflCount ?? 0,
             fallbackStraight: f.splineFallback ?? false,
+            splineFk: f.splineFk,
+            splineL: f.splineL,
+            splineMinEdge: f.splineMinEdge,
+            splineStepRatio: f.splineStepRatio,
+            splineRow1Deg: f.splineRow1Deg,
         })),
         t0Log: grid.frames.map((f) => ({
             u: Number(f.u.toFixed(4)),
@@ -1350,7 +1527,7 @@ export function reconstructProceduralWalls(
         innerRow: grid.innerRow,
         fieldsBeforeBF: grid.fieldsBeforeBF,
         outlineRing: grid.outlineRing,
-        outlineVertexStart: generatedStart + Math.max(0, grid.outlineRow - 1) * nS,
+        outlineVertexStart: indexGrid ? bRingStart : generatedStart + Math.max(0, grid.outlineRow - 1) * nS,
         outlineVertexCount: nS,
         filletVertexStart: generatedStart + Math.max(0, fRowJ - 1) * nS,
         filletVertexCount: nS,

@@ -15,14 +15,18 @@ import {
     RING_TURNING_MAX_DEG,
     reconstructionManifold,
     reconstructProceduralWalls,
+    SPLINE_F_RING_MAX,
     SPLINE_G1_R_MAX_DEG,
     SPLINE_H_MIN_MM,
+    SPLINE_MIN_EDGE_FRAC,
     SPLINE_PEAK_GATE_HI,
     SPLINE_PEAK_GATE_LO,
     SPLINE_PLAN_OUT_MM,
+    SPLINE_ROW1_TR_MAX_DEG,
     SPLINE_SAG_HI,
     SPLINE_SAG_LO,
     SPLINE_SEAM_B_MAX_DEG,
+    SPLINE_STEP_RATIO_MAX,
     WALL_MID_DIHEDRAL_MAX_DEG,
     WALL_MID_TURN_MAX_DEG,
     WALL_PLAN_ANGLE_REPORT_DEG,
@@ -88,6 +92,11 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
             maxMidRowDihedralDeg?: number;
             maxAlongRowDeg?: number;
             maxMidAcrossP99Deg?: number;
+            maxSplineFDelta?: number;
+            maxSplineStepRatio?: number;
+            minSplineEdgeOverLN?: number;
+            maxRow1TRDeg?: number;
+            duplicateVerts?: number;
         };
         wallFrames?: Array<{
             u: number;
@@ -155,6 +164,21 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
         if (midDihedral > WALL_MID_DIHEDRAL_MAX_DEG + 1e-6) {
             misses.push(`mid-row-dihedral ${midDihedral.toFixed(2)}>${WALL_MID_DIHEDRAL_MAX_DEG}`);
         }
+        if ((q.maxSplineFDelta ?? 0) > SPLINE_F_RING_MAX + 1e-9) {
+            misses.push(`f-delta ${q.maxSplineFDelta?.toFixed(4)}>${SPLINE_F_RING_MAX}`);
+        }
+        if ((q.maxSplineStepRatio ?? 1) > SPLINE_STEP_RATIO_MAX + 1e-9) {
+            misses.push(`step-ratio ${q.maxSplineStepRatio?.toFixed(2)}>${SPLINE_STEP_RATIO_MAX}`);
+        }
+        if ((q.minSplineEdgeOverLN ?? 1) + 1e-9 < 1) {
+            misses.push(
+                `minEdge ${((q.minSplineEdgeOverLN ?? 0) * SPLINE_MIN_EDGE_FRAC).toFixed(3)}<${SPLINE_MIN_EDGE_FRAC} L/N`,
+            );
+        }
+        if ((q.maxRow1TRDeg ?? 0) > SPLINE_ROW1_TR_MAX_DEG + 1e-6) {
+            misses.push(`row1-tR ${q.maxRow1TRDeg?.toFixed(2)}>${SPLINE_ROW1_TR_MAX_DEG}`);
+        }
+        if ((q.duplicateVerts ?? 0) > 0) misses.push(`dup-verts ${q.duplicateVerts}`);
     }
     const hits = countSelfIntersections(geo);
     if (hits.real !== 0) misses.push(`SI ${hits.real}`);
@@ -249,7 +273,7 @@ describe("procedural wall styles", () => {
     test("straight / round / hybrid on Default: gates + STL/PNG", async () => {
         const raw = await loadProductionDefaultGlb({ slot: "left" });
         const model = extractStockWallModel(raw, { id: "default", name: "Default" });
-        const styles: Style[] = ["straight", "round", "hybrid"];
+        const styles: Style[] = ["round", "hybrid", "straight"];
         const geos: Partial<Record<Style, BufferGeometry>> = {};
         for (const style of styles) {
             geos[style] = reconstructProceduralWalls(model, { wallStyle: style });

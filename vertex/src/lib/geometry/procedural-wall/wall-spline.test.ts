@@ -3,10 +3,14 @@
 
 import { describe, expect, test } from "@rstest/core";
 import {
+    buildSplineDensityTable,
+    enforceMonotoneF,
     evalClampedCubic,
+    invertDensityW,
     printSplineGates,
     SPLINE_KNOTS,
     type SplineStationInput,
+    sampleSplineRingByW,
     solveSplineStation,
     stationGates,
 } from "./wall-spline";
@@ -103,5 +107,30 @@ describe("clamped cubic wall spline", () => {
             if (!g.pass) misses.push(`${c.name}: ${g.misses.join(",")}`);
         }
         expect(misses).toEqual([]);
+    });
+
+    test("W(u) table inverts k/N and keeps endpoints", () => {
+        const sol = solveSplineStation(station(0.35, 1, 12, 2.6, { s: -1, z: -0.18 }));
+        const table = buildSplineDensityTable(sol.poly);
+        expect(table.W[0]).toBe(0);
+        expect(table.W[table.W.length - 1]).toBe(1);
+        expect(table.L).toBeGreaterThan(1);
+        const N = 20;
+        const f = enforceMonotoneF(
+            Array.from({ length: N + 1 }, (_, k) => k / N),
+            N,
+        );
+        expect(f[0]).toBe(0);
+        expect(f[N]).toBe(1);
+        for (let k = 1; k <= N; k++) expect(f[k]!).toBeGreaterThanOrEqual(f[k - 1]! + 0.25 / N - 1e-12);
+        const u0 = invertDensityW(table, 0);
+        const u1 = invertDensityW(table, 1);
+        expect(u0).toBe(0);
+        expect(u1).toBe(1);
+        const ring = sampleSplineRingByW([sol.poly, sol.poly], N, [sol.pts[0]!, sol.pts[0]!]);
+        expect(ring.pts[0]!.length).toBe(N + 1);
+        expect(ring.pts[0]![0]!.z).toBeCloseTo(sol.poly[0]!.z, 9);
+        expect(ring.pts[0]![N]!.z).toBeCloseTo(sol.poly[sol.poly.length - 1]!.z, 9);
+        expect(Math.abs(ring.f[0]![5]! - ring.f[1]![5]!)).toBeLessThanOrEqual(0.02);
     });
 });

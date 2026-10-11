@@ -36,6 +36,15 @@ export const SPLINE_SAG_HI = 0.25;
 export const SPLINE_H_MIN_MM = 6;
 export const SPLINE_BISECT = 30;
 export const SPLINE_DENSE = 512;
+export const SPLINE_W_DENSE = 2048;
+export const SPLINE_W_ALPHA = 0.6;
+export const SPLINE_W_THETA_MIN_DEG = 1;
+export const SPLINE_F_STEP_FRAC = 0.25;
+export const SPLINE_F_RING_MAX = 0.02;
+export const SPLINE_MIN_EDGE_FRAC = 0.2;
+export const SPLINE_STEP_RATIO_MAX = 4;
+export const SPLINE_ROW1_TR_MAX_DEG = 5;
+export const SPLINE_ENDPOINT_EPS = 1e-9;
 export const SPLINE_SMOOTH_SIGMA_MM = 10;
 export const SPLINE_PLAN_OUT_MM = 2;
 export const SPLINE_G1_R_MAX_DEG = 1;
@@ -693,6 +702,164 @@ export function rebuildSplineStation(
         );
     }
     return finishSolve(input, poly, o, zy, a, oMax, tRAngleDeg, steep, o <= 1e-9 && !m.convex);
+}
+
+export interface SplineDensityTable {
+    u: number[];
+    S: number[];
+    T: number[];
+    W: number[];
+    L: number;
+    Theta: number;
+    alpha: number;
+}
+
+/** 2048 uniform-u samples: cumulative arc S(u), |turning| T(u), mix W(u). */
+export function buildSplineDensityTable(poly: XYZ[], nDense = SPLINE_W_DENSE): SplineDensityTable {
+    const n = Math.max(1, nDense);
+    const u: number[] = [];
+    const pts: XYZ[] = [];
+    for (let i = 0; i <= n; i++) {
+        const ui = i / n;
+        u.push(ui);
+        pts.push(evalClampedCubic(poly, ui));
+    }
+    const S = [0];
+    for (let i = 1; i <= n; i++) S.push(S[i - 1]! + hypot3(sub(pts[i]!, pts[i - 1]!)));
+    const T = [0];
+    let prev = splineTangent(poly, 0);
+    for (let i = 1; i <= n; i++) {
+        const tan = splineTangent(poly, i / n);
+        T.push(T[i - 1]! + vecAngleDeg(prev, tan));
+        prev = tan;
+    }
+    const L = S[n]!;
+    const Theta = T[n]!;
+    const alpha = Theta < SPLINE_W_THETA_MIN_DEG ? 0 : SPLINE_W_ALPHA;
+    const W: number[] = [];
+    for (let i = 0; i <= n; i++) {
+        const sTerm = L > 1e-16 ? S[i]! / L : (u[i] ?? 0);
+        const tTerm = Theta > 1e-16 ? T[i]! / Theta : 0;
+        W.push((1 - alpha) * sTerm + alpha * tTerm);
+    }
+    W[0] = 0;
+    W[n] = 1;
+    return { u, S, T, W, L, Theta, alpha };
+}
+
+export function invertDensityW(table: SplineDensityTable, f: number): number {
+    const target = Math.max(0, Math.min(1, f));
+    if (target <= 0) return 0;
+    if (target >= 1) return 1;
+    const W = table.W;
+    let i = 1;
+    while (i < W.length && (W[i] ?? 1) < target) i++;
+    const a = W[i - 1]!;
+    const b = W[i] ?? a;
+    const t = b > a + 1e-16 ? (target - a) / (b - a) : 0;
+    const u0 = table.u[i - 1]!;
+    const u1 = table.u[i] ?? u0;
+    return u0 + (u1 - u0) * t;
+}
+
+/** f_0 = 0, f_N = 1, f_k >= f_{k-1} + 0.25/N. */
+export function enforceMonotoneF(f: number[], N: number): number[] {
+    const out = f.slice();
+    if (!out.length) return out;
+    const n = Math.max(1, N);
+    const minStep = SPLINE_F_STEP_FRAC / n;
+    out[0] = 0;
+    out[out.length - 1] = 1;
+    for (let k = 1; k < out.length; k++) out[k] = Math.max(out[k]!, out[k - 1]! + minStep);
+    out[out.length - 1] = 1;
+    for (let k = out.length - 2; k >= 1; k--) {
+        out[k] = Math.min(out[k]!, out[k + 1]! - minStep);
+        out[k] = Math.max(out[k]!, out[k - 1]! + minStep);
+    }
+    out[0] = 0;
+    out[out.length - 1] = 1;
+    return out;
+}
+
+export function assertSplineEndpoints(poly: XYZ[], R: XYZ, B: XYZ): void {
+    const C0 = evalClampedCubic(poly, 0);
+    const C1 = evalClampedCubic(poly, 1);
+    const d0 = hypot3(sub(C0, R));
+    const d1 = hypot3(sub(C1, B));
+    if (d0 >= SPLINE_ENDPOINT_EPS || d1 >= SPLINE_ENDPOINT_EPS) {
+        throw new Error(`[RND-END] |C(0)-R|=${d0.toExponential(3)} |C(1)-B|=${d1.toExponential(3)}`);
+    }
+}
+
+export function row1TRAngleDeg(row1: XYZ, R: XYZ, tR: XYZ, h: { x: number; y: number }): number {
+    return acuteDeg(sub(row1, R), overEdgeTangent(tR, h));
+}
+
+/**
+ * Shared N (last-row index). Smooth f_k = k/N along the rim, enforce spacing,
+ * invert each station's W(u). Rows 0 and N are C(0)=R and C(1)=B.
+ */
+export function sampleSplineRingByW(
+    polys: XYZ[][],
+    N: number,
+    rim: XYZ[],
+): { pts: XYZ[][]; f: number[][]; u: number[][]; L: number[]; Theta: number[] } {
+    const nS = polys.length;
+    const tables = polys.map((p) => buildSplineDensityTable(p));
+    const f: number[][] = [];
+    const denom = Math.max(N, 1);
+    for (let i = 0; i < nS; i++) {
+        const row: number[] = [];
+        for (let k = 0; k <= N; k++) row.push(k / denom);
+        f.push(row);
+    }
+    const arc: number[] = [0];
+    for (let i = 1; i < nS; i++) {
+        const a = rim[i - 1] ?? rim[0]!;
+        const b = rim[i] ?? a;
+        arc.push(arc[i - 1]! + Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+    }
+    let period = arc[nS - 1] ?? 0;
+    if (nS > 1) {
+        const a = rim[0]!;
+        const b = rim[nS - 1]!;
+        period += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    }
+    for (let k = 1; k < N; k++) {
+        const vals = f.map((row) => row[k]!);
+        const sm = periodicGaussian1d(vals, arc, SPLINE_SMOOTH_SIGMA_MM, period);
+        for (let i = 0; i < nS; i++) f[i]![k] = sm[i]!;
+    }
+    const u: number[][] = [];
+    const pts: XYZ[][] = [];
+    const L: number[] = [];
+    const Theta: number[] = [];
+    for (let i = 0; i < nS; i++) {
+        const fk = enforceMonotoneF(f[i]!, N);
+        f[i] = fk;
+        const ui: number[] = [];
+        const pi: XYZ[] = [];
+        const poly = polys[i]!;
+        const table = tables[i]!;
+        for (let k = 0; k <= N; k++) {
+            if (k === 0) {
+                ui.push(0);
+                pi.push({ ...poly[0]! });
+            } else if (k === N) {
+                ui.push(1);
+                pi.push({ ...poly[poly.length - 1]! });
+            } else {
+                const uk = invertDensityW(table, fk[k]!);
+                ui.push(uk);
+                pi.push(evalClampedCubic(poly, uk));
+            }
+        }
+        u.push(ui);
+        pts.push(pi);
+        L.push(table.L);
+        Theta.push(table.Theta);
+    }
+    return { pts, f, u, L, Theta };
 }
 
 export function splineTurningTValues(poly: XYZ[], n: number): number[] {

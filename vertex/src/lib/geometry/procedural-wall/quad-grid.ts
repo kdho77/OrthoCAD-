@@ -856,8 +856,16 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         throw new Error(`[S1-B] ${wallBelowPlantar} wall vertices below the plantar`);
     }
 
-    const refined = refineSharedBRing(columns, outlineRow, soleZ);
-    if (refined.ring.length !== nS) {
+    const indexGrid = (input.wallStyle?.style ?? "straight") !== "straight";
+    const refined = indexGrid
+        ? {
+              ring: outlineRing.map((p) => ({ ...p, z: 0 })),
+              k: new Array(nS).fill(1),
+              refinedOfStation: [...Array(nS).keys()],
+              stationOfRefined: [...Array(nS).keys()],
+          }
+        : refineSharedBRing(columns, outlineRow, soleZ);
+    if (!indexGrid && refined.ring.length !== nS) {
         plantar = buildGeneratedPlantar({
             boundary: refined.ring,
             dish: null,
