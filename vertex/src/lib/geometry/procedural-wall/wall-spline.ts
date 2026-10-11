@@ -42,7 +42,7 @@ export const SPLINE_DENSE = 512;
 export const SPLINE_W_DENSE = 2048;
 export const SPLINE_W_ALPHA = 0.6;
 export const SPLINE_W_THETA_MIN_DEG = 1;
-export const SPLINE_R_CAP = 5;
+export const SPLINE_R_CAP = 4.5;
 export const SPLINE_R_FILL_ITERS = 20;
 export const SPLINE_F_RING_MAX = 0.02;
 export const SPLINE_MIN_EDGE_FRAC = 0.2;
@@ -715,7 +715,7 @@ export interface SplineDensityTable {
     fillPasses: number;
 }
 
-/** 2048-point S, T; water-fill r≤5 in arc length; W = cumsum(r s). */
+/** 2048-point S, T; water-fill r≤4.5 in arc length; W = cumsum(r s). */
 export function buildSplineDensityTable(poly: XYZ[], nDense = SPLINE_W_DENSE): SplineDensityTable {
     const n = Math.max(1, nDense);
     const u: number[] = [];

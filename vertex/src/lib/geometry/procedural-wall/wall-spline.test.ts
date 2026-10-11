@@ -140,7 +140,7 @@ describe("clamped cubic wall spline", () => {
             expect(table.W[i]!).toBeGreaterThan(table.W[i - 1]!);
         }
         expect(table.L).toBeGreaterThan(1);
-        expect(table.maxR).toBeLessThanOrEqual(5 + 1e-6);
+        expect(table.maxR).toBeLessThanOrEqual(4.5 + 1e-6);
         const N = 20;
         const f = enforceMonotoneF(
             Array.from({ length: N + 1 }, (_, k) => k / N),
@@ -167,10 +167,10 @@ describe("clamped cubic wall spline", () => {
         expect(Math.abs(ring.f[0]![5]! - ring.f[1]![5]!)).toBeLessThanOrEqual(0.02);
     });
 
-    test("density cap water-fills r to <= 5", () => {
+    test("density cap water-fills r to <= 4.5", () => {
         const sol = solveSplineStation(station(0, 1, 12, 2, { s: -1, z: -0.2 }));
         const table = buildSplineDensityTable(sol.poly);
-        expect(table.maxR).toBeLessThanOrEqual(5 + 1e-6);
+        expect(table.maxR).toBeLessThanOrEqual(4.5 + 1e-6);
         expect(table.W[0]).toBe(0);
         expect(table.W[table.W.length - 1]!).toBeCloseTo(1, 2);
         expect(table.fillPasses).toBeGreaterThan(0);
