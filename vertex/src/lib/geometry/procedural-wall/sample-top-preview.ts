@@ -90,22 +90,33 @@ export function reconstructProceduralPreview(
     options: ProceduralPreviewOptions = {},
 ): { model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry } {
     const model = extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
-    const pattern = options.bottomPattern?.length
+    const requested = options.bottomPattern?.length
         ? options.bottomPattern
         : buildFairedPatternFromTop(model, options.scanPattern);
-    const thicknessMm = options.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
-    const stockThicknessMm = options.stockThicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
-    const geometry = reconstructProceduralWalls(model, {
-        corrections: options.corrections as SideCorrections | undefined,
-        thicknessMm,
-        stockThicknessMm,
-        bottomPattern: pattern,
-        bottomPatternLabel: PATTERN_SOURCE_SYNTHETIC,
-        flatPlantar: true,
-        wallStyle: options.wallStyle,
-        deviceType: options.deviceType,
-        lateralFlange: options.lateralFlange,
-        archGrindDepthMm: options.archGrindDepthMm,
-    });
-    return { model, pattern, geometry };
+    const loft = (pattern: PolyPoint[]) => {
+        const thicknessMm = options.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
+        const stockThicknessMm = options.stockThicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
+        const geometry = reconstructProceduralWalls(model, {
+            corrections: options.corrections as SideCorrections | undefined,
+            thicknessMm,
+            stockThicknessMm,
+            bottomPattern: pattern,
+            bottomPatternLabel: PATTERN_SOURCE_SYNTHETIC,
+            flatPlantar: true,
+            wallStyle: options.wallStyle,
+            deviceType: options.deviceType,
+            lateralFlange: options.lateralFlange,
+            archGrindDepthMm: options.archGrindDepthMm,
+        });
+        return { model, pattern, geometry };
+    };
+    try {
+        return loft(requested);
+    } catch (e) {
+        if (options.bottomPattern?.length || !options.scanPattern || options.scanPattern === "full_contact") {
+            throw e;
+        }
+        // Prefab 3D / Flat must still produce a mesh from SAMPLE_Top.
+        return loft(buildFairedPatternFromTop(model));
+    }
 }

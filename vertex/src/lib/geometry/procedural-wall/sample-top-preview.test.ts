@@ -44,6 +44,20 @@ describe("SAMPLE_Top faired preview inputs", () => {
         expect(fairInsetMm(0.4, true, prefab)).toBeGreaterThan(fairInsetMm(0.4, true));
     });
 
+    test("SAMPLE_Top reconstructs for Full Contact, Prefab 3D, Flat, and Custom", async () => {
+        const buf = readFileSync(SAMPLE_TOP_PATH);
+        const geo = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        for (const scanPattern of ["full_contact", "prefab_3d", "flat", "custom"] as const) {
+            const preview = reconstructProceduralPreview(geo, { wallStyle: "straight", scanPattern });
+            expect(preview.pattern.length).toBeGreaterThan(16);
+            expect(preview.geometry.getAttribute("position")?.count ?? 0).toBeGreaterThan(1000);
+            preview.geometry.dispose();
+        }
+        geo.dispose();
+    }, 240_000);
+
     test("SAMPLE_Top builds a faired pattern inside the top rim", async () => {
         const buf = readFileSync(SAMPLE_TOP_PATH);
         const geo = await sampleTopFromArrayBuffer(

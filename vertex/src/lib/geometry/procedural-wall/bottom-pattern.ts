@@ -187,7 +187,8 @@ export function insetsForScanPattern(pattern?: ScanPattern): FairInsetOptions | 
         return { heelMm: 2, archMm: 2, forefootMm: 2, minMm: 2 };
     }
     if (pattern === "prefab_3d") {
-        return { heelMm: 10, archMm: 36, forefootMm: 2, minMm: 1 };
+        // Deeper shell cut-in than Full Contact, still inside SAMPLE_Top preloft skew.
+        return { heelMm: 9, archMm: 30, forefootMm: 1.5, minMm: 1 };
     }
     return undefined;
 }
