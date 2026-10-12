@@ -31,6 +31,7 @@ import {
     shouldLoftProceduralViewer,
 } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { reconstructProceduralPreviewInWorker } from "@/lib/geometry/procedural-wall/preview-loft-worker";
+import { proceduralViewerStockGate } from "@/lib/geometry/procedural-wall/sample-top-display";
 import {
     buildProceduralViewerPattern,
     loadSampleTopGeometry,
@@ -123,21 +124,24 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         : assetId
           ? `${assetId}:${isMirroredForLoad ? "m" : "p"}:${baseUrl ?? ""}`
           : null;
+    // SAMPLE_Top is a public static GLB — ignore stock-server loading flags so
+    // App login bootstrap / persist rehydrate cannot remount-dispose the sheet.
+    const stockGate = proceduralViewerStockGate(wallModel, stockBaseLoading, stockBaseResolutionState);
     // biome-ignore lint/correctness/useExhaustiveDependencies: loadKey captures asset + mirror variant
     useEffect(() => {
         let cancelled = false;
-        nativeGeoRef.current?.dispose();
-        nativeGeoRef.current = null;
-        baseGeoRef.current?.dispose();
-        baseGeoRef.current = null;
-        if (outRef.current && outRef.current !== workRef.current) {
-            outRef.current.dispose();
-        }
-        outRef.current = null;
-        workRef.current?.dispose();
-        workRef.current = null;
         const ref = getDesignBase(design, side);
         if (!ref) {
+            nativeGeoRef.current?.dispose();
+            nativeGeoRef.current = null;
+            baseGeoRef.current?.dispose();
+            baseGeoRef.current = null;
+            if (outRef.current && outRef.current !== workRef.current) {
+                outRef.current.dispose();
+            }
+            outRef.current = null;
+            workRef.current?.dispose();
+            workRef.current = null;
             setGeometry(null);
             setBuilding(false);
             setBaseMeshLoading(side, false);
@@ -172,13 +176,24 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 hasUrl,
                 glbPath: ref.glbPath,
             });
-            setGeometry(null);
+            if (!outRef.current) setGeometry(null);
             setBuilding(stockBaseLoading || stockBaseResolutionState === "loading");
             setBaseMeshLoading(side, true);
             setLoftPhase(side, "fetching", "Waiting for stock base…");
             return;
         }
 
+        // Reload in the background. Keep the last displayed geometry so a
+        // remount cannot flash an empty viewport (blue patterns only).
+        const keepDisplay = Boolean(outRef.current);
+        if (!keepDisplay) {
+            nativeGeoRef.current?.dispose();
+            nativeGeoRef.current = null;
+            baseGeoRef.current?.dispose();
+            baseGeoRef.current = null;
+            workRef.current?.dispose();
+            workRef.current = null;
+        }
         setBuilding(true);
         setBaseMeshLoading(side, true);
         setLoftPhase(side, "fetching", "Fetching SAMPLE_Top…");
@@ -213,6 +228,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 if (cancelled) {
                     geo?.dispose();
                     return;
+                }
+                if (nativeGeoRef.current && nativeGeoRef.current !== geo) {
+                    nativeGeoRef.current.dispose();
                 }
                 nativeGeoRef.current = geo;
                 // Phase 2 — register raw L0 once per source asset (J1: mirrored-only safe).
@@ -267,17 +285,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             cancelled = true;
             setBaseMeshLoading(side, false);
         };
-    }, [
-        loadKey,
-        stockBaseLoading,
-        stockBaseResolutionState,
-        setBaseMeshLoading,
-        side,
-        retryNonce,
-        setLoftPhase,
-        setLoftError,
-        wallModel,
-    ]);
+    }, [loadKey, stockGate, setBaseMeshLoading, side, retryNonce, setLoftPhase, setLoftError, wallModel]);
 
     // Scale native template to the selected shoe size; publish outline/bounds for the sized mesh.
     // biome-ignore lint/correctness/useExhaustiveDependencies: rebuild when native load finishes (building→false)
@@ -388,11 +396,20 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 const rawCount = raw.getAttribute("position")?.count ?? 0;
                 const canReuseWork =
                     workRef.current != null && workRef.current.getAttribute("position")?.count === rawCount;
-                const modified = applyBaseModifiers(raw, field, interacting ? 0 : 1, {
-                    reuse: canReuseWork && workRef.current ? workRef.current : undefined,
-                    skipNormals: interacting,
-                    skipBottomSync: true,
-                });
+                let modified = raw;
+                try {
+                    modified = applyBaseModifiers(raw, field, interacting ? 0 : 1, {
+                        reuse: canReuseWork && workRef.current ? workRef.current : undefined,
+                        skipNormals: interacting,
+                        skipBottomSync: true,
+                    });
+                } catch (e) {
+                    stockDebug("applyBaseModifiers failed — showing raw SAMPLE_Top", {
+                        side,
+                        message: e instanceof Error ? e.message : String(e),
+                    });
+                    modified = raw;
+                }
                 if (workRef.current && workRef.current !== modified) workRef.current.dispose();
                 workRef.current = modified;
                 if (outRef.current && outRef.current !== modified && outRef.current !== workRef.current) {
