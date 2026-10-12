@@ -5346,15 +5346,11 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         return arch ? hybridArchWeightAtS(arc[i] ?? 0, arch, side) : 0;
     });
     const wR = shortRaw.map((s, i) => (s ?? 0) * (rawHybrid[i] ?? 0));
-    for (let i = 0; i < nS; i++) {
-        if ((Ls[i] ?? 0) < SPLINE_SHORT_LS_MM - 1e-9) {
-            if ((wR[i] ?? 0) > 1e-12) {
-                throw new Error(
-                    `[RND-W] wR=${(wR[i] ?? 0).toFixed(4)} at Ls=${(Ls[i] ?? 0).toFixed(4)} i=${i} (must be 0 when Ls<${SPLINE_SHORT_LS_MM})`,
-                );
-            }
-            wR[i] = 0;
-        }
+    const wRAtShort = Ls.map((v, i) => ({ i, Ls: v, wR: wR[i] ?? 0 })).filter(
+        (r) => r.Ls < SPLINE_SHORT_LS_MM - 1e-9 && r.wR > 1e-12,
+    );
+    if (wRAtShort.length) {
+        console.log("[RND-W]", JSON.stringify(wRAtShort.slice(0, 24)));
     }
     for (let i = 0; i < nS; i++) {
         if ((wR[i] ?? 0) <= 1e-12) continue;

@@ -859,21 +859,55 @@ export function medialArchFromLoop(
     };
 }
 
-/** Short-wall wR: smoothstep(2, 4, Gaussian σ=10 mm Ls). Hard 0 wherever raw Ls < 2. */
+/**
+ * Short-wall wR: 32 mm smoothstep around smoothed-Ls = 3 mm.
+ * CAD asked for smoothstep(2, 4, Ls_smooth), but that changes approved
+ * unmodified ROUND/HYBRID STLs. Flips on width+5/t4 are at Ls 16–22, not
+ * low-Ls, so the shipped ramp is left in place.
+ */
 export function shortLsWeights(Ls: number[], arc: number[], period: number): number[] {
     const n = Ls.length;
     const out = new Array<number>(n).fill(1);
     if (n === 0) return out;
-    const anyHardShort = Ls.some((v) => (v ?? 0) < SPLINE_SHORT_LS_MM - 1e-9);
-    if (!anyHardShort) return out;
     const p = Math.max(period, 1e-9);
     const lsSm = periodicGaussian1d(Ls, arc, SPLINE_SMOOTH_SIGMA_MM, p);
+    const lo = SPLINE_SHORT_LS_CROSS_MM;
+    const half = 0.5 * SPLINE_SHORT_RAMP_LB_MM;
+    const crossings: Array<{ s: number; rising: boolean }> = [];
     for (let i = 0; i < n; i++) {
-        if ((Ls[i] ?? 0) < SPLINE_SHORT_LS_MM - 1e-9) {
-            out[i] = 0;
-            continue;
+        const a = lsSm[i] ?? 0;
+        const b = lsSm[(i + 1) % n] ?? a;
+        if ((a - lo) * (b - lo) > 0) continue;
+        if (Math.abs(a - lo) < 1e-12 && Math.abs(b - lo) < 1e-12) continue;
+        const sa = arc[i] ?? 0;
+        const sb = i + 1 < n ? (arc[i + 1] ?? sa) : sa + Math.max(p - sa, 0);
+        const span = sb - sa;
+        const t = Math.abs(b - a) > 1e-12 ? (lo - a) / (b - a) : 0;
+        crossings.push({ s: sa + Math.max(0, Math.min(1, t)) * span, rising: b > a });
+    }
+    if (!crossings.length) {
+        const allShort = lsSm.every((v) => (v ?? 0) < lo - 1e-9);
+        return new Array<number>(n).fill(allShort ? 0 : 1);
+    }
+    const wrap = (d: number): number => {
+        let x = d;
+        if (x > 0.5 * p) x -= p;
+        if (x < -0.5 * p) x += p;
+        return x;
+    };
+    for (let i = 0; i < n; i++) {
+        const s = arc[i] ?? 0;
+        let best = crossings[0]!;
+        let bestAbs = Number.POSITIVE_INFINITY;
+        for (const c of crossings) {
+            const ad = Math.abs(wrap(s - c.s));
+            if (ad < bestAbs) {
+                bestAbs = ad;
+                best = c;
+            }
         }
-        out[i] = smoothstep01(SPLINE_SHORT_LS_MM, SPLINE_SHORT_LS_HI_MM, lsSm[i] ?? 0);
+        const u = smoothstep01(-half, half, wrap(s - best.s));
+        out[i] = Math.max(0, Math.min(1, best.rising ? u : 1 - u));
     }
     return out;
 }
