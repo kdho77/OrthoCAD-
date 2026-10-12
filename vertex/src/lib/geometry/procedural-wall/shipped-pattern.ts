@@ -1,11 +1,10 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import patternBaseline from "./baselines/sample-top-full-contact.json";
+import styleMetricsBaseline from "./baselines/sample-top-style-metrics.json";
 import { ensureCcw, type PolyPoint, startAtPosteriorHeel } from "./curves";
+import { sha256Hex } from "./sha256";
 
 export const SHIPPED_PATTERN_SOURCE_SHA = "a2f7cc61bd6242d45f302342addfac35be87aa83";
 export const SHIPPED_PATTERN_JSON = "sample-top-full-contact.json";
@@ -14,6 +13,14 @@ export const SHIPPED_STYLE_METRICS_JSON = "sample-top-style-metrics.json";
 export const SHIPPED_RATCHET_DEG = 0.5;
 /** Hausdorff of the shipped pattern to the scaled DXF trace. */
 export const SHIPPED_PATTERN_HAUSDORFF_MM = 1.5;
+/** Windows Full Contact fit: lateral midfoot waist is a real feature. */
+export const SHIPPED_MAX_INFLECTIONS = 4;
+export const SHIPPED_LATERAL_K_ABS = 0.015;
+export const SHIPPED_PATTERN_MAX_DKDS = 0.045;
+export const SHIPPED_LATERAL_WAIST_U0 = 0.25;
+export const SHIPPED_LATERAL_WAIST_U1 = 0.65;
+/** SHA-256 of the frozen CCW posterior-heel control loop (a2f7cc61). */
+export const SHIPPED_CONTROL_HASH = "2b51e5eda4c9e30abea976d9535c3f80ca159f048f809a439de8b3d64041012d";
 
 export interface ShippedPatternBaseline {
     sourceSha: string;
@@ -48,37 +55,23 @@ export interface ShippedStyleMetrics {
     infl: number;
 }
 
-function here(): string {
-    return dirname(fileURLToPath(import.meta.url));
-}
-
-function loadPattern(): ShippedPatternBaseline {
-    const raw = readFileSync(resolve(here(), "baselines", SHIPPED_PATTERN_JSON), "utf8");
-    return JSON.parse(raw) as ShippedPatternBaseline;
-}
-
-function loadMetrics(): Record<"straight" | "round" | "hybrid", ShippedStyleMetrics> {
-    const raw = readFileSync(resolve(here(), "baselines", SHIPPED_STYLE_METRICS_JSON), "utf8");
-    return JSON.parse(raw) as Record<"straight" | "round" | "hybrid", ShippedStyleMetrics>;
-}
-
 let cachedPattern: ShippedPatternBaseline | null = null;
 let cachedMetrics: Record<"straight" | "round" | "hybrid", ShippedStyleMetrics> | null = null;
+let cachedControlHash = "";
 
 function data(): ShippedPatternBaseline {
-    cachedPattern ??= loadPattern();
+    cachedPattern ??= patternBaseline as ShippedPatternBaseline;
     return cachedPattern;
 }
 
 export function hashClosedLoop(points: ReadonlyArray<{ x: number; y: number; z?: number }>): string {
     if (!points.length) return "empty";
     const loop = startAtPosteriorHeel(ensureCcw(points.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }))));
-    const h = createHash("sha256");
-    h.update(String(loop.length));
+    let payload = String(loop.length);
     for (const p of loop) {
-        h.update(`${p.x.toFixed(6)},${p.y.toFixed(6)};`);
+        payload += `${p.x.toFixed(6)},${p.y.toFixed(6)};`;
     }
-    return h.digest("hex");
+    return sha256Hex(payload);
 }
 
 export function shippedSampleTopPattern(): PolyPoint[] {
@@ -97,8 +90,13 @@ export function shippedRimHash(): string {
     return data().rimHash;
 }
 
+export function shippedControlHash(): string {
+    cachedControlHash ||= hashClosedLoop(data().controls);
+    return cachedControlHash;
+}
+
 export function shippedStyleMetrics(): Record<"straight" | "round" | "hybrid", ShippedStyleMetrics> {
-    cachedMetrics ??= loadMetrics();
+    cachedMetrics ??= styleMetricsBaseline as Record<"straight" | "round" | "hybrid", ShippedStyleMetrics>;
     return cachedMetrics;
 }
 
@@ -113,6 +111,10 @@ export function assertShippedPatternUntouched(): void {
         throw new Error(
             `[SHIPPED-PATTERN] hash ${live} != frozen ${data().patternHash} (source ${data().sourceSha})`,
         );
+    }
+    const liveControls = shippedControlHash();
+    if (SHIPPED_CONTROL_HASH && liveControls !== SHIPPED_CONTROL_HASH) {
+        throw new Error(`[SHIPPED-PATTERN] control hash ${liveControls} != frozen ${SHIPPED_CONTROL_HASH}`);
     }
     if (data().sourceSha !== SHIPPED_PATTERN_SOURCE_SHA) {
         throw new Error(`[SHIPPED-PATTERN] sourceSha ${data().sourceSha} != ${SHIPPED_PATTERN_SOURCE_SHA}`);

@@ -64,6 +64,7 @@ import {
     SPLINE_R_CAP,
     SPLINE_ROW1_TR_MAX_DEG,
     SPLINE_S_MIN_MM,
+    SPLINE_SHORT_LS_HI_MM,
     SPLINE_SHORT_LS_MM,
     SPLINE_SMOOTH_SIGMA_MM,
     SPLINE_TURN_MAX_DEG,
@@ -619,7 +620,8 @@ export interface ColumnQuality {
     nColZFail?: number;
     nColQuadFail?: number;
     nFaceFlips?: number;
-    faceFlips?: Array<{ i: number; k: number }>;
+    faceFlips?: Array<{ i: number; k: number; Ls: number; wR: number }>;
+    inwardHits?: Array<{ i: number; j: number; Ls: number; wR: number }>;
     sMinAll?: number;
     nLipFail?: number;
     maxG1RAnalyticDeg?: number;
@@ -5344,6 +5346,35 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
         return arch ? hybridArchWeightAtS(arc[i] ?? 0, arch, side) : 0;
     });
     const wR = shortRaw.map((s, i) => (s ?? 0) * (rawHybrid[i] ?? 0));
+    for (let i = 0; i < nS; i++) {
+        if ((Ls[i] ?? 0) < SPLINE_SHORT_LS_MM - 1e-9) {
+            if ((wR[i] ?? 0) > 1e-12) {
+                throw new Error(
+                    `[RND-W] wR=${(wR[i] ?? 0).toFixed(4)} at Ls=${(Ls[i] ?? 0).toFixed(4)} i=${i} (must be 0 when Ls<${SPLINE_SHORT_LS_MM})`,
+                );
+            }
+            wR[i] = 0;
+        }
+    }
+    for (let i = 0; i < nS; i++) {
+        if ((wR[i] ?? 0) <= 1e-12) continue;
+        const joint = joints[i]!;
+        const sE = joint.E.s;
+        const mS = joint.M.s;
+        const lsI = joint.Ls;
+        if (mS + 1e-9 < sE || mS - 1e-9 > lsI) {
+            throw new Error(
+                `[RND-M] ${JSON.stringify({
+                    i,
+                    u: Number(frames[i]!.u.toFixed(4)),
+                    Ms: Number(mS.toFixed(4)),
+                    sE: Number(sE.toFixed(4)),
+                    Ls: Number(lsI.toFixed(4)),
+                    wR: Number((wR[i] ?? 0).toFixed(4)),
+                })}`,
+            );
+        }
+    }
     if (style === "hybrid") {
         for (let i = 0; i < nS; i++) {
             if ((frames[i]!.sideSign ?? 1) < 0) wR[i] = 0;
@@ -6778,6 +6809,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let nFoldsOver90 = 0;
     let inwardWallFaces = 0;
     const inwardByJ: Record<number, number> = {};
+    const inwardHits: Array<{ i: number; j: number; Ls: number; wR: number }> = [];
     let maxNeighbourRatio = 0;
     let maxSeamNonFb = 0;
     let maxRoundStepDeg = 0;
@@ -7061,13 +7093,31 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 const outL = Math.hypot(outX, outY) || 1;
                 const wallish = (n: XYZ): boolean => Math.abs(n.z) < 0.7 && Math.hypot(n.x, n.y) > 0.25;
                 if (j >= nRnd && j < nRnd + nLn) {
+                    const lsI = fr.splineLs ?? stationSzFrame(fr.R, fr.B, fr.h).Ls;
+                    const wRv = fr.splineWR ?? 0;
                     if (wallish(nL) && (nL.x * outX + nL.y * outY) / outL > 0) {
                         inwardWallFaces++;
                         inwardByJ[j] = (inwardByJ[j] ?? 0) + 1;
+                        if (inwardHits.length < 64) {
+                            inwardHits.push({
+                                i,
+                                j,
+                                Ls: Number(lsI.toFixed(4)),
+                                wR: Number(wRv.toFixed(4)),
+                            });
+                        }
                     }
                     if (wallish(nR) && (nR.x * outX + nR.y * outY) / outL > 0) {
                         inwardWallFaces++;
                         inwardByJ[j] = (inwardByJ[j] ?? 0) + 1;
+                        if (inwardHits.length < 64) {
+                            inwardHits.push({
+                                i,
+                                j,
+                                Ls: Number(lsI.toFixed(4)),
+                                wR: Number(wRv.toFixed(4)),
+                            });
+                        }
                     }
                 }
             }
@@ -7287,7 +7337,9 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
             band: topRoundBand,
         }),
     );
-    if (inwardWallFaces) console.log("[S1-INWARD]", JSON.stringify(inwardByJ));
+    if (inwardWallFaces) {
+        console.log("[S1-INWARD]", JSON.stringify({ byJ: inwardByJ, hits: inwardHits.slice(0, 32) }));
+    }
     console.log("[S1-ASPECT]", JSON.stringify(worstAspect));
     console.log("[S1-RATIO]", JSON.stringify(worstRatio));
     console.log("[S1-ACROSS]", JSON.stringify({ ...worstAcross, p99: Number(maxAcrossP99.toFixed(2)) }));
@@ -7350,7 +7402,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
     let nColZFail = 0;
     let nColQuadFail = 0;
     let nFaceFlips = 0;
-    const faceFlips: Array<{ i: number; k: number }> = [];
+    const faceFlips: Array<{ i: number; k: number; Ls: number; wR: number }> = [];
     let sMinAll = Number.POSITIVE_INFINITY;
     let nLipFail = 0;
     let maxWRStep = 0;
@@ -7429,7 +7481,14 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 };
                 if (bad(n1) || bad(n2)) {
                     nFaceFlips++;
-                    if (faceFlips.length < 64) faceFlips.push({ i, k });
+                    if (faceFlips.length < 64) {
+                        faceFlips.push({
+                            i,
+                            k,
+                            Ls: Number((fr.splineLs ?? 0).toFixed(4)),
+                            wR: Number((fr.splineWR ?? 0).toFixed(4)),
+                        });
+                    }
                 }
             }
         }
@@ -7455,6 +7514,16 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 flips: faceFlips.slice(0, 24),
             }),
         );
+        if (nFaceFlips) {
+            console.log(
+                "[RND-FLIPS]",
+                JSON.stringify({
+                    n: nFaceFlips,
+                    flips: faceFlips,
+                    lowLs: faceFlips.filter((f) => f.Ls < SPLINE_SHORT_LS_HI_MM + 1e-9),
+                }),
+            );
+        }
         console.log(
             "[RND-SAMPLE]",
             JSON.stringify({
@@ -7604,6 +7673,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
         nColQuadFail,
         nFaceFlips,
         faceFlips,
+        inwardHits,
         sMinAll,
         nLipFail,
         maxG1RAnalyticDeg,

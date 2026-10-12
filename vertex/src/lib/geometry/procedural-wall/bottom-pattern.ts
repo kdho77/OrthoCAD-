@@ -12,7 +12,12 @@ import {
     startAtPosteriorHeel,
 } from "./curves";
 import { fairedPattern, scaleToMinInset } from "./faired-pattern";
-import { rimMatchesShippedSampleTop, shippedSampleTopPattern } from "./shipped-pattern";
+import {
+    rimMatchesShippedSampleTop,
+    SHIPPED_LATERAL_WAIST_U0,
+    SHIPPED_LATERAL_WAIST_U1,
+    shippedSampleTopPattern,
+} from "./shipped-pattern";
 import {
     fitWindowsTraceToRim,
     PATTERN_TRACE_HAUSDORFF_MM,
@@ -369,6 +374,13 @@ function smoothUnit2(ns: Array<{ x: number; y: number }>, passes: number): Array
     return cur;
 }
 
+export interface PatternInflectionStation {
+    u: number;
+    y: number;
+    medial: boolean;
+    lateralMidfoot: boolean;
+}
+
 export interface PatternCurvatureReport {
     k: number[];
     s: number[];
@@ -463,6 +475,83 @@ export function countClosedInflections(
         if (merged[i]!.sign !== merged[(i + 1) % merged.length]!.sign) count++;
     }
     return count;
+}
+
+/**
+ * Inflection stations aligned with {@link countClosedInflections}: first sample
+ * of each new signed-k run after a hysteresis-valid previous run.
+ */
+export function closedInflectionStations(
+    loop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    sign: MedialYSign = 1,
+): PatternInflectionStation[] {
+    const { k, s } = closedSignedCurvature(loop);
+    const n = loop.length;
+    if (n < 3) return [];
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const yMid = rimYMid(loop);
+    const ds = new Array<number>(n).fill(1);
+    for (let i = 0; i < n - 1; i++) ds[i] = Math.max(s[i + 1]! - s[i]!, 1e-9);
+    ds[n - 1] = Math.max((s[1] ?? 0) - (s[0] ?? 0), 1e-9);
+    const runs: Array<{ sign: number; arc: number; i0: number }> = [];
+    let runSign = 0;
+    let arc = 0;
+    let i0 = 0;
+    const flush = (): void => {
+        if (runSign !== 0 && arc >= INFLECTION_MIN_ARC_MM - 1e-9) {
+            runs.push({ sign: runSign, arc, i0 });
+        }
+        runSign = 0;
+        arc = 0;
+    };
+    for (let t = 0; t < n; t++) {
+        const ki = k[t]!;
+        if (Math.abs(ki) < INFLECTION_K_EPS) {
+            flush();
+            continue;
+        }
+        const sg = Math.sign(ki);
+        if (runSign === 0) {
+            runSign = sg;
+            arc = ds[t]!;
+            i0 = t;
+        } else if (sg === runSign) {
+            arc += ds[t]!;
+        } else {
+            flush();
+            runSign = sg;
+            arc = ds[t]!;
+            i0 = t;
+        }
+    }
+    flush();
+    const merged: Array<{ sign: number; arc: number; i0: number }> = [];
+    for (const r of runs) {
+        const last = merged[merged.length - 1];
+        if (last && last.sign === r.sign) last.arc += r.arc;
+        else merged.push({ ...r });
+    }
+    if (merged.length >= 2 && merged[0]!.sign === merged[merged.length - 1]!.sign) {
+        merged[0]!.arc += merged.pop()!.arc;
+    }
+    if (merged.length < 2) return [];
+    const out: PatternInflectionStation[] = [];
+    for (let i = 0; i < merged.length; i++) {
+        if (merged[i]!.sign === merged[(i + 1) % merged.length]!.sign) continue;
+        const idx = merged[(i + 1) % merged.length]!.i0;
+        const p = loop[idx]!;
+        const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
+        const medial = (p.y - yMid) * sign > 0;
+        out.push({
+            u,
+            y: p.y,
+            medial,
+            lateralMidfoot:
+                !medial && u >= SHIPPED_LATERAL_WAIST_U0 - 1e-9 && u <= SHIPPED_LATERAL_WAIST_U1 + 1e-9,
+        });
+    }
+    return out;
 }
 
 export function patternCurvatureReport(

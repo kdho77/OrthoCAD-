@@ -80,11 +80,13 @@ export const ROUND_R1_OVER_HEEL = 0.5;
 export const HEEL_EDGE_THICKNESS_MM = 1;
 /** Hard skip: do not evaluate ROUND when Ls is below this. */
 export const SPLINE_SHORT_LS_MM = 2;
+/** wR = smoothstep(SPLINE_SHORT_LS_MM, this, Ls_smooth). */
+export const SPLINE_SHORT_LS_HI_MM = 4;
 /** Kept for callers; short-Ls ROUND ramp now uses SPLINE_SHORT_RAMP_LB_MM. */
 export const SPLINE_SHORT_BLEND_MM = 15;
-/** Short-Ls ROUND ramp is centered where smoothed Ls crosses this. */
+/** Kept for callers; ramp is now smoothstep(2, 4, Ls_smooth). */
 export const SPLINE_SHORT_LS_CROSS_MM = 3;
-/** Analytic short-Ls ramp length (mm of rim arc), no Gaussian. */
+/** Kept for callers; ramp is now smoothstep(2, 4, Ls_smooth). */
 export const SPLINE_SHORT_RAMP_LB_MM = 32;
 /** Shared lip-block step: NL = max_i ceil(θ_i / this). */
 export const SPLINE_LIP_ANGLE_DEG = 3.5;
@@ -857,50 +859,19 @@ export function medialArchFromLoop(
     };
 }
 
-/** Short-wall wR: analytic smoothstep, Lb=30 mm, centered on smoothed-Ls = 3 mm. */
+/** Short-wall wR: smoothstep(2, 4, Gaussian σ=10 mm Ls). Hard 0 wherever raw Ls < 2. */
 export function shortLsWeights(Ls: number[], arc: number[], period: number): number[] {
     const n = Ls.length;
     const out = new Array<number>(n).fill(1);
     if (n === 0) return out;
     const p = Math.max(period, 1e-9);
     const lsSm = periodicGaussian1d(Ls, arc, SPLINE_SMOOTH_SIGMA_MM, p);
-    const lo = SPLINE_SHORT_LS_CROSS_MM;
-    const half = 0.5 * SPLINE_SHORT_RAMP_LB_MM;
-    const crossings: Array<{ s: number; rising: boolean }> = [];
     for (let i = 0; i < n; i++) {
-        const a = lsSm[i] ?? 0;
-        const b = lsSm[(i + 1) % n] ?? a;
-        if ((a - lo) * (b - lo) > 0) continue;
-        if (Math.abs(a - lo) < 1e-12 && Math.abs(b - lo) < 1e-12) continue;
-        const sa = arc[i] ?? 0;
-        const sb = i + 1 < n ? (arc[i + 1] ?? sa) : sa + Math.max(p - sa, 0);
-        const span = sb - sa;
-        const t = Math.abs(b - a) > 1e-12 ? (lo - a) / (b - a) : 0;
-        crossings.push({ s: sa + Math.max(0, Math.min(1, t)) * span, rising: b > a });
-    }
-    if (!crossings.length) {
-        const allShort = lsSm.every((v) => (v ?? 0) < lo - 1e-9);
-        return new Array<number>(n).fill(allShort ? 0 : 1);
-    }
-    const wrap = (d: number): number => {
-        let x = d;
-        if (x > 0.5 * p) x -= p;
-        if (x < -0.5 * p) x += p;
-        return x;
-    };
-    for (let i = 0; i < n; i++) {
-        const s = arc[i] ?? 0;
-        let best = crossings[0]!;
-        let bestAbs = Number.POSITIVE_INFINITY;
-        for (const c of crossings) {
-            const ad = Math.abs(wrap(s - c.s));
-            if (ad < bestAbs) {
-                bestAbs = ad;
-                best = c;
-            }
+        if ((Ls[i] ?? 0) < SPLINE_SHORT_LS_MM - 1e-9) {
+            out[i] = 0;
+            continue;
         }
-        const u = smoothstep01(-half, half, wrap(s - best.s));
-        out[i] = Math.max(0, Math.min(1, best.rising ? u : 1 - u));
+        out[i] = smoothstep01(SPLINE_SHORT_LS_MM, SPLINE_SHORT_LS_HI_MM, lsSm[i] ?? 0);
     }
     return out;
 }

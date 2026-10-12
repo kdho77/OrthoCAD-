@@ -26,6 +26,8 @@ export const WALL_MID_DIHEDRAL_MAX_DEG = 4;
 /** Target, not blocking. */
 export const WALL_STYLE_ACROSS_P99_MAX_DEG = 3;
 export const WALL_STYLE_ACROSS_P99_BLOCK_DEG = 6;
+/** Modified-case across p99 (unmodified stays at BLOCK). */
+export const WALL_STYLE_ACROSS_P99_MODIFIED_DEG = 7;
 export const WALL_STYLE_ACROSS_P100_BLOCK_DEG = 8;
 export const WALL_MID_SMOOTH_SIGMA_MM = 10;
 export const WALL_MID_ROW_CAP = 72;

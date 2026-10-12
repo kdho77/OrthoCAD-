@@ -6,8 +6,11 @@ import {
     assertShippedPatternUntouched,
     hashClosedLoop,
     rimMatchesShippedSampleTop,
+    SHIPPED_CONTROL_HASH,
     SHIPPED_PATTERN_SOURCE_SHA,
+    shippedControlHash,
     shippedPatternHash,
+    shippedSampleTopControls,
     shippedSampleTopPattern,
     shippedStyleMetrics,
 } from "./shipped-pattern";
@@ -18,6 +21,8 @@ describe("shipped SAMPLE_Top pattern freeze", () => {
         const samples = shippedSampleTopPattern();
         expect(samples.length).toBeGreaterThan(80);
         expect(hashClosedLoop(samples)).toBe(shippedPatternHash());
+        expect(hashClosedLoop(shippedSampleTopControls())).toBe(SHIPPED_CONTROL_HASH);
+        expect(shippedControlHash()).toBe(SHIPPED_CONTROL_HASH);
         expect(rimMatchesShippedSampleTop(samples)).toBe(false);
         const metrics = shippedStyleMetrics();
         expect(metrics.straight.sourceSha).toBe(SHIPPED_PATTERN_SOURCE_SHA);

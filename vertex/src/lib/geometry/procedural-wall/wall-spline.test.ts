@@ -45,10 +45,9 @@ import {
     SPLINE_LIP_MS_SLACK_MM,
     SPLINE_LIP_S_SLACK_MM,
     SPLINE_N_MAX,
-    SPLINE_SHORT_LS_CROSS_MM,
+    SPLINE_SHORT_LS_HI_MM,
     SPLINE_SHORT_LS_MM,
-    SPLINE_SHORT_RAMP_LB_MM,
-    SPLINE_WR_STEP_MAX,
+    SPLINE_SMOOTH_SIGMA_MM,
     type SplineStationInput,
     sampleLipEqualAngle,
     samplePolylineAtArcFractions,
@@ -471,7 +470,7 @@ describe("quadratic wall parabola", () => {
         expect(analyticG1RDeg({ s: -Math.SQRT1_2, z: -Math.SQRT1_2 }, joint.tR)).toBeGreaterThan(40);
     });
 
-    test("short-Ls ROUND ramp is a 32 mm smoothstep around Ls=3, |dw|<=0.08", () => {
+    test("short-Ls ROUND ramp is smoothstep(2,4,Ls_smooth); wR=0 where Ls<2", () => {
         const n = 240;
         const period = 240;
         const arc = Array.from({ length: n }, (_, i) => (i * period) / n);
@@ -483,13 +482,11 @@ describe("quadratic wall parabola", () => {
         expect(w.length).toBe(n);
         expect(Math.max(...w)).toBeGreaterThan(0.95);
         expect(Math.min(...w)).toBeLessThan(0.05);
-        let maxDw = 0;
         for (let i = 0; i < n; i++) {
-            maxDw = Math.max(maxDw, Math.abs((w[(i + 1) % n] ?? 0) - (w[i] ?? 0)));
+            if ((Ls[i] ?? 0) < SPLINE_SHORT_LS_MM - 1e-9) expect(w[i]).toBe(0);
         }
-        expect(maxDw).toBeLessThanOrEqual(SPLINE_WR_STEP_MAX + 1e-9);
-        expect(SPLINE_SHORT_RAMP_LB_MM).toBe(32);
-        expect(SPLINE_SHORT_LS_CROSS_MM).toBe(3);
+        expect(SPLINE_SHORT_LS_HI_MM).toBe(4);
+        expect(SPLINE_SMOOTH_SIGMA_MM).toBe(10);
     });
 
     test("lip block count is max ceil(theta / 3.5 deg) and row NL locks to E", () => {
