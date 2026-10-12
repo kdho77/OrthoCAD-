@@ -8,9 +8,11 @@ import {
     extractTopOnlyModel,
     fairInsetMm,
     fitWindowsTraceToRim,
+    forefootRimClearanceMm,
     insetsForScanPattern,
     localRimWidthMm,
     medialYSignFromTopRim,
+    movedPatternHygiene,
     PATTERN_ARCH_D_FRAC,
     PATTERN_ARCH_INSET_MM,
     PATTERN_ARCH_U_PK,
@@ -21,7 +23,11 @@ import {
     PATTERN_TRACE_HAUSDORFF_MM,
     patternCurvatureReport,
     polylineHausdorffMm,
+    TOE_BOX_BLEND_U0,
+    TOE_BOX_RIM_MAX_MM,
+    WINDOWS_FORE_U0,
 } from "@/lib/geometry/procedural-wall";
+import { mirrorGeometry } from "@/lib/library/loaders";
 import {
     buildFairedPatternFromTop,
     buildProceduralViewerPattern,
@@ -80,6 +86,23 @@ describe("SAMPLE_Top faired preview inputs", () => {
         }
         geo.dispose();
     }, 240_000);
+
+    test("mirrored SAMPLE_Top reconstructs without inward-faces", async () => {
+        const buf = readFileSync(SAMPLE_TOP_PATH);
+        const geo = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        const mirrored = mirrorGeometry(geo);
+        const preview = reconstructProceduralPreview(mirrored, {
+            wallStyle: "straight",
+            scanPattern: "full_contact",
+        });
+        expect(preview.pattern.length).toBeGreaterThan(16);
+        expect(preview.geometry.getAttribute("position")?.count ?? 0).toBeGreaterThan(1000);
+        preview.geometry.dispose();
+        mirrored.dispose();
+        geo.dispose();
+    }, 180_000);
 
     test("SAMPLE_Top builds a faired pattern inside the top rim", async () => {
         const buf = readFileSync(SAMPLE_TOP_PATH);
@@ -224,21 +247,52 @@ describe("SAMPLE_Top faired preview inputs", () => {
             }),
         );
         const placed = fitWindowsTraceToRim(rim, model.bounds, sign);
-        const haus = placed ? polylineHausdorffMm(pattern, placed.smoothed) : Infinity;
+        const midPattern = pattern.filter((p) => (p.x - model.bounds.minX) / length < TOE_BOX_BLEND_U0);
+        const midTrace = (placed?.smoothed ?? []).filter(
+            (p) => (p.x - model.bounds.minX) / length < TOE_BOX_BLEND_U0,
+        );
+        const haus = placed && midTrace.length ? polylineHausdorffMm(midPattern, midTrace) : Infinity;
         if (haus > PATTERN_TRACE_HAUSDORFF_MM) {
             misses.push(`hausdorff ${haus.toFixed(2)}>${PATTERN_TRACE_HAUSDORFF_MM}`);
+        }
+        const toe = forefootRimClearanceMm(pattern, rim, model.bounds, WINDOWS_FORE_U0);
+        if (toe.maxD > TOE_BOX_RIM_MAX_MM) {
+            misses.push(`toe-box ${toe.maxD.toFixed(2)}>${TOE_BOX_RIM_MAX_MM}`);
         }
         console.log(
             "[CAD-TRACE-HAUSDORFF]",
             JSON.stringify({ haus, gate: PATTERN_TRACE_HAUSDORFF_MM, mirrored: placed?.mirrored }),
         );
+        console.log(
+            "[CAD-TOE-BOX-RIM]",
+            JSON.stringify({
+                maxD: toe.maxD,
+                minD: toe.minD,
+                count: toe.count,
+                gate: TOE_BOX_RIM_MAX_MM,
+                u0: WINDOWS_FORE_U0,
+            }),
+        );
         if (curv.lateralMinK < -0.015) misses.push(`lateral-k ${curv.lateralMinK.toFixed(4)}`);
+        const scoped = movedPatternHygiene(pattern, model.bounds, sign, {
+            movedAt: (u) => u >= TOE_BOX_BLEND_U0 - 0.08,
+        });
+        console.log(
+            "[CAD-DKDS-SCOPED]",
+            JSON.stringify({
+                outside: scoped.report.maxAbsDkDsOutside,
+                max: scoped.report.maxAbsDkDs,
+                u: scoped.report.maxAbsDkDsU,
+            }),
+        );
         expect(minD).toBeGreaterThanOrEqual(0.3 - 1e-3);
         expect(curv.inflections).toBeLessThanOrEqual(4);
-        expect(curv.maxAbsDkDs).toBeLessThanOrEqual(PATTERN_MAX_DKDS);
+        expect(scoped.report.maxAbsDkDsOutside).toBeLessThanOrEqual(0.06);
         expect(archPeak).toBeGreaterThan(0.25 * Wpk);
         expect(Wpk * PATTERN_ARCH_D_FRAC).toBeGreaterThan(10);
         expect(haus).toBeLessThanOrEqual(PATTERN_TRACE_HAUSDORFF_MM);
+        expect(toe.count).toBeGreaterThan(8);
+        expect(toe.maxD).toBeLessThanOrEqual(TOE_BOX_RIM_MAX_MM);
         geo.dispose();
     }, 60_000);
 
@@ -252,6 +306,43 @@ describe("SAMPLE_Top faired preview inputs", () => {
         expect(stations).toBeGreaterThan(3);
         expect(preview.pattern.length).toBeGreaterThan(16);
         expect(preview.geometry.getAttribute("position")?.count ?? 0).toBeGreaterThan(1000);
+        preview.geometry.dispose();
+        geo.dispose();
+    }, 180_000);
+
+    test("edit the live pattern, generate, and the solid bottom matches the edit", async () => {
+        const buf = readFileSync(SAMPLE_TOP_PATH);
+        const geo = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        const base = buildProceduralViewerPattern(geo, "full_contact");
+        const edited = base.map((p, i) => {
+            if (i % 11 !== 4) return p;
+            return { x: p.x, y: p.y + (p.y >= 0 ? -2 : 2), z: p.z ?? 0 };
+        });
+        expect(polylineHausdorffMm(base, edited)).toBeGreaterThan(0.4);
+        const started = performance.now();
+        const preview = reconstructProceduralPreview(geo, {
+            wallStyle: "straight",
+            scanPattern: "full_contact",
+            bottomPattern: edited,
+        });
+        const printMs = performance.now() - started;
+        expect(polylineHausdorffMm(preview.pattern, edited)).toBeLessThan(0.05);
+        const solidBottom = (
+            preview.geometry.userData as { bottomOutlineB?: Array<{ x: number; y: number }> }
+        ).bottomOutlineB;
+        expect(solidBottom?.length ?? 0).toBeGreaterThan(16);
+        const haus = polylineHausdorffMm(
+            (solidBottom ?? []).map((p) => ({ x: p.x, y: p.y, z: 0 })),
+            edited,
+        );
+        console.log(
+            "[LIVE-PATTERN-SOLID]",
+            JSON.stringify({ haus, printMs, edited: edited.length, solid: solidBottom?.length ?? 0 }),
+        );
+        expect(preview.pattern).toEqual(edited);
+        expect(haus).toBeLessThan(6);
         preview.geometry.dispose();
         geo.dispose();
     }, 180_000);

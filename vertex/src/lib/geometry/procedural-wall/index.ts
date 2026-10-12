@@ -254,6 +254,11 @@ export {
     type WallSubClass,
 } from "./intersect";
 export {
+    hashLiveBottomPattern,
+    livePatternMarksSolidStale,
+    resolveLiveBottomPattern,
+} from "./live-bottom-pattern";
+export {
     buildHermiteStations,
     countColumnPlanReversals,
     MIN_REAL_BOTTOM_FILLET_MM,
@@ -330,6 +335,12 @@ export {
     PLANTAR_STEINER_OUTLINE_FRAC,
     SLIVER_MIN_ANGLE_DEG,
 } from "./plantar-cdt";
+export {
+    PRINT_LOFT_HINT,
+    PRINT_LOFT_TIMEOUT_MS,
+    printLoftProgress01,
+    printLoftSteps,
+} from "./preview-loft-ui";
 export { type ReconstructOptions, reconstructProceduralWalls, splitAcuteTriangles } from "./reconstruct";
 export {
     assertClosedStationRing,
@@ -656,8 +667,14 @@ export {
     wallBetaAt,
 } from "./wall-style";
 export {
+    clampForefootToRimInset,
     cleanWindowsTracePx,
     fitWindowsTraceToRim,
+    forefootRimClearanceMm,
     polylineHausdorffMm,
+    pullForefootTargetsToRim,
     smoothedWindowsTraceCanonical,
+    TOE_BOX_BLEND_U0,
+    TOE_BOX_RIM_MAX_MM,
+    WINDOWS_FORE_U0,
 } from "./windows-trace";

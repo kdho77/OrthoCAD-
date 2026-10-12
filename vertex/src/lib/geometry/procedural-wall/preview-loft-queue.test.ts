@@ -3,6 +3,7 @@
 
 import { afterEach, describe, expect, test } from "@rstest/core";
 import {
+    cancelAllPreviewLofts,
     enqueuePreviewLoft,
     previewLoftPriority,
     previewLoftQueueSnapshotForTests,
@@ -75,5 +76,33 @@ describe("preview loft queue", () => {
         releaseLeft?.();
         await new Promise((r) => setTimeout(r, 40));
         expect(order).toEqual(["left"]);
+    });
+
+    test("cancelAllPreviewLofts drops queued jobs", async () => {
+        const order: string[] = [];
+        let releaseLeft: (() => void) | undefined;
+        const leftGate = new Promise<void>((resolve) => {
+            releaseLeft = resolve;
+        });
+        enqueuePreviewLoft({
+            side: "left",
+            priority: 0,
+            run: async () => {
+                await leftGate;
+                order.push("left");
+            },
+        });
+        enqueuePreviewLoft({
+            side: "right",
+            priority: 1,
+            run: () => {
+                order.push("right");
+            },
+        });
+        cancelAllPreviewLofts();
+        releaseLeft?.();
+        await new Promise((r) => setTimeout(r, 40));
+        expect(order).not.toContain("right");
+        expect(previewLoftQueueSnapshotForTests().pending).toEqual([]);
     });
 });

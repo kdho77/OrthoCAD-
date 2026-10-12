@@ -4,7 +4,11 @@
 import { describe, expect, test } from "@rstest/core";
 import {
     autoPatternKey,
+    PRINT_LOFT_HINT,
+    PRINT_LOFT_TIMEOUT_MS,
     previewLoftProgressLabel,
+    printLoftProgress01,
+    printLoftSteps,
     proceduralLoftReuseKey,
     resolveLoftActiveSide,
     shouldLoftProceduralViewer,
@@ -22,7 +26,7 @@ describe("preview loft overlay", () => {
         expect(resolveLoftActiveSide(true, true, "right")).toBe("right");
     });
 
-    test("blocks the viewport only until the first visible foot is ready", () => {
+    test("full splash stays up while any visible foot is still lofting", () => {
         const blocked = viewerLoftOverlayState({
             showBase: true,
             showLeft: true,
@@ -44,9 +48,18 @@ describe("preview loft overlay", () => {
             phaseBySide: { left: "ready", right: "lofting" },
             error: null,
         });
-        expect(oneReady.blockViewport).toBe(false);
+        expect(oneReady.blockViewport).toBe(true);
         expect(oneReady.showBanner).toBe(true);
         expect(oneReady.kind).toBe("progress");
+        expect(PRINT_LOFT_TIMEOUT_MS).toBeGreaterThanOrEqual(5 * 60 * 1000);
+        expect(PRINT_LOFT_HINT).toMatch(/minute per foot/i);
+        expect(printLoftSteps({ left: "lofting", right: "queued" }).map((s) => s.state)).toEqual([
+            "active",
+            "active",
+            "active",
+        ]);
+        expect(printLoftProgress01(15_000, 1)).toBeGreaterThan(0.1);
+        expect(printLoftProgress01(15_000, 1)).toBeLessThan(0.95);
     });
 
     test("surfaces an error with a blocking overlay when no foot is ready", () => {

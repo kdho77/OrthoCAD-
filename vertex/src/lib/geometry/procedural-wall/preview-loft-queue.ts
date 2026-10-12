@@ -6,10 +6,9 @@ import type { Side } from "@/types";
 /**
  * Serial preview-loft queue.
  *
- * `reconstructProceduralPreview` is synchronous on the main thread (there is no
- * procedural-wall worker). Starting left and right in the same tick freezes the
- * page for both feet and can OOM a phone. Jobs run one at a time, active foot
- * first, with a paint yield between them.
+ * Reconstruct runs in a Web Worker, but left and right still share one worker
+ * and one queue. Jobs run one at a time, active foot first, with a paint yield
+ * between them so the splash can update.
  *
  * Lower-resolution preview rows (widening OUTLINE_STATION_SPACING_MM) would
  * change the approved wall station set and need CAD expert sign-off. This
@@ -90,6 +89,13 @@ async function pumpPreviewLoftQueue(): Promise<void> {
         pumping = false;
         if (pending.length > 0) void pumpPreviewLoftQueue();
     }
+}
+
+/** Cancel queued jobs and mark the running job so Cancel aborts generate. */
+export function cancelAllPreviewLofts(): void {
+    for (const job of pending) job.cancelled = true;
+    pending.length = 0;
+    if (running) running.cancelled = true;
 }
 
 export function resetPreviewLoftQueueForTests(): void {

@@ -35,7 +35,7 @@ export function proceduralLoftReuseKey(input: {
     thicknessMm: number;
     correctionsJson: string;
     scanPattern: string;
-    patternKind: "auto" | "edited";
+    patternKind: "auto" | "edited" | "live";
     patternHash: string;
     flanges: string;
 }): string {
@@ -54,10 +54,18 @@ export function proceduralLoftReuseKey(input: {
 
 export function hashPatternPoints(points: ReadonlyArray<{ x: number; y: number; z?: number }>): string {
     if (points.length === 0) return "0";
-    const a = points[0];
-    const mid = points[Math.floor(points.length / 2)];
-    const c = points[points.length - 1];
-    return `${points.length}:${a.x.toFixed(2)},${mid.x.toFixed(2)},${c.x.toFixed(2)}`;
+    let h = points.length * 2654435761;
+    const step = Math.max(1, Math.floor(points.length / 48));
+    for (let i = 0; i < points.length; i += step) {
+        const p = points[i];
+        if (!p) continue;
+        h = (Math.imul(h, 33) + Math.round(p.x * 100) * 10007 + Math.round(p.y * 100) * 17) >>> 0;
+    }
+    const last = points[points.length - 1];
+    if (last) {
+        h = (Math.imul(h, 33) + Math.round(last.x * 100) + Math.round(last.y * 100) * 31) >>> 0;
+    }
+    return `${points.length}:${h.toString(16)}`;
 }
 
 export function autoPatternKey(mirrored: boolean, scanPattern: string): string {
@@ -71,9 +79,9 @@ export interface ViewerLoftOverlayState {
 }
 
 /**
- * Full-viewport spinner only while no visible foot has a mesh.
- * Once the active foot is ready the canvas stays usable; the mirror can loft
- * in the background with a non-blocking banner.
+ * Full-viewport splash while any visible foot is fetching / queued / lofting.
+ * Print reconstruct is off the main thread but still takes about a minute per
+ * foot — keep the canvas blocked so the page never looks frozen.
  */
 export function viewerLoftOverlayState(args: {
     showBase: boolean;
@@ -91,24 +99,54 @@ export function viewerLoftOverlayState(args: {
     if (visible.length === 0) return { blockViewport: false, showBanner: false, kind: "hidden" };
 
     const phases = visible.map((side) => args.phaseBySide[side]);
-    const anyReady = phases.includes("ready");
     const anyError = phases.includes("error") || Boolean(args.error);
     const anyWorking =
         args.stockBaseLoading ||
         visible.some((side) => args.loadingBySide[side]) ||
         phases.some((phase) => phase === "fetching" || phase === "queued" || phase === "lofting");
 
-    if (!anyReady && (anyWorking || anyError)) {
-        return {
-            blockViewport: true,
-            showBanner: true,
-            kind: anyError && !anyWorking ? "error" : anyError ? "error" : "progress",
-        };
+    if (anyError) {
+        return { blockViewport: true, showBanner: true, kind: "error" };
     }
-    if (anyReady && (anyWorking || anyError)) {
-        return { blockViewport: false, showBanner: true, kind: anyError ? "error" : "progress" };
+    if (anyWorking) {
+        return { blockViewport: true, showBanner: true, kind: "progress" };
     }
     return { blockViewport: false, showBanner: false, kind: "hidden" };
+}
+
+export const PRINT_LOFT_TIMEOUT_MS = 10 * 60 * 1000;
+export const PRINT_LOFT_HINT = "This can take about a minute per foot.";
+
+export type PrintLoftStepState = "done" | "active" | "pending";
+
+export interface PrintLoftStep {
+    id: "left" | "right" | "solid";
+    label: string;
+    state: PrintLoftStepState;
+}
+
+export function printLoftSteps(phaseBySide: Record<Side, PreviewLoftPhase>): PrintLoftStep[] {
+    const sideState = (side: Side): PrintLoftStepState => {
+        const phase = phaseBySide[side];
+        if (phase === "ready") return "done";
+        if (phase === "lofting" || phase === "queued" || phase === "fetching") return "active";
+        return "pending";
+    };
+    const left = sideState("left");
+    const right = sideState("right");
+    let solid: PrintLoftStepState = "pending";
+    if (left === "done" && right === "done") solid = "done";
+    else if (left === "active" || right === "active") solid = "active";
+    return [
+        { id: "left", label: "Left walls", state: left },
+        { id: "right", label: "Right walls", state: right },
+        { id: "solid", label: "Print solid", state: solid },
+    ];
+}
+
+export function printLoftProgress01(elapsedMs: number, workingFeet: number): number {
+    const budget = Math.max(1, workingFeet) * 60_000;
+    return Math.max(0.04, Math.min(0.95, elapsedMs / budget));
 }
 
 export function previewLoftProgressLabel(

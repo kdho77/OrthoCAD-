@@ -473,7 +473,7 @@ export function CorrectionsPanel() {
         return hasWedgeViolations(violations);
     }, [corrections, design.thicknessMm]);
 
-    const sectionOpen = (key: string) => openSections[key] ?? workflowStep === "corrections";
+    const sectionOpen = (key: string) => openSections[key] ?? false;
     const toggleSection = (key: string) => setOpenSections((prev) => ({ ...prev, [key]: !sectionOpen(key) }));
 
     useEffect(() => {

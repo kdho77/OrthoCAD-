@@ -7,14 +7,17 @@ import { HardnessStepPanel } from "@/features/clinical/HardnessStepPanel";
 import { CorrectionsPanel } from "@/features/corrections/CorrectionsPanel";
 import { ElementsPanel } from "@/features/elements/ElementsPanel";
 import { ExportPanel } from "@/features/exports/ExportPanel";
+import { ScanImport } from "@/features/scans/ScanImport";
 import { CorrectionPresetsPanel } from "@/features/shape/CorrectionPresetsPanel";
 import { TrimPresetsPanel } from "@/features/shape/TrimPresetsPanel";
 import { ShapeFinishPanel } from "@/features/shape-finish/ShapeFinishPanel";
 import { shouldShowShapeFinishOnShapeStep } from "@/features/shape-finish/shape-finish-mount";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
+import { useDesignStore } from "@/stores/design-store";
 
 export function RightPanel() {
     const step = useClinicalWorkflowStore((s) => s.step);
+    const scanPattern = useDesignStore((s) => s.design.pattern);
 
     return (
         <aside className="flex h-full w-full flex-col border-l border-border bg-panel lg:w-80 lg:shrink-0">
@@ -31,6 +34,17 @@ export function RightPanel() {
                     {step === "base" ? (
                         <div className="space-y-3">
                             <LeftSidebar embedded sections={["pattern", "library"]} />
+                            {scanPattern === "full_contact" ? (
+                                <div className="space-y-2 rounded-md border border-border bg-background/40 p-2">
+                                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                        3D foot scan
+                                    </div>
+                                    <p className="text-[10px] text-muted-foreground">
+                                        Upload a scan for Full Contact — Left, Right, or Pair.
+                                    </p>
+                                    <ScanImport />
+                                </div>
+                            ) : null}
                             <TrimPresetsPanel />
                             {shouldShowShapeFinishOnShapeStep() ? <ShapeFinishPanel /> : null}
                             <p className="text-[10px] text-muted-foreground">

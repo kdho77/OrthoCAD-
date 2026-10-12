@@ -1,4 +1,4 @@
-import { Bookmark, Layers, Trash2 } from "lucide-react";
+import { Bookmark, ChevronRight, Layers, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -9,6 +9,7 @@ import {
     captureCorrectionPresetFromDesign,
     correctionPresetOriginKeys,
 } from "@/lib/clinical/correction-presets";
+import { cn } from "@/lib/utils";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useCorrectionPresetStore } from "@/stores/correction-preset-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -35,6 +36,7 @@ export function CorrectionPresetsPanel() {
     const [pendingDelete, setPendingDelete] = useState<string | null>(null);
     const [pendingRename, setPendingRename] = useState<{ id: string; name: string } | null>(null);
     const [renameValue, setRenameValue] = useState("");
+    const [open, setOpen] = useState(false);
 
     const captured = useMemo(() => captureCorrectionPresetFromDesign(design), [design]);
 
@@ -70,52 +72,70 @@ export function CorrectionPresetsPanel() {
 
     return (
         <div className="mb-3 space-y-2 rounded-md border border-border bg-background/40 p-2">
-            <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    <Layers className="h-3.5 w-3.5" />
+            <button
+                type="button"
+                className="flex w-full items-center gap-1.5 text-left"
+                onClick={() => setOpen((v) => !v)}
+                aria-expanded={open}
+            >
+                <ChevronRight
+                    className={cn(
+                        "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+                        open && "rotate-90",
+                    )}
+                />
+                <Layers className="h-3.5 w-3.5" />
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Correction presets
-                </div>
-                <Button
-                    size="sm"
-                    variant="secondary"
-                    className="h-7 gap-1 text-[10px]"
-                    onClick={() => {
-                        setSaveName(`My preset ${userPresets.length + 1}`);
-                        setSaveOpen(true);
-                    }}
-                >
-                    <Bookmark className="h-3 w-3" />
-                    Save current
-                </Button>
-            </div>
+                </span>
+            </button>
 
-            <PresetGroup
-                title="Vertex starters"
-                items={starters.map((p) => ({
-                    id: p.id,
-                    name: p.name,
-                    payload: p.payload,
-                    scope: "vertex" as const,
-                }))}
-                onApply={apply}
-            />
+            {open ? (
+                <>
+                    <div className="flex items-center justify-end gap-2">
+                        <Button
+                            size="sm"
+                            variant="secondary"
+                            className="h-7 gap-1 text-[10px]"
+                            onClick={() => {
+                                setSaveName(`My preset ${userPresets.length + 1}`);
+                                setSaveOpen(true);
+                            }}
+                        >
+                            <Bookmark className="h-3 w-3" />
+                            Save current
+                        </Button>
+                    </div>
 
-            <PresetGroup
-                title="My presets"
-                emptyCopy="No saved presets yet — adjust Corrections and use Save current."
-                items={userPresets.map((p) => ({
-                    id: p.id,
-                    name: p.name,
-                    payload: p.payload,
-                    scope: "user" as const,
-                }))}
-                onApply={apply}
-                onStartRename={(id, name) => {
-                    setRenameValue(name);
-                    setPendingRename({ id, name });
-                }}
-                onDelete={(id) => setPendingDelete(id)}
-            />
+                    <PresetGroup
+                        title="Vertex starters"
+                        items={starters.map((p) => ({
+                            id: p.id,
+                            name: p.name,
+                            payload: p.payload,
+                            scope: "vertex" as const,
+                        }))}
+                        onApply={apply}
+                    />
+
+                    <PresetGroup
+                        title="My presets"
+                        emptyCopy="No saved presets yet — adjust Corrections and use Save current."
+                        items={userPresets.map((p) => ({
+                            id: p.id,
+                            name: p.name,
+                            payload: p.payload,
+                            scope: "user" as const,
+                        }))}
+                        onApply={apply}
+                        onStartRename={(id, name) => {
+                            setRenameValue(name);
+                            setPendingRename({ id, name });
+                        }}
+                        onDelete={(id) => setPendingDelete(id)}
+                    />
+                </>
+            ) : null}
 
             <Dialog open={saveOpen} onOpenChange={setSaveOpen}>
                 <DialogContent>

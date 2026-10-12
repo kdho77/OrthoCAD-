@@ -13,7 +13,10 @@ import {
 } from "@/lib/geometry/base-asset";
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
-import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall";
+import {
+    hashLiveBottomPattern,
+    resolveLiveBottomPattern,
+} from "@/lib/geometry/procedural-wall/live-bottom-pattern";
 import {
     enqueuePreviewLoft,
     isCoarsePointerDevice,
@@ -22,11 +25,12 @@ import {
 } from "@/lib/geometry/procedural-wall/preview-loft-queue";
 import {
     autoPatternKey,
-    hashPatternPoints,
+    PRINT_LOFT_TIMEOUT_MS,
     proceduralLoftReuseKey,
     resolveLoftActiveSide,
     shouldLoftProceduralViewer,
 } from "@/lib/geometry/procedural-wall/preview-loft-ui";
+import { reconstructProceduralPreviewInWorker } from "@/lib/geometry/procedural-wall/preview-loft-worker";
 import {
     buildProceduralViewerPattern,
     loadSampleTopGeometry,
@@ -41,7 +45,7 @@ import { mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBaseBoundsStore } from "@/stores/base-bounds-store";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
-import { curveToPolyPoints, useBottomPatternStore } from "@/stores/bottom-pattern-store";
+import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -50,7 +54,7 @@ import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { DesignState, Side } from "@/types";
 
-const PREVIEW_LOFT_WATCHDOG_MS = 120_000;
+const PREVIEW_LOFT_WATCHDOG_MS = PRINT_LOFT_TIMEOUT_MS;
 
 export interface BaseInsoleGeometryState {
     geometry: BufferGeometry | null;
@@ -83,6 +87,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const generatedPatternKey = useBottomPatternStore((s) => s.generatedKey[side]);
     const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
     const retryNonce = usePreviewLoftStatusStore((s) => s.retryNonce);
+    const loftCancelled = usePreviewLoftStatusStore((s) => s.cancelled);
     const exportSide = useDesignStore((s) => s.exportSide);
     const showLeft = useDesignStore((s) => s.viewer.showLeft);
     const showRight = useDesignStore((s) => s.viewer.showRight);
@@ -346,11 +351,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             const field = baseModifierField(design, side, thicknessMm);
             const draft = useMeshEditStore.getState().getActiveDraftBottomPattern(side);
             const stored = useBottomPatternStore.getState().getPattern(side);
+            const dragging = Boolean(useMeshEditStore.getState().bottomPatternEdit?.isDragging);
             const heelW = field.corrections?.heelCupWidthMm ?? 0;
             const widthId = shoeWidthForSide(design, side);
             const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}:w${widthId}`;
-            const edited = draft ?? (generatedPatternKey === patternKey ? null : stored);
-            if (!draft && generatedPatternKey !== patternKey) {
+            const userEdited = Boolean(stored) && !generatedPatternKey;
+            if (!draft && !userEdited && generatedPatternKey !== patternKey) {
                 try {
                     const rawPattern = buildProceduralViewerPattern(raw, design.pattern, field.corrections);
                     let minX = Infinity;
@@ -374,6 +380,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     });
                 }
             }
+            const livePts = resolveLiveBottomPattern({
+                draft,
+                stored: useBottomPatternStore.getState().getPattern(side),
+            });
             if (!shouldLoftProceduralViewer(clinicalStep, wallModel)) {
                 const rawCount = raw.getAttribute("position")?.count ?? 0;
                 const canReuseWork =
@@ -395,6 +405,13 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 setBaseMeshLoading(side, false);
                 return;
             }
+            if (dragging || loftCancelled) {
+                lastLoftKeyRef.current = null;
+                setBaseMeshLoading(side, false);
+                if (loftCancelled) setLoftPhase(side, "idle", "Print solid cancelled");
+                else setLoftPhase(side, "ready", "Pattern edited — solid is stale");
+                return;
+            }
             const loftKey = proceduralLoftReuseKey({
                 side,
                 wallStyle,
@@ -402,8 +419,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 thicknessMm,
                 correctionsJson: JSON.stringify(field.corrections ?? {}),
                 scanPattern: design.pattern,
-                patternKind: edited ? "edited" : "auto",
-                patternHash: edited ? hashPatternPoints(curveToPolyPoints(edited)) : patternKey,
+                patternKind: draft ? "edited" : livePts ? "live" : "auto",
+                patternHash: livePts ? hashLiveBottomPattern(livePts) : patternKey,
                 flanges: `${lateralFlangeHeightMm}:${lateralFlangeLengthMm}:${lateralFlangeAngleDeg}|r${retryNonce}`,
             });
             if (lastLoftKeyRef.current === loftKey && outRef.current) {
@@ -443,7 +460,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     if (cancelled) return;
                     const started = performance.now();
                     try {
-                        const preview = reconstructProceduralPreview(raw, {
+                        const preview = await reconstructProceduralPreviewInWorker(raw, {
                             corrections: field.corrections,
                             thicknessMm,
                             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
@@ -456,16 +473,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             archGrindDepthMm: 0,
                             wallStyle,
                             scanPattern: design.pattern,
-                            ...(edited ? { bottomPattern: curveToPolyPoints(edited) } : {}),
+                            ...(livePts ? { bottomPattern: livePts } : {}),
                         });
                         if (cancelled) {
                             preview.geometry.dispose();
                             return;
-                        }
-                        if (!edited) {
-                            useBottomPatternStore
-                                .getState()
-                                .ensureGenerated(side, patternKey, preview.pattern);
                         }
                         if (outRef.current && outRef.current !== workRef.current) {
                             outRef.current.dispose();
@@ -478,6 +490,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     } catch (e) {
                         if (cancelled) return;
                         const message = e instanceof Error ? e.message : String(e);
+                        if (/cancelled/i.test(message)) return;
                         stockDebug("procedural SAMPLE_Top reconstruct failed", { side, message });
                         setGeometry(null);
                         setLoftError(side, message);
@@ -571,6 +584,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         generatedPatternKey,
         bottomPatternEdit,
         retryNonce,
+        loftCancelled,
         activeReady,
         clinicalStep,
         setLoftPhase,

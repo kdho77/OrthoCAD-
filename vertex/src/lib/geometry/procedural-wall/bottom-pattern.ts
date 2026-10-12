@@ -12,7 +12,12 @@ import {
     startAtPosteriorHeel,
 } from "./curves";
 import { fairedPattern, scaleToMinInset } from "./faired-pattern";
-import { fitWindowsTraceToRim, PATTERN_TRACE_HAUSDORFF_MM, s01Along } from "./windows-trace";
+import {
+    fitWindowsTraceToRim,
+    PATTERN_TRACE_HAUSDORFF_MM,
+    pullForefootTargetsToRim,
+    s01Along,
+} from "./windows-trace";
 
 export const PATTERN_INSET_MM = 2;
 /** Heel-band inset both sides (u 0.00–0.22). */
@@ -694,7 +699,12 @@ export function syntheticBottomPattern(
             foreInsetMm: insets?.forefootMm ?? PATTERN_FOREFOOT_INSET_MM,
         });
         if (placed && placed.smoothed.length >= 8) {
-            return qpFitClosedTargets(placed.smoothed, loop, bounds, sign, yMid, minInset, true);
+            const foreInset = insets?.forefootMm ?? PATTERN_FOREFOOT_INSET_MM;
+            let out = qpFitClosedTargets(placed.smoothed, loop, bounds, sign, yMid, minInset, true);
+            // 0.70 mm keeps d≤1.0 after smooth and leaves enough wall for mirrored loft.
+            out = pullForefootTargetsToRim(out, loop, bounds, Math.max(foreInset, 0.7));
+            out = smoothForefoot(out, bounds, 16);
+            return makeLateralConvex(out, sign, 24);
         }
     }
     return analyticOffsetPattern(loop, bounds, sign, yMid, insets);
@@ -784,6 +794,32 @@ function analyticOffsetPattern(
         );
     }
     return out;
+}
+
+/** Light Laplacian on the toe box so a rim pull does not spike curvature. */
+function smoothForefoot(
+    loop: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    passes: number,
+): PolyPoint[] {
+    if (loop.length < 4) return loop;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    let cur = loop.map((p) => ({ ...p }));
+    for (let p = 0; p < passes; p++) {
+        cur = cur.map((b, i) => {
+            const u = (b.x - bounds.minX) / length;
+            if (u < PATTERN_FORE_U0 - 0.12) return b;
+            const a = cur[(i + cur.length - 1) % cur.length];
+            const c = cur[(i + 1) % cur.length];
+            if (!a || !c) return b;
+            return {
+                x: b.x * 0.55 + (a.x + c.x) * 0.225,
+                y: b.y * 0.55 + (a.y + c.y) * 0.225,
+                z: b.z,
+            };
+        });
+    }
+    return cur;
 }
 
 /** Laplacian only concave lateral verts so the lateral side stays convex. */

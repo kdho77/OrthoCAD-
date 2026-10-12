@@ -2,7 +2,9 @@
 // See LICENSE file in the project root for full license information.
 
 import { create } from "zustand";
+import { cancelAllPreviewLofts } from "@/lib/geometry/procedural-wall/preview-loft-queue";
 import type { PreviewLoftPhase } from "@/lib/geometry/procedural-wall/preview-loft-ui";
+import { terminateProceduralWallWorker } from "@/lib/geometry/procedural-wall/preview-loft-worker";
 import { resetSampleTopGeometryCache } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { useDesignStore } from "@/stores/design-store";
 import type { Side } from "@/types";
@@ -15,6 +17,8 @@ export interface PreviewLoftStatusStore {
     retryNonce: number;
     startedAt: number | null;
     lastElapsedMs: number;
+    /** User hit Cancel — do not auto-restart loft until Retry. */
+    cancelled: boolean;
     setSidePhase: (side: Side, phase: PreviewLoftPhase, message?: string) => void;
     setError: (side: Side, error: string) => void;
     clearError: () => void;
@@ -33,6 +37,7 @@ export const usePreviewLoftStatusStore = create<PreviewLoftStatusStore>((set) =>
     retryNonce: 0,
     startedAt: null,
     lastElapsedMs: 0,
+    cancelled: false,
 
     setSidePhase: (side, phase, message) =>
         set((s) => ({
@@ -64,6 +69,7 @@ export const usePreviewLoftStatusStore = create<PreviewLoftStatusStore>((set) =>
             retryNonce: s.retryNonce + 1,
             startedAt: null,
             lastElapsedMs: 0,
+            cancelled: false,
         })),
 
     reset: () =>
@@ -74,6 +80,7 @@ export const usePreviewLoftStatusStore = create<PreviewLoftStatusStore>((set) =>
             errorSide: null,
             startedAt: null,
             lastElapsedMs: 0,
+            cancelled: false,
         }),
 }));
 
@@ -83,6 +90,23 @@ export function retryPreviewLoft(): void {
         resetSampleTopGeometryCache();
     }
     usePreviewLoftStatusStore.getState().retry();
+    useDesignStore.setState({
+        stockBaseError: null,
+        baseMeshLoadingBySide: { left: false, right: false },
+    });
+}
+
+export function cancelPreviewLoft(): void {
+    cancelAllPreviewLofts();
+    terminateProceduralWallWorker();
+    usePreviewLoftStatusStore.setState({
+        phaseBySide: { left: "idle", right: "idle" },
+        message: "Print solid cancelled",
+        error: null,
+        errorSide: null,
+        startedAt: null,
+        cancelled: true,
+    });
     useDesignStore.setState({
         stockBaseError: null,
         baseMeshLoadingBySide: { left: false, right: false },

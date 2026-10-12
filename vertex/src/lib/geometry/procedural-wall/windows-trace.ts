@@ -13,10 +13,15 @@ import { WINDOWS_TRACE_PX } from "./windows-trace-data";
 
 /** Canonical Windows trace has the medial arch cut-in on +Y. */
 export const WINDOWS_TRACE_MEDIAL_SIGN = 1 as const;
-/** Hausdorff gate: faired QP vs the smoothed, placed Windows trace. */
+/** Hausdorff gate: faired QP vs the smoothed, placed Windows trace (midfoot/heel). */
 export const PATTERN_TRACE_HAUSDORFF_MM = 2;
 export const WINDOWS_TRACE_SMOOTH_PASSES = 10;
 export const WINDOWS_FORE_U0 = 0.62;
+/** Toe box must sit within this of the top rim (both sides + tip). */
+export const TOE_BOX_RIM_MAX_MM = 1;
+/** Blend starts behind the toe box so u ≥ 0.62 is a full rim pull. */
+export const TOE_BOX_BLEND_U0 = 0.54;
+export const TOE_BOX_BLEND_U1 = 0.62;
 
 export interface TracePlacement {
     /** Smoothed trace in the footprint frame (X=length heel→toe), placed on the rim. */
@@ -329,6 +334,120 @@ export function directedPolylineHausdorff(from: PolyPoint[], to: PolyPoint[]): n
 export function polylineHausdorffMm(a: PolyPoint[], b: PolyPoint[]): number {
     if (!a.length || !b.length) return Infinity;
     return Math.max(directedPolylineHausdorff(a, b), directedPolylineHausdorff(b, a));
+}
+
+function clamp01(t: number): number {
+    return Math.max(0, Math.min(1, t));
+}
+
+function smoothstep01(e0: number, e1: number, x: number): number {
+    const t = clamp01((x - e0) / Math.max(1e-9, e1 - e0));
+    return t * t * (3 - 2 * t);
+}
+
+function closestOnLoopXY(loop: PolyPoint[], x: number, y: number): { x: number; y: number; d: number } {
+    let best = Infinity;
+    let cx = x;
+    let cy = y;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const len2 = ex * ex + ey * ey;
+        const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((x - a.x) * ex + (y - a.y) * ey) / len2)) : 0;
+        const px = a.x + ex * t;
+        const py = a.y + ey * t;
+        const d = Math.hypot(x - px, y - py);
+        if (d < best) {
+            best = d;
+            cx = px;
+            cy = py;
+        }
+    }
+    return { x: cx, y: cy, d: best };
+}
+
+function rimInsetTarget(rim: PolyPoint[], x: number, y: number, insetMm: number): PolyPoint {
+    const closest = closestOnLoopXY(rim, x, y);
+    const n = inwardAt(rim, closest.x, closest.y);
+    const target = { x: closest.x + n.x * insetMm, y: closest.y + n.y * insetMm, z: 0 };
+    if (!pointInPoly(target.x, target.y, rim)) {
+        return { x: closest.x - n.x * insetMm, y: closest.y - n.y * insetMm, z: 0 };
+    }
+    return target;
+}
+
+/**
+ * Pull Windows forefoot targets (u ≥ 0.62) onto the top-rim inset so the toe
+ * box matches the rim. Midfoot / heel / arch vertices are left unchanged.
+ * Blend TOE_BOX_BLEND_U0–U1 so u ≥ 0.62 is a full rim pull.
+ */
+export function pullForefootTargetsToRim(
+    placed: PolyPoint[],
+    rim: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    insetMm = 0.5,
+    u0 = TOE_BOX_BLEND_U0,
+    blendU1 = TOE_BOX_BLEND_U1,
+): PolyPoint[] {
+    if (placed.length < 3 || rim.length < 3) return placed;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    return placed.map((p) => {
+        const u = clamp01((p.x - bounds.minX) / length);
+        if (u < u0) return { ...p };
+        const w = smoothstep01(u0, blendU1, u);
+        if (w <= 1e-6) return { ...p };
+        const target = rimInsetTarget(rim, p.x, p.y, insetMm);
+        return {
+            x: p.x + (target.x - p.x) * w,
+            y: p.y + (target.y - p.y) * w,
+            z: 0,
+        };
+    });
+}
+
+/** Snap any remaining toe-box vertex with d > maxMm onto the rim inset. */
+export function clampForefootToRimInset(
+    pattern: PolyPoint[],
+    rim: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    opts?: { maxMm?: number; insetMm?: number; u0?: number },
+): PolyPoint[] {
+    if (pattern.length < 3 || rim.length < 3) return pattern;
+    const maxMm = opts?.maxMm ?? TOE_BOX_RIM_MAX_MM;
+    const insetMm = opts?.insetMm ?? 0.5;
+    const u0 = opts?.u0 ?? WINDOWS_FORE_U0;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    return pattern.map((p) => {
+        const u = clamp01((p.x - bounds.minX) / length);
+        if (u < u0) return { ...p };
+        const closest = closestOnLoopXY(rim, p.x, p.y);
+        if (closest.d <= maxMm + 1e-6) return { ...p };
+        return rimInsetTarget(rim, p.x, p.y, insetMm);
+    });
+}
+
+/** Directed pattern→rim clearance on the toe box (u ≥ u0), both sides + tip. */
+export function forefootRimClearanceMm(
+    pattern: PolyPoint[],
+    rim: PolyPoint[],
+    bounds: { minX: number; maxX: number },
+    u0 = WINDOWS_FORE_U0,
+): { maxD: number; minD: number; count: number } {
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    let maxD = 0;
+    let minD = Infinity;
+    let count = 0;
+    for (const p of pattern) {
+        const u = (p.x - bounds.minX) / length;
+        if (u < u0) continue;
+        const d = minDistToLoopXY(p.x, p.y, rim);
+        maxD = Math.max(maxD, d);
+        minD = Math.min(minD, d);
+        count++;
+    }
+    return { maxD, minD: Number.isFinite(minD) ? minD : 0, count };
 }
 
 export function s01Along(loop: PolyPoint[], p: PolyPoint): number {

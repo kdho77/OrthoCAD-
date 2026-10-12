@@ -38,7 +38,7 @@ export const CLINICAL_STEPS: { id: ClinicalStepId; label: string; short: string 
     { id: "export", label: "Export", short: "Export" },
 ];
 
-/** All parametric-correction section keys — opened when entering Corrections. */
+/** Parametric-correction section keys. Groups stay collapsed until the user opens one. */
 export const CORRECTIONS_STEP_SECTIONS: CorrectionsSectionKey[] = [
     "Arch",
     "Heel",
@@ -100,8 +100,7 @@ function prevStep(current: ClinicalStepId): ClinicalStepId {
     return CLINICAL_STEPS[idx - 1].id;
 }
 
-function sectionsForStep(step: ClinicalStepId): CorrectionsSectionKey[] {
-    if (step === "corrections") return [...CORRECTIONS_STEP_SECTIONS];
+function sectionsForStep(_step: ClinicalStepId): CorrectionsSectionKey[] {
     return [];
 }
 
