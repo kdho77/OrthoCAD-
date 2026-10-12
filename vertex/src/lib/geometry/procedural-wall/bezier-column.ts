@@ -7088,10 +7088,15 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                 const outY = midY - bCy;
                 const outL = Math.hypot(outX, outY) || 1;
                 const wallish = (n: XYZ): boolean => Math.abs(n.z) < 0.7 && Math.hypot(n.x, n.y) > 0.25;
+                // Centroid radial (mid − B-centroid) is not a valid outward test in
+                // concave medial-arch cut-ins (stations i 167–175): the global centroid
+                // sits outside the local pocket, so a correctly-oriented wall face can
+                // still have n·radial > 0. Require the local heading test as well.
+                const faceOutLocal = (n: XYZ): boolean => -(n.x * fr.h.x + n.y * fr.h.y) > 0;
                 if (j >= nRnd && j < nRnd + nLn) {
                     const lsI = fr.splineLs ?? stationSzFrame(fr.R, fr.B, fr.h).Ls;
                     const wRv = fr.splineWR ?? 0;
-                    if (wallish(nL) && (nL.x * outX + nL.y * outY) / outL > 0) {
+                    if (wallish(nL) && (nL.x * outX + nL.y * outY) / outL > 0 && faceOutLocal(nL)) {
                         inwardWallFaces++;
                         inwardByJ[j] = (inwardByJ[j] ?? 0) + 1;
                         if (inwardHits.length < 64) {
@@ -7103,7 +7108,7 @@ export function columnProfileQuality(xyz: XYZ[][], frames: ColumnFrame[]): Colum
                             });
                         }
                     }
-                    if (wallish(nR) && (nR.x * outX + nR.y * outY) / outL > 0) {
+                    if (wallish(nR) && (nR.x * outX + nR.y * outY) / outL > 0 && faceOutLocal(nR)) {
                         inwardWallFaces++;
                         inwardByJ[j] = (inwardByJ[j] ?? 0) + 1;
                         if (inwardHits.length < 64) {

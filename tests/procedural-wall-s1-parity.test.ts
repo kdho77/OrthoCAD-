@@ -1281,6 +1281,22 @@ describe("S1 parametric wall", () => {
                     if (style === "straight") {
                         straightVolBySmoke[smoke.name] = live.signedVolume;
                     }
+                    if (style !== "straight" && (smoke.name === "width+5" || smoke.name === "t4")) {
+                        const straightVol = straightVolBySmoke[smoke.name] ?? live.signedVolume;
+                        const gVolErr = Math.abs(live.signedVolume - straightVol - live.dVPred);
+                        const gVolCap = SPLINE_VOL_ERR_FRAC * Math.max(straightVol, 1e-6);
+                        console.log(
+                            "[S1-GVOL]",
+                            label,
+                            JSON.stringify({
+                                volErr: Number(gVolErr.toFixed(4)),
+                                volCap: Number(gVolCap.toFixed(4)),
+                                signedVolume: Number(live.signedVolume.toFixed(4)),
+                                straightVol: Number(straightVol.toFixed(4)),
+                                dVPred: Number(live.dVPred.toFixed(4)),
+                            }),
+                        );
+                    }
                     const wind = windingReport(rebuilt);
                     const plantar = plantarFlatDeltaMm(rebuilt);
                     let stlMd5: string | undefined;
@@ -1410,6 +1426,46 @@ describe("S1 parametric wall", () => {
             );
         }
     }, 1_200_000);
+
+    test("width+5 STRAIGHT has 0 inward faces at i 167–175", async () => {
+        const original = await loadSampleTopGlb();
+        const model = extractTopOnlyModel(original, { id: "sample-top", name: "SAMPLE_Top" });
+        const pos = model.top.meshPositions;
+        const rimLocal = model.top.rimLocal ?? [];
+        const rim3d = rimLocal.map((i) => ({
+            x: pos![i * 3]!,
+            y: pos![i * 3 + 1]!,
+            z: pos![i * 3 + 2]!,
+        }));
+        const pattern = syntheticBottomPattern(rim3d, model.bounds, rim3d);
+        const rebuilt = reconstructProceduralWalls(model, {
+            corrections: neutralCorrections(),
+            insoleWidthScale: 1.05,
+            bottomPattern: pattern,
+            bottomPatternLabel: PATTERN_SOURCE_SYNTHETIC,
+            flatPlantar: true,
+            wallStyle: "straight",
+        });
+        const q = (
+            rebuilt.userData as {
+                columnQuality?: {
+                    inwardWallFaces?: number;
+                    inwardHits?: Array<{ i: number; j: number; Ls: number; wR: number }>;
+                };
+            }
+        ).columnQuality;
+        const cutInHits = (q?.inwardHits ?? []).filter((h) => h.i >= 167 && h.i <= 175);
+        console.log(
+            "[S1-INWARD-CUTIN]",
+            JSON.stringify({
+                inward: q?.inwardWallFaces ?? 0,
+                cutInHits,
+            }),
+        );
+        expect(cutInHits).toEqual([]);
+        rebuilt.dispose();
+        original.dispose();
+    }, 240_000);
 
     test("SAMPLE_Top + synthetic pattern", async () => {
         const original = await loadSampleTopGlb();
