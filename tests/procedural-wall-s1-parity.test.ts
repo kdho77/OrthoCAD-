@@ -1516,7 +1516,7 @@ describe("S1 parametric wall", () => {
         }
         for (const extra of extras) {
             if (!extra.lateralMidfoot) {
-                misses.push(`extra-inflection u=${extra.u.toFixed(3)} not lateral midfoot 0.25–0.65`);
+                misses.push(`extra-inflection u=${extra.u.toFixed(3)} not lateral midfoot 0.22–0.65`);
             }
         }
         if (curv.lateralMinK < -SHIPPED_LATERAL_K_ABS) {

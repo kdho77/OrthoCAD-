@@ -17,7 +17,7 @@ export const SHIPPED_PATTERN_HAUSDORFF_MM = 1.5;
 export const SHIPPED_MAX_INFLECTIONS = 4;
 export const SHIPPED_LATERAL_K_ABS = 0.015;
 export const SHIPPED_PATTERN_MAX_DKDS = 0.045;
-export const SHIPPED_LATERAL_WAIST_U0 = 0.25;
+export const SHIPPED_LATERAL_WAIST_U0 = 0.22;
 export const SHIPPED_LATERAL_WAIST_U1 = 0.65;
 /** SHA-256 of the frozen CCW posterior-heel control loop (a2f7cc61). */
 export const SHIPPED_CONTROL_HASH = "2b51e5eda4c9e30abea976d9535c3f80ca159f048f809a439de8b3d64041012d";

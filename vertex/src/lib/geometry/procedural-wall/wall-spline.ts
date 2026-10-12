@@ -864,6 +864,8 @@ export function shortLsWeights(Ls: number[], arc: number[], period: number): num
     const n = Ls.length;
     const out = new Array<number>(n).fill(1);
     if (n === 0) return out;
+    const anyHardShort = Ls.some((v) => (v ?? 0) < SPLINE_SHORT_LS_MM - 1e-9);
+    if (!anyHardShort) return out;
     const p = Math.max(period, 1e-9);
     const lsSm = periodicGaussian1d(Ls, arc, SPLINE_SMOOTH_SIGMA_MM, p);
     for (let i = 0; i < n; i++) {

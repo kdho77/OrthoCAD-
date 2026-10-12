@@ -809,7 +809,13 @@ export function assertPostLoftGates(quality: ColumnQuality): void {
         bad.push(`crossings=${quality.columnCrossings}`);
     }
     if ((quality.inwardWallFaces ?? 0) !== 0) {
-        bad.push(`inward-faces=${quality.inwardWallFaces}`);
+        const hits = quality.inwardHits ?? [];
+        console.log("[RND-FLIPS]", JSON.stringify({ inward: quality.inwardWallFaces, hits }));
+        const dump = hits
+            .slice(0, 16)
+            .map((h) => `i=${h.i}/j=${h.j}/Ls=${h.Ls}/wR=${h.wR}`)
+            .join(",");
+        bad.push(`inward-faces=${quality.inwardWallFaces}${dump ? ` [${dump}]` : ""}`);
     }
     if (bad.length) {
         throw new Error(`[S1-POSTLOFT] ${bad.join("; ")}`);
