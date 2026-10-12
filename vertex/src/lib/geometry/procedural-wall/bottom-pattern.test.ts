@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import {
+    analyticOffsetPattern,
     assertCutInOnHighRimSide,
     countClosedInflections,
     fairInsetMm,
@@ -104,6 +105,26 @@ describe("synthetic bottom pattern", () => {
             const bump = latMean[i]! - 0.5 * (latMean[i - 1]! + latMean[i + 1]!);
             expect(bump).toBeLessThan(1.2);
         }
+    });
+
+    test("QP unit: analytic offset meets synthetic targets (inflections=2, dk/ds, lateral)", () => {
+        const n = 80;
+        const outline = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 120 + 110 * Math.cos(a), y: 42 * Math.sin(a), z: 0 };
+        });
+        const bounds = { minX: 10, maxX: 230 };
+        const yMid = outline.reduce((s, p) => s + p.y, 0) / outline.length;
+        const out = analyticOffsetPattern(outline, bounds, 1, yMid, { source: "analytic" });
+        const curv = patternCurvatureReport(out, bounds, 1);
+        expect(curv.inflections).toBe(2);
+        expect(curv.maxAbsDkDs).toBeLessThanOrEqual(PATTERN_MAX_DKDS + 0.005);
+        expect(curv.lateralMinK).toBeGreaterThanOrEqual(-0.005);
+        let minC = Infinity;
+        for (const p of out) {
+            minC = Math.min(minC, minDistToLoopXY(p.x, p.y, outline));
+        }
+        expect(minC).toBeGreaterThanOrEqual(0.3 - 1e-3);
     });
 
     test("cut-in follows the high midfoot rim, not +Y", () => {

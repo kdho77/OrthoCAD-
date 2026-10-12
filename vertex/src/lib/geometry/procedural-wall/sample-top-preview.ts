@@ -14,7 +14,7 @@ import {
 import type { ScanPattern, SideCorrections } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
-import { extractTopOnlyModel } from "./extract";
+import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
@@ -167,6 +167,9 @@ export function reconstructProceduralPreview(
     topGeo: BufferGeometry,
     options: ProceduralPreviewOptions = {},
 ): { model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry } {
+    if (isCombinedStockGeometry(topGeo)) {
+        throw new Error("[S1-PROCEDURAL] combined/stock GLB is not a procedural input — use legacy");
+    }
     const model = extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
     const requested = options.bottomPattern?.length
         ? options.bottomPattern

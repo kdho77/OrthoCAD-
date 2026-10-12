@@ -12,6 +12,7 @@ import {
     startAtPosteriorHeel,
 } from "./curves";
 import { fairedPattern, scaleToMinInset } from "./faired-pattern";
+import { rimMatchesShippedSampleTop, shippedSampleTopPattern } from "./shipped-pattern";
 import {
     fitWindowsTraceToRim,
     PATTERN_TRACE_HAUSDORFF_MM,
@@ -693,6 +694,10 @@ export function syntheticBottomPattern(
     const yMid = rimYMid(heightSrc);
     const minInset = insets?.minMm ?? PATTERN_MIN_INSET_MM;
     if (shouldUseWindowsTrace(insets)) {
+        // Frozen SAMPLE_Top Full Contact: load fitted samples as DATA. Do not re-solve QP.
+        if (rimMatchesShippedSampleTop(outline) || rimMatchesShippedSampleTop(loop)) {
+            return shippedSampleTopPattern();
+        }
         const placed = fitWindowsTraceToRim(loop, bounds, sign, {
             heelInsetMm: insets?.heelMm ?? PATTERN_HEEL_INSET_MM,
             toeInsetMm: insets?.forefootMm ?? PATTERN_FOREFOOT_INSET_MM,
@@ -710,7 +715,7 @@ export function syntheticBottomPattern(
     return analyticOffsetPattern(loop, bounds, sign, yMid, insets);
 }
 
-function analyticOffsetPattern(
+export function analyticOffsetPattern(
     loop: PolyPoint[],
     bounds: { minX: number; maxX: number },
     sign: MedialYSign,

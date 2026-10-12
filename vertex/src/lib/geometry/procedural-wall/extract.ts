@@ -76,6 +76,37 @@ function topVertexCountOf(geo: BufferGeometry): number {
     return (geo.userData as { topVertexCount?: number }).topVertexCount ?? 0;
 }
 
+/**
+ * Combined/stock Default.glb carries a distinct plantar sheet after the top
+ * range. SAMPLE_Top is top-only (`topVertexCount === position.count`).
+ */
+export function isCombinedStockGeometry(geo: BufferGeometry): boolean {
+    if ((geo.userData as { topOnly?: boolean }).topOnly) return false;
+    const topN = topVertexCountOf(geo);
+    const total = geo.getAttribute("position")?.count ?? 0;
+    if (topN > 0 && total - topN > 100) return true;
+    const bot = (geo.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
+    if (topN > 100 && bot > 100) return true;
+    // Raw Default.glb has no topOnly / topVertexCount. A closed stock solid
+    // carries a plantar sheet (many verts near z-min); SAMPLE_Top is 7809 verts.
+    if (total < 12_000) return false;
+    const pos = geo.getAttribute("position");
+    if (!pos) return false;
+    let zMin = Infinity;
+    let zMax = -Infinity;
+    for (let i = 0; i < total; i++) {
+        const z = pos.getZ(i);
+        if (z < zMin) zMin = z;
+        if (z > zMax) zMax = z;
+    }
+    if (zMax - zMin < 4) return false;
+    let plantar = 0;
+    for (let i = 0; i < total; i++) {
+        if (pos.getZ(i) - zMin < 0.4) plantar++;
+    }
+    return plantar > Math.max(400, total * 0.12);
+}
+
 function emptyField(): UvHeightField {
     return {
         originX: 0,

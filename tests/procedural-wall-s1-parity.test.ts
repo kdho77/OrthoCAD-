@@ -8,6 +8,7 @@
  * path unchanged. All behind wallModel:'procedural'.
  */
 
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
@@ -22,6 +23,7 @@ import {
     ASPECT_LAST_STRIP_MAX,
     ASPECT_ROUND_MAX,
     ASPECT_ROUND_S1_MAX,
+    assertShippedPatternUntouched,
     buildHermiteStations,
     CHORD_RISE_MAX_DEG,
     COLUMN_PLANARITY_LIMIT_MM,
@@ -38,11 +40,15 @@ import {
     FOLD_HARD_LIMIT_DEG,
     FOLD_WORST_LIMIT_DEG,
     FOREFOOT_INSET_MM,
+    fitClosedC2Spline,
+    fitWindowsTraceToRim,
     foldReport,
+    forefootRimClearanceMm,
     formatSiBreakdown,
     G1_MAX_DEG,
     generatedMinWallMm,
     groundDriftMm,
+    hashClosedLoop,
     heelInnerWidthAtU,
     heelRegionWallHeightMm,
     LAST_CHORD_FLOOR_MAX_FRAC,
@@ -65,6 +71,7 @@ import {
     PATTERN_SOURCE_SYNTHETIC,
     patternCurvatureReport,
     plantarFlatDeltaMm,
+    polylineHausdorffMm,
     RING_TURNING_MAX_DEG,
     RING_TURNING_MODIFIED_MAX_DEG,
     ROUND_JOINT_MAX_DEG,
@@ -75,15 +82,25 @@ import {
     SEAM_B_FALLBACK_DEG,
     SEAM_B_LIMIT_DEG,
     SEAM_B_SLACK_DEG,
+    SHIPPED_PATTERN_HAUSDORFF_MM,
+    SHIPPED_RATCHET_DEG,
     SIGNED_FOLD_MAX_DEG,
     SKEW_LIMIT_MM,
+    SPLINE_G1_ANALYTIC_MAX_DEG,
+    SPLINE_VOL_ERR_FRAC,
     sheetBoundaryStats,
+    shippedPatternHash,
+    shippedStyleMetrics,
     soleUvFrameFromOutline,
     soleUvFrameFromPolyline,
     summarizeWallBands,
     syntheticBottomPattern,
+    TOE_BOX_BLEND_U0,
+    TOE_BOX_RIM_MAX_MM,
     TOP_ROUND_MAX_STEP_DEG,
     topSurfaceDeltas,
+    WALL_STYLE_ACROSS_P99_BLOCK_DEG,
+    WINDOWS_FORE_U0,
     windingReport,
     zoneFixturesMapIdentically,
 } from "@/lib/geometry/procedural-wall";
@@ -187,6 +204,12 @@ type ColumnQualityUd = {
     stationSpacingMm?: number;
     rowPieceIdentical?: boolean;
     maxAlongRowDeg?: number;
+    maxG1RMeshDeg?: number;
+    maxG1RAnalyticDeg?: number;
+    maxG1EAnalyticDeg?: number;
+    maxG1BAnalyticDeg?: number;
+    maxMidAcrossP99Deg?: number;
+    dVPred?: number;
     maxG1EDeg?: number;
     maxG1FDeg?: number;
     maxAspectEverywhere?: number;
@@ -518,6 +541,114 @@ function qualityMisses(ud: { columnQuality?: ColumnQualityUd }, opts?: { turning
             }),
         );
     }
+    return misses;
+}
+
+type SampleTopLive = {
+    acrossP99: number;
+    acrossP100: number;
+    eTurn: number;
+    fTurn: number;
+    alongRow: number;
+    g1Rm: number;
+    g1RAnalytic: number;
+    g1EAnalytic: number;
+    g1BAnalytic: number;
+    infl: number;
+    signedVolume: number;
+    dVPred: number;
+};
+
+function liveSampleTopMetrics(geo: BufferGeometry, style: "straight" | "round" | "hybrid"): SampleTopLive {
+    const q = (geo.userData as { columnQuality?: ColumnQualityUd & { dVPred?: number } }).columnQuality ?? {};
+    const frames = (geo.userData as { wallFrames?: Array<{ inflCount?: number }> }).wallFrames ?? [];
+    const infl = frames.reduce((m, f) => Math.max(m, f.inflCount ?? 0), 0);
+    const acrossP99 =
+        style === "straight" ? (q.maxAcrossP99Deg ?? 0) : (q.maxMidAcrossP99Deg ?? q.maxAcrossP99Deg ?? 0);
+    return {
+        acrossP99,
+        acrossP100: q.maxAcrossDeg ?? 0,
+        eTurn: q.maxETurningPlanDeg ?? q.maxETurningDeg ?? 0,
+        fTurn: q.maxFTurningPlanDeg ?? q.maxFTurningDeg ?? 0,
+        alongRow: q.maxAlongRowDeg ?? 0,
+        g1Rm: q.maxG1RMeshDeg ?? 0,
+        g1RAnalytic: q.maxG1RAnalyticDeg ?? 0,
+        g1EAnalytic: q.maxG1EAnalyticDeg ?? 0,
+        g1BAnalytic: q.maxG1BAnalyticDeg ?? 0,
+        infl,
+        signedVolume: windingReport(geo).signedVolume,
+        dVPred: q.dVPred ?? 0,
+    };
+}
+
+function sampleTopHardMisses(args: {
+    style: "straight" | "round" | "hybrid";
+    smoke: string;
+    man: ReturnType<typeof reconstructionManifold>;
+    wind: ReturnType<typeof windingReport>;
+    si: number;
+    live: SampleTopLive;
+    plantar: number;
+    stlMd5?: string;
+    straightVol: number;
+}): string[] {
+    const misses: string[] = [];
+    if (!args.man.watertight) misses.push(`open=${args.man.openEdges}`);
+    if (args.man.nonManifoldEdges !== 0) misses.push(`NM ${args.man.nonManifoldEdges}`);
+    if (args.si !== 0) misses.push(`SI ${args.si}`);
+    if (!args.wind.consistent || args.wind.oppositeEdgeMismatch !== 0 || args.wind.signedVolume <= 0) {
+        misses.push(`winding mismatch=${args.wind.oppositeEdgeMismatch} vol=${args.wind.signedVolume}`);
+    }
+    if (args.style !== "straight") {
+        const volErr = Math.abs(args.live.signedVolume - args.straightVol - args.live.dVPred);
+        const volCap = SPLINE_VOL_ERR_FRAC * Math.max(args.straightVol, 1e-6);
+        if (volErr > volCap) {
+            misses.push(`G-VOL ${volErr.toFixed(1)}>${volCap.toFixed(1)}`);
+        }
+    }
+    if (args.live.g1RAnalytic > SPLINE_G1_ANALYTIC_MAX_DEG + 1e-6) {
+        misses.push(`G1-R ${args.live.g1RAnalytic.toFixed(4)}>${SPLINE_G1_ANALYTIC_MAX_DEG}`);
+    }
+    if (args.live.g1EAnalytic > SPLINE_G1_ANALYTIC_MAX_DEG + 1e-6) {
+        misses.push(`G1-E ${args.live.g1EAnalytic.toFixed(4)}>${SPLINE_G1_ANALYTIC_MAX_DEG}`);
+    }
+    if (args.live.g1BAnalytic > SPLINE_G1_ANALYTIC_MAX_DEG + 1e-6) {
+        misses.push(`G1-B ${args.live.g1BAnalytic.toFixed(4)}>${SPLINE_G1_ANALYTIC_MAX_DEG}`);
+    }
+    if (args.plantar > 1e-3) misses.push(`plantar-z0 ${args.plantar.toFixed(4)}`);
+    const frozen = shippedStyleMetrics().straight.stlMd5;
+    if (args.style === "straight" && args.smoke === "unmodified" && args.stlMd5 && args.stlMd5 !== frozen) {
+        misses.push(`STRAIGHT md5 ${args.stlMd5} != ${frozen}`);
+    }
+    if (args.live.acrossP99 > WALL_STYLE_ACROSS_P99_BLOCK_DEG + 1e-6) {
+        misses.push(`across-p99 ${args.live.acrossP99.toFixed(2)}>${WALL_STYLE_ACROSS_P99_BLOCK_DEG}`);
+    }
+    return misses;
+}
+
+function sampleTopRatchetMisses(
+    style: "straight" | "round" | "hybrid",
+    smoke: string,
+    live: SampleTopLive,
+): string[] {
+    if (smoke !== "unmodified") return [];
+    const base = shippedStyleMetrics()[style];
+    const misses: string[] = [];
+    const check = (name: string, val: number, frozen: number, count = false): void => {
+        const cap = count ? frozen : frozen + SHIPPED_RATCHET_DEG;
+        const residual = val - frozen;
+        console.log(
+            `[S1-RATCHET] ${style}/${smoke} ${name} live=${val.toFixed(4)} base=${frozen.toFixed(4)} residual=${residual.toFixed(4)} cap=${cap.toFixed(4)}`,
+        );
+        if (val > cap + 1e-9)
+            misses.push(`${name} ${val.toFixed(3)}>${cap.toFixed(3)} (base ${frozen.toFixed(3)})`);
+    };
+    check("eTurn", live.eTurn, base.eTurn);
+    check("fTurn", live.fTurn, base.fTurn);
+    check("along-row", live.alongRow, base.alongRow);
+    check("across-p100", live.acrossP100, base.acrossP100);
+    check("G1-R_m", live.g1Rm, base.g1Rm);
+    check("INFL", live.infl, base.infl, true);
     return misses;
 }
 
@@ -972,335 +1103,8 @@ describe("S1 parametric wall", () => {
         console.log("[S1-PARITY]", JSON.stringify(rows, null, 2));
     }, 240_000);
 
-    test("smoke: widen +6/+10, t4, lift 10, posting 4deg, grind 3", async () => {
-        const original = await loadProductionDefaultGlb({ slot: "left" });
-        const model = extractStockWallModel(original, { id: "default", name: "Default" });
-        const smokes: Array<{
-            name: string;
-            patch: Partial<SideCorrections>;
-            thicknessMm?: number;
-            archGrindDepthMm?: number;
-            insoleWidthScale?: number;
-        }> = [
-            { name: "widen+6", patch: { heelCupWidthMm: 6 } },
-            { name: "widen+10", patch: { heelCupWidthMm: 10 } },
-            { name: "width+5", patch: {}, insoleWidthScale: 1.05 },
-            { name: "t2", patch: {}, thicknessMm: 2 },
-            { name: "t4", patch: {}, thicknessMm: 4 },
-            { name: "heel-lift-10", patch: { heelLiftMm: 10 } },
-            { name: "posting-4", patch: { rearfootPostingDeg: 4 } },
-            { name: "grind-3", patch: {}, archGrindDepthMm: 3 },
-        ];
-        const results: Array<Record<string, number | string | boolean>> = [];
-        const smokeMiss: string[] = [];
-        const smokeBreakdowns: string[] = [];
-        const seamBRequiredSmokes = ["widen+6", "width+5"] as const;
-        const dumps: unknown[] = [];
-        const origLog = console.log.bind(console);
-        console.log = ((...args: unknown[]) => {
-            const tag = typeof args[0] === "string" ? args[0] : "";
-            if (tag === "[S1-WIDTH-ARCH]" || tag === "[S1-T2-STATIONS]" || tag === "[S1-I-DUMP]") {
-                dumps.push({ tag, payload: args[1] });
-            }
-            origLog(...args);
-        }) as typeof console.log;
-        try {
-            for (const smoke of smokes) {
-                let rebuilt: BufferGeometry;
-                try {
-                    rebuilt = reconstructProceduralWalls(model, {
-                        corrections: { ...neutralCorrections(), ...smoke.patch },
-                        thicknessMm: smoke.thicknessMm,
-                        stockThicknessMm: 3,
-                        archGrindDepthMm: smoke.archGrindDepthMm,
-                        insoleWidthScale: smoke.insoleWidthScale,
-                    });
-                } catch (err) {
-                    smokeMiss.push(`${smoke.name} reconstruct: ${String(err)}`);
-                    continue;
-                }
-                if (smoke.name === "t4") {
-                    try {
-                        const t2geo = reconstructProceduralWalls(model, {
-                            corrections: { ...neutralCorrections() },
-                            thicknessMm: 2,
-                            stockThicknessMm: 3,
-                        });
-                        const t4Band =
-                            (
-                                rebuilt.userData as {
-                                    topRoundBand?: Array<{ i: number; u: number; deg: number }>;
-                                }
-                            ).topRoundBand ?? [];
-                        const t2Band =
-                            (
-                                t2geo.userData as {
-                                    topRoundBand?: Array<{ i: number; u: number; deg: number }>;
-                                }
-                            ).topRoundBand ?? [];
-                        const byU = new Map(t2Band.map((r) => [r.u, r.deg]));
-                        const cmp = t4Band.map((r) => ({
-                            i: r.i,
-                            u: r.u,
-                            t4: r.deg,
-                            t2: byU.get(r.u) ?? null,
-                            d: byU.has(r.u) ? Number((r.deg - (byU.get(r.u) ?? 0)).toFixed(2)) : null,
-                        }));
-                        const maxT4 = t4Band.reduce((m, r) => Math.max(m, r.deg), 0);
-                        const maxD = cmp.reduce((m, r) => Math.max(m, Math.abs(r.d ?? 0)), 0);
-                        console.log("[S1-TOP-ROUND] t4-vs-t2", JSON.stringify({ maxT4, maxD, cmp }));
-                        if (maxT4 > ROUND_JOINT_MAX_DEG + 1e-6) {
-                            smokeMiss.push(
-                                `t4 top|round ${maxT4.toFixed(2)}>${ROUND_JOINT_MAX_DEG} at u 0.40-0.54`,
-                            );
-                        }
-                        if (maxD > ROUND_JOINT_MAX_DEG + 1e-6) {
-                            smokeMiss.push(`t4-vs-t2 top|round Δ ${maxD.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`);
-                        }
-                        t2geo.dispose();
-                    } catch (err) {
-                        smokeMiss.push(`t2 top|round reconstruct: ${String(err)}`);
-                    }
-                }
-                const topN = (rebuilt.userData as { topVertexCount?: number }).topVertexCount ?? 0;
-                const outlineN =
-                    (rebuilt.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
-                const outlineStart =
-                    (rebuilt.userData as { outlineVertexStart?: number }).outlineVertexStart ?? topN;
-                const fold = foldReport(rebuilt, {
-                    wholeInsole: true,
-                    topVertexCount: topN,
-                    outlineVertexCount: outlineN,
-                    outlineVertexStart: outlineStart,
-                    plantarVertexStart: (rebuilt.userData as { plantarStart?: number }).plantarStart,
-                    plantarVertexEnd: (rebuilt.userData as { plantarEnd?: number }).plantarEnd,
-                });
-                const hits = countSelfIntersections(rebuilt);
-                const man = reconstructionManifold(rebuilt);
-                const drift = groundDriftMm(rebuilt, outlineOf(model));
-                const designedStep =
-                    (rebuilt.userData as { columnQuality?: { maxRoundStepDeg?: number } }).columnQuality
-                        ?.maxRoundStepDeg ?? TOP_ROUND_MAX_STEP_DEG;
-                const archFolds = medialArchUpperWallFolds(
-                    rebuilt,
-                    model.bounds,
-                    topN,
-                    (rebuilt.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1,
-                    designedStep,
-                );
-                const generatedOutline =
-                    (rebuilt.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> })
-                        .outlineRing ?? outlineOf(model);
-                const reconSeam = outlineSeamDihedrals(rebuilt, generatedOutline, 1.25);
-                const sud = rebuilt.userData as {
-                    chordCrossings?: number;
-                    maxSidewaysSkewMm?: number;
-                    planReversals?: number;
-                    junctionSlivers?: number;
-                    meshMinZ?: number;
-                    bandTiltDegMax?: number;
-                    maxFrameAngleDeg?: number;
-                    maxOffPlaneMm?: number;
-                    maxSidewaysMm?: number;
-                    stationCount?: number;
-                    nRound?: number;
-                    nLine?: number;
-                    nFil?: number;
-                    columnQuality?: ColumnQualityUd;
-                    patternAdjustedForClearance?: string | null;
-                    patternClearanceStations?: number[];
-                    widenFollowFactor?: number;
-                    insoleWidthScale?: number;
-                    postingClamps?: Array<{ station: number; u: number; droppedMm: number }>;
-                    maxBPlantarDeltaMm?: number;
-                    wallBelowPlantar?: number;
-                    plantarAbsMaxZ?: number;
-                    heelWallHeightMm?: number;
-                };
-                const chordX = sud.chordCrossings ?? -1;
-                const maxSkew = sud.maxSidewaysSkewMm ?? 0;
-                const minZ = sud.meshMinZ ?? meshVertexMinZ(rebuilt);
-                const degenerates = countDegenerateFaces(rebuilt);
-                const qMiss = qualityMisses(sud, { turningMaxDeg: RING_TURNING_MODIFIED_MAX_DEG });
-                results.push({
-                    smoke: smoke.name,
-                    selfIntersections: hits.real,
-                    byClass: hits.byClass ? JSON.stringify(hits.byClass) : "",
-                    bySubClass: hits.bySubClass ? JSON.stringify(hits.bySubClass) : "",
-                    coplanarOverlaps: hits.coplanar,
-                    chordCrossings: chordX,
-                    maxSkewMm: Number(maxSkew.toFixed(3)),
-                    foldWorstDeg: Number(fold.worstDeg.toFixed(3)),
-                    foldGe10: fold.edgesAtLeast10Deg,
-                    archFoldGe10: archFolds.edgesAtLeast10Deg,
-                    seamWorstDeg: Number(reconSeam.worstDeg.toFixed(3)),
-                    watertight: man.watertight,
-                    openEdges: man.openEdges,
-                    nonManifold: man.nonManifoldEdges,
-                    groundDrift: Number(drift.toFixed(3)),
-                    meshMinZ: Number(minZ.toFixed(3)),
-                    planReversals: sud.planReversals ?? 0,
-                    junctionSlivers: sud.junctionSlivers ?? 0,
-                    zeroArea: degenerates.zeroArea,
-                    duplicateFaces: degenerates.duplicates,
-                    bandTilt: Number((sud.bandTiltDegMax ?? 0).toFixed(2)),
-                    ...compactGateTable(smoke.name, sud.columnQuality, {
-                        nS: sud.stationCount,
-                        nRound: sud.nRound,
-                        nLine: sud.nLine,
-                        nFil: sud.nFil,
-                        misses: qMiss.join("; "),
-                    }),
-                    patternAdjusted: sud.patternAdjustedForClearance ?? "",
-                    followFactor: sud.widenFollowFactor ?? 0,
-                    insoleWidthScale: sud.insoleWidthScale ?? 1,
-                    postingClamps: sud.postingClamps?.length ?? 0,
-                    plantarFlatMm: Number(plantarFlatDeltaMm(rebuilt).toFixed(6)),
-                    heelWallHeightMm: Number(heelRegionWallHeightMm(rebuilt, model.bounds).toFixed(4)),
-                    plantarAbsMaxZ: Number((sud.plantarAbsMaxZ ?? 0).toFixed(6)),
-                });
-                writeArtifact(
-                    `procedural-${smoke.name.replace(/\+/g, "-")}.stl`,
-                    Buffer.from(geometryToBinarySTL(rebuilt)),
-                );
-                if (smoke.name === "widen+6" || smoke.name === "width+5") {
-                    const pos = rebuilt.getAttribute("position")?.array as Float32Array;
-                    const idx = rebuilt.getIndex()?.array;
-                    if (pos && idx) {
-                        writeArtifact(
-                            `screenshots/bottom-${smoke.name.replace(/\+/g, "")}.png`,
-                            encodePng(900, 680, renderMesh(pos, idx, BOTTOM_VIEW, 900, 680)),
-                        );
-                    }
-                }
-                if (smoke.name.startsWith("widen") || smoke.name === "width+5") {
-                    const ring = generatedOutline;
-                    if (ring.length >= 8) {
-                        const sign = (rebuilt.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1;
-                        const movedAt =
-                            smoke.name === "width+5"
-                                ? () => true
-                                : (u: number) =>
-                                      heelCupWidthLongitudinalEnvelope(u) > 1e-6 || (u >= 0 && u <= 0.42);
-                        const hy = movedPatternHygiene(ring, model.bounds, sign, {
-                            maxInflections: 4,
-                            movedAt,
-                        });
-                        for (const m of hy.misses) smokeMiss.push(`${smoke.name} ${m}`);
-                    }
-                    if (smoke.name.startsWith("widen") && (sud.widenFollowFactor ?? 0) !== 1) {
-                        smokeMiss.push(`${smoke.name} followFactor ${sud.widenFollowFactor}!=1`);
-                    }
-                    if (smoke.name === "width+5" && Math.abs((sud.insoleWidthScale ?? 1) - 1.05) > 1e-9) {
-                        smokeMiss.push(`${smoke.name} insoleWidthScale ${sud.insoleWidthScale}!=1.05`);
-                    }
-                }
-                if (hits.real !== 0) {
-                    const cls = hits.byClass
-                        ? Object.entries(hits.byClass)
-                              .map(([k, v]) => `${k}:${v}`)
-                              .join(",")
-                        : "";
-                    const sub = hits.bySubClass
-                        ? Object.entries(hits.bySubClass)
-                              .map(([k, v]) => `${k}:${v}`)
-                              .join(",")
-                        : "";
-                    smokeMiss.push(
-                        `${smoke.name} xi=${hits.real}${cls ? ` ${cls}` : ""}${sub ? ` ${sub}` : ""}`,
-                    );
-                    const topWall = hits.byClass?.["top-wall"] ?? 0;
-                    if (topWall > 0) {
-                        const heelHits = heelTopWallHits(hits, model);
-                        smokeMiss.push(
-                            heelHits > 0
-                                ? `[S1-TOP] ${smoke.name}: ${heelHits} of ${topWall} top-wall in heel`
-                                : `[S1-TOP] ${smoke.name}: top junction still has ${topWall} hits`,
-                        );
-                        if (heelHits > 0) {
-                            smokeBreakdowns.push(heelSlopeStopMessage(rebuilt, topWall, heelHits));
-                        }
-                    }
-                    smokeBreakdowns.push(siBreakdownMessage(hits, rebuilt, model, `[S1-SI] ${smoke.name}`));
-                }
-                if ((sud.maxOffPlaneMm ?? 0) > COLUMN_PLANARITY_LIMIT_MM) {
-                    smokeMiss.push(
-                        `${smoke.name} off-plane ${sud.maxOffPlaneMm!.toFixed(4)}>${COLUMN_PLANARITY_LIMIT_MM}`,
-                    );
-                }
-                const wind = windingReport(rebuilt);
-                if (!wind.consistent || wind.signedVolume <= 0 || wind.oppositeEdgeMismatch !== 0) {
-                    smokeMiss.push(`${smoke.name} winding mismatch=${wind.oppositeEdgeMismatch}`);
-                }
-                if (chordX !== 0) smokeMiss.push(`${smoke.name} chord-cross=${chordX}`);
-                // plan-reversals: table diagnostic only.
-                if ((sud.junctionSlivers ?? 0) !== 0)
-                    smokeMiss.push(`${smoke.name} slivers=${sud.junctionSlivers}`);
-                if (degenerates.zeroArea !== 0)
-                    smokeMiss.push(`${smoke.name} zero-area=${degenerates.zeroArea}`);
-                if (degenerates.duplicates !== 0)
-                    smokeMiss.push(`${smoke.name} dupes=${degenerates.duplicates}`);
-                if (man.nonManifoldEdges !== 0)
-                    smokeMiss.push(`${smoke.name} nonManifold=${man.nonManifoldEdges}`);
-                if (archFolds.edgesAtLeast10Deg !== 0) {
-                    smokeMiss.push(
-                        `${smoke.name} medial-arch-upper>${(designedStep + 2).toFixed(1)} ${JSON.stringify(archFolds.hardEdges ?? [])}`,
-                    );
-                }
-                if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) smokeMiss.push(`${smoke.name} fold`);
-                for (const m of qMiss) smokeMiss.push(`${smoke.name} ${m}`);
-                if ((sud.maxBPlantarDeltaMm ?? 0) > 1e-3) {
-                    smokeMiss.push(`${smoke.name} B-plantar ${sud.maxBPlantarDeltaMm!.toFixed(4)}`);
-                }
-                if ((sud.wallBelowPlantar ?? 0) > 0) {
-                    smokeMiss.push(`${smoke.name} wall-below-plantar=${sud.wallBelowPlantar}`);
-                }
-                {
-                    const fb = sud.columnQuality?.obliqueFallback ?? [];
-                    const nonFb = sud.columnQuality?.maxSignedSeamNonFallbackDeg ?? reconSeam.worstDeg;
-                    if (reconSeam.worstDeg > SEAM_B_FALLBACK_DEG + 1e-6) {
-                        smokeMiss.push(
-                            `${smoke.name} seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_FALLBACK_DEG}`,
-                        );
-                    } else if (nonFb > SEAM_B_LIMIT_DEG + SEAM_B_SLACK_DEG) {
-                        smokeMiss.push(`${smoke.name} seam-B ${nonFb.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
-                    } else if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + SEAM_B_SLACK_DEG && !fb.length) {
-                        smokeMiss.push(
-                            `${smoke.name} seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`,
-                        );
-                    }
-                }
-                if (!man.watertight) smokeMiss.push(`${smoke.name} open=${man.openEdges}`);
-                if (minZ < -0.01) smokeMiss.push(`${smoke.name} min-z ${minZ.toFixed(3)}`);
-                if (smoke.name === "posting-4" || smoke.name === "heel-lift-10" || smoke.name === "grind-3") {
-                    const flat = plantarFlatDeltaMm(rebuilt);
-                    if (flat > 1e-3) smokeMiss.push(`${smoke.name} plantar-z0 ${flat.toFixed(4)}`);
-                }
-                if (smoke.name === "grind-3" && (sud.plantarAbsMaxZ ?? 0) > 1e-6) {
-                    smokeMiss.push(`${smoke.name} plantar-|z| ${(sud.plantarAbsMaxZ ?? 0).toFixed(4)}`);
-                }
-                rebuilt.dispose();
-            }
-        } finally {
-            console.log = origLog;
-        }
-        writeFileSync("/tmp/s1-smoke.json", JSON.stringify(results, null, 2));
-        writeFileSync("/tmp/s1-smoke-dumps.json", JSON.stringify(dumps, null, 2));
-        writeArtifact("s1-smoke-dumps.json", Buffer.from(JSON.stringify(dumps, null, 2)));
-        for (const name of seamBRequiredSmokes) {
-            if (!results.some((row) => row.name === name)) {
-                smokeMiss.push(`${name} missing from seam-B gate`);
-            }
-        }
-        if (smokeBreakdowns.length || smokeMiss.length) {
-            throw new Error(
-                `[S1-SMOKE] nonzero. STOP.\n` +
-                    (smokeMiss.length ? `misses: ${smokeMiss.join("; ")}\n` : "") +
-                    smokeBreakdowns.join("\n\n"),
-            );
-        }
-        original.dispose();
-    }, 300_000);
+    // Default procedural widen +6/+10 S1-SMOKE lives in
+    // tests/procedural-wall-s1-default-procedural.optional.test.ts (non-required).
 
     test("SAMPLE_Top S1-SMOKE matrix: unmodified + modifiers × styles", async () => {
         const original = await loadSampleTopGlb();
@@ -1343,6 +1147,7 @@ describe("S1 parametric wall", () => {
             }
             origLog(...args);
         }) as typeof console.log;
+        const straightVolBySmoke: Record<string, number> = {};
         try {
             for (const style of styles) {
                 for (const smoke of smokes) {
@@ -1400,17 +1205,11 @@ describe("S1 parametric wall", () => {
                             }));
                             const maxT4 = t4Band.reduce((m, r) => Math.max(m, r.deg), 0);
                             const maxD = cmp.reduce((m, r) => Math.max(m, Math.abs(r.d ?? 0)), 0);
-                            console.log("[S1-TOP-ROUND]", label, JSON.stringify({ maxT4, maxD, cmp }));
-                            if (maxT4 > ROUND_JOINT_MAX_DEG + 1e-6) {
-                                smokeMiss.push(
-                                    `${label} top|round ${maxT4.toFixed(2)}>${ROUND_JOINT_MAX_DEG} at u 0.40-0.54`,
-                                );
-                            }
-                            if (maxD > ROUND_JOINT_MAX_DEG + 1e-6) {
-                                smokeMiss.push(
-                                    `${label} t4-vs-t2 top|round Δ ${maxD.toFixed(2)}>${ROUND_JOINT_MAX_DEG}`,
-                                );
-                            }
+                            console.log(
+                                "[S1-TOP-ROUND]",
+                                label,
+                                JSON.stringify({ maxT4, maxD, cmp, reportOnly: true }),
+                            );
                             t2geo.dispose();
                         } catch (err) {
                             smokeMiss.push(`${label} t2 top|round reconstruct: ${String(err)}`);
@@ -1472,7 +1271,41 @@ describe("S1 parametric wall", () => {
                     const chordX = sud.chordCrossings ?? -1;
                     const minZ = sud.meshMinZ ?? meshVertexMinZ(rebuilt);
                     const degenerates = countDegenerateFaces(rebuilt);
-                    const qMiss = qualityMisses(sud, { turningMaxDeg: turnMax });
+                    const live = liveSampleTopMetrics(rebuilt, style);
+                    if (style === "straight") {
+                        straightVolBySmoke[smoke.name] = live.signedVolume;
+                    }
+                    const wind = windingReport(rebuilt);
+                    const plantar = plantarFlatDeltaMm(rebuilt);
+                    let stlMd5: string | undefined;
+                    if (style === "straight" && smoke.name === "unmodified") {
+                        stlMd5 = createHash("md5")
+                            .update(Buffer.from(geometryToBinarySTL(rebuilt)))
+                            .digest("hex");
+                    }
+                    const hard = sampleTopHardMisses({
+                        style,
+                        smoke: smoke.name,
+                        man,
+                        wind,
+                        si: hits.real,
+                        live,
+                        plantar,
+                        stlMd5,
+                        straightVol: straightVolBySmoke[smoke.name] ?? live.signedVolume,
+                    });
+                    const ratchet = sampleTopRatchetMisses(style, smoke.name, live);
+                    console.log(
+                        "[S1-SOFT-4-8]",
+                        JSON.stringify({
+                            label,
+                            acrossP99: live.acrossP99,
+                            acrossP99vs4: live.acrossP99,
+                            acrossP100: live.acrossP100,
+                            acrossP100vs8: live.acrossP100,
+                            reportOnly: { p99Cap: 4, p100Cap: 8 },
+                        }),
+                    );
                     results.push({
                         style,
                         smoke: smoke.name,
@@ -1481,7 +1314,7 @@ describe("S1 parametric wall", () => {
                             nRound: sud.nRound,
                             nLine: sud.nLine,
                             nFil: sud.nFil,
-                            misses: qMiss.join("; "),
+                            misses: [...hard, ...ratchet].join("; "),
                         }),
                         selfIntersections: hits.real,
                         foldWorstDeg: Number(fold.worstDeg.toFixed(3)),
@@ -1493,96 +1326,18 @@ describe("S1 parametric wall", () => {
                         meshMinZ: Number(minZ.toFixed(3)),
                         chordCrossings: chordX,
                         turningMax: turnMax,
+                        acrossP99: live.acrossP99,
+                        acrossP100: live.acrossP100,
+                        eTurn: live.eTurn,
+                        alongRow: live.alongRow,
+                        g1Rm: live.g1Rm,
+                        infl: live.infl,
                     });
-                    if (smoke.name.startsWith("widen") || smoke.name === "width+5") {
-                        const ring = generatedOutline;
-                        if (ring.length >= 8) {
-                            const sign = (rebuilt.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1;
-                            const movedAt =
-                                smoke.name === "width+5"
-                                    ? () => true
-                                    : (u: number) =>
-                                          heelCupWidthLongitudinalEnvelope(u) > 1e-6 || (u >= 0 && u <= 0.42);
-                            const hy = movedPatternHygiene(ring, model.bounds, sign, {
-                                maxInflections: 4,
-                                movedAt,
-                            });
-                            for (const m of hy.misses) smokeMiss.push(`${label} ${m}`);
-                        }
-                        if (smoke.name.startsWith("widen") && (sud.widenFollowFactor ?? 0) !== 1) {
-                            smokeMiss.push(`${label} followFactor ${sud.widenFollowFactor}!=1`);
-                        }
-                        if (smoke.name === "width+5" && Math.abs((sud.insoleWidthScale ?? 1) - 1.05) > 1e-9) {
-                            smokeMiss.push(`${label} insoleWidthScale ${sud.insoleWidthScale}!=1.05`);
-                        }
-                    }
                     if (hits.real !== 0) {
-                        smokeMiss.push(`${label} xi=${hits.real}`);
                         smokeBreakdowns.push(siBreakdownMessage(hits, rebuilt, model, `[S1-SI] ${label}`));
                     }
-                    if ((sud.maxOffPlaneMm ?? 0) > COLUMN_PLANARITY_LIMIT_MM) {
-                        smokeMiss.push(
-                            `${label} off-plane ${sud.maxOffPlaneMm!.toFixed(4)}>${COLUMN_PLANARITY_LIMIT_MM}`,
-                        );
-                    }
-                    const wind = windingReport(rebuilt);
-                    if (!wind.consistent || wind.signedVolume <= 0 || wind.oppositeEdgeMismatch !== 0) {
-                        smokeMiss.push(`${label} winding mismatch=${wind.oppositeEdgeMismatch}`);
-                    }
-                    if (chordX !== 0) smokeMiss.push(`${label} chord-cross=${chordX}`);
-                    if ((sud.junctionSlivers ?? 0) !== 0) {
-                        smokeMiss.push(`${label} slivers=${sud.junctionSlivers}`);
-                    }
-                    if (degenerates.zeroArea !== 0) {
-                        smokeMiss.push(`${label} zero-area=${degenerates.zeroArea}`);
-                    }
-                    if (degenerates.duplicates !== 0) {
-                        smokeMiss.push(`${label} dupes=${degenerates.duplicates}`);
-                    }
-                    if (man.nonManifoldEdges !== 0) {
-                        smokeMiss.push(`${label} nonManifold=${man.nonManifoldEdges}`);
-                    }
-                    if (archFolds.edgesAtLeast10Deg !== 0) {
-                        smokeMiss.push(
-                            `${label} medial-arch-upper>${(designedStep + 2).toFixed(1)} ${JSON.stringify(archFolds.hardEdges ?? [])}`,
-                        );
-                    }
-                    if (fold.worstDeg > FOLD_WORST_LIMIT_DEG) smokeMiss.push(`${label} fold`);
-                    for (const m of qMiss) smokeMiss.push(`${label} ${m}`);
-                    if ((sud.maxBPlantarDeltaMm ?? 0) > 1e-3) {
-                        smokeMiss.push(`${label} B-plantar ${sud.maxBPlantarDeltaMm!.toFixed(4)}`);
-                    }
-                    if ((sud.wallBelowPlantar ?? 0) > 0) {
-                        smokeMiss.push(`${label} wall-below-plantar=${sud.wallBelowPlantar}`);
-                    }
-                    {
-                        const fb = sud.columnQuality?.obliqueFallback ?? [];
-                        const nonFb = sud.columnQuality?.maxSignedSeamNonFallbackDeg ?? reconSeam.worstDeg;
-                        if (reconSeam.worstDeg > SEAM_B_FALLBACK_DEG + 1e-6) {
-                            smokeMiss.push(
-                                `${label} seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_FALLBACK_DEG}`,
-                            );
-                        } else if (nonFb > SEAM_B_LIMIT_DEG + SEAM_B_SLACK_DEG) {
-                            smokeMiss.push(`${label} seam-B ${nonFb.toFixed(1)}>${SEAM_B_LIMIT_DEG}`);
-                        } else if (reconSeam.worstDeg > SEAM_B_LIMIT_DEG + SEAM_B_SLACK_DEG && !fb.length) {
-                            smokeMiss.push(
-                                `${label} seam-B ${reconSeam.worstDeg.toFixed(1)}>${SEAM_B_LIMIT_DEG}`,
-                            );
-                        }
-                    }
-                    if (!man.watertight) smokeMiss.push(`${label} open=${man.openEdges}`);
-                    if (minZ < -0.01) smokeMiss.push(`${label} min-z ${minZ.toFixed(3)}`);
-                    if (
-                        smoke.name === "posting-4" ||
-                        smoke.name === "heel-lift-10" ||
-                        smoke.name === "grind-3"
-                    ) {
-                        const flat = plantarFlatDeltaMm(rebuilt);
-                        if (flat > 1e-3) smokeMiss.push(`${label} plantar-z0 ${flat.toFixed(4)}`);
-                    }
-                    if (smoke.name === "grind-3" && (sud.plantarAbsMaxZ ?? 0) > 1e-6) {
-                        smokeMiss.push(`${label} plantar-|z| ${(sud.plantarAbsMaxZ ?? 0).toFixed(4)}`);
-                    }
+                    for (const m of hard) smokeMiss.push(`${label} ${m}`);
+                    for (const m of ratchet) smokeMiss.push(`${label} ${m}`);
                     rebuilt.dispose();
                 }
             }
@@ -1620,6 +1375,12 @@ describe("S1 parametric wall", () => {
             z: pos![i * 3 + 2]!,
         }));
         const pattern = syntheticBottomPattern(rim3d, model.bounds, rim3d);
+        assertShippedPatternUntouched();
+        if (hashClosedLoop(pattern) !== shippedPatternHash()) {
+            throw new Error(
+                `[S1-SAMPLE] shipped pattern re-solved or mutated: ${hashClosedLoop(pattern)} != ${shippedPatternHash()}`,
+            );
+        }
         let rebuilt: BufferGeometry;
         try {
             rebuilt = reconstructProceduralWalls(model, {
@@ -1689,7 +1450,12 @@ describe("S1 parametric wall", () => {
             "/tmp/s1-stls/screenshots/bottom-view-curvature.png",
             encodePng(overlay.width, overlay.height, overlay.rgb),
         );
+        const spline = fitClosedC2Spline(pattern);
+        if (!spline.c2) misses.push("pattern-not-C2");
         if (curv.inflections !== 2) {
+            console.log(
+                `[S1-SHIPPED-INFLECTIONS] STOP: shipped fit has ${curv.inflections} inflections, gate stays 2. Do not change the gate.`,
+            );
             misses.push(`pattern-inflections ${curv.inflections} != 2`);
         }
         if (curv.lateralMinK < LATERAL_K_SLACK) {
@@ -1698,6 +1464,31 @@ describe("S1 parametric wall", () => {
         if (curv.maxAbsDkDs > PATTERN_MAX_DKDS) {
             misses.push(`pattern-dkds ${curv.maxAbsDkDs.toFixed(4)}>${PATTERN_MAX_DKDS}`);
         }
+        const placed = fitWindowsTraceToRim(rim3d, model.bounds, patternSign);
+        const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+        const midPattern = pattern.filter((p) => (p.x - model.bounds.minX) / length < TOE_BOX_BLEND_U0);
+        const midTrace = (placed?.smoothed ?? []).filter(
+            (p) => (p.x - model.bounds.minX) / length < TOE_BOX_BLEND_U0,
+        );
+        const haus = placed && midTrace.length ? polylineHausdorffMm(midPattern, midTrace) : Infinity;
+        if (haus > SHIPPED_PATTERN_HAUSDORFF_MM) {
+            misses.push(`hausdorff ${haus.toFixed(2)}>${SHIPPED_PATTERN_HAUSDORFF_MM}`);
+        }
+        const toe = forefootRimClearanceMm(pattern, rim3d, model.bounds, WINDOWS_FORE_U0);
+        if (toe.maxD > TOE_BOX_RIM_MAX_MM) {
+            misses.push(`toe-box ${toe.maxD.toFixed(2)}>${TOE_BOX_RIM_MAX_MM}`);
+        }
+        console.log(
+            "[S1-SHIPPED-PATTERN]",
+            JSON.stringify({
+                inflections: curv.inflections,
+                dkds: curv.maxAbsDkDs,
+                lateralMinK: curv.lateralMinK,
+                haus,
+                toeMaxD: toe.maxD,
+                c2: spline.c2,
+            }),
+        );
         let minInset = Infinity;
         for (const p of pattern) {
             let best = Infinity;

@@ -156,6 +156,7 @@ export {
     wallStartTiltRad,
 } from "./bezier-column";
 export {
+    analyticOffsetPattern,
     archBumpAt,
     assertCutInOnHighRimSide,
     closedSignedCurvature,
@@ -235,6 +236,7 @@ export {
     extractStockWallModel,
     extractTopOnlyModel,
     extractTopSheet,
+    isCombinedStockGeometry,
     matchedLoftCurves,
     sampleUvField,
 } from "./extract";
@@ -340,6 +342,7 @@ export {
     PRINT_LOFT_TIMEOUT_MS,
     printLoftProgress01,
     printLoftSteps,
+    wantsProceduralExportSolid,
 } from "./preview-loft-ui";
 export { type ReconstructOptions, reconstructProceduralWalls, splitAcuteTriangles } from "./reconstruct";
 export {
@@ -361,6 +364,19 @@ export {
     reconstructProceduralPreview,
     sampleTopFromArrayBuffer,
 } from "./sample-top-preview";
+export {
+    assertShippedPatternUntouched,
+    hashClosedLoop,
+    rimMatchesShippedSampleTop,
+    SHIPPED_PATTERN_HAUSDORFF_MM,
+    SHIPPED_PATTERN_SOURCE_SHA,
+    SHIPPED_RATCHET_DEG,
+    type ShippedStyleMetrics,
+    shippedPatternHash,
+    shippedSampleTopControls,
+    shippedSampleTopPattern,
+    shippedStyleMetrics,
+} from "./shipped-pattern";
 export {
     mapZoneFixtures,
     soleUvFrameFromOutline,
