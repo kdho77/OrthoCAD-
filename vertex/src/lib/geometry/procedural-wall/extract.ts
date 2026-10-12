@@ -87,24 +87,15 @@ export function isCombinedStockGeometry(geo: BufferGeometry): boolean {
     if (topN > 0 && total - topN > 100) return true;
     const bot = (geo.userData as { outlineVertexCount?: number }).outlineVertexCount ?? 0;
     if (topN > 100 && bot > 100) return true;
-    // Raw Default.glb has no topOnly / topVertexCount. A closed stock solid
-    // carries a plantar sheet (many verts near z-min); SAMPLE_Top is 7809 verts.
-    if (total < 12_000) return false;
+    // Raw Default.glb has no topOnly / topVertexCount. Combined stock carries
+    // a plantar sheet at z≈0. SAMPLE_Top is a top sheet (zMin≈2, no ground plane).
     const pos = geo.getAttribute("position");
-    if (!pos) return false;
-    let zMin = Infinity;
-    let zMax = -Infinity;
-    for (let i = 0; i < total; i++) {
-        const z = pos.getZ(i);
-        if (z < zMin) zMin = z;
-        if (z > zMax) zMax = z;
-    }
-    if (zMax - zMin < 4) return false;
+    if (!pos || total < 2000) return false;
     let plantar = 0;
     for (let i = 0; i < total; i++) {
-        if (pos.getZ(i) - zMin < 0.4) plantar++;
+        if (Math.abs(pos.getZ(i)) < 0.4) plantar++;
     }
-    return plantar > Math.max(400, total * 0.12);
+    return plantar > 400;
 }
 
 function emptyField(): UvHeightField {
