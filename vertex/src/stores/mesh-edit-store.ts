@@ -10,11 +10,12 @@ import {
     type TrimlineCurve,
 } from "@/lib/geometry/trimline";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
+import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useIssuesStore } from "@/stores/issues-store";
 import type { Side, TrimPresetId } from "@/types";
 
-export type MeshEditMode = "transform" | "trim" | "vertex" | "edit-trimline";
+export type MeshEditMode = "transform" | "trim" | "vertex" | "edit-trimline" | "edit-bottom-pattern";
 
 export type MeshEditTarget =
     | { type: "element"; id: string }
@@ -44,6 +45,8 @@ export interface MeshEditStore {
     trimLines: TrimLine[];
     /** Active trimline reshape session (draft vs committed). */
     trimlineEdit: TrimlineEditSession | null;
+    /** Active faired-bottom-pattern reshape session (independent of trimline). */
+    bottomPatternEdit: TrimlineEditSession | null;
 
     vertexOverrides: Map<number, THREE.Vector3>;
     selectedVertex: number | null;
@@ -73,6 +76,13 @@ export interface MeshEditStore {
     getCommittedTrimline: (side: Side) => TrimlineCurve | null;
     /** Returns the live draft if an edit-trimline session is active for the side, else null. */
     getActiveDraftTrimline: (side: Side) => TrimlineCurve | null;
+    beginBottomPatternEdit: (side: Side) => void;
+    confirmBottomPatternEdit: () => void;
+    cancelBottomPatternEdit: () => void;
+    setBottomPatternDraft: (points: THREE.Vector3[]) => void;
+    setBottomPatternDragAnchor: (index: number | null, startLocal?: THREE.Vector3 | null) => void;
+    setBottomPatternDragging: (dragging: boolean) => void;
+    getActiveDraftBottomPattern: (side: Side) => TrimlineCurve | null;
 }
 
 function committedOrDefault(side: Side): TrimlineCurve {
@@ -99,6 +109,7 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
     activeTrimPoints: [],
     trimLines: [],
     trimlineEdit: null,
+    bottomPatternEdit: null,
     vertexOverrides: new Map(),
     selectedVertex: null,
 
@@ -108,6 +119,7 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
             activeTrimPoints: editMode === "trim" ? get().activeTrimPoints : [],
             selectedVertex: editMode === "vertex" ? get().selectedVertex : null,
             trimlineEdit: editMode === "edit-trimline" ? get().trimlineEdit : null,
+            bottomPatternEdit: editMode === "edit-bottom-pattern" ? get().bottomPatternEdit : null,
         }),
 
     setTarget: (target) =>
@@ -147,6 +159,7 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
             activeTrimPoints: [],
             trimLines: [],
             trimlineEdit: null,
+            bottomPatternEdit: null,
             vertexOverrides: new Map(),
             selectedVertex: null,
             editMode: "transform",
@@ -163,6 +176,7 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
         set({
             editMode: "edit-trimline",
             target: { type: "insole", side },
+            bottomPatternEdit: null,
             trimlineEdit: {
                 side,
                 draft: cloneTrimline(draft),
@@ -236,6 +250,76 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
 
     getActiveDraftTrimline: (side) => {
         const session = get().trimlineEdit;
+        if (session && session.side === side) return cloneTrimline(session.draft);
+        return null;
+    },
+
+    beginBottomPatternEdit: (side) => {
+        const stored = useBottomPatternStore.getState().getPattern(side);
+        const base = stored ?? committedOrDefault(side);
+        useDesignStore.getState().checkpoint("bottom-pattern-edit-begin");
+        set({
+            editMode: "edit-bottom-pattern",
+            target: { type: "insole", side },
+            trimlineEdit: null,
+            bottomPatternEdit: {
+                side,
+                draft: cloneTrimline(base),
+                snapshot: cloneTrimline(base),
+                dragAnchorIndex: null,
+                dragStartLocal: null,
+                isDragging: false,
+            },
+        });
+    },
+
+    confirmBottomPatternEdit: () => {
+        const session = get().bottomPatternEdit;
+        if (!session) return;
+        useDesignStore.getState().checkpoint("bottom-pattern-edit-confirm");
+        useBottomPatternStore.getState().setPattern(session.side, session.draft);
+        if (useDesignStore.getState().design.corrections.linked) {
+            const other: Side = session.side === "left" ? "right" : "left";
+            useBottomPatternStore.getState().setPattern(other, session.draft);
+        }
+        set({ bottomPatternEdit: null, editMode: "transform" });
+    },
+
+    cancelBottomPatternEdit: () => {
+        set({ bottomPatternEdit: null, editMode: "transform" });
+    },
+
+    setBottomPatternDraft: (points) =>
+        set((s) => {
+            if (!s.bottomPatternEdit) return s;
+            return {
+                bottomPatternEdit: {
+                    ...s.bottomPatternEdit,
+                    draft: { points: points.map((p) => p.clone()) },
+                },
+            };
+        }),
+
+    setBottomPatternDragAnchor: (index, startLocal = null) =>
+        set((s) => {
+            if (!s.bottomPatternEdit) return s;
+            return {
+                bottomPatternEdit: {
+                    ...s.bottomPatternEdit,
+                    dragAnchorIndex: index,
+                    dragStartLocal: startLocal ? startLocal.clone() : null,
+                },
+            };
+        }),
+
+    setBottomPatternDragging: (isDragging) =>
+        set((s) => {
+            if (!s.bottomPatternEdit) return s;
+            return { bottomPatternEdit: { ...s.bottomPatternEdit, isDragging } };
+        }),
+
+    getActiveDraftBottomPattern: (side) => {
+        const session = get().bottomPatternEdit;
         if (session && session.side === side) return cloneTrimline(session.draft);
         return null;
     },

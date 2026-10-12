@@ -1,9 +1,16 @@
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
 import { Cpu, Download, Lock, Play, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
 import { exportGcode, type GrindingStyleInput, generateHybridGcode } from "@/features/exports/export-service";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
+import {
+    ProceduralWallPreviewControls,
+    type ProceduralWallStyleChoice,
+} from "@/features/exports/procedural-wall-preview-controls";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/chili3d/kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
@@ -25,11 +32,20 @@ interface PrintingPanelProps {
     clinicalMode?: boolean;
     /** Clinical print step: only foot side + Prepare for print (AC7). */
     primaryOnly?: boolean;
+    /**
+     * Show the existing viewer.wallModel flag + grinding dropdown.
+     * Defaults on for the full panel; the clinical Print step mounts it once above.
+     */
+    showWallPreview?: boolean;
 }
 
-export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: PrintingPanelProps) {
+export function PrintingPanel({
+    clinicalMode = false,
+    primaryOnly = false,
+    showWallPreview,
+}: PrintingPanelProps) {
     const { user, license } = useAuthStore();
-    const { design, exportSide, setExportSide } = useDesignStore();
+    const { design, exportSide, setExportSide, setViewer } = useDesignStore();
     const printRecipe = migratePrintRecipe(design.printRecipe);
     const recipeInfillPct = Math.round(infillFractionFromRecipe(printRecipe) * 100);
     const [layerHeight, setLayerHeight] = useState(0.3);
@@ -46,10 +62,7 @@ export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: Pri
     });
 
     const presets = useMemo(() => presetsForMethod(design.method), [design.method]);
-    const defaultPreset = useMemo(
-        () => presets.find((p) => p.beltAngleDeg) ?? presets[0],
-        [presets],
-    );
+    const defaultPreset = useMemo(() => presets.find((p) => p.beltAngleDeg) ?? presets[0], [presets]);
     const [presetId, setPresetId] = useState(defaultPreset?.id ?? "");
     const preset = presets.find((p) => p.id === presetId) ?? defaultPreset;
 
@@ -130,6 +143,14 @@ export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: Pri
     };
 
     const showPrimaryOnly = clinicalMode && primaryOnly;
+    const showProceduralWallControls = showWallPreview ?? !showPrimaryOnly;
+
+    const onWallStyle = (t: ProceduralWallStyleChoice) => {
+        setViewer({ wallStyle: t });
+        setGrindingStyle(
+            t === "straight" ? { type: "straight", angle_degrees: 8 } : { type: "rounded", radius_mm: 3 },
+        );
+    };
 
     return (
         <div className="space-y-3">
@@ -150,38 +171,40 @@ export function PrintingPanel({ clinicalMode = false, primaryOnly = false }: Pri
             ) : null}
 
             {!showPrimaryOnly ? (
-            <div className="space-y-1.5">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {isCnc ? "Mill preset" : "Printer preset"}
+                <div className="space-y-1.5">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        {isCnc ? "Mill preset" : "Printer preset"}
+                    </div>
+                    {presets.map((p) => (
+                        <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => setPresetId(p.id)}
+                            className={cn(
+                                "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left text-xs",
+                                presetId === p.id
+                                    ? "border-primary bg-primary/10 text-foreground"
+                                    : "border-border bg-background text-muted-foreground",
+                            )}
+                        >
+                            {isCnc ? <Cpu className="h-3.5 w-3.5" /> : <Printer className="h-3.5 w-3.5" />}
+                            {p.name}
+                            {p.beltAngleDeg ? (
+                                <span className="ml-auto rounded bg-muted px-1 text-[10px]">
+                                    belt {p.beltAngleDeg}°
+                                </span>
+                            ) : null}
+                        </button>
+                    ))}
                 </div>
-                {presets.map((p) => (
-                    <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => setPresetId(p.id)}
-                        className={cn(
-                            "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left text-xs",
-                            presetId === p.id
-                                ? "border-primary bg-primary/10 text-foreground"
-                                : "border-border bg-background text-muted-foreground",
-                        )}
-                    >
-                        {isCnc ? <Cpu className="h-3.5 w-3.5" /> : <Printer className="h-3.5 w-3.5" />}
-                        {p.name}
-                        {p.beltAngleDeg ? (
-                            <span className="ml-auto rounded bg-muted px-1 text-[10px]">
-                                belt {p.beltAngleDeg}°
-                            </span>
-                        ) : null}
-                    </button>
-                ))}
-            </div>
             ) : showPrimaryOnly && preset ? (
                 <p className="text-[10px] text-muted-foreground">
                     Preset: <span className="text-foreground">{preset.name}</span>
                     {preset.beltAngleDeg ? ` · belt ${preset.beltAngleDeg}°` : ""}
                 </p>
             ) : null}
+
+            {showProceduralWallControls ? <ProceduralWallPreviewControls onWallStyle={onWallStyle} /> : null}
 
             {!showPrimaryOnly && isBeltPreset && (
                 <div className="space-y-1.5">

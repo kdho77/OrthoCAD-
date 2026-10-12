@@ -6,7 +6,6 @@ import {
     Eye,
     EyeOff,
     Layers,
-    Loader2,
     Maximize2,
     Move,
     PencilLine,
@@ -14,12 +13,15 @@ import {
     Rotate3d,
     Scale3d,
     Scissors,
+    Spline,
     X,
 } from "lucide-react";
 import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
+import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
+import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
 import { cn } from "@/lib/utils";
@@ -27,13 +29,16 @@ import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/d
 import { useKernelStore } from "@/stores/kernel-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
+import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
+import { BottomPatternEditTools } from "./BottomPatternEditTools";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
 import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
+import { PrintLoftSplash } from "./PrintLoftSplash";
 import { ScanMarkerPlacement } from "./ScanMarkerPlacement";
 import { ScanMeshes } from "./ScanMeshes";
 import { ScanPlaneSliceTool } from "./ScanPlaneSliceTool";
@@ -94,10 +99,15 @@ export function Viewer3D() {
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
     const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
+    const beginBottomPatternEdit = useMeshEditStore((s) => s.beginBottomPatternEdit);
     const target = useMeshEditStore((s) => s.target);
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
+    const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
+    const confirmBottomPatternEdit = useMeshEditStore((s) => s.confirmBottomPatternEdit);
+    const cancelBottomPatternEdit = useMeshEditStore((s) => s.cancelBottomPatternEdit);
+    const wallModel = viewer.wallModel ?? "procedural";
     const editSide = resolveDefaultEditSide(viewer, target);
     const designMode = resolveDesignMode(design);
     const showBase = designMode.mode === "base";
@@ -135,13 +145,17 @@ export function Viewer3D() {
     const showScans = viewer.showScans ?? true;
     const showLeftInsole = viewer.showLeft && !hideInsoleForMarkers;
     const showRightInsole = viewer.showRight && !hideInsoleForMarkers;
-    // Prefer an empty viewport + loading cue over the parametric placeholder outline
-    // while the Default Stock Base GLB is still resolving/downloading.
-    const baseGeometryLoading =
-        showBase &&
-        (stockBaseLoading ||
-            (viewer.showLeft && baseMeshLoadingBySide.left) ||
-            (viewer.showRight && baseMeshLoadingBySide.right));
+    const loftPhaseBySide = usePreviewLoftStatusStore((s) => s.phaseBySide);
+    const loftError = usePreviewLoftStatusStore((s) => s.error);
+    const loftOverlay = viewerLoftOverlayState({
+        showBase,
+        showLeft: viewer.showLeft,
+        showRight: viewer.showRight,
+        stockBaseLoading,
+        loadingBySide: baseMeshLoadingBySide,
+        phaseBySide: loftPhaseBySide,
+        error: loftError,
+    });
     // Select primitives only — returning a fresh object from a zustand selector
     // causes an infinite re-render loop (React #185) once registration completes.
     const registrationError = useScanStore((s) => {
@@ -234,9 +248,10 @@ export function Viewer3D() {
                     <ScanPlaneSliceTool />
                     <ScanRotateTool />
                     <ScanTransformTool />
-                    {!hideInsoleForMarkers && !baseGeometryLoading ? <ElementMarkers /> : null}
+                    {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
                     <MeshEditTools />
-                    {!baseGeometryLoading ? <TrimlineEditTools /> : null}
+                    {!loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
+                    {!loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
@@ -307,18 +322,7 @@ export function Viewer3D() {
                 />
             </div>
 
-            {baseGeometryLoading ? (
-                <div
-                    className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[hsl(222_28%_7%/0.55)]"
-                    role="status"
-                    aria-live="polite"
-                >
-                    <div className="flex items-center gap-2 rounded-md border border-border/60 bg-panel/90 px-3 py-2 text-[12px] font-medium text-foreground shadow backdrop-blur">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-400" />
-                        Loading base…
-                    </div>
-                </div>
-            ) : null}
+            <PrintLoftSplash overlay={loftOverlay} />
 
             {/* Active view + edit-mode indicator (below the view pad) */}
             <div className="pointer-events-none absolute left-3 top-[5.5rem] flex flex-col gap-1">
@@ -329,7 +333,12 @@ export function Viewer3D() {
                 {designMode.mode === "base" ? (
                     <span className="flex w-fit items-center gap-1 rounded bg-violet-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         <Layers className="h-3 w-3" />
-                        Base: {designMode.baseName ?? "custom GLB"}
+                        Base:{" "}
+                        {wallModel === "procedural"
+                            ? SAMPLE_TOP_NAME
+                            : /default stock base/i.test(designMode.baseName ?? "")
+                              ? SAMPLE_TOP_NAME
+                              : (designMode.baseName ?? SAMPLE_TOP_NAME)}
                         {modifiersActive ? " · modifiers applied" : ""}
                     </span>
                 ) : (
@@ -342,6 +351,11 @@ export function Viewer3D() {
                     <span className="w-fit rounded bg-orange-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Editing trimline · {trimlineEdit.side}
                         {viewer.view !== "iso" ? " · plane-locked" : ""}
+                    </span>
+                ) : null}
+                {editMode === "edit-bottom-pattern" && bottomPatternEdit ? (
+                    <span className="w-fit rounded bg-teal-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Editing bottom pattern · {bottomPatternEdit.side}
                     </span>
                 ) : null}
                 {hideInsoleForMarkers && !placingArchOnly ? (
@@ -404,7 +418,7 @@ export function Viewer3D() {
                     icon={
                         showLeftInsole ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
                     }
-                    label="Left"
+                    label="Show left"
                 />
                 <ToggleButton
                     active={showRightInsole}
@@ -415,7 +429,7 @@ export function Viewer3D() {
                     icon={
                         showRightInsole ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
                     }
-                    label="Right"
+                    label="Show right"
                 />
                 <ToggleButton
                     active={showScans && hasScans}
@@ -423,12 +437,16 @@ export function Viewer3D() {
                     icon={showScans ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
                     label="Scan"
                 />
-                <ToggleButton
-                    active={showPerf}
-                    onClick={() => setShowPerf(!showPerf)}
-                    icon={<Activity className="h-3.5 w-3.5" />}
-                    label="FPS Monitor"
-                />
+                {typeof window !== "undefined" &&
+                (window.localStorage.getItem("chili3d:dev") === "1" ||
+                    new URLSearchParams(window.location.search).has("dev")) ? (
+                    <ToggleButton
+                        active={showPerf}
+                        onClick={() => setShowPerf(!showPerf)}
+                        icon={<Activity className="h-3.5 w-3.5" />}
+                        label="FPS Monitor"
+                    />
+                ) : null}
             </div>
 
             {/* Scan selection toolbar — rotate appears only while a scan is selected */}
@@ -517,6 +535,14 @@ export function Viewer3D() {
                         icon={<PencilLine className="h-3.5 w-3.5" />}
                         label="Edit trimline"
                     />
+                    {wallModel === "procedural" ? (
+                        <ModeButton
+                            active={editMode === "edit-bottom-pattern"}
+                            onClick={() => beginBottomPatternEdit(editSide)}
+                            icon={<Spline className="h-3.5 w-3.5" />}
+                            label="Edit bottom pattern"
+                        />
+                    ) : null}
                     <ModeButton
                         active={editMode === "trim"}
                         onClick={() => {
@@ -550,6 +576,26 @@ export function Viewer3D() {
                                 variant="ghost"
                                 className="h-7 text-[11px]"
                                 onClick={cancelTrimlineEdit}
+                            >
+                                Cancel
+                            </Button>
+                        </>
+                    ) : null}
+                    {editMode === "edit-bottom-pattern" && bottomPatternEdit ? (
+                        <>
+                            <Button
+                                size="sm"
+                                variant="default"
+                                className="h-7 text-[11px]"
+                                onClick={confirmBottomPatternEdit}
+                            >
+                                Confirm
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-[11px]"
+                                onClick={cancelBottomPatternEdit}
                             >
                                 Cancel
                             </Button>

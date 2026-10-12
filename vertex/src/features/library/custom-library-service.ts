@@ -1,17 +1,25 @@
 import * as THREE from "three";
 import { canSaveCustom, SAVE_CUSTOM_TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/chili3d/kernel";
-import { baseModifierField, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
-import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import {
+    baseModifierField,
+    getDesignBase,
+    isSampleTopStockBase,
+    loadBaseGeometry,
+} from "@/lib/geometry/base-asset";
+import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { boundsFromObject, registerCustomElementBounds } from "@/lib/geometry/custom-element-bounds";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
+import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall";
+import { loadSampleTopGeometry } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { getDesignTrimline } from "@/lib/geometry/trimline";
 import { countMeshes, extractMergedGeometry, loadGlbFromBuffer, mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
+import { curveToPolyPoints, useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -128,16 +136,44 @@ export function buildExportMesh(input: SaveCustomInput): THREE.Mesh {
  * no base or the base GLB can't be resolved, so callers fall back to parametric.
  */
 async function buildBasePrefabMesh(side: Side): Promise<THREE.Mesh | null> {
-    const { design } = useDesignStore.getState();
-    const base = getDesignBase(design, 'left'); // legacy single; for paired use per side
+    const { design, viewer } = useDesignStore.getState();
+    const base = getDesignBase(design, side) ?? getDesignBase(design);
     if (!base) return null;
 
-    const raw = await loadBaseGeometry(base);
-    if (!raw) return null;
+    const procedural = (viewer.wallModel ?? "procedural") === "procedural" || isSampleTopStockBase(base);
 
-    const field = baseModifierField(design, side, design.thicknessMm);
-    let geometry = applyBaseModifiers(raw, field, 1);
-    raw.dispose();
+    let geometry: THREE.BufferGeometry;
+    if (procedural) {
+        let raw = await loadSampleTopGeometry();
+        if (base.mirrored) {
+            const mirrored = mirrorGeometry(raw);
+            raw.dispose();
+            raw = mirrored;
+        }
+        const thicknessMm = design.paired
+            ? side === "left"
+                ? design.paired.leftThicknessMm
+                : design.paired.rightThicknessMm
+            : design.thicknessMm;
+        const field = baseModifierField(design, side, thicknessMm ?? BASE_REFERENCE_THICKNESS_MM);
+        const stored = useBottomPatternStore.getState().getPattern(side);
+        const preview = reconstructProceduralPreview(raw, {
+            corrections: field.corrections,
+            thicknessMm: thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
+            stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
+            wallStyle: viewer.wallStyle ?? "straight",
+            scanPattern: design.pattern,
+            ...(stored ? { bottomPattern: curveToPolyPoints(stored) } : {}),
+        });
+        raw.dispose();
+        geometry = preview.geometry;
+    } else {
+        const raw = await loadBaseGeometry(base);
+        if (!raw) return null;
+        const field = baseModifierField(design, side, design.thicknessMm);
+        geometry = applyBaseModifiers(raw, field, 1);
+        raw.dispose();
+    }
 
     const { trimLines, vertexOverrides } = useMeshEditStore.getState();
     geometry = applyTrimLines(geometry, trimLines);

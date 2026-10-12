@@ -1,0 +1,265 @@
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, test } from "@rstest/core";
+import {
+    analyticOffsetPattern,
+    assertCutInOnHighRimSide,
+    countClosedInflections,
+    fairInsetMm,
+    INFLECTION_K_EPS,
+    INFLECTION_MIN_ARC_MM,
+    medialYSignFromTopRim,
+    movedPatternHygiene,
+    PATTERN_ARCH_INSET_MM,
+    PATTERN_FOREFOOT_INSET_MM,
+    PATTERN_HEEL_INSET_MM,
+    PATTERN_MAX_DKDS,
+    parseBottomPattern,
+    patternCurvatureReport,
+    syntheticBottomPattern,
+} from "./bottom-pattern";
+import { minDistToLoopXY, pointInPoly } from "./cdt-band";
+import { hygieneBottomPattern } from "./pattern-hygiene";
+import { cleanWindowsTracePx, fitWindowsTraceToRim, smoothedWindowsTraceCanonical } from "./windows-trace";
+
+function turning(loop: Array<{ x: number; y: number }>): number {
+    let sum = 0;
+    const n = loop.length;
+    for (let i = 0; i < n; i++) {
+        const a = loop[(i + n - 1) % n]!;
+        const b = loop[i]!;
+        const c = loop[(i + 1) % n]!;
+        sum += Math.atan2(
+            (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x),
+            (b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y),
+        );
+    }
+    return sum / (Math.PI * 2);
+}
+
+describe("synthetic bottom pattern", () => {
+    test("is a simple C2 inset with a deeper medial-arch cut-in", () => {
+        const n = 80;
+        const outline = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 120 + 110 * Math.cos(a), y: 42 * Math.sin(a), z: 0 };
+        });
+        const bounds = { minX: 10, maxX: 230 };
+        const raw = syntheticBottomPattern(outline, bounds, outline, undefined, { source: "analytic" });
+        const rawCurv = patternCurvatureReport(raw, bounds, 1);
+        expect(rawCurv.inflections).toBe(2);
+        expect(rawCurv.maxAbsDkDs).toBeLessThanOrEqual(PATTERN_MAX_DKDS + 0.005);
+        const pattern = hygieneBottomPattern(raw, {
+            rimPlan: outline,
+            requireInsideRim: true,
+            clearanceMm: 0,
+            keepFair: true,
+        }).loop;
+        expect(pattern.length).toBeGreaterThan(80);
+        expect(Math.abs(turning(pattern) - 1)).toBeLessThan(0.05);
+        let minC = Infinity;
+        let maxC = 0;
+        let medial = 0;
+        let heelC = 0;
+        let foreC = Infinity;
+        const length = bounds.maxX - bounds.minX;
+        for (const p of pattern) {
+            expect(pointInPoly(p.x, p.y, outline) || minDistToLoopXY(p.x, p.y, outline) < 1e-3).toBe(true);
+            const c = minDistToLoopXY(p.x, p.y, outline);
+            minC = Math.min(minC, c);
+            maxC = Math.max(maxC, c);
+            const u = (p.x - bounds.minX) / length;
+            if (p.y > 8 && u > 0.22 && u < 0.55) medial = Math.max(medial, c);
+            if (u < 0.12) heelC = Math.max(heelC, c);
+            if (u > 0.82) foreC = Math.min(foreC, c);
+        }
+        expect(foreC).toBeLessThanOrEqual(1.0);
+        expect(minC).toBeLessThan(1.5);
+        expect(heelC).toBeGreaterThan(4);
+        expect(maxC).toBeGreaterThan(PATTERN_HEEL_INSET_MM * 0.7);
+        expect(medial).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.35);
+        const curv = patternCurvatureReport(pattern, bounds, 1);
+        expect(curv.inflections).toBe(2);
+        expect(curv.lateralMinK).toBeGreaterThanOrEqual(0);
+        expect(curv.maxAbsDkDs).toBeLessThanOrEqual(PATTERN_MAX_DKDS + 0.015);
+        expect(minC).toBeGreaterThanOrEqual(0.3 - 1e-3);
+        const latBins = new Map<number, number[]>();
+        for (const p of pattern) {
+            const u = (p.x - bounds.minX) / length;
+            if (p.y > 0) continue;
+            const bin = Math.round(u * 20);
+            const list = latBins.get(bin) ?? [];
+            list.push(minDistToLoopXY(p.x, p.y, outline));
+            latBins.set(bin, list);
+        }
+        const latMean: number[] = [];
+        for (let b = 0; b <= 20; b++) {
+            const list = latBins.get(b);
+            if (!list?.length) continue;
+            latMean.push(list.reduce((s, v) => s + v, 0) / list.length);
+        }
+        for (let i = 1; i < latMean.length - 1; i++) {
+            const bump = latMean[i]! - 0.5 * (latMean[i - 1]! + latMean[i + 1]!);
+            expect(bump).toBeLessThan(1.2);
+        }
+    });
+
+    test("QP unit: analytic offset meets synthetic targets (inflections=2, dk/ds, lateral)", () => {
+        const n = 80;
+        const outline = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 120 + 110 * Math.cos(a), y: 42 * Math.sin(a), z: 0 };
+        });
+        const bounds = { minX: 10, maxX: 230 };
+        const yMid = outline.reduce((s, p) => s + p.y, 0) / outline.length;
+        const out = analyticOffsetPattern(outline, bounds, 1, yMid, { source: "analytic" });
+        const curv = patternCurvatureReport(out, bounds, 1);
+        expect(curv.inflections).toBe(2);
+        expect(curv.maxAbsDkDs).toBeLessThanOrEqual(PATTERN_MAX_DKDS + 0.005);
+        expect(curv.lateralMinK).toBeGreaterThanOrEqual(-0.005);
+        let minC = Infinity;
+        for (const p of out) {
+            minC = Math.min(minC, minDistToLoopXY(p.x, p.y, outline));
+        }
+        expect(minC).toBeGreaterThanOrEqual(0.3 - 1e-3);
+    });
+
+    test("cut-in follows the high midfoot rim, not +Y", () => {
+        const n = 80;
+        const outline = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            const y = 42 * Math.sin(a);
+            const x = 120 + 110 * Math.cos(a);
+            const u = (x - 10) / 220;
+            const z = u > 0.28 && u < 0.48 && y < 0 ? 18 : 6;
+            return { x, y, z };
+        });
+        const bounds = { minX: 10, maxX: 230 };
+        expect(medialYSignFromTopRim(outline, bounds)).toBe(-1);
+        const raw = syntheticBottomPattern(outline, bounds, outline, undefined, { source: "analytic" });
+        const pattern = hygieneBottomPattern(raw, {
+            rimPlan: outline,
+            requireInsideRim: true,
+            clearanceMm: 0,
+            keepFair: true,
+        }).loop;
+        assertCutInOnHighRimSide(pattern, outline, bounds, -1);
+        const length = bounds.maxX - bounds.minX;
+        let medialNeg = 0;
+        let lateralPos = 0;
+        for (const p of pattern) {
+            const c = minDistToLoopXY(p.x, p.y, outline);
+            const u = (p.x - bounds.minX) / length;
+            if (u > 0.22 && u < 0.55) {
+                if (p.y < -8) medialNeg = Math.max(medialNeg, c);
+                if (p.y > 8) lateralPos = Math.max(lateralPos, c);
+            }
+        }
+        expect(medialNeg).toBeGreaterThan(PATTERN_ARCH_INSET_MM * 0.35);
+        expect(lateralPos).toBeLessThan(medialNeg * 0.55);
+    });
+
+    test("inflection hysteresis ignores |k| flicker shorter than 3 mm", () => {
+        const n = 40;
+        const k = new Array<number>(n).fill(0.01);
+        const s = k.map((_, i) => i);
+        k[10] = -0.01;
+        k[11] = -0.01;
+        expect(s[12]! - s[10]!).toBeLessThan(INFLECTION_MIN_ARC_MM);
+        expect(countClosedInflections(k, s, INFLECTION_K_EPS, INFLECTION_MIN_ARC_MM)).toBe(0);
+        for (let i = 8; i <= 14; i++) k[i] = -0.01;
+        expect(s[15]! - s[8]!).toBeGreaterThan(INFLECTION_MIN_ARC_MM);
+        expect(countClosedInflections(k, s, INFLECTION_K_EPS, INFLECTION_MIN_ARC_MM)).toBe(2);
+    });
+
+    test("dk/ds misses only outside the modifier-moved region", () => {
+        const n = 40;
+        const loop = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            const r = 40 + (i === 2 ? 8 : 0);
+            return { x: 100 + r * Math.cos(a), y: r * Math.sin(a), z: 0 };
+        });
+        const bounds = { minX: 50, maxX: 160 };
+        const all = movedPatternHygiene(loop, bounds, 1);
+        const heelOnly = movedPatternHygiene(loop, bounds, 1, {
+            movedAt: (u) => u < 0.35,
+        });
+        if (all.report.maxAbsDkDs > PATTERN_MAX_DKDS) {
+            expect(all.misses.some((m) => m.startsWith("pattern-dkds"))).toBe(true);
+        }
+        expect(heelOnly.report.maxAbsDkDsOutside).toBeLessThanOrEqual(all.report.maxAbsDkDs + 1e-12);
+        if (heelOnly.report.maxAbsDkDsOutside <= PATTERN_MAX_DKDS) {
+            expect(heelOnly.misses.some((m) => m.startsWith("pattern-dkds"))).toBe(false);
+        }
+    });
+
+    test("parses SVG polyline and JSON points", () => {
+        const svg = parseBottomPattern('<polyline points="0,0 10,0 10,6 0,6"/>');
+        expect(svg).toHaveLength(4);
+        expect(svg[2]).toEqual({ x: 10, y: 6, z: 0 });
+        const json = parseBottomPattern(
+            JSON.stringify([
+                { x: 1, y: 2 },
+                { x: 3, y: 4 },
+            ]),
+        );
+        expect(json).toEqual([
+            { x: 1, y: 2, z: 0 },
+            { x: 3, y: 4, z: 0 },
+        ]);
+    });
+
+    test("parses the Windows GREEN_PATTERN DXF and drops the junk tail", () => {
+        const dxf = readFileSync(resolve(process.cwd(), "tests/fixtures/windows-bottom-pattern.dxf"), "utf8");
+        const raw = parseBottomPattern(dxf);
+        expect(raw.length).toBeGreaterThan(200);
+        const clean = cleanWindowsTracePx(raw);
+        expect(clean.every((p) => !(p.x < 8 && p.y < 20))).toBe(true);
+        expect(clean.length).toBeGreaterThan(200);
+        expect(raw.length).toBeGreaterThanOrEqual(clean.length);
+    });
+
+    test("Windows trace length-matches the rim and mirrors with medial sign", () => {
+        const n = 80;
+        const outline = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            return { x: 120 + 110 * Math.cos(a), y: 42 * Math.sin(a), z: 0 };
+        });
+        const bounds = { minX: 10, maxX: 230 };
+        const left = fitWindowsTraceToRim(outline, bounds, 1);
+        const right = fitWindowsTraceToRim(outline, bounds, -1);
+        expect(left).toBeTruthy();
+        expect(right).toBeTruthy();
+        const span = (pts: Array<{ x: number }>) => {
+            let lo = Infinity;
+            let hi = -Infinity;
+            for (const p of pts) {
+                lo = Math.min(lo, p.x);
+                hi = Math.max(hi, p.x);
+            }
+            return { lo, hi, len: hi - lo };
+        };
+        const target = bounds.maxX - bounds.minX - PATTERN_HEEL_INSET_MM - PATTERN_FOREFOOT_INSET_MM;
+        expect(Math.abs(span(left!.smoothed).len - target)).toBeLessThan(0.35);
+        expect(span(left!.smoothed).lo).toBeGreaterThan(bounds.minX + PATTERN_HEEL_INSET_MM - 0.6);
+        expect(right!.mirrored).toBe(true);
+        expect(left!.mirrored).toBe(false);
+        const yL = left!.smoothed.reduce((s, p) => s + p.y, 0) / left!.smoothed.length;
+        const yR = right!.smoothed.reduce((s, p) => s + p.y, 0) / right!.smoothed.length;
+        expect(Math.abs(yL + yR)).toBeLessThan(2);
+        expect(smoothedWindowsTraceCanonical().length).toBeGreaterThan(80);
+    });
+
+    test("plan inset d(u) is unchanged when only heel width scale changes W away from u_pk", () => {
+        const W = (u: number) => (Math.abs(u - 0.44) < 0.05 ? 80 : 70);
+        const stations = [0.05, 0.2, 0.44, 0.55, 0.7, 0.9];
+        for (const u of stations) {
+            const a = fairInsetMm(u, true, { widthAtU: W });
+            const b = fairInsetMm(u, true, { widthAtU: (t) => W(t) * (t < 0.28 ? 1.15 : 1) });
+            expect(Math.abs(b - a)).toBeLessThanOrEqual(0.5);
+        }
+    });
+});

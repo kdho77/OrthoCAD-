@@ -8,8 +8,10 @@ import {
     getDefaultStockBaseSync,
     getDesignBase,
     getOfflineFallbackStockBase,
+    replaceBuiltinDefaultWithSampleTop,
     sanitizeDesignStockBases,
     sanitizeStockBaseForServerMode,
+    stockBaseDisplayName,
     stockBaseNeedsServerResolution,
 } from "@/lib/geometry/base-asset";
 import { isApiConfigured } from "@/lib/trpc";
@@ -50,32 +52,36 @@ function pairedDesign(leftBase: DesignBase, rightBase: DesignBase): DesignState 
 }
 
 describe("createDefaultStockPairedBases", () => {
-    test("builtin sync default is primarySide left (Default.glb arch is on width−)", () => {
-        expect(getDefaultStockBaseSync().primarySide).toBe("left");
+    test("builtin sync default is SAMPLE_Top, primarySide left", () => {
+        const stock = getDefaultStockBaseSync();
+        expect(stock.primarySide).toBe("left");
+        expect(stock.name).toBe("SAMPLE_Top");
+        expect(stock.glbPath).toMatch(/SAMPLE_Top\.glb$/);
+        expect(stock.url).toBe("/Templates/SAMPLE_Top.glb");
+        expect(stockBaseNeedsServerResolution(stock)).toBe(false);
         const { left, right } = createDefaultStockPairedBases();
         expect(left.mirrored).toBeFalsy();
         expect(right.mirrored).toBe(true);
-        expect(left.name).toMatch(/\(Left\)/i);
-        expect(right.name).toMatch(/\(Right\)/i);
+        expect(left.name).toMatch(/SAMPLE_Top \(Left\)/i);
+        expect(right.name).toMatch(/SAMPLE_Top \(Right\)/i);
+        expect(left.name).not.toMatch(/Default Stock Base/i);
     });
 
-    test("API mode sync default is a non-loadable pending stub (no glbPath/url)", () => {
-        // When Supabase/API is configured the stub must not carry a fetchable URL,
-        // so the viewer shows loading until applyDefaultStockBase resolves.
-        if (!isApiConfigured()) {
-            const offline = getOfflineFallbackStockBase();
-            expect(offline.glbPath).toBeTruthy();
-            expect(offline.resolutionFallback).toBe(true);
-            return;
-        }
-        const stub = getDefaultStockBaseSync();
-        expect(stub.glbPath).toBeUndefined();
-        expect(stub.url).toBeUndefined();
-        expect(stockBaseNeedsServerResolution(stub)).toBe(true);
+    test("sync default is immediately loadable SAMPLE_Top (no Default.glb stub)", () => {
+        const stock = getDefaultStockBaseSync();
+        expect(stock.glbPath).toBeTruthy();
+        expect(stock.url).toBe("/Templates/SAMPLE_Top.glb");
+        expect(stock.resolutionFallback).toBe(true);
+        expect(stockBaseNeedsServerResolution(stock)).toBe(false);
+        const offline = getOfflineFallbackStockBase();
+        expect(offline.glbPath).toMatch(/SAMPLE_Top\.glb$/);
+        expect(offline.resolutionFallback).toBe(true);
+        expect(offline.name).not.toMatch(/Default Stock Base/i);
+        if (!isApiConfigured()) return;
         const { left, right } = createDefaultStockPairedBases();
-        expect(left.url).toBeUndefined();
-        expect(right.url).toBeUndefined();
-        expect(stockBaseNeedsServerResolution(left)).toBe(true);
+        expect(left.url).toBe("/Templates/SAMPLE_Top.glb");
+        expect(right.url).toBe("/Templates/SAMPLE_Top.glb");
+        expect(stockBaseNeedsServerResolution(left)).toBe(false);
     });
 
     test("sanitize strips persisted placeholder URLs so Default.glb is not loaded early", () => {
@@ -249,5 +255,34 @@ describe("sanitizeDesignStockBases", () => {
         expect(healed.paired?.leftBase?.primarySide).toBe("left");
         expect(healed.paired?.leftBase?.name).toMatch(/\(Left\)/i);
         expect(healed.paired?.rightBase?.name).toMatch(/\(Right\)/i);
+    });
+});
+
+describe("SAMPLE_Top app default", () => {
+    test("replaceBuiltinDefaultWithSampleTop swaps leftover Default.glb", () => {
+        const left = stockSource("left");
+        const { left: L, right: R } = createDefaultStockPairedBases(left);
+        const migrated = replaceBuiltinDefaultWithSampleTop(pairedDesign(L, R));
+        expect(migrated.paired?.leftBase?.glbPath).toMatch(/SAMPLE_Top\.glb$/);
+        expect(migrated.paired?.rightBase?.mirrored).toBe(true);
+        expect(stockBaseDisplayName(migrated.base)).toBe("SAMPLE_Top");
+        expect(stockBaseDisplayName(left)).toBe("SAMPLE_Top");
+    });
+
+    test("stockBaseDisplayName never returns Default Stock Base", () => {
+        expect(
+            stockBaseDisplayName({
+                assetId: "stock-default",
+                name: "Default Stock Base (Left)",
+                source: "stock",
+            }),
+        ).toBe("SAMPLE_Top");
+        expect(
+            stockBaseDisplayName({
+                assetId: "sample-top",
+                name: "SAMPLE_Top (Right)",
+                source: "stock",
+            }),
+        ).toBe("SAMPLE_Top");
     });
 });

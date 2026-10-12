@@ -1,10 +1,17 @@
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
 import { useEffect, useState } from "react";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { type SaveTargetKind, saveCustomAsset } from "@/features/library/custom-library-service";
 import { SAVE_CUSTOM_TOKEN_COST } from "@/features/licensing/license";
-import { saveCustomAsset, type SaveTargetKind } from "@/features/library/custom-library-service";
+import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
+import { SIDE_LABELS, type Side } from "@/types";
+
+export type SaveLibrarySide = Side | "both";
 
 export interface SaveCustomDialogProps {
     open: boolean;
@@ -14,7 +21,7 @@ export interface SaveCustomDialogProps {
     defaultCategory: string;
     parentStockId?: string;
     sourceId?: string;
-    side?: "left" | "right";
+    side?: SaveLibrarySide;
 }
 
 export function SaveCustomDialog({
@@ -29,6 +36,7 @@ export function SaveCustomDialog({
 }: SaveCustomDialogProps) {
     const [name, setName] = useState(defaultName);
     const [category, setCategory] = useState(defaultCategory);
+    const [saveSide, setSaveSide] = useState<SaveLibrarySide>(side ?? "left");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const tokenBalance = useAuthStore((s) => s.user?.tokenBalance ?? 0);
@@ -37,9 +45,10 @@ export function SaveCustomDialog({
         if (open) {
             setName(defaultName);
             setCategory(defaultCategory);
+            setSaveSide(side ?? "left");
             setError(null);
         }
-    }, [open, defaultName, defaultCategory]);
+    }, [open, defaultName, defaultCategory, side]);
 
     const onSave = async () => {
         if (!name.trim()) {
@@ -48,19 +57,24 @@ export function SaveCustomDialog({
         }
         setBusy(true);
         setError(null);
-        const res = await saveCustomAsset({
-            kind,
-            name: name.trim(),
-            category: category.trim() || "other",
-            parentStockId,
-            sourceId,
-            side,
-        });
-        setBusy(false);
-        if (!res.ok) {
-            setError(res.reason ?? "Save failed");
-            return;
+        const sides: Side[] = saveSide === "both" ? ["left", "right"] : [saveSide];
+        for (const s of sides) {
+            const labeled = saveSide === "both" ? `${name.trim()} ${s === "left" ? "L" : "R"}` : name.trim();
+            const res = await saveCustomAsset({
+                kind,
+                name: labeled,
+                category: category.trim() || "other",
+                parentStockId,
+                sourceId,
+                side: s,
+            });
+            if (!res.ok) {
+                setBusy(false);
+                setError(res.reason ?? "Save failed");
+                return;
+            }
         }
+        setBusy(false);
         onClose();
     };
 
@@ -72,19 +86,52 @@ export function SaveCustomDialog({
                 </DialogHeader>
                 <p className="text-xs text-muted-foreground">
                     Exports the current modified mesh as GLB and adds it to your personal library. Costs{" "}
-                    {SAVE_CUSTOM_TOKEN_COST} token (balance: {tokenBalance}).
+                    {SAVE_CUSTOM_TOKEN_COST} token
+                    {saveSide === "both" ? " per foot" : ""} (balance: {tokenBalance}).
                 </p>
                 <div className="space-y-2">
-                    <label className="text-xs text-muted-foreground">
-                        Name
-                        <Input value={name} onChange={(e) => setName(e.target.value)} className="mt-1" />
-                    </label>
-                    <label className="text-xs text-muted-foreground">
-                        Category
-                        <Input value={category} onChange={(e) => setCategory(e.target.value)} className="mt-1" />
-                    </label>
+                    <div>
+                        <p className="mb-1 text-xs text-muted-foreground">Save for</p>
+                        <div className="grid grid-cols-3 gap-1">
+                            {(["left", "right", "both"] as SaveLibrarySide[]).map((choice) => (
+                                <button
+                                    key={choice}
+                                    type="button"
+                                    onClick={() => setSaveSide(choice)}
+                                    className={cn(
+                                        "rounded border px-1 py-1.5 text-[11px]",
+                                        saveSide === choice
+                                            ? "border-primary bg-primary/10 text-primary"
+                                            : "border-border text-muted-foreground",
+                                    )}
+                                >
+                                    {choice === "both" ? "Pair" : SIDE_LABELS[choice]}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                        <label htmlFor="save-custom-name">Name</label>
+                        <Input
+                            id="save-custom-name"
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            className="mt-1"
+                        />
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                        <label htmlFor="save-custom-category">Category</label>
+                        <Input
+                            id="save-custom-category"
+                            value={category}
+                            onChange={(e) => setCategory(e.target.value)}
+                            className="mt-1"
+                        />
+                    </div>
                     {parentStockId ? (
-                        <p className="text-[11px] text-muted-foreground">Derived from stock: {parentStockId}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                            Derived from stock: {parentStockId}
+                        </p>
                     ) : null}
                     {error ? <p className="text-xs text-destructive">{error}</p> : null}
                 </div>

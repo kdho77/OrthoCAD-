@@ -25,7 +25,13 @@ export function MeshEditTools() {
     const layout = insoleLayoutFromDesign(design);
     const centerX = layout.lengthMm / 2;
 
-    if (editMode === "transform" || editMode === "edit-trimline" || !target) return null;
+    if (
+        editMode === "transform" ||
+        editMode === "edit-trimline" ||
+        editMode === "edit-bottom-pattern" ||
+        !target
+    )
+        return null;
 
     const side: Side =
         target.type === "insole"

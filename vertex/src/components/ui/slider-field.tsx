@@ -1,3 +1,7 @@
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
+import { RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePerformanceStore } from "@/stores/performance-store";
 
@@ -14,6 +18,11 @@ interface SliderFieldProps {
     className?: string;
     /** When set, replaces the numeric readout (e.g. "—" for inactive derived fields). */
     displayText?: string;
+    /** Restore this value (shows a reset control when current differs). */
+    defaultValue?: number;
+    onReset?: () => void;
+    /** e.g. "from PF" when the value originated from a preset. */
+    originLabel?: string;
 }
 
 /**
@@ -32,6 +41,9 @@ export function SliderField({
     onPreview,
     className,
     displayText,
+    defaultValue,
+    onReset,
+    originLabel,
 }: SliderFieldProps) {
     const setInteracting = usePerformanceStore((s) => s.setInteracting);
     const clamp = (v: number) => Math.min(max, Math.max(min, Number.isFinite(v) ? v : min));
@@ -49,12 +61,21 @@ export function SliderField({
     };
 
     const onPointerDown = () => setInteracting(true, "slider");
+    const canReset = onReset != null && (defaultValue == null || Math.abs(value - defaultValue) > 1e-6);
+    const controlId = `slider-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 
     return (
         <div className={cn("space-y-1", className)}>
             <div className="flex items-center justify-between">
-                <label className="text-xs text-muted-foreground">{label}</label>
+                <label htmlFor={controlId} className="text-xs text-muted-foreground">
+                    {label}
+                </label>
                 <div className="flex items-center gap-1">
+                    {originLabel ? (
+                        <span className="max-w-[4.5rem] truncate rounded bg-primary/15 px-1 py-0.5 text-[9px] text-primary">
+                            {originLabel}
+                        </span>
+                    ) : null}
                     {displayText != null ? (
                         <span className="flex h-6 w-16 items-center justify-end px-1 text-xs tabular-nums text-muted-foreground">
                             {displayText}
@@ -71,9 +92,20 @@ export function SliderField({
                         />
                     )}
                     {unit ? <span className="w-5 text-xs text-muted-foreground">{unit}</span> : null}
+                    {canReset ? (
+                        <button
+                            type="button"
+                            title="Reset"
+                            onClick={() => onReset()}
+                            className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        >
+                            <RotateCcw className="h-3 w-3" />
+                        </button>
+                    ) : null}
                 </div>
             </div>
             <input
+                id={controlId}
                 type="range"
                 value={value}
                 min={min}

@@ -3,23 +3,25 @@
 
 import { Button } from "@/components/ui/button";
 import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
-import { useClinicalWorkflowStore, type ElementPlacementFoot } from "@/stores/clinical-workflow-store";
+import { type ElementPlacementFoot, useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { SIDE_LABELS, type Side } from "@/types";
 
 interface ActiveFootSideBarProps {
-    /** When true, offer Both (L+R) when corrections are linked. */
+    /** When true, offer Both (L+R) — default for the sticky Editing control. */
     allowBothWhenLinked?: boolean;
 }
 
-/** L/R (and optional both) selector aligned with viewer target and clinical rail (#168). */
+/** L/R / Both (linked) selector aligned with viewer target and clinical rail. */
 export function ActiveFootSideBar({ allowBothWhenLinked = false }: ActiveFootSideBarProps) {
     const active = useActiveFootSide();
     const linked = useDesignStore((s) => s.design.corrections.linked);
     const placementFoot = useClinicalWorkflowStore((s) => s.elementPlacementFoot);
     const setPlacementFoot = useClinicalWorkflowStore((s) => s.setElementPlacementFoot);
     const acknowledgeExplicitFootSide = useClinicalWorkflowStore((s) => s.acknowledgeExplicitFootSide);
+    const acknowledgePairAssignment = useClinicalWorkflowStore((s) => s.acknowledgePairAssignment);
+    const setLinked = useDesignStore((s) => s.setLinked);
     const setExportSide = useDesignStore((s) => s.setExportSide);
     const setTarget = useMeshEditStore((s) => s.setTarget);
 
@@ -31,11 +33,13 @@ export function ActiveFootSideBar({ allowBothWhenLinked = false }: ActiveFootSid
     };
 
     const pickBoth = () => {
+        acknowledgePairAssignment();
+        setLinked(true);
         setPlacementFoot("both");
         setTarget({ type: "insole", side: active });
     };
 
-    const showBoth = allowBothWhenLinked && linked;
+    const showBoth = allowBothWhenLinked || linked || placementFoot === "both";
 
     const isActive = (choice: ElementPlacementFoot | Side) => {
         if (choice === "both") return placementFoot === "both";
@@ -43,26 +47,26 @@ export function ActiveFootSideBar({ allowBothWhenLinked = false }: ActiveFootSid
     };
 
     return (
-        <div className="flex flex-wrap gap-1">
+        <div className={showBoth ? "grid grid-cols-3 gap-1" : "flex flex-wrap gap-1"}>
             {(["left", "right"] as Side[]).map((s) => (
                 <Button
                     key={s}
                     size="sm"
                     variant={isActive(s) ? "default" : "secondary"}
-                    className="h-8 flex-1 text-[11px]"
+                    className="h-8 text-[11px]"
                     onClick={() => pickSide(s)}
                 >
-                    {SIDE_LABELS[s]} foot
+                    {SIDE_LABELS[s]}
                 </Button>
             ))}
             {showBoth ? (
                 <Button
                     size="sm"
                     variant={isActive("both") ? "default" : "secondary"}
-                    className="h-8 w-full text-[11px]"
+                    className="h-8 text-[11px]"
                     onClick={() => pickBoth()}
                 >
-                    Both feet (linked L+R)
+                    Both (linked)
                 </Button>
             ) : null}
         </div>

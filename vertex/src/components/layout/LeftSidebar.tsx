@@ -12,6 +12,7 @@ import {
     X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -22,9 +23,11 @@ import {
     selectCustomPrefab,
     uploadBaseGlb,
 } from "@/features/library/custom-library-service";
-import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
 import { ScanImport } from "@/features/scans/ScanImport";
+import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
+import { stockBaseDisplayName } from "@/lib/geometry/base-asset";
+import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-id";
 import {
     DEFAULT_US_MEN_SIZE,
     footLengthMmOptions,
@@ -38,9 +41,17 @@ import {
     usMenToUk,
     usShoeSizeOptions,
 } from "@/lib/geometry/shoe-size";
-import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
+import {
+    hasHeelWidthOverride,
+    normalizeShoeWidth,
+    SHOE_WIDTH_LABELS,
+    type ShoeWidthId,
+    shoeWidthForSide,
+    shoeWidthHint,
+} from "@/lib/geometry/shoe-width";
 import { mergePrefabLibrary, STOCK_PREFABS } from "@/lib/library/manifest";
 import { cn } from "@/lib/utils";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -52,7 +63,13 @@ const METHODS: { id: ProductionMethod; label: string }[] = [
     { id: "milling_3axis", label: "Milling — 3 Axis" },
 ];
 
-export function LeftSidebar() {
+export function LeftSidebar({
+    sections,
+    embedded,
+}: {
+    sections?: Array<"pattern" | "library" | "production" | "size" | "import">;
+    embedded?: boolean;
+} = {}) {
     const {
         design,
         setPattern,
@@ -71,7 +88,8 @@ export function LeftSidebar() {
     const setTarget = useMeshEditStore((s) => s.setTarget);
     const merged = mergePrefabLibrary(customPrefabs);
     const [saveOpen, setSaveOpen] = useState(false);
-    const [saveSide, setSaveSide] = useState<Side>("left");
+    const [saveSide, setSaveSide] = useState<Side | "both">("left");
+    const placementFoot = useClinicalWorkflowStore((s) => s.elementPlacementFoot);
     const uploadRef = useRef<HTMLInputElement>(null);
     const [uploadBusy, setUploadBusy] = useState(false);
     const [uploadError, setUploadError] = useState<string | null>(null);
@@ -125,7 +143,7 @@ export function LeftSidebar() {
     const onPattern = async (id: string, stock: boolean) => {
         const side = getActiveFootSide();
         if (stock) {
-            // Scan pattern only — the mandatory GLB stock base is never cleared here.
+            // Pattern presets drive the faired bottom on SAMPLE_Top; the GLB stays.
             setPattern(id as ScanPattern);
             setTarget({ type: "insole", side });
         } else {
@@ -140,211 +158,238 @@ export function LeftSidebar() {
         design.paired?.rightBase?.source === "stock" ||
         design.base?.source === "stock";
 
+    const show = (id: "pattern" | "library" | "production" | "size" | "import") =>
+        !sections || sections.includes(id);
+    const stockPatterns = merged.filter((p) => p.stock && (p.id === "full_contact" || p.id === "prefab_3d"));
+
     return (
-        <aside className="flex w-56 flex-col gap-4 overflow-y-auto border-r border-border bg-panel p-3">
-            <Section icon={<Footprints className="h-3.5 w-3.5" />} title="Pattern">
-                {usingStockBase ? (
-                    <p className="mb-1.5 text-[10px] text-muted-foreground">
-                        Base:{" "}
-                        {design.base?.name ??
-                            design.paired?.leftBase?.name ??
-                            design.paired?.rightBase?.name ??
-                            "Stock GLB"}{" "}
-                        · patterns adjust scan metadata only
-                    </p>
-                ) : null}
-                <div className="grid grid-cols-2 gap-1.5">
-                    {merged.map((p) => (
-                        <button
-                            key={p.id}
-                            type="button"
-                            onClick={() => void onPattern(p.id, p.stock)}
-                            className={cn(
-                                "rounded-md border px-2 py-2 text-xs transition-colors",
-                                (p.stock && design.pattern === p.id) ||
-                                    (!p.stock && design.customPrefabId === p.id)
-                                    ? "border-primary bg-primary/10 text-foreground"
-                                    : "border-border bg-background text-muted-foreground hover:border-primary/50",
-                                !p.stock && "border-primary/20",
-                            )}
-                        >
-                            {p.name}
-                            {!p.stock ? (
-                                <span className="mt-0.5 block text-[9px] text-primary">custom</span>
-                            ) : null}
-                        </button>
-                    ))}
-                </div>
-                <div className="mt-2 flex gap-1">
-                    {(["left", "right"] as Side[]).map((s) => (
-                        <Button
-                            key={s}
-                            size="sm"
-                            variant="secondary"
-                            className="h-7 flex-1 gap-1 text-[11px]"
-                            onClick={() => {
-                                setSaveSide(s);
-                                setTarget({ type: "insole", side: s });
-                                setSaveOpen(true);
-                            }}
-                        >
-                            <Save className="h-3 w-3" />
-                            Save {s}…
-                        </Button>
-                    ))}
-                </div>
-            </Section>
-
-            <Section icon={<BookmarkPlus className="h-3.5 w-3.5" />} title="My Custom Library">
-                <input
-                    ref={uploadRef}
-                    type="file"
-                    accept=".glb"
-                    multiple
-                    className="hidden"
-                    onChange={(e) => void onUpload(e.target.files)}
-                />
-                <button
-                    type="button"
-                    disabled={uploadBusy}
-                    onClick={() => uploadRef.current?.click()}
-                    className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-border bg-background px-2 py-2.5 text-[11px] text-muted-foreground hover:border-primary/50 hover:text-foreground disabled:opacity-50"
-                >
-                    <Upload className="h-3.5 w-3.5" />
-                    {uploadBusy ? "Uploading…" : "Upload .glb base"}
-                </button>
-                {uploadError ? <p className="mt-1 text-[11px] text-destructive">{uploadError}</p> : null}
-
-                {libraryLoading || baseMeshLoading ? (
-                    <p className="mt-2 text-[11px] text-muted-foreground">Loading…</p>
-                ) : customPrefabs.length === 0 ? (
-                    <p className="mt-2 text-[11px] text-muted-foreground">
-                        Upload a `.glb` base, or save a modified insole/shell to reuse it here.
-                    </p>
-                ) : (
-                    <div className="mt-2 space-y-1">
-                        {customPrefabs.map((p) =>
-                            renamingId === p.id ? (
-                                <div key={p.id} className="flex items-center gap-1">
-                                    <Input
-                                        value={renameValue}
-                                        autoFocus
-                                        className="h-7 flex-1 text-[11px]"
-                                        onChange={(e) => setRenameValue(e.target.value)}
-                                        onKeyDown={(e) => {
-                                            if (e.key === "Enter") commitRename(p.id);
-                                            if (e.key === "Escape") setRenamingId(null);
-                                        }}
-                                    />
-                                    <button
-                                        type="button"
-                                        className="text-emerald-500 hover:text-emerald-400"
-                                        onClick={() => commitRename(p.id)}
-                                        title="Save name"
-                                    >
-                                        <Check className="h-3.5 w-3.5" />
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="text-muted-foreground hover:text-foreground"
-                                        onClick={() => setRenamingId(null)}
-                                        title="Cancel"
-                                    >
-                                        <X className="h-3.5 w-3.5" />
-                                    </button>
-                                </div>
-                            ) : (
-                                <div key={p.id} className="flex items-center gap-1">
-                                    <button
-                                        type="button"
-                                        onClick={() => onPattern(p.id, false)}
-                                        className={cn(
-                                            "flex-1 truncate rounded border border-primary/30 bg-primary/5 px-2 py-1.5 text-left text-[11px]",
-                                            design.customPrefabId === p.id && "border-primary bg-primary/15",
-                                        )}
-                                        title={p.uploaded ? "Uploaded GLB base" : "Saved base"}
-                                    >
-                                        <span className="truncate">{p.name}</span>
-                                        <span className="mt-0.5 flex items-center gap-1 text-[9px] text-primary">
-                                            {p.uploaded ? "uploaded" : "custom"}
-                                            {p.meshCount && p.meshCount > 1 ? (
-                                                <span className="text-muted-foreground">
-                                                    · {p.meshCount} meshes
-                                                </span>
-                                            ) : null}
-                                        </span>
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="text-muted-foreground hover:text-foreground disabled:opacity-40"
-                                        disabled={mirroringId === p.id}
-                                        onClick={() => void onMirror(p.id)}
-                                        title="Mirror base (Left ↔ Right)"
-                                    >
-                                        <FlipHorizontal className="h-3 w-3" />
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="text-muted-foreground hover:text-foreground"
-                                        onClick={() => {
-                                            setRenamingId(p.id);
-                                            setRenameValue(p.name);
-                                        }}
-                                        title="Rename"
-                                    >
-                                        <Pencil className="h-3 w-3" />
-                                    </button>
-                                    <ConfirmDeleteTrigger
-                                        title="Delete custom base?"
-                                        description={`Remove "${p.name}" from your library?`}
-                                        onConfirm={() => void deleteCustomAsset("prefab", p.id)}
-                                        className="text-muted-foreground hover:text-destructive"
-                                    >
-                                        <Trash2 className="h-3 w-3" />
-                                    </ConfirmDeleteTrigger>
-                                </div>
-                            ),
-                        )}
+        <div
+            className={
+                embedded
+                    ? "flex flex-col gap-4"
+                    : "flex w-56 flex-col gap-4 overflow-y-auto border-r border-border bg-panel p-3"
+            }
+        >
+            {show("pattern") ? (
+                <Section icon={<Footprints className="h-3.5 w-3.5" />} title="Pattern">
+                    {usingStockBase ? (
+                        <p className="mb-1.5 text-[10px] text-muted-foreground">
+                            Base:{" "}
+                            {stockBaseDisplayName(
+                                design.base ?? design.paired?.leftBase ?? design.paired?.rightBase,
+                            ) || SAMPLE_TOP_NAME}{" "}
+                            · Prefab 3D / Full Contact only
+                        </p>
+                    ) : null}
+                    <div className="grid grid-cols-2 gap-1.5">
+                        {stockPatterns.map((p) => (
+                            <button
+                                key={p.id}
+                                type="button"
+                                onClick={() => void onPattern(p.id, p.stock)}
+                                className={cn(
+                                    "rounded-md border px-2 py-2 text-xs transition-colors",
+                                    (p.stock && design.pattern === p.id) ||
+                                        (!p.stock && design.customPrefabId === p.id)
+                                        ? "border-primary bg-primary/10 text-foreground"
+                                        : "border-border bg-background text-muted-foreground hover:border-primary/50",
+                                    !p.stock && "border-primary/20",
+                                )}
+                            >
+                                {p.name}
+                                {!p.stock ? (
+                                    <span className="mt-0.5 block text-[9px] text-primary">custom</span>
+                                ) : null}
+                            </button>
+                        ))}
                     </div>
-                )}
-            </Section>
+                    <Button
+                        size="sm"
+                        variant="secondary"
+                        className="mt-2 h-7 w-full gap-1 text-[11px]"
+                        onClick={() => {
+                            const side =
+                                placementFoot === "right"
+                                    ? "right"
+                                    : placementFoot === "both"
+                                      ? "both"
+                                      : "left";
+                            setSaveSide(side);
+                            if (side !== "both") setTarget({ type: "insole", side });
+                            setSaveOpen(true);
+                        }}
+                    >
+                        <Save className="h-3 w-3" />
+                        Save to library
+                        {placementFoot === "both"
+                            ? " (Pair)"
+                            : placementFoot === "right"
+                              ? " (Right)"
+                              : " (Left)"}
+                    </Button>
+                </Section>
+            ) : null}
 
-            <Section icon={<Layers3 className="h-3.5 w-3.5" />} title="Production">
-                <div className="flex flex-col gap-1.5">
-                    {METHODS.map((m) => (
-                        <button
-                            key={m.id}
-                            type="button"
-                            onClick={() => setMethod(m.id)}
-                            className={cn(
-                                "rounded-md border px-2 py-2 text-left text-xs transition-colors",
-                                design.method === m.id
-                                    ? "border-primary bg-primary/10 text-foreground"
-                                    : "border-border bg-background text-muted-foreground hover:border-primary/50",
+            {show("library") ? (
+                <Section icon={<BookmarkPlus className="h-3.5 w-3.5" />} title="My library">
+                    <input
+                        ref={uploadRef}
+                        type="file"
+                        accept=".glb"
+                        multiple
+                        className="hidden"
+                        onChange={(e) => void onUpload(e.target.files)}
+                    />
+                    <button
+                        type="button"
+                        disabled={uploadBusy}
+                        onClick={() => uploadRef.current?.click()}
+                        className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-border bg-background px-2 py-2.5 text-[11px] text-muted-foreground hover:border-primary/50 hover:text-foreground disabled:opacity-50"
+                    >
+                        <Upload className="h-3.5 w-3.5" />
+                        {uploadBusy ? "Uploading…" : "Upload .glb base"}
+                    </button>
+                    {uploadError ? <p className="mt-1 text-[11px] text-destructive">{uploadError}</p> : null}
+
+                    {libraryLoading || baseMeshLoading ? (
+                        <p className="mt-2 text-[11px] text-muted-foreground">Loading…</p>
+                    ) : customPrefabs.length === 0 ? (
+                        <p className="mt-2 text-[11px] text-muted-foreground">
+                            Upload a `.glb` base, or save a modified insole/shell to reuse it here.
+                        </p>
+                    ) : (
+                        <div className="mt-2 space-y-1">
+                            {customPrefabs.map((p) =>
+                                renamingId === p.id ? (
+                                    <div key={p.id} className="flex items-center gap-1">
+                                        <Input
+                                            value={renameValue}
+                                            autoFocus
+                                            className="h-7 flex-1 text-[11px]"
+                                            onChange={(e) => setRenameValue(e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Enter") commitRename(p.id);
+                                                if (e.key === "Escape") setRenamingId(null);
+                                            }}
+                                        />
+                                        <button
+                                            type="button"
+                                            className="text-emerald-500 hover:text-emerald-400"
+                                            onClick={() => commitRename(p.id)}
+                                            title="Save name"
+                                        >
+                                            <Check className="h-3.5 w-3.5" />
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="text-muted-foreground hover:text-foreground"
+                                            onClick={() => setRenamingId(null)}
+                                            title="Cancel"
+                                        >
+                                            <X className="h-3.5 w-3.5" />
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div key={p.id} className="flex items-center gap-1">
+                                        <button
+                                            type="button"
+                                            onClick={() => onPattern(p.id, false)}
+                                            className={cn(
+                                                "flex-1 truncate rounded border border-primary/30 bg-primary/5 px-2 py-1.5 text-left text-[11px]",
+                                                design.customPrefabId === p.id &&
+                                                    "border-primary bg-primary/15",
+                                            )}
+                                            title={p.uploaded ? "Uploaded GLB base" : "Saved base"}
+                                        >
+                                            <span className="truncate">{p.name}</span>
+                                            <span className="mt-0.5 flex items-center gap-1 text-[9px] text-primary">
+                                                {p.uploaded ? "uploaded" : "custom"}
+                                                {p.meshCount && p.meshCount > 1 ? (
+                                                    <span className="text-muted-foreground">
+                                                        · {p.meshCount} meshes
+                                                    </span>
+                                                ) : null}
+                                            </span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="text-muted-foreground hover:text-foreground disabled:opacity-40"
+                                            disabled={mirroringId === p.id}
+                                            onClick={() => void onMirror(p.id)}
+                                            title="Mirror base (Left ↔ Right)"
+                                        >
+                                            <FlipHorizontal className="h-3 w-3" />
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="text-muted-foreground hover:text-foreground"
+                                            onClick={() => {
+                                                setRenamingId(p.id);
+                                                setRenameValue(p.name);
+                                            }}
+                                            title="Rename"
+                                        >
+                                            <Pencil className="h-3 w-3" />
+                                        </button>
+                                        <ConfirmDeleteTrigger
+                                            title="Delete custom base?"
+                                            description={`Remove "${p.name}" from your library?`}
+                                            onConfirm={() => void deleteCustomAsset("prefab", p.id)}
+                                            className="text-muted-foreground hover:text-destructive"
+                                        >
+                                            <Trash2 className="h-3 w-3" />
+                                        </ConfirmDeleteTrigger>
+                                    </div>
+                                ),
                             )}
-                        >
-                            {m.label}
-                        </button>
-                    ))}
-                </div>
-            </Section>
+                        </div>
+                    )}
+                </Section>
+            ) : null}
 
-            <Section icon={<Footprints className="h-3.5 w-3.5" />} title="Shoe size">
-                <ShoeSizeSelect
-                    system={normalizeShoeSizeSystem(design.sizeSystem)}
-                    usMenSize={design.usMenSize ?? DEFAULT_US_MEN_SIZE}
-                    ukSize={design.ukSize ?? usMenToUk(design.usMenSize ?? DEFAULT_US_MEN_SIZE)}
-                    footLengthMm={design.footLengthMm ?? insoleLayoutFromDesign(design).footLengthMm}
-                    onSystemChange={setShoeSizeSystem}
-                    onUsChange={setUsShoeSize}
-                    onUkChange={setUkShoeSize}
-                    onMmChange={setFootLengthMm}
-                />
-            </Section>
+            {show("production") ? (
+                <Section icon={<Layers3 className="h-3.5 w-3.5" />} title="Production">
+                    <div className="flex flex-col gap-1.5">
+                        {METHODS.map((m) => (
+                            <button
+                                key={m.id}
+                                type="button"
+                                onClick={() => setMethod(m.id)}
+                                className={cn(
+                                    "rounded-md border px-2 py-2 text-left text-xs transition-colors",
+                                    design.method === m.id
+                                        ? "border-primary bg-primary/10 text-foreground"
+                                        : "border-border bg-background text-muted-foreground hover:border-primary/50",
+                                )}
+                            >
+                                {m.label}
+                            </button>
+                        ))}
+                    </div>
+                </Section>
+            ) : null}
 
-            <Section icon={<FileBox className="h-3.5 w-3.5" />} title="Import">
-                <ScanImport />
-            </Section>
+            {show("size") ? (
+                <Section icon={<Footprints className="h-3.5 w-3.5" />} title="Size">
+                    <ShoeSizeSelect
+                        system={normalizeShoeSizeSystem(design.sizeSystem)}
+                        usMenSize={design.usMenSize ?? DEFAULT_US_MEN_SIZE}
+                        ukSize={design.ukSize ?? usMenToUk(design.usMenSize ?? DEFAULT_US_MEN_SIZE)}
+                        footLengthMm={design.footLengthMm ?? insoleLayoutFromDesign(design).footLengthMm}
+                        onSystemChange={setShoeSizeSystem}
+                        onUsChange={setUsShoeSize}
+                        onUkChange={setUkShoeSize}
+                        onMmChange={setFootLengthMm}
+                    />
+                    <ShoeWidthSelect />
+                </Section>
+            ) : null}
+
+            {show("import") ? (
+                <Section icon={<FileBox className="h-3.5 w-3.5" />} title="Import">
+                    <ScanImport />
+                </Section>
+            ) : null}
 
             <SaveCustomDialog
                 open={saveOpen}
@@ -356,7 +401,7 @@ export function LeftSidebar() {
                 sourceId={undefined}
                 side={saveSide}
             />
-        </aside>
+        </div>
     );
 }
 
@@ -487,6 +532,64 @@ function ShoeSizeSelect({
                       : formatFootLengthLabel(footLengthMm)}{" "}
                 · {layout.lengthMm.toFixed(0)} × {layout.widthMm.toFixed(0)} mm
             </p>
+        </div>
+    );
+}
+
+function ShoeWidthSelect() {
+    const linked = useDesignStore((s) => s.design.corrections.linked);
+    const design = useDesignStore((s) => s.design);
+    const setShoeWidth = useDesignStore((s) => s.setShoeWidth);
+    const ids: ShoeWidthId[] = ["narrow", "medium", "wide", "extra_wide"];
+
+    const renderGrid = (side?: Side) => {
+        const width = side ? shoeWidthForSide(design, side) : normalizeShoeWidth(design.shoeWidth);
+        const heelOverride = hasHeelWidthOverride(
+            side ? design.corrections[side].heelCupWidthMm : design.corrections.left.heelCupWidthMm,
+        );
+        return (
+            <div className="space-y-1">
+                {side ? (
+                    <p className="text-[10px] font-medium uppercase text-muted-foreground">
+                        {side === "left" ? "Left" : "Right"}
+                    </p>
+                ) : null}
+                <div className="grid grid-cols-2 gap-1">
+                    {ids.map((id) => (
+                        <button
+                            key={id}
+                            type="button"
+                            onClick={() => setShoeWidth(id, side)}
+                            className={cn(
+                                "rounded border px-1 py-1 text-center text-[10px]",
+                                width === id
+                                    ? "border-primary bg-primary/10 text-primary"
+                                    : "border-border text-muted-foreground",
+                            )}
+                        >
+                            {SHOE_WIDTH_LABELS[id]}
+                        </button>
+                    ))}
+                </div>
+                <p className="text-[10px] text-muted-foreground">{shoeWidthHint(width)}</p>
+                {heelOverride ? (
+                    <button
+                        type="button"
+                        onClick={() => useClinicalWorkflowStore.getState().setStep("corrections")}
+                        className="text-[10px] text-amber-200/90 underline-offset-2 hover:underline"
+                    >
+                        Heel width set in Corrections
+                    </button>
+                ) : null}
+            </div>
+        );
+    };
+
+    if (linked) return <div className="space-y-1.5">{renderGrid()}</div>;
+    return (
+        <div className="grid grid-cols-2 gap-2">
+            {renderGrid("left")}
+            {renderGrid("right")}
         </div>
     );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
+import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
 import {
     baseModifierField,
     DEFAULT_STOCK_PRIMARY_SIDE,
@@ -8,24 +9,52 @@ import {
     isLocalPlaceholderGlbPath,
     isStockDesignBase,
     loadBaseGeometry,
-    StockGlbLoadError,
     stockBaseNeedsServerResolution,
 } from "@/lib/geometry/base-asset";
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
-import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import {
+    hashLiveBottomPattern,
+    resolveLiveBottomPattern,
+} from "@/lib/geometry/procedural-wall/live-bottom-pattern";
+import {
+    enqueuePreviewLoft,
+    isCoarsePointerDevice,
+    previewLoftPriority,
+    yieldToPaint,
+} from "@/lib/geometry/procedural-wall/preview-loft-queue";
+import {
+    autoPatternKey,
+    PRINT_LOFT_TIMEOUT_MS,
+    proceduralLoftReuseKey,
+    resolveLoftActiveSide,
+    shouldLoftProceduralViewer,
+} from "@/lib/geometry/procedural-wall/preview-loft-ui";
+import { reconstructProceduralPreviewInWorker } from "@/lib/geometry/procedural-wall/preview-loft-worker";
+import {
+    buildProceduralViewerPattern,
+    loadSampleTopGeometry,
+    SAMPLE_TOP_ASSET_ID,
+} from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBaseBoundsStore } from "@/stores/base-bounds-store";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
+import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
+import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { DesignState, Side } from "@/types";
+
+const PREVIEW_LOFT_WATCHDOG_MS = PRINT_LOFT_TIMEOUT_MS;
 
 export interface BaseInsoleGeometryState {
     geometry: BufferGeometry | null;
@@ -48,6 +77,29 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const stockBaseLoading = useDesignStore((s) => s.stockBaseLoading);
     const stockBaseResolutionState = useDesignStore((s) => s.stockBaseResolutionState);
     const setBaseMeshLoading = useDesignStore((s) => s.setBaseMeshLoading);
+    const wallModel = useDesignStore((s) => s.viewer.wallModel ?? "procedural");
+    const wallStyle = useDesignStore((s) => s.viewer.wallStyle ?? "straight");
+    const deviceType = useDesignStore((s) => s.viewer.deviceType ?? "functional");
+    const lateralFlangeHeightMm = useDesignStore((s) => s.viewer.lateralFlangeHeightMm ?? 0);
+    const lateralFlangeLengthMm = useDesignStore((s) => s.viewer.lateralFlangeLengthMm ?? 40);
+    const lateralFlangeAngleDeg = useDesignStore((s) => s.viewer.lateralFlangeAngleDeg ?? 10);
+    const bottomPattern = useBottomPatternStore((s) => s.patterns[side]);
+    const generatedPatternKey = useBottomPatternStore((s) => s.generatedKey[side]);
+    const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
+    const retryNonce = usePreviewLoftStatusStore((s) => s.retryNonce);
+    const loftCancelled = usePreviewLoftStatusStore((s) => s.cancelled);
+    const exportSide = useDesignStore((s) => s.exportSide);
+    const showLeft = useDesignStore((s) => s.viewer.showLeft);
+    const showRight = useDesignStore((s) => s.viewer.showRight);
+    const activeReady = usePreviewLoftStatusStore((s) => {
+        const active = resolveLoftActiveSide(showLeft, showRight, exportSide);
+        return s.phaseBySide[active] === "ready";
+    });
+    const clinicalStep = useClinicalWorkflowStore((s) => s.step);
+    const setLoftPhase = usePreviewLoftStatusStore((s) => s.setSidePhase);
+    const setLoftError = usePreviewLoftStatusStore((s) => s.setError);
+    const lastLoftKeyRef = useRef<string | null>(null);
+    const loftGenRef = useRef(0);
 
     const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
@@ -65,7 +117,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
 
     // Load the raw base mesh whenever the referenced asset (or its mirrored variant) changes.
     // Include url so stock bases upgrade from the sync stub to the server row re-trigger load.
-    const loadKey = assetId ? `${assetId}:${isMirroredForLoad ? "m" : "p"}:${baseUrl ?? ""}` : null;
+    const procedural = wallModel === "procedural";
+    const loadKey = procedural
+        ? `${SAMPLE_TOP_ASSET_ID}:${side}:${isMirroredForLoad ? "m" : "p"}`
+        : assetId
+          ? `${assetId}:${isMirroredForLoad ? "m" : "p"}:${baseUrl ?? ""}`
+          : null;
     // biome-ignore lint/correctness/useExhaustiveDependencies: loadKey captures asset + mirror variant
     useEffect(() => {
         let cancelled = false;
@@ -88,7 +145,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         }
 
         const isStock = isStockDesignBase(ref);
-        const hasUrl = Boolean(ref.url && /^https?:\/\//i.test(ref.url));
+        const hasUrl = Boolean(ref.url && (/^https?:\/\//i.test(ref.url) || ref.url.startsWith("/")));
         // An authoritative (signed/public https) URL means the glbPath is a real
         // storage key — even when it is literally "Templates/Default.glb". Without a
         // URL we keep the bundled-placeholder guard so server mode never fetches public/.
@@ -97,7 +154,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             ref.glbPath.length > 0 &&
             (hasUrl || !isApiConfigured() || !isLocalPlaceholderGlbPath(ref.glbPath));
         const awaitingResolution =
-            isStock && (stockBaseNeedsServerResolution(ref) || !hasUrl || !hasRealGlbPath);
+            !procedural && isStock && (stockBaseNeedsServerResolution(ref) || !hasUrl || !hasRealGlbPath);
 
         if (awaitingResolution) {
             stockResolveLog("useBaseInsoleGeometry waiting for stock resolution", {
@@ -118,11 +175,13 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             setGeometry(null);
             setBuilding(stockBaseLoading || stockBaseResolutionState === "loading");
             setBaseMeshLoading(side, true);
+            setLoftPhase(side, "fetching", "Waiting for stock base…");
             return;
         }
 
         setBuilding(true);
         setBaseMeshLoading(side, true);
+        setLoftPhase(side, "fetching", "Fetching SAMPLE_Top…");
         stockResolveLog("useBaseInsoleGeometry loading resolved stock base", {
             side,
             assetId: ref.assetId,
@@ -136,12 +195,20 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             hasUrl,
             glbPath: ref.glbPath,
         });
-        void loadBaseGeometry(ref, {
-            // sealBottomSlits disabled on viewer load — too expensive for 208k-vertex
-            // bottom mesh on main thread. Sealing runs on export path only via
-            // sealInternalSlitsSafe. See: vertex/IMPLEMENTATION_NOTES.md — geometry worker TODO
-            sealBottomSlits: false,
-        })
+        const loadGeo = procedural
+            ? loadSampleTopGeometry().then((geo) => {
+                  if (!isMirroredForLoad) return geo;
+                  const mirrored = mirrorGeometry(geo);
+                  geo.dispose();
+                  return mirrored;
+              })
+            : loadBaseGeometry(ref, {
+                  // sealBottomSlits disabled on viewer load — too expensive for 208k-vertex
+                  // bottom mesh on main thread. Sealing runs on export path only via
+                  // sealInternalSlitsSafe. See: vertex/IMPLEMENTATION_NOTES.md — geometry worker TODO
+                  sealBottomSlits: false,
+              });
+        void loadGeo
             .then((geo) => {
                 if (cancelled) {
                     geo?.dispose();
@@ -187,30 +254,42 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 nativeGeoRef.current = null;
                 baseGeoRef.current = null;
                 setGeometry(null);
-                if (e instanceof StockGlbLoadError) {
-                    useDesignStore.setState({ stockBaseError: e.message });
-                }
+                const msg = e instanceof Error ? e.message : String(e);
+                useDesignStore.setState({ stockBaseError: msg });
+                setLoftError(side, msg);
             })
             .finally(() => {
                 if (cancelled) return;
                 setBuilding(false);
-                // Clear even when the modifier rebuild path has not run yet (e.g. zero-field
-                // designs) so Viewer3D does not stay on "Loading base…".
-                setBaseMeshLoading(side, false);
+                if (!nativeGeoRef.current) setBaseMeshLoading(side, false);
             });
         return () => {
             cancelled = true;
             setBaseMeshLoading(side, false);
         };
-    }, [loadKey, stockBaseLoading, stockBaseResolutionState, setBaseMeshLoading, side]);
+    }, [
+        loadKey,
+        stockBaseLoading,
+        stockBaseResolutionState,
+        setBaseMeshLoading,
+        side,
+        retryNonce,
+        setLoftPhase,
+        setLoftError,
+        wallModel,
+    ]);
 
     // Scale native template to the selected shoe size; publish outline/bounds for the sized mesh.
     // biome-ignore lint/correctness/useExhaustiveDependencies: rebuild when native load finishes (building→false)
     useEffect(() => {
         const native = nativeGeoRef.current;
-        if (!native || !assetId) return;
+        if (!native || (!assetId && !procedural)) return;
         const ref = getDesignBase(design, side);
-        const sized = scaleGeometryToInsoleSize(native, layout.lengthMm, layout.widthMm);
+        // Procedural preview keeps native SAMPLE_Top (the approved STL input).
+        // Shoe-size scale on a top-only sheet is a display concern for legacy Default.
+        const sized = procedural
+            ? native.clone()
+            : scaleGeometryToInsoleSize(native, layout.lengthMm, layout.widthMm);
         if (baseGeoRef.current && baseGeoRef.current !== native) {
             baseGeoRef.current.dispose();
         }
@@ -221,20 +300,220 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         }
 
         const cacheKey = ref ? getBaseCacheKey(ref) : null;
-        const lookupKey = cacheKey ?? ref?.assetId ?? assetId;
+        const lookupKey = procedural
+            ? `${SAMPLE_TOP_ASSET_ID}:${side}:${isMirroredForLoad ? "m" : "p"}`
+            : (cacheKey ?? ref?.assetId ?? assetId);
         // Invalidate prior size so outline/bounds refresh for the new footprint.
         clearBaseBoundsCache(lookupKey);
         const b = computeBaseBounds(sized, lookupKey);
         useBaseBoundsStore.getState().setBounds(lookupKey, b);
         const outline = extractMeshOutline(sized);
-        if (outline) useBaseOutlineStore.getState().setOutline(lookupKey, outline);
-    }, [assetId, side, layout.lengthMm, layout.widthMm, layout.usMenSize, building, design]);
+        if (outline) {
+            const widthId = shoeWidthForSide(design, side);
+            const heelW = layout.widthMm * 0.62;
+            const scaledPts = applyShoeWidthToPoints(outline.points, widthId, {
+                ballWidthMm: layout.widthMm,
+                heelWidthMm: heelW,
+                minX: b.minX,
+                lengthMm: Math.max(1e-3, b.maxX - b.minX),
+                heelOverrideMm: design.corrections[side]?.heelCupWidthMm,
+            });
+            useBaseOutlineStore.getState().setOutline(lookupKey, { points: scaledPts });
+        }
+    }, [
+        assetId,
+        side,
+        layout.lengthMm,
+        layout.widthMm,
+        layout.usMenSize,
+        design.shoeWidth,
+        design.shoeWidthBySide,
+        design.corrections.linked,
+        design.corrections[side]?.heelCupWidthMm,
+        building,
+    ]);
 
     // Re-apply modifiers whenever corrections / elements / thickness change.
+    // `wallModel: 'procedural'` is viewer-only (S1): loft from planform columns.
+    // Widen / cup / lift move only the curves; profile interiors rescale affinely.
+    // Export / legacy modifier paths are unchanged.
     // biome-ignore lint/correctness/useExhaustiveDependencies: preview patches + live draft trimline are intentional triggers
     useEffect(() => {
         const raw = baseGeoRef.current;
-        if (!assetId || !raw) return;
+        if ((!assetId && wallModel !== "procedural") || !raw) return;
+        if (wallModel === "procedural") {
+            const committedThickness = design.paired
+                ? side === "left"
+                    ? design.paired.leftThicknessMm
+                    : design.paired.rightThicknessMm
+                : design.thicknessMm;
+            const thicknessMm = thicknessPreview ?? committedThickness ?? BASE_REFERENCE_THICKNESS_MM;
+            const field = baseModifierField(design, side, thicknessMm);
+            const draft = useMeshEditStore.getState().getActiveDraftBottomPattern(side);
+            const stored = useBottomPatternStore.getState().getPattern(side);
+            const dragging = Boolean(useMeshEditStore.getState().bottomPatternEdit?.isDragging);
+            const heelW = field.corrections?.heelCupWidthMm ?? 0;
+            const widthId = shoeWidthForSide(design, side);
+            const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}:w${widthId}`;
+            const userEdited = Boolean(stored) && !generatedPatternKey;
+            if (!draft && !userEdited && generatedPatternKey !== patternKey) {
+                try {
+                    const rawPattern = buildProceduralViewerPattern(raw, design.pattern, field.corrections);
+                    let minX = Infinity;
+                    let maxX = -Infinity;
+                    for (const p of rawPattern) {
+                        minX = Math.min(minX, p.x);
+                        maxX = Math.max(maxX, p.x);
+                    }
+                    const sizedPattern = applyShoeWidthToPoints(rawPattern, widthId, {
+                        ballWidthMm: layout.widthMm,
+                        heelWidthMm: layout.widthMm * 0.62,
+                        minX,
+                        lengthMm: Math.max(1e-3, maxX - minX),
+                        heelOverrideMm: heelW,
+                    });
+                    useBottomPatternStore.getState().ensureGenerated(side, patternKey, sizedPattern);
+                } catch (e) {
+                    stockDebug("procedural viewer pattern failed", {
+                        side,
+                        message: e instanceof Error ? e.message : String(e),
+                    });
+                }
+            }
+            const livePts = resolveLiveBottomPattern({
+                draft,
+                stored: useBottomPatternStore.getState().getPattern(side),
+            });
+            if (!shouldLoftProceduralViewer(clinicalStep, wallModel)) {
+                const rawCount = raw.getAttribute("position")?.count ?? 0;
+                const canReuseWork =
+                    workRef.current != null && workRef.current.getAttribute("position")?.count === rawCount;
+                const modified = applyBaseModifiers(raw, field, interacting ? 0 : 1, {
+                    reuse: canReuseWork && workRef.current ? workRef.current : undefined,
+                    skipNormals: interacting,
+                    skipBottomSync: true,
+                });
+                if (workRef.current && workRef.current !== modified) workRef.current.dispose();
+                workRef.current = modified;
+                if (outRef.current && outRef.current !== modified && outRef.current !== workRef.current) {
+                    outRef.current.dispose();
+                }
+                outRef.current = modified;
+                lastLoftKeyRef.current = null;
+                setGeometry((prev) => (prev === modified ? prev : modified));
+                setLoftPhase(side, "ready", "Top surface ready");
+                setBaseMeshLoading(side, false);
+                return;
+            }
+            if (dragging || loftCancelled) {
+                lastLoftKeyRef.current = null;
+                setBaseMeshLoading(side, false);
+                if (loftCancelled) setLoftPhase(side, "idle", "Print solid cancelled");
+                else setLoftPhase(side, "ready", "Pattern edited — solid is stale");
+                return;
+            }
+            const loftKey = proceduralLoftReuseKey({
+                side,
+                wallStyle,
+                deviceType,
+                thicknessMm,
+                correctionsJson: JSON.stringify(field.corrections ?? {}),
+                scanPattern: design.pattern,
+                patternKind: draft ? "edited" : livePts ? "live" : "auto",
+                patternHash: livePts ? hashLiveBottomPattern(livePts) : patternKey,
+                flanges: `${lateralFlangeHeightMm}:${lateralFlangeLengthMm}:${lateralFlangeAngleDeg}|r${retryNonce}`,
+            });
+            if (lastLoftKeyRef.current === loftKey && outRef.current) {
+                setBaseMeshLoading(side, false);
+                setLoftPhase(side, "ready");
+                return;
+            }
+            const viewer = useDesignStore.getState().viewer;
+            const activeSide = resolveLoftActiveSide(viewer.showLeft, viewer.showRight, getActiveFootSide());
+            const coarse = isCoarsePointerDevice();
+            const deferMirror = coarse && side !== activeSide && !activeReady;
+            let cancelled = false;
+            const gen = ++loftGenRef.current;
+            if (deferMirror) {
+                setBaseMeshLoading(side, true);
+                setLoftPhase(side, "queued", "Waiting for active foot…");
+                return () => {
+                    cancelled = true;
+                    setBaseMeshLoading(side, false);
+                };
+            }
+            setBaseMeshLoading(side, true);
+            setLoftPhase(side, "queued", `Queued ${side} walls…`);
+            const handle = enqueuePreviewLoft({
+                side,
+                priority: previewLoftPriority(side, activeSide, coarse),
+                run: async () => {
+                    if (cancelled) return;
+                    setLoftPhase(
+                        side,
+                        "lofting",
+                        coarse
+                            ? `Building ${side} walls for print… — this can take up to a minute on phones`
+                            : `Building ${side} walls for print…`,
+                    );
+                    await yieldToPaint();
+                    if (cancelled) return;
+                    const started = performance.now();
+                    try {
+                        const preview = await reconstructProceduralPreviewInWorker(raw, {
+                            corrections: field.corrections,
+                            thicknessMm,
+                            stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
+                            deviceType,
+                            lateralFlange: {
+                                heightMm: lateralFlangeHeightMm,
+                                lengthMm: lateralFlangeLengthMm,
+                                angleDeg: lateralFlangeAngleDeg,
+                            },
+                            archGrindDepthMm: 0,
+                            wallStyle,
+                            scanPattern: design.pattern,
+                            ...(livePts ? { bottomPattern: livePts } : {}),
+                        });
+                        if (cancelled) {
+                            preview.geometry.dispose();
+                            return;
+                        }
+                        if (outRef.current && outRef.current !== workRef.current) {
+                            outRef.current.dispose();
+                        }
+                        outRef.current = preview.geometry;
+                        lastLoftKeyRef.current = loftKey;
+                        setGeometry(preview.geometry);
+                        setLoftPhase(side, "ready", `Print solid ready (${side})`);
+                        usePreviewLoftStatusStore.getState().markElapsed(performance.now() - started);
+                    } catch (e) {
+                        if (cancelled) return;
+                        const message = e instanceof Error ? e.message : String(e);
+                        if (/cancelled/i.test(message)) return;
+                        stockDebug("procedural SAMPLE_Top reconstruct failed", { side, message });
+                        setGeometry(null);
+                        setLoftError(side, message);
+                    } finally {
+                        if (loftGenRef.current === gen) setBaseMeshLoading(side, false);
+                    }
+                },
+            });
+            const watchdog = window.setTimeout(() => {
+                if (cancelled || loftGenRef.current !== gen) return;
+                const phase = usePreviewLoftStatusStore.getState().phaseBySide[side];
+                if (phase === "queued" || phase === "lofting" || phase === "fetching") {
+                    setLoftError(side, "Print solid is taking too long. Tap Retry.");
+                    setBaseMeshLoading(side, false);
+                }
+            }, PREVIEW_LOFT_WATCHDOG_MS);
+            return () => {
+                cancelled = true;
+                handle.cancel();
+                window.clearTimeout(watchdog);
+                if (loftGenRef.current === gen) setBaseMeshLoading(side, false);
+            };
+        }
         // Paired workspace: per-side committed thickness (matches export path).
         const committedThickness = design.paired
             ? side === "left"
@@ -280,10 +559,14 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     }, [
         assetId,
         side,
-        design,
         design.thicknessMm,
+        design.paired?.leftThicknessMm,
+        design.paired?.rightThicknessMm,
         design.corrections,
         design.elements,
+        design.pattern,
+        design.shoeWidth,
+        design.shoeWidthBySide,
         correctionPreview,
         thicknessPreview,
         elementPreviews,
@@ -291,7 +574,21 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         interactionSource,
         building,
         setBaseMeshLoading,
-        side,
+        wallModel,
+        wallStyle,
+        deviceType,
+        lateralFlangeHeightMm,
+        lateralFlangeLengthMm,
+        lateralFlangeAngleDeg,
+        bottomPattern,
+        generatedPatternKey,
+        bottomPatternEdit,
+        retryNonce,
+        loftCancelled,
+        activeReady,
+        clinicalStep,
+        setLoftPhase,
+        setLoftError,
     ]);
 
     useEffect(

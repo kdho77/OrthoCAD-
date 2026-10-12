@@ -2,19 +2,34 @@
 // See LICENSE file in the project root for full license information.
 
 import { beforeEach, describe, expect, test } from "@rstest/core";
+import { stockBaseDisplayName } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
 import type { DesignBase, DesignState } from "@/types";
 
 function resolvedStockBase(side: "left" | "right", mirrored = false): DesignBase {
     return {
-        assetId: "11111111-1111-4111-8111-111111111111",
+        assetId: "sample-top",
+        name: `SAMPLE_Top (${side === "left" ? "Left" : "Right"})`,
+        source: "stock",
+        glbPath: "Templates/SAMPLE_Top.glb",
+        url: "/Templates/SAMPLE_Top.glb",
+        primarySide: "left",
+        offlinePlaceholder: true,
+        resolutionFallback: true,
+        ...(mirrored ? { mirrored: true, mirroredFrom: "sample-top" } : {}),
+    };
+}
+
+function legacyDefaultStockBase(side: "left" | "right", mirrored = false): DesignBase {
+    return {
+        assetId: "stock-default",
         name: `Default Stock Base (${side === "left" ? "Left" : "Right"})`,
         source: "stock",
         glbPath: "Templates/Default.glb",
         url: "https://example.supabase.co/storage/v1/object/public/stock-bases/Templates/Default.glb",
         primarySide: "left",
-        ...(mirrored ? { mirrored: true, mirroredFrom: "11111111-1111-4111-8111-111111111111" } : {}),
+        ...(mirrored ? { mirrored: true, mirroredFrom: "stock-default" } : {}),
     };
 }
 
@@ -71,7 +86,49 @@ describe("stock base loading state", () => {
         await useDesignStore.getState().applyDefaultStockBase();
         const state = useDesignStore.getState();
         expect(state.stockBaseLoading).toBe(false);
-        expect(state.design.paired?.leftBase?.url).toMatch(/^https?:\/\//);
-        expect(state.design.paired?.rightBase?.url).toMatch(/^https?:\/\//);
+        expect(state.design.paired?.leftBase?.url).toBe("/Templates/SAMPLE_Top.glb");
+        expect(state.design.paired?.rightBase?.url).toBe("/Templates/SAMPLE_Top.glb");
+        expect(state.design.paired?.leftBase?.name).toMatch(/SAMPLE_Top/i);
+        expect(state.design.paired?.leftBase?.name).not.toMatch(/Default Stock Base/i);
+    });
+
+    test("applyDefaultStockBase migrates leftover Default.glb to SAMPLE_Top", async () => {
+        const left = legacyDefaultStockBase("left");
+        const right = legacyDefaultStockBase("right", true);
+        useDesignStore.setState({
+            design: {
+                ...resolvedPairedDesign(),
+                base: left,
+                customPrefabId: left.assetId,
+                customPrefabName: left.name,
+                paired: {
+                    leftBase: left,
+                    rightBase: right,
+                    leftThicknessMm: BASE_REFERENCE_THICKNESS_MM,
+                    rightThicknessMm: BASE_REFERENCE_THICKNESS_MM,
+                    leftMethod: "printing_solid",
+                    rightMethod: "printing_solid",
+                    linked: false,
+                },
+            },
+            stockBaseLoading: false,
+            stockBaseResolutionState: "resolved",
+        });
+        await useDesignStore.getState().applyDefaultStockBase();
+        const state = useDesignStore.getState();
+        expect(state.design.paired?.leftBase?.glbPath).toMatch(/SAMPLE_Top\.glb$/);
+        expect(state.design.paired?.rightBase?.mirrored).toBe(true);
+        expect(state.design.base?.name).not.toMatch(/Default Stock Base/i);
+        expect(state.viewer.wallModel ?? "procedural").toBe("procedural");
+    });
+
+    test("store initializer is SAMPLE_Top + procedural Straight, not Default Stock Base", () => {
+        const initial = useDesignStore.getInitialState();
+        expect(initial.viewer.wallModel).toBe("procedural");
+        expect(initial.viewer.wallStyle).toBe("straight");
+        expect(initial.design.paired?.leftBase?.glbPath).toMatch(/SAMPLE_Top\.glb$/);
+        expect(initial.design.paired?.rightBase?.mirrored).toBe(true);
+        expect(initial.design.base?.name).not.toMatch(/Default Stock Base/i);
+        expect(stockBaseDisplayName(initial.design.base)).toBe("SAMPLE_Top");
     });
 });

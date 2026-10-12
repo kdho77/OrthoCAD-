@@ -4,7 +4,7 @@ import { defineConfig } from "@rstest/core";
 import packages from "./package.json";
 
 export default defineConfig({
-    exclude: ["**/cpp/**", "**/*.wasm.test.ts"],
+    exclude: ["**/cpp/**", "**/*.wasm.test.ts", "**/*.optional.test.ts", "**/dump-*.test.ts"],
     globals: true,
     testEnvironment: "happy-dom",
     setupFiles: ["./rstest-setup.ts"],

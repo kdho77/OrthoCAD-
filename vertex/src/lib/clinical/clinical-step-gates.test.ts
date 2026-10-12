@@ -35,7 +35,7 @@ describe("clinical step gates", () => {
         expect(isFootSideExplicitlyKnown()).toBe(false);
         const gate = evaluateScanStepGate();
         expect(gate.ok).toBe(false);
-        if (!gate.ok) expect(gate.reason).toMatch(/Select Left or Right/i);
+        if (!gate.ok) expect(gate.reason).toMatch(/Select Left, Right, or Pair/i);
 
         useClinicalWorkflowStore.getState().acknowledgeExplicitFootSide("right");
         expect(isFootSideExplicitlyKnown()).toBe(true);
@@ -73,9 +73,10 @@ describe("clinical step gates", () => {
 
     test("evaluateStepComplete does not auto-complete Shape from base load alone", () => {
         useClinicalWorkflowStore.setState({ footSideExplicitlyChosen: true });
-        expect(evaluateStepComplete("shape", [])).toBe(false);
-        expect(evaluateStepComplete("shape", ["shape"])).toBe(true);
+        expect(evaluateStepComplete("base", [])).toBe(false);
+        expect(evaluateStepComplete("base", ["base"])).toBe(true);
+        expect(evaluateStepComplete("corrections", [])).toBe(false);
         expect(evaluateStepComplete("elements", [])).toBe(false);
-        expect(evaluateStepComplete("hardness", [])).toBe(false);
+        expect(evaluateStepComplete("print", [])).toBe(false);
     });
 });

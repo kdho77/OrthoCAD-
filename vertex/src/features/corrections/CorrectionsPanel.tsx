@@ -34,10 +34,17 @@ import { skiveDerivedDisplayText } from "./skive-derived-display";
  *  - **Heel** holds heel cup depth, heel cup width and the new heel lift.
  *  - **Skive** is a dedicated Kirby control (depth + angle/location solver).
  */
-const FIELDS: { key: keyof SideCorrections; label: string; min: number; max: number; group: string }[] = [
+const FIELDS: {
+    key: keyof SideCorrections;
+    label: string;
+    min: number;
+    max: number;
+    group: string;
+    unit?: string;
+}[] = [
     { key: "archHeightMm", label: "Arch height", min: 0, max: 18, group: "Arch" },
     { key: "archFillMm", label: "Arch fill", min: 0, max: 12, group: "Arch" },
-    { key: "apexMoveMm", label: "Apex move", min: -12, max: 12, group: "Arch" },
+    { key: "apexMoveMm", label: "Apex shift (distal / posterior)", min: -12, max: 12, group: "Arch" },
     // Heel cup depth: slider 0 = off; commit clamps positive values to 12–18 mm (see constrainSideCorrections).
     {
         key: "heelCupDepthMm",
@@ -62,9 +69,25 @@ const FIELDS: { key: keyof SideCorrections; label: string; min: number; max: num
     },
     { key: "medialFlangeMm", label: "Medial flange", min: 0, max: 8, group: "Flanges" },
     { key: "lateralFlangeMm", label: "Lateral flange", min: 0, max: 8, group: "Flanges" },
+    {
+        key: "rearfootPostingDeg",
+        label: "Rearfoot posting",
+        min: CLINICAL_LIMITS.rearfootPostingDeg.min,
+        max: CLINICAL_LIMITS.rearfootPostingDeg.max,
+        group: "Posting",
+        unit: "deg",
+    },
+    {
+        key: "forefootPostingDeg",
+        label: "Forefoot posting",
+        min: CLINICAL_LIMITS.forefootPostingDeg.min,
+        max: CLINICAL_LIMITS.forefootPostingDeg.max,
+        group: "Posting",
+        unit: "deg",
+    },
 ];
 
-const GROUPS = ["Arch", "Heel", "Flanges"];
+const GROUPS = ["Arch", "Heel", "Flanges", "Posting"];
 
 const WEDGE_ZONES = [
     { zone: "rearfoot" as const, label: "Rearfoot" },
@@ -409,6 +432,8 @@ export function CorrectionsPanel() {
     const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
     const workflowStep = useClinicalWorkflowStore((s) => s.step);
     const pendingCorrectionSections = useClinicalWorkflowStore((s) => s.pendingCorrectionSections);
+    const presetOrigin = useClinicalWorkflowStore((s) => s.correctionPresetOrigin);
+    const clearPresetKey = useClinicalWorkflowStore((s) => s.clearCorrectionPresetOriginKey);
     const productionMethod = useProductionMethodForActiveFoot();
     const showShellThickness = productionMethod === "printing_shell";
     const design = useDesignStore((s) => s.design);
@@ -452,7 +477,7 @@ export function CorrectionsPanel() {
     const toggleSection = (key: string) => setOpenSections((prev) => ({ ...prev, [key]: !sectionOpen(key) }));
 
     useEffect(() => {
-        if (workflowStep !== "shape" || pendingCorrectionSections.length === 0) return;
+        if (workflowStep !== "corrections" || pendingCorrectionSections.length === 0) return;
         setOpenSections((prev) => {
             const next = { ...prev };
             for (const key of pendingCorrectionSections) next[key] = true;
@@ -497,7 +522,7 @@ export function CorrectionsPanel() {
                 />
             ) : (
                 <p className="text-[10px] text-muted-foreground">
-                    Shell thickness is available when production method is Printing — Shell (left sidebar).
+                    Shell thickness is available when production method is Printing — Shell (Setup).
                 </p>
             )}
 
@@ -586,7 +611,19 @@ export function CorrectionsPanel() {
                                         min={f.min}
                                         max={f.max}
                                         step={0.5}
-                                        unit="mm"
+                                        unit={f.unit ?? "mm"}
+                                        defaultValue={0}
+                                        originLabel={
+                                            presetOrigin?.keys[side].includes(f.key)
+                                                ? `from ${presetOrigin.name}`
+                                                : undefined
+                                        }
+                                        onReset={() => {
+                                            updateCorrection(side, {
+                                                [f.key]: 0,
+                                            } as Partial<SideCorrections>);
+                                            clearPresetKey(side, f.key);
+                                        }}
                                         onPreview={(v) =>
                                             previewCorrection(side, {
                                                 [f.key]: v,
@@ -600,6 +637,7 @@ export function CorrectionsPanel() {
                                                 [f.key]: v,
                                             } as Partial<SideCorrections>);
                                             clearCorrectionPreview();
+                                            clearPresetKey(side, f.key);
                                         }}
                                     />
                                 ))}

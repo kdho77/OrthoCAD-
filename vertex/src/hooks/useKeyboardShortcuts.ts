@@ -51,6 +51,10 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
                     meshEdit.cancelTrimlineEdit();
                     return;
                 }
+                if (meshEdit.editMode === "edit-bottom-pattern" && meshEdit.bottomPatternEdit) {
+                    meshEdit.cancelBottomPatternEdit();
+                    return;
+                }
                 const scan = useScanStore.getState();
                 if (scan.rotateDraft) {
                     scan.cancelRotate({ restore: true });
@@ -82,6 +86,11 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
                 if (meshEdit.editMode === "edit-trimline" && meshEdit.trimlineEdit) {
                     e.preventDefault();
                     meshEdit.confirmTrimlineEdit();
+                    return;
+                }
+                if (meshEdit.editMode === "edit-bottom-pattern" && meshEdit.bottomPatternEdit) {
+                    e.preventDefault();
+                    meshEdit.confirmBottomPatternEdit();
                     return;
                 }
             }

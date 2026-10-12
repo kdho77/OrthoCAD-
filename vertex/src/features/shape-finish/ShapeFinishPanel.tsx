@@ -3,14 +3,11 @@
 
 import { Link2, Unlink } from "lucide-react";
 import { useMemo } from "react";
+import { CaseOrderSummary } from "@/components/clinical/CaseOrderSummary";
 import { SliderField } from "@/components/ui/slider-field";
-import { ActiveFootSideBar } from "@/features/clinical/ActiveFootSideBar";
 import { ShapeFinishQcBlock } from "@/features/shape-finish/ShapeFinishQcBlock";
 import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
-import {
-    evaluateShapeFinishQc,
-    shapeFinishWallRisk,
-} from "@/lib/geometry/shape-finish-gates";
+import { evaluateShapeFinishQc, shapeFinishWallRisk } from "@/lib/geometry/shape-finish-gates";
 import { getSideShapeFinish, SHAPE_FINISH_DEFAULTS } from "@/lib/geometry/shape-finish-modifiers";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
@@ -24,10 +21,7 @@ const ARCH_SKIVE_SIDES: { value: ArchSkiveSide; label: string }[] = [
     { value: "central", label: "Central" },
 ];
 
-function thicknessForSide(
-    design: ReturnType<typeof useDesignStore.getState>["design"],
-    side: Side,
-): number {
+function thicknessForSide(design: ReturnType<typeof useDesignStore.getState>["design"], side: Side): number {
     if (design.paired) {
         return side === "left" ? design.paired.leftThicknessMm : design.paired.rightThicknessMm;
     }
@@ -98,8 +92,6 @@ export function ShapeFinishPanel() {
                     {linked ? "L/R linked" : SIDE_LABELS[side]}
                 </button>
             </div>
-
-            <ActiveFootSideBar />
 
             <p className="text-[11px] leading-snug text-muted-foreground">
                 Top cover adds clearance for cover bulk — it does not change heel cup depth. Arch grind
@@ -175,6 +167,7 @@ export function ShapeFinishPanel() {
                 </div>
             ) : null}
 
+            <CaseOrderSummary />
             <ShapeFinishQcBlock items={qcItems} />
         </div>
     );

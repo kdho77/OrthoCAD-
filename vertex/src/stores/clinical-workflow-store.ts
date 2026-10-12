@@ -8,20 +8,56 @@ import {
     scanGateBlocksLaterSteps,
 } from "@/lib/clinical/clinical-step-gates";
 
-export type ClinicalStepId = "scan" | "shape" | "elements" | "hardness" | "print";
+export type ClinicalStepId = "scan" | "setup" | "base" | "corrections" | "elements" | "print" | "export";
+
+/** Map retired step ids so persisted / older calls still resolve. */
+export function normalizeClinicalStep(step: string): ClinicalStepId {
+    if (step === "shape") return "base";
+    if (step === "hardness") return "print";
+    if (
+        step === "scan" ||
+        step === "setup" ||
+        step === "base" ||
+        step === "corrections" ||
+        step === "elements" ||
+        step === "print" ||
+        step === "export"
+    ) {
+        return step;
+    }
+    return "scan";
+}
 
 export const CLINICAL_STEPS: { id: ClinicalStepId; label: string; short: string }[] = [
     { id: "scan", label: "Scan", short: "Scan" },
-    { id: "shape", label: "Shape", short: "Shape" },
+    { id: "setup", label: "Setup", short: "Setup" },
+    { id: "base", label: "Base", short: "Base" },
+    { id: "corrections", label: "Corrections", short: "Corrections" },
     { id: "elements", label: "Elements", short: "Elements" },
-    { id: "hardness", label: "Hardness", short: "Hardness" },
-    { id: "print", label: "Print / Export", short: "Print" },
+    { id: "print", label: "Print", short: "Print" },
+    { id: "export", label: "Export", short: "Export" },
+];
+
+/** Parametric-correction section keys. Groups stay collapsed until the user opens one. */
+export const CORRECTIONS_STEP_SECTIONS: CorrectionsSectionKey[] = [
+    "Arch",
+    "Heel",
+    "Flanges",
+    "Posting",
+    "pronationSupination",
+    "skive",
 ];
 
 /** Corrections collapsible section keys (see CorrectionsPanel GROUPS + wedge/skive). */
 export type CorrectionsSectionKey = "pronationSupination" | "skive" | string;
 
 export type ElementPlacementFoot = "left" | "right" | "both";
+
+export interface CorrectionPresetOrigin {
+    name: string;
+    mode: "merge" | "replace";
+    keys: { left: string[]; right: string[] };
+}
 
 interface ClinicalWorkflowStore {
     step: ClinicalStepId;
@@ -35,9 +71,14 @@ interface ClinicalWorkflowStore {
     nextBlockReason: string | null;
     elementPlacementFoot: ElementPlacementFoot;
     pendingCorrectionSections: CorrectionsSectionKey[];
+    /** Last applied correction preset — keys stay marked until the user edits them. */
+    correctionPresetOrigin: CorrectionPresetOrigin | null;
     setStep: (step: ClinicalStepId) => void;
     acknowledgeExplicitFootSide: (side: "left" | "right") => void;
+    acknowledgePairAssignment: () => void;
     setElementPlacementFoot: (foot: ElementPlacementFoot) => void;
+    setCorrectionPresetOrigin: (origin: CorrectionPresetOrigin | null) => void;
+    clearCorrectionPresetOriginKey: (side: "left" | "right", key: string) => void;
     goNext: () => void;
     goBack: () => void;
     consumePendingCorrectionSections: () => CorrectionsSectionKey[];
@@ -59,8 +100,7 @@ function prevStep(current: ClinicalStepId): ClinicalStepId {
     return CLINICAL_STEPS[idx - 1].id;
 }
 
-function sectionsForStep(step: ClinicalStepId): CorrectionsSectionKey[] {
-    if (step === "shape") return ["Arch", "pronationSupination"];
+function sectionsForStep(_step: ClinicalStepId): CorrectionsSectionKey[] {
     return [];
 }
 
@@ -87,18 +127,39 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
     nextBlockReason: null,
     elementPlacementFoot: "left",
     pendingCorrectionSections: [],
+    correctionPresetOrigin: null,
     acknowledgeExplicitFootSide: (side) =>
         set({
             footSideExplicitlyChosen: true,
             elementPlacementFoot: side,
         }),
-    setStep: (step) => {
-        const sticky = applyScanStickyReason(step);
+    acknowledgePairAssignment: () =>
         set({
-            step,
+            footSideExplicitlyChosen: true,
+            elementPlacementFoot: "both",
+        }),
+    setCorrectionPresetOrigin: (origin) => set({ correctionPresetOrigin: origin }),
+    clearCorrectionPresetOriginKey: (side, key) =>
+        set((s) => {
+            const origin = s.correctionPresetOrigin;
+            if (!origin) return s;
+            const nextKeys = origin.keys[side].filter((k) => k !== key);
+            if (nextKeys.length === origin.keys[side].length) return s;
+            return {
+                correctionPresetOrigin: {
+                    ...origin,
+                    keys: { ...origin.keys, [side]: nextKeys },
+                },
+            };
+        }),
+    setStep: (step) => {
+        const next = normalizeClinicalStep(step);
+        const sticky = applyScanStickyReason(next);
+        set({
+            step: next,
             scanGateStickyReason: sticky,
             nextBlockReason: sticky,
-            pendingCorrectionSections: sectionsForStep(step),
+            pendingCorrectionSections: sectionsForStep(next),
         });
     },
     setElementPlacementFoot: (foot) => set({ elementPlacementFoot: foot }),
@@ -106,10 +167,11 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         const current = get().step;
         const gate = evaluateNextGate(current);
         if (!gate.ok) {
-            const sticky = current === "scan" || stepIndex(current) > stepIndex("scan") ? gate.reason : null;
             set({
+                step: "scan",
                 nextBlockReason: gate.reason,
-                scanGateStickyReason: sticky ?? get().scanGateStickyReason,
+                scanGateStickyReason: gate.reason,
+                pendingCorrectionSections: sectionsForStep("scan"),
             });
             return;
         }

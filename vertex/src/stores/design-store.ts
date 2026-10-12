@@ -8,12 +8,13 @@ import {
 } from "@/lib/clinical/correction-presets";
 import {
     createDefaultStockPairedBases,
-    createFallbackStockDesignPatch,
     designHasBase,
     designNeedsDefaultStockResolution,
     designStockBasesAreResolved,
+    designUsesLegacyDefaultStock,
     getDesignStockAssetId,
-    resolveStockBase,
+    getSampleTopStockBase,
+    replaceBuiltinDefaultWithSampleTop,
     StockBaseResolutionError,
     sanitizeDesignStockBases,
 } from "@/lib/geometry/base-asset";
@@ -40,10 +41,12 @@ import {
     type ShoeSizeSystem,
     usMenToUk,
 } from "@/lib/geometry/shoe-size";
+import { normalizeShoeWidth } from "@/lib/geometry/shoe-width";
 import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
+import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { buildEffectiveTrimlines, useIssuesStore } from "@/stores/issues-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
@@ -157,6 +160,7 @@ export function defaultDesign(): DesignState {
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
         sizeSystem: DEFAULT_SHOE_SIZE_SYSTEM,
         usMenSize: DEFAULT_US_MEN_SIZE,
+        shoeWidth: "medium",
         corrections: {
             unit: "mm",
             linked: true,
@@ -170,47 +174,21 @@ export function defaultDesign(): DesignState {
 }
 
 /**
- * Every new design must start from the default stock GLB (Base + Modifier model).
- * When the API is configured, injects a non-loadable pending stub; applyDefaultStockBase()
- * must run (after auth) to fetch the real Supabase GLB. Offline dev uses the local placeholder.
+ * Every new design starts from bundled SAMPLE_Top (Left + mirrored Right) with
+ * the faired bottom pattern. Legacy Default.glb is never injected here.
  */
 export function createDesignWithStockPlaceholder(design?: DesignState): DesignState {
-    const d = design ?? defaultDesign();
-    if (designHasBase(d)) return d;
-
-    const { left, right } = createDefaultStockPairedBases();
-    stockFixLog("createDesignWithStockPlaceholder() injected pending paired placeholders", {
-        leftName: left.name,
-        rightName: right.name,
-        leftUrl: left.url ?? "(pending resolution)",
-        leftGlbPath: left.glbPath ?? "(none)",
+    const d = replaceBuiltinDefaultWithSampleTop(design ?? defaultDesign());
+    stockFixLog("createDesignWithStockPlaceholder() SAMPLE_Top pair", {
+        leftName: d.paired?.leftBase?.name,
+        rightName: d.paired?.rightBase?.name,
+        leftUrl: d.paired?.leftBase?.url ?? d.base?.url ?? "(none)",
+        leftGlbPath: d.paired?.leftBase?.glbPath ?? d.base?.glbPath ?? "(none)",
     });
     stockGlbLog(
-        `createDesignWithStockPlaceholder() injected placeholder — left="${left.name}" right="${right.name}" url="${left.url ?? "(pending resolution)"}" glb_path="${left.glbPath ?? "(none)"}"`,
+        `createDesignWithStockPlaceholder() — left="${d.paired?.leftBase?.name ?? d.base?.name}" right="${d.paired?.rightBase?.name ?? ""}" url="${d.paired?.leftBase?.url ?? d.base?.url ?? "(none)"}" glb_path="${d.paired?.leftBase?.glbPath ?? d.base?.glbPath ?? "(none)"}"`,
     );
-    stockDebug("createDesignWithStockPlaceholder()", {
-        leftAssetId: left.assetId,
-        rightAssetId: right.assetId,
-        leftGlbPath: left.glbPath,
-        leftUrl: left.url ?? null,
-        apiConfigured: isApiConfigured(),
-    });
-    return {
-        ...d,
-        pattern: "custom",
-        base: left,
-        customPrefabId: left.assetId,
-        customPrefabName: left.name,
-        paired: {
-            leftBase: left,
-            rightBase: right,
-            leftThicknessMm: d.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
-            rightThicknessMm: d.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
-            leftMethod: d.method,
-            rightMethod: d.method,
-            linked: false,
-        },
-    };
+    return d;
 }
 
 let stockBaseUpgradeInFlight: Promise<void> | null = null;
@@ -396,6 +374,22 @@ export interface ViewerSettings {
     showScans: boolean;
     /** Active named camera view (for UI + planar editing constraint). */
     view: CameraView;
+    /**
+     * Procedural walls rebuild from SAMPLE_Top + the faired bottom pattern.
+     * Default `'procedural'` (Grinding Straight). `'legacy'` is test-only via
+     * `?wallModel=legacy`. Not persisted; never touches modifiers/export.
+     */
+    wallModel?: "legacy" | "procedural";
+    /**
+     * Print-step grinding dropdown → wall mid-style. Default `'straight'`.
+     * Applied only when `wallModel === "procedural"` (also `?wallStyle=`).
+     */
+    wallStyle?: "straight" | "round" | "hybrid";
+    /** Viewer-only device-type preset for the procedural wall. Not persisted. */
+    deviceType?: "functional" | "accommodative";
+    lateralFlangeHeightMm?: number;
+    lateralFlangeLengthMm?: number;
+    lateralFlangeAngleDeg?: number;
 }
 
 export type TransformMode = "translate" | "rotate" | "scale";
@@ -438,6 +432,7 @@ export interface DesignStore {
     setUkShoeSize: (ukSize: number) => void;
     /** Change foot length in mm and auto-scale. */
     setFootLengthMm: (mm: number) => void;
+    setShoeWidth: (width: "narrow" | "medium" | "wide" | "extra_wide", side?: Side) => void;
 
     /** Patch corrections for a side. When linked, mirrors to the other side. */
     updateCorrection: (side: Side, patch: Partial<SideCorrections>) => void;
@@ -462,9 +457,8 @@ export interface DesignStore {
     clearBase: () => void;
 
     /**
-     * Load/refresh the default stock base from the server (stock_bases table).
-     * Returns a promise so callers can await authoritative data (real UUID, storage URL, primarySide).
-     * The implementation builds a mirrored pair when the stock record indicates a single-sided asset.
+     * Apply bundled SAMPLE_Top as the L+R stock pair. Migrates leftover Default.glb.
+     * Custom library prefabs that are already resolved are left alone.
      */
     applyDefaultStockBase: () => Promise<void>;
 
@@ -488,7 +482,7 @@ export interface DesignStore {
     applyCorrectionPreset: (
         payload: CorrectionPresetPayload,
         mode: CorrectionPresetApplyMode,
-        options?: { includeElements?: boolean; activeSide?: Side },
+        options?: { includeElements?: boolean; activeSide?: Side; label?: string },
     ) => void;
 
     setViewer: (patch: Partial<ViewerSettings>) => void;
@@ -519,9 +513,8 @@ export const useDesignStore = create<DesignStore>()(
         (set, get) => ({
             design: createDesignWithStockPlaceholder(),
             stockBaseError: null,
-            // Show "Loading base…" immediately while the pending stub waits for the server GLB.
-            stockBaseLoading: isApiConfigured(),
-            stockBaseResolutionState: isApiConfigured() ? "loading" : "resolved",
+            stockBaseLoading: false,
+            stockBaseResolutionState: "resolved",
             baseMeshLoadingBySide: { left: false, right: false },
             exportSide: "left",
             viewer: {
@@ -531,17 +524,24 @@ export const useDesignStore = create<DesignStore>()(
                 showRight: true,
                 showScans: true,
                 view: "iso",
+                wallModel: "procedural",
+                wallStyle: "straight",
             },
             selectedElementId: null,
             transformMode: "translate",
             history: [],
             future: [],
 
-            setPattern: (pattern) =>
+            setPattern: (pattern) => {
+                // Stock Pattern presets drive the faired B on SAMPLE_Top.
+                // Custom keeps a user-edited overlay; the other presets regenerate.
+                if (pattern !== "custom") {
+                    useBottomPatternStore.getState().clear();
+                }
                 set((s) => ({
-                    // Scan pattern is metadata only — never clears the mandatory GLB base.
                     design: { ...s.design, pattern },
-                })),
+                }));
+            },
             setMethod: (method) => set((s) => ({ design: { ...s.design, method } })),
             setPrintHardness: (hardness) => {
                 get().checkpoint("print-hardness");
@@ -609,13 +609,22 @@ export const useDesignStore = create<DesignStore>()(
                     design: { ...s.design, corrections: { ...s.design.corrections, unit } },
                 })),
             setLinked: (linked) =>
-                set((s) => ({
-                    design: {
-                        ...s.design,
-                        corrections: { ...s.design.corrections, linked },
-                        paired: s.design.paired ? { ...s.design.paired, linked } : undefined,
-                    },
-                })),
+                set((s) => {
+                    const leftWidth = normalizeShoeWidth(
+                        linked ? (s.design.shoeWidthBySide?.left ?? s.design.shoeWidth) : s.design.shoeWidth,
+                    );
+                    return {
+                        design: {
+                            ...s.design,
+                            shoeWidth: linked ? leftWidth : s.design.shoeWidth,
+                            shoeWidthBySide: linked
+                                ? { left: leftWidth, right: leftWidth }
+                                : s.design.shoeWidthBySide,
+                            corrections: { ...s.design.corrections, linked },
+                            paired: s.design.paired ? { ...s.design.paired, linked } : undefined,
+                        },
+                    };
+                }),
 
             setUsShoeSize: (menSize) =>
                 set((s) => {
@@ -666,6 +675,27 @@ export const useDesignStore = create<DesignStore>()(
                             usMenSize: next.usMenSize,
                             ukSize: next.ukSize,
                         }),
+                    };
+                }),
+
+            setShoeWidth: (width, side) =>
+                set((s) => {
+                    const linked = s.design.corrections.linked;
+                    if (linked || !side) {
+                        return {
+                            design: {
+                                ...s.design,
+                                shoeWidth: width,
+                                shoeWidthBySide: { left: width, right: width },
+                            },
+                        };
+                    }
+                    return {
+                        design: {
+                            ...s.design,
+                            shoeWidth: side === "left" ? width : s.design.shoeWidth,
+                            shoeWidthBySide: { ...s.design.shoeWidthBySide, [side]: width },
+                        },
                     };
                 }),
 
@@ -911,129 +941,67 @@ export const useDesignStore = create<DesignStore>()(
             },
 
             applyDefaultStockBase: async () => {
-                try {
-                    const snap = get().design;
-                    // Persist rehydrate can win the race and already inject public URLs.
-                    // Skip the network round-trip so we never leave stockBaseLoading=true
-                    // while the viewer is already rendering the base GLB.
-                    if (designStockBasesAreResolved(snap)) {
-                        stockResolveLog("applyDefaultStockBase() skipped — already resolved", {
+                const snap = get().design;
+                if (designStockBasesAreResolved(snap) && !designUsesLegacyDefaultStock(snap)) {
+                    stockResolveLog(
+                        "applyDefaultStockBase() skipped — SAMPLE_Top / custom already resolved",
+                        {
                             assetId: getDesignStockAssetId(snap),
                             glbPath: snap.paired?.rightBase?.glbPath ?? snap.base?.glbPath ?? null,
-                        });
-                        set({
-                            stockBaseError: null,
-                            stockBaseLoading: false,
-                            stockBaseResolutionState: "resolved",
-                        });
-                        stockBaseAutoRetryBlocked = false;
-                        return;
-                    }
-                    const assetId = getDesignStockAssetId(snap);
-                    stockFixLog("applyDefaultStockBase() start", { assetId });
-                    stockDebug("applyDefaultStockBase() start", { assetId });
-                    stockResolveLog("applyDefaultStockBase() start", { assetId });
+                        },
+                    );
                     set({
                         stockBaseError: null,
-                        stockBaseLoading: true,
-                        stockBaseResolutionState: "loading",
-                    });
-                    const resolved = await resolveStockBase(assetId);
-                    // Another bootstrap path (rehydrate) may have resolved while we awaited.
-                    if (designStockBasesAreResolved(get().design)) {
-                        stockResolveLog(
-                            "applyDefaultStockBase() abandoned inject — design resolved during await",
-                        );
-                        set({
-                            stockBaseError: null,
-                            stockBaseLoading: false,
-                            stockBaseResolutionState: "resolved",
-                        });
-                        stockBaseAutoRetryBlocked = false;
-                        return;
-                    }
-                    const { left, right } = createDefaultStockPairedBases(resolved);
-                    stockResolveLog("applyDefaultStockBase() resolved — injecting mirrored L+R pair", {
-                        resolvedId: resolved.assetId,
-                        glbPath: resolved.glbPath ?? null,
-                        hasUrl: Boolean(resolved.url),
-                    });
-                    stockFixLog("applyDefaultStockBase() server success — injecting mirrored L+R pair", {
-                        resolvedId: resolved.assetId,
-                        glbPath: resolved.glbPath,
-                        url: resolved.url ?? null,
-                        leftName: left.name,
-                        rightName: right.name,
-                    });
-                    stockGlbLog(
-                        `applyDefaultStockBase() injecting stock base — url="${resolved.url ?? "(none)"}" glb_path="${resolved.glbPath ?? "(none)"}" left="${left.name}" right="${right.name}"`,
-                    );
-                    stockDebug("applyDefaultStockBase() applying paired bases", {
-                        resolvedId: resolved.assetId,
-                        resolvedGlbPath: resolved.glbPath,
-                        resolvedUrl: resolved.url ?? null,
-                        leftName: left.name,
-                        rightName: right.name,
-                    });
-                    set((s) => ({
-                        design: {
-                            ...s.design,
-                            pattern: "custom",
-                            base: left,
-                            customPrefabId: left.assetId,
-                            customPrefabName: left.name,
-                            paired: {
-                                leftBase: left,
-                                rightBase: right,
-                                leftThicknessMm:
-                                    s.design.paired?.leftThicknessMm ??
-                                    s.design.thicknessMm ??
-                                    BASE_REFERENCE_THICKNESS_MM,
-                                rightThicknessMm:
-                                    s.design.paired?.rightThicknessMm ??
-                                    s.design.thicknessMm ??
-                                    BASE_REFERENCE_THICKNESS_MM,
-                                leftMethod: s.design.paired?.leftMethod ?? s.design.method,
-                                rightMethod: s.design.paired?.rightMethod ?? s.design.method,
-                                linked: s.design.paired?.linked ?? false,
-                            },
-                        },
                         stockBaseLoading: false,
                         stockBaseResolutionState: "resolved",
-                    }));
-                    stockBaseAutoRetryBlocked = false;
-                    if (snap.base?.assetId !== left.assetId && snap.base?.assetId !== right.assetId) {
-                        get().checkpoint("default-stock-base");
-                    }
-                } catch (e) {
-                    const msg =
-                        e instanceof StockBaseResolutionError
-                            ? e.message
-                            : "Failed to load the default stock base. Check server configuration.";
-                    stockResolveLog("applyDefaultStockBase() error", { error: msg });
-                    stockFixLog("applyDefaultStockBase() error", {
-                        error: msg,
-                        supabaseConfigured: isSupabaseConfigured(),
                     });
-                    stockDebug("applyDefaultStockBase() error", { error: msg });
-                    stockBaseAutoRetryBlocked = true;
-                    if (isSupabaseConfigured()) {
-                        set({
-                            stockBaseError: msg,
-                            stockBaseLoading: false,
-                            stockBaseResolutionState: "failed",
-                        });
-                    } else {
-                        const snap = get().design;
-                        const fallbackPatch = createFallbackStockDesignPatch(snap);
-                        set((s) => ({
-                            design: { ...s.design, ...fallbackPatch },
-                            stockBaseError: msg,
-                            stockBaseLoading: false,
-                            stockBaseResolutionState: "failed",
-                        }));
-                    }
-                    throw e;
+                    stockBaseAutoRetryBlocked = false;
+                    return;
+                }
+                const resolved = getSampleTopStockBase();
+                const { left, right } = createDefaultStockPairedBases(resolved);
+                stockResolveLog("applyDefaultStockBase() injecting SAMPLE_Top L+R", {
+                    resolvedId: resolved.assetId,
+                    glbPath: resolved.glbPath ?? null,
+                    hasUrl: Boolean(resolved.url),
+                });
+                stockFixLog("applyDefaultStockBase() SAMPLE_Top pair", {
+                    leftName: left.name,
+                    rightName: right.name,
+                    glbPath: resolved.glbPath,
+                });
+                stockGlbLog(
+                    `applyDefaultStockBase() injecting SAMPLE_Top — url="${resolved.url ?? "(none)"}" glb_path="${resolved.glbPath ?? "(none)"}" left="${left.name}" right="${right.name}"`,
+                );
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        base: left,
+                        customPrefabId: left.assetId,
+                        customPrefabName: left.name,
+                        paired: {
+                            leftBase: left,
+                            rightBase: right,
+                            leftThicknessMm:
+                                s.design.paired?.leftThicknessMm ??
+                                s.design.thicknessMm ??
+                                BASE_REFERENCE_THICKNESS_MM,
+                            rightThicknessMm:
+                                s.design.paired?.rightThicknessMm ??
+                                s.design.thicknessMm ??
+                                BASE_REFERENCE_THICKNESS_MM,
+                            leftMethod: s.design.paired?.leftMethod ?? s.design.method,
+                            rightMethod: s.design.paired?.rightMethod ?? s.design.method,
+                            linked: s.design.paired?.linked ?? false,
+                        },
+                    },
+                    stockBaseError: null,
+                    stockBaseLoading: false,
+                    stockBaseResolutionState: "resolved",
+                }));
+                stockBaseAutoRetryBlocked = false;
+                if (snap.base?.assetId !== left.assetId && snap.base?.assetId !== right.assetId) {
+                    get().checkpoint("default-stock-base");
                 }
             },
 
@@ -1120,23 +1088,22 @@ export const useDesignStore = create<DesignStore>()(
                         right: incoming.corrections.linked ? r.constrained : r2.constrained,
                     },
                 };
-                // Legacy or parametric-only saved designs: inject the mandatory stock GLB base.
+                // Legacy or parametric-only saved designs: inject SAMPLE_Top.
                 const hadBase = designHasBase(safeDesign);
                 if (!hadBase) {
                     safeDesign = createDesignWithStockPlaceholder(safeDesign);
                 }
-                safeDesign = sanitizeDesignStockBases(safeDesign);
+                safeDesign = replaceBuiltinDefaultWithSampleTop(sanitizeDesignStockBases(safeDesign));
                 const eff = buildEffectiveTrimlines(safeDesign);
                 useIssuesStore.getState().recompute(safeDesign, eff);
-                const needsResolution = !hadBase || designNeedsDefaultStockResolution(safeDesign);
-                const waitingOnServer = needsResolution && isApiConfigured();
+                const needsResolution = designNeedsDefaultStockResolution(safeDesign);
                 stockBaseAutoRetryBlocked = false;
                 set({
                     design: safeDesign,
                     selectedElementId: null,
                     stockBaseError: null,
-                    stockBaseLoading: waitingOnServer,
-                    stockBaseResolutionState: waitingOnServer ? "loading" : "resolved",
+                    stockBaseLoading: false,
+                    stockBaseResolutionState: "resolved",
                 });
 
                 // Resolve server stock base when missing or still on a local/sync placeholder.
@@ -1227,11 +1194,13 @@ export const useDesignStore = create<DesignStore>()(
                     design: withStock,
                     selectedElementId: null,
                     stockBaseError: null,
-                    stockBaseLoading: isApiConfigured(),
-                    stockBaseResolutionState: isApiConfigured() ? "loading" : "resolved",
+                    stockBaseLoading: false,
+                    stockBaseResolutionState: "resolved",
                     baseMeshLoadingBySide: { left: false, right: false },
                 });
-                upgradeStockBaseAsync(() => get().applyDefaultStockBase(), "reset");
+                if (designNeedsDefaultStockResolution(withStock)) {
+                    upgradeStockBaseAsync(() => get().applyDefaultStockBase(), "reset");
+                }
             },
 
             getActiveViolations: () => {
@@ -1320,7 +1289,7 @@ export const useDesignStore = create<DesignStore>()(
             partialize: (state) => ({ design: state.design }),
             onRehydrateStorage: () => (state) => {
                 if (!state?.design) return;
-                let design = sanitizeDesignStockBases(state.design);
+                let design = replaceBuiltinDefaultWithSampleTop(sanitizeDesignStockBases(state.design));
                 if (!designHasBase(design)) {
                     design = createDesignWithStockPlaceholder(design);
                 }
@@ -1334,12 +1303,11 @@ export const useDesignStore = create<DesignStore>()(
                     hasUrl: Boolean(design.base?.url),
                 });
                 stockBaseAutoRetryBlocked = false;
-                const waitingOnServer = needsResolution && isApiConfigured();
                 useDesignStore.setState({
                     design,
                     stockBaseError: null,
-                    stockBaseLoading: waitingOnServer,
-                    stockBaseResolutionState: waitingOnServer ? "loading" : "resolved",
+                    stockBaseLoading: false,
+                    stockBaseResolutionState: "resolved",
                     baseMeshLoadingBySide: { left: false, right: false },
                 });
                 stockFixLog("persist onRehydrate", { needsResolution, apiConfigured: isApiConfigured() });
