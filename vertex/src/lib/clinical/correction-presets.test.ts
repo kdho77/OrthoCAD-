@@ -73,8 +73,8 @@ describe("correction presets", () => {
             },
         );
 
-        expect(next.corrections.left.archFillMm).toBe(2);
-        expect(next.corrections.left.archHeightMm).toBe(10);
+        expect(next.corrections.left.archFillMm).toBe(0);
+        expect(next.corrections.left.archHeightMm).toBe(12);
     });
 
     test("replace overwrites scalar corrections on linked feet", () => {

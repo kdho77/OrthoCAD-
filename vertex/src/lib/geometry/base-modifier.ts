@@ -29,6 +29,7 @@ import {
     applyTrimmableForefootExtension,
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
+import { wedgeCorrectionActive } from "@/lib/geometry/wedge";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
 // Base + Modifier deformation core (see docs/base-modifier-architecture.md).
@@ -2572,11 +2573,16 @@ export function applyBaseModifiers(
     // take the legacy path so PR #117 arch-band re-loft (W=h^1.5) can keep the
     // medial sidewall rounded instead of a vertical rim-delta extrusion.
     const archRaiseActive =
-        field.corrections.archHeightMm !== 0 ||
-        field.corrections.archFillMm !== 0 ||
-        field.corrections.archEaseMm !== 0;
+        (field.corrections.archHeightMm ?? 0) !== 0 ||
+        (field.corrections.archFillMm ?? 0) !== 0 ||
+        (field.corrections.archEaseMm ?? 0) !== 0;
+    const wedgeActive = wedgeCorrectionActive(field.corrections);
     const useShellFieldSync =
-        isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm === 0 && !archRaiseActive;
+        isMultiMesh &&
+        topVertexCount > 0 &&
+        field.corrections.heelCupWidthMm === 0 &&
+        !archRaiseActive &&
+        !wedgeActive;
 
     // 1) Sample the pure modifier delta. Multi-mesh top range only when shell
     //    sync is active (bottom gets F via sampleFieldDeltaAtXY below); otherwise
@@ -2584,7 +2590,8 @@ export function applyBaseModifiers(
     //    rim-conformity moves the wall). Top-range samples are bit-identical
     //    either way (same u/vSigned → correctionDeltaAt).
     const delta = new Float32Array(count);
-    const sampleEnd = useShellFieldSync ? topVertexCount : count;
+    const sampleEnd =
+        isMultiMesh && topVertexCount > 0 && (useShellFieldSync || wedgeActive) ? topVertexCount : count;
     for (let i = 0; i < sampleEnd; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
         const widCoord = array[i * 3 + widthAxis]!;

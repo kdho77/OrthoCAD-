@@ -438,9 +438,7 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         // Bottom (low factor) movement small even with wedge (weighted)
         expect(metricsSingle.maxBottomDeltaMm).toBeLessThan(2); // wedge affects but weighted for single
 
-        // Multi-mesh: field-coupled shell sync applies the wedge delta to the
-        // bottom layer at full strength (constant-thickness shell). Top must
-        // still receive the wedge; bottom heel region must move in lockstep.
+        // Multi-mesh: raise-only posting/wedge is top-sheet only; bottom stays datum-anchored.
         const multiBase = makeMultiMeshBase();
         const wedgeField = {
             ...p,
@@ -461,10 +459,7 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
             maxBottomLift = Math.max(maxBottomLift, modArr[i * 3 + 2]! - baseArr[i * 3 + 2]!);
         }
         expect(maxTopLift).toBeGreaterThan(1);
-        expect(maxBottomLift).toBeGreaterThan(1);
-        // Thickness preserved: top and bottom lifts within 0.05 mm of each other
-        // at the peak (same F sampled at similar footprints on the synthetic grid).
-        expect(Math.abs(maxTopLift - maxBottomLift)).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM + 0.002);
+        expect(maxBottomLift).toBeLessThan(0.05);
         multiBase.dispose();
         modifiedMulti.dispose();
     });

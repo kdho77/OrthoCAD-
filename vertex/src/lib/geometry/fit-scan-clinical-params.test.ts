@@ -31,7 +31,7 @@ describe("fitArchParamsFromApexMarker", () => {
         expect(Math.abs(fit.apexMoveMm)).toBeLessThan(1);
     });
 
-    test("clamps negative gap to 0", () => {
+    test("negative gap lowers arch height (clamped at clinical min)", () => {
         const fit = fitArchParamsFromApexMarker({
             archPointBase: new THREE.Vector3(100, 10, 18),
             baseSurfaceZ: 23.5,
@@ -39,7 +39,7 @@ describe("fitArchParamsFromApexMarker", () => {
             lengthMm: 260,
         });
         expect(fit.gapMm).toBeCloseTo(-5.5, 5);
-        expect(fit.archHeightMm).toBe(0);
+        expect(fit.archHeightMm).toBeCloseTo(-5.5, 5);
     });
 });
 
