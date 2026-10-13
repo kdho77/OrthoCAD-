@@ -21,6 +21,7 @@ import {
     enqueuePreviewLoft,
     isCoarsePointerDevice,
     previewLoftPriority,
+    yieldToMain,
     yieldToPaint,
 } from "@/lib/geometry/procedural-wall/preview-loft-queue";
 import {
@@ -31,10 +32,12 @@ import {
     resolveLoftActiveSide,
     shouldLoftProceduralViewer,
 } from "@/lib/geometry/procedural-wall/preview-loft-ui";
-import { reconstructProceduralPreviewInWorker } from "@/lib/geometry/procedural-wall/preview-loft-worker";
+import {
+    buildProceduralViewerPatternInWorker,
+    reconstructProceduralPreviewInWorker,
+} from "@/lib/geometry/procedural-wall/preview-loft-worker";
 import { proceduralViewerStockGate } from "@/lib/geometry/procedural-wall/sample-top-display";
 import {
-    buildProceduralViewerPattern,
     loadSampleTopGeometry,
     SAMPLE_TOP_ASSET_ID,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -365,195 +368,220 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             const widthId = shoeWidthForSide(design, side);
             const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}:w${widthId}`;
             const userEdited = Boolean(stored) && !generatedPatternKey;
-            if (!draft && !userEdited && generatedPatternKey !== patternKey) {
-                try {
-                    const rawPattern = buildProceduralViewerPattern(raw, design.pattern, field.corrections);
-                    let minX = Infinity;
-                    let maxX = -Infinity;
-                    for (const p of rawPattern) {
-                        minX = Math.min(minX, p.x);
-                        maxX = Math.max(maxX, p.x);
-                    }
-                    const sizedPattern = applyShoeWidthToPoints(rawPattern, widthId, {
-                        ballWidthMm: layout.widthMm,
-                        heelWidthMm: layout.widthMm * 0.62,
-                        minX,
-                        lengthMm: Math.max(1e-3, maxX - minX),
-                        heelOverrideMm: heelW,
-                    });
-                    useBottomPatternStore.getState().ensureGenerated(side, patternKey, sizedPattern);
-                } catch (e) {
-                    stockDebug("procedural viewer pattern failed", {
-                        side,
-                        message: e instanceof Error ? e.message : String(e),
-                    });
-                }
-            }
-            const livePts = resolveLiveBottomPattern({
-                draft,
-                stored: useBottomPatternStore.getState().getPattern(side),
-            });
-            if (!shouldLoftProceduralViewer(clinicalStep, wallModel)) {
-                const rawCount = raw.getAttribute("position")?.count ?? 0;
-                const canReuseWork =
-                    workRef.current != null && workRef.current.getAttribute("position")?.count === rawCount;
-                let modified = raw;
-                try {
-                    modified = applyBaseModifiers(raw, field, interacting ? 0 : 1, {
-                        reuse: canReuseWork && workRef.current ? workRef.current : undefined,
-                        skipNormals: interacting,
-                        skipBottomSync: true,
-                    });
-                } catch (e) {
-                    stockDebug("applyBaseModifiers failed — showing raw SAMPLE_Top", {
-                        side,
-                        message: e instanceof Error ? e.message : String(e),
-                    });
-                    modified = raw;
-                }
-                if (workRef.current && workRef.current !== modified) workRef.current.dispose();
-                workRef.current = modified;
-                if (outRef.current && outRef.current !== modified && outRef.current !== workRef.current) {
-                    outRef.current.dispose();
-                }
-                outRef.current = modified;
-                lastLoftKeyRef.current = null;
-                setGeometry((prev) => (prev === modified ? prev : modified));
-                setLoftPhase(side, "ready", "Top surface ready");
-                setBaseMeshLoading(side, false);
-                return;
-            }
-            if (dragging || loftCancelled) {
-                lastLoftKeyRef.current = null;
-                setBaseMeshLoading(side, false);
-                if (loftCancelled) setLoftPhase(side, "idle", "Print solid cancelled");
-                else setLoftPhase(side, "ready", "Pattern edited — solid is stale");
-                return;
-            }
-            const draftTrim = useMeshEditStore.getState().getActiveDraftTrimline(side);
-            const committedTrim = getDesignTrimline(design, side);
-            const printTrim = draftTrim ?? committedTrim;
-            const loftKey = proceduralLoftReuseKey({
-                side,
-                wallStyle,
-                deviceType,
-                thicknessMm,
-                correctionsJson: JSON.stringify(field.corrections ?? {}),
-                scanPattern: design.pattern,
-                patternKind: draft ? "edited" : livePts ? "live" : "auto",
-                patternHash: livePts ? hashLiveBottomPattern(livePts) : patternKey,
-                flanges: `${lateralFlangeHeightMm}:${lateralFlangeLengthMm}:${lateralFlangeAngleDeg}|r${retryNonce}`,
-                sourceFieldJson: JSON.stringify({
-                    side: field.side,
-                    lengthMm: field.lengthMm,
-                    widthMm: field.widthMm,
-                    thicknessMm: field.thicknessMm,
-                    includeSkives: field.includeSkives ?? false,
-                    includeElements: field.includeElements ?? true,
-                }),
-                shapeFinishJson: JSON.stringify(field.shapeFinish ?? null),
-                elementsJson: JSON.stringify(field.elements ?? []),
-                trimlineHash: printTrim ? hashPatternPoints(printTrim.points) : "",
-                shoeWidth: widthId,
-            });
-            if (lastLoftKeyRef.current === loftKey && outRef.current) {
-                setBaseMeshLoading(side, false);
-                setLoftPhase(side, "ready");
-                return;
-            }
-            const viewer = useDesignStore.getState().viewer;
-            const activeSide = resolveLoftActiveSide(viewer.showLeft, viewer.showRight, getActiveFootSide());
-            const coarse = isCoarsePointerDevice();
-            const deferMirror = coarse && side !== activeSide && !activeReady;
-            let cancelled = false;
-            const gen = ++loftGenRef.current;
-            if (deferMirror) {
-                setBaseMeshLoading(side, true);
-                setLoftPhase(side, "queued", "Waiting for active foot…");
-                return () => {
-                    cancelled = true;
-                    setBaseMeshLoading(side, false);
-                };
-            }
-            setBaseMeshLoading(side, true);
-            setLoftPhase(side, "queued", `Queued ${side} walls…`);
-            const handle = enqueuePreviewLoft({
-                side,
-                priority: previewLoftPriority(side, activeSide, coarse),
-                run: async () => {
-                    if (cancelled) return;
-                    setLoftPhase(
-                        side,
-                        "lofting",
-                        coarse
-                            ? `Building ${side} walls for print… — this can take up to a minute on phones`
-                            : `Building ${side} walls for print…`,
-                    );
-                    await yieldToPaint();
-                    if (cancelled) return;
-                    const started = performance.now();
+            const needPattern = !draft && !userEdited && generatedPatternKey !== patternKey;
+            const session = {
+                cancelled: false,
+                handle: null as { cancel: () => void } | null,
+                watchdog: 0,
+                gen: 0,
+            };
+            void (async () => {
+                if (needPattern) {
                     try {
-                        const preview = await reconstructProceduralPreviewInWorker(raw, {
-                            corrections: field.corrections,
-                            thicknessMm,
-                            stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
-                            deviceType,
-                            lateralFlange: {
-                                heightMm: lateralFlangeHeightMm,
-                                lengthMm: lateralFlangeLengthMm,
-                                angleDeg: lateralFlangeAngleDeg,
-                            },
-                            archGrindDepthMm: 0,
-                            wallStyle,
-                            scanPattern: design.pattern,
-                            sourceField: field,
-                            composedTop: true,
-                            shoeWidth: {
-                                width: widthId,
-                                ballWidthMm: layout.widthMm,
-                                heelWidthMm: layout.widthMm * 0.62,
-                                heelOverrideMm: heelW,
-                            },
-                            trimline: printTrim,
-                            ...(livePts ? { bottomPattern: livePts } : {}),
+                        await yieldToMain();
+                        if (session.cancelled) return;
+                        const rawPattern = await buildProceduralViewerPatternInWorker(
+                            raw,
+                            design.pattern,
+                            field.corrections,
+                        );
+                        if (session.cancelled) return;
+                        await yieldToMain();
+                        if (session.cancelled) return;
+                        let minX = Infinity;
+                        let maxX = -Infinity;
+                        for (const p of rawPattern) {
+                            minX = Math.min(minX, p.x);
+                            maxX = Math.max(maxX, p.x);
+                        }
+                        const sizedPattern = applyShoeWidthToPoints(rawPattern, widthId, {
+                            ballWidthMm: layout.widthMm,
+                            heelWidthMm: layout.widthMm * 0.62,
+                            minX,
+                            lengthMm: Math.max(1e-3, maxX - minX),
+                            heelOverrideMm: heelW,
                         });
-                        if (cancelled) {
-                            preview.geometry.dispose();
-                            return;
-                        }
-                        if (outRef.current && outRef.current !== workRef.current) {
-                            outRef.current.dispose();
-                        }
-                        outRef.current = preview.geometry;
-                        lastLoftKeyRef.current = loftKey;
-                        setGeometry(preview.geometry);
-                        setLoftPhase(side, "ready", `Print solid ready (${side})`);
-                        usePreviewLoftStatusStore.getState().markElapsed(performance.now() - started);
+                        useBottomPatternStore.getState().ensureGenerated(side, patternKey, sizedPattern);
                     } catch (e) {
-                        if (cancelled) return;
-                        const message = e instanceof Error ? e.message : String(e);
-                        if (/cancelled/i.test(message)) return;
-                        stockDebug("procedural SAMPLE_Top reconstruct failed", { side, message });
-                        setGeometry(null);
-                        setLoftError(side, message);
-                    } finally {
-                        if (loftGenRef.current === gen) setBaseMeshLoading(side, false);
+                        if (session.cancelled) return;
+                        stockDebug("procedural viewer pattern failed", {
+                            side,
+                            message: e instanceof Error ? e.message : String(e),
+                        });
                     }
-                },
-            });
-            const watchdog = window.setTimeout(() => {
-                if (cancelled || loftGenRef.current !== gen) return;
-                const phase = usePreviewLoftStatusStore.getState().phaseBySide[side];
-                if (phase === "queued" || phase === "lofting" || phase === "fetching") {
-                    setLoftError(side, "Print solid is taking too long. Tap Retry.");
-                    setBaseMeshLoading(side, false);
                 }
-            }, PREVIEW_LOFT_WATCHDOG_MS);
+                if (session.cancelled) return;
+                const livePts = resolveLiveBottomPattern({
+                    draft,
+                    stored: useBottomPatternStore.getState().getPattern(side),
+                });
+                if (!shouldLoftProceduralViewer(clinicalStep, wallModel)) {
+                    await yieldToMain();
+                    if (session.cancelled) return;
+                    const rawCount = raw.getAttribute("position")?.count ?? 0;
+                    const canReuseWork =
+                        workRef.current != null &&
+                        workRef.current.getAttribute("position")?.count === rawCount;
+                    let modified = raw;
+                    try {
+                        modified = applyBaseModifiers(raw, field, interacting ? 0 : 1, {
+                            reuse: canReuseWork && workRef.current ? workRef.current : undefined,
+                            skipNormals: interacting,
+                            skipBottomSync: true,
+                        });
+                    } catch (e) {
+                        stockDebug("applyBaseModifiers failed — showing raw SAMPLE_Top", {
+                            side,
+                            message: e instanceof Error ? e.message : String(e),
+                        });
+                        modified = raw;
+                    }
+                    if (workRef.current && workRef.current !== modified) workRef.current.dispose();
+                    workRef.current = modified;
+                    if (outRef.current && outRef.current !== modified && outRef.current !== workRef.current) {
+                        outRef.current.dispose();
+                    }
+                    outRef.current = modified;
+                    lastLoftKeyRef.current = null;
+                    setGeometry((prev) => (prev === modified ? prev : modified));
+                    setLoftPhase(side, "ready", "Top surface ready");
+                    setBaseMeshLoading(side, false);
+                    return;
+                }
+                if (dragging || loftCancelled) {
+                    lastLoftKeyRef.current = null;
+                    setBaseMeshLoading(side, false);
+                    if (loftCancelled) setLoftPhase(side, "idle", "Print solid cancelled");
+                    else setLoftPhase(side, "ready", "Pattern edited — solid is stale");
+                    return;
+                }
+                const draftTrim = useMeshEditStore.getState().getActiveDraftTrimline(side);
+                const committedTrim = getDesignTrimline(design, side);
+                const printTrim = draftTrim ?? committedTrim;
+                const loftKey = proceduralLoftReuseKey({
+                    side,
+                    wallStyle,
+                    deviceType,
+                    thicknessMm,
+                    correctionsJson: JSON.stringify(field.corrections ?? {}),
+                    scanPattern: design.pattern,
+                    patternKind: draft ? "edited" : livePts ? "live" : "auto",
+                    patternHash: livePts ? hashLiveBottomPattern(livePts) : patternKey,
+                    flanges: `${lateralFlangeHeightMm}:${lateralFlangeLengthMm}:${lateralFlangeAngleDeg}|r${retryNonce}`,
+                    sourceFieldJson: JSON.stringify({
+                        side: field.side,
+                        lengthMm: field.lengthMm,
+                        widthMm: field.widthMm,
+                        thicknessMm: field.thicknessMm,
+                        includeSkives: field.includeSkives ?? false,
+                        includeElements: field.includeElements ?? true,
+                    }),
+                    shapeFinishJson: JSON.stringify(field.shapeFinish ?? null),
+                    elementsJson: JSON.stringify(field.elements ?? []),
+                    trimlineHash: printTrim ? hashPatternPoints(printTrim.points) : "",
+                    shoeWidth: widthId,
+                });
+                if (lastLoftKeyRef.current === loftKey && outRef.current) {
+                    setBaseMeshLoading(side, false);
+                    setLoftPhase(side, "ready");
+                    return;
+                }
+                const viewer = useDesignStore.getState().viewer;
+                const activeSide = resolveLoftActiveSide(
+                    viewer.showLeft,
+                    viewer.showRight,
+                    getActiveFootSide(),
+                );
+                const coarse = isCoarsePointerDevice();
+                const deferMirror = coarse && side !== activeSide && !activeReady;
+                session.gen = ++loftGenRef.current;
+                if (deferMirror) {
+                    setBaseMeshLoading(side, true);
+                    setLoftPhase(side, "queued", "Waiting for active foot…");
+                    return;
+                }
+                await yieldToMain();
+                if (session.cancelled) return;
+                setBaseMeshLoading(side, true);
+                setLoftPhase(side, "queued", `Queued ${side} walls…`);
+                session.handle = enqueuePreviewLoft({
+                    side,
+                    priority: previewLoftPriority(side, activeSide, coarse),
+                    run: async () => {
+                        if (session.cancelled) return;
+                        setLoftPhase(
+                            side,
+                            "lofting",
+                            coarse
+                                ? `Building ${side} walls for print… — this can take up to a minute on phones`
+                                : `Building ${side} walls for print…`,
+                        );
+                        await yieldToPaint();
+                        if (session.cancelled) return;
+                        const started = performance.now();
+                        try {
+                            const preview = await reconstructProceduralPreviewInWorker(raw, {
+                                corrections: field.corrections,
+                                thicknessMm,
+                                stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
+                                deviceType,
+                                lateralFlange: {
+                                    heightMm: lateralFlangeHeightMm,
+                                    lengthMm: lateralFlangeLengthMm,
+                                    angleDeg: lateralFlangeAngleDeg,
+                                },
+                                archGrindDepthMm: 0,
+                                wallStyle,
+                                scanPattern: design.pattern,
+                                sourceField: field,
+                                composedTop: true,
+                                shoeWidth: {
+                                    width: widthId,
+                                    ballWidthMm: layout.widthMm,
+                                    heelWidthMm: layout.widthMm * 0.62,
+                                    heelOverrideMm: heelW,
+                                },
+                                trimline: printTrim,
+                                ...(livePts ? { bottomPattern: livePts } : {}),
+                            });
+                            if (session.cancelled) {
+                                preview.geometry.dispose();
+                                return;
+                            }
+                            if (outRef.current && outRef.current !== workRef.current) {
+                                outRef.current.dispose();
+                            }
+                            outRef.current = preview.geometry;
+                            lastLoftKeyRef.current = loftKey;
+                            setGeometry(preview.geometry);
+                            setLoftPhase(side, "ready", `Print solid ready (${side})`);
+                            usePreviewLoftStatusStore.getState().markElapsed(performance.now() - started);
+                        } catch (e) {
+                            if (session.cancelled) return;
+                            const message = e instanceof Error ? e.message : String(e);
+                            if (/cancelled/i.test(message)) return;
+                            stockDebug("procedural SAMPLE_Top reconstruct failed", { side, message });
+                            setGeometry(null);
+                            setLoftError(side, message);
+                        } finally {
+                            if (loftGenRef.current === session.gen) setBaseMeshLoading(side, false);
+                        }
+                    },
+                });
+                session.watchdog = window.setTimeout(() => {
+                    if (session.cancelled || loftGenRef.current !== session.gen) return;
+                    const phase = usePreviewLoftStatusStore.getState().phaseBySide[side];
+                    if (phase === "queued" || phase === "lofting" || phase === "fetching") {
+                        setLoftError(side, "Print solid is taking too long. Tap Retry.");
+                        setBaseMeshLoading(side, false);
+                    }
+                }, PREVIEW_LOFT_WATCHDOG_MS);
+            })();
             return () => {
-                cancelled = true;
-                handle.cancel();
-                window.clearTimeout(watchdog);
-                if (loftGenRef.current === gen) setBaseMeshLoading(side, false);
+                session.cancelled = true;
+                session.handle?.cancel();
+                if (session.watchdog) window.clearTimeout(session.watchdog);
+                if (session.gen && loftGenRef.current === session.gen) setBaseMeshLoading(side, false);
             };
         }
         // Paired workspace: per-side committed thickness (matches export path).

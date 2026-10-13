@@ -3,10 +3,15 @@
 
 import type { BufferGeometry } from "three";
 import { type geometryToPayload, payloadToGeometry } from "@/lib/geometry/geometry-buffer";
+import type { ScanPattern, SideCorrections } from "@/types";
 import type { PolyPoint } from "./curves";
-import { type ProceduralPreviewOptions, reconstructProceduralPreview } from "./sample-top-preview";
+import {
+    buildProceduralViewerPattern,
+    type ProceduralPreviewOptions,
+    reconstructProceduralPreview,
+} from "./sample-top-preview";
 
-export interface ProceduralWallWorkerRequest {
+export interface ProceduralWallReconstructRequest {
     id: number;
     type: "reconstruct";
     positions: Float32Array;
@@ -14,9 +19,20 @@ export interface ProceduralWallWorkerRequest {
     options: ProceduralPreviewOptions;
 }
 
+export interface ProceduralWallPatternRequest {
+    id: number;
+    type: "buildPattern";
+    positions: Float32Array;
+    indices: Uint32Array | null;
+    scanPattern?: ScanPattern;
+    corrections?: Partial<SideCorrections>;
+}
+
+export type ProceduralWallWorkerRequest = ProceduralWallReconstructRequest | ProceduralWallPatternRequest;
+
 export interface ProceduralWallWorkerResponse {
     id: number;
-    type: "geometry" | "error";
+    type: "geometry" | "pattern" | "error";
     payload?: ReturnType<typeof geometryToPayload>;
     pattern?: PolyPoint[];
     userData?: Record<string, unknown>;
@@ -24,7 +40,7 @@ export interface ProceduralWallWorkerResponse {
 }
 
 interface Pending {
-    resolve: (value: { geometry: BufferGeometry; pattern: PolyPoint[] }) => void;
+    resolve: (value: { geometry?: BufferGeometry; pattern: PolyPoint[] }) => void;
     reject: (err: Error) => void;
 }
 
@@ -56,7 +72,15 @@ function ensureWorker(): Worker | null {
             const req = pending.get(msg.id);
             if (!req) return;
             pending.delete(msg.id);
-            if (msg.type === "error" || !msg.payload) {
+            if (msg.type === "error") {
+                req.reject(new Error(msg.message ?? "Procedural wall worker failed"));
+                return;
+            }
+            if (msg.type === "pattern") {
+                req.resolve({ pattern: msg.pattern ?? [] });
+                return;
+            }
+            if (!msg.payload) {
                 req.reject(new Error(msg.message ?? "Procedural wall worker failed"));
                 return;
             }
@@ -147,11 +171,51 @@ export async function reconstructProceduralPreviewInWorker(
                 },
             };
             w.postMessage(msg, transfer);
+        }).then((result) => {
+            if (!result.geometry) throw new Error("Procedural wall worker returned no geometry");
+            return { geometry: result.geometry, pattern: result.pattern };
         });
     } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         if (/cancelled/i.test(message)) throw e;
         console.warn("[preview-loft-worker] falling back to main thread:", message);
+        return sync();
+    }
+}
+
+/**
+ * Fair the SAMPLE_Top rim off the main thread (`extractTopOnlyModel` is ~4s).
+ * Same function as the sync viewer path — hashes stay identical.
+ */
+export async function buildProceduralViewerPatternInWorker(
+    topGeo: BufferGeometry,
+    scanPattern?: ScanPattern,
+    corrections?: Partial<SideCorrections>,
+): Promise<PolyPoint[]> {
+    const sync = () => buildProceduralViewerPattern(topGeo, scanPattern, corrections);
+    const w = ensureWorker();
+    if (!w) return sync();
+    const id = ++nextId;
+    const copy = geometryCopy(topGeo);
+    try {
+        const result = await new Promise<{ pattern: PolyPoint[] }>((resolve, reject) => {
+            pending.set(id, { resolve, reject });
+            const transfer: Transferable[] = [copy.positions.buffer];
+            if (copy.indices) transfer.push(copy.indices.buffer);
+            const msg: ProceduralWallWorkerRequest = {
+                id,
+                type: "buildPattern",
+                positions: copy.positions,
+                indices: copy.indices,
+                scanPattern,
+                corrections,
+            };
+            w.postMessage(msg, transfer);
+        });
+        return result.pattern;
+    } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        console.warn("[preview-loft-worker] pattern falling back to main thread:", message);
         return sync();
     }
 }

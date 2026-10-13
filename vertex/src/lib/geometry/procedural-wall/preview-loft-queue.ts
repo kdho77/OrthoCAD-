@@ -42,8 +42,18 @@ export function previewLoftPriority(side: Side, activeSide: Side, coarse: boolea
     return coarse ? 10 : 1;
 }
 
-export async function yieldToPaint(): Promise<void> {
+/** Yield the main thread so Chrome does not see one multi-second task. */
+export async function yieldToMain(): Promise<void> {
+    const scheduler = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+    if (typeof scheduler?.yield === "function") {
+        await scheduler.yield();
+        return;
+    }
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+export async function yieldToPaint(): Promise<void> {
+    await yieldToMain();
     if (typeof requestAnimationFrame !== "function") return;
     await new Promise<void>((resolve) => {
         const fallback = setTimeout(resolve, 16);

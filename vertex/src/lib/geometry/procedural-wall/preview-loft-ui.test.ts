@@ -4,6 +4,7 @@
 import { describe, expect, test } from "@rstest/core";
 import {
     autoPatternKey,
+    INITIAL_LOAD_LABEL,
     PRINT_LOFT_HINT,
     PRINT_LOFT_TIMEOUT_MS,
     previewLoftProgressLabel,
@@ -38,6 +39,7 @@ describe("preview loft overlay", () => {
         });
         expect(blocked.blockViewport).toBe(true);
         expect(blocked.kind).toBe("progress");
+        expect(blocked.mode).toBe("print");
 
         const oneReady = viewerLoftOverlayState({
             showBase: true,
@@ -51,6 +53,7 @@ describe("preview loft overlay", () => {
         expect(oneReady.blockViewport).toBe(true);
         expect(oneReady.showBanner).toBe(true);
         expect(oneReady.kind).toBe("progress");
+        expect(oneReady.mode).toBe("print");
         expect(PRINT_LOFT_TIMEOUT_MS).toBeGreaterThanOrEqual(5 * 60 * 1000);
         expect(PRINT_LOFT_HINT).toMatch(/minute per foot/i);
         expect(printLoftSteps({ left: "lofting", right: "queued" }).map((s) => s.state)).toEqual([
@@ -74,6 +77,33 @@ describe("preview loft overlay", () => {
         });
         expect(state.blockViewport).toBe(true);
         expect(state.kind).toBe("error");
+    });
+
+    test("initial load splash is top-mesh only — no print steps or per-foot hint", () => {
+        const loading = viewerLoftOverlayState({
+            showBase: true,
+            showLeft: true,
+            showRight: true,
+            stockBaseLoading: false,
+            loadingBySide: { left: true, right: true },
+            phaseBySide: { left: "idle", right: "idle" },
+            error: null,
+        });
+        expect(loading.mode).toBe("initial");
+        expect(loading.kind).toBe("progress");
+        expect(loading.blockViewport).toBe(true);
+        const fetching = viewerLoftOverlayState({
+            showBase: true,
+            showLeft: true,
+            showRight: false,
+            stockBaseLoading: false,
+            loadingBySide: { left: false, right: false },
+            phaseBySide: { left: "fetching", right: "idle" },
+            error: null,
+        });
+        expect(fetching.mode).toBe("initial");
+        expect(INITIAL_LOAD_LABEL).toBe("Loading top mesh…");
+        expect(PRINT_LOFT_HINT).toMatch(/minute per foot/i);
     });
 
     test("progress label names the foot being lofted", () => {
