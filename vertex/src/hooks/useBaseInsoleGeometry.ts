@@ -423,11 +423,34 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     try {
                         await yieldToMain();
                         if (session.cancelled) return;
+                        const draftTrimForPattern = useMeshEditStore.getState().getActiveDraftTrimline(side);
+                        const committedTrimForPattern = getDesignTrimline(design, side);
+                        const patternTrim = draftTrimForPattern ?? committedTrimForPattern;
+                        let patternTop = raw;
+                        try {
+                            patternTop = composePrintSolidTop(raw, {
+                                sourceField: field,
+                                shoeWidth: {
+                                    width: widthId,
+                                    ballWidthMm: layout.widthMm,
+                                    heelWidthMm: layout.widthMm * 0.62,
+                                    heelOverrideMm: heelW,
+                                },
+                                trimline: patternTrim,
+                            });
+                        } catch (composeErr) {
+                            stockDebug("composePrintSolidTop for viewer pattern — using raw rim", {
+                                side,
+                                message:
+                                    composeErr instanceof Error ? composeErr.message : String(composeErr),
+                            });
+                        }
                         const rawPattern = await buildProceduralViewerPatternInWorker(
-                            raw,
+                            patternTop,
                             design.pattern,
                             field.corrections,
                         );
+                        if (patternTop !== raw) patternTop.dispose();
                         if (session.cancelled) return;
                         await yieldToMain();
                         if (session.cancelled) return;

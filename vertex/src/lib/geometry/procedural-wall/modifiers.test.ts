@@ -83,6 +83,35 @@ describe("plantar posting", () => {
             side: "right",
         });
         expect(flipped).toBeGreaterThan(0);
+        const lateralY = (side: "left" | "right", medialYSign: 1 | -1, edge: "lat" | "med") => {
+            const medialSign = side === "left" ? -1 : 1;
+            const targetV =
+                edge === "lat" ? (side === "right" ? 0.98 : -0.98) : side === "right" ? -0.98 : 0.98;
+            const mMesh = -targetV / (medialYSign * medialSign);
+            const widCenter = (bounds.minY + bounds.maxY) * 0.5;
+            const halfW = (bounds.maxY - bounds.minY) * 0.5;
+            return widCenter + mMesh * halfW;
+        };
+        for (const side of ["left", "right"] as const) {
+            for (const medialYSign of [1, -1] as const) {
+                const yLat = lateralY(side, medialYSign, "lat");
+                const yMed = lateralY(side, medialYSign, "med");
+                const lat = postingZDelta(10, yLat, bounds, {
+                    ...input,
+                    side,
+                    medialYSign,
+                    corrections: input.corrections,
+                });
+                const med = postingZDelta(10, yMed, bounds, {
+                    ...input,
+                    side,
+                    medialYSign,
+                    corrections: input.corrections,
+                });
+                expect(lat).toBeGreaterThan(0.2);
+                expect(med).toBeLessThan(0.05);
+            }
+        }
         expect(
             plantarZDelta(42, 0, bounds, {
                 ...input,

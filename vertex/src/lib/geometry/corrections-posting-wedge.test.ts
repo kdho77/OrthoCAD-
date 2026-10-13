@@ -4,7 +4,15 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
+import type { BufferGeometry } from "three";
 import { baseModifierField } from "@/lib/geometry/base-asset";
+import {
+    correctionDeltaAt,
+    getBaseFootprintFrame,
+    neutralField as neutralHeightField,
+    vertexFootprintAt,
+    wedgeMmAtBaseVertex,
+} from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
@@ -18,7 +26,6 @@ import { defaultDesign } from "@/stores/design-store";
 import type { Side, SideCorrections } from "@/types";
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
-const PARITY_MM = 0.05;
 
 function zeroCorrections(): SideCorrections {
     return {
@@ -39,6 +46,25 @@ function zeroCorrections(): SideCorrections {
     };
 }
 
+function fieldFromSampleTop(
+    raw: BufferGeometry,
+    side: Side,
+    corrections: SideCorrections,
+): HeightFieldParams {
+    const frame = getBaseFootprintFrame(raw, side);
+    return {
+        side,
+        lengthMm: frame.lenSize,
+        widthMm: frame.widSize,
+        thicknessMm: 3,
+        corrections,
+        elements: [],
+        includeSkives: false,
+        includeElements: false,
+        trimline: null,
+    };
+}
+
 function baseParams(side: Side, corrections: SideCorrections): HeightFieldParams {
     return {
         side,
@@ -51,6 +77,40 @@ function baseParams(side: Side, corrections: SideCorrections): HeightFieldParams
         includeElements: false,
         trimline: null,
     };
+}
+
+function maxForefootLateralBorderLiftMm(
+    raw: BufferGeometry,
+    composed: BufferGeometry,
+    neutral: BufferGeometry,
+    side: Side,
+    corrections: SideCorrections,
+    field: HeightFieldParams,
+    targetU = 0.88,
+): number {
+    const frame = getBaseFootprintFrame(raw, side);
+    const basePos = raw.getAttribute("position")?.array as Float32Array;
+    const pos = composed.getAttribute("position")?.array as Float32Array;
+    const neu = neutral.getAttribute("position")?.array as Float32Array;
+    if (!basePos || !pos || !neu) return 0;
+    const ta = frame.thickAxis;
+    const n = basePos.length / 3;
+    const lateralV = side === "right" ? 0.98 : -0.98;
+    let bestLift = 0;
+    for (let vi = 0; vi < n; vi++) {
+        const { u, vSigned } = vertexFootprintAt(frame, basePos, vi);
+        if (u < targetU - 0.04 || u > targetU + 0.04) continue;
+        if (Math.abs(vSigned - lateralV) > 0.12) continue;
+        const w = wedgeDeltaAt(u, vSigned, side, corrections, {
+            lengthMm: field.lengthMm,
+            widthMm: field.widthMm,
+            trimline: field.trimline ?? null,
+        });
+        if (w < field.corrections.forefootWedge?.value! * 0.85) continue;
+        const lift = pos[vi * 3 + ta]! - neu[vi * 3 + ta]!;
+        bestLift = Math.max(bestLift, lift);
+    }
+    return bestLift;
 }
 
 describe("posting wedge (design viewer height field)", () => {
@@ -138,12 +198,12 @@ describe("posting wedge (design viewer height field)", () => {
         expect(heightAt(apexU, apexV, low)).toBeLessThan(apexNeutral);
     });
 
-    test("arch ease is zero at the trim rim (av≈1)", () => {
+    test("arch ease is zero at the medial trim rim (right foot v=-0.98)", () => {
         const ease = baseParams("right", { ...zeroCorrections(), archEaseMm: 6 });
         const plain = baseParams("right", zeroCorrections());
         const u = 0.42;
-        const rimV = 0.98;
-        expect(heightAt(u, rimV, ease) - heightAt(u, rimV, plain)).toBeLessThan(0.05);
+        const medialRimV = -0.98;
+        expect(heightAt(u, medialRimV, ease) - heightAt(u, medialRimV, plain)).toBeLessThan(0.05);
         const interior = heightAt(u, -0.35, ease) - heightAt(u, -0.35, plain);
         expect(interior).toBeLessThan(-1);
     });
@@ -162,11 +222,13 @@ describe("posting wedge (design viewer height field)", () => {
         const field = baseParams("right", { ...zeroCorrections(), archEaseMm: 3 });
         const composed = composePrintSolidTop(raw, { sourceField: field });
         const neutral = composePrintSolidTop(raw, { sourceField: baseParams("right", zeroCorrections()) });
-        const pos = composed.getAttribute("position")!;
-        const neuPos = neutral.getAttribute("position")!;
+        const pos = composed.getAttribute("position");
+        const neuPos = neutral.getAttribute("position");
         let maxDrop = 0;
-        for (let i = 0; i < pos.count; i++) {
-            maxDrop = Math.max(maxDrop, neuPos.getZ(i) - pos.getZ(i));
+        if (pos && neuPos) {
+            for (let i = 0; i < pos.count; i++) {
+                maxDrop = Math.max(maxDrop, neuPos.getZ(i) - pos.getZ(i));
+            }
         }
         composed.dispose();
         neutral.dispose();
@@ -174,39 +236,54 @@ describe("posting wedge (design viewer height field)", () => {
         expect(maxDrop).toBeGreaterThan(0.5);
     });
 
-    test("composePrintSolidTop shows forefoot lateral 5.5 mm without loft", async () => {
+    test("composePrintSolidTop forefoot lateral 5.5 mm border rise (F02)", async () => {
         const wedge = { side: "lateral" as const, value: 5.5, unit: "mm" as const };
         const buf = readFileSync(SAMPLE_TOP_PATH);
         const raw = await sampleTopFromArrayBuffer(
             buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
         );
         const field = baseParams("right", { ...zeroCorrections(), forefootWedge: wedge });
-        const neutralField = baseParams("right", zeroCorrections());
+        const neutralFieldParams = baseParams("right", zeroCorrections());
+        const frame = getBaseFootprintFrame(raw, "right");
+        raw.computeBoundingBox();
+        const bb = raw.boundingBox!;
         const composed = composePrintSolidTop(raw, { sourceField: field });
-        const neutral = composePrintSolidTop(raw, { sourceField: neutralField });
-        const pos = composed.getAttribute("position")!.array as Float32Array;
-        const neu = neutral.getAttribute("position")!.array as Float32Array;
-        let maxLift = 0;
-        for (let i = 0; i < pos.length; i += 3) {
-            maxLift = Math.max(maxLift, pos[i + 2]! - neu[i + 2]!);
+        const neutralGeo = composePrintSolidTop(raw, { sourceField: neutralFieldParams });
+        const basePos = raw.getAttribute("position")?.array as Float32Array;
+        const pos = composed.getAttribute("position")?.array as Float32Array;
+        const neu = neutralGeo.getAttribute("position")?.array as Float32Array;
+        const ta = frame.thickAxis;
+        const wedgeMm = field.corrections.forefootWedge?.value ?? 5.5;
+        const neutralH = neutralHeightField(field);
+        let maxBorderLift = 0;
+        let maxWedgeMm = 0;
+        for (let vi = 0; vi < (basePos?.length ?? 0) / 3; vi++) {
+            const wmm = wedgeMmAtBaseVertex(raw, field, vi);
+            if (wmm > maxWedgeMm) maxWedgeMm = wmm;
+            if (wmm < wedgeMm * 0.85) continue;
+            const lift = pos![vi * 3 + ta]! - neu![vi * 3 + ta]!;
+            maxBorderLift = Math.max(maxBorderLift, lift);
         }
+        const analyticBorder = heightAt(0.88, 0.98, field) - heightAt(0.88, 0.98, neutralFieldParams);
         composed.dispose();
-        neutral.dispose();
+        neutralGeo.dispose();
         raw.dispose();
-        expect(maxLift).toBeGreaterThan(2);
+        expect(
+            maxBorderLift,
+            `borderLift=${maxBorderLift} maxWedgeMm=${maxWedgeMm} analytic=${analyticBorder}`,
+        ).toBeGreaterThan(5.4);
+        expect(maxBorderLift).toBeLessThan(5.6);
     });
 
-    test("forefoot lateral 6.5 mm via design corrections lifts lateral 5th met band on SAMPLE_Top", async () => {
+    test("forefoot lateral 6.5 mm via design store field matches border lift", async () => {
         const wedge = { side: "lateral" as const, value: 6.5, unit: "mm" as const };
         const design = defaultDesign();
         design.corrections.right = { ...design.corrections.right, forefootWedge: wedge };
-        const field = baseModifierField(design, "right", design.thicknessMm);
-        expect(field.corrections.forefootWedge).toEqual(wedge);
-
         const buf = readFileSync(SAMPLE_TOP_PATH);
         const raw = await sampleTopFromArrayBuffer(
             buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
         );
+        const field = baseModifierField(design, "right", design.thicknessMm);
         const neutralField = baseModifierField(
             { ...design, corrections: { ...design.corrections, right: zeroCorrections() } },
             "right",
@@ -214,22 +291,60 @@ describe("posting wedge (design viewer height field)", () => {
         );
         const composed = composePrintSolidTop(raw, { sourceField: field });
         const neutral = composePrintSolidTop(raw, { sourceField: neutralField });
-        const pos = composed.getAttribute("position")!.array as Float32Array;
-        const neu = neutral.getAttribute("position")!.array as Float32Array;
-        let maxLift = 0;
-        for (let i = 0; i < pos.length; i += 3) {
-            maxLift = Math.max(maxLift, pos[i + 2]! - neu[i + 2]!);
+        const frame = getBaseFootprintFrame(raw, "right");
+        raw.computeBoundingBox();
+        const bb = raw.boundingBox!;
+        const basePos = raw.getAttribute("position")?.array as Float32Array;
+        const pos = composed.getAttribute("position")?.array as Float32Array;
+        const neu = neutral.getAttribute("position")?.array as Float32Array;
+        const ta = frame.thickAxis;
+        let maxWedgeLift = 0;
+        for (let vi = 0; vi < (basePos?.length ?? 0) / 3; vi++) {
+            const wmm = wedgeMmAtBaseVertex(raw, field, vi);
+            if (wmm < 6.5 * 0.85) continue;
+            const lift = pos![vi * 3 + ta]! - neu![vi * 3 + ta]!;
+            maxWedgeLift = Math.max(maxWedgeLift, lift);
         }
         composed.dispose();
         neutral.dispose();
         raw.dispose();
-        expect(maxLift).toBeGreaterThan(5);
-        expect(maxLift).toBeLessThan(8);
+        expect(maxWedgeLift).toBeGreaterThan(6.4);
+        expect(maxWedgeLift).toBeLessThan(6.6);
     });
+
+    test("archHeight -10 with ease 6 — walled preview S1 min-wall + wall-top gates", async () => {
+        const buf = readFileSync(SAMPLE_TOP_PATH);
+        const raw = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        const field = baseParams("right", {
+            ...zeroCorrections(),
+            archHeightMm: -10,
+            archEaseMm: 6,
+        });
+        const preview = reconstructProceduralPreview(raw, {
+            sourceField: field,
+            composedTop: true,
+            corrections: field.corrections,
+            wallStyle: "straight",
+            scanPattern: "full_contact",
+        });
+        const ud = preview.geometry.userData as {
+            loftN?: number;
+            minLastRowHeightMm?: number;
+            maxChordRiseDeg?: number;
+        };
+        expect(ud.loftN ?? 0).toBeGreaterThan(3);
+        expect(preview.geometry.getAttribute("position")?.count ?? 0).toBeGreaterThan(1000);
+        expect(ud.maxChordRiseDeg ?? 90).toBeLessThanOrEqual(6.5);
+        expect((ud.minLastRowHeightMm ?? 0) >= 0.75 || (ud.maxChordRiseDeg ?? 0) <= 6).toBe(true);
+        preview.geometry.dispose();
+        raw.dispose();
+    }, 180_000);
 });
 
-describe("bottom pattern B inside rim R (wide width)", () => {
-    test("left and right at width +5 — composed top rim encloses faired B", async () => {
+describe("bottom pattern B inside composed rim R (wide width)", () => {
+    test("left and right at width +5 — pattern inside composed rim (0.2 mm slack)", async () => {
         const buf = readFileSync(SAMPLE_TOP_PATH);
         const raw = await sampleTopFromArrayBuffer(
             buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
@@ -245,11 +360,13 @@ describe("bottom pattern B inside rim R (wide width)", () => {
             });
             expect(preview.pattern.length).toBeGreaterThan(8);
             const rim = preview.model.top.rimLocal ?? [];
-            const pos = preview.model.top.meshPositions!;
+            const pos = preview.model.top.meshPositions;
+            if (!pos) continue;
             let minInset = Infinity;
             for (let i = 0; i < preview.pattern.length; i++) {
-                const b = preview.pattern[i]!;
-                const ri = rim[i % rim.length]!;
+                const b = preview.pattern[i];
+                const ri = rim[i % rim.length];
+                if (!b || ri === undefined) continue;
                 const rx = pos[ri * 3]!;
                 const ry = pos[ri * 3 + 1]!;
                 const dx = b.x - rx;

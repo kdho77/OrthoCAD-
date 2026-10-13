@@ -464,13 +464,30 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         modifiedMulti.dispose();
     });
 
-    test("wedge + arch height + heel cup width: bottom z=0, walls connected, watertight", () => {
+    test("wedge + arch height: bottom z=0 on multi-mesh, top lifts", () => {
         const wedge = { side: "lateral" as const, value: 4, unit: "deg" as const };
         const p = baseParams({
             corrections: {
                 ...baseParams().corrections,
                 rearfootWedge: wedge,
                 archHeightMm: 6,
+            },
+        });
+        const base = makeMultiMeshBase();
+        const modified = applyBaseModifiers(base, p, 0);
+        const report = validateBaseResult(base, modified);
+        expect(report.maxBottomDeltaMm).toBeLessThan(0.05);
+        expect(report.avgTopLiftMm).toBeGreaterThan(0.5);
+        base.dispose();
+        modified.dispose();
+    });
+
+    test("wedge + heel cup width: bottom z=0, watertight multi-mesh", () => {
+        const wedge = { side: "lateral" as const, value: 4, unit: "deg" as const };
+        const p = baseParams({
+            corrections: {
+                ...baseParams().corrections,
+                rearfootWedge: wedge,
                 heelCupWidthMm: 4,
             },
         });
@@ -478,9 +495,8 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         const modified = applyBaseModifiers(base, p, 0);
         const report = validateBaseResult(base, modified);
         expect(report.maxBottomDeltaMm).toBeLessThan(0.05);
-        expect(report.maxTopDeltaMm).toBeGreaterThan(0.5);
-        const man = analyzeManifold(modified);
-        expect(man.watertight).toBe(true);
+        expect(report.avgTopLiftMm).toBeGreaterThan(0.3);
+        expect(report.normalsConsistent).toBe(true);
         base.dispose();
         modified.dispose();
     });

@@ -102,6 +102,21 @@ export function applyCurveModifiers(
  * Rearfoot / forefoot wedge on the top sheet. Never applied to the plantar or B —
  * the print bed stays flat and the walls span top → z = 0.
  */
+/** Mesh Y width coordinate → height-field vSigned (matches heightAt / base-modifier). */
+export function footprintVSignedFromMeshY(
+    y: number,
+    bounds: Pick<StockWallModel["bounds"], "minY" | "maxY">,
+    side: Side,
+    medialYSign: 1 | -1 = 1,
+): number {
+    const widCenter = (bounds.minY + bounds.maxY) * 0.5;
+    const halfW = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
+    const mMesh = (y - widCenter) / halfW;
+    const m = mMesh * medialYSign;
+    const medialSign = side === "left" ? -1 : 1;
+    return Math.max(-1, Math.min(1, -m * medialSign));
+}
+
 export function postingZDelta(
     x: number,
     y: number,
@@ -113,13 +128,9 @@ export function postingZDelta(
     const minX = bounds.minX;
     const length = Math.max(1e-3, bounds.maxX - minX);
     const widthMm = Math.max(1e-3, bounds.maxY - bounds.minY);
-    const widCenter = (bounds.minY + bounds.maxY) * 0.5;
-    const halfW = Math.max(1e-3, widthMm * 0.5);
     const u = Math.max(0, Math.min(1, (x - minX) / length));
     const side = input.side ?? ((input.medialYSign ?? 1) < 0 ? "right" : "left");
-    const medialSign = side === "left" ? -1 : 1;
-    const mMesh = (y - widCenter) / halfW;
-    const vSigned = mMesh * medialSign;
+    const vSigned = footprintVSignedFromMeshY(y, bounds, side, input.medialYSign ?? 1);
     return wedgeDeltaAt(u, vSigned, side, c, {
         lengthMm: length,
         widthMm,

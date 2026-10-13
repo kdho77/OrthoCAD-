@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import { maxVertexDeltaMm } from "@/lib/geometry/procedural-wall/metrics";
+import { maxVertexDeltaMm, outlineExactOnBMm } from "@/lib/geometry/procedural-wall/metrics";
 import type { SideCorrections } from "@/types";
 import { composePrintSolidTop } from "./print-solid-compose";
 import { reconstructProceduralPreview, sampleTopFromArrayBuffer } from "./sample-top-preview";
@@ -77,7 +77,7 @@ describe("Print solid composed-top parity", () => {
         expect(sourcePos).toBeTruthy();
         expect(topN).toBeGreaterThan(1000);
         expect(preview.geometry.userData.composedTop).toBe(true);
-        expect((preview.geometry.userData as { stationCount?: number }).stationCount ?? 0).toBeGreaterThan(3);
+        expect((preview.geometry.userData as { loftN?: number }).loftN ?? 0).toBeGreaterThan(3);
         expect(preview.geometry.userData.inwardWallFaces ?? 0).toBe(0);
         expect(preview.geometry.userData.columnCrossings ?? 0).toBe(0);
 
@@ -90,6 +90,16 @@ describe("Print solid composed-top parity", () => {
             b[i * 3 + 2] = loftPos.getZ(i);
         }
         expect(maxVertexDeltaMm(a, b)).toBeLessThanOrEqual(PARITY_MM);
+
+        const ud = preview.geometry.userData as {
+            bottomOutlineB?: Array<{ x: number; y: number }>;
+            outlineRing?: Array<{ x: number; y: number }>;
+        };
+        const solidBottom = ud.bottomOutlineB;
+        const outlineRing = ud.outlineRing;
+        expect(solidBottom?.length ?? 0).toBeGreaterThan(16);
+        expect(outlineExactOnBMm(preview.geometry)).toBeLessThanOrEqual(0.05);
+        expect(solidBottom?.length).toBe(outlineRing?.length);
 
         const composedPos = composed.getAttribute("position")!;
         const plain = composePrintSolidTop(raw, { sourceField: field(zero()) });

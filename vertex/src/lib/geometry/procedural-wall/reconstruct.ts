@@ -45,6 +45,7 @@ import { defaultsFromStockCurves } from "./measure";
 import { countJunctionBandSlivers, windingReport } from "./metrics";
 import {
     clampPostingOnTopSheet,
+    footprintVSignedFromMeshY,
     type ProceduralModifierInput,
     type ProceduralWallStyle,
     postingZDelta,
@@ -206,7 +207,6 @@ function applyAnalyticTopDeltas(
     const requested = input.thicknessMm;
     const stock = input.stockThicknessMm ?? requested ?? BASE_REFERENCE_THICKNESS_MM;
     const side = input.sourceField?.side ?? ((input.medialYSign ?? 1) < 0 ? "right" : "left");
-    const medialSign = side === "left" ? -1 : 1;
     const correctionsNoWedge = {
         ...c,
         rearfootWedge: undefined,
@@ -235,14 +235,13 @@ function applyAnalyticTopDeltas(
     };
     const minX = bounds.minX;
     const widCenter = (bounds.minY + bounds.maxY) * 0.5;
-    const halfW = width * 0.5;
+    const medialYSign = (input.medialYSign ?? 1) as 1 | -1;
     const count = pos.length / 3;
     for (let i = 0; i < count; i++) {
         const x = pos[i * 3]!;
         const y = pos[i * 3 + 1]!;
         const u = Math.max(0, Math.min(1, (x - minX) / length));
-        const mMesh = (y - widCenter) / halfW;
-        const vSigned = Math.max(-1, Math.min(1, mMesh * medialSign));
+        const vSigned = footprintVSignedFromMeshY(y, bounds, side, medialYSign);
         pos[i * 3 + 2]! += correctionDeltaAt(u, vSigned, field, neutral);
         pos[i * 3 + 2]! += postingZDelta(x, y, bounds, postingInput);
         if (c.heelCupWidthMm !== 0) {

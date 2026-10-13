@@ -73,7 +73,7 @@ const ZERO_CORRECTIONS: SideCorrections = {
 export const BASE_REFERENCE_THICKNESS_MM = 2;
 
 /** Neutral field (no corrections, no elements) used as the displacement baseline. */
-function neutralField(field: HeightFieldParams): HeightFieldParams {
+export function neutralField(field: HeightFieldParams): HeightFieldParams {
     return {
         ...field,
         // Fixed baseline thickness so the thickness slider produces a real delta
@@ -144,6 +144,8 @@ function getBaseAdjacency(base: BufferGeometry): number[][] | null {
 /** Vertices within this height of the base minimum are always treated as bottom. */
 const BOTTOM_BAND_MM = 2.0;
 const BOTTOM_BAND_TRANSITION_MM = 2.5;
+/** Vertices with top factor below this are considered bottom-sheet (see validateBaseDeformation). */
+const BOTTOM_FACTOR_THRESHOLD = 0.1;
 
 type AxisIndex = 0 | 1 | 2;
 
@@ -333,6 +335,79 @@ export function detectArchSideSign(base: BufferGeometry): number {
 
     baseArchSideCache.set(base, sign);
     return sign;
+}
+
+export interface BaseFootprintFrame {
+    lengthAxis: AxisIndex;
+    widthAxis: AxisIndex;
+    thickAxis: AxisIndex;
+    lenMin: number;
+    lenSize: number;
+    widCenter: number;
+    widSize: number;
+    widthSign: number;
+}
+
+/** Footprint (u, vSigned) frame shared by applyBaseModifiers and mesh tests. */
+export function getBaseFootprintFrame(base: BufferGeometry, side: Side): BaseFootprintFrame {
+    const extents = getBaseExtents(base);
+    if (!extents) throw new Error("getBaseFootprintFrame: missing extents");
+    const { lengthAxis, widthAxis, thickAxis, min, size } = extents;
+    const lenMin = min[lengthAxis];
+    const lenSize = size[lengthAxis] || 1;
+    const widSize = size[widthAxis] || 1;
+    const widCenter = min[widthAxis]! + widSize / 2;
+    const medialSign = side === "left" ? -1 : 1;
+    const widthSign = -(detectArchSideSign(base) * medialSign);
+    return { lengthAxis, widthAxis, thickAxis, lenMin, lenSize, widCenter, widSize, widthSign };
+}
+
+/** Wedge delta (mm) at a base vertex — mirrors applyBaseModifiers sampling. */
+export function wedgeMmAtBaseVertex(
+    base: BufferGeometry,
+    field: HeightFieldParams,
+    vertexIndex: number,
+): number {
+    const extents = getBaseExtents(base);
+    const pos = base.getAttribute("position");
+    if (!extents || !pos) return 0;
+    const { lengthAxis, widthAxis, min, size } = extents;
+    const lenMin = min[lengthAxis];
+    const lenSize = size[lengthAxis] || 1;
+    const widSize = size[widthAxis] || 1;
+    const widCenter = min[widthAxis]! + widSize / 2;
+    const medialSign = field.side === "left" ? -1 : 1;
+    const widthSign = -(detectArchSideSign(base) * medialSign);
+    const arr = pos.array as ArrayLike<number>;
+    const lenCoord = arr[vertexIndex * 3 + lengthAxis]!;
+    const widCoord = arr[vertexIndex * 3 + widthAxis]!;
+    const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+    const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
+    return wedgeDeltaAt(u, vSigned, field.side, field.corrections, {
+        lengthMm: field.lengthMm,
+        widthMm: field.widthMm,
+        trimline: field.trimline ?? null,
+    });
+}
+
+export function vertexFootprintAt(
+    frame: BaseFootprintFrame,
+    posArr: ArrayLike<number>,
+    vertexIndex: number,
+): { u: number; vSigned: number } {
+    const u = Math.max(
+        0,
+        Math.min(1, (posArr[vertexIndex * 3 + frame.lengthAxis]! - frame.lenMin) / frame.lenSize),
+    );
+    const vSigned = Math.max(
+        -1,
+        Math.min(
+            1,
+            (frame.widthSign * (posArr[vertexIndex * 3 + frame.widthAxis]! - frame.widCenter)) /
+                (frame.widSize / 2),
+        ),
+    );
+    return { u, vSigned };
 }
 
 /** Vertices with top factor above this are considered top-sheet. */
@@ -2600,7 +2675,7 @@ export function applyBaseModifiers(
     //    rim-conformity moves the wall). Top-range samples are bit-identical
     //    either way (same u/vSigned → correctionDeltaAt).
     const delta = new Float32Array(count);
-    const wedgeDelta = wedgeActive ? new Float32Array(count) : null;
+    const wedgeAt = wedgeActive ? new Float32Array(count) : null;
     const sampleEnd = useShellFieldSync && topVertexCount > 0 ? topVertexCount : count;
     for (let i = 0; i < sampleEnd; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
@@ -2608,16 +2683,14 @@ export function applyBaseModifiers(
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
         let d = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
-        let wD = 0;
         if (wedgeActive) {
-            wD = wedgeDeltaAt(u, vSigned, field.side, field.corrections, wedgeParams);
+            const wD = wedgeDeltaAt(u, vSigned, field.side, field.corrections, wedgeParams);
+            if (wedgeAt) wedgeAt[i] = wD;
             if (isMultiMesh && topVertexCount > 0 && i >= topVertexCount) {
                 d -= wD;
-                wD = 0;
             }
         }
         delta[i] = d;
-        if (wedgeDelta) wedgeDelta[i] = wD;
     }
 
     // 2) Optional Laplacian relaxation of the displacement field (cached adjacency).
@@ -2625,11 +2698,6 @@ export function applyBaseModifiers(
     // merged adjacency graph collapses the top rim loop and breaks closeGlbInsoleToSolid.
     const effectiveSmoothing = isMultiMesh && topVertexCount > 0 ? 0 : smoothingIterations;
     const adj = effectiveSmoothing > 0 ? getBaseAdjacency(base) : null;
-    if (adj && wedgeDelta) {
-        for (let i = 0; i < count; i++) {
-            delta[i] = delta[i]! - wedgeDelta[i]!;
-        }
-    }
     if (adj) {
         let current = delta;
         for (let it = 0; it < effectiveSmoothing; it++) {
@@ -2648,11 +2716,6 @@ export function applyBaseModifiers(
             current = next;
         }
         delta.set(current);
-    }
-    if (adj && wedgeDelta) {
-        for (let i = 0; i < count; i++) {
-            delta[i] = delta[i]! + wedgeDelta[i]!;
-        }
     }
 
     const { smoothed: lateralDelta } = buildHeelCupWidthLateralDelta(
@@ -2709,16 +2772,6 @@ export function applyBaseModifiers(
     // is always the widest extent, so the print constraint already holds.
     const heelCupNarrowing = field.corrections.heelCupWidthMm < 0;
 
-    // Posting wedges must not be attenuated by topFactor feathering: rim verts at
-    // the forefoot carry steep normals so topFactor≈0 would mute mm posting on
-    // single-mesh SAMPLE_Top (Corrections composed-top path).
-    const wedgeWeightAt = (i: number, t: number): number => {
-        if (!wedgeDelta || wedgeDelta[i]! === 0) return 0;
-        if (isMultiMesh && topVertexCount > 0) return i < topVertexCount ? 1 : 0;
-        const heightAbove = t - thickMin;
-        return heightAbove > BOTTOM_BAND_MM ? 1 : 0;
-    };
-
     // Parallel composition: vertical, width-lateral, and depth-tangent displacements
     // are each computed from baseline positions (above) and summed here in one pass.
     // Neither width nor depth reads the other's deformed coordinates — clinical
@@ -2731,9 +2784,16 @@ export function applyBaseModifiers(
         } else {
             w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
         }
-        const wedgePart = wedgeDelta ? wedgeDelta[i]! : 0;
+        const heightAbove = t - thickMin;
+        const onPlantarBottom =
+            topFactors !== null
+                ? topFactors[i]! < BOTTOM_FACTOR_THRESHOLD && heightAbove < BOTTOM_BAND_MM
+                : heightAbove < BOTTOM_BAND_MM;
+        const wedgePart = wedgeAt ? wedgeAt[i]! : 0;
         const corePart = delta[i]! - wedgePart;
-        const vertD = corePart * w + wedgePart * wedgeWeightAt(i, t);
+        const allowWedge =
+            wedgePart > 0 && !(isMultiMesh && topVertexCount > 0 && i >= topVertexCount) && w > 0.01;
+        const vertD = corePart * w + (allowWedge ? wedgePart : 0);
         const latD = lateralDelta[i]! * (heelCupNarrowing ? 1 : w);
         let dx = 0;
         let dy = 0;
@@ -3047,9 +3107,6 @@ export function applyBaseModifiers(
 
 /** Max allowed bottom-surface movement for a "good" base output. */
 export const BASE_BOTTOM_DELTA_TOLERANCE_MM = 0.05;
-/** Vertices with top factor below this are considered bottom-sheet. */
-const BOTTOM_FACTOR_THRESHOLD = 0.1;
-
 export interface BaseValidation {
     /** Max |Δ| along the up axis over bottom-sheet vertices (topFactor < 0.1). */
     maxBottomDeltaMm: number;
