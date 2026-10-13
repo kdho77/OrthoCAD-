@@ -55,13 +55,12 @@ export const adminRouter = router({
                 throw new TRPCError({ code: "BAD_REQUEST", message: "Grant amount must be non-zero" });
             }
 
-            // Super admin must never be blocked by a missing RPC or a crashed
-            // Lambda body. grantAdminTokens falls back to table writes / Prisma
-            // and only TRPCError escapes (JSON the client can parse).
+            // Super admin must never be blocked by a missing RPC. Do not call
+            // Prisma here — the query engine is the FUNCTION_INVOCATION_FAILED
+            // crash (Vercel plaintext "A server error has occurred").
             try {
                 const result = await grantAdminTokens({
                     supabase: getSupabaseAdmin(),
-                    prisma: ctx.prismaDirect ?? ctx.prisma,
                     actorId: ctx.user.id,
                     targetUserId: input.userId,
                     amount: input.amount,
