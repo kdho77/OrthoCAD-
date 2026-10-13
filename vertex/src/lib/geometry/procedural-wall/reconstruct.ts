@@ -131,7 +131,8 @@ function zeroCorrections(): SideCorrections {
     };
 }
 
-function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
+/** True when Print reconstruct will run applyAnalyticTopDeltas (or sourceGeometry steal). */
+export function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
     const whole = input.insoleWidthScale ?? 1;
     if (Number.isFinite(whole) && Math.abs(whole - 1) > 1e-12) return true;
     const c = input.corrections;

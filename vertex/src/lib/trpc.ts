@@ -3,7 +3,7 @@ import superjson from "superjson";
 import type { AppRouter } from "../../server/src/routers";
 import { devAuthHeaderValue } from "./dev-auth";
 import { getSupabase, isSupabaseConfigured } from "./supabase";
-import { mapTrpcHttpFailure } from "./trpc-errors";
+import { looksLikeJsonRpcBody, mapTrpcHttpFailure } from "./trpc-errors";
 
 const rawApiUrl = import.meta.env.VITE_API_URL as string | undefined;
 
@@ -48,8 +48,14 @@ export const trpc = createTRPCClient<AppRouter>({
             },
             fetch: async (url, options) => {
                 const res = await fetch(url, options);
-                if (res.status !== 413) return res;
-                const text = await res.text().catch(() => "");
+                if (res.ok) return res;
+                const contentType = res.headers.get("content-type");
+                // Clone so tRPC can still read a JSON error body.
+                const text = await res
+                    .clone()
+                    .text()
+                    .catch(() => "");
+                if (looksLikeJsonRpcBody(text, contentType) && res.status !== 413) return res;
                 throw new Error(mapTrpcHttpFailure(res.status, text));
             },
         }),
