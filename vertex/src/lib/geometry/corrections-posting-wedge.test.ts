@@ -15,7 +15,6 @@ import {
 } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
-import { minBottomPatternInsetVsTopRimMm } from "@/lib/geometry/procedural-wall/bottom-pattern-rim";
 import { generatedMinWallMm } from "@/lib/geometry/procedural-wall/metrics";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import {
@@ -444,28 +443,4 @@ describe("posting wedge (design viewer height field)", () => {
             }, 180_000);
         }
     }
-});
-
-describe("bottom pattern B inside composed rim R (wide width)", () => {
-    test("left and right at width +5 — pattern inside composed rim (0.2 mm slack)", async () => {
-        const buf = readFileSync(SAMPLE_TOP_PATH);
-        const raw = await sampleTopFromArrayBuffer(
-            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
-        );
-        for (const side of ["left", "right"] as Side[]) {
-            const field = baseParams(side, zeroCorrections());
-            const preview = await reconstructProceduralPreview(raw, {
-                sourceField: field,
-                composedTop: true,
-                corrections: field.corrections,
-                shoeWidth: { width: "wide", ballWidthMm: 95, heelWidthMm: 95 * 0.62 },
-                scanPattern: "full_contact",
-            });
-            expect(preview.pattern.length).toBeGreaterThan(8);
-            const minInset = minBottomPatternInsetVsTopRimMm(preview.pattern, preview.model);
-            preview.geometry.dispose();
-            expect(minInset).toBeGreaterThan(-0.2);
-        }
-        raw.dispose();
-    });
 });

@@ -14,8 +14,6 @@ import {
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { heightAt } from "@/lib/geometry/height-field";
-import { minBottomPatternInsetVsTopRimMm } from "@/lib/geometry/procedural-wall/bottom-pattern-rim";
-import { extractTopOnlyModel } from "@/lib/geometry/procedural-wall/extract";
 import {
     hashLiveBottomPattern,
     resolveLiveBottomPattern,
@@ -471,16 +469,6 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             heelOverrideMm: heelW,
                         });
                         useBottomPatternStore.getState().ensureGenerated(side, patternKey, sizedPattern);
-                        try {
-                            const rimModel = extractTopOnlyModel(patternTop, {
-                                id: SAMPLE_TOP_ASSET_ID,
-                                name: "pattern-rim",
-                            });
-                            const inset = minBottomPatternInsetVsTopRimMm(sizedPattern, rimModel);
-                            useBottomPatternStore.getState().setRimInsetMm(side, inset);
-                        } catch {
-                            /* composed rim unavailable — skip B-inside-R warning */
-                        }
                     } catch (e) {
                         if (session.cancelled) return;
                         stockDebug("procedural viewer pattern failed", {
@@ -679,8 +667,6 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             }
                             outRef.current = preview.geometry;
                             lastLoftKeyRef.current = loftKey;
-                            const inset = minBottomPatternInsetVsTopRimMm(preview.pattern, preview.model);
-                            useBottomPatternStore.getState().setRimInsetMm(side, inset);
                             setGeometry(preview.geometry);
                             setLoftPhase(side, "ready", `Print solid ready (${side})`);
                             usePreviewLoftStatusStore.getState().markElapsed(performance.now() - started);

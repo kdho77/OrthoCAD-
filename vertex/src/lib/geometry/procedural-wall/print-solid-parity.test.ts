@@ -14,7 +14,6 @@ import { mirrorGeometry } from "@/lib/library/loaders";
 import type { Side, SideCorrections } from "@/types";
 import { composePrintSolidTop, composeViewerPrintSolidTop } from "./print-solid-compose";
 import { reconstructProceduralPreview, sampleTopFromArrayBuffer } from "./sample-top-preview";
-import { polylineHausdorffMm } from "./windows-trace";
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
 const PARITY_MM = 0.05;
@@ -150,31 +149,4 @@ describe("Print solid composed-top parity", () => {
         plain.dispose();
         raw.dispose();
     }, 180_000);
-
-    for (const side of ["left", "right"] as Side[]) {
-        test(`viewer overlay B matches loft bottomOutlineB (Hausdorff ≤ ${PARITY_MM} mm) — ${side}`, async () => {
-            const raw = await loadSampleTop(side);
-            const sourceField = field(side, {
-                ...zero(),
-                forefootWedge: { side: "lateral", value: 4, unit: "deg" },
-            });
-            const preview = reconstructProceduralPreview(raw, {
-                sourceField,
-                composedTop: true,
-                corrections: sourceField.corrections,
-                wallStyle: "straight",
-                scanPattern: "full_contact",
-            });
-            const solidBottom = (
-                preview.geometry.userData as {
-                    bottomOutlineB?: Array<{ x: number; y: number; z?: number }>;
-                }
-            ).bottomOutlineB;
-            expect(solidBottom?.length ?? 0).toBeGreaterThan(16);
-            const loftB = (solidBottom ?? []).map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }));
-            expect(polylineHausdorffMm(preview.pattern, loftB)).toBeLessThanOrEqual(PARITY_MM);
-            preview.geometry.dispose();
-            raw.dispose();
-        }, 180_000);
-    }
 });

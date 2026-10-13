@@ -224,28 +224,12 @@ export function reconstructProceduralPreview(
         return { model, pattern, geometry };
     };
     try {
-        return syncViewerPatternFromLoftB(loft(requested));
+        return loft(requested);
     } catch (e) {
         if (options.bottomPattern?.length || !options.scanPattern || options.scanPattern === "full_contact") {
             throw e;
         }
         // Prefab 3D / Flat must still produce a mesh from SAMPLE_Top.
-        return syncViewerPatternFromLoftB(loft(buildFairedPatternFromTop(model)));
+        return loft(buildFairedPatternFromTop(model));
     }
-}
-
-/** Viewer overlay B must match the loft station ring (bottomOutlineB), not a pre-loft estimate. */
-function syncViewerPatternFromLoftB(result: {
-    model: StockWallModel;
-    pattern: PolyPoint[];
-    geometry: BufferGeometry;
-}): { model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry } {
-    const ud = result.geometry.userData as {
-        bottomOutlineB?: Array<{ x: number; y: number; z?: number }>;
-    };
-    const ring = ud.bottomOutlineB;
-    if (ring?.length) {
-        result.pattern = ring.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }));
-    }
-    return result;
 }

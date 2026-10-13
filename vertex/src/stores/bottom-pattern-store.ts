@@ -32,12 +32,6 @@ export function curveToPolyPoints(curve: TrimlineCurve): PolyPoint[] {
 export const useBottomPatternStore = create<BottomPatternStore>((set, get) => ({
     patterns: {},
     generatedKey: {},
-    rimInsetMm: {},
-
-    setRimInsetMm: (side, insetMm) =>
-        set((s) => ({
-            rimInsetMm: { ...s.rimInsetMm, [side]: insetMm },
-        })),
 
     setPattern: (side, curve) =>
         set((s) => {
@@ -69,12 +63,10 @@ export const useBottomPatternStore = create<BottomPatternStore>((set, get) => ({
         set((s) => {
             const patterns = { ...s.patterns };
             const generatedKey = { ...s.generatedKey };
-            const rimInsetMm = { ...s.rimInsetMm };
             delete patterns[side];
             delete generatedKey[side];
-            delete rimInsetMm[side];
-            return { patterns, generatedKey, rimInsetMm };
+            return { patterns, generatedKey };
         }),
 
-    clear: () => set({ patterns: {}, generatedKey: {}, rimInsetMm: {} }),
+    clear: () => set({ patterns: {}, generatedKey: {} }),
 }));
