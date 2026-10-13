@@ -2786,12 +2786,21 @@ export function applyBaseModifiers(
         }
         const wedgePart = wedgeAt ? wedgeAt[i]! : 0;
         const corePart = delta[i]! - wedgePart;
-        // Wedge is applied at full wedgePart (not × top-factor w or smoothstep(0,0.1,w)):
-        // rim neighbours can sit at w≈0 beside w≈1 on the plantar sheet, which
-        // makes a scaled wedge cliff and forefoot stair-step tears (6.5° pronation).
-        const allowWedge =
-            wedgePart > 0 && !(isMultiMesh && topVertexCount > 0 && i >= topVertexCount) && w > 0.01;
-        const wedgeScaled = allowWedge ? wedgePart : 0;
+        // Wedge = smooth function of plan position only. Weight is a mesh-level
+        // constant (top-only sheet → 1; multi-mesh → top range 1 / bottom 0), or
+        // the continuous topFactor on closed single-mesh bases. Never the
+        // normalised-height fallback `w`, whose 1 % band follows the z ≈ 2.23 mm
+        // contour of SAMPLE_Top and tears the forefoot (PR #186 CAD review).
+        const wedgeW = !wedgeAt
+            ? 0
+            : isMultiMesh && topVertexCount > 0
+              ? i < topVertexCount
+                  ? 1
+                  : 0
+              : topFactors
+                ? topFactors[i]!
+                : 1;
+        const wedgeScaled = wedgePart > 0 ? wedgePart * wedgeW : 0;
         const vertD = corePart * w + wedgeScaled;
         const latD = lateralDelta[i]! * (heelCupNarrowing ? 1 : w);
         let dx = 0;

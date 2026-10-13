@@ -14,6 +14,8 @@ import {
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { heightAt } from "@/lib/geometry/height-field";
+import { minBottomPatternInsetVsTopRimMm } from "@/lib/geometry/procedural-wall/bottom-pattern-rim";
+import { extractTopOnlyModel } from "@/lib/geometry/procedural-wall/extract";
 import {
     hashLiveBottomPattern,
     resolveLiveBottomPattern,
@@ -37,7 +39,7 @@ import {
     buildProceduralViewerPatternInWorker,
     reconstructProceduralPreviewInWorker,
 } from "@/lib/geometry/procedural-wall/preview-loft-worker";
-import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
+import { composeViewerPrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import { proceduralViewerStockGate } from "@/lib/geometry/procedural-wall/sample-top-display";
 import {
     loadSampleTopGeometry,
@@ -428,7 +430,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         const patternTrim = draftTrimForPattern ?? committedTrimForPattern;
                         let patternTop = raw;
                         try {
-                            patternTop = composePrintSolidTop(raw, {
+                            patternTop = composeViewerPrintSolidTop({
+                                raw,
                                 sourceField: field,
                                 shoeWidth: {
                                     width: widthId,
@@ -468,6 +471,16 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             heelOverrideMm: heelW,
                         });
                         useBottomPatternStore.getState().ensureGenerated(side, patternKey, sizedPattern);
+                        try {
+                            const rimModel = extractTopOnlyModel(patternTop, {
+                                id: SAMPLE_TOP_ASSET_ID,
+                                name: "pattern-rim",
+                            });
+                            const inset = minBottomPatternInsetVsTopRimMm(sizedPattern, rimModel);
+                            useBottomPatternStore.getState().setRimInsetMm(side, inset);
+                        } catch {
+                            /* composed rim unavailable — skip B-inside-R warning */
+                        }
                     } catch (e) {
                         if (session.cancelled) return;
                         stockDebug("procedural viewer pattern failed", {
@@ -489,7 +502,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     const printTrim = draftTrim ?? committedTrim;
                     let modified = raw;
                     try {
-                        modified = composePrintSolidTop(raw, {
+                        modified = composeViewerPrintSolidTop({
+                            raw,
                             sourceField: field,
                             shoeWidth: {
                                 width: widthId,
@@ -511,7 +525,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 ...field,
                                 corrections: { ...(field.corrections ?? {}), forefootWedge: undefined },
                             };
-                            const neutralGeo = composePrintSolidTop(raw, {
+                            const neutralGeo = composeViewerPrintSolidTop({
+                                raw,
                                 sourceField: neutralField,
                                 shoeWidth: {
                                     width: widthId,
@@ -664,6 +679,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             }
                             outRef.current = preview.geometry;
                             lastLoftKeyRef.current = loftKey;
+                            const inset = minBottomPatternInsetVsTopRimMm(preview.pattern, preview.model);
+                            useBottomPatternStore.getState().setRimInsetMm(side, inset);
                             setGeometry(preview.geometry);
                             setLoftPhase(side, "ready", `Print solid ready (${side})`);
                             usePreviewLoftStatusStore.getState().markElapsed(performance.now() - started);

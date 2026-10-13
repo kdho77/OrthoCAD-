@@ -16,6 +16,7 @@ import {
 } from "./base-modifier";
 import type { HeightFieldParams } from "./height-field";
 import { heightAt } from "./height-field";
+import { analyzeManifold } from "./manifold";
 import { deriveNativeShellThicknessDatum } from "./native-shell-thickness";
 import { getForefootFactor, getRearfootFactor, wedgeDeltaAt } from "./wedge";
 
@@ -462,6 +463,27 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         expect(maxBottomLift).toBeLessThan(0.05);
         multiBase.dispose();
         modifiedMulti.dispose();
+    });
+
+    test("forefoot lateral 10 mm wedge — multi-mesh bottom sheet unchanged", () => {
+        const wedge = { side: "lateral" as const, value: 10, unit: "mm" as const };
+        const p = baseParams({
+            corrections: {
+                ...baseParams().corrections,
+                forefootWedge: wedge,
+            },
+        });
+        const base = makeMultiMeshBase();
+        const wedgeField = {
+            ...p,
+            thicknessMm:
+                deriveNativeShellThicknessDatum(base)?.nativeMinClearanceMm ?? BASE_REFERENCE_THICKNESS_MM,
+        };
+        const modified = applyBaseModifiers(base, wedgeField, 0);
+        const report = validateBaseResult(base, modified);
+        expect(report.maxBottomDeltaMm).toBeLessThan(0.05);
+        base.dispose();
+        modified.dispose();
     });
 
     test("wedge + arch height: bottom z=0 on multi-mesh, top lifts", () => {

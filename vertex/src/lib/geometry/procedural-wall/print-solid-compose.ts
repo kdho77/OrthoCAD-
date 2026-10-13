@@ -34,6 +34,19 @@ export interface ComposePrintSolidInput {
  * 2. applyBaseModifiers (thickness datum, F, elements+feather, shapeFinish, Kirby R11)
  * 3. trimline clip — before rim extraction
  */
+export function composeViewerPrintSolidTop(input: {
+    raw: BufferGeometry;
+    sourceField: HeightFieldParams;
+    shoeWidth?: PrintSolidShoeWidth | null;
+    trimline?: TrimlineCurve | null;
+}): BufferGeometry {
+    return composePrintSolidTop(input.raw, {
+        sourceField: input.sourceField,
+        shoeWidth: input.shoeWidth,
+        trimline: input.trimline,
+    });
+}
+
 export function composePrintSolidTop(raw: BufferGeometry, input: ComposePrintSolidInput): BufferGeometry {
     let current = raw;
     let owned = false;

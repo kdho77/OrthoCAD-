@@ -11,7 +11,10 @@ import type { Side } from "@/types";
 export interface BottomPatternStore {
     patterns: Partial<Record<Side, TrimlineCurve>>;
     generatedKey: Partial<Record<Side, string>>;
+    /** Min inset of B vs composed top rim R (mm). Negative = B outside R. */
+    rimInsetMm: Partial<Record<Side, number>>;
     setPattern: (side: Side, curve: TrimlineCurve) => void;
+    setRimInsetMm: (side: Side, insetMm: number) => void;
     ensureGenerated: (side: Side, key: string, points: PolyPoint[]) => TrimlineCurve;
     getPattern: (side: Side) => TrimlineCurve | null;
     clearSide: (side: Side) => void;
@@ -29,6 +32,12 @@ export function curveToPolyPoints(curve: TrimlineCurve): PolyPoint[] {
 export const useBottomPatternStore = create<BottomPatternStore>((set, get) => ({
     patterns: {},
     generatedKey: {},
+    rimInsetMm: {},
+
+    setRimInsetMm: (side, insetMm) =>
+        set((s) => ({
+            rimInsetMm: { ...s.rimInsetMm, [side]: insetMm },
+        })),
 
     setPattern: (side, curve) =>
         set((s) => {
@@ -60,10 +69,12 @@ export const useBottomPatternStore = create<BottomPatternStore>((set, get) => ({
         set((s) => {
             const patterns = { ...s.patterns };
             const generatedKey = { ...s.generatedKey };
+            const rimInsetMm = { ...s.rimInsetMm };
             delete patterns[side];
             delete generatedKey[side];
-            return { patterns, generatedKey };
+            delete rimInsetMm[side];
+            return { patterns, generatedKey, rimInsetMm };
         }),
 
-    clear: () => set({ patterns: {}, generatedKey: {} }),
+    clear: () => set({ patterns: {}, generatedKey: {}, rimInsetMm: {} }),
 }));

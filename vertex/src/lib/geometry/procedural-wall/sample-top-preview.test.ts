@@ -340,8 +340,8 @@ describe("SAMPLE_Top faired preview inputs", () => {
             "[LIVE-PATTERN-SOLID]",
             JSON.stringify({ haus, printMs, edited: edited.length, solid: solidBottom?.length ?? 0 }),
         );
-        expect(preview.pattern).toEqual(edited);
-        expect(haus).toBeLessThan(6);
+        expect(polylineHausdorffMm(preview.pattern, edited)).toBeLessThan(0.05);
+        expect(haus).toBeLessThan(0.05);
         preview.geometry.dispose();
         geo.dispose();
     }, 180_000);

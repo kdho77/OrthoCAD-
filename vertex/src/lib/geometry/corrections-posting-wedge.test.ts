@@ -15,6 +15,7 @@ import {
 } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
+import { minBottomPatternInsetVsTopRimMm } from "@/lib/geometry/procedural-wall/bottom-pattern-rim";
 import { generatedMinWallMm } from "@/lib/geometry/procedural-wall/metrics";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import {
@@ -28,8 +29,8 @@ import { defaultDesign } from "@/stores/design-store";
 import type { Side, SideCorrections } from "@/types";
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
-const FOREFOOT_WEDGE_MAX_NEIGHBOR_STEP_MM = 0.3;
-const FOREFOOT_PLANTAR_HEIGHT_MM = 4.5;
+const WEDGE_LIFT_TOL_MM = 0.01;
+const SLOPE_RATIO_SLACK = 0.15;
 
 function zeroCorrections(): SideCorrections {
     return {
@@ -67,6 +68,55 @@ function fieldFromSampleTop(
         includeElements: false,
         trimline: null,
     };
+}
+
+function wedgeSlopeAndFlips(
+    geo: BufferGeometry,
+    base: BufferGeometry,
+    thickAxis: number,
+): { maxRatio: number; flippedNormals: number } {
+    const posAttr = geo.getAttribute("position");
+    const baseAttr = base.getAttribute("position");
+    const index = geo.getIndex();
+    if (!posAttr || !baseAttr || !index) {
+        return { maxRatio: 0, flippedNormals: 0 };
+    }
+    const p = posAttr.array as Float32Array;
+    const b = baseAttr.array as Float32Array;
+    const idx = index.array;
+    let maxRatio = 0;
+    let flippedNormals = 0;
+    const normalOf = (arr: Float32Array, f: number): [number, number, number] => {
+        const v = [idx[f]!, idx[f + 1]!, idx[f + 2]!];
+        const A = v[0]!;
+        const B = v[1]!;
+        const C = v[2]!;
+        const ux = arr[B * 3]! - arr[A * 3]!;
+        const uy = arr[B * 3 + 1]! - arr[A * 3 + 1]!;
+        const uz = arr[B * 3 + 2]! - arr[A * 3 + 2]!;
+        const vx = arr[C * 3]! - arr[A * 3]!;
+        const vy = arr[C * 3 + 1]! - arr[A * 3 + 1]!;
+        const vz = arr[C * 3 + 2]! - arr[A * 3 + 2]!;
+        return [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+    };
+    for (let t = 0; t < idx.length; t += 3) {
+        const n0 = normalOf(b, t);
+        const n1 = normalOf(p, t);
+        if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] < 0) flippedNormals++;
+        const verts = [idx[t]!, idx[t + 1]!, idx[t + 2]!];
+        for (let k = 0; k < 3; k++) {
+            const a = verts[k]!;
+            const c = verts[(k + 1) % 3]!;
+            const ex = b[a * 3]! - b[c * 3]!;
+            const ey = b[a * 3 + 1]! - b[c * 3 + 1]!;
+            const ez = b[a * 3 + 2]! - b[c * 3 + 2]!;
+            const len = Math.hypot(ex, ey, ez);
+            if (len < 1e-6) continue;
+            const dz = Math.abs(p[a * 3 + thickAxis]! - p[c * 3 + thickAxis]!);
+            maxRatio = Math.max(maxRatio, dz / len);
+        }
+    }
+    return { maxRatio, flippedNormals };
 }
 
 function baseParams(side: Side, corrections: SideCorrections): HeightFieldParams {
@@ -347,75 +397,53 @@ describe("posting wedge (design viewer height field)", () => {
         raw.dispose();
     }, 180_000);
 
-    test("forefoot lateral 6.5° — no plantar step > 0.3 mm, distal rise holds on both feet", async () => {
-        const wedge = { side: "lateral" as const, value: 6.5, unit: "deg" as const };
-        const buf = readFileSync(SAMPLE_TOP_PATH);
+    for (const wedgeSpec of [
+        { value: 6.5, unit: "deg" as const },
+        { value: 10, unit: "mm" as const },
+    ]) {
         for (const side of ["left", "right"] as Side[]) {
-            let raw = await sampleTopFromArrayBuffer(
-                buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
-            );
-            if (side === "left") {
-                const mirrored = mirrorGeometry(raw);
-                raw.dispose();
-                raw = mirrored;
-            }
-            const field = baseParams(side, { ...zeroCorrections(), forefootWedge: wedge });
-            const neutralField = baseParams(side, zeroCorrections());
-            const composed = composePrintSolidTop(raw, { sourceField: field });
-            const neutral = composePrintSolidTop(raw, { sourceField: neutralField });
-            const frame = getBaseFootprintFrame(raw, side);
-            const ta = frame.thickAxis;
-            const basePos = raw.getAttribute("position")!.array as Float32Array;
-            const pos = composed.getAttribute("position")!.array as Float32Array;
-            const neu = neutral.getAttribute("position")!.array as Float32Array;
-            raw.computeBoundingBox();
-            const thickMin = raw.boundingBox!.min.getComponent(frame.thickAxis);
-            const n = basePos.length / 3;
-            const lifts = new Float32Array(n);
-            for (let i = 0; i < n; i++) lifts[i] = pos[i * 3 + ta]! - neu[i * 3 + ta]!;
-            const index = raw.getIndex();
-            let maxStep = 0;
-            if (index) {
-                const idx = index.array;
-                const seen = new Set<string>();
-                for (let e = 0; e < idx.length; e += 3) {
-                    const pairs = [
-                        [idx[e]!, idx[e + 1]!],
-                        [idx[e + 1]!, idx[e + 2]!],
-                        [idx[e + 2]!, idx[e]!],
-                    ];
-                    for (const [a, b] of pairs) {
-                        const key = a < b ? `${a},${b}` : `${b},${a}`;
-                        if (seen.has(key)) continue;
-                        seen.add(key);
-                        const ua = vertexFootprintAt(frame, basePos, a).u;
-                        const ub = vertexFootprintAt(frame, basePos, b).u;
-                        if (ua < 0.68 && ub < 0.68) continue;
-                        if (basePos[a * 3 + ta]! - thickMin < FOREFOOT_PLANTAR_HEIGHT_MM) continue;
-                        if (basePos[b * 3 + ta]! - thickMin < FOREFOOT_PLANTAR_HEIGHT_MM) continue;
-                        if (lifts[a]! < 0.25 && lifts[b]! < 0.25) continue;
-                        maxStep = Math.max(maxStep, Math.abs(lifts[a]! - lifts[b]!));
-                    }
+            test(`forefoot lateral ${wedgeSpec.value}${wedgeSpec.unit} ${side} — wedge lift, slope, normals`, async () => {
+                const wedge = {
+                    side: "lateral" as const,
+                    value: wedgeSpec.value,
+                    unit: wedgeSpec.unit,
+                };
+                const buf = readFileSync(SAMPLE_TOP_PATH);
+                let raw = await sampleTopFromArrayBuffer(
+                    buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+                );
+                if (side === "left") {
+                    const mirrored = mirrorGeometry(raw);
+                    raw.dispose();
+                    raw = mirrored;
                 }
-            }
-            let peak = 0;
-            let distal = 0;
-            for (let i = 0; i < n; i++) {
-                const { u } = vertexFootprintAt(frame, basePos, i);
-                if (u < 0.68) continue;
-                peak = Math.max(peak, lifts[i]!);
-                if (u >= 0.82) distal = Math.max(distal, lifts[i]!);
-            }
-            composed.dispose();
-            neutral.dispose();
-            raw.dispose();
-            expect(maxStep, `${side} maxStep=${maxStep}`).toBeLessThanOrEqual(
-                FOREFOOT_WEDGE_MAX_NEIGHBOR_STEP_MM,
-            );
-            expect(peak).toBeGreaterThan(2);
-            expect(distal).toBeGreaterThanOrEqual(peak * 0.65);
+                const field = baseParams(side, { ...zeroCorrections(), forefootWedge: wedge });
+                const neutralField = baseParams(side, zeroCorrections());
+                const composed = composePrintSolidTop(raw, { sourceField: field });
+                const neutral = composePrintSolidTop(raw, { sourceField: neutralField });
+                const frame = getBaseFootprintFrame(raw, side);
+                const ta = frame.thickAxis;
+                const basePos = raw.getAttribute("position")!.array as Float32Array;
+                const pos = composed.getAttribute("position")!.array as Float32Array;
+                const neu = neutral.getAttribute("position")!.array as Float32Array;
+                const n = basePos.length / 3;
+                let worstLiftErr = 0;
+                for (let i = 0; i < n; i++) {
+                    const expected = wedgeMmAtBaseVertex(raw, field, i);
+                    const lift = pos[i * 3 + ta]! - neu[i * 3 + ta]!;
+                    worstLiftErr = Math.max(worstLiftErr, Math.abs(lift - expected));
+                }
+                const wedgedSlope = wedgeSlopeAndFlips(composed, raw, ta);
+                const neutralSlope = wedgeSlopeAndFlips(neutral, raw, ta);
+                composed.dispose();
+                neutral.dispose();
+                raw.dispose();
+                expect(worstLiftErr).toBeLessThanOrEqual(WEDGE_LIFT_TOL_MM);
+                expect(wedgedSlope.maxRatio).toBeLessThanOrEqual(neutralSlope.maxRatio + SLOPE_RATIO_SLACK);
+                expect(wedgedSlope.flippedNormals).toBe(0);
+            }, 180_000);
         }
-    });
+    }
 });
 
 describe("bottom pattern B inside composed rim R (wide width)", () => {
@@ -434,20 +462,7 @@ describe("bottom pattern B inside composed rim R (wide width)", () => {
                 scanPattern: "full_contact",
             });
             expect(preview.pattern.length).toBeGreaterThan(8);
-            const rim = preview.model.top.rimLocal ?? [];
-            const pos = preview.model.top.meshPositions;
-            if (!pos) continue;
-            let minInset = Infinity;
-            for (let i = 0; i < preview.pattern.length; i++) {
-                const b = preview.pattern[i];
-                const ri = rim[i % rim.length];
-                if (!b || ri === undefined) continue;
-                const rx = pos[ri * 3]!;
-                const ry = pos[ri * 3 + 1]!;
-                const dx = b.x - rx;
-                const dy = b.y - ry;
-                minInset = Math.min(minInset, Math.hypot(dx, dy));
-            }
+            const minInset = minBottomPatternInsetVsTopRimMm(preview.pattern, preview.model);
             preview.geometry.dispose();
             expect(minInset).toBeGreaterThan(-0.2);
         }

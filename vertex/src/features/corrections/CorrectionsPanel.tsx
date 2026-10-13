@@ -19,6 +19,8 @@ import {
 } from "@/lib/geometry/heel-skive";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { cn } from "@/lib/utils";
+import { bottomPatternOutsideComposedRim } from "@/lib/geometry/procedural-wall/bottom-pattern-rim";
+import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { mergeCorrections, usePerformanceStore } from "@/stores/performance-store";
@@ -475,6 +477,15 @@ export function CorrectionsPanel() {
         [sideValues],
     );
 
+    const rimInsetLeft = useBottomPatternStore((s) => s.rimInsetMm.left);
+    const rimInsetRight = useBottomPatternStore((s) => s.rimInsetMm.right);
+    const showBottomOutsideRim = useMemo(
+        () =>
+            bottomPatternOutsideComposedRim(rimInsetLeft ?? Number.POSITIVE_INFINITY) ||
+            bottomPatternOutsideComposedRim(rimInsetRight ?? Number.POSITIVE_INFINITY),
+        [rimInsetLeft, rimInsetRight],
+    );
+
     const sectionOpen = (key: string) => openSections[key] ?? false;
     const toggleSection = (key: string) => setOpenSections((prev) => ({ ...prev, [key]: !sectionOpen(key) }));
 
@@ -490,6 +501,15 @@ export function CorrectionsPanel() {
 
     return (
         <div className="space-y-3">
+            {showBottomOutsideRim ? (
+                <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
+                    <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                    <span>
+                        Bottom pattern (B) extends outside the composed top rim (R) — check width or
+                        pattern edit (0.2 mm slack).
+                    </span>
+                </div>
+            ) : null}
             <div className="flex items-center rounded-md bg-muted px-2 py-1.5">
                 <button
                     type="button"
