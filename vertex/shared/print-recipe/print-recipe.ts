@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { z } from "zod";
-import hardnessTable from "./hardness-to-infill-pct.json";
+import { HARDNESS_TO_INFILL_PCT as hardnessTable } from "./hardness-to-infill-pct.js";
 
 /** Locked clinical hardness ladder (Biomechanics 2026-09-20). */
 export const HARDNESS_NAMES = ["Extra Soft", "Soft", "Medium", "Hard", "Extra Hard"] as const;

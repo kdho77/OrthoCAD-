@@ -1,6 +1,9 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "@rstest/core";
 import {
     bindPrintRecipeProfile,
@@ -24,6 +27,12 @@ describe("print-recipe", () => {
         expect(HARDNESS_TO_INFILL_PCT.Hard).toBe(32);
         expect(HARDNESS_TO_INFILL_PCT["Extra Hard"]).toBe(38);
         expect(HARDNESS_NAMES).toHaveLength(5);
+    });
+
+    test("TS hardness table matches the JSON Python still reads", () => {
+        const jsonPath = join(dirname(fileURLToPath(import.meta.url)), "hardness-to-infill-pct.json");
+        const fromJson = JSON.parse(readFileSync(jsonPath, "utf8"));
+        expect(HARDNESS_TO_INFILL_PCT).toEqual(fromJson);
     });
 
     test("schema round-trip", () => {

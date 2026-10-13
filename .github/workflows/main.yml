@@ -39,6 +39,9 @@ jobs:
             - name: Install STL-gate Python deps
               run: python3 -m pip install "trimesh>=4.0" "scipy>=1.11"
 
+            - name: Assert server entry boots under plain Node ESM
+              run: node vertex/scripts/assert-server-esm-boot.mjs
+
             - name: Run unit tests
               run: npm run test
 
