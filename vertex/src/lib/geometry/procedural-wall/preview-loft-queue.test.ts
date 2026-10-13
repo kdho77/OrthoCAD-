@@ -8,6 +8,7 @@ import {
     previewLoftPriority,
     previewLoftQueueSnapshotForTests,
     resetPreviewLoftQueueForTests,
+    yieldToMain,
 } from "./preview-loft-queue";
 
 afterEach(() => {
@@ -15,6 +16,16 @@ afterEach(() => {
 });
 
 describe("preview loft queue", () => {
+    test("yieldToMain returns control to the event loop", async () => {
+        let continued = false;
+        const p = yieldToMain().then(() => {
+            continued = true;
+        });
+        expect(continued).toBe(false);
+        await p;
+        expect(continued).toBe(true);
+    });
+
     test("previewLoftPriority runs the active foot first and parks the mobile mirror", () => {
         expect(previewLoftPriority("left", "left", false)).toBe(0);
         expect(previewLoftPriority("right", "left", false)).toBe(1);
