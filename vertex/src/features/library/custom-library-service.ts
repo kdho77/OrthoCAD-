@@ -14,6 +14,8 @@ import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall";
 import { loadSampleTopGeometry } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { getDesignTrimline } from "@/lib/geometry/trimline";
 import { countMeshes, extractMergedGeometry, loadGlbFromBuffer, mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured, trpc } from "@/lib/trpc";
@@ -157,12 +159,23 @@ async function buildBasePrefabMesh(side: Side): Promise<THREE.Mesh | null> {
             : design.thicknessMm;
         const field = baseModifierField(design, side, thicknessMm ?? BASE_REFERENCE_THICKNESS_MM);
         const stored = useBottomPatternStore.getState().getPattern(side);
+        const layout = insoleLayoutFromDesign(design);
+        const widthId = shoeWidthForSide(design, side);
         const preview = reconstructProceduralPreview(raw, {
             corrections: field.corrections,
             thicknessMm: thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
             wallStyle: viewer.wallStyle ?? "straight",
             scanPattern: design.pattern,
+            sourceField: field,
+            composedTop: true,
+            shoeWidth: {
+                width: widthId,
+                ballWidthMm: layout.widthMm,
+                heelWidthMm: layout.widthMm * 0.62,
+                heelOverrideMm: field.corrections?.heelCupWidthMm,
+            },
+            trimline: getDesignTrimline(design, side),
             ...(stored ? { bottomPattern: curveToPolyPoints(stored) } : {}),
         });
         raw.dispose();

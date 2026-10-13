@@ -4,7 +4,9 @@
 import type { BufferGeometry } from "three";
 import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthLongitudinalEnvelope, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
     extractMergedGeometry,
     loadGlbFromBuffer,
@@ -15,6 +17,7 @@ import type { ScanPattern, SideCorrections } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
+import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
@@ -155,13 +158,25 @@ export interface ProceduralPreviewOptions {
     archGrindDepthMm?: number;
     /** Pattern preset (Full Contact / Prefab 3D / Flat / Custom) drives faired B. */
     scanPattern?: ScanPattern;
+    /**
+     * Full viewer height field. When set, Print composes once
+     * (width → applyBaseModifiers → trimline clip), extracts the composed
+     * top via extractTopOnlyModel, and lofts without applyAnalyticTopDeltas.
+     */
+    sourceField?: HeightFieldParams;
+    /** Viewer shoe-width affine applied to the top before modifiers. */
+    shoeWidth?: PrintSolidShoeWidth | null;
+    /** Committed / draft trimline. Clipped before rim extraction. */
+    trimline?: TrimlineCurve | null;
+    /** Force the composed-top loft path (skip analytic deltas). */
+    composedTop?: boolean;
 }
 
 /**
  * Viewer reconstruct for procedural mode: top-only SAMPLE_Top + faired B.
- * Same inputs as the approved SAMPLE_Top + synthetic-pattern STLs.
- * Do not pass sourceGeometry — extractTopSheet after applyBaseModifiers is the
- * stock Default path and yields a 0-station ring on a top-only mesh.
+ * With sourceField: compose once, extractTopOnlyModel on the composed top,
+ * loft without applyAnalyticTopDeltas. Do not pass raw+sourceGeometry into
+ * the Default extractTopSheet steal — that yields a 0-station ring.
  */
 export function reconstructProceduralPreview(
     topGeo: BufferGeometry,
@@ -170,15 +185,30 @@ export function reconstructProceduralPreview(
     if (isCombinedStockGeometry(topGeo)) {
         throw new Error("[S1-PROCEDURAL] combined/stock GLB is not a procedural input — use legacy");
     }
-    const model = extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+    const useComposed = Boolean(options.sourceField) || options.composedTop === true;
+    let source = topGeo;
+    let owned = false;
+    if (options.sourceField) {
+        source = composePrintSolidTop(topGeo, {
+            sourceField: options.sourceField,
+            shoeWidth: options.shoeWidth,
+            trimline: options.trimline,
+        });
+        owned = source !== topGeo;
+    }
+    const model = extractTopOnlyModel(source, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+    if (owned) source.dispose();
     const requested = options.bottomPattern?.length
         ? options.bottomPattern
         : buildFairedPatternFromTop(model, options.scanPattern);
     const loft = (pattern: PolyPoint[]) => {
-        const thicknessMm = options.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
+        const thicknessMm =
+            options.thicknessMm ?? options.sourceField?.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
         const stockThicknessMm = options.stockThicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
         const geometry = reconstructProceduralWalls(model, {
-            corrections: options.corrections as SideCorrections | undefined,
+            corrections: (options.corrections ?? options.sourceField?.corrections) as
+                | SideCorrections
+                | undefined,
             thicknessMm,
             stockThicknessMm,
             bottomPattern: pattern,
@@ -188,6 +218,8 @@ export function reconstructProceduralPreview(
             deviceType: options.deviceType,
             lateralFlange: options.lateralFlange,
             archGrindDepthMm: options.archGrindDepthMm,
+            sourceField: options.sourceField,
+            composedTop: useComposed,
         });
         return { model, pattern, geometry };
     };
