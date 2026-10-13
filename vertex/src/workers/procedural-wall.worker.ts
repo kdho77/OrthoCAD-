@@ -7,11 +7,28 @@ import type {
     ProceduralWallWorkerRequest,
     ProceduralWallWorkerResponse,
 } from "@/lib/geometry/procedural-wall/preview-loft-worker";
-import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import {
+    buildProceduralViewerPattern,
+    reconstructProceduralPreview,
+} from "@/lib/geometry/procedural-wall/sample-top-preview";
 
 self.onmessage = (event: MessageEvent<ProceduralWallWorkerRequest>) => {
     const msg = event.data;
     try {
+        if (msg.type === "buildPattern") {
+            const geo = new BufferGeometry();
+            geo.setAttribute("position", new BufferAttribute(msg.positions, 3));
+            if (msg.indices) geo.setIndex(new BufferAttribute(msg.indices, 1));
+            const pattern = buildProceduralViewerPattern(geo, msg.scanPattern, msg.corrections);
+            geo.dispose();
+            const response: ProceduralWallWorkerResponse = {
+                id: msg.id,
+                type: "pattern",
+                pattern,
+            };
+            (self as DedicatedWorkerGlobalScope).postMessage(response);
+            return;
+        }
         if (msg.type !== "reconstruct") {
             throw new Error(`Unknown procedural wall worker message: ${String(msg.type)}`);
         }

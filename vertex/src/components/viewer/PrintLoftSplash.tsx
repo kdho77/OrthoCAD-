@@ -5,6 +5,7 @@ import { Loader2, RotateCcw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isCoarsePointerDevice } from "@/lib/geometry/procedural-wall/preview-loft-queue";
 import {
+    INITIAL_LOAD_LABEL,
     PRINT_LOFT_HINT,
     previewLoftProgressLabel,
     printLoftProgress01,
@@ -48,6 +49,7 @@ export function PrintLoftSplash({ overlay }: { overlay: ViewerLoftOverlayState }
     const progress = printLoftProgress01(elapsedMs, Math.max(1, workingFeet));
     const steps = printLoftSteps(phaseBySide);
     const label = previewLoftProgressLabel(phaseBySide, isCoarsePointerDevice());
+    const initialLoad = overlay.kind === "progress" && overlay.mode === "initial";
 
     return (
         <div
@@ -58,7 +60,7 @@ export function PrintLoftSplash({ overlay }: { overlay: ViewerLoftOverlayState }
             }
             role={overlay.kind === "error" ? "alert" : "status"}
             aria-live="polite"
-            data-testid="print-loft-splash"
+            data-testid={initialLoad ? "initial-load-splash" : "print-loft-splash"}
         >
             <div
                 className={
@@ -96,57 +98,67 @@ export function PrintLoftSplash({ overlay }: { overlay: ViewerLoftOverlayState }
                         <div className="flex items-start gap-2">
                             <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-cyan-400" />
                             <div className="min-w-0 flex-1">
-                                <p className="font-medium">{label}</p>
-                                <p className="mt-0.5 text-[11px] text-muted-foreground">{PRINT_LOFT_HINT}</p>
+                                <p className="font-medium">{initialLoad ? INITIAL_LOAD_LABEL : label}</p>
+                                {initialLoad ? null : (
+                                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                                        {PRINT_LOFT_HINT}
+                                    </p>
+                                )}
                             </div>
-                            <span className="tabular-nums text-[11px] text-muted-foreground">
-                                {formatElapsed(elapsedMs)}
-                            </span>
+                            {initialLoad ? null : (
+                                <span className="tabular-nums text-[11px] text-muted-foreground">
+                                    {formatElapsed(elapsedMs)}
+                                </span>
+                            )}
                         </div>
-                        <div
-                            className="h-1.5 overflow-hidden rounded-full bg-muted"
-                            role="progressbar"
-                            aria-valuemin={0}
-                            aria-valuemax={100}
-                            aria-valuenow={Math.round(progress * 100)}
-                        >
-                            <div
-                                className="h-full rounded-full bg-cyan-400 transition-[width] duration-300"
-                                style={{ width: `${Math.round(progress * 100)}%` }}
-                            />
-                        </div>
-                        <ol className="space-y-1 text-[11px]">
-                            {steps.map((step) => (
-                                <li key={step.id} className="flex items-center gap-2">
-                                    <span
-                                        className={cn(
-                                            "h-1.5 w-1.5 rounded-full",
-                                            step.state === "done" && "bg-emerald-400",
-                                            step.state === "active" && "bg-cyan-400",
-                                            step.state === "pending" && "bg-muted-foreground/40",
-                                        )}
+                        {initialLoad ? null : (
+                            <>
+                                <div
+                                    className="h-1.5 overflow-hidden rounded-full bg-muted"
+                                    role="progressbar"
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                    aria-valuenow={Math.round(progress * 100)}
+                                >
+                                    <div
+                                        className="h-full rounded-full bg-cyan-400 transition-[width] duration-300"
+                                        style={{ width: `${Math.round(progress * 100)}%` }}
                                     />
-                                    <span
-                                        className={cn(
-                                            step.state === "active" && "text-foreground",
-                                            step.state !== "active" && "text-muted-foreground",
-                                        )}
+                                </div>
+                                <ol className="space-y-1 text-[11px]">
+                                    {steps.map((step) => (
+                                        <li key={step.id} className="flex items-center gap-2">
+                                            <span
+                                                className={cn(
+                                                    "h-1.5 w-1.5 rounded-full",
+                                                    step.state === "done" && "bg-emerald-400",
+                                                    step.state === "active" && "bg-cyan-400",
+                                                    step.state === "pending" && "bg-muted-foreground/40",
+                                                )}
+                                            />
+                                            <span
+                                                className={cn(
+                                                    step.state === "active" && "text-foreground",
+                                                    step.state !== "active" && "text-muted-foreground",
+                                                )}
+                                            >
+                                                {step.label}
+                                            </span>
+                                        </li>
+                                    ))}
+                                </ol>
+                                <div className="flex justify-end">
+                                    <button
+                                        type="button"
+                                        className="inline-flex items-center justify-center gap-1 rounded border border-border bg-background/60 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide hover:bg-background"
+                                        onClick={() => cancelPreviewLoft()}
                                     >
-                                        {step.label}
-                                    </span>
-                                </li>
-                            ))}
-                        </ol>
-                        <div className="flex justify-end">
-                            <button
-                                type="button"
-                                className="inline-flex items-center justify-center gap-1 rounded border border-border bg-background/60 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide hover:bg-background"
-                                onClick={() => cancelPreviewLoft()}
-                            >
-                                <X className="h-3 w-3" />
-                                Cancel
-                            </button>
-                        </div>
+                                        <X className="h-3 w-3" />
+                                        Cancel
+                                    </button>
+                                </div>
+                            </>
+                        )}
                     </>
                 )}
             </div>

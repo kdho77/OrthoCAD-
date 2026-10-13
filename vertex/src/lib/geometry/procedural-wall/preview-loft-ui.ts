@@ -86,16 +86,28 @@ export function autoPatternKey(mirrored: boolean, scanPattern: string): string {
     return `sample-top:${mirrored ? "m" : "p"}:${scanPattern}`;
 }
 
+export type ViewerOverlayMode = "initial" | "print";
+
 export interface ViewerLoftOverlayState {
     blockViewport: boolean;
     showBanner: boolean;
     kind: "hidden" | "progress" | "error";
+    /** Initial app load (top + pattern) vs Print solid generation. */
+    mode: ViewerOverlayMode;
 }
 
+const hiddenOverlay = (): ViewerLoftOverlayState => ({
+    blockViewport: false,
+    showBanner: false,
+    kind: "hidden",
+    mode: "initial",
+});
+
 /**
- * Full-viewport splash while any visible foot is fetching / queued / lofting.
- * Print reconstruct is off the main thread but still takes about a minute per
- * foot — keep the canvas blocked so the page never looks frozen.
+ * Full-viewport splash while any visible foot is loading or lofting.
+ * Initial load only fetches the top mesh + bottom pattern — do not reuse the
+ * Print solid step list / per-foot estimate. Print reconstruct stays blocked
+ * so the canvas never looks frozen.
  */
 export function viewerLoftOverlayState(args: {
     showBase: boolean;
@@ -106,30 +118,35 @@ export function viewerLoftOverlayState(args: {
     phaseBySide: Record<Side, PreviewLoftPhase>;
     error: string | null;
 }): ViewerLoftOverlayState {
-    if (!args.showBase) return { blockViewport: false, showBanner: false, kind: "hidden" };
+    if (!args.showBase) return hiddenOverlay();
     const visible: Side[] = [];
     if (args.showLeft) visible.push("left");
     if (args.showRight) visible.push("right");
-    if (visible.length === 0) return { blockViewport: false, showBanner: false, kind: "hidden" };
+    if (visible.length === 0) return hiddenOverlay();
 
     const phases = visible.map((side) => args.phaseBySide[side]);
     const anyError = phases.includes("error") || Boolean(args.error);
-    const anyWorking =
+    const anyPrint = phases.some((phase) => phase === "queued" || phase === "lofting");
+    const anyInitial =
         args.stockBaseLoading ||
         visible.some((side) => args.loadingBySide[side]) ||
-        phases.some((phase) => phase === "fetching" || phase === "queued" || phase === "lofting");
+        phases.some((phase) => phase === "fetching");
 
     if (anyError) {
-        return { blockViewport: true, showBanner: true, kind: "error" };
+        return { blockViewport: true, showBanner: true, kind: "error", mode: anyPrint ? "print" : "initial" };
     }
-    if (anyWorking) {
-        return { blockViewport: true, showBanner: true, kind: "progress" };
+    if (anyPrint) {
+        return { blockViewport: true, showBanner: true, kind: "progress", mode: "print" };
     }
-    return { blockViewport: false, showBanner: false, kind: "hidden" };
+    if (anyInitial) {
+        return { blockViewport: true, showBanner: true, kind: "progress", mode: "initial" };
+    }
+    return hiddenOverlay();
 }
 
 export const PRINT_LOFT_TIMEOUT_MS = 10 * 60 * 1000;
 export const PRINT_LOFT_HINT = "This can take about a minute per foot.";
+export const INITIAL_LOAD_LABEL = "Loading top mesh…";
 
 export type PrintLoftStepState = "done" | "active" | "pending";
 

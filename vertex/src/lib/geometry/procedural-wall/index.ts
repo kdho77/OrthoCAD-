@@ -340,6 +340,7 @@ export {
     SLIVER_MIN_ANGLE_DEG,
 } from "./plantar-cdt";
 export {
+    INITIAL_LOAD_LABEL,
     PRINT_LOFT_HINT,
     PRINT_LOFT_TIMEOUT_MS,
     printLoftProgress01,
