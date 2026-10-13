@@ -2600,6 +2600,7 @@ export function applyBaseModifiers(
     //    rim-conformity moves the wall). Top-range samples are bit-identical
     //    either way (same u/vSigned → correctionDeltaAt).
     const delta = new Float32Array(count);
+    const wedgeDelta = wedgeActive ? new Float32Array(count) : null;
     const sampleEnd = useShellFieldSync && topVertexCount > 0 ? topVertexCount : count;
     for (let i = 0; i < sampleEnd; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
@@ -2607,10 +2608,16 @@ export function applyBaseModifiers(
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
         let d = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
-        if (wedgeActive && isMultiMesh && topVertexCount > 0 && i >= topVertexCount) {
-            d -= wedgeDeltaAt(u, vSigned, field.side, field.corrections, wedgeParams);
+        let wD = 0;
+        if (wedgeActive) {
+            wD = wedgeDeltaAt(u, vSigned, field.side, field.corrections, wedgeParams);
+            if (isMultiMesh && topVertexCount > 0 && i >= topVertexCount) {
+                d -= wD;
+                wD = 0;
+            }
         }
         delta[i] = d;
+        if (wedgeDelta) wedgeDelta[i] = wD;
     }
 
     // 2) Optional Laplacian relaxation of the displacement field (cached adjacency).
@@ -2618,6 +2625,11 @@ export function applyBaseModifiers(
     // merged adjacency graph collapses the top rim loop and breaks closeGlbInsoleToSolid.
     const effectiveSmoothing = isMultiMesh && topVertexCount > 0 ? 0 : smoothingIterations;
     const adj = effectiveSmoothing > 0 ? getBaseAdjacency(base) : null;
+    if (adj && wedgeDelta) {
+        for (let i = 0; i < count; i++) {
+            delta[i] = delta[i]! - wedgeDelta[i]!;
+        }
+    }
     if (adj) {
         let current = delta;
         for (let it = 0; it < effectiveSmoothing; it++) {
@@ -2636,6 +2648,11 @@ export function applyBaseModifiers(
             current = next;
         }
         delta.set(current);
+    }
+    if (adj && wedgeDelta) {
+        for (let i = 0; i < count; i++) {
+            delta[i] = delta[i]! + wedgeDelta[i]!;
+        }
     }
 
     const { smoothed: lateralDelta } = buildHeelCupWidthLateralDelta(
@@ -2692,6 +2709,16 @@ export function applyBaseModifiers(
     // is always the widest extent, so the print constraint already holds.
     const heelCupNarrowing = field.corrections.heelCupWidthMm < 0;
 
+    // Posting wedges must not be attenuated by topFactor feathering: rim verts at
+    // the forefoot carry steep normals so topFactor≈0 would mute mm posting on
+    // single-mesh SAMPLE_Top (Corrections composed-top path).
+    const wedgeWeightAt = (i: number, t: number): number => {
+        if (!wedgeDelta || wedgeDelta[i]! === 0) return 0;
+        if (isMultiMesh && topVertexCount > 0) return i < topVertexCount ? 1 : 0;
+        const heightAbove = t - thickMin;
+        return heightAbove > BOTTOM_BAND_MM ? 1 : 0;
+    };
+
     // Parallel composition: vertical, width-lateral, and depth-tangent displacements
     // are each computed from baseline positions (above) and summed here in one pass.
     // Neither width nor depth reads the other's deformed coordinates — clinical
@@ -2704,7 +2731,9 @@ export function applyBaseModifiers(
         } else {
             w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
         }
-        const vertD = delta[i]! * w;
+        const wedgePart = wedgeDelta ? wedgeDelta[i]! : 0;
+        const corePart = delta[i]! - wedgePart;
+        const vertD = corePart * w + wedgePart * wedgeWeightAt(i, t);
         const latD = lateralDelta[i]! * (heelCupNarrowing ? 1 : w);
         let dx = 0;
         let dy = 0;

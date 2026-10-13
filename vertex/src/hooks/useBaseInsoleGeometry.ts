@@ -387,7 +387,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             if (
                 fw?.unit === "mm" &&
                 fw.side === "lateral" &&
-                Math.abs((fw.value ?? 0) - 5.5) < 0.01 &&
+                (fw.value ?? 0) > 0 &&
                 clinicalStep === "corrections"
             ) {
                 const u = 0.88;
@@ -395,8 +395,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     ...field,
                     corrections: { ...field.corrections!, forefootWedge: undefined },
                 };
-                stockDebug("STEP corrections forefoot lateral 5.5mm top z delta (mm)", {
+                stockDebug("STEP corrections forefoot lateral mm top z delta (heightAt + mesh)", {
                     side,
+                    mm: fw.value,
                     composedPath: true,
                     lateralBorder: heightAt(u, 0.98, field) - heightAt(u, 0.98, neutral),
                     medialEdge: heightAt(u, -0.98, field) - heightAt(u, -0.98, neutral),
@@ -475,6 +476,41 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             },
                             trimline: printTrim,
                         });
+                        const fwLog = field.corrections?.forefootWedge;
+                        if (
+                            fwLog?.unit === "mm" &&
+                            fwLog.side === "lateral" &&
+                            (fwLog.value ?? 0) > 0 &&
+                            clinicalStep === "corrections" &&
+                            modified !== raw
+                        ) {
+                            const neutralField = {
+                                ...field,
+                                corrections: { ...field.corrections!, forefootWedge: undefined },
+                            };
+                            const neutralGeo = composePrintSolidTop(raw, {
+                                sourceField: neutralField,
+                                shoeWidth: {
+                                    width: widthId,
+                                    ballWidthMm: layout.widthMm,
+                                    heelWidthMm: layout.widthMm * 0.62,
+                                    heelOverrideMm: heelW,
+                                },
+                                trimline: printTrim,
+                            });
+                            const pos = modified.getAttribute("position")!.array as Float32Array;
+                            const neu = neutralGeo.getAttribute("position")!.array as Float32Array;
+                            let maxMeshLiftMm = 0;
+                            for (let vi = 2; vi < pos.length; vi += 3) {
+                                maxMeshLiftMm = Math.max(maxMeshLiftMm, pos[vi]! - neu[vi]!);
+                            }
+                            neutralGeo.dispose();
+                            stockDebug("STEP corrections forefoot lateral composed mesh maxZ lift (mm)", {
+                                side,
+                                mm: fwLog.value,
+                                maxMeshLiftMm,
+                            });
+                        }
                     } catch (e) {
                         stockDebug("composePrintSolidTop failed — showing raw SAMPLE_Top", {
                             side,

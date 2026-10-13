@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
+import { baseModifierField } from "@/lib/geometry/base-asset";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
@@ -13,6 +14,7 @@ import {
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { effectiveOutlineHalfWidth } from "@/lib/geometry/trimline";
 import { getForefootFactor, wedgeDeltaAt } from "@/lib/geometry/wedge";
+import { defaultDesign } from "@/stores/design-store";
 import type { Side, SideCorrections } from "@/types";
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
@@ -192,6 +194,37 @@ describe("posting wedge (design viewer height field)", () => {
         neutral.dispose();
         raw.dispose();
         expect(maxLift).toBeGreaterThan(2);
+    });
+
+    test("forefoot lateral 6.5 mm via design corrections lifts lateral 5th met band on SAMPLE_Top", async () => {
+        const wedge = { side: "lateral" as const, value: 6.5, unit: "mm" as const };
+        const design = defaultDesign();
+        design.corrections.right = { ...design.corrections.right, forefootWedge: wedge };
+        const field = baseModifierField(design, "right", design.thicknessMm);
+        expect(field.corrections.forefootWedge).toEqual(wedge);
+
+        const buf = readFileSync(SAMPLE_TOP_PATH);
+        const raw = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        const neutralField = baseModifierField(
+            { ...design, corrections: { ...design.corrections, right: zeroCorrections() } },
+            "right",
+            design.thicknessMm,
+        );
+        const composed = composePrintSolidTop(raw, { sourceField: field });
+        const neutral = composePrintSolidTop(raw, { sourceField: neutralField });
+        const pos = composed.getAttribute("position")!.array as Float32Array;
+        const neu = neutral.getAttribute("position")!.array as Float32Array;
+        let maxLift = 0;
+        for (let i = 0; i < pos.length; i += 3) {
+            maxLift = Math.max(maxLift, pos[i + 2]! - neu[i + 2]!);
+        }
+        composed.dispose();
+        neutral.dispose();
+        raw.dispose();
+        expect(maxLift).toBeGreaterThan(5);
+        expect(maxLift).toBeLessThan(8);
     });
 });
 
