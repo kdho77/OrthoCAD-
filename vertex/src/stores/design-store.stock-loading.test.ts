@@ -81,6 +81,19 @@ describe("stock base loading state", () => {
         expect(state.stockBaseLoading).toBe(false);
     });
 
+    test("already-resolved bootstrap does not notify stock subscribers", () => {
+        useDesignStore.setState({ stockBaseLoading: false, stockBaseResolutionState: "resolved" });
+        let notified = 0;
+        const unsub = useDesignStore.subscribe(() => {
+            notified += 1;
+        });
+        ensureDefaultStockBaseResolved();
+        unsub();
+        expect(notified).toBe(0);
+        expect(useDesignStore.getState().stockBaseResolutionState).toBe("resolved");
+        expect(useDesignStore.getState().stockBaseLoading).toBe(false);
+    });
+
     test("applyDefaultStockBase no-ops without flipping loading when already resolved", async () => {
         useDesignStore.setState({ stockBaseLoading: false, stockBaseResolutionState: "resolved" });
         await useDesignStore.getState().applyDefaultStockBase();

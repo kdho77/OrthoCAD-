@@ -198,6 +198,12 @@ let stockBaseAutoRetryBlocked = false;
 
 function markStockBaseResolved(): void {
     stockBaseAutoRetryBlocked = false;
+    const current = useDesignStore.getState();
+    // No-op when already resolved — a redundant setState still notifies
+    // subscribers and remounted the SAMPLE_Top hook after login bootstrap.
+    if (current.stockBaseResolutionState === "resolved" && current.stockBaseLoading === false) {
+        return;
+    }
     // Always clear the loading flag here — early-return paths used to leave
     // stockBaseLoading=true after a rehydrated/session design was already usable,
     // which stuck the viewer on "Loading base…" / "Loading stock base from server…".
@@ -312,12 +318,16 @@ function upgradeStockBaseAsync(apply: () => Promise<void>, reason: string): void
 export function ensureDefaultStockBaseResolved(): void {
     if (!isApiConfigured()) {
         stockFixLog("ensureDefaultStockBaseResolved() skipped — API not configured");
-        useDesignStore.setState({ stockBaseLoading: false });
+        if (useDesignStore.getState().stockBaseLoading) {
+            useDesignStore.setState({ stockBaseLoading: false });
+        }
         return;
     }
     if (stockBaseAutoRetryBlocked) {
         stockFixLog("ensureDefaultStockBaseResolved() skipped — auto-retry blocked after failure");
-        useDesignStore.setState({ stockBaseLoading: false });
+        if (useDesignStore.getState().stockBaseLoading) {
+            useDesignStore.setState({ stockBaseLoading: false });
+        }
         return;
     }
     const design = useDesignStore.getState().design;
