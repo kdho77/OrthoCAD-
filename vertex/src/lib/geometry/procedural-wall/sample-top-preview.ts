@@ -224,12 +224,39 @@ export function reconstructProceduralPreview(
         return { model, pattern, geometry };
     };
     try {
-        return loft(requested);
+        return attachViewerBottomOverlayFromLoft(loft(requested));
     } catch (e) {
         if (options.bottomPattern?.length || !options.scanPattern || options.scanPattern === "full_contact") {
             throw e;
         }
         // Prefab 3D / Flat must still produce a mesh from SAMPLE_Top.
-        return loft(buildFairedPatternFromTop(model));
+        return attachViewerBottomOverlayFromLoft(loft(buildFairedPatternFromTop(model)));
     }
+}
+
+/** Corrections viewer overlay only — does not replace the editable bottom-pattern store. */
+export function attachViewerBottomOverlayFromLoft(result: {
+    model: StockWallModel;
+    pattern: PolyPoint[];
+    geometry: BufferGeometry;
+}): { model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry } {
+    const ud = result.geometry.userData as {
+        bottomOutlineB?: Array<{ x: number; y: number; z?: number }>;
+        viewerBottomOverlayB?: Array<{ x: number; y: number; z: number }>;
+    };
+    const ring = ud.bottomOutlineB;
+    if (ring?.length) {
+        ud.viewerBottomOverlayB = ring.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }));
+    }
+    return result;
+}
+
+export function viewerBottomOverlayFromPreview(preview: {
+    geometry: BufferGeometry;
+    pattern: PolyPoint[];
+}): PolyPoint[] {
+    const ud = preview.geometry.userData as {
+        viewerBottomOverlayB?: PolyPoint[];
+    };
+    return ud.viewerBottomOverlayB?.length ? ud.viewerBottomOverlayB : preview.pattern;
 }

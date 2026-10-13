@@ -30,7 +30,14 @@ import {
     PATTERN_SOURCE_SYNTHETIC,
     parseBottomPattern,
 } from "./bottom-pattern";
-import { ensureCcw, type PolyPoint, sampleClosedAtArc01, startAtLowCurvature } from "./curves";
+import {
+    ensureCcw,
+    fitClosedC2Spline,
+    type PolyPoint,
+    resampleClosedC2,
+    sampleClosedAtArc01,
+    startAtLowCurvature,
+} from "./curves";
 import {
     type DeviceTypePreset,
     LATERAL_FLANGE_BOUNDS,
@@ -1243,15 +1250,31 @@ export function reconstructProceduralWalls(
     }
     applyOutlineClean(stations, rimLocal, indices, true);
     rotateStationRing(stations, rimLocal, model.bounds);
-    const spreadB = spreadClosedOnLoop(
-        stations.map((s) => s.outline),
-        hygiened.loop,
-        0.4,
-    );
-    for (let i = 0; i < stations.length; i++) stations[i]!.outline = spreadB[i]!;
+    const lockUserBottomB = Boolean(options.bottomPattern?.length);
+    const userBottomRing = lockUserBottomB
+        ? resampleClosedC2(fitClosedC2Spline(hygiened.loop), stations.length)
+        : null;
+    const stampUserBottomB = (): void => {
+        if (!userBottomRing) return;
+        for (let i = 0; i < stations.length; i++) {
+            const p = userBottomRing[i]!;
+            stations[i]!.outline = { x: p.x, y: p.y, z: 0 };
+        }
+    };
+    if (lockUserBottomB) {
+        stampUserBottomB();
+    } else {
+        const spreadB = spreadClosedOnLoop(
+            stations.map((s) => s.outline),
+            hygiened.loop,
+            0.4,
+        );
+        for (let i = 0; i < stations.length; i++) stations[i]!.outline = spreadB[i]!;
+    }
     stampMonotonicTB(stations, hygiened.loop);
     applyStoredTB(stations, hygiened.loop);
     const applySmoothedB = (): boolean => {
+        if (lockUserBottomB) return true;
         const rim = stations.map((s) => s.rim);
         const s01 = stations.map((s) => s.tB ?? 0);
         const sm = smoothClosedParameters(s01, rim, TB_SMOOTH_SIGMA_MM);
@@ -1282,6 +1305,7 @@ export function reconstructProceduralWalls(
         limitStationSkew(stations, hygiened.loop, r1, r2);
         reparameterizeBArcLength(stations, hygiened.loop);
     }
+    if (lockUserBottomB) stampUserBottomB();
     assertClosedStationRing(stations, rimLocal);
     {
         const thicknessChanged =
