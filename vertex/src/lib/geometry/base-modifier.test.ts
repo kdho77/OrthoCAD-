@@ -463,6 +463,27 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         multiBase.dispose();
         modifiedMulti.dispose();
     });
+
+    test("wedge + arch height + heel cup width: bottom z=0, walls connected, watertight", () => {
+        const wedge = { side: "lateral" as const, value: 4, unit: "deg" as const };
+        const p = baseParams({
+            corrections: {
+                ...baseParams().corrections,
+                rearfootWedge: wedge,
+                archHeightMm: 6,
+                heelCupWidthMm: 4,
+            },
+        });
+        const base = makeMultiMeshBase();
+        const modified = applyBaseModifiers(base, p, 0);
+        const report = validateBaseResult(base, modified);
+        expect(report.maxBottomDeltaMm).toBeLessThan(0.05);
+        expect(report.maxTopDeltaMm).toBeGreaterThan(0.5);
+        const man = analyzeManifold(modified);
+        expect(man.watertight).toBe(true);
+        base.dispose();
+        modified.dispose();
+    });
 });
 
 describe("resolveDesignMode", () => {

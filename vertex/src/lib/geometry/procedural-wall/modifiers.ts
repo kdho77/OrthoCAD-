@@ -3,8 +3,9 @@
 
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { heelCupDepthBowlDelta, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
-import type { SideCorrections } from "@/types";
+import type { Side, SideCorrections } from "@/types";
 import type { PolyPoint } from "./curves";
 import type { HermiteStation } from "./loft";
 import type { DeviceTypePreset, LateralFlangeParams, StockWallModel } from "./types";
@@ -28,6 +29,9 @@ export interface ProceduralModifierInput {
     wallStyle?: ProceduralWallStyle;
     /** High-rim medial side. +1 = +Y. */
     medialYSign?: 1 | -1;
+    /** Foot side for wedge math (independent of mesh Y flip). */
+    side?: Side;
+    trimline?: TrimlineCurve | null;
     /**
      * Whole-insole width scale (1 = unchanged). Same factor and medial-lateral
      * centre as the top. Heel widen uses heelCupWidthMm + follow=1 instead.
@@ -112,9 +116,15 @@ export function postingZDelta(
     const widCenter = (bounds.minY + bounds.maxY) * 0.5;
     const halfW = Math.max(1e-3, widthMm * 0.5);
     const u = Math.max(0, Math.min(1, (x - minX) / length));
-    const vSigned = ((y - widCenter) / halfW) * (input.medialYSign ?? 1);
-    const side = (input.medialYSign ?? 1) < 0 ? "right" : "left";
-    return wedgeDeltaAt(u, vSigned, side, c, { lengthMm: length, widthMm });
+    const side = input.side ?? ((input.medialYSign ?? 1) < 0 ? "right" : "left");
+    const medialSign = side === "left" ? -1 : 1;
+    const mMesh = (y - widCenter) / halfW;
+    const vSigned = mMesh * medialSign;
+    return wedgeDeltaAt(u, vSigned, side, c, {
+        lengthMm: length,
+        widthMm,
+        trimline: input.trimline ?? null,
+    });
 }
 
 /**

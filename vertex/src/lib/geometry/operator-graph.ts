@@ -95,7 +95,6 @@ export function correctionsToOperators(c: SideCorrections, side: Side): Clinical
         ops.push({ id: `legacy_${kind}`, kind, enabled: true, params, label: `legacy ${kind}` });
 
     if (c.archHeightMm) push("arch_dome", { height: c.archHeightMm });
-    if (c.archEaseMm) push("arch_ease", { depth: c.archEaseMm });
     if (c.heelCupHeightMm || c.heelCupDepthMm) {
         push("heel_cup", { height: c.heelCupHeightMm, depth: c.heelCupDepthMm });
     }
@@ -131,18 +130,6 @@ export function evaluateOperator(
             const d = Math.abs(u - centerU) / r;
             const bump = d >= 1 ? 0 : 0.5 * (1 + Math.cos(Math.PI * d));
             return h * bump * w;
-        }
-        case "arch_ease": {
-            const depth = (p.depth as number) || 0;
-            if (depth <= 0) return 0;
-            const centerU = 0.42;
-            const r = 0.32;
-            const d = Math.abs(u - centerU) / r;
-            const along = d >= 1 ? 0 : 0.5 * (1 + Math.cos(Math.PI * d));
-            const medialSign = ctx.side === "left" ? -1 : 1;
-            const m = -(vSigned * medialSign);
-            const medial = m > 0.2 ? Math.min(1, (m - 0.2) / 0.75) : 0;
-            return -depth * along * medial * w;
         }
         case "heel_cup": {
             const depth = (p.depth as number) || 0;

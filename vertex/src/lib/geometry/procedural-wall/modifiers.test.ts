@@ -77,6 +77,12 @@ describe("plantar posting", () => {
         expect(medial).toBeLessThan(0.05);
         expect(plantarZDelta(10, 20, bounds, input)).toBe(0);
         expect(plantarZDelta(10, -20, bounds, input)).toBe(0);
+        const flipped = postingZDelta(5, 20, bounds, {
+            ...input,
+            medialYSign: -1,
+            side: "right",
+        });
+        expect(flipped).toBeGreaterThan(0);
         expect(
             plantarZDelta(42, 0, bounds, {
                 ...input,

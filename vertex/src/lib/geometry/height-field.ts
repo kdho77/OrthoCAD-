@@ -313,7 +313,8 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     let archEase = 0;
     if (c.archEaseMm > 0) {
         const easeAlong = bump(u, apexCenter, 0.32);
-        const easeAcross = medialBlend * smoothstep(0.02, 0.88, m);
+        const rimGuard = 1 - smoothstep(0.86, 1.0, av);
+        const easeAcross = medialBlend * smoothstep(0.02, 0.88, m) * rimGuard;
         archEase = -c.archEaseMm * easeAlong * easeAcross;
     }
 

@@ -29,7 +29,7 @@ import {
     applyTrimmableForefootExtension,
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
-import { wedgeCorrectionActive } from "@/lib/geometry/wedge";
+import { wedgeCorrectionActive, wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
 // Base + Modifier deformation core (see docs/base-modifier-architecture.md).
@@ -442,12 +442,20 @@ function sampleFieldDeltaAtXY(
     fieldForDelta: HeightFieldParams,
     neutral: HeightFieldParams,
     edgeProfile: TopEdgeProfile | null,
+    skipWedge = false,
 ): number {
     const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
     const halfW = widSize / 2 || 1;
     const vNorm = Math.max(-1, Math.min(1, (widCoord - widCenter) / halfW));
     const vSigned = Math.max(-1, Math.min(1, widthSign * vNorm));
-    const F_raw = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
+    let F_raw = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
+    if (skipWedge && wedgeCorrectionActive(fieldForDelta.corrections)) {
+        F_raw -= wedgeDeltaAt(u, vSigned, fieldForDelta.side, fieldForDelta.corrections, {
+            lengthMm: fieldForDelta.lengthMm,
+            widthMm: fieldForDelta.widthMm,
+            trimline: fieldForDelta.trimline ?? null,
+        });
+    }
 
     if (!edgeProfile) return F_raw;
 
@@ -2578,11 +2586,13 @@ export function applyBaseModifiers(
         (field.corrections.archEaseMm ?? 0) !== 0;
     const wedgeActive = wedgeCorrectionActive(field.corrections);
     const useShellFieldSync =
-        isMultiMesh &&
-        topVertexCount > 0 &&
-        field.corrections.heelCupWidthMm === 0 &&
-        !archRaiseActive &&
-        !wedgeActive;
+        isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm === 0 && !archRaiseActive;
+
+    const wedgeParams = {
+        lengthMm: field.lengthMm,
+        widthMm: field.widthMm,
+        trimline: field.trimline ?? null,
+    };
 
     // 1) Sample the pure modifier delta. Multi-mesh top range only when shell
     //    sync is active (bottom gets F via sampleFieldDeltaAtXY below); otherwise
@@ -2590,14 +2600,17 @@ export function applyBaseModifiers(
     //    rim-conformity moves the wall). Top-range samples are bit-identical
     //    either way (same u/vSigned → correctionDeltaAt).
     const delta = new Float32Array(count);
-    const sampleEnd =
-        isMultiMesh && topVertexCount > 0 && (useShellFieldSync || wedgeActive) ? topVertexCount : count;
+    const sampleEnd = useShellFieldSync && topVertexCount > 0 ? topVertexCount : count;
     for (let i = 0; i < sampleEnd; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
-        delta[i] = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
+        let d = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
+        if (wedgeActive && isMultiMesh && topVertexCount > 0 && i >= topVertexCount) {
+            d -= wedgeDeltaAt(u, vSigned, field.side, field.corrections, wedgeParams);
+        }
+        delta[i] = d;
     }
 
     // 2) Optional Laplacian relaxation of the displacement field (cached adjacency).
@@ -2795,6 +2808,7 @@ export function applyBaseModifiers(
                     fieldForBottomSync,
                     neutral,
                     edgeProfile,
+                    wedgeActive,
                 );
                 const fCorrectionsLocal = F;
                 const rimBlend = bv.rimBlend;
@@ -2821,6 +2835,7 @@ export function applyBaseModifiers(
                         fieldForDelta,
                         neutral,
                         edgeProfile,
+                        wedgeActive,
                     );
                     F += (fFull - fCorrectionsLocal) * rimConformityHeightWeight(bv.thicknessHz);
                 }

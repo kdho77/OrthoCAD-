@@ -37,6 +37,7 @@ import {
     buildProceduralViewerPatternInWorker,
     reconstructProceduralPreviewInWorker,
 } from "@/lib/geometry/procedural-wall/preview-loft-worker";
+import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import { proceduralViewerStockGate } from "@/lib/geometry/procedural-wall/sample-top-display";
 import {
     loadSampleTopGeometry,
@@ -382,6 +383,26 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     medialEdge: heightAt(u, -0.98, field) - heightAt(u, -0.98, neutral),
                 });
             }
+            const fw = field.corrections?.forefootWedge;
+            if (
+                fw?.unit === "mm" &&
+                fw.side === "lateral" &&
+                Math.abs((fw.value ?? 0) - 5.5) < 0.01 &&
+                clinicalStep === "corrections"
+            ) {
+                const u = 0.88;
+                const neutral = {
+                    ...field,
+                    corrections: { ...field.corrections!, forefootWedge: undefined },
+                };
+                stockDebug("STEP corrections forefoot lateral 5.5mm top z delta (mm)", {
+                    side,
+                    composedPath: true,
+                    lateralBorder: heightAt(u, 0.98, field) - heightAt(u, 0.98, neutral),
+                    medialEdge: heightAt(u, -0.98, field) - heightAt(u, -0.98, neutral),
+                    lateralMet: heightAt(u, 0.5, field) - heightAt(u, 0.5, neutral),
+                });
+            }
             const draft = useMeshEditStore.getState().getActiveDraftBottomPattern(side);
             const stored = useBottomPatternStore.getState().getPattern(side);
             const dragging = Boolean(useMeshEditStore.getState().bottomPatternEdit?.isDragging);
@@ -439,33 +460,39 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 if (!shouldLoftProceduralViewer(clinicalStep, wallModel)) {
                     await yieldToMain();
                     if (session.cancelled) return;
-                    const rawCount = raw.getAttribute("position")?.count ?? 0;
-                    const canReuseWork =
-                        workRef.current != null &&
-                        workRef.current.getAttribute("position")?.count === rawCount;
+                    const draftTrim = useMeshEditStore.getState().getActiveDraftTrimline(side);
+                    const committedTrim = getDesignTrimline(design, side);
+                    const printTrim = draftTrim ?? committedTrim;
                     let modified = raw;
                     try {
-                        modified = applyBaseModifiers(raw, field, interacting ? 0 : 1, {
-                            reuse: canReuseWork && workRef.current ? workRef.current : undefined,
-                            skipNormals: interacting,
-                            skipBottomSync: true,
+                        modified = composePrintSolidTop(raw, {
+                            sourceField: field,
+                            shoeWidth: {
+                                width: widthId,
+                                ballWidthMm: layout.widthMm,
+                                heelWidthMm: layout.widthMm * 0.62,
+                                heelOverrideMm: heelW,
+                            },
+                            trimline: printTrim,
                         });
                     } catch (e) {
-                        stockDebug("applyBaseModifiers failed — showing raw SAMPLE_Top", {
+                        stockDebug("composePrintSolidTop failed — showing raw SAMPLE_Top", {
                             side,
                             message: e instanceof Error ? e.message : String(e),
                         });
                         modified = raw;
                     }
-                    if (workRef.current && workRef.current !== modified) workRef.current.dispose();
+                    if (workRef.current && workRef.current !== modified && workRef.current !== raw) {
+                        workRef.current.dispose();
+                    }
                     workRef.current = modified;
-                    if (outRef.current && outRef.current !== modified && outRef.current !== workRef.current) {
+                    if (outRef.current && outRef.current !== modified && outRef.current !== raw) {
                         outRef.current.dispose();
                     }
                     outRef.current = modified;
                     lastLoftKeyRef.current = null;
                     setGeometry((prev) => (prev === modified ? prev : modified));
-                    setLoftPhase(side, "ready", "Top surface ready");
+                    setLoftPhase(side, "idle", "Composed top ready");
                     setBaseMeshLoading(side, false);
                     return;
                 }

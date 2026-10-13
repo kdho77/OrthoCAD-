@@ -5,9 +5,9 @@ import type { ClinicalStepId } from "@/stores/clinical-workflow-store";
 import type { Side } from "@/types";
 import { sha256Hex } from "./sha256";
 
-/** Procedural corrections + print show the walled solid; scan/base stay top + pattern. */
+/** Procedural print step shows the walled solid; earlier steps use composed top + pattern only. */
 export function shouldLoftProceduralViewer(step: ClinicalStepId, wallModel: string): boolean {
-    return wallModel === "procedural" && (step === "print" || step === "corrections");
+    return wallModel === "procedural" && step === "print";
 }
 
 export function wantsProceduralExportSolid(

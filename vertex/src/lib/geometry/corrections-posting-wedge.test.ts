@@ -83,6 +83,17 @@ describe("posting wedge (design viewer height field)", () => {
         expect(dMedEdge).toBeCloseTo(0, 0.5);
     });
 
+    test("forefoot lateral 5.5 mm raises lateral border (right)", () => {
+        const wedge = { side: "lateral" as const, value: 5.5, unit: "mm" as const };
+        const p = baseParams("right", { ...zeroCorrections(), forefootWedge: wedge });
+        const p0 = baseParams("right", zeroCorrections());
+        const u = 0.88;
+        const dLat = heightAt(u, 0.98, p) - heightAt(u, 0.98, p0);
+        const dMed = heightAt(u, -0.98, p) - heightAt(u, -0.98, p0);
+        expect(dLat).toBeGreaterThan(4.5);
+        expect(dMed).toBeLessThan(0.2);
+    });
+
     test("forefoot 10° — border height and slope match tan(10°)", () => {
         const wedge = { side: "lateral" as const, value: 10, unit: "deg" as const };
         const p = baseParams("right", { ...zeroCorrections(), forefootWedge: wedge });
@@ -125,6 +136,16 @@ describe("posting wedge (design viewer height field)", () => {
         expect(heightAt(apexU, apexV, low)).toBeLessThan(apexNeutral);
     });
 
+    test("arch ease is zero at the trim rim (av≈1)", () => {
+        const ease = baseParams("right", { ...zeroCorrections(), archEaseMm: 6 });
+        const plain = baseParams("right", zeroCorrections());
+        const u = 0.42;
+        const rimV = 0.98;
+        expect(heightAt(u, rimV, ease) - heightAt(u, rimV, plain)).toBeLessThan(0.05);
+        const interior = heightAt(u, -0.35, ease) - heightAt(u, -0.35, plain);
+        expect(interior).toBeLessThan(-1);
+    });
+
     test("arch ease lowers medial arch in heightAt and composePrintSolidTop", async () => {
         const u = 0.42;
         const v = -0.35;
@@ -149,6 +170,28 @@ describe("posting wedge (design viewer height field)", () => {
         neutral.dispose();
         raw.dispose();
         expect(maxDrop).toBeGreaterThan(0.5);
+    });
+
+    test("composePrintSolidTop shows forefoot lateral 5.5 mm without loft", async () => {
+        const wedge = { side: "lateral" as const, value: 5.5, unit: "mm" as const };
+        const buf = readFileSync(SAMPLE_TOP_PATH);
+        const raw = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        const field = baseParams("right", { ...zeroCorrections(), forefootWedge: wedge });
+        const neutralField = baseParams("right", zeroCorrections());
+        const composed = composePrintSolidTop(raw, { sourceField: field });
+        const neutral = composePrintSolidTop(raw, { sourceField: neutralField });
+        const pos = composed.getAttribute("position")!.array as Float32Array;
+        const neu = neutral.getAttribute("position")!.array as Float32Array;
+        let maxLift = 0;
+        for (let i = 0; i < pos.length; i += 3) {
+            maxLift = Math.max(maxLift, pos[i + 2]! - neu[i + 2]!);
+        }
+        composed.dispose();
+        neutral.dispose();
+        raw.dispose();
+        expect(maxLift).toBeGreaterThan(2);
     });
 });
 
