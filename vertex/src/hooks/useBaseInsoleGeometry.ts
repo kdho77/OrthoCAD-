@@ -486,7 +486,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         ) {
                             const neutralField = {
                                 ...field,
-                                corrections: { ...field.corrections!, forefootWedge: undefined },
+                                corrections: { ...(field.corrections ?? {}), forefootWedge: undefined },
                             };
                             const neutralGeo = composePrintSolidTop(raw, {
                                 sourceField: neutralField,
@@ -498,11 +498,15 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 },
                                 trimline: printTrim,
                             });
-                            const pos = modified.getAttribute("position")!.array as Float32Array;
-                            const neu = neutralGeo.getAttribute("position")!.array as Float32Array;
+                            const posAttr = modified.getAttribute("position");
+                            const neuAttr = neutralGeo.getAttribute("position");
                             let maxMeshLiftMm = 0;
-                            for (let vi = 2; vi < pos.length; vi += 3) {
-                                maxMeshLiftMm = Math.max(maxMeshLiftMm, pos[vi]! - neu[vi]!);
+                            if (posAttr && neuAttr) {
+                                const pos = posAttr.array as Float32Array;
+                                const neu = neuAttr.array as Float32Array;
+                                for (let vi = 2; vi < pos.length; vi += 3) {
+                                    maxMeshLiftMm = Math.max(maxMeshLiftMm, pos[vi] - neu[vi]);
+                                }
                             }
                             neutralGeo.dispose();
                             stockDebug("STEP corrections forefoot lateral composed mesh maxZ lift (mm)", {
