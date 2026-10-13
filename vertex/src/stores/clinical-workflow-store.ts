@@ -44,12 +44,12 @@ export const CORRECTIONS_STEP_SECTIONS: CorrectionsSectionKey[] = [
     "Heel",
     "Flanges",
     "Posting",
-    "pronationSupination",
+    "Posting",
     "skive",
 ];
 
 /** Corrections collapsible section keys (see CorrectionsPanel GROUPS + wedge/skive). */
-export type CorrectionsSectionKey = "pronationSupination" | "skive" | string;
+export type CorrectionsSectionKey = "Posting" | "skive" | string;
 
 export type ElementPlacementFoot = "left" | "right" | "both";
 

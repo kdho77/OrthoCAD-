@@ -3,6 +3,7 @@
 
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { heelCupDepthBowlDelta, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import { wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { SideCorrections } from "@/types";
 import type { PolyPoint } from "./curves";
 import type { HermiteStation } from "./loft";
@@ -85,7 +86,7 @@ export function applyCurveModifiers(
         if (c && c.heelLiftMm > 0) {
             t.z += heelLiftDeltaAt(u, c.heelLiftMm);
         }
-        if (c && (c.rearfootPostingDeg || c.forefootPostingDeg)) {
+        if (c && (c.rearfootWedge || c.forefootWedge)) {
             t.z += postingZDelta(o.x, o.y, model.bounds, input);
         }
         if (dThick) t.z += dThick;
@@ -104,23 +105,16 @@ export function postingZDelta(
     input: ProceduralModifierInput,
 ): number {
     const c = input.corrections;
-    if (!c || (!c.rearfootPostingDeg && !c.forefootPostingDeg)) return 0;
+    if (!c || (!c.rearfootWedge && !c.forefootWedge)) return 0;
     const minX = bounds.minX;
     const length = Math.max(1e-3, bounds.maxX - minX);
+    const widthMm = Math.max(1e-3, bounds.maxY - bounds.minY);
     const widCenter = (bounds.minY + bounds.maxY) * 0.5;
-    const halfW = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
+    const halfW = Math.max(1e-3, widthMm * 0.5);
     const u = Math.max(0, Math.min(1, (x - minX) / length));
     const vSigned = ((y - widCenter) / halfW) * (input.medialYSign ?? 1);
-    let dz = 0;
-    if (c.rearfootPostingDeg) {
-        const heel = 1 - Math.max(0, Math.min(1, (u - 0.05) / 0.35));
-        dz += Math.tan((c.rearfootPostingDeg * Math.PI) / 180) * vSigned * halfW * heel;
-    }
-    if (c.forefootPostingDeg) {
-        const fore = Math.max(0, Math.min(1, (u - 0.62) / 0.28));
-        dz += Math.tan((c.forefootPostingDeg * Math.PI) / 180) * vSigned * halfW * fore;
-    }
-    return dz;
+    const side = (input.medialYSign ?? 1) < 0 ? "right" : "left";
+    return wedgeDeltaAt(u, vSigned, side, c, { lengthMm: length, widthMm });
 }
 
 /**

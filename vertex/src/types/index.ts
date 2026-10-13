@@ -121,8 +121,14 @@ export interface SideCorrections {
      * Default `"location"` (angle set by user/default 15°, location derived).
      */
     skiveDriven?: "angle" | "location";
+    /** @deprecated Migrated into archHeightMm; always 0 after load. */
     archFillMm: number;
     archHeightMm: number;
+    /**
+     * Medial arch contact relief (mm downward) after arch height — eases shell
+     * tightness so soft tissue can spread. Distinct from arch height.
+     */
+    archEaseMm: number;
     heelCupDepthMm: number;
     heelCupHeightMm: number;
     /**

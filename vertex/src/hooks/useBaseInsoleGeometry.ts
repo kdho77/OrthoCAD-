@@ -13,6 +13,7 @@ import {
 } from "@/lib/geometry/base-asset";
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import { heightAt } from "@/lib/geometry/height-field";
 import {
     hashLiveBottomPattern,
     resolveLiveBottomPattern,
@@ -358,6 +359,26 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 : design.thicknessMm;
             const thicknessMm = thicknessPreview ?? committedThickness ?? BASE_REFERENCE_THICKNESS_MM;
             const field = baseModifierField(design, side, thicknessMm);
+            const rw = field.corrections?.rearfootWedge;
+            if (
+                rw?.unit === "mm" &&
+                rw.side === "lateral" &&
+                Math.abs((rw.value ?? 0) - 10) < 0.01 &&
+                clinicalStep === "corrections"
+            ) {
+                const u = 0.1;
+                const neutral = {
+                    ...field,
+                    corrections: { ...field.corrections!, rearfootWedge: undefined },
+                };
+                stockDebug("STEP0 design viewer top-sheet z delta (mm)", {
+                    side,
+                    border: heightAt(u, 0.98, field) - heightAt(u, 0.98, neutral),
+                    lateralHeelCenter: heightAt(u, 0.5, field) - heightAt(u, 0.5, neutral),
+                    medialHeel: heightAt(u, -0.5, field) - heightAt(u, -0.5, neutral),
+                    medialEdge: heightAt(u, -0.98, field) - heightAt(u, -0.98, neutral),
+                });
+            }
             const draft = useMeshEditStore.getState().getActiveDraftBottomPattern(side);
             const stored = useBottomPatternStore.getState().getPattern(side);
             const dragging = Boolean(useMeshEditStore.getState().bottomPatternEdit?.isDragging);

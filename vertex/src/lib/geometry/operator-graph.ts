@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import type { PlacedElement, Side, SideCorrections } from "@/types";
-import { heightAt, type HeightFieldParams } from "./height-field";
+import { type HeightFieldParams, heightAt } from "./height-field";
 
 /**
  * Phase 4 — Clinical depth: Operator Graph.
@@ -26,6 +26,7 @@ import { heightAt, type HeightFieldParams } from "./height-field";
 
 export type OperatorKind =
     | "arch_dome"
+    | "arch_ease"
     | "arch_fill"
     | "heel_cup"
     | "rearfoot_posting"
@@ -94,7 +95,7 @@ export function correctionsToOperators(c: SideCorrections, side: Side): Clinical
         ops.push({ id: `legacy_${kind}`, kind, enabled: true, params, label: `legacy ${kind}` });
 
     if (c.archHeightMm) push("arch_dome", { height: c.archHeightMm });
-    if (c.archFillMm) push("arch_fill", { height: c.archFillMm });
+    if (c.archEaseMm) push("arch_ease", { depth: c.archEaseMm });
     if (c.heelCupHeightMm || c.heelCupDepthMm) {
         push("heel_cup", { height: c.heelCupHeightMm, depth: c.heelCupDepthMm });
     }
@@ -131,6 +132,18 @@ export function evaluateOperator(
             const bump = d >= 1 ? 0 : 0.5 * (1 + Math.cos(Math.PI * d));
             return h * bump * w;
         }
+        case "arch_ease": {
+            const depth = (p.depth as number) || 0;
+            if (depth <= 0) return 0;
+            const centerU = 0.42;
+            const r = 0.32;
+            const d = Math.abs(u - centerU) / r;
+            const along = d >= 1 ? 0 : 0.5 * (1 + Math.cos(Math.PI * d));
+            const medialSign = ctx.side === "left" ? -1 : 1;
+            const m = -(vSigned * medialSign);
+            const medial = m > 0.2 ? Math.min(1, (m - 0.2) / 0.75) : 0;
+            return -depth * along * medial * w;
+        }
         case "heel_cup": {
             const depth = (p.depth as number) || 0;
             const h = (p.height as number) || 0;
@@ -148,7 +161,7 @@ export function evaluateOperator(
             // be done in the OCCT solid or a 3D displacement field.
             const sta = ctx.biomech?.staInclinationDeg ?? 0;
             const staFactor = 1.0 + (sta / 45) * 0.15; // small coupling
-            const tiltMm = (deg * 0.18) * staFactor; // approx mm per deg at edge
+            const tiltMm = deg * 0.18 * staFactor; // approx mm per deg at edge
             return tiltMm * zone * w;
         }
         case "medial_skive":
@@ -190,7 +203,7 @@ export function evaluateOperator(
             // The posting plane is rotated around the STJ axis; we approximate
             // the vertical effect as a combination of frontal + small transverse.
             const effective = deg * (1 + Math.abs(sta) / 60);
-            return (effective * 0.16) * zone * w;
+            return effective * 0.16 * zone * w;
         }
         case "element_add":
         case "regional_blend":
@@ -248,7 +261,7 @@ export function estimateTissueStress(
 
     // Local element contribution.
     for (const el of elements) {
-        const dx = (el.position.x / 260) - u;
+        const dx = el.position.x / 260 - u;
         const dy = el.position.y - vSigned * 50; // rough
         const d = Math.hypot(dx * 260, dy);
         if (d < 25) stress += (el.heightMm || 4) * 0.8 * (1 - d / 25);

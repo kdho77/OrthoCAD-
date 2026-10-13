@@ -50,6 +50,7 @@ const ZERO_CORRECTIONS: SideCorrections = {
     lateralSkiveMm: 0,
     archFillMm: 0,
     archHeightMm: 0,
+    archEaseMm: 0,
     heelCupDepthMm: 0,
     heelCupHeightMm: 0,
     heelCupWidthMm: 0,
@@ -2570,7 +2571,10 @@ export function applyBaseModifiers(
     // (lateral field not yet samplable for the underside). Active arch raises also
     // take the legacy path so PR #117 arch-band re-loft (W=h^1.5) can keep the
     // medial sidewall rounded instead of a vertical rim-delta extrusion.
-    const archRaiseActive = field.corrections.archHeightMm > 0 || field.corrections.archFillMm > 0;
+    const archRaiseActive =
+        field.corrections.archHeightMm !== 0 ||
+        field.corrections.archFillMm !== 0 ||
+        field.corrections.archEaseMm !== 0;
     const useShellFieldSync =
         isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm === 0 && !archRaiseActive;
 

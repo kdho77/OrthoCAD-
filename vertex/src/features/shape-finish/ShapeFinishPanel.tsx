@@ -39,7 +39,7 @@ function commitShapeFinish(
         side,
         sf: next,
         thicknessMm: thicknessForSide(design, side),
-        archHeightMm: design.corrections[side].archHeightMm + design.corrections[side].archFillMm,
+        archHeightMm: design.corrections[side].archHeightMm,
         heelSkiveMedialMm: design.corrections[side].medialSkiveMm,
         heelSkiveLateralMm: design.corrections[side].lateralSkiveMm,
     };

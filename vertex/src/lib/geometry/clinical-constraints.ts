@@ -1,6 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
 import type { SideCorrections, WedgeCorrection } from "@/types";
 
 /**
@@ -48,14 +49,15 @@ export const WEDGE_CLINICAL_SPECS: Record<string, ClinicalSpec> = {
 
 export const CLINICAL_LIMITS = {
     thicknessMm: { min: 1.5, max: 8.0 },
-    forefootPostingDeg: { min: -12, max: 12 },
-    rearfootPostingDeg: { min: -10, max: 10 },
+    forefootPostingDeg: { min: 0, max: 0 },
+    rearfootPostingDeg: { min: 0, max: 0 },
     medialSkiveMm: { min: 0, max: 8.0 },
     lateralSkiveMm: { min: 0, max: 8.0 },
     skiveAngleDeg: { min: 5, max: 30 },
     skiveLocationPct: { min: 0, max: 100 },
-    archHeightMm: { min: 0, max: 18.0 },
-    archFillMm: { min: 0, max: 12.0 },
+    archHeightMm: { min: -10.0, max: 14.0 },
+    archFillMm: { min: 0, max: 0 },
+    archEaseMm: { min: 0, max: 6.0 },
     heelCupHeightMm: { min: 0, max: 12.0 },
     /** Biomechanics lock 2026-09-20: usable 12–18 mm when enabled; 0 = off (see clamp below). */
     heelCupDepthMm: { min: 12, max: 18.0 },
@@ -69,9 +71,9 @@ export const CLINICAL_LIMITS = {
     // Wedge limits (per the wedge design). Applied to the .value inside the wedge object.
     // mm: absolute raise on the edge. deg: angle (converted internally for clamping).
     rearfootWedgeMm: { min: 0, max: 10 },
-    rearfootWedgeDeg: { min: 0, max: 12 },
+    rearfootWedgeDeg: { min: 0, max: 10 },
     forefootWedgeMm: { min: 0, max: 10 },
-    forefootWedgeDeg: { min: 0, max: 12 },
+    forefootWedgeDeg: { min: 0, max: 10 },
 } as const;
 
 /** Product default when a heel cup depth is suggested without an explicit value (Biomechanics lock 2026-09-20). */
@@ -134,12 +136,14 @@ function clamp(
 export function constrainSideCorrections(corrections: SideCorrections, thicknessMm: number): ConstrainResult {
     const v: ConstraintViolation[] = [];
 
+    const migrated = migrateSideCorrections(corrections);
+
     let t = thicknessMm;
     const tc = clamp(t, CLINICAL_LIMITS.thicknessMm.min, CLINICAL_LIMITS.thicknessMm.max, "thickness");
     t = tc.value;
     if (tc.violation) v.push(tc.violation);
 
-    const c: SideCorrections = { ...corrections };
+    const c: SideCorrections = { ...migrated };
 
     // Scalar clamps
     const pairs: Array<[keyof SideCorrections, { min: number; max: number }]> = [
@@ -149,6 +153,7 @@ export function constrainSideCorrections(corrections: SideCorrections, thickness
         ["lateralSkiveMm", CLINICAL_LIMITS.lateralSkiveMm],
         ["archHeightMm", CLINICAL_LIMITS.archHeightMm],
         ["archFillMm", CLINICAL_LIMITS.archFillMm],
+        ["archEaseMm", CLINICAL_LIMITS.archEaseMm],
         ["heelCupHeightMm", CLINICAL_LIMITS.heelCupHeightMm],
         ["heelCupWidthMm", CLINICAL_LIMITS.heelCupWidthMm],
         ["heelLiftMm", CLINICAL_LIMITS.heelLiftMm],
@@ -247,22 +252,6 @@ export function constrainSideCorrections(corrections: SideCorrections, thickness
         }
     }
 
-    // Arch total (height + fill) should not create an excessively tall rigid column on thin shells.
-    const archTotal = c.archHeightMm + c.archFillMm;
-    if (t < 3.5 && archTotal > 14) {
-        const scale = 14 / archTotal;
-        const ahBefore = c.archHeightMm;
-        const afBefore = c.archFillMm;
-        c.archHeightMm = Math.round(c.archHeightMm * scale * 10) / 10;
-        c.archFillMm = Math.round(c.archFillMm * scale * 10) / 10;
-        v.push({
-            field: "combined",
-            message: `Scaled arch features for thin shell (thickness ${t.toFixed(1)} mm)`,
-            requested: ahBefore + afBefore,
-            applied: c.archHeightMm + c.archFillMm,
-        });
-    }
-
     // --- Wedge clamps (object fields per design) ---
     // Wedges are {side, value, unit}. We clamp the .value using unit-specific limits from CLINICAL_LIMITS.
     // mm = absolute edge raise on the chosen side (tapers linearly to 0 opposite).
@@ -356,4 +345,12 @@ export function hasCriticalViolations(violations: ConstraintViolation[]): boolea
 /** Soft warnings for wedge values approaching limits (non-blocking but shown in UI). */
 export function hasWedgeViolations(violations: ConstraintViolation[]): boolean {
     return violations.some((vi) => vi.field === "rearfootWedge" || vi.field === "forefootWedge");
+}
+
+/** Soft UI warning when posting wedge angle exceeds 8° (still allowed up to 10°). */
+export function hasPostingAngleWarning(c: SideCorrections): boolean {
+    for (const w of [c.rearfootWedge, c.forefootWedge]) {
+        if (w?.unit === "deg" && (w.value ?? 0) > 8) return true;
+    }
+    return false;
 }

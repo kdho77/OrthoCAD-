@@ -127,6 +127,7 @@ function zeroCorrections(): SideCorrections {
         lateralSkiveMm: 0,
         archFillMm: 0,
         archHeightMm: 0,
+        archEaseMm: 0,
         heelCupDepthMm: 0,
         heelCupHeightMm: 0,
         heelCupWidthMm: 0,
@@ -162,9 +163,8 @@ export function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
         c.heelLiftMm > 0 ||
         c.archHeightMm !== 0 ||
         c.archFillMm !== 0 ||
+        (c.archEaseMm ?? 0) !== 0 ||
         c.heelCupHeightMm !== 0 ||
-        c.forefootPostingDeg !== 0 ||
-        c.rearfootPostingDeg !== 0 ||
         c.apexMoveMm !== 0 ||
         c.medialSkiveMm !== 0 ||
         c.lateralSkiveMm !== 0 ||
@@ -1967,9 +1967,9 @@ export function reconstructProceduralWalls(
         plantarAbsMaxZ: grid.plantar.points.reduce((m, p) => Math.max(m, Math.abs(p.z)), 0),
     };
     const liftMm = options.corrections?.heelLiftMm ?? 0;
-    const postDeg =
-        (options.corrections?.rearfootPostingDeg ?? 0) || (options.corrections?.forefootPostingDeg ?? 0);
-    if (liftMm > 0 || postDeg) {
+    const hasPost =
+        hasWedge(options.corrections?.rearfootWedge) || hasWedge(options.corrections?.forefootWedge);
+    if (liftMm > 0 || hasPost) {
         let heelWall = 0;
         let maxBz = Number.NEGATIVE_INFINITY;
         let minBz = Number.POSITIVE_INFINITY;

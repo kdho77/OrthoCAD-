@@ -264,7 +264,7 @@ export function assertShapeFinishExportAllowed(design: DesignState, side: Side):
         side,
         sf: sfApplied,
         thicknessMm,
-        archHeightMm: c.archHeightMm + c.archFillMm,
+        archHeightMm: c.archHeightMm,
         heelSkiveMedialMm: c.medialSkiveMm,
         heelSkiveLateralMm: c.lateralSkiveMm,
     });

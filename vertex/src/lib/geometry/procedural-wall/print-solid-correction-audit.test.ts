@@ -15,6 +15,7 @@ function zero(): SideCorrections {
         lateralSkiveMm: 0,
         archFillMm: 0,
         archHeightMm: 0,
+        archEaseMm: 0,
         heelCupDepthMm: 0,
         heelCupHeightMm: 0,
         heelCupWidthMm: 0,
@@ -55,7 +56,7 @@ describe("Print solid correction audit (inventory)", () => {
     });
 
     test("surviving gates: posting, lift, widen, cup, arch height, thickness", () => {
-        expect(gate({ rearfootPostingDeg: 4 })).toBe(true);
+        expect(gate({ rearfootWedge: { side: "lateral", value: 4, unit: "deg" } })).toBe(true);
         expect(gate({ heelLiftMm: 6 })).toBe(true);
         expect(gate({ heelCupWidthMm: 4 })).toBe(true);
         expect(gate({ heelCupDepthMm: 8 })).toBe(true);
