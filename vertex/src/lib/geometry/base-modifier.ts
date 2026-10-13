@@ -2784,16 +2784,15 @@ export function applyBaseModifiers(
         } else {
             w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
         }
-        const heightAbove = t - thickMin;
-        const onPlantarBottom =
-            topFactors !== null
-                ? topFactors[i]! < BOTTOM_FACTOR_THRESHOLD && heightAbove < BOTTOM_BAND_MM
-                : heightAbove < BOTTOM_BAND_MM;
         const wedgePart = wedgeAt ? wedgeAt[i]! : 0;
         const corePart = delta[i]! - wedgePart;
+        // Wedge is applied at full wedgePart (not × top-factor w or smoothstep(0,0.1,w)):
+        // rim neighbours can sit at w≈0 beside w≈1 on the plantar sheet, which
+        // makes a scaled wedge cliff and forefoot stair-step tears (6.5° pronation).
         const allowWedge =
             wedgePart > 0 && !(isMultiMesh && topVertexCount > 0 && i >= topVertexCount) && w > 0.01;
-        const vertD = corePart * w + (allowWedge ? wedgePart : 0);
+        const wedgeScaled = allowWedge ? wedgePart : 0;
+        const vertD = corePart * w + wedgeScaled;
         const latD = lateralDelta[i]! * (heelCupNarrowing ? 1 : w);
         let dx = 0;
         let dy = 0;
