@@ -28,6 +28,20 @@ jobs:
             - name: Generate Prisma client (vertex)
               run: npm run prisma:generate --prefix vertex
 
+            # procedural-wall-style.test.ts shells out to tests/helpers/stl-gates.py.
+            # ubuntu-latest has python3 but not trimesh; without this the required
+            # job dies on ModuleNotFoundError instead of reporting STL gates.
+            - name: Setup Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+
+            - name: Install STL-gate Python deps
+              run: python3 -m pip install "trimesh>=4.0" "scipy>=1.11"
+
+            - name: Assert server entry boots under plain Node ESM
+              run: node vertex/scripts/assert-server-esm-boot.mjs
+
             - name: Run unit tests
               run: npm run test
 

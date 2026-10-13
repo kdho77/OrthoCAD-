@@ -2,11 +2,14 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
+import { BufferAttribute, BufferGeometry } from "three";
 import { insoleLayoutForUsMenSize } from "./shoe-size";
 import {
+    applyShoeWidthToGeometry,
     applyShoeWidthToPoints,
     formatShoeWidthSummary,
     SHOE_WIDTH_HEEL_CAP_MM,
+    shoeWidthAffineY,
     shoeWidthBallScale,
     shoeWidthForSide,
     shoeWidthHeelScale,
@@ -87,5 +90,34 @@ describe("shoe width rule", () => {
         expect(shoeWidthForSide(design, "right")).toBe("narrow");
         expect(formatShoeWidthSummary(design)).toBe("L Wide / R Narrow");
         expect(formatShoeWidthSummary({ ...design, corrections: { linked: true } })).toBe("Wide");
+    });
+
+    test("mesh affine matches applyShoeWidthToPoints vertex-for-vertex", () => {
+        const pts = [
+            { x: 0, y: 10 },
+            { x: 130, y: 40 },
+            { x: 260, y: -10 },
+        ];
+        const opts = { ballWidthMm: 95, heelWidthMm: 59, minX: 0, lengthMm: 260 };
+        const scaled = applyShoeWidthToPoints(pts, "wide", opts);
+        const geo = new BufferGeometry();
+        const arr = new Float32Array(pts.length * 3);
+        pts.forEach((p, i) => {
+            arr[i * 3] = p.x;
+            arr[i * 3 + 1] = p.y;
+            arr[i * 3 + 2] = 2;
+        });
+        geo.setAttribute("position", new BufferAttribute(arr, 3));
+        const out = applyShoeWidthToGeometry(geo, "wide", opts);
+        const pos = out.getAttribute("position")!;
+        for (let i = 0; i < pts.length; i++) {
+            expect(pos.getX(i)).toBeCloseTo(scaled[i]!.x, 4);
+            expect(pos.getY(i)).toBeCloseTo(scaled[i]!.y, 4);
+            expect(pos.getZ(i)).toBeCloseTo(2, 5);
+        }
+        const yMid = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+        expect(shoeWidthAffineY(130, 40, yMid, "wide", opts)).toBeCloseTo(scaled[1]!.y, 6);
+        out.dispose();
+        geo.dispose();
     });
 });

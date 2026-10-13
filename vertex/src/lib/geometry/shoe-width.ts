@@ -1,6 +1,8 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import type { BufferGeometry } from "three";
+
 export type ShoeWidthId = "narrow" | "medium" | "wide" | "extra_wide";
 
 /** Forefoot ball-width deltas (mm) vs Medium. */
@@ -77,24 +79,45 @@ export function shoeWidthScaleAtU(
     return heel + (ball - heel) * t;
 }
 
+export interface ShoeWidthAffineOpts {
+    ballWidthMm: number;
+    heelWidthMm: number;
+    minX: number;
+    lengthMm: number;
+    heelOverrideMm?: number;
+}
+
+/** True when the width class or a heel-override actually changes Y. */
+export function shoeWidthAffineActive(width: ShoeWidthId, heelOverrideMm?: number): boolean {
+    return width !== "medium" || (heelOverrideMm != null && Math.abs(heelOverrideMm) > 1e-6);
+}
+
+/**
+ * Same affine as {@link applyShoeWidthToPoints}: Y' = yMid + (Y − yMid) · s(u).
+ * Length (X) is unchanged. Heel is capped; full ball scale by u ≥ 0.48.
+ */
+export function shoeWidthAffineY(
+    x: number,
+    y: number,
+    yMid: number,
+    width: ShoeWidthId,
+    opts: ShoeWidthAffineOpts,
+): number {
+    const u = (x - opts.minX) / Math.max(1e-3, opts.lengthMm);
+    const s = shoeWidthScaleAtU(u, opts.ballWidthMm, opts.heelWidthMm, width, opts.heelOverrideMm);
+    return yMid + (y - yMid) * s;
+}
+
 export function applyShoeWidthToPoints<T extends { x: number; y: number }>(
     pts: T[],
     width: ShoeWidthId,
-    opts: {
-        ballWidthMm: number;
-        heelWidthMm: number;
-        minX: number;
-        lengthMm: number;
-        heelOverrideMm?: number;
-    },
+    opts: ShoeWidthAffineOpts,
 ): T[] {
     if (!Array.isArray(pts) || pts.length === 0) return pts;
-    if (width === "medium" && !(opts.heelOverrideMm && Math.abs(opts.heelOverrideMm) > 1e-6)) return pts;
+    if (!shoeWidthAffineActive(width, opts.heelOverrideMm)) return pts;
     const yMid = pts.reduce((s, p) => s + p.y, 0) / Math.max(1, pts.length);
     return pts.map((p) => {
-        const u = (p.x - opts.minX) / Math.max(1e-3, opts.lengthMm);
-        const s = shoeWidthScaleAtU(u, opts.ballWidthMm, opts.heelWidthMm, width, opts.heelOverrideMm);
-        const y = yMid + (p.y - yMid) * s;
+        const y = shoeWidthAffineY(p.x, p.y, yMid, width, opts);
         const clone = (p as { clone?: () => T }).clone;
         if (typeof clone === "function") {
             const next = clone.call(p);
@@ -103,6 +126,63 @@ export function applyShoeWidthToPoints<T extends { x: number; y: number }>(
         }
         return { ...p, y };
     });
+}
+
+/**
+ * Apply the viewer shoe-width affine to every vertex of a top mesh.
+ * Same s(u) / yMid formula as {@link applyShoeWidthToPoints}.
+ */
+export function applyShoeWidthToGeometry(
+    geometry: BufferGeometry,
+    width: ShoeWidthId,
+    opts: {
+        ballWidthMm: number;
+        heelWidthMm: number;
+        minX?: number;
+        lengthMm?: number;
+        heelOverrideMm?: number;
+    },
+): BufferGeometry {
+    const pos = geometry.getAttribute("position");
+    if (!pos) return geometry.clone();
+    if (!shoeWidthAffineActive(width, opts.heelOverrideMm)) return geometry.clone();
+    const count = pos.count;
+    let minX = opts.minX;
+    let lengthMm = opts.lengthMm;
+    if (minX == null || lengthMm == null || !Number.isFinite(lengthMm)) {
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (let i = 0; i < count; i++) {
+            const x = pos.getX(i);
+            lo = Math.min(lo, x);
+            hi = Math.max(hi, x);
+        }
+        minX = lo;
+        lengthMm = Math.max(1e-3, hi - lo);
+    }
+    let ySum = 0;
+    for (let i = 0; i < count; i++) ySum += pos.getY(i);
+    const yMid = ySum / Math.max(1, count);
+    const affine: ShoeWidthAffineOpts = {
+        ballWidthMm: opts.ballWidthMm,
+        heelWidthMm: opts.heelWidthMm,
+        minX,
+        lengthMm,
+        heelOverrideMm: opts.heelOverrideMm,
+    };
+    const out = geometry.clone();
+    const dst = out.getAttribute("position");
+    if (!dst) return out;
+    const arr = dst.array as Float32Array;
+    for (let i = 0; i < count; i++) {
+        const x = arr[i * 3]!;
+        const y = arr[i * 3 + 1]!;
+        arr[i * 3 + 1] = shoeWidthAffineY(x, y, yMid, width, affine);
+    }
+    dst.needsUpdate = true;
+    out.computeBoundingBox();
+    out.computeBoundingSphere();
+    return out;
 }
 
 export function shoeWidthHint(width: ShoeWidthId): string {

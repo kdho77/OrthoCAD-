@@ -111,6 +111,12 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * {@link insoleWidthScale} instead.
      */
     widenFollowFactor?: number;
+    /**
+     * Model top is already the single composed Print sheet (width +
+     * applyBaseModifiers + trimline clip). Skip applyAnalyticTopDeltas and
+     * the Default extractTopSheet steal.
+     */
+    composedTop?: boolean;
 }
 
 function zeroCorrections(): SideCorrections {
@@ -131,9 +137,21 @@ function zeroCorrections(): SideCorrections {
     };
 }
 
-function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
+function hasWedge(w?: { value?: number } | null): boolean {
+    return Boolean(w && Number.isFinite(w.value) && Math.abs(w.value ?? 0) > 1e-9);
+}
+
+/** True when Print reconstruct will run applyAnalyticTopDeltas (or sourceGeometry steal). */
+export function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
+    if (input.composedTop) return true;
     const whole = input.insoleWidthScale ?? 1;
     if (Number.isFinite(whole) && Math.abs(whole - 1) > 1e-12) return true;
+    const field = input.sourceField;
+    if (field) {
+        if ((field.elements?.length ?? 0) > 0) return true;
+        if (field.shapeFinish) return true;
+        if (field.trimline && field.trimline.points.length >= 4) return true;
+    }
     const c = input.corrections;
     const thicknessChanged =
         input.thicknessMm != null && input.thicknessMm !== (input.stockThicknessMm ?? input.thicknessMm);
@@ -147,6 +165,13 @@ function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
         c.heelCupHeightMm !== 0 ||
         c.forefootPostingDeg !== 0 ||
         c.rearfootPostingDeg !== 0 ||
+        c.apexMoveMm !== 0 ||
+        c.medialSkiveMm !== 0 ||
+        c.lateralSkiveMm !== 0 ||
+        c.medialFlangeMm !== 0 ||
+        c.lateralFlangeMm !== 0 ||
+        hasWedge(c.rearfootWedge) ||
+        hasWedge(c.forefootWedge) ||
         thicknessChanged
     );
 }
@@ -924,7 +949,14 @@ export function reconstructProceduralWalls(
     let topIdx: Uint32Array;
     let rimLocal: number[];
 
-    if (options.sourceGeometry && hasCurveOrTopModifiers(options) && options.sourceField) {
+    if (options.composedTop) {
+        if (!model.top.meshPositions || !model.top.meshIndices || !model.top.rimLocal) {
+            throw new Error("procedural reconstruct: composed top sheet missing");
+        }
+        topPos = model.top.meshPositions.slice();
+        topIdx = model.top.meshIndices;
+        rimLocal = model.top.rimLocal.slice();
+    } else if (options.sourceGeometry && hasCurveOrTopModifiers(options) && options.sourceField) {
         const modified = applyBaseModifiers(options.sourceGeometry, options.sourceField, 0);
         const sheet = extractTopSheet(modified);
         modified.dispose();
@@ -1134,7 +1166,7 @@ export function reconstructProceduralWalls(
         0,
     );
     const rTop = Math.min(FILLET_R_CAP_MM, Math.max(0, defaults.wallFilletTopMm || 0.5));
-    const useLiveSheet = hasCurveOrTopModifiers(options);
+    const useLiveSheet = options.composedTop === true || hasCurveOrTopModifiers(options);
     const E: PolyPoint[] = pairing.top.map((R, i) => {
         const B = pairing.plantar[i]!;
         const dx = B.x - R.x;
@@ -1922,6 +1954,7 @@ export function reconstructProceduralWalls(
         }),
         postingClamps,
         wallStyle: options.wallStyle ?? "straight",
+        composedTop: Boolean(options.composedTop),
         maxBPlantarDeltaMm: grid.maxBPlantarDeltaMm,
         wallBelowPlantar: grid.wallBelowPlantar,
         heelWallHeightMm: (() => {

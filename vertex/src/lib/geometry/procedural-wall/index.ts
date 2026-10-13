@@ -346,7 +346,17 @@ export {
     printLoftSteps,
     wantsProceduralExportSolid,
 } from "./preview-loft-ui";
-export { type ReconstructOptions, reconstructProceduralWalls, splitAcuteTriangles } from "./reconstruct";
+export {
+    type ComposePrintSolidInput,
+    composePrintSolidTop,
+    type PrintSolidShoeWidth,
+} from "./print-solid-compose";
+export {
+    hasCurveOrTopModifiers,
+    type ReconstructOptions,
+    reconstructProceduralWalls,
+    splitAcuteTriangles,
+} from "./reconstruct";
 export {
     assertClosedStationRing,
     assertPeriodicQuadStrip,

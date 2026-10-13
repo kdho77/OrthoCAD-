@@ -126,6 +126,21 @@ describe("preview loft overlay", () => {
             flanges: "0:40:10",
         });
         expect(a).toBe(b);
+        expect(a).toMatch(/^[0-9a-f]{64}$/);
+        const c = proceduralLoftReuseKey({
+            side: "left",
+            wallStyle: "straight",
+            deviceType: "functional",
+            thicknessMm: 3,
+            correctionsJson: "{}",
+            scanPattern: "full_contact",
+            patternKind: "auto",
+            patternHash: autoPatternKey(false, "full_contact"),
+            flanges: "0:40:10",
+            shoeWidth: "wide",
+            elementsJson: "[{}]",
+        });
+        expect(c).not.toBe(a);
         expect(idle.left).toBe("idle");
     });
 });

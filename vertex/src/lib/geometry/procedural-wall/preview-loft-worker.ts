@@ -119,6 +119,31 @@ export async function reconstructProceduralPreviewInWorker(
                         y: p.y,
                         z: p.z ?? 0,
                     })),
+                    trimline: options.trimline
+                        ? {
+                              points: options.trimline.points.map((p) => ({
+                                  x: p.x,
+                                  y: p.y,
+                                  z: p.z ?? 0,
+                              })),
+                          }
+                        : options.trimline,
+                    sourceField: options.sourceField
+                        ? {
+                              ...options.sourceField,
+                              topEdgeAvProfile: undefined,
+                              graph: undefined,
+                              trimline: options.sourceField.trimline
+                                  ? {
+                                        points: options.sourceField.trimline.points.map((p) => ({
+                                            x: p.x,
+                                            y: p.y,
+                                            z: p.z ?? 0,
+                                        })),
+                                    }
+                                  : options.sourceField.trimline,
+                          }
+                        : undefined,
                 },
             };
             w.postMessage(msg, transfer);

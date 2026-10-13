@@ -3,6 +3,7 @@
 
 import type { ClinicalStepId } from "@/stores/clinical-workflow-store";
 import type { Side } from "@/types";
+import { sha256Hex } from "./sha256";
 
 /** Walls/solid are Print + export only — Base/Design stay top + pattern. */
 export function shouldLoftProceduralViewer(step: ClinicalStepId, wallModel: string): boolean {
@@ -38,18 +39,31 @@ export function proceduralLoftReuseKey(input: {
     patternKind: "auto" | "edited" | "live";
     patternHash: string;
     flanges: string;
+    /** Full viewer field (elements, shapeFinish, include flags). */
+    sourceFieldJson?: string;
+    shapeFinishJson?: string;
+    elementsJson?: string;
+    trimlineHash?: string;
+    shoeWidth?: string;
 }): string {
-    return [
-        input.side,
-        input.wallStyle,
-        input.deviceType,
-        input.thicknessMm.toFixed(3),
-        input.correctionsJson,
-        input.scanPattern,
-        input.patternKind,
-        input.patternHash,
-        input.flanges,
-    ].join("|");
+    return sha256Hex(
+        [
+            input.side,
+            input.wallStyle,
+            input.deviceType,
+            input.thicknessMm.toFixed(3),
+            input.correctionsJson,
+            input.scanPattern,
+            input.patternKind,
+            input.patternHash,
+            input.flanges,
+            input.sourceFieldJson ?? "",
+            input.shapeFinishJson ?? "",
+            input.elementsJson ?? "",
+            input.trimlineHash ?? "",
+            input.shoeWidth ?? "medium",
+        ].join("|"),
+    );
 }
 
 export function hashPatternPoints(points: ReadonlyArray<{ x: number; y: number; z?: number }>): string {

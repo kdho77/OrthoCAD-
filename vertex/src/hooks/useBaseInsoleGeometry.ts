@@ -25,6 +25,7 @@ import {
 } from "@/lib/geometry/procedural-wall/preview-loft-queue";
 import {
     autoPatternKey,
+    hashPatternPoints,
     PRINT_LOFT_TIMEOUT_MS,
     proceduralLoftReuseKey,
     resolveLoftActiveSide,
@@ -429,6 +430,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 else setLoftPhase(side, "ready", "Pattern edited — solid is stale");
                 return;
             }
+            const draftTrim = useMeshEditStore.getState().getActiveDraftTrimline(side);
+            const committedTrim = getDesignTrimline(design, side);
+            const printTrim = draftTrim ?? committedTrim;
             const loftKey = proceduralLoftReuseKey({
                 side,
                 wallStyle,
@@ -439,6 +443,18 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 patternKind: draft ? "edited" : livePts ? "live" : "auto",
                 patternHash: livePts ? hashLiveBottomPattern(livePts) : patternKey,
                 flanges: `${lateralFlangeHeightMm}:${lateralFlangeLengthMm}:${lateralFlangeAngleDeg}|r${retryNonce}`,
+                sourceFieldJson: JSON.stringify({
+                    side: field.side,
+                    lengthMm: field.lengthMm,
+                    widthMm: field.widthMm,
+                    thicknessMm: field.thicknessMm,
+                    includeSkives: field.includeSkives ?? false,
+                    includeElements: field.includeElements ?? true,
+                }),
+                shapeFinishJson: JSON.stringify(field.shapeFinish ?? null),
+                elementsJson: JSON.stringify(field.elements ?? []),
+                trimlineHash: printTrim ? hashPatternPoints(printTrim.points) : "",
+                shoeWidth: widthId,
             });
             if (lastLoftKeyRef.current === loftKey && outRef.current) {
                 setBaseMeshLoading(side, false);
@@ -490,6 +506,15 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             archGrindDepthMm: 0,
                             wallStyle,
                             scanPattern: design.pattern,
+                            sourceField: field,
+                            composedTop: true,
+                            shoeWidth: {
+                                width: widthId,
+                                ballWidthMm: layout.widthMm,
+                                heelWidthMm: layout.widthMm * 0.62,
+                                heelOverrideMm: heelW,
+                            },
+                            trimline: printTrim,
                             ...(livePts ? { bottomPattern: livePts } : {}),
                         });
                         if (cancelled) {
@@ -584,6 +609,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.pattern,
         design.shoeWidth,
         design.shoeWidthBySide,
+        design.shapeFinish,
+        design.trimlines,
         correctionPreview,
         thicknessPreview,
         elementPreviews,

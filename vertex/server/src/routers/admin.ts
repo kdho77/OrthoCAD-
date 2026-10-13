@@ -1,5 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { getSupabaseAdmin } from "../context.js";
+import { grantAdminTokens } from "../lib/grant-admin-tokens.js";
 import { requireSupabaseAdmin } from "../lib/supabase-db.js";
 import { adminProcedure, router, superAdminProcedure } from "../trpc.js";
 
@@ -53,39 +55,39 @@ export const adminRouter = router({
                 throw new TRPCError({ code: "BAD_REQUEST", message: "Grant amount must be non-zero" });
             }
 
-            const supabase = requireSupabaseAdmin();
-            const { data, error } = await supabase.rpc("vertex_grant_admin_tokens", {
-                p_actor_user_id: ctx.user.id,
-                p_target_user_id: input.userId,
-                p_amount: input.amount,
-                p_reason: input.reason ?? null,
-                p_ip: ctx.ip,
-            });
-
-            if (error) {
-                console.error("[admin] grantTokens failed", {
+            // Super admin must never be blocked by a missing RPC. Do not call
+            // Prisma here — the query engine is the FUNCTION_INVOCATION_FAILED
+            // crash (Vercel plaintext "A server error has occurred").
+            try {
+                const result = await grantAdminTokens({
+                    supabase: getSupabaseAdmin(),
                     actorId: ctx.user.id,
                     targetUserId: input.userId,
                     amount: input.amount,
-                    error: error.message,
+                    reason: input.reason ?? null,
+                    ip: ctx.ip,
                 });
-                if (error.message.includes("NOT_FOUND")) {
-                    throw new TRPCError({ code: "NOT_FOUND", message: "Target user not found" });
-                }
+                console.log("[admin] grantTokens success", {
+                    actorId: ctx.user.id,
+                    targetUserId: input.userId,
+                    amount: input.amount,
+                    newBalance: result.balance,
+                });
+                return result;
+            } catch (e) {
+                if (e instanceof TRPCError) throw e;
+                const message = e instanceof Error ? e.message : String(e);
+                console.error("[admin] grantTokens unexpected", {
+                    actorId: ctx.user.id,
+                    targetUserId: input.userId,
+                    amount: input.amount,
+                    error: message,
+                });
                 throw new TRPCError({
                     code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to grant tokens: ${error.message}`,
+                    message: `Failed to grant tokens: ${message}`,
                 });
             }
-
-            const result = data as { ok: true; balance: number };
-            console.log("[admin] grantTokens success", {
-                actorId: ctx.user.id,
-                targetUserId: input.userId,
-                amount: input.amount,
-                newBalance: result.balance,
-            });
-            return result;
         }),
 
     listLicenses: adminProcedure.query(async () => {
