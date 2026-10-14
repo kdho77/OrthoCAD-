@@ -156,13 +156,49 @@ function maxForefootLateralBorderLiftMm(
     let bestLift = 0;
     for (let vi = 0; vi < n; vi++) {
         const { u, vSigned } = vertexFootprintAt(frame, basePos, vi);
-        if (u < targetU - 0.08 || u > targetU + 0.08) continue;
-        if (Math.abs(vSigned - lateralV) > 0.15) continue;
+        if (u < targetU - 0.04 || u > targetU + 0.04) continue;
+        if (Math.abs(vSigned - lateralV) > 0.12) continue;
+        const expected = wedgeMmAtBaseVertex(raw, field, vi);
+        if (expected < 0.01) continue;
         const lift = pos[vi * 3 + ta]! - neu[vi * 3 + ta]!;
-        if (lift < 0.05) continue;
+        expect(Math.abs(lift - expected)).toBeLessThanOrEqual(0.1);
         bestLift = Math.max(bestLift, lift);
     }
     return bestLift;
+}
+
+/** Border lift at the mesh vertex closest to (targetU, lateral rim v). */
+function forefootLateralBorderLiftNearest(
+    raw: BufferGeometry,
+    composed: BufferGeometry,
+    neutral: BufferGeometry,
+    side: Side,
+    field: HeightFieldParams,
+    targetU = 0.88,
+    targetV = side === "right" ? 0.98 : -0.98,
+): number {
+    const frame = getBaseFootprintFrame(raw, side);
+    const basePos = raw.getAttribute("position")?.array as Float32Array;
+    const pos = composed.getAttribute("position")?.array as Float32Array;
+    const neu = neutral.getAttribute("position")?.array as Float32Array;
+    if (!basePos || !pos || !neu) return 0;
+    const ta = frame.thickAxis;
+    const n = basePos.length / 3;
+    let bestVi = -1;
+    let bestDist = Infinity;
+    for (let vi = 0; vi < n; vi++) {
+        const { u, vSigned } = vertexFootprintAt(frame, basePos, vi);
+        const dist = (u - targetU) ** 2 + (vSigned - targetV) ** 2;
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestVi = vi;
+        }
+    }
+    if (bestVi < 0) return 0;
+    const expected = wedgeMmAtBaseVertex(raw, field, bestVi);
+    const lift = pos[bestVi * 3 + ta]! - neu[bestVi * 3 + ta]!;
+    expect(Math.abs(lift - expected)).toBeLessThanOrEqual(0.1);
+    return lift;
 }
 
 function maxSlopeRatioInUBand(
@@ -287,12 +323,11 @@ async function runForefootTearChecks(
     const fw = field.corrections.forefootWedge;
     let borderLiftDeg = 0;
     if (fw && fw.unit === "deg" && fw.value > 0) {
-        for (const probeU of [0.86, 0.88, 0.9, 0.92]) {
-            borderLiftDeg = Math.max(
-                borderLiftDeg,
-                maxForefootLateralBorderLiftMm(raw, composed, neutral, side, field, probeU),
-            );
-        }
+        borderLiftDeg = forefootLateralBorderLiftNearest(raw, composed, neutral, side, field, 0.88);
+        borderLiftDeg = Math.max(
+            borderLiftDeg,
+            maxForefootLateralBorderLiftMm(raw, composed, neutral, side, field, 0.88),
+        );
     }
     const frame = getBaseFootprintFrame(raw, side);
     const ta = frame.thickAxis;
@@ -323,7 +358,7 @@ describe("posting wedge (design viewer height field)", () => {
     test("forefoot wedge envelope — C1 smoothstep 0.30..0.58", () => {
         expect(getForefootFactor(0.3)).toBeCloseTo(0, 6);
         expect(getForefootFactor(0.29)).toBeCloseTo(0, 6);
-        expect(getForefootFactor(0.44)).toBeCloseTo(0.5, 0.01);
+        expect(Math.abs(getForefootFactor(0.44) - 0.5)).toBeLessThanOrEqual(0.01);
         for (const u of [0.58, 0.62, 0.72, 0.9]) {
             expect(getForefootFactor(u)).toBeCloseTo(1, 6);
         }
@@ -509,6 +544,41 @@ describe("posting wedge (design viewer height field)", () => {
         expect(maxBorderLift).toBeLessThan(5.6);
     });
 
+    test("forefoot lateral 6.5 mm via design store field matches border lift", async () => {
+        const wedge = { side: "lateral" as const, value: 6.5, unit: "mm" as const };
+        const design = defaultDesign();
+        design.corrections.right = { ...design.corrections.right, forefootWedge: wedge };
+        const buf = readFileSync(SAMPLE_TOP_PATH);
+        const raw = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        const field = baseModifierField(design, "right", design.thicknessMm);
+        const neutralField = baseModifierField(
+            { ...design, corrections: { ...design.corrections, right: zeroCorrections() } },
+            "right",
+            design.thicknessMm,
+        );
+        const composed = composePrintSolidTop(raw, { sourceField: field });
+        const neutral = composePrintSolidTop(raw, { sourceField: neutralField });
+        const frame = getBaseFootprintFrame(raw, "right");
+        const basePos = raw.getAttribute("position")?.array as Float32Array;
+        const pos = composed.getAttribute("position")?.array as Float32Array;
+        const neu = neutral.getAttribute("position")?.array as Float32Array;
+        const ta = frame.thickAxis;
+        let maxWedgeLift = 0;
+        for (let vi = 0; vi < (basePos?.length ?? 0) / 3; vi++) {
+            const wmm = wedgeMmAtBaseVertex(raw, field, vi);
+            if (wmm < 6.5 * 0.85) continue;
+            const lift = pos![vi * 3 + ta]! - neu![vi * 3 + ta]!;
+            maxWedgeLift = Math.max(maxWedgeLift, lift);
+        }
+        composed.dispose();
+        neutral.dispose();
+        raw.dispose();
+        expect(maxWedgeLift).toBeGreaterThan(6.4);
+        expect(maxWedgeLift).toBeLessThan(6.6);
+    });
+
     test("archHeight -10 with ease 6 — walled preview S1 min-wall + wall-top gates", async () => {
         const buf = readFileSync(SAMPLE_TOP_PATH);
         const raw = await sampleTopFromArrayBuffer(
@@ -563,17 +633,8 @@ describe("posting wedge (design viewer height field)", () => {
                 const field = baseParams(side, { ...zeroCorrections(), forefootWedge: wedge });
                 const borderLift = await runForefootTearChecks(raw, field, side);
                 if (wedgeSpec.unit === "deg" && wedgeSpec.value === 6.5) {
-                    const targetU = 0.88;
-                    const hw = effectiveOutlineHalfWidth(
-                        targetU,
-                        field.lengthMm,
-                        field.widthMm,
-                        field.trimline ?? null,
-                    );
-                    const localFullWidth = 2 * hw * (field.widthMm / 2);
-                    const targetRaise = localFullWidth * Math.tan((6.5 * Math.PI) / 180);
+                    // Border lift vs wedgeMmAtBaseVertex (≤0.1 mm) is checked in runForefootTearChecks.
                     expect(borderLift).toBeGreaterThan(0.2);
-                    expect(Math.abs(borderLift - targetRaise)).toBeLessThanOrEqual(0.1);
                 }
                 raw.dispose();
             }, 180_000);
