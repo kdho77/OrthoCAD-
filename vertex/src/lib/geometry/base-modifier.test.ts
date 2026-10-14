@@ -16,6 +16,7 @@ import {
 } from "./base-modifier";
 import type { HeightFieldParams } from "./height-field";
 import { heightAt } from "./height-field";
+import { analyzeManifold } from "./manifold";
 import { deriveNativeShellThicknessDatum } from "./native-shell-thickness";
 import { getForefootFactor, getRearfootFactor, wedgeDeltaAt } from "./wedge";
 
@@ -408,7 +409,9 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
 
     test("factors exported for test/debug", () => {
         expect(getRearfootFactor(0.1)).toBeGreaterThan(0.9);
-        expect(getForefootFactor(0.9)).toBeGreaterThan(0.9);
+        expect(getForefootFactor(0.9)).toBeCloseTo(1, 5);
+        expect(getForefootFactor(0.29)).toBeCloseTo(0, 5);
+        expect(Math.abs(getForefootFactor(0.44) - 0.5)).toBeLessThanOrEqual(0.01);
         expect(getRearfootFactor(0.5)).toBeLessThan(0.5);
     });
 
@@ -438,9 +441,7 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
         // Bottom (low factor) movement small even with wedge (weighted)
         expect(metricsSingle.maxBottomDeltaMm).toBeLessThan(2); // wedge affects but weighted for single
 
-        // Multi-mesh: field-coupled shell sync applies the wedge delta to the
-        // bottom layer at full strength (constant-thickness shell). Top must
-        // still receive the wedge; bottom heel region must move in lockstep.
+        // Multi-mesh: raise-only posting/wedge is top-sheet only; bottom stays datum-anchored.
         const multiBase = makeMultiMeshBase();
         const wedgeField = {
             ...p,
@@ -461,12 +462,67 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
             maxBottomLift = Math.max(maxBottomLift, modArr[i * 3 + 2]! - baseArr[i * 3 + 2]!);
         }
         expect(maxTopLift).toBeGreaterThan(1);
-        expect(maxBottomLift).toBeGreaterThan(1);
-        // Thickness preserved: top and bottom lifts within 0.05 mm of each other
-        // at the peak (same F sampled at similar footprints on the synthetic grid).
-        expect(Math.abs(maxTopLift - maxBottomLift)).toBeLessThan(BASE_BOTTOM_DELTA_TOLERANCE_MM + 0.002);
+        expect(maxBottomLift).toBeLessThan(0.05);
         multiBase.dispose();
         modifiedMulti.dispose();
+    });
+
+    test("forefoot lateral 10 mm wedge — multi-mesh bottom sheet unchanged", () => {
+        const wedge = { side: "lateral" as const, value: 10, unit: "mm" as const };
+        const p = baseParams({
+            corrections: {
+                ...baseParams().corrections,
+                forefootWedge: wedge,
+            },
+        });
+        const base = makeMultiMeshBase();
+        const wedgeField = {
+            ...p,
+            thicknessMm:
+                deriveNativeShellThicknessDatum(base)?.nativeMinClearanceMm ?? BASE_REFERENCE_THICKNESS_MM,
+        };
+        const modified = applyBaseModifiers(base, wedgeField, 0);
+        const report = validateBaseResult(base, modified);
+        expect(report.maxBottomDeltaMm).toBeLessThan(0.05);
+        base.dispose();
+        modified.dispose();
+    });
+
+    test("wedge + arch height: bottom z=0 on multi-mesh, top lifts", () => {
+        const wedge = { side: "lateral" as const, value: 4, unit: "deg" as const };
+        const p = baseParams({
+            corrections: {
+                ...baseParams().corrections,
+                rearfootWedge: wedge,
+                archHeightMm: 6,
+            },
+        });
+        const base = makeMultiMeshBase();
+        const modified = applyBaseModifiers(base, p, 0);
+        const report = validateBaseResult(base, modified);
+        expect(report.maxBottomDeltaMm).toBeLessThan(0.05);
+        expect(report.avgTopLiftMm).toBeGreaterThan(0.5);
+        base.dispose();
+        modified.dispose();
+    });
+
+    test("wedge + heel cup width: bottom z=0, watertight multi-mesh", () => {
+        const wedge = { side: "lateral" as const, value: 4, unit: "deg" as const };
+        const p = baseParams({
+            corrections: {
+                ...baseParams().corrections,
+                rearfootWedge: wedge,
+                heelCupWidthMm: 4,
+            },
+        });
+        const base = makeMultiMeshBase();
+        const modified = applyBaseModifiers(base, p, 0);
+        const report = validateBaseResult(base, modified);
+        expect(report.maxBottomDeltaMm).toBeLessThan(0.05);
+        expect(report.avgTopLiftMm).toBeGreaterThan(0.3);
+        expect(report.normalsConsistent).toBe(true);
+        base.dispose();
+        modified.dispose();
     });
 });
 

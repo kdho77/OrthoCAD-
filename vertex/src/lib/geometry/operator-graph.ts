@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import type { PlacedElement, Side, SideCorrections } from "@/types";
-import { heightAt, type HeightFieldParams } from "./height-field";
+import { type HeightFieldParams, heightAt } from "./height-field";
 
 /**
  * Phase 4 — Clinical depth: Operator Graph.
@@ -26,6 +26,7 @@ import { heightAt, type HeightFieldParams } from "./height-field";
 
 export type OperatorKind =
     | "arch_dome"
+    | "arch_ease"
     | "arch_fill"
     | "heel_cup"
     | "rearfoot_posting"
@@ -94,7 +95,6 @@ export function correctionsToOperators(c: SideCorrections, side: Side): Clinical
         ops.push({ id: `legacy_${kind}`, kind, enabled: true, params, label: `legacy ${kind}` });
 
     if (c.archHeightMm) push("arch_dome", { height: c.archHeightMm });
-    if (c.archFillMm) push("arch_fill", { height: c.archFillMm });
     if (c.heelCupHeightMm || c.heelCupDepthMm) {
         push("heel_cup", { height: c.heelCupHeightMm, depth: c.heelCupDepthMm });
     }
@@ -148,7 +148,7 @@ export function evaluateOperator(
             // be done in the OCCT solid or a 3D displacement field.
             const sta = ctx.biomech?.staInclinationDeg ?? 0;
             const staFactor = 1.0 + (sta / 45) * 0.15; // small coupling
-            const tiltMm = (deg * 0.18) * staFactor; // approx mm per deg at edge
+            const tiltMm = deg * 0.18 * staFactor; // approx mm per deg at edge
             return tiltMm * zone * w;
         }
         case "medial_skive":
@@ -190,7 +190,7 @@ export function evaluateOperator(
             // The posting plane is rotated around the STJ axis; we approximate
             // the vertical effect as a combination of frontal + small transverse.
             const effective = deg * (1 + Math.abs(sta) / 60);
-            return (effective * 0.16) * zone * w;
+            return effective * 0.16 * zone * w;
         }
         case "element_add":
         case "regional_blend":
@@ -248,7 +248,7 @@ export function estimateTissueStress(
 
     // Local element contribution.
     for (const el of elements) {
-        const dx = (el.position.x / 260) - u;
+        const dx = el.position.x / 260 - u;
         const dy = el.position.y - vSigned * 50; // rough
         const d = Math.hypot(dx * 260, dy);
         if (d < 25) stress += (el.heightMm || 4) * 0.8 * (1 - d / 25);

@@ -1,14 +1,18 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
+import type { BufferGeometry } from "three";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import { maxVertexDeltaMm } from "@/lib/geometry/procedural-wall/metrics";
-import type { SideCorrections } from "@/types";
-import { composePrintSolidTop } from "./print-solid-compose";
+import { maxVertexDeltaMm, outlineExactOnBMm } from "@/lib/geometry/procedural-wall/metrics";
+import { geometryToBinarySTL } from "@/lib/geometry/stl";
+import { mirrorGeometry } from "@/lib/library/loaders";
+import type { Side, SideCorrections } from "@/types";
+import { composePrintSolidTop, composeViewerPrintSolidTop } from "./print-solid-compose";
 import { reconstructProceduralPreview, sampleTopFromArrayBuffer } from "./sample-top-preview";
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
@@ -32,9 +36,9 @@ function zero(): SideCorrections {
     };
 }
 
-function field(corrections: SideCorrections): HeightFieldParams {
+function field(side: Side, corrections: SideCorrections): HeightFieldParams {
     return {
-        side: "left",
+        side,
         lengthMm: 260,
         widthMm: 95,
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
@@ -54,15 +58,40 @@ function field(corrections: SideCorrections): HeightFieldParams {
     };
 }
 
-async function loadSampleTop() {
+function stlMd5(geo: BufferGeometry): string {
+    return createHash("md5")
+        .update(Buffer.from(geometryToBinarySTL(geo)))
+        .digest("hex");
+}
+
+async function loadSampleTop(side: Side) {
     const buf = readFileSync(SAMPLE_TOP_PATH);
-    return sampleTopFromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    let raw = await sampleTopFromArrayBuffer(
+        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    );
+    if (side === "left") {
+        const mirrored = mirrorGeometry(raw);
+        raw.dispose();
+        raw = mirrored;
+    }
+    return raw;
 }
 
 describe("Print solid composed-top parity", () => {
+    test("composeViewerPrintSolidTop STL md5 matches composePrintSolidTop", async () => {
+        const raw = await loadSampleTop("right");
+        const sourceField = field("right", { ...zero(), medialSkiveMm: 2 });
+        const viaPrint = composePrintSolidTop(raw, { sourceField });
+        const viaViewer = composeViewerPrintSolidTop({ raw, sourceField });
+        expect(stlMd5(viaViewer)).toBe(stlMd5(viaPrint));
+        viaPrint.dispose();
+        viaViewer.dispose();
+        raw.dispose();
+    });
+
     test("loft top matches composePrintSolidTop within 0.05 mm; skive raise + S1 gates", async () => {
-        const raw = await loadSampleTop();
-        const sourceField = field({ ...zero(), medialSkiveMm: 4, heelLiftMm: 4 });
+        const raw = await loadSampleTop("right");
+        const sourceField = field("right", { ...zero(), medialSkiveMm: 4, heelLiftMm: 4 });
         const composed = composePrintSolidTop(raw, { sourceField });
         const preview = reconstructProceduralPreview(raw, {
             sourceField,
@@ -77,7 +106,7 @@ describe("Print solid composed-top parity", () => {
         expect(sourcePos).toBeTruthy();
         expect(topN).toBeGreaterThan(1000);
         expect(preview.geometry.userData.composedTop).toBe(true);
-        expect((preview.geometry.userData as { stationCount?: number }).stationCount ?? 0).toBeGreaterThan(3);
+        expect((preview.geometry.userData as { loftN?: number }).loftN ?? 0).toBeGreaterThan(3);
         expect(preview.geometry.userData.inwardWallFaces ?? 0).toBe(0);
         expect(preview.geometry.userData.columnCrossings ?? 0).toBe(0);
 
@@ -91,8 +120,18 @@ describe("Print solid composed-top parity", () => {
         }
         expect(maxVertexDeltaMm(a, b)).toBeLessThanOrEqual(PARITY_MM);
 
+        const ud = preview.geometry.userData as {
+            bottomOutlineB?: Array<{ x: number; y: number }>;
+            outlineRing?: Array<{ x: number; y: number }>;
+        };
+        const solidBottom = ud.bottomOutlineB;
+        const outlineRing = ud.outlineRing;
+        expect(solidBottom?.length ?? 0).toBeGreaterThan(16);
+        expect(outlineExactOnBMm(preview.geometry)).toBeLessThanOrEqual(0.05);
+        expect(solidBottom?.length).toBe(outlineRing?.length);
+
         const composedPos = composed.getAttribute("position")!;
-        const plain = composePrintSolidTop(raw, { sourceField: field(zero()) });
+        const plain = composePrintSolidTop(raw, { sourceField: field("right", zero()) });
         const pPos = plain.getAttribute("position")!;
         let maxSkive = 0;
         composed.computeBoundingBox();

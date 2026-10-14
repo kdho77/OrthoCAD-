@@ -49,16 +49,17 @@ describe("plantar posting", () => {
         expect(forced.zDelta(7, 0)).toBeLessThan(2.2);
     });
 
-    test("postingZDelta tilts the top; plantarZDelta stays 0", () => {
+    test("postingZDelta raises the posted edge only; plantarZDelta stays 0", () => {
         const bounds = { minX: 0, maxX: 100, minY: -20, maxY: 20 };
         const input = {
             corrections: {
                 forefootPostingDeg: 0,
-                rearfootPostingDeg: 4,
+                rearfootPostingDeg: 0,
                 medialSkiveMm: 0,
                 lateralSkiveMm: 0,
                 archFillMm: 0,
                 archHeightMm: 0,
+                archEaseMm: 0,
                 heelCupDepthMm: 0,
                 heelCupHeightMm: 0,
                 heelCupWidthMm: 0,
@@ -66,15 +67,51 @@ describe("plantar posting", () => {
                 apexMoveMm: 0,
                 medialFlangeMm: 0,
                 lateralFlangeMm: 0,
+                rearfootWedge: { side: "lateral", value: 4, unit: "deg" },
             },
             medialYSign: 1 as const,
         };
-        const pos = postingZDelta(10, 20, bounds, input);
-        const neg = postingZDelta(10, -20, bounds, input);
-        expect(pos).toBeGreaterThan(0);
-        expect(neg).toBeLessThan(0);
+        const lateral = postingZDelta(5, -20, bounds, input);
+        const medial = postingZDelta(5, 20, bounds, input);
+        expect(lateral).toBeGreaterThan(0);
+        expect(medial).toBeLessThan(0.05);
         expect(plantarZDelta(10, 20, bounds, input)).toBe(0);
         expect(plantarZDelta(10, -20, bounds, input)).toBe(0);
+        const flipped = postingZDelta(5, 20, bounds, {
+            ...input,
+            medialYSign: -1,
+            side: "right",
+        });
+        expect(flipped).toBeGreaterThan(0);
+        const lateralY = (side: "left" | "right", medialYSign: 1 | -1, edge: "lat" | "med") => {
+            const medialSign = side === "left" ? -1 : 1;
+            const targetV =
+                edge === "lat" ? (side === "right" ? 0.98 : -0.98) : side === "right" ? -0.98 : 0.98;
+            const mMesh = -targetV / (medialYSign * medialSign);
+            const widCenter = (bounds.minY + bounds.maxY) * 0.5;
+            const halfW = (bounds.maxY - bounds.minY) * 0.5;
+            return widCenter + mMesh * halfW;
+        };
+        for (const side of ["left", "right"] as const) {
+            for (const medialYSign of [1, -1] as const) {
+                const yLat = lateralY(side, medialYSign, "lat");
+                const yMed = lateralY(side, medialYSign, "med");
+                const lat = postingZDelta(10, yLat, bounds, {
+                    ...input,
+                    side,
+                    medialYSign,
+                    corrections: input.corrections,
+                });
+                const med = postingZDelta(10, yMed, bounds, {
+                    ...input,
+                    side,
+                    medialYSign,
+                    corrections: input.corrections,
+                });
+                expect(lat).toBeGreaterThan(0.2);
+                expect(med).toBeLessThan(0.05);
+            }
+        }
         expect(
             plantarZDelta(42, 0, bounds, {
                 ...input,

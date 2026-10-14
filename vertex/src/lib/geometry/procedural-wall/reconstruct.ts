@@ -13,6 +13,7 @@ import {
     heelCupWidthScaleFactor,
 } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
+import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
 import type { SideCorrections } from "@/types";
 import {
     columnHeading,
@@ -44,6 +45,7 @@ import { defaultsFromStockCurves } from "./measure";
 import { countJunctionBandSlivers, windingReport } from "./metrics";
 import {
     clampPostingOnTopSheet,
+    footprintVSignedFromMeshY,
     type ProceduralModifierInput,
     type ProceduralWallStyle,
     postingZDelta,
@@ -127,6 +129,7 @@ function zeroCorrections(): SideCorrections {
         lateralSkiveMm: 0,
         archFillMm: 0,
         archHeightMm: 0,
+        archEaseMm: 0,
         heelCupDepthMm: 0,
         heelCupHeightMm: 0,
         heelCupWidthMm: 0,
@@ -162,9 +165,10 @@ export function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
         c.heelLiftMm > 0 ||
         c.archHeightMm !== 0 ||
         c.archFillMm !== 0 ||
+        (c.archEaseMm ?? 0) !== 0 ||
+        (c.rearfootPostingDeg ?? 0) !== 0 ||
+        (c.forefootPostingDeg ?? 0) !== 0 ||
         c.heelCupHeightMm !== 0 ||
-        c.forefootPostingDeg !== 0 ||
-        c.rearfootPostingDeg !== 0 ||
         c.apexMoveMm !== 0 ||
         c.medialSkiveMm !== 0 ||
         c.lateralSkiveMm !== 0 ||
@@ -202,32 +206,44 @@ function applyAnalyticTopDeltas(
     // (2.315 → 1.315). The top stays put unless thickness is requested.
     const requested = input.thicknessMm;
     const stock = input.stockThicknessMm ?? requested ?? BASE_REFERENCE_THICKNESS_MM;
+    const side = input.sourceField?.side ?? ((input.medialYSign ?? 1) < 0 ? "right" : "left");
+    const correctionsNoWedge = {
+        ...c,
+        rearfootWedge: undefined,
+        forefootWedge: undefined,
+    };
     const field: HeightFieldParams = {
-        side: (input.medialYSign ?? 1) < 0 ? "right" : "left",
+        side,
         lengthMm: length,
         widthMm: width,
         thicknessMm: requested ?? stock,
-        corrections: c,
+        corrections: correctionsNoWedge,
         elements: [],
         includeSkives: false,
         includeElements: false,
-        trimline: null,
+        trimline: input.sourceField?.trimline ?? input.trimline ?? null,
     };
     const neutral: HeightFieldParams = {
         ...field,
         thicknessMm: stock,
         corrections: zeroCorrections(),
     };
+    const postingInput = {
+        ...input,
+        side,
+        trimline: field.trimline,
+    };
     const minX = bounds.minX;
     const widCenter = (bounds.minY + bounds.maxY) * 0.5;
-    const halfW = width * 0.5;
+    const medialYSign = (input.medialYSign ?? 1) as 1 | -1;
     const count = pos.length / 3;
     for (let i = 0; i < count; i++) {
         const x = pos[i * 3]!;
         const y = pos[i * 3 + 1]!;
         const u = Math.max(0, Math.min(1, (x - minX) / length));
-        const vSigned = Math.max(-1, Math.min(1, ((y - widCenter) / halfW) * (input.medialYSign ?? 1)));
+        const vSigned = footprintVSignedFromMeshY(y, bounds, side, medialYSign);
         pos[i * 3 + 2]! += correctionDeltaAt(u, vSigned, field, neutral);
+        pos[i * 3 + 2]! += postingZDelta(x, y, bounds, postingInput);
         if (c.heelCupWidthMm !== 0) {
             const scale = heelCupWidthScaleFactor(u, c.heelCupWidthMm);
             pos[i * 3 + 1] = widCenter + (y - widCenter) * scale;
@@ -915,6 +931,9 @@ export function reconstructProceduralWalls(
     model: StockWallModel,
     options: ReconstructOptions = {},
 ): BufferGeometry {
+    if (options.corrections) {
+        options = { ...options, corrections: migrateSideCorrections(options.corrections) };
+    }
     const preset = options.deviceType ?? "functional";
     const peekRim =
         model.top.meshPositions && model.top.rimLocal
@@ -979,7 +998,12 @@ export function reconstructProceduralWalls(
 
     rimLocal = orderRimLocal(topPos, rimLocal);
     const { r1, r2 } = filletRadiiFromDefaults(defaults);
-    const postingAt = (x: number, y: number) => postingZDelta(x, y, model.bounds, options);
+    const postingInput = {
+        ...options,
+        side: options.sourceField?.side ?? ((options.medialYSign ?? 1) < 0 ? "right" : "left"),
+        trimline: options.sourceField?.trimline ?? options.trimline ?? null,
+    };
+    const postingAt = (x: number, y: number) => postingZDelta(x, y, model.bounds, postingInput);
     const postingClamps = clampPostingOnTopSheet(
         topPos,
         rimLocal,
@@ -1967,9 +1991,9 @@ export function reconstructProceduralWalls(
         plantarAbsMaxZ: grid.plantar.points.reduce((m, p) => Math.max(m, Math.abs(p.z)), 0),
     };
     const liftMm = options.corrections?.heelLiftMm ?? 0;
-    const postDeg =
-        (options.corrections?.rearfootPostingDeg ?? 0) || (options.corrections?.forefootPostingDeg ?? 0);
-    if (liftMm > 0 || postDeg) {
+    const hasPost =
+        hasWedge(options.corrections?.rearfootWedge) || hasWedge(options.corrections?.forefootWedge);
+    if (liftMm > 0 || hasPost) {
         let heelWall = 0;
         let maxBz = Number.NEGATIVE_INFINITY;
         let minBz = Number.POSITIVE_INFINITY;

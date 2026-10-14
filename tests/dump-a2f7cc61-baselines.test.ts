@@ -132,6 +132,26 @@ describe("dump a2f7cc61 golden baselines", () => {
             resolve(OUT, "sample-top-style-metrics.json"),
             `${JSON.stringify(perStyle, null, 2)}\n`,
         );
+        const postingPatch = { rearfootWedge: { side: "lateral", value: 4, unit: "deg" } };
+        const postingPerStyle: Record<string, Record<string, unknown>> = {};
+        for (const style of styles) {
+            const geo = reconstructProceduralWalls(model, {
+                bottomPattern: pattern,
+                bottomPatternLabel: "synthetic",
+                flatPlantar: true,
+                wallStyle: style,
+                corrections: postingPatch,
+            });
+            const stl = Buffer.from(geometryToBinarySTL(geo));
+            const md5 = createHash("md5").update(stl).digest("hex");
+            postingPerStyle[style] = { stlMd5: md5, stlBytes: stl.length };
+            writeFileSync(resolve(OUT, `sample-top-posting-4-${style}.stl.md5`), `${md5}\n`);
+            geo.dispose();
+        }
+        writeFileSync(
+            resolve(OUT, "sample-top-posting-4-metrics.json"),
+            `${JSON.stringify(postingPerStyle, null, 2)}\n`,
+        );
         console.log(
             "[DUMP-BASELINES]",
             JSON.stringify({

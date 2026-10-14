@@ -1,8 +1,8 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import type { Side, SideCorrections } from "@/types";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
+import type { Side, SideCorrections } from "@/types";
 
 /**
  * Medial/Lateral wedge system (Phase 3A).
@@ -30,8 +30,8 @@ export interface WedgeParams {
 // Zone fade boundaries (tunable; keep in sync with documentation / tests)
 const REARFOOT_WEDGE_START_FADE = 0.3;
 const REARFOOT_WEDGE_END_FADE = 0.45;
-const FOREFOOT_WEDGE_START_FADE = 0.55;
-const FOREFOOT_WEDGE_END_FADE = 0.7;
+const FOREFOOT_WEDGE_START_FADE = 0.3;
+const FOREFOOT_WEDGE_END_FADE = 0.58;
 
 /** Local smoothstep (duplicated from height-field.ts for module independence / no circular import). */
 function smoothstep(e0: number, e1: number, x: number): number {
@@ -60,7 +60,7 @@ export function wedgeDeltaAt(
     vSigned: number,
     side: Side,
     corrections: SideCorrections,
-    params: WedgeParams
+    params: WedgeParams,
 ): number {
     let d = 0;
 
@@ -80,18 +80,13 @@ function zoneWedgeDelta(
     side: Side,
     wedge: NonNullable<SideCorrections["rearfootWedge"]>,
     zone: "rearfoot" | "forefoot",
-    params: WedgeParams
+    params: WedgeParams,
 ): number {
     const zoneFactor = zone === "rearfoot" ? getRearfootFactor(u) : getForefootFactor(u);
     if (zoneFactor <= 0) return 0;
 
     // Current effective full width at station u (respects active trimline)
-    const halfWidthFactor = effectiveOutlineHalfWidth(
-        u,
-        params.lengthMm,
-        params.widthMm,
-        params.trimline
-    );
+    const halfWidthFactor = effectiveOutlineHalfWidth(u, params.lengthMm, params.widthMm, params.trimline);
     const localFullWidth = 2 * halfWidthFactor * (params.widthMm / 2);
 
     // Edge case: zero or negative width (extreme trimline) -> no raise for degrees; mm still applies absolute but taper will be narrow
@@ -122,7 +117,12 @@ function zoneWedgeDelta(
 
     const isMedial = wedge.side === "medial";
     // taper = 1.0 at the raised edge, 0.0 at the opposite edge
-    const taper = isMedial ? (1 - crossMedialToLateral) : crossMedialToLateral;
+    const taper = isMedial ? 1 - crossMedialToLateral : crossMedialToLateral;
 
     return maxRaise * taper * zoneFactor;
+}
+
+/** True when any zone wedge/posting correction is non-zero (top-sheet only in applyBaseModifiers). */
+export function wedgeCorrectionActive(c: SideCorrections): boolean {
+    return (c.rearfootWedge?.value ?? 0) > 0 || (c.forefootWedge?.value ?? 0) > 0;
 }

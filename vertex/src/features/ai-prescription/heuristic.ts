@@ -34,12 +34,32 @@ export function heuristicParse(text: string): PrescriptionParseResult {
     };
 
     const rearfoot = firstNumber(lower, /rear\s*foot[^.]*?-?\d+(\.\d+)?\s*(deg|°)/);
-    if (rearfoot !== undefined) apply({ rearfootPostingDeg: rearfoot });
+    if (rearfoot !== undefined) {
+        apply({
+            rearfootWedge: {
+                side: rearfoot > 0 ? "lateral" : "medial",
+                value: Math.abs(rearfoot),
+                unit: "deg",
+            },
+        });
+    }
     const forefoot = firstNumber(lower, /fore\s*foot[^.]*?-?\d+(\.\d+)?\s*(deg|°)/);
-    if (forefoot !== undefined) apply({ forefootPostingDeg: forefoot });
+    if (forefoot !== undefined) {
+        apply({
+            forefootWedge: {
+                side: forefoot > 0 ? "lateral" : "medial",
+                value: Math.abs(forefoot),
+                unit: "deg",
+            },
+        });
+    }
 
-    if (/pronat/.test(lower) && rearfoot === undefined) apply({ rearfootPostingDeg: 4 });
-    if (/supinat/.test(lower) && rearfoot === undefined) apply({ rearfootPostingDeg: -4 });
+    if (/pronat/.test(lower) && rearfoot === undefined) {
+        apply({ rearfootWedge: { side: "lateral", value: 4, unit: "deg" } });
+    }
+    if (/supinat/.test(lower) && rearfoot === undefined) {
+        apply({ rearfootWedge: { side: "medial", value: 4, unit: "deg" } });
+    }
 
     const medialSkive = firstNumber(lower, /medial\s*(heel\s*)?skive[^.]*?\d+(\.\d+)?\s*mm/);
     if (medialSkive !== undefined) apply({ medialSkiveMm: medialSkive });
@@ -50,7 +70,7 @@ export function heuristicParse(text: string): PrescriptionParseResult {
     const archHeight = firstNumber(lower, /arch[^.]*?\d+(\.\d+)?\s*mm/);
     if (archHeight !== undefined) apply({ archHeightMm: archHeight });
     else if (/high arch|pes cavus/.test(lower)) apply({ archHeightMm: 14 });
-    else if (/low arch|flat ?foot|pes planus/.test(lower)) apply({ archFillMm: 4 });
+    else if (/low arch|flat ?foot|pes planus/.test(lower)) apply({ archHeightMm: 4 });
 
     const heelCup = firstNumber(lower, /heel\s*cup[^.]*?\d+(\.\d+)?\s*mm/);
     if (heelCup !== undefined) apply({ heelCupDepthMm: heelCup });

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import {
     deformTrimlineSection,
     pickTrimlineAnchorIndex,
@@ -83,6 +84,8 @@ function BottomPatternOverlay({
     const layout = insoleLayoutFromDesign(design);
     const centerX = layout.lengthMm / 2;
     const offsetY = sideOffsetX(side, layout.widthMm);
+    const widthId = shoeWidthForSide(design, side);
+    const heelW = design.corrections[side].heelCupWidthMm ?? 0;
     const setDraft = useMeshEditStore((s) => s.setBottomPatternDraft);
     const setDragAnchor = useMeshEditStore((s) => s.setBottomPatternDragAnchor);
     const setDragging = useMeshEditStore((s) => s.setBottomPatternDragging);
@@ -99,10 +102,22 @@ function BottomPatternOverlay({
     const rafRef = useRef<number | null>(null);
 
     const pickRadius = isEditing ? TRIMLINE_PICK_RADIUS_EDIT : TRIMLINE_PICK_RADIUS_IDLE;
-    const displayPoints = useMemo(
-        () => curve.points.map((p) => new THREE.Vector3(p.x, p.y, p.z + 0.8)),
-        [curve.points],
-    );
+    const displayPoints = useMemo(() => {
+        let minX = Infinity;
+        let maxX = -Infinity;
+        for (const p of curve.points) {
+            minX = Math.min(minX, p.x);
+            maxX = Math.max(maxX, p.x);
+        }
+        const sized = applyShoeWidthToPoints(curve.points, widthId, {
+            ballWidthMm: layout.widthMm,
+            heelWidthMm: layout.widthMm * 0.62,
+            minX,
+            lengthMm: Math.max(1e-3, maxX - minX),
+            heelOverrideMm: heelW,
+        });
+        return sized.map((p) => new THREE.Vector3(p.x, p.y, p.z + 0.8));
+    }, [curve.points, widthId, layout.widthMm, heelW]);
     const outlineColor = isEditing ? (isDragging ? "#ef4444" : "#22d3ee") : "#0EA5E9";
     const fillShape = useMemo(() => {
         if (curve.points.length < 3) return null;

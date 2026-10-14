@@ -11,7 +11,10 @@ import type { Side } from "@/types";
 export interface BottomPatternStore {
     patterns: Partial<Record<Side, TrimlineCurve>>;
     generatedKey: Partial<Record<Side, string>>;
+    /** Min inset of B vs composed top rim R (mm). Negative = B outside R. */
+    rimInsetMm: Partial<Record<Side, number>>;
     setPattern: (side: Side, curve: TrimlineCurve) => void;
+    setRimInsetMm: (side: Side, insetMm: number) => void;
     ensureGenerated: (side: Side, key: string, points: PolyPoint[]) => TrimlineCurve;
     getPattern: (side: Side) => TrimlineCurve | null;
     clearSide: (side: Side) => void;

@@ -26,9 +26,9 @@ export interface PrintSolidAuditRow {
 export const PRINT_SOLID_CORRECTION_AUDIT: PrintSolidAuditRow[] = [
     {
         id: "posting",
-        label: "Rearfoot / forefoot posting (deg)",
+        label: "Rearfoot / forefoot zone posting (wedge)",
         verdict: "survives",
-        drop: "composePrintSolidTop → applyBaseModifiers heightAt posting. Loft skips applyAnalyticTopDeltas.",
+        drop: "composePrintSolidTop → applyBaseModifiers wedgeDeltaAt. Loft skips applyAnalyticTopDeltas.",
         proposedFix: "Keep. Composed top is the loft source.",
     },
     {
@@ -54,7 +54,7 @@ export const PRINT_SOLID_CORRECTION_AUDIT: PrintSolidAuditRow[] = [
     },
     {
         id: "arch-height",
-        label: "Arch height / arch fill",
+        label: "Arch height / arch ease",
         verdict: "survives",
         drop: "applyBaseModifiers heightAt dome on the composed top.",
         proposedFix: "Keep.",

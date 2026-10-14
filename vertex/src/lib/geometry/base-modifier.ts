@@ -29,6 +29,7 @@ import {
     applyTrimmableForefootExtension,
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
+import { wedgeCorrectionActive, wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
 // Base + Modifier deformation core (see docs/base-modifier-architecture.md).
@@ -50,6 +51,7 @@ const ZERO_CORRECTIONS: SideCorrections = {
     lateralSkiveMm: 0,
     archFillMm: 0,
     archHeightMm: 0,
+    archEaseMm: 0,
     heelCupDepthMm: 0,
     heelCupHeightMm: 0,
     heelCupWidthMm: 0,
@@ -71,7 +73,7 @@ const ZERO_CORRECTIONS: SideCorrections = {
 export const BASE_REFERENCE_THICKNESS_MM = 2;
 
 /** Neutral field (no corrections, no elements) used as the displacement baseline. */
-function neutralField(field: HeightFieldParams): HeightFieldParams {
+export function neutralField(field: HeightFieldParams): HeightFieldParams {
     return {
         ...field,
         // Fixed baseline thickness so the thickness slider produces a real delta
@@ -142,6 +144,8 @@ function getBaseAdjacency(base: BufferGeometry): number[][] | null {
 /** Vertices within this height of the base minimum are always treated as bottom. */
 const BOTTOM_BAND_MM = 2.0;
 const BOTTOM_BAND_TRANSITION_MM = 2.5;
+/** Vertices with top factor below this are considered bottom-sheet (see validateBaseDeformation). */
+const BOTTOM_FACTOR_THRESHOLD = 0.1;
 
 type AxisIndex = 0 | 1 | 2;
 
@@ -333,6 +337,79 @@ export function detectArchSideSign(base: BufferGeometry): number {
     return sign;
 }
 
+export interface BaseFootprintFrame {
+    lengthAxis: AxisIndex;
+    widthAxis: AxisIndex;
+    thickAxis: AxisIndex;
+    lenMin: number;
+    lenSize: number;
+    widCenter: number;
+    widSize: number;
+    widthSign: number;
+}
+
+/** Footprint (u, vSigned) frame shared by applyBaseModifiers and mesh tests. */
+export function getBaseFootprintFrame(base: BufferGeometry, side: Side): BaseFootprintFrame {
+    const extents = getBaseExtents(base);
+    if (!extents) throw new Error("getBaseFootprintFrame: missing extents");
+    const { lengthAxis, widthAxis, thickAxis, min, size } = extents;
+    const lenMin = min[lengthAxis];
+    const lenSize = size[lengthAxis] || 1;
+    const widSize = size[widthAxis] || 1;
+    const widCenter = min[widthAxis]! + widSize / 2;
+    const medialSign = side === "left" ? -1 : 1;
+    const widthSign = -(detectArchSideSign(base) * medialSign);
+    return { lengthAxis, widthAxis, thickAxis, lenMin, lenSize, widCenter, widSize, widthSign };
+}
+
+/** Wedge delta (mm) at a base vertex — mirrors applyBaseModifiers sampling. */
+export function wedgeMmAtBaseVertex(
+    base: BufferGeometry,
+    field: HeightFieldParams,
+    vertexIndex: number,
+): number {
+    const extents = getBaseExtents(base);
+    const pos = base.getAttribute("position");
+    if (!extents || !pos) return 0;
+    const { lengthAxis, widthAxis, min, size } = extents;
+    const lenMin = min[lengthAxis];
+    const lenSize = size[lengthAxis] || 1;
+    const widSize = size[widthAxis] || 1;
+    const widCenter = min[widthAxis]! + widSize / 2;
+    const medialSign = field.side === "left" ? -1 : 1;
+    const widthSign = -(detectArchSideSign(base) * medialSign);
+    const arr = pos.array as ArrayLike<number>;
+    const lenCoord = arr[vertexIndex * 3 + lengthAxis]!;
+    const widCoord = arr[vertexIndex * 3 + widthAxis]!;
+    const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+    const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
+    return wedgeDeltaAt(u, vSigned, field.side, field.corrections, {
+        lengthMm: field.lengthMm,
+        widthMm: field.widthMm,
+        trimline: field.trimline ?? null,
+    });
+}
+
+export function vertexFootprintAt(
+    frame: BaseFootprintFrame,
+    posArr: ArrayLike<number>,
+    vertexIndex: number,
+): { u: number; vSigned: number } {
+    const u = Math.max(
+        0,
+        Math.min(1, (posArr[vertexIndex * 3 + frame.lengthAxis]! - frame.lenMin) / frame.lenSize),
+    );
+    const vSigned = Math.max(
+        -1,
+        Math.min(
+            1,
+            (frame.widthSign * (posArr[vertexIndex * 3 + frame.widthAxis]! - frame.widCenter)) /
+                (frame.widSize / 2),
+        ),
+    );
+    return { u, vSigned };
+}
+
 /** Vertices with top factor above this are considered top-sheet. */
 const TOP_FACTOR_THRESHOLD = 0.9;
 
@@ -440,12 +517,20 @@ function sampleFieldDeltaAtXY(
     fieldForDelta: HeightFieldParams,
     neutral: HeightFieldParams,
     edgeProfile: TopEdgeProfile | null,
+    skipWedge = false,
 ): number {
     const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
     const halfW = widSize / 2 || 1;
     const vNorm = Math.max(-1, Math.min(1, (widCoord - widCenter) / halfW));
     const vSigned = Math.max(-1, Math.min(1, widthSign * vNorm));
-    const F_raw = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
+    let F_raw = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
+    if (skipWedge && wedgeCorrectionActive(fieldForDelta.corrections)) {
+        F_raw -= wedgeDeltaAt(u, vSigned, fieldForDelta.side, fieldForDelta.corrections, {
+            lengthMm: fieldForDelta.lengthMm,
+            widthMm: fieldForDelta.widthMm,
+            trimline: fieldForDelta.trimline ?? null,
+        });
+    }
 
     if (!edgeProfile) return F_raw;
 
@@ -2570,9 +2655,19 @@ export function applyBaseModifiers(
     // (lateral field not yet samplable for the underside). Active arch raises also
     // take the legacy path so PR #117 arch-band re-loft (W=h^1.5) can keep the
     // medial sidewall rounded instead of a vertical rim-delta extrusion.
-    const archRaiseActive = field.corrections.archHeightMm > 0 || field.corrections.archFillMm > 0;
+    const archRaiseActive =
+        (field.corrections.archHeightMm ?? 0) !== 0 ||
+        (field.corrections.archFillMm ?? 0) !== 0 ||
+        (field.corrections.archEaseMm ?? 0) !== 0;
+    const wedgeActive = wedgeCorrectionActive(field.corrections);
     const useShellFieldSync =
         isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm === 0 && !archRaiseActive;
+
+    const wedgeParams = {
+        lengthMm: field.lengthMm,
+        widthMm: field.widthMm,
+        trimline: field.trimline ?? null,
+    };
 
     // 1) Sample the pure modifier delta. Multi-mesh top range only when shell
     //    sync is active (bottom gets F via sampleFieldDeltaAtXY below); otherwise
@@ -2580,13 +2675,22 @@ export function applyBaseModifiers(
     //    rim-conformity moves the wall). Top-range samples are bit-identical
     //    either way (same u/vSigned → correctionDeltaAt).
     const delta = new Float32Array(count);
-    const sampleEnd = useShellFieldSync ? topVertexCount : count;
+    const wedgeAt = wedgeActive ? new Float32Array(count) : null;
+    const sampleEnd = useShellFieldSync && topVertexCount > 0 ? topVertexCount : count;
     for (let i = 0; i < sampleEnd; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
-        delta[i] = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
+        let d = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
+        if (wedgeActive) {
+            const wD = wedgeDeltaAt(u, vSigned, field.side, field.corrections, wedgeParams);
+            if (wedgeAt) wedgeAt[i] = wD;
+            if (isMultiMesh && topVertexCount > 0 && i >= topVertexCount) {
+                d -= wD;
+            }
+        }
+        delta[i] = d;
     }
 
     // 2) Optional Laplacian relaxation of the displacement field (cached adjacency).
@@ -2680,7 +2784,24 @@ export function applyBaseModifiers(
         } else {
             w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
         }
-        const vertD = delta[i]! * w;
+        const wedgePart = wedgeAt ? wedgeAt[i]! : 0;
+        const corePart = delta[i]! - wedgePart;
+        // Wedge = smooth function of plan position only. Weight is a mesh-level
+        // constant (top-only sheet → 1; multi-mesh → top range 1 / bottom 0), or
+        // the continuous topFactor on closed single-mesh bases. Never the
+        // normalised-height fallback `w`, whose 1 % band follows the z ≈ 2.23 mm
+        // contour of SAMPLE_Top and tears the forefoot (PR #186 CAD review).
+        const wedgeW = !wedgeAt
+            ? 0
+            : isMultiMesh && topVertexCount > 0
+              ? i < topVertexCount
+                  ? 1
+                  : 0
+              : topFactors
+                ? topFactors[i]!
+                : 1;
+        const wedgeScaled = wedgePart > 0 ? wedgePart * wedgeW : 0;
+        const vertD = corePart * w + wedgeScaled;
         const latD = lateralDelta[i]! * (heelCupNarrowing ? 1 : w);
         let dx = 0;
         let dy = 0;
@@ -2784,6 +2905,7 @@ export function applyBaseModifiers(
                     fieldForBottomSync,
                     neutral,
                     edgeProfile,
+                    wedgeActive,
                 );
                 const fCorrectionsLocal = F;
                 const rimBlend = bv.rimBlend;
@@ -2810,6 +2932,7 @@ export function applyBaseModifiers(
                         fieldForDelta,
                         neutral,
                         edgeProfile,
+                        wedgeActive,
                     );
                     F += (fFull - fCorrectionsLocal) * rimConformityHeightWeight(bv.thicknessHz);
                 }
@@ -2992,9 +3115,6 @@ export function applyBaseModifiers(
 
 /** Max allowed bottom-surface movement for a "good" base output. */
 export const BASE_BOTTOM_DELTA_TOLERANCE_MM = 0.05;
-/** Vertices with top factor below this are considered bottom-sheet. */
-const BOTTOM_FACTOR_THRESHOLD = 0.1;
-
 export interface BaseValidation {
     /** Max |Δ| along the up axis over bottom-sheet vertices (topFactor < 0.1). */
     maxBottomDeltaMm: number;

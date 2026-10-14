@@ -309,17 +309,16 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     }
     shaped *= featherScale;
 
-    // --- Posting (rearfoot / forefoot wedges) — full strength at the edge -----
-    const post = vSigned * medialSign * halfW;
-    let posting = Math.tan(c.rearfootPostingDeg * DEG) * post * heel;
-    const fore = bump(u, 0.82, 0.24);
-    posting += Math.tan(c.forefootPostingDeg * DEG) * post * fore;
+    // Arch ease — medial contact relief after arch raise; not edge-feathered (like posting).
+    let archEase = 0;
+    if (c.archEaseMm > 0) {
+        const easeAlong = bump(u, apexCenter, 0.32);
+        const rimGuard = 1 - smoothstep(0.86, 1.0, av);
+        const easeAcross = medialBlend * smoothstep(0.02, 0.88, m) * rimGuard;
+        archEase = -c.archEaseMm * easeAlong * easeAcross;
+    }
 
-    // --- Medial / Lateral surface wedges (new system) -------------------------
-    // Applied after posting/flanges (so they are surface features on the already
-    // tilted/posted shell) but before discrete elements. Uses the current
-    // trimline-aware outline for both the cross position and (for degrees) the
-    // local width used to convert angle → physical raise.
+    // --- Zone posting (rearfoot / forefoot wedge, raise-only, low-edge pivot) ---
     const wedge = wedgeDeltaAt(u, vSigned, side, c, {
         lengthMm,
         widthMm,
@@ -333,7 +332,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // the flat z = 0 bottom stays stable on solid prints.
     const heelLift = heelLiftDeltaAt(u, c.heelLiftMm);
 
-    let h = softFloor(thicknessMm + baseline + shaped + posting + wedge + heelLift, 0.8);
+    let h = softFloor(thicknessMm + baseline + shaped + archEase + wedge + heelLift, 0.8);
 
     // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).
     // The graph is the new clinical source of truth when present; the flat

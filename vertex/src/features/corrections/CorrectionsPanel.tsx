@@ -8,6 +8,7 @@ import { useProductionMethodForActiveFoot } from "@/lib/clinical/active-foot-sid
 import {
     CLINICAL_LIMITS,
     constrainDesignCorrections,
+    hasPostingAngleWarning,
     hasWedgeViolations,
 } from "@/lib/geometry/clinical-constraints";
 import {
@@ -42,8 +43,20 @@ const FIELDS: {
     group: string;
     unit?: string;
 }[] = [
-    { key: "archHeightMm", label: "Arch height", min: 0, max: 18, group: "Arch" },
-    { key: "archFillMm", label: "Arch fill", min: 0, max: 12, group: "Arch" },
+    {
+        key: "archHeightMm",
+        label: "Arch height",
+        min: CLINICAL_LIMITS.archHeightMm.min,
+        max: CLINICAL_LIMITS.archHeightMm.max,
+        group: "Arch",
+    },
+    {
+        key: "archEaseMm",
+        label: "Arch ease",
+        min: CLINICAL_LIMITS.archEaseMm.min,
+        max: CLINICAL_LIMITS.archEaseMm.max,
+        group: "Arch",
+    },
     { key: "apexMoveMm", label: "Apex shift (distal / posterior)", min: -12, max: 12, group: "Arch" },
     // Heel cup depth: slider 0 = off; commit clamps positive values to 12–18 mm (see constrainSideCorrections).
     {
@@ -69,22 +82,6 @@ const FIELDS: {
     },
     { key: "medialFlangeMm", label: "Medial flange", min: 0, max: 8, group: "Flanges" },
     { key: "lateralFlangeMm", label: "Lateral flange", min: 0, max: 8, group: "Flanges" },
-    {
-        key: "rearfootPostingDeg",
-        label: "Rearfoot posting",
-        min: CLINICAL_LIMITS.rearfootPostingDeg.min,
-        max: CLINICAL_LIMITS.rearfootPostingDeg.max,
-        group: "Posting",
-        unit: "deg",
-    },
-    {
-        key: "forefootPostingDeg",
-        label: "Forefoot posting",
-        min: CLINICAL_LIMITS.forefootPostingDeg.min,
-        max: CLINICAL_LIMITS.forefootPostingDeg.max,
-        group: "Posting",
-        unit: "deg",
-    },
 ];
 
 const GROUPS = ["Arch", "Heel", "Flanges", "Posting"];
@@ -362,7 +359,7 @@ function wedgeFromState(edge: WedgeEdge, value: number, unit: WedgeUnit): WedgeC
 }
 
 function wedgeMaxForUnit(unit: WedgeUnit): number {
-    return unit === "deg" ? 12 : 10;
+    return unit === "deg" ? CLINICAL_LIMITS.rearfootWedgeDeg.max : CLINICAL_LIMITS.rearfootWedgeMm.max;
 }
 
 /** One foot column: edge toggle, value input, and unit toggle. Active when value > 0. */
@@ -395,10 +392,10 @@ function WedgeSideControl({ side, zoneLabel, wedge, onPreview, onCommit }: Wedge
                 {SIDE_LABELS[side]} {zoneLabel}
             </div>
             <TogglePair
-                ariaLabel={`${SIDE_LABELS[side]} ${zoneLabel} wedge edge`}
+                ariaLabel={`${SIDE_LABELS[side]} ${zoneLabel} posting edge`}
                 options={[
-                    { value: "lateral", label: "Lateral" },
-                    { value: "medial", label: "Medial" },
+                    { value: "lateral", label: "Lateral high (pronation)" },
+                    { value: "medial", label: "Medial high (supination)" },
                 ]}
                 value={activeEdge}
                 onChange={(edge) => update(edge, activeValue, activeUnit, true)}
@@ -473,6 +470,11 @@ export function CorrectionsPanel() {
         return hasWedgeViolations(violations);
     }, [corrections, design.thicknessMm]);
 
+    const showPostingAngleWarning = useMemo(
+        () => hasPostingAngleWarning(sideValues.left) || hasPostingAngleWarning(sideValues.right),
+        [sideValues],
+    );
+
     const sectionOpen = (key: string) => openSections[key] ?? false;
     const toggleSection = (key: string) => setOpenSections((prev) => ({ ...prev, [key]: !sectionOpen(key) }));
 
@@ -527,50 +529,6 @@ export function CorrectionsPanel() {
             )}
 
             <CollapsibleSection
-                title="Pronation/Supination"
-                open={sectionOpen("pronationSupination")}
-                onOpenChange={() => toggleSection("pronationSupination")}
-            >
-                {showWedgeWarning && (
-                    <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
-                        <AlertTriangle className="h-3 w-3 flex-shrink-0" />
-                        <span>
-                            Wedge value near clinical limit (clamped on change). Check the preview for its
-                            effect on wall thickness.
-                        </span>
-                    </div>
-                )}
-
-                {WEDGE_ZONES.map(({ zone, label }, zoneIndex) => {
-                    const wedgeKey = `${zone}Wedge` as "rearfootWedge" | "forefootWedge";
-                    const setter = zone === "rearfoot" ? setRearfootWedge : setForefootWedge;
-                    return (
-                        <div key={zone} className={cn(zoneIndex > 0 && "border-t border-border pt-2")}>
-                            <div className="grid grid-cols-2 gap-x-3">
-                                {(["left", "right"] as Side[]).map((side) => (
-                                    <WedgeSideControl
-                                        key={side}
-                                        side={side}
-                                        zoneLabel={label}
-                                        wedge={sideValues[side][wedgeKey] as WedgeCorrection | undefined}
-                                        onPreview={(newW) =>
-                                            previewCorrection(side, {
-                                                [wedgeKey]: newW,
-                                            } as Partial<SideCorrections>)
-                                        }
-                                        onCommit={(newW) => {
-                                            setter(side, newW);
-                                            clearCorrectionPreview();
-                                        }}
-                                    />
-                                ))}
-                            </div>
-                        </div>
-                    );
-                })}
-            </CollapsibleSection>
-
-            <CollapsibleSection
                 title="Skive"
                 open={sectionOpen("skive")}
                 onOpenChange={() => toggleSection("skive")}
@@ -599,6 +557,60 @@ export function CorrectionsPanel() {
                     open={sectionOpen(group)}
                     onOpenChange={() => toggleSection(group)}
                 >
+                    {group === "Posting" && (showWedgeWarning || showPostingAngleWarning) ? (
+                        <div className="mb-2 space-y-1">
+                            {showPostingAngleWarning ? (
+                                <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
+                                    <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                                    <span>
+                                        Posting angle above 8° — verify wall thickness and clinical intent.
+                                    </span>
+                                </div>
+                            ) : null}
+                            {showWedgeWarning ? (
+                                <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
+                                    <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                                    <span>Posting value at clinical limit (clamped on change).</span>
+                                </div>
+                            ) : null}
+                        </div>
+                    ) : null}
+                    {group === "Posting"
+                        ? WEDGE_ZONES.map(({ zone, label }, zoneIndex) => {
+                              const wedgeKey = `${zone}Wedge` as "rearfootWedge" | "forefootWedge";
+                              const setter = zone === "rearfoot" ? setRearfootWedge : setForefootWedge;
+                              return (
+                                  <div
+                                      key={zone}
+                                      className={cn(zoneIndex > 0 && "border-t border-border pt-2")}
+                                  >
+                                      <div className="grid grid-cols-2 gap-x-3">
+                                          {(["left", "right"] as Side[]).map((side) => (
+                                              <WedgeSideControl
+                                                  key={side}
+                                                  side={side}
+                                                  zoneLabel={label}
+                                                  wedge={
+                                                      sideValues[side][wedgeKey] as
+                                                          | WedgeCorrection
+                                                          | undefined
+                                                  }
+                                                  onPreview={(newW) =>
+                                                      previewCorrection(side, {
+                                                          [wedgeKey]: newW,
+                                                      } as Partial<SideCorrections>)
+                                                  }
+                                                  onCommit={(newW) => {
+                                                      setter(side, newW);
+                                                      clearCorrectionPreview();
+                                                  }}
+                                              />
+                                          ))}
+                                      </div>
+                                  </div>
+                              );
+                          })
+                        : null}
                     <div className="grid grid-cols-2 gap-x-3">
                         {(["left", "right"] as Side[]).map((side) => (
                             <div key={side} className="space-y-2">

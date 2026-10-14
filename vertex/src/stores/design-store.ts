@@ -21,6 +21,7 @@ import {
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { defaultElementPose } from "@/lib/geometry/elements";
+import { migrateCorrections } from "@/lib/geometry/migrate-corrections";
 import {
     defaultSideShapeFinish,
     normalizeSideShapeFinish,
@@ -77,6 +78,7 @@ function defaultSideCorrections(): SideCorrections {
         lateralSkiveMm: 0,
         archFillMm: 0,
         archHeightMm: 0,
+        archEaseMm: 0,
         heelCupDepthMm: 0,
         heelCupHeightMm: 0,
         heelCupWidthMm: 0,
@@ -1300,6 +1302,7 @@ export const useDesignStore = create<DesignStore>()(
             onRehydrateStorage: () => (state) => {
                 if (!state?.design) return;
                 let design = replaceBuiltinDefaultWithSampleTop(sanitizeDesignStockBases(state.design));
+                design = { ...design, corrections: migrateCorrections(design.corrections) };
                 if (!designHasBase(design)) {
                     design = createDesignWithStockPlaceholder(design);
                 }

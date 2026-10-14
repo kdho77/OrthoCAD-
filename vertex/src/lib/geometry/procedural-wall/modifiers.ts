@@ -3,7 +3,9 @@
 
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { heelCupDepthBowlDelta, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
-import type { SideCorrections } from "@/types";
+import type { TrimlineCurve } from "@/lib/geometry/trimline";
+import { wedgeDeltaAt } from "@/lib/geometry/wedge";
+import type { Side, SideCorrections } from "@/types";
 import type { PolyPoint } from "./curves";
 import type { HermiteStation } from "./loft";
 import type { DeviceTypePreset, LateralFlangeParams, StockWallModel } from "./types";
@@ -27,6 +29,9 @@ export interface ProceduralModifierInput {
     wallStyle?: ProceduralWallStyle;
     /** High-rim medial side. +1 = +Y. */
     medialYSign?: 1 | -1;
+    /** Foot side for wedge math (independent of mesh Y flip). */
+    side?: Side;
+    trimline?: TrimlineCurve | null;
     /**
      * Whole-insole width scale (1 = unchanged). Same factor and medial-lateral
      * centre as the top. Heel widen uses heelCupWidthMm + follow=1 instead.
@@ -85,7 +90,7 @@ export function applyCurveModifiers(
         if (c && c.heelLiftMm > 0) {
             t.z += heelLiftDeltaAt(u, c.heelLiftMm);
         }
-        if (c && (c.rearfootPostingDeg || c.forefootPostingDeg)) {
+        if (c && (c.rearfootWedge || c.forefootWedge)) {
             t.z += postingZDelta(o.x, o.y, model.bounds, input);
         }
         if (dThick) t.z += dThick;
@@ -97,6 +102,21 @@ export function applyCurveModifiers(
  * Rearfoot / forefoot wedge on the top sheet. Never applied to the plantar or B —
  * the print bed stays flat and the walls span top → z = 0.
  */
+/** Mesh Y width coordinate → height-field vSigned (matches heightAt / base-modifier). */
+export function footprintVSignedFromMeshY(
+    y: number,
+    bounds: Pick<StockWallModel["bounds"], "minY" | "maxY">,
+    side: Side,
+    medialYSign: 1 | -1 = 1,
+): number {
+    const widCenter = (bounds.minY + bounds.maxY) * 0.5;
+    const halfW = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
+    const mMesh = (y - widCenter) / halfW;
+    const m = mMesh * medialYSign;
+    const medialSign = side === "left" ? -1 : 1;
+    return Math.max(-1, Math.min(1, -m * medialSign));
+}
+
 export function postingZDelta(
     x: number,
     y: number,
@@ -104,23 +124,18 @@ export function postingZDelta(
     input: ProceduralModifierInput,
 ): number {
     const c = input.corrections;
-    if (!c || (!c.rearfootPostingDeg && !c.forefootPostingDeg)) return 0;
+    if (!c || (!c.rearfootWedge && !c.forefootWedge)) return 0;
     const minX = bounds.minX;
     const length = Math.max(1e-3, bounds.maxX - minX);
-    const widCenter = (bounds.minY + bounds.maxY) * 0.5;
-    const halfW = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
+    const widthMm = Math.max(1e-3, bounds.maxY - bounds.minY);
     const u = Math.max(0, Math.min(1, (x - minX) / length));
-    const vSigned = ((y - widCenter) / halfW) * (input.medialYSign ?? 1);
-    let dz = 0;
-    if (c.rearfootPostingDeg) {
-        const heel = 1 - Math.max(0, Math.min(1, (u - 0.05) / 0.35));
-        dz += Math.tan((c.rearfootPostingDeg * Math.PI) / 180) * vSigned * halfW * heel;
-    }
-    if (c.forefootPostingDeg) {
-        const fore = Math.max(0, Math.min(1, (u - 0.62) / 0.28));
-        dz += Math.tan((c.forefootPostingDeg * Math.PI) / 180) * vSigned * halfW * fore;
-    }
-    return dz;
+    const side = input.side ?? ((input.medialYSign ?? 1) < 0 ? "right" : "left");
+    const vSigned = footprintVSignedFromMeshY(y, bounds, side, input.medialYSign ?? 1);
+    return wedgeDeltaAt(u, vSigned, side, c, {
+        lengthMm: length,
+        widthMm,
+        trimline: input.trimline ?? null,
+    });
 }
 
 /**

@@ -1138,7 +1138,10 @@ describe("S1 parametric wall", () => {
             { name: "t2", patch: {}, thicknessMm: 2 },
             { name: "t4", patch: {}, thicknessMm: 4 },
             { name: "heel-lift-10", patch: { heelLiftMm: 10 } },
-            { name: "posting-4", patch: { rearfootPostingDeg: 4 } },
+            {
+                name: "posting-4",
+                patch: { rearfootWedge: { side: "lateral", value: 4, unit: "deg" } },
+            },
             { name: "grind-3", patch: {}, archGrindDepthMm: 3 },
         ];
         const results: Array<Record<string, number | string | boolean>> = [];

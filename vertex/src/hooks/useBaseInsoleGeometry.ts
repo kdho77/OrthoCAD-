@@ -13,6 +13,7 @@ import {
 } from "@/lib/geometry/base-asset";
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import { heightAt } from "@/lib/geometry/height-field";
 import {
     hashLiveBottomPattern,
     resolveLiveBottomPattern,
@@ -36,6 +37,7 @@ import {
     buildProceduralViewerPatternInWorker,
     reconstructProceduralPreviewInWorker,
 } from "@/lib/geometry/procedural-wall/preview-loft-worker";
+import { composeViewerPrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import { proceduralViewerStockGate } from "@/lib/geometry/procedural-wall/sample-top-display";
 import {
     loadSampleTopGeometry,
@@ -361,6 +363,47 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 : design.thicknessMm;
             const thicknessMm = thicknessPreview ?? committedThickness ?? BASE_REFERENCE_THICKNESS_MM;
             const field = baseModifierField(design, side, thicknessMm);
+            const rw = field.corrections?.rearfootWedge;
+            if (
+                rw?.unit === "mm" &&
+                rw.side === "lateral" &&
+                Math.abs((rw.value ?? 0) - 10) < 0.01 &&
+                clinicalStep === "corrections"
+            ) {
+                const u = 0.1;
+                const neutral = {
+                    ...field,
+                    corrections: { ...field.corrections!, rearfootWedge: undefined },
+                };
+                stockDebug("STEP0 design viewer top-sheet z delta (mm)", {
+                    side,
+                    border: heightAt(u, 0.98, field) - heightAt(u, 0.98, neutral),
+                    lateralHeelCenter: heightAt(u, 0.5, field) - heightAt(u, 0.5, neutral),
+                    medialHeel: heightAt(u, -0.5, field) - heightAt(u, -0.5, neutral),
+                    medialEdge: heightAt(u, -0.98, field) - heightAt(u, -0.98, neutral),
+                });
+            }
+            const fw = field.corrections?.forefootWedge;
+            if (
+                fw?.unit === "mm" &&
+                fw.side === "lateral" &&
+                (fw.value ?? 0) > 0 &&
+                clinicalStep === "corrections"
+            ) {
+                const u = 0.88;
+                const neutral = {
+                    ...field,
+                    corrections: { ...field.corrections!, forefootWedge: undefined },
+                };
+                stockDebug("STEP corrections forefoot lateral mm top z delta (heightAt + mesh)", {
+                    side,
+                    mm: fw.value,
+                    composedPath: true,
+                    lateralBorder: heightAt(u, 0.98, field) - heightAt(u, 0.98, neutral),
+                    medialEdge: heightAt(u, -0.98, field) - heightAt(u, -0.98, neutral),
+                    lateralMet: heightAt(u, 0.5, field) - heightAt(u, 0.5, neutral),
+                });
+            }
             const draft = useMeshEditStore.getState().getActiveDraftBottomPattern(side);
             const stored = useBottomPatternStore.getState().getPattern(side);
             const dragging = Boolean(useMeshEditStore.getState().bottomPatternEdit?.isDragging);
@@ -380,11 +423,35 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     try {
                         await yieldToMain();
                         if (session.cancelled) return;
+                        const draftTrimForPattern = useMeshEditStore.getState().getActiveDraftTrimline(side);
+                        const committedTrimForPattern = getDesignTrimline(design, side);
+                        const patternTrim = draftTrimForPattern ?? committedTrimForPattern;
+                        let patternTop = raw;
+                        try {
+                            patternTop = composeViewerPrintSolidTop({
+                                raw,
+                                sourceField: field,
+                                shoeWidth: {
+                                    width: widthId,
+                                    ballWidthMm: layout.widthMm,
+                                    heelWidthMm: layout.widthMm * 0.62,
+                                    heelOverrideMm: heelW,
+                                },
+                                trimline: patternTrim,
+                            });
+                        } catch (composeErr) {
+                            stockDebug("composePrintSolidTop for viewer pattern — using raw rim", {
+                                side,
+                                message:
+                                    composeErr instanceof Error ? composeErr.message : String(composeErr),
+                            });
+                        }
                         const rawPattern = await buildProceduralViewerPatternInWorker(
-                            raw,
+                            patternTop,
                             design.pattern,
                             field.corrections,
                         );
+                        if (patternTop !== raw) patternTop.dispose();
                         if (session.cancelled) return;
                         await yieldToMain();
                         if (session.cancelled) return;
@@ -418,33 +485,80 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 if (!shouldLoftProceduralViewer(clinicalStep, wallModel)) {
                     await yieldToMain();
                     if (session.cancelled) return;
-                    const rawCount = raw.getAttribute("position")?.count ?? 0;
-                    const canReuseWork =
-                        workRef.current != null &&
-                        workRef.current.getAttribute("position")?.count === rawCount;
+                    const draftTrim = useMeshEditStore.getState().getActiveDraftTrimline(side);
+                    const committedTrim = getDesignTrimline(design, side);
+                    const printTrim = draftTrim ?? committedTrim;
                     let modified = raw;
                     try {
-                        modified = applyBaseModifiers(raw, field, interacting ? 0 : 1, {
-                            reuse: canReuseWork && workRef.current ? workRef.current : undefined,
-                            skipNormals: interacting,
-                            skipBottomSync: true,
+                        modified = composeViewerPrintSolidTop({
+                            raw,
+                            sourceField: field,
+                            shoeWidth: {
+                                width: widthId,
+                                ballWidthMm: layout.widthMm,
+                                heelWidthMm: layout.widthMm * 0.62,
+                                heelOverrideMm: heelW,
+                            },
+                            trimline: printTrim,
                         });
+                        const fwLog = field.corrections?.forefootWedge;
+                        if (
+                            fwLog?.unit === "mm" &&
+                            fwLog.side === "lateral" &&
+                            (fwLog.value ?? 0) > 0 &&
+                            clinicalStep === "corrections" &&
+                            modified !== raw
+                        ) {
+                            const neutralField = {
+                                ...field,
+                                corrections: { ...(field.corrections ?? {}), forefootWedge: undefined },
+                            };
+                            const neutralGeo = composeViewerPrintSolidTop({
+                                raw,
+                                sourceField: neutralField,
+                                shoeWidth: {
+                                    width: widthId,
+                                    ballWidthMm: layout.widthMm,
+                                    heelWidthMm: layout.widthMm * 0.62,
+                                    heelOverrideMm: heelW,
+                                },
+                                trimline: printTrim,
+                            });
+                            const posAttr = modified.getAttribute("position");
+                            const neuAttr = neutralGeo.getAttribute("position");
+                            let maxMeshLiftMm = 0;
+                            if (posAttr && neuAttr) {
+                                const pos = posAttr.array as Float32Array;
+                                const neu = neuAttr.array as Float32Array;
+                                for (let vi = 2; vi < pos.length; vi += 3) {
+                                    maxMeshLiftMm = Math.max(maxMeshLiftMm, pos[vi] - neu[vi]);
+                                }
+                            }
+                            neutralGeo.dispose();
+                            stockDebug("STEP corrections forefoot lateral composed mesh maxZ lift (mm)", {
+                                side,
+                                mm: fwLog.value,
+                                maxMeshLiftMm,
+                            });
+                        }
                     } catch (e) {
-                        stockDebug("applyBaseModifiers failed — showing raw SAMPLE_Top", {
+                        stockDebug("composePrintSolidTop failed — showing raw SAMPLE_Top", {
                             side,
                             message: e instanceof Error ? e.message : String(e),
                         });
                         modified = raw;
                     }
-                    if (workRef.current && workRef.current !== modified) workRef.current.dispose();
+                    if (workRef.current && workRef.current !== modified && workRef.current !== raw) {
+                        workRef.current.dispose();
+                    }
                     workRef.current = modified;
-                    if (outRef.current && outRef.current !== modified && outRef.current !== workRef.current) {
+                    if (outRef.current && outRef.current !== modified && outRef.current !== raw) {
                         outRef.current.dispose();
                     }
                     outRef.current = modified;
                     lastLoftKeyRef.current = null;
                     setGeometry((prev) => (prev === modified ? prev : modified));
-                    setLoftPhase(side, "ready", "Top surface ready");
+                    setLoftPhase(side, "idle", "Composed top ready");
                     setBaseMeshLoading(side, false);
                     return;
                 }
