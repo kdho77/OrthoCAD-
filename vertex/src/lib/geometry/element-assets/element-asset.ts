@@ -1,9 +1,6 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { Matrix4, SphereGeometry, Vector3 } from "three";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import type { ElementKind, PlacedElement, Side } from "@/types";
@@ -16,33 +13,59 @@ import type {
     PlacedElementAssetContext,
 } from "./types";
 
-const MANIFEST_PATH = resolve(process.cwd(), "vertex/public/elements/index.json");
-const ELEMENTS_DIR = resolve(process.cwd(), "vertex/public/elements");
-
 let manifestCache: ElementManifest | null = null;
 const assetBytesCache = new Map<string, { hash: string; buffer: ArrayBuffer; syntheticFloat?: boolean }>();
 const sidecarCache = new Map<string, ElementAssetSidecar>();
 
-export function loadElementManifest(): ElementManifest {
+function canReadLocalElements(): boolean {
+    return typeof process !== "undefined" && Boolean(process.versions?.node);
+}
+
+async function readElementsText(relativePath: string): Promise<string> {
+    if (canReadLocalElements()) {
+        const { readFileSync } = await import("node:fs");
+        const { resolve } = await import("node:path");
+        const full = resolve(process.cwd(), "vertex/public/elements", relativePath);
+        return readFileSync(full, "utf8");
+    }
+    const res = await fetch(`/elements/${relativePath}`);
+    if (!res.ok) throw new Error(`Failed to fetch /elements/${relativePath}`);
+    return res.text();
+}
+
+async function readElementsBuffer(relativePath: string): Promise<ArrayBuffer> {
+    if (canReadLocalElements()) {
+        const { readFileSync } = await import("node:fs");
+        const { resolve } = await import("node:path");
+        const buf = readFileSync(resolve(process.cwd(), "vertex/public/elements", relativePath));
+        return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    }
+    const res = await fetch(`/elements/${relativePath}`);
+    if (!res.ok) throw new Error(`Failed to fetch /elements/${relativePath}`);
+    return res.arrayBuffer();
+}
+
+export async function loadElementManifest(): Promise<ElementManifest> {
     if (!manifestCache) {
-        manifestCache = JSON.parse(readFileSync(MANIFEST_PATH, "utf8")) as ElementManifest;
+        manifestCache = JSON.parse(await readElementsText("index.json")) as ElementManifest;
     }
     return manifestCache;
 }
 
-export function manifestEntryForKind(kind: ElementKind): { id: string; sidecar: ElementAssetSidecar } | null {
-    const manifest = loadElementManifest();
+export async function manifestEntryForKind(
+    kind: ElementKind,
+): Promise<{ id: string; sidecar: ElementAssetSidecar } | null> {
+    const manifest = await loadElementManifest();
     const entry = manifest.elements.find((e) => e.kind === kind);
     if (!entry) return null;
-    return { id: entry.id, sidecar: loadSidecar(entry.sidecar) };
+    return { id: entry.id, sidecar: await loadSidecar(entry.sidecar) };
 }
 
-function loadSidecar(file: string): ElementAssetSidecar {
-    const key = file;
-    const cached = sidecarCache.get(key);
+async function loadSidecar(file: string): Promise<ElementAssetSidecar> {
+    const cached = sidecarCache.get(file);
     if (cached) return cached;
-    const sc = JSON.parse(readFileSync(resolve(ELEMENTS_DIR, file), "utf8")) as ElementAssetSidecar;
-    sidecarCache.set(key, sc);
+    const sc = JSON.parse(await readElementsText(file)) as ElementAssetSidecar;
+    sidecarCache.set(file, sc);
     return sc;
 }
 
@@ -65,24 +88,24 @@ function isGlbBuffer(buffer: ArrayBuffer): boolean {
     return u[0] === 0x67 && u[1] === 0x6c && u[2] === 0x54 && u[3] === 0x46;
 }
 
-function loadAssetBuffer(assetId: string): { hash: string; buffer: ArrayBuffer; syntheticFloat?: boolean } {
+async function loadAssetBuffer(
+    assetId: string,
+): Promise<{ hash: string; buffer: ArrayBuffer; syntheticFloat?: boolean }> {
     const cached = assetBytesCache.get(assetId);
     if (cached) return cached;
-    const manifest = loadElementManifest();
+    const manifest = await loadElementManifest();
     const entry = manifest.elements.find((e) => e.id === assetId);
     if (!entry) throw new Error(`Unknown element asset id: ${assetId}`);
     let buffer: ArrayBuffer;
     let syntheticFloat = false;
-    const glbPath = resolve(ELEMENTS_DIR, entry.glb);
     try {
-        const buf = readFileSync(glbPath);
-        buffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        buffer = await readElementsBuffer(entry.glb);
     } catch {
         if (assetId !== "synthetic-dome") throw new Error(`Missing element GLB: ${entry.glb}`);
         buffer = syntheticDomeBuffer();
         syntheticFloat = true;
     }
-    const hash = createHash("sha256").update(Buffer.from(buffer)).digest("hex");
+    const hash = await digestHex(buffer);
     const out = { hash, buffer, syntheticFloat };
     assetBytesCache.set(assetId, out);
     return out;
@@ -96,8 +119,8 @@ export function buildElementTransform(
     placed: PlacedElement,
     sidecar: ElementAssetSidecar,
     side: Side,
-    lengthMm: number,
-    widthMm: number,
+    _lengthMm: number,
+    _widthMm: number,
 ): ElementAssetTransform {
     const scaleZ = sidecar.nominalPeakMm > 1e-6 ? placed.heightMm / sidecar.nominalPeakMm : 1;
     const scaleXy = Math.max(placed.scale.x, placed.scale.y);
@@ -132,7 +155,7 @@ export async function loadTransformedAssetPositions(
     assetId: string,
     transform: ElementAssetTransform,
 ): Promise<{ positions: Float32Array; grid: ElementHeightGrid; assetHash: string }> {
-    const { hash, buffer, syntheticFloat } = loadAssetBuffer(assetId);
+    const { hash, buffer, syntheticFloat } = await loadAssetBuffer(assetId);
     let pos: {
         count: number;
         getX: (i: number) => number;
@@ -167,7 +190,7 @@ export async function loadTransformedAssetPositions(
     m.premultiply(rot);
     const v = new Vector3();
     for (let i = 0; i < pos.count; i++) {
-        v.fromBufferAttribute(pos, i);
+        v.set(pos.getX(i), pos.getY(i), pos.getZ(i));
         v.applyMatrix4(m);
         out[i * 3] = v.x;
         out[i * 3 + 1] = v.y;
@@ -179,35 +202,46 @@ export async function loadTransformedAssetPositions(
     return { positions: out, grid, assetHash: hash };
 }
 
-export function hashElementAssetsForDesign(elements: PlacedElement[]): string {
-    const manifest = loadElementManifest();
+export async function hashElementAssetsForDesign(elements: PlacedElement[]): Promise<string> {
+    const manifest = await loadElementManifest();
     const parts: string[] = [];
     for (const el of elements) {
         if (el.kind === "custom") continue;
         const entry = manifest.elements.find((e) => e.kind === el.kind);
         if (!entry) continue;
-        const { hash } = loadAssetBuffer(entry.id);
-        const sc = loadSidecar(entry.sidecar);
+        const { hash } = await loadAssetBuffer(entry.id);
+        const sc = await loadSidecar(entry.sidecar);
         const t = buildElementTransform(el, sc, el.side, 1, 1);
         parts.push(`${entry.id}:${hash}:${transformKey(t)}`);
     }
-    return createHash("sha256").update(parts.join("|")).digest("hex");
+    return await digestHex(new TextEncoder().encode(parts.join("|")).buffer);
 }
 
-export function resolvePlacedAssetContexts(
+async function digestHex(buffer: ArrayBuffer): Promise<string> {
+    if (!canReadLocalElements() && globalThis.crypto?.subtle) {
+        const digest = await crypto.subtle.digest("SHA-256", buffer);
+        return Array.from(new Uint8Array(digest))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+    }
+    const { createHash } = await import("node:crypto");
+    return createHash("sha256").update(Buffer.from(buffer)).digest("hex");
+}
+
+export async function resolvePlacedAssetContexts(
     elements: PlacedElement[],
     side: Side,
     lengthMm: number,
     widthMm: number,
-): PlacedElementAssetContext[] {
-    const manifest = loadElementManifest();
+): Promise<PlacedElementAssetContext[]> {
+    const manifest = await loadElementManifest();
     const out: PlacedElementAssetContext[] = [];
     for (const placed of elements) {
         if (placed.side !== side || placed.kind === "custom") continue;
         const entry = manifest.elements.find((e) => e.kind === placed.kind);
         if (!entry) continue;
-        const sidecar = loadSidecar(entry.sidecar);
-        const { hash } = loadAssetBuffer(entry.id);
+        const sidecar = await loadSidecar(entry.sidecar);
+        const { hash } = await loadAssetBuffer(entry.id);
         const transform = buildElementTransform(placed, sidecar, side, lengthMm, widthMm);
         out.push({
             placed,

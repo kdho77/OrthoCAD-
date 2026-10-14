@@ -1,7 +1,6 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { createHash } from "node:crypto";
 import type { BufferGeometry } from "three";
 import { ELEMENT_GRID_MM } from "./types";
 
@@ -19,7 +18,7 @@ export interface ElementHeightGrid {
 const gridCache = new Map<string, ElementHeightGrid>();
 
 export function heightGridCacheKey(assetHash: string, transformKey: string): string {
-    return createHash("sha256").update(`${assetHash}|${transformKey}`).digest("hex");
+    return `${assetHash.slice(0, 16)}|${transformKey}`;
 }
 
 export function rasterizeUpperEnvelope(positions: Float32Array, cellMm = ELEMENT_GRID_MM): ElementHeightGrid {

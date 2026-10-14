@@ -11,7 +11,7 @@ import {
 } from "@/lib/geometry/base-modifier";
 import { elementHeightAt } from "@/lib/geometry/elements";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import { resolveOutlineHalfWidth } from "@/lib/geometry/trimline";
+import { resolveOutlineHalfWidth } from "@/lib/geometry/height-field";
 import type { PlacedElement } from "@/types";
 import { loadTransformedAssetPositions, resolvePlacedAssetContexts } from "./element-asset";
 import { sampleGridBilinear } from "./height-grid";
@@ -98,7 +98,6 @@ async function applyAssetContext(
     const arr = pos.array as Float32Array;
     const { grid, transform } = await loadTransformedAssetPositions(ctx.assetId, ctx.transform);
     const anchor = anchorMmFromPlacement(base, field.side, ctx.placed.position.x, ctx.placed.position.y);
-    const halfW = field.widthMm / 2;
     const sign = ctx.sidecar.category === "sink" ? -1 : 1;
     const ta = frame.thickAxis;
 
@@ -136,28 +135,36 @@ async function applyAssetContext(
         const { lx, ly } = localCoordsFlow(x, y, anchor.x, anchor.y, ctx.transform.rotationDeg);
         const assetH = sampleGridBilinear(grid, lx, ly);
         if (assetH <= 1e-9) continue;
-        const w = flowFeatherWeight(
-            lx,
-            ly,
-            grid.originX,
-            grid.originY,
-            grid.nx,
-            grid.ny,
-            grid.cellMm,
-            ctx.sidecar.featherMm,
-        );
-        const lift = sign * assetH * w + ctx.transform.zOffsetMm * w;
         const nx = normal.getX(i);
         const ny = normal.getY(i);
         const nz = normal.getZ(i);
         const len = Math.hypot(nx, ny, nz) || 1;
+        const uz = nz / len;
+        const w =
+            Math.abs(uz) >= 0.85
+                ? 1
+                : flowFeatherWeight(
+                      lx,
+                      ly,
+                      grid.originX,
+                      grid.originY,
+                      grid.nx,
+                      grid.ny,
+                      grid.cellMm,
+                      ctx.sidecar.featherMm,
+                  );
+        const lift = sign * assetH * w + ctx.transform.zOffsetMm * w;
         if (sign > 0) {
-            arr[i * 3] += (nx / len) * lift;
-            arr[i * 3 + 1] += (ny / len) * lift;
-            arr[i * 3 + 2] += (nz / len) * lift;
+            // Flat / shallow tops: match noFlow vertical imprint; steeper areas follow the normal.
+            if (Math.abs(uz) >= 0.85) {
+                arr[i * 3 + ta] += lift;
+            } else {
+                arr[i * 3] += (nx / len) * lift;
+                arr[i * 3 + 1] += (ny / len) * lift;
+                arr[i * 3 + 2] += uz * lift;
+            }
         } else {
-            const nzClamped = nz / len;
-            arr[i * 3 + ta] += lift * Math.max(0.2, nzClamped);
+            arr[i * 3 + ta] += lift * Math.max(0.2, Math.abs(uz));
         }
     }
 }
@@ -273,7 +280,7 @@ export async function applyElementsToTopMeshLast(
     const elements = field.elements ?? [];
     if (elements.length === 0) return;
     const hooks = options?.noFlowHooks ?? defaultNoFlowHeightHooks;
-    const contexts = resolvePlacedAssetContexts(elements, field.side, field.lengthMm, field.widthMm);
+    const contexts = await resolvePlacedAssetContexts(elements, field.side, field.lengthMm, field.widthMm);
     const assetKinds = new Set(contexts.map((c) => c.placed.kind));
 
     const topOnlyOpen = classifyBaseTopFactors(referenceBase) === null;
