@@ -75,7 +75,11 @@ async function loadSampleTop(side: Side): Promise<BufferGeometry> {
     return raw;
 }
 
-function worstLiftErrorMm(raw: BufferGeometry, modified: BufferGeometry, field: HeightFieldParams): number {
+function liftErrorStats(
+    raw: BufferGeometry,
+    modified: BufferGeometry,
+    field: HeightFieldParams,
+): { worst: number; maxIntended: number } {
     const frame = getBaseFootprintFrame(raw, field.side);
     const neutral = neutralField(field);
     const basePos = raw.getAttribute("position")!.array as Float32Array;
@@ -83,13 +87,15 @@ function worstLiftErrorMm(raw: BufferGeometry, modified: BufferGeometry, field: 
     const ta = frame.thickAxis;
     const n = basePos.length / 3;
     let worst = 0;
+    let maxIntended = 0;
     for (let i = 0; i < n; i++) {
         const { u, vSigned } = vertexFootprintAt(frame, basePos, i);
         const intended = correctionDeltaAt(u, vSigned, field, neutral);
+        maxIntended = Math.max(maxIntended, Math.abs(intended));
         const applied = modPos[i * 3 + ta]! - basePos[i * 3 + ta]!;
         worst = Math.max(worst, Math.abs(applied - intended));
     }
-    return worst;
+    return { worst, maxIntended };
 }
 
 describe("SAMPLE_Top top-only applyBaseModifiers lift (PR #188)", () => {
@@ -103,11 +109,13 @@ describe("SAMPLE_Top top-only applyBaseModifiers lift (PR #188)", () => {
         test(`${side} — arch raise applied lift matches intended`, async () => {
             const raw = await loadSampleTop(side);
             const field = fieldForSampleTop(raw, side, {
-                corrections: { ...zeroCorrections(), archHeightMm: 18 },
+                corrections: { ...zeroCorrections(), archHeightMm: 14 },
                 includeElements: false,
             });
             const modified = applyBaseModifiers(raw, field, 0);
-            expect(worstLiftErrorMm(raw, modified, field)).toBeLessThanOrEqual(LIFT_TOL_MM);
+            const { worst, maxIntended } = liftErrorStats(raw, modified, field);
+            expect(maxIntended).toBeGreaterThan(1);
+            expect(worst).toBeLessThanOrEqual(LIFT_TOL_MM);
             modified.dispose();
             raw.dispose();
         }, 60_000);
@@ -128,7 +136,9 @@ describe("SAMPLE_Top top-only applyBaseModifiers lift (PR #188)", () => {
                 includeElements: true,
             });
             const modified = applyBaseModifiers(raw, field, 0);
-            expect(worstLiftErrorMm(raw, modified, field)).toBeLessThanOrEqual(LIFT_TOL_MM);
+            const { worst, maxIntended } = liftErrorStats(raw, modified, field);
+            expect(maxIntended).toBeGreaterThan(1);
+            expect(worst).toBeLessThanOrEqual(LIFT_TOL_MM);
             modified.dispose();
             raw.dispose();
         }, 60_000);
