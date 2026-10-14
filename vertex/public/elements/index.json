@@ -1,0 +1,11 @@
+{
+    "version": 1,
+    "elements": [
+        {
+            "id": "synthetic-dome",
+            "kind": "met_pad",
+            "glb": "synthetic-dome.glb",
+            "sidecar": "synthetic-dome.json"
+        }
+    ]
+}

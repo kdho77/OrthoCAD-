@@ -5,7 +5,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import { Vector3 } from "three";
-import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import { BASE_REFERENCE_THICKNESS_MM, getBaseFootprintFrame } from "@/lib/geometry/base-modifier";
+import { defaultElementPose } from "@/lib/geometry/elements";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import type { PlacedElement, SideCorrections } from "@/types";
 import { composePrintSolidTop } from "./print-solid-compose";
@@ -84,7 +85,7 @@ describe("composePrintSolidTop", () => {
     test("width affine widens the ball and leaves X unchanged", async () => {
         const raw = await loadSampleTop();
         const native = bbox(raw);
-        const composed = composePrintSolidTop(raw, {
+        const composed = await composePrintSolidTop(raw, {
             sourceField: field(),
             shoeWidth: {
                 width: "wide",
@@ -103,8 +104,8 @@ describe("composePrintSolidTop", () => {
         const raw = await loadSampleTop();
         const native = bbox(raw);
         const length = native.maxX - native.minX;
-        const plain = composePrintSolidTop(raw, { sourceField: field() });
-        const skived = composePrintSolidTop(raw, {
+        const plain = await composePrintSolidTop(raw, { sourceField: field() });
+        const skived = await composePrintSolidTop(raw, {
             sourceField: field({ corrections: { ...zero(), medialSkiveMm: 4 } }),
         });
         const a = plain.getAttribute("position")!;
@@ -133,7 +134,7 @@ describe("composePrintSolidTop", () => {
             const t = (i / 24) * Math.PI * 2;
             return new Vector3(cx + Math.cos(t) * rx, cy + Math.sin(t) * ry, 0);
         });
-        const composed = composePrintSolidTop(raw, {
+        const composed = await composePrintSolidTop(raw, {
             sourceField: field(),
             trimline: { points },
         });
@@ -147,17 +148,22 @@ describe("composePrintSolidTop", () => {
     test("elements raise via elementHeightAt (includeElements)", async () => {
         const raw = await loadSampleTop();
         const native = bbox(raw);
+        const pose = defaultElementPose(
+            "met_pad",
+            "left",
+            native.maxX - native.minX,
+            native.maxY - native.minY,
+        );
         const el: PlacedElement = {
             id: "met-1",
             kind: "met_pad",
             side: "left",
-            position: { x: 20, y: 0 },
-            rotationDeg: 0,
-            scale: { x: 1, y: 1 },
+            ...pose,
             heightMm: 5,
+            placementMode: "noFlow",
         };
-        const plain = composePrintSolidTop(raw, { sourceField: field() });
-        const withEl = composePrintSolidTop(raw, {
+        const plain = await composePrintSolidTop(raw, { sourceField: field() });
+        const withEl = await composePrintSolidTop(raw, {
             sourceField: field({
                 lengthMm: native.maxX - native.minX,
                 widthMm: native.maxY - native.minY,
@@ -166,8 +172,13 @@ describe("composePrintSolidTop", () => {
         });
         const a = plain.getAttribute("position")!;
         const b = withEl.getAttribute("position")!;
+        const ta = getBaseFootprintFrame(raw, "left").thickAxis;
+        const pa = a.array as Float32Array;
+        const pb = b.array as Float32Array;
         let maxRaise = 0;
-        for (let i = 0; i < a.count; i++) maxRaise = Math.max(maxRaise, b.getZ(i) - a.getZ(i));
+        for (let i = 0; i < a.count; i++) {
+            maxRaise = Math.max(maxRaise, pb[i * 3 + ta]! - pa[i * 3 + ta]!);
+        }
         expect(maxRaise).toBeGreaterThan(0.3);
         plain.dispose();
         withEl.dispose();

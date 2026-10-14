@@ -92,8 +92,8 @@ describe("posted SAMPLE_Top golden (composed top — Corrections viewer path)", 
             ...field,
             corrections: neutralCorrections(field.corrections),
         };
-        const posted = composePrintSolidTop(raw, { sourceField: field });
-        const neutral = composePrintSolidTop(raw, { sourceField: neutralField });
+        const posted = await composePrintSolidTop(raw, { sourceField: field });
+        const neutral = await composePrintSolidTop(raw, { sourceField: neutralField });
         const md5 = stlMd5(posted);
         const neutralMd5 = stlMd5(neutral);
         if (process.env.REGEN_POSTING_GOLDEN === "1") {

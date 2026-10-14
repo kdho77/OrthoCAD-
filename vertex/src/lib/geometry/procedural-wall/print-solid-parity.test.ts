@@ -81,8 +81,8 @@ describe("Print solid composed-top parity", () => {
     test("composeViewerPrintSolidTop STL md5 matches composePrintSolidTop", async () => {
         const raw = await loadSampleTop("right");
         const sourceField = field("right", { ...zero(), medialSkiveMm: 2 });
-        const viaPrint = composePrintSolidTop(raw, { sourceField });
-        const viaViewer = composeViewerPrintSolidTop({ raw, sourceField });
+        const viaPrint = await composePrintSolidTop(raw, { sourceField });
+        const viaViewer = await composeViewerPrintSolidTop({ raw, sourceField });
         expect(stlMd5(viaViewer)).toBe(stlMd5(viaPrint));
         viaPrint.dispose();
         viaViewer.dispose();

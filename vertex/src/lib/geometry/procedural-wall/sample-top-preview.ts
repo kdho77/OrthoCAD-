@@ -17,7 +17,7 @@ import type { ScanPattern, SideCorrections } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
-import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
+import { composePrintSolidTopSync, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
@@ -189,7 +189,7 @@ export function reconstructProceduralPreview(
     let source = topGeo;
     let owned = false;
     if (options.sourceField) {
-        source = composePrintSolidTop(topGeo, {
+        source = composePrintSolidTopSync(topGeo, {
             sourceField: options.sourceField,
             shoeWidth: options.shoeWidth,
             trimline: options.trimline,

@@ -3,6 +3,10 @@
 
 import type { BufferGeometry } from "three";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
+import {
+    applyElementsToTopMeshLast,
+    fieldWithoutElementsForModifiers,
+} from "@/lib/geometry/element-assets/apply-elements";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { applyShoeWidthToGeometry, type ShoeWidthId, shoeWidthAffineActive } from "@/lib/geometry/shoe-width";
 import { clipGeometryToOutline, type TrimlineCurve } from "@/lib/geometry/trimline";
@@ -29,17 +33,17 @@ export interface ComposePrintSolidInput {
 /**
  * CAD-approved Print top: one composed mesh, then loft.
  *
- * Order matches the viewer height-field / applyBaseModifiers path:
  * 1. width affine (same as applyShoeWidthToPoints)
- * 2. applyBaseModifiers (thickness datum, F, elements+feather, shapeFinish, Kirby R11)
- * 3. trimline clip — before rim extraction
+ * 2. applyBaseModifiers (wedge/posting/arch — elements stripped from F)
+ * 3. applyElementsToTopMeshLast (GLB flow / noFlow + procedural fallback)
+ * 4. trimline clip — before rim extraction
  */
-export function composeViewerPrintSolidTop(input: {
+export async function composeViewerPrintSolidTop(input: {
     raw: BufferGeometry;
     sourceField: HeightFieldParams;
     shoeWidth?: PrintSolidShoeWidth | null;
     trimline?: TrimlineCurve | null;
-}): BufferGeometry {
+}): Promise<BufferGeometry> {
     return composePrintSolidTop(input.raw, {
         sourceField: input.sourceField,
         shoeWidth: input.shoeWidth,
@@ -47,7 +51,10 @@ export function composeViewerPrintSolidTop(input: {
     });
 }
 
-export function composePrintSolidTop(raw: BufferGeometry, input: ComposePrintSolidInput): BufferGeometry {
+function composePrintSolidTopCore(
+    raw: BufferGeometry,
+    input: ComposePrintSolidInput,
+): { geometry: BufferGeometry; referenceBase: BufferGeometry; ownedWidth: boolean } {
     let current = raw;
     let owned = false;
     const sw = input.shoeWidth;
@@ -59,15 +66,38 @@ export function composePrintSolidTop(raw: BufferGeometry, input: ComposePrintSol
         });
         owned = true;
     }
-    const modified = applyBaseModifiers(current, input.sourceField, 0, {
+    const modifierField = fieldWithoutElementsForModifiers(input.sourceField);
+    const modified = applyBaseModifiers(current, modifierField, 0, {
         skipBottomSync: true,
     });
-    if (owned && current !== raw && current !== modified) current.dispose();
+    return { geometry: modified, referenceBase: current, ownedWidth: owned };
+}
+
+/** Modifier path without GLB element placement (sync; used by procedural S1 reconstruct). */
+export function composePrintSolidTopSync(raw: BufferGeometry, input: ComposePrintSolidInput): BufferGeometry {
+    const { geometry, referenceBase, ownedWidth } = composePrintSolidTopCore(raw, input);
+    if (ownedWidth && referenceBase !== raw && referenceBase !== geometry) referenceBase.dispose();
     const trim = input.trimline ?? input.sourceField.trimline ?? null;
     if (trim && trim.points.length >= 4) {
-        const clipped = clipGeometryToOutline(modified, trim);
-        if (modified !== raw) modified.dispose();
+        const clipped = clipGeometryToOutline(geometry, trim);
+        if (geometry !== raw) geometry.dispose();
         return clipped;
     }
-    return modified;
+    return geometry;
+}
+
+export async function composePrintSolidTop(
+    raw: BufferGeometry,
+    input: ComposePrintSolidInput,
+): Promise<BufferGeometry> {
+    const { geometry, referenceBase, ownedWidth } = composePrintSolidTopCore(raw, input);
+    await applyElementsToTopMeshLast(geometry, referenceBase, input.sourceField);
+    if (ownedWidth && referenceBase !== raw && referenceBase !== geometry) referenceBase.dispose();
+    const trim = input.trimline ?? input.sourceField.trimline ?? null;
+    if (trim && trim.points.length >= 4) {
+        const clipped = clipGeometryToOutline(geometry, trim);
+        if (geometry !== raw) geometry.dispose();
+        return clipped;
+    }
+    return geometry;
 }
