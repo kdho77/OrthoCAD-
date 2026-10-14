@@ -4,6 +4,7 @@ import { z } from "zod";
 // the client `PrescriptionParseResult` / `SideCorrections` types.
 
 export const ELEMENT_KINDS = [
+    "test_dome",
     "met_pad",
     "met_bar",
     "cluffy_wedge",

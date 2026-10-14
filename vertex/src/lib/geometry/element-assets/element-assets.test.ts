@@ -89,10 +89,10 @@ function placedMetPad(
     patch?: Partial<PlacedElement>,
 ): PlacedElement {
     const frame = getBaseFootprintFrame(raw, side);
-    const pose = defaultElementPose("met_pad", side, frame.lenSize, frame.widSize);
+    const pose = defaultElementPose("test_dome", side, frame.lenSize, frame.widSize);
     return {
         id: "el-1",
-        kind: "met_pad",
+        kind: "test_dome",
         side,
         ...pose,
         heightMm: 5,
@@ -136,8 +136,9 @@ function makeFlatTopSheet(lengthMm: number, widthMm: number, topZ: number, nx = 
 
 describe("element asset pipeline", () => {
     test("synthetic dome peak scales with heightMm within 0.02 mm", async () => {
-        const { grid } = await loadTransformedAssetPositions("synthetic-dome", {
-            scaleXy: 1,
+        const { grid } = await loadTransformedAssetPositions("test-dome", {
+            scaleX: 1,
+            scaleY: 1,
             scaleZ: 1,
             rotationDeg: 0,
             mirrorX: false,
@@ -185,8 +186,9 @@ describe("element asset pipeline", () => {
         await applyElementsToTopMeshLast(base, raw, field, { subdivide: false });
         const anchor = anchorMmFromPlacement(raw, "right", el.position.x, el.position.y);
         const ta = anchor.frame.thickAxis;
-        const { grid } = await loadTransformedAssetPositions("synthetic-dome", {
-            scaleXy: 1,
+        const { grid } = await loadTransformedAssetPositions("test-dome", {
+            scaleX: 1,
+            scaleY: 1,
             scaleZ: 1,
             rotationDeg: 0,
             mirrorX: false,
@@ -231,8 +233,9 @@ describe("element asset pipeline", () => {
         await applyElementsToTopMeshLast(meshFlow, raw, fFlow, { subdivide: false });
         const anchor = anchorMmFromPlacement(raw, "right", 0, 0);
         const ta = anchor.frame.thickAxis;
-        const { grid } = await loadTransformedAssetPositions("synthetic-dome", {
-            scaleXy: 1,
+        const { grid } = await loadTransformedAssetPositions("test-dome", {
+            scaleX: 1,
+            scaleY: 1,
             scaleZ: 1,
             rotationDeg: 0,
             mirrorX: false,
@@ -318,8 +321,9 @@ describe("element asset pipeline", () => {
             await applyElementsToTopMeshLast(base, raw, field, { subdivide: false });
             const anchor = anchorMmFromPlacement(raw, side, el.position.x, el.position.y);
             const ta = anchor.frame.thickAxis;
-            const { grid } = await loadTransformedAssetPositions("synthetic-dome", {
-                scaleXy: 1,
+            const { grid } = await loadTransformedAssetPositions("test-dome", {
+                scaleX: 1,
+                scaleY: 1,
                 scaleZ: 1,
                 rotationDeg: el.rotationDeg,
                 mirrorX: side === "left",

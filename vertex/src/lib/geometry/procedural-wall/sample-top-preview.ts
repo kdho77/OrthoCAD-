@@ -17,7 +17,7 @@ import type { ScanPattern, SideCorrections } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
-import { composePrintSolidTopSync, type PrintSolidShoeWidth } from "./print-solid-compose";
+import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
@@ -126,7 +126,7 @@ export async function buildProceduralExportSolid(
         raw = mirrored;
     }
     try {
-        return reconstructProceduralPreview(raw, options);
+        return await reconstructProceduralPreview(raw, options);
     } finally {
         raw.dispose();
     }
@@ -178,10 +178,10 @@ export interface ProceduralPreviewOptions {
  * loft without applyAnalyticTopDeltas. Do not pass raw+sourceGeometry into
  * the Default extractTopSheet steal — that yields a 0-station ring.
  */
-export function reconstructProceduralPreview(
+export async function reconstructProceduralPreview(
     topGeo: BufferGeometry,
     options: ProceduralPreviewOptions = {},
-): { model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry } {
+): Promise<{ model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry }> {
     if (isCombinedStockGeometry(topGeo)) {
         throw new Error("[S1-PROCEDURAL] combined/stock GLB is not a procedural input — use legacy");
     }
@@ -189,7 +189,7 @@ export function reconstructProceduralPreview(
     let source = topGeo;
     let owned = false;
     if (options.sourceField) {
-        source = composePrintSolidTopSync(topGeo, {
+        source = await composePrintSolidTop(topGeo, {
             sourceField: options.sourceField,
             shoeWidth: options.shoeWidth,
             trimline: options.trimline,

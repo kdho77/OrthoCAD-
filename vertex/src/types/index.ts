@@ -167,6 +167,7 @@ export interface Corrections {
 // --- Elements (additive features placed on the insole) ----------------------
 
 export type ElementKind =
+    | "test_dome"
     | "met_pad"
     | "met_bar"
     | "cluffy_wedge"

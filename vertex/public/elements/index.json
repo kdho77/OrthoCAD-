@@ -2,10 +2,10 @@
     "version": 1,
     "elements": [
         {
-            "id": "synthetic-dome",
-            "kind": "met_pad",
-            "glb": "synthetic-dome.glb",
-            "sidecar": "synthetic-dome.json"
+            "id": "test-dome",
+            "kind": "test_dome",
+            "glb": "test-dome.glb",
+            "sidecar": "test-dome.json"
         }
     ]
 }

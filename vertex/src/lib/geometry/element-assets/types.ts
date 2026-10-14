@@ -31,7 +31,10 @@ export interface ElementManifest {
 }
 
 export interface ElementAssetTransform {
-    scaleXy: number;
+    /** Footprint scale X (mm true — not width-affine scaled). */
+    scaleX: number;
+    /** Footprint scale Y (mm true — not width-affine scaled). */
+    scaleY: number;
     scaleZ: number;
     rotationDeg: number;
     mirrorX: boolean;

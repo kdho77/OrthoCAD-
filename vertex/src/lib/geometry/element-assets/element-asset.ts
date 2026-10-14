@@ -101,7 +101,7 @@ async function loadAssetBuffer(
     try {
         buffer = await readElementsBuffer(entry.glb);
     } catch {
-        if (assetId !== "synthetic-dome") throw new Error(`Missing element GLB: ${entry.glb}`);
+        if (assetId !== "test-dome") throw new Error(`Missing element GLB: ${entry.glb}`);
         buffer = syntheticDomeBuffer();
         syntheticFloat = true;
     }
@@ -123,9 +123,12 @@ export function buildElementTransform(
     _widthMm: number,
 ): ElementAssetTransform {
     const scaleZ = sidecar.nominalPeakMm > 1e-6 ? placed.heightMm / sidecar.nominalPeakMm : 1;
-    const scaleXy = Math.max(placed.scale.x, placed.scale.y);
+    // Footprint stays true mm on the surface; only anchor follows #184 width affine.
+    const scaleX = placed.scale.x;
+    const scaleY = placed.scale.y;
     return {
-        scaleXy,
+        scaleX,
+        scaleY,
         scaleZ,
         rotationDeg: placed.rotationDeg + sidecar.rotationDeg,
         mirrorX: side === "left",
@@ -138,9 +141,14 @@ export function buildElementTransform(
     };
 }
 
-export function transformKey(t: ElementAssetTransform): string {
+export function transformKey(
+    t: ElementAssetTransform,
+    sidecar?: ElementAssetSidecar,
+    sidecarHash?: string,
+): string {
     return [
-        t.scaleXy.toFixed(4),
+        t.scaleX.toFixed(4),
+        t.scaleY.toFixed(4),
         t.scaleZ.toFixed(4),
         t.rotationDeg.toFixed(3),
         t.mirrorX ? "L" : "R",
@@ -148,6 +156,9 @@ export function transformKey(t: ElementAssetTransform): string {
         t.anchorVMm.toFixed(3),
         t.placementMode,
         t.zOffsetMm.toFixed(3),
+        t.category,
+        sidecar?.featherMm.toFixed(3) ?? "",
+        sidecarHash ?? "",
     ].join(",");
 }
 
@@ -163,7 +174,10 @@ export async function loadTransformedAssetPositions(
         getZ: (i: number) => number;
     };
     let geoDispose: (() => void) | null = null;
-    if (syntheticFloat || (assetId === "synthetic-dome" && !isGlbBuffer(buffer))) {
+    let meshIndices: ArrayLike<number> | undefined;
+    if (syntheticFloat || (assetId === "test-dome" && !isGlbBuffer(buffer))) {
+        const dome = new SphereGeometry(5, 48, 24, 0, Math.PI * 2, 0, Math.PI / 2);
+        meshIndices = dome.getIndex()!.array;
         const floats = new Float32Array(buffer);
         pos = {
             count: floats.length / 3,
@@ -180,12 +194,12 @@ export async function loadTransformedAssetPositions(
         const attr = geo.getAttribute("position");
         if (!attr) throw new Error(`Element asset ${assetId} missing positions`);
         pos = attr;
+        meshIndices = geo.getIndex()?.array;
         geoDispose = () => geo.dispose();
     }
     const out = new Float32Array(pos.count * 3);
     const m = new Matrix4();
-    const s = transform.scaleXy;
-    m.makeScale(transform.mirrorX ? -s : s, s, transform.scaleZ);
+    m.makeScale(transform.mirrorX ? -transform.scaleX : transform.scaleX, transform.scaleY, transform.scaleZ);
     const rot = new Matrix4().makeRotationZ((transform.rotationDeg * Math.PI) / 180);
     m.premultiply(rot);
     const v = new Vector3();
@@ -198,7 +212,7 @@ export async function loadTransformedAssetPositions(
     }
     geoDispose?.();
     const cacheKey = heightGridCacheKey(hash, transformKey(transform));
-    const grid = getOrRasterizeGrid(cacheKey, out);
+    const grid = getOrRasterizeGrid(cacheKey, out, meshIndices);
     return { positions: out, grid, assetHash: hash };
 }
 
@@ -211,8 +225,9 @@ export async function hashElementAssetsForDesign(elements: PlacedElement[]): Pro
         if (!entry) continue;
         const { hash } = await loadAssetBuffer(entry.id);
         const sc = await loadSidecar(entry.sidecar);
+        const scHash = await digestHex(new TextEncoder().encode(JSON.stringify(sc)).buffer);
         const t = buildElementTransform(el, sc, el.side, 1, 1);
-        parts.push(`${entry.id}:${hash}:${transformKey(t)}`);
+        parts.push(`${entry.id}:${hash}:${transformKey(t, sc, scHash)}`);
     }
     return await digestHex(new TextEncoder().encode(parts.join("|")).buffer);
 }

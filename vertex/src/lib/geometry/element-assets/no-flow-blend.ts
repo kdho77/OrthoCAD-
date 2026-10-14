@@ -11,6 +11,12 @@ export function smoothMaxMm(a: number, b: number, k = NO_FLOW_SMOOTH_MAX_K_MM): 
     return Math.max(a, b) + (h * h) / (4 * k);
 }
 
+/** CAD smooth min for sinks: smin(a,b)=min(a,b)-h²/(4k). */
+export function smoothMinMm(a: number, b: number, k = NO_FLOW_SMOOTH_MAX_K_MM): number {
+    const h = Math.max(k - Math.abs(a - b), 0);
+    return Math.min(a, b) - (h * h) / (4 * k);
+}
+
 export interface NoFlowHeightHooks {
     /** Mean top z within radius of anchor (mm). */
     baseHeightAtAnchor(geometry: BufferGeometry, anchorX: number, anchorY: number, thickAxis: number): number;

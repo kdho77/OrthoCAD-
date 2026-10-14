@@ -49,6 +49,15 @@ export interface ElementProfile {
 }
 
 export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
+    test_dome: {
+        rxMm: 5,
+        ryMm: 5,
+        sign: 1,
+        shape: "teardrop",
+        defaultHeightMm: 5,
+        defaultU: 0.5,
+        defaultMedial: 0,
+    },
     // Classic tear-drop metatarsal pad: tip just proximal to met heads 2–4,
     // bulb under the necks. ~30 × 24 mm.
     met_pad: {

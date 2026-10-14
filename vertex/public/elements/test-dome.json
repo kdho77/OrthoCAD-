@@ -1,0 +1,11 @@
+{
+    "kind": "add",
+    "label": "Test dome (CAD fixture)",
+    "nominalPeakMm": 5,
+    "defaultAnchorU": 0.5,
+    "defaultAnchorV": 0,
+    "rotationDeg": 0,
+    "featherMm": 3,
+    "category": "add",
+    "defaultPlacementMode": "noFlow"
+}

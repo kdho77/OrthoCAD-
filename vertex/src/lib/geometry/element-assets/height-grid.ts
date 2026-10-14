@@ -10,7 +10,7 @@ export interface ElementHeightGrid {
     originY: number;
     nx: number;
     ny: number;
-    /** Max upper-envelope z per cell (mm); NaN = empty. */
+    /** Max upper-envelope z per cell centre (mm); NaN = empty. */
     z: Float32Array;
     maxZ: number;
 }
@@ -21,7 +21,57 @@ export function heightGridCacheKey(assetHash: string, transformKey: string): str
     return `${assetHash.slice(0, 16)}|${transformKey}`;
 }
 
-export function rasterizeUpperEnvelope(positions: Float32Array, cellMm = ELEMENT_GRID_MM): ElementHeightGrid {
+function triangleRasterMaxZ(
+    z: Float32Array,
+    nx: number,
+    ny: number,
+    originX: number,
+    originY: number,
+    cellMm: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    cx: number,
+    cy: number,
+    cz: number,
+): void {
+    const minX = Math.min(ax, bx, cx);
+    const maxX = Math.max(ax, bx, cx);
+    const minY = Math.min(ay, by, cy);
+    const maxY = Math.max(ay, by, cy);
+    const i0 = Math.max(0, Math.floor((minX - originX) / cellMm));
+    const i1 = Math.min(nx - 1, Math.ceil((maxX - originX) / cellMm));
+    const j0 = Math.max(0, Math.floor((minY - originY) / cellMm));
+    const j1 = Math.min(ny - 1, Math.ceil((maxY - originY) / cellMm));
+    const denom = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (Math.abs(denom) < 1e-12) return;
+    for (let iy = j0; iy <= j1; iy++) {
+        const py = originY + (iy + 0.5) * cellMm;
+        for (let ix = i0; ix <= i1; ix++) {
+            const px = originX + (ix + 0.5) * cellMm;
+            const w0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / denom;
+            const w1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / denom;
+            const w2 = 1 - w0 - w1;
+            if (w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6) continue;
+            const pz = w0 * az + w1 * bz + w2 * cz;
+            if (pz < -1e-6) continue;
+            const k = iy * nx + ix;
+            const prev = z[k]!;
+            z[k] = Number.isFinite(prev) ? Math.max(prev, pz) : pz;
+        }
+    }
+}
+
+function boundsFromPositions(positions: Float32Array): {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+    maxZ: number;
+} {
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -38,33 +88,81 @@ export function rasterizeUpperEnvelope(positions: Float32Array, cellMm = ELEMENT
         maxY = Math.max(maxY, y);
         maxZ = Math.max(maxZ, z);
     }
+    return { minX, minY, maxX, maxY, maxZ };
+}
+
+/** Point-splat fallback (vertices only). */
+export function rasterizeUpperEnvelope(positions: Float32Array, cellMm = ELEMENT_GRID_MM): ElementHeightGrid {
+    const { minX, minY, maxX, maxY, maxZ: seedMax } = boundsFromPositions(positions);
     const pad = cellMm * 2;
-    minX -= pad;
-    minY -= pad;
-    maxX += pad;
-    maxY += pad;
-    const nx = Math.max(4, Math.ceil((maxX - minX) / cellMm));
-    const ny = Math.max(4, Math.ceil((maxY - minY) / cellMm));
+    const oX = minX - pad;
+    const oY = minY - pad;
+    const nx = Math.max(4, Math.ceil((maxX - minX + 2 * pad) / cellMm));
+    const ny = Math.max(4, Math.ceil((maxY - minY + 2 * pad) / cellMm));
     const z = new Float32Array(nx * ny);
     z.fill(Number.NaN);
+    let maxZ = seedMax;
     for (let i = 0; i < positions.length / 3; i++) {
         const px = positions[i * 3]!;
         const py = positions[i * 3 + 1]!;
         const pz = positions[i * 3 + 2]!;
         if (pz < -1e-6) continue;
-        const ix = Math.floor((px - minX) / cellMm);
-        const iy = Math.floor((py - minY) / cellMm);
+        const ix = Math.floor((px - oX) / cellMm - 0.5);
+        const iy = Math.floor((py - oY) / cellMm - 0.5);
         if (ix < 0 || iy < 0 || ix >= nx || iy >= ny) continue;
-        const k = iy * nx + ix;
-        const prev = z[k]!;
-        z[k] = Number.isFinite(prev) ? Math.max(prev, pz) : pz;
+        const ki = iy * nx + ix;
+        const prev = z[ki]!;
+        z[ki] = Number.isFinite(prev) ? Math.max(prev, pz) : pz;
+        maxZ = Math.max(maxZ, pz);
     }
-    return { cellMm, originX: minX, originY: minY, nx, ny, z, maxZ };
+    return { cellMm, originX: oX, originY: oY, nx, ny, z, maxZ };
+}
+
+export function rasterizeUpperEnvelopeFromIndexed(
+    positions: Float32Array,
+    indices: ArrayLike<number>,
+    cellMm = ELEMENT_GRID_MM,
+): ElementHeightGrid {
+    const { minX, minY, maxX, maxY, maxZ: seedMax } = boundsFromPositions(positions);
+    const pad = cellMm * 2;
+    const oX = minX - pad;
+    const oY = minY - pad;
+    const nx = Math.max(4, Math.ceil((maxX - minX + 2 * pad) / cellMm));
+    const ny = Math.max(4, Math.ceil((maxY - minY + 2 * pad) / cellMm));
+    const z = new Float32Array(nx * ny);
+    z.fill(Number.NaN);
+    let maxZ = seedMax;
+    for (let f = 0; f < indices.length; f += 3) {
+        const a = indices[f]! * 3;
+        const b = indices[f + 1]! * 3;
+        const c = indices[f + 2]! * 3;
+        triangleRasterMaxZ(
+            z,
+            nx,
+            ny,
+            oX,
+            oY,
+            cellMm,
+            positions[a]!,
+            positions[a + 1]!,
+            positions[a + 2]!,
+            positions[b]!,
+            positions[b + 1]!,
+            positions[b + 2]!,
+            positions[c]!,
+            positions[c + 1]!,
+            positions[c + 2]!,
+        );
+    }
+    for (let i = 0; i < z.length; i++) {
+        if (Number.isFinite(z[i]!)) maxZ = Math.max(maxZ, z[i]!);
+    }
+    return { cellMm, originX: oX, originY: oY, nx, ny, z, maxZ };
 }
 
 export function sampleGridBilinear(grid: ElementHeightGrid, lx: number, ly: number): number {
-    const u = (lx - grid.originX) / grid.cellMm;
-    const v = (ly - grid.originY) / grid.cellMm;
+    const u = (lx - grid.originX) / grid.cellMm - 0.5;
+    const v = (ly - grid.originY) / grid.cellMm - 0.5;
     if (u < 0 || v < 0 || u > grid.nx - 1 || v > grid.ny - 1) return 0;
     const u0 = Math.max(0, Math.min(grid.nx - 2, Math.floor(u)));
     const v0 = Math.max(0, Math.min(grid.ny - 2, Math.floor(v)));
@@ -81,10 +179,17 @@ export function sampleGridBilinear(grid: ElementHeightGrid, lx: number, ly: numb
     return (1 - fu) * (1 - fv) * z00 + fu * (1 - fv) * z10 + (1 - fu) * fv * z01 + fu * fv * z11;
 }
 
-export function getOrRasterizeGrid(cacheKey: string, positions: Float32Array): ElementHeightGrid {
+export function getOrRasterizeGrid(
+    cacheKey: string,
+    positions: Float32Array,
+    indices?: ArrayLike<number> | null,
+): ElementHeightGrid {
     const hit = gridCache.get(cacheKey);
     if (hit) return hit;
-    const grid = rasterizeUpperEnvelope(positions);
+    const grid =
+        indices && indices.length >= 3
+            ? rasterizeUpperEnvelopeFromIndexed(positions, indices)
+            : rasterizeUpperEnvelope(positions);
     gridCache.set(cacheKey, grid);
     return grid;
 }

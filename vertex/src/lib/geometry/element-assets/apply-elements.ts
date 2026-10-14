@@ -20,6 +20,7 @@ import {
     defaultNoFlowHeightHooks,
     type NoFlowHeightHooks,
     smoothMaxMm,
+    smoothMinMm,
 } from "./no-flow-blend";
 import { ELEMENT_SUBDIVIDE_EDGE_MM, NO_FLOW_SMOOTH_MAX_K_MM, type PlacedElementAssetContext } from "./types";
 
@@ -109,16 +110,19 @@ async function applyAssetContext(
             const y = arr[i * 3 + 1]!;
             const z = arr[i * 3 + ta]!;
             const { lx, ly } = localCoordsPlanar(x, y, anchor.x, anchor.y, ctx.transform.rotationDeg);
-            const assetH = sampleGridBilinear(grid, lx, ly) * sign;
-            if (assetH <= 1e-9) continue;
-            const elementTop = baseZ + assetH + ctx.transform.zOffsetMm;
-            if (elementTop <= z - k) continue;
+            const hMag = sampleGridBilinear(grid, lx, ly);
+            if (hMag <= 1e-9) continue;
             const { u, vSigned } = vertexFootprintAt(frame, arr, i);
             if (rimBandClipFactor(u, vSigned, field) < 0.5) continue;
-            const next = smoothMaxMm(z, elementTop, k);
             if (ctx.sidecar.category === "add") {
+                const elementTop = baseZ + hMag + ctx.transform.zOffsetMm;
+                if (elementTop <= z - k) continue;
+                const next = smoothMaxMm(z, elementTop, k);
                 arr[i * 3 + ta] = Math.max(z, next);
             } else {
+                const elementFloor = baseZ - hMag + ctx.transform.zOffsetMm;
+                if (elementFloor >= z + k) continue;
+                const next = smoothMinMm(z, elementFloor, k);
                 arr[i * 3 + ta] = Math.min(z, next);
             }
         }
@@ -140,32 +144,22 @@ async function applyAssetContext(
         const nz = normal.getZ(i);
         const len = Math.hypot(nx, ny, nz) || 1;
         const uz = nz / len;
-        const w =
-            Math.abs(uz) >= 0.85
-                ? 1
-                : flowFeatherWeight(
-                      lx,
-                      ly,
-                      grid.originX,
-                      grid.originY,
-                      grid.nx,
-                      grid.ny,
-                      grid.cellMm,
-                      ctx.sidecar.featherMm,
-                  );
+        const w = flowFeatherWeight(
+            lx,
+            ly,
+            grid.originX,
+            grid.originY,
+            grid.nx,
+            grid.ny,
+            grid.cellMm,
+            ctx.sidecar.featherMm,
+        );
         const lift = sign * assetH * w + ctx.transform.zOffsetMm * w;
-        if (sign > 0) {
-            // Flat / shallow tops: match noFlow vertical imprint; steeper areas follow the normal.
-            if (Math.abs(uz) >= 0.85) {
-                arr[i * 3 + ta] += lift;
-            } else {
-                arr[i * 3] += (nx / len) * lift;
-                arr[i * 3 + 1] += (ny / len) * lift;
-                arr[i * 3 + 2] += uz * lift;
-            }
-        } else {
-            arr[i * 3 + ta] += lift * Math.max(0.2, Math.abs(uz));
-        }
+        const verticalBias = c1Smoothstep01(Math.max(0, uz));
+        const along = lift * (1 - verticalBias) + lift * verticalBias;
+        arr[i * 3] += (nx / len) * along;
+        arr[i * 3 + 1] += (ny / len) * along;
+        arr[i * 3 + 2] += uz * along;
     }
 }
 
