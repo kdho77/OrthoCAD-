@@ -92,7 +92,7 @@ describe("Print solid composed-top parity", () => {
     test("loft top matches composePrintSolidTop within 0.05 mm; skive raise + S1 gates", async () => {
         const raw = await loadSampleTop("right");
         const sourceField = field("right", { ...zero(), medialSkiveMm: 4, heelLiftMm: 4 });
-        const composed = composePrintSolidTop(raw, { sourceField });
+        const composed = await composePrintSolidTop(raw, { sourceField });
         const preview = reconstructProceduralPreview(raw, {
             sourceField,
             composedTop: true,
@@ -131,7 +131,7 @@ describe("Print solid composed-top parity", () => {
         expect(solidBottom?.length).toBe(outlineRing?.length);
 
         const composedPos = composed.getAttribute("position")!;
-        const plain = composePrintSolidTop(raw, { sourceField: field("right", zero()) });
+        const plain = await composePrintSolidTop(raw, { sourceField: field("right", zero()) });
         const pPos = plain.getAttribute("position")!;
         let maxSkive = 0;
         composed.computeBoundingBox();
