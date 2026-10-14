@@ -5,6 +5,7 @@ import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { ExportPanel } from "@/features/exports/ExportPanel";
 import { PrintingPanel } from "@/features/exports/PrintingPanel";
+import { VertexSliceGcodePanel } from "@/features/exports/VertexSliceGcodePanel";
 import { ShapeFinishPanel } from "@/features/shape-finish/ShapeFinishPanel";
 import { shouldShowShapeFinishInPrintAdvanced } from "@/features/shape-finish/shape-finish-mount";
 import { cn } from "@/lib/utils";
@@ -17,11 +18,12 @@ export function ClinicalPrintStepPanel() {
             <div className="rounded-md border border-primary/30 bg-primary/5 px-2 py-2 text-[11px] leading-snug text-foreground">
                 <p className="font-medium">Recommended path</p>
                 <p className="mt-1 text-muted-foreground">
-                    The procedural solid is built here. Choose grinding style and hardness, then prepare
-                    G-code. Final gyroid infill is applied on the server — the 3D preview may differ from the
-                    printed part.
+                    Export the finished solid and generate Apex V2 G-code via VertexSlice (walls, gyroid
+                    infill, toe-first or heel-first). Preview may differ from the printed part.
                 </p>
             </div>
+
+            <VertexSliceGcodePanel clinicalMode />
 
             <PrintingPanel clinicalMode primaryOnly showWallPreview />
 
