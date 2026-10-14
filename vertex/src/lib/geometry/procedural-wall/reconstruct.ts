@@ -32,9 +32,8 @@ import {
 } from "./bottom-pattern";
 import {
     ensureCcw,
-    fitClosedC2Spline,
     type PolyPoint,
-    resampleClosedC2,
+    resamplePolyline,
     sampleClosedAtArc01,
     startAtLowCurvature,
 } from "./curves";
@@ -80,6 +79,7 @@ import {
     countPlanViewChordCrossings,
     limitPairingSkew,
     pairAtNativeTop,
+    projectStationsOntoBottomAtTB,
     reparameterizeBArcLength,
     retargetPlantarFromE,
     smoothClosedParameters,
@@ -126,6 +126,12 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * the Default extractTopSheet steal.
      */
     composedTop?: boolean;
+    /**
+     * When true, station B stays on the user bottomPattern loop at each station's
+     * tB (live edit path). Faired / S1-smoke patterns pass bottomPattern without
+     * this flag and keep spreadClosedOnLoop.
+     */
+    lockBottomB?: boolean;
 }
 
 function zeroCorrections(): SideCorrections {
@@ -1083,14 +1089,19 @@ export function reconstructProceduralWalls(
           );
     const patternLabel =
         options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : PATTERN_SOURCE_FAIRED_STOCK);
+    const lockBottomBEarly = options.lockBottomB === true;
     let hygiened = hygieneBottomPattern(rawOutline, {
         rimPlan: patternRim,
         requireInsideRim: true,
         clearanceMm:
-            patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
+            lockBottomBEarly || patternLabel === PATTERN_SOURCE_SYNTHETIC
+                ? 0
+                : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
         source: patternLabel,
-        resampleN: Math.max(160, rawOutline.length, rimPts.length),
-        keepFair: true,
+        resampleN: lockBottomBEarly
+            ? Math.max(rawOutline.length, rimPts.length)
+            : Math.max(160, rawOutline.length, rimPts.length),
+        keepFair: !lockBottomBEarly,
     });
     const heelWiden = (options.corrections?.heelCupWidthMm ?? 0) !== 0;
     const wholeScale = options.insoleWidthScale ?? 1;
@@ -1176,6 +1187,8 @@ export function reconstructProceduralWalls(
     if (patternPts?.length || legacyFaired) {
         assertCutInOnHighRimSide(hygiened.loop, rimPts, model.bounds, medialYSign);
     }
+    const lockBottomB = options.lockBottomB === true;
+    const bottomLoop = hygiened.loop;
     let pairing = limitPairingSkew(pairAtNativeTop(hygiened.loop, rimPts), hygiened.loop);
     const collapsed = mergeCollapsedStations(pairing, rimLocal, indices, 1e-6);
     pairing = collapsed.pairing;
@@ -1250,35 +1263,20 @@ export function reconstructProceduralWalls(
     }
     applyOutlineClean(stations, rimLocal, indices, true);
     rotateStationRing(stations, rimLocal, model.bounds);
-    const lockUserBottomB = Boolean(options.bottomPattern?.length);
-    const userBottomRing = lockUserBottomB
-        ? resampleClosedC2(fitClosedC2Spline(hygiened.loop), stations.length)
-        : null;
-    const stampUserBottomB = (): void => {
-        if (!userBottomRing) return;
-        for (let i = 0; i < stations.length; i++) {
-            const p = userBottomRing[i]!;
-            stations[i]!.outline = { x: p.x, y: p.y, z: 0 };
-        }
-    };
-    if (lockUserBottomB) {
-        stampUserBottomB();
-    } else {
-        const spreadB = spreadClosedOnLoop(
-            stations.map((s) => s.outline),
-            hygiened.loop,
-            0.4,
-        );
-        for (let i = 0; i < stations.length; i++) stations[i]!.outline = spreadB[i]!;
-    }
-    stampMonotonicTB(stations, hygiened.loop);
-    applyStoredTB(stations, hygiened.loop);
+    const spreadB = spreadClosedOnLoop(
+        stations.map((s) => s.outline),
+        bottomLoop,
+        0.4,
+    );
+    for (let i = 0; i < stations.length; i++) stations[i]!.outline = spreadB[i]!;
+    stampMonotonicTB(stations, bottomLoop);
+    applyStoredTB(stations, bottomLoop);
     const applySmoothedB = (): boolean => {
-        if (lockUserBottomB) return true;
+        if (lockBottomB) return true;
         const rim = stations.map((s) => s.rim);
         const s01 = stations.map((s) => s.tB ?? 0);
         const sm = smoothClosedParameters(s01, rim, TB_SMOOTH_SIGMA_MM);
-        const pts = sm.map((t) => sampleClosedAtArc01(hygiened.loop, t));
+        const pts = sm.map((t) => sampleClosedAtArc01(bottomLoop, t));
         const x = countPlanViewChordCrossings(
             pts,
             stations.map((s) => s.rim),
@@ -1291,21 +1289,20 @@ export function reconstructProceduralWalls(
         return true;
     };
     applySmoothedB();
-    ensureSourceRimStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, sourceRim);
-    evenSplitSourceEdges(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
+    ensureSourceRimStations(stations, rimLocal, positions, indices, bottomLoop, model.bounds, sourceRim);
+    evenSplitSourceEdges(stations, rimLocal, positions, indices, bottomLoop, model.bounds, rimPts);
     markSourceRimStations(stations, rimLocal, sourceRim);
-    stampMonotonicTB(stations, hygiened.loop);
-    applyStoredTB(stations, hygiened.loop);
+    stampMonotonicTB(stations, bottomLoop);
+    applyStoredTB(stations, bottomLoop);
     applySmoothedB();
-    reparameterizeBArcLength(stations, hygiened.loop);
-    limitStationSkew(stations, hygiened.loop, r1, r2);
-    reparameterizeBArcLength(stations, hygiened.loop);
+    reparameterizeBArcLength(stations, bottomLoop);
+    limitStationSkew(stations, bottomLoop, r1, r2);
+    reparameterizeBArcLength(stations, bottomLoop);
     if (patternMoved) {
-        smoothMovedStationOutline(stations, hygiened.loop);
-        limitStationSkew(stations, hygiened.loop, r1, r2);
-        reparameterizeBArcLength(stations, hygiened.loop);
+        smoothMovedStationOutline(stations, bottomLoop);
+        limitStationSkew(stations, bottomLoop, r1, r2);
+        reparameterizeBArcLength(stations, bottomLoop);
     }
-    if (lockUserBottomB) stampUserBottomB();
     assertClosedStationRing(stations, rimLocal);
     {
         const thicknessChanged =

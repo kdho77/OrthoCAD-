@@ -668,7 +668,14 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                     heelOverrideMm: heelW,
                                 },
                                 trimline: printTrim,
-                                ...(livePts ? { bottomPattern: livePts } : {}),
+                                ...(livePts
+                                    ? {
+                                          bottomPattern: livePts,
+                                          lockBottomB:
+                                              !useBottomPatternStore.getState().generatedKey[side] ||
+                                              useMeshEditStore.getState().bottomPatternEdit?.side === side,
+                                      }
+                                    : {}),
                             });
                             if (session.cancelled) {
                                 preview.geometry.dispose();

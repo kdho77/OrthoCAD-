@@ -25,7 +25,7 @@ import { fairedPattern } from "./faired-pattern";
 import type { HermiteStation } from "./loft";
 import { outwardNormal } from "./measure";
 import { enforceMinRimInset } from "./pattern-hygiene";
-import { nearestRayHitOnLoop, spreadClosedOnLoop } from "./stations";
+import { nearestRayHitOnLoop, projectStationsOntoBottomAtTB, spreadClosedOnLoop } from "./stations";
 
 export const PATTERN_SOURCE_FAIRED_STOCK = "faired-stock";
 export const MIN_INSET_FLOOR_MM = 1;
@@ -697,6 +697,34 @@ export function limitStationSkew(
     repairNeighbourHeading(stations, loop, r1, r2);
     // spreadClosedOnLoop can put skew back over 0.5 inset; slide once more.
     slideSkewStations(stations, loop, r1, r2);
+}
+
+/** Skew limit with B sliding only along the user bottom loop (no spreadClosedOnLoop). */
+export function limitStationSkewOnLockedBottomB(
+    stations: HermiteStation[],
+    userBottomLoop: PolyPoint[],
+    r1: number,
+    r2: number,
+): void {
+    if (stations.length < 3 || userBottomLoop.length < 3) return;
+    for (let pass = 0; pass < 10; pass++) {
+        slideSkewStations(stations, userBottomLoop, r1, r2);
+        projectStationsOntoBottomAtTB(stations, userBottomLoop);
+        for (let hp = 0; hp < 6; hp++) {
+            let moved = 0;
+            for (let i = 0; i < stations.length; i++) {
+                const a = stations[i]!;
+                const b = stations[(i + 1) % stations.length]!;
+                if (headingDeg(a, b) <= PRELOFT_HEADING_MAX_DEG + 1e-3) continue;
+                if (pullHeading(b, a, userBottomLoop)) moved++;
+                if (headingDeg(a, b) > PRELOFT_HEADING_MAX_DEG + 1e-3 && pullHeading(a, b, userBottomLoop)) {
+                    moved++;
+                }
+            }
+            projectStationsOntoBottomAtTB(stations, userBottomLoop);
+            if (!moved) break;
+        }
+    }
 }
 
 function headingDeg(a: HermiteStation, b: HermiteStation): number {

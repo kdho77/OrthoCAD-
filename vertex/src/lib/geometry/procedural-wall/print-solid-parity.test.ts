@@ -14,9 +14,9 @@ import { mirrorGeometry } from "@/lib/library/loaders";
 import type { Side, SideCorrections } from "@/types";
 import { composePrintSolidTop, composeViewerPrintSolidTop } from "./print-solid-compose";
 import {
+    buildProceduralViewerPattern,
     reconstructProceduralPreview,
     sampleTopFromArrayBuffer,
-    viewerBottomOverlayFromPreview,
 } from "./sample-top-preview";
 import { polylineHausdorffMm } from "./windows-trace";
 
@@ -156,19 +156,22 @@ describe("Print solid composed-top parity", () => {
     }, 180_000);
 
     for (const side of ["left", "right"] as Side[]) {
-        test(`Corrections viewer overlay B matches loft bottomOutlineB (Hausdorff ≤ ${PARITY_MM} mm) — ${side}`, async () => {
+        test(`sized bottomPattern matches loft bottomOutlineB (Hausdorff ≤ ${PARITY_MM} mm) — ${side}`, async () => {
             const raw = await loadSampleTop(side);
             const sourceField = field(side, {
                 ...zero(),
                 forefootWedge: { side: "lateral", value: 4, unit: "deg" },
             });
             const composedTop = composeViewerPrintSolidTop({ raw, sourceField });
+            const sizedPattern = buildProceduralViewerPattern(composedTop, "full_contact");
             const preview = reconstructProceduralPreview(composedTop, {
                 sourceField,
                 composedTop: true,
                 corrections: sourceField.corrections,
                 wallStyle: "straight",
                 scanPattern: "full_contact",
+                bottomPattern: sizedPattern,
+                lockBottomB: true,
             });
             if (composedTop !== raw) composedTop.dispose();
             const solidBottom = (
@@ -178,8 +181,8 @@ describe("Print solid composed-top parity", () => {
             ).bottomOutlineB;
             expect(solidBottom?.length ?? 0).toBeGreaterThan(16);
             const loftB = (solidBottom ?? []).map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }));
-            const overlay = viewerBottomOverlayFromPreview(preview);
-            expect(polylineHausdorffMm(overlay, loftB)).toBeLessThanOrEqual(PARITY_MM);
+            expect(polylineHausdorffMm(sizedPattern, loftB)).toBeLessThanOrEqual(PARITY_MM);
+            expect(preview.pattern).toEqual(sizedPattern);
             preview.geometry.dispose();
             raw.dispose();
         }, 180_000);

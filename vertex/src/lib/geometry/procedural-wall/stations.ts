@@ -3,6 +3,7 @@
 
 import {
     fitClosedC2Spline,
+    nearestClosedArc01,
     type PolyPoint,
     polylineArcLengths,
     resampleClosedC2,
@@ -1028,6 +1029,28 @@ function commitTB(
         stations[i]!.tB = ((next[i]! % 1) + 1) % 1;
     }
     return true;
+}
+
+/** Project each station B onto `userBottomLoop` at its arc parameter tB (or nearest). */
+export function projectStationsOntoBottomAtTB(
+    stations: Array<{ outline: PolyPoint; rim: PolyPoint; tB?: number; n?: { x: number; y: number } }>,
+    userBottomLoop: PolyPoint[],
+): void {
+    if (userBottomLoop.length < 3) return;
+    for (const st of stations) {
+        let t = st.tB;
+        if (t == null || !Number.isFinite(t)) {
+            t = nearestClosedArc01(userBottomLoop, st.outline);
+        }
+        t = ((t % 1) + 1) % 1;
+        st.tB = t;
+        const p = sampleClosedAtArc01(userBottomLoop, t);
+        st.outline = { x: p.x, y: p.y, z: p.z ?? 0 };
+        const dx = st.outline.x - st.rim.x;
+        const dy = st.outline.y - st.rim.y;
+        const hl = Math.hypot(dx, dy);
+        if (hl > 1e-6) st.n = { x: dx / hl, y: dy / hl };
+    }
 }
 
 export function applyStoredTB(stations: Array<{ outline: PolyPoint; tB?: number }>, loop: PolyPoint[]): void {

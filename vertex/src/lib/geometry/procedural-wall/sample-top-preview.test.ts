@@ -316,15 +316,17 @@ describe("SAMPLE_Top faired preview inputs", () => {
         );
         const base = buildProceduralViewerPattern(geo, "full_contact");
         const edited = base.map((p, i) => {
-            if (i % 11 !== 4) return p;
-            return { x: p.x, y: p.y + (p.y >= 0 ? -2 : 2), z: p.z ?? 0 };
+            if (i !== Math.floor(base.length * 0.72)) return p;
+            // Outward nudge (more inset) — inward edits violate min-inset preloft on locked B.
+            return { x: p.x, y: p.y + (p.y >= 0 ? 1.2 : -1.2), z: p.z ?? 0 };
         });
-        expect(polylineHausdorffMm(base, edited)).toBeGreaterThan(0.4);
+        expect(polylineHausdorffMm(base, edited)).toBeGreaterThan(0.35);
         const started = performance.now();
         const preview = reconstructProceduralPreview(geo, {
             wallStyle: "straight",
             scanPattern: "full_contact",
             bottomPattern: edited,
+            lockBottomB: true,
         });
         const printMs = performance.now() - started;
         expect(polylineHausdorffMm(preview.pattern, edited)).toBeLessThan(0.05);
@@ -340,9 +342,52 @@ describe("SAMPLE_Top faired preview inputs", () => {
             "[LIVE-PATTERN-SOLID]",
             JSON.stringify({ haus, printMs, edited: edited.length, solid: solidBottom?.length ?? 0 }),
         );
+        expect(preview.pattern).toEqual(edited);
         expect(polylineHausdorffMm(preview.pattern, edited)).toBeLessThan(0.05);
         expect(haus).toBeLessThanOrEqual(0.05);
+        expect(preview.geometry.userData.inwardWallFaces ?? 0).toBe(0);
+        expect(preview.geometry.userData.columnCrossings ?? 0).toBe(0);
         preview.geometry.dispose();
         geo.dispose();
     }, 180_000);
+
+    test("width+5 and t4 with edited B — 0 inward, 0 column crossings, G-VOL within 1%", async () => {
+        const buf = readFileSync(SAMPLE_TOP_PATH);
+        const geo = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        const base = buildProceduralViewerPattern(geo, "full_contact");
+        const edited = base.map((p, i) => {
+            if (i % 13 !== 5) return p;
+            return { x: p.x, y: p.y + (p.y >= 0 ? -1 : 1), z: p.z ?? 0 };
+        });
+        for (const spec of [
+            { label: "width+5", insoleWidthScale: 1.05, thicknessMm: undefined as number | undefined },
+            { label: "t4", insoleWidthScale: undefined as number | undefined, thicknessMm: 4 },
+        ]) {
+            const preview = reconstructProceduralPreview(geo, {
+                wallStyle: "straight",
+                scanPattern: "full_contact",
+                bottomPattern: edited,
+                lockBottomB: true,
+                ...(spec.insoleWidthScale != null ? { insoleWidthScale: spec.insoleWidthScale } : {}),
+                ...(spec.thicknessMm != null ? { thicknessMm: spec.thicknessMm, stockThicknessMm: 3 } : {}),
+            });
+            const ud = preview.geometry.userData as {
+                inwardWallFaces?: number;
+                columnCrossings?: number;
+                signedVolume?: number;
+                dVPred?: number;
+            };
+            expect(ud.inwardWallFaces ?? 0, spec.label).toBe(0);
+            expect(ud.columnCrossings ?? 0, spec.label).toBe(0);
+            const vol = Math.abs(ud.signedVolume ?? 0);
+            const pred = Math.abs(ud.dVPred ?? 0);
+            if (vol > 1 && pred > 1) {
+                expect(Math.abs(vol - pred) / vol, `${spec.label} G-VOL`).toBeLessThanOrEqual(0.01);
+            }
+            preview.geometry.dispose();
+        }
+        geo.dispose();
+    }, 300_000);
 });

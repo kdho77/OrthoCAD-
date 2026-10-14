@@ -170,6 +170,9 @@ export interface ProceduralPreviewOptions {
     trimline?: TrimlineCurve | null;
     /** Force the composed-top loft path (skip analytic deltas). */
     composedTop?: boolean;
+    /** Lock loft B to the live user bottomPattern at each station tB. */
+    lockBottomB?: boolean;
+    insoleWidthScale?: number;
 }
 
 /**
@@ -220,43 +223,18 @@ export function reconstructProceduralPreview(
             archGrindDepthMm: options.archGrindDepthMm,
             sourceField: options.sourceField,
             composedTop: useComposed,
+            lockBottomB: options.lockBottomB === true,
+            insoleWidthScale: options.insoleWidthScale,
         });
         return { model, pattern, geometry };
     };
     try {
-        return attachViewerBottomOverlayFromLoft(loft(requested));
+        return loft(requested);
     } catch (e) {
         if (options.bottomPattern?.length || !options.scanPattern || options.scanPattern === "full_contact") {
             throw e;
         }
         // Prefab 3D / Flat must still produce a mesh from SAMPLE_Top.
-        return attachViewerBottomOverlayFromLoft(loft(buildFairedPatternFromTop(model)));
+        return loft(buildFairedPatternFromTop(model));
     }
-}
-
-/** Corrections viewer overlay only — does not replace the editable bottom-pattern store. */
-export function attachViewerBottomOverlayFromLoft(result: {
-    model: StockWallModel;
-    pattern: PolyPoint[];
-    geometry: BufferGeometry;
-}): { model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry } {
-    const ud = result.geometry.userData as {
-        bottomOutlineB?: Array<{ x: number; y: number; z?: number }>;
-        viewerBottomOverlayB?: Array<{ x: number; y: number; z: number }>;
-    };
-    const ring = ud.bottomOutlineB;
-    if (ring?.length) {
-        ud.viewerBottomOverlayB = ring.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }));
-    }
-    return result;
-}
-
-export function viewerBottomOverlayFromPreview(preview: {
-    geometry: BufferGeometry;
-    pattern: PolyPoint[];
-}): PolyPoint[] {
-    const ud = preview.geometry.userData as {
-        viewerBottomOverlayB?: PolyPoint[];
-    };
-    return ud.viewerBottomOverlayB?.length ? ud.viewerBottomOverlayB : preview.pattern;
 }
