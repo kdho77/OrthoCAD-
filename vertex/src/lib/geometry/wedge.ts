@@ -30,8 +30,8 @@ export interface WedgeParams {
 // Zone fade boundaries (tunable; keep in sync with documentation / tests)
 const REARFOOT_WEDGE_START_FADE = 0.3;
 const REARFOOT_WEDGE_END_FADE = 0.45;
-const FOREFOOT_WEDGE_START_FADE = 0.55;
-const FOREFOOT_WEDGE_END_FADE = 0.7;
+const FOREFOOT_WEDGE_START_FADE = 0.45;
+const FOREFOOT_WEDGE_END_FADE = 0.58;
 
 /** Local smoothstep (duplicated from height-field.ts for module independence / no circular import). */
 function smoothstep(e0: number, e1: number, x: number): number {

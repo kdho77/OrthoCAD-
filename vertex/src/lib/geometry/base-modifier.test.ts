@@ -409,7 +409,8 @@ describe("wedge system (medial/lateral, rear/fore, mm/deg)", () => {
 
     test("factors exported for test/debug", () => {
         expect(getRearfootFactor(0.1)).toBeGreaterThan(0.9);
-        expect(getForefootFactor(0.9)).toBeGreaterThan(0.9);
+        expect(getForefootFactor(0.9)).toBeCloseTo(1, 5);
+        expect(getForefootFactor(0.4)).toBeCloseTo(0, 5);
         expect(getRearfootFactor(0.5)).toBeLessThan(0.5);
     });
 

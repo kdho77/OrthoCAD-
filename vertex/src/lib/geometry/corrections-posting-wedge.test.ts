@@ -159,14 +159,67 @@ function maxForefootLateralBorderLiftMm(
             widthMm: field.widthMm,
             trimline: field.trimline ?? null,
         });
-        if (w < field.corrections.forefootWedge?.value! * 0.85) continue;
+        const fw = field.corrections.forefootWedge;
+        const minW = fw && fw.value > 0 ? (fw.unit === "mm" ? fw.value * 0.85 : 0.2) : Infinity;
+        if (w < minW) continue;
         const lift = pos[vi * 3 + ta]! - neu[vi * 3 + ta]!;
         bestLift = Math.max(bestLift, lift);
     }
     return bestLift;
 }
 
+function maxSlopeRatioInUBand(
+    geo: BufferGeometry,
+    base: BufferGeometry,
+    frame: ReturnType<typeof getBaseFootprintFrame>,
+    thickAxis: number,
+    uMin: number,
+    uMax: number,
+): number {
+    const posAttr = geo.getAttribute("position");
+    const baseAttr = base.getAttribute("position");
+    const index = geo.getIndex();
+    if (!posAttr || !baseAttr || !index) return 0;
+    const p = posAttr.array as Float32Array;
+    const b = baseAttr.array as Float32Array;
+    const idx = index.array;
+    const seen = new Set<string>();
+    let maxRatio = 0;
+    for (let t = 0; t < idx.length; t += 3) {
+        const pairs = [
+            [idx[t]!, idx[t + 1]!],
+            [idx[t + 1]!, idx[t + 2]!],
+            [idx[t + 2]!, idx[t]!],
+        ];
+        for (const [a, c] of pairs) {
+            const key = a < c ? `${a},${c}` : `${c},${a}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const ua = vertexFootprintAt(frame, b, a).u;
+            const uc = vertexFootprintAt(frame, b, c).u;
+            if (ua < uMin || ua > uMax || uc < uMin || uc > uMax) continue;
+            const ex = b[a * 3]! - b[c * 3]!;
+            const ey = b[a * 3 + 1]! - b[c * 3 + 1]!;
+            const ez = b[a * 3 + 2]! - b[c * 3 + 2]!;
+            const len = Math.hypot(ex, ey, ez);
+            if (len < 1e-6) continue;
+            const dz = Math.abs(p[a * 3 + thickAxis]! - p[c * 3 + thickAxis]!);
+            maxRatio = Math.max(maxRatio, dz / len);
+        }
+    }
+    return maxRatio;
+}
+
 describe("posting wedge (design viewer height field)", () => {
+    test("forefoot wedge envelope — C1 smoothstep 0.45..0.58", () => {
+        expect(getForefootFactor(0.45)).toBeCloseTo(0, 6);
+        expect(getForefootFactor(0.52)).toBeGreaterThan(0);
+        expect(getForefootFactor(0.52)).toBeLessThan(1);
+        for (const u of [0.58, 0.62, 0.72, 0.9]) {
+            expect(getForefootFactor(u)).toBeCloseTo(1, 6);
+        }
+    });
+
     test("STEP 0: rearfoot lateral 10 mm z lift at heel (right)", () => {
         const wedge = { side: "lateral" as const, value: 10, unit: "mm" as const };
         const p = baseParams("right", { ...zeroCorrections(), rearfootWedge: wedge });
@@ -212,19 +265,29 @@ describe("posting wedge (design viewer height field)", () => {
     test("forefoot 10° — border height and slope match tan(10°)", () => {
         const wedge = { side: "lateral" as const, value: 10, unit: "deg" as const };
         const p = baseParams("right", { ...zeroCorrections(), forefootWedge: wedge });
-        const u = 0.88;
         const vLat = 0.98;
         const vMed = -0.98;
+        const tan10 = Math.tan((10 * Math.PI) / 180);
+        for (const u of [0.62, 0.9]) {
+            const zone = getForefootFactor(u);
+            expect(zone).toBeCloseTo(1, 5);
+            const hw = effectiveOutlineHalfWidth(u, p.lengthMm, p.widthMm, null);
+            const localFullWidth = 2 * hw * (p.widthMm / 2);
+            const borderRaise = wedgeDeltaAt(u, vLat, "right", p.corrections, p);
+            expect(borderRaise).toBeGreaterThan(localFullWidth * tan10 - 0.1);
+            expect(borderRaise).toBeLessThan(localFullWidth * tan10 + 0.1);
+        }
+        const u = 0.88;
         const zone = getForefootFactor(u);
         const hw = effectiveOutlineHalfWidth(u, p.lengthMm, p.widthMm, null);
         const localFullWidth = 2 * hw * (p.widthMm / 2);
         const borderRaise = wedgeDeltaAt(u, vLat, "right", p.corrections, p);
-        expect(borderRaise).toBeCloseTo(localFullWidth * Math.tan((10 * Math.PI) / 180) * zone, 0.1);
+        expect(borderRaise).toBeCloseTo(localFullWidth * tan10 * zone, 0.1);
         const slope =
             (wedgeDeltaAt(u, vLat, "right", p.corrections, p) -
                 wedgeDeltaAt(u, vMed, "right", p.corrections, p)) /
             (localFullWidth * 0.98 * 2 * zone);
-        expect(slope).toBeCloseTo(Math.tan((10 * Math.PI) / 180), 0.005);
+        expect(slope).toBeCloseTo(tan10, 0.005);
     });
 
     test("arch height −10 and +14 mm at apex", () => {
@@ -434,11 +497,14 @@ describe("posting wedge (design viewer height field)", () => {
                 }
                 const wedgedSlope = wedgeSlopeAndFlips(composed, raw, ta);
                 const neutralSlope = wedgeSlopeAndFlips(neutral, raw, ta);
+                const rampWedged = maxSlopeRatioInUBand(composed, raw, frame, ta, 0.45, 0.58);
+                const rampNeutral = maxSlopeRatioInUBand(neutral, raw, frame, ta, 0.45, 0.58);
                 composed.dispose();
                 neutral.dispose();
                 raw.dispose();
                 expect(worstLiftErr).toBeLessThanOrEqual(WEDGE_LIFT_TOL_MM);
                 expect(wedgedSlope.maxRatio).toBeLessThanOrEqual(neutralSlope.maxRatio + SLOPE_RATIO_SLACK);
+                expect(rampWedged).toBeLessThanOrEqual(rampNeutral + SLOPE_RATIO_SLACK);
                 expect(wedgedSlope.flippedNormals).toBe(0);
             }, 180_000);
         }
