@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useState } from "react";
-import { AdminPortal } from "@/components/admin/AdminPortal";
 import { CaseSummaryBar } from "@/components/clinical/CaseSummaryBar";
 import { ClinicalStepRail } from "@/components/clinical/ClinicalStepRail";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -9,6 +8,8 @@ import { StatusBar } from "@/components/layout/StatusBar";
 import { type NavItem, TopNav } from "@/components/layout/TopNav";
 import { PrescriptionUpload } from "@/components/prescription-upload/PrescriptionUpload";
 import { Viewer3D } from "@/components/viewer/Viewer3D";
+import { AdminApp } from "@/features/admin/AdminApp";
+import { useLocationPath } from "@/features/admin/admin-nav";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { ClientsView } from "@/features/clients/ClientsView";
 import { exportDesign } from "@/features/exports/export-service";
@@ -22,11 +23,37 @@ import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
 import { useAuthStore } from "@/stores/auth-store";
 import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
+import { isAdminPath } from "../shared/admin/admin-domain";
 
 export default function App() {
     useAuthBootstrap();
+    const { pathname } = useLocationPath();
+    const { user, loading: authLoading } = useAuthStore();
+
+    if (isSupabaseConfigured()) {
+        if (authLoading) {
+            return (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    Loading…
+                </div>
+            );
+        }
+        if (!user) return <LoginScreen />;
+    }
+
+    if (isAdminPath(pathname)) {
+        return (
+            <ErrorBoundary>
+                <AdminApp />
+            </ErrorBoundary>
+        );
+    }
+
+    return <CadApp />;
+}
+
+function CadApp() {
     const [nav, setNav] = useState<NavItem>("Production");
-    const [adminOpen, setAdminOpen] = useState(false);
     const [rxOpen, setRxOpen] = useState(false);
     const applyPrescription = useDesignStore((s) => s.applyPrescription);
     const { user, loading: authLoading } = useAuthStore();
@@ -36,7 +63,6 @@ export default function App() {
         applyViewerWallFlagFromSearch(window.location.search);
     }, []);
 
-    // Apply SAMPLE_Top (and migrate leftover Default.glb) once auth is ready.
     useEffect(() => {
         const bootstrapDesign = useDesignStore.getState().design;
         const bootstrapBase = bootstrapDesign.paired?.rightBase ?? bootstrapDesign.base;
@@ -82,28 +108,11 @@ export default function App() {
         },
     });
 
-    // Auth enforcement: when Supabase is configured, require a signed-in user.
-    if (isSupabaseConfigured()) {
-        if (authLoading) {
-            return (
-                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                    Loading…
-                </div>
-            );
-        }
-        if (!user) return <LoginScreen />;
-    }
-
     return (
         <ErrorBoundary>
             <div className="flex h-full flex-col">
                 <KernelLoadingBanner />
-                <TopNav
-                    active={nav}
-                    onNavigate={setNav}
-                    onOpenAdmin={() => setAdminOpen(true)}
-                    onOpenPrescription={() => setRxOpen(true)}
-                />
+                <TopNav active={nav} onNavigate={setNav} onOpenPrescription={() => setRxOpen(true)} />
 
                 <div className="flex min-h-0 flex-1">
                     {nav === "Production" ? (
@@ -139,7 +148,6 @@ export default function App() {
 
                 <StatusBar />
 
-                <AdminPortal open={adminOpen} onClose={() => setAdminOpen(false)} />
                 <PrescriptionUpload
                     open={rxOpen}
                     onClose={() => setRxOpen(false)}

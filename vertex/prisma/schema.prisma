@@ -74,6 +74,28 @@ enum TokenTxnType {
     adjustment
 }
 
+enum TenantPlan {
+    starter
+    professional
+    clinic
+    enterprise
+}
+
+enum TenantStatus {
+    active
+    trial
+    suspended
+    expired
+    archived
+}
+
+enum TokenLedgerType {
+    grant
+    usage
+    adjustment
+    expiry
+}
+
 enum AuditAction {
     user_signin
     user_signout
@@ -106,6 +128,9 @@ model User {
     createdAt    DateTime @default(now())
     updatedAt    DateTime @updatedAt
 
+    tenantId        String?        @db.Uuid
+    tenant          Tenant?        @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
     licensesOwned   License[]      @relation("LicenseOwner")
     seats           LicenseSeat[]
     clients         Client[]
@@ -116,8 +141,11 @@ model User {
     auditLogs       AuditLog[]
     customElements  CustomElement[]
     customPrefabs   CustomPrefab[]
+    tenantLedger    TenantTokenLedger[] @relation("LedgerActor")
+    adminAudits     AdminAuditLog[]     @relation("AuditActor")
 
     @@index([role])
+    @@index([tenantId])
     @@map("users")
 }
 
@@ -153,6 +181,75 @@ model LicenseSeat {
 
     @@unique([licenseId, userId])
     @@map("license_seats")
+}
+
+// --- Tenants (super-admin commercial layer) ---------------------------------
+// CAD runtime still uses per-user License + users.tokenBalance. Tenants, the
+// tenant token ledger, and admin_audit_logs are managed only by super_admin.
+
+model Tenant {
+    id             String       @id @default(uuid()) @db.Uuid
+    name           String
+    slug           String       @unique
+    status         TenantStatus @default(trial)
+    plan           TenantPlan   @default(starter)
+    seats          Int          @default(1)
+    startsAt       DateTime     @default(now())
+    expiresAt      DateTime?
+    tokenBalance   Int          @default(0)
+    tokenThreshold Int          @default(50)
+    lastActivityAt DateTime?
+    archivedAt     DateTime?
+    createdAt      DateTime     @default(now())
+    updatedAt      DateTime     @updatedAt
+
+    members User[]
+    ledger  TenantTokenLedger[]
+    audits  AdminAuditLog[]
+
+    @@index([status])
+    @@index([plan])
+    @@index([expiresAt])
+    @@map("tenants")
+}
+
+model TenantTokenLedger {
+    id           String          @id @default(uuid()) @db.Uuid
+    tenantId     String          @db.Uuid
+    type         TokenLedgerType
+    amount       Int
+    balanceAfter Int
+    actorId      String?         @db.Uuid
+    reason       String
+    note         String?
+    expiresAt    DateTime?
+    createdAt    DateTime        @default(now())
+
+    tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+    actor  User?  @relation("LedgerActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+    @@index([tenantId, createdAt])
+    @@map("tenant_token_ledger")
+}
+
+model AdminAuditLog {
+    id        String   @id @default(uuid()) @db.Uuid
+    actorId   String?  @db.Uuid
+    tenantId  String?  @db.Uuid
+    action    String
+    before    Json?
+    after     Json?
+    reason    String
+    ipAddress String?
+    createdAt DateTime @default(now())
+
+    actor  User?   @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+    tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+    @@index([tenantId])
+    @@index([action])
+    @@index([createdAt])
+    @@map("admin_audit_logs")
 }
 
 // --- Tokens -----------------------------------------------------------------
