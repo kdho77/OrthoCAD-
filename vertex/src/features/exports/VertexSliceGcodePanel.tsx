@@ -1,28 +1,34 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 
 import { Download, Lock, Printer } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
 import { canExport } from "@/features/licensing/license";
+import { buildExportStl, exportModeFromMethod } from "@/lib/geometry/export-geometry";
+import { cn } from "@/lib/utils";
 import {
     BELT_PRINT_DIRECTIONS,
-    defaultInfillPctForRecipe,
     type BeltPrintDirection,
+    defaultInfillPctForRecipe,
     vertexSliceProfileIdForRecipe,
 } from "@/lib/vertexslice/profile-map";
 import {
+    DEFAULT_VERTEX_SLICE_MATERIAL,
+    FALLBACK_VERTEX_SLICE_MATERIALS,
+    fetchVertexSliceMaterials,
     isVertexSliceConfigured,
     sliceStlWithVertexSlice,
+    type VertexSliceMaterial,
     vertexSliceBaseUrl,
+    vertexSliceGcodeFilename,
+    vertexSliceMaterialOptionLabel,
 } from "@/lib/vertexslice/slice-client";
-import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
 import { SIDE_LABELS, type Side } from "@/types";
 import { migratePrintRecipe } from "../../../shared/print-recipe/print-recipe";
-import { buildExportStl, exportModeFromMethod } from "@/lib/geometry/export-geometry";
 
 function downloadText(text: string, filename: string) {
     const blob = new Blob([text], { type: "text/plain" });
@@ -48,6 +54,8 @@ export function VertexSliceGcodePanel({ clinicalMode = false }: VertexSliceGcode
     const [wallLoops, setWallLoops] = useState(1);
     const [infillPct, setInfillPct] = useState(defaultInfill);
     const [printDirection, setPrintDirection] = useState<BeltPrintDirection>("toe_first");
+    const [materials, setMaterials] = useState<VertexSliceMaterial[]>(FALLBACK_VERTEX_SLICE_MATERIALS);
+    const [material, setMaterial] = useState(DEFAULT_VERTEX_SLICE_MATERIAL);
     const [busy, setBusy] = useState(false);
     const [status, setStatus] = useState<string | null>(null);
 
@@ -55,6 +63,23 @@ export function VertexSliceGcodePanel({ clinicalMode = false }: VertexSliceGcode
     const configured = isVertexSliceConfigured();
 
     const infillChoices = useMemo(() => [14, 20, 26, 32, 38] as const, []);
+
+    useEffect(() => {
+        if (!configured) return;
+        let cancelled = false;
+        void (async () => {
+            const loaded = await fetchVertexSliceMaterials(vertexSliceBaseUrl());
+            if (cancelled) return;
+            setMaterials(loaded.materials);
+            setMaterial((current) => {
+                if (loaded.materials.some((m) => m.id === current)) return current;
+                return loaded.defaultId;
+            });
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [configured]);
 
     const onGenerate = async () => {
         if (!configured) {
@@ -78,13 +103,19 @@ export function VertexSliceGcodePanel({ clinicalMode = false }: VertexSliceGcode
                 wallLoops,
                 infillDensityPct: infillPct,
                 printDirection,
+                material,
                 fileName: `orthocad-${exportSide}.stl`,
             });
-            const filename = `apex-v2-${exportSide}-${printDirection}-${Date.now()}.gcode`;
+            const filename = vertexSliceGcodeFilename({
+                side: exportSide,
+                printDirection,
+                material,
+            });
             downloadText(gcode, filename);
-            const t = sliceSeconds != null && Number.isFinite(sliceSeconds)
-                ? ` (${sliceSeconds.toFixed(1)}s on server)`
-                : "";
+            const t =
+                sliceSeconds != null && Number.isFinite(sliceSeconds)
+                    ? ` (${sliceSeconds.toFixed(1)}s on server)`
+                    : "";
             setStatus(`Downloaded ${filename}${t} · Apex V2 95A · ${profileId}`);
         } catch (e) {
             setStatus(stlExportUserMessage(e instanceof Error ? e.message : "G-code generation failed"));
@@ -130,6 +161,22 @@ export function VertexSliceGcodePanel({ clinicalMode = false }: VertexSliceGcode
                 Profile: <span className="text-foreground">{profileId}</span> · hardness{" "}
                 {printRecipe.defaultHardness} · gyroid · layer 0.42 mm
             </p>
+
+            <label className="block space-y-1">
+                <div className="text-[11px] text-muted-foreground">Material</div>
+                <select
+                    className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    value={material}
+                    aria-label="Material"
+                    onChange={(e) => setMaterial(e.target.value)}
+                >
+                    {materials.map((m) => (
+                        <option key={m.id} value={m.id}>
+                            {vertexSliceMaterialOptionLabel(m)}
+                        </option>
+                    ))}
+                </select>
+            </label>
 
             <SliderField
                 label="Wall loops"
@@ -183,11 +230,7 @@ export function VertexSliceGcodePanel({ clinicalMode = false }: VertexSliceGcode
                 </div>
             </div>
 
-            <Button
-                className="w-full"
-                disabled={busy || !gcodeCheck.ok}
-                onClick={onGenerate}
-            >
+            <Button className="w-full" disabled={busy || !gcodeCheck.ok} onClick={onGenerate}>
                 {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                 {busy ? "Generating G-code…" : "Generate G-code"}
             </Button>
