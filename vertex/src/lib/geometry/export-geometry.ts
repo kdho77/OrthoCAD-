@@ -18,14 +18,17 @@ import {
     closeGlbInsoleToSolid,
     DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
+import { resolveLiveBottomPattern } from "@/lib/geometry/procedural-wall/live-bottom-pattern";
 import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gates";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
-import { curveToPolyPoints, useBottomPatternStore } from "@/stores/bottom-pattern-store";
+import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
+import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, ProductionMethod, Side } from "@/types";
 
 /** Export routing: manufacturing uses OCCT sew first; preview uses mesh-close. */
@@ -60,7 +63,13 @@ async function buildModifiedBaseGeometry(
                 : design.paired.rightThicknessMm
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, effThickness);
-        const stored = useBottomPatternStore.getState().getPattern(side);
+        const livePts = resolveLiveBottomPattern({
+            draft: useMeshEditStore.getState().getActiveDraftBottomPattern(side),
+            stored: useBottomPatternStore.getState().getPattern(side),
+        });
+        const layout = insoleLayoutFromDesign(design);
+        const widthId = shoeWidthForSide(design, side);
+        const trimline = getDesignTrimline(design, side);
         const preview = await buildProceduralExportSolid({
             mirrored: Boolean(base.mirrored),
             corrections: field.corrections,
@@ -68,7 +77,16 @@ async function buildModifiedBaseGeometry(
             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
             wallStyle: viewer?.wallStyle ?? "straight",
             scanPattern: design.pattern,
-            ...(stored ? { bottomPattern: curveToPolyPoints(stored) } : {}),
+            sourceField: field,
+            composedTop: true,
+            shoeWidth: {
+                width: widthId,
+                ballWidthMm: layout.widthMm,
+                heelWidthMm: layout.widthMm * 0.62,
+                heelOverrideMm: field.corrections?.heelCupWidthMm,
+            },
+            trimline,
+            ...(livePts ? { bottomPattern: livePts } : {}),
         });
         return preview.geometry;
     }
