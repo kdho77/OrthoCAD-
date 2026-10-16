@@ -226,22 +226,19 @@ function fitsInside(flat: FlattenedText, outline: PolyPoint[], insetMm: number):
     return true;
 }
 
+/** Top-sheet Z at each XY (ignore the plantar z=0 vertices that share the same XY). */
 function minLocalHeight(geo: BufferGeometry, pts: TextXy[]): number {
     const pos = geo.getAttribute("position").array as Float32Array;
     let min = Infinity;
     for (const p of pts) {
-        let best = Infinity;
-        let zTop = 0;
+        let zTop = -Infinity;
         for (let i = 0; i < pos.length; i += 3) {
             const d = Math.hypot(pos[i]! - p.x, pos[i + 1]! - p.y);
-            if (d < best) {
-                best = d;
-                zTop = pos[i + 2]!;
-            }
+            if (d < 2.5) zTop = Math.max(zTop, pos[i + 2]!);
         }
         min = Math.min(min, zTop);
     }
-    return Number.isFinite(min) ? min : 0;
+    return Number.isFinite(min) && min > -1e3 ? min : 0;
 }
 
 export function placeBottomText(
