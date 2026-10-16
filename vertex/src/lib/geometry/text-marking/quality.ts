@@ -251,6 +251,9 @@ function rasterBottomGlyphs(meta: TextApplyMeta, cell: number): { dist: (x: numb
     const iy0 = Math.floor(minY / cell);
     const ix1 = Math.floor(maxX / cell);
     const iy1 = Math.floor(maxY / cell);
+    if (ix1 - ix0 > 500 || iy1 - iy0 > 500) {
+        return { dist: () => 99 };
+    }
     for (let iy = iy0; iy <= iy1; iy++) {
         for (let ix = ix0; ix <= ix1; ix++) {
             const x = (ix + 0.5) * cell;
@@ -420,8 +423,8 @@ function hausdorff(a: Vert3[], b: Vert3[]): number {
     const gb = new VertGrid(b, 0.4);
     const ga = new VertGrid(a, 0.4);
     let max = 0;
-    for (const p of a) max = Math.max(max, gb.nearest(p, 8));
-    for (const p of b) max = Math.max(max, ga.nearest(p, 8));
+    for (const p of a) max = Math.max(max, gb.nearest(p, 3));
+    for (const p of b) max = Math.max(max, ga.nearest(p, 3));
     return Number.isFinite(max) ? max : 99;
 }
 
@@ -436,13 +439,8 @@ export function measureTextRegionQuality(
     const outlineGrid = new VertGrid(outline, 0.3);
     const bottomOcc = meta.surface === "bottom" ? rasterBottomGlyphs(meta, 0.4) : null;
     const near = (p: Vert3) => {
-        const d3 = outlineGrid.nearest(p, 8);
-        if (meta.surface !== "bottom") return d3;
-        if (bottomOcc) {
-            const d2 = bottomOcc.dist(p.x, p.y);
-            return Math.min(d3, d2);
-        }
-        return distToTextRegion(p, meta, outline, outlineGrid);
+        if (meta.surface === "bottom" && bottomOcc) return bottomOcc.dist(p.x, p.y);
+        return outlineGrid.nearest(p, padMm + 0.6);
     };
     const wallN0 = meanNOut(meta);
     const resultVerts = allVerts(result);
