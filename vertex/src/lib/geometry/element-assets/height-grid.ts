@@ -12,6 +12,8 @@ export interface ElementHeightGrid {
     /** Max upper-envelope z per cell centre (mm); NaN = empty. */
     z: Float32Array;
     maxZ: number;
+    /** Occupied cell-centre AABB (z ≥ 0.05). */
+    occupied?: { minX: number; maxX: number; minY: number; maxY: number } | null;
 }
 
 const gridCache = new Map<string, ElementHeightGrid>();
@@ -87,11 +89,14 @@ export function flipHeightGridY(grid: ElementHeightGrid): ElementHeightGrid {
         const src = (grid.ny - 1 - iy) * grid.nx;
         z.set(grid.z.subarray(src, src + grid.nx), iy * grid.nx);
     }
-    return {
+    const flipped: ElementHeightGrid = {
         ...grid,
         originY: -(grid.originY + grid.ny * grid.cellMm),
         z,
+        occupied: undefined,
     };
+    flipped.occupied = gridFootprintBounds(flipped, 0.05);
+    return flipped;
 }
 
 function boundsFromPositions(positions: Float32Array): {
@@ -140,7 +145,9 @@ export function rasterizeUpperEnvelope(positions: Float32Array, cellMm = ELEMENT
         z[ki] = Number.isFinite(prev) ? Math.max(prev, pz) : pz;
         maxZ = Math.max(maxZ, pz);
     }
-    return { cellMm, originX: oX, originY: oY, nx, ny, z, maxZ };
+    const grid: ElementHeightGrid = { cellMm, originX: oX, originY: oY, nx, ny, z, maxZ };
+    grid.occupied = gridFootprintBounds(grid, 0.05);
+    return grid;
 }
 
 export function rasterizeUpperEnvelopeFromIndexed(
@@ -178,10 +185,14 @@ export function rasterizeUpperEnvelopeFromIndexed(
     for (let i = 0; i < z.length; i++) {
         if (Number.isFinite(z[i]!)) maxZ = Math.max(maxZ, z[i]!);
     }
-    return { cellMm, originX: oX, originY: oY, nx, ny, z, maxZ };
+    const grid: ElementHeightGrid = { cellMm, originX: oX, originY: oY, nx, ny, z, maxZ };
+    grid.occupied = gridFootprintBounds(grid, 0.05);
+    return grid;
 }
 
 export function sampleGridBilinear(grid: ElementHeightGrid, lx: number, ly: number): number {
+    const occ = grid.occupied;
+    if (occ && (lx < occ.minX || lx > occ.maxX || ly < occ.minY || ly > occ.maxY)) return 0;
     const u = (lx - grid.originX) / grid.cellMm - 0.5;
     const v = (ly - grid.originY) / grid.cellMm - 0.5;
     if (u < 0 || v < 0 || u > grid.nx - 1 || v > grid.ny - 1) return 0;
