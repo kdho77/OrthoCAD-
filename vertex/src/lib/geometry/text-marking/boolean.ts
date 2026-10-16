@@ -3,7 +3,6 @@
 
 import { BufferAttribute, BufferGeometry } from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { analyzeManifold } from "@/lib/geometry/manifold";
 import { TEXT_WELD_MM } from "./constants";
 import { TextMarkingError } from "./errors";
 import type { MapTextPoint } from "./solid";
@@ -96,7 +95,7 @@ function textGroupsToManifold(
     let solid: ManifoldHandle;
     try {
         const cs = new mod.CrossSection(contours, "NonZero");
-        const extruded = cs.extrude(1, 6);
+        const extruded = cs.extrude(1);
         solid = extruded.warp((vert) => {
             const mapped = mapPoint({ x: vert[0], y: vert[1] }, vert[2]);
             vert[0] = mapped.x;
@@ -189,17 +188,10 @@ function manifoldToGeometry(handle: ManifoldHandle, userData: unknown): BufferGe
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(positions, 3));
     geo.setIndex(Array.from(mesh.triVerts));
-    let welded = mergeVertices(geo, TEXT_WELD_MM);
-    if (welded !== geo) geo.dispose();
-    if (!analyzeManifold(welded).isWatertight) {
-        const retry = mergeVertices(welded, 1e-3);
-        if (retry !== welded) welded.dispose();
-        welded = retry;
-    }
-    welded.computeVertexNormals();
-    welded.computeBoundingBox();
-    welded.userData = userData ?? {};
-    return welded;
+    geo.computeVertexNormals();
+    geo.computeBoundingBox();
+    geo.userData = userData ?? {};
+    return geo;
 }
 
 /** Single manifold-3d WASM boolean. `op` add = emboss, subtract = engrave. */
