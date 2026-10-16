@@ -10,6 +10,9 @@ export interface TextXy {
     y: number;
 }
 
+/** Map a 2D glyph point at extrusion parameter t into world space. */
+export type MapTextPoint = (p: TextXy, t: number) => { x: number; y: number; z: number };
+
 export interface TextContour {
     points: TextXy[];
     hole: boolean;
@@ -55,4 +58,9 @@ export interface TextApplyMeta {
     /** Inclusive glyph extent in placement-u (wall only). */
     wallUMin?: number;
     wallUMax?: number;
+    /** Mapped font-outline loops on the host surface (t = surface). */
+    outlineWorld?: Array<{
+        outer: Array<{ x: number; y: number; z: number }>;
+        holes: Array<Array<{ x: number; y: number; z: number }>>;
+    }>;
 }

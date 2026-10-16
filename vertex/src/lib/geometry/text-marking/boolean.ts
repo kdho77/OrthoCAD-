@@ -4,9 +4,10 @@
 import { BufferAttribute, BufferGeometry } from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { TEXT_DEGENERATE_AREA_MM2, TEXT_DEGENERATE_MIN_ANGLE_DEG, TEXT_WELD_MM } from "./constants";
+import { buildTextCutterMesh } from "./cutter";
 import { TextMarkingError } from "./errors";
-import type { MapTextPoint } from "./solid";
-import type { TextGlyphGroup } from "./types";
+import { refineHostLocally } from "./host-refine";
+import type { MapTextPoint, TextGlyphGroup } from "./types";
 
 type ManifoldMesh = {
     merge: () => boolean;
@@ -22,19 +23,12 @@ type ManifoldWasm = {
         vertProperties: Float32Array;
         triVerts: Uint32Array;
     }) => ManifoldMesh;
-    CrossSection: new (
-        contours: Array<Array<[number, number]>>,
-        fillRule?: string,
-    ) => {
-        extrude: (height: number) => ManifoldHandle;
-    };
 };
 
 type ManifoldHandle = {
     add: (other: ManifoldHandle) => ManifoldHandle;
     subtract: (other: ManifoldHandle) => ManifoldHandle;
     warp: (fn: (vert: [number, number, number]) => void) => ManifoldHandle;
-    simplify: (tolerance?: number) => ManifoldHandle;
     getMesh: () => { vertProperties: Float32Array; triVerts: Uint32Array; numProp: number };
     delete: () => void;
 };
@@ -79,38 +73,18 @@ function textGroupsToManifold(
     groups: TextGlyphGroup[],
     mapPoint: MapTextPoint,
 ): ManifoldHandle {
-    const contours: Array<Array<[number, number]>> = [];
-    for (const g of groups) {
-        if (g.outer.length >= 3) contours.push(g.outer.map((p) => [p.x, p.y]));
-        for (const hole of g.holes) {
-            if (hole.length < 3) continue;
-            contours.push(
-                hole
-                    .slice()
-                    .reverse()
-                    .map((p) => [p.x, p.y]),
-            );
-        }
-    }
-    if (!contours.length) throw new TextMarkingError("boolean", "text produced no contours");
-    let solid: ManifoldHandle;
+    let cutter: BufferGeometry | null = null;
     try {
-        const cs = new mod.CrossSection(contours, "NonZero");
-        const extruded = cs.extrude(1);
-        solid = extruded.warp((vert) => {
-            const mapped = mapPoint({ x: vert[0], y: vert[1] }, vert[2]);
-            vert[0] = mapped.x;
-            vert[1] = mapped.y;
-            vert[2] = mapped.z;
-        });
-        if (solid !== extruded) extruded.delete();
+        cutter = buildTextCutterMesh(groups, mapPoint);
+        return geometryToManifold(mod, cutter, "text cutter");
     } catch (e) {
         throw new TextMarkingError(
             "boolean",
             `text solid failed: ${e instanceof Error ? e.message : String(e)}`,
         );
+    } finally {
+        cutter?.dispose();
     }
-    return solid;
 }
 
 function geometryToManifold(mod: ManifoldWasm, geo: BufferGeometry, label: string): ManifoldHandle {
@@ -345,8 +319,7 @@ export function collapseDegenerateThenWeld(geo: BufferGeometry, forceWeldMm = 0)
     work.computeBoundingBox();
     work.userData = userData ?? {};
     // Re-weld only when the snap stays a 2-manifold. A global mergeVertices on
-    // Manifold-3d CSG output otherwise creates nm edges. After wall simplify,
-    // a 0.02 mm weld collapses remesh needles that SAT still flags as top-top.
+    // Manifold-3d CSG output otherwise creates nm edges.
     const originalWatertight = indexedWatertight(geo);
     const tryWeld = (src: BufferGeometry, mm: number): BufferGeometry | null => {
         const welded = mergeVertices(src, mm);
@@ -396,21 +369,14 @@ export async function booleanTextSolid(
     groups: TextGlyphGroup[],
     mapPoint: MapTextPoint,
     op: "add" | "subtract",
-    simplifyMm = 0,
 ): Promise<BufferGeometry> {
     const mod = await loadWasm();
-    const a = geometryToManifold(mod, host, "host");
+    const refined = refineHostLocally(host, groups, mapPoint);
+    const a = geometryToManifold(mod, refined, "host");
     const b = textGroupsToManifold(mod, groups, mapPoint);
     let result: ManifoldHandle | null = null;
     try {
         result = op === "add" ? a.add(b) : a.subtract(b);
-        if (simplifyMm > 0) {
-            const simplified = result.simplify(simplifyMm);
-            if (simplified !== result) {
-                result.delete();
-                result = simplified;
-            }
-        }
         const geo = manifoldToGeometry(result, host.userData);
         const cleaned = collapseDegenerateThenWeld(geo);
         if (cleaned !== geo) geo.dispose();
@@ -422,6 +388,7 @@ export async function booleanTextSolid(
             `boolean failed: ${e instanceof Error ? e.message : String(e)}`,
         );
     } finally {
+        if (refined !== host) refined.dispose();
         result?.delete();
         a.delete();
         b.delete();

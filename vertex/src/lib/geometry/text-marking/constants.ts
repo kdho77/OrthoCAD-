@@ -7,6 +7,9 @@ export const TEXT_FONT_ID = "Inter-Bold";
 export const TEXT_FONT_PUBLIC_PATH = "/fonts/Inter-Bold.ttf";
 
 export const TEXT_FLATTEN_CHORD_MM = 0.05;
+export const TEXT_CONTOUR_EDGE_MIN_MM = 0.03;
+export const TEXT_CONTOUR_EDGE_MAX_MM = 0.15;
+export const TEXT_CLIPPER_PRECISION = 4;
 export const TEXT_MIN_LOOP_AREA_MM2 = 0.3;
 export const TEXT_BOLD_OFFSET_MM = 0.15;
 export const TEXT_MIN_STROKE_MM = 0.9;
@@ -14,8 +17,19 @@ export const TEXT_MAX_CHARS = 40;
 export const TEXT_MIN_LETTER_SPACING_MM = 0.6;
 export const TEXT_BOOLEAN_EPS_MM = 0.05;
 export const TEXT_WELD_MM = 1e-4;
-/** Wall-only Manifold.simplify tolerance. Bottom stays unsimplified. */
-export const TEXT_WALL_SIMPLIFY_MM = 0.02;
+/** CDT Steiner grid on glyph caps (mm). */
+export const TEXT_CUTTER_STEINER_MM = 0.25;
+/** Max edge on the refined 2D cutter before mapping (mm). */
+export const TEXT_CUTTER_MAX_EDGE_MM = 0.3;
+/** Sidewall bands through the extrusion (vertex rings = this + 1). */
+export const TEXT_CUTTER_SIDEWALL_RINGS = 3;
+/** Local host refine: footprint pad and max edge (mm). */
+export const TEXT_HOST_REFINE_PAD_MM = 1;
+export const TEXT_HOST_REFINE_MAX_EDGE_MM = 0.4;
+/** Outer-wall normal smoothing radius (mm). */
+export const TEXT_NORMAL_SMOOTH_MM = 1;
+/** Acceptance region around the mapped glyph footprint (mm). */
+export const TEXT_REGION_PAD_MM = 0.5;
 /** Drop / edge-collapse needles after the boolean (area mm²). */
 export const TEXT_DEGENERATE_AREA_MM2 = 1e-6;
 /** Drop / edge-collapse needles after the boolean (minimum interior angle). */

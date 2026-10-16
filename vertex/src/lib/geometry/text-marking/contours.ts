@@ -1,12 +1,15 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { EndType, FillRule, inflatePathsD, isPositiveD, JoinType, unionD } from "clipper2-ts";
+import { booleanOpD, ClipType, EndType, FillRule, inflatePathsD, isPositiveD, JoinType } from "clipper2-ts";
 import type { Font } from "opentype.js";
 import { pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
 import { polygonSignedArea } from "@/lib/geometry/procedural-wall/curves";
 import {
     TEXT_BOLD_OFFSET_MM,
+    TEXT_CLIPPER_PRECISION,
+    TEXT_CONTOUR_EDGE_MAX_MM,
+    TEXT_CONTOUR_EDGE_MIN_MM,
     TEXT_FLATTEN_CHORD_MM,
     TEXT_MAX_CHARS,
     TEXT_MIN_LETTER_SPACING_MM,
@@ -139,7 +142,7 @@ function fromPathD(path: Array<{ x: number; y: number }>): TextXy[] {
 function clipperUnionOrient(contours: TextXy[][]): TextContour[] {
     if (!contours.length) return [];
     const subject = contours.map((c) => toPathD(c));
-    const paths = unionD(subject, FillRule.NonZero);
+    const paths = booleanOpD(ClipType.Union, subject, null, FillRule.NonZero, TEXT_CLIPPER_PRECISION);
     const out: TextContour[] = [];
     for (const path of paths) {
         if (path.length < 3) continue;
@@ -161,9 +164,110 @@ function inflateContours(contours: TextContour[], deltaMm: number): TextContour[
         JoinType.Round,
         EndType.Polygon,
         2,
-        2,
+        TEXT_CLIPPER_PRECISION,
     );
     return clipperUnionOrient(paths.map(fromPathD));
+}
+
+function distToSeg(p: TextXy, a: TextXy, b: TextXy): number {
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const len2 = ex * ex + ey * ey;
+    const t = len2 > 1e-18 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
+    return Math.hypot(p.x - (a.x + ex * t), p.y - (a.y + ey * t));
+}
+
+/**
+ * Closed-loop resample: drop collinear verts (chord ≤ flatten), then keep
+ * edges in [0.03, 0.15] mm. Corners with a real turning angle stay.
+ */
+export function resampleClosedLoop(
+    pts: TextXy[],
+    chordMm = TEXT_FLATTEN_CHORD_MM,
+    minE = TEXT_CONTOUR_EDGE_MIN_MM,
+    maxE = TEXT_CONTOUR_EDGE_MAX_MM,
+): TextXy[] {
+    if (pts.length < 3) return pts.slice();
+    const src = pts.slice();
+    if (dist(src[0]!, src[src.length - 1]!) < 1e-9) src.pop();
+    if (src.length < 3) return src;
+    const turningOk = (a: TextXy, b: TextXy, c: TextXy): boolean => {
+        const abx = b.x - a.x;
+        const aby = b.y - a.y;
+        const bcx = c.x - b.x;
+        const bcy = c.y - b.y;
+        const lab = Math.hypot(abx, aby);
+        const lbc = Math.hypot(bcx, bcy);
+        if (lab < 1e-12 || lbc < 1e-12) return true;
+        const cross = abx * bcy - aby * bcx;
+        const ang = Math.atan2(Math.abs(cross), abx * bcx + aby * bcy);
+        return ang < (8 * Math.PI) / 180;
+    };
+    let loop = src;
+    for (let pass = 0; pass < 8; pass++) {
+        const next: TextXy[] = [];
+        const n = loop.length;
+        let dropped = 0;
+        for (let i = 0; i < n; i++) {
+            const a = loop[(i - 1 + n) % n]!;
+            const b = loop[i]!;
+            const c = loop[(i + 1) % n]!;
+            const ac = dist(a, c);
+            if (
+                ac + 1e-9 >= minE &&
+                ac - 1e-9 <= maxE &&
+                distToSeg(b, a, c) <= chordMm &&
+                turningOk(a, b, c)
+            ) {
+                dropped++;
+                continue;
+            }
+            next.push(b);
+        }
+        if (next.length < 3) break;
+        loop = next;
+        if (!dropped) break;
+    }
+    const densify = (src: TextXy[]): TextXy[] => {
+        const out: TextXy[] = [];
+        for (let i = 0; i < src.length; i++) {
+            const a = src[i]!;
+            const b = src[(i + 1) % src.length]!;
+            out.push(a);
+            const len = dist(a, b);
+            if (len <= maxE + 1e-9) continue;
+            const steps = Math.max(2, Math.ceil(len / maxE));
+            for (let k = 1; k < steps; k++) out.push(lerp(a, b, k / steps));
+        }
+        return out;
+    };
+    loop = densify(loop);
+    for (let pass = 0; pass < 8; pass++) {
+        const next: TextXy[] = [];
+        const n = loop.length;
+        let dropped = 0;
+        for (let i = 0; i < n; i++) {
+            const a = loop[(i - 1 + n) % n]!;
+            const b = loop[i]!;
+            const ab = dist(a, b);
+            if (ab < minE) {
+                dropped++;
+                continue;
+            }
+            next.push(b);
+        }
+        if (next.length < 3) break;
+        loop = next;
+        if (!dropped) break;
+    }
+    return densify(loop);
+}
+
+function resampleGroup(g: TextGlyphGroup): TextGlyphGroup {
+    return {
+        outer: resampleClosedLoop(g.outer),
+        holes: g.holes.map((h) => resampleClosedLoop(h)).filter((h) => h.length >= 3),
+    };
 }
 
 function minStrokeMm(contours: TextContour[]): number {
@@ -250,7 +354,9 @@ export function flattenText(
     if (bold) contours = inflateContours(contours, TEXT_BOLD_OFFSET_MM);
     const stroke = minStrokeMm(contours);
     if (stroke + 1e-6 < TEXT_MIN_STROKE_MM) throw textTooThin();
-    const groups = groupHoles(contours);
+    const groups = groupHoles(contours)
+        .map(resampleGroup)
+        .filter((g) => g.outer.length >= 3);
     if (!groups.length) {
         throw new TextMarkingError("empty-glyph", "text produced no drawable outlines");
     }

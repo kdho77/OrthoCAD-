@@ -2,8 +2,17 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import { defaultTextMarking, hasActiveTextMarking, TEXT_FONT_ID, TEXT_MIN_STROKE_MM } from "./constants";
+import {
+    defaultTextMarking,
+    hasActiveTextMarking,
+    TEXT_CONTOUR_EDGE_MAX_MM,
+    TEXT_CONTOUR_EDGE_MIN_MM,
+    TEXT_CUTTER_MAX_EDGE_MM,
+    TEXT_FONT_ID,
+    TEXT_MIN_STROKE_MM,
+} from "./constants";
 import { flattenText } from "./contours";
+import { cutterMaxEdgeMm } from "./cutter";
 import { TextMarkingError } from "./errors";
 import { loadTextFont } from "./font";
 import { textMarkingHash } from "./hash";
@@ -102,6 +111,24 @@ describe("text flatten / Clipper / stroke", () => {
         expect(flat.minStrokeMm).toBeGreaterThanOrEqual(TEXT_MIN_STROKE_MM);
         expect(flat.advanceMm).toBeGreaterThan(20);
         expect(flat.capHeightMm).toBe(6);
+        let minE = Infinity;
+        let maxE = 0;
+        const measure = (loop: Array<{ x: number; y: number }>) => {
+            for (let i = 0; i < loop.length; i++) {
+                const a = loop[i]!;
+                const b = loop[(i + 1) % loop.length]!;
+                const e = Math.hypot(a.x - b.x, a.y - b.y);
+                if (e < minE) minE = e;
+                if (e > maxE) maxE = e;
+            }
+        };
+        for (const g of flat.groups) {
+            measure(g.outer);
+            for (const h of g.holes) measure(h);
+        }
+        expect(minE).toBeGreaterThanOrEqual(TEXT_CONTOUR_EDGE_MIN_MM * 0.9);
+        expect(maxE).toBeLessThanOrEqual(TEXT_CONTOUR_EDGE_MAX_MM + 1e-3);
+        expect(cutterMaxEdgeMm(flat.groups[0]!)).toBeLessThanOrEqual(TEXT_CUTTER_MAX_EDGE_MM + 1e-3);
     });
 
     test("regular weight at tiny size is too thin", async () => {

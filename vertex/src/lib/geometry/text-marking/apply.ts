@@ -3,7 +3,7 @@
 
 import type { BufferGeometry } from "three";
 import { booleanTextSolid } from "./boolean";
-import { hasActiveTextMarking, TEXT_CAP, TEXT_WALL_SIMPLIFY_MM } from "./constants";
+import { hasActiveTextMarking, TEXT_BOOLEAN_EPS_MM, TEXT_CAP } from "./constants";
 import { flattenText } from "./contours";
 import { TextMarkingError } from "./errors";
 import { loadTextFont } from "./font";
@@ -102,14 +102,15 @@ export async function applyTextMarkingToPrintSolid(
     }
 
     const op = checked.mode === "emboss" ? "add" : "subtract";
-    // Wall-only 0.02 mm simplify (CAD-expert accepted). Bottom stays unsimplified.
-    const result = await booleanTextSolid(
-        host,
-        placedFlat.groups,
-        map,
-        op,
-        checked.surface === "wall" ? TEXT_WALL_SIMPLIFY_MM : 0,
-    );
+    const result = await booleanTextSolid(host, placedFlat.groups, map, op);
+    const tSurface =
+        checked.mode === "engrave"
+            ? checked.depthMm / Math.max(1e-9, checked.depthMm + TEXT_BOOLEAN_EPS_MM)
+            : TEXT_BOOLEAN_EPS_MM / Math.max(1e-9, checked.heightMm + TEXT_BOOLEAN_EPS_MM);
+    const outlineWorld = placedFlat.groups.map((g) => ({
+        outer: g.outer.map((p) => map(p, tSurface)),
+        holes: g.holes.map((h) => h.map((p) => map(p, tSurface))),
+    }));
     const meta: TextApplyMeta = {
         surface: checked.surface,
         mode: checked.mode,
@@ -121,6 +122,7 @@ export async function applyTextMarkingToPrintSolid(
         mappedWidthMm: placeMeta.mappedWidthMm,
         wallUMin: placeMeta.wallUMin,
         wallUMax: placeMeta.wallUMax,
+        outlineWorld,
     };
     assertTextPrintGates(result, meta, hostCtx.outline);
     return result;

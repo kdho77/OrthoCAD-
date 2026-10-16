@@ -1,7 +1,8 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { type BufferGeometry, DoubleSide, Mesh, MeshBasicMaterial, Raycaster, Vector3 } from "three";
+import { BufferAttribute, BufferGeometry, Vector3 } from "three";
+import { MeshBVH } from "three-mesh-bvh";
 import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
 import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
 import type { Side } from "@/types";
@@ -9,6 +10,7 @@ import {
     TEXT_BOOLEAN_EPS_MM,
     TEXT_BOTTOM_INSET_MM,
     TEXT_CAP,
+    TEXT_NORMAL_SMOOTH_MM,
     TEXT_TRIMLINE_RIM_BAND_MM,
     TEXT_U,
     TEXT_WALL_EDGE_CLEARANCE_MM,
@@ -209,7 +211,7 @@ function lerpDir(
     return { x: x / n, y: y / n, z: z / n };
 }
 
-function sampleAlong(stations: WallStation[], s: number): WallStation {
+export function sampleAlong(stations: WallStation[], s: number): WallStation {
     if (stations.length === 1) return stations[0]!;
     if (s <= stations[0]!.s) return stations[0]!;
     const last = stations[stations.length - 1]!;
@@ -371,50 +373,189 @@ export function placeBottomText(
     };
 }
 
-const _rayOrigin = new Vector3();
-const _rayDir = new Vector3();
-const _raycaster = new Raycaster();
-
-/** Distance along nOut from the B–R chord to the first outward mesh hit. */
-function chordToOuterMm(mesh: Mesh, st: WallStation, frac: number): number {
-    const px = st.B.x + (st.R.x - st.B.x) * frac;
-    const py = st.B.y + (st.R.y - st.B.y) * frac;
-    const pz = st.B.z + (st.R.z - st.B.z) * frac;
-    const nlen = Math.hypot(st.nOut.x, st.nOut.y, st.nOut.z) || 1;
-    const nx = st.nOut.x / nlen;
-    const ny = st.nOut.y / nlen;
-    const nz = st.nOut.z / nlen;
-    const bump = 0.02;
-    _rayOrigin.set(px + nx * bump, py + ny * bump, pz + nz * bump);
-    _rayDir.set(nx, ny, nz);
-    _raycaster.set(_rayOrigin, _rayDir);
-    _raycaster.near = 0;
-    _raycaster.far = 8;
-    const hits = _raycaster.intersectObject(mesh, false);
-    for (const hit of hits) {
-        if (hit.distance + bump < 5) return hit.distance + bump;
-    }
-    return 0;
+export interface OuterWallHit {
+    p: { x: number; y: number; z: number };
+    n: { x: number; y: number; z: number };
 }
 
-function stampOuterOffsets(geo: BufferGeometry, run: WallStation[], capHeightMm: number): void {
-    if (!geo.boundingSphere) geo.computeBoundingSphere();
-    const material = new MeshBasicMaterial({ side: DoubleSide });
-    const mesh = new Mesh(geo, material);
-    const raw: number[] = [];
-    for (const st of run) {
-        const h = Math.max(1e-6, st.heightMm);
-        const frac = Math.min(0.9, Math.max(0.15, (TEXT_WALL_EDGE_CLEARANCE_MM + capHeightMm / 2) / h));
-        const cap = Math.min(8, Math.max(0.2, st.thickMm));
-        raw.push(Math.max(0, Math.min(cap, chordToOuterMm(mesh, st, frac))));
+function cellKey(x: number, y: number, z: number): string {
+    return `${Math.floor(x)}|${Math.floor(y)}|${Math.floor(z)}`;
+}
+
+/**
+ * Closest point on the host outer wall, with normals smoothed over 1 mm.
+ * Built from triangles whose face normal agrees with the local station nOut.
+ */
+export function createOuterWallSampler(
+    geo: BufferGeometry,
+    run: WallStation[],
+): {
+    at: (s: number, h: number) => OuterWallHit;
+    closest: (probe: { x: number; y: number; z: number }) => OuterWallHit | null;
+} {
+    const pos = geo.getAttribute("position");
+    const index = geo.getIndex();
+    const triCount = index ? index.count / 3 : pos.count / 3;
+    const idxOf = (t: number, k: number) => (index ? index.getX(t * 3 + k) : t * 3 + k);
+    const wallPos: number[] = [];
+    const faceN: Array<{ x: number; y: number; z: number }> = [];
+    const faceC: Array<{ x: number; y: number; z: number }> = [];
+    const grid = new Map<string, number[]>();
+    const nearStation = (cx: number, cy: number, cz: number): WallStation | null => {
+        let best: WallStation | null = null;
+        let bestD = 36;
+        for (const st of run) {
+            const d =
+                (st.R.x - cx) ** 2 +
+                (st.R.y - cy) ** 2 +
+                (st.R.z - cz) ** 2 +
+                (st.B.x - cx) ** 2 +
+                (st.B.y - cy) ** 2 +
+                (st.B.z - cz) ** 2;
+            if (d < bestD) {
+                bestD = d;
+                best = st;
+            }
+        }
+        return best;
+    };
+    for (let t = 0; t < triCount; t++) {
+        const i0 = idxOf(t, 0);
+        const i1 = idxOf(t, 1);
+        const i2 = idxOf(t, 2);
+        const ax = pos.getX(i0);
+        const ay = pos.getY(i0);
+        const az = pos.getZ(i0);
+        const bx = pos.getX(i1);
+        const by = pos.getY(i1);
+        const bz = pos.getZ(i1);
+        const cx = pos.getX(i2);
+        const cy = pos.getY(i2);
+        const cz = pos.getZ(i2);
+        const abx = bx - ax;
+        const aby = by - ay;
+        const abz = bz - az;
+        const acx = cx - ax;
+        const acy = cy - ay;
+        const acz = cz - az;
+        let nx = aby * acz - abz * acy;
+        let ny = abz * acx - abx * acz;
+        let nz = abx * acy - aby * acx;
+        const nl = Math.hypot(nx, ny, nz);
+        if (nl < 1e-12) continue;
+        nx /= nl;
+        ny /= nl;
+        nz /= nl;
+        const mx = (ax + bx + cx) / 3;
+        const my = (ay + by + cy) / 3;
+        const mz = (az + bz + cz) / 3;
+        const st = nearStation(mx, my, mz);
+        if (!st) continue;
+        if (nx * st.nOut.x + ny * st.nOut.y + nz * st.nOut.z < 0.35) continue;
+        const h = Math.max(1e-6, st.R.z - st.B.z);
+        const frac = Math.max(0, Math.min(1, (mz - st.B.z) / h));
+        const qx = st.B.x + (st.R.x - st.B.x) * frac;
+        const qy = st.B.y + (st.R.y - st.B.y) * frac;
+        const qz = st.B.z + (st.R.z - st.B.z) * frac;
+        const ox = mx - qx;
+        const oy = my - qy;
+        const oz = mz - qz;
+        if (ox * st.nOut.x + oy * st.nOut.y + oz * st.nOut.z < -0.4) continue;
+        const fi = faceN.length;
+        faceN.push({ x: nx, y: ny, z: nz });
+        faceC.push({ x: mx, y: my, z: mz });
+        wallPos.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+        const key = cellKey(mx, my, mz);
+        const list = grid.get(key);
+        if (list) list.push(fi);
+        else grid.set(key, [fi]);
     }
-    for (let i = 0; i < run.length; i++) {
-        const a = raw[Math.max(0, i - 1)]!;
-        const b = raw[i]!;
-        const c = raw[Math.min(raw.length - 1, i + 1)]!;
-        run[i]!.outerMm = (a + b + c) / 3;
+    let bvh: MeshBVH | null = null;
+    if (wallPos.length >= 9) {
+        const wallGeo = new BufferGeometry();
+        wallGeo.setAttribute("position", new BufferAttribute(new Float32Array(wallPos), 3));
+        wallGeo.computeBoundingBox();
+        bvh = new MeshBVH(wallGeo);
     }
-    material.dispose();
+    const probe = new Vector3();
+    const hitInfo = { point: new Vector3(), distance: 0, faceIndex: 0 };
+    const radius = TEXT_NORMAL_SMOOTH_MM;
+    const sigma = radius * 0.45;
+    const twoS2 = 2 * sigma * sigma;
+    const smoothN = (px: number, py: number, pz: number, fallback: { x: number; y: number; z: number }) => {
+        let sx = 0;
+        let sy = 0;
+        let sz = 0;
+        let wSum = 0;
+        const ix0 = Math.floor(px - radius);
+        const iy0 = Math.floor(py - radius);
+        const iz0 = Math.floor(pz - radius);
+        const ix1 = Math.floor(px + radius);
+        const iy1 = Math.floor(py + radius);
+        const iz1 = Math.floor(pz + radius);
+        for (let ix = ix0; ix <= ix1; ix++) {
+            for (let iy = iy0; iy <= iy1; iy++) {
+                for (let iz = iz0; iz <= iz1; iz++) {
+                    const list = grid.get(`${ix}|${iy}|${iz}`);
+                    if (!list) continue;
+                    for (const fi of list) {
+                        const c = faceC[fi]!;
+                        const d2 = (c.x - px) ** 2 + (c.y - py) ** 2 + (c.z - pz) ** 2;
+                        if (d2 > radius * radius) continue;
+                        const w = Math.exp(-d2 / twoS2);
+                        const n = faceN[fi]!;
+                        sx += n.x * w;
+                        sy += n.y * w;
+                        sz += n.z * w;
+                        wSum += w;
+                    }
+                }
+            }
+        }
+        if (wSum < 1e-9) return fallback;
+        const nlen = Math.hypot(sx, sy, sz) || 1;
+        return { x: sx / nlen, y: sy / nlen, z: sz / nlen };
+    };
+    const closest = (p: { x: number; y: number; z: number }): OuterWallHit | null => {
+        if (!bvh) return null;
+        probe.set(p.x, p.y, p.z);
+        const hit = bvh.closestPointToPoint(probe, hitInfo, 0, 8);
+        if (!hit) return null;
+        const pt = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
+        const fi = hit.faceIndex;
+        const fb = faceN[fi] ?? { x: 0, y: 0, z: 1 };
+        return { p: pt, n: smoothN(pt.x, pt.y, pt.z, fb) };
+    };
+    const at = (s: number, h: number): OuterWallHit => {
+        const st = sampleAlong(run, s);
+        const hh = Math.max(1e-6, st.heightMm);
+        const frac = Math.max(0, Math.min(1, h / hh));
+        const nlen = Math.hypot(st.nOut.x, st.nOut.y, st.nOut.z) || 1;
+        const nx = st.nOut.x / nlen;
+        const ny = st.nOut.y / nlen;
+        const nz = st.nOut.z / nlen;
+        const cx = st.B.x + (st.R.x - st.B.x) * frac;
+        const cy = st.B.y + (st.R.y - st.B.y) * frac;
+        const cz = st.B.z + (st.R.z - st.B.z) * frac;
+        const hit =
+            closest({ x: cx + nx * 1.2, y: cy + ny * 1.2, z: cz + nz * 1.2 }) ??
+            closest({ x: cx, y: cy, z: cz });
+        if (hit) {
+            if (hit.n.x * nx + hit.n.y * ny + hit.n.z * nz < 0) {
+                hit.n = { x: -hit.n.x, y: -hit.n.y, z: -hit.n.z };
+            }
+            return hit;
+        }
+        return {
+            p: {
+                x: cx + nx * (st.outerMm ?? 0),
+                y: cy + ny * (st.outerMm ?? 0),
+                z: cz + nz * (st.outerMm ?? 0),
+            },
+            n: { x: nx, y: ny, z: nz },
+        };
+    };
+    return { at, closest };
 }
 
 function windowStats(run: WallStation[], sMid: number, half: number): { minH: number; minT: number } {
@@ -492,12 +633,21 @@ export function placeWallText(
     const sMid = bestS;
     const s0 = sMid - half;
     const s1 = sMid + half;
-    stampOuterOffsets(geo, run, flat.capHeightMm);
-    // t must increase along +nOut so (s, h, t) stays right-handed with CrossSection.extrude.
-    // Engrave cutter spans −depth (inside) to +TEXT_BOOLEAN_EPS_MM (0.05 mm outside).
+    const wall = createOuterWallSampler(geo, run);
+    // t increases along +nOut. Engrave spans −depth (inside) to +eps (outside).
     const offset0 = marking.mode === "engrave" ? -marking.depthMm : -TEXT_BOOLEAN_EPS_MM;
     const offset1 = marking.mode === "engrave" ? TEXT_BOOLEAN_EPS_MM : marking.heightMm;
     const tSurface = -offset0 / Math.max(1e-9, offset1 - offset0);
+    const surfCache = new Map<string, OuterWallHit>();
+    const heightOf = (p: TextXy, st: WallStation): number => {
+        const h = Math.max(1e-6, st.R.z - st.B.z);
+        const usableBot = TEXT_WALL_EDGE_CLEARANCE_MM;
+        const usableTop = Math.max(usableBot + 0.5, h - TEXT_TRIMLINE_RIM_BAND_MM);
+        const usable = Math.max(1e-3, usableTop - usableBot);
+        const yScale = Math.min(1, usable / ySpan);
+        const letter0 = usableBot + Math.max(0, usable - ySpan * yScale) / 2;
+        return letter0 + (p.y - yMin) * yScale;
+    };
     const map: MapTextPoint = (p, t) => {
         const st = sampleAlong(run, s0 + p.x);
         if (st.u < TEXT_U.wall.min - 1e-6 || st.u > TEXT_U.wall.max + 1e-6) {
@@ -506,25 +656,17 @@ export function placeWallText(
         if (st.thickMm + 1e-6 < TEXT_WALL_MIN_THICK_MM) {
             throw textForbiddenZone("wall thinner than 2 mm");
         }
-        const h = Math.max(1e-6, st.R.z - st.B.z);
-        const usableBot = TEXT_WALL_EDGE_CLEARANCE_MM;
-        const usableTop = Math.max(usableBot + 0.5, h - TEXT_TRIMLINE_RIM_BAND_MM);
-        const nlen = Math.hypot(st.nOut.x, st.nOut.y, st.nOut.z) || 1;
-        const usable = Math.max(1e-3, usableTop - usableBot);
-        // 1-1 map into the usable band. Clamping overflow y onto usableTop
-        // collapses the glyph crown into a line and the cutter self-intersects.
-        const yScale = Math.min(1, usable / ySpan);
-        const letter0 = usableBot + Math.max(0, usable - ySpan * yScale) / 2;
-        const frac = (letter0 + (p.y - yMin) * yScale) / h;
-        const clamped = Math.max(usableBot / h, Math.min(usableTop / h, frac));
-        const x = st.B.x + (st.R.x - st.B.x) * clamped;
-        const y = st.B.y + (st.R.y - st.B.y) * clamped;
-        const z = st.B.z + (st.R.z - st.B.z) * clamped;
-        const off = (st.outerMm ?? 0) + offset0 + (offset1 - offset0) * t;
+        const key = `${p.x.toFixed(5)},${p.y.toFixed(5)}`;
+        let hit = surfCache.get(key);
+        if (!hit) {
+            hit = wall.at(s0 + p.x, heightOf(p, st));
+            surfCache.set(key, hit);
+        }
+        const off = offset0 + (offset1 - offset0) * t;
         return {
-            x: x + (st.nOut.x / nlen) * off,
-            y: y + (st.nOut.y / nlen) * off,
-            z: z + (st.nOut.z / nlen) * off,
+            x: hit.p.x + hit.n.x * off,
+            y: hit.p.y + hit.n.y * off,
+            z: hit.p.z + hit.n.z * off,
         };
     };
     const uOf = (x: number) => sampleAlong(run, s0 + x).u;
@@ -543,12 +685,14 @@ export function placeWallText(
     const centroids = flat.centroids.map((p) => {
         const pt = map(p, tSurface);
         const st = sampleAlong(run, s0 + p.x);
-        const nlen = Math.hypot(st.nOut.x, st.nOut.y, st.nOut.z) || 1;
+        const hit = surfCache.get(`${p.x.toFixed(5)},${p.y.toFixed(5)}`);
+        const n = hit?.n ?? st.nOut;
+        const nlen = Math.hypot(n.x, n.y, n.z) || 1;
         return {
             x: pt.x,
             y: pt.y,
             z: pt.z,
-            nOut: { x: st.nOut.x / nlen, y: st.nOut.y / nlen, z: st.nOut.z / nlen },
+            nOut: { x: n.x / nlen, y: n.y / nlen, z: n.z / nlen },
             u: st.u,
         };
     });

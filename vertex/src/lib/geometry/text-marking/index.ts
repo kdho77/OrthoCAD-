@@ -14,17 +14,19 @@ export {
     TEXT_MAX_CHARS,
     TEXT_MIN_LETTER_SPACING_MM,
     TEXT_MIN_STROKE_MM,
+    TEXT_REGION_PAD_MM,
     TEXT_REMAINING_MIN_MM,
     TEXT_U,
-    TEXT_WALL_SIMPLIFY_MM,
     TEXT_WELD_MM,
 } from "./constants";
-export { flattenText } from "./contours";
+export { flattenText, resampleClosedLoop } from "./contours";
+export { cdtGlyphCap, cutterMaxEdgeMm } from "./cutter";
 export { TextMarkingError } from "./errors";
 export { loadTextFont } from "./font";
 export { assertTextPrintGates } from "./gates";
 export { textMarkingHash } from "./hash";
 export { extractHostTextContext, lateralStations, localWallHeightMm } from "./place";
+export { measureTextRegionQuality } from "./quality";
 export { countSoupSelfIntersections } from "./soup-intersect";
 export type { TextApplyMeta, TextMarking, TextMode, TextSurface } from "./types";
 export {

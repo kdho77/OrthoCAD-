@@ -287,8 +287,8 @@ function vertsOf(t: Tri): { x: number; y: number; z: number }[] {
  * Self-intersections on a final triangle soup (exported STL). Fresh BVH and
  * welded adjacency only — no loft station / region metadata. Pairs that share
  * a vertex or an edge after `weldMm` (neighbor-cell snap) are excluded. No
- * loft station / region metadata. Wall callers pass the 0.02 mm simplify
- * tolerance so remesh T-junctions count as shared vertices.
+ * loft station / region metadata. Shared vertex/edge pairs (after `weldMm`
+ * neighbor-cell snap) are excluded; everything else is a real hit.
  */
 export function countSoupSelfIntersections(
     geo: BufferGeometry,

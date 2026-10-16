@@ -13,13 +13,14 @@ import {
     defaultTextMarking,
     TEXT_MIN_STROKE_MM,
     TEXT_U,
-    TEXT_WALL_SIMPLIFY_MM,
     TEXT_WELD_MM,
 } from "@/lib/geometry/text-marking/constants";
 import { flattenText } from "@/lib/geometry/text-marking/contours";
 import { TextMarkingError } from "@/lib/geometry/text-marking/errors";
 import { loadTextFont } from "@/lib/geometry/text-marking/font";
+import { measureTextRegionQuality } from "@/lib/geometry/text-marking/quality";
 import { countSoupSelfIntersections } from "@/lib/geometry/text-marking/soup-intersect";
+import type { TextApplyMeta } from "@/lib/geometry/text-marking/types";
 import { assertTextMarkingInRange } from "@/lib/geometry/text-marking/validate";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import type { Side, TextMarking, TextSurface } from "@/types";
@@ -112,24 +113,14 @@ describe("text marking L/R × wall/bottom builds", () => {
             raw.dispose();
         }
 
+        const metrics: Record<string, unknown> = {};
         for (const { side, geo } of sides) {
             for (const surface of ["bottom", "wall"] as const) {
                 const m = marking(surface);
+                const host = geo.geometry.clone();
                 const tagged = await applyTextMarkingToPrintSolid(geo.geometry.clone(), m, { side });
                 const ud = tagged.userData as {
-                    textMarking?: {
-                        mappedWidthMm?: number;
-                        centroids?: Array<{
-                            x: number;
-                            y: number;
-                            z: number;
-                            nOut?: { x: number; y: number; z: number };
-                            u?: number;
-                        }>;
-                        depthMm?: number;
-                        wallUMin?: number;
-                        wallUMax?: number;
-                    };
+                    textMarking?: TextApplyMeta;
                     textGates?: { watertight?: boolean; gWind?: boolean; selfIntersections?: number };
                 };
                 expect(ud.textGates?.watertight).toBe(true);
@@ -163,19 +154,42 @@ describe("text marking L/R × wall/bottom builds", () => {
                 }
                 const stl = geometryToBinarySTL(tagged);
                 const soup = binaryStlToGeometry(stl);
-                const weldMm = surface === "wall" ? TEXT_WALL_SIMPLIFY_MM : TEXT_WELD_MM;
-                const soupSi = countSoupSelfIntersections(soup, weldMm);
+                const soupSi = countSoupSelfIntersections(soup, TEXT_WELD_MM);
                 expect(soupSi.real).toBe(0);
+                const q = measureTextRegionQuality(soup, host, ud.textMarking!);
+                metrics[`${side}-${surface}`] = { ...q, soupSi: soupSi.real };
+                mkdirSync("/tmp/s1-stls", { recursive: true });
+                writeFileSync("/tmp/s1-stls/text-quality.json", JSON.stringify(metrics, null, 2));
+                expect(q.outsideVertMaxMm).toBeLessThanOrEqual(1e-4);
+                expect(q.outsideHostVertsMissing).toBe(0);
+                expect(q.outsideTrisLost).toBe(0);
+                expect(q.inRegion.pctMinAngleGe5).toBeGreaterThanOrEqual(99);
+                expect(q.inRegion.minAngleMinDeg).toBeGreaterThanOrEqual(1);
+                expect(q.inRegion.aspectP99).toBeLessThanOrEqual(10);
+                expect(q.inRegion.aspectMax).toBeLessThanOrEqual(30);
+                expect(q.inRegion.longestEdgeMm).toBeLessThanOrEqual(0.6);
+                expect(q.floor.depthAbsMaxMm).toBeLessThanOrEqual(0.05);
+                expect(q.floor.depthStdMm).toBeLessThanOrEqual(0.02);
+                expect(q.sidewall.pctDotLe01).toBeGreaterThanOrEqual(95);
+                expect(q.dihedral.floorFloorMaxDeg).toBeLessThanOrEqual(10);
+                expect(q.dihedral.wallWallMaxDeg).toBeLessThanOrEqual(10);
+                expect(q.outline.hausdorffMm).toBeLessThanOrEqual(0.05);
+                expect(q.outline.extraTurnGt30).toBe(0);
+                expect(q.triCount).toBeGreaterThanOrEqual(60_000);
+                expect(q.triCount).toBeLessThanOrEqual(120_000);
                 soup.dispose();
                 const gate = stlGates(stl, `${side}-${surface}`);
                 expect(gate.watertight).toBe(true);
                 expect(gate.winding).toBe(true);
                 expect(gate.bodies).toBe(1);
                 tagged.dispose();
+                host.dispose();
             }
             geo.geometry.dispose();
         }
-    }, 180_000);
+        mkdirSync("/tmp/s1-stls", { recursive: true });
+        writeFileSync("/tmp/s1-stls/text-quality.json", JSON.stringify(metrics, null, 2));
+    }, 300_000);
 
     test("empty text is a no-op (same object)", async () => {
         const buf = await loadSampleTopGlb();
