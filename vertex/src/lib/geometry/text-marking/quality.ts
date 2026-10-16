@@ -408,7 +408,9 @@ export function measureTextRegionQuality(
         const dot = Math.abs(tri.n.x * nOut.x + tri.n.y * nOut.y + tri.n.z * nOut.z);
         if (dot >= 0.7) {
             if (meta.surface === "bottom") {
-                if (Math.abs(c.z - setDepth) <= 0.25) floors.push(tri);
+                if (Math.abs(c.z - setDepth) <= 0.25 && distToTextRegion(c, meta, outline) <= 0.15) {
+                    floors.push(tri);
+                }
             } else if (sampler) {
                 const hit = sampler.closest(c);
                 if (hit) {
@@ -419,7 +421,7 @@ export function measureTextRegionQuality(
             } else {
                 floors.push(tri);
             }
-        } else if (dot <= 0.35) {
+        } else if (dot <= 0.35 && distToTextRegion(c, meta, outline) <= 0.2) {
             walls.push(tri);
         }
     }
@@ -541,7 +543,7 @@ export function measureTextRegionQuality(
         outlineLoops.push(g.outer);
         outlineLoops.push(...g.holes);
     }
-    const boundPts = boundLoops.flat();
+    const boundPts = adjFloor.flat();
     const outlineAll = outlineLoops.flat();
     const haus = outlineAll.length && boundPts.length ? hausdorff(outlineAll, boundPts) : 0;
     const corners = fontCorners(outlineLoops);

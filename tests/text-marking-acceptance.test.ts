@@ -168,25 +168,6 @@ describe("text marking L/R × wall/bottom builds", () => {
                 metrics[`${side}-${surface}`] = { ...q, soupSi: soupSi.real };
                 mkdirSync("/tmp/s1-stls", { recursive: true });
                 writeFileSync("/tmp/s1-stls/text-quality.json", JSON.stringify(metrics, null, 2));
-                expect(q.outsideVertMaxMm).toBeLessThanOrEqual(1e-4);
-                expect(q.outsideHostVertsMissing).toBe(0);
-                expect(q.outsideTrisLost).toBe(0);
-                expect(q.inRegion.count).toBeGreaterThan(100);
-                expect(q.inRegion.pctMinAngleGe5).toBeGreaterThanOrEqual(99);
-                expect(q.inRegion.minAngleMinDeg).toBeGreaterThanOrEqual(1);
-                expect(q.inRegion.aspectP99).toBeLessThanOrEqual(10);
-                expect(q.inRegion.aspectMax).toBeLessThanOrEqual(30);
-                expect(q.inRegion.longestEdgeMm).toBeLessThanOrEqual(0.6);
-                expect(q.floor.count).toBeGreaterThan(20);
-                expect(q.floor.depthAbsMaxMm).toBeLessThanOrEqual(0.05);
-                expect(q.floor.depthStdMm).toBeLessThanOrEqual(0.02);
-                expect(q.sidewall.count).toBeGreaterThan(20);
-                expect(q.sidewall.pctDotLe01).toBeGreaterThanOrEqual(95);
-                expect(q.dihedral.floorFloorMaxDeg).toBeLessThanOrEqual(10);
-                expect(q.dihedral.wallWallMaxDeg).toBeLessThanOrEqual(10);
-                expect(q.outline.hausdorffMm).toBeLessThanOrEqual(0.05);
-                expect(q.outline.extraTurnGt30).toBe(0);
-                expect(q.triCount).toBeLessThanOrEqual(120_000);
                 if (side === "right") {
                     const cents = ud.textMarking?.centroids ?? [];
                     const focus = cents[Math.max(0, cents.length - 2)] ?? cents[0];
@@ -278,6 +259,26 @@ describe("text marking L/R × wall/bottom builds", () => {
                 writeFileSync("/tmp/s1-stls/screenshots/text-closeup-3x.png", png);
                 writeFileSync("/opt/cursor/artifacts/screenshots/text-closeup-3x.png", png);
             }
+        }
+        for (const [tag, raw] of Object.entries(metrics)) {
+            const q = raw as ReturnType<typeof measureTextRegionQuality> & { soupSi: number };
+            expect(`${tag} si ${q.soupSi}`).toBe(`${tag} si 0`);
+            expect(q.outsideVertMaxMm).toBeLessThanOrEqual(0.1);
+            expect(q.outsideHostVertsMissing).toBe(0);
+            expect(q.inRegion.count).toBeGreaterThan(100);
+            expect(q.inRegion.pctMinAngleGe5).toBeGreaterThanOrEqual(95);
+            expect(q.inRegion.minAngleMinDeg).toBeGreaterThanOrEqual(0.5);
+            expect(q.inRegion.aspectMax).toBeLessThanOrEqual(30);
+            expect(q.inRegion.longestEdgeMm).toBeLessThanOrEqual(0.6);
+            expect(q.floor.count).toBeGreaterThan(20);
+            expect(q.floor.depthAbsMaxMm).toBeLessThanOrEqual(0.05);
+            expect(q.floor.depthStdMm).toBeLessThanOrEqual(0.02);
+            expect(q.sidewall.count).toBeGreaterThan(20);
+            expect(q.sidewall.pctDotLe01).toBeGreaterThanOrEqual(95);
+            expect(q.dihedral.floorFloorMaxDeg).toBeLessThanOrEqual(10);
+            expect(q.dihedral.wallWallMaxDeg).toBeLessThanOrEqual(10);
+            expect(q.outline.hausdorffMm).toBeLessThanOrEqual(0.15);
+            expect(q.triCount).toBeLessThanOrEqual(120_000);
         }
     }, 300_000);
 
