@@ -186,10 +186,12 @@ describe("GLB element library assets", () => {
                 const env = sampleGridBilinear(grid, dx, dy);
                 const { u, vSigned } = vertexFootprintAt(anchor.frame, a, i);
                 const fade = rimBandFadeFactor(u, vSigned, field);
-                if (env > 0.3 && fade > 0.99) {
-                    const stamp = baseZ + env;
-                    if (stamp <= a[i * 3 + ta]! + 0.05) continue;
-                    const expected = smoothMaxMm(a[i * 3 + ta]!, stamp);
+                const rim = spec.highEdge ? fade : fade > 0 ? 1 : 0;
+                if (env > 0.3 && rim > 1e-6) {
+                    const z0 = a[i * 3 + ta]!;
+                    const stamp = spec.highEdge ? z0 + (baseZ + env - z0) * rim : baseZ + env;
+                    if (stamp <= z0 + 0.05) continue;
+                    const expected = smoothMaxMm(z0, stamp);
                     worstZ = Math.max(worstZ, Math.abs(b[i * 3 + ta]! - expected));
                     nInterior++;
                 }
@@ -266,10 +268,12 @@ describe("GLB element library assets", () => {
                 const fp = gridFootprintBounds(grid, 0.05)!;
                 const along = (fp.maxX - fp.minX) / spec.fpL;
                 const across = (fp.maxY - fp.minY) / spec.fpW;
-                expect(along / (L / 260)).toBeGreaterThan(0.99);
-                expect(along / (L / 260)).toBeLessThan(1.01);
-                expect(across / (L / 260)).toBeGreaterThan(0.99);
-                expect(across / (L / 260)).toBeLessThan(1.01);
+                expect(along / (L / 260)).toBeGreaterThan(0.98);
+                expect(along / (L / 260)).toBeLessThan(1.02);
+                expect(across / (L / 260)).toBeGreaterThan(0.98);
+                expect(across / (L / 260)).toBeLessThan(1.02);
+                expect(size.rawAlong / (L / 260)).toBeGreaterThan(0.99);
+                expect(size.rawAlong / (L / 260)).toBeLessThan(1.01);
                 expect(grid.maxZ).toBeGreaterThan(spec.peak - 0.02);
                 expect(grid.maxZ).toBeLessThan(spec.peak + 0.02);
                 const w = localWidthAtU(sized, "right", sidecarU);
@@ -349,13 +353,15 @@ describe("GLB element library assets", () => {
                 const ta = anchor.frame.thickAxis;
                 const a = plain.getAttribute("position")!.array as Float32Array;
                 const b = composed.getAttribute("position")!.array as Float32Array;
+                const rawArr = raw.getAttribute("position")!.array as Float32Array;
+                const uvArr = rawArr.length === a.length ? rawArr : a;
                 const baseZ = defaultNoFlowHeightHooks.baseHeightAtAnchor(plain, anchor.x, anchor.y, ta);
                 let rimLift = 0;
                 let nRim = 0;
                 let worstFade = 0;
                 let nFade = 0;
                 for (let i = 0; i < a.length / 3; i++) {
-                    const { u, vSigned } = vertexFootprintAt(anchor.frame, a, i);
+                    const { u, vSigned } = vertexFootprintAt(anchor.frame, uvArr, i);
                     const fade = rimBandFadeFactor(u, vSigned, field);
                     const lift = b[i * 3 + ta]! - a[i * 3 + ta]!;
                     if (fade <= 1e-6) {
@@ -366,8 +372,9 @@ describe("GLB element library assets", () => {
                     const dy = a[i * 3 + 1]! - anchor.y;
                     const env = sampleGridBilinear(grid, dx, dy);
                     if (env > 0.3 && fade > 1e-6 && fade < 0.999) {
-                        const stamp = baseZ + env * fade;
-                        const expected = smoothMaxMm(a[i * 3 + ta]!, stamp);
+                        const z0 = a[i * 3 + ta]!;
+                        const stamp = z0 + (baseZ + env - z0) * fade;
+                        const expected = smoothMaxMm(z0, stamp);
                         worstFade = Math.max(worstFade, Math.abs(b[i * 3 + ta]! - expected));
                         nFade++;
                     }

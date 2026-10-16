@@ -146,6 +146,8 @@ async function applyAssetContext(
     const frame = getBaseFootprintFrame(base, field.side);
     const pos = geometry.getAttribute("position") as BufferAttribute;
     const arr = pos.array as Float32Array;
+    const basePos = base.getAttribute("position")?.array as Float32Array | undefined;
+    const uvArr = basePos && basePos.length === arr.length ? basePos : arr;
     const { grid } = await loadTransformedAssetPositions(ctx.assetId, ctx.transform);
     const anchor = anchorMmFromPlacement(base, field.side, ctx.placed.position.x, ctx.placed.position.y);
     const sign = ctx.sidecar.category === "sink" ? -1 : 1;
@@ -163,19 +165,20 @@ async function applyAssetContext(
             const { lx, ly } = localCoordsFlow(x, y, anchor.x, anchor.y, ctx.transform.rotationDeg);
             const hMag = sampleGridBilinear(grid, lx, ly);
             if (hMag <= 1e-9) continue;
-            const { u, vSigned } = vertexFootprintAt(frame, arr, i);
+            const { u, vSigned } = vertexFootprintAt(frame, uvArr, i);
             const rim = fadeHighEdge
                 ? rimBandFadeFactor(u, vSigned, field)
                 : rimBandClipFactor(u, vSigned, field);
-            if (rim <= 1e-9) continue;
-            const h = hMag * rim;
+            if (rim <= 1e-6) continue;
             if (ctx.sidecar.category === "add") {
-                const elementTop = baseZ + h + ctx.transform.zOffsetMm * rim;
+                const stamp = baseZ + hMag + ctx.transform.zOffsetMm;
+                const elementTop = z + (stamp - z) * rim;
                 if (elementTop <= z - k) continue;
                 const next = smoothMaxMm(z, elementTop, k);
                 arr[i * 3 + ta] = Math.max(z, next);
             } else {
-                const elementFloor = baseZ - h + ctx.transform.zOffsetMm * rim;
+                const stamp = baseZ - hMag + ctx.transform.zOffsetMm;
+                const elementFloor = z + (stamp - z) * rim;
                 if (elementFloor >= z + k) continue;
                 const next = smoothMinMm(z, elementFloor, k);
                 arr[i * 3 + ta] = Math.min(z, next);
@@ -187,7 +190,7 @@ async function applyAssetContext(
     for (let i = 0; i < pos.count; i++) {
         const x = arr[i * 3]!;
         const y = arr[i * 3 + 1]!;
-        const { u, vSigned } = vertexFootprintAt(frame, arr, i);
+        const { u, vSigned } = vertexFootprintAt(frame, uvArr, i);
         const rim = rimBandFadeFactor(u, vSigned, field);
         if (rim <= 1e-9) continue;
         const { lx, ly } = localCoordsFlow(x, y, anchor.x, anchor.y, ctx.transform.rotationDeg);
