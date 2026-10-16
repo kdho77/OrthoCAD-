@@ -5,7 +5,9 @@
             "id": "met-pad-1",
             "kind": "met_pad",
             "glb": "met_pad_1.right.glb",
-            "sidecar": "met_pad_1.right.json"
+            "sidecar": "met_pad_1.right.json",
+            "thumb": "met_pad_1_thumb.png",
+            "label": "Met pad 1"
         }
     ]
 }

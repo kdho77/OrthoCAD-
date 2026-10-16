@@ -32,6 +32,9 @@ export interface ElementManifestEntry {
     kind: ElementKind;
     glb: string;
     sidecar: string;
+    /** Viridis height-heatmap PNG generated at import from the 0.25 mm raster. */
+    thumb?: string;
+    label?: string;
 }
 
 export interface ElementManifest {
