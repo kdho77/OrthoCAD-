@@ -88,9 +88,10 @@ export async function applyTextMarkingToPrintSolid(
         placeMeta = placed.meta;
     } else {
         placedFlat = shrinkThenFlatten(font, checked, minCap, (flat) => {
-            placeWallText(hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat);
+            placeWallText(host, hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat);
         });
         const placed = placeWallText(
+            host,
             hostCtx,
             { ...checked, capHeightMm: placedFlat.capHeightMm },
             placedFlat,

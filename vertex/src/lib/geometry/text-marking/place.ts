@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import type { BufferGeometry } from "three";
+import { type BufferGeometry, Mesh, Raycaster, Vector3 } from "three";
 import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
 import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
 import type { Side } from "@/types";
@@ -27,6 +27,8 @@ export interface WallStation {
     sideSign: number;
     nOut: { x: number; y: number; z: number };
     thickMm: number;
+    /** Distance along nOut from the B–R chord to the actual outer wall. */
+    outerMm: number;
 }
 
 export interface HostTextContext {
@@ -129,6 +131,7 @@ export function extractHostTextContext(geo: BufferGeometry): HostTextContext {
             sideSign: fr.sideSign ?? 1,
             nOut: { x: nx, y: ny, z: nz },
             thickMm,
+            outerMm: 0,
         });
     }
     let minX = Infinity;
@@ -200,6 +203,7 @@ function sampleAlong(stations: WallStation[], s: number): WallStation {
                     z: a.nOut.z + (b.nOut.z - a.nOut.z) * t,
                 },
                 thickMm: a.thickMm + (b.thickMm - a.thickMm) * t,
+                outerMm: a.outerMm + (b.outerMm - a.outerMm) * t,
             };
         }
     }
@@ -318,6 +322,40 @@ export function placeBottomText(
     };
 }
 
+const _rayOrigin = new Vector3();
+const _rayDir = new Vector3();
+const _raycaster = new Raycaster();
+
+/** Distance along nOut from the B–R chord to the first outward mesh hit. */
+function chordToOuterMm(mesh: Mesh, st: WallStation, frac: number): number {
+    const px = st.B.x + (st.R.x - st.B.x) * frac;
+    const py = st.B.y + (st.R.y - st.B.y) * frac;
+    const pz = st.B.z + (st.R.z - st.B.z) * frac;
+    const nlen = Math.hypot(st.nOut.x, st.nOut.y, st.nOut.z) || 1;
+    const nx = st.nOut.x / nlen;
+    const ny = st.nOut.y / nlen;
+    const nz = st.nOut.z / nlen;
+    const far = 16;
+    _rayOrigin.set(px + nx * far, py + ny * far, pz + nz * far);
+    _rayDir.set(-nx, -ny, -nz);
+    _raycaster.set(_rayOrigin, _rayDir);
+    _raycaster.near = 0;
+    _raycaster.far = far + 10;
+    const hits = _raycaster.intersectObject(mesh, false);
+    if (!hits.length) return 0;
+    return far - hits[0]!.distance;
+}
+
+function stampOuterOffsets(geo: BufferGeometry, run: WallStation[], capHeightMm: number): void {
+    if (!geo.boundingSphere) geo.computeBoundingSphere();
+    const mesh = new Mesh(geo);
+    for (const st of run) {
+        const h = Math.max(1e-6, st.heightMm);
+        const frac = Math.min(0.9, Math.max(0.15, (TEXT_WALL_EDGE_CLEARANCE_MM + capHeightMm / 2) / h));
+        st.outerMm = chordToOuterMm(mesh, st, frac);
+    }
+}
+
 function contiguousStationRuns(stations: WallStation[], gapMm = 8): WallStation[][] {
     if (stations.length < 2) return [];
     const sorted = stations.slice().sort((a, b) => a.s - b.s);
@@ -337,6 +375,7 @@ function contiguousStationRuns(stations: WallStation[], gapMm = 8): WallStation[
 }
 
 export function placeWallText(
+    geo: BufferGeometry,
     ctx: HostTextContext,
     marking: TextMarking,
     flat: FlattenedText,
@@ -373,6 +412,7 @@ export function placeWallText(
     if (sMid > hi) sMid = hi;
     const s0 = sMid - half;
     const s1 = sMid + half;
+    stampOuterOffsets(geo, run, flat.capHeightMm);
     const atMid = sampleAlong(run, sMid);
     if (!tallEnough(atMid)) {
         if (atMid.heightMm - 3 < TEXT_CAP.wall.min) {
@@ -396,7 +436,7 @@ export function placeWallText(
         const x = st.B.x + (st.R.x - st.B.x) * clamped;
         const y = st.B.y + (st.R.y - st.B.y) * clamped;
         const z = st.B.z + (st.R.z - st.B.z) * clamped;
-        const off = offset0 + (offset1 - offset0) * t;
+        const off = (st.outerMm ?? 0) + offset0 + (offset1 - offset0) * t;
         const nlen = Math.hypot(st.nOut.x, st.nOut.y, st.nOut.z) || 1;
         return {
             x: x + (st.nOut.x / nlen) * off,
