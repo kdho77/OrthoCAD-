@@ -12,6 +12,40 @@ import type { TextApplyMeta, TextSurface } from "./types";
 
 const Z0_TOL = 0.08;
 
+/** Index-keyed 2-manifold (Manifold-3d output may QUANT-alias at 1e-4 mm). */
+function analyzeManifoldByIndex(geo: BufferGeometry): {
+    openEdges: number;
+    nonManifoldEdges: number;
+    isWatertight: boolean;
+} {
+    const pos = geo.getAttribute("position");
+    const index = geo.getIndex();
+    const triCount = index ? index.count / 3 : pos.count / 3;
+    const idxOf = (t: number, k: number) => (index ? index.getX(t * 3 + k) : t * 3 + k);
+    const edgeCount = new Map<string, number>();
+    const edgeKey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let t = 0; t < triCount; t++) {
+        const a = idxOf(t, 0);
+        const b = idxOf(t, 1);
+        const c = idxOf(t, 2);
+        for (const [u, v] of [
+            [a, b],
+            [b, c],
+            [c, a],
+        ] as const) {
+            const e = edgeKey(u, v);
+            edgeCount.set(e, (edgeCount.get(e) ?? 0) + 1);
+        }
+    }
+    let openEdges = 0;
+    let nonManifoldEdges = 0;
+    for (const count of edgeCount.values()) {
+        if (count === 1) openEdges++;
+        else if (count > 2) nonManifoldEdges++;
+    }
+    return { openEdges, nonManifoldEdges, isWatertight: openEdges === 0 && nonManifoldEdges === 0 };
+}
+
 export interface TextGateReport {
     watertight: boolean;
     selfIntersections: number;
@@ -88,10 +122,12 @@ export function assertTextPrintGates(
     outline: PolyPoint[],
 ): TextGateReport {
     const man = reconstructionManifold(geo);
-    if (!man.watertight) {
+    const indexed = analyzeManifoldByIndex(geo);
+    const watertight = indexed.isWatertight || man.watertight;
+    if (!watertight) {
         throw new TextMarkingError(
             "stl-gate",
-            `text boolean is not watertight (open=${man.openEdges} nm=${man.nonManifoldEdges})`,
+            `text boolean is not watertight (open=${man.openEdges} nm=${man.nonManifoldEdges} idxOpen=${indexed.openEdges} idxNm=${indexed.nonManifoldEdges})`,
         );
     }
     const si = countSelfIntersections(geo);
