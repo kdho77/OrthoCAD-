@@ -3,13 +3,13 @@
 
 /**
  * NON-REQUIRED SAMPLE_Top L/R × wall/bottom text CSG + expert print-quality gates.
- * Retired from test-and-deploy: four full-insole Manifold booleans take ~20 min
- * and currently fail soup SI on right-wall / left-bottom / left-wall (host-heel
- * slivers + wall–plantar fillet). Job stays off the required `npm run test`
- * (*.optional.test.ts). Run with:
+ * Off required `npm run test` (*.optional.test.ts) so CI stays green while the
+ * four-combo Manifold boolean is ~20 min. Run with:
  *   npx rstest --config rstest.optional.config.ts tests/text-marking-acceptance.optional.test.ts
  *
- * Expert gates are still hard in this file. Right-bottom is 1 body / 0 SI.
+ * Expert gates are hard here: outside identity 1e-4 / 0 lost tris, ≥99% ≥5°,
+ * none <1°, aspect p99 ≤10, longest ≤0.6, floor ±0.05, sidewall 95%, Hausdorff
+ * ≤0.05, watertight, 0 SI on the exported STL.
  */
 
 import { spawnSync } from "node:child_process";
@@ -20,7 +20,12 @@ import { DoubleSide, Mesh, MeshBasicMaterial, Raycaster, Vector3 } from "three";
 import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { applyTextMarkingToPrintSolid } from "@/lib/geometry/text-marking/apply";
-import { defaultTextMarking, TEXT_MIN_STROKE_MM, TEXT_U } from "@/lib/geometry/text-marking/constants";
+import {
+    defaultTextMarking,
+    TEXT_MIN_STROKE_MM,
+    TEXT_OUTSIDE_IDENT_MM,
+    TEXT_U,
+} from "@/lib/geometry/text-marking/constants";
 import { flattenText } from "@/lib/geometry/text-marking/contours";
 import { loadTextFont } from "@/lib/geometry/text-marking/font";
 import { measureTextRegionQuality } from "@/lib/geometry/text-marking/quality";
@@ -200,7 +205,11 @@ describe("text marking L/R × wall/bottom builds", () => {
                 writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} soupSi ${Date.now()}\n`);
                 const q = measureTextRegionQuality(tagged, host, ud.textMarking!);
                 writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} quality ${Date.now()}\n`);
-                metrics[`${side}-${surface}`] = { ...q, soupSi };
+                metrics[`${side}-${surface}`] = {
+                    ...q,
+                    soupSi,
+                    hostRepair: ud.textMarking?.hostRepair ?? null,
+                };
                 mkdirSync("/tmp/s1-stls", { recursive: true });
                 writeFileSync("/tmp/s1-stls/text-quality.json", JSON.stringify(metrics, null, 2));
                 if (side === "right") {
@@ -222,6 +231,11 @@ describe("text marking L/R × wall/bottom builds", () => {
                     }
                 }
                 const stl = geometryToBinarySTL(tagged);
+                if (side === "right" && surface === "wall") {
+                    mkdirSync("/opt/cursor/artifacts", { recursive: true });
+                    writeFileSync("/opt/cursor/artifacts/text-right-wall-JOHN-SMITH.stl", Buffer.from(stl));
+                    writeFileSync("/tmp/s1-stls/text-right-wall-JOHN-SMITH.stl", Buffer.from(stl));
+                }
                 const gate = stlGates(stl, `${side}-${surface}`);
                 if (!gate.watertight || !gate.winding || gate.bodies !== 1) {
                     stlGateFails.push(
@@ -328,8 +342,9 @@ describe("text marking L/R × wall/bottom builds", () => {
         for (const [tag, raw] of Object.entries(metrics)) {
             const q = raw as ReturnType<typeof measureTextRegionQuality> & { soupSi: number };
             expect(`${tag} si ${q.soupSi}`).toBe(`${tag} si 0`);
-            expect(q.outsideVertMaxMm).toBeLessThanOrEqual(0.1);
+            expect(q.outsideVertMaxMm).toBeLessThanOrEqual(TEXT_OUTSIDE_IDENT_MM);
             expect(q.outsideHostVertsMissing).toBe(0);
+            expect(q.outsideTrisLost).toBe(0);
             expect(q.inRegion.count).toBeGreaterThan(100);
             expect(q.inRegion.pctMinAngleGe5).toBeGreaterThanOrEqual(99);
             expect(q.inRegion.minAngleMinDeg).toBeGreaterThanOrEqual(1);

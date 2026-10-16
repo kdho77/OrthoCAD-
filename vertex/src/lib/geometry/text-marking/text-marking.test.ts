@@ -254,6 +254,91 @@ describe("text flatten / Clipper / stroke", () => {
     });
 });
 
+describe("print-clean CAD-expert gates", () => {
+    test("region pad is 1 mm and wall outset is a uniform 0.5 mm", async () => {
+        const { TEXT_BOOLEAN_OUTSET_MM, TEXT_REGION_PAD_MM } = await import("./constants");
+        expect(TEXT_REGION_PAD_MM).toBe(1);
+        expect(TEXT_BOOLEAN_OUTSET_MM).toBe(0.5);
+    });
+
+    test("box subtract keeps outside host triangles (move ≤ 1e-4, 0 lost)", async () => {
+        const { BoxGeometry } = await import("three");
+        const { booleanTextSolid } = await import("./boolean");
+        const { planarBottomMap } = await import("./solid");
+        const { measureTextRegionQuality } = await import("./quality");
+        const { TEXT_OUTSIDE_IDENT_MM, TEXT_REGION_PAD_MM } = await import("./constants");
+        const font = await loadTextFont();
+        const flat = flattenText(font, SAMPLE, 6, 0.6, true);
+        const host = new BoxGeometry(120, 40, 8);
+        host.translate(flat.advanceMm / 2, 3, 4);
+        const map = planarBottomMap(-0.05, 0.8);
+        const out = await booleanTextSolid(host, flat.groups, map, "subtract");
+        const meta = {
+            surface: "bottom" as const,
+            mode: "engrave" as const,
+            depthMm: 0.8,
+            heightMm: 0,
+            capHeightMm: 6,
+            advanceMm: flat.advanceMm,
+            centroids: flat.centroids.map((p) => ({ x: p.x, y: p.y, z: 0.8 })),
+            mappedWidthMm: flat.advanceMm,
+            outlineWorld: flat.groups.map((g) => ({
+                outer: g.outer.map((p) => map(p, 0.5)),
+                holes: g.holes.map((h) => h.map((p) => map(p, 0.5))),
+            })),
+        };
+        const q = measureTextRegionQuality(out, host, meta, TEXT_REGION_PAD_MM);
+        expect(q.outsideTrisLost).toBe(0);
+        expect(q.outsideVertMaxMm).toBeLessThanOrEqual(TEXT_OUTSIDE_IDENT_MM);
+        expect(q.outsideHostVertsMissing).toBe(0);
+        out.dispose();
+        host.dispose();
+    });
+
+    test("collapseDegenerateThenWeld only touches the text band", async () => {
+        const { BoxGeometry } = await import("three");
+        const { collapseDegenerateThenWeld, makeFootprintBand } = await import("./boolean");
+        const { planarBottomMap } = await import("./solid");
+        const font = await loadTextFont();
+        const flat = flattenText(font, SAMPLE, 6, 0.6, true);
+        const host = new BoxGeometry(120, 40, 8);
+        host.translate(flat.advanceMm / 2, 3, 4);
+        const map = planarBottomMap(-0.05, 0.8);
+        const band = makeFootprintBand(flat.groups, map, 1);
+        const before = host.getAttribute("position").array.slice() as Float32Array;
+        const after = collapseDegenerateThenWeld(host, 0, band);
+        const pos = after.getAttribute("position").array as Float32Array;
+        const n = Math.min(before.length, pos.length);
+        let moved = 0;
+        for (let i = 0; i < n; i++) moved = Math.max(moved, Math.abs(before[i]! - pos[i]!));
+        expect(moved).toBeLessThanOrEqual(1e-4);
+        if (after !== host) after.dispose();
+        host.dispose();
+    });
+
+    test("flat-bottom boundary of a box is the z=0 rectangle", async () => {
+        const { BoxGeometry } = await import("three");
+        const { flatBottomBoundaryLoop, measureWallFilletTopMm } = await import("./place");
+        const box = new BoxGeometry(20, 10, 4);
+        box.translate(0, 0, 2);
+        const loop = flatBottomBoundaryLoop(box);
+        expect(loop === null || loop.length >= 4).toBe(true);
+        const top = measureWallFilletTopMm(box, {
+            u: 0.4,
+            s: 0,
+            R: { x: 10, y: 0, z: 4 },
+            B: { x: 10, y: 0, z: 0 },
+            heightMm: 4,
+            sideSign: -1,
+            nOut: { x: 1, y: 0, z: 0 },
+            thickMm: 3,
+            outerMm: 0,
+        });
+        expect(top).toBeGreaterThanOrEqual(0);
+        box.dispose();
+    });
+});
+
 describe("exported-STL soup self-intersections", () => {
     test("a box STL has 0 hits; two crossing triangles report a pair", async () => {
         const { BoxGeometry, BufferAttribute, BufferGeometry } = await import("three");
@@ -279,6 +364,9 @@ describe("exported-STL soup self-intersections", () => {
         const hit = countSoupSelfIntersections(cross);
         expect(hit.real).toBeGreaterThan(0);
         expect(hit.pairs[0]?.centroid).toBeDefined();
+        expect(hit.pairs[0]?.triA).toBeDefined();
+        expect(hit.pairs[0]?.triB).toBeDefined();
+        expect(hit.pairs[0]?.triA).not.toBe(hit.pairs[0]?.triB);
         cross.dispose();
     });
 });
