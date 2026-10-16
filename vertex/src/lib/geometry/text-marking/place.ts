@@ -207,17 +207,14 @@ function sampleAlong(stations: WallStation[], s: number): WallStation {
 }
 
 export function lateralStations(ctx: HostTextContext): WallStation[] {
-    const band = ctx.stations.filter((st) => st.u >= TEXT_U.wall.min && st.u <= TEXT_U.wall.max);
-    if (band.length < 2) return [];
-    const low = band.filter((st) => st.R.y < ctx.midY);
-    const high = band.filter((st) => st.R.y >= ctx.midY);
+    // Full lateral Y-side (not clipped to the u control band). Placement u stays
+    // in [0.35, 0.80]; glyph extents may run into the taller heel wall.
+    const low = ctx.stations.filter((st) => st.R.y < ctx.midY);
+    const high = ctx.stations.filter((st) => st.R.y >= ctx.midY);
     const nLowLat = low.filter((s) => s.sideSign < 0).length;
     const nHighLat = high.filter((s) => s.sideSign < 0).length;
     const ySide = nLowLat >= nHighLat ? "low" : "high";
-    const inOrder = ctx.stations.filter((st) => {
-        if (st.u < TEXT_U.wall.min || st.u > TEXT_U.wall.max) return false;
-        return ySide === "low" ? st.R.y < ctx.midY : st.R.y >= ctx.midY;
-    });
+    const inOrder = ySide === "low" ? low : high;
     if (inOrder.length < 2) return [];
     // Filtered loop order still wraps at the original perimeter seam. Cut at the
     // largest 3D gap (the true discontinuity) and rebuild arc-length s so the
@@ -321,14 +318,14 @@ export function placeBottomText(
     };
 }
 
-function contiguousStationRuns(stations: WallStation[]): WallStation[][] {
+function contiguousStationRuns(stations: WallStation[], gapMm = 8): WallStation[][] {
+    if (stations.length < 2) return [];
     const sorted = stations.slice().sort((a, b) => a.s - b.s);
     const runs: WallStation[][] = [];
     let cur: WallStation[] = [];
     for (const st of sorted) {
         const prev = cur[cur.length - 1];
-        // Only split on wrap-around (half a perimeter), not on sparse samples.
-        if (prev && st.s - prev.s > 40) {
+        if (prev && st.s - prev.s > gapMm) {
             if (cur.length >= 2) runs.push(cur);
             cur = [st];
         } else {
@@ -345,41 +342,35 @@ export function placeWallText(
     flat: FlattenedText,
 ): { flat: FlattenedText; map: MapTextPoint; meta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm"> } {
     const lateral = lateralStations(ctx);
-    if (lateral.length < 2) throw textForbiddenZone("no lateral wall stations in the allowed u band");
+    if (lateral.length < 2) throw textForbiddenZone("no lateral wall stations");
     const u = Math.max(TEXT_U.wall.min, Math.min(TEXT_U.wall.max, marking.placementU));
-    const runs = contiguousStationRuns(lateral);
     const spanOf = (r: WallStation[]) => r[r.length - 1]!.s - r[0]!.s;
     const hNeed = flat.capHeightMm + 2 * TEXT_WALL_EDGE_CLEARANCE_MM;
     const tallEnough = (st: WallStation) =>
         st.heightMm + 1e-6 >= hNeed + TEXT_TRIMLINE_RIM_BAND_MM - TEXT_WALL_EDGE_CLEARANCE_MM;
-    const score = (r: WallStation[]) => {
-        const ok = r.filter((st) => tallEnough(st) && st.thickMm + 1e-6 >= TEXT_WALL_MIN_THICK_MM);
-        return ok.length ? spanOf(ok) : -1;
-    };
-    const nearU = runs.filter((r) => r.some((st) => Math.abs(st.u - u) < 0.12));
-    const pool = nearU.length ? nearU : runs;
-    const run = pool.reduce((best, r) => (score(r) > score(best) ? r : best), pool[0] ?? lateral);
-    const atU = run.reduce((best, st) => (Math.abs(st.u - u) < Math.abs(best.u - u) ? st : best));
+    const usable = (st: WallStation) => tallEnough(st) && st.thickMm + 1e-6 >= TEXT_WALL_MIN_THICK_MM;
+    const runs = contiguousStationRuns(lateral.filter(usable));
     const half = flat.advanceMm / 2;
-    const sMin = run[0]!.s;
-    const sMax = run[run.length - 1]!.s;
-    const lo = sMin + half;
-    const hi = sMax - half;
+    const fitting = runs.filter((r) => spanOf(r) + 1e-3 >= flat.advanceMm);
+    if (!fitting.length) {
+        const longest = runs.reduce((a, b) => (spanOf(b) > spanOf(a) ? b : a), runs[0] ?? []);
+        const avail = longest.length >= 2 ? spanOf(longest) : 0;
+        throw new TextMarkingError(
+            "too-long",
+            `text does not fit the placement zone (${flat.advanceMm.toFixed(1)} mm in ${avail.toFixed(1)} mm)`,
+        );
+    }
+    const uDist = (r: WallStation[]) => {
+        const st = r.reduce((best, s) => (Math.abs(s.u - u) < Math.abs(best.u - u) ? s : best));
+        return Math.abs(st.u - u);
+    };
+    const run = fitting.reduce((best, r) => (uDist(r) < uDist(best) ? r : best));
+    const atU = run.reduce((best, st) => (Math.abs(st.u - u) < Math.abs(best.u - u) ? st : best));
+    const lo = run[0]!.s + half;
+    const hi = run[run.length - 1]!.s - half;
     let sMid = atU.s;
     if (sMid < lo) sMid = lo;
     if (sMid > hi) sMid = hi;
-    if (lo > hi + 1e-3) {
-        throw new TextMarkingError(
-            "too-long",
-            `text does not fit the placement zone (${flat.advanceMm.toFixed(1)} mm in ${(sMax - sMin).toFixed(1)} mm)`,
-        );
-    }
-    const candidates = run.filter((st) => st.s + 1e-6 >= lo && st.s - 1e-6 <= hi && tallEnough(st));
-    if (candidates.length) {
-        sMid = candidates.reduce((best, st) =>
-            Math.abs(st.s - atU.s) < Math.abs(best.s - atU.s) ? st : best,
-        ).s;
-    }
     const s0 = sMid - half;
     const s1 = sMid + half;
     const atMid = sampleAlong(run, sMid);
@@ -389,7 +380,6 @@ export function placeWallText(
         }
         throw textDoesNotFit();
     }
-    const zMid = (atMid.B.z + atMid.R.z) / 2;
     const offset0 = marking.mode === "engrave" ? TEXT_BOOLEAN_EPS_MM : -TEXT_BOOLEAN_EPS_MM;
     const offset1 = marking.mode === "engrave" ? -marking.depthMm : marking.heightMm;
     const map: MapTextPoint = (p, t) => {
@@ -397,8 +387,12 @@ export function placeWallText(
         if (st.thickMm + 1e-6 < TEXT_WALL_MIN_THICK_MM) {
             throw textForbiddenZone("wall thinner than 2 mm");
         }
-        const frac = (zMid - st.B.z - flat.capHeightMm / 2 + p.y) / Math.max(1e-6, st.R.z - st.B.z);
-        const clamped = Math.max(0.02, Math.min(0.98, frac));
+        const h = Math.max(1e-6, st.R.z - st.B.z);
+        const usableTop = h - TEXT_TRIMLINE_RIM_BAND_MM;
+        const usableBot = TEXT_WALL_EDGE_CLEARANCE_MM;
+        const letter0 = usableBot + Math.max(0, usableTop - usableBot - flat.capHeightMm) / 2;
+        const frac = (letter0 + p.y) / h;
+        const clamped = Math.max(usableBot / h, Math.min(usableTop / h, frac));
         const x = st.B.x + (st.R.x - st.B.x) * clamped;
         const y = st.B.y + (st.R.y - st.B.y) * clamped;
         const z = st.B.z + (st.R.z - st.B.z) * clamped;
