@@ -32,6 +32,22 @@
             "glb": "met_bar_1.right.glb",
             "sidecar": "met_bar_1.right.json",
             "thumb": "met_bar_1_thumb.png"
+        },
+        {
+            "id": "dancers-pad-1",
+            "kind": "dancers_pad",
+            "label": "Dancer's pad (1st MPJ relief)",
+            "glb": "new_element_2.right.glb",
+            "sidecar": "new_element_2.right.json",
+            "thumb": "new_element_2_thumb.png"
+        },
+        {
+            "id": "cluffy-wedge-1",
+            "kind": "cluffy_wedge",
+            "label": "Cluffy wedge 1",
+            "glb": "cluffy_wedge_1.right.glb",
+            "sidecar": "cluffy_wedge_1.right.json",
+            "thumb": "cluffy_wedge_1_thumb.png"
         }
     ]
 }

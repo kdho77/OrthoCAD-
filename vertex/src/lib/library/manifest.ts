@@ -48,7 +48,7 @@ export const STOCK_ELEMENTS: StockElementEntry[] = [
     { id: "met_bar", label: "Met Bar", category: "bar", stock: true },
     { id: "toe_crest", label: "Toe Crest", category: "pad", stock: true },
     { id: "cuboid_pad", label: "Cuboid Pad", category: "pad", stock: true },
-    { id: "cluffy_wedge", label: "Cluffy Wedge", category: "wedge", stock: true },
+    { id: "cluffy_wedge", label: "Cluffy wedge 1", category: "wedge", stock: true },
     { id: "mortons_extension", label: "Morton's Ext.", category: "extension", stock: true },
     { id: "reverse_mortons", label: "Rev. Morton's", category: "extension", stock: true },
     { id: "kinetic_wedge", label: "Kinetic Wedge", category: "wedge", stock: true },
@@ -56,7 +56,7 @@ export const STOCK_ELEMENTS: StockElementEntry[] = [
     { id: "navicular_sink", label: "Navicular Sink", category: "sink", stock: true },
     { id: "scaphoid_pad", label: "Scaphoid Pad", category: "pad", stock: true },
     { id: "heel_cushion", label: "Heel Cushion", category: "pad", stock: true },
-    { id: "dancers_pad", label: "Dancer's Pad", category: "pad", stock: true },
+    { id: "dancers_pad", label: "Dancer's pad (1st MPJ relief)", category: "pad", stock: true },
 ];
 
 export const STOCK_PREFABS: StockPrefabEntry[] = [
