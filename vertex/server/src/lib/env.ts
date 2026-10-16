@@ -25,8 +25,9 @@ export function validateServerEnv(): void {
     }
     if (!process.env.VERTEXSLICE_SLICER_URL || !process.env.VERTEXSLICE_API_KEY) {
         console.warn(
-            "[vertex] VERTEXSLICE_SLICER_URL and VERTEXSLICE_API_KEY must both be set for printer G-code. " +
-                "They are server-only — do not use VITE_ names (those ship in the client bundle).",
+            "[vertex] VERTEXSLICE_SLICER_URL and VERTEXSLICE_API_KEY must both be set for printer G-code and /slicer. " +
+                "They are server-only — do not use VITE_ names (those ship in the client bundle). " +
+                "/slicer stays on the in-process mock until both are set, or while SLICER_MOCK=1.",
         );
     }
     if (!process.env.MANUFACTURING_SERVICE_URL && !process.env.PYTHON_MANUFACTURING_URL) {

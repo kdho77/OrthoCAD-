@@ -6,6 +6,12 @@ import { prisma, resolveDatabaseUrl } from "./lib/prisma.js";
 import { prismaProductionRepo } from "./lib/prisma-production-repo.js";
 import { handlePrintBridgeNode } from "./print-bridge-http.js";
 import { serverBridgeDirectory } from "./print-bridge-state.js";
+import {
+    handleSlicerRequest,
+    incomingMessageToRequest,
+    isSlicerProxyPath,
+    sendFetchResponse,
+} from "./lib/vertexslice-proxy.js";
 import { appRouter } from "./routers/index.js";
 import { handleIntegrationNode } from "./routers/integrations/node-http.js";
 import { ensureIntegrationProduction } from "./routers/integrations/production.js";
@@ -48,9 +54,33 @@ const server = createHTTPServer({
             });
             return;
         }
+        if (isSlicerProxyPath(early)) {
+            void incomingMessageToRequest(req)
+                .then((request) => handleSlicerRequest(request))
+                .then((response) => sendFetchResponse(res, response))
+                .catch((err) => {
+                    console.error("[vertex] slicer proxy error", err);
+                    if (!res.headersSent) {
+                        res.statusCode = 500;
+                        res.setHeader("Content-Type", "application/json");
+                        res.end(
+                            JSON.stringify({
+                                ok: false,
+                                error: {
+                                    code: "auth_config",
+                                    cause: "Proxy failed",
+                                    nextStep: "Retry",
+                                    requestId: "",
+                                },
+                            }),
+                        );
+                    }
+                });
+            return;
+        }
         res.setHeader("Access-Control-Allow-Origin", ORIGIN);
         res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Slicer-Fault");
         if (req.method === "OPTIONS") {
             res.writeHead(204);
             res.end();

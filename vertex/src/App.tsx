@@ -24,6 +24,7 @@ import { usePersistDesignWorkflow } from "@/features/clients/usePersistDesignWor
 import { InactivityGuard } from "@/features/clients/InactivityGuard";
 import { parseClinicalPath } from "@/features/clients/routes";
 import { exportDesign } from "@/features/exports/export-service";
+import { SlicerPage } from "@/features/slicer/SlicerPage";
 import { MillTableView } from "@/features/mill/MillTableView";
 import { ProductionPage } from "@/features/production/ProductionPage";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
@@ -32,6 +33,7 @@ import { useViewportMode } from "@/hooks/useViewportMode";
 import { designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
 import { applyViewerWallFlagFromSearch } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { stockDebug, stockGlbLog } from "@/lib/geometry/stock-debug";
+import { isSlicerPath } from "@/lib/navigate";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
 import { useAuthStore } from "@/stores/auth-store";
@@ -48,6 +50,16 @@ export default function App() {
     useEffect(() => {
         document.title = clinicalDocumentTitle();
     }, [pathname]);
+
+    // /slicer is a standalone pay-per-file page. It must not mount CAD chrome,
+    // the design store, or the stock-base loader. Sign-in is required only to pay.
+    if (isSlicerPath(pathname)) {
+        return (
+            <ErrorBoundary>
+                <SlicerPage />
+            </ErrorBoundary>
+        );
+    }
 
     if (authLoading) {
         return (
