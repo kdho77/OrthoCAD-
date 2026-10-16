@@ -217,11 +217,20 @@ function rasterBottomGlyphs(meta: TextApplyMeta, cell: number): { dist: (x: numb
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
+    const thin = (pts: PolyPoint[]): PolyPoint[] => {
+        const out: PolyPoint[] = [];
+        for (const p of pts) {
+            const prev = out[out.length - 1];
+            if (prev && Math.hypot(p.x - prev.x, p.y - prev.y) < 0.4) continue;
+            out.push(p);
+        }
+        return out.length >= 3 ? out : pts;
+    };
     const glyphs: Array<{ outer: PolyPoint[]; holes: PolyPoint[][] }> = [];
     for (const g of meta.outlineWorld ?? []) {
-        const outer = asPoly(g.outer);
+        const outer = thin(asPoly(g.outer));
         if (outer.length < 3) continue;
-        const holes = g.holes.map(asPoly).filter((h) => h.length >= 3);
+        const holes = g.holes.map((h) => thin(asPoly(h))).filter((h) => h.length >= 3);
         glyphs.push({ outer, holes });
         for (const p of outer) {
             if (p.x < minX) minX = p.x;
@@ -425,7 +434,7 @@ export function measureTextRegionQuality(
 ): TextRegionQuality {
     const outline = outlinePts(meta);
     const outlineGrid = new VertGrid(outline, 0.3);
-    const bottomOcc = meta.surface === "bottom" ? rasterBottomGlyphs(meta, 0.25) : null;
+    const bottomOcc = meta.surface === "bottom" ? rasterBottomGlyphs(meta, 0.4) : null;
     const near = (p: Vert3) => {
         const d3 = outlineGrid.nearest(p, 8);
         if (meta.surface !== "bottom") return d3;
