@@ -182,6 +182,8 @@ export type ElementKind =
 /** Top trim preset id — `custom` when the user edits the spline manually. */
 export type TrimPresetId = "full" | "sulcus" | "met_head" | "custom";
 
+export type ElementPlacementMode = "flow" | "noFlow";
+
 export interface PlacedElement {
     id: string;
     kind: ElementKind | "custom";
@@ -194,6 +196,9 @@ export interface PlacedElement {
     rotationDeg: number;
     scale: { x: number; y: number };
     heightMm: number;
+    /** GLB height-field lift: flow feathers the edge; noFlow keeps a crisp step. */
+    placementMode?: ElementPlacementMode;
+    zOffsetMm?: number;
 }
 
 /** Serializable trimline control points stored in design state. */

@@ -4,13 +4,13 @@ import * as THREE from "three";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
+import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
 import {
     deleteCustomAsset,
     placeCustomElement,
     refreshCustomLibrary,
 } from "@/features/library/custom-library-service";
 import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
-import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
 import { ELEMENT_HEIGHT_LIMITS } from "@/lib/geometry/elements";
 import { elementDisplayName, STOCK_ELEMENTS } from "@/lib/library/manifest";
 import { rafThrottle } from "@/lib/performance/throttle";
@@ -149,7 +149,9 @@ export function ElementsPanel() {
             </div>
 
             <div className="space-y-1">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Placed</div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Placed
+                </div>
                 {design.elements.length === 0 ? (
                     <p className="rounded-md border border-dashed border-border px-2 py-3 text-center text-xs text-muted-foreground">
                         No elements added
@@ -339,6 +341,31 @@ export function ElementsPanel() {
                         }}
                         unit="°"
                     />
+                    {displaySelected.kind === "met_pad" ? (
+                        <div className="space-y-1">
+                            <div className="text-[11px] text-muted-foreground">Edge</div>
+                            <div className="flex gap-1">
+                                {(["flow", "noFlow"] as const).map((mode) => (
+                                    <Button
+                                        key={mode}
+                                        size="sm"
+                                        variant={
+                                            (displaySelected.placementMode ?? "flow") === mode
+                                                ? "default"
+                                                : "secondary"
+                                        }
+                                        className="h-7 flex-1"
+                                        onClick={() => {
+                                            updateElement(displaySelected.id, { placementMode: mode });
+                                            clearElementPreview(displaySelected.id);
+                                        }}
+                                    >
+                                        {mode === "flow" ? "Flow" : "No-flow"}
+                                    </Button>
+                                ))}
+                            </div>
+                        </div>
+                    ) : null}
                     <SliderField
                         label="Scale X"
                         value={displaySelected.scale.x}

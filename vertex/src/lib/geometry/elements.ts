@@ -56,9 +56,9 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         ryMm: 12,
         sign: 1,
         shape: "teardrop",
-        defaultHeightMm: 3,
-        defaultU: 0.68,
-        defaultMedial: 0.05,
+        defaultHeightMm: 5,
+        defaultU: 0.5233,
+        defaultMedial: 0.0722,
     },
     // Transverse metatarsal bar: short AP, long ML, gentle anterior bow
     // following the metatarsal parabola. ~20 × 64 mm.
@@ -406,7 +406,7 @@ export function defaultElementPose(
     side: Side,
     lengthMm = 260,
     widthMm = 95,
-): Pick<PlacedElement, "position" | "rotationDeg" | "scale" | "heightMm"> {
+): Pick<PlacedElement, "position" | "rotationDeg" | "scale" | "heightMm" | "placementMode"> {
     const p = ELEMENT_PROFILES[kind];
     const medial = medialYSign(side);
     return {
@@ -417,6 +417,7 @@ export function defaultElementPose(
         rotationDeg: 0,
         scale: { x: 1, y: 1 },
         heightMm: p.defaultHeightMm,
+        placementMode: kind === "met_pad" ? "flow" : undefined,
     };
 }
 

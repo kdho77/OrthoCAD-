@@ -78,7 +78,7 @@ describe("SAMPLE_Top faired preview inputs", () => {
             buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
         );
         for (const scanPattern of ["full_contact", "prefab_3d", "flat", "custom"] as const) {
-            const preview = reconstructProceduralPreview(geo, { wallStyle: "straight", scanPattern });
+            const preview = await reconstructProceduralPreview(geo, { wallStyle: "straight", scanPattern });
             expect(preview.pattern.length).toBeGreaterThan(16);
             expect(preview.geometry.getAttribute("position")?.count ?? 0).toBeGreaterThan(1000);
             preview.geometry.dispose();
@@ -92,7 +92,7 @@ describe("SAMPLE_Top faired preview inputs", () => {
             buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
         );
         const mirrored = mirrorGeometry(geo);
-        const preview = reconstructProceduralPreview(mirrored, {
+        const preview = await reconstructProceduralPreview(mirrored, {
             wallStyle: "straight",
             scanPattern: "full_contact",
         });
@@ -300,7 +300,7 @@ describe("SAMPLE_Top faired preview inputs", () => {
         const geo = await sampleTopFromArrayBuffer(
             buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
         );
-        const preview = reconstructProceduralPreview(geo, { wallStyle: "round" });
+        const preview = await reconstructProceduralPreview(geo, { wallStyle: "round" });
         const stations = (preview.geometry.userData as { stationCount?: number }).stationCount ?? 0;
         expect(stations).toBeGreaterThan(3);
         expect(preview.pattern.length).toBeGreaterThan(16);
@@ -321,7 +321,7 @@ describe("SAMPLE_Top faired preview inputs", () => {
         });
         expect(polylineHausdorffMm(base, edited)).toBeGreaterThan(0.4);
         const started = performance.now();
-        const preview = reconstructProceduralPreview(geo, {
+        const preview = await reconstructProceduralPreview(geo, {
             wallStyle: "straight",
             scanPattern: "full_contact",
             bottomPattern: edited,

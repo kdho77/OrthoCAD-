@@ -1,0 +1,243 @@
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
+import { Matrix4, Vector3 } from "three";
+import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
+import type { ElementKind, PlacedElement, Side } from "@/types";
+import { type ElementHeightGrid, getOrRasterizeGrid, heightGridCacheKey } from "./height-grid";
+import { elementSizeScale, sidecarAnchorUV } from "./sizing";
+import type {
+    ElementAssetSidecar,
+    ElementAssetTransform,
+    ElementManifest,
+    ElementPlacementMode,
+    PlacedElementAssetContext,
+} from "./types";
+
+let manifestCache: ElementManifest | null = null;
+const assetBytesCache = new Map<string, { hash: string; buffer: ArrayBuffer }>();
+const sidecarCache = new Map<string, ElementAssetSidecar>();
+
+function canReadLocalElements(): boolean {
+    return typeof process !== "undefined" && Boolean(process.versions?.node);
+}
+
+async function resolveElementsDir(): Promise<string> {
+    const { existsSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const a = resolve(process.cwd(), "vertex/public/elements");
+    const b = resolve(process.cwd(), "public/elements");
+    if (existsSync(a)) return a;
+    return b;
+}
+
+async function readElementsText(relativePath: string): Promise<string> {
+    if (canReadLocalElements()) {
+        const { readFileSync } = await import("node:fs");
+        const { resolve } = await import("node:path");
+        return readFileSync(resolve(await resolveElementsDir(), relativePath), "utf8");
+    }
+    const res = await fetch(`/elements/${relativePath}`);
+    if (!res.ok) throw new Error(`Failed to fetch /elements/${relativePath}`);
+    return res.text();
+}
+
+async function readElementsBuffer(relativePath: string): Promise<ArrayBuffer> {
+    if (canReadLocalElements()) {
+        const { readFileSync } = await import("node:fs");
+        const { resolve } = await import("node:path");
+        const buf = readFileSync(resolve(await resolveElementsDir(), relativePath));
+        return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    }
+    const res = await fetch(`/elements/${relativePath}`);
+    if (!res.ok) throw new Error(`Failed to fetch /elements/${relativePath}`);
+    return res.arrayBuffer();
+}
+
+export async function loadElementManifest(): Promise<ElementManifest> {
+    if (!manifestCache) {
+        manifestCache = JSON.parse(await readElementsText("index.json")) as ElementManifest;
+    }
+    return manifestCache;
+}
+
+export async function manifestEntryForKind(
+    kind: ElementKind,
+): Promise<{ id: string; sidecar: ElementAssetSidecar } | null> {
+    const manifest = await loadElementManifest();
+    const entry = manifest.elements.find((e) => e.kind === kind);
+    if (!entry) return null;
+    return { id: entry.id, sidecar: await loadSidecar(entry.sidecar) };
+}
+
+async function loadSidecar(file: string): Promise<ElementAssetSidecar> {
+    const cached = sidecarCache.get(file);
+    if (cached) return cached;
+    const sc = JSON.parse(await readElementsText(file)) as ElementAssetSidecar;
+    sidecarCache.set(file, sc);
+    return sc;
+}
+
+export function placementModeFor(placed: PlacedElement, sidecar: ElementAssetSidecar): ElementPlacementMode {
+    return placed.placementMode ?? sidecar.defaultPlacementMode ?? "flow";
+}
+
+export function buildElementTransform(
+    placed: PlacedElement,
+    sidecar: ElementAssetSidecar,
+    side: Side,
+    size: { scaleAlong: number; scaleAcross: number },
+): ElementAssetTransform {
+    const scaleZ = sidecar.nominalPeakMm > 1e-6 ? placed.heightMm / sidecar.nominalPeakMm : 1;
+    return {
+        scaleX: size.scaleAcross * placed.scale.y,
+        scaleY: size.scaleAlong * placed.scale.x,
+        scaleZ,
+        rotationDeg: placed.rotationDeg + (sidecar.rotationDeg ?? 0),
+        mirrorX: side === "left",
+        anchorUMm: placed.position.x,
+        anchorVMm: placed.position.y,
+        placementMode: placementModeFor(placed, sidecar),
+        zOffsetMm: placed.zOffsetMm ?? 0,
+        heightMm: placed.heightMm,
+        category: sidecar.category === "sink" ? "sink" : "add",
+    };
+}
+
+export function transformKey(
+    t: ElementAssetTransform,
+    sidecar?: ElementAssetSidecar,
+    sidecarHash?: string,
+): string {
+    return [
+        t.scaleX.toFixed(4),
+        t.scaleY.toFixed(4),
+        t.scaleZ.toFixed(4),
+        t.rotationDeg.toFixed(3),
+        t.mirrorX ? "L" : "R",
+        t.anchorUMm.toFixed(3),
+        t.anchorVMm.toFixed(3),
+        t.placementMode,
+        t.zOffsetMm.toFixed(3),
+        t.category,
+        sidecar?.featherMm.toFixed(3) ?? "",
+        sidecarHash ?? "",
+    ].join(",");
+}
+
+async function loadAssetBuffer(assetId: string): Promise<{ hash: string; buffer: ArrayBuffer }> {
+    const cached = assetBytesCache.get(assetId);
+    if (cached) return cached;
+    const manifest = await loadElementManifest();
+    const entry = manifest.elements.find((e) => e.id === assetId);
+    if (!entry) throw new Error(`Unknown element asset id: ${assetId}`);
+    const buffer = await readElementsBuffer(entry.glb);
+    const hash = await digestHex(buffer);
+    const out = { hash, buffer };
+    assetBytesCache.set(assetId, out);
+    return out;
+}
+
+/**
+ * Authored repo-right (+X medial, +Y toe) → app footprint (+X toe, +Y left-medial).
+ * Mirror authored X after scale and before translate (LEFT).
+ */
+export function authoredToAppXY(xMed: number, yToe: number, mirrorX: boolean): { x: number; y: number } {
+    const mx = mirrorX ? -xMed : xMed;
+    return { x: yToe, y: -mx };
+}
+
+export async function loadTransformedAssetPositions(
+    assetId: string,
+    transform: ElementAssetTransform,
+): Promise<{ positions: Float32Array; grid: ElementHeightGrid; assetHash: string }> {
+    const { hash, buffer } = await loadAssetBuffer(assetId);
+    const group = await loadGlbFromBuffer(buffer);
+    const merged = extractMergedGeometry(group);
+    group.clear();
+    if (!merged) throw new Error(`Element asset ${assetId} has no geometry`);
+    const geo = merged.geometry;
+    const attr = geo.getAttribute("position");
+    if (!attr) throw new Error(`Element asset ${assetId} missing positions`);
+    const out = new Float32Array(attr.count * 3);
+    const rot = new Matrix4().makeRotationZ((transform.rotationDeg * Math.PI) / 180);
+    const v = new Vector3();
+    for (let i = 0; i < attr.count; i++) {
+        const ax = attr.getX(i) * transform.scaleX;
+        const ay = attr.getY(i) * transform.scaleY;
+        const az = Math.max(0, attr.getZ(i) * transform.scaleZ);
+        const app = authoredToAppXY(ax, ay, transform.mirrorX);
+        v.set(app.x, app.y, az);
+        v.applyMatrix4(rot);
+        out[i * 3] = v.x;
+        out[i * 3 + 1] = v.y;
+        out[i * 3 + 2] = v.z;
+    }
+    const index = geo.getIndex()?.array;
+    geo.dispose();
+    const cacheKey = heightGridCacheKey(hash, transformKey(transform));
+    const grid = getOrRasterizeGrid(cacheKey, out, index);
+    return { positions: out, grid, assetHash: hash };
+}
+
+export async function hashElementAssetsForDesign(elements: PlacedElement[]): Promise<string> {
+    const manifest = await loadElementManifest();
+    const parts: string[] = [];
+    for (const el of elements) {
+        if (el.kind === "custom") continue;
+        const entry = manifest.elements.find((e) => e.kind === el.kind);
+        if (!entry) continue;
+        const { hash } = await loadAssetBuffer(entry.id);
+        const sc = await loadSidecar(entry.sidecar);
+        const scHash = await digestHex(new TextEncoder().encode(JSON.stringify(sc)).buffer);
+        const t = buildElementTransform(el, sc, el.side, { scaleAlong: 1, scaleAcross: 1 });
+        parts.push(`${entry.id}:${hash}:${transformKey(t, sc, scHash)}`);
+    }
+    return await digestHex(new TextEncoder().encode(parts.join("|")).buffer);
+}
+
+async function digestHex(buffer: ArrayBuffer): Promise<string> {
+    if (!canReadLocalElements() && globalThis.crypto?.subtle) {
+        const digest = await crypto.subtle.digest("SHA-256", buffer);
+        return Array.from(new Uint8Array(digest))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+    }
+    const { createHash } = await import("node:crypto");
+    return createHash("sha256").update(Buffer.from(buffer)).digest("hex");
+}
+
+export async function resolvePlacedAssetContexts(
+    elements: PlacedElement[],
+    side: Side,
+    _lengthMm: number,
+    _widthMm: number,
+    base?: import("three").BufferGeometry,
+    reference?: import("three").BufferGeometry | null,
+): Promise<PlacedElementAssetContext[]> {
+    const manifest = await loadElementManifest();
+    const out: PlacedElementAssetContext[] = [];
+    for (const placed of elements) {
+        if (placed.side !== side || placed.kind === "custom") continue;
+        const entry = manifest.elements.find((e) => e.kind === placed.kind);
+        if (!entry) continue;
+        const sidecar = await loadSidecar(entry.sidecar);
+        const { hash } = await loadAssetBuffer(entry.id);
+        const size = base
+            ? elementSizeScale(base, side, sidecar, reference)
+            : { scaleAlong: 1, scaleAcross: 1, rawAlong: 1, rawAcross: 1, warning: undefined };
+        const transform = buildElementTransform(placed, sidecar, side, size);
+        out.push({
+            placed,
+            side,
+            sidecar,
+            assetId: entry.id,
+            assetHash: hash,
+            transform,
+            scaleWarning: size.warning,
+        });
+    }
+    return out;
+}
+
+export { sidecarAnchorUV };

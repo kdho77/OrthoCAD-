@@ -1,0 +1,11 @@
+{
+    "version": 1,
+    "elements": [
+        {
+            "id": "met-pad-1",
+            "kind": "met_pad",
+            "glb": "met_pad_1.right.glb",
+            "sidecar": "met_pad_1.right.json"
+        }
+    ]
+}

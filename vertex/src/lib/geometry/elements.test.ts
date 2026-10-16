@@ -100,7 +100,7 @@ describe("anatomical element footprints", () => {
 
     test("default poses place pads near anatomical landmarks, not midfoot origin", () => {
         const met = defaultElementPose("met_pad", "left");
-        expect(met.position.x).toBeGreaterThan(20); // distal of centre
+        expect(met.position.x).toBeCloseTo((0.5233 - 0.5) * 260, 5);
         expect(met.heightMm).toBe(ELEMENT_PROFILES.met_pad.defaultHeightMm);
 
         const heel = defaultElementPose("heel_sink", "left");
