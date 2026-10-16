@@ -293,6 +293,22 @@ export function placeBottomText(
     };
 }
 
+function contiguousStationRuns(stations: WallStation[]): WallStation[][] {
+    const runs: WallStation[][] = [];
+    let cur: WallStation[] = [];
+    for (const st of stations) {
+        const prev = cur[cur.length - 1];
+        if (prev && st.s - prev.s > 8) {
+            if (cur.length >= 2) runs.push(cur);
+            cur = [st];
+        } else {
+            cur.push(st);
+        }
+    }
+    if (cur.length >= 2) runs.push(cur);
+    return runs;
+}
+
 export function placeWallText(
     ctx: HostTextContext,
     marking: TextMarking,
@@ -301,28 +317,35 @@ export function placeWallText(
     const lateral = lateralStations(ctx);
     if (lateral.length < 2) throw textForbiddenZone("no lateral wall stations in the allowed u band");
     const u = Math.max(TEXT_U.wall.min, Math.min(TEXT_U.wall.max, marking.placementU));
-    const atU = lateral.reduce((best, st) => (Math.abs(st.u - u) < Math.abs(best.u - u) ? st : best));
+    const runs = contiguousStationRuns(lateral);
+    const run =
+        runs.find((r) => r.some((st) => Math.abs(st.u - u) < 0.08)) ??
+        runs.reduce((best, r) => (r.length > best.length ? r : best), runs[0] ?? lateral);
+    const atU = run.reduce((best, st) => (Math.abs(st.u - u) < Math.abs(best.u - u) ? st : best));
     const half = flat.advanceMm / 2;
-    const s0 = atU.s - half;
-    const s1 = atU.s + half;
-    if (s0 < lateral[0]!.s - 1e-3 || s1 > lateral[lateral.length - 1]!.s + 1e-3) {
-        const zone = lateral[lateral.length - 1]!.s - lateral[0]!.s;
-        const minAdv = (TEXT_CAP.wall.min / Math.max(flat.capHeightMm, 1e-3)) * flat.advanceMm;
-        if (minAdv > zone + 1e-3) throw textDoesNotFit();
+    const sMin = run[0]!.s;
+    const sMax = run[run.length - 1]!.s;
+    let sMid = atU.s;
+    if (sMid - half < sMin) sMid = sMin + half;
+    if (sMid + half > sMax) sMid = sMax - half;
+    const s0 = sMid - half;
+    const s1 = sMid + half;
+    if (s0 < sMin - 1e-3 || s1 > sMax + 1e-3) {
         throw textDoesNotFit();
     }
+    const atMid = sampleAlong(run, sMid);
     const hNeed = flat.capHeightMm + 2 * TEXT_WALL_EDGE_CLEARANCE_MM;
-    if (atU.heightMm + 1e-6 < hNeed + TEXT_TRIMLINE_RIM_BAND_MM - TEXT_WALL_EDGE_CLEARANCE_MM) {
-        if (atU.heightMm - 3 < TEXT_CAP.wall.min) {
+    if (atMid.heightMm + 1e-6 < hNeed + TEXT_TRIMLINE_RIM_BAND_MM - TEXT_WALL_EDGE_CLEARANCE_MM) {
+        if (atMid.heightMm - 3 < TEXT_CAP.wall.min) {
             throw textForbiddenZone("wall height too short for cap plus 1.5 mm edge clearance");
         }
         throw textDoesNotFit();
     }
-    const zMid = (atU.B.z + atU.R.z) / 2;
+    const zMid = (atMid.B.z + atMid.R.z) / 2;
     const offset0 = marking.mode === "engrave" ? TEXT_BOOLEAN_EPS_MM : -TEXT_BOOLEAN_EPS_MM;
     const offset1 = marking.mode === "engrave" ? -marking.depthMm : marking.heightMm;
     const map: MapTextPoint = (p, t) => {
-        const st = sampleAlong(lateral, s0 + p.x);
+        const st = sampleAlong(run, s0 + p.x);
         if (st.thickMm + 1e-6 < TEXT_WALL_MIN_THICK_MM) {
             throw textForbiddenZone("wall thinner than 2 mm");
         }
