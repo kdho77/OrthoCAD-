@@ -15,7 +15,6 @@ import {
     placeBottomText,
     placeWallText,
 } from "./place";
-import { extrudeTextSolid } from "./solid";
 import type { TextApplyContext, TextApplyMeta, TextMarking } from "./types";
 import { assertTextMarkingInRange } from "./validate";
 
@@ -101,9 +100,8 @@ export async function applyTextMarkingToPrintSolid(
         placeMeta = placed.meta;
     }
 
-    const tool = extrudeTextSolid(placedFlat.groups, map);
     const op = checked.mode === "emboss" ? "add" : "subtract";
-    const result = await booleanTextSolid(host, tool, op);
+    const result = await booleanTextSolid(host, placedFlat.groups, map, op);
     const meta: TextApplyMeta = {
         surface: checked.surface,
         mode: checked.mode,

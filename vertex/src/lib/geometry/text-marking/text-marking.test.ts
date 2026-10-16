@@ -113,4 +113,18 @@ describe("text flatten / Clipper / stroke", () => {
             expect((e as Error).message).toMatch(/too thin, enable Bold or increase size/);
         }
     });
+
+    test("text prism subtracts from a box (manifold-3d)", async () => {
+        const { BoxGeometry } = await import("three");
+        const { booleanTextSolid } = await import("./boolean");
+        const { planarBottomMap } = await import("./solid");
+        const font = await loadTextFont();
+        const flat = flattenText(font, SAMPLE, 6, 0.6, true);
+        const host = new BoxGeometry(120, 40, 8);
+        host.translate(flat.advanceMm / 2, 3, 4);
+        const out = await booleanTextSolid(host, flat.groups, planarBottomMap(-0.05, 0.8), "subtract");
+        expect(out.getAttribute("position").count).toBeGreaterThan(8);
+        out.dispose();
+        host.dispose();
+    });
 });
