@@ -99,24 +99,21 @@ export function extractHostTextContext(geo: BufferGeometry): HostTextContext {
         const next = frames[(i + 1) % frames.length]!.R;
         const tx = next.x - prev.x;
         const ty = next.y - prev.y;
-        const tz = next.z - prev.z;
-        const wx = fr.R.x - B.x;
-        const wy = fr.R.y - B.y;
-        const wz = fr.R.z - (B.z ?? 0);
-        let nx = ty * wz - tz * wy;
-        let ny = tz * wx - tx * wz;
-        let nz = tx * wy - ty * wx;
-        const nl = Math.hypot(nx, ny, nz) || 1;
+        // Horizontal outward (rim tangent × +Z). A 3D B–R normal pitches down and
+        // the outer-surface raycast hits the plantar instead of the wall.
+        let nx = ty;
+        let ny = -tx;
+        const nl = Math.hypot(nx, ny) || 1;
         nx /= nl;
         ny /= nl;
-        nz /= nl;
         const awayX = fr.R.x - c.x;
         const awayY = fr.R.y - c.y;
         if (nx * awayX + ny * awayY < 0) {
             nx = -nx;
             ny = -ny;
-            nz = -nz;
         }
+        const wx = fr.R.x - B.x;
+        const wy = fr.R.y - B.y;
         const thickMm = Math.hypot(wx, wy);
         if (i > 0) {
             const p = frames[i - 1]!.R;
@@ -129,7 +126,7 @@ export function extractHostTextContext(geo: BufferGeometry): HostTextContext {
             B: { x: B.x, y: B.y, z: B.z ?? fr.Bz ?? 0 },
             heightMm: fr.heightMm ?? Math.abs(fr.R.z - (B.z ?? 0)),
             sideSign: fr.sideSign ?? 1,
-            nOut: { x: nx, y: ny, z: nz },
+            nOut: { x: nx, y: ny, z: 0 },
             thickMm,
             outerMm: 0,
         });
@@ -349,10 +346,18 @@ function chordToOuterMm(mesh: Mesh, st: WallStation, frac: number): number {
 function stampOuterOffsets(geo: BufferGeometry, run: WallStation[], capHeightMm: number): void {
     if (!geo.boundingSphere) geo.computeBoundingSphere();
     const mesh = new Mesh(geo);
+    const raw: number[] = [];
     for (const st of run) {
         const h = Math.max(1e-6, st.heightMm);
         const frac = Math.min(0.9, Math.max(0.15, (TEXT_WALL_EDGE_CLEARANCE_MM + capHeightMm / 2) / h));
-        st.outerMm = chordToOuterMm(mesh, st, frac);
+        const cap = Math.min(8, Math.max(0.2, st.thickMm));
+        raw.push(Math.max(0, Math.min(cap, chordToOuterMm(mesh, st, frac))));
+    }
+    for (let i = 0; i < run.length; i++) {
+        const a = raw[Math.max(0, i - 1)]!;
+        const b = raw[i]!;
+        const c = raw[Math.min(raw.length - 1, i + 1)]!;
+        run[i]!.outerMm = (a + b + c) / 3;
     }
 }
 
