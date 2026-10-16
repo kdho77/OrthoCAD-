@@ -35,7 +35,7 @@ export const TEXT_EMBOSS_WALL = { min: 0.6, default: 0.8, max: 1.2 } as const;
 
 export const TEXT_U = {
     bottom: { min: 0.15, default: 0.3, max: 0.45 },
-    wall: { min: 0.35, default: 0.55, max: 0.8 },
+    wall: { min: 0.35, default: 0.42, max: 0.8 },
 } as const;
 
 export const TEXT_ROTATION_MAX_DEG = 90;
