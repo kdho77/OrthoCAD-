@@ -11,6 +11,7 @@ import {
     TEXT_BOOLEAN_OUTSET_MM,
     TEXT_BOTTOM_INSET_MM,
     TEXT_CAP,
+    TEXT_FILLET_DIHEDRAL_DEG,
     TEXT_NORMAL_SMOOTH_MM,
     TEXT_TRIMLINE_RIM_BAND_MM,
     TEXT_U,
@@ -303,6 +304,153 @@ function fitsInside(flat: FlattenedText, outline: PolyPoint[], insetMm: number):
     return true;
 }
 
+/**
+ * Boundary of the actual flat plantar (z≈0 faces whose neighbor tilts off +Z).
+ * This is where the wall–plantar fillet starts.
+ */
+export function flatBottomBoundaryLoop(geo: BufferGeometry): PolyPoint[] | null {
+    const pos = geo.getAttribute("position");
+    const index = geo.getIndex();
+    if (!pos || !index) return null;
+    const src = index.array as ArrayLike<number>;
+    const n = (i0: number, i1: number, i2: number) => {
+        const ax = pos.getX(i0);
+        const ay = pos.getY(i0);
+        const az = pos.getZ(i0);
+        const bx = pos.getX(i1);
+        const by = pos.getY(i1);
+        const bz = pos.getZ(i1);
+        const cx = pos.getX(i2);
+        const cy = pos.getY(i2);
+        const cz = pos.getZ(i2);
+        const nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
+        const ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+        const nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        const l = Math.hypot(nx, ny, nz) || 1;
+        return { nx: nx / l, ny: ny / l, nz: nz / l, z: (az + bz + cz) / 3 };
+    };
+    const flat: boolean[] = [];
+    const edges = new Map<string, number>();
+    const edgeKey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let t = 0; t + 2 < index.count; t += 3) {
+        const i0 = src[t] ?? 0;
+        const i1 = src[t + 1] ?? 0;
+        const i2 = src[t + 2] ?? 0;
+        const m = n(i0, i1, i2);
+        const isFlat = m.nz > 0.85 && m.z < 0.35;
+        flat.push(isFlat);
+        if (!isFlat) continue;
+        for (const [u, v] of [
+            [i0, i1],
+            [i1, i2],
+            [i2, i0],
+        ] as const) {
+            const k = edgeKey(u, v);
+            edges.set(k, (edges.get(k) ?? 0) + 1);
+        }
+    }
+    const loop: PolyPoint[] = [];
+    const seen = new Set<number>();
+    for (let t = 0; t + 2 < index.count; t += 3) {
+        if (!flat[t / 3]) continue;
+        const i0 = src[t] ?? 0;
+        const i1 = src[t + 1] ?? 0;
+        const i2 = src[t + 2] ?? 0;
+        for (const [u, v] of [
+            [i0, i1],
+            [i1, i2],
+            [i2, i0],
+        ] as const) {
+            if ((edges.get(edgeKey(u, v)) ?? 0) !== 1) continue;
+            for (const i of [u, v]) {
+                if (seen.has(i)) continue;
+                seen.add(i);
+                loop.push({ x: pos.getX(i), y: pos.getY(i), z: pos.getZ(i) });
+            }
+        }
+    }
+    return loop.length >= 8 ? loop : null;
+}
+
+function dihedralDeg(
+    a: { x: number; y: number; z: number },
+    b: { x: number; y: number; z: number },
+): number {
+    const c = Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y + a.z * b.z));
+    return (Math.acos(c) * 180) / Math.PI;
+}
+
+/**
+ * Height along B→R of the top of the wall–plantar fillet: the highest sample
+ * whose face still has dihedral-to-plantar below 10°.
+ */
+export function measureWallFilletTopMm(geo: BufferGeometry, st: WallStation): number {
+    const ud = geo.userData as { filletRing?: Array<{ x: number; y: number; z: number }> };
+    let fromMeta = 0;
+    if (ud.filletRing?.length) {
+        let best = Infinity;
+        let fz = st.B.z;
+        for (const f of ud.filletRing) {
+            const d = (f.x - st.B.x) ** 2 + (f.y - st.B.y) ** 2;
+            if (d < best) {
+                best = d;
+                fz = f.z;
+            }
+        }
+        fromMeta = Math.max(0, fz - st.B.z);
+    }
+    const pos = geo.getAttribute("position");
+    const index = geo.getIndex();
+    if (!pos || !index) return fromMeta;
+    const plantar = { x: 0, y: 0, z: 1 };
+    const bx = st.B.x;
+    const by = st.B.y;
+    const bz = st.B.z;
+    const rx = st.R.x - bx;
+    const ry = st.R.y - by;
+    const rz = st.R.z - bz;
+    const hLen = Math.hypot(rx, ry, rz) || 1;
+    let measured = 0;
+    const src = index.array as ArrayLike<number>;
+    for (let t = 0; t + 2 < index.count; t += 3) {
+        const i0 = src[t] ?? 0;
+        const i1 = src[t + 1] ?? 0;
+        const i2 = src[t + 2] ?? 0;
+        const ax = pos.getX(i0);
+        const ay = pos.getY(i0);
+        const az = pos.getZ(i0);
+        const px = pos.getX(i1);
+        const py = pos.getY(i1);
+        const pz = pos.getZ(i1);
+        const qx = pos.getX(i2);
+        const qy = pos.getY(i2);
+        const qz = pos.getZ(i2);
+        const mx = (ax + px + qx) / 3;
+        const my = (ay + py + qy) / 3;
+        const mz = (az + pz + qz) / 3;
+        const dx = mx - bx;
+        const dy = my - by;
+        const dz = mz - bz;
+        const along = (dx * rx + dy * ry + dz * rz) / hLen;
+        if (along < -1 || along > hLen + 1) continue;
+        const sideways = Math.hypot(dx - (rx / hLen) * along, dy - (ry / hLen) * along, dz - (rz / hLen) * along);
+        if (sideways > 8) continue;
+        const nx = (py - ay) * (qz - az) - (pz - az) * (qy - ay);
+        const ny = (pz - az) * (qx - ax) - (px - ax) * (qz - az);
+        const nz = (px - ax) * (qy - ay) - (py - ay) * (qx - ax);
+        const nl = Math.hypot(nx, ny, nz);
+        if (nl < 1e-12) continue;
+        const n = { x: nx / nl, y: ny / nl, z: nz / nl };
+        const deg = dihedralDeg(n, plantar);
+        // Fillet band: not plantar-flat and not a vertical wall. The top is
+        // the highest sample in that band (dihedral to plantar has left <10°
+        // at the plantar join and has not yet reached a vertical wall).
+        if (deg < TEXT_FILLET_DIHEDRAL_DEG || deg > 80) continue;
+        if (along > measured) measured = along;
+    }
+    return Math.max(fromMeta, measured);
+}
+
 /** Top-sheet Z at each XY (ignore the plantar z=0 vertices that share the same XY). */
 function minLocalHeight(geo: BufferGeometry, pts: TextXy[]): number {
     const pos = geo.getAttribute("position").array as Float32Array;
@@ -351,11 +499,15 @@ export function placeBottomText(
     let placed = applyAt(flat, 1);
     let scale = 1;
     const minScale = TEXT_CAP.bottom.min / Math.max(flat.capHeightMm, 1e-3);
-    while (!fitsInside(placed, ctx.outline, TEXT_BOTTOM_INSET_MM) && scale > minScale + 1e-4) {
+    const flatBound = flatBottomBoundaryLoop(geo);
+    const fitsBoth = (src: FlattenedText) =>
+        fitsInside(src, ctx.outline, TEXT_BOTTOM_INSET_MM) &&
+        (!flatBound || fitsInside(src, flatBound, TEXT_BOTTOM_INSET_MM));
+    while (!fitsBoth(placed) && scale > minScale + 1e-4) {
         scale = Math.max(minScale, scale * 0.92);
         placed = applyAt(flat, scale);
     }
-    if (!fitsInside(placed, ctx.outline, TEXT_BOTTOM_INSET_MM)) throw textDoesNotFit();
+    if (!fitsBoth(placed)) throw textDoesNotFit();
 
     for (const p of placed.centroids) {
         const uPt = (p.x - ctx.minX) / Math.max(1e-3, ctx.maxX - ctx.minX);
@@ -645,10 +797,16 @@ export function placeWallText(
     if (best.minT + 1e-6 < TEXT_WALL_MIN_THICK_MM) {
         throw textForbiddenZone("wall thinner than 2 mm");
     }
-    const minUsable = TEXT_WALL_EDGE_CLEARANCE_MM + TEXT_TRIMLINE_RIM_BAND_MM;
-    if (best.minH + 1e-6 < minUsable) {
-        throw textForbiddenZone("wall height too short for cap plus 1.5 mm edge clearance");
-    }
+    const filletCache = new Map<number, number>();
+    const filletOf = (st: WallStation): number => {
+        const key = Math.round(st.s * 20);
+        let v = filletCache.get(key);
+        if (v == null) {
+            v = measureWallFilletTopMm(geo, st);
+            filletCache.set(key, v);
+        }
+        return v;
+    };
     let yMin = Infinity;
     let yMax = -Infinity;
     for (const g of flat.groups) {
@@ -661,11 +819,23 @@ export function placeWallText(
     const sMid = bestS;
     const s0 = sMid - half;
     const s1 = sMid + half;
+    let minUsableH = Infinity;
+    for (let i = 0; i <= 16; i++) {
+        const st = sampleAlong(run, s0 + ((s1 - s0) * i) / 16);
+        const usable =
+            st.heightMm - filletOf(st) - TEXT_WALL_EDGE_CLEARANCE_MM - TEXT_TRIMLINE_RIM_BAND_MM;
+        if (usable < minUsableH) minUsableH = usable;
+    }
+    if (minUsableH + 1e-6 < flat.capHeightMm) {
+        throw textForbiddenZone(
+            "wall height too short above the plantar fillet plus 1.5 mm edge clearance",
+        );
+    }
     const offset0 = marking.mode === "engrave" ? -marking.depthMm : -TEXT_BOOLEAN_OUTSET_MM;
     const offset1 = marking.mode === "engrave" ? TEXT_BOOLEAN_OUTSET_MM : marking.heightMm;
     const heightOf = (p: TextXy, st: WallStation): number => {
         const h = Math.max(1e-6, st.R.z - st.B.z);
-        const usableBot = TEXT_WALL_EDGE_CLEARANCE_MM;
+        const usableBot = filletOf(st) + TEXT_WALL_EDGE_CLEARANCE_MM;
         const usableTop = Math.max(usableBot + 0.5, h - TEXT_TRIMLINE_RIM_BAND_MM);
         const usable = Math.max(1e-3, usableTop - usableBot);
         const yScale = Math.min(1, usable / ySpan);
@@ -690,29 +860,13 @@ export function placeWallText(
                 surfCache.set(key, hit);
             }
             const off = offset0 + (offset1 - offset0) * t;
-            // Floor follows the 1 mm smoothed n; the outer cap pokes along
-            // the station outward so the cutter cannot sit inside the wall.
+            // Uniform 0.5 mm outset of the outer cap along the smoothed normal.
             const n0 = hit.n;
-            let px = st.nOut.x;
-            let py = st.nOut.y;
-            let pz = st.nOut.z;
-            const pl = Math.hypot(px, py, pz) || 1;
-            px /= pl;
-            py /= pl;
-            pz /= pl;
-            if (px * n0.x + py * n0.y + pz * n0.z < 0) {
-                px = -px;
-                py = -py;
-                pz = -pz;
-            }
-            const nx = n0.x * (1 - t) + px * t;
-            const ny = n0.y * (1 - t) + py * t;
-            const nz = n0.z * (1 - t) + pz * t;
-            const nlen = Math.hypot(nx, ny, nz) || 1;
+            const nlen = Math.hypot(n0.x, n0.y, n0.z) || 1;
             return {
-                x: hit.p.x + (nx / nlen) * off,
-                y: hit.p.y + (ny / nlen) * off,
-                z: hit.p.z + (nz / nlen) * off,
+                x: hit.p.x + (n0.x / nlen) * off,
+                y: hit.p.y + (n0.y / nlen) * off,
+                z: hit.p.z + (n0.z / nlen) * off,
             };
         };
     };
