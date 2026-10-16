@@ -48,7 +48,7 @@ describe("text marking controls", () => {
         expect(wall.capDefault).toBe(6);
         expect(wall.capMax).toBe(9);
         expect(wall.depthMax).toBe(1.2);
-        expect(wall.uMin).toBe(0.35);
+        expect(wall.uMin).toBe(0.2);
         expect(wall.uMax).toBe(0.8);
         expect(textControlBounds("wall", { wallHeightMm: 7 }).wallAvailable).toBe(false);
     });

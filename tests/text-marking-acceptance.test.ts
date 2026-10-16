@@ -5,10 +5,11 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
+import { DoubleSide, Mesh, MeshBasicMaterial, Raycaster, Vector3 } from "three";
 import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { applyTextMarkingToPrintSolid } from "@/lib/geometry/text-marking/apply";
-import { defaultTextMarking, TEXT_MIN_STROKE_MM } from "@/lib/geometry/text-marking/constants";
+import { defaultTextMarking, TEXT_MIN_STROKE_MM, TEXT_U } from "@/lib/geometry/text-marking/constants";
 import { flattenText } from "@/lib/geometry/text-marking/contours";
 import { TextMarkingError } from "@/lib/geometry/text-marking/errors";
 import { loadTextFont } from "@/lib/geometry/text-marking/font";
@@ -27,6 +28,28 @@ function marking(surface: TextSurface, extras: Partial<TextMarking> = {}): TextM
         capHeightMm: 6,
         ...extras,
     };
+}
+
+function depthAlongNormal(
+    geo: Parameters<typeof applyTextMarkingToPrintSolid>[0],
+    c: { x: number; y: number; z: number },
+    nOut: { x: number; y: number; z: number },
+): number {
+    const material = new MeshBasicMaterial({ side: DoubleSide });
+    const mesh = new Mesh(geo, material);
+    const nlen = Math.hypot(nOut.x, nOut.y, nOut.z) || 1;
+    const nx = nOut.x / nlen;
+    const ny = nOut.y / nlen;
+    const nz = nOut.z / nlen;
+    const origin = new Vector3(c.x + nx * 8, c.y + ny * 8, c.z + nz * 8);
+    const dir = new Vector3(-nx, -ny, -nz);
+    const ray = new Raycaster(origin, dir, 0, 20);
+    const hits = ray.intersectObject(mesh, false);
+    material.dispose();
+    const hit = hits[0];
+    if (!hit) return Number.NaN;
+    const h = hit.point;
+    return (c.x - h.x) * nx + (c.y - h.y) * ny + (c.z - h.z) * nz;
 }
 
 function stlGates(stl: ArrayBuffer, tag: string): { watertight: boolean; winding: boolean; bodies: number } {
@@ -89,16 +112,41 @@ describe("text marking L/R × wall/bottom builds", () => {
                 const ud = tagged.userData as {
                     textMarking?: {
                         mappedWidthMm?: number;
-                        centroids?: Array<{ z: number }>;
+                        centroids?: Array<{
+                            x: number;
+                            y: number;
+                            z: number;
+                            nOut?: { x: number; y: number; z: number };
+                            u?: number;
+                        }>;
                         depthMm?: number;
+                        wallUMin?: number;
+                        wallUMax?: number;
                     };
-                    textGates?: { watertight?: boolean; gWind?: boolean };
+                    textGates?: { watertight?: boolean; gWind?: boolean; selfIntersections?: number };
                 };
                 expect(ud.textGates?.watertight).toBe(true);
                 expect(ud.textGates?.gWind).toBe(true);
+                expect(ud.textGates?.selfIntersections).toBe(0);
                 if (surface === "wall") {
                     const mapped = ud.textMarking?.mappedWidthMm ?? 0;
                     expect(Math.abs(mapped - flat.advanceMm) / flat.advanceMm).toBeLessThanOrEqual(0.02);
+                    expect(ud.textMarking?.wallUMin ?? -1).toBeGreaterThanOrEqual(TEXT_U.wall.min - 1e-6);
+                    expect(ud.textMarking?.wallUMax ?? 99).toBeLessThanOrEqual(TEXT_U.wall.max + 1e-6);
+                    const cents = ud.textMarking?.centroids ?? [];
+                    expect(cents.length).toBeGreaterThan(3);
+                    for (const c of cents) {
+                        expect(c.u ?? -1).toBeGreaterThanOrEqual(TEXT_U.wall.min - 1e-6);
+                        expect(c.u ?? 99).toBeLessThanOrEqual(TEXT_U.wall.max + 1e-6);
+                    }
+                    const slanted = cents.reduce((best, c) => {
+                        const a = Math.abs(c.nOut?.z ?? 0);
+                        const b = Math.abs(best.nOut?.z ?? 0);
+                        return a > b ? c : best;
+                    });
+                    const along = depthAlongNormal(tagged, slanted, slanted.nOut ?? { x: 0, y: 0, z: 1 });
+                    const depth = ud.textMarking?.depthMm ?? 0;
+                    expect(Math.abs(along - depth)).toBeLessThanOrEqual(0.05);
                 }
                 if (surface === "bottom") {
                     const depth = ud.textMarking?.depthMm ?? 0;
@@ -130,6 +178,23 @@ describe("text marking L/R × wall/bottom builds", () => {
             buf.dispose();
         }
     });
+
+    test("over-length wall string errors instead of leaving the u band", async () => {
+        const buf = await loadSampleTopGlb();
+        try {
+            const preview = reconstructProceduralPreview(buf, { wallStyle: "straight" });
+            await expect(
+                applyTextMarkingToPrintSolid(
+                    preview.geometry,
+                    marking("wall", { text: "X".repeat(40), capHeightMm: 6 }),
+                    { side: "right" },
+                ),
+            ).rejects.toBeInstanceOf(TextMarkingError);
+            preview.geometry.dispose();
+        } finally {
+            buf.dispose();
+        }
+    }, 60_000);
 
     test("forbidden zone / thickness errors never yield a broken STL", async () => {
         const buf = await loadSampleTopGlb();

@@ -3,7 +3,7 @@
 
 import type { BufferGeometry } from "three";
 import { booleanTextSolid } from "./boolean";
-import { hasActiveTextMarking, TEXT_CAP } from "./constants";
+import { hasActiveTextMarking, TEXT_CAP, TEXT_WALL_SIMPLIFY_MM } from "./constants";
 import { flattenText } from "./contours";
 import { TextMarkingError } from "./errors";
 import { loadTextFont } from "./font";
@@ -71,7 +71,7 @@ export async function applyTextMarkingToPrintSolid(
 
     let placedFlat: ReturnType<typeof flattenText>;
     let map: ReturnType<typeof placeBottomText>["map"];
-    let placeMeta: ReturnType<typeof placeBottomText>["meta"];
+    let placeMeta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm" | "wallUMin" | "wallUMax">;
     if (checked.surface === "bottom") {
         placedFlat = shrinkThenFlatten(font, checked, minCap, (flat) => {
             placeBottomText(host, hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat, ctx.side);
@@ -102,13 +102,13 @@ export async function applyTextMarkingToPrintSolid(
     }
 
     const op = checked.mode === "emboss" ? "add" : "subtract";
-    // Wall cuts leave SAT slivers; 0.1 mm << 0.8 mm pocket. Bottom stays unsimplified.
+    // Wall-only 0.02 mm simplify (CAD-expert accepted). Bottom stays unsimplified.
     const result = await booleanTextSolid(
         host,
         placedFlat.groups,
         map,
         op,
-        checked.surface === "wall" ? 0.02 : 0,
+        checked.surface === "wall" ? TEXT_WALL_SIMPLIFY_MM : 0,
     );
     const meta: TextApplyMeta = {
         surface: checked.surface,
@@ -119,6 +119,8 @@ export async function applyTextMarkingToPrintSolid(
         advanceMm: placedFlat.advanceMm,
         centroids: placeMeta.centroids,
         mappedWidthMm: placeMeta.mappedWidthMm,
+        wallUMin: placeMeta.wallUMin,
+        wallUMax: placeMeta.wallUMax,
     };
     assertTextPrintGates(result, meta, hostCtx.outline);
     return result;

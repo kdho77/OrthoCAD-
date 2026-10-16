@@ -6,7 +6,7 @@ import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt
 import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
 import { countSelfIntersections } from "@/lib/geometry/procedural-wall/intersect";
 import { reconstructionManifold, windingReport } from "@/lib/geometry/procedural-wall/metrics";
-import { TEXT_BOOLEAN_EPS_MM, TEXT_REMAINING_MIN_MM } from "./constants";
+import { TEXT_BOOLEAN_EPS_MM, TEXT_REMAINING_MIN_MM, TEXT_WELD_MM } from "./constants";
 import { TextMarkingError, textTooThinRemaining } from "./errors";
 import type { TextApplyMeta, TextSurface } from "./types";
 
@@ -130,13 +130,8 @@ export function assertTextPrintGates(
             `text boolean is not watertight (open=${man.openEdges} nm=${man.nonManifoldEdges} idxOpen=${indexed.openEdges} idxNm=${indexed.nonManifoldEdges})`,
         );
     }
-    const si = countSelfIntersections(geo, 0.02);
-    // Manifold-3d CSG is a 2-manifold embedding. The loft SAT tester still
-    // flags a handful of remeshed cut slivers (stale topN / 1e-5 weld). Allow
-    // a small sliver budget on an indexed 2-manifold; a folded cutter (thousands
-    // of hits) still fails.
-    const sliverBudget = indexed.isWatertight ? 8 : 0;
-    if (si.real > sliverBudget) {
+    const si = countSelfIntersections(geo, TEXT_WELD_MM);
+    if (si.real > 0) {
         throw new TextMarkingError("stl-gate", `text boolean has ${si.real} self-intersections`);
     }
     const wind = windingReport(geo);

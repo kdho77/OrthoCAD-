@@ -14,6 +14,12 @@ export const TEXT_MAX_CHARS = 40;
 export const TEXT_MIN_LETTER_SPACING_MM = 0.6;
 export const TEXT_BOOLEAN_EPS_MM = 0.05;
 export const TEXT_WELD_MM = 1e-4;
+/** Wall-only Manifold.simplify tolerance. Bottom stays unsimplified. */
+export const TEXT_WALL_SIMPLIFY_MM = 0.02;
+/** Drop / edge-collapse needles after the boolean (area mm²). */
+export const TEXT_DEGENERATE_AREA_MM2 = 1e-6;
+/** Drop / edge-collapse needles after the boolean (minimum interior angle). */
+export const TEXT_DEGENERATE_MIN_ANGLE_DEG = 0.5;
 export const TEXT_REMAINING_MIN_MM = 1.2;
 export const TEXT_BOTTOM_INSET_MM = 4;
 export const TEXT_WALL_EDGE_CLEARANCE_MM = 1.5;
@@ -35,7 +41,7 @@ export const TEXT_EMBOSS_WALL = { min: 0.6, default: 0.8, max: 1.2 } as const;
 
 export const TEXT_U = {
     bottom: { min: 0.15, default: 0.3, max: 0.45 },
-    wall: { min: 0.35, default: 0.42, max: 0.8 },
+    wall: { min: 0.2, default: 0.42, max: 0.8 },
 } as const;
 
 export const TEXT_ROTATION_MAX_DEG = 90;

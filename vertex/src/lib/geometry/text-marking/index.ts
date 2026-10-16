@@ -16,6 +16,7 @@ export {
     TEXT_MIN_STROKE_MM,
     TEXT_REMAINING_MIN_MM,
     TEXT_U,
+    TEXT_WALL_SIMPLIFY_MM,
     TEXT_WELD_MM,
 } from "./constants";
 export { flattenText } from "./contours";

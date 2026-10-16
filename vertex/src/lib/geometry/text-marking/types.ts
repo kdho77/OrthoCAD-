@@ -41,7 +41,18 @@ export interface TextApplyMeta {
     heightMm: number;
     capHeightMm: number;
     advanceMm: number;
-    centroids: Array<{ x: number; y: number; z: number }>;
+    centroids: Array<{
+        x: number;
+        y: number;
+        z: number;
+        /** Outward wall normal at the glyph centroid (wall only). */
+        nOut?: { x: number; y: number; z: number };
+        /** Placement-u of the station under this centroid (wall only). */
+        u?: number;
+    }>;
     /** World-space width along the placement axis (mm). */
     mappedWidthMm: number;
+    /** Inclusive glyph extent in placement-u (wall only). */
+    wallUMin?: number;
+    wallUMax?: number;
 }

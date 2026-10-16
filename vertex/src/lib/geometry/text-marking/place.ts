@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { type BufferGeometry, Mesh, Raycaster, Vector3 } from "three";
+import { type BufferGeometry, DoubleSide, Mesh, MeshBasicMaterial, Raycaster, Vector3 } from "three";
 import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
 import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
 import type { Side } from "@/types";
@@ -99,22 +99,32 @@ export function extractHostTextContext(geo: BufferGeometry): HostTextContext {
         const next = frames[(i + 1) % frames.length]!.R;
         const tx = next.x - prev.x;
         const ty = next.y - prev.y;
-        // Horizontal outward (rim tangent × +Z). A 3D B–R normal pitches down and
-        // the outer-surface raycast hits the plantar instead of the wall.
-        let nx = ty;
-        let ny = -tx;
-        const nl = Math.hypot(nx, ny) || 1;
+        const tz = next.z - prev.z;
+        const bx = fr.R.x - B.x;
+        const by = fr.R.y - B.y;
+        const bz = fr.R.z - (B.z ?? fr.Bz ?? 0);
+        // True wall normal at the hit: station tangent × B→R, signed outward.
+        let nx = ty * bz - tz * by;
+        let ny = tz * bx - tx * bz;
+        let nz = tx * by - ty * bx;
+        let nl = Math.hypot(nx, ny, nz);
+        if (nl < 1e-10) {
+            nx = ty;
+            ny = -tx;
+            nz = 0;
+            nl = Math.hypot(nx, ny) || 1;
+        }
         nx /= nl;
         ny /= nl;
+        nz /= nl;
         const awayX = fr.R.x - c.x;
         const awayY = fr.R.y - c.y;
         if (nx * awayX + ny * awayY < 0) {
             nx = -nx;
             ny = -ny;
+            nz = -nz;
         }
-        const wx = fr.R.x - B.x;
-        const wy = fr.R.y - B.y;
-        const thickMm = Math.hypot(wx, wy);
+        const thickMm = Math.hypot(bx, by);
         if (i > 0) {
             const p = frames[i - 1]!.R;
             s += Math.hypot(fr.R.x - p.x, fr.R.y - p.y, fr.R.z - p.z);
@@ -126,7 +136,7 @@ export function extractHostTextContext(geo: BufferGeometry): HostTextContext {
             B: { x: B.x, y: B.y, z: B.z ?? fr.Bz ?? 0 },
             heightMm: fr.heightMm ?? Math.abs(fr.R.z - (B.z ?? 0)),
             sideSign: fr.sideSign ?? 1,
-            nOut: { x: nx, y: ny, z: 0 },
+            nOut: { x: nx, y: ny, z: nz },
             thickMm,
             outerMm: 0,
         });
@@ -141,6 +151,24 @@ export function extractHostTextContext(geo: BufferGeometry): HostTextContext {
     }
     midY /= Math.max(1, outline.length);
     return { outline, stations, minX, maxX, midY };
+}
+
+function contiguousStationRuns(stations: WallStation[], gapMm = 8): WallStation[][] {
+    if (stations.length < 2) return [];
+    const sorted = stations.slice().sort((a, b) => a.s - b.s);
+    const runs: WallStation[][] = [];
+    let cur: WallStation[] = [];
+    for (const st of sorted) {
+        const prev = cur[cur.length - 1];
+        if (prev && st.s - prev.s > gapMm) {
+            if (cur.length >= 2) runs.push(cur);
+            cur = [st];
+        } else {
+            cur.push(st);
+        }
+    }
+    if (cur.length >= 2) runs.push(cur);
+    return runs.length ? runs : [sorted];
 }
 
 function xAtU(ctx: HostTextContext, u: number): number {
@@ -169,6 +197,18 @@ function centrelineYAtX(outline: PolyPoint[], x: number, fallback: number): numb
     return 0.5 * (hits[0]! + hits[hits.length - 1]!);
 }
 
+function lerpDir(
+    a: { x: number; y: number; z: number },
+    b: { x: number; y: number; z: number },
+    t: number,
+): { x: number; y: number; z: number } {
+    const x = a.x + (b.x - a.x) * t;
+    const y = a.y + (b.y - a.y) * t;
+    const z = a.z + (b.z - a.z) * t;
+    const n = Math.hypot(x, y, z) || 1;
+    return { x: x / n, y: y / n, z: z / n };
+}
+
 function sampleAlong(stations: WallStation[], s: number): WallStation {
     if (stations.length === 1) return stations[0]!;
     if (s <= stations[0]!.s) return stations[0]!;
@@ -194,11 +234,7 @@ function sampleAlong(stations: WallStation[], s: number): WallStation {
                 },
                 heightMm: a.heightMm + (b.heightMm - a.heightMm) * t,
                 sideSign: a.sideSign,
-                nOut: {
-                    x: a.nOut.x + (b.nOut.x - a.nOut.x) * t,
-                    y: a.nOut.y + (b.nOut.y - a.nOut.y) * t,
-                    z: a.nOut.z + (b.nOut.z - a.nOut.z) * t,
-                },
+                nOut: lerpDir(a.nOut, b.nOut, t),
                 thickMm: a.thickMm + (b.thickMm - a.thickMm) * t,
                 outerMm: a.outerMm + (b.outerMm - a.outerMm) * t,
             };
@@ -208,8 +244,8 @@ function sampleAlong(stations: WallStation[], s: number): WallStation {
 }
 
 export function lateralStations(ctx: HostTextContext): WallStation[] {
-    // Full lateral Y-side (not clipped to the u control band). Placement u stays
-    // in [0.35, 0.80]; glyph extents may run into the taller heel wall.
+    // Full lateral Y-side, wrap-rotated at the true 3D gap, then clipped to the
+    // u 0.20–0.80 wall band. Glyph extents must never leave this band.
     const low = ctx.stations.filter((st) => st.R.y < ctx.midY);
     const high = ctx.stations.filter((st) => st.R.y >= ctx.midY);
     const nLowLat = low.filter((s) => s.sideSign < 0).length;
@@ -217,9 +253,6 @@ export function lateralStations(ctx: HostTextContext): WallStation[] {
     const ySide = nLowLat >= nHighLat ? "low" : "high";
     const inOrder = ySide === "low" ? low : high;
     if (inOrder.length < 2) return [];
-    // Filtered loop order still wraps at the original perimeter seam. Cut at the
-    // largest 3D gap (the true discontinuity) and rebuild arc-length s so the
-    // u=0.35–0.80 lateral band is one continuous chain.
     let cut = 0;
     let maxGap = -1;
     for (let i = 0; i < inOrder.length; i++) {
@@ -232,10 +265,25 @@ export function lateralStations(ctx: HostTextContext): WallStation[] {
         }
     }
     const run = inOrder.slice(cut).concat(inOrder.slice(0, cut));
-    let s = 0;
-    return run.map((st, i) => {
+    let sRun = 0;
+    const chained = run.map((st, i) => {
         if (i > 0) {
             const p = run[i - 1]!;
+            sRun += Math.hypot(st.R.x - p.R.x, st.R.y - p.R.y, st.R.z - p.R.z);
+        }
+        return { ...st, s: sRun };
+    });
+    const banded = chained.filter((st) => st.u + 1e-9 >= TEXT_U.wall.min && st.u - 1e-9 <= TEXT_U.wall.max);
+    const runs = contiguousStationRuns(banded);
+    const chain = runs.reduce((best, r) => {
+        const span = (x: WallStation[]) => x[x.length - 1]!.s - x[0]!.s;
+        return !best.length || span(r) > span(best) ? r : best;
+    }, [] as WallStation[]);
+    if (chain.length < 2) return [];
+    let s = 0;
+    return chain.map((st, i) => {
+        if (i > 0) {
+            const p = chain[i - 1]!;
             s += Math.hypot(st.R.x - p.R.x, st.R.y - p.R.y, st.R.z - p.R.z);
         }
         return { ...st, s };
@@ -273,7 +321,11 @@ export function placeBottomText(
     marking: TextMarking,
     flat: FlattenedText,
     side: Side,
-): { flat: FlattenedText; map: MapTextPoint; meta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm"> } {
+): {
+    flat: FlattenedText;
+    map: MapTextPoint;
+    meta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm" | "wallUMin" | "wallUMax">;
+} {
     const u = Math.max(TEXT_U.bottom.min, Math.min(TEXT_U.bottom.max, marking.placementU));
     const cx = xAtU(ctx, u);
     // Left-foot placement is already mirrored with the host mesh; do not glyph-mirror again.
@@ -332,20 +384,23 @@ function chordToOuterMm(mesh: Mesh, st: WallStation, frac: number): number {
     const nx = st.nOut.x / nlen;
     const ny = st.nOut.y / nlen;
     const nz = st.nOut.z / nlen;
-    const far = 16;
-    _rayOrigin.set(px + nx * far, py + ny * far, pz + nz * far);
-    _rayDir.set(-nx, -ny, -nz);
+    const bump = 0.02;
+    _rayOrigin.set(px + nx * bump, py + ny * bump, pz + nz * bump);
+    _rayDir.set(nx, ny, nz);
     _raycaster.set(_rayOrigin, _rayDir);
     _raycaster.near = 0;
-    _raycaster.far = far + 10;
+    _raycaster.far = 8;
     const hits = _raycaster.intersectObject(mesh, false);
-    if (!hits.length) return 0;
-    return far - hits[0]!.distance;
+    for (const hit of hits) {
+        if (hit.point.z > 0.4) return hit.distance + bump;
+    }
+    return 0;
 }
 
 function stampOuterOffsets(geo: BufferGeometry, run: WallStation[], capHeightMm: number): void {
     if (!geo.boundingSphere) geo.computeBoundingSphere();
-    const mesh = new Mesh(geo);
+    const material = new MeshBasicMaterial({ side: DoubleSide });
+    const mesh = new Mesh(geo, material);
     const raw: number[] = [];
     for (const st of run) {
         const h = Math.max(1e-6, st.heightMm);
@@ -359,24 +414,19 @@ function stampOuterOffsets(geo: BufferGeometry, run: WallStation[], capHeightMm:
         const c = raw[Math.min(raw.length - 1, i + 1)]!;
         run[i]!.outerMm = (a + b + c) / 3;
     }
+    material.dispose();
 }
 
-function contiguousStationRuns(stations: WallStation[], gapMm = 8): WallStation[][] {
-    if (stations.length < 2) return [];
-    const sorted = stations.slice().sort((a, b) => a.s - b.s);
-    const runs: WallStation[][] = [];
-    let cur: WallStation[] = [];
-    for (const st of sorted) {
-        const prev = cur[cur.length - 1];
-        if (prev && st.s - prev.s > gapMm) {
-            if (cur.length >= 2) runs.push(cur);
-            cur = [st];
-        } else {
-            cur.push(st);
-        }
+function windowStats(run: WallStation[], sMid: number, half: number): { minH: number; minT: number } {
+    let minH = Infinity;
+    let minT = Infinity;
+    const steps = 24;
+    for (let i = 0; i <= steps; i++) {
+        const st = sampleAlong(run, sMid - half + (i / steps) * 2 * half);
+        minH = Math.min(minH, st.heightMm);
+        minT = Math.min(minT, st.thickMm);
     }
-    if (cur.length >= 2) runs.push(cur);
-    return runs.length ? runs : [sorted];
+    return { minH, minT };
 }
 
 export function placeWallText(
@@ -384,52 +434,66 @@ export function placeWallText(
     ctx: HostTextContext,
     marking: TextMarking,
     flat: FlattenedText,
-): { flat: FlattenedText; map: MapTextPoint; meta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm"> } {
-    const lateral = lateralStations(ctx);
-    if (lateral.length < 2) throw textForbiddenZone("no lateral wall stations");
+): {
+    flat: FlattenedText;
+    map: MapTextPoint;
+    meta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm" | "wallUMin" | "wallUMax">;
+} {
+    const run = lateralStations(ctx);
+    if (run.length < 2) throw textForbiddenZone("no lateral wall stations");
     const u = Math.max(TEXT_U.wall.min, Math.min(TEXT_U.wall.max, marking.placementU));
-    const spanOf = (r: WallStation[]) => r[r.length - 1]!.s - r[0]!.s;
-    const hNeed = flat.capHeightMm + 2 * TEXT_WALL_EDGE_CLEARANCE_MM;
-    const tallEnough = (st: WallStation) =>
-        st.heightMm + 1e-6 >= hNeed + TEXT_TRIMLINE_RIM_BAND_MM - TEXT_WALL_EDGE_CLEARANCE_MM;
-    const usable = (st: WallStation) => tallEnough(st) && st.thickMm + 1e-6 >= TEXT_WALL_MIN_THICK_MM;
-    const runs = contiguousStationRuns(lateral.filter(usable));
+    const sStart = run[0]!.s;
+    const sEnd = run[run.length - 1]!.s;
+    const avail = sEnd - sStart;
     const half = flat.advanceMm / 2;
-    const fitting = runs.filter((r) => spanOf(r) + 1e-3 >= flat.advanceMm);
-    if (!fitting.length) {
-        const longest = runs.reduce((a, b) => (spanOf(b) > spanOf(a) ? b : a), runs[0] ?? []);
-        const avail = longest.length >= 2 ? spanOf(longest) : 0;
+    if (avail + 1e-3 < flat.advanceMm) {
         throw new TextMarkingError(
             "too-long",
             `text does not fit the placement zone (${flat.advanceMm.toFixed(1)} mm in ${avail.toFixed(1)} mm)`,
         );
     }
-    const uDist = (r: WallStation[]) => {
-        const st = r.reduce((best, s) => (Math.abs(s.u - u) < Math.abs(best.u - u) ? s : best));
-        return Math.abs(st.u - u);
-    };
-    const run = fitting.reduce((best, r) => (uDist(r) < uDist(best) ? r : best));
+    const lo = sStart + half;
+    const hi = sEnd - half;
     const atU = run.reduce((best, st) => (Math.abs(st.u - u) < Math.abs(best.u - u) ? st : best));
-    const lo = run[0]!.s + half;
-    const hi = run[run.length - 1]!.s - half;
-    let sMid = atU.s;
-    if (sMid < lo) sMid = lo;
-    if (sMid > hi) sMid = hi;
+    const requested = Math.max(lo, Math.min(hi, atU.s));
+    let bestS = requested;
+    let best = windowStats(run, requested, half);
+    const scan = 48;
+    for (let i = 0; i <= scan; i++) {
+        const sMid = lo + ((hi - lo) * i) / Math.max(1, scan);
+        const sc = windowStats(run, sMid, half);
+        const thickOk = sc.minT + 1e-6 >= TEXT_WALL_MIN_THICK_MM;
+        const bestThickOk = best.minT + 1e-6 >= TEXT_WALL_MIN_THICK_MM;
+        const betterThick = thickOk && !bestThickOk;
+        const taller = sc.minH > best.minH + 0.25;
+        const closer =
+            Math.abs(sc.minH - best.minH) <= 0.25 && Math.abs(sMid - requested) < Math.abs(bestS - requested);
+        if (betterThick || (thickOk && (taller || closer))) {
+            bestS = sMid;
+            best = sc;
+        }
+    }
+    if (best.minT + 1e-6 < TEXT_WALL_MIN_THICK_MM) {
+        throw textForbiddenZone("wall thinner than 2 mm");
+    }
+    const minUsable = TEXT_WALL_EDGE_CLEARANCE_MM + TEXT_TRIMLINE_RIM_BAND_MM;
+    if (best.minH + 1e-6 < minUsable) {
+        throw textForbiddenZone("wall height too short for cap plus 1.5 mm edge clearance");
+    }
+    const sMid = bestS;
     const s0 = sMid - half;
     const s1 = sMid + half;
     stampOuterOffsets(geo, run, flat.capHeightMm);
-    const atMid = sampleAlong(run, sMid);
-    if (!tallEnough(atMid)) {
-        if (atMid.heightMm - 3 < TEXT_CAP.wall.min) {
-            throw textForbiddenZone("wall height too short for cap plus 1.5 mm edge clearance");
-        }
-        throw textDoesNotFit();
-    }
     // t must increase along +nOut so (s, h, t) stays right-handed with CrossSection.extrude.
+    // Engrave cutter spans −depth (inside) to +TEXT_BOOLEAN_EPS_MM (0.05 mm outside).
     const offset0 = marking.mode === "engrave" ? -marking.depthMm : -TEXT_BOOLEAN_EPS_MM;
     const offset1 = marking.mode === "engrave" ? TEXT_BOOLEAN_EPS_MM : marking.heightMm;
+    const tSurface = -offset0 / Math.max(1e-9, offset1 - offset0);
     const map: MapTextPoint = (p, t) => {
         const st = sampleAlong(run, s0 + p.x);
+        if (st.u < TEXT_U.wall.min - 1e-6 || st.u > TEXT_U.wall.max + 1e-6) {
+            throw textForbiddenZone("glyph extent left the wall u band");
+        }
         if (st.thickMm + 1e-6 < TEXT_WALL_MIN_THICK_MM) {
             throw textForbiddenZone("wall thinner than 2 mm");
         }
@@ -450,8 +514,32 @@ export function placeWallText(
             z: z + (st.nOut.z / nlen) * off,
         };
     };
-    const centroids = flat.centroids.map((p) => map(p, 1));
-    return { flat, map, meta: { centroids, mappedWidthMm: s1 - s0 } };
+    const uOf = (x: number) => sampleAlong(run, s0 + x).u;
+    let wallUMin = Math.min(uOf(0), uOf(flat.advanceMm));
+    let wallUMax = Math.max(uOf(0), uOf(flat.advanceMm));
+    for (const g of flat.groups) {
+        for (const p of g.outer) {
+            const uu = uOf(p.x);
+            if (uu < wallUMin) wallUMin = uu;
+            if (uu > wallUMax) wallUMax = uu;
+        }
+    }
+    if (wallUMin < TEXT_U.wall.min - 1e-6 || wallUMax > TEXT_U.wall.max + 1e-6) {
+        throw textForbiddenZone("glyph extent left the wall u band");
+    }
+    const centroids = flat.centroids.map((p) => {
+        const pt = map(p, tSurface);
+        const st = sampleAlong(run, s0 + p.x);
+        const nlen = Math.hypot(st.nOut.x, st.nOut.y, st.nOut.z) || 1;
+        return {
+            x: pt.x,
+            y: pt.y,
+            z: pt.z,
+            nOut: { x: st.nOut.x / nlen, y: st.nOut.y / nlen, z: st.nOut.z / nlen },
+            u: st.u,
+        };
+    });
+    return { flat, map, meta: { centroids, mappedWidthMm: s1 - s0, wallUMin, wallUMax } };
 }
 
 export function localWallHeightMm(ctx: HostTextContext, u: number): number {
