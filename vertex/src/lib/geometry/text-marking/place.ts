@@ -213,12 +213,21 @@ export function lateralStations(ctx: HostTextContext): WallStation[] {
     const high = band.filter((st) => st.R.y >= ctx.midY);
     const nLowLat = low.filter((s) => s.sideSign < 0).length;
     const nHighLat = high.filter((s) => s.sideSign < 0).length;
-    const chosen = (nLowLat >= nHighLat ? low : high).slice();
-    chosen.sort((a, b) => a.u - b.u);
+    const ySide = nLowLat >= nHighLat ? "low" : "high";
+    const inOrder = ctx.stations.filter((st) => {
+        if (st.u < TEXT_U.wall.min || st.u > TEXT_U.wall.max) return false;
+        return ySide === "low" ? st.R.y < ctx.midY : st.R.y >= ctx.midY;
+    });
+    const runs = contiguousStationRuns(inOrder);
+    const run = runs.reduce((best, r) => {
+        const a = r[r.length - 1]!.s - r[0]!.s;
+        const b = best[best.length - 1]!.s - best[0]!.s;
+        return a > b ? r : best;
+    }, runs[0] ?? inOrder);
     let s = 0;
-    return chosen.map((st, i) => {
+    return run.map((st, i) => {
         if (i > 0) {
-            const p = chosen[i - 1]!;
+            const p = run[i - 1]!;
             s += Math.hypot(st.R.x - p.R.x, st.R.y - p.R.y, st.R.z - p.R.z);
         }
         return { ...st, s };
