@@ -20,7 +20,7 @@ export const TEXT_BOOLEAN_EPS_MM = 0.05;
  * Wall cutter must poke through the outer surface by more than Manifold's
  * ~0.06 mm repair snap; 0.05 mm leaves closed glyph voids (14 bodies).
  */
-export const TEXT_BOOLEAN_OUTSET_MM = 0.2;
+export const TEXT_BOOLEAN_OUTSET_MM = 0.8;
 export const TEXT_WELD_MM = 1e-4;
 /** CDT Steiner grid on glyph caps (mm). */
 export const TEXT_CUTTER_STEINER_MM = 0.25;

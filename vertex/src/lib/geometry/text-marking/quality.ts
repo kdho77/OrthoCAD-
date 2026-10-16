@@ -547,11 +547,16 @@ export function measureTextRegionQuality(
 ): TextRegionQuality {
     const outline = outlinePts(meta);
     const outlineGrid = new VertGrid(outline, 0.3);
+    const setDepth = meta.mode === "engrave" ? meta.depthMm : meta.heightMm;
     const bottomOcc = meta.surface === "bottom" ? rasterBottomGlyphs(meta, 0.4, padMm) : null;
     const wallOcc = meta.surface === "wall" ? rasterWallGlyphs(meta, 0.4, padMm) : null;
     const near = (p: Vert3) => {
         if (meta.surface === "bottom" && bottomOcc) return bottomOcc.dist(p.x, p.y);
-        if (meta.surface === "wall" && wallOcc) return wallOcc.dist2(p);
+        if (meta.surface === "wall" && wallOcc) {
+            const d = wallOcc.dist2(p);
+            if (d < 50) return d;
+            return outlineGrid.nearest(p, padMm + setDepth + 0.6);
+        }
         return outlineGrid.nearest(p, padMm + 0.6);
     };
     const wallN0 = meanNOut(meta);
@@ -598,7 +603,6 @@ export function measureTextRegionQuality(
     const hostCtx = extractHostTextContext(host);
     const run = meta.surface === "wall" ? lateralStations(hostCtx) : [];
     const sampler = run.length >= 2 ? createOuterWallSampler(host, run) : null;
-    const setDepth = meta.mode === "engrave" ? meta.depthMm : meta.heightMm;
     const floors: typeof inRegion = [];
     const walls: typeof inRegion = [];
     for (const tri of inRegion) {

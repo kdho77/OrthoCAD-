@@ -673,8 +673,8 @@ export function placeWallText(
             const n0 = hit.n;
             const n1 = hit.nFace ?? hit.n;
             // Floor (t=0) follows the 1 mm smoothed normal; the outer cap
-            // (t=1) pokes along the local face normal so a 0.2 mm outset
-            // cannot hook into the wall–plantar fillet.
+            // (t=1) pokes along the local face normal so the outset clears
+            // Manifold's ~0.06 mm snap without following a tilted smooth n.
             const nx = n0.x * (1 - t) + n1.x * t;
             const ny = n0.y * (1 - t) + n1.y * t;
             const nz = n0.z * (1 - t) + n1.z * t;

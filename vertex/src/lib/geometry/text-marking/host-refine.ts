@@ -229,6 +229,7 @@ function splitMarkedEdges(
     minAngleDeg: number,
     footprint?: SampleGrid,
     padMm = TEXT_HOST_REFINE_PAD_MM,
+    maxExtraVerts = 80_000,
 ): boolean {
     const max2 = maxEdgeMm * maxEdgeMm;
     const minAng = (Math.max(0, minAngleDeg) * Math.PI) / 180;
@@ -236,7 +237,7 @@ function splitMarkedEdges(
     let any = false;
     let extraVerts = 0;
     for (let pass = 0; pass < 12; pass++) {
-        if (extraVerts > 80_000) break;
+        if (extraVerts > maxExtraVerts) break;
         const pos = work.getAttribute("position") as BufferAttribute;
         const index = work.getIndex();
         if (!pos || !index) break;
@@ -362,7 +363,7 @@ export function refineHostLocally(
     }
     const samples = footprintSamples(groups, mapPoint);
     const footprint = samples.length ? new SampleGrid(samples, 0.5) : undefined;
-    splitMarkedEdges(work, boxes, maxEdgeMm, 0, footprint, padMm);
+    splitMarkedEdges(work, boxes, maxEdgeMm, 0, footprint, padMm, 24_000);
     work.computeVertexNormals();
     work.computeBoundingBox();
     if (!indexedWatertight(work)) {
@@ -401,7 +402,7 @@ export function splitLongRegionEdges(
     }
     const samples = footprintSamples(groups, mapPoint);
     const footprint = samples.length ? new SampleGrid(samples, 0.5) : undefined;
-    splitMarkedEdges(work, boxes, maxEdgeMm, minAngleDeg, footprint, padMm);
+    splitMarkedEdges(work, boxes, maxEdgeMm, minAngleDeg, footprint, padMm, 20_000);
     work.computeVertexNormals();
     work.computeBoundingBox();
     if (!indexedWatertight(work)) {
