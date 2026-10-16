@@ -374,7 +374,10 @@ export function ElementsPanel() {
                         }}
                         unit="°"
                     />
-                    {displaySelected.kind === "met_pad" ? (
+                    {displaySelected.kind === "met_pad" ||
+                    displaySelected.kind === "met_bar" ||
+                    displaySelected.kind === "toe_crest" ||
+                    displaySelected.kind === "cuboid_pad" ? (
                         <div className="space-y-1">
                             <div className="text-[11px] text-muted-foreground">Edge</div>
                             <div className="flex gap-1">

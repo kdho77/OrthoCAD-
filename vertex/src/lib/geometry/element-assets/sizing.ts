@@ -64,7 +64,12 @@ export function elementSizeScale(
     const Lref = sidecar.refSizeMm && sidecar.refSizeMm > 1e-3 ? sidecar.refSizeMm : 260;
     const W = localWidthAtU(base, side, u);
     let Wref = sidecar.refWidthAtAnchorMm;
-    if (!(Wref != null && Wref > 1e-3) && reference) {
+    const useSampleTopWidth = Boolean(sidecar.widthBasis && /SAMPLE_Top/i.test(sidecar.widthBasis));
+    if (useSampleTopWidth && reference) {
+        const Wsample = localWidthAtU(reference, side, u);
+        const Lsample = getBaseFootprintFrame(reference, side).lenSize;
+        Wref = Wsample * (Lref / Math.max(Lsample, 1e-3));
+    } else if (!(Wref != null && Wref > 1e-3) && reference) {
         Wref = localWidthAtU(reference, side, u);
     }
     if (!(Wref != null && Wref > 1e-3)) {

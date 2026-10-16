@@ -169,6 +169,8 @@ export interface Corrections {
 export type ElementKind =
     | "met_pad"
     | "met_bar"
+    | "toe_crest"
+    | "cuboid_pad"
     | "cluffy_wedge"
     | "mortons_extension"
     | "reverse_mortons"

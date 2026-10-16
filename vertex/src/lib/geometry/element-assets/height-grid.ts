@@ -261,3 +261,29 @@ export function gridFootprintBounds(
     if (!Number.isFinite(minX)) return null;
     return { minX, maxX, minY, maxY };
 }
+
+/** Max height (mm) on occupied cells that touch an empty 4-neighbour (edge ring). */
+export function gridEdgeRingMax(grid: ElementHeightGrid, zMin = 0.05): number {
+    let max = 0;
+    const { nx, ny, z } = grid;
+    const occupied = (ix: number, iy: number): boolean => {
+        if (ix < 0 || iy < 0 || ix >= nx || iy >= ny) return false;
+        const v = z[iy * nx + ix]!;
+        return Number.isFinite(v) && v > zMin;
+    };
+    for (let iy = 0; iy < ny; iy++) {
+        for (let ix = 0; ix < nx; ix++) {
+            const v = z[iy * nx + ix]!;
+            if (!Number.isFinite(v) || v <= zMin) continue;
+            if (
+                !occupied(ix - 1, iy) ||
+                !occupied(ix + 1, iy) ||
+                !occupied(ix, iy - 1) ||
+                !occupied(ix, iy + 1)
+            ) {
+                max = Math.max(max, v);
+            }
+        }
+    }
+    return max;
+}

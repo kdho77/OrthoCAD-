@@ -25,6 +25,10 @@ export interface ElementAssetSidecar {
     authoredSide?: "left" | "right";
     footprintMm?: { w: number; l: number; area: number };
     frame?: string;
+    /** Width reference: `"SAMPLE_Top unscaled"` → Wref from SAMPLE_Top, scaled onto refSizeMm. */
+    widthBasis?: string;
+    /** Occupied-cell edge-ring max height (mm). >1 mm uses rim fade in no-flow. */
+    edgeRingMaxMm?: number;
 }
 
 export interface ElementManifestEntry {

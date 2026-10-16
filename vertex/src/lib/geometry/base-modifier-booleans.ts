@@ -144,8 +144,13 @@ export function applyTrimlineCut(
  * Falls back to the oriented AABB if the polygonal loft fails.
  */
 function buildElementTool(factory: IShapeFactory, el: PlacedElement, lengthMm: number): ISolid | null {
-    if (el.kind === "met_pad") {
-        // GLB met pad is a height-field lift on the composed top, not a boolean union.
+    if (
+        el.kind === "met_pad" ||
+        el.kind === "met_bar" ||
+        el.kind === "toe_crest" ||
+        el.kind === "cuboid_pad"
+    ) {
+        // GLB library assets are a height-field lift on the composed top, not a boolean union.
         return null;
     }
     if (el.kind === "custom") {

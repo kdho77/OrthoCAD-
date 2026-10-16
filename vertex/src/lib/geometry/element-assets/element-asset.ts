@@ -1,7 +1,9 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
+import type { BufferGeometry } from "three";
+import { sampleTopFromArrayBuffer } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import { extractMergedGeometry, loadGlbFromBuffer, mirrorGeometry } from "@/lib/library/loaders";
 import type { ElementKind, PlacedElement, Side } from "@/types";
 import {
     type ElementHeightGrid,
@@ -21,6 +23,7 @@ import type {
 let manifestCache: ElementManifest | null = null;
 const assetBytesCache = new Map<string, { hash: string; buffer: ArrayBuffer }>();
 const sidecarCache = new Map<string, ElementAssetSidecar>();
+const widthBasisCache = new Map<Side, BufferGeometry>();
 
 function canReadLocalElements(): boolean {
     return typeof process !== "undefined" && Boolean(process.versions?.node);
@@ -72,6 +75,42 @@ export async function manifestEntryForKind(
     const entry = manifest.elements.find((e) => e.kind === kind);
     if (!entry) return null;
     return { id: entry.id, sidecar: await loadSidecar(entry.sidecar) };
+}
+
+async function resolveSampleTopPath(): Promise<string | null> {
+    if (!canReadLocalElements()) return null;
+    const { existsSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    for (const p of [
+        resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb"),
+        resolve(process.cwd(), "vertex/../tests/fixtures/SAMPLE_Top.glb"),
+    ]) {
+        if (existsSync(p)) return p;
+    }
+    return null;
+}
+
+async function loadWidthBasisReference(
+    side: Side,
+    sidecar: ElementAssetSidecar,
+): Promise<BufferGeometry | null> {
+    if (!sidecar.widthBasis || !/SAMPLE_Top/i.test(sidecar.widthBasis)) return null;
+    const cached = widthBasisCache.get(side);
+    if (cached) return cached;
+    const path = await resolveSampleTopPath();
+    if (!path) return null;
+    const { readFileSync } = await import("node:fs");
+    const buf = readFileSync(path);
+    let raw = await sampleTopFromArrayBuffer(
+        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    );
+    if (side === "left") {
+        const m = mirrorGeometry(raw);
+        raw.dispose();
+        raw = m;
+    }
+    widthBasisCache.set(side, raw);
+    return raw;
 }
 
 async function loadSidecar(file: string): Promise<ElementAssetSidecar> {
@@ -228,8 +267,9 @@ export async function resolvePlacedAssetContexts(
         if (!entry) continue;
         const sidecar = await loadSidecar(entry.sidecar);
         const { hash } = await loadAssetBuffer(entry.id);
+        const widthRef = (await loadWidthBasisReference(side, sidecar)) ?? reference;
         const size = base
-            ? elementSizeScale(base, side, sidecar, reference)
+            ? elementSizeScale(base, side, sidecar, widthRef)
             : { scaleAlong: 1, scaleAcross: 1, rawAlong: 1, rawAcross: 1, warning: undefined };
         const transform = buildElementTransform(placed, sidecar, side, size);
         out.push({

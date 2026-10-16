@@ -1,34 +1,33 @@
 {
-    "kind": "met_pad",
-    "label": "Met pad 1",
-    "nominalPeakMm": 5.0,
-    "refSizeMm": 260,
-    "anchor": {
-        "u": 0.5473,
-        "v": 0.0722
-    },
-    "defaultAnchorU": 0.5473,
-    "defaultAnchorV": 0.0722,
-    "anchorConvention": "u heel0->toe1 over 260 mm refSizeMm; v=(x-mid)/halfwidth at anchor Y, medial +",
-    "authoredSide": "right",
-    "footprintMm": {
-        "w": 55.0,
-        "l": 66.75,
-        "area": 2729.3
-    },
-    "featherMm": 2,
-    "rotationDeg": 0,
-    "category": "add",
-    "defaultPlacementMode": "flow",
-    "frame": "repo-right (+X medial, +Y toe, Z up)",
-    "refMeasuredLengthMm": 271.93,
-    "origin": "footprint centroid, z>=0",
-    "source": {
-        "file": "met_pad_1.glb",
-        "sha256": "3ed368894b2f3078e97c82730da89feec0e89786a42b4923c19bca5d67f1d72b"
-    },
-    "anchorMm": {
-        "x": -98.69,
-        "y": 141.31
-    }
+  "kind": "met_pad",
+  "label": "Met pad 1",
+  "nominalPeakMm": 5.0,
+  "refSizeMm": 260,
+  "refMeasuredLengthMm": 271.93,
+  "refNote": "u=(y+1)/260 (length-only 260 basis); v=(x-mid)/halfwidth of unscaled SAMPLE_Top at anchor y, medial +",
+  "anchor": {
+    "u": 0.5473,
+    "v": 0.0722
+  },
+  "anchorConvention": "v=(x-mid)/halfwidth, medial +",
+  "authoredSide": "right",
+  "footprintMm": {
+    "w": 55.0,
+    "l": 66.75,
+    "area": 2729.3
+  },
+  "featherMm": 2,
+  "rotationDeg": 0,
+  "category": "add",
+  "frame": "repo-right (+X medial, +Y toe, Z up)",
+  "origin": "footprint centroid, z>=0",
+  "anchorMm": {
+    "x": -98.69,
+    "y": 141.31
+  },
+  "source": {
+    "file": "met_pad_1.glb",
+    "sha256": "3ed368894b2f3078e97c82730da89feec0e89786a42b4923c19bca5d67f1d72b"
+  },
+  "widthBasis": "SAMPLE_Top unscaled"
 }

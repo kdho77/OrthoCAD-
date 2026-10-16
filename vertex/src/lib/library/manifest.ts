@@ -46,6 +46,8 @@ export interface LibraryPrefabItem {
 export const STOCK_ELEMENTS: StockElementEntry[] = [
     { id: "met_pad", label: "Met Pad", category: "pad", stock: true },
     { id: "met_bar", label: "Met Bar", category: "bar", stock: true },
+    { id: "toe_crest", label: "Toe Crest", category: "pad", stock: true },
+    { id: "cuboid_pad", label: "Cuboid Pad", category: "pad", stock: true },
     { id: "cluffy_wedge", label: "Cluffy Wedge", category: "wedge", stock: true },
     { id: "mortons_extension", label: "Morton's Ext.", category: "extension", stock: true },
     { id: "reverse_mortons", label: "Rev. Morton's", category: "extension", stock: true },

@@ -67,9 +67,27 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         ryMm: 32,
         sign: 1,
         shape: "met_bar",
-        defaultHeightMm: 3,
-        defaultU: 0.66,
-        defaultMedial: 0,
+        defaultHeightMm: 3.47,
+        defaultU: 0.5162,
+        defaultMedial: -0.0387,
+    },
+    toe_crest: {
+        rxMm: 12,
+        ryMm: 18,
+        sign: 1,
+        shape: "teardrop",
+        defaultHeightMm: 2.47,
+        defaultU: 0.7802,
+        defaultMedial: -0.2859,
+    },
+    cuboid_pad: {
+        rxMm: 16,
+        ryMm: 10,
+        sign: 1,
+        shape: "teardrop",
+        defaultHeightMm: 6.37,
+        defaultU: 0.3448,
+        defaultMedial: -0.6865,
     },
     // Cluffy wedge under the hallux — raises the distal phalanx to promote
     // 1st MPJ dorsiflexion. Apex distal, base at IPJ. ~22 × 14 mm.
@@ -417,7 +435,10 @@ export function defaultElementPose(
         rotationDeg: 0,
         scale: { x: 1, y: 1 },
         heightMm: p.defaultHeightMm,
-        placementMode: kind === "met_pad" ? "flow" : undefined,
+        placementMode:
+            kind === "met_pad" || kind === "met_bar" || kind === "toe_crest" || kind === "cuboid_pad"
+                ? "flow"
+                : undefined,
     };
 }
 

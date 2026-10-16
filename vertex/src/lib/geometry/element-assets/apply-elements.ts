@@ -9,10 +9,14 @@ import {
 } from "@/lib/geometry/base-modifier";
 import { elementHeightAt } from "@/lib/geometry/elements";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import { resolveOutlineHalfWidth } from "@/lib/geometry/height-field";
+import {
+    EDGE_FEATHER_EASE_START_R,
+    quinticSmoothstep,
+    resolveOutlineHalfWidth,
+} from "@/lib/geometry/height-field";
 import type { PlacedElement } from "@/types";
 import { loadTransformedAssetPositions, resolvePlacedAssetContexts } from "./element-asset";
-import { sampleGridBilinear } from "./height-grid";
+import { gridEdgeRingMax, sampleGridBilinear } from "./height-grid";
 import {
     anchorMmFromPlacement,
     defaultNoFlowHeightHooks,
@@ -29,12 +33,69 @@ function c1Smoothstep01(t: number): number {
     return x * x * (3 - 2 * x);
 }
 
+const HIGH_EDGE_RING_MM = 1;
+
 function rimBandClipFactor(u: number, vSigned: number, field: HeightFieldParams): number {
     const av = Math.abs(vSigned);
     const avEdge = field.topEdgeAvProfile ? field.topEdgeAvProfile(u, vSigned) : 0;
     if (avEdge <= 1e-6) return 1;
     if (av >= avEdge) return 0;
     return 1;
+}
+
+/** #184 rim-band fade to 0 at the local top-sheet edge (C2 / therefore C1). */
+export function rimBandFadeFactor(u: number, vSigned: number, field: HeightFieldParams): number {
+    const av = Math.abs(vSigned);
+    const avEdge = field.topEdgeAvProfile ? field.topEdgeAvProfile(u, vSigned) : 0;
+    if (avEdge <= 1e-6) return 1;
+    const r = av / avEdge;
+    if (r >= 1) return 0;
+    if (r <= EDGE_FEATHER_EASE_START_R) return 1;
+    const t = (r - EDGE_FEATHER_EASE_START_R) / (1 - EDGE_FEATHER_EASE_START_R);
+    return 1 - quinticSmoothstep(t);
+}
+
+function fillEmptyBins(bins: Float64Array): void {
+    let last = 0;
+    for (let i = 0; i < bins.length; i++) {
+        const v = bins[i] ?? 0;
+        if (v > 1e-6) last = v;
+        else bins[i] = last;
+    }
+    last = 0;
+    for (let i = bins.length - 1; i >= 0; i--) {
+        const v = bins[i] ?? 0;
+        if (v > 1e-6) last = v;
+        else bins[i] = last;
+    }
+}
+
+/** Build a local top-sheet |v| profile from the reference mesh when the field has none. */
+export function ensureTopEdgeAvProfile(field: HeightFieldParams, base: BufferGeometry): void {
+    if (field.topEdgeAvProfile) return;
+    const frame = getBaseFootprintFrame(base, field.side);
+    const pos = base.getAttribute("position");
+    if (!pos) return;
+    const arr = pos.array as Float32Array;
+    const bins = 64;
+    const posB = new Float64Array(bins);
+    const negB = new Float64Array(bins);
+    for (let i = 0; i < pos.count; i++) {
+        const { u, vSigned } = vertexFootprintAt(frame, arr, i);
+        const b = Math.min(bins - 1, Math.floor(Math.max(0, Math.min(1, u)) * bins));
+        const target = vSigned >= 0 ? posB : negB;
+        target[b] = Math.max(target[b] ?? 0, Math.abs(vSigned));
+    }
+    fillEmptyBins(posB);
+    fillEmptyBins(negB);
+    field.topEdgeAvProfile = (u: number, vSigned: number): number => {
+        const row = vSigned >= 0 ? posB : negB;
+        const x = Math.max(0, Math.min(1, u)) * bins - 0.5;
+        const b0 = Math.max(0, Math.min(bins - 1, Math.floor(x)));
+        const b1 = Math.min(bins - 1, b0 + 1);
+        const f = Math.max(0, Math.min(1, x - b0));
+        return (row[b0] ?? 0) * (1 - f) + (row[b1] ?? 0) * f;
+    };
 }
 
 function flowFeatherWeight(
@@ -93,6 +154,8 @@ async function applyAssetContext(
     if (ctx.transform.placementMode === "noFlow") {
         const baseZ = hooks.baseHeightAtAnchor(geometry, anchor.x, anchor.y, ta);
         const k = NO_FLOW_SMOOTH_MAX_K_MM;
+        const edgeRing = ctx.sidecar.edgeRingMaxMm ?? gridEdgeRingMax(grid);
+        const fadeHighEdge = edgeRing > HIGH_EDGE_RING_MM;
         for (let i = 0; i < pos.count; i++) {
             const x = arr[i * 3]!;
             const y = arr[i * 3 + 1]!;
@@ -101,14 +164,18 @@ async function applyAssetContext(
             const hMag = sampleGridBilinear(grid, lx, ly);
             if (hMag <= 1e-9) continue;
             const { u, vSigned } = vertexFootprintAt(frame, arr, i);
-            if (rimBandClipFactor(u, vSigned, field) < 0.5) continue;
+            const rim = fadeHighEdge
+                ? rimBandFadeFactor(u, vSigned, field)
+                : rimBandClipFactor(u, vSigned, field);
+            if (rim <= 1e-9) continue;
+            const h = hMag * rim;
             if (ctx.sidecar.category === "add") {
-                const elementTop = baseZ + hMag + ctx.transform.zOffsetMm;
+                const elementTop = baseZ + h + ctx.transform.zOffsetMm * rim;
                 if (elementTop <= z - k) continue;
                 const next = smoothMaxMm(z, elementTop, k);
                 arr[i * 3 + ta] = Math.max(z, next);
             } else {
-                const elementFloor = baseZ - hMag + ctx.transform.zOffsetMm;
+                const elementFloor = baseZ - h + ctx.transform.zOffsetMm * rim;
                 if (elementFloor >= z + k) continue;
                 const next = smoothMinMm(z, elementFloor, k);
                 arr[i * 3 + ta] = Math.min(z, next);
@@ -121,7 +188,8 @@ async function applyAssetContext(
         const x = arr[i * 3]!;
         const y = arr[i * 3 + 1]!;
         const { u, vSigned } = vertexFootprintAt(frame, arr, i);
-        if (rimBandClipFactor(u, vSigned, field) < 0.5) continue;
+        const rim = rimBandFadeFactor(u, vSigned, field);
+        if (rim <= 1e-9) continue;
         const { lx, ly } = localCoordsFlow(x, y, anchor.x, anchor.y, ctx.transform.rotationDeg);
         const assetH = sampleGridBilinear(grid, lx, ly);
         if (assetH <= 1e-9) continue;
@@ -135,7 +203,7 @@ async function applyAssetContext(
             grid.cellMm,
             ctx.sidecar.featherMm,
         );
-        const lift = sign * assetH * w + ctx.transform.zOffsetMm * w;
+        const lift = (sign * assetH * w + ctx.transform.zOffsetMm * w) * rim;
         arr[i * 3 + ta] += lift;
     }
 }
@@ -252,6 +320,7 @@ export async function applyElementsToTopMeshLast(
 ): Promise<void> {
     const elements = field.elements ?? [];
     if (elements.length === 0) return;
+    ensureTopEdgeAvProfile(field, referenceBase);
     const hooks = options?.noFlowHooks ?? defaultNoFlowHeightHooks;
     const contexts = await resolvePlacedAssetContexts(
         elements,
