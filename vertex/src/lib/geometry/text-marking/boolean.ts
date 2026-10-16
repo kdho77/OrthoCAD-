@@ -208,8 +208,8 @@ export async function booleanTextSolid(
     let result: ManifoldHandle | null = null;
     try {
         result = op === "add" ? a.add(b) : a.subtract(b);
-        // Collapse boolean-cut slivers; 0.02 mm << 0.8 mm pocket and 0.05 mm depth spec.
-        const cleaned = result.simplify(0.02);
+        // Collapse boolean-cut slivers; 0.05 mm matches flatten chord and the depth spec.
+        const cleaned = result.simplify(0.05);
         if (cleaned !== result) {
             result.delete();
             result = cleaned;
