@@ -2,11 +2,12 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
+import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
 import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
 import { countSelfIntersections } from "@/lib/geometry/procedural-wall/intersect";
 import { reconstructionManifold, windingReport } from "@/lib/geometry/procedural-wall/metrics";
-import { TEXT_BOOLEAN_EPS_MM, TEXT_REMAINING_MIN_MM } from "./constants";
+import { TEXT_BOOLEAN_EPS_MM, TEXT_REMAINING_MIN_MM, TEXT_WELD_MM } from "./constants";
 import { TextMarkingError, textTooThinRemaining } from "./errors";
 import type { TextApplyMeta, TextSurface } from "./types";
 
@@ -130,7 +131,11 @@ export function assertTextPrintGates(
             `text boolean is not watertight (open=${man.openEdges} nm=${man.nonManifoldEdges} idxOpen=${indexed.openEdges} idxNm=${indexed.nonManifoldEdges})`,
         );
     }
-    const si = countSelfIntersections(geo);
+    // Manifold-3d quantizes at ~1e-4 mm; the stock SI tester welds at 1e-5 and
+    // then flags adjacent cut slivers that share no identical vertex.
+    const siGeo = mergeVertices(geo.clone(), TEXT_WELD_MM);
+    const si = countSelfIntersections(siGeo);
+    if (siGeo !== geo) siGeo.dispose();
     if (si.real > 0) {
         throw new TextMarkingError("stl-gate", `text boolean has ${si.real} self-intersections`);
     }
