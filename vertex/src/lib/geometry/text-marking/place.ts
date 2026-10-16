@@ -312,9 +312,10 @@ export function placeWallText(
     if (lateral.length < 2) throw textForbiddenZone("no lateral wall stations in the allowed u band");
     const u = Math.max(TEXT_U.wall.min, Math.min(TEXT_U.wall.max, marking.placementU));
     const runs = contiguousStationRuns(lateral);
-    const run =
-        runs.find((r) => r.some((st) => Math.abs(st.u - u) < 0.08)) ??
-        runs.reduce((best, r) => (r.length > best.length ? r : best), runs[0] ?? lateral);
+    const spanOf = (r: WallStation[]) => r[r.length - 1]!.s - r[0]!.s;
+    const nearU = runs.filter((r) => r.some((st) => Math.abs(st.u - u) < 0.12));
+    const pool = nearU.length ? nearU : runs;
+    const run = pool.reduce((best, r) => (spanOf(r) > spanOf(best) ? r : best), pool[0] ?? lateral);
     const atU = run.reduce((best, st) => (Math.abs(st.u - u) < Math.abs(best.u - u) ? st : best));
     const half = flat.advanceMm / 2;
     const sMin = run[0]!.s;
@@ -325,7 +326,10 @@ export function placeWallText(
     const s0 = sMid - half;
     const s1 = sMid + half;
     if (s0 < sMin - 1e-3 || s1 > sMax + 1e-3) {
-        throw textDoesNotFit();
+        throw new TextMarkingError(
+            "too-long",
+            `text does not fit the placement zone (${flat.advanceMm.toFixed(1)} mm in ${(sMax - sMin).toFixed(1)} mm, ${runs.length} runs)`,
+        );
     }
     // zoneMm/advance kept for placement; mappedWidthMm is s1-s0 after the slide.
     const atMid = sampleAlong(run, sMid);
