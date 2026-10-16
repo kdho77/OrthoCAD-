@@ -39,7 +39,7 @@ export default defineConfig({
     },
     // OpenCascade WASM is large; keep it out of the eager bundle.
     optimizeDeps: {
-        exclude: ["@chili3d/wasm"],
+        exclude: ["@chili3d/wasm", "manifold-3d"],
     },
     build: {
         target: "es2022",

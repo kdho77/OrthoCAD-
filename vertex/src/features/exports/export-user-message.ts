@@ -13,6 +13,9 @@ const HEEL_CUP_STL_BLOCKED_MSG = "Heel cup depth correction can't be exported ri
  */
 export function stlExportUserMessage(reason: string | undefined): string {
     if (!reason) return "Export failed";
+    if (reason.includes("[TEXT]")) {
+        return reason.replace(/^\[TEXT\]\s*/, "") || "Custom text could not be applied";
+    }
     if (
         reason.includes("[MESH-CLOSE]") ||
         reason.includes("heelBridgeSelfIntersections") ||

@@ -47,6 +47,7 @@ import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
+import { textMarkingHash } from "@/lib/geometry/text-marking/hash";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured } from "@/lib/trpc";
@@ -594,6 +595,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     elementsJson: JSON.stringify(field.elements ?? []),
                     trimlineHash: printTrim ? hashPatternPoints(printTrim.points) : "",
                     shoeWidth: widthId,
+                    textMarkingHash: textMarkingHash(design.textMarking),
                 });
                 if (lastLoftKeyRef.current === loftKey && outRef.current) {
                     setBaseMeshLoading(side, false);
@@ -656,6 +658,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                     heelOverrideMm: heelW,
                                 },
                                 trimline: printTrim,
+                                textMarking: design.textMarking,
+                                side,
                                 ...(livePts ? { bottomPattern: livePts } : {}),
                             });
                             if (session.cancelled) {
@@ -753,6 +757,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.shoeWidthBySide,
         design.shapeFinish,
         design.trimlines,
+        design.textMarking,
         correctionPreview,
         thicknessPreview,
         elementPreviews,

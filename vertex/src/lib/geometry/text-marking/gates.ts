@@ -1,0 +1,152 @@
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
+import type { BufferGeometry } from "three";
+import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
+import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
+import { countSelfIntersections } from "@/lib/geometry/procedural-wall/intersect";
+import { reconstructionManifold, windingReport } from "@/lib/geometry/procedural-wall/metrics";
+import { TEXT_BOOLEAN_EPS_MM, TEXT_REMAINING_MIN_MM } from "./constants";
+import { TextMarkingError, textTooThinRemaining } from "./errors";
+import type { TextApplyMeta, TextSurface } from "./types";
+
+const Z0_TOL = 0.08;
+
+export interface TextGateReport {
+    watertight: boolean;
+    selfIntersections: number;
+    gWind: boolean;
+    gFace: boolean;
+    gCol: boolean;
+    gVol: boolean;
+    remainingMinMm: number;
+}
+
+function columnQuality(geo: BufferGeometry): {
+    nFaceFlips?: number;
+    nColZFail?: number;
+    nColQuadFail?: number;
+} {
+    return (
+        (
+            geo.userData as {
+                columnQuality?: { nFaceFlips?: number; nColZFail?: number; nColQuadFail?: number };
+            }
+        ).columnQuality ?? {}
+    );
+}
+
+function remainingAtCentroids(geo: BufferGeometry, meta: TextApplyMeta): number {
+    const pos = geo.getAttribute("position").array as Float32Array;
+    let min = Infinity;
+    for (const c of meta.centroids) {
+        let zTop = -Infinity;
+        for (let i = 0; i < pos.length; i += 3) {
+            const d = Math.hypot(pos[i]! - c.x, pos[i + 1]! - c.y);
+            if (d < 3) zTop = Math.max(zTop, pos[i + 2]!);
+        }
+        if (meta.surface === "bottom") {
+            min = Math.min(min, zTop - meta.depthMm);
+        } else {
+            min = Math.min(min, Number.isFinite(zTop) ? zTop : TEXT_REMAINING_MIN_MM + 0.01);
+        }
+    }
+    return Number.isFinite(min) ? min : 0;
+}
+
+function assertBottomZ0OutsideRecess(
+    geo: BufferGeometry,
+    outline: PolyPoint[],
+    centroids: TextApplyMeta["centroids"],
+): void {
+    const pos = geo.getAttribute("position").array as Float32Array;
+    const cx = centroids.reduce((s, p) => s + p.x, 0) / Math.max(1, centroids.length);
+    const cy = centroids.reduce((s, p) => s + p.y, 0) / Math.max(1, centroids.length);
+    let recR = 8;
+    for (const c of centroids) recR = Math.max(recR, Math.hypot(c.x - cx, c.y - cy) + 6);
+    for (let i = 0; i < pos.length; i += 3) {
+        const x = pos[i]!;
+        const y = pos[i + 1]!;
+        const z = pos[i + 2]!;
+        if (z > 0.4) continue;
+        if (!pointInPoly(x, y, outline)) continue;
+        if (minDistToLoopXY(x, y, outline) < 0.4) continue;
+        if (Math.hypot(x - cx, y - cy) < recR) continue;
+        if (z < -TEXT_BOOLEAN_EPS_MM - 0.05 || Math.abs(z) > Z0_TOL) {
+            throw new TextMarkingError(
+                "z0",
+                `bottom z=${z.toFixed(3)} outside the recess (must stay at z=0)`,
+            );
+        }
+    }
+}
+
+/** Hard STL gates after the text boolean. Failures throw — no broken STL. */
+export function assertTextPrintGates(
+    geo: BufferGeometry,
+    meta: TextApplyMeta,
+    outline: PolyPoint[],
+): TextGateReport {
+    const man = reconstructionManifold(geo);
+    if (!man.watertight) {
+        throw new TextMarkingError(
+            "stl-gate",
+            `text boolean is not watertight (open=${man.openEdges} nm=${man.nonManifoldEdges})`,
+        );
+    }
+    const si = countSelfIntersections(geo);
+    if (si.real > 0) {
+        throw new TextMarkingError("stl-gate", `text boolean has ${si.real} self-intersections`);
+    }
+    const wind = windingReport(geo);
+    const gWind = !!wind.consistent && wind.oppositeEdgeMismatch === 0 && wind.signedVolume > 0;
+    if (!gWind) {
+        throw new TextMarkingError(
+            "G-WIND",
+            `G-WIND failed (mismatch=${wind.oppositeEdgeMismatch} vol=${wind.signedVolume})`,
+        );
+    }
+    const q = columnQuality(geo);
+    const style = (geo.userData as { wallStyle?: string }).wallStyle ?? "straight";
+    const nFace = q.nFaceFlips ?? 0;
+    const colFail = (q.nColZFail ?? 0) + (q.nColQuadFail ?? 0);
+    const gFace = nFace === 0 || style === "straight";
+    const gCol = colFail === 0 || style === "straight";
+    if (!gFace) throw new TextMarkingError("G-FACE", `G-FACE flips=${q.nFaceFlips}`);
+    if (!gCol) throw new TextMarkingError("G-COL", `G-COL zFail=${q.nColZFail} quadFail=${q.nColQuadFail}`);
+    const gVol = wind.signedVolume > 0;
+    if (!gVol) throw new TextMarkingError("G-VOL", "G-VOL signed volume is not positive");
+
+    if (meta.surface === "bottom") {
+        assertBottomZ0OutsideRecess(geo, outline, meta.centroids);
+    }
+    const remaining = meta.mode === "engrave" ? remainingAtCentroids(geo, meta) : TEXT_REMAINING_MIN_MM + 1;
+    if (meta.mode === "engrave" && remaining + 1e-6 < TEXT_REMAINING_MIN_MM) {
+        throw textTooThinRemaining();
+    }
+    geo.userData = {
+        ...geo.userData,
+        winding: wind,
+        textMarking: meta,
+        textGates: {
+            watertight: true,
+            selfIntersections: si.real,
+            gWind,
+            gFace,
+            gCol,
+            gVol,
+            remainingMinMm: remaining,
+        },
+    };
+    return {
+        watertight: true,
+        selfIntersections: si.real,
+        gWind,
+        gFace,
+        gCol,
+        gVol,
+        remainingMinMm: remaining,
+    };
+}
+
+export type { TextSurface };

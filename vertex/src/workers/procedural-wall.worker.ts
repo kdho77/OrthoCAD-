@@ -12,7 +12,7 @@ import {
     reconstructProceduralPreview,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 
-self.onmessage = (event: MessageEvent<ProceduralWallWorkerRequest>) => {
+self.onmessage = async (event: MessageEvent<ProceduralWallWorkerRequest>) => {
     const msg = event.data;
     try {
         if (msg.type === "buildPattern") {
@@ -37,9 +37,18 @@ self.onmessage = (event: MessageEvent<ProceduralWallWorkerRequest>) => {
         if (msg.indices) geo.setIndex(new BufferAttribute(msg.indices, 1));
         const preview = reconstructProceduralPreview(geo, msg.options);
         geo.dispose();
-        const payload = geometryToPayload(preview.geometry);
-        const userData = preview.geometry.userData ?? {};
-        preview.geometry.dispose();
+        let outGeo = preview.geometry;
+        const marking = msg.options.textMarking;
+        if (marking?.text.trim()) {
+            const { applyTextMarkingToPrintSolid } = await import("@/lib/geometry/text-marking/apply");
+            outGeo = await applyTextMarkingToPrintSolid(preview.geometry, marking, {
+                side: msg.options.side ?? "right",
+            });
+            if (outGeo !== preview.geometry) preview.geometry.dispose();
+        }
+        const payload = geometryToPayload(outGeo);
+        const userData = outGeo.userData ?? {};
+        outGeo.dispose();
         const transfer: Transferable[] = [payload.positions.buffer as ArrayBuffer];
         if (payload.indices) transfer.push(payload.indices.buffer as ArrayBuffer);
         const response: ProceduralWallWorkerResponse = {
@@ -52,6 +61,7 @@ self.onmessage = (event: MessageEvent<ProceduralWallWorkerRequest>) => {
                 loftN: userData.loftN,
                 bottomOutlineB: JSON.parse(JSON.stringify(userData.bottomOutlineB ?? null)),
                 bottomPatternSource: userData.bottomPatternSource,
+                textMarking: userData.textMarking ?? null,
             },
         };
         (self as DedicatedWorkerGlobalScope).postMessage(response, transfer);
