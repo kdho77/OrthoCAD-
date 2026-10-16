@@ -2,7 +2,8 @@
 // See LICENSE file in the project root for full license information.
 
 import { BufferAttribute, type BufferGeometry } from "three";
-import { TEXT_HOST_REFINE_MAX_EDGE_MM, TEXT_HOST_REFINE_PAD_MM } from "./constants";
+import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { TEXT_HOST_REFINE_MAX_EDGE_MM, TEXT_HOST_REFINE_PAD_MM, TEXT_WELD_MM } from "./constants";
 import type { MapTextPoint, TextGlyphGroup } from "./types";
 
 interface Aabb {
@@ -53,15 +54,6 @@ function glyphAabbs(groups: TextGlyphGroup[], mapPoint: MapTextPoint, pad: numbe
     return boxes;
 }
 
-function inBoxes(x: number, y: number, z: number, boxes: Aabb[]): boolean {
-    for (const b of boxes) {
-        if (x >= b.minX && x <= b.maxX && y >= b.minY && y <= b.maxY && z >= b.minZ && z <= b.maxZ) {
-            return true;
-        }
-    }
-    return false;
-}
-
 function indexedWatertight(geo: BufferGeometry): boolean {
     const pos = geo.getAttribute("position");
     const index = geo.getIndex();
@@ -104,13 +96,23 @@ export function refineHostLocally(
     const boxes = glyphAabbs(groups, mapPoint, padMm);
     if (!boxes.length) return host;
 
-    const work = host.clone();
-    work.userData = host.userData ?? {};
-    if (!work.getIndex()) {
+    const clone = host.clone();
+    clone.userData = host.userData ?? {};
+    if (!clone.getIndex()) {
         const n = srcPos.count;
         const tri: number[] = [];
         for (let i = 0; i < n; i++) tri.push(i);
-        work.setIndex(tri);
+        clone.setIndex(tri);
+    }
+    for (const name of Object.keys(clone.attributes)) {
+        if (name !== "position") clone.deleteAttribute(name);
+    }
+    const work = mergeVertices(clone, TEXT_WELD_MM);
+    if (work !== clone) clone.dispose();
+    work.userData = host.userData ?? {};
+    if (!indexedWatertight(work)) {
+        work.dispose();
+        return host;
     }
     const max2 = maxEdgeMm * maxEdgeMm;
     const xyz = (pos: BufferAttribute, i: number) => ({
@@ -118,9 +120,23 @@ export function refineHostLocally(
         y: pos.getY(i),
         z: pos.getZ(i),
     });
-    const inRegion = (pos: BufferAttribute, i: number): boolean => {
-        const p = xyz(pos, i);
-        return inBoxes(p.x, p.y, p.z, boxes);
+    const triOverlaps = (pos: BufferAttribute, a: number, b: number, c: number): boolean => {
+        const pa = xyz(pos, a);
+        const pb = xyz(pos, b);
+        const pc = xyz(pos, c);
+        const minX = Math.min(pa.x, pb.x, pc.x);
+        const minY = Math.min(pa.y, pb.y, pc.y);
+        const minZ = Math.min(pa.z, pb.z, pc.z);
+        const maxX = Math.max(pa.x, pb.x, pc.x);
+        const maxY = Math.max(pa.y, pb.y, pc.y);
+        const maxZ = Math.max(pa.z, pb.z, pc.z);
+        for (const box of boxes) {
+            if (maxX < box.minX || minX > box.maxX) continue;
+            if (maxY < box.minY || minY > box.maxY) continue;
+            if (maxZ < box.minZ || minZ > box.maxZ) continue;
+            return true;
+        }
+        return false;
     };
     const longEdge = (pos: BufferAttribute, a: number, b: number): boolean => {
         const pa = xyz(pos, a);
@@ -141,8 +157,7 @@ export function refineHostLocally(
             const a = src[t] ?? 0;
             const b = src[t + 1] ?? 0;
             const c = src[t + 2] ?? 0;
-            const region = inRegion(pos, a) || inRegion(pos, b) || inRegion(pos, c);
-            if (!region) continue;
+            if (!triOverlaps(pos, a, b, c)) continue;
             if (longEdge(pos, a, b)) marked.add(edgeKey(a, b));
             if (longEdge(pos, b, c)) marked.add(edgeKey(b, c));
             if (longEdge(pos, c, a)) marked.add(edgeKey(c, a));

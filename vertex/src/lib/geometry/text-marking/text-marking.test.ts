@@ -174,11 +174,16 @@ describe("text flatten / Clipper / stroke", () => {
 
     test("local host refine splits long edges and stays watertight", async () => {
         const { BoxGeometry } = await import("three");
+        const { mergeVertices } = await import("three/examples/jsm/utils/BufferGeometryUtils.js");
         const { planarBottomMap } = await import("./solid");
         const font = await loadTextFont();
         const flat = flattenText(font, SAMPLE, 6, 0.6, true);
-        const host = new BoxGeometry(120, 40, 8);
-        host.translate(flat.advanceMm / 2, 3, 4);
+        const box = new BoxGeometry(120, 40, 8);
+        box.translate(flat.advanceMm / 2, 3, 4);
+        box.deleteAttribute("normal");
+        box.deleteAttribute("uv");
+        const host = mergeVertices(box, 1e-6);
+        if (host !== box) box.dispose();
         const refined = refineHostLocally(host, flat.groups, planarBottomMap(-0.05, 0.8));
         const index = refined.getIndex();
         expect(index).toBeTruthy();
