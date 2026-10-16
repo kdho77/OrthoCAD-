@@ -64,6 +64,36 @@ function triangleRasterMaxZ(
     }
 }
 
+/** Snap AABB origin onto the cell lattice so L/R Y-flips hit mirrored cell centres. */
+export function latticeGridFrame(
+    minX: number,
+    minY: number,
+    maxX: number,
+    maxY: number,
+    cellMm: number,
+): { originX: number; originY: number; nx: number; ny: number } {
+    const pad = cellMm * 2;
+    const originX = Math.floor((minX - pad) / cellMm) * cellMm;
+    const originY = Math.floor((minY - pad) / cellMm) * cellMm;
+    const nx = Math.max(4, Math.ceil((maxX + pad - originX) / cellMm));
+    const ny = Math.max(4, Math.ceil((maxY + pad - originY) / cellMm));
+    return { originX, originY, nx, ny };
+}
+
+/** Exact Y-mirror of a height grid (LEFT from an authored-right raster). */
+export function flipHeightGridY(grid: ElementHeightGrid): ElementHeightGrid {
+    const z = new Float32Array(grid.z.length);
+    for (let iy = 0; iy < grid.ny; iy++) {
+        const src = (grid.ny - 1 - iy) * grid.nx;
+        z.set(grid.z.subarray(src, src + grid.nx), iy * grid.nx);
+    }
+    return {
+        ...grid,
+        originY: -(grid.originY + grid.ny * grid.cellMm),
+        z,
+    };
+}
+
 function boundsFromPositions(positions: Float32Array): {
     minX: number;
     minY: number;
@@ -93,11 +123,7 @@ function boundsFromPositions(positions: Float32Array): {
 /** Point-splat fallback (vertices only). */
 export function rasterizeUpperEnvelope(positions: Float32Array, cellMm = ELEMENT_GRID_MM): ElementHeightGrid {
     const { minX, minY, maxX, maxY, maxZ: seedMax } = boundsFromPositions(positions);
-    const pad = cellMm * 2;
-    const oX = minX - pad;
-    const oY = minY - pad;
-    const nx = Math.max(4, Math.ceil((maxX - minX + 2 * pad) / cellMm));
-    const ny = Math.max(4, Math.ceil((maxY - minY + 2 * pad) / cellMm));
+    const { originX: oX, originY: oY, nx, ny } = latticeGridFrame(minX, minY, maxX, maxY, cellMm);
     const z = new Float32Array(nx * ny);
     z.fill(Number.NaN);
     let maxZ = seedMax;
@@ -123,11 +149,7 @@ export function rasterizeUpperEnvelopeFromIndexed(
     cellMm = ELEMENT_GRID_MM,
 ): ElementHeightGrid {
     const { minX, minY, maxX, maxY, maxZ: seedMax } = boundsFromPositions(positions);
-    const pad = cellMm * 2;
-    const oX = minX - pad;
-    const oY = minY - pad;
-    const nx = Math.max(4, Math.ceil((maxX - minX + 2 * pad) / cellMm));
-    const ny = Math.max(4, Math.ceil((maxY - minY + 2 * pad) / cellMm));
+    const { originX: oX, originY: oY, nx, ny } = latticeGridFrame(minX, minY, maxX, maxY, cellMm);
     const z = new Float32Array(nx * ny);
     z.fill(Number.NaN);
     let maxZ = seedMax;

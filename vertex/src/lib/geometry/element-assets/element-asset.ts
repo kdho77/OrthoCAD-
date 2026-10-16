@@ -1,10 +1,14 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { Matrix4, Vector3 } from "three";
 import { extractMergedGeometry, loadGlbFromBuffer } from "@/lib/library/loaders";
 import type { ElementKind, PlacedElement, Side } from "@/types";
-import { type ElementHeightGrid, getOrRasterizeGrid, heightGridCacheKey } from "./height-grid";
+import {
+    type ElementHeightGrid,
+    flipHeightGridY,
+    getOrRasterizeGrid,
+    heightGridCacheKey,
+} from "./height-grid";
 import { elementSizeScale, sidecarAnchorUV } from "./sizing";
 import type {
     ElementAssetSidecar,
@@ -160,23 +164,24 @@ export async function loadTransformedAssetPositions(
     const attr = geo.getAttribute("position");
     if (!attr) throw new Error(`Element asset ${assetId} missing positions`);
     const out = new Float32Array(attr.count * 3);
-    const rot = new Matrix4().makeRotationZ((transform.rotationDeg * Math.PI) / 180);
-    const v = new Vector3();
     for (let i = 0; i < attr.count; i++) {
         const ax = attr.getX(i) * transform.scaleX;
         const ay = attr.getY(i) * transform.scaleY;
         const az = Math.max(0, attr.getZ(i) * transform.scaleZ);
-        const app = authoredToAppXY(ax, ay, transform.mirrorX);
-        v.set(app.x, app.y, az);
-        v.applyMatrix4(rot);
-        out[i * 3] = v.x;
-        out[i * 3 + 1] = v.y;
-        out[i * 3 + 2] = v.z;
+        // Always rasterize authored-right; flip Y for LEFT so L/R is an exact mirror.
+        const app = authoredToAppXY(ax, ay, false);
+        out[i * 3] = app.x;
+        out[i * 3 + 1] = app.y;
+        out[i * 3 + 2] = az;
     }
     const index = geo.getIndex()?.array;
     geo.dispose();
-    const cacheKey = heightGridCacheKey(hash, transformKey(transform));
-    const grid = getOrRasterizeGrid(cacheKey, out, index);
+    const cacheKey = heightGridCacheKey(hash, transformKey({ ...transform, mirrorX: false, rotationDeg: 0 }));
+    let grid = getOrRasterizeGrid(cacheKey, out, index);
+    if (transform.mirrorX) {
+        grid = flipHeightGridY(grid);
+        for (let i = 0; i < out.length / 3; i++) out[i * 3 + 1]! *= -1;
+    }
     return { positions: out, grid, assetHash: hash };
 }
 

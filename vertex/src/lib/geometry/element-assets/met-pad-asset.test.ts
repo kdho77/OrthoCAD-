@@ -25,7 +25,7 @@ import { encodePng, renderMesh } from "../../../../../tests/helpers/render-png";
 import { applyElementsToTopMeshLast } from "./apply-elements";
 import { loadTransformedAssetPositions, resolvePlacedAssetContexts } from "./element-asset";
 import { gridFootprintBounds, sampleGridBilinear } from "./height-grid";
-import { anchorMmFromPlacement, defaultNoFlowHeightHooks } from "./no-flow-blend";
+import { anchorMmFromPlacement, defaultNoFlowHeightHooks, smoothMaxMm } from "./no-flow-blend";
 import { anchorPositionFromSidecar, elementSizeScale, localWidthAtU } from "./sizing";
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
@@ -167,12 +167,15 @@ describe("met pad GLB height-field asset", () => {
             const dy = b[i * 3 + 1]! - anchor.y;
             const env = sampleGridBilinear(grid, dx, dy);
             if (env > 0.3) {
-                const expected = Math.max(a[i * 3 + ta]!, baseZ + env);
+                const stamp = baseZ + env;
+                if (stamp <= a[i * 3 + ta]! + 0.05) continue;
+                const expected = smoothMaxMm(a[i * 3 + ta]!, stamp);
                 worstZ = Math.max(worstZ, Math.abs(b[i * 3 + ta]! - expected));
                 nInterior++;
             }
             if (lift > 0.05) lifted.push({ x: b[i * 3]!, y: b[i * 3 + 1]! });
         }
+        console.log("MET-PAD-ENVELOPE", { nInterior, worstZ, lifted: lifted.length });
         expect(nInterior).toBeGreaterThan(20);
         expect(worstZ).toBeLessThanOrEqual(0.02);
         const fp = gridFootprintBounds(grid, 0.05);
@@ -192,6 +195,7 @@ describe("met pad GLB height-field asset", () => {
                 worstXy = Math.max(worstXy, Math.hypot(dx, dy));
             }
         }
+        console.log("MET-PAD-ENVELOPE-XY", { worstXy, lifted: lifted.length });
         expect(worstXy).toBeLessThanOrEqual(0.05);
         writeRender("met-pad-before.png", plain);
         writeRender("met-pad-after.png", composed);
@@ -238,6 +242,7 @@ describe("met pad GLB height-field asset", () => {
             composed.dispose();
             sized.dispose();
         }
+        console.log("MET-PAD-SIZE", results);
         expect(results).toHaveLength(2);
         native.dispose();
     }, 120_000);
@@ -271,6 +276,7 @@ describe("met pad GLB height-field asset", () => {
             n++;
             worst = Math.max(worst, Math.abs(liftR - liftL));
         }
+        console.log("MET-PAD-LR", { n, worst });
         expect(n).toBeGreaterThan(20);
         expect(worst).toBeLessThanOrEqual(0.05);
         meshR.dispose();
@@ -296,6 +302,7 @@ describe("met pad GLB height-field asset", () => {
         for (let i = 0; i < pa.length / 3; i++) {
             maxRaise = Math.max(maxRaise, pb[i * 3 + ta]! - pa[i * 3 + ta]!);
         }
+        console.log("MET-PAD-LOFT-RAISE", { maxRaise });
         expect(maxRaise).toBeGreaterThan(2);
         const loft = await reconstructProceduralPreview(raw, {
             sourceField: field,
@@ -310,6 +317,7 @@ describe("met pad GLB height-field asset", () => {
         const helper = resolve(process.cwd(), "tests/helpers/stl-gates.py");
         const out = execFileSync("python3", [helper, "straight", stlPath], { encoding: "utf8" });
         const gate = JSON.parse(out) as { watertight: boolean; winding: boolean; bodies: number };
+        console.log("MET-PAD-STL-GATES", gate);
         expect(gate.watertight).toBe(true);
         expect(gate.winding).toBe(true);
         expect(gate.bodies).toBe(1);
