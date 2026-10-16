@@ -26,6 +26,8 @@ interface Tri {
 }
 
 export interface SoupHitPair {
+    triA: number;
+    triB: number;
     centroid: { x: number; y: number; z: number };
     a: { x: number; y: number; z: number }[];
     b: { x: number; y: number; z: number }[];
@@ -370,6 +372,8 @@ export function countSoupSelfIntersections(
             }
             real++;
             pairs.push({
+                triA: i,
+                triB: j,
                 centroid: {
                     x: (a.ax + a.bx + a.cx + b.ax + b.bx + b.cx) / 6,
                     y: (a.ay + a.by + a.cy + b.ay + b.by + b.cy) / 6,

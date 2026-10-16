@@ -136,6 +136,7 @@ export async function applyTextMarkingToPrintSolid(
         wallUMin: placeMeta.wallUMin,
         wallUMax: placeMeta.wallUMax,
         outlineWorld,
+        hostRepair: (result.userData as { textHostRepair?: TextApplyMeta["hostRepair"] }).textHostRepair,
     };
     assertTextPrintGates(result, meta, hostCtx.outline);
     return result;

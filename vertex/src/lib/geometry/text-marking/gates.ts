@@ -170,6 +170,8 @@ export function assertTextPrintGates(
     soup.dispose();
     if (si.real > 0) {
         const sample = si.pairs.slice(0, 8).map((p) => ({
+            triA: p.triA,
+            triB: p.triB,
             c: p.centroid,
             a: p.a,
             b: p.b,
