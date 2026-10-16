@@ -62,9 +62,35 @@ function inBoxes(x: number, y: number, z: number, boxes: Aabb[]): boolean {
     return false;
 }
 
+function indexedWatertight(geo: BufferGeometry): boolean {
+    const pos = geo.getAttribute("position");
+    const index = geo.getIndex();
+    if (!pos || !index) return false;
+    const edgeCount = new Map<string, number>();
+    const src = index.array as ArrayLike<number>;
+    for (let t = 0; t + 2 < index.count; t += 3) {
+        const a = src[t] ?? 0;
+        const b = src[t + 1] ?? 0;
+        const c = src[t + 2] ?? 0;
+        for (const [u, v] of [
+            [a, b],
+            [b, c],
+            [c, a],
+        ] as const) {
+            const e = edgeKey(u, v);
+            edgeCount.set(e, (edgeCount.get(e) ?? 0) + 1);
+        }
+    }
+    for (const count of edgeCount.values()) {
+        if (count !== 2) return false;
+    }
+    return true;
+}
+
 /**
- * Split host edges inside (footprint + 1 mm) down to ≤ 0.4 mm. Vertices
- * outside the region keep their original float bits; the mesh stays watertight.
+ * Split host edges inside (footprint + 1 mm) down to ≤ 0.4 mm. Only long
+ * edges are marked; every neighbor that shares a marked edge splits it, so
+ * the surface stays indexed-watertight. Outside vertices keep their bits.
  */
 export function refineHostLocally(
     host: BufferGeometry,
@@ -92,13 +118,39 @@ export function refineHostLocally(
         y: pos.getY(i),
         z: pos.getZ(i),
     });
+    const inRegion = (pos: BufferAttribute, i: number): boolean => {
+        const p = xyz(pos, i);
+        return inBoxes(p.x, p.y, p.z, boxes);
+    };
+    const longEdge = (pos: BufferAttribute, a: number, b: number): boolean => {
+        const pa = xyz(pos, a);
+        const pb = xyz(pos, b);
+        const dx = pb.x - pa.x;
+        const dy = pb.y - pa.y;
+        const dz = pb.z - pa.z;
+        return dx * dx + dy * dy + dz * dz > max2;
+    };
+
     for (let pass = 0; pass < 16; pass++) {
         const pos = work.getAttribute("position") as BufferAttribute;
         const index = work.getIndex();
         if (!pos || !index) break;
         const src = index.array as ArrayLike<number>;
-        const mids = new Map<string, number>();
+        const marked = new Set<string>();
+        for (let t = 0; t + 2 < index.count; t += 3) {
+            const a = src[t] ?? 0;
+            const b = src[t + 1] ?? 0;
+            const c = src[t + 2] ?? 0;
+            const region = inRegion(pos, a) || inRegion(pos, b) || inRegion(pos, c);
+            if (!region) continue;
+            if (longEdge(pos, a, b)) marked.add(edgeKey(a, b));
+            if (longEdge(pos, b, c)) marked.add(edgeKey(b, c));
+            if (longEdge(pos, c, a)) marked.add(edgeKey(c, a));
+        }
+        if (!marked.size) break;
+
         const extra: number[] = [];
+        const mids = new Map<string, number>();
         const midOf = (a: number, b: number): number => {
             const k = edgeKey(a, b);
             let m = mids.get(k);
@@ -111,37 +163,19 @@ export function refineHostLocally(
             }
             return m;
         };
-        const longInRegion = (a: number, b: number): boolean => {
-            const pa = xyz(pos, a);
-            const pb = xyz(pos, b);
-            const dx = pb.x - pa.x;
-            const dy = pb.y - pa.y;
-            const dz = pb.z - pa.z;
-            if (dx * dx + dy * dy + dz * dz <= max2) return false;
-            const mx = (pa.x + pb.x) * 0.5;
-            const my = (pa.y + pb.y) * 0.5;
-            const mz = (pa.z + pb.z) * 0.5;
-            return (
-                inBoxes(pa.x, pa.y, pa.z, boxes) ||
-                inBoxes(pb.x, pb.y, pb.z, boxes) ||
-                inBoxes(mx, my, mz, boxes)
-            );
-        };
         const next: number[] = [];
-        let splits = 0;
         for (let t = 0; t + 2 < index.count; t += 3) {
             const a = src[t] ?? 0;
             const b = src[t + 1] ?? 0;
             const c = src[t + 2] ?? 0;
-            const ab = longInRegion(a, b);
-            const bc = longInRegion(b, c);
-            const ca = longInRegion(c, a);
+            const ab = marked.has(edgeKey(a, b));
+            const bc = marked.has(edgeKey(b, c));
+            const ca = marked.has(edgeKey(c, a));
             const n = (ab ? 1 : 0) + (bc ? 1 : 0) + (ca ? 1 : 0);
             if (!n) {
                 next.push(a, b, c);
                 continue;
             }
-            splits++;
             const mab = ab ? midOf(a, b) : -1;
             const mbc = bc ? midOf(b, c) : -1;
             const mca = ca ? midOf(c, a) : -1;
@@ -159,7 +193,6 @@ export function refineHostLocally(
                 next.push(a, mab, mca, mab, b, c, mca, mab, c);
             }
         }
-        if (!splits) break;
         if (extra.length) {
             const old = pos.array as Float32Array;
             const grown = new Float32Array(old.length + extra.length);
@@ -171,5 +204,9 @@ export function refineHostLocally(
     }
     work.computeVertexNormals();
     work.computeBoundingBox();
+    if (!indexedWatertight(work)) {
+        work.dispose();
+        return host;
+    }
     return work;
 }

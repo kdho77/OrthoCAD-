@@ -392,7 +392,7 @@ export function measureTextRegionQuality(
                 if (!hit) continue;
                 const n = hit.n;
                 const signed = (hit.p.x - v.x) * n.x + (hit.p.y - v.y) * n.y + (hit.p.z - v.z) * n.z;
-                depths.push(signed);
+                depths.push(Math.abs(signed));
             }
         }
     } else {

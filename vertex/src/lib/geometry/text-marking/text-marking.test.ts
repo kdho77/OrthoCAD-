@@ -12,10 +12,11 @@ import {
     TEXT_MIN_STROKE_MM,
 } from "./constants";
 import { flattenText } from "./contours";
-import { cutterMaxEdgeMm } from "./cutter";
+import { cdtGlyphCap, cutterMaxEdgeMm } from "./cutter";
 import { TextMarkingError } from "./errors";
 import { loadTextFont } from "./font";
 import { textMarkingHash } from "./hash";
+import { refineHostLocally } from "./host-refine";
 import { assertTextMarkingInRange, normalizeTextMarking, textControlBounds } from "./validate";
 
 const SAMPLE = "JOHN SMITH 10/15";
@@ -128,7 +129,13 @@ describe("text flatten / Clipper / stroke", () => {
         }
         expect(minE).toBeGreaterThanOrEqual(TEXT_CONTOUR_EDGE_MIN_MM * 0.9);
         expect(maxE).toBeLessThanOrEqual(TEXT_CONTOUR_EDGE_MAX_MM + 1e-3);
-        expect(cutterMaxEdgeMm(flat.groups[0]!)).toBeLessThanOrEqual(TEXT_CUTTER_MAX_EDGE_MM + 1e-3);
+        const first = flat.groups[0];
+        expect(first).toBeDefined();
+        if (!first) return;
+        expect(cutterMaxEdgeMm(first)).toBeLessThanOrEqual(TEXT_CUTTER_MAX_EDGE_MM + 1e-3);
+        const cap = cdtGlyphCap(first);
+        expect(cap.points.length).toBeGreaterThan(first.outer.length + 4);
+        expect(cap.faces.length).toBeGreaterThan(8);
     });
 
     test("regular weight at tiny size is too thin", async () => {
@@ -152,6 +159,49 @@ describe("text flatten / Clipper / stroke", () => {
         const out = await booleanTextSolid(host, flat.groups, planarBottomMap(-0.05, 0.8), "subtract");
         expect(out.getAttribute("position").count).toBeGreaterThan(8);
         out.dispose();
+        const mirrored = flat.groups.map((g) => ({
+            outer: g.outer.map((p) => ({ x: p.x, y: -p.y })),
+            holes: g.holes.map((h) => h.map((p) => ({ x: p.x, y: -p.y }))),
+        }));
+        const host2 = new BoxGeometry(120, 40, 8);
+        host2.translate(flat.advanceMm / 2, 3, 4);
+        const out2 = await booleanTextSolid(host2, mirrored, planarBottomMap(-0.05, 0.8), "subtract");
+        expect(out2.getAttribute("position").count).toBeGreaterThan(8);
+        out2.dispose();
+        host.dispose();
+        host2.dispose();
+    });
+
+    test("local host refine splits long edges and stays watertight", async () => {
+        const { BoxGeometry } = await import("three");
+        const { planarBottomMap } = await import("./solid");
+        const font = await loadTextFont();
+        const flat = flattenText(font, SAMPLE, 6, 0.6, true);
+        const host = new BoxGeometry(120, 40, 8);
+        host.translate(flat.advanceMm / 2, 3, 4);
+        const refined = refineHostLocally(host, flat.groups, planarBottomMap(-0.05, 0.8));
+        const index = refined.getIndex();
+        expect(index).toBeTruthy();
+        if (!index) return;
+        const src = index.array as ArrayLike<number>;
+        const edgeCount = new Map<string, number>();
+        const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+        for (let t = 0; t + 2 < index.count; t += 3) {
+            const a = src[t] ?? 0;
+            const b = src[t + 1] ?? 0;
+            const c = src[t + 2] ?? 0;
+            for (const [u, v] of [
+                [a, b],
+                [b, c],
+                [c, a],
+            ] as const) {
+                const e = key(u, v);
+                edgeCount.set(e, (edgeCount.get(e) ?? 0) + 1);
+            }
+        }
+        for (const count of edgeCount.values()) expect(count).toBe(2);
+        expect(index.count).toBeGreaterThan((host.getIndex()?.count ?? 36) + 12);
+        if (refined !== host) refined.dispose();
         host.dispose();
     });
 });

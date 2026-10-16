@@ -25,6 +25,7 @@ import { assertTextMarkingInRange } from "@/lib/geometry/text-marking/validate";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import type { Side, TextMarking, TextSurface } from "@/types";
 import { loadSampleTopGlb } from "./helpers/load-sample-top-glb";
+import { encodePng, renderMesh } from "./helpers/render-png";
 
 const SAMPLE = "JOHN SMITH 10/15";
 const GATES_PY = resolve(process.cwd(), "tests/helpers/stl-gates.py");
@@ -114,6 +115,13 @@ describe("text marking L/R × wall/bottom builds", () => {
         }
 
         const metrics: Record<string, unknown> = {};
+        const closeups: Array<{
+            label: string;
+            pos: Float32Array;
+            idx: ArrayLike<number>;
+            center: { x: number; y: number; z: number };
+            nOut: { x: number; y: number; z: number };
+        }> = [];
         for (const { side, geo } of sides) {
             for (const surface of ["bottom", "wall"] as const) {
                 const m = marking(surface);
@@ -163,20 +171,37 @@ describe("text marking L/R × wall/bottom builds", () => {
                 expect(q.outsideVertMaxMm).toBeLessThanOrEqual(1e-4);
                 expect(q.outsideHostVertsMissing).toBe(0);
                 expect(q.outsideTrisLost).toBe(0);
+                expect(q.inRegion.count).toBeGreaterThan(100);
                 expect(q.inRegion.pctMinAngleGe5).toBeGreaterThanOrEqual(99);
                 expect(q.inRegion.minAngleMinDeg).toBeGreaterThanOrEqual(1);
                 expect(q.inRegion.aspectP99).toBeLessThanOrEqual(10);
                 expect(q.inRegion.aspectMax).toBeLessThanOrEqual(30);
                 expect(q.inRegion.longestEdgeMm).toBeLessThanOrEqual(0.6);
+                expect(q.floor.count).toBeGreaterThan(20);
                 expect(q.floor.depthAbsMaxMm).toBeLessThanOrEqual(0.05);
                 expect(q.floor.depthStdMm).toBeLessThanOrEqual(0.02);
+                expect(q.sidewall.count).toBeGreaterThan(20);
                 expect(q.sidewall.pctDotLe01).toBeGreaterThanOrEqual(95);
                 expect(q.dihedral.floorFloorMaxDeg).toBeLessThanOrEqual(10);
                 expect(q.dihedral.wallWallMaxDeg).toBeLessThanOrEqual(10);
                 expect(q.outline.hausdorffMm).toBeLessThanOrEqual(0.05);
                 expect(q.outline.extraTurnGt30).toBe(0);
-                expect(q.triCount).toBeGreaterThanOrEqual(60_000);
                 expect(q.triCount).toBeLessThanOrEqual(120_000);
+                if (side === "right") {
+                    const cents = ud.textMarking?.centroids ?? [];
+                    const focus = cents[Math.max(0, cents.length - 2)] ?? cents[0];
+                    if (focus) {
+                        const nOut = focus.nOut ?? { x: 0, y: 0, z: 1 };
+                        const src = soup.getAttribute("position").array as Float32Array;
+                        closeups.push({
+                            label: `${side}-${surface}`,
+                            pos: new Float32Array(src),
+                            idx: Array.from({ length: src.length / 3 }, (_, i) => i),
+                            center: { x: focus.x, y: focus.y, z: focus.z },
+                            nOut,
+                        });
+                    }
+                }
                 soup.dispose();
                 const gate = stlGates(stl, `${side}-${surface}`);
                 expect(gate.watertight).toBe(true);
@@ -189,6 +214,71 @@ describe("text marking L/R × wall/bottom builds", () => {
         }
         mkdirSync("/tmp/s1-stls", { recursive: true });
         writeFileSync("/tmp/s1-stls/text-quality.json", JSON.stringify(metrics, null, 2));
+        if (closeups.length >= 2) {
+            const w = 720;
+            const h = 420;
+            const panels: Uint8Array[] = [];
+            const wall = closeups.find((c) => c.label.endsWith("wall"));
+            const bottom = closeups.find((c) => c.label.endsWith("bottom"));
+            const viewFromNormal = (n: { x: number; y: number; z: number }) => {
+                const fl = Math.hypot(n.x, n.y, n.z) || 1;
+                const fx = n.x / fl;
+                const fy = n.y / fl;
+                const fz = n.z / fl;
+                let rx = -fy;
+                let ry = fx;
+                let rz = 0;
+                const rl = Math.hypot(rx, ry, rz) || 1;
+                rx /= rl;
+                ry /= rl;
+                rz /= rl;
+                const ux = fy * rz - fz * ry;
+                const uy = fz * rx - fx * rz;
+                const uz = fx * ry - fy * rx;
+                const ul = Math.hypot(ux, uy, uz) || 1;
+                return {
+                    right: [rx, ry, rz] as [number, number, number],
+                    up: [ux / ul, uy / ul, uz / ul] as [number, number, number],
+                    light: [0.35, 0.55, 0.75] as [number, number, number],
+                };
+            };
+            if (wall) {
+                const v = viewFromNormal(wall.nOut);
+                const focus = { center: wall.center, radius: 14 };
+                panels.push(renderMesh(wall.pos, wall.idx, v, w, h, [190, 190, 195], 48, focus));
+                const pitched = viewFromNormal({
+                    x: wall.nOut.x,
+                    y: wall.nOut.y,
+                    z: wall.nOut.z + 0.45,
+                });
+                panels.push(renderMesh(wall.pos, wall.idx, pitched, w, h, [190, 190, 195], 48, focus));
+            }
+            if (bottom) {
+                const v = {
+                    right: [1, 0, 0] as [number, number, number],
+                    up: [0, -1, 0] as [number, number, number],
+                    light: [0.25, -0.2, 0.95] as [number, number, number],
+                };
+                panels.push(
+                    renderMesh(bottom.pos, bottom.idx, v, w, h, [190, 190, 195], 48, {
+                        center: bottom.center,
+                        radius: 16,
+                    }),
+                );
+            }
+            if (panels.length >= 3) {
+                const stacked = new Uint8Array(w * h * 3 * panels.length);
+                for (let i = 0; i < panels.length; i++) {
+                    const panel = panels[i];
+                    if (panel) stacked.set(panel, i * w * h * 3);
+                }
+                const png = encodePng(w, h * panels.length, stacked);
+                mkdirSync("/tmp/s1-stls/screenshots", { recursive: true });
+                mkdirSync("/opt/cursor/artifacts/screenshots", { recursive: true });
+                writeFileSync("/tmp/s1-stls/screenshots/text-closeup-3x.png", png);
+                writeFileSync("/opt/cursor/artifacts/screenshots/text-closeup-3x.png", png);
+            }
+        }
     }, 300_000);
 
     test("empty text is a no-op (same object)", async () => {

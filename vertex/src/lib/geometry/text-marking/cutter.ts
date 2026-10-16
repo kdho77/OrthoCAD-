@@ -282,13 +282,36 @@ function fallbackCap(outer: TextXy[], holes: TextXy[][], extra: TextXy[]): Glyph
     return cap;
 }
 
-function refineMaxEdge(cap: GlyphCap, maxLen: number, nBoundary: number): void {
+function loopSignedArea(points: TextXy[], idx: number[]): number {
+    let s = 0;
+    const n = idx.length;
+    for (let i = 0; i < n; i++) {
+        const a = points[idx[i]!]!;
+        const b = points[idx[(i + 1) % n]!]!;
+        s += a.x * b.y - b.x * a.y;
+    }
+    return 0.5 * s;
+}
+
+function orientLoops(cap: GlyphCap): void {
+    for (let i = 0; i < cap.loops.length; i++) {
+        const idx = cap.loops[i]!;
+        const area = loopSignedArea(cap.points, idx);
+        const wantCcw = i === 0;
+        if (wantCcw === area > 0) continue;
+        cap.loops[i] = idx.slice().reverse();
+    }
+}
+
+function refineMaxEdge(cap: GlyphCap, maxLen: number): void {
     const max2 = maxLen * maxLen;
-    const isBoundary = (a: number, b: number): boolean => {
-        if (a >= nBoundary || b >= nBoundary) return false;
-        const d = Math.abs(a - b);
-        return d === 1 || d === nBoundary - 1;
-    };
+    const boundary = new Set<string>();
+    for (const loop of cap.loops) {
+        for (let i = 0; i < loop.length; i++) {
+            boundary.add(edgeKey(loop[i]!, loop[(i + 1) % loop.length]!));
+        }
+    }
+    const isBoundary = (a: number, b: number): boolean => boundary.has(edgeKey(a, b));
     for (let pass = 0; pass < 12; pass++) {
         const mids = new Map<string, number>();
         const midOf = (a: number, b: number): number => {
@@ -354,7 +377,8 @@ export function cdtGlyphCap(group: TextGlyphGroup): GlyphCap {
             loops: [group.outer.map((_, i) => i)],
         };
     }
-    refineMaxEdge(cap, TEXT_CUTTER_MAX_EDGE_MM, group.outer.length);
+    refineMaxEdge(cap, TEXT_CUTTER_MAX_EDGE_MM);
+    orientLoops(cap);
     return cap;
 }
 
@@ -362,10 +386,14 @@ export function cdtGlyphCap(group: TextGlyphGroup): GlyphCap {
  * Refine the 2D CDT (Steiner grid + max-edge splits), then map every vertex.
  * Caps at t=0 / t=1; `TEXT_CUTTER_SIDEWALL_RINGS` bands through the depth.
  */
-export function buildTextCutterMesh(groups: TextGlyphGroup[], mapPoint: MapTextPoint): BufferGeometry {
+export function buildTextCutterMesh(
+    groups: TextGlyphGroup[],
+    mapPoint: MapTextPoint,
+    sidewallRings = TEXT_CUTTER_SIDEWALL_RINGS,
+): BufferGeometry {
     const positions: number[] = [];
     const indices: number[] = [];
-    const nRings = TEXT_CUTTER_SIDEWALL_RINGS + 1;
+    const nRings = Math.max(1, sidewallRings) + 1;
     for (const group of groups) {
         if (group.outer.length < 3) continue;
         const cap = cdtGlyphCap(group);

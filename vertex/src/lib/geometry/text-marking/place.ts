@@ -326,6 +326,7 @@ export function placeBottomText(
 ): {
     flat: FlattenedText;
     map: MapTextPoint;
+    rebind?: (geo: BufferGeometry) => MapTextPoint;
     meta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm" | "wallUMin" | "wallUMax">;
 } {
     const u = Math.max(TEXT_U.bottom.min, Math.min(TEXT_U.bottom.max, marking.placementU));
@@ -577,6 +578,7 @@ export function placeWallText(
     flat: FlattenedText,
 ): {
     flat: FlattenedText;
+    rebind: (geo: BufferGeometry) => MapTextPoint;
     map: MapTextPoint;
     meta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm" | "wallUMin" | "wallUMax">;
 } {
@@ -633,12 +635,9 @@ export function placeWallText(
     const sMid = bestS;
     const s0 = sMid - half;
     const s1 = sMid + half;
-    const wall = createOuterWallSampler(geo, run);
-    // t increases along +nOut. Engrave spans −depth (inside) to +eps (outside).
     const offset0 = marking.mode === "engrave" ? -marking.depthMm : -TEXT_BOOLEAN_EPS_MM;
     const offset1 = marking.mode === "engrave" ? TEXT_BOOLEAN_EPS_MM : marking.heightMm;
     const tSurface = -offset0 / Math.max(1e-9, offset1 - offset0);
-    const surfCache = new Map<string, OuterWallHit>();
     const heightOf = (p: TextXy, st: WallStation): number => {
         const h = Math.max(1e-6, st.R.z - st.B.z);
         const usableBot = TEXT_WALL_EDGE_CLEARANCE_MM;
@@ -648,27 +647,32 @@ export function placeWallText(
         const letter0 = usableBot + Math.max(0, usable - ySpan * yScale) / 2;
         return letter0 + (p.y - yMin) * yScale;
     };
-    const map: MapTextPoint = (p, t) => {
-        const st = sampleAlong(run, s0 + p.x);
-        if (st.u < TEXT_U.wall.min - 1e-6 || st.u > TEXT_U.wall.max + 1e-6) {
-            throw textForbiddenZone("glyph extent left the wall u band");
-        }
-        if (st.thickMm + 1e-6 < TEXT_WALL_MIN_THICK_MM) {
-            throw textForbiddenZone("wall thinner than 2 mm");
-        }
-        const key = `${p.x.toFixed(5)},${p.y.toFixed(5)}`;
-        let hit = surfCache.get(key);
-        if (!hit) {
-            hit = wall.at(s0 + p.x, heightOf(p, st));
-            surfCache.set(key, hit);
-        }
-        const off = offset0 + (offset1 - offset0) * t;
-        return {
-            x: hit.p.x + hit.n.x * off,
-            y: hit.p.y + hit.n.y * off,
-            z: hit.p.z + hit.n.z * off,
+    const makeMap = (mesh: BufferGeometry): MapTextPoint => {
+        const wall = createOuterWallSampler(mesh, run);
+        const surfCache = new Map<string, OuterWallHit>();
+        return (p, t) => {
+            const st = sampleAlong(run, s0 + p.x);
+            if (st.u < TEXT_U.wall.min - 1e-6 || st.u > TEXT_U.wall.max + 1e-6) {
+                throw textForbiddenZone("glyph extent left the wall u band");
+            }
+            if (st.thickMm + 1e-6 < TEXT_WALL_MIN_THICK_MM) {
+                throw textForbiddenZone("wall thinner than 2 mm");
+            }
+            const key = `${p.x.toFixed(5)},${p.y.toFixed(5)}`;
+            let hit = surfCache.get(key);
+            if (!hit) {
+                hit = wall.at(s0 + p.x, heightOf(p, st));
+                surfCache.set(key, hit);
+            }
+            const off = offset0 + (offset1 - offset0) * t;
+            return {
+                x: hit.p.x + hit.n.x * off,
+                y: hit.p.y + hit.n.y * off,
+                z: hit.p.z + hit.n.z * off,
+            };
         };
     };
+    const map = makeMap(geo);
     const uOf = (x: number) => sampleAlong(run, s0 + x).u;
     let wallUMin = Math.min(uOf(0), uOf(flat.advanceMm));
     let wallUMax = Math.max(uOf(0), uOf(flat.advanceMm));
@@ -684,19 +688,32 @@ export function placeWallText(
     }
     const centroids = flat.centroids.map((p) => {
         const pt = map(p, tSurface);
+        const out = map(p, Math.min(1, tSurface + 0.05));
         const st = sampleAlong(run, s0 + p.x);
-        const hit = surfCache.get(`${p.x.toFixed(5)},${p.y.toFixed(5)}`);
-        const n = hit?.n ?? st.nOut;
-        const nlen = Math.hypot(n.x, n.y, n.z) || 1;
+        let nx = out.x - pt.x;
+        let ny = out.y - pt.y;
+        let nz = out.z - pt.z;
+        let nlen = Math.hypot(nx, ny, nz);
+        if (nlen < 1e-8) {
+            nx = st.nOut.x;
+            ny = st.nOut.y;
+            nz = st.nOut.z;
+            nlen = Math.hypot(nx, ny, nz) || 1;
+        }
         return {
             x: pt.x,
             y: pt.y,
             z: pt.z,
-            nOut: { x: n.x / nlen, y: n.y / nlen, z: n.z / nlen },
+            nOut: { x: nx / nlen, y: ny / nlen, z: nz / nlen },
             u: st.u,
         };
     });
-    return { flat, map, meta: { centroids, mappedWidthMm: s1 - s0, wallUMin, wallUMax } };
+    return {
+        flat,
+        map,
+        rebind: makeMap,
+        meta: { centroids, mappedWidthMm: s1 - s0, wallUMin, wallUMax },
+    };
 }
 
 export function localWallHeightMm(ctx: HostTextContext, u: number): number {

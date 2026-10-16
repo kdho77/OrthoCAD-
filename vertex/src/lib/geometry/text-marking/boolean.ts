@@ -7,6 +7,7 @@ import { TEXT_DEGENERATE_AREA_MM2, TEXT_DEGENERATE_MIN_ANGLE_DEG, TEXT_WELD_MM }
 import { buildTextCutterMesh } from "./cutter";
 import { TextMarkingError } from "./errors";
 import { refineHostLocally } from "./host-refine";
+import { countSoupSelfIntersections } from "./soup-intersect";
 import type { MapTextPoint, TextGlyphGroup } from "./types";
 
 type ManifoldMesh = {
@@ -72,10 +73,16 @@ function textGroupsToManifold(
     mod: ManifoldWasm,
     groups: TextGlyphGroup[],
     mapPoint: MapTextPoint,
+    sidewallRings?: number,
 ): ManifoldHandle {
     let cutter: BufferGeometry | null = null;
     try {
-        cutter = buildTextCutterMesh(groups, mapPoint);
+        cutter = buildTextCutterMesh(groups, mapPoint, sidewallRings);
+        const cleaned = collapseDegenerateThenWeld(cutter);
+        if (cleaned !== cutter) {
+            cutter.dispose();
+            cutter = cleaned;
+        }
         return geometryToManifold(mod, cutter, "text cutter");
     } catch (e) {
         throw new TextMarkingError(
@@ -363,22 +370,87 @@ function manifoldToGeometry(handle: ManifoldHandle, userData: unknown): BufferGe
     return geo;
 }
 
+function csgOnce(
+    mod: ManifoldWasm,
+    hostMesh: BufferGeometry,
+    groups: TextGlyphGroup[],
+    mapped: MapTextPoint,
+    op: "add" | "subtract",
+    userData: unknown,
+    sidewallRings?: number,
+): BufferGeometry {
+    const a = geometryToManifold(mod, hostMesh, "host");
+    const b = textGroupsToManifold(mod, groups, mapped, sidewallRings);
+    let result: ManifoldHandle | null = null;
+    try {
+        result = op === "add" ? a.add(b) : a.subtract(b);
+        const geo = manifoldToGeometry(result, userData);
+        const cleaned = collapseDegenerateThenWeld(geo);
+        if (cleaned !== geo) geo.dispose();
+        return cleaned;
+    } finally {
+        result?.delete();
+        a.delete();
+        b.delete();
+    }
+}
+
+function soupRealHits(geo: BufferGeometry): number {
+    return countSoupSelfIntersections(geo, TEXT_WELD_MM).real;
+}
+
 /** Single manifold-3d WASM boolean. `op` add = emboss, subtract = engrave. */
 export async function booleanTextSolid(
     host: BufferGeometry,
     groups: TextGlyphGroup[],
     mapPoint: MapTextPoint,
     op: "add" | "subtract",
+    rebind?: (geo: BufferGeometry) => MapTextPoint,
+    sidewallRings?: number,
 ): Promise<BufferGeometry> {
     const mod = await loadWasm();
     const refined = refineHostLocally(host, groups, mapPoint);
-    const a = geometryToManifold(mod, refined, "host");
-    const b = textGroupsToManifold(mod, groups, mapPoint);
-    let result: ManifoldHandle | null = null;
+    const prepped = collapseDegenerateThenWeld(refined);
+    if (prepped !== refined && refined !== host) {
+        // Keep `refined` if collapse was a no-op; otherwise the clone can go.
+        if (prepped !== host) refined.dispose();
+    }
+    const refinedOk = prepped !== host && indexedWatertight(prepped);
+    const mappedRefined = rebind && refinedOk ? rebind(prepped) : mapPoint;
+    const mappedOrig = rebind ? rebind(host) : mapPoint;
     try {
-        result = op === "add" ? a.add(b) : a.subtract(b);
-        const geo = manifoldToGeometry(result, host.userData);
-        const cleaned = collapseDegenerateThenWeld(geo);
+        let geo: BufferGeometry;
+        try {
+            if (refinedOk) {
+                geo = csgOnce(mod, prepped, groups, mappedRefined, op, host.userData, sidewallRings);
+                if (soupRealHits(geo) > 0) {
+                    geo.dispose();
+                    geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
+                }
+            } else {
+                geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
+            }
+        } catch (e) {
+            if (refinedOk) {
+                geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
+            } else if (e instanceof TextMarkingError) {
+                throw e;
+            } else {
+                throw new TextMarkingError(
+                    "boolean",
+                    `boolean failed: ${e instanceof Error ? e.message : String(e)}`,
+                );
+            }
+        }
+        const mapped = refinedOk ? mappedRefined : mappedOrig;
+        const split = refineHostLocally(geo, groups, mapped);
+        const cleaned = collapseDegenerateThenWeld(split);
+        if (soupRealHits(cleaned) > 0) {
+            if (cleaned !== split && cleaned !== geo) cleaned.dispose();
+            if (split !== geo) split.dispose();
+            return geo;
+        }
+        if (cleaned !== split && split !== geo) split.dispose();
         if (cleaned !== geo) geo.dispose();
         return cleaned;
     } catch (e) {
@@ -388,9 +460,6 @@ export async function booleanTextSolid(
             `boolean failed: ${e instanceof Error ? e.message : String(e)}`,
         );
     } finally {
-        if (refined !== host) refined.dispose();
-        result?.delete();
-        a.delete();
-        b.delete();
+        if (prepped !== host) prepped.dispose();
     }
 }

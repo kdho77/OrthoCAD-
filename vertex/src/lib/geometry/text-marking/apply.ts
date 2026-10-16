@@ -71,6 +71,7 @@ export async function applyTextMarkingToPrintSolid(
 
     let placedFlat: ReturnType<typeof flattenText>;
     let map: ReturnType<typeof placeBottomText>["map"];
+    let rebind: ((geo: typeof host) => typeof map) | undefined;
     let placeMeta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm" | "wallUMin" | "wallUMax">;
     if (checked.surface === "bottom") {
         placedFlat = shrinkThenFlatten(font, checked, minCap, (flat) => {
@@ -98,11 +99,19 @@ export async function applyTextMarkingToPrintSolid(
         );
         placedFlat = placed.flat;
         map = placed.map;
+        rebind = placed.rebind;
         placeMeta = placed.meta;
     }
 
     const op = checked.mode === "emboss" ? "add" : "subtract";
-    const result = await booleanTextSolid(host, placedFlat.groups, map, op);
+    const result = await booleanTextSolid(
+        host,
+        placedFlat.groups,
+        map,
+        op,
+        rebind,
+        checked.surface === "wall" ? undefined : 1,
+    );
     const tSurface =
         checked.mode === "engrave"
             ? checked.depthMm / Math.max(1e-9, checked.depthMm + TEXT_BOOLEAN_EPS_MM)
