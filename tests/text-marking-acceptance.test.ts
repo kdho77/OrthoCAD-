@@ -159,7 +159,16 @@ describe("text marking L/R × wall/bottom builds", () => {
                 writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} start ${Date.now()}\n`);
                 const m = marking(surface);
                 const host = geo.geometry.clone();
-                const tagged = await applyTextMarkingToPrintSolid(geo.geometry.clone(), m, { side });
+                let tagged: Awaited<ReturnType<typeof applyTextMarkingToPrintSolid>>;
+                try {
+                    tagged = await applyTextMarkingToPrintSolid(geo.geometry.clone(), m, { side });
+                } catch (e) {
+                    const msg = e instanceof Error ? e.message.slice(0, 240) : String(e);
+                    stlGateFails.push(`${tag} apply ${msg}`);
+                    writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} apply-fail ${Date.now()}\n`);
+                    host.dispose();
+                    continue;
+                }
                 writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} applied ${Date.now()}\n`);
                 const ud = tagged.userData as {
                     textMarking?: TextApplyMeta;

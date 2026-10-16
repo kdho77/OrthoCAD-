@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { BufferAttribute, BufferGeometry, Vector3 } from "three";
+import { BufferAttribute, BufferGeometry, DoubleSide, Ray, Vector3 } from "three";
 import { MeshBVH } from "three-mesh-bvh";
 import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
 import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
@@ -530,6 +530,9 @@ export function createOuterWallSampler(
         const fb = faceN[fi] ?? { x: 0, y: 0, z: 1 };
         return { p: pt, n: smoothN(pt.x, pt.y, pt.z, fb), nFace: fb };
     };
+    const ray = new Ray();
+    const rayOrigin = new Vector3();
+    const rayDir = new Vector3();
     const at = (s: number, h: number): OuterWallHit => {
         const st = sampleAlong(run, s);
         const hh = Math.max(1e-6, st.heightMm);
@@ -541,10 +544,7 @@ export function createOuterWallSampler(
         const cx = st.B.x + (st.R.x - st.B.x) * frac;
         const cy = st.B.y + (st.R.y - st.B.y) * frac;
         const cz = st.B.z + (st.R.z - st.B.z) * frac;
-        const hit =
-            closest({ x: cx + nx * 1.2, y: cy + ny * 1.2, z: cz + nz * 1.2 }) ??
-            closest({ x: cx, y: cy, z: cz });
-        if (hit) {
+        const flipOut = (hit: OuterWallHit): OuterWallHit => {
             if (hit.n.x * nx + hit.n.y * ny + hit.n.z * nz < 0) {
                 hit.n = { x: -hit.n.x, y: -hit.n.y, z: -hit.n.z };
             }
@@ -552,7 +552,27 @@ export function createOuterWallSampler(
                 hit.nFace = { x: -hit.nFace.x, y: -hit.nFace.y, z: -hit.nFace.z };
             }
             return hit;
+        };
+        // Ray from well outside so the first hit is the outer wall, not a
+        // closest-point inside the wall thickness (that left closed voids).
+        if (bvh) {
+            rayOrigin.set(cx + nx * 12, cy + ny * 12, cz + nz * 12);
+            rayDir.set(-nx, -ny, -nz);
+            ray.set(rayOrigin, rayDir);
+            const hit = bvh.raycastFirst(ray, DoubleSide, 0, 24);
+            if (hit?.point) {
+                const fb = faceN[hit.faceIndex] ?? { x: nx, y: ny, z: nz };
+                const pt = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
+                return flipOut({
+                    p: pt,
+                    n: smoothN(pt.x, pt.y, pt.z, fb),
+                    nFace: fb,
+                });
+            }
         }
+        const fallback =
+            closest({ x: cx + nx * 3, y: cy + ny * 3, z: cz + nz * 3 }) ?? closest({ x: cx, y: cy, z: cz });
+        if (fallback) return flipOut(fallback);
         return {
             p: {
                 x: cx + nx * (st.outerMm ?? 0),
@@ -670,14 +690,24 @@ export function placeWallText(
                 surfCache.set(key, hit);
             }
             const off = offset0 + (offset1 - offset0) * t;
+            // Floor follows the 1 mm smoothed n; the outer cap pokes along
+            // the station outward so the cutter cannot sit inside the wall.
             const n0 = hit.n;
-            const n1 = hit.nFace ?? hit.n;
-            // Floor (t=0) follows the 1 mm smoothed normal; the outer cap
-            // (t=1) pokes along the local face normal so the outset clears
-            // Manifold's ~0.06 mm snap without following a tilted smooth n.
-            const nx = n0.x * (1 - t) + n1.x * t;
-            const ny = n0.y * (1 - t) + n1.y * t;
-            const nz = n0.z * (1 - t) + n1.z * t;
+            let px = st.nOut.x;
+            let py = st.nOut.y;
+            let pz = st.nOut.z;
+            const pl = Math.hypot(px, py, pz) || 1;
+            px /= pl;
+            py /= pl;
+            pz /= pl;
+            if (px * n0.x + py * n0.y + pz * n0.z < 0) {
+                px = -px;
+                py = -py;
+                pz = -pz;
+            }
+            const nx = n0.x * (1 - t) + px * t;
+            const ny = n0.y * (1 - t) + py * t;
+            const nz = n0.z * (1 - t) + pz * t;
             const nlen = Math.hypot(nx, ny, nz) || 1;
             return {
                 x: hit.p.x + (nx / nlen) * off,
