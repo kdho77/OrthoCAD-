@@ -159,9 +159,13 @@ describe("text marking L/R × wall/bottom builds", () => {
         }> = [];
         for (const { side, geo } of sides) {
             for (const surface of ["bottom", "wall"] as const) {
+                const tag = `${side}-${surface}`;
+                mkdirSync("/tmp/s1-stls", { recursive: true });
+                writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} start ${Date.now()}\n`);
                 const m = marking(surface);
                 const host = geo.geometry.clone();
                 const tagged = await applyTextMarkingToPrintSolid(geo.geometry.clone(), m, { side });
+                writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} applied ${Date.now()}\n`);
                 const ud = tagged.userData as {
                     textMarking?: TextApplyMeta;
                     textGates?: { watertight?: boolean; gWind?: boolean; selfIntersections?: number };
@@ -199,6 +203,7 @@ describe("text marking L/R × wall/bottom builds", () => {
                 const soup = binaryStlToGeometry(stl);
                 const soupSi = countSoupSelfIntersections(soup, TEXT_WELD_MM);
                 expect(soupSi.real).toBe(0);
+                writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} soupSi ${Date.now()}\n`);
                 const q = measureTextRegionQuality(soup, host, ud.textMarking!);
                 metrics[`${side}-${surface}`] = { ...q, soupSi: soupSi.real };
                 mkdirSync("/tmp/s1-stls", { recursive: true });

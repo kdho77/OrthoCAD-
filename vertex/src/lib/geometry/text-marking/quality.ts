@@ -138,8 +138,13 @@ function asPoly(pts: Vert3[]): PolyPoint[] {
     return pts.map((p) => ({ x: p.x, y: p.y, z: p.z }));
 }
 
-export function distToTextRegion(p: Vert3, meta: TextApplyMeta, outline: Vert3[]): number {
-    const d3 = minDistToOutline(p, outline);
+export function distToTextRegion(
+    p: Vert3,
+    meta: TextApplyMeta,
+    outline: Vert3[],
+    grid?: { nearest: (q: Vert3, maxMm: number) => number },
+): number {
+    const d3 = grid ? grid.nearest(p, 8) : minDistToOutline(p, outline);
     if (meta.surface !== "bottom") return d3;
     let d2 = d3;
     for (const g of meta.outlineWorld ?? []) {
@@ -343,6 +348,8 @@ export function measureTextRegionQuality(
     padMm = TEXT_REGION_PAD_MM,
 ): TextRegionQuality {
     const outline = outlinePts(meta);
+    const outlineGrid = new VertGrid(outline, 0.3);
+    const near = (p: Vert3) => distToTextRegion(p, meta, outline, outlineGrid);
     const wallN0 = meanNOut(meta);
     const resultVerts = allVerts(result);
     const hostVerts = allVerts(host);
@@ -352,7 +359,7 @@ export function measureTextRegionQuality(
 
     const hostOutsideVerts: Vert3[] = [];
     for (const v of hostVerts) {
-        if (distToTextRegion(v, meta, outline) > padMm) hostOutsideVerts.push(v);
+        if (near(v) > padMm) hostOutsideVerts.push(v);
     }
     let outsideVertMax = 0;
     let missing = 0;
@@ -367,11 +374,7 @@ export function measureTextRegionQuality(
         const a = vertOf(host, idxOf(host, t, 0));
         const b = vertOf(host, idxOf(host, t, 1));
         const c = vertOf(host, idxOf(host, t, 2));
-        if (
-            distToTextRegion(a, meta, outline) > padMm &&
-            distToTextRegion(b, meta, outline) > padMm &&
-            distToTextRegion(c, meta, outline) > padMm
-        ) {
+        if (near(a) > padMm && near(b) > padMm && near(c) > padMm) {
             hostOutsideTris++;
         }
     }
@@ -381,11 +384,7 @@ export function measureTextRegionQuality(
         const a = vertOf(result, idxOf(result, t, 0));
         const b = vertOf(result, idxOf(result, t, 1));
         const c = vertOf(result, idxOf(result, t, 2));
-        if (
-            distToTextRegion(a, meta, outline) > padMm &&
-            distToTextRegion(b, meta, outline) > padMm &&
-            distToTextRegion(c, meta, outline) > padMm
-        ) {
+        if (near(a) > padMm && near(b) > padMm && near(c) > padMm) {
             resultOutsideTris++;
             continue;
         }
@@ -408,7 +407,7 @@ export function measureTextRegionQuality(
         const dot = Math.abs(tri.n.x * nOut.x + tri.n.y * nOut.y + tri.n.z * nOut.z);
         if (dot >= 0.7) {
             if (meta.surface === "bottom") {
-                if (Math.abs(c.z - setDepth) <= 0.25 && distToTextRegion(c, meta, outline) <= 0.15) {
+                if (Math.abs(c.z - setDepth) <= 0.25 && near(c) <= 0.15) {
                     floors.push(tri);
                 }
             } else if (sampler) {
@@ -421,7 +420,7 @@ export function measureTextRegionQuality(
             } else {
                 floors.push(tri);
             }
-        } else if (dot <= 0.35 && distToTextRegion(c, meta, outline) <= 0.15) {
+        } else if (dot <= 0.35 && near(c) <= 0.15) {
             if (meta.surface === "bottom") {
                 if (c.z > 0.15 && c.z < setDepth - 0.1) walls.push(tri);
             } else {
