@@ -33,7 +33,7 @@ export const TEXT_REGION_PAD_MM = 0.5;
 /** Drop / edge-collapse needles after the boolean (area mm²). */
 export const TEXT_DEGENERATE_AREA_MM2 = 1e-6;
 /** Drop / edge-collapse needles after the boolean (minimum interior angle). */
-export const TEXT_DEGENERATE_MIN_ANGLE_DEG = 1;
+export const TEXT_DEGENERATE_MIN_ANGLE_DEG = 0.5;
 /** Post-boolean split of leftover long / needle edges in the text AABB (mm / deg). */
 export const TEXT_RESULT_MAX_EDGE_MM = 0.55;
 export const TEXT_RESULT_SPLIT_ANGLE_DEG = 5;

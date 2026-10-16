@@ -448,14 +448,13 @@ function restoreOutsideVerts(
         if (list) list.push(i);
         else grid.set(k, [i]);
     }
-    type Cand = { hi: number; ri: number; d: number; hx: number; hy: number; hz: number };
-    const cands: Cand[] = [];
+    const claimed = new Set<number>();
     for (let hi = 0; hi < hostPos.count; hi++) {
         const hx = hostPos.getX(hi);
         const hy = hostPos.getY(hi);
         const hz = hostPos.getZ(hi);
         if (distToTextRegion({ x: hx, y: hy, z: hz }, meta, outline) <= 0.5) continue;
-        let best = 0.12;
+        let best = 0.1;
         let bestI = -1;
         const ix = Math.floor(hx / cell);
         const iy = Math.floor(hy / cell);
@@ -466,6 +465,7 @@ function restoreOutsideVerts(
                     const list = grid.get(`${ix + dx}|${iy + dy}|${iz + dz}`);
                     if (!list) continue;
                     for (const ri of list) {
+                        if (claimed.has(ri)) continue;
                         const d = Math.hypot(
                             hx - resPos.getX(ri),
                             hy - resPos.getY(ri),
@@ -479,16 +479,10 @@ function restoreOutsideVerts(
                 }
             }
         }
-        if (bestI >= 0) cands.push({ hi, ri: bestI, d: best, hx, hy, hz });
-    }
-    cands.sort((a, b) => a.d - b.d);
-    const claimedH = new Set<number>();
-    const claimedR = new Set<number>();
-    for (const c of cands) {
-        if (claimedH.has(c.hi) || claimedR.has(c.ri)) continue;
-        if (c.d > 1e-4) resPos.setXYZ(c.ri, c.hx, c.hy, c.hz);
-        claimedH.add(c.hi);
-        claimedR.add(c.ri);
+        if (bestI >= 0 && best > 1e-4) {
+            resPos.setXYZ(bestI, hx, hy, hz);
+            claimed.add(bestI);
+        }
     }
     resPos.needsUpdate = true;
 }
@@ -544,6 +538,7 @@ export async function booleanTextSolid(
         const cleaned = collapseDegenerateThenWeld(geo);
         if (cleaned !== geo) geo.dispose();
         restoreOutsideVerts(cleaned, host, groups, mappedOrig);
+        if (soupRealHits(cleaned) > 0) return cleaned;
         const split = splitLongRegionEdges(
             cleaned,
             groups,
@@ -552,6 +547,10 @@ export async function booleanTextSolid(
             TEXT_RESULT_MAX_EDGE_MM,
             TEXT_RESULT_SPLIT_ANGLE_DEG,
         );
+        if (split !== cleaned && soupRealHits(split) > 0) {
+            split.dispose();
+            return cleaned;
+        }
         if (split !== cleaned) cleaned.dispose();
         return split;
     } catch (e) {
