@@ -108,7 +108,7 @@ export async function applyTextMarkingToPrintSolid(
         placedFlat.groups,
         map,
         op,
-        checked.surface === "wall" ? 0.1 : 0,
+        checked.surface === "wall" ? 0.05 : 0,
     );
     const meta: TextApplyMeta = {
         surface: checked.surface,
