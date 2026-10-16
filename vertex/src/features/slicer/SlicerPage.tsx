@@ -855,7 +855,7 @@ function ResultPanel({
                                 ? "ApexForge"
                                 : "ApexBounce"}{" "}
                         · {result.printDirection === "toe_first" ? "Toe first" : "Heel first"} ·{" "}
-                        {result.wallLoops} walls
+                        {result.wallLoops} {result.wallLoops === 1 ? "wall" : "walls"}
                     </dd>
                 </dl>
                 <div className="mt-4 flex flex-wrap gap-2">
