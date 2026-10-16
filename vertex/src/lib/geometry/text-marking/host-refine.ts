@@ -25,6 +25,58 @@ function edgeKey(a: number, b: number): string {
     return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
+class SampleGrid {
+    private readonly cells = new Map<string, Array<{ x: number; y: number; z: number }>>();
+    constructor(
+        pts: Array<{ x: number; y: number; z: number }>,
+        readonly cell = 0.5,
+    ) {
+        for (const p of pts) {
+            const k = this.key(p.x, p.y, p.z);
+            const list = this.cells.get(k);
+            if (list) list.push(p);
+            else this.cells.set(k, [p]);
+        }
+    }
+    private key(x: number, y: number, z: number): string {
+        return `${Math.floor(x / this.cell)}|${Math.floor(y / this.cell)}|${Math.floor(z / this.cell)}`;
+    }
+    nearest(p: { x: number; y: number; z: number }, maxMm: number): number {
+        let best = Infinity;
+        const r = Math.ceil(maxMm / this.cell);
+        const ix = Math.floor(p.x / this.cell);
+        const iy = Math.floor(p.y / this.cell);
+        const iz = Math.floor(p.z / this.cell);
+        for (let dx = -r; dx <= r; dx++) {
+            for (let dy = -r; dy <= r; dy++) {
+                for (let dz = -r; dz <= r; dz++) {
+                    const list = this.cells.get(`${ix + dx}|${iy + dy}|${iz + dz}`);
+                    if (!list) continue;
+                    for (const q of list) {
+                        const d = Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
+                        if (d < best) best = d;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+}
+
+function footprintSamples(
+    groups: TextGlyphGroup[],
+    mapPoint: MapTextPoint,
+): Array<{ x: number; y: number; z: number }> {
+    const pts: Array<{ x: number; y: number; z: number }> = [];
+    for (const g of groups) {
+        for (const t of [0, 0.5, 1]) {
+            for (const p of g.outer) pts.push(mapPoint(p, t));
+            for (const hole of g.holes) for (const p of hole) pts.push(mapPoint(p, t));
+        }
+    }
+    return pts;
+}
+
 function glyphAabbs(groups: TextGlyphGroup[], mapPoint: MapTextPoint, pad: number): Aabb[] {
     const boxes: Aabb[] = [];
     for (const g of groups) {
@@ -151,11 +203,32 @@ function minAngAndLongest(
  * marked edge also split, so the index graph stays watertight. Vertices
  * outside the boxes keep their coordinates.
  */
+function triNearFootprint(
+    pos: BufferAttribute,
+    a: number,
+    b: number,
+    c: number,
+    grid: SampleGrid,
+    padMm: number,
+): boolean {
+    const pa = xyzOf(pos, a);
+    const pb = xyzOf(pos, b);
+    const pc = xyzOf(pos, c);
+    const cx = (pa.x + pb.x + pc.x) / 3;
+    const cy = (pa.y + pb.y + pc.y) / 3;
+    const cz = (pa.z + pb.z + pc.z) / 3;
+    const long = Math.sqrt(Math.max(dist2(pos, a, b), dist2(pos, b, c), dist2(pos, c, a)));
+    const reach = padMm + long;
+    return grid.nearest({ x: cx, y: cy, z: cz }, reach) <= reach;
+}
+
 function splitMarkedEdges(
     work: BufferGeometry,
     boxes: Aabb[],
     maxEdgeMm: number,
     minAngleDeg: number,
+    footprint?: SampleGrid,
+    padMm = TEXT_HOST_REFINE_PAD_MM,
 ): boolean {
     const max2 = maxEdgeMm * maxEdgeMm;
     const minAng = (Math.max(0, minAngleDeg) * Math.PI) / 180;
@@ -174,6 +247,7 @@ function splitMarkedEdges(
             const b = src[t + 1] ?? 0;
             const c = src[t + 2] ?? 0;
             if (!triOverlapsBox(pos, a, b, c, boxes)) continue;
+            if (footprint && !triNearFootprint(pos, a, b, c, footprint, padMm)) continue;
             const ab2 = dist2(pos, a, b);
             const bc2 = dist2(pos, b, c);
             const ca2 = dist2(pos, c, a);
@@ -286,7 +360,9 @@ export function refineHostLocally(
         work.dispose();
         return host;
     }
-    splitMarkedEdges(work, boxes, maxEdgeMm, 0);
+    const samples = footprintSamples(groups, mapPoint);
+    const footprint = samples.length ? new SampleGrid(samples, 0.5) : undefined;
+    splitMarkedEdges(work, boxes, maxEdgeMm, 0, footprint, padMm);
     work.computeVertexNormals();
     work.computeBoundingBox();
     if (!indexedWatertight(work)) {
@@ -323,7 +399,9 @@ export function splitLongRegionEdges(
         work.dispose();
         return geo;
     }
-    splitMarkedEdges(work, boxes, maxEdgeMm, minAngleDeg);
+    const samples = footprintSamples(groups, mapPoint);
+    const footprint = samples.length ? new SampleGrid(samples, 0.5) : undefined;
+    splitMarkedEdges(work, boxes, maxEdgeMm, minAngleDeg, footprint, padMm);
     work.computeVertexNormals();
     work.computeBoundingBox();
     if (!indexedWatertight(work)) {

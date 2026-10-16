@@ -8,6 +8,7 @@ import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
 import type { Side } from "@/types";
 import {
     TEXT_BOOLEAN_EPS_MM,
+    TEXT_BOOLEAN_OUTSET_MM,
     TEXT_BOTTOM_INSET_MM,
     TEXT_CAP,
     TEXT_NORMAL_SMOOTH_MM,
@@ -635,9 +636,8 @@ export function placeWallText(
     const sMid = bestS;
     const s0 = sMid - half;
     const s1 = sMid + half;
-    const offset0 = marking.mode === "engrave" ? -marking.depthMm : -TEXT_BOOLEAN_EPS_MM;
-    const offset1 = marking.mode === "engrave" ? TEXT_BOOLEAN_EPS_MM : marking.heightMm;
-    const tSurface = -offset0 / Math.max(1e-9, offset1 - offset0);
+    const offset0 = marking.mode === "engrave" ? -marking.depthMm : -TEXT_BOOLEAN_OUTSET_MM;
+    const offset1 = marking.mode === "engrave" ? TEXT_BOOLEAN_OUTSET_MM : marking.heightMm;
     const heightOf = (p: TextXy, st: WallStation): number => {
         const h = Math.max(1e-6, st.R.z - st.B.z);
         const usableBot = TEXT_WALL_EDGE_CLEARANCE_MM;

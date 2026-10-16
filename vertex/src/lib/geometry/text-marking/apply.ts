@@ -3,7 +3,7 @@
 
 import type { BufferGeometry } from "three";
 import { booleanTextSolid } from "./boolean";
-import { hasActiveTextMarking, TEXT_BOOLEAN_EPS_MM, TEXT_CAP } from "./constants";
+import { hasActiveTextMarking, TEXT_BOOLEAN_EPS_MM, TEXT_BOOLEAN_OUTSET_MM, TEXT_CAP } from "./constants";
 import { flattenText } from "./contours";
 import { TextMarkingError } from "./errors";
 import { loadTextFont } from "./font";
@@ -112,10 +112,14 @@ export async function applyTextMarkingToPrintSolid(
         rebind,
         checked.surface === "wall" ? undefined : 1,
     );
+    const poke = checked.surface === "wall" ? TEXT_BOOLEAN_OUTSET_MM : TEXT_BOOLEAN_EPS_MM;
+    const span = checked.mode === "engrave" ? checked.depthMm + poke : checked.heightMm + poke;
     const tSurface =
-        checked.mode === "engrave"
-            ? checked.depthMm / Math.max(1e-9, checked.depthMm + TEXT_BOOLEAN_EPS_MM)
-            : TEXT_BOOLEAN_EPS_MM / Math.max(1e-9, checked.heightMm + TEXT_BOOLEAN_EPS_MM);
+        checked.surface === "wall"
+            ? checked.mode === "engrave"
+                ? checked.depthMm / Math.max(1e-9, span)
+                : poke / Math.max(1e-9, span)
+            : poke / Math.max(1e-9, span);
     const outlineWorld = placedFlat.groups.map((g) => ({
         outer: g.outer.map((p) => map(p, tSurface)),
         holes: g.holes.map((h) => h.map((p) => map(p, tSurface))),

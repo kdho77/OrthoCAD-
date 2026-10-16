@@ -144,6 +144,7 @@ describe("text marking L/R × wall/bottom builds", () => {
         }
 
         const metrics: Record<string, unknown> = {};
+        const stlGateFails: string[] = [];
         const closeups: Array<{
             label: string;
             pos: Float32Array;
@@ -221,9 +222,11 @@ describe("text marking L/R × wall/bottom builds", () => {
                 }
                 const stl = geometryToBinarySTL(tagged);
                 const gate = stlGates(stl, `${side}-${surface}`);
-                expect(gate.watertight).toBe(true);
-                expect(gate.winding).toBe(true);
-                expect(gate.bodies).toBe(1);
+                if (!gate.watertight || !gate.winding || gate.bodies !== 1) {
+                    stlGateFails.push(
+                        `${tag} watertight=${gate.watertight} winding=${gate.winding} bodies=${gate.bodies}`,
+                    );
+                }
                 tagged.dispose();
                 host.dispose();
             }
@@ -296,6 +299,7 @@ describe("text marking L/R × wall/bottom builds", () => {
                 writeFileSync("/opt/cursor/artifacts/screenshots/text-closeup-3x.png", png);
             }
         }
+        expect(stlGateFails).toEqual([]);
         for (const [tag, raw] of Object.entries(metrics)) {
             const q = raw as ReturnType<typeof measureTextRegionQuality> & { soupSi: number };
             expect(`${tag} si ${q.soupSi}`).toBe(`${tag} si 0`);

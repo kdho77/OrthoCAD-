@@ -3,10 +3,16 @@
 
 import { BufferAttribute, BufferGeometry } from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { TEXT_DEGENERATE_AREA_MM2, TEXT_DEGENERATE_MIN_ANGLE_DEG, TEXT_WELD_MM } from "./constants";
+import {
+    TEXT_DEGENERATE_AREA_MM2,
+    TEXT_DEGENERATE_MIN_ANGLE_DEG,
+    TEXT_HOST_REFINE_PAD_MM,
+    TEXT_RESULT_MAX_EDGE_MM,
+    TEXT_WELD_MM,
+} from "./constants";
 import { buildTextCutterMesh } from "./cutter";
 import { TextMarkingError } from "./errors";
-import { refineHostLocally } from "./host-refine";
+import { refineHostLocally, splitLongRegionEdges } from "./host-refine";
 import { distToTextRegion } from "./quality";
 import { countSoupSelfIntersections } from "./soup-intersect";
 import type { MapTextPoint, TextApplyMeta, TextGlyphGroup } from "./types";
@@ -446,8 +452,8 @@ function restoreOutsideVerts(
         const hx = hostPos.getX(hi);
         const hy = hostPos.getY(hi);
         const hz = hostPos.getZ(hi);
-        if (distToTextRegion({ x: hx, y: hy, z: hz }, meta, outline) <= 0.5) continue;
-        let best = 0.1;
+        if (distToTextRegion({ x: hx, y: hy, z: hz }, meta, outline) <= 1) continue;
+        let best = 0.2;
         let bestI = -1;
         const ix = Math.floor(hx / cell);
         const iy = Math.floor(hy / cell);
@@ -501,14 +507,17 @@ export async function booleanTextSolid(
     const mappedOrig = rebind ? rebind(host) : mapPoint;
     try {
         let geo: BufferGeometry;
+        let usedMap = mappedOrig;
         try {
             if (refinedOk) {
                 geo = csgOnce(mod, prepped, groups, mappedRefined, op, host.userData, sidewallRings);
+                usedMap = mappedRefined;
                 if (soupRealHits(geo) > 0) {
                     const orig = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
                     if (soupRealHits(orig) === 0) {
                         geo.dispose();
                         geo = orig;
+                        usedMap = mappedOrig;
                     } else {
                         orig.dispose();
                     }
@@ -519,6 +528,7 @@ export async function booleanTextSolid(
         } catch (e) {
             if (refinedOk) {
                 geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
+                usedMap = mappedOrig;
             } else if (e instanceof TextMarkingError) {
                 throw e;
             } else {
@@ -531,7 +541,16 @@ export async function booleanTextSolid(
         const cleaned = collapseDegenerateThenWeld(geo);
         if (cleaned !== geo) geo.dispose();
         restoreOutsideVerts(cleaned, host, groups, mappedOrig);
-        return cleaned;
+        const split = splitLongRegionEdges(
+            cleaned,
+            groups,
+            usedMap,
+            TEXT_HOST_REFINE_PAD_MM,
+            TEXT_RESULT_MAX_EDGE_MM,
+            0,
+        );
+        if (split !== cleaned) cleaned.dispose();
+        return split;
     } catch (e) {
         if (e instanceof TextMarkingError) throw e;
         throw new TextMarkingError(

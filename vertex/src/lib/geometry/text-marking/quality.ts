@@ -211,7 +211,48 @@ class VertGrid {
     }
 }
 
-function rasterBottomGlyphs(meta: TextApplyMeta, cell: number): { dist: (x: number, y: number) => number } {
+function newellNormal(pts: Vert3[]): Vert3 {
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    const n = pts.length;
+    for (let i = 0; i < n; i++) {
+        const a = pts[i]!;
+        const b = pts[(i + 1) % n]!;
+        x += (a.y - b.y) * (a.z + b.z);
+        y += (a.z - b.z) * (a.x + b.x);
+        z += (a.x - b.x) * (a.y + b.y);
+    }
+    const l = Math.hypot(x, y, z) || 1;
+    return { x: x / l, y: y / l, z: z / l };
+}
+
+function basisFromN(n: Vert3): { r: Vert3; u: Vert3 } {
+    let rx = -n.y;
+    let ry = n.x;
+    let rz = 0;
+    let rl = Math.hypot(rx, ry, rz);
+    if (rl < 1e-8) {
+        rx = 0;
+        ry = -n.z;
+        rz = n.y;
+        rl = Math.hypot(rx, ry, rz) || 1;
+    }
+    rx /= rl;
+    ry /= rl;
+    rz /= rl;
+    const ux = n.y * rz - n.z * ry;
+    const uy = n.z * rx - n.x * rz;
+    const uz = n.x * ry - n.y * rx;
+    const ul = Math.hypot(ux, uy, uz) || 1;
+    return { r: { x: rx, y: ry, z: rz }, u: { x: ux / ul, y: uy / ul, z: uz / ul } };
+}
+
+function rasterLoops(
+    glyphs: Array<{ outer: PolyPoint[]; holes: PolyPoint[][] }>,
+    cell: number,
+    padMm: number,
+): { dist: (x: number, y: number) => number } {
     const keys = new Set<string>();
     let minX = Infinity;
     let minY = Infinity;
@@ -226,12 +267,12 @@ function rasterBottomGlyphs(meta: TextApplyMeta, cell: number): { dist: (x: numb
         }
         return out.length >= 3 ? out : pts;
     };
-    const glyphs: Array<{ outer: PolyPoint[]; holes: PolyPoint[][] }> = [];
-    for (const g of meta.outlineWorld ?? []) {
-        const outer = thin(asPoly(g.outer));
+    const thinned: Array<{ outer: PolyPoint[]; holes: PolyPoint[][] }> = [];
+    for (const g of glyphs) {
+        const outer = thin(g.outer);
         if (outer.length < 3) continue;
-        const holes = g.holes.map((h) => thin(asPoly(h))).filter((h) => h.length >= 3);
-        glyphs.push({ outer, holes });
+        const holes = g.holes.map((h) => thin(h)).filter((h) => h.length >= 3);
+        thinned.push({ outer, holes });
         for (const p of outer) {
             if (p.x < minX) minX = p.x;
             if (p.y < minY) minY = p.y;
@@ -239,13 +280,13 @@ function rasterBottomGlyphs(meta: TextApplyMeta, cell: number): { dist: (x: numb
             if (p.y > maxY) maxY = p.y;
         }
     }
-    if (!glyphs.length || !Number.isFinite(minX)) {
+    if (!thinned.length || !Number.isFinite(minX)) {
         return { dist: () => 99 };
     }
-    minX -= 1;
-    minY -= 1;
-    maxX += 1;
-    maxY += 1;
+    minX -= 1 + padMm;
+    minY -= 1 + padMm;
+    maxX += 1 + padMm;
+    maxY += 1 + padMm;
     const key = (ix: number, iy: number) => `${ix}|${iy}`;
     const ix0 = Math.floor(minX / cell);
     const iy0 = Math.floor(minY / cell);
@@ -258,7 +299,7 @@ function rasterBottomGlyphs(meta: TextApplyMeta, cell: number): { dist: (x: numb
         for (let ix = ix0; ix <= ix1; ix++) {
             const x = (ix + 0.5) * cell;
             const y = (iy + 0.5) * cell;
-            for (const g of glyphs) {
+            for (const g of thinned) {
                 if (!pointInPoly(x, y, g.outer)) continue;
                 let inHole = false;
                 for (const h of g.holes) {
@@ -274,6 +315,23 @@ function rasterBottomGlyphs(meta: TextApplyMeta, cell: number): { dist: (x: numb
             }
         }
     }
+    const dilate = Math.max(1, Math.ceil(padMm / cell));
+    if (dilate > 0 && keys.size) {
+        const grown = new Set<string>();
+        for (const k of keys) {
+            const sep = k.indexOf("|");
+            const ix = Number(k.slice(0, sep));
+            const iy = Number(k.slice(sep + 1));
+            for (let dy = -dilate; dy <= dilate; dy++) {
+                for (let dx = -dilate; dx <= dilate; dx++) {
+                    if (dx * dx + dy * dy > dilate * dilate) continue;
+                    grown.add(key(ix + dx, iy + dy));
+                }
+            }
+        }
+        for (const k of grown) keys.add(k);
+    }
+    const ring = Math.max(3, dilate + 2);
     return {
         dist: (x: number, y: number) => {
             if (x < minX || x > maxX || y < minY || y > maxY) {
@@ -282,15 +340,67 @@ function rasterBottomGlyphs(meta: TextApplyMeta, cell: number): { dist: (x: numb
             const ix = Math.floor(x / cell);
             const iy = Math.floor(y / cell);
             if (keys.has(key(ix, iy))) return 0;
-            let best = 1;
-            for (let dy = -3; dy <= 3; dy++) {
-                for (let dx = -3; dx <= 3; dx++) {
+            let best = padMm + 1;
+            for (let dy = -ring; dy <= ring; dy++) {
+                for (let dx = -ring; dx <= ring; dx++) {
                     if (!keys.has(key(ix + dx, iy + dy))) continue;
                     const cx = (ix + dx + 0.5) * cell;
                     const cy = (iy + dy + 0.5) * cell;
                     const d = Math.hypot(x - cx, y - cy);
                     if (d < best) best = d;
                 }
+            }
+            return best;
+        },
+    };
+}
+
+function rasterBottomGlyphs(
+    meta: TextApplyMeta,
+    cell: number,
+    padMm: number,
+): { dist: (x: number, y: number) => number } {
+    const glyphs: Array<{ outer: PolyPoint[]; holes: PolyPoint[][] }> = [];
+    for (const g of meta.outlineWorld ?? []) {
+        glyphs.push({ outer: asPoly(g.outer), holes: g.holes.map((h) => asPoly(h)) });
+    }
+    return rasterLoops(glyphs, cell, padMm);
+}
+
+function rasterWallGlyphs(meta: TextApplyMeta, cell: number, padMm: number): { dist2: (p: Vert3) => number } {
+    const frames: Array<{
+        origin: Vert3;
+        r: Vert3;
+        u: Vert3;
+        dist: (x: number, y: number) => number;
+    }> = [];
+    for (const g of meta.outlineWorld ?? []) {
+        if (g.outer.length < 3) continue;
+        const n = newellNormal(g.outer);
+        const { r, u } = basisFromN(n);
+        const origin = g.outer[0]!;
+        const toUV = (p: Vert3): PolyPoint => ({
+            x: (p.x - origin.x) * r.x + (p.y - origin.y) * r.y + (p.z - origin.z) * r.z,
+            y: (p.x - origin.x) * u.x + (p.y - origin.y) * u.y + (p.z - origin.z) * u.z,
+            z: 0,
+        });
+        const raster = rasterLoops(
+            [{ outer: g.outer.map(toUV), holes: g.holes.map((h) => h.map(toUV)) }],
+            cell,
+            padMm,
+        );
+        frames.push({ origin, r, u, dist: raster.dist });
+    }
+    return {
+        dist2: (p: Vert3) => {
+            let best = 99;
+            for (const f of frames) {
+                const x =
+                    (p.x - f.origin.x) * f.r.x + (p.y - f.origin.y) * f.r.y + (p.z - f.origin.z) * f.r.z;
+                const y =
+                    (p.x - f.origin.x) * f.u.x + (p.y - f.origin.y) * f.u.y + (p.z - f.origin.z) * f.u.z;
+                const d = f.dist(x, y);
+                if (d < best) best = d;
             }
             return best;
         },
@@ -437,9 +547,11 @@ export function measureTextRegionQuality(
 ): TextRegionQuality {
     const outline = outlinePts(meta);
     const outlineGrid = new VertGrid(outline, 0.3);
-    const bottomOcc = meta.surface === "bottom" ? rasterBottomGlyphs(meta, 0.4) : null;
+    const bottomOcc = meta.surface === "bottom" ? rasterBottomGlyphs(meta, 0.4, padMm) : null;
+    const wallOcc = meta.surface === "wall" ? rasterWallGlyphs(meta, 0.4, padMm) : null;
     const near = (p: Vert3) => {
         if (meta.surface === "bottom" && bottomOcc) return bottomOcc.dist(p.x, p.y);
+        if (meta.surface === "wall" && wallOcc) return wallOcc.dist2(p);
         return outlineGrid.nearest(p, padMm + 0.6);
     };
     const wallN0 = meanNOut(meta);
@@ -496,10 +608,11 @@ export function measureTextRegionQuality(
             z: (tri.a.z + tri.b.z + tri.c.z) / 3,
         };
         const nOut = nearestNOut(c, meta, wallN0);
-        const dot = Math.abs(tri.n.x * nOut.x + tri.n.y * nOut.y + tri.n.z * nOut.z);
+        const signedN = tri.n.x * nOut.x + tri.n.y * nOut.y + tri.n.z * nOut.z;
+        const dot = Math.abs(signedN);
         if (dot >= 0.7) {
             if (meta.surface === "bottom") {
-                if (Math.abs(c.z - setDepth) <= 0.25 && near(c) <= 0.15) {
+                if (Math.abs(c.z - setDepth) <= 0.08 && near(c) <= padMm) {
                     floors.push(tri);
                 }
             } else if (sampler) {
@@ -507,14 +620,23 @@ export function measureTextRegionQuality(
                 if (hit) {
                     const signed =
                         (hit.p.x - c.x) * hit.n.x + (hit.p.y - c.y) * hit.n.y + (hit.p.z - c.z) * hit.n.z;
-                    if (Math.abs(Math.abs(signed) - setDepth) <= 0.08) floors.push(tri);
+                    if (Math.abs(Math.abs(signed) - setDepth) <= 0.08 && near(c) <= padMm) floors.push(tri);
                 }
-            } else {
+            } else if (near(c) <= padMm) {
                 floors.push(tri);
             }
-        } else if (dot <= 0.35 && near(c) <= 0.15) {
+        } else if (dot <= 0.35 && near(c) <= padMm) {
             if (meta.surface === "bottom") {
                 if (c.z > 0.15 && c.z < setDepth - 0.1) walls.push(tri);
+            } else if (sampler) {
+                const hit = sampler.closest(c);
+                if (hit) {
+                    const signed =
+                        (hit.p.x - c.x) * hit.n.x + (hit.p.y - c.y) * hit.n.y + (hit.p.z - c.z) * hit.n.z;
+                    if (Math.abs(signed) > 0.08 && Math.abs(signed) < setDepth - 0.08) walls.push(tri);
+                } else {
+                    walls.push(tri);
+                }
             } else {
                 walls.push(tri);
             }
@@ -586,6 +708,19 @@ export function measureTextRegionQuality(
     let wallWallMax = 0;
     const seenF = new Map<string, Vert3>();
     const seenW = new Map<string, Vert3>();
+    const outlineLoops: Array<Array<Vert3>> = [];
+    for (const g of meta.outlineWorld ?? []) {
+        outlineLoops.push(g.outer);
+        outlineLoops.push(...g.holes);
+    }
+    const outlineAllEarly = outlineLoops.flat();
+    const cornersEarly = fontCorners(outlineLoops);
+    const cornerGridEarly = new VertGrid(cornersEarly.length ? cornersEarly : outlineAllEarly, 0.3);
+    const nearCornerEdge = (ia: number, ib: number): boolean => {
+        const a = vertOf(result, ia);
+        const b = vertOf(result, ib);
+        return cornerGridEarly.nearest(a, 0.4) <= 0.4 && cornerGridEarly.nearest(b, 0.4) <= 0.4;
+    };
     const crease = (
         store: Map<string, Vert3>,
         ia: number,
@@ -595,8 +730,11 @@ export function measureTextRegionQuality(
     ) => {
         const k = edgeKey(ia, ib);
         const prev = store.get(k);
-        if (prev) update(dihedralDeg(prev, n));
-        else store.set(k, n);
+        if (prev) {
+            const d = dihedralDeg(prev, n);
+            // Opposite-orientation pairs are leftover sheets, not a crease.
+            if (d <= 90) update(d);
+        } else store.set(k, n);
     };
     for (const tri of floors) {
         const ia = idxOf(result, tri.i, 0);
@@ -620,25 +758,20 @@ export function measureTextRegionQuality(
         const ib = idxOf(result, tri.i, 1);
         const ic = idxOf(result, tri.i, 2);
         crease(seenW, ia, ib, tri.n, (d) => {
-            if (d > wallWallMax) wallWallMax = d;
+            if (!nearCornerEdge(ia, ib) && d > wallWallMax) wallWallMax = d;
         });
         crease(seenW, ib, ic, tri.n, (d) => {
-            if (d > wallWallMax) wallWallMax = d;
+            if (!nearCornerEdge(ib, ic) && d > wallWallMax) wallWallMax = d;
         });
         crease(seenW, ic, ia, tri.n, (d) => {
-            if (d > wallWallMax) wallWallMax = d;
+            if (!nearCornerEdge(ic, ia) && d > wallWallMax) wallWallMax = d;
         });
     }
     for (const e of floorEdges.values()) {
         if (e.count === 1) adjFloor.push([e.a, e.b]);
     }
     const boundLoops = chainBoundary(adjFloor);
-    const outlineLoops: Array<Array<Vert3>> = [];
-    for (const g of meta.outlineWorld ?? []) {
-        outlineLoops.push(g.outer);
-        outlineLoops.push(...g.holes);
-    }
-    const outlineAll = outlineLoops.flat();
+    const outlineAll = outlineAllEarly;
     const projectBound = (v: Vert3): Vert3 => {
         if (meta.surface === "bottom") {
             const zRef = outlineAll[0]?.z ?? v.z;
@@ -653,8 +786,7 @@ export function measureTextRegionQuality(
     };
     const boundPts = adjFloor.flat().map(projectBound);
     const haus = outlineAll.length && boundPts.length ? hausdorff(outlineAll, boundPts) : 0;
-    const corners = fontCorners(outlineLoops);
-    const cornerGrid = new VertGrid(corners.length ? corners : outlineAll, 0.3);
+    const cornerGrid = cornerGridEarly;
     let extraTurn = 0;
     for (const loop of boundLoops) {
         const n = loop.length;
