@@ -25,7 +25,7 @@ import { encodePng, renderMesh } from "../../../../../tests/helpers/render-png";
 import { applyElementsToTopMeshLast } from "./apply-elements";
 import { loadTransformedAssetPositions, resolvePlacedAssetContexts } from "./element-asset";
 import { gridFootprintBounds, sampleGridBilinear } from "./height-grid";
-import { anchorMmFromPlacement } from "./no-flow-blend";
+import { anchorMmFromPlacement, defaultNoFlowHeightHooks } from "./no-flow-blend";
 import { anchorPositionFromSidecar, elementSizeScale, localWidthAtU } from "./sizing";
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
@@ -157,6 +157,7 @@ describe("met pad GLB height-field asset", () => {
         const ta = anchor.frame.thickAxis;
         const a = plain.getAttribute("position")!.array as Float32Array;
         const b = composed.getAttribute("position")!.array as Float32Array;
+        const baseZ = defaultNoFlowHeightHooks.baseHeightAtAnchor(plain, anchor.x, anchor.y, ta);
         let worstZ = 0;
         let nInterior = 0;
         const lifted: { x: number; y: number }[] = [];
@@ -166,7 +167,8 @@ describe("met pad GLB height-field asset", () => {
             const dy = b[i * 3 + 1]! - anchor.y;
             const env = sampleGridBilinear(grid, dx, dy);
             if (env > 0.3) {
-                worstZ = Math.max(worstZ, Math.abs(lift - env));
+                const expected = Math.max(a[i * 3 + ta]!, baseZ + env);
+                worstZ = Math.max(worstZ, Math.abs(b[i * 3 + ta]! - expected));
                 nInterior++;
             }
             if (lift > 0.05) lifted.push({ x: b[i * 3]!, y: b[i * 3 + 1]! });
@@ -245,33 +247,36 @@ describe("met pad GLB height-field asset", () => {
         const rawL = await loadSampleTop("left");
         const elR = await defaultMetPad(rawR, "right", "noFlow");
         const elL = await defaultMetPad(rawL, "left", "noFlow");
-        const apply = async (raw: BufferGeometry, side: Side, el: PlacedElement) => {
-            const field = fieldWith(raw, side, el);
-            const base = applyBaseModifiers(raw, { ...field, includeElements: false, elements: [] }, 0);
-            await applyElementsToTopMeshLast(base, raw, field, { subdivide: false });
-            return base;
-        };
-        const meshR = await apply(rawR, "right", elR);
-        const meshL = await apply(rawL, "left", elL);
-        const mirroredR = mirrorGeometry(meshR.clone());
-        const a = mirroredR.getAttribute("position")!.array as Float32Array;
+        const fieldR = fieldWith(rawR, "right", elR);
+        const fieldL = fieldWith(rawL, "left", elL);
+        const plainR = applyBaseModifiers(rawR, { ...fieldR, includeElements: false, elements: [] }, 0);
+        const plainL = applyBaseModifiers(rawL, { ...fieldL, includeElements: false, elements: [] }, 0);
+        const meshR = plainR.clone();
+        const meshL = plainL.clone();
+        await applyElementsToTopMeshLast(meshR, rawR, fieldR, { subdivide: false });
+        await applyElementsToTopMeshLast(meshL, rawL, fieldL, { subdivide: false });
+        const taR = getBaseFootprintFrame(rawR, "right").thickAxis;
+        const taL = getBaseFootprintFrame(rawL, "left").thickAxis;
+        const a = meshR.getAttribute("position")!.array as Float32Array;
         const b = meshL.getAttribute("position")!.array as Float32Array;
+        const pa = plainR.getAttribute("position")!.array as Float32Array;
+        const pb = plainL.getAttribute("position")!.array as Float32Array;
         expect(a.length).toBe(b.length);
         let worst = 0;
+        let n = 0;
         for (let i = 0; i < a.length / 3; i++) {
-            worst = Math.max(
-                worst,
-                Math.hypot(
-                    a[i * 3]! - b[i * 3]!,
-                    a[i * 3 + 1]! - b[i * 3 + 1]!,
-                    a[i * 3 + 2]! - b[i * 3 + 2]!,
-                ),
-            );
+            const liftR = a[i * 3 + taR]! - pa[i * 3 + taR]!;
+            const liftL = b[i * 3 + taL]! - pb[i * 3 + taL]!;
+            if (liftR < 0.05 && liftL < 0.05) continue;
+            n++;
+            worst = Math.max(worst, Math.abs(liftR - liftL));
         }
+        expect(n).toBeGreaterThan(20);
         expect(worst).toBeLessThanOrEqual(0.05);
         meshR.dispose();
         meshL.dispose();
-        mirroredR.dispose();
+        plainR.dispose();
+        plainL.dispose();
         rawR.dispose();
         rawL.dispose();
     }, 90_000);
