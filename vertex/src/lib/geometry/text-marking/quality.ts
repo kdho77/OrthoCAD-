@@ -4,7 +4,7 @@
 import type { BufferGeometry } from "three";
 import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
 import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
-import { TEXT_REGION_PAD_MM } from "./constants";
+import { TEXT_HOST_SMOOTH_DIHEDRAL_DEG, TEXT_REGION_PAD_MM } from "./constants";
 import { createOuterWallSampler, extractHostTextContext, lateralStations } from "./place";
 import type { TextApplyMeta } from "./types";
 
@@ -529,6 +529,67 @@ function stddev(xs: number[]): number {
     return Math.sqrt(v / xs.length);
 }
 
+function hostSmoothEdgeGrid(host: BufferGeometry): {
+    dihedralAt: (a: Vert3, b: Vert3) => number;
+} {
+    const pos = host.getAttribute("position");
+    const index = host.getIndex();
+    const empty = { dihedralAt: () => 0 };
+    if (!pos || !index) return empty;
+    const edgeN = new Map<string, Vert3>();
+    const dih = new Map<string, number>();
+    const mids: Array<{ p: Vert3; deg: number }> = [];
+    const edgeKey = (u: number, v: number) => (u < v ? `${u}|${v}` : `${v}|${u}`);
+    const nTri = index.count / 3;
+    for (let t = 0; t < nTri; t++) {
+        const ia = index.getX(t * 3);
+        const ib = index.getX(t * 3 + 1);
+        const ic = index.getX(t * 3 + 2);
+        const a = vertOf(host, ia);
+        const b = vertOf(host, ib);
+        const c = vertOf(host, ic);
+        const n = faceNormal(a, b, c);
+        const push = (u: number, v: number) => {
+            const k = edgeKey(u, v);
+            const prev = edgeN.get(k);
+            if (prev) {
+                const d = dihedralDeg(prev, n);
+                dih.set(k, d);
+                const pu = vertOf(host, u);
+                const pv = vertOf(host, v);
+                mids.push({
+                    p: { x: (pu.x + pv.x) * 0.5, y: (pu.y + pv.y) * 0.5, z: (pu.z + pv.z) * 0.5 },
+                    deg: d,
+                });
+            } else edgeN.set(k, n);
+        };
+        push(ia, ib);
+        push(ib, ic);
+        push(ic, ia);
+    }
+    const grid = new VertGrid(
+        mids.map((m) => m.p),
+        0.4,
+    );
+    const midByKey = new Map<string, number>();
+    const cell = 0.4;
+    const keyOf = (p: Vert3) =>
+        `${Math.floor(p.x / cell)}|${Math.floor(p.y / cell)}|${Math.floor(p.z / cell)}`;
+    for (const m of mids) {
+        const k = keyOf(m.p);
+        const prev = midByKey.get(k);
+        if (prev == null || m.deg > prev) midByKey.set(k, m.deg);
+    }
+    return {
+        dihedralAt: (a, b) => {
+            const mid = { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5, z: (a.z + b.z) * 0.5 };
+            if (grid.nearest(mid, 0.6) > 0.6) return 0;
+            const k = keyOf(mid);
+            return midByKey.get(k) ?? 0;
+        },
+    };
+}
+
 function hausdorff(a: Vert3[], b: Vert3[]): number {
     const gb = new VertGrid(b, 0.4);
     const ga = new VertGrid(a, 0.4);
@@ -707,7 +768,10 @@ export function measureTextRegionQuality(
         if (prev) prev.count++;
         else map.set(k, { count: 1, n, a: pa, b: pb });
     };
+    const hostEdges = hostSmoothEdgeGrid(host);
     const adjFloor: Array<[Vert3, Vert3]> = [];
+    const floorSide: Array<[Vert3, Vert3]> = [];
+    const wallEdgeKeys = new Set<string>();
     let floorFloorMax = 0;
     let wallWallMax = 0;
     const seenF = new Map<string, Vert3>();
@@ -761,18 +825,28 @@ export function measureTextRegionQuality(
         const ia = idxOf(result, tri.i, 0);
         const ib = idxOf(result, tri.i, 1);
         const ic = idxOf(result, tri.i, 2);
+        wallEdgeKeys.add(edgeKey(ia, ib));
+        wallEdgeKeys.add(edgeKey(ib, ic));
+        wallEdgeKeys.add(edgeKey(ic, ia));
         crease(seenW, ia, ib, tri.n, (d) => {
-            if (!nearCornerEdge(ia, ib) && d > wallWallMax) wallWallMax = d;
+            if (nearCornerEdge(ia, ib)) return;
+            if (hostEdges.dihedralAt(tri.a, tri.b) > TEXT_HOST_SMOOTH_DIHEDRAL_DEG) return;
+            if (d > wallWallMax) wallWallMax = d;
         });
         crease(seenW, ib, ic, tri.n, (d) => {
-            if (!nearCornerEdge(ib, ic) && d > wallWallMax) wallWallMax = d;
+            if (nearCornerEdge(ib, ic)) return;
+            if (hostEdges.dihedralAt(tri.b, tri.c) > TEXT_HOST_SMOOTH_DIHEDRAL_DEG) return;
+            if (d > wallWallMax) wallWallMax = d;
         });
         crease(seenW, ic, ia, tri.n, (d) => {
-            if (!nearCornerEdge(ic, ia) && d > wallWallMax) wallWallMax = d;
+            if (nearCornerEdge(ic, ia)) return;
+            if (hostEdges.dihedralAt(tri.c, tri.a) > TEXT_HOST_SMOOTH_DIHEDRAL_DEG) return;
+            if (d > wallWallMax) wallWallMax = d;
         });
     }
-    for (const e of floorEdges.values()) {
+    for (const [k, e] of floorEdges) {
         if (e.count === 1) adjFloor.push([e.a, e.b]);
+        if (wallEdgeKeys.has(k)) floorSide.push([e.a, e.b]);
     }
     const boundLoops = chainBoundary(adjFloor);
     const outlineAll = outlineAllEarly;
@@ -788,8 +862,10 @@ export function measureTextRegionQuality(
             z: v.z + n.z * setDepth,
         };
     };
-    const boundPts = adjFloor.flat().map(projectBound);
-    const haus = outlineAll.length && boundPts.length ? hausdorff(outlineAll, boundPts) : 0;
+    const floorSidePts = (floorSide.length ? floorSide : adjFloor).flat().map(projectBound);
+    const boundPts = floorSidePts;
+    const resampled = outlineAll;
+    const haus = resampled.length && boundPts.length ? hausdorff(resampled, boundPts) : 0;
     const cornerGrid = cornerGridEarly;
     let extraTurn = 0;
     for (const loop of boundLoops) {
