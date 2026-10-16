@@ -3,16 +3,10 @@
 
 import { BufferAttribute, BufferGeometry } from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import {
-    TEXT_DEGENERATE_AREA_MM2,
-    TEXT_DEGENERATE_MIN_ANGLE_DEG,
-    TEXT_REGION_PAD_MM,
-    TEXT_RESULT_MAX_EDGE_MM,
-    TEXT_WELD_MM,
-} from "./constants";
+import { TEXT_DEGENERATE_AREA_MM2, TEXT_DEGENERATE_MIN_ANGLE_DEG, TEXT_WELD_MM } from "./constants";
 import { buildTextCutterMesh } from "./cutter";
 import { TextMarkingError } from "./errors";
-import { refineHostLocally, splitLongRegionEdges } from "./host-refine";
+import { refineHostLocally } from "./host-refine";
 import { distToTextRegion } from "./quality";
 import { countSoupSelfIntersections } from "./soup-intersect";
 import type { MapTextPoint, TextApplyMeta, TextGlyphGroup } from "./types";
@@ -537,21 +531,7 @@ export async function booleanTextSolid(
         const cleaned = collapseDegenerateThenWeld(geo);
         if (cleaned !== geo) geo.dispose();
         restoreOutsideVerts(cleaned, host, groups, mappedOrig);
-        if (soupRealHits(cleaned) > 0) return cleaned;
-        const split = splitLongRegionEdges(
-            cleaned,
-            groups,
-            mappedOrig,
-            TEXT_REGION_PAD_MM,
-            TEXT_RESULT_MAX_EDGE_MM,
-            0,
-        );
-        if (split !== cleaned && soupRealHits(split) > 0) {
-            split.dispose();
-            return cleaned;
-        }
-        if (split !== cleaned) cleaned.dispose();
-        return split;
+        return cleaned;
     } catch (e) {
         if (e instanceof TextMarkingError) throw e;
         throw new TextMarkingError(
