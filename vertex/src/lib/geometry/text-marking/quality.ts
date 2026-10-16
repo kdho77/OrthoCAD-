@@ -146,6 +146,8 @@ export function distToTextRegion(
 ): number {
     const d3 = grid ? grid.nearest(p, 8) : minDistToOutline(p, outline);
     if (meta.surface !== "bottom") return d3;
+    // Far from every outline sample: skip the O(loops) 2D walk.
+    if (d3 > 8) return d3;
     let d2 = d3;
     for (const g of meta.outlineWorld ?? []) {
         const outer = asPoly(g.outer);
