@@ -34,6 +34,7 @@ type ManifoldHandle = {
     add: (other: ManifoldHandle) => ManifoldHandle;
     subtract: (other: ManifoldHandle) => ManifoldHandle;
     warp: (fn: (vert: [number, number, number]) => void) => ManifoldHandle;
+    simplify: (tolerance?: number) => ManifoldHandle;
     getMesh: () => { vertProperties: Float32Array; triVerts: Uint32Array; numProp: number };
     delete: () => void;
 };
@@ -207,6 +208,12 @@ export async function booleanTextSolid(
     let result: ManifoldHandle | null = null;
     try {
         result = op === "add" ? a.add(b) : a.subtract(b);
+        // Collapse boolean-cut slivers; 0.02 mm << 0.8 mm pocket and 0.05 mm depth spec.
+        const cleaned = result.simplify(0.02);
+        if (cleaned !== result) {
+            result.delete();
+            result = cleaned;
+        }
         return manifoldToGeometry(result, host.userData);
     } catch (e) {
         if (e instanceof TextMarkingError) throw e;
