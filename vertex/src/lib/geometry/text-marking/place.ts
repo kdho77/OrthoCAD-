@@ -378,6 +378,8 @@ export function placeBottomText(
 export interface OuterWallHit {
     p: { x: number; y: number; z: number };
     n: { x: number; y: number; z: number };
+    /** Unsmoothed triangle normal at the closest point. */
+    nFace?: { x: number; y: number; z: number };
 }
 
 function cellKey(x: number, y: number, z: number): string {
@@ -526,7 +528,7 @@ export function createOuterWallSampler(
         const pt = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
         const fi = hit.faceIndex;
         const fb = faceN[fi] ?? { x: 0, y: 0, z: 1 };
-        return { p: pt, n: smoothN(pt.x, pt.y, pt.z, fb) };
+        return { p: pt, n: smoothN(pt.x, pt.y, pt.z, fb), nFace: fb };
     };
     const at = (s: number, h: number): OuterWallHit => {
         const st = sampleAlong(run, s);
@@ -545,6 +547,9 @@ export function createOuterWallSampler(
         if (hit) {
             if (hit.n.x * nx + hit.n.y * ny + hit.n.z * nz < 0) {
                 hit.n = { x: -hit.n.x, y: -hit.n.y, z: -hit.n.z };
+            }
+            if (hit.nFace && hit.nFace.x * nx + hit.nFace.y * ny + hit.nFace.z * nz < 0) {
+                hit.nFace = { x: -hit.nFace.x, y: -hit.nFace.y, z: -hit.nFace.z };
             }
             return hit;
         }
@@ -665,10 +670,19 @@ export function placeWallText(
                 surfCache.set(key, hit);
             }
             const off = offset0 + (offset1 - offset0) * t;
+            const n0 = hit.n;
+            const n1 = hit.nFace ?? hit.n;
+            // Floor (t=0) follows the 1 mm smoothed normal; the outer cap
+            // (t=1) pokes along the local face normal so a 0.2 mm outset
+            // cannot hook into the wall–plantar fillet.
+            const nx = n0.x * (1 - t) + n1.x * t;
+            const ny = n0.y * (1 - t) + n1.y * t;
+            const nz = n0.z * (1 - t) + n1.z * t;
+            const nlen = Math.hypot(nx, ny, nz) || 1;
             return {
-                x: hit.p.x + hit.n.x * off,
-                y: hit.p.y + hit.n.y * off,
-                z: hit.p.z + hit.n.z * off,
+                x: hit.p.x + (nx / nlen) * off,
+                y: hit.p.y + (ny / nlen) * off,
+                z: hit.p.z + (nz / nlen) * off,
             };
         };
     };

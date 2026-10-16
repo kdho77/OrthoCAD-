@@ -719,7 +719,7 @@ export function measureTextRegionQuality(
     const nearCornerEdge = (ia: number, ib: number): boolean => {
         const a = vertOf(result, ia);
         const b = vertOf(result, ib);
-        return cornerGridEarly.nearest(a, 0.4) <= 0.4 && cornerGridEarly.nearest(b, 0.4) <= 0.4;
+        return cornerGridEarly.nearest(a, 0.45) <= 0.45 || cornerGridEarly.nearest(b, 0.45) <= 0.45;
     };
     const crease = (
         store: Map<string, Vert3>,

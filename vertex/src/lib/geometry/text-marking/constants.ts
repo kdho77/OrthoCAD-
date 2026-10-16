@@ -20,7 +20,7 @@ export const TEXT_BOOLEAN_EPS_MM = 0.05;
  * Wall cutter must poke through the outer surface by more than Manifold's
  * ~0.06 mm repair snap; 0.05 mm leaves closed glyph voids (14 bodies).
  */
-export const TEXT_BOOLEAN_OUTSET_MM = 0.4;
+export const TEXT_BOOLEAN_OUTSET_MM = 0.2;
 export const TEXT_WELD_MM = 1e-4;
 /** CDT Steiner grid on glyph caps (mm). */
 export const TEXT_CUTTER_STEINER_MM = 0.25;
@@ -40,7 +40,7 @@ export const TEXT_DEGENERATE_AREA_MM2 = 1e-6;
 /** Drop / edge-collapse needles after the boolean (minimum interior angle). */
 export const TEXT_DEGENERATE_MIN_ANGLE_DEG = 0.5;
 /** Post-boolean split of leftover long / needle edges in the text AABB (mm / deg). */
-export const TEXT_RESULT_MAX_EDGE_MM = 0.55;
+export const TEXT_RESULT_MAX_EDGE_MM = 0.6;
 export const TEXT_RESULT_SPLIT_ANGLE_DEG = 5;
 export const TEXT_REMAINING_MIN_MM = 1.2;
 export const TEXT_BOTTOM_INSET_MM = 4;

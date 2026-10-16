@@ -541,6 +541,8 @@ export async function booleanTextSolid(
         const cleaned = collapseDegenerateThenWeld(geo);
         if (cleaned !== geo) geo.dispose();
         restoreOutsideVerts(cleaned, host, groups, mappedOrig);
+        const nClean = (cleaned.getIndex()?.count ?? cleaned.getAttribute("position").count) / 3;
+        if (nClean > 115_000) return cleaned;
         const split = splitLongRegionEdges(
             cleaned,
             groups,
@@ -549,7 +551,13 @@ export async function booleanTextSolid(
             TEXT_RESULT_MAX_EDGE_MM,
             0,
         );
-        if (split !== cleaned) cleaned.dispose();
+        if (split === cleaned) return cleaned;
+        const nSplit = (split.getIndex()?.count ?? split.getAttribute("position").count) / 3;
+        if (nSplit > 120_000) {
+            split.dispose();
+            return cleaned;
+        }
+        cleaned.dispose();
         return split;
     } catch (e) {
         if (e instanceof TextMarkingError) throw e;
