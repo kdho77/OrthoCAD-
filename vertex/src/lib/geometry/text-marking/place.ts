@@ -218,12 +218,22 @@ export function lateralStations(ctx: HostTextContext): WallStation[] {
         if (st.u < TEXT_U.wall.min || st.u > TEXT_U.wall.max) return false;
         return ySide === "low" ? st.R.y < ctx.midY : st.R.y >= ctx.midY;
     });
-    const runs = contiguousStationRuns(inOrder);
-    const run = runs.reduce((best, r) => {
-        const a = r[r.length - 1]!.s - r[0]!.s;
-        const b = best[best.length - 1]!.s - best[0]!.s;
-        return a > b ? r : best;
-    }, runs[0] ?? inOrder);
+    if (inOrder.length < 2) return [];
+    // Filtered loop order still wraps at the original perimeter seam. Cut at the
+    // largest 3D gap (the true discontinuity) and rebuild arc-length s so the
+    // u=0.35–0.80 lateral band is one continuous chain.
+    let cut = 0;
+    let maxGap = -1;
+    for (let i = 0; i < inOrder.length; i++) {
+        const a = inOrder[i]!;
+        const b = inOrder[(i + 1) % inOrder.length]!;
+        const gap = Math.hypot(b.R.x - a.R.x, b.R.y - a.R.y, b.R.z - a.R.z);
+        if (gap > maxGap) {
+            maxGap = gap;
+            cut = (i + 1) % inOrder.length;
+        }
+    }
+    const run = inOrder.slice(cut).concat(inOrder.slice(0, cut));
     let s = 0;
     return run.map((st, i) => {
         if (i > 0) {
