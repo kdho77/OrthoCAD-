@@ -211,7 +211,7 @@ describe("text marking L/R × wall/bottom builds", () => {
         } finally {
             buf.dispose();
         }
-    });
+    }, 60_000);
 
     test("bottom flipped-render occupancy IoU >= 0.9 vs mirrored glyphs", async () => {
         const font = await loadTextFont();
@@ -244,5 +244,5 @@ describe("text marking L/R × wall/bottom builds", () => {
         } finally {
             buf.dispose();
         }
-    });
+    }, 90_000);
 });

@@ -392,7 +392,7 @@ function chordToOuterMm(mesh: Mesh, st: WallStation, frac: number): number {
     _raycaster.far = 8;
     const hits = _raycaster.intersectObject(mesh, false);
     for (const hit of hits) {
-        if (hit.point.z > 0.4) return hit.distance + bump;
+        if (hit.distance + bump < 5) return hit.distance + bump;
     }
     return 0;
 }
@@ -480,6 +480,15 @@ export function placeWallText(
     if (best.minH + 1e-6 < minUsable) {
         throw textForbiddenZone("wall height too short for cap plus 1.5 mm edge clearance");
     }
+    let yMin = Infinity;
+    let yMax = -Infinity;
+    for (const g of flat.groups) {
+        for (const p of g.outer) {
+            if (p.y < yMin) yMin = p.y;
+            if (p.y > yMax) yMax = p.y;
+        }
+    }
+    const ySpan = Math.max(1e-3, yMax - yMin);
     const sMid = bestS;
     const s0 = sMid - half;
     const s1 = sMid + half;
@@ -498,16 +507,20 @@ export function placeWallText(
             throw textForbiddenZone("wall thinner than 2 mm");
         }
         const h = Math.max(1e-6, st.R.z - st.B.z);
-        const usableTop = h - TEXT_TRIMLINE_RIM_BAND_MM;
         const usableBot = TEXT_WALL_EDGE_CLEARANCE_MM;
-        const letter0 = usableBot + Math.max(0, usableTop - usableBot - flat.capHeightMm) / 2;
-        const frac = (letter0 + p.y) / h;
+        const usableTop = Math.max(usableBot + 0.5, h - TEXT_TRIMLINE_RIM_BAND_MM);
+        const nlen = Math.hypot(st.nOut.x, st.nOut.y, st.nOut.z) || 1;
+        const usable = Math.max(1e-3, usableTop - usableBot);
+        // 1-1 map into the usable band. Clamping overflow y onto usableTop
+        // collapses the glyph crown into a line and the cutter self-intersects.
+        const yScale = Math.min(1, usable / ySpan);
+        const letter0 = usableBot + Math.max(0, usable - ySpan * yScale) / 2;
+        const frac = (letter0 + (p.y - yMin) * yScale) / h;
         const clamped = Math.max(usableBot / h, Math.min(usableTop / h, frac));
         const x = st.B.x + (st.R.x - st.B.x) * clamped;
         const y = st.B.y + (st.R.y - st.B.y) * clamped;
         const z = st.B.z + (st.R.z - st.B.z) * clamped;
         const off = (st.outerMm ?? 0) + offset0 + (offset1 - offset0) * t;
-        const nlen = Math.hypot(st.nOut.x, st.nOut.y, st.nOut.z) || 1;
         return {
             x: x + (st.nOut.x / nlen) * off,
             y: y + (st.nOut.y / nlen) * off,

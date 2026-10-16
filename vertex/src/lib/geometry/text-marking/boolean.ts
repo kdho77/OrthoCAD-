@@ -250,9 +250,36 @@ function indexedWatertight(geo: BufferGeometry): boolean {
  * Collapse needles (area < 1e-6 mm² or min angle < 0.5°) by welding the
  * shortest edge, then re-weld at TEXT_WELD_MM.
  */
-export function collapseDegenerateThenWeld(geo: BufferGeometry): BufferGeometry {
+export function collapseDegenerateThenWeld(geo: BufferGeometry, forceWeldMm = 0): BufferGeometry {
     const minAng = (TEXT_DEGENERATE_MIN_ANGLE_DEG * Math.PI) / 180;
-    const work = geo.index ? geo.clone() : weldedIndexed(geo);
+    const srcIndex = geo.getIndex();
+    const srcPos = geo.getAttribute("position");
+    if (!srcIndex || !srcPos) return geo;
+    const src = srcIndex.array as ArrayLike<number>;
+    let found = false;
+    for (let t = 0; t + 2 < srcIndex.count; t += 3) {
+        const i0 = src[t] ?? 0;
+        const i1 = src[t + 1] ?? 0;
+        const i2 = src[t + 2] ?? 0;
+        const m = triMetrics(
+            srcPos.getX(i0),
+            srcPos.getY(i0),
+            srcPos.getZ(i0),
+            srcPos.getX(i1),
+            srcPos.getY(i1),
+            srcPos.getZ(i1),
+            srcPos.getX(i2),
+            srcPos.getY(i2),
+            srcPos.getZ(i2),
+        );
+        if (m.area < TEXT_DEGENERATE_AREA_MM2 || m.minAng < minAng) {
+            found = true;
+            break;
+        }
+    }
+    if (!found && forceWeldMm <= 0) return geo;
+
+    const work = geo.clone();
     const userData = geo.userData;
     for (let pass = 0; pass < 4; pass++) {
         const pos = work.getAttribute("position");
@@ -263,10 +290,10 @@ export function collapseDegenerateThenWeld(geo: BufferGeometry): BufferGeometry 
         for (let i = 0; i < nVert; i++) parent[i] = i;
         const find = (i: number): number => {
             let x = i;
-            while (parent[x] !== x) x = parent[x]!;
+            while (parent[x] !== x) x = parent[x] ?? x;
             let y = i;
             while (y !== x) {
-                const n = parent[y]!;
+                const n = parent[y] ?? y;
                 parent[y] = x;
                 y = n;
             }
@@ -277,12 +304,12 @@ export function collapseDegenerateThenWeld(geo: BufferGeometry): BufferGeometry 
             const pb = find(b);
             if (pa !== pb) parent[pb] = pa;
         };
-        const src = index.array as ArrayLike<number>;
+        const idx = index.array as ArrayLike<number>;
         let collapsed = 0;
         for (let t = 0; t + 2 < index.count; t += 3) {
-            const i0 = src[t]!;
-            const i1 = src[t + 1]!;
-            const i2 = src[t + 2]!;
+            const i0 = idx[t] ?? 0;
+            const i1 = idx[t + 1] ?? 0;
+            const i2 = idx[t + 2] ?? 0;
             const m = triMetrics(
                 pos.getX(i0),
                 pos.getY(i0),
@@ -303,22 +330,12 @@ export function collapseDegenerateThenWeld(geo: BufferGeometry): BufferGeometry 
         if (!collapsed) break;
         const nextIndex: number[] = [];
         for (let t = 0; t + 2 < index.count; t += 3) {
-            const a = find(src[t]!);
-            const b = find(src[t + 1]!);
-            const c = find(src[t + 2]!);
+            const a = find(idx[t] ?? 0);
+            const b = find(idx[t + 1] ?? 0);
+            const c = find(idx[t + 2] ?? 0);
+            // Skip tris that collapsed to a line. Do not drop leftover needles —
+            // that opens the surface. Another pass unions their short edges.
             if (a === b || b === c || c === a) continue;
-            const m = triMetrics(
-                pos.getX(a),
-                pos.getY(a),
-                pos.getZ(a),
-                pos.getX(b),
-                pos.getY(b),
-                pos.getZ(b),
-                pos.getX(c),
-                pos.getY(c),
-                pos.getZ(c),
-            );
-            if (m.area < TEXT_DEGENERATE_AREA_MM2 || m.minAng < minAng) continue;
             nextIndex.push(a, b, c);
         }
         if (nextIndex.length < 9) break;
@@ -327,19 +344,31 @@ export function collapseDegenerateThenWeld(geo: BufferGeometry): BufferGeometry 
     work.computeVertexNormals();
     work.computeBoundingBox();
     work.userData = userData ?? {};
-    const welded = mergeVertices(work, TEXT_WELD_MM);
-    welded.computeVertexNormals();
-    welded.computeBoundingBox();
-    welded.userData = userData ?? {};
-    if (welded !== work) {
-        if (indexedWatertight(welded) || !indexedWatertight(work)) {
-            work.dispose();
+    // Re-weld only when the snap stays a 2-manifold. A global mergeVertices on
+    // Manifold-3d CSG output otherwise creates nm edges. After wall simplify,
+    // a 0.02 mm weld collapses remesh needles that SAT still flags as top-top.
+    const originalWatertight = indexedWatertight(geo);
+    const tryWeld = (src: BufferGeometry, mm: number): BufferGeometry | null => {
+        const welded = mergeVertices(src, mm);
+        welded.computeVertexNormals();
+        welded.computeBoundingBox();
+        welded.userData = userData ?? {};
+        if (indexedWatertight(welded)) {
+            if (welded !== src) src.dispose();
             return welded;
         }
-        welded.dispose();
-        return work;
+        if (welded !== src) welded.dispose();
+        return null;
+    };
+    if (forceWeldMm > 0) {
+        const snapped = tryWeld(work, forceWeldMm);
+        if (snapped) return snapped;
     }
-    return welded;
+    const welded = tryWeld(work, TEXT_WELD_MM);
+    if (welded) return welded;
+    if (indexedWatertight(work) || !originalWatertight) return work;
+    work.dispose();
+    return geo;
 }
 
 function manifoldToGeometry(handle: ManifoldHandle, userData: unknown): BufferGeometry {
@@ -376,10 +405,10 @@ export async function booleanTextSolid(
     try {
         result = op === "add" ? a.add(b) : a.subtract(b);
         if (simplifyMm > 0) {
-            const cleaned = result.simplify(simplifyMm);
-            if (cleaned !== result) {
+            const simplified = result.simplify(simplifyMm);
+            if (simplified !== result) {
                 result.delete();
-                result = cleaned;
+                result = simplified;
             }
         }
         const geo = manifoldToGeometry(result, host.userData);
