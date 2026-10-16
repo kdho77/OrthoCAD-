@@ -288,11 +288,13 @@ export function placeBottomText(
 }
 
 function contiguousStationRuns(stations: WallStation[]): WallStation[][] {
+    const sorted = stations.slice().sort((a, b) => a.s - b.s);
     const runs: WallStation[][] = [];
     let cur: WallStation[] = [];
-    for (const st of stations) {
+    for (const st of sorted) {
         const prev = cur[cur.length - 1];
-        if (prev && st.s - prev.s > 8) {
+        // Only split on wrap-around (half a perimeter), not on sparse samples.
+        if (prev && st.s - prev.s > 40) {
             if (cur.length >= 2) runs.push(cur);
             cur = [st];
         } else {
@@ -300,7 +302,7 @@ function contiguousStationRuns(stations: WallStation[]): WallStation[][] {
         }
     }
     if (cur.length >= 2) runs.push(cur);
-    return runs;
+    return runs.length ? runs : [sorted];
 }
 
 export function placeWallText(
