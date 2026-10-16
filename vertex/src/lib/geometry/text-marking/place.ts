@@ -207,7 +207,22 @@ function sampleAlong(stations: WallStation[], s: number): WallStation {
 }
 
 export function lateralStations(ctx: HostTextContext): WallStation[] {
-    return ctx.stations.filter((st) => st.sideSign < 0 && st.u >= TEXT_U.wall.min && st.u <= TEXT_U.wall.max);
+    const band = ctx.stations.filter((st) => st.u >= TEXT_U.wall.min && st.u <= TEXT_U.wall.max);
+    if (band.length < 2) return [];
+    const low = band.filter((st) => st.R.y < ctx.midY);
+    const high = band.filter((st) => st.R.y >= ctx.midY);
+    const nLowLat = low.filter((s) => s.sideSign < 0).length;
+    const nHighLat = high.filter((s) => s.sideSign < 0).length;
+    const chosen = (nLowLat >= nHighLat ? low : high).slice();
+    chosen.sort((a, b) => a.u - b.u);
+    let s = 0;
+    return chosen.map((st, i) => {
+        if (i > 0) {
+            const p = chosen[i - 1]!;
+            s += Math.hypot(st.R.x - p.R.x, st.R.y - p.R.y, st.R.z - p.R.z);
+        }
+        return { ...st, s };
+    });
 }
 
 function fitsInside(flat: FlattenedText, outline: PolyPoint[], insetMm: number): boolean {
