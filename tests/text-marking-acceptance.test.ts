@@ -201,7 +201,7 @@ describe("text marking L/R × wall/bottom builds", () => {
                 writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} soupSi ${Date.now()}\n`);
                 const q = measureTextRegionQuality(soup, host, ud.textMarking!);
                 writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} quality ${Date.now()}\n`);
-                metrics[`${side}-${surface}`] = { ...q, soupSi: soupSi.real };
+                metrics[`${side}-${surface}`] = { ...q, soupSi };
                 mkdirSync("/tmp/s1-stls", { recursive: true });
                 writeFileSync("/tmp/s1-stls/text-quality.json", JSON.stringify(metrics, null, 2));
                 if (side === "right") {
