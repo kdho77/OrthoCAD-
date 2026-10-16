@@ -425,8 +425,9 @@ export function placeWallText(
         }
         throw textDoesNotFit();
     }
-    const offset0 = marking.mode === "engrave" ? TEXT_BOOLEAN_EPS_MM : -TEXT_BOOLEAN_EPS_MM;
-    const offset1 = marking.mode === "engrave" ? -marking.depthMm : marking.heightMm;
+    // t must increase along +nOut so (s, h, t) stays right-handed with CrossSection.extrude.
+    const offset0 = marking.mode === "engrave" ? -marking.depthMm : -TEXT_BOOLEAN_EPS_MM;
+    const offset1 = marking.mode === "engrave" ? TEXT_BOOLEAN_EPS_MM : marking.heightMm;
     const map: MapTextPoint = (p, t) => {
         const st = sampleAlong(run, s0 + p.x);
         if (st.thickMm + 1e-6 < TEXT_WALL_MIN_THICK_MM) {
