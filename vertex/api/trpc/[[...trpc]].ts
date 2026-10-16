@@ -12,9 +12,9 @@
 // persistent /trpc 500s). The same rule applies to every file under
 // server/src/. Verify with `npx vercel build` + booting
 // .vercel/output/functions/api/trpc/[[...trpc]].func/api/trpc/[[...trpc]].js.
-// Also keep this the ONLY module inside api/ (Vercel deploys every
-// non-underscore file under api/ as its own function). node_modules are traced
-// automatically, including Prisma query engines — no `functions` config needed.
+// Extra files under api/ become extra Vercel functions. That is intentional for
+// `/api/slicer` (multipart G-code proxy). Do not add unrelated siblings.
+// node_modules are traced automatically, including Prisma query engines.
 //
 // Routing: the client calls /trpc (see src/lib/trpc.ts); rewrites in
 // vertex/vercel.json map /trpc/* to /api/trpc/* so this catch-all handles it.

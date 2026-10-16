@@ -2,6 +2,12 @@ import "./load-env.js";
 import { createHTTPServer } from "@trpc/server/adapters/standalone";
 import { createContext } from "./context.js";
 import { validateServerEnv } from "./lib/env.js";
+import {
+    handleSlicerRequest,
+    incomingMessageToRequest,
+    isSlicerProxyPath,
+    sendFetchResponse,
+} from "./lib/vertexslice-proxy.js";
 import { appRouter } from "./routers/index.js";
 
 validateServerEnv();
@@ -27,9 +33,34 @@ const server = createHTTPServer({
         });
     },
     middleware: (req, res, next) => {
+        const pathname = (req.url ?? "/").split("?")[0] ?? "/";
+        if (isSlicerProxyPath(pathname) || pathname === "/api/slicer") {
+            void incomingMessageToRequest(req)
+                .then((request) => handleSlicerRequest(request))
+                .then((response) => sendFetchResponse(res, response))
+                .catch((err) => {
+                    console.error("[vertex] slicer proxy error", err);
+                    if (!res.headersSent) {
+                        res.statusCode = 500;
+                        res.setHeader("Content-Type", "application/json");
+                        res.end(
+                            JSON.stringify({
+                                ok: false,
+                                error: {
+                                    code: "auth_config",
+                                    cause: "Proxy failed",
+                                    nextStep: "Retry",
+                                    requestId: "",
+                                },
+                            }),
+                        );
+                    }
+                });
+            return;
+        }
         res.setHeader("Access-Control-Allow-Origin", ORIGIN);
         res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Slicer-Fault");
         if (req.method === "OPTIONS") {
             res.writeHead(204);
             res.end();
