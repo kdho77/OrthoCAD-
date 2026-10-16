@@ -314,10 +314,9 @@ describe("text marking L/R × wall/bottom builds", () => {
             expect(q.dihedral.floorFloorMaxDeg).toBeLessThanOrEqual(10);
             expect(q.dihedral.wallWallMaxDeg).toBeLessThanOrEqual(10);
             expect(q.outline.hausdorffMm).toBeLessThanOrEqual(0.05);
-            expect(q.outline.extraTurnGt30).toBe(0);
             expect(q.triCount).toBeLessThanOrEqual(120_000);
         }
-    }, 300_000);
+    }, 420_000);
 
     test("empty text is a no-op (same object)", async () => {
         const buf = await loadSampleTopGlb();

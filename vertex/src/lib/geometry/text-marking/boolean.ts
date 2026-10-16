@@ -8,7 +8,6 @@ import {
     TEXT_DEGENERATE_MIN_ANGLE_DEG,
     TEXT_REGION_PAD_MM,
     TEXT_RESULT_MAX_EDGE_MM,
-    TEXT_RESULT_SPLIT_ANGLE_DEG,
     TEXT_WELD_MM,
 } from "./constants";
 import { buildTextCutterMesh } from "./cutter";
@@ -545,7 +544,7 @@ export async function booleanTextSolid(
             mappedOrig,
             TEXT_REGION_PAD_MM,
             TEXT_RESULT_MAX_EDGE_MM,
-            TEXT_RESULT_SPLIT_ANGLE_DEG,
+            0,
         );
         if (split !== cleaned && soupRealHits(split) > 0) {
             split.dispose();

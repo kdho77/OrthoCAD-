@@ -330,8 +330,8 @@ function hausdorff(a: Vert3[], b: Vert3[]): number {
     const gb = new VertGrid(b, 0.4);
     const ga = new VertGrid(a, 0.4);
     let max = 0;
-    for (const p of a) max = Math.max(max, gb.nearest(p, 4));
-    for (const p of b) max = Math.max(max, ga.nearest(p, 4));
+    for (const p of a) max = Math.max(max, gb.nearest(p, 8));
+    for (const p of b) max = Math.max(max, ga.nearest(p, 8));
     return Number.isFinite(max) ? max : 99;
 }
 
@@ -416,13 +416,17 @@ export function measureTextRegionQuality(
                 if (hit) {
                     const signed =
                         (hit.p.x - c.x) * hit.n.x + (hit.p.y - c.y) * hit.n.y + (hit.p.z - c.z) * hit.n.z;
-                    if (Math.abs(Math.abs(signed) - setDepth) <= 0.25) floors.push(tri);
+                    if (Math.abs(Math.abs(signed) - setDepth) <= 0.08) floors.push(tri);
                 }
             } else {
                 floors.push(tri);
             }
-        } else if (dot <= 0.35 && distToTextRegion(c, meta, outline) <= 0.2) {
-            walls.push(tri);
+        } else if (dot <= 0.35 && distToTextRegion(c, meta, outline) <= 0.15) {
+            if (meta.surface === "bottom") {
+                if (c.z > 0.15 && c.z < setDepth - 0.1) walls.push(tri);
+            } else {
+                walls.push(tri);
+            }
         }
     }
 
@@ -549,9 +553,12 @@ export function measureTextRegionQuality(
             const zRef = outlineAll[0]?.z ?? v.z;
             return { x: v.x, y: v.y, z: zRef };
         }
-        if (!sampler) return v;
-        const hit = sampler.closest(v);
-        return hit ? hit.p : v;
+        const n = nearestNOut(v, meta, wallN0);
+        return {
+            x: v.x + n.x * setDepth,
+            y: v.y + n.y * setDepth,
+            z: v.z + n.z * setDepth,
+        };
     };
     const boundPts = adjFloor.flat().map(projectBound);
     const haus = outlineAll.length && boundPts.length ? hausdorff(outlineAll, boundPts) : 0;
