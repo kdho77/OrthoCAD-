@@ -305,15 +305,22 @@ function fitsInside(flat: FlattenedText, outline: PolyPoint[], insetMm: number):
 }
 
 /**
- * Boundary of the actual flat plantar (z≈0 faces whose neighbor tilts off +Z).
- * This is where the wall–plantar fillet starts.
+ * Ordered CCW boundary of the actual flat plantar (z≈0, |n·Z| high).
+ * This is where the wall–plantar fillet starts. Uses |n·Z| so a mirrored
+ * left foot (winding flipped then restored) still finds the same loop.
  */
 export function flatBottomBoundaryLoop(geo: BufferGeometry): PolyPoint[] | null {
     const pos = geo.getAttribute("position");
     const index = geo.getIndex();
     if (!pos || !index) return null;
     const src = index.array as ArrayLike<number>;
-    const n = (i0: number, i1: number, i2: number) => {
+    const undirected = new Map<string, number>();
+    const directed: Array<[number, number]> = [];
+    const edgeKey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let t = 0; t + 2 < index.count; t += 3) {
+        const i0 = src[t] ?? 0;
+        const i1 = src[t + 1] ?? 0;
+        const i2 = src[t + 2] ?? 0;
         const ax = pos.getX(i0);
         const ay = pos.getY(i0);
         const az = pos.getZ(i0);
@@ -326,58 +333,80 @@ export function flatBottomBoundaryLoop(geo: BufferGeometry): PolyPoint[] | null 
         const nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
         const ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
         const nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
-        const l = Math.hypot(nx, ny, nz) || 1;
-        return { nx: nx / l, ny: ny / l, nz: nz / l, z: (az + bz + cz) / 3 };
-    };
-    const flat: boolean[] = [];
-    const edges = new Map<string, number>();
-    const edgeKey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
-    for (let t = 0; t + 2 < index.count; t += 3) {
-        const i0 = src[t] ?? 0;
-        const i1 = src[t + 1] ?? 0;
-        const i2 = src[t + 2] ?? 0;
-        const m = n(i0, i1, i2);
-        const isFlat = m.nz > 0.85 && m.z < 0.35;
-        flat.push(isFlat);
-        if (!isFlat) continue;
+        const z = (az + bz + cz) / 3;
+        const nl = Math.hypot(nx, ny, nz) || 1;
+        if (Math.abs(nz / nl) <= 0.85 || z >= 0.35) continue;
+        // Orient the XY projection CCW so mirrored winding still traces the
+        // interior on the left of each directed boundary edge.
+        const area2 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        const u0 = i0;
+        const u1 = area2 >= 0 ? i1 : i2;
+        const u2 = area2 >= 0 ? i2 : i1;
         for (const [u, v] of [
-            [i0, i1],
-            [i1, i2],
-            [i2, i0],
+            [u0, u1],
+            [u1, u2],
+            [u2, u0],
         ] as const) {
             const k = edgeKey(u, v);
-            edges.set(k, (edges.get(k) ?? 0) + 1);
+            undirected.set(k, (undirected.get(k) ?? 0) + 1);
+            directed.push([u, v]);
         }
     }
-    const loop: PolyPoint[] = [];
-    const seen = new Set<number>();
-    for (let t = 0; t + 2 < index.count; t += 3) {
-        if (!flat[t / 3]) continue;
-        const i0 = src[t] ?? 0;
-        const i1 = src[t + 1] ?? 0;
-        const i2 = src[t + 2] ?? 0;
-        for (const [u, v] of [
-            [i0, i1],
-            [i1, i2],
-            [i2, i0],
-        ] as const) {
-            if ((edges.get(edgeKey(u, v)) ?? 0) !== 1) continue;
-            for (const i of [u, v]) {
-                if (seen.has(i)) continue;
-                seen.add(i);
-                loop.push({ x: pos.getX(i), y: pos.getY(i), z: pos.getZ(i) });
+    const next = new Map<number, number[]>();
+    for (const [u, v] of directed) {
+        if ((undirected.get(edgeKey(u, v)) ?? 0) !== 1) continue;
+        const list = next.get(u);
+        if (list) list.push(v);
+        else next.set(u, [v]);
+    }
+    if (next.size < 4) return null;
+    const walk = (start: number): number[] => {
+        const path: number[] = [start];
+        const used = new Set<string>();
+        let cur = start;
+        for (let step = 0; step < next.size + 2; step++) {
+            const cands = next.get(cur) ?? [];
+            let nxt = -1;
+            for (const v of cands) {
+                const k = `${cur}>${v}`;
+                if (used.has(k)) continue;
+                nxt = v;
+                break;
             }
+            if (nxt < 0) break;
+            used.add(`${cur}>${nxt}`);
+            if (nxt === start) return path;
+            path.push(nxt);
+            cur = nxt;
         }
+        return [];
+    };
+    let best: number[] = [];
+    for (const start of next.keys()) {
+        const path = walk(start);
+        if (path.length > best.length) best = path;
+        if (best.length >= next.size) break;
     }
-    return loop.length >= 8 ? loop : null;
+    if (best.length < 4) return null;
+    const loop: PolyPoint[] = best.map((i) => ({ x: pos.getX(i), y: pos.getY(i), z: pos.getZ(i) }));
+    let area = 0;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        area += a.x * b.y - b.x * a.y;
+    }
+    if (area < 0) loop.reverse();
+    return loop;
 }
 
-function dihedralDeg(
+/** Unsigned plane angle (0–90°). Flipped winding does not change the result. */
+function planeAngleDeg(
     a: { x: number; y: number; z: number },
     b: { x: number; y: number; z: number },
 ): number {
     const c = Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y + a.z * b.z));
-    return (Math.acos(c) * 180) / Math.PI;
+    const d = (Math.acos(c) * 180) / Math.PI;
+    return Math.min(d, 180 - d);
 }
 
 /**
@@ -441,10 +470,9 @@ export function measureWallFilletTopMm(geo: BufferGeometry, st: WallStation): nu
         const nl = Math.hypot(nx, ny, nz);
         if (nl < 1e-12) continue;
         const n = { x: nx / nl, y: ny / nl, z: nz / nl };
-        const deg = dihedralDeg(n, plantar);
-        // Fillet band: not plantar-flat and not a vertical wall. The top is
-        // the highest sample in that band (dihedral to plantar has left <10°
-        // at the plantar join and has not yet reached a vertical wall).
+        const deg = planeAngleDeg(n, plantar);
+        // Fillet band: not plantar-flat and not a vertical wall. Unsigned
+        // so a mirrored left foot still classifies the same faces.
         if (deg < TEXT_FILLET_DIHEDRAL_DEG || deg > 80) continue;
         if (along > measured) measured = along;
     }

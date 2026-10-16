@@ -316,14 +316,36 @@ describe("print-clean CAD-expert gates", () => {
         host.dispose();
     });
 
-    test("flat-bottom boundary of a box is the z=0 rectangle", async () => {
+    test("flat-bottom boundary of a box is an ordered CCW loop (also after mirror)", async () => {
         const { BoxGeometry } = await import("three");
+        const { mirrorGeometry } = await import("@/lib/library/loaders");
         const { flatBottomBoundaryLoop, measureWallFilletTopMm } = await import("./place");
+        const signedArea = (loop: Array<{ x: number; y: number }>) => {
+            let a = 0;
+            for (let i = 0; i < loop.length; i++) {
+                const p = loop[i]!;
+                const q = loop[(i + 1) % loop.length]!;
+                a += p.x * q.y - q.x * p.y;
+            }
+            return a / 2;
+        };
         const box = new BoxGeometry(20, 10, 4);
         box.translate(0, 0, 2);
         const loop = flatBottomBoundaryLoop(box);
-        expect(loop === null || loop.length >= 4).toBe(true);
-        const top = measureWallFilletTopMm(box, {
+        expect(loop).not.toBeNull();
+        expect(loop!.length).toBeGreaterThanOrEqual(4);
+        expect(signedArea(loop!)).toBeGreaterThan(0);
+        expect(pointInPoly(0, 0, loop!)).toBe(true);
+        expect(pointInPoly(12, 0, loop!)).toBe(false);
+
+        const mirrored = mirrorGeometry(box);
+        const loopL = flatBottomBoundaryLoop(mirrored);
+        expect(loopL).not.toBeNull();
+        expect(loopL!.length).toBeGreaterThanOrEqual(4);
+        expect(signedArea(loopL!)).toBeGreaterThan(0);
+        expect(pointInPoly(0, 0, loopL!)).toBe(true);
+
+        const station = {
             u: 0.4,
             s: 0,
             R: { x: 10, y: 0, z: 4 },
@@ -333,9 +355,11 @@ describe("print-clean CAD-expert gates", () => {
             nOut: { x: 1, y: 0, z: 0 },
             thickMm: 3,
             outerMm: 0,
-        });
-        expect(top).toBeGreaterThanOrEqual(0);
+        };
+        expect(measureWallFilletTopMm(box, station)).toBeGreaterThanOrEqual(0);
+        expect(measureWallFilletTopMm(mirrored, station)).toBeGreaterThanOrEqual(0);
         box.dispose();
+        mirrored.dispose();
     });
 });
 

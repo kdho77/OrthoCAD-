@@ -65,6 +65,17 @@ type ManifoldHandle = {
 };
 
 let wasm: ManifoldWasm | null = null;
+/** Fallback when Manifold.reserveIDs is missing — never reuse 1 for host and cutter. */
+let nextFaceID = 1;
+
+function allocFaceIDs(mod: ManifoldWasm, nTri: number): number {
+    if (typeof mod.Manifold.reserveIDs === "function") {
+        return mod.Manifold.reserveIDs(nTri);
+    }
+    const first = nextFaceID;
+    nextFaceID += nTri;
+    return first;
+}
 
 async function loadWasm(): Promise<ManifoldWasm> {
     if (wasm) return wasm;
@@ -169,7 +180,7 @@ function geometryToManifold(mod: ManifoldWasm, geo: BufferGeometry, label: strin
             throw new TextMarkingError("boolean", `${label} mesh has no usable triangles`);
         }
         const nTri = clean.length / 3;
-        const firstID = typeof mod.Manifold.reserveIDs === "function" ? mod.Manifold.reserveIDs(nTri) : 1;
+        const firstID = allocFaceIDs(mod, nTri);
         const faceID = new Uint32Array(nTri);
         const runIndex = new Uint32Array(nTri + 1);
         const runOriginalID = new Uint32Array(nTri);
@@ -513,7 +524,8 @@ function csgOnce(
     try {
         result = op === "add" ? a.add(b) : a.subtract(b);
         const geo = manifoldToGeometry(result, userData);
-        const cleaned = collapseDegenerateThenWeld(geo, 0, band);
+        // Band-only 1° collapse: catches 0.53° slivers without a whole-mesh weld.
+        const cleaned = collapseDegenerateThenWeld(geo, 0, band, TEXT_HOST_SLIVER_MIN_ANGLE_DEG);
         if (cleaned !== geo) geo.dispose();
         return cleaned;
     } finally {
@@ -753,7 +765,7 @@ export async function booleanTextSolid(
                 );
             }
         }
-        const cleaned = collapseDegenerateThenWeld(geo, 0, regionBand);
+        const cleaned = collapseDegenerateThenWeld(geo, 0, regionBand, TEXT_HOST_SLIVER_MIN_ANGLE_DEG);
         if (cleaned !== geo) geo.dispose();
         restoreOutsideVerts(cleaned, host, groups, mappedOrig);
         const hits = countSoupSelfIntersections(cleaned, TEXT_WELD_MM);
