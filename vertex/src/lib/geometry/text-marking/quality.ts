@@ -278,7 +278,7 @@ function fontCorners(loops: Array<Array<Vert3>>, thresh = 35): Vert3[] {
 }
 
 function chainBoundary(edges: Array<[Vert3, Vert3]>): Array<Vert3[]> {
-    const key = (p: Vert3) => `${p.x.toFixed(4)},${p.y.toFixed(4)},${p.z.toFixed(4)}`;
+    const key = (p: Vert3) => `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`;
     const adj = new Map<string, Vert3[]>();
     const point = new Map<string, Vert3>();
     const add = (a: Vert3, b: Vert3) => {
@@ -554,6 +554,7 @@ export function measureTextRegionQuality(
             const b = loop[i]!;
             const c = loop[(i + 1) % n]!;
             if (turningDeg(a, b, c) <= 30) continue;
+            if (minDistToOutline(b, outlineAll) > 0.2) continue;
             if (cornerGrid.nearest(b, 0.4) > 0.35) extraTurn++;
         }
     }

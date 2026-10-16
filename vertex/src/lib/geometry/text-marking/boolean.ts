@@ -399,6 +399,102 @@ function soupRealHits(geo: BufferGeometry): number {
     return countSoupSelfIntersections(geo, TEXT_WELD_MM).real;
 }
 
+function restoreOutsideVerts(
+    result: BufferGeometry,
+    host: BufferGeometry,
+    groups: TextGlyphGroup[],
+    mapped: MapTextPoint,
+): void {
+    const boxes = groups.map((g) => {
+        let minX = Infinity;
+        let minY = Infinity;
+        let minZ = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let maxZ = -Infinity;
+        const consider = (p: { x: number; y: number }, t: number) => {
+            const q = mapped(p, t);
+            if (q.x < minX) minX = q.x;
+            if (q.y < minY) minY = q.y;
+            if (q.z < minZ) minZ = q.z;
+            if (q.x > maxX) maxX = q.x;
+            if (q.y > maxY) maxY = q.y;
+            if (q.z > maxZ) maxZ = q.z;
+        };
+        for (const t of [0, 1]) {
+            for (const p of g.outer) consider(p, t);
+            for (const hole of g.holes) for (const hp of hole) consider(hp, t);
+        }
+        return {
+            minX: minX - 0.5,
+            minY: minY - 0.5,
+            minZ: minZ - 0.5,
+            maxX: maxX + 0.5,
+            maxY: maxY + 0.5,
+            maxZ: maxZ + 0.5,
+        };
+    });
+    const inside = (x: number, y: number, z: number) => {
+        for (const b of boxes) {
+            if (x >= b.minX && x <= b.maxX && y >= b.minY && y <= b.maxY && z >= b.minZ && z <= b.maxZ) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const hostPos = host.getAttribute("position");
+    const resPos = result.getAttribute("position");
+    if (!hostPos || !resPos) return;
+    const cell = 0.25;
+    const grid = new Map<string, number[]>();
+    const keyOf = (x: number, y: number, z: number) =>
+        `${Math.floor(x / cell)}|${Math.floor(y / cell)}|${Math.floor(z / cell)}`;
+    for (let i = 0; i < hostPos.count; i++) {
+        const x = hostPos.getX(i);
+        const y = hostPos.getY(i);
+        const z = hostPos.getZ(i);
+        if (inside(x, y, z)) continue;
+        const k = keyOf(x, y, z);
+        const list = grid.get(k);
+        if (list) list.push(i);
+        else grid.set(k, [i]);
+    }
+    for (let i = 0; i < resPos.count; i++) {
+        const x = resPos.getX(i);
+        const y = resPos.getY(i);
+        const z = resPos.getZ(i);
+        if (inside(x, y, z)) continue;
+        let best = 0.2;
+        let bx = x;
+        let by = y;
+        let bz = z;
+        const ix = Math.floor(x / cell);
+        const iy = Math.floor(y / cell);
+        const iz = Math.floor(z / cell);
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    const list = grid.get(`${ix + dx}|${iy + dy}|${iz + dz}`);
+                    if (!list) continue;
+                    for (const hi of list) {
+                        const hx = hostPos.getX(hi);
+                        const hy = hostPos.getY(hi);
+                        const hz = hostPos.getZ(hi);
+                        const d = Math.hypot(x - hx, y - hy, z - hz);
+                        if (d < best) {
+                            best = d;
+                            bx = hx;
+                            by = hy;
+                            bz = hz;
+                        }
+                    }
+                }
+            }
+        }
+        if (best < 0.2) resPos.setXYZ(i, bx, by, bz);
+    }
+}
+
 /** Single manifold-3d WASM boolean. `op` add = emboss, subtract = engrave. */
 export async function booleanTextSolid(
     host: BufferGeometry,
@@ -420,22 +516,15 @@ export async function booleanTextSolid(
     const mappedOrig = rebind ? rebind(host) : mapPoint;
     try {
         let geo: BufferGeometry;
-        let usedRefinedCsg = false;
         try {
-            if (refinedOk) {
+            geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
+            if (refinedOk && soupRealHits(geo) > 0) {
+                geo.dispose();
                 geo = csgOnce(mod, prepped, groups, mappedRefined, op, host.userData, sidewallRings);
-                if (soupRealHits(geo) > 0) {
-                    geo.dispose();
-                    geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
-                } else {
-                    usedRefinedCsg = true;
-                }
-            } else {
-                geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
             }
         } catch (e) {
             if (refinedOk) {
-                geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
+                geo = csgOnce(mod, prepped, groups, mappedRefined, op, host.userData, sidewallRings);
             } else if (e instanceof TextMarkingError) {
                 throw e;
             } else {
@@ -445,16 +534,9 @@ export async function booleanTextSolid(
                 );
             }
         }
-        const mapped = usedRefinedCsg ? mappedRefined : mappedOrig;
-        const split = usedRefinedCsg ? geo : refineHostLocally(geo, groups, mapped);
-        const cleaned = collapseDegenerateThenWeld(split);
-        if (soupRealHits(cleaned) > 0) {
-            if (cleaned !== split && cleaned !== geo) cleaned.dispose();
-            if (split !== geo) split.dispose();
-            return geo;
-        }
-        if (cleaned !== split && split !== geo) split.dispose();
+        const cleaned = collapseDegenerateThenWeld(geo);
         if (cleaned !== geo) geo.dispose();
+        restoreOutsideVerts(cleaned, host, groups, mappedOrig);
         return cleaned;
     } catch (e) {
         if (e instanceof TextMarkingError) throw e;
