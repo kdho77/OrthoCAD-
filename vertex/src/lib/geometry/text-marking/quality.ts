@@ -2,6 +2,8 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
+import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
+import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
 import { TEXT_REGION_PAD_MM } from "./constants";
 import { createOuterWallSampler, extractHostTextContext, lateralStations } from "./place";
 import type { TextApplyMeta } from "./types";
@@ -130,6 +132,38 @@ function minDistToOutline(p: Vert3, outline: Vert3[]): number {
         if (d < best) best = d;
     }
     return best;
+}
+
+function asPoly(pts: Vert3[]): PolyPoint[] {
+    return pts.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+}
+
+function distToTextRegion(p: Vert3, meta: TextApplyMeta, outline: Vert3[]): number {
+    const d3 = minDistToOutline(p, outline);
+    if (meta.surface !== "bottom") return d3;
+    let d2 = d3;
+    for (const g of meta.outlineWorld ?? []) {
+        const outer = asPoly(g.outer);
+        if (outer.length >= 3) {
+            if (pointInPoly(p.x, p.y, outer)) {
+                let inHole = false;
+                for (const h of g.holes) {
+                    const hole = asPoly(h);
+                    if (hole.length >= 3 && pointInPoly(p.x, p.y, hole)) {
+                        inHole = true;
+                        break;
+                    }
+                }
+                if (!inHole) return 0;
+            }
+            d2 = Math.min(d2, minDistToLoopXY(p.x, p.y, outer));
+        }
+        for (const h of g.holes) {
+            const hole = asPoly(h);
+            if (hole.length >= 3) d2 = Math.min(d2, minDistToLoopXY(p.x, p.y, hole));
+        }
+    }
+    return d2;
 }
 
 class VertGrid {
@@ -318,7 +352,7 @@ export function measureTextRegionQuality(
 
     const hostOutsideVerts: Vert3[] = [];
     for (const v of hostVerts) {
-        if (minDistToOutline(v, outline) > padMm) hostOutsideVerts.push(v);
+        if (distToTextRegion(v, meta, outline) > padMm) hostOutsideVerts.push(v);
     }
     let outsideVertMax = 0;
     let missing = 0;
@@ -334,39 +368,34 @@ export function measureTextRegionQuality(
         const b = vertOf(host, idxOf(host, t, 1));
         const c = vertOf(host, idxOf(host, t, 2));
         if (
-            minDistToOutline(a, outline) > padMm &&
-            minDistToOutline(b, outline) > padMm &&
-            minDistToOutline(c, outline) > padMm
+            distToTextRegion(a, meta, outline) > padMm &&
+            distToTextRegion(b, meta, outline) > padMm &&
+            distToTextRegion(c, meta, outline) > padMm
         ) {
             hostOutsideTris++;
         }
     }
     let resultOutsideTris = 0;
     const inRegion: Array<{ a: Vert3; b: Vert3; c: Vert3; n: Vert3; i: number }> = [];
-    const aspects: number[] = [];
-    let longest = 0;
-    let ge5 = 0;
-    let minAngMin = 180;
     for (let t = 0; t < resN; t++) {
         const a = vertOf(result, idxOf(result, t, 0));
         const b = vertOf(result, idxOf(result, t, 1));
         const c = vertOf(result, idxOf(result, t, 2));
-        const da = minDistToOutline(a, outline);
-        const db = minDistToOutline(b, outline);
-        const dc = minDistToOutline(c, outline);
-        if (da > padMm && db > padMm && dc > padMm) {
+        if (
+            distToTextRegion(a, meta, outline) > padMm &&
+            distToTextRegion(b, meta, outline) > padMm &&
+            distToTextRegion(c, meta, outline) > padMm
+        ) {
             resultOutsideTris++;
             continue;
         }
-        const n = faceNormal(a, b, c);
-        inRegion.push({ a, b, c, n, i: t });
-        const ang = minAngleDeg(a, b, c);
-        if (ang >= 5) ge5++;
-        if (ang < minAngMin) minAngMin = ang;
-        aspects.push(aspectOf(a, b, c));
-        longest = Math.max(longest, longestOf(a, b, c));
+        inRegion.push({ a, b, c, n: faceNormal(a, b, c), i: t });
     }
 
+    const hostCtx = extractHostTextContext(host);
+    const run = meta.surface === "wall" ? lateralStations(hostCtx) : [];
+    const sampler = run.length >= 2 ? createOuterWallSampler(host, run) : null;
+    const setDepth = meta.mode === "engrave" ? meta.depthMm : meta.heightMm;
     const floors: typeof inRegion = [];
     const walls: typeof inRegion = [];
     for (const tri of inRegion) {
@@ -377,13 +406,37 @@ export function measureTextRegionQuality(
         };
         const nOut = nearestNOut(c, meta, wallN0);
         const dot = Math.abs(tri.n.x * nOut.x + tri.n.y * nOut.y + tri.n.z * nOut.z);
-        if (dot >= 0.7) floors.push(tri);
-        else if (dot <= 0.35) walls.push(tri);
+        if (dot >= 0.7) {
+            if (meta.surface === "bottom") {
+                if (Math.abs(c.z - setDepth) <= 0.25) floors.push(tri);
+            } else if (sampler) {
+                const hit = sampler.closest(c);
+                if (hit) {
+                    const signed =
+                        (hit.p.x - c.x) * hit.n.x + (hit.p.y - c.y) * hit.n.y + (hit.p.z - c.z) * hit.n.z;
+                    if (Math.abs(Math.abs(signed) - setDepth) <= 0.25) floors.push(tri);
+                }
+            } else {
+                floors.push(tri);
+            }
+        } else if (dot <= 0.35) {
+            walls.push(tri);
+        }
     }
 
-    const hostCtx = extractHostTextContext(host);
-    const run = meta.surface === "wall" ? lateralStations(hostCtx) : [];
-    const sampler = run.length >= 2 ? createOuterWallSampler(host, run) : null;
+    const feature = floors.concat(walls);
+    const aspects: number[] = [];
+    let longest = 0;
+    let ge5 = 0;
+    let minAngMin = 180;
+    for (const tri of feature) {
+        const ang = minAngleDeg(tri.a, tri.b, tri.c);
+        if (ang >= 5) ge5++;
+        if (ang < minAngMin) minAngMin = ang;
+        aspects.push(aspectOf(tri.a, tri.b, tri.c));
+        longest = Math.max(longest, longestOf(tri.a, tri.b, tri.c));
+    }
+
     const depths: number[] = [];
     if (meta.surface === "wall" && sampler) {
         for (const tri of floors) {
@@ -400,7 +453,6 @@ export function measureTextRegionQuality(
             for (const v of [tri.a, tri.b, tri.c]) depths.push(v.z);
         }
     }
-    const setDepth = meta.mode === "engrave" ? meta.depthMm : meta.heightMm;
     const depthErr = depths.map((d) => d - setDepth);
     const depthAbsMax = depthErr.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
     const depthMean = depths.length ? depths.reduce((s, v) => s + v, 0) / depths.length : 0;
@@ -513,9 +565,9 @@ export function measureTextRegionQuality(
         outsideHostVertsMissing: missing,
         outsideTrisLost: Math.max(0, hostOutsideTris - resultOutsideTris),
         inRegion: {
-            count: inRegion.length,
-            pctMinAngleGe5: inRegion.length ? (100 * ge5) / inRegion.length : 100,
-            minAngleMinDeg: inRegion.length ? minAngMin : 180,
+            count: feature.length,
+            pctMinAngleGe5: feature.length ? (100 * ge5) / feature.length : 100,
+            minAngleMinDeg: feature.length ? minAngMin : 180,
             aspectP99: percentile(aspects, 99),
             aspectMax: aspects.length ? aspects[aspects.length - 1]! : 0,
             longestEdgeMm: longest,

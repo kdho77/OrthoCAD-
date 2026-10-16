@@ -420,12 +420,15 @@ export async function booleanTextSolid(
     const mappedOrig = rebind ? rebind(host) : mapPoint;
     try {
         let geo: BufferGeometry;
+        let usedRefinedCsg = false;
         try {
             if (refinedOk) {
                 geo = csgOnce(mod, prepped, groups, mappedRefined, op, host.userData, sidewallRings);
                 if (soupRealHits(geo) > 0) {
                     geo.dispose();
                     geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
+                } else {
+                    usedRefinedCsg = true;
                 }
             } else {
                 geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
@@ -442,8 +445,8 @@ export async function booleanTextSolid(
                 );
             }
         }
-        const mapped = refinedOk ? mappedRefined : mappedOrig;
-        const split = refineHostLocally(geo, groups, mapped);
+        const mapped = usedRefinedCsg ? mappedRefined : mappedOrig;
+        const split = usedRefinedCsg ? geo : refineHostLocally(geo, groups, mapped);
         const cleaned = collapseDegenerateThenWeld(split);
         if (soupRealHits(cleaned) > 0) {
             if (cleaned !== split && cleaned !== geo) cleaned.dispose();
