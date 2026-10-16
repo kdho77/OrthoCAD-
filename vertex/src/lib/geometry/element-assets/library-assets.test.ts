@@ -44,6 +44,8 @@ const LIBRARY: {
     { kind: "toe_crest", peak: 2.47, fpW: 68.5, fpL: 55.0, highEdge: false },
     { kind: "cuboid_pad", peak: 6.37, fpW: 29.75, fpL: 87.75, highEdge: true },
     { kind: "met_bar", peak: 3.47, fpW: 86.0, fpL: 108.0, highEdge: true },
+    { kind: "dancers_pad", peak: 2.5, fpW: 53.75, fpL: 68.25, highEdge: false },
+    { kind: "cluffy_wedge", peak: 2.4, fpW: 29.25, fpL: 26.25, highEdge: false },
 ];
 
 function zero(): SideCorrections {
