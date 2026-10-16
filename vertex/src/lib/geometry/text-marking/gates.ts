@@ -130,7 +130,7 @@ export function assertTextPrintGates(
             `text boolean is not watertight (open=${man.openEdges} nm=${man.nonManifoldEdges} idxOpen=${indexed.openEdges} idxNm=${indexed.nonManifoldEdges})`,
         );
     }
-    const si = countSelfIntersections(geo);
+    const si = countSelfIntersections(geo, 0.02);
     if (si.real > 0) {
         throw new TextMarkingError("stl-gate", `text boolean has ${si.real} self-intersections`);
     }
