@@ -14,7 +14,7 @@ import {
     TEXT_WALL_EDGE_CLEARANCE_MM,
     TEXT_WALL_MIN_THICK_MM,
 } from "./constants";
-import { textDoesNotFit, textForbiddenZone, textTooThinRemaining } from "./errors";
+import { TextMarkingError, textDoesNotFit, textForbiddenZone, textTooThinRemaining } from "./errors";
 import { type MapTextPoint, planarBottomMap } from "./solid";
 import type { FlattenedText, TextApplyMeta, TextMarking, TextXy } from "./types";
 
