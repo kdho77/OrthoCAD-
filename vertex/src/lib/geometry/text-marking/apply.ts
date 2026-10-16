@@ -102,7 +102,14 @@ export async function applyTextMarkingToPrintSolid(
     }
 
     const op = checked.mode === "emboss" ? "add" : "subtract";
-    const result = await booleanTextSolid(host, placedFlat.groups, map, op);
+    // Wall cuts leave SAT slivers; 0.1 mm << 0.8 mm pocket. Bottom stays unsimplified.
+    const result = await booleanTextSolid(
+        host,
+        placedFlat.groups,
+        map,
+        op,
+        checked.surface === "wall" ? 0.1 : 0,
+    );
     const meta: TextApplyMeta = {
         surface: checked.surface,
         mode: checked.mode,

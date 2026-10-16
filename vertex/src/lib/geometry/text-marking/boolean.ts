@@ -201,6 +201,7 @@ export async function booleanTextSolid(
     groups: TextGlyphGroup[],
     mapPoint: MapTextPoint,
     op: "add" | "subtract",
+    simplifyMm = 0,
 ): Promise<BufferGeometry> {
     const mod = await loadWasm();
     const a = geometryToManifold(mod, host, "host");
@@ -208,11 +209,12 @@ export async function booleanTextSolid(
     let result: ManifoldHandle | null = null;
     try {
         result = op === "add" ? a.add(b) : a.subtract(b);
-        // Collapse boolean-cut slivers; 0.05 mm matches flatten chord and the depth spec.
-        const cleaned = result.simplify(0.05);
-        if (cleaned !== result) {
-            result.delete();
-            result = cleaned;
+        if (simplifyMm > 0) {
+            const cleaned = result.simplify(simplifyMm);
+            if (cleaned !== result) {
+                result.delete();
+                result = cleaned;
+            }
         }
         return manifoldToGeometry(result, host.userData);
     } catch (e) {
