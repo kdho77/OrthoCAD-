@@ -3,13 +3,19 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
+import * as textConstants from "./constants";
 import {
     defaultTextMarking,
     hasActiveTextMarking,
+    TEXT_CLIPPER_PRECISION,
     TEXT_CONTOUR_EDGE_MAX_MM,
     TEXT_CONTOUR_EDGE_MIN_MM,
     TEXT_CUTTER_MAX_EDGE_MM,
+    TEXT_CUTTER_SIDEWALL_RINGS,
+    TEXT_CUTTER_STEINER_MM,
+    TEXT_FLATTEN_CHORD_MM,
     TEXT_FONT_ID,
+    TEXT_HOST_REFINE_MAX_EDGE_MM,
     TEXT_MIN_STROKE_MM,
 } from "./constants";
 import { flattenText } from "./contours";
@@ -102,6 +108,20 @@ describe("text marking controls", () => {
         expect(n.rotationDeg).toBe(90);
         expect(n.placementU).toBe(0.45);
         expect(n.bold).toBe(true);
+    });
+});
+
+describe("text print-path constants", () => {
+    test("no whole-insole simplify; Clipper 4, 0.05 mm chord, CDT Steiner, 3 rings", () => {
+        expect("TEXT_WALL_SIMPLIFY_MM" in textConstants).toBe(false);
+        expect(TEXT_CLIPPER_PRECISION).toBe(4);
+        expect(TEXT_FLATTEN_CHORD_MM).toBe(0.05);
+        expect(TEXT_CONTOUR_EDGE_MIN_MM).toBe(0.03);
+        expect(TEXT_CONTOUR_EDGE_MAX_MM).toBe(0.15);
+        expect(TEXT_CUTTER_STEINER_MM).toBe(0.25);
+        expect(TEXT_CUTTER_MAX_EDGE_MM).toBe(0.3);
+        expect(TEXT_CUTTER_SIDEWALL_RINGS).toBe(3);
+        expect(TEXT_HOST_REFINE_MAX_EDGE_MM).toBe(0.4);
     });
 });
 
