@@ -24,7 +24,12 @@ import {
     smoothMaxMm,
     smoothMinMm,
 } from "./no-flow-blend";
-import { ELEMENT_SUBDIVIDE_EDGE_MM, NO_FLOW_SMOOTH_MAX_K_MM, type PlacedElementAssetContext } from "./types";
+import {
+    ELEMENT_SUBDIVIDE_EDGE_MM,
+    type ElementFeatherMm,
+    NO_FLOW_SMOOTH_MAX_K_MM,
+    type PlacedElementAssetContext,
+} from "./types";
 
 const DEG = Math.PI / 180;
 
@@ -106,9 +111,13 @@ function flowFeatherWeight(
     nx: number,
     ny: number,
     cellMm: number,
-    featherMm: number,
+    featherMm: ElementFeatherMm,
 ): number {
+    // Per-edge sidecar feathers are already authored into the mesh (edge z=0).
+    // Extra AABB would reshape the CAD-approved height field — do not apply.
+    if (typeof featherMm !== "number") return 1;
     const margin = featherMm;
+    if (margin <= 1e-9) return 1;
     const minX = gridOriginX + margin;
     const maxX = gridOriginX + nx * cellMm - margin;
     const minY = gridOriginY + margin;
