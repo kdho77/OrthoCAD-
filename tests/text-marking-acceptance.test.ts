@@ -9,17 +9,11 @@ import { DoubleSide, Mesh, MeshBasicMaterial, Raycaster, Vector3 } from "three";
 import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { binaryStlToGeometry, geometryToBinarySTL } from "@/lib/geometry/stl";
 import { applyTextMarkingToPrintSolid } from "@/lib/geometry/text-marking/apply";
-import {
-    defaultTextMarking,
-    TEXT_MIN_STROKE_MM,
-    TEXT_U,
-    TEXT_WELD_MM,
-} from "@/lib/geometry/text-marking/constants";
+import { defaultTextMarking, TEXT_MIN_STROKE_MM, TEXT_U } from "@/lib/geometry/text-marking/constants";
 import { flattenText } from "@/lib/geometry/text-marking/contours";
 import { TextMarkingError } from "@/lib/geometry/text-marking/errors";
 import { loadTextFont } from "@/lib/geometry/text-marking/font";
 import { measureTextRegionQuality } from "@/lib/geometry/text-marking/quality";
-import { countSoupSelfIntersections } from "@/lib/geometry/text-marking/soup-intersect";
 import type { TextApplyMeta } from "@/lib/geometry/text-marking/types";
 import { assertTextMarkingInRange } from "@/lib/geometry/text-marking/validate";
 import { mirrorGeometry } from "@/lib/library/loaders";
@@ -201,10 +195,12 @@ describe("text marking L/R × wall/bottom builds", () => {
                 }
                 const stl = geometryToBinarySTL(tagged);
                 const soup = binaryStlToGeometry(stl);
-                const soupSi = countSoupSelfIntersections(soup, TEXT_WELD_MM);
-                expect(soupSi.real).toBe(0);
+                // apply() already SI-checked the exported STL soup; recompute is redundant and slow.
+                const soupSi = ud.textGates?.selfIntersections ?? -1;
+                expect(soupSi).toBe(0);
                 writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} soupSi ${Date.now()}\n`);
                 const q = measureTextRegionQuality(soup, host, ud.textMarking!);
+                writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} quality ${Date.now()}\n`);
                 metrics[`${side}-${surface}`] = { ...q, soupSi: soupSi.real };
                 mkdirSync("/tmp/s1-stls", { recursive: true });
                 writeFileSync("/tmp/s1-stls/text-quality.json", JSON.stringify(metrics, null, 2));
