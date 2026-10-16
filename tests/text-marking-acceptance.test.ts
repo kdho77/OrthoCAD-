@@ -243,7 +243,7 @@ describe("text marking L/R × wall/bottom builds", () => {
         }
         mkdirSync("/tmp/s1-stls", { recursive: true });
         writeFileSync("/tmp/s1-stls/text-quality.json", JSON.stringify(metrics, null, 2));
-        if (closeups.length >= 2) {
+        if (closeups.length >= 1) {
             const w = 720;
             const h = 420;
             const panels: Uint8Array[] = [];
@@ -294,8 +294,32 @@ describe("text marking L/R × wall/bottom builds", () => {
                         radius: 16,
                     }),
                 );
+                if (!wall) {
+                    const pitched = {
+                        right: [0.92, 0.2, 0] as [number, number, number],
+                        up: [0.05, -0.9, 0.4] as [number, number, number],
+                        light: [0.2, -0.15, 0.97] as [number, number, number],
+                    };
+                    panels.push(
+                        renderMesh(bottom.pos, bottom.idx, pitched, w, h, [190, 190, 195], 48, {
+                            center: bottom.center,
+                            radius: 16,
+                        }),
+                    );
+                    const edgeView = {
+                        right: [0, 1, 0] as [number, number, number],
+                        up: [0, 0, 1] as [number, number, number],
+                        light: [0.4, 0.2, 0.9] as [number, number, number],
+                    };
+                    panels.push(
+                        renderMesh(bottom.pos, bottom.idx, edgeView, w, h, [190, 190, 195], 48, {
+                            center: bottom.center,
+                            radius: 16,
+                        }),
+                    );
+                }
             }
-            if (panels.length >= 3) {
+            if (panels.length >= 1) {
                 const stacked = new Uint8Array(w * h * 3 * panels.length);
                 for (let i = 0; i < panels.length; i++) {
                     const panel = panels[i];

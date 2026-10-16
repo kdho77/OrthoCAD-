@@ -496,7 +496,8 @@ export async function booleanTextSolid(
     sidewallRings?: number,
 ): Promise<BufferGeometry> {
     const mod = await loadWasm();
-    const refined = refineHostLocally(host, groups, mapPoint);
+    const hostClean = collapseDegenerateThenWeld(host, 0.01);
+    const refined = refineHostLocally(hostClean !== host ? hostClean : host, groups, mapPoint);
     const prepped = collapseDegenerateThenWeld(refined);
     if (prepped !== refined && refined !== host) {
         // Keep `refined` if collapse was a no-op; otherwise the clone can go.
@@ -567,5 +568,6 @@ export async function booleanTextSolid(
         );
     } finally {
         if (prepped !== host) prepped.dispose();
+        if (hostClean !== host && hostClean !== prepped) hostClean.dispose();
     }
 }
