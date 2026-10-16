@@ -4,10 +4,11 @@
 import type { BufferGeometry } from "three";
 import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
 import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
-import { countSelfIntersections } from "@/lib/geometry/procedural-wall/intersect";
 import { reconstructionManifold, windingReport } from "@/lib/geometry/procedural-wall/metrics";
-import { TEXT_BOOLEAN_EPS_MM, TEXT_REMAINING_MIN_MM } from "./constants";
+import { binaryStlToGeometry, geometryToBinarySTL } from "@/lib/geometry/stl";
+import { TEXT_BOOLEAN_EPS_MM, TEXT_REMAINING_MIN_MM, TEXT_WALL_SIMPLIFY_MM, TEXT_WELD_MM } from "./constants";
 import { TextMarkingError, textTooThinRemaining } from "./errors";
+import { countSoupSelfIntersections } from "./soup-intersect";
 import type { TextApplyMeta, TextSurface } from "./types";
 
 const Z0_TOL = 0.08;
@@ -163,17 +164,21 @@ export function assertTextPrintGates(
             `text boolean is not watertight (open=${man.openEdges} nm=${man.nonManifoldEdges} idxOpen=${indexed.openEdges} idxNm=${indexed.nonManifoldEdges})`,
         );
     }
-    const si = countSelfIntersections(geo, 0.02);
-    const byClass = si.byClass ?? {};
-    const remeshTop = byClass["top-top"] ?? 0;
-    // Wall Manifold.simplify remeshes the loft; the SAT tester then flags a
-    // 0.015 mm top-sheet cluster using stale topN indices. Those are not cutter
-    // slivers (wall-wall is 0). Cutter / wall-wall hits still fail the gate.
-    const cutterHits = si.real - remeshTop;
-    if (cutterHits > 0) {
+    const stl = geometryToBinarySTL(geo);
+    const soup = binaryStlToGeometry(stl);
+    const weldMm = meta.surface === "wall" ? TEXT_WALL_SIMPLIFY_MM : TEXT_WELD_MM;
+    const si = countSoupSelfIntersections(soup, weldMm);
+    soup.dispose();
+    if (si.real > 0) {
+        const sample = si.pairs.slice(0, 8).map((p) => ({
+            c: p.centroid,
+            a: p.a,
+            b: p.b,
+        }));
         throw new TextMarkingError(
             "stl-gate",
-            `text boolean has ${si.real} self-intersections (${JSON.stringify(byClass)})`,
+            `text boolean has ${si.real} self-intersections on the exported STL ` +
+                `(pairs=${JSON.stringify(sample)})`,
         );
     }
     const wind = windingReport(geo);
@@ -209,7 +214,7 @@ export function assertTextPrintGates(
         textMarking: meta,
         textGates: {
             watertight: true,
-            selfIntersections: cutterHits,
+            selfIntersections: si.real,
             gWind,
             gFace,
             gCol,
@@ -219,7 +224,7 @@ export function assertTextPrintGates(
     };
     return {
         watertight: true,
-        selfIntersections: cutterHits,
+        selfIntersections: si.real,
         gWind,
         gFace,
         gCol,

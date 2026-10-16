@@ -1,4 +1,4 @@
-import type { BufferGeometry } from "three";
+import { BufferAttribute, BufferGeometry } from "three";
 
 // Pure-TS binary STL writer. Works on any indexed or non-indexed
 // THREE.BufferGeometry with a "position" attribute. Used as the default STL
@@ -72,4 +72,27 @@ export function geometryToBinarySTL(geometry: BufferGeometry): ArrayBuffer {
     }
 
     return buffer;
+}
+
+/** Parse a binary STL into an unindexed triangle soup (3 verts per face). */
+export function binaryStlToGeometry(buffer: ArrayBuffer): BufferGeometry {
+    if (buffer.byteLength < 84) throw new Error("STL too short");
+    const view = new DataView(buffer);
+    const triCount = view.getUint32(80, true);
+    const need = 84 + triCount * 50;
+    if (buffer.byteLength < need) throw new Error("STL truncated");
+    const positions = new Float32Array(triCount * 9);
+    let offset = 84;
+    let p = 0;
+    for (let t = 0; t < triCount; t++) {
+        offset += 12;
+        for (let k = 0; k < 9; k++) {
+            positions[p++] = view.getFloat32(offset, true);
+            offset += 4;
+        }
+        offset += 2;
+    }
+    const geo = new BufferGeometry();
+    geo.setAttribute("position", new BufferAttribute(positions, 3));
+    return geo;
 }

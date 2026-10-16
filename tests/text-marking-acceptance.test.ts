@@ -7,12 +7,19 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import { DoubleSide, Mesh, MeshBasicMaterial, Raycaster, Vector3 } from "three";
 import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall/sample-top-preview";
-import { geometryToBinarySTL } from "@/lib/geometry/stl";
+import { binaryStlToGeometry, geometryToBinarySTL } from "@/lib/geometry/stl";
 import { applyTextMarkingToPrintSolid } from "@/lib/geometry/text-marking/apply";
-import { defaultTextMarking, TEXT_MIN_STROKE_MM, TEXT_U } from "@/lib/geometry/text-marking/constants";
+import {
+    defaultTextMarking,
+    TEXT_MIN_STROKE_MM,
+    TEXT_U,
+    TEXT_WALL_SIMPLIFY_MM,
+    TEXT_WELD_MM,
+} from "@/lib/geometry/text-marking/constants";
 import { flattenText } from "@/lib/geometry/text-marking/contours";
 import { TextMarkingError } from "@/lib/geometry/text-marking/errors";
 import { loadTextFont } from "@/lib/geometry/text-marking/font";
+import { countSoupSelfIntersections } from "@/lib/geometry/text-marking/soup-intersect";
 import { assertTextMarkingInRange } from "@/lib/geometry/text-marking/validate";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import type { Side, TextMarking, TextSurface } from "@/types";
@@ -155,6 +162,11 @@ describe("text marking L/R × wall/bottom builds", () => {
                     }
                 }
                 const stl = geometryToBinarySTL(tagged);
+                const soup = binaryStlToGeometry(stl);
+                const weldMm = surface === "wall" ? TEXT_WALL_SIMPLIFY_MM : TEXT_WELD_MM;
+                const soupSi = countSoupSelfIntersections(soup, weldMm);
+                expect(soupSi.real).toBe(0);
+                soup.dispose();
                 const gate = stlGates(stl, `${side}-${surface}`);
                 expect(gate.watertight).toBe(true);
                 expect(gate.winding).toBe(true);

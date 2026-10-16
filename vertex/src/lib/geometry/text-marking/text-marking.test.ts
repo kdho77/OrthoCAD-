@@ -128,3 +128,32 @@ describe("text flatten / Clipper / stroke", () => {
         host.dispose();
     });
 });
+
+describe("exported-STL soup self-intersections", () => {
+    test("a box STL has 0 hits; two crossing triangles report a pair", async () => {
+        const { BoxGeometry, BufferAttribute, BufferGeometry } = await import("three");
+        const { binaryStlToGeometry, geometryToBinarySTL } = await import("@/lib/geometry/stl");
+        const { countSoupSelfIntersections } = await import("./soup-intersect");
+        const box = new BoxGeometry(10, 10, 10);
+        const stl = geometryToBinarySTL(box);
+        const soup = binaryStlToGeometry(stl);
+        const boxTris = (box.getIndex()?.count ?? box.getAttribute("position").count) / 3;
+        expect(soup.getAttribute("position").count / 3).toBe(boxTris);
+        expect(countSoupSelfIntersections(soup).real).toBe(0);
+        soup.dispose();
+        box.dispose();
+
+        const cross = new BufferGeometry();
+        cross.setAttribute(
+            "position",
+            new BufferAttribute(
+                new Float32Array([-1, 0, 0, 1, 0, 0, 0, 1, 0, 0, -0.5, -1, 0, 1.5, -1, 0, 0.5, 1]),
+                3,
+            ),
+        );
+        const hit = countSoupSelfIntersections(cross);
+        expect(hit.real).toBeGreaterThan(0);
+        expect(hit.pairs[0]?.centroid).toBeDefined();
+        cross.dispose();
+    });
+});

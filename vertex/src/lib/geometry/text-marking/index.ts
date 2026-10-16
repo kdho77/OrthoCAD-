@@ -25,6 +25,7 @@ export { loadTextFont } from "./font";
 export { assertTextPrintGates } from "./gates";
 export { textMarkingHash } from "./hash";
 export { extractHostTextContext, lateralStations, localWallHeightMm } from "./place";
+export { countSoupSelfIntersections } from "./soup-intersect";
 export type { TextApplyMeta, TextMarking, TextMode, TextSurface } from "./types";
 export {
     assertTextMarkingInRange,
