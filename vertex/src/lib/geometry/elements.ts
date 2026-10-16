@@ -90,15 +90,15 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultMedial: -0.6865,
     },
     // Cluffy wedge under the hallux — raises the distal phalanx to promote
-    // 1st MPJ dorsiflexion. Apex distal, base at IPJ. ~22 × 14 mm.
+    // 1st MPJ dorsiflexion. Apex distal, base at IPJ. Library GLB (29 × 26 mm).
     cluffy_wedge: {
-        rxMm: 11,
-        ryMm: 7,
+        rxMm: 15,
+        ryMm: 13,
         sign: 1,
         shape: "hallux_wedge",
-        defaultHeightMm: 2.5,
-        defaultU: 0.9,
-        defaultMedial: 0.55,
+        defaultHeightMm: 2.4,
+        defaultU: 0.7744,
+        defaultMedial: 0.6413,
     },
     // Morton's extension: rigid strip under 1st ray from met neck through
     // hallux. Long AP, narrow ML. ~56 × 18 mm.
@@ -172,15 +172,15 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultU: 0.14,
         defaultMedial: 0,
     },
-    // Dancer's pad — lateral forefoot / sulcus relief, 0–6 mm.
+    // Dancer's pad — 1st MPJ relief (mitten + sesamoid notch), 0–6 mm.
     dancers_pad: {
-        rxMm: 18,
-        ryMm: 10,
+        rxMm: 34,
+        ryMm: 27,
         sign: 1,
         shape: "dancers_pad",
         defaultHeightMm: 2.5,
-        defaultU: 0.7,
-        defaultMedial: -0.55,
+        defaultU: 0.6496,
+        defaultMedial: -0.0196,
     },
 };
 
@@ -436,7 +436,12 @@ export function defaultElementPose(
         scale: { x: 1, y: 1 },
         heightMm: p.defaultHeightMm,
         placementMode:
-            kind === "met_pad" || kind === "met_bar" || kind === "toe_crest" || kind === "cuboid_pad"
+            kind === "met_pad" ||
+            kind === "met_bar" ||
+            kind === "toe_crest" ||
+            kind === "cuboid_pad" ||
+            kind === "dancers_pad" ||
+            kind === "cluffy_wedge"
                 ? "flow"
                 : undefined,
     };

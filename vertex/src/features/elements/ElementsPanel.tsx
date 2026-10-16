@@ -377,7 +377,9 @@ export function ElementsPanel() {
                     {displaySelected.kind === "met_pad" ||
                     displaySelected.kind === "met_bar" ||
                     displaySelected.kind === "toe_crest" ||
-                    displaySelected.kind === "cuboid_pad" ? (
+                    displaySelected.kind === "cuboid_pad" ||
+                    displaySelected.kind === "dancers_pad" ||
+                    displaySelected.kind === "cluffy_wedge" ? (
                         <div className="space-y-1">
                             <div className="text-[11px] text-muted-foreground">Edge</div>
                             <div className="flex gap-1">

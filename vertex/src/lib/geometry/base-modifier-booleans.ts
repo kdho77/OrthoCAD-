@@ -148,7 +148,9 @@ function buildElementTool(factory: IShapeFactory, el: PlacedElement, lengthMm: n
         el.kind === "met_pad" ||
         el.kind === "met_bar" ||
         el.kind === "toe_crest" ||
-        el.kind === "cuboid_pad"
+        el.kind === "cuboid_pad" ||
+        el.kind === "dancers_pad" ||
+        el.kind === "cluffy_wedge"
     ) {
         // GLB library assets are a height-field lift on the composed top, not a boolean union.
         return null;
