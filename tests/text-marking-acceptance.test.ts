@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import { DoubleSide, Mesh, MeshBasicMaterial, Raycaster, Vector3 } from "three";
 import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall/sample-top-preview";
-import { binaryStlToGeometry, geometryToBinarySTL } from "@/lib/geometry/stl";
+import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { applyTextMarkingToPrintSolid } from "@/lib/geometry/text-marking/apply";
 import { defaultTextMarking, TEXT_MIN_STROKE_MM, TEXT_U } from "@/lib/geometry/text-marking/constants";
 import { flattenText } from "@/lib/geometry/text-marking/contours";
@@ -193,13 +193,10 @@ describe("text marking L/R × wall/bottom builds", () => {
                         expect(Math.abs(c.z - depth)).toBeLessThanOrEqual(0.05);
                     }
                 }
-                const stl = geometryToBinarySTL(tagged);
-                const soup = binaryStlToGeometry(stl);
-                // apply() already SI-checked the exported STL soup; recompute is redundant and slow.
                 const soupSi = ud.textGates?.selfIntersections ?? -1;
                 expect(soupSi).toBe(0);
                 writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} soupSi ${Date.now()}\n`);
-                const q = measureTextRegionQuality(soup, host, ud.textMarking!);
+                const q = measureTextRegionQuality(tagged, host, ud.textMarking!);
                 writeFileSync("/tmp/s1-stls/heartbeat.txt", `${tag} quality ${Date.now()}\n`);
                 metrics[`${side}-${surface}`] = { ...q, soupSi };
                 mkdirSync("/tmp/s1-stls", { recursive: true });
@@ -209,17 +206,20 @@ describe("text marking L/R × wall/bottom builds", () => {
                     const focus = cents[Math.max(0, cents.length - 2)] ?? cents[0];
                     if (focus) {
                         const nOut = focus.nOut ?? { x: 0, y: 0, z: 1 };
-                        const src = soup.getAttribute("position").array as Float32Array;
+                        const src = tagged.getAttribute("position").array as Float32Array;
+                        const index = tagged.getIndex();
                         closeups.push({
                             label: `${side}-${surface}`,
                             pos: new Float32Array(src),
-                            idx: Array.from({ length: src.length / 3 }, (_, i) => i),
+                            idx: index
+                                ? Array.from(index.array as ArrayLike<number>)
+                                : Array.from({ length: src.length / 3 }, (_, i) => i),
                             center: { x: focus.x, y: focus.y, z: focus.z },
                             nOut,
                         });
                     }
                 }
-                soup.dispose();
+                const stl = geometryToBinarySTL(tagged);
                 const gate = stlGates(stl, `${side}-${surface}`);
                 expect(gate.watertight).toBe(true);
                 expect(gate.winding).toBe(true);
