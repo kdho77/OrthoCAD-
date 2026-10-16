@@ -211,6 +211,80 @@ class VertGrid {
     }
 }
 
+function rasterBottomGlyphs(meta: TextApplyMeta, cell: number): { dist: (x: number, y: number) => number } {
+    const keys = new Set<string>();
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const glyphs: Array<{ outer: PolyPoint[]; holes: PolyPoint[][] }> = [];
+    for (const g of meta.outlineWorld ?? []) {
+        const outer = asPoly(g.outer);
+        if (outer.length < 3) continue;
+        const holes = g.holes.map(asPoly).filter((h) => h.length >= 3);
+        glyphs.push({ outer, holes });
+        for (const p of outer) {
+            if (p.x < minX) minX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y > maxY) maxY = p.y;
+        }
+    }
+    if (!glyphs.length || !Number.isFinite(minX)) {
+        return { dist: () => 99 };
+    }
+    minX -= 1;
+    minY -= 1;
+    maxX += 1;
+    maxY += 1;
+    const key = (ix: number, iy: number) => `${ix}|${iy}`;
+    const ix0 = Math.floor(minX / cell);
+    const iy0 = Math.floor(minY / cell);
+    const ix1 = Math.floor(maxX / cell);
+    const iy1 = Math.floor(maxY / cell);
+    for (let iy = iy0; iy <= iy1; iy++) {
+        for (let ix = ix0; ix <= ix1; ix++) {
+            const x = (ix + 0.5) * cell;
+            const y = (iy + 0.5) * cell;
+            for (const g of glyphs) {
+                if (!pointInPoly(x, y, g.outer)) continue;
+                let inHole = false;
+                for (const h of g.holes) {
+                    if (pointInPoly(x, y, h)) {
+                        inHole = true;
+                        break;
+                    }
+                }
+                if (!inHole) {
+                    keys.add(key(ix, iy));
+                    break;
+                }
+            }
+        }
+    }
+    return {
+        dist: (x: number, y: number) => {
+            if (x < minX || x > maxX || y < minY || y > maxY) {
+                return Math.hypot(Math.max(0, minX - x, x - maxX), Math.max(0, minY - y, y - maxY)) + 1;
+            }
+            const ix = Math.floor(x / cell);
+            const iy = Math.floor(y / cell);
+            if (keys.has(key(ix, iy))) return 0;
+            let best = 1;
+            for (let dy = -3; dy <= 3; dy++) {
+                for (let dx = -3; dx <= 3; dx++) {
+                    if (!keys.has(key(ix + dx, iy + dy))) continue;
+                    const cx = (ix + dx + 0.5) * cell;
+                    const cy = (iy + dy + 0.5) * cell;
+                    const d = Math.hypot(x - cx, y - cy);
+                    if (d < best) best = d;
+                }
+            }
+            return best;
+        },
+    };
+}
+
 function allVerts(geo: BufferGeometry): Vert3[] {
     const pos = geo.getAttribute("position");
     const out: Vert3[] = [];
@@ -351,7 +425,16 @@ export function measureTextRegionQuality(
 ): TextRegionQuality {
     const outline = outlinePts(meta);
     const outlineGrid = new VertGrid(outline, 0.3);
-    const near = (p: Vert3) => distToTextRegion(p, meta, outline, outlineGrid);
+    const bottomOcc = meta.surface === "bottom" ? rasterBottomGlyphs(meta, 0.25) : null;
+    const near = (p: Vert3) => {
+        const d3 = outlineGrid.nearest(p, 8);
+        if (meta.surface !== "bottom") return d3;
+        if (bottomOcc) {
+            const d2 = bottomOcc.dist(p.x, p.y);
+            return Math.min(d3, d2);
+        }
+        return distToTextRegion(p, meta, outline, outlineGrid);
+    };
     const wallN0 = meanNOut(meta);
     const resultVerts = allVerts(result);
     const hostVerts = allVerts(host);
