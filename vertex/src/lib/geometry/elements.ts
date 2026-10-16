@@ -57,7 +57,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         sign: 1,
         shape: "teardrop",
         defaultHeightMm: 5,
-        defaultU: 0.5233,
+        defaultU: 0.5473,
         defaultMedial: 0.0722,
     },
     // Transverse metatarsal bar: short AP, long ML, gentle anterior bow

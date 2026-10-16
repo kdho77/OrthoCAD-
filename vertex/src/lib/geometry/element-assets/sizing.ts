@@ -48,9 +48,9 @@ export interface ElementSizeScale {
 }
 
 /**
- * XY size vs the authored reference: along-foot L/refMeasuredLength,
+ * XY size vs the authored reference insole (refSizeMm, 260): along-foot L/260,
  * across-foot local width ratio W/Wref at the sidecar anchor (post #184 affine).
- * Height is never sized here.
+ * refMeasuredLengthMm is informational only. Height is never sized here.
  */
 export function elementSizeScale(
     base: BufferGeometry,
@@ -61,8 +61,7 @@ export function elementSizeScale(
     const { u } = sidecarAnchorUV(sidecar);
     const frame = getBaseFootprintFrame(base, side);
     const L = frame.lenSize;
-    const Lref =
-        sidecar.refMeasuredLengthMm && sidecar.refMeasuredLengthMm > 1e-3 ? sidecar.refMeasuredLengthMm : L;
+    const Lref = sidecar.refSizeMm && sidecar.refSizeMm > 1e-3 ? sidecar.refSizeMm : 260;
     const W = localWidthAtU(base, side, u);
     let Wref = sidecar.refWidthAtAnchorMm;
     if (!(Wref != null && Wref > 1e-3) && reference) {

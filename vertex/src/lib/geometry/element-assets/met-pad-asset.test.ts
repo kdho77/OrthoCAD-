@@ -145,8 +145,18 @@ function writeRender(name: string, geo: BufferGeometry): string {
 
 describe("met pad GLB height-field asset", () => {
     test("ref size RIGHT default anchor — lift matches envelope (0.05 XY / 0.02 z)", async () => {
-        const raw = await loadSampleTop("right");
+        const native = await loadSampleTop("right");
+        const nativeFrame = getBaseFootprintFrame(native, "right");
+        const raw = scaleGeometryToInsoleSize(native, 260, nativeFrame.widSize * (260 / nativeFrame.lenSize));
+        native.dispose();
         const el = await defaultMetPad(raw, "right", "noFlow");
+        const sizeAtRef = elementSizeScale(
+            raw,
+            "right",
+            (await resolvePlacedAssetContexts([el], "right", 1, 1, raw))[0]!.sidecar,
+        );
+        expect(sizeAtRef.scaleAlong).toBeCloseTo(1, 3);
+        expect(sizeAtRef.rawAlong).toBeCloseTo(1, 3);
         const field = fieldWith(raw, "right", el);
         const plain = applyBaseModifiers(raw, { ...field, includeElements: false, elements: [] }, 0);
         const composed = plain.clone();
@@ -204,13 +214,18 @@ describe("met pad GLB height-field asset", () => {
         raw.dispose();
     }, 90_000);
 
-    test("230 and 290 — footprint scales within 1%, peak stays 5.0±0.02", async () => {
+    test("230 and 290 — footprint scales by L/260 within 1%, peak stays 5.0±0.02", async () => {
         const native = await loadSampleTop("right");
         const nativeFrame = getBaseFootprintFrame(native, "right");
-        const sidecarU = 0.5233;
-        const wRef = localWidthAtU(native, "right", sidecarU);
+        const sidecarU = 0.5473;
+        const ref260 = scaleGeometryToInsoleSize(
+            native,
+            260,
+            nativeFrame.widSize * (260 / nativeFrame.lenSize),
+        );
+        const wRef = localWidthAtU(ref260, "right", sidecarU);
         const results: { size: number; along: number; across: number; peak: number }[] = [];
-        for (const L of [230, 290]) {
+        for (const L of [230, 260, 290]) {
             const W = nativeFrame.widSize * (L / nativeFrame.lenSize);
             const sized = scaleGeometryToInsoleSize(native, L, W);
             const el = await defaultMetPad(sized, "right", "noFlow");
@@ -219,30 +234,44 @@ describe("met pad GLB height-field asset", () => {
                 sized,
                 "right",
                 (await resolvePlacedAssetContexts([el], "right", 1, 1, sized))[0]!.sidecar,
+                ref260,
             );
             const plain = applyBaseModifiers(sized, { ...field, includeElements: false, elements: [] }, 0);
             const composed = plain.clone();
             await applyElementsToTopMeshLast(composed, sized, field, { subdivide: false });
-            const ctx = await resolvePlacedAssetContexts([el], "right", field.lengthMm, field.widthMm, sized);
+            const ctx = await resolvePlacedAssetContexts(
+                [el],
+                "right",
+                field.lengthMm,
+                field.widthMm,
+                sized,
+                ref260,
+            );
             const { grid } = await loadTransformedAssetPositions(ctx[0]!.assetId, ctx[0]!.transform);
             const fp = gridFootprintBounds(grid, 0.05)!;
             const along = (fp.maxX - fp.minX) / 66.75;
             const across = (fp.maxY - fp.minY) / 55.0;
-            expect(along / size.scaleAlong).toBeGreaterThan(0.99);
-            expect(along / size.scaleAlong).toBeLessThan(1.01);
-            expect(across / size.scaleAcross).toBeGreaterThan(0.99);
-            expect(across / size.scaleAcross).toBeLessThan(1.01);
+            expect(along / (L / 260)).toBeGreaterThan(0.99);
+            expect(along / (L / 260)).toBeLessThan(1.01);
+            expect(across / (L / 260)).toBeGreaterThan(0.99);
+            expect(across / (L / 260)).toBeLessThan(1.01);
             expect(grid.maxZ).toBeGreaterThan(5 - 0.02);
             expect(grid.maxZ).toBeLessThan(5 + 0.02);
             const w = localWidthAtU(sized, "right", sidecarU);
-            expect(size.rawAlong).toBeCloseTo(L / 271.93, 3);
+            expect(size.rawAlong).toBeCloseTo(L / 260, 3);
+            expect(size.scaleAlong).toBeCloseTo(L / 260, 3);
             expect(size.rawAcross).toBeCloseTo(w / wRef, 3);
+            if (L === 260) {
+                expect(size.scaleAlong).toBeCloseTo(1, 3);
+                expect(size.scaleAcross).toBeCloseTo(1, 3);
+            }
             results.push({ size: L, along, across, peak: grid.maxZ });
             plain.dispose();
             composed.dispose();
             sized.dispose();
         }
         console.log("MET-PAD-SIZE", results);
+        ref260.dispose();
         expect(results).toHaveLength(2);
         native.dispose();
     }, 120_000);

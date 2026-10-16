@@ -17,7 +17,9 @@ export interface ElementAssetSidecar {
     featherMm: number;
     category: ElementAssetCategory;
     defaultPlacementMode?: ElementPlacementMode;
+    /** Authoritative insole length the asset was authored for (mm). XY scale is L/refSizeMm. */
     refSizeMm?: number;
+    /** Informational measured top length (mm). Not used for scale. */
     refMeasuredLengthMm?: number;
     refWidthAtAnchorMm?: number;
     authoredSide?: "left" | "right";

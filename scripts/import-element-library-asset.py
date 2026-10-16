@@ -84,22 +84,24 @@ def main() -> int:
     k = int(np.nanargmax(np.where(np.isfinite(Z), Z, -1)))
     pk = (float(X.flat[k]), float(Y.flat[k]), float(Z.flat[k]))
 
-    u = 0.5233
+    u = 0.5473
     v = 0.0722
-    ref_len = 271.93
+    ref_size = 260.0
+    ref_measured = 271.93
     ref_top = Path(args.ref_top)
     if ref_top.exists():
         ref = trimesh.load(str(ref_top)).to_geometry()
         R = ref.vertices.copy()
         R[:, 0] *= -1
         ymin, ymax = float(R[:, 1].min()), float(R[:, 1].max())
-        u = (cy - ymin) / (ymax - ymin)
+        # Kendon 260 mm basis: u = distance-from-heel / 260, not / measured length.
+        u = (cy - ymin) / ref_size
         s = R[np.abs(R[:, 1] - cy) < 2]
         xl, xh = float(s[:, 0].min()), float(s[:, 0].max())
         mid = (xl + xh) / 2
         hw = (xh - xl) / 2
         v = (cx - mid) / hw
-        ref_len = ymax - ymin
+        ref_measured = ymax - ymin
 
     N = m.vertices.copy()
     N[:, 0] -= cx
@@ -120,7 +122,7 @@ def main() -> int:
         "anchor": {"u": round(float(u), 4), "v": round(float(v), 4)},
         "defaultAnchorU": round(float(u), 4),
         "defaultAnchorV": round(float(v), 4),
-        "anchorConvention": "u heel0->toe1 over ref Y extent; v=(x-mid)/halfwidth at anchor Y, medial +",
+        "anchorConvention": "u heel0->toe1 over 260 mm refSizeMm; v=(x-mid)/halfwidth at anchor Y, medial +",
         "authoredSide": args.side.lower(),
         "footprintMm": {"w": round(bb[1] - bb[0], 2), "l": round(bb[3] - bb[2], 2), "area": round(area, 1)},
         "featherMm": 2,
@@ -128,7 +130,7 @@ def main() -> int:
         "category": "add",
         "defaultPlacementMode": "flow",
         "frame": "repo-right (+X medial, +Y toe, Z up)",
-        "refMeasuredLengthMm": round(float(ref_len), 2),
+        "refMeasuredLengthMm": round(float(ref_measured), 2),
         "origin": "footprint centroid, z>=0",
         "source": {"file": src.name, "sha256": sha},
         "anchorMm": {"x": round(cx, 2), "y": round(cy, 2)},

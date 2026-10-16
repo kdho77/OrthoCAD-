@@ -4,12 +4,12 @@
     "nominalPeakMm": 5.0,
     "refSizeMm": 260,
     "anchor": {
-        "u": 0.5233,
+        "u": 0.5473,
         "v": 0.0722
     },
-    "defaultAnchorU": 0.5233,
+    "defaultAnchorU": 0.5473,
     "defaultAnchorV": 0.0722,
-    "anchorConvention": "u heel0->toe1 over ref Y extent; v=(x-mid)/halfwidth at anchor Y, medial +",
+    "anchorConvention": "u heel0->toe1 over 260 mm refSizeMm; v=(x-mid)/halfwidth at anchor Y, medial +",
     "authoredSide": "right",
     "footprintMm": {
         "w": 55.0,
