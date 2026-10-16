@@ -207,13 +207,7 @@ function sampleAlong(stations: WallStation[], s: number): WallStation {
 }
 
 export function lateralStations(ctx: HostTextContext): WallStation[] {
-    return ctx.stations.filter(
-        (st) =>
-            st.sideSign < 0 &&
-            st.u >= TEXT_U.wall.min &&
-            st.u <= TEXT_U.wall.max &&
-            st.thickMm + 1e-6 >= TEXT_WALL_MIN_THICK_MM,
-    );
+    return ctx.stations.filter((st) => st.sideSign < 0 && st.u >= TEXT_U.wall.min && st.u <= TEXT_U.wall.max);
 }
 
 function fitsInside(flat: FlattenedText, outline: PolyPoint[], insetMm: number): boolean {
@@ -333,6 +327,7 @@ export function placeWallText(
     if (s0 < sMin - 1e-3 || s1 > sMax + 1e-3) {
         throw textDoesNotFit();
     }
+    // zoneMm/advance kept for placement; mappedWidthMm is s1-s0 after the slide.
     const atMid = sampleAlong(run, sMid);
     const hNeed = flat.capHeightMm + 2 * TEXT_WALL_EDGE_CLEARANCE_MM;
     if (atMid.heightMm + 1e-6 < hNeed + TEXT_TRIMLINE_RIM_BAND_MM - TEXT_WALL_EDGE_CLEARANCE_MM) {
