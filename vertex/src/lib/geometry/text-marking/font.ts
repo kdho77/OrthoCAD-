@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import opentype, { type Font } from "opentype.js";
+import { type Font, parse as parseOpenType } from "opentype.js";
 import { TEXT_FONT_ID, TEXT_FONT_PUBLIC_PATH } from "./constants";
 import { TextMarkingError } from "./errors";
 
@@ -9,7 +9,7 @@ let cached: Font | null = null;
 let inflight: Promise<Font> | null = null;
 
 function parseFont(buffer: ArrayBuffer): Font {
-    const font = opentype.parse(buffer);
+    const font = parseOpenType(buffer);
     if (!font?.unitsPerEm) {
         throw new TextMarkingError("font", `failed to parse ${TEXT_FONT_ID}`);
     }

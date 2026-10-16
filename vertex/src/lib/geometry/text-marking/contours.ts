@@ -238,13 +238,13 @@ export function flattenText(
     const scale = fontSize / font.unitsPerEm;
     let x = 0;
     const raw: TextXy[][] = [];
-    const glyphs = font.stringToGlyphs(text);
-    for (let i = 0; i < glyphs.length; i++) {
-        const glyph = glyphs[i]!;
+    // Per-character (no GSUB ligatures) so patient names engrave exactly as typed.
+    for (let i = 0; i < text.length; i++) {
+        const glyph = font.charToGlyph(text[i]!);
         const path = glyph.getPath(x, 0, fontSize);
         raw.push(...flattenPath(path.commands as OtCommand[], TEXT_FLATTEN_CHORD_MM));
-        x += glyph.advanceWidth * scale;
-        if (i < glyphs.length - 1) x += tracking;
+        x += (glyph.advanceWidth ?? 0) * scale;
+        if (i < text.length - 1) x += tracking;
     }
     let contours = clipperUnionOrient(raw);
     if (bold) contours = inflateContours(contours, TEXT_BOLD_OFFSET_MM);
