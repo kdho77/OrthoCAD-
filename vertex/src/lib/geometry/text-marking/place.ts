@@ -313,28 +313,41 @@ export function placeWallText(
     const u = Math.max(TEXT_U.wall.min, Math.min(TEXT_U.wall.max, marking.placementU));
     const runs = contiguousStationRuns(lateral);
     const spanOf = (r: WallStation[]) => r[r.length - 1]!.s - r[0]!.s;
+    const hNeed = flat.capHeightMm + 2 * TEXT_WALL_EDGE_CLEARANCE_MM;
+    const tallEnough = (st: WallStation) =>
+        st.heightMm + 1e-6 >= hNeed + TEXT_TRIMLINE_RIM_BAND_MM - TEXT_WALL_EDGE_CLEARANCE_MM;
+    const score = (r: WallStation[]) => {
+        const ok = r.filter((st) => tallEnough(st) && st.thickMm + 1e-6 >= TEXT_WALL_MIN_THICK_MM);
+        return ok.length ? spanOf(ok) : -1;
+    };
     const nearU = runs.filter((r) => r.some((st) => Math.abs(st.u - u) < 0.12));
     const pool = nearU.length ? nearU : runs;
-    const run = pool.reduce((best, r) => (spanOf(r) > spanOf(best) ? r : best), pool[0] ?? lateral);
+    const run = pool.reduce((best, r) => (score(r) > score(best) ? r : best), pool[0] ?? lateral);
     const atU = run.reduce((best, st) => (Math.abs(st.u - u) < Math.abs(best.u - u) ? st : best));
     const half = flat.advanceMm / 2;
     const sMin = run[0]!.s;
     const sMax = run[run.length - 1]!.s;
+    const lo = sMin + half;
+    const hi = sMax - half;
     let sMid = atU.s;
-    if (sMid - half < sMin) sMid = sMin + half;
-    if (sMid + half > sMax) sMid = sMax - half;
-    const s0 = sMid - half;
-    const s1 = sMid + half;
-    if (s0 < sMin - 1e-3 || s1 > sMax + 1e-3) {
+    if (sMid < lo) sMid = lo;
+    if (sMid > hi) sMid = hi;
+    if (lo > hi + 1e-3) {
         throw new TextMarkingError(
             "too-long",
-            `text does not fit the placement zone (${flat.advanceMm.toFixed(1)} mm in ${(sMax - sMin).toFixed(1)} mm, ${runs.length} runs)`,
+            `text does not fit the placement zone (${flat.advanceMm.toFixed(1)} mm in ${(sMax - sMin).toFixed(1)} mm)`,
         );
     }
-    // zoneMm/advance kept for placement; mappedWidthMm is s1-s0 after the slide.
+    const candidates = run.filter((st) => st.s + 1e-6 >= lo && st.s - 1e-6 <= hi && tallEnough(st));
+    if (candidates.length) {
+        sMid = candidates.reduce((best, st) =>
+            Math.abs(st.s - atU.s) < Math.abs(best.s - atU.s) ? st : best,
+        ).s;
+    }
+    const s0 = sMid - half;
+    const s1 = sMid + half;
     const atMid = sampleAlong(run, sMid);
-    const hNeed = flat.capHeightMm + 2 * TEXT_WALL_EDGE_CLEARANCE_MM;
-    if (atMid.heightMm + 1e-6 < hNeed + TEXT_TRIMLINE_RIM_BAND_MM - TEXT_WALL_EDGE_CLEARANCE_MM) {
+    if (!tallEnough(atMid)) {
         if (atMid.heightMm - 3 < TEXT_CAP.wall.min) {
             throw textForbiddenZone("wall height too short for cap plus 1.5 mm edge clearance");
         }
