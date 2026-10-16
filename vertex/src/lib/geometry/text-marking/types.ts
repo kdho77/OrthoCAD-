@@ -37,6 +37,12 @@ export interface TextApplyContext {
     side: Side;
 }
 
+export interface TextHostRepair {
+    collapsed: number;
+    siBefore: number;
+    siAfter: number;
+}
+
 export interface TextApplyMeta {
     surface: TextSurface;
     mode: TextMode;
@@ -63,4 +69,5 @@ export interface TextApplyMeta {
         outer: Array<{ x: number; y: number; z: number }>;
         holes: Array<Array<{ x: number; y: number; z: number }>>;
     }>;
+    hostRepair?: TextHostRepair;
 }

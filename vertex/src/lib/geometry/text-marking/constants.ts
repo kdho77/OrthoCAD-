@@ -16,11 +16,8 @@ export const TEXT_MIN_STROKE_MM = 0.9;
 export const TEXT_MAX_CHARS = 40;
 export const TEXT_MIN_LETTER_SPACING_MM = 0.6;
 export const TEXT_BOOLEAN_EPS_MM = 0.05;
-/**
- * Wall cutter must poke through the outer surface by more than Manifold's
- * ~0.06 mm repair snap; 0.05 mm leaves closed glyph voids (14 bodies).
- */
-export const TEXT_BOOLEAN_OUTSET_MM = 0.25;
+/** Uniform outer-cap poke along the smoothed host normal (mm). */
+export const TEXT_BOOLEAN_OUTSET_MM = 0.5;
 export const TEXT_WELD_MM = 1e-4;
 /** CDT Steiner grid on glyph caps (mm). */
 export const TEXT_CUTTER_STEINER_MM = 0.25;
@@ -33,12 +30,20 @@ export const TEXT_HOST_REFINE_PAD_MM = 1;
 export const TEXT_HOST_REFINE_MAX_EDGE_MM = 0.4;
 /** Outer-wall normal smoothing radius (mm). */
 export const TEXT_NORMAL_SMOOTH_MM = 1;
-/** Acceptance region around the mapped glyph footprint (mm). */
-export const TEXT_REGION_PAD_MM = 0.5;
+/** Acceptance / collapse / refine region around the mapped glyph footprint (mm). */
+export const TEXT_REGION_PAD_MM = 1;
+/** Host-only SI / sliver repair band (mm). */
+export const TEXT_HOST_SI_PAD_MM = 2;
+/** Host edge dihedral above this is a crease, not a smooth wall–wall pair. */
+export const TEXT_HOST_SMOOTH_DIHEDRAL_DEG = 20;
+/** Fillet top: host dihedral to the plantar face drops below this (deg). */
+export const TEXT_FILLET_DIHEDRAL_DEG = 10;
 /** Drop / edge-collapse needles after the boolean (area mm²). */
 export const TEXT_DEGENERATE_AREA_MM2 = 1e-6;
 /** Drop / edge-collapse needles after the boolean (minimum interior angle). */
 export const TEXT_DEGENERATE_MIN_ANGLE_DEG = 0.5;
+/** Host pre-boolean sliver repair (minimum interior angle). */
+export const TEXT_HOST_SLIVER_MIN_ANGLE_DEG = 1;
 /** Post-boolean split of leftover long / needle edges in the text AABB (mm / deg). */
 export const TEXT_RESULT_MAX_EDGE_MM = 0.6;
 export const TEXT_RESULT_SPLIT_ANGLE_DEG = 5;
@@ -48,6 +53,8 @@ export const TEXT_WALL_EDGE_CLEARANCE_MM = 1.5;
 export const TEXT_WALL_MIN_THICK_MM = 2;
 export const TEXT_DEPTH_STEP_MM = 0.2;
 export const TEXT_TRIMLINE_RIM_BAND_MM = 1.84;
+/** Outside-region vertex identity after CSG (mm). */
+export const TEXT_OUTSIDE_IDENT_MM = 1e-4;
 
 export const TEXT_CAP = {
     wall: { min: 5, default: 6 },
