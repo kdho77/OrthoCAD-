@@ -686,25 +686,27 @@ export function placeWallText(
     if (wallUMin < TEXT_U.wall.min - 1e-6 || wallUMax > TEXT_U.wall.max + 1e-6) {
         throw textForbiddenZone("glyph extent left the wall u band");
     }
+    const wallN = createOuterWallSampler(geo, run);
     const centroids = flat.centroids.map((p) => {
-        const pt = map(p, tSurface);
-        const out = map(p, Math.min(1, tSurface + 0.05));
         const st = sampleAlong(run, s0 + p.x);
-        let nx = out.x - pt.x;
-        let ny = out.y - pt.y;
-        let nz = out.z - pt.z;
-        let nlen = Math.hypot(nx, ny, nz);
-        if (nlen < 1e-8) {
-            nx = st.nOut.x;
-            ny = st.nOut.y;
-            nz = st.nOut.z;
-            nlen = Math.hypot(nx, ny, nz) || 1;
+        const hit = wallN.at(s0 + p.x, heightOf(p, st));
+        let nx = hit.n.x;
+        let ny = hit.n.y;
+        let nz = hit.n.z;
+        const nlen = Math.hypot(nx, ny, nz) || 1;
+        nx /= nlen;
+        ny /= nlen;
+        nz /= nlen;
+        if (nx * st.nOut.x + ny * st.nOut.y + nz * st.nOut.z < 0) {
+            nx = -nx;
+            ny = -ny;
+            nz = -nz;
         }
         return {
-            x: pt.x,
-            y: pt.y,
-            z: pt.z,
-            nOut: { x: nx / nlen, y: ny / nlen, z: nz / nlen },
+            x: hit.p.x,
+            y: hit.p.y,
+            z: hit.p.z,
+            nOut: { x: nx, y: ny, z: nz },
             u: st.u,
         };
     });

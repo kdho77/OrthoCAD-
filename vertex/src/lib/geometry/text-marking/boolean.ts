@@ -3,10 +3,17 @@
 
 import { BufferAttribute, BufferGeometry } from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { TEXT_DEGENERATE_AREA_MM2, TEXT_DEGENERATE_MIN_ANGLE_DEG, TEXT_WELD_MM } from "./constants";
+import {
+    TEXT_DEGENERATE_AREA_MM2,
+    TEXT_DEGENERATE_MIN_ANGLE_DEG,
+    TEXT_REGION_PAD_MM,
+    TEXT_RESULT_MAX_EDGE_MM,
+    TEXT_RESULT_SPLIT_ANGLE_DEG,
+    TEXT_WELD_MM,
+} from "./constants";
 import { buildTextCutterMesh } from "./cutter";
 import { TextMarkingError } from "./errors";
-import { refineHostLocally } from "./host-refine";
+import { refineHostLocally, splitLongRegionEdges } from "./host-refine";
 import { distToTextRegion } from "./quality";
 import { countSoupSelfIntersections } from "./soup-intersect";
 import type { MapTextPoint, TextApplyMeta, TextGlyphGroup } from "./types";
@@ -441,13 +448,14 @@ function restoreOutsideVerts(
         if (list) list.push(i);
         else grid.set(k, [i]);
     }
-    const claimed = new Set<number>();
+    type Cand = { hi: number; ri: number; d: number; hx: number; hy: number; hz: number };
+    const cands: Cand[] = [];
     for (let hi = 0; hi < hostPos.count; hi++) {
         const hx = hostPos.getX(hi);
         const hy = hostPos.getY(hi);
         const hz = hostPos.getZ(hi);
         if (distToTextRegion({ x: hx, y: hy, z: hz }, meta, outline) <= 0.5) continue;
-        let best = 0.1;
+        let best = 0.12;
         let bestI = -1;
         const ix = Math.floor(hx / cell);
         const iy = Math.floor(hy / cell);
@@ -458,7 +466,6 @@ function restoreOutsideVerts(
                     const list = grid.get(`${ix + dx}|${iy + dy}|${iz + dz}`);
                     if (!list) continue;
                     for (const ri of list) {
-                        if (claimed.has(ri)) continue;
                         const d = Math.hypot(
                             hx - resPos.getX(ri),
                             hy - resPos.getY(ri),
@@ -472,10 +479,16 @@ function restoreOutsideVerts(
                 }
             }
         }
-        if (bestI >= 0 && best > 1e-4) {
-            resPos.setXYZ(bestI, hx, hy, hz);
-            claimed.add(bestI);
-        }
+        if (bestI >= 0) cands.push({ hi, ri: bestI, d: best, hx, hy, hz });
+    }
+    cands.sort((a, b) => a.d - b.d);
+    const claimedH = new Set<number>();
+    const claimedR = new Set<number>();
+    for (const c of cands) {
+        if (claimedH.has(c.hi) || claimedR.has(c.ri)) continue;
+        if (c.d > 1e-4) resPos.setXYZ(c.ri, c.hx, c.hy, c.hz);
+        claimedH.add(c.hi);
+        claimedR.add(c.ri);
     }
     resPos.needsUpdate = true;
 }
@@ -518,7 +531,7 @@ export async function booleanTextSolid(
             }
         } catch (e) {
             if (refinedOk) {
-                geo = csgOnce(mod, prepped, groups, mappedRefined, op, host.userData, sidewallRings);
+                geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
             } else if (e instanceof TextMarkingError) {
                 throw e;
             } else {
@@ -531,7 +544,16 @@ export async function booleanTextSolid(
         const cleaned = collapseDegenerateThenWeld(geo);
         if (cleaned !== geo) geo.dispose();
         restoreOutsideVerts(cleaned, host, groups, mappedOrig);
-        return cleaned;
+        const split = splitLongRegionEdges(
+            cleaned,
+            groups,
+            mappedOrig,
+            TEXT_REGION_PAD_MM,
+            TEXT_RESULT_MAX_EDGE_MM,
+            TEXT_RESULT_SPLIT_ANGLE_DEG,
+        );
+        if (split !== cleaned) cleaned.dispose();
+        return split;
     } catch (e) {
         if (e instanceof TextMarkingError) throw e;
         throw new TextMarkingError(

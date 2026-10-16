@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
+import { pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
 import {
     defaultTextMarking,
     hasActiveTextMarking,
@@ -136,6 +137,28 @@ describe("text flatten / Clipper / stroke", () => {
         const cap = cdtGlyphCap(first);
         expect(cap.points.length).toBeGreaterThan(first.outer.length + 4);
         expect(cap.faces.length).toBeGreaterThan(8);
+        for (const g of flat.groups) {
+            const c = flat.centroids[flat.groups.indexOf(g)];
+            expect(c).toBeDefined();
+            if (!c) continue;
+            expect(
+                pointInPoly(
+                    c.x,
+                    c.y,
+                    g.outer.map((p) => ({ x: p.x, y: p.y, z: 0 })),
+                ),
+            ).toBe(true);
+            for (const h of g.holes) {
+                if (h.length < 3) continue;
+                expect(
+                    pointInPoly(
+                        c.x,
+                        c.y,
+                        h.map((p) => ({ x: p.x, y: p.y, z: 0 })),
+                    ),
+                ).toBe(false);
+            }
+        }
     });
 
     test("regular weight at tiny size is too thin", async () => {

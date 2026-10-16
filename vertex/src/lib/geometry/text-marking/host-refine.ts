@@ -3,7 +3,13 @@
 
 import { BufferAttribute, type BufferGeometry } from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { TEXT_HOST_REFINE_MAX_EDGE_MM, TEXT_HOST_REFINE_PAD_MM, TEXT_WELD_MM } from "./constants";
+import {
+    TEXT_HOST_REFINE_MAX_EDGE_MM,
+    TEXT_HOST_REFINE_PAD_MM,
+    TEXT_RESULT_MAX_EDGE_MM,
+    TEXT_RESULT_SPLIT_ANGLE_DEG,
+    TEXT_WELD_MM,
+} from "./constants";
 import type { MapTextPoint, TextGlyphGroup } from "./types";
 
 interface Aabb {
@@ -79,75 +85,85 @@ function indexedWatertight(geo: BufferGeometry): boolean {
     return true;
 }
 
+function xyzOf(pos: BufferAttribute, i: number): { x: number; y: number; z: number } {
+    return { x: pos.getX(i), y: pos.getY(i), z: pos.getZ(i) };
+}
+
+function triOverlapsBox(pos: BufferAttribute, a: number, b: number, c: number, boxes: Aabb[]): boolean {
+    const pa = xyzOf(pos, a);
+    const pb = xyzOf(pos, b);
+    const pc = xyzOf(pos, c);
+    const minX = Math.min(pa.x, pb.x, pc.x);
+    const minY = Math.min(pa.y, pb.y, pc.y);
+    const minZ = Math.min(pa.z, pb.z, pc.z);
+    const maxX = Math.max(pa.x, pb.x, pc.x);
+    const maxY = Math.max(pa.y, pb.y, pc.y);
+    const maxZ = Math.max(pa.z, pb.z, pc.z);
+    for (const box of boxes) {
+        if (maxX < box.minX || minX > box.maxX) continue;
+        if (maxY < box.minY || minY > box.maxY) continue;
+        if (maxZ < box.minZ || minZ > box.maxZ) continue;
+        return true;
+    }
+    return false;
+}
+
+function dist2(pos: BufferAttribute, a: number, b: number): number {
+    const pa = xyzOf(pos, a);
+    const pb = xyzOf(pos, b);
+    const dx = pb.x - pa.x;
+    const dy = pb.y - pa.y;
+    const dz = pb.z - pa.z;
+    return dx * dx + dy * dy + dz * dz;
+}
+
+function minAngAndLongest(
+    pos: BufferAttribute,
+    a: number,
+    b: number,
+    c: number,
+): { minAng: number; long: 0 | 1 | 2 } {
+    const pa = xyzOf(pos, a);
+    const pb = xyzOf(pos, b);
+    const pc = xyzOf(pos, c);
+    const lab = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z);
+    const lbc = Math.hypot(pc.x - pb.x, pc.y - pb.y, pc.z - pb.z);
+    const lca = Math.hypot(pa.x - pc.x, pa.y - pc.y, pa.z - pc.z);
+    const ang = (opp: number, u: number, v: number) => {
+        const den = 2 * u * v;
+        if (den < 1e-18) return 0;
+        const cos = Math.max(-1, Math.min(1, (u * u + v * v - opp * opp) / den));
+        return Math.acos(cos);
+    };
+    const minAng = Math.min(ang(lbc, lab, lca), ang(lca, lab, lbc), ang(lab, lca, lbc));
+    let long: 0 | 1 | 2 = 0;
+    let longL = lab;
+    if (lbc > longL) {
+        long = 1;
+        longL = lbc;
+    }
+    if (lca > longL) long = 2;
+    return { minAng, long };
+}
+
 /**
- * Split host edges inside (footprint + 1 mm) down to ≤ 0.4 mm. Only long
- * edges are marked; every neighbor that shares a marked edge splits it, so
- * the surface stays indexed-watertight. Outside vertices keep their bits.
+ * Split marked long / needle edges on `work`. Neighbor faces that share a
+ * marked edge also split, so the index graph stays watertight. Vertices
+ * outside the boxes keep their coordinates.
  */
-export function refineHostLocally(
-    host: BufferGeometry,
-    groups: TextGlyphGroup[],
-    mapPoint: MapTextPoint,
-    padMm = TEXT_HOST_REFINE_PAD_MM,
-    maxEdgeMm = TEXT_HOST_REFINE_MAX_EDGE_MM,
-): BufferGeometry {
-    const srcPos = host.getAttribute("position");
-    if (!srcPos) return host;
-    const boxes = glyphAabbs(groups, mapPoint, padMm);
-    if (!boxes.length) return host;
-
-    const clone = host.clone();
-    clone.userData = host.userData ?? {};
-    if (!clone.getIndex()) {
-        const n = srcPos.count;
-        const tri: number[] = [];
-        for (let i = 0; i < n; i++) tri.push(i);
-        clone.setIndex(tri);
-    }
-    for (const name of Object.keys(clone.attributes)) {
-        if (name !== "position") clone.deleteAttribute(name);
-    }
-    const work = mergeVertices(clone, TEXT_WELD_MM);
-    if (work !== clone) clone.dispose();
-    work.userData = host.userData ?? {};
-    if (!indexedWatertight(work)) {
-        work.dispose();
-        return host;
-    }
+function splitMarkedEdges(
+    work: BufferGeometry,
+    boxes: Aabb[],
+    maxEdgeMm: number,
+    minAngleDeg: number,
+): boolean {
     const max2 = maxEdgeMm * maxEdgeMm;
-    const xyz = (pos: BufferAttribute, i: number) => ({
-        x: pos.getX(i),
-        y: pos.getY(i),
-        z: pos.getZ(i),
-    });
-    const triOverlaps = (pos: BufferAttribute, a: number, b: number, c: number): boolean => {
-        const pa = xyz(pos, a);
-        const pb = xyz(pos, b);
-        const pc = xyz(pos, c);
-        const minX = Math.min(pa.x, pb.x, pc.x);
-        const minY = Math.min(pa.y, pb.y, pc.y);
-        const minZ = Math.min(pa.z, pb.z, pc.z);
-        const maxX = Math.max(pa.x, pb.x, pc.x);
-        const maxY = Math.max(pa.y, pb.y, pc.y);
-        const maxZ = Math.max(pa.z, pb.z, pc.z);
-        for (const box of boxes) {
-            if (maxX < box.minX || minX > box.maxX) continue;
-            if (maxY < box.minY || minY > box.maxY) continue;
-            if (maxZ < box.minZ || minZ > box.maxZ) continue;
-            return true;
-        }
-        return false;
-    };
-    const longEdge = (pos: BufferAttribute, a: number, b: number): boolean => {
-        const pa = xyz(pos, a);
-        const pb = xyz(pos, b);
-        const dx = pb.x - pa.x;
-        const dy = pb.y - pa.y;
-        const dz = pb.z - pa.z;
-        return dx * dx + dy * dy + dz * dz > max2;
-    };
-
-    for (let pass = 0; pass < 16; pass++) {
+    const minAng = (Math.max(0, minAngleDeg) * Math.PI) / 180;
+    const needleMax2 = maxEdgeMm * 2.5 * (maxEdgeMm * 2.5);
+    let any = false;
+    let extraVerts = 0;
+    for (let pass = 0; pass < 12; pass++) {
+        if (extraVerts > 80_000) break;
         const pos = work.getAttribute("position") as BufferAttribute;
         const index = work.getIndex();
         if (!pos || !index) break;
@@ -157,12 +173,26 @@ export function refineHostLocally(
             const a = src[t] ?? 0;
             const b = src[t + 1] ?? 0;
             const c = src[t + 2] ?? 0;
-            if (!triOverlaps(pos, a, b, c)) continue;
-            if (longEdge(pos, a, b)) marked.add(edgeKey(a, b));
-            if (longEdge(pos, b, c)) marked.add(edgeKey(b, c));
-            if (longEdge(pos, c, a)) marked.add(edgeKey(c, a));
+            if (!triOverlapsBox(pos, a, b, c, boxes)) continue;
+            const ab2 = dist2(pos, a, b);
+            const bc2 = dist2(pos, b, c);
+            const ca2 = dist2(pos, c, a);
+            if (ab2 > max2) marked.add(edgeKey(a, b));
+            if (bc2 > max2) marked.add(edgeKey(b, c));
+            if (ca2 > max2) marked.add(edgeKey(c, a));
+            // Only split needles that are already short — a 5° split on a
+            // 40 mm leftover host face cascades into millions of slivers.
+            if (minAng > 0 && Math.max(ab2, bc2, ca2) <= needleMax2) {
+                const m = minAngAndLongest(pos, a, b, c);
+                if (m.minAng < minAng) {
+                    if (m.long === 0) marked.add(edgeKey(a, b));
+                    else if (m.long === 1) marked.add(edgeKey(b, c));
+                    else marked.add(edgeKey(c, a));
+                }
+            }
         }
         if (!marked.size) break;
+        any = true;
 
         const extra: number[] = [];
         const mids = new Map<string, number>();
@@ -170,8 +200,8 @@ export function refineHostLocally(
             const k = edgeKey(a, b);
             let m = mids.get(k);
             if (m == null) {
-                const pa = xyz(pos, a);
-                const pb = xyz(pos, b);
+                const pa = xyzOf(pos, a);
+                const pb = xyzOf(pos, b);
                 m = pos.count + extra.length / 3;
                 extra.push((pa.x + pb.x) * 0.5, (pa.y + pb.y) * 0.5, (pa.z + pb.z) * 0.5);
                 mids.set(k, m);
@@ -209,6 +239,7 @@ export function refineHostLocally(
             }
         }
         if (extra.length) {
+            extraVerts += extra.length / 3;
             const old = pos.array as Float32Array;
             const grown = new Float32Array(old.length + extra.length);
             grown.set(old);
@@ -217,11 +248,87 @@ export function refineHostLocally(
         }
         work.setIndex(next);
     }
+    return any;
+}
+
+/**
+ * Split host edges inside (footprint + 1 mm) down to ≤ 0.4 mm. Only long
+ * edges are marked; every neighbor that shares a marked edge splits it, so
+ * the surface stays indexed-watertight. Outside vertices keep their bits.
+ */
+export function refineHostLocally(
+    host: BufferGeometry,
+    groups: TextGlyphGroup[],
+    mapPoint: MapTextPoint,
+    padMm = TEXT_HOST_REFINE_PAD_MM,
+    maxEdgeMm = TEXT_HOST_REFINE_MAX_EDGE_MM,
+): BufferGeometry {
+    const srcPos = host.getAttribute("position");
+    if (!srcPos) return host;
+    const boxes = glyphAabbs(groups, mapPoint, padMm);
+    if (!boxes.length) return host;
+
+    const clone = host.clone();
+    clone.userData = host.userData ?? {};
+    if (!clone.getIndex()) {
+        const n = srcPos.count;
+        const tri: number[] = [];
+        for (let i = 0; i < n; i++) tri.push(i);
+        clone.setIndex(tri);
+    }
+    for (const name of Object.keys(clone.attributes)) {
+        if (name !== "position") clone.deleteAttribute(name);
+    }
+    const work = mergeVertices(clone, TEXT_WELD_MM);
+    if (work !== clone) clone.dispose();
+    work.userData = host.userData ?? {};
+    if (!indexedWatertight(work)) {
+        work.dispose();
+        return host;
+    }
+    splitMarkedEdges(work, boxes, maxEdgeMm, 0);
     work.computeVertexNormals();
     work.computeBoundingBox();
     if (!indexedWatertight(work)) {
         work.dispose();
         return host;
+    }
+    return work;
+}
+
+/**
+ * After the boolean: split leftover long / needle edges in the text AABB
+ * without welding. Midpoints lie on existing edges, so outside vertices
+ * keep their coordinates and the surface stays a 2-manifold.
+ */
+export function splitLongRegionEdges(
+    geo: BufferGeometry,
+    groups: TextGlyphGroup[],
+    mapPoint: MapTextPoint,
+    padMm: number,
+    maxEdgeMm = TEXT_RESULT_MAX_EDGE_MM,
+    minAngleDeg = TEXT_RESULT_SPLIT_ANGLE_DEG,
+): BufferGeometry {
+    const boxes = glyphAabbs(groups, mapPoint, padMm);
+    if (!boxes.length) return geo;
+    const work = geo.clone();
+    work.userData = geo.userData ?? {};
+    if (!work.getIndex()) {
+        const n = work.getAttribute("position").count;
+        const tri: number[] = [];
+        for (let i = 0; i < n; i++) tri.push(i);
+        work.setIndex(tri);
+    }
+    if (!indexedWatertight(work)) {
+        work.dispose();
+        return geo;
+    }
+    splitMarkedEdges(work, boxes, maxEdgeMm, minAngleDeg);
+    work.computeVertexNormals();
+    work.computeBoundingBox();
+    if (!indexedWatertight(work)) {
+        work.dispose();
+        return geo;
     }
     return work;
 }

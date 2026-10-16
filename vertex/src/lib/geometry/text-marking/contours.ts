@@ -304,19 +304,59 @@ function groupHoles(contours: TextContour[]): TextGlyphGroup[] {
     return groups.filter((g) => g.outer.length >= 3);
 }
 
-function centroidsOf(groups: TextGlyphGroup[]): TextXy[] {
-    const pts: TextXy[] = [];
-    for (const g of groups) {
-        let x = 0;
-        let y = 0;
-        for (const p of g.outer) {
-            x += p.x;
-            y += p.y;
+function inGlyphGroup(x: number, y: number, g: TextGlyphGroup): boolean {
+    const outer = g.outer.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    if (!pointInPoly(x, y, outer)) return false;
+    for (const hole of g.holes) {
+        if (
+            hole.length >= 3 &&
+            pointInPoly(
+                x,
+                y,
+                hole.map((p) => ({ x: p.x, y: p.y, z: 0 })),
+            )
+        ) {
+            return false;
         }
-        const n = Math.max(1, g.outer.length);
-        pts.push({ x: x / n, y: y / n });
     }
-    return pts;
+    return true;
+}
+
+/** A point on the solid, not in a counter (O / 0 / D hole). */
+function interiorPoint(g: TextGlyphGroup): TextXy {
+    let cx = 0;
+    let cy = 0;
+    for (const p of g.outer) {
+        cx += p.x;
+        cy += p.y;
+    }
+    const n = Math.max(1, g.outer.length);
+    cx /= n;
+    cy /= n;
+    if (inGlyphGroup(cx, cy, g)) return { x: cx, y: cy };
+    for (let i = 0; i < g.outer.length; i++) {
+        const a = g.outer[i]!;
+        const b = g.outer[(i + 1) % g.outer.length]!;
+        const mx = (a.x + b.x) * 0.5;
+        const my = (a.y + b.y) * 0.5;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const el = Math.hypot(ex, ey) || 1;
+        const nx = -ey / el;
+        const ny = ex / el;
+        for (const s of [1, -1]) {
+            for (const d of [0.25, 0.45, 0.7, 1.1]) {
+                const x = mx + nx * s * d;
+                const y = my + ny * s * d;
+                if (inGlyphGroup(x, y, g)) return { x, y };
+            }
+        }
+    }
+    return { x: cx, y: cy };
+}
+
+function centroidsOf(groups: TextGlyphGroup[]): TextXy[] {
+    return groups.map(interiorPoint);
 }
 
 export function flattenText(

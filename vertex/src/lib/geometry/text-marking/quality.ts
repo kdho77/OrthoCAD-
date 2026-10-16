@@ -278,7 +278,7 @@ function fontCorners(loops: Array<Array<Vert3>>, thresh = 35): Vert3[] {
 }
 
 function chainBoundary(edges: Array<[Vert3, Vert3]>): Array<Vert3[]> {
-    const key = (p: Vert3) => `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`;
+    const key = (p: Vert3) => `${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)}`;
     const adj = new Map<string, Vert3[]>();
     const point = new Map<string, Vert3>();
     const add = (a: Vert3, b: Vert3) => {
@@ -543,8 +543,17 @@ export function measureTextRegionQuality(
         outlineLoops.push(g.outer);
         outlineLoops.push(...g.holes);
     }
-    const boundPts = adjFloor.flat();
     const outlineAll = outlineLoops.flat();
+    const projectBound = (v: Vert3): Vert3 => {
+        if (meta.surface === "bottom") {
+            const zRef = outlineAll[0]?.z ?? v.z;
+            return { x: v.x, y: v.y, z: zRef };
+        }
+        if (!sampler) return v;
+        const hit = sampler.closest(v);
+        return hit ? hit.p : v;
+    };
+    const boundPts = adjFloor.flat().map(projectBound);
     const haus = outlineAll.length && boundPts.length ? hausdorff(outlineAll, boundPts) : 0;
     const corners = fontCorners(outlineLoops);
     const cornerGrid = new VertGrid(corners.length ? corners : outlineAll, 0.3);

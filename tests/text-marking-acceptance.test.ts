@@ -44,21 +44,56 @@ function depthAlongNormal(
     c: { x: number; y: number; z: number },
     nOut: { x: number; y: number; z: number },
 ): number {
+    geo.computeBoundingSphere();
     const material = new MeshBasicMaterial({ side: DoubleSide });
     const mesh = new Mesh(geo, material);
+    mesh.updateMatrixWorld(true);
     const nlen = Math.hypot(nOut.x, nOut.y, nOut.z) || 1;
     const nx = nOut.x / nlen;
     const ny = nOut.y / nlen;
     const nz = nOut.z / nlen;
-    const origin = new Vector3(c.x + nx * 8, c.y + ny * 8, c.z + nz * 8);
-    const dir = new Vector3(-nx, -ny, -nz);
-    const ray = new Raycaster(origin, dir, 0, 20);
-    const hits = ray.intersectObject(mesh, false);
+    let tx = -ny;
+    let ty = nx;
+    let tz = 0;
+    let tl = Math.hypot(tx, ty, tz);
+    if (tl < 1e-8) {
+        tx = 0;
+        ty = -nz;
+        tz = ny;
+        tl = Math.hypot(tx, ty, tz) || 1;
+    }
+    tx /= tl;
+    ty /= tl;
+    tz /= tl;
+    const bx = ny * tz - nz * ty;
+    const by = nz * tx - nx * tz;
+    const bz = nx * ty - ny * tx;
+    const offsets: Array<[number, number]> = [
+        [0, 0],
+        [0.4, 0],
+        [-0.4, 0],
+        [0, 0.4],
+        [0, -0.4],
+        [0.7, 0],
+        [-0.7, 0],
+    ];
+    const depths: number[] = [];
+    for (const [ou, ov] of offsets) {
+        const ox = c.x + tx * ou + bx * ov;
+        const oy = c.y + ty * ou + by * ov;
+        const oz = c.z + tz * ou + bz * ov;
+        const origin = new Vector3(ox + nx * 8, oy + ny * 8, oz + nz * 8);
+        const dir = new Vector3(-nx, -ny, -nz);
+        const ray = new Raycaster(origin, dir, 0, 20);
+        for (const hit of ray.intersectObject(mesh, false)) {
+            const along = (ox - hit.point.x) * nx + (oy - hit.point.y) * ny + (oz - hit.point.z) * nz;
+            if (along >= 0.35 && along <= 1.6) depths.push(along);
+        }
+    }
     material.dispose();
-    const hit = hits[0];
-    if (!hit) return Number.NaN;
-    const h = hit.point;
-    return (c.x - h.x) * nx + (c.y - h.y) * ny + (c.z - h.z) * nz;
+    if (!depths.length) return Number.NaN;
+    depths.sort((a, b) => a - b);
+    return depths[Math.floor(depths.length / 2)]!;
 }
 
 function stlGates(stl: ArrayBuffer, tag: string): { watertight: boolean; winding: boolean; bodies: number } {
@@ -266,8 +301,9 @@ describe("text marking L/R × wall/bottom builds", () => {
             expect(q.outsideVertMaxMm).toBeLessThanOrEqual(0.1);
             expect(q.outsideHostVertsMissing).toBe(0);
             expect(q.inRegion.count).toBeGreaterThan(100);
-            expect(q.inRegion.pctMinAngleGe5).toBeGreaterThanOrEqual(95);
-            expect(q.inRegion.minAngleMinDeg).toBeGreaterThanOrEqual(0.5);
+            expect(q.inRegion.pctMinAngleGe5).toBeGreaterThanOrEqual(99);
+            expect(q.inRegion.minAngleMinDeg).toBeGreaterThanOrEqual(1);
+            expect(q.inRegion.aspectP99).toBeLessThanOrEqual(10);
             expect(q.inRegion.aspectMax).toBeLessThanOrEqual(30);
             expect(q.inRegion.longestEdgeMm).toBeLessThanOrEqual(0.6);
             expect(q.floor.count).toBeGreaterThan(20);
@@ -277,7 +313,8 @@ describe("text marking L/R × wall/bottom builds", () => {
             expect(q.sidewall.pctDotLe01).toBeGreaterThanOrEqual(95);
             expect(q.dihedral.floorFloorMaxDeg).toBeLessThanOrEqual(10);
             expect(q.dihedral.wallWallMaxDeg).toBeLessThanOrEqual(10);
-            expect(q.outline.hausdorffMm).toBeLessThanOrEqual(0.15);
+            expect(q.outline.hausdorffMm).toBeLessThanOrEqual(0.05);
+            expect(q.outline.extraTurnGt30).toBe(0);
             expect(q.triCount).toBeLessThanOrEqual(120_000);
         }
     }, 300_000);
