@@ -7,8 +7,9 @@ import { TEXT_DEGENERATE_AREA_MM2, TEXT_DEGENERATE_MIN_ANGLE_DEG, TEXT_WELD_MM }
 import { buildTextCutterMesh } from "./cutter";
 import { TextMarkingError } from "./errors";
 import { refineHostLocally } from "./host-refine";
+import { distToTextRegion } from "./quality";
 import { countSoupSelfIntersections } from "./soup-intersect";
-import type { MapTextPoint, TextGlyphGroup } from "./types";
+import type { MapTextPoint, TextApplyMeta, TextGlyphGroup } from "./types";
 
 type ManifoldMesh = {
     merge: () => boolean;
@@ -399,10 +400,37 @@ function soupRealHits(geo: BufferGeometry): number {
     return countSoupSelfIntersections(geo, TEXT_WELD_MM).real;
 }
 
-function restoreOutsideVerts(result: BufferGeometry, host: BufferGeometry): void {
+function restoreOutsideVerts(
+    result: BufferGeometry,
+    host: BufferGeometry,
+    groups: TextGlyphGroup[],
+    mapped: MapTextPoint,
+): void {
     const hostPos = host.getAttribute("position");
     const resPos = result.getAttribute("position");
     if (!hostPos || !resPos) return;
+    const outlineWorld = groups.map((g) => ({
+        outer: g.outer.map((p) => mapped(p, 0.5)),
+        holes: g.holes.map((h) => h.map((p) => mapped(p, 0.5))),
+    }));
+    const outline = outlineWorld.flatMap((g) => [g.outer, ...g.holes].flat());
+    let zMin = Infinity;
+    let zMax = -Infinity;
+    for (const p of outline) {
+        if (p.z < zMin) zMin = p.z;
+        if (p.z > zMax) zMax = p.z;
+    }
+    const meta = {
+        surface: zMax - zMin < 2 ? "bottom" : "wall",
+        outlineWorld,
+        centroids: [],
+        mode: "engrave",
+        depthMm: 0.8,
+        heightMm: 0,
+        capHeightMm: 6,
+        advanceMm: 0,
+        mappedWidthMm: 0,
+    } as TextApplyMeta;
     const cell = 0.25;
     const grid = new Map<string, number[]>();
     const keyOf = (x: number, y: number, z: number) =>
@@ -418,7 +446,8 @@ function restoreOutsideVerts(result: BufferGeometry, host: BufferGeometry): void
         const hx = hostPos.getX(hi);
         const hy = hostPos.getY(hi);
         const hz = hostPos.getZ(hi);
-        let best = 0.2;
+        if (distToTextRegion({ x: hx, y: hy, z: hz }, meta, outline) <= 0.5) continue;
+        let best = 0.1;
         let bestI = -1;
         const ix = Math.floor(hx / cell);
         const iy = Math.floor(hy / cell);
@@ -473,10 +502,19 @@ export async function booleanTextSolid(
     try {
         let geo: BufferGeometry;
         try {
-            geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
-            if (refinedOk && soupRealHits(geo) > 0) {
-                geo.dispose();
+            if (refinedOk) {
                 geo = csgOnce(mod, prepped, groups, mappedRefined, op, host.userData, sidewallRings);
+                if (soupRealHits(geo) > 0) {
+                    const orig = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
+                    if (soupRealHits(orig) === 0) {
+                        geo.dispose();
+                        geo = orig;
+                    } else {
+                        orig.dispose();
+                    }
+                }
+            } else {
+                geo = csgOnce(mod, host, groups, mappedOrig, op, host.userData, sidewallRings);
             }
         } catch (e) {
             if (refinedOk) {
@@ -492,7 +530,7 @@ export async function booleanTextSolid(
         }
         const cleaned = collapseDegenerateThenWeld(geo);
         if (cleaned !== geo) geo.dispose();
-        restoreOutsideVerts(cleaned, host);
+        restoreOutsideVerts(cleaned, host, groups, mappedOrig);
         return cleaned;
     } catch (e) {
         if (e instanceof TextMarkingError) throw e;

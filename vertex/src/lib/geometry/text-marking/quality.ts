@@ -138,7 +138,7 @@ function asPoly(pts: Vert3[]): PolyPoint[] {
     return pts.map((p) => ({ x: p.x, y: p.y, z: p.z }));
 }
 
-function distToTextRegion(p: Vert3, meta: TextApplyMeta, outline: Vert3[]): number {
+export function distToTextRegion(p: Vert3, meta: TextApplyMeta, outline: Vert3[]): number {
     const d3 = minDistToOutline(p, outline);
     if (meta.surface !== "bottom") return d3;
     let d2 = d3;
