@@ -272,7 +272,7 @@ describe("met pad GLB height-field asset", () => {
         }
         console.log("MET-PAD-SIZE", results);
         ref260.dispose();
-        expect(results).toHaveLength(2);
+        expect(results).toHaveLength(3);
         native.dispose();
     }, 120_000);
 
