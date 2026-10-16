@@ -12,12 +12,13 @@ import {
     heightGridCacheKey,
 } from "./height-grid";
 import { elementSizeScale, sidecarAnchorUV } from "./sizing";
-import type {
-    ElementAssetSidecar,
-    ElementAssetTransform,
-    ElementManifest,
-    ElementPlacementMode,
-    PlacedElementAssetContext,
+import {
+    type ElementAssetSidecar,
+    type ElementAssetTransform,
+    type ElementManifest,
+    type ElementPlacementMode,
+    type PlacedElementAssetContext,
+    sidecarFeatherKey,
 } from "./types";
 
 let manifestCache: ElementManifest | null = null;
@@ -163,7 +164,7 @@ export function transformKey(
         t.placementMode,
         t.zOffsetMm.toFixed(3),
         t.category,
-        sidecar?.featherMm.toFixed(3) ?? "",
+        sidecar ? sidecarFeatherKey(sidecar.featherMm) : "",
         sidecarHash ?? "",
     ].join(",");
 }
