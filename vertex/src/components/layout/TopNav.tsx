@@ -1,29 +1,21 @@
 import { Coins, LogOut, ShieldCheck, Sparkles, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SaveControl } from "@/features/designs/SaveControl";
-import { navigate } from "@/lib/navigate";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
-import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
+import { cn } from "@/lib/utils";
 
 const NAV = ["Clients", "Production", "Orders"] as const;
 type NavItem = (typeof NAV)[number];
 
 interface TopNavProps {
     active: NavItem;
-    slicerActive?: boolean;
     onNavigate: (item: NavItem) => void;
     onOpenAdmin: () => void;
     onOpenPrescription: () => void;
 }
 
-export function TopNav({
-    active,
-    slicerActive = false,
-    onNavigate,
-    onOpenAdmin,
-    onOpenPrescription,
-}: TopNavProps) {
+export function TopNav({ active, onNavigate, onOpenAdmin, onOpenPrescription }: TopNavProps) {
     const { user, license } = useAuthStore();
 
     return (
@@ -41,13 +33,10 @@ export function TopNav({
                         <button
                             key={item}
                             type="button"
-                            onClick={() => {
-                                if (slicerActive) navigate("/");
-                                onNavigate(item);
-                            }}
+                            onClick={() => onNavigate(item)}
                             className={cn(
                                 "rounded px-3 py-1.5 text-sm transition-colors",
-                                !slicerActive && active === item
+                                active === item
                                     ? "bg-secondary text-foreground"
                                     : "text-muted-foreground hover:text-foreground",
                             )}
@@ -55,18 +44,6 @@ export function TopNav({
                             {item}
                         </button>
                     ))}
-                    <button
-                        type="button"
-                        onClick={() => navigate("/slicer")}
-                        className={cn(
-                            "rounded px-3 py-1.5 text-sm transition-colors",
-                            slicerActive
-                                ? "bg-secondary text-foreground"
-                                : "text-muted-foreground hover:text-foreground",
-                        )}
-                    >
-                        Slicer
-                    </button>
                 </nav>
             </div>
 
@@ -81,12 +58,7 @@ export function TopNav({
                     <span className="text-muted-foreground">tokens</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <ShieldCheck
-                        className={cn(
-                            "h-3.5 w-3.5",
-                            license?.status === "active" ? "text-emerald-400" : "text-amber-400",
-                        )}
-                    />
+                    <ShieldCheck className={cn("h-3.5 w-3.5", license?.status === "active" ? "text-emerald-400" : "text-amber-400")} />
                     {license?.status ?? "no license"}
                 </div>
                 {user?.role === "super_admin" ? (
@@ -98,12 +70,7 @@ export function TopNav({
                     {user?.fullName?.[0]?.toUpperCase() ?? user?.email?.[0]?.toUpperCase() ?? "?"}
                 </div>
                 {isSupabaseConfigured() ? (
-                    <Button
-                        size="icon"
-                        variant="ghost"
-                        title="Sign out"
-                        onClick={() => getSupabase()?.auth.signOut()}
-                    >
+                    <Button size="icon" variant="ghost" title="Sign out" onClick={() => getSupabase()?.auth.signOut()}>
                         <LogOut className="h-3.5 w-3.5" />
                     </Button>
                 ) : null}
