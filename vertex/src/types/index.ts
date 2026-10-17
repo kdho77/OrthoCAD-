@@ -2,9 +2,13 @@
 // These mirror the Prisma schema but are framework-agnostic for use in the
 // browser, stores and the 3D pipeline.
 
+import type { RegionHardnessClass } from "../../shared/print-recipe/hardness-class-table";
+import type { DepthSpec, HardnessOverrides } from "../../shared/print-recipe/hardness-region";
 import type { PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
 
 export type { HardnessName, PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
+export type { DepthSpec, HardnessOverrides, HardnessRegion, RegionKind } from "../../shared/print-recipe/hardness-region";
+export type { RegionHardnessClass } from "../../shared/print-recipe/hardness-class-table";
 
 export type Role = "super_admin" | "admin" | "clinician";
 
@@ -54,7 +58,7 @@ export interface ShapeFinishModifiers {
     linked: boolean;
 }
 
-export type ExportFormat = "stl" | "gcode" | "glb";
+export type ExportFormat = "stl" | "gcode" | "glb" | "3mf";
 
 export type GrindingStyleType = "straight" | "rounded";
 
@@ -194,6 +198,15 @@ export interface PlacedElement {
     rotationDeg: number;
     scale: { x: number; y: number };
     heightMm: number;
+    /**
+     * Hardness region fields (Phase 1). Settings stay on this element id through
+     * move/resize/save/reopen. Absent => device default, no modifier volume.
+     */
+    regionId?: string;
+    hardnessClass?: RegionHardnessClass;
+    priority?: number;
+    depth?: DepthSpec;
+    overrides?: HardnessOverrides;
 }
 
 /** Serializable trimline control points stored in design state. */

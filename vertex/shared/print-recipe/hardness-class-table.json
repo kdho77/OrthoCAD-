@@ -1,0 +1,27 @@
+{
+    "Soft": {
+        "sparseInfillDensityPct": 11,
+        "sparseInfillPattern": "gyroid",
+        "sparseInfillSpeedMmS": 44.0
+    },
+    "Medium": {
+        "sparseInfillDensityPct": 22,
+        "sparseInfillPattern": "gyroid",
+        "sparseInfillSpeedMmS": 44.5
+    },
+    "Firm": {
+        "sparseInfillDensityPct": 38,
+        "sparseInfillPattern": "gyroid",
+        "sparseInfillSpeedMmS": 45.0
+    },
+    "Rigid": {
+        "sparseInfillDensityPct": 65,
+        "sparseInfillPattern": "gyroid",
+        "sparseInfillSpeedMmS": 45.5
+    },
+    "Custom": {
+        "sparseInfillDensityPctMin": 5,
+        "sparseInfillDensityPctMax": 100,
+        "sparseInfillPattern": "gyroid"
+    }
+}

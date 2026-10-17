@@ -5,6 +5,10 @@ import {
     buildExportStl,
     exportModeFromMethod,
 } from "@/lib/geometry/export-geometry";
+import { collectHardnessRegions } from "@/lib/hardness/collect";
+import { parseBinaryStl } from "@/lib/hardness/mesh";
+import { exportHardness3mf, STL_SHELL_ONLY_WARNING } from "@/lib/hardness/pipeline";
+import type { HardnessExportReport } from "@/lib/hardness/report";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { mapClientRpcError } from "@/lib/trpc-errors";
@@ -25,6 +29,8 @@ export interface ExportOutcome {
     blob?: Blob;
     stats?: CamResult["stats"];
     productionId?: string;
+    warning?: string;
+    report?: HardnessExportReport;
 }
 
 function buildSideGeometry(side: Side) {
@@ -103,6 +109,9 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     if (format === "glb") {
         return exportGlb(side);
     }
+    if (format === "3mf") {
+        return export3mf(side);
+    }
     const filename = `insole-${side}-${Date.now()}.stl`;
     try {
         const { design } = useDesignStore.getState();
@@ -116,9 +125,31 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         const auth = await authorize("stl", side, filename);
         if (!auth.ok) return { ok: false, reason: auth.reason };
         useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
-        return { ok: true, filename, blob };
+        const warning = collectHardnessRegions(design, side).length > 0 ? STL_SHELL_ONLY_WARNING : undefined;
+        return { ok: true, filename, blob, warning };
     } catch (e) {
         return { ok: false, reason: e instanceof Error ? e.message : "Export failed" };
+    }
+}
+
+export async function export3mf(side: Side): Promise<ExportOutcome> {
+    const { user, license, deductTokens } = useAuthStore.getState();
+    const check = canExport(user, license, "3mf");
+    if (!check.ok) return { ok: false, reason: check.reason };
+    const filename = `insole-${side}-${Date.now()}.3mf`;
+    try {
+        const { design } = useDesignStore.getState();
+        const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
+        if (!stl?.byteLength) return { ok: false, reason: "Export failed" };
+        const shell = parseBinaryStl(stl);
+        const packed = await exportHardness3mf({ design, side, shell });
+        const blob = new Blob([packed.bytes], { type: "model/3mf" });
+        downloadBlob(blob, filename);
+        deductTokens(TOKEN_COST["3mf"]);
+        useAuditStore.getState().record("export_generated", `3MF ${side} (-${TOKEN_COST["3mf"]})`);
+        return { ok: true, filename, blob, report: packed.report };
+    } catch (e) {
+        return { ok: false, reason: e instanceof Error ? e.message : "3MF export failed" };
     }
 }
 
