@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import { formatPrintTime, parseGcodeStats } from "./gcode-stats";
+import { formatPrintTime, parseGcodeStats, sumGcodeStats } from "./gcode-stats";
 
 describe("parseGcodeStats", () => {
     test("reads Orca header comments", () => {
@@ -26,5 +26,19 @@ describe("parseGcodeStats", () => {
         expect(formatPrintTime(125)).toBe("2m 5s");
         expect(formatPrintTime(3723)).toBe("1h 2m");
         expect(formatPrintTime(null)).toBe("—");
+    });
+
+    test("sums print time and filament for an L/R pair", () => {
+        expect(
+            sumGcodeStats([
+                { printTimeSeconds: 60, filamentGrams: 1.5, filamentMeters: 2, layers: 10 },
+                { printTimeSeconds: 90, filamentGrams: 2.5, filamentMeters: 3, layers: 12 },
+            ]),
+        ).toEqual({
+            printTimeSeconds: 150,
+            filamentGrams: 4,
+            filamentMeters: 5,
+            layers: 12,
+        });
     });
 });
