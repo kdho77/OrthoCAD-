@@ -2,7 +2,15 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import { cloneProfile, IDAHO_PROFILE, skinZ, stepoverMm, toolRadiusMm, wallClearZ } from "@/lib/cnc/profile";
+import {
+    cloneProfile,
+    contourOffsetMm,
+    IDAHO_PROFILE,
+    skinZ,
+    stepoverMm,
+    toolRadiusMm,
+    wallClearZ,
+} from "@/lib/cnc/profile";
 
 describe("Idaho milling profile seed", () => {
     test("matches founder screenshot values", () => {
@@ -32,6 +40,7 @@ describe("Idaho milling profile seed", () => {
         expect(p.toolpathCutter).toEqual({ diameterMm: 10, type: "ball", rpm: 24000, enabled: true });
         expect(p.contourCutter).toEqual({ diameterMm: 10, type: "ball", rpm: 24000, enabled: true });
         expect(wallClearZ(p)).toBe(6);
+        expect(contourOffsetMm(p)).toBe(4.95);
         expect(p.topFeeds).toEqual({ dip: 3500, normal: 36000, slow: 3500, contour: 2500 });
         expect(p.pockets).toEqual([
             { x: 0, y: 0, width: 368.3, length: 130.175 },
