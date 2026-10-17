@@ -8,18 +8,20 @@ import { PrintingPanel } from "@/features/exports/PrintingPanel";
 import { ShapeFinishPanel } from "@/features/shape-finish/ShapeFinishPanel";
 import { shouldShowShapeFinishInPrintAdvanced } from "@/features/shape-finish/shape-finish-mount";
 import { cn } from "@/lib/utils";
+import { useMillingProfileStore } from "@/stores/milling-profile-store";
 
 export function ClinicalPrintStepPanel() {
     const [advancedOpen, setAdvancedOpen] = useState(false);
+    const machine = useMillingProfileStore((s) => s.machine);
 
     return (
         <div className="space-y-3">
             <div className="rounded-md border border-primary/30 bg-primary/5 px-2 py-2 text-[11px] leading-snug text-foreground">
                 <p className="font-medium">Recommended path</p>
                 <p className="mt-1 text-muted-foreground">
-                    The procedural solid is built here. Choose grinding style and hardness, then prepare
-                    G-code. Final gyroid infill is applied on the server — the 3D preview may differ from the
-                    printed part.
+                    {machine === "cnc"
+                        ? "3-axis CNC export reads the finished design (elements included) and does not change it. Walls are always straight. Choose the Idaho milling table, then export G-code."
+                        : "The procedural solid is built here. Choose grinding style and hardness, then prepare G-code. Final gyroid infill is applied on the server — the 3D preview may differ from the printed part."}
                 </p>
             </div>
 
