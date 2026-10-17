@@ -1,6 +1,7 @@
-import { Coins, ShieldCheck, Sparkles } from "lucide-react";
+import { Coins, Shield, ShieldCheck, Sparkles } from "lucide-react";
 import { AccountMenu } from "@/components/layout/AccountMenu";
 import { Button } from "@/components/ui/button";
+import { navigate, showSuperAdminLink } from "@/features/admin/admin-nav";
 import { SaveControl } from "@/features/designs/SaveControl";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
@@ -43,6 +44,15 @@ export function TopNav({ active, onNavigate, onOpenPrescription }: TopNavProps) 
                             {item}
                         </button>
                     ))}
+                    {showSuperAdminLink(user?.role) ? (
+                        <button
+                            type="button"
+                            onClick={() => navigate("/admin")}
+                            className="rounded px-3 py-1.5 text-sm text-sky-300 transition-colors hover:bg-secondary hover:text-sky-200"
+                        >
+                            Super admin
+                        </button>
+                    ) : null}
                 </nav>
             </div>
 
@@ -65,6 +75,16 @@ export function TopNav({ active, onNavigate, onOpenPrescription }: TopNavProps) 
                     />
                     {license?.status ?? "no license"}
                 </div>
+                {showSuperAdminLink(user?.role) ? (
+                    <button
+                        type="button"
+                        onClick={() => navigate("/admin")}
+                        className="flex items-center gap-1.5 rounded-md border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+                    >
+                        <Shield className="h-3.5 w-3.5" />
+                        Super admin
+                    </button>
+                ) : null}
                 <AccountMenu user={user} />
             </div>
         </header>

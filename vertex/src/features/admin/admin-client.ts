@@ -15,9 +15,45 @@ import {
     type TokenLedgerEntry,
 } from "../../../shared/admin/admin-domain";
 
+export const TENANT_MIGRATION_NOTICE =
+    "Tenant tables are not migrated. Showing demo tenants. Apply vertex/prisma/migrations/20261015120000_super_admin_tenants/migration.sql in the Supabase SQL editor.";
+
 let demoTenants: TenantRecord[] = structuredClone(DEMO_TENANTS);
 const demoLedger = new Map<string, TokenLedgerEntry[]>();
 const demoAudit: AdminAuditEntry[] = [];
+let demoBecauseUnmigrated = false;
+
+export function resetAdminDemoFallback(): void {
+    demoBecauseUnmigrated = false;
+}
+
+export function adminDemoNotice(): string | null {
+    if (!isApiConfigured()) return null;
+    return demoBecauseUnmigrated ? TENANT_MIGRATION_NOTICE : null;
+}
+
+export function isMissingTenantMigration(error: unknown): boolean {
+    const message = surfaceAdminError(error, "");
+    const record =
+        error && typeof error === "object"
+            ? (error as { data?: { code?: string }; shape?: { data?: { code?: string } } })
+            : null;
+    const code = record?.data?.code ?? record?.shape?.data?.code ?? "";
+    return /not migrated/i.test(message) || code === "PRECONDITION_FAILED";
+}
+
+async function liveOrDemo<T>(live: () => Promise<T>, demo: () => T | Promise<T>): Promise<T> {
+    if (!isApiConfigured() || demoBecauseUnmigrated) return await demo();
+    try {
+        return await live();
+    } catch (error) {
+        if (isMissingTenantMigration(error)) {
+            demoBecauseUnmigrated = true;
+            return await demo();
+        }
+        throw error;
+    }
+}
 
 function bumpDemo(tenant: TenantRecord, patch: Partial<TenantRecord>): TenantRecord {
     const next = { ...tenant, ...patch, updatedAt: new Date().toISOString() };
@@ -37,21 +73,27 @@ function pushDemoAudit(input: Parameters<typeof buildAuditEntry>[0] & { tenantNa
 }
 
 export async function fetchTenants(): Promise<TenantRecord[]> {
-    if (!isApiConfigured()) return demoTenants.filter((t) => !t.archivedAt);
-    return trpc.admin.tenants.list.query();
+    return liveOrDemo(
+        () => trpc.admin.tenants.list.query(),
+        () => demoTenants.filter((t) => !t.archivedAt),
+    );
+}
+
+function demoTenantDetail(id: string) {
+    const tenant = demoTenants.find((t) => t.id === id);
+    if (!tenant) throw new Error("Tenant not found");
+    return {
+        tenant,
+        ledger: demoLedger.get(id) ?? [],
+        audit: demoAudit.filter((a) => a.tenantId === id),
+    };
 }
 
 export async function fetchTenant(id: string) {
-    if (!isApiConfigured()) {
-        const tenant = demoTenants.find((t) => t.id === id);
-        if (!tenant) throw new Error("Tenant not found");
-        return {
-            tenant,
-            ledger: demoLedger.get(id) ?? [],
-            audit: demoAudit.filter((a) => a.tenantId === id),
-        };
-    }
-    return trpc.admin.tenants.get.query({ id });
+    return liveOrDemo(
+        () => trpc.admin.tenants.get.query({ id }),
+        () => demoTenantDetail(id),
+    );
 }
 
 export async function fetchAudit(filters?: {
@@ -60,16 +102,17 @@ export async function fetchAudit(filters?: {
     from?: string;
     to?: string;
 }): Promise<AdminAuditEntry[]> {
-    if (!isApiConfigured()) {
-        return demoAudit.filter((row) => {
-            if (filters?.tenantId && row.tenantId !== filters.tenantId) return false;
-            if (filters?.action && row.action !== filters.action) return false;
-            if (filters?.from && row.createdAt < filters.from) return false;
-            if (filters?.to && row.createdAt > filters.to) return false;
-            return true;
-        });
-    }
-    return trpc.admin.tenantAudit.list.query(filters);
+    return liveOrDemo(
+        () => trpc.admin.tenantAudit.list.query(filters),
+        () =>
+            demoAudit.filter((row) => {
+                if (filters?.tenantId && row.tenantId !== filters.tenantId) return false;
+                if (filters?.action && row.action !== filters.action) return false;
+                if (filters?.from && row.createdAt < filters.from) return false;
+                if (filters?.to && row.createdAt > filters.to) return false;
+                return true;
+            }),
+    );
 }
 
 export async function fetchAuditCsv(filters?: {
@@ -78,11 +121,13 @@ export async function fetchAuditCsv(filters?: {
     from?: string;
     to?: string;
 }): Promise<string> {
-    if (!isApiConfigured()) {
-        const { auditRowsToCsv } = await import("../../../shared/admin/admin-domain");
-        return auditRowsToCsv(await fetchAudit(filters));
-    }
-    return trpc.admin.tenantAudit.csv.query(filters);
+    return liveOrDemo(
+        () => trpc.admin.tenantAudit.csv.query(filters),
+        async () => {
+            const { auditRowsToCsv } = await import("../../../shared/admin/admin-domain");
+            return auditRowsToCsv(await fetchAudit(filters));
+        },
+    );
 }
 
 export async function createTenant(input: {
@@ -94,39 +139,43 @@ export async function createTenant(input: {
     initialTokens?: number;
     reason: string;
 }): Promise<TenantRecord> {
-    if (isApiConfigured()) return trpc.admin.tenants.create.mutate(input);
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-    const tenant: TenantRecord = {
-        id,
-        name: input.name.trim(),
-        slug: `${slugifyTenantName(input.name)}-${id.slice(0, 8)}`,
-        status: input.status,
-        plan: input.plan,
-        seats: input.seats,
-        seatsUsed: 0,
-        startsAt: now,
-        expiresAt: input.expiresAt ?? null,
-        tokenBalance: 0,
-        tokenThreshold: 50,
-        lastActivityAt: now,
-        archivedAt: null,
-        createdAt: now,
-        updatedAt: now,
-    };
-    demoTenants = [tenant, ...demoTenants];
-    if (input.initialTokens) {
-        await grantTokens({ tenantId: id, amount: input.initialTokens, reason: input.reason });
-    } else {
-        pushDemoAudit({
-            action: "tenant.created",
-            reason: input.reason,
-            tenantId: id,
-            tenantName: tenant.name,
-            after: tenant,
-        });
-    }
-    return tenant;
+    return liveOrDemo(
+        () => trpc.admin.tenants.create.mutate(input),
+        async () => {
+            const id = crypto.randomUUID();
+            const now = new Date().toISOString();
+            const tenant: TenantRecord = {
+                id,
+                name: input.name.trim(),
+                slug: `${slugifyTenantName(input.name)}-${id.slice(0, 8)}`,
+                status: input.status,
+                plan: input.plan,
+                seats: input.seats,
+                seatsUsed: 0,
+                startsAt: now,
+                expiresAt: input.expiresAt ?? null,
+                tokenBalance: 0,
+                tokenThreshold: 50,
+                lastActivityAt: now,
+                archivedAt: null,
+                createdAt: now,
+                updatedAt: now,
+            };
+            demoTenants = [tenant, ...demoTenants];
+            if (input.initialTokens) {
+                await grantTokens({ tenantId: id, amount: input.initialTokens, reason: input.reason });
+            } else {
+                pushDemoAudit({
+                    action: "tenant.created",
+                    reason: input.reason,
+                    tenantId: id,
+                    tenantName: tenant.name,
+                    after: tenant,
+                });
+            }
+            return tenant;
+        },
+    );
 }
 
 export async function updateLicense(input: {
@@ -138,26 +187,30 @@ export async function updateLicense(input: {
     status: Exclude<TenantStatus, "archived">;
     reason: string;
 }): Promise<TenantRecord> {
-    if (isApiConfigured()) return trpc.admin.tenants.updateLicense.mutate(input);
-    const before = demoTenants.find((t) => t.id === input.tenantId);
-    if (!before) throw new Error("Tenant not found");
-    const after = bumpDemo(before, {
-        plan: input.plan,
-        seats: input.seats,
-        startsAt: input.startsAt,
-        expiresAt: input.expiresAt,
-        status: input.status,
-        lastActivityAt: new Date().toISOString(),
-    });
-    pushDemoAudit({
-        action: "tenant.license_updated",
-        reason: input.reason,
-        tenantId: input.tenantId,
-        tenantName: after.name,
-        before,
-        after,
-    });
-    return after;
+    return liveOrDemo(
+        () => trpc.admin.tenants.updateLicense.mutate(input),
+        () => {
+            const before = demoTenants.find((t) => t.id === input.tenantId);
+            if (!before) throw new Error("Tenant not found");
+            const after = bumpDemo(before, {
+                plan: input.plan,
+                seats: input.seats,
+                startsAt: input.startsAt,
+                expiresAt: input.expiresAt,
+                status: input.status,
+                lastActivityAt: new Date().toISOString(),
+            });
+            pushDemoAudit({
+                action: "tenant.license_updated",
+                reason: input.reason,
+                tenantId: input.tenantId,
+                tenantName: after.name,
+                before,
+                after,
+            });
+            return after;
+        },
+    );
 }
 
 export async function extendTenant(input: {
@@ -166,24 +219,28 @@ export async function extendTenant(input: {
     expiresAt?: string;
     reason: string;
 }): Promise<{ tenant: TenantRecord; from: string | null; to: string }> {
-    if (isApiConfigured()) return trpc.admin.tenants.extend.mutate(input);
-    const before = demoTenants.find((t) => t.id === input.tenantId);
-    if (!before) throw new Error("Tenant not found");
-    const to = input.expiresAt ?? extendExpiry(before.expiresAt, input.days ?? 30);
-    const after = bumpDemo(before, {
-        expiresAt: to,
-        status: before.status === "expired" ? "active" : before.status,
-        lastActivityAt: new Date().toISOString(),
-    });
-    pushDemoAudit({
-        action: "tenant.extended",
-        reason: input.reason,
-        tenantId: input.tenantId,
-        tenantName: after.name,
-        before: { expiresAt: before.expiresAt },
-        after: { expiresAt: to },
-    });
-    return { tenant: after, from: before.expiresAt, to };
+    return liveOrDemo(
+        () => trpc.admin.tenants.extend.mutate(input),
+        () => {
+            const before = demoTenants.find((t) => t.id === input.tenantId);
+            if (!before) throw new Error("Tenant not found");
+            const to = input.expiresAt ?? extendExpiry(before.expiresAt, input.days ?? 30);
+            const after = bumpDemo(before, {
+                expiresAt: to,
+                status: before.status === "expired" ? "active" : before.status,
+                lastActivityAt: new Date().toISOString(),
+            });
+            pushDemoAudit({
+                action: "tenant.extended",
+                reason: input.reason,
+                tenantId: input.tenantId,
+                tenantName: after.name,
+                before: { expiresAt: before.expiresAt },
+                after: { expiresAt: to },
+            });
+            return { tenant: after, from: before.expiresAt, to };
+        },
+    );
 }
 
 export async function grantTokens(input: {
@@ -193,44 +250,48 @@ export async function grantTokens(input: {
     note?: string;
     expiresAt?: string | null;
 }): Promise<{ tenant: TenantRecord; from: number; to: number }> {
-    if (isApiConfigured()) return trpc.admin.tenants.grantTokens.mutate(input);
-    const before = demoTenants.find((t) => t.id === input.tenantId);
-    if (!before) throw new Error("Tenant not found");
-    const existing = demoLedger.get(input.tenantId) ?? [];
-    const applied = applyLedgerWrite(existing, {
-        type: input.amount < 0 ? "adjustment" : "grant",
-        amount: input.amount,
-        reason: input.reason,
-        note: input.note,
-        expiresAt: input.expiresAt,
-    });
-    const entry: TokenLedgerEntry = {
-        id: crypto.randomUUID(),
-        tenantId: input.tenantId,
-        type: applied.type,
-        amount: applied.amount,
-        balanceAfter: applied.balanceAfter,
-        actorId: null,
-        actorEmail: "offline",
-        reason: applied.reason,
-        note: input.note ?? null,
-        expiresAt: input.expiresAt ?? null,
-        createdAt: new Date().toISOString(),
-    };
-    demoLedger.set(input.tenantId, [...existing, entry]);
-    const after = bumpDemo(before, {
-        tokenBalance: applied.balanceAfter,
-        lastActivityAt: entry.createdAt,
-    });
-    pushDemoAudit({
-        action: "tenant.grant_tokens",
-        reason: input.reason,
-        tenantId: input.tenantId,
-        tenantName: after.name,
-        before: { tokenBalance: before.tokenBalance },
-        after: { tokenBalance: after.tokenBalance },
-    });
-    return { tenant: after, from: before.tokenBalance, to: after.tokenBalance };
+    return liveOrDemo(
+        () => trpc.admin.tenants.grantTokens.mutate(input),
+        () => {
+            const before = demoTenants.find((t) => t.id === input.tenantId);
+            if (!before) throw new Error("Tenant not found");
+            const existing = demoLedger.get(input.tenantId) ?? [];
+            const applied = applyLedgerWrite(existing, {
+                type: input.amount < 0 ? "adjustment" : "grant",
+                amount: input.amount,
+                reason: input.reason,
+                note: input.note,
+                expiresAt: input.expiresAt,
+            });
+            const entry: TokenLedgerEntry = {
+                id: crypto.randomUUID(),
+                tenantId: input.tenantId,
+                type: applied.type,
+                amount: applied.amount,
+                balanceAfter: applied.balanceAfter,
+                actorId: null,
+                actorEmail: "offline",
+                reason: applied.reason,
+                note: input.note ?? null,
+                expiresAt: input.expiresAt ?? null,
+                createdAt: new Date().toISOString(),
+            };
+            demoLedger.set(input.tenantId, [...existing, entry]);
+            const after = bumpDemo(before, {
+                tokenBalance: applied.balanceAfter,
+                lastActivityAt: entry.createdAt,
+            });
+            pushDemoAudit({
+                action: "tenant.grant_tokens",
+                reason: input.reason,
+                tenantId: input.tenantId,
+                tenantName: after.name,
+                before: { tokenBalance: before.tokenBalance },
+                after: { tokenBalance: after.tokenBalance },
+            });
+            return { tenant: after, from: before.tokenBalance, to: after.tokenBalance };
+        },
+    );
 }
 
 export async function suspendTenant(input: {
@@ -238,48 +299,59 @@ export async function suspendTenant(input: {
     reason: string;
     confirmName: string;
 }): Promise<TenantRecord> {
-    if (isApiConfigured()) return trpc.admin.tenants.suspend.mutate(input);
-    const before = demoTenants.find((t) => t.id === input.tenantId);
-    if (!before) throw new Error("Tenant not found");
-    if (input.confirmName.trim() !== before.name) {
-        throw new Error(`Type the tenant name "${before.name}" to confirm suspend`);
-    }
-    const after = bumpDemo(before, { status: "suspended", lastActivityAt: new Date().toISOString() });
-    pushDemoAudit({
-        action: "tenant.suspended",
-        reason: input.reason,
-        tenantId: input.tenantId,
-        tenantName: after.name,
-        before: { status: before.status },
-        after: { status: after.status },
-    });
-    return after;
+    return liveOrDemo(
+        () => trpc.admin.tenants.suspend.mutate(input),
+        () => {
+            const before = demoTenants.find((t) => t.id === input.tenantId);
+            if (!before) throw new Error("Tenant not found");
+            if (input.confirmName.trim() !== before.name) {
+                throw new Error(`Type the tenant name "${before.name}" to confirm suspend`);
+            }
+            const after = bumpDemo(before, { status: "suspended", lastActivityAt: new Date().toISOString() });
+            pushDemoAudit({
+                action: "tenant.suspended",
+                reason: input.reason,
+                tenantId: input.tenantId,
+                tenantName: after.name,
+                before: { status: before.status },
+                after: { status: after.status },
+            });
+            return after;
+        },
+    );
 }
 
 export async function reactivateTenant(input: { tenantId: string; reason: string }): Promise<TenantRecord> {
-    if (isApiConfigured()) return trpc.admin.tenants.reactivate.mutate(input);
-    const before = demoTenants.find((t) => t.id === input.tenantId);
-    if (!before) throw new Error("Tenant not found");
-    const after = bumpDemo(before, { status: "active", lastActivityAt: new Date().toISOString() });
-    pushDemoAudit({
-        action: "tenant.reactivated",
-        reason: input.reason,
-        tenantId: input.tenantId,
-        tenantName: after.name,
-        before: { status: before.status },
-        after: { status: after.status },
-    });
-    return after;
+    return liveOrDemo(
+        () => trpc.admin.tenants.reactivate.mutate(input),
+        () => {
+            const before = demoTenants.find((t) => t.id === input.tenantId);
+            if (!before) throw new Error("Tenant not found");
+            const after = bumpDemo(before, { status: "active", lastActivityAt: new Date().toISOString() });
+            pushDemoAudit({
+                action: "tenant.reactivated",
+                reason: input.reason,
+                tenantId: input.tenantId,
+                tenantName: after.name,
+                before: { status: before.status },
+                after: { status: after.status },
+            });
+            return after;
+        },
+    );
 }
 
 export async function undoGrant(input: { tenantId: string; amount: number }) {
-    if (isApiConfigured()) return trpc.admin.tenants.undoGrant.mutate(input);
-    return grantTokens({
-        tenantId: input.tenantId,
-        amount: -input.amount,
-        reason: "Undo grant",
-        note: "Reversal within undo window",
-    });
+    return liveOrDemo(
+        () => trpc.admin.tenants.undoGrant.mutate(input),
+        () =>
+            grantTokens({
+                tenantId: input.tenantId,
+                amount: -input.amount,
+                reason: "Undo grant",
+                note: "Reversal within undo window",
+            }),
+    );
 }
 
 export function surfaceAdminError(e: unknown, fallback: string): string {

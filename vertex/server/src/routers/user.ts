@@ -1,5 +1,6 @@
-import { protectedProcedure, publicProcedure, router } from "../trpc.js";
+import { resolveDevRole } from "../lib/dev-auth.js";
 import { findActiveLicense, getUserProfile, requireSupabaseAdmin } from "../lib/supabase-db.js";
+import { protectedProcedure, publicProcedure, router } from "../trpc.js";
 
 export const userRouter = router({
     // Public health check for load balancers / Render health checks.
@@ -10,12 +11,16 @@ export const userRouter = router({
         const supabase = requireSupabaseAdmin();
         const profile = await getUserProfile(supabase, ctx.user.id).catch(() => null);
         const license = await findActiveLicense(supabase, ctx.user.id);
+        const email = profile?.email ?? ctx.user.email;
 
         return {
             id: ctx.user.id,
-            email: profile?.email ?? ctx.user.email,
+            email,
             fullName: profile?.fullName ?? null,
-            role: (profile?.role ?? ctx.user.role) as "super_admin" | "admin" | "clinician",
+            role: resolveDevRole(email, profile?.role ?? ctx.user.role) as
+                | "super_admin"
+                | "admin"
+                | "clinician",
             tokenBalance: profile?.tokenBalance ?? 0,
             license: license
                 ? {

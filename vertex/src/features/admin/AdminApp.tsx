@@ -14,6 +14,7 @@ import { type AdminModal, AdminModals } from "./AdminModals";
 import { AdminTenantDetailPage } from "./AdminTenantDetailPage";
 import { AdminTenantsPage } from "./AdminTenantsPage";
 import {
+    adminDemoNotice,
     createTenant,
     extendTenant,
     fetchAudit,
@@ -56,6 +57,7 @@ export function AdminApp() {
         try {
             setLoadError(null);
             setTenants(await fetchTenants());
+            setLoadError(adminDemoNotice());
         } catch (e) {
             setLoadError(surfaceAdminError(e, "Failed to load tenants"));
         }
@@ -154,7 +156,7 @@ export function AdminApp() {
             </header>
 
             {loadError ? (
-                <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-200">
+                <div className="border-b border-yellow-500 bg-yellow-300 px-4 py-2 text-sm font-medium text-yellow-950">
                     {loadError}
                 </div>
             ) : null}
