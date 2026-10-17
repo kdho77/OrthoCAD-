@@ -4,15 +4,17 @@ import * as THREE from "three";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
+import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
 import {
     deleteCustomAsset,
     placeCustomElement,
     refreshCustomLibrary,
 } from "@/features/library/custom-library-service";
 import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
-import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
+import { loadElementManifest } from "@/lib/geometry/element-assets/element-asset";
+import type { ElementManifestEntry } from "@/lib/geometry/element-assets/types";
 import { ELEMENT_HEIGHT_LIMITS } from "@/lib/geometry/elements";
-import { elementDisplayName, STOCK_ELEMENTS } from "@/lib/library/manifest";
+import { elementDisplayName, STOCK_ELEMENT_LABELS, STOCK_ELEMENTS } from "@/lib/library/manifest";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { cn } from "@/lib/utils";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
@@ -59,6 +61,15 @@ export function ElementsPanel() {
     });
 
     const [saveOpen, setSaveOpen] = useState(false);
+    const [libraryEntries, setLibraryEntries] = useState<ElementManifestEntry[]>([]);
+
+    useEffect(() => {
+        void loadElementManifest()
+            .then((m) => setLibraryEntries(m.elements))
+            .catch(() => setLibraryEntries([]));
+    }, []);
+
+    const libraryKinds = useMemo(() => new Set(libraryEntries.map((e) => e.kind)), [libraryEntries]);
 
     const placeStockElement = (kind: ElementKind) => {
         for (const side of elementPlacementSides()) {
@@ -93,7 +104,29 @@ export function ElementsPanel() {
                     Stock Library
                 </div>
                 <div className="grid grid-cols-2 gap-1.5">
-                    {STOCK_ELEMENTS.map((item) => (
+                    {libraryEntries.map((item) => (
+                        <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => placeStockElement(item.kind)}
+                            className="flex flex-col items-stretch gap-1 rounded-md border border-border bg-background p-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+                        >
+                            {item.thumb ? (
+                                <img
+                                    src={`/elements/${item.thumb}`}
+                                    alt={item.label ?? STOCK_ELEMENT_LABELS[item.kind] ?? item.id}
+                                    className="h-24 w-full object-contain"
+                                />
+                            ) : null}
+                            <span className="flex items-center justify-between px-0.5">
+                                <span className="truncate">
+                                    {item.label ?? STOCK_ELEMENT_LABELS[item.kind] ?? item.id}
+                                </span>
+                                <Plus className="h-3 w-3 shrink-0" />
+                            </span>
+                        </button>
+                    ))}
+                    {STOCK_ELEMENTS.filter((item) => !libraryKinds.has(item.id)).map((item) => (
                         <button
                             key={item.id}
                             type="button"
@@ -149,7 +182,9 @@ export function ElementsPanel() {
             </div>
 
             <div className="space-y-1">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Placed</div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Placed
+                </div>
                 {design.elements.length === 0 ? (
                     <p className="rounded-md border border-dashed border-border px-2 py-3 text-center text-xs text-muted-foreground">
                         No elements added
@@ -339,6 +374,36 @@ export function ElementsPanel() {
                         }}
                         unit="°"
                     />
+                    {displaySelected.kind === "met_pad" ||
+                    displaySelected.kind === "met_bar" ||
+                    displaySelected.kind === "toe_crest" ||
+                    displaySelected.kind === "cuboid_pad" ||
+                    displaySelected.kind === "dancers_pad" ||
+                    displaySelected.kind === "cluffy_wedge" ? (
+                        <div className="space-y-1">
+                            <div className="text-[11px] text-muted-foreground">Edge</div>
+                            <div className="flex gap-1">
+                                {(["flow", "noFlow"] as const).map((mode) => (
+                                    <Button
+                                        key={mode}
+                                        size="sm"
+                                        variant={
+                                            (displaySelected.placementMode ?? "flow") === mode
+                                                ? "default"
+                                                : "secondary"
+                                        }
+                                        className="h-7 flex-1"
+                                        onClick={() => {
+                                            updateElement(displaySelected.id, { placementMode: mode });
+                                            clearElementPreview(displaySelected.id);
+                                        }}
+                                    >
+                                        {mode === "flow" ? "Flow" : "No-flow"}
+                                    </Button>
+                                ))}
+                            </div>
+                        </div>
+                    ) : null}
                     <SliderField
                         label="Scale X"
                         value={displaySelected.scale.x}
