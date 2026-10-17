@@ -6,7 +6,7 @@ import { sampleHeight } from "./heightmap";
 import type { ParsedMove as GMove } from "./parse";
 import { localPoint, machineXY } from "./placement";
 import { distToPoly, offsetClosed, pointInPoly } from "./polygon";
-import { skinZ, toolRadiusMm, wallClearZ } from "./profile";
+import { contourOffsetMm, skinZ, toolRadiusMm, wallClearZ } from "./profile";
 import type { MillingProfile, PlacedPart, ToolType } from "./types";
 
 export interface SimGrid {
@@ -137,7 +137,6 @@ export function evaluateStock(grid: SimGrid, placed: PlacedPart[], profile: Mill
     let skinMax = -Infinity;
     let minStock = Infinity;
     let insideCount = 0;
-    const rContour = toolRadiusMm(profile.contourCutter.diameterMm);
     const ballContour = profile.contourCutter.type === "ball";
 
     for (let iy = 0; iy < grid.ny; iy++) {
@@ -178,7 +177,7 @@ export function evaluateStock(grid: SimGrid, placed: PlacedPart[], profile: Mill
 
     if (ballContour) {
         for (const part of placed) {
-            const path = offsetClosed(part.outline, rContour, profile.chordTolMm);
+            const path = offsetClosed(part.outline, contourOffsetMm(profile), profile.chordTolMm);
             for (const p of path) {
                 const w = machineXY(p, part, profile);
                 const s = sampleGridZ(grid, w.x, w.y);

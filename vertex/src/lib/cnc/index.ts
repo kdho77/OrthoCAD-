@@ -9,6 +9,7 @@ export { parseGcode } from "./parse";
 export { renderToolpathPreview } from "./preview";
 export {
     cloneProfile,
+    contourOffsetMm,
     IDAHO_PROFILE,
     maxStepdownMm,
     skinZ,

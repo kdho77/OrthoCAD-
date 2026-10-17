@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { densifyArc, ensureCw, offsetClosed, perimeter, resampleClosed, tangentAt, unit } from "./polygon";
-import { skinZ, toolRadiusMm } from "./profile";
+import { contourOffsetMm, skinZ } from "./profile";
 import type { MillingProfile, Point } from "./types";
 
 const LEAD_R = 2;
@@ -80,8 +80,7 @@ export function buildContourPass(outline: Point[], profile: MillingProfile): Con
     if (profile.contourCutter.type === "ball") {
         warnings.push("Contour tool is a ball mill — walls will not be vertical in the lowest 5 mm.");
     }
-    const r = toolRadiusMm(profile.contourCutter.diameterMm);
-    const offset = offsetClosed(outline, r, profile.chordTolMm);
+    const offset = offsetClosed(outline, contourOffsetMm(profile), profile.chordTolMm);
     const path = ensureCw(resampleClosed(offset, Math.max(0.2, profile.sampleMm)));
     const zEnd = skinZ(profile);
     const zStart = profile.materialHeightMm;

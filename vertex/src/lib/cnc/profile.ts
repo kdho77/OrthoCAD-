@@ -97,6 +97,15 @@ export function wallClearZ(profile: MillingProfile): number {
     return skinZ(profile);
 }
 
+/**
+ * XY offset of the contour tool centre from the outline.
+ * A 0.05 mm overlap makes the ball equator cover the discrete 0.2 mm exterior band.
+ */
+export function contourOffsetMm(profile: MillingProfile): number {
+    const r = toolRadiusMm(profile.contourCutter.diameterMm);
+    return Math.max(0.1, r - 0.05);
+}
+
 export function clearanceZ(profile: MillingProfile): number {
     return profile.freeMovementHeightMm + profile.zOffsetCorrectionMm;
 }
