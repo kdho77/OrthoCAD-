@@ -81,6 +81,32 @@ describe("print-recipe", () => {
         );
     });
 
+    test("zones accept kind zone regions and keep empty legacy arrays", () => {
+        const empty = printRecipeV1Schema.parse({ ...DEFAULT_PRINT_RECIPE_V1 });
+        expect(empty.zones).toEqual([]);
+        const withZone = printRecipeV1Schema.parse({
+            ...DEFAULT_PRINT_RECIPE_V1,
+            zones: [
+                {
+                    regionId: "z-heel",
+                    kind: "zone",
+                    hardnessClass: "Medium",
+                    priority: 0,
+                    depth: { type: "full" },
+                    side: "left",
+                    polygon: [
+                        { x: 0, y: 0 },
+                        { x: 1, y: 0 },
+                        { x: 1, y: 1 },
+                        { x: 0, y: 1 },
+                    ],
+                },
+            ],
+        });
+        expect(withZone.zones[0]!.kind).toBe("zone");
+        expect(withZone.zones[0]!.priority).toBe(0);
+    });
+
     test("infill fraction from recipe", () => {
         expect(infillFractionFromRecipe({ ...DEFAULT_PRINT_RECIPE_V1, defaultHardness: "Soft" })).toBe(0.2);
         expect(gyroidInfillPctForHardness("Extra Hard")).toBe(38);

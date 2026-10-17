@@ -4,13 +4,14 @@ import * as THREE from "three";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
+import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
+import { HardnessPicker } from "@/features/elements/HardnessPicker";
 import {
     deleteCustomAsset,
     placeCustomElement,
     refreshCustomLibrary,
 } from "@/features/library/custom-library-service";
 import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
-import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
 import { ELEMENT_HEIGHT_LIMITS } from "@/lib/geometry/elements";
 import { elementDisplayName, STOCK_ELEMENTS } from "@/lib/library/manifest";
 import { rafThrottle } from "@/lib/performance/throttle";
@@ -149,7 +150,9 @@ export function ElementsPanel() {
             </div>
 
             <div className="space-y-1">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Placed</div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Placed
+                </div>
                 {design.elements.length === 0 ? (
                     <p className="rounded-md border border-dashed border-border px-2 py-3 text-center text-xs text-muted-foreground">
                         No elements added
@@ -370,6 +373,20 @@ export function ElementsPanel() {
                         }
                         onChange={(v) => {
                             updateElement(displaySelected.id, { scale: { ...displaySelected.scale, y: v } });
+                            clearElementPreview(displaySelected.id);
+                        }}
+                    />
+                    <HardnessPicker
+                        id={displaySelected.id}
+                        value={{
+                            regionId: displaySelected.regionId,
+                            hardnessClass: displaySelected.hardnessClass,
+                            priority: displaySelected.priority,
+                            depth: displaySelected.depth,
+                            overrides: displaySelected.overrides,
+                        }}
+                        onChange={(patch) => {
+                            updateElement(displaySelected.id, patch);
                             clearElementPreview(displaySelected.id);
                         }}
                     />
