@@ -158,6 +158,8 @@ export interface PlacedPart {
     side: Side;
     pocketIndex: number;
     rot180: boolean;
+    /** Rotation about the outline centroid, degrees CCW. 0 = heel toward X0. */
+    rotationDeg: number;
     cx: number;
     cy: number;
     tx: number;

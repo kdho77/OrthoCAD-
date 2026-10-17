@@ -1,10 +1,10 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { afterEach, beforeEach, describe, expect, test } from "@rstest/core";
 import * as React from "react";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { describe, expect, test, beforeEach, afterEach } from "@rstest/core";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 
@@ -38,6 +38,7 @@ rs.mock("@/components/layout/StatusBar", () => ({ StatusBar: () => null }));
 rs.mock("@/components/layout/TopNav", () => ({ TopNav: () => null }));
 rs.mock("@/components/prescription-upload/PrescriptionUpload", () => ({ PrescriptionUpload: () => null }));
 rs.mock("@/components/viewer/Viewer3D", () => ({ Viewer3D: () => null }));
+rs.mock("@/features/mill/MillTableView", () => ({ MillTableView: () => null }));
 rs.mock("@/features/clients/ClientsView", () => ({ ClientsView: () => null }));
 rs.mock("@/features/auth/LoginScreen", () => ({ LoginScreen: () => null }));
 rs.mock("@/hooks/useKeyboardShortcuts", () => ({ useKeyboardShortcuts: () => {} }));

@@ -2,10 +2,24 @@
 // See LICENSE file in the project root for full license information.
 
 export { workpieceFromComposed, workpiecesFromDesign } from "./compose";
+export { buildContourPass } from "./contour";
 export { ballScallopMm } from "./drop-cutter";
 export { generateCncJob } from "./export";
 export type { ParseResult } from "./parse";
 export { parseGcode } from "./parse";
+export type { PartPlacement, PlacementIssue } from "./placement";
+export {
+    autoTranslate,
+    defaultPlacements,
+    defaultRotationDeg,
+    evaluatePlacedPart,
+    machineXY,
+    placementMarginMm,
+    placeWorkpieces,
+    rotateAround,
+    transformOutline,
+    worldPoint,
+} from "./placement";
 export { renderToolpathPreview } from "./preview";
 export {
     cloneProfile,
