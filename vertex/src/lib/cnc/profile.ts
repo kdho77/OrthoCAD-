@@ -55,7 +55,9 @@ export const IDAHO_PROFILE: MillingProfile = {
     alignX: "left",
     alignY: "center",
     insolesHorizontal: true,
+    // Founder-confirmed: heel X0 (left), toe right; one insole per Y-stacked full-width pocket.
     heelDirection: "x0",
+    // Founder-confirmed: 2.5 mm is a horizontal overrun ring around the outline, not Z.
     topOffsetMeaning: "horizontal_overrun",
     stepoverBallMm: 1.2,
     stepoverFlatMm: 3,
