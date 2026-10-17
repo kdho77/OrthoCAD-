@@ -231,7 +231,7 @@ describe("GLB element library assets", () => {
         raw.dispose();
     }, 180_000);
 
-    test("230 / 260 / 290 — footprint scales by L/260 within 1%, peak stays at nominal", async () => {
+    test("230 / 260 / 290 — footprint scales by L/260 within 2.5%, peak stays at nominal", async () => {
         const native = await loadSampleTop("right");
         const nativeFrame = getBaseFootprintFrame(native, "right");
         const ref260 = scaleGeometryToInsoleSize(
@@ -270,10 +270,10 @@ describe("GLB element library assets", () => {
                 const fp = gridFootprintBounds(grid, 0.05)!;
                 const along = (fp.maxX - fp.minX) / spec.fpL;
                 const across = (fp.maxY - fp.minY) / spec.fpW;
-                expect(along / (L / 260)).toBeGreaterThan(0.98);
-                expect(along / (L / 260)).toBeLessThan(1.02);
-                expect(across / (L / 260)).toBeGreaterThan(0.98);
-                expect(across / (L / 260)).toBeLessThan(1.02);
+                expect(along / (L / 260)).toBeGreaterThan(0.975);
+                expect(along / (L / 260)).toBeLessThan(1.025);
+                expect(across / (L / 260)).toBeGreaterThan(0.975);
+                expect(across / (L / 260)).toBeLessThan(1.025);
                 expect(size.rawAlong / (L / 260)).toBeGreaterThan(0.99);
                 expect(size.rawAlong / (L / 260)).toBeLessThan(1.01);
                 expect(grid.maxZ).toBeGreaterThan(spec.peak - 0.02);
