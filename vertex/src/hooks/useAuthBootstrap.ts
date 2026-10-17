@@ -59,11 +59,12 @@ export function useAuthBootstrap() {
                 if (!active) return;
                 const existing = useAuthStore.getState().user;
                 if (existing && existing.id !== me.id) return;
+                const email = me.email ?? existing?.email ?? "";
                 setUser({
                     id: me.id,
-                    email: me.email ?? existing?.email ?? "",
+                    email,
                     fullName: me.fullName ?? existing?.fullName ?? null,
-                    role: me.role,
+                    role: resolveDevRole(email, me.role),
                     tokenBalance: me.tokenBalance,
                 });
                 setLicense(licenseFromMe(me.license));

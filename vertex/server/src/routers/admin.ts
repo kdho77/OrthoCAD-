@@ -4,9 +4,12 @@ import { getSupabaseAdmin } from "../context.js";
 import { grantAdminTokens } from "../lib/grant-admin-tokens.js";
 import { requireSupabaseAdmin } from "../lib/supabase-db.js";
 import { adminProcedure, router, superAdminProcedure } from "../trpc.js";
+import { adminAuditRouter, adminTenantsRouter } from "./admin-tenants.js";
 
 // Super Admin Portal API: user/token/license administration and audit access.
 export const adminRouter = router({
+    tenants: adminTenantsRouter,
+    tenantAudit: adminAuditRouter,
     listUsers: adminProcedure
         .input(z.object({ search: z.string().optional() }).optional())
         .query(async ({ input }) => {
