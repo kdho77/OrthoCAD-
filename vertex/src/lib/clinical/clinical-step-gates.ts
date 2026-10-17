@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { designHasBase, designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
+import { useAfoStore } from "@/stores/afo-store";
 import type { ClinicalStepId } from "@/stores/clinical-workflow-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -48,6 +49,23 @@ export function evaluateScanStepGate(): StepGateResult {
         };
     }
 
+    const product = useClinicalWorkflowStore.getState().productType;
+    if (product === "afo") {
+        if (useAfoStore.getState().castMesh) return { ok: true };
+        const scans = useScanStore.getState().scans;
+        if (scans.length === 0) {
+            return { ok: false, reason: "Import a foot+leg scan to start the AFO case." };
+        }
+        const oriented = scans.some((s) => {
+            const m = useScanStore.getState().markersByScanId[s.id];
+            return Boolean(m?.M1 && m.M2 && m.M3);
+        });
+        if (!oriented) {
+            return { ok: false, reason: "Place the 3-point orient (heel, medial mal, lateral mal)." };
+        }
+        return { ok: true };
+    }
+
     const ready = isReadyToShape();
     if (!ready.ok) return ready;
 
@@ -84,6 +102,33 @@ export function evaluateStepComplete(
 /** Gate for leaving the current step via Next. */
 export function evaluateNextGate(fromStep: ClinicalStepId): StepGateResult {
     if (fromStep === "scan") return evaluateScanStepGate();
+    const product = useClinicalWorkflowStore.getState().productType;
+    if (product === "afo" && fromStep === "cast") {
+        const afo = useDesignStore.getState().design.afo;
+        if (afo?.crest.lowConfidence && !afo.crest.override) {
+            const has =
+                afo.clinicalMarkers.some((m) => m.id === "tibial_tuberosity") &&
+                afo.clinicalMarkers.some((m) => m.id === "distal_crest");
+            if (!has) {
+                return {
+                    ok: false,
+                    reason: "Low-confidence tibial crest — place tibial tuberosity and distal crest end.",
+                };
+            }
+        }
+    }
+    if (product === "afo" && fromStep === "design") {
+        const afo = useDesignStore.getState().design.afo;
+        if (!afo?.trimConfirmed) {
+            return { ok: false, reason: "Confirm a closed geodesic trim loop before Print." };
+        }
+    }
+    if (product === "afo" && fromStep === "print") {
+        const afo = useDesignStore.getState().design.afo;
+        if (!afo?.shellReady) {
+            return { ok: false, reason: "Generate the watertight shell before Export." };
+        }
+    }
     return scanGateBlocksLaterSteps();
 }
 

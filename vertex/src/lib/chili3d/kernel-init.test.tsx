@@ -33,6 +33,7 @@ rs.mock("@/components/ErrorBoundary", () => ({
 rs.mock("@/components/layout/KernelLoadingBanner", () => ({ KernelLoadingBanner: () => null }));
 rs.mock("@/components/admin/AdminPortal", () => ({ AdminPortal: () => null }));
 rs.mock("@/features/admin/AdminApp", () => ({ AdminApp: () => null }));
+rs.mock("@/features/afo/ProductTypeBar", () => ({ ProductTypeBar: () => null }));
 rs.mock("@/components/layout/LeftSidebar", () => ({ LeftSidebar: () => null }));
 rs.mock("@/components/layout/RightPanel", () => ({ RightPanel: () => null }));
 rs.mock("@/components/layout/StatusBar", () => ({ StatusBar: () => null }));

@@ -25,6 +25,7 @@ import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-previ
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
 import { cn } from "@/lib/utils";
+import { useAfoStore } from "@/stores/afo-store";
 import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -32,6 +33,8 @@ import { usePerformanceStore } from "@/stores/performance-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
+import { AfoMarkerPlacement } from "./AfoMarkerPlacement";
+import { AfoMeshes } from "./AfoMeshes";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
 import { BottomPatternEditTools } from "./BottomPatternEditTools";
 import { ElementMarkers } from "./ElementMarkers";
@@ -102,6 +105,8 @@ export function Viewer3D() {
     const beginBottomPatternEdit = useMeshEditStore((s) => s.beginBottomPatternEdit);
     const target = useMeshEditStore((s) => s.target);
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
+    const afoDraggingTrim = useAfoStore((s) => s.draggingTrimIndex != null);
+    const afoWorkingMesh = useAfoStore((s) => s.castMesh);
     const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
@@ -143,8 +148,9 @@ export function Viewer3D() {
     const rotateDraft = useScanStore((s) => s.rotateDraft);
     const hasScans = useScanStore((s) => s.scans.length > 0);
     const showScans = viewer.showScans ?? true;
-    const showLeftInsole = viewer.showLeft && !hideInsoleForMarkers;
-    const showRightInsole = viewer.showRight && !hideInsoleForMarkers;
+    const isAfo = design.productType === "afo";
+    const showLeftInsole = !isAfo && viewer.showLeft && !hideInsoleForMarkers;
+    const showRightInsole = !isAfo && viewer.showRight && !hideInsoleForMarkers;
     const loftPhaseBySide = usePreviewLoftStatusStore((s) => s.phaseBySide);
     const loftError = usePreviewLoftStatusStore((s) => s.error);
     const loftOverlay = viewerLoftOverlayState({
@@ -241,17 +247,22 @@ export function Viewer3D() {
                             )}
                         </>
                     ) : null}
-                    {showScans ? (
+                    {showScans && !(isAfo && afoWorkingMesh) ? (
                         <ScanMeshes transparent={viewer.transparent} heightmap={viewer.heightmap} />
                     ) : null}
-                    <ScanMarkerPlacement />
-                    <ScanPlaneSliceTool />
-                    <ScanRotateTool />
-                    <ScanTransformTool />
-                    {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
-                    <MeshEditTools />
-                    {!loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
-                    {!loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
+                    {isAfo ? <AfoMeshes /> : null}
+                    {isAfo ? <AfoMarkerPlacement /> : <ScanMarkerPlacement />}
+                    {isAfo ? null : (
+                        <>
+                            <ScanPlaneSliceTool />
+                            <ScanRotateTool />
+                            <ScanTransformTool />
+                            {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
+                            <MeshEditTools />
+                            {!loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
+                            {!loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
+                        </>
+                    )}
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
@@ -272,7 +283,7 @@ export function Viewer3D() {
                     makeDefault
                     enableDamping
                     dampingFactor={0.1}
-                    enabled={!trimlineEdit?.isDragging}
+                    enabled={!trimlineEdit?.isDragging && !afoDraggingTrim}
                 />
             </Canvas>
 
