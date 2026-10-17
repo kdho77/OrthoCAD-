@@ -11,7 +11,7 @@ import {
 } from "../../../shared/vertexslice/contract";
 import type { SlicerPublicError } from "../../../shared/vertexslice/errors";
 import type { GcodeStats } from "../../../shared/vertexslice/gcode-stats";
-import type { FootSideTag, ParsedSlicerMesh } from "./slicer-mesh";
+import { makeInsoleDemoMesh, type FootSideTag, type ParsedSlicerMesh } from "./slicer-mesh";
 import type { SlicerPaymentStatus } from "./slicer-pay";
 
 export type SlicerUiStatus = "empty" | "uploading" | "validating" | "slicing" | "error" | "done" | "outdated";
@@ -311,27 +311,12 @@ const DEMO_STATS: GcodeStats = {
 export function demoSlicerState(kind: DemoSlicerState, fault?: string | null): SlicerState {
     const base = initialSlicerState();
     const meshy = demoFile({
-        mesh: {
-            positions: new Float32Array([0, 0, 0, 270, 0, 0, 270, 90, 0, 0, 0, 0, 270, 90, 0, 0, 90, 0]),
-            triangleCount: 2,
-            bounds: {
-                min: [0, 0, 0],
-                max: [270, 90, 15],
-                size: [270, 90, 15],
-                lengthMm: 270,
-                widthMm: 90,
-                heightMm: 15,
-            },
-            closed: true,
-            topology: {
-                boundaryEdges: 0,
-                nonManifoldEdges: 0,
-                weldedVertexCount: 4,
-                triangleCount: 2,
-            },
-            warning: null,
-            extension: ".stl",
-        },
+        file: new File(
+            [new Uint8Array([0])],
+            "Extrusion_FlattenHeel_HolePattern_Left.stl",
+            { type: "model/stl" },
+        ),
+        mesh: makeInsoleDemoMesh(),
         progress: 100,
     });
     const result: SliceResult = {
