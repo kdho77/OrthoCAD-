@@ -16,7 +16,11 @@ export type AfoWorkerProgress = { pct: number; stage: string };
 export async function runAfoOffset(mesh: AfoTriMesh, options: AfoOffsetOptions): Promise<AfoTriMesh> {
     const worker = tryWorker();
     if (!worker) return offsetMesh(mesh, options);
-    return workerRequest(worker, { type: "afoOffset", mesh, options }, options.onProgress);
+    try {
+        return await workerRequest(worker, { type: "afoOffset", mesh, options }, options.onProgress);
+    } catch {
+        return offsetMesh(mesh, options);
+    }
 }
 
 export async function runAfoShell(
@@ -26,7 +30,15 @@ export async function runAfoShell(
 ): Promise<AfoTriMesh> {
     const worker = tryWorker();
     if (!worker) return buildAfoShell(mesh, trimVertexIndices, options);
-    return workerRequest(worker, { type: "afoShell", mesh, trimVertexIndices, options }, options.onProgress);
+    try {
+        return await workerRequest(
+            worker,
+            { type: "afoShell", mesh, trimVertexIndices, options },
+            options.onProgress,
+        );
+    } catch {
+        return buildAfoShell(mesh, trimVertexIndices, options);
+    }
 }
 
 function tryWorker(): Worker | null {
@@ -72,6 +84,18 @@ function workerRequest(
         geom.dispose();
         const transfer: Transferable[] = [payload.positions.buffer as ArrayBuffer];
         if (payload.indices) transfer.push(payload.indices.buffer as ArrayBuffer);
-        worker.postMessage({ id, ...body, mesh: payload }, transfer);
+        const { mesh: _omitMesh, options, ...rest } = body;
+        const rawOptions = (options ?? {}) as Record<string, unknown>;
+        const safeOptions: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(rawOptions)) {
+            if (typeof v !== "function") safeOptions[k] = v;
+        }
+        try {
+            worker.postMessage({ id, ...rest, options: safeOptions, mesh: payload }, transfer);
+        } catch (err) {
+            worker.removeEventListener("message", onMsg);
+            worker.terminate();
+            reject(err instanceof Error ? err : new Error("AFO worker postMessage failed"));
+        }
     });
 }

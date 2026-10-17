@@ -124,7 +124,7 @@ export function loopNearZ(mesh: AfoTriMesh, zMm: number, count = 16): number[] {
     }
     band.sort((a, b) => a.d - b.d);
     const d0 = band[0]?.d ?? 0;
-    const near = band.filter((b) => b.d <= d0 + 8);
+    const near = band.filter((b) => b.d <= Math.max(d0 + 12, 16));
     let cx = 0;
     let cy = 0;
     for (const b of near) {
@@ -149,6 +149,9 @@ export function loopNearZ(mesh: AfoTriMesh, zMm: number, count = 16): number[] {
         if (i == null || seen.has(i)) continue;
         seen.add(i);
         out.push(i);
+    }
+    if (out.length < 3) {
+        return ring.slice(0, Math.min(ring.length, Math.max(count, 8))).map((r) => r.i);
     }
     return out;
 }

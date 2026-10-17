@@ -47,7 +47,10 @@ export function AfoDesignPanel() {
         if (!working) return;
         const z = afo.corrections.braceHeightMm;
         const ids = loopNearZ(working, Math.min(z, 120), 16);
-        if (ids.length < 3) return;
+        if (ids.length < 3) {
+            useAfoStore.getState().setLastError("Could not find a brace-height loop on this mesh.");
+            return;
+        }
         patchAfoState(
             {
                 trimPoints: ids.map((vertexIndex) => ({
