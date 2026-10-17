@@ -8,6 +8,7 @@ const t = initTRPC.context<Context>().create({ transformer: superjson });
 
 export const router = t.router;
 export const publicProcedure = t.procedure;
+export const createCallerFactory = t.createCallerFactory;
 
 // Requires an authenticated Supabase user (mirrored into app `users` on first request).
 export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
@@ -41,10 +42,15 @@ export const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
     return next({ ctx });
 });
 
-// Requires the super_admin role.
-export const superAdminProcedure = protectedProcedure.use(({ ctx, next }) => {
+// Requires the super_admin role. Role is checked before ensureAppUser so a
+// non-super-admin is rejected with 403 even if the users-table mirror is down.
+export const superAdminProcedure = t.procedure.use(async ({ ctx, next }) => {
+    if (!ctx.user) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required" });
+    }
     if (ctx.user.role !== "super_admin") {
         throw new TRPCError({ code: "FORBIDDEN", message: "Super admin access required" });
     }
-    return next({ ctx });
+    await ensureAppUser(ctx.user);
+    return next({ ctx: { ...ctx, user: ctx.user } });
 });

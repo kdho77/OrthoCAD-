@@ -8,13 +8,21 @@ export const DEV_SUPER_ADMIN = {
     role: "super_admin",
 } as const;
 
+/** Founder emails that always resolve to super_admin, even if users.role says admin. */
+export const FOUNDER_SUPER_ADMIN_EMAILS = [DEV_SUPER_ADMIN.email] as const;
+
 export function isDevSuperAdminEmail(email: string | undefined | null): boolean {
-    return email?.toLowerCase() === DEV_SUPER_ADMIN.email.toLowerCase();
+    const normalized = email?.trim().toLowerCase();
+    return Boolean(normalized && FOUNDER_SUPER_ADMIN_EMAILS.some((e) => e.toLowerCase() === normalized));
 }
 
-export function resolveDevRole(email: string | undefined, metadataRole: string | undefined): string {
+/**
+ * Resolve the session role. Founder email allowlist always wins over JWT metadata
+ * and the users-table role — super admin is never blocked by a stale `admin` row.
+ */
+export function resolveDevRole(email: string | undefined, claimedRole: string | undefined): string {
     if (isDevSuperAdminEmail(email)) return DEV_SUPER_ADMIN.role;
-    return metadataRole ?? "clinician";
+    return claimedRole ?? "clinician";
 }
 
 /** Accept offline dev bearer tokens only outside production or when Supabase is unset. */
@@ -22,7 +30,9 @@ export function isDevAuthAllowed(supabaseConfigured: boolean): boolean {
     return process.env.NODE_ENV !== "production" || !supabaseConfigured;
 }
 
-export function resolveDevBearerUser(authHeader: string | undefined): { id: string; email: string; role: string } | null {
+export function resolveDevBearerUser(
+    authHeader: string | undefined,
+): { id: string; email: string; role: string } | null {
     if (!authHeader?.startsWith("Bearer dev:")) return null;
     const userId = authHeader.slice("Bearer dev:".length);
     if (userId !== DEV_SUPER_ADMIN.id) return null;
