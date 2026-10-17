@@ -35,7 +35,6 @@ Show only the scanned side:
 - Leg side rotation (deg)
 - Heel lift
 - Foot lift medial / lateral
-- Toe flow
 - Medial arch
 - Heel width
 - Brace height
@@ -53,9 +52,10 @@ Deferred on this step: Cut out, Hole pattern, Corrugation, Add pad, Add volume.
 
 ### 5. Print
 
-- Thickness 5, edge 2.5, flare 2 (all editable).
+- Thickness 4, edge 2.5, flare 2.5 (all editable).
 - Generate watertight shell (worker + progress).
-- Hide cast.
+- Cast hides automatically when a shell exists (no Print toggle).
+- Footer: Save, Return to patient file.
 
 ### 6. Export
 

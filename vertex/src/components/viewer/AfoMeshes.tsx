@@ -11,7 +11,6 @@ import { useDesignStore } from "@/stores/design-store";
 export function AfoMeshes() {
     const afo = useDesignStore((s) => s.design.afo) ?? getAfoState();
     const transparent = useDesignStore((s) => s.viewer.transparent) || afo.cast.transparent;
-    const hideCast = useAfoStore((s) => s.hideCast) || afo.print.hideCast;
     const shell = useAfoStore((s) => s.shellMesh);
     const corrected = useAfoStore((s) => s.correctedMesh);
     const cast = useAfoStore((s) => s.castMesh);
@@ -19,7 +18,7 @@ export function AfoMeshes() {
     const showCorrected = afo.cast.showCorrected;
 
     const working = showCorrected ? (corrected ?? cast) : cast;
-    const showCast = Boolean(working) && show3d && !(hideCast && shell);
+    const showCast = Boolean(working) && show3d && !shell;
 
     const castGeo = useMemo(() => (working ? afoMeshToGeometry(working) : null), [working]);
     const shellGeo = useMemo(() => (shell ? afoMeshToGeometry(shell) : null), [shell]);

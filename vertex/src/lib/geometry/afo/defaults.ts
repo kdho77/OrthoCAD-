@@ -11,11 +11,11 @@ import type {
 } from "./types";
 
 /** [K] Print wall thickness (mm). */
-export const AFO_THICKNESS_MM = 5;
+export const AFO_THICKNESS_MM = 4;
 /** [K] Rim blend width (mm). */
 export const AFO_EDGE_MM = 2.5;
 /** [K] Outward flare at the trim opening (mm). */
-export const AFO_FLARE_MM = 2;
+export const AFO_FLARE_MM = 2.5;
 /** [K] Brace height from plantar origin (mm). */
 export const AFO_BRACE_HEIGHT_MM = 220;
 /** [K] Taubin smooth iterations. */
@@ -37,7 +37,6 @@ export const AFO_REAR_ROT_RANGE: [number, number] = [-20, 20];
 export const AFO_SIDE_ROT_RANGE: [number, number] = [-25, 25];
 export const AFO_HEEL_LIFT_RANGE: [number, number] = [0, 12];
 export const AFO_FOOT_LIFT_RANGE: [number, number] = [0, 12];
-export const AFO_TOE_FLOW_RANGE: [number, number] = [0, 16];
 export const AFO_ARCH_RANGE: [number, number] = [0, 18];
 export const AFO_HEEL_WIDTH_RANGE: [number, number] = [-10, 10];
 export const AFO_BRACE_HEIGHT_RANGE: [number, number] = [80, 350];
@@ -64,7 +63,6 @@ export function defaultAfoCorrections(): AfoCorrections {
         heelLiftMm: 0,
         footLiftMedMm: 0,
         footLiftLatMm: 0,
-        toeFlowMm: 0,
         medialArchMm: 0,
         heelWidthMm: 0,
         braceHeightMm: AFO_BRACE_HEIGHT_MM,
@@ -89,7 +87,6 @@ export function defaultAfoPrint(): AfoPrintParams {
         thicknessMm: AFO_THICKNESS_MM,
         edgeMm: AFO_EDGE_MM,
         flareMm: AFO_FLARE_MM,
-        hideCast: true,
     };
 }
 
@@ -115,7 +112,6 @@ export function isAfoIdentityCorrections(c: AfoCorrections): boolean {
         c.heelLiftMm === 0 &&
         c.footLiftMedMm === 0 &&
         c.footLiftLatMm === 0 &&
-        c.toeFlowMm === 0 &&
         c.medialArchMm === 0 &&
         c.heelWidthMm === 0 &&
         c.smoothIterations === 0

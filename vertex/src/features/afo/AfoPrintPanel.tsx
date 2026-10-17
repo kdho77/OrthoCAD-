@@ -24,7 +24,6 @@ export function AfoPrintPanel() {
     const progress = useAfoStore((s) => s.workerProgress);
     const lastError = useAfoStore((s) => s.lastError);
     const setShell = useAfoStore((s) => s.setShellMesh);
-    const setHideCast = useAfoStore((s) => s.setHideCast);
     const setProgress = useAfoStore((s) => s.setWorkerProgress);
     const setError = useAfoStore((s) => s.setLastError);
 
@@ -47,8 +46,7 @@ export function AfoPrintPanel() {
                 },
             );
             setShell(shell);
-            setHideCast(print.hideCast);
-            patchAfoState({ shellReady: true, print: { ...print, hideCast: true } }, "afo-shell");
+            patchAfoState({ shellReady: true }, "afo-shell");
             setProgress(null);
         } catch (e) {
             setError(e instanceof Error ? e.message : "Shell failed");
@@ -85,17 +83,6 @@ export function AfoPrintPanel() {
                 defaultValue={AFO_FLARE_MM}
                 onChange={(v) => patchAfoState({ print: { ...print, flareMm: v } }, "afo-print")}
             />
-            <label className="flex items-center gap-2">
-                <input
-                    type="checkbox"
-                    checked={print.hideCast}
-                    onChange={(e) => {
-                        patchAfoState({ print: { ...print, hideCast: e.target.checked } }, "afo-print");
-                        setHideCast(e.target.checked);
-                    }}
-                />
-                Hide cast
-            </label>
             <button
                 type="button"
                 onClick={() => void generate()}

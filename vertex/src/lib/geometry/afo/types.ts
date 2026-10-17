@@ -41,7 +41,6 @@ export interface AfoCorrections {
     heelLiftMm: number;
     footLiftMedMm: number;
     footLiftLatMm: number;
-    toeFlowMm: number;
     medialArchMm: number;
     heelWidthMm: number;
     braceHeightMm: number;
@@ -70,7 +69,6 @@ export interface AfoPrintParams {
     thicknessMm: number;
     edgeMm: number;
     flareMm: number;
-    hideCast: boolean;
 }
 
 /** Persisted AFO parameter block (lives on DesignState.afo). */

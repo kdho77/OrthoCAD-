@@ -2,8 +2,10 @@
 // See LICENSE file in the project root for full license information.
 
 import { AlertCircle, Check, CircleDot } from "lucide-react";
+import { useSaveDesign } from "@/features/designs/SaveControl";
 import { evaluateNextGate, evaluateStepComplete } from "@/lib/clinical/clinical-step-gates";
 import { cn } from "@/lib/utils";
+import { useAppNavStore } from "@/stores/app-nav-store";
 import {
     type ClinicalStepId,
     stepsForProduct,
@@ -102,6 +104,11 @@ export function ClinicalStepFooter() {
     const atFirst = step === steps[0]?.id;
     const atLast = step === steps[steps.length - 1]?.id;
     const gate = evaluateNextGate(step);
+    const isAfoPrint = productType === "afo" && step === "print";
+
+    if (isAfoPrint) {
+        return <AfoPrintFooter />;
+    }
 
     return (
         <div className="sticky bottom-0 z-10 border-t border-border bg-panel px-3 py-2">
@@ -133,6 +140,33 @@ export function ClinicalStepFooter() {
                     {nextBlockReason}
                 </p>
             ) : null}
+        </div>
+    );
+}
+
+function AfoPrintFooter() {
+    const { saved, onSave, dialog } = useSaveDesign();
+    const setNav = useAppNavStore((s) => s.setNav);
+
+    return (
+        <div className="sticky bottom-0 z-10 border-t border-border bg-panel px-3 py-2">
+            <div className="flex gap-2">
+                <button
+                    type="button"
+                    onClick={onSave}
+                    className="h-8 flex-1 rounded-md bg-primary text-[12px] font-medium text-primary-foreground"
+                >
+                    {saved ? "Saved" : "Save"}
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setNav("Clients")}
+                    className="h-8 flex-1 rounded-md border border-border bg-background text-[12px] font-medium text-foreground"
+                >
+                    Return to patient file
+                </button>
+            </div>
+            {dialog}
         </div>
     );
 }

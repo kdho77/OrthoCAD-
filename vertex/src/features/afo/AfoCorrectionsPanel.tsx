@@ -14,7 +14,6 @@ import {
     AFO_SIDE_ROT_RANGE,
     AFO_SMOOTH_ITERATIONS,
     AFO_SMOOTH_RANGE,
-    AFO_TOE_FLOW_RANGE,
     defaultAfoCorrections,
 } from "@/lib/geometry/afo/defaults";
 import { getAfoState, patchAfoState, useAfoStore } from "@/stores/afo-store";
@@ -91,15 +90,6 @@ export function AfoCorrectionsPanel() {
                         unit="mm"
                         defaultValue={0}
                         onChange={(v) => patch({ footLiftLatMm: v })}
-                    />
-                    <SliderField
-                        label="Toe flow"
-                        value={c.toeFlowMm}
-                        min={AFO_TOE_FLOW_RANGE[0]}
-                        max={AFO_TOE_FLOW_RANGE[1]}
-                        unit="mm"
-                        defaultValue={0}
-                        onChange={(v) => patch({ toeFlowMm: v })}
                     />
                     <SliderField
                         label="Medial arch"

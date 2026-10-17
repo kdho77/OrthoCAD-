@@ -15,7 +15,6 @@ interface AfoSessionStore {
     castMesh: AfoTriMesh | null;
     correctedMesh: AfoTriMesh | null;
     shellMesh: AfoTriMesh | null;
-    hideCast: boolean;
     placingLandmarkIndex: number;
     placingTrim: boolean;
     draggingTrimIndex: number | null;
@@ -25,7 +24,6 @@ interface AfoSessionStore {
     setCastMesh: (mesh: AfoTriMesh | null) => void;
     setCorrectedMesh: (mesh: AfoTriMesh | null) => void;
     setShellMesh: (mesh: AfoTriMesh | null) => void;
-    setHideCast: (hide: boolean) => void;
     setPlacingLandmarkIndex: (index: number) => void;
     setPlacingTrim: (on: boolean) => void;
     setDraggingTrimIndex: (index: number | null) => void;
@@ -84,7 +82,6 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     castMesh: null,
     correctedMesh: null,
     shellMesh: null,
-    hideCast: false,
     placingLandmarkIndex: 0,
     placingTrim: false,
     draggingTrimIndex: null,
@@ -98,7 +95,6 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     setCastMesh: (mesh) => set({ castMesh: mesh ? cloneMesh(mesh) : null }),
     setCorrectedMesh: (mesh) => set({ correctedMesh: mesh ? cloneMesh(mesh) : null }),
     setShellMesh: (mesh) => set({ shellMesh: mesh ? cloneMesh(mesh) : null }),
-    setHideCast: (hide) => set({ hideCast: hide }),
     setPlacingLandmarkIndex: (index) => set({ placingLandmarkIndex: index }),
     setPlacingTrim: (on) => set({ placingTrim: on }),
     setDraggingTrimIndex: (index) => set({ draggingTrimIndex: index }),
@@ -110,7 +106,6 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
             castMesh: null,
             correctedMesh: null,
             shellMesh: null,
-            hideCast: false,
             placingLandmarkIndex: 0,
             placingTrim: false,
             draggingTrimIndex: null,

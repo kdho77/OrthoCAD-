@@ -6,7 +6,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { KernelLoadingBanner } from "@/components/layout/KernelLoadingBanner";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { StatusBar } from "@/components/layout/StatusBar";
-import { type NavItem, TopNav } from "@/components/layout/TopNav";
+import { TopNav } from "@/components/layout/TopNav";
 import { PrescriptionUpload } from "@/components/prescription-upload/PrescriptionUpload";
 import { Viewer3D } from "@/components/viewer/Viewer3D";
 import { ProductTypeBar } from "@/features/afo/ProductTypeBar";
@@ -21,12 +21,14 @@ import { applyViewerWallFlagFromSearch } from "@/lib/geometry/procedural-wall/vi
 import { stockDebug, stockGlbLog } from "@/lib/geometry/stock-debug";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
+import { useAppNavStore } from "@/stores/app-nav-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
 
 export default function App() {
     useAuthBootstrap();
-    const [nav, setNav] = useState<NavItem>("Production");
+    const nav = useAppNavStore((s) => s.nav);
+    const setNav = useAppNavStore((s) => s.setNav);
     const [adminOpen, setAdminOpen] = useState(false);
     const [rxOpen, setRxOpen] = useState(false);
     const applyPrescription = useDesignStore((s) => s.applyPrescription);

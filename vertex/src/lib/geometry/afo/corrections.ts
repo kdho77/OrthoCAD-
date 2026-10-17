@@ -56,10 +56,6 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections): AfoTri
         if (c.footLiftLatMm && x < 0) {
             z += c.footLiftLatMm * clamp01(-x / 40) * clamp01(1 - z / 50);
         }
-        if (c.toeFlowMm) {
-            const t = clamp01((y - 120) / 60);
-            z += c.toeFlowMm * t;
-        }
         if (c.medialArchMm && x > 0) {
             const gy = Math.exp(-((y - 70) ** 2) / (2 * 28 * 28));
             z += c.medialArchMm * gy * clamp01(x / 30);

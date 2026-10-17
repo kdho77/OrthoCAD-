@@ -83,7 +83,6 @@ Shin / toe boxes clip the working mesh to an AABB (keep inside).
 | Heel lift | mm | 0 | 0…12 |
 | Foot lift medial | mm | 0 | 0…12 |
 | Foot lift lateral | mm | 0 | 0…12 |
-| Toe flow | mm | 0 | 0…16 |
 | Medial arch | mm | 0 | 0…18 |
 | Heel width | mm | 0 | −10…10 |
 | Brace height | mm | 220 | 80…350 |
@@ -124,9 +123,9 @@ Invalid loops cannot be Confirmed.
 
 | Parameter | Default | Range |
 |-----------|---------|-------|
-| Thickness | 5 mm | 1…12 |
+| Thickness | 4 mm | 1…12 |
 | Edge (rim blend width) | 2.5 mm | 0.5…8 |
-| Flare (outward at opening) | 2 mm | 0…8 |
+| Flare (outward at opening) | 2.5 mm | 0…8 |
 
 Heavy work (SDF offset, shell extract) runs in a Web Worker and reports
 progress. Hide the cast when a shell exists.
@@ -170,7 +169,8 @@ module. Please confirm or correct:
 
 1. **3-point orient targets** — heel `(0,0,0)`, medial mal `(35,40,80)`, lateral
    mal `(-35,40,80)` mm. Confirm against the expert sheet.
-2. **Shin / toe box** origins and sizes (80×70×220 shin, 80×90×50 toe).
+2. **Shin / toe box** origins and sizes — keep 80×70×220 shin and 80×90×50 toe
+   (confirmed).
 3. **Leg rear vs side rotation** axes (frontal varus–valgus vs sagittal PF–DF).
 4. **Shell keep-region** — currently triangles with centroid z at or below the
    trim-loop mean z (brace below the opening in the canonical frame).

@@ -4,7 +4,7 @@
 import { describe, expect, test } from "@rstest/core";
 import { analyzeManifoldBuffers } from "@/lib/geometry/manifold-core";
 import { applyAfoCorrections } from "./corrections";
-import { defaultAfoCorrections } from "./defaults";
+import { AFO_EDGE_MM, AFO_FLARE_MM, AFO_THICKNESS_MM, defaultAfoCorrections } from "./defaults";
 import { geodesicVertexPath } from "./geodesic";
 import { meanRadiusFrom, meshIsWatertight, positionsEqual, vertexCount } from "./mesh-ops";
 import { offsetMesh, offsetMeshAlongNormals } from "./sdf-offset";
@@ -63,9 +63,9 @@ describe("AFO acceptance (spec §11)", () => {
         const loop = equatorialLoop(sphere);
         expect(loop.length).toBeGreaterThanOrEqual(6);
         const shell = buildAfoShell(sphere, loop, {
-            thicknessMm: 5,
-            edgeMm: 2.5,
-            flareMm: 2,
+            thicknessMm: AFO_THICKNESS_MM,
+            edgeMm: AFO_EDGE_MM,
+            flareMm: AFO_FLARE_MM,
         });
         const report = analyzeManifoldBuffers(shell.positions, shell.indices);
         expect(report.openEdges).toBe(0);
