@@ -5,8 +5,10 @@ import { describe, expect, test } from "@rstest/core";
 import {
     analyzeMeshTopology,
     INCH_SCALE,
+    INSOLE_DEMO_MM,
     isClosedManifold,
     makeBoxStl,
+    makeInsoleDemoMesh,
     meshOpenBoundaryIssue,
     meshTopologyWarning,
     parseSlicerMesh,
@@ -19,7 +21,7 @@ import {
 } from "./slicer-mesh";
 
 /** Kendon's OrthoCAD export size: Extrusion_FlattenHeel_HolePattern_Left (2).stl */
-const INSOLE_MM: [number, number, number] = [185.1, 89.7, 28.7];
+const INSOLE_MM: [number, number, number] = INSOLE_DEMO_MM;
 
 function encodeBinaryStl(positions: Float32Array): ArrayBuffer {
     const count = positions.length / 9;
@@ -243,6 +245,22 @@ describe("slicer mesh", () => {
             meshTopologyWarning({ ...closed, nonManifoldEdges: 3, triangleCount: 13 }),
         ).toMatch(/non-manifold/i);
         expect(meshOpenBoundaryIssue({ ...closed, nonManifoldEdges: 3, triangleCount: 13 })).toBe(null);
+    });
+
+    test("demo insole mesh is watertight at OrthoCAD export size", () => {
+        const mesh = makeInsoleDemoMesh();
+        expect(mesh.closed).toBe(true);
+        expect(mesh.warning).toBe(null);
+        expect(mesh.topology.boundaryEdges).toBe(0);
+        expect(mesh.topology.nonManifoldEdges).toBe(0);
+        expect(mesh.triangleCount).toBeGreaterThan(100);
+        expect(meshOpenBoundaryIssue(mesh.topology)).toBe(null);
+        expect(mesh.bounds.lengthMm).toBeGreaterThan(184.6);
+        expect(mesh.bounds.lengthMm).toBeLessThan(185.6);
+        expect(mesh.bounds.widthMm).toBeGreaterThan(89.2);
+        expect(mesh.bounds.widthMm).toBeLessThan(90.2);
+        expect(mesh.bounds.heightMm).toBeGreaterThan(28.2);
+        expect(mesh.bounds.heightMm).toBeLessThan(29.2);
     });
 
     test("duplicated triangle is a non-manifold warning, not a block", () => {
