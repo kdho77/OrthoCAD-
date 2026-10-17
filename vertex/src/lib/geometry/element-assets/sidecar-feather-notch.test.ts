@@ -80,7 +80,9 @@ describe("sidecar per-edge feather and notch mm", () => {
         const uv = notchUvFromMm(raw, "right", sc);
         expect(uv).toBeTruthy();
         expect(uv!.u).toBeCloseTo(0.6953, 3);
-        expect(uv!.v).not.toBeCloseTo(0.6129, 2);
+        // SAMPLE_Top v at the authored mm is ~0.6098 — near 0.6129, but not the stored UV.
+        expect(uv!.v).toBeCloseTo(0.6098, 3);
+        expect(uv!.v).not.toBe(0.6129);
         raw.dispose();
     });
 });
