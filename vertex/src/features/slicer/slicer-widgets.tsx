@@ -1,15 +1,12 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { Loader2, X } from "lucide-react";
+import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { VertexSlicePrintDirection } from "../../../shared/vertexslice/contract";
 import { formatDimensionsMm, type FootSideTag, unitsWarning } from "./slicer-mesh";
-import type { SlicerFileSlot, SliceStep } from "./slicer-state";
-
-export const SLICER_SLOW_MS = 20_000;
-export const SLICER_STEPS: SliceStep[] = ["Preparing", "Slicing", "Packaging"];
+import type { SlicerFileSlot } from "./slicer-state";
 
 export function formatBytes(n: number): string {
     if (n < 1024) return `${n} B`;
@@ -64,6 +61,8 @@ export function FileChip({
                 <p className="mt-2 text-xs text-destructive">
                     {slot.issue.message} {slot.issue.fix}
                 </p>
+            ) : slot.mesh?.warning ? (
+                <p className="mt-2 rounded bg-amber-500/15 p-2 text-xs text-amber-200">{slot.mesh.warning}</p>
             ) : null}
             {warn ? (
                 <div className="mt-2 rounded bg-amber-500/15 p-2 text-xs text-amber-200">
