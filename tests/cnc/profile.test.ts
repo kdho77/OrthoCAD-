@@ -6,6 +6,7 @@ import {
     cloneProfile,
     contourOffsetMm,
     IDAHO_PROFILE,
+    reconcileMillingProfile,
     skinZ,
     stepoverMm,
     toolRadiusMm,
@@ -56,6 +57,15 @@ describe("Idaho milling profile seed", () => {
         expect(toolRadiusMm(10)).toBe(5);
         expect(stepoverMm(p, "ball")).toBe(1.2);
         expect(stepoverMm(p, "flat")).toBe(3);
+    });
+
+    test("reconcile grows a stale 130 mm table to cover the second pocket", () => {
+        const stale = cloneProfile(IDAHO_PROFILE);
+        stale.tableLengthMm = 130.175;
+        const next = reconcileMillingProfile(stale);
+        expect(next.tableLengthMm).toBeCloseTo(260.35, 6);
+        expect(next.tableWidthMm).toBeCloseTo(368.3, 6);
+        expect(next.pockets).toHaveLength(2);
     });
 
     test("flat contour wall-clear stays at skin Z", () => {

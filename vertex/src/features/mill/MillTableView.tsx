@@ -2,29 +2,22 @@
 // See LICENSE file in the project root for full license information.
 
 import { Box, Rotate3d } from "lucide-react";
-import { type PointerEvent, useMemo, useRef } from "react";
+import { type PointerEvent, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { evaluatePlacedPart, placeWorkpieces, transformOutline, worldPoint } from "@/lib/cnc/placement";
 import { bboxOf, offsetClosed } from "@/lib/cnc/polygon";
+import { reconcileMillingProfile } from "@/lib/cnc/profile";
 import type { PlacedPart, Point } from "@/lib/cnc/types";
 import { cn } from "@/lib/utils";
-import { useMillingProfileStore } from "@/stores/milling-profile-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
+import { type MillTableViewMode, useMillingProfileStore } from "@/stores/milling-profile-store";
 import type { Side } from "@/types";
+import { MillOrbitCanvas } from "./MillOrbitCanvas";
 import { useMillWorkpieces } from "./use-mill-workpieces";
 
 function svgPath(pts: Point[]): string {
     if (pts.length < 2) return "";
     return `M ${pts.map((p) => `${p.x.toFixed(3)} ${p.y.toFixed(3)}`).join(" L ")} Z`;
-}
-
-function iso(x: number, y: number, z = 0): Point {
-    const c = Math.cos(Math.PI / 6);
-    const s = Math.sin(Math.PI / 6);
-    return { x: (x - y) * c, y: (x + y) * s - z };
-}
-
-function isoPath(pts: Point[], z = 0): string {
-    return svgPath(pts.map((p) => iso(p.x, p.y, z)));
 }
 
 function clientToView(svg: SVGSVGElement, clientX: number, clientY: number): Point | null {
@@ -141,15 +134,53 @@ type DragState =
 
 export function MillTableView() {
     const { parts, loading } = useMillWorkpieces();
-    const profile = useMillingProfileStore((s) => s.profile);
+    const rawProfile = useMillingProfileStore((s) => s.profile);
+    const profile = useMemo(() => reconcileMillingProfile(rawProfile), [rawProfile]);
     const placements = useMillingProfileStore((s) => s.placements);
     const millView = useMillingProfileStore((s) => s.millView);
     const millSelected = useMillingProfileStore((s) => s.millSelected);
     const setMillView = useMillingProfileStore((s) => s.setMillView);
     const setMillSelected = useMillingProfileStore((s) => s.setMillSelected);
+    const setProfile = useMillingProfileStore((s) => s.setProfile);
     const patchPlacement = useMillingProfileStore((s) => s.patchPlacement);
     const svgRef = useRef<SVGSVGElement>(null);
     const drag = useRef<DragState | null>(null);
+    const pointerIdRef = useRef<number | null>(null);
+
+    const releaseDragCapture = (pointerId?: number) => {
+        drag.current = null;
+        const svg = svgRef.current;
+        const id = pointerId ?? pointerIdRef.current;
+        pointerIdRef.current = null;
+        if (!svg || id == null) return;
+        try {
+            if (svg.hasPointerCapture(id)) svg.releasePointerCapture(id);
+        } catch {
+            /* already released on unmount */
+        }
+    };
+
+    const selectSide = (side: Side | null) => {
+        setMillSelected(side);
+        if (side && !useClinicalWorkflowStore.getState().footSideExplicitlyChosen) {
+            useClinicalWorkflowStore.getState().acknowledgeExplicitFootSide(side);
+        }
+    };
+
+    const changeView = (view: MillTableViewMode) => {
+        releaseDragCapture();
+        setMillView(view);
+    };
+
+    useEffect(() => {
+        if (
+            rawProfile.tableWidthMm !== profile.tableWidthMm ||
+            rawProfile.tableLengthMm !== profile.tableLengthMm ||
+            rawProfile.pockets.length !== profile.pockets.length
+        ) {
+            setProfile(profile);
+        }
+    }, [rawProfile, profile, setProfile]);
 
     const placed = useMemo(() => {
         try {
@@ -188,7 +219,7 @@ export function MillTableView() {
         if (selected) {
             const handle = handleWorld(selected);
             if (Math.hypot(p.x - handle.x, p.y - handle.y) <= 8) {
-                setMillSelected(selected.side);
+                selectSide(selected.side);
                 drag.current = {
                     kind: "rotate",
                     side: selected.side,
@@ -202,16 +233,17 @@ export function MillTableView() {
                     tx: selected.tx,
                     ty: selected.ty,
                 };
+                pointerIdRef.current = e.pointerId;
                 svgRef.current?.setPointerCapture(e.pointerId);
                 return;
             }
         }
         const hit = hitPart(p.x, p.y, placed);
         if (!hit) {
-            setMillSelected(null);
+            selectSide(null);
             return;
         }
-        setMillSelected(hit.side);
+        selectSide(hit.side);
         drag.current = {
             kind: "move",
             side: hit.side,
@@ -221,6 +253,7 @@ export function MillTableView() {
             ty: hit.ty,
             rotationDeg: hit.rotationDeg,
         };
+        pointerIdRef.current = e.pointerId;
         svgRef.current?.setPointerCapture(e.pointerId);
     };
 
@@ -247,25 +280,8 @@ export function MillTableView() {
     };
 
     const onPointerUp = (e: PointerEvent<SVGSVGElement>) => {
-        drag.current = null;
-        svgRef.current?.releasePointerCapture(e.pointerId);
+        releaseDragCapture(e.pointerId);
     };
-
-    const isoCorners = [
-        iso(0, 0, 0),
-        iso(tw, 0, 0),
-        iso(tw, tl, 0),
-        iso(0, tl, 0),
-        iso(0, 0, h),
-        iso(tw, 0, h),
-        iso(tw, tl, h),
-        iso(0, tl, h),
-    ];
-    const isoMinX = Math.min(...isoCorners.map((p) => p.x));
-    const isoMaxX = Math.max(...isoCorners.map((p) => p.x));
-    const isoMinY = Math.min(...isoCorners.map((p) => p.y));
-    const isoMaxY = Math.max(...isoCorners.map((p) => p.y));
-    const isoPad = 18;
 
     return (
         <div className="relative h-full w-full bg-[hsl(222_28%_7%)]">
@@ -275,7 +291,7 @@ export function MillTableView() {
                     size="sm"
                     variant={millView === "top" ? "default" : "secondary"}
                     className="h-7 px-2"
-                    onClick={() => setMillView("top")}
+                    onClick={() => changeView("top")}
                 >
                     <Box className="h-3.5 w-3.5" />
                     Top
@@ -285,7 +301,7 @@ export function MillTableView() {
                     size="sm"
                     variant={millView === "orbit" ? "default" : "secondary"}
                     className="h-7 px-2"
-                    onClick={() => setMillView("orbit")}
+                    onClick={() => changeView("orbit")}
                 >
                     <Rotate3d className="h-3.5 w-3.5" />
                     Orbit
@@ -301,91 +317,15 @@ export function MillTableView() {
                     Loading mill layout…
                 </div>
             ) : millView === "orbit" ? (
-                <svg
-                    className="h-full w-full"
-                    viewBox={`${isoMinX - isoPad} ${isoMinY - isoPad} ${isoMaxX - isoMinX + 2 * isoPad} ${isoMaxY - isoMinY + 2 * isoPad}`}
-                    aria-label="Milling block orbit view"
-                >
-                    <path
-                        d={isoPath([
-                            { x: 0, y: 0 },
-                            { x: tw, y: 0 },
-                            { x: tw, y: tl },
-                            { x: 0, y: tl },
-                        ])}
-                        fill="#3f3f46"
+                <div className="absolute inset-0 touch-none">
+                    <MillOrbitCanvas
+                        profile={profile}
+                        placed={placed}
+                        issues={issues}
+                        millSelected={millSelected}
+                        onSelect={selectSide}
                     />
-                    <path
-                        d={svgPath([iso(0, 0, 0), iso(tw, 0, 0), iso(tw, 0, h), iso(0, 0, h)])}
-                        fill="#27272a"
-                    />
-                    <path
-                        d={svgPath([iso(tw, 0, 0), iso(tw, tl, 0), iso(tw, tl, h), iso(tw, 0, h)])}
-                        fill="#18181b"
-                    />
-                    <path
-                        d={isoPath(
-                            [
-                                { x: 0, y: 0 },
-                                { x: tw, y: 0 },
-                                { x: tw, y: tl },
-                                { x: 0, y: tl },
-                            ],
-                            h,
-                        )}
-                        fill="#52525b"
-                        stroke="#a1a1aa"
-                        strokeWidth={0.6}
-                    />
-                    {profile.pockets.map((pk) => (
-                        <path
-                            key={`pk-${pk.x}-${pk.y}-${pk.width}-${pk.length}`}
-                            d={isoPath(
-                                [
-                                    { x: pk.x, y: pk.y },
-                                    { x: pk.x + pk.width, y: pk.y },
-                                    { x: pk.x + pk.width, y: pk.y + pk.length },
-                                    { x: pk.x, y: pk.y + pk.length },
-                                ],
-                                h,
-                            )}
-                            fill="none"
-                            stroke="#d4d4d8"
-                            strokeWidth={0.5}
-                        />
-                    ))}
-                    {placed.map((part) => {
-                        const world = transformOutline(part.outline, part);
-                        const invalid = issues[part.side]?.ok === false;
-                        const selected = millSelected === part.side;
-                        const zTop = h;
-                        const zBot = h - Math.min(h - 2, Math.max(4, part.zMax));
-                        return (
-                            <g key={part.side}>
-                                <path
-                                    d={isoPath(world, zBot)}
-                                    fill={partFill(invalid, selected, true)}
-                                    opacity={0.55}
-                                />
-                                <path
-                                    d={isoPath(world, zTop)}
-                                    fill={partFill(invalid, selected, true)}
-                                    stroke={partStroke(invalid, selected)}
-                                    strokeWidth={0.45}
-                                />
-                            </g>
-                        );
-                    })}
-                    <text
-                        x={(iso(0, 0, h).x + iso(tw, 0, h).x) / 2}
-                        y={iso(0, 0, 0).y + 10}
-                        fill="#a1a1aa"
-                        fontSize={8}
-                        textAnchor="middle"
-                    >
-                        {h.toFixed(0)} mm
-                    </text>
-                </svg>
+                </div>
             ) : (
                 <svg
                     ref={svgRef}

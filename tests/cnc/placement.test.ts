@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
+import { workpiecesFromDesign } from "@/lib/cnc/compose";
 import { buildContourPass } from "@/lib/cnc/contour";
 import { generateCncJob } from "@/lib/cnc/export";
 import { parseGcode } from "@/lib/cnc/parse";
@@ -10,12 +11,15 @@ import {
     machineXY,
     placementMarginMm,
     placeWorkpieces,
+    tableBoundsMm,
     transformOutline,
 } from "@/lib/cnc/placement";
 import { bboxOf } from "@/lib/cnc/polygon";
 import { cloneProfile, IDAHO_PROFILE } from "@/lib/cnc/profile";
 import { CncExportError, type PlacedPart, type Point } from "@/lib/cnc/types";
-import { syntheticWorkpiece } from "./helpers";
+import { mirrorGeometry } from "@/lib/library/loaders";
+import { createDesignWithStockPlaceholder } from "@/stores/design-store";
+import { loadSampleTop, sampleTopWorkpiece, syntheticWorkpiece } from "./helpers";
 
 function first<T>(arr: readonly T[], label: string): T {
     const value = arr[0];
@@ -103,6 +107,76 @@ describe("CNC mill placement", () => {
         expect(actual.minX - autoBb.minX).toBeCloseTo(12.5, 2);
         expect(actual.minY - autoBb.minY).toBeCloseTo(3.25, 2);
     });
+
+    test("US M9 pair stays green in the second pocket when table length is a stale 130 mm", () => {
+        const profile = cloneProfile(IDAHO_PROFILE);
+        profile.tableLengthMm = 130.175;
+        expect(tableBoundsMm(profile).length).toBeCloseTo(260.35, 6);
+        const left = syntheticWorkpiece(profile, "left");
+        left.outline = [
+            { x: 3.8, y: 0 },
+            { x: 3.8 + 276.9, y: 0 },
+            { x: 3.8 + 276.9, y: 91.7 },
+            { x: 3.8, y: 91.7 },
+        ];
+        const right = syntheticWorkpiece(profile, "right");
+        right.outline = left.outline.map((p) => ({ ...p }));
+        const placed = placeWorkpieces(profile, [left, right], [], { validate: false });
+        expect(placed).toHaveLength(2);
+        const rightPart = placed.find((p) => p.side === "right");
+        if (!rightPart) throw new Error("expected right part");
+        expect(rightPart.pocketIndex).toBe(1);
+        expect(rightPart.tx).toBeCloseTo(5.7, 1);
+        const issue = evaluatePlacedPart(rightPart, profile);
+        expect(issue.ok).toBe(true);
+        for (const part of placed) {
+            expect(evaluatePlacedPart(part, profile).ok).toBe(true);
+        }
+    });
+
+    test("SAMPLE_Top L+R default left-edge placement is green in both pockets", async () => {
+        const profile = cloneProfile(IDAHO_PROFILE);
+        const left = await sampleTopWorkpiece("left", profile, false);
+        const right = await sampleTopWorkpiece("right", profile, false);
+        const placed = placeWorkpieces(profile, [left, right], [], { validate: false });
+        expect(placed).toHaveLength(2);
+        for (const part of placed) {
+            const world = bboxOf(transformOutline(part.outline, part));
+            const local = bboxOf(part.outline);
+            const issue = evaluatePlacedPart(part, profile);
+            if (!issue.ok) {
+                throw new Error(
+                    `${part.side} ${issue.reason} tx=${part.tx.toFixed(2)} ty=${part.ty.toFixed(2)} pocket=${part.pocketIndex} local=${(local.maxX - local.minX).toFixed(1)}x${(local.maxY - local.minY).toFixed(1)} world=${(world.maxX - world.minX).toFixed(1)}x${(world.maxY - world.minY).toFixed(1)} [${world.minX.toFixed(2)},${world.maxX.toFixed(2)}]x[${world.minY.toFixed(2)},${world.maxY.toFixed(2)}] margin=${placementMarginMm(profile).toFixed(1)}`,
+                );
+            }
+            expect(issue.ok).toBe(true);
+            expect(part.pocketIndex).toBe(part.side === "left" ? 0 : 1);
+        }
+    }, 60_000);
+
+    test("workpiecesFromDesign US M9 SAMPLE_Top L+R default is green in both pockets", async () => {
+        const profile = cloneProfile(IDAHO_PROFILE);
+        const design = createDesignWithStockPlaceholder();
+        design.method = "milling_3axis";
+        const raw = await loadSampleTop();
+        const parts = await workpiecesFromDesign(design, ["left", "right"], profile, async (side) => {
+            const geo = raw.clone();
+            return side === "right" ? mirrorGeometry(geo) : geo;
+        });
+        expect(parts).toHaveLength(2);
+        const placed = placeWorkpieces(profile, parts, [], { validate: false });
+        expect(placed).toHaveLength(2);
+        for (const part of placed) {
+            const issue = evaluatePlacedPart(part, profile);
+            if (!issue.ok) {
+                throw new Error(
+                    `${part.side} ${issue.reason} tx=${part.tx.toFixed(2)} ty=${part.ty.toFixed(2)}`,
+                );
+            }
+            expect(issue.ok).toBe(true);
+        }
+        raw.dispose();
+    }, 60_000);
 
     test("drag out of pocket is red in preview and export errors with no_fit", () => {
         const profile = cloneProfile(IDAHO_PROFILE);

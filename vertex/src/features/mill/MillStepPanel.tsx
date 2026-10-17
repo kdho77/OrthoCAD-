@@ -7,7 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CncMillingPanel } from "@/features/exports/CncMillingPanel";
 import { evaluatePlacedPart, placeWorkpieces } from "@/lib/cnc/placement";
+import { reconcileMillingProfile } from "@/lib/cnc/profile";
 import { cn } from "@/lib/utils";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import { SIDE_LABELS, type Side } from "@/types";
 import { useMillWorkpieces } from "./use-mill-workpieces";
@@ -19,7 +21,8 @@ function normalizeDeg(deg: number): number {
 
 export function MillStepPanel() {
     const { parts, loading } = useMillWorkpieces();
-    const profile = useMillingProfileStore((s) => s.profile);
+    const rawProfile = useMillingProfileStore((s) => s.profile);
+    const profile = useMemo(() => reconcileMillingProfile(rawProfile), [rawProfile]);
     const placements = useMillingProfileStore((s) => s.placements);
     const millSelected = useMillingProfileStore((s) => s.millSelected);
     const setMillSelected = useMillingProfileStore((s) => s.setMillSelected);
@@ -71,7 +74,12 @@ export function MillStepPanel() {
                         <button
                             key={p.side}
                             type="button"
-                            onClick={() => setMillSelected(p.side)}
+                            onClick={() => {
+                                setMillSelected(p.side);
+                                if (!useClinicalWorkflowStore.getState().footSideExplicitlyChosen) {
+                                    useClinicalWorkflowStore.getState().acknowledgeExplicitFootSide(p.side);
+                                }
+                            }}
                             className={cn(
                                 "flex-1 rounded-md border px-2 py-1 text-[10px]",
                                 millSelected === p.side

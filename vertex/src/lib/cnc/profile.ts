@@ -77,6 +77,28 @@ export function cloneProfile(src: MillingProfile = IDAHO_PROFILE): MillingProfil
     };
 }
 
+/**
+ * Keep the milling rectangle at least as large as the pocket union.
+ * Persisted Idaho profiles from the single-pocket era still have tableLength
+ * 130.175 mm while carrying the later Y-stacked pockets — Right then paints
+ * red at default even though the pocket itself is on the block.
+ */
+export function reconcileMillingProfile(profile: MillingProfile): MillingProfile {
+    const next = cloneProfile(profile);
+    if (next.id === IDAHO_PROFILE.id && next.pockets.length < IDAHO_PROFILE.pockets.length) {
+        next.pockets = IDAHO_PROFILE.pockets.map((p) => ({ ...p }));
+    }
+    let maxX = 0;
+    let maxY = 0;
+    for (const pk of next.pockets) {
+        maxX = Math.max(maxX, pk.x + pk.width);
+        maxY = Math.max(maxY, pk.y + pk.length);
+    }
+    if (maxX > next.tableWidthMm) next.tableWidthMm = maxX;
+    if (maxY > next.tableLengthMm) next.tableLengthMm = maxY;
+    return next;
+}
+
 export function toolRadiusMm(diameterMm: number): number {
     return Math.max(0.1, diameterMm / 2);
 }

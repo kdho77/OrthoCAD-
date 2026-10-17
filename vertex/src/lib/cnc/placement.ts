@@ -92,22 +92,29 @@ export function autoTranslate(
     return { tx, ty };
 }
 
+/** Axis-aligned milling rectangle: declared table grown to cover every pocket. */
+export function tableBoundsMm(profile: MillingProfile): { width: number; length: number } {
+    let width = profile.tableWidthMm;
+    let length = profile.tableLengthMm;
+    for (const pk of profile.pockets) {
+        width = Math.max(width, pk.x + pk.width);
+        length = Math.max(length, pk.y + pk.length);
+    }
+    return { width, length };
+}
+
 export function evaluatePlacedPart(placed: PlacedPart, profile: MillingProfile): PlacementIssue {
     const pocket = profile.pockets[placed.pocketIndex];
     if (!pocket) return { ok: false, reason: "Milling table has no pocket for this insole" };
     const margin = placementMarginMm(profile);
+    const table = tableBoundsMm(profile);
     const world = transformOutline(placed.outline, placed);
     const bb = bboxOf(world);
     const minX = bb.minX - margin;
     const maxX = bb.maxX + margin;
     const minY = bb.minY - margin;
     const maxY = bb.maxY + margin;
-    if (
-        minX < -1e-6 ||
-        maxX > profile.tableWidthMm + 1e-6 ||
-        minY < -1e-6 ||
-        maxY > profile.tableLengthMm + 1e-6
-    ) {
+    if (minX < -1e-6 || maxX > table.width + 1e-6 || minY < -1e-6 || maxY > table.length + 1e-6) {
         return {
             ok: false,
             reason: `Part plus margin leaves the milling table (${(maxX - minX).toFixed(1)}×${(maxY - minY).toFixed(1)} mm)`,

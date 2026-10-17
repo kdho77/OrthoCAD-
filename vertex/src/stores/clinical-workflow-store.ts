@@ -135,16 +135,28 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
     elementPlacementFoot: "left",
     pendingCorrectionSections: [],
     correctionPresetOrigin: null,
-    acknowledgeExplicitFootSide: (side) =>
+    acknowledgeExplicitFootSide: (side) => {
         set({
             footSideExplicitlyChosen: true,
             elementPlacementFoot: side,
-        }),
-    acknowledgePairAssignment: () =>
+        });
+        const gate = evaluateScanStepGate();
+        set({
+            scanGateStickyReason: gate.ok ? null : gate.reason,
+            nextBlockReason: gate.ok ? null : gate.reason,
+        });
+    },
+    acknowledgePairAssignment: () => {
         set({
             footSideExplicitlyChosen: true,
             elementPlacementFoot: "both",
-        }),
+        });
+        const gate = evaluateScanStepGate();
+        set({
+            scanGateStickyReason: gate.ok ? null : gate.reason,
+            nextBlockReason: gate.ok ? null : gate.reason,
+        });
+    },
     setCorrectionPresetOrigin: (origin) => set({ correctionPresetOrigin: origin }),
     clearCorrectionPresetOriginKey: (side, key) =>
         set((s) => {
