@@ -97,3 +97,77 @@ export function FileChip({
         </div>
     );
 }
+
+export function Segmented({
+    ariaLabel,
+    value,
+    onChange,
+    options,
+}: {
+    ariaLabel: string;
+    value: VertexSlicePrintDirection;
+    onChange: (v: VertexSlicePrintDirection) => void;
+    options: { value: VertexSlicePrintDirection; label: string; hint: string }[];
+}) {
+    return (
+        <div
+            role="radiogroup"
+            aria-label={ariaLabel}
+            className="mt-2 flex rounded-md border border-border p-0.5"
+            onKeyDown={(e) => {
+                const i = options.findIndex((o) => o.value === value);
+                if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+                    e.preventDefault();
+                    onChange(options[(i + 1) % options.length].value);
+                }
+                if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+                    e.preventDefault();
+                    onChange(options[(i - 1 + options.length) % options.length].value);
+                }
+            }}
+        >
+            {options.map((opt) => {
+                const selected = opt.value === value;
+                return (
+                    <label
+                        key={opt.value}
+                        title={opt.hint}
+                        className={cn(
+                            "flex flex-1 cursor-pointer items-center justify-center gap-1 rounded px-2 py-1.5 text-sm focus-within:ring-2 focus-within:ring-ring",
+                            selected
+                                ? "bg-secondary text-foreground"
+                                : "text-muted-foreground hover:text-foreground",
+                        )}
+                    >
+                        <input
+                            type="radio"
+                            name="slicer-print-direction"
+                            className="sr-only"
+                            checked={selected}
+                            onChange={() => onChange(opt.value)}
+                        />
+                        <svg width="12" height="12" viewBox="0 0 12 12" className="opacity-80">
+                            <title>{opt.hint}</title>
+                            {opt.value === "toe_first" ? (
+                                <path
+                                    d="M2 6h7M7 3l3 3-3 3"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                />
+                            ) : (
+                                <path
+                                    d="M10 6H3M5 3L2 6l3 3"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                />
+                            )}
+                        </svg>
+                        {opt.label}
+                    </label>
+                );
+            })}
+        </div>
+    );
+}
