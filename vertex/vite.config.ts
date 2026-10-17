@@ -31,6 +31,10 @@ export default defineConfig({
                 target: "http://localhost:5181",
                 changeOrigin: true,
             },
+            "/api/slicer": {
+                target: "http://localhost:5181",
+                changeOrigin: true,
+            },
         },
     },
     assetsInclude: ["**/*.wasm"],

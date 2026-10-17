@@ -12,12 +12,14 @@ import { Viewer3D } from "@/components/viewer/Viewer3D";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { ClientsView } from "@/features/clients/ClientsView";
 import { exportDesign } from "@/features/exports/export-service";
+import { SlicerApp } from "@/features/slicer/SlicerApp";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useViewportMode } from "@/hooks/useViewportMode";
 import { designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
 import { applyViewerWallFlagFromSearch } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { stockDebug, stockGlbLog } from "@/lib/geometry/stock-debug";
+import { isSlicerPath, usePathname } from "@/lib/navigate";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
 import { useAuthStore } from "@/stores/auth-store";
@@ -25,6 +27,14 @@ import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-
 
 export default function App() {
     useAuthBootstrap();
+    const pathname = usePathname();
+    if (isSlicerPath(pathname)) {
+        return <SlicerApp />;
+    }
+    return <CadApp />;
+}
+
+function CadApp() {
     const [nav, setNav] = useState<NavItem>("Production");
     const [adminOpen, setAdminOpen] = useState(false);
     const [rxOpen, setRxOpen] = useState(false);

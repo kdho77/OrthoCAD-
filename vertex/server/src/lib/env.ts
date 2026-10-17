@@ -41,4 +41,11 @@ export function validateServerEnv(): void {
     if (process.env.CORS_ORIGIN === "*" && process.env.NODE_ENV === "production") {
         console.warn("[vertex] CORS_ORIGIN is * in production — set to your SPA origin");
     }
+    const sliceUrl = process.env.VERTEXSLICE_URL?.trim();
+    const sliceMock = process.env.SLICER_MOCK === "1" || process.env.SLICER_MOCK?.toLowerCase() === "true";
+    if (!sliceUrl || sliceMock) {
+        console.warn("[vertex] VertexSlice mock enabled — set VERTEXSLICE_URL to use the headless slicer");
+    } else if (!process.env.VERTEXSLICE_API_KEY?.trim()) {
+        console.warn("[vertex] VERTEXSLICE_API_KEY unset — /v1/slice calls will omit X-API-Key");
+    }
 }
