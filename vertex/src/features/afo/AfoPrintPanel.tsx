@@ -12,6 +12,7 @@ import {
     AFO_THICKNESS_RANGE,
     defaultAfoPrint,
 } from "@/lib/geometry/afo/defaults";
+import { evaluateAfoWarnings } from "@/lib/geometry/afo/warnings";
 import { getAfoState, patchAfoState, useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
 
@@ -26,6 +27,7 @@ export function AfoPrintPanel() {
     const setShell = useAfoStore((s) => s.setShellMesh);
     const setProgress = useAfoStore((s) => s.setWorkerProgress);
     const setError = useAfoStore((s) => s.setLastError);
+    const warnings = evaluateAfoWarnings(afo, working);
 
     const generate = async () => {
         if (!working || !afo.trimConfirmed) {
@@ -96,6 +98,11 @@ export function AfoPrintPanel() {
                 </p>
             ) : null}
             {lastError ? <p className="text-amber-200">{lastError}</p> : null}
+            {warnings.map((w) => (
+                <p key={w.id} className="text-[11px] text-amber-200/90">
+                    Warn: {w.message}
+                </p>
+            ))}
             {afo.shellReady ? <p className="text-emerald-300">Watertight shell ready. Cast hidden.</p> : null}
         </div>
     );

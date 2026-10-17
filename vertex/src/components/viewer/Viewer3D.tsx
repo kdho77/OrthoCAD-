@@ -106,6 +106,7 @@ export function Viewer3D() {
     const target = useMeshEditStore((s) => s.target);
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const afoDraggingTrim = useAfoStore((s) => s.draggingTrimIndex != null);
+    const afoWorkingMesh = useAfoStore((s) => s.castMesh);
     const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
@@ -246,7 +247,7 @@ export function Viewer3D() {
                             )}
                         </>
                     ) : null}
-                    {showScans && !(isAfo && design.afo?.cast.removeCast) ? (
+                    {showScans && !(isAfo && afoWorkingMesh) ? (
                         <ScanMeshes transparent={viewer.transparent} heightmap={viewer.heightmap} />
                     ) : null}
                     {isAfo ? <AfoMeshes /> : null}

@@ -6,14 +6,12 @@ import { evaluateScanStepGate } from "@/lib/clinical/clinical-step-gates";
 import { geometryToAfoMesh } from "@/lib/geometry/afo/mesh-ops";
 import { orientScanThreePoint } from "@/lib/geometry/afo/orient";
 import { buildSyntheticLegMesh } from "@/lib/geometry/afo/synthetic-leg";
-import { useAfoStore } from "@/stores/afo-store";
+import { ingestOrientedScan } from "@/stores/afo-store";
 import { useScanStore } from "@/stores/scan-store";
 
 export function AfoScanPanel() {
     const gate = evaluateScanStepGate();
     const scans = useScanStore((s) => s.scans);
-    const setSourceMesh = useAfoStore((s) => s.setSourceMesh);
-
     const applyOrient = () => {
         const scan = scans[0];
         if (!scan) return;
@@ -21,7 +19,7 @@ export function AfoScanPanel() {
         if (!m?.M1 || !m.M2 || !m.M3) return;
         const mesh = geometryToAfoMesh(scan.geometry);
         const result = orientScanThreePoint(mesh, m.M1, m.M2, m.M3);
-        setSourceMesh(result.mesh);
+        ingestOrientedScan(result.mesh);
     };
 
     return (
@@ -30,13 +28,13 @@ export function AfoScanPanel() {
                 Import a foot+leg scan, then place the 3-point orient:{" "}
                 <strong className="text-foreground">M1 heel</strong>,{" "}
                 <strong className="text-foreground">M2 medial malleolus</strong>,{" "}
-                <strong className="text-foreground">M3 lateral malleolus</strong>. ARCH is not required for
-                AFO.
+                <strong className="text-foreground">M3 lateral malleolus</strong>. Those malleoli are also the
+                default bony-relief markers. ARCH is not required for AFO.
             </p>
             <button
                 type="button"
                 className="h-8 w-full rounded-md border border-border bg-background text-[12px]"
-                onClick={() => setSourceMesh(buildSyntheticLegMesh())}
+                onClick={() => ingestOrientedScan(buildSyntheticLegMesh())}
             >
                 Load synthetic demo leg
             </button>

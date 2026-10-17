@@ -8,7 +8,7 @@ import { AFO_DESIGN_MARKERS } from "@/lib/geometry/afo/defaults";
 import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
 import { isCloseClick } from "@/lib/geometry/afo/trim-loop";
 import { applyCameraViewPreset, type CameraViewControls } from "@/lib/geometry/viewport-side-layout";
-import { getAfoState, patchAfoState, useAfoStore } from "@/stores/afo-store";
+import { getAfoState, patchAfoState, refreshAfoWorkingMesh, useAfoStore } from "@/stores/afo-store";
 import { type CameraView, useDesignStore } from "@/stores/design-store";
 
 function viewForMarker(side: "left" | "right", view: "medial" | "lateral" | "bottom"): CameraView {
@@ -20,6 +20,7 @@ function viewForMarker(side: "left" | "right", view: "medial" | "lateral" | "bot
 export function AfoMarkerPlacement() {
     const { gl, camera, raycaster, scene, controls } = useThree();
     const placingIndex = useAfoStore((s) => s.placingLandmarkIndex);
+    const placingClinicalId = useAfoStore((s) => s.placingClinicalId);
     const placingTrim = useAfoStore((s) => s.placingTrim);
     const correctedMesh = useAfoStore((s) => s.correctedMesh);
     const castMesh = useAfoStore((s) => s.castMesh);
@@ -127,6 +128,19 @@ export function AfoMarkerPlacement() {
                 return;
             }
 
+            if (placingClinicalId) {
+                const rest = afo.clinicalMarkers.filter((m) => m.id !== placingClinicalId);
+                patchAfoState(
+                    {
+                        clinicalMarkers: [...rest, { id: placingClinicalId, point, vertexIndex: hit.index }],
+                    },
+                    "afo-clinical-marker",
+                );
+                useAfoStore.getState().setPlacingClinicalId(null);
+                refreshAfoWorkingMesh();
+                return;
+            }
+
             const marker = AFO_DESIGN_MARKERS[placingIndex];
             if (!marker) return;
             const rest = afo.landmarks.filter((l) => l.id !== marker.id);
@@ -166,6 +180,7 @@ export function AfoMarkerPlacement() {
             window.removeEventListener("pointerup", onUp);
         };
     }, [
+        afo.clinicalMarkers,
         afo.landmarks,
         afo.side,
         afo.trimConfirmed,
@@ -173,6 +188,7 @@ export function AfoMarkerPlacement() {
         camera,
         gl,
         placingIndex,
+        placingClinicalId,
         placingTrim,
         raycaster,
         scene,

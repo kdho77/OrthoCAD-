@@ -103,6 +103,20 @@ export function evaluateStepComplete(
 export function evaluateNextGate(fromStep: ClinicalStepId): StepGateResult {
     if (fromStep === "scan") return evaluateScanStepGate();
     const product = useClinicalWorkflowStore.getState().productType;
+    if (product === "afo" && fromStep === "cast") {
+        const afo = useDesignStore.getState().design.afo;
+        if (afo?.crest.lowConfidence && !afo.crest.override) {
+            const has =
+                afo.clinicalMarkers.some((m) => m.id === "tibial_tuberosity") &&
+                afo.clinicalMarkers.some((m) => m.id === "distal_crest");
+            if (!has) {
+                return {
+                    ok: false,
+                    reason: "Low-confidence tibial crest — place tibial tuberosity and distal crest end.",
+                };
+            }
+        }
+    }
     if (product === "afo" && fromStep === "design") {
         const afo = useDesignStore.getState().design.afo;
         if (!afo?.trimConfirmed) {

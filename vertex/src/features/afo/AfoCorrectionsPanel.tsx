@@ -16,6 +16,7 @@ import {
     AFO_SMOOTH_RANGE,
     defaultAfoCorrections,
 } from "@/lib/geometry/afo/defaults";
+import { evaluateAfoWarnings } from "@/lib/geometry/afo/warnings";
 import { getAfoState, patchAfoState, useAfoStore } from "@/stores/afo-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -31,10 +32,24 @@ export function AfoCorrectionsPanel() {
     const castMesh = useAfoStore((s) => s.castMesh);
     const setCorrected = useAfoStore((s) => s.setCorrectedMesh);
 
+    const axes = {
+        medialMal: afo.landmarks.find((l) => l.id === "malleolus_medial")?.point ?? {
+            x: 35,
+            y: 40,
+            z: 80,
+        },
+        lateralMal: afo.landmarks.find((l) => l.id === "malleolus_lateral")?.point ?? {
+            x: -35,
+            y: 40,
+            z: 80,
+        },
+    };
+    const warnings = evaluateAfoWarnings(afo, castMesh);
+
     const patch = (partial: Partial<typeof c>) => {
         const next = { ...c, ...partial };
         patchAfoState({ corrections: next }, "afo-corrections");
-        if (castMesh) setCorrected(applyAfoCorrections(castMesh, next));
+        if (castMesh) setCorrected(applyAfoCorrections(castMesh, next, axes));
     };
 
     return (
@@ -45,7 +60,7 @@ export function AfoCorrectionsPanel() {
             {scanned === "left" || scanned === "right" ? (
                 <div className="space-y-2">
                     <SliderField
-                        label="Leg rear rotation"
+                        label="Frontal (varus / valgus)"
                         value={c.legRearDeg}
                         min={AFO_REAR_ROT_RANGE[0]}
                         max={AFO_REAR_ROT_RANGE[1]}
@@ -55,7 +70,7 @@ export function AfoCorrectionsPanel() {
                         onChange={(v) => patch({ legRearDeg: v })}
                     />
                     <SliderField
-                        label="Leg side rotation"
+                        label="Sagittal (PF / DF)"
                         value={c.legSideDeg}
                         min={AFO_SIDE_ROT_RANGE[0]}
                         max={AFO_SIDE_ROT_RANGE[1]}
@@ -133,6 +148,11 @@ export function AfoCorrectionsPanel() {
                     Select the scanned foot above to edit corrections.
                 </p>
             )}
+            {warnings.map((w) => (
+                <p key={w.id} className="text-[11px] text-amber-200/90">
+                    Warn: {w.message}
+                </p>
+            ))}
         </div>
     );
 }

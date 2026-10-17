@@ -4,12 +4,17 @@
 import type { ProductionMethod, Side } from "@/types";
 import type {
     AfoCastState,
+    AfoClinicalMarkerId,
     AfoCorrections,
+    AfoCrestState,
     AfoDesignMarkerId,
     AfoDesignState,
     AfoPrintParams,
+    AfoReliefs,
 } from "./types";
 
+/** Plantar / calcaneus Z in the oriented frame (C). */
+export const AFO_C_MM = 0;
 /** [K] Print wall thickness (mm). */
 export const AFO_THICKNESS_MM = 4;
 /** [K] Rim blend width (mm). */
@@ -23,6 +28,15 @@ export const AFO_SMOOTH_ITERATIONS = 4;
 /** [K] Production method for a new AFO case. */
 export const AFO_PRODUCTION_METHOD: ProductionMethod = "printing_shell";
 
+export const AFO_FEATHER_MIN_MM = 10;
+export const AFO_SLOPE_LIMIT = 0.7;
+export const AFO_FEATHER_SLOPE = 2.15;
+export const AFO_CREST_BAND_MM = 8;
+export const AFO_CREST_SECTION_MM = 5;
+export const AFO_CREST_OUTLIER_MM = 6;
+export const AFO_CREST_OUTLIER_RATIO = 0.3;
+export const AFO_CREST_PEAK_RATIO = 1.5;
+
 /** [K] Canonical 3-point orient targets (heel, medial mal, lateral mal). */
 export const AFO_ORIENT_TARGETS_MM: [number, number, number][] = [
     [0, 0, 0],
@@ -30,17 +44,24 @@ export const AFO_ORIENT_TARGETS_MM: [number, number, number][] = [
     [-35, 40, 80],
 ];
 
-export const AFO_THICKNESS_RANGE: [number, number] = [1, 12];
+export const AFO_THICKNESS_RANGE: [number, number] = [1.2, 12];
+export const AFO_THICKNESS_WARN_MM = 2;
 export const AFO_EDGE_RANGE: [number, number] = [0.5, 8];
 export const AFO_FLARE_RANGE: [number, number] = [0, 8];
-export const AFO_REAR_ROT_RANGE: [number, number] = [-20, 20];
-export const AFO_SIDE_ROT_RANGE: [number, number] = [-25, 25];
+/** Frontal (varus/valgus) about the mid-malleolar frontal axis. */
+export const AFO_REAR_ROT_RANGE: [number, number] = [-10, 10];
+/** Sagittal (PF/DF) about the malleolar axis. */
+export const AFO_SIDE_ROT_RANGE: [number, number] = [-5, 10];
 export const AFO_HEEL_LIFT_RANGE: [number, number] = [0, 12];
 export const AFO_FOOT_LIFT_RANGE: [number, number] = [0, 12];
 export const AFO_ARCH_RANGE: [number, number] = [0, 18];
 export const AFO_HEEL_WIDTH_RANGE: [number, number] = [-10, 10];
 export const AFO_BRACE_HEIGHT_RANGE: [number, number] = [80, 350];
 export const AFO_SMOOTH_RANGE: [number, number] = [0, 12];
+export const AFO_REMOVE_CAST_RANGE: [number, number] = [-10, 10];
+export const AFO_SHIN_OFFSET_RANGE: [number, number] = [-6, 4];
+export const AFO_TOE_BOX_PCT_RANGE: [number, number] = [100, 130];
+export const AFO_RELIEF_RANGE: [number, number] = [-6, 0];
 
 export const AFO_TRIM_MIN_POINTS = 3;
 export const AFO_TRIM_MIN_LENGTH_MM = 20;
@@ -53,6 +74,19 @@ export const AFO_DESIGN_MARKERS = [
     { id: "malleolus_lateral", label: "Lateral malleolus", view: "lateral" },
     { id: "distal", label: "Distal / sulcus", view: "bottom" },
 ] as const;
+
+export const AFO_CLINICAL_MARKERS: {
+    id: AfoClinicalMarkerId;
+    label: string;
+    view: "medial" | "lateral" | "front";
+}[] = [
+    { id: "navicular", label: "Navicular", view: "medial" },
+    { id: "fifth_met_base", label: "5th met base", view: "lateral" },
+    { id: "post_calcaneus", label: "Post calcaneus", view: "medial" },
+    { id: "fibular_head", label: "Fibular head", view: "lateral" },
+    { id: "tibial_tuberosity", label: "Tibial tuberosity", view: "front" },
+    { id: "distal_crest", label: "Distal crest end", view: "front" },
+];
 
 export type { AfoDesignMarkerId };
 
@@ -70,12 +104,34 @@ export function defaultAfoCorrections(): AfoCorrections {
     };
 }
 
+export function defaultAfoReliefs(): AfoReliefs {
+    return {
+        malleoli: { mm: -3, on: true },
+        navicular: { mm: -2, on: false },
+        fifthMetBase: { mm: -2, on: false },
+        postCalcaneus: { mm: -2, on: false },
+        fibularHead: { mm: -2, on: false },
+    };
+}
+
+export function defaultAfoCrest(): AfoCrestState {
+    return {
+        points: [],
+        outlierRatio: 0,
+        peakToMedian: 1,
+        lowConfidence: false,
+        override: false,
+    };
+}
+
 export function defaultAfoCast(): AfoCastState {
     return {
-        removeCast: false,
+        removeCastMm: 0,
+        shinOffsetMm: 0,
+        insensate: false,
         flattenBottom: false,
         shinBox: { widthMm: 80, depthMm: 70, heightMm: 220, enabled: false },
-        toeBox: { widthMm: 80, depthMm: 90, heightMm: 50, enabled: false },
+        toeBox: { widthMm: 80, depthMm: 90, heightMm: 50, heightPct: 100, enabled: false },
         transparent: false,
         show3dModel: true,
         showCorrected: false,
@@ -96,6 +152,10 @@ export function defaultAfoDesignState(side: Side = "left"): AfoDesignState {
         method: AFO_PRODUCTION_METHOD,
         cast: defaultAfoCast(),
         corrections: defaultAfoCorrections(),
+        reliefs: defaultAfoReliefs(),
+        clinicalMarkers: [],
+        crest: defaultAfoCrest(),
+        effectiveFeatherMm: AFO_FEATHER_MIN_MM,
         landmarks: [],
         trimPoints: [],
         trimClosed: false,

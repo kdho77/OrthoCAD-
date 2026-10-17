@@ -33,10 +33,14 @@ describe("AFO product workflow", () => {
             heightMm: 220,
             enabled: false,
         });
+        expect(useDesignStore.getState().design.afo?.cast.removeCastMm).toBe(0);
+        expect(useDesignStore.getState().design.afo?.cast.shinOffsetMm).toBe(0);
+        expect(useDesignStore.getState().design.afo?.reliefs.malleoli).toEqual({ mm: -3, on: true });
         expect(useDesignStore.getState().design.afo?.cast.toeBox).toEqual({
             widthMm: 80,
             depthMm: 90,
             heightMm: 50,
+            heightPct: 100,
             enabled: false,
         });
     });

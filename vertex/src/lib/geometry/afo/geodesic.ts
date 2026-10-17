@@ -85,6 +85,38 @@ export function pathToPoints(mesh: AfoTriMesh, path: number[]): AfoVec3[] {
     }));
 }
 
+/** Multi-source Dijkstra. Sources at distance 0. Unreachable verts stay +Infinity. */
+export function geodesicDistanceField(mesh: AfoTriMesh, sources: number[]): Float64Array {
+    const n = vertexCount(mesh);
+    const d = new Float64Array(n).fill(Number.POSITIVE_INFINITY);
+    if (sources.length === 0) return d;
+    const { adj, dist } = buildVertexGraph(mesh);
+    const used = new Uint8Array(n);
+    for (const s of sources) {
+        if (s >= 0 && s < n) d[s] = 0;
+    }
+    for (let iter = 0; iter < n; iter++) {
+        let u = -1;
+        let best = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < n; i++) {
+            if (!used[i] && d[i]! < best) {
+                best = d[i]!;
+                u = i;
+            }
+        }
+        if (u < 0 || best === Number.POSITIVE_INFINITY) break;
+        used[u] = 1;
+        const nbrs = adj[u] ?? [];
+        const nd = dist[u] ?? [];
+        for (let k = 0; k < nbrs.length; k++) {
+            const v = nbrs[k]!;
+            const alt = d[u]! + (nd[k] ?? Number.POSITIVE_INFINITY);
+            if (alt < d[v]!) d[v] = alt;
+        }
+    }
+    return d;
+}
+
 export function geodesicPolyline(mesh: AfoTriMesh, vertices: number[], closed: boolean): AfoVec3[] {
     if (vertices.length === 0) return [];
     const pts: AfoVec3[] = [];

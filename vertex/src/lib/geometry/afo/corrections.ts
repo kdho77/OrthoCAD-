@@ -1,49 +1,108 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { isAfoIdentityCorrections } from "./defaults";
+import { AFO_REAR_ROT_RANGE, AFO_SIDE_ROT_RANGE, isAfoIdentityCorrections } from "./defaults";
 import { cloneMesh, computeVertexNormals, vertexCount } from "./mesh-ops";
-import type { AfoCorrections, AfoTriMesh } from "./types";
+import { clamp01, smoothstep } from "./offset-field";
+import type { AfoCorrections, AfoTriMesh, AfoVec3 } from "./types";
 
 const DEG = Math.PI / 180;
+
+export interface AfoRotationAxes {
+    medialMal: AfoVec3;
+    lateralMal: AfoVec3;
+}
+
+export function clampSagittalDeg(v: number): number {
+    return Math.min(AFO_SIDE_ROT_RANGE[1], Math.max(AFO_SIDE_ROT_RANGE[0], v));
+}
+
+export function clampFrontalDeg(v: number): number {
+    return Math.min(AFO_REAR_ROT_RANGE[1], Math.max(AFO_REAR_ROT_RANGE[0], v));
+}
+
+export function malleolarAxes(
+    medial: AfoVec3,
+    lateral: AfoVec3,
+): {
+    origin: AfoVec3;
+    sagittal: AfoVec3;
+    frontal: AfoVec3;
+    leg: AfoVec3;
+} {
+    const origin = {
+        x: (medial.x + lateral.x) * 0.5,
+        y: (medial.y + lateral.y) * 0.5,
+        z: (medial.z + lateral.z) * 0.5,
+    };
+    const sx = lateral.x - medial.x;
+    const sy = lateral.y - medial.y;
+    const sz = lateral.z - medial.z;
+    const sl = Math.hypot(sx, sy, sz) || 1;
+    const sagittal = { x: sx / sl, y: sy / sl, z: sz / sl };
+    const leg = { x: 0, y: 0, z: 1 };
+    const fx = sagittal.y * leg.z - sagittal.z * leg.y;
+    const fy = sagittal.z * leg.x - sagittal.x * leg.z;
+    const fz = sagittal.x * leg.y - sagittal.y * leg.x;
+    const fl = Math.hypot(fx, fy, fz) || 1;
+    const frontal = { x: fx / fl, y: fy / fl, z: fz / fl };
+    return { origin, sagittal, frontal, leg };
+}
+
+/** Degrees away from perpendicular (0 = orthogonal). */
+export function axisOrthogonalityDeg(a: AfoVec3, b: AfoVec3): number {
+    const d = Math.abs(a.x * b.x + a.y * b.y + a.z * b.z);
+    return (Math.asin(Math.min(1, d)) * 180) / Math.PI;
+}
+
+function rotateAround(p: AfoVec3, origin: AfoVec3, axis: AfoVec3, angle: number): AfoVec3 {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const vx = p.x - origin.x;
+    const vy = p.y - origin.y;
+    const vz = p.z - origin.z;
+    const cx = axis.y * vz - axis.z * vy;
+    const cy = axis.z * vx - axis.x * vz;
+    const cz = axis.x * vy - axis.y * vx;
+    const dot = axis.x * vx + axis.y * vy + axis.z * vz;
+    return {
+        x: origin.x + vx * c + cx * s + axis.x * dot * (1 - c),
+        y: origin.y + vy * c + cy * s + axis.y * dot * (1 - c),
+        z: origin.z + vz * c + cz * s + axis.z * dot * (1 - c),
+    };
+}
 
 /**
  * Apply AFO corrections to a working positive. All-zero corrections with
  * `smoothIterations = 0` are a true identity (cloned buffers, same positions).
+ * Sagittal rotation is about the malleolar axis; frontal about the axis through
+ * the midpoint perpendicular to the malleolar and leg axes. Warp w is 0 below
+ * midpoint.z − 15 and 1 above midpoint.z + 25.
  */
-export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections): AfoTriMesh {
+export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections, axes?: AfoRotationAxes): AfoTriMesh {
     if (isAfoIdentityCorrections(c)) return cloneMesh(mesh);
     const out = cloneMesh(mesh);
     const n = vertexCount(out);
-    const rear = c.legRearDeg * DEG;
-    const side = c.legSideDeg * DEG;
-    const cr = Math.cos(rear);
-    const sr = Math.sin(rear);
-    const cs = Math.cos(side);
-    const ss = Math.sin(side);
+    const sagDeg = clampSagittalDeg(c.legSideDeg);
+    const frontDeg = clampFrontalDeg(c.legRearDeg);
+    const medial = axes?.medialMal ?? { x: 35, y: 40, z: 80 };
+    const lateral = axes?.lateralMal ?? { x: -35, y: 40, z: 80 };
+    const ax = malleolarAxes(medial, lateral);
+    const sag = sagDeg * DEG;
+    const front = frontDeg * DEG;
 
     for (let i = 0; i < n; i++) {
         let x = out.positions[i * 3] ?? 0;
         let y = out.positions[i * 3 + 1] ?? 0;
         let z = out.positions[i * 3 + 2] ?? 0;
-
-        // Leg rotations about the ankle region (y≈40, z≈80). Pivot at heel for
-        // rear (X/Z about Y=0) and side (Y/Z about X=0) with a z-weight so the
-        // foot stays planted.
-        const wLeg = clamp01((z - 40) / 160);
-        if (wLeg > 0 && (rear !== 0 || side !== 0)) {
-            if (rear !== 0) {
-                const xz = x * cr - z * sr * wLeg;
-                const zz = x * sr * wLeg + z;
-                x = xz;
-                z = zz;
-            }
-            if (side !== 0) {
-                const yz = y * cs - z * ss * wLeg;
-                const zz = y * ss * wLeg + z;
-                y = yz;
-                z = zz;
-            }
+        const w = smoothstep(ax.origin.z - 15, ax.origin.z + 25, z);
+        if (w > 0 && (sag !== 0 || front !== 0)) {
+            let p = { x, y, z };
+            if (sag !== 0) p = rotateAround(p, ax.origin, ax.sagittal, sag * w);
+            if (front !== 0) p = rotateAround(p, ax.origin, ax.frontal, front * w);
+            x = p.x;
+            y = p.y;
+            z = p.z;
         }
 
         if (c.heelLiftMm) {
@@ -65,7 +124,6 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections): AfoTri
             x += Math.sign(x || 1) * c.heelWidthMm * 0.5 * gh;
         }
         if (c.braceHeightMm > 0 && z > c.braceHeightMm) {
-            // Soft clamp of shin vertices above the designed height.
             z = c.braceHeightMm + (z - c.braceHeightMm) * 0.05;
         }
 
@@ -78,12 +136,7 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections): AfoTri
     return out;
 }
 
-function clamp01(v: number): number {
-    return Math.min(1, Math.max(0, v));
-}
-
-/** Taubin λ/μ smooth that preserves volume better than plain Laplacian. */
-export function taubinSmooth(mesh: AfoTriMesh, iterations: number, lambda = 0.33, mu = -0.34): void {
+function taubinSmooth(mesh: AfoTriMesh, iterations: number, lambda = 0.33, mu = -0.34): void {
     const n = vertexCount(mesh);
     const nrm = computeVertexNormals(mesh);
     void nrm;

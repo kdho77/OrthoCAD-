@@ -76,6 +76,16 @@ export function AfoMeshes() {
                 </mesh>
             ) : null}
             {trimLine ? <primitive object={trimLine} /> : null}
+            {afo.clinicalMarkers.map((lm) => (
+                <mesh
+                    key={`c-${lm.id}`}
+                    position={[lm.point.x, lm.point.y, lm.point.z]}
+                    userData={{ isAfoClinical: true }}
+                >
+                    <sphereGeometry args={[3, 12, 10]} />
+                    <meshStandardMaterial color="#f472b6" />
+                </mesh>
+            ))}
             {afo.landmarks.map((lm) => (
                 <mesh
                     key={lm.id}

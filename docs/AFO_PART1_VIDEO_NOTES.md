@@ -21,18 +21,21 @@ workflow; the 3D viewer, raycast, markers, and undo/redo are shared.
 Panel controls:
 
 - Production method
-- Remove Cast
+- Remove Cast slider (−10…+10 mm)
+- Shin offset (−6…+4 mm)
 - Flatten bottom
 - Shin box
-- Toe box
+- Toe box height 100–130%
+- Bony reliefs (malleoli −3 on by default)
+- Insensate
 - Toggles: Transparent, 3D model, Corrected
 
 ### 3. Corrections
 
 Show only the scanned side:
 
-- Leg rear rotation (deg)
-- Leg side rotation (deg)
+- Frontal (varus / valgus, ±10°)
+- Sagittal (PF / DF, −5…+10°)
 - Heel lift
 - Foot lift medial / lateral
 - Medial arch

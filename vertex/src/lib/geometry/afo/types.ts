@@ -20,11 +20,52 @@ export interface AfoBoxParams {
     widthMm: number;
     depthMm: number;
     heightMm: number;
+    /** Toe box: 100–130% of max Z in the toe region. */
+    heightPct?: number;
     enabled: boolean;
 }
 
+export interface AfoReliefChannel {
+    mm: number;
+    on: boolean;
+}
+
+export interface AfoReliefs {
+    malleoli: AfoReliefChannel;
+    navicular: AfoReliefChannel;
+    fifthMetBase: AfoReliefChannel;
+    postCalcaneus: AfoReliefChannel;
+    fibularHead: AfoReliefChannel;
+}
+
+export type AfoClinicalMarkerId =
+    | "navicular"
+    | "fifth_met_base"
+    | "post_calcaneus"
+    | "fibular_head"
+    | "tibial_tuberosity"
+    | "distal_crest";
+
+export interface AfoClinicalMarker {
+    id: AfoClinicalMarkerId;
+    point: AfoVec3;
+    vertexIndex: number;
+}
+
+export interface AfoCrestState {
+    points: AfoVec3[];
+    outlierRatio: number;
+    peakToMedian: number;
+    lowConfidence: boolean;
+    override: boolean;
+}
+
 export interface AfoCastState {
-    removeCast: boolean;
+    /** Remove Cast offset `c_cast` (mm). c>0 shrinks. */
+    removeCastMm: number;
+    /** Shin offset `c_shin` (mm). */
+    shinOffsetMm: number;
+    insensate: boolean;
     flattenBottom: boolean;
     shinBox: AfoBoxParams;
     toeBox: AfoBoxParams;
@@ -71,12 +112,22 @@ export interface AfoPrintParams {
     flareMm: number;
 }
 
+export interface AfoWarning {
+    id: string;
+    message: string;
+    blocking: boolean;
+}
+
 /** Persisted AFO parameter block (lives on DesignState.afo). */
 export interface AfoDesignState {
     side: Side;
     method: ProductionMethod;
     cast: AfoCastState;
     corrections: AfoCorrections;
+    reliefs: AfoReliefs;
+    clinicalMarkers: AfoClinicalMarker[];
+    crest: AfoCrestState;
+    effectiveFeatherMm: number;
     landmarks: AfoLandmark[];
     trimPoints: AfoTrimPoint[];
     trimClosed: boolean;

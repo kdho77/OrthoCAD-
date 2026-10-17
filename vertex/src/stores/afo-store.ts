@@ -2,9 +2,12 @@
 // See LICENSE file in the project root for full license information.
 
 import { create } from "zustand";
+import { applyClinicalCast } from "@/lib/geometry/afo/cast";
+import { applyAfoCorrections } from "@/lib/geometry/afo/corrections";
+import { detectTibialCrest } from "@/lib/geometry/afo/crest";
 import { defaultAfoDesignState } from "@/lib/geometry/afo/defaults";
 import { cloneMesh } from "@/lib/geometry/afo/mesh-ops";
-import type { AfoTriMesh } from "@/lib/geometry/afo/types";
+import type { AfoClinicalMarkerId, AfoTriMesh } from "@/lib/geometry/afo/types";
 import { useDesignStore } from "@/stores/design-store";
 import type { Side } from "@/types";
 
@@ -16,6 +19,7 @@ interface AfoSessionStore {
     correctedMesh: AfoTriMesh | null;
     shellMesh: AfoTriMesh | null;
     placingLandmarkIndex: number;
+    placingClinicalId: AfoClinicalMarkerId | null;
     placingTrim: boolean;
     draggingTrimIndex: number | null;
     workerProgress: { pct: number; stage: string } | null;
@@ -25,6 +29,7 @@ interface AfoSessionStore {
     setCorrectedMesh: (mesh: AfoTriMesh | null) => void;
     setShellMesh: (mesh: AfoTriMesh | null) => void;
     setPlacingLandmarkIndex: (index: number) => void;
+    setPlacingClinicalId: (id: AfoClinicalMarkerId | null) => void;
     setPlacingTrim: (on: boolean) => void;
     setDraggingTrimIndex: (index: number | null) => void;
     setWorkerProgress: (p: { pct: number; stage: string } | null) => void;
@@ -38,7 +43,20 @@ export function isAfoProduct(): boolean {
 
 export function getAfoState() {
     const design = useDesignStore.getState().design;
-    return design.afo ?? defaultAfoDesignState(design.afo?.side ?? "left");
+    const base = defaultAfoDesignState(design.afo?.side ?? "left");
+    if (!design.afo) return base;
+    return {
+        ...base,
+        ...design.afo,
+        cast: { ...base.cast, ...design.afo.cast },
+        corrections: { ...base.corrections, ...design.afo.corrections },
+        reliefs: { ...base.reliefs, ...design.afo.reliefs },
+        print: { ...base.print, ...design.afo.print },
+        crest: { ...base.crest, ...design.afo.crest },
+        clinicalMarkers: design.afo.clinicalMarkers ?? [],
+        landmarks: design.afo.landmarks ?? [],
+        trimPoints: design.afo.trimPoints ?? [],
+    };
 }
 
 export function patchAfoState(
@@ -55,6 +73,36 @@ export function patchAfoState(
             afo: { ...current, ...patch },
         },
     });
+}
+
+export function refreshAfoWorkingMesh(): void {
+    const src = useAfoStore.getState().sourceMesh;
+    if (!src) return;
+    const afo = getAfoState();
+    const medial = afo.landmarks.find((l) => l.id === "malleolus_medial")?.point;
+    const lateral = afo.landmarks.find((l) => l.id === "malleolus_lateral")?.point;
+    const { mesh, featherMm } = applyClinicalCast(src, afo, { medialMal: medial, lateralMal: lateral });
+    useAfoStore.getState().setCastMesh(mesh);
+    if (Math.abs(featherMm - afo.effectiveFeatherMm) > 1e-3) {
+        const ds = useDesignStore.getState();
+        const current = ds.design.afo ?? defaultAfoDesignState();
+        useDesignStore.setState({
+            design: { ...ds.design, afo: { ...current, effectiveFeatherMm: featherMm } },
+        });
+    }
+    const corrected = applyAfoCorrections(mesh, afo.corrections, {
+        medialMal: medial,
+        lateralMal: lateral,
+    });
+    useAfoStore.getState().setCorrectedMesh(corrected);
+}
+
+export function ingestOrientedScan(mesh: AfoTriMesh): void {
+    useAfoStore.getState().setSourceMesh(mesh);
+    const afo = getAfoState();
+    const crest = detectTibialCrest(mesh, afo.corrections.braceHeightMm, afo.clinicalMarkers);
+    patchAfoState({ crest }, "afo-crest");
+    refreshAfoWorkingMesh();
 }
 
 export function setProductType(productType: "insole" | "afo", side: Side = "left"): void {
@@ -83,6 +131,7 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     correctedMesh: null,
     shellMesh: null,
     placingLandmarkIndex: 0,
+    placingClinicalId: null,
     placingTrim: false,
     draggingTrimIndex: null,
     workerProgress: null,
@@ -96,6 +145,7 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     setCorrectedMesh: (mesh) => set({ correctedMesh: mesh ? cloneMesh(mesh) : null }),
     setShellMesh: (mesh) => set({ shellMesh: mesh ? cloneMesh(mesh) : null }),
     setPlacingLandmarkIndex: (index) => set({ placingLandmarkIndex: index }),
+    setPlacingClinicalId: (id) => set({ placingClinicalId: id }),
     setPlacingTrim: (on) => set({ placingTrim: on }),
     setDraggingTrimIndex: (index) => set({ draggingTrimIndex: index }),
     setWorkerProgress: (p) => set({ workerProgress: p }),
@@ -107,6 +157,7 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
             correctedMesh: null,
             shellMesh: null,
             placingLandmarkIndex: 0,
+            placingClinicalId: null,
             placingTrim: false,
             draggingTrimIndex: null,
             workerProgress: null,

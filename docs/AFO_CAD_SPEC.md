@@ -30,9 +30,9 @@ Origin: plantar heel contact.
 ## 3. Pipeline
 
 1. **Home / Scan** — import foot+leg scan; 3-point orient (Kabsch, rigid, no scale).
-2. **Cast** — production method, remove-cast, flatten bottom, shin box, toe box;
-   display toggles (Transparent, 3D model, Corrected).
-3. **Corrections** — applied only on the scanned side.
+2. **Cast** — production method, Remove Cast offset `c_cast`, shin offset,
+   flatten bottom, shin box, toe box %; bony reliefs; tibial crest; insensate.
+3. **Corrections** — applied only on the scanned side (malleolar-axis rotations).
 4. **Design** — 5 landmarks with auto-rotating views; geodesic trim loop;
    close by clicking the first point; draggable handles; Confirm.
 5. **Print** — watertight shell via SDF offset; hide cast.
@@ -62,24 +62,26 @@ Canonical targets (mm), rigid Kabsch, no scale:
 | Control | Default |
 |---------|---------|
 | Production method | `printing_shell` |
-| Remove Cast | off |
+| Remove Cast `c_cast` | 0 mm (−10…+10; warn > +3 or < −5) |
+| Shin offset `c_shin` | 0 mm (−6…+4) |
 | Flatten bottom | off (plane z = 0) |
 | Shin box | 80 × 70 × 220 mm, origin at ankle |
-| Toe box | 80 × 90 × 50 mm, origin at toes |
+| Toe box height | 100–130% of max Z in the toe region |
 | Transparent | off |
 | 3D model | on |
 | Corrected | off |
 
-Remove Cast copies the working positive and hides the original scan mesh.
-Flatten bottom clamps vertices with z < 0 onto the plantar plane and caps.
-Shin / toe boxes clip the working mesh to an AABB (keep inside).
+Remove Cast is a signed offset field (`c>0` shrinks, `c<0` clearance) with
+bone protection — see `docs/AFO_CLINICAL_ADDENDUM.md`. Flatten bottom clamps
+vertices with z < 0 onto the plantar plane. Shin box clips an AABB; toe box
+height is `pct ×` toe-region max Z.
 
 ## 6. Corrections (scanned side only) **[K]**
 
 | Parameter | Unit | Default | Range |
 |-----------|------|---------|-------|
-| Leg rear rotation (frontal / varus–valgus) | deg | 0 | −20…20 |
-| Leg side rotation (sagittal / PF–DF) | deg | 0 | −25…25 |
+| Frontal rotation (varus–valgus, mid-malleolar frontal axis) | deg | 0 | −10…10 (warn \|deg\| > 5) |
+| Sagittal rotation (PF–DF, malleolar axis) | deg | 0 | −5…+10 (warn > +5) |
 | Heel lift | mm | 0 | 0…12 |
 | Foot lift medial | mm | 0 | 0…12 |
 | Foot lift lateral | mm | 0 | 0…12 |
@@ -159,6 +161,9 @@ self-intersections.
 
 Tests use a small synthetic closed leg (or sphere) — never commit patient scans.
 
+Clinical addendum tests **a–l** live in `afo-clinical.test.ts` (offset field,
+crest, reliefs, ranges, warnings). Binding text: `docs/AFO_CLINICAL_ADDENDUM.md`.
+
 ---
 
 ## Open questions
@@ -171,7 +176,8 @@ module. Please confirm or correct:
    mal `(-35,40,80)` mm. Confirm against the expert sheet.
 2. **Shin / toe box** origins and sizes — keep 80×70×220 shin and 80×90×50 toe
    (confirmed).
-3. **Leg rear vs side rotation** axes (frontal varus–valgus vs sagittal PF–DF).
+3. **Leg rear vs side rotation** — signed off: sagittal about the malleolar
+   axis, frontal ⟂ malleolar & leg axes (addendum).
 4. **Shell keep-region** — currently triangles with centroid z at or below the
    trim-loop mean z (brace below the opening in the canonical frame).
 5. **VertexSlice** — reuse of `generateHybridGcode` / `manufacturing.generateSolid`
