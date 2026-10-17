@@ -105,6 +105,6 @@ function vertexCountSafe(mesh: AfoTriMesh): number {
 }
 
 /** Click is a close if it lands on the first handle (within radius mm). */
-export function isCloseClick(first: AfoVec3, click: AfoVec3, radiusMm = 4): boolean {
+export function isCloseClick(first: AfoVec3, click: AfoVec3, radiusMm = 12): boolean {
     return Math.hypot(click.x - first.x, click.y - first.y, click.z - first.z) <= radiusMm;
 }

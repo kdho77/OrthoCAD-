@@ -89,6 +89,14 @@ export function AfoDesignPanel() {
                     : null}
                 <button
                     type="button"
+                    disabled={afo.trimPoints.length < 3 || afo.trimClosed}
+                    className="h-8 w-full rounded-md border border-border bg-background"
+                    onClick={() => patchAfoState({ trimClosed: true }, "afo-trim-close")}
+                >
+                    Close loop
+                </button>
+                <button
+                    type="button"
                     disabled={!validation.ok}
                     className="h-8 w-full rounded-md bg-primary text-[12px] font-medium text-primary-foreground disabled:opacity-40"
                     onClick={() => patchAfoState({ trimConfirmed: true }, "afo-trim-confirm")}

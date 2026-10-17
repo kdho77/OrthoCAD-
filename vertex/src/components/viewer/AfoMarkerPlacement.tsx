@@ -99,6 +99,11 @@ export function AfoMarkerPlacement() {
             if (placingTrim || afo.trimPoints.length > 0) {
                 const handle = hitHandle(ev.clientX, ev.clientY);
                 if (handle != null && !afo.trimConfirmed) {
+                    if (placingTrim && handle === 0 && afo.trimPoints.length >= 3) {
+                        patchAfoState({ trimClosed: true }, "afo-trim-close");
+                        ev.preventDefault();
+                        return;
+                    }
                     setDragging(handle);
                     ev.preventDefault();
                     return;
