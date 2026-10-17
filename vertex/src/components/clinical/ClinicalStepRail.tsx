@@ -5,12 +5,14 @@ import { AlertCircle, Check, CircleDot } from "lucide-react";
 import { evaluateNextGate, evaluateStepComplete } from "@/lib/clinical/clinical-step-gates";
 import { cn } from "@/lib/utils";
 import {
-    CLINICAL_STEPS,
     type ClinicalStepId,
+    stepsForProduct,
     useClinicalWorkflowStore,
 } from "@/stores/clinical-workflow-store";
 
 export function ClinicalStepRail() {
+    const productType = useClinicalWorkflowStore((s) => s.productType);
+    const steps = stepsForProduct(productType);
     const step = useClinicalWorkflowStore((s) => s.step);
     const completedSteps = useClinicalWorkflowStore((s) => s.completedSteps);
     const nextBlockReason = useClinicalWorkflowStore((s) => s.nextBlockReason);
@@ -22,8 +24,12 @@ export function ClinicalStepRail() {
     const stepState = (id: ClinicalStepId) => {
         if (step === id) return "current";
         if (evaluateStepComplete(id, completedSteps)) return "completed";
-        if (stepIndex(id) < stepIndex(step)) return "visited";
-        if (stepIndex(id) > stepIndex(step) && !evaluateNextGate(step).ok && id !== "scan") {
+        if (stepIndexOf(id, steps) < stepIndexOf(step, steps)) return "visited";
+        if (
+            stepIndexOf(id, steps) > stepIndexOf(step, steps) &&
+            !evaluateNextGate(step).ok &&
+            id !== "scan"
+        ) {
             return "attention";
         }
         return "upcoming";
@@ -36,7 +42,7 @@ export function ClinicalStepRail() {
     return (
         <div className="border-b border-border bg-panel px-3 py-2">
             <nav aria-label="Clinical workflow" className="flex flex-wrap items-center gap-1">
-                {CLINICAL_STEPS.map((s, i) => {
+                {steps.map((s, i) => {
                     const state = stepState(s.id);
                     return (
                         <button
@@ -80,8 +86,8 @@ export function ClinicalStepRail() {
     );
 }
 
-function stepIndex(step: ClinicalStepId): number {
-    return CLINICAL_STEPS.findIndex((s) => s.id === step);
+function stepIndexOf(step: ClinicalStepId, steps: { id: ClinicalStepId }[]): number {
+    return steps.findIndex((s) => s.id === step);
 }
 
 export function ClinicalStepFooter() {
@@ -91,8 +97,10 @@ export function ClinicalStepFooter() {
     void footSideExplicitlyChosen;
     const goNext = useClinicalWorkflowStore((s) => s.goNext);
     const goBack = useClinicalWorkflowStore((s) => s.goBack);
-    const atFirst = step === "scan";
-    const atLast = step === "export";
+    const productType = useClinicalWorkflowStore((s) => s.productType);
+    const steps = stepsForProduct(productType);
+    const atFirst = step === steps[0]?.id;
+    const atLast = step === steps[steps.length - 1]?.id;
     const gate = evaluateNextGate(step);
 
     return (

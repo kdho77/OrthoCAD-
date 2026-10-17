@@ -8,6 +8,7 @@ import {
     isAuthoritativeKernel,
     isKernelInitFailed,
 } from "@/lib/chili3d/kernel";
+import { afoMeshToGeometry } from "@/lib/geometry/afo/mesh-ops";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
@@ -24,6 +25,7 @@ import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gate
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
+import { useAfoStore } from "@/stores/afo-store";
 import { curveToPolyPoints, useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
 import type { DesignState, ProductionMethod, Side } from "@/types";
@@ -186,6 +188,19 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
 /** Export STL bytes for the active design side. */
 export async function buildExportStl(side: Side, options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
     const { design } = useDesignStore.getState();
+    if (design.productType === "afo") {
+        const shell = useAfoStore.getState().shellMesh;
+        if (!shell) {
+            throw new Error("[EXPORT] Generate the AFO shell on the Print step before exporting STL.");
+        }
+        const geometry = afoMeshToGeometry(shell);
+        assertClosedSolidAcceptable(geometry, 0, null);
+        try {
+            return geometryToBinarySTL(geometry);
+        } finally {
+            geometry.dispose();
+        }
+    }
     assertShapeFinishExportAllowed(design, side);
     const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
 

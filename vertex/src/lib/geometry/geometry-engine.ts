@@ -1,21 +1,18 @@
-import { BufferGeometry, Vector3 } from "three";
+import { type BufferGeometry, Vector3 } from "three";
 import { getKernel } from "@/lib/chili3d/kernel";
-import { buildInsoleGeometry } from "@/lib/geometry/insole";
-import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import { geometryToPayload, payloadToGeometry } from "@/lib/geometry/geometry-buffer";
-import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
-import { isOcctKernelActive, scheduleMainThread } from "@/lib/geometry/kernel-build";
-import { occtWorkerEngine } from "@/lib/geometry/occt-worker-engine";
-import type { SolidValidation } from "@/lib/geometry/repair";
-import { segmentsForQuality, type GeometryQuality } from "@/lib/geometry/quality";
-import { serializeTrimLines, serializeVertexOverrides } from "@/lib/geometry/mesh-edit-serialize";
-import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
-import {
-    buildTrimlineInsoleMesh,
-    type TrimlineMeshOptions,
-} from "@/lib/geometry/trimline-mesh";
-import type { TrimLine } from "@/lib/geometry/mesh-edit";
 import type { InsoleParams } from "@/lib/geometry/insole";
+import { buildInsoleGeometry } from "@/lib/geometry/insole";
+import { isOcctKernelActive, scheduleMainThread } from "@/lib/geometry/kernel-build";
+import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
+import type { TrimLine } from "@/lib/geometry/mesh-edit";
+import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
+import { serializeTrimLines, serializeVertexOverrides } from "@/lib/geometry/mesh-edit-serialize";
+import { occtWorkerEngine } from "@/lib/geometry/occt-worker-engine";
+import { type GeometryQuality, segmentsForQuality } from "@/lib/geometry/quality";
+import type { SolidValidation } from "@/lib/geometry/repair";
+import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
+import { buildTrimlineInsoleMesh, type TrimlineMeshOptions } from "@/lib/geometry/trimline-mesh";
 import type { WorkerRequest, WorkerResponse } from "@/workers/geometry.worker";
 
 export interface BuildInsoleOptions {
@@ -40,7 +37,10 @@ class GeometryEngine {
     private worker: Worker | null = null;
     private nextId = 1;
     private pending = new Map<number, PendingRequest>();
-    private manifoldPending = new Map<number, { resolve: (r: ManifoldReport) => void; reject: (e: Error) => void }>();
+    private manifoldPending = new Map<
+        number,
+        { resolve: (r: ManifoldReport) => void; reject: (e: Error) => void }
+    >();
     private latestBuildId = 0;
 
     private ensureWorker(): Worker | null {
@@ -64,6 +64,8 @@ class GeometryEngine {
                         this.manifoldPending.delete(msg.id);
                         req.resolve(msg.report);
                     }
+                } else if (msg.type === "progress") {
+                    return;
                 } else if (msg.type === "error") {
                     const req = this.pending.get(msg.id) ?? this.manifoldPending.get(msg.id);
                     if (req) {

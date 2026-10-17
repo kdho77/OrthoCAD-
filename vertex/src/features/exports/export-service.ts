@@ -103,7 +103,8 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     if (format === "glb") {
         return exportGlb(side);
     }
-    const filename = `insole-${side}-${Date.now()}.stl`;
+    const product = useDesignStore.getState().design.productType === "afo" ? "afo" : "insole";
+    const filename = `${product}-${side}-${Date.now()}.stl`;
     try {
         const { design } = useDesignStore.getState();
         const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });

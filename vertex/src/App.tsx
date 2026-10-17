@@ -9,6 +9,7 @@ import { StatusBar } from "@/components/layout/StatusBar";
 import { type NavItem, TopNav } from "@/components/layout/TopNav";
 import { PrescriptionUpload } from "@/components/prescription-upload/PrescriptionUpload";
 import { Viewer3D } from "@/components/viewer/Viewer3D";
+import { ProductTypeBar } from "@/features/afo/ProductTypeBar";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { ClientsView } from "@/features/clients/ClientsView";
 import { exportDesign } from "@/features/exports/export-service";
@@ -53,6 +54,10 @@ export default function App() {
             glbPath: bootstrapBase?.glbPath ?? null,
         });
 
+        if (useDesignStore.getState().design.productType === "afo") {
+            stockDebug("App stock bootstrap skipped — AFO product (no SAMPLE_Top)");
+            return;
+        }
         if (authLoading) {
             stockDebug("App stock bootstrap waiting for auth");
             return;
@@ -108,6 +113,7 @@ export default function App() {
                 <div className="flex min-h-0 flex-1">
                     {nav === "Production" ? (
                         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                            <ProductTypeBar />
                             <ClinicalStepRail />
                             <CaseSummaryBar />
                             <div className="relative flex min-h-0 flex-1">
