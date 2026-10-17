@@ -11,7 +11,6 @@ import { mapVertexSliceError, VertexSliceHttpError } from "../../../shared/verte
 import { slicerDownloadFilename } from "../../../shared/vertexslice/filename.js";
 import { parseGcodeStats } from "../../../shared/vertexslice/gcode-stats.js";
 import { createFetchContext } from "../context.js";
-import { assertActiveLicense, requireSupabaseAdmin } from "./supabase-db.js";
 import { createVertexSliceClient, type VertexSliceClient } from "./vertexslice-client.js";
 import { createMockVertexSliceClient } from "./vertexslice-mock.js";
 
@@ -130,38 +129,14 @@ async function parseSliceInput(request: Request): Promise<{
     };
 }
 
-async function authorize(request: Request): Promise<{ id: string; role: string } | Response | null> {
+async function authorize(request: Request): Promise<{ id: string; role: string } | null> {
     const ctx = await createFetchContext({
         req: request,
         resHeaders: new Headers(),
     } as unknown as Parameters<typeof createFetchContext>[0]);
     if (ctx.user) return { id: ctx.user.id, role: ctx.user.role };
-
-    const supabaseConfigured = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
-    if (!supabaseConfigured) return null;
-    return jsonResponse(
-        {
-            ok: false,
-            error: {
-                code: "unauthorized",
-                cause: "Sign in to slice.",
-                nextStep: "Sign in, then try again.",
-                requestId: request.headers.get(SLICER_REQUEST_ID_HEADER) || "",
-            },
-        },
-        401,
-        request.headers.get(SLICER_REQUEST_ID_HEADER) || requestId(),
-        request,
-    );
-}
-
-async function assertLicenseUnlessSuperAdmin(user: { id: string; role: string } | null): Promise<void> {
-    if (!user) return;
-    if (user.role === "super_admin") return;
-    const supabaseConfigured = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
-    if (!supabaseConfigured) return;
-    const supabase = requireSupabaseAdmin();
-    await assertActiveLicense(supabase, user.id);
+    // Pay-per-file: slice is allowed without an account. Nothing is persisted.
+    return null;
 }
 
 export async function handleSlicerRequest(
@@ -197,44 +172,10 @@ export async function handleSlicerRequest(
         );
     }
 
-    const auth = await authorize(request);
-    if (auth instanceof Response) {
-        const body = await auth.text();
-        return new Response(body, {
-            status: auth.status,
-            headers: { ...Object.fromEntries(auth.headers), [SLICER_REQUEST_ID_HEADER]: id },
-        });
-    }
-
     try {
-        await assertLicenseUnlessSuperAdmin(auth);
-    } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (message.includes("No valid license") || message.includes("FORBIDDEN")) {
-            return jsonResponse(
-                {
-                    ok: false,
-                    error: {
-                        code: "unauthorized",
-                        cause: "No valid license.",
-                        nextStep: "Ask an admin to assign a license, then try again.",
-                        requestId: id,
-                    },
-                },
-                403,
-                id,
-                request,
-            );
-        }
-        return jsonResponse(
-            {
-                ok: false,
-                error: mapVertexSliceError(500, message, id),
-            },
-            502,
-            id,
-            request,
-        );
+        await authorize(request);
+    } catch {
+        // Anonymous pay-per-file slice still proceeds; nothing is persisted.
     }
 
     const env = deps?.env ?? process.env;
