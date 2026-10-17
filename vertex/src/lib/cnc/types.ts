@@ -89,9 +89,9 @@ export interface MillingProfile {
     alignX: AlignX;
     alignY: AlignY;
     insolesHorizontal: boolean;
-    /** [K] Heel toward X0 (default) or toward table max X. Founder confirmation pending. */
+    /** Founder-confirmed: heel toward X0 (left), toe right. Still configurable. */
     heelDirection: HeelDirection;
-    /** [K] Top offset is a horizontal overrun outside the outline. Founder confirmation pending. */
+    /** Founder-confirmed: top offset is a horizontal overrun ring, not a Z allowance. Still configurable. */
     topOffsetMeaning: TopOffsetMeaning;
     stepoverBallMm: number;
     stepoverFlatMm: number;

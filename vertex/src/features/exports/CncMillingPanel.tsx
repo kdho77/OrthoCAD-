@@ -83,22 +83,22 @@ export function CncMillingPanel() {
                 </Button>
             </div>
 
-            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[10px] text-amber-200">
-                Open [K] questions — defaults used until the founder confirms: heel toward X0, top offset =
-                2.5 mm horizontal overrun. Contour tool confirmed: 10 mm ball (DAMEN VHM D10); flat remains
-                selectable.
+            <div className="rounded-md border border-border bg-muted/40 px-2 py-1.5 text-[10px] text-muted-foreground">
+                Founder-confirmed Idaho layout: heel toward X0 (left), toe right; one insole per pocket,
+                stacked in Y, pockets are full-width table halves. Top offset 2.5 mm is a horizontal overrun
+                ring around the outline (not Z). Contour: 10 mm ball (DAMEN VHM D10); flat remains selectable.
             </div>
 
             <div className="grid grid-cols-2 gap-2">
                 <label htmlFor="cnc-heel-direction" className="block space-y-0.5">
-                    <span className="text-[10px] text-muted-foreground">Heel direction [K]</span>
+                    <span className="text-[10px] text-muted-foreground">Heel direction</span>
                     <select
                         id="cnc-heel-direction"
                         className="h-7 w-full rounded-md border border-input bg-background px-2 text-xs"
                         value={profile.heelDirection}
                         onChange={(e) => setProfile({ heelDirection: e.target.value as HeelDirection })}
                     >
-                        <option value="x0">Heel toward X0</option>
+                        <option value="x0">Heel toward X0 (left)</option>
                         <option value="xmax">Heel toward +X</option>
                     </select>
                 </label>
@@ -130,7 +130,7 @@ export function CncMillingPanel() {
 
             <div className="grid grid-cols-2 gap-2">
                 <Field
-                    label="Top offset [K]"
+                    label="Top offset (XY ring)"
                     value={profile.topOffsetMm}
                     unit="mm"
                     onChange={(v) => setProfile({ topOffsetMm: v })}
