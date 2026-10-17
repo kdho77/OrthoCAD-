@@ -131,6 +131,12 @@ export function evaluatePlacedPart(placed: PlacedPart, profile: MillingProfile):
             reason: `Part plus margin does not fit pocket ${placed.pocketIndex + 1} (leaves pocket)`,
         };
     }
+    if (placed.zMax > profile.materialHeightMm + 1e-6) {
+        return {
+            ok: false,
+            reason: `Part max height ${placed.zMax.toFixed(1)} mm exceeds the block depth (${profile.materialHeightMm} mm)`,
+        };
+    }
     return { ok: true };
 }
 
@@ -164,7 +170,7 @@ export function placeWorkpieces(
         const tx = override?.tx ?? auto.tx;
         const ty = override?.ty ?? auto.ty;
         const skinClear = profile.materialHeightMm - 1;
-        if (wp.zMax > skinClear + 1e-6) {
+        if (options?.validate !== false && wp.zMax > skinClear + 1e-6) {
             throw new CncExportError(
                 "too_tall",
                 `Part max Z ${wp.zMax.toFixed(3)} mm exceeds material height − 1 (${skinClear} mm)`,
@@ -183,6 +189,7 @@ export function placeWorkpieces(
             heightmap: wp.heightmap,
             zMin: wp.zMin,
             zMax: wp.zMax,
+            mesh: wp.mesh,
         };
         if (options?.validate !== false) {
             const fit = evaluatePlacedPart(placed, profile);

@@ -3,31 +3,15 @@
 
 import { Line, OrbitControls } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
-import { useLayoutEffect, useMemo } from "react";
+import { useEffect, useLayoutEffect, useMemo } from "react";
 import * as THREE from "three";
-import { transformOutline } from "@/lib/cnc/placement";
-import type { MillingProfile, PlacedPart, Point } from "@/lib/cnc/types";
+import type { MillingProfile, PlacedPart } from "@/lib/cnc/types";
 import type { Side } from "@/types";
 
 function partFill(invalid: boolean, selected: boolean): string {
     if (invalid) return "#ef4444";
     if (selected) return "#4ade80";
     return "#d4d4d8";
-}
-
-function outlineShape(pts: Point[]): THREE.Shape | null {
-    if (pts.length < 3) return null;
-    const first = pts[0];
-    if (!first) return null;
-    const shape = new THREE.Shape();
-    shape.moveTo(first.x, first.y);
-    for (let i = 1; i < pts.length; i++) {
-        const p = pts[i];
-        if (!p) continue;
-        shape.lineTo(p.x, p.y);
-    }
-    shape.closePath();
-    return shape;
 }
 
 function ZUpCamera({ tx, ty, tz }: { tx: number; ty: number; tz: number }) {
@@ -51,74 +35,99 @@ function TableBlock({
     height: number;
     pockets: MillingProfile["pockets"];
 }) {
+    const boxGeo = useMemo(() => new THREE.BoxGeometry(width, length, height), [width, length, height]);
+    const edgesGeo = useMemo(() => new THREE.EdgesGeometry(boxGeo), [boxGeo]);
+    useEffect(
+        () => () => {
+            boxGeo.dispose();
+            edgesGeo.dispose();
+        },
+        [boxGeo, edgesGeo],
+    );
     const pocketLines = useMemo(
         () =>
             pockets.map((pk) => ({
                 key: `pk-${pk.x}-${pk.y}-${pk.width}-${pk.length}`,
                 points: [
-                    new THREE.Vector3(pk.x, pk.y, height + 0.2),
-                    new THREE.Vector3(pk.x + pk.width, pk.y, height + 0.2),
-                    new THREE.Vector3(pk.x + pk.width, pk.y + pk.length, height + 0.2),
-                    new THREE.Vector3(pk.x, pk.y + pk.length, height + 0.2),
-                    new THREE.Vector3(pk.x, pk.y, height + 0.2),
+                    new THREE.Vector3(pk.x, pk.y, height + 0.15),
+                    new THREE.Vector3(pk.x + pk.width, pk.y, height + 0.15),
+                    new THREE.Vector3(pk.x + pk.width, pk.y + pk.length, height + 0.15),
+                    new THREE.Vector3(pk.x, pk.y + pk.length, height + 0.15),
+                    new THREE.Vector3(pk.x, pk.y, height + 0.15),
                 ],
             })),
         [pockets, height],
     );
     return (
         <group>
-            <mesh position={[width / 2, length / 2, height / 2]} receiveShadow>
-                <boxGeometry args={[width, length, height]} />
-                <meshStandardMaterial color="#3f3f46" />
+            <mesh position={[width / 2, length / 2, height / 2]} geometry={boxGeo} renderOrder={0}>
+                <meshStandardMaterial
+                    color="#94a3b8"
+                    transparent
+                    opacity={0.22}
+                    depthWrite={false}
+                    metalness={0.04}
+                    roughness={0.9}
+                    side={THREE.FrontSide}
+                />
             </mesh>
+            <lineSegments position={[width / 2, length / 2, height / 2]} geometry={edgesGeo} renderOrder={2}>
+                <lineBasicMaterial color="#e4e4e7" />
+            </lineSegments>
             {pocketLines.map((pk) => (
-                <Line key={pk.key} points={pk.points} color="#e4e4e7" lineWidth={2} />
+                <Line key={pk.key} points={pk.points} color="#e4e4e7" lineWidth={1.5} />
             ))}
         </group>
     );
 }
 
+/**
+ * Same placement as the 2D top view: T(tx,ty) · T(cx,cy) · Rz(rotationDeg) · T(-cx,-cy).
+ * Mesh local XY is mill plan; Z is thickness so arch/heel sit inside the stock block.
+ */
 function InsoleMesh3D({
     part,
-    height,
     selected,
     invalid,
     onSelect,
 }: {
     part: PlacedPart;
-    height: number;
     selected: boolean;
     invalid: boolean;
     onSelect: (side: Side) => void;
 }) {
-    const world = useMemo(() => transformOutline(part.outline, part), [part]);
-    const geometry = useMemo(() => {
-        const shape = outlineShape(world);
-        if (!shape) return null;
-        const thickness = Math.max(4, Math.min(height - 2, part.zMax));
-        const geo = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false, steps: 1 });
-        geo.translate(0, 0, height + 0.4);
-        return geo;
-    }, [world, height, part.zMax]);
-    if (!geometry) return null;
+    const geometry = part.mesh;
+    const rotationRad = (part.rotationDeg * Math.PI) / 180;
     const color = partFill(invalid, selected);
+    if (!geometry) return null;
     return (
-        <mesh
-            geometry={geometry}
-            castShadow
-            onPointerDown={(e) => {
-                e.stopPropagation();
-                onSelect(part.side);
-            }}
-        >
-            <meshStandardMaterial
-                color={color}
-                emissive={color}
-                emissiveIntensity={0.35}
-                metalness={0.02}
-                roughness={0.45}
-            />
-        </mesh>
+        <group position={[part.tx, part.ty, 0]}>
+            <group position={[part.cx, part.cy, 0]} rotation={[0, 0, rotationRad]}>
+                <group position={[-part.cx, -part.cy, 0]}>
+                    <mesh
+                        geometry={geometry}
+                        castShadow
+                        renderOrder={1}
+                        onPointerDown={(e) => {
+                            e.stopPropagation();
+                            onSelect(part.side);
+                        }}
+                    >
+                        <meshStandardMaterial
+                            color={color}
+                            emissive={color}
+                            emissiveIntensity={selected ? 0.28 : 0.12}
+                            metalness={0.04}
+                            roughness={0.55}
+                            side={THREE.DoubleSide}
+                            polygonOffset
+                            polygonOffsetFactor={1}
+                            polygonOffsetUnits={1}
+                        />
+                    </mesh>
+                </group>
+            </group>
+        </group>
     );
 }
 
@@ -149,7 +158,7 @@ export function MillOrbitCanvas({
             dpr={[1, 1.5]}
             gl={{ antialias: true, alpha: false }}
             camera={{
-                position: [cx + tw * 0.15, cy - tl * 0.95, h * 16],
+                position: [cx + tw * 0.55, cy - tl * 0.95, h * 8],
                 fov: 40,
                 near: 0.5,
                 far: 8000,
@@ -157,23 +166,23 @@ export function MillOrbitCanvas({
             }}
             onCreated={({ camera, gl }) => {
                 camera.up.set(0, 0, 1);
-                camera.lookAt(cx, cy, h);
+                camera.lookAt(cx, cy, cz);
                 gl.domElement.style.touchAction = "none";
             }}
             onPointerMissed={() => onSelect(null)}
         >
             <color attach="background" args={["#0f1522"]} />
-            <ZUpCamera tx={cx} ty={cy} tz={h} />
-            <ambientLight intensity={1.05} />
-            <hemisphereLight args={["#f4f4f5", "#27272a", 0.7]} />
-            <directionalLight position={[tw * 0.2, -tl * 0.4, h * 18]} intensity={1.4} />
-            <directionalLight position={[-tw, tl, h * 8]} intensity={0.55} />
+            <ZUpCamera tx={cx} ty={cy} tz={cz} />
+            <ambientLight intensity={0.7} />
+            <hemisphereLight args={["#f8fafc", "#1e293b", 0.55]} />
+            <directionalLight position={[tw * 0.9, cy, h * 1.4]} intensity={1.15} />
+            <directionalLight position={[cx, -tl * 0.4, h * 6]} intensity={0.85} />
+            <directionalLight position={[-tw * 0.3, tl, h * 3]} intensity={0.45} />
             <TableBlock width={tw} length={tl} height={h} pockets={profile.pockets} />
             {placed.map((part) => (
                 <InsoleMesh3D
                     key={part.side}
                     part={part}
-                    height={h}
                     selected={millSelected === part.side}
                     invalid={issues[part.side]?.ok === false}
                     onSelect={onSelect}
@@ -190,8 +199,8 @@ export function MillOrbitCanvas({
                 target={[cx, cy, cz]}
                 minDistance={40}
                 maxDistance={2500}
-                minPolarAngle={0.12}
-                maxPolarAngle={Math.PI / 2 - 0.08}
+                minPolarAngle={0.08}
+                maxPolarAngle={Math.PI / 2 - 0.04}
                 zoomToCursor
                 mouseButtons={{
                     LEFT: THREE.MOUSE.ROTATE,

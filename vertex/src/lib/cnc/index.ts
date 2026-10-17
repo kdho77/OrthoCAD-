@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-export { workpieceFromComposed, workpiecesFromDesign } from "./compose";
+export { attachOrbitMesh, workpieceFromComposed, workpiecesFromDesign } from "./compose";
 export { buildContourPass } from "./contour";
 export { ballScallopMm } from "./drop-cutter";
 export { generateCncJob } from "./export";

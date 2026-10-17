@@ -10,13 +10,25 @@ import type { DesignState, Side } from "@/types";
 import type { CncWorkpiece, MillingProfile } from "./types";
 import { workpieceFromGeometry } from "./workpiece";
 
+/** Keep the composed top for mill orbit. Clone when `composed` is the loaded SAMPLE_Top sheet. */
+export function attachOrbitMesh(
+    wp: CncWorkpiece,
+    composed: BufferGeometry,
+    raw?: BufferGeometry | null,
+): CncWorkpiece {
+    const mesh = raw && composed === raw ? composed.clone() : composed;
+    mesh.computeVertexNormals();
+    wp.mesh = mesh;
+    return wp;
+}
+
 /** Build a CAM workpiece from a composed top mesh. Does not mutate `design`. */
 export function workpieceFromComposed(
     composed: BufferGeometry,
     side: Side,
     profile: MillingProfile,
 ): CncWorkpiece {
-    return workpieceFromGeometry(composed, side, profile);
+    return attachOrbitMesh(workpieceFromGeometry(composed, side, profile), composed);
 }
 
 /**
@@ -47,8 +59,7 @@ export async function workpiecesFromDesign(
         const composed = composePrintSolidTop(raw, {
             sourceField: { ...field, lengthMm: layout.lengthMm, widthMm: layout.widthMm },
         });
-        out.push(workpieceFromGeometry(composed, side, profile));
-        if (composed !== raw) composed.dispose();
+        out.push(attachOrbitMesh(workpieceFromGeometry(composed, side, profile), composed, raw));
     }
     return out;
 }
