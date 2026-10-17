@@ -19,13 +19,10 @@ function user(role: UserProfile["role"]): UserProfile {
 }
 
 describe("canUseSlicer", () => {
-    test("super admin is never blocked", () => {
-        expect(canUseSlicer(user("super_admin"), null).ok).toBe(true);
-        expect(canUseSlicer(user("super_admin"), { ...license, status: "revoked" }).ok).toBe(true);
-    });
-
-    test("clinician without a license is blocked", () => {
-        expect(canUseSlicer(user("clinician"), null).ok).toBe(false);
+    test("pay-per-file slicer does not require an account or license", () => {
+        expect(canUseSlicer(null, null).ok).toBe(true);
+        expect(canUseSlicer(user("clinician"), null).ok).toBe(true);
         expect(canUseSlicer(user("clinician"), license).ok).toBe(true);
+        expect(canUseSlicer(user("super_admin"), null).ok).toBe(true);
     });
 });

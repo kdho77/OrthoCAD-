@@ -24,7 +24,7 @@ import { usePersistDesignWorkflow } from "@/features/clients/usePersistDesignWor
 import { InactivityGuard } from "@/features/clients/InactivityGuard";
 import { parseClinicalPath } from "@/features/clients/routes";
 import { exportDesign } from "@/features/exports/export-service";
-import { SlicerPage } from "@/features/slicer/SlicerPage";
+import { SlicerApp } from "@/features/slicer/SlicerApp";
 import { MillTableView } from "@/features/mill/MillTableView";
 import { ProductionPage } from "@/features/production/ProductionPage";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
@@ -56,7 +56,7 @@ export default function App() {
     if (isSlicerPath(pathname)) {
         return (
             <ErrorBoundary>
-                <SlicerPage />
+                <SlicerApp />
             </ErrorBoundary>
         );
     }
