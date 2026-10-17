@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { ChevronDown, Upload } from "lucide-react";
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import { Button } from "@/components/ui/button";
 import { MATERIAL_CARDS, standardWallLabel } from "@/features/slicer/materials";
 import { cn } from "@/lib/utils";
@@ -47,6 +47,7 @@ export function SlicerFormColumn({
     onSlice,
     onCancel,
     onKeepWaiting,
+    children,
 }: {
     state: SlicerState;
     dragOver: boolean;
@@ -72,9 +73,10 @@ export function SlicerFormColumn({
     onSlice: () => void;
     onCancel: () => void;
     onKeepWaiting: () => void;
+    children?: ReactNode;
 }) {
     return (
-        <div className="flex w-full flex-col gap-4 md:w-[380px] md:shrink-0 pb-24 md:pb-0">
+        <div className="flex w-full flex-col gap-4 p-4 pb-24 md:h-full md:w-[400px] md:shrink-0 md:overflow-y-auto md:pb-4">
             {/* biome-ignore lint/a11y/useSemanticElements: drop target cannot be a native button */}
             <div
                 ref={dropRef}
@@ -281,6 +283,7 @@ export function SlicerFormColumn({
                     onKeepWaiting={onKeepWaiting}
                 />
             </div>
+            {children}
         </div>
     );
 }
