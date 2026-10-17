@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { VERTEXSLICE_MAX_UPLOAD_BYTES } from "../../../shared/vertexslice/contract";
-import { analyzeMeshTopology, meshTopologyWarning, type MeshTopology } from "./slicer-topology";
+import { analyzeMeshTopology, meshTopologyWarning } from "./slicer-topology";
 
 export {
     analyzeMeshTopology,
@@ -367,4 +367,74 @@ export function makeBoxStl(dx: number, dy: number, dz: number): ArrayBuffer {
         offset += 2;
     }
     return buffer;
+}
+
+/** Kendon's OrthoCAD export size used by `/slicer?demo=*` and closed-mesh tests. */
+export const INSOLE_DEMO_MM: [number, number, number] = [185.1, 89.7, 28.7];
+
+function pushTri(out: number[], a: number[], b: number[], c: number[]): void {
+    out.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+}
+
+/**
+ * Watertight stadium (capsule) extrusion that reads as an insole in the viewer.
+ * Demo used to ship a 2-triangle plane, so the camera framed empty space.
+ */
+export function makeStadiumInsolePositions(
+    lengthMm = INSOLE_DEMO_MM[0],
+    widthMm = INSOLE_DEMO_MM[1],
+    heightMm = INSOLE_DEMO_MM[2],
+    segments = 48,
+): Float32Array {
+    const halfL = lengthMm / 2;
+    const r = widthMm / 2;
+    const halfH = heightMm / 2;
+    const halfStraight = Math.max(halfL - r, 0);
+    const halfN = Math.max(8, Math.floor(segments / 2));
+    const ring: Array<[number, number]> = [];
+    for (let i = 0; i < halfN; i++) {
+        const t = -Math.PI / 2 + (Math.PI * i) / halfN;
+        ring.push([halfStraight + r * Math.cos(t), r * Math.sin(t)]);
+    }
+    for (let i = 0; i < halfN; i++) {
+        const t = Math.PI / 2 + (Math.PI * i) / halfN;
+        ring.push([-halfStraight + r * Math.cos(t), r * Math.sin(t)]);
+    }
+    const tris: number[] = [];
+    const count = ring.length;
+    for (let i = 0; i < count; i++) {
+        const j = (i + 1) % count;
+        const topA = [ring[i][0], ring[i][1], halfH];
+        const topB = [ring[j][0], ring[j][1], halfH];
+        const botB = [ring[j][0], ring[j][1], -halfH];
+        const botA = [ring[i][0], ring[i][1], -halfH];
+        pushTri(tris, topA, topB, botB);
+        pushTri(tris, topA, botB, botA);
+    }
+    const topCenter = [0, 0, halfH];
+    const botCenter = [0, 0, -halfH];
+    for (let i = 0; i < count; i++) {
+        const j = (i + 1) % count;
+        pushTri(tris, topCenter, [ring[i][0], ring[i][1], halfH], [ring[j][0], ring[j][1], halfH]);
+        pushTri(tris, botCenter, [ring[j][0], ring[j][1], -halfH], [ring[i][0], ring[i][1], -halfH]);
+    }
+    return Float32Array.from(tris);
+}
+
+export function makeInsoleDemoMesh(
+    lengthMm = INSOLE_DEMO_MM[0],
+    widthMm = INSOLE_DEMO_MM[1],
+    heightMm = INSOLE_DEMO_MM[2],
+): ParsedSlicerMesh {
+    const positions = makeStadiumInsolePositions(lengthMm, widthMm, heightMm);
+    const topology = analyzeMeshTopology(positions);
+    return {
+        positions,
+        triangleCount: positions.length / 9,
+        bounds: boundsFromPositions(positions),
+        closed: topology.triangleCount > 0 && topology.boundaryEdges === 0,
+        topology,
+        warning: meshTopologyWarning(topology),
+        extension: ".stl",
+    };
 }
