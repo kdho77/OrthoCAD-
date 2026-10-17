@@ -10,8 +10,12 @@ export const DEV_SUPER_ADMIN = {
     tokenBalance: 100,
 } as const;
 
+/** Founder emails that always resolve to super_admin, even if users.role says admin. */
+export const FOUNDER_SUPER_ADMIN_EMAILS = [DEV_SUPER_ADMIN.email] as const;
+
 export function isDevSuperAdminEmail(email: string | undefined | null): boolean {
-    return email?.toLowerCase() === DEV_SUPER_ADMIN.email.toLowerCase();
+    const normalized = email?.trim().toLowerCase();
+    return Boolean(normalized && FOUNDER_SUPER_ADMIN_EMAILS.some((e) => e.toLowerCase() === normalized));
 }
 
 /** True when Vite dev server is running (auto sign-in + prefilled login form). */
@@ -40,10 +44,13 @@ export function offlineLicense(): License {
     };
 }
 
-/** Resolve role — dev super_admin account always gets super_admin in dev/offline flows. */
-export function resolveDevRole(email: string | undefined, metadataRole: unknown): Role {
+/**
+ * Resolve the session role. Founder email allowlist always wins over JWT metadata
+ * and the users-table role — super admin is never blocked by a stale `admin` row.
+ */
+export function resolveDevRole(email: string | undefined, claimedRole: unknown): Role {
     if (isDevSuperAdminEmail(email)) return DEV_SUPER_ADMIN.role;
-    return (metadataRole as Role) ?? "clinician";
+    return (claimedRole as Role) ?? "clinician";
 }
 
 /** Bearer token sent to the API when Supabase is not configured locally. */
