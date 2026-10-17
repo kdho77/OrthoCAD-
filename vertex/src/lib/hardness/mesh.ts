@@ -203,9 +203,12 @@ export function parseBinaryStl(buffer: ArrayBuffer): TriangleMesh {
         positions.push(x, y, z);
         return i;
     };
-    let offset = 84;
+    const expected = 84 + triCount * 50;
+    if (view.byteLength < expected) {
+        throw new Error(`binary STL truncated: ${view.byteLength} < ${expected} bytes`);
+    }
     for (let t = 0; t < triCount; t++) {
-        offset += 12;
+        const offset = 84 + t * 50 + 12;
         const ax = view.getFloat32(offset, true);
         const ay = view.getFloat32(offset + 4, true);
         const az = view.getFloat32(offset + 8, true);
@@ -216,7 +219,6 @@ export function parseBinaryStl(buffer: ArrayBuffer): TriangleMesh {
         const cy = view.getFloat32(offset + 28, true);
         const cz = view.getFloat32(offset + 32, true);
         indices.push(vert(ax, ay, az), vert(bx, by, bz), vert(cx, cy, cz));
-        offset += 50;
     }
     return { positions: new Float32Array(positions), indices: new Uint32Array(indices) };
 }

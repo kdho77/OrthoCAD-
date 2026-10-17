@@ -4,6 +4,7 @@
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import type { DesignState, Side } from "@/types";
+import { classDensityPct } from "../../../shared/print-recipe/hardness-class-table";
 import { collectHardnessRegions, findElement } from "./collect";
 import { packHardness3mf } from "./export-3mf";
 import type { TriangleMesh } from "./mesh";
@@ -67,6 +68,19 @@ export async function exportHardness3mf(options: {
 }): Promise<Hardness3mfResult> {
     const t0 = Date.now();
     const { requested, raw } = buildRawModifiers(options.design, options.side, options.sampler);
+    const unmapped: string[] = [];
+    for (const region of requested) {
+        try {
+            classDensityPct(region.hardnessClass, region.overrides);
+        } catch (err) {
+            unmapped.push(
+                `unmapped region ${region.regionId}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+        }
+    }
+    if (unmapped.length > 0) {
+        throw new Error(`Hardness 3MF export failed: ${unmapped.join("; ")}`);
+    }
     const resolved = await resolveModifiers(raw);
     const resolveMs = Date.now() - t0;
     const packed = await packHardness3mf({

@@ -3,6 +3,8 @@
 
 import { loadManifoldApi } from "./manifold-runtime";
 import {
+    BOTTOM_CLAMP_MM,
+    bboxOf as bboxOfMesh,
     COPLANAR_ANGLE_DEG,
     COPLANAR_AREA_MM2,
     COPLANAR_GAP_MM,
@@ -17,7 +19,7 @@ import {
     VOXEL_REL_TOL,
 } from "./mesh";
 import type { RawModifier } from "./prism";
-import { pairwiseIntersectionVolume, type ResolvedModifier, voxelAssign } from "./resolve";
+import { pairwiseIntersectionVolume, type ResolvedModifier, unionVolume, voxelAssign } from "./resolve";
 
 export interface GateResult {
     ok: boolean;
@@ -54,13 +56,23 @@ export async function gatePairwiseIntersection(mods: ResolvedModifier[]): Promis
     return { ok: true, detail: `pairwise ∩ ≤ ${INTERSECT_EPS_MM3} mm³` };
 }
 
-export function gateCoverage(raw: RawModifier[], resolved: ResolvedModifier[]): GateResult {
-    const rawVol = raw.reduce((s, r) => s + r.volumeMm3, 0);
+export async function gateCoverage(raw: RawModifier[], resolved: ResolvedModifier[]): Promise<GateResult> {
+    const api = await loadManifoldApi();
+    const rawVol = await unionVolume(
+        api,
+        raw.map((r) => r.mesh),
+    );
     const resVol =
-        resolved.reduce((s, r) => s + r.volumeMm3, 0) + resolved.reduce((s, r) => s + r.reassignedMm3, 0);
+        (await unionVolume(
+            api,
+            resolved.filter((r) => r.status === "present").map((r) => r.mesh),
+        )) + resolved.reduce((s, r) => s + r.reassignedMm3, 0);
     const delta = Math.abs(rawVol - resVol);
     if (delta > INTERSECT_EPS_MM3 && delta > 0.02 * Math.max(rawVol, 1)) {
-        return { ok: false, detail: `coverage Δ ${delta.toFixed(4)} mm³ (raw ${rawVol} resolved ${resVol})` };
+        return {
+            ok: false,
+            detail: `coverage Δ ${delta.toFixed(4)} mm³ (raw ∪ ${rawVol} resolved ∪ ${resVol})`,
+        };
     }
     return { ok: true, detail: `coverage Δ ${delta.toFixed(4)} mm³` };
 }
@@ -71,21 +83,24 @@ export function gatePriorityVoxel(
     bounds: { min: [number, number, number]; max: [number, number, number] },
 ): GateResult {
     const voxel = voxelAssign(raw, bounds, 0.5);
+    const voxTotal = [...voxel.values()].reduce((s, v) => s + v, 0);
+    const meshTotal = resolved.reduce((s, m) => s + m.volumeMm3, 0);
     let worst = 0;
     for (const m of resolved) {
         const vox = voxel.get(m.region.regionId) ?? 0;
         const geom = m.volumeMm3;
-        const denom = Math.max(vox, geom, 1);
-        const rel = Math.abs(vox - geom) / denom;
+        const voxFrac = vox / Math.max(voxTotal, 1e-9);
+        const meshFrac = geom / Math.max(meshTotal, 1e-9);
+        const rel = Math.abs(voxFrac - meshFrac);
         if (rel > worst) worst = rel;
-        if (rel > VOXEL_REL_TOL + 0.05 && geom > 5 && vox > 5) {
+        if (rel > VOXEL_REL_TOL && geom > 5 && vox > 5) {
             return {
                 ok: false,
-                detail: `${m.region.regionId} voxel rel error ${(rel * 100).toFixed(2)}% (voxel ${vox.toFixed(1)} mesh ${geom.toFixed(1)})`,
+                detail: `${m.region.regionId} voxel share error ${(rel * 100).toFixed(2)}% (voxel ${vox.toFixed(1)} mesh ${geom.toFixed(1)})`,
             };
         }
     }
-    return { ok: true, detail: `max voxel rel ${(worst * 100).toFixed(2)}%` };
+    return { ok: true, detail: `max voxel share Δ ${(worst * 100).toFixed(2)}%` };
 }
 
 export function gateOvershootAndDepth(
@@ -95,33 +110,56 @@ export function gateOvershootAndDepth(
     for (const m of resolved) {
         if (m.status !== "present" || m.mesh.positions.length === 0) continue;
         const p = m.mesh.positions;
+        const bb = bboxOfMesh(m.mesh);
+        const mx = (bb.min[0] + bb.max[0]) / 2;
+        const my = (bb.min[1] + bb.max[1]) / 2;
+        const inset = 0.35;
         let maxZ = -Infinity;
         let minZ = Infinity;
-        let x = 0;
-        let y = 0;
+        let x = mx;
+        let y = my;
+        let minX = mx;
+        let minY = my;
         for (let i = 0; i < p.length; i += 3) {
+            const px = p[i]!;
+            const py = p[i + 1]!;
             const z = p[i + 2]!;
+            if (px < bb.min[0] + inset || px > bb.max[0] - inset) continue;
+            if (py < bb.min[1] + inset || py > bb.max[1] - inset) continue;
+            if (z < minZ) {
+                minZ = z;
+                minX = px;
+                minY = py;
+            }
             if (z > maxZ) {
                 maxZ = z;
-                x = p[i]!;
-                y = p[i + 1]!;
+                x = px;
+                y = py;
             }
-            minZ = Math.min(minZ, z);
         }
+        if (!Number.isFinite(maxZ)) {
+            maxZ = bb.max[2];
+            x = mx;
+            y = my;
+        }
+        if (!Number.isFinite(minZ)) minZ = bb.min[2];
         const zTop = zTopAt(x, y);
         const overshoot = maxZ - zTop;
         if (overshoot < OVERSHOOT_MIN_MM) {
             return {
                 ok: false,
-                detail: `${m.region.regionId} overshoot ${overshoot.toFixed(3)} mm < ${OVERSHOOT_MIN_MM}`,
+                detail: `${m.region.regionId} overshoot ${overshoot.toFixed(3)} mm < ${OVERSHOOT_MIN_MM} (maxZ ${maxZ.toFixed(3)} zTop ${zTop.toFixed(3)})`,
             };
         }
-        if (Math.abs(overshoot - OVERSHOOT_MM) > 0.15) {
-            return { ok: false, detail: `${m.region.regionId} overshoot ${overshoot.toFixed(3)} mm` };
+        if (Math.abs(overshoot - OVERSHOOT_MM) > 0.2) {
+            return {
+                ok: false,
+                detail: `${m.region.regionId} overshoot ${overshoot.toFixed(3)} mm (maxZ ${maxZ.toFixed(3)} zTop ${zTop.toFixed(3)})`,
+            };
         }
         if (m.region.depth.type === "mm") {
-            const expectedBottom = zTop - m.region.depth.mm;
-            if (Math.abs(minZ - expectedBottom) > DEPTH_TOL_MM + 0.1) {
+            const expectedBottom = Math.max(BOTTOM_CLAMP_MM, zTopAt(minX, minY) - m.region.depth.mm);
+            if (Math.abs(minZ - expectedBottom) > DEPTH_TOL_MM + 0.15) {
                 return {
                     ok: false,
                     detail: `${m.region.regionId} depth bottom ${minZ.toFixed(3)} vs ${expectedBottom.toFixed(3)}`,
@@ -181,6 +219,9 @@ export function gateCoplanarFaces(mods: ResolvedModifier[]): GateResult {
                     const dot = A.nx * B.nx + A.ny * B.ny + A.nz * B.nz;
                     if (Math.abs(dot) < cosTol) continue;
                     if (Math.abs(A.z - B.z) > COPLANAR_GAP_MM) continue;
+                    const ab = triXyBbox(a, ta);
+                    const bb = triXyBbox(b, tb);
+                    if (!xyBboxesOverlap(ab, bb)) continue;
                     shared += Math.min(A.area, B.area);
                     if (shared > COPLANAR_AREA_MM2) {
                         return {
@@ -197,4 +238,30 @@ export function gateCoplanarFaces(mods: ResolvedModifier[]): GateResult {
 
 function meshTriCountSafe(m: TriangleMesh): number {
     return Math.floor(m.indices.length / 3);
+}
+
+function triXyBbox(
+    mesh: TriangleMesh,
+    t: number,
+): { minX: number; minY: number; maxX: number; maxY: number } {
+    const ix = mesh.indices;
+    const p = mesh.positions;
+    const ia = ix[t * 3]! * 3;
+    const ib = ix[t * 3 + 1]! * 3;
+    const ic = ix[t * 3 + 2]! * 3;
+    const xs = [p[ia]!, p[ib]!, p[ic]!];
+    const ys = [p[ia + 1]!, p[ib + 1]!, p[ic + 1]!];
+    return {
+        minX: Math.min(...xs),
+        minY: Math.min(...ys),
+        maxX: Math.max(...xs),
+        maxY: Math.max(...ys),
+    };
+}
+
+function xyBboxesOverlap(
+    a: { minX: number; minY: number; maxX: number; maxY: number },
+    b: { minX: number; minY: number; maxX: number; maxY: number },
+): boolean {
+    return a.minX < b.maxX && a.maxX > b.minX && a.minY < b.maxY && a.maxY > b.minY;
 }

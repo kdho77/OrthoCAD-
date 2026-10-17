@@ -11,6 +11,39 @@ import type { ResolvedModifier } from "./resolve";
 const DOS_EPOCH = new Date(Date.UTC(1980, 0, 1, 0, 0, 0));
 const IDENTITY = "1 0 0 0 1 0 0 0 1 0 0 0";
 
+/** Zero DOS + extra-field timestamps so two packs of the same files are byte-identical. */
+function freezeZipTimestamps(src: Uint8Array): Uint8Array {
+    const out = new Uint8Array(src);
+    const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+    let i = 0;
+    while (i + 4 <= out.length) {
+        const sig = view.getUint32(i, true);
+        if (sig === 0x04034b50) {
+            view.setUint16(i + 10, 0, true);
+            view.setUint16(i + 12, 0, true);
+            const nameLen = view.getUint16(i + 26, true);
+            const extraLen = view.getUint16(i + 28, true);
+            const compSize = view.getUint32(i + 18, true);
+            for (let k = 0; k < extraLen; k++) out[i + 30 + nameLen + k] = 0;
+            i += 30 + nameLen + extraLen + compSize;
+            continue;
+        }
+        if (sig === 0x02014b50) {
+            view.setUint16(i + 12, 0, true);
+            view.setUint16(i + 14, 0, true);
+            const nameLen = view.getUint16(i + 28, true);
+            const extraLen = view.getUint16(i + 30, true);
+            const commentLen = view.getUint16(i + 32, true);
+            for (let k = 0; k < extraLen; k++) out[i + 46 + nameLen + k] = 0;
+            i += 46 + nameLen + extraLen + commentLen;
+            continue;
+        }
+        if (sig === 0x06054b50) break;
+        i += 1;
+    }
+    return out;
+}
+
 function xmlEscape(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -153,16 +186,15 @@ export async function packHardness3mf(options: {
             date: DOS_EPOCH,
             compression: "DEFLATE",
             compressionOptions: { level: 6 },
-            unixPermissions: 0o644,
         });
     }
-    const bytes = await zip.generateAsync({
+    const raw = await zip.generateAsync({
         type: "uint8array",
-        platform: "UNIX",
+        platform: "DOS",
         compression: "DEFLATE",
         compressionOptions: { level: 6 },
     });
-    return { bytes, designJson, designHash };
+    return { bytes: freezeZipTimestamps(raw), designJson, designHash };
 }
 
 export async function readDesignFrom3mf(bytes: Uint8Array): Promise<{

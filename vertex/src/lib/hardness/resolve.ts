@@ -163,6 +163,27 @@ export async function resolveModifiers(raw: RawModifier[]): Promise<ResolvedModi
     return out;
 }
 
+export async function unionVolume(api: ManifoldApi, meshes: TriangleMesh[]): Promise<number> {
+    let acc: ManifoldHandle | undefined;
+    try {
+        for (const mesh of meshes) {
+            if (mesh.indices.length === 0) continue;
+            const next = meshToManifold(api, mesh);
+            if (!acc) {
+                acc = next;
+                continue;
+            }
+            const u = acc.add(next);
+            dispose(acc);
+            dispose(next);
+            acc = u;
+        }
+        return acc ? manifoldVolume(acc) : 0;
+    } finally {
+        dispose(acc);
+    }
+}
+
 export async function pairwiseIntersectionVolume(
     api: ManifoldApi,
     a: TriangleMesh,

@@ -35,11 +35,30 @@ export interface ManifoldApi {
 
 let apiPromise: Promise<ManifoldApi> | null = null;
 
+/** Happy-DOM/rstest rewrite wasm URLs; inject bytes from disk when Node can read them. */
+async function readManifoldWasm(): Promise<Uint8Array | undefined> {
+    if (typeof process === "undefined" || !process.versions?.node) return undefined;
+    try {
+        const fs = await import("node:fs");
+        const path = await import("node:path");
+        const candidates = [
+            path.join(process.cwd(), "vertex/node_modules/manifold-3d/manifold.wasm"),
+            path.join(process.cwd(), "node_modules/manifold-3d/manifold.wasm"),
+        ];
+        for (const p of candidates) {
+            if (fs.existsSync(p)) return new Uint8Array(fs.readFileSync(p));
+        }
+    } catch {
+        return undefined;
+    }
+    return undefined;
+}
+
 export async function loadManifoldApi(): Promise<ManifoldApi> {
     if (!apiPromise) {
         apiPromise = (async () => {
             const mod = (await import("manifold-3d")) as {
-                default?: (() => Promise<ManifoldApi>) | ManifoldApi;
+                default?: ((opts?: { wasmBinary?: Uint8Array }) => Promise<ManifoldApi>) | ManifoldApi;
                 setup?: () => void;
                 Manifold?: ManifoldCtor;
                 Mesh?: MeshCtor;
@@ -47,7 +66,10 @@ export async function loadManifoldApi(): Promise<ManifoldApi> {
             const factory = mod.default ?? mod;
             let wasm: ManifoldApi & { setup?: () => void };
             if (typeof factory === "function") {
-                wasm = (await factory()) as ManifoldApi & { setup?: () => void };
+                const wasmBinary = await readManifoldWasm();
+                wasm = (await factory(wasmBinary ? { wasmBinary } : {})) as ManifoldApi & {
+                    setup?: () => void;
+                };
             } else {
                 wasm = factory as ManifoldApi & { setup?: () => void };
             }

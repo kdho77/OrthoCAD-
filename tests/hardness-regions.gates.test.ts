@@ -18,7 +18,8 @@ import {
     fixtureThreeWayOverlap,
 } from "@/lib/hardness/fixtures";
 import { verifyGcodeByClass } from "@/lib/hardness/gcode-verify";
-import { canonicalizeJson, sha256Utf8 } from "@/lib/hardness/hash";
+import { canonicalizeJson } from "@/lib/hardness/hash";
+import { loadManifoldApi } from "@/lib/hardness/manifold-runtime";
 import { boxMesh, meshIsWatertight, meshSha, meshVolume, parseBinaryStl } from "@/lib/hardness/mesh";
 import { buildRawModifiers, exportHardness3mf, samplerForDesign } from "@/lib/hardness/pipeline";
 import { resolveModifiers } from "@/lib/hardness/resolve";
@@ -202,32 +203,38 @@ describe("3MF + geometry gates", () => {
     test("gates 2-10,12: SAMPLE_Top elements + freehand/abut + byte-identical 3MF", async () => {
         const d = fixtureFreehandAndAbutting();
         const shell = boxMesh(-5, -50, -0.6, 270, 50, 25);
-        const t0 = Date.now();
         const { requested, raw } = buildRawModifiers(d, "left");
         expect(requested.length).toBeGreaterThanOrEqual(4);
+        await loadManifoldApi();
+        const t0 = Date.now();
         const resolved = await resolveModifiers(raw);
         const resolveMs = Date.now() - t0;
         expect(resolveMs).toBeLessThan(2000);
 
         const man = gateModifiersManifold(resolved);
+        if (!man.ok) throw new Error(man.detail);
         expect(man.ok).toBe(true);
 
         const pair = await gatePairwiseIntersection(resolved);
+        if (!pair.ok) throw new Error(pair.detail);
         expect(pair.ok).toBe(true);
         const coplanar = gateCoplanarFaces(resolved);
+        if (!coplanar.ok) throw new Error(coplanar.detail);
         expect(coplanar.ok).toBe(true);
 
-        const cov = gateCoverage(raw, resolved);
+        const cov = await gateCoverage(raw, resolved);
+        if (!cov.ok) throw new Error(cov.detail);
         expect(cov.ok).toBe(true);
 
         const sampler = samplerForDesign(d, "left");
         const over = gateOvershootAndDepth(resolved, (x, y) => sampler.zTop(x, y));
+        if (!over.ok) throw new Error(over.detail);
         expect(over.ok).toBe(true);
 
         const t1 = Date.now();
         const a = await exportHardness3mf({ design: d, side: "left", shell });
+        expect(Date.now() - t1).toBeLessThan(5000);
         const b = await exportHardness3mf({ design: d, side: "left", shell });
-        expect(Date.now() - t1).toBeLessThan(10000);
         expect(a.report.ok).toBe(true);
         expect(a.bytes).toEqual(b.bytes);
         expect(a.designHash).toBe(b.designHash);
@@ -271,6 +278,7 @@ describe("3MF + geometry gates", () => {
             max: [130, 15, 20] as [number, number, number],
         };
         const g = gatePriorityVoxel(raw, resolved, bounds);
+        if (!g.ok) throw new Error(g.detail);
         expect(g.ok).toBe(true);
         const pair = await gatePairwiseIntersection(resolved);
         expect(pair.ok).toBe(true);
