@@ -8,15 +8,21 @@ import {
     type AdminAuditEntry,
     applyLedgerWrite,
     auditRowsToCsv,
+    type BillingTerm,
     buildAuditEntry,
+    computeLicenseExpiry,
     displayTenantStatus,
     extendExpiry,
+    generateTempPassword,
+    isValidAdminEmail,
     type LedgerWrite,
     requireReason,
     slugifyTenantName,
+    type TenantAdminInvite,
     type TenantPlan,
     type TenantRecord,
     type TenantStatus,
+    type TenantUserAccount,
     type TokenLedgerEntry,
 } from "../../../shared/admin/admin-domain.js";
 
@@ -27,6 +33,7 @@ type TenantRow = {
     status: TenantStatus;
     plan: TenantPlan;
     seats: number;
+    billingTerm?: BillingTerm | null;
     startsAt: string;
     expiresAt: string | null;
     tokenBalance: number;
@@ -66,6 +73,19 @@ function iso(value: string | Date | null | undefined): string | null {
     return value instanceof Date ? value.toISOString() : value;
 }
 
+function isMissingColumn(error: { message: string; code?: string }, column: string): boolean {
+    const message = (error.message ?? "").toLowerCase();
+    const col = column.toLowerCase();
+    return (
+        error.code === "PGRST204" ||
+        error.code === "42703" ||
+        message.includes(`'${col}'`) ||
+        message.includes(`"${col}"`) ||
+        message.includes(`${col} does not exist`) ||
+        message.includes(`could not find the '${col}' column`)
+    );
+}
+
 function mapTenant(row: TenantRow, seatsUsed: number): TenantRecord {
     const record: TenantRecord = {
         id: row.id,
@@ -75,6 +95,7 @@ function mapTenant(row: TenantRow, seatsUsed: number): TenantRecord {
         plan: row.plan,
         seats: row.seats,
         seatsUsed,
+        billingTerm: row.billingTerm === "annual" ? "annual" : "monthly",
         startsAt: iso(row.startsAt) ?? new Date().toISOString(),
         expiresAt: iso(row.expiresAt),
         tokenBalance: row.tokenBalance,
@@ -224,13 +245,157 @@ async function appendLedger(
     };
 }
 
+async function insertTenantRow(supabase: SupabaseClient, row: Record<string, unknown>): Promise<TenantRow> {
+    const { data, error } = await supabase.from("tenants").insert(row).select().single();
+    if (!error && data) return data as TenantRow;
+    if (error && isMissingColumn(error, "billingTerm") && "billingTerm" in row) {
+        const withoutBilling = { ...row };
+        delete withoutBilling.billingTerm;
+        const retry = await supabase.from("tenants").insert(withoutBilling).select().single();
+        if (!retry.error && retry.data) return retry.data as TenantRow;
+        throwStoreError("create tenant", retry.error ?? error);
+    }
+    throwStoreError("create tenant", error ?? { message: "unknown error" });
+}
+
+async function findAuthUserIdByEmail(supabase: SupabaseClient, email: string): Promise<string | null> {
+    const { data } = await supabase.auth.admin.listUsers({ page: 1, perPage: 200 });
+    const match = data?.users?.find((user) => user.email?.toLowerCase() === email.toLowerCase());
+    if (match?.id) return match.id;
+    const { data: link } = await supabase.auth.admin.generateLink({ type: "magiclink", email });
+    return link?.user?.id ?? null;
+}
+
+async function inviteLinkForEmail(supabase: SupabaseClient, email: string): Promise<string | null> {
+    const { data } = await supabase.auth.admin.generateLink({ type: "magiclink", email });
+    return data?.properties?.action_link ?? null;
+}
+
+async function upsertTenantAdminProfile(
+    supabase: SupabaseClient,
+    args: { id: string; email: string; fullName: string; tenantId: string },
+): Promise<void> {
+    const now = new Date().toISOString();
+    const profile = {
+        id: args.id,
+        email: args.email,
+        fullName: args.fullName,
+        role: "admin" as const,
+        tenantId: args.tenantId,
+        isActive: true,
+        updatedAt: now,
+    };
+    const { error } = await supabase.from("users").upsert(profile);
+    if (!error) return;
+    const { error: insertError } = await supabase.from("users").insert({ ...profile, createdAt: now });
+    if (!insertError) return;
+    const { error: updateError } = await supabase
+        .from("users")
+        .update({
+            fullName: args.fullName,
+            role: "admin",
+            tenantId: args.tenantId,
+            isActive: true,
+            updatedAt: now,
+        })
+        .eq("id", args.id);
+    if (updateError) {
+        throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Failed to attach primary admin: ${updateError.message}`,
+        });
+    }
+}
+
+export async function createPrimaryAdmin(
+    supabase: SupabaseClient,
+    args: { tenantId: string; name: string; email: string },
+): Promise<TenantAdminInvite> {
+    const email = args.email.trim().toLowerCase();
+    const fullName = args.name.trim();
+    if (!fullName) throw new TRPCError({ code: "BAD_REQUEST", message: "Admin name is required" });
+    if (!isValidAdminEmail(email)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "A valid admin email is required" });
+    }
+    const tempPassword = generateTempPassword();
+    const created = await supabase.auth.admin.createUser({
+        email,
+        password: tempPassword,
+        email_confirm: true,
+        user_metadata: { full_name: fullName },
+    });
+    let userId = created.data.user?.id ?? null;
+    let issuedPassword: string | null = tempPassword;
+    if (!userId) {
+        const message = created.error?.message ?? "";
+        if (!/already|registered|exists/i.test(message)) {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: `Failed to create primary admin: ${message || "unknown error"}`,
+            });
+        }
+        userId = await findAuthUserIdByEmail(supabase, email);
+        issuedPassword = null;
+    }
+    if (!userId) {
+        throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Failed to create primary admin: user id missing",
+        });
+    }
+    await upsertTenantAdminProfile(supabase, { id: userId, email, fullName, tenantId: args.tenantId });
+    return {
+        id: userId,
+        email,
+        fullName,
+        role: "admin",
+        lastLoginAt: null,
+        tempPassword: issuedPassword,
+        inviteLink: await inviteLinkForEmail(supabase, email),
+    };
+}
+
+export async function listTenantUsers(
+    supabase: SupabaseClient,
+    tenantId: string,
+): Promise<TenantUserAccount[]> {
+    const { data, error } = await supabase
+        .from("users")
+        .select("id, email, fullName, role")
+        .eq("tenantId", tenantId)
+        .order("email", { ascending: true });
+    if (error) throwStoreError("list tenant users", error);
+    return Promise.all(
+        (data ?? []).map(async (row) => {
+            let lastLoginAt: string | null = null;
+            try {
+                const { data: auth } = await supabase.auth.admin.getUserById(row.id as string);
+                lastLoginAt = iso(auth?.user?.last_sign_in_at ?? null);
+            } catch {
+                lastLoginAt = null;
+            }
+            const role = row.role as TenantUserAccount["role"];
+            return {
+                id: row.id as string,
+                email: (row.email as string) ?? "",
+                fullName: (row.fullName as string | null) ?? null,
+                role: role === "super_admin" || role === "admin" ? role : "clinician",
+                lastLoginAt,
+            };
+        }),
+    );
+}
+
 export async function createTenant(
     supabase: SupabaseClient,
     args: {
         name: string;
         plan: TenantPlan;
         seats: number;
-        status: TenantStatus;
+        status: "active" | "trial";
+        billingTerm?: BillingTerm;
+        adminName: string;
+        adminEmail: string;
         startsAt?: string;
         expiresAt?: string | null;
         initialTokens?: number;
@@ -238,37 +403,35 @@ export async function createTenant(
         actorId: string;
         ip: string | null;
     },
-): Promise<TenantRecord> {
+): Promise<{ tenant: TenantRecord; admin: TenantAdminInvite }> {
     const reason = requireReason(args.reason);
     const name = args.name.trim();
     if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "Tenant name is required" });
     if (!Number.isInteger(args.seats) || args.seats < 1) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Seats must be at least 1" });
     }
+    const billingTerm: BillingTerm = args.billingTerm === "annual" ? "annual" : "monthly";
     const id = randomUUID();
     const now = new Date().toISOString();
+    const startsAt = args.startsAt ?? now;
+    const expiresAt = args.expiresAt ?? computeLicenseExpiry(startsAt, args.status, billingTerm);
     const slugBase = slugifyTenantName(name);
     const slug = `${slugBase}-${id.slice(0, 8)}`;
-    const { data, error } = await supabase
-        .from("tenants")
-        .insert({
-            id,
-            name,
-            slug,
-            status: args.status,
-            plan: args.plan,
-            seats: args.seats,
-            startsAt: args.startsAt ?? now,
-            expiresAt: args.expiresAt ?? null,
-            tokenBalance: 0,
-            tokenThreshold: 50,
-            lastActivityAt: now,
-            createdAt: now,
-            updatedAt: now,
-        })
-        .select()
-        .single();
-    if (error || !data) throwStoreError("create tenant", error ?? { message: "unknown error" });
+    const data = await insertTenantRow(supabase, {
+        id,
+        name,
+        slug,
+        status: args.status,
+        plan: args.plan,
+        seats: args.seats,
+        billingTerm,
+        startsAt,
+        expiresAt,
+        tokenBalance: 0,
+        tokenThreshold: 50,
+        createdAt: now,
+        updatedAt: now,
+    });
 
     if (args.initialTokens && args.initialTokens !== 0) {
         await appendLedger(supabase, id, {
@@ -280,16 +443,30 @@ export async function createTenant(
         });
     }
 
+    const admin = await createPrimaryAdmin(supabase, {
+        tenantId: id,
+        name: args.adminName,
+        email: args.adminEmail,
+    });
+
+    const { error: clearActivityError } = await supabase
+        .from("tenants")
+        .update({ lastActivityAt: null })
+        .eq("id", id);
+    if (clearActivityError && !isMissingColumn(clearActivityError, "lastActivityAt")) {
+        throwStoreError("clear tenant activity", clearActivityError);
+    }
+
     await writeAudit(supabase, {
         action: "tenant.created",
         reason,
         actorId: args.actorId,
         tenantId: id,
         before: null,
-        after: data,
+        after: { ...data, adminId: admin.id, adminEmail: admin.email },
         ipAddress: args.ip,
     });
-    return getTenant(supabase, id);
+    return { tenant: await getTenant(supabase, id), admin };
 }
 
 export async function updateTenantLicense(
@@ -298,6 +475,7 @@ export async function updateTenantLicense(
         tenantId: string;
         plan: TenantPlan;
         seats: number;
+        billingTerm: BillingTerm;
         startsAt: string;
         expiresAt: string | null;
         status: TenantStatus;
@@ -315,19 +493,25 @@ export async function updateTenantLicense(
         });
     }
     const now = new Date().toISOString();
-    const { error } = await supabase
-        .from("tenants")
-        .update({
-            plan: args.plan,
-            seats: args.seats,
-            startsAt: args.startsAt,
-            expiresAt: args.expiresAt,
-            status: args.status,
-            lastActivityAt: now,
-            updatedAt: now,
-        })
-        .eq("id", args.tenantId);
-    if (error) throwStoreError("update license", error);
+    const billingTerm: BillingTerm = args.billingTerm === "annual" ? "annual" : "monthly";
+    const patch = {
+        plan: args.plan,
+        seats: args.seats,
+        billingTerm,
+        startsAt: args.startsAt,
+        expiresAt: args.expiresAt,
+        status: args.status,
+        updatedAt: now,
+    };
+    const { error } = await supabase.from("tenants").update(patch).eq("id", args.tenantId);
+    if (error && isMissingColumn(error, "billingTerm")) {
+        const withoutBilling = { ...patch };
+        delete withoutBilling.billingTerm;
+        const retry = await supabase.from("tenants").update(withoutBilling).eq("id", args.tenantId);
+        if (retry.error) throwStoreError("update license", retry.error);
+    } else if (error) {
+        throwStoreError("update license", error);
+    }
     const after = await getTenant(supabase, args.tenantId);
     await writeAudit(supabase, {
         action: "tenant.license_updated",

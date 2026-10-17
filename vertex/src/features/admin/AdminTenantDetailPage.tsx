@@ -9,15 +9,23 @@ import { navigate } from "@/features/admin/admin-nav";
 import { cn } from "@/lib/utils";
 import {
     type AdminAuditEntry,
+    BILLING_TERM_LABELS,
+    BILLING_TERMS,
+    type BillingTerm,
+    computeLicenseExpiry,
     formatAbsolute,
+    formatDateOnly,
     monthlyBurnRate,
     PLAN_LABELS,
+    ROLE_LABELS,
+    relativeActivityTime,
     relativeTime,
     TENANT_PLANS,
     TENANT_STATUSES,
     type TenantPlan,
     type TenantRecord,
     type TenantStatus,
+    type TenantUserAccount,
     type TokenLedgerEntry,
     usageThisMonth,
 } from "../../../shared/admin/admin-domain";
@@ -28,11 +36,13 @@ interface AdminTenantDetailPageProps {
     tenant: TenantRecord;
     ledger: TokenLedgerEntry[];
     audit: AdminAuditEntry[];
-    tab: "overview" | "license" | "tokens" | "audit";
+    users: TenantUserAccount[];
+    tab: "overview" | "license" | "users" | "tokens" | "audit";
     onOpen: (modal: AdminModal) => void;
     onSaveLicense: (input: {
         plan: TenantPlan;
         seats: number;
+        billingTerm: BillingTerm;
         startsAt: string;
         expiresAt: string | null;
         status: Exclude<TenantStatus, "archived">;
@@ -45,6 +55,7 @@ export function AdminTenantDetailPage({
     tenant,
     ledger,
     audit,
+    users,
     tab,
     onOpen,
     onSaveLicense,
@@ -103,6 +114,7 @@ export function AdminTenantDetailPage({
                 <TabsList>
                     <TabsTrigger value="overview">Overview</TabsTrigger>
                     <TabsTrigger value="license">License</TabsTrigger>
+                    <TabsTrigger value="users">Users</TabsTrigger>
                     <TabsTrigger value="tokens">Tokens</TabsTrigger>
                     <TabsTrigger value="audit">Audit</TabsTrigger>
                 </TabsList>
@@ -111,6 +123,9 @@ export function AdminTenantDetailPage({
                 </TabsContent>
                 <TabsContent value="license">
                     <LicenseTab tenant={tenant} onSave={onSaveLicense} busy={busy} />
+                </TabsContent>
+                <TabsContent value="users">
+                    <UsersTab users={users} seats={tenant.seats} />
                 </TabsContent>
                 <TabsContent value="tokens">
                     <TokensTab
@@ -136,9 +151,13 @@ function OverviewTab({ tenant }: { tenant: TenantRecord }) {
                 <div className="text-[11px] text-muted-foreground">Seats</div>
                 <SeatsBar used={tenant.seatsUsed} total={tenant.seats} />
             </div>
-            <Info label="Last activity" value={relativeTime(tenant.lastActivityAt)} />
+            <Info label="Billing term" value={BILLING_TERM_LABELS[tenant.billingTerm]} />
+            <div className="rounded-md border border-border bg-panel p-3">
+                <div className="text-[11px] text-muted-foreground">Last activity</div>
+                <div className="mt-1">{relativeActivityTime(tenant.lastActivityAt)}</div>
+            </div>
             <Info label="Starts" value={formatAbsolute(tenant.startsAt)} />
-            <Info label="Expires" value={formatAbsolute(tenant.expiresAt)} />
+            <Info label="Expires" value={formatDateOnly(tenant.expiresAt)} />
         </div>
     );
 }
@@ -163,6 +182,7 @@ function LicenseTab({
 }) {
     const [plan, setPlan] = useState<TenantPlan>(tenant.plan);
     const [seats, setSeats] = useState(tenant.seats);
+    const [billingTerm, setBillingTerm] = useState<BillingTerm>(tenant.billingTerm);
     const [startsAt, setStartsAt] = useState(tenant.startsAt.slice(0, 10));
     const [expiresAt, setExpiresAt] = useState(tenant.expiresAt ? tenant.expiresAt.slice(0, 10) : "");
     const [status, setStatus] = useState<Exclude<TenantStatus, "archived">>(
@@ -171,11 +191,28 @@ function LicenseTab({
     const [reason, setReason] = useState("");
     const [message, setMessage] = useState<string | null>(null);
 
+    const applyComputedExpiry = (
+        nextStart: string,
+        nextStatus: Exclude<TenantStatus, "archived">,
+        nextTerm: BillingTerm,
+    ) => {
+        const startIso = new Date(`${nextStart}T00:00:00.000Z`).toISOString();
+        const computed = computeLicenseExpiry(
+            startIso,
+            nextStatus === "trial" ? "trial" : "active",
+            nextTerm,
+        );
+        setExpiresAt(computed.slice(0, 10));
+    };
+
     const nextStarts = new Date(`${startsAt}T00:00:00.000Z`).toISOString();
     const nextExpires = expiresAt ? new Date(`${expiresAt}T00:00:00.000Z`).toISOString() : null;
     const changes = [
         plan !== tenant.plan ? `Plan ${PLAN_LABELS[tenant.plan]} → ${PLAN_LABELS[plan]}` : null,
         seats !== tenant.seats ? `Seats ${tenant.seats} → ${seats}` : null,
+        billingTerm !== tenant.billingTerm
+            ? `Billing ${BILLING_TERM_LABELS[tenant.billingTerm]} → ${BILLING_TERM_LABELS[billingTerm]}`
+            : null,
         nextStarts !== tenant.startsAt ? `Start ${tenant.startsAt.slice(0, 10)} → ${startsAt}` : null,
         (nextExpires ?? "") !== (tenant.expiresAt ?? "")
             ? `Expiry ${tenant.expiresAt?.slice(0, 10) ?? "none"} → ${expiresAt || "none"}`
@@ -209,6 +246,24 @@ function LicenseTab({
                     onChange={(e) => setSeats(Number(e.target.value))}
                 />
             </label>
+            <label className="block text-xs text-muted-foreground">
+                Billing term
+                <select
+                    className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2"
+                    value={billingTerm}
+                    onChange={(e) => {
+                        const next = e.target.value as BillingTerm;
+                        setBillingTerm(next);
+                        applyComputedExpiry(startsAt, status, next);
+                    }}
+                >
+                    {BILLING_TERMS.map((term) => (
+                        <option key={term} value={term}>
+                            {BILLING_TERM_LABELS[term]}
+                        </option>
+                    ))}
+                </select>
+            </label>
             <div className="grid grid-cols-2 gap-2">
                 <label htmlFor="license-start" className="block text-xs text-muted-foreground">
                     Start
@@ -217,11 +272,14 @@ function LicenseTab({
                         className="mt-1"
                         type="date"
                         value={startsAt}
-                        onChange={(e) => setStartsAt(e.target.value)}
+                        onChange={(e) => {
+                            setStartsAt(e.target.value);
+                            applyComputedExpiry(e.target.value, status, billingTerm);
+                        }}
                     />
                 </label>
                 <label htmlFor="license-expiry" className="block text-xs text-muted-foreground">
-                    Expiry
+                    {status === "trial" ? "Trial expiry" : "Renewal / expiry"}
                     <Input
                         id="license-expiry"
                         className="mt-1"
@@ -231,12 +289,21 @@ function LicenseTab({
                     />
                 </label>
             </div>
+            <p className="text-xs text-muted-foreground">
+                {status === "trial"
+                    ? `Trial defaults to 7 days after start (${formatDateOnly(nextExpires)}). Extend still works.`
+                    : `${BILLING_TERM_LABELS[billingTerm]} term renews ${formatDateOnly(nextExpires)}.`}
+            </p>
             <label className="block text-xs text-muted-foreground">
                 Status
                 <select
                     className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2"
                     value={status}
-                    onChange={(e) => setStatus(e.target.value as Exclude<TenantStatus, "archived">)}
+                    onChange={(e) => {
+                        const next = e.target.value as Exclude<TenantStatus, "archived">;
+                        setStatus(next);
+                        applyComputedExpiry(startsAt, next, billingTerm);
+                    }}
                 >
                     {TENANT_STATUSES.filter((s) => s !== "archived").map((s) => (
                         <option key={s} value={s}>
@@ -270,6 +337,7 @@ function LicenseTab({
                     void onSave({
                         plan,
                         seats,
+                        billingTerm,
                         startsAt: nextStarts,
                         expiresAt: nextExpires,
                         status,
@@ -279,6 +347,43 @@ function LicenseTab({
             >
                 {busy ? "Saving…" : "Save license"}
             </Button>
+        </div>
+    );
+}
+
+function UsersTab({ users, seats }: { users: TenantUserAccount[]; seats: number }) {
+    return (
+        <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+                {users.length} account{users.length === 1 ? "" : "s"} count toward {seats} seats.
+            </p>
+            <div className="overflow-hidden rounded-lg border border-border">
+                <table className="w-full text-left text-xs">
+                    <thead className="bg-panel text-[11px] uppercase text-muted-foreground">
+                        <tr>
+                            <th className="px-3 py-2">Name</th>
+                            <th className="px-3 py-2">Email</th>
+                            <th className="px-3 py-2">Role</th>
+                            <th className="px-3 py-2">Last login</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {users.map((user) => (
+                            <tr key={user.id} className="border-t border-border/60">
+                                <td className="px-3 py-2">{user.fullName || "—"}</td>
+                                <td className="px-3 py-2">{user.email}</td>
+                                <td className="px-3 py-2">{ROLE_LABELS[user.role]}</td>
+                                <td className="px-3 py-2 text-muted-foreground">
+                                    {relativeActivityTime(user.lastLoginAt)}
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+                {users.length === 0 ? (
+                    <p className="px-3 py-6 text-center text-muted-foreground">No accounts on this tenant.</p>
+                ) : null}
+            </div>
         </div>
     );
 }

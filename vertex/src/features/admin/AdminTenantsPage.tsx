@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import {
     matchesTenantFilters,
     PLAN_LABELS,
-    relativeTime,
+    relativeActivityTime,
     STATUS_LABELS,
     serializeTenantListSearch,
     sortTenants,
@@ -278,7 +278,7 @@ function TenantRow({
                 <TokenCell balance={tenant.tokenBalance} threshold={tenant.tokenThreshold} />
             </td>
             <td className="px-3 py-2.5 text-xs text-muted-foreground">
-                {relativeTime(tenant.lastActivityAt, now)}
+                {relativeActivityTime(tenant.lastActivityAt, now)}
             </td>
             <td className="relative px-2 py-2.5">
                 <Button

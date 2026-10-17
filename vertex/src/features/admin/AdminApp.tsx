@@ -7,7 +7,12 @@ import { LoginScreen } from "@/features/auth/LoginScreen";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
-import type { AdminAuditEntry, TenantRecord, TokenLedgerEntry } from "../../../shared/admin/admin-domain";
+import type {
+    AdminAuditEntry,
+    TenantRecord,
+    TenantUserAccount,
+    TokenLedgerEntry,
+} from "../../../shared/admin/admin-domain";
 import { isAdminPath, parseAdminPath, UNDO_WINDOW_MS } from "../../../shared/admin/admin-domain";
 import { AdminAuditPage } from "./AdminAuditPage";
 import { type AdminModal, AdminModals } from "./AdminModals";
@@ -45,6 +50,7 @@ export function AdminApp() {
         tenant: TenantRecord;
         ledger: TokenLedgerEntry[];
         audit: AdminAuditEntry[];
+        users: TenantUserAccount[];
     } | null>(null);
     const [audit, setAudit] = useState<AdminAuditEntry[]>([]);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -170,6 +176,7 @@ export function AdminApp() {
                         tenant={detail.tenant}
                         ledger={detail.ledger}
                         audit={detail.audit}
+                        users={detail.users}
                         tab={route.tab}
                         busy={busy}
                         onOpen={setModal}
@@ -269,9 +276,19 @@ export function AdminApp() {
                 }}
                 onCreate={(input) => {
                     void run(async () => {
-                        const tenant = await createTenant(input);
-                        setToast({ message: `Created ${tenant.name}` });
-                        navigate(`/admin/tenants/${tenant.id}`);
+                        const { tenant, admin } = await createTenant(input);
+                        if (admin.inviteLink) {
+                            try {
+                                await navigator.clipboard.writeText(admin.inviteLink);
+                            } catch {
+                                // Clipboard is optional; temp password / link still show in the toast.
+                            }
+                        }
+                        const bits = [`Created ${tenant.name}`, `admin ${admin.email}`];
+                        if (admin.tempPassword) bits.push(`temp password ${admin.tempPassword}`);
+                        if (admin.inviteLink) bits.push("invite link copied");
+                        setToast({ message: bits.join(" · ") });
+                        navigate(`/admin/tenants/${tenant.id}?tab=users`);
                     });
                 }}
             />

@@ -15,6 +15,10 @@ export type TokenLedgerType = (typeof LEDGER_TYPES)[number];
 export const GRANT_REASONS = ["Purchase", "Comp", "Correction", "custom"] as const;
 export type GrantReasonKind = (typeof GRANT_REASONS)[number];
 
+export const BILLING_TERMS = ["monthly", "annual"] as const;
+export type BillingTerm = (typeof BILLING_TERMS)[number];
+
+export const TRIAL_LENGTH_DAYS = 7;
 export const DEFAULT_TOKEN_THRESHOLD = 50;
 export const UNDO_WINDOW_MS = 10_000;
 
@@ -33,6 +37,11 @@ export const STATUS_LABELS: Record<TenantStatus, string> = {
     archived: "Archived",
 };
 
+export const BILLING_TERM_LABELS: Record<BillingTerm, string> = {
+    monthly: "Monthly",
+    annual: "Annual",
+};
+
 export interface TenantRecord {
     id: string;
     name: string;
@@ -41,6 +50,7 @@ export interface TenantRecord {
     plan: TenantPlan;
     seats: number;
     seatsUsed: number;
+    billingTerm: BillingTerm;
     startsAt: string;
     expiresAt: string | null;
     tokenBalance: number;
@@ -63,6 +73,39 @@ export interface TokenLedgerEntry {
     note: string | null;
     expiresAt: string | null;
     createdAt: string;
+}
+
+export interface TenantUserAccount {
+    id: string;
+    fullName: string | null;
+    email: string;
+    role: "super_admin" | "admin" | "clinician";
+    lastLoginAt: string | null;
+}
+
+export interface TenantAdminInvite extends TenantUserAccount {
+    tempPassword: string | null;
+    inviteLink: string | null;
+}
+
+export const ROLE_LABELS: Record<TenantUserAccount["role"], string> = {
+    super_admin: "Super admin",
+    admin: "Admin",
+    clinician: "Clinician",
+};
+
+export function isValidAdminEmail(email: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
+export function demoUsersForTenant(tenant: TenantRecord): TenantUserAccount[] {
+    return Array.from({ length: Math.max(0, tenant.seatsUsed) }, (_, index) => ({
+        id: `${tenant.id}-user-${index}`,
+        fullName: index === 0 ? `${tenant.name} Admin` : `User ${index + 1}`,
+        email: index === 0 ? `admin@${tenant.slug}.example` : `user${index + 1}@${tenant.slug}.example`,
+        role: index === 0 ? "admin" : "clinician",
+        lastLoginAt: index === 0 ? tenant.lastActivityAt : null,
+    }));
 }
 
 export interface AdminAuditEntry {
@@ -109,6 +152,62 @@ export const EMPTY_TENANT_FILTERS: TenantListFilters = {
     sort: "name",
     dir: "asc",
 };
+
+/** Parse admin timestamps as UTC when the DB omits a timezone (avoids "in 6 hours"). */
+export function parseAdminInstant(value: string | Date | null | undefined): Date | null {
+    if (!value) return null;
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        return new Date(`${trimmed}T00:00:00.000Z`);
+    }
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(trimmed)) {
+        return new Date(`${trimmed.replace(" ", "T")}Z`);
+    }
+    const parsed = new Date(trimmed);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function addUtcDays(startsAt: string, days: number): string {
+    const start = parseAdminInstant(startsAt) ?? new Date();
+    return new Date(start.getTime() + days * 864e5).toISOString();
+}
+
+export function addUtcMonths(startsAt: string, months: number): string {
+    const start = parseAdminInstant(startsAt) ?? new Date();
+    return new Date(
+        Date.UTC(
+            start.getUTCFullYear(),
+            start.getUTCMonth() + months,
+            start.getUTCDate(),
+            start.getUTCHours(),
+            start.getUTCMinutes(),
+            start.getUTCSeconds(),
+            start.getUTCMilliseconds(),
+        ),
+    ).toISOString();
+}
+
+export function computeLicenseExpiry(
+    startsAt: string,
+    status: TenantStatus | "active" | "trial",
+    billingTerm: BillingTerm,
+): string {
+    if (status === "trial") return addUtcDays(startsAt, TRIAL_LENGTH_DAYS);
+    return billingTerm === "monthly" ? addUtcMonths(startsAt, 1) : addUtcMonths(startsAt, 12);
+}
+
+export function generateTempPassword(): string {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    const bytes = new Uint8Array(12);
+    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+        crypto.getRandomValues(bytes);
+    } else {
+        for (let i = 0; i < bytes.length; i += 1) bytes[i] = (Math.random() * chars.length) | 0;
+    }
+    return Array.from(bytes, (b) => chars[b % chars.length]).join("");
+}
 
 export function slugifyTenantName(name: string): string {
     const slug = name
@@ -184,18 +283,22 @@ export function displayTenantStatus(
 ): TenantStatus {
     if (tenant.archivedAt || tenant.status === "archived") return "archived";
     if (tenant.status === "suspended") return "suspended";
-    if (tenant.expiresAt && new Date(tenant.expiresAt).getTime() < now.getTime()) return "expired";
+    const expiry = parseAdminInstant(tenant.expiresAt);
+    if (expiry && expiry.getTime() < now.getTime()) return "expired";
     return tenant.status;
 }
 
 export function isExpiringWithin(expiresAt: string | null, days: number, now = new Date()): boolean {
     if (!expiresAt) return false;
-    const ms = new Date(expiresAt).getTime() - now.getTime();
+    const when = parseAdminInstant(expiresAt);
+    if (!when) return false;
+    const ms = when.getTime() - now.getTime();
     return ms > 0 && ms <= days * 864e5;
 }
 
 export function isExpired(expiresAt: string | null, now = new Date()): boolean {
-    return Boolean(expiresAt && new Date(expiresAt).getTime() < now.getTime());
+    const when = parseAdminInstant(expiresAt);
+    return Boolean(when && when.getTime() < now.getTime());
 }
 
 export function isLowTokenBalance(balance: number, threshold: number): boolean {
@@ -210,13 +313,16 @@ export function expiryTone(expiresAt: string | null, now = new Date()): "ok" | "
 }
 
 export function extendExpiry(current: string | null, days: number, now = new Date()): string {
-    const baseMs = Math.max(current ? new Date(current).getTime() : 0, now.getTime());
+    const currentMs = parseAdminInstant(current)?.getTime() ?? 0;
+    const baseMs = Math.max(currentMs, now.getTime());
     return new Date(baseMs + days * 864e5).toISOString();
 }
 
-export function relativeTime(iso: string | null, now = new Date()): string {
-    if (!iso) return "—";
-    const delta = new Date(iso).getTime() - now.getTime();
+export function relativeTime(iso: string | null, now = new Date(), empty = "—"): string {
+    if (!iso) return empty;
+    const when = parseAdminInstant(iso);
+    if (!when) return empty;
+    const delta = when.getTime() - now.getTime();
     const abs = Math.abs(delta);
     const minute = 60_000;
     const hour = 60 * minute;
@@ -227,18 +333,36 @@ export function relativeTime(iso: string | null, now = new Date()): string {
     else if (abs < day) value = format(Math.round(abs / hour), "hour");
     else if (abs < 45 * day) value = format(Math.round(abs / day), "day");
     else value = format(Math.round(abs / (30 * day)), "month");
-    if (Math.abs(delta) < minute) return "just now";
+    if (abs < 2 * minute) return "just now";
     return delta >= 0 ? `in ${value}` : `${value} ago`;
+}
+
+export function relativeActivityTime(iso: string | null, now = new Date()): string {
+    return relativeTime(iso, now, "Never");
 }
 
 export function formatAbsolute(iso: string | null): string {
     if (!iso) return "—";
-    return new Date(iso).toLocaleString(undefined, {
+    const when = parseAdminInstant(iso);
+    if (!when) return "—";
+    return when.toLocaleString(undefined, {
         year: "numeric",
         month: "short",
         day: "numeric",
         hour: "2-digit",
         minute: "2-digit",
+    });
+}
+
+export function formatDateOnly(iso: string | null): string {
+    if (!iso) return "—";
+    const when = parseAdminInstant(iso);
+    if (!when) return "—";
+    return when.toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        timeZone: "UTC",
     });
 }
 
@@ -404,7 +528,7 @@ export function parseAdminPath(
     search = "",
 ):
     | { page: "tenants"; filters: TenantListFilters }
-    | { page: "tenant"; id: string; tab: "overview" | "license" | "tokens" | "audit" }
+    | { page: "tenant"; id: string; tab: "overview" | "license" | "users" | "tokens" | "audit" }
     | { page: "audit" }
     | { page: "none" } {
     const path = pathname.replace(/\/+$/, "") || "/";
@@ -414,7 +538,11 @@ export function parseAdminPath(
     if (match) {
         const tabRaw = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search).get("tab");
         const tab =
-            tabRaw === "license" || tabRaw === "tokens" || tabRaw === "audit" || tabRaw === "overview"
+            tabRaw === "license" ||
+            tabRaw === "users" ||
+            tabRaw === "tokens" ||
+            tabRaw === "audit" ||
+            tabRaw === "overview"
                 ? tabRaw
                 : "overview";
         return { page: "tenant", id: match[1], tab };
@@ -462,6 +590,7 @@ export const DEMO_TENANTS: TenantRecord[] = [
         plan: "professional",
         seats: 5,
         seatsUsed: 3,
+        billingTerm: "annual",
         startsAt: "2026-01-15T00:00:00.000Z",
         expiresAt: new Date(Date.now() + 90 * 864e5).toISOString(),
         tokenBalance: 400,
@@ -479,6 +608,7 @@ export const DEMO_TENANTS: TenantRecord[] = [
         plan: "clinic",
         seats: 10,
         seatsUsed: 8,
+        billingTerm: "monthly",
         startsAt: "2026-03-01T00:00:00.000Z",
         expiresAt: new Date(Date.now() + 12 * 864e5).toISOString(),
         tokenBalance: 80,
@@ -496,6 +626,7 @@ export const DEMO_TENANTS: TenantRecord[] = [
         plan: "starter",
         seats: 2,
         seatsUsed: 1,
+        billingTerm: "monthly",
         startsAt: "2025-11-01T00:00:00.000Z",
         expiresAt: new Date(Date.now() + 120 * 864e5).toISOString(),
         tokenBalance: 20,
@@ -513,6 +644,7 @@ export const DEMO_TENANTS: TenantRecord[] = [
         plan: "enterprise",
         seats: 25,
         seatsUsed: 18,
+        billingTerm: "annual",
         startsAt: "2025-06-01T00:00:00.000Z",
         expiresAt: new Date(Date.now() - 5 * 864e5).toISOString(),
         tokenBalance: 12,

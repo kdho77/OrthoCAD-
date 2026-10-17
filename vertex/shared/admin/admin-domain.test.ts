@@ -8,14 +8,19 @@ import {
     auditRowsToCsv,
     balanceFromLedger,
     buildAuditEntry,
+    computeLicenseExpiry,
     DEMO_TENANTS,
+    demoUsersForTenant,
     displayTenantStatus,
     extendExpiry,
     grantPreview,
     isAdminPath,
+    isValidAdminEmail,
     matchesTenantFilters,
+    parseAdminInstant,
     parseAdminPath,
     parseTenantListSearch,
+    relativeActivityTime,
     serializeTenantListSearch,
     sortTenants,
     tileCounts,
@@ -175,6 +180,34 @@ describe("license helpers", () => {
     test("grant preview shows old -> new balance", () => {
         expect(grantPreview(40, 25)).toEqual({ from: 40, to: 65 });
     });
+
+    test("trial expires 7 days after start; billing term drives paid expiry", () => {
+        expect(computeLicenseExpiry("2026-10-17T00:00:00.000Z", "trial", "annual")).toBe(
+            "2026-10-24T00:00:00.000Z",
+        );
+        expect(computeLicenseExpiry("2026-10-17T00:00:00.000Z", "active", "monthly")).toBe(
+            "2026-11-17T00:00:00.000Z",
+        );
+        expect(computeLicenseExpiry("2026-10-17T00:00:00.000Z", "active", "annual")).toBe(
+            "2027-10-17T00:00:00.000Z",
+        );
+    });
+
+    test("admin email and seeded users are validated", () => {
+        expect(isValidAdminEmail("admin@clinic.com")).toBe(true);
+        expect(isValidAdminEmail("not-an-email")).toBe(false);
+        expect(demoUsersForTenant(DEMO_TENANTS[0]).length).toBe(DEMO_TENANTS[0].seatsUsed);
+        expect(demoUsersForTenant(DEMO_TENANTS[0])[0]?.role).toBe("admin");
+    });
+});
+
+describe("admin timestamps", () => {
+    test("naive UTC timestamps are not shifted into the future", () => {
+        const now = new Date("2026-10-17T07:00:00.000Z");
+        expect(parseAdminInstant("2026-10-17T01:00:00")?.toISOString()).toBe("2026-10-17T01:00:00.000Z");
+        expect(relativeActivityTime("2026-10-17T01:00:00", now)).toBe("6 hours ago");
+        expect(relativeActivityTime(null, now)).toBe("Never");
+    });
 });
 
 describe("admin routes", () => {
@@ -189,6 +222,11 @@ describe("admin routes", () => {
             page: "tenant",
             id: "abc",
             tab: "tokens",
+        });
+        expect(parseAdminPath("/admin/tenants/abc", "?tab=users")).toEqual({
+            page: "tenant",
+            id: "abc",
+            tab: "users",
         });
         expect(parseAdminPath("/admin/audit")).toEqual({ page: "audit" });
         expect(parseAdminPath("/production")).toEqual({ page: "none" });

@@ -89,6 +89,11 @@ enum TenantStatus {
     archived
 }
 
+enum TenantBillingTerm {
+    monthly
+    annual
+}
+
 enum TokenLedgerType {
     grant
     usage
@@ -194,6 +199,7 @@ model Tenant {
     status         TenantStatus @default(trial)
     plan           TenantPlan   @default(starter)
     seats          Int          @default(1)
+    billingTerm    TenantBillingTerm @default(monthly)
     startsAt       DateTime     @default(now())
     expiresAt      DateTime?
     tokenBalance   Int          @default(0)

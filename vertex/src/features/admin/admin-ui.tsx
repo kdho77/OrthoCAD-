@@ -5,8 +5,8 @@ import { cn } from "@/lib/utils";
 import {
     displayTenantStatus,
     expiryTone,
+    formatDateOnly,
     PLAN_LABELS,
-    relativeTime,
     STATUS_LABELS,
     type TenantRecord,
     type TenantStatus,
@@ -62,7 +62,7 @@ export function ExpiryCell({ iso, now }: { iso: string | null; now?: Date }) {
                 tone === "amber" && "text-amber-300",
             )}
         >
-            {relativeTime(iso, now)}
+            {formatDateOnly(iso)}
         </span>
     );
 }

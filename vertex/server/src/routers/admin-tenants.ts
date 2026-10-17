@@ -12,6 +12,7 @@ import {
     listAdminAudit,
     listLedger,
     listTenants,
+    listTenantUsers,
     setTenantStatus,
     undoGrant,
     updateTenantLicense,
@@ -20,6 +21,7 @@ import { requireSupabaseAdmin } from "../lib/supabase-db.js";
 import { router, superAdminProcedure } from "../trpc.js";
 
 const planSchema = z.enum(["starter", "professional", "clinic", "enterprise"]);
+const billingTermSchema = z.enum(["monthly", "annual"]);
 const licenseStatusSchema = z.enum(["active", "trial", "suspended", "expired"]);
 const uuid = z.string().uuid();
 
@@ -33,7 +35,8 @@ export const adminTenantsRouter = router({
         const tenant = await getTenant(supabase, input.id);
         const ledger = await listLedger(supabase, input.id);
         const audit = await listAdminAudit(supabase, { tenantId: input.id, limit: 100 });
-        return { tenant, ledger, audit };
+        const users = await listTenantUsers(supabase, input.id);
+        return { tenant, ledger, audit, users };
     }),
 
     create: superAdminProcedure
@@ -43,6 +46,9 @@ export const adminTenantsRouter = router({
                 plan: planSchema,
                 seats: z.number().int().min(1).max(500),
                 status: z.enum(["active", "trial"]),
+                billingTerm: billingTermSchema.optional(),
+                adminName: z.string().min(1).max(120),
+                adminEmail: z.string().email().max(200),
                 startsAt: z.string().datetime().optional(),
                 expiresAt: z.string().datetime().nullable().optional(),
                 initialTokens: z.number().int().optional(),
@@ -63,6 +69,7 @@ export const adminTenantsRouter = router({
                 tenantId: uuid,
                 plan: planSchema,
                 seats: z.number().int().min(1).max(500),
+                billingTerm: billingTermSchema,
                 startsAt: z.string().datetime(),
                 expiresAt: z.string().datetime().nullable(),
                 status: licenseStatusSchema,

@@ -6,9 +6,15 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
+    BILLING_TERM_LABELS,
+    BILLING_TERMS,
+    type BillingTerm,
+    computeLicenseExpiry,
     extendExpiry,
+    formatDateOnly,
     GRANT_REASONS,
     grantPreview,
+    isValidAdminEmail,
     PLAN_LABELS,
     TENANT_PLANS,
     type TenantPlan,
@@ -37,6 +43,9 @@ interface AdminModalsProps {
         plan: TenantPlan;
         seats: number;
         status: "active" | "trial";
+        billingTerm: BillingTerm;
+        adminName: string;
+        adminEmail: string;
         expiresAt?: string | null;
         initialTokens?: number;
         reason: string;
@@ -297,46 +306,121 @@ function CreateForm({ busy, error, onCreate }: AdminModalsProps) {
     const [plan, setPlan] = useState<TenantPlan>("starter");
     const [seats, setSeats] = useState(5);
     const [status, setStatus] = useState<"active" | "trial">("trial");
+    const [billingTerm, setBillingTerm] = useState<BillingTerm>("monthly");
+    const [adminName, setAdminName] = useState("");
+    const [adminEmail, setAdminEmail] = useState("");
     const [tokens, setTokens] = useState(100);
     const [reason, setReason] = useState("New customer");
-    const blockReason = !name.trim() ? "Name is required" : !reason.trim() ? "A reason is required" : null;
+    const startsAt = useMemo(() => new Date().toISOString(), []);
+    const expiresAt = computeLicenseExpiry(startsAt, status, billingTerm);
+    const blockReason = !name.trim()
+        ? "Name is required"
+        : !adminName.trim()
+          ? "Admin name is required"
+          : !isValidAdminEmail(adminEmail)
+            ? "A valid admin email is required"
+            : !reason.trim()
+              ? "A reason is required"
+              : null;
     return (
         <>
             <DialogHeader>
                 <DialogTitle>New tenant</DialogTitle>
             </DialogHeader>
             <div className="space-y-3 text-sm">
-                <Input placeholder="Clinic name" value={name} onChange={(e) => setName(e.target.value)} />
+                <label htmlFor="create-name" className="block text-xs text-muted-foreground">
+                    Clinic name
+                    <Input
+                        id="create-name"
+                        className="mt-1"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                    />
+                </label>
                 <div className="grid grid-cols-2 gap-2">
+                    <label className="block text-xs text-muted-foreground">
+                        Plan
+                        <select
+                            className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                            value={plan}
+                            onChange={(e) => setPlan(e.target.value as TenantPlan)}
+                        >
+                            {TENANT_PLANS.map((p) => (
+                                <option key={p} value={p}>
+                                    {PLAN_LABELS[p]}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <label htmlFor="create-seats" className="block text-xs text-muted-foreground">
+                        Seats
+                        <Input
+                            id="create-seats"
+                            className="mt-1"
+                            type="number"
+                            min={1}
+                            value={seats}
+                            onChange={(e) => setSeats(Number(e.target.value))}
+                        />
+                    </label>
+                </div>
+                <div className="block text-xs text-muted-foreground">
+                    Status
+                    <div className="mt-1 flex gap-2">
+                        <Button
+                            size="sm"
+                            variant={status === "trial" ? "default" : "secondary"}
+                            onClick={() => setStatus("trial")}
+                        >
+                            Trial
+                        </Button>
+                        <Button
+                            size="sm"
+                            variant={status === "active" ? "default" : "secondary"}
+                            onClick={() => setStatus("active")}
+                        >
+                            Active
+                        </Button>
+                    </div>
+                </div>
+                <label className="block text-xs text-muted-foreground">
+                    Billing term
                     <select
-                        className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                        value={plan}
-                        onChange={(e) => setPlan(e.target.value as TenantPlan)}
+                        className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                        value={billingTerm}
+                        onChange={(e) => setBillingTerm(e.target.value as BillingTerm)}
                     >
-                        {TENANT_PLANS.map((p) => (
-                            <option key={p} value={p}>
-                                {PLAN_LABELS[p]}
+                        {BILLING_TERMS.map((term) => (
+                            <option key={term} value={term}>
+                                {BILLING_TERM_LABELS[term]}
                             </option>
                         ))}
                     </select>
-                    <Input type="number" value={seats} onChange={(e) => setSeats(Number(e.target.value))} />
+                </label>
+                <div className="rounded-md bg-muted px-3 py-2 text-xs">
+                    {status === "trial"
+                        ? `Trial expires ${formatDateOnly(expiresAt)} (7 days after start)`
+                        : `Renews ${formatDateOnly(expiresAt)} (${BILLING_TERM_LABELS[billingTerm]})`}
                 </div>
-                <div className="flex gap-2">
-                    <Button
-                        size="sm"
-                        variant={status === "trial" ? "default" : "secondary"}
-                        onClick={() => setStatus("trial")}
-                    >
-                        Trial
-                    </Button>
-                    <Button
-                        size="sm"
-                        variant={status === "active" ? "default" : "secondary"}
-                        onClick={() => setStatus("active")}
-                    >
-                        Active
-                    </Button>
-                </div>
+                <label htmlFor="create-admin-name" className="block text-xs text-muted-foreground">
+                    Admin name
+                    <Input
+                        id="create-admin-name"
+                        className="mt-1"
+                        value={adminName}
+                        onChange={(e) => setAdminName(e.target.value)}
+                    />
+                </label>
+                <label htmlFor="create-admin-email" className="block text-xs text-muted-foreground">
+                    Admin email
+                    <Input
+                        id="create-admin-email"
+                        className="mt-1"
+                        type="email"
+                        value={adminEmail}
+                        onChange={(e) => setAdminEmail(e.target.value)}
+                    />
+                </label>
                 <label htmlFor="create-tokens" className="block text-xs text-muted-foreground">
                     Initial tokens
                     <Input
@@ -347,7 +431,15 @@ function CreateForm({ busy, error, onCreate }: AdminModalsProps) {
                         onChange={(e) => setTokens(Number(e.target.value))}
                     />
                 </label>
-                <Input placeholder="Reason" value={reason} onChange={(e) => setReason(e.target.value)} />
+                <label htmlFor="create-reason" className="block text-xs text-muted-foreground">
+                    Reason
+                    <Input
+                        id="create-reason"
+                        className="mt-1"
+                        value={reason}
+                        onChange={(e) => setReason(e.target.value)}
+                    />
+                </label>
                 <FieldError error={error} />
                 {blockReason ? <p className="text-xs text-amber-400">{blockReason}</p> : null}
                 <Button
@@ -359,6 +451,10 @@ function CreateForm({ busy, error, onCreate }: AdminModalsProps) {
                             plan,
                             seats,
                             status,
+                            billingTerm,
+                            adminName,
+                            adminEmail,
+                            expiresAt,
                             initialTokens: tokens || undefined,
                             reason,
                         });

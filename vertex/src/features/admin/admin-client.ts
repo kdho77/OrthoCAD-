@@ -5,13 +5,20 @@ import { isApiConfigured, trpc } from "@/lib/trpc";
 import {
     type AdminAuditEntry,
     applyLedgerWrite,
+    type BillingTerm,
     buildAuditEntry,
+    computeLicenseExpiry,
     DEMO_TENANTS,
+    demoUsersForTenant,
     extendExpiry,
+    generateTempPassword,
+    isValidAdminEmail,
     slugifyTenantName,
+    type TenantAdminInvite,
     type TenantPlan,
     type TenantRecord,
     type TenantStatus,
+    type TenantUserAccount,
     type TokenLedgerEntry,
 } from "../../../shared/admin/admin-domain";
 
@@ -20,6 +27,9 @@ export const TENANT_MIGRATION_NOTICE =
 
 let demoTenants: TenantRecord[] = structuredClone(DEMO_TENANTS);
 const demoLedger = new Map<string, TokenLedgerEntry[]>();
+const demoUsers = new Map<string, TenantUserAccount[]>(
+    DEMO_TENANTS.map((tenant) => [tenant.id, demoUsersForTenant(tenant)]),
+);
 const demoAudit: AdminAuditEntry[] = [];
 let demoBecauseUnmigrated = false;
 
@@ -86,6 +96,7 @@ function demoTenantDetail(id: string) {
         tenant,
         ledger: demoLedger.get(id) ?? [],
         audit: demoAudit.filter((a) => a.tenantId === id),
+        users: demoUsers.get(id) ?? [],
     };
 }
 
@@ -135,15 +146,22 @@ export async function createTenant(input: {
     plan: TenantPlan;
     seats: number;
     status: "active" | "trial";
+    billingTerm: BillingTerm;
+    adminName: string;
+    adminEmail: string;
     expiresAt?: string | null;
     initialTokens?: number;
     reason: string;
-}): Promise<TenantRecord> {
+}): Promise<{ tenant: TenantRecord; admin: TenantAdminInvite }> {
+    if (!input.adminName.trim()) throw new Error("Admin name is required");
+    if (!isValidAdminEmail(input.adminEmail)) throw new Error("A valid admin email is required");
     return liveOrDemo(
         () => trpc.admin.tenants.create.mutate(input),
         async () => {
             const id = crypto.randomUUID();
             const now = new Date().toISOString();
+            const billingTerm: BillingTerm = input.billingTerm === "annual" ? "annual" : "monthly";
+            const expiresAt = input.expiresAt ?? computeLicenseExpiry(now, input.status, billingTerm);
             const tenant: TenantRecord = {
                 id,
                 name: input.name.trim(),
@@ -151,29 +169,42 @@ export async function createTenant(input: {
                 status: input.status,
                 plan: input.plan,
                 seats: input.seats,
-                seatsUsed: 0,
+                seatsUsed: 1,
+                billingTerm,
                 startsAt: now,
-                expiresAt: input.expiresAt ?? null,
+                expiresAt,
                 tokenBalance: 0,
                 tokenThreshold: 50,
-                lastActivityAt: now,
+                lastActivityAt: null,
                 archivedAt: null,
                 createdAt: now,
                 updatedAt: now,
             };
             demoTenants = [tenant, ...demoTenants];
+            const admin: TenantAdminInvite = {
+                id: crypto.randomUUID(),
+                fullName: input.adminName.trim(),
+                email: input.adminEmail.trim().toLowerCase(),
+                role: "admin",
+                lastLoginAt: null,
+                tempPassword: generateTempPassword(),
+                inviteLink: `https://app.vertexorthopedic.com/invite?tenant=${id}`,
+            };
+            demoUsers.set(id, [admin]);
             if (input.initialTokens) {
                 await grantTokens({ tenantId: id, amount: input.initialTokens, reason: input.reason });
+                const afterGrant = demoTenants.find((row) => row.id === id);
+                if (afterGrant) bumpDemo(afterGrant, { lastActivityAt: null, seatsUsed: 1 });
             } else {
                 pushDemoAudit({
                     action: "tenant.created",
                     reason: input.reason,
                     tenantId: id,
                     tenantName: tenant.name,
-                    after: tenant,
+                    after: { tenant, adminEmail: admin.email },
                 });
             }
-            return tenant;
+            return { tenant: demoTenants.find((row) => row.id === id) ?? tenant, admin };
         },
     );
 }
@@ -182,6 +213,7 @@ export async function updateLicense(input: {
     tenantId: string;
     plan: TenantPlan;
     seats: number;
+    billingTerm: BillingTerm;
     startsAt: string;
     expiresAt: string | null;
     status: Exclude<TenantStatus, "archived">;
@@ -195,10 +227,10 @@ export async function updateLicense(input: {
             const after = bumpDemo(before, {
                 plan: input.plan,
                 seats: input.seats,
+                billingTerm: input.billingTerm,
                 startsAt: input.startsAt,
                 expiresAt: input.expiresAt,
                 status: input.status,
-                lastActivityAt: new Date().toISOString(),
             });
             pushDemoAudit({
                 action: "tenant.license_updated",
