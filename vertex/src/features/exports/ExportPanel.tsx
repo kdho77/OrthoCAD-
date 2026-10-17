@@ -156,8 +156,17 @@ export function ExportPanel() {
 
             <div className="flex items-center gap-2 rounded-md border border-border px-2 py-2 text-xs text-muted-foreground">
                 <FileCode2 className="h-4 w-4" />
-                G-code (slicing / CNC) is in the <span className="text-foreground">Printing</span> tab ·{" "}
-                {TOKEN_COST.gcode} tokens
+                {design.method === "milling_3axis" ? (
+                    <>
+                        3-axis CNC G-code is in the <span className="text-foreground">Mill</span> step ·{" "}
+                        {TOKEN_COST.gcode} tokens
+                    </>
+                ) : (
+                    <>
+                        3D-printer and 3-axis CNC G-code are in the{" "}
+                        <span className="text-foreground">Print</span> step · {TOKEN_COST.gcode} tokens
+                    </>
+                )}
             </div>
 
             {status ? <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p> : null}

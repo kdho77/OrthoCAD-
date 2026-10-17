@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import { CLINICAL_STEPS, useClinicalWorkflowStore } from "./clinical-workflow-store";
+import { CLINICAL_STEPS, clinicalStepShort, useClinicalWorkflowStore } from "./clinical-workflow-store";
 
 describe("clinical workflow steps", () => {
     test("Scan > Setup > Base > Corrections > Elements > Print > Export", () => {
@@ -17,6 +17,13 @@ describe("clinical workflow steps", () => {
         ]);
     });
 
+    test("Print step is labeled Mill for milling_3axis", () => {
+        expect(clinicalStepShort("print", "printing_solid")).toBe("Print");
+        expect(clinicalStepShort("print", "printing_shell")).toBe("Print");
+        expect(clinicalStepShort("print", "milling_3axis")).toBe("Mill");
+        expect(clinicalStepShort("export", "milling_3axis")).toBe("Export");
+    });
+
     test("pair assignment defaults Editing to Both", () => {
         useClinicalWorkflowStore.setState({
             elementPlacementFoot: "left",
@@ -25,6 +32,8 @@ describe("clinical workflow steps", () => {
         useClinicalWorkflowStore.getState().acknowledgePairAssignment();
         expect(useClinicalWorkflowStore.getState().elementPlacementFoot).toBe("both");
         expect(useClinicalWorkflowStore.getState().footSideExplicitlyChosen).toBe(true);
+        const sticky = useClinicalWorkflowStore.getState().scanGateStickyReason;
+        if (sticky) expect(sticky).not.toMatch(/Select Left, Right, or Pair/i);
     });
 
     test("blocked Next stays enabled and jumps to Scan", () => {

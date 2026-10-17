@@ -39,6 +39,7 @@ rs.mock("@/components/layout/StatusBar", () => ({ StatusBar: () => null }));
 rs.mock("@/components/layout/TopNav", () => ({ TopNav: () => null }));
 rs.mock("@/components/prescription-upload/PrescriptionUpload", () => ({ PrescriptionUpload: () => null }));
 rs.mock("@/components/viewer/Viewer3D", () => ({ Viewer3D: () => null }));
+rs.mock("@/features/mill/MillTableView", () => ({ MillTableView: () => null }));
 rs.mock("@/features/clients/ClientsView", () => ({ ClientsView: () => null }));
 rs.mock("@/features/auth/LoginScreen", () => ({ LoginScreen: () => null }));
 rs.mock("@/hooks/useKeyboardShortcuts", () => ({ useKeyboardShortcuts: () => {} }));
