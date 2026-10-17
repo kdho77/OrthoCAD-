@@ -42,19 +42,19 @@ function rasterFill(ring: Point[], stepover: number, sample: number): XyPoint[] 
 
 export function spiralXy(outline: Point[], profile: MillingProfile, toolType: ToolType): XyPoint[] {
     const step = stepoverMm(profile, toolType);
-    const outer = offsetClosed(outline, profile.topOffsetMm, profile.chordTolMm);
-    if (outer.length < 4) return [];
     const spacing = Math.max(0.8, step);
-    const rings: Point[][] = [ensureCw(resampleClosed(outer, spacing))];
-    let current = outer;
-    for (let k = 0; k < 200; k++) {
-        const next = offsetClosed(current, -step, profile.chordTolMm);
+    // Offset every ring from the source outline. Chained 0.01 mm clipper offsets explode
+    // vertex count on SAMPLE_Top and miss the 10 s export gate.
+    const chord = Math.max(0.2, profile.chordTolMm);
+    const rings: Point[][] = [];
+    for (let k = 0; k < 80; k++) {
+        const next = offsetClosed(outline, profile.topOffsetMm - k * step, chord);
         if (next.length < 8) break;
         const bb = bboxOf(next);
         if (bb.maxX - bb.minX < step * 2 || bb.maxY - bb.minY < step * 2) break;
         rings.push(ensureCw(resampleClosed(next, spacing)));
-        current = next;
     }
+    if (rings.length === 0) return [];
     const nAlign = Math.max(...rings.map((r) => r.length));
     const aligned = rings.map((r) => resampleClosed(r, perimeterSafe(r) / nAlign));
     const path: XyPoint[] = [];
