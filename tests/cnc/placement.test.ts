@@ -13,6 +13,7 @@ import {
     placeWorkpieces,
     tableBoundsMm,
     transformOutline,
+    worldPoint,
 } from "@/lib/cnc/placement";
 import { bboxOf } from "@/lib/cnc/polygon";
 import { cloneProfile, IDAHO_PROFILE } from "@/lib/cnc/profile";
@@ -175,6 +176,92 @@ describe("CNC mill placement", () => {
             }
             expect(issue.ok).toBe(true);
         }
+        raw.dispose();
+    }, 60_000);
+
+    test("evaluatePlacedPart is red when max height exceeds the block depth", () => {
+        const profile = cloneProfile(IDAHO_PROFILE);
+        profile.materialHeightMm = 5;
+        const wp = syntheticWorkpiece(profile, "left");
+        expect(wp.zMax).toBeGreaterThan(profile.materialHeightMm);
+        const placed = first(placeWorkpieces(profile, [wp], [], { validate: false }), "placed");
+        expect(placed.zMax).toBe(wp.zMax);
+        const issue = evaluatePlacedPart(placed, profile);
+        expect(issue.ok).toBe(false);
+        expect(issue.reason).toMatch(/block depth/i);
+        expect(issue.reason).toMatch(/5/);
+    });
+
+    test("placeWorkpieces validate:false still returns too-tall parts for mill preview", () => {
+        const profile = cloneProfile(IDAHO_PROFILE);
+        profile.materialHeightMm = 5;
+        const wp = syntheticWorkpiece(profile, "left");
+        const placed = placeWorkpieces(profile, [wp], [], { validate: false });
+        expect(placed).toHaveLength(1);
+        expect(first(placed, "placed").zMax).toBeGreaterThan(5);
+        expect(() => placeWorkpieces(profile, [wp])).toThrow(CncExportError);
+        try {
+            placeWorkpieces(profile, [wp]);
+        } catch (e) {
+            expect((e as CncExportError).code).toBe("too_tall");
+        }
+    });
+
+    test("orbit mesh XY matches 2D worldPoint at the same tx/ty/rotation", () => {
+        const profile = cloneProfile(IDAHO_PROFILE);
+        const wp = syntheticWorkpiece(profile, "left");
+        const placed = first(
+            placeWorkpieces(profile, [wp], [{ side: wp.side, rotationDeg: 37.5 }]),
+            "placed",
+        );
+        const rad = (placed.rotationDeg * Math.PI) / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        for (const p of placed.outline) {
+            const dx = p.x - placed.cx;
+            const dy = p.y - placed.cy;
+            const orbitX = placed.cx + dx * cos - dy * sin + placed.tx;
+            const orbitY = placed.cy + dx * sin + dy * cos + placed.ty;
+            const world = worldPoint(p, placed);
+            expect(orbitX).toBeCloseTo(world.x, 10);
+            expect(orbitY).toBeCloseTo(world.y, 10);
+        }
+    });
+
+    test("workpiecesFromDesign keeps SAMPLE_Top composed mesh with contour for mill orbit", async () => {
+        const profile = cloneProfile(IDAHO_PROFILE);
+        const design = createDesignWithStockPlaceholder();
+        design.method = "milling_3axis";
+        const raw = await loadSampleTop();
+        const parts = await workpiecesFromDesign(design, ["left", "right"], profile, async (side) => {
+            const geo = raw.clone();
+            return side === "right" ? mirrorGeometry(geo) : geo;
+        });
+        expect(parts).toHaveLength(2);
+        for (const part of parts) {
+            const mesh = part.mesh;
+            if (!mesh) throw new Error(`${part.side} missing orbit mesh`);
+            const pos = mesh.getAttribute("position");
+            if (!pos) throw new Error(`${part.side} mesh has no position`);
+            expect(pos.count).toBeGreaterThan(100);
+            let minZ = Infinity;
+            let maxZ = -Infinity;
+            for (let i = 0; i < pos.count; i++) {
+                const z = pos.getZ(i);
+                minZ = Math.min(minZ, z);
+                maxZ = Math.max(maxZ, z);
+            }
+            expect(maxZ - minZ).toBeGreaterThan(2);
+            expect(maxZ).toBeLessThanOrEqual(profile.materialHeightMm);
+            expect(Math.abs(maxZ - part.zMax)).toBeLessThan(1.5);
+        }
+        const placed = placeWorkpieces(profile, parts, [], { validate: false });
+        expect(placed).toHaveLength(2);
+        for (const part of placed) {
+            expect(part.mesh).toBe(parts.find((p) => p.side === part.side)?.mesh);
+            expect(evaluatePlacedPart(part, profile).ok).toBe(true);
+        }
+        for (const part of parts) part.mesh?.dispose();
         raw.dispose();
     }, 60_000);
 

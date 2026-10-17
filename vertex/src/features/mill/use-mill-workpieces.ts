@@ -17,6 +17,13 @@ interface MillLoadMemo {
 
 let millLoadMemo: MillLoadMemo | null = null;
 
+function disposeWorkpieceMeshes(parts: CncWorkpiece[]): void {
+    for (const part of parts) {
+        part.mesh?.dispose();
+        part.mesh = undefined;
+    }
+}
+
 function loadMillWorkpieces(
     design: ReturnType<typeof useDesignStore.getState>["design"],
     exportSide: Side,
@@ -30,8 +37,16 @@ function loadMillWorkpieces(
     ) {
         return millLoadMemo.promise;
     }
+    const previous = millLoadMemo;
     const sides: Side[] = design.paired ? ["left", "right"] : [exportSide];
-    const promise = workpiecesFromDesign(design, sides, profile);
+    const promise = workpiecesFromDesign(design, sides, profile).then((parts) => {
+        if (previous) {
+            void previous.promise.then(disposeWorkpieceMeshes).catch(() => {
+                /* previous load failed; nothing to dispose */
+            });
+        }
+        return parts;
+    });
     millLoadMemo = { design, exportSide, profile, promise };
     return promise;
 }

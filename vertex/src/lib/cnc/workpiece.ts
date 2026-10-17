@@ -35,11 +35,5 @@ export function workpieceFromGeometry(
         );
     const heightmap = rasterizeTop(geometry, outline, Math.min(0.25, profile.sampleMm), band);
     const { zMin, zMax } = heightmapRange(heightmap);
-    if (zMax > profile.materialHeightMm - 1 + 1e-6) {
-        throw new CncExportError(
-            "too_tall",
-            `Part max Z ${zMax.toFixed(3)} mm exceeds material height − 1 (${profile.materialHeightMm - 1} mm)`,
-        );
-    }
     return { side, outline, heightmap, zMin, zMax };
 }

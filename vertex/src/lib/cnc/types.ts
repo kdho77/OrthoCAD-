@@ -1,6 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import type { BufferGeometry } from "three";
 import type { Side } from "@/types";
 
 export type ToolType = "ball" | "flat";
@@ -115,6 +116,8 @@ export interface CncWorkpiece {
     heightmap: Heightmap;
     zMin: number;
     zMax: number;
+    /** Composed mill top (XY = plan, Z = thickness). Orbit view only; omitted from the design hash. */
+    mesh?: BufferGeometry;
 }
 
 export type CncErrorCode = "too_tall" | "no_fit" | "outline_open";
@@ -168,4 +171,6 @@ export interface PlacedPart {
     heightmap: Heightmap;
     zMin: number;
     zMax: number;
+    /** Same composed top as {@link CncWorkpiece.mesh}; mill orbit reuses it (no per-frame rebuild). */
+    mesh?: BufferGeometry;
 }
