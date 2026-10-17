@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { AFO_DESIGN_MARKERS } from "@/lib/geometry/afo/defaults";
-import { validateTrimLoop } from "@/lib/geometry/afo/trim-loop";
+import { loopNearZ, validateTrimLoop } from "@/lib/geometry/afo/trim-loop";
 import { getAfoState, patchAfoState, useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
 
@@ -12,6 +12,7 @@ export function AfoDesignPanel() {
     const setPlacing = useAfoStore((s) => s.setPlacingLandmarkIndex);
     const setPlacingTrim = useAfoStore((s) => s.setPlacingTrim);
     const placingTrim = useAfoStore((s) => s.placingTrim);
+    const lastError = useAfoStore((s) => s.lastError);
     const correctedMesh = useAfoStore((s) => s.correctedMesh);
     const castMesh = useAfoStore((s) => s.castMesh);
     const working = correctedMesh ?? castMesh;
@@ -23,8 +24,46 @@ export function AfoDesignPanel() {
               working,
               afo.trimPoints.map((p) => p.vertexIndex),
               afo.trimClosed,
+              { skipGeodesic: true },
           )
         : { ok: false, reasons: ["No working mesh."] };
+
+    const confirmTrim = () => {
+        if (!working) return;
+        const full = validateTrimLoop(
+            working,
+            afo.trimPoints.map((p) => p.vertexIndex),
+            afo.trimClosed,
+        );
+        if (!full.ok) {
+            useAfoStore.getState().setLastError(full.reasons.join(" "));
+            return;
+        }
+        useAfoStore.getState().setLastError(null);
+        patchAfoState({ trimConfirmed: true }, "afo-trim-confirm");
+    };
+
+    const snapBraceLoop = () => {
+        if (!working) return;
+        const z = afo.corrections.braceHeightMm;
+        const ids = loopNearZ(working, Math.min(z, 120), 16);
+        if (ids.length < 3) return;
+        patchAfoState(
+            {
+                trimPoints: ids.map((vertexIndex) => ({
+                    vertexIndex,
+                    point: {
+                        x: working.positions[vertexIndex * 3] ?? 0,
+                        y: working.positions[vertexIndex * 3 + 1] ?? 0,
+                        z: working.positions[vertexIndex * 3 + 2] ?? 0,
+                    },
+                })),
+                trimClosed: true,
+                trimConfirmed: false,
+            },
+            "afo-trim-brace",
+        );
+    };
 
     return (
         <div className="space-y-3 text-xs">
@@ -89,6 +128,14 @@ export function AfoDesignPanel() {
                     : null}
                 <button
                     type="button"
+                    disabled={!working}
+                    className="h-8 w-full rounded-md border border-border bg-background"
+                    onClick={snapBraceLoop}
+                >
+                    Loop at brace height
+                </button>
+                <button
+                    type="button"
                     disabled={afo.trimPoints.length < 3 || afo.trimClosed}
                     className="h-8 w-full rounded-md border border-border bg-background"
                     onClick={() => patchAfoState({ trimClosed: true }, "afo-trim-close")}
@@ -99,10 +146,11 @@ export function AfoDesignPanel() {
                     type="button"
                     disabled={!validation.ok}
                     className="h-8 w-full rounded-md bg-primary text-[12px] font-medium text-primary-foreground disabled:opacity-40"
-                    onClick={() => patchAfoState({ trimConfirmed: true }, "afo-trim-confirm")}
+                    onClick={confirmTrim}
                 >
                     Confirm
                 </button>
+                {lastError ? <p className="text-[10px] text-amber-200">{lastError}</p> : null}
             </section>
 
             <p className="rounded-md border border-dashed border-border px-2 py-2 text-[10px] text-muted-foreground">

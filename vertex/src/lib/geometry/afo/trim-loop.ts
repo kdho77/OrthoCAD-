@@ -58,6 +58,7 @@ export function validateTrimLoop(
     mesh: AfoTriMesh,
     vertexIndices: number[],
     closed: boolean,
+    options: { skipGeodesic?: boolean } = {},
 ): TrimLoopValidation {
     const reasons: string[] = [];
     const unique = new Set(vertexIndices);
@@ -71,7 +72,7 @@ export function validateTrimLoop(
     for (const v of vertexIndices) {
         if (v < 0 || v >= n) reasons.push(`Vertex ${v} is outside the mesh.`);
     }
-    if (closed && vertexIndices.length >= 2) {
+    if (!options.skipGeodesic && closed && vertexIndices.length >= 2) {
         for (let i = 0; i < vertexIndices.length; i++) {
             const a = vertexIndices[i]!;
             const b = vertexIndices[(i + 1) % vertexIndices.length]!;
@@ -107,4 +108,47 @@ function vertexCountSafe(mesh: AfoTriMesh): number {
 /** Click is a close if it lands on the first handle (within radius mm). */
 export function isCloseClick(first: AfoVec3, click: AfoVec3, radiusMm = 12): boolean {
     return Math.hypot(click.x - first.x, click.y - first.y, click.z - first.z) <= radiusMm;
+}
+
+/** Angularly ordered vertex loop near a target Z (brace opening). */
+export function loopNearZ(mesh: AfoTriMesh, zMm: number, count = 16): number[] {
+    const n = (mesh.positions.length / 3) | 0;
+    const band: { i: number; d: number; ang: number }[] = [];
+    for (let i = 0; i < n; i++) {
+        const z = mesh.positions[i * 3 + 2] ?? 0;
+        band.push({
+            i,
+            d: Math.abs(z - zMm),
+            ang: Math.atan2(mesh.positions[i * 3 + 1] ?? 0, mesh.positions[i * 3] ?? 0),
+        });
+    }
+    band.sort((a, b) => a.d - b.d);
+    const d0 = band[0]?.d ?? 0;
+    const near = band.filter((b) => b.d <= d0 + 8);
+    let cx = 0;
+    let cy = 0;
+    for (const b of near) {
+        cx += mesh.positions[b.i * 3] ?? 0;
+        cy += mesh.positions[b.i * 3 + 1] ?? 0;
+    }
+    const nNear = near.length || 1;
+    cx /= nNear;
+    cy /= nNear;
+    const ring = near
+        .map((b) => ({
+            ...b,
+            ang: Math.atan2((mesh.positions[b.i * 3 + 1] ?? 0) - cy, (mesh.positions[b.i * 3] ?? 0) - cx),
+        }))
+        .sort((a, b) => a.ang - b.ang);
+    if (ring.length === 0) return [];
+    const step = Math.max(1, Math.floor(ring.length / count));
+    const out: number[] = [];
+    const seen = new Set<number>();
+    for (let k = 0; k < ring.length && out.length < count; k += step) {
+        const i = ring[k]?.i;
+        if (i == null || seen.has(i)) continue;
+        seen.add(i);
+        out.push(i);
+    }
+    return out;
 }
