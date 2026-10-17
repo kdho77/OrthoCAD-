@@ -27,6 +27,10 @@ describe("element library thumbnails", () => {
             const bytes = readFileSync(thumbPath);
             expect(bytes.length).toBeGreaterThan(100);
             expect(bytes.subarray(0, 8).equals(PNG_MAGIC)).toBe(true);
+            const glbPath = resolve(dir, entry.glb);
+            expect(existsSync(glbPath)).toBe(true);
+            const glb = readFileSync(glbPath);
+            expect(glb.subarray(0, 4).toString("ascii")).toBe("glTF");
         }
     });
 });

@@ -22,13 +22,27 @@ EXPECTED = {
 }
 
 
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def already_materialized() -> bool:
+    return all((DEST / name).is_file() and _sha(DEST / name) == digest for name, digest in EXPECTED.items())
+
+
 def main() -> int:
-    if not INCOMING.is_dir():
-        print("no _incoming dir; nothing to materialize")
+    if already_materialized():
+        print("element binaries already present")
         return 0
-    parts = sorted(INCOMING.glob("assets.tar.gz.part*"))
+    if not INCOMING.is_dir():
+        print("no _incoming dir; skip materialize")
+        return 0
+    bundle = sorted(INCOMING.glob("bundle.b64.part*"))
+    legacy = sorted(INCOMING.glob("assets.tar.gz.part*"))
+    parts = bundle or legacy
     if not parts:
-        raise SystemExit("missing assets.tar.gz.part* chunks")
+        print("no incoming parts; skip materialize")
+        return 0
     payload = "".join(p.read_text() for p in parts)
     raw = base64.b64decode(payload)
     DEST.mkdir(parents=True, exist_ok=True)
