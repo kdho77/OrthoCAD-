@@ -10,7 +10,13 @@ import { SlicerFormColumn } from "./slicer-form-column";
 import { SlicerPreview } from "./SlicerPreview";
 import { ResultPanel } from "./slicer-result-panel";
 import { downloadGcode, requestSlice } from "./slicer-api";
-import { INCH_SCALE, parseSlicerMesh, scaledMesh, validateSlicerFileMeta } from "./slicer-mesh";
+import {
+    INCH_SCALE,
+    meshOpenBoundaryIssue,
+    parseSlicerMesh,
+    scaledMesh,
+    validateSlicerFileMeta,
+} from "./slicer-mesh";
 import {
     type DemoSlicerState,
     demoSlicerState,
@@ -117,14 +123,12 @@ export function SlicerPage() {
                 const buffer = await slot.file.arrayBuffer();
                 dispatch({ type: "progress", id: slot.id, progress: 100 });
                 const mesh = await parseSlicerMesh(slot.file, buffer);
-                const issue = mesh.closed
-                    ? null
-                    : {
-                          message:
-                              "This file isn't a closed mesh. Re-export from OrthoCAD with Export > STL.",
-                          fix: "Export a watertight STL and try again.",
-                      };
-                validated.push({ ...slot, mesh, progress: 100, issue });
+                validated.push({
+                    ...slot,
+                    mesh,
+                    progress: 100,
+                    issue: meshOpenBoundaryIssue(mesh.topology),
+                });
             } catch (err) {
                 const issue = (err as { issue?: { message: string; fix: string } }).issue ?? {
                     message: "This file isn't a closed mesh. Re-export from OrthoCAD with Export > STL.",
@@ -279,11 +283,11 @@ export function SlicerPage() {
     };
 
     return (
-        <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <div aria-live="polite" className="sr-only">
                 {liveMessage}
             </div>
-            <div className="mx-auto flex w-full max-w-[1400px] flex-1 flex-col gap-4 p-4 md:flex-row md:items-start">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
                 <SlicerFormColumn
                     state={state}
                     dragOver={dragOver}
@@ -327,15 +331,7 @@ export function SlicerPage() {
                     onSlice={onSliceClick}
                     onCancel={() => abortRef.current?.abort()}
                     onKeepWaiting={() => dispatch({ type: "slicing-slow", slow: false })}
-                />
-
-                <div className="flex min-h-[360px] min-w-0 flex-1 flex-col gap-4">
-                    <SlicerPreview
-                        mesh={primaryMesh}
-                        printDirection={state.printDirection}
-                        resetNonce={resetNonce}
-                        onResetView={() => setResetNonce((n) => n + 1)}
-                    />
+                >
                     <ResultPanel
                         stateStatus={state.status}
                         error={state.error}
@@ -348,6 +344,14 @@ export function SlicerPage() {
                         onSliceAnother={() => dispatch({ type: "slice-another" })}
                         onPay={onPayAndDownload}
                         onDownload={downloadPaidGcode}
+                    />
+                </SlicerFormColumn>
+                <div className="relative h-[50vh] min-h-[320px] min-w-0 w-full md:h-full md:min-h-0 md:flex-1">
+                    <SlicerPreview
+                        mesh={primaryMesh}
+                        printDirection={state.printDirection}
+                        resetNonce={resetNonce}
+                        onResetView={() => setResetNonce((n) => n + 1)}
                     />
                 </div>
             </div>
