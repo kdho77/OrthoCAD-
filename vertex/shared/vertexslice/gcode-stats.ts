@@ -63,3 +63,41 @@ export function formatPrintTime(seconds: number | null): string {
     if (m > 0) return s > 0 ? `${m}m ${s}s` : `${m}m`;
     return `${s}s`;
 }
+
+export function sumGcodeStats(items: GcodeStats[]): GcodeStats {
+    if (items.length === 0) {
+        return { printTimeSeconds: null, filamentGrams: null, filamentMeters: null, layers: null };
+    }
+    let printTimeSeconds = 0;
+    let filamentGrams = 0;
+    let filamentMeters = 0;
+    let layers = 0;
+    let hasTime = false;
+    let hasGrams = false;
+    let hasMeters = false;
+    let hasLayers = false;
+    for (const item of items) {
+        if (item.printTimeSeconds != null) {
+            printTimeSeconds += item.printTimeSeconds;
+            hasTime = true;
+        }
+        if (item.filamentGrams != null) {
+            filamentGrams += item.filamentGrams;
+            hasGrams = true;
+        }
+        if (item.filamentMeters != null) {
+            filamentMeters += item.filamentMeters;
+            hasMeters = true;
+        }
+        if (item.layers != null) {
+            layers = Math.max(layers, item.layers);
+            hasLayers = true;
+        }
+    }
+    return {
+        printTimeSeconds: hasTime ? printTimeSeconds : null,
+        filamentGrams: hasGrams ? filamentGrams : null,
+        filamentMeters: hasMeters ? filamentMeters : null,
+        layers: hasLayers ? layers : null,
+    };
+}
