@@ -3,6 +3,29 @@
 
 import type { Heightmap, ToolType } from "./types";
 
+/** Max-Z downsample so SAMPLE_Top drop maps stay under the 10 s export gate. Synthetic grids stay native. */
+export function coarsenHeightmap(hm: Heightmap, cellMm: number): Heightmap {
+    if (hm.cell >= cellMm - 1e-12) return hm;
+    const factor = Math.max(2, Math.round(cellMm / hm.cell));
+    const cell = hm.cell * factor;
+    const nx = Math.max(2, Math.ceil(hm.nx / factor));
+    const ny = Math.max(2, Math.ceil(hm.ny / factor));
+    const z = new Float32Array(nx * ny);
+    z.fill(Number.NaN);
+    const inside = new Uint8Array(nx * ny);
+    for (let iy = 0; iy < hm.ny; iy++) {
+        const jy = (iy / factor) | 0;
+        for (let ix = 0; ix < hm.nx; ix++) {
+            const jx = (ix / factor) | 0;
+            const src = hm.z[iy * hm.nx + ix]!;
+            const j = jy * nx + jx;
+            if (Number.isFinite(src) && (!Number.isFinite(z[j]!) || src > z[j]!)) z[j] = src;
+            if (hm.inside[iy * hm.nx + ix] === 1) inside[j] = 1;
+        }
+    }
+    return { originX: hm.originX, originY: hm.originY, cell, nx, ny, z, inside };
+}
+
 export function ballScallopMm(radiusMm: number, stepoverMm: number): number {
     const r = Math.max(1e-6, radiusMm);
     const half = stepoverMm / 2;
@@ -12,11 +35,12 @@ export function ballScallopMm(radiusMm: number, stepoverMm: number): number {
 
 /** Precompute gouge-free tool-tip Z on the same grid as the surface heightmap. */
 export function buildDropMap(hm: Heightmap, radiusMm: number, type: ToolType): Heightmap {
+    const grid = hm.nx * hm.ny > 120_000 ? coarsenHeightmap(hm, Math.max(0.5, hm.cell * 2)) : hm;
     const r = Math.max(0.05, radiusMm);
     const r2 = r * r;
-    const cell = hm.cell;
-    const nx = hm.nx;
-    const ny = hm.ny;
+    const cell = grid.cell;
+    const nx = grid.nx;
+    const ny = grid.ny;
     const rCells = Math.ceil(r / cell);
     const kdx: number[] = [];
     const kdy: number[] = [];
@@ -35,9 +59,9 @@ export function buildDropMap(hm: Heightmap, radiusMm: number, type: ToolType): H
     const kn = kdx.length;
     const out = new Float32Array(nx * ny);
     out.fill(Number.NaN);
-    const src = hm.z;
-    for (let i = 0; i < src.length; i++) {
-        const z = src[i]!;
+    const srcZ = grid.z;
+    for (let i = 0; i < srcZ.length; i++) {
+        const z = srcZ[i]!;
         if (!Number.isFinite(z)) continue;
         const ix = i % nx;
         const iy = (i / nx) | 0;
@@ -51,7 +75,7 @@ export function buildDropMap(hm: Heightmap, radiusMm: number, type: ToolType): H
             if (!Number.isFinite(prev) || v > prev) out[j] = v;
         }
     }
-    return { ...hm, z: out };
+    return { ...grid, z: out };
 }
 
 export function sampleDrop(map: Heightmap, x: number, y: number): number {
