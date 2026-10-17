@@ -5,7 +5,7 @@ import { sha256Hex } from "@/lib/geometry/procedural-wall/sha256";
 import { buildContourPass } from "./contour";
 import { buildDropMap, sampleDrop } from "./drop-cutter";
 import { CncGcodeEmitter } from "./gcode";
-import { machineXY, placeWorkpieces } from "./placement";
+import { machineXY, type PartPlacement, placeWorkpieces } from "./placement";
 import { maxStepdownMm, skinZ, toolRadiusMm } from "./profile";
 import { spiralXy, waterlineLevels, zigzagXy } from "./spiral";
 import {
@@ -117,7 +117,11 @@ function toolsDiffer(profile: MillingProfile): boolean {
     );
 }
 
-export function generateCncJob(profile: MillingProfile, parts: CncWorkpiece[]): CncJobResult {
+export function generateCncJob(
+    profile: MillingProfile,
+    parts: CncWorkpiece[],
+    options?: { placements?: PartPlacement[] },
+): CncJobResult {
     for (const part of parts) {
         if (part.outline.length < 3) {
             throw new CncExportError(
@@ -126,7 +130,7 @@ export function generateCncJob(profile: MillingProfile, parts: CncWorkpiece[]): 
             );
         }
     }
-    const placed = placeWorkpieces(profile, parts);
+    const placed = placeWorkpieces(profile, parts, options?.placements ?? []);
     const designHash = canonicalHash(profile, parts);
     const warnings: string[] = [];
     const g = new CncGcodeEmitter(profile);

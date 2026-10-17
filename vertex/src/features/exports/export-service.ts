@@ -19,6 +19,7 @@ import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
+import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import type { ExportFormat, GrindingStyle, Side } from "@/types";
 import { bindPrintRecipeProfile } from "../../../shared/print-recipe/print-recipe";
 
@@ -181,7 +182,8 @@ export async function exportCncGcode(sides: Side[], profile: MillingProfile): Pr
         if (parts.length === 0) {
             return { ok: false, reason: "No insole geometry to mill" };
         }
-        const job = generateCncJob(profile, parts);
+        const placements = useMillingProfileStore.getState().placements;
+        const job = generateCncJob(profile, parts, { placements });
         const after = JSON.stringify(useDesignStore.getState().design);
         if (after !== before) {
             return { ok: false, reason: "CNC export mutated design state" };

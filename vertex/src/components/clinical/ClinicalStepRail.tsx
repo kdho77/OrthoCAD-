@@ -7,8 +7,10 @@ import { cn } from "@/lib/utils";
 import {
     CLINICAL_STEPS,
     type ClinicalStepId,
+    clinicalStepShort,
     useClinicalWorkflowStore,
 } from "@/stores/clinical-workflow-store";
+import { useDesignStore } from "@/stores/design-store";
 
 export function ClinicalStepRail() {
     const step = useClinicalWorkflowStore((s) => s.step);
@@ -18,6 +20,7 @@ export function ClinicalStepRail() {
     const footSideExplicitlyChosen = useClinicalWorkflowStore((s) => s.footSideExplicitlyChosen);
     void footSideExplicitlyChosen;
     const setStep = useClinicalWorkflowStore((s) => s.setStep);
+    const method = useDesignStore((s) => s.design.method);
 
     const stepState = (id: ClinicalStepId) => {
         if (step === id) return "current";
@@ -65,7 +68,7 @@ export function ClinicalStepRail() {
                             ) : (
                                 <span className="text-[10px] opacity-80">{i + 1}.</span>
                             )}
-                            {s.short}
+                            {clinicalStepShort(s.id, method)}
                         </button>
                     );
                 })}

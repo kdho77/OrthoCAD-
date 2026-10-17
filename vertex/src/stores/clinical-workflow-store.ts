@@ -7,6 +7,7 @@ import {
     evaluateScanStepGate,
     scanGateBlocksLaterSteps,
 } from "@/lib/clinical/clinical-step-gates";
+import type { ProductionMethod } from "@/types";
 
 export type ClinicalStepId = "scan" | "setup" | "base" | "corrections" | "elements" | "print" | "export";
 
@@ -37,6 +38,12 @@ export const CLINICAL_STEPS: { id: ClinicalStepId; label: string; short: string 
     { id: "print", label: "Print", short: "Print" },
     { id: "export", label: "Export", short: "Export" },
 ];
+
+/** Print step is labeled Mill when production type is Milling — 3 Axis. */
+export function clinicalStepShort(id: ClinicalStepId, method?: ProductionMethod): string {
+    if (id === "print" && method === "milling_3axis") return "Mill";
+    return CLINICAL_STEPS.find((s) => s.id === id)?.short ?? id;
+}
 
 /** Parametric-correction section keys. Groups stay collapsed until the user opens one. */
 export const CORRECTIONS_STEP_SECTIONS: CorrectionsSectionKey[] = [

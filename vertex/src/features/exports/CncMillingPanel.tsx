@@ -210,7 +210,7 @@ export function CncMillingPanel() {
                 ) : (
                     <Lock className="h-4 w-4" />
                 )}
-                {busy ? "Exporting CNC…" : `Export CNC G-code · ${TOKEN_COST.gcode} tokens`}
+                {busy ? "Exporting CNC…" : `Mill · Export CNC G-code · ${TOKEN_COST.gcode} tokens`}
             </Button>
             {!gcodeCheck.ok ? <p className="text-xs text-amber-400">{gcodeCheck.reason}</p> : null}
             {status ? <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p> : null}
