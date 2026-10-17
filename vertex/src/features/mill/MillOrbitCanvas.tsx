@@ -71,12 +71,8 @@ function TableBlock({
                 <boxGeometry args={[width, length, height]} />
                 <meshStandardMaterial color="#3f3f46" />
             </mesh>
-            <mesh position={[width / 2, length / 2, height + 0.05]}>
-                <boxGeometry args={[width, length, 0.1]} />
-                <meshStandardMaterial color="#52525b" />
-            </mesh>
             {pocketLines.map((pk) => (
-                <Line key={pk.key} points={pk.points} color="#d4d4d8" lineWidth={1.5} />
+                <Line key={pk.key} points={pk.points} color="#e4e4e7" lineWidth={2} />
             ))}
         </group>
     );
@@ -101,7 +97,7 @@ function InsoleMesh3D({
         if (!shape) return null;
         const thickness = Math.max(4, Math.min(height - 2, part.zMax));
         const geo = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false, steps: 1 });
-        geo.translate(0, 0, height - thickness);
+        geo.translate(0, 0, height + 0.4);
         return geo;
     }, [world, height, part.zMax]);
     if (!geometry) return null;
@@ -115,7 +111,13 @@ function InsoleMesh3D({
                 onSelect(part.side);
             }}
         >
-            <meshStandardMaterial color={color} metalness={0.05} roughness={0.55} />
+            <meshStandardMaterial
+                color={color}
+                emissive={color}
+                emissiveIntensity={0.35}
+                metalness={0.02}
+                roughness={0.45}
+            />
         </mesh>
     );
 }
@@ -147,7 +149,7 @@ export function MillOrbitCanvas({
             dpr={[1, 1.5]}
             gl={{ antialias: true, alpha: false }}
             camera={{
-                position: [cx + tw * 0.55, cy - tl * 1.05, h * 11],
+                position: [cx + tw * 0.15, cy - tl * 0.95, h * 16],
                 fov: 40,
                 near: 0.5,
                 far: 8000,
@@ -155,16 +157,17 @@ export function MillOrbitCanvas({
             }}
             onCreated={({ camera, gl }) => {
                 camera.up.set(0, 0, 1);
-                camera.lookAt(cx, cy, 0);
+                camera.lookAt(cx, cy, h);
                 gl.domElement.style.touchAction = "none";
             }}
             onPointerMissed={() => onSelect(null)}
         >
             <color attach="background" args={["#0f1522"]} />
-            <ZUpCamera tx={cx} ty={cy} tz={0} />
-            <ambientLight intensity={0.7} />
-            <directionalLight position={[tw, -tl, h * 8]} intensity={1.15} castShadow />
-            <directionalLight position={[-tw, tl, h * 4]} intensity={0.35} />
+            <ZUpCamera tx={cx} ty={cy} tz={h} />
+            <ambientLight intensity={1.05} />
+            <hemisphereLight args={["#f4f4f5", "#27272a", 0.7]} />
+            <directionalLight position={[tw * 0.2, -tl * 0.4, h * 18]} intensity={1.4} />
+            <directionalLight position={[-tw, tl, h * 8]} intensity={0.55} />
             <TableBlock width={tw} length={tl} height={h} pockets={profile.pockets} />
             {placed.map((part) => (
                 <InsoleMesh3D
@@ -187,6 +190,8 @@ export function MillOrbitCanvas({
                 target={[cx, cy, cz]}
                 minDistance={40}
                 maxDistance={2500}
+                minPolarAngle={0.12}
+                maxPolarAngle={Math.PI / 2 - 0.08}
                 zoomToCursor
                 mouseButtons={{
                     LEFT: THREE.MOUSE.ROTATE,
