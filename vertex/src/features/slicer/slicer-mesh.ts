@@ -2,6 +2,21 @@
 // See LICENSE file in the project root for full license information.
 
 import { VERTEXSLICE_MAX_UPLOAD_BYTES } from "../../../shared/vertexslice/contract";
+import { analyzeMeshTopology, meshTopologyWarning, type MeshTopology } from "./slicer-topology";
+
+export {
+    analyzeMeshTopology,
+    cameraDistanceForBounds,
+    isClosedManifold,
+    meshOpenBoundaryIssue,
+    meshTopologyWarning,
+    OPEN_BOUNDARY_BLOCK_EDGES,
+    SLICER_VIEW_DIR,
+    weldToleranceMm,
+    weldVertexIds,
+    WELD_RELATIVE_TOLERANCE,
+} from "./slicer-topology";
+export type { MeshTopology } from "./slicer-topology";
 
 export const ACCEPTED_EXTENSIONS = [".stl", ".3mf"] as const;
 export const LENGTH_WARN_MIN_MM = 150;
@@ -25,6 +40,9 @@ export interface ParsedSlicerMesh {
     triangleCount: number;
     bounds: MeshBounds;
     closed: boolean;
+    topology: MeshTopology;
+    /** Non-blocking mesh note; the slicer is the final authority. */
+    warning: string | null;
     extension: ".stl" | ".3mf";
 }
 
@@ -61,35 +79,6 @@ function boundsFromPositions(positions: Float32Array): MeshBounds {
         widthMm: sorted[1] ?? 0,
         heightMm: sorted[2] ?? 0,
     };
-}
-
-function quantize(v: number): number {
-    return Math.round(v * 1000) / 1000;
-}
-
-export function isClosedManifold(positions: Float32Array): boolean {
-    if (positions.length < 9) return false;
-    const edges = new Map<string, number>();
-    const vertexKey = (i: number) =>
-        `${quantize(positions[i])},${quantize(positions[i + 1])},${quantize(positions[i + 2])}`;
-    const edgeKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
-    for (let i = 0; i < positions.length; i += 9) {
-        const a = vertexKey(i);
-        const b = vertexKey(i + 3);
-        const c = vertexKey(i + 6);
-        for (const [u, v] of [
-            [a, b],
-            [b, c],
-            [c, a],
-        ] as const) {
-            if (u === v) return false;
-            edges.set(edgeKey(u, v), (edges.get(edgeKey(u, v)) ?? 0) + 1);
-        }
-    }
-    for (const count of edges.values()) {
-        if (count !== 2) return false;
-    }
-    return edges.size > 0;
 }
 
 function parseBinaryStl(buffer: ArrayBuffer): Float32Array {
@@ -292,11 +281,14 @@ export async function parseSlicerMesh(
         };
         throw err;
     }
+    const topology = analyzeMeshTopology(positions);
     return {
         positions,
         triangleCount: positions.length / 9,
         bounds: boundsFromPositions(positions),
-        closed: isClosedManifold(positions),
+        closed: topology.triangleCount > 0 && topology.boundaryEdges === 0,
+        topology,
+        warning: meshTopologyWarning(topology),
         extension: ext,
     };
 }
