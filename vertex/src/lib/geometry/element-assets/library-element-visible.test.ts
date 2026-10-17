@@ -8,14 +8,23 @@ import { describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import { BASE_REFERENCE_THICKNESS_MM, getBaseFootprintFrame } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import { sampleTopFromArrayBuffer } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { weldAndLabelComponents } from "@/lib/geometry/scan-components";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { defaultElementPose } from "@/lib/geometry/elements";
-import type { ElementKind, PlacedElement, SideCorrections } from "@/types";
+import { mirrorGeometry } from "@/lib/library/loaders";
+import type { ElementKind, PlacedElement, Side, SideCorrections } from "@/types";
 import { applyElementsToTopMeshLast } from "./apply-elements";
-import { assertElementAssetBytes, isHtmlAssetPayload, resolvePlacedAssetContexts } from "./element-asset";
+import {
+    assertElementAssetBytes,
+    isHtmlAssetPayload,
+    loadTransformedAssetPositions,
+    resolvePlacedAssetContexts,
+} from "./element-asset";
+import { sampleGridBilinear } from "./height-grid";
+import { anchorMmFromPlacement } from "./no-flow-blend";
 import { LIBRARY_HEIGHT_FIELD_KINDS } from "./types";
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
@@ -39,15 +48,23 @@ function zero(): SideCorrections {
     };
 }
 
-async function loadSampleTop(): Promise<BufferGeometry> {
+async function loadSampleTop(side: Side = "right"): Promise<BufferGeometry> {
     const buf = readFileSync(SAMPLE_TOP_PATH);
-    return sampleTopFromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    let raw = await sampleTopFromArrayBuffer(
+        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    );
+    if (side === "left") {
+        const mirrored = mirrorGeometry(raw);
+        raw.dispose();
+        raw = mirrored;
+    }
+    return raw;
 }
 
 function fieldFor(raw: BufferGeometry, el: PlacedElement): HeightFieldParams {
-    const frame = getBaseFootprintFrame(raw, "right");
+    const frame = getBaseFootprintFrame(raw, el.side);
     return {
-        side: "right",
+        side: el.side,
         lengthMm: frame.lenSize,
         widthMm: frame.widSize,
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
@@ -59,11 +76,38 @@ function fieldFor(raw: BufferGeometry, el: PlacedElement): HeightFieldParams {
     };
 }
 
-function maxZ(geo: BufferGeometry): number {
-    const pos = geo.getAttribute("position")!;
-    let max = -Infinity;
-    for (let i = 0; i < pos.count; i++) max = Math.max(max, pos.getZ(i));
-    return max;
+/** Max composed-vs-base Δz (mm) on vertices that sample the asset footprint. */
+async function maxDeltaZInsideFootprint(
+    base: BufferGeometry,
+    composed: BufferGeometry,
+    el: PlacedElement,
+): Promise<{ maxDz: number; nInside: number; gridMaxZ: number; footprintAreaMm2: number }> {
+    const ctx = await resolvePlacedAssetContexts([el], el.side, 1, 1, base);
+    expect(ctx.length).toBe(1);
+    const { grid } = await loadTransformedAssetPositions(ctx[0]!.assetId, ctx[0]!.transform);
+    const anchor = anchorMmFromPlacement(base, el.side, el.position.x, el.position.y);
+    const ta = anchor.frame.thickAxis;
+    const a = base.getAttribute("position")!.array as Float32Array;
+    const b = composed.getAttribute("position")!.array as Float32Array;
+    let maxDz = 0;
+    let nInside = 0;
+    let occupied = 0;
+    for (let i = 0; i < grid.z.length; i++) {
+        const z = grid.z[i]!;
+        if (Number.isFinite(z) && z >= 0.05) occupied++;
+    }
+    for (let i = 0; i < a.length / 3; i++) {
+        const h = sampleGridBilinear(grid, a[i * 3]! - anchor.x, a[i * 3 + 1]! - anchor.y);
+        if (h <= 1e-9) continue;
+        nInside++;
+        maxDz = Math.max(maxDz, b[i * 3 + ta]! - a[i * 3 + ta]!);
+    }
+    return {
+        maxDz,
+        nInside,
+        gridMaxZ: grid.maxZ,
+        footprintAreaMm2: occupied * grid.cellMm * grid.cellMm,
+    };
 }
 
 function stlDigest(geo: BufferGeometry): string {
@@ -97,8 +141,6 @@ describe("library element visible placement", () => {
         const baseline = await composePrintSolidTop(raw, {
             sourceField: { ...emptyField, elements: [], includeElements: false },
         });
-        const baseCount = baseline.getAttribute("position")!.count;
-        const baseMaxZ = maxZ(baseline);
         const baseStl = stlDigest(baseline);
 
         for (const kind of kinds) {
@@ -111,14 +153,10 @@ describe("library element visible placement", () => {
             await applyElementsToTopMeshLast(composed, raw, field);
             const viaCompose = await composePrintSolidTop(raw, { sourceField: field });
 
-            const count = composed.getAttribute("position")!.count;
-            const z = maxZ(composed);
+            const local = await maxDeltaZInsideFootprint(raw, composed, placed);
             const stl = stlDigest(viaCompose);
-            const composeZ = maxZ(viaCompose);
-
-            expect(count).toBeGreaterThan(baseCount);
-            expect(z).toBeGreaterThan(baseMaxZ + 0.4);
-            expect(composeZ).toBeGreaterThan(baseMaxZ + 0.4);
+            expect(local.nInside).toBeGreaterThan(20);
+            expect(local.maxDz).toBeGreaterThan(0.4);
             expect(stl).not.toBe(baseStl);
 
             // Height-field lift only — no disconnected coin/cylinder shell.
@@ -131,5 +169,42 @@ describe("library element visible placement", () => {
 
         baseline.dispose();
         raw.dispose();
+    }, 300_000);
+
+    test("Met pad 1 and Cluffy wedge 1 peak Δz equals default height ±0.2 mm on L and R", async () => {
+        const cases: { kind: ElementKind; expectedMm: number }[] = [
+            { kind: "met_pad", expectedMm: 5.0 },
+            { kind: "cluffy_wedge", expectedMm: 2.4 },
+        ];
+        for (const spec of cases) {
+            for (const side of ["right", "left"] as Side[]) {
+                const raw = await loadSampleTop(side);
+                const pose = defaultElementPose(spec.kind, side, INSOLE_LENGTH_MM, INSOLE_WIDTH_MM);
+                const placed: PlacedElement = { id: `${spec.kind}-${side}`, kind: spec.kind, side, ...pose };
+                const field = fieldFor(raw, placed);
+                const composed = raw.clone();
+                await applyElementsToTopMeshLast(composed, raw, field);
+                const local = await maxDeltaZInsideFootprint(raw, composed, placed);
+                console.log("PEAK-DZ", spec.kind, side, {
+                    expectedMm: spec.expectedMm,
+                    gridMaxZ: local.gridMaxZ,
+                    maxDz: local.maxDz,
+                    nInside: local.nInside,
+                    footprintAreaMm2: local.footprintAreaMm2,
+                });
+                expect(local.nInside).toBeGreaterThan(20);
+                expect(local.gridMaxZ).toBeGreaterThan(spec.expectedMm - 0.05);
+                expect(local.gridMaxZ).toBeLessThan(spec.expectedMm + 0.05);
+                expect(local.maxDz).toBeGreaterThan(spec.expectedMm - 0.2);
+                expect(local.maxDz).toBeLessThan(spec.expectedMm + 0.2);
+
+                const viaCompose = await composePrintSolidTop(raw, { sourceField: field });
+                expect(weldAndLabelComponents(viaCompose).components).toHaveLength(1);
+
+                composed.dispose();
+                viaCompose.dispose();
+                raw.dispose();
+            }
+        }
     }, 300_000);
 });
