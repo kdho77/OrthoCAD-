@@ -32,6 +32,8 @@ describe("clinical workflow steps", () => {
         useClinicalWorkflowStore.getState().acknowledgePairAssignment();
         expect(useClinicalWorkflowStore.getState().elementPlacementFoot).toBe("both");
         expect(useClinicalWorkflowStore.getState().footSideExplicitlyChosen).toBe(true);
+        const sticky = useClinicalWorkflowStore.getState().scanGateStickyReason;
+        if (sticky) expect(sticky).not.toMatch(/Select Left, Right, or Pair/i);
     });
 
     test("blocked Next stays enabled and jumps to Scan", () => {

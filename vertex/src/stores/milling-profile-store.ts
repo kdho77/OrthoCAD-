@@ -4,7 +4,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { PartPlacement } from "@/lib/cnc/placement";
-import { cloneProfile, IDAHO_PROFILE } from "@/lib/cnc/profile";
+import { cloneProfile, IDAHO_PROFILE, reconcileMillingProfile } from "@/lib/cnc/profile";
 import type { MillingProfile } from "@/lib/cnc/types";
 import type { Side } from "@/types";
 
@@ -36,16 +36,17 @@ export const useMillingProfileStore = create<MillingProfileStore>()(
             millView: "top",
             millSelected: null,
             setMachine: (machine) => set({ machine }),
-            setProfile: (patch) => set((s) => ({ profile: { ...s.profile, ...patch } })),
+            setProfile: (patch) =>
+                set((s) => ({ profile: reconcileMillingProfile({ ...s.profile, ...patch }) })),
             setPlacements: (placements) => set({ placements }),
             patchPlacement: (side, patch) =>
                 set((s) => {
                     const prev = s.placements.find((p) => p.side === side);
                     const next: PartPlacement = {
                         side,
-                        tx: patch.tx ?? prev?.tx ?? 0,
-                        ty: patch.ty ?? prev?.ty ?? 0,
-                        rotationDeg: patch.rotationDeg ?? prev?.rotationDeg ?? 0,
+                        tx: patch.tx ?? prev?.tx,
+                        ty: patch.ty ?? prev?.ty,
+                        rotationDeg: patch.rotationDeg ?? prev?.rotationDeg,
                     };
                     return { placements: [...s.placements.filter((p) => p.side !== side), next] };
                 }),
@@ -61,6 +62,16 @@ export const useMillingProfileStore = create<MillingProfileStore>()(
                 profile: s.profile,
                 placements: s.placements,
             }),
+            merge: (persistedState, currentState) => {
+                const persisted = (persistedState ?? {}) as Partial<MillingProfileStore>;
+                const profile = reconcileMillingProfile(persisted.profile ?? currentState.profile);
+                return {
+                    ...currentState,
+                    ...persisted,
+                    profile,
+                    placements: persisted.placements ?? currentState.placements,
+                };
+            },
         },
     ),
 );

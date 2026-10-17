@@ -2,7 +2,11 @@
 // See LICENSE file in the project root for full license information.
 
 import { AlertCircle, Check, CircleDot } from "lucide-react";
-import { evaluateNextGate, evaluateStepComplete } from "@/lib/clinical/clinical-step-gates";
+import {
+    clinicalRailBannerReason,
+    evaluateNextGate,
+    evaluateStepComplete,
+} from "@/lib/clinical/clinical-step-gates";
 import { cn } from "@/lib/utils";
 import {
     CLINICAL_STEPS,
@@ -32,9 +36,9 @@ export function ClinicalStepRail() {
         return "upcoming";
     };
 
-    const bannerReason =
-        scanGateStickyReason ??
-        (nextBlockReason || (!evaluateNextGate(step).ok ? evaluateNextGate(step).reason : null));
+    const bannerReason = clinicalRailBannerReason(step);
+    void scanGateStickyReason;
+    void nextBlockReason;
 
     return (
         <div className="border-b border-border bg-panel px-3 py-2">
@@ -91,6 +95,7 @@ export function ClinicalStepFooter() {
     const step = useClinicalWorkflowStore((s) => s.step);
     const nextBlockReason = useClinicalWorkflowStore((s) => s.nextBlockReason);
     const footSideExplicitlyChosen = useClinicalWorkflowStore((s) => s.footSideExplicitlyChosen);
+    void nextBlockReason;
     void footSideExplicitlyChosen;
     const goNext = useClinicalWorkflowStore((s) => s.goNext);
     const goBack = useClinicalWorkflowStore((s) => s.goBack);
@@ -122,10 +127,6 @@ export function ClinicalStepFooter() {
             {!gate.ok ? (
                 <p className="mt-1.5 text-[11px] leading-snug text-amber-300/95" role="status">
                     {gate.reason} Next jumps to what’s missing.
-                </p>
-            ) : nextBlockReason ? (
-                <p className="mt-1.5 text-[11px] leading-snug text-amber-300/95" role="status">
-                    {nextBlockReason}
                 </p>
             ) : null}
         </div>
