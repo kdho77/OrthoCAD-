@@ -174,16 +174,15 @@ export function generateCncJob(
         for (const levelZ of [...levels, Number.NEGATIVE_INFINITY]) {
             if (didFinish) break;
             const path: Point[] = [];
+            let follows = true;
             for (const p of xy) {
                 const drop = sampleDrop(dropMap, p.x, p.y);
                 if (!Number.isFinite(drop)) continue;
-                path.push({ x: p.x, y: p.y, z: Math.max(drop, levelZ, skinZ(profile)) });
+                const z = Math.max(drop, levelZ, skinZ(profile));
+                path.push({ x: p.x, y: p.y, z });
+                if (z > drop + 0.05) follows = false;
             }
             if (path.length < 2) continue;
-            const follows = path.every((p) => {
-                const drop = sampleDrop(dropMap, p.x, p.y);
-                return Number.isFinite(drop) && (p.z ?? 0) <= drop + 0.05;
-            });
             emitPath(g, part, profile, path, "normal", true);
             if (follows || levelZ === Number.NEGATIVE_INFINITY) didFinish = true;
         }

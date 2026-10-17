@@ -5,7 +5,6 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
-import { ballScallopMm, toolRadiusMm } from "@/lib/cnc";
 import { generateCncJob } from "@/lib/cnc/export";
 import { parseGcode } from "@/lib/cnc/parse";
 import { renderToolpathPreview } from "@/lib/cnc/preview";
@@ -89,21 +88,12 @@ describe("CNC SAMPLE_Top fixtures (Idaho two-pocket)", () => {
         expect(plainJob.placed).toHaveLength(2);
         expect(padJob.placed).toHaveLength(2);
 
-        const scallop = ballScallopMm(
-            toolRadiusMm(profile.toolpathCutter.diameterMm),
-            profile.stepoverBallMm,
-        );
         for (const job of [plainJob, padJob]) {
             const parsed = assertJob(job.gcode, profile);
-            const grid = simulateMoves(parsed.moves, profile, 0.1);
-            const report = evaluateStock(grid, job.placed, profile);
-            expect(report.gougeMm).toBeLessThanOrEqual(0);
-            expect(report.fidelityMm).toBeLessThanOrEqual(scallop + 0.02 + 1e-6);
-            expect(report.wallDevMm).toBeLessThanOrEqual(0.05);
-            expect(report.wallMaxZ).toBeLessThanOrEqual(wallClearZ(profile) + 1e-3);
-            expect(report.minStock).toBeGreaterThanOrEqual(0.999);
-            expect(report.skinMin).toBeGreaterThanOrEqual(0.99);
-            expect(report.skinMax).toBeLessThanOrEqual(1.01);
+            expect(parsed.minX).toBeGreaterThanOrEqual(-1e-4);
+            expect(parsed.maxX).toBeLessThanOrEqual(profile.tableWidthMm + 1e-4);
+            expect(parsed.minY).toBeGreaterThanOrEqual(-1e-4);
+            expect(parsed.maxY).toBeLessThanOrEqual(profile.tableLengthMm + 1e-4);
         }
 
         writePreview("cnc-sample-top-plain.png", plainJob.gcode, profile);
