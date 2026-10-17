@@ -323,6 +323,13 @@ export function demoSlicerState(kind: DemoSlicerState, fault?: string | null): S
                 heightMm: 15,
             },
             closed: true,
+            topology: {
+                boundaryEdges: 0,
+                nonManifoldEdges: 0,
+                weldedVertexCount: 4,
+                triangleCount: 2,
+            },
+            warning: null,
             extension: ".stl",
         },
         progress: 100,
