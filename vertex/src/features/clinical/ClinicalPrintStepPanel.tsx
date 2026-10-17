@@ -5,6 +5,7 @@ import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { ExportPanel } from "@/features/exports/ExportPanel";
 import { PrintingPanel } from "@/features/exports/PrintingPanel";
+import { TextMarkingPanel } from "@/features/exports/TextMarkingPanel";
 import { ShapeFinishPanel } from "@/features/shape-finish/ShapeFinishPanel";
 import { shouldShowShapeFinishInPrintAdvanced } from "@/features/shape-finish/shape-finish-mount";
 import { cn } from "@/lib/utils";
@@ -24,6 +25,7 @@ export function ClinicalPrintStepPanel() {
             </div>
 
             <PrintingPanel clinicalMode primaryOnly showWallPreview />
+            <TextMarkingPanel />
 
             <button
                 type="button"

@@ -33,6 +33,23 @@ export type ScanPattern =
 /** Midfoot arch skive target (distinct from Kirby heel skive). */
 export type ArchSkiveSide = "medial" | "lateral" | "central";
 
+export type TextSurface = "bottom" | "wall";
+export type TextMode = "engrave" | "emboss";
+
+/** Print-step custom text (empty text is a no-op). */
+export interface TextMarking {
+    text: string;
+    surface: TextSurface;
+    mode: TextMode;
+    bold: boolean;
+    capHeightMm: number;
+    depthMm: number;
+    heightMm: number;
+    letterSpacingMm: number;
+    rotationDeg: number;
+    placementU: number;
+}
+
 /** Track 5b — print / shell shape & finish modifiers (per foot). */
 export interface SideShapeFinish {
     /** Extra top clearance in heel cup / flange for cover bulk (mm). */
@@ -283,6 +300,12 @@ export interface DesignState {
 
     /** Track 5b shape / finish (top cover, trimmable forefoot, arch grind / skive). */
     shapeFinish?: ShapeFinishModifiers;
+
+    /**
+     * Print-step custom text (engrave / emboss). Empty text is a no-op and is
+     * omitted from the design-state hash so frozen STLs stay byte-identical.
+     */
+    textMarking?: TextMarking;
 
     /**
      * Paired Left + Right dual-view workspace support.

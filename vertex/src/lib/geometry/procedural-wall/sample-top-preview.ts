@@ -6,6 +6,7 @@ import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthLongitudinalEnvelope, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
     extractMergedGeometry,
@@ -13,7 +14,7 @@ import {
     mirrorGeometry,
     reorientToFootprintFrame,
 } from "@/lib/library/loaders";
-import type { ScanPattern, SideCorrections } from "@/types";
+import type { ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
@@ -126,7 +127,14 @@ export async function buildProceduralExportSolid(
         raw = mirrored;
     }
     try {
-        return reconstructProceduralPreview(raw, options);
+        const preview = reconstructProceduralPreview(raw, options);
+        if (!hasActiveTextMarking(options.textMarking)) return preview;
+        const { applyTextMarkingToPrintSolid } = await import("@/lib/geometry/text-marking/apply");
+        const geometry = await applyTextMarkingToPrintSolid(preview.geometry, options.textMarking, {
+            side: options.side ?? (options.mirrored ? "left" : "right"),
+        });
+        if (geometry !== preview.geometry) preview.geometry.dispose();
+        return { ...preview, geometry };
     } finally {
         raw.dispose();
     }
@@ -170,6 +178,10 @@ export interface ProceduralPreviewOptions {
     trimline?: TrimlineCurve | null;
     /** Force the composed-top loft path (skip analytic deltas). */
     composedTop?: boolean;
+    /** Print-step custom text. Applied after loft; empty is a no-op. */
+    textMarking?: TextMarking | null;
+    /** Foot side for left/right placement (wall text is never glyph-mirrored). */
+    side?: Side;
 }
 
 /**

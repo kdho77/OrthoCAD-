@@ -68,6 +68,8 @@ async function buildModifiedBaseGeometry(
             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
             wallStyle: viewer?.wallStyle ?? "straight",
             scanPattern: design.pattern,
+            textMarking: design.textMarking,
+            side,
             ...(stored ? { bottomPattern: curveToPolyPoints(stored) } : {}),
         });
         return preview.geometry;
