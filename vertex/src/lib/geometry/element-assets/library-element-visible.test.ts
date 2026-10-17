@@ -10,6 +10,7 @@ import { BASE_REFERENCE_THICKNESS_MM, getBaseFootprintFrame } from "@/lib/geomet
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import { sampleTopFromArrayBuffer } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import { weldAndLabelComponents } from "@/lib/geometry/scan-components";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { defaultElementPose } from "@/lib/geometry/elements";
 import type { ElementKind, PlacedElement, SideCorrections } from "@/types";
@@ -119,6 +120,10 @@ describe("library element visible placement", () => {
             expect(z).toBeGreaterThan(baseMaxZ + 0.4);
             expect(composeZ).toBeGreaterThan(baseMaxZ + 0.4);
             expect(stl).not.toBe(baseStl);
+
+            // Height-field lift only — no disconnected coin/cylinder shell.
+            const labeled = weldAndLabelComponents(viaCompose);
+            expect(labeled.components).toHaveLength(1);
 
             composed.dispose();
             viaCompose.dispose();
