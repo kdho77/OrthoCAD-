@@ -2,18 +2,55 @@
 // See LICENSE file in the project root for full license information.
 
 import { Grid, OrbitControls } from "@react-three/drei";
-import { Canvas } from "@react-three/fiber";
-import { useMemo } from "react";
+import { Canvas, useThree } from "@react-three/fiber";
+import { useLayoutEffect, useMemo } from "react";
 import * as THREE from "three";
 import { Button } from "@/components/ui/button";
 import type { VertexSlicePrintDirection } from "../../../shared/vertexslice/contract";
-import { formatDimensionsMm, type ParsedSlicerMesh } from "./slicer-mesh";
+import {
+    cameraDistanceForBounds,
+    formatDimensionsMm,
+    type MeshBounds,
+    type ParsedSlicerMesh,
+} from "./slicer-mesh";
 
 interface SlicerPreviewProps {
     mesh: ParsedSlicerMesh | null;
     printDirection: VertexSlicePrintDirection;
     onResetView: () => void;
     resetNonce: number;
+}
+
+function FitCamera({ bounds, resetNonce }: { bounds: MeshBounds; resetNonce: number }) {
+    const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
+    const controls = useThree((s) => s.controls) as {
+        target: THREE.Vector3;
+        minDistance: number;
+        maxDistance: number;
+        update: () => void;
+    } | null;
+    const size = useThree((s) => s.size);
+    const invalidate = useThree((s) => s.invalidate);
+
+    useLayoutEffect(() => {
+        const aspect = size.width / Math.max(size.height, 1);
+        const { center, distance, viewDir } = cameraDistanceForBounds(bounds, camera.fov, aspect);
+        const target = new THREE.Vector3(center[0], center[1], center[2]);
+        camera.near = Math.max(distance / 200, 0.05);
+        camera.far = Math.max(distance * 40, 4000);
+        camera.position.copy(target).addScaledVector(new THREE.Vector3(...viewDir), distance);
+        camera.lookAt(target);
+        camera.updateProjectionMatrix();
+        if (controls) {
+            controls.target.copy(target);
+            controls.minDistance = Math.max(distance * 0.15, 1);
+            controls.maxDistance = distance * 12;
+            controls.update();
+        }
+        invalidate();
+    }, [bounds, resetNonce, camera, controls, size.width, size.height, invalidate]);
+
+    return null;
 }
 
 function MeshView({
@@ -105,16 +142,16 @@ export function SlicerPreview({ mesh, printDirection, onResetView, resetNonce }:
         : "No model uploaded yet. The build plate is empty.";
 
     return (
-        <div className="relative flex min-h-[280px] flex-1 flex-col overflow-hidden rounded-lg border border-border bg-[#0b1220]">
+        <div className="absolute inset-0 h-full w-full overflow-hidden bg-[#0b1220] md:border-l md:border-border">
             <p className="sr-only" id="slicer-preview-desc">
                 {description}
             </p>
             <Canvas
-                camera={{ position: [180, 140, 220], fov: 40, near: 0.1, far: 4000 }}
+                camera={{ position: [180, 140, 220], fov: 35, near: 0.1, far: 8000 }}
                 frameloop="demand"
                 dpr={[1, 1.5]}
                 gl={{ antialias: true, alpha: false }}
-                style={{ touchAction: "none" }}
+                style={{ touchAction: "none", width: "100%", height: "100%" }}
                 aria-hidden
                 tabIndex={-1}
             >
@@ -129,23 +166,18 @@ export function SlicerPreview({ mesh, printDirection, onResetView, resetNonce }:
                     position={[0, 0, 0]}
                     rotation={[-Math.PI / 2, 0, 0]}
                 />
-                {mesh ? (
-                    <MeshView
-                        key={`${resetNonce}-${printDirection}`}
-                        mesh={mesh}
-                        printDirection={printDirection}
-                    />
-                ) : null}
+                {mesh ? <MeshView mesh={mesh} printDirection={printDirection} /> : null}
                 <OrbitControls
                     makeDefault
                     enableDamping
                     enablePan
                     enableZoom
                     enableRotate
-                    minDistance={20}
-                    maxDistance={2000}
+                    minDistance={5}
+                    maxDistance={8000}
                     zoomToCursor={false}
                 />
+                {mesh ? <FitCamera bounds={mesh.bounds} resetNonce={resetNonce} /> : null}
             </Canvas>
             {mesh ? (
                 <div className="pointer-events-none absolute left-3 top-3 rounded bg-black/55 px-2 py-1 text-[11px] text-cyan-100">
