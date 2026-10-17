@@ -65,6 +65,24 @@ describe("handleSlicerRequest", () => {
         expect(JSON.stringify(body)).not.toContain("X-API-Key");
     });
 
+    test("POST succeeds without an account (pay-per-file, nothing persisted)", async () => {
+        const res = await handleSlicerRequest(
+            new Request("http://localhost/api/slicer", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                    filename: "insole.stl",
+                    modelBase64: Buffer.from([0, 1, 2]).toString("base64"),
+                    material: "apex_core",
+                }),
+            }),
+            { client: createMockVertexSliceClient(), env: {} },
+        );
+        const body = (await res.json()) as { ok: boolean };
+        expect(res.status).toBe(200);
+        expect(body.ok).toBe(true);
+    });
+
     test("mock timeout and 5xx each return a request ID", async () => {
         const timeout = await handleSlicerRequest(
             new Request("http://localhost/api/slicer?fault=timeout", {
