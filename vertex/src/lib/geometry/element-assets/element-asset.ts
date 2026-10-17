@@ -30,6 +30,40 @@ function canReadLocalElements(): boolean {
     return typeof process !== "undefined" && Boolean(process.versions?.node);
 }
 
+/** SPA rewrite used to serve index.html for missing /elements/* (HTTP 200). */
+export function isHtmlAssetPayload(bytes: Uint8Array): boolean {
+    if (bytes.length < 12) return false;
+    let head = "";
+    for (let i = 0; i < Math.min(bytes.length, 32); i++) head += String.fromCharCode(bytes[i]!);
+    const trimmed = head.replace(/^\uFEFF/, "").trimStart().toLowerCase();
+    return trimmed.startsWith("<!doctype") || trimmed.startsWith("<html");
+}
+
+export function assertElementAssetBytes(relativePath: string, bytes: Uint8Array): void {
+    if (bytes.length < 12) {
+        throw new Error(`Element asset /elements/${relativePath} is too small`);
+    }
+    if (isHtmlAssetPayload(bytes)) {
+        throw new Error(`Element asset /elements/${relativePath} returned HTML (missing from build)`);
+    }
+    if (relativePath.endsWith(".glb")) {
+        const magic = String.fromCharCode(bytes[0]!, bytes[1]!, bytes[2]!, bytes[3]!);
+        if (magic !== "glTF") {
+            throw new Error(`Element asset /elements/${relativePath} is not a GLB`);
+        }
+    }
+}
+
+async function fetchElementsResponse(relativePath: string): Promise<Response> {
+    const res = await fetch(`/elements/${relativePath}`);
+    if (!res.ok) throw new Error(`Failed to fetch /elements/${relativePath} (${res.status})`);
+    const ct = (res.headers.get("content-type") ?? "").toLowerCase();
+    if (ct.includes("text/html")) {
+        throw new Error(`Element asset /elements/${relativePath} returned HTML (missing from build)`);
+    }
+    return res;
+}
+
 async function resolveElementsDir(): Promise<string> {
     const { existsSync } = await import("node:fs");
     const { resolve } = await import("node:path");
@@ -45,9 +79,12 @@ async function readElementsText(relativePath: string): Promise<string> {
         const { resolve } = await import("node:path");
         return readFileSync(resolve(await resolveElementsDir(), relativePath), "utf8");
     }
-    const res = await fetch(`/elements/${relativePath}`);
-    if (!res.ok) throw new Error(`Failed to fetch /elements/${relativePath}`);
-    return res.text();
+    const res = await fetchElementsResponse(relativePath);
+    const text = await res.text();
+    if (text.trimStart().startsWith("<!DOCTYPE") || text.trimStart().startsWith("<html")) {
+        throw new Error(`Element asset /elements/${relativePath} returned HTML (missing from build)`);
+    }
+    return text;
 }
 
 async function readElementsBuffer(relativePath: string): Promise<ArrayBuffer> {
@@ -55,11 +92,14 @@ async function readElementsBuffer(relativePath: string): Promise<ArrayBuffer> {
         const { readFileSync } = await import("node:fs");
         const { resolve } = await import("node:path");
         const buf = readFileSync(resolve(await resolveElementsDir(), relativePath));
+        const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+        assertElementAssetBytes(relativePath, bytes);
         return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
     }
-    const res = await fetch(`/elements/${relativePath}`);
-    if (!res.ok) throw new Error(`Failed to fetch /elements/${relativePath}`);
-    return res.arrayBuffer();
+    const res = await fetchElementsResponse(relativePath);
+    const buffer = await res.arrayBuffer();
+    assertElementAssetBytes(relativePath, new Uint8Array(buffer));
+    return buffer;
 }
 
 export async function loadElementManifest(): Promise<ElementManifest> {
@@ -266,22 +306,29 @@ export async function resolvePlacedAssetContexts(
         if (placed.side !== side || placed.kind === "custom") continue;
         const entry = manifest.elements.find((e) => e.kind === placed.kind);
         if (!entry) continue;
-        const sidecar = await loadSidecar(entry.sidecar);
-        const { hash } = await loadAssetBuffer(entry.id);
-        const widthRef = (await loadWidthBasisReference(side, sidecar)) ?? reference;
-        const size = base
-            ? elementSizeScale(base, side, sidecar, widthRef)
-            : { scaleAlong: 1, scaleAcross: 1, rawAlong: 1, rawAcross: 1, warning: undefined };
-        const transform = buildElementTransform(placed, sidecar, side, size);
-        out.push({
-            placed,
-            side,
-            sidecar,
-            assetId: entry.id,
-            assetHash: hash,
-            transform,
-            scaleWarning: size.warning,
-        });
+        try {
+            const sidecar = await loadSidecar(entry.sidecar);
+            const { hash } = await loadAssetBuffer(entry.id);
+            const widthRef = (await loadWidthBasisReference(side, sidecar)) ?? reference;
+            const size = base
+                ? elementSizeScale(base, side, sidecar, widthRef)
+                : { scaleAlong: 1, scaleAcross: 1, rawAlong: 1, rawAcross: 1, warning: undefined };
+            const transform = buildElementTransform(placed, sidecar, side, size);
+            out.push({
+                placed,
+                side,
+                sidecar,
+                assetId: entry.id,
+                assetHash: hash,
+                transform,
+                scaleWarning: size.warning,
+            });
+        } catch (err) {
+            console.warn(
+                `[elements] skip ${placed.kind} (${entry.id}):`,
+                err instanceof Error ? err.message : err,
+            );
+        }
     }
     return out;
 }
