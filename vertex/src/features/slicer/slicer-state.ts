@@ -12,6 +12,7 @@ import {
 import type { SlicerPublicError } from "../../../shared/vertexslice/errors";
 import type { GcodeStats } from "../../../shared/vertexslice/gcode-stats";
 import type { FootSideTag, ParsedSlicerMesh } from "./slicer-mesh";
+import type { SlicerPaymentStatus } from "./slicer-pay";
 
 export type SlicerUiStatus = "empty" | "uploading" | "validating" | "slicing" | "error" | "done" | "outdated";
 
@@ -28,9 +29,13 @@ export interface SlicerFileSlot {
     treatedAsInches: boolean;
 }
 
-export interface SliceResult {
+export interface SliceDownload {
     gcode: string;
     filename: string;
+}
+
+export interface SliceResult {
+    downloads: SliceDownload[];
     stats: GcodeStats;
     requestId: string;
     material: VertexSliceMaterialId;
@@ -54,6 +59,9 @@ export interface SlicerState {
     queuedReslice: boolean;
     error: SlicerPublicError | null;
     result: SliceResult | null;
+    paymentStatus: SlicerPaymentStatus;
+    paymentId: string | null;
+    paymentError: string | null;
 }
 
 export function initialSlicerState(): SlicerState {
@@ -72,6 +80,9 @@ export function initialSlicerState(): SlicerState {
         queuedReslice: false,
         error: null,
         result: null,
+        paymentStatus: "unpaid",
+        paymentId: null,
+        paymentError: null,
     };
 }
 
@@ -104,7 +115,10 @@ export type SlicerAction =
     | { type: "slicing-slow"; slow: boolean }
     | { type: "queue-reslice" }
     | { type: "error"; error: SlicerPublicError }
-    | { type: "done"; result: SliceResult };
+    | { type: "done"; result: SliceResult }
+    | { type: "start-pay" }
+    | { type: "paid"; paymentId: string }
+    | { type: "pay-failed"; error: string };
 
 function markOutdated(state: SlicerState): SlicerState {
     if (state.status === "done" && state.result) {
@@ -226,6 +240,9 @@ export function slicerReducer(state: SlicerState, action: SlicerAction): SlicerS
                 queuedReslice: false,
                 error: null,
                 missingHighlight: null,
+                paymentStatus: "unpaid",
+                paymentId: null,
+                paymentError: null,
             };
         case "slice-step":
             return { ...state, sliceStep: action.step };
@@ -243,7 +260,18 @@ export function slicerReducer(state: SlicerState, action: SlicerAction): SlicerS
                 error: null,
                 slicingSlow: false,
                 queuedReslice: false,
+                paymentStatus: "unpaid",
+                paymentId: null,
+                paymentError: null,
             };
+        case "start-pay":
+            if (!state.result || (state.status !== "done" && state.status !== "outdated")) return state;
+            return { ...state, paymentStatus: "paying", paymentError: null };
+        case "paid":
+            if (state.paymentStatus !== "paying" && state.paymentStatus !== "unpaid") return state;
+            return { ...state, paymentStatus: "paid", paymentId: action.paymentId, paymentError: null };
+        case "pay-failed":
+            return { ...state, paymentStatus: "failed", paymentError: action.error };
         default:
             return state;
     }
@@ -256,7 +284,9 @@ export type DemoSlicerState =
     | "slicing"
     | "error"
     | "done"
-    | "outdated";
+    | "outdated"
+    | "pay"
+    | "paid";
 
 function demoFile(partial: Partial<SlicerFileSlot> = {}): SlicerFileSlot {
     return {
@@ -298,8 +328,12 @@ export function demoSlicerState(kind: DemoSlicerState, fault?: string | null): S
         progress: 100,
     });
     const result: SliceResult = {
-        gcode: "; material = ApexCore\n; print_direction = toe_first\nG28\n",
-        filename: "insole_ApexCore_toefirst_1w.gcode",
+        downloads: [
+            {
+                gcode: "; material = ApexCore\n; print_direction = toe_first\nG28\n",
+                filename: "insole_ApexCore_toefirst_1w.gcode",
+            },
+        ],
         stats: DEMO_STATS,
         requestId: "demo-req-1",
         material: "apex_core",
@@ -346,6 +380,25 @@ export function demoSlicerState(kind: DemoSlicerState, fault?: string | null): S
             };
         case "done":
             return { ...base, status: "done", files: [meshy], material: "apex_core", result };
+        case "pay":
+            return {
+                ...base,
+                status: "done",
+                files: [meshy],
+                material: "apex_core",
+                result,
+                paymentStatus: "paying",
+            };
+        case "paid":
+            return {
+                ...base,
+                status: "done",
+                files: [meshy],
+                material: "apex_core",
+                result,
+                paymentStatus: "paid",
+                paymentId: "mock_demo_pay",
+            };
         case "outdated":
             return {
                 ...base,
