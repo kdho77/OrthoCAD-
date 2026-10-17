@@ -1,12 +1,13 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import tableJson from "./hardness-class-table.json";
-
 /**
  * Region hardness classes (Phase 1 element/zone modifiers).
  * Distinct from the device-wide Extra Soft → Extra Hard PrintRecipe ladder.
- * Calibrate densities/speeds here — VertexSlice reads the exported per-volume copy.
+ *
+ * Keep values in lockstep with hardness-class-table.json (calibration / Python).
+ * This is a .ts module so the Vercel Node ESM function can import it without
+ * `with { type: "json" }` (ERR_IMPORT_ATTRIBUTE_MISSING).
  */
 export const REGION_HARDNESS_CLASSES = ["Soft", "Medium", "Firm", "Rigid", "Custom"] as const;
 export type RegionHardnessClass = (typeof REGION_HARDNESS_CLASSES)[number];
@@ -33,7 +34,33 @@ export interface HardnessClassTable {
     Custom: CustomClassSettings;
 }
 
-export const HARDNESS_CLASS_TABLE: HardnessClassTable = tableJson as HardnessClassTable;
+export const HARDNESS_CLASS_TABLE: HardnessClassTable = {
+    Soft: {
+        sparseInfillDensityPct: 11,
+        sparseInfillPattern: "gyroid",
+        sparseInfillSpeedMmS: 44.0,
+    },
+    Medium: {
+        sparseInfillDensityPct: 22,
+        sparseInfillPattern: "gyroid",
+        sparseInfillSpeedMmS: 44.5,
+    },
+    Firm: {
+        sparseInfillDensityPct: 38,
+        sparseInfillPattern: "gyroid",
+        sparseInfillSpeedMmS: 45.0,
+    },
+    Rigid: {
+        sparseInfillDensityPct: 65,
+        sparseInfillPattern: "gyroid",
+        sparseInfillSpeedMmS: 45.5,
+    },
+    Custom: {
+        sparseInfillDensityPctMin: 5,
+        sparseInfillDensityPctMax: 100,
+        sparseInfillPattern: "gyroid",
+    },
+};
 
 /** Softest first — used for equal-priority tie breaks (softer wins). */
 export const CLASS_SOFTNESS_RANK: Record<Exclude<RegionHardnessClass, "Custom">, number> = {
