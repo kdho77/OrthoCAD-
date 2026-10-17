@@ -11,17 +11,6 @@ export interface XyPoint {
     y: number;
 }
 
-function lerpRing(a: Point[], b: Point[], t: number): Point[] {
-    const n = Math.min(a.length, b.length);
-    const out: Point[] = [];
-    for (let i = 0; i < n; i++) {
-        const p = a[i]!;
-        const q = b[i]!;
-        out.push({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
-    }
-    return out;
-}
-
 function rasterFill(ring: Point[], stepover: number, sample: number): XyPoint[] {
     if (ring.length < 4) return [];
     const bb = bboxOf(ring);
@@ -43,19 +32,20 @@ function rasterFill(ring: Point[], stepover: number, sample: number): XyPoint[] 
 export function spiralXy(outline: Point[], profile: MillingProfile, toolType: ToolType): XyPoint[] {
     const step = stepoverMm(profile, toolType);
     const spacing = Math.max(0.8, step);
-    // Offset every ring from the source outline. Chained 0.01 mm clipper offsets explode
+    // Offset every ring from a resampled source. Chained 0.01 mm clipper offsets explode
     // vertex count on SAMPLE_Top and miss the 10 s export gate.
     const chord = Math.max(0.2, profile.chordTolMm);
+    const source = resampleClosed(outline, spacing);
     const rings: Point[][] = [];
     for (let k = 0; k < 80; k++) {
-        const next = offsetClosed(outline, profile.topOffsetMm - k * step, chord);
+        const next = offsetClosed(source, profile.topOffsetMm - k * step, chord);
         if (next.length < 8) break;
         const bb = bboxOf(next);
         if (bb.maxX - bb.minX < step * 2 || bb.maxY - bb.minY < step * 2) break;
         rings.push(ensureCw(resampleClosed(next, spacing)));
     }
     if (rings.length === 0) return [];
-    const nAlign = Math.max(...rings.map((r) => r.length));
+    const nAlign = Math.min(480, Math.max(...rings.map((r) => r.length)));
     const aligned = rings.map((r) => resampleClosed(r, perimeterSafe(r) / nAlign));
     const path: XyPoint[] = [];
     for (let i = 0; i < aligned.length - 1; i++) {
@@ -64,8 +54,9 @@ export function spiralXy(outline: Point[], profile: MillingProfile, toolType: To
         const n = Math.min(a.length, b.length);
         for (let k = 0; k < n; k++) {
             const t = k / n;
-            const p = lerpRing(a, b, t)[k] ?? a[k]!;
-            path.push({ x: p.x, y: p.y });
+            const p = a[k]!;
+            const q = b[k]!;
+            path.push({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
         }
     }
     if (aligned.length) {

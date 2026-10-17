@@ -169,18 +169,22 @@ export function generateCncJob(
             profile.strategy === "zigzag"
                 ? zigzagXy(part.outline, profile, profile.toolpathCutter.type)
                 : spiralXy(part.outline, profile, profile.toolpathCutter.type);
+        const sampled: Array<{ x: number; y: number; drop: number }> = [];
+        for (const p of xy) {
+            const drop = sampleDrop(dropMap, p.x, p.y);
+            if (!Number.isFinite(drop)) continue;
+            sampled.push({ x: p.x, y: p.y, drop });
+        }
         const levels = waterlineLevels(profile, part.zMin);
         let didFinish = false;
         for (const levelZ of [...levels, Number.NEGATIVE_INFINITY]) {
             if (didFinish) break;
             const path: Point[] = [];
             let follows = true;
-            for (const p of xy) {
-                const drop = sampleDrop(dropMap, p.x, p.y);
-                if (!Number.isFinite(drop)) continue;
-                const z = Math.max(drop, levelZ, skinZ(profile));
+            for (const p of sampled) {
+                const z = Math.max(p.drop, levelZ, skinZ(profile));
                 path.push({ x: p.x, y: p.y, z });
-                if (z > drop + 0.05) follows = false;
+                if (z > p.drop + 0.05) follows = false;
             }
             if (path.length < 2) continue;
             emitPath(g, part, profile, path, "normal", true);
