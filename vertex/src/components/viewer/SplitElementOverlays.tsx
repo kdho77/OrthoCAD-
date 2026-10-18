@@ -6,7 +6,7 @@ import * as THREE from "three";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import {
-    designColorForElement,
+    designColorForElementIndex,
     splitColorForElement,
     splitOverlayOutline,
 } from "@/lib/hardness/split-overlay";
@@ -36,11 +36,13 @@ function SplitPatch({
     centerX,
     widthMm,
     appearance,
+    elementIndex,
 }: {
     element: PlacedElement;
     centerX: number;
     widthMm: number;
     appearance: "design" | "hardness";
+    elementIndex: number;
 }) {
     const selectedId = useDesignStore((s) => s.selectedElementId);
     const selectElement = useDesignStore((s) => s.selectElement);
@@ -51,7 +53,7 @@ function SplitPatch({
     const selected = selectedId === element.id;
     const color =
         appearance === "design"
-            ? designColorForElement(element)
+            ? designColorForElementIndex(elementIndex)
             : splitColorForElement({ ...element, ...preview, id: element.id });
 
     const { fill, ring } = useMemo(() => {
@@ -130,13 +132,14 @@ export function SplitElementOverlays({ appearance = "hardness" }: { appearance?:
 
     return (
         <group>
-            {elements.map((el) => (
+            {elements.map((el, elementIndex) => (
                 <SplitPatch
                     key={el.id}
                     element={el}
                     centerX={centerX}
                     widthMm={layout.widthMm}
                     appearance={appearance}
+                    elementIndex={elementIndex}
                 />
             ))}
         </group>

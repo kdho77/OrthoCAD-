@@ -8,7 +8,7 @@ import { fixtureSampleTopElements } from "@/lib/hardness/fixtures";
 import { canonicalizeJson } from "@/lib/hardness/hash";
 import {
     applyDefaultSplitHardness,
-    designColorForElement,
+    designColorForElementIndex,
     resolvedSplitHardness,
     splitColorForElement,
     splitOverlayOutline,
@@ -62,14 +62,10 @@ describe("split elements UI + one hardness table", () => {
         expect(overlays).toMatch(/appearance === "design"/);
     });
 
-    test("design colors stay stable per element and distinguish nearby additions", () => {
-        const design = fixtureSampleTopElements();
-        const first = design.elements[0];
-        const second = design.elements[1];
-        if (!first || !second) throw new Error("fixture requires two placed elements");
-
-        expect(designColorForElement(first)).toBe(designColorForElement({ id: first.id }));
-        expect(designColorForElement(first)).not.toBe(designColorForElement(second));
+    test("design colors distinguish additions by placement order", () => {
+        const colors = [0, 1, 2, 3, 4, 5, 6].map(designColorForElementIndex);
+        expect(new Set(colors.slice(0, 6)).size).toBe(6);
+        expect(colors[6]).toBe(colors[0]);
     });
 
     test("five named classes have distinct colors and line-width fingerprint", () => {
