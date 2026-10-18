@@ -253,8 +253,8 @@ export function Viewer3D() {
                     <ScanRotateTool />
                     <ScanTransformTool />
                     {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
-                    {!hideInsoleForMarkers && !loftOverlay.blockViewport ? (
-                        <SplitElementOverlays appearance={workflowStep === "print" ? "hardness" : "design"} />
+                    {workflowStep === "print" && !hideInsoleForMarkers && !loftOverlay.blockViewport ? (
+                        <SplitElementOverlays />
                     ) : null}
                     <MeshEditTools />
                     {!loftOverlay.blockViewport ? <TrimlineEditTools /> : null}

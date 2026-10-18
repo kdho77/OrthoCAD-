@@ -58,10 +58,12 @@ describe("split elements UI + one hardness table", () => {
         expect(overlays).toMatch(/SELECTED_ELEMENT_HIGHLIGHT/);
         expect(viewer).toMatch(/SplitElementOverlays/);
         expect(viewer).toMatch(/HardnessLegend/);
-        expect(viewer).toMatch(/appearance=\{workflowStep === "print" \? "hardness" : "design"\}/);
+        expect(viewer).toMatch(/workflowStep === "print" && !hideInsoleForMarkers/);
         expect(viewer).toMatch(/workflowStep === "print" && design\.splitElements/);
-        expect(overlays).toMatch(/appearance === "design"/);
-        expect(overlays).toMatch(/appearance === "design" \? Math\.max\(8, heightMm \+ 4\)/);
+        const parametric = readFileSync(repoFile("src/components/viewer/InsoleMesh.tsx"), "utf8");
+        const stock = readFileSync(repoFile("src/components/viewer/BaseInsoleMesh.tsx"), "utf8");
+        expect(parametric).toMatch(/applyDesignElementColors/);
+        expect(stock).toMatch(/applyDesignElementColors/);
     });
 
     test("design additions use the purple highlight on white bases", () => {
