@@ -4,6 +4,7 @@
 import {
     classDensityPct,
     classLineWidthMm,
+    classOverlapPct,
     classSpeedMmS,
     SPARSE_INFILL_PATTERN,
 } from "../../../shared/print-recipe/hardness-class-table";
@@ -22,6 +23,7 @@ export interface RegionReportRow {
     pattern: typeof SPARSE_INFILL_PATTERN;
     speedMmS?: number;
     lineWidthMm: number;
+    infillWallOverlapPct: number;
     note?: string;
 }
 
@@ -40,6 +42,7 @@ export function volumeSettingsFor(region: HardnessRegion): {
     pattern: typeof SPARSE_INFILL_PATTERN;
     speedMmS?: number;
     lineWidthMm: number;
+    infillWallOverlapPct: number;
 } {
     const densityPct = classDensityPct(region.hardnessClass, region.overrides);
     return {
@@ -47,6 +50,7 @@ export function volumeSettingsFor(region: HardnessRegion): {
         pattern: SPARSE_INFILL_PATTERN,
         speedMmS: classSpeedMmS(region.hardnessClass),
         lineWidthMm: classLineWidthMm(region.hardnessClass),
+        infillWallOverlapPct: classOverlapPct(region.hardnessClass),
     };
 }
 
@@ -80,6 +84,7 @@ export function buildExportReport(
                 densityPct: 0,
                 pattern: SPARSE_INFILL_PATTERN,
                 lineWidthMm: classLineWidthMm(region.hardnessClass),
+                infillWallOverlapPct: classOverlapPct(region.hardnessClass),
                 note: err instanceof Error ? err.message : String(err),
             });
             continue;
@@ -99,6 +104,7 @@ export function buildExportReport(
                 pattern: SPARSE_INFILL_PATTERN,
                 speedMmS: classSpeedMmS(region.hardnessClass),
                 lineWidthMm: classLineWidthMm(region.hardnessClass),
+                infillWallOverlapPct: classOverlapPct(region.hardnessClass),
             });
             continue;
         }
@@ -119,6 +125,7 @@ export function buildExportReport(
             pattern: SPARSE_INFILL_PATTERN,
             speedMmS: classSpeedMmS(region.hardnessClass),
             lineWidthMm: classLineWidthMm(region.hardnessClass),
+            infillWallOverlapPct: classOverlapPct(region.hardnessClass),
             note: got.note,
         });
     }

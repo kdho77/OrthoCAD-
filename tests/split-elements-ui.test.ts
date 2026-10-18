@@ -81,12 +81,23 @@ describe("split elements UI + one hardness table", () => {
         expect(classLineWidthMm("Extra Soft")).toBe(0.7);
         expect(classLineWidthMm("Soft")).toBe(0.7);
         expect(classLineWidthMm("Medium")).toBe(1.0);
-        expect(classLineWidthMm("Hard")).toBe(1.0);
-        expect(classLineWidthMm("Extra Hard")).toBe(1.0);
+        expect(classLineWidthMm("Hard")).toBe(1.2);
+        expect(classLineWidthMm("Extra Hard")).toBe(1.2);
         const fp = classFingerprint("Soft");
         expect(fp.lineWidthMm).toBe(0.7);
         expect(fp.densityPct).toBe(22);
+        expect(fp.pattern).toBe("gyroid");
+        expect(fp.infillWallOverlapPct).toBe(25);
         expect(fp.pendingCouponValidation).toBe(true);
+        const hard = classFingerprint("Hard");
+        expect(hard.densityPct).toBe(26);
+        expect(hard.lineWidthMm).toBe(1.2);
+        expect(hard.speedMmS).toBe(23.0);
+        expect(hard.infillWallOverlapPct).toBe(25);
+        const extraHard = classFingerprint("Extra Hard");
+        expect(extraHard.densityPct).toBe(30);
+        expect(extraHard.lineWidthMm).toBe(1.2);
+        expect(extraHard.speedMmS).toBe(23.0);
     });
 
     test("legacy Firm/Rigid migrate onto the five-level table", () => {

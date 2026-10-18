@@ -3,8 +3,8 @@
 
 /**
  * Device-wide hardness → gyroid infill %. Same five-level table as region
- * modifiers (hardness-class-table). Extra Soft / Soft densities are the 0.7 mm
- * line-width starting points; Medium / Hard / Extra Hard keep the ladder.
+ * modifiers (hardness-class-table). Extra Soft / Soft stay 16 / 22% at 0.7 mm;
+ * Medium stays 26% at 1.0 mm; Hard / Extra Hard are 26 / 30% at 1.2 mm.
  * All values pending coupon validation.
  *
  * Keep values in lockstep with hardness-to-infill-pct.json (Python reads the JSON).

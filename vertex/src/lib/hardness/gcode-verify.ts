@@ -16,6 +16,7 @@ export interface SparseSegment {
     feedMmMin: number;
     speedMmS: number;
     lineWidthMm: number;
+    densityPct?: number;
     className: RegionHardnessClass | "unknown";
     color: string;
 }
@@ -28,24 +29,31 @@ export interface GcodeVerifyResult {
     previewColors: Record<string, string>;
 }
 
-const SPEED_TO_CLASS: Array<{ speed: number; cls: NamedHardnessClass }> = NAMED_HARDNESS_CLASSES.map(
-    (cls) => ({
-        speed: HARDNESS_CLASS_TABLE[cls].sparseInfillSpeedMmS,
-        cls,
-    }),
-);
-
-function classFromSpeed(mmS: number): RegionHardnessClass | "unknown" {
-    let best: RegionHardnessClass | "unknown" = "unknown";
-    let bestD = 0.08;
-    for (const row of SPEED_TO_CLASS) {
-        const d = Math.abs(row.speed - mmS);
-        if (d < bestD) {
-            bestD = d;
-            best = row.cls;
+function classFromFingerprint(
+    mmS: number,
+    lineWidthMm?: number,
+    densityPct?: number,
+): RegionHardnessClass | "unknown" {
+    const hits: NamedHardnessClass[] = [];
+    for (const cls of NAMED_HARDNESS_CLASSES) {
+        const row = HARDNESS_CLASS_TABLE[cls];
+        if (Math.abs(row.sparseInfillSpeedMmS - mmS) >= 0.08) continue;
+        if (lineWidthMm !== undefined && Math.abs(row.sparseInfillLineWidthMm - lineWidthMm) > 0.05) {
+            continue;
         }
+        if (densityPct !== undefined && Math.abs(row.sparseInfillDensityPct - densityPct) > 0.5) {
+            continue;
+        }
+        hits.push(cls);
     }
-    return best;
+    if (hits.length === 1) return hits[0]!;
+    if (hits.length > 1 && densityPct !== undefined) {
+        const byDensity = hits.find(
+            (cls) => Math.abs(HARDNESS_CLASS_TABLE[cls].sparseInfillDensityPct - densityPct) <= 0.5,
+        );
+        if (byDensity) return byDensity;
+    }
+    return "unknown";
 }
 
 const SPARSE_TYPES = /sparse infill|internal infill|infill/i;
@@ -53,8 +61,9 @@ const SOLID_TYPES = /solid infill|internal solid|top solid|bottom solid/i;
 
 /**
  * Parse F (mm/min) on extrusion moves after each `;TYPE:` comment.
- * Maps fingerprint speeds to Extra Soft → Extra Hard and checks each class's
- * sparse_infill_line_width against the single hardness table.
+ * Maps fingerprint speed + line width + density to Extra Soft → Extra Hard
+ * (Hard and Extra Hard share 23 mm/s; density splits them) and checks each
+ * class's sparse_infill_line_width against the single hardness table.
  */
 export function verifyGcodeByClass(
     gcode: string,
@@ -65,12 +74,20 @@ export function verifyGcodeByClass(
     const lines = gcode.split(/\r?\n/);
     let currentType = "";
     let commentLineWidth: number | undefined;
+    let commentDensityPct: number | undefined;
     const feeds = new Map<string, number[]>();
 
     for (const line of lines) {
         const lw = line.match(/^;\s*(?:LINE_WIDTH|sparse_infill_line_width)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)/i);
         if (lw) {
             commentLineWidth = Number(lw[1]);
+            continue;
+        }
+        const dens = line.match(
+            /^;\s*(?:INFILL_DENSITY|sparse_infill_density)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)%?/i,
+        );
+        if (dens) {
+            commentDensityPct = Number(dens[1]);
             continue;
         }
         const typeMatch = line.match(/^;TYPE:(.+)$/i) || line.match(/^;\s*TYPE:(.+)$/i);
@@ -89,7 +106,7 @@ export function verifyGcodeByClass(
         feeds.set(currentType, list);
 
         if (SPARSE_TYPES.test(currentType) && !SOLID_TYPES.test(currentType)) {
-            const className = classFromSpeed(speedMmS);
+            const className = classFromFingerprint(speedMmS, commentLineWidth, commentDensityPct);
             const lineWidthMm = className === "unknown" ? Number.NaN : classLineWidthMm(className);
             if (className !== "unknown" && commentLineWidth !== undefined) {
                 if (Math.abs(commentLineWidth - lineWidthMm) > 0.05) {
@@ -103,6 +120,7 @@ export function verifyGcodeByClass(
                 feedMmMin,
                 speedMmS,
                 lineWidthMm,
+                densityPct: commentDensityPct,
                 className,
                 color: className === "unknown" ? "#888888" : CLASS_PREVIEW_COLORS[className],
             });
@@ -126,9 +144,21 @@ export function verifyGcodeByClass(
         if (fp.lineWidthMm !== classLineWidthMm(cls)) {
             errors.push(`class ${cls} fingerprint line width mismatch`);
         }
-        const expected = cls === "Extra Soft" || cls === "Soft" ? 0.7 : 1.0;
+        if (fp.pattern !== "gyroid") {
+            errors.push(`class ${cls} fingerprint pattern ${fp.pattern} ≠ gyroid`);
+        }
+        if (fp.infillWallOverlapPct !== 25) {
+            errors.push(`class ${cls} fingerprint overlap ${fp.infillWallOverlapPct}% ≠ 25%`);
+        }
+        const expected = classLineWidthMm(cls);
         if (Math.abs(fp.lineWidthMm - expected) > 1e-6) {
             errors.push(`class ${cls} line width ${fp.lineWidthMm} mm ≠ ${expected} mm`);
+        }
+        if (fp.speedMmS !== HARDNESS_CLASS_TABLE[cls].sparseInfillSpeedMmS) {
+            errors.push(`class ${cls} fingerprint speed ${fp.speedMmS} ≠ table`);
+        }
+        if (fp.densityPct !== HARDNESS_CLASS_TABLE[cls].sparseInfillDensityPct) {
+            errors.push(`class ${cls} fingerprint density ${fp.densityPct} ≠ table`);
         }
     }
 

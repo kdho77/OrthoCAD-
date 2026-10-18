@@ -6,6 +6,7 @@ export {
     classDensityPct,
     classFingerprint,
     classLineWidthMm,
+    classOverlapPct,
     classSpeedMmS,
     HARDNESS_CLASS_TABLE,
     NAMED_HARDNESS_CLASSES,

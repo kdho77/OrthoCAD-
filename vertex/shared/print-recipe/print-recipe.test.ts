@@ -24,8 +24,8 @@ describe("print-recipe", () => {
         expect(HARDNESS_TO_INFILL_PCT["Extra Soft"]).toBe(16);
         expect(HARDNESS_TO_INFILL_PCT.Soft).toBe(22);
         expect(HARDNESS_TO_INFILL_PCT.Medium).toBe(26);
-        expect(HARDNESS_TO_INFILL_PCT.Hard).toBe(32);
-        expect(HARDNESS_TO_INFILL_PCT["Extra Hard"]).toBe(38);
+        expect(HARDNESS_TO_INFILL_PCT.Hard).toBe(26);
+        expect(HARDNESS_TO_INFILL_PCT["Extra Hard"]).toBe(30);
         expect(HARDNESS_NAMES).toHaveLength(5);
     });
 
@@ -109,7 +109,7 @@ describe("print-recipe", () => {
 
     test("infill fraction from recipe", () => {
         expect(infillFractionFromRecipe({ ...DEFAULT_PRINT_RECIPE_V1, defaultHardness: "Soft" })).toBe(0.22);
-        expect(gyroidInfillPctForHardness("Extra Hard")).toBe(38);
+        expect(gyroidInfillPctForHardness("Extra Hard")).toBe(30);
         expect(gyroidInfillPctForHardness("Extra Soft")).toBe(16);
     });
 });

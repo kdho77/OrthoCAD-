@@ -7,8 +7,16 @@
  *
  * Slicing (Kendon 2026-10-18, pending coupon validation):
  * - Extra Soft / Soft: sparse_infill_line_width 0.7 mm, 16% / 22% gyroid
- * - Medium / Hard / Extra Hard: 1.0 mm line width, keep ladder 26 / 32 / 38%
+ * - Medium: 1.0 mm line width, 26% gyroid
+ * - Hard / Extra Hard: 1.2 mm line width, 26% / 30% gyroid, sparse_infill_speed 23 mm/s
+ *   (keeps TPU volumetric flow at about 12–14 mm³/s)
+ * - infill_wall_overlap is 25% for every class. VertexSlice/Orca applies that
+ *   percent to inner-wall spacing (not sparse infill line width), so 25% of the
+ *   global 1.0 mm wall is ~0.25 mm absolute overlap.
  * - Walls and skins stay global at 1.0 mm
+ *
+ * Coupon plan: Hard at 24/26/28% and Extra Hard at 28/30/32% at 1.2 mm, beside
+ * the 1.0 mm reference.
  *
  * Keep values in lockstep with hardness-class-table.json (calibration / Python).
  * This is a .ts module so the Vercel Node ESM function can import it without
@@ -26,11 +34,20 @@ export const SPARSE_INFILL_PATTERN = "gyroid" as const;
 export const GLOBAL_WALL_LINE_WIDTH_MM = 1.0;
 export const GLOBAL_SKIN_LINE_WIDTH_MM = 1.0;
 
+/**
+ * VertexSlice `infill_wall_overlap` is a percent of inner-wall spacing
+ * (PerimeterGenerator.cpp; PrintConfig.cpp `ratio_over = inner_wall_line_width`).
+ * 25% of the global 1.0 mm wall ≈ 0.25 mm into the inner wall.
+ */
+export const INFILL_WALL_OVERLAP_PCT = 25;
+export const TARGET_ABSOLUTE_OVERLAP_MM = 0.25;
+
 export interface NamedClassSettings {
     sparseInfillDensityPct: number;
     sparseInfillPattern: typeof SPARSE_INFILL_PATTERN;
     sparseInfillSpeedMmS: number;
     sparseInfillLineWidthMm: number;
+    infillWallOverlapPct: typeof INFILL_WALL_OVERLAP_PCT;
     pendingCouponValidation: true;
 }
 
@@ -39,6 +56,7 @@ export interface CustomClassSettings {
     sparseInfillDensityPctMax: number;
     sparseInfillPattern: typeof SPARSE_INFILL_PATTERN;
     sparseInfillLineWidthMm: number;
+    infillWallOverlapPct: typeof INFILL_WALL_OVERLAP_PCT;
     pendingCouponValidation: true;
 }
 
@@ -57,6 +75,7 @@ export const HARDNESS_CLASS_TABLE: HardnessClassTable = {
         sparseInfillPattern: "gyroid",
         sparseInfillSpeedMmS: 43.5,
         sparseInfillLineWidthMm: 0.7,
+        infillWallOverlapPct: 25,
         pendingCouponValidation: true,
     },
     Soft: {
@@ -64,6 +83,7 @@ export const HARDNESS_CLASS_TABLE: HardnessClassTable = {
         sparseInfillPattern: "gyroid",
         sparseInfillSpeedMmS: 44.0,
         sparseInfillLineWidthMm: 0.7,
+        infillWallOverlapPct: 25,
         pendingCouponValidation: true,
     },
     Medium: {
@@ -71,20 +91,23 @@ export const HARDNESS_CLASS_TABLE: HardnessClassTable = {
         sparseInfillPattern: "gyroid",
         sparseInfillSpeedMmS: 44.5,
         sparseInfillLineWidthMm: 1.0,
+        infillWallOverlapPct: 25,
         pendingCouponValidation: true,
     },
     Hard: {
-        sparseInfillDensityPct: 32,
+        sparseInfillDensityPct: 26,
         sparseInfillPattern: "gyroid",
-        sparseInfillSpeedMmS: 45.0,
-        sparseInfillLineWidthMm: 1.0,
+        sparseInfillSpeedMmS: 23.0,
+        sparseInfillLineWidthMm: 1.2,
+        infillWallOverlapPct: 25,
         pendingCouponValidation: true,
     },
     "Extra Hard": {
-        sparseInfillDensityPct: 38,
+        sparseInfillDensityPct: 30,
         sparseInfillPattern: "gyroid",
-        sparseInfillSpeedMmS: 45.5,
-        sparseInfillLineWidthMm: 1.0,
+        sparseInfillSpeedMmS: 23.0,
+        sparseInfillLineWidthMm: 1.2,
+        infillWallOverlapPct: 25,
         pendingCouponValidation: true,
     },
     Custom: {
@@ -92,6 +115,7 @@ export const HARDNESS_CLASS_TABLE: HardnessClassTable = {
         sparseInfillDensityPctMax: 100,
         sparseInfillPattern: "gyroid",
         sparseInfillLineWidthMm: 1.0,
+        infillWallOverlapPct: 25,
         pendingCouponValidation: true,
     },
 };
@@ -165,15 +189,22 @@ export function classLineWidthMm(cls: RegionHardnessClass): number {
     return HARDNESS_CLASS_TABLE[cls].sparseInfillLineWidthMm;
 }
 
+export function classOverlapPct(cls: RegionHardnessClass): number {
+    if (cls === "Custom") return HARDNESS_CLASS_TABLE.Custom.infillWallOverlapPct;
+    return HARDNESS_CLASS_TABLE[cls].infillWallOverlapPct;
+}
+
 export interface ClassFingerprint {
     className: RegionHardnessClass;
     densityPct: number;
+    pattern: typeof SPARSE_INFILL_PATTERN;
     speedMmS?: number;
     lineWidthMm: number;
+    infillWallOverlapPct: number;
     pendingCouponValidation: true;
 }
 
-/** Speed + line width fingerprint used by G-code / 3MF verification. */
+/** Density + pattern + line width + speed + overlap fingerprint used by G-code / 3MF verification. */
 export function classFingerprint(
     cls: RegionHardnessClass,
     overrides?: { sparseInfillDensityPct?: number },
@@ -184,8 +215,10 @@ export function classFingerprint(
             cls === "Custom"
                 ? classDensityPct(cls, overrides)
                 : HARDNESS_CLASS_TABLE[cls].sparseInfillDensityPct,
+        pattern: SPARSE_INFILL_PATTERN,
         speedMmS: classSpeedMmS(cls),
         lineWidthMm: classLineWidthMm(cls),
+        infillWallOverlapPct: classOverlapPct(cls),
         pendingCouponValidation: true,
     };
 }
@@ -200,7 +233,7 @@ export function softnessKey(cls: RegionHardnessClass, densityPct: number): numbe
         const hi = marks[i + 1] ?? lo;
         if (densityPct <= hi) return i + (densityPct - lo) / Math.max(1e-6, hi - lo);
     }
-    const last = marks[marks.length - 1] ?? 38;
+    const last = marks[marks.length - 1] ?? 30;
     return marks.length - 1 + (densityPct - last) / Math.max(1, 100 - last);
 }
 

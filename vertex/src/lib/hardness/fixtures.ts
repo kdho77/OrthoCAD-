@@ -163,22 +163,27 @@ export function fixtureThreeWayOverlap(): DesignState {
 
 /** Tiny Orca-like gcode with fingerprint speeds (mm/min = mm/s * 60). */
 export const FIXTURE_GCODE = `;LINE_WIDTH:0.7
+;INFILL_DENSITY:16
 ;TYPE:Sparse infill
 G1 X10 Y8 E0.05 F2610
 ;LINE_WIDTH:0.7
+;INFILL_DENSITY:22
 ;TYPE:Sparse infill
 G1 X10 Y10 E0.1 F2640
 G1 X12 Y10 E0.2 F2640
 ;LINE_WIDTH:1.0
+;INFILL_DENSITY:26
 ;TYPE:Sparse infill
 G1 X10 Y12 E0.3 F2670
 G1 X12 Y12 E0.4 F2670
-;LINE_WIDTH:1.0
+;LINE_WIDTH:1.2
+;INFILL_DENSITY:26
 ;TYPE:Sparse infill
-G1 X10 Y14 E0.5 F2700
-;LINE_WIDTH:1.0
+G1 X10 Y14 E0.5 F1380
+;LINE_WIDTH:1.2
+;INFILL_DENSITY:30
 ;TYPE:Sparse infill
-G1 X10 Y16 E0.6 F2730
+G1 X10 Y16 E0.6 F1380
 ;TYPE:Internal solid infill
 G1 X10 Y18 E0.7 F1200
 `;
