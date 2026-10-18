@@ -76,7 +76,9 @@ function SplitPatch({
         [fill, ring],
     );
 
-    const z = Math.max(0.8, heightMm) + 0.35;
+    // Design overlays are location markers, so lift them above the base mesh.
+    // The hardness overlay stays near the element's actual height for Print.
+    const z = appearance === "design" ? Math.max(8, heightMm + 4) : Math.max(0.8, heightMm) + 0.35;
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>

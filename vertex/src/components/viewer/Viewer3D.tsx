@@ -456,7 +456,7 @@ export function Viewer3D() {
                 ) : null}
             </div>
 
-            {design.splitElements ? (
+            {workflowStep === "print" && design.splitElements ? (
                 <div className="absolute bottom-3 left-3 rounded-md border border-border bg-panel/90 px-2 py-1.5 shadow-lg backdrop-blur">
                     <HardnessLegend compact />
                 </div>

@@ -59,7 +59,9 @@ describe("split elements UI + one hardness table", () => {
         expect(viewer).toMatch(/SplitElementOverlays/);
         expect(viewer).toMatch(/HardnessLegend/);
         expect(viewer).toMatch(/appearance=\{workflowStep === "print" \? "hardness" : "design"\}/);
+        expect(viewer).toMatch(/workflowStep === "print" && design\.splitElements/);
         expect(overlays).toMatch(/appearance === "design"/);
+        expect(overlays).toMatch(/appearance === "design" \? Math\.max\(8, heightMm \+ 4\)/);
     });
 
     test("design additions use the purple highlight on white bases", () => {

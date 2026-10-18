@@ -6,6 +6,7 @@ import {
     type CorrectionPresetApplyMode,
     type CorrectionPresetPayload,
 } from "@/lib/clinical/correction-presets";
+import { prescriptionElementsForAutomaticPlacement } from "@/lib/clinical/prescription-elements";
 import {
     createDefaultStockPairedBases,
     designHasBase,
@@ -1079,7 +1080,11 @@ export const useDesignStore = create<DesignStore>()(
                         right: s.design.corrections.linked ? r1.constrained : r2.constrained,
                     };
                     const layout = insoleLayoutFromDesign(s.design);
-                    const elements: PlacedElement[] = result.elements.map((e) => ({
+                    // Dancer's pads need deliberate anatomical placement. Keep AI Rx from
+                    // silently inserting them; users can add them from the Elements panel.
+                    const elements: PlacedElement[] = prescriptionElementsForAutomaticPlacement(
+                        result.elements,
+                    ).map((e) => ({
                         id: crypto.randomUUID(),
                         kind: e.kind,
                         side: e.side,
