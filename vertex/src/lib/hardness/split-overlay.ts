@@ -34,7 +34,7 @@ export function splitColorForElement(el: PlacedElement): string {
     return CLASS_PREVIEW_COLORS[resolvedSplitHardness(el)];
 }
 
-/** Assign distinct design-view colors by placement order; position edits don't change order. */
+/** Stable purple design-view color; selected additions use the green selection highlight. */
 export function designColorForElementIndex(index: number): string {
     return DESIGN_ELEMENT_COLORS[index % DESIGN_ELEMENT_COLORS.length] ?? DESIGN_ELEMENT_COLORS[0];
 }

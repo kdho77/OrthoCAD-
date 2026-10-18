@@ -62,10 +62,9 @@ describe("split elements UI + one hardness table", () => {
         expect(overlays).toMatch(/appearance === "design"/);
     });
 
-    test("design colors distinguish additions by placement order", () => {
+    test("design additions use the purple highlight on white bases", () => {
         const colors = [0, 1, 2, 3, 4, 5, 6].map(designColorForElementIndex);
-        expect(new Set(colors.slice(0, 6)).size).toBe(6);
-        expect(colors[6]).toBe(colors[0]);
+        expect(colors).toEqual(Array(7).fill("#a855f7"));
     });
 
     test("five named classes have distinct colors and line-width fingerprint", () => {
