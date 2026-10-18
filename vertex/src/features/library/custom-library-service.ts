@@ -161,7 +161,7 @@ async function buildBasePrefabMesh(side: Side): Promise<THREE.Mesh | null> {
         const stored = useBottomPatternStore.getState().getPattern(side);
         const layout = insoleLayoutFromDesign(design);
         const widthId = shoeWidthForSide(design, side);
-        const preview = reconstructProceduralPreview(raw, {
+        const preview = await reconstructProceduralPreview(raw, {
             corrections: field.corrections,
             thicknessMm: thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,

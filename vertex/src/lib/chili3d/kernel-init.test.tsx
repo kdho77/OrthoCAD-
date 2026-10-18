@@ -1,10 +1,10 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { afterEach, beforeEach, describe, expect, test } from "@rstest/core";
 import * as React from "react";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { describe, expect, test, beforeEach, afterEach } from "@rstest/core";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 
@@ -32,6 +32,7 @@ rs.mock("@/components/ErrorBoundary", () => ({
 }));
 rs.mock("@/components/layout/KernelLoadingBanner", () => ({ KernelLoadingBanner: () => null }));
 rs.mock("@/components/admin/AdminPortal", () => ({ AdminPortal: () => null }));
+rs.mock("@/features/admin/AdminApp", () => ({ AdminApp: () => null }));
 rs.mock("@/components/layout/LeftSidebar", () => ({ LeftSidebar: () => null }));
 rs.mock("@/components/layout/RightPanel", () => ({ RightPanel: () => null }));
 rs.mock("@/components/layout/StatusBar", () => ({ StatusBar: () => null }));

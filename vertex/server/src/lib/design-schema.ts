@@ -59,6 +59,8 @@ const placedElement = z.object({
     priority: z.number().int().optional(),
     depth: depthSpecSchema.optional(),
     overrides: hardnessOverridesSchema.optional(),
+    placementMode: z.enum(["flow", "noFlow"]).optional(),
+    zOffsetMm: z.number().optional(),
 });
 
 const trimlinePoint = z.object({

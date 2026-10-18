@@ -1,9 +1,10 @@
-import { Coins, LogOut, ShieldCheck, Sparkles, Users } from "lucide-react";
+import { Coins, Shield, ShieldCheck, Sparkles } from "lucide-react";
+import { AccountMenu } from "@/components/layout/AccountMenu";
 import { Button } from "@/components/ui/button";
+import { navigate, showSuperAdminLink } from "@/features/admin/admin-nav";
 import { SaveControl } from "@/features/designs/SaveControl";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
-import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/auth-store";
 
 const NAV = ["Clients", "Production", "Orders"] as const;
 type NavItem = (typeof NAV)[number];
@@ -11,11 +12,10 @@ type NavItem = (typeof NAV)[number];
 interface TopNavProps {
     active: NavItem;
     onNavigate: (item: NavItem) => void;
-    onOpenAdmin: () => void;
     onOpenPrescription: () => void;
 }
 
-export function TopNav({ active, onNavigate, onOpenAdmin, onOpenPrescription }: TopNavProps) {
+export function TopNav({ active, onNavigate, onOpenPrescription }: TopNavProps) {
     const { user, license } = useAuthStore();
 
     return (
@@ -44,6 +44,15 @@ export function TopNav({ active, onNavigate, onOpenAdmin, onOpenPrescription }: 
                             {item}
                         </button>
                     ))}
+                    {showSuperAdminLink(user?.role) ? (
+                        <button
+                            type="button"
+                            onClick={() => navigate("/admin")}
+                            className="rounded px-3 py-1.5 text-sm text-sky-300 transition-colors hover:bg-secondary hover:text-sky-200"
+                        >
+                            Super admin
+                        </button>
+                    ) : null}
                 </nav>
             </div>
 
@@ -58,22 +67,25 @@ export function TopNav({ active, onNavigate, onOpenAdmin, onOpenPrescription }: 
                     <span className="text-muted-foreground">tokens</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <ShieldCheck className={cn("h-3.5 w-3.5", license?.status === "active" ? "text-emerald-400" : "text-amber-400")} />
+                    <ShieldCheck
+                        className={cn(
+                            "h-3.5 w-3.5",
+                            license?.status === "active" ? "text-emerald-400" : "text-amber-400",
+                        )}
+                    />
                     {license?.status ?? "no license"}
                 </div>
-                {user?.role === "super_admin" ? (
-                    <Button size="sm" variant="outline" onClick={onOpenAdmin}>
-                        <Users className="h-3.5 w-3.5" /> Admin
-                    </Button>
+                {showSuperAdminLink(user?.role) ? (
+                    <button
+                        type="button"
+                        onClick={() => navigate("/admin")}
+                        className="flex items-center gap-1.5 rounded-md border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+                    >
+                        <Shield className="h-3.5 w-3.5" />
+                        Super admin
+                    </button>
                 ) : null}
-                <div className="flex h-7 w-7 items-center justify-center rounded-full bg-secondary text-xs font-medium">
-                    {user?.fullName?.[0]?.toUpperCase() ?? user?.email?.[0]?.toUpperCase() ?? "?"}
-                </div>
-                {isSupabaseConfigured() ? (
-                    <Button size="icon" variant="ghost" title="Sign out" onClick={() => getSupabase()?.auth.signOut()}>
-                        <LogOut className="h-3.5 w-3.5" />
-                    </Button>
-                ) : null}
+                <AccountMenu user={user} />
             </div>
         </header>
     );

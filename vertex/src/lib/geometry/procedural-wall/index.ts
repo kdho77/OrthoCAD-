@@ -350,6 +350,7 @@ export {
 export {
     type ComposePrintSolidInput,
     composePrintSolidTop,
+    composePrintSolidTopSync,
     type PrintSolidShoeWidth,
 } from "./print-solid-compose";
 export {

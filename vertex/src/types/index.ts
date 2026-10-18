@@ -173,6 +173,8 @@ export interface Corrections {
 export type ElementKind =
     | "met_pad"
     | "met_bar"
+    | "toe_crest"
+    | "cuboid_pad"
     | "cluffy_wedge"
     | "mortons_extension"
     | "reverse_mortons"
@@ -185,6 +187,8 @@ export type ElementKind =
 
 /** Top trim preset id — `custom` when the user edits the spline manually. */
 export type TrimPresetId = "full" | "sulcus" | "met_head" | "custom";
+
+export type ElementPlacementMode = "flow" | "noFlow";
 
 export interface PlacedElement {
     id: string;
@@ -207,6 +211,9 @@ export interface PlacedElement {
     priority?: number;
     depth?: DepthSpec;
     overrides?: HardnessOverrides;
+    /** GLB height-field lift: flow feathers the edge; noFlow keeps a crisp step. */
+    placementMode?: ElementPlacementMode;
+    zOffsetMm?: number;
 }
 
 /** Serializable trimline control points stored in design state. */

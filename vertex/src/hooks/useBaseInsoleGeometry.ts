@@ -428,7 +428,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         const patternTrim = draftTrimForPattern ?? committedTrimForPattern;
                         let patternTop = raw;
                         try {
-                            patternTop = composeViewerPrintSolidTop({
+                            patternTop = await composeViewerPrintSolidTop({
                                 raw,
                                 sourceField: field,
                                 shoeWidth: {
@@ -490,7 +490,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     const printTrim = draftTrim ?? committedTrim;
                     let modified = raw;
                     try {
-                        modified = composeViewerPrintSolidTop({
+                        modified = await composeViewerPrintSolidTop({
                             raw,
                             sourceField: field,
                             shoeWidth: {
@@ -513,7 +513,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 ...field,
                                 corrections: { ...(field.corrections ?? {}), forefootWedge: undefined },
                             };
-                            const neutralGeo = composeViewerPrintSolidTop({
+                            const neutralGeo = await composeViewerPrintSolidTop({
                                 raw,
                                 sourceField: neutralField,
                                 shoeWidth: {

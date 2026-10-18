@@ -118,12 +118,12 @@ export async function reconstructProceduralPreviewInWorker(
     topGeo: BufferGeometry,
     options: ProceduralPreviewOptions = {},
 ): Promise<{ geometry: BufferGeometry; pattern: PolyPoint[] }> {
-    const sync = () => {
-        const preview = reconstructProceduralPreview(topGeo, options);
+    const sync = async () => {
+        const preview = await reconstructProceduralPreview(topGeo, options);
         return { geometry: preview.geometry, pattern: preview.pattern };
     };
     const w = ensureWorker();
-    if (!w) return sync();
+    if (!w) return await sync();
     const id = ++nextId;
     const copy = geometryCopy(topGeo);
     try {
