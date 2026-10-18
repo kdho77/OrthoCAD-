@@ -56,6 +56,7 @@ export function BaseInsoleMesh({
 }) {
     const design = useDesignStore((s) => s.design);
     const workflowStep = useClinicalWorkflowStore((s) => s.step);
+    const selectedElementId = useDesignStore((s) => s.selectedElementId);
     const interacting = usePerformanceStore((s) => s.interacting);
     const { geometry, building } = useBaseInsoleGeometry(design, side);
 
@@ -92,13 +93,7 @@ export function BaseInsoleMesh({
     useEffect(() => {
         if (!geometry) return;
         if (!heightmap) {
-            const layout = insoleLayoutFromDesign(design);
-            applyDesignElementColors(
-                geometry,
-                workflowStep === "print" ? [] : design.elements,
-                side,
-                layout.lengthMm,
-            );
+            applyDesignElementColors(geometry, workflowStep !== "print", selectedElementId);
             return;
         }
         const pos = geometry.getAttribute("position");
@@ -110,6 +105,7 @@ export function BaseInsoleMesh({
         geometry,
         heightmap,
         workflowStep,
+        selectedElementId,
         design.elements,
         design.sizeSystem,
         design.usMenSize,

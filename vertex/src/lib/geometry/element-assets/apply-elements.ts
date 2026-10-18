@@ -1,12 +1,17 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import type { BufferAttribute, BufferGeometry } from "three";
+import { BufferAttribute, type BufferGeometry } from "three";
 import {
     classifyBaseTopFactors,
     getBaseFootprintFrame,
     vertexFootprintAt,
 } from "@/lib/geometry/base-modifier";
+import {
+    ELEMENT_IDS_KEY,
+    ELEMENT_LIFT_ATTRIBUTE,
+    ELEMENT_OWNER_ATTRIBUTE,
+} from "@/lib/geometry/element-visualization";
 import { elementHeightAt } from "@/lib/geometry/elements";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import {
@@ -27,6 +32,7 @@ import {
 import {
     ELEMENT_SUBDIVIDE_EDGE_MM,
     type ElementFeatherMm,
+    LIBRARY_HEIGHT_FIELD_KINDS,
     NO_FLOW_SMOOTH_MAX_K_MM,
     type PlacedElementAssetContext,
 } from "./types";
@@ -331,6 +337,9 @@ export async function applyElementsToTopMeshLast(
     options?: ApplyElementsOptions,
 ): Promise<void> {
     const elements = field.elements ?? [];
+    geometry.deleteAttribute(ELEMENT_LIFT_ATTRIBUTE);
+    geometry.deleteAttribute(ELEMENT_OWNER_ATTRIBUTE);
+    geometry.userData[ELEMENT_IDS_KEY] = [];
     if (elements.length === 0) return;
     ensureTopEdgeAvProfile(field, referenceBase);
     const hooks = options?.noFlowHooks ?? defaultNoFlowHeightHooks;
@@ -343,6 +352,17 @@ export async function applyElementsToTopMeshLast(
         options?.referenceForSize,
     );
     const assetKinds = new Set(contexts.map((c) => c.placed.kind));
+    for (const element of elements) {
+        if (element.side !== field.side) continue;
+        if (
+            (LIBRARY_HEIGHT_FIELD_KINDS as readonly string[]).includes(element.kind) &&
+            !contexts.some((context) => context.placed.id === element.id)
+        ) {
+            throw new Error(
+                `Library element ${element.kind} could not be loaded; refusing a substitute shape`,
+            );
+        }
+    }
 
     const topOnlyOpen = classifyBaseTopFactors(referenceBase) === null;
     if (options?.subdivide !== false && !topOnlyOpen) {
@@ -368,10 +388,42 @@ export async function applyElementsToTopMeshLast(
         }
     }
 
-    applyProceduralElements(geometry, referenceBase, field, elements, assetKinds);
+    // Record the composed top immediately before placement. This is the source
+    // of truth for design highlighting, including no-flow areas buried in the base.
+    const position = geometry.getAttribute("position");
+    const thickAxis = getBaseFootprintFrame(referenceBase, field.side).thickAxis;
+    const before = new Float32Array(position.count);
+    const previous = new Float32Array(position.count);
+    const owners = new Float32Array(position.count);
+    const lift = new Float32Array(position.count);
+    const topFactors = classifyBaseTopFactors(geometry);
+    for (let i = 0; i < position.count; i++) {
+        before[i] = previous[i] = position.getComponent(i, thickAxis);
+    }
+    const recordOwner = (elementIndex: number) => {
+        for (let i = 0; i < position.count; i++) {
+            const z = position.getComponent(i, thickAxis);
+            if (z > previous[i]! + 1e-6) owners[i] = elementIndex + 1;
+            previous[i] = z;
+        }
+    };
+    for (let index = 0; index < elements.length; index++) {
+        applyProceduralElements(geometry, referenceBase, field, [elements[index]!], assetKinds);
+        recordOwner(index);
+    }
     for (const ctx of contexts) {
         await applyAssetContext(geometry, referenceBase, field, ctx, hooks);
+        recordOwner(elements.indexOf(ctx.placed));
     }
+    for (let i = 0; i < position.count; i++) {
+        // Open top sheets have no bottom; closed bases must not color their undersides.
+        if (!topFactors || topFactors[i]! > 0.5) {
+            lift[i] = Math.max(0, position.getComponent(i, thickAxis) - before[i]!);
+        }
+    }
+    geometry.setAttribute(ELEMENT_LIFT_ATTRIBUTE, new BufferAttribute(lift, 1));
+    geometry.setAttribute(ELEMENT_OWNER_ATTRIBUTE, new BufferAttribute(owners, 1));
+    geometry.userData[ELEMENT_IDS_KEY] = elements.map((element) => element.id);
     const pos = geometry.getAttribute("position");
     if (pos) pos.needsUpdate = true;
     geometry.computeVertexNormals();

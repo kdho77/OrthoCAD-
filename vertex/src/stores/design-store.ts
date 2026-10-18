@@ -1,12 +1,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
 import {
     applyCorrectionPresetToDesign,
     type CorrectionPresetApplyMode,
     type CorrectionPresetPayload,
 } from "@/lib/clinical/correction-presets";
-import { prescriptionElementsForAutomaticPlacement } from "@/lib/clinical/prescription-elements";
 import {
     createDefaultStockPairedBases,
     designHasBase,
@@ -498,7 +496,7 @@ export interface DesignStore {
     applyCorrectionPreset: (
         payload: CorrectionPresetPayload,
         mode: CorrectionPresetApplyMode,
-        options?: { includeElements?: boolean; activeSide?: Side; label?: string },
+        options?: { activeSide?: Side; label?: string },
     ) => void;
 
     setViewer: (patch: Partial<ViewerSettings>) => void;
@@ -1079,17 +1077,6 @@ export const useDesignStore = create<DesignStore>()(
                         left: r1.constrained,
                         right: s.design.corrections.linked ? r1.constrained : r2.constrained,
                     };
-                    const layout = insoleLayoutFromDesign(s.design);
-                    // Dancer's pads need deliberate anatomical placement. Keep AI Rx from
-                    // silently inserting them; users can add them from the Elements panel.
-                    const elements: PlacedElement[] = prescriptionElementsForAutomaticPlacement(
-                        result.elements,
-                    ).map((e) => ({
-                        id: crypto.randomUUID(),
-                        kind: e.kind,
-                        side: e.side,
-                        ...defaultElementPose(e.kind, e.side, layout.lengthMm, layout.widthMm),
-                    }));
                     return {
                         design: {
                             ...s.design,
@@ -1097,7 +1084,8 @@ export const useDesignStore = create<DesignStore>()(
                             method: result.method ?? s.design.method,
                             thicknessMm: r1.thicknessMm,
                             corrections,
-                            elements: [...s.design.elements, ...elements],
+                            // Element suggestions are added explicitly in the Elements library.
+                            elements: s.design.elements,
                         },
                     };
                 });
@@ -1201,11 +1189,7 @@ export const useDesignStore = create<DesignStore>()(
                 set((s) => {
                     const next = applyCorrectionPresetToDesign(s.design, payload, {
                         mode,
-                        // Presets may describe suggested elements, but users add them deliberately
-                        // from the Elements step instead of having them appear as a side effect.
-                        includeElements: options?.includeElements ?? false,
                         activeSide: options?.activeSide ?? s.exportSide,
-                        placementSides: elementPlacementSides(),
                     });
                     const eff = buildEffectiveTrimlines(next);
                     useIssuesStore.getState().recompute(next, eff);

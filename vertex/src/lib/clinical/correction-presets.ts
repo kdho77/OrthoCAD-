@@ -1,17 +1,7 @@
 // Correction macro presets — capture/apply Shape-step design slices (corrections, elements, thickness).
 
 import { constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
-import { defaultElementPose } from "@/lib/geometry/elements";
-import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
-import type {
-    Corrections,
-    DesignState,
-    ElementKind,
-    PlacedElement,
-    PrintRecipeV1,
-    Side,
-    SideCorrections,
-} from "@/types";
+import type { Corrections, DesignState, ElementKind, PrintRecipeV1, Side, SideCorrections } from "@/types";
 
 /** Serializable preset payload (no element ids — regenerated on apply). */
 export interface CorrectionPresetPayload {
@@ -20,7 +10,7 @@ export interface CorrectionPresetPayload {
         left?: Partial<SideCorrections>;
         right?: Partial<SideCorrections>;
     };
-    /** Stock element kinds to place per side when applying (at default pose). */
+    /** Suggested stock elements; placement is explicit in the Elements library. */
     elementKinds?: { left?: ElementKind[]; right?: ElementKind[] };
     thicknessMm?: number;
     printRecipe?: PrintRecipeV1;
@@ -81,21 +71,6 @@ function replaceSide(
 
 function clampSide(side: SideCorrections, thicknessMm: number): SideCorrections {
     return constrainSideCorrections(side, thicknessMm).constrained;
-}
-
-function newElementsForSide(
-    kinds: ElementKind[] | undefined,
-    side: Side,
-    design: DesignState,
-): PlacedElement[] {
-    if (!kinds?.length) return [];
-    const { lengthMm, widthMm } = insoleLayoutFromDesign(design);
-    return kinds.map((kind) => ({
-        id: crypto.randomUUID(),
-        kind,
-        side,
-        ...defaultElementPose(kind, side, lengthMm, widthMm),
-    }));
 }
 
 /**
@@ -263,10 +238,10 @@ export function correctionPresetOriginKeys(
 
 export interface ApplyCorrectionPresetOptions {
     mode: CorrectionPresetApplyMode;
-    /** When true, replace/merge elements for affected sides. */
+    /** Legacy option retained for saved callers; suggestions never place elements. */
     includeElements?: boolean;
     activeSide?: Side;
-    /** Sides to place stock elements on (e.g. both when L+R linked placement). */
+    /** Legacy placement option; ignored because only the library places elements. */
     placementSides?: Side[];
 }
 
@@ -306,32 +281,11 @@ export function applyCorrectionPresetToDesign(
         applyToSide("right");
     }
 
-    let elements = [...design.elements];
-    if (opts.includeElements && preset.elementKinds) {
-        const sides: Side[] = opts.placementSides?.length
-            ? opts.placementSides
-            : linked
-              ? ["left", "right"]
-              : opts.activeSide
-                ? [opts.activeSide]
-                : (["left", "right"] as Side[]);
-
-        if (opts.mode === "replace") {
-            elements = elements.filter((e) => !sides.includes(e.side) || e.kind === "custom");
-        }
-
-        for (const side of sides) {
-            const kinds = preset.elementKinds[side] ?? (linked ? preset.elementKinds.left : undefined);
-            if (!kinds?.length) continue;
-            elements.push(...newElementsForSide(kinds, side, design));
-        }
-    }
-
     return {
         ...design,
         thicknessMm: preset.thicknessMm ?? design.thicknessMm,
         printRecipe: preset.printRecipe ?? design.printRecipe,
         corrections: corr,
-        elements,
+        elements: design.elements,
     };
 }
