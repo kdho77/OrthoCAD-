@@ -278,7 +278,8 @@ describe("3MF + geometry gates", () => {
         expect(a.report.regions.every((r) => r.status !== "missing" && r.status !== "unmapped")).toBe(true);
         expect(collectHardnessRegions(d, "left").some((r) => r.kind === "freehand")).toBe(true);
         expect(collectHardnessRegions(d, "left").some((r) => r.kind === "zone")).toBe(true);
-    }, 30_000);
+        // Warmup + resolve + two exports + move-export overshoots 30s on GitHub ubuntu (~32s).
+    }, 60_000);
 
     test("gate 7: 3-way priority vs voxel ref", async () => {
         const d = fixtureThreeWayOverlap();
