@@ -45,6 +45,7 @@ import {
 import { normalizeShoeWidth } from "@/lib/geometry/shoe-width";
 import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
+import { applyDefaultSplitHardness, defaultSplitHardnessPatch } from "@/lib/hardness/split-overlay";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
@@ -433,6 +434,8 @@ export interface DesignStore {
     setMethod: (method: ProductionMethod) => void;
     /** Named whole-device hardness (Phase A PrintRecipe). */
     setPrintHardness: (hardness: HardnessName) => void;
+    setSplitElements: (on: boolean) => void;
+    setSmoothElements: (on: boolean) => void;
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
@@ -567,6 +570,16 @@ export const useDesignStore = create<DesignStore>()(
                     };
                 });
             },
+            setSplitElements: (on) => {
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        splitElements: on,
+                        elements: on ? applyDefaultSplitHardness(s.design.elements) : s.design.elements,
+                    },
+                }));
+            },
+            setSmoothElements: (on) => set((s) => ({ design: { ...s.design, smoothElements: on } })),
             setThickness: (thicknessMm) =>
                 set((s) => {
                     const isPaired = !!s.design.paired;
@@ -876,11 +889,13 @@ export const useDesignStore = create<DesignStore>()(
                 set((s) => {
                     const layout = insoleLayoutFromDesign(s.design);
                     const pose = defaultElementPose(kind, side, layout.lengthMm, layout.widthMm);
+                    const id = crypto.randomUUID();
                     const el: PlacedElement = {
-                        id: crypto.randomUUID(),
+                        id,
                         kind,
                         side,
                         ...pose,
+                        ...(s.design.splitElements ? defaultSplitHardnessPatch(id) : {}),
                     };
                     const next = { ...s.design, elements: [...s.design.elements, el] };
                     const eff = buildEffectiveTrimlines(next);
@@ -892,8 +907,9 @@ export const useDesignStore = create<DesignStore>()(
             addCustomElement: (customElementId, customName, side) => {
                 get().checkpoint("add-custom-element");
                 set((s) => {
+                    const id = crypto.randomUUID();
                     const el: PlacedElement = {
-                        id: crypto.randomUUID(),
+                        id,
                         kind: "custom",
                         customElementId,
                         customName,
@@ -902,6 +918,7 @@ export const useDesignStore = create<DesignStore>()(
                         rotationDeg: 0,
                         scale: { x: 1, y: 1 },
                         heightMm: 4,
+                        ...(s.design.splitElements ? defaultSplitHardnessPatch(id) : {}),
                     };
                     const next = { ...s.design, elements: [...s.design.elements, el] };
                     const eff = buildEffectiveTrimlines(next);

@@ -1,27 +1,44 @@
 {
-    "Soft": {
-        "sparseInfillDensityPct": 11,
+    "Extra Soft": {
+        "sparseInfillDensityPct": 10,
         "sparseInfillPattern": "gyroid",
-        "sparseInfillSpeedMmS": 44.0
+        "sparseInfillSpeedMmS": 43.5,
+        "sparseInfillLineWidthMm": 0.7,
+        "pendingCouponValidation": true
+    },
+    "Soft": {
+        "sparseInfillDensityPct": 14,
+        "sparseInfillPattern": "gyroid",
+        "sparseInfillSpeedMmS": 44.0,
+        "sparseInfillLineWidthMm": 0.7,
+        "pendingCouponValidation": true
     },
     "Medium": {
-        "sparseInfillDensityPct": 22,
+        "sparseInfillDensityPct": 26,
         "sparseInfillPattern": "gyroid",
-        "sparseInfillSpeedMmS": 44.5
+        "sparseInfillSpeedMmS": 44.5,
+        "sparseInfillLineWidthMm": 1.0,
+        "pendingCouponValidation": true
     },
-    "Firm": {
+    "Hard": {
+        "sparseInfillDensityPct": 32,
+        "sparseInfillPattern": "gyroid",
+        "sparseInfillSpeedMmS": 45.0,
+        "sparseInfillLineWidthMm": 1.0,
+        "pendingCouponValidation": true
+    },
+    "Extra Hard": {
         "sparseInfillDensityPct": 38,
         "sparseInfillPattern": "gyroid",
-        "sparseInfillSpeedMmS": 45.0
-    },
-    "Rigid": {
-        "sparseInfillDensityPct": 65,
-        "sparseInfillPattern": "gyroid",
-        "sparseInfillSpeedMmS": 45.5
+        "sparseInfillSpeedMmS": 45.5,
+        "sparseInfillLineWidthMm": 1.0,
+        "pendingCouponValidation": true
     },
     "Custom": {
         "sparseInfillDensityPctMin": 5,
         "sparseInfillDensityPctMax": 100,
-        "sparseInfillPattern": "gyroid"
+        "sparseInfillPattern": "gyroid",
+        "sparseInfillLineWidthMm": 1.0,
+        "pendingCouponValidation": true
     }
 }

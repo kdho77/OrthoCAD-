@@ -296,6 +296,13 @@ export interface DesignState {
     };
     corrections: Corrections;
     elements: PlacedElement[];
+    /** Print-step Split mode: elements are selectable hardness regions. */
+    splitElements?: boolean;
+    /**
+     * Persist-only. Boundary smoothing of split regions needs CAD sign-off —
+     * does not change print geometry.
+     */
+    smoothElements?: boolean;
     /** User-edited insole outline curves — persisted with the design. */
     trimlines?: DesignTrimlines;
     /** Active top-trim preset label per foot (cleared to custom on manual edit). */

@@ -38,7 +38,7 @@ export function fixtureSampleTopElements(): DesignState {
             position: { x: 40, y: 0 },
         }),
         pad("el-dancer-left", "dancers_pad", "left", {
-            hardnessClass: "Firm",
+            hardnessClass: "Hard",
             priority: 1,
             position: { x: 50, y: -18 },
         }),
@@ -48,7 +48,7 @@ export function fixtureSampleTopElements(): DesignState {
             position: { x: 40, y: 0 },
         }),
         pad("el-dancer-right", "dancers_pad", "right", {
-            hardnessClass: "Firm",
+            hardnessClass: "Hard",
             priority: 1,
             position: { x: 50, y: 18 },
         }),
@@ -77,7 +77,7 @@ export function fixtureFreehandAndAbutting(): DesignState {
     const freehandHard: HardnessRegion = {
         regionId: "fh-hard-higher",
         kind: "freehand",
-        hardnessClass: "Rigid",
+        hardnessClass: "Extra Hard",
         priority: 5,
         depth: { type: "mm", mm: 3 },
         side: "left",
@@ -106,7 +106,7 @@ export function fixtureFreehandAndAbutting(): DesignState {
     const abutB: HardnessRegion = {
         regionId: "zone-abut-b",
         kind: "zone",
-        hardnessClass: "Firm",
+        hardnessClass: "Hard",
         priority: 0,
         depth: { type: "full" },
         side: "left",
@@ -156,20 +156,27 @@ export function fixtureThreeWayOverlap(): DesignState {
     });
     d.printRecipe = {
         ...recipe,
-        zones: [box("tw-a", "Soft", 1, 0), box("tw-b", "Medium", 1, 12), box("tw-c", "Firm", 2, 6)],
+        zones: [box("tw-a", "Soft", 1, 0), box("tw-b", "Medium", 1, 12), box("tw-c", "Hard", 2, 6)],
     };
     return d;
 }
 
 /** Tiny Orca-like gcode with fingerprint speeds (mm/min = mm/s * 60). */
-export const FIXTURE_GCODE = `;TYPE:Sparse infill
+export const FIXTURE_GCODE = `;LINE_WIDTH:0.7
+;TYPE:Sparse infill
+G1 X10 Y8 E0.05 F2610
+;LINE_WIDTH:0.7
+;TYPE:Sparse infill
 G1 X10 Y10 E0.1 F2640
 G1 X12 Y10 E0.2 F2640
+;LINE_WIDTH:1.0
 ;TYPE:Sparse infill
 G1 X10 Y12 E0.3 F2670
 G1 X12 Y12 E0.4 F2670
+;LINE_WIDTH:1.0
 ;TYPE:Sparse infill
 G1 X10 Y14 E0.5 F2700
+;LINE_WIDTH:1.0
 ;TYPE:Sparse infill
 G1 X10 Y16 E0.6 F2730
 ;TYPE:Internal solid infill

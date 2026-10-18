@@ -3,6 +3,7 @@
 
 import {
     classDensityPct,
+    classLineWidthMm,
     classSpeedMmS,
     SPARSE_INFILL_PATTERN,
 } from "../../../shared/print-recipe/hardness-class-table";
@@ -20,6 +21,7 @@ export interface RegionReportRow {
     densityPct: number;
     pattern: typeof SPARSE_INFILL_PATTERN;
     speedMmS?: number;
+    lineWidthMm: number;
     note?: string;
 }
 
@@ -37,12 +39,14 @@ export function volumeSettingsFor(region: HardnessRegion): {
     densityPct: number;
     pattern: typeof SPARSE_INFILL_PATTERN;
     speedMmS?: number;
+    lineWidthMm: number;
 } {
     const densityPct = classDensityPct(region.hardnessClass, region.overrides);
     return {
         densityPct,
         pattern: SPARSE_INFILL_PATTERN,
         speedMmS: classSpeedMmS(region.hardnessClass),
+        lineWidthMm: classLineWidthMm(region.hardnessClass),
     };
 }
 
@@ -75,6 +79,7 @@ export function buildExportReport(
                 rawVolumeMm3: 0,
                 densityPct: 0,
                 pattern: SPARSE_INFILL_PATTERN,
+                lineWidthMm: classLineWidthMm(region.hardnessClass),
                 note: err instanceof Error ? err.message : String(err),
             });
             continue;
@@ -93,6 +98,7 @@ export function buildExportReport(
                 densityPct,
                 pattern: SPARSE_INFILL_PATTERN,
                 speedMmS: classSpeedMmS(region.hardnessClass),
+                lineWidthMm: classLineWidthMm(region.hardnessClass),
             });
             continue;
         }
@@ -112,6 +118,7 @@ export function buildExportReport(
             densityPct,
             pattern: SPARSE_INFILL_PATTERN,
             speedMmS: classSpeedMmS(region.hardnessClass),
+            lineWidthMm: classLineWidthMm(region.hardnessClass),
             note: got.note,
         });
     }

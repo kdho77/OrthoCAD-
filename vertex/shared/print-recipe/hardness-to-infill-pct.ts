@@ -2,16 +2,21 @@
 // See LICENSE file in the project root for full license information.
 
 /**
- * Locked clinical hardness → gyroid infill % (Biomechanics 2026-09-20).
+ * Device-wide hardness → gyroid infill %. Same five-level table as region
+ * modifiers (hardness-class-table). Extra Soft / Soft densities are the 0.7 mm
+ * line-width starting points; Medium / Hard / Extra Hard keep the ladder.
+ * All values pending coupon validation.
  *
  * Keep values in lockstep with hardness-to-infill-pct.json (Python reads the JSON).
- * This is a .ts module so the Vercel Node ESM function can import it without
- * `with { type: "json" }` (ERR_IMPORT_ATTRIBUTE_MISSING).
  */
+import { HARDNESS_CLASS_TABLE, NAMED_HARDNESS_CLASSES } from "./hardness-class-table.js";
+
 export const HARDNESS_TO_INFILL_PCT = {
-    "Extra Soft": 14,
-    Soft: 20,
-    Medium: 26,
-    Hard: 32,
-    "Extra Hard": 38,
+    "Extra Soft": HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillDensityPct,
+    Soft: HARDNESS_CLASS_TABLE.Soft.sparseInfillDensityPct,
+    Medium: HARDNESS_CLASS_TABLE.Medium.sparseInfillDensityPct,
+    Hard: HARDNESS_CLASS_TABLE.Hard.sparseInfillDensityPct,
+    "Extra Hard": HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillDensityPct,
 } as const;
+
+export const HARDNESS_TABLE_SOURCE_CLASSES = NAMED_HARDNESS_CLASSES;

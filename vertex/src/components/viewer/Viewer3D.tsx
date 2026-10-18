@@ -19,6 +19,7 @@ import {
 import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
+import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -44,6 +45,7 @@ import { ScanMeshes } from "./ScanMeshes";
 import { ScanPlaneSliceTool } from "./ScanPlaneSliceTool";
 import { ScanRotateTool } from "./ScanRotateTool";
 import { consumeScanMissDeselectSuppression, ScanTransformTool } from "./ScanTransformTool";
+import { SplitElementOverlays } from "./SplitElementOverlays";
 import { TrimlineEditTools } from "./TrimlineEditTools";
 
 /** Cross-pad anatomical views (Left / Top / Bottom / Right / Front / Back). */
@@ -249,6 +251,7 @@ export function Viewer3D() {
                     <ScanRotateTool />
                     <ScanTransformTool />
                     {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
+                    {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <SplitElementOverlays /> : null}
                     <MeshEditTools />
                     {!loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
                     {!loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
@@ -448,6 +451,12 @@ export function Viewer3D() {
                     />
                 ) : null}
             </div>
+
+            {design.splitElements ? (
+                <div className="absolute bottom-3 left-3 rounded-md border border-border bg-panel/90 px-2 py-1.5 shadow-lg backdrop-blur">
+                    <HardnessLegend compact />
+                </div>
+            ) : null}
 
             {/* Scan selection toolbar — rotate appears only while a scan is selected */}
             {selectedScanId ? (

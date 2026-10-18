@@ -2,9 +2,11 @@
 // See LICENSE file in the project root for full license information.
 
 import {
+    CLASS_DISPLAY_NAMES,
     CLASS_PREVIEW_COLORS,
+    classLineWidthMm,
     HARDNESS_CLASS_TABLE,
-    REGION_HARDNESS_CLASSES,
+    NAMED_HARDNESS_CLASSES,
     type RegionHardnessClass,
 } from "../../../shared/print-recipe/hardness-class-table";
 import type { DepthSpec, HardnessOverrides } from "../../../shared/print-recipe/hardness-region";
@@ -25,15 +27,17 @@ interface Props {
     id: string;
     value: HardnessPickerValue;
     onChange: (patch: HardnessPickerValue) => void;
+    /** Resource settings: hardness is required (default Medium). */
+    required?: boolean;
 }
 
 const selectClass =
     "h-7 w-full rounded-md border border-border bg-background px-1.5 text-[11px] text-foreground";
 
-export function HardnessPicker({ id, value, onChange }: Props) {
+export function HardnessPicker({ id, value, onChange, required = false }: Props) {
     const cls = value.hardnessClass;
     const priority = value.priority ?? DEFAULT_ELEMENT_PRIORITY;
-    const customPct = value.overrides?.sparseInfillDensityPct ?? 22;
+    const customPct = value.overrides?.sparseInfillDensityPct ?? 26;
 
     const setClass = (next: RegionHardnessClass | "") => {
         if (!next) {
@@ -51,7 +55,7 @@ export function HardnessPicker({ id, value, onChange }: Props) {
             hardnessClass: next,
             priority,
             depth: value.depth ?? { ...DEFAULT_ELEMENT_DEPTH },
-            overrides: next === "Custom" ? { sparseInfillDensityPct: customPct } : value.overrides,
+            overrides: next === "Custom" ? { sparseInfillDensityPct: customPct } : undefined,
         });
     };
 
@@ -62,70 +66,50 @@ export function HardnessPicker({ id, value, onChange }: Props) {
             </div>
             <select
                 className={selectClass}
-                value={cls ?? ""}
+                value={cls ?? (required ? "Medium" : "")}
                 onChange={(e) => setClass(e.target.value as RegionHardnessClass | "")}
-                aria-label="Hardness class"
+                aria-label="Hardness"
+                data-testid="hardness-dropdown"
             >
-                <option value="">Device default (no modifier)</option>
-                {REGION_HARDNESS_CLASSES.map((name) => (
+                {required ? null : <option value="">Device default (no modifier)</option>}
+                {NAMED_HARDNESS_CLASSES.map((name) => (
                     <option key={name} value={name}>
-                        {name}
-                        {name !== "Custom"
-                            ? ` · ${HARDNESS_CLASS_TABLE[name].sparseInfillDensityPct}% gyroid`
-                            : " · 5–100%"}
+                        {CLASS_DISPLAY_NAMES[name]}
                     </option>
                 ))}
             </select>
+            {cls && cls !== "Custom" ? (
+                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                    <span
+                        className="h-2.5 w-2.5 rounded-full"
+                        style={{ background: CLASS_PREVIEW_COLORS[cls] }}
+                    />
+                    <span>
+                        {HARDNESS_CLASS_TABLE[cls].sparseInfillDensityPct}% gyroid ·{" "}
+                        {classLineWidthMm(cls).toFixed(1)} mm
+                        {HARDNESS_CLASS_TABLE[cls].pendingCouponValidation ? " · pending coupon" : ""}
+                    </span>
+                </div>
+            ) : null}
             {cls ? (
-                <>
-                    <div className="flex items-center gap-1.5">
-                        <span
-                            className="h-2.5 w-2.5 rounded-full"
-                            style={{ background: CLASS_PREVIEW_COLORS[cls] }}
-                        />
-                        <label className="flex flex-1 items-center justify-between text-[11px] text-muted-foreground">
-                            Priority
-                            <input
-                                type="number"
-                                className="h-7 w-16 rounded-md border border-border bg-background px-1.5 text-right text-[11px] text-foreground"
-                                value={priority}
-                                onChange={(e) =>
-                                    onChange({
-                                        regionId: value.regionId ?? id,
-                                        hardnessClass: cls,
-                                        priority: Number(e.target.value),
-                                        depth: value.depth ?? { ...DEFAULT_ELEMENT_DEPTH },
-                                        overrides: value.overrides,
-                                    })
-                                }
-                                aria-label="Hardness priority"
-                            />
-                        </label>
-                    </div>
-                    {cls === "Custom" ? (
-                        <label className="flex items-center justify-between text-[11px] text-muted-foreground">
-                            Custom density %
-                            <input
-                                type="number"
-                                min={5}
-                                max={100}
-                                className="h-7 w-16 rounded-md border border-border bg-background px-1.5 text-right text-[11px] text-foreground"
-                                value={customPct}
-                                onChange={(e) =>
-                                    onChange({
-                                        regionId: value.regionId ?? id,
-                                        hardnessClass: "Custom",
-                                        priority,
-                                        depth: value.depth ?? { ...DEFAULT_ELEMENT_DEPTH },
-                                        overrides: {
-                                            sparseInfillDensityPct: Number(e.target.value),
-                                        },
-                                    })
-                                }
-                            />
-                        </label>
-                    ) : null}
-                </>
+                <label className="flex flex-1 items-center justify-between text-[11px] text-muted-foreground">
+                    Priority
+                    <input
+                        type="number"
+                        className="h-7 w-16 rounded-md border border-border bg-background px-1.5 text-right text-[11px] text-foreground"
+                        value={priority}
+                        onChange={(e) =>
+                            onChange({
+                                regionId: value.regionId ?? id,
+                                hardnessClass: cls,
+                                priority: Number(e.target.value),
+                                depth: value.depth ?? { ...DEFAULT_ELEMENT_DEPTH },
+                                overrides: value.overrides,
+                            })
+                        }
+                        aria-label="Hardness priority"
+                    />
+                </label>
             ) : null}
         </div>
     );

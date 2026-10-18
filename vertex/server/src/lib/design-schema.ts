@@ -87,6 +87,8 @@ export const designStateSchema = z.object({
         right: sideCorrection,
     }),
     elements: z.array(placedElement),
+    splitElements: z.boolean().optional(),
+    smoothElements: z.boolean().optional(),
     trimlines: designTrimlines,
     printRecipe: printRecipeV1Schema.optional(),
     shapeFinish: z

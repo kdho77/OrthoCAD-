@@ -3,6 +3,7 @@
 
 import { ChevronRight } from "lucide-react";
 import { useState } from "react";
+import { SplitSettingsPanel } from "@/features/clinical/SplitSettingsPanel";
 import { ExportPanel } from "@/features/exports/ExportPanel";
 import { PrintingPanel } from "@/features/exports/PrintingPanel";
 import { ShapeFinishPanel } from "@/features/shape-finish/ShapeFinishPanel";
@@ -22,6 +23,8 @@ export function ClinicalPrintStepPanel() {
                     printed part.
                 </p>
             </div>
+
+            <SplitSettingsPanel />
 
             <PrintingPanel clinicalMode primaryOnly showWallPreview />
 

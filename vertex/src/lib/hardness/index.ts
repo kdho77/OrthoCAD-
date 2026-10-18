@@ -4,8 +4,11 @@
 export {
     CLASS_PREVIEW_COLORS,
     classDensityPct,
+    classFingerprint,
+    classLineWidthMm,
     classSpeedMmS,
     HARDNESS_CLASS_TABLE,
+    NAMED_HARDNESS_CLASSES,
     REGION_HARDNESS_CLASSES,
 } from "../../../shared/print-recipe/hardness-class-table";
 export {

@@ -4,6 +4,7 @@
 import { z } from "zod";
 import {
     classDensityPct,
+    migrateRegionHardnessClass,
     REGION_HARDNESS_CLASSES,
     type RegionHardnessClass,
     softnessKey,
@@ -12,7 +13,10 @@ import {
 export const REGION_KINDS = ["zone", "element", "freehand"] as const;
 export type RegionKind = (typeof REGION_KINDS)[number];
 
-export const hardnessClassSchema = z.enum(REGION_HARDNESS_CLASSES);
+export const hardnessClassSchema = z.preprocess(
+    (raw) => migrateRegionHardnessClass(raw),
+    z.enum(REGION_HARDNESS_CLASSES),
+);
 
 export const depthSpecSchema = z.discriminatedUnion("type", [
     z.object({ type: z.literal("full") }),
@@ -78,12 +82,7 @@ const legacyZoneTagSchema = z.object({
 });
 
 function classFromLegacyHardness(raw: string | undefined): RegionHardnessClass {
-    const n = (raw ?? "Medium").toLowerCase();
-    if (n.includes("soft") && !n.includes("extra")) return "Soft";
-    if (n.includes("firm")) return "Firm";
-    if (n.includes("rigid") || n.includes("hard") || n.includes("post")) return "Rigid";
-    if (n === "custom") return "Custom";
-    return "Medium";
+    return migrateRegionHardnessClass(raw ?? "Medium");
 }
 
 export function migrateLegacyZoneTag(raw: unknown, index: number): HardnessRegion | null {

@@ -46,19 +46,26 @@ describe("hardness class table", () => {
         );
         const json = JSON.parse(readFileSync(jsonPath, "utf8"));
         expect(HARDNESS_CLASS_TABLE).toEqual(json);
-        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillDensityPct).toBe(11);
-        expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillDensityPct).toBe(22);
-        expect(HARDNESS_CLASS_TABLE.Firm.sparseInfillDensityPct).toBe(38);
-        expect(HARDNESS_CLASS_TABLE.Rigid.sparseInfillDensityPct).toBe(65);
+        expect(HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillDensityPct).toBe(10);
+        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillDensityPct).toBe(14);
+        expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillDensityPct).toBe(26);
+        expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillDensityPct).toBe(32);
+        expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillDensityPct).toBe(38);
+        expect(HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillLineWidthMm).toBe(0.7);
+        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillLineWidthMm).toBe(0.7);
+        expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillLineWidthMm).toBe(1.0);
+        expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillLineWidthMm).toBe(1.0);
+        expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillLineWidthMm).toBe(1.0);
         expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillSpeedMmS).toBe(44.0);
         expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillSpeedMmS).toBe(44.5);
-        expect(HARDNESS_CLASS_TABLE.Firm.sparseInfillSpeedMmS).toBe(45.0);
-        expect(HARDNESS_CLASS_TABLE.Rigid.sparseInfillSpeedMmS).toBe(45.5);
+        expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillSpeedMmS).toBe(45.0);
+        expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillSpeedMmS).toBe(45.5);
         expect(HARDNESS_CLASS_TABLE.Custom.sparseInfillDensityPctMin).toBe(5);
         expect(HARDNESS_CLASS_TABLE.Custom.sparseInfillDensityPctMax).toBe(100);
         for (const k of REGION_HARDNESS_CLASSES) {
             if (k === "Custom") continue;
             expect(HARDNESS_CLASS_TABLE[k].sparseInfillPattern).toBe("gyroid");
+            expect(HARDNESS_CLASS_TABLE[k].pendingCouponValidation).toBe(true);
         }
     });
 });
@@ -118,10 +125,11 @@ describe("element hardness persistence (gate 9 setup)", () => {
 });
 
 describe("gcode class fingerprint (gate 13 helper)", () => {
-    test("maps F mm/min to Soft/Medium/Firm/Rigid and rejects solid-in-Soft", () => {
-        const ok = verifyGcodeByClass(FIXTURE_GCODE, ["Soft", "Medium", "Firm", "Rigid"]);
+    test("maps F mm/min + line width to Extra Soft→Extra Hard and rejects solid-in-Soft", () => {
+        const ok = verifyGcodeByClass(FIXTURE_GCODE, ["Extra Soft", "Soft", "Medium", "Hard", "Extra Hard"]);
         expect(ok.ok).toBe(true);
-        expect(ok.classesSeen.sort()).toEqual(["Firm", "Medium", "Rigid", "Soft"]);
+        expect(ok.classesSeen.sort()).toEqual(["Extra Hard", "Extra Soft", "Hard", "Medium", "Soft"]);
+        expect(ok.segments.every((s) => s.lineWidthMm === 0.7 || s.lineWidthMm === 1.0)).toBe(true);
         const bad = verifyGcodeByClass(`${FIXTURE_GCODE};TYPE:Internal solid infill\nG1 X1 Y1 E1 F2640\n`, [
             "Soft",
         ]);
@@ -130,9 +138,9 @@ describe("gcode class fingerprint (gate 13 helper)", () => {
     });
 
     test("fails when a required class has no sparse segments", () => {
-        const r = verifyGcodeByClass(";TYPE:Sparse infill\nG1 X0 Y0 E0.1 F2640\n", ["Soft", "Rigid"]);
+        const r = verifyGcodeByClass(";TYPE:Sparse infill\nG1 X0 Y0 E0.1 F2640\n", ["Soft", "Extra Hard"]);
         expect(r.ok).toBe(false);
-        expect(r.errors.some((e) => /Rigid/.test(e))).toBe(true);
+        expect(r.errors.some((e) => /Extra Hard/.test(e))).toBe(true);
     });
 });
 
@@ -140,7 +148,7 @@ describe("3MF + geometry gates", () => {
     test("manifold-3d subtract: higher priority wins, equal-priority softer wins", async () => {
         const region = (
             regionId: string,
-            hardnessClass: "Soft" | "Medium" | "Firm" | "Rigid",
+            hardnessClass: "Soft" | "Medium" | "Hard" | "Extra Hard",
             priority: number,
         ) => ({
             regionId,
@@ -170,7 +178,7 @@ describe("3MF + geometry gates", () => {
                 volumeMm3: 12 * 10 * 8,
             },
             {
-                region: region("high-firm", "Firm", 2),
+                region: region("high-firm", "Hard", 2),
                 mesh: boxMesh(6, 0, 0, 18, 10, 8),
                 footprint: fp,
                 volumeMm3: 12 * 10 * 8,
@@ -206,6 +214,7 @@ describe("3MF + geometry gates", () => {
         const { requested, raw } = buildRawModifiers(d, "left");
         expect(requested.length).toBeGreaterThanOrEqual(4);
         await loadManifoldApi();
+        await resolveModifiers(raw);
         const t0 = Date.now();
         const resolved = await resolveModifiers(raw);
         const resolveMs = Date.now() - t0;
@@ -251,6 +260,7 @@ describe("3MF + geometry gates", () => {
         expect(cfg).toBeTruthy();
         expect(cfg).toContain('subtype="modifier_part"');
         expect(cfg).toContain("sparse_infill_pattern");
+        expect(cfg).toContain("sparse_infill_line_width");
         expect(cfg).toContain("gyroid");
         expect(cfg).not.toMatch(/wall_loops|top_shell|bottom_shell/);
         expect(zip.file("Metadata/orthocad_design.json")).toBeTruthy();

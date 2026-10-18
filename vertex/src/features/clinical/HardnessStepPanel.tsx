@@ -56,8 +56,8 @@ export function HardnessStepPanel() {
 
             <p className="text-[11px] text-muted-foreground">
                 Selected: <span className="font-medium text-foreground">{active}</span> ({pct}% gyroid infill
-                for the untagged shell). Region modifiers (Soft/Medium/Firm/Rigid/Custom) override infill
-                inside exported 3MF volumes — walls and skins stay global.
+                for the untagged shell). Split regions use the same Extra soft → Extra hard table — walls and
+                skins stay global at 1.0 mm (pending coupon validation).
             </p>
 
             <HardnessRegionList />
