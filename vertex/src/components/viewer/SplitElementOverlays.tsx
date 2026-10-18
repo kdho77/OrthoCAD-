@@ -5,7 +5,11 @@ import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
-import { splitColorForElement, splitOverlayOutline } from "@/lib/hardness/split-overlay";
+import {
+    designColorForElement,
+    splitColorForElement,
+    splitOverlayOutline,
+} from "@/lib/hardness/split-overlay";
 import { useDesignStore } from "@/stores/design-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { PlacedElement } from "@/types";
@@ -31,10 +35,12 @@ function SplitPatch({
     element,
     centerX,
     widthMm,
+    appearance,
 }: {
     element: PlacedElement;
     centerX: number;
     widthMm: number;
+    appearance: "design" | "hardness";
 }) {
     const selectedId = useDesignStore((s) => s.selectedElementId);
     const selectElement = useDesignStore((s) => s.selectElement);
@@ -43,7 +49,10 @@ function SplitPatch({
     const rot = preview?.rotationDeg ?? element.rotationDeg;
     const heightMm = preview?.heightMm ?? element.heightMm;
     const selected = selectedId === element.id;
-    const color = splitColorForElement({ ...element, ...preview, id: element.id });
+    const color =
+        appearance === "design"
+            ? designColorForElement(element)
+            : splitColorForElement({ ...element, ...preview, id: element.id });
 
     const { fill, ring } = useMemo(() => {
         const pts = splitOverlayOutline({
@@ -89,7 +98,7 @@ function SplitPatch({
                         <meshStandardMaterial
                             color={selected ? SELECTED_ELEMENT_HIGHLIGHT : color}
                             transparent
-                            opacity={selected ? 0.88 : 0.62}
+                            opacity={selected ? 0.9 : appearance === "design" ? 0.82 : 0.62}
                             metalness={0.05}
                             roughness={0.55}
                             depthWrite={false}
@@ -107,7 +116,7 @@ function SplitPatch({
     );
 }
 
-export function SplitElementOverlays() {
+export function SplitElementOverlays({ appearance = "hardness" }: { appearance?: "design" | "hardness" }) {
     const splitOn = useDesignStore((s) => Boolean(s.design.splitElements));
     const elements = useDesignStore((s) => s.design.elements);
     const usMenSize = useDesignStore((s) => s.design.usMenSize);
@@ -117,12 +126,18 @@ export function SplitElementOverlays() {
     const layout = insoleLayoutFromDesign({ sizeSystem, usMenSize, ukSize, footLengthMm });
     const centerX = layout.lengthMm / 2;
 
-    if (!splitOn || elements.length === 0) return null;
+    if ((appearance === "hardness" && !splitOn) || elements.length === 0) return null;
 
     return (
         <group>
             {elements.map((el) => (
-                <SplitPatch key={el.id} element={el} centerX={centerX} widthMm={layout.widthMm} />
+                <SplitPatch
+                    key={el.id}
+                    element={el}
+                    centerX={centerX}
+                    widthMm={layout.widthMm}
+                    appearance={appearance}
+                />
             ))}
         </group>
     );

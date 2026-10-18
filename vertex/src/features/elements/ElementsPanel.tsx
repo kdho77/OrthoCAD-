@@ -15,6 +15,7 @@ import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
 import { loadElementManifest } from "@/lib/geometry/element-assets/element-asset";
 import type { ElementManifestEntry } from "@/lib/geometry/element-assets/types";
 import { ELEMENT_HEIGHT_LIMITS } from "@/lib/geometry/elements";
+import { DESIGN_ELEMENT_COLORS } from "@/lib/hardness/split-overlay";
 import { elementDisplayName, STOCK_ELEMENT_LABELS, STOCK_ELEMENTS } from "@/lib/library/manifest";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { cn } from "@/lib/utils";
@@ -100,6 +101,20 @@ export function ElementsPanel() {
 
     return (
         <div className="space-y-3">
+            {design.elements.length > 0 ? (
+                <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-2 py-1.5 text-[10px] text-muted-foreground">
+                    <span className="flex shrink-0 items-center gap-0.5" aria-hidden="true">
+                        {DESIGN_ELEMENT_COLORS.map((color) => (
+                            <span
+                                key={color}
+                                className="h-2.5 w-2.5 rounded-sm"
+                                style={{ backgroundColor: color }}
+                            />
+                        ))}
+                    </span>
+                    Added elements are color-coded in the viewer; the selected element turns green.
+                </div>
+            ) : null}
             <div>
                 <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Stock Library

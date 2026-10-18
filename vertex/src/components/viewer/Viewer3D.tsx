@@ -26,6 +26,7 @@ import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-previ
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
 import { cn } from "@/lib/utils";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -98,6 +99,7 @@ export function Viewer3D() {
         setRegistrationTargetLayout({ lengthMm: layoutLengthMm, widthMm: layoutWidthMm });
     }, [layoutLengthMm, layoutWidthMm, setRegistrationTargetLayout]);
     const editMode = useMeshEditStore((s) => s.editMode);
+    const workflowStep = useClinicalWorkflowStore((s) => s.step);
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
     const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
@@ -251,7 +253,13 @@ export function Viewer3D() {
                     <ScanRotateTool />
                     <ScanTransformTool />
                     {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
-                    {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <SplitElementOverlays /> : null}
+                    {!hideInsoleForMarkers && !loftOverlay.blockViewport ? (
+                        workflowStep === "elements" ? (
+                            <SplitElementOverlays appearance="design" />
+                        ) : (
+                            <SplitElementOverlays />
+                        )
+                    ) : null}
                     <MeshEditTools />
                     {!loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
                     {!loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}

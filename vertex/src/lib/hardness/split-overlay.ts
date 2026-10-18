@@ -17,6 +17,9 @@ import {
 
 export const DEFAULT_SPLIT_HARDNESS: NamedHardnessClass = "Medium";
 
+/** High-contrast colors used to locate additions while designing an insole. */
+export const DESIGN_ELEMENT_COLORS = ["#fb7185", "#22d3ee", "#facc15", "#c084fc", "#fb923c"] as const;
+
 export function isNamedHardnessClass(cls: RegionHardnessClass | undefined): cls is NamedHardnessClass {
     return !!cls && (NAMED_HARDNESS_CLASSES as readonly string[]).includes(cls);
 }
@@ -29,6 +32,15 @@ export function resolvedSplitHardness(el: PlacedElement): NamedHardnessClass {
 
 export function splitColorForElement(el: PlacedElement): string {
     return CLASS_PREVIEW_COLORS[resolvedSplitHardness(el)];
+}
+
+/** Keep each element's design-view color stable when the list is reordered. */
+export function designColorForElement(el: Pick<PlacedElement, "id">): string {
+    let hash = 0;
+    for (let i = 0; i < el.id.length; i++) {
+        hash = (hash * 31 + el.id.charCodeAt(i)) >>> 0;
+    }
+    return DESIGN_ELEMENT_COLORS[hash % DESIGN_ELEMENT_COLORS.length] ?? DESIGN_ELEMENT_COLORS[0];
 }
 
 export function defaultSplitHardnessPatch(
