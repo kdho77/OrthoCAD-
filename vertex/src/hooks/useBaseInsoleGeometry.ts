@@ -13,6 +13,7 @@ import {
 } from "@/lib/geometry/base-asset";
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
 import { heightAt } from "@/lib/geometry/height-field";
 import {
     hashLiveBottomPattern,
@@ -67,6 +68,7 @@ export interface BaseInsoleGeometryState {
     geometry: BufferGeometry | null;
     building: boolean;
     hasBase: boolean;
+    elementReference: BufferGeometry | null;
 }
 
 /**
@@ -76,6 +78,8 @@ export interface BaseInsoleGeometryState {
  * parametric designs so callers can fall back to the parametric mesh.
  */
 export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInsoleGeometryState {
+    const [elementReference, setElementReference] = useState<BufferGeometry | null>(null);
+    useEffect(() => () => elementReference?.dispose(), [elementReference]);
     const correctionPreview = usePerformanceStore((s) => s.correctionPreview);
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
     const elementPreviews = usePerformanceStore((s) => s.elementPreviews);
@@ -363,6 +367,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 : design.thicknessMm;
             const thicknessMm = thicknessPreview ?? committedThickness ?? BASE_REFERENCE_THICKNESS_MM;
             const field = baseModifierField(design, side, thicknessMm);
+            field.elements = elementsForSurface(
+                field.elements ?? [],
+                clinicalStep === "print" || clinicalStep === "export",
+            );
             const rw = field.corrections?.rearfootWedge;
             if (
                 rw?.unit === "mm" &&
@@ -483,6 +491,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     stored: useBottomPatternStore.getState().getPattern(side),
                 });
                 if (!shouldLoftProceduralViewer(clinicalStep, wallModel)) {
+                    setElementReference(null);
                     await yieldToMain();
                     if (session.cancelled) return;
                     const draftTrim = useMeshEditStore.getState().getActiveDraftTrimline(side);
@@ -658,10 +667,32 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 trimline: printTrim,
                                 ...(livePts ? { bottomPattern: livePts } : {}),
                             });
+                            let placementReference: BufferGeometry;
+                            try {
+                                placementReference = await composeViewerPrintSolidTop({
+                                    raw,
+                                    sourceField: {
+                                        ...field,
+                                        elements: elementsForSurface(field.elements ?? [], false),
+                                    },
+                                    shoeWidth: {
+                                        width: widthId,
+                                        ballWidthMm: layout.widthMm,
+                                        heelWidthMm: layout.widthMm * 0.62,
+                                        heelOverrideMm: heelW,
+                                    },
+                                    trimline: printTrim,
+                                });
+                            } catch (error) {
+                                preview.geometry.dispose();
+                                throw error;
+                            }
                             if (session.cancelled) {
+                                placementReference.dispose();
                                 preview.geometry.dispose();
                                 return;
                             }
+                            setElementReference(placementReference);
                             if (outRef.current && outRef.current !== workRef.current) {
                                 outRef.current.dispose();
                             }
@@ -706,6 +737,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             : design.thicknessMm;
         const thicknessMm = thicknessPreview ?? committedThickness;
         const field = baseModifierField(design, side, thicknessMm);
+        field.elements = elementsForSurface(
+            field.elements ?? [],
+            clinicalStep === "print" || clinicalStep === "export",
+        );
         // Skip smoothing while dragging for responsiveness; relax once when idle.
         // Slider/gizmo: reuse work buffer + skip normals/clip. Trimline keeps clip.
         const fastPreview = interacting && interactionSource !== "trimline";
@@ -791,5 +826,5 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         [],
     );
 
-    return { geometry, building, hasBase: Boolean(base) };
+    return { geometry, building, hasBase: Boolean(base), elementReference };
 }

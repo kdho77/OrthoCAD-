@@ -241,7 +241,7 @@ export function authoredToAppXY(xMed: number, yToe: number, mirrorX: boolean): {
 export async function loadTransformedAssetPositions(
     assetId: string,
     transform: ElementAssetTransform,
-): Promise<{ positions: Float32Array; grid: ElementHeightGrid; assetHash: string }> {
+): Promise<{ positions: Float32Array; indices: Uint32Array; grid: ElementHeightGrid; assetHash: string }> {
     const { hash, buffer } = await loadAssetBuffer(assetId);
     const group = await loadGlbFromBuffer(buffer);
     const merged = extractMergedGeometry(group);
@@ -269,7 +269,15 @@ export async function loadTransformedAssetPositions(
         grid = flipHeightGridY(grid);
         for (let i = 0; i < out.length / 3; i++) out[i * 3 + 1]! *= -1;
     }
-    return { positions: out, grid, assetHash: hash };
+    const indices = index ? Uint32Array.from(index) : Uint32Array.from({ length: attr.count }, (_, i) => i);
+    if (transform.mirrorX) {
+        for (let i = 0; i < indices.length; i += 3) {
+            const b = indices[i + 1]!;
+            indices[i + 1] = indices[i + 2]!;
+            indices[i + 2] = b;
+        }
+    }
+    return { positions: out, indices, grid, assetHash: hash };
 }
 
 export async function hashElementAssetsForDesign(elements: PlacedElement[]): Promise<string> {

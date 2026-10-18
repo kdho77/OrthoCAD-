@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
+import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
 import type { GeometryQuality } from "@/lib/geometry/quality";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import { mergeCorrections, mergeElementPreviews, usePerformanceStore } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
@@ -29,6 +31,7 @@ export interface InsoleGeometryState {
  */
 export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeometryState {
     const { side, design, trimLines, trimline, vertexOverrides, applyEdits } = options;
+    const step = useClinicalWorkflowStore((s) => s.step);
     const interacting = usePerformanceStore((s) => s.interacting);
     const correctionPreview = usePerformanceStore((s) => s.correctionPreview);
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
@@ -66,7 +69,10 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         const params = {
             ...insoleParamsFromDesign(design, side, quality),
             corrections: mergeCorrections(side, design.corrections[side]),
-            elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
+            elements: elementsForSurface(
+                mergeElementPreviews(design.elements.filter((e) => e.side === side)),
+                step === "print" || step === "export",
+            ),
             trimline: trimline ?? null,
         };
 
@@ -96,6 +102,7 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
             cancelled = true;
         };
     }, [
+        step,
         side,
         design.thicknessMm,
         design.method,

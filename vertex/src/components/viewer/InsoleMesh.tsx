@@ -5,10 +5,11 @@ import { applyDesignElementColors } from "@/lib/geometry/element-visualization";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { getDesignTrimline } from "@/lib/geometry/trimline";
-import { useDesignStore } from "@/stores/design-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
+import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, Side } from "@/types";
+import { ElementSurfaceMeshes } from "./ElementSurfaceMeshes";
 
 interface InsoleMeshProps {
     side: Side;
@@ -79,7 +80,11 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
     const coloredGeometry = useMemo(() => {
         if (!geometry) return geometry;
         if (!heightmap) {
-            applyDesignElementColors(geometry, workflowStep !== "print", selectedElementId);
+            applyDesignElementColors(
+                geometry,
+                workflowStep !== "print" && workflowStep !== "export",
+                selectedElementId,
+            );
             return geometry;
         }
         const pos = geometry.getAttribute("position");
@@ -127,6 +132,11 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
                 castShadow
                 receiveShadow
             />
+            {!heightmap && (
+                <group position={[-layout.lengthMm / 2, offsetX, 0]}>
+                    <ElementSurfaceMeshes base={displayGeo} side={side} />
+                </group>
+            )}
         </group>
     );
 }

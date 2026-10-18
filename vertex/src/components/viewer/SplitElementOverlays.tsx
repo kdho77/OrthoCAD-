@@ -1,3 +1,4 @@
+import { isLibraryHeightFieldKind } from "@/lib/geometry/element-assets/types";
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
@@ -121,9 +122,11 @@ export function SplitElementOverlays() {
 
     return (
         <group>
-            {elements.map((el) => (
-                <SplitPatch key={el.id} element={el} centerX={centerX} widthMm={layout.widthMm} />
-            ))}
+            {elements
+                .filter((el) => !isLibraryHeightFieldKind(el.kind))
+                .map((el) => (
+                    <SplitPatch key={el.id} element={el} centerX={centerX} widthMm={layout.widthMm} />
+                ))}
         </group>
     );
 }

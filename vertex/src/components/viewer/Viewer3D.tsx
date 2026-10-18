@@ -1,4 +1,4 @@
-import { Grid, OrbitControls } from "@react-three/drei";
+import { OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import {
     Activity,
@@ -262,18 +262,6 @@ export function Viewer3D() {
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
-                <Grid
-                    args={[1000, 1000]}
-                    cellSize={10}
-                    cellThickness={0.5}
-                    cellColor="#1e293b"
-                    sectionSize={50}
-                    sectionThickness={1}
-                    sectionColor="#334155"
-                    fadeDistance={900}
-                    infiniteGrid
-                    position={[0, -0.1, 0]}
-                />
                 <OrbitControls
                     ref={controls}
                     makeDefault
