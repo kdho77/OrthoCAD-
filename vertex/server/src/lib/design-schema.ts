@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+    depthSpecSchema,
+    hardnessClassSchema,
+    hardnessOverridesSchema,
+} from "../../../shared/print-recipe/hardness-region.js";
 import { printRecipeV1Schema } from "../../../shared/print-recipe/print-recipe.js";
 import { ELEMENT_KINDS, PRODUCTION_METHODS, SCAN_PATTERNS } from "./prescription-schema.js";
 
@@ -40,12 +45,20 @@ const sideCorrection = z.object({
 });
 
 const placedElement = z.object({
-    kind: z.enum(ELEMENT_KINDS),
+    id: z.string().min(1).optional(),
+    kind: z.enum([...ELEMENT_KINDS, "custom"]),
+    customElementId: z.string().optional(),
+    customName: z.string().optional(),
     side: z.enum(["left", "right"]),
     position: z.object({ x: z.number(), y: z.number() }),
     rotationDeg: z.number(),
     scale: z.object({ x: z.number(), y: z.number() }),
     heightMm: z.number(),
+    regionId: z.string().min(1).optional(),
+    hardnessClass: hardnessClassSchema.optional(),
+    priority: z.number().int().optional(),
+    depth: depthSpecSchema.optional(),
+    overrides: hardnessOverridesSchema.optional(),
     placementMode: z.enum(["flow", "noFlow"]).optional(),
     zOffsetMm: z.number().optional(),
 });
@@ -74,6 +87,8 @@ export const designStateSchema = z.object({
         right: sideCorrection,
     }),
     elements: z.array(placedElement),
+    splitElements: z.boolean().optional(),
+    smoothElements: z.boolean().optional(),
     trimlines: designTrimlines,
     printRecipe: printRecipeV1Schema.optional(),
     shapeFinish: z

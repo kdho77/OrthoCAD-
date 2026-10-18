@@ -35,7 +35,10 @@ export function isHtmlAssetPayload(bytes: Uint8Array): boolean {
     if (bytes.length < 12) return false;
     let head = "";
     for (let i = 0; i < Math.min(bytes.length, 32); i++) head += String.fromCharCode(bytes[i]!);
-    const trimmed = head.replace(/^\uFEFF/, "").trimStart().toLowerCase();
+    const trimmed = head
+        .replace(/^\uFEFF/, "")
+        .trimStart()
+        .toLowerCase();
     return trimmed.startsWith("<!doctype") || trimmed.startsWith("<html");
 }
 
@@ -173,12 +176,16 @@ export function buildElementTransform(
     size: { scaleAlong: number; scaleAcross: number },
 ): ElementAssetTransform {
     const scaleZ = sidecar.nominalPeakMm > 1e-6 ? placed.heightMm / sidecar.nominalPeakMm : 1;
+    // The dancer's pad library mesh is authored in the left-foot orientation;
+    // its medial sesamoid notch must face inward on both feet. Other stock
+    // assets use the standard repo-right source orientation.
+    const mirrorX = placed.kind === "dancers_pad" ? side === "right" : side === "left";
     return {
         scaleX: size.scaleAcross * placed.scale.y,
         scaleY: size.scaleAlong * placed.scale.x,
         scaleZ,
         rotationDeg: placed.rotationDeg + (sidecar.rotationDeg ?? 0),
-        mirrorX: side === "left",
+        mirrorX,
         anchorUMm: placed.position.x,
         anchorVMm: placed.position.y,
         placementMode: placementModeFor(placed, sidecar),
@@ -234,7 +241,7 @@ export function authoredToAppXY(xMed: number, yToe: number, mirrorX: boolean): {
 export async function loadTransformedAssetPositions(
     assetId: string,
     transform: ElementAssetTransform,
-): Promise<{ positions: Float32Array; grid: ElementHeightGrid; assetHash: string }> {
+): Promise<{ positions: Float32Array; indices: Uint32Array; grid: ElementHeightGrid; assetHash: string }> {
     const { hash, buffer } = await loadAssetBuffer(assetId);
     const group = await loadGlbFromBuffer(buffer);
     const merged = extractMergedGeometry(group);
@@ -262,7 +269,15 @@ export async function loadTransformedAssetPositions(
         grid = flipHeightGridY(grid);
         for (let i = 0; i < out.length / 3; i++) out[i * 3 + 1]! *= -1;
     }
-    return { positions: out, grid, assetHash: hash };
+    const indices = index ? Uint32Array.from(index) : Uint32Array.from({ length: attr.count }, (_, i) => i);
+    if (transform.mirrorX) {
+        for (let i = 0; i < indices.length; i += 3) {
+            const b = indices[i + 1]!;
+            indices[i + 1] = indices[i + 2]!;
+            indices[i + 2] = b;
+        }
+    }
+    return { positions: out, indices, grid, assetHash: hash };
 }
 
 export async function hashElementAssetsForDesign(elements: PlacedElement[]): Promise<string> {

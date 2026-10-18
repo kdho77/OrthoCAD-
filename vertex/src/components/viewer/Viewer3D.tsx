@@ -1,4 +1,4 @@
-import { Grid, OrbitControls } from "@react-three/drei";
+import { OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import {
     Activity,
@@ -19,12 +19,14 @@ import {
 import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
+import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
 import { cn } from "@/lib/utils";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -44,6 +46,7 @@ import { ScanMeshes } from "./ScanMeshes";
 import { ScanPlaneSliceTool } from "./ScanPlaneSliceTool";
 import { ScanRotateTool } from "./ScanRotateTool";
 import { consumeScanMissDeselectSuppression, ScanTransformTool } from "./ScanTransformTool";
+import { SplitElementOverlays } from "./SplitElementOverlays";
 import { TrimlineEditTools } from "./TrimlineEditTools";
 
 /** Cross-pad anatomical views (Left / Top / Bottom / Right / Front / Back). */
@@ -96,6 +99,7 @@ export function Viewer3D() {
         setRegistrationTargetLayout({ lengthMm: layoutLengthMm, widthMm: layoutWidthMm });
     }, [layoutLengthMm, layoutWidthMm, setRegistrationTargetLayout]);
     const editMode = useMeshEditStore((s) => s.editMode);
+    const workflowStep = useClinicalWorkflowStore((s) => s.step);
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
     const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
@@ -249,24 +253,15 @@ export function Viewer3D() {
                     <ScanRotateTool />
                     <ScanTransformTool />
                     {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
+                    {workflowStep === "print" && !hideInsoleForMarkers && !loftOverlay.blockViewport ? (
+                        <SplitElementOverlays />
+                    ) : null}
                     <MeshEditTools />
                     {!loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
                     {!loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
-                <Grid
-                    args={[1000, 1000]}
-                    cellSize={10}
-                    cellThickness={0.5}
-                    cellColor="#1e293b"
-                    sectionSize={50}
-                    sectionThickness={1}
-                    sectionColor="#334155"
-                    fadeDistance={900}
-                    infiniteGrid
-                    position={[0, -0.1, 0]}
-                />
                 <OrbitControls
                     ref={controls}
                     makeDefault
@@ -448,6 +443,12 @@ export function Viewer3D() {
                     />
                 ) : null}
             </div>
+
+            {workflowStep === "print" && design.splitElements ? (
+                <div className="absolute bottom-3 left-3 rounded-md border border-border bg-panel/90 px-2 py-1.5 shadow-lg backdrop-blur">
+                    <HardnessLegend compact />
+                </div>
+            ) : null}
 
             {/* Scan selection toolbar — rotate appears only while a scan is selected */}
             {selectedScanId ? (

@@ -1,20 +1,18 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useBaseInsoleGeometry } from "@/hooks/useBaseInsoleGeometry";
+import { applyDesignElementColors } from "@/lib/geometry/element-visualization";
 import { sideOffsetX } from "@/lib/geometry/layout";
-import { isCoarsePointerDevice } from "@/lib/geometry/procedural-wall/preview-loft-queue";
-import {
-    shouldExtractBaseEdges,
-    shouldHideBaseMesh,
-} from "@/lib/geometry/procedural-wall/sample-top-display";
+import { shouldHideBaseMesh } from "@/lib/geometry/procedural-wall/sample-top-display";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
-import { usePerformanceStore } from "@/stores/performance-store";
 import type { Side } from "@/types";
+import { ElementSurfaceMeshes } from "./ElementSurfaceMeshes";
 
 const sideColors: Record<Side, string> = {
-    left: "#c084fc",
-    right: "#a855f7",
+    left: "#f8fafc",
+    right: "#f8fafc",
 };
 
 function applyHeightmapColors(geometry: THREE.BufferGeometry, colors: THREE.BufferAttribute): void {
@@ -53,8 +51,9 @@ export function BaseInsoleMesh({
     heightmap?: boolean;
 }) {
     const design = useDesignStore((s) => s.design);
-    const interacting = usePerformanceStore((s) => s.interacting);
-    const { geometry, building } = useBaseInsoleGeometry(design, side);
+    const workflowStep = useClinicalWorkflowStore((s) => s.step);
+    const selectedElementId = useDesignStore((s) => s.selectedElementId);
+    const { geometry, building, elementReference } = useBaseInsoleGeometry(design, side);
 
     const material = useMemo(() => {
         if (heightmap) {
@@ -68,6 +67,7 @@ export function BaseInsoleMesh({
             });
         }
         return new THREE.MeshStandardMaterial({
+            vertexColors: true,
             color: sideColors[side],
             metalness: 0.15,
             roughness: 0.7,
@@ -82,10 +82,19 @@ export function BaseInsoleMesh({
     const colorAttrRef = useRef<THREE.BufferAttribute | null>(null);
     const corr = design.corrections[side];
 
-    // Geometry identity is reused while scrubbing — refresh vertex colors when Z params change.
+    // Geometry identity is reused while scrubbing — refresh color attributes when
+    // height fields or the current workflow step change.
     // biome-ignore lint/correctness/useExhaustiveDependencies: correction fields stand in for in-place geo edits
     useEffect(() => {
-        if (!geometry || !heightmap) return;
+        if (!geometry) return;
+        if (!heightmap) {
+            applyDesignElementColors(
+                geometry,
+                workflowStep !== "print" && workflowStep !== "export",
+                selectedElementId,
+            );
+            return;
+        }
         const pos = geometry.getAttribute("position");
         if (!colorAttrRef.current || colorAttrRef.current.count !== pos.count) {
             colorAttrRef.current = new THREE.BufferAttribute(new Float32Array(pos.count * 3), 3);
@@ -94,6 +103,14 @@ export function BaseInsoleMesh({
     }, [
         geometry,
         heightmap,
+        workflowStep,
+        selectedElementId,
+        design.elements,
+        design.sizeSystem,
+        design.usMenSize,
+        design.ukSize,
+        design.footLengthMm,
+        side,
         corr.archHeightMm,
         corr.heelCupDepthMm,
         corr.heelCupWidthMm,
@@ -113,9 +130,6 @@ export function BaseInsoleMesh({
 
     const layout = insoleLayoutFromDesign(design);
     const offsetX = sideOffsetX(side, layout.widthMm);
-    const vertexCount = geometry.getAttribute("position")?.count ?? 0;
-    const showEdges =
-        !heightmap && !isCoarsePointerDevice() && shouldExtractBaseEdges(vertexCount, interacting);
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             <mesh
@@ -125,13 +139,15 @@ export function BaseInsoleMesh({
                 castShadow={!building}
                 receiveShadow
             />
-            {/* Edge extract is expensive on large bases — only when idle and small. */}
-            {showEdges ? (
-                <lineSegments position={[-layout.lengthMm / 2, offsetX, 0]}>
-                    <edgesGeometry args={[geometry, 35]} />
-                    <lineBasicMaterial color={sideColors[side]} transparent opacity={0.35} />
-                </lineSegments>
-            ) : null}
+            {!heightmap && (
+                <group position={[-layout.lengthMm / 2, offsetX, 0]}>
+                    <ElementSurfaceMeshes
+                        base={geometry}
+                        reference={elementReference ?? geometry}
+                        side={side}
+                    />
+                </group>
+            )}
         </group>
     );
 }

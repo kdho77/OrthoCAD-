@@ -7,7 +7,7 @@ import {
     correctionPresetOriginKeys,
     VERTEX_STARTER_PRESETS,
 } from "@/lib/clinical/correction-presets";
-import type { DesignState, ElementKind } from "@/types";
+import type { DesignState } from "@/types";
 
 function testDesign(): DesignState {
     return {
@@ -95,7 +95,7 @@ describe("correction presets", () => {
         expect(next.corrections.right.heelLiftMm).toBe(4);
     });
 
-    test("merge adds stock elements for new kinds", () => {
+    test("legacy includeElements cannot insert suggested elements", () => {
         const design = testDesign();
         const sesamoid = VERTEX_STARTER_PRESETS.find((p) => p.id === "vertex-sesamoiditis")!;
         const next = applyCorrectionPresetToDesign(design, sesamoid.payload, {
@@ -103,8 +103,16 @@ describe("correction presets", () => {
             includeElements: true,
             activeSide: "left",
         });
-        const kinds = next.elements.map((e) => e.kind);
-        expect(kinds).toContain("dancers_pad" satisfies ElementKind);
+        expect(next.elements).toEqual([]);
+    });
+
+    test("presets leave suggested elements for the user to add", () => {
+        const sesamoid = VERTEX_STARTER_PRESETS.find((p) => p.id === "vertex-sesamoiditis")!;
+        const next = applyCorrectionPresetToDesign(testDesign(), sesamoid.payload, {
+            mode: "merge",
+            activeSide: "left",
+        });
+        expect(next.elements).toHaveLength(0);
     });
 
     test("origin keys mark the fields a linked preset wrote", () => {

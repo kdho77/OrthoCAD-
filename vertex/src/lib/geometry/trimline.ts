@@ -233,6 +233,20 @@ export function clipGeometryToOutline(
     }
     const out = new THREE.BufferGeometry();
     out.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    // Preserve per-vertex element displacement/ownership (and any other attributes)
+    // when expanding kept triangles. Recomputing a footprint after clipping loses
+    // the actual GLB shape and placement semantics.
+    for (const [name, attribute] of Object.entries(geometry.attributes)) {
+        if (name === "position" || name === "normal") continue;
+        const values = new Float32Array(kept.length * attribute.itemSize);
+        for (let i = 0; i < kept.length; i++) {
+            for (let c = 0; c < attribute.itemSize; c++) {
+                values[i * attribute.itemSize + c] = attribute.getComponent(kept[i]!, c);
+            }
+        }
+        out.setAttribute(name, new THREE.BufferAttribute(values, attribute.itemSize));
+    }
+    out.userData = { ...geometry.userData };
     out.computeVertexNormals();
     out.computeBoundingBox();
     out.computeBoundingSphere();

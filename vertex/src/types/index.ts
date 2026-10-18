@@ -2,9 +2,13 @@
 // These mirror the Prisma schema but are framework-agnostic for use in the
 // browser, stores and the 3D pipeline.
 
+import type { RegionHardnessClass } from "../../shared/print-recipe/hardness-class-table";
+import type { DepthSpec, HardnessOverrides } from "../../shared/print-recipe/hardness-region";
 import type { PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
 
 export type { HardnessName, PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
+export type { DepthSpec, HardnessOverrides, HardnessRegion, RegionKind } from "../../shared/print-recipe/hardness-region";
+export type { RegionHardnessClass } from "../../shared/print-recipe/hardness-class-table";
 
 export type Role = "super_admin" | "admin" | "clinician";
 
@@ -54,7 +58,7 @@ export interface ShapeFinishModifiers {
     linked: boolean;
 }
 
-export type ExportFormat = "stl" | "gcode" | "glb";
+export type ExportFormat = "stl" | "gcode" | "glb" | "3mf";
 
 export type GrindingStyleType = "straight" | "rounded";
 
@@ -198,6 +202,15 @@ export interface PlacedElement {
     rotationDeg: number;
     scale: { x: number; y: number };
     heightMm: number;
+    /**
+     * Hardness region fields (Phase 1). Settings stay on this element id through
+     * move/resize/save/reopen. Absent => device default, no modifier volume.
+     */
+    regionId?: string;
+    hardnessClass?: RegionHardnessClass;
+    priority?: number;
+    depth?: DepthSpec;
+    overrides?: HardnessOverrides;
     /** GLB height-field lift: flow feathers the edge; noFlow keeps a crisp step. */
     placementMode?: ElementPlacementMode;
     zOffsetMm?: number;
@@ -283,6 +296,13 @@ export interface DesignState {
     };
     corrections: Corrections;
     elements: PlacedElement[];
+    /** Print-step Split mode: elements are selectable hardness regions. */
+    splitElements?: boolean;
+    /**
+     * Persist-only. Boundary smoothing of split regions needs CAD sign-off —
+     * does not change print geometry.
+     */
+    smoothElements?: boolean;
     /** User-edited insole outline curves — persisted with the design. */
     trimlines?: DesignTrimlines;
     /** Active top-trim preset label per foot (cleared to custom on manual edit). */

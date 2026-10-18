@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useInsoleGeometry } from "@/hooks/useInsoleGeometry";
+import { applyDesignElementColors } from "@/lib/geometry/element-visualization";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { getDesignTrimline } from "@/lib/geometry/trimline";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
+import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, Side } from "@/types";
+import { ElementSurfaceMeshes } from "./ElementSurfaceMeshes";
 
 interface InsoleMeshProps {
     side: Side;
@@ -15,12 +19,14 @@ interface InsoleMeshProps {
 }
 
 const sideColors: Record<Side, string> = {
-    left: "#38bdf8",
-    right: "#22d3ee",
+    left: "#f8fafc",
+    right: "#f8fafc",
 };
 
 export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshProps) {
     const trimLines = useMeshEditStore((s) => s.trimLines);
+    const workflowStep = useClinicalWorkflowStore((s) => s.step);
+    const selectedElementId = useDesignStore((s) => s.selectedElementId);
     const vertexOverrides = useMeshEditStore((s) => s.vertexOverrides);
     const target = useMeshEditStore((s) => s.target);
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
@@ -57,6 +63,7 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
             });
         }
         return new THREE.MeshStandardMaterial({
+            vertexColors: true,
             color: sideColors[side],
             metalness: 0.15,
             roughness: 0.7,
@@ -71,7 +78,15 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
     const colorAttrRef = useRef<THREE.BufferAttribute | null>(null);
 
     const coloredGeometry = useMemo(() => {
-        if (!geometry || !heightmap) return geometry;
+        if (!geometry) return geometry;
+        if (!heightmap) {
+            applyDesignElementColors(
+                geometry,
+                workflowStep !== "print" && workflowStep !== "export",
+                selectedElementId,
+            );
+            return geometry;
+        }
         const pos = geometry.getAttribute("position");
         if (!colorAttrRef.current || colorAttrRef.current.count !== pos.count) {
             colorAttrRef.current = new THREE.BufferAttribute(new Float32Array(pos.count * 3), 3);
@@ -94,7 +109,7 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
         colors.needsUpdate = true;
         geometry.setAttribute("color", colors);
         return geometry;
-    }, [geometry, heightmap]);
+    }, [geometry, heightmap, design.elements, layout.lengthMm, side, workflowStep, selectedElementId]);
 
     useEffect(
         () => () => {
@@ -117,6 +132,11 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
                 castShadow
                 receiveShadow
             />
+            {!heightmap && (
+                <group position={[-layout.lengthMm / 2, offsetX, 0]}>
+                    <ElementSurfaceMeshes base={displayGeo} side={side} />
+                </group>
+            )}
         </group>
     );
 }

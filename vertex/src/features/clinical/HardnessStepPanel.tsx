@@ -1,6 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { HardnessRegionList } from "@/features/clinical/HardnessRegionList";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
 import {
@@ -55,9 +56,11 @@ export function HardnessStepPanel() {
 
             <p className="text-[11px] text-muted-foreground">
                 Selected: <span className="font-medium text-foreground">{active}</span> ({pct}% gyroid infill
-                target for server manufacture). Hardness applies to the whole device for now — per-region
-                print settings will land here when models can be split.
+                for the untagged shell). Split regions use the same Extra soft → Extra hard table — walls and
+                skins stay global at 1.0 mm (pending coupon validation).
             </p>
+
+            <HardnessRegionList />
         </div>
     );
 }

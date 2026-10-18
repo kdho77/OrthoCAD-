@@ -2,21 +2,23 @@
 // See LICENSE file in the project root for full license information.
 
 import { z } from "zod";
+import { hardnessRegionSchema, migrateHardnessZones } from "./hardness-region.js";
 import { HARDNESS_TO_INFILL_PCT as hardnessTable } from "./hardness-to-infill-pct.js";
 
-/** Locked clinical hardness ladder (Biomechanics 2026-09-20). */
+/** Locked clinical hardness ladder — same five names as region modifiers. */
 export const HARDNESS_NAMES = ["Extra Soft", "Soft", "Medium", "Hard", "Extra Hard"] as const;
 
 export type HardnessName = (typeof HARDNESS_NAMES)[number];
 
-export type GyroidInfillPct = 14 | 20 | 26 | 32 | 38;
+/** Pending coupon validation. Extra Soft/Soft are 0.7 mm starting points. */
+export type GyroidInfillPct = 10 | 14 | 16 | 20 | 22 | 26 | 32 | 38;
 
-export const HARDNESS_TO_INFILL_PCT: Record<HardnessName, GyroidInfillPct> = hardnessTable as Record<
+export const HARDNESS_TO_INFILL_PCT: Record<HardnessName, number> = hardnessTable as Record<
     HardnessName,
-    GyroidInfillPct
+    number
 >;
 
-const gyroidPctSchema = z.union([z.literal(14), z.literal(20), z.literal(26), z.literal(32), z.literal(38)]);
+const gyroidPctSchema = z.number().int().min(5).max(100);
 
 const hardnessNameSchema = z.enum(HARDNESS_NAMES);
 
@@ -29,7 +31,8 @@ export const printRecipeV1Schema = z.object({
     /** Locked printer/material profile (Phase A: existing PRINTER_PRESETS id). */
     profileId: z.string().min(1),
     defaultHardness: hardnessNameSchema,
-    zones: z.tuple([]),
+    /** Phase B material zones — kind "zone" | "element" | "freehand" hardness regions. */
+    zones: z.array(hardnessRegionSchema).default([]),
     hardnessToInfillPct: z.record(hardnessNameSchema, gyroidPctSchema).optional(),
 });
 
@@ -58,8 +61,8 @@ export function isGyroidManufacturingPreset(presetId: string): boolean {
 
 export function gyroidInfillPctForHardness(
     hardness: HardnessName,
-    table: Partial<Record<HardnessName, GyroidInfillPct>> | undefined = HARDNESS_TO_INFILL_PCT,
-): GyroidInfillPct {
+    table: Partial<Record<HardnessName, number>> | undefined = HARDNESS_TO_INFILL_PCT,
+): number {
     const pct = table?.[hardness] ?? HARDNESS_TO_INFILL_PCT[hardness];
     return pct;
 }
@@ -75,26 +78,34 @@ const legacyPrintRecipeV1Schema = z.object({
     version: z.literal(1),
     pattern: z.literal("gyroid"),
     defaultHardness: hardnessNameSchema,
-    zones: z.tuple([]),
+    zones: z.array(z.unknown()).default([]),
     hardnessToInfillPct: z.record(hardnessNameSchema, gyroidPctSchema).optional(),
 });
 
 export function migratePrintRecipe(recipe: PrintRecipeV1 | undefined | null): PrintRecipeV1 {
     if (!recipe) {
-        return { ...DEFAULT_PRINT_RECIPE_V1 };
+        return { ...DEFAULT_PRINT_RECIPE_V1, zones: [] };
     }
-    const parsed = printRecipeV1Schema.safeParse(recipe);
+    const withZones = {
+        ...recipe,
+        zones: migrateHardnessZones((recipe as { zones?: unknown }).zones),
+    };
+    const parsed = printRecipeV1Schema.safeParse(withZones);
     if (parsed.success) {
         return parsed.data;
     }
     const legacy = legacyPrintRecipeV1Schema.safeParse(recipe);
     if (legacy.success) {
         return {
-            ...legacy.data,
+            version: legacy.data.version,
+            pattern: legacy.data.pattern,
+            defaultHardness: legacy.data.defaultHardness,
+            hardnessToInfillPct: legacy.data.hardnessToInfillPct,
             profileId: DEFAULT_PRODUCTION_PROFILE_ID,
+            zones: migrateHardnessZones(legacy.data.zones),
         };
     }
-    return { ...DEFAULT_PRINT_RECIPE_V1 };
+    return { ...DEFAULT_PRINT_RECIPE_V1, zones: [] };
 }
 
 export class PrintRecipeProfileRequiredError extends Error {
