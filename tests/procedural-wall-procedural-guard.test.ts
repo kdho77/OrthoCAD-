@@ -10,7 +10,7 @@ describe("procedural mode rejects combined/stock GLB", () => {
     test("Default.glb is combined stock and cannot enter reconstructProceduralPreview", async () => {
         const geo = await loadProductionDefaultGlb({ slot: "left" });
         expect(isCombinedStockGeometry(geo)).toBe(true);
-        expect(() => reconstructProceduralPreview(geo)).toThrow(
+        await expect(reconstructProceduralPreview(geo)).rejects.toThrow(
             /\[S1-PROCEDURAL\] combined\/stock GLB is not a procedural input/,
         );
         expect(

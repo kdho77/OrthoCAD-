@@ -1,0 +1,33 @@
+{
+  "kind": "met_bar",
+  "label": "Met bar 1",
+  "nominalPeakMm": 3.47,
+  "refSizeMm": 260,
+  "refMeasuredLengthMm": 271.93,
+  "refNote": "u=(y+1)/260 (length-only 260 basis); v=(x-mid)/halfwidth of unscaled SAMPLE_Top at anchor y, medial +",
+  "anchor": {
+    "u": 0.5162,
+    "v": -0.0387
+  },
+  "anchorConvention": "v=(x-mid)/halfwidth, medial +",
+  "authoredSide": "right",
+  "footprintMm": {
+    "w": 86.0,
+    "l": 108.0,
+    "area": 4627.9
+  },
+  "featherMm": 2,
+  "rotationDeg": 0,
+  "category": "add",
+  "frame": "repo-right (+X medial, +Y toe, Z up)",
+  "origin": "footprint centroid, z>=0",
+  "anchorMm": {
+    "x": -103.26,
+    "y": 133.2
+  },
+  "source": {
+    "file": "met_bar_1.glb",
+    "sha256": "e19d633a6f737684246168d6e605c641c797ae02bb2c3240e9e783ba08ae8c48"
+  },
+  "widthBasis": "SAMPLE_Top unscaled"
+}

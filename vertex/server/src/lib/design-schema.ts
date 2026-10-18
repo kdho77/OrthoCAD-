@@ -46,6 +46,8 @@ const placedElement = z.object({
     rotationDeg: z.number(),
     scale: z.object({ x: z.number(), y: z.number() }),
     heightMm: z.number(),
+    placementMode: z.enum(["flow", "noFlow"]).optional(),
+    zOffsetMm: z.number().optional(),
 });
 
 const trimlinePoint = z.object({

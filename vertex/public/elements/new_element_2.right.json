@@ -1,0 +1,84 @@
+{
+  "kind": "dancers_pad",
+  "label": "Dancer's pad (1st MPJ relief)",
+  "nominalPeakMm": 2.5,
+  "refSizeMm": 260,
+  "refMeasuredLengthMm": 271.93,
+  "refNote": "u=(y+1)/260 (length-only 260 basis); v=(x-mid)/halfwidth of unscaled SAMPLE_Top at anchor y, medial +",
+  "anchor": {
+    "u": 0.6496,
+    "v": -0.0196
+  },
+  "anchorConvention": "v=(x-mid)/halfwidth, medial +",
+  "authoredSide": "left",
+  "footprintMm": {
+    "w": 53.75,
+    "l": 68.25,
+    "area": 2720.6
+  },
+  "featherMm": {
+    "distal": 20.0,
+    "proximal": 10.0,
+    "lateral": 8.0,
+    "medialThumb": 8.0,
+    "notchRim": 3.0
+  },
+  "rotationDeg": 0,
+  "category": "add",
+  "frame": "repo-right (+X medial, +Y toe, Z up)",
+  "origin": "footprint centroid, z>=0",
+  "anchorMm": {
+    "x": 101.63,
+    "y": 167.9
+  },
+  "source": {
+    "file": "new_element_2.glb",
+    "sha256": "564801fcab6b566e00a832fdf68a7c3e36c624828d82f9e6b5b077d997a1ba32",
+    "fixedFile": "new_element_2.fixed.glb",
+    "fixedSha256": "9be39a0dbdad6cfd40556d5e5c048a3aea6a654739c3ad4b13cd92af77ad5d36",
+    "photo": "new_element_2_ref.png"
+  },
+  "widthBasis": "SAMPLE_Top unscaled",
+  "notch": {
+    "radiusMm": 11.31,
+    "centerAuthoredMm": {
+      "x": 73.06,
+      "y": 179.78
+    },
+    "centerAssetMm": {
+      "x": 28.57,
+      "y": 11.88
+    },
+    "centerUV": {
+      "u": 0.6953,
+      "v": 0.6129
+    },
+    "landmark": "1st met head / sesamoids",
+    "scaling": "keep radius unscaled; re-anchor centre to 1st head landmark",
+    "rimTaperMm": 3.0,
+    "tipFilletMm": 3.5
+  },
+  "notchRadiusMm": 11.31,
+  "featherNote": "Bio-approved edge taper: distal 20 mm (max slope ~10.6 deg; 7 deg would need ~30.5 mm smoothstep / ~32 mm cosine, not built), proximal 10, lateral 8, medial thumb 8, notch rim 2.5->0 over 3 mm (smoothstep top rounding serves as the 0.5 mm fillet); edge z=0",
+  "fixApplied": "Rebuilt (ne2a/b/c.py): footprint = reference-photo mitten outline (Fourier-smoothed, 20 harmonics) fitted by similarity to Kendon footprint (scale 0.327 mm/px, rot 0, no mirror, IoU 0.86); notch circle r=11.31 at authored (73.06,179.78); flat 2.50 mm plateau; C1 smoothstep feathers 7 mm prox/lat, 3.5 mm distal, 1.75 mm notch bevel; z=0 inside notch. Rev2 (ne2d/e/f.py): distal edge (80.2,193.8)->(124.3,190.9) replaced by one smooth convex arc (G2 joins, monotone curvature), apex (102.0,204.0); feather transition kept at old ymax 202.08. Rev3 (ne2g.py): edge-taper spec applied, outline unchanged. Rev4 (ne2h.py): medial thumb taper 6->8 mm. Rev4 (ne2h.py): medial thumb taper 6->8 mm. Rev5 (ne2i.py): notch distal tip filleted r=3.5 mm in plan; all taper distances measured to the filleted outline with every boundary point classified (fixes unclassified outline gap at notch tip that caused a cliff/spike). Rev5 (ne2i.py): notch distal tip filleted r=3.5 mm in plan; all taper distances measured to the filleted outline with every boundary point classified (fixes unclassified outline gap at notch tip that caused a cliff/spike). Rev5 (ne2i.py): notch distal tip filleted r=3.5 mm in plan; all taper distances measured to the filleted outline with every boundary point classified (fixes unclassified outline gap at notch tip that caused a cliff/spike).",
+  "rightSha256": "89409da09102312713c32e1193cba6c13adb367dc24e8fdfb58889cbe892001c",
+  "distalArc": {
+    "apexAuthoredMm": {
+      "x": 102.04,
+      "y": 204.0
+    },
+    "joinsAuthoredMm": [
+      [
+        80.24,
+        193.76
+      ],
+      [
+        124.28,
+        190.87
+      ]
+    ],
+    "continuity": "G2 (position, tangent, curvature) at both joins",
+    "curvature": "convex, U-shaped monotone (high at joins, min -0.0333 /mm at apex region)"
+  },
+  "featherProfile": "smoothstep 3t^2-2t^3 (C1: zero slope at plateau and floor), widths = horizontal distance inward to each edge class outline segment; edges combined by C1 polynomial smooth-min (k=0.08) of normalized distances; plateau 2.5 mm; notch distal tip filleted r=3.5 mm in plan; distances to filleted outline, every boundary point classified (thumb-to-notch border = notch rim 3 mm); signed normalized-distance field Gaussian-smoothed sigma 0.75 mm before smoothstep (removes medial-axis creases)"
+}

@@ -1,0 +1,33 @@
+{
+  "kind": "cuboid_pad",
+  "label": "Cuboid pad 1",
+  "nominalPeakMm": 6.37,
+  "refSizeMm": 260,
+  "refMeasuredLengthMm": 271.93,
+  "refNote": "u=(y+1)/260 (length-only 260 basis); v=(x-mid)/halfwidth of unscaled SAMPLE_Top at anchor y, medial +",
+  "anchor": {
+    "u": 0.3448,
+    "v": -0.6865
+  },
+  "anchorConvention": "v=(x-mid)/halfwidth, medial +",
+  "authoredSide": "left",
+  "footprintMm": {
+    "w": 29.75,
+    "l": 87.75,
+    "area": 1381.3
+  },
+  "featherMm": 2,
+  "rotationDeg": 0,
+  "category": "add",
+  "frame": "repo-right (+X medial, +Y toe, Z up)",
+  "origin": "footprint centroid, z>=0",
+  "anchorMm": {
+    "x": 126.2,
+    "y": 88.66
+  },
+  "source": {
+    "file": "cuboid_pad_1.glb",
+    "sha256": "cd2c56f4f0749f8bc75471a0d96dfba4e33d4023d75a9a7cfb2248e6255912d6"
+  },
+  "widthBasis": "SAMPLE_Top unscaled"
+}
