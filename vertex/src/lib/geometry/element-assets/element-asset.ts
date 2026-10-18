@@ -35,7 +35,10 @@ export function isHtmlAssetPayload(bytes: Uint8Array): boolean {
     if (bytes.length < 12) return false;
     let head = "";
     for (let i = 0; i < Math.min(bytes.length, 32); i++) head += String.fromCharCode(bytes[i]!);
-    const trimmed = head.replace(/^\uFEFF/, "").trimStart().toLowerCase();
+    const trimmed = head
+        .replace(/^\uFEFF/, "")
+        .trimStart()
+        .toLowerCase();
     return trimmed.startsWith("<!doctype") || trimmed.startsWith("<html");
 }
 
@@ -173,12 +176,16 @@ export function buildElementTransform(
     size: { scaleAlong: number; scaleAcross: number },
 ): ElementAssetTransform {
     const scaleZ = sidecar.nominalPeakMm > 1e-6 ? placed.heightMm / sidecar.nominalPeakMm : 1;
+    // The dancer's pad library mesh is authored in the left-foot orientation;
+    // its medial sesamoid notch must face inward on both feet. Other stock
+    // assets use the standard repo-right source orientation.
+    const mirrorX = placed.kind === "dancers_pad" ? side === "right" : side === "left";
     return {
         scaleX: size.scaleAcross * placed.scale.y,
         scaleY: size.scaleAlong * placed.scale.x,
         scaleZ,
         rotationDeg: placed.rotationDeg + (sidecar.rotationDeg ?? 0),
-        mirrorX: side === "left",
+        mirrorX,
         anchorUMm: placed.position.x,
         anchorVMm: placed.position.y,
         placementMode: placementModeFor(placed, sidecar),

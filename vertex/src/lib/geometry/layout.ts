@@ -10,11 +10,10 @@ export const INSOLE_GAP_MM = 30;
 
 /**
  * Local-Y (width-axis) offset for a foot when both insoles are shown side by side.
- * After viewer Rx(−90°) this becomes world −Z. In the toe-up Top view, the
- * patient's left foot is on screen-right and the right foot is on screen-left.
- * Magnitude is unchanged; this is presentation-only and never enters exports.
+ * After viewer Rx(−90°) this becomes world −Z, so left=+offset → world Z negative →
+ * screen-left under the toe-up Top preset (up=+X). Magnitude unchanged; sign only.
  * Presentation-only — never persisted on the design record / export geometry.
  */
 export function sideOffsetX(side: "left" | "right", widthMm: number = INSOLE_WIDTH_MM): number {
-    return side === "left" ? -(widthMm + INSOLE_GAP_MM) / 2 : (widthMm + INSOLE_GAP_MM) / 2;
+    return side === "left" ? (widthMm + INSOLE_GAP_MM) / 2 : -(widthMm + INSOLE_GAP_MM) / 2;
 }

@@ -4,6 +4,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
+import type { PlacedElement } from "@/types";
+import { buildElementTransform } from "./element-asset";
 import { notchAssetMm, notchOffsetAppMm, notchUvFromMm, sidecarAnchorUV } from "./sizing";
 import { type ElementAssetSidecar, sidecarFeatherKey } from "./types";
 
@@ -22,6 +24,40 @@ function readSidecar(name: string): ElementAssetSidecar {
 }
 
 describe("sidecar per-edge feather and notch mm", () => {
+    test("dancer pad orientation mirrors its left-authored asset toward medial", () => {
+        const sidecar = readSidecar("new_element_2.right.json");
+        const placed = {
+            id: "dancer",
+            kind: "dancers_pad",
+            side: "left",
+            position: { x: 0, y: 0 },
+            rotationDeg: 0,
+            scale: { x: 1, y: 1 },
+            heightMm: 2.5,
+        } satisfies PlacedElement;
+
+        expect(
+            buildElementTransform(placed, sidecar, "left", { scaleAlong: 1, scaleAcross: 1 }).mirrorX,
+        ).toBe(false);
+        expect(
+            buildElementTransform({ ...placed, side: "right" }, sidecar, "right", {
+                scaleAlong: 1,
+                scaleAcross: 1,
+            }).mirrorX,
+        ).toBe(true);
+
+        const metPad = { ...placed, kind: "met_pad" } satisfies PlacedElement;
+        expect(
+            buildElementTransform(metPad, sidecar, "left", { scaleAlong: 1, scaleAcross: 1 }).mirrorX,
+        ).toBe(true);
+        expect(
+            buildElementTransform({ ...metPad, side: "right" }, sidecar, "right", {
+                scaleAlong: 1,
+                scaleAcross: 1,
+            }).mirrorX,
+        ).toBe(false);
+    });
+
     test("dancers_pad reads per-edge featherMm without treating it as a number", () => {
         const sc = readSidecar("new_element_2.right.json");
         expect(typeof sc.featherMm).toBe("object");

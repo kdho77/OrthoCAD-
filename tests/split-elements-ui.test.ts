@@ -58,7 +58,7 @@ describe("split elements UI + one hardness table", () => {
         expect(overlays).toMatch(/SELECTED_ELEMENT_HIGHLIGHT/);
         expect(viewer).toMatch(/SplitElementOverlays/);
         expect(viewer).toMatch(/HardnessLegend/);
-        expect(viewer).toMatch(/appearance="design"/);
+        expect(viewer).toMatch(/appearance=\{workflowStep === "print" \? "hardness" : "design"\}/);
         expect(overlays).toMatch(/appearance === "design"/);
     });
 

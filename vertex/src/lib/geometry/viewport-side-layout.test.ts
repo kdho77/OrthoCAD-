@@ -46,23 +46,23 @@ describe("viewport side layout (T24–T27)", () => {
         expect(instanceWorldPosition("left").z).not.toBe(instanceWorldPosition("right").z);
     });
 
-    test("T25: Top view — left instance projects further screen-right than right", () => {
+    test("T25: Top view — left instance projects further screen-left than right", () => {
         const lx = projectViewNdcX("top", instanceWorldPosition("left"));
         const rx = projectViewNdcX("top", instanceWorldPosition("right"));
-        expect(lx).toBeGreaterThan(rx);
-        expect(furtherScreenLeft("top")).toBe("right");
+        expect(lx).toBeLessThan(rx);
+        expect(furtherScreenLeft("top")).toBe("left");
     });
 
-    test("T24: hiding right leaves the Top screen-right instance (left)", () => {
-        expect(furtherScreenLeft("top")).toBe("right");
+    test("T24: hiding right leaves the Top screen-left instance (left)", () => {
+        expect(furtherScreenLeft("top")).toBe("left");
         const lx = projectViewNdcX("top", instanceWorldPosition("left"));
         const rx = projectViewNdcX("top", instanceWorldPosition("right"));
-        expect(lx).toBeGreaterThan(rx);
+        expect(rx).toBeGreaterThan(lx);
     });
 
     test("T26: Bottom remains L/R-transposed relative to Top (optically correct)", () => {
-        expect(furtherScreenLeft("top")).toBe("right");
-        expect(furtherScreenLeft("bottom")).toBe("left");
+        expect(furtherScreenLeft("top")).toBe("left");
+        expect(furtherScreenLeft("bottom")).toBe("right");
         expect(viewCameraUp("top")).toEqual(viewCameraUp("bottom"));
         expect(VIEW_CAMERA_POS.top[1]).toBeGreaterThan(0);
         expect(VIEW_CAMERA_POS.bottom[1]).toBeLessThan(0);
@@ -73,28 +73,28 @@ describe("pair placement — screen L/R + medial adjacency", () => {
     test("world Z: left and right sit on opposite sides of origin (medial↔lateral = ±Z)", () => {
         const lz = instanceWorldPosition("left").z;
         const rz = instanceWorldPosition("right").z;
-        expect(lz).toBeGreaterThan(0);
-        expect(rz).toBeLessThan(0);
+        expect(lz).toBeLessThan(0);
+        expect(rz).toBeGreaterThan(0);
         expect(Math.abs(lz)).toBeCloseTo(PAIR_HALF_SPAN, 5);
         expect(Math.abs(rz)).toBeCloseTo(PAIR_HALF_SPAN, 5);
         expect(Math.sign(lz)).not.toBe(Math.sign(rz));
     });
 
-    test("Top: projected screen-X of left > right", () => {
+    test("Top: projected screen-X of left < right", () => {
         const lx = projectViewNdcX("top", instanceWorldPosition("left"));
         const rx = projectViewNdcX("top", instanceWorldPosition("right"));
-        expect(lx).toBeGreaterThan(rx);
+        expect(lx).toBeLessThan(rx);
     });
 
     test("arch-apex adjacency: medial edges face each other (inner gap < outer span)", () => {
-        // The patient's left medial edge is width+; right medial is width−.
+        // Default.glb left arch sits on width−; mirrored right arch on width+.
         // After Rx(−90°): worldZ = −(localY + sideOffset).
         const halfWidth = INSOLE_WIDTH_MM / 2;
         const worldZ = (side: "left" | "right", localY: number) => -(localY + sideOffsetX(side));
-        const leftMedialZ = worldZ("left", halfWidth);
-        const rightMedialZ = worldZ("right", -halfWidth);
-        const leftLateralZ = worldZ("left", -halfWidth);
-        const rightLateralZ = worldZ("right", halfWidth);
+        const leftMedialZ = worldZ("left", -halfWidth);
+        const rightMedialZ = worldZ("right", halfWidth);
+        const leftLateralZ = worldZ("left", halfWidth);
+        const rightLateralZ = worldZ("right", -halfWidth);
         const innerGap = Math.abs(leftMedialZ - rightMedialZ);
         const outerSpan = Math.abs(leftLateralZ - rightLateralZ);
         expect(innerGap).toBeLessThan(outerSpan);
@@ -103,11 +103,11 @@ describe("pair placement — screen L/R + medial adjacency", () => {
         expect(Math.abs(rightMedialZ)).toBeLessThan(Math.abs(instanceWorldPosition("right").z));
     });
 
-    test("Bottom: left projects to lesser screen-X than right (intended transposition)", () => {
+    test("Bottom: left projects to greater screen-X than right (intended transposition)", () => {
         const lx = projectViewNdcX("bottom", instanceWorldPosition("left"));
         const rx = projectViewNdcX("bottom", instanceWorldPosition("right"));
-        expect(lx).toBeLessThan(rx);
-        expect(furtherScreenLeft("bottom")).toBe("left");
+        expect(lx).toBeGreaterThan(rx);
+        expect(furtherScreenLeft("bottom")).toBe("right");
     });
 
     test("idempotency: remount / visibility toggle 5× yields identical world positions", () => {
@@ -132,8 +132,8 @@ describe("pair placement — screen L/R + medial adjacency", () => {
             expect(obj.scale.y).toBeGreaterThan(0);
             expect(obj.scale.z).toBeGreaterThan(0);
         }
-        expect(sideOffsetX("left")).toBeLessThan(0);
-        expect(sideOffsetX("right")).toBeGreaterThan(0);
+        expect(sideOffsetX("left")).toBeGreaterThan(0);
+        expect(sideOffsetX("right")).toBeLessThan(0);
     });
 
     test("empty-scene: placement helpers do not throw and produce finite positions", () => {
