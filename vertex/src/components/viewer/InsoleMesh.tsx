@@ -15,8 +15,8 @@ interface InsoleMeshProps {
 }
 
 const sideColors: Record<Side, string> = {
-    left: "#38bdf8",
-    right: "#22d3ee",
+    left: "#f8fafc",
+    right: "#f8fafc",
 };
 
 export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshProps) {
