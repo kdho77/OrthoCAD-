@@ -18,14 +18,7 @@ import {
 export const DEFAULT_SPLIT_HARDNESS: NamedHardnessClass = "Medium";
 
 /** High-contrast colors used to locate additions while designing an insole. */
-export const DESIGN_ELEMENT_COLORS = [
-    "#fb7185",
-    "#22d3ee",
-    "#facc15",
-    "#fb923c",
-    "#f472b6",
-    "#a3e635",
-] as const;
+export const DESIGN_ELEMENT_COLORS = ["#a855f7"] as const;
 
 export function isNamedHardnessClass(cls: RegionHardnessClass | undefined): cls is NamedHardnessClass {
     return !!cls && (NAMED_HARDNESS_CLASSES as readonly string[]).includes(cls);

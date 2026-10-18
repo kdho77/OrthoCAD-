@@ -1196,7 +1196,9 @@ export const useDesignStore = create<DesignStore>()(
                 set((s) => {
                     const next = applyCorrectionPresetToDesign(s.design, payload, {
                         mode,
-                        includeElements: options?.includeElements ?? true,
+                        // Presets may describe suggested elements, but users add them deliberately
+                        // from the Elements step instead of having them appear as a side effect.
+                        includeElements: options?.includeElements ?? false,
                         activeSide: options?.activeSide ?? s.exportSide,
                         placementSides: elementPlacementSides(),
                     });

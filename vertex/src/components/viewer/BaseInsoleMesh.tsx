@@ -13,8 +13,8 @@ import { usePerformanceStore } from "@/stores/performance-store";
 import type { Side } from "@/types";
 
 const sideColors: Record<Side, string> = {
-    left: "#c084fc",
-    right: "#a855f7",
+    left: "#f8fafc",
+    right: "#f8fafc",
 };
 
 function applyHeightmapColors(geometry: THREE.BufferGeometry, colors: THREE.BufferAttribute): void {
@@ -129,7 +129,7 @@ export function BaseInsoleMesh({
             {showEdges ? (
                 <lineSegments position={[-layout.lengthMm / 2, offsetX, 0]}>
                     <edgesGeometry args={[geometry, 35]} />
-                    <lineBasicMaterial color={sideColors[side]} transparent opacity={0.35} />
+                    <lineBasicMaterial color="#94a3b8" transparent opacity={0.45} />
                 </lineSegments>
             ) : null}
         </group>

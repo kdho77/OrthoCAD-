@@ -67,7 +67,10 @@ export function notchUvFromMm(
     const halfW = localWidthAtU(base, side, u) / 2;
     const { v: vAnchor } = sidecarAnchorUV(sidecar);
     const xMed = asset?.x ?? 0;
-    return { u, v: vAnchor + xMed / Math.max(halfW, 1e-3) };
+    // The sidecar's +X is medial on the authored right foot. In the app's
+    // center-relative width axis, medial is +Y on the left and −Y on the right.
+    const medialSign = side === "left" ? 1 : -1;
+    return { u, v: vAnchor + (medialSign * xMed) / Math.max(halfW, 1e-3) };
 }
 
 /** Local planform width (mm) of a band of vertices around footprint u. */
