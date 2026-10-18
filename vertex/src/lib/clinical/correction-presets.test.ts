@@ -107,6 +107,15 @@ describe("correction presets", () => {
         expect(kinds).toContain("dancers_pad" satisfies ElementKind);
     });
 
+    test("presets leave suggested elements for the user to add", () => {
+        const sesamoid = VERTEX_STARTER_PRESETS.find((p) => p.id === "vertex-sesamoiditis")!;
+        const next = applyCorrectionPresetToDesign(testDesign(), sesamoid.payload, {
+            mode: "merge",
+            activeSide: "left",
+        });
+        expect(next.elements).toHaveLength(0);
+    });
+
     test("origin keys mark the fields a linked preset wrote", () => {
         const pf = VERTEX_STARTER_PRESETS.find((p) => p.id === "vertex-pf")!;
         const keys = correctionPresetOriginKeys(pf.payload, true);

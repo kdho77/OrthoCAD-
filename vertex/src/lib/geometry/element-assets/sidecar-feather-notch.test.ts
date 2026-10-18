@@ -78,12 +78,15 @@ describe("sidecar per-edge feather and notch mm", () => {
         );
         const sc = readSidecar("new_element_2.right.json");
         const uv = notchUvFromMm(raw, "right", sc);
+        const leftUv = notchUvFromMm(raw, "left", sc);
         expect(uv).toBeTruthy();
+        expect(leftUv).toBeTruthy();
         expect(uv!.u).toBeCloseTo(0.6953, 3);
         // The right foot's medial direction is negative app-v; the old sign
         // placed this notch on the lateral side of the foot.
         expect(uv!.v).toBeLessThan(sidecarAnchorUV(sc).v);
         expect(uv!.v).toBeCloseTo(-0.649, 2);
+        expect(leftUv!.v).toBeGreaterThan(sidecarAnchorUV(sc).v);
         expect(uv!.v).not.toBe(0.6129);
         raw.dispose();
     });
