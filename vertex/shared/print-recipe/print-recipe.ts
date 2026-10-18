@@ -11,7 +11,7 @@ export const HARDNESS_NAMES = ["Extra Soft", "Soft", "Medium", "Hard", "Extra Ha
 export type HardnessName = (typeof HARDNESS_NAMES)[number];
 
 /** Pending coupon validation. Extra Soft/Soft are 0.7 mm starting points. */
-export type GyroidInfillPct = 10 | 14 | 20 | 26 | 32 | 38;
+export type GyroidInfillPct = 10 | 14 | 16 | 20 | 22 | 26 | 32 | 38;
 
 export const HARDNESS_TO_INFILL_PCT: Record<HardnessName, number> = hardnessTable as Record<
     HardnessName,

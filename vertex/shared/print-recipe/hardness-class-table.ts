@@ -6,7 +6,7 @@
  * Five named levels (Extra Soft → Extra Hard) plus Custom density overrides.
  *
  * Slicing (Kendon 2026-10-18, pending coupon validation):
- * - Extra Soft / Soft: sparse_infill_line_width 0.7 mm, ~10% / ~14% gyroid
+ * - Extra Soft / Soft: sparse_infill_line_width 0.7 mm, 16% / 22% gyroid
  * - Medium / Hard / Extra Hard: 1.0 mm line width, keep ladder 26 / 32 / 38%
  * - Walls and skins stay global at 1.0 mm
  *
@@ -53,14 +53,14 @@ export interface HardnessClassTable {
 
 export const HARDNESS_CLASS_TABLE: HardnessClassTable = {
     "Extra Soft": {
-        sparseInfillDensityPct: 10,
+        sparseInfillDensityPct: 16,
         sparseInfillPattern: "gyroid",
         sparseInfillSpeedMmS: 43.5,
         sparseInfillLineWidthMm: 0.7,
         pendingCouponValidation: true,
     },
     Soft: {
-        sparseInfillDensityPct: 14,
+        sparseInfillDensityPct: 22,
         sparseInfillPattern: "gyroid",
         sparseInfillSpeedMmS: 44.0,
         sparseInfillLineWidthMm: 0.7,

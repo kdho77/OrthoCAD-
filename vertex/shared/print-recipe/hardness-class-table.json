@@ -1,13 +1,13 @@
 {
     "Extra Soft": {
-        "sparseInfillDensityPct": 10,
+        "sparseInfillDensityPct": 16,
         "sparseInfillPattern": "gyroid",
         "sparseInfillSpeedMmS": 43.5,
         "sparseInfillLineWidthMm": 0.7,
         "pendingCouponValidation": true
     },
     "Soft": {
-        "sparseInfillDensityPct": 14,
+        "sparseInfillDensityPct": 22,
         "sparseInfillPattern": "gyroid",
         "sparseInfillSpeedMmS": 44.0,
         "sparseInfillLineWidthMm": 0.7,

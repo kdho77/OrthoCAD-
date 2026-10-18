@@ -46,8 +46,8 @@ describe("hardness class table", () => {
         );
         const json = JSON.parse(readFileSync(jsonPath, "utf8"));
         expect(HARDNESS_CLASS_TABLE).toEqual(json);
-        expect(HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillDensityPct).toBe(10);
-        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillDensityPct).toBe(14);
+        expect(HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillDensityPct).toBe(16);
+        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillDensityPct).toBe(22);
         expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillDensityPct).toBe(26);
         expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillDensityPct).toBe(32);
         expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillDensityPct).toBe(38);

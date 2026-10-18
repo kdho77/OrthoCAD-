@@ -69,7 +69,7 @@ describe("split elements UI + one hardness table", () => {
         expect(classLineWidthMm("Extra Hard")).toBe(1.0);
         const fp = classFingerprint("Soft");
         expect(fp.lineWidthMm).toBe(0.7);
-        expect(fp.densityPct).toBe(14);
+        expect(fp.densityPct).toBe(22);
         expect(fp.pendingCouponValidation).toBe(true);
     });
 
