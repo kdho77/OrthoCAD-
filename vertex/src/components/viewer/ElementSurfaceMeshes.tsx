@@ -83,6 +83,7 @@ export function ElementSurfaceMeshes({
                         {/* biome-ignore lint/a11y/noStaticElementInteractions: R3F mesh pick target */}
                         <mesh
                             geometry={surface}
+                            onPointerDown={(event) => event.stopPropagation()}
                             onClick={(event) => {
                                 event.stopPropagation();
                                 select(element.id);

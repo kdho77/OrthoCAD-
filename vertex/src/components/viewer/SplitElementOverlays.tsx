@@ -77,6 +77,7 @@ function SplitPatch({
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: R3F mesh pick target */}
                     <mesh
                         geometry={fill}
+                        onPointerDown={(event) => event.stopPropagation()}
                         onClick={(e) => {
                             e.stopPropagation();
                             selectElement(element.id);

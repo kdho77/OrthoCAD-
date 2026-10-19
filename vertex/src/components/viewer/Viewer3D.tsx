@@ -100,6 +100,7 @@ export function Viewer3D() {
     }, [layoutLengthMm, layoutWidthMm, setRegistrationTargetLayout]);
     const editMode = useMeshEditStore((s) => s.editMode);
     const workflowStep = useClinicalWorkflowStore((s) => s.step);
+    const printPreview = workflowStep === "print" || workflowStep === "export";
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
     const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
@@ -199,9 +200,11 @@ export function Viewer3D() {
                 onPointerMissed={() => {
                     selectElement(null);
                     if (!consumeScanMissDeselectSuppression()) selectScan(null);
-                    setTarget({ type: "insole", side: editSide });
+                    if (!printPreview) setTarget({ type: "insole", side: editSide });
                 }}
-                onClick={() => setTarget({ type: "insole", side: editSide })}
+                onClick={() => {
+                    if (!printPreview) setTarget({ type: "insole", side: editSide });
+                }}
             >
                 <color attach="background" args={["#0c111b"]} />
                 <ambientLight intensity={0.6} />
@@ -256,9 +259,11 @@ export function Viewer3D() {
                     {workflowStep === "print" && !hideInsoleForMarkers && !loftOverlay.blockViewport ? (
                         <SplitElementOverlays />
                     ) : null}
-                    <MeshEditTools />
-                    {!loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
-                    {!loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
+                    {/* Invisible pick meshes can start geometry edits on pointer-down,
+                        before an element's click opens its hardness selector. */}
+                    {!printPreview ? <MeshEditTools /> : null}
+                    {!printPreview && !loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
+                    {!printPreview && !loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
@@ -477,8 +482,7 @@ export function Viewer3D() {
             ) : null}
 
             {/* Print selection edits hardness; placement tools remain in Design. */}
-            {selectedElementId &&
-            (workflowStep === "print" || workflowStep === "export") ? null : selectedElementId ? (
+            {printPreview ? null : selectedElementId ? (
                 <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
                     <ModeButton
                         active={editMode === "transform" && transformMode === "translate"}
