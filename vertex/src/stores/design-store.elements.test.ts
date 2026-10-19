@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, test } from "@rstest/core";
 import { VERTEX_STARTER_PRESETS } from "@/lib/clinical/correction-presets";
 import { ELEMENT_PROFILES } from "@/lib/geometry/elements";
 import type { DesignState, ElementKind, PrescriptionParseResult } from "@/types";
+import { useClientStore } from "./client-store";
 import { useDesignStore } from "./design-store";
 
 function freshDesign(): DesignState {
@@ -28,7 +29,13 @@ function prescription(): PrescriptionParseResult {
 describe("elements require explicit library placement", () => {
     beforeEach(() => {
         localStorage.removeItem("vertex-design-session");
-        useDesignStore.setState({ design: freshDesign(), selectedElementId: null, history: [], future: [] });
+        useDesignStore.setState({
+            design: freshDesign(),
+            pendingSessionDesign: null,
+            selectedElementId: null,
+            history: [],
+            future: [],
+        });
     });
 
     test("new designs and resets have no elements", () => {
@@ -72,7 +79,7 @@ describe("elements require explicit library placement", () => {
         expect(useDesignStore.getState().design.elements).toEqual(placed);
     });
 
-    test("session rehydration restores intentional placements without adding or erasing any", async () => {
+    test("session reload holds placements aside until explicit resume, even across repeated reloads", async () => {
         useDesignStore.getState().addElement("dancers_pad", "right");
         const saved = JSON.parse(JSON.stringify(useDesignStore.getState().design));
         useDesignStore.setState({ design: freshDesign() });
@@ -81,7 +88,16 @@ describe("elements require explicit library placement", () => {
             JSON.stringify({ state: { design: saved }, version: 0 }),
         );
         await useDesignStore.persist.rehydrate();
+        expect(useDesignStore.getState().design.elements).toEqual([]);
+        expect(useDesignStore.getState().pendingSessionDesign?.elements).toEqual(saved.elements);
+        // A routine store write and another reload must not lose the recovery copy.
+        useDesignStore.getState().selectElement(null);
+        await useDesignStore.persist.rehydrate();
+        expect(useDesignStore.getState().design.elements).toEqual([]);
+        expect(useDesignStore.getState().pendingSessionDesign?.elements).toEqual(saved.elements);
+        useDesignStore.getState().resumeSession();
         expect(useDesignStore.getState().design.elements).toEqual(saved.elements);
+        expect(useDesignStore.getState().pendingSessionDesign).toBeNull();
         // Reloading an intentionally empty session must stay empty as well.
         const empty = { ...saved, elements: [] };
         localStorage.setItem(
@@ -90,5 +106,23 @@ describe("elements require explicit library placement", () => {
         );
         await useDesignStore.persist.rehydrate();
         expect(useDesignStore.getState().design.elements).toEqual([]);
+    });
+    test("starting fresh clears the browser draft and active save target, not saved projects", async () => {
+        useDesignStore.getState().addElement("dancers_pad", "left");
+        const saved = JSON.parse(JSON.stringify(useDesignStore.getState().design));
+        const client = useClientStore.getState().addClient({ firstName: "Test", lastName: "Client" });
+        const project = useClientStore.getState().addDesign(client, "Saved design", saved);
+        await useDesignStore.persist.rehydrate();
+        expect(useDesignStore.getState().pendingSessionDesign).not.toBeNull();
+        useDesignStore.getState().startFreshSession();
+        expect(useDesignStore.getState().design.elements).toEqual([]);
+        expect(useDesignStore.getState().pendingSessionDesign).toBeNull();
+        expect(useClientStore.getState().activeDesignId).toBeNull();
+        expect(useClientStore.getState().designs.find((d) => d.id === project)?.state).toEqual(saved);
+        await useDesignStore.persist.rehydrate();
+        expect(useDesignStore.getState().design.elements).toEqual([]);
+        expect(useDesignStore.getState().pendingSessionDesign).toBeNull();
+        useDesignStore.getState().loadDesign(saved);
+        expect(useDesignStore.getState().design.elements).toEqual(saved.elements);
     });
 });

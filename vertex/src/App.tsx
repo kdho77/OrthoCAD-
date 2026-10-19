@@ -4,6 +4,7 @@ import { ClinicalStepRail } from "@/components/clinical/ClinicalStepRail";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { KernelLoadingBanner } from "@/components/layout/KernelLoadingBanner";
 import { RightPanel } from "@/components/layout/RightPanel";
+import { SessionRecoveryDialog } from "@/components/layout/SessionRecoveryDialog";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { type NavItem, TopNav } from "@/components/layout/TopNav";
 import { PrescriptionUpload } from "@/components/prescription-upload/PrescriptionUpload";
@@ -111,6 +112,7 @@ function CadApp() {
     return (
         <ErrorBoundary>
             <div className="flex h-full flex-col">
+                <SessionRecoveryDialog />
                 <KernelLoadingBanner />
                 <TopNav active={nav} onNavigate={setNav} onOpenPrescription={() => setRxOpen(true)} />
 

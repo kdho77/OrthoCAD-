@@ -53,6 +53,7 @@ const placedElement = z.object({
     position: z.object({ x: z.number(), y: z.number() }),
     rotationDeg: z.number(),
     scale: z.object({ x: z.number(), y: z.number() }),
+    scaleLocked: z.boolean().optional(),
     heightMm: z.number(),
     regionId: z.string().min(1).optional(),
     hardnessClass: hardnessClassSchema.optional(),

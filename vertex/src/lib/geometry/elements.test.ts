@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
+import { Euler, Vector3 } from "three";
 import type { ElementKind, PlacedElement } from "@/types";
 import {
     defaultElementPose,
@@ -10,6 +11,7 @@ import {
     elementHeightAt,
     elementOutlineLocalMm,
 } from "./elements";
+import { instanceWorldPosition, projectViewNdcX } from "./viewport-side-layout";
 
 const KINDS = Object.keys(ELEMENT_PROFILES) as ElementKind[];
 
@@ -123,8 +125,29 @@ describe("anatomical element footprints", () => {
 
         const cluffyL = defaultElementPose("cluffy_wedge", "left");
         const cluffyR = defaultElementPose("cluffy_wedge", "right");
-        expect(cluffyL.position.y).toBeGreaterThan(0); // medial left
-        expect(cluffyR.position.y).toBeLessThan(0); // medial right
+        expect(cluffyL.position.y).toBeLessThan(0); // medial left
+        expect(cluffyR.position.y).toBeGreaterThan(0); // medial right
+    });
+
+    test("Cluffy starts toward the hallux in the displayed pair on both feet and across sizes", () => {
+        for (const [length, width] of [
+            [230, 85],
+            [260, 95],
+            [290, 105],
+        ]) {
+            for (const side of ["left", "right"] as const) {
+                const pose = defaultElementPose("cluffy_wedge", side, length, width);
+                const origin = instanceWorldPosition(side);
+                const placed = new Vector3(pose.position.x, pose.position.y, 0)
+                    .applyEuler(new Euler(-Math.PI / 2, 0, 0))
+                    .add(origin);
+                expect(Math.abs(projectViewNdcX("top", placed))).toBeLessThan(
+                    Math.abs(projectViewNdcX("top", origin)),
+                );
+                expect(pose.position.x).toBeCloseTo((0.7744 - 0.5) * length, 5);
+                expect(pose.rotationDeg).toBe(0);
+            }
+        }
     });
 
     test("elementHeightAt produces a positive dome inside a met pad", () => {

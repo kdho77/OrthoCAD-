@@ -428,7 +428,9 @@ export function defaultElementPose(
     widthMm = 95,
 ): Pick<PlacedElement, "position" | "rotationDeg" | "scale" | "heightMm" | "placementMode"> {
     const p = ELEMENT_PROFILES[kind];
-    const medial = medialYSign(side);
+    // Cluffy belongs under the hallux: inward is -Y on left, +Y on right.
+    // Keep the other library anchors unchanged; their positions are already approved.
+    const medial = medialYSign(side) * (kind === "cluffy_wedge" ? -1 : 1);
     return {
         position: {
             x: p.defaultU * lengthMm - lengthMm / 2,

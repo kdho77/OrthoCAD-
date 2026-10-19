@@ -201,6 +201,8 @@ export interface PlacedElement {
     position: { x: number; y: number };
     rotationDeg: number;
     scale: { x: number; y: number };
+    /** Missing on older designs means locked. Height remains independent. */
+    scaleLocked?: boolean;
     heightMm: number;
     /**
      * Hardness region fields (Phase 1). Settings stay on this element id through

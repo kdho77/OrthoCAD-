@@ -6,9 +6,9 @@ import type {
     OrbitControls as OrbitControlsImpl,
     TransformControls as TransformControlsImpl,
 } from "three-stdlib";
+import { gizmoElementScale } from "@/lib/geometry/element-scale";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
-import { rafThrottle } from "@/lib/performance/throttle";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -61,31 +61,52 @@ function SelectedElementGizmo({
 
     const zTop = element.heightMm + 4;
 
-    const commitTransform = useCallback(() => {
-        const m = node;
-        if (!m) return;
-        updateElement(element.id, {
-            position: { x: m.position.x - centerX, y: m.position.y },
-            rotationDeg: (m.rotation.z * 180) / Math.PI,
-            scale: { x: Math.max(0.25, m.scale.x), y: Math.max(0.25, m.scale.y) },
-        });
-        clearElementPreview(element.id);
-    }, [node, element.id, updateElement, clearElementPreview, centerX]);
-
-    const previewTransform = useMemo(
-        () =>
-            rafThrottle(() => {
-                const m = node;
-                if (!m) return;
-                setElementPreview(element.id, {
-                    id: element.id,
-                    position: { x: m.position.x - centerX, y: m.position.y },
-                    rotationDeg: (m.rotation.z * 180) / Math.PI,
-                    scale: { x: Math.max(0.25, m.scale.x), y: Math.max(0.25, m.scale.y) },
-                });
-            }),
-        [node, element.id, setElementPreview, centerX],
+    const previewFrame = useRef<number | null>(null);
+    const cancelPreview = useCallback(() => {
+        if (previewFrame.current !== null) cancelAnimationFrame(previewFrame.current);
+        previewFrame.current = null;
+    }, []);
+    useEffect(
+        () => () => {
+            cancelPreview();
+            clearElementPreview(element.id);
+        },
+        [cancelPreview, clearElementPreview, element.id],
     );
+
+    const readTransform = useCallback(() => {
+        if (!node) return null;
+        const scale =
+            mode === "scale"
+                ? gizmoElementScale(element.scale, node.scale, element.scaleLocked !== false)
+                : element.scale;
+        // Keep the handles and rendered preview on the same constrained XY scale.
+        node.scale.set(scale.x, scale.y, 1);
+        return {
+            id: element.id,
+            position: { x: node.position.x - centerX, y: node.position.y },
+            rotationDeg: (node.rotation.z * 180) / Math.PI,
+            scale,
+        };
+    }, [node, mode, element.scale, element.scaleLocked, element.id, centerX]);
+
+    const commitTransform = useCallback(() => {
+        cancelPreview();
+        const patch = readTransform();
+        if (patch) updateElement(element.id, patch);
+        clearElementPreview(element.id);
+    }, [cancelPreview, readTransform, element.id, updateElement, clearElementPreview]);
+
+    const previewTransform = useCallback(() => {
+        // Constrain immediately, then throttle only the expensive geometry preview.
+        const patch = readTransform();
+        if (!patch) return;
+        cancelPreview();
+        previewFrame.current = requestAnimationFrame(() => {
+            previewFrame.current = null;
+            setElementPreview(element.id, patch);
+        });
+    }, [readTransform, cancelPreview, setElementPreview, element.id]);
 
     const onDraggingChanged = useCallback(
         (dragging: boolean) => {
@@ -99,6 +120,7 @@ function SelectedElementGizmo({
     );
 
     useEffect(() => {
+        if (!node || editMode !== "transform") return;
         const tc = controlsRef.current;
         if (!tc) return;
         const handler = (event: { value?: boolean }) => {
@@ -110,7 +132,7 @@ function SelectedElementGizmo({
         };
         emitter.addEventListener("dragging-changed", handler);
         return () => emitter.removeEventListener("dragging-changed", handler);
-    }, [onDraggingChanged, node]);
+    }, [onDraggingChanged, node, editMode]);
 
     return (
         <>
@@ -131,7 +153,7 @@ function SelectedElementGizmo({
                     mode={mode}
                     space="local"
                     size={0.6}
-                    showZ={mode !== "translate"}
+                    showZ={mode === "rotate"}
                     onObjectChange={previewTransform}
                 />
             ) : null}
