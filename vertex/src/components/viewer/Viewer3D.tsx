@@ -476,8 +476,9 @@ export function Viewer3D() {
                 </div>
             ) : null}
 
-            {/* Element / mesh edit toolbar */}
-            {selectedElementId ? (
+            {/* Print selection edits hardness; placement tools remain in Design. */}
+            {selectedElementId &&
+            (workflowStep === "print" || workflowStep === "export") ? null : selectedElementId ? (
                 <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
                     <ModeButton
                         active={editMode === "transform" && transformMode === "translate"}

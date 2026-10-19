@@ -9,6 +9,7 @@ import type {
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { rafThrottle } from "@/lib/performance/throttle";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
@@ -22,6 +23,7 @@ import type { PlacedElement } from "@/types";
  * on edge). Only the move gizmo is shown, and only while an element is selected.
  */
 export function ElementMarkers() {
+    const print = useClinicalWorkflowStore((s) => s.step === "print" || s.step === "export");
     const elements = useDesignStore((s) => s.design.elements);
     const selectedId = useDesignStore((s) => s.selectedElementId);
     const usMenSize = useDesignStore((s) => s.design.usMenSize);
@@ -33,7 +35,7 @@ export function ElementMarkers() {
 
     const selected = useMemo(() => elements.find((e) => e.id === selectedId) ?? null, [elements, selectedId]);
 
-    if (!selected) return null;
+    if (!selected || print) return null;
 
     return <SelectedElementGizmo element={selected} centerX={centerX} widthMm={layout.widthMm} />;
 }

@@ -68,6 +68,7 @@ import type {
     Unit,
     WedgeCorrection,
 } from "@/types";
+import type { NamedHardnessClass } from "../../shared/print-recipe/hardness-class-table";
 import { type HardnessName, migratePrintRecipe } from "../../shared/print-recipe/print-recipe";
 
 function defaultSideCorrections(): SideCorrections {
@@ -460,6 +461,7 @@ export interface DesignStore {
     addElement: (kind: ElementKind, side: Side) => void;
     addCustomElement: (customElementId: string, customName: string, side: Side) => void;
     updateElement: (id: string, patch: Partial<PlacedElement>) => void;
+    setElementHardness: (id: string, hardness: NamedHardnessClass) => void;
     removeElement: (id: string) => void;
     selectElement: (id: string | null) => void;
     setTransformMode: (mode: TransformMode) => void;
@@ -1034,6 +1036,32 @@ export const useDesignStore = create<DesignStore>()(
             },
 
             clearStockBaseError: () => set({ stockBaseError: null }),
+
+            setElementHardness: (id, hardness) => {
+                const element = get().design.elements.find((e) => e.id === id);
+                if (!element) return;
+                if (element.hardnessClass === hardness && !element.overrides && get().design.splitElements)
+                    return;
+                get().checkpoint("element-hardness");
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        splitElements: true,
+                        elements: s.design.elements.map((e) =>
+                            e.id === id
+                                ? {
+                                      ...e,
+                                      regionId: e.regionId ?? e.id,
+                                      hardnessClass: hardness,
+                                      priority: e.priority ?? 1,
+                                      depth: e.depth ?? { type: "full" },
+                                      overrides: undefined,
+                                  }
+                                : e,
+                        ),
+                    },
+                }));
+            },
 
             updateElement: (id, patch) =>
                 set((s) => {

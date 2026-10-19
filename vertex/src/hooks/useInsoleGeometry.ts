@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
 import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
+import { elementGeometryKey } from "@/lib/geometry/element-geometry-key";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
@@ -31,6 +32,7 @@ export interface InsoleGeometryState {
  */
 export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeometryState {
     const { side, design, trimLines, trimline, vertexOverrides, applyEdits } = options;
+    const geometryElementsKey = elementGeometryKey(design.elements);
     const step = useClinicalWorkflowStore((s) => s.step);
     const interacting = usePerformanceStore((s) => s.interacting);
     const correctionPreview = usePerformanceStore((s) => s.correctionPreview);
@@ -111,7 +113,7 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         design.ukSize,
         design.footLengthMm,
         design.corrections,
-        design.elements,
+        geometryElementsKey,
         trimLines,
         trimline,
         vertexOverrides,
