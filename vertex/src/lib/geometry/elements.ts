@@ -341,7 +341,9 @@ export function elementFootprintT(
     ry: number,
     side: Side = "left",
 ): number {
-    const medial = medialYSign(side);
+    // Match the GLB dancer-pad contour orientation in the displayed pair.
+    // Reflect only the local shape; default/saved placement anchors stay fixed.
+    const medial = side === "left" ? -1 : 1;
     const profile = ELEMENT_PROFILES[kind];
 
     switch (profile.shape) {

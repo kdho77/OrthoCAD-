@@ -73,17 +73,32 @@ describe("anatomical element footprints", () => {
         expect(elementFootprintT("cluffy_wedge", rx * 0.7, 0, rx, ry)).toBeLessThan(1);
     });
 
-    test("reverse Morton's keeps lateral platform and notches the medial 1st ray", () => {
+    test("reverse Morton's relief points inward like the approved dancer pad", () => {
         const { rxMm: rx, ryMm: ry } = ELEMENT_PROFILES.reverse_mortons;
-        // Lateral column present on left foot (−y).
-        expect(elementFootprintT("reverse_mortons", 0, -ry * 0.55, rx, ry, "left")).toBeLessThan(1);
-        // Medial 1st-ray notch empty on left foot (+y).
-        expect(elementFootprintT("reverse_mortons", rx * 0.15, ry * 0.75, rx, ry, "left")).toBeGreaterThan(1);
-        // Notch flips for right foot.
-        expect(elementFootprintT("reverse_mortons", rx * 0.15, -ry * 0.75, rx, ry, "right")).toBeGreaterThan(
-            1,
-        );
-        expect(elementFootprintT("reverse_mortons", 0, ry * 0.55, rx, ry, "right")).toBeLessThan(1);
+        for (const side of ["left", "right"] as const) {
+            // In the displayed pair, inward local Y is negative on the left.
+            const inward = side === "left" ? -1 : 1;
+            expect(
+                elementFootprintT("reverse_mortons", rx * 0.15, inward * ry * 0.75, rx, ry, side),
+            ).toBeGreaterThan(1);
+            expect(elementFootprintT("reverse_mortons", 0, -inward * ry * 0.55, rx, ry, side)).toBeLessThan(
+                1,
+            );
+        }
+    });
+
+    test("every procedural footprint mirrors across width without reversing heel/toe", () => {
+        for (const kind of KINDS) {
+            const { rxMm: rx, ryMm: ry } = ELEMENT_PROFILES[kind];
+            for (const x of [-0.8, -0.2, 0.4, 0.9]) {
+                for (const y of [-0.8, -0.3, 0.2, 0.7]) {
+                    expect(elementFootprintT(kind, x * rx, y * ry, rx, ry, "left")).toBeCloseTo(
+                        elementFootprintT(kind, x * rx, -y * ry, rx, ry, "right"),
+                        8,
+                    );
+                }
+            }
+        }
     });
 
     test("outline sampling produces a closed clinical polygon for each kind", () => {
