@@ -1,4 +1,5 @@
 import { isLibraryHeightFieldKind } from "@/lib/geometry/element-assets/types";
+import { ElementHardnessPopup } from "./ElementHardnessPopup";
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
@@ -6,7 +7,7 @@ import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
-import { splitColorForElement, splitOverlayOutline } from "@/lib/hardness/split-overlay";
+import { elementPreviewColor, splitOverlayOutline } from "@/lib/hardness/split-overlay";
 import { useDesignStore } from "@/stores/design-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { PlacedElement } from "@/types";
@@ -37,6 +38,7 @@ function SplitPatch({
     centerX: number;
     widthMm: number;
 }) {
+    const splitOn = useDesignStore((s) => Boolean(s.design.splitElements));
     const selectedId = useDesignStore((s) => s.selectedElementId);
     const selectElement = useDesignStore((s) => s.selectElement);
     const preview = usePerformanceStore((s) => s.elementPreviews[element.id]);
@@ -44,7 +46,7 @@ function SplitPatch({
     const rot = preview?.rotationDeg ?? element.rotationDeg;
     const heightMm = preview?.heightMm ?? element.heightMm;
     const selected = selectedId === element.id;
-    const color = splitColorForElement({ ...element, ...preview, id: element.id });
+    const color = elementPreviewColor(element, true, selected, splitOn);
 
     const { fill, ring } = useMemo(() => {
         const pts = splitOverlayOutline({
@@ -75,6 +77,7 @@ function SplitPatch({
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: R3F mesh pick target */}
                     <mesh
                         geometry={fill}
+                        onPointerDown={(event) => event.stopPropagation()}
                         onClick={(e) => {
                             e.stopPropagation();
                             selectElement(element.id);
@@ -88,9 +91,9 @@ function SplitPatch({
                         }}
                     >
                         <meshStandardMaterial
-                            color={selected ? SELECTED_ELEMENT_HIGHLIGHT : color}
+                            color={color}
                             transparent
-                            opacity={selected ? 0.9 : 0.62}
+                            opacity={1}
                             metalness={0.05}
                             roughness={0.55}
                             depthWrite={false}
@@ -102,6 +105,7 @@ function SplitPatch({
                             <lineBasicMaterial color={SELECTED_ELEMENT_HIGHLIGHT} linewidth={2} />
                         </line>
                     ) : null}
+                    {selected ? <ElementHardnessPopup elementId={element.id} position={[0, 0, 0.2]} /> : null}
                 </group>
             </group>
         </group>
@@ -109,7 +113,6 @@ function SplitPatch({
 }
 
 export function SplitElementOverlays() {
-    const splitOn = useDesignStore((s) => Boolean(s.design.splitElements));
     const elements = useDesignStore((s) => s.design.elements);
     const usMenSize = useDesignStore((s) => s.design.usMenSize);
     const sizeSystem = useDesignStore((s) => s.design.sizeSystem);
@@ -118,7 +121,7 @@ export function SplitElementOverlays() {
     const layout = insoleLayoutFromDesign({ sizeSystem, usMenSize, ukSize, footLengthMm });
     const centerX = layout.lengthMm / 2;
 
-    if (!splitOn || elements.length === 0) return null;
+    if (elements.length === 0) return null;
 
     return (
         <group>

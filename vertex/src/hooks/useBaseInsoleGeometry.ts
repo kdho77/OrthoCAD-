@@ -14,6 +14,7 @@ import {
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
 import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
+import { elementGeometryKey } from "@/lib/geometry/element-geometry-key";
 import { heightAt } from "@/lib/geometry/height-field";
 import {
     hashLiveBottomPattern,
@@ -80,6 +81,7 @@ export interface BaseInsoleGeometryState {
 export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInsoleGeometryState {
     const [elementReference, setElementReference] = useState<BufferGeometry | null>(null);
     useEffect(() => () => elementReference?.dispose(), [elementReference]);
+    const geometryElementsKey = elementGeometryKey(design.elements);
     const correctionPreview = usePerformanceStore((s) => s.correctionPreview);
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
     const elementPreviews = usePerformanceStore((s) => s.elementPreviews);
@@ -600,7 +602,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         includeElements: field.includeElements ?? true,
                     }),
                     shapeFinishJson: JSON.stringify(field.shapeFinish ?? null),
-                    elementsJson: JSON.stringify(field.elements ?? []),
+                    elementsJson: elementGeometryKey(field.elements ?? []),
                     trimlineHash: printTrim ? hashPatternPoints(printTrim.points) : "",
                     shoeWidth: widthId,
                 });
@@ -782,7 +784,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.paired?.leftThicknessMm,
         design.paired?.rightThicknessMm,
         design.corrections,
-        design.elements,
+        geometryElementsKey,
         design.pattern,
         design.shoeWidth,
         design.shoeWidthBySide,

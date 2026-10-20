@@ -45,17 +45,6 @@ describe("sidecar per-edge feather and notch mm", () => {
                 scaleAcross: 1,
             }).mirrorX,
         ).toBe(true);
-
-        const metPad = { ...placed, kind: "met_pad" } satisfies PlacedElement;
-        expect(
-            buildElementTransform(metPad, sidecar, "left", { scaleAlong: 1, scaleAcross: 1 }).mirrorX,
-        ).toBe(true);
-        expect(
-            buildElementTransform({ ...metPad, side: "right" }, sidecar, "right", {
-                scaleAlong: 1,
-                scaleAcross: 1,
-            }).mirrorX,
-        ).toBe(false);
     });
 
     test("dancers_pad reads per-edge featherMm without treating it as a number", () => {

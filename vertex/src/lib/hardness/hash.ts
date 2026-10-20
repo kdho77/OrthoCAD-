@@ -82,9 +82,12 @@ export function sha256Utf8(text: string): string {
 
 /** Deterministic JSON: sorted keys, no whitespace. */
 export function canonicalizeJson(value: unknown): string {
-    if (value === null || typeof value !== "object") return JSON.stringify(value);
-    if (Array.isArray(value)) return `[${value.map((v) => canonicalizeJson(v)).join(",")}]`;
+    if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+    if (Array.isArray(value)) return `[${Array.from(value, (v) => canonicalizeJson(v)).join(",")}]`;
     const rec = value as Record<string, unknown>;
-    const keys = Object.keys(rec).sort();
+    // Match JSON object semantics for optional fields cleared by the UI.
+    const keys = Object.keys(rec)
+        .filter((key) => rec[key] !== undefined)
+        .sort();
     return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalizeJson(rec[k])}`).join(",")}}`;
 }

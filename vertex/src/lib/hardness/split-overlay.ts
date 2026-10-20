@@ -68,3 +68,14 @@ export function splitOverlayOutline(el: PlacedElement): { x: number; y: number }
 export function applyDefaultSplitHardness(elements: PlacedElement[]): PlacedElement[] {
     return elements.map((el) => (el.hardnessClass ? el : { ...el, ...defaultSplitHardnessPatch(el.id) }));
 }
+
+/** Selection changes only the outline in Print, so material color remains legible. */
+export function elementPreviewColor(
+    el: PlacedElement,
+    print: boolean,
+    selected: boolean,
+    split = true,
+): string {
+    if (print) return split && el.hardnessClass ? splitColorForElement(el) : "#f8fafc";
+    return selected ? "#22c55e" : DESIGN_ELEMENT_COLORS[0];
+}

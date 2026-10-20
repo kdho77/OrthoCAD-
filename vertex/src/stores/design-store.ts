@@ -48,6 +48,7 @@ import { applyDefaultSplitHardness, defaultSplitHardnessPatch } from "@/lib/hard
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
+import { useClientStore } from "@/stores/client-store";
 import { buildEffectiveTrimlines, useIssuesStore } from "@/stores/issues-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
@@ -68,6 +69,7 @@ import type {
     Unit,
     WedgeCorrection,
 } from "@/types";
+import type { NamedHardnessClass } from "../../shared/print-recipe/hardness-class-table";
 import { type HardnessName, migratePrintRecipe } from "../../shared/print-recipe/print-recipe";
 
 function defaultSideCorrections(): SideCorrections {
@@ -410,6 +412,10 @@ export type StockBaseResolutionState = "idle" | "loading" | "resolved" | "failed
 
 export interface DesignStore {
     design: DesignState;
+    /** Browser draft held aside until the user explicitly resumes it. */
+    pendingSessionDesign: DesignState | null;
+    resumeSession: () => void;
+    startFreshSession: () => void;
     /** Set when the mandatory default stock base cannot be loaded from the server. */
     stockBaseError: string | null;
     /** True while fetching the default stock base from the server. */
@@ -460,6 +466,7 @@ export interface DesignStore {
     addElement: (kind: ElementKind, side: Side) => void;
     addCustomElement: (customElementId: string, customName: string, side: Side) => void;
     updateElement: (id: string, patch: Partial<PlacedElement>) => void;
+    setElementHardness: (id: string, hardness: NamedHardnessClass) => void;
     removeElement: (id: string) => void;
     selectElement: (id: string | null) => void;
     setTransformMode: (mode: TransformMode) => void;
@@ -526,6 +533,15 @@ export const useDesignStore = create<DesignStore>()(
     persist(
         (set, get) => ({
             design: createDesignWithStockPlaceholder(),
+            pendingSessionDesign: null,
+            resumeSession: () => {
+                const draft = get().pendingSessionDesign;
+                if (draft) get().loadDesign({ ...draft, corrections: migrateCorrections(draft.corrections) });
+            },
+            startFreshSession: () => {
+                useClientStore.getState().setActiveDesign(null);
+                get().reset();
+            },
             stockBaseError: null,
             stockBaseLoading: false,
             stockBaseResolutionState: "resolved",
@@ -1035,6 +1051,32 @@ export const useDesignStore = create<DesignStore>()(
 
             clearStockBaseError: () => set({ stockBaseError: null }),
 
+            setElementHardness: (id, hardness) => {
+                const element = get().design.elements.find((e) => e.id === id);
+                if (!element) return;
+                if (element.hardnessClass === hardness && !element.overrides && get().design.splitElements)
+                    return;
+                get().checkpoint("element-hardness");
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        splitElements: true,
+                        elements: s.design.elements.map((e) =>
+                            e.id === id
+                                ? {
+                                      ...e,
+                                      regionId: e.regionId ?? e.id,
+                                      hardnessClass: hardness,
+                                      priority: e.priority ?? 1,
+                                      depth: e.depth ?? { type: "full" },
+                                      overrides: undefined,
+                                  }
+                                : e,
+                        ),
+                    },
+                }));
+            },
+
             updateElement: (id, patch) =>
                 set((s) => {
                     const nextElements = s.design.elements.map((e) => (e.id === id ? { ...e, ...patch } : e));
@@ -1122,6 +1164,7 @@ export const useDesignStore = create<DesignStore>()(
                 stockBaseAutoRetryBlocked = false;
                 set({
                     design: safeDesign,
+                    pendingSessionDesign: null,
                     selectedElementId: null,
                     stockBaseError: null,
                     stockBaseLoading: false,
@@ -1212,6 +1255,7 @@ export const useDesignStore = create<DesignStore>()(
                 stockBaseAutoRetryBlocked = false;
                 set({
                     design: withStock,
+                    pendingSessionDesign: null,
                     selectedElementId: null,
                     stockBaseError: null,
                     stockBaseLoading: false,
@@ -1305,8 +1349,31 @@ export const useDesignStore = create<DesignStore>()(
         }),
         {
             name: "vertex-design-session",
-            /** Keep live design (incl. trimlines) across page refresh before explicit Save. */
-            partialize: (state) => ({ design: state.design }),
+            /** Keep both the active work and an unclaimed draft across repeated reloads. */
+            partialize: (state) => ({
+                design: state.design,
+                pendingSessionDesign: state.pendingSessionDesign,
+            }),
+            merge: (persisted, current) => {
+                const saved = persisted as
+                    | {
+                          design?: DesignState;
+                          pendingSessionDesign?: DesignState | null;
+                      }
+                    | undefined;
+                if (!saved?.design) return current;
+                // Never put a previous session's elements into a new viewport implicitly.
+                // Intercept before hydration publishes any state, avoiding a flash of pads.
+                const draft = saved.design.elements?.length
+                    ? saved.design
+                    : (saved.pendingSessionDesign ?? null);
+                return {
+                    ...current,
+                    design: draft ? createDesignWithStockPlaceholder() : saved.design,
+                    pendingSessionDesign: draft,
+                    selectedElementId: null,
+                };
+            },
             onRehydrateStorage: () => (state) => {
                 if (!state?.design) return;
                 let design = replaceBuiltinDefaultWithSampleTop(sanitizeDesignStockBases(state.design));

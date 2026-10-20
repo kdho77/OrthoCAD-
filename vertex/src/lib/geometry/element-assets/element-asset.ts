@@ -176,10 +176,11 @@ export function buildElementTransform(
     size: { scaleAlong: number; scaleAcross: number },
 ): ElementAssetTransform {
     const scaleZ = sidecar.nominalPeakMm > 1e-6 ? placed.heightMm / sidecar.nominalPeakMm : 1;
-    // The dancer's pad library mesh is authored in the left-foot orientation;
-    // its medial sesamoid notch must face inward on both feet. Other stock
-    // assets use the standard repo-right source orientation.
-    const mirrorX = placed.kind === "dancers_pad" ? side === "right" : side === "left";
+    // All bundled GLBs use the same local orientation as the approved dancer
+    // pad: keep the source on the left foot and reflect its width on the right.
+    // Legacy `.right` filenames / authoredSide labels do not describe the
+    // displayed handedness after authoredToAppXY. Never mirror the insole here.
+    const mirrorX = side === "right";
     return {
         scaleX: size.scaleAcross * placed.scale.y,
         scaleY: size.scaleAlong * placed.scale.x,
@@ -230,8 +231,8 @@ async function loadAssetBuffer(assetId: string): Promise<{ hash: string; buffer:
 }
 
 /**
- * Authored repo-right (+X medial, +Y toe) → app footprint (+X toe, +Y left-medial).
- * Mirror authored X after scale and before translate (LEFT).
+ * Authored asset XY → local app footprint (X along length, Y across width).
+ * Reflect authored X for the right-foot instance, around the element's anchor.
  */
 export function authoredToAppXY(xMed: number, yToe: number, mirrorX: boolean): { x: number; y: number } {
     const mx = mirrorX ? -xMed : xMed;
@@ -255,7 +256,7 @@ export async function loadTransformedAssetPositions(
         const ax = attr.getX(i) * transform.scaleX;
         const ay = attr.getY(i) * transform.scaleY;
         const az = Math.max(0, attr.getZ(i) * transform.scaleZ);
-        // Always rasterize authored-right; flip Y for LEFT so L/R is an exact mirror.
+        // Rasterize the unreflected source, then flip Y for the opposite foot.
         const app = authoredToAppXY(ax, ay, false);
         out[i * 3] = app.x;
         out[i * 3 + 1] = app.y;

@@ -160,7 +160,7 @@ export function anchorPositionFromSidecar(
     const { u, v } = sidecarAnchorUV(sidecar);
     const frame = getBaseFootprintFrame(base, side);
     const halfW = localWidthAtU(base, side, u) / 2;
-    const medialY = side === "left" ? 1 : -1;
+    const medialY = (side === "left" ? 1 : -1) * (sidecar.kind === "cluffy_wedge" ? -1 : 1);
     return {
         x: (u - 0.5) * frame.lenSize,
         y: v * halfW * medialY,

@@ -341,7 +341,9 @@ export function elementFootprintT(
     ry: number,
     side: Side = "left",
 ): number {
-    const medial = medialYSign(side);
+    // Match the GLB dancer-pad contour orientation in the displayed pair.
+    // Reflect only the local shape; default/saved placement anchors stay fixed.
+    const medial = side === "left" ? -1 : 1;
     const profile = ELEMENT_PROFILES[kind];
 
     switch (profile.shape) {
@@ -426,7 +428,9 @@ export function defaultElementPose(
     widthMm = 95,
 ): Pick<PlacedElement, "position" | "rotationDeg" | "scale" | "heightMm" | "placementMode"> {
     const p = ELEMENT_PROFILES[kind];
-    const medial = medialYSign(side);
+    // Cluffy belongs under the hallux: inward is -Y on left, +Y on right.
+    // Keep the other library anchors unchanged; their positions are already approved.
+    const medial = medialYSign(side) * (kind === "cluffy_wedge" ? -1 : 1);
     return {
         position: {
             x: p.defaultU * lengthMm - lengthMm / 2,

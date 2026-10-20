@@ -5,6 +5,7 @@ import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog"
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
 import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
+import { ElementScaleControls } from "@/features/elements/ElementScaleControls";
 import { HardnessPicker } from "@/features/elements/HardnessPicker";
 import {
     deleteCustomAsset,
@@ -240,7 +241,7 @@ export function ElementsPanel() {
                 )}
             </div>
 
-            {displaySelected ? (
+            {displaySelected && selected ? (
                 <div className="space-y-2 rounded-md border border-border bg-background/50 p-2">
                     <div className="flex items-center justify-between">
                         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -420,40 +421,7 @@ export function ElementsPanel() {
                             </div>
                         </div>
                     ) : null}
-                    <SliderField
-                        label="Scale X"
-                        value={displaySelected.scale.x}
-                        min={0.25}
-                        max={3}
-                        step={0.05}
-                        onPreview={(v) =>
-                            previewElementPatch(displaySelected.id, {
-                                id: displaySelected.id,
-                                scale: { ...displaySelected.scale, x: v },
-                            })
-                        }
-                        onChange={(v) => {
-                            updateElement(displaySelected.id, { scale: { ...displaySelected.scale, x: v } });
-                            clearElementPreview(displaySelected.id);
-                        }}
-                    />
-                    <SliderField
-                        label="Scale Y"
-                        value={displaySelected.scale.y}
-                        min={0.25}
-                        max={3}
-                        step={0.05}
-                        onPreview={(v) =>
-                            previewElementPatch(displaySelected.id, {
-                                id: displaySelected.id,
-                                scale: { ...displaySelected.scale, y: v },
-                            })
-                        }
-                        onChange={(v) => {
-                            updateElement(displaySelected.id, { scale: { ...displaySelected.scale, y: v } });
-                            clearElementPreview(displaySelected.id);
-                        }}
-                    />
+                    <ElementScaleControls key={selected.id} element={selected} />
                     <HardnessPicker
                         id={displaySelected.id}
                         value={{
