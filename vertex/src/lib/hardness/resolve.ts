@@ -12,6 +12,7 @@ import {
     meshToManifold,
 } from "./manifold-runtime";
 import {
+    bboxOf,
     emptyMesh,
     INTERSECT_EPS_MM3,
     SLIVER_THICKNESS_MM,
@@ -64,6 +65,8 @@ export async function resolveModifiers(raw: RawModifier[]): Promise<ResolvedModi
         status: RegionStatus;
         note?: string;
         reassignedMm3: number;
+        bounds: ReturnType<typeof bboxOf>;
+        mesh: TriangleMesh;
     }[] = [];
 
     for (const item of ordered) {
@@ -81,8 +84,19 @@ export async function resolveModifiers(raw: RawModifier[]): Promise<ResolvedModi
         let note: string | undefined;
         let status: RegionStatus = "present";
 
+        // Subtraction cannot enlarge the incoming mesh. Its original bounds are
+        // a conservative broad phase; touching bounds still require the boolean.
+        const incomingBounds = bboxOf(item.mesh);
         for (const prev of resolvedHandles) {
             if (!prev.handle) continue;
+            if (
+                [0, 1, 2].some(
+                    (axis) =>
+                        incomingBounds.max[axis]! < prev.bounds.min[axis]! ||
+                        prev.bounds.max[axis]! < incomingBounds.min[axis]!,
+                )
+            )
+                continue;
             let clipped: ManifoldHandle;
             try {
                 clipped = handle.subtract(prev.handle);
@@ -98,7 +112,8 @@ export async function resolveModifiers(raw: RawModifier[]): Promise<ResolvedModi
         }
 
         const vol = manifoldVolume(handle);
-        const thick = thicknessOf(manifoldToMesh(handle));
+        const clippedMesh = manifoldToMesh(handle);
+        const thick = thicknessOf(clippedMesh);
         let kept: ManifoldHandle | null = handle;
 
         if (vol < INTERSECT_EPS_MM3) {
@@ -112,6 +127,12 @@ export async function resolveModifiers(raw: RawModifier[]): Promise<ResolvedModi
                 const unioned = winner.handle.add(handle);
                 dispose(winner.handle);
                 winner.handle = unioned;
+                // A reassigned sliver can expand the winner beyond its old bounds.
+                winner.mesh = manifoldToMesh(unioned);
+                for (const axis of [0, 1, 2] as const) {
+                    winner.bounds.min[axis] = Math.min(winner.bounds.min[axis], incomingBounds.min[axis]);
+                    winner.bounds.max[axis] = Math.max(winner.bounds.max[axis], incomingBounds.max[axis]);
+                }
                 reassignedMm3 = vol;
                 status = "reassigned";
                 note = `Sliver ${vol.toFixed(3)} mm³ / ${thick.toFixed(2)} mm thick reassigned to ${winner.region.regionId}`;
@@ -124,6 +145,10 @@ export async function resolveModifiers(raw: RawModifier[]): Promise<ResolvedModi
             region: item.region,
             handle: kept,
             raw: item,
+            // Retain input bounds: they remain conservative after clipping and
+            // avoid tightening bounds using rounded Float32 output vertices.
+            bounds: incomingBounds,
+            mesh: kept ? clippedMesh : emptyMesh(),
             status,
             note,
             reassignedMm3,
@@ -131,8 +156,7 @@ export async function resolveModifiers(raw: RawModifier[]): Promise<ResolvedModi
     }
 
     const out: ResolvedModifier[] = resolvedHandles.map((item) => {
-        const finalMesh =
-            item.status === "present" && item.handle ? manifoldToMesh(item.handle) : emptyMesh();
+        const finalMesh = item.status === "present" && item.handle ? item.mesh : emptyMesh();
         const sourceHash = sha256Utf8(
             canonicalizeJson({
                 regionId: item.region.regionId,

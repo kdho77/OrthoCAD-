@@ -119,6 +119,8 @@ describe("Print element hardness popup", () => {
             "Soft",
         );
     });
+    // Includes cold WASM initialization and a real ZIP export; performance is
+    // measured separately by hardness-regions.gates.test.ts.
     test("popup choice reaches 3MF modifier settings and embedded saved design", async () => {
         await render();
         await choose("Extra Soft");
@@ -140,5 +142,5 @@ describe("Print element hardness popup", () => {
         expect(xml).toContain('key="sparse_infill_line_width" value="0.7"');
         const reopened = await readDesignFrom3mf(packed.bytes);
         expect(JSON.parse(reopened.designJson).design.elements[0]!.hardnessClass).toBe("Extra Soft");
-    });
+    }, 30_000);
 });

@@ -244,7 +244,9 @@ describe("3MF + geometry gates", () => {
 
         const t1 = Date.now();
         const a = await exportHardness3mf({ design: d, side: "left", shell });
-        expect(Date.now() - t1).toBeLessThan(5000);
+        const exportMs = Date.now() - t1;
+        console.log("HARDNESS-PERF", { resolveMs, resolveBudgetMs, exportMs, exportBudgetMs: 5000 });
+        expect(exportMs).toBeLessThan(5000);
         const b = await exportHardness3mf({ design: d, side: "left", shell });
         expect(a.report.ok).toBe(true);
         expect(a.bytes).toEqual(b.bytes);
