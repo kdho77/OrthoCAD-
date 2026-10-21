@@ -7,6 +7,7 @@ import { SliderField } from "@/components/ui/slider-field";
 import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
 import { ElementScaleControls } from "@/features/elements/ElementScaleControls";
 import { HardnessPicker } from "@/features/elements/HardnessPicker";
+import { TextMarkingPanel } from "@/features/exports/TextMarkingPanel";
 import {
     deleteCustomAsset,
     placeCustomElement,
@@ -16,10 +17,12 @@ import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
 import { loadElementManifest } from "@/lib/geometry/element-assets/element-asset";
 import type { ElementManifestEntry } from "@/lib/geometry/element-assets/types";
 import { ELEMENT_HEIGHT_LIMITS } from "@/lib/geometry/elements";
+import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
 import { DESIGN_ELEMENT_COLORS } from "@/lib/hardness/split-overlay";
 import { elementDisplayName, STOCK_ELEMENT_LABELS, STOCK_ELEMENTS } from "@/lib/library/manifest";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { cn } from "@/lib/utils";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -64,6 +67,15 @@ export function ElementsPanel() {
     });
 
     const [saveOpen, setSaveOpen] = useState(false);
+    const textFocusNonce = useClinicalWorkflowStore((s) => s.textFocusNonce);
+    const [textOpen, setTextOpen] = useState(false);
+    const setTextMarking = useDesignStore((s) => s.setTextMarking);
+    const textMarking = useDesignStore((s) => s.design.textMarking);
+
+    useEffect(() => {
+        if (textFocusNonce > 0) setTextOpen(true);
+    }, [textFocusNonce]);
+
     const [libraryEntries, setLibraryEntries] = useState<ElementManifestEntry[]>([]);
 
     useEffect(() => {
@@ -116,6 +128,27 @@ export function ElementsPanel() {
                     Added elements are color-coded in the viewer; the selected element turns green.
                 </div>
             ) : null}
+            <div>
+                <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Text
+                </div>
+                <button
+                    type="button"
+                    onClick={() => {
+                        setTextOpen(true);
+                        if (!textMarking) setTextMarking(defaultTextMarking("bottom"));
+                    }}
+                    className="flex w-full items-center justify-between rounded-md border border-border bg-background px-2 py-2 text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground"
+                >
+                    Text
+                    <PenTool className="h-3 w-3" />
+                </button>
+                {textOpen ? (
+                    <div className="mt-1.5">
+                        <TextMarkingPanel />
+                    </div>
+                ) : null}
+            </div>
             <div>
                 <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Stock Library

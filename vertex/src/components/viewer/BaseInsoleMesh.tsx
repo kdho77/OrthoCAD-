@@ -1,14 +1,22 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
+import { publishTextGuide } from "@/features/exports/text-guide-store";
 import { useBaseInsoleGeometry } from "@/hooks/useBaseInsoleGeometry";
 import { applyDesignElementColors } from "@/lib/geometry/element-visualization";
 import { sideOffsetX } from "@/lib/geometry/layout";
-import { shouldHideBaseMesh } from "@/lib/geometry/procedural-wall/sample-top-display";
+import { isCoarsePointerDevice } from "@/lib/geometry/procedural-wall/preview-loft-queue";
+import {
+    shouldExtractBaseEdges,
+    shouldHideBaseMesh,
+} from "@/lib/geometry/procedural-wall/sample-top-display";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import type { TextGuide } from "@/lib/geometry/text-marking/place";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
+import { usePerformanceStore } from "@/stores/performance-store";
 import type { Side } from "@/types";
 import { ElementSurfaceMeshes } from "./ElementSurfaceMeshes";
+import { TextPlacementGuide, useTextSurfaceDrag } from "./TextPlacementGuide";
 
 const sideColors: Record<Side, string> = {
     left: "#f8fafc",
@@ -51,9 +59,16 @@ export function BaseInsoleMesh({
     heightmap?: boolean;
 }) {
     const design = useDesignStore((s) => s.design);
+    const interacting = usePerformanceStore((s) => s.interacting);
     const workflowStep = useClinicalWorkflowStore((s) => s.step);
     const selectedElementId = useDesignStore((s) => s.selectedElementId);
     const { geometry, building, elementReference } = useBaseInsoleGeometry(design, side);
+    const textDrag = useTextSurfaceDrag(side);
+
+    useEffect(() => {
+        const ud = geometry?.userData as { textGuide?: TextGuide; textFitError?: string } | undefined;
+        if (ud?.textGuide) publishTextGuide(side, ud.textGuide, ud.textFitError ?? null);
+    }, [geometry, side]);
 
     const material = useMemo(() => {
         if (heightmap) {
@@ -130,6 +145,9 @@ export function BaseInsoleMesh({
 
     const layout = insoleLayoutFromDesign(design);
     const offsetX = sideOffsetX(side, layout.widthMm);
+    const vertexCount = geometry.getAttribute("position")?.count ?? 0;
+    const showEdges =
+        !heightmap && !isCoarsePointerDevice() && shouldExtractBaseEdges(vertexCount, interacting);
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             <mesh
@@ -138,7 +156,13 @@ export function BaseInsoleMesh({
                 position={[-layout.lengthMm / 2, offsetX, 0]}
                 castShadow={!building}
                 receiveShadow
+                onPointerDown={textDrag.onPointerDown}
+                onPointerMove={textDrag.onPointerMove}
+                onPointerUp={textDrag.onPointerUp}
             />
+            <group position={[-layout.lengthMm / 2, offsetX, 0]}>
+                <TextPlacementGuide side={side} />
+            </group>
             {!heightmap && (
                 <group position={[-layout.lengthMm / 2, offsetX, 0]}>
                     <ElementSurfaceMeshes
@@ -148,6 +172,13 @@ export function BaseInsoleMesh({
                     />
                 </group>
             )}
+            {/* Edge extract is expensive on large bases — only when idle and small. */}
+            {showEdges ? (
+                <lineSegments position={[-layout.lengthMm / 2, offsetX, 0]}>
+                    <edgesGeometry args={[geometry, 35]} />
+                    <lineBasicMaterial color={sideColors[side]} transparent opacity={0.35} />
+                </lineSegments>
+            ) : null}
         </group>
     );
 }

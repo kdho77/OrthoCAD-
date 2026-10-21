@@ -25,11 +25,18 @@ export function ActiveFootSideBar({ allowBothWhenLinked = false }: ActiveFootSid
     const setExportSide = useDesignStore((s) => s.setExportSide);
     const setTarget = useMeshEditStore((s) => s.setTarget);
 
+    const syncTextFeet = (feet: "left" | "right" | "both") => {
+        const marking = useDesignStore.getState().design.textMarking;
+        if (!marking) return;
+        useDesignStore.getState().setTextMarking({ feet });
+    };
+
     const pickSide = (side: Side) => {
         acknowledgeExplicitFootSide(side);
         setPlacementFoot(side);
         setExportSide(side);
         setTarget({ type: "insole", side });
+        syncTextFeet(side);
     };
 
     const pickBoth = () => {
@@ -37,6 +44,7 @@ export function ActiveFootSideBar({ allowBothWhenLinked = false }: ActiveFootSid
         setLinked(true);
         setPlacementFoot("both");
         setTarget({ type: "insole", side: active });
+        syncTextFeet("both");
     };
 
     const showBoth = allowBothWhenLinked || linked || placementFoot === "both";

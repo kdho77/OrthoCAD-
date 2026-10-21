@@ -6,6 +6,7 @@ import { useState } from "react";
 import { SplitSettingsPanel } from "@/features/clinical/SplitSettingsPanel";
 import { ExportPanel } from "@/features/exports/ExportPanel";
 import { PrintingPanel } from "@/features/exports/PrintingPanel";
+import { TextSummary } from "@/features/exports/TextSummary";
 import { MillStepPanel } from "@/features/mill/MillStepPanel";
 import { ShapeFinishPanel } from "@/features/shape-finish/ShapeFinishPanel";
 import { shouldShowShapeFinishInPrintAdvanced } from "@/features/shape-finish/shape-finish-mount";
@@ -57,6 +58,7 @@ export function ClinicalPrintStepPanel() {
             <SplitSettingsPanel />
 
             <PrintingPanel clinicalMode primaryOnly showWallPreview />
+            <TextSummary />
 
             <button
                 type="button"

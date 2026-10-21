@@ -37,6 +37,38 @@ export type ScanPattern =
 /** Midfoot arch skive target (distinct from Kirby heel skive). */
 export type ArchSkiveSide = "medial" | "lateral" | "central";
 
+/** `wall` is the outer (lateral) side. `medial` is the inner side. */
+export type TextSurface = "bottom" | "wall" | "medial";
+export type TextMode = "engrave" | "emboss";
+export type TextAnchor = "heel" | "arch" | "forefoot";
+export type TextFeet = "both" | "left" | "right";
+
+/** Custom text. Empty text is a no-op. Placement is mirrored per foot; glyphs are not. */
+export interface TextMarking {
+    text: string;
+    surface: TextSurface;
+    mode: TextMode;
+    /** Always the bundled bold sans. Kept so older designs still round-trip. */
+    bold: boolean;
+    capHeightMm: number;
+    depthMm: number;
+    heightMm: number;
+    letterSpacingMm: number;
+    rotationDeg: number;
+    placementU: number;
+    /** Bottom snap target. Wall / medial ignore this and use mid-height. */
+    anchor: TextAnchor;
+    /** Which feet receive this text. Follows the Editing L / R / Both control. */
+    feet: TextFeet;
+    differentOnLR: boolean;
+    textLeft: string;
+    textRight: string;
+    /** Millimetres along the placement axis, after placementU. */
+    nudgeAlongMm: number;
+    /** Bottom: off the centreline. Sides: off mid-height. */
+    nudgeAcrossMm: number;
+}
+
 /** Track 5b — print / shell shape & finish modifiers (per foot). */
 export interface SideShapeFinish {
     /** Extra top clearance in heel cup / flange for cover bulk (mm). */
@@ -312,6 +344,12 @@ export interface DesignState {
 
     /** Track 5b shape / finish (top cover, trimmable forefoot, arch grind / skive). */
     shapeFinish?: ShapeFinishModifiers;
+
+    /**
+     * Print-step custom text (engrave / emboss). Empty text is a no-op and is
+     * omitted from the design-state hash so frozen STLs stay byte-identical.
+     */
+    textMarking?: TextMarking;
 
     /**
      * Paired Left + Right dual-view workspace support.

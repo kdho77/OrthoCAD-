@@ -43,6 +43,8 @@ import {
 } from "@/lib/geometry/shoe-size";
 import { normalizeShoeWidth } from "@/lib/geometry/shoe-width";
 import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
+import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
+import { normalizeTextMarking } from "@/lib/geometry/text-marking/validate";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { applyDefaultSplitHardness, defaultSplitHardnessPatch } from "@/lib/hardness/split-overlay";
 import { isSupabaseConfigured } from "@/lib/supabase";
@@ -65,6 +67,7 @@ import type {
     Side,
     SideCorrections,
     SideShapeFinish,
+    TextMarking,
     TrimPresetId,
     Unit,
     WedgeCorrection,
@@ -459,6 +462,7 @@ export interface DesignStore {
 
     updateShapeFinish: (side: Side, patch: Partial<SideShapeFinish>) => void;
     setShapeFinishLinked: (linked: boolean) => void;
+    setTextMarking: (patch: Partial<TextMarking>) => void;
 
     /** Live production constraint violations for the current design (derived). */
     getActiveViolations: () => ConstraintViolation[];
@@ -761,6 +765,17 @@ export const useDesignStore = create<DesignStore>()(
                         design: {
                             ...s.design,
                             shapeFinish: { ...current, left, right },
+                        },
+                    };
+                }),
+
+            setTextMarking: (patch) =>
+                set((s) => {
+                    const current = s.design.textMarking ?? defaultTextMarking(patch.surface ?? "bottom");
+                    return {
+                        design: {
+                            ...s.design,
+                            textMarking: normalizeTextMarking({ ...current, ...patch }),
                         },
                     };
                 }),
