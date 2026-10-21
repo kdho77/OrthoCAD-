@@ -1,4 +1,9 @@
 {
+<<<<<<< HEAD
     "plain": "622f224730fb68261babce61661bc9867dd58fb4ff44137ca7b6e8b958bad53f",
     "dancer": "d4161167115917366864b60c33fadcd1b9190cfbd123cff726531c9c6b860bae"
+=======
+    "plain": "5faf283e82c6b992c09bd0b7097cd67ad61cbb6b61f254120cb2bbfdea08fb55",
+    "dancer": "6e62acfffa5972933eb33ca037ae17e66b1e2f355ed3e7e67a59846bb2e973bd"
+>>>>>>> e81b3707 (✨ feat(cnc): space the top-surface spiral at about 1 mm)
 }

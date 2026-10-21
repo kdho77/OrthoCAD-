@@ -7,7 +7,16 @@ import { dropCutterZ } from "@/lib/cnc/drop-cutter";
 import { generateCncJob } from "@/lib/cnc/export";
 import { type ParsedMove, parseGcode } from "@/lib/cnc/parse";
 import { localPoint } from "@/lib/cnc/placement";
-import { bboxOf, distToPoly, perimeter, signedArea } from "@/lib/cnc/polygon";
+import {
+    bboxOf,
+    distToPoly,
+    maxOrderedChordDeviation,
+    perimeter,
+    resampleToSpacing,
+    signedArea,
+    TOOLPATH_CHORD_DEV_MM,
+    TOOLPATH_SPACING_MM,
+} from "@/lib/cnc/polygon";
 import { cloneProfile, IDAHO_PROFILE, toolRadiusMm } from "@/lib/cnc/profile";
 import { acrossWidthGapMm, measureSpiral, planCenterSpiral, type XyPoint } from "@/lib/cnc/spiral";
 import type { MillingProfile, PlacedPart, Point } from "@/lib/cnc/types";
@@ -228,6 +237,100 @@ describe("center-out spiral", () => {
         profile.materialHeightMm = 40;
         const job = generateCncJob(profile, [syntheticWorkpiece(profile, "left")]);
         expect(job.warnings.some((w) => w.includes("exceeds 25"))).toBe(true);
+    });
+
+    test("resample keeps about 1 mm chords inside the 0.05 mm gate", () => {
+        const circle: Point[] = [];
+        for (let i = 0; i < 720; i++) {
+            const a = (i / 720) * Math.PI * 2;
+            circle.push({ x: Math.cos(a) * 30, y: Math.sin(a) * 30, z: 0 });
+        }
+        const spaced = resampleToSpacing(circle, TOOLPATH_SPACING_MM, TOOLPATH_CHORD_DEV_MM, true);
+        const lengths: number[] = [];
+        for (let i = 0; i < spaced.length; i++) {
+            const a = spaced[i];
+            const b = spaced[(i + 1) % spaced.length];
+            if (!a || !b) continue;
+            lengths.push(Math.hypot(b.x - a.x, b.y - a.y));
+        }
+        lengths.sort((a, b) => a - b);
+        const median = lengths[Math.floor(lengths.length / 2)] ?? 0;
+        expect(median).toBeGreaterThan(0.8);
+        expect(median).toBeLessThan(1.2);
+        const circleStart = circle[0];
+        const spacedStart = spaced[0];
+        if (!circleStart || !spacedStart) throw new Error("empty resample");
+        const closed = spaced.concat(spacedStart);
+        const dev = maxOrderedChordDeviation(closed, circle.concat(circleStart));
+        expect(dev.xy).toBeLessThanOrEqual(TOOLPATH_CHORD_DEV_MM);
+        expect(dev.z).toBeLessThanOrEqual(TOOLPATH_CHORD_DEV_MM);
+
+        const peak: Point[] = [];
+        for (let i = 0; i <= 40; i++) {
+            const x = i * 0.1;
+            peak.push({ x, y: 0, z: Math.sin((x / 4) * Math.PI) });
+        }
+        const fitted = resampleToSpacing(peak, TOOLPATH_SPACING_MM, TOOLPATH_CHORD_DEV_MM, false);
+        const peakDev = maxOrderedChordDeviation(fitted, peak);
+        expect(peakDev.z).toBeLessThanOrEqual(TOOLPATH_CHORD_DEV_MM);
+        expect(peakDev.xy).toBeLessThanOrEqual(TOOLPATH_CHORD_DEV_MM);
+        expect(fitted.length).toBeGreaterThan(2);
+    });
+
+    test("emitted insole moves stay near 1 mm and within 0.05 mm of the surface", () => {
+        const profile = cloneProfile(IDAHO_PROFILE);
+        const wp = syntheticWorkpiece(profile, "left");
+        const plan = planCenterSpiral(wp.outline, profile, "ball");
+        const job = generateCncJob(profile, [wp]);
+        const parsed = parseGcode(job.gcode, profile.freeMovementHeightMm);
+        const passes = cuttingPasses(parsed.moves);
+        const surface = passes.filter((p) => Math.min(...p.map((m) => m.z)) > 0.5);
+        const perimeterPasses = passes.filter((p) => Math.min(...p.map((m) => m.z)) <= 0.5);
+        expect(surface).toHaveLength(1);
+        const part = job.placed[0]!;
+        const radius = toolRadiusMm(profile.toolpathCutter.diameterMm);
+        const lengths: number[] = [];
+        const locals: Point[] = [];
+        let maxZ = 0;
+        for (const pass of surface) {
+            const plunge = pass[0]!;
+            for (const m of pass) {
+                if (m === plunge) continue;
+                const dxy = Math.hypot(m.x - m.from.x, m.y - m.from.y);
+                const dz = m.z - m.from.z;
+                if (dxy < 0.05) continue;
+                lengths.push(Math.hypot(dxy, dz));
+                const from = machineToLocal(m.from.x, m.from.y, part, profile);
+                const to = machineToLocal(m.x, m.y, part, profile);
+                if (locals.length === 0) locals.push({ x: from.x, y: from.y, z: m.from.z });
+                locals.push({ x: to.x, y: to.y, z: m.z });
+                for (const t of [0.25, 0.5, 0.75]) {
+                    const x = from.x + (to.x - from.x) * t;
+                    const y = from.y + (to.y - from.y) * t;
+                    const z = m.from.z + dz * t;
+                    const surf = dropCutterZ(part.heightmap, x, y, radius, "ball");
+                    maxZ = Math.max(maxZ, Math.abs(surf - z));
+                }
+            }
+        }
+        for (const pass of perimeterPasses) {
+            for (const m of pass) {
+                const dxy = Math.hypot(m.x - m.from.x, m.y - m.from.y);
+                if (dxy < 0.05) continue;
+                lengths.push(Math.hypot(dxy, m.z - m.from.z));
+            }
+        }
+        lengths.sort((a, b) => a - b);
+        const median = lengths[Math.floor(lengths.length / 2)] ?? 0;
+        expect(median).toBeGreaterThan(0.8);
+        expect(median).toBeLessThan(1.2);
+        expect(maxZ).toBeLessThanOrEqual(0.05);
+        const xy = maxOrderedChordDeviation(locals, plan.samples);
+        expect(xy.xy).toBeLessThanOrEqual(0.05);
+        const contour = buildContourPass(wp.outline, profile);
+        const centre = contour.band.centreline.concat(contour.band.centreline[0]!);
+        const perDev = maxOrderedChordDeviation(contour.finish, centre);
+        expect(perDev.xy).toBeLessThanOrEqual(0.05);
     });
 
     test("across-width gap of the synthetic dome is within 0.75 mm", () => {

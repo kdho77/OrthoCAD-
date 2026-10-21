@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { type BallBandGeometry, ballBandGeometry, UNCUT_CORNER_TOL_MM } from "./band";
-import { densifyArc, signedArea, tangentAt, unit } from "./polygon";
+import { densifyArc, resampleToSpacing, signedArea, TOOLPATH_SPACING_MM, tangentAt, unit } from "./polygon";
 import { toolRadiusMm } from "./profile";
 import type { MillingProfile, Point } from "./types";
 
@@ -31,25 +31,6 @@ function tangentTravel(pts: Point[], i: number): Point {
  */
 function outwardCcw(t: Point): Point {
     return { x: t.y, y: -t.x };
-}
-
-/** Keep every vertex (no corner cutting) and split edges longer than maxSegMm. */
-function densifyKeepVertices(pts: Point[], maxSegMm: number): Point[] {
-    if (pts.length < 3) return pts.map((p) => ({ x: p.x, y: p.y }));
-    const maxSeg = Math.max(0.05, maxSegMm);
-    const out: Point[] = [];
-    for (let i = 0; i < pts.length; i++) {
-        const a = pts[i]!;
-        const b = pts[(i + 1) % pts.length]!;
-        out.push({ x: a.x, y: a.y });
-        const len = Math.hypot(b.x - a.x, b.y - a.y);
-        const n = Math.ceil(len / maxSeg);
-        for (let k = 1; k < n; k++) {
-            const t = k / n;
-            out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-        }
-    }
-    return out;
 }
 
 /** CCW, like the Windows perimeter. The first vertex stays the toe/lateral start. */
@@ -156,19 +137,23 @@ export function buildContourPass(outline: Point[], profile: MillingProfile): Con
         }
     }
     const source = band.centreline.length >= 3 ? band.centreline : outline;
-    const path = ensureCcwKeepStart(densifyKeepVertices(source, Math.max(0.35, profile.sampleMm)));
+    const oriented = ensureCcwKeepStart(source);
+    // Leads keep the dense-centreline tangent. Laps are about 1 mm apart.
+    // 0.012 mm is as far as the chord can leave the centreline before the R5
+    // wall profile exceeds its 0.05 mm gate. The surface pass uses 0.05 mm.
+    const path = resampleToSpacing(oriented, TOOLPATH_SPACING_MM, 0.012, true);
     // Rapid to Z clearance, then a straight plunge to the stock top. The helix itself
     // is exactly two laps from that Z down to the table, plus one flat lap.
     const zStock = profile.materialHeightMm;
     const zFloor = PERIMETER_FLOOR_MM;
-    const t0 = tangentTravel(path, 0);
+    const t0 = tangentTravel(oriented, 0);
     const n0 = outwardCcw(t0);
-    const p0 = path[0]!;
+    const p0 = path[0] ?? oriented[0]!;
     const leadIn = leadArc(p0, t0, n0, LEAD_RADIUS_MM, profile.chordTolMm, true).map((p) => ({
         ...p,
         z: zStock,
     }));
-    const tEnd = tangentAt(path, 0);
+    const tEnd = tangentAt(oriented, 0);
     const nEnd = outwardCcw(tEnd);
     const leadOut = leadArc(p0, tEnd, nEnd, LEAD_RADIUS_MM, profile.chordTolMm, false).map((p) => ({
         ...p,
