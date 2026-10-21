@@ -56,7 +56,7 @@ export async function workpiecesFromDesign(
                 : design.paired.rightThicknessMm
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, thickness ?? BASE_REFERENCE_THICKNESS_MM);
-        const composed = composePrintSolidTop(raw, {
+        const composed = await composePrintSolidTop(raw, {
             sourceField: { ...field, lengthMm: layout.lengthMm, widthMm: layout.widthMm },
         });
         out.push(attachOrbitMesh(workpieceFromGeometry(composed, side, profile), composed, raw));

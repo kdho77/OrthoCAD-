@@ -92,7 +92,7 @@ export async function sampleTopWorkpiece(
         raw = mirrored;
     }
     const b = bbox(raw);
-    const composed = composePrintSolidTop(raw, {
+    const composed = await composePrintSolidTop(raw, {
         sourceField: field({
             side,
             lengthMm: b.length,
