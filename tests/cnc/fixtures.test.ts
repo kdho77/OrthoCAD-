@@ -9,7 +9,7 @@ import { generateCncJob } from "@/lib/cnc/export";
 import { parseGcode } from "@/lib/cnc/parse";
 import { renderToolpathPreview } from "@/lib/cnc/preview";
 import { cloneProfile, IDAHO_PROFILE, wallClearZ } from "@/lib/cnc/profile";
-import { evaluateStock, simulateMoves } from "@/lib/cnc/simulate";
+import { evaluateStock, simulateLocal, simulateMoves } from "@/lib/cnc/simulate";
 import { encodePng } from "../helpers/render-png";
 import { sampleTopWorkpiece, syntheticWorkpiece } from "./helpers";
 
@@ -62,9 +62,12 @@ describe("CNC ball wall / skin gates (synthetic)", () => {
 
         const parsed = assertJob(job.gcode, profile);
         const grid = simulateMoves(parsed.moves, profile, 0.1);
-        const report = evaluateStock(grid, job.placed, profile);
+        const localGrids = job.placed.map((part) => simulateLocal(parsed.moves, profile, part));
+        const report = evaluateStock(grid, job.placed, profile, localGrids);
         expect(report.minStock).toBeGreaterThanOrEqual(0.999);
-        expect(report.gougeMm).toBeLessThanOrEqual(0.001);
+        // Raw design−stock on the eroded interior. The previous 0.001 ceiling
+        // was applied after subtracting 0.01 mm, so it allowed ~0.011 mm.
+        expect(report.gougeMm).toBeLessThanOrEqual(0.01);
         expect(report.wallMaxZ).toBeLessThanOrEqual(wallClearZ(profile) + 0.01);
         expect(report.wallDevMm).toBeLessThanOrEqual(0.05);
         expect(report.profileDevMm).toBeLessThanOrEqual(0.05);
@@ -101,6 +104,36 @@ describe("CNC SAMPLE_Top fixtures (Idaho two-pocket)", () => {
             expect(parsed.maxY).toBeLessThanOrEqual(profile.tableLengthMm + 1e-4);
         }
 
+        // Dexels sit on the design-sample lattice (same origin, pitch, and cell
+        // centres). A machine grid whose origin is the toolpath bbox mixes the
+        // rim fillet into the first interior sample.
+        // Before this fix the inverted cusp left the finish pass ≥ 5 mm high
+        // (median excess 5.57, P95 9.0, sim excess 9.02 on 6cd477de).
+        const surfaceCell = Math.min(plainL.heightmap.cell, plainR.heightmap.cell);
+        expect(surfaceCell).toBeLessThanOrEqual(0.2);
+        const surfaceParsed = parseGcode(plainJob.gcode, profile.freeMovementHeightMm);
+        const surfaceLocals = plainJob.placed.map((part) =>
+            simulateLocal(surfaceParsed.moves, profile, part),
+        );
+        const surface = evaluateStock(
+            {
+                originX: 0,
+                originY: 0,
+                cell: 1,
+                nx: 1,
+                ny: 1,
+                z: Float32Array.of(profile.materialHeightMm),
+            },
+            plainJob.placed,
+            profile,
+            surfaceLocals,
+        );
+        if (surface.excessOverCount > 0) console.info("[cnc] cells over 0.25 mm excess", surface.excessOver);
+        expect(surface.gougeMm).toBeLessThanOrEqual(0.01);
+        expect(surface.excessP95Mm).toBeLessThanOrEqual(0.086);
+        expect(surface.excessMaxMm).toBeLessThanOrEqual(0.25);
+        expect(surface.excessOverCount).toBe(0);
+
         writePreview("cnc-sample-top-plain.png", plainJob.gcode, profile);
         writePreview("cnc-sample-top-dancer.png", padJob.gcode, profile);
 
@@ -114,5 +147,5 @@ describe("CNC SAMPLE_Top fixtures (Idaho two-pocket)", () => {
         const latest = loadGolden();
         expect(latest.plain).toBe(shaPlain);
         expect(latest.dancer).toBe(shaPad);
-    }, 180_000);
+    }, 300_000);
 });

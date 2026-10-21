@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
-import { bboxOf, distToPoly, nearestOnPoly, pointInPoly } from "./polygon";
+import { bboxOf, pointInPoly } from "./polygon";
 import type { Heightmap, Point } from "./types";
 
 export function sampleHeight(hm: Heightmap, x: number, y: number): number {
@@ -32,14 +32,15 @@ export function isInside(hm: Heightmap, x: number, y: number): boolean {
 }
 
 /**
- * Rasterize the composed top at ≤0.25 mm. Outside the outline, height is extended
- * at rim height across the top-offset (+ tool-radius) band.
+ * Rasterize the composed top at the given pitch. Outside the outline the design
+ * height is the skin floor (default 1 mm) — not 0, NaN, rim Z, or the stock top.
  */
 export function rasterizeTop(
     geometry: BufferGeometry,
     outline: Point[],
     cellMm: number,
     bandMm: number,
+    skinFloorMm = 1,
 ): Heightmap {
     const pos = geometry.getAttribute("position");
     const index = geometry.getIndex();
@@ -110,18 +111,11 @@ export function rasterizeTop(
         for (let ix = 0; ix < nx; ix++) {
             const x = originX + ix * cellMm;
             const i = iy * nx + ix;
-            const inn = pointInPoly(x, y, outline);
-            if (inn) {
+            if (pointInPoly(x, y, outline)) {
                 inside[i] = 1;
                 continue;
             }
-            const d = distToPoly(x, y, outline);
-            if (d <= bandMm) {
-                const rim = nearestOnPoly(x, y, outline);
-                const rz = rim.z ?? 0;
-                const prev = z[i]!;
-                if (!Number.isFinite(prev) || rz > prev) z[i] = rz;
-            }
+            z[i] = skinFloorMm;
         }
     }
 

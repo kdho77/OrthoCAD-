@@ -19,8 +19,31 @@ export interface SimGrid {
     z: Float32Array;
 }
 
+export interface SurfaceSample {
+    x: number;
+    y: number;
+    localX: number;
+    localY: number;
+    design: number;
+    stock: number;
+    distOutline: number;
+}
+
 export interface SimReport {
+    /** max(design − stock) on cells whose centre is inside the outline eroded by one cell. */
     gougeMm: number;
+    gougeAt: SurfaceSample | null;
+    /** Same metric on the one-cell band that the eroded gate excludes. */
+    edgeGougeMm: number;
+    edgeGougeAt: SurfaceSample | null;
+    /** stock − design on the eroded interior. */
+    excessMedianMm: number;
+    excessP95Mm: number;
+    excessMaxMm: number;
+    excessMaxAt: SurfaceSample | null;
+    /** Cells with excess above 0.25 mm. Count is complete; the list is capped. */
+    excessOverCount: number;
+    excessOver: SurfaceSample[];
     fidelityMm: number;
     /** Max stock excess above the equator inside the inner→outer band. */
     wallDevMm: number;
@@ -34,6 +57,14 @@ export interface SimReport {
     skinMax: number;
     minStock: number;
     insideCount: number;
+}
+
+const EXCESS_FLAG_MM = 0.25;
+
+function percentile(sorted: number[], p: number): number {
+    if (sorted.length === 0) return 0;
+    const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1));
+    return sorted[idx] ?? 0;
 }
 
 function worldToLocalHm(x: number, y: number, placed: PlacedPart): { x: number; y: number } {
@@ -81,6 +112,35 @@ function sampleGridZ(grid: SimGrid, x: number, y: number): number {
     return grid.z[iy * grid.nx + ix]!;
 }
 
+/** Stock at an arbitrary XY. Design nodes and dexel centres are not the same lattice. */
+function sampleGridZAt(grid: SimGrid, x: number, y: number): number {
+    if (grid.cell <= 0 || grid.nx < 2 || grid.ny < 2) return sampleGridZ(grid, x, y);
+    const gx = (x - grid.originX) / grid.cell;
+    const gy = (y - grid.originY) / grid.cell;
+    const x0 = Math.floor(gx);
+    const y0 = Math.floor(gy);
+    if (x0 < 0 || y0 < 0 || x0 >= grid.nx - 1 || y0 >= grid.ny - 1) return sampleGridZ(grid, x, y);
+    const z00 = grid.z[y0 * grid.nx + x0];
+    const z10 = grid.z[y0 * grid.nx + x0 + 1];
+    const z01 = grid.z[(y0 + 1) * grid.nx + x0];
+    const z11 = grid.z[(y0 + 1) * grid.nx + x0 + 1];
+    if (
+        z00 === undefined ||
+        z10 === undefined ||
+        z01 === undefined ||
+        z11 === undefined ||
+        !Number.isFinite(z00) ||
+        !Number.isFinite(z10) ||
+        !Number.isFinite(z01) ||
+        !Number.isFinite(z11)
+    ) {
+        return sampleGridZ(grid, x, y);
+    }
+    const fx = gx - x0;
+    const fy = gy - y0;
+    return z00 * (1 - fx) * (1 - fy) + z10 * fx * (1 - fy) + z01 * (1 - fx) * fy + z11 * fx * fy;
+}
+
 export function simulateMoves(moves: GMove[], profile: MillingProfile, cell = 0.1): SimGrid {
     const pad = 12;
     let minX = Infinity;
@@ -123,6 +183,49 @@ export function simulateMoves(moves: GMove[], profile: MillingProfile, cell = 0.
             const zz = m.from.z + dz * t;
             const tool = toolAtZ(zz, profile, skin);
             stamp(grid, x, y, zz, tool.r, tool.type);
+        }
+    }
+    return grid;
+}
+
+function machineToWorld(x: number, y: number, profile: MillingProfile): Point {
+    const wx = profile.zeroX === "right" ? profile.tableWidthMm - x : x;
+    const wy = profile.zeroY === "back" ? profile.tableLengthMm - y : y;
+    return { x: wx, y: wy };
+}
+
+/**
+ * Dexels on this part's heightmap lattice, in local XY.
+ * Cell centres are the design samples, so design and stock share one grid.
+ */
+export function simulateLocal(moves: GMove[], profile: MillingProfile, part: PlacedPart): SimGrid {
+    const hm = part.heightmap;
+    const z = new Float32Array(hm.nx * hm.ny);
+    z.fill(profile.materialHeightMm);
+    const grid: SimGrid = {
+        originX: hm.originX,
+        originY: hm.originY,
+        cell: hm.cell,
+        nx: hm.nx,
+        ny: hm.ny,
+        z,
+    };
+    const skin = Math.abs(profile.extraMovementMm);
+    const step = Math.max(0.05, hm.cell * 0.85);
+    for (const m of moves) {
+        if (m.motion !== "G1") continue;
+        const a = localPoint(machineToWorld(m.from.x, m.from.y, profile), part);
+        const b = localPoint(machineToWorld(m.x, m.y, profile), part);
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dz = m.z - m.from.z;
+        const len = Math.hypot(dx, dy, dz);
+        const n = Math.max(1, Math.ceil(len / step));
+        for (let i = 1; i <= n; i++) {
+            const t = i / n;
+            const zz = m.from.z + dz * t;
+            const tool = toolAtZ(zz, profile, skin);
+            stamp(grid, a.x + dx * t, a.y + dy * t, zz, tool.r, tool.type);
         }
     }
     return grid;
@@ -182,12 +285,25 @@ function ringBoundaryHausdorff(
     return counted >= 8 ? miss : Math.max(miss, 1);
 }
 
-export function evaluateStock(grid: SimGrid, placed: PlacedPart[], profile: MillingProfile): SimReport {
+export function evaluateStock(
+    grid: SimGrid,
+    placed: PlacedPart[],
+    profile: MillingProfile,
+    localGrids?: SimGrid[],
+): SimReport {
     const skin = skinZ(profile);
     const radius = toolRadiusMm(profile.contourCutter.diameterMm);
     const wallZ = wallClearZ(profile);
     const ballContour = profile.contourCutter.type === "ball";
     let gougeMm = 0;
+    let gougeAt: SurfaceSample | null = null;
+    let edgeGougeMm = 0;
+    let edgeGougeAt: SurfaceSample | null = null;
+    let excessMaxMm = Number.NEGATIVE_INFINITY;
+    let excessMaxAt: SurfaceSample | null = null;
+    let excessOverCount = 0;
+    const excessOver: SurfaceSample[] = [];
+    const excesses: number[] = [];
     let fidelityMm = 0;
     let wallDevMm = 0;
     let wallMaxZ = -Infinity;
@@ -220,16 +336,6 @@ export function evaluateStock(grid: SimGrid, placed: PlacedPart[], profile: Mill
                     lp.y <= outerBb.maxY + grid.cell;
                 const inn = nearOuter && pointInPoly(lp.x, lp.y, outline);
                 const dOutline = inn || nearOuter ? distToPoly(lp.x, lp.y, outline) : Infinity;
-                const design = inn ? sampleHeight(part.heightmap, lp.x, lp.y) : Number.NaN;
-                if (inn && Number.isFinite(design)) {
-                    insideCount++;
-                    const g = design - 0.01 - stock;
-                    if (g > gougeMm) gougeMm = g;
-                    if (dOutline > 0.5) {
-                        const fid = stock - design;
-                        if (fid > fidelityMm) fidelityMm = fid;
-                    }
-                }
                 if (!nearOuter) continue;
                 const inOuter = band.outerEdge.length >= 3 && pointInPoly(lp.x, lp.y, band.outerEdge);
                 const inInner = band.innerEdge.length >= 3 && pointInPoly(lp.x, lp.y, band.innerEdge);
@@ -261,6 +367,65 @@ export function evaluateStock(grid: SimGrid, placed: PlacedPart[], profile: Mill
         }
     }
 
+    // Gouge and excess use the design-sample grid, at those cell centres, so a
+    // bilinear read cannot mix the skin floor into an interior sample. Cells
+    // closer than one sample to the outline are the edge band.
+    for (let pi = 0; pi < bands.length; pi++) {
+        const { part } = bands[pi]!;
+        const hm = part.heightmap;
+        const local = localGrids?.[pi];
+        const aligned =
+            local !== undefined && local.nx === hm.nx && local.ny === hm.ny && local.cell === hm.cell;
+        for (let iy = 0; iy < hm.ny; iy++) {
+            const ly = hm.originY + iy * hm.cell;
+            for (let ix = 0; ix < hm.nx; ix++) {
+                const i = iy * hm.nx + ix;
+                if (hm.inside[i] !== 1) continue;
+                const design = hm.z[i];
+                if (design === undefined || !Number.isFinite(design)) continue;
+                const lx = hm.originX + ix * hm.cell;
+                const dOutline = distToPoly(lx, ly, part.outline);
+                const w = machineXY({ x: lx, y: ly }, part, profile);
+                const stock = aligned ? local.z[i]! : sampleGridZAt(grid, w.x, w.y);
+                if (!Number.isFinite(stock)) continue;
+                const sample: SurfaceSample = {
+                    x: w.x,
+                    y: w.y,
+                    localX: lx,
+                    localY: ly,
+                    design,
+                    stock,
+                    distOutline: dOutline,
+                };
+                const raw = design - stock;
+                if (dOutline >= hm.cell) {
+                    insideCount++;
+                    if (raw > gougeMm) {
+                        gougeMm = raw;
+                        gougeAt = sample;
+                    }
+                    const excess = stock - design;
+                    excesses.push(excess);
+                    if (excess > excessMaxMm) {
+                        excessMaxMm = excess;
+                        excessMaxAt = sample;
+                    }
+                    if (excess > EXCESS_FLAG_MM) {
+                        excessOverCount++;
+                        if (excessOver.length < 12) excessOver.push(sample);
+                    }
+                    if (dOutline > 0.5) {
+                        const fid = stock - design;
+                        if (fid > fidelityMm) fidelityMm = fid;
+                    }
+                } else if (raw > edgeGougeMm) {
+                    edgeGougeMm = raw;
+                    edgeGougeAt = sample;
+                }
+            }
+        }
+    }
+
     if (ballContour) {
         for (const { part, band } of bands) {
             const path = band.centreline;
@@ -281,8 +446,33 @@ export function evaluateStock(grid: SimGrid, placed: PlacedPart[], profile: Mill
     if (!Number.isFinite(skinMin)) skinMin = skin;
     if (!Number.isFinite(skinMax)) skinMax = skin;
     if (!Number.isFinite(wallMaxZ)) wallMaxZ = wallZ;
+    if (!Number.isFinite(excessMaxMm)) excessMaxMm = 0;
+    const sortedExcess = excesses.slice().sort((a, b) => a - b);
+    const excessMedianMm = percentile(sortedExcess, 0.5);
+    const excessP95Mm = percentile(sortedExcess, 0.95);
+    const gougeLine = gougeAt
+        ? `gouge ${gougeMm.toFixed(3)} mm at (${gougeAt.x.toFixed(2)}, ${gougeAt.y.toFixed(2)}) local (${gougeAt.localX.toFixed(2)}, ${gougeAt.localY.toFixed(2)}) design ${gougeAt.design.toFixed(3)} stock ${gougeAt.stock.toFixed(3)} distOutline ${gougeAt.distOutline.toFixed(3)}`
+        : "gouge none";
+    const edgeLine = edgeGougeAt
+        ? `edge-band gouge ${edgeGougeMm.toFixed(3)} mm at (${edgeGougeAt.x.toFixed(2)}, ${edgeGougeAt.y.toFixed(2)}) design ${edgeGougeAt.design.toFixed(3)} stock ${edgeGougeAt.stock.toFixed(3)} distOutline ${edgeGougeAt.distOutline.toFixed(3)}`
+        : "edge-band gouge none";
+    const excessLine = excessMaxAt
+        ? `excess max ${excessMaxMm.toFixed(3)} at local (${excessMaxAt.localX.toFixed(2)}, ${excessMaxAt.localY.toFixed(2)}) design ${excessMaxAt.design.toFixed(3)} stock ${excessMaxAt.stock.toFixed(3)} dist ${excessMaxAt.distOutline.toFixed(3)}`
+        : `excess max ${excessMaxMm.toFixed(3)}`;
+    console.info(
+        `[cnc] ${gougeLine}; ${edgeLine}; excess median ${excessMedianMm.toFixed(3)} P95 ${excessP95Mm.toFixed(3)}; ${excessLine}; over0.25 ${excessOverCount}`,
+    );
     return {
         gougeMm,
+        gougeAt,
+        edgeGougeMm,
+        edgeGougeAt,
+        excessMedianMm,
+        excessP95Mm,
+        excessMaxMm,
+        excessMaxAt,
+        excessOverCount,
+        excessOver,
         fidelityMm,
         wallDevMm,
         wallMaxZ,

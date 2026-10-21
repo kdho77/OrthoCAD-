@@ -115,7 +115,7 @@ export function syntheticWorkpiece(profile: MillingProfile, side: Side = "left")
         const a = (i / n) * Math.PI * 2;
         outline.push({ x: 40 + Math.cos(a) * rx, y: Math.sin(a) * ry, z: 5 });
     }
-    const cell = 0.25;
+    const cell = 0.2;
     const originX = -5;
     const originY = -25;
     const nx = Math.ceil(90 / cell);
@@ -132,7 +132,9 @@ export function syntheticWorkpiece(profile: MillingProfile, side: Side = "left")
             const r2 = u * u + v * v;
             if (r2 <= 1.08) {
                 const i = iy * nx + ix;
-                z[i] = 4 + 4 * Math.max(0, 1 - r2);
+                // Edge stays above the fillet equator (Z 6) so a true-to-surface
+                // finish pass does not undercut the R5 wall. Crest is 12, edge is 8.
+                z[i] = 8 + 4 * Math.max(0, 1 - r2);
                 if (r2 <= 1) inside[i] = 1;
             }
         }

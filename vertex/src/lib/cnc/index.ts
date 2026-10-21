@@ -5,7 +5,7 @@ export type { BallBandGeometry, UncutCorner } from "./band";
 export { ballBandGeometry, ballHalfWidthMm, ballProfileZ, contourLegend, hausdorffClosed } from "./band";
 export { attachOrbitMesh, workpieceFromComposed, workpiecesFromDesign } from "./compose";
 export { buildContourPass } from "./contour";
-export { ballScallopMm } from "./drop-cutter";
+export { ballScallopMm, cutterTipFromSample, dropCutterZ, SKIN_FLOOR_MM } from "./drop-cutter";
 export { ENVELOPE_CLEARANCE_MM, toolFootprintLocal } from "./envelope";
 export { generateCncJob } from "./export";
 export type { ParseResult } from "./parse";

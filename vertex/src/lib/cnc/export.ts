@@ -3,11 +3,11 @@
 
 import { sha256Hex } from "@/lib/geometry/procedural-wall/sha256";
 import { buildContourPass } from "./contour";
-import { buildDropMap, sampleDrop } from "./drop-cutter";
+import { dropCutterZ } from "./drop-cutter";
 import { CncGcodeEmitter } from "./gcode";
 import { machineXY, type PartPlacement, placeWorkpieces } from "./placement";
 import { maxStepdownMm, skinZ, toolRadiusMm } from "./profile";
-import { spiralXy, waterlineLevels, zigzagXy } from "./spiral";
+import { spiralXy, waterlineLevels, type XyPoint, zigzagXy } from "./spiral";
 import {
     CncExportError,
     type CncJobResult,
@@ -44,6 +44,28 @@ function canonicalHash(profile: MillingProfile, parts: CncWorkpiece[]): string {
         })),
     });
     return sha256Hex(payload);
+}
+
+/**
+ * Linear G1 chords sit below the drop envelope by about L²/(8r).
+ * Keep that sagitta under 0.004 mm for an r = 5 mm ball (L ≤ 0.4 mm).
+ */
+const FINISH_CHORD_MM = 0.4;
+
+function densifyXy(pts: XyPoint[], maxChord: number): XyPoint[] {
+    if (pts.length < 2) return pts;
+    const out: XyPoint[] = [pts[0]!];
+    for (let i = 1; i < pts.length; i++) {
+        const a = out[out.length - 1]!;
+        const b = pts[i]!;
+        const dist = Math.hypot(b.x - a.x, b.y - a.y);
+        const n = Math.max(1, Math.ceil(dist / maxChord));
+        for (let k = 1; k <= n; k++) {
+            const t = k / n;
+            out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+        }
+    }
+    return out;
 }
 
 function plunge(g: CncGcodeEmitter, profile: MillingProfile, x: number, y: number, zTarget: number): void {
@@ -164,18 +186,17 @@ export function generateCncJob(
 
     g.raw(profile.customGcode.toolpathStart);
     for (const part of placed) {
-        const dropMap = buildDropMap(
-            part.heightmap,
-            toolRadiusMm(profile.toolpathCutter.diameterMm),
-            profile.toolpathCutter.type,
-        );
-        const xy =
+        const tipR = toolRadiusMm(profile.toolpathCutter.diameterMm);
+        const tipType = profile.toolpathCutter.type;
+        const xy = densifyXy(
             profile.strategy === "zigzag"
-                ? zigzagXy(part.outline, profile, profile.toolpathCutter.type)
-                : spiralXy(part.outline, profile, profile.toolpathCutter.type);
+                ? zigzagXy(part.outline, profile, tipType)
+                : spiralXy(part.outline, profile, tipType),
+            FINISH_CHORD_MM,
+        );
         const sampled: Array<{ x: number; y: number; drop: number }> = [];
         for (const p of xy) {
-            const drop = sampleDrop(dropMap, p.x, p.y);
+            const drop = dropCutterZ(part.heightmap, p.x, p.y, tipR, tipType);
             if (!Number.isFinite(drop)) continue;
             sampled.push({ x: p.x, y: p.y, drop });
         }

@@ -4,9 +4,10 @@
 import type { BufferGeometry } from "three";
 import { extractOrderedBoundaryLoop } from "@/lib/geometry/mesh-close";
 import type { Side } from "@/types";
+import { DESIGN_PITCH_MM, SKIN_FLOOR_MM } from "./drop-cutter";
 import { heightmapRange, rasterizeTop } from "./heightmap";
 import { closeOutline, ensureCcw, startAtHeel } from "./polygon";
-import { toolRadiusMm } from "./profile";
+import { skinZ, toolRadiusMm } from "./profile";
 import type { CncWorkpiece, MillingProfile, Point } from "./types";
 import { CncExportError } from "./types";
 
@@ -33,7 +34,8 @@ export function workpieceFromGeometry(
             toolRadiusMm(profile.toolpathCutter.diameterMm),
             toolRadiusMm(profile.contourCutter.diameterMm),
         );
-    const heightmap = rasterizeTop(geometry, outline, Math.min(0.25, profile.sampleMm), band);
+    const pitch = Math.min(DESIGN_PITCH_MM, Math.max(0.05, profile.sampleMm));
+    const heightmap = rasterizeTop(geometry, outline, pitch, band, Math.max(SKIN_FLOOR_MM, skinZ(profile)));
     const { zMin, zMax } = heightmapRange(heightmap);
     return { side, outline, heightmap, zMin, zMax };
 }
