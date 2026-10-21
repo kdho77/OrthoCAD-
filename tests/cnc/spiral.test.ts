@@ -170,6 +170,8 @@ describe("center-out spiral", () => {
                 if (m === plunge) continue;
                 expect(m.z).toBeGreaterThanOrEqual(drop - 0.02);
                 expect(m.z).toBeLessThanOrEqual(drop + 0.02);
+                // The plunge is the only F3500. Steep climbs stay at the surface feed.
+                if (m.f) expect(m.f).toBe(36000);
                 if (m.f === 36000) sawFinish = true;
             }
             expect(sawFinish).toBe(true);

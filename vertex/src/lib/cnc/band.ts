@@ -53,12 +53,20 @@ function copyLoop(pts: Point[]): Point[] {
 }
 
 /**
- * Forefoot point on the min-Y side. Windows insole 1 starts near X215 Y10,
- * about 69% of the way from the heel end to the toe, on the lateral edge.
+ * Toe end of the flat lateral edge (min Y). The widest point sits further back;
+ * Windows starts where that edge turns into the toe, near X215.7 Y10.4 on the
+ * left and X195.8 Y140.6 on the right. 0.8 mm is the rise at those spots.
  */
+const LATERAL_FLAT_RISE_MM = 0.8;
+
 function toeLateralTarget(loop: Point[]): Point {
     const bb = bboxOf(loop);
-    return { x: bb.minX + 0.69 * (bb.maxX - bb.minX), y: bb.minY, z: 0 };
+    let best: Point | null = null;
+    for (const p of loop) {
+        if (p.y > bb.minY + LATERAL_FLAT_RISE_MM) continue;
+        if (!best || p.x > best.x) best = p;
+    }
+    return best ?? { x: bb.minX + 0.69 * (bb.maxX - bb.minX), y: bb.minY, z: 0 };
 }
 
 function rotateToClosest(loop: Point[], target: Point): Point[] {

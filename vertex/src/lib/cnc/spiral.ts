@@ -49,8 +49,10 @@ export interface SpiralMeasure {
     lengthMm: number;
     /** Median spacing of crossings along the short axis. */
     widthPitchMm: number;
-    /** Median spacing of crossings along the long axis (toe and heel). */
+    /** Median spacing of crossings along the long axis, toe side. */
     endPitchMm: number;
+    /** Spacing of the outer quarter of long-axis crossings on the heel side. */
+    heelPitchMm: number;
     clockwise: boolean;
     /**
      * Largest half-spacing between path crossings of lines across the width,
@@ -117,16 +119,15 @@ function lapCount(rx: number, ry: number, step: number): number {
 }
 
 /**
- * Heel-cup radial pitch cap. The homothety leaves ~2.4 mm at the ends.
- * A 10 mm ball's flat scallop there is ~0.15 mm, and the heel cup (the
- * min-X end) leaves more than the 0.25 mm stock gate. Extra arcs on that
- * end keep its pitch at or under this cap. The toe stays at the stretched pitch.
+ * Heel-tip radial pitch. The homothety on SAMPLE_Top already matches the toe
+ * (~2.44 mm) and Windows (~2.55 mm) at ~2.47 mm. A 10 mm ball cannot seat the
+ * heel cup there (excess max ~0.40 mm, P95 ~0.116 mm). 1.98 mm is the coarsest
+ * uniform tip grid that stays inside the stock gate; the next step, ~2.01 mm,
+ * leaves cells over 0.25 mm.
  */
-const HEEL_RADIAL_CAP_MM = 1.4;
-/** Fraction of the length, from the heel, that gets the extra arcs. */
-const HEEL_CAP_FRACTION = 0.16;
-/** Inner laps are the midfoot. The cup is the outer part of the spiral. */
-const HEEL_CAP_FROM_SCALE = 0.72;
+const HEEL_PITCH_MM = 1.98;
+/** Heel tip, as a fraction of the length from min X. Stays clear of the width line. */
+const HEEL_TIP_FRACTION = 0.22;
 
 function pointAtFraction(loop: Point[], frac: number): XyPoint {
     const n = loop.length;
@@ -209,29 +210,11 @@ function splitPieces(loop: Point[], step: number): Point[][] {
     return [loop];
 }
 
-function coarseRuns(pieces: number[]): Array<{ start: number; len: number }> {
-    const n = pieces.length;
-    const runs: Array<{ start: number; len: number }> = [];
-    const seen = new Array<boolean>(n).fill(false);
-    for (let i = 0; i < n; i++) {
-        if (pieces[i]! <= 1 || seen[i]) continue;
-        if (pieces[(i - 1 + n) % n]! > 1) continue;
-        let len = 0;
-        while (len < n && pieces[(i + len) % n]! > 1) {
-            seen[(i + len) % n] = true;
-            len++;
-        }
-        runs.push({ start: i, len });
-    }
-    if (!runs.length && pieces.some((p) => p > 1)) runs.push({ start: 0, len: n });
-    return runs;
-}
-
 /**
  * Clockwise homothety from the bounding-box center out to `loop`.
  * Scale grows linearly with angle, so the pitch at the toe and heel is wider
- * than the pitch across the width. Where the heel cup would exceed
- * {@link HEEL_RADIAL_CAP_MM}, extra arcs are cut before that sector's outer lap.
+ * than the pitch across the width. Heel-tip angles use their own radial grid
+ * when {@link HEEL_PITCH_MM} is finer than that homothety.
  */
 function emitHomothety(
     loop: Point[],
@@ -246,29 +229,32 @@ function emitHomothety(
     const per = Math.max(1e-6, perimeter(cw));
     const nAng = Math.max(24, Math.ceil(per / PATH_SPACING_MM));
     const bb = bboxOf(cw);
-    const heelX = bb.minX + HEEL_CAP_FRACTION * (bb.maxX - bb.minX);
+    const heelX = bb.minX + HEEL_TIP_FRACTION * (bb.maxX - bb.minX);
     const boundary: XyPoint[] = [];
-    const pieces = new Array<number>(nAng).fill(1);
+    const ray: number[] = [];
+    const heel: boolean[] = [];
     for (let i = 0; i < nAng; i++) {
         const p = pointAtFraction(cw, i / nAng);
         boundary.push(p);
-        const ray = Math.hypot(p.x - center.x, p.y - center.y);
-        const heel = p.x <= heelX;
-        const gap = ray / laps;
-        if (heel && gap > HEEL_RADIAL_CAP_MM) {
-            pieces[i] = Math.max(1, Math.ceil((gap - 1e-6) / HEEL_RADIAL_CAP_MM));
-        }
+        ray.push(Math.hypot(p.x - center.x, p.y - center.y));
+        heel.push(p.x <= heelX);
     }
-    // Start the angular walk on a side station so a heel run does not wrap.
-    let rot = pieces.findIndex((p) => p === 1);
+    let rot = heel.findIndex((flag) => !flag);
     if (rot < 0) rot = 0;
     if (rot > 0) {
         boundary.push(...boundary.splice(0, rot));
-        pieces.push(...pieces.splice(0, rot));
+        ray.push(...ray.splice(0, rot));
+        heel.push(...heel.splice(0, rot));
     }
-    const runs = coarseRuns(pieces);
-    const runAt = new Map<number, { start: number; len: number }>();
-    for (const run of runs) runAt.set(run.start, run);
+    const hStart = heel.findIndex((flag) => flag);
+    let hLen = 0;
+    if (hStart >= 0) {
+        while (hLen < nAng && heel[hStart + hLen]) hLen++;
+    }
+    let rHeel = 0;
+    for (let j = 0; j < hLen; j++) rHeel = Math.max(rHeel, ray[hStart + j] ?? 0);
+    const natural = rHeel / Math.max(1, laps);
+    const nHeel = natural <= HEEL_PITCH_MM + 1e-6 ? laps : Math.max(laps, Math.round(rHeel / HEEL_PITCH_MM));
 
     const emit = (i: number, s: number, clock: number) => {
         const b = boundary[i]!;
@@ -284,24 +270,24 @@ function emitHomothety(
     pushSample(out, center, 0, component, true);
     let clock = 0;
     const tick = 1 / nAng;
+    let heelCursor = 0;
     for (let lap = 0; lap < laps; lap++) {
-        const s0 = lap / laps;
         const s1 = (lap + 1) / laps;
+        const pending: number[] = [];
+        while (heelCursor < nHeel && (heelCursor + 1) / nHeel <= s1 + 1e-9) {
+            pending.push((heelCursor + 1) / nHeel);
+            heelCursor++;
+        }
         for (let k = 0; k < nAng; k++) {
-            const run = lap / laps >= HEEL_CAP_FROM_SCALE ? runAt.get(k) : undefined;
-            if (run) {
-                let maxP = 1;
-                for (let j = 0; j < run.len; j++) {
-                    maxP = Math.max(maxP, pieces[(run.start + j) % nAng]!);
-                }
-                for (let sub = 1; sub < maxP; sub++) {
-                    const s = s0 + ((s1 - s0) * sub) / maxP;
-                    for (let j = 0; j < run.len; j++) {
+            if (hLen > 0 && k === hStart) {
+                for (const s of pending) {
+                    for (let j = 0; j < hLen; j++) {
                         clock += tick;
-                        emit((run.start + j) % nAng, s, clock);
+                        emit(hStart + j, s, clock);
                     }
                 }
             }
+            if (hLen > 0 && k >= hStart && k < hStart + hLen) continue;
             clock += tick;
             emit(k, s1, clock);
         }
@@ -448,17 +434,36 @@ export function measureSpiral(samples: XyPoint[], outline: Point[]): SpiralMeasu
     const bb = bboxOf(samples.length ? (samples as Point[]) : outline);
     const longX = bb.maxX - bb.minX >= bb.maxY - bb.minY;
     const yHits = crossingValues(samples, "x", center.x).filter((y) => y > center.y + 0.4);
-    const xHits = crossingValues(samples, "y", center.y).filter((x) => x > center.x + 0.4);
+    const xToe = crossingValues(samples, "y", center.y).filter((x) => x > center.x + 0.4);
+    const xHeel = crossingValues(samples, "y", center.y).filter((x) => x < center.x - 0.4);
     const yPitch = medianPitch(yHits);
-    const xPitch = medianPitch(xHits);
+    const toePitch = medianPitch(xToe);
+    const heelPitch = outerPitch(xHeel, "min");
     return {
         laps: Math.abs(wind) / (2 * Math.PI),
         lengthMm,
-        widthPitchMm: longX ? yPitch : xPitch,
-        endPitchMm: longX ? xPitch : yPitch,
+        widthPitchMm: longX ? yPitch : toePitch,
+        endPitchMm: longX ? toePitch : yPitch,
+        heelPitchMm: longX ? heelPitch : outerPitch(yHits, "min"),
         clockwise: wind < 0,
         acrossWidthGapMm: acrossWidthGapMm(samples, outline),
     };
+}
+
+/** Median gap among the outer quarter of sorted crossings. `min` is the low end of the axis. */
+function outerPitch(values: number[], toward: "min" | "max"): number {
+    const sorted = values.slice().sort((a, b) => a - b);
+    const diffs: number[] = [];
+    for (let i = 1; i < sorted.length; i++) {
+        const d = sorted[i]! - sorted[i - 1]!;
+        if (d > 0.05) diffs.push(d);
+    }
+    if (!diffs.length) return 0;
+    const n = Math.max(1, Math.ceil(diffs.length * 0.25));
+    const outer = (toward === "min" ? diffs.slice(0, n) : diffs.slice(diffs.length - n))
+        .slice()
+        .sort((a, b) => a - b);
+    return outer[Math.floor(outer.length / 2)]!;
 }
 
 export function zigzagXy(outline: Point[], profile: MillingProfile, toolType: ToolType): XyPoint[] {

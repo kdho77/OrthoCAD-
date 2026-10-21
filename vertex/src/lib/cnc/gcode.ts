@@ -66,8 +66,9 @@ export class CncGcodeEmitter {
         const dz = z - this.z;
         const d = Math.hypot(dxy, dz);
         if (d < 1e-7) return;
-        let cls = feedClass;
-        if (cls !== "contour" && dxy > 1e-9 && Math.abs(dz) / dxy > 1) cls = "slow";
+        // Windows stays on the surface feed after the plunge, including the heel-cup
+        // climbs. The caller chooses dip / contour / normal; slope does not override it.
+        const cls = feedClass;
         const f =
             cls === "dip"
                 ? feeds.dip
