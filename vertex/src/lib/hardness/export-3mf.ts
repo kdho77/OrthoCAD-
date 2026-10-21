@@ -141,6 +141,7 @@ export function modelSettingsXml(modifiers: ResolvedModifier[], designHash: stri
             meta.splice(4, 0, ["sparse_infill_speed", vs.speedMmS.toFixed(1)]);
         }
         meta.splice(5, 0, ["sparse_infill_line_width", vs.lineWidthMm.toFixed(1)]);
+        meta.splice(6, 0, ["infill_wall_overlap", `${vs.infillWallOverlapPct}%`]);
         parts.push(`<part id="${partId}" subtype="modifier_part">${partMetadata(meta)}</part>`);
         partId += 1;
     }

@@ -32,7 +32,10 @@ import {
     gatePriorityVoxel,
 } from "@/lib/hardness/validate";
 import {
+    GLOBAL_SKIN_LINE_WIDTH_MM,
+    GLOBAL_WALL_LINE_WIDTH_MM,
     HARDNESS_CLASS_TABLE,
+    NAMED_HARDNESS_CLASSES,
     REGION_HARDNESS_CLASSES,
 } from "../vertex/shared/print-recipe/hardness-class-table";
 import { migrateHardnessZones } from "../vertex/shared/print-recipe/hardness-region";
@@ -46,26 +49,29 @@ describe("hardness class table", () => {
         );
         const json = JSON.parse(readFileSync(jsonPath, "utf8"));
         expect(HARDNESS_CLASS_TABLE).toEqual(json);
-        expect(HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillDensityPct).toBe(16);
-        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillDensityPct).toBe(22);
+        expect(HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillDensityPct).toBe(15);
+        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillDensityPct).toBe(21);
         expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillDensityPct).toBe(26);
-        expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillDensityPct).toBe(32);
-        expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillDensityPct).toBe(38);
+        expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillDensityPct).toBe(26);
+        expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillDensityPct).toBe(30);
         expect(HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillLineWidthMm).toBe(0.7);
         expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillLineWidthMm).toBe(0.7);
         expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillLineWidthMm).toBe(1.0);
-        expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillLineWidthMm).toBe(1.0);
-        expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillLineWidthMm).toBe(1.0);
-        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillSpeedMmS).toBe(44.0);
-        expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillSpeedMmS).toBe(44.5);
-        expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillSpeedMmS).toBe(45.0);
-        expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillSpeedMmS).toBe(45.5);
+        expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillLineWidthMm).toBe(1.2);
+        expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillLineWidthMm).toBe(1.2);
+        expect(HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillSpeedMmS).toBeUndefined();
+        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillSpeedMmS).toBeUndefined();
+        expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillSpeedMmS).toBeUndefined();
+        expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillSpeedMmS).toBe(23.0);
+        expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillSpeedMmS).toBe(23.0);
+        for (const k of REGION_HARDNESS_CLASSES) {
+            expect(HARDNESS_CLASS_TABLE[k].infillWallOverlapPct).toBe(25);
+        }
         expect(HARDNESS_CLASS_TABLE.Custom.sparseInfillDensityPctMin).toBe(5);
         expect(HARDNESS_CLASS_TABLE.Custom.sparseInfillDensityPctMax).toBe(100);
         for (const k of REGION_HARDNESS_CLASSES) {
             if (k === "Custom") continue;
             expect(HARDNESS_CLASS_TABLE[k].sparseInfillPattern).toBe("gyroid");
-            expect(HARDNESS_CLASS_TABLE[k].pendingCouponValidation).toBe(true);
         }
     });
 });
@@ -129,12 +135,14 @@ describe("gcode class fingerprint (gate 13 helper)", () => {
         const ok = verifyGcodeByClass(FIXTURE_GCODE, ["Extra Soft", "Soft", "Medium", "Hard", "Extra Hard"]);
         expect(ok.ok).toBe(true);
         expect(ok.classesSeen.sort()).toEqual(["Extra Hard", "Extra Soft", "Hard", "Medium", "Soft"]);
-        expect(ok.segments.every((s) => s.lineWidthMm === 0.7 || s.lineWidthMm === 1.0)).toBe(true);
-        const bad = verifyGcodeByClass(`${FIXTURE_GCODE};TYPE:Internal solid infill\nG1 X1 Y1 E1 F2640\n`, [
-            "Soft",
+        expect(
+            ok.segments.every((s) => s.lineWidthMm === 0.7 || s.lineWidthMm === 1.0 || s.lineWidthMm === 1.2),
+        ).toBe(true);
+        const bad = verifyGcodeByClass(`${FIXTURE_GCODE};TYPE:Internal solid infill\nG1 X1 Y1 E1 F1380\n`, [
+            "Hard",
         ]);
         expect(bad.ok).toBe(false);
-        expect(bad.errors.some((e) => /solid infill in Soft/i.test(e))).toBe(true);
+        expect(bad.errors.some((e) => /solid infill at Hard sparse speed/i.test(e))).toBe(true);
     });
 
     test("fails when a required class has no sparse segments", () => {
@@ -193,6 +201,115 @@ describe("3MF + geometry gates", () => {
         expect(soft.status).toBe("present");
         expect(meshVolume(firm.mesh)).toBeGreaterThan(meshVolume(soft.mesh) * 0.5);
     }, 20_000);
+
+    test("per-region modifiers emit only sparse infill keys, never walls or skins", async () => {
+        const baseSlicerKeys = [
+            "sparse_infill_density",
+            "sparse_infill_pattern",
+            "sparse_infill_line_width",
+            "infill_wall_overlap",
+        ] as const;
+        const metadataKeys = new Set([
+            "name",
+            "matrix",
+            "regionId",
+            "kind",
+            "hardnessClass",
+            "priority",
+            "depth",
+            "overrides",
+            "sourceHash",
+            "meshSha",
+            "designHash",
+        ]);
+        const wallOrSkinKey =
+            /^(?:inner_wall|outer_wall|wall_loops|wall_line|wall_speed|wall_flow|top_shell|bottom_shell|top_surface|bottom_surface)|skin/i;
+        expect(GLOBAL_WALL_LINE_WIDTH_MM).toBe(1.0);
+        expect(GLOBAL_SKIN_LINE_WIDTH_MM).toBe(1.0);
+
+        const modifiers = NAMED_HARDNESS_CLASSES.map((cls, i) => {
+            const mesh = boxMesh(i * 6, 0, 0, i * 6 + 4, 4, 4);
+            return {
+                region: {
+                    regionId: `mod-${cls.replace(/\s+/g, "-").toLowerCase()}`,
+                    kind: "zone" as const,
+                    hardnessClass: cls,
+                    priority: 1,
+                    depth: { type: "full" as const },
+                    side: "left" as const,
+                    polygon: [
+                        { x: 0, y: 0 },
+                        { x: 4, y: 0 },
+                        { x: 4, y: 4 },
+                        { x: 0, y: 4 },
+                    ],
+                },
+                mesh,
+                footprint: [
+                    { x: 0, y: 0 },
+                    { x: 4, y: 0 },
+                    { x: 4, y: 4 },
+                    { x: 0, y: 4 },
+                ],
+                rawVolumeMm3: 64,
+                volumeMm3: 64,
+                status: "present" as const,
+                meshSha: meshSha(mesh),
+                sourceHash: `src-${cls}`,
+                reassignedMm3: 0,
+            };
+        });
+        const packed = await packHardness3mf({
+            design: fixturePhaseBLegacy(),
+            side: "left",
+            shell: boxMesh(0, -40, -0.5, 260, 40, 8),
+            modifiers,
+        });
+        const zip = await JSZip.loadAsync(packed.bytes);
+        const cfg = await zip.file("Metadata/model_settings.config")?.async("string");
+        const designJson = await zip.file("Metadata/orthocad_design.json")?.async("string");
+        expect(cfg).toBeTruthy();
+        expect(designJson).toBeTruthy();
+        const parts = [
+            ...(cfg ?? "").matchAll(/<part id="[^"]+" subtype="modifier_part">([\s\S]*?)<\/part>/g),
+        ];
+        expect(parts).toHaveLength(NAMED_HARDNESS_CLASSES.length);
+        for (const part of parts) {
+            const body = part[1]!;
+            const keys = [...body.matchAll(/key="([^"]+)"/g)].map((m) => m[1]!);
+            const cls = body.match(/key="hardnessClass" value="([^"]+)"/)?.[1] as
+                | (typeof NAMED_HARDNESS_CLASSES)[number]
+                | undefined;
+            expect(cls).toBeTruthy();
+            const expectSpeed = HARDNESS_CLASS_TABLE[cls!].sparseInfillSpeedMmS !== undefined;
+            const expectedSlicer = [
+                ...baseSlicerKeys,
+                ...(expectSpeed ? (["sparse_infill_speed"] as const) : []),
+            ].sort();
+            const slicerKeys = keys.filter((k) => !metadataKeys.has(k)).sort();
+            expect(slicerKeys).toEqual(expectedSlicer);
+            expect(keys.some((k) => wallOrSkinKey.test(k))).toBe(false);
+            expect(keys).not.toContain("wall_loops");
+            expect(keys).not.toContain("inner_wall_line_width");
+            expect(keys).not.toContain("outer_wall_line_width");
+            expect(keys).not.toContain("wall_line_width");
+            expect(keys).not.toContain("top_shell_layers");
+            expect(keys).not.toContain("bottom_shell_layers");
+            expect(keys).not.toContain("top_surface_line_width");
+            expect(keys).not.toContain("bottom_surface_line_width");
+        }
+        expect(cfg).toContain('key="sparse_infill_density" value="15%"');
+        expect(cfg).toContain('key="sparse_infill_density" value="21%"');
+        expect(cfg).toContain('key="sparse_infill_density" value="26%"');
+        expect(cfg).toContain('key="sparse_infill_density" value="30%"');
+        expect(cfg).toContain('key="sparse_infill_line_width" value="0.7"');
+        expect(cfg).toContain('key="sparse_infill_line_width" value="1.0"');
+        expect(cfg).toContain('key="sparse_infill_line_width" value="1.2"');
+        expect(cfg).toContain('key="sparse_infill_speed" value="23.0"');
+        expect(cfg).toContain('key="infill_wall_overlap" value="25%"');
+        expect(cfg).not.toContain('key="sparse_infill_speed" value="45.0"');
+        expect(cfg).not.toContain('key="sparse_infill_speed" value="45.5"');
+    });
 
     test("gate 1: packing 3MF does not mutate the shell mesh", async () => {
         const shell = boxMesh(0, -40, -0.5, 260, 40, 8);
@@ -265,6 +382,7 @@ describe("3MF + geometry gates", () => {
         expect(cfg).toContain('subtype="modifier_part"');
         expect(cfg).toContain("sparse_infill_pattern");
         expect(cfg).toContain("sparse_infill_line_width");
+        expect(cfg).toContain("infill_wall_overlap");
         expect(cfg).toContain("gyroid");
         expect(cfg).not.toMatch(/wall_loops|top_shell|bottom_shell/);
         expect(zip.file("Metadata/orthocad_design.json")).toBeTruthy();

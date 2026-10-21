@@ -20,12 +20,12 @@ import {
 } from "./print-recipe";
 
 describe("print-recipe", () => {
-    test("hardness table matches the single 5-level ladder (pending coupon)", () => {
-        expect(HARDNESS_TO_INFILL_PCT["Extra Soft"]).toBe(16);
-        expect(HARDNESS_TO_INFILL_PCT.Soft).toBe(22);
+    test("hardness table matches the coupon-validated 5-level ladder", () => {
+        expect(HARDNESS_TO_INFILL_PCT["Extra Soft"]).toBe(15);
+        expect(HARDNESS_TO_INFILL_PCT.Soft).toBe(21);
         expect(HARDNESS_TO_INFILL_PCT.Medium).toBe(26);
-        expect(HARDNESS_TO_INFILL_PCT.Hard).toBe(32);
-        expect(HARDNESS_TO_INFILL_PCT["Extra Hard"]).toBe(38);
+        expect(HARDNESS_TO_INFILL_PCT.Hard).toBe(26);
+        expect(HARDNESS_TO_INFILL_PCT["Extra Hard"]).toBe(30);
         expect(HARDNESS_NAMES).toHaveLength(5);
     });
 
@@ -108,8 +108,8 @@ describe("print-recipe", () => {
     });
 
     test("infill fraction from recipe", () => {
-        expect(infillFractionFromRecipe({ ...DEFAULT_PRINT_RECIPE_V1, defaultHardness: "Soft" })).toBe(0.22);
-        expect(gyroidInfillPctForHardness("Extra Hard")).toBe(38);
-        expect(gyroidInfillPctForHardness("Extra Soft")).toBe(16);
+        expect(infillFractionFromRecipe({ ...DEFAULT_PRINT_RECIPE_V1, defaultHardness: "Soft" })).toBe(0.21);
+        expect(gyroidInfillPctForHardness("Extra Hard")).toBe(30);
+        expect(gyroidInfillPctForHardness("Extra Soft")).toBe(15);
     });
 });
