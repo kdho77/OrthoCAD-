@@ -37,7 +37,8 @@ describe("CNC dialect / envelope / feeds", () => {
         expect(parsed.unknownWords).toEqual([]);
         expect(parsed.g0BelowClearance).toBe(false);
         expect(parsed.spindleOnBeforeFirstCut).toBe(true);
-        expect(parsed.minZ).toBeGreaterThanOrEqual(0.999);
+        expect(parsed.minZ).toBeGreaterThanOrEqual(-1e-4);
+        expect(parsed.minZ).toBeLessThan(0.05);
         expect(parsed.maxZ).toBeLessThanOrEqual(50.0001);
         expect(parsed.minX).toBeGreaterThanOrEqual(-1e-4);
         expect(parsed.maxX).toBeLessThanOrEqual(profile.tableWidthMm + 1e-4);

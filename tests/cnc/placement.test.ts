@@ -15,7 +15,7 @@ import {
     transformOutline,
     worldPoint,
 } from "@/lib/cnc/placement";
-import { bboxOf } from "@/lib/cnc/polygon";
+import { bboxOf, distToPoly } from "@/lib/cnc/polygon";
 import { cloneProfile, IDAHO_PROFILE } from "@/lib/cnc/profile";
 import { CncExportError, type PlacedPart, type Point } from "@/lib/cnc/types";
 import { mirrorGeometry } from "@/lib/library/loaders";
@@ -28,11 +28,21 @@ function first<T>(arr: readonly T[], label: string): T {
     return value;
 }
 
-function contourFinishXy(gcode: string, contourFeed: number): Point[] {
+/** Finish lap only. Leads share the contour feed; the lead-out is also at Z0, off the centreline. */
+function contourFinishXy(gcode: string, contourFeed: number, finish: Point[]): Point[] {
     const parsed = parseGcode(gcode, 50);
     return parsed.moves
-        .filter((m) => m.motion === "G1" && m.f === contourFeed)
+        .filter((m) => m.motion === "G1" && m.f === contourFeed && m.z <= 0.02)
+        .filter((m) => distToPoly(m.x, m.y, finish) <= 0.002)
         .map((m) => ({ x: m.x, y: m.y }));
+}
+
+function finishPolyline(
+    outline: Point[],
+    placed: PlacedPart,
+    profile: ReturnType<typeof cloneProfile>,
+): Point[] {
+    return buildContourPass(outline, profile).finish.map((p) => machineXY(p, placed, profile));
 }
 
 function expectBboxClose(
@@ -44,11 +54,6 @@ function expectBboxClose(
     expect(Math.abs(actual.maxX - expected.maxX)).toBeLessThanOrEqual(eps);
     expect(Math.abs(actual.minY - expected.minY)).toBeLessThanOrEqual(eps);
     expect(Math.abs(actual.maxY - expected.maxY)).toBeLessThanOrEqual(eps);
-}
-
-function expectedContourBbox(outline: Point[], placed: PlacedPart, profile: ReturnType<typeof cloneProfile>) {
-    const finish = buildContourPass(outline, profile).finish.map((p) => machineXY(p, placed, profile));
-    return bboxOf(finish);
 }
 
 describe("CNC mill placement", () => {
@@ -82,9 +87,9 @@ describe("CNC mill placement", () => {
         expect(jobPart.rotationDeg).toBe(rotationDeg);
         expect(jobPart.tx).toBeCloseTo(placed.tx, 6);
         expect(jobPart.ty).toBeCloseTo(placed.ty, 6);
-        const actual = bboxOf(contourFinishXy(job.gcode, profile.topFeeds.contour));
-        const expected = expectedContourBbox(wp.outline, jobPart, profile);
-        expectBboxClose(actual, expected, 0.01);
+        const finish = finishPolyline(wp.outline, jobPart, profile);
+        const actual = bboxOf(contourFinishXy(job.gcode, profile.topFeeds.contour, finish));
+        expectBboxClose(actual, bboxOf(finish), 0.01);
     });
 
     test("chosen x/y offset feeds G-code bbox exactly", () => {
@@ -101,11 +106,13 @@ describe("CNC mill placement", () => {
         const jobPart = first(job.placed, "job part");
         expect(jobPart.tx).toBeCloseTo(base.tx + 12.5, 6);
         expect(jobPart.ty).toBeCloseTo(base.ty + 3.25, 6);
-        const actual = bboxOf(contourFinishXy(job.gcode, profile.topFeeds.contour));
-        const expected = expectedContourBbox(wp.outline, jobPart, profile);
-        expectBboxClose(actual, expected, 0.01);
+        const finish = finishPolyline(wp.outline, jobPart, profile);
+        const actual = bboxOf(contourFinishXy(job.gcode, profile.topFeeds.contour, finish));
+        expectBboxClose(actual, bboxOf(finish), 0.01);
         const autoJob = generateCncJob(profile, [wp]);
-        const autoBb = bboxOf(contourFinishXy(autoJob.gcode, profile.topFeeds.contour));
+        const autoPart = first(autoJob.placed, "auto part");
+        const autoFinish = finishPolyline(wp.outline, autoPart, profile);
+        const autoBb = bboxOf(contourFinishXy(autoJob.gcode, profile.topFeeds.contour, autoFinish));
         expect(actual.minX - autoBb.minX).toBeCloseTo(12.5, 2);
         expect(actual.minY - autoBb.minY).toBeCloseTo(3.25, 2);
     });

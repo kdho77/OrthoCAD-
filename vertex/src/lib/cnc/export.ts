@@ -6,13 +6,12 @@ import { buildContourPass } from "./contour";
 import { dropCutterZ } from "./drop-cutter";
 import { CncGcodeEmitter } from "./gcode";
 import { machineXY, type PartPlacement, placeWorkpieces } from "./placement";
-import { maxStepdownMm, skinZ, toolRadiusMm } from "./profile";
-import { spiralXy, waterlineLevels, type XyPoint, zigzagXy } from "./spiral";
+import { toolRadiusMm } from "./profile";
+import { planCenterSpiral, type XyPoint, zigzagXy } from "./spiral";
 import {
     CncExportError,
     type CncJobResult,
     type CncWorkpiece,
-    type FeedClass,
     type MillingProfile,
     type PlacedPart,
     type Point,
@@ -68,43 +67,38 @@ function densifyXy(pts: XyPoint[], maxChord: number): XyPoint[] {
     return out;
 }
 
-function plunge(g: CncGcodeEmitter, profile: MillingProfile, x: number, y: number, zTarget: number): void {
-    const feeds = profile.topFeeds;
-    const clear = profile.freeMovementHeightMm;
-    const step = maxStepdownMm(profile);
-    g.rapidZ(clear);
-    g.rapidTo(x, y, clear);
-    let z = clear;
-    const dest = Math.max(zTarget, skinZ(profile));
-    while (z > dest + 1e-6) {
-        z = Math.max(dest, z - step);
-        g.cutTo(x, y, z, "dip", feeds);
-    }
-}
+/** Center entry stays at or under 15°. tan(15°) ≈ 0.268. */
+const ENTRY_SLOPE = Math.tan((15 * Math.PI) / 180) * 0.999;
+const ENTRY_DEPTH_WARN_MM = 25;
 
-function emitPath(
+function emitEntryRamp(
     g: CncGcodeEmitter,
     placed: PlacedPart,
     profile: MillingProfile,
-    pts: Point[],
-    feed: FeedClass,
-    firstSlow: boolean,
+    circuit: XyPoint[],
+    dropAt: (p: XyPoint) => number,
+    zTarget: number,
 ): void {
-    if (pts.length === 0) return;
     const feeds = profile.topFeeds;
-    const clear = profile.freeMovementHeightMm;
-    const start = machineXY(pts[0]!, placed, profile);
-    const z0 = Math.max(pts[0]!.z ?? skinZ(profile), skinZ(profile));
-    plunge(g, profile, start.x, start.y, z0);
-    let engaged = !firstSlow;
-    for (let i = 1; i < pts.length; i++) {
-        const w = machineXY(pts[i]!, placed, profile);
-        const z = Math.max(pts[i]!.z ?? skinZ(profile), skinZ(profile));
-        const cls: FeedClass = !engaged ? "slow" : feed;
-        g.cutTo(w.x, w.y, z, cls, feeds);
-        engaged = true;
+    if (circuit.length < 2) return;
+    let z = profile.freeMovementHeightMm;
+    for (let guard = 0; guard < 8000; guard++) {
+        let descended = false;
+        for (let i = 1; i < circuit.length; i++) {
+            const prev = circuit[i - 1]!;
+            const b = circuit[i]!;
+            const dist = Math.hypot(b.x - prev.x, b.y - prev.y);
+            const drop = dropAt(b);
+            const proposed = z - dist * ENTRY_SLOPE;
+            const zNext = Math.max(proposed, drop);
+            const w = machineXY(b, placed, profile);
+            g.cutTo(w.x, w.y, zNext, "dip", feeds);
+            if (zNext < z - 1e-4) descended = true;
+            z = zNext;
+        }
+        if (z <= zTarget + 0.02) break;
+        if (!descended) break;
     }
-    g.rapidZ(clear);
 }
 
 function emitContour(g: CncGcodeEmitter, placed: PlacedPart, profile: MillingProfile): string[] {
@@ -113,26 +107,33 @@ function emitContour(g: CncGcodeEmitter, placed: PlacedPart, profile: MillingPro
     const clear = profile.freeMovementHeightMm;
     const map = (p: Point) => {
         const w = machineXY(p, placed, profile);
-        return { x: w.x, y: w.y, z: Math.max(p.z ?? skinZ(profile), skinZ(profile)) };
+        return { x: w.x, y: w.y, z: p.z ?? 0 };
     };
     const lead = pass.leadIn.map(map);
     if (lead.length) {
         const p0 = lead[0]!;
-        plunge(g, profile, p0.x, p0.y, p0.z ?? profile.materialHeightMm);
+        g.rapidZ(clear);
+        g.rapidTo(p0.x, p0.y, clear);
+        g.cutTo(p0.x, p0.y, p0.z, "contour", feeds);
         for (let i = 1; i < lead.length; i++) {
             const p = lead[i]!;
-            g.cutTo(p.x, p.y, p.z ?? profile.materialHeightMm, "slow", feeds);
+            g.cutTo(p.x, p.y, p.z, "contour", feeds);
         }
     }
-    for (const p of pass.helix.map(map)) g.cutTo(p.x, p.y, p.z ?? skinZ(profile), "dip", feeds);
-    for (const p of pass.finish.map(map)) g.cutTo(p.x, p.y, p.z ?? skinZ(profile), "contour", feeds);
+    for (const p of pass.helix.map(map)) g.cutTo(p.x, p.y, p.z, "contour", feeds);
+    for (const p of pass.finish.map(map)) g.cutTo(p.x, p.y, p.z, "contour", feeds);
     for (const w of pass.warnings) {
         if (w.startsWith("uncut corner")) g.comment(w);
     }
-    const out = pass.leadOut.map(map);
-    for (const p of out) g.cutTo(p.x, p.y, p.z ?? skinZ(profile), "slow", feeds);
+    for (const p of pass.leadOut.map(map)) g.cutTo(p.x, p.y, p.z, "contour", feeds);
     g.rapidZ(clear);
     return pass.warnings;
+}
+
+function sideRank(side: string): number {
+    if (side === "left") return 0;
+    if (side === "right") return 1;
+    return 2;
 }
 
 function toolsDiffer(profile: MillingProfile): boolean {
@@ -184,37 +185,51 @@ export function generateCncJob(
     g.spindle(true, profile.toolpathCutter.rpm);
     g.dwell(3);
 
+    const ordered = placed.slice().sort((a, b) => sideRank(a.side) - sideRank(b.side));
     g.raw(profile.customGcode.toolpathStart);
-    for (const part of placed) {
+    for (const part of ordered) {
+        g.comment(`surface ${part.side}`);
         const tipR = toolRadiusMm(profile.toolpathCutter.diameterMm);
         const tipType = profile.toolpathCutter.type;
-        const xy = densifyXy(
+        const dropAt = (p: XyPoint) => dropCutterZ(part.heightmap, p.x, p.y, tipR, tipType);
+        const xy =
             profile.strategy === "zigzag"
-                ? zigzagXy(part.outline, profile, tipType)
-                : spiralXy(part.outline, profile, tipType),
-            FINISH_CHORD_MM,
-        );
-        const sampled: Array<{ x: number; y: number; drop: number }> = [];
-        for (const p of xy) {
-            const drop = dropCutterZ(part.heightmap, p.x, p.y, tipR, tipType);
-            if (!Number.isFinite(drop)) continue;
-            sampled.push({ x: p.x, y: p.y, drop });
+                ? zigzagXy(part.outline, profile, tipType).map((p, i) => ({
+                      ...p,
+                      offsetIndex: i,
+                      component: 0,
+                      componentStart: i === 0,
+                  }))
+                : planCenterSpiral(part.outline, profile, tipType);
+        if (!Array.isArray(xy) && xy.warnings.length) {
+            for (const w of xy.warnings) warnings.push(`${part.side}: ${w}`);
         }
-        const levels = waterlineLevels(profile, part.zMin);
-        let didFinish = false;
-        for (const levelZ of [...levels, Number.NEGATIVE_INFINITY]) {
-            if (didFinish) break;
-            const path: Point[] = [];
-            let follows = true;
-            for (const p of sampled) {
-                const z = Math.max(p.drop, levelZ, skinZ(profile));
-                path.push({ x: p.x, y: p.y, z });
-                if (z > p.drop + 0.05) follows = false;
-            }
-            if (path.length < 2) continue;
-            emitPath(g, part, profile, path, "normal", true);
-            if (follows || levelZ === Number.NEGATIVE_INFINITY) didFinish = true;
+        const entry = Array.isArray(xy)
+            ? densifyXy(xy.slice(0, Math.min(xy.length, 8)).concat(xy.slice(0, 1)), 0.8)
+            : xy.entry;
+        const raw = Array.isArray(xy) ? xy : xy.samples;
+        const path = densifyXy(raw, FINISH_CHORD_MM)
+            .map((p) => ({ x: p.x, y: p.y, z: dropAt(p) }))
+            .filter((p) => Number.isFinite(p.z));
+        if (path.length < 2) continue;
+        const start = path[0]!;
+        const depth = profile.materialHeightMm - start.z;
+        if (depth > ENTRY_DEPTH_WARN_MM) {
+            const msg = `entry depth ${depth.toFixed(2)} mm exceeds 25 mm`;
+            warnings.push(`${part.side}: ${msg}`);
+            console.warn(`[cnc] ${msg}`);
         }
+        const m0 = machineXY(start, part, profile);
+        g.rapidZ(clear);
+        g.rapidTo(m0.x, m0.y, clear);
+        const circuit = entry.length >= 2 ? entry : [start, start];
+        emitEntryRamp(g, part, profile, circuit, dropAt, start.z);
+        const feeds = profile.topFeeds;
+        for (const p of path) {
+            const w = machineXY(p, part, profile);
+            g.cutTo(w.x, w.y, p.z, "normal", feeds);
+        }
+        g.rapidZ(clear);
     }
     g.raw(profile.customGcode.toolpathEnd);
 
@@ -227,7 +242,10 @@ export function generateCncJob(
             g.dwell(3);
         }
         g.raw(profile.customGcode.contourStart);
-        for (const part of placed) warnings.push(...emitContour(g, part, profile));
+        for (const part of ordered) {
+            g.comment(`perimeter ${part.side}`);
+            warnings.push(...emitContour(g, part, profile));
+        }
         g.raw(profile.customGcode.contourEnd);
     }
 

@@ -55,7 +55,7 @@ describe("Idaho milling profile seed", () => {
         expect(p.topOffsetMeaning).toBe("horizontal_overrun");
         expect(skinZ(p)).toBe(1);
         expect(toolRadiusMm(10)).toBe(5);
-        expect(stepoverMm(p, "ball")).toBe(1.2);
+        expect(stepoverMm(p, "ball")).toBe(1.4);
         expect(stepoverMm(p, "flat")).toBe(3);
     });
 

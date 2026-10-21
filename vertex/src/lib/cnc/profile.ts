@@ -59,7 +59,7 @@ export const IDAHO_PROFILE: MillingProfile = {
     heelDirection: "x0",
     // Founder-confirmed: 2.5 mm is a horizontal overrun ring around the outline, not Z.
     topOffsetMeaning: "horizontal_overrun",
-    stepoverBallMm: 1.2,
+    stepoverBallMm: 1.4,
     stepoverFlatMm: 3,
     sampleMm: 0.25,
     chordTolMm: 0.01,

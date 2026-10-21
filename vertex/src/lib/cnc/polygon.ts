@@ -215,37 +215,57 @@ function distPointToSeg(p: Point, a: Point, b: Point): number {
     return Math.hypot(p.x - (a.x + ex * t), p.y - (a.y + ey * t));
 }
 
-function largestPath(paths: Array<Array<{ x: number; y: number }>>): Array<{ x: number; y: number }> {
-    let best = paths[0] ?? [];
+function orientOuter(path: Array<{ x: number; y: number }>): Point[] {
+    if (path.length < 3 || !isPositiveD(path)) return [];
+    let area2 = 0;
+    for (let i = 0; i < path.length; i++) {
+        const a = path[i]!;
+        const b = path[(i + 1) % path.length]!;
+        area2 += a.x * b.y - b.x * a.y;
+    }
+    if (Math.abs(area2) < 1e-4) return [];
+    const pts: Point[] = path.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    return startAtHeel(ensureCcw(pts));
+}
+
+/** Round-join Clipper2 offset. Positive delta = outward for a CCW loop. Largest outer only. */
+export function offsetClosed(loop: Point[], deltaMm: number, chordTolMm = 0.01): Point[] {
+    if (loop.length < 3) return loop.map((p) => ({ ...p }));
+    const all = offsetClosedAll(loop, deltaMm, chordTolMm);
+    if (!all.length) return [];
+    let best = all[0]!;
     let bestA = -1;
-    for (const path of paths) {
-        let s = 0;
-        for (let i = 0; i < path.length; i++) {
-            const a = path[i]!;
-            const b = path[(i + 1) % path.length]!;
-            s += a.x * b.y - b.x * a.y;
-        }
-        const a = Math.abs(s);
+    for (const path of all) {
+        const a = Math.abs(signedArea(path));
         if (a > bestA) {
             bestA = a;
             best = path;
         }
     }
-    return best;
+    return best.map((p) => ({ x: p.x, y: p.y, z: 0 }));
 }
 
-/** Round-join Clipper2 offset. Positive delta = outward for a CCW loop. */
-export function offsetClosed(loop: Point[], deltaMm: number, chordTolMm = 0.01): Point[] {
-    if (loop.length < 3) return loop.map((p) => ({ ...p }));
+/**
+ * Every positive-area outer from a round-join offset.
+ * An inward offset can split one loop into several; holes are dropped.
+ * Order is centroid X then Y so a split is deterministic.
+ */
+export function offsetClosedAll(loop: Point[], deltaMm: number, chordTolMm = 0.01): Point[][] {
+    if (loop.length < 3) return [];
     const src = ensureCcw(loop);
     const path = src.map((p) => ({ x: p.x, y: p.y }));
     const paths = inflatePathsD([path], deltaMm, JoinType.Round, EndType.Polygon, 2, 4, chordTolMm);
-    if (!paths.length) return [];
-    const best = largestPath(paths);
-    if (best.length < 3) return [];
-    const pts: Point[] = best.map((p) => ({ x: p.x, y: p.y, z: 0 }));
-    const oriented = isPositiveD(best) ? pts : pts.slice().reverse();
-    return startAtHeel(ensureCcw(oriented));
+    const out: Point[][] = [];
+    for (const p of paths) {
+        const oriented = orientOuter(p);
+        if (oriented.length >= 3) out.push(oriented);
+    }
+    out.sort((a, b) => {
+        const ca = centroid(a);
+        const cb = centroid(b);
+        return ca.x - cb.x || ca.y - cb.y;
+    });
+    return out;
 }
 
 export function unit(x: number, y: number): Point {

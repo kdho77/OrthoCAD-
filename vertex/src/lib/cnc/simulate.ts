@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { ballBandGeometry, ballProfileZ } from "./band";
+import { PERIMETER_FLOOR_MM } from "./contour";
 import { dropCutterZ } from "./drop-cutter";
 import { sampleHeight } from "./heightmap";
 import type { ParsedMove as GMove } from "./parse";
@@ -354,7 +355,7 @@ export function evaluateStock(
                         const dC = distToPoly(lp.x, lp.y, band.centreline);
                         const nearLead = Math.hypot(lp.x - heel.x, lp.y - heel.y) < radius + 8;
                         if (!nearLead && dC < radius - 0.2 && dC > 0.15) {
-                            const expected = ballProfileZ(dC, radius, skin);
+                            const expected = ballProfileZ(dC, radius, PERIMETER_FLOOR_MM);
                             profileDevMm = Math.max(profileDevMm, Math.abs(stock - expected));
                         }
                     }
@@ -438,7 +439,15 @@ export function evaluateStock(
             }
             ringHausdorffMm = Math.max(
                 ringHausdorffMm,
-                ringBoundaryHausdorff(grid, part, profile, band.centreline, band.outerEdge, radius, skin),
+                ringBoundaryHausdorff(
+                    grid,
+                    part,
+                    profile,
+                    band.centreline,
+                    band.outerEdge,
+                    radius,
+                    PERIMETER_FLOOR_MM,
+                ),
             );
         }
     }

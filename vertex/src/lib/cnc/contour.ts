@@ -3,7 +3,7 @@
 
 import { type BallBandGeometry, ballBandGeometry, UNCUT_CORNER_TOL_MM } from "./band";
 import { densifyArc, perimeter, signedArea, tangentAt, unit } from "./polygon";
-import { skinZ, toolRadiusMm } from "./profile";
+import { toolRadiusMm } from "./profile";
 import type { MillingProfile, Point } from "./types";
 
 /** Tangent lead arc radius. The tool disk around it is part of the footprint. */
@@ -110,6 +110,43 @@ export function helicalLevels(zStart: number, zEnd: number, maxStep: number): nu
     return zs;
 }
 
+/** Perimeter tip finishes on the table. The on-screen band legend still reads the 1 mm skin. */
+export const PERIMETER_FLOOR_MM = 0;
+
+const RAMP_MAX_RAD = (15 * Math.PI) / 180;
+
+/** Full laps so a descent stays at or under 15° and ends on the path start. */
+export function approachLaps(dropMm: number, perimeterMm: number): number {
+    if (dropMm <= 1e-6) return 0;
+    const slope = Math.tan(RAMP_MAX_RAD) * 0.999;
+    const minRun = dropMm / slope;
+    return Math.max(1, Math.ceil((minRun - 1e-9) / Math.max(perimeterMm, 1e-6)));
+}
+
+function traceLaps(path: Point[], laps: number, z0: number, z1: number): Point[] {
+    if (laps <= 0 || path.length < 3) return [];
+    const n = path.length;
+    let per = 0;
+    for (let i = 0; i < n; i++) {
+        const a = path[i]!;
+        const b = path[(i + 1) % n]!;
+        per += Math.hypot(b.x - a.x, b.y - a.y);
+    }
+    const total = Math.max(1e-9, laps * per);
+    const out: Point[] = [{ x: path[0]!.x, y: path[0]!.y, z: z0 }];
+    let travelled = 0;
+    for (let lap = 0; lap < laps; lap++) {
+        for (let i = 0; i < n; i++) {
+            const a = path[i]!;
+            const b = path[(i + 1) % n]!;
+            travelled += Math.hypot(b.x - a.x, b.y - a.y);
+            const u = Math.min(1, travelled / total);
+            out.push({ x: b.x, y: b.y, z: z0 + (z1 - z0) * u });
+        }
+    }
+    return out;
+}
+
 export function buildContourPass(outline: Point[], profile: MillingProfile): ContourPass {
     const warnings: string[] = [];
     const radius = toolRadiusMm(profile.contourCutter.diameterMm);
@@ -127,42 +164,30 @@ export function buildContourPass(outline: Point[], profile: MillingProfile): Con
     }
     const source = band.centreline.length >= 3 ? band.centreline : outline;
     const path = ensureCwKeepStart(densifyKeepVertices(source, Math.max(0.35, profile.sampleMm)));
-    const zEnd = skinZ(profile);
-    const zStart = profile.materialHeightMm;
-    const maxStep = profile.layeredEnabled ? profile.layeredMm : 15;
-    const zs = helicalLevels(zStart, zEnd, maxStep);
-    const nLaps = zs.length - 1;
+    // Ramp starts at clearance, which is at least 2 mm above the stock top, eases to the
+    // stock top, then runs Z(stock) → Z0 over two laps and one flat lap at Z0.
+    const zTop = Math.max(profile.freeMovementHeightMm, profile.materialHeightMm + 2);
+    const zStock = profile.materialHeightMm;
+    const zFloor = PERIMETER_FLOOR_MM;
     const per = perimeter(path);
     const t0 = tangentCw(path, 0);
     const n0 = outwardCw(t0);
     const p0 = path[0]!;
     const leadIn = leadArc(p0, t0, n0, LEAD_RADIUS_MM, profile.chordTolMm, true).map((p) => ({
         ...p,
-        z: zStart,
+        z: zTop,
     }));
     const tEnd = tangentAt(path, 0);
     const nEnd = outwardCw(tEnd);
     const leadOut = leadArc(p0, tEnd, nEnd, LEAD_RADIUS_MM, profile.chordTolMm, false).map((p) => ({
         ...p,
-        z: zEnd,
+        z: zFloor,
     }));
 
-    const helix: Point[] = [];
-    const totalXy = nLaps * per;
-    let travelled = 0;
-    for (let lap = 0; lap < nLaps; lap++) {
-        for (let i = 0; i < path.length; i++) {
-            const p = path[i]!;
-            const z = zStart + ((zEnd - zStart) * travelled) / totalXy;
-            helix.push({ x: p.x, y: p.y, z });
-            const q = path[(i + 1) % path.length]!;
-            travelled += Math.hypot(q.x - p.x, q.y - p.y);
-        }
-    }
-    helix.push({ x: path[0]!.x, y: path[0]!.y, z: zEnd });
-
-    const finish: Point[] = path.map((p) => ({ x: p.x, y: p.y, z: zEnd }));
-    finish.push({ x: path[0]!.x, y: path[0]!.y, z: zEnd });
+    const approach = traceLaps(path, approachLaps(zTop - zStock, per), zTop, zStock);
+    const ramp = traceLaps(path, 2, zStock, zFloor);
+    const helix = approach.concat(ramp.slice(approach.length ? 1 : 0));
+    const finish = traceLaps(path, 1, zFloor, zFloor);
 
     return { leadIn, helix, finish, leadOut, warnings, band };
 }

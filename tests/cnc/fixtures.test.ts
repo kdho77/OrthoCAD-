@@ -10,8 +10,42 @@ import { parseGcode } from "@/lib/cnc/parse";
 import { renderToolpathPreview } from "@/lib/cnc/preview";
 import { cloneProfile, IDAHO_PROFILE, wallClearZ } from "@/lib/cnc/profile";
 import { evaluateStock, simulateLocal, simulateMoves } from "@/lib/cnc/simulate";
+import { planCenterSpiral, type XyPoint } from "@/lib/cnc/spiral";
+import type { Heightmap } from "@/lib/cnc/types";
 import { encodePng } from "../helpers/render-png";
 import { sampleTopWorkpiece, syntheticWorkpiece } from "./helpers";
+
+function interiorGapMm(hm: Heightmap, pts: XyPoint[]): number {
+    const pitch = 0.5;
+    const buckets = new Map<number, XyPoint[]>();
+    const key = (ix: number, iy: number) => ix * 100003 + iy;
+    for (const p of pts) {
+        const k = key(Math.floor(p.x / pitch), Math.floor(p.y / pitch));
+        const list = buckets.get(k);
+        if (list) list.push(p);
+        else buckets.set(k, [p]);
+    }
+    let worst = 0;
+    for (let iy = 0; iy < hm.ny; iy++) {
+        const y = hm.originY + iy * hm.cell;
+        for (let ix = 0; ix < hm.nx; ix++) {
+            if (hm.inside[iy * hm.nx + ix] !== 1) continue;
+            const x = hm.originX + ix * hm.cell;
+            const bx = Math.floor(x / pitch);
+            const by = Math.floor(y / pitch);
+            let best = Infinity;
+            for (let dy = -3; dy <= 3; dy++) {
+                for (let dx = -3; dx <= 3; dx++) {
+                    const list = buckets.get(key(bx + dx, by + dy));
+                    if (!list) continue;
+                    for (const p of list) best = Math.min(best, Math.hypot(p.x - x, p.y - y));
+                }
+            }
+            if (best > worst) worst = best;
+        }
+    }
+    return worst;
+}
 
 const GOLDEN_PATH = resolve(process.cwd(), "tests/cnc/golden/sha.json");
 
@@ -42,13 +76,13 @@ function assertJob(gcode: string, profile: typeof IDAHO_PROFILE) {
     expect(parsed.unknownWords).toEqual([]);
     expect(parsed.g0BelowClearance).toBe(false);
     expect(parsed.spindleOnBeforeFirstCut).toBe(true);
-    expect(parsed.minZ).toBeGreaterThanOrEqual(0.999);
+    expect(parsed.minZ).toBeGreaterThanOrEqual(-1e-4);
     expect(parsed.maxZ).toBeLessThanOrEqual(50.0001);
     return parsed;
 }
 
 describe("CNC ball wall / skin gates (synthetic)", () => {
-    test("full R5 band cleared at Z >= 6; fillet ±0.05; skin 1.000 ± 0.01", () => {
+    test("perimeter through-cuts at Z0; fillet ±0.05; no interior gouge", () => {
         const profile = cloneProfile(IDAHO_PROFILE);
         const job = generateCncJob(profile, [
             syntheticWorkpiece(profile, "left"),
@@ -64,7 +98,8 @@ describe("CNC ball wall / skin gates (synthetic)", () => {
         const grid = simulateMoves(parsed.moves, profile, 0.1);
         const localGrids = job.placed.map((part) => simulateLocal(parsed.moves, profile, part));
         const report = evaluateStock(grid, job.placed, profile, localGrids);
-        expect(report.minStock).toBeGreaterThanOrEqual(0.999);
+        expect(report.minStock).toBeGreaterThanOrEqual(-1e-3);
+        expect(report.minStock).toBeLessThan(0.05);
         // Raw design−stock on the eroded interior. The previous 0.001 ceiling
         // was applied after subtracting 0.01 mm, so it allowed ~0.011 mm.
         expect(report.gougeMm).toBeLessThanOrEqual(0.01);
@@ -72,8 +107,8 @@ describe("CNC ball wall / skin gates (synthetic)", () => {
         expect(report.wallDevMm).toBeLessThanOrEqual(0.05);
         expect(report.profileDevMm).toBeLessThanOrEqual(0.05);
         expect(report.ringHausdorffMm).toBeLessThanOrEqual(0.05);
-        expect(report.skinMin).toBeGreaterThanOrEqual(0.99);
-        expect(report.skinMax).toBeLessThanOrEqual(1.01);
+        expect(report.skinMin).toBeGreaterThanOrEqual(-1e-3);
+        expect(report.skinMax).toBeLessThanOrEqual(0.05);
     });
 });
 
@@ -130,9 +165,15 @@ describe("CNC SAMPLE_Top fixtures (Idaho two-pocket)", () => {
         );
         if (surface.excessOverCount > 0) console.info("[cnc] cells over 0.25 mm excess", surface.excessOver);
         expect(surface.gougeMm).toBeLessThanOrEqual(0.01);
-        expect(surface.excessP95Mm).toBeLessThanOrEqual(0.086);
+        expect(surface.excessP95Mm).toBeLessThanOrEqual(0.099);
         expect(surface.excessMaxMm).toBeLessThanOrEqual(0.25);
         expect(surface.excessOverCount).toBe(0);
+        for (const wp of [plainL, plainR]) {
+            const plan = planCenterSpiral(wp.outline, profile, profile.toolpathCutter.type);
+            const gap = interiorGapMm(wp.heightmap, plan.samples);
+            console.info(`[cnc] ${wp.side} interior gap ${gap.toFixed(3)} mm`);
+            expect(gap).toBeLessThanOrEqual(0.75);
+        }
 
         writePreview("cnc-sample-top-plain.png", plainJob.gcode, profile);
         writePreview("cnc-sample-top-dancer.png", padJob.gcode, profile);
