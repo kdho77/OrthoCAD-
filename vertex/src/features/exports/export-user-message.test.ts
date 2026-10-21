@@ -27,4 +27,10 @@ describe("stlExportUserMessage", () => {
     test("undefined → Export failed", () => {
         expect(stlExportUserMessage(undefined)).toBe("Export failed");
     });
+
+    test("maps [TEXT] errors to the clear message", () => {
+        expect(stlExportUserMessage("[TEXT] too thin, enable Bold or increase size")).toBe(
+            "too thin, enable Bold or increase size",
+        );
+    });
 });

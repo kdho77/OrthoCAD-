@@ -288,12 +288,12 @@ function aabbHit(a: BvhNode, b: Tri): boolean {
  * BVH tri-tri test. Pairs that share a vertex or edge (after a 1e-5 mm weld)
  * are excluded. Coplanar overlaps are counted separately from real hits.
  */
-export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionReport {
+export function countSelfIntersections(geo: BufferGeometry, weldMm = WELD_MM): SelfIntersectionReport {
     const pos = geo.getAttribute("position").array as Float32Array;
     const index = geo.getIndex();
     if (!index) return { real: 0, coplanar: 0 };
     const idx = index.array;
-    const weld = weldIndex(pos, WELD_MM);
+    const weld = weldIndex(pos, weldMm);
     const tris: Tri[] = [];
     for (let t = 0; t < idx.length; t += 3) {
         const i0 = weld[idx[t]!]!;

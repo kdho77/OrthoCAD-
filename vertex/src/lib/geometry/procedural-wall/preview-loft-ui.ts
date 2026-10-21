@@ -45,25 +45,27 @@ export function proceduralLoftReuseKey(input: {
     elementsJson?: string;
     trimlineHash?: string;
     shoeWidth?: string;
+    /** Empty when text is inactive so reuse keys stay identical. */
+    textMarkingHash?: string;
 }): string {
-    return sha256Hex(
-        [
-            input.side,
-            input.wallStyle,
-            input.deviceType,
-            input.thicknessMm.toFixed(3),
-            input.correctionsJson,
-            input.scanPattern,
-            input.patternKind,
-            input.patternHash,
-            input.flanges,
-            input.sourceFieldJson ?? "",
-            input.shapeFinishJson ?? "",
-            input.elementsJson ?? "",
-            input.trimlineHash ?? "",
-            input.shoeWidth ?? "medium",
-        ].join("|"),
-    );
+    const parts = [
+        input.side,
+        input.wallStyle,
+        input.deviceType,
+        input.thicknessMm.toFixed(3),
+        input.correctionsJson,
+        input.scanPattern,
+        input.patternKind,
+        input.patternHash,
+        input.flanges,
+        input.sourceFieldJson ?? "",
+        input.shapeFinishJson ?? "",
+        input.elementsJson ?? "",
+        input.trimlineHash ?? "",
+        input.shoeWidth ?? "medium",
+    ];
+    if (input.textMarkingHash) parts.push(input.textMarkingHash);
+    return sha256Hex(parts.join("|"));
 }
 
 export function hashPatternPoints(points: ReadonlyArray<{ x: number; y: number; z?: number }>): string {

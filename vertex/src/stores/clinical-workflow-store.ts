@@ -77,6 +77,8 @@ interface ClinicalWorkflowStore {
     /** Inline reason when Next is blocked (AC8). */
     nextBlockReason: string | null;
     elementPlacementFoot: ElementPlacementFoot;
+    /** Bumped when Print / Export asks Elements to open the text editor. */
+    textFocusNonce: number;
     pendingCorrectionSections: CorrectionsSectionKey[];
     /** Last applied correction preset — keys stay marked until the user edits them. */
     correctionPresetOrigin: CorrectionPresetOrigin | null;
@@ -84,6 +86,7 @@ interface ClinicalWorkflowStore {
     acknowledgeExplicitFootSide: (side: "left" | "right") => void;
     acknowledgePairAssignment: () => void;
     setElementPlacementFoot: (foot: ElementPlacementFoot) => void;
+    openTextEditor: () => void;
     setCorrectionPresetOrigin: (origin: CorrectionPresetOrigin | null) => void;
     clearCorrectionPresetOriginKey: (side: "left" | "right", key: string) => void;
     goNext: () => void;
@@ -132,7 +135,8 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
     footSideExplicitlyChosen: false,
     scanGateStickyReason: null,
     nextBlockReason: null,
-    elementPlacementFoot: "left",
+    elementPlacementFoot: "both",
+    textFocusNonce: 0,
     pendingCorrectionSections: [],
     correctionPresetOrigin: null,
     acknowledgeExplicitFootSide: (side) => {
@@ -182,6 +186,11 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         });
     },
     setElementPlacementFoot: (foot) => set({ elementPlacementFoot: foot }),
+    openTextEditor: () =>
+        set((s) => ({
+            step: "elements",
+            textFocusNonce: s.textFocusNonce + 1,
+        })),
     goNext: () => {
         const current = get().step;
         const gate = evaluateNextGate(current);

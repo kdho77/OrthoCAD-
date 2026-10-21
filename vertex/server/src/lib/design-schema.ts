@@ -99,6 +99,20 @@ export const designStateSchema = z.object({
             right: sideShapeFinish,
         })
         .optional(),
+    textMarking: z
+        .object({
+            text: z.string().max(40),
+            surface: z.enum(["bottom", "wall"]),
+            mode: z.enum(["engrave", "emboss"]),
+            bold: z.boolean(),
+            capHeightMm: z.number(),
+            depthMm: z.number(),
+            heightMm: z.number(),
+            letterSpacingMm: z.number(),
+            rotationDeg: z.number(),
+            placementU: z.number(),
+        })
+        .optional(),
 });
 
 export type DesignStatePayload = z.infer<typeof designStateSchema>;

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { HardnessRegionList } from "@/features/clinical/HardnessRegionList";
 import { exportDesign } from "@/features/exports/export-service";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
+import { TextSummary } from "@/features/exports/TextSummary";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { useSolidValidation } from "@/hooks/useSolidValidation";
 import { isOcctKernelActive } from "@/lib/geometry/kernel-build";
@@ -95,6 +96,7 @@ export function ExportPanel() {
     return (
         <div className="space-y-3">
             <CaseOrderSummary />
+            <TextSummary />
             <div className="rounded-md border border-border bg-background/50 p-2 text-xs">
                 <div className="flex justify-between">
                     <span className="text-muted-foreground">Token balance</span>

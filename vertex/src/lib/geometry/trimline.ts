@@ -21,11 +21,7 @@ export function cloneTrimline(curve: TrimlineCurve): TrimlineCurve {
 }
 
 /** Sample the parametric insole outline as a closed polyline suitable for editing. */
-export function sampleDefaultOutline(
-    lengthMm: number,
-    widthMm: number,
-    segmentsPerEdge = 20,
-): TrimlineCurve {
+export function sampleDefaultOutline(lengthMm: number, widthMm: number, segmentsPerEdge = 20): TrimlineCurve {
     const nx = segmentsPerEdge;
     const ny = segmentsPerEdge;
     const halfW = widthMm / 2;
@@ -209,8 +205,7 @@ export function clipGeometryToOutline(
     const index = geometry.getIndex();
     const triCount = index ? index.count / 3 : pos.count / 3;
     const kept: number[] = [];
-    const triIndex = (t: number, c: number): number =>
-        index ? index.getX(t * 3 + c) : t * 3 + c;
+    const triIndex = (t: number, c: number): number => (index ? index.getX(t * 3 + c) : t * 3 + c);
 
     for (let t = 0; t < triCount; t++) {
         const a = triIndex(t, 0);
@@ -324,11 +319,7 @@ export function deformTrimlineSection(
         const direct = Math.abs(i - anchorIndex);
         const wrapped = Math.min(direct, n - direct);
         const weight = Math.exp(-(wrapped * wrapped) / (2 * influenceRadius * influenceRadius));
-        return new THREE.Vector3(
-            p.x + delta.x * weight,
-            p.y + delta.y * weight,
-            p.z,
-        );
+        return new THREE.Vector3(p.x + delta.x * weight, p.y + delta.y * weight, p.z);
     });
 }
 
@@ -354,7 +345,13 @@ export function pickTrimlineWithRaycaster(
     if (curve.points.length < 2) return null;
 
     const catmull = trimlineToCurve(curve.points, true);
-    const tubeGeo = new THREE.TubeGeometry(catmull, Math.max(48, curve.points.length * 2), tubeRadius, 8, true);
+    const tubeGeo = new THREE.TubeGeometry(
+        catmull,
+        Math.max(48, curve.points.length * 2),
+        tubeRadius,
+        8,
+        true,
+    );
     const pickMesh = new THREE.Mesh(tubeGeo);
     pickMesh.applyMatrix4(matrixWorld);
 
