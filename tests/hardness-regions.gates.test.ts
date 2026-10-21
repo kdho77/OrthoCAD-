@@ -49,8 +49,8 @@ describe("hardness class table", () => {
         );
         const json = JSON.parse(readFileSync(jsonPath, "utf8"));
         expect(HARDNESS_CLASS_TABLE).toEqual(json);
-        expect(HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillDensityPct).toBe(16);
-        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillDensityPct).toBe(22);
+        expect(HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillDensityPct).toBe(15);
+        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillDensityPct).toBe(21);
         expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillDensityPct).toBe(26);
         expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillDensityPct).toBe(26);
         expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillDensityPct).toBe(30);
@@ -59,8 +59,9 @@ describe("hardness class table", () => {
         expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillLineWidthMm).toBe(1.0);
         expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillLineWidthMm).toBe(1.2);
         expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillLineWidthMm).toBe(1.2);
-        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillSpeedMmS).toBe(44.0);
-        expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillSpeedMmS).toBe(44.5);
+        expect(HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillSpeedMmS).toBeUndefined();
+        expect(HARDNESS_CLASS_TABLE.Soft.sparseInfillSpeedMmS).toBeUndefined();
+        expect(HARDNESS_CLASS_TABLE.Medium.sparseInfillSpeedMmS).toBeUndefined();
         expect(HARDNESS_CLASS_TABLE.Hard.sparseInfillSpeedMmS).toBe(23.0);
         expect(HARDNESS_CLASS_TABLE["Extra Hard"].sparseInfillSpeedMmS).toBe(23.0);
         for (const k of REGION_HARDNESS_CLASSES) {
@@ -71,7 +72,6 @@ describe("hardness class table", () => {
         for (const k of REGION_HARDNESS_CLASSES) {
             if (k === "Custom") continue;
             expect(HARDNESS_CLASS_TABLE[k].sparseInfillPattern).toBe("gyroid");
-            expect(HARDNESS_CLASS_TABLE[k].pendingCouponValidation).toBe(true);
         }
     });
 });
@@ -135,14 +135,14 @@ describe("gcode class fingerprint (gate 13 helper)", () => {
         const ok = verifyGcodeByClass(FIXTURE_GCODE, ["Extra Soft", "Soft", "Medium", "Hard", "Extra Hard"]);
         expect(ok.ok).toBe(true);
         expect(ok.classesSeen.sort()).toEqual(["Extra Hard", "Extra Soft", "Hard", "Medium", "Soft"]);
-        expect(ok.segments.every((s) => s.lineWidthMm === 0.7 || s.lineWidthMm === 1.0 || s.lineWidthMm === 1.2)).toBe(
-            true,
-        );
-        const bad = verifyGcodeByClass(`${FIXTURE_GCODE};TYPE:Internal solid infill\nG1 X1 Y1 E1 F2640\n`, [
-            "Soft",
+        expect(
+            ok.segments.every((s) => s.lineWidthMm === 0.7 || s.lineWidthMm === 1.0 || s.lineWidthMm === 1.2),
+        ).toBe(true);
+        const bad = verifyGcodeByClass(`${FIXTURE_GCODE};TYPE:Internal solid infill\nG1 X1 Y1 E1 F1380\n`, [
+            "Hard",
         ]);
         expect(bad.ok).toBe(false);
-        expect(bad.errors.some((e) => /solid infill in Soft/i.test(e))).toBe(true);
+        expect(bad.errors.some((e) => /solid infill at Hard sparse speed/i.test(e))).toBe(true);
     });
 
     test("fails when a required class has no sparse segments", () => {
@@ -203,11 +203,10 @@ describe("3MF + geometry gates", () => {
     }, 20_000);
 
     test("per-region modifiers emit only sparse infill keys, never walls or skins", async () => {
-        const perClassKeys = [
+        const baseSlicerKeys = [
             "sparse_infill_density",
             "sparse_infill_pattern",
             "sparse_infill_line_width",
-            "sparse_infill_speed",
             "infill_wall_overlap",
         ] as const;
         const metadataKeys = new Set([
@@ -271,12 +270,24 @@ describe("3MF + geometry gates", () => {
         const designJson = await zip.file("Metadata/orthocad_design.json")?.async("string");
         expect(cfg).toBeTruthy();
         expect(designJson).toBeTruthy();
-        const parts = [...(cfg ?? "").matchAll(/<part id="[^"]+" subtype="modifier_part">([\s\S]*?)<\/part>/g)];
+        const parts = [
+            ...(cfg ?? "").matchAll(/<part id="[^"]+" subtype="modifier_part">([\s\S]*?)<\/part>/g),
+        ];
         expect(parts).toHaveLength(NAMED_HARDNESS_CLASSES.length);
         for (const part of parts) {
-            const keys = [...part[1]!.matchAll(/key="([^"]+)"/g)].map((m) => m[1]!);
+            const body = part[1]!;
+            const keys = [...body.matchAll(/key="([^"]+)"/g)].map((m) => m[1]!);
+            const cls = body.match(/key="hardnessClass" value="([^"]+)"/)?.[1] as
+                | (typeof NAMED_HARDNESS_CLASSES)[number]
+                | undefined;
+            expect(cls).toBeTruthy();
+            const expectSpeed = HARDNESS_CLASS_TABLE[cls!].sparseInfillSpeedMmS !== undefined;
+            const expectedSlicer = [
+                ...baseSlicerKeys,
+                ...(expectSpeed ? (["sparse_infill_speed"] as const) : []),
+            ].sort();
             const slicerKeys = keys.filter((k) => !metadataKeys.has(k)).sort();
-            expect(slicerKeys).toEqual([...perClassKeys].sort());
+            expect(slicerKeys).toEqual(expectedSlicer);
             expect(keys.some((k) => wallOrSkinKey.test(k))).toBe(false);
             expect(keys).not.toContain("wall_loops");
             expect(keys).not.toContain("inner_wall_line_width");
@@ -287,8 +298,8 @@ describe("3MF + geometry gates", () => {
             expect(keys).not.toContain("top_surface_line_width");
             expect(keys).not.toContain("bottom_surface_line_width");
         }
-        expect(cfg).toContain('key="sparse_infill_density" value="16%"');
-        expect(cfg).toContain('key="sparse_infill_density" value="22%"');
+        expect(cfg).toContain('key="sparse_infill_density" value="15%"');
+        expect(cfg).toContain('key="sparse_infill_density" value="21%"');
         expect(cfg).toContain('key="sparse_infill_density" value="26%"');
         expect(cfg).toContain('key="sparse_infill_density" value="30%"');
         expect(cfg).toContain('key="sparse_infill_line_width" value="0.7"');

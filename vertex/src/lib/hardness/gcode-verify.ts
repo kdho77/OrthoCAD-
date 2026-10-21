@@ -37,7 +37,10 @@ function classFromFingerprint(
     const hits: NamedHardnessClass[] = [];
     for (const cls of NAMED_HARDNESS_CLASSES) {
         const row = HARDNESS_CLASS_TABLE[cls];
-        if (Math.abs(row.sparseInfillSpeedMmS - mmS) >= 0.08) continue;
+        const speedOverride = row.sparseInfillSpeedMmS;
+        if (speedOverride !== undefined) {
+            if (Math.abs(speedOverride - mmS) >= 0.08) continue;
+        }
         if (lineWidthMm !== undefined && Math.abs(row.sparseInfillLineWidthMm - lineWidthMm) > 0.05) {
             continue;
         }
@@ -154,7 +157,8 @@ export function verifyGcodeByClass(
         if (Math.abs(fp.lineWidthMm - expected) > 1e-6) {
             errors.push(`class ${cls} line width ${fp.lineWidthMm} mm ≠ ${expected} mm`);
         }
-        if (fp.speedMmS !== HARDNESS_CLASS_TABLE[cls].sparseInfillSpeedMmS) {
+        const tableSpeed = HARDNESS_CLASS_TABLE[cls].sparseInfillSpeedMmS;
+        if (tableSpeed !== undefined && fp.speedMmS !== tableSpeed) {
             errors.push(`class ${cls} fingerprint speed ${fp.speedMmS} ≠ table`);
         }
         if (fp.densityPct !== HARDNESS_CLASS_TABLE[cls].sparseInfillDensityPct) {
@@ -162,15 +166,16 @@ export function verifyGcodeByClass(
         }
     }
 
-    const extraSoftSpeeds = HARDNESS_CLASS_TABLE["Extra Soft"].sparseInfillSpeedMmS;
-    const softSpeeds = HARDNESS_CLASS_TABLE.Soft.sparseInfillSpeedMmS;
     for (const [type, speeds] of feeds) {
         if (!SOLID_TYPES.test(type)) continue;
-        const mixed = speeds.some(
-            (s) => Math.abs(s - extraSoftSpeeds) < 0.08 || Math.abs(s - softSpeeds) < 0.08,
-        );
-        if (mixed && (requiredClasses.includes("Soft") || requiredClasses.includes("Extra Soft"))) {
-            errors.push(`unexpected solid infill in Soft (${type})`);
+        for (const cls of requiredClasses) {
+            if (cls === "Custom") continue;
+            const override = HARDNESS_CLASS_TABLE[cls as NamedHardnessClass].sparseInfillSpeedMmS;
+            if (override === undefined) continue;
+            const mixed = speeds.some((s) => Math.abs(s - override) < 0.08);
+            if (mixed) {
+                errors.push(`unexpected solid infill at ${cls} sparse speed (${type})`);
+            }
         }
     }
 

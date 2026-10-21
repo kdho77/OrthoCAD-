@@ -5,18 +5,12 @@
  * Single hardness table for device-wide PrintRecipe and per-region modifiers.
  * Five named levels (Extra Soft → Extra Hard) plus Custom density overrides.
  *
- * Slicing (Kendon 2026-10-18, pending coupon validation):
- * - Extra Soft / Soft: sparse_infill_line_width 0.7 mm, 16% / 22% gyroid
- * - Medium: 1.0 mm line width, 26% gyroid
- * - Hard / Extra Hard: 1.2 mm line width, 26% / 30% gyroid, sparse_infill_speed 23 mm/s
- *   (keeps TPU volumetric flow at about 12–14 mm³/s)
- * - infill_wall_overlap is 25% for every class. VertexSlice/Orca applies that
- *   percent to inner-wall spacing (not sparse infill line width), so 25% of the
- *   global 1.0 mm wall is ~0.25 mm absolute overlap.
+ * Slicing (Kendon 2026-10, 10 mm coupon validated):
+ * - Extra Soft / Soft: 15% / 21% gyroid at 0.7 mm (material default infill speed)
+ * - Medium: 26% gyroid at 1.0 mm (material default infill speed)
+ * - Hard / Extra Hard: 26% / 30% gyroid at 1.2 mm, sparse_infill_speed 23 mm/s
+ * - infill_wall_overlap 25% every class (~0.25 mm into the 1.0 mm global wall)
  * - Walls and skins stay global at 1.0 mm
- *
- * Coupon plan: Hard at 24/26/28% and Extra Hard at 28/30/32% at 1.2 mm, beside
- * the 1.0 mm reference.
  *
  * Keep values in lockstep with hardness-class-table.json (calibration / Python).
  * This is a .ts module so the Vercel Node ESM function can import it without
@@ -45,10 +39,10 @@ export const TARGET_ABSOLUTE_OVERLAP_MM = 0.25;
 export interface NamedClassSettings {
     sparseInfillDensityPct: number;
     sparseInfillPattern: typeof SPARSE_INFILL_PATTERN;
-    sparseInfillSpeedMmS: number;
     sparseInfillLineWidthMm: number;
     infillWallOverlapPct: typeof INFILL_WALL_OVERLAP_PCT;
-    pendingCouponValidation: true;
+    /** Only Hard / Extra Hard override TPU volumetric flow at 1.2 mm. */
+    sparseInfillSpeedMmS?: number;
 }
 
 export interface CustomClassSettings {
@@ -57,7 +51,6 @@ export interface CustomClassSettings {
     sparseInfillPattern: typeof SPARSE_INFILL_PATTERN;
     sparseInfillLineWidthMm: number;
     infillWallOverlapPct: typeof INFILL_WALL_OVERLAP_PCT;
-    pendingCouponValidation: true;
 }
 
 export interface HardnessClassTable {
@@ -71,28 +64,22 @@ export interface HardnessClassTable {
 
 export const HARDNESS_CLASS_TABLE: HardnessClassTable = {
     "Extra Soft": {
-        sparseInfillDensityPct: 16,
+        sparseInfillDensityPct: 15,
         sparseInfillPattern: "gyroid",
-        sparseInfillSpeedMmS: 43.5,
         sparseInfillLineWidthMm: 0.7,
         infillWallOverlapPct: 25,
-        pendingCouponValidation: true,
     },
     Soft: {
-        sparseInfillDensityPct: 22,
+        sparseInfillDensityPct: 21,
         sparseInfillPattern: "gyroid",
-        sparseInfillSpeedMmS: 44.0,
         sparseInfillLineWidthMm: 0.7,
         infillWallOverlapPct: 25,
-        pendingCouponValidation: true,
     },
     Medium: {
         sparseInfillDensityPct: 26,
         sparseInfillPattern: "gyroid",
-        sparseInfillSpeedMmS: 44.5,
         sparseInfillLineWidthMm: 1.0,
         infillWallOverlapPct: 25,
-        pendingCouponValidation: true,
     },
     Hard: {
         sparseInfillDensityPct: 26,
@@ -100,7 +87,6 @@ export const HARDNESS_CLASS_TABLE: HardnessClassTable = {
         sparseInfillSpeedMmS: 23.0,
         sparseInfillLineWidthMm: 1.2,
         infillWallOverlapPct: 25,
-        pendingCouponValidation: true,
     },
     "Extra Hard": {
         sparseInfillDensityPct: 30,
@@ -108,7 +94,6 @@ export const HARDNESS_CLASS_TABLE: HardnessClassTable = {
         sparseInfillSpeedMmS: 23.0,
         sparseInfillLineWidthMm: 1.2,
         infillWallOverlapPct: 25,
-        pendingCouponValidation: true,
     },
     Custom: {
         sparseInfillDensityPctMin: 5,
@@ -116,7 +101,6 @@ export const HARDNESS_CLASS_TABLE: HardnessClassTable = {
         sparseInfillPattern: "gyroid",
         sparseInfillLineWidthMm: 1.0,
         infillWallOverlapPct: 25,
-        pendingCouponValidation: true,
     },
 };
 
@@ -201,10 +185,9 @@ export interface ClassFingerprint {
     speedMmS?: number;
     lineWidthMm: number;
     infillWallOverlapPct: number;
-    pendingCouponValidation: true;
 }
 
-/** Density + pattern + line width + speed + overlap fingerprint used by G-code / 3MF verification. */
+/** Density + pattern + line width + optional speed + overlap fingerprint used by G-code / 3MF verification. */
 export function classFingerprint(
     cls: RegionHardnessClass,
     overrides?: { sparseInfillDensityPct?: number },
@@ -219,7 +202,6 @@ export function classFingerprint(
         speedMmS: classSpeedMmS(cls),
         lineWidthMm: classLineWidthMm(cls),
         infillWallOverlapPct: classOverlapPct(cls),
-        pendingCouponValidation: true,
     };
 }
 

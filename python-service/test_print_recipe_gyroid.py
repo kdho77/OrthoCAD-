@@ -18,7 +18,7 @@ import trimesh
 class PrintRecipeGyroidTests(unittest.TestCase):
     def test_hardness_table_matches_ts_json(self) -> None:
         self.assertEqual(HARDNESS_TO_INFILL_PCT["Medium"], 26)
-        self.assertEqual(HARDNESS_TO_INFILL_PCT["Extra Hard"], 38)
+        self.assertEqual(HARDNESS_TO_INFILL_PCT["Extra Hard"], 30)
 
     def test_recipe_resolves_fraction(self) -> None:
         recipe = PrintRecipeV1(default_hardness="Soft")

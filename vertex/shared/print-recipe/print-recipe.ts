@@ -10,8 +10,8 @@ export const HARDNESS_NAMES = ["Extra Soft", "Soft", "Medium", "Hard", "Extra Ha
 
 export type HardnessName = (typeof HARDNESS_NAMES)[number];
 
-/** Pending coupon validation. Hard / Extra Hard are 1.2 mm starting points. */
-export type GyroidInfillPct = 10 | 14 | 16 | 20 | 22 | 24 | 26 | 28 | 30 | 32 | 38;
+/** Coupon-validated gyroid ladder (10 mm coupons, 2026-10). */
+export type GyroidInfillPct = 10 | 14 | 15 | 16 | 20 | 21 | 22 | 24 | 26 | 28 | 30 | 32 | 38;
 
 export const HARDNESS_TO_INFILL_PCT: Record<HardnessName, number> = hardnessTable as Record<
     HardnessName,

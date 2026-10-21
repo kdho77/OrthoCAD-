@@ -1,50 +1,41 @@
 {
     "Extra Soft": {
-        "sparseInfillDensityPct": 16,
+        "sparseInfillDensityPct": 15,
         "sparseInfillPattern": "gyroid",
-        "sparseInfillSpeedMmS": 43.5,
         "sparseInfillLineWidthMm": 0.7,
-        "infillWallOverlapPct": 25,
-        "pendingCouponValidation": true
+        "infillWallOverlapPct": 25
     },
     "Soft": {
-        "sparseInfillDensityPct": 22,
+        "sparseInfillDensityPct": 21,
         "sparseInfillPattern": "gyroid",
-        "sparseInfillSpeedMmS": 44.0,
         "sparseInfillLineWidthMm": 0.7,
-        "infillWallOverlapPct": 25,
-        "pendingCouponValidation": true
+        "infillWallOverlapPct": 25
     },
     "Medium": {
         "sparseInfillDensityPct": 26,
         "sparseInfillPattern": "gyroid",
-        "sparseInfillSpeedMmS": 44.5,
         "sparseInfillLineWidthMm": 1.0,
-        "infillWallOverlapPct": 25,
-        "pendingCouponValidation": true
+        "infillWallOverlapPct": 25
     },
     "Hard": {
         "sparseInfillDensityPct": 26,
         "sparseInfillPattern": "gyroid",
         "sparseInfillSpeedMmS": 23.0,
         "sparseInfillLineWidthMm": 1.2,
-        "infillWallOverlapPct": 25,
-        "pendingCouponValidation": true
+        "infillWallOverlapPct": 25
     },
     "Extra Hard": {
         "sparseInfillDensityPct": 30,
         "sparseInfillPattern": "gyroid",
         "sparseInfillSpeedMmS": 23.0,
         "sparseInfillLineWidthMm": 1.2,
-        "infillWallOverlapPct": 25,
-        "pendingCouponValidation": true
+        "infillWallOverlapPct": 25
     },
     "Custom": {
         "sparseInfillDensityPctMin": 5,
         "sparseInfillDensityPctMax": 100,
         "sparseInfillPattern": "gyroid",
         "sparseInfillLineWidthMm": 1.0,
-        "infillWallOverlapPct": 25,
-        "pendingCouponValidation": true
+        "infillWallOverlapPct": 25
     }
 }
