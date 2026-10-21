@@ -284,6 +284,236 @@ export function tangentAt(pts: Point[], i: number): Point {
     return unit(b.x - a.x, b.y - a.y);
 }
 
+/** Nominal G1 spacing along the toolpath, matching the Windows reference. */
+export const TOOLPATH_SPACING_MM = 1;
+/** Split a chord only when it leaves the source curve by more than this in XY or Z. */
+export const TOOLPATH_CHORD_DEV_MM = 0.05;
+
+interface ArcStation {
+    x: number;
+    y: number;
+    z: number;
+    s: number;
+}
+
+function buildArcStations(pts: Point[], closed: boolean): { stations: ArcStation[]; total: number } {
+    const stations: ArcStation[] = [];
+    const n = pts.length;
+    if (n === 0) return { stations, total: 0 };
+    const push = (p: Point, s: number) => {
+        stations.push({ x: p.x, y: p.y, z: p.z ?? 0, s });
+    };
+    push(pts[0]!, 0);
+    let s = 0;
+    const edges = closed ? n : n - 1;
+    for (let i = 0; i < edges; i++) {
+        const a = pts[i]!;
+        const b = pts[(i + 1) % n]!;
+        const d = Math.hypot(b.x - a.x, b.y - a.y);
+        if (d < 1e-9) continue;
+        s += d;
+        push(b, s);
+    }
+    return { stations, total: s };
+}
+
+function stationAt(stations: ArcStation[], s: number): ArcStation {
+    const last = stations[stations.length - 1]!;
+    if (s <= 0) return stations[0]!;
+    if (s >= last.s) return last;
+    let lo = 0;
+    let hi = stations.length - 1;
+    while (lo + 1 < hi) {
+        const mid = (lo + hi) >> 1;
+        if (stations[mid]!.s <= s) lo = mid;
+        else hi = mid;
+    }
+    const a = stations[lo]!;
+    const b = stations[hi]!;
+    const span = b.s - a.s;
+    const u = span > 1e-12 ? (s - a.s) / span : 0;
+    return {
+        x: a.x + (b.x - a.x) * u,
+        y: a.y + (b.y - a.y) * u,
+        z: a.z + (b.z - a.z) * u,
+        s,
+    };
+}
+
+function worstChord(
+    a: ArcStation,
+    b: ArcStation,
+    stations: ArcStation[],
+): { xy: number; z: number; s: number } {
+    let lo = 0;
+    let hi = stations.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (stations[mid]!.s <= a.s + 1e-8) lo = mid + 1;
+        else hi = mid;
+    }
+    let worst = 0;
+    let xy = 0;
+    let z = 0;
+    let s = (a.s + b.s) / 2;
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const ez = b.z - a.z;
+    const len2 = ex * ex + ey * ey;
+    for (let i = lo; i < stations.length; i++) {
+        const p = stations[i]!;
+        if (p.s >= b.s - 1e-8) break;
+        const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
+        const dxy = Math.hypot(p.x - (a.x + ex * t), p.y - (a.y + ey * t));
+        const dz = Math.abs(p.z - (a.z + ez * t));
+        const err = Math.max(dxy, dz);
+        if (err > worst) {
+            worst = err;
+            xy = dxy;
+            z = dz;
+            s = p.s;
+        }
+    }
+    return { xy, z, s };
+}
+
+function toPoint(s: ArcStation): Point {
+    return { x: s.x, y: s.y, z: s.z };
+}
+
+/**
+ * Even samples about `spacingMm` apart along XY arc length.
+ * A span is split until every source vertex stays within `maxDevMm` of the chord in XY and in Z.
+ * The first point is kept. Closed loops are not repeated.
+ */
+export function resampleToSpacing(
+    pts: Point[],
+    spacingMm: number,
+    maxDevMm: number,
+    closed = false,
+): Point[] {
+    if (pts.length < 2) return pts.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }));
+    const { stations, total } = buildArcStations(pts, closed);
+    if (stations.length < 2 || total < 1e-9)
+        return [toPoint(stations[0] ?? { x: pts[0]!.x, y: pts[0]!.y, z: 0, s: 0 })];
+    const spacing = Math.max(1e-3, spacingMm);
+    const nSeg = Math.max(closed ? 3 : 1, Math.round(total / spacing));
+    const step = total / nSeg;
+    const keys: ArcStation[] = [];
+    const count = closed ? nSeg : nSeg + 1;
+    for (let k = 0; k < count; k++) {
+        if (k === 0) keys.push(stations[0]!);
+        else if (!closed && k === count - 1) keys.push(stations[stations.length - 1]!);
+        else keys.push(stationAt(stations, Math.min(total, k * step)));
+    }
+    type Span = { a: ArcStation; b: ArcStation };
+    const spans: Span[] = [];
+    for (let i = 0; i < keys.length - 1; i++) spans.push({ a: keys[i]!, b: keys[i + 1]! });
+    if (closed) {
+        const end = keys[keys.length - 1]!;
+        const start = stations[0]!;
+        spans.push({ a: end, b: { x: start.x, y: start.y, z: start.z, s: total } });
+    }
+    const out: Point[] = [toPoint(keys[0]!)];
+    for (let i = 0; i < spans.length; i++) {
+        const span = spans[i]!;
+        const dev = worstChord(span.a, span.b, stations);
+        if ((dev.xy > maxDevMm || dev.z > maxDevMm) && dev.s > span.a.s + 1e-4 && dev.s < span.b.s - 1e-4) {
+            const mid = stationAt(stations, dev.s);
+            spans.splice(i, 1, { a: span.a, b: mid }, { a: mid, b: span.b });
+            // `continue` still runs the for-loop increment, which would skip the new span.
+            i--;
+            continue;
+        }
+        const closes =
+            closed &&
+            Math.abs(span.b.s - total) <= 1e-6 &&
+            Math.hypot(span.b.x - stations[0]!.x, span.b.y - stations[0]!.y) <= 1e-6;
+        if (closes) continue;
+        const prev = out[out.length - 1]!;
+        if (
+            Math.hypot(prev.x - span.b.x, prev.y - span.b.y) < 1e-6 &&
+            Math.abs((prev.z ?? 0) - span.b.z) < 1e-6
+        ) {
+            continue;
+        }
+        out.push(toPoint(span.b));
+    }
+    return out;
+}
+
+function projectSeg(p: Point, a: Point, b: Point): { t: number; d: number } {
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const len2 = ex * ex + ey * ey;
+    const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
+    return { t, d: Math.hypot(p.x - (a.x + ex * t), p.y - (a.y + ey * t)) };
+}
+
+/**
+ * Max XY / Z distance from `source` vertices to the chords of `path`.
+ * Both polylines are walked in order. A path point may sit `slack` mm off the source.
+ */
+export function maxOrderedChordDeviation(
+    path: Point[],
+    source: Point[],
+    slack = 0.08,
+): { xy: number; z: number } {
+    if (path.length < 2 || source.length < 2) return { xy: 0, z: 0 };
+    const cum: number[] = [0];
+    for (let i = 1; i < source.length; i++) {
+        const a = source[i - 1]!;
+        const b = source[i]!;
+        cum.push(cum[i - 1]! + Math.hypot(b.x - a.x, b.y - a.y));
+    }
+    const lastEdge = source.length - 2;
+    let edge = 0;
+    let vertex = 1;
+    let maxXy = 0;
+    let maxZ = 0;
+    let prev: { s: number; p: Point } | null = null;
+    for (const p of path) {
+        let e = Math.min(Math.max(0, edge), lastEdge);
+        let here = projectSeg(p, source[e]!, source[e + 1]!);
+        while (e < lastEdge) {
+            const nxt = projectSeg(p, source[e + 1]!, source[e + 2]!);
+            if (here.d <= slack && nxt.d > here.d + 1e-6) break;
+            if (nxt.d > here.d + 1e-4 && here.t < 0.999) break;
+            e++;
+            here = nxt;
+        }
+        if (here.d > slack) return { xy: Number.POSITIVE_INFINITY, z: Number.POSITIVE_INFINITY };
+        const s0 = cum[e]!;
+        const s1 = cum[e + 1]!;
+        const s = s0 + here.t * (s1 - s0);
+        if (prev && s + 1e-6 < prev.s) return { xy: Number.POSITIVE_INFINITY, z: Number.POSITIVE_INFINITY };
+        if (prev) {
+            const ex = p.x - prev.p.x;
+            const ey = p.y - prev.p.y;
+            const ez = (p.z ?? 0) - (prev.p.z ?? 0);
+            const len2 = ex * ex + ey * ey;
+            while (vertex < source.length - 1 && cum[vertex]! <= prev.s + 1e-6) vertex++;
+            let v = vertex;
+            while (v < source.length - 1 && cum[v]! < s - 1e-6) {
+                const q = source[v]!;
+                const t =
+                    len2 > 1e-12
+                        ? Math.max(0, Math.min(1, ((q.x - prev.p.x) * ex + (q.y - prev.p.y) * ey) / len2))
+                        : 0;
+                const dxy = Math.hypot(q.x - (prev.p.x + ex * t), q.y - (prev.p.y + ey * t));
+                const dz = Math.abs((q.z ?? 0) - ((prev.p.z ?? 0) + ez * t));
+                if (dxy > maxXy) maxXy = dxy;
+                if (dz > maxZ) maxZ = dz;
+                v++;
+            }
+            vertex = v;
+        }
+        prev = { s, p };
+        edge = e;
+    }
+    return { xy: maxXy, z: maxZ };
+}
+
 export function densifyArc(
     cx: number,
     cy: number,

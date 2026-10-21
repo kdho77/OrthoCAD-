@@ -5,13 +5,16 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
+import { dropCutterZ } from "@/lib/cnc/drop-cutter";
 import { generateCncJob } from "@/lib/cnc/export";
 import { parseGcode } from "@/lib/cnc/parse";
+import { localPoint } from "@/lib/cnc/placement";
+import { distToPoly } from "@/lib/cnc/polygon";
 import { renderToolpathPreview } from "@/lib/cnc/preview";
-import { cloneProfile, IDAHO_PROFILE, wallClearZ } from "@/lib/cnc/profile";
+import { cloneProfile, IDAHO_PROFILE, toolRadiusMm, wallClearZ } from "@/lib/cnc/profile";
 import { evaluateStock, simulateLocal, simulateMoves } from "@/lib/cnc/simulate";
 import { acrossWidthGapMm, measureSpiral, planCenterSpiral, type XyPoint } from "@/lib/cnc/spiral";
-import type { Heightmap } from "@/lib/cnc/types";
+import type { Heightmap, PlacedPart, Point } from "@/lib/cnc/types";
 import { encodePng } from "../helpers/render-png";
 import { sampleTopWorkpiece, syntheticWorkpiece } from "./helpers";
 
@@ -43,6 +46,56 @@ function interiorGapMm(hm: Heightmap, pts: XyPoint[]): number {
             }
             if (best > worst) worst = best;
         }
+    }
+    return worst;
+}
+
+function maxDistanceToPolyline(path: XyPoint[], source: XyPoint[]): number {
+    const pitch = 2;
+    const buckets = new Map<number, number[]>();
+    const key = (ix: number, iy: number) => ix * 100003 + iy;
+    for (let i = 0; i < source.length - 1; i++) {
+        const a = source[i];
+        const b = source[i + 1];
+        if (!a || !b) continue;
+        const minX = Math.floor(Math.min(a.x, b.x) / pitch);
+        const maxX = Math.floor(Math.max(a.x, b.x) / pitch);
+        const minY = Math.floor(Math.min(a.y, b.y) / pitch);
+        const maxY = Math.floor(Math.max(a.y, b.y) / pitch);
+        for (let ix = minX; ix <= maxX; ix++) {
+            for (let iy = minY; iy <= maxY; iy++) {
+                const k = key(ix, iy);
+                const list = buckets.get(k);
+                if (list) list.push(i);
+                else buckets.set(k, [i]);
+            }
+        }
+    }
+    let worst = 0;
+    for (const p of path) {
+        const ix = Math.floor(p.x / pitch);
+        const iy = Math.floor(p.y / pitch);
+        let best = Infinity;
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                const list = buckets.get(key(ix + dx, iy + dy));
+                if (!list) continue;
+                for (const i of list) {
+                    const a = source[i];
+                    const b = source[i + 1];
+                    if (!a || !b) continue;
+                    const ex = b.x - a.x;
+                    const ey = b.y - a.y;
+                    const len2 = ex * ex + ey * ey;
+                    const t =
+                        len2 > 1e-12
+                            ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2))
+                            : 0;
+                    best = Math.min(best, Math.hypot(p.x - (a.x + ex * t), p.y - (a.y + ey * t)));
+                }
+            }
+        }
+        if (best > worst) worst = best;
     }
     return worst;
 }
@@ -222,6 +275,89 @@ describe("CNC SAMPLE_Top fixtures (Idaho two-pocket)", () => {
             expect(measured.endPitchMm).toBeLessThan(2.6);
             expect(acrossWidthGapMm(plan.samples, wp.outline)).toBeLessThanOrEqual(0.75);
         }
+        const g1Count = (text: string) => text.split("\n").filter((line) => line.startsWith("G1")).length;
+        const atMarker = (marker: string) => plainJob.gcode.indexOf(marker);
+        const between = (a: string, b: string) => plainJob.gcode.slice(atMarker(a), atMarker(b));
+        const lineCount = [
+            g1Count(between("; surface left", "; surface right")) +
+                g1Count(between("; perimeter left", "; perimeter right")),
+            g1Count(between("; surface right", "; perimeter left")) +
+                g1Count(plainJob.gcode.slice(atMarker("; perimeter right"))),
+        ];
+        // Windows is about 21k lines per insole. Half to twice that is the gate.
+        expect(lineCount[0]).toBeGreaterThan(10_500);
+        expect(lineCount[0]).toBeLessThan(42_000);
+        expect(lineCount[1]).toBeGreaterThan(10_500);
+        expect(lineCount[1]).toBeLessThan(42_000);
+        const lengths: number[] = [];
+        let maxChordZ = 0;
+        let maxChordXy = 0;
+        const radius = toolRadiusMm(profile.toolpathCutter.diameterMm);
+        const toLocal = (x: number, y: number, part: PlacedPart) => {
+            const world = {
+                x: profile.zeroX === "right" ? profile.tableWidthMm - x : x,
+                y: profile.zeroY === "back" ? profile.tableLengthMm - y : y,
+                z: 0,
+            };
+            return localPoint(world, part);
+        };
+        const passes: (typeof surfaceParsed.moves)[] = [];
+        let cur: typeof surfaceParsed.moves = [];
+        for (const m of surfaceParsed.moves) {
+            if (m.motion === "G0") {
+                if (cur.length) passes.push(cur);
+                cur = [];
+            } else cur.push(m);
+        }
+        if (cur.length) passes.push(cur);
+        for (const pass of passes) {
+            const plunge = pass[0];
+            const firstPart = plainJob.placed[0];
+            if (!plunge || !firstPart) continue;
+            let part = firstPart;
+            let best = Infinity;
+            for (const candidate of plainJob.placed) {
+                const local = toLocal(plunge.x, plunge.y, candidate);
+                const near = distToPoly(local.x, local.y, candidate.outline);
+                if (near < best) {
+                    best = near;
+                    part = candidate;
+                }
+            }
+            const surfacePass = Math.min(...pass.map((m) => m.z)) > 0.5;
+            const locals: Point[] = [];
+            for (const m of pass) {
+                const dxy = Math.hypot(m.x - m.from.x, m.y - m.from.y);
+                if (dxy < 0.05) continue;
+                lengths.push(Math.hypot(dxy, m.z - m.from.z));
+                if (!surfacePass) continue;
+                const from = toLocal(m.from.x, m.from.y, part);
+                const to = toLocal(m.x, m.y, part);
+                if (locals.length === 0) locals.push({ x: from.x, y: from.y, z: m.from.z });
+                locals.push({ x: to.x, y: to.y, z: m.z });
+                for (const t of [0.25, 0.5, 0.75]) {
+                    const x = from.x + (to.x - from.x) * t;
+                    const y = from.y + (to.y - from.y) * t;
+                    const z = m.from.z + (m.z - m.from.z) * t;
+                    const surf = dropCutterZ(part.heightmap, x, y, radius, profile.toolpathCutter.type);
+                    maxChordZ = Math.max(maxChordZ, Math.abs(surf - z));
+                }
+            }
+            if (surfacePass && locals.length > 2) {
+                const planned = planCenterSpiral(part.outline, profile, profile.toolpathCutter.type);
+                maxChordXy = Math.max(maxChordXy, maxDistanceToPolyline(locals, planned.samples));
+            }
+        }
+        lengths.sort((a, b) => a - b);
+        const median = lengths[Math.floor(lengths.length / 2)] ?? 0;
+        console.info(
+            `[cnc] G1 L ${lineCount[0]} R ${lineCount[1]} median ${median.toFixed(3)} mm ` +
+                `chordZ ${maxChordZ.toFixed(4)} chordXY ${maxChordXy.toFixed(4)}`,
+        );
+        expect(median).toBeGreaterThan(0.8);
+        expect(median).toBeLessThan(1.2);
+        expect(maxChordZ).toBeLessThanOrEqual(0.05);
+        expect(maxChordXy).toBeLessThanOrEqual(0.05);
         expect(surface.gougeMm).toBeLessThanOrEqual(0.01);
         expect(surface.excessP95Mm).toBeLessThanOrEqual(0.099);
         expect(surface.excessMaxMm).toBeLessThanOrEqual(0.25);

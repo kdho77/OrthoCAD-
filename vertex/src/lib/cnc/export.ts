@@ -6,6 +6,7 @@ import { buildContourPass } from "./contour";
 import { dropCutterZ } from "./drop-cutter";
 import { CncGcodeEmitter } from "./gcode";
 import { machineXY, type PartPlacement, placeWorkpieces } from "./placement";
+import { resampleToSpacing, TOOLPATH_CHORD_DEV_MM, TOOLPATH_SPACING_MM } from "./polygon";
 import { toolRadiusMm } from "./profile";
 import { planCenterSpiral, type XyPoint, zigzagXy } from "./spiral";
 import {
@@ -45,25 +46,54 @@ function canonicalHash(profile: MillingProfile, parts: CncWorkpiece[]): string {
     return sha256Hex(payload);
 }
 
+const CHORD_SAMPLES = [1 / 6, 2 / 6, 0.5, 4 / 6, 5 / 6];
+const MIN_FIT_CHORD_MM = 0.08;
 /**
- * Linear G1 chords sit below the drop envelope by about L²/(8R).
- * On the heel cup the tool-center curve is tighter than the 5 mm ball,
- * and a 0.4 mm chord left a 0.014 mm gouge. 0.22 mm keeps that under 0.01 mm.
+ * XY chords may leave the planned spiral by 0.05 mm. Z is held tighter:
+ * a 0.05 mm sag is a 0.05 mm gouge, and the stock gate is 0.01 mm.
  */
-const FINISH_CHORD_MM = 0.22;
+const SURFACE_Z_DEV_MM = 0.007;
 
-function densifyXy(pts: XyPoint[], maxChord: number): XyPoint[] {
+/** Split a 1 mm chord where interpolated Z leaves the drop surface. */
+function fitChordToSurface(pts: Point[], zAt: (x: number, y: number) => number, maxDev: number): Point[] {
     if (pts.length < 2) return pts;
-    const out: XyPoint[] = [pts[0]!];
-    for (let i = 1; i < pts.length; i++) {
-        const a = out[out.length - 1]!;
-        const b = pts[i]!;
-        const dist = Math.hypot(b.x - a.x, b.y - a.y);
-        const n = Math.max(1, Math.ceil(dist / maxChord));
-        for (let k = 1; k <= n; k++) {
-            const t = k / n;
-            out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    const spans: Array<[Point, Point]> = [];
+    for (let i = 1; i < pts.length; i++) spans.push([pts[i - 1]!, pts[i]!]);
+    const out: Point[] = [{ x: pts[0]!.x, y: pts[0]!.y, z: pts[0]!.z ?? zAt(pts[0]!.x, pts[0]!.y) }];
+    for (let i = 0; i < spans.length; i++) {
+        const a = spans[i]![0];
+        const b = spans[i]![1];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dz = (b.z ?? 0) - (a.z ?? 0);
+        const len = Math.hypot(dx, dy);
+        if (len > MIN_FIT_CHORD_MM) {
+            let worst = 0;
+            let worstT = 0.5;
+            for (const t of CHORD_SAMPLES) {
+                const x = a.x + dx * t;
+                const y = a.y + dy * t;
+                const surf = zAt(x, y);
+                if (!Number.isFinite(surf)) continue;
+                const err = Math.abs(surf - ((a.z ?? 0) + dz * t));
+                if (err > worst) {
+                    worst = err;
+                    worstT = t;
+                }
+            }
+            if (worst > maxDev) {
+                const x = a.x + dx * worstT;
+                const y = a.y + dy * worstT;
+                const mid = { x, y, z: zAt(x, y) };
+                spans.splice(i, 1, [a, mid], [mid, b]);
+                // `continue` still runs the for-loop increment, which would skip the new span.
+                i--;
+                continue;
+            }
         }
+        const prev = out[out.length - 1]!;
+        if (Math.hypot(prev.x - b.x, prev.y - b.y, (prev.z ?? 0) - (b.z ?? 0)) < 1e-6) continue;
+        out.push({ x: b.x, y: b.y, z: b.z ?? 0 });
     }
     return out;
 }
@@ -175,9 +205,10 @@ export function generateCncJob(
             for (const w of xy.warnings) warnings.push(`${part.side}: ${w}`);
         }
         const raw = Array.isArray(xy) ? xy : xy.samples;
-        const path = densifyXy(raw, FINISH_CHORD_MM)
+        const spaced = resampleToSpacing(raw, TOOLPATH_SPACING_MM, TOOLPATH_CHORD_DEV_MM, false)
             .map((p) => ({ x: p.x, y: p.y, z: dropAt(p) }))
             .filter((p) => Number.isFinite(p.z));
+        const path = fitChordToSurface(spaced, (x, y) => dropAt({ x, y }), SURFACE_Z_DEV_MM);
         if (path.length < 2) continue;
         const start = path[0]!;
         const depth = profile.materialHeightMm - start.z;
