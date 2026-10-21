@@ -14,6 +14,7 @@ import { useLocationPath } from "@/features/admin/admin-nav";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { ClientsView } from "@/features/clients/ClientsView";
 import { exportDesign } from "@/features/exports/export-service";
+import { MillTableView } from "@/features/mill/MillTableView";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useViewportMode } from "@/hooks/useViewportMode";
@@ -23,6 +24,7 @@ import { stockDebug, stockGlbLog } from "@/lib/geometry/stock-debug";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
 import { useAuthStore } from "@/stores/auth-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
 import { isAdminPath } from "../shared/admin/admin-domain";
 
@@ -57,6 +59,9 @@ function CadApp() {
     const [nav, setNav] = useState<NavItem>("Production");
     const [rxOpen, setRxOpen] = useState(false);
     const applyPrescription = useDesignStore((s) => s.applyPrescription);
+    const method = useDesignStore((s) => s.design.method);
+    const step = useClinicalWorkflowStore((s) => s.step);
+    const millLayout = step === "print" && method === "milling_3axis";
     const { user, loading: authLoading } = useAuthStore();
     const viewport = useViewportMode();
 
@@ -123,7 +128,7 @@ function CadApp() {
                             <CaseSummaryBar />
                             <div className="relative flex min-h-0 flex-1">
                                 <main className="min-w-0 flex-1">
-                                    <Viewer3D />
+                                    {millLayout ? <MillTableView /> : <Viewer3D />}
                                 </main>
                                 {viewport === "phone" ? (
                                     <div className="flex w-64 items-center justify-center border-l border-border bg-panel px-4 text-center text-[12px] text-muted-foreground">

@@ -92,3 +92,14 @@ export function scanGateBlocksLaterSteps(): StepGateResult {
     const gate = evaluateScanStepGate();
     return gate;
 }
+
+/**
+ * Banner copy for the clinical rail. Always uses the live gate so choosing
+ * Left / Right / Pair (or mill-selecting a side) clears the stale "select a
+ * side" message even if a jump-ahead sticky reason is still stored.
+ */
+export function clinicalRailBannerReason(step: ClinicalStepId): string | null {
+    const live = evaluateNextGate(step);
+    if (live.ok) return null;
+    return live.reason;
+}
