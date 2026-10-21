@@ -10,7 +10,7 @@ import { parseGcode } from "@/lib/cnc/parse";
 import { renderToolpathPreview } from "@/lib/cnc/preview";
 import { cloneProfile, IDAHO_PROFILE, wallClearZ } from "@/lib/cnc/profile";
 import { evaluateStock, simulateLocal, simulateMoves } from "@/lib/cnc/simulate";
-import { planCenterSpiral, type XyPoint } from "@/lib/cnc/spiral";
+import { acrossWidthGapMm, measureSpiral, planCenterSpiral, type XyPoint } from "@/lib/cnc/spiral";
 import type { Heightmap } from "@/lib/cnc/types";
 import { encodePng } from "../helpers/render-png";
 import { sampleTopWorkpiece, syntheticWorkpiece } from "./helpers";
@@ -163,16 +163,33 @@ describe("CNC SAMPLE_Top fixtures (Idaho two-pocket)", () => {
             profile,
             surfaceLocals,
         );
-        if (surface.excessOverCount > 0) console.info("[cnc] cells over 0.25 mm excess", surface.excessOver);
         expect(surface.gougeMm).toBeLessThanOrEqual(0.01);
         expect(surface.excessP95Mm).toBeLessThanOrEqual(0.099);
         expect(surface.excessMaxMm).toBeLessThanOrEqual(0.25);
         expect(surface.excessOverCount).toBe(0);
         for (const wp of [plainL, plainR]) {
             const plan = planCenterSpiral(wp.outline, profile, profile.toolpathCutter.type);
-            const gap = interiorGapMm(wp.heightmap, plan.samples);
-            console.info(`[cnc] ${wp.side} interior gap ${gap.toFixed(3)} mm`);
-            expect(gap).toBeLessThanOrEqual(0.75);
+            const measured = measureSpiral(plan.samples, wp.outline);
+            const euclidean = interiorGapMm(wp.heightmap, plan.samples);
+            console.info(
+                `[cnc] ${wp.side} laps ${measured.laps.toFixed(1)} length ${(measured.lengthMm / 1000).toFixed(2)} m ` +
+                    `widthPitch ${measured.widthPitchMm.toFixed(3)} endPitch ${measured.endPitchMm.toFixed(3)} ` +
+                    `acrossWidthGap ${measured.acrossWidthGapMm.toFixed(3)} euclideanGap ${euclidean.toFixed(3)}`,
+            );
+            expect(measured.clockwise).toBe(true);
+            // SAMPLE_Top is ~272×92 mm against Windows' ~295×100 mm, so the
+            // homothety is ~56 laps. Heel-cup arcs (pitch capped at 1.4 mm on
+            // the outer min-X end) bring the length to ~21 m. Toe pitch stays
+            // stretched; across-width gap is the gate, not the end pitch.
+            expect(measured.laps).toBeGreaterThan(52);
+            expect(measured.laps).toBeLessThan(60);
+            expect(measured.lengthMm / 1000).toBeGreaterThan(19);
+            expect(measured.lengthMm / 1000).toBeLessThan(23);
+            expect(measured.widthPitchMm).toBeGreaterThan(0.65);
+            expect(measured.widthPitchMm).toBeLessThan(0.85);
+            expect(measured.endPitchMm).toBeGreaterThan(2.3);
+            expect(measured.endPitchMm).toBeLessThan(2.6);
+            expect(acrossWidthGapMm(plan.samples, wp.outline)).toBeLessThanOrEqual(0.75);
         }
 
         writePreview("cnc-sample-top-plain.png", plainJob.gcode, profile);

@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { distToPoly, ensureCcw, offsetClosed } from "./polygon";
+import { bboxOf, distToPoly, ensureCcw, offsetClosed } from "./polygon";
 import { skinZ, toolRadiusMm } from "./profile";
 import type { MillingProfile, Point } from "./types";
 
@@ -50,6 +50,30 @@ export function ballProfileZ(distFromCentreMm: number, radiusMm: number, skinMm:
 
 function copyLoop(pts: Point[]): Point[] {
     return pts.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }));
+}
+
+/**
+ * Forefoot point on the min-Y side. Windows insole 1 starts near X215 Y10,
+ * about 69% of the way from the heel end to the toe, on the lateral edge.
+ */
+function toeLateralTarget(loop: Point[]): Point {
+    const bb = bboxOf(loop);
+    return { x: bb.minX + 0.69 * (bb.maxX - bb.minX), y: bb.minY, z: 0 };
+}
+
+function rotateToClosest(loop: Point[], target: Point): Point[] {
+    if (loop.length === 0) return [];
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const p = loop[i]!;
+        const d = Math.hypot(p.x - target.x, p.y - target.y);
+        if (d < bestD) {
+            bestD = d;
+            best = i;
+        }
+    }
+    return loop.slice(best).concat(loop.slice(0, best));
 }
 
 function uncutSpans(inner: Point[], outline: Point[], tol: number): { spans: UncutCorner[]; maxMm: number } {
@@ -109,7 +133,9 @@ export function ballBandGeometry(
     const chord = Math.max(1e-4, chordTolMm);
     const knifeLine = ensureCcw(copyLoop(outline));
     const radius = Math.max(0.1, radiusMm);
-    const centreline = offsetClosed(knifeLine, radius, chord);
+    const centreRaw = offsetClosed(knifeLine, radius, chord);
+    const centreline =
+        centreRaw.length >= 3 ? rotateToClosest(centreRaw, toeLateralTarget(centreRaw)) : centreRaw;
     const outerEdge = offsetClosed(knifeLine, radius * 2, chord);
     const innerEdge = centreline.length >= 3 ? offsetClosed(centreline, -radius, chord) : copyLoop(knifeLine);
     const closed = innerEdge.length >= 3 ? innerEdge : copyLoop(knifeLine);

@@ -51,7 +51,8 @@ describe("CNC dialect / envelope / feeds", () => {
             if (m.motion !== "G1") continue;
             const dxy = Math.hypot(m.x - m.from.x, m.y - m.from.y);
             const dz = m.z - m.from.z;
-            if (dz < -15.001) {
+            // A straight Windows plunge (no XY) may drop the full entry. Sloped moves stay ≤ 15 mm.
+            if (dz < -15.001 && dxy > 0.05) {
                 throw new Error(`step-down ${dz.toFixed(3)} mm exceeds 15 at line ${m.line}`);
             }
             if (m.f) lastF = m.f;

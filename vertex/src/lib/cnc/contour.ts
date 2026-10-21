@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { type BallBandGeometry, ballBandGeometry, UNCUT_CORNER_TOL_MM } from "./band";
-import { densifyArc, perimeter, signedArea, tangentAt, unit } from "./polygon";
+import { densifyArc, signedArea, tangentAt, unit } from "./polygon";
 import { toolRadiusMm } from "./profile";
 import type { MillingProfile, Point } from "./types";
 
@@ -19,18 +19,18 @@ export interface ContourPass {
     band: BallBandGeometry;
 }
 
-function tangentCw(pts: Point[], i: number): Point {
+function tangentTravel(pts: Point[], i: number): Point {
     const a = pts[i]!;
     const b = pts[(i + 1) % pts.length]!;
     return unit(b.x - a.x, b.y - a.y);
 }
 
 /**
- * Outward normal of a CW loop (negative signed area).
- * Walking CW, the interior is on the right, so outward is to the left of travel.
+ * Outward normal of a CCW loop (positive signed area).
+ * Walking CCW, the interior is on the left, so outward is to the right of travel.
  */
-function outwardCw(t: Point): Point {
-    return { x: -t.y, y: t.x };
+function outwardCcw(t: Point): Point {
+    return { x: t.y, y: -t.x };
 }
 
 /** Keep every vertex (no corner cutting) and split edges longer than maxSegMm. */
@@ -52,9 +52,9 @@ function densifyKeepVertices(pts: Point[], maxSegMm: number): Point[] {
     return out;
 }
 
-/** CW, but the first vertex stays the heel so the lead-in does not jump. */
-function ensureCwKeepStart(pts: Point[]): Point[] {
-    if (pts.length < 3 || signedArea(pts) <= 0) return pts.map((p) => ({ x: p.x, y: p.y }));
+/** CCW, like the Windows perimeter. The first vertex stays the toe/lateral start. */
+function ensureCcwKeepStart(pts: Point[]): Point[] {
+    if (pts.length < 3 || signedArea(pts) >= 0) return pts.map((p) => ({ x: p.x, y: p.y }));
     const rev = pts.map((p) => ({ x: p.x, y: p.y })).reverse();
     const first = rev.pop();
     if (first) rev.unshift(first);
@@ -113,15 +113,8 @@ export function helicalLevels(zStart: number, zEnd: number, maxStep: number): nu
 /** Perimeter tip finishes on the table. The on-screen band legend still reads the 1 mm skin. */
 export const PERIMETER_FLOOR_MM = 0;
 
-const RAMP_MAX_RAD = (15 * Math.PI) / 180;
-
-/** Full laps so a descent stays at or under 15° and ends on the path start. */
-export function approachLaps(dropMm: number, perimeterMm: number): number {
-    if (dropMm <= 1e-6) return 0;
-    const slope = Math.tan(RAMP_MAX_RAD) * 0.999;
-    const minRun = dropMm / slope;
-    return Math.max(1, Math.ceil((minRun - 1e-9) / Math.max(perimeterMm, 1e-6)));
-}
+/** Windows ramps the perimeter in two laps, then one flat lap. */
+export const PERIMETER_RAMP_LAPS = 2;
 
 function traceLaps(path: Point[], laps: number, z0: number, z1: number): Point[] {
     if (laps <= 0 || path.length < 3) return [];
@@ -163,30 +156,26 @@ export function buildContourPass(outline: Point[], profile: MillingProfile): Con
         }
     }
     const source = band.centreline.length >= 3 ? band.centreline : outline;
-    const path = ensureCwKeepStart(densifyKeepVertices(source, Math.max(0.35, profile.sampleMm)));
-    // Ramp starts at clearance, which is at least 2 mm above the stock top, eases to the
-    // stock top, then runs Z(stock) → Z0 over two laps and one flat lap at Z0.
-    const zTop = Math.max(profile.freeMovementHeightMm, profile.materialHeightMm + 2);
+    const path = ensureCcwKeepStart(densifyKeepVertices(source, Math.max(0.35, profile.sampleMm)));
+    // Rapid to Z clearance, then a straight plunge to the stock top. The helix itself
+    // is exactly two laps from that Z down to the table, plus one flat lap.
     const zStock = profile.materialHeightMm;
     const zFloor = PERIMETER_FLOOR_MM;
-    const per = perimeter(path);
-    const t0 = tangentCw(path, 0);
-    const n0 = outwardCw(t0);
+    const t0 = tangentTravel(path, 0);
+    const n0 = outwardCcw(t0);
     const p0 = path[0]!;
     const leadIn = leadArc(p0, t0, n0, LEAD_RADIUS_MM, profile.chordTolMm, true).map((p) => ({
         ...p,
-        z: zTop,
+        z: zStock,
     }));
     const tEnd = tangentAt(path, 0);
-    const nEnd = outwardCw(tEnd);
+    const nEnd = outwardCcw(tEnd);
     const leadOut = leadArc(p0, tEnd, nEnd, LEAD_RADIUS_MM, profile.chordTolMm, false).map((p) => ({
         ...p,
         z: zFloor,
     }));
 
-    const approach = traceLaps(path, approachLaps(zTop - zStock, per), zTop, zStock);
-    const ramp = traceLaps(path, 2, zStock, zFloor);
-    const helix = approach.concat(ramp.slice(approach.length ? 1 : 0));
+    const helix = traceLaps(path, PERIMETER_RAMP_LAPS, zStock, zFloor);
     const finish = traceLaps(path, 1, zFloor, zFloor);
 
     return { leadIn, helix, finish, leadOut, warnings, band };

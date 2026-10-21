@@ -83,8 +83,10 @@ describe("ball contour band geometry", () => {
         const partBb = bboxOf(wp.outline);
         const envBb = bboxOf(env);
         const leftOverhang = partBb.minX - envBb.minX;
-        expect(leftOverhang).toBeGreaterThan(10);
-        expect(leftOverhang).toBeLessThan(16);
+        // The perimeter lead sits on the toe/lateral edge, so the heel side is the
+        // outline+2R band (~10 mm), not a lead bulb past 10.
+        expect(leftOverhang).toBeGreaterThan(9.5);
+        expect(leftOverhang).toBeLessThan(12);
         const placed = placeWorkpieces(profile, [wp]);
         const part = placed[0];
         if (!part) throw new Error("expected part");

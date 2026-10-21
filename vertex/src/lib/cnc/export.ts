@@ -46,10 +46,11 @@ function canonicalHash(profile: MillingProfile, parts: CncWorkpiece[]): string {
 }
 
 /**
- * Linear G1 chords sit below the drop envelope by about L²/(8r).
- * Keep that sagitta under 0.004 mm for an r = 5 mm ball (L ≤ 0.4 mm).
+ * Linear G1 chords sit below the drop envelope by about L²/(8R).
+ * On the heel cup the tool-center curve is tighter than the 5 mm ball,
+ * and a 0.4 mm chord left a 0.014 mm gouge. 0.22 mm keeps that under 0.01 mm.
  */
-const FINISH_CHORD_MM = 0.4;
+const FINISH_CHORD_MM = 0.22;
 
 function densifyXy(pts: XyPoint[], maxChord: number): XyPoint[] {
     if (pts.length < 2) return pts;
@@ -67,39 +68,7 @@ function densifyXy(pts: XyPoint[], maxChord: number): XyPoint[] {
     return out;
 }
 
-/** Center entry stays at or under 15°. tan(15°) ≈ 0.268. */
-const ENTRY_SLOPE = Math.tan((15 * Math.PI) / 180) * 0.999;
 const ENTRY_DEPTH_WARN_MM = 25;
-
-function emitEntryRamp(
-    g: CncGcodeEmitter,
-    placed: PlacedPart,
-    profile: MillingProfile,
-    circuit: XyPoint[],
-    dropAt: (p: XyPoint) => number,
-    zTarget: number,
-): void {
-    const feeds = profile.topFeeds;
-    if (circuit.length < 2) return;
-    let z = profile.freeMovementHeightMm;
-    for (let guard = 0; guard < 8000; guard++) {
-        let descended = false;
-        for (let i = 1; i < circuit.length; i++) {
-            const prev = circuit[i - 1]!;
-            const b = circuit[i]!;
-            const dist = Math.hypot(b.x - prev.x, b.y - prev.y);
-            const drop = dropAt(b);
-            const proposed = z - dist * ENTRY_SLOPE;
-            const zNext = Math.max(proposed, drop);
-            const w = machineXY(b, placed, profile);
-            g.cutTo(w.x, w.y, zNext, "dip", feeds);
-            if (zNext < z - 1e-4) descended = true;
-            z = zNext;
-        }
-        if (z <= zTarget + 0.02) break;
-        if (!descended) break;
-    }
-}
 
 function emitContour(g: CncGcodeEmitter, placed: PlacedPart, profile: MillingProfile): string[] {
     const pass = buildContourPass(placed.outline, profile);
@@ -114,7 +83,8 @@ function emitContour(g: CncGcodeEmitter, placed: PlacedPart, profile: MillingPro
         const p0 = lead[0]!;
         g.rapidZ(clear);
         g.rapidTo(p0.x, p0.y, clear);
-        g.cutTo(p0.x, p0.y, p0.z, "contour", feeds);
+        // Windows: G00 Z50, then a straight G01 down to the ramp start (stock top).
+        g.cutTo(p0.x, p0.y, p0.z, "dip", feeds);
         for (let i = 1; i < lead.length; i++) {
             const p = lead[i]!;
             g.cutTo(p.x, p.y, p.z, "contour", feeds);
@@ -204,9 +174,6 @@ export function generateCncJob(
         if (!Array.isArray(xy) && xy.warnings.length) {
             for (const w of xy.warnings) warnings.push(`${part.side}: ${w}`);
         }
-        const entry = Array.isArray(xy)
-            ? densifyXy(xy.slice(0, Math.min(xy.length, 8)).concat(xy.slice(0, 1)), 0.8)
-            : xy.entry;
         const raw = Array.isArray(xy) ? xy : xy.samples;
         const path = densifyXy(raw, FINISH_CHORD_MM)
             .map((p) => ({ x: p.x, y: p.y, z: dropAt(p) }))
@@ -219,12 +186,12 @@ export function generateCncJob(
             warnings.push(`${part.side}: ${msg}`);
             console.warn(`[cnc] ${msg}`);
         }
+        const feeds = profile.topFeeds;
         const m0 = machineXY(start, part, profile);
         g.rapidZ(clear);
         g.rapidTo(m0.x, m0.y, clear);
-        const circuit = entry.length >= 2 ? entry : [start, start];
-        emitEntryRamp(g, part, profile, circuit, dropAt, start.z);
-        const feeds = profile.topFeeds;
+        // Windows plunges straight down at the center. No zigzag ramp.
+        g.cutTo(m0.x, m0.y, start.z, "dip", feeds);
         for (const p of path) {
             const w = machineXY(p, part, profile);
             g.cutTo(w.x, w.y, p.z, "normal", feeds);
@@ -241,6 +208,7 @@ export function generateCncJob(
             g.spindle(true, profile.contourCutter.rpm);
             g.dwell(3);
         }
+        g.spindle(true, profile.contourCutter.rpm);
         g.raw(profile.customGcode.contourStart);
         for (const part of ordered) {
             g.comment(`perimeter ${part.side}`);
