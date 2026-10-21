@@ -2,8 +2,8 @@
 // See LICENSE file in the project root for full license information.
 
 import type { Side } from "@/types";
+import { ENVELOPE_CLEARANCE_MM, footprintOverhangMm, polygonsOverlap, toolFootprintLocal } from "./envelope";
 import { bboxOf, centroid } from "./polygon";
-import { toolRadiusMm } from "./profile";
 import type { CncWorkpiece, MillingProfile, PlacedPart, Point } from "./types";
 import { CncExportError } from "./types";
 
@@ -19,12 +19,23 @@ export interface PlacementIssue {
     reason?: string;
 }
 
-export function placementMarginMm(profile: MillingProfile): number {
-    const r = Math.max(
-        toolRadiusMm(profile.toolpathCutter.diameterMm),
-        toolRadiusMm(profile.contourCutter.diameterMm),
-    );
-    return r + profile.topOffsetMm + 2;
+/**
+ * Auto-position inset of the outline bbox, from the tool-footprint envelope.
+ * Left/right alignment uses that side's overhang plus {@link ENVELOPE_CLEARANCE_MM}.
+ */
+export function placementMarginMm(profile: MillingProfile, outline?: Point[], rotationDeg = 0): number {
+    if (!outline || outline.length < 3) return ENVELOPE_CLEARANCE_MM;
+    const footprint = toolFootprintLocal(outline, profile);
+    if (footprint.length < 3) return ENVELOPE_CLEARANCE_MM;
+    const c = centroid(outline);
+    const over = footprintOverhangMm(outline, footprint, rotationDeg, c.x, c.y);
+    const side =
+        profile.alignX === "right"
+            ? over.right
+            : profile.alignX === "center"
+              ? Math.max(over.left, over.right)
+              : over.left;
+    return Math.max(0, side) + ENVELOPE_CLEARANCE_MM;
 }
 
 export function defaultRotationDeg(profile: MillingProfile): number {
@@ -79,8 +90,8 @@ export function autoTranslate(
     profile: MillingProfile,
     pocket: { x: number; y: number; width: number; length: number },
     rotated: { minX: number; maxX: number; minY: number; maxY: number },
+    margin = ENVELOPE_CLEARANCE_MM,
 ): { tx: number; ty: number } {
-    const margin = placementMarginMm(profile);
     let tx = 0;
     let ty = 0;
     if (profile.alignX === "left") tx = pocket.x + margin - rotated.minX;
@@ -103,32 +114,39 @@ export function tableBoundsMm(profile: MillingProfile): { width: number; length:
     return { width, length };
 }
 
+export function worldFootprint(placed: PlacedPart, profile: MillingProfile): Point[] {
+    return toolFootprintLocal(placed.outline, profile).map((p) => worldPoint(p, placed));
+}
+
+/** Red/green fit: the tool envelope must keep 1 mm inside the pocket and the table. */
 export function evaluatePlacedPart(placed: PlacedPart, profile: MillingProfile): PlacementIssue {
     const pocket = profile.pockets[placed.pocketIndex];
     if (!pocket) return { ok: false, reason: "Milling table has no pocket for this insole" };
-    const margin = placementMarginMm(profile);
     const table = tableBoundsMm(profile);
-    const world = transformOutline(placed.outline, placed);
-    const bb = bboxOf(world);
-    const minX = bb.minX - margin;
-    const maxX = bb.maxX + margin;
-    const minY = bb.minY - margin;
-    const maxY = bb.maxY + margin;
-    if (minX < -1e-6 || maxX > table.width + 1e-6 || minY < -1e-6 || maxY > table.length + 1e-6) {
-        return {
-            ok: false,
-            reason: `Part plus margin leaves the milling table (${(maxX - minX).toFixed(1)}×${(maxY - minY).toFixed(1)} mm)`,
-        };
-    }
+    const env = worldFootprint(placed, profile);
+    if (env.length < 3) return { ok: false, reason: "Tool envelope is empty" };
+    const bb = bboxOf(env);
+    const clearance = ENVELOPE_CLEARANCE_MM;
     if (
-        minX < pocket.x - 1e-6 ||
-        maxX > pocket.x + pocket.width + 1e-6 ||
-        minY < pocket.y - 1e-6 ||
-        maxY > pocket.y + pocket.length + 1e-6
+        bb.minX < clearance - 1e-4 ||
+        bb.maxX > table.width - clearance + 1e-4 ||
+        bb.minY < clearance - 1e-4 ||
+        bb.maxY > table.length - clearance + 1e-4
     ) {
         return {
             ok: false,
-            reason: `Part plus margin does not fit pocket ${placed.pocketIndex + 1} (leaves pocket)`,
+            reason: `Tool envelope leaves the milling table (needs ${clearance.toFixed(0)} mm clearance)`,
+        };
+    }
+    if (
+        bb.minX < pocket.x + clearance - 1e-4 ||
+        bb.maxX > pocket.x + pocket.width - clearance + 1e-4 ||
+        bb.minY < pocket.y + clearance - 1e-4 ||
+        bb.maxY > pocket.y + pocket.length - clearance + 1e-4
+    ) {
+        return {
+            ok: false,
+            reason: `Tool envelope does not fit pocket ${placed.pocketIndex + 1} (needs ${clearance.toFixed(0)} mm clearance)`,
         };
     }
     if (placed.zMax > profile.materialHeightMm + 1e-6) {
@@ -138,6 +156,34 @@ export function evaluatePlacedPart(placed: PlacedPart, profile: MillingProfile):
         };
     }
     return { ok: true };
+}
+
+/** Per-side fit, including no overlap between the L and R tool envelopes. */
+export function evaluateAllPlacements(
+    placed: PlacedPart[],
+    profile: MillingProfile,
+): Record<string, PlacementIssue> {
+    const footprints = new Map<string, Point[]>();
+    for (const part of placed) footprints.set(part.side, worldFootprint(part, profile));
+    const out: Record<string, PlacementIssue> = {};
+    for (const part of placed) {
+        const self = evaluatePlacedPart(part, profile);
+        if (!self.ok) {
+            out[part.side] = self;
+            continue;
+        }
+        let issue: PlacementIssue = { ok: true };
+        const mine = footprints.get(part.side) ?? [];
+        for (const other of placed) {
+            if (other.side === part.side) continue;
+            if (polygonsOverlap(mine, footprints.get(other.side) ?? [])) {
+                issue = { ok: false, reason: `Tool envelope overlaps the ${other.side} insole` };
+                break;
+            }
+        }
+        out[part.side] = issue;
+    }
+    return out;
 }
 
 export function placeWorkpieces(
@@ -151,7 +197,6 @@ export function placeWorkpieces(
     if (pockets.length === 0) {
         throw new CncExportError("no_fit", "Milling table has no pockets");
     }
-    const margin = placementMarginMm(profile);
     const out: PlacedPart[] = [];
     for (let i = 0; i < parts.length; i++) {
         const wp = parts[i];
@@ -166,7 +211,8 @@ export function placeWorkpieces(
         }
         const partW = rotBb.maxX - rotBb.minX;
         const partH = rotBb.maxY - rotBb.minY;
-        const auto = autoTranslate(profile, pocket, rotBb);
+        const margin = placementMarginMm(profile, wp.outline, rotationDeg);
+        const auto = autoTranslate(profile, pocket, rotBb, margin);
         const tx = override?.tx ?? auto.tx;
         const ty = override?.ty ?? auto.ty;
         const skinClear = profile.materialHeightMm - 1;
@@ -197,11 +243,19 @@ export function placeWorkpieces(
                 throw new CncExportError(
                     "no_fit",
                     fit.reason ??
-                        `Part plus margin does not fit pocket ${i + 1} (${partW.toFixed(1)}×${(partH).toFixed(1)} mm, pocket ${pocket.width}×${pocket.length} mm, margin ${margin.toFixed(1)} mm)`,
+                        `Tool envelope does not fit pocket ${i + 1} (${partW.toFixed(1)}×${partH.toFixed(1)} mm, pocket ${pocket.width}×${pocket.length} mm, margin ${margin.toFixed(1)} mm)`,
                 );
             }
         }
         out.push(placed);
+    }
+    if (options?.validate !== false && out.length > 1) {
+        const all = evaluateAllPlacements(out, profile);
+        for (const part of out) {
+            const issue = all[part.side];
+            if (issue && !issue.ok)
+                throw new CncExportError("no_fit", issue.reason ?? "Tool envelopes overlap");
+        }
     }
     return out;
 }

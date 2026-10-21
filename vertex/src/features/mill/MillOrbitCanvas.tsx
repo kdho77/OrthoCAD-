@@ -1,12 +1,158 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { Line, OrbitControls } from "@react-three/drei";
+import { Html, Line, OrbitControls } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
 import { useEffect, useLayoutEffect, useMemo } from "react";
 import * as THREE from "three";
-import type { MillingProfile, PlacedPart } from "@/lib/cnc/types";
+import { ballBandGeometry } from "@/lib/cnc/band";
+import { toolRadiusMm } from "@/lib/cnc/profile";
+import type { MillingProfile, PlacedPart, Point } from "@/lib/cnc/types";
 import type { Side } from "@/types";
+
+function noRaycast() {
+    return null;
+}
+
+function bandShape(outer: Point[], hole: Point[]): THREE.ShapeGeometry | null {
+    if (outer.length < 3) return null;
+    const shape = new THREE.Shape(outer.map((p) => new THREE.Vector2(p.x, p.y)));
+    if (hole.length >= 3)
+        shape.holes.push(
+            new THREE.Path(
+                hole
+                    .slice()
+                    .reverse()
+                    .map((p) => new THREE.Vector2(p.x, p.y)),
+            ),
+        );
+    return new THREE.ShapeGeometry(shape);
+}
+
+function BandFill({
+    geometry,
+    z,
+    color,
+    opacity,
+}: {
+    geometry: THREE.ShapeGeometry | null;
+    z: number;
+    color: string;
+    opacity: number;
+}) {
+    if (!geometry) return null;
+    return (
+        <mesh geometry={geometry} position={[0, 0, z]} renderOrder={4} raycast={noRaycast}>
+            <meshBasicMaterial
+                color={color}
+                transparent
+                opacity={opacity}
+                depthWrite={false}
+                side={THREE.DoubleSide}
+            />
+        </mesh>
+    );
+}
+
+/** Slot band on the stock top plane. Same geometry the G-code contour follows. */
+function StockTopBand({
+    part,
+    profile,
+    height,
+}: {
+    part: PlacedPart;
+    profile: MillingProfile;
+    height: number;
+}) {
+    const band = useMemo(
+        () =>
+            ballBandGeometry(
+                part.outline,
+                toolRadiusMm(profile.contourCutter.diameterMm),
+                profile.chordTolMm,
+                profile.topOffsetMm,
+            ),
+        [part.outline, profile],
+    );
+    const dark = useMemo(() => bandShape(band.outerEdge, band.innerEdge), [band]);
+    const light = useMemo(() => bandShape(band.overrunEdge, band.knifeLine), [band]);
+    const zBand = height + 0.35;
+    const zLine = height + 0.7;
+    const centre = useMemo(
+        () => band.centreline.map((p) => new THREE.Vector3(p.x, p.y, zLine)),
+        [band, zLine],
+    );
+    const knife = useMemo(() => loopLine(band.knifeLine, zLine + 0.05), [band, zLine]);
+    const heel = useMemo(() => {
+        let p = band.knifeLine[0] ?? { x: 0, y: 0 };
+        for (const q of band.knifeLine) if (q.x < p.x) p = q;
+        return p;
+    }, [band]);
+    const rotationRad = (part.rotationDeg * Math.PI) / 180;
+    return (
+        <group position={[part.tx, part.ty, 0]}>
+            <group position={[part.cx, part.cy, 0]} rotation={[0, 0, rotationRad]}>
+                <group position={[-part.cx, -part.cy, 0]}>
+                    <BandFill geometry={dark} z={zBand} color="#0f172a" opacity={0.82} />
+                    <BandFill geometry={light} z={zBand + 0.12} color="#e7e5e4" opacity={0.78} />
+                    {centre.length > 1 ? (
+                        <Line
+                            points={centre}
+                            color="#38bdf8"
+                            dashed
+                            dashSize={1.6}
+                            gapSize={1}
+                            lineWidth={1}
+                        />
+                    ) : null}
+                    {knife.length > 1 ? <Line points={knife} color="#f8fafc" lineWidth={1.5} /> : null}
+                    {band.uncutCorners.map((corner) => (
+                        <Line
+                            key={`uncut-${part.side}-${corner.deviationMm.toFixed(3)}-${corner.points[0]?.x.toFixed(2)}`}
+                            points={loopLine(corner.points, zLine + 0.1)}
+                            color="#fbbf24"
+                            lineWidth={2}
+                        />
+                    ))}
+                    <Html
+                        position={[heel.x, heel.y, zLine + 0.4]}
+                        center
+                        zIndexRange={[8, 0]}
+                        style={{ pointerEvents: "none" }}
+                    >
+                        <div className="whitespace-nowrap rounded bg-black/70 px-1 py-0.5 text-[10px] text-white">
+                            knife line
+                        </div>
+                    </Html>
+                    {band.uncutCorners[0] ? (
+                        <Html
+                            position={[
+                                band.uncutCorners[0].points[0]?.x ?? heel.x,
+                                band.uncutCorners[0].points[0]?.y ?? heel.y,
+                                zLine + 0.5,
+                            ]}
+                            center
+                            zIndexRange={[8, 0]}
+                            style={{ pointerEvents: "none" }}
+                        >
+                            <div className="whitespace-nowrap rounded bg-amber-500/90 px-1 py-0.5 text-[10px] text-black">
+                                uncut corner
+                            </div>
+                        </Html>
+                    ) : null}
+                </group>
+            </group>
+        </group>
+    );
+}
+
+function loopLine(pts: Point[], z: number): THREE.Vector3[] {
+    if (pts.length < 2) return [];
+    const line = pts.map((p) => new THREE.Vector3(p.x, p.y, z));
+    const first = pts[0];
+    if (first) line.push(new THREE.Vector3(first.x, first.y, z));
+    return line;
+}
 
 function partFill(invalid: boolean, selected: boolean): string {
     if (invalid) return "#ef4444";
@@ -187,6 +333,9 @@ export function MillOrbitCanvas({
                     invalid={issues[part.side]?.ok === false}
                     onSelect={onSelect}
                 />
+            ))}
+            {placed.map((part) => (
+                <StockTopBand key={`band-${part.side}`} part={part} profile={profile} height={h} />
             ))}
             <OrbitControls
                 makeDefault

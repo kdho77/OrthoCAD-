@@ -21,6 +21,7 @@ describe("CNC dialect / envelope / feeds", () => {
         expect(g).toContain("; pass1-tool: 10mm ball");
         expect(g).toContain("; pass2-tool: 10mm ball");
         expect(g).toContain("; lowest 5 mm of the wall will be filleted (10 mm ball)");
+        expect(g).toContain("; box knife follows the outline (knife line), not the slot bottom");
         expect(g).toContain("; tool-change: none (same 10mm ball both passes)");
         expect(g).toMatch(/G21/);
         expect(g).toMatch(/G90/);

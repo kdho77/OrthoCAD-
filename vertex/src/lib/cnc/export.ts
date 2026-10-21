@@ -104,6 +104,9 @@ function emitContour(g: CncGcodeEmitter, placed: PlacedPart, profile: MillingPro
     }
     for (const p of pass.helix.map(map)) g.cutTo(p.x, p.y, p.z ?? skinZ(profile), "dip", feeds);
     for (const p of pass.finish.map(map)) g.cutTo(p.x, p.y, p.z ?? skinZ(profile), "contour", feeds);
+    for (const w of pass.warnings) {
+        if (w.startsWith("uncut corner")) g.comment(w);
+    }
     const out = pass.leadOut.map(map);
     for (const p of out) g.cutTo(p.x, p.y, p.z ?? skinZ(profile), "slow", feeds);
     g.rapidZ(clear);
@@ -146,6 +149,7 @@ export function generateCncJob(
             `lowest ${r} mm of the wall will be filleted (${profile.contourCutter.diameterMm} mm ball)`,
         );
     }
+    g.comment("box knife follows the outline (knife line), not the slot bottom");
     if (!toolsDiffer(profile)) {
         g.comment(
             `tool-change: none (same ${profile.toolpathCutter.diameterMm}mm ${profile.toolpathCutter.type} both passes)`,

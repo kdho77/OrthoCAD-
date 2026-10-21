@@ -48,22 +48,27 @@ function assertJob(gcode: string, profile: typeof IDAHO_PROFILE) {
 }
 
 describe("CNC ball wall / skin gates (synthetic)", () => {
-    test("0.2 mm band cleared at Z >= 6; skin 1.000 ± 0.01 under the tip", () => {
+    test("full R5 band cleared at Z >= 6; fillet ±0.05; skin 1.000 ± 0.01", () => {
         const profile = cloneProfile(IDAHO_PROFILE);
         const job = generateCncJob(profile, [
             syntheticWorkpiece(profile, "left"),
             syntheticWorkpiece(profile, "right"),
         ]);
         expect(job.gcode).toContain("; lowest 5 mm of the wall will be filleted (10 mm ball)");
+        expect(job.gcode).toContain("; box knife follows the outline (knife line), not the slot bottom");
         expect(job.gcode).not.toMatch(/\bM0\b/);
         expect(job.warnings.some((w) => w.includes("lowest 5 mm"))).toBe(true);
+        expect(job.warnings.some((w) => w.toLowerCase().includes("uncut corner"))).toBe(false);
 
         const parsed = assertJob(job.gcode, profile);
         const grid = simulateMoves(parsed.moves, profile, 0.1);
         const report = evaluateStock(grid, job.placed, profile);
         expect(report.minStock).toBeGreaterThanOrEqual(0.999);
-        expect(report.wallMaxZ).toBeLessThanOrEqual(wallClearZ(profile) + 1e-3);
+        expect(report.gougeMm).toBeLessThanOrEqual(0.001);
+        expect(report.wallMaxZ).toBeLessThanOrEqual(wallClearZ(profile) + 0.01);
         expect(report.wallDevMm).toBeLessThanOrEqual(0.05);
+        expect(report.profileDevMm).toBeLessThanOrEqual(0.05);
+        expect(report.ringHausdorffMm).toBeLessThanOrEqual(0.05);
         expect(report.skinMin).toBeGreaterThanOrEqual(0.99);
         expect(report.skinMax).toBeLessThanOrEqual(1.01);
     });

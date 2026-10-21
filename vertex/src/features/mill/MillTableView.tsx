@@ -4,10 +4,11 @@
 import { Box, Rotate3d } from "lucide-react";
 import { type PointerEvent, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { evaluatePlacedPart, placeWorkpieces, transformOutline, worldPoint } from "@/lib/cnc/placement";
-import { bboxOf, offsetClosed } from "@/lib/cnc/polygon";
-import { reconcileMillingProfile } from "@/lib/cnc/profile";
-import type { PlacedPart, Point } from "@/lib/cnc/types";
+import { ballBandGeometry, contourLegend } from "@/lib/cnc/band";
+import { evaluateAllPlacements, placeWorkpieces, transformOutline, worldPoint } from "@/lib/cnc/placement";
+import { bboxOf } from "@/lib/cnc/polygon";
+import { reconcileMillingProfile, toolRadiusMm } from "@/lib/cnc/profile";
+import type { MillingProfile, PlacedPart, Point } from "@/lib/cnc/types";
 import { cn } from "@/lib/utils";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { type MillTableViewMode, useMillingProfileStore } from "@/stores/milling-profile-store";
@@ -73,28 +74,104 @@ function partStroke(invalid: boolean, selected: boolean): string {
     return "#a1a1aa";
 }
 
+function worldLoop(pts: Point[], part: PlacedPart): Point[] {
+    return pts.map((p) => worldPoint(p, part));
+}
+
+function ringPath(outer: Point[], inner: Point[]): string {
+    if (outer.length < 3) return "";
+    const fwd = svgPath(outer);
+    if (inner.length < 3) return fwd;
+    return `${fwd} ${svgPath(inner.slice().reverse())}`;
+}
+
+function labelAt(pts: Point[], part: PlacedPart, text: string, fill: string) {
+    if (pts.length === 0) return null;
+    let heel = pts[0]!;
+    for (const p of pts) if (p.x < heel.x) heel = p;
+    const w = worldPoint(heel, part);
+    return (
+        <text
+            x={0}
+            y={0}
+            transform={`translate(${(w.x + 2).toFixed(2)} ${(w.y + 3).toFixed(2)}) scale(1 -1)`}
+            fontSize="3.1"
+            fill={fill}
+        >
+            {text}
+        </text>
+    );
+}
+
 function InsoleGraphic({
     part,
-    profileTopOffset,
+    profile,
     selected,
     invalid,
 }: {
     part: PlacedPart;
-    profileTopOffset: number;
+    profile: MillingProfile;
     selected: boolean;
     invalid: boolean;
 }) {
-    const world = transformOutline(part.outline, part);
-    const ring = offsetClosed(world, profileTopOffset, 0.3);
+    const band = ballBandGeometry(
+        part.outline,
+        toolRadiusMm(profile.contourCutter.diameterMm),
+        profile.chordTolMm,
+        profile.topOffsetMm,
+    );
+    const outer = worldLoop(band.outerEdge, part);
+    const inner = worldLoop(band.innerEdge, part);
+    const centre = worldLoop(band.centreline, part);
+    const knife = worldLoop(band.knifeLine, part);
+    const overrun = worldLoop(band.overrunEdge, part);
     const fill = partFill(invalid, selected);
     const stroke = partStroke(invalid, selected);
     const handle = selected ? handleWorld(part) : null;
     return (
         <g>
-            {ring.length > 2 ? (
-                <path d={svgPath(ring)} fill="none" stroke={stroke} strokeWidth={0.6} opacity={0.85} />
+            {outer.length > 2 ? (
+                <path
+                    d={ringPath(outer, inner)}
+                    fill="#0f172a"
+                    fillOpacity={0.78}
+                    fillRule="evenodd"
+                    stroke="#94a3b8"
+                    strokeWidth={0.25}
+                />
             ) : null}
-            <path d={svgPath(world)} fill={fill} stroke={stroke} strokeWidth={0.45} />
+            {overrun.length > 2 ? (
+                <path
+                    d={ringPath(overrun, knife)}
+                    fill="#e7e5e4"
+                    fillOpacity={0.72}
+                    fillRule="evenodd"
+                    stroke="none"
+                />
+            ) : null}
+            <path d={svgPath(knife)} fill={fill} stroke="#f8fafc" strokeWidth={0.4} />
+            {centre.length > 2 ? (
+                <path
+                    d={svgPath(centre)}
+                    fill="none"
+                    stroke="#38bdf8"
+                    strokeWidth={0.28}
+                    strokeDasharray="1.4 0.9"
+                />
+            ) : null}
+            {band.uncutCorners.map((corner) => (
+                <path
+                    key={`uncut-${part.side}-${corner.deviationMm.toFixed(3)}-${corner.points[0]?.x.toFixed(2)}`}
+                    d={svgPath(worldLoop(corner.points, part))}
+                    fill="none"
+                    stroke="#fbbf24"
+                    strokeWidth={0.85}
+                />
+            ))}
+            {labelAt(band.knifeLine, part, "knife line", "#f8fafc")}
+            {band.uncutCorners[0]
+                ? labelAt(band.uncutCorners[0].points, part, "uncut corner", "#fbbf24")
+                : null}
             {handle ? (
                 <g>
                     <line
@@ -190,14 +267,7 @@ export function MillTableView() {
         }
     }, [profile, parts, placements]);
 
-    const issues = useMemo(
-        () =>
-            Object.fromEntries(placed.map((p) => [p.side, evaluatePlacedPart(p, profile)])) as Record<
-                string,
-                ReturnType<typeof evaluatePlacedPart>
-            >,
-        [placed, profile],
-    );
+    const issues = useMemo(() => evaluateAllPlacements(placed, profile), [placed, profile]);
 
     const tw = profile.tableWidthMm;
     const tl = profile.tableLengthMm;
@@ -355,7 +425,7 @@ export function MillTableView() {
                             <InsoleGraphic
                                 key={part.side}
                                 part={part}
-                                profileTopOffset={profile.topOffsetMm}
+                                profile={profile}
                                 selected={millSelected === part.side}
                                 invalid={issues[part.side]?.ok === false}
                             />
@@ -363,6 +433,13 @@ export function MillTableView() {
                     </g>
                 </svg>
             )}
+            <div className="pointer-events-none absolute bottom-12 left-3 max-w-[340px] rounded bg-panel/85 px-2 py-1 text-[11px] leading-snug text-foreground shadow backdrop-blur">
+                <p>{contourLegend(profile)}</p>
+                <p className="mt-0.5 text-muted-foreground">
+                    Dark band: R ball slot. Light band: {profile.topOffsetMm.toFixed(1)} mm overrun. Dashed:
+                    centreline. Solid: knife line.
+                </p>
+            </div>
             <div
                 className={cn(
                     "pointer-events-none absolute bottom-3 left-3 rounded bg-panel/80 px-2 py-0.5 text-[11px] text-foreground shadow backdrop-blur",

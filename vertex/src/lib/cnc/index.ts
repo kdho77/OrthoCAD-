@@ -1,9 +1,12 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+export type { BallBandGeometry, UncutCorner } from "./band";
+export { ballBandGeometry, ballHalfWidthMm, ballProfileZ, contourLegend, hausdorffClosed } from "./band";
 export { attachOrbitMesh, workpieceFromComposed, workpiecesFromDesign } from "./compose";
 export { buildContourPass } from "./contour";
 export { ballScallopMm } from "./drop-cutter";
+export { ENVELOPE_CLEARANCE_MM, toolFootprintLocal } from "./envelope";
 export { generateCncJob } from "./export";
 export type { ParseResult } from "./parse";
 export { parseGcode } from "./parse";
@@ -12,6 +15,7 @@ export {
     autoTranslate,
     defaultPlacements,
     defaultRotationDeg,
+    evaluateAllPlacements,
     evaluatePlacedPart,
     machineXY,
     placementMarginMm,

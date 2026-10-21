@@ -123,11 +123,10 @@ export function wallClearZ(profile: MillingProfile): number {
 
 /**
  * XY offset of the contour tool centre from the outline.
- * A 0.05 mm overlap makes the ball equator cover the discrete 0.2 mm exterior band.
+ * Exactly +R: the ball centreline. The 10 mm slot is outline → outline+2R.
  */
 export function contourOffsetMm(profile: MillingProfile): number {
-    const r = toolRadiusMm(profile.contourCutter.diameterMm);
-    return Math.max(0.1, r - 0.05);
+    return toolRadiusMm(profile.contourCutter.diameterMm);
 }
 
 export function clearanceZ(profile: MillingProfile): number {

@@ -6,7 +6,7 @@ import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CncMillingPanel } from "@/features/exports/CncMillingPanel";
-import { evaluatePlacedPart, placeWorkpieces } from "@/lib/cnc/placement";
+import { evaluateAllPlacements, placeWorkpieces } from "@/lib/cnc/placement";
 import { reconcileMillingProfile } from "@/lib/cnc/profile";
 import { cn } from "@/lib/utils";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
@@ -39,10 +39,11 @@ export function MillStepPanel() {
 
     const targetSide: Side | null = millSelected ?? placed[0]?.side ?? null;
     const target = placed.find((p) => p.side === targetSide) ?? null;
-    const issue = target ? evaluatePlacedPart(target, profile) : null;
+    const evaluated = useMemo(() => evaluateAllPlacements(placed, profile), [placed, profile]);
+    const issue = target ? evaluated[target.side] : null;
     const issues = placed
-        .map((p) => ({ side: p.side, issue: evaluatePlacedPart(p, profile) }))
-        .filter((x) => !x.issue.ok);
+        .map((p) => ({ side: p.side, issue: evaluated[p.side] }))
+        .filter((x) => x.issue && !x.issue.ok);
 
     const applyRotation = (nextDeg: number) => {
         if (!target) return;

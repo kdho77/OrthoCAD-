@@ -1,13 +1,14 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { ballScallopMm, dropCutterZ } from "./drop-cutter";
+import { ballBandGeometry, ballProfileZ } from "./band";
+import { dropCutterZ } from "./drop-cutter";
 import { sampleHeight } from "./heightmap";
 import type { ParsedMove as GMove } from "./parse";
 import { localPoint, machineXY } from "./placement";
-import { distToPoly, offsetClosed, pointInPoly } from "./polygon";
-import { contourOffsetMm, skinZ, toolRadiusMm, wallClearZ } from "./profile";
-import type { MillingProfile, PlacedPart, ToolType } from "./types";
+import { bboxOf, distToPoly, nearestOnPoly, pointInPoly, resampleClosed } from "./polygon";
+import { skinZ, toolRadiusMm, wallClearZ } from "./profile";
+import type { MillingProfile, PlacedPart, Point, ToolType } from "./types";
 
 export interface SimGrid {
     originX: number;
@@ -21,9 +22,14 @@ export interface SimGrid {
 export interface SimReport {
     gougeMm: number;
     fidelityMm: number;
+    /** Max stock excess above the equator inside the inner→outer band. */
     wallDevMm: number;
-    /** Highest remaining stock in the 0.2 mm band outside the outline. */
+    /** Highest remaining stock in the inner→outer band. */
     wallMaxZ: number;
+    /** |stock − ball profile| below the equator, away from the lead. */
+    profileDevMm: number;
+    /** Hausdorff of the drawn outer edge vs the simulated Z≥6 boundary. */
+    ringHausdorffMm: number;
     skinMin: number;
     skinMax: number;
     minStock: number;
@@ -122,22 +128,81 @@ export function simulateMoves(moves: GMove[], profile: MillingProfile, cell = 0.
     return grid;
 }
 
+function ringBoundaryHausdorff(
+    grid: SimGrid,
+    part: PlacedPart,
+    profile: MillingProfile,
+    centreline: Point[],
+    outer: Point[],
+    radius: number,
+    skin: number,
+): number {
+    if (centreline.length < 3 || outer.length < 3) return Infinity;
+    const wallZ = skin + radius;
+    const limit = wallZ + 0.01;
+    const heel = centreline[0] ?? { x: 0, y: 0 };
+    const samples = resampleClosed(outer, 0.35);
+    let miss = 0;
+    let counted = 0;
+    for (const p of samples) {
+        // Lead-in / lead-out disks clear a bulb past the slot outer edge on purpose.
+        if (Math.hypot(p.x - heel.x, p.y - heel.y) < radius + 10) continue;
+        const near = nearestOnPoly(p.x, p.y, centreline);
+        let ux = p.x - near.x;
+        let uy = p.y - near.y;
+        const ul = Math.hypot(ux, uy) || 1;
+        ux /= ul;
+        uy /= ul;
+        let lastD = Number.NaN;
+        let lastZ = Number.NaN;
+        for (let d = Math.max(0, ul - 0.8); d <= ul + 0.35; d += 0.025) {
+            const q = { x: near.x + ux * d, y: near.y + uy * d };
+            const w = machineXY(q, part, profile);
+            const z = sampleGridZ(grid, w.x, w.y);
+            if (Number.isFinite(z) && z <= limit) {
+                lastD = d;
+                lastZ = z;
+            } else if (Number.isFinite(lastD)) break;
+        }
+        counted++;
+        if (!Number.isFinite(lastD)) {
+            miss = Math.max(miss, 1);
+            continue;
+        }
+        let boundaryD = lastD;
+        if (lastZ >= skin - 0.02 && lastZ <= limit) {
+            const drop = Math.max(0, wallZ - lastZ);
+            const dCut = Math.sqrt(Math.max(0, radius * radius - drop * drop));
+            if (Math.abs(dCut - lastD) <= 0.2 && Math.abs(lastD - radius) <= 0.2) boundaryD = radius;
+        }
+        const boundary = { x: near.x + ux * boundaryD, y: near.y + uy * boundaryD };
+        miss = Math.max(miss, Math.hypot(boundary.x - p.x, boundary.y - p.y));
+        miss = Math.max(miss, distToPoly(boundary.x, boundary.y, outer));
+    }
+    return counted >= 8 ? miss : Math.max(miss, 1);
+}
+
 export function evaluateStock(grid: SimGrid, placed: PlacedPart[], profile: MillingProfile): SimReport {
     const skin = skinZ(profile);
+    const radius = toolRadiusMm(profile.contourCutter.diameterMm);
     const wallZ = wallClearZ(profile);
-    const scallop =
-        profile.toolpathCutter.type === "ball"
-            ? ballScallopMm(toolRadiusMm(profile.toolpathCutter.diameterMm), profile.stepoverBallMm)
-            : 0.05;
+    const ballContour = profile.contourCutter.type === "ball";
     let gougeMm = 0;
     let fidelityMm = 0;
     let wallDevMm = 0;
     let wallMaxZ = -Infinity;
+    let profileDevMm = 0;
     let skinMin = Infinity;
     let skinMax = -Infinity;
     let minStock = Infinity;
     let insideCount = 0;
-    const ballContour = profile.contourCutter.type === "ball";
+    let ringHausdorffMm = 0;
+
+    const bands = placed.map((part) => {
+        const band = ballBandGeometry(part.outline, radius, profile.chordTolMm, profile.topOffsetMm);
+        const heel = band.centreline[0] ?? { x: 0, y: 0 };
+        return { part, band, heel, outerBb: bboxOf(band.outerEdge) };
+    });
 
     for (let iy = 0; iy < grid.ny; iy++) {
         const y = grid.originY + iy * grid.cell;
@@ -145,28 +210,49 @@ export function evaluateStock(grid: SimGrid, placed: PlacedPart[], profile: Mill
             const x = grid.originX + ix * grid.cell;
             const stock = grid.z[iy * grid.nx + ix]!;
             if (stock < minStock) minStock = stock;
-            for (const part of placed) {
+            for (const { part, band, heel, outerBb } of bands) {
                 const lp = worldToLocalHm(x, y, part);
                 const outline = part.outline;
-                const inn = pointInPoly(lp.x, lp.y, outline);
-                const d = distToPoly(lp.x, lp.y, outline);
-                const design = sampleHeight(part.heightmap, lp.x, lp.y);
+                const nearOuter =
+                    lp.x >= outerBb.minX - grid.cell &&
+                    lp.x <= outerBb.maxX + grid.cell &&
+                    lp.y >= outerBb.minY - grid.cell &&
+                    lp.y <= outerBb.maxY + grid.cell;
+                const inn = nearOuter && pointInPoly(lp.x, lp.y, outline);
+                const dOutline = inn || nearOuter ? distToPoly(lp.x, lp.y, outline) : Infinity;
+                const design = inn ? sampleHeight(part.heightmap, lp.x, lp.y) : Number.NaN;
                 if (inn && Number.isFinite(design)) {
                     insideCount++;
                     const g = design - 0.01 - stock;
                     if (g > gougeMm) gougeMm = g;
-                    if (d > 0.5) {
+                    if (dOutline > 0.5) {
                         const fid = stock - design;
                         if (fid > fidelityMm) fidelityMm = fid;
                     }
                 }
-                // 0.2 mm band outside the outline: ball must be cleared at Z >= wallClearZ
-                // (equator = skin+R); flat must be cleared at skin. Skin itself is measured
-                // at the tool tip (flat: this band; ball: ~R outside, sampled below).
-                if (!inn && d <= 0.2) {
-                    if (stock > wallMaxZ) wallMaxZ = stock;
-                    if (stock > wallZ + 0.05) wallDevMm = Math.max(wallDevMm, d);
-                    if (!ballContour) {
+                if (!nearOuter) continue;
+                const inOuter = band.outerEdge.length >= 3 && pointInPoly(lp.x, lp.y, band.outerEdge);
+                const inInner = band.innerEdge.length >= 3 && pointInPoly(lp.x, lp.y, band.innerEdge);
+                if (inOuter && !inInner) {
+                    // 0.1 mm dexels land on the knife line and the outer edge. Those
+                    // boundary cells are the ±0.05 wall / ring tolerance; the Hausdorff
+                    // check owns them. Interior cells of the band must be <= equator+0.01.
+                    const edge =
+                        distToPoly(lp.x, lp.y, band.outerEdge) <= 0.05 ||
+                        distToPoly(lp.x, lp.y, band.innerEdge) <= 0.05;
+                    if (!edge) {
+                        if (stock > wallMaxZ) wallMaxZ = stock;
+                        if (stock > wallZ + 0.01) wallDevMm = Math.max(wallDevMm, stock - (wallZ + 0.01));
+                    }
+                    if (ballContour && !inn && dOutline > 0.2) {
+                        const dC = distToPoly(lp.x, lp.y, band.centreline);
+                        const nearLead = Math.hypot(lp.x - heel.x, lp.y - heel.y) < radius + 8;
+                        if (!nearLead && dC < radius - 0.2 && dC > 0.15) {
+                            const expected = ballProfileZ(dC, radius, skin);
+                            profileDevMm = Math.max(profileDevMm, Math.abs(stock - expected));
+                        }
+                    }
+                    if (!ballContour && !inn) {
                         if (stock < skinMin) skinMin = stock;
                         if (stock > skinMax) skinMax = stock;
                     }
@@ -176,8 +262,8 @@ export function evaluateStock(grid: SimGrid, placed: PlacedPart[], profile: Mill
     }
 
     if (ballContour) {
-        for (const part of placed) {
-            const path = offsetClosed(part.outline, contourOffsetMm(profile), profile.chordTolMm);
+        for (const { part, band } of bands) {
+            const path = band.centreline;
             for (const p of path) {
                 const w = machineXY(p, part, profile);
                 const s = sampleGridZ(grid, w.x, w.y);
@@ -185,18 +271,23 @@ export function evaluateStock(grid: SimGrid, placed: PlacedPart[], profile: Mill
                 if (s < skinMin) skinMin = s;
                 if (s > skinMax) skinMax = s;
             }
+            ringHausdorffMm = Math.max(
+                ringHausdorffMm,
+                ringBoundaryHausdorff(grid, part, profile, band.centreline, band.outerEdge, radius, skin),
+            );
         }
     }
 
     if (!Number.isFinite(skinMin)) skinMin = skin;
     if (!Number.isFinite(skinMax)) skinMax = skin;
     if (!Number.isFinite(wallMaxZ)) wallMaxZ = wallZ;
-    void scallop;
     return {
         gougeMm,
         fidelityMm,
         wallDevMm,
         wallMaxZ,
+        profileDevMm,
+        ringHausdorffMm,
         skinMin,
         skinMax,
         minStock,

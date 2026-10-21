@@ -62,7 +62,8 @@ describe("CNC mill placement", () => {
         expect(part.pocketIndex).toBe(0);
         const world = transformOutline(wp.outline, part);
         const bb = bboxOf(world);
-        expect(bb.minX).toBeCloseTo(placementMarginMm(profile), 6);
+        expect(bb.minX).toBeCloseTo(placementMarginMm(profile, wp.outline, 0), 4);
+        expect(placementMarginMm(profile, wp.outline, 0)).toBeGreaterThan(9.5);
         const pocket = first(profile.pockets, "pocket");
         expect(bb.minY).toBeGreaterThan(pocket.y - 1e-6);
         expect(bb.maxY).toBeLessThan(pocket.y + pocket.length + 1e-6);
@@ -127,7 +128,7 @@ describe("CNC mill placement", () => {
         const rightPart = placed.find((p) => p.side === "right");
         if (!rightPart) throw new Error("expected right part");
         expect(rightPart.pocketIndex).toBe(1);
-        expect(rightPart.tx).toBeCloseTo(5.7, 1);
+        expect(rightPart.tx).toBeCloseTo(placementMarginMm(profile, right.outline, 0) - 3.8, 2);
         const issue = evaluatePlacedPart(rightPart, profile);
         expect(issue.ok).toBe(true);
         for (const part of placed) {

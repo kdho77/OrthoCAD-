@@ -1,11 +1,13 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { densifyArc, ensureCw, offsetClosed, perimeter, resampleClosed, tangentAt, unit } from "./polygon";
-import { contourOffsetMm, skinZ } from "./profile";
+import { type BallBandGeometry, ballBandGeometry, UNCUT_CORNER_TOL_MM } from "./band";
+import { densifyArc, perimeter, signedArea, tangentAt, unit } from "./polygon";
+import { skinZ, toolRadiusMm } from "./profile";
 import type { MillingProfile, Point } from "./types";
 
-const LEAD_R = 2;
+/** Tangent lead arc radius. The tool disk around it is part of the footprint. */
+export const LEAD_RADIUS_MM = 2;
 
 export interface ContourPass {
     leadIn: Point[];
@@ -13,6 +15,8 @@ export interface ContourPass {
     finish: Point[];
     leadOut: Point[];
     warnings: string[];
+    /** Same band the visualizer draws. */
+    band: BallBandGeometry;
 }
 
 function tangentCw(pts: Point[], i: number): Point {
@@ -21,9 +25,40 @@ function tangentCw(pts: Point[], i: number): Point {
     return unit(b.x - a.x, b.y - a.y);
 }
 
-/** Outward (away from part) for a CW offset path. Interior is to the left. */
+/**
+ * Outward normal of a CW loop (negative signed area).
+ * Walking CW, the interior is on the right, so outward is to the left of travel.
+ */
 function outwardCw(t: Point): Point {
-    return { x: t.y, y: -t.x };
+    return { x: -t.y, y: t.x };
+}
+
+/** Keep every vertex (no corner cutting) and split edges longer than maxSegMm. */
+function densifyKeepVertices(pts: Point[], maxSegMm: number): Point[] {
+    if (pts.length < 3) return pts.map((p) => ({ x: p.x, y: p.y }));
+    const maxSeg = Math.max(0.05, maxSegMm);
+    const out: Point[] = [];
+    for (let i = 0; i < pts.length; i++) {
+        const a = pts[i]!;
+        const b = pts[(i + 1) % pts.length]!;
+        out.push({ x: a.x, y: a.y });
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        const n = Math.ceil(len / maxSeg);
+        for (let k = 1; k < n; k++) {
+            const t = k / n;
+            out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+        }
+    }
+    return out;
+}
+
+/** CW, but the first vertex stays the heel so the lead-in does not jump. */
+function ensureCwKeepStart(pts: Point[]): Point[] {
+    if (pts.length < 3 || signedArea(pts) <= 0) return pts.map((p) => ({ x: p.x, y: p.y }));
+    const rev = pts.map((p) => ({ x: p.x, y: p.y })).reverse();
+    const first = rev.pop();
+    if (first) rev.unshift(first);
+    return rev;
 }
 
 function leadArc(
@@ -77,11 +112,21 @@ export function helicalLevels(zStart: number, zEnd: number, maxStep: number): nu
 
 export function buildContourPass(outline: Point[], profile: MillingProfile): ContourPass {
     const warnings: string[] = [];
+    const radius = toolRadiusMm(profile.contourCutter.diameterMm);
+    const band = ballBandGeometry(outline, radius, profile.chordTolMm, profile.topOffsetMm);
     if (profile.contourCutter.type === "ball") {
         warnings.push("Contour tool is a ball mill — walls will not be vertical in the lowest 5 mm.");
     }
-    const offset = offsetClosed(outline, contourOffsetMm(profile), profile.chordTolMm);
-    const path = ensureCw(resampleClosed(offset, Math.max(0.2, profile.sampleMm)));
+    if (band.maxUncutMm > UNCUT_CORNER_TOL_MM) {
+        const spans = band.uncutCorners.length > 0 ? band.uncutCorners : [{ deviationMm: band.maxUncutMm }];
+        for (const corner of spans) {
+            warnings.push(
+                `uncut corner: deviation ${corner.deviationMm.toFixed(3)} mm (concavity tighter than R${radius.toFixed(3)})`,
+            );
+        }
+    }
+    const source = band.centreline.length >= 3 ? band.centreline : outline;
+    const path = ensureCwKeepStart(densifyKeepVertices(source, Math.max(0.35, profile.sampleMm)));
     const zEnd = skinZ(profile);
     const zStart = profile.materialHeightMm;
     const maxStep = profile.layeredEnabled ? profile.layeredMm : 15;
@@ -91,10 +136,13 @@ export function buildContourPass(outline: Point[], profile: MillingProfile): Con
     const t0 = tangentCw(path, 0);
     const n0 = outwardCw(t0);
     const p0 = path[0]!;
-    const leadIn = leadArc(p0, t0, n0, LEAD_R, profile.chordTolMm, true).map((p) => ({ ...p, z: zStart }));
+    const leadIn = leadArc(p0, t0, n0, LEAD_RADIUS_MM, profile.chordTolMm, true).map((p) => ({
+        ...p,
+        z: zStart,
+    }));
     const tEnd = tangentAt(path, 0);
     const nEnd = outwardCw(tEnd);
-    const leadOut = leadArc(p0, tEnd, nEnd, LEAD_R, profile.chordTolMm, false).map((p) => ({
+    const leadOut = leadArc(p0, tEnd, nEnd, LEAD_RADIUS_MM, profile.chordTolMm, false).map((p) => ({
         ...p,
         z: zEnd,
     }));
@@ -116,5 +164,5 @@ export function buildContourPass(outline: Point[], profile: MillingProfile): Con
     const finish: Point[] = path.map((p) => ({ x: p.x, y: p.y, z: zEnd }));
     finish.push({ x: path[0]!.x, y: path[0]!.y, z: zEnd });
 
-    return { leadIn, helix, finish, leadOut, warnings };
+    return { leadIn, helix, finish, leadOut, warnings, band };
 }
