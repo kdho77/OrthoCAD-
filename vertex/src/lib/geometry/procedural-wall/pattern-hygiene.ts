@@ -18,7 +18,6 @@ import { minDistToLoopXY, pointInPoly } from "./cdt-band";
 import {
     ensureCcw,
     fitClosedC2Spline,
-    matchClosedByArc,
     nearestClosedArc01,
     type PolyPoint,
     polygonSignedArea,
@@ -318,9 +317,189 @@ export function alignPatternToExportFootprint(
 
 export type PatternRimCase = "inside" | "clip_warn" | "hard_fail";
 
+export interface PatternRimClipResult {
+    loop: PolyPoint[];
+    case: PatternRimCase;
+    /**
+     * Symmetric-difference area between the input stations and the output
+     * polyline, in mm². Zero when the outline is already inside the rim.
+     */
+    clippedAreaMm2: number;
+    /** Max distance from each original station to the output polyline, mm. */
+    displacementMm: number;
+    symmetricDifferenceMm2: number;
+}
+
+function copyStation(p: PolyPoint): PolyPoint {
+    return { x: p.x, y: p.y, z: p.z };
+}
+
+/** Max distance from each original station to the output polyline (same frame). */
+export function maxStationToPolylineMm(stations: PolyPoint[], loop: PolyPoint[]): number {
+    if (stations.length === 0 || loop.length === 0) return 0;
+    let maxD = 0;
+    for (const p of stations) {
+        const d =
+            loop.length < 2
+                ? Math.hypot(p.x - loop[0]!.x, p.y - loop[0]!.y)
+                : minDistToLoopXY(p.x, p.y, loop);
+        if (d > maxD) maxD = d;
+    }
+    return maxD;
+}
+
+/** Area of the symmetric difference of two simple loops (mm²). */
+export function symmetricDifferenceAreaMm2(a: PolyPoint[], b: PolyPoint[]): number {
+    if (a.length < 3 || b.length < 3) return 0;
+    const subject = [orientPositiveUm(toPathUm(ensureCcw(a.map((p) => ({ ...p, z: 0 })))))];
+    const clip = [orientPositiveUm(toPathUm(ensureCcw(b.map((p) => ({ ...p, z: 0 })))))];
+    const out = booleanOp(ClipType.Xor, subject, clip, FillRule.NonZero) as Path64[];
+    if (!out?.length) return 0;
+    let area = 0;
+    for (const path of out) {
+        if (path.length < 3) continue;
+        area += Math.abs(polygonSignedArea(fromPathUm(path)));
+    }
+    return area;
+}
+
+function resampleClosedToCount(clipped: PolyPoint[], n: number, origin: PolyPoint): PolyPoint[] {
+    const s0 = nearestClosedArc01(clipped, origin);
+    const out: PolyPoint[] = [];
+    for (let i = 0; i < n; i++) out.push(sampleClosedAtArc01(clipped, s0 + i / n));
+    return out;
+}
+
+function arcSpan01(s0: number, s1: number, forward: boolean): number {
+    const raw = forward ? s1 - s0 : s0 - s1;
+    return ((raw % 1) + 1) % 1;
+}
+
+function sampleOpenArc(
+    loop: PolyPoint[],
+    s0: number,
+    s1: number,
+    forward: boolean,
+    count: number,
+): PolyPoint[] {
+    const span = arcSpan01(s0, s1, forward);
+    if (span < 1e-9 || count <= 0) {
+        const p = sampleClosedAtArc01(loop, s0);
+        return Array.from({ length: Math.max(count, 0) }, () => ({ x: p.x, y: p.y, z: p.z }));
+    }
+    const out: PolyPoint[] = [];
+    for (let i = 1; i <= count; i++) {
+        const f = i / (count + 1);
+        const s = forward ? s0 + f * span : s0 - f * span;
+        out.push(sampleClosedAtArc01(loop, s));
+    }
+    return out;
+}
+
+function arcCloserForward(loop: PolyPoint[], s0: number, s1: number, window: PolyPoint[]): boolean {
+    let cx = 0;
+    let cy = 0;
+    for (const p of window) {
+        cx += p.x;
+        cy += p.y;
+    }
+    const n = Math.max(1, window.length);
+    cx /= n;
+    cy /= n;
+    const spanF = arcSpan01(s0, s1, true);
+    const spanB = arcSpan01(s0, s1, false);
+    const midF = sampleClosedAtArc01(loop, s0 + 0.5 * (spanF < 1e-9 ? 1 : spanF));
+    const midB = sampleClosedAtArc01(loop, s0 - 0.5 * (spanB < 1e-9 ? 1 : spanB));
+    const dF = (midF.x - cx) ** 2 + (midF.y - cy) ** 2;
+    const dB = (midB.x - cx) ** 2 + (midB.y - cy) ** 2;
+    if (Math.abs(dF - dB) > 1e-8) return dF < dB;
+    return spanF <= spanB;
+}
+
+function paddedSpanMask(flags: boolean[], pad: number): boolean[] {
+    const n = flags.length;
+    const mask = flags.slice();
+    for (let i = 0; i < n; i++) {
+        if (!flags[i]) continue;
+        for (let d = 1; d <= pad; d++) {
+            mask[(i - d + n) % n] = true;
+            mask[(i + d) % n] = true;
+        }
+    }
+    return mask;
+}
+
+function maskToSpans(mask: boolean[]): Array<{ start: number; count: number }> {
+    const n = mask.length;
+    if (n === 0) return [];
+    let i = 0;
+    while (i < n && mask[i]) i++;
+    if (i === n) return [{ start: 0, count: n }];
+    const spans: Array<{ start: number; count: number }> = [];
+    let k = 0;
+    while (k < n) {
+        const idx = (i + k) % n;
+        if (!mask[idx]) {
+            k++;
+            continue;
+        }
+        let count = 0;
+        while (count < n && mask[(idx + count) % n]) count++;
+        spans.push({ start: idx, count });
+        k += count;
+    }
+    return spans;
+}
+
 /**
- * Intersect pattern with rim inset by clearanceMm, resample, and gate on pre-clip
- * violation (hard fail only when &gt; hardOutsideMm).
+ * Replace only stations that miss the rim clearance, plus one station on
+ * either side, with arc-length samples of the clipped outline. Every other
+ * station keeps its exact coordinates.
+ */
+function resampleClippedSpans(
+    pattern: PolyPoint[],
+    clipped: PolyPoint[],
+    rim: PolyPoint[],
+    clearanceMm: number,
+): PolyPoint[] {
+    const n = pattern.length;
+    const clippedCcw = ensureCcw(clipped.map((p) => ({ x: p.x, y: p.y, z: 0 })));
+    if (n < 3) {
+        return resampleClosedToCount(clippedCcw, Math.max(n, 3), pattern[0] ?? { x: 0, y: 0, z: 0 });
+    }
+    const violate = pattern.map((p) => signedRimInsetMmPattern(p, rim) < clearanceMm - 1e-6);
+    const spans = maskToSpans(paddedSpanMask(violate, 1));
+    if (spans.length === 0 || (spans.length === 1 && spans[0]!.count >= n)) {
+        return resampleClosedToCount(clippedCcw, n, pattern[0]!).map((p, i) => ({
+            x: p.x,
+            y: p.y,
+            z: pattern[i]!.z,
+        }));
+    }
+    const out = pattern.map(copyStation);
+    for (const span of spans) {
+        const left = (span.start - 1 + n) % n;
+        const right = (span.start + span.count) % n;
+        const window: PolyPoint[] = [];
+        for (let k = 0; k < span.count; k++) window.push(pattern[(span.start + k) % n]!);
+        const sL = nearestClosedArc01(clippedCcw, pattern[left]!);
+        const sR = nearestClosedArc01(clippedCcw, pattern[right]!);
+        const forward = arcCloserForward(clippedCcw, sL, sR, window);
+        const samples = sampleOpenArc(clippedCcw, sL, sR, forward, span.count);
+        for (let k = 0; k < span.count; k++) {
+            const idx = (span.start + k) % n;
+            const s = samples[k]!;
+            out[idx] = { x: s.x, y: s.y, z: pattern[idx]!.z };
+        }
+    }
+    return out;
+}
+
+/**
+ * Gate on the pre-clip outside violation. An outline already inside the rim
+ * passes through bit-identical (no inset, no resample). A mild violation is
+ * clipped, and only that span plus one station on either side is re-sampled.
+ * Hard fail only when the violation exceeds hardOutsideMm.
  */
 export function clipPatternInsideRim(
     pattern: PolyPoint[],
@@ -328,7 +507,10 @@ export function clipPatternInsideRim(
     clearanceMm: number,
     resampleN: number,
     opts?: { sizeLabel?: string; hardOutsideMm?: number; codePath?: string },
-): { loop: PolyPoint[]; case: PatternRimCase; clippedAreaMm2: number } {
+): PatternRimClipResult {
+    // Callers still pass a global station count. Inside outlines are not
+    // re-spaced, and a clipped span keeps the original stations outside it.
+    void resampleN;
     const hardOutsideMm = opts?.hardOutsideMm ?? PATTERN_HARD_OUTSIDE_MM;
     const maxOut = maxOutsideRimViolationMm(pattern, rim);
     if (maxOut > hardOutsideMm + 1e-6) {
@@ -341,7 +523,15 @@ export function clipPatternInsideRim(
                 `(max ${hardOutsideMm} mm); size=${opts?.sizeLabel ?? "unknown"}`,
         );
     }
-    const areaBefore = Math.abs(polygonSignedArea(pattern));
+    if (maxOut <= 1e-6) {
+        return {
+            loop: pattern.map(copyStation),
+            case: "inside",
+            clippedAreaMm2: 0,
+            displacementMm: 0,
+            symmetricDifferenceMm2: 0,
+        };
+    }
     const rimGate = clipperRoundInset(rim, clearanceMm);
     const clipped = intersectPatternWithRim(pattern, rimGate);
     if (!clipped || clipped.length < 3) {
@@ -349,26 +539,21 @@ export function clipPatternInsideRim(
             `[S1-PATTERN] Clipper2 intersection with rim inset ${clearanceMm} mm produced no path`,
         );
     }
-    const areaAfter = Math.abs(polygonSignedArea(clipped));
-    const clippedAreaMm2 = Math.max(0, areaBefore - areaAfter);
-    const patternCc = ensureCcw(pattern.map((p) => ({ ...p, z: 0 })));
-    const n = Math.max(resampleN, 160, patternCc.length, clipped.length);
-    const ref = resamplePolyline(patternCc, n);
-    const clippedCcw = ensureCcw(clipped.map((p) => ({ ...p, z: 0 })));
-    const matched = matchClosedByArc(ref, clippedCcw);
-    const s0 = nearestClosedArc01(matched, ref[0]!);
-    const loop: PolyPoint[] = [];
-    for (let i = 0; i < n; i++) {
-        loop.push(sampleClosedAtArc01(matched, s0 + i / n));
-    }
-    if (maxOut > 1e-6) {
-        console.warn(
-            `[S1-PATTERN] clipped ${clippedAreaMm2.toFixed(2)} mm² outside rim ` +
-                `(max outside ${maxOut.toFixed(3)} mm; size=${opts?.sizeLabel ?? "unknown"})`,
-        );
-        return { loop, case: "clip_warn", clippedAreaMm2 };
-    }
-    return { loop, case: "inside", clippedAreaMm2: 0 };
+    const loop = resampleClippedSpans(pattern, clipped, rim, clearanceMm);
+    const displacementMm = maxStationToPolylineMm(pattern, loop);
+    const symmetricDifferenceMm2 = symmetricDifferenceAreaMm2(pattern, loop);
+    console.warn(
+        `[S1-PATTERN] clipped ${symmetricDifferenceMm2.toFixed(2)} mm² symmetric difference ` +
+            `(displacement ${displacementMm.toFixed(3)} mm; max outside ${maxOut.toFixed(3)} mm; ` +
+            `size=${opts?.sizeLabel ?? "unknown"})`,
+    );
+    return {
+        loop,
+        case: "clip_warn",
+        clippedAreaMm2: symmetricDifferenceMm2,
+        displacementMm,
+        symmetricDifferenceMm2,
+    };
 }
 
 function smoothHeelBand(loop: PolyPoint[], uMax: number, passes: number): PolyPoint[] {
@@ -583,15 +768,15 @@ export function hygieneBottomPattern(
         const minRadiusMm = masterCurveRadii(resampled).minRadiusMm;
         if (opts.requireInsideRim && opts.rimPlan?.length) {
             const clearance = opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM;
-            const cleared = clipPatternInsideRim(resampled, opts.rimPlan, clearance, n, {
+            const clip = clipPatternInsideRim(resampled, opts.rimPlan, clearance, n, {
                 sizeLabel: opts.sizeLabel,
                 hardOutsideMm: hardOutsideMm,
                 codePath: rimCtx.codePath,
-            }).loop;
-            assertInsideRim(cleared, opts.rimPlan, clearance, rimCtx);
+            });
+            assertInsideRim(clip.loop, opts.rimPlan, clip.case === "inside" ? 0 : clearance, rimCtx);
             return {
-                loop: cleared,
-                turning: turningNumber(cleared),
+                loop: clip.loop,
+                turning: turningNumber(clip.loop),
                 minRadiusMm,
                 source: opts.source ?? "pattern",
             };
@@ -614,15 +799,15 @@ export function hygieneBottomPattern(
     const resampled = smoothHeelBand(resampleClosedC2(fitClosedC2Spline(smoothed), n), 0.18, 8);
     if (opts?.requireInsideRim && opts.rimPlan?.length) {
         const clearance = opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM;
-        const cleared = clipPatternInsideRim(resampled, opts.rimPlan, clearance, n, {
+        const clip = clipPatternInsideRim(resampled, opts.rimPlan, clearance, n, {
             sizeLabel: opts?.sizeLabel,
             hardOutsideMm: hardOutsideMm,
             codePath: rimCtx.codePath,
-        }).loop;
-        assertInsideRim(cleared, opts.rimPlan, clearance, rimCtx);
+        });
+        assertInsideRim(clip.loop, opts.rimPlan, clip.case === "inside" ? 0 : clearance, rimCtx);
         return {
-            loop: cleared,
-            turning: turningNumber(cleared),
+            loop: clip.loop,
+            turning: turningNumber(clip.loop),
             minRadiusMm,
             source: opts?.source ?? "pattern",
         };

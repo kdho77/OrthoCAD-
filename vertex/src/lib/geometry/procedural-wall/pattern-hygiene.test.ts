@@ -15,7 +15,10 @@ import {
     clipperUnion,
     insoleFootprintAnchorFromBounds,
     maxOutsideRimViolationMm,
+    maxStationToPolylineMm,
     PATTERN_RIM_CLEARANCE_MM,
+    signedRimInsetMmPattern,
+    symmetricDifferenceAreaMm2,
     turningNumber,
 } from "./pattern-hygiene";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME } from "./sample-top-id";
@@ -56,6 +59,80 @@ describe("pattern hygiene", () => {
         const severe = ellipse(24, 26, 16);
         expect(maxOutsideRimViolationMm(severe, rim)).toBeGreaterThan(4);
         expect(() => clipPatternInsideRim(severe, rim, 0.5, 64)).toThrow(/outside the TopSheet rim/);
+    });
+
+    test("inside outline passes through bit-identical", () => {
+        const rim = ellipse(32, 20, 12);
+        const pattern = ellipse(24, 16, 9);
+        const {
+            loop,
+            case: clipCase,
+            displacementMm,
+            symmetricDifferenceMm2,
+        } = clipPatternInsideRim(pattern, rim, 2.5, 64);
+        expect(maxOutsideRimViolationMm(pattern, rim)).toBe(0);
+        expect(clipCase).toBe("inside");
+        expect(displacementMm).toBe(0);
+        expect(symmetricDifferenceMm2).toBe(0);
+        expect(loop).toEqual(pattern);
+        for (let i = 0; i < pattern.length; i++) {
+            expect(loop[i]!.x).toBe(pattern[i]!.x);
+            expect(loop[i]!.y).toBe(pattern[i]!.y);
+            expect(loop[i]!.z).toBe(pattern[i]!.z);
+        }
+    });
+
+    test("1 mm local violation moves only the clipped span plus one station", () => {
+        const n = 80;
+        const rim = ellipse(n, 100, 60);
+        const pattern = ellipse(n, 90, 52);
+        const bump = [18, 19, 20, 21, 22];
+        for (const i of bump) {
+            const ang = (i / n) * Math.PI * 2;
+            const rimX = 100 * Math.cos(ang);
+            const rimY = 60 * Math.sin(ang);
+            const radial = Math.hypot(rimX, rimY);
+            pattern[i] = { x: rimX + (rimX / radial) * 1, y: rimY + (rimY / radial) * 1, z: 0 };
+        }
+        const clearance = 0.5;
+        const maxOut = maxOutsideRimViolationMm(pattern, rim);
+        expect(maxOut).toBeGreaterThan(0.5);
+        expect(maxOut).toBeLessThan(2);
+        const violate = pattern.map((p) => signedRimInsetMmPattern(p, rim) < clearance - 1e-6);
+        const resampled = violate.slice();
+        for (let i = 0; i < n; i++) {
+            if (!violate[i]) continue;
+            resampled[(i - 1 + n) % n] = true;
+            resampled[(i + 1) % n] = true;
+        }
+        expect(resampled.some((flag) => !flag)).toBe(true);
+        const {
+            loop,
+            case: clipCase,
+            displacementMm,
+            symmetricDifferenceMm2,
+        } = clipPatternInsideRim(pattern, rim, clearance, n);
+        expect(clipCase).toBe("clip_warn");
+        expect(loop.length).toBe(pattern.length);
+        let moved = 0;
+        for (let i = 0; i < n; i++) {
+            if (!resampled[i]) {
+                expect(loop[i]!.x).toBe(pattern[i]!.x);
+                expect(loop[i]!.y).toBe(pattern[i]!.y);
+                expect(loop[i]!.z).toBe(pattern[i]!.z);
+            } else if (loop[i]!.x !== pattern[i]!.x || loop[i]!.y !== pattern[i]!.y) {
+                moved++;
+            }
+        }
+        expect(moved).toBeGreaterThan(0);
+        for (const p of loop) {
+            expect(pointInPoly(p.x, p.y, rim) || minDistToLoopXY(p.x, p.y, rim) < 1e-3).toBe(true);
+        }
+        expect(displacementMm).toBeGreaterThan(0);
+        expect(displacementMm).toBeLessThan(4);
+        expect(displacementMm).toBeCloseTo(maxStationToPolylineMm(pattern, loop), 6);
+        expect(symmetricDifferenceMm2).toBeGreaterThan(0);
+        expect(symmetricDifferenceMm2).toBeCloseTo(symmetricDifferenceAreaMm2(pattern, loop), 4);
     });
 
     test("footprint scale moves stations between sizes", () => {
@@ -134,7 +211,13 @@ describe("pattern hygiene", () => {
         const maxPreClipMm = maxOutsideRimViolationMm(pattern, rimPlan);
         const clearance = Math.max(0.5, minInsetForLeanMm(0.5, 2, 0));
         const n = Math.max(160, pattern.length);
-        const { case: clipCase, clippedAreaMm2 } = clipPatternInsideRim(pattern, rimPlan, clearance, n, {
+        const {
+            loop,
+            case: clipCase,
+            clippedAreaMm2,
+            displacementMm,
+            symmetricDifferenceMm2,
+        } = clipPatternInsideRim(pattern, rimPlan, clearance, n, {
             sizeLabel: "US M8.5",
         });
         const clipWarn = clippedAreaMm2 > 0.5;
@@ -143,13 +226,23 @@ describe("pattern hygiene", () => {
             JSON.stringify({
                 maxPreClipMm,
                 clippedAreaMm2,
+                displacementMm,
+                symmetricDifferenceMm2,
                 clipCase,
                 clipWarn,
             }),
         );
         expect(maxPreClipMm).toBeLessThanOrEqual(0.5);
         expect(clippedAreaMm2).toBe(0);
+        expect(displacementMm).toBe(0);
+        expect(symmetricDifferenceMm2).toBe(0);
         expect(clipCase).toBe("inside");
+        expect(loop.length).toBe(pattern.length);
+        for (let i = 0; i < pattern.length; i++) {
+            expect(loop[i]!.x).toBe(pattern[i]!.x);
+            expect(loop[i]!.y).toBe(pattern[i]!.y);
+            expect(loop[i]!.z).toBe(pattern[i]!.z);
+        }
         scaled.dispose();
     }, 60_000);
 });
