@@ -18,10 +18,13 @@ import { minDistToLoopXY, pointInPoly } from "./cdt-band";
 import {
     ensureCcw,
     fitClosedC2Spline,
+    matchClosedByArc,
+    nearestClosedArc01,
     type PolyPoint,
     polygonSignedArea,
     resampleClosedC2,
     resamplePolyline,
+    sampleClosedAtArc01,
 } from "./curves";
 import { scaleToMinInset } from "./faired-pattern";
 import { masterCurveRadii, smoothClosedToMinRadius } from "./stations";
@@ -280,8 +283,16 @@ export function clipPatternInsideRim(
     }
     const areaAfter = Math.abs(polygonSignedArea(clipped));
     const clippedAreaMm2 = Math.max(0, areaBefore - areaAfter);
-    const n = Math.max(resampleN, 160, clipped.length);
-    const loop = resamplePolyline(ensureCcw(clipped), n);
+    const patternCc = ensureCcw(pattern.map((p) => ({ ...p, z: 0 })));
+    const n = Math.max(resampleN, 160, patternCc.length, clipped.length);
+    const ref = resamplePolyline(patternCc, n);
+    const clippedCcw = ensureCcw(clipped.map((p) => ({ ...p, z: 0 })));
+    const matched = matchClosedByArc(ref, clippedCcw);
+    const s0 = nearestClosedArc01(matched, ref[0]!);
+    const loop: PolyPoint[] = [];
+    for (let i = 0; i < n; i++) {
+        loop.push(sampleClosedAtArc01(matched, s0 + i / n));
+    }
     if (maxOut > 1e-6) {
         console.warn(
             `[S1-PATTERN] clipped ${clippedAreaMm2.toFixed(2)} mm² outside rim ` +

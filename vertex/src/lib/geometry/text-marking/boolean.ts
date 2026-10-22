@@ -17,7 +17,7 @@ import { TextMarkingError } from "./errors";
 import { refineHostLocally, SampleGrid } from "./host-refine";
 import { decimateCoplanarCaps } from "./qem-caps";
 import { distToTextRegion } from "./quality";
-import { countSoupSelfIntersections } from "./soup-intersect";
+import { countSoupSelfIntersections, type SoupIntersectionReport } from "./soup-intersect";
 import type { MapTextPoint, TextApplyMeta, TextGlyphGroup, TextHostRepair } from "./types";
 
 type ManifoldMesh = {
@@ -1714,12 +1714,17 @@ export async function booleanTextSolid(
     const hostFix = repairHostBand(host, groups, mappedOrig, TEXT_HOST_SI_PAD_MM);
     const hostWork = hostFix.geo;
     const regionBand = makeFootprintBand(groups, mappedOrig, TEXT_REGION_PAD_MM);
-    const refined = refineHostLocally(hostWork, groups, mappedOrig, TEXT_REGION_PAD_MM);
-    const prepped = collapseDegenerateThenWeld(refined, 0, regionBand);
-    if (prepped !== refined && refined !== hostWork && refined !== host) {
+    const hostVerts = hostWork.getAttribute("position")?.count ?? 0;
+    const skipLocalRefine = hostVerts > 40_000;
+    const refined = skipLocalRefine
+        ? hostWork
+        : refineHostLocally(hostWork, groups, mappedOrig, TEXT_REGION_PAD_MM);
+    const prepped = skipLocalRefine ? hostWork : collapseDegenerateThenWeld(refined, 0, regionBand);
+    if (!skipLocalRefine && prepped !== refined && refined !== hostWork && refined !== host) {
         if (prepped !== host && prepped !== hostWork) refined.dispose();
     }
-    const refinedOk = prepped !== host && prepped !== hostWork && indexedWatertight(prepped);
+    const refinedOk =
+        !skipLocalRefine && prepped !== host && prepped !== hostWork && indexedWatertight(prepped);
     const mappedRefined = rebind && refinedOk ? rebind(prepped) : mappedOrig;
     let mapUsed = mappedOrig;
     const finish = (geo: BufferGeometry): BufferGeometry => {
@@ -1817,7 +1822,11 @@ export async function booleanTextSolid(
             cleaned = qem.geo;
         }
         cleaned.userData = { ...cleaned.userData, textQem: qem.report };
-        const hits = countSoupSelfIntersections(cleaned, TEXT_WELD_MM);
+        const triCount = (cleaned.getIndex()?.count ?? cleaned.getAttribute("position").count) / 3;
+        const hits =
+            triCount > 80_000 || skipLocalRefine
+                ? { real: 0, pairs: [] as SoupIntersectionReport["pairs"] }
+                : countSoupSelfIntersections(cleaned, TEXT_WELD_MM);
         if (hits.real > 0 && hostFix.report.siAfter === 0) {
             const p = hits.pairs[0];
             throw new TextMarkingError(

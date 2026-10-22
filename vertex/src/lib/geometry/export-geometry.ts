@@ -76,7 +76,7 @@ async function buildModifiedBaseGeometry(
             corrections: field.corrections,
             thicknessMm: effThickness,
             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
-            wallStyle: viewer?.wallStyle ?? "straight",
+            wallStyle: viewer?.wallStyle ?? "hybrid",
             scanPattern: design.pattern,
             textMarking: design.textMarking,
             side,

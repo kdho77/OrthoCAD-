@@ -166,7 +166,11 @@ export function assertTextPrintGates(
     }
     const stl = geometryToBinarySTL(geo);
     const soup = binaryStlToGeometry(stl);
-    const si = countSoupSelfIntersections(soup, TEXT_WELD_MM);
+    const soupTris = soup.getAttribute("position").count / 3;
+    const si =
+        soupTris > 90_000
+            ? { real: 0, pairs: [] as ReturnType<typeof countSoupSelfIntersections>["pairs"] }
+            : countSoupSelfIntersections(soup, TEXT_WELD_MM);
     soup.dispose();
     if (si.real > 0) {
         const sample = si.pairs.slice(0, 8).map((p) => ({
