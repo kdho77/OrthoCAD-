@@ -1,7 +1,19 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { EndType, FillRule, inflatePathsD, isPositiveD, JoinType, unionD } from "clipper2-ts";
+import {
+    booleanOp,
+    ClipType,
+    EndType,
+    FillRule,
+    inflatePathsD,
+    isPositive,
+    isPositiveD,
+    JoinType,
+    type Path64,
+    unionD,
+} from "clipper2-ts";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { minDistToLoopXY, pointInPoly } from "./cdt-band";
 import {
     ensureCcw,
@@ -16,9 +28,68 @@ import { masterCurveRadii, smoothClosedToMinRadius } from "./stations";
 
 export const PATTERN_MIN_RADIUS_MM = 3;
 export const PATTERN_RIM_CLEARANCE_MM = 0.5;
+export const PATTERN_HARD_OUTSIDE_MM = 3;
 export const PATTERN_SOURCE_SYNTHETIC = "synthetic";
+/** Clipper2 integer grid: millimetres → micrometres. */
+const CLIPPER_UM = 1000;
 /** Extra inset so resample / fairing cannot land 1e-4 mm short of the rim gate. */
 export const RIM_INSET_SLACK_MM = 0.02;
+
+export interface InsoleFootprintAnchor {
+    x0: number;
+    yMid: number;
+    nativeLengthMm: number;
+    nativeWidthMm: number;
+}
+
+export interface FootprintBounds {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+}
+
+/** Same anchor as {@link scaleGeometryToInsoleSize} (heel at minX, width about yMid). */
+export function insoleFootprintAnchorFromBounds(bounds: FootprintBounds): InsoleFootprintAnchor {
+    return {
+        x0: bounds.minX,
+        yMid: 0.5 * (bounds.minY + bounds.maxY),
+        nativeLengthMm: Math.max(1e-3, bounds.maxX - bounds.minX),
+        nativeWidthMm: Math.max(1e-3, bounds.maxY - bounds.minY),
+    };
+}
+
+/** Men's 9 / 260×95 reference footprint for SAMPLE_Top-native coordinates. */
+export function mensNineFootprintAnchor(bounds: FootprintBounds): InsoleFootprintAnchor {
+    const anchor = insoleFootprintAnchorFromBounds(bounds);
+    return {
+        ...anchor,
+        nativeLengthMm: INSOLE_LENGTH_MM,
+        nativeWidthMm: INSOLE_WIDTH_MM,
+    };
+}
+
+/**
+ * Apply the same XY footprint scale used on the TopSheet mesh (260 mm reference,
+ * shared anchor). Z is unchanged.
+ */
+export function applyInsoleFootprintScale(
+    loop: PolyPoint[],
+    anchor: InsoleFootprintAnchor,
+    lengthMm: number,
+    widthMm: number,
+): PolyPoint[] {
+    const sx = lengthMm / anchor.nativeLengthMm;
+    const sy = widthMm / anchor.nativeWidthMm;
+    if (Math.abs(sx - 1) < 1e-12 && Math.abs(sy - 1) < 1e-12) {
+        return loop.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    }
+    return loop.map((p) => ({
+        x: (p.x - anchor.x0) * sx,
+        y: (p.y - anchor.yMid) * sy,
+        z: p.z,
+    }));
+}
 
 export interface HygieneReport {
     loop: PolyPoint[];
@@ -56,6 +127,40 @@ function largestPath(paths: Array<Array<{ x: number; y: number }>>): Array<{ x: 
         }
     }
     return best;
+}
+
+function dedupePath2d(loop: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {
+    const out: Array<{ x: number; y: number }> = [];
+    for (const p of loop) {
+        const prev = out[out.length - 1];
+        if (prev && Math.hypot(prev.x - p.x, prev.y - p.y) < 1e-6) continue;
+        out.push({ x: p.x, y: p.y });
+    }
+    if (out.length >= 2) {
+        const a = out[0]!;
+        const b = out[out.length - 1]!;
+        if (Math.hypot(a.x - b.x, a.y - b.y) < 1e-6) out.pop();
+    }
+    return out;
+}
+
+function toPathUm(loop: PolyPoint[]): Path64 {
+    return dedupePath2d(loop).map((p) => ({
+        x: Math.round(p.x * CLIPPER_UM),
+        y: Math.round(p.y * CLIPPER_UM),
+    }));
+}
+
+function fromPathUm(path: Path64): PolyPoint[] {
+    return dedupePath2d(path.map((p) => ({ x: p.x / CLIPPER_UM, y: p.y / CLIPPER_UM }))).map((p) => ({
+        x: p.x,
+        y: p.y,
+        z: 0,
+    }));
+}
+
+function orientPositiveUm(path: Path64): Path64 {
+    return isPositive(path) ? path : path.slice().reverse();
 }
 
 export function turningNumber(loop: PolyPoint[]): number {
@@ -106,6 +211,85 @@ export function clipperRoundInset(loop: PolyPoint[], deltaMm: number): PolyPoint
     const pts = fromPathD(best);
     const oriented = isPositiveD(best) ? pts : pts.slice().reverse();
     return ensureCcw(oriented);
+}
+
+/** Largest simple intersection of two closed loops (integer µm Clipper2). */
+export function intersectPatternWithRim(pattern: PolyPoint[], rim: PolyPoint[]): PolyPoint[] | null {
+    if (pattern.length < 3 || rim.length < 3) return null;
+    const subject = [orientPositiveUm(toPathUm(ensureCcw(pattern.map((p) => ({ ...p, z: 0 })))))];
+    const clip = [orientPositiveUm(toPathUm(ensureCcw(rim.map((p) => ({ ...p, z: 0 })))))];
+    const out = booleanOp(ClipType.Intersection, subject, clip, FillRule.NonZero) as Path64[];
+    if (!out?.length) return null;
+    let best: Path64 | null = null;
+    let bestA = -1;
+    for (const path of out) {
+        if (path.length < 3) continue;
+        const pts = fromPathUm(path);
+        const a = Math.abs(polygonSignedArea(pts));
+        if (a > bestA) {
+            bestA = a;
+            best = path;
+        }
+    }
+    return best ? fromPathUm(best) : null;
+}
+
+/** Max distance any station sits outside the rim (0 when fully inside). */
+export function maxOutsideRimViolationMm(pattern: PolyPoint[], rim: PolyPoint[]): number {
+    let maxOut = 0;
+    for (const p of pattern) {
+        if (pointInPoly(p.x, p.y, rim)) continue;
+        maxOut = Math.max(maxOut, minDistToLoopXY(p.x, p.y, rim));
+    }
+    return maxOut;
+}
+
+export function signedRimInsetMmPattern(p: PolyPoint, rim: PolyPoint[]): number {
+    const d = minDistToLoopXY(p.x, p.y, rim);
+    return pointInPoly(p.x, p.y, rim) ? d : -d;
+}
+
+export type PatternRimCase = "inside" | "clip_warn" | "hard_fail";
+
+/**
+ * Intersect pattern with rim inset by clearanceMm, resample, and gate on pre-clip
+ * violation (hard fail only when &gt; hardOutsideMm).
+ */
+export function clipPatternInsideRim(
+    pattern: PolyPoint[],
+    rim: PolyPoint[],
+    clearanceMm: number,
+    resampleN: number,
+    opts?: { sizeLabel?: string; hardOutsideMm?: number },
+): { loop: PolyPoint[]; case: PatternRimCase; clippedAreaMm2: number } {
+    const hardOutsideMm = opts?.hardOutsideMm ?? PATTERN_HARD_OUTSIDE_MM;
+    const maxOut = maxOutsideRimViolationMm(pattern, rim);
+    if (maxOut > hardOutsideMm + 1e-6) {
+        throw new Error(
+            `[S1-PATTERN] pattern is ${maxOut.toFixed(2)} mm outside the TopSheet rim ` +
+                `(max ${hardOutsideMm} mm); size=${opts?.sizeLabel ?? "unknown"}`,
+        );
+    }
+    const areaBefore = Math.abs(polygonSignedArea(pattern));
+    const rimGate = clipperRoundInset(rim, clearanceMm);
+    const clipped = intersectPatternWithRim(pattern, rimGate);
+    if (!clipped || clipped.length < 3) {
+        throw new Error(
+            `[S1-PATTERN] Clipper2 intersection with rim inset ${clearanceMm} mm produced no path`,
+        );
+    }
+    const areaAfter = Math.abs(polygonSignedArea(clipped));
+    const clippedAreaMm2 = Math.max(0, areaBefore - areaAfter);
+    const n = Math.max(resampleN, 160, clipped.length);
+    const loop = resamplePolyline(ensureCcw(clipped), n);
+    if (maxOut > 1e-6) {
+        console.warn(
+            `[S1-PATTERN] clipped ${clippedAreaMm2.toFixed(2)} mm² outside rim ` +
+                `(max outside ${maxOut.toFixed(3)} mm; size=${opts?.sizeLabel ?? "unknown"})`,
+        );
+        return { loop, case: "clip_warn", clippedAreaMm2 };
+    }
+    return { loop, case: "inside", clippedAreaMm2: 0 };
 }
 
 function smoothHeelBand(loop: PolyPoint[], uMax: number, passes: number): PolyPoint[] {
@@ -272,6 +456,8 @@ export function hygieneBottomPattern(
         resampleN?: number;
         /** Keep a fair few-control spline; do not re-interpolate or Laplacian the heel. */
         keepFair?: boolean;
+        sizeLabel?: string;
+        rimHardOutsideMm?: number;
     },
 ): HygieneReport {
     const sourceLoop = ensureCcw(loop.map((p) => ({ ...p, z: 0 })));
@@ -287,7 +473,13 @@ export function hygieneBottomPattern(
         const minRadiusMm = masterCurveRadii(resampled).minRadiusMm;
         if (opts.requireInsideRim && opts.rimPlan?.length) {
             const clearance = opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM;
-            const cleared = enforceMinRimInset(resampled, opts.rimPlan, clearance, { smooth: true });
+            const useClip = opts.rimHardOutsideMm != null && Number.isFinite(opts.rimHardOutsideMm);
+            const cleared = useClip
+                ? clipPatternInsideRim(resampled, opts.rimPlan, clearance, n, {
+                      sizeLabel: opts.sizeLabel,
+                      hardOutsideMm: opts.rimHardOutsideMm,
+                  }).loop
+                : enforceMinRimInset(resampled, opts.rimPlan, clearance, { smooth: true });
             assertInsideRim(cleared, opts.rimPlan, clearance);
             return {
                 loop: cleared,
@@ -313,7 +505,21 @@ export function hygieneBottomPattern(
     const n = Math.max(opts?.resampleN ?? 0, 160, smoothed.length);
     const resampled = smoothHeelBand(resampleClosedC2(fitClosedC2Spline(smoothed), n), 0.18, 8);
     if (opts?.requireInsideRim && opts.rimPlan?.length) {
-        assertInsideRim(resampled, opts.rimPlan, opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM);
+        const clearance = opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM;
+        const useClip = opts.rimHardOutsideMm != null && Number.isFinite(opts.rimHardOutsideMm);
+        const cleared = useClip
+            ? clipPatternInsideRim(resampled, opts.rimPlan, clearance, n, {
+                  sizeLabel: opts.sizeLabel,
+                  hardOutsideMm: opts.rimHardOutsideMm,
+              }).loop
+            : enforceMinRimInset(resampled, opts.rimPlan, clearance, { smooth: true });
+        assertInsideRim(cleared, opts.rimPlan, clearance);
+        return {
+            loop: cleared,
+            turning: turningNumber(cleared),
+            minRadiusMm,
+            source: opts?.source ?? "pattern",
+        };
     }
     const source = opts?.source ?? "pattern";
     return { loop: resampled, turning: turningNumber(resampled), minRadiusMm, source };

@@ -51,7 +51,16 @@ import {
     postingZDelta,
 } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
-import { hygieneBottomPattern } from "./pattern-hygiene";
+import {
+    applyInsoleFootprintScale,
+    type FootprintBounds,
+    hygieneBottomPattern,
+    insoleFootprintAnchorFromBounds,
+    mensNineFootprintAnchor,
+    PATTERN_HARD_OUTSIDE_MM,
+    signedRimInsetMmPattern,
+} from "./pattern-hygiene";
+import type { PrintSolidShoeWidth } from "./print-solid-compose";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
 import { assertClosedStationRing, assertPeriodicQuadStrip, rotateStationRing } from "./ring-seam";
 import {
@@ -119,6 +128,13 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * the Default extractTopSheet steal.
      */
     composedTop?: boolean;
+    shoeWidth?: PrintSolidShoeWidth | null;
+    footprintReferenceBounds?: FootprintBounds;
+    footprintLengthMm?: number;
+    footprintWidthMm?: number;
+    sizeLabel?: string;
+    /** Stored / edited bottom pattern (enables footprint align + rim clip). */
+    userBottomPattern?: boolean;
 }
 
 function zeroCorrections(): SideCorrections {
@@ -947,6 +963,7 @@ export function reconstructProceduralWalls(
     options.medialYSign = medialYSign;
     const defaults = defaultsFromModel(model, preset);
     defaults.medialYSign = medialYSign;
+    const userSuppliedPattern = Boolean(options.userBottomPattern);
     const patternPts = options.bottomPattern?.length
         ? options.bottomPattern
         : options.bottomPatternSource && !/^(synthetic|stock)$/i.test(options.bottomPatternSource)
@@ -1045,6 +1062,40 @@ export function reconstructProceduralWalls(
         model.bounds,
     );
     const liveRimPlan = rimPts.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    const refBounds: FootprintBounds = options.footprintReferenceBounds ?? {
+        minX: model.bounds.minX,
+        maxX: model.bounds.maxX,
+        minY: model.bounds.minY,
+        maxY: model.bounds.maxY,
+    };
+    const targetLength = options.footprintLengthMm ?? Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+    const targetWidth = options.footprintWidthMm ?? Math.max(1e-3, model.bounds.maxY - model.bounds.minY);
+    const refAnchor = options.footprintReferenceBounds
+        ? insoleFootprintAnchorFromBounds(refBounds)
+        : mensNineFootprintAnchor(refBounds);
+    const alignFootprint = (loop: PolyPoint[]): PolyPoint[] => {
+        const scaled = applyInsoleFootprintScale(loop, refAnchor, targetLength, targetWidth);
+        if (options.sizeLabel && /M8\.5/i.test(options.sizeLabel)) {
+            const idx = Math.min(415, scaled.length - 1);
+            const before = loop[idx] ?? loop[0]!;
+            const after = scaled[idx] ?? scaled[0]!;
+            const inset = signedRimInsetMmPattern(after, liveRimPlan);
+            const violationCase =
+                inset < -PATTERN_HARD_OUTSIDE_MM ? "hard_fail" : inset < 0 ? "clip_warn" : "inside";
+            console.log(
+                "[S1-PATTERN]",
+                JSON.stringify({
+                    size: options.sizeLabel,
+                    station: idx,
+                    before: { x: Number(before.x.toFixed(2)), y: Number(before.y.toFixed(2)) },
+                    after: { x: Number(after.x.toFixed(2)), y: Number(after.y.toFixed(2)) },
+                    signedRimInsetMm: Number(inset.toFixed(3)),
+                    case: violationCase,
+                }),
+            );
+        }
+        return scaled;
+    };
     const stockRimLocal =
         model.top.meshPositions && model.top.rimLocal
             ? orderRimLocal(model.top.meshPositions, model.top.rimLocal)
@@ -1074,16 +1125,22 @@ export function reconstructProceduralWalls(
               ),
               model.bounds,
           );
+    const alignedOutline = userSuppliedPattern ? alignFootprint(rawOutline) : rawOutline;
     const patternLabel =
         options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : PATTERN_SOURCE_FAIRED_STOCK);
-    let hygiened = hygieneBottomPattern(rawOutline, {
-        rimPlan: patternRim,
+    const rimClearance =
+        patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0));
+    const rimHardOutsideMm = userSuppliedPattern ? PATTERN_HARD_OUTSIDE_MM : Number.POSITIVE_INFINITY;
+    const rimForHygiene = userSuppliedPattern ? liveRimPlan : patternRim;
+    let hygiened = hygieneBottomPattern(alignedOutline, {
+        rimPlan: rimForHygiene,
         requireInsideRim: true,
-        clearanceMm:
-            patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
+        clearanceMm: rimClearance,
         source: patternLabel,
-        resampleN: Math.max(160, rawOutline.length, rimPts.length),
+        resampleN: Math.max(160, alignedOutline.length, rimPts.length),
         keepFair: true,
+        sizeLabel: options.sizeLabel,
+        rimHardOutsideMm,
     });
     const heelWiden = (options.corrections?.heelCupWidthMm ?? 0) !== 0;
     const wholeScale = options.insoleWidthScale ?? 1;
@@ -1130,11 +1187,12 @@ export function reconstructProceduralWalls(
         hygiened = hygieneBottomPattern(patternLoop, {
             rimPlan: liveRimPlan,
             requireInsideRim: true,
-            clearanceMm:
-                patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
+            clearanceMm: rimClearance,
             source: patternLabel,
             resampleN: Math.max(160, patternLoop.length, rimPts.length),
             keepFair: true,
+            sizeLabel: options.sizeLabel,
+            rimHardOutsideMm,
         });
     }
     medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);

@@ -6,6 +6,8 @@ import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthLongitudinalEnvelope, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import { scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -18,6 +20,7 @@ import type { ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
+import type { FootprintBounds } from "./pattern-hygiene";
 import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
@@ -193,6 +196,11 @@ export interface ProceduralPreviewOptions {
     textMarking?: TextMarking | null;
     /** Foot side for left/right placement (wall text is never glyph-mirrored). */
     side?: Side;
+    footprintReferenceBounds?: FootprintBounds;
+    footprintLengthMm?: number;
+    footprintWidthMm?: number;
+    sizeLabel?: string;
+    userBottomPattern?: boolean;
 }
 
 /**
@@ -211,6 +219,31 @@ export async function reconstructProceduralPreview(
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
     let source = topGeo;
     let owned = false;
+    let footprintReferenceBounds = options.footprintReferenceBounds;
+    if (
+        options.footprintLengthMm != null &&
+        options.footprintWidthMm != null &&
+        (Math.abs(options.footprintLengthMm - INSOLE_LENGTH_MM) > 1e-3 ||
+            Math.abs(options.footprintWidthMm - INSOLE_WIDTH_MM) > 1e-3)
+    ) {
+        if (!footprintReferenceBounds) {
+            topGeo.computeBoundingBox();
+            const box = topGeo.boundingBox;
+            if (box) {
+                footprintReferenceBounds = {
+                    minX: box.min.x,
+                    maxX: box.max.x,
+                    minY: box.min.y,
+                    maxY: box.max.y,
+                };
+            }
+        }
+        const scaled = scaleGeometryToInsoleSize(topGeo, options.footprintLengthMm, options.footprintWidthMm);
+        if (scaled !== topGeo) {
+            source = scaled;
+            owned = true;
+        }
+    }
     if (options.sourceField) {
         source = await composePrintSolidTop(topGeo, {
             sourceField: options.sourceField,
@@ -236,13 +269,20 @@ export async function reconstructProceduralPreview(
             stockThicknessMm,
             bottomPattern: pattern,
             bottomPatternLabel: PATTERN_SOURCE_SYNTHETIC,
+            userBottomPattern: options.userBottomPattern,
             flatPlantar: true,
             wallStyle: options.wallStyle,
             deviceType: options.deviceType,
             lateralFlange: options.lateralFlange,
             archGrindDepthMm: options.archGrindDepthMm,
+            scanPattern: options.scanPattern,
             sourceField: options.sourceField,
             composedTop: useComposed,
+            shoeWidth: options.shoeWidth,
+            footprintReferenceBounds: footprintReferenceBounds ?? options.footprintReferenceBounds,
+            footprintLengthMm: options.footprintLengthMm,
+            footprintWidthMm: options.footprintWidthMm,
+            sizeLabel: options.sizeLabel,
         });
         return { model, pattern, geometry };
     };

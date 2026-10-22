@@ -10,6 +10,7 @@ import {
 } from "@/lib/chili3d/kernel";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
@@ -21,7 +22,12 @@ import {
 import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gates";
-import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import {
+    formatUsShoeSizeLabel,
+    insoleLayoutFromDesign,
+    scaleGeometryToInsoleSize,
+} from "@/lib/geometry/shoe-size";
+import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
 import { curveToPolyPoints, useBottomPatternStore } from "@/stores/bottom-pattern-store";
@@ -60,6 +66,10 @@ async function buildModifiedBaseGeometry(
                 : design.paired.rightThicknessMm
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, effThickness);
+        field.elements = elementsForSurface(field.elements ?? [], true);
+        const layout = insoleLayoutFromDesign(design);
+        const trimline = getDesignTrimline(design, side);
+        const widthId = shoeWidthForSide(design, side);
         const stored = useBottomPatternStore.getState().getPattern(side);
         const preview = await buildProceduralExportSolid({
             mirrored: Boolean(base.mirrored),
@@ -70,6 +80,22 @@ async function buildModifiedBaseGeometry(
             scanPattern: design.pattern,
             textMarking: design.textMarking,
             side,
+            sourceField: field,
+            composedTop: true,
+            shoeWidth: {
+                width: widthId,
+                ballWidthMm: layout.widthMm,
+                heelWidthMm: layout.widthMm * 0.62,
+                heelOverrideMm: field.corrections?.heelCupWidthMm,
+            },
+            trimline,
+            footprintLengthMm: layout.lengthMm,
+            footprintWidthMm: layout.widthMm,
+            sizeLabel:
+                layout.sizeSystem === "us"
+                    ? formatUsShoeSizeLabel(layout.usMenSize).split(" / ")[0]
+                    : `${layout.footLengthMm} mm`,
+            userBottomPattern: Boolean(stored),
             ...(stored ? { bottomPattern: curveToPolyPoints(stored) } : {}),
         });
         return preview.geometry;
