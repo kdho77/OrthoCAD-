@@ -252,6 +252,70 @@ export function signedRimInsetMmPattern(p: PolyPoint, rim: PolyPoint[]): number 
     return pointInPoly(p.x, p.y, rim) ? d : -d;
 }
 
+export interface PatternRimGateContext {
+    sizeLabel?: string;
+    /** e.g. reconstruct:user-bottom-pattern, hygieneBottomPattern:keepFair */
+    codePath: string;
+}
+
+function logPatternRimFailure(
+    pattern: PolyPoint[],
+    rim: PolyPoint[],
+    ctx: PatternRimGateContext,
+    extra?: Record<string, unknown>,
+): void {
+    let worstSigned = Infinity;
+    let worstI = 0;
+    for (let i = 0; i < pattern.length; i++) {
+        const signed = signedRimInsetMmPattern(pattern[i]!, rim);
+        if (signed < worstSigned) {
+            worstSigned = signed;
+            worstI = i;
+        }
+    }
+    const p = pattern[worstI]!;
+    console.error(
+        "[S1-PATTERN-RIM-FAIL]",
+        JSON.stringify({
+            station: worstI,
+            x: Number(p.x.toFixed(2)),
+            y: Number(p.y.toFixed(2)),
+            signedRimInsetMm: Number(worstSigned.toFixed(3)),
+            maxPreClipOutsideMm: maxOutsideRimViolationMm(pattern, rim),
+            sizeLabel: ctx.sizeLabel ?? "unknown",
+            codePath: ctx.codePath,
+            ...extra,
+        }),
+    );
+}
+
+/**
+ * Footprint XY scale for bottom patterns. Viewer/export store user patterns in the
+ * same frame as the composed TopSheet; skip re-scaling in that case.
+ */
+export function alignPatternToExportFootprint(
+    loop: PolyPoint[],
+    opts: {
+        footprintReferenceBounds?: FootprintBounds;
+        footprintLengthMm?: number;
+        footprintWidthMm?: number;
+        /** Pattern already matches the loft TopSheet (stored B, faired on scaled mesh). */
+        patternInMeshFrame?: boolean;
+    },
+): PolyPoint[] {
+    if (opts.patternInMeshFrame) {
+        return loop.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    }
+    const lengthMm = opts.footprintLengthMm;
+    const widthMm = opts.footprintWidthMm;
+    const ref = opts.footprintReferenceBounds;
+    if (!ref || lengthMm == null || widthMm == null) {
+        return loop.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    }
+    const anchor = insoleFootprintAnchorFromBounds(ref);
+    return applyInsoleFootprintScale(loop, anchor, lengthMm, widthMm);
+}
+
 export type PatternRimCase = "inside" | "clip_warn" | "hard_fail";
 
 /**
@@ -263,11 +327,15 @@ export function clipPatternInsideRim(
     rim: PolyPoint[],
     clearanceMm: number,
     resampleN: number,
-    opts?: { sizeLabel?: string; hardOutsideMm?: number },
+    opts?: { sizeLabel?: string; hardOutsideMm?: number; codePath?: string },
 ): { loop: PolyPoint[]; case: PatternRimCase; clippedAreaMm2: number } {
     const hardOutsideMm = opts?.hardOutsideMm ?? PATTERN_HARD_OUTSIDE_MM;
     const maxOut = maxOutsideRimViolationMm(pattern, rim);
     if (maxOut > hardOutsideMm + 1e-6) {
+        logPatternRimFailure(pattern, rim, {
+            sizeLabel: opts?.sizeLabel,
+            codePath: opts?.codePath ?? "clipPatternInsideRim",
+        });
         throw new Error(
             `[S1-PATTERN] pattern is ${maxOut.toFixed(2)} mm outside the TopSheet rim ` +
                 `(max ${hardOutsideMm} mm); size=${opts?.sizeLabel ?? "unknown"}`,
@@ -433,17 +501,42 @@ export function assertInsideRim(
     pattern: PolyPoint[],
     rimPlan: PolyPoint[],
     clearanceMm = PATTERN_RIM_CLEARANCE_MM,
+    ctx?: PatternRimGateContext,
 ): void {
     if (rimPlan.length < 3) return;
     for (let i = 0; i < pattern.length; i++) {
         const p = pattern[i]!;
+        const signed = signedRimInsetMmPattern(p, rimPlan);
         const d = minDistToLoopXY(p.x, p.y, rimPlan);
         if (!pointInPoly(p.x, p.y, rimPlan) && d > 1e-4) {
+            if (ctx) {
+                logPatternRimFailure(pattern, rimPlan, ctx, {
+                    failStation: i,
+                    signedRimInsetMm: Number(signed.toFixed(3)),
+                    outsideMm: Number(d.toFixed(3)),
+                });
+            }
             throw new Error(
                 `[S1-PATTERN] station ${i} (${p.x.toFixed(2)},${p.y.toFixed(2)}) is outside the TopSheet rim`,
             );
         }
         if (d < clearanceMm - 1e-6) {
+            if (ctx) {
+                console.error(
+                    "[S1-PATTERN-RIM-FAIL]",
+                    JSON.stringify({
+                        station: i,
+                        x: Number(p.x.toFixed(2)),
+                        y: Number(p.y.toFixed(2)),
+                        signedRimInsetMm: Number(signed.toFixed(3)),
+                        insetMm: Number(d.toFixed(3)),
+                        clearanceMm,
+                        sizeLabel: ctx.sizeLabel ?? "unknown",
+                        codePath: ctx.codePath,
+                        case: "clearance",
+                    }),
+                );
+            }
             throw new Error(
                 `[S1-PATTERN] station ${i} (${p.x.toFixed(2)},${p.y.toFixed(2)}) is ` +
                     `${d.toFixed(3)} mm from the rim (need >= ${clearanceMm} mm)`,
@@ -469,8 +562,14 @@ export function hygieneBottomPattern(
         keepFair?: boolean;
         sizeLabel?: string;
         rimHardOutsideMm?: number;
+        codePath?: string;
     },
 ): HygieneReport {
+    const rimCtx: PatternRimGateContext = {
+        sizeLabel: opts?.sizeLabel,
+        codePath: opts?.codePath ?? "hygieneBottomPattern",
+    };
+    const hardOutsideMm = opts?.rimHardOutsideMm ?? PATTERN_HARD_OUTSIDE_MM;
     const sourceLoop = ensureCcw(loop.map((p) => ({ ...p, z: 0 })));
     const tn0 = turningNumber(sourceLoop);
     const unioned = Math.abs(tn0 - 1) < 0.05 && opts?.keepFair ? sourceLoop : clipperUnion(sourceLoop);
@@ -484,14 +583,12 @@ export function hygieneBottomPattern(
         const minRadiusMm = masterCurveRadii(resampled).minRadiusMm;
         if (opts.requireInsideRim && opts.rimPlan?.length) {
             const clearance = opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM;
-            const useClip = opts.rimHardOutsideMm != null && Number.isFinite(opts.rimHardOutsideMm);
-            const cleared = useClip
-                ? clipPatternInsideRim(resampled, opts.rimPlan, clearance, n, {
-                      sizeLabel: opts.sizeLabel,
-                      hardOutsideMm: opts.rimHardOutsideMm,
-                  }).loop
-                : enforceMinRimInset(resampled, opts.rimPlan, clearance, { smooth: true });
-            assertInsideRim(cleared, opts.rimPlan, clearance);
+            const cleared = clipPatternInsideRim(resampled, opts.rimPlan, clearance, n, {
+                sizeLabel: opts.sizeLabel,
+                hardOutsideMm: hardOutsideMm,
+                codePath: rimCtx.codePath,
+            }).loop;
+            assertInsideRim(cleared, opts.rimPlan, clearance, rimCtx);
             return {
                 loop: cleared,
                 turning: turningNumber(cleared),
@@ -517,14 +614,12 @@ export function hygieneBottomPattern(
     const resampled = smoothHeelBand(resampleClosedC2(fitClosedC2Spline(smoothed), n), 0.18, 8);
     if (opts?.requireInsideRim && opts.rimPlan?.length) {
         const clearance = opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM;
-        const useClip = opts.rimHardOutsideMm != null && Number.isFinite(opts.rimHardOutsideMm);
-        const cleared = useClip
-            ? clipPatternInsideRim(resampled, opts.rimPlan, clearance, n, {
-                  sizeLabel: opts.sizeLabel,
-                  hardOutsideMm: opts.rimHardOutsideMm,
-              }).loop
-            : enforceMinRimInset(resampled, opts.rimPlan, clearance, { smooth: true });
-        assertInsideRim(cleared, opts.rimPlan, clearance);
+        const cleared = clipPatternInsideRim(resampled, opts.rimPlan, clearance, n, {
+            sizeLabel: opts?.sizeLabel,
+            hardOutsideMm: hardOutsideMm,
+            codePath: rimCtx.codePath,
+        }).loop;
+        assertInsideRim(cleared, opts.rimPlan, clearance, rimCtx);
         return {
             loop: cleared,
             turning: turningNumber(cleared),

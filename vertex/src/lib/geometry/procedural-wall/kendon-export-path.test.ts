@@ -24,7 +24,10 @@ import {
     soupRegionAabbFromOutlineWorld,
 } from "@/lib/geometry/text-marking/soup-intersect";
 import type { TextApplyMeta } from "@/lib/geometry/text-marking/types";
-import type { Side, SideCorrections } from "@/types";
+import { parseBinaryStl } from "@/lib/hardness/mesh";
+import { exportHardness3mf } from "@/lib/hardness/pipeline";
+import { useDesignStore } from "@/stores/design-store";
+import type { PlacedElement, Side, SideCorrections } from "@/types";
 import { composePrintSolidTop } from "./print-solid-compose";
 import {
     buildProceduralViewerPattern,
@@ -168,4 +171,143 @@ describe("Kendon PR #204 preview path", () => {
         loft.geometry.dispose();
         raw.dispose();
     }, 120_000);
+
+    test("stored user pattern + 2 elements export STL, GLB, and 3MF (Kendon rim gate)", async () => {
+        const layout = insoleLayoutForUsMenSize(9);
+        const elements: PlacedElement[] = [
+            {
+                id: "met-lateral",
+                kind: "met_pad",
+                side: "left",
+                position: { x: 198, y: -14 },
+                rotationDeg: 8,
+                scale: { x: 1.1, y: 1 },
+                heightMm: 4.5,
+            },
+            {
+                id: "met-medial",
+                kind: "met_pad",
+                side: "left",
+                position: { x: 78, y: 12 },
+                rotationDeg: 0,
+                scale: { x: 1.05, y: 0.95 },
+                heightMm: 3.5,
+            },
+        ];
+        const sourceField: HeightFieldParams = { ...fieldM9("left"), elements };
+        const raw = await loadLeftSampleTop();
+        const shoeWidth = {
+            width: "medium" as const,
+            ballWidthMm: layout.widthMm,
+            heelWidthMm: layout.widthMm * 0.62,
+            heelOverrideMm: 0,
+        };
+        const patternTop = await composePrintSolidTop(raw, { sourceField, shoeWidth });
+        const storedPattern = buildProceduralViewerPattern(patternTop, "full_contact", zero());
+        patternTop.dispose();
+        const loft = await reconstructProceduralPreview(raw, {
+            sourceField,
+            composedTop: true,
+            scanPattern: "full_contact",
+            userBottomPattern: true,
+            bottomPattern: storedPattern,
+            side: "left",
+            wallStyle: "straight",
+            footprintLengthMm: layout.lengthMm,
+            footprintWidthMm: layout.widthMm,
+            sizeLabel: "US M9",
+            corrections: zero(),
+            shoeWidth,
+        });
+        const stl = geometryToBinarySTL(loft.geometry);
+        expect(stl.byteLength).toBeGreaterThan(10_000);
+        const glb = await exportObjectToGlb(meshFromGeometry(loft.geometry));
+        expect(glb.arrayBuffer.byteLength).toBeGreaterThan(10_000);
+        const shell = parseBinaryStl(stl);
+        const design = {
+            ...useDesignStore.getInitialState().design,
+            elements,
+            pattern: "full_contact" as const,
+        };
+        const packed = await exportHardness3mf({ design, side: "left", shell });
+        expect(packed.bytes.byteLength).toBeGreaterThan(2000);
+        console.log(
+            "[KENDON-FULL-EXPORT]",
+            JSON.stringify({
+                stlBytes: stl.byteLength,
+                glbBytes: glb.arrayBuffer.byteLength,
+                mfBytes: packed.bytes.byteLength,
+            }),
+        );
+        loft.geometry.dispose();
+        raw.dispose();
+    }, 300_000);
+
+    test("Kendon-like export with 2 elements + lateral wall text exports STL, GLB, and 3MF", async () => {
+        const layout = insoleLayoutForUsMenSize(9);
+        const elements: PlacedElement[] = [
+            {
+                id: "met-lateral",
+                kind: "met_pad",
+                side: "left",
+                position: { x: 198, y: -14 },
+                rotationDeg: 8,
+                scale: { x: 1.1, y: 1 },
+                heightMm: 4.5,
+            },
+            {
+                id: "met-medial",
+                kind: "met_pad",
+                side: "left",
+                position: { x: 78, y: 12 },
+                rotationDeg: 0,
+                scale: { x: 1.05, y: 0.95 },
+                heightMm: 3.5,
+            },
+        ];
+        const sourceField: HeightFieldParams = { ...fieldM9("left"), elements };
+        const raw = await loadLeftSampleTop();
+        const shoeWidth = {
+            width: "medium" as const,
+            ballWidthMm: layout.widthMm,
+            heelWidthMm: layout.widthMm * 0.62,
+            heelOverrideMm: 0,
+        };
+        const textMarking = {
+            ...defaultTextMarking("wall"),
+            text: sanitizeText("A"),
+            capHeightMm: 6,
+            depthMm: 0.6,
+            placementU: 0.55,
+        };
+        const loft = await reconstructProceduralPreview(raw, {
+            sourceField,
+            composedTop: true,
+            scanPattern: "full_contact",
+            side: "left",
+            wallStyle: "straight",
+            footprintLengthMm: layout.lengthMm,
+            footprintWidthMm: layout.widthMm,
+            sizeLabel: "US M9",
+            corrections: zero(),
+            shoeWidth,
+        });
+        const marked = await applyTextMarkingToPrintSolid(loft.geometry, textMarking, { side: "left" });
+        const stl = geometryToBinarySTL(marked);
+        const glb = await exportObjectToGlb(meshFromGeometry(marked));
+        const shell = parseBinaryStl(stl);
+        const design = {
+            ...useDesignStore.getInitialState().design,
+            elements,
+            textMarking,
+            pattern: "full_contact" as const,
+        };
+        const packed = await exportHardness3mf({ design, side: "left", shell });
+        expect(stl.byteLength).toBeGreaterThan(10_000);
+        expect(glb.arrayBuffer.byteLength).toBeGreaterThan(10_000);
+        expect(packed.bytes.byteLength).toBeGreaterThan(2000);
+        if (marked !== loft.geometry) marked.dispose();
+        loft.geometry.dispose();
+        raw.dispose();
+    }, 300_000);
 });
