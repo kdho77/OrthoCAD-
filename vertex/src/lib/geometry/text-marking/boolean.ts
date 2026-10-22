@@ -37,9 +37,15 @@ type ManifoldCtor = {
     reserveIDs?: (n: number) => number;
 };
 
+type ManifoldCrossSection = {
+    extrude: (height: number) => ManifoldHandle;
+    delete: () => void;
+};
+
 type ManifoldWasm = {
     setup: () => void;
     Manifold: ManifoldCtor;
+    CrossSection: new (contours: Array<Array<[number, number]>>, fillRule?: string) => ManifoldCrossSection;
     Mesh: new (args: {
         numProp: number;
         vertProperties: Float32Array;
@@ -190,8 +196,13 @@ function textGroupsToManifold(
     }
 }
 
-function geometryToManifold(mod: ManifoldWasm, geo: BufferGeometry, label: string): ManifoldHandle {
-    const welded = weldedIndexed(geo);
+function geometryToManifold(
+    mod: ManifoldWasm,
+    geo: BufferGeometry,
+    label: string,
+    exactIndex = false,
+): ManifoldHandle {
+    const welded = exactIndex ? geo : weldedIndexed(geo);
     try {
         const pos = welded.getAttribute("position");
         if (!pos) throw new TextMarkingError("boolean", `${label} mesh has no positions`);
@@ -301,7 +312,7 @@ function geometryToManifold(mod: ManifoldWasm, geo: BufferGeometry, label: strin
             );
         }
     } finally {
-        welded.dispose();
+        if (!exactIndex) welded.dispose();
     }
 }
 
@@ -1553,13 +1564,19 @@ function csgOnce(
     userData: unknown,
     sidewallRings?: number,
     band?: TriBandPred,
+    opts?: { exactHost?: boolean; skipRefine?: boolean },
 ): BufferGeometry {
-    const a = geometryToManifold(mod, hostMesh, "host");
+    const a = geometryToManifold(mod, hostMesh, "host", opts?.exactHost === true);
     const b = textGroupsToManifold(mod, groups, mapped, sidewallRings);
     let result: ManifoldHandle | null = null;
     try {
         result = op === "add" ? a.add(b) : a.subtract(b);
+        const status = result.status?.() ?? "NoError";
+        if (opts?.exactHost && status !== "NoError") {
+            throw new TextMarkingError("stl-gate", `manifold status ${status}`);
+        }
         const geo = manifoldToGeometry(result, userData);
+        if (opts?.skipRefine) return geo;
         // Band-only 1° collapse: catches 0.53° slivers without a whole-mesh weld.
         const cleaned = collapseDegenerateThenWeld(geo, 0, band, TEXT_HOST_SLIVER_MIN_ANGLE_DEG);
         if (cleaned !== geo) geo.dispose();
@@ -1687,6 +1704,389 @@ function restoreOutsideVerts(
     resPos.needsUpdate = true;
 }
 
+/** Exact-index rim weld for a hybrid host. Identical coordinates only — no tolerance. */
+function weldHybridHostExact(geo: BufferGeometry): BufferGeometry {
+    const ud = geo.userData as { wallStyle?: string; rimSeamVerts?: number[] };
+    if (ud.wallStyle !== "hybrid" || !ud.rimSeamVerts?.length) return geo;
+    const pos = geo.getAttribute("position");
+    const index = geo.getIndex();
+    if (!pos || !index) return geo;
+    const positions = pos.array as ArrayLike<number>;
+    const n = pos.count;
+    const keyOf = (i: number): string =>
+        `${positions[i * 3]}|${positions[i * 3 + 1]}|${positions[i * 3 + 2]}`;
+    const canon = new Map<string, number>();
+    for (const r of ud.rimSeamVerts) {
+        if (r < 0 || r >= n) continue;
+        const k = keyOf(r);
+        if (!canon.has(k)) canon.set(k, r);
+    }
+    const raw = index.array as ArrayLike<number>;
+    const indices: number[] = [];
+    let changed = false;
+    for (let t = 0; t < index.count; t++) {
+        const i = raw[t] ?? 0;
+        const c = i >= 0 && i < n ? canon.get(keyOf(i)) : undefined;
+        const use = c ?? i;
+        if (use !== i) changed = true;
+        indices.push(use);
+    }
+    if (!changed) return geo;
+    const kept: number[] = [];
+    for (let t = 0; t + 2 < indices.length; t += 3) {
+        const a = indices[t]!;
+        const b = indices[t + 1]!;
+        const c = indices[t + 2]!;
+        if (a === b || b === c || c === a) continue;
+        kept.push(a, b, c);
+    }
+    const out = new BufferGeometry();
+    out.setAttribute("position", pos.clone());
+    out.setIndex(kept);
+    out.computeVertexNormals();
+    out.userData = { ...geo.userData };
+    return out;
+}
+
+function signedLoopArea(loop: Array<[number, number]>): number {
+    let area = 0;
+    for (let i = 0; i < loop.length; i++) {
+        const p = loop[i]!;
+        const q = loop[(i + 1) % loop.length]!;
+        area += p[0] * q[1] - q[0] * p[1];
+    }
+    return area * 0.5;
+}
+
+function dedupLoop(loop: Array<[number, number]>): Array<[number, number]> {
+    const out: Array<[number, number]> = [];
+    for (const p of loop) {
+        const prev = out[out.length - 1];
+        if (prev && Math.hypot(p[0] - prev[0], p[1] - prev[1]) <= 1e-6) continue;
+        out.push(p);
+    }
+    if (out.length > 2) {
+        const a = out[0]!;
+        const b = out[out.length - 1]!;
+        if (Math.hypot(a[0] - b[0], a[1] - b[1]) <= 1e-6) out.pop();
+    }
+    return out;
+}
+
+/**
+ * Hybrid text solid: one manifold-3d prism along the average depth axis.
+ * The mapped triangle-soup cutter folds on the curved wall and self-intersects;
+ * CrossSection.extrude does not.
+ */
+function hybridPrismCutter(
+    mod: ManifoldWasm,
+    groups: TextGlyphGroup[],
+    mapPoint: MapTextPoint,
+): ManifoldHandle {
+    let sx = 0;
+    let sy = 0;
+    let sz = 0;
+    let ox = 0;
+    let oy = 0;
+    let oz = 0;
+    let n = 0;
+    for (const g of groups) {
+        for (const p of g.outer) {
+            const a = mapPoint(p, 0);
+            const b = mapPoint(p, 1);
+            sx += b.x - a.x;
+            sy += b.y - a.y;
+            sz += b.z - a.z;
+            ox += a.x;
+            oy += a.y;
+            oz += a.z;
+            n++;
+        }
+    }
+    if (n < 3) throw new TextMarkingError("boolean", "text solid failed: glyph has no outline");
+    const nlen = Math.hypot(sx, sy, sz);
+    if (nlen < 1e-6) throw new TextMarkingError("boolean", "text solid failed: glyph has no depth");
+    const nx = sx / nlen;
+    const ny = sy / nlen;
+    const nz = sz / nlen;
+    ox /= n;
+    oy /= n;
+    oz /= n;
+    const hx = Math.abs(nz) < 0.9 ? 0 : 1;
+    const hz = Math.abs(nz) < 0.9 ? 1 : 0;
+    let ux = -hz * ny;
+    let uy = hz * nx - hx * nz;
+    let uz = hx * ny;
+    const ul = Math.hypot(ux, uy, uz) || 1;
+    ux /= ul;
+    uy /= ul;
+    uz /= ul;
+    const vx = ny * uz - nz * uy;
+    const vy = nz * ux - nx * uz;
+    const vz = nx * uy - ny * ux;
+    const project = (p: { x: number; y: number; z: number }): [number, number] => {
+        const dx = p.x - ox;
+        const dy = p.y - oy;
+        const dz = p.z - oz;
+        return [dx * ux + dy * uy + dz * uz, dx * vx + dy * vy + dz * vz];
+    };
+    const scalar = (p: { x: number; y: number; z: number }) =>
+        (p.x - ox) * nx + (p.y - oy) * ny + (p.z - oz) * nz;
+    let sMin = Infinity;
+    let sMax = -Infinity;
+    const consider = (p: { x: number; y: number; z: number }) => {
+        const s = scalar(p);
+        if (s < sMin) sMin = s;
+        if (s > sMax) sMax = s;
+    };
+    for (const g of groups) {
+        for (const loop of [g.outer, ...g.holes]) {
+            for (const p of loop) {
+                consider(mapPoint(p, 0));
+                consider(mapPoint(p, 1));
+            }
+        }
+    }
+    const height = sMax - sMin;
+    if (!(height > 1e-3)) throw new TextMarkingError("boolean", "text solid failed: glyph has no depth");
+    const contours: Array<Array<[number, number]>> = [];
+    const pushLoop = (loop: TextGlyphGroup["outer"], hole: boolean) => {
+        let poly = dedupLoop(loop.map((p) => project(mapPoint(p, 0.5))));
+        if (poly.length < 3) {
+            throw new TextMarkingError("boolean", "text solid failed: glyph collapsed");
+        }
+        const area = signedLoopArea(poly);
+        if (Math.abs(area) < 1e-4) {
+            throw new TextMarkingError("boolean", "text solid failed: glyph collapsed");
+        }
+        if (hole ? area > 0 : area < 0) poly = poly.slice().reverse();
+        contours.push(poly);
+    };
+    for (const g of groups) {
+        pushLoop(g.outer, false);
+        for (const hole of g.holes) pushLoop(hole, true);
+    }
+    const cs = new mod.CrossSection(contours, "Positive");
+    let extruded: ManifoldHandle | null = null;
+    try {
+        extruded = cs.extrude(height);
+        const mesh = extruded.getMesh();
+        const nProp = mesh.numProp || 3;
+        const nVert = mesh.vertProperties.length / nProp;
+        const vertProperties = new Float32Array(nVert * 3);
+        for (let i = 0; i < nVert; i++) {
+            const x = mesh.vertProperties[i * nProp]!;
+            const y = mesh.vertProperties[i * nProp + 1]!;
+            const z = mesh.vertProperties[i * nProp + 2]! + sMin;
+            vertProperties[i * 3] = ox + ux * x + vx * y + nx * z;
+            vertProperties[i * 3 + 1] = oy + uy * x + vy * y + ny * z;
+            vertProperties[i * 3 + 2] = oz + uz * x + vz * y + nz * z;
+        }
+        const triVerts = Uint32Array.from(mesh.triVerts);
+        if (triVerts.length < 12) {
+            throw new TextMarkingError("boolean", "text solid failed: prism is empty");
+        }
+        const solid = new mod.Manifold(new mod.Mesh({ numProp: 3, vertProperties, triVerts, tolerance: 0 }));
+        const status = solid.status?.() ?? "NoError";
+        if (status !== "NoError") {
+            solid.delete();
+            throw new TextMarkingError("stl-gate", `manifold status ${status}`);
+        }
+        return solid;
+    } finally {
+        extruded?.delete();
+        cs.delete();
+    }
+}
+
+/**
+ * Merge corners that land in the same 0.0001 mm cell and drop the needles and
+ * duplicate faces that cell creates. Normals are ignored — CSG corners share a
+ * position, not a normal. Longer edges are not collapsed.
+ */
+function weldQuantumPositions(geo: BufferGeometry): BufferGeometry {
+    const pos = geo.getAttribute("position");
+    const index = geo.getIndex();
+    if (!pos || !index) return geo;
+    const q = 1e4;
+    const keyOf = (i: number) =>
+        `${Math.round(pos.getX(i) * q)}|${Math.round(pos.getY(i) * q)}|${Math.round(pos.getZ(i) * q)}`;
+    const canon = new Map<string, number>();
+    const map = new Int32Array(pos.count);
+    let merged = false;
+    for (let i = 0; i < pos.count; i++) {
+        const k = keyOf(i);
+        const c = canon.get(k);
+        if (c === undefined) {
+            canon.set(k, i);
+            map[i] = i;
+        } else {
+            map[i] = c;
+            merged = true;
+        }
+    }
+    if (!merged) return geo;
+    const kept: number[] = [];
+    const seen = new Set<string>();
+    for (let t = 0; t + 2 < index.count; t += 3) {
+        const a = map[index.getX(t)]!;
+        const b = map[index.getX(t + 1)]!;
+        const c = map[index.getX(t + 2)]!;
+        if (a === b || b === c || c === a) continue;
+        const s0 = a < b ? (a < c ? a : c) : b < c ? b : c;
+        const s2 = a > b ? (a > c ? a : c) : b > c ? b : c;
+        const s1 = a + b + c - s0 - s2;
+        const sig = `${s0},${s1},${s2}`;
+        if (seen.has(sig)) continue;
+        seen.add(sig);
+        kept.push(a, b, c);
+    }
+    const out = new BufferGeometry();
+    out.setAttribute("position", pos.clone());
+    out.setIndex(kept);
+    out.computeVertexNormals();
+    out.computeBoundingBox();
+    out.userData = { ...geo.userData };
+    return out;
+}
+
+/**
+ * Collapse only the short edge of a triangle that still crosses another after
+ * the prism boolean. Edges at or above 0.2 mm stay. Reverts unless the mesh
+ * stays index-watertight and the text region has no real intersections.
+ */
+function collapseCrossingSlivers(
+    geo: BufferGeometry,
+    groups: TextGlyphGroup[],
+    mapPoint: MapTextPoint,
+): BufferGeometry {
+    const region = soupRegionAabbFromGlyphGroups(groups, mapPoint, TEXT_SI_REGION_PAD_MM);
+    if (!region) return geo;
+    const hits = countSoupSelfIntersectionsInRegion(geo, region, TEXT_WELD_MM);
+    if (hits.real === 0) return geo;
+    const pos = geo.getAttribute("position");
+    const index = geo.getIndex();
+    if (!pos || !index) return geo;
+    const at = new Map<string, number>();
+    const keyOf = (i: number) => `${pos.getX(i)}|${pos.getY(i)}|${pos.getZ(i)}`;
+    for (let i = 0; i < pos.count; i++) if (!at.has(keyOf(i))) at.set(keyOf(i), i);
+    const parent = new Int32Array(pos.count);
+    for (let i = 0; i < pos.count; i++) parent[i] = i;
+    const find = (i: number): number => {
+        let x = i;
+        while (parent[x] !== x) x = parent[x]!;
+        return x;
+    };
+    const link = (a: number, b: number) => {
+        const pa = find(a);
+        const pb = find(b);
+        if (pa !== pb) parent[pb] = pa;
+    };
+    const idOf = (p: { x: number; y: number; z: number }) => at.get(`${p.x}|${p.y}|${p.z}`);
+    let linked = false;
+    for (const pair of hits.pairs) {
+        for (const tri of [pair.a, pair.b]) {
+            const ids = tri.map((p) => idOf(p));
+            if (ids.some((id) => id === undefined)) continue;
+            const [i0, i1, i2] = ids as number[];
+            const edges: Array<[number, number]> = [
+                [i0, i1],
+                [i1, i2],
+                [i2, i0],
+            ];
+            let best = 0.2;
+            let ea = -1;
+            let eb = -1;
+            for (const [a, b] of edges) {
+                const d = Math.hypot(
+                    pos.getX(a) - pos.getX(b),
+                    pos.getY(a) - pos.getY(b),
+                    pos.getZ(a) - pos.getZ(b),
+                );
+                if (d < best) {
+                    best = d;
+                    ea = a;
+                    eb = b;
+                }
+            }
+            if (ea >= 0) {
+                link(ea, eb);
+                linked = true;
+            }
+        }
+    }
+    if (!linked) return geo;
+    const kept: number[] = [];
+    const seen = new Set<string>();
+    for (let t = 0; t + 2 < index.count; t += 3) {
+        const a = find(index.getX(t));
+        const b = find(index.getX(t + 1));
+        const c = find(index.getX(t + 2));
+        if (a === b || b === c || c === a) continue;
+        const s0 = a < b ? (a < c ? a : c) : b < c ? b : c;
+        const s2 = a > b ? (a > c ? a : c) : b > c ? b : c;
+        const sig = `${s0},${a + b + c - s0 - s2},${s2}`;
+        if (seen.has(sig)) continue;
+        seen.add(sig);
+        kept.push(a, b, c);
+    }
+    const out = new BufferGeometry();
+    out.setAttribute("position", pos.clone());
+    out.setIndex(kept);
+    out.computeVertexNormals();
+    out.computeBoundingBox();
+    out.userData = { ...geo.userData };
+    if (!indexedWatertight(out) || countSoupSelfIntersectionsInRegion(out, region, TEXT_WELD_MM).real > 0) {
+        out.dispose();
+        return geo;
+    }
+    return out;
+}
+
+/**
+ * Hybrid hosts: exact-index seam weld, manifold status OK, then one manifold-3d
+ * prism boolean. No soup boolean and no QEM/angle refine. Corners that share a
+ * 0.0001 mm cell are welded, and a crossing triangle's short edge (under 0.2 mm)
+ * is collapsed only when that leaves the region intersection-free and watertight.
+ */
+async function booleanHybridText(
+    mod: ManifoldWasm,
+    host: BufferGeometry,
+    groups: TextGlyphGroup[],
+    mapPoint: MapTextPoint,
+    op: "add" | "subtract",
+    rebind?: (geo: BufferGeometry) => MapTextPoint,
+): Promise<BufferGeometry> {
+    const welded = weldHybridHostExact(host);
+    let hostMan: ManifoldHandle | null = null;
+    let tool: ManifoldHandle | null = null;
+    let result: ManifoldHandle | null = null;
+    try {
+        await assertExactManifold(welded);
+        const mapped = rebind ? rebind(welded) : mapPoint;
+        hostMan = geometryToManifold(mod, welded, "host", true);
+        tool = hybridPrismCutter(mod, groups, mapped);
+        result = op === "add" ? hostMan.add(tool) : hostMan.subtract(tool);
+        const status = result.status?.() ?? "NoError";
+        if (status !== "NoError") {
+            throw new TextMarkingError("stl-gate", `manifold status ${status}`);
+        }
+        const raw = manifoldToGeometry(result, host.userData);
+        const weldedOut = weldQuantumPositions(raw);
+        if (weldedOut !== raw) raw.dispose();
+        const collapsed = collapseCrossingSlivers(weldedOut, groups, mapped);
+        if (collapsed !== weldedOut) weldedOut.dispose();
+        // Face/column counters are the wall loft's. Text does not retessellate them.
+        collapsed.userData = { ...collapsed.userData, columnQualityFromHost: true };
+        return collapsed;
+    } finally {
+        result?.delete();
+        tool?.delete();
+        hostMan?.delete();
+        if (welded !== host) welded.dispose();
+    }
+}
+
 /** Single manifold-3d WASM boolean. `op` add = emboss, subtract = engrave. */
 export async function booleanTextSolid(
     host: BufferGeometry,
@@ -1697,6 +2097,9 @@ export async function booleanTextSolid(
     sidewallRings?: number,
 ): Promise<BufferGeometry> {
     const mod = await loadWasm();
+    if ((host.userData as { wallStyle?: string }).wallStyle === "hybrid") {
+        return booleanHybridText(mod, host, groups, mapPoint, op, rebind);
+    }
     const mappedOrig = rebind ? rebind(host) : mapPoint;
     const hostFix = repairHostBand(host, groups, mappedOrig, TEXT_HOST_SI_PAD_MM);
     const hostWork = hostFix.geo;

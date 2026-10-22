@@ -32,6 +32,13 @@ export function textForbiddenZone(detail: string): TextMarkingError {
     return new TextMarkingError("forbidden-zone", `placement is in a forbidden zone: ${detail}`);
 }
 
+/** Shown when no station along a hybrid wall keeps the glyph 1.5 mm off the rim seam. */
+export const HYBRID_SEAM_OVERLAP_MESSAGE = "Text overlaps the hybrid wall transition; move or shorten it";
+
+export function textHybridSeamOverlap(): TextMarkingError {
+    return new TextMarkingError("hybrid-seam", HYBRID_SEAM_OVERLAP_MESSAGE);
+}
+
 export function textTooThinRemaining(): TextMarkingError {
     return new TextMarkingError("thickness", "remaining thickness under engraving is below 1.0 mm");
 }

@@ -12,6 +12,7 @@ import {
     TEXT_BOTTOM_INSET_MM,
     TEXT_CAP,
     TEXT_FILLET_DIHEDRAL_DEG,
+    TEXT_HYBRID_SEAM_CLEARANCE_MM,
     TEXT_NORMAL_SMOOTH_MM,
     TEXT_REMAINING_MIN_MM,
     TEXT_TRIMLINE_RIM_BAND_MM,
@@ -19,7 +20,13 @@ import {
     TEXT_WALL_EDGE_CLEARANCE_MM,
     TEXT_WALL_MIN_THICK_MM,
 } from "./constants";
-import { TextMarkingError, textDoesNotFit, textForbiddenZone, textTooThinRemaining } from "./errors";
+import {
+    TextMarkingError,
+    textDoesNotFit,
+    textForbiddenZone,
+    textHybridSeamOverlap,
+    textTooThinRemaining,
+} from "./errors";
 import { type MapTextPoint, planarBottomMap } from "./solid";
 import type { FlattenedText, TextApplyMeta, TextMarking, TextSurface, TextXy } from "./types";
 
@@ -897,6 +904,85 @@ function glyphsTowardHigherU(flat: FlattenedText, run: WallStation[]): Flattened
     return { ...flat, groups, centroids };
 }
 
+export interface TextPlacementClamp {
+    /** Placement u after the seam clamp. The preview guide uses this. */
+    u: number;
+    requestedU: number;
+    /** Arc-length shift along the wall (mm). Positive is toward higher s. */
+    alongMm: number;
+    /** Extra drop from the rim seam (mm). Cap height is unchanged. */
+    seamInsetMm: number;
+}
+
+function isHybridWall(geo: BufferGeometry): boolean {
+    return (geo.userData as { wallStyle?: string }).wallStyle === "hybrid";
+}
+
+function rimSeamLoop(geo: BufferGeometry): Array<{ x: number; y: number; z: number }> {
+    const frames = (geo.userData as { wallFrames?: Array<{ R: { x: number; y: number; z: number } }> })
+        .wallFrames;
+    if (!frames || frames.length < 3) return [];
+    return frames.map((f) => ({ x: f.R.x, y: f.R.y, z: f.R.z }));
+}
+
+/**
+ * Nearest arc length in [lo, hi] where `clears` is true, measured from `requested`.
+ * Samples every `stepMm`. Returns null when the whole run stays inside the seam band.
+ */
+export function nearestClearStation(
+    lo: number,
+    hi: number,
+    requested: number,
+    clears: (s: number) => boolean,
+    stepMm = 1,
+): number | null {
+    if (!(hi + 1e-6 >= lo)) return null;
+    const origin = Math.max(lo, Math.min(hi, requested));
+    if (clears(origin)) return origin;
+    const step = Math.max(0.25, stepMm);
+    const steps = Math.max(1, Math.ceil((hi - lo) / step));
+    for (let i = 1; i <= steps; i++) {
+        const dist = i * step;
+        const candidates = [origin - dist, origin + dist];
+        let chosen: number | null = null;
+        let bestD = Infinity;
+        for (const raw of candidates) {
+            if (raw < lo - 1e-6 || raw > hi + 1e-6) continue;
+            const sMid = Math.max(lo, Math.min(hi, raw));
+            if (!clears(sMid)) continue;
+            const d = Math.abs(sMid - requested);
+            if (d < bestD - 1e-9) {
+                bestD = d;
+                chosen = sMid;
+            }
+        }
+        if (chosen != null) return chosen;
+    }
+    return null;
+}
+
+function distToClosedLoop3(
+    p: { x: number; y: number; z: number },
+    loop: Array<{ x: number; y: number; z: number }>,
+): number {
+    let best = Infinity;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const ez = b.z - a.z;
+        const len2 = ex * ex + ey * ey + ez * ez;
+        const t =
+            len2 > 1e-18
+                ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey + (p.z - a.z) * ez) / len2))
+                : 0;
+        const d = Math.hypot(p.x - (a.x + ex * t), p.y - (a.y + ey * t), p.z - (a.z + ez * t));
+        if (d < best) best = d;
+    }
+    return best;
+}
+
 export function placeWallText(
     geo: BufferGeometry,
     ctx: HostTextContext,
@@ -907,6 +993,7 @@ export function placeWallText(
     rebind: (geo: BufferGeometry) => MapTextPoint;
     map: MapTextPoint;
     meta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm" | "wallUMin" | "wallUMax">;
+    placementClamp: TextPlacementClamp | null;
 } {
     const run = stationsForSurface(ctx, marking.surface);
     if (run.length < 2) throw textForbiddenZone("no lateral wall stations");
@@ -988,13 +1075,84 @@ export function placeWallText(
         }
     }
     const ySpan = Math.max(1e-3, yMax - yMin);
+    let seamInsetMm = 0;
+    let placementClamp: TextPlacementClamp | null = null;
+    const rim = isHybridWall(geo) ? rimSeamLoop(geo) : [];
+    if (rim.length >= 3) {
+        const wall = createOuterWallSampler(geo, run);
+        const glyphs = flat.groups.flatMap((g) => g.outer);
+        const off0 = marking.mode === "engrave" ? -marking.depthMm : -TEXT_BOOLEAN_OUTSET_MM;
+        const off1 = marking.mode === "engrave" ? TEXT_BOOLEAN_OUTSET_MM : marking.heightMm;
+        const heightAt = (st: WallStation, y: number, inset: number): number => {
+            const h = Math.max(1e-6, st.R.z - st.B.z);
+            const usableBot = filletOf(st) + TEXT_WALL_EDGE_CLEARANCE_MM;
+            const usableTop = Math.max(usableBot + 0.5, h - TEXT_TRIMLINE_RIM_BAND_MM - inset);
+            const usable = Math.max(1e-3, usableTop - usableBot);
+            const yScale = Math.min(1, usable / ySpan);
+            const slack = Math.max(0, usable - ySpan * yScale);
+            const nudge = Math.max(-slack / 2, Math.min(slack / 2, marking.nudgeAcrossMm ?? 0));
+            return usableBot + slack / 2 + nudge + (y - yMin) * yScale;
+        };
+        const fitsInset = (sMid: number, inset: number): boolean => {
+            let room = Infinity;
+            for (let i = 0; i <= 8; i++) {
+                const st = sampleAlong(run, sMid - half + (2 * half * i) / 8);
+                const usable = st.heightMm - filletOf(st) - TEXT_WALL_EDGE_CLEARANCE_MM - inset;
+                if (usable < room) room = usable;
+            }
+            return room + 1e-6 >= flat.capHeightMm;
+        };
+        const minSeam = (sMid: number, inset: number): number => {
+            let min = Infinity;
+            const sA = sMid - half;
+            for (const p of glyphs) {
+                const st = sampleAlong(run, sA + p.x);
+                const hit = wall.at(sA + p.x, heightAt(st, p.y, inset));
+                const nlen = Math.hypot(hit.n.x, hit.n.y, hit.n.z) || 1;
+                for (const t of [0, 1]) {
+                    const off = off0 + (off1 - off0) * t;
+                    const d = distToClosedLoop3(
+                        {
+                            x: hit.p.x + (hit.n.x / nlen) * off,
+                            y: hit.p.y + (hit.n.y / nlen) * off,
+                            z: hit.p.z + (hit.n.z / nlen) * off,
+                        },
+                        rim,
+                    );
+                    if (d < min) min = d;
+                }
+            }
+            return min;
+        };
+        const clear = TEXT_HYBRID_SEAM_CLEARANCE_MM;
+        const clearsAlong = (sMid: number): boolean => fitsInset(sMid, 0) && minSeam(sMid, 0) + 1e-6 >= clear;
+        // Shift along the wall first. Dropping the cap is not a substitute, and
+        // the size stays put. Throw only when every station still crosses the seam.
+        if (!clearsAlong(bestS)) {
+            const chosenS = nearestClearStation(lo, hi, requested, clearsAlong, 1);
+            if (chosenS == null) throw textHybridSeamOverlap();
+            bestS = chosenS;
+            seamInsetMm = 0;
+            placementClamp = {
+                u: sampleAlong(run, bestS).u,
+                requestedU: atU.u,
+                alongMm: bestS - requested,
+                seamInsetMm,
+            };
+        }
+    }
     const sMid = bestS;
     const s0 = sMid - half;
     const s1 = sMid + half;
     let minUsableH = Infinity;
     for (let i = 0; i <= 16; i++) {
         const st = sampleAlong(run, s0 + ((s1 - s0) * i) / 16);
-        const usable = st.heightMm - filletOf(st) - TEXT_WALL_EDGE_CLEARANCE_MM - TEXT_TRIMLINE_RIM_BAND_MM;
+        const usable =
+            st.heightMm -
+            filletOf(st) -
+            TEXT_WALL_EDGE_CLEARANCE_MM -
+            TEXT_TRIMLINE_RIM_BAND_MM -
+            seamInsetMm;
         if (usable < minUsableH) minUsableH = usable;
     }
     if (minUsableH + 1e-6 < flat.capHeightMm) {
@@ -1005,7 +1163,7 @@ export function placeWallText(
     const heightOf = (p: TextXy, st: WallStation): number => {
         const h = Math.max(1e-6, st.R.z - st.B.z);
         const usableBot = filletOf(st) + TEXT_WALL_EDGE_CLEARANCE_MM;
-        const usableTop = Math.max(usableBot + 0.5, h - TEXT_TRIMLINE_RIM_BAND_MM);
+        const usableTop = Math.max(usableBot + 0.5, h - TEXT_TRIMLINE_RIM_BAND_MM - seamInsetMm);
         const usable = Math.max(1e-3, usableTop - usableBot);
         const yScale = Math.min(1, usable / ySpan);
         const slack = Math.max(0, usable - ySpan * yScale);
@@ -1084,6 +1242,7 @@ export function placeWallText(
         map,
         rebind: makeMap,
         meta: { centroids, mappedWidthMm: s1 - s0, wallUMin, wallUMax },
+        placementClamp,
     };
 }
 
@@ -1135,6 +1294,8 @@ export interface TextGuide {
     lateral: TextGuideStation[];
     medial: TextGuideStation[];
     outline: Array<{ x: number; y: number }>;
+    /** Set when hybrid text was shifted along the wall to clear the rim seam. */
+    placementClamp?: TextPlacementClamp | null;
 }
 
 /** Compact placement frame for the viewer guide. Plain data so it survives the worker. */
@@ -1168,4 +1329,13 @@ export function buildTextGuide(geo: BufferGeometry): TextGuide {
         medial: pack("medial"),
         outline: ctx.outline.filter((_, i) => i % step === 0).map((p) => ({ x: p.x, y: p.y })),
     };
+}
+
+/** Copy the seam clamp onto the viewer guide so the placement line shows the shift. */
+export function guideWithPlacementClamp(
+    guide: TextGuide,
+    clamp: TextPlacementClamp | null | undefined,
+): TextGuide {
+    if (!clamp) return guide;
+    return { ...guide, placementClamp: clamp };
 }

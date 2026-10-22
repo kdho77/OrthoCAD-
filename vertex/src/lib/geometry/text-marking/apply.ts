@@ -14,10 +14,16 @@ import {
     TEXT_WALL_FEATURE_MIN_MM,
 } from "./constants";
 import { flattenText } from "./contours";
-import { TextMarkingError } from "./errors";
+import { HYBRID_SEAM_OVERLAP_MESSAGE, TextMarkingError } from "./errors";
 import { loadTextFont } from "./font";
 import { assertTextPrintGates } from "./gates";
-import { bandWallHeightMm, extractHostTextContext, placeBottomText, placeWallText } from "./place";
+import {
+    bandWallHeightMm,
+    extractHostTextContext,
+    placeBottomText,
+    placeWallText,
+    type TextPlacementClamp,
+} from "./place";
 import type { TextApplyContext, TextApplyMeta, TextMarking } from "./types";
 import { assertTextMarkingInRange } from "./validate";
 
@@ -36,7 +42,7 @@ function shrinkThenFlatten(
             return flat;
         } catch (e) {
             lastErr = e;
-            if (e instanceof TextMarkingError && e.code === "too-thin") throw e;
+            if (e instanceof TextMarkingError && (e.code === "too-thin" || e.code === "hybrid-seam")) throw e;
             cap = Math.max(minCap, Number((cap - 0.1).toFixed(4)));
             if (cap <= minCap + 1e-6) break;
         }
@@ -48,6 +54,19 @@ function shrinkThenFlatten(
     } catch (e) {
         throw lastErr instanceof Error ? lastErr : e;
     }
+}
+
+/**
+ * Hybrid seam overlap is a placement warning. The print solid stays the host
+ * (no text cut) and the panel shows {@link HYBRID_SEAM_OVERLAP_MESSAGE}.
+ */
+export function releaseTextHostOnHybridSeamOverlap(
+    host: BufferGeometry,
+    error: unknown,
+): BufferGeometry | null {
+    if (!(error instanceof TextMarkingError) || error.code !== "hybrid-seam") return null;
+    host.userData = { ...host.userData, textFitError: HYBRID_SEAM_OVERLAP_MESSAGE };
+    return host;
 }
 
 /**
@@ -78,6 +97,7 @@ export async function applyTextMarkingToPrintSolid(
     let map: ReturnType<typeof placeBottomText>["map"];
     let rebind: ((geo: typeof host) => typeof map) | undefined;
     let placeMeta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm" | "wallUMin" | "wallUMax">;
+    let placementClamp: TextPlacementClamp | null = null;
     if (checked.surface === "bottom") {
         placedFlat = shrinkThenFlatten(font, checked, minCap, (flat) => {
             placeBottomText(host, hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat, ctx.side);
@@ -93,19 +113,26 @@ export async function applyTextMarkingToPrintSolid(
         map = placed.map;
         placeMeta = placed.meta;
     } else {
-        placedFlat = shrinkThenFlatten(font, checked, minCap, (flat) => {
-            placeWallText(host, hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat);
-        });
-        const placed = placeWallText(
-            host,
-            hostCtx,
-            { ...checked, capHeightMm: placedFlat.capHeightMm },
-            placedFlat,
-        );
-        placedFlat = placed.flat;
-        map = placed.map;
-        rebind = placed.rebind;
-        placeMeta = placed.meta;
+        try {
+            placedFlat = shrinkThenFlatten(font, checked, minCap, (flat) => {
+                placeWallText(host, hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat);
+            });
+            const placed = placeWallText(
+                host,
+                hostCtx,
+                { ...checked, capHeightMm: placedFlat.capHeightMm },
+                placedFlat,
+            );
+            placedFlat = placed.flat;
+            map = placed.map;
+            rebind = placed.rebind;
+            placeMeta = placed.meta;
+            placementClamp = placed.placementClamp;
+        } catch (e) {
+            const released = releaseTextHostOnHybridSeamOverlap(host, e);
+            if (released) return released;
+            throw e;
+        }
     }
 
     const op = checked.mode === "emboss" ? "add" : "subtract";
@@ -144,5 +171,8 @@ export async function applyTextMarkingToPrintSolid(
         hostRepair: (result.userData as { textHostRepair?: TextApplyMeta["hostRepair"] }).textHostRepair,
     };
     assertTextPrintGates(result, meta, hostCtx.outline);
+    if (placementClamp) {
+        result.userData = { ...result.userData, textPlacementClamp: placementClamp };
+    }
     return result;
 }

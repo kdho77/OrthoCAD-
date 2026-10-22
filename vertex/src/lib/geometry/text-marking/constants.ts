@@ -69,6 +69,11 @@ export const TEXT_REGION_PAD_MM = 1;
 export const TEXT_SI_REGION_PAD_MM = 2;
 /** Host-only SI / sliver repair band (mm). */
 export const TEXT_HOST_SI_PAD_MM = 2;
+/**
+ * Hybrid wall text stays this far (mm) from the procedural-wall / top-sheet
+ * rim seam, including glyph depth or emboss height. Size is not reduced.
+ */
+export const TEXT_HYBRID_SEAM_CLEARANCE_MM = 1.5;
 /** Host edge dihedral above this is a crease, not a smooth wall–wall pair. */
 export const TEXT_HOST_SMOOTH_DIHEDRAL_DEG = 20;
 /** Fillet top: host dihedral to the plantar face drops below this (deg). */
