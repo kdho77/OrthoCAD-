@@ -2567,8 +2567,9 @@ export function applyBaseModifiers(
     const array = pos.array as Float32Array;
     const count = pos.count;
 
-    // Top/bottom classification keeps the original bottom surface stable; falls
-    // back to a normalised-height weight when no bottom can be identified.
+    // Top/bottom classification keeps the original bottom surface stable. When
+    // null (top-only sheet — no downward-facing normals), apply the full modifier
+    // delta at w=1 (same contract as wedgeW on open sheets; PR #188).
     const topFactors = classifyBaseTopFactors(base);
 
     // For explicit multi-mesh bases ("Top" + "Bottom" sub-meshes from GLB),
@@ -2781,8 +2782,10 @@ export function applyBaseModifiers(
         let w: number;
         if (isMultiMesh && topVertexCount > 0) {
             w = i < topVertexCount ? 1 : 0;
+        } else if (topFactors) {
+            w = topFactors[i]!;
         } else {
-            w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
+            w = 1;
         }
         const wedgePart = wedgeAt ? wedgeAt[i]! : 0;
         const corePart = delta[i]! - wedgePart;
