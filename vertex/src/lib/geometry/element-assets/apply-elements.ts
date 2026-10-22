@@ -19,6 +19,7 @@ import {
     quinticSmoothstep,
     resolveOutlineHalfWidth,
 } from "@/lib/geometry/height-field";
+import { SKIVE_FEATHER_MM } from "@/lib/geometry/procedural-wall/trim-curve";
 import type { PlacedElement } from "@/types";
 import { loadTransformedAssetPositions, resolvePlacedAssetContexts } from "./element-asset";
 import { gridEdgeRingMax, sampleGridBilinear } from "./height-grid";
@@ -323,6 +324,12 @@ export interface ApplyElementsOptions {
     noFlowHooks?: NoFlowHeightHooks;
     subdivide?: boolean;
     referenceForSize?: BufferGeometry | null;
+    /**
+     * 0 at and distal of a distal-skive start, 1 proximal of the 5 mm feather.
+     * Pass `SKIVE_FEATHER_MM` as `leadMm` for a met pad or met bar so the
+     * feather finishes before the taper starts. Omit on the full-length path.
+     */
+    skiveFeatherAt?: (x: number, y: number, leadMm?: number) => number;
 }
 
 /**
@@ -419,6 +426,27 @@ export async function applyElementsToTopMeshLast(
         // Open top sheets have no bottom; closed bases must not color their undersides.
         if (!topFactors || topFactors[i]! > 0.5) {
             lift[i] = Math.max(0, position.getComponent(i, thickAxis) - before[i]!);
+        }
+    }
+    const featherAt = options?.skiveFeatherAt;
+    if (featherAt) {
+        const planAxes = [0, 1, 2].filter((axis) => axis !== thickAxis);
+        for (let i = 0; i < position.count; i++) {
+            const owner = owners[i] ?? 0;
+            const kind = owner > 0 ? elements[owner - 1]?.kind : undefined;
+            const lead = kind === "met_pad" || kind === "met_bar" ? SKIVE_FEATHER_MM : 0;
+            const f = featherAt(
+                position.getComponent(i, planAxes[0]!),
+                position.getComponent(i, planAxes[1]!),
+                lead,
+            );
+            if (f >= 1 - 1e-6) continue;
+            const baseZ = before[i]!;
+            const z = position.getComponent(i, thickAxis);
+            const next = baseZ + (z - baseZ) * f;
+            position.setComponent(i, thickAxis, next);
+            lift[i] = Math.max(0, next - baseZ);
+            if (f <= 1e-6) owners[i] = 0;
         }
     }
     geometry.setAttribute(ELEMENT_LIFT_ATTRIBUTE, new BufferAttribute(lift, 1));

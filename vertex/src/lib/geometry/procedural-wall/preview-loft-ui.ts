@@ -16,7 +16,14 @@ export function wantsProceduralExportSolid(
 ): boolean {
     if (!base) return false;
     const path = (base.glbPath ?? "").replace(/^\/+/, "");
-    if (base.assetId === "sample-top" || /SAMPLE_Top\.glb$/i.test(path)) return true;
+    if (
+        base.assetId === "sample-top" ||
+        base.assetId === "sample-top-34" ||
+        base.assetId === "sample-top-sulcus" ||
+        /SAMPLE_Top(?:_34|_sulcus)?\.glb$/i.test(path)
+    ) {
+        return true;
+    }
     if (base.assetId === "stock-default" || /(?:^|\/)Default\.glb$/i.test(path)) return false;
     return (wallModel ?? "procedural") === "procedural";
 }
@@ -47,6 +54,8 @@ export function proceduralLoftReuseKey(input: {
     shoeWidth?: string;
     /** Empty when text is inactive so reuse keys stay identical. */
     textMarkingHash?: string;
+    /** Bundled top (full / 34 / sulcus). Omitted keys stay stable for full-length. */
+    topShape?: string;
 }): string {
     const parts = [
         input.side,
@@ -65,6 +74,7 @@ export function proceduralLoftReuseKey(input: {
         input.shoeWidth ?? "medium",
     ];
     if (input.textMarkingHash) parts.push(input.textMarkingHash);
+    if (input.topShape) parts.push(input.topShape);
     return sha256Hex(parts.join("|"));
 }
 
@@ -84,8 +94,9 @@ export function hashPatternPoints(points: ReadonlyArray<{ x: number; y: number; 
     return `${points.length}:${h.toString(16)}`;
 }
 
-export function autoPatternKey(mirrored: boolean, scanPattern: string): string {
-    return `sample-top:${mirrored ? "m" : "p"}:${scanPattern}`;
+export function autoPatternKey(mirrored: boolean, scanPattern: string, shape?: string | null): string {
+    const trim = shape && shape !== "full" ? `:${shape}` : "";
+    return `sample-top:${mirrored ? "m" : "p"}:${scanPattern}${trim}`;
 }
 
 export type ViewerOverlayMode = "initial" | "print";

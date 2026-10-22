@@ -238,6 +238,7 @@ export function assertInsideRim(
     pattern: PolyPoint[],
     rimPlan: PolyPoint[],
     clearanceMm = PATTERN_RIM_CLEARANCE_MM,
+    waiveClearance?: (index: number, point: PolyPoint) => boolean,
 ): void {
     if (rimPlan.length < 3) return;
     for (let i = 0; i < pattern.length; i++) {
@@ -248,6 +249,7 @@ export function assertInsideRim(
                 `[S1-PATTERN] station ${i} (${p.x.toFixed(2)},${p.y.toFixed(2)}) is outside the TopSheet rim`,
             );
         }
+        if (waiveClearance?.(i, p)) continue;
         if (d < clearanceMm - 1e-6) {
             throw new Error(
                 `[S1-PATTERN] station ${i} (${p.x.toFixed(2)},${p.y.toFixed(2)}) is ` +

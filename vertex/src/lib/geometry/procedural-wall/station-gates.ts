@@ -757,7 +757,13 @@ function repairNeighbourHeading(stations: HermiteStation[], loop: PolyPoint[], r
     }
 }
 
-export function assertPreLoftStations(stations: HermiteStation[], r1: number, r2: number): void {
+export function assertPreLoftStations(
+    stations: HermiteStation[],
+    r1: number,
+    r2: number,
+    /** Stations on a distal cut may turn harder than the side-wall heading cap. */
+    relaxHeading?: (stationIndex: number) => boolean,
+): void {
     if (stations.length < 3) {
         throw new Error("[S1-PRELOFT] station ring < 3");
     }
@@ -791,7 +797,8 @@ export function assertPreLoftStations(stations: HermiteStation[], r1: number, r2
         const h1 = columnHeading(nxt).h;
         const d = Math.max(-1, Math.min(1, col.h.x * h1.x + col.h.y * h1.y));
         const head = (Math.acos(d) * 180) / Math.PI;
-        if (head > PRELOFT_HEADING_MAX_DEG + 1e-3) {
+        const onCut = relaxHeading?.(i) || relaxHeading?.((i + 1) % stations.length);
+        if (!onCut && head > PRELOFT_HEADING_MAX_DEG + 1e-3) {
             bad.push(`heading[${i}-${(i + 1) % stations.length}]=${head.toFixed(2)}>15`);
         }
     }

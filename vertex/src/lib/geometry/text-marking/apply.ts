@@ -108,17 +108,43 @@ export async function applyTextMarkingToPrintSolid(
         placeMeta = placed.meta;
     }
 
-    const op = checked.mode === "emboss" ? "add" : "subtract";
     const groups = placedFlat.groups;
+    let depthMm = checked.depthMm;
+    let heightMm = checked.heightMm;
+    let textMap = map;
+    if (ctx.skiveFeatherAt) {
+        const featherAt = ctx.skiveFeatherAt;
+        let minF = 1;
+        for (const group of groups) {
+            for (const p of group.outer) {
+                const w = map(p, 0);
+                minF = Math.min(minF, featherAt(w.x, w.y));
+            }
+        }
+        if (!(minF > 1e-6)) {
+            host.userData = {
+                ...host.userData,
+                textFitError: "clipped proximal of the skive",
+            };
+            return host;
+        }
+        if (minF < 1) {
+            depthMm *= minF;
+            heightMm *= minF;
+            const scale = minF;
+            textMap = (p, t) => map(p, t * scale);
+        }
+    }
+    const op = checked.mode === "emboss" ? "add" : "subtract";
     const result =
         checked.surface === "bottom"
-            ? await engraveBottomPlanar(host, groups, checked.depthMm)
-            : await booleanTextSolid(host, groups, map, op, rebind);
+            ? await engraveBottomPlanar(host, groups, depthMm)
+            : await booleanTextSolid(host, groups, textMap, op, rebind);
     const poke = isSideText(checked.surface) ? TEXT_BOOLEAN_OUTSET_MM : TEXT_BOOLEAN_EPS_MM;
-    const span = checked.mode === "engrave" ? checked.depthMm + poke : checked.heightMm + poke;
+    const span = checked.mode === "engrave" ? depthMm + poke : heightMm + poke;
     const tSurface = isSideText(checked.surface)
         ? checked.mode === "engrave"
-            ? checked.depthMm / Math.max(1e-9, span)
+            ? depthMm / Math.max(1e-9, span)
             : poke / Math.max(1e-9, span)
         : poke / Math.max(1e-9, span);
     const bottomOutline = (result.userData as { bottomOutlineWorld?: BottomOutlineWorld[] })
@@ -126,14 +152,14 @@ export async function applyTextMarkingToPrintSolid(
     const outlineWorld =
         bottomOutline ??
         groups.map((g) => ({
-            outer: g.outer.map((p) => map(p, tSurface)),
-            holes: g.holes.map((h) => h.map((p) => map(p, tSurface))),
+            outer: g.outer.map((p) => textMap(p, tSurface)),
+            holes: g.holes.map((h) => h.map((p) => textMap(p, tSurface))),
         }));
     const meta: TextApplyMeta = {
         surface: checked.surface,
         mode: checked.mode,
-        depthMm: checked.mode === "engrave" ? checked.depthMm : 0,
-        heightMm: checked.mode === "emboss" ? checked.heightMm : 0,
+        depthMm: checked.mode === "engrave" ? depthMm : 0,
+        heightMm: checked.mode === "emboss" ? heightMm : 0,
         capHeightMm: placedFlat.capHeightMm,
         advanceMm: placedFlat.advanceMm,
         centroids: placeMeta.centroids,

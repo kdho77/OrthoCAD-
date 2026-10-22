@@ -6,6 +6,9 @@ import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import {
+    type BundledTopShape,
+    bundledTopShapeFromBase,
+    bundledTopTemplate,
     SAMPLE_TOP_ASSET_ID,
     SAMPLE_TOP_GLB_PATH,
     SAMPLE_TOP_NAME,
@@ -146,7 +149,7 @@ export function stockBaseNeedsServerResolution(base: DesignBase): boolean {
     // "Templates/Default.glb". The Supabase Storage key can legitimately match the
     // bundled placeholder name, so the path string alone must NOT mark it as local.
     if (!base.offlinePlaceholder && base.glbPath && hasAuthoritativeStockUrl(base)) return false;
-    if (isSampleTopStockBase(base)) return false;
+    if (isSampleTopStockBase(base) || bundledTopShapeFromBase(base)) return false;
     if (base.offlinePlaceholder && base.glbPath && isLocalPlaceholderGlbPath(base.glbPath)) return false;
     if (base.offlinePlaceholder) return true;
     if (base.assetId === LEGACY_DEFAULT_STOCK_BASE_ID || base.assetId.startsWith("stock-")) return true;
@@ -165,8 +168,8 @@ export function stockBaseNeedsServerResolution(base: DesignBase): boolean {
 function baseRequiresDefaultStockResolution(base: DesignBase): boolean {
     // A user custom-library prefab loads via the library store — never override it.
     if (base.source === "custom") return false;
-    // Bundled SAMPLE_Top is local — never fetch Default.glb for it.
-    if (isSampleTopStockBase(base)) return false;
+    // Bundled SAMPLE_Top and its trims are local — never fetch Default.glb for them.
+    if (isSampleTopStockBase(base) || bundledTopShapeFromBase(base)) return false;
     // Legacy Default.glb must be swapped for SAMPLE_Top on the default load path.
     if (isBuiltinDefaultStockBase(base)) return true;
     // Offline fallback bases are intentionally local — leave them alone.
@@ -222,7 +225,7 @@ export function sanitizeStockBaseForServerMode(base: DesignBase): DesignBase {
     if (!isApiConfigured() || !isStockDesignBase(base)) return base;
     if (base.resolutionFallback) return base;
 
-    if (isSampleTopStockBase(base)) return base;
+    if (isSampleTopStockBase(base) || bundledTopShapeFromBase(base)) return base;
     const isPlaceholderId =
         base.assetId === LEGACY_DEFAULT_STOCK_BASE_ID || base.assetId.startsWith("stock-");
     // Real UUID rows that already carry glbPath + https URL are fully resolved.
@@ -414,12 +417,18 @@ export function sanitizeDesignStockBases(design: DesignState): DesignState {
  * Never pending, never fetched from the stock_bases "Default Stock Base" row.
  */
 export function getSampleTopStockBase(): DesignBase {
+    return bundledTopStockBase("full");
+}
+
+/** Bundled full-length, 3/4, or sulcus top. Local, never the server Default row. */
+export function bundledTopStockBase(shape: BundledTopShape): DesignBase {
+    const template = bundledTopTemplate(shape);
     return {
-        assetId: SAMPLE_TOP_ASSET_ID,
-        name: SAMPLE_TOP_NAME,
+        assetId: template.assetId,
+        name: template.name,
         source: "stock",
-        glbPath: SAMPLE_TOP_GLB_PATH,
-        url: SAMPLE_TOP_PUBLIC_PATH,
+        glbPath: template.glbPath,
+        url: template.publicPath,
         primarySide: DEFAULT_STOCK_PRIMARY_SIDE,
         offlinePlaceholder: true,
         resolutionFallback: true,
@@ -466,6 +475,8 @@ export function replaceBuiltinDefaultWithSampleTop(design: DesignState): DesignS
 /** Sidebar / viewer label — never "Default Stock Base". */
 export function stockBaseDisplayName(base: DesignBase | null | undefined): string {
     if (!base) return SAMPLE_TOP_NAME;
+    const shape = bundledTopShapeFromBase(base);
+    if (shape === "34" || shape === "sulcus") return bundledTopTemplate(shape).name;
     if (isSampleTopStockBase(base) || isBuiltinDefaultStockBase(base)) return SAMPLE_TOP_NAME;
     const bare = (base.name ?? "").replace(/\s*\((Left|Right)\)\s*$/i, "").trim();
     return bare || SAMPLE_TOP_NAME;
@@ -753,12 +764,11 @@ async function resolveStockFetchUrl(base: DesignBase): Promise<string | null> {
     const glbPath = (base.glbPath && base.glbPath.trim()) || BUILTIN_DEFAULT_STOCK.glbPath;
     stockGlbLog(`resolveStockFetchUrl() glb_path = "${glbPath}" (assetId=${base.assetId})`);
 
-    if (
-        isSampleTopStockBase({ assetId: base.assetId, glbPath, name: base.name }) ||
-        isBuiltinDefaultStockBase({ assetId: base.assetId, glbPath, name: base.name })
-    ) {
+    if (isBuiltinDefaultStockBase({ assetId: base.assetId, glbPath, name: base.name })) {
         return SAMPLE_TOP_PUBLIC_PATH;
     }
+    const shape = bundledTopShapeFromBase({ assetId: base.assetId, glbPath });
+    if (shape) return bundledTopTemplate(shape).publicPath;
 
     const url = getStockBasePublicUrl(glbPath);
     if (url) {

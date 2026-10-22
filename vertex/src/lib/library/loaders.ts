@@ -459,12 +459,26 @@ export function mirrorGeometry(geometry: THREE.BufferGeometry): THREE.BufferGeom
  * is a reflection (odd permutation) the triangle winding is reversed so normals
  * stay outward.
  */
+export interface FootprintFrameLock {
+    lengthAxis: 0 | 1 | 2;
+    widthAxis: 0 | 1 | 2;
+    thickAxis: 0 | 1 | 2;
+    lengthMin: number;
+    widthCenter: number;
+}
+
 export interface ReorientToFootprintOptions {
     /**
      * Top-only input: keep the author's vertical values so the pattern plane
      * can sit at z = 0. Do not subtract the TopSheet min Z.
      */
     preserveAuthorZ?: boolean;
+    /**
+     * Use a known frame instead of detecting axes from the bbox. An identity
+     * lock keeps a mesh that is already in the footprint frame from being
+     * recentered when the toe is cut off.
+     */
+    lock?: FootprintFrameLock;
 }
 
 export function reorientToFootprintFrame(
@@ -484,15 +498,17 @@ export function reorientToFootprintFrame(
 
     // Sort axes by extent: [thickness (smallest), width (middle), length (largest)].
     const byExtent = [0, 1, 2].sort((a, b) => size[a]! - size[b]!);
-    const thickAxis = byExtent[0]!;
-    const widthAxis = byExtent[1]!;
-    const lengthAxis = byExtent[2]!;
-    const widthCenter = min[widthAxis]! + size[widthAxis]! / 2;
+    const lock = opts?.lock;
+    const thickAxis = lock?.thickAxis ?? byExtent[0]!;
+    const widthAxis = lock?.widthAxis ?? byExtent[1]!;
+    const lengthAxis = lock?.lengthAxis ?? byExtent[2]!;
+    const widthCenter = lock?.widthCenter ?? min[widthAxis]! + size[widthAxis]! / 2;
+    const lengthMin = lock?.lengthMin ?? min[lengthAxis]!;
 
     const count = src.count;
     const out = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
-        out[i * 3] = src.getComponent(i, lengthAxis) - min[lengthAxis]!; // X = length, 0..len
+        out[i * 3] = src.getComponent(i, lengthAxis) - lengthMin; // X = length, 0..len
         out[i * 3 + 1] = src.getComponent(i, widthAxis) - widthCenter; // Y = width, centered
         out[i * 3 + 2] = opts?.preserveAuthorZ
             ? src.getComponent(i, thickAxis)

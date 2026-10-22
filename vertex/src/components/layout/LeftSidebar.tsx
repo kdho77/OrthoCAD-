@@ -27,7 +27,11 @@ import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
 import { ScanImport } from "@/features/scans/ScanImport";
 import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
 import { stockBaseDisplayName } from "@/lib/geometry/base-asset";
-import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-id";
+import {
+    BUNDLED_TOP_TEMPLATES,
+    bundledTopShapeFromBase,
+    SAMPLE_TOP_NAME,
+} from "@/lib/geometry/procedural-wall/sample-top-id";
 import {
     DEFAULT_US_MEN_SIZE,
     footLengthMmOptions,
@@ -78,6 +82,7 @@ export function LeftSidebar({
         setShoeSizeSystem,
         setUkShoeSize,
         setFootLengthMm,
+        setBundledTopShape,
     } = useDesignStore();
     const customPrefabs = useCustomLibraryStore((s) => s.customPrefabs);
     const libraryLoading = useCustomLibraryStore((s) => s.loading);
@@ -180,6 +185,37 @@ export function LeftSidebar({
                             ) || SAMPLE_TOP_NAME}{" "}
                             · Prefab 3D / Full Contact only
                         </p>
+                    ) : null}
+                    {usingStockBase ? (
+                        <div className="mb-1.5 grid grid-cols-3 gap-1">
+                            {BUNDLED_TOP_TEMPLATES.map((template) => {
+                                const active =
+                                    (bundledTopShapeFromBase(
+                                        design.base ?? design.paired?.leftBase ?? design.paired?.rightBase,
+                                    ) ?? "full") === template.shape;
+                                const label =
+                                    template.shape === "full"
+                                        ? "Full"
+                                        : template.shape === "34"
+                                          ? "3/4"
+                                          : "Sulcus";
+                                return (
+                                    <button
+                                        key={template.shape}
+                                        type="button"
+                                        onClick={() => setBundledTopShape(template.shape)}
+                                        className={cn(
+                                            "rounded-md border px-1 py-1.5 text-[10px] transition-colors",
+                                            active
+                                                ? "border-primary bg-primary/10 text-foreground"
+                                                : "border-border bg-background text-muted-foreground hover:border-primary/50",
+                                        )}
+                                    >
+                                        {label}
+                                    </button>
+                                );
+                            })}
+                        </div>
                     ) : null}
                     <div className="grid grid-cols-2 gap-1.5">
                         {stockPatterns.map((p) => (

@@ -35,6 +35,12 @@ export interface FlattenedText {
 
 export interface TextApplyContext {
     side: Side;
+    /**
+     * Distal-skive feather in the print frame. Glyphs that enter the skive
+     * (feather 0) are dropped; a glyph entirely in the 5 mm band is scaled.
+     * Omit on the full-length path.
+     */
+    skiveFeatherAt?: (x: number, y: number) => number;
 }
 
 export interface TextHostRepair {

@@ -42,9 +42,11 @@ import {
 import { composeViewerPrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import { proceduralViewerStockGate } from "@/lib/geometry/procedural-wall/sample-top-display";
 import {
-    loadSampleTopGeometry,
+    bundledTopShapeFromBase,
+    distalTrimKind,
     SAMPLE_TOP_ASSET_ID,
-} from "@/lib/geometry/procedural-wall/sample-top-preview";
+} from "@/lib/geometry/procedural-wall/sample-top-id";
+import { loadBundledTopGeometry } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
@@ -71,6 +73,20 @@ export interface BaseInsoleGeometryState {
     building: boolean;
     hasBase: boolean;
     elementReference: BufferGeometry | null;
+}
+
+/** X extent of a footprint-frame mesh, in millimetres, stable to 0.1 mm. */
+function meshSpanMm(geo: BufferGeometry): string {
+    const pos = geo.getAttribute("position");
+    if (!pos || pos.count === 0) return "0";
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+    }
+    return (maxX - minX).toFixed(1);
 }
 
 /**
@@ -114,6 +130,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const setLoftError = usePreviewLoftStatusStore((s) => s.setError);
     const lastLoftKeyRef = useRef<string | null>(null);
     const loftGenRef = useRef(0);
+    const patternGenRef = useRef(0);
 
     const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
@@ -132,8 +149,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     // Load the raw base mesh whenever the referenced asset (or its mirrored variant) changes.
     // Include url so stock bases upgrade from the sync stub to the server row re-trigger load.
     const procedural = wallModel === "procedural";
+    const topShape = bundledTopShapeFromBase(base);
     const loadKey = procedural
-        ? `${SAMPLE_TOP_ASSET_ID}:${side}:${isMirroredForLoad ? "m" : "p"}`
+        ? `${topShape ?? SAMPLE_TOP_ASSET_ID}:${side}:${isMirroredForLoad ? "m" : "p"}:${base?.glbPath ?? ""}`
         : assetId
           ? `${assetId}:${isMirroredForLoad ? "m" : "p"}:${baseUrl ?? ""}`
           : null;
@@ -224,7 +242,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             glbPath: ref.glbPath,
         });
         const loadGeo = procedural
-            ? loadSampleTopGeometry().then((geo) => {
+            ? loadBundledTopGeometry(bundledTopShapeFromBase(ref) ?? "full").then((geo) => {
                   if (!isMirroredForLoad) return geo;
                   const mirrored = mirrorGeometry(geo);
                   geo.dispose();
@@ -321,9 +339,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         }
 
         const cacheKey = ref ? getBaseCacheKey(ref) : null;
-        const lookupKey = procedural
-            ? `${SAMPLE_TOP_ASSET_ID}:${side}:${isMirroredForLoad ? "m" : "p"}`
-            : (cacheKey ?? ref?.assetId ?? assetId);
+        // Per-asset key so a 3/4 outline cannot replace sulcus or full.
+        const lookupKey = cacheKey ?? ref?.assetId ?? assetId;
         // Invalidate prior size so outline/bounds refresh for the new footprint.
         clearBaseBoundsCache(lookupKey);
         const b = computeBaseBounds(sized, lookupKey);
@@ -420,7 +437,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             const dragging = Boolean(useMeshEditStore.getState().bottomPatternEdit?.isDragging);
             const heelW = field.corrections?.heelCupWidthMm ?? 0;
             const widthId = shoeWidthForSide(design, side);
-            const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}:w${widthId}`;
+            const patternKey = [
+                autoPatternKey(isMirroredForLoad, design.pattern, topShape),
+                `hw${heelW.toFixed(2)}`,
+                `w${widthId}`,
+                `L${meshSpanMm(raw)}`,
+            ].join(":");
             const userEdited = Boolean(stored) && !generatedPatternKey;
             const needPattern = !draft && !userEdited && generatedPatternKey !== patternKey;
             const session = {
@@ -429,6 +451,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 watchdog: 0,
                 gen: 0,
             };
+            const patternGen = ++patternGenRef.current;
             void (async () => {
                 if (needPattern) {
                     try {
@@ -479,6 +502,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             lengthMm: Math.max(1e-3, maxX - minX),
                             heelOverrideMm: heelW,
                         });
+                        if (session.cancelled || patternGen !== patternGenRef.current) return;
                         useBottomPatternStore.getState().ensureGenerated(side, patternKey, sizedPattern);
                     } catch (e) {
                         if (session.cancelled) return;
@@ -567,6 +591,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     if (outRef.current && outRef.current !== modified && outRef.current !== raw) {
                         outRef.current.dispose();
                     }
+                    if (session.cancelled || patternGen !== patternGenRef.current) {
+                        if (modified !== raw) modified.dispose();
+                        return;
+                    }
                     outRef.current = modified;
                     lastLoftKeyRef.current = null;
                     setGeometry((prev) => (prev === modified ? prev : modified));
@@ -607,6 +635,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     trimlineHash: printTrim ? hashPatternPoints(printTrim.points) : "",
                     shoeWidth: widthId,
                     textMarkingHash: textMarkingHash(design.textMarking),
+                    topShape: topShape ?? "full",
                 });
                 if (lastLoftKeyRef.current === loftKey && outRef.current) {
                     setBaseMeshLoading(side, false);
@@ -648,6 +677,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         const started = performance.now();
                         try {
                             const preview = await reconstructProceduralPreviewInWorker(raw, {
+                                distalTrim:
+                                    distalTrimKind(bundledTopShapeFromBase(getDesignBase(design, side))) ??
+                                    undefined,
                                 corrections: field.corrections,
                                 thicknessMm,
                                 stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
@@ -693,7 +725,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 preview.geometry.dispose();
                                 throw error;
                             }
-                            if (session.cancelled) {
+                            if (session.cancelled || patternGen !== patternGenRef.current) {
                                 placementReference.dispose();
                                 preview.geometry.dispose();
                                 return;
@@ -801,6 +833,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         interacting,
         interactionSource,
         building,
+        topShape,
         setBaseMeshLoading,
         wallModel,
         wallStyle,
