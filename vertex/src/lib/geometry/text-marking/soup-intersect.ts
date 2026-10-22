@@ -2,7 +2,125 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
-import { TEXT_WELD_MM } from "./constants";
+import { TEXT_SI_REGION_PAD_MM, TEXT_WELD_MM } from "./constants";
+import type { MapTextPoint, TextGlyphGroup } from "./types";
+
+export interface SoupRegionAabb {
+    minX: number;
+    minY: number;
+    minZ: number;
+    maxX: number;
+    maxY: number;
+    maxZ: number;
+}
+
+function aabbHitsRegion(region: SoupRegionAabb, t: Tri): boolean {
+    return !(
+        region.maxX < t.minX ||
+        region.minX > t.maxX ||
+        region.maxY < t.minY ||
+        region.minY > t.maxY ||
+        region.maxZ < t.minZ ||
+        region.minZ > t.maxZ
+    );
+}
+
+function mergeRegionAabb(boxes: SoupRegionAabb[]): SoupRegionAabb | null {
+    if (!boxes.length) return null;
+    let minX = Infinity;
+    let minY = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let maxZ = -Infinity;
+    for (const b of boxes) {
+        if (b.minX < minX) minX = b.minX;
+        if (b.minY < minY) minY = b.minY;
+        if (b.minZ < minZ) minZ = b.minZ;
+        if (b.maxX > maxX) maxX = b.maxX;
+        if (b.maxY > maxY) maxY = b.maxY;
+        if (b.maxZ > maxZ) maxZ = b.maxZ;
+    }
+    return { minX, minY, minZ, maxX, maxY, maxZ };
+}
+
+/** Text glyph bounds in world space, expanded by `padMm`. */
+export function soupRegionAabbFromGlyphGroups(
+    groups: TextGlyphGroup[],
+    mapPoint: MapTextPoint,
+    padMm = TEXT_SI_REGION_PAD_MM,
+): SoupRegionAabb | null {
+    const boxes: SoupRegionAabb[] = [];
+    for (const g of groups) {
+        let minX = Infinity;
+        let minY = Infinity;
+        let minZ = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let maxZ = -Infinity;
+        const consider = (p: { x: number; y: number }, t: number) => {
+            const q = mapPoint(p, t);
+            if (!Number.isFinite(q.x) || !Number.isFinite(q.y) || !Number.isFinite(q.z)) return;
+            if (q.x < minX) minX = q.x;
+            if (q.y < minY) minY = q.y;
+            if (q.z < minZ) minZ = q.z;
+            if (q.x > maxX) maxX = q.x;
+            if (q.y > maxY) maxY = q.y;
+            if (q.z > maxZ) maxZ = q.z;
+        };
+        for (const t of [0, 0.5, 1]) {
+            for (const p of g.outer) consider(p, t);
+            for (const hole of g.holes) for (const p of hole) consider(p, t);
+        }
+        if (!Number.isFinite(minX)) continue;
+        boxes.push({
+            minX: minX - padMm,
+            minY: minY - padMm,
+            minZ: minZ - padMm,
+            maxX: maxX + padMm,
+            maxY: maxY + padMm,
+            maxZ: maxZ + padMm,
+        });
+    }
+    return mergeRegionAabb(boxes);
+}
+
+export function soupRegionAabbFromOutlineWorld(
+    outlineWorld: Array<{
+        outer: Array<{ x: number; y: number; z: number }>;
+        holes: Array<Array<{ x: number; y: number; z: number }>>;
+    }>,
+    padMm = TEXT_SI_REGION_PAD_MM,
+): SoupRegionAabb | null {
+    let minX = Infinity;
+    let minY = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let maxZ = -Infinity;
+    const pt = (p: { x: number; y: number; z: number }) => {
+        if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) return;
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.z < minZ) minZ = p.z;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+        if (p.z > maxZ) maxZ = p.z;
+    };
+    for (const g of outlineWorld) {
+        for (const p of g.outer) pt(p);
+        for (const hole of g.holes) for (const p of hole) pt(p);
+    }
+    if (!Number.isFinite(minX)) return null;
+    return {
+        minX: minX - padMm,
+        minY: minY - padMm,
+        minZ: minZ - padMm,
+        maxX: maxX + padMm,
+        maxY: maxY + padMm,
+        maxZ: maxZ + padMm,
+    };
+}
 
 interface Tri {
     i0: number;
@@ -292,10 +410,7 @@ function vertsOf(t: Tri): { x: number; y: number; z: number }[] {
  * loft station / region metadata. Shared vertex/edge pairs (after `weldMm`
  * neighbor-cell snap) are excluded; everything else is a real hit.
  */
-export function countSoupSelfIntersections(
-    geo: BufferGeometry,
-    weldMm = TEXT_WELD_MM,
-): SoupIntersectionReport {
+function buildSoupTris(geo: BufferGeometry, weldMm: number): Tri[] {
     const pos = geo.getAttribute("position").array as Float32Array;
     const index = geo.getIndex();
     const weld = weldIndex(pos, weldMm);
@@ -337,8 +452,14 @@ export function countSoupSelfIntersections(
             maxZ: Math.max(az, bz, cz),
         });
     }
-    const order = Array.from({ length: tris.length }, (_, i) => i);
-    const root = tris.length ? buildBvh(tris, order) : null;
+    return tris;
+}
+
+function intersectSoupSubset(tris: Tri[], cand: number[]): SoupIntersectionReport {
+    if (cand.length < 2) return { real: 0, coplanar: 0, pairs: [] };
+    const localTris = cand.map((i) => tris[i]!);
+    const order = Array.from({ length: cand.length }, (_, i) => i);
+    const root = buildBvh(localTris, order);
     let real = 0;
     let coplanar = 0;
     const pairs: SoupHitPair[] = [];
@@ -356,14 +477,12 @@ export function countSoupSelfIntersections(
         collect(node.left, a, ai);
         collect(node.right, a, ai);
     };
-    for (let i = 0; i < tris.length; i++) {
-        const a = tris[i]!;
-        if (!root) break;
+    for (let li = 0; li < localTris.length; li++) {
+        const a = localTris[li]!;
         buf.length = 0;
-        collect(root, a, i);
-        for (const j of buf) {
-            const b = tris[j]!;
-            // Shared vertex or shared edge (two vertices) — adjacent, not a hit.
+        collect(root, a, li);
+        for (const lj of buf) {
+            const b = localTris[lj]!;
             if (sharedVertexCount(a, b) > 0) continue;
             if (!trianglesIntersect(a, b)) continue;
             if (facesCoplanar(a, b)) {
@@ -372,8 +491,8 @@ export function countSoupSelfIntersections(
             }
             real++;
             pairs.push({
-                triA: i,
-                triB: j,
+                triA: cand[li]!,
+                triB: cand[lj]!,
                 centroid: {
                     x: (a.ax + a.bx + a.cx + b.ax + b.bx + b.cx) / 6,
                     y: (a.ay + a.by + a.cy + b.ay + b.by + b.cy) / 6,
@@ -385,4 +504,27 @@ export function countSoupSelfIntersections(
         }
     }
     return { real, coplanar, pairs };
+}
+
+export function countSoupSelfIntersections(
+    geo: BufferGeometry,
+    weldMm = TEXT_WELD_MM,
+): SoupIntersectionReport {
+    const tris = buildSoupTris(geo, weldMm);
+    const order = Array.from({ length: tris.length }, (_, i) => i);
+    return intersectSoupSubset(tris, order);
+}
+
+/** Self-intersections among triangles whose AABB meets `region` (text bbox + pad). */
+export function countSoupSelfIntersectionsInRegion(
+    geo: BufferGeometry,
+    region: SoupRegionAabb,
+    weldMm = TEXT_WELD_MM,
+): SoupIntersectionReport {
+    const tris = buildSoupTris(geo, weldMm);
+    const cand: number[] = [];
+    for (let i = 0; i < tris.length; i++) {
+        if (aabbHitsRegion(region, tris[i]!)) cand.push(i);
+    }
+    return intersectSoupSubset(tris, cand);
 }

@@ -1,10 +1,13 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
-import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
+import { insoleLayoutForUsMenSize, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { minDistToLoopXY, pointInPoly } from "./cdt-band";
+import { extractTopOnlyModel } from "./extract";
 import {
     applyInsoleFootprintScale,
     clipPatternInsideRim,
@@ -15,6 +18,9 @@ import {
     PATTERN_RIM_CLEARANCE_MM,
     turningNumber,
 } from "./pattern-hygiene";
+import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME } from "./sample-top-id";
+import { buildProceduralViewerPattern, sampleTopFromArrayBuffer } from "./sample-top-preview";
+import { minInsetForLeanMm } from "./station-gates";
 
 function ellipse(n: number, rx: number, ry: number): Array<{ x: number; y: number; z: number }> {
     return Array.from({ length: n }, (_, i) => {
@@ -106,4 +112,44 @@ describe("pattern hygiene", () => {
         }
         expect(scaledLoops[0]![0]!.x).not.toBeCloseTo(scaledLoops[2]![0]!.x, 1);
     });
+
+    test("US M8.5 Full Contact pattern clip metrics", async () => {
+        const buf = readFileSync(resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb"));
+        const geo = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        const layout = insoleLayoutForUsMenSize(8.5);
+        const scaled = scaleGeometryToInsoleSize(geo, layout.lengthMm, layout.widthMm);
+        if (scaled !== geo) geo.dispose();
+        const pattern = buildProceduralViewerPattern(scaled, "full_contact");
+        const model = extractTopOnlyModel(scaled, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+        const pos = model.top.meshPositions;
+        const rimIdx = model.top.rimLocal ?? [];
+        expect(pos && rimIdx.length >= 3).toBe(true);
+        const rimPlan = rimIdx.map((i) => ({
+            x: pos![i * 3]!,
+            y: pos![i * 3 + 1]!,
+            z: 0,
+        }));
+        const maxPreClipMm = maxOutsideRimViolationMm(pattern, rimPlan);
+        const clearance = Math.max(0.5, minInsetForLeanMm(0.5, 2, 0));
+        const n = Math.max(160, pattern.length);
+        const { case: clipCase, clippedAreaMm2 } = clipPatternInsideRim(pattern, rimPlan, clearance, n, {
+            sizeLabel: "US M8.5",
+        });
+        const clipWarn = clippedAreaMm2 > 0.5;
+        console.log(
+            "[M85-CLIP-METRICS]",
+            JSON.stringify({
+                maxPreClipMm,
+                clippedAreaMm2,
+                clipCase,
+                clipWarn,
+            }),
+        );
+        expect(maxPreClipMm).toBeLessThanOrEqual(0.5);
+        expect(clippedAreaMm2).toBe(0);
+        expect(clipCase).toBe("inside");
+        scaled.dispose();
+    }, 60_000);
 });

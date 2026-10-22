@@ -65,6 +65,8 @@ export const TEXT_HOST_REFINE_MAX_EDGE_MM = 0.4;
 export const TEXT_NORMAL_SMOOTH_MM = 1;
 /** Acceptance / collapse / refine region around the mapped glyph footprint (mm). */
 export const TEXT_REGION_PAD_MM = 1;
+/** Self-intersection queries: text glyph AABB plus this pad (mm). */
+export const TEXT_SI_REGION_PAD_MM = 2;
 /** Host-only SI / sliver repair band (mm). */
 export const TEXT_HOST_SI_PAD_MM = 2;
 /** Host edge dihedral above this is a crease, not a smooth wall–wall pair. */

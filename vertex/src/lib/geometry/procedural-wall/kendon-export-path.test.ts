@@ -9,9 +9,21 @@ import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
-import { geometryToBinarySTL } from "@/lib/geometry/stl";
+import { binaryStlToGeometry, geometryToBinarySTL } from "@/lib/geometry/stl";
 import { applyTextMarkingToPrintSolid } from "@/lib/geometry/text-marking/apply";
-import { defaultTextMarking, sanitizeText } from "@/lib/geometry/text-marking/constants";
+import {
+    defaultTextMarking,
+    sanitizeText,
+    TEXT_QEM_HAUSDORFF_MM,
+    TEXT_SI_REGION_PAD_MM,
+    TEXT_WELD_MM,
+} from "@/lib/geometry/text-marking/constants";
+import { measureTextRegionQuality } from "@/lib/geometry/text-marking/quality";
+import {
+    countSoupSelfIntersectionsInRegion,
+    soupRegionAabbFromOutlineWorld,
+} from "@/lib/geometry/text-marking/soup-intersect";
+import type { TextApplyMeta } from "@/lib/geometry/text-marking/types";
 import type { Side, SideCorrections } from "@/types";
 import { composePrintSolidTop } from "./print-solid-compose";
 import {
@@ -115,10 +127,11 @@ describe("Kendon PR #204 preview path", () => {
             sourceField,
             composedTop: true,
             scanPattern: "full_contact",
-            wallStyle: "hybrid",
+            wallStyle: "straight",
             side: "left",
         });
         composed.dispose();
+        const hostBefore = loft.geometry.clone();
         const marking = {
             ...defaultTextMarking("wall"),
             text: sanitizeText("A"),
@@ -135,6 +148,22 @@ describe("Kendon PR #204 preview path", () => {
         );
         expect(ms).toBeLessThan(60_000);
         expect(marked.getAttribute("position")?.count ?? 0).toBeGreaterThan(1000);
+        const meta = (marked.userData as { textMarking?: TextApplyMeta }).textMarking;
+        expect(meta?.outlineWorld?.length).toBeGreaterThan(0);
+        const q = measureTextRegionQuality(marked, hostBefore, meta!);
+        expect(q.outline.hausdorffMm).toBeLessThanOrEqual(TEXT_QEM_HAUSDORFF_MM);
+        const stl = geometryToBinarySTL(marked);
+        const soup = binaryStlToGeometry(stl);
+        const region = soupRegionAabbFromOutlineWorld(meta!.outlineWorld, TEXT_SI_REGION_PAD_MM);
+        expect(region).not.toBeNull();
+        const siStarted = performance.now();
+        const si = countSoupSelfIntersectionsInRegion(soup!, region!, TEXT_WELD_MM);
+        const siMs = performance.now() - siStarted;
+        soup.dispose();
+        console.log("[KENDON-TEXT-SI]", JSON.stringify({ siMs, real: si.real, tris: stl.byteLength }));
+        expect(siMs).toBeLessThan(5000);
+        expect(si.real).toBe(0);
+        hostBefore.dispose();
         if (marked !== loft.geometry) marked.dispose();
         loft.geometry.dispose();
         raw.dispose();
