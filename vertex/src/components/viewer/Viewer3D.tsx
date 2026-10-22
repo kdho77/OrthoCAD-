@@ -20,6 +20,7 @@ import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
+import { stockBaseDisplayName } from "@/lib/geometry/base-asset";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -335,7 +336,9 @@ export function Viewer3D() {
                         <Layers className="h-3 w-3" />
                         Base:{" "}
                         {wallModel === "procedural"
-                            ? SAMPLE_TOP_NAME
+                            ? stockBaseDisplayName(
+                                  design.base ?? design.paired?.leftBase ?? design.paired?.rightBase,
+                              )
                             : /default stock base/i.test(designMode.baseName ?? "")
                               ? SAMPLE_TOP_NAME
                               : (designMode.baseName ?? SAMPLE_TOP_NAME)}

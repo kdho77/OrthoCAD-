@@ -894,7 +894,10 @@ export const useDesignStore = create<DesignStore>()(
                     };
                 }),
 
-            setBundledTopShape: (shape) =>
+            setBundledTopShape: (shape) => {
+                // The faired pattern is rebuilt from the newly loaded GLB. Drop the
+                // previous one immediately so a full-length fill cannot complete a trim.
+                useBottomPatternStore.getState().clear();
                 set((s) => {
                     const { left, right } = createDefaultStockPairedBases(bundledTopStockBase(shape));
                     const thickness = s.design.thicknessMm || BASE_REFERENCE_THICKNESS_MM;
@@ -916,7 +919,8 @@ export const useDesignStore = create<DesignStore>()(
                             },
                         },
                     };
-                }),
+                });
+            },
 
             setPairedBases: (left, right) =>
                 set((s) => {

@@ -186,4 +186,38 @@ describe("preview loft overlay", () => {
         expect(c).not.toBe(a);
         expect(idle.left).toBe("idle");
     });
+
+    test("trim shape changes the pattern key and the loft reuse key", () => {
+        expect(autoPatternKey(false, "full_contact")).toBe("sample-top:p:full_contact");
+        expect(autoPatternKey(false, "full_contact", "full")).toBe("sample-top:p:full_contact");
+        expect(autoPatternKey(false, "full_contact", "34")).toBe("sample-top:p:full_contact:34");
+        expect(autoPatternKey(true, "full_contact", "sulcus")).not.toBe(
+            autoPatternKey(true, "full_contact", "34"),
+        );
+        const full = proceduralLoftReuseKey({
+            side: "left",
+            wallStyle: "straight",
+            deviceType: "functional",
+            thicknessMm: 3,
+            correctionsJson: "{}",
+            scanPattern: "full_contact",
+            patternKind: "auto",
+            patternHash: autoPatternKey(false, "full_contact", "full"),
+            flanges: "0:40:10",
+            topShape: "full",
+        });
+        const threeQuarter = proceduralLoftReuseKey({
+            side: "left",
+            wallStyle: "straight",
+            deviceType: "functional",
+            thicknessMm: 3,
+            correctionsJson: "{}",
+            scanPattern: "full_contact",
+            patternKind: "auto",
+            patternHash: autoPatternKey(false, "full_contact", "34"),
+            flanges: "0:40:10",
+            topShape: "34",
+        });
+        expect(threeQuarter).not.toBe(full);
+    });
 });
