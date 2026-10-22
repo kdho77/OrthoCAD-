@@ -40,6 +40,7 @@ function guideLine(
     u: number,
     midY: number,
     nudgeAcross: number,
+    seamInsetMm = 0,
 ): THREE.Vector3[] {
     if (!stations.length) return [];
     if (!isSideText(surface)) {
@@ -54,7 +55,7 @@ function guideLine(
             : [stations.reduce((a, b) => (Math.abs(a.u - u) < Math.abs(b.u - u) ? a : b))];
     return band.map((st) => {
         const h = Math.max(st.h, 0.5);
-        const t = Math.min(0.85, Math.max(0.15, 0.5 + nudgeAcross / h));
+        const t = Math.min(0.85, Math.max(0.12, 0.5 + nudgeAcross / h - seamInsetMm / h));
         return new THREE.Vector3(
             st.bx + (st.x - st.bx) * t,
             st.by + (st.y - st.by) * t,
@@ -79,24 +80,32 @@ export function TextPlacementGuide({ side }: { side: Side }) {
     const guide = guides[side];
     const active =
         Boolean(marking && (marking.text || marking.textLeft || marking.textRight)) && step === "elements";
-    const u = dragU ?? marking?.placementU ?? 0.32;
+    const clamp = dragU == null ? guide?.placementClamp : null;
+    const u = dragU ?? clamp?.u ?? marking?.placementU ?? 0.32;
     const points = useMemo(() => {
         if (!guide || !marking || !active) return [];
         const stations = stationsForSurface(marking.surface, guide.lateral, guide.medial);
-        return guideLine(marking.surface, stations, u, guide.midY, marking.nudgeAcrossMm);
-    }, [active, guide, marking, u]);
+        return guideLine(
+            marking.surface,
+            stations,
+            u,
+            guide.midY,
+            marking.nudgeAcrossMm,
+            clamp?.seamInsetMm ?? 0,
+        );
+    }, [active, clamp?.seamInsetMm, guide, marking, u]);
 
     const line = useMemo(() => {
         const geom = new THREE.BufferGeometry();
         if (points.length >= 2) geom.setFromPoints(points);
         const mat = new THREE.LineBasicMaterial({
-            color: alert ? "#fbbf24" : "#facc15",
+            color: alert ? "#fbbf24" : clamp ? "#38bdf8" : "#facc15",
             depthTest: false,
         });
         const mesh = new THREE.Line(geom, mat);
         mesh.renderOrder = 20;
         return mesh;
-    }, [alert, points]);
+    }, [alert, clamp, points]);
 
     useEffect(
         () => () => {

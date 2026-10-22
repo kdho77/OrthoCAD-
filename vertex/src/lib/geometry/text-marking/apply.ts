@@ -17,7 +17,13 @@ import { flattenText } from "./contours";
 import { TextMarkingError } from "./errors";
 import { loadTextFont } from "./font";
 import { assertTextPrintGates } from "./gates";
-import { bandWallHeightMm, extractHostTextContext, placeBottomText, placeWallText } from "./place";
+import {
+    bandWallHeightMm,
+    extractHostTextContext,
+    placeBottomText,
+    placeWallText,
+    type TextPlacementClamp,
+} from "./place";
 import type { TextApplyContext, TextApplyMeta, TextMarking } from "./types";
 import { assertTextMarkingInRange } from "./validate";
 
@@ -78,6 +84,7 @@ export async function applyTextMarkingToPrintSolid(
     let map: ReturnType<typeof placeBottomText>["map"];
     let rebind: ((geo: typeof host) => typeof map) | undefined;
     let placeMeta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm" | "wallUMin" | "wallUMax">;
+    let placementClamp: TextPlacementClamp | null = null;
     if (checked.surface === "bottom") {
         placedFlat = shrinkThenFlatten(font, checked, minCap, (flat) => {
             placeBottomText(host, hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat, ctx.side);
@@ -106,6 +113,7 @@ export async function applyTextMarkingToPrintSolid(
         map = placed.map;
         rebind = placed.rebind;
         placeMeta = placed.meta;
+        placementClamp = placed.placementClamp;
     }
 
     const op = checked.mode === "emboss" ? "add" : "subtract";
@@ -144,5 +152,8 @@ export async function applyTextMarkingToPrintSolid(
         hostRepair: (result.userData as { textHostRepair?: TextApplyMeta["hostRepair"] }).textHostRepair,
     };
     assertTextPrintGates(result, meta, hostCtx.outline);
+    if (placementClamp) {
+        result.userData = { ...result.userData, textPlacementClamp: placementClamp };
+    }
     return result;
 }

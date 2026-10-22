@@ -537,6 +537,37 @@ function weldGenerated(
     return remap;
 }
 
+/**
+ * Exact-index seam weld. A corner whose position is bitwise-identical to a rim
+ * vertex is rewritten to that rim index. No distance tolerance.
+ */
+export function exactIndexWeldRimSeam(
+    positions: ArrayLike<number>,
+    indices: number[],
+    rimVertices: readonly number[],
+): number {
+    const n = positions.length / 3;
+    const keyOf = (i: number): string =>
+        `${positions[i * 3]}|${positions[i * 3 + 1]}|${positions[i * 3 + 2]}`;
+    const canon = new Map<string, number>();
+    for (const r of rimVertices) {
+        if (r < 0 || r >= n) continue;
+        const k = keyOf(r);
+        if (!canon.has(k)) canon.set(k, r);
+    }
+    let remapped = 0;
+    for (let t = 0; t < indices.length; t++) {
+        const i = indices[t]!;
+        if (i < 0 || i >= n) continue;
+        const c = canon.get(keyOf(i));
+        if (c != null && c !== i) {
+            indices[t] = c;
+            remapped++;
+        }
+    }
+    return remapped;
+}
+
 function countCoincidentVerts(positions: number[], start: number, end: number, eps = 1e-9): number {
     const cell = Math.max(eps, 1e-6);
     const buckets = new Map<string, number[]>();
@@ -1743,6 +1774,22 @@ export function reconstructProceduralWalls(
     if (grid.quality) {
         (grid.quality as { nFlippedWallFaces?: number }).nFlippedWallFaces = wallFlip.n;
     }
+    if ((options.wallStyle ?? "straight") === "hybrid") {
+        const remapped = exactIndexWeldRimSeam(positions, indices, rimLocal);
+        if (remapped) {
+            const kept: number[] = [];
+            for (let t = 0; t + 2 < indices.length; t += 3) {
+                const a = indices[t]!;
+                const b = indices[t + 1]!;
+                const c = indices[t + 2]!;
+                if (a === b || b === c || c === a) continue;
+                kept.push(a, b, c);
+            }
+            indices.length = 0;
+            for (const v of kept) indices.push(v);
+            console.log("[HYBRID-SEAM-WELD]", JSON.stringify({ corners: remapped, tris: kept.length / 3 }));
+        }
+    }
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
     geo.setIndex(indices);
@@ -2019,6 +2066,7 @@ export function reconstructProceduralWalls(
         }),
         postingClamps,
         wallStyle: options.wallStyle ?? "straight",
+        rimSeamVerts: (options.wallStyle ?? "straight") === "hybrid" ? rimLocal.slice() : undefined,
         composedTop: Boolean(options.composedTop),
         maxBPlantarDeltaMm: grid.maxBPlantarDeltaMm,
         wallBelowPlantar: grid.wallBelowPlantar,

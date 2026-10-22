@@ -173,7 +173,22 @@ export function TextFitList() {
     const marking = useDesignStore((s) => s.design.textMarking);
     const setTextMarking = useDesignStore((s) => s.setTextMarking);
     const report = useTextFitReport();
+    const guides = useTextGuides();
     if (!marking) return null;
+    const clampNotes: string[] = [];
+    for (const side of ["left", "right"] as const) {
+        const clamp = guides[side]?.placementClamp;
+        if (!clamp) continue;
+        const along = Math.abs(clamp.alongMm);
+        const moved = along > 0.05 || clamp.seamInsetMm > 0.05;
+        if (!moved) continue;
+        const where = side === "left" ? "Left" : "Right";
+        clampNotes.push(
+            along > 0.05
+                ? `${where} text shifted ${along.toFixed(1)} mm along the wall to stay 1.5 mm from the hybrid seam.`
+                : `${where} text moved down the wall to stay 1.5 mm from the hybrid seam.`,
+        );
+    }
 
     const applyFix = (fix: TextFitFix) => {
         if (fix === "bottom") {
@@ -214,9 +229,14 @@ export function TextFitList() {
     };
 
     const fixes = [...new Set(report.warnings.flatMap((w) => w.fixes))];
-    if (!report.warnings.length && !report.notes.length) return null;
+    if (!report.warnings.length && !report.notes.length && !clampNotes.length) return null;
     return (
         <div className="mt-2 space-y-1" aria-live="polite">
+            {clampNotes.map((note) => (
+                <p key={note} className="text-[11px] leading-snug text-sky-200">
+                    {note}
+                </p>
+            ))}
             {report.notes.map((note) => (
                 <p key={note} className="text-[11px] leading-snug text-amber-200">
                     {note}

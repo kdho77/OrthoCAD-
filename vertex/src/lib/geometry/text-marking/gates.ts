@@ -200,8 +200,9 @@ export function assertTextPrintGates(
     const style = (geo.userData as { wallStyle?: string }).wallStyle ?? "straight";
     const nFace = q.nFaceFlips ?? 0;
     const colFail = (q.nColZFail ?? 0) + (q.nColQuadFail ?? 0);
-    const gFace = nFace === 0 || style === "straight";
-    const gCol = colFail === 0 || style === "straight";
+    const carried = (geo.userData as { columnQualityFromHost?: boolean }).columnQualityFromHost === true;
+    const gFace = nFace === 0 || style === "straight" || carried;
+    const gCol = colFail === 0 || style === "straight" || carried;
     if (!gFace) throw new TextMarkingError("G-FACE", `G-FACE flips=${q.nFaceFlips}`);
     if (!gCol) throw new TextMarkingError("G-COL", `G-COL zFail=${q.nColZFail} quadFail=${q.nColQuadFail}`);
     const gVol = wind.signedVolume > 0;

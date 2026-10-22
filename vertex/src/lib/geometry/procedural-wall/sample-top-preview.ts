@@ -9,6 +9,7 @@ import { heelCupWidthLongitudinalEnvelope, heelCupWidthScaleFactor } from "@/lib
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
+import type { TextGuide } from "@/lib/geometry/text-marking/place";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
     extractMergedGeometry,
@@ -134,7 +135,7 @@ export async function buildProceduralExportSolid(
         if (!hasActiveTextMarking(options.textMarking)) return preview;
         const { applyTextMarkingToPrintSolid } = await import("@/lib/geometry/text-marking/apply");
         const { TextMarkingError } = await import("@/lib/geometry/text-marking/errors");
-        const { buildTextGuide } = await import("@/lib/geometry/text-marking/place");
+        const { buildTextGuide, guideWithPlacementClamp } = await import("@/lib/geometry/text-marking/place");
         const textGuide = buildTextGuide(preview.geometry);
         let geometry = preview.geometry;
         try {
@@ -147,7 +148,14 @@ export async function buildProceduralExportSolid(
             return { ...preview, geometry };
         }
         if (geometry !== preview.geometry) preview.geometry.dispose();
-        geometry.userData = { ...geometry.userData, textGuide };
+        geometry.userData = {
+            ...geometry.userData,
+            textGuide: guideWithPlacementClamp(
+                textGuide,
+                (geometry.userData as { textPlacementClamp?: TextGuide["placementClamp"] })
+                    .textPlacementClamp,
+            ),
+        };
         return { ...preview, geometry };
     } finally {
         raw.dispose();
