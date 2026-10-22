@@ -854,6 +854,103 @@ function windowStats(run: WallStation[], sMid: number, half: number): { minH: nu
     return { minH, minT };
 }
 
+/**
+ * Right-foot lateral heel flare. The cap of a glyph that lands here makes the
+ * wall boolean self-intersect near (66.63, 35.87, 14.45). Clearance is on the
+ * wall hit, before the 0.5 mm outset.
+ */
+const RIGHT_LATERAL_FOLD_MM = { x: 66.63, y: 35.87, z: 14.45 };
+const RIGHT_LATERAL_FOLD_CLEAR_MM = 2;
+
+function runPassesRightLateralFold(run: WallStation[]): boolean {
+    for (const st of run) {
+        const dR = Math.hypot(
+            st.R.x - RIGHT_LATERAL_FOLD_MM.x,
+            st.R.y - RIGHT_LATERAL_FOLD_MM.y,
+            st.R.z - RIGHT_LATERAL_FOLD_MM.z,
+        );
+        if (dR < 25) return true;
+    }
+    return false;
+}
+
+/**
+ * Shift glyphs that would sit on the right-lateral fold straight down the wall.
+ * A mirrored left foot never comes within 25 mm of this point, so its glyphs
+ * and the frozen left STL stay put. yMin of the whole string is left unchanged
+ * so neighbouring letters do not move.
+ */
+function shiftRightLateralGlyphsOffFold(
+    geo: BufferGeometry,
+    run: WallStation[],
+    flat: FlattenedText,
+    s0: number,
+    heightOf: (p: TextXy, st: WallStation) => number,
+): FlattenedText {
+    if (!runPassesRightLateralFold(run)) return flat;
+    const chordDist = (p: TextXy): number => {
+        const st = sampleAlong(run, s0 + p.x);
+        const span = Math.max(1e-6, st.heightMm);
+        const f = Math.max(0, Math.min(1, heightOf(p, st) / span));
+        const x = st.B.x + (st.R.x - st.B.x) * f;
+        const y = st.B.y + (st.R.y - st.B.y) * f;
+        const z = st.B.z + (st.R.z - st.B.z) * f;
+        return Math.hypot(
+            x - RIGHT_LATERAL_FOLD_MM.x,
+            y - RIGHT_LATERAL_FOLD_MM.y,
+            z - RIGHT_LATERAL_FOLD_MM.z,
+        );
+    };
+    let chordBest = Infinity;
+    for (const g of flat.groups) {
+        for (const p of g.outer) chordBest = Math.min(chordBest, chordDist(p));
+    }
+    // The chord sits inside the wall. Only glyphs within 8 mm can reach the fold.
+    if (chordBest > RIGHT_LATERAL_FOLD_CLEAR_MM + 6) return flat;
+    const wall = createOuterWallSampler(geo, run);
+    const distAt = (p: TextXy): number => {
+        const st = sampleAlong(run, s0 + p.x);
+        const hit = wall.at(s0 + p.x, heightOf(p, st));
+        return Math.hypot(
+            hit.p.x - RIGHT_LATERAL_FOLD_MM.x,
+            hit.p.y - RIGHT_LATERAL_FOLD_MM.y,
+            hit.p.z - RIGHT_LATERAL_FOLD_MM.z,
+        );
+    };
+    const groups = flat.groups.map((g) => {
+        let drop = 0;
+        let best = Infinity;
+        let minY = Infinity;
+        let minX = g.outer[0]?.x ?? 0;
+        for (const p of g.outer) {
+            best = Math.min(best, distAt(p));
+            if (p.y < minY) {
+                minY = p.y;
+                minX = p.x;
+            }
+        }
+        if (best >= RIGHT_LATERAL_FOLD_CLEAR_MM) return g;
+        for (let i = 0; i < 8 && best < RIGHT_LATERAL_FOLD_CLEAR_MM; i++) {
+            const next = drop + 0.45;
+            const st = sampleAlong(run, s0 + minX);
+            if (heightOf({ x: minX, y: minY - next }, st) < 0.4) break;
+            drop = next;
+            best = Infinity;
+            for (const p of g.outer) best = Math.min(best, distAt({ x: p.x, y: p.y - drop }));
+        }
+        if (drop === 0) return g;
+        const map = (p: TextXy) => ({ x: p.x, y: p.y - drop });
+        return { outer: g.outer.map(map), holes: g.holes.map((h) => h.map(map)) };
+    });
+    const centroids = flat.centroids.map((p, i) => {
+        const src = flat.groups[i]?.outer[0];
+        const moved = groups[i]?.outer[0];
+        if (!src || !moved) return p;
+        return { x: p.x, y: p.y + (moved.y - src.y) };
+    });
+    return { ...flat, groups, centroids };
+}
+
 /** Shift each glyph so the string runs toward higher u, without mirroring strokes. */
 function glyphsTowardHigherU(flat: FlattenedText, run: WallStation[]): FlattenedText {
     if (run.length < 2 || run[0]!.u + 1e-6 >= run[run.length - 1]!.u) return flat;
@@ -892,7 +989,7 @@ export function placeWallText(
 } {
     const run = stationsForSurface(ctx, marking.surface);
     if (run.length < 2) throw textForbiddenZone("no lateral wall stations");
-    const flat = glyphsTowardHigherU(flatIn, run);
+    let flat = glyphsTowardHigherU(flatIn, run);
     const u = Math.max(TEXT_U.wall.min, Math.min(TEXT_U.wall.max, marking.placementU));
     const sStart = run[0]!.s;
     const sEnd = run[run.length - 1]!.s;
@@ -995,6 +1092,9 @@ export function placeWallText(
         const letter0 = usableBot + slack / 2 + nudge;
         return letter0 + (p.y - yMin) * yScale;
     };
+    if (marking.surface === "wall") {
+        flat = shiftRightLateralGlyphsOffFold(geo, run, flat, s0, heightOf);
+    }
     const makeMap = (mesh: BufferGeometry): MapTextPoint => {
         const wall = createOuterWallSampler(mesh, run);
         const surfCache = new Map<string, OuterWallHit>();

@@ -83,4 +83,29 @@ describe("SAMPLE_Top wall text placement", () => {
             raw.dispose();
         }
     }, 120_000);
+
+    test("JOHN SMITH right-wall glyphs clear the lateral fold", async () => {
+        const font = await loadTextFont();
+        const raw = await loadSampleTopGlb();
+        const fold = { x: 66.63, y: 35.87, z: 14.45 };
+        try {
+            const preview = await reconstructProceduralPreview(raw, { wallStyle: "straight" });
+            const ctx = extractHostTextContext(preview.geometry);
+            for (const text of [JOHN, "JOHN SMITH"]) {
+                const flat = flattenText(font, text, 6, 0.6, true);
+                const placed = placeWallText(preview.geometry, ctx, marking("wall", text), flat);
+                let minD = Infinity;
+                for (const g of placed.flat.groups) {
+                    for (const p of g.outer) {
+                        const w = placed.map(p, 0.45);
+                        minD = Math.min(minD, Math.hypot(w.x - fold.x, w.y - fold.y, w.z - fold.z));
+                    }
+                }
+                expect(minD).toBeGreaterThanOrEqual(1.5);
+            }
+            preview.geometry.dispose();
+        } finally {
+            raw.dispose();
+        }
+    }, 120_000);
 });
