@@ -20,7 +20,13 @@ import {
     TEXT_WALL_EDGE_CLEARANCE_MM,
     TEXT_WALL_MIN_THICK_MM,
 } from "./constants";
-import { TextMarkingError, textDoesNotFit, textForbiddenZone, textTooThinRemaining } from "./errors";
+import {
+    TextMarkingError,
+    textDoesNotFit,
+    textForbiddenZone,
+    textHybridSeamOverlap,
+    textTooThinRemaining,
+} from "./errors";
 import { type MapTextPoint, planarBottomMap } from "./solid";
 import type { FlattenedText, TextApplyMeta, TextMarking, TextSurface, TextXy } from "./types";
 
@@ -919,6 +925,42 @@ function rimSeamLoop(geo: BufferGeometry): Array<{ x: number; y: number; z: numb
     return frames.map((f) => ({ x: f.R.x, y: f.R.y, z: f.R.z }));
 }
 
+/**
+ * Nearest arc length in [lo, hi] where `clears` is true, measured from `requested`.
+ * Samples every `stepMm`. Returns null when the whole run stays inside the seam band.
+ */
+export function nearestClearStation(
+    lo: number,
+    hi: number,
+    requested: number,
+    clears: (s: number) => boolean,
+    stepMm = 1,
+): number | null {
+    if (!(hi + 1e-6 >= lo)) return null;
+    const origin = Math.max(lo, Math.min(hi, requested));
+    if (clears(origin)) return origin;
+    const step = Math.max(0.25, stepMm);
+    const steps = Math.max(1, Math.ceil((hi - lo) / step));
+    for (let i = 1; i <= steps; i++) {
+        const dist = i * step;
+        const candidates = [origin - dist, origin + dist];
+        let chosen: number | null = null;
+        let bestD = Infinity;
+        for (const raw of candidates) {
+            if (raw < lo - 1e-6 || raw > hi + 1e-6) continue;
+            const sMid = Math.max(lo, Math.min(hi, raw));
+            if (!clears(sMid)) continue;
+            const d = Math.abs(sMid - requested);
+            if (d < bestD - 1e-9) {
+                bestD = d;
+                chosen = sMid;
+            }
+        }
+        if (chosen != null) return chosen;
+    }
+    return null;
+}
+
 function distToClosedLoop3(
     p: { x: number; y: number; z: number },
     loop: Array<{ x: number; y: number; z: number }>,
@@ -1083,39 +1125,14 @@ export function placeWallText(
             return min;
         };
         const clear = TEXT_HYBRID_SEAM_CLEARANCE_MM;
-        if (minSeam(bestS, 0) + 1e-6 < clear) {
-            const insets = [clear, 2, 2.5, 3, 3.5, 4.5, 6];
-            const pick = (sMid: number): number | null => {
-                for (const inset of insets) {
-                    if (!fitsInset(sMid, inset)) continue;
-                    if (minSeam(sMid, inset) + 1e-6 >= clear) return inset;
-                }
-                return null;
-            };
-            let chosenS = bestS;
-            let chosenInset = pick(bestS);
-            if (chosenInset == null) {
-                let bestD = Infinity;
-                const steps = 24;
-                for (let i = 0; i <= steps; i++) {
-                    const sMid = lo + ((hi - lo) * i) / Math.max(1, steps);
-                    const inset = pick(sMid);
-                    if (inset == null) continue;
-                    const d = Math.abs(sMid - requested);
-                    if (d < bestD) {
-                        bestD = d;
-                        chosenS = sMid;
-                        chosenInset = inset;
-                    }
-                }
-            }
-            if (chosenInset == null) {
-                throw textForbiddenZone(
-                    "glyph cannot stay 1.5 mm from the hybrid seam without changing size",
-                );
-            }
+        const clearsAlong = (sMid: number): boolean => fitsInset(sMid, 0) && minSeam(sMid, 0) + 1e-6 >= clear;
+        // Shift along the wall first. Dropping the cap is not a substitute, and
+        // the size stays put. Throw only when every station still crosses the seam.
+        if (!clearsAlong(bestS)) {
+            const chosenS = nearestClearStation(lo, hi, requested, clearsAlong, 1);
+            if (chosenS == null) throw textHybridSeamOverlap();
             bestS = chosenS;
-            seamInsetMm = chosenInset;
+            seamInsetMm = 0;
             placementClamp = {
                 u: sampleAlong(run, bestS).u,
                 requestedU: atU.u,

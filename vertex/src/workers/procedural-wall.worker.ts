@@ -58,7 +58,8 @@ self.onmessage = async (event: MessageEvent<ProceduralWallWorkerRequest>) => {
                 }
                 if (outGeo !== preview.geometry) preview.geometry.dispose();
             }
-            outGeo.userData = { ...outGeo.userData, textGuide, textFitError };
+            const carriedFit = (outGeo.userData as { textFitError?: string | null }).textFitError ?? null;
+            outGeo.userData = { ...outGeo.userData, textGuide, textFitError: textFitError ?? carriedFit };
             const clamp = (outGeo.userData as { textPlacementClamp?: unknown }).textPlacementClamp;
             if (textGuide && clamp) {
                 const { guideWithPlacementClamp } = await import("@/lib/geometry/text-marking/place");

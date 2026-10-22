@@ -15,6 +15,7 @@ import {
     unsupportedTextChars,
 } from "@/lib/geometry/text-marking/constants";
 import { flattenText } from "@/lib/geometry/text-marking/contours";
+import { HYBRID_SEAM_OVERLAP_MESSAGE } from "@/lib/geometry/text-marking/errors";
 import {
     evaluateTextFit,
     type TextFitFix,
@@ -28,7 +29,7 @@ import { cn } from "@/lib/utils";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import type { TextAnchor, TextMode, TextSurface } from "@/types";
-import { publishTextFitAlert, useTextGuides } from "./text-guide-store";
+import { publishTextFitAlert, useTextFitErrors, useTextGuides } from "./text-guide-store";
 
 const FIX_LABEL: Record<TextFitFix, string> = {
     shrink: "Shrink to fit",
@@ -174,6 +175,13 @@ export function TextFitList() {
     const setTextMarking = useDesignStore((s) => s.setTextMarking);
     const report = useTextFitReport();
     const guides = useTextGuides();
+    const fitErrors = useTextFitErrors();
+    const seamOverlap = (["left", "right"] as const).some((side) =>
+        fitErrors[side]?.includes(HYBRID_SEAM_OVERLAP_MESSAGE),
+    );
+    useEffect(() => {
+        if (seamOverlap) publishTextFitAlert(true);
+    }, [seamOverlap]);
     if (!marking) return null;
     const clampNotes: string[] = [];
     for (const side of ["left", "right"] as const) {
@@ -229,9 +237,14 @@ export function TextFitList() {
     };
 
     const fixes = [...new Set(report.warnings.flatMap((w) => w.fixes))];
-    if (!report.warnings.length && !report.notes.length && !clampNotes.length) return null;
+    if (!report.warnings.length && !report.notes.length && !clampNotes.length && !seamOverlap) {
+        return null;
+    }
     return (
         <div className="mt-2 space-y-1" aria-live="polite">
+            {seamOverlap ? (
+                <p className="text-[11px] leading-snug text-amber-200">{HYBRID_SEAM_OVERLAP_MESSAGE}</p>
+            ) : null}
             {clampNotes.map((note) => (
                 <p key={note} className="text-[11px] leading-snug text-sky-200">
                     {note}

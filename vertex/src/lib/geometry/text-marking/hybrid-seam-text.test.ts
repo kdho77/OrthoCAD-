@@ -21,7 +21,7 @@ import { parseBinaryStl } from "@/lib/hardness/mesh";
 import { exportHardness3mf } from "@/lib/hardness/pipeline";
 import { useDesignStore } from "@/stores/design-store";
 import type { PlacedElement, Side, SideCorrections } from "@/types";
-import { applyTextMarkingToPrintSolid } from "./apply";
+import { applyTextMarkingToPrintSolid, releaseTextHostOnHybridSeamOverlap } from "./apply";
 import {
     defaultTextMarking,
     sanitizeText,
@@ -29,9 +29,11 @@ import {
     TEXT_SI_REGION_PAD_MM,
     TEXT_WELD_MM,
 } from "./constants";
+import { HYBRID_SEAM_OVERLAP_MESSAGE, TextMarkingError } from "./errors";
+import { extractHostTextContext, placeWallText, type TextPlacementClamp } from "./place";
 import { measureTextRegionQuality } from "./quality";
 import { countSoupSelfIntersectionsInRegion, soupRegionAabbFromOutlineWorld } from "./soup-intersect";
-import type { TextApplyMeta } from "./types";
+import type { FlattenedText, TextApplyMeta } from "./types";
 
 const SAMPLE = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
 /** Self-intersection reported on hybrid lateral text before the seam clamp. */
@@ -148,6 +150,11 @@ describe("hybrid seam text", () => {
                 placementU: 0.55,
             };
             const marked = await applyTextMarkingToPrintSolid(loft.geometry, marking, { side });
+            const clamp = (marked.userData as { textPlacementClamp?: TextPlacementClamp | null })
+                .textPlacementClamp;
+            expect(clamp).toBeTruthy();
+            expect(clamp?.seamInsetMm).toBe(0);
+            expect(Math.abs(clamp?.alongMm ?? 0)).toBeGreaterThan(0.05);
             const meta = (marked.userData as { textMarking?: TextApplyMeta }).textMarking;
             expect(meta?.outlineWorld?.length).toBeGreaterThan(0);
             const man = reconstructionManifold(marked);
@@ -204,4 +211,94 @@ describe("hybrid seam text", () => {
             raw.dispose();
         }, 300_000);
     }
+
+    test("a glyph that meets the seam on every station keeps the solid and names the overlap", async () => {
+        const side = "left" as const;
+        const layout = insoleLayoutForUsMenSize(8.5);
+        const elements = elementsFor(side);
+        const sourceField: HeightFieldParams = {
+            side,
+            lengthMm: layout.lengthMm,
+            widthMm: layout.widthMm,
+            thicknessMm: BASE_REFERENCE_THICKNESS_MM,
+            corrections: zero(),
+            elements,
+            includeSkives: false,
+            includeElements: true,
+            trimline: null,
+            shapeFinish: {
+                topCoverAccommodateMm: 1.25,
+                trimmableForefoot: true,
+                trimmableForefootExtraMm: 5,
+                archGrindDepthMm: 0,
+                archSkiveMm: 0,
+                archSkiveSide: "medial",
+            },
+        };
+        const raw = await loadSide(side);
+        const shoeWidth = {
+            width: "medium" as const,
+            ballWidthMm: layout.widthMm,
+            heelWidthMm: layout.widthMm * 0.62,
+            heelOverrideMm: 0,
+        };
+        const patternTop = await composePrintSolidTop(raw, { sourceField, shoeWidth });
+        const storedPattern = buildProceduralViewerPattern(patternTop, "full_contact", zero());
+        patternTop.dispose();
+        const loft = await reconstructProceduralPreview(raw, {
+            sourceField,
+            composedTop: true,
+            scanPattern: "full_contact",
+            userBottomPattern: true,
+            bottomPattern: storedPattern,
+            side,
+            wallStyle: "hybrid",
+            footprintLengthMm: layout.lengthMm,
+            footprintWidthMm: layout.widthMm,
+            sizeLabel: "US M8.5",
+            corrections: zero(),
+            shoeWidth,
+        });
+        const marking = {
+            ...defaultTextMarking("wall"),
+            text: sanitizeText("A"),
+            capHeightMm: 6,
+            depthMm: 0.6,
+            placementU: 0.55,
+        };
+        const tall: FlattenedText = {
+            advanceMm: 8,
+            capHeightMm: 6,
+            bold: true,
+            minStrokeMm: 1,
+            centroids: [{ x: 4, y: 40 }],
+            groups: [
+                {
+                    outer: [
+                        { x: 0, y: 0 },
+                        { x: 8, y: 0 },
+                        { x: 8, y: 80 },
+                        { x: 0, y: 80 },
+                    ],
+                    holes: [],
+                },
+            ],
+        };
+        const host = loft.geometry;
+        const verts = host.getAttribute("position").count;
+        let thrown: unknown;
+        try {
+            placeWallText(host, extractHostTextContext(host), marking, tall);
+        } catch (e) {
+            thrown = e;
+        }
+        expect(thrown).toBeInstanceOf(TextMarkingError);
+        expect((thrown as TextMarkingError).code).toBe("hybrid-seam");
+        const released = releaseTextHostOnHybridSeamOverlap(host, thrown);
+        expect(released).toBe(host);
+        expect((host.userData as { textFitError?: string }).textFitError).toBe(HYBRID_SEAM_OVERLAP_MESSAGE);
+        expect(host.getAttribute("position").count).toBe(verts);
+        host.dispose();
+        raw.dispose();
+    }, 120_000);
 });

@@ -14,7 +14,7 @@ import {
     TEXT_WALL_FEATURE_MIN_MM,
 } from "./constants";
 import { flattenText } from "./contours";
-import { TextMarkingError } from "./errors";
+import { HYBRID_SEAM_OVERLAP_MESSAGE, TextMarkingError } from "./errors";
 import { loadTextFont } from "./font";
 import { assertTextPrintGates } from "./gates";
 import {
@@ -42,7 +42,7 @@ function shrinkThenFlatten(
             return flat;
         } catch (e) {
             lastErr = e;
-            if (e instanceof TextMarkingError && e.code === "too-thin") throw e;
+            if (e instanceof TextMarkingError && (e.code === "too-thin" || e.code === "hybrid-seam")) throw e;
             cap = Math.max(minCap, Number((cap - 0.1).toFixed(4)));
             if (cap <= minCap + 1e-6) break;
         }
@@ -54,6 +54,19 @@ function shrinkThenFlatten(
     } catch (e) {
         throw lastErr instanceof Error ? lastErr : e;
     }
+}
+
+/**
+ * Hybrid seam overlap is a placement warning. The print solid stays the host
+ * (no text cut) and the panel shows {@link HYBRID_SEAM_OVERLAP_MESSAGE}.
+ */
+export function releaseTextHostOnHybridSeamOverlap(
+    host: BufferGeometry,
+    error: unknown,
+): BufferGeometry | null {
+    if (!(error instanceof TextMarkingError) || error.code !== "hybrid-seam") return null;
+    host.userData = { ...host.userData, textFitError: HYBRID_SEAM_OVERLAP_MESSAGE };
+    return host;
 }
 
 /**
@@ -100,20 +113,26 @@ export async function applyTextMarkingToPrintSolid(
         map = placed.map;
         placeMeta = placed.meta;
     } else {
-        placedFlat = shrinkThenFlatten(font, checked, minCap, (flat) => {
-            placeWallText(host, hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat);
-        });
-        const placed = placeWallText(
-            host,
-            hostCtx,
-            { ...checked, capHeightMm: placedFlat.capHeightMm },
-            placedFlat,
-        );
-        placedFlat = placed.flat;
-        map = placed.map;
-        rebind = placed.rebind;
-        placeMeta = placed.meta;
-        placementClamp = placed.placementClamp;
+        try {
+            placedFlat = shrinkThenFlatten(font, checked, minCap, (flat) => {
+                placeWallText(host, hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat);
+            });
+            const placed = placeWallText(
+                host,
+                hostCtx,
+                { ...checked, capHeightMm: placedFlat.capHeightMm },
+                placedFlat,
+            );
+            placedFlat = placed.flat;
+            map = placed.map;
+            rebind = placed.rebind;
+            placeMeta = placed.meta;
+            placementClamp = placed.placementClamp;
+        } catch (e) {
+            const released = releaseTextHostOnHybridSeamOverlap(host, e);
+            if (released) return released;
+            throw e;
+        }
     }
 
     const op = checked.mode === "emboss" ? "add" : "subtract";
