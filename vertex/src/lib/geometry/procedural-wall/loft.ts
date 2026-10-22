@@ -59,6 +59,8 @@ export interface HermiteStation {
     t1?: { n: number; z: number };
     /** Fillet-implied seam dihedral at the plantar stitch (deg). */
     impliedSeamDeg?: number;
+    /** Cut station: wall drops straight from the skived rim to z = 0. */
+    straightDown?: boolean;
 }
 
 export interface HermiteLoftInput {

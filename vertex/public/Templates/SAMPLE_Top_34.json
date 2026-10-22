@@ -1,0 +1,31 @@
+{
+  "kind": "34",
+  "frame": "footprint-uv",
+  "u": "0 medial, 1 lateral",
+  "v": "0 heel, 1 toe",
+  "extendMm": 2,
+  "controls": [
+    {
+      "u": 0,
+      "v": 0.62
+    },
+    {
+      "u": 0.2,
+      "v": 0.64
+    },
+    {
+      "u": 0.6,
+      "v": 0.61
+    },
+    {
+      "u": 1,
+      "v": 0.55
+    }
+  ],
+  "skive": {
+    "lengthMm": 10,
+    "thickOver4Mm": "3t",
+    "capMm": 15
+  },
+  "endThicknessMm": 0.5
+}

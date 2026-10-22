@@ -6,6 +6,7 @@ import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthLongitudinalEnvelope, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import { scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -17,11 +18,18 @@ import {
 import type { ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
+import { type DistalSkiveField, skiveFeatherAt } from "./distal-skive";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
 import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
-import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
+import {
+    type BundledTopShape,
+    bundledTopTemplate,
+    SAMPLE_TOP_ASSET_ID,
+    SAMPLE_TOP_NAME,
+} from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
+import { TRIM_GLB_LOCK } from "./trim-curve";
 import type { StockWallModel } from "./types";
 import type { ProceduralWallStyle } from "./wall-style";
 
@@ -32,48 +40,64 @@ export {
     SAMPLE_TOP_PUBLIC_PATH,
 } from "./sample-top-id";
 
-let cachedNative: BufferGeometry | null = null;
-let inflight: Promise<BufferGeometry> | null = null;
+const cachedNative = new Map<string, BufferGeometry>();
+const inflight = new Map<string, Promise<BufferGeometry>>();
 
-/** Parse SAMPLE_Top bytes the same way the S1 SAMPLE_Top gate does. */
-export async function sampleTopFromArrayBuffer(buffer: ArrayBuffer): Promise<BufferGeometry> {
+/** Parse a bundled top the same way the S1 SAMPLE_Top gate does. */
+export async function sampleTopFromArrayBuffer(
+    buffer: ArrayBuffer,
+    lock?: typeof TRIM_GLB_LOCK,
+): Promise<BufferGeometry> {
     const group = await loadGlbFromBuffer(buffer);
     const merged = extractMergedGeometry(group);
     if (!merged) throw new Error("SAMPLE_Top.glb produced no geometry");
-    const reoriented = reorientToFootprintFrame(merged.geometry, { preserveAuthorZ: true });
+    const reoriented = reorientToFootprintFrame(merged.geometry, {
+        preserveAuthorZ: true,
+        lock,
+    });
     merged.geometry.dispose();
     return reoriented;
 }
 
 /** Drop the cached SAMPLE_Top mesh so a Retry can refetch after a failed load. */
 export function resetSampleTopGeometryCache(): void {
-    cachedNative?.dispose();
-    cachedNative = null;
-    inflight = null;
+    for (const geo of cachedNative.values()) geo.dispose();
+    cachedNative.clear();
+    inflight.clear();
+}
+
+/** Load one bundled top (full, 3/4, or sulcus). Caller owns the clone. */
+export async function loadBundledTopGeometry(shape: BundledTopShape = "full"): Promise<BufferGeometry> {
+    const template = bundledTopTemplate(shape);
+    const cached = cachedNative.get(template.publicPath);
+    if (cached) return cached.clone();
+    let pending = inflight.get(template.publicPath);
+    if (!pending) {
+        pending = (async () => {
+            try {
+                const res = await fetch(template.publicPath);
+                if (!res.ok) {
+                    throw new StockGlbLoadError(template.publicPath, `HTTP ${res.status}`);
+                }
+                const lock = shape === "full" ? undefined : TRIM_GLB_LOCK;
+                const parsed = await sampleTopFromArrayBuffer(await res.arrayBuffer(), lock);
+                cachedNative.set(template.publicPath, parsed);
+                return parsed;
+            } catch (e) {
+                inflight.delete(template.publicPath);
+                if (e instanceof StockGlbLoadError) throw e;
+                throw new StockGlbLoadError(template.publicPath, e);
+            }
+        })();
+        inflight.set(template.publicPath, pending);
+    }
+    const native = await pending;
+    return native.clone();
 }
 
 /** Load the bundled top-only SAMPLE_Top.glb (cloned; caller owns the result). */
 export async function loadSampleTopGeometry(): Promise<BufferGeometry> {
-    if (cachedNative) return cachedNative.clone();
-    if (!inflight) {
-        inflight = (async () => {
-            try {
-                const res = await fetch(SAMPLE_TOP_PUBLIC_PATH);
-                if (!res.ok) {
-                    throw new StockGlbLoadError(SAMPLE_TOP_PUBLIC_PATH, `HTTP ${res.status}`);
-                }
-                const parsed = await sampleTopFromArrayBuffer(await res.arrayBuffer());
-                cachedNative = parsed;
-                return parsed;
-            } catch (e) {
-                inflight = null;
-                if (e instanceof StockGlbLoadError) throw e;
-                throw new StockGlbLoadError(SAMPLE_TOP_PUBLIC_PATH, e);
-            }
-        })();
-    }
-    const native = await inflight;
-    return native.clone();
+    return loadBundledTopGeometry("full");
 }
 
 /** Viewer-only: SAMPLE_Top rim → faired B. Does not loft walls. */
@@ -118,9 +142,21 @@ export function followViewerPattern(
 
 /** Print / STL: loft the approved solid. Same reconstruct math as the frozen STLs. */
 export async function buildProceduralExportSolid(
-    options: ProceduralPreviewOptions & { mirrored?: boolean } = {},
+    options: ProceduralPreviewOptions & { mirrored?: boolean; topShape?: BundledTopShape } = {},
 ): Promise<{ model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry }> {
-    let raw = await loadSampleTopGeometry();
+    const shape = options.topShape ?? (options.distalTrim ? options.distalTrim : "full");
+    let raw = await loadBundledTopGeometry(shape);
+    if (
+        options.distalTrim &&
+        options.footprintLengthMm &&
+        options.footprintWidthMm &&
+        options.footprintLengthMm > 1 &&
+        options.footprintWidthMm > 1
+    ) {
+        const sized = scaleGeometryToInsoleSize(raw, options.footprintLengthMm, options.footprintWidthMm);
+        raw.dispose();
+        raw = sized;
+    }
     if (options.mirrored) {
         const mirrored = mirrorGeometry(raw);
         raw.dispose();
@@ -134,9 +170,16 @@ export async function buildProceduralExportSolid(
         const { buildTextGuide } = await import("@/lib/geometry/text-marking/place");
         const textGuide = buildTextGuide(preview.geometry);
         let geometry = preview.geometry;
+        const skive = preview.geometry.userData.distalSkive as DistalSkiveField | undefined;
         try {
             geometry = await applyTextMarkingToPrintSolid(preview.geometry, options.textMarking, {
                 side: options.side ?? (options.mirrored ? "left" : "right"),
+                ...(skive
+                    ? {
+                          skiveFeatherAt: (x: number, y: number, leadMm = 0) =>
+                              skiveFeatherAt(skive, x, y, leadMm),
+                      }
+                    : {}),
             });
         } catch (e) {
             if (!(e instanceof TextMarkingError)) throw e;
@@ -193,6 +236,11 @@ export interface ProceduralPreviewOptions {
     textMarking?: TextMarking | null;
     /** Foot side for left/right placement (wall text is never glyph-mirrored). */
     side?: Side;
+    /** 3/4 or sulcus. Omit for full-length SAMPLE_Top. */
+    distalTrim?: "34" | "sulcus";
+    /** Shoe-size footprint. Applied once, and only when distalTrim is set. */
+    footprintLengthMm?: number;
+    footprintWidthMm?: number;
 }
 
 /**
@@ -216,6 +264,7 @@ export async function reconstructProceduralPreview(
             sourceField: options.sourceField,
             shoeWidth: options.shoeWidth,
             trimline: options.trimline,
+            distalTrim: options.distalTrim,
         });
         owned = source !== topGeo;
     }
@@ -243,6 +292,7 @@ export async function reconstructProceduralPreview(
             archGrindDepthMm: options.archGrindDepthMm,
             sourceField: options.sourceField,
             composedTop: useComposed,
+            distalTrim: options.distalTrim ? { kind: options.distalTrim } : undefined,
         });
         return { model, pattern, geometry };
     };

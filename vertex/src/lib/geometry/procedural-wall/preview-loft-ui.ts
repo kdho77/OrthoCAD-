@@ -16,7 +16,14 @@ export function wantsProceduralExportSolid(
 ): boolean {
     if (!base) return false;
     const path = (base.glbPath ?? "").replace(/^\/+/, "");
-    if (base.assetId === "sample-top" || /SAMPLE_Top\.glb$/i.test(path)) return true;
+    if (
+        base.assetId === "sample-top" ||
+        base.assetId === "sample-top-34" ||
+        base.assetId === "sample-top-sulcus" ||
+        /SAMPLE_Top(?:_34|_sulcus)?\.glb$/i.test(path)
+    ) {
+        return true;
+    }
     if (base.assetId === "stock-default" || /(?:^|\/)Default\.glb$/i.test(path)) return false;
     return (wallModel ?? "procedural") === "procedural";
 }

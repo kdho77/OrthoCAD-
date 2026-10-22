@@ -42,9 +42,11 @@ import {
 import { composeViewerPrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import { proceduralViewerStockGate } from "@/lib/geometry/procedural-wall/sample-top-display";
 import {
-    loadSampleTopGeometry,
+    bundledTopShapeFromBase,
+    distalTrimKind,
     SAMPLE_TOP_ASSET_ID,
-} from "@/lib/geometry/procedural-wall/sample-top-preview";
+} from "@/lib/geometry/procedural-wall/sample-top-id";
+import { loadBundledTopGeometry } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
@@ -132,8 +134,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     // Load the raw base mesh whenever the referenced asset (or its mirrored variant) changes.
     // Include url so stock bases upgrade from the sync stub to the server row re-trigger load.
     const procedural = wallModel === "procedural";
+    const topShape = bundledTopShapeFromBase(base);
     const loadKey = procedural
-        ? `${SAMPLE_TOP_ASSET_ID}:${side}:${isMirroredForLoad ? "m" : "p"}`
+        ? `${topShape ?? SAMPLE_TOP_ASSET_ID}:${side}:${isMirroredForLoad ? "m" : "p"}:${base?.glbPath ?? ""}`
         : assetId
           ? `${assetId}:${isMirroredForLoad ? "m" : "p"}:${baseUrl ?? ""}`
           : null;
@@ -224,7 +227,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             glbPath: ref.glbPath,
         });
         const loadGeo = procedural
-            ? loadSampleTopGeometry().then((geo) => {
+            ? loadBundledTopGeometry(bundledTopShapeFromBase(ref) ?? "full").then((geo) => {
                   if (!isMirroredForLoad) return geo;
                   const mirrored = mirrorGeometry(geo);
                   geo.dispose();
@@ -648,6 +651,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         const started = performance.now();
                         try {
                             const preview = await reconstructProceduralPreviewInWorker(raw, {
+                                distalTrim:
+                                    distalTrimKind(bundledTopShapeFromBase(getDesignBase(design, side))) ??
+                                    undefined,
                                 corrections: field.corrections,
                                 thicknessMm,
                                 stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,

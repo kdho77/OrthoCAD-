@@ -10,6 +10,8 @@ import {
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { applyShoeWidthToGeometry, type ShoeWidthId, shoeWidthAffineActive } from "@/lib/geometry/shoe-width";
 import { clipGeometryToOutline, type TrimlineCurve } from "@/lib/geometry/trimline";
+import { distalSkiveFieldFromMesh, skiveFeatherAt } from "./distal-skive";
+import type { TrimKind } from "./trim-curve";
 
 /**
  * Viewer shoe-width affine forwarded onto the Print top sheet.
@@ -28,6 +30,13 @@ export interface ComposePrintSolidInput {
     shoeWidth?: PrintSolidShoeWidth | null;
     /** Clip before rim extraction. Falls back to sourceField.trimline. */
     trimline?: TrimlineCurve | null;
+    /**
+     * Present only for a trimmed base. Clips elements before the skive start.
+     * `leadMm` pulls a met pad's clip further proximal of the taper.
+     */
+    skiveFeatherAt?: (x: number, y: number, leadMm?: number) => number;
+    /** When set, elements are feathered from this trim's skive start. */
+    distalTrim?: TrimKind;
 }
 
 /**
@@ -73,6 +82,17 @@ function composePrintSolidTopCore(
     return { geometry: modified, referenceBase: current, ownedWidth: owned };
 }
 
+function featherFromReference(
+    referenceBase: BufferGeometry,
+    kind: TrimKind,
+): (x: number, y: number, leadMm?: number) => number {
+    const pos = referenceBase.getAttribute("position");
+    const index = referenceBase.getIndex();
+    if (!pos || !index) return () => 1;
+    const field = distalSkiveFieldFromMesh(pos.array as Float32Array, index.array as Uint32Array, kind);
+    return (x, y, leadMm = 0) => skiveFeatherAt(field, x, y, leadMm);
+}
+
 /** Modifier path without GLB element placement (sync; used when no elements). */
 export function composePrintSolidTopSync(raw: BufferGeometry, input: ComposePrintSolidInput): BufferGeometry {
     const { geometry, referenceBase, ownedWidth } = composePrintSolidTopCore(raw, input);
@@ -91,7 +111,12 @@ export async function composePrintSolidTop(
     input: ComposePrintSolidInput,
 ): Promise<BufferGeometry> {
     const { geometry, referenceBase, ownedWidth } = composePrintSolidTopCore(raw, input);
-    await applyElementsToTopMeshLast(geometry, referenceBase, input.sourceField);
+    const skiveFeatherAtXY =
+        input.skiveFeatherAt ??
+        (input.distalTrim ? featherFromReference(referenceBase, input.distalTrim) : undefined);
+    await applyElementsToTopMeshLast(geometry, referenceBase, input.sourceField, {
+        skiveFeatherAt: skiveFeatherAtXY,
+    });
     if (ownedWidth && referenceBase !== raw && referenceBase !== geometry) referenceBase.dispose();
     const trim = input.trimline ?? input.sourceField.trimline ?? null;
     if (trim && trim.points.length >= 4) {

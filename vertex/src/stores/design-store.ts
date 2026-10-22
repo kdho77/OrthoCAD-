@@ -6,6 +6,7 @@ import {
     type CorrectionPresetPayload,
 } from "@/lib/clinical/correction-presets";
 import {
+    bundledTopStockBase,
     createDefaultStockPairedBases,
     designHasBase,
     designNeedsDefaultStockResolution,
@@ -21,6 +22,7 @@ import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { defaultElementPose } from "@/lib/geometry/elements";
 import { migrateCorrections } from "@/lib/geometry/migrate-corrections";
+import type { BundledTopShape } from "@/lib/geometry/procedural-wall/sample-top-id";
 import {
     defaultSideShapeFinish,
     normalizeSideShapeFinish,
@@ -531,6 +533,9 @@ export interface DesignStore {
 
     /** Set paired left/right bases for dual-view workspace. Sets per-side bases, defaults per-side thickness/method from legacy or defaults, sets paired.linked = false for independence. */
     setPairedBases: (left?: DesignBase, right?: DesignBase) => void;
+
+    /** Switch the bundled top: full-length SAMPLE_Top, 3/4, or sulcus. */
+    setBundledTopShape: (shape: BundledTopShape) => void;
 }
 
 export const useDesignStore = create<DesignStore>()(
@@ -884,6 +889,30 @@ export const useDesignStore = create<DesignStore>()(
                                 ...corrections,
                                 left: finalLeft,
                                 right: finalRight,
+                            },
+                        },
+                    };
+                }),
+
+            setBundledTopShape: (shape) =>
+                set((s) => {
+                    const { left, right } = createDefaultStockPairedBases(bundledTopStockBase(shape));
+                    const thickness = s.design.thicknessMm || BASE_REFERENCE_THICKNESS_MM;
+                    const method = s.design.method || "printing_solid";
+                    return {
+                        design: {
+                            ...s.design,
+                            base: left,
+                            customPrefabId: left.assetId,
+                            customPrefabName: left.name,
+                            paired: {
+                                leftBase: left,
+                                rightBase: right,
+                                leftThicknessMm: s.design.paired?.leftThicknessMm ?? thickness,
+                                rightThicknessMm: s.design.paired?.rightThicknessMm ?? thickness,
+                                leftMethod: s.design.paired?.leftMethod ?? method,
+                                rightMethod: s.design.paired?.rightMethod ?? method,
+                                linked: s.design.paired?.linked ?? false,
                             },
                         },
                     };

@@ -19,6 +19,7 @@ import {
     DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
 import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/preview-loft-ui";
+import { bundledTopShapeFromBase, distalTrimKind } from "@/lib/geometry/procedural-wall/sample-top-id";
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gates";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
@@ -61,6 +62,9 @@ async function buildModifiedBaseGeometry(
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, effThickness);
         const stored = useBottomPatternStore.getState().getPattern(side);
+        const topShape = bundledTopShapeFromBase(base);
+        const trim = distalTrimKind(topShape);
+        const layout = trim ? insoleLayoutFromDesign(design) : null;
         const preview = await buildProceduralExportSolid({
             mirrored: Boolean(base.mirrored),
             corrections: field.corrections,
@@ -70,6 +74,9 @@ async function buildModifiedBaseGeometry(
             scanPattern: design.pattern,
             textMarking: design.textMarking,
             side,
+            topShape: topShape ?? "full",
+            ...(trim ? { distalTrim: trim } : {}),
+            ...(layout ? { footprintLengthMm: layout.lengthMm, footprintWidthMm: layout.widthMm } : {}),
             ...(stored ? { bottomPattern: curveToPolyPoints(stored) } : {}),
         });
         return preview.geometry;

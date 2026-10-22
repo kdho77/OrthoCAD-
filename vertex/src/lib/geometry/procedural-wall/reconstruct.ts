@@ -38,6 +38,7 @@ import {
     type WallRegionDefaults,
 } from "./defaults";
 import { ensureSourceRimStations, evenSplitSourceEdges, markSourceRimStations } from "./densify-stations";
+import { applyDistalSkive, type DistalSkiveField, medialSignFromArchPeak } from "./distal-skive";
 import { extractTopSheet } from "./extract";
 import { buildDishZIndex, buildXyHeightIndex, sampleXyHeight } from "./height-xy";
 import { buildHermiteStations } from "./loft";
@@ -80,6 +81,7 @@ import {
     stampMonotonicTB,
     TB_SMOOTH_SIGMA_MM,
 } from "./stations";
+import { closestOnCut, TRIM_SEED_CONTROLS, type TrimKind } from "./trim-curve";
 import { S1_MIN_WALL_MM, type StockWallModel } from "./types";
 import { SPLINE_GATES_REPORT_ONLY, splineGateFail } from "./wall-spline";
 import { resolveWallStyleParams } from "./wall-style";
@@ -119,6 +121,11 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * the Default extractTopSheet steal.
      */
     composedTop?: boolean;
+    /**
+     * Distal trim family. Absent on the full-length SAMPLE_Top path, which
+     * must stay byte-identical. Skive length is absolute millimetres.
+     */
+    distalTrim?: { kind: TrimKind };
 }
 
 function zeroCorrections(): SideCorrections {
@@ -178,6 +185,22 @@ export function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
         hasWedge(c.forefootWedge) ||
         thicknessChanged
     );
+}
+
+/** Drop sub-millimetre cut chords so the wall is not lofted at the 0.1 mm GLB spacing. */
+function thinShortBoundary(pos: Float32Array, rim: number[], minChordMm: number): number[] {
+    if (rim.length < 8) return rim;
+    const kept = [rim[0]!];
+    let last = rim[0]!;
+    for (let i = 1; i < rim.length; i++) {
+        const b = rim[i]!;
+        const d = Math.hypot(pos[b * 3]! - pos[last * 3]!, pos[b * 3 + 1]! - pos[last * 3 + 1]!);
+        if (d >= minChordMm || i === rim.length - 1) {
+            kept.push(b);
+            last = b;
+        }
+    }
+    return kept.length >= 8 ? kept : rim;
 }
 
 function orderRimLocal(pos: Float32Array, rimLocal: number[]): number[] {
@@ -944,6 +967,7 @@ export function reconstructProceduralWalls(
               }))
             : [];
     let medialYSign = medialYSignFromTopRim(peekRim, model.bounds);
+    if (options.distalTrim && peekRim.length) medialYSign = medialSignFromArchPeak(peekRim);
     options.medialYSign = medialYSign;
     const defaults = defaultsFromModel(model, preset);
     defaults.medialYSign = medialYSign;
@@ -996,7 +1020,23 @@ export function reconstructProceduralWalls(
         throw new Error("procedural reconstruct: TopSheet required (exact stock top mesh)");
     }
 
+    let skiveField: DistalSkiveField | null = null;
+    if (options.distalTrim) {
+        const skived = applyDistalSkive(
+            topPos,
+            topIdx,
+            rimLocal,
+            options.distalTrim.kind,
+            TRIM_SEED_CONTROLS[options.distalTrim.kind],
+        );
+        topPos = skived.pos;
+        topIdx = skived.idx;
+        rimLocal = skived.rimLocal;
+        skiveField = skived.field;
+    }
+
     rimLocal = orderRimLocal(topPos, rimLocal);
+    if (skiveField) rimLocal = thinShortBoundary(topPos, rimLocal, 1);
     const { r1, r2 } = filletRadiiFromDefaults(defaults);
     const postingInput = {
         ...options,
@@ -1137,7 +1177,9 @@ export function reconstructProceduralWalls(
             keepFair: true,
         });
     }
-    medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
+    medialYSign = options.distalTrim
+        ? medialSignFromArchPeak(rimPts)
+        : medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
     const patternMovedAt = wholeWidth
         ? () => true
         : heelWiden
@@ -1161,7 +1203,9 @@ export function reconstructProceduralWalls(
                     mode: wholeWidth ? "width" : "heel",
                 }),
             };
-            medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
+            medialYSign = options.distalTrim
+                ? medialSignFromArchPeak(rimPts)
+                : medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
         }
     }
     options.medialYSign = medialYSign;
@@ -1324,7 +1368,25 @@ export function reconstructProceduralWalls(
             }
         }
     }
-    assertPreLoftStations(stations, r1, r2);
+    const cutForHeading = skiveField?.cut;
+    assertPreLoftStations(
+        stations,
+        r1,
+        r2,
+        // Straight-down stations sit on the cut. Heading is waived only there.
+        cutForHeading
+            ? (i) => closestOnCut(stations[i]!.rim.x, stations[i]!.rim.y, cutForHeading).dist < 12
+            : undefined,
+    );
+    if (skiveField) {
+        for (const st of stations) {
+            const hit = closestOnCut(st.rim.x, st.rim.y, skiveField.cut);
+            if (hit.dist <= 0.6) {
+                st.straightDown = true;
+                st.outline = { x: st.rim.x, y: st.rim.y, z: 0 };
+            }
+        }
+    }
     {
         let minB = Infinity;
         let maxHead = 0;
@@ -1719,6 +1781,7 @@ export function reconstructProceduralWalls(
         (grid.frames[0]?.nRoundFix || grid.frames[0]?.roundRows || 0) + (grid.frames[0]?.nLineFix || 0);
     geo.userData = {
         wallModel: "procedural",
+        ...(skiveField ? { distalSkive: skiveField } : {}),
         stockId: model.id,
         loftN: nS,
         pairingMethod: pairing.method ?? "harmonic",

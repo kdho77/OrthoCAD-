@@ -6270,6 +6270,16 @@ export function buildBezierColumns(
     let maxTiltStep = 0;
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
+        if (stations[i]?.straightDown) {
+            const rows = Math.max(2, nWall);
+            const col: PolyPoint[] = [];
+            for (let k = 0; k < rows; k++) {
+                const t = k / (rows - 1);
+                col.push({ x: fr.R.x, y: fr.R.y, z: fr.R.z * (1 - t) });
+            }
+            xyz.push(col);
+            continue;
+        }
         const col = columnPoints(fr, nWall, spacing, fr.nRoundFix, fr.nFilFix);
         col[0] = { ...fr.R };
         col[col.length - 1] = { ...fr.B };
@@ -6291,6 +6301,10 @@ export function buildBezierColumns(
     for (let i = 0; i < frames.length; i++) {
         const fr = frames[i]!;
         const col = xyz[i]!;
+        if (stations[i]?.straightDown) {
+            implied.push(0);
+            continue;
+        }
         const first = col[1] ?? fr.F;
         const nxt = frames[(i + 1) % frames.length]!;
         const leanStep = (Math.abs(nxt.leanRad - fr.leanRad) * 180) / Math.PI;
@@ -6303,6 +6317,7 @@ export function buildBezierColumns(
         maxTiltStep = Math.max(maxTiltStep, leanStep);
     }
     for (let i = 0; i < frames.length; i++) {
+        if (stations[i]?.straightDown) continue;
         const col = xyz[i]!;
         const fr = frames[i]!;
         fr.arcEndZ = col[col.length - 2]?.z ?? fr.B.z;
@@ -6311,6 +6326,7 @@ export function buildBezierColumns(
     reportLeanVsBio(frames, defaults, flare);
     const bad: Array<{ i: number; u: number; off: number; side: number }> = [];
     for (let i = 0; i < frames.length; i++) {
+        if (stations[i]?.straightDown) continue;
         const fr = frames[i]!;
         const col = xyz[i]!;
         const nRnd = fr.nRoundFix || fr.roundRows || 0;

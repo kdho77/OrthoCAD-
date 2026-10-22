@@ -1,0 +1,29 @@
+{
+  "kind": "sulcus",
+  "frame": "footprint-uv",
+  "u": "0 medial, 1 lateral",
+  "v": "0 heel, 1 toe",
+  "extendMm": 2,
+  "controls": [
+    {
+      "u": 0,
+      "v": 0.68
+    },
+    {
+      "u": 0.29,
+      "v": 0.74
+    },
+    {
+      "u": 0.58,
+      "v": 0.79
+    },
+    {
+      "u": 1,
+      "v": 0.77
+    }
+  ],
+  "skive": {
+    "lengthMm": 6
+  },
+  "endThicknessMm": 0.5
+}
