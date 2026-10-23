@@ -15,6 +15,7 @@ import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
 import {
     assertClosedSolidAcceptable,
+    assertProceduralIndexSolid,
     closeGlbInsoleToSolid,
     DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
@@ -187,7 +188,7 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
 
 /** Export STL bytes for the active design side. */
 export async function buildExportStl(side: Side, options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const { design } = useDesignStore.getState();
+    const { design, viewer } = useDesignStore.getState();
     assertShapeFinishExportAllowed(design, side);
     const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
 
@@ -205,7 +206,18 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
         );
     }
     const geometry = modifiedBase;
+    const base = getDesignBase(design, side);
+    const procedural = wantsProceduralExportSolid(base, viewer?.wallModel);
     try {
+        if (procedural) {
+            // Already a closed loft. closeGlbInsoleToSolid position-keys at QUANT 1e4
+            // and false-fails (euler=3, no seam loops) at several shoe sizes.
+            if (typeof console !== "undefined") {
+                console.log("[EXPORT] procedural solid already closed — index-topology gate");
+            }
+            assertProceduralIndexSolid(geometry);
+            return geometryToBinarySTL(geometry);
+        }
         if (typeof console !== "undefined") {
             console.log("[EXPORT] closing GLB insole rims...");
         }
@@ -296,7 +308,7 @@ export async function buildExportSolid(
     side: Side,
     options: BuildExportStlOptions = {},
 ): Promise<BufferGeometry> {
-    const { design } = useDesignStore.getState();
+    const { design, viewer } = useDesignStore.getState();
     const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
 
     if (exportMode === "manufacturing" && isAuthoritativeKernel()) {
@@ -322,6 +334,11 @@ export async function buildExportSolid(
 
     const geometry = await buildExportGlbGeometry(side);
     if (exportMode === "manufacturing") {
+        const base = getDesignBase(design, side);
+        if (wantsProceduralExportSolid(base, viewer?.wallModel)) {
+            assertProceduralIndexSolid(geometry);
+            return geometry;
+        }
         return closeGlbInsoleToSolid(geometry);
     }
     return geometry;
