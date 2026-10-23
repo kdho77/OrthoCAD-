@@ -636,4 +636,58 @@ describe("exported-STL soup self-intersections", () => {
         expect(hit.pairs[0]?.triA).not.toBe(hit.pairs[0]?.triB);
         cross.dispose();
     });
+
+    test("region SI catches a planted hit in a >90k soup under 5 s", async () => {
+        const { BufferAttribute, BufferGeometry } = await import("three");
+        const { countSoupSelfIntersectionsInRegion } = await import("./soup-intersect");
+        const positions: number[] = [];
+        const indices: number[] = [];
+        const pushTri = (
+            ax: number,
+            ay: number,
+            az: number,
+            bx: number,
+            by: number,
+            bz: number,
+            cx: number,
+            cy: number,
+            cz: number,
+        ) => {
+            const base = positions.length / 3;
+            positions.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+            indices.push(base, base + 1, base + 2);
+        };
+        const ox = 2000;
+        const cells = 220;
+        for (let i = 0; i < cells; i++) {
+            for (let j = 0; j < cells; j++) {
+                const x0 = ox + i;
+                const y0 = j;
+                const x1 = x0 + 1;
+                const y1 = y0 + 1;
+                pushTri(x0, y0, 0, x1, y0, 0, x1, y1, 0);
+                pushTri(x0, y0, 0, x1, y1, 0, x0, y1, 0);
+            }
+        }
+        expect(indices.length / 3).toBeGreaterThan(90_000);
+        pushTri(-1, 50, 0, 1, 50, 0, 0, 51, 0);
+        pushTri(0, 49, -1, 0, 51, -1, 0, 50, 1);
+        const geo = new BufferGeometry();
+        geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
+        geo.setIndex(indices);
+        const region = {
+            minX: -2,
+            minY: 48,
+            minZ: -2,
+            maxX: 2,
+            maxY: 52,
+            maxZ: 2,
+        };
+        const started = performance.now();
+        const hit = countSoupSelfIntersectionsInRegion(geo, region);
+        const ms = performance.now() - started;
+        expect(hit.real).toBeGreaterThan(0);
+        expect(ms).toBeLessThan(5000);
+        geo.dispose();
+    });
 });

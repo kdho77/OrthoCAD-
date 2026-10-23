@@ -393,7 +393,7 @@ export interface ViewerSettings {
     view: CameraView;
     /**
      * Procedural walls rebuild from SAMPLE_Top + the faired bottom pattern.
-     * Default `'procedural'` (Grinding Straight). `'legacy'` is test-only via
+     * Default `'procedural'` (Grinding Hybrid). `'legacy'` is test-only via
      * `?wallModel=legacy`. Not persisted; never touches modifiers/export.
      */
     wallModel?: "legacy" | "procedural";
@@ -559,7 +559,7 @@ export const useDesignStore = create<DesignStore>()(
                 showScans: true,
                 view: "iso",
                 wallModel: "procedural",
-                wallStyle: "straight",
+                wallStyle: "hybrid",
             },
             selectedElementId: null,
             transformMode: "translate",

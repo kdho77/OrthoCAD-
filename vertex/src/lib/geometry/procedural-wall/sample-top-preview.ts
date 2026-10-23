@@ -1,11 +1,12 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import type { BufferGeometry } from "three";
+import { BufferAttribute, BufferGeometry } from "three";
 import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthLongitudinalEnvelope, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import { extractOrderedBoundaryLoopWithIndices } from "@/lib/geometry/mesh-close";
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -16,9 +17,20 @@ import {
 } from "@/lib/library/loaders";
 import type { ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
-import type { PolyPoint } from "./curves";
+import { fitClosedC2Spline, type PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
-import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
+import {
+    type FootprintBounds,
+    type SharedInsoleSizeTransform,
+    sharedInsoleSizeTransformFromGeometry,
+} from "./pattern-hygiene";
+import {
+    applySharedInsoleSizeToGeometry,
+    composePrintSolidTop,
+    type DistalCutKind,
+    type PrintSolidShoeWidth,
+    sharedComposedRim,
+} from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
@@ -193,6 +205,77 @@ export interface ProceduralPreviewOptions {
     textMarking?: TextMarking | null;
     /** Foot side for left/right placement (wall text is never glyph-mirrored). */
     side?: Side;
+    footprintReferenceBounds?: FootprintBounds;
+    footprintLengthMm?: number;
+    footprintWidthMm?: number;
+    /**
+     * #204 size map. Created once by the caller when it has the native mesh.
+     * When omitted and both footprint dimensions are set, preview builds it
+     * once from this mesh and passes that same object into compose and the loft.
+     */
+    sizeTransform?: SharedInsoleSizeTransform | null;
+    /** #206 sulcus / 3/4 cut, or the met-head landmark on that same cutter. */
+    distalCut?: DistalCutKind | null;
+    /**
+     * Outline + #206 cut. Same array compose stored. Passed through to the loft
+     * so export does not build a second rim.
+     */
+    referenceRim?: PolyPoint[] | null;
+    sizeLabel?: string;
+    userBottomPattern?: boolean;
+}
+
+function ySpanOf(pos: Float32Array, indices: readonly number[]): number {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const i of indices) {
+        if (i < 0 || i * 3 + 1 >= pos.length) return -1;
+        const y = pos[i * 3 + 1] ?? 0;
+        if (y < min) min = y;
+        if (y > max) max = y;
+    }
+    return max - min;
+}
+
+/**
+ * Use the extracted mesh's own longest boundary when it spans more of the foot
+ * than the current rim index list. Vertices are not moved.
+ */
+export function adoptFullBoundaryRim(model: StockWallModel): void {
+    const pos = model.top.meshPositions;
+    const idx = model.top.meshIndices;
+    const rim = model.top.rimLocal;
+    if (!pos || !idx || !rim || rim.length < 3 || idx.length < 3) return;
+    const geo = new BufferGeometry();
+    geo.setAttribute("position", new BufferAttribute(pos, 3));
+    geo.setIndex(new BufferAttribute(idx, 1));
+    const boundary = extractOrderedBoundaryLoopWithIndices(geo);
+    geo.deleteAttribute("position");
+    geo.setIndex(null);
+    geo.dispose();
+    if (boundary.indices.length < 8 || boundary.indices.some((i) => i < 0)) return;
+    const current = ySpanOf(pos, rim);
+    const next = ySpanOf(pos, boundary.indices);
+    if (next < 0 || next <= current + 0.05) return;
+    model.top.rimLocal = boundary.indices.slice();
+    const rimPts = boundary.indices.map((i) => ({
+        x: pos[i * 3] ?? 0,
+        y: pos[i * 3 + 1] ?? 0,
+        z: 0,
+    }));
+    model.outline.spline = fitClosedC2Spline(rimPts);
+    model.outline.sourceCount = rimPts.length;
+}
+
+/** Fair B on the composed rim. The rim array is not copied and its points are not moved. */
+export function patternOnComposedRim(rim: PolyPoint[], scanPattern?: ScanPattern, side?: Side): PolyPoint[] {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const p of rim) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+    }
+    return syntheticBottomPattern(rim, { minX, maxX }, rim, side, insetsForScanPattern(scanPattern));
 }
 
 /**
@@ -209,6 +292,15 @@ export async function reconstructProceduralPreview(
         throw new Error("[S1-PROCEDURAL] combined/stock GLB is not a procedural input — use legacy");
     }
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
+    const sizeTransform =
+        options.sizeTransform ??
+        (options.footprintLengthMm != null && options.footprintWidthMm != null
+            ? sharedInsoleSizeTransformFromGeometry(
+                  topGeo,
+                  options.footprintLengthMm,
+                  options.footprintWidthMm,
+              )
+            : null);
     let source = topGeo;
     let owned = false;
     if (options.sourceField) {
@@ -216,14 +308,23 @@ export async function reconstructProceduralPreview(
             sourceField: options.sourceField,
             shoeWidth: options.shoeWidth,
             trimline: options.trimline,
+            sizeTransform,
+            distalCut: options.distalCut,
         });
         owned = source !== topGeo;
+    } else if (sizeTransform) {
+        source = applySharedInsoleSizeToGeometry(topGeo, sizeTransform);
+        owned = true;
     }
+    const referenceRim = options.referenceRim ?? sharedComposedRim(source);
     const model = extractTopOnlyModel(source, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+    adoptFullBoundaryRim(model);
     if (owned) source.dispose();
     const requested = options.bottomPattern?.length
         ? options.bottomPattern
-        : buildFairedPatternFromTop(model, options.scanPattern);
+        : referenceRim
+          ? patternOnComposedRim(referenceRim, options.scanPattern, options.side)
+          : buildFairedPatternFromTop(model, options.scanPattern);
     const loft = (pattern: PolyPoint[]) => {
         const thicknessMm =
             options.thicknessMm ?? options.sourceField?.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
@@ -236,13 +337,22 @@ export async function reconstructProceduralPreview(
             stockThicknessMm,
             bottomPattern: pattern,
             bottomPatternLabel: PATTERN_SOURCE_SYNTHETIC,
+            userBottomPattern: options.userBottomPattern,
             flatPlantar: true,
             wallStyle: options.wallStyle,
             deviceType: options.deviceType,
             lateralFlange: options.lateralFlange,
             archGrindDepthMm: options.archGrindDepthMm,
+            scanPattern: options.scanPattern,
             sourceField: options.sourceField,
             composedTop: useComposed,
+            shoeWidth: options.shoeWidth,
+            footprintReferenceBounds: options.footprintReferenceBounds,
+            footprintLengthMm: options.footprintLengthMm,
+            footprintWidthMm: options.footprintWidthMm,
+            sizeTransform,
+            referenceRim,
+            sizeLabel: options.sizeLabel,
         });
         return { model, pattern, geometry };
     };

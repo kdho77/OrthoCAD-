@@ -20,6 +20,7 @@ import {
     hashLiveBottomPattern,
     resolveLiveBottomPattern,
 } from "@/lib/geometry/procedural-wall/live-bottom-pattern";
+import { sharedInsoleSizeTransformFromGeometry } from "@/lib/geometry/procedural-wall/pattern-hygiene";
 import {
     enqueuePreviewLoft,
     isCoarsePointerDevice,
@@ -420,7 +421,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             const dragging = Boolean(useMeshEditStore.getState().bottomPatternEdit?.isDragging);
             const heelW = field.corrections?.heelCupWidthMm ?? 0;
             const widthId = shoeWidthForSide(design, side);
-            const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}:w${widthId}`;
+            const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
+            const sizeKey = `${layout.lengthMm.toFixed(3)}x${layout.widthMm.toFixed(3)}`;
+            const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}:w${widthId}:sz${sizeKey}`;
             const userEdited = Boolean(stored) && !generatedPatternKey;
             const needPattern = !draft && !userEdited && generatedPatternKey !== patternKey;
             const session = {
@@ -449,6 +452,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                     heelOverrideMm: heelW,
                                 },
                                 trimline: patternTrim,
+                                sizeTransform,
                             });
                         } catch (composeErr) {
                             stockDebug("composePrintSolidTop for viewer pattern — using raw rim", {
@@ -512,6 +516,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 heelOverrideMm: heelW,
                             },
                             trimline: printTrim,
+                            sizeTransform,
                         });
                         const fwLog = field.corrections?.forefootWedge;
                         if (
@@ -535,6 +540,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                     heelOverrideMm: heelW,
                                 },
                                 trimline: printTrim,
+                                sizeTransform,
                             });
                             const posAttr = modified.getAttribute("position");
                             const neuAttr = neutralGeo.getAttribute("position");
@@ -605,7 +611,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     shapeFinishJson: JSON.stringify(field.shapeFinish ?? null),
                     elementsJson: elementGeometryKey(field.elements ?? []),
                     trimlineHash: printTrim ? hashPatternPoints(printTrim.points) : "",
-                    shoeWidth: widthId,
+                    shoeWidth: `${widthId}:${sizeKey}`,
                     textMarkingHash: textMarkingHash(design.textMarking),
                 });
                 if (lastLoftKeyRef.current === loftKey && outRef.current) {
@@ -671,6 +677,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 trimline: printTrim,
                                 textMarking: design.textMarking,
                                 side,
+                                sizeTransform,
+                                footprintLengthMm: layout.lengthMm,
+                                footprintWidthMm: layout.widthMm,
                                 ...(livePts ? { bottomPattern: livePts } : {}),
                             });
                             let placementReference: BufferGeometry;
@@ -688,6 +697,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                         heelOverrideMm: heelW,
                                     },
                                     trimline: printTrim,
+                                    sizeTransform,
                                 });
                             } catch (error) {
                                 preview.geometry.dispose();
@@ -792,6 +802,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.pattern,
         design.shoeWidth,
         design.shoeWidthBySide,
+        design.sizeSystem,
+        design.usMenSize,
+        design.ukSize,
+        design.footLengthMm,
         design.shapeFinish,
         design.trimlines,
         design.textMarking,

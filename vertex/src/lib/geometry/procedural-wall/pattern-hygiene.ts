@@ -1,24 +1,163 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { EndType, FillRule, inflatePathsD, isPositiveD, JoinType, unionD } from "clipper2-ts";
+import {
+    booleanOp,
+    ClipType,
+    EndType,
+    FillRule,
+    inflatePathsD,
+    isPositive,
+    isPositiveD,
+    JoinType,
+    type Path64,
+    unionD,
+} from "clipper2-ts";
+import type { BufferGeometry } from "three";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { minDistToLoopXY, pointInPoly } from "./cdt-band";
 import {
     ensureCcw,
     fitClosedC2Spline,
+    nearestClosedArc01,
     type PolyPoint,
     polygonSignedArea,
     resampleClosedC2,
     resamplePolyline,
+    sampleClosedAtArc01,
 } from "./curves";
 import { scaleToMinInset } from "./faired-pattern";
 import { masterCurveRadii, smoothClosedToMinRadius } from "./stations";
+import { type CutSample, closestOnCut } from "./trim-curve";
 
 export const PATTERN_MIN_RADIUS_MM = 3;
 export const PATTERN_RIM_CLEARANCE_MM = 0.5;
+export const PATTERN_HARD_OUTSIDE_MM = 3;
 export const PATTERN_SOURCE_SYNTHETIC = "synthetic";
+/** Clipper2 integer grid: millimetres → micrometres. */
+const CLIPPER_UM = 1000;
 /** Extra inset so resample / fairing cannot land 1e-4 mm short of the rim gate. */
 export const RIM_INSET_SLACK_MM = 0.02;
+
+export interface InsoleFootprintAnchor {
+    x0: number;
+    yMid: number;
+    nativeLengthMm: number;
+    nativeWidthMm: number;
+}
+
+export interface FootprintBounds {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+}
+
+/** Same anchor as {@link scaleGeometryToInsoleSize} (heel at minX, width about yMid). */
+export function insoleFootprintAnchorFromBounds(bounds: FootprintBounds): InsoleFootprintAnchor {
+    return {
+        x0: bounds.minX,
+        yMid: 0.5 * (bounds.minY + bounds.maxY),
+        nativeLengthMm: Math.max(1e-3, bounds.maxX - bounds.minX),
+        nativeWidthMm: Math.max(1e-3, bounds.maxY - bounds.minY),
+    };
+}
+
+/** Men's 9 / 260×95 reference footprint for SAMPLE_Top-native coordinates. */
+export function mensNineFootprintAnchor(bounds: FootprintBounds): InsoleFootprintAnchor {
+    const anchor = insoleFootprintAnchorFromBounds(bounds);
+    return {
+        ...anchor,
+        nativeLengthMm: INSOLE_LENGTH_MM,
+        nativeWidthMm: INSOLE_WIDTH_MM,
+    };
+}
+
+/**
+ * One XY size map shared by the TopSheet, the pattern, export, and the viewer.
+ * `sx` / `sy` are computed once. Pass this object; do not divide length again.
+ */
+export interface SharedInsoleSizeTransform {
+    x0: number;
+    yMid: number;
+    sx: number;
+    sy: number;
+    lengthMm: number;
+    widthMm: number;
+    nativeLengthMm: number;
+    nativeWidthMm: number;
+}
+
+export function sharedInsoleSizeTransformFromAnchor(
+    anchor: InsoleFootprintAnchor,
+    lengthMm: number,
+    widthMm: number,
+): SharedInsoleSizeTransform {
+    return {
+        x0: anchor.x0,
+        yMid: anchor.yMid,
+        nativeLengthMm: anchor.nativeLengthMm,
+        nativeWidthMm: anchor.nativeWidthMm,
+        lengthMm,
+        widthMm,
+        sx: lengthMm / anchor.nativeLengthMm,
+        sy: widthMm / anchor.nativeWidthMm,
+    };
+}
+
+export function sharedInsoleSizeTransform(
+    bounds: FootprintBounds,
+    lengthMm: number,
+    widthMm: number,
+): SharedInsoleSizeTransform {
+    return sharedInsoleSizeTransformFromAnchor(insoleFootprintAnchorFromBounds(bounds), lengthMm, widthMm);
+}
+
+/** One transform from the mesh bbox. Callers pass this object; compose does not rebuild it. */
+export function sharedInsoleSizeTransformFromGeometry(
+    geometry: BufferGeometry,
+    lengthMm: number,
+    widthMm: number,
+): SharedInsoleSizeTransform {
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    if (!box) throw new Error("[SIZE] SAMPLE_Top has no bounds");
+    return sharedInsoleSizeTransform(
+        { minX: box.min.x, maxX: box.max.x, minY: box.min.y, maxY: box.max.y },
+        lengthMm,
+        widthMm,
+    );
+}
+
+/** Identity scales do not shift, matching #204's pattern transform. */
+export function applySharedSizeXY(
+    x: number,
+    y: number,
+    t: SharedInsoleSizeTransform,
+): { x: number; y: number } {
+    if (Math.abs(t.sx - 1) < 1e-12 && Math.abs(t.sy - 1) < 1e-12) return { x, y };
+    return { x: (x - t.x0) * t.sx, y: (y - t.yMid) * t.sy };
+}
+
+export function applySharedInsoleSizeToLoop(loop: PolyPoint[], t: SharedInsoleSizeTransform): PolyPoint[] {
+    return loop.map((p) => {
+        const q = applySharedSizeXY(p.x, p.y, t);
+        return { x: q.x, y: q.y, z: p.z };
+    });
+}
+
+/**
+ * Apply the same XY footprint scale used on the TopSheet mesh (260 mm reference,
+ * shared anchor). Z is unchanged. The matrix is {@link SharedInsoleSizeTransform}.
+ */
+export function applyInsoleFootprintScale(
+    loop: PolyPoint[],
+    anchor: InsoleFootprintAnchor,
+    lengthMm: number,
+    widthMm: number,
+): PolyPoint[] {
+    return applySharedInsoleSizeToLoop(loop, sharedInsoleSizeTransformFromAnchor(anchor, lengthMm, widthMm));
+}
 
 export interface HygieneReport {
     loop: PolyPoint[];
@@ -56,6 +195,40 @@ function largestPath(paths: Array<Array<{ x: number; y: number }>>): Array<{ x: 
         }
     }
     return best;
+}
+
+function dedupePath2d(loop: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {
+    const out: Array<{ x: number; y: number }> = [];
+    for (const p of loop) {
+        const prev = out[out.length - 1];
+        if (prev && Math.hypot(prev.x - p.x, prev.y - p.y) < 1e-6) continue;
+        out.push({ x: p.x, y: p.y });
+    }
+    if (out.length >= 2) {
+        const a = out[0]!;
+        const b = out[out.length - 1]!;
+        if (Math.hypot(a.x - b.x, a.y - b.y) < 1e-6) out.pop();
+    }
+    return out;
+}
+
+function toPathUm(loop: PolyPoint[]): Path64 {
+    return dedupePath2d(loop).map((p) => ({
+        x: Math.round(p.x * CLIPPER_UM),
+        y: Math.round(p.y * CLIPPER_UM),
+    }));
+}
+
+function fromPathUm(path: Path64): PolyPoint[] {
+    return dedupePath2d(path.map((p) => ({ x: p.x / CLIPPER_UM, y: p.y / CLIPPER_UM }))).map((p) => ({
+        x: p.x,
+        y: p.y,
+        z: 0,
+    }));
+}
+
+function orientPositiveUm(path: Path64): Path64 {
+    return isPositive(path) ? path : path.slice().reverse();
 }
 
 export function turningNumber(loop: PolyPoint[]): number {
@@ -106,6 +279,456 @@ export function clipperRoundInset(loop: PolyPoint[], deltaMm: number): PolyPoint
     const pts = fromPathD(best);
     const oriented = isPositiveD(best) ? pts : pts.slice().reverse();
     return ensureCcw(oriented);
+}
+
+/** Largest simple intersection of two closed loops (integer µm Clipper2). */
+export function intersectPatternWithRim(pattern: PolyPoint[], rim: PolyPoint[]): PolyPoint[] | null {
+    if (pattern.length < 3 || rim.length < 3) return null;
+    const subject = [orientPositiveUm(toPathUm(ensureCcw(pattern.map((p) => ({ ...p, z: 0 })))))];
+    const clip = [orientPositiveUm(toPathUm(ensureCcw(rim.map((p) => ({ ...p, z: 0 })))))];
+    const out = booleanOp(ClipType.Intersection, subject, clip, FillRule.NonZero) as Path64[];
+    if (!out?.length) return null;
+    let best: Path64 | null = null;
+    let bestA = -1;
+    for (const path of out) {
+        if (path.length < 3) continue;
+        const pts = fromPathUm(path);
+        const a = Math.abs(polygonSignedArea(pts));
+        if (a > bestA) {
+            bestA = a;
+            best = path;
+        }
+    }
+    return best ? fromPathUm(best) : null;
+}
+
+/** Max distance any station sits outside the rim (0 when fully inside). */
+export function maxOutsideRimViolationMm(pattern: PolyPoint[], rim: PolyPoint[]): number {
+    let maxOut = 0;
+    for (const p of pattern) {
+        if (pointInPoly(p.x, p.y, rim)) continue;
+        maxOut = Math.max(maxOut, minDistToLoopXY(p.x, p.y, rim));
+    }
+    return maxOut;
+}
+
+export function signedRimInsetMmPattern(p: PolyPoint, rim: PolyPoint[]): number {
+    const d = minDistToLoopXY(p.x, p.y, rim);
+    return pointInPoly(p.x, p.y, rim) ? d : -d;
+}
+
+export interface PatternRimGateContext {
+    sizeLabel?: string;
+    /** e.g. reconstruct:user-bottom-pattern, hygieneBottomPattern:keepFair */
+    codePath: string;
+}
+
+function logPatternRimFailure(
+    pattern: PolyPoint[],
+    rim: PolyPoint[],
+    ctx: PatternRimGateContext,
+    extra?: Record<string, unknown>,
+): void {
+    let worstSigned = Infinity;
+    let worstI = 0;
+    for (let i = 0; i < pattern.length; i++) {
+        const signed = signedRimInsetMmPattern(pattern[i]!, rim);
+        if (signed < worstSigned) {
+            worstSigned = signed;
+            worstI = i;
+        }
+    }
+    const p = pattern[worstI]!;
+    console.error(
+        "[S1-PATTERN-RIM-FAIL]",
+        JSON.stringify({
+            station: worstI,
+            x: Number(p.x.toFixed(2)),
+            y: Number(p.y.toFixed(2)),
+            signedRimInsetMm: Number(worstSigned.toFixed(3)),
+            maxPreClipOutsideMm: maxOutsideRimViolationMm(pattern, rim),
+            sizeLabel: ctx.sizeLabel ?? "unknown",
+            codePath: ctx.codePath,
+            ...extra,
+        }),
+    );
+}
+
+/**
+ * Footprint XY scale for bottom patterns. Viewer/export store user patterns in the
+ * same frame as the composed TopSheet; skip re-scaling in that case.
+ */
+export function alignPatternToExportFootprint(
+    loop: PolyPoint[],
+    opts: {
+        footprintReferenceBounds?: FootprintBounds;
+        footprintLengthMm?: number;
+        footprintWidthMm?: number;
+        /** Pattern already matches the loft TopSheet (stored B, faired on scaled mesh). */
+        patternInMeshFrame?: boolean;
+        /** When set, this object is the only scale. It is not recomputed from bounds. */
+        sizeTransform?: SharedInsoleSizeTransform | null;
+    },
+): PolyPoint[] {
+    if (opts.patternInMeshFrame) {
+        return loop.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    }
+    if (opts.sizeTransform) {
+        return applySharedInsoleSizeToLoop(loop, opts.sizeTransform);
+    }
+    const lengthMm = opts.footprintLengthMm;
+    const widthMm = opts.footprintWidthMm;
+    const ref = opts.footprintReferenceBounds;
+    if (!ref || lengthMm == null || widthMm == null) {
+        return loop.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    }
+    const anchor = insoleFootprintAnchorFromBounds(ref);
+    return applyInsoleFootprintScale(loop, anchor, lengthMm, widthMm);
+}
+
+/** A rim-point substitution farther than this is rejected. The point stays. */
+export const RIM_SUBSTITUTION_MAX_MM = 0.05;
+
+export interface SignedInsetStats {
+    min: number;
+    max: number;
+    p95: number;
+    n: number;
+}
+
+export function signedInsetStats(pattern: PolyPoint[], rim: PolyPoint[]): SignedInsetStats {
+    const values: number[] = [];
+    for (const p of pattern) values.push(signedRimInsetMmPattern(p, rim));
+    if (values.length === 0) return { min: 0, max: 0, p95: 0, n: 0 };
+    values.sort((a, b) => a - b);
+    const idx = Math.min(values.length - 1, Math.max(0, Math.ceil(0.95 * values.length) - 1));
+    return {
+        min: values[0]!,
+        max: values[values.length - 1]!,
+        p95: values[idx]!,
+        n: values.length,
+    };
+}
+
+function copyPlan(p: PolyPoint): PolyPoint {
+    return { x: p.x, y: p.y, z: 0 };
+}
+
+function dedupePlan(loop: PolyPoint[]): PolyPoint[] {
+    const out: PolyPoint[] = [];
+    for (const p of loop) {
+        const prev = out[out.length - 1];
+        if (prev && Math.hypot(prev.x - p.x, prev.y - p.y) < 1e-6) continue;
+        out.push(p);
+    }
+    if (out.length >= 2) {
+        const a = out[0]!;
+        const b = out[out.length - 1]!;
+        if (Math.hypot(a.x - b.x, a.y - b.y) < 1e-6) out.pop();
+    }
+    return out;
+}
+
+/**
+ * Reference boundary for a clipped top: kept outline points stay bit-identical
+ * and the #206 cut polyline is inserted as-is. A kept point is never moved,
+ * so the substitution distance is 0.
+ */
+export function referenceRimFromOutlineAndCut(
+    outline: PolyPoint[],
+    cut: readonly CutSample[],
+): { rim: PolyPoint[]; maxSubstitutionMm: number } {
+    if (outline.length < 3 || cut.length < 2) {
+        return { rim: outline.map(copyPlan), maxSubstitutionMm: 0 };
+    }
+    const hits = outline.map((p) => closestOnCut(p.x, p.y, cut));
+    const distal = hits.map((h) => h.signed < -RIM_SUBSTITUTION_MAX_MM);
+    if (!distal.some(Boolean)) {
+        return { rim: outline.map(copyPlan), maxSubstitutionMm: 0 };
+    }
+    const n = outline.length;
+    let start = 0;
+    while (start < n && distal[start]) start++;
+    if (start === n) {
+        return {
+            rim: cut.map((p) => ({ x: p.x, y: p.y, z: 0 })),
+            maxSubstitutionMm: 0,
+        };
+    }
+    const rim: PolyPoint[] = [];
+    let consumed = 0;
+    let i = start;
+    while (consumed < n) {
+        if (!distal[i]) {
+            rim.push(copyPlan(outline[i]!));
+            i = (i + 1) % n;
+            consumed++;
+            continue;
+        }
+        const prev = (i - 1 + n) % n;
+        let span = 0;
+        let j = i;
+        while (distal[j] && span < n) {
+            j = (j + 1) % n;
+            span++;
+        }
+        const a = hits[prev]!.index;
+        const b = hits[j]!.index;
+        const prevPt = outline[prev]!;
+        const da = Math.hypot(prevPt.x - cut[a]!.x, prevPt.y - cut[a]!.y);
+        const db = Math.hypot(prevPt.x - cut[b]!.x, prevPt.y - cut[b]!.y);
+        const from = da <= db ? a : b;
+        const to = da <= db ? b : a;
+        if (from <= to) {
+            for (let k = from; k <= to; k++) rim.push({ x: cut[k]!.x, y: cut[k]!.y, z: 0 });
+        } else {
+            for (let k = from; k >= to; k--) rim.push({ x: cut[k]!.x, y: cut[k]!.y, z: 0 });
+        }
+        consumed += span;
+        i = j;
+    }
+    return { rim: dedupePlan(rim), maxSubstitutionMm: 0 };
+}
+
+export type PatternRimCase = "inside" | "clip_warn" | "hard_fail";
+
+export interface PatternRimClipResult {
+    loop: PolyPoint[];
+    case: PatternRimCase;
+    /**
+     * Symmetric-difference area between the input stations and the output
+     * polyline, in mm². Zero when the outline is already inside the rim.
+     */
+    clippedAreaMm2: number;
+    /** Max distance from each original station to the output polyline, mm. */
+    displacementMm: number;
+    symmetricDifferenceMm2: number;
+}
+
+function copyStation(p: PolyPoint): PolyPoint {
+    return { x: p.x, y: p.y, z: p.z };
+}
+
+/** Max distance from each original station to the output polyline (same frame). */
+export function maxStationToPolylineMm(stations: PolyPoint[], loop: PolyPoint[]): number {
+    if (stations.length === 0 || loop.length === 0) return 0;
+    let maxD = 0;
+    for (const p of stations) {
+        const d =
+            loop.length < 2
+                ? Math.hypot(p.x - loop[0]!.x, p.y - loop[0]!.y)
+                : minDistToLoopXY(p.x, p.y, loop);
+        if (d > maxD) maxD = d;
+    }
+    return maxD;
+}
+
+/** Area of the symmetric difference of two simple loops (mm²). */
+export function symmetricDifferenceAreaMm2(a: PolyPoint[], b: PolyPoint[]): number {
+    if (a.length < 3 || b.length < 3) return 0;
+    const subject = [orientPositiveUm(toPathUm(ensureCcw(a.map((p) => ({ ...p, z: 0 })))))];
+    const clip = [orientPositiveUm(toPathUm(ensureCcw(b.map((p) => ({ ...p, z: 0 })))))];
+    const out = booleanOp(ClipType.Xor, subject, clip, FillRule.NonZero) as Path64[];
+    if (!out?.length) return 0;
+    let area = 0;
+    for (const path of out) {
+        if (path.length < 3) continue;
+        area += Math.abs(polygonSignedArea(fromPathUm(path)));
+    }
+    return area;
+}
+
+function resampleClosedToCount(clipped: PolyPoint[], n: number, origin: PolyPoint): PolyPoint[] {
+    const s0 = nearestClosedArc01(clipped, origin);
+    const out: PolyPoint[] = [];
+    for (let i = 0; i < n; i++) out.push(sampleClosedAtArc01(clipped, s0 + i / n));
+    return out;
+}
+
+function arcSpan01(s0: number, s1: number, forward: boolean): number {
+    const raw = forward ? s1 - s0 : s0 - s1;
+    return ((raw % 1) + 1) % 1;
+}
+
+function sampleOpenArc(
+    loop: PolyPoint[],
+    s0: number,
+    s1: number,
+    forward: boolean,
+    count: number,
+): PolyPoint[] {
+    const span = arcSpan01(s0, s1, forward);
+    if (span < 1e-9 || count <= 0) {
+        const p = sampleClosedAtArc01(loop, s0);
+        return Array.from({ length: Math.max(count, 0) }, () => ({ x: p.x, y: p.y, z: p.z }));
+    }
+    const out: PolyPoint[] = [];
+    for (let i = 1; i <= count; i++) {
+        const f = i / (count + 1);
+        const s = forward ? s0 + f * span : s0 - f * span;
+        out.push(sampleClosedAtArc01(loop, s));
+    }
+    return out;
+}
+
+function arcCloserForward(loop: PolyPoint[], s0: number, s1: number, window: PolyPoint[]): boolean {
+    let cx = 0;
+    let cy = 0;
+    for (const p of window) {
+        cx += p.x;
+        cy += p.y;
+    }
+    const n = Math.max(1, window.length);
+    cx /= n;
+    cy /= n;
+    const spanF = arcSpan01(s0, s1, true);
+    const spanB = arcSpan01(s0, s1, false);
+    const midF = sampleClosedAtArc01(loop, s0 + 0.5 * (spanF < 1e-9 ? 1 : spanF));
+    const midB = sampleClosedAtArc01(loop, s0 - 0.5 * (spanB < 1e-9 ? 1 : spanB));
+    const dF = (midF.x - cx) ** 2 + (midF.y - cy) ** 2;
+    const dB = (midB.x - cx) ** 2 + (midB.y - cy) ** 2;
+    if (Math.abs(dF - dB) > 1e-8) return dF < dB;
+    return spanF <= spanB;
+}
+
+function paddedSpanMask(flags: boolean[], pad: number): boolean[] {
+    const n = flags.length;
+    const mask = flags.slice();
+    for (let i = 0; i < n; i++) {
+        if (!flags[i]) continue;
+        for (let d = 1; d <= pad; d++) {
+            mask[(i - d + n) % n] = true;
+            mask[(i + d) % n] = true;
+        }
+    }
+    return mask;
+}
+
+function maskToSpans(mask: boolean[]): Array<{ start: number; count: number }> {
+    const n = mask.length;
+    if (n === 0) return [];
+    let i = 0;
+    while (i < n && mask[i]) i++;
+    if (i === n) return [{ start: 0, count: n }];
+    const spans: Array<{ start: number; count: number }> = [];
+    let k = 0;
+    while (k < n) {
+        const idx = (i + k) % n;
+        if (!mask[idx]) {
+            k++;
+            continue;
+        }
+        let count = 0;
+        while (count < n && mask[(idx + count) % n]) count++;
+        spans.push({ start: idx, count });
+        k += count;
+    }
+    return spans;
+}
+
+/**
+ * Replace only stations that miss the rim clearance, plus one station on
+ * either side, with arc-length samples of the clipped outline. Every other
+ * station keeps its exact coordinates.
+ */
+function resampleClippedSpans(
+    pattern: PolyPoint[],
+    clipped: PolyPoint[],
+    rim: PolyPoint[],
+    clearanceMm: number,
+): PolyPoint[] {
+    const n = pattern.length;
+    const clippedCcw = ensureCcw(clipped.map((p) => ({ x: p.x, y: p.y, z: 0 })));
+    if (n < 3) {
+        return resampleClosedToCount(clippedCcw, Math.max(n, 3), pattern[0] ?? { x: 0, y: 0, z: 0 });
+    }
+    const violate = pattern.map((p) => signedRimInsetMmPattern(p, rim) < clearanceMm - 1e-6);
+    const spans = maskToSpans(paddedSpanMask(violate, 1));
+    if (spans.length === 0 || (spans.length === 1 && spans[0]!.count >= n)) {
+        return resampleClosedToCount(clippedCcw, n, pattern[0]!).map((p, i) => ({
+            x: p.x,
+            y: p.y,
+            z: pattern[i]!.z,
+        }));
+    }
+    const out = pattern.map(copyStation);
+    for (const span of spans) {
+        const left = (span.start - 1 + n) % n;
+        const right = (span.start + span.count) % n;
+        const window: PolyPoint[] = [];
+        for (let k = 0; k < span.count; k++) window.push(pattern[(span.start + k) % n]!);
+        const sL = nearestClosedArc01(clippedCcw, pattern[left]!);
+        const sR = nearestClosedArc01(clippedCcw, pattern[right]!);
+        const forward = arcCloserForward(clippedCcw, sL, sR, window);
+        const samples = sampleOpenArc(clippedCcw, sL, sR, forward, span.count);
+        for (let k = 0; k < span.count; k++) {
+            const idx = (span.start + k) % n;
+            const s = samples[k]!;
+            out[idx] = { x: s.x, y: s.y, z: pattern[idx]!.z };
+        }
+    }
+    return out;
+}
+
+/**
+ * Gate on the pre-clip outside violation. An outline already inside the rim
+ * passes through bit-identical (no inset, no resample). A mild violation is
+ * clipped, and only that span plus one station on either side is re-sampled.
+ * Hard fail only when the violation exceeds hardOutsideMm.
+ */
+export function clipPatternInsideRim(
+    pattern: PolyPoint[],
+    rim: PolyPoint[],
+    clearanceMm: number,
+    resampleN: number,
+    opts?: { sizeLabel?: string; hardOutsideMm?: number; codePath?: string },
+): PatternRimClipResult {
+    // Callers still pass a global station count. Inside outlines are not
+    // re-spaced, and a clipped span keeps the original stations outside it.
+    void resampleN;
+    const hardOutsideMm = opts?.hardOutsideMm ?? PATTERN_HARD_OUTSIDE_MM;
+    const maxOut = maxOutsideRimViolationMm(pattern, rim);
+    if (maxOut > hardOutsideMm + 1e-6) {
+        logPatternRimFailure(pattern, rim, {
+            sizeLabel: opts?.sizeLabel,
+            codePath: opts?.codePath ?? "clipPatternInsideRim",
+        });
+        throw new Error(
+            `[S1-PATTERN] pattern is ${maxOut.toFixed(2)} mm outside the TopSheet rim ` +
+                `(max ${hardOutsideMm} mm); size=${opts?.sizeLabel ?? "unknown"}`,
+        );
+    }
+    if (maxOut <= 1e-6) {
+        return {
+            loop: pattern.map(copyStation),
+            case: "inside",
+            clippedAreaMm2: 0,
+            displacementMm: 0,
+            symmetricDifferenceMm2: 0,
+        };
+    }
+    const rimGate = clipperRoundInset(rim, clearanceMm);
+    const clipped = intersectPatternWithRim(pattern, rimGate);
+    if (!clipped || clipped.length < 3) {
+        throw new Error(
+            `[S1-PATTERN] Clipper2 intersection with rim inset ${clearanceMm} mm produced no path`,
+        );
+    }
+    const loop = resampleClippedSpans(pattern, clipped, rim, clearanceMm);
+    const displacementMm = maxStationToPolylineMm(pattern, loop);
+    const symmetricDifferenceMm2 = symmetricDifferenceAreaMm2(pattern, loop);
+    console.warn(
+        `[S1-PATTERN] clipped ${symmetricDifferenceMm2.toFixed(2)} mm² symmetric difference ` +
+            `(displacement ${displacementMm.toFixed(3)} mm; max outside ${maxOut.toFixed(3)} mm; ` +
+            `size=${opts?.sizeLabel ?? "unknown"})`,
+    );
+    return {
+        loop,
+        case: "clip_warn",
+        clippedAreaMm2: symmetricDifferenceMm2,
+        displacementMm,
+        symmetricDifferenceMm2,
+    };
 }
 
 function smoothHeelBand(loop: PolyPoint[], uMax: number, passes: number): PolyPoint[] {
@@ -238,17 +861,42 @@ export function assertInsideRim(
     pattern: PolyPoint[],
     rimPlan: PolyPoint[],
     clearanceMm = PATTERN_RIM_CLEARANCE_MM,
+    ctx?: PatternRimGateContext,
 ): void {
     if (rimPlan.length < 3) return;
     for (let i = 0; i < pattern.length; i++) {
         const p = pattern[i]!;
+        const signed = signedRimInsetMmPattern(p, rimPlan);
         const d = minDistToLoopXY(p.x, p.y, rimPlan);
         if (!pointInPoly(p.x, p.y, rimPlan) && d > 1e-4) {
+            if (ctx) {
+                logPatternRimFailure(pattern, rimPlan, ctx, {
+                    failStation: i,
+                    signedRimInsetMm: Number(signed.toFixed(3)),
+                    outsideMm: Number(d.toFixed(3)),
+                });
+            }
             throw new Error(
                 `[S1-PATTERN] station ${i} (${p.x.toFixed(2)},${p.y.toFixed(2)}) is outside the TopSheet rim`,
             );
         }
         if (d < clearanceMm - 1e-6) {
+            if (ctx) {
+                console.error(
+                    "[S1-PATTERN-RIM-FAIL]",
+                    JSON.stringify({
+                        station: i,
+                        x: Number(p.x.toFixed(2)),
+                        y: Number(p.y.toFixed(2)),
+                        signedRimInsetMm: Number(signed.toFixed(3)),
+                        insetMm: Number(d.toFixed(3)),
+                        clearanceMm,
+                        sizeLabel: ctx.sizeLabel ?? "unknown",
+                        codePath: ctx.codePath,
+                        case: "clearance",
+                    }),
+                );
+            }
             throw new Error(
                 `[S1-PATTERN] station ${i} (${p.x.toFixed(2)},${p.y.toFixed(2)}) is ` +
                     `${d.toFixed(3)} mm from the rim (need >= ${clearanceMm} mm)`,
@@ -272,8 +920,16 @@ export function hygieneBottomPattern(
         resampleN?: number;
         /** Keep a fair few-control spline; do not re-interpolate or Laplacian the heel. */
         keepFair?: boolean;
+        sizeLabel?: string;
+        rimHardOutsideMm?: number;
+        codePath?: string;
     },
 ): HygieneReport {
+    const rimCtx: PatternRimGateContext = {
+        sizeLabel: opts?.sizeLabel,
+        codePath: opts?.codePath ?? "hygieneBottomPattern",
+    };
+    const hardOutsideMm = opts?.rimHardOutsideMm ?? PATTERN_HARD_OUTSIDE_MM;
     const sourceLoop = ensureCcw(loop.map((p) => ({ ...p, z: 0 })));
     const tn0 = turningNumber(sourceLoop);
     const unioned = Math.abs(tn0 - 1) < 0.05 && opts?.keepFair ? sourceLoop : clipperUnion(sourceLoop);
@@ -287,11 +943,15 @@ export function hygieneBottomPattern(
         const minRadiusMm = masterCurveRadii(resampled).minRadiusMm;
         if (opts.requireInsideRim && opts.rimPlan?.length) {
             const clearance = opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM;
-            const cleared = enforceMinRimInset(resampled, opts.rimPlan, clearance, { smooth: true });
-            assertInsideRim(cleared, opts.rimPlan, clearance);
+            const clip = clipPatternInsideRim(resampled, opts.rimPlan, clearance, n, {
+                sizeLabel: opts.sizeLabel,
+                hardOutsideMm: hardOutsideMm,
+                codePath: rimCtx.codePath,
+            });
+            assertInsideRim(clip.loop, opts.rimPlan, clip.case === "inside" ? 0 : clearance, rimCtx);
             return {
-                loop: cleared,
-                turning: turningNumber(cleared),
+                loop: clip.loop,
+                turning: turningNumber(clip.loop),
                 minRadiusMm,
                 source: opts.source ?? "pattern",
             };
@@ -313,7 +973,19 @@ export function hygieneBottomPattern(
     const n = Math.max(opts?.resampleN ?? 0, 160, smoothed.length);
     const resampled = smoothHeelBand(resampleClosedC2(fitClosedC2Spline(smoothed), n), 0.18, 8);
     if (opts?.requireInsideRim && opts.rimPlan?.length) {
-        assertInsideRim(resampled, opts.rimPlan, opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM);
+        const clearance = opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM;
+        const clip = clipPatternInsideRim(resampled, opts.rimPlan, clearance, n, {
+            sizeLabel: opts?.sizeLabel,
+            hardOutsideMm: hardOutsideMm,
+            codePath: rimCtx.codePath,
+        });
+        assertInsideRim(clip.loop, opts.rimPlan, clip.case === "inside" ? 0 : clearance, rimCtx);
+        return {
+            loop: clip.loop,
+            turning: turningNumber(clip.loop),
+            minRadiusMm,
+            source: opts?.source ?? "pattern",
+        };
     }
     const source = opts?.source ?? "pattern";
     return { loop: resampled, turning: turningNumber(resampled), minRadiusMm, source };

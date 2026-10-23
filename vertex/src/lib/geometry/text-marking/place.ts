@@ -435,11 +435,29 @@ function planeAngleDeg(
 export function measureWallFilletTopMm(geo: BufferGeometry, st: WallStation): number {
     const h = Math.max(0, st.heightMm);
     const cap = h * 0.45;
-    const ud = geo.userData as { filletRing?: Array<{ x: number; y: number; z: number }> };
-    if (ud.filletRing?.length) {
+    const ud = geo.userData as {
+        filletRing?: Array<{ x: number; y: number; z: number }>;
+        wallFrames?: Array<{ u: number; R: { x: number; y: number; z: number } }>;
+    };
+    const ring = ud.filletRing;
+    const frames = ud.wallFrames;
+    if (ring?.length && frames?.length === ring.length) {
+        let bestI = 0;
+        let bestU = Infinity;
+        for (let i = 0; i < frames.length; i++) {
+            const du = Math.abs(frames[i]!.u - st.u);
+            if (du < bestU) {
+                bestU = du;
+                bestI = i;
+            }
+        }
+        const f = ring[bestI]!;
+        return Math.max(0, Math.min(cap, f.z - st.B.z));
+    }
+    if (ring?.length) {
         let best = Infinity;
         let rise = 0;
-        for (const f of ud.filletRing) {
+        for (const f of ring) {
             const d = (f.x - st.B.x) ** 2 + (f.y - st.B.y) ** 2;
             if (d < best) {
                 best = d;
