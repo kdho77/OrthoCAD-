@@ -7,7 +7,6 @@ import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthLongitudinalEnvelope, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
-import { scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -21,7 +20,14 @@ import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern 
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
 import type { FootprintBounds } from "./pattern-hygiene";
-import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
+import {
+    applySharedInsoleSizeToGeometry,
+    applySharedSizeXY,
+    composePrintSolidTop,
+    type PrintSolidShoeWidth,
+    type SharedInsoleSizeTransform,
+    sharedInsoleSizeTransformFromGeometry,
+} from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
@@ -169,6 +175,26 @@ export function buildFairedPatternFromTop(model: StockWallModel, pattern?: ScanP
     return syntheticBottomPattern(rim3d, model.bounds, rim3d, undefined, insetsForScanPattern(pattern));
 }
 
+function mapPatternBySize(pattern: PolyPoint[], t: SharedInsoleSizeTransform): PolyPoint[] {
+    return pattern.map((p) => {
+        const q = applySharedSizeXY(p.x, p.y, t);
+        return { x: q.x, y: q.y, z: p.z ?? 0 };
+    });
+}
+
+/**
+ * A pattern built on the sized sheet already has its toe at `lengthMm`.
+ * A pattern built on the native SAMPLE_Top still reaches the native toe.
+ */
+function patternAlreadyOnSizedSheet(pattern: PolyPoint[], t: SharedInsoleSizeTransform): boolean {
+    let maxX = -Infinity;
+    for (const p of pattern) {
+        if (p.x > maxX) maxX = p.x;
+    }
+    const nativeToe = t.x0 + t.nativeLengthMm;
+    return Math.abs(maxX - t.lengthMm) <= Math.abs(maxX - nativeToe);
+}
+
 export interface ProceduralPreviewOptions {
     corrections?: Partial<SideCorrections>;
     thicknessMm?: number;
@@ -199,6 +225,12 @@ export interface ProceduralPreviewOptions {
     footprintReferenceBounds?: FootprintBounds;
     footprintLengthMm?: number;
     footprintWidthMm?: number;
+    /**
+     * #204 size map. Created once by the caller when it has the native mesh.
+     * When omitted and the footprint is not the Men's 9 template, preview builds it
+     * once from this mesh and passes that same object into compose and the loft.
+     */
+    sizeTransform?: SharedInsoleSizeTransform | null;
     sizeLabel?: string;
     userBottomPattern?: boolean;
 }
@@ -217,46 +249,56 @@ export async function reconstructProceduralPreview(
         throw new Error("[S1-PROCEDURAL] combined/stock GLB is not a procedural input — use legacy");
     }
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
+    const lengthMm = options.footprintLengthMm;
+    const widthMm = options.footprintWidthMm;
+    const offTemplate =
+        lengthMm != null &&
+        widthMm != null &&
+        (Math.abs(lengthMm - INSOLE_LENGTH_MM) > 1e-3 || Math.abs(widthMm - INSOLE_WIDTH_MM) > 1e-3);
+    const sizeTransform =
+        options.sizeTransform !== undefined
+            ? options.sizeTransform
+            : offTemplate && lengthMm != null && widthMm != null
+              ? sharedInsoleSizeTransformFromGeometry(topGeo, lengthMm, widthMm)
+              : null;
+    // One object, applied to the sheet and to a pattern that is still in the native frame.
+    // Fairing runs on the native rim, then this same transform, so the loft is not
+    // rebuilt from an unscaled SAMPLE_Top and the column headings stay inside the gate.
+    let patternOnSheet: PolyPoint[] | undefined;
+    if (sizeTransform) {
+        patternOnSheet = options.bottomPattern?.length
+            ? patternAlreadyOnSizedSheet(options.bottomPattern, sizeTransform)
+                ? options.bottomPattern
+                : mapPatternBySize(options.bottomPattern, sizeTransform)
+            : mapPatternBySize(
+                  buildFairedPatternFromTop(
+                      extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME }),
+                      options.scanPattern,
+                  ),
+                  sizeTransform,
+              );
+    }
     let source = topGeo;
     let owned = false;
-    let footprintReferenceBounds = options.footprintReferenceBounds;
-    if (
-        options.footprintLengthMm != null &&
-        options.footprintWidthMm != null &&
-        (Math.abs(options.footprintLengthMm - INSOLE_LENGTH_MM) > 1e-3 ||
-            Math.abs(options.footprintWidthMm - INSOLE_WIDTH_MM) > 1e-3)
-    ) {
-        if (!footprintReferenceBounds) {
-            topGeo.computeBoundingBox();
-            const box = topGeo.boundingBox;
-            if (box) {
-                footprintReferenceBounds = {
-                    minX: box.min.x,
-                    maxX: box.max.x,
-                    minY: box.min.y,
-                    maxY: box.max.y,
-                };
-            }
-        }
-        const scaled = scaleGeometryToInsoleSize(topGeo, options.footprintLengthMm, options.footprintWidthMm);
-        if (scaled !== topGeo) {
-            source = scaled;
-            owned = true;
-        }
-    }
     if (options.sourceField) {
         source = await composePrintSolidTop(topGeo, {
             sourceField: options.sourceField,
             shoeWidth: options.shoeWidth,
             trimline: options.trimline,
+            sizeTransform,
         });
         owned = source !== topGeo;
+    } else if (sizeTransform) {
+        source = applySharedInsoleSizeToGeometry(topGeo, sizeTransform);
+        owned = true;
     }
     const model = extractTopOnlyModel(source, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
     if (owned) source.dispose();
-    const requested = options.bottomPattern?.length
-        ? options.bottomPattern
-        : buildFairedPatternFromTop(model, options.scanPattern);
+    const requested = patternOnSheet?.length
+        ? patternOnSheet
+        : options.bottomPattern?.length
+          ? options.bottomPattern
+          : buildFairedPatternFromTop(model, options.scanPattern);
     const loft = (pattern: PolyPoint[]) => {
         const thicknessMm =
             options.thicknessMm ?? options.sourceField?.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
@@ -279,7 +321,7 @@ export async function reconstructProceduralPreview(
             sourceField: options.sourceField,
             composedTop: useComposed,
             shoeWidth: options.shoeWidth,
-            footprintReferenceBounds: footprintReferenceBounds ?? options.footprintReferenceBounds,
+            footprintReferenceBounds: options.footprintReferenceBounds,
             footprintLengthMm: options.footprintLengthMm,
             footprintWidthMm: options.footprintWidthMm,
             sizeLabel: options.sizeLabel,
