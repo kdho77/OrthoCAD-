@@ -8,9 +8,28 @@ import {
     fieldWithoutElementsForModifiers,
 } from "@/lib/geometry/element-assets/apply-elements";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { applyShoeWidthToGeometry, type ShoeWidthId, shoeWidthAffineActive } from "@/lib/geometry/shoe-width";
 import { clipGeometryToOutline, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { insoleFootprintAnchorFromBounds } from "./pattern-hygiene";
+
+/**
+ * US M9 / W10.5 heel-to-toe and ball width.
+ * The size table's 260 × 95. Change this one binding to the SAMPLE_Top
+ * sheet size if M9 should stay on the scanned sheet.
+ */
+export const M9_TARGET_SOURCE = {
+    lengthMm: INSOLE_LENGTH_MM,
+    widthMm: INSOLE_WIDTH_MM,
+} as const;
+
+/** Table M9 keeps {@link M9_TARGET_SOURCE}. Every other size keeps the table row. */
+export function sharedSizeTarget(lengthMm: number, widthMm: number): { lengthMm: number; widthMm: number } {
+    const tableM9 =
+        Math.abs(lengthMm - INSOLE_LENGTH_MM) <= 1e-3 && Math.abs(widthMm - INSOLE_WIDTH_MM) <= 1e-3;
+    if (tableM9) return { lengthMm: M9_TARGET_SOURCE.lengthMm, widthMm: M9_TARGET_SOURCE.widthMm };
+    return { lengthMm, widthMm };
+}
 
 /**
  * Viewer shoe-width affine forwarded onto the Print top sheet.

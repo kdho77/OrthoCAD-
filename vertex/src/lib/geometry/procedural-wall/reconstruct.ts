@@ -132,6 +132,11 @@ export interface ReconstructOptions extends ProceduralModifierInput {
     sizeLabel?: string;
     /** Stored / edited bottom pattern (enables footprint align + rim clip). */
     userBottomPattern?: boolean;
+    /**
+     * Composed rim was resampled to a fixed indexed ring. Stations stay on
+     * those indices. Do not distance-merge them.
+     */
+    indexedRimRing?: boolean;
 }
 
 function zeroCorrections(): SideCorrections {
@@ -1211,9 +1216,11 @@ export function reconstructProceduralWalls(
         assertCutInOnHighRimSide(hygiened.loop, rimPts, model.bounds, medialYSign);
     }
     let pairing = limitPairingSkew(pairAtNativeTop(hygiened.loop, rimPts), hygiened.loop);
-    const collapsed = mergeCollapsedStations(pairing, rimLocal, indices, 1e-6);
-    pairing = collapsed.pairing;
-    rimLocal = collapsed.rimLocal;
+    if (!options.indexedRimRing) {
+        const collapsed = mergeCollapsedStations(pairing, rimLocal, indices, 1e-6);
+        pairing = collapsed.pairing;
+        rimLocal = collapsed.rimLocal;
+    }
     const sourceRim = rimLocal.slice();
     const topHeight = buildXyHeightIndex(Float32Array.from(positions), indices);
     const topZ = (x: number, y: number) => sampleXyHeight(topHeight, x, y, "max");
@@ -1433,6 +1440,7 @@ export function reconstructProceduralWalls(
             planOutMm: options.wallPlanOutMm,
             forefootRound: options.forefootRound,
         }),
+        indexedRimRing: options.indexedRimRing === true,
     });
     const indexGridStyle = (options.wallStyle ?? "straight") !== "straight";
     if (wholeWidth) {

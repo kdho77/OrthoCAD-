@@ -5,33 +5,29 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
-import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
-import { extractBoundaryLoops } from "@/lib/geometry/mesh-close";
 import {
     formatHalfSize,
     insoleLayoutForUsMenSize,
     listUsMenSizes,
-    US_MEN_SIZE_MAX,
-    US_MEN_SIZE_MIN,
     usWomenFromMen,
 } from "@/lib/geometry/shoe-size";
 import type { SideCorrections } from "@/types";
+import { positionKeyedRim } from "./extract";
+import { maxRimVertexDelta, RIM_RING_STATION_N } from "./outline-clean";
 import { applyInsoleFootprintScale, insoleFootprintAnchorFromBounds } from "./pattern-hygiene";
 import {
-    applySharedInsoleSizeToGeometry,
     applySharedSizeXY,
     composePrintSolidTop,
     composeViewerPrintSolidTop,
+    M9_TARGET_SOURCE,
     type SharedInsoleSizeTransform,
     sharedInsoleSizeTransformFromGeometry,
+    sharedSizeTarget,
 } from "./print-solid-compose";
 import { reconstructProceduralPreview, sampleTopFromArrayBuffer } from "./sample-top-preview";
-
-/** Same tolerance as `copyTopMesh` / `extractTopSheet` and the quant-key rim walk. */
-const RIM_WELD_MM = 1e-4;
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
 const SIZES = [1, 8.5, 16] as const;
@@ -122,124 +118,61 @@ function sameBytes(a: Float64Array, b: Float64Array): boolean {
     );
 }
 
-/** A weld chord across the outline is tens of millimetres. Tessellation stays under 3 mm. */
-const CHORD_MM = 10;
-
-function num(value: number | undefined): number {
-    return value ?? 0;
-}
-
-function halfSizes(): number[] {
-    const out: number[] = [];
-    for (let s = US_MEN_SIZE_MIN; s <= US_MEN_SIZE_MAX + 1e-9; s += 0.5) out.push(Math.round(s * 2) / 2);
-    return out;
-}
-
-function quantKey(x: number, y: number, z: number): string {
-    return `${Math.round(x * 1e4)},${Math.round(y * 1e4)},${Math.round(z * 1e4)}`;
-}
-
-/** Vertices mergeVertices(1e-4) will collapse. Positions are the pre-weld mesh. */
-function coincidentWeldPairs(geo: BufferGeometry): string[] {
-    const names = Object.keys(geo.attributes);
-    const hashMultiplier = 1e4;
-    const hashAdditive = RIM_WELD_MM * 0.5 * hashMultiplier;
-    const groups = new Map<string, number[]>();
+/** Index topology of a closed triangle mesh. Position is not used to merge vertices. */
+function solidTopology(geo: BufferGeometry): { naked: number; nonManifold: number; euler: number } {
+    const index = geo.getIndex();
     const pos = geo.getAttribute("position");
-    for (let i = 0; i < pos.count; i++) {
-        let hash = "";
-        for (const name of names) {
-            const attr = geo.getAttribute(name);
-            if (!attr) continue;
-            for (let k = 0; k < attr.itemSize; k++) {
-                const getter = ["getX", "getY", "getZ", "getW"][k] as "getX" | "getY" | "getZ" | "getW";
-                hash += `${~~(attr[getter](i) * hashMultiplier + hashAdditive)},`;
-            }
+    if (!index || !pos) throw new Error("mesh has no index");
+    const edges = new Map<string, number>();
+    const used = new Set<number>();
+    let faces = 0;
+    for (let t = 0; t < index.count; t += 3) {
+        const vs = [index.getX(t), index.getX(t + 1), index.getX(t + 2)];
+        const a = vs[0]!;
+        const b = vs[1]!;
+        const c = vs[2]!;
+        if (a === b || b === c || c === a) continue;
+        faces++;
+        used.add(a);
+        used.add(b);
+        used.add(c);
+        for (let k = 0; k < 3; k++) {
+            const u = vs[k]!;
+            const v = vs[(k + 1) % 3]!;
+            const key = u < v ? `${u},${v}` : `${v},${u}`;
+            edges.set(key, (edges.get(key) ?? 0) + 1);
         }
-        const list = groups.get(hash);
-        if (list) list.push(i);
-        else groups.set(hash, [i]);
     }
-    const lines: string[] = [];
-    for (const ids of groups.values()) {
-        const a = ids[0];
-        const b = ids[1];
-        if (a === undefined || b === undefined) continue;
-        const distance = Math.hypot(
-            pos.getX(a) - pos.getX(b),
-            pos.getY(a) - pos.getY(b),
-            pos.getZ(a) - pos.getZ(b),
-        );
-        lines.push(
-            `v${a} (${pos.getX(a).toFixed(4)}, ${pos.getY(a).toFixed(4)}, ${pos.getZ(a).toFixed(4)}) ` +
-                `v${b} (${pos.getX(b).toFixed(4)}, ${pos.getY(b).toFixed(4)}, ${pos.getZ(b).toFixed(4)}) ` +
-                `d=${distance.toFixed(6)} mm`,
-        );
+    let naked = 0;
+    let nonManifold = 0;
+    for (const n of edges.values()) {
+        if (n === 1) naked++;
+        else if (n !== 2) nonManifold++;
     }
-    return lines;
+    return { naked, nonManifold, euler: used.size - edges.size + faces };
 }
 
-/**
- * Production later weld: mergeVertices(1e-4), then the position-quant boundary.
- * A chord is a naked edge of CHORD_MM or more. An open chain is not an outline.
- */
-function weldedRimReport(geo: BufferGeometry): {
-    loopCount: number;
-    maxEdge: number;
-    chords: string[];
-    openEnds: string[];
+function bboxOf(points: { x: number; y: number }[]): {
+    length: number;
+    width: number;
+    minX: number;
+    minY: number;
 } {
-    const welded = mergeVertices(geo.clone(), RIM_WELD_MM);
-    try {
-        const loops = extractBoundaryLoops(welded);
-        const pos = welded.getAttribute("position");
-        const index = welded.getIndex();
-        const triN = index ? index.count / 3 : pos.count / 3;
-        const edges = new Map<string, { a: string; b: string; n: number }>();
-        const at = (t: number, k: number) => (index ? index.getX(t * 3 + k) : t * 3 + k);
-        for (let t = 0; t < triN; t++) {
-            const keys = [0, 1, 2].map((k) =>
-                quantKey(pos.getX(at(t, k)), pos.getY(at(t, k)), pos.getZ(at(t, k))),
-            );
-            for (let k = 0; k < 3; k++) {
-                const a = keys[k];
-                const b = keys[(k + 1) % 3];
-                if (a === undefined || b === undefined || a === b) continue;
-                const ek = a < b ? `${a}|${b}` : `${b}|${a}`;
-                const hit = edges.get(ek);
-                if (hit) hit.n++;
-                else edges.set(ek, { a, b, n: 1 });
-            }
-        }
-        const degree = new Map<string, number>();
-        const chords: string[] = [];
-        let maxEdge = 0;
-        for (const edge of edges.values()) {
-            if (edge.n !== 1) continue;
-            degree.set(edge.a, (degree.get(edge.a) ?? 0) + 1);
-            degree.set(edge.b, (degree.get(edge.b) ?? 0) + 1);
-            const [ax, ay, az] = edge.a.split(",").map(Number);
-            const [bx, by, bz] = edge.b.split(",").map(Number);
-            const length = Math.hypot(num(ax) - num(bx), num(ay) - num(by), num(az) - num(bz)) / 1e4;
-            if (length > maxEdge) maxEdge = length;
-            if (length >= CHORD_MM) {
-                chords.push(
-                    `${length.toFixed(3)} mm ` +
-                        `(${(num(ax) / 1e4).toFixed(3)}, ${(num(ay) / 1e4).toFixed(3)}, ${(num(az) / 1e4).toFixed(3)}) -> ` +
-                        `(${(num(bx) / 1e4).toFixed(3)}, ${(num(by) / 1e4).toFixed(3)}, ${(num(bz) / 1e4).toFixed(3)})`,
-                );
-            }
-        }
-        const openEnds = [...degree.entries()]
-            .filter(([, d]) => d !== 2)
-            .map(([key, d]) => {
-                const [x, y, z] = key.split(",").map(Number);
-                return `deg ${d} at (${(num(x) / 1e4).toFixed(4)}, ${(num(y) / 1e4).toFixed(4)}, ${(num(z) / 1e4).toFixed(4)})`;
-            });
-        return { loopCount: loops.length, maxEdge, chords, openEnds };
-    } finally {
-        welded.dispose();
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of points) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
     }
+    return { length: maxX - minX, width: maxY - minY, minX, minY };
+}
+
+function composedRim(geo: BufferGeometry): { x: number; y: number; z: number }[] {
+    return positionKeyedRim(geo);
 }
 
 describe("shared size transform on composed SAMPLE_Top", () => {
@@ -350,81 +283,132 @@ describe("shared size transform on composed SAMPLE_Top", () => {
         raw.dispose();
     }, 180_000);
 
-    test("sized rim outline has no chord after the later weld", async () => {
+    test("M9 uses the shared size transform and is not identity", async () => {
         const raw = await loadSampleTop();
-        const findings: string[] = [];
-        const check = (label: string, geo: BufferGeometry) => {
-            const pairs = coincidentWeldPairs(geo);
-            const rim = weldedRimReport(geo);
-            if (rim.chords.length === 0 && rim.loopCount === 1 && rim.openEnds.length === 0) return;
-            findings.push(
-                [
-                    label,
-                    `loops=${rim.loopCount}`,
-                    `longestNaked=${rim.maxEdge.toFixed(3)} mm`,
-                    pairs.length ? `coincident ${pairs.join(" ; ")}` : "",
-                    rim.chords.length ? `chord ${rim.chords.join(" ; ")}` : "",
-                    rim.openEnds.length ? `open ${rim.openEnds.join(" ; ")}` : "",
-                ]
-                    .filter(Boolean)
-                    .join(" | "),
-            );
-        };
-        for (const menSize of halfSizes()) {
+        const native = bbox(raw);
+        const layout = insoleLayoutForUsMenSize(9);
+        const target = sharedSizeTarget(layout.lengthMm, layout.widthMm);
+        expect(target.lengthMm).toBe(M9_TARGET_SOURCE.lengthMm);
+        expect(target.widthMm).toBe(M9_TARGET_SOURCE.widthMm);
+        expect(M9_TARGET_SOURCE.lengthMm).toBe(INSOLE_LENGTH_MM);
+        expect(M9_TARGET_SOURCE.widthMm).toBe(INSOLE_WIDTH_MM);
+        const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, target.lengthMm, target.widthMm);
+        expect(sizeTransform.sx).not.toBe(1);
+        expect(sizeTransform.sy).not.toBe(1);
+        const composed = await composeViewerPrintSolidTop({
+            raw,
+            sourceField: field(target.lengthMm, target.widthMm),
+            sizeTransform,
+        });
+        expect(composed.userData.sizeTransform).toBe(sizeTransform);
+        const out = bbox(composed);
+        expect(Math.abs(out.length - target.lengthMm)).toBeLessThanOrEqual(0.2);
+        expect(Math.abs(out.width - target.widthMm)).toBeLessThanOrEqual(0.2);
+        expect(Math.abs(out.length - native.length)).toBeGreaterThan(0.2);
+        expect(Math.abs(out.width - native.width)).toBeGreaterThan(0.2);
+        composed.dispose();
+        raw.dispose();
+    }, 30_000);
+
+    test("indexed rim ring is a closed solid at every table size", async () => {
+        const raw = await loadSampleTop();
+        const rows = ["size\tnaked\tnonManifold\teuler\trimDelta\theel\tball"];
+        for (const menSize of listUsMenSizes()) {
             const layout = insoleLayoutForUsMenSize(menSize);
-            const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
-            const sized = applySharedInsoleSizeToGeometry(raw, sizeTransform);
-            check(`US M${menSize}`, sized);
-            sized.dispose();
-        }
-        for (const menSize of SIZES) {
-            const layout = insoleLayoutForUsMenSize(menSize);
-            const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
+            const target = sharedSizeTarget(layout.lengthMm, layout.widthMm);
+            const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, target.lengthMm, target.widthMm);
             const composed = await composePrintSolidTop(raw, {
-                sourceField: field(layout.lengthMm, layout.widthMm),
+                sourceField: field(target.lengthMm, target.widthMm),
                 sizeTransform,
             });
-            check(`composed US M${menSize}`, composed);
+            const rim = composedRim(composed);
             composed.dispose();
+            let preview: Awaited<ReturnType<typeof reconstructProceduralPreview>>;
+            try {
+                preview = await reconstructProceduralPreview(raw, {
+                    sourceField: field(target.lengthMm, target.widthMm),
+                    composedTop: true,
+                    sizeTransform,
+                    footprintLengthMm: target.lengthMm,
+                    footprintWidthMm: target.widthMm,
+                });
+            } catch (err) {
+                rows.push(
+                    `M${formatHalfSize(menSize)}\tFAIL\t\t\t\t${(err as Error).message.split("\n")[0]}`,
+                );
+                continue;
+            }
+            const top = preview.model.top;
+            const rimLocal = top.rimLocal ?? [];
+            const mesh = top.meshPositions;
+            if (!mesh || rimLocal.length !== RIM_RING_STATION_N) {
+                throw new Error(`US M${menSize} rim ring has ${rimLocal.length} vertices`);
+            }
+            expect(new Set(rimLocal).size).toBe(RIM_RING_STATION_N);
+            const ring = rimLocal.map((i) => ({
+                x: mesh[i * 3]!,
+                y: mesh[i * 3 + 1]!,
+                z: mesh[i * 3 + 2]!,
+            }));
+            const delta = maxRimVertexDelta(ring, rim);
+            const topo = solidTopology(preview.geometry);
+            const out = bboxOf(ring);
+            rows.push(
+                [
+                    `M${formatHalfSize(menSize)}`,
+                    String(topo.naked),
+                    String(topo.nonManifold),
+                    String(topo.euler),
+                    delta.toFixed(4),
+                    out.length.toFixed(4),
+                    out.width.toFixed(4),
+                ].join("\t"),
+            );
+            expect(topo.naked).toBe(0);
+            expect(topo.nonManifold).toBe(0);
+            expect(topo.euler).toBe(2);
+            expect(delta).toBeLessThanOrEqual(0.01);
+            expect(Math.abs(out.length - target.lengthMm)).toBeLessThanOrEqual(0.2);
+            expect(Math.abs(out.width - target.widthMm)).toBeLessThanOrEqual(0.2);
+            preview.geometry.dispose();
         }
+        const failed = rows.filter((row) => row.includes("\tFAIL\t"));
+        expect(failed, rows.join("\n")).toEqual([]);
         raw.dispose();
-        expect(findings, findings.join("\n")).toEqual([]);
-    }, 120_000);
+    }, 1_800_000);
 
     test("every men's and women's size matches the composed top", async () => {
         const raw = await loadSampleTop();
         const rows = ["men\twomen\theel target\theel actual\tball target\tball actual"];
+        let prevLength = -Infinity;
+        let prevWidth = -Infinity;
         for (const menSize of listUsMenSizes()) {
             const layout = insoleLayoutForUsMenSize(menSize);
-            const onTemplate =
-                Math.abs(layout.lengthMm - INSOLE_LENGTH_MM) <= 1e-3 &&
-                Math.abs(layout.widthMm - INSOLE_WIDTH_MM) <= 1e-3;
-            const sizeTransform = onTemplate
-                ? null
-                : sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
+            const target = sharedSizeTarget(layout.lengthMm, layout.widthMm);
+            const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, target.lengthMm, target.widthMm);
             const composed = await composeViewerPrintSolidTop({
                 raw,
-                sourceField: field(layout.lengthMm, layout.widthMm),
+                sourceField: field(target.lengthMm, target.widthMm),
                 sizeTransform,
             });
-            expect(composed.userData.sizeTransform ?? null).toBe(sizeTransform);
+            expect(composed.userData.sizeTransform).toBe(sizeTransform);
             const out = bbox(composed);
             rows.push(
                 [
                     formatHalfSize(layout.usMenSize),
                     formatHalfSize(usWomenFromMen(layout.usMenSize)),
-                    layout.lengthMm.toFixed(4),
+                    target.lengthMm.toFixed(4),
                     out.length.toFixed(4),
-                    layout.widthMm.toFixed(4),
+                    target.widthMm.toFixed(4),
                     out.width.toFixed(4),
                 ].join("\t"),
             );
-            if (sizeTransform) {
-                expect(Math.abs(out.length - layout.lengthMm)).toBeLessThanOrEqual(0.2);
-                expect(Math.abs(out.width - layout.widthMm)).toBeLessThanOrEqual(0.2);
-            } else {
-                expect(Math.abs(out.length - layout.lengthMm)).toBeGreaterThan(0.2);
-            }
+            expect(Math.abs(out.length - target.lengthMm)).toBeLessThanOrEqual(0.2);
+            expect(Math.abs(out.width - target.widthMm)).toBeLessThanOrEqual(0.2);
+            expect(out.length).toBeGreaterThan(prevLength);
+            expect(out.width).toBeGreaterThan(prevWidth);
+            prevLength = out.length;
+            prevWidth = out.width;
             composed.dispose();
         }
         console.log(rows.join("\n"));

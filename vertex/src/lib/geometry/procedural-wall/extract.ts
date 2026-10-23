@@ -22,6 +22,7 @@ import {
 } from "./curves";
 import { blendedFlareDeg } from "./defaults";
 import { defaultsFromStockCurves, outwardNormal, type StationBandFlare } from "./measure";
+import { RIM_RING_MIN_STATION_MM, RIM_RING_STATION_N } from "./outline-clean";
 import { buildPlanformFrame } from "./planform";
 import { offsetClosedInward, smoothClosedToMinRadius } from "./stations";
 import { DEFAULT_LOFT_N, type StockWallModel, type UvHeightField, type WallProfile } from "./types";
@@ -542,6 +543,7 @@ export function extractStockWallModel(
     geo: BufferGeometry,
     meta: { id: string; name: string },
     _loftN = DEFAULT_LOFT_N,
+    indexedRim = false,
 ): StockWallModel {
     if (!geo.boundingBox) geo.computeBoundingBox();
     const box = geo.boundingBox;
@@ -557,7 +559,11 @@ export function extractStockWallModel(
         : { minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1 };
 
     const { wall, plantar, top } = collectWallAndPlantar(geo);
-    const topRim = extractTopRim(geo);
+    // Indexed rims never use the 0.0001 mm quant walk in mesh-close. That walk
+    // does not close on every size, and this path already has the position-keyed outline.
+    const topRim = indexedRim
+        ? { points: positionKeyedRim(geo), indices: [] as number[] }
+        : extractTopRim(geo);
     const rimSet = new Set(topRim.points.map((p) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`));
     const topInterior = top.filter((p) => !rimSet.has(`${p.x.toFixed(3)},${p.y.toFixed(3)}`));
     let outlinePoly = extractPlantarOutline(geo, topRim.points);
@@ -622,7 +628,7 @@ export function extractStockWallModel(
     );
     const planform = buildPlanformFrame(outlineSpline.controls, trimSpline.controls);
 
-    const topSheet = copyTopMesh(geo);
+    const topSheet = copyTopMesh(geo, indexedRim);
     let trimFromSheet = trimSpline;
     let trimCount = topRim.points.length;
     if (topSheet.meshPositions && topSheet.rimLocal && topSheet.rimLocal.length >= 3) {
@@ -679,7 +685,433 @@ export function extractStockWallModel(
     };
 }
 
-function copyTopMesh(geo: BufferGeometry):
+/**
+ * Longest boundary cycle by vertex index. Edges are index pairs, never a position weld.
+ * The returned loop does not repeat the closing vertex.
+ */
+export function indexedBoundaryLoop(indices: ArrayLike<number>, indexCount = indices.length): number[] {
+    const triN = Math.floor(indexCount / 3);
+    const count = new Map<string, number>();
+    const ends = new Map<string, [number, number]>();
+    const keyOf = (a: number, b: number): string => (a < b ? `${a},${b}` : `${b},${a}`);
+    for (let t = 0; t < triN; t++) {
+        const vs = [indices[t * 3]!, indices[t * 3 + 1]!, indices[t * 3 + 2]!];
+        if (vs[0] === vs[1] || vs[1] === vs[2] || vs[2] === vs[0]) continue;
+        for (let k = 0; k < 3; k++) {
+            const a = vs[k]!;
+            const b = vs[(k + 1) % 3]!;
+            const key = keyOf(a, b);
+            count.set(key, (count.get(key) ?? 0) + 1);
+            if (!ends.has(key)) ends.set(key, [a, b]);
+        }
+    }
+    const adj = new Map<number, number[]>();
+    const link = (a: number, b: number): void => {
+        const list = adj.get(a);
+        if (list) {
+            if (!list.includes(b)) list.push(b);
+        } else adj.set(a, [b]);
+    };
+    const unused = new Set<string>();
+    for (const [key, n] of count) {
+        if (n !== 1) continue;
+        const pair = ends.get(key);
+        if (!pair) continue;
+        link(pair[0], pair[1]);
+        link(pair[1], pair[0]);
+        unused.add(key);
+    }
+    let best: number[] = [];
+    for (const edge of unused) {
+        if (!unused.has(edge)) continue;
+        const pair = ends.get(edge);
+        if (!pair) continue;
+        const start = pair[0];
+        let prev = pair[0];
+        let curr = pair[1];
+        const loop = [start];
+        let closed = false;
+        const walked = new Set<string>([edge]);
+        unused.delete(edge);
+        for (let guard = 0; guard < count.size + 2; guard++) {
+            if (curr === start) {
+                closed = true;
+                break;
+            }
+            loop.push(curr);
+            const next = (adj.get(curr) ?? []).find((n) => n !== prev);
+            if (next === undefined) break;
+            const step = keyOf(curr, next);
+            if (walked.has(step)) break;
+            walked.add(step);
+            unused.delete(step);
+            prev = curr;
+            curr = next;
+        }
+        if (closed && loop.length > best.length) best = loop;
+    }
+    return best;
+}
+
+/** Same corner stored once per triangle. 1e-5 mm keeps the rim copies the 0.0001 mm weld merges. */
+const RIM_CORNER_MM = 1e-5;
+
+function indexDuplicateCorners(
+    positions: Float32Array,
+    indices: Uint32Array,
+): { pos: number[]; idx: number[] } {
+    const map = new Map<string, number>();
+    const pos: number[] = [];
+    const remap = (v: number): number => {
+        const key = `${Math.round(positions[v * 3]! / RIM_CORNER_MM)},${Math.round(positions[v * 3 + 1]! / RIM_CORNER_MM)},${Math.round(positions[v * 3 + 2]! / RIM_CORNER_MM)}`;
+        let id = map.get(key);
+        if (id === undefined) {
+            id = map.size;
+            map.set(key, id);
+            pos.push(positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!);
+        }
+        return id;
+    };
+    const raw: number[] = [];
+    for (let i = 0; i < indices.length; i++) raw.push(remap(indices[i]!));
+    return { pos, idx: cleanIndexedFaces(pos, raw) };
+}
+
+/** Composed-sheet outline: one vertex per 1e-5 mm corner, before the arc-length resample. */
+export function positionKeyedRim(geo: BufferGeometry): { x: number; y: number; z: number }[] {
+    const attr = geo.getAttribute("position");
+    const index = geo.getIndex();
+    if (!attr || !index) throw new Error("[RIM] composed top has no index");
+    const indexed = indexDuplicateCorners(
+        new Float32Array(attr.array as ArrayLike<number>),
+        new Uint32Array(index.array as ArrayLike<number>),
+    );
+    const loop = indexedBoundaryLoop(indexed.idx, indexed.idx.length);
+    return loop.map((i) => ({
+        x: indexed.pos[i * 3]!,
+        y: indexed.pos[i * 3 + 1]!,
+        z: indexed.pos[i * 3 + 2]!,
+    }));
+}
+
+function vertexDist(pos: ArrayLike<number>, a: number, b: number): number {
+    return Math.hypot(
+        pos[a * 3]! - pos[b * 3]!,
+        pos[a * 3 + 1]! - pos[b * 3 + 1]!,
+        pos[a * 3 + 2]! - pos[b * 3 + 2]!,
+    );
+}
+
+function cleanIndexedFaces(pos: ArrayLike<number>, idx: number[]): number[] {
+    const seen = new Set<string>();
+    const out: number[] = [];
+    for (let t = 0; t < idx.length; t += 3) {
+        const a = idx[t]!;
+        const b = idx[t + 1]!;
+        const c = idx[t + 2]!;
+        if (a === b || b === c || c === a) continue;
+        const ux = pos[b * 3]! - pos[a * 3]!;
+        const uy = pos[b * 3 + 1]! - pos[a * 3 + 1]!;
+        const uz = pos[b * 3 + 2]! - pos[a * 3 + 2]!;
+        const vx = pos[c * 3]! - pos[a * 3]!;
+        const vy = pos[c * 3 + 1]! - pos[a * 3 + 1]!;
+        const vz = pos[c * 3 + 2]! - pos[a * 3 + 2]!;
+        const nx = uy * vz - uz * vy;
+        const ny = uz * vx - ux * vz;
+        const nz = ux * vy - uy * vx;
+        if (nx * nx + ny * ny + nz * nz < 1e-20) continue;
+        const canon = [a, b, c]
+            .slice()
+            .sort((x, y) => x - y)
+            .join(",");
+        if (seen.has(canon)) continue;
+        seen.add(canon);
+        out.push(a, b, c);
+    }
+    return out;
+}
+
+/** Collapse consecutive boundary vertices closer than 1e-3 mm. Indexed remap, not a distance weld. */
+function collapseCloseBoundary(
+    pos: number[],
+    idx: number[],
+    minMm: number,
+): { idx: number[]; loop: number[] } {
+    const faces0 = cleanIndexedFaces(pos, idx);
+    const loop = indexedBoundaryLoop(faces0, faces0.length);
+    if (loop.length < 3) throw new Error(`[RIM] boundary has ${loop.length} vertices`);
+    const root = new Map<number, number>();
+    const find = (v: number): number => {
+        let x = v;
+        const path: number[] = [];
+        while (root.has(x) && root.get(x) !== x) {
+            path.push(x);
+            x = root.get(x)!;
+        }
+        for (const p of path) root.set(p, x);
+        return x;
+    };
+    const uniteTo = (drop: number, keep: number): void => {
+        const a = find(drop);
+        const b = find(keep);
+        if (a !== b) root.set(a, b);
+    };
+    const kept: number[] = [];
+    const take = (v: number): void => {
+        const id = find(v);
+        const prev = kept[kept.length - 1];
+        if (prev !== undefined && (prev === id || vertexDist(pos, prev, id) < minMm)) {
+            uniteTo(id, prev);
+            return;
+        }
+        kept.push(id);
+    };
+    for (const v of loop) take(v);
+    if (kept.length >= 2) {
+        const first = kept[0]!;
+        const last = kept[kept.length - 1]!;
+        if (first === last || vertexDist(pos, first, last) < minMm) {
+            uniteTo(last, first);
+            kept.pop();
+        }
+    }
+    if (kept.length < 3) throw new Error("[RIM] boundary collapsed below 3 stations");
+    if (root.size === 0) return { idx: faces0, loop: kept };
+    const remapped = faces0.map((v) => find(v));
+    const faces = cleanIndexedFaces(pos, remapped);
+    const after = indexedBoundaryLoop(faces, faces.length);
+    if (after.length < 3) throw new Error("[RIM] boundary collapsed below 3 stations");
+    return { idx: faces, loop: after };
+}
+
+function findBoundaryTriangle(
+    idx: number[],
+    a: number,
+    b: number,
+): { at: number; verts: [number, number, number] } | null {
+    for (let t = 0; t < idx.length; t += 3) {
+        const verts: [number, number, number] = [idx[t]!, idx[t + 1]!, idx[t + 2]!];
+        const hasA = verts[0] === a || verts[1] === a || verts[2] === a;
+        const hasB = verts[0] === b || verts[1] === b || verts[2] === b;
+        if (hasA && hasB) return { at: t, verts };
+    }
+    return null;
+}
+
+function packIndexedRim(
+    pos: number[],
+    faces: number[],
+    rim: number[],
+): { meshPositions: Float32Array; meshIndices: Uint32Array; rimLocal: number[] } {
+    const map = new Map<number, number>();
+    const packed: number[] = [];
+    const pack = (v: number): number => {
+        let id = map.get(v);
+        if (id === undefined) {
+            id = map.size;
+            map.set(v, id);
+            packed.push(pos[v * 3]!, pos[v * 3 + 1]!, pos[v * 3 + 2]!);
+        }
+        return id;
+    };
+    const packedIdx = faces.map(pack);
+    return {
+        meshPositions: Float32Array.from(packed),
+        meshIndices: Uint32Array.from(packedIdx),
+        rimLocal: rim.map(pack),
+    };
+}
+
+/**
+ * Resample the indexed rim to {@link RIM_RING_STATION_N} unique vertices.
+ * Wall quads and the bottom use these indices (i, i+1 mod N). No distance weld.
+ */
+export function installIndexedRimRing(
+    positions: Float32Array,
+    indices: Uint32Array,
+    stationN = RIM_RING_STATION_N,
+): { meshPositions: Float32Array; meshIndices: Uint32Array; rimLocal: number[] } {
+    const indexed = indexDuplicateCorners(positions, indices);
+    const pos = indexed.pos;
+    const closed = collapseCloseBoundary(pos, indexed.idx, RIM_RING_MIN_STATION_MM);
+    let faces = closed.idx;
+    const loop = closed.loop;
+    if (loop.length === stationN && new Set(loop).size === stationN) {
+        return packIndexedRim(pos, faces, loop);
+    }
+    const m = loop.length;
+    const pts = loop.map((i) => ({ x: pos[i * 3]!, y: pos[i * 3 + 1]!, z: pos[i * 3 + 2]! }));
+    const { cum, total } = polylineArcLengths(pts);
+    const stations: Array<{ edge: number; t: number }> = [];
+    for (let k = 0; k < stationN; k++) {
+        const s = (k / stationN) * total;
+        let e = 0;
+        while (e < m - 1 && (cum[e + 1] ?? 0) < s - 1e-9) e++;
+        const seg = (cum[e + 1] ?? total) - (cum[e] ?? 0);
+        let t = seg > 1e-12 ? (s - (cum[e] ?? 0)) / seg : 0;
+        if (t < 0) t = 0;
+        if (t >= 1 - 1e-12) {
+            e = (e + 1) % m;
+            t = 0;
+        }
+        stations.push({ edge: e, t });
+    }
+    const usedStation = new Set<number>();
+    const scoreOf = [
+        (i: number) => pos[loop[i]! * 3]!,
+        (i: number) => -pos[loop[i]! * 3]!,
+        (i: number) => pos[loop[i]! * 3 + 1]!,
+        (i: number) => -pos[loop[i]! * 3 + 1]!,
+    ];
+    for (const score of scoreOf) {
+        let bestI = 0;
+        let best = -Infinity;
+        for (let i = 0; i < m; i++) {
+            const s = score(i);
+            if (s > best) {
+                best = s;
+                bestI = i;
+            }
+        }
+        const arc = (cum[bestI] ?? 0) / Math.max(total, 1e-12);
+        let nearest = 0;
+        let bestD = Infinity;
+        for (let k = 0; k < stationN; k++) {
+            if (usedStation.has(k)) continue;
+            const sa = k / stationN;
+            const d = Math.min(Math.abs(sa - arc), 1 - Math.abs(sa - arc));
+            if (d < bestD) {
+                bestD = d;
+                nearest = k;
+            }
+        }
+        usedStation.add(nearest);
+        stations[nearest] = { edge: bestI, t: 0 };
+    }
+    const vertexOf = new Array<number>(stationN).fill(-1);
+    const taken = new Set<number>();
+    const byEdge = new Map<number, Array<{ k: number; t: number }>>();
+    for (let k = 0; k < stationN; k++) {
+        const st = stations[k]!;
+        if (st.t <= 1e-8) {
+            const id = loop[st.edge]!;
+            if (!taken.has(id)) {
+                vertexOf[k] = id;
+                taken.add(id);
+                continue;
+            }
+        }
+        const t = st.t <= 1e-8 ? 1e-4 : st.t;
+        const list = byEdge.get(st.edge) ?? [];
+        list.push({ k, t });
+        byEdge.set(st.edge, list);
+    }
+    for (let e = 0; e < m; e++) {
+        const inserts = byEdge.get(e);
+        if (!inserts || inserts.length === 0) continue;
+        inserts.sort((a, b) => a.t - b.t);
+        const a = loop[e]!;
+        const b = loop[(e + 1) % m]!;
+        const tri = findBoundaryTriangle(faces, a, b);
+        if (!tri) throw new Error(`[RIM] boundary edge ${a}-${b} has no face`);
+        const c = tri.verts.find((v) => v !== a && v !== b);
+        if (c === undefined) throw new Error(`[RIM] boundary edge ${a}-${b} is degenerate`);
+        const ax = pos[a * 3]!;
+        const ay = pos[a * 3 + 1]!;
+        const az = pos[a * 3 + 2]!;
+        const bx = pos[b * 3]!;
+        const by = pos[b * 3 + 1]!;
+        const bz = pos[b * 3 + 2]!;
+        const created: number[] = [];
+        for (const ins of inserts) {
+            const id = pos.length / 3;
+            const t = Math.min(1 - 1e-6, Math.max(1e-6, ins.t));
+            pos.push(ax + (bx - ax) * t, ay + (by - ay) * t, az + (bz - az) * t);
+            created.push(id);
+            vertexOf[ins.k] = id;
+            taken.add(id);
+        }
+        const iA = tri.verts.indexOf(a);
+        const iB = tri.verts.indexOf(b);
+        const forward = (iA + 1) % 3 === iB;
+        const chain = [a, ...created, b];
+        const fan: number[] = [];
+        for (let i = 0; i < chain.length - 1; i++) {
+            if (forward) fan.push(chain[i]!, chain[i + 1]!, c);
+            else fan.push(chain[i + 1]!, chain[i]!, c);
+        }
+        faces.splice(tri.at, 3, ...fan);
+    }
+    if (vertexOf.some((v) => v < 0)) throw new Error("[RIM] a station was not assigned a vertex");
+    const stationSet = new Set(vertexOf);
+    if (stationSet.size !== stationN) {
+        throw new Error(`[RIM] expected ${stationN} unique stations, got ${stationSet.size}`);
+    }
+    const boundary = indexedBoundaryLoop(faces, faces.length);
+    if (boundary.length < stationN) throw new Error("[RIM] boundary lost stations during insert");
+    const nearest = new Array<number>(boundary.length);
+    const isStation = boundary.map((v) => stationSet.has(v));
+    for (let i = 0; i < boundary.length; i++) {
+        if (isStation[i]) {
+            nearest[i] = boundary[i]!;
+            continue;
+        }
+        let back = 1;
+        let fwd = 1;
+        while (!isStation[(i - back + boundary.length) % boundary.length]) back++;
+        while (!isStation[(i + fwd) % boundary.length]) fwd++;
+        nearest[i] =
+            back <= fwd
+                ? boundary[(i - back + boundary.length) % boundary.length]!
+                : boundary[(i + fwd) % boundary.length]!;
+    }
+    const remap = new Map<number, number>();
+    for (let i = 0; i < boundary.length; i++) {
+        if (boundary[i] !== nearest[i]) remap.set(boundary[i]!, nearest[i]!);
+    }
+    if (remap.size) {
+        for (let k = 0; k < faces.length; k++) {
+            const next = remap.get(faces[k]!);
+            if (next !== undefined) faces[k] = next;
+        }
+    }
+    faces = cleanIndexedFaces(pos, faces);
+    const walked = indexedBoundaryLoop(faces, faces.length);
+    if (walked.length !== stationN) {
+        throw new Error(`[RIM] indexed ring has ${walked.length} vertices, expected ${stationN}`);
+    }
+    const start = walked.indexOf(vertexOf[0]!);
+    if (start < 0) throw new Error("[RIM] station 0 left the boundary");
+    const forward = Array.from({ length: stationN }, (_, i) => walked[(start + i) % stationN]!);
+    const backward = Array.from({ length: stationN }, (_, i) => walked[(start - i + stationN) % stationN]!);
+    const sameOrder = (seq: number[]) => seq.every((v, i) => v === vertexOf[i]);
+    const rim = sameOrder(forward) ? forward : sameOrder(backward) ? backward : null;
+    if (!rim) throw new Error("[RIM] boundary is not the arc-length station ring");
+    if (new Set(rim).size !== stationN) throw new Error("[RIM] ring vertices are not unique");
+    const map = new Map<number, number>();
+    const packed: number[] = [];
+    const pack = (v: number): number => {
+        let id = map.get(v);
+        if (id === undefined) {
+            id = map.size;
+            map.set(v, id);
+            packed.push(pos[v * 3]!, pos[v * 3 + 1]!, pos[v * 3 + 2]!);
+        }
+        return id;
+    };
+    const packedIdx = faces.map(pack);
+    const rimLocal = rim.map(pack);
+    return {
+        meshPositions: Float32Array.from(packed),
+        meshIndices: Uint32Array.from(packedIdx),
+        rimLocal,
+    };
+}
+
+function copyTopMesh(
+    geo: BufferGeometry,
+    indexedRim = false,
+):
     | {
           meshPositions: Float32Array;
           meshIndices: Uint32Array;
@@ -689,6 +1121,19 @@ function copyTopMesh(geo: BufferGeometry):
     const topN = topVertexCountOf(geo);
     if (topN < 3) return {};
     const topSub = submeshByVertexRange(geo, 0, topN);
+    if (indexedRim) {
+        try {
+            const pos = topSub.getAttribute("position");
+            const idx = topSub.getIndex();
+            if (!pos || !idx) return {};
+            return installIndexedRimRing(
+                new Float32Array(pos.array as ArrayLike<number>),
+                new Uint32Array(idx.array as ArrayLike<number>),
+            );
+        } finally {
+            topSub.dispose();
+        }
+    }
     const welded = mergeVertices(topSub, 1e-4);
     if (welded !== topSub) topSub.dispose();
     try {
@@ -716,10 +1161,14 @@ export function extractTopSheet(geo: BufferGeometry): {
  * Top-only GLB (Kendon SAMPLE_Top): the entire mesh is the TopSheet.
  * Outline is the rim plan at z=0 until a bottom-pattern is supplied.
  */
-export function extractTopOnlyModel(geo: BufferGeometry, meta: { id: string; name: string }): StockWallModel {
+export function extractTopOnlyModel(
+    geo: BufferGeometry,
+    meta: { id: string; name: string },
+    options?: { indexedRim?: boolean },
+): StockWallModel {
     const count = geo.getAttribute("position")?.count ?? 0;
     geo.userData = { ...geo.userData, topVertexCount: count, topOnly: true };
-    const model = extractStockWallModel(geo, meta);
+    const model = extractStockWallModel(geo, meta, DEFAULT_LOFT_N, options?.indexedRim === true);
     if (model.top.meshPositions && model.top.rimLocal?.length) {
         const pos = model.top.meshPositions;
         const rim = model.top.rimLocal.map((i) => ({

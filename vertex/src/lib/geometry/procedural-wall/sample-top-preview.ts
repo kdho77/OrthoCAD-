@@ -6,7 +6,6 @@ import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthLongitudinalEnvelope, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
-import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -27,6 +26,7 @@ import {
     type PrintSolidShoeWidth,
     type SharedInsoleSizeTransform,
     sharedInsoleSizeTransformFromGeometry,
+    sharedSizeTarget,
 } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
@@ -227,12 +227,15 @@ export interface ProceduralPreviewOptions {
     footprintWidthMm?: number;
     /**
      * #204 size map. Created once by the caller when it has the native mesh.
-     * When omitted and the footprint is not the Men's 9 template, preview builds it
-     * once from this mesh and passes that same object into compose and the loft.
+     * When omitted, or null, and a footprint is set, preview builds it once
+     * from this mesh — including US M9 / W10.5 — and passes that same object
+     * into compose and the loft.
      */
     sizeTransform?: SharedInsoleSizeTransform | null;
     sizeLabel?: string;
     userBottomPattern?: boolean;
+    /** Sized previews resample the rim to a fixed indexed ring. */
+    indexedRim?: boolean;
 }
 
 /**
@@ -251,16 +254,12 @@ export async function reconstructProceduralPreview(
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
     const lengthMm = options.footprintLengthMm;
     const widthMm = options.footprintWidthMm;
-    const offTemplate =
-        lengthMm != null &&
-        widthMm != null &&
-        (Math.abs(lengthMm - INSOLE_LENGTH_MM) > 1e-3 || Math.abs(widthMm - INSOLE_WIDTH_MM) > 1e-3);
-    const sizeTransform =
-        options.sizeTransform !== undefined
-            ? options.sizeTransform
-            : offTemplate && lengthMm != null && widthMm != null
-              ? sharedInsoleSizeTransformFromGeometry(topGeo, lengthMm, widthMm)
-              : null;
+    const target = lengthMm != null && widthMm != null ? sharedSizeTarget(lengthMm, widthMm) : null;
+    const sizeTransform = options.sizeTransform
+        ? options.sizeTransform
+        : target
+          ? sharedInsoleSizeTransformFromGeometry(topGeo, target.lengthMm, target.widthMm)
+          : null;
     // One object, applied to the sheet and to a pattern that is still in the native frame.
     // Fairing runs on the native rim, then this same transform, so the loft is not
     // rebuilt from an unscaled SAMPLE_Top and the column headings stay inside the gate.
@@ -292,7 +291,12 @@ export async function reconstructProceduralPreview(
         source = applySharedInsoleSizeToGeometry(topGeo, sizeTransform);
         owned = true;
     }
-    const model = extractTopOnlyModel(source, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+    const indexedRim = options.indexedRim !== false && Boolean(sizeTransform);
+    const model = extractTopOnlyModel(
+        source,
+        { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME },
+        { indexedRim },
+    );
     if (owned) source.dispose();
     const requested = patternOnSheet?.length
         ? patternOnSheet
@@ -325,6 +329,7 @@ export async function reconstructProceduralPreview(
             footprintLengthMm: options.footprintLengthMm,
             footprintWidthMm: options.footprintWidthMm,
             sizeLabel: options.sizeLabel,
+            indexedRimRing: indexedRim,
         });
         return { model, pattern, geometry };
     };
