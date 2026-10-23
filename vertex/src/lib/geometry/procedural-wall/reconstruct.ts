@@ -56,6 +56,7 @@ import {
     type FootprintBounds,
     hygieneBottomPattern,
     PATTERN_HARD_OUTSIDE_MM,
+    type SharedInsoleSizeTransform,
 } from "./pattern-hygiene";
 import type { PrintSolidShoeWidth } from "./print-solid-compose";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
@@ -129,6 +130,13 @@ export interface ReconstructOptions extends ProceduralModifierInput {
     footprintReferenceBounds?: FootprintBounds;
     footprintLengthMm?: number;
     footprintWidthMm?: number;
+    /** Same object compose applied. Not recomputed from the sized bbox. */
+    sizeTransform?: SharedInsoleSizeTransform | null;
+    /**
+     * Clipped-top rim from outline + the #206 cut. Same array compose stored.
+     * Pattern hygiene and exportRim use it; mesh vertices are not moved.
+     */
+    referenceRim?: PolyPoint[] | null;
     sizeLabel?: string;
     /** Stored / edited bottom pattern (enables footprint align + rim clip). */
     userBottomPattern?: boolean;
@@ -1058,7 +1066,10 @@ export function reconstructProceduralWalls(
         ensureCcw(model.outline.spline.controls.map((p) => ({ ...p }))),
         model.bounds,
     );
-    const liveRimPlan = rimPts.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    const liveRimPlan =
+        options.referenceRim && options.referenceRim.length >= 4
+            ? options.referenceRim
+            : rimPts.map((p) => ({ x: p.x, y: p.y, z: 0 }));
     const refBounds: FootprintBounds = options.footprintReferenceBounds ?? {
         minX: model.bounds.minX,
         maxX: model.bounds.maxX,
@@ -1107,6 +1118,7 @@ export function reconstructProceduralWalls(
         footprintLengthMm: targetLength,
         footprintWidthMm: targetWidth,
         patternInMeshFrame,
+        sizeTransform: options.sizeTransform,
     });
     const patternLabel =
         options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : PATTERN_SOURCE_FAIRED_STOCK);
@@ -1760,6 +1772,9 @@ export function reconstructProceduralWalls(
         (grid.frames[0]?.nRoundFix || grid.frames[0]?.roundRows || 0) + (grid.frames[0]?.nLineFix || 0);
     geo.userData = {
         wallModel: "procedural",
+        exportPattern: hygiened.loop.map((p) => ({ x: p.x, y: p.y, z: p.z })),
+        exportRim: liveRimPlan,
+        sizeTransform: options.sizeTransform ?? null,
         stockId: model.id,
         loftN: nS,
         pairingMethod: pairing.method ?? "harmonic",

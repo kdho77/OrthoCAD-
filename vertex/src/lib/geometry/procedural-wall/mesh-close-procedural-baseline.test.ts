@@ -68,8 +68,8 @@ interface LoftReport {
 }
 
 /**
- * Same gate as `buildExportStl` after the procedural loft: close, then the
- * Default.glb baseline whenever `topVertexCount > 0`.
+ * Same gate as `buildExportStl`: close, then assert. Procedural solids take the
+ * absolute genus-0 gate. Default.glb stays on euler 3.
  */
 function exportGateError(geometry: BufferGeometry): string | null {
     const solid = closeGlbInsoleToSolid(geometry);
@@ -114,6 +114,9 @@ async function loft(raw: BufferGeometry, withPad: boolean): Promise<LoftReport> 
             heelWidthMm: layout.widthMm * 0.62,
         },
         trimline: null,
+        footprintLengthMm: layout.lengthMm,
+        footprintWidthMm: layout.widthMm,
+        sizeLabel: "US M8.5",
     });
     const geo = preview.geometry;
     try {

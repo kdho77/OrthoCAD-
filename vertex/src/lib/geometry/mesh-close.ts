@@ -1654,15 +1654,541 @@ export const DEFAULT_GLB_CLOSED_BASELINE: ClosedSolidBaseline = {
     heelBridgeSelfIntersections: 0,
 };
 
+/** Absolute procedural solid. The Default.glb euler-3 baseline does not apply. */
+export interface ProceduralSolidReport {
+    edgesExactlyTwo: boolean;
+    openEdges: number;
+    nonManifoldEdges: number;
+    euler: number;
+    genus: number;
+    signedVolumeMm3: number;
+    degenerateFaces: number;
+    selfIntersections: number;
+    orientationConsistent: boolean;
+    bottomFaces: number;
+    bottomMinZ: number;
+    bottomP99Z: number;
+    bottomMaxZ: number;
+    meshMinZ: number;
+    bedVertices: number;
+    bedVerticesOffPlane: number;
+    interiorOffPlane: number;
+    bedOffByZ: Record<string, number>;
+    highOff: { n: number; minX: number; maxX: number; minY: number; maxY: number };
+}
+
+const PROCEDURAL_DEGENERATE_MM2 = 1e-6;
+const PROCEDURAL_BOTTOM_Z_MM = 1e-3;
+/**
+ * Flat-plantar tessellation sits a few hundredths of a millimetre off z=0 at p99.
+ * bottomMaxZ still reports the separate toe patch above that plate.
+ */
+const PROCEDURAL_BED_P99_MM = 0.15;
+/** A print-bed face is downward and itself flat. Wall fillets are not the bed. */
+const PROCEDURAL_BED_SPAN_MM = 0.05;
+const PROCEDURAL_GRAZE_MM = 1e-4;
+
+function proceduralFaceMetrics(geometry: BufferGeometry): {
+    signedVolumeMm3: number;
+    degenerateFaces: number;
+    bottomFaces: number;
+    bottomMinZ: number;
+    bottomP99Z: number;
+    bottomMaxZ: number;
+    meshMinZ: number;
+    bedVertices: number;
+    bedVerticesOffPlane: number;
+    interiorOffPlane: number;
+    bedOffByZ: Record<string, number>;
+    highOff: { n: number; minX: number; maxX: number; minY: number; maxY: number };
+    orientationConsistent: boolean;
+} {
+    const pos = geometry.getAttribute("position");
+    const index = geometry.getIndex();
+    const triCount = index ? index.count / 3 : pos.count / 3;
+    const at = (t: number, k: number) => (index ? index.getX(t * 3 + k) : t * 3 + k);
+    let vol = 0;
+    let degenerateFaces = 0;
+    let orientationConsistent = true;
+    let bottomFaces = 0;
+    let bottomMinZ = Infinity;
+    let bottomMaxZ = -Infinity;
+    let meshMinZ = Infinity;
+    const bedAt = new Map<number, number>();
+    const bedOff = new Set<number>();
+    const maxUnitNz = new Map<number, number>();
+    const directed = new Map<string, 1>();
+    for (let t = 0; t < triCount; t++) {
+        const i0 = at(t, 0);
+        const i1 = at(t, 1);
+        const i2 = at(t, 2);
+        const ax = pos.getX(i0);
+        const ay = pos.getY(i0);
+        const az = pos.getZ(i0);
+        const bx = pos.getX(i1);
+        const by = pos.getY(i1);
+        const bz = pos.getZ(i1);
+        const cx = pos.getX(i2);
+        const cy = pos.getY(i2);
+        const cz = pos.getZ(i2);
+        const nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
+        const ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+        const nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        const nlenPre = Math.hypot(nx, ny, nz);
+        const area = 0.5 * nlenPre;
+        if (area < PROCEDURAL_DEGENERATE_MM2) degenerateFaces++;
+        if (nlenPre > 0) {
+            const unz = nz / nlenPre;
+            for (const id of [i0, i1, i2]) {
+                const prev = maxUnitNz.get(id);
+                if (prev == null || unz > prev) maxUnitNz.set(id, unz);
+            }
+        }
+        vol += ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx);
+        if (az < meshMinZ) meshMinZ = az;
+        if (bz < meshMinZ) meshMinZ = bz;
+        if (cz < meshMinZ) meshMinZ = cz;
+        const nlen = Math.hypot(nx, ny, nz);
+        const zSpan = Math.max(az, bz, cz) - Math.min(az, bz, cz);
+        if (
+            area >= PROCEDURAL_DEGENERATE_MM2 &&
+            nlen > 0 &&
+            nz < -0.95 * nlen &&
+            zSpan <= PROCEDURAL_BED_SPAN_MM
+        ) {
+            bottomFaces++;
+            const zs = [az, bz, cz];
+            const ids = [i0, i1, i2];
+            for (let k = 0; k < 3; k++) {
+                const z = zs[k]!;
+                if (z < bottomMinZ) bottomMinZ = z;
+                if (z > bottomMaxZ) bottomMaxZ = z;
+                bedAt.set(ids[k]!, z);
+                if (Math.abs(z) > PROCEDURAL_BOTTOM_Z_MM) bedOff.add(ids[k]!);
+            }
+        }
+        const keys = [quantKey(ax, ay, az), quantKey(bx, by, bz), quantKey(cx, cy, cz)];
+        const dirs = [`${keys[0]}>${keys[1]}`, `${keys[1]}>${keys[2]}`, `${keys[2]}>${keys[0]}`];
+        for (const dir of dirs) {
+            if (directed.has(dir)) orientationConsistent = false;
+            else directed.set(dir, 1);
+        }
+    }
+    if (orientationConsistent) {
+        for (const dir of directed.keys()) {
+            const cut = dir.indexOf(">");
+            const rev = `${dir.slice(cut + 1)}>${dir.slice(0, cut)}`;
+            if (!directed.has(rev)) {
+                orientationConsistent = false;
+                break;
+            }
+        }
+    }
+    if (bottomFaces === 0) {
+        bottomMinZ = 0;
+        bottomMaxZ = 0;
+    }
+    if (!Number.isFinite(meshMinZ)) meshMinZ = 0;
+    const bedZ = [...bedAt.values()].sort((a, b) => a - b);
+    const bottomP99Z =
+        bedZ.length === 0 ? 0 : bedZ[Math.min(bedZ.length - 1, Math.ceil(0.99 * bedZ.length) - 1)]!;
+    return {
+        signedVolumeMm3: vol / 6,
+        degenerateFaces,
+        bottomFaces,
+        bottomMinZ,
+        bottomP99Z,
+        bottomMaxZ,
+        meshMinZ,
+        bedVertices: bedAt.size,
+        bedVerticesOffPlane: bedOff.size,
+        interiorOffPlane: [...bedOff].filter((id) => (maxUnitNz.get(id) ?? 0) < -0.5).length,
+        bedOffByZ: [...bedOff].reduce<Record<string, number>>((hist, id) => {
+            const z = bedAt.get(id) ?? 0;
+            const key = (Math.round(z * 20) / 20).toFixed(2);
+            hist[key] = (hist[key] ?? 0) + 1;
+            return hist;
+        }, {}),
+        highOff: [...bedOff].reduce(
+            (box, id) => {
+                const z = bedAt.get(id) ?? 0;
+                if (z <= 0.15) return box;
+                const x = pos.getX(id);
+                const y = pos.getY(id);
+                box.n++;
+                if (x < box.minX) box.minX = x;
+                if (x > box.maxX) box.maxX = x;
+                if (y < box.minY) box.minY = y;
+                if (y > box.maxY) box.maxY = y;
+                return box;
+            },
+            { n: 0, minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity },
+        ),
+        orientationConsistent,
+    };
+}
+
+function soupTriangles(geometry: BufferGeometry): Float32Array {
+    const pos = geometry.getAttribute("position");
+    const index = geometry.getIndex();
+    const n = index ? index.count / 3 : pos.count / 3;
+    const out = new Float32Array(n * 9);
+    let w = 0;
+    for (let t = 0; t < n; t++) {
+        for (let k = 0; k < 3; k++) {
+            const vi = index ? index.getX(t * 3 + k) : t * 3 + k;
+            out[w++] = pos.getX(vi);
+            out[w++] = pos.getY(vi);
+            out[w++] = pos.getZ(vi);
+        }
+    }
+    return out;
+}
+
+function sameQuantVertex(ax: number, ay: number, az: number, bx: number, by: number, bz: number): boolean {
+    return (
+        Math.round(ax * QUANT) === Math.round(bx * QUANT) &&
+        Math.round(ay * QUANT) === Math.round(by * QUANT) &&
+        Math.round(az * QUANT) === Math.round(bz * QUANT)
+    );
+}
+
+/** Proper crossing only. Shared vertices and coplanar pairs are not intersections. */
+function triangleProperCrossing(tris: Float32Array, ia: number, ib: number): boolean {
+    const a = ia * 9;
+    const b = ib * 9;
+    for (let i = 0; i < 3; i++) {
+        const ax = tris[a + i * 3]!;
+        const ay = tris[a + i * 3 + 1]!;
+        const az = tris[a + i * 3 + 2]!;
+        for (let j = 0; j < 3; j++) {
+            if (sameQuantVertex(ax, ay, az, tris[b + j * 3]!, tris[b + j * 3 + 1]!, tris[b + j * 3 + 2]!)) {
+                return false;
+            }
+        }
+    }
+    let aMinX = Infinity;
+    let aMinY = Infinity;
+    let aMinZ = Infinity;
+    let aMaxX = -Infinity;
+    let aMaxY = -Infinity;
+    let aMaxZ = -Infinity;
+    let bMinX = Infinity;
+    let bMinY = Infinity;
+    let bMinZ = Infinity;
+    let bMaxX = -Infinity;
+    let bMaxY = -Infinity;
+    let bMaxZ = -Infinity;
+    for (let i = 0; i < 3; i++) {
+        const x = tris[a + i * 3]!;
+        const y = tris[a + i * 3 + 1]!;
+        const z = tris[a + i * 3 + 2]!;
+        if (x < aMinX) aMinX = x;
+        if (y < aMinY) aMinY = y;
+        if (z < aMinZ) aMinZ = z;
+        if (x > aMaxX) aMaxX = x;
+        if (y > aMaxY) aMaxY = y;
+        if (z > aMaxZ) aMaxZ = z;
+        const u = tris[b + i * 3]!;
+        const v = tris[b + i * 3 + 1]!;
+        const w = tris[b + i * 3 + 2]!;
+        if (u < bMinX) bMinX = u;
+        if (v < bMinY) bMinY = v;
+        if (w < bMinZ) bMinZ = w;
+        if (u > bMaxX) bMaxX = u;
+        if (v > bMaxY) bMaxY = v;
+        if (w > bMaxZ) bMaxZ = w;
+    }
+    if (aMaxX < bMinX || bMaxX < aMinX || aMaxY < bMinY || bMaxY < aMinY || aMaxZ < bMinZ || bMaxZ < aMinZ) {
+        return false;
+    }
+    const ax = tris[a]!;
+    const ay = tris[a + 1]!;
+    const az = tris[a + 2]!;
+    const bx = tris[a + 3]!;
+    const by = tris[a + 4]!;
+    const bz = tris[a + 5]!;
+    const cx = tris[a + 6]!;
+    const cy = tris[a + 7]!;
+    const cz = tris[a + 8]!;
+    const dx = tris[b]!;
+    const dy = tris[b + 1]!;
+    const dz = tris[b + 2]!;
+    const ex = tris[b + 3]!;
+    const ey = tris[b + 4]!;
+    const ez = tris[b + 5]!;
+    const fx = tris[b + 6]!;
+    const fy = tris[b + 7]!;
+    const fz = tris[b + 8]!;
+    const abx = bx - ax;
+    const aby = by - ay;
+    const abz = bz - az;
+    const acx = cx - ax;
+    const acy = cy - ay;
+    const acz = cz - az;
+    let n1x = aby * acz - abz * acy;
+    let n1y = abz * acx - abx * acz;
+    let n1z = abx * acy - aby * acx;
+    const n1l = Math.hypot(n1x, n1y, n1z);
+    if (n1l < 1e-8) return false;
+    n1x /= n1l;
+    n1y /= n1l;
+    n1z /= n1l;
+    const dex = ex - dx;
+    const dey = ey - dy;
+    const dez = ez - dz;
+    const dfx = fx - dx;
+    const dfy = fy - dy;
+    const dfz = fz - dz;
+    let n2x = dey * dfz - dez * dfy;
+    let n2y = dez * dfx - dex * dfz;
+    let n2z = dex * dfy - dey * dfx;
+    const n2l = Math.hypot(n2x, n2y, n2z);
+    if (n2l < 1e-8) return false;
+    n2x /= n2l;
+    n2y /= n2l;
+    n2z /= n2l;
+    const cnx = n1y * n2z - n1z * n2y;
+    const cny = n1z * n2x - n1x * n2z;
+    const cnz = n1x * n2y - n1y * n2x;
+    const plane = Math.abs((dx - ax) * n1x + (dy - ay) * n1y + (dz - az) * n1z);
+    if (Math.hypot(cnx, cny, cnz) < 1e-6 && plane < PROCEDURAL_GRAZE_MM) return false;
+    const e1x = [abx, cx - bx, ax - cx];
+    const e1y = [aby, cy - by, ay - cy];
+    const e1z = [abz, cz - bz, az - cz];
+    const e2x = [dex, fx - ex, dx - fx];
+    const e2y = [dey, fy - ey, dy - fy];
+    const e2z = [dez, fz - ez, dz - fz];
+    const px = [ax, bx, cx, dx, ex, fx];
+    const py = [ay, by, cy, dy, ey, fy];
+    const pz = [az, bz, cz, dz, ez, fz];
+    const testAxis = (ux: number, uy: number, uz: number): boolean => {
+        const len = Math.hypot(ux, uy, uz);
+        if (len < 1e-10) return true;
+        const ix = ux / len;
+        const iy = uy / len;
+        const iz = uz / len;
+        let aMin = Infinity;
+        let aMax = -Infinity;
+        let bMin = Infinity;
+        let bMax = -Infinity;
+        for (let i = 0; i < 3; i++) {
+            const pa = px[i]! * ix + py[i]! * iy + pz[i]! * iz;
+            const pb = px[i + 3]! * ix + py[i + 3]! * iy + pz[i + 3]! * iz;
+            if (pa < aMin) aMin = pa;
+            if (pa > aMax) aMax = pa;
+            if (pb < bMin) bMin = pb;
+            if (pb > bMax) bMax = pb;
+        }
+        return Math.min(aMax, bMax) - Math.max(aMin, bMin) >= PROCEDURAL_GRAZE_MM;
+    };
+    if (!testAxis(n1x, n1y, n1z) || !testAxis(n2x, n2y, n2z)) return false;
+    for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+            const ux = e1y[i]! * e2z[j]! - e1z[i]! * e2y[j]!;
+            const uy = e1z[i]! * e2x[j]! - e1x[i]! * e2z[j]!;
+            const uz = e1x[i]! * e2y[j]! - e1y[i]! * e2x[j]!;
+            if (!testAxis(ux, uy, uz)) return false;
+        }
+    }
+    return true;
+}
+
+interface ProcBvhNode {
+    minX: number;
+    minY: number;
+    minZ: number;
+    maxX: number;
+    maxY: number;
+    maxZ: number;
+    start: number;
+    count: number;
+    left: number;
+    right: number;
+}
+
+function countProperSelfIntersections(geometry: BufferGeometry): number {
+    const tris = soupTriangles(geometry);
+    const n = tris.length / 9;
+    if (n < 2) return 0;
+    const order = new Uint32Array(n);
+    for (let i = 0; i < n; i++) order[i] = i;
+    const nodes: ProcBvhNode[] = [];
+    const boundsOf = (start: number, count: number) => {
+        let minX = Infinity;
+        let minY = Infinity;
+        let minZ = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let maxZ = -Infinity;
+        for (let k = 0; k < count; k++) {
+            const t = order[start + k]! * 9;
+            for (let v = 0; v < 9; v += 3) {
+                const x = tris[t + v]!;
+                const y = tris[t + v + 1]!;
+                const z = tris[t + v + 2]!;
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (z < minZ) minZ = z;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+                if (z > maxZ) maxZ = z;
+            }
+        }
+        return { minX, minY, minZ, maxX, maxY, maxZ };
+    };
+    const build = (start: number, count: number): number => {
+        const box = boundsOf(start, count);
+        const id = nodes.length;
+        nodes.push({ ...box, start, count, left: -1, right: -1 });
+        if (count <= 8) return id;
+        const dx = box.maxX - box.minX;
+        const dy = box.maxY - box.minY;
+        const dz = box.maxZ - box.minZ;
+        const axis = dx >= dy && dx >= dz ? 0 : dy >= dz ? 1 : 2;
+        const slice = Array.from(order.subarray(start, start + count));
+        slice.sort((i, j) => {
+            const ai = i * 9 + axis;
+            const bi = j * 9 + axis;
+            const ac = (tris[ai]! + tris[ai + 3]! + tris[ai + 6]!) / 3;
+            const bc = (tris[bi]! + tris[bi + 3]! + tris[bi + 6]!) / 3;
+            return ac - bc;
+        });
+        order.set(slice, start);
+        const mid = count >> 1;
+        if (mid < 1 || mid >= count) return id;
+        nodes[id]!.left = build(start, mid);
+        nodes[id]!.right = build(start + mid, count - mid);
+        return id;
+    };
+    const root = build(0, n);
+    const overlap = (a: ProcBvhNode, b: ProcBvhNode) =>
+        a.minX <= b.maxX &&
+        a.maxX >= b.minX &&
+        a.minY <= b.maxY &&
+        a.maxY >= b.minY &&
+        a.minZ <= b.maxZ &&
+        a.maxZ >= b.minZ;
+    let hits = 0;
+    const stack: Array<{ a: number; b: number; self: boolean }> = [{ a: root, b: root, self: true }];
+    while (stack.length > 0 && hits === 0) {
+        const job = stack.pop()!;
+        const A = nodes[job.a]!;
+        const B = nodes[job.b]!;
+        if (!job.self && !overlap(A, B)) continue;
+        if (job.self) {
+            if (A.left < 0) {
+                for (let i = 0; i < A.count && hits === 0; i++) {
+                    for (let j = i + 1; j < A.count; j++) {
+                        if (triangleProperCrossing(tris, order[A.start + i]!, order[A.start + j]!)) {
+                            hits++;
+                            break;
+                        }
+                    }
+                }
+            } else {
+                stack.push({ a: A.left, b: A.left, self: true });
+                stack.push({ a: A.right, b: A.right, self: true });
+                stack.push({ a: A.left, b: A.right, self: false });
+            }
+        } else if (A.left < 0 && B.left < 0) {
+            for (let i = 0; i < A.count && hits === 0; i++) {
+                for (let j = 0; j < B.count; j++) {
+                    if (triangleProperCrossing(tris, order[A.start + i]!, order[B.start + j]!)) {
+                        hits++;
+                        break;
+                    }
+                }
+            }
+        } else if (A.left < 0) {
+            stack.push({ a: job.a, b: B.left, self: false });
+            stack.push({ a: job.a, b: B.right, self: false });
+        } else if (B.left < 0 || A.count >= B.count) {
+            stack.push({ a: A.left, b: job.b, self: false });
+            stack.push({ a: A.right, b: job.b, self: false });
+        } else {
+            stack.push({ a: job.a, b: B.left, self: false });
+            stack.push({ a: job.a, b: B.right, self: false });
+        }
+    }
+    return hits;
+}
+
+export function proceduralSolidReport(geometry: BufferGeometry): ProceduralSolidReport {
+    const cached = (geometry.userData as { proceduralSolidReport?: ProceduralSolidReport })
+        .proceduralSolidReport;
+    if (cached) return cached;
+    const manifold = validateManifold(geometry);
+    const faces = manifold.triangleCount;
+    const edges = manifold.edgeCount;
+    const metrics = proceduralFaceMetrics(geometry);
+    const report: ProceduralSolidReport = {
+        edgesExactlyTwo:
+            manifold.openEdges === 0 && manifold.nonManifoldEdges === 0 && faces * 3 === edges * 2,
+        openEdges: manifold.openEdges,
+        nonManifoldEdges: manifold.nonManifoldEdges,
+        euler: manifold.eulerCharacteristic,
+        genus: (2 - manifold.eulerCharacteristic) / 2,
+        signedVolumeMm3: metrics.signedVolumeMm3,
+        degenerateFaces: metrics.degenerateFaces,
+        selfIntersections: countProperSelfIntersections(geometry),
+        orientationConsistent: metrics.orientationConsistent,
+        bottomFaces: metrics.bottomFaces,
+        bottomMinZ: metrics.bottomMinZ,
+        bottomP99Z: metrics.bottomP99Z,
+        bottomMaxZ: metrics.bottomMaxZ,
+        meshMinZ: metrics.meshMinZ,
+        bedVertices: metrics.bedVertices,
+        bedVerticesOffPlane: metrics.bedVerticesOffPlane,
+        interiorOffPlane: metrics.interiorOffPlane,
+        bedOffByZ: metrics.bedOffByZ,
+        highOff: metrics.highOff,
+    };
+    geometry.userData = { ...geometry.userData, proceduralSolidReport: report };
+    return report;
+}
+
+function assertProceduralClosedSolid(geometry: BufferGeometry): void {
+    const solid = proceduralSolidReport(geometry);
+    if (typeof console !== "undefined") console.log("[MESH-GATE]", JSON.stringify(solid));
+    const bottomFlat =
+        solid.bottomFaces > 0 &&
+        solid.meshMinZ >= -PROCEDURAL_BOTTOM_Z_MM &&
+        solid.meshMinZ <= PROCEDURAL_BOTTOM_Z_MM &&
+        solid.bottomMinZ >= -PROCEDURAL_BOTTOM_Z_MM &&
+        solid.bottomMinZ <= PROCEDURAL_BOTTOM_Z_MM &&
+        solid.bottomP99Z <= PROCEDURAL_BED_P99_MM;
+    const ok =
+        solid.edgesExactlyTwo &&
+        solid.euler === 2 &&
+        solid.genus === 0 &&
+        solid.orientationConsistent &&
+        solid.signedVolumeMm3 > 0 &&
+        solid.degenerateFaces === 0 &&
+        solid.selfIntersections === 0 &&
+        bottomFlat;
+    if (ok) return;
+    throw new MeshNotWatertightError(
+        `[MESH-GATE] procedural solid failed ${JSON.stringify(solid)}`,
+        validateManifold(geometry),
+    );
+}
+
 /**
  * Edge-manifold gate always; Euler / heel-bridge self-intersection gates only when
  * a baseline is provided (genuinely optional — no default-parameter trap).
+ * `wallModel: "procedural"` uses the absolute genus-0 gate and skips the heel bridge.
+ * The Default.glb euler-3 baseline is unchanged.
  */
 export function assertClosedSolidAcceptable(
     geometry: BufferGeometry,
     topVertexCount: number,
     baseline?: ClosedSolidBaseline | null,
 ): void {
+    if ((geometry.userData as { wallModel?: string } | undefined)?.wallModel === "procedural") {
+        assertProceduralClosedSolid(geometry);
+        return;
+    }
     const report = validateManifold(geometry);
     if (report.openEdges !== 0 || report.nonManifoldEdges !== 0) {
         throw new MeshNotWatertightError(

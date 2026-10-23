@@ -13,6 +13,7 @@ import {
     type Path64,
     unionD,
 } from "clipper2-ts";
+import type { BufferGeometry } from "three";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { minDistToLoopXY, pointInPoly } from "./cdt-band";
 import {
@@ -27,6 +28,7 @@ import {
 } from "./curves";
 import { scaleToMinInset } from "./faired-pattern";
 import { masterCurveRadii, smoothClosedToMinRadius } from "./stations";
+import { type CutSample, closestOnCut } from "./trim-curve";
 
 export const PATTERN_MIN_RADIUS_MM = 3;
 export const PATTERN_RIM_CLEARANCE_MM = 0.5;
@@ -72,8 +74,81 @@ export function mensNineFootprintAnchor(bounds: FootprintBounds): InsoleFootprin
 }
 
 /**
+ * One XY size map shared by the TopSheet, the pattern, export, and the viewer.
+ * `sx` / `sy` are computed once. Pass this object; do not divide length again.
+ */
+export interface SharedInsoleSizeTransform {
+    x0: number;
+    yMid: number;
+    sx: number;
+    sy: number;
+    lengthMm: number;
+    widthMm: number;
+    nativeLengthMm: number;
+    nativeWidthMm: number;
+}
+
+export function sharedInsoleSizeTransformFromAnchor(
+    anchor: InsoleFootprintAnchor,
+    lengthMm: number,
+    widthMm: number,
+): SharedInsoleSizeTransform {
+    return {
+        x0: anchor.x0,
+        yMid: anchor.yMid,
+        nativeLengthMm: anchor.nativeLengthMm,
+        nativeWidthMm: anchor.nativeWidthMm,
+        lengthMm,
+        widthMm,
+        sx: lengthMm / anchor.nativeLengthMm,
+        sy: widthMm / anchor.nativeWidthMm,
+    };
+}
+
+export function sharedInsoleSizeTransform(
+    bounds: FootprintBounds,
+    lengthMm: number,
+    widthMm: number,
+): SharedInsoleSizeTransform {
+    return sharedInsoleSizeTransformFromAnchor(insoleFootprintAnchorFromBounds(bounds), lengthMm, widthMm);
+}
+
+/** One transform from the mesh bbox. Callers pass this object; compose does not rebuild it. */
+export function sharedInsoleSizeTransformFromGeometry(
+    geometry: BufferGeometry,
+    lengthMm: number,
+    widthMm: number,
+): SharedInsoleSizeTransform {
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    if (!box) throw new Error("[SIZE] SAMPLE_Top has no bounds");
+    return sharedInsoleSizeTransform(
+        { minX: box.min.x, maxX: box.max.x, minY: box.min.y, maxY: box.max.y },
+        lengthMm,
+        widthMm,
+    );
+}
+
+/** Identity scales do not shift, matching #204's pattern transform. */
+export function applySharedSizeXY(
+    x: number,
+    y: number,
+    t: SharedInsoleSizeTransform,
+): { x: number; y: number } {
+    if (Math.abs(t.sx - 1) < 1e-12 && Math.abs(t.sy - 1) < 1e-12) return { x, y };
+    return { x: (x - t.x0) * t.sx, y: (y - t.yMid) * t.sy };
+}
+
+export function applySharedInsoleSizeToLoop(loop: PolyPoint[], t: SharedInsoleSizeTransform): PolyPoint[] {
+    return loop.map((p) => {
+        const q = applySharedSizeXY(p.x, p.y, t);
+        return { x: q.x, y: q.y, z: p.z };
+    });
+}
+
+/**
  * Apply the same XY footprint scale used on the TopSheet mesh (260 mm reference,
- * shared anchor). Z is unchanged.
+ * shared anchor). Z is unchanged. The matrix is {@link SharedInsoleSizeTransform}.
  */
 export function applyInsoleFootprintScale(
     loop: PolyPoint[],
@@ -81,16 +156,7 @@ export function applyInsoleFootprintScale(
     lengthMm: number,
     widthMm: number,
 ): PolyPoint[] {
-    const sx = lengthMm / anchor.nativeLengthMm;
-    const sy = widthMm / anchor.nativeWidthMm;
-    if (Math.abs(sx - 1) < 1e-12 && Math.abs(sy - 1) < 1e-12) {
-        return loop.map((p) => ({ x: p.x, y: p.y, z: p.z }));
-    }
-    return loop.map((p) => ({
-        x: (p.x - anchor.x0) * sx,
-        y: (p.y - anchor.yMid) * sy,
-        z: p.z,
-    }));
+    return applySharedInsoleSizeToLoop(loop, sharedInsoleSizeTransformFromAnchor(anchor, lengthMm, widthMm));
 }
 
 export interface HygieneReport {
@@ -300,10 +366,15 @@ export function alignPatternToExportFootprint(
         footprintWidthMm?: number;
         /** Pattern already matches the loft TopSheet (stored B, faired on scaled mesh). */
         patternInMeshFrame?: boolean;
+        /** When set, this object is the only scale. It is not recomputed from bounds. */
+        sizeTransform?: SharedInsoleSizeTransform | null;
     },
 ): PolyPoint[] {
     if (opts.patternInMeshFrame) {
         return loop.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    }
+    if (opts.sizeTransform) {
+        return applySharedInsoleSizeToLoop(loop, opts.sizeTransform);
     }
     const lengthMm = opts.footprintLengthMm;
     const widthMm = opts.footprintWidthMm;
@@ -313,6 +384,110 @@ export function alignPatternToExportFootprint(
     }
     const anchor = insoleFootprintAnchorFromBounds(ref);
     return applyInsoleFootprintScale(loop, anchor, lengthMm, widthMm);
+}
+
+/** A rim-point substitution farther than this is rejected. The point stays. */
+export const RIM_SUBSTITUTION_MAX_MM = 0.05;
+
+export interface SignedInsetStats {
+    min: number;
+    max: number;
+    p95: number;
+    n: number;
+}
+
+export function signedInsetStats(pattern: PolyPoint[], rim: PolyPoint[]): SignedInsetStats {
+    const values: number[] = [];
+    for (const p of pattern) values.push(signedRimInsetMmPattern(p, rim));
+    if (values.length === 0) return { min: 0, max: 0, p95: 0, n: 0 };
+    values.sort((a, b) => a - b);
+    const idx = Math.min(values.length - 1, Math.max(0, Math.ceil(0.95 * values.length) - 1));
+    return {
+        min: values[0]!,
+        max: values[values.length - 1]!,
+        p95: values[idx]!,
+        n: values.length,
+    };
+}
+
+function copyPlan(p: PolyPoint): PolyPoint {
+    return { x: p.x, y: p.y, z: 0 };
+}
+
+function dedupePlan(loop: PolyPoint[]): PolyPoint[] {
+    const out: PolyPoint[] = [];
+    for (const p of loop) {
+        const prev = out[out.length - 1];
+        if (prev && Math.hypot(prev.x - p.x, prev.y - p.y) < 1e-6) continue;
+        out.push(p);
+    }
+    if (out.length >= 2) {
+        const a = out[0]!;
+        const b = out[out.length - 1]!;
+        if (Math.hypot(a.x - b.x, a.y - b.y) < 1e-6) out.pop();
+    }
+    return out;
+}
+
+/**
+ * Reference boundary for a clipped top: kept outline points stay bit-identical
+ * and the #206 cut polyline is inserted as-is. A kept point is never moved,
+ * so the substitution distance is 0.
+ */
+export function referenceRimFromOutlineAndCut(
+    outline: PolyPoint[],
+    cut: readonly CutSample[],
+): { rim: PolyPoint[]; maxSubstitutionMm: number } {
+    if (outline.length < 3 || cut.length < 2) {
+        return { rim: outline.map(copyPlan), maxSubstitutionMm: 0 };
+    }
+    const hits = outline.map((p) => closestOnCut(p.x, p.y, cut));
+    const distal = hits.map((h) => h.signed < -RIM_SUBSTITUTION_MAX_MM);
+    if (!distal.some(Boolean)) {
+        return { rim: outline.map(copyPlan), maxSubstitutionMm: 0 };
+    }
+    const n = outline.length;
+    let start = 0;
+    while (start < n && distal[start]) start++;
+    if (start === n) {
+        return {
+            rim: cut.map((p) => ({ x: p.x, y: p.y, z: 0 })),
+            maxSubstitutionMm: 0,
+        };
+    }
+    const rim: PolyPoint[] = [];
+    let consumed = 0;
+    let i = start;
+    while (consumed < n) {
+        if (!distal[i]) {
+            rim.push(copyPlan(outline[i]!));
+            i = (i + 1) % n;
+            consumed++;
+            continue;
+        }
+        const prev = (i - 1 + n) % n;
+        let span = 0;
+        let j = i;
+        while (distal[j] && span < n) {
+            j = (j + 1) % n;
+            span++;
+        }
+        const a = hits[prev]!.index;
+        const b = hits[j]!.index;
+        const prevPt = outline[prev]!;
+        const da = Math.hypot(prevPt.x - cut[a]!.x, prevPt.y - cut[a]!.y);
+        const db = Math.hypot(prevPt.x - cut[b]!.x, prevPt.y - cut[b]!.y);
+        const from = da <= db ? a : b;
+        const to = da <= db ? b : a;
+        if (from <= to) {
+            for (let k = from; k <= to; k++) rim.push({ x: cut[k]!.x, y: cut[k]!.y, z: 0 });
+        } else {
+            for (let k = from; k >= to; k--) rim.push({ x: cut[k]!.x, y: cut[k]!.y, z: 0 });
+        }
+        consumed += span;
+        i = j;
+    }
+    return { rim: dedupePlan(rim), maxSubstitutionMm: 0 };
 }
 
 export type PatternRimCase = "inside" | "clip_warn" | "hard_fail";
