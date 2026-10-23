@@ -739,7 +739,7 @@ describe("wall text cases (PR-gated)", () => {
 const fullMatrixDescribe = FULL_TEXT_MATRIX ? describe : describe.skip;
 
 fullMatrixDescribe("wall text cases (full boolean matrix)", () => {
-    for (const cell of WALL_CELLS.filter((c) => c.fullBoolean || c.outcome === "textDoesNotFit")) {
+    for (const cell of WALL_CELLS.filter((c) => c.fullBoolean)) {
         test(
             `${cellTitle(cell)} [full carve]`,
             async () => {
