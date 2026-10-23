@@ -1783,10 +1783,16 @@ export function validateManifoldIndexed(geometry: BufferGeometry): ManifoldValid
     };
 }
 
-/** First pair of distinct position indices closer than `minSeparationMm`, if any. */
+/**
+ * First pair of distinct position indices closer than `minSeparationMm`, if any.
+ * When `sourceVertexCountExclusive` is positive, only pairs with both indices in
+ * the generated range `[sourceVertexCountExclusive, vertexCount)` are reported —
+ * the imported top-sheet block is exempt (manifold + Euler gate covers it).
+ */
 export function findIndexedVerticesWithin(
     geometry: BufferGeometry,
     minSeparationMm = INDEXED_VERTEX_MIN_SEPARATION_MM,
+    sourceVertexCountExclusive = 0,
 ): { a: number; b: number } | null {
     const pos = geometry.getAttribute("position");
     if (!pos || pos.count < 2 || minSeparationMm < 0) return null;
@@ -1812,7 +1818,12 @@ export function findIndexedVerticesWithin(
                         const ddx = x - pos.getX(j);
                         const ddy = y - pos.getY(j);
                         const ddz = z - pos.getZ(j);
-                        if (ddx * ddx + ddy * ddy + ddz * ddz <= limit2) return { a: j, b: i };
+                        if (ddx * ddx + ddy * ddy + ddz * ddz <= limit2) {
+                            const generatedOnly =
+                                sourceVertexCountExclusive <= 0 ||
+                                (j >= sourceVertexCountExclusive && i >= sourceVertexCountExclusive);
+                            if (generatedOnly) return { a: j, b: i };
+                        }
                     }
                 }
             }
@@ -1825,12 +1836,13 @@ export function findIndexedVerticesWithin(
     return null;
 }
 
-/** Fails when two distinct indexed vertices sit within 1e-4 mm. */
+/** Fails when two distinct generated indexed vertices sit within 1e-4 mm (see {@link findIndexedVerticesWithin}). */
 export function assertIndexedVerticesSeparated(
     geometry: BufferGeometry,
     minSeparationMm = INDEXED_VERTEX_MIN_SEPARATION_MM,
+    sourceVertexCountExclusive = 0,
 ): void {
-    const pair = findIndexedVerticesWithin(geometry, minSeparationMm);
+    const pair = findIndexedVerticesWithin(geometry, minSeparationMm, sourceVertexCountExclusive);
     if (!pair) return;
     const report = validateManifoldIndexed(geometry);
     const label = minSeparationMm === INDEXED_VERTEX_MIN_SEPARATION_MM ? "1e-4" : String(minSeparationMm);
@@ -1845,7 +1857,8 @@ export function assertIndexedVerticesSeparated(
  * Does not run the GLB heel-bridge counter (baseline stays 0 on purpose).
  */
 export function assertProceduralIndexSolid(geometry: BufferGeometry): void {
-    assertIndexedVerticesSeparated(geometry);
+    const sourceVertexCountExclusive = (geometry.userData as { topVertexCount?: number }).topVertexCount ?? 0;
+    assertIndexedVerticesSeparated(geometry, INDEXED_VERTEX_MIN_SEPARATION_MM, sourceVertexCountExclusive);
     const report = validateManifoldIndexed(geometry);
     if (report.openEdges !== 0 || report.nonManifoldEdges !== 0) {
         throw new MeshNotWatertightError(
