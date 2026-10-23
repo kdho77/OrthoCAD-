@@ -92,6 +92,39 @@ describe("mesh-close — procedural export baseline", () => {
         separated.dispose();
     });
 
+    test("separation gate exempts source top-sheet verts, still rejects generated near-dups", () => {
+        const sourceNearDup = new THREE.BufferGeometry();
+        sourceNearDup.setAttribute(
+            "position",
+            new THREE.BufferAttribute(
+                new Float32Array([0, 0, 0, 1e-5, 0, 0, 10, 0, 0, 0, 10, 0, 5, 5, 5, 20, 20, 20]),
+                3,
+            ),
+        );
+        (sourceNearDup.userData as { topVertexCount?: number }).topVertexCount = 4;
+        expect(() => assertIndexedVerticesSeparated(sourceNearDup, undefined, 4)).not.toThrow();
+
+        const generatedNearDup = new THREE.BufferGeometry();
+        generatedNearDup.setAttribute(
+            "position",
+            new THREE.BufferAttribute(
+                new Float32Array([0, 0, 0, 10, 0, 0, 0, 10, 0, 0, 0, 10, 5, 5, 5, 5, 5, 5 + 1e-5]),
+                3,
+            ),
+        );
+        (generatedNearDup.userData as { topVertexCount?: number }).topVertexCount = 4;
+        expect(() => assertIndexedVerticesSeparated(generatedNearDup, undefined, 4)).toThrow(/1e-4/);
+
+        const collapsedSourceOnly = makeClosedTetra([1e-5, 0, 0]);
+        (collapsedSourceOnly.userData as { topVertexCount?: number }).topVertexCount = 4;
+        expect(() => assertIndexedVerticesSeparated(collapsedSourceOnly, undefined, 4)).not.toThrow();
+        expect(() => assertProceduralIndexSolid(collapsedSourceOnly)).not.toThrow();
+
+        sourceNearDup.dispose();
+        generatedNearDup.dispose();
+        collapsedSourceOnly.dispose();
+    });
+
     test("wantsProceduralExportSolid defaults false unless SAMPLE_Top or explicit procedural", () => {
         expect(wantsProceduralExportSolid(null)).toBe(false);
         expect(wantsProceduralExportSolid({ assetId: "other", glbPath: "Templates/Other.glb" })).toBe(false);
