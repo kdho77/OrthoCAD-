@@ -17,8 +17,9 @@ import {
 import type { SideCorrections } from "@/types";
 import { positionKeyedRim } from "./extract";
 import { maxRimVertexDelta, RIM_RING_STATION_N } from "./outline-clean";
-import { applyInsoleFootprintScale, insoleFootprintAnchorFromBounds } from "./pattern-hygiene";
+import { insoleFootprintAnchorFromBounds } from "./pattern-hygiene";
 import {
+    applySharedInsoleSizeToGeometry,
     applySharedSizeXY,
     composePrintSolidTop,
     composeViewerPrintSolidTop,
@@ -86,23 +87,28 @@ function bbox(geo: {
     };
 }
 
-/** Column-major XY affine of #204's pattern transform. Identity scales do not shift. */
+/** Column-major XY affine. Scale is the graded size over the M9 anchor. Identity scales do not shift. */
 function patternMatrix(
     lengthMm: number,
     widthMm: number,
     anchor: {
         x0: number;
         yMid: number;
-        nativeLengthMm: number;
-        nativeWidthMm: number;
     },
 ): Float64Array {
-    const sx = lengthMm / anchor.nativeLengthMm;
-    const sy = widthMm / anchor.nativeWidthMm;
+    const sx = lengthMm / M9_TARGET_SOURCE.lengthMm;
+    const sy = widthMm / M9_TARGET_SOURCE.widthMm;
     if (Math.abs(sx - 1) < 1e-12 && Math.abs(sy - 1) < 1e-12) {
         return new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
     }
     return new Float64Array([sx, 0, -anchor.x0 * sx, 0, sy, -anchor.yMid * sy, 0, 0, 1]);
+}
+
+function positionBytes(geo: BufferGeometry): Buffer {
+    const pos = geo.getAttribute("position");
+    if (!pos) throw new Error("mesh has no positions");
+    const arr = pos.array as Float32Array;
+    return Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength);
 }
 
 function sharedMatrix(t: SharedInsoleSizeTransform): Float64Array {
@@ -188,51 +194,46 @@ describe("shared size transform on composed SAMPLE_Top", () => {
         const rows: string[] = [];
         for (const menSize of SIZES) {
             const layout = insoleLayoutForUsMenSize(menSize);
+            const target = sharedSizeTarget(layout.lengthMm, layout.widthMm);
             const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
-            expect(sizeTransform.sx).toBe(layout.lengthMm / anchor.nativeLengthMm);
-            expect(sizeTransform.sy).toBe(layout.widthMm / anchor.nativeWidthMm);
+            expect(sizeTransform.lengthMm).toBe(target.lengthMm);
+            expect(sizeTransform.widthMm).toBe(target.widthMm);
+            expect(sizeTransform.sx).toBe(target.lengthMm / M9_TARGET_SOURCE.lengthMm);
+            expect(sizeTransform.sy).toBe(target.widthMm / M9_TARGET_SOURCE.widthMm);
             expect(sizeTransform.x0).toBe(anchor.x0);
             expect(sizeTransform.yMid).toBe(anchor.yMid);
             expect(
                 sameBytes(
                     sharedMatrix(sizeTransform),
-                    patternMatrix(layout.lengthMm, layout.widthMm, anchor),
+                    patternMatrix(target.lengthMm, target.widthMm, anchor),
                 ),
             ).toBe(true);
-            const probes = [
-                { x: anchor.x0, y: anchor.yMid, z: 0 },
-                { x: anchor.x0 + anchor.nativeLengthMm, y: anchor.yMid, z: 1 },
-                {
-                    x: anchor.x0 + anchor.nativeLengthMm * 0.66,
-                    y: anchor.yMid + anchor.nativeWidthMm * 0.5,
-                    z: 2,
-                },
-            ];
-            for (const probe of probes) {
-                const viaShared = applySharedSizeXY(probe.x, probe.y, sizeTransform);
-                const viaPattern = applyInsoleFootprintScale(
-                    [probe],
-                    anchor,
-                    layout.lengthMm,
-                    layout.widthMm,
-                )[0];
-                if (!viaPattern) throw new Error("pattern transform dropped a probe");
-                expect(viaShared.x).toBe(viaPattern.x);
-                expect(viaShared.y).toBe(viaPattern.y);
+            const heel = applySharedSizeXY(anchor.x0, anchor.yMid, sizeTransform);
+            const toe = applySharedSizeXY(anchor.x0 + anchor.nativeLengthMm, anchor.yMid, sizeTransform);
+            if (Math.abs(sizeTransform.sx - 1) < 1e-12) {
+                expect(heel.x).toBe(anchor.x0);
+                expect(toe.x).toBe(anchor.x0 + anchor.nativeLengthMm);
             }
+            const sized = applySharedInsoleSizeToGeometry(raw, sizeTransform);
+            const sheet = bbox(sized);
+            const lengthStep = layout.lengthMm - INSOLE_LENGTH_MM;
+            const widthStep = layout.widthMm - INSOLE_WIDTH_MM;
+            expect(Math.abs(sheet.length - (M9_TARGET_SOURCE.lengthMm + lengthStep))).toBeLessThanOrEqual(
+                0.01,
+            );
+            expect(Math.abs(sheet.width - (M9_TARGET_SOURCE.widthMm + widthStep))).toBeLessThanOrEqual(0.01);
+            sized.dispose();
             const composed = await composePrintSolidTop(raw, {
-                sourceField: field(layout.lengthMm, layout.widthMm),
+                sourceField: field(target.lengthMm, target.widthMm),
                 sizeTransform,
             });
             expect(composed.userData.sizeTransform).toBe(sizeTransform);
             const out = bbox(composed);
-            const heelToToe = out.length;
-            const ballWidth = out.width;
             rows.push(
-                `US M${menSize}\theel-to-toe\t${layout.lengthMm.toFixed(4)}\t${heelToToe.toFixed(4)}\tball width\t${layout.widthMm.toFixed(4)}\t${ballWidth.toFixed(4)}`,
+                `US M${menSize}\theel-to-toe\t${target.lengthMm.toFixed(4)}\t${out.length.toFixed(4)}\tball width\t${target.widthMm.toFixed(4)}\t${out.width.toFixed(4)}`,
             );
-            expect(Math.abs(heelToToe - layout.lengthMm)).toBeLessThanOrEqual(0.2);
-            expect(Math.abs(ballWidth - layout.widthMm)).toBeLessThanOrEqual(0.2);
+            expect(Math.abs(out.length - target.lengthMm)).toBeLessThanOrEqual(0.2);
+            expect(Math.abs(out.width - target.widthMm)).toBeLessThanOrEqual(0.2);
             composed.dispose();
         }
         console.log(["size\tmeasure\ttarget\tactual\tmeasure\ttarget\tactual", ...rows].join("\n"));
@@ -276,37 +277,48 @@ describe("shared size transform on composed SAMPLE_Top", () => {
         const heelToToe = preview.model.bounds.maxX - preview.model.bounds.minX;
         const ballWidth = preview.model.bounds.maxY - preview.model.bounds.minY;
         expect(preview.model).toBeTruthy();
-        expect(Math.abs(heelToToe - layout.lengthMm)).toBeLessThanOrEqual(0.2);
-        expect(Math.abs(ballWidth - layout.widthMm)).toBeLessThanOrEqual(0.2);
+        expect(Math.abs(heelToToe - sizeTransform.lengthMm)).toBeLessThanOrEqual(0.2);
+        expect(Math.abs(ballWidth - sizeTransform.widthMm)).toBeLessThanOrEqual(0.2);
         expect(Math.abs(heelToToe - bbox(raw).length)).toBeGreaterThan(0.2);
         preview.geometry.dispose();
         raw.dispose();
     }, 180_000);
 
-    test("M9 uses the shared size transform and is not identity", async () => {
+    test("M9 output is bit-identical to SAMPLE_Top", async () => {
         const raw = await loadSampleTop();
         const native = bbox(raw);
         const layout = insoleLayoutForUsMenSize(9);
         const target = sharedSizeTarget(layout.lengthMm, layout.widthMm);
+        expect(M9_TARGET_SOURCE.lengthMm).toBe(271.93);
+        expect(M9_TARGET_SOURCE.widthMm).toBe(91.69);
         expect(target.lengthMm).toBe(M9_TARGET_SOURCE.lengthMm);
         expect(target.widthMm).toBe(M9_TARGET_SOURCE.widthMm);
-        expect(M9_TARGET_SOURCE.lengthMm).toBe(INSOLE_LENGTH_MM);
-        expect(M9_TARGET_SOURCE.widthMm).toBe(INSOLE_WIDTH_MM);
-        const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, target.lengthMm, target.widthMm);
-        expect(sizeTransform.sx).not.toBe(1);
-        expect(sizeTransform.sy).not.toBe(1);
+        const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
+        expect(sizeTransform.sx).toBe(1);
+        expect(sizeTransform.sy).toBe(1);
+        expect(sizeTransform.lengthMm).toBe(M9_TARGET_SOURCE.lengthMm);
+        expect(sizeTransform.widthMm).toBe(M9_TARGET_SOURCE.widthMm);
+        const sized = applySharedInsoleSizeToGeometry(raw, sizeTransform);
+        expect(positionBytes(sized).equals(positionBytes(raw))).toBe(true);
+        sized.dispose();
         const composed = await composeViewerPrintSolidTop({
             raw,
-            sourceField: field(target.lengthMm, target.widthMm),
+            sourceField: field(layout.lengthMm, layout.widthMm),
             sizeTransform,
         });
+        const unsized = await composeViewerPrintSolidTop({
+            raw,
+            sourceField: field(layout.lengthMm, layout.widthMm),
+        });
         expect(composed.userData.sizeTransform).toBe(sizeTransform);
+        expect(positionBytes(composed).equals(positionBytes(unsized))).toBe(true);
         const out = bbox(composed);
-        expect(Math.abs(out.length - target.lengthMm)).toBeLessThanOrEqual(0.2);
-        expect(Math.abs(out.width - target.widthMm)).toBeLessThanOrEqual(0.2);
-        expect(Math.abs(out.length - native.length)).toBeGreaterThan(0.2);
-        expect(Math.abs(out.width - native.width)).toBeGreaterThan(0.2);
+        expect(Math.abs(out.length - native.length)).toBeLessThanOrEqual(0.01);
+        expect(Math.abs(out.width - native.width)).toBeLessThanOrEqual(0.01);
+        expect(Math.abs(native.length - M9_TARGET_SOURCE.lengthMm)).toBeLessThanOrEqual(0.01);
+        expect(Math.abs(native.width - M9_TARGET_SOURCE.widthMm)).toBeLessThanOrEqual(0.01);
         composed.dispose();
+        unsized.dispose();
         raw.dispose();
     }, 30_000);
 
@@ -316,7 +328,7 @@ describe("shared size transform on composed SAMPLE_Top", () => {
         for (const menSize of listUsMenSizes()) {
             const layout = insoleLayoutForUsMenSize(menSize);
             const target = sharedSizeTarget(layout.lengthMm, layout.widthMm);
-            const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, target.lengthMm, target.widthMm);
+            const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
             const composed = await composePrintSolidTop(raw, {
                 sourceField: field(target.lengthMm, target.widthMm),
                 sizeTransform,
@@ -385,7 +397,7 @@ describe("shared size transform on composed SAMPLE_Top", () => {
         for (const menSize of listUsMenSizes()) {
             const layout = insoleLayoutForUsMenSize(menSize);
             const target = sharedSizeTarget(layout.lengthMm, layout.widthMm);
-            const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, target.lengthMm, target.widthMm);
+            const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
             const composed = await composeViewerPrintSolidTop({
                 raw,
                 sourceField: field(target.lengthMm, target.widthMm),
@@ -403,8 +415,10 @@ describe("shared size transform on composed SAMPLE_Top", () => {
                     out.width.toFixed(4),
                 ].join("\t"),
             );
-            expect(Math.abs(out.length - target.lengthMm)).toBeLessThanOrEqual(0.2);
-            expect(Math.abs(out.width - target.widthMm)).toBeLessThanOrEqual(0.2);
+            const lengthStep = layout.lengthMm - INSOLE_LENGTH_MM;
+            const widthStep = layout.widthMm - INSOLE_WIDTH_MM;
+            expect(Math.abs(out.length - (M9_TARGET_SOURCE.lengthMm + lengthStep))).toBeLessThanOrEqual(0.01);
+            expect(Math.abs(out.width - (M9_TARGET_SOURCE.widthMm + widthStep))).toBeLessThanOrEqual(0.01);
             expect(out.length).toBeGreaterThan(prevLength);
             expect(out.width).toBeGreaterThan(prevWidth);
             prevLength = out.length;
@@ -419,10 +433,11 @@ describe("shared size transform on composed SAMPLE_Top", () => {
         const raw = await loadSampleTop();
         for (const menSize of SIZES) {
             const layout = insoleLayoutForUsMenSize(menSize);
+            const target = sharedSizeTarget(layout.lengthMm, layout.widthMm);
             const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
             const composed = await composeViewerPrintSolidTop({
                 raw,
-                sourceField: field(layout.lengthMm, layout.widthMm),
+                sourceField: field(target.lengthMm, target.widthMm),
                 sizeTransform,
             });
             const positions = composed.getAttribute("position");
@@ -432,8 +447,8 @@ describe("shared size transform on composed SAMPLE_Top", () => {
             const out = bbox(composed);
             expect(out.length).toBeGreaterThan(1);
             expect(out.width).toBeGreaterThan(1);
-            expect(Math.abs(out.length - layout.lengthMm)).toBeLessThanOrEqual(0.2);
-            expect(Math.abs(out.width - layout.widthMm)).toBeLessThanOrEqual(0.2);
+            expect(Math.abs(out.length - target.lengthMm)).toBeLessThanOrEqual(0.2);
+            expect(Math.abs(out.width - target.widthMm)).toBeLessThanOrEqual(0.2);
             expect(composed.userData.sizeTransform).toBe(sizeTransform);
             composed.dispose();
         }
@@ -463,8 +478,8 @@ describe("shared size transform on composed SAMPLE_Top", () => {
         });
         const length11 = bbox(second).length;
         expect(second.userData.sizeTransform).toBe(t11);
-        expect(Math.abs(length85 - m85.lengthMm)).toBeLessThanOrEqual(0.2);
-        expect(Math.abs(length11 - m11.lengthMm)).toBeLessThanOrEqual(0.2);
+        expect(Math.abs(length85 - t85.lengthMm)).toBeLessThanOrEqual(0.2);
+        expect(Math.abs(length11 - t11.lengthMm)).toBeLessThanOrEqual(0.2);
         expect(length11 - length85).toBeGreaterThan(0.2);
         second.dispose();
         raw.dispose();

@@ -26,7 +26,6 @@ import {
     type PrintSolidShoeWidth,
     type SharedInsoleSizeTransform,
     sharedInsoleSizeTransformFromGeometry,
-    sharedSizeTarget,
 } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
@@ -229,7 +228,7 @@ export interface ProceduralPreviewOptions {
      * #204 size map. Created once by the caller when it has the native mesh.
      * When omitted, or null, and a footprint is set, preview builds it once
      * from this mesh — including US M9 / W10.5 — and passes that same object
-     * into compose and the loft.
+     * into compose and the loft. The table footprint is regraded inside that build.
      */
     sizeTransform?: SharedInsoleSizeTransform | null;
     sizeLabel?: string;
@@ -254,11 +253,10 @@ export async function reconstructProceduralPreview(
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
     const lengthMm = options.footprintLengthMm;
     const widthMm = options.footprintWidthMm;
-    const target = lengthMm != null && widthMm != null ? sharedSizeTarget(lengthMm, widthMm) : null;
     const sizeTransform = options.sizeTransform
         ? options.sizeTransform
-        : target
-          ? sharedInsoleSizeTransformFromGeometry(topGeo, target.lengthMm, target.widthMm)
+        : lengthMm != null && widthMm != null
+          ? sharedInsoleSizeTransformFromGeometry(topGeo, lengthMm, widthMm)
           : null;
     // One object, applied to the sheet and to a pattern that is still in the native frame.
     // Fairing runs on the native rim, then this same transform, so the loft is not

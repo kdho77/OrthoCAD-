@@ -15,20 +15,24 @@ import { insoleFootprintAnchorFromBounds } from "./pattern-hygiene";
 
 /**
  * US M9 / W10.5 heel-to-toe and ball width.
- * The size table's 260 × 95. Change this one binding to the SAMPLE_Top
- * sheet size if M9 should stay on the scanned sheet.
+ * SAMPLE_Top raw, 271.93 × 91.69 mm. Every other size adds the table's
+ * existing length and width step to this one binding.
  */
 export const M9_TARGET_SOURCE = {
-    lengthMm: INSOLE_LENGTH_MM,
-    widthMm: INSOLE_WIDTH_MM,
+    lengthMm: 271.93,
+    widthMm: 91.69,
 } as const;
 
-/** Table M9 keeps {@link M9_TARGET_SOURCE}. Every other size keeps the table row. */
+/**
+ * Shift the table footprint onto {@link M9_TARGET_SOURCE}.
+ * The table's M9 row is {@link INSOLE_LENGTH_MM} × {@link INSOLE_WIDTH_MM}.
+ * The same addition applies at every size, including M9 where the step is 0.
+ */
 export function sharedSizeTarget(lengthMm: number, widthMm: number): { lengthMm: number; widthMm: number } {
-    const tableM9 =
-        Math.abs(lengthMm - INSOLE_LENGTH_MM) <= 1e-3 && Math.abs(widthMm - INSOLE_WIDTH_MM) <= 1e-3;
-    if (tableM9) return { lengthMm: M9_TARGET_SOURCE.lengthMm, widthMm: M9_TARGET_SOURCE.widthMm };
-    return { lengthMm, widthMm };
+    return {
+        lengthMm: M9_TARGET_SOURCE.lengthMm + (lengthMm - INSOLE_LENGTH_MM),
+        widthMm: M9_TARGET_SOURCE.widthMm + (widthMm - INSOLE_WIDTH_MM),
+    };
 }
 
 /**
@@ -71,7 +75,12 @@ export interface ComposePrintSolidInput {
     sizeTransform?: SharedInsoleSizeTransform | null;
 }
 
-/** One transform from the mesh bbox. Callers pass this object; compose does not rebuild it. */
+/**
+ * One transform from the mesh bbox. `lengthMm` / `widthMm` are the table
+ * footprint. The returned target is {@link sharedSizeTarget} of that row.
+ * Scale is the graded size over {@link M9_TARGET_SOURCE}, so M9 is sx = sy = 1
+ * on the same path as every other size. Callers pass this object; compose does not rebuild it.
+ */
 export function sharedInsoleSizeTransformFromGeometry(
     geometry: BufferGeometry,
     lengthMm: number,
@@ -86,15 +95,16 @@ export function sharedInsoleSizeTransformFromGeometry(
         minY: box.min.y,
         maxY: box.max.y,
     });
+    const target = sharedSizeTarget(lengthMm, widthMm);
     return {
         x0: anchor.x0,
         yMid: anchor.yMid,
         nativeLengthMm: anchor.nativeLengthMm,
         nativeWidthMm: anchor.nativeWidthMm,
-        lengthMm,
-        widthMm,
-        sx: lengthMm / anchor.nativeLengthMm,
-        sy: widthMm / anchor.nativeWidthMm,
+        lengthMm: target.lengthMm,
+        widthMm: target.widthMm,
+        sx: target.lengthMm / M9_TARGET_SOURCE.lengthMm,
+        sy: target.widthMm / M9_TARGET_SOURCE.widthMm,
     };
 }
 
