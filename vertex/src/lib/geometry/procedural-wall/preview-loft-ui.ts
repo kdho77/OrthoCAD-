@@ -18,7 +18,8 @@ export function wantsProceduralExportSolid(
     const path = (base.glbPath ?? "").replace(/^\/+/, "");
     if (base.assetId === "sample-top" || /SAMPLE_Top\.glb$/i.test(path)) return true;
     if (base.assetId === "stock-default" || /(?:^|\/)Default\.glb$/i.test(path)) return false;
-    return (wallModel ?? "procedural") === "procedural";
+    // Unset wall model is the GLB path. Procedural only when the caller says so.
+    return wallModel === "procedural";
 }
 
 export type PreviewLoftPhase = "idle" | "fetching" | "queued" | "lofting" | "ready" | "error";
