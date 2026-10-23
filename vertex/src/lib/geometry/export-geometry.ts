@@ -16,8 +16,8 @@ import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
 import {
     assertClosedSolidAcceptable,
+    closedSolidBaselineForExport,
     closeGlbInsoleToSolid,
-    DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
 import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -213,7 +213,7 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
 
 /** Export STL bytes for the active design side. */
 export async function buildExportStl(side: Side, options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const { design } = useDesignStore.getState();
+    const { design, viewer } = useDesignStore.getState();
     assertShapeFinishExportAllowed(design, side);
     const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
 
@@ -237,7 +237,12 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
         }
         const solid = closeGlbInsoleToSolid(geometry);
         const topN = (solid.userData as { topVertexCount?: number }).topVertexCount ?? 0;
-        assertClosedSolidAcceptable(solid, topN, topN > 0 ? DEFAULT_GLB_CLOSED_BASELINE : null);
+        const base = getDesignBase(design, side);
+        assertClosedSolidAcceptable(
+            solid,
+            topN,
+            closedSolidBaselineForExport(topN, wantsProceduralExportSolid(base, viewer?.wallModel)),
+        );
         try {
             return geometryToBinarySTL(solid);
         } finally {
