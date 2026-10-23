@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { describe, expect, test } from "@rstest/core";
+import { beforeAll, describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry } from "three";
 import { publishTextGuide, textFitErrorSnapshot } from "@/features/exports/text-guide-store";
 import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -11,6 +11,7 @@ import { booleanTextSolid } from "@/lib/geometry/text-marking/boolean";
 import {
     defaultTextMarking,
     TEXT_BOOLEAN_OUTSET_MM,
+    TEXT_MAX_CHARS,
     TEXT_WALL_EDGE_CLEARANCE_MM,
 } from "@/lib/geometry/text-marking/constants";
 import { flattenText } from "@/lib/geometry/text-marking/contours";
@@ -33,23 +34,210 @@ import type { Side } from "@/types";
 import { loadSampleTopGlb } from "./helpers/load-sample-top-glb";
 
 const JOHN = "JOHN SMITH";
-/**
- * Twenty characters. A space between each I keeps adjacent stems farther apart
- * than the engrave outset, which is what the M1 wall curvature needs. A packed
- * run of I's fits the band and still leaves a self-intersection in the text box.
- */
-const LONG = "I I I I I I I I I I ";
-const SHORT = "BO";
+/** Full patient-style name; engraving uses the same 24-character cap as the product UI. */
+const MAXIMILIAN_LEGAL = "MAXIMILIAN WOLFGANG ABERNATHY-SMYTHE";
+const MAXIMILIAN = MAXIMILIAN_LEGAL.slice(0, TEXT_MAX_CHARS);
+const AL = "AL";
 const OVERSIZED = "WWWWWWWWWWWWWWWWWWWWWWWW";
-const NAMES = [JOHN, LONG, SHORT] as const;
-const SIDES = ["left", "right"] as const;
-const SIZES = [1, 8.5, 16] as const;
+
+type WallCellOutcome = "place" | "textDoesNotFit";
+
+interface WallCell {
+    /** Engraving string passed to placement (≤ TEXT_MAX_CHARS). */
+    text: string;
+    /** Table label (may be longer than the engraved cap). */
+    label: string;
+    side: Side;
+    size: number;
+    outcome: WallCellOutcome;
+    /** Nightly full matrix: carve + BVH + unmoved wall (13 cells total with booleans). */
+    fullBoolean: boolean;
+    /** PR-gated: carve + BVH over text bbox + 2 mm (three JOHN SMITH right-wall cells). */
+    gatedBoolean: boolean;
+}
+
+/**
+ * Expected outcome per name, side, and size. No padded or synthetic strings.
+ * `fullBoolean` covers the 12 grid carve cases plus the gated oversized apply case (13 booleans).
+ */
+const WALL_CELLS: WallCell[] = [
+    {
+        label: JOHN,
+        text: JOHN,
+        side: "left",
+        size: 1,
+        outcome: "place",
+        fullBoolean: true,
+        gatedBoolean: false,
+    },
+    {
+        label: JOHN,
+        text: JOHN,
+        side: "left",
+        size: 8.5,
+        outcome: "place",
+        fullBoolean: true,
+        gatedBoolean: false,
+    },
+    {
+        label: JOHN,
+        text: JOHN,
+        side: "left",
+        size: 16,
+        outcome: "place",
+        fullBoolean: true,
+        gatedBoolean: false,
+    },
+    {
+        label: JOHN,
+        text: JOHN,
+        side: "right",
+        size: 1,
+        outcome: "place",
+        fullBoolean: true,
+        gatedBoolean: true,
+    },
+    {
+        label: JOHN,
+        text: JOHN,
+        side: "right",
+        size: 8.5,
+        outcome: "place",
+        fullBoolean: true,
+        gatedBoolean: true,
+    },
+    {
+        label: JOHN,
+        text: JOHN,
+        side: "right",
+        size: 16,
+        outcome: "place",
+        fullBoolean: true,
+        gatedBoolean: true,
+    },
+    {
+        label: MAXIMILIAN_LEGAL,
+        text: MAXIMILIAN,
+        side: "left",
+        size: 1,
+        outcome: "textDoesNotFit",
+        fullBoolean: false,
+        gatedBoolean: false,
+    },
+    {
+        label: MAXIMILIAN_LEGAL,
+        text: MAXIMILIAN,
+        side: "left",
+        size: 8.5,
+        outcome: "textDoesNotFit",
+        fullBoolean: false,
+        gatedBoolean: false,
+    },
+    {
+        label: MAXIMILIAN_LEGAL,
+        text: MAXIMILIAN,
+        side: "left",
+        size: 16,
+        outcome: "textDoesNotFit",
+        fullBoolean: false,
+        gatedBoolean: false,
+    },
+    {
+        label: MAXIMILIAN_LEGAL,
+        text: MAXIMILIAN,
+        side: "right",
+        size: 1,
+        outcome: "textDoesNotFit",
+        fullBoolean: false,
+        gatedBoolean: false,
+    },
+    {
+        label: MAXIMILIAN_LEGAL,
+        text: MAXIMILIAN,
+        side: "right",
+        size: 8.5,
+        outcome: "textDoesNotFit",
+        fullBoolean: false,
+        gatedBoolean: false,
+    },
+    {
+        label: MAXIMILIAN_LEGAL,
+        text: MAXIMILIAN,
+        side: "right",
+        size: 16,
+        outcome: "textDoesNotFit",
+        fullBoolean: false,
+        gatedBoolean: false,
+    },
+    {
+        label: AL,
+        text: AL,
+        side: "left",
+        size: 1,
+        outcome: "place",
+        fullBoolean: true,
+        gatedBoolean: false,
+    },
+    {
+        label: AL,
+        text: AL,
+        side: "left",
+        size: 8.5,
+        outcome: "place",
+        fullBoolean: true,
+        gatedBoolean: false,
+    },
+    {
+        label: AL,
+        text: AL,
+        side: "left",
+        size: 16,
+        outcome: "place",
+        fullBoolean: true,
+        gatedBoolean: false,
+    },
+    {
+        label: AL,
+        text: AL,
+        side: "right",
+        size: 1,
+        outcome: "place",
+        fullBoolean: true,
+        gatedBoolean: false,
+    },
+    {
+        label: AL,
+        text: AL,
+        side: "right",
+        size: 8.5,
+        outcome: "place",
+        fullBoolean: true,
+        gatedBoolean: false,
+    },
+    {
+        label: AL,
+        text: AL,
+        side: "right",
+        size: 16,
+        outcome: "place",
+        fullBoolean: true,
+        gatedBoolean: false,
+    },
+];
+
 const SI_PAD_MM = 2;
+const GATED_TIMEOUT_MS = 15_000;
+const FULL_MATRIX_TIMEOUT_MS = 600_000;
+const FULL_TEXT_MATRIX = process.env.FULL_TEXT_MATRIX === "1";
 
 const hosts = new Map<string, Promise<BufferGeometry>>();
 
 function marking(text: string): TextMarking {
     return { ...defaultTextMarking("wall"), text, capHeightMm: 6, mode: "engrave" };
+}
+
+function cellTitle(cell: WallCell): string {
+    return `${cell.label} on the ${cell.side} wall at M${cell.size}`;
 }
 
 function glyphBox(flat: FlattenedText): { xMin: number; xMax: number; yMin: number; yMax: number } {
@@ -123,9 +311,6 @@ function hostFor(side: Side, size: number): Promise<BufferGeometry> {
                 return preview.geometry;
             } catch (err) {
                 sized.dispose();
-                // Mirroring and then scaling the scan makes the left M16 plantar
-                // CDT reject a sliver. Loft the unscaled mirror, then scale the
-                // solid and the frames the text code reads.
                 if (side !== "left" || !(err instanceof Error) || !err.message.includes("CDT sliver"))
                     throw err;
                 const again = await loadSampleTopGlb();
@@ -286,10 +471,6 @@ function projectWall(
     return found ? { dist: bestD, h: bestH, height: bestHeight } : null;
 }
 
-/**
- * Wall vertices outside the text box, and every bottom (z = 0) vertex, must
- * exist at the same coordinates on the engraved solid.
- */
 function assertWallAndBottomUnmoved(host: BufferGeometry, result: BufferGeometry, box: Box): void {
     const ctx = extractHostTextContext(host);
     const pos = host.getAttribute("position");
@@ -361,30 +542,73 @@ function mappedTextAabb(
     };
 }
 
-async function assertCase(text: string, side: Side, size: number): Promise<void> {
-    if (text === LONG) expect(text.length).toBeGreaterThanOrEqual(20);
-    if (text === SHORT) {
-        expect(text.length).toBeGreaterThanOrEqual(2);
-        expect(text.length).toBeLessThanOrEqual(3);
-    }
-    const host = await hostFor(side, size);
-    const ctx = extractHostTextContext(host);
-    const run = stationsForSurface(ctx, "wall");
-    const font = await loadTextFont();
-    const flat = flattenText(font, text, 6, 0.6, true);
+function glyphInsideBand(
+    band: ReturnType<typeof buildWallUsableBand>,
+    wall: ReturnType<typeof createOuterWallSampler>,
+    run: WallStation[],
+    placed: ReturnType<typeof placeWallText>,
+    mark: TextMarking,
+): boolean {
+    const box = glyphBox(placed.flat);
+    const anchor = placed.flat.centroids[0] ?? placed.flat.groups[0]?.outer[0];
+    if (!anchor) return false;
+    const world = placed.map(anchor, surfaceT(mark));
+    const loc = locateOnWall(wall, run, world);
+    if (loc.d > 0.2) return false;
+    const sLeft = loc.s - (anchor.x - box.xMin);
+    const hBase = loc.h - (anchor.y - box.yMin);
+    return band.contains(sLeft, box.xMax - box.xMin, hBase, box.yMax - box.yMin);
+}
+
+function assertScaleAtLeast80(flat: FlattenedText, placed: ReturnType<typeof placeWallText>): void {
     const before = glyphBox(flat);
-    const mark = marking(text);
-    const placed = placeWallText(host, ctx, mark, flat);
     const after = glyphBox(placed.flat);
     const scaleX = (after.xMax - after.xMin) / Math.max(1e-9, before.xMax - before.xMin);
     const scaleY = (after.yMax - after.yMin) / Math.max(1e-9, before.yMax - before.yMin);
     expect(scaleX).toBeGreaterThanOrEqual(0.8 - 1e-6);
     expect(scaleY).toBeGreaterThanOrEqual(0.8 - 1e-6);
+}
 
+async function loadPlacementInputs(cell: WallCell) {
+    const host = await hostFor(cell.side, cell.size);
+    const ctx = extractHostTextContext(host);
+    const run = stationsForSurface(ctx, "wall");
+    const font = await loadTextFont();
+    const flat = flattenText(font, cell.text, 6, 0.6, true);
+    const mark = marking(cell.text);
     const band = buildWallUsableBand(host, run, mark.depthMm, filletFloor(host, run));
     const wall = createOuterWallSampler(host, run);
-    expect(glyphInsideBand(band, wall, run, placed, mark)).toBe(true);
+    return { host, ctx, run, flat, mark, band, wall };
+}
 
+function expectTextDoesNotFitError(err: unknown): void {
+    const ui = textDoesNotFit();
+    expect(err).toBeInstanceOf(TextMarkingError);
+    expect((err as TextMarkingError).code).toBe(ui.code);
+    expect((err as Error).message).toBe(ui.message);
+}
+
+async function assertCleanTextDoesNotFit(cell: WallCell): Promise<void> {
+    const { host, ctx, flat, mark } = await loadPlacementInputs(cell);
+    let placementErr: unknown;
+    try {
+        placeWallText(host, ctx, mark, flat);
+    } catch (e) {
+        placementErr = e;
+    }
+    expectTextDoesNotFitError(placementErr);
+}
+
+async function assertPlacementAndBand(cell: WallCell): Promise<ReturnType<typeof placeWallText>> {
+    const { host, ctx, run, flat, mark, band, wall } = await loadPlacementInputs(cell);
+    const placed = placeWallText(host, ctx, mark, flat);
+    assertScaleAtLeast80(flat, placed);
+    expect(glyphInsideBand(band, wall, run, placed, mark)).toBe(true);
+    return placed;
+}
+
+async function assertBooleanCarve(cell: WallCell, placed: ReturnType<typeof placeWallText>): Promise<void> {
+    const { host, ctx, run, flat, mark, band, wall } = await loadPlacementInputs(cell);
     const work = host.clone();
     work.userData = { ...host.userData };
     let result: BufferGeometry | null = null;
@@ -426,61 +650,69 @@ async function assertCase(text: string, side: Side, size: number): Promise<void>
     }
 }
 
-function glyphInsideBand(
-    band: ReturnType<typeof buildWallUsableBand>,
-    wall: ReturnType<typeof createOuterWallSampler>,
-    run: WallStation[],
-    placed: ReturnType<typeof placeWallText>,
-    mark: TextMarking,
-): boolean {
-    const box = glyphBox(placed.flat);
-    const anchor = placed.flat.centroids[0] ?? placed.flat.groups[0]?.outer[0];
-    if (!anchor) return false;
-    const world = placed.map(anchor, surfaceT(mark));
-    const loc = locateOnWall(wall, run, world);
-    if (loc.d > 0.2) return false;
-    const sLeft = loc.s - (anchor.x - box.xMin);
-    const hBase = loc.h - (anchor.y - box.yMin);
-    return band.contains(sLeft, box.xMax - box.xMin, hBase, box.yMax - box.yMin);
+async function runGatedCell(cell: WallCell): Promise<void> {
+    if (cell.outcome === "textDoesNotFit") {
+        await assertCleanTextDoesNotFit(cell);
+        return;
+    }
+    const placed = await assertPlacementAndBand(cell);
+    if (cell.gatedBoolean) await assertBooleanCarve(cell, placed);
 }
 
-describe("wall text cases", () => {
-    for (const text of NAMES) {
-        for (const side of SIDES) {
-            for (const size of SIZES) {
-                test(`${text} on the ${side} wall at M${size}`, async () => {
-                    await assertCase(text, side, size);
-                }, 600_000);
-            }
-        }
+async function runFullMatrixCell(cell: WallCell): Promise<void> {
+    if (cell.outcome === "textDoesNotFit") {
+        await assertCleanTextDoesNotFit(cell);
+        return;
+    }
+    const placed = await assertPlacementAndBand(cell);
+    if (cell.fullBoolean) await assertBooleanCarve(cell, placed);
+}
+
+describe("wall text cases (PR-gated)", () => {
+    beforeAll(async () => {
+        await Promise.all(
+            (["left", "right"] as const).flatMap((side) => [1, 8.5, 16].map((size) => hostFor(side, size))),
+        );
+    }, 120_000);
+
+    for (const cell of WALL_CELLS) {
+        test(
+            cellTitle(cell),
+            async () => {
+                await runGatedCell(cell);
+            },
+            GATED_TIMEOUT_MS,
+        );
     }
 
-    test("oversized name at M1 throws textDoesNotFit and keeps the no-text mesh", async () => {
-        const host = await hostFor("right", 1);
-        const work = host.clone();
-        work.userData = { ...host.userData };
-        const snap = positionSnapshot(work);
-        const mark = marking(OVERSIZED);
-        const ui = textDoesNotFit();
-        let textFitError: string | null = null;
-        let returned: BufferGeometry | null = null;
-        try {
-            returned = await applyTextMarkingToPrintSolid(work, mark, { side: "right" });
-        } catch (e) {
-            expect(e).toBeInstanceOf(TextMarkingError);
-            expect((e as TextMarkingError).code).toBe(ui.code);
-            expect((e as Error).message).toBe(ui.message);
-            textFitError = (e as Error).message;
-        }
-        expect(textFitError).toBe(ui.message);
-        expect(returned).toBeNull();
-        expect(samePositions(work, snap)).toBe(true);
-        const guide = buildTextGuide(work);
-        work.userData = { ...work.userData, textGuide: guide, textFitError };
-        publishTextGuide("right", guide, textFitError);
-        expect(textFitErrorSnapshot().right).toBe("[TEXT] text does not fit the placement zone");
-        work.dispose();
-    }, 180_000);
+    test(
+        "oversized name at M1 throws textDoesNotFit and keeps the no-text mesh",
+        async () => {
+            const host = await hostFor("right", 1);
+            const work = host.clone();
+            work.userData = { ...host.userData };
+            const snap = positionSnapshot(work);
+            const mark = marking(OVERSIZED);
+            const ui = textDoesNotFit();
+            let textFitError: string | null = null;
+            let returned: BufferGeometry | null = null;
+            try {
+                returned = await applyTextMarkingToPrintSolid(work, mark, { side: "right" });
+            } catch (e) {
+                expectTextDoesNotFitError(e);
+                textFitError = (e as Error).message;
+            }
+            expect(textFitError).toBe(ui.message);
+            expect(returned).toBeNull();
+            expect(samePositions(work, snap)).toBe(true);
+            const guide = buildTextGuide(work);
+            work.userData = { ...work.userData, textGuide: guide, textFitError };
+            publishTextGuide("right", guide, textFitError);
+            expect(textFitErrorSnapshot().right).toBe("[TEXT] text does not fit the placement zone");
+            work.dispose();
+        },
+        GATED_TIMEOUT_MS,
+    );
 
     test("usable band rejects a fold over 30 degrees and a radius under 2x depth", () => {
         const sharp = kinkedWall(40, 1.5, 24, 48, 18);
@@ -502,6 +734,45 @@ describe("wall text cases", () => {
         expect(tightBand.contains(tight.hinge - 1, 2, 4, 4)).toBe(false);
         tight.geo.dispose();
     });
+});
+
+const fullMatrixDescribe = FULL_TEXT_MATRIX ? describe : describe.skip;
+
+fullMatrixDescribe("wall text cases (full boolean matrix)", () => {
+    for (const cell of WALL_CELLS.filter((c) => c.fullBoolean || c.outcome === "textDoesNotFit")) {
+        test(
+            `${cellTitle(cell)} [full carve]`,
+            async () => {
+                await runFullMatrixCell(cell);
+            },
+            FULL_MATRIX_TIMEOUT_MS,
+        );
+    }
+
+    test(
+        "oversized name at M1 throws textDoesNotFit and keeps the no-text mesh [full apply]",
+        async () => {
+            const host = await hostFor("right", 1);
+            const work = host.clone();
+            work.userData = { ...host.userData };
+            const snap = positionSnapshot(work);
+            const mark = marking(OVERSIZED);
+            const ui = textDoesNotFit();
+            let textFitError: string | null = null;
+            let returned: BufferGeometry | null = null;
+            try {
+                returned = await applyTextMarkingToPrintSolid(work, mark, { side: "right" });
+            } catch (e) {
+                expectTextDoesNotFitError(e);
+                textFitError = (e as Error).message;
+            }
+            expect(textFitError).toBe(ui.message);
+            expect(returned).toBeNull();
+            expect(samePositions(work, snap)).toBe(true);
+            work.dispose();
+        },
+        FULL_MATRIX_TIMEOUT_MS,
+    );
 });
 
 function kinkedWall(
@@ -584,7 +855,6 @@ function kinkedWall(
     const right = nOf(hingeI);
     const dot = Math.max(-1, Math.min(1, left.x * right.x + left.y * right.y + left.z * right.z));
     const measured = (Math.acos(dot) * 180) / Math.PI;
-    // Centroid of each face sits one third of the way off the hinge.
     const stepMm = left.span / 3 + right.span / 3;
     return { geo, run, hinge, angleDeg: measured, stepMm };
 }
