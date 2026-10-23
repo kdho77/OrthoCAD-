@@ -4,18 +4,25 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
+import type { BufferGeometry } from "three";
+import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
+import { extractBoundaryLoops } from "@/lib/geometry/mesh-close";
+import { insoleLayoutForUsMenSize, US_MEN_SIZE_MAX, US_MEN_SIZE_MIN } from "@/lib/geometry/shoe-size";
 import type { SideCorrections } from "@/types";
 import { applyInsoleFootprintScale, insoleFootprintAnchorFromBounds } from "./pattern-hygiene";
 import {
+    applySharedInsoleSizeToGeometry,
     applySharedSizeXY,
     composePrintSolidTop,
     type SharedInsoleSizeTransform,
     sharedInsoleSizeTransformFromGeometry,
 } from "./print-solid-compose";
 import { reconstructProceduralPreview, sampleTopFromArrayBuffer } from "./sample-top-preview";
+
+/** Same tolerance as `copyTopMesh` / `extractTopSheet` and the quant-key rim walk. */
+const RIM_WELD_MM = 1e-4;
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
 const SIZES = [1, 8.5, 16] as const;
@@ -104,6 +111,126 @@ function sameBytes(a: Float64Array, b: Float64Array): boolean {
     return Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(
         Buffer.from(b.buffer, b.byteOffset, b.byteLength),
     );
+}
+
+/** A weld chord across the outline is tens of millimetres. Tessellation stays under 3 mm. */
+const CHORD_MM = 10;
+
+function num(value: number | undefined): number {
+    return value ?? 0;
+}
+
+function halfSizes(): number[] {
+    const out: number[] = [];
+    for (let s = US_MEN_SIZE_MIN; s <= US_MEN_SIZE_MAX + 1e-9; s += 0.5) out.push(Math.round(s * 2) / 2);
+    return out;
+}
+
+function quantKey(x: number, y: number, z: number): string {
+    return `${Math.round(x * 1e4)},${Math.round(y * 1e4)},${Math.round(z * 1e4)}`;
+}
+
+/** Vertices mergeVertices(1e-4) will collapse. Positions are the pre-weld mesh. */
+function coincidentWeldPairs(geo: BufferGeometry): string[] {
+    const names = Object.keys(geo.attributes);
+    const hashMultiplier = 1e4;
+    const hashAdditive = RIM_WELD_MM * 0.5 * hashMultiplier;
+    const groups = new Map<string, number[]>();
+    const pos = geo.getAttribute("position");
+    for (let i = 0; i < pos.count; i++) {
+        let hash = "";
+        for (const name of names) {
+            const attr = geo.getAttribute(name);
+            if (!attr) continue;
+            for (let k = 0; k < attr.itemSize; k++) {
+                const getter = ["getX", "getY", "getZ", "getW"][k] as "getX" | "getY" | "getZ" | "getW";
+                hash += `${~~(attr[getter](i) * hashMultiplier + hashAdditive)},`;
+            }
+        }
+        const list = groups.get(hash);
+        if (list) list.push(i);
+        else groups.set(hash, [i]);
+    }
+    const lines: string[] = [];
+    for (const ids of groups.values()) {
+        const a = ids[0];
+        const b = ids[1];
+        if (a === undefined || b === undefined) continue;
+        const distance = Math.hypot(
+            pos.getX(a) - pos.getX(b),
+            pos.getY(a) - pos.getY(b),
+            pos.getZ(a) - pos.getZ(b),
+        );
+        lines.push(
+            `v${a} (${pos.getX(a).toFixed(4)}, ${pos.getY(a).toFixed(4)}, ${pos.getZ(a).toFixed(4)}) ` +
+                `v${b} (${pos.getX(b).toFixed(4)}, ${pos.getY(b).toFixed(4)}, ${pos.getZ(b).toFixed(4)}) ` +
+                `d=${distance.toFixed(6)} mm`,
+        );
+    }
+    return lines;
+}
+
+/**
+ * Production later weld: mergeVertices(1e-4), then the position-quant boundary.
+ * A chord is a naked edge of CHORD_MM or more. An open chain is not an outline.
+ */
+function weldedRimReport(geo: BufferGeometry): {
+    loopCount: number;
+    maxEdge: number;
+    chords: string[];
+    openEnds: string[];
+} {
+    const welded = mergeVertices(geo.clone(), RIM_WELD_MM);
+    try {
+        const loops = extractBoundaryLoops(welded);
+        const pos = welded.getAttribute("position");
+        const index = welded.getIndex();
+        const triN = index ? index.count / 3 : pos.count / 3;
+        const edges = new Map<string, { a: string; b: string; n: number }>();
+        const at = (t: number, k: number) => (index ? index.getX(t * 3 + k) : t * 3 + k);
+        for (let t = 0; t < triN; t++) {
+            const keys = [0, 1, 2].map((k) =>
+                quantKey(pos.getX(at(t, k)), pos.getY(at(t, k)), pos.getZ(at(t, k))),
+            );
+            for (let k = 0; k < 3; k++) {
+                const a = keys[k];
+                const b = keys[(k + 1) % 3];
+                if (a === undefined || b === undefined || a === b) continue;
+                const ek = a < b ? `${a}|${b}` : `${b}|${a}`;
+                const hit = edges.get(ek);
+                if (hit) hit.n++;
+                else edges.set(ek, { a, b, n: 1 });
+            }
+        }
+        const degree = new Map<string, number>();
+        const chords: string[] = [];
+        let maxEdge = 0;
+        for (const edge of edges.values()) {
+            if (edge.n !== 1) continue;
+            degree.set(edge.a, (degree.get(edge.a) ?? 0) + 1);
+            degree.set(edge.b, (degree.get(edge.b) ?? 0) + 1);
+            const [ax, ay, az] = edge.a.split(",").map(Number);
+            const [bx, by, bz] = edge.b.split(",").map(Number);
+            const length = Math.hypot(num(ax) - num(bx), num(ay) - num(by), num(az) - num(bz)) / 1e4;
+            if (length > maxEdge) maxEdge = length;
+            if (length >= CHORD_MM) {
+                chords.push(
+                    `${length.toFixed(3)} mm ` +
+                        `(${(num(ax) / 1e4).toFixed(3)}, ${(num(ay) / 1e4).toFixed(3)}, ${(num(az) / 1e4).toFixed(3)}) -> ` +
+                        `(${(num(bx) / 1e4).toFixed(3)}, ${(num(by) / 1e4).toFixed(3)}, ${(num(bz) / 1e4).toFixed(3)})`,
+                );
+            }
+        }
+        const openEnds = [...degree.entries()]
+            .filter(([, d]) => d !== 2)
+            .map(([key, d]) => {
+                const [x, y, z] = key.split(",").map(Number);
+                return `deg ${d} at (${(num(x) / 1e4).toFixed(4)}, ${(num(y) / 1e4).toFixed(4)}, ${(num(z) / 1e4).toFixed(4)})`;
+            });
+        return { loopCount: loops.length, maxEdge, chords, openEnds };
+    } finally {
+        welded.dispose();
+    }
 }
 
 describe("shared size transform on composed SAMPLE_Top", () => {
@@ -213,4 +340,45 @@ describe("shared size transform on composed SAMPLE_Top", () => {
         preview.geometry.dispose();
         raw.dispose();
     }, 180_000);
+
+    test("sized rim outline has no chord after the later weld", async () => {
+        const raw = await loadSampleTop();
+        const findings: string[] = [];
+        const check = (label: string, geo: BufferGeometry) => {
+            const pairs = coincidentWeldPairs(geo);
+            const rim = weldedRimReport(geo);
+            if (rim.chords.length === 0 && rim.loopCount === 1 && rim.openEnds.length === 0) return;
+            findings.push(
+                [
+                    label,
+                    `loops=${rim.loopCount}`,
+                    `longestNaked=${rim.maxEdge.toFixed(3)} mm`,
+                    pairs.length ? `coincident ${pairs.join(" ; ")}` : "",
+                    rim.chords.length ? `chord ${rim.chords.join(" ; ")}` : "",
+                    rim.openEnds.length ? `open ${rim.openEnds.join(" ; ")}` : "",
+                ]
+                    .filter(Boolean)
+                    .join(" | "),
+            );
+        };
+        for (const menSize of halfSizes()) {
+            const layout = insoleLayoutForUsMenSize(menSize);
+            const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
+            const sized = applySharedInsoleSizeToGeometry(raw, sizeTransform);
+            check(`US M${menSize}`, sized);
+            sized.dispose();
+        }
+        for (const menSize of SIZES) {
+            const layout = insoleLayoutForUsMenSize(menSize);
+            const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
+            const composed = await composePrintSolidTop(raw, {
+                sourceField: field(layout.lengthMm, layout.widthMm),
+                sizeTransform,
+            });
+            check(`composed US M${menSize}`, composed);
+            composed.dispose();
+        }
+        raw.dispose();
+        expect(findings, findings.join("\n")).toEqual([]);
+    }, 120_000);
 });
