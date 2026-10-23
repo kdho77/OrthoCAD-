@@ -431,6 +431,31 @@ describe("shared size transform on composed SAMPLE_Top", () => {
         raw.dispose();
     }, 180_000);
 
+    test("composed scaled top is non-empty at M1, M8.5 and M16", async () => {
+        const raw = await loadSampleTop();
+        for (const menSize of SIZES) {
+            const layout = insoleLayoutForUsMenSize(menSize);
+            const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
+            const composed = await composeViewerPrintSolidTop({
+                raw,
+                sourceField: field(layout.lengthMm, layout.widthMm),
+                sizeTransform,
+            });
+            const positions = composed.getAttribute("position");
+            if (!positions || positions.count < 3) {
+                throw new Error(`US M${menSize} composed top is empty`);
+            }
+            const out = bbox(composed);
+            expect(out.length).toBeGreaterThan(1);
+            expect(out.width).toBeGreaterThan(1);
+            expect(Math.abs(out.length - layout.lengthMm)).toBeLessThanOrEqual(0.2);
+            expect(Math.abs(out.width - layout.widthMm)).toBeLessThanOrEqual(0.2);
+            expect(composed.userData.sizeTransform).toBe(sizeTransform);
+            composed.dispose();
+        }
+        raw.dispose();
+    }, 60_000);
+
     test("switching US M8.5 to M11 recomposes the top with the new transform", async () => {
         const raw = await loadSampleTop();
         const m85 = insoleLayoutForUsMenSize(8.5);
