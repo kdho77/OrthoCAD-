@@ -1654,23 +1654,38 @@ export const DEFAULT_GLB_CLOSED_BASELINE: ClosedSolidBaseline = {
     heelBridgeSelfIntersections: 0,
 };
 
-/** Genus-0 procedural-wall export solid (closed loft); Euler=2 when edge-manifold. */
+/**
+ * Genus-0 procedural-wall export solid. Already closed: export skips
+ * closeGlbInsoleToSolid and gates manifold + Euler on index topology
+ * ({@link assertProceduralIndexSolid}). Position-keying at QUANT 1e4 merges
+ * near-coincident vertices and false-fails these solids (euler=3, no seam loops).
+ *
+ * heelBridgeSelfIntersections stays 0 on purpose. Procedural loft solids have
+ * no GLB heel bridge, so the counter is not run.
+ */
 export const DEFAULT_PROCEDURAL_CLOSED_BASELINE: ClosedSolidBaseline = {
     eulerCharacteristic: 2,
     heelBridgeSelfIntersections: 0,
 };
 
+/** Distinct indexed vertices closer than this fail the procedural gate (1/QUANT). */
+export const INDEXED_VERTEX_MIN_SEPARATION_MM = 1e-4;
+
 export function closedSolidBaselineForExport(
     topVertexCount: number,
     proceduralWall: boolean,
 ): ClosedSolidBaseline | null {
+    if (proceduralWall) return DEFAULT_PROCEDURAL_CLOSED_BASELINE;
     if (topVertexCount <= 0) return null;
-    return proceduralWall ? DEFAULT_PROCEDURAL_CLOSED_BASELINE : DEFAULT_GLB_CLOSED_BASELINE;
+    return DEFAULT_GLB_CLOSED_BASELINE;
 }
 
 /**
- * Edge-manifold gate always; Euler / heel-bridge self-intersection gates only when
- * a baseline is provided (genuinely optional — no default-parameter trap).
+ * Position-keyed edge-manifold gate (QUANT 1e4). Euler / heel-bridge gates run
+ * only when a baseline is provided. GLB export keeps euler=3 on this path.
+ * Procedural export does not use this function — it calls
+ * {@link assertProceduralIndexSolid} on the index graph. If the procedural
+ * baseline is passed here, the heel-bridge counter is skipped and stays 0.
  */
 export function assertClosedSolidAcceptable(
     geometry: BufferGeometry,
@@ -1691,6 +1706,11 @@ export function assertClosedSolidAcceptable(
             report,
         );
     }
+    if (baseline === DEFAULT_PROCEDURAL_CLOSED_BASELINE) {
+        // Procedural loft solids have no GLB heel bridge. Counter skipped;
+        // heelBridgeSelfIntersections stays 0 on purpose.
+        return;
+    }
     const si = countHeelBridgeSelfIntersections(geometry, topVertexCount);
     if (si > baseline.heelBridgeSelfIntersections) {
         throw new MeshNotWatertightError(
@@ -1698,6 +1718,152 @@ export function assertClosedSolidAcceptable(
             report,
         );
     }
+}
+
+/**
+ * Manifold + Euler on the index graph (vertex indices, not QUANT position keys).
+ * V is the indexed vertex count, E is unique index-pairs, F is the triangle count.
+ */
+export function validateManifoldIndexed(geometry: BufferGeometry): ManifoldValidationReport {
+    const index = geometry.getIndex();
+    const pos = geometry.getAttribute("position");
+    if (!index || !pos) {
+        return {
+            triangleCount: 0,
+            vertexCount: pos?.count ?? 0,
+            openEdges: 0,
+            nonManifoldEdges: 0,
+            isWatertight: false,
+            edgeCount: 0,
+            eulerCharacteristic: 0,
+            nakedEdgeKeys: [],
+        };
+    }
+
+    const edgeUse = new Map<string, number>();
+    const triCount = index.count / 3;
+    for (let t = 0; t < triCount; t++) {
+        const a = index.getX(t * 3);
+        const b = index.getX(t * 3 + 1);
+        const c = index.getX(t * 3 + 2);
+        for (const [p, q] of [
+            [a, b],
+            [b, c],
+            [c, a],
+        ] as [number, number][]) {
+            const lo = Math.min(p, q);
+            const hi = Math.max(p, q);
+            const k = `${lo}-${hi}`;
+            edgeUse.set(k, (edgeUse.get(k) ?? 0) + 1);
+        }
+    }
+
+    let openEdges = 0;
+    let nonManifoldEdges = 0;
+    const nakedEdgeKeys: string[] = [];
+    for (const [k, count] of edgeUse) {
+        if (count === 1) {
+            openEdges++;
+            nakedEdgeKeys.push(k);
+        } else if (count > 2) nonManifoldEdges++;
+    }
+
+    const V = pos.count;
+    const E = edgeUse.size;
+    const F = triCount;
+    return {
+        triangleCount: F,
+        vertexCount: V,
+        openEdges,
+        nonManifoldEdges,
+        isWatertight: openEdges === 0 && nonManifoldEdges === 0,
+        edgeCount: E,
+        eulerCharacteristic: V - E + F,
+        nakedEdgeKeys,
+    };
+}
+
+/** First pair of distinct position indices closer than `minSeparationMm`, if any. */
+export function findIndexedVerticesWithin(
+    geometry: BufferGeometry,
+    minSeparationMm = INDEXED_VERTEX_MIN_SEPARATION_MM,
+): { a: number; b: number } | null {
+    const pos = geometry.getAttribute("position");
+    if (!pos || pos.count < 2 || minSeparationMm < 0) return null;
+    const cell = minSeparationMm > 0 ? minSeparationMm : 1e-4;
+    const limit2 = minSeparationMm * minSeparationMm;
+    const bins = new Map<string, number[]>();
+    const binKey = (ix: number, iy: number, iz: number) => `${ix},${iy},${iz}`;
+
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        const z = pos.getZ(i);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+        const ix = Math.floor(x / cell);
+        const iy = Math.floor(y / cell);
+        const iz = Math.floor(z / cell);
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    const list = bins.get(binKey(ix + dx, iy + dy, iz + dz));
+                    if (!list) continue;
+                    for (const j of list) {
+                        const ddx = x - pos.getX(j);
+                        const ddy = y - pos.getY(j);
+                        const ddz = z - pos.getZ(j);
+                        if (ddx * ddx + ddy * ddy + ddz * ddz <= limit2) return { a: j, b: i };
+                    }
+                }
+            }
+        }
+        const key = binKey(ix, iy, iz);
+        const bucket = bins.get(key);
+        if (bucket) bucket.push(i);
+        else bins.set(key, [i]);
+    }
+    return null;
+}
+
+/** Fails when two distinct indexed vertices sit within 1e-4 mm. */
+export function assertIndexedVerticesSeparated(
+    geometry: BufferGeometry,
+    minSeparationMm = INDEXED_VERTEX_MIN_SEPARATION_MM,
+): void {
+    const pair = findIndexedVerticesWithin(geometry, minSeparationMm);
+    if (!pair) return;
+    const report = validateManifoldIndexed(geometry);
+    const label = minSeparationMm === INDEXED_VERTEX_MIN_SEPARATION_MM ? "1e-4" : String(minSeparationMm);
+    throw new MeshNotWatertightError(
+        `[MESH-CLOSE] distinct indexed vertices ${pair.a} and ${pair.b} sit within ${label} mm`,
+        report,
+    );
+}
+
+/**
+ * Index-topology manifold and Euler=2 gate for an already-closed procedural solid.
+ * Does not run the GLB heel-bridge counter (baseline stays 0 on purpose).
+ */
+export function assertProceduralIndexSolid(geometry: BufferGeometry): void {
+    assertIndexedVerticesSeparated(geometry);
+    const report = validateManifoldIndexed(geometry);
+    if (report.openEdges !== 0 || report.nonManifoldEdges !== 0) {
+        throw new MeshNotWatertightError(
+            `[MESH-CLOSE] procedural solid not edge-manifold (index topology): ` +
+                `openEdges=${report.openEdges} nonManifold=${report.nonManifoldEdges}`,
+            report,
+        );
+    }
+    const expected = DEFAULT_PROCEDURAL_CLOSED_BASELINE.eulerCharacteristic;
+    if (report.eulerCharacteristic !== expected) {
+        throw new MeshNotWatertightError(
+            `[MESH-CLOSE] eulerCharacteristic=${report.eulerCharacteristic} !== baseline ${expected} ` +
+                `(index topology)`,
+            report,
+        );
+    }
+    // Heel-bridge counter skipped: procedural loft solids have no GLB heel bridge.
+    // heelBridgeSelfIntersections stays 0 on purpose.
 }
 
 function rotateLoop(loop: Vector3[], offset: number): Vector3[] {
