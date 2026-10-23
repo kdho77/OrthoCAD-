@@ -14,13 +14,17 @@ import { clipGeometryToOutline, type TrimlineCurve } from "@/lib/geometry/trimli
 import { insoleFootprintAnchorFromBounds } from "./pattern-hygiene";
 
 /**
- * US M9 / W10.5 heel-to-toe and ball width.
- * SAMPLE_Top raw, 271.93 × 91.69 mm. Every other size adds the table's
- * existing length and width step to this one binding.
+ * US M9 / W10.5 anchor. One uniform XY scale of the SAMPLE_Top sheet
+ * (271.93 × 91.69) by 275/271.93 (1.011290). Length is 275.00 mm and width
+ * is about 92.73 mm. Z is not scaled. Every other size adds the table's
+ * existing length and width step to this binding.
  */
 export const M9_TARGET_SOURCE = {
-    lengthMm: 271.93,
-    widthMm: 91.69,
+    sheetLengthMm: 271.93,
+    sheetWidthMm: 91.69,
+    xyScale: 275 / 271.93,
+    lengthMm: 275,
+    widthMm: 91.69 * (275 / 271.93),
 } as const;
 
 /**
@@ -78,8 +82,9 @@ export interface ComposePrintSolidInput {
 /**
  * One transform from the mesh bbox. `lengthMm` / `widthMm` are the table
  * footprint. The returned target is {@link sharedSizeTarget} of that row.
- * Scale is the graded size over {@link M9_TARGET_SOURCE}, so M9 is sx = sy = 1
- * on the same path as every other size. Callers pass this object; compose does not rebuild it.
+ * Scale is that target over the SAMPLE_Top sheet in {@link M9_TARGET_SOURCE},
+ * so M9 is the uniform {@link M9_TARGET_SOURCE.xyScale} on both axes.
+ * Callers pass this object; compose does not rebuild it.
  */
 export function sharedInsoleSizeTransformFromGeometry(
     geometry: BufferGeometry,
@@ -103,12 +108,15 @@ export function sharedInsoleSizeTransformFromGeometry(
         nativeWidthMm: anchor.nativeWidthMm,
         lengthMm: target.lengthMm,
         widthMm: target.widthMm,
-        sx: target.lengthMm / M9_TARGET_SOURCE.lengthMm,
-        sy: target.widthMm / M9_TARGET_SOURCE.widthMm,
+        sx: target.lengthMm / M9_TARGET_SOURCE.sheetLengthMm,
+        sy: target.widthMm / M9_TARGET_SOURCE.sheetWidthMm,
     };
 }
 
-/** Identity scales do not shift, matching #204's pattern transform. */
+/**
+ * XY only. Z is not scaled, so a bottom at z = 0 stays at z = 0.
+ * Identity scales do not shift, matching #204's pattern transform.
+ */
 export function applySharedSizeXY(
     x: number,
     y: number,

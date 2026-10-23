@@ -87,7 +87,7 @@ function bbox(geo: {
     };
 }
 
-/** Column-major XY affine. Scale is the graded size over the M9 anchor. Identity scales do not shift. */
+/** Row-major XY affine shared by the pattern and the top. Z is the untouched row. */
 function patternMatrix(
     lengthMm: number,
     widthMm: number,
@@ -96,19 +96,12 @@ function patternMatrix(
         yMid: number;
     },
 ): Float64Array {
-    const sx = lengthMm / M9_TARGET_SOURCE.lengthMm;
-    const sy = widthMm / M9_TARGET_SOURCE.widthMm;
+    const sx = lengthMm / M9_TARGET_SOURCE.sheetLengthMm;
+    const sy = widthMm / M9_TARGET_SOURCE.sheetWidthMm;
     if (Math.abs(sx - 1) < 1e-12 && Math.abs(sy - 1) < 1e-12) {
         return new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
     }
     return new Float64Array([sx, 0, -anchor.x0 * sx, 0, sy, -anchor.yMid * sy, 0, 0, 1]);
-}
-
-function positionBytes(geo: BufferGeometry): Buffer {
-    const pos = geo.getAttribute("position");
-    if (!pos) throw new Error("mesh has no positions");
-    const arr = pos.array as Float32Array;
-    return Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength);
 }
 
 function sharedMatrix(t: SharedInsoleSizeTransform): Float64Array {
@@ -198,22 +191,27 @@ describe("shared size transform on composed SAMPLE_Top", () => {
             const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
             expect(sizeTransform.lengthMm).toBe(target.lengthMm);
             expect(sizeTransform.widthMm).toBe(target.widthMm);
-            expect(sizeTransform.sx).toBe(target.lengthMm / M9_TARGET_SOURCE.lengthMm);
-            expect(sizeTransform.sy).toBe(target.widthMm / M9_TARGET_SOURCE.widthMm);
+            expect(sizeTransform.sx).toBe(target.lengthMm / M9_TARGET_SOURCE.sheetLengthMm);
+            expect(sizeTransform.sy).toBe(target.widthMm / M9_TARGET_SOURCE.sheetWidthMm);
             expect(sizeTransform.x0).toBe(anchor.x0);
             expect(sizeTransform.yMid).toBe(anchor.yMid);
-            expect(
-                sameBytes(
-                    sharedMatrix(sizeTransform),
-                    patternMatrix(target.lengthMm, target.widthMm, anchor),
-                ),
-            ).toBe(true);
-            const heel = applySharedSizeXY(anchor.x0, anchor.yMid, sizeTransform);
-            const toe = applySharedSizeXY(anchor.x0 + anchor.nativeLengthMm, anchor.yMid, sizeTransform);
-            if (Math.abs(sizeTransform.sx - 1) < 1e-12) {
-                expect(heel.x).toBe(anchor.x0);
-                expect(toe.x).toBe(anchor.x0 + anchor.nativeLengthMm);
-            }
+            const topMatrix = sharedMatrix(sizeTransform);
+            const pattern = patternMatrix(target.lengthMm, target.widthMm, anchor);
+            expect(sameBytes(topMatrix, pattern)).toBe(true);
+            const probe = { x: anchor.x0 + anchor.nativeLengthMm * 0.66, y: anchor.yMid + 12, z: 0 };
+            const onTop = applySharedSizeXY(probe.x, probe.y, sizeTransform);
+            const sx = pattern[0] ?? 0;
+            const tx = pattern[2] ?? 0;
+            const sy = pattern[4] ?? 0;
+            const ty = pattern[5] ?? 0;
+            const onPattern = {
+                x: sx * probe.x + tx,
+                y: sy * probe.y + ty,
+                z: probe.z,
+            };
+            expect(onTop.x).toBe(onPattern.x);
+            expect(onTop.y).toBe(onPattern.y);
+            expect(onPattern.z).toBe(0);
             const sized = applySharedInsoleSizeToGeometry(raw, sizeTransform);
             const sheet = bbox(sized);
             const lengthStep = layout.lengthMm - INSOLE_LENGTH_MM;
@@ -284,41 +282,24 @@ describe("shared size transform on composed SAMPLE_Top", () => {
         raw.dispose();
     }, 180_000);
 
-    test("M9 output is bit-identical to SAMPLE_Top", async () => {
+    test("M9 length is 275 and width is about 92.73", async () => {
         const raw = await loadSampleTop();
-        const native = bbox(raw);
         const layout = insoleLayoutForUsMenSize(9);
-        const target = sharedSizeTarget(layout.lengthMm, layout.widthMm);
-        expect(M9_TARGET_SOURCE.lengthMm).toBe(271.93);
-        expect(M9_TARGET_SOURCE.widthMm).toBe(91.69);
-        expect(target.lengthMm).toBe(M9_TARGET_SOURCE.lengthMm);
-        expect(target.widthMm).toBe(M9_TARGET_SOURCE.widthMm);
         const sizeTransform = sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
-        expect(sizeTransform.sx).toBe(1);
-        expect(sizeTransform.sy).toBe(1);
-        expect(sizeTransform.lengthMm).toBe(M9_TARGET_SOURCE.lengthMm);
-        expect(sizeTransform.widthMm).toBe(M9_TARGET_SOURCE.widthMm);
+        expect(sizeTransform.sx).toBe(M9_TARGET_SOURCE.xyScale);
+        expect(sizeTransform.sy).toBe(M9_TARGET_SOURCE.xyScale);
+        expect(sizeTransform.sx).not.toBe(1);
+        expect(M9_TARGET_SOURCE.lengthMm).toBe(275);
         const sized = applySharedInsoleSizeToGeometry(raw, sizeTransform);
-        expect(positionBytes(sized).equals(positionBytes(raw))).toBe(true);
+        const rawPos = raw.getAttribute("position");
+        const sizedPos = sized.getAttribute("position");
+        if (!rawPos || !sizedPos) throw new Error("mesh has no positions");
+        expect(sizedPos.getZ(0)).toBe(rawPos.getZ(0));
+        expect(sizedPos.getZ(Math.floor(sizedPos.count / 2))).toBe(rawPos.getZ(Math.floor(rawPos.count / 2)));
+        const out = bbox(sized);
+        expect(Math.abs(out.length - 275)).toBeLessThanOrEqual(0.01);
+        expect(Math.abs(out.width - 92.73)).toBeLessThanOrEqual(0.05);
         sized.dispose();
-        const composed = await composeViewerPrintSolidTop({
-            raw,
-            sourceField: field(layout.lengthMm, layout.widthMm),
-            sizeTransform,
-        });
-        const unsized = await composeViewerPrintSolidTop({
-            raw,
-            sourceField: field(layout.lengthMm, layout.widthMm),
-        });
-        expect(composed.userData.sizeTransform).toBe(sizeTransform);
-        expect(positionBytes(composed).equals(positionBytes(unsized))).toBe(true);
-        const out = bbox(composed);
-        expect(Math.abs(out.length - native.length)).toBeLessThanOrEqual(0.01);
-        expect(Math.abs(out.width - native.width)).toBeLessThanOrEqual(0.01);
-        expect(Math.abs(native.length - M9_TARGET_SOURCE.lengthMm)).toBeLessThanOrEqual(0.01);
-        expect(Math.abs(native.width - M9_TARGET_SOURCE.widthMm)).toBeLessThanOrEqual(0.01);
-        composed.dispose();
-        unsized.dispose();
         raw.dispose();
     }, 30_000);
 
