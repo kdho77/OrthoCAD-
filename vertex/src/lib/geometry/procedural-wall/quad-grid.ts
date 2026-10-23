@@ -316,6 +316,11 @@ export interface BuildQuadGridInput {
     movedAt?: (u: number) => boolean;
     /** Print-step grinding dropdown → E→F mid-style. */
     wallStyle?: WallStyleParams;
+    /**
+     * Rim stations are already a fixed indexed ring. The bottom boundary
+     * stays one vertex per station (i, i+1 mod N) and is not subdivided.
+     */
+    indexedRimRing?: boolean;
 }
 
 function headingOfStation(st: HermiteStation): { h: { x: number; y: number }; planLen: number } {
@@ -887,7 +892,8 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
     }
 
     const indexGrid = (input.wallStyle?.style ?? "straight") !== "straight";
-    const refined = indexGrid
+    const lockRing = indexGrid || input.indexedRimRing === true;
+    const refined = lockRing
         ? {
               ring: outlineRing.map((p) => ({ ...p, z: 0 })),
               k: new Array(nS).fill(1),

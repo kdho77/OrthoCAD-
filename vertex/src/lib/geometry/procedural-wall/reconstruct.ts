@@ -51,7 +51,13 @@ import {
     postingZDelta,
 } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
-import { hygieneBottomPattern } from "./pattern-hygiene";
+import {
+    alignPatternToExportFootprint,
+    type FootprintBounds,
+    hygieneBottomPattern,
+    PATTERN_HARD_OUTSIDE_MM,
+} from "./pattern-hygiene";
+import type { PrintSolidShoeWidth } from "./print-solid-compose";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
 import { assertClosedStationRing, assertPeriodicQuadStrip, rotateStationRing } from "./ring-seam";
 import {
@@ -119,6 +125,18 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * the Default extractTopSheet steal.
      */
     composedTop?: boolean;
+    shoeWidth?: PrintSolidShoeWidth | null;
+    footprintReferenceBounds?: FootprintBounds;
+    footprintLengthMm?: number;
+    footprintWidthMm?: number;
+    sizeLabel?: string;
+    /** Stored / edited bottom pattern (enables footprint align + rim clip). */
+    userBottomPattern?: boolean;
+    /**
+     * Composed rim was resampled to a fixed indexed ring. Stations stay on
+     * those indices. Do not distance-merge them.
+     */
+    indexedRimRing?: boolean;
 }
 
 function zeroCorrections(): SideCorrections {
@@ -947,6 +965,7 @@ export function reconstructProceduralWalls(
     options.medialYSign = medialYSign;
     const defaults = defaultsFromModel(model, preset);
     defaults.medialYSign = medialYSign;
+    const userSuppliedPattern = Boolean(options.userBottomPattern);
     const patternPts = options.bottomPattern?.length
         ? options.bottomPattern
         : options.bottomPatternSource && !/^(synthetic|stock)$/i.test(options.bottomPatternSource)
@@ -1045,6 +1064,20 @@ export function reconstructProceduralWalls(
         model.bounds,
     );
     const liveRimPlan = rimPts.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    const refBounds: FootprintBounds = options.footprintReferenceBounds ?? {
+        minX: model.bounds.minX,
+        maxX: model.bounds.maxX,
+        minY: model.bounds.minY,
+        maxY: model.bounds.maxY,
+    };
+    const targetLength = options.footprintLengthMm ?? Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+    const targetWidth = options.footprintWidthMm ?? Math.max(1e-3, model.bounds.maxY - model.bounds.minY);
+    const patternInMeshFrame = userSuppliedPattern || Boolean(options.composedTop);
+    const rimGatePath = userSuppliedPattern
+        ? "reconstruct:export-user-bottom-pattern"
+        : patternPts?.length
+          ? "reconstruct:custom-bottom-pattern"
+          : "reconstruct:faired-stock";
     const stockRimLocal =
         model.top.meshPositions && model.top.rimLocal
             ? orderRimLocal(model.top.meshPositions, model.top.rimLocal)
@@ -1074,16 +1107,27 @@ export function reconstructProceduralWalls(
               ),
               model.bounds,
           );
+    const alignedOutline = alignPatternToExportFootprint(rawOutline, {
+        footprintReferenceBounds: refBounds,
+        footprintLengthMm: targetLength,
+        footprintWidthMm: targetWidth,
+        patternInMeshFrame,
+    });
     const patternLabel =
         options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : PATTERN_SOURCE_FAIRED_STOCK);
-    let hygiened = hygieneBottomPattern(rawOutline, {
-        rimPlan: patternRim,
+    const rimClearance =
+        patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0));
+    const rimForHygiene = options.composedTop || userSuppliedPattern ? liveRimPlan : patternRim;
+    let hygiened = hygieneBottomPattern(alignedOutline, {
+        rimPlan: rimForHygiene,
         requireInsideRim: true,
-        clearanceMm:
-            patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
+        clearanceMm: rimClearance,
         source: patternLabel,
-        resampleN: Math.max(160, rawOutline.length, rimPts.length),
+        resampleN: Math.max(160, alignedOutline.length, rimPts.length),
         keepFair: true,
+        sizeLabel: options.sizeLabel,
+        rimHardOutsideMm: PATTERN_HARD_OUTSIDE_MM,
+        codePath: `${rimGatePath}:hygiene-initial`,
     });
     const heelWiden = (options.corrections?.heelCupWidthMm ?? 0) !== 0;
     const wholeScale = options.insoleWidthScale ?? 1;
@@ -1095,11 +1139,11 @@ export function reconstructProceduralWalls(
           : (options.widenFollowFactor ?? 0);
     let patternLoop = hygiened.loop;
     let patternMoved = false;
-    if (wholeWidth) {
+    if (wholeWidth && !userSuppliedPattern) {
         const cy = 0.5 * (model.bounds.minY + model.bounds.maxY);
         patternLoop = scalePatternWidth(patternLoop, wholeScale, cy);
         patternMoved = true;
-    } else if (followFactor !== 0) {
+    } else if (!userSuppliedPattern && followFactor !== 0) {
         const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
         const minX = model.bounds.minX;
         patternLoop = shiftPatternByRimFollow(patternLoop, patternRim, liveRimPlan, (p) => {
@@ -1130,11 +1174,13 @@ export function reconstructProceduralWalls(
         hygiened = hygieneBottomPattern(patternLoop, {
             rimPlan: liveRimPlan,
             requireInsideRim: true,
-            clearanceMm:
-                patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
+            clearanceMm: rimClearance,
             source: patternLabel,
             resampleN: Math.max(160, patternLoop.length, rimPts.length),
             keepFair: true,
+            sizeLabel: options.sizeLabel,
+            rimHardOutsideMm: PATTERN_HARD_OUTSIDE_MM,
+            codePath: `${rimGatePath}:hygiene-after-move`,
         });
     }
     medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
@@ -1170,9 +1216,11 @@ export function reconstructProceduralWalls(
         assertCutInOnHighRimSide(hygiened.loop, rimPts, model.bounds, medialYSign);
     }
     let pairing = limitPairingSkew(pairAtNativeTop(hygiened.loop, rimPts), hygiened.loop);
-    const collapsed = mergeCollapsedStations(pairing, rimLocal, indices, 1e-6);
-    pairing = collapsed.pairing;
-    rimLocal = collapsed.rimLocal;
+    if (!options.indexedRimRing) {
+        const collapsed = mergeCollapsedStations(pairing, rimLocal, indices, 1e-6);
+        pairing = collapsed.pairing;
+        rimLocal = collapsed.rimLocal;
+    }
     const sourceRim = rimLocal.slice();
     const topHeight = buildXyHeightIndex(Float32Array.from(positions), indices);
     const topZ = (x: number, y: number) => sampleXyHeight(topHeight, x, y, "max");
@@ -1392,6 +1440,7 @@ export function reconstructProceduralWalls(
             planOutMm: options.wallPlanOutMm,
             forefootRound: options.forefootRound,
         }),
+        indexedRimRing: options.indexedRimRing === true,
     });
     const indexGridStyle = (options.wallStyle ?? "straight") !== "straight";
     if (wholeWidth) {

@@ -48,7 +48,7 @@ export function ProceduralWallPreviewControls({ onWallStyle }: ProceduralWallPre
             </div>
             <div className="text-[10px] text-muted-foreground">
                 SAMPLE_Top + faired bottom pattern (heel ~8 mm, ~0 toe inset). Overlay is independent of the
-                top trimline. Grinding default is Straight.
+                top trimline. Grinding default is Hybrid.
             </div>
         </div>
     );

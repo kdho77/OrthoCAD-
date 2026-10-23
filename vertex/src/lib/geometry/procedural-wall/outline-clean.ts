@@ -1,10 +1,18 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import type { PolyPoint } from "./curves";
+import { type PolyPoint, resamplePolyline } from "./curves";
 import type { HermiteStation } from "./loft";
 
 export const OUTLINE_DEDUPE_MM = 0.05;
+/**
+ * Same station count for every size.
+ * 446 is the composed SAMPLE_Top outline after corner indexing. A coarser
+ * arc-length ring cuts corners and fails the loft heading gate.
+ */
+export const RIM_RING_STATION_N = 446;
+/** Consecutive rim stations closer than this are the same station. */
+export const RIM_RING_MIN_STATION_MM = 1e-3;
 export const OUTLINE_COLLINEAR_MM = 0.05;
 export const OUTLINE_NUDGE_MM = 0.12;
 
@@ -238,4 +246,68 @@ export function mergeStationPair(
     }
     stations.splice(d, 1);
     rimLocal.splice(d, 1);
+}
+
+function dist3(a: PolyPoint, b: PolyPoint): number {
+    return Math.hypot(a.x - b.x, a.y - b.y, (a.z ?? 0) - (b.z ?? 0));
+}
+
+/**
+ * Drop consecutive stations closer than `minMm`, and a closing duplicate.
+ * Keeps the earlier station. This is an index along the loop, not a spatial weld.
+ */
+export function dropCloseRimStations(points: PolyPoint[], minMm = RIM_RING_MIN_STATION_MM): PolyPoint[] {
+    const src = points.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }));
+    if (src.length >= 2 && dist3(src[0]!, src[src.length - 1]!) < minMm) src.pop();
+    const kept: PolyPoint[] = [];
+    for (const p of src) {
+        const prev = kept[kept.length - 1];
+        if (prev && dist3(prev, p) < minMm) continue;
+        kept.push(p);
+    }
+    if (kept.length >= 2 && dist3(kept[0]!, kept[kept.length - 1]!) < minMm) kept.pop();
+    return kept;
+}
+
+/** Closed-rim arc-length resample. Result length is `n` and does not repeat the start. */
+export function resampleRimByArcLength(points: PolyPoint[], n = RIM_RING_STATION_N): PolyPoint[] {
+    const cleaned = dropCloseRimStations(points);
+    if (cleaned.length < 3) throw new Error("[RIM] composed rim has fewer than 3 stations");
+    const ring = resamplePolyline(cleaned, n);
+    const dropped = dropCloseRimStations(ring);
+    return dropped.length === n ? dropped : ring;
+}
+
+/** Max distance from `points` to the composed rim polyline. */
+export function maxRimVertexDelta(points: PolyPoint[], rim: PolyPoint[]): number {
+    let max = 0;
+    for (const p of points) {
+        let best = Infinity;
+        for (let i = 0; i < rim.length; i++) {
+            const a = rim[i]!;
+            const b = rim[(i + 1) % rim.length]!;
+            const ex = b.x - a.x;
+            const ey = b.y - a.y;
+            const ez = (b.z ?? 0) - (a.z ?? 0);
+            const len2 = ex * ex + ey * ey + ez * ez;
+            const t =
+                len2 > 1e-18
+                    ? Math.max(
+                          0,
+                          Math.min(
+                              1,
+                              ((p.x - a.x) * ex + (p.y - a.y) * ey + ((p.z ?? 0) - (a.z ?? 0)) * ez) / len2,
+                          ),
+                      )
+                    : 0;
+            const d = Math.hypot(
+                p.x - (a.x + ex * t),
+                p.y - (a.y + ey * t),
+                (p.z ?? 0) - ((a.z ?? 0) + ez * t),
+            );
+            if (d < best) best = d;
+        }
+        if (best > max) max = best;
+    }
+    return max;
 }
