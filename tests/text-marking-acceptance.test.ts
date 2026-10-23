@@ -141,8 +141,13 @@ describe("text marking SAMPLE_Top apply guards", () => {
                 const c = p.centroid;
                 return Math.hypot(c.x - 65.35, c.y - 34.99, c.z - 12.41) < 1;
             });
+            const fold = si.pairs.find((p) => {
+                const c = p.centroid;
+                return Math.hypot(c.x - 66.63, c.y - 35.87, c.z - 14.45) < 1.5;
+            });
             expect(si.real).toBe(0);
             expect(hit).toBeUndefined();
+            expect(fold).toBeUndefined();
             tagged.dispose();
             preview.geometry.dispose();
         } finally {
