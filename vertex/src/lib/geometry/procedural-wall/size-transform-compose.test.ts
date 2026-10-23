@@ -8,14 +8,23 @@ import type { BufferGeometry } from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { extractBoundaryLoops } from "@/lib/geometry/mesh-close";
-import { insoleLayoutForUsMenSize, US_MEN_SIZE_MAX, US_MEN_SIZE_MIN } from "@/lib/geometry/shoe-size";
+import {
+    formatHalfSize,
+    insoleLayoutForUsMenSize,
+    listUsMenSizes,
+    US_MEN_SIZE_MAX,
+    US_MEN_SIZE_MIN,
+    usWomenFromMen,
+} from "@/lib/geometry/shoe-size";
 import type { SideCorrections } from "@/types";
 import { applyInsoleFootprintScale, insoleFootprintAnchorFromBounds } from "./pattern-hygiene";
 import {
     applySharedInsoleSizeToGeometry,
     applySharedSizeXY,
     composePrintSolidTop,
+    composeViewerPrintSolidTop,
     type SharedInsoleSizeTransform,
     sharedInsoleSizeTransformFromGeometry,
 } from "./print-solid-compose";
@@ -381,4 +390,74 @@ describe("shared size transform on composed SAMPLE_Top", () => {
         raw.dispose();
         expect(findings, findings.join("\n")).toEqual([]);
     }, 120_000);
+
+    test("every men's and women's size matches the composed top", async () => {
+        const raw = await loadSampleTop();
+        const rows = ["men\twomen\theel target\theel actual\tball target\tball actual"];
+        for (const menSize of listUsMenSizes()) {
+            const layout = insoleLayoutForUsMenSize(menSize);
+            const onTemplate =
+                Math.abs(layout.lengthMm - INSOLE_LENGTH_MM) <= 1e-3 &&
+                Math.abs(layout.widthMm - INSOLE_WIDTH_MM) <= 1e-3;
+            const sizeTransform = onTemplate
+                ? null
+                : sharedInsoleSizeTransformFromGeometry(raw, layout.lengthMm, layout.widthMm);
+            const composed = await composeViewerPrintSolidTop({
+                raw,
+                sourceField: field(layout.lengthMm, layout.widthMm),
+                sizeTransform,
+            });
+            expect(composed.userData.sizeTransform ?? null).toBe(sizeTransform);
+            const out = bbox(composed);
+            rows.push(
+                [
+                    formatHalfSize(layout.usMenSize),
+                    formatHalfSize(usWomenFromMen(layout.usMenSize)),
+                    layout.lengthMm.toFixed(4),
+                    out.length.toFixed(4),
+                    layout.widthMm.toFixed(4),
+                    out.width.toFixed(4),
+                ].join("\t"),
+            );
+            if (sizeTransform) {
+                expect(Math.abs(out.length - layout.lengthMm)).toBeLessThanOrEqual(0.2);
+                expect(Math.abs(out.width - layout.widthMm)).toBeLessThanOrEqual(0.2);
+            } else {
+                expect(Math.abs(out.length - layout.lengthMm)).toBeGreaterThan(0.2);
+            }
+            composed.dispose();
+        }
+        console.log(rows.join("\n"));
+        raw.dispose();
+    }, 180_000);
+
+    test("switching US M8.5 to M11 recomposes the top with the new transform", async () => {
+        const raw = await loadSampleTop();
+        const m85 = insoleLayoutForUsMenSize(8.5);
+        const m11 = insoleLayoutForUsMenSize(11);
+        const t85 = sharedInsoleSizeTransformFromGeometry(raw, m85.lengthMm, m85.widthMm);
+        const first = await composeViewerPrintSolidTop({
+            raw,
+            sourceField: field(m85.lengthMm, m85.widthMm),
+            sizeTransform: t85,
+        });
+        const length85 = bbox(first).length;
+        expect(first.userData.sizeTransform).toBe(t85);
+        first.dispose();
+
+        const t11 = sharedInsoleSizeTransformFromGeometry(raw, m11.lengthMm, m11.widthMm);
+        expect(t11).not.toBe(t85);
+        const second = await composeViewerPrintSolidTop({
+            raw,
+            sourceField: field(m11.lengthMm, m11.widthMm),
+            sizeTransform: t11,
+        });
+        const length11 = bbox(second).length;
+        expect(second.userData.sizeTransform).toBe(t11);
+        expect(Math.abs(length85 - m85.lengthMm)).toBeLessThanOrEqual(0.2);
+        expect(Math.abs(length11 - m11.lengthMm)).toBeLessThanOrEqual(0.2);
+        expect(length11 - length85).toBeGreaterThan(0.2);
+        second.dispose();
+        raw.dispose();
+    }, 60_000);
 });
