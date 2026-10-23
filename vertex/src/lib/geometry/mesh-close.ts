@@ -1654,6 +1654,20 @@ export const DEFAULT_GLB_CLOSED_BASELINE: ClosedSolidBaseline = {
     heelBridgeSelfIntersections: 0,
 };
 
+/** Genus-0 procedural-wall export solid (closed loft); Euler=2 when edge-manifold. */
+export const DEFAULT_PROCEDURAL_CLOSED_BASELINE: ClosedSolidBaseline = {
+    eulerCharacteristic: 2,
+    heelBridgeSelfIntersections: 0,
+};
+
+export function closedSolidBaselineForExport(
+    topVertexCount: number,
+    proceduralWall: boolean,
+): ClosedSolidBaseline | null {
+    if (topVertexCount <= 0) return null;
+    return proceduralWall ? DEFAULT_PROCEDURAL_CLOSED_BASELINE : DEFAULT_GLB_CLOSED_BASELINE;
+}
+
 /**
  * Edge-manifold gate always; Euler / heel-bridge self-intersection gates only when
  * a baseline is provided (genuinely optional — no default-parameter trap).
