@@ -611,6 +611,73 @@ function refineMinAngle(
     return good;
 }
 
+function isBoundaryRingEdge(i: number, j: number, nOuter: number): boolean {
+    if (i >= nOuter || j >= nOuter) return false;
+    const d = Math.abs(i - j);
+    return d === 1 || d === nOuter - 1;
+}
+
+/**
+ * Split the longest INTERIOR edge of each in-band sliver. The midpoint is
+ * biased into the triangle so it stays off the edge. B vertices are not moved
+ * and B edges are not split — a 0.05 mm Steiner pair within 0.5 mm of B cannot
+ * be reached by the keep-band fill.
+ */
+function interiorSliverSplits(
+    points: PolyPoint[],
+    faces: Array<[number, number, number]>,
+    loop: PolyPoint[],
+    limit: number,
+): PolyPoint[] {
+    const nOuter = loop.length;
+    const out: PolyPoint[] = [];
+    const occupied = points.map((p) => ({ x: p.x, y: p.y }));
+    const free = (x: number, y: number): boolean => {
+        for (const p of occupied) {
+            if (Math.hypot(p.x - x, p.y - y) < 0.02) return false;
+        }
+        return true;
+    };
+    for (const f of faces) {
+        const ids = [f[0]!, f[1]!, f[2]!];
+        const tri = [points[ids[0]!]!, points[ids[1]!]!, points[ids[2]!]!];
+        if (faceAspect(tri[0]!, tri[1]!, tri[2]!).aspect <= limit) continue;
+        const cx = (tri[0]!.x + tri[1]!.x + tri[2]!.x) / 3;
+        const cy = (tri[0]!.y + tri[1]!.y + tri[2]!.y) / 3;
+        if (minDistToLoopXY(cx, cy, loop) > PLANTAR_SLIVER_BAND_MM) continue;
+        let longK = -1;
+        let longLen = -1;
+        for (let k = 0; k < 3; k++) {
+            if (isBoundaryRingEdge(ids[k]!, ids[(k + 1) % 3]!, nOuter)) continue;
+            const a = tri[k]!;
+            const b = tri[(k + 1) % 3]!;
+            const len = Math.hypot(b.x - a.x, b.y - a.y);
+            if (len > longLen) {
+                longLen = len;
+                longK = k;
+            }
+        }
+        if (longK < 0) continue;
+        const a = tri[longK]!;
+        const b = tri[(longK + 1) % 3]!;
+        const opp = tri[(longK + 2) % 3]!;
+        const mx = (a.x + b.x) * 0.5;
+        const my = (a.y + b.y) * 0.5;
+        let placed: PolyPoint | null = null;
+        for (const bias of [0.08, 0.2, 0.35, 0.5]) {
+            const x = mx * (1 - bias) + opp.x * bias;
+            const y = my * (1 - bias) + opp.y * bias;
+            if (!pointInPoly(x, y, loop) || !free(x, y)) continue;
+            placed = { x, y, z: 0 };
+            break;
+        }
+        if (!placed) continue;
+        out.push(placed);
+        occupied.push(placed);
+    }
+    return out;
+}
+
 function cdtDiskOf(
     loop: PolyPoint[],
     extra: PolyPoint[],
@@ -713,6 +780,42 @@ function cdtDiskOf(
             best,
             wantSteiner,
         );
+    }
+    if (wantSteiner) {
+        const splits: PolyPoint[] = [];
+        let repairPoints = points;
+        let repairFaces = faces;
+        let repairAspect = sliverMaxAspect;
+        for (let pass = 0; pass < 6; pass++) {
+            const added = interiorSliverSplits(repairPoints, repairFaces, loop, I_SLIVER_ASPECT);
+            if (!added.length) break;
+            splits.push(...added);
+            const steiner = [...collar, ...inward, ...hex, ...refine, ...splits];
+            repairPoints = [...loop, ...extra, ...steiner];
+            nudgeInteriorDuplicates(repairPoints, loop.length, loop, keep);
+            repairFaces = libraryCdtInterior(repairPoints, loop.length, extraEdges);
+            assertIEdges(repairFaces, loop.length);
+            assertLibraryDisk(repairFaces, loop.length);
+            const aspect = maxBoundaryAspect(repairPoints, repairFaces, loop, PLANTAR_SLIVER_BAND_MM);
+            if (aspect >= repairAspect - 1e-6) break;
+            repairAspect = aspect;
+            if (aspect <= I_SLIVER_ASPECT) {
+                return refineMinAngle(
+                    loop,
+                    extra,
+                    extraEdges,
+                    keep,
+                    steiner,
+                    {
+                        points: repairPoints,
+                        faces: repairFaces,
+                        steinerCount: steiner.length,
+                        sliverMaxAspect: aspect,
+                    },
+                    wantSteiner,
+                );
+            }
+        }
     }
     const steiner = wantSteiner ? [...collar, ...inward, ...hex, ...refine] : [];
     if (dense) {

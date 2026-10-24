@@ -10,18 +10,25 @@ import {
 } from "@/lib/chili3d/kernel";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
 import {
     assertClosedSolidAcceptable,
+    assertProceduralIndexSolid,
     closeGlbInsoleToSolid,
     DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
 import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gates";
-import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import {
+    formatUsShoeSizeLabel,
+    insoleLayoutFromDesign,
+    scaleGeometryToInsoleSize,
+} from "@/lib/geometry/shoe-size";
+import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
 import { curveToPolyPoints, useBottomPatternStore } from "@/stores/bottom-pattern-store";
@@ -60,16 +67,36 @@ async function buildModifiedBaseGeometry(
                 : design.paired.rightThicknessMm
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, effThickness);
+        field.elements = elementsForSurface(field.elements ?? [], true);
+        const layout = insoleLayoutFromDesign(design);
+        const trimline = getDesignTrimline(design, side);
+        const widthId = shoeWidthForSide(design, side);
         const stored = useBottomPatternStore.getState().getPattern(side);
         const preview = await buildProceduralExportSolid({
             mirrored: Boolean(base.mirrored),
             corrections: field.corrections,
             thicknessMm: effThickness,
             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
-            wallStyle: viewer?.wallStyle ?? "straight",
+            wallStyle: viewer?.wallStyle ?? "hybrid",
             scanPattern: design.pattern,
             textMarking: design.textMarking,
             side,
+            sourceField: field,
+            composedTop: true,
+            shoeWidth: {
+                width: widthId,
+                ballWidthMm: layout.widthMm,
+                heelWidthMm: layout.widthMm * 0.62,
+                heelOverrideMm: field.corrections?.heelCupWidthMm,
+            },
+            trimline,
+            footprintLengthMm: layout.lengthMm,
+            footprintWidthMm: layout.widthMm,
+            sizeLabel:
+                layout.sizeSystem === "us"
+                    ? formatUsShoeSizeLabel(layout.usMenSize).split(" / ")[0]
+                    : `${layout.footLengthMm} mm`,
+            userBottomPattern: Boolean(stored),
             ...(stored ? { bottomPattern: curveToPolyPoints(stored) } : {}),
         });
         return preview.geometry;
@@ -187,7 +214,7 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
 
 /** Export STL bytes for the active design side. */
 export async function buildExportStl(side: Side, options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const { design } = useDesignStore.getState();
+    const { design, viewer } = useDesignStore.getState();
     assertShapeFinishExportAllowed(design, side);
     const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
 
@@ -205,7 +232,18 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
         );
     }
     const geometry = modifiedBase;
+    const base = getDesignBase(design, side);
+    const procedural = wantsProceduralExportSolid(base, viewer?.wallModel);
     try {
+        if (procedural) {
+            // Already a closed loft. closeGlbInsoleToSolid position-keys at QUANT 1e4
+            // and false-fails (euler=3, no seam loops) at several shoe sizes.
+            if (typeof console !== "undefined") {
+                console.log("[EXPORT] procedural solid already closed — index-topology gate");
+            }
+            assertProceduralIndexSolid(geometry);
+            return geometryToBinarySTL(geometry);
+        }
         if (typeof console !== "undefined") {
             console.log("[EXPORT] closing GLB insole rims...");
         }
@@ -296,7 +334,7 @@ export async function buildExportSolid(
     side: Side,
     options: BuildExportStlOptions = {},
 ): Promise<BufferGeometry> {
-    const { design } = useDesignStore.getState();
+    const { design, viewer } = useDesignStore.getState();
     const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
 
     if (exportMode === "manufacturing" && isAuthoritativeKernel()) {
@@ -322,6 +360,11 @@ export async function buildExportSolid(
 
     const geometry = await buildExportGlbGeometry(side);
     if (exportMode === "manufacturing") {
+        const base = getDesignBase(design, side);
+        if (wantsProceduralExportSolid(base, viewer?.wallModel)) {
+            assertProceduralIndexSolid(geometry);
+            return geometry;
+        }
         return closeGlbInsoleToSolid(geometry);
     }
     return geometry;

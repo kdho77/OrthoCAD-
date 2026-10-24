@@ -6,9 +6,9 @@ import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt
 import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
 import { reconstructionManifold, windingReport } from "@/lib/geometry/procedural-wall/metrics";
 import { binaryStlToGeometry, geometryToBinarySTL } from "@/lib/geometry/stl";
-import { TEXT_BOOLEAN_EPS_MM, TEXT_REMAINING_MIN_MM, TEXT_WELD_MM } from "./constants";
+import { TEXT_BOOLEAN_EPS_MM, TEXT_REMAINING_MIN_MM, TEXT_SI_REGION_PAD_MM, TEXT_WELD_MM } from "./constants";
 import { TextMarkingError, textTooThinRemaining } from "./errors";
-import { countSoupSelfIntersections } from "./soup-intersect";
+import { countSoupSelfIntersectionsInRegion, soupRegionAabbFromOutlineWorld } from "./soup-intersect";
 import type { TextApplyMeta, TextSurface } from "./types";
 
 const Z0_TOL = 0.08;
@@ -166,7 +166,12 @@ export function assertTextPrintGates(
     }
     const stl = geometryToBinarySTL(geo);
     const soup = binaryStlToGeometry(stl);
-    const si = countSoupSelfIntersections(soup, TEXT_WELD_MM);
+    const region = meta.outlineWorld?.length
+        ? soupRegionAabbFromOutlineWorld(meta.outlineWorld, TEXT_SI_REGION_PAD_MM)
+        : null;
+    const si = region
+        ? countSoupSelfIntersectionsInRegion(soup, region, TEXT_WELD_MM)
+        : { real: 0, coplanar: 0, pairs: [] };
     soup.dispose();
     if (si.real > 0) {
         const sample = si.pairs.slice(0, 8).map((p) => ({

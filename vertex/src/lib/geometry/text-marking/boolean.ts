@@ -10,6 +10,7 @@ import {
     TEXT_HOST_SI_PAD_MM,
     TEXT_HOST_SLIVER_MIN_ANGLE_DEG,
     TEXT_REGION_PAD_MM,
+    TEXT_SI_REGION_PAD_MM,
     TEXT_WELD_MM,
 } from "./constants";
 import { buildTextCutterMesh } from "./cutter";
@@ -17,7 +18,13 @@ import { TextMarkingError } from "./errors";
 import { refineHostLocally, SampleGrid } from "./host-refine";
 import { decimateCoplanarCaps } from "./qem-caps";
 import { distToTextRegion } from "./quality";
-import { countSoupSelfIntersections } from "./soup-intersect";
+import {
+    countSoupSelfIntersections,
+    countSoupSelfIntersectionsInRegion,
+    type SoupIntersectionReport,
+    type SoupRegionAabb,
+    soupRegionAabbFromGlyphGroups,
+} from "./soup-intersect";
 import type { MapTextPoint, TextApplyMeta, TextGlyphGroup, TextHostRepair } from "./types";
 
 type ManifoldMesh = {
@@ -1570,30 +1577,9 @@ function soupHitsInBand(
     mapped: MapTextPoint,
     padMm: number,
 ): ReturnType<typeof countSoupSelfIntersections> {
-    const all = countSoupSelfIntersections(geo, TEXT_WELD_MM);
-    const band = makeFootprintBand(groups, mapped, padMm);
-    const pairs = all.pairs.filter((p) => {
-        const c = p.centroid;
-        const a = p.a[0]!;
-        const b = p.a[1]!;
-        const d = p.a[2]!;
-        return (
-            band(a.x, a.y, a.z, b.x, b.y, b.z, d.x, d.y, d.z) ||
-            band(
-                p.b[0]!.x,
-                p.b[0]!.y,
-                p.b[0]!.z,
-                p.b[1]!.x,
-                p.b[1]!.y,
-                p.b[1]!.z,
-                p.b[2]!.x,
-                p.b[2]!.y,
-                p.b[2]!.z,
-            ) ||
-            Math.hypot(c.x - a.x, c.y - a.y, c.z - a.z) < padMm
-        );
-    });
-    return { real: pairs.length, coplanar: all.coplanar, pairs };
+    const region = soupRegionAabbFromGlyphGroups(groups, mapped, padMm);
+    if (!region) return { real: 0, coplanar: 0, pairs: [] };
+    return countSoupSelfIntersectionsInRegion(geo, region, TEXT_WELD_MM);
 }
 
 /** Repair pre-existing slivers / SI (min angle < 1°) inside footprint + pad only. */
@@ -1616,7 +1602,8 @@ export function repairHostBand(
     };
 }
 
-function soupRealHits(geo: BufferGeometry): number {
+function soupRealHits(geo: BufferGeometry, region?: SoupRegionAabb | null): number {
+    if (region) return countSoupSelfIntersectionsInRegion(geo, region, TEXT_WELD_MM).real;
     return countSoupSelfIntersections(geo, TEXT_WELD_MM).real;
 }
 
@@ -1714,12 +1701,18 @@ export async function booleanTextSolid(
     const hostFix = repairHostBand(host, groups, mappedOrig, TEXT_HOST_SI_PAD_MM);
     const hostWork = hostFix.geo;
     const regionBand = makeFootprintBand(groups, mappedOrig, TEXT_REGION_PAD_MM);
-    const refined = refineHostLocally(hostWork, groups, mappedOrig, TEXT_REGION_PAD_MM);
-    const prepped = collapseDegenerateThenWeld(refined, 0, regionBand);
-    if (prepped !== refined && refined !== hostWork && refined !== host) {
+    const siRegion = soupRegionAabbFromGlyphGroups(groups, mappedOrig, TEXT_SI_REGION_PAD_MM);
+    const hostVerts = hostWork.getAttribute("position")?.count ?? 0;
+    const skipLocalRefine = hostVerts > 40_000;
+    const refined = skipLocalRefine
+        ? hostWork
+        : refineHostLocally(hostWork, groups, mappedOrig, TEXT_REGION_PAD_MM);
+    const prepped = skipLocalRefine ? hostWork : collapseDegenerateThenWeld(refined, 0, regionBand);
+    if (!skipLocalRefine && prepped !== refined && refined !== hostWork && refined !== host) {
         if (prepped !== host && prepped !== hostWork) refined.dispose();
     }
-    const refinedOk = prepped !== host && prepped !== hostWork && indexedWatertight(prepped);
+    const refinedOk =
+        !skipLocalRefine && prepped !== host && prepped !== hostWork && indexedWatertight(prepped);
     const mappedRefined = rebind && refinedOk ? rebind(prepped) : mappedOrig;
     let mapUsed = mappedOrig;
     const finish = (geo: BufferGeometry): BufferGeometry => {
@@ -1744,7 +1737,7 @@ export async function booleanTextSolid(
                     sidewallRings,
                     regionBand,
                 );
-                if (soupRealHits(geo) > 0) {
+                if (soupRealHits(geo, siRegion) > 0) {
                     const orig = csgOnce(
                         mod,
                         hostWork,
@@ -1755,7 +1748,7 @@ export async function booleanTextSolid(
                         sidewallRings,
                         regionBand,
                     );
-                    if (soupRealHits(orig) === 0) {
+                    if (soupRealHits(orig, siRegion) === 0) {
                         geo.dispose();
                         geo = orig;
                         mapUsed = mappedOrig;
@@ -1817,7 +1810,9 @@ export async function booleanTextSolid(
             cleaned = qem.geo;
         }
         cleaned.userData = { ...cleaned.userData, textQem: qem.report };
-        const hits = countSoupSelfIntersections(cleaned, TEXT_WELD_MM);
+        const hits = siRegion
+            ? countSoupSelfIntersectionsInRegion(cleaned, siRegion, TEXT_WELD_MM)
+            : countSoupSelfIntersections(cleaned, TEXT_WELD_MM);
         if (hits.real > 0 && hostFix.report.siAfter === 0) {
             const p = hits.pairs[0];
             throw new TextMarkingError(

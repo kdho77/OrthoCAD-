@@ -39,11 +39,12 @@ self.onmessage = async (event: MessageEvent<ProceduralWallWorkerRequest>) => {
             const preview = await reconstructProceduralPreview(geo, msg.options);
             geo.dispose();
             let outGeo = preview.geometry;
-            const { buildTextGuide } = await import("@/lib/geometry/text-marking/place");
-            const textGuide = buildTextGuide(preview.geometry);
             const marking = msg.options.textMarking;
+            let textGuide: unknown = null;
             let textFitError: string | null = null;
             if (marking?.text.trim()) {
+                const { buildTextGuide } = await import("@/lib/geometry/text-marking/place");
+                textGuide = buildTextGuide(preview.geometry);
                 const { applyTextMarkingToPrintSolid } = await import("@/lib/geometry/text-marking/apply");
                 const { TextMarkingError } = await import("@/lib/geometry/text-marking/errors");
                 try {

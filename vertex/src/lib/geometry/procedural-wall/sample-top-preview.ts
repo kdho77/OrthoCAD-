@@ -18,7 +18,15 @@ import type { ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
-import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
+import type { FootprintBounds } from "./pattern-hygiene";
+import {
+    applySharedInsoleSizeToGeometry,
+    applySharedSizeXY,
+    composePrintSolidTop,
+    type PrintSolidShoeWidth,
+    type SharedInsoleSizeTransform,
+    sharedInsoleSizeTransformFromGeometry,
+} from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
@@ -166,6 +174,26 @@ export function buildFairedPatternFromTop(model: StockWallModel, pattern?: ScanP
     return syntheticBottomPattern(rim3d, model.bounds, rim3d, undefined, insetsForScanPattern(pattern));
 }
 
+function mapPatternBySize(pattern: PolyPoint[], t: SharedInsoleSizeTransform): PolyPoint[] {
+    return pattern.map((p) => {
+        const q = applySharedSizeXY(p.x, p.y, t);
+        return { x: q.x, y: q.y, z: p.z ?? 0 };
+    });
+}
+
+/**
+ * A pattern built on the sized sheet already has its toe at `lengthMm`.
+ * A pattern built on the native SAMPLE_Top still reaches the native toe.
+ */
+function patternAlreadyOnSizedSheet(pattern: PolyPoint[], t: SharedInsoleSizeTransform): boolean {
+    let maxX = -Infinity;
+    for (const p of pattern) {
+        if (p.x > maxX) maxX = p.x;
+    }
+    const nativeToe = t.x0 + t.nativeLengthMm;
+    return Math.abs(maxX - t.lengthMm) <= Math.abs(maxX - nativeToe);
+}
+
 export interface ProceduralPreviewOptions {
     corrections?: Partial<SideCorrections>;
     thicknessMm?: number;
@@ -193,6 +221,20 @@ export interface ProceduralPreviewOptions {
     textMarking?: TextMarking | null;
     /** Foot side for left/right placement (wall text is never glyph-mirrored). */
     side?: Side;
+    footprintReferenceBounds?: FootprintBounds;
+    footprintLengthMm?: number;
+    footprintWidthMm?: number;
+    /**
+     * #204 size map. Created once by the caller when it has the native mesh.
+     * When omitted, or null, and a footprint is set, preview builds it once
+     * from this mesh — including US M9 / W10.5 — and passes that same object
+     * into compose and the loft. The table footprint is regraded inside that build.
+     */
+    sizeTransform?: SharedInsoleSizeTransform | null;
+    sizeLabel?: string;
+    userBottomPattern?: boolean;
+    /** Sized previews resample the rim to a fixed indexed ring. */
+    indexedRim?: boolean;
 }
 
 /**
@@ -209,6 +251,30 @@ export async function reconstructProceduralPreview(
         throw new Error("[S1-PROCEDURAL] combined/stock GLB is not a procedural input — use legacy");
     }
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
+    const lengthMm = options.footprintLengthMm;
+    const widthMm = options.footprintWidthMm;
+    const sizeTransform = options.sizeTransform
+        ? options.sizeTransform
+        : lengthMm != null && widthMm != null
+          ? sharedInsoleSizeTransformFromGeometry(topGeo, lengthMm, widthMm)
+          : null;
+    // One object, applied to the sheet and to a pattern that is still in the native frame.
+    // Fairing runs on the native rim, then this same transform, so the loft is not
+    // rebuilt from an unscaled SAMPLE_Top and the column headings stay inside the gate.
+    let patternOnSheet: PolyPoint[] | undefined;
+    if (sizeTransform) {
+        patternOnSheet = options.bottomPattern?.length
+            ? patternAlreadyOnSizedSheet(options.bottomPattern, sizeTransform)
+                ? options.bottomPattern
+                : mapPatternBySize(options.bottomPattern, sizeTransform)
+            : mapPatternBySize(
+                  buildFairedPatternFromTop(
+                      extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME }),
+                      options.scanPattern,
+                  ),
+                  sizeTransform,
+              );
+    }
     let source = topGeo;
     let owned = false;
     if (options.sourceField) {
@@ -216,14 +282,25 @@ export async function reconstructProceduralPreview(
             sourceField: options.sourceField,
             shoeWidth: options.shoeWidth,
             trimline: options.trimline,
+            sizeTransform,
         });
         owned = source !== topGeo;
+    } else if (sizeTransform) {
+        source = applySharedInsoleSizeToGeometry(topGeo, sizeTransform);
+        owned = true;
     }
-    const model = extractTopOnlyModel(source, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+    const indexedRim = options.indexedRim !== false && Boolean(sizeTransform);
+    const model = extractTopOnlyModel(
+        source,
+        { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME },
+        { indexedRim },
+    );
     if (owned) source.dispose();
-    const requested = options.bottomPattern?.length
-        ? options.bottomPattern
-        : buildFairedPatternFromTop(model, options.scanPattern);
+    const requested = patternOnSheet?.length
+        ? patternOnSheet
+        : options.bottomPattern?.length
+          ? options.bottomPattern
+          : buildFairedPatternFromTop(model, options.scanPattern);
     const loft = (pattern: PolyPoint[]) => {
         const thicknessMm =
             options.thicknessMm ?? options.sourceField?.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
@@ -236,13 +313,21 @@ export async function reconstructProceduralPreview(
             stockThicknessMm,
             bottomPattern: pattern,
             bottomPatternLabel: PATTERN_SOURCE_SYNTHETIC,
+            userBottomPattern: options.userBottomPattern,
             flatPlantar: true,
             wallStyle: options.wallStyle,
             deviceType: options.deviceType,
             lateralFlange: options.lateralFlange,
             archGrindDepthMm: options.archGrindDepthMm,
+            scanPattern: options.scanPattern,
             sourceField: options.sourceField,
             composedTop: useComposed,
+            shoeWidth: options.shoeWidth,
+            footprintReferenceBounds: options.footprintReferenceBounds,
+            footprintLengthMm: options.footprintLengthMm,
+            footprintWidthMm: options.footprintWidthMm,
+            sizeLabel: options.sizeLabel,
+            indexedRimRing: indexedRim,
         });
         return { model, pattern, geometry };
     };

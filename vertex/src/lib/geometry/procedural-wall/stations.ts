@@ -578,69 +578,284 @@ export function pairAtNativeTop(plantarLoop: PolyPoint[], topLoop: PolyPoint[]):
     };
 }
 
-/** Slide B onto the pairing normal through R so |skew| ≤ min(2 mm, 0.5 × plan inset).
- * Keep a candidate only when it does not add plan-view chord crossings.
+/** 5-station Gaussian on signed skew, then ≤ this much change per station. */
+export const SKEW_STEP_MM = 0.3;
+/** Adjacent column headings may turn by at most this many degrees. */
+export const COLUMN_TURN_CAP_DEG = 3;
+
+function signedPairSkew(R: PolyPoint, B: PolyPoint, nxy: { x: number; y: number }): number {
+    const nl = Math.hypot(nxy.x, nxy.y) || 1;
+    const ox = nxy.x / nl;
+    const oy = nxy.y / nl;
+    const vx = B.x - R.x;
+    const vy = B.y - R.y;
+    return vx * oy - vy * ox;
+}
+
+function planHeadingOf(R: PolyPoint, B: PolyPoint): { x: number; y: number; len: number } {
+    const dx = B.x - R.x;
+    const dy = B.y - R.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-8) return { x: 0, y: 0, len: 0 };
+    return { x: dx / len, y: dy / len, len };
+}
+
+function signedHeadingDeg(a: { x: number; y: number }, b: { x: number; y: number }): number {
+    return (Math.atan2(a.x * b.y - a.y * b.x, a.x * b.x + a.y * b.y) * 180) / Math.PI;
+}
+
+function rotateHeading(v: { x: number; y: number }, deg: number): { x: number; y: number } {
+    const r = (deg * Math.PI) / 180;
+    const c = Math.cos(r);
+    const s = Math.sin(r);
+    return { x: v.x * c - v.y * s, y: v.x * s + v.y * c };
+}
+
+function gaussian5(values: number[]): number[] {
+    const k0 = Math.exp(-2);
+    const k1 = Math.exp(-0.5);
+    const ker = [k0, k1, 1, k1, k0];
+    const sum = k0 + k1 + 1 + k1 + k0;
+    const n = values.length;
+    const out = new Array<number>(n);
+    for (let i = 0; i < n; i++) {
+        let s = 0;
+        for (let d = -2; d <= 2; d++) s += ker[d + 2]! * values[(i + d + n) % n]!;
+        out[i] = s / sum;
+    }
+    return out;
+}
+
+function limitCircularStep(values: number[], maxStep: number): number[] {
+    const n = values.length;
+    const out = values.slice();
+    for (let pass = 0; pass < 16; pass++) {
+        let moved = false;
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            const d = out[j]! - out[i]!;
+            if (Math.abs(d) <= maxStep) continue;
+            const adj = (Math.abs(d) - maxStep) * 0.5 * Math.sign(d);
+            out[i] = out[i]! + adj;
+            out[j] = out[j]! - adj;
+            moved = true;
+        }
+        if (!moved) break;
+    }
+    return out;
+}
+
+function monotonicArcS(s01: number[], minStep: number): number[] {
+    const n = s01.length;
+    const out = unwrapAllowPlateau(s01.map((s) => ((s % 1) + 1) % 1));
+    for (let i = 1; i < n; i++) {
+        if (out[i]! < out[i - 1]! + minStep) out[i] = out[i - 1]! + minStep;
+    }
+    const end = out[0]! + 1 - minStep;
+    if (out[n - 1]! > end) {
+        const span = out[n - 1]! - out[0]!;
+        const room = end - out[0]!;
+        if (span > 1e-9 && room > 0) {
+            const t0 = out[0]!;
+            for (let i = 1; i < n; i++) out[i] = t0 + ((out[i]! - t0) / span) * room;
+        }
+    }
+    return out;
+}
+
+function arcBracket(s: number[], i: number, minStep: number): [number, number] {
+    const n = s.length;
+    const prev = i === 0 ? s[n - 1]! - 1 : s[i - 1]!;
+    const next = i === n - 1 ? s[0]! + 1 : s[i + 1]!;
+    return [prev + minStep, next - minStep];
+}
+
+function searchArc(
+    loop: PolyPoint[],
+    s0: number,
+    lo: number,
+    hi: number,
+    total: number,
+    score: (p: PolyPoint) => number,
+    windowMm = 8,
+): number {
+    const window = windowMm / Math.max(total, 1e-6);
+    const a = Math.max(lo, s0 - window);
+    const b = Math.min(hi, s0 + window);
+    if (!(b > a)) return Math.max(lo, Math.min(hi, s0));
+    let best = Math.max(a, Math.min(b, s0));
+    let bestScore = score(sampleClosedAtArc01(loop, best));
+    const steps = 16;
+    for (let k = 0; k <= steps; k++) {
+        const s = a + ((b - a) * k) / steps;
+        const sc = score(sampleClosedAtArc01(loop, s));
+        if (sc < bestScore) {
+            bestScore = sc;
+            best = s;
+        }
+    }
+    return best;
+}
+
+/**
+ * Bottom points stay on `loop`, chosen by arc length and kept monotonic.
+ * Signed skew is a 5-station Gaussian limited to {@link SKEW_STEP_MM} per
+ * station. Adjacent column headings turn by at most {@link COLUMN_TURN_CAP_DEG}.
+ * The rim and the outline polyline are not modified.
  */
+export function smoothBottomOnLoop(
+    top: PolyPoint[],
+    plantar: PolyPoint[],
+    normals: Array<{ x: number; y: number }>,
+    loop: PolyPoint[],
+): PolyPoint[] {
+    const n = Math.min(top.length, plantar.length, normals.length);
+    if (n < 3 || loop.length < 3) return plantar.map((p) => ({ ...p }));
+    const { cum, total } = polylineArcLengths(loop);
+    if (total < 1e-6) return plantar.map((p) => ({ ...p }));
+    const minStep = Math.max(1e-6, 0.05 / total);
+    let s = plantar.slice(0, n).map((p) => nearestS01(p, loop, cum, total));
+    const unwrapped = unwrapAllowPlateau(s);
+    let needsOrder = false;
+    for (let i = 1; i < n; i++) if (unwrapped[i]! <= unwrapped[i - 1]! + 1e-8) needsOrder = true;
+    if (unwrapped[n - 1]! >= unwrapped[0]! + 1 - 1e-4) needsOrder = true;
+    const dirty = new Array<boolean>(n).fill(needsOrder);
+    if (needsOrder) s = monotonicArcS(s, minStep).map((t) => ((t % 1) + 1) % 1);
+    const pointAt = (t: number): PolyPoint => {
+        const p = sampleClosedAtArc01(loop, t);
+        return { x: p.x, y: p.y, z: 0 };
+    };
+    const skewAt = (i: number, p: PolyPoint): number => signedPairSkew(top[i]!, p, normals[i]!);
+
+    let u = unwrapAllowPlateau(s);
+    const skewCapOf = (i: number, p: PolyPoint): number => {
+        const inset = Math.hypot(p.x - top[i]!.x, p.y - top[i]!.y);
+        return SKEW_INSET_RATIO * Math.max(inset, 1e-6);
+    };
+    const legal = (i: number, p: PolyPoint): boolean => Math.abs(skewAt(i, p)) <= skewCapOf(i, p) + 0.05;
+    for (let pass = 0; pass < 12; pass++) {
+        const pts = u.map((t) => pointAt(t));
+        const skews = pts.map((p, i) => skewAt(i, p));
+        const smoothed = limitCircularStep(gaussian5(skews), SKEW_STEP_MM);
+        const heads = pts.map((p, i) => planHeadingOf(top[i]!, p));
+        let moved = false;
+        const next = u.slice();
+        for (let i = 0; i < n; i++) {
+            const prevI = (i + n - 1) % n;
+            const dSkew = Math.abs(skews[i]! - skews[prevI]!);
+            const prevH = heads[prevI]!;
+            const curH = heads[i]!;
+            const ang = prevH.len > 1e-6 && curH.len > 1e-6 ? Math.abs(signedHeadingDeg(prevH, curH)) : 0;
+            if (dSkew <= SKEW_STEP_MM + 1e-3 && ang <= COLUMN_TURN_CAP_DEG + 0.05) continue;
+            const [lo, hi] = arcBracket(next, i, minStep);
+            const desired =
+                prevH.len > 1e-6 && curH.len > 1e-6 && ang > COLUMN_TURN_CAP_DEG
+                    ? rotateHeading(prevH, Math.sign(signedHeadingDeg(prevH, curH)) * COLUMN_TURN_CAP_DEG)
+                    : curH;
+            const wantSkew = smoothed[i]!;
+            const picked = searchArc(
+                loop,
+                next[i]!,
+                lo,
+                hi,
+                total,
+                (p) => {
+                    if (!legal(i, p)) return 1e6;
+                    const h = planHeadingOf(top[i]!, p);
+                    const turn =
+                        h.len > 1e-6 && desired.len > 1e-6 ? Math.abs(signedHeadingDeg(desired, h)) : 0;
+                    return turn * 4 + Math.abs(skewAt(i, p) - wantSkew) * 0.15;
+                },
+                Math.min(28, 6 + ang),
+            );
+            if (legal(i, pointAt(picked)) && Math.abs(picked - next[i]!) > 1e-6) {
+                next[i] = picked;
+                dirty[i] = true;
+                moved = true;
+            }
+        }
+        u = next;
+        if (!moved) break;
+    }
+    return u.map((t, i) => (dirty[i] ? pointAt(t) : { ...plantar[i]!, z: plantar[i]!.z }));
+}
+
+function pairingAlreadySmooth(pairing: StationPairing, loop: PolyPoint[]): boolean {
+    const n = Math.min(pairing.top.length, pairing.plantar.length, pairing.normals.length);
+    if (n < 3 || loop.length < 3) return true;
+    const { cum, total } = polylineArcLengths(loop);
+    if (total < 1e-6) return true;
+    const s = unwrapAllowPlateau(pairing.plantar.slice(0, n).map((p) => nearestS01(p, loop, cum, total)));
+    for (let i = 1; i < n; i++) if (s[i]! <= s[i - 1]! + 1e-6) return false;
+    if (s[n - 1]! >= s[0]! + 1 - 1e-4) return false;
+    for (let i = 0; i < n; i++) {
+        const R = pairing.top[i]!;
+        const B = pairing.plantar[i]!;
+        const skew = signedPairSkew(R, B, pairing.normals[i]!);
+        const prev = pairing.plantar[(i + n - 1) % n]!;
+        const prevSkew = signedPairSkew(
+            pairing.top[(i + n - 1) % n]!,
+            prev,
+            pairing.normals[(i + n - 1) % n]!,
+        );
+        if (Math.abs(skew - prevSkew) > SKEW_STEP_MM + 1e-3) return false;
+        const inset = Math.hypot(B.x - R.x, B.y - R.y);
+        const cap = Math.min(SKEW_LIMIT_MM, SKEW_INSET_RATIO * Math.max(inset, 1e-6));
+        if (Math.abs(skew) > cap + 1e-3) return false;
+        const h0 = planHeadingOf(pairing.top[(i + n - 1) % n]!, prev);
+        const h1 = planHeadingOf(R, B);
+        if (
+            h0.len > 1e-4 &&
+            h1.len > 1e-4 &&
+            Math.abs(signedHeadingDeg(h0, h1)) > COLUMN_TURN_CAP_DEG + 0.05
+        ) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Smoothed pairing: B moves only along the bottom outline. Rim vertices stay put. */
 export function limitPairingSkew(pairing: StationPairing, loop: PolyPoint[]): StationPairing {
     const n = Math.min(pairing.top.length, pairing.plantar.length, pairing.normals.length);
     if (n < 3 || loop.length < 3) return pairing;
-    const plantar = pairing.plantar.map((p) => ({ ...p }));
+    if (pairingAlreadySmooth(pairing, loop)) return pairing;
+    const before = pairing.plantar.slice(0, n).map((p) => ({ ...p }));
+    const beforeX = countPlanViewChordCrossings(before, pairing.top);
+    let plantar = smoothBottomOnLoop(pairing.top, before, pairing.normals, loop);
+    let anyMoved = false;
+    for (let i = 0; i < n; i++) {
+        if (Math.hypot(plantar[i]!.x - before[i]!.x, plantar[i]!.y - before[i]!.y) > 1e-4) anyMoved = true;
+    }
+    if (!anyMoved) return pairing;
     let crossings = countPlanViewChordCrossings(plantar, pairing.top);
-    for (let pass = 0; pass < 4; pass++) {
-        let moved = 0;
-        for (let i = 0; i < n; i++) {
-            const R = pairing.top[i]!;
-            const B = plantar[i]!;
-            const nx = pairing.normals[i]!.x;
-            const ny = pairing.normals[i]!.y;
-            const nl = Math.hypot(nx, ny) || 1;
-            const ox = nx / nl;
-            const oy = ny / nl;
-            const vx = B.x - R.x;
-            const vy = B.y - R.y;
-            const inset = Math.hypot(vx, vy);
-            const skew = Math.abs(vx * oy - vy * ox);
-            const cap = Math.min(SKEW_LIMIT_MM, SKEW_INSET_RATIO * Math.max(inset, 1e-6));
-            if (skew <= cap + 1e-3) continue;
-            const along = vx * ox + vy * oy;
-            const target = { x: R.x + ox * along, y: R.y + oy * along, z: 0 };
-            let lo = 0;
-            let hi = 1;
-            let best = B;
-            for (let it = 0; it < 8; it++) {
-                const mid = 0.5 * (lo + hi);
-                const trial = nearestOnLoop(
-                    { x: B.x + (target.x - B.x) * mid, y: B.y + (target.y - B.y) * mid, z: 0 },
-                    loop,
-                );
-                const next = plantar.map((p, k) => (k === i ? trial : p));
-                const nextX = countPlanViewChordCrossings(next, pairing.top);
-                if (nextX <= crossings) {
-                    lo = mid;
-                    best = trial;
-                } else {
-                    hi = mid;
-                }
-            }
-            const next = plantar.map((p, k) => (k === i ? best : p));
-            const nextX = countPlanViewChordCrossings(next, pairing.top);
-            if (nextX <= crossings && (best.x !== B.x || best.y !== B.y)) {
-                plantar[i] = best;
-                crossings = nextX;
-                moved++;
-            }
+    if (crossings > beforeX) {
+        const mono = spreadClosedOnLoop(before, loop, 0.4);
+        const monoX = countPlanViewChordCrossings(mono, pairing.top);
+        if (monoX <= beforeX) {
+            plantar = mono;
+            crossings = monoX;
+        } else {
+            plantar = before;
+            crossings = beforeX;
         }
-        if (!moved) break;
     }
     const sidewaysSkewMm = columnSidewaysSkewMm(plantar, pairing.top, pairing.normals);
     let maxSkewMm = 0;
     for (const d of sidewaysSkewMm) if (d > maxSkewMm) maxSkewMm = d;
+    const { cum, total } = polylineArcLengths(loop);
+    const s01 = total < 1e-6 ? pairing.s01 : plantar.map((p) => nearestS01(p, loop, cum, total));
+    let monotonic = true;
+    const unwrapped = unwrapAllowPlateau(s01);
+    for (let i = 1; i < unwrapped.length; i++) if (unwrapped[i]! <= unwrapped[i - 1]!) monotonic = false;
     return {
         ...pairing,
         plantar,
+        s01,
         sidewaysSkewMm,
         maxSkewMm,
-        chordCrossings: countPlanViewChordCrossings(plantar, pairing.top),
+        chordCrossings: crossings,
+        monotonic,
     };
 }
 
@@ -966,8 +1181,46 @@ export function stampMonotonicTB(
  * Prefer a neighbour-Δt clamp to 1.5 (small moves). Fall back to equal
  * arc-length only if the clamp still crosses.
  */
+function smoothDenseStationBottoms(
+    stations: Array<{ outline: PolyPoint; rim: PolyPoint; tB?: number; n?: { x: number; y: number } }>,
+    loop: PolyPoint[],
+): void {
+    const n = stations.length;
+    if (n < 80 || loop.length < 3) return;
+    const rim = stations.map((s) => s.rim);
+    const before = stations.map((s) => s.outline);
+    const rimCentroid = centroidOf(rim);
+    const outward = rim.map((_, i) => outwardNormal(rim, i, rimCentroid));
+    const probe: StationPairing = {
+        plantar: before,
+        top: rim,
+        normals: outward,
+        s01: before.map(() => 0),
+        sidewaysSkewMm: [],
+        maxSkewMm: 0,
+        chordCrossings: 0,
+        missedRays: 0,
+        monotonic: true,
+    };
+    if (pairingAlreadySmooth(probe, loop)) return;
+    const beforeX = countPlanViewChordCrossings(before, rim);
+    const next = smoothBottomOnLoop(rim, before, outward, loop);
+    if (countPlanViewChordCrossings(next, rim) > beforeX) return;
+    for (let i = 0; i < n; i++) {
+        const p = next[i]!;
+        const was = before[i]!;
+        if (Math.hypot(p.x - was.x, p.y - was.y) < 1e-4) continue;
+        stations[i]!.outline = p;
+        stations[i]!.tB = parameterOnClosedLoop(p, loop);
+        const dx = p.x - rim[i]!.x;
+        const dy = p.y - rim[i]!.y;
+        const hl = Math.hypot(dx, dy);
+        if (hl > 1e-6 && stations[i]!.n) stations[i]!.n = { x: dx / hl, y: dy / hl };
+    }
+}
+
 export function reparameterizeBArcLength(
-    stations: Array<{ outline: PolyPoint; rim: PolyPoint; tB?: number }>,
+    stations: Array<{ outline: PolyPoint; rim: PolyPoint; tB?: number; n?: { x: number; y: number } }>,
     loop: PolyPoint[],
 ): boolean {
     const n = stations.length;
@@ -1003,10 +1256,15 @@ export function reparameterizeBArcLength(
     }
     const next: number[] = [t0];
     for (let i = 0; i < n - 1; i++) next.push(next[i]! + deltas[i]!);
-    if (commitTB(stations, loop, next)) return true;
+    if (commitTB(stations, loop, next)) {
+        smoothDenseStationBottoms(stations, loop);
+        return true;
+    }
     const equal: number[] = [];
     for (let i = 0; i < n; i++) equal.push(t0 + i / n);
-    return commitTB(stations, loop, equal);
+    if (!commitTB(stations, loop, equal)) return false;
+    smoothDenseStationBottoms(stations, loop);
+    return true;
 }
 
 function commitTB(

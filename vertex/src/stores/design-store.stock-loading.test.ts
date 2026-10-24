@@ -135,10 +135,10 @@ describe("stock base loading state", () => {
         expect(state.viewer.wallModel ?? "procedural").toBe("procedural");
     });
 
-    test("store initializer is SAMPLE_Top + procedural Straight, not Default Stock Base", () => {
+    test("store initializer is SAMPLE_Top + procedural Hybrid, not Default Stock Base", () => {
         const initial = useDesignStore.getInitialState();
         expect(initial.viewer.wallModel).toBe("procedural");
-        expect(initial.viewer.wallStyle).toBe("straight");
+        expect(initial.viewer.wallStyle).toBe("hybrid");
         expect(initial.design.paired?.leftBase?.glbPath).toMatch(/SAMPLE_Top\.glb$/);
         expect(initial.design.paired?.rightBase?.mirrored).toBe(true);
         expect(initial.design.base?.name).not.toMatch(/Default Stock Base/i);

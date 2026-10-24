@@ -1655,8 +1655,37 @@ export const DEFAULT_GLB_CLOSED_BASELINE: ClosedSolidBaseline = {
 };
 
 /**
- * Edge-manifold gate always; Euler / heel-bridge self-intersection gates only when
- * a baseline is provided (genuinely optional — no default-parameter trap).
+ * Genus-0 procedural-wall export solid. Already closed: export skips
+ * closeGlbInsoleToSolid and gates manifold + Euler on index topology
+ * ({@link assertProceduralIndexSolid}). Position-keying at QUANT 1e4 merges
+ * near-coincident vertices and false-fails these solids (euler=3, no seam loops).
+ *
+ * heelBridgeSelfIntersections stays 0 on purpose. Procedural loft solids have
+ * no GLB heel bridge, so the counter is not run.
+ */
+export const DEFAULT_PROCEDURAL_CLOSED_BASELINE: ClosedSolidBaseline = {
+    eulerCharacteristic: 2,
+    heelBridgeSelfIntersections: 0,
+};
+
+/** Distinct indexed vertices closer than this fail the procedural gate (1/QUANT). */
+export const INDEXED_VERTEX_MIN_SEPARATION_MM = 1e-4;
+
+export function closedSolidBaselineForExport(
+    topVertexCount: number,
+    proceduralWall: boolean,
+): ClosedSolidBaseline | null {
+    if (proceduralWall) return DEFAULT_PROCEDURAL_CLOSED_BASELINE;
+    if (topVertexCount <= 0) return null;
+    return DEFAULT_GLB_CLOSED_BASELINE;
+}
+
+/**
+ * Position-keyed edge-manifold gate (QUANT 1e4). Euler / heel-bridge gates run
+ * only when a baseline is provided. GLB export keeps euler=3 on this path.
+ * Procedural export does not use this function — it calls
+ * {@link assertProceduralIndexSolid} on the index graph. If the procedural
+ * baseline is passed here, the heel-bridge counter is skipped and stays 0.
  */
 export function assertClosedSolidAcceptable(
     geometry: BufferGeometry,
@@ -1677,6 +1706,11 @@ export function assertClosedSolidAcceptable(
             report,
         );
     }
+    if (baseline === DEFAULT_PROCEDURAL_CLOSED_BASELINE) {
+        // Procedural loft solids have no GLB heel bridge. Counter skipped;
+        // heelBridgeSelfIntersections stays 0 on purpose.
+        return;
+    }
     const si = countHeelBridgeSelfIntersections(geometry, topVertexCount);
     if (si > baseline.heelBridgeSelfIntersections) {
         throw new MeshNotWatertightError(
@@ -1684,6 +1718,481 @@ export function assertClosedSolidAcceptable(
             report,
         );
     }
+}
+
+/**
+ * Manifold + Euler on the index graph (vertex indices, not QUANT position keys).
+ * V is the indexed vertex count, E is unique index-pairs, F is the triangle count.
+ */
+export function validateManifoldIndexed(geometry: BufferGeometry): ManifoldValidationReport {
+    const index = geometry.getIndex();
+    const pos = geometry.getAttribute("position");
+    if (!index || !pos) {
+        return {
+            triangleCount: 0,
+            vertexCount: pos?.count ?? 0,
+            openEdges: 0,
+            nonManifoldEdges: 0,
+            isWatertight: false,
+            edgeCount: 0,
+            eulerCharacteristic: 0,
+            nakedEdgeKeys: [],
+        };
+    }
+
+    const edgeUse = new Map<string, number>();
+    const triCount = index.count / 3;
+    for (let t = 0; t < triCount; t++) {
+        const a = index.getX(t * 3);
+        const b = index.getX(t * 3 + 1);
+        const c = index.getX(t * 3 + 2);
+        for (const [p, q] of [
+            [a, b],
+            [b, c],
+            [c, a],
+        ] as [number, number][]) {
+            const lo = Math.min(p, q);
+            const hi = Math.max(p, q);
+            const k = `${lo}-${hi}`;
+            edgeUse.set(k, (edgeUse.get(k) ?? 0) + 1);
+        }
+    }
+
+    let openEdges = 0;
+    let nonManifoldEdges = 0;
+    const nakedEdgeKeys: string[] = [];
+    for (const [k, count] of edgeUse) {
+        if (count === 1) {
+            openEdges++;
+            nakedEdgeKeys.push(k);
+        } else if (count > 2) nonManifoldEdges++;
+    }
+
+    const V = pos.count;
+    const E = edgeUse.size;
+    const F = triCount;
+    return {
+        triangleCount: F,
+        vertexCount: V,
+        openEdges,
+        nonManifoldEdges,
+        isWatertight: openEdges === 0 && nonManifoldEdges === 0,
+        edgeCount: E,
+        eulerCharacteristic: V - E + F,
+        nakedEdgeKeys,
+    };
+}
+
+/**
+ * First pair of distinct position indices closer than `minSeparationMm`, if any.
+ * When `sourceVertexCountExclusive` is positive, only pairs with both indices in
+ * the generated range `[sourceVertexCountExclusive, vertexCount)` are reported —
+ * the imported top-sheet block is exempt (manifold + Euler gate covers it).
+ */
+export function findIndexedVerticesWithin(
+    geometry: BufferGeometry,
+    minSeparationMm = INDEXED_VERTEX_MIN_SEPARATION_MM,
+    sourceVertexCountExclusive = 0,
+): { a: number; b: number } | null {
+    const pos = geometry.getAttribute("position");
+    if (!pos || pos.count < 2 || minSeparationMm < 0) return null;
+    const cell = minSeparationMm > 0 ? minSeparationMm : 1e-4;
+    const limit2 = minSeparationMm * minSeparationMm;
+    const bins = new Map<string, number[]>();
+    const binKey = (ix: number, iy: number, iz: number) => `${ix},${iy},${iz}`;
+
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        const z = pos.getZ(i);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+        const ix = Math.floor(x / cell);
+        const iy = Math.floor(y / cell);
+        const iz = Math.floor(z / cell);
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    const list = bins.get(binKey(ix + dx, iy + dy, iz + dz));
+                    if (!list) continue;
+                    for (const j of list) {
+                        const ddx = x - pos.getX(j);
+                        const ddy = y - pos.getY(j);
+                        const ddz = z - pos.getZ(j);
+                        if (ddx * ddx + ddy * ddy + ddz * ddz <= limit2) {
+                            const generatedOnly =
+                                sourceVertexCountExclusive <= 0 ||
+                                (j >= sourceVertexCountExclusive && i >= sourceVertexCountExclusive);
+                            if (generatedOnly) return { a: j, b: i };
+                        }
+                    }
+                }
+            }
+        }
+        const key = binKey(ix, iy, iz);
+        const bucket = bins.get(key);
+        if (bucket) bucket.push(i);
+        else bins.set(key, [i]);
+    }
+    return null;
+}
+
+/** Fails when two distinct generated indexed vertices sit within 1e-4 mm (see {@link findIndexedVerticesWithin}). */
+export function assertIndexedVerticesSeparated(
+    geometry: BufferGeometry,
+    minSeparationMm = INDEXED_VERTEX_MIN_SEPARATION_MM,
+    sourceVertexCountExclusive = 0,
+): void {
+    const pair = findIndexedVerticesWithin(geometry, minSeparationMm, sourceVertexCountExclusive);
+    if (!pair) return;
+    const report = validateManifoldIndexed(geometry);
+    const label = minSeparationMm === INDEXED_VERTEX_MIN_SEPARATION_MM ? "1e-4" : String(minSeparationMm);
+    throw new MeshNotWatertightError(
+        `[MESH-CLOSE] distinct indexed vertices ${pair.a} and ${pair.b} sit within ${label} mm`,
+        report,
+    );
+}
+
+/**
+ * Index-topology manifold and Euler=2 gate for an already-closed procedural solid.
+ * Does not run the GLB heel-bridge counter (baseline stays 0 on purpose).
+ */
+/** Adjacent wall faces, away from the rim fillet and the bottom edge. */
+export const WALL_FOLD_MAX_DEG = 30;
+/** Adjacent column headings in plan. */
+export const WALL_COLUMN_TURN_MAX_DEG = 5;
+/** Offset change between neighbouring stations at 25/50/75% of wall height. */
+export const WALL_OFFSET_STEP_MM = 0.5;
+
+export interface WallSmoothnessReport {
+    foldOver30: number;
+    foldOver60: number;
+    inwardFaces: number;
+    maxColumnTurnDeg: number;
+    monotonicArc: boolean;
+    maxOffsetStepMm: number;
+    maxFoldDeg: number;
+    wallQuads: number;
+    worstTurnX: number;
+    worstFolds: Array<{ i: number; j: number; deg: number; x: number; across: boolean; turn: number }>;
+}
+
+interface Xyz {
+    x: number;
+    y: number;
+    z: number;
+}
+
+function xyzAt(pos: BufferGeometry["attributes"]["position"], i: number): Xyz {
+    return { x: pos.getX(i), y: pos.getY(i), z: pos.getZ(i) };
+}
+
+function triNormal(a: Xyz, b: Xyz, c: Xyz): Xyz | null {
+    const ux = b.x - a.x;
+    const uy = b.y - a.y;
+    const uz = b.z - a.z;
+    const vx = c.x - a.x;
+    const vy = c.y - a.y;
+    const vz = c.z - a.z;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-12) return null;
+    return { x: nx / len, y: ny / len, z: nz / len };
+}
+
+function foldDeg(a: Xyz, b: Xyz): number {
+    const d = Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y + a.z * b.z));
+    return (Math.acos(d) * 180) / Math.PI;
+}
+
+function headingDeg(a: { x: number; y: number }, b: { x: number; y: number }): number {
+    const al = Math.hypot(a.x, a.y);
+    const bl = Math.hypot(b.x, b.y);
+    if (al < 1e-8 || bl < 1e-8) return 0;
+    const d = Math.max(-1, Math.min(1, (a.x * b.x + a.y * b.y) / (al * bl)));
+    return (Math.acos(d) * 180) / Math.PI;
+}
+
+/**
+ * Wall-smoothness gates for an indexed procedural loft.
+ * Returns null when the geometry is not a station wall (export unit fixtures).
+ * Face normals use the loft quad winding. A face is inward when its normal
+ * dotted with the outward rim normal is ≤ 0.
+ */
+export function measureProceduralWallSmoothness(geometry: BufferGeometry): WallSmoothnessReport | null {
+    const ud = geometry.userData as {
+        stationCount?: number;
+        loftN?: number;
+        topVertexCount?: number;
+        generatedStart?: number;
+        outlineRow?: number;
+        outlineVertexStart?: number;
+        nRound?: number;
+        nLine?: number;
+        wallStyle?: string;
+        outlineRing?: Xyz[];
+    };
+    const nS = ud.stationCount ?? ud.loftN ?? 0;
+    const topCount = ud.topVertexCount;
+    const outlineRow = ud.outlineRow;
+    const outlineVertexStart = ud.outlineVertexStart;
+    if (!nS || topCount == null || outlineRow == null || outlineVertexStart == null || nS < 3) return null;
+    const index = geometry.getIndex();
+    const pos = geometry.getAttribute("position");
+    if (!index || !pos) return null;
+    const generatedStart = ud.generatedStart ?? topCount;
+    const indexGrid = (ud.wallStyle ?? "straight") !== "straight";
+    const nJ = outlineRow + 1;
+    const gridVert = (j: number, i: number): number => {
+        const s = ((i % nS) + nS) % nS;
+        if (indexGrid && j >= nJ - 1) return outlineVertexStart + s;
+        if (j <= 0) return -1;
+        return generatedStart + (j - 1) * nS + s;
+    };
+
+    const adj: Array<Set<number>> = Array.from({ length: nS }, () => new Set<number>());
+    const stationOfBody = new Map<number, number>();
+    for (let i = 0; i < nS; i++) stationOfBody.set(generatedStart + i, i);
+    const triCount = index.count / 3;
+    for (let t = 0; t < triCount; t++) {
+        const vs = [index.getX(t * 3), index.getX(t * 3 + 1), index.getX(t * 3 + 2)];
+        const tops: number[] = [];
+        const bodies: number[] = [];
+        for (const v of vs) {
+            if (v < topCount) tops.push(v);
+            else if (stationOfBody.has(v)) bodies.push(v);
+        }
+        if (!tops.length || !bodies.length) continue;
+        for (const b of bodies) {
+            const s = stationOfBody.get(b)!;
+            for (const r of tops) adj[s]!.add(r);
+        }
+    }
+    const rimIx = new Array<number>(nS).fill(-1);
+    for (let i = 0; i < nS; i++) {
+        const shared: number[] = [];
+        for (const v of adj[i]!) if (adj[(i + 1) % nS]!.has(v)) shared.push(v);
+        if (shared.length) rimIx[i] = shared[0]!;
+    }
+    if (rimIx.some((v) => v < 0)) return null;
+
+    const rim = rimIx.map((i) => xyzAt(pos, i));
+    const bottom: Xyz[] =
+        ud.outlineRing && ud.outlineRing.length === nS
+            ? ud.outlineRing.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }))
+            : Array.from({ length: nS }, (_, i) => xyzAt(pos, gridVert(outlineRow, i)));
+
+    let cx = 0;
+    let cy = 0;
+    for (const p of rim) {
+        cx += p.x;
+        cy += p.y;
+    }
+    cx /= nS;
+    cy /= nS;
+    const outward: Array<{ x: number; y: number }> = [];
+    for (let i = 0; i < nS; i++) {
+        const prev = rim[(i + nS - 1) % nS]!;
+        const next = rim[(i + 1) % nS]!;
+        let tx = next.x - prev.x;
+        let ty = next.y - prev.y;
+        const tl = Math.hypot(tx, ty) || 1;
+        tx /= tl;
+        ty /= tl;
+        let ox = ty;
+        let oy = -tx;
+        const p = rim[i]!;
+        if (ox * (p.x - cx) + oy * (p.y - cy) < 0) {
+            ox = -ox;
+            oy = -oy;
+        }
+        outward.push({ x: ox, y: oy });
+    }
+
+    const nRound = ud.nRound ?? 0;
+    const nLine = ud.nLine ?? 0;
+    let j0 = Math.max(1, nRound);
+    let j1 = nLine > 0 ? Math.min(outlineRow - 1, nRound + nLine) : outlineRow - 1;
+    j1 = Math.min(j1, Math.max(j0, outlineRow - 1));
+    if (j1 - j0 < 1) {
+        j0 = Math.min(2, Math.max(1, outlineRow - 3));
+        j1 = Math.max(j0 + 1, outlineRow - 1);
+    }
+
+    const quadN = (j: number, i: number): Xyz | null => {
+        const a = j <= 0 ? rim[i]! : xyzAt(pos, gridVert(j, i));
+        const d = xyzAt(pos, gridVert(j + 1, i));
+        const c = xyzAt(pos, gridVert(j + 1, i + 1));
+        return triNormal(a, d, c);
+    };
+
+    let foldOver30 = 0;
+    let foldOver60 = 0;
+    let inwardFaces = 0;
+    let maxFoldDeg = 0;
+    let wallQuads = 0;
+    const worstFolds: WallSmoothnessReport["worstFolds"] = [];
+    const noteFold = (deg: number, i: number, j: number, across: boolean): void => {
+        if (deg <= WALL_FOLD_MAX_DEG) return;
+        if (worstFolds.length < 8) {
+            const b = bottom[((i % nS) + nS) % nS]!;
+            worstFolds.push({ i: ((i % nS) + nS) % nS, j, deg, x: b.x, across, turn: 0 });
+            worstFolds.sort((p, q) => q.deg - p.deg);
+        } else if (deg > worstFolds[worstFolds.length - 1]!.deg) {
+            const b = bottom[((i % nS) + nS) % nS]!;
+            worstFolds[worstFolds.length - 1] = {
+                i: ((i % nS) + nS) % nS,
+                j,
+                deg,
+                x: b.x,
+                across,
+                turn: 0,
+            };
+            worstFolds.sort((p, q) => q.deg - p.deg);
+        }
+    };
+    const consider = (a: Xyz | null, b: Xyz | null, i: number, j: number, across: boolean): void => {
+        if (!a || !b) return;
+        const deg = foldDeg(a, b);
+        if (deg > maxFoldDeg) maxFoldDeg = deg;
+        if (deg > 60) foldOver60++;
+        if (deg > WALL_FOLD_MAX_DEG) {
+            foldOver30++;
+            noteFold(deg, i, j, across);
+        }
+    };
+    for (let j = j0; j < j1; j++) {
+        for (let i = 0; i < nS; i++) {
+            const n = quadN(j, i);
+            if (!n) continue;
+            wallQuads++;
+            const o = outward[i]!;
+            if (n.x * o.x + n.y * o.y <= 0) inwardFaces++;
+            consider(n, quadN(j, i + 1), i, j, true);
+            if (j + 1 < j1) consider(n, quadN(j + 1, i), i, j, false);
+        }
+    }
+
+    let maxColumnTurnDeg = 0;
+    let worstTurnX = 0;
+    const heads: Array<{ x: number; y: number }> = [];
+    for (let i = 0; i < nS; i++) {
+        const r = rim[i]!;
+        const b = bottom[i]!;
+        heads.push({ x: b.x - r.x, y: b.y - r.y });
+    }
+    for (let i = 0; i < nS; i++) {
+        const deg = headingDeg(heads[i]!, heads[(i + 1) % nS]!);
+        if (deg > maxColumnTurnDeg) {
+            maxColumnTurnDeg = deg;
+            worstTurnX = bottom[i]!.x;
+        }
+    }
+    for (const w of worstFolds) {
+        w.turn = headingDeg(heads[w.i]!, heads[(w.i + 1) % nS]!);
+    }
+
+    let monotonicArc = true;
+    for (let i = 0; i < nS; i++) {
+        const prev = bottom[(i + nS - 1) % nS]!;
+        const cur = bottom[i]!;
+        const next = bottom[(i + 1) % nS]!;
+        const forward = Math.hypot(next.x - cur.x, next.y - cur.y);
+        const back = Math.hypot(cur.x - prev.x, cur.y - prev.y);
+        const skip = Math.hypot(next.x - prev.x, next.y - prev.y);
+        if (forward > 1e-4 && back > 1e-4 && skip + 1e-3 < back && skip + 1e-3 < forward)
+            monotonicArc = false;
+    }
+
+    const columnAt = (i: number, frac: number): Xyz => {
+        const samples: Xyz[] = [rim[i]!];
+        for (let j = 1; j <= outlineRow; j++) samples.push(xyzAt(pos, gridVert(j, i)));
+        const zB = samples[samples.length - 1]!.z;
+        const zR = samples[0]!.z;
+        const z = zB + (zR - zB) * frac;
+        for (let k = 1; k < samples.length; k++) {
+            const a = samples[k - 1]!;
+            const b = samples[k]!;
+            const dz = b.z - a.z;
+            if (Math.abs(dz) < 1e-9) continue;
+            const t = (z - a.z) / dz;
+            if (t >= -1e-4 && t <= 1 + 1e-4) {
+                const u = Math.max(0, Math.min(1, t));
+                return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, z };
+            }
+        }
+        return samples[Math.floor(samples.length / 2)]!;
+    };
+    let maxOffsetStepMm = 0;
+    for (const frac of [0.25, 0.5, 0.75]) {
+        const off = new Array<number>(nS);
+        for (let i = 0; i < nS; i++) {
+            const p = columnAt(i, frac);
+            const r = rim[i]!;
+            off[i] = Math.hypot(p.x - r.x, p.y - r.y);
+        }
+        for (let i = 0; i < nS; i++) {
+            maxOffsetStepMm = Math.max(maxOffsetStepMm, Math.abs(off[(i + 1) % nS]! - off[i]!));
+        }
+    }
+
+    return {
+        foldOver30,
+        foldOver60,
+        inwardFaces,
+        maxColumnTurnDeg,
+        monotonicArc,
+        maxOffsetStepMm,
+        maxFoldDeg,
+        wallQuads,
+        worstTurnX,
+        worstFolds,
+    };
+}
+
+export function assertProceduralWallSmooth(geometry: BufferGeometry): void {
+    const smooth = measureProceduralWallSmoothness(geometry);
+    if (!smooth) return;
+    const bad: string[] = [];
+    if (smooth.foldOver30 !== 0) {
+        bad.push(`fold>${WALL_FOLD_MAX_DEG}=${smooth.foldOver30} (over60=${smooth.foldOver60})`);
+    }
+    if (smooth.inwardFaces !== 0) bad.push(`inward=${smooth.inwardFaces}`);
+    if (smooth.maxColumnTurnDeg > WALL_COLUMN_TURN_MAX_DEG + 1e-3) {
+        bad.push(`columnTurn=${smooth.maxColumnTurnDeg.toFixed(2)}>${WALL_COLUMN_TURN_MAX_DEG}`);
+    }
+    if (!smooth.monotonicArc) bad.push("bottom arc not monotonic");
+    if (smooth.maxOffsetStepMm > WALL_OFFSET_STEP_MM + 1e-3) {
+        bad.push(`offsetStep=${smooth.maxOffsetStepMm.toFixed(3)}>${WALL_OFFSET_STEP_MM}`);
+    }
+    if (!bad.length) return;
+    const report = validateManifoldIndexed(geometry);
+    throw new MeshNotWatertightError(`[MESH-CLOSE] wall smoothness: ${bad.join("; ")}`, report);
+}
+
+export function assertProceduralIndexSolid(geometry: BufferGeometry): void {
+    const sourceVertexCountExclusive = (geometry.userData as { topVertexCount?: number }).topVertexCount ?? 0;
+    assertIndexedVerticesSeparated(geometry, INDEXED_VERTEX_MIN_SEPARATION_MM, sourceVertexCountExclusive);
+    const report = validateManifoldIndexed(geometry);
+    if (report.openEdges !== 0 || report.nonManifoldEdges !== 0) {
+        throw new MeshNotWatertightError(
+            `[MESH-CLOSE] procedural solid not edge-manifold (index topology): ` +
+                `openEdges=${report.openEdges} nonManifold=${report.nonManifoldEdges}`,
+            report,
+        );
+    }
+    const expected = DEFAULT_PROCEDURAL_CLOSED_BASELINE.eulerCharacteristic;
+    if (report.eulerCharacteristic !== expected) {
+        throw new MeshNotWatertightError(
+            `[MESH-CLOSE] eulerCharacteristic=${report.eulerCharacteristic} !== baseline ${expected} ` +
+                `(index topology)`,
+            report,
+        );
+    }
+    // Heel-bridge counter skipped: procedural loft solids have no GLB heel bridge.
+    // heelBridgeSelfIntersections stays 0 on purpose.
+    assertProceduralWallSmooth(geometry);
 }
 
 function rotateLoop(loop: Vector3[], offset: number): Vector3[] {
