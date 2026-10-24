@@ -153,6 +153,40 @@ function smoothNormals(ns: Array<{ x: number; y: number }>, passes = 3): Array<{
     return cur;
 }
 
+/** Keep adjacent column normals within 3° without moving the rim or the outline. */
+function capStationPlanNormals(stations: HermiteStation[]): void {
+    const n = stations.length;
+    if (n < 3) return;
+    const cur = stations.map((st) => {
+        const len = Math.hypot(st.n.x, st.n.y) || 1;
+        return { x: st.n.x / len, y: st.n.y / len };
+    });
+    const maxRad = (3 * Math.PI) / 180;
+    for (let pass = 0; pass < 8; pass++) {
+        let moved = false;
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            const a = cur[i]!;
+            const b = cur[j]!;
+            const dot = Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y));
+            const ang = Math.acos(dot);
+            if (ang <= maxRad + 1e-6) continue;
+            const pull = ((ang - maxRad) / ang) * 0.5;
+            const bx = b.x + (a.x - b.x) * pull;
+            const by = b.y + (a.y - b.y) * pull;
+            const ax = a.x + (b.x - a.x) * pull;
+            const ay = a.y + (b.y - a.y) * pull;
+            const al = Math.hypot(ax, ay) || 1;
+            const bl = Math.hypot(bx, by) || 1;
+            cur[i] = { x: ax / al, y: ay / al };
+            cur[j] = { x: bx / bl, y: by / bl };
+            moved = true;
+        }
+        if (!moved) break;
+    }
+    for (let i = 0; i < n; i++) stations[i]!.n = cur[i]!;
+}
+
 /** Build outward-normal Hermite stations from matched rim / outline polylines. */
 export function buildHermiteStations(
     outline: PolyPoint[],
@@ -400,6 +434,7 @@ export function loftHermiteWall(input: HermiteLoftInput): LoftGrid {
         input.stations.map((s) => s.outline),
         regionDefault,
     );
+    capStationPlanNormals(input.stations);
 
     const buildAt = (si: number, flare: number) => {
         const st = input.stations[si]!;
