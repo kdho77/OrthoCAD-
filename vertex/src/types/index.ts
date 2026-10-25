@@ -360,15 +360,16 @@ export interface DesignState {
     corrections: Corrections;
     elements: PlacedElement[];
     /**
-     * MPJ and styloid sinks. Absent or empty ⇒ no thickness addition and no cut
-     * (exports stay byte-identical). Not summed like elements.
+     * MPJ and styloid sinks, per foot. Absent or empty on a side ⇒ no thickness
+     * and no cut (exports stay byte-identical). Not summed like elements.
+     * `corrections.linked` mirrors edits the same way as the other corrections.
      */
-    sinks?: PlacedSink[];
+    sinks?: { left?: PlacedSink[]; right?: PlacedSink[] };
     /**
-     * Midfoot thickness under the styloid sink. Default off (forefoot only)
-     * until Kendon confirms otherwise.
+     * Midfoot thickness under the styloid sink, per foot. Default off
+     * (forefoot only) until Kendon confirms otherwise.
      */
-    sinkStyloidThicken?: boolean;
+    sinkStyloidThicken?: { left?: boolean; right?: boolean };
     /** Print-step Split mode: elements are selectable hardness regions. */
     splitElements?: boolean;
     /**

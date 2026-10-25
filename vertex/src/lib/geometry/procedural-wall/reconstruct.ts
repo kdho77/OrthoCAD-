@@ -15,7 +15,7 @@ import {
 } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
-import { applyAnalyticSinkToLoftedSolid, applyStyloidWallRelief, sinksActive } from "@/lib/geometry/sink";
+import { applyAnalyticSinkToLoftedSolid, sinksActive } from "@/lib/geometry/sink";
 import type { SideCorrections } from "@/types";
 import {
     columnHeading,
@@ -997,7 +997,15 @@ export function reconstructProceduralWalls(
         topIdx = model.top.meshIndices;
         rimLocal = model.top.rimLocal.slice();
     } else if (options.sourceGeometry && hasCurveOrTopModifiers(options) && options.sourceField) {
-        const modified = applyBaseModifiers(options.sourceGeometry, options.sourceField, 0);
+        const sinkFreeField = options.sourceField.sinks
+            ? {
+                  ...options.sourceField,
+                  sinks: undefined,
+                  sinkStyloidThicken: undefined,
+                  sinkMarkers: undefined,
+              }
+            : options.sourceField;
+        const modified = applyBaseModifiers(options.sourceGeometry, sinkFreeField, 0);
         const sheet = extractTopSheet(modified);
         modified.dispose();
         if (!sheet.meshPositions || !sheet.meshIndices || !sheet.rimLocal) {
@@ -1763,44 +1771,24 @@ export function reconstructProceduralWalls(
             p.y += forefootWidthPlanDy(p.x, p.y, model.bounds, forefootMm, roomAt);
         }
     }
-    // z-only. The loft above is the sink-free wall, so station pairing is unchanged.
-    // Composed tops already carry T and S on the rim; only the styloid notch remains.
+    // z-only on the sink-free loft. Composed and analytic tops share this pass
+    // so T and S cannot change station pairing, outline XY, or vertex count.
     const reliefSinks = options.sourceField?.sinks ?? options.sinks;
     if (sinksActive(reliefSinks)) {
         const sinkSide = options.sourceField?.side ?? options.side ?? (medialYSign < 0 ? "right" : "left");
         const vertAt = (row: number, station: number) => gridVert(row, station);
-        if (options.composedTop) {
-            applyStyloidWallRelief({
-                positions,
-                nS,
-                nJ,
-                vertAt,
-                rimZ: (s) => positions[gridVert(0, s) * 3 + 2]!,
-                rimXY: (s) => ({
-                    x: positions[gridVert(0, s) * 3]!,
-                    y: positions[gridVert(0, s) * 3 + 1]!,
-                }),
-                bounds: model.bounds,
-                medialYSign,
-                side: sinkSide,
-                sinks: reliefSinks,
-                sinkStyloidThicken: options.sourceField?.sinkStyloidThicken ?? options.sinkStyloidThicken,
-                rimAlreadyLowered: true,
-            });
-        } else {
-            applyAnalyticSinkToLoftedSolid({
-                positions,
-                topCount: topPos.length / 3,
-                nS,
-                nJ,
-                vertAt,
-                bounds: model.bounds,
-                medialYSign,
-                side: sinkSide,
-                sinks: reliefSinks,
-                sinkStyloidThicken: options.sourceField?.sinkStyloidThicken ?? options.sinkStyloidThicken,
-            });
-        }
+        applyAnalyticSinkToLoftedSolid({
+            positions,
+            topCount: topPos.length / 3,
+            nS,
+            nJ,
+            vertAt,
+            bounds: model.bounds,
+            medialYSign,
+            side: sinkSide,
+            sinks: reliefSinks,
+            sinkStyloidThicken: options.sourceField?.sinkStyloidThicken ?? options.sinkStyloidThicken,
+        });
     }
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));

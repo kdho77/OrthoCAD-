@@ -2,14 +2,13 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
-import { applyBaseModifiers, getBaseFootprintFrame } from "@/lib/geometry/base-modifier";
+import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
 import {
     applyElementsToTopMeshLast,
     fieldWithoutElementsForModifiers,
 } from "@/lib/geometry/element-assets/apply-elements";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { applyShoeWidthToGeometry, type ShoeWidthId, shoeWidthAffineActive } from "@/lib/geometry/shoe-width";
-import { applySinkCutToGeometry, applySinkThicknessToGeometry, sinksActive } from "@/lib/geometry/sink";
 import { clipGeometryToOutline, type TrimlineCurve } from "@/lib/geometry/trimline";
 
 /**
@@ -74,25 +73,18 @@ function composePrintSolidTopCore(
     return { geometry: modified, referenceBase: current, ownedWidth: owned };
 }
 
-/** T on the top sheet after wedges. No write when the design has no sinks. */
-function applyComposedSinkThickness(
-    geometry: BufferGeometry,
-    reference: BufferGeometry,
-    field: HeightFieldParams,
-): void {
-    if (!sinksActive(field.sinks)) return;
-    const frame = getBaseFootprintFrame(reference, field.side);
-    applySinkThicknessToGeometry(geometry, reference, field, frame);
+/**
+ * The loft must see the unsunk sheet. T and S are a z-only pass after the
+ * wall exists, so a sink cannot move the outline or add vertices.
+ */
+function fieldWithoutSinks(field: HeightFieldParams): HeightFieldParams {
+    if (!field.sinks && field.sinkStyloidThicken == null && !field.sinkMarkers) return field;
+    return { ...field, sinks: undefined, sinkStyloidThicken: undefined, sinkMarkers: undefined };
 }
 
 /** Modifier path without GLB element placement (sync; used when no elements). */
 export function composePrintSolidTopSync(raw: BufferGeometry, input: ComposePrintSolidInput): BufferGeometry {
     const { geometry, referenceBase, ownedWidth } = composePrintSolidTopCore(raw, input);
-    applyComposedSinkThickness(geometry, referenceBase, input.sourceField);
-    if (sinksActive(input.sourceField.sinks)) {
-        const frame = getBaseFootprintFrame(referenceBase, input.sourceField.side);
-        applySinkCutToGeometry(geometry, referenceBase, input.sourceField, frame);
-    }
     if (ownedWidth && referenceBase !== raw && referenceBase !== geometry) referenceBase.dispose();
     const trim = input.trimline ?? input.sourceField.trimline ?? null;
     if (trim && trim.points.length >= 4) {
@@ -108,9 +100,8 @@ export async function composePrintSolidTop(
     input: ComposePrintSolidInput,
 ): Promise<BufferGeometry> {
     const { geometry, referenceBase, ownedWidth } = composePrintSolidTopCore(raw, input);
-    // T after wedges / skive, then elements, then S inside applyElements (before text).
-    applyComposedSinkThickness(geometry, referenceBase, input.sourceField);
-    await applyElementsToTopMeshLast(geometry, referenceBase, input.sourceField);
+    // Elements stay on the sheet. Sinks do not — they would re-loft the wall.
+    await applyElementsToTopMeshLast(geometry, referenceBase, fieldWithoutSinks(input.sourceField));
     if (ownedWidth && referenceBase !== raw && referenceBase !== geometry) referenceBase.dispose();
     const trim = input.trimline ?? input.sourceField.trimline ?? null;
     if (trim && trim.points.length >= 4) {

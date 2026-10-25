@@ -20,7 +20,12 @@ import {
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { defaultElementPose } from "@/lib/geometry/elements";
-import { migrateCorrections } from "@/lib/geometry/migrate-corrections";
+import {
+    migrateCorrections,
+    migrateDesignSinks,
+    sinkStyloidThickenForSide,
+    sinksForSide,
+} from "@/lib/geometry/migrate-corrections";
 import {
     defaultSideShapeFinish,
     normalizeSideShapeFinish,
@@ -156,6 +161,50 @@ function scaleDesignToLayout(
         elements,
         trimlines,
     };
+}
+
+/** Write one foot's sink list. Linked corrections copy it onto the other foot. */
+function writeSideSinks(design: DesignState, side: Side, list: PlacedSink[]): DesignState["sinks"] {
+    const cleaned = list.length > 0 ? list : undefined;
+    if (design.corrections.linked) {
+        if (!cleaned) return undefined;
+        return { left: cleaned, right: cleaned.map((sink) => ({ ...sink })) };
+    }
+    const next: { left?: PlacedSink[]; right?: PlacedSink[] } = {
+        left: sinksForSide(design, "left"),
+        right: sinksForSide(design, "right"),
+    };
+    next[side] = cleaned;
+    if (!next.left?.length) delete next.left;
+    if (!next.right?.length) delete next.right;
+    if (!next.left && !next.right) return undefined;
+    return next;
+}
+
+function writeSideThicken(design: DesignState, side: Side, on: boolean): DesignState["sinkStyloidThicken"] {
+    if (design.corrections.linked) return on ? { left: true, right: true } : undefined;
+    const next = {
+        left: sinkStyloidThickenForSide(design, "left"),
+        right: sinkStyloidThickenForSide(design, "right"),
+    };
+    next[side] = on;
+    if (!next.left && !next.right) return undefined;
+    return { ...(next.left ? { left: true } : {}), ...(next.right ? { right: true } : {}) };
+}
+
+function sinkKindById(design: DesignState, id: string): PlacedSink["kind"] | undefined {
+    for (const side of ["left", "right"] as const) {
+        const hit = sinksForSide(design, side)?.find((sink) => sink.id === id);
+        if (hit) return hit.kind;
+    }
+    return undefined;
+}
+
+/** Linking copies the left foot's sinks onto the right, matching shoe-width link. */
+function copyLinkedSinks(design: DesignState): DesignState["sinks"] {
+    const left = sinksForSide(design, "left");
+    if (!left) return undefined;
+    return { left, right: left.map((sink) => ({ ...sink })) };
 }
 
 function defaultShapeFinishModifiers(method: ProductionMethod = "printing_solid"): ShapeFinishModifiers {
@@ -476,10 +525,14 @@ export interface DesignStore {
     updateElement: (id: string, patch: Partial<PlacedElement>) => void;
     setElementHardness: (id: string, hardness: NamedHardnessClass) => void;
     removeElement: (id: string) => void;
-    addSink: (kind: SinkKind) => void;
-    updateSink: (id: string, patch: Partial<Pick<PlacedSink, "depthMm" | "u" | "v" | "markerId">>) => void;
-    removeSink: (id: string) => void;
-    setSinkStyloidThicken: (on: boolean) => void;
+    addSink: (kind: SinkKind, side: Side) => void;
+    updateSink: (
+        id: string,
+        patch: Partial<Pick<PlacedSink, "depthMm" | "u" | "v" | "markerId">>,
+        side: Side,
+    ) => void;
+    removeSink: (id: string, side: Side) => void;
+    setSinkStyloidThicken: (on: boolean, side: Side) => void;
     selectElement: (id: string | null) => void;
     setTransformMode: (mode: TransformMode) => void;
     setCustomPrefab: (customPrefabId: string, customPrefabName: string) => void;
@@ -674,6 +727,14 @@ export const useDesignStore = create<DesignStore>()(
                                 : s.design.shoeWidthBySide,
                             corrections: { ...s.design.corrections, linked },
                             paired: s.design.paired ? { ...s.design.paired, linked } : undefined,
+                            ...(linked
+                                ? {
+                                      sinks: copyLinkedSinks(s.design),
+                                      sinkStyloidThicken: sinkStyloidThickenForSide(s.design, "left")
+                                          ? { left: true, right: true }
+                                          : undefined,
+                                  }
+                                : {}),
                         },
                     };
                 }),
@@ -1124,52 +1185,62 @@ export const useDesignStore = create<DesignStore>()(
                 });
             },
 
-            addSink: (kind) => {
-                if (get().design.sinks?.some((s) => s.kind === kind)) return;
+            addSink: (kind, side) => {
+                const current = sinksForSide(get().design, side) ?? [];
+                if (current.some((s) => s.kind === kind)) return;
                 get().checkpoint("add-sink");
                 set((s) => {
+                    const list = sinksForSide(s.design, side) ?? [];
+                    if (list.some((sink) => sink.kind === kind)) return {};
                     const sink: PlacedSink = {
                         id: crypto.randomUUID(),
                         kind,
                         depthMm: SINK_DEFAULT_DEPTH_MM,
                     };
-                    const next = { ...s.design, sinks: [...(s.design.sinks ?? []), sink] };
+                    const next = { ...s.design, sinks: writeSideSinks(s.design, side, [...list, sink]) };
                     const eff = buildEffectiveTrimlines(next);
                     useIssuesStore.getState().recompute(next, eff);
                     return { design: next };
                 });
             },
 
-            updateSink: (id, patch) => {
+            updateSink: (id, patch, side) => {
                 get().checkpoint("update-sink");
+                set((s) => {
+                    const kind = sinkKindById(s.design, id);
+                    const list = (sinksForSide(s.design, side) ?? []).map((sink) =>
+                        sink.id === id || (kind !== undefined && sink.kind === kind)
+                            ? { ...sink, ...patch }
+                            : sink,
+                    );
+                    const next = { ...s.design, sinks: writeSideSinks(s.design, side, list) };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
+                });
+            },
+
+            removeSink: (id, side) => {
+                get().checkpoint("remove-sink");
+                set((s) => {
+                    const kind = sinkKindById(s.design, id);
+                    const list = (sinksForSide(s.design, side) ?? []).filter((sink) =>
+                        kind !== undefined ? sink.kind !== kind : sink.id !== id,
+                    );
+                    const next = { ...s.design, sinks: writeSideSinks(s.design, side, list) };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
+                });
+            },
+
+            setSinkStyloidThicken: (on, side) => {
+                get().checkpoint("sink-styloid-thicken");
                 set((s) => {
                     const next = {
                         ...s.design,
-                        sinks: (s.design.sinks ?? []).map((sink) =>
-                            sink.id === id ? { ...sink, ...patch } : sink,
-                        ),
+                        sinkStyloidThicken: writeSideThicken(s.design, side, on),
                     };
-                    const eff = buildEffectiveTrimlines(next);
-                    useIssuesStore.getState().recompute(next, eff);
-                    return { design: next };
-                });
-            },
-
-            removeSink: (id) => {
-                get().checkpoint("remove-sink");
-                set((s) => {
-                    const sinks = (s.design.sinks ?? []).filter((sink) => sink.id !== id);
-                    const next = { ...s.design, sinks };
-                    const eff = buildEffectiveTrimlines(next);
-                    useIssuesStore.getState().recompute(next, eff);
-                    return { design: next };
-                });
-            },
-
-            setSinkStyloidThicken: (on) => {
-                get().checkpoint("sink-styloid-thicken");
-                set((s) => {
-                    const next = { ...s.design, sinkStyloidThicken: on };
                     const eff = buildEffectiveTrimlines(next);
                     useIssuesStore.getState().recompute(next, eff);
                     return { design: next };
@@ -1217,7 +1288,7 @@ export const useDesignStore = create<DesignStore>()(
                 // Sanitize on load so persisted or imported designs are always valid.
                 const r = constrainSideCorrections(incoming.corrections.left, incoming.thicknessMm);
                 const r2 = constrainSideCorrections(incoming.corrections.right, r.thicknessMm);
-                let safeDesign: DesignState = {
+                let safeDesign: DesignState = migrateDesignSinks({
                     ...incoming,
                     printRecipe: migratePrintRecipe(incoming.printRecipe),
                     thicknessMm: r.thicknessMm,
@@ -1226,7 +1297,7 @@ export const useDesignStore = create<DesignStore>()(
                         left: r.constrained,
                         right: incoming.corrections.linked ? r.constrained : r2.constrained,
                     },
-                };
+                });
                 // Legacy or parametric-only saved designs: inject SAMPLE_Top.
                 const hadBase = designHasBase(safeDesign);
                 if (!hadBase) {
@@ -1451,7 +1522,9 @@ export const useDesignStore = create<DesignStore>()(
             },
             onRehydrateStorage: () => (state) => {
                 if (!state?.design) return;
-                let design = replaceBuiltinDefaultWithSampleTop(sanitizeDesignStockBases(state.design));
+                let design = migrateDesignSinks(
+                    replaceBuiltinDefaultWithSampleTop(sanitizeDesignStockBases(state.design)),
+                );
                 design = { ...design, corrections: migrateCorrections(design.corrections) };
                 if (!designHasBase(design)) {
                     design = createDesignWithStockPlaceholder(design);

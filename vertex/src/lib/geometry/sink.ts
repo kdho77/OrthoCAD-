@@ -833,6 +833,69 @@ export interface StyloidWallReliefInput {
     rimAlreadyLowered: boolean;
 }
 
+const INBOARD_MIN_MM = 1.5;
+const INBOARD_MAX_MM = 40;
+
+/** Nearest inboard top-sheet vertex. That is the local footbed, not the wall below the rim. */
+function sampleInboardFootbed(
+    positions: number[],
+    rimX: number,
+    rimY: number,
+    centerY: number,
+    searchCount: number,
+): { x: number; y: number; z: number } | null {
+    const toward = centerY - rimY;
+    if (Math.abs(toward) < 1e-6) return null;
+    const min2 = INBOARD_MIN_MM * INBOARD_MIN_MM;
+    const max2 = INBOARD_MAX_MM * INBOARD_MAX_MM;
+    const n = Math.min(searchCount, Math.floor(positions.length / 3));
+    let best = max2;
+    let found: { x: number; y: number; z: number } | null = null;
+    for (let i = 0; i < n; i++) {
+        const x = positions[i * 3]!;
+        const y = positions[i * 3 + 1]!;
+        const dy = y - rimY;
+        if (dy * toward <= 0) continue;
+        const dx = x - rimX;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < min2 || d2 >= best) continue;
+        best = d2;
+        found = { x, y, z: positions[i * 3 + 2]! };
+    }
+    return found;
+}
+
+/**
+ * Footbed under the wall after T−S. The crest must stay LATERAL_WALL_MIN_MM
+ * above this, not above z=0. Returns 0 only when the sheet has no inboard sample.
+ */
+function localTopSurfaceZ(
+    positions: number[],
+    searchCount: number,
+    rimX: number,
+    rimY: number,
+    centerY: number,
+    bounds: { minX: number; maxX: number; minY: number; maxY: number },
+    medialYSign: 1 | -1,
+    side: Side,
+    ctx: SinkSurfaceContext,
+    alreadyDisplaced: boolean,
+): number {
+    const foot = sampleInboardFootbed(positions, rimX, rimY, centerY, searchCount);
+    if (!foot) return 0;
+    if (alreadyDisplaced) return foot.z;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const width = Math.max(1e-3, bounds.maxY - bounds.minY);
+    const u = Math.max(0, Math.min(1, (foot.x - bounds.minX) / length));
+    const mMesh = (foot.y - centerY) / (width / 2);
+    const medialSign = side === "left" ? -1 : 1;
+    const vSigned = Math.max(-1, Math.min(1, -mMesh * medialYSign * medialSign));
+    const t = sinkThicknessAt(u, vSigned, ctx);
+    const cut = sinkCutAt(u, vSigned, ctx);
+    const guarded = applyFloorGuard(foot.z + t, cut.mm, cut.sinkId);
+    return foot.z + t - guarded.cutMm;
+}
+
 /** Lateral-wall z notch for the styloid. XY is not written. No-op without a styloid sink. */
 export function applyStyloidWallRelief(input: StyloidWallReliefInput): SinkWarning[] {
     if (!sinksActive(input.sinks)) return [];
@@ -867,7 +930,19 @@ export function applyStyloidWallRelief(input: StyloidWallReliefInput): SinkWarni
         if (sample.mm <= 1e-6) continue;
         const rimNow = input.rimZ(s);
         const H = input.rimAlreadyLowered ? rimNow + sample.mm : rimNow;
-        const guard = guardedRimLowering(H, sample.mm, 0);
+        const localTop = localTopSurfaceZ(
+            input.positions,
+            input.positions.length / 3,
+            rim.x,
+            rim.y,
+            widCenter,
+            input.bounds,
+            input.medialYSign,
+            input.side,
+            ctx,
+            input.rimAlreadyLowered,
+        );
+        const guard = guardedRimLowering(H, sample.mm, localTop);
         if (guard.warning && !warned) {
             warned = true;
             warnings.push({
@@ -936,6 +1011,7 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
     const rimH = new Float64Array(input.nS);
     const rimT = new Float64Array(input.nS);
     const rimR = new Float64Array(input.nS);
+    const topCount = Math.min(input.topCount, input.positions.length / 3);
     for (let s = 0; s < input.nS; s++) {
         const vi = input.vertAt(0, s);
         const x = input.positions[vi * 3]!;
@@ -945,11 +1021,22 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
         rimT[s] = sinkThicknessAt(at.u, at.vSigned, ctx);
         const cut = sinkCutAt(at.u, at.vSigned, ctx);
         const floor = applyFloorGuard(rimH[s]! + rimT[s]!, cut.mm, cut.sinkId);
-        rimR[s] = guardedRimLowering(rimH[s]! + rimT[s]!, floor.cutMm, 0).lowering;
+        const localTop = localTopSurfaceZ(
+            input.positions,
+            topCount,
+            x,
+            y,
+            widCenter,
+            input.bounds,
+            input.medialYSign,
+            input.side,
+            ctx,
+            false,
+        );
+        rimR[s] = guardedRimLowering(rimH[s]! + rimT[s]!, floor.cutMm, localTop).lowering;
     }
     const warnings: SinkWarning[] = [];
     const seen = new Set<string>();
-    const topCount = Math.min(input.topCount, input.positions.length / 3);
     const rimStation = new Map<number, number>();
     for (let s = 0; s < input.nS; s++) rimStation.set(input.vertAt(0, s), s);
     for (let i = 0; i < topCount; i++) {

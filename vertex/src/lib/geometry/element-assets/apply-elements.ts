@@ -19,7 +19,7 @@ import {
     quinticSmoothstep,
     resolveOutlineHalfWidth,
 } from "@/lib/geometry/height-field";
-import { applySinkCutToGeometry, SINK_PROFILES, sinksActive } from "@/lib/geometry/sink";
+import { applySinkCutToGeometry, sinksActive } from "@/lib/geometry/sink";
 import type { PlacedElement } from "@/types";
 import { loadTransformedAssetPositions, resolvePlacedAssetContexts } from "./element-asset";
 import { gridEdgeRingMax, sampleGridBilinear } from "./height-grid";
@@ -445,57 +445,9 @@ function applySinkCutLast(
     if (!sinksActive(field.sinks)) return;
     const frame = getBaseFootprintFrame(referenceBase, field.side);
     const factors = classifyBaseTopFactors(referenceBase);
-    maybeSubdivideSinks(geometry, field, frame);
+    // z-only. Subdivision re-lofts the wall and moves the heel outline.
     applySinkCutToGeometry(geometry, referenceBase, field, frame, factors);
     geometry.computeVertexNormals();
-}
-
-/** Subdivide only when a sink's minor axis covers fewer than 6 vertices. */
-function maybeSubdivideSinks(
-    geometry: BufferGeometry,
-    field: HeightFieldParams,
-    frame: ReturnType<typeof getBaseFootprintFrame>,
-): void {
-    const pos = geometry.getAttribute("position");
-    if (!pos || !field.sinks?.length) return;
-    const arr = pos.array as Float32Array;
-    const index = geometry.getIndex();
-    if (!index) return;
-    for (const sink of field.sinks) {
-        const profile = SINK_PROFILES[sink.kind];
-        const minor = Math.min(profile.lengthMm, profile.widthMm) * (field.lengthMm / 260);
-        const u = sink.u ?? profile.u;
-        const len = frame.lenMin + u * frame.lenSize;
-        let near = 0;
-        let edgeSum = 0;
-        let edges = 0;
-        const idx = index.array as ArrayLike<number>;
-        for (let e = 0; e < idx.length; e += 3) {
-            const a = idx[e]!;
-            const b = idx[e + 1]!;
-            const ax = arr[a * 3 + frame.lengthAxis]!;
-            if (Math.abs(ax - len) > minor) continue;
-            near++;
-            const bx = arr[b * 3 + frame.lengthAxis]!;
-            const by = arr[b * 3 + frame.widthAxis]!;
-            const ay = arr[a * 3 + frame.widthAxis]!;
-            edgeSum += Math.hypot(ax - bx, ay - by);
-            edges++;
-            if (edges > 80) break;
-        }
-        if (edges < 1 || near < 1) continue;
-        const meanEdge = edgeSum / edges;
-        if (minor / meanEdge >= 6) continue;
-        const v = sink.v ?? profile.v;
-        const half = frame.widSize / 2;
-        const across = (v - 0.5) * frame.widSize;
-        subdivideLongEdgesUnderFootprint(
-            geometry,
-            (x, y) =>
-                Math.abs(x - len) <= profile.lengthMm && Math.abs(y - (frame.widCenter + across)) <= half,
-            Math.max(0.4, minor / 6),
-        );
-    }
 }
 
 export function fieldWithoutElementsForModifiers(field: HeightFieldParams): HeightFieldParams {

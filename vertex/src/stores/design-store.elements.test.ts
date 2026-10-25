@@ -125,4 +125,21 @@ describe("elements require explicit library placement", () => {
         useDesignStore.getState().loadDesign(saved);
         expect(useDesignStore.getState().design.elements).toEqual(saved.elements);
     });
+
+    test("linked sinks keep a requested depth above max on both feet", () => {
+        expect(useDesignStore.getState().design.corrections.linked).toBe(true);
+        expect(useDesignStore.getState().design.sinks).toBeUndefined();
+        useDesignStore.getState().addSink("mpj1", "left");
+        const added = useDesignStore.getState().design.sinks?.left?.[0];
+        expect(added?.depthMm).toBe(2);
+        useDesignStore.getState().updateSink(added!.id, { depthMm: 5 }, "left");
+        const sinks = useDesignStore.getState().design.sinks;
+        expect(sinks?.left?.[0]?.depthMm).toBe(5);
+        expect(sinks?.right?.[0]?.depthMm).toBe(5);
+        expect(sinks?.left?.[0]).not.toBe(sinks?.right?.[0]);
+        useDesignStore.getState().setSinkStyloidThicken(true, "right");
+        expect(useDesignStore.getState().design.sinkStyloidThicken).toEqual({ left: true, right: true });
+        useDesignStore.getState().removeSink(added!.id, "left");
+        expect(useDesignStore.getState().design.sinks).toBeUndefined();
+    });
 });

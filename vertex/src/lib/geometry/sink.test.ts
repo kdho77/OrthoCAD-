@@ -9,6 +9,7 @@ import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { effectiveOutlineHalfWidth } from "@/lib/geometry/trimline";
 import type { DesignState, PlacedElement, PlacedSink, Side, SideCorrections, SinkKind } from "@/types";
 import {
+    applyAnalyticSinkToLoftedSolid,
     applyFloorGuard,
     applyStyloidWallRelief,
     BLEND_LEN_MM,
@@ -31,6 +32,7 @@ import {
     sinkThicknessAt,
     smootherstep01,
     smoothstep01,
+    specVFromVSigned,
     styloidWallReliefAt,
     vSignedFromSpecV,
 } from "./sink";
@@ -277,6 +279,39 @@ describe("sink scalar field", () => {
         const wall = guardedRimLowering(4, 2, 0);
         expect(wall.warning).toBe(true);
         expect(wall.lowering).toBeCloseTo(1, 6);
+        // Crest stays LATERAL_WALL_MIN_MM above the local footbed, not above z=0.
+        const aboveBed = guardedRimLowering(8, 4, 5);
+        expect(aboveBed.warning).toBe(true);
+        expect(aboveBed.lowering).toBeCloseTo(0, 6);
+        const clearance = guardedRimLowering(10, 4, 6);
+        expect(clearance.lowering).toBeCloseTo(1, 6);
+    });
+
+    test("wall relief keeps 3 mm above the inboard footbed", () => {
+        const length = 260;
+        const width = 95;
+        const rimX = 0.42 * length;
+        const rimY = 2;
+        const half = width / 2;
+        const centerY = width / 2;
+        const mMesh = (rimY - centerY) / half;
+        const v = specVFromVSigned(-mMesh, "right");
+        const positions = [rimX, rimY, 8, rimX, 40, 5, rimX, rimY, 4];
+        applyAnalyticSinkToLoftedSolid({
+            positions,
+            topCount: 2,
+            nS: 1,
+            nJ: 2,
+            vertAt: (row) => (row === 0 ? 0 : 2),
+            bounds: { minX: 0, maxX: length, minY: 0, maxY: width },
+            medialYSign: 1,
+            side: "right",
+            sinks: [{ id: "sty", kind: "styloid", depthMm: 3, u: rimX / length, v }],
+        });
+        // A z=0 guard would drop the crest by the full 3 mm (8 → 5).
+        expect(positions[2]).toBeCloseTo(8, 3);
+        expect(positions[0]).toBeCloseTo(rimX, 6);
+        expect(positions[1]).toBeCloseTo(rimY, 6);
     });
 
     test("5th MPJ is zero at the lateral rim; styloid is not", () => {
@@ -436,10 +471,19 @@ describe("sink scalar field", () => {
         expect(moved).toBe(true);
     });
 
-    test("migrateDesignSinks fills a missing list and leaves an existing one", () => {
-        const design = { sinks: undefined } as DesignState;
-        expect(migrateDesignSinks(design).sinks).toEqual([]);
-        const kept = { sinks: [placed("mpj1", 2)] } as DesignState;
+    test("migrateDesignSinks leaves a missing list and splits a legacy array per side", () => {
+        const design = {} as DesignState;
+        expect(migrateDesignSinks(design)).toBe(design);
+        const kept = { sinks: { left: [placed("mpj1", 2)] } } as DesignState;
         expect(migrateDesignSinks(kept)).toBe(kept);
+        const legacy = {
+            sinks: [placed("mpj1", 2)],
+            sinkStyloidThicken: true,
+        } as unknown as DesignState;
+        const migrated = migrateDesignSinks(legacy);
+        expect(migrated.sinks?.left?.[0]?.kind).toBe("mpj1");
+        expect(migrated.sinks?.right?.[0]?.kind).toBe("mpj1");
+        expect(migrated.sinks?.left?.[0]).not.toBe(migrated.sinks?.right?.[0]);
+        expect(migrated.sinkStyloidThicken).toEqual({ left: true, right: true });
     });
 });
