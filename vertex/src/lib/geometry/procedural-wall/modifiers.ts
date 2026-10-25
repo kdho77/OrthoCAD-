@@ -1,6 +1,12 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import {
+    buildWedgeStations,
+    fallbackRimXY,
+    fullLengthWedgeActive,
+    fullLengthWedgeDeltaAt,
+} from "@/lib/geometry/full-length-wedge";
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import {
     forefootWidthLongitudinalEnvelope,
@@ -370,6 +376,9 @@ export function shiftClosedLoopForefoot<T extends { x: number; y: number }>(
     }));
 }
 
+let loggedRectFallback = false;
+let rectRimCache: { key: string; rim: { x: number; y: number }[] } | null = null;
+
 /** Print-step grinding dropdown → wall mid-style. */
 export type ProceduralWallStyle = "straight" | "round" | "hybrid";
 
@@ -395,6 +404,9 @@ export interface ProceduralModifierInput {
     /** MPJ / styloid sinks. Absent ⇒ curve T is not evaluated. */
     sinks?: PlacedSink[];
     sinkStyloidThicken?: boolean;
+    /** Real top-rim polyline in mesh XY. Unordered clouds set {@link fullLengthRimOrdered} false. */
+    fullLengthRimXY?: ReadonlyArray<{ x: number; y: number }>;
+    fullLengthRimOrdered?: boolean;
     /**
      * Whole-insole width scale (1 = unchanged). Same factor and medial-lateral
      * centre as the top. Heel widen uses heelCupWidthMm + follow=1 instead.
@@ -460,8 +472,24 @@ export function applyCurveModifiers(
         if (c && c.heelLiftMm > 0) {
             t.z += heelLiftDeltaAt(u, c.heelLiftMm);
         }
-        if (c && (c.rearfootWedge || c.forefootWedge)) {
-            t.z += postingZDelta(o.x, o.y, model.bounds, input);
+    }
+    // Full-length stations use the outline after the forefoot-width shift.
+    // Built only when that wedge is on, so the off path keeps main's posting call.
+    let postingInput = input;
+    if (c && fullLengthWedgeActive(c)) {
+        const rim: { x: number; y: number }[] = [];
+        for (let i = 0; i < n; i++) {
+            const o = outline[i]!;
+            rim.push({ x: o.x, y: o.y });
+        }
+        postingInput = { ...input, fullLengthRimXY: rim, fullLengthRimOrdered: true };
+    }
+    for (let i = 0; i < n; i++) {
+        const o = outline[i]!;
+        const t = trim[i]!;
+        const u = Math.max(0, Math.min(1, (o.x - minX) / length));
+        if (c && (c.rearfootWedge || c.forefootWedge || fullLengthWedgeActive(c))) {
+            t.z += postingZDelta(o.x, o.y, model.bounds, postingInput);
         }
         if (sinksActive(input.sinks)) {
             const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
@@ -508,18 +536,54 @@ export function postingZDelta(
     input: ProceduralModifierInput,
 ): number {
     const c = input.corrections;
-    if (!c || (!c.rearfootWedge && !c.forefootWedge)) return 0;
+    const fl = !!c && fullLengthWedgeActive(c);
+    if (!c || (!c.rearfootWedge && !c.forefootWedge && !fl)) return 0;
     const minX = bounds.minX;
     const length = Math.max(1e-3, bounds.maxX - minX);
     const widthMm = Math.max(1e-3, bounds.maxY - bounds.minY);
     const u = Math.max(0, Math.min(1, (x - minX) / length));
     const side = input.side ?? ((input.medialYSign ?? 1) < 0 ? "right" : "left");
     const vSigned = footprintVSignedFromMeshY(y, bounds, side, input.medialYSign ?? 1);
-    return wedgeDeltaAt(u, vSigned, side, c, {
-        lengthMm: length,
-        widthMm,
-        trimline: input.trimline ?? null,
-    });
+    let d = 0;
+    if (c.rearfootWedge || c.forefootWedge) {
+        d += wedgeDeltaAt(u, vSigned, side, c, {
+            lengthMm: length,
+            widthMm,
+            trimline: input.trimline ?? null,
+        });
+    }
+    if (fl) {
+        const medialPositiveY = (input.medialYSign ?? 1) > 0;
+        let rim = input.fullLengthRimXY;
+        let ordered = input.fullLengthRimOrdered !== false;
+        if (!rim || rim.length < 4) {
+            if (!loggedRectFallback) {
+                loggedRectFallback = true;
+                console.warn("[full-length-wedge] no real rim; using effectiveOutlineHalfWidth fallback");
+            }
+            const midY = (bounds.minY + bounds.maxY) * 0.5;
+            const key = `${minX}|${length}|${midY}|${widthMm}|${c.fullLengthWedge?.side}|${c.fullLengthWedge?.value}|${c.fullLengthWedge?.unit}`;
+            if (!rectRimCache || rectRimCache.key !== key) {
+                rectRimCache = {
+                    key,
+                    rim: fallbackRimXY(length, () => widthMm / 2).map((p) => ({
+                        x: p.x + minX,
+                        y: p.y + midY,
+                    })),
+                };
+            }
+            rim = rectRimCache.rim;
+            ordered = true;
+        }
+        const stations = buildWedgeStations(rim, side, c.fullLengthWedge, {
+            originX: minX,
+            lengthMm: length,
+            medialPositiveY,
+            ordered,
+        });
+        d += fullLengthWedgeDeltaAt(x, y, stations);
+    }
+    return d;
 }
 
 /**

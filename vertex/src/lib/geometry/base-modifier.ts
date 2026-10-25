@@ -5,6 +5,11 @@ import type { BufferGeometry } from "three";
 import type { SolidResult } from "@/lib/chili3d/kernel";
 import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
 import { getDesignBase } from "@/lib/geometry/base-asset";
+import {
+    type FullLengthRimFrame,
+    fullLengthDeltaFromField,
+    fullLengthWedgeActive,
+} from "@/lib/geometry/full-length-wedge";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
     forefootWidthPerSideDeltaMm,
@@ -12,6 +17,7 @@ import {
     heelCupWidthScaleFactor,
     heightAt,
     quinticSmoothstep,
+    resolveOutlineHalfWidth,
     smoothstep,
 } from "@/lib/geometry/height-field";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
@@ -89,6 +95,7 @@ export function neutralField(field: HeightFieldParams): HeightFieldParams {
             ...ZERO_CORRECTIONS,
             rearfootWedge: undefined,
             forefootWedge: undefined,
+            fullLengthWedge: undefined,
         },
         elements: [],
         includeElements: false,
@@ -369,6 +376,45 @@ export function getBaseFootprintFrame(base: BufferGeometry, side: Side): BaseFoo
     return { lengthAxis, widthAxis, thickAxis, lenMin, lenSize, widCenter, widSize, widthSign };
 }
 
+function halfWidthMmAtField(field: HeightFieldParams): (u: number) => number {
+    return (u: number) => resolveOutlineHalfWidth(u, field) * (field.widthMm / 2);
+}
+
+/** Top-sheet extremes in the vSigned frame (y = widthSign · (width − center)). */
+function collectFullLengthRim(base: BufferGeometry, field: HeightFieldParams): FullLengthRimFrame | null {
+    if (!fullLengthWedgeActive(field.corrections)) return null;
+    const extents = getBaseExtents(base);
+    const pos = base.getAttribute("position");
+    if (!extents || !pos) return null;
+    const { lengthAxis, widthAxis, min, size } = extents;
+    const lenMin = min[lengthAxis]!;
+    const lenSize = size[lengthAxis] || 1;
+    const widSize = size[widthAxis] || 1;
+    const widCenter = min[widthAxis]! + widSize / 2;
+    const medialSign = field.side === "left" ? -1 : 1;
+    const widthSign = -(detectArchSideSign(base) * medialSign);
+    const ud = base.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
+    const topN = ud?.isMultiMeshBase && ud.topVertexCount && ud.topVertexCount > 0 ? ud.topVertexCount : 0;
+    const arr = pos.array as ArrayLike<number>;
+    const count = topN > 0 ? topN : pos.count;
+    const points: { x: number; y: number }[] = [];
+    for (let i = 0; i < count; i++) {
+        points.push({
+            x: arr[i * 3 + lengthAxis]!,
+            y: widthSign * (arr[i * 3 + widthAxis]! - widCenter),
+        });
+    }
+    if (points.length < 4) return null;
+    return {
+        points,
+        originX: lenMin,
+        lengthMm: lenSize,
+        medialPositiveY: field.side === "left",
+        yScale: widSize / 2,
+        ordered: false,
+    };
+}
+
 /** Wedge delta (mm) at a base vertex — mirrors applyBaseModifiers sampling. */
 export function wedgeMmAtBaseVertex(
     base: BufferGeometry,
@@ -390,11 +436,16 @@ export function wedgeMmAtBaseVertex(
     const widCoord = arr[vertexIndex * 3 + widthAxis]!;
     const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
     const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
-    return wedgeDeltaAt(u, vSigned, field.side, field.corrections, {
+    const regional = wedgeDeltaAt(u, vSigned, field.side, field.corrections, {
         lengthMm: field.lengthMm,
         widthMm: field.widthMm,
         trimline: field.trimline ?? null,
     });
+    if (!fullLengthWedgeActive(field.corrections)) return regional;
+    const withRim: HeightFieldParams = field.fullLengthRim
+        ? field
+        : { ...field, fullLengthRim: collectFullLengthRim(base, field) };
+    return regional + fullLengthDeltaFromField(u, vSigned, withRim, halfWidthMmAtField(withRim));
 }
 
 export function vertexFootprintAt(
@@ -537,6 +588,9 @@ function sampleFieldDeltaAtXY(
             widthMm: fieldForDelta.widthMm,
             trimline: fieldForDelta.trimline ?? null,
         });
+    }
+    if (skipWedge && fullLengthWedgeActive(fieldForDelta.corrections)) {
+        F_raw -= fullLengthDeltaFromField(u, vSigned, fieldForDelta, halfWidthMmAtField(fieldForDelta));
     }
 
     if (!edgeProfile) return F_raw;
@@ -2692,7 +2746,12 @@ export function applyBaseModifiers(
         (field.corrections.archHeightMm ?? 0) !== 0 ||
         (field.corrections.archFillMm ?? 0) !== 0 ||
         (field.corrections.archEaseMm ?? 0) !== 0;
-    const wedgeActive = wedgeCorrectionActive(field.corrections);
+    const regionalWedgeActive = wedgeCorrectionActive(field.corrections);
+    const flActive = fullLengthWedgeActive(field.corrections);
+    const wedgeActive = regionalWedgeActive || flActive;
+    if (flActive && !fieldForDelta.fullLengthRim) {
+        fieldForDelta.fullLengthRim = collectFullLengthRim(base, field);
+    }
     const useShellFieldSync =
         isMultiMesh &&
         topVertexCount > 0 &&
@@ -2723,10 +2782,16 @@ export function applyBaseModifiers(
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
         let d = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
         if (wedgeActive) {
-            const wD = wedgeDeltaAt(u, vSigned, field.side, field.corrections, wedgeParams);
-            if (wedgeAt) wedgeAt[i] = wD;
+            const wD = regionalWedgeActive
+                ? wedgeDeltaAt(u, vSigned, field.side, field.corrections, wedgeParams)
+                : 0;
+            const flD = flActive
+                ? fullLengthDeltaFromField(u, vSigned, fieldForDelta, halfWidthMmAtField(fieldForDelta))
+                : 0;
+            const postD = wD + flD;
+            if (wedgeAt) wedgeAt[i] = postD;
             if (isMultiMesh && topVertexCount > 0 && i >= topVertexCount) {
-                d -= wD;
+                d -= postD;
             }
         }
         if (sinkTAt && !(isMultiMesh && topVertexCount > 0 && i >= topVertexCount)) {

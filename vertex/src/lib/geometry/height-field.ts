@@ -1,4 +1,9 @@
 import { elementHeightAt } from "@/lib/geometry/elements";
+import {
+    type FullLengthRimFrame,
+    fullLengthDeltaFromField,
+    fullLengthWedgeActive,
+} from "@/lib/geometry/full-length-wedge";
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
 import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
@@ -48,6 +53,11 @@ export interface HeightFieldParams {
     topEdgeAvProfile?: (u: number, vSigned: number) => number;
     /** Track 5b — top-only print/shell finish (excludes bottom-only arch grind). */
     shapeFinish?: SideShapeFinish | null;
+    /**
+     * Real top rim for the full-length wedge, in the same frame as vSigned
+     * (y = vSigned * yScale). Absent → outline fallback inside the wedge module.
+     */
+    fullLengthRim?: FullLengthRimFrame | null;
 }
 
 const DEG = Math.PI / 180;
@@ -432,6 +442,17 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const heelLift = heelLiftDeltaAt(u, c.heelLiftMm);
 
     let h = softFloor(thicknessMm + baseline + shaped + archEase + wedge + heelLift, 0.8);
+
+    // Full-length ruled posting. After lift + intrinsic shaping, before skive.
+    // Omitted entirely when off so the height matches the regional-only field.
+    if (fullLengthWedgeActive(c)) {
+        h += fullLengthDeltaFromField(
+            u,
+            vSigned,
+            params,
+            (uu) => effectiveOutlineHalfWidth(uu, lengthMm, widthMm, params.trimline) * (widthMm / 2),
+        );
+    }
 
     // Forefoot / styloid thickness T. After posting, before skive. The cut S is
     // not applied here — it is the last subtraction on the composed top.

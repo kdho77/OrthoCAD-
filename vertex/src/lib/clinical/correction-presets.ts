@@ -44,6 +44,7 @@ function sideKeys(): (keyof SideCorrections)[] {
         "lateralFlangeMm",
         "rearfootWedge",
         "forefootWedge",
+        "fullLengthWedge",
     ];
 }
 
@@ -52,6 +53,7 @@ function mergeSide(base: SideCorrections, patch: Partial<SideCorrections> | unde
     const next = { ...base, ...patch };
     if (patch.rearfootWedge !== undefined) next.rearfootWedge = patch.rearfootWedge;
     if (patch.forefootWedge !== undefined) next.forefootWedge = patch.forefootWedge;
+    if (patch.fullLengthWedge !== undefined) next.fullLengthWedge = patch.fullLengthWedge;
     return next;
 }
 
@@ -61,7 +63,7 @@ function replaceSide(
 ): SideCorrections {
     const blank = { ...fallback };
     for (const k of sideKeys()) {
-        if (k === "rearfootWedge" || k === "forefootWedge") {
+        if (k === "rearfootWedge" || k === "forefootWedge" || k === "fullLengthWedge") {
             (blank as SideCorrections)[k] = undefined;
         } else {
             (blank as SideCorrections)[k as keyof SideCorrections] = 0 as never;

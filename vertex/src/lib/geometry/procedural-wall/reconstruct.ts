@@ -7,6 +7,7 @@ import {
     BASE_REFERENCE_THICKNESS_MM,
     correctionDeltaAt,
 } from "@/lib/geometry/base-modifier";
+import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import {
     forefootWidthLongitudinalEnvelope,
     type HeightFieldParams,
@@ -192,6 +193,7 @@ export function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
         c.lateralFlangeMm !== 0 ||
         hasWedge(c.rearfootWedge) ||
         hasWedge(c.forefootWedge) ||
+        fullLengthWedgeActive(c) ||
         thicknessChanged
     );
 }
@@ -227,6 +229,7 @@ function applyAnalyticTopDeltas(
         ...c,
         rearfootWedge: undefined,
         forefootWedge: undefined,
+        fullLengthWedge: undefined,
     };
     // Corrections-no-sink. T and S are a pure z pass after the loft so station
     // pairing stays the same as a sink-free wall.
@@ -248,10 +251,18 @@ function applyAnalyticTopDeltas(
         thicknessMm: stock,
         corrections: zeroCorrections(),
     };
+    const fullLengthRimXY = fullLengthWedgeActive(c)
+        ? Array.from({ length: pos.length / 3 }, (_, i) => ({
+              x: pos[i * 3]!,
+              y: pos[i * 3 + 1]!,
+          }))
+        : undefined;
     const postingInput = {
         ...input,
         side,
         trimline: field.trimline,
+        fullLengthRimXY,
+        fullLengthRimOrdered: false,
     };
     const minX = bounds.minX;
     const widCenter = (bounds.minY + bounds.maxY) * 0.5;
@@ -1168,10 +1179,18 @@ export function reconstructProceduralWalls(
 
     rimLocal = orderRimLocal(topPos, rimLocal);
     const { r1, r2 } = filletRadiiFromDefaults(defaults);
+    const postingRim = fullLengthWedgeActive(options.corrections)
+        ? Array.from({ length: (topPos.length / 3) | 0 }, (_, i) => ({
+              x: topPos[i * 3]!,
+              y: topPos[i * 3 + 1]!,
+          }))
+        : undefined;
     const postingInput = {
         ...options,
         side: options.sourceField?.side ?? ((options.medialYSign ?? 1) < 0 ? "right" : "left"),
         trimline: options.sourceField?.trimline ?? options.trimline ?? null,
+        fullLengthRimXY: postingRim,
+        fullLengthRimOrdered: false as const,
     };
     const postingAt = (x: number, y: number) => postingZDelta(x, y, model.bounds, postingInput);
     const postingClamps = clampPostingOnTopSheet(
@@ -2226,7 +2245,9 @@ export function reconstructProceduralWalls(
     };
     const liftMm = options.corrections?.heelLiftMm ?? 0;
     const hasPost =
-        hasWedge(options.corrections?.rearfootWedge) || hasWedge(options.corrections?.forefootWedge);
+        hasWedge(options.corrections?.rearfootWedge) ||
+        hasWedge(options.corrections?.forefootWedge) ||
+        fullLengthWedgeActive(options.corrections);
     if (liftMm > 0 || hasPost) {
         let heelWall = 0;
         let maxBz = Number.NEGATIVE_INFINITY;

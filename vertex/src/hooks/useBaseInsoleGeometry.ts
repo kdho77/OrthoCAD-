@@ -429,7 +429,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 };
                 const neutral = {
                     ...wedgeOnly,
-                    corrections: { ...wedgeOnly.corrections!, rearfootWedge: undefined },
+                    corrections: {
+                        ...wedgeOnly.corrections!,
+                        rearfootWedge: undefined,
+                        fullLengthWedge: undefined,
+                    },
                 };
                 stockDebug("STEP0 design viewer top-sheet z delta (mm)", {
                     side,
@@ -455,7 +459,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 };
                 const neutral = {
                     ...wedgeOnly,
-                    corrections: { ...wedgeOnly.corrections!, forefootWedge: undefined },
+                    corrections: {
+                        ...wedgeOnly.corrections!,
+                        forefootWedge: undefined,
+                        fullLengthWedge: undefined,
+                    },
                 };
                 stockDebug("STEP corrections forefoot lateral mm top z delta (heightAt + mesh)", {
                     side,
@@ -654,7 +662,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             };
                             const neutralField = {
                                 ...wedgeField,
-                                corrections: { ...(wedgeField.corrections ?? {}), forefootWedge: undefined },
+                                corrections: {
+                                    ...(wedgeField.corrections ?? {}),
+                                    forefootWedge: undefined,
+                                    fullLengthWedge: undefined,
+                                },
                             };
                             const wedgeGeo = await composeViewerPrintSolidTop({
                                 raw,
