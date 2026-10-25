@@ -23,6 +23,8 @@ interface SliderFieldProps {
     onReset?: () => void;
     /** e.g. "from PF" when the value originated from a preset. */
     originLabel?: string;
+    /** Short note under the slider. */
+    hint?: string;
 }
 
 /**
@@ -44,6 +46,7 @@ export function SliderField({
     defaultValue,
     onReset,
     originLabel,
+    hint,
 }: SliderFieldProps) {
     const setInteracting = usePerformanceStore((s) => s.setInteracting);
     const clamp = (v: number) => Math.min(max, Math.max(min, Number.isFinite(v) ? v : min));
@@ -116,6 +119,7 @@ export function SliderField({
                 onChange={(e) => handlePreview(Number(e.target.value))}
                 className="h-1 w-full cursor-pointer appearance-none rounded bg-muted accent-primary"
             />
+            {hint ? <p className="text-[10px] leading-tight text-muted-foreground">{hint}</p> : null}
         </div>
     );
 }

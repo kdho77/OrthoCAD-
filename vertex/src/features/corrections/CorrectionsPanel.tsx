@@ -42,6 +42,7 @@ const FIELDS: {
     max: number;
     group: string;
     unit?: string;
+    hint?: string;
 }[] = [
     {
         key: "archHeightMm",
@@ -79,6 +80,7 @@ const FIELDS: {
         min: CLINICAL_LIMITS.forefootWidthMm.min,
         max: CLINICAL_LIMITS.forefootWidthMm.max,
         group: "Forefoot",
+        hint: "per side (total width change = 2x)",
     },
     {
         key: "heelLiftMm",
@@ -101,7 +103,12 @@ const WEDGE_ZONES = [
 const SIDE_LABELS: Record<Side, string> = { left: "Left", right: "Right" };
 
 const previewCorrection = rafThrottle((side: Side, patch: Partial<SideCorrections>) => {
-    usePerformanceStore.getState().setCorrectionPreview(side, patch);
+    const store = usePerformanceStore.getState();
+    store.setCorrectionPreview(side, patch);
+    if (useDesignStore.getState().design.corrections.linked) {
+        const other: Side = side === "left" ? "right" : "left";
+        store.setCorrectionPreview(other, patch);
+    }
 });
 
 const previewThickness = rafThrottle((mm: number) => {
@@ -643,6 +650,7 @@ export function CorrectionsPanel() {
                                             } as Partial<SideCorrections>);
                                             clearPresetKey(side, f.key);
                                         }}
+                                        hint={f.hint}
                                         onPreview={(v) =>
                                             previewCorrection(side, {
                                                 [f.key]: v,

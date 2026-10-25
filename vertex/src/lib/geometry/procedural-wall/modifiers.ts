@@ -255,6 +255,58 @@ export function offsetPlanLoopForefootWidthMm(
     }));
 }
 
+/** Axis-aligned plan bounds of a position buffer (x, y, z triplets). */
+export function forefootPlanBoundsOfPositions(positions: ArrayLike<number>): PlanBounds {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    const count = Math.floor(positions.length / 3);
+    for (let i = 0; i < count; i++) {
+        const x = positions[i * 3] ?? 0;
+        const y = positions[i * 3 + 1] ?? 0;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+    if (!Number.isFinite(minX)) return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
+    return { minX, maxX, minY, maxY };
+}
+
+function forefootPlanBoundsOfPoints(points: ReadonlyArray<{ x: number; y: number }>): PlanBounds {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of points) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    if (!Number.isFinite(minX)) return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
+    return { minX, maxX, minY, maxY };
+}
+
+/**
+ * Display-only copy of the export outline shift. Stored curves stay anatomical;
+ * the viewer adds this while the slider moves. 0 mm returns the same points.
+ */
+export function shiftClosedLoopForefoot<T extends { x: number; y: number }>(
+    points: readonly T[],
+    forefootWidthMm: number,
+    bounds?: PlanBounds,
+): T[] {
+    if (!forefootWidthMm || points.length < 3) return points.map((p) => ({ ...p }));
+    const box = bounds ?? forefootPlanBoundsOfPoints(points);
+    const roomAt = forefootOutlineRoomMm(points, box);
+    return points.map((p) => ({
+        ...p,
+        y: p.y + forefootWidthPlanDy(p.x, p.y, box, forefootWidthMm, roomAt),
+    }));
+}
+
 /** Print-step grinding dropdown → wall mid-style. */
 export type ProceduralWallStyle = "straight" | "round" | "hybrid";
 
