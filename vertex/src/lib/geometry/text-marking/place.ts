@@ -534,7 +534,7 @@ export function placeBottomText(
 } {
     const u = Math.max(TEXT_U.bottom.min, Math.min(TEXT_U.bottom.max, marking.placementU));
     const cx = xAtU(ctx, u) + (marking.nudgeAlongMm ?? 0);
-    // Left-foot placement is already mirrored with the host mesh; do not glyph-mirror again.
+    // glyph placement is the same for both sides; text reads from below in the STL frame after any side mirroring.
     void side;
     const cy = centrelineYAtX(ctx.outline, cx, ctx.midY) + (marking.nudgeAcrossMm ?? 0);
     const local = { x: flat.advanceMm / 2, y: flat.capHeightMm / 2 };
@@ -545,13 +545,13 @@ export function placeBottomText(
             y: (p.y - local.y) * s,
         }));
         const rotated = transformGroups(pivoted, (p) => rotateAbout(p, { x: 0, y: 0 }, marking.rotationDeg));
-        // Mirror so the recess reads correctly when the insole is flipped (pancake about X).
-        const mirrored = transformGroups(rotated, (p) => ({ x: p.x, y: -p.y }));
-        return transformGroups(mirrored, (p) => ({ x: p.x + cx, y: p.y + cy }));
+        const glyphPlaced = transformGroups(rotated, (p) => ({ x: -p.x, y: p.y }));
+        return transformGroups(glyphPlaced, (p) => ({ x: p.x + cx, y: p.y + cy }));
     };
 
     let placed = applyAt(flat, 1);
     let scale = 1;
+    // glyph placement is the same for both sides; text reads from below in the STL frame after any side mirroring.
     const minScale = TEXT_CAP.bottom.min / Math.max(flat.capHeightMm, 1e-3);
     const flatBound = flatBottomBoundaryLoop(geo);
     const fitsBoth = (src: FlattenedText) =>

@@ -163,7 +163,7 @@ function clipperUnionOrient(contours: TextXy[][]): TextContour[] {
 function inflateContours(contours: TextContour[], deltaMm: number): TextContour[] {
     if (!contours.length) return [];
     const paths = inflatePathsD(
-        contours.map((c) => toPathD(c.points)),
+        contours.map((c) => toPathD(c.hole ? c.points.slice().reverse() : c.points)),
         deltaMm,
         JoinType.Round,
         EndType.Polygon,
