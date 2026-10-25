@@ -18,7 +18,7 @@ import type { ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
-import { offsetPlanLoopForefootWidthMm } from "./modifiers";
+import { forefootFeatureBoxes, offsetPlanLoopForefootWidthMm } from "./modifiers";
 import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
@@ -216,19 +216,6 @@ export async function reconstructProceduralPreview(
         throw new Error("[S1-PROCEDURAL] combined/stock GLB is not a procedural input — use legacy");
     }
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
-    let patternRimBaseline: PolyPoint[] | undefined;
-    if (useComposed) {
-        const pristine = extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
-        const pos = pristine.top.meshPositions;
-        const rimIdx = pristine.top.rimLocal ?? [];
-        if (pos && rimIdx.length >= 8) {
-            patternRimBaseline = rimIdx.map((i) => ({
-                x: pos[i * 3] ?? 0,
-                y: pos[i * 3 + 1] ?? 0,
-                z: 0,
-            }));
-        }
-    }
     let source = topGeo;
     let owned = false;
     if (options.sourceField) {
@@ -273,7 +260,11 @@ export async function reconstructProceduralPreview(
             archGrindDepthMm: options.archGrindDepthMm,
             sourceField: options.sourceField,
             composedTop: useComposed,
-            patternRimBaseline,
+            forefootRigidBoxes: forefootFeatureBoxes(model.bounds, {
+                lengthMm: model.bounds.maxX - model.bounds.minX,
+                elements: options.sourceField?.elements,
+                text: options.textMarking,
+            }),
         });
         return { model, pattern, geometry };
     };

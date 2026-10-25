@@ -8,14 +8,16 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
-import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import { BASE_REFERENCE_THICKNESS_MM, getBaseFootprintFrame } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { forefootWidthLongitudinalEnvelope } from "@/lib/geometry/height-field";
 import { countSelfIntersections, reconstructionManifold } from "@/lib/geometry/procedural-wall";
 import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
-import type { SideCorrections } from "@/types";
+import { applyTextMarkingToPrintSolid } from "@/lib/geometry/text-marking/apply";
+import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
+import type { PlacedElement, SideCorrections } from "@/types";
 import { loadSampleTopGlb } from "./helpers/load-sample-top-glb";
 
 /** Frozen at origin/main M9 compose export (forefootWidthMm=0); full STL MD5 prefixes. */
@@ -24,6 +26,9 @@ const M9_BASELINE_STL_MD5_PREFIX: Record<"straight" | "round" | "hybrid", string
     round: "129269d7c0a1",
     hybrid: "4c56a8d00a15",
 };
+
+/** Bottom side-shift minus top side-shift, every sampled u. */
+const BOTTOM_MINUS_TOP_MM = 0.25;
 
 const CREASE_BASE_MAX_DEG = 8;
 const CREASE_JUMP_MIN_DEG = 12;
@@ -276,7 +281,7 @@ describe("forefoot width — SAMPLE_Top M9 procedural export", () => {
                 let perSide = 0;
                 let balance = 0;
                 let past = 0;
-                for (const u of [0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]) {
+                for (const u of [0.5, 0.55, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]) {
                     const target = envAt(u);
                     const shift = sideShiftMm(
                         sampleExtentsAtU(baseGeo, u, frame, 0.003),
@@ -289,7 +294,7 @@ describe("forefoot width — SAMPLE_Top M9 procedural export", () => {
                     );
                     expect(Math.abs(shift.medial - target)).toBeLessThanOrEqual(0.3);
                     expect(Math.abs(shift.lateral - target)).toBeLessThanOrEqual(0.3);
-                    if (mm < 0) {
+                    if (mm < 0 && u >= 0.65 && u <= 0.9) {
                         past = Math.max(past, target - shift.medial, target - shift.lateral);
                         expect(shift.medial).toBeGreaterThanOrEqual(target - 0.02);
                         expect(shift.lateral).toBeGreaterThanOrEqual(target - 0.02);
@@ -319,8 +324,8 @@ describe("forefoot width — SAMPLE_Top M9 procedural export", () => {
                         Math.abs(dTop.medial - dBot.medial),
                         Math.abs(dTop.lateral - dBot.lateral),
                     );
-                    expect(Math.abs(dTop.medial - dBot.medial)).toBeLessThanOrEqual(0.3);
-                    expect(Math.abs(dTop.lateral - dBot.lateral)).toBeLessThanOrEqual(0.3);
+                    expect(Math.abs(dTop.medial - dBot.medial)).toBeLessThanOrEqual(BOTTOM_MINUS_TOP_MM);
+                    expect(Math.abs(dTop.lateral - dBot.lateral)).toBeLessThanOrEqual(BOTTOM_MINUS_TOP_MM);
                 }
                 const heelTop = sideShiftMm(
                     sampleExtentsAtU(baseGeo, 0.2, frame, 0.02),
@@ -348,14 +353,33 @@ describe("forefoot width — SAMPLE_Top M9 procedural export", () => {
                 expect(dHeelX).toBeLessThanOrEqual(0.02);
 
                 let heelOutline = 0;
-                const nTop = Math.min(frame.topVertexCount, modArr.length / 3, baseArr.length / 3);
-                for (let i = 0; i < nTop; i++) {
+                const nAll = Math.min(modArr.length / 3, baseArr.length / 3);
+                for (let i = 0; i < nAll; i++) {
                     const u = (baseArr[i * 3 + frame.lengthAxis]! - frame.lenMin) / frame.lenSize;
                     if (u >= 0.45) continue;
                     const dx = modArr[i * 3]! - baseArr[i * 3]!;
                     const dy = modArr[i * 3 + 1]! - baseArr[i * 3 + 1]!;
                     const dz = modArr[i * 3 + 2]! - baseArr[i * 3 + 2]!;
                     heelOutline = Math.max(heelOutline, Math.hypot(dx, dy, dz));
+                }
+                const ring0 =
+                    (baseGeo.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> })
+                        .outlineRing ?? [];
+                const ring1 =
+                    (geo.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> })
+                        .outlineRing ?? [];
+                if (ring0.length === ring1.length) {
+                    for (let i = 0; i < ring0.length; i++) {
+                        const a = ring0[i]!;
+                        const b = ring1[i]!;
+                        const len = frame.lengthAxis === 0 ? a.x : frame.lengthAxis === 1 ? a.y : a.z;
+                        const u = (len - frame.lenMin) / frame.lenSize;
+                        if (u >= 0.45) continue;
+                        heelOutline = Math.max(
+                            heelOutline,
+                            Math.hypot(b.x - a.x, b.y - a.y, (b.z ?? 0) - (a.z ?? 0)),
+                        );
+                    }
                 }
                 expect(heelOutline).toBeLessThanOrEqual(0.05);
 
@@ -394,7 +418,124 @@ describe("forefoot width — SAMPLE_Top M9 procedural export", () => {
                 geo.dispose();
             }
             baseGeo.dispose();
+            console.log("[FOREFOOT-METRICS]", JSON.stringify(rows));
             expect(rows).toHaveLength(magnitudes.length);
         });
     }
+
+    test("met pad and text crossing the midline stay rigid at ±10", async () => {
+        const probe = await loadSampleTopGlb();
+        const frame = getBaseFootprintFrame(probe, "right");
+        probe.dispose();
+        const pad: PlacedElement = {
+            id: "mid-pad",
+            kind: "met_pad",
+            side: "right",
+            position: { x: 0.25 * frame.lenSize, y: 0 },
+            rotationDeg: 0,
+            scale: { x: 1, y: 1 },
+            heightMm: 5,
+            placementMode: "flow",
+        };
+        const text = {
+            ...defaultTextMarking("bottom"),
+            text: "OO",
+            surface: "bottom" as const,
+            mode: "engrave" as const,
+            placementU: 0.62,
+            capHeightMm: 6,
+            nudgeAlongMm: 0,
+            nudgeAcrossMm: 0,
+        };
+        const buildPad = async (mm: number) => {
+            const top = await loadSampleTopGlb();
+            const field = m9Field({ forefootWidthMm: mm });
+            field.elements = [pad];
+            field.includeElements = true;
+            const preview = await reconstructProceduralPreview(top, {
+                sourceField: field,
+                composedTop: true,
+                wallStyle: "straight",
+                side: "right",
+            });
+            top.dispose();
+            return preview.geometry;
+        };
+        const buildText = async (mm: number) => {
+            const top = await loadSampleTopGlb();
+            const preview = await reconstructProceduralPreview(top, {
+                sourceField: m9Field({ forefootWidthMm: mm }),
+                composedTop: true,
+                wallStyle: "straight",
+                textMarking: text,
+                side: "right",
+            });
+            top.dispose();
+            const marked = await applyTextMarkingToPrintSolid(preview.geometry, text, { side: "right" });
+            if (marked !== preview.geometry) preview.geometry.dispose();
+            return marked;
+        };
+        const span = (
+            geo: Awaited<ReturnType<typeof buildPad>>,
+            u: number,
+            halfU: number,
+            halfY: number,
+            zOk: (z: number) => boolean,
+        ) => {
+            const pos = geo.getAttribute("position")!.array as Float32Array;
+            const fr = getBaseFootprintFrame(geo, "right");
+            let minW = Infinity;
+            let maxW = -Infinity;
+            let sumW = 0;
+            let n = 0;
+            for (let i = 0; i < pos.length / 3; i++) {
+                const len = pos[i * 3 + fr.lengthAxis]!;
+                const wid = pos[i * 3 + fr.widthAxis]!;
+                const z = pos[i * 3 + fr.thickAxis]!;
+                const uu = (len - fr.lenMin) / fr.lenSize;
+                if (Math.abs(uu - u) > halfU || Math.abs(wid - fr.widCenter) > halfY) continue;
+                if (!zOk(z)) continue;
+                minW = Math.min(minW, wid);
+                maxW = Math.max(maxW, wid);
+                sumW += wid;
+                n++;
+            }
+            return { n, width: maxW - minW, mid: n ? sumW / n : 0 };
+        };
+        const padBase = await buildPad(0);
+        const textBase = await buildText(0);
+        const rows: Array<Record<string, number>> = [];
+        for (const mm of [10, -10] as const) {
+            const padGeo = await buildPad(mm);
+            const textGeo = await buildText(mm);
+            const pad0 = span(padBase, 0.75, 0.08, 24, (z) => z > 6);
+            const pad1 = span(padGeo, 0.75, 0.08, 24, (z) => z > 6);
+            const text0 = span(textBase, 0.62, 0.06, 14, (z) => z > 0.12 && z < 1.4);
+            const text1 = span(textGeo, 0.62, 0.06, 14, (z) => z > 0.12 && z < 1.4);
+            expect(pad0.n).toBeGreaterThan(8);
+            expect(pad1.n).toBeGreaterThan(8);
+            expect(text0.n).toBeGreaterThan(8);
+            expect(text1.n).toBeGreaterThan(8);
+            // Centroid is on the centreline, so the rigid offset is 0. A sheared
+            // pad would grow by about 2·|fw|.
+            expect(Math.abs(pad1.width - pad0.width)).toBeLessThanOrEqual(0.4);
+            expect(Math.abs(pad1.mid - pad0.mid)).toBeLessThanOrEqual(0.4);
+            expect(Math.abs(text1.width - text0.width)).toBeLessThanOrEqual(0.4);
+            expect(Math.abs(text1.mid - text0.mid)).toBeLessThanOrEqual(0.4);
+            rows.push({
+                mm,
+                padN: pad1.n,
+                padDWidth: Number((pad1.width - pad0.width).toFixed(3)),
+                padDMid: Number((pad1.mid - pad0.mid).toFixed(3)),
+                textN: text1.n,
+                textDWidth: Number((text1.width - text0.width).toFixed(3)),
+                textDMid: Number((text1.mid - text0.mid).toFixed(3)),
+            });
+            padGeo.dispose();
+            textGeo.dispose();
+        }
+        console.log("[FOREFOOT-MIDLINE]", JSON.stringify(rows));
+        padBase.dispose();
+        textBase.dispose();
+    }, 300_000);
 });

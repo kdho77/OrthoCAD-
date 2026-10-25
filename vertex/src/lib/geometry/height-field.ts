@@ -123,15 +123,29 @@ export function forefootWidthLongitudinalEnvelope(u: number): number {
     return 1 + t * (toeTipEnvelope - 1);
 }
 
+/** Normalized half-width of the centre band. Full shift outside it, 0 on v = 0. */
+export const FOREFOOT_WIDTH_MIDLINE_HALF_V = 0.15;
+
+/** 0 on the centreline, 1 for |v| at or beyond the midline band. C1. */
+export function forefootWidthMidlineGain(vAbs: number): number {
+    if (vAbs >= FOREFOOT_WIDTH_MIDLINE_HALF_V) return 1;
+    return smoothstep(0, FOREFOOT_WIDTH_MIDLINE_HALF_V, vAbs);
+}
+
 /**
- * Per-side forefoot offset (mm). Full envelope amount; `vSigned` is only the side.
- * No |v| taper. `forefootWidthMm === 0` stays 0 so the zero export is unchanged.
+ * Per-side forefoot offset (mm). Full envelope at the rim.
+ * `vSigned` is the normalized geometric lateral coordinate (about −1..1),
+ * not millimetres. The shift fades to 0 across |v| < 0.15 so the centre
+ * strip is not opened by 2·forefootWidthMm.
+ * `forefootWidthMm === 0` stays 0 so the zero export is unchanged.
  */
 export function forefootWidthPerSideDeltaMm(u: number, vSigned: number, forefootWidthMm: number): number {
-    if (forefootWidthMm === 0 || Math.abs(vSigned) < 1e-6) return 0;
+    if (forefootWidthMm === 0 || vSigned === 0) return 0;
     const env = forefootWidthLongitudinalEnvelope(u);
     if (env <= 0) return 0;
-    return Math.sign(vSigned) * forefootWidthMm * env;
+    const gain = forefootWidthMidlineGain(Math.abs(vSigned));
+    if (gain <= 0) return 0;
+    return Math.sign(vSigned) * forefootWidthMm * env * gain;
 }
 
 /** Heel cup scale delta + forefoot per-side offset (mm) at a lateral sample. */

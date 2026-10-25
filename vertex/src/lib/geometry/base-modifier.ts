@@ -764,6 +764,7 @@ function buildHeelCupWidthLateralDelta(
 } {
     const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
     const syncIndexCount = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+    const halfW = Math.max(1e-3, ctx.widSize * 0.5);
 
     const heelW = field.corrections.heelCupWidthMm ?? 0;
     const foreW = field.corrections.forefootWidthMm ?? 0;
@@ -785,7 +786,7 @@ function buildHeelCupWidthLateralDelta(
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const offset = widCoord - widCenter;
         const heelDelta = offset * (heelCupWidthScaleFactor(u, heelW) - 1);
-        const foreDelta = forefootWidthPerSideDeltaMm(u, offset, foreW);
+        const foreDelta = forefootWidthPerSideDeltaMm(u, offset / halfW, foreW);
         raw[i] = heelDelta + foreDelta;
     }
 

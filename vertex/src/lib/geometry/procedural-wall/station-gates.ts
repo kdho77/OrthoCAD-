@@ -798,7 +798,7 @@ export function assertPreLoftStations(
         if (foreEnv <= 1e-3 && insetMm + 1e-3 < need) {
             bad.push(`inset[${i}]=${insetMm.toFixed(3)}<${need.toFixed(3)}`);
         }
-        if (fore === 0) {
+        if (foreEnv <= 1e-3) {
             const skewCap = SKEW_INSET_RATIO * Math.max(insetMm, 0);
             if (skewMm > skewCap + 1e-3) {
                 bad.push(`skew[${i}]=${skewMm.toFixed(3)}>${skewCap.toFixed(3)}`);
@@ -818,7 +818,9 @@ export function assertPreLoftStations(
         const h1 = columnHeading(nxt).h;
         const d = Math.max(-1, Math.min(1, col.h.x * h1.x + col.h.y * h1.y));
         const head = (Math.acos(d) * 180) / Math.PI;
-        if (fore === 0 && head > PRELOFT_HEADING_MAX_DEG + 1e-3) {
+        const uNext = lengthMm > 1e-3 ? Math.max(0, Math.min(1, (nxt.rim.x - minX) / lengthMm)) : 0;
+        const nextEnv = fore !== 0 ? forefootWidthLongitudinalEnvelope(uNext) : 0;
+        if ((foreEnv <= 1e-3 || nextEnv <= 1e-3) && head > PRELOFT_HEADING_MAX_DEG + 1e-3) {
             bad.push(`heading[${i}-${(i + 1) % stations.length}]=${head.toFixed(2)}>15`);
         }
     }

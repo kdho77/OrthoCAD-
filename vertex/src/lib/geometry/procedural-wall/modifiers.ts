@@ -7,7 +7,6 @@ import {
     forefootWidthPerSideDeltaMm,
     heelCupDepthBowlDelta,
     heelCupWidthScaleFactor,
-    smoothstep,
 } from "@/lib/geometry/height-field";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
@@ -18,288 +17,242 @@ import type { DeviceTypePreset, LateralFlangeParams, StockWallModel } from "./ty
 
 type PlanBounds = { minX: number; maxX: number; minY: number; maxY: number };
 
-type SideUpper = (u: number) => { h: number; ny: number };
-
-/**
- * Per-outline-point lateral offset (mm). X is unchanged.
- * Wide stations move the full `mm × envelope(u)`. Where the outline normal
- * turns toward the toe, the offset follows that normal so the two sides
- * cannot cross. `upper` is the per-side half-width and the normal at it.
- */
-function rimLateralDeltas(
-    rim: PolyPoint[],
-    bounds: PlanBounds,
-    forefootWidthMm: number,
-): {
-    dy: Float64Array;
-    cy: number;
-    uOf: (x: number) => number;
-    upper: (sideSign: number, u: number) => { h: number; ny: number };
-    silhouetteDy: (sideSign: number, u: number) => number;
-} {
-    const minX = bounds.minX;
-    const length = Math.max(1e-3, bounds.maxX - minX);
-    const cy = 0.5 * (bounds.minY + bounds.maxY);
-    const n = rim.length;
-    const uOf = (x: number) => Math.max(0, Math.min(1, (x - minX) / length));
-    const ny = new Float64Array(n);
-    for (let i = 0; i < n; i++) {
-        const a = rim[(i - 1 + n) % n]!;
-        const b = rim[(i + 1) % n]!;
-        const tx = b.x - a.x;
-        const ty = b.y - a.y;
-        const len = Math.hypot(tx, ty) || 1;
-        let oy = -tx / len;
-        const side = rim[i]!.y - cy;
-        if (oy * side < 0) oy = -oy;
-        ny[i] = oy;
-    }
-    for (let pass = 0; pass < 2; pass++) {
-        const next = new Float64Array(n);
-        for (let i = 0; i < n; i++) {
-            next[i] = ny[(i - 1 + n) % n]! * 0.25 + ny[i]! * 0.5 + ny[(i + 1) % n]! * 0.25;
-        }
-        ny.set(next);
-    }
-    const upperOf = (sideSign: number): SideUpper => {
-        const bins = new Map<number, { u: number; h: number; ny: number }>();
-        const q = 0.004;
-        for (let i = 0; i < n; i++) {
-            const side = rim[i]!.y - cy;
-            if (side * sideSign < 0) continue;
-            const u = uOf(rim[i]!.x);
-            const h = Math.abs(side);
-            const k = Math.round(u / q);
-            const prev = bins.get(k);
-            if (!prev || h > prev.h) bins.set(k, { u, h, ny: Math.abs(ny[i]!) });
-        }
-        const arr = [...bins.values()].sort((a, b) => a.u - b.u);
-        return (u: number) => {
-            if (arr.length === 0) return { h: 1, ny: 0.5 };
-            if (u <= arr[0]!.u) return arr[0]!;
-            const last = arr[arr.length - 1]!;
-            if (u >= last.u) return last;
-            let lo = 0;
-            let hi = arr.length - 1;
-            while (hi - lo > 1) {
-                const mid = (lo + hi) >> 1;
-                if (arr[mid]!.u <= u) lo = mid;
-                else hi = mid;
-            }
-            const a = arr[lo]!;
-            const b = arr[hi]!;
-            const span = b.u - a.u || 1;
-            const t = (u - a.u) / span;
-            return { h: a.h + (b.h - a.h) * t, ny: a.ny + (b.ny - a.ny) * t };
-        };
-    };
-    const upperPos = upperOf(1);
-    const upperNeg = upperOf(-1);
-    const upper = (sideSign: number, u: number) => (sideSign >= 0 ? upperPos(u) : upperNeg(u));
-    let maxHalf = 0;
-    for (let i = 0; i < n; i++) {
-        const u = uOf(rim[i]!.x);
-        if (u < 0.6 || u > 0.92) continue;
-        maxHalf = Math.max(maxHalf, Math.abs(rim[i]!.y - cy));
-    }
-    let sat = 0.75;
-    if (maxHalf > 1) {
-        let acc = 0;
-        let satCount = 0;
-        for (let i = 0; i < n; i++) {
-            const u = uOf(rim[i]!.x);
-            if (u < 0.6 || u > 0.92) continue;
-            if (Math.abs(rim[i]!.y - cy) < maxHalf - 0.5) continue;
-            acc += Math.abs(ny[i]!);
-            satCount++;
-        }
-        if (satCount > 0) sat = acc / satCount;
-    }
-    sat = Math.min(0.99, Math.max(0.35, sat));
-    const dy = new Float64Array(n);
-    const signMm = Math.sign(forefootWidthMm);
-    for (let i = 0; i < n; i++) {
-        const u = uOf(rim[i]!.x);
-        const env = forefootWidthLongitudinalEnvelope(u);
-        if (env <= 0) continue;
-        const side = rim[i]!.y - cy;
-        const sideSign = side >= 0 ? 1 : -1;
-        const exact = Math.abs(forefootWidthMm) * env;
-        const lat = Math.max(0, Math.min(1, (ny[i]! * sideSign) / sat));
-        const nyMag = lat * exact;
-        // Full envelope through the gated stations. The toe cap follows the
-        // outward normal so a full lateral move does not fold the wall.
-        const hold = smoothstep(0.975, 0.955, u);
-        const mag = nyMag + (exact - nyMag) * hold;
-        dy[i] = sideSign * signMm * mag;
-    }
-    const orig = new Float64Array(dy);
-    for (let pass = 0; pass < 6; pass++) {
-        const next = new Float64Array(n);
-        for (let i = 0; i < n; i++) {
-            const u = uOf(rim[i]!.x);
-            if (u < 0.82) {
-                next[i] = dy[i]!;
-                continue;
-            }
-            const a = dy[(i - 1 + n) % n]!;
-            const c = dy[(i + 1) % n]!;
-            let smoothed = a * 0.25 + dy[i]! * 0.5 + c * 0.25;
-            // Averaging across the toe centre must not flip a station's side.
-            const src = orig[i]!;
-            if (src !== 0 && smoothed * src < 0) {
-                smoothed = Math.min(Math.abs(smoothed), Math.abs(src)) * Math.sign(src);
-            }
-            next[i] = smoothed;
-        }
-        dy.set(next);
-    }
-    for (let i = 0; i < n; i++) {
-        const u = uOf(rim[i]!.x);
-        const env = forefootWidthLongitudinalEnvelope(u);
-        const exact = Math.abs(forefootWidthMm) * env;
-        if (u <= 0.955 && Math.abs(orig[i]!) > Math.abs(dy[i]!) + 1e-4) dy[i] = orig[i]!;
-        const room = Math.abs(rim[i]!.y - cy) - 0.35;
-        if (forefootWidthMm < 0 && Math.abs(dy[i]!) > Math.max(0, room)) {
-            dy[i] = Math.sign(dy[i]!) * Math.max(0, room);
-        }
-        if (exact > 0 && Math.abs(dy[i]!) > exact) dy[i] = Math.sign(dy[i]!) * exact;
-    }
-    const silhouetteDy = (sideSign: number, u: number): number => {
-        const env = forefootWidthLongitudinalEnvelope(u);
-        if (env <= 0) return 0;
-        const exact = Math.abs(forefootWidthMm) * env;
-        const lat = Math.max(0, Math.min(1, upper(sideSign, u).ny / sat));
-        const hold = smoothstep(0.975, 0.955, u);
-        const mag = lat * exact + (exact - lat * exact) * hold;
-        return sideSign * signMm * mag;
-    };
-    return { dy, cy, uOf, upper, silhouetteDy };
+/** Plan rectangle translated by the forefoot offset at its vertex centroid. */
+export interface ForefootRigidBox {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
 }
 
 /**
- * Lateral part of a pure outward-normal offset of the rim. X never moves.
- * A query copies the nearest same-side rim point, so a loop vertex translates
- * with that station instead of shearing across |v|.
+ * Hold the last 1.5% of length. Past this the toe has collapsed onto the
+ * centreline and a live envelope slope folds the cap.
  */
+const FOREFOOT_SHIFT_U_HOLD = 0.985;
+/** |dY/dy| cap. A ±10 mm step steeper than this crosses vertices on narrowing. */
+const FOREFOOT_SHIFT_SLOPE_CAP = 0.75;
+/** Plateau starts just inboard of the bottom outline so the outline is at full shift. */
+const FOREFOOT_OUTLINE_ROOM_SCALE = 0.92;
+
+/**
+ * Outer |y − centre| of the bottom outline on one side, sampled along u.
+ * The rim and the outline then share one shift; only the inboard sheet tapers.
+ */
+export function forefootOutlineRoomMm(
+    outline: ReadonlyArray<{ x: number; y: number }>,
+    bounds: PlanBounds,
+): (u: number, positive: boolean) => number {
+    const cy = (bounds.minY + bounds.maxY) * 0.5;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const pts = outline.map((p) => {
+        const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
+        return { u, y: p.y, d: Math.abs(p.y - cy) };
+    });
+    return (u, positive) => {
+        const clamped = Math.max(0, Math.min(1, u));
+        let best = 0;
+        let has = false;
+        let nearest = Infinity;
+        let nearestD = 0;
+        for (const p of pts) {
+            if (positive ? p.y < cy : p.y >= cy) continue;
+            const du = Math.abs(p.u - clamped);
+            if (du < nearest) {
+                nearest = du;
+                nearestD = p.d;
+            }
+            if (du <= 0.004) {
+                best = Math.max(best, p.d);
+                has = true;
+            }
+        }
+        return has ? best : nearestD;
+    };
+}
+
+/** Lateral shift (mm) at a plan point. X and Z stay put. 0 below the ramp. */
+export function forefootPlanShiftMm(
+    x: number,
+    y: number,
+    bounds: PlanBounds,
+    forefootWidthMm: number,
+    roomAt: (u: number, positive: boolean) => number,
+): number {
+    if (!forefootWidthMm) return 0;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const cy = (bounds.minY + bounds.maxY) * 0.5;
+    if (y === cy) return 0;
+    const uRaw = Math.max(0, Math.min(1, (x - bounds.minX) / length));
+    const u = Math.min(uRaw, FOREFOOT_SHIFT_U_HOLD);
+    const env = forefootWidthLongitudinalEnvelope(u);
+    if (env <= 0) return 0;
+    const positive = y >= cy;
+    const room = Math.max(1, roomAt(u, positive) * FOREFOOT_OUTLINE_ROOM_SCALE);
+    const applied = Math.min(Math.abs(forefootWidthMm) * env, FOREFOOT_SHIFT_SLOPE_CAP * room);
+    const dist = Math.abs(y - cy);
+    const gain = dist >= room ? 1 : dist / room;
+    return Math.sign(y - cy) * Math.sign(forefootWidthMm) * applied * gain;
+}
+
+/**
+ * One lateral envelope on both sides. Full amount at the rim and the bottom
+ * outline, 0 on the centreline, 0 below the ramp. The taper is the inboard
+ * of the outline (slope-capped) so a ±10 mm narrowing cannot fold the sheet.
+ */
+export function forefootWidthPlanDy(
+    x: number,
+    y: number,
+    bounds: PlanBounds,
+    forefootWidthMm: number,
+    roomAt?: (u: number, positive: boolean) => number,
+): number {
+    if (!forefootWidthMm) return 0;
+    const half = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
+    const fallback = roomAt ?? (() => half);
+    return forefootPlanShiftMm(x, y, bounds, forefootWidthMm, fallback);
+}
+
+/** Met pads and text move rigidly; every other vertex uses the envelope. */
+export function applyForefootPlanShift(
+    positions: { readonly length: number; [index: number]: number },
+    bounds: PlanBounds,
+    forefootWidthMm: number,
+    boxes?: readonly ForefootRigidBox[],
+    outline?: ReadonlyArray<{ x: number; y: number }>,
+): void {
+    if (!forefootWidthMm) return;
+    const roomAt = outline && outline.length >= 8 ? forefootOutlineRoomMm(outline, bounds) : undefined;
+    const count = Math.floor(positions.length / 3);
+    const dy = new Float64Array(count);
+    for (let i = 0; i < count; i++) {
+        dy[i] = forefootWidthPlanDy(
+            positions[i * 3]!,
+            positions[i * 3 + 1]!,
+            bounds,
+            forefootWidthMm,
+            roomAt,
+        );
+    }
+    if (boxes) {
+        for (const box of boxes) {
+            const ids: number[] = [];
+            for (let i = 0; i < count; i++) {
+                const x = positions[i * 3]!;
+                const y = positions[i * 3 + 1]!;
+                if (x < box.minX || x > box.maxX || y < box.minY || y > box.maxY) continue;
+                ids.push(i);
+            }
+            if (ids.length === 0) continue;
+            // Feature centroid, not the mesh-vertex average (density would bias it).
+            const cx = (box.minX + box.maxX) * 0.5;
+            const cyBox = (box.minY + box.maxY) * 0.5;
+            const hx = Math.max(1e-3, (box.maxX - box.minX) * 0.5);
+            const hy = Math.max(1e-3, (box.maxY - box.minY) * 0.5);
+            const rigid = forefootWidthPlanDy(cx, cyBox, bounds, forefootWidthMm, roomAt);
+            for (const i of ids) {
+                const x = positions[i * 3]!;
+                const y = positions[i * 3 + 1]!;
+                const edge = Math.max(Math.abs(x - cx) / hx, Math.abs(y - cyBox) / hy);
+                // Core stays rigid. The outer margin blends back to the field so the
+                // box edge is not a step the boolean rejects.
+                const w = edge <= 0.7 ? 1 : Math.max(0, (1 - edge) / 0.3);
+                dy[i] = rigid * w + dy[i]! * (1 - w);
+            }
+        }
+    }
+    for (let i = 0; i < count; i++) {
+        const add = dy[i]!;
+        if (add !== 0) positions[i * 3 + 1] = positions[i * 3 + 1]! + add;
+    }
+}
+
+const FEATURE_HALF_MM: Record<string, { x: number; y: number }> = {
+    met_pad: { x: 34, y: 28 },
+    met_bar: { x: 16, y: 44 },
+    toe_crest: { x: 18, y: 24 },
+};
+
+/**
+ * Axis-aligned plan boxes for features that must not be sheared by the
+ * midline taper. Sized from the nominal footprint, padded so the feather
+ * stays inside, and kept clear of the rim.
+ */
+export function forefootFeatureBoxes(
+    bounds: PlanBounds,
+    features: {
+        lengthMm?: number;
+        elements?: ReadonlyArray<{
+            position: { x: number; y: number };
+            scale?: { x: number; y: number };
+            kind?: string;
+        }>;
+        text?: {
+            text?: string;
+            placementU?: number;
+            capHeightMm?: number;
+            nudgeAlongMm?: number;
+            nudgeAcrossMm?: number;
+        } | null;
+    },
+): ForefootRigidBox[] {
+    const boxes: ForefootRigidBox[] = [];
+    const cx0 = (bounds.minX + bounds.maxX) * 0.5;
+    const cy0 = (bounds.minY + bounds.maxY) * 0.5;
+    const lengthScale = Math.max(0.75, (features.lengthMm ?? 260) / 260);
+    for (const el of features.elements ?? []) {
+        const half = FEATURE_HALF_MM[el.kind ?? ""] ?? { x: 24, y: 20 };
+        const sx = Math.max(0.5, el.scale?.x ?? 1) * lengthScale * 1.2;
+        const sy = Math.max(0.5, el.scale?.y ?? 1) * lengthScale * 1.2;
+        const cx = cx0 + el.position.x;
+        const cy = cy0 + el.position.y;
+        boxes.push({
+            minX: cx - half.x * sx,
+            maxX: cx + half.x * sx,
+            minY: cy - half.y * sy,
+            maxY: cy + half.y * sy,
+        });
+    }
+    const text = features.text;
+    const label = text?.text?.trim() ?? "";
+    if (label) {
+        const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+        const u = Math.max(0, Math.min(1, text?.placementU ?? 0.68));
+        const cap = Math.max(4, text?.capHeightMm ?? 6);
+        const cx = bounds.minX + u * length + (text?.nudgeAlongMm ?? 0);
+        const cy = cy0 + (text?.nudgeAcrossMm ?? 0);
+        boxes.push({
+            minX: cx - Math.max(16, cap * label.length * 0.85),
+            maxX: cx + Math.max(16, cap * label.length * 0.85),
+            minY: cy - Math.max(8, cap),
+            maxY: cy + Math.max(8, cap),
+        });
+    }
+    return boxes;
+}
+
+/** Lateral part of the envelope at a query. X never moves. */
 export function forefootLateralOffsetFn(
     rim: PolyPoint[],
     bounds: PlanBounds,
     forefootWidthMm: number,
 ): (x: number, y: number) => number {
     if (!forefootWidthMm || rim.length < 3) return () => 0;
-    const built = rimLateralDeltas(rim, bounds, forefootWidthMm);
-    const pos: number[] = [];
-    const neg: number[] = [];
-    for (let i = 0; i < rim.length; i++) (rim[i]!.y >= built.cy ? pos : neg).push(i);
-    return (x: number, y: number) => {
-        const pool = y >= built.cy ? pos : neg;
-        if (pool.length === 0) return 0;
-        let best = Infinity;
-        let bestDy = 0;
-        for (const i of pool) {
-            const p = rim[i]!;
-            const d = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
-            if (d < best) {
-                best = d;
-                bestDy = built.dy[i]!;
-            }
-        }
-        return bestDy;
-    };
+    return (x: number, y: number) => forefootWidthPlanDy(x, y, bounds, forefootWidthMm);
 }
 
-/** Pure lateral normal offset of a closed plan loop. X is unchanged. */
+/** Pure lateral offset of a closed plan loop. X is unchanged. */
 export function offsetPlanLoopForefootWidthMm(
     loop: PolyPoint[],
     bounds: PlanBounds,
     forefootWidthMm: number,
 ): PolyPoint[] {
     if (!forefootWidthMm || loop.length < 3) return loop;
-    const dyAt = forefootLateralOffsetFn(loop, bounds, forefootWidthMm);
-    return loop.map((p) => ({ x: p.x, y: p.y + dyAt(p.x, p.y), z: p.z }));
-}
-
-/**
- * After main's station pipeline: the rim and the bottom each take the
- * envelope at their own station. The sheet scales that amount linearly
- * out to the outline so a cross-section stays affine.
- */
-export function applyForefootNormalOffset(
-    positions: number[],
-    stations: Array<{ rim: PolyPoint; outline: PolyPoint }>,
-    bounds: PlanBounds,
-    forefootWidthMm: number,
-): void {
-    if (!forefootWidthMm || stations.length < 3) return;
-    const rim = stations.map((s) => s.rim);
-    const built = rimLateralDeltas(rim, bounds, forefootWidthMm);
-    const rimX = new Float64Array(stations.length);
-    const rimY = new Float64Array(stations.length);
-    for (let s = 0; s < stations.length; s++) {
-        rimX[s] = rim[s]!.x;
-        rimY[s] = rim[s]!.y;
-    }
-    const signMm = Math.sign(forefootWidthMm);
-    for (let s = 0; s < stations.length; s++) {
-        const st = stations[s]!;
-        st.rim.y += built.dy[s]!;
-        const sideB = st.outline.y - built.cy;
-        if (Math.abs(sideB) < 1e-6) continue;
-        const uB = built.uOf(st.outline.x);
-        const envB = forefootWidthLongitudinalEnvelope(uB);
-        if (envB <= 0 && built.dy[s] === 0) continue;
-        let mag = Math.abs(forefootWidthMm) * envB;
-        if (forefootWidthMm < 0) mag = Math.min(mag, Math.max(0, Math.abs(sideB) - 0.35));
-        const own = Math.sign(sideB) * signMm * mag;
-        // Past the gated stations the rim follows its outward normal so the
-        // wall does not fold. The paired outline has to take that same shift;
-        // a full lateral move there swings the column chord.
-        const uR = built.uOf(rimX[s]!);
-        const followRim = smoothstep(0.955, 0.975, uR);
-        st.outline.y += own * (1 - followRim) + built.dy[s]! * followRim;
-    }
-    const count = Math.floor(positions.length / 3);
-    const vertDy = new Float64Array(count);
-    for (let i = 0; i < count; i++) {
-        const x = positions[i * 3]!;
-        const y = positions[i * 3 + 1]!;
-        const side = y - built.cy;
-        if (Math.abs(side) < 1e-6) continue;
-        const u = built.uOf(x);
-        const env = forefootWidthLongitudinalEnvelope(u);
-        if (env <= 0) continue;
-        // Freeze the scale past the last gated station so the toe cap, a
-        // Y-strip, does not pick up an extra slope from the envelope fade.
-        const uScale = Math.min(u, 0.975);
-        const half = Math.max(1, built.upper(side > 0 ? 1 : -1, uScale).h);
-        const t = Math.min(1, Math.abs(side) / half);
-        // Same silhouette law as the stations, scaled in to the centre.
-        // A full-envelope affine next to a normal-reduced station flips the
-        // toe rim triangles.
-        vertDy[i] = built.silhouetteDy(side > 0 ? 1 : -1, uScale) * t;
-    }
-    // A vertex on a station, and any coincident duplicate, takes that
-    // station's offset. The wall is lofted from those stations.
-    for (let i = 0; i < count; i++) {
-        const x = positions[i * 3]!;
-        const y = positions[i * 3 + 1]!;
-        let best = 0.35;
-        let bestDy = 0;
-        let hit = false;
-        for (let s = 0; s < stations.length; s++) {
-            const d = Math.hypot(x - rimX[s]!, y - rimY[s]!);
-            if (d < best) {
-                best = d;
-                bestDy = built.dy[s]!;
-                hit = true;
-            }
-        }
-        if (hit) vertDy[i] = bestDy;
-    }
-    for (let i = 0; i < count; i++) {
-        positions[i * 3 + 1] = positions[i * 3 + 1]! + vertDy[i]!;
-    }
+    return loop.map((p) => ({
+        x: p.x,
+        y: p.y + forefootWidthPlanDy(p.x, p.y, bounds, forefootWidthMm),
+        z: p.z,
+    }));
 }
 
 /** Print-step grinding dropdown → wall mid-style. */
@@ -372,8 +325,9 @@ export function applyCurveModifiers(
             t.y = widCenter + (t.y - widCenter) * scale;
         }
         if (c && foreW !== 0) {
-            o.y += forefootWidthPerSideDeltaMm(u, o.y - widCenter, foreW);
-            t.y += forefootWidthPerSideDeltaMm(u, t.y - widCenter, foreW);
+            const halfW = Math.max(1e-3, (model.bounds.maxY - model.bounds.minY) * 0.5);
+            o.y += forefootWidthPerSideDeltaMm(u, (o.y - widCenter) / halfW, foreW);
+            t.y += forefootWidthPerSideDeltaMm(u, (t.y - widCenter) / halfW, foreW);
         }
         const whole = input.insoleWidthScale ?? 1;
         if (Number.isFinite(whole) && Math.abs(whole - 1) > 1e-12) {

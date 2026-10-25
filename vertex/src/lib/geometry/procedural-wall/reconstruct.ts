@@ -45,9 +45,11 @@ import { buildHermiteStations } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
 import { countJunctionBandSlivers, windingReport } from "./metrics";
 import {
-    applyForefootNormalOffset,
+    applyForefootPlanShift,
     clampPostingOnTopSheet,
     footprintVSignedFromMeshY,
+    forefootOutlineRoomMm,
+    forefootWidthPlanDy,
     type ProceduralModifierInput,
     type ProceduralWallStyle,
     postingZDelta,
@@ -121,13 +123,16 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * the Default extractTopSheet steal.
      */
     composedTop?: boolean;
-    /** Uncomposed SAMPLE_Top rim plan for B follow when `composedTop` moved the live rim. */
-    patternRimBaseline?: PolyPoint[];
     /**
      * Composed rim at forefootWidthMm=0. Pattern hygiene/clearance uses this
      * so the heel matches the zero-width export, then the forefoot offset is applied.
      */
     forefootClearanceRim?: PolyPoint[];
+    /**
+     * Met pads and text. Vertices inside translate by the offset at their
+     * centroid instead of the per-vertex midline taper.
+     */
+    forefootRigidBoxes?: ReadonlyArray<{ minX: number; maxX: number; minY: number; maxY: number }>;
 }
 
 function zeroCorrections(): SideCorrections {
@@ -1068,12 +1073,7 @@ export function reconstructProceduralWalls(
                   z: 0,
               }))
             : liveRimPlan;
-    const patternRim =
-        options.patternRimBaseline && options.patternRimBaseline.length >= 3
-            ? options.patternRimBaseline
-            : stockRimPlan.length >= 3
-              ? stockRimPlan
-              : liveRimPlan;
+    const patternRim = stockRimPlan.length >= 3 ? stockRimPlan : liveRimPlan;
     const legacyFaired = !patternPts?.length;
     const rawOutline = patternPts?.length
         ? startAtLowCurvature(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))), model.bounds)
@@ -1404,9 +1404,6 @@ export function reconstructProceduralWalls(
         forefootRound: options.forefootRound,
     });
     const footLengthMm = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
-    if (forefootMm !== 0) {
-        applyForefootNormalOffset(positions, stations, model.bounds, forefootMm);
-    }
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,
         y: positions[i * 3 + 1]!,
@@ -1420,14 +1417,6 @@ export function reconstructProceduralWalls(
         stations.map((s) => columnHeading(s).h),
         0,
     );
-    const sheetZ =
-        forefootMm !== 0
-            ? (() => {
-                  const liveH = buildXyHeightIndex(Float32Array.from(positions), indices);
-                  return (x: number, y: number) => sampleXyHeight(liveH, x, y, "max");
-              })()
-            : topZ;
-
     const grid = buildQuadGrid({
         stations,
         junctions,
@@ -1436,7 +1425,7 @@ export function reconstructProceduralWalls(
         dish,
         plantarField: model.outline.plantarZ,
         zDelta,
-        topZ: sheetZ,
+        topZ,
         liveSheet: useLiveSheet,
         nWall: options.wallLayers ?? 26,
         flangeHeightMm: flangeH,
@@ -1755,6 +1744,19 @@ export function reconstructProceduralWalls(
     console.log("[RND-WIND]", JSON.stringify(wallFlip));
     if (grid.quality) {
         (grid.quality as { nFlippedWallFaces?: number }).nFlippedWallFaces = wallFlip.n;
+    }
+    if (forefootMm !== 0) {
+        const roomAt = forefootOutlineRoomMm(grid.outlineRing, model.bounds);
+        applyForefootPlanShift(
+            positions,
+            model.bounds,
+            forefootMm,
+            options.forefootRigidBoxes,
+            grid.outlineRing,
+        );
+        for (const p of grid.outlineRing) {
+            p.y += forefootWidthPlanDy(p.x, p.y, model.bounds, forefootMm, roomAt);
+        }
     }
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
