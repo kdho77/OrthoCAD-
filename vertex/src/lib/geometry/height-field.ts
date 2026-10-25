@@ -124,6 +124,51 @@ export function forefootWidthLongitudinalEnvelope(u: number): number {
 }
 
 /**
+ * Local silhouette half-width. A narrow u window keeps the toe taper from
+ * borrowing the wider ball-of-foot edge, so |v| is 1 on the outline.
+ */
+export function makeSilhouetteHalfWidth(
+    samples: Array<{ u: number; offset: number }>,
+    windowU = 0.004,
+): (u: number) => number {
+    const sorted = samples
+        .map((s) => ({ u: Math.max(0, Math.min(1, s.u)), a: Math.abs(s.offset) }))
+        .sort((p, q) => p.u - q.u);
+    const n = sorted.length;
+    return (u: number) => {
+        if (n === 0) return 1e-3;
+        const t = Math.max(0, Math.min(1, u));
+        const a = t - windowU;
+        const b = t + windowU;
+        let lo = 0;
+        let hi = n;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (sorted[mid]!.u < a) lo = mid + 1;
+            else hi = mid;
+        }
+        let m = 0;
+        for (let i = lo; i < n && sorted[i]!.u <= b; i++) if (sorted[i]!.a > m) m = sorted[i]!.a;
+        if (m > 0) return m;
+        let nearest = sorted[0]!.a;
+        let best = Math.abs(sorted[0]!.u - t);
+        for (let i = 1; i < n; i++) {
+            const d = Math.abs(sorted[i]!.u - t);
+            if (d < best) {
+                best = d;
+                nearest = sorted[i]!.a;
+            }
+        }
+        return nearest || 1e-3;
+    };
+}
+
+/** Lateral coordinate normalized by the silhouette half-width (±1 at the edge). */
+export function localLateralV(offsetFromCenter: number, halfWidth: number): number {
+    return Math.max(-1, Math.min(1, offsetFromCenter / (halfWidth || 1e-3)));
+}
+
+/**
  * Per-side normal offset (mm) along the local lateral axis. Positive `forefootWidthMm`
  * moves each outline side outward by `|mm| × envelope(u)` at the edge; 0 on the centerline.
  */
@@ -131,7 +176,9 @@ export function forefootWidthPerSideDeltaMm(u: number, vSigned: number, forefoot
     if (forefootWidthMm === 0 || Math.abs(vSigned) < 1e-6) return 0;
     const env = forefootWidthLongitudinalEnvelope(u);
     if (env <= 0) return 0;
-    const edge = smoothstep(0.04, 0.98, Math.abs(vSigned));
+    // Saturate before |v|=1 so a tapering toe rim, and the vertices welded to it,
+    // still move by the full per-side amount. Centerline stays put.
+    const edge = smoothstep(0.02, 0.7, Math.abs(vSigned));
     return Math.sign(vSigned) * forefootWidthMm * env * edge;
 }
 

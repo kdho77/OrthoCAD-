@@ -20,7 +20,7 @@ import {
 } from "@/lib/library/loaders";
 import type { ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
-import type { PolyPoint } from "./curves";
+import { ensureCcw, type PolyPoint, startAtLowCurvature } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
 import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
@@ -250,10 +250,35 @@ export async function reconstructProceduralPreview(
     if (owned) source.dispose();
     const foreW =
         options.sourceField?.corrections?.forefootWidthMm ?? options.corrections?.forefootWidthMm ?? 0;
-    const patternModel =
-        useComposed && foreW !== 0
-            ? extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME })
-            : model;
+    // Same faired bottom as forefootWidthMm=0, then one per-side offset. A pattern
+    // taken from the already-widened top (or from the uncomposed mesh) does not
+    // share the baseline heel.
+    let patternModel = model;
+    let forefootClearanceRim: PolyPoint[] | undefined;
+    if (useComposed && foreW !== 0 && options.sourceField) {
+        const baseline = await composePrintSolidTop(topGeo, {
+            sourceField: {
+                ...options.sourceField,
+                corrections: { ...options.sourceField.corrections, forefootWidthMm: 0 },
+            },
+            shoeWidth: options.shoeWidth,
+            trimline: options.trimline,
+        });
+        patternModel = extractTopOnlyModel(baseline, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+        const pos = patternModel.top.meshPositions;
+        const rimIdx = patternModel.top.rimLocal ?? [];
+        if (pos && rimIdx.length >= 8) {
+            const rim = rimIdx.map((i) => ({
+                x: pos[i * 3] ?? 0,
+                y: pos[i * 3 + 1] ?? 0,
+                z: 0,
+            }));
+            forefootClearanceRim = startAtLowCurvature(ensureCcw(rim)).map((p) => ({ x: p.x, y: p.y, z: 0 }));
+        }
+        if (baseline !== topGeo) baseline.dispose();
+    } else if (useComposed && foreW !== 0) {
+        patternModel = extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+    }
     const requested = options.bottomPattern?.length
         ? options.bottomPattern
         : buildFairedPatternFromTop(patternModel, options.scanPattern);
@@ -277,6 +302,7 @@ export async function reconstructProceduralPreview(
             sourceField: options.sourceField,
             composedTop: useComposed,
             patternRimBaseline,
+            forefootClearanceRim,
         });
         return { model, pattern, geometry };
     };

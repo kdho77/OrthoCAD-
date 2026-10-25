@@ -11,6 +11,8 @@ import {
     type HeightFieldParams,
     heelCupWidthScaleFactor,
     heightAt,
+    localLateralV,
+    makeSilhouetteHalfWidth,
     quinticSmoothstep,
     smoothstep,
 } from "@/lib/geometry/height-field";
@@ -779,6 +781,19 @@ function buildHeelCupWidthLateralDelta(
     }
 
     const raw = new Float32Array(count);
+    const foreHalf =
+        foreW !== 0
+            ? makeSilhouetteHalfWidth(
+                  Array.from({ length: count }, (_, i) => {
+                      const lenCoord = array[i * 3 + lengthAxis]!;
+                      const widCoord = array[i * 3 + widthAxis]!;
+                      return {
+                          u: Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize)),
+                          offset: widCoord - widCenter,
+                      };
+                  }),
+              )
+            : null;
     for (let i = 0; i < count; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
         const widCoord = array[i * 3 + widthAxis]!;
@@ -788,7 +803,8 @@ function buildHeelCupWidthLateralDelta(
         const vGeom = Math.max(-1, Math.min(1, offset / halfW));
         const vSigned = Math.max(-1, Math.min(1, (widthSign * offset) / halfW));
         const heelDelta = offset * (heelCupWidthScaleFactor(u, heelW) - 1);
-        const foreDelta = forefootWidthPerSideDeltaMm(u, vGeom, foreW);
+        const vFore = foreHalf ? localLateralV(offset, foreHalf(u)) : vGeom;
+        const foreDelta = forefootWidthPerSideDeltaMm(u, vFore, foreW);
         raw[i] = heelDelta + foreDelta;
     }
 

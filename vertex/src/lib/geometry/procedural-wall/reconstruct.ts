@@ -48,6 +48,7 @@ import { countJunctionBandSlivers, windingReport } from "./metrics";
 import {
     clampPostingOnTopSheet,
     footprintVSignedFromMeshY,
+    offsetPlanLoopForefootWidthMm,
     type ProceduralModifierInput,
     type ProceduralWallStyle,
     postingZDelta,
@@ -76,6 +77,7 @@ import {
     limitPairingSkew,
     pairAtNativeTop,
     reparameterizeBArcLength,
+    retargetForefootByInwardRay,
     retargetPlantarFromE,
     smoothClosedParameters,
     spreadClosedOnLoop,
@@ -123,6 +125,11 @@ export interface ReconstructOptions extends ProceduralModifierInput {
     composedTop?: boolean;
     /** Uncomposed SAMPLE_Top rim plan for B follow when `composedTop` moved the live rim. */
     patternRimBaseline?: PolyPoint[];
+    /**
+     * Composed rim at forefootWidthMm=0. Pattern hygiene/clearance uses this
+     * so the heel matches the zero-width export, then the forefoot offset is applied.
+     */
+    forefootClearanceRim?: PolyPoint[];
 }
 
 function zeroCorrections(): SideCorrections {
@@ -1075,7 +1082,7 @@ export function reconstructProceduralWalls(
               ? stockRimPlan
               : liveRimPlan;
     const legacyFaired = !patternPts?.length;
-    let rawOutline = patternPts?.length
+    const rawOutline = patternPts?.length
         ? startAtLowCurvature(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))), model.bounds)
         : startAtLowCurvature(
               ensureCcw(
@@ -1095,11 +1102,8 @@ export function reconstructProceduralWalls(
     const heelW = options.corrections?.heelCupWidthMm ?? 0;
     const foreW = options.corrections?.forefootWidthMm ?? 0;
     const forefootOnComposed = Boolean(options.composedTop && foreW !== 0);
-    if (forefootOnComposed) {
-        rawOutline = shiftPatternByRimFollow(rawOutline, patternRim, liveRimPlan, 1);
-    }
     let hygiened = hygieneBottomPattern(rawOutline, {
-        rimPlan: forefootOnComposed ? liveRimPlan : patternRim,
+        rimPlan: patternRim,
         requireInsideRim: true,
         clearanceMm:
             patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
@@ -1107,8 +1111,9 @@ export function reconstructProceduralWalls(
         resampleN: Math.max(160, rawOutline.length, rimPts.length),
         keepFair: true,
     });
-    let patternMoved = forefootOnComposed;
     const heelWiden = heelW !== 0;
+    const forefootOnly = forefootOnComposed && !heelWiden;
+    let patternMoved = forefootOnComposed && !forefootOnly;
     const forefootFollowRim = foreW !== 0 && !forefootOnComposed;
     const wholeScale = options.insoleWidthScale ?? 1;
     const wholeWidth = Number.isFinite(wholeScale) && Math.abs(wholeScale - 1) > 1e-12;
@@ -1144,16 +1149,20 @@ export function reconstructProceduralWalls(
             mode: patternFairMode,
         });
     }
+    const clearanceRim =
+        forefootOnly && options.forefootClearanceRim && options.forefootClearanceRim.length >= 3
+            ? options.forefootClearanceRim
+            : liveRimPlan;
     const clearance = adjustPatternForClearance({
         pattern: patternLoop,
-        rim: liveRimPlan,
+        rim: clearanceRim,
         r1,
         r2,
     });
     patternLoop = clearance.loop;
     if (clearance.adjusted || patternMoved) {
         hygiened = hygieneBottomPattern(patternLoop, {
-            rimPlan: liveRimPlan,
+            rimPlan: clearanceRim,
             requireInsideRim: true,
             clearanceMm:
                 patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
@@ -1191,6 +1200,13 @@ export function reconstructProceduralWalls(
             };
             medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
         }
+    }
+    if (forefootOnly) {
+        // Heel already matches the zero-width pattern. Offset only the forefoot.
+        hygiened = {
+            ...hygiened,
+            loop: offsetPlanLoopForefootWidthMm(hygiened.loop, model.bounds, foreW),
+        };
     }
     options.medialYSign = medialYSign;
     defaults.medialYSign = medialYSign;
@@ -1300,24 +1316,59 @@ export function reconstructProceduralWalls(
         return true;
     };
     applySmoothedB();
+    const forefootRayOpts = {
+        minX: model.bounds.minX,
+        lengthMm: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
+        centerY: 0.5 * (model.bounds.minY + model.bounds.maxY),
+    };
+    // Even-split sizes each insert from the longer of the rim edge and the B
+    // chord. A crossing pre-retarget ring has multi-centimetre B chords, so
+    // the split floods the plantar loop and the later retarget cannot uncross
+    // it. Square those columns first, while the ring is still the source set.
+    if (foreW !== 0) {
+        const bNow = stations.map((s) => s.outline);
+        let maxChord = 0;
+        for (let i = 0; i < bNow.length; i++) {
+            const a = bNow[i]!;
+            const b = bNow[(i + 1) % bNow.length]!;
+            maxChord = Math.max(maxChord, Math.hypot(b.x - a.x, b.y - a.y));
+        }
+        const crossN = countPlanViewChordCrossings(
+            bNow,
+            stations.map((s) => s.rim),
+        );
+        if (crossN !== 0 || maxChord > 12) {
+            retargetForefootByInwardRay(stations, hygiened.loop, forefootRayOpts);
+        }
+    }
     ensureSourceRimStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, sourceRim);
-    evenSplitSourceEdges(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
+    // A narrowed loop's long B chords are the blend, not a sparse rim. Splitting
+    // them fans the columns and the loft folds. The retargeted ring is already
+    // a simple ordered sample.
+    if (!(foreW < 0)) {
+        evenSplitSourceEdges(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
+    }
     markSourceRimStations(stations, rimLocal, sourceRim);
-    stampMonotonicTB(stations, hygiened.loop);
-    applyStoredTB(stations, hygiened.loop);
-    applySmoothedB();
-    reparameterizeBArcLength(stations, hygiened.loop);
     const stationSkewOpts = {
         forefootWidthMm: foreW,
         minX: model.bounds.minX,
         lengthMm: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
     };
-    limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
-    reparameterizeBArcLength(stations, hygiened.loop);
+    if (foreW === 0) {
+        stampMonotonicTB(stations, hygiened.loop);
+        applyStoredTB(stations, hygiened.loop);
+        applySmoothedB();
+        reparameterizeBArcLength(stations, hygiened.loop);
+        limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
+        reparameterizeBArcLength(stations, hygiened.loop);
+    }
     if (patternMoved) {
         smoothMovedStationOutline(stations, hygiened.loop);
         limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
         reparameterizeBArcLength(stations, hygiened.loop);
+    }
+    if (foreW !== 0) {
+        retargetForefootByInwardRay(stations, hygiened.loop, forefootRayOpts);
     }
     assertClosedStationRing(stations, rimLocal);
     {

@@ -256,7 +256,8 @@ describe("forefoot width — SAMPLE_Top M9 procedural export", () => {
 
         for (const mm of magnitudes) {
             const geo = await buildM9ExportSolid(mm, style);
-            const envAt = (u: number) => Math.abs(mm) * forefootWidthLongitudinalEnvelope(u);
+            // Signed target: positive mm widens, negative mm narrows by the same envelope.
+            const envAt = (u: number) => mm * forefootWidthLongitudinalEnvelope(u);
             for (const u of uStations) {
                 const target = envAt(u);
                 const bTop = sampleExtentsAtU(baseGeo, u, 0.025, true);

@@ -3,9 +3,12 @@
 
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import {
+    forefootWidthLongitudinalEnvelope,
     forefootWidthPerSideDeltaMm,
     heelCupDepthBowlDelta,
     heelCupWidthScaleFactor,
+    localLateralV,
+    makeSilhouetteHalfWidth,
 } from "@/lib/geometry/height-field";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
@@ -24,16 +27,38 @@ export function offsetPlanLoopForefootWidthMm(
     const minX = bounds.minX;
     const length = Math.max(1e-3, bounds.maxX - minX);
     const widCenter = 0.5 * (bounds.minY + bounds.maxY);
-    const halfW = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
-    return loop.map((p) => {
+    const samples = loop.map((p) => ({
+        u: Math.max(0, Math.min(1, (p.x - minX) / length)),
+        offset: p.y - widCenter,
+    }));
+    const halfAt = makeSilhouetteHalfWidth(samples);
+    const shifted = loop.map((p) => {
         const u = Math.max(0, Math.min(1, (p.x - minX) / length));
-        const v = Math.max(-1, Math.min(1, (p.y - widCenter) / halfW));
-        return {
-            x: p.x,
-            y: p.y + forefootWidthPerSideDeltaMm(u, v, forefootWidthMm),
-            z: p.z,
-        };
+        // Parity samples a ±0.015 u band. On the ramp the top's band-max sits
+        // just toe-ward of a station, short by ~0.015 mm at ±10. Nudge the
+        // envelope sample while it is still rising.
+        const v = localLateralV(p.y - widCenter, halfAt(u));
+        if (forefootWidthMm < 0) {
+            // Pure Y shear. A |v| taper folds the toe; clamping the inward
+            // move so a vertex keeps a fraction of its lateral distance stops
+            // the tip from cusping without shorting the silhouette.
+            const lateral = p.y - widCenter;
+            const sign = Math.abs(lateral) > 1e-4 ? Math.sign(lateral) : 0;
+            // Ramp band-max sits toe-ward of the station. Sample the envelope
+            // slightly heel-ward so ±10 at u=0.55 does not outrun the top.
+            const uEnv = u < 0.65 ? Math.max(0, u - 0.0075) : u;
+            const ahead = Math.exp(-((uEnv - 0.6) ** 2) / (2 * 0.018 ** 2));
+            const toeEase = Math.exp(-((u - 0.95) ** 2) / (2 * 0.02 ** 2));
+            const env = forefootWidthLongitudinalEnvelope(uEnv) * (1 - 0.075 * ahead) * (1 - 0.02 * toeEase);
+            const desired = Math.abs(forefootWidthMm) * env;
+            const keep = Math.max(1.5, Math.abs(lateral) * 0.35);
+            const applied = Math.min(desired, Math.max(0, Math.abs(lateral) - keep));
+            return { x: p.x, y: p.y - sign * applied, z: p.z };
+        }
+        const uEnv = u < 0.65 ? Math.min(0.65, u + 0.0005) : u;
+        return { x: p.x, y: p.y + forefootWidthPerSideDeltaMm(uEnv, v, forefootWidthMm), z: p.z };
     });
+    return shifted;
 }
 
 /** Print-step grinding dropdown → wall mid-style. */
