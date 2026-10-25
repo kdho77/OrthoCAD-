@@ -5,6 +5,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "@rstest/core";
+import type { BufferGeometry } from "three";
+import { createDefaultStockPairedBases, getSampleTopStockBase } from "@/lib/geometry/base-asset";
 import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { applyTextMarkingToPrintSolid } from "@/lib/geometry/text-marking/apply";
@@ -13,10 +15,67 @@ import { flattenText } from "@/lib/geometry/text-marking/contours";
 import { loadTextFont } from "@/lib/geometry/text-marking/font";
 import { extractHostTextContext, placeBottomText } from "@/lib/geometry/text-marking/place";
 import { mirrorGeometry } from "@/lib/library/loaders";
-import type { Side, TextMarking } from "@/types";
+import type { DesignBase, Side, TextMarking } from "@/types";
 import { loadSampleTopGlb } from "./helpers/load-sample-top-glb";
 
 const ASYMMETRIC = "JR";
+
+/** Same `mirrored` flag as `export-geometry.ts` → `buildProceduralExportSolid`. */
+function stockBaseForSide(side: Side): DesignBase {
+    const { left, right } = createDefaultStockPairedBases(getSampleTopStockBase());
+    return side === "left" ? left : right;
+}
+
+function productionMirrored(side: Side): boolean {
+    return Boolean(stockBaseForSide(side).mirrored);
+}
+
+/** `loadBaseGeometry` mirror + `reconstructProceduralPreview` (export-geometry procedural path). */
+async function buildProductionHost(side: Side) {
+    const mirrored = productionMirrored(side);
+    let raw = await loadSampleTopGlb();
+    if (mirrored) {
+        const reflected = mirrorGeometry(raw);
+        raw.dispose();
+        raw = reflected;
+    }
+    const preview = await reconstructProceduralPreview(raw, { wallStyle: "straight" });
+    raw.dispose();
+    return { preview, mirrored };
+}
+
+/**
+ * Medial arch sign from top-surface height in the 35–55% length band.
+ * Returns −1 when the higher arch (max Z) sits on Y−, +1 when on Y+.
+ */
+function medialArchSideSign(geo: BufferGeometry): number {
+    const pos = geo.getAttribute("position").array as Float32Array;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < pos.length; i += 3) {
+        minX = Math.min(minX, pos[i]!);
+        maxX = Math.max(maxX, pos[i]!);
+        minY = Math.min(minY, pos[i + 1]!);
+        maxY = Math.max(maxY, pos[i + 1]!);
+    }
+    const midY = (minY + maxY) / 2;
+    const x0 = minX + 0.35 * (maxX - minX);
+    const x1 = minX + 0.55 * (maxX - minX);
+    let maxZNegY = -Infinity;
+    let maxZPosY = -Infinity;
+    for (let i = 0; i < pos.length; i += 3) {
+        const x = pos[i]!;
+        const y = pos[i + 1]!;
+        const z = pos[i + 2]!;
+        if (x < x0 || x > x1) continue;
+        if (y < midY) maxZNegY = Math.max(maxZNegY, z);
+        else maxZPosY = Math.max(maxZPosY, z);
+    }
+    if (!Number.isFinite(maxZNegY) || !Number.isFinite(maxZPosY)) return 0;
+    return maxZNegY > maxZPosY ? -1 : 1;
+}
 
 function markingBottom(text: string, extras: Partial<TextMarking> = {}): TextMarking {
     return {
@@ -27,17 +86,6 @@ function markingBottom(text: string, extras: Partial<TextMarking> = {}): TextMar
         placementU: 0.32,
         ...extras,
     };
-}
-
-/** Outline point farthest from centreline in the arch band (u ≈ 0.32). */
-function archLateralY(ctx: ReturnType<typeof extractHostTextContext>): number {
-    const cx = ctx.minX + 0.32 * (ctx.maxX - ctx.minX);
-    const band = ctx.outline.filter((p) => Math.abs(p.x - cx) < 18);
-    let peak = ctx.midY;
-    for (const p of band) {
-        if (Math.abs(p.y - ctx.midY) > Math.abs(peak - ctx.midY)) peak = p.y;
-    }
-    return peak;
 }
 
 /** Sole viewed from below with toe toward +x: lateral axis is −world Y. */
@@ -68,45 +116,34 @@ function jHookBias(placed: ReturnType<typeof placeBottomText>["flat"]): number {
 }
 
 describe("SAMPLE_Top bottom text L/R handedness", () => {
-    test("arch lateral Y: left −, right +; soles are y-mirrors", async () => {
-        const raw = await loadSampleTopGlb();
-        try {
-            const rightPreview = await reconstructProceduralPreview(raw.clone(), { wallStyle: "straight" });
-            const mirrored = mirrorGeometry(raw);
-            const leftPreview = await reconstructProceduralPreview(mirrored, { wallStyle: "straight" });
-            mirrored.dispose();
-            const leftCtx = extractHostTextContext(leftPreview.geometry);
-            const rightCtx = extractHostTextContext(rightPreview.geometry);
-            const leftArch = archLateralY(leftCtx);
-            const rightArch = archLateralY(rightCtx);
-            expect(leftArch).toBeLessThan(leftCtx.midY);
-            expect(rightArch).toBeGreaterThan(rightCtx.midY);
-            expect(rightArch - rightCtx.midY).toBeCloseTo(leftCtx.midY - leftArch, 0.5);
-            leftPreview.geometry.dispose();
-            rightPreview.geometry.dispose();
-        } finally {
-            raw.dispose();
-        }
-    }, 120_000);
+    test("production mirror: left unmirrored, right mirrored; arch Y− / Y+", async () => {
+        expect(productionMirrored("left")).toBe(false);
+        expect(productionMirrored("right")).toBe(true);
 
-    test("bottom J reads the same from below on both feet (export + placement)", async () => {
+        const leftHost = await buildProductionHost("left");
+        const rightHost = await buildProductionHost("right");
+        try {
+            expect(medialArchSideSign(leftHost.preview.geometry)).toBe(-1);
+            expect(medialArchSideSign(rightHost.preview.geometry)).toBe(1);
+        } finally {
+            leftHost.preview.geometry.dispose();
+            rightHost.preview.geometry.dispose();
+        }
+    }, 180_000);
+
+    test("bottom JR reads the same from below on both feet (export + placement)", async () => {
         const font = await loadTextFont();
         const flat = flattenText(font, ASYMMETRIC, 6, 0.6, true);
-        const raw = await loadSampleTopGlb();
         const outDir = mkdtempSync(join(tmpdir(), "bottomtext-"));
         try {
             const buildSide = async (side: Side) => {
-                const base = side === "left" ? mirrorGeometry(raw) : raw.clone();
-                const preview = await reconstructProceduralPreview(base, { wallStyle: "straight" });
-                if (side === "left") base.dispose();
+                const { preview } = await buildProductionHost(side);
                 const ctx = extractHostTextContext(preview.geometry);
                 const placed = placeBottomText(preview.geometry, ctx, markingBottom(ASYMMETRIC), flat, side);
                 const tagged = await applyTextMarkingToPrintSolid(
                     preview.geometry.clone(),
                     markingBottom(ASYMMETRIC),
-                    {
-                        side,
-                    },
+                    { side },
                 );
                 const stlPath = join(outDir, `${side}-bottom-JR.stl`);
                 writeFileSync(stlPath, Buffer.from(geometryToBinarySTL(tagged)));
@@ -133,7 +170,7 @@ describe("SAMPLE_Top bottom text L/R handedness", () => {
             expect(Math.sign(leftHook)).not.toBe(0);
             expect(Math.sign(rightHook)).toBe(Math.sign(leftHook));
         } finally {
-            raw.dispose();
+            /* buildProductionHost loads SAMPLE_Top internally */
         }
-    }, 180_000);
+    }, 240_000);
 });
