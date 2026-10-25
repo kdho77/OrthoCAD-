@@ -832,4 +832,72 @@ describe("full-length wedge export", () => {
             }
         }
     }, 1_200_000);
+
+    test("forefoot width +5 mm with a full-length wedge stays watertight and rises at the heel", async () => {
+        const meshCase: MeshCase = { deg: 5, size: 9, side: "right", style: "straight", edge: "lateral" };
+        const neutral = await preview(blank({ forefootWidthMm: 5 }), meshCase);
+        const corrections = blank({
+            forefootWidthMm: 5,
+            fullLengthWedge: { side: "lateral", value: 5, unit: "deg" },
+        });
+        const posted = await preview(corrections, meshCase);
+        try {
+            const report = analyzeManifold(posted);
+            expect(report.isWatertight).toBe(true);
+            expect(report.nonManifoldEdges).toBe(0);
+            assertBottomFacesDown(posted);
+
+            const frame = getBaseFootprintFrame(neutral, meshCase.side);
+            const posN = neutral.getAttribute("position");
+            const posP = posted.getAttribute("position");
+            const topN = (neutral.userData as { topVertexCount?: number }).topVertexCount ?? 0;
+            const points: RimXY[] = [];
+            for (let i = 0; i < topN; i++) {
+                const x = (posN.array as ArrayLike<number>)[i * 3 + frame.lengthAxis]!;
+                const wid = (posN.array as ArrayLike<number>)[i * 3 + frame.widthAxis]!;
+                points.push({ x, y: frame.widthSign * (wid - frame.widCenter) });
+            }
+            const stations = buildWedgeStations(points, meshCase.side, corrections.fullLengthWedge, {
+                originX: frame.lenMin,
+                lengthMm: frame.lenSize,
+                medialPositiveY: meshCase.side === "left",
+                ordered: false,
+            });
+            expect(stations).not.toBeNull();
+            const u = FULL_LENGTH_HEEL_U;
+            const xTarget = frame.lenMin + u * frame.lenSize;
+            let bestHigh = -1;
+            let bestLow = -1;
+            let yHigh = Number.NEGATIVE_INFINITY;
+            let yLow = Number.POSITIVE_INFINITY;
+            for (let i = 0; i < topN; i++) {
+                const x = (posN.array as ArrayLike<number>)[i * 3 + frame.lengthAxis]!;
+                if (Math.abs(x - xTarget) > frame.lenSize * 0.02) continue;
+                const wid = (posN.array as ArrayLike<number>)[i * 3 + frame.widthAxis]!;
+                const y = frame.widthSign * (wid - frame.widCenter);
+                if (y > yHigh) {
+                    yHigh = y;
+                    bestHigh = i;
+                }
+                if (y < yLow) {
+                    yLow = y;
+                    bestLow = i;
+                }
+            }
+            expect(bestHigh).toBeGreaterThanOrEqual(0);
+            expect(bestLow).toBeGreaterThanOrEqual(0);
+            const zAt = (i: number, pos: typeof posN) =>
+                (pos.array as ArrayLike<number>)[i * 3 + frame.thickAxis]!;
+            const highIdx = stations!.highPositiveY ? bestHigh : bestLow;
+            const lowIdx = stations!.highPositiveY ? bestLow : bestHigh;
+            const dHigh = zAt(highIdx, posP) - zAt(highIdx, posN);
+            const dLow = zAt(lowIdx, posP) - zAt(lowIdx, posN);
+            const rise = Math.abs(yHigh - yLow) * Math.tan(stations!.theta);
+            expect(dLow).toBeLessThanOrEqual(0.05);
+            expect(Math.abs(dHigh - dLow - rise)).toBeLessThanOrEqual(0.1);
+        } finally {
+            neutral.dispose();
+            posted.dispose();
+        }
+    }, 300_000);
 });
