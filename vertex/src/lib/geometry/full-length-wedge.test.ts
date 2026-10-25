@@ -492,6 +492,33 @@ function wallCreases(
     return { count, minX: count ? minX : 0, maxX: count ? maxX : 0, maxDeg, heelMaxDeg };
 }
 
+/** Every z=0 face points down, and no exported face has zero area. */
+function assertBottomFacesDown(geo: BufferGeometry): void {
+    const pos = geo.getAttribute("position");
+    const index = geo.getIndex();
+    expect(index).toBeTruthy();
+    if (!index) return;
+    for (let t = 0; t < index.count; t += 3) {
+        const ia = index.getX(t);
+        const ib = index.getX(t + 1);
+        const ic = index.getX(t + 2);
+        const ax = pos.getX(ib) - pos.getX(ia);
+        const ay = pos.getY(ib) - pos.getY(ia);
+        const az = pos.getZ(ib) - pos.getZ(ia);
+        const bx = pos.getX(ic) - pos.getX(ia);
+        const by = pos.getY(ic) - pos.getY(ia);
+        const bz = pos.getZ(ic) - pos.getZ(ia);
+        const nx = ay * bz - az * by;
+        const ny = az * bx - ax * bz;
+        const nz = ax * by - ay * bx;
+        expect(nx * nx + ny * ny + nz * nz).toBeGreaterThan(0);
+        if (Math.abs(pos.getZ(ia)) > 1e-4 || Math.abs(pos.getZ(ib)) > 1e-4 || Math.abs(pos.getZ(ic)) > 1e-4) {
+            continue;
+        }
+        expect(nz).toBeLessThan(0);
+    }
+}
+
 function assertBottomFlat(geo: BufferGeometry): void {
     const pos = geo.getAttribute("position");
     const ud = geo.userData as {
@@ -695,6 +722,8 @@ describe("full-length wedge export", () => {
                 expect(report.isWatertight).toBe(true);
                 expect(report.nonManifoldEdges).toBe(0);
                 expect(eulerOf(posted)).toBe(2);
+                assertBottomFacesDown(neutral);
+                assertBottomFacesDown(posted);
                 expect(countSelfIntersections(neutral).real).toBe(0);
                 // Default 1e-5 mm weld flags rim-seam triangles whose vertices
                 // sit within 0.05 mm. That is loft contact, not a remote hit.
@@ -782,6 +811,25 @@ describe("full-length wedge export", () => {
             }
         } finally {
             for (const geo of neutralByKey.values()) geo.dispose();
+        }
+    }, 1_200_000);
+
+    test("z=0 bottom faces point down on the style, edge, and angle grid", async () => {
+        for (const style of STYLES) {
+            for (const edge of ["medial", "lateral"] as const) {
+                for (const deg of [1, 5, 10]) {
+                    const meshCase: MeshCase = { deg, size: 9, side: "right", style, edge };
+                    const geo = await preview(
+                        blank({ fullLengthWedge: { side: edge, value: deg, unit: "deg" } }),
+                        meshCase,
+                    );
+                    const report = analyzeManifold(geo);
+                    expect(report.isWatertight).toBe(true);
+                    expect(report.nonManifoldEdges).toBe(0);
+                    assertBottomFacesDown(geo);
+                    geo.dispose();
+                }
+            }
         }
     }, 1_200_000);
 });

@@ -703,10 +703,10 @@ function assertGeneratedEdgesUsedTwice(
 }
 
 /**
- * A non-uniform forefoot Y shift can hand the z=0 disk an ear wound upward
- * while the rest of the disk points down. An undirected watertight check
- * still sees two uses of each edge. Two retiles, both judged in the float32
- * coordinates the mesh is exported with:
+ * A z=0 ear can wind upward while the rest of the disk points down, from a
+ * refined straight plantar row or a non-uniform forefoot Y shift. An
+ * undirected watertight check still sees two uses of each edge. Two retiles,
+ * both judged in the float32 coordinates the mesh is exported with:
  *
  * - Folded diagonal: swap the ear with the flat neighbor across one edge
  *   when both replacement triangles point down. Outer edges keep their
@@ -717,7 +717,7 @@ function assertGeneratedEdgesUsedTwice(
  *   points down and its signed area matches the star.
  *
  * Meshes with no upward or degenerate bottom face are left byte-for-byte alone.
- * Callers must skip this on the zero-width path.
+ * The forefoot-shift caller skips this when the width is 0.
  */
 export function repairInvertedBottomFaces(positions: number[], indices: number[]): number {
     const zEps = 1e-4;
@@ -1894,6 +1894,7 @@ export function reconstructProceduralWalls(
     const bandVerts = new Set<number>();
     for (let i = 0; i < (indexGrid ? nS : refinedB.length); i++) bandVerts.add(refinedVert(i));
     const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ, bandVerts, indexGrid);
+    repairInvertedBottomFaces(positions, indices);
     assertGeneratedEdgesUsedTwice(indices, generatedStart, positions);
     if (indexGrid) {
         const seam = measureSeamBFromPlantar(positions, indices, bRingStart, nS, (i) => gridVert(nJ - 2, i));
