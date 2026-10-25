@@ -87,6 +87,7 @@ function defaultSideCorrections(): SideCorrections {
         heelCupDepthMm: 0,
         heelCupHeightMm: 0,
         heelCupWidthMm: 0,
+        forefootWidthMm: 0,
         heelLiftMm: 0,
         apexMoveMm: 0,
         medialFlangeMm: 0,

@@ -2,13 +2,310 @@
 // See LICENSE file in the project root for full license information.
 
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
-import { heelCupDepthBowlDelta, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import {
+    forefootWidthLongitudinalEnvelope,
+    forefootWidthPerSideDeltaMm,
+    heelCupDepthBowlDelta,
+    heelCupWidthScaleFactor,
+} from "@/lib/geometry/height-field";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { Side, SideCorrections } from "@/types";
 import type { PolyPoint } from "./curves";
 import type { HermiteStation } from "./loft";
 import type { DeviceTypePreset, LateralFlangeParams, StockWallModel } from "./types";
+
+type PlanBounds = { minX: number; maxX: number; minY: number; maxY: number };
+
+/** Plan rectangle translated by the forefoot offset at its vertex centroid. */
+export interface ForefootRigidBox {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+}
+
+/**
+ * Hold the last 1.5% of length. Past this the toe has collapsed onto the
+ * centreline and a live envelope slope folds the cap.
+ */
+const FOREFOOT_SHIFT_U_HOLD = 0.985;
+/** |dY/dy| cap. A ±10 mm step steeper than this crosses vertices on narrowing. */
+const FOREFOOT_SHIFT_SLOPE_CAP = 0.75;
+/** Plateau starts just inboard of the bottom outline so the outline is at full shift. */
+const FOREFOOT_OUTLINE_ROOM_SCALE = 0.92;
+
+/**
+ * Outer |y − centre| of the bottom outline on one side, sampled along u.
+ * The rim and the outline then share one shift; only the inboard sheet tapers.
+ */
+export function forefootOutlineRoomMm(
+    outline: ReadonlyArray<{ x: number; y: number }>,
+    bounds: PlanBounds,
+): (u: number, positive: boolean) => number {
+    const cy = (bounds.minY + bounds.maxY) * 0.5;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const pts = outline.map((p) => {
+        const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
+        return { u, y: p.y, d: Math.abs(p.y - cy) };
+    });
+    return (u, positive) => {
+        const clamped = Math.max(0, Math.min(1, u));
+        let best = 0;
+        let has = false;
+        let nearest = Infinity;
+        let nearestD = 0;
+        for (const p of pts) {
+            if (positive ? p.y < cy : p.y >= cy) continue;
+            const du = Math.abs(p.u - clamped);
+            if (du < nearest) {
+                nearest = du;
+                nearestD = p.d;
+            }
+            if (du <= 0.004) {
+                best = Math.max(best, p.d);
+                has = true;
+            }
+        }
+        return has ? best : nearestD;
+    };
+}
+
+/** Lateral shift (mm) at a plan point. X and Z stay put. 0 below the ramp. */
+export function forefootPlanShiftMm(
+    x: number,
+    y: number,
+    bounds: PlanBounds,
+    forefootWidthMm: number,
+    roomAt: (u: number, positive: boolean) => number,
+): number {
+    if (!forefootWidthMm) return 0;
+    const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const cy = (bounds.minY + bounds.maxY) * 0.5;
+    if (y === cy) return 0;
+    const uRaw = Math.max(0, Math.min(1, (x - bounds.minX) / length));
+    const u = Math.min(uRaw, FOREFOOT_SHIFT_U_HOLD);
+    const env = forefootWidthLongitudinalEnvelope(u);
+    if (env <= 0) return 0;
+    const positive = y >= cy;
+    const room = Math.max(1, roomAt(u, positive) * FOREFOOT_OUTLINE_ROOM_SCALE);
+    const applied = Math.min(Math.abs(forefootWidthMm) * env, FOREFOOT_SHIFT_SLOPE_CAP * room);
+    const dist = Math.abs(y - cy);
+    const gain = dist >= room ? 1 : dist / room;
+    return Math.sign(y - cy) * Math.sign(forefootWidthMm) * applied * gain;
+}
+
+/**
+ * One lateral envelope on both sides. Full amount at the rim and the bottom
+ * outline, 0 on the centreline, 0 below the ramp. The taper is the inboard
+ * of the outline (slope-capped) so a ±10 mm narrowing cannot fold the sheet.
+ */
+export function forefootWidthPlanDy(
+    x: number,
+    y: number,
+    bounds: PlanBounds,
+    forefootWidthMm: number,
+    roomAt?: (u: number, positive: boolean) => number,
+): number {
+    if (!forefootWidthMm) return 0;
+    const half = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
+    const fallback = roomAt ?? (() => half);
+    return forefootPlanShiftMm(x, y, bounds, forefootWidthMm, fallback);
+}
+
+/** Met pads and text move rigidly; every other vertex uses the envelope. */
+export function applyForefootPlanShift(
+    positions: { readonly length: number; [index: number]: number },
+    bounds: PlanBounds,
+    forefootWidthMm: number,
+    boxes?: readonly ForefootRigidBox[],
+    outline?: ReadonlyArray<{ x: number; y: number }>,
+): void {
+    if (!forefootWidthMm) return;
+    const roomAt = outline && outline.length >= 8 ? forefootOutlineRoomMm(outline, bounds) : undefined;
+    const count = Math.floor(positions.length / 3);
+    const dy = new Float64Array(count);
+    for (let i = 0; i < count; i++) {
+        dy[i] = forefootWidthPlanDy(
+            positions[i * 3]!,
+            positions[i * 3 + 1]!,
+            bounds,
+            forefootWidthMm,
+            roomAt,
+        );
+    }
+    if (boxes) {
+        for (const box of boxes) {
+            const ids: number[] = [];
+            for (let i = 0; i < count; i++) {
+                const x = positions[i * 3]!;
+                const y = positions[i * 3 + 1]!;
+                if (x < box.minX || x > box.maxX || y < box.minY || y > box.maxY) continue;
+                ids.push(i);
+            }
+            if (ids.length === 0) continue;
+            // Feature centroid, not the mesh-vertex average (density would bias it).
+            const cx = (box.minX + box.maxX) * 0.5;
+            const cyBox = (box.minY + box.maxY) * 0.5;
+            const hx = Math.max(1e-3, (box.maxX - box.minX) * 0.5);
+            const hy = Math.max(1e-3, (box.maxY - box.minY) * 0.5);
+            const rigid = forefootWidthPlanDy(cx, cyBox, bounds, forefootWidthMm, roomAt);
+            for (const i of ids) {
+                const x = positions[i * 3]!;
+                const y = positions[i * 3 + 1]!;
+                const edge = Math.max(Math.abs(x - cx) / hx, Math.abs(y - cyBox) / hy);
+                // Core stays rigid. The outer margin blends back to the field so the
+                // box edge is not a step the boolean rejects.
+                const w = edge <= 0.7 ? 1 : Math.max(0, (1 - edge) / 0.3);
+                dy[i] = rigid * w + dy[i]! * (1 - w);
+            }
+        }
+    }
+    for (let i = 0; i < count; i++) {
+        const add = dy[i]!;
+        if (add !== 0) positions[i * 3 + 1] = positions[i * 3 + 1]! + add;
+    }
+}
+
+const FEATURE_HALF_MM: Record<string, { x: number; y: number }> = {
+    met_pad: { x: 34, y: 28 },
+    met_bar: { x: 16, y: 44 },
+    toe_crest: { x: 18, y: 24 },
+};
+
+/**
+ * Axis-aligned plan boxes for features that must not be sheared by the
+ * midline taper. Sized from the nominal footprint, padded so the feather
+ * stays inside, and kept clear of the rim.
+ */
+export function forefootFeatureBoxes(
+    bounds: PlanBounds,
+    features: {
+        lengthMm?: number;
+        elements?: ReadonlyArray<{
+            position: { x: number; y: number };
+            scale?: { x: number; y: number };
+            kind?: string;
+        }>;
+        text?: {
+            text?: string;
+            placementU?: number;
+            capHeightMm?: number;
+            nudgeAlongMm?: number;
+            nudgeAcrossMm?: number;
+        } | null;
+    },
+): ForefootRigidBox[] {
+    const boxes: ForefootRigidBox[] = [];
+    const cx0 = (bounds.minX + bounds.maxX) * 0.5;
+    const cy0 = (bounds.minY + bounds.maxY) * 0.5;
+    const lengthScale = Math.max(0.75, (features.lengthMm ?? 260) / 260);
+    for (const el of features.elements ?? []) {
+        const half = FEATURE_HALF_MM[el.kind ?? ""] ?? { x: 24, y: 20 };
+        const sx = Math.max(0.5, el.scale?.x ?? 1) * lengthScale * 1.2;
+        const sy = Math.max(0.5, el.scale?.y ?? 1) * lengthScale * 1.2;
+        const cx = cx0 + el.position.x;
+        const cy = cy0 + el.position.y;
+        boxes.push({
+            minX: cx - half.x * sx,
+            maxX: cx + half.x * sx,
+            minY: cy - half.y * sy,
+            maxY: cy + half.y * sy,
+        });
+    }
+    const text = features.text;
+    const label = text?.text?.trim() ?? "";
+    if (label) {
+        const length = Math.max(1e-3, bounds.maxX - bounds.minX);
+        const u = Math.max(0, Math.min(1, text?.placementU ?? 0.68));
+        const cap = Math.max(4, text?.capHeightMm ?? 6);
+        const cx = bounds.minX + u * length + (text?.nudgeAlongMm ?? 0);
+        const cy = cy0 + (text?.nudgeAcrossMm ?? 0);
+        boxes.push({
+            minX: cx - Math.max(16, cap * label.length * 0.85),
+            maxX: cx + Math.max(16, cap * label.length * 0.85),
+            minY: cy - Math.max(8, cap),
+            maxY: cy + Math.max(8, cap),
+        });
+    }
+    return boxes;
+}
+
+/** Lateral part of the envelope at a query. X never moves. */
+export function forefootLateralOffsetFn(
+    rim: PolyPoint[],
+    bounds: PlanBounds,
+    forefootWidthMm: number,
+): (x: number, y: number) => number {
+    if (!forefootWidthMm || rim.length < 3) return () => 0;
+    return (x: number, y: number) => forefootWidthPlanDy(x, y, bounds, forefootWidthMm);
+}
+
+/** Pure lateral offset of a closed plan loop. X is unchanged. */
+export function offsetPlanLoopForefootWidthMm(
+    loop: PolyPoint[],
+    bounds: PlanBounds,
+    forefootWidthMm: number,
+): PolyPoint[] {
+    if (!forefootWidthMm || loop.length < 3) return loop;
+    return loop.map((p) => ({
+        x: p.x,
+        y: p.y + forefootWidthPlanDy(p.x, p.y, bounds, forefootWidthMm),
+        z: p.z,
+    }));
+}
+
+/** Axis-aligned plan bounds of a position buffer (x, y, z triplets). */
+export function forefootPlanBoundsOfPositions(positions: ArrayLike<number>): PlanBounds {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    const count = Math.floor(positions.length / 3);
+    for (let i = 0; i < count; i++) {
+        const x = positions[i * 3] ?? 0;
+        const y = positions[i * 3 + 1] ?? 0;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+    if (!Number.isFinite(minX)) return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
+    return { minX, maxX, minY, maxY };
+}
+
+function forefootPlanBoundsOfPoints(points: ReadonlyArray<{ x: number; y: number }>): PlanBounds {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of points) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    if (!Number.isFinite(minX)) return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
+    return { minX, maxX, minY, maxY };
+}
+
+/**
+ * Display-only copy of the export outline shift. Stored curves stay anatomical;
+ * the viewer adds this while the slider moves. 0 mm returns the same points.
+ */
+export function shiftClosedLoopForefoot<T extends { x: number; y: number }>(
+    points: readonly T[],
+    forefootWidthMm: number,
+    bounds?: PlanBounds,
+): T[] {
+    if (!forefootWidthMm || points.length < 3) return points.map((p) => ({ ...p }));
+    const box = bounds ?? forefootPlanBoundsOfPoints(points);
+    const roomAt = forefootOutlineRoomMm(points, box);
+    return points.map((p) => ({
+        ...p,
+        y: p.y + forefootWidthPlanDy(p.x, p.y, box, forefootWidthMm, roomAt),
+    }));
+}
 
 /** Print-step grinding dropdown → wall mid-style. */
 export type ProceduralWallStyle = "straight" | "round" | "hybrid";
@@ -72,10 +369,17 @@ export function applyCurveModifiers(
         const o = outline[i]!;
         const t = trim[i]!;
         const u = Math.max(0, Math.min(1, (o.x - minX) / length));
-        if (c && c.heelCupWidthMm !== 0) {
-            const scale = heelCupWidthScaleFactor(u, c.heelCupWidthMm);
+        const heelW = c?.heelCupWidthMm ?? 0;
+        const foreW = c?.forefootWidthMm ?? 0;
+        if (c && heelW !== 0) {
+            const scale = heelCupWidthScaleFactor(u, heelW);
             o.y = widCenter + (o.y - widCenter) * scale;
             t.y = widCenter + (t.y - widCenter) * scale;
+        }
+        if (c && foreW !== 0) {
+            const halfW = Math.max(1e-3, (model.bounds.maxY - model.bounds.minY) * 0.5);
+            o.y += forefootWidthPerSideDeltaMm(u, (o.y - widCenter) / halfW, foreW);
+            t.y += forefootWidthPerSideDeltaMm(u, (t.y - widCenter) / halfW, foreW);
         }
         const whole = input.insoleWidthScale ?? 1;
         if (Number.isFinite(whole) && Math.abs(whole - 1) > 1e-12) {

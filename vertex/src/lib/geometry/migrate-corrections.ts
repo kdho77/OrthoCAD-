@@ -44,6 +44,10 @@ export function migrateSideCorrections(c: SideCorrections): SideCorrections {
         next.archEaseMm = 0;
     }
 
+    if (next.forefootWidthMm == null || !Number.isFinite(next.forefootWidthMm)) {
+        next.forefootWidthMm = 0;
+    }
+
     return next;
 }
 

@@ -7,6 +7,7 @@ import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
 import { getDesignBase } from "@/lib/geometry/base-asset";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
+    forefootWidthPerSideDeltaMm,
     type HeightFieldParams,
     heelCupWidthScaleFactor,
     heightAt,
@@ -55,6 +56,7 @@ const ZERO_CORRECTIONS: SideCorrections = {
     heelCupDepthMm: 0,
     heelCupHeightMm: 0,
     heelCupWidthMm: 0,
+    forefootWidthMm: 0,
     heelLiftMm: 0,
     apexMoveMm: 0,
     medialFlangeMm: 0,
@@ -741,6 +743,8 @@ interface LateralDeltaContext {
     lenMin: number;
     lenSize: number;
     widCenter: number;
+    widSize: number;
+    widthSign: number;
     array: Float32Array;
 }
 
@@ -760,8 +764,11 @@ function buildHeelCupWidthLateralDelta(
 } {
     const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
     const syncIndexCount = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+    const halfW = Math.max(1e-3, ctx.widSize * 0.5);
 
-    if (field.corrections.heelCupWidthMm === 0) {
+    const heelW = field.corrections.heelCupWidthMm ?? 0;
+    const foreW = field.corrections.forefootWidthMm ?? 0;
+    if (heelW === 0 && foreW === 0) {
         const empty = new Float32Array(count);
         return {
             raw: empty,
@@ -778,8 +785,9 @@ function buildHeelCupWidthLateralDelta(
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const offset = widCoord - widCenter;
-        const scale = heelCupWidthScaleFactor(u, field.corrections.heelCupWidthMm);
-        raw[i] = offset * (scale - 1);
+        const heelDelta = offset * (heelCupWidthScaleFactor(u, heelW) - 1);
+        const foreDelta = forefootWidthPerSideDeltaMm(u, offset / halfW, foreW);
+        raw[i] = heelDelta + foreDelta;
     }
 
     const {
@@ -820,8 +828,9 @@ function buildHeelCupWidthLateralDelta(
     // height-blended rim transfer then shears the wall into a shelf. For
     // narrowing: coincidence-weld only (no relax). Widening keeps the welded
     // Laplacian (top-only path; bottom stays fixed).
-    const narrowing = field.corrections.heelCupWidthMm < 0;
-    if (narrowing) {
+    const narrowing = heelW < 0 || foreW < 0;
+    const forefootWidenOnly = heelW === 0 && foreW > 0;
+    if (narrowing || forefootWidenOnly) {
         const smoothed = new Float32Array(raw);
         syncCoincidentDeltas(smoothed, groups);
         return {
@@ -2441,7 +2450,10 @@ export function diagnoseHeelCupWidthLateral(
     const { lengthAxis, widthAxis } = resolveBaseAxes(size[0], size[1], size[2]);
     const lenMin = min[lengthAxis];
     const lenSize = size[lengthAxis];
-    const widCenter = min[widthAxis] + size[widthAxis] / 2;
+    const widSize = size[widthAxis] || 1;
+    const widCenter = min[widthAxis] + widSize / 2;
+    const medialSign = field.side === "left" ? 1 : -1;
+    const widthSign = -(detectArchSideSign(base) * medialSign);
     const array = pos.array as Float32Array;
     const count = pos.count;
     const topFactors = classifyBaseTopFactors(base);
@@ -2457,7 +2469,17 @@ export function diagnoseHeelCupWidthLateral(
         buildHeelCupWidthLateralDelta(
             base,
             field,
-            { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
+            {
+                count,
+                lengthAxis,
+                widthAxis,
+                lenMin,
+                lenSize,
+                widCenter,
+                widSize,
+                widthSign,
+                array,
+            },
             topFactors,
             isMultiMesh,
             topVertexCount,
@@ -2636,6 +2658,8 @@ export function applyBaseModifiers(
         lenMin,
         lenSize,
         widCenter,
+        widSize,
+        widthSign,
         array,
     };
 
@@ -2661,7 +2685,11 @@ export function applyBaseModifiers(
         (field.corrections.archEaseMm ?? 0) !== 0;
     const wedgeActive = wedgeCorrectionActive(field.corrections);
     const useShellFieldSync =
-        isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm === 0 && !archRaiseActive;
+        isMultiMesh &&
+        topVertexCount > 0 &&
+        (field.corrections.heelCupWidthMm ?? 0) === 0 &&
+        (field.corrections.forefootWidthMm ?? 0) === 0 &&
+        !archRaiseActive;
 
     const wedgeParams = {
         lengthMm: field.lengthMm,
@@ -2770,7 +2798,8 @@ export function applyBaseModifiers(
     // is untouched, so HC-1 holds. Widening keeps the legacy top-only path
     // (bottom fixed; wall follows via rim-conformity) — there the top border
     // is always the widest extent, so the print constraint already holds.
-    const heelCupNarrowing = field.corrections.heelCupWidthMm < 0;
+    const heelCupNarrowing =
+        (field.corrections.heelCupWidthMm ?? 0) < 0 || (field.corrections.forefootWidthMm ?? 0) < 0;
 
     // Parallel composition: vertical, width-lateral, and depth-tangent displacements
     // are each computed from baseline positions (above) and summed here in one pass.
@@ -2802,7 +2831,8 @@ export function applyBaseModifiers(
                 : 1;
         const wedgeScaled = wedgePart > 0 ? wedgePart * wedgeW : 0;
         const vertD = corePart * w + wedgeScaled;
-        const latD = lateralDelta[i]! * (heelCupNarrowing ? 1 : w);
+        const foreWActive = (field.corrections.forefootWidthMm ?? 0) !== 0;
+        const latD = lateralDelta[i]! * (heelCupNarrowing || foreWActive ? 1 : w);
         let dx = 0;
         let dy = 0;
         let dz = 0;

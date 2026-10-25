@@ -8,9 +8,10 @@ import {
     correctionDeltaAt,
 } from "@/lib/geometry/base-modifier";
 import {
+    forefootWidthLongitudinalEnvelope,
     type HeightFieldParams,
-    heelCupWidthLongitudinalEnvelope,
     heelCupWidthScaleFactor,
+    widthCorrectionFollowEnvelope,
 } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
@@ -44,8 +45,11 @@ import { buildHermiteStations } from "./loft";
 import { defaultsFromStockCurves } from "./measure";
 import { countJunctionBandSlivers, windingReport } from "./metrics";
 import {
+    applyForefootPlanShift,
     clampPostingOnTopSheet,
     footprintVSignedFromMeshY,
+    forefootOutlineRoomMm,
+    forefootWidthPlanDy,
     type ProceduralModifierInput,
     type ProceduralWallStyle,
     postingZDelta,
@@ -119,6 +123,16 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * the Default extractTopSheet steal.
      */
     composedTop?: boolean;
+    /**
+     * Composed rim at forefootWidthMm=0. Pattern hygiene/clearance uses this
+     * so the heel matches the zero-width export, then the forefoot offset is applied.
+     */
+    forefootClearanceRim?: PolyPoint[];
+    /**
+     * Met pads and text. Vertices inside translate by the offset at their
+     * centroid instead of the per-vertex midline taper.
+     */
+    forefootRigidBoxes?: ReadonlyArray<{ minX: number; maxX: number; minY: number; maxY: number }>;
 }
 
 function zeroCorrections(): SideCorrections {
@@ -161,6 +175,7 @@ export function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
     if (!c) return thicknessChanged;
     return (
         c.heelCupWidthMm !== 0 ||
+        (c.forefootWidthMm ?? 0) !== 0 ||
         c.heelCupDepthMm > 0 ||
         c.heelLiftMm > 0 ||
         c.archHeightMm !== 0 ||
@@ -244,8 +259,9 @@ function applyAnalyticTopDeltas(
         const vSigned = footprintVSignedFromMeshY(y, bounds, side, medialYSign);
         pos[i * 3 + 2]! += correctionDeltaAt(u, vSigned, field, neutral);
         pos[i * 3 + 2]! += postingZDelta(x, y, bounds, postingInput);
-        if (c.heelCupWidthMm !== 0) {
-            const scale = heelCupWidthScaleFactor(u, c.heelCupWidthMm);
+        const heelW = c.heelCupWidthMm ?? 0;
+        if (heelW !== 0) {
+            const scale = heelCupWidthScaleFactor(u, heelW);
             pos[i * 3 + 1] = widCenter + (y - widCenter) * scale;
         }
         const whole = input.insoleWidthScale ?? 1;
@@ -1076,6 +1092,12 @@ export function reconstructProceduralWalls(
           );
     const patternLabel =
         options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : PATTERN_SOURCE_FAIRED_STOCK);
+    const heelW = options.corrections?.heelCupWidthMm ?? 0;
+    // Station pairing, even-split, stamp, and skew stay on main's zero-forefoot
+    // loops. The per-side offset is applied once, after that pipeline.
+    const forefootMm = options.corrections?.forefootWidthMm ?? 0;
+    const foreW = 0;
+    const forefootOnComposed = Boolean(options.composedTop && foreW !== 0);
     let hygiened = hygieneBottomPattern(rawOutline, {
         rimPlan: patternRim,
         requireInsideRim: true,
@@ -1085,16 +1107,19 @@ export function reconstructProceduralWalls(
         resampleN: Math.max(160, rawOutline.length, rimPts.length),
         keepFair: true,
     });
-    const heelWiden = (options.corrections?.heelCupWidthMm ?? 0) !== 0;
+    const heelWiden = heelW !== 0;
+    const forefootOnly = forefootOnComposed && !heelWiden;
+    let patternMoved = forefootOnComposed && !forefootOnly;
+    const forefootFollowRim = foreW !== 0 && !forefootOnComposed;
     const wholeScale = options.insoleWidthScale ?? 1;
     const wholeWidth = Number.isFinite(wholeScale) && Math.abs(wholeScale - 1) > 1e-12;
+    const patternFairMode = wholeWidth ? "width" : "heel";
     const followFactor = wholeWidth
         ? 0
-        : heelWiden
+        : heelWiden || forefootFollowRim
           ? (options.widenFollowFactor ?? 1)
           : (options.widenFollowFactor ?? 0);
     let patternLoop = hygiened.loop;
-    let patternMoved = false;
     if (wholeWidth) {
         const cy = 0.5 * (model.bounds.minY + model.bounds.maxY);
         patternLoop = scalePatternWidth(patternLoop, wholeScale, cy);
@@ -1102,13 +1127,14 @@ export function reconstructProceduralWalls(
     } else if (followFactor !== 0) {
         const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
         const minX = model.bounds.minX;
+        const followForeW = forefootFollowRim ? foreW : 0;
         patternLoop = shiftPatternByRimFollow(patternLoop, patternRim, liveRimPlan, (p) => {
             const u = Math.max(0, Math.min(1, (p.x - minX) / length));
-            return followFactor * heelCupWidthLongitudinalEnvelope(u);
+            return followFactor * widthCorrectionFollowEnvelope(u, heelW, followForeW);
         });
         patternMoved = true;
     }
-    if (patternMoved) {
+    if (patternMoved && !(forefootOnComposed && !heelWiden)) {
         patternLoop = fairMovedPattern({
             pattern: patternLoop,
             rim: liveRimPlan,
@@ -1116,19 +1142,23 @@ export function reconstructProceduralWalls(
             r2,
             bounds: model.bounds,
             medialYSign,
-            mode: wholeWidth ? "width" : "heel",
+            mode: patternFairMode,
         });
     }
+    const clearanceRim =
+        forefootOnly && options.forefootClearanceRim && options.forefootClearanceRim.length >= 3
+            ? options.forefootClearanceRim
+            : liveRimPlan;
     const clearance = adjustPatternForClearance({
         pattern: patternLoop,
-        rim: liveRimPlan,
+        rim: clearanceRim,
         r1,
         r2,
     });
     patternLoop = clearance.loop;
     if (clearance.adjusted || patternMoved) {
         hygiened = hygieneBottomPattern(patternLoop, {
-            rimPlan: liveRimPlan,
+            rimPlan: clearanceRim,
             requireInsideRim: true,
             clearanceMm:
                 patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
@@ -1140,8 +1170,11 @@ export function reconstructProceduralWalls(
     medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
     const patternMovedAt = wholeWidth
         ? () => true
-        : heelWiden
-          ? (u: number) => heelCupWidthLongitudinalEnvelope(u) > 1e-6 || u <= 0.42
+        : heelWiden || forefootFollowRim || forefootOnComposed
+          ? (u: number) =>
+                widthCorrectionFollowEnvelope(u, heelW, forefootFollowRim ? foreW : 0) > 1e-6 ||
+                (forefootOnComposed && forefootWidthLongitudinalEnvelope(u) > 1e-6) ||
+                (heelW !== 0 && u <= 0.42)
           : undefined;
     if (patternMoved) {
         const movedHy = movedPatternHygiene(hygiened.loop, model.bounds, medialYSign, {
@@ -1158,7 +1191,7 @@ export function reconstructProceduralWalls(
                     r2,
                     bounds: model.bounds,
                     medialYSign,
-                    mode: wholeWidth ? "width" : "heel",
+                    mode: patternFairMode,
                 }),
             };
             medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
@@ -1169,7 +1202,11 @@ export function reconstructProceduralWalls(
     if (patternPts?.length || legacyFaired) {
         assertCutInOnHighRimSide(hygiened.loop, rimPts, model.bounds, medialYSign);
     }
-    let pairing = limitPairingSkew(pairAtNativeTop(hygiened.loop, rimPts), hygiened.loop);
+    const skewOpts = {
+        forefootWidthMm: foreW,
+        bounds: model.bounds,
+    };
+    let pairing = limitPairingSkew(pairAtNativeTop(hygiened.loop, rimPts), hygiened.loop, skewOpts);
     const collapsed = mergeCollapsedStations(pairing, rimLocal, indices, 1e-6);
     pairing = collapsed.pairing;
     rimLocal = collapsed.rimLocal;
@@ -1209,7 +1246,7 @@ export function reconstructProceduralWalls(
     });
     pairing.plantar = retargetPlantarFromE(E, hygiened.loop);
     const rimTop = pairing.top;
-    pairing = limitPairingSkew({ ...pairing, top: E }, hygiened.loop);
+    pairing = limitPairingSkew({ ...pairing, top: E }, hygiened.loop, skewOpts);
     pairing.top = rimTop;
     pairing.sidewaysSkewMm = pairing.plantar.map((p, i) => {
         const e = E[i]!;
@@ -1271,15 +1308,20 @@ export function reconstructProceduralWalls(
     ensureSourceRimStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, sourceRim);
     evenSplitSourceEdges(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
     markSourceRimStations(stations, rimLocal, sourceRim);
+    const stationSkewOpts = {
+        forefootWidthMm: foreW,
+        minX: model.bounds.minX,
+        lengthMm: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
+    };
     stampMonotonicTB(stations, hygiened.loop);
     applyStoredTB(stations, hygiened.loop);
     applySmoothedB();
     reparameterizeBArcLength(stations, hygiened.loop);
-    limitStationSkew(stations, hygiened.loop, r1, r2);
+    limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
     reparameterizeBArcLength(stations, hygiened.loop);
     if (patternMoved) {
         smoothMovedStationOutline(stations, hygiened.loop);
-        limitStationSkew(stations, hygiened.loop, r1, r2);
+        limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
         reparameterizeBArcLength(stations, hygiened.loop);
     }
     assertClosedStationRing(stations, rimLocal);
@@ -1324,7 +1366,7 @@ export function reconstructProceduralWalls(
             }
         }
     }
-    assertPreLoftStations(stations, r1, r2);
+    assertPreLoftStations(stations, r1, r2, stationSkewOpts);
     {
         let minB = Infinity;
         let maxHead = 0;
@@ -1354,6 +1396,14 @@ export function reconstructProceduralWalls(
             }),
         );
     }
+    const zDelta = (): number => 0;
+    const wallStyle = resolveWallStyleParams({
+        style: options.wallStyle ?? "straight",
+        bulge: options.wallBulge,
+        planOutMm: options.wallPlanOutMm,
+        forefootRound: options.forefootRound,
+    });
+    const footLengthMm = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
     const rimPtsLive: PolyPoint[] = rimLocal.map((i) => ({
         x: positions[i * 3]!,
         y: positions[i * 3 + 1]!,
@@ -1367,8 +1417,6 @@ export function reconstructProceduralWalls(
         stations.map((s) => columnHeading(s).h),
         0,
     );
-    const zDelta = (): number => 0;
-
     const grid = buildQuadGrid({
         stations,
         junctions,
@@ -1383,15 +1431,10 @@ export function reconstructProceduralWalls(
         flangeHeightMm: flangeH,
         flangeLengthMm: flangeLen,
         flangeAngleDeg: flangeAng,
-        footLengthMm: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
+        footLengthMm,
         flatPlantar,
         movedAt: patternMovedAt,
-        wallStyle: resolveWallStyleParams({
-            style: options.wallStyle ?? "straight",
-            bulge: options.wallBulge,
-            planOutMm: options.wallPlanOutMm,
-            forefootRound: options.forefootRound,
-        }),
+        wallStyle,
     });
     const indexGridStyle = (options.wallStyle ?? "straight") !== "straight";
     if (wholeWidth) {
@@ -1701,6 +1744,19 @@ export function reconstructProceduralWalls(
     console.log("[RND-WIND]", JSON.stringify(wallFlip));
     if (grid.quality) {
         (grid.quality as { nFlippedWallFaces?: number }).nFlippedWallFaces = wallFlip.n;
+    }
+    if (forefootMm !== 0) {
+        const roomAt = forefootOutlineRoomMm(grid.outlineRing, model.bounds);
+        applyForefootPlanShift(
+            positions,
+            model.bounds,
+            forefootMm,
+            options.forefootRigidBoxes,
+            grid.outlineRing,
+        );
+        for (const p of grid.outlineRing) {
+            p.y += forefootWidthPlanDy(p.x, p.y, model.bounds, forefootMm, roomAt);
+        }
     }
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));

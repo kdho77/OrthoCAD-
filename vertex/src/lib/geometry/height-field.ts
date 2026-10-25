@@ -101,6 +101,91 @@ export function heelCupWidthScaleFactor(u: number, heelCupWidthMm: number): numb
     return 1 + env * (targetScale - 1);
 }
 
+/** Forefoot planform widen/narrow envelope stations — pending CAD expert sign-off. */
+export const FOREFOOT_WIDTH_ENVELOPE = {
+    rampStartU: 0.45,
+    rampEndU: 0.65,
+    holdEndU: 0.95,
+    toeTipU: 1.0,
+    toeTipEnvelope: 0.5,
+} as const;
+
+/** C1-smooth longitudinal mask for forefoot width (heel 0 → toe 1). */
+export function forefootWidthLongitudinalEnvelope(u: number): number {
+    const { rampStartU, rampEndU, holdEndU, toeTipU, toeTipEnvelope } = FOREFOOT_WIDTH_ENVELOPE;
+    if (u < rampStartU) return 0;
+    if (u <= holdEndU) {
+        if (u <= rampEndU) return smoothstep(rampStartU, rampEndU, u);
+        return 1;
+    }
+    if (u >= toeTipU) return toeTipEnvelope;
+    const t = smoothstep(holdEndU, toeTipU, u);
+    return 1 + t * (toeTipEnvelope - 1);
+}
+
+/** Normalized half-width of the centre band. Full shift outside it, 0 on v = 0. */
+export const FOREFOOT_WIDTH_MIDLINE_HALF_V = 0.15;
+
+/** 0 on the centreline, 1 for |v| at or beyond the midline band. C1. */
+export function forefootWidthMidlineGain(vAbs: number): number {
+    if (vAbs >= FOREFOOT_WIDTH_MIDLINE_HALF_V) return 1;
+    return smoothstep(0, FOREFOOT_WIDTH_MIDLINE_HALF_V, vAbs);
+}
+
+/**
+ * Per-side forefoot offset (mm). Full envelope at the rim.
+ * `vSigned` is the normalized geometric lateral coordinate (about −1..1),
+ * not millimetres. The shift fades to 0 across |v| < 0.15 so the centre
+ * strip is not opened by 2·forefootWidthMm.
+ * `forefootWidthMm === 0` stays 0 so the zero export is unchanged.
+ */
+export function forefootWidthPerSideDeltaMm(u: number, vSigned: number, forefootWidthMm: number): number {
+    if (forefootWidthMm === 0 || vSigned === 0) return 0;
+    const env = forefootWidthLongitudinalEnvelope(u);
+    if (env <= 0) return 0;
+    const gain = forefootWidthMidlineGain(Math.abs(vSigned));
+    if (gain <= 0) return 0;
+    return Math.sign(vSigned) * forefootWidthMm * env * gain;
+}
+
+/** Heel cup scale delta + forefoot per-side offset (mm) at a lateral sample. */
+export function lateralWidthCorrectionDeltaMm(
+    u: number,
+    vSigned: number,
+    offsetFromCenterMm: number,
+    heelCupWidthMm: number,
+    forefootWidthMm: number,
+): number {
+    const heelScale = heelCupWidthScaleFactor(u, heelCupWidthMm);
+    const heelDelta = offsetFromCenterMm * (heelScale - 1);
+    const foreDelta = forefootWidthPerSideDeltaMm(u, vSigned, forefootWidthMm);
+    return heelDelta + foreDelta;
+}
+
+/** Pattern / rim follow weight for heel cup width only. */
+export function heelWidthCorrectionFollowEnvelope(u: number, heelCupWidthMm: number): number {
+    if (heelCupWidthMm === 0) return 0;
+    return heelCupWidthLongitudinalEnvelope(u);
+}
+
+/** Pattern / rim follow weight for forefoot width only. */
+export function forefootWidthCorrectionFollowEnvelope(u: number, forefootWidthMm: number): number {
+    if (forefootWidthMm === 0) return 0;
+    return forefootWidthLongitudinalEnvelope(u);
+}
+
+/** Combined follow weight when both corrections may be active. */
+export function widthCorrectionFollowEnvelope(
+    u: number,
+    heelCupWidthMm: number,
+    forefootWidthMm: number,
+): number {
+    return Math.max(
+        heelWidthCorrectionFollowEnvelope(u, heelCupWidthMm),
+        forefootWidthCorrectionFollowEnvelope(u, forefootWidthMm),
+    );
+}
+
 export const HEEL_CUP_DEPTH_RIM_LATERAL_GAIN = 0.65;
 export const HEEL_CUP_DEPTH_RIM_POSTERIOR_GAIN = 0.85;
 export const HEEL_CUP_DEPTH_SEAT_GAIN = 0.35;
