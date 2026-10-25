@@ -74,6 +74,13 @@ const FIELDS: {
         group: "Heel",
     },
     {
+        key: "forefootWidthMm",
+        label: "Forefoot width",
+        min: CLINICAL_LIMITS.forefootWidthMm.min,
+        max: CLINICAL_LIMITS.forefootWidthMm.max,
+        group: "Forefoot",
+    },
+    {
         key: "heelLiftMm",
         label: "Heel lift",
         min: CLINICAL_LIMITS.heelLiftMm.min,
@@ -84,7 +91,7 @@ const FIELDS: {
     { key: "lateralFlangeMm", label: "Lateral flange", min: 0, max: 8, group: "Flanges" },
 ];
 
-const GROUPS = ["Arch", "Heel", "Flanges", "Posting"];
+const GROUPS = ["Arch", "Heel", "Forefoot", "Flanges", "Posting"];
 
 const WEDGE_ZONES = [
     { zone: "rearfoot" as const, label: "Rearfoot" },

@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
-import { heelCupDepthBowlDelta, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import { combineLateralWidthScaleFactors, heelCupDepthBowlDelta } from "@/lib/geometry/height-field";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { Side, SideCorrections } from "@/types";
@@ -72,8 +72,8 @@ export function applyCurveModifiers(
         const o = outline[i]!;
         const t = trim[i]!;
         const u = Math.max(0, Math.min(1, (o.x - minX) / length));
-        if (c && c.heelCupWidthMm !== 0) {
-            const scale = heelCupWidthScaleFactor(u, c.heelCupWidthMm);
+        if (c && ((c.heelCupWidthMm ?? 0) !== 0 || (c.forefootWidthMm ?? 0) !== 0)) {
+            const scale = combineLateralWidthScaleFactors(u, c.heelCupWidthMm ?? 0, c.forefootWidthMm ?? 0);
             o.y = widCenter + (o.y - widCenter) * scale;
             t.y = widCenter + (t.y - widCenter) * scale;
         }

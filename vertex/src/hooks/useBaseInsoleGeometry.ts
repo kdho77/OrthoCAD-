@@ -351,6 +351,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.shoeWidthBySide,
         design.corrections.linked,
         design.corrections[side]?.heelCupWidthMm,
+        design.corrections[side]?.forefootWidthMm,
         building,
     ]);
 
@@ -419,8 +420,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             const stored = useBottomPatternStore.getState().getPattern(side);
             const dragging = Boolean(useMeshEditStore.getState().bottomPatternEdit?.isDragging);
             const heelW = field.corrections?.heelCupWidthMm ?? 0;
+            const foreW = field.corrections?.forefootWidthMm ?? 0;
             const widthId = shoeWidthForSide(design, side);
-            const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}:w${widthId}`;
+            const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}:fw${foreW.toFixed(2)}:w${widthId}`;
             const userEdited = Boolean(stored) && !generatedPatternKey;
             const needPattern = !draft && !userEdited && generatedPatternKey !== patternKey;
             const session = {

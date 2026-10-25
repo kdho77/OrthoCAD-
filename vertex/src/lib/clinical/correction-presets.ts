@@ -37,6 +37,7 @@ function sideKeys(): (keyof SideCorrections)[] {
         "heelCupDepthMm",
         "heelCupHeightMm",
         "heelCupWidthMm",
+        "forefootWidthMm",
         "heelLiftMm",
         "apexMoveMm",
         "medialFlangeMm",

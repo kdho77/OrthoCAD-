@@ -8,9 +8,9 @@ import {
     correctionDeltaAt,
 } from "@/lib/geometry/base-modifier";
 import {
+    combineLateralWidthScaleFactors,
     type HeightFieldParams,
-    heelCupWidthLongitudinalEnvelope,
-    heelCupWidthScaleFactor,
+    widthCorrectionFollowEnvelope,
 } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
@@ -161,6 +161,7 @@ export function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
     if (!c) return thicknessChanged;
     return (
         c.heelCupWidthMm !== 0 ||
+        (c.forefootWidthMm ?? 0) !== 0 ||
         c.heelCupDepthMm > 0 ||
         c.heelLiftMm > 0 ||
         c.archHeightMm !== 0 ||
@@ -244,8 +245,8 @@ function applyAnalyticTopDeltas(
         const vSigned = footprintVSignedFromMeshY(y, bounds, side, medialYSign);
         pos[i * 3 + 2]! += correctionDeltaAt(u, vSigned, field, neutral);
         pos[i * 3 + 2]! += postingZDelta(x, y, bounds, postingInput);
-        if (c.heelCupWidthMm !== 0) {
-            const scale = heelCupWidthScaleFactor(u, c.heelCupWidthMm);
+        if ((c.heelCupWidthMm ?? 0) !== 0 || (c.forefootWidthMm ?? 0) !== 0) {
+            const scale = combineLateralWidthScaleFactors(u, c.heelCupWidthMm ?? 0, c.forefootWidthMm ?? 0);
             pos[i * 3 + 1] = widCenter + (y - widCenter) * scale;
         }
         const whole = input.insoleWidthScale ?? 1;
@@ -1085,9 +1086,12 @@ export function reconstructProceduralWalls(
         resampleN: Math.max(160, rawOutline.length, rimPts.length),
         keepFair: true,
     });
-    const heelWiden = (options.corrections?.heelCupWidthMm ?? 0) !== 0;
+    const heelW = options.corrections?.heelCupWidthMm ?? 0;
+    const foreW = options.corrections?.forefootWidthMm ?? 0;
+    const heelWiden = heelW !== 0 || foreW !== 0;
     const wholeScale = options.insoleWidthScale ?? 1;
     const wholeWidth = Number.isFinite(wholeScale) && Math.abs(wholeScale - 1) > 1e-12;
+    const patternFairMode = wholeWidth || foreW !== 0 ? "width" : "heel";
     const followFactor = wholeWidth
         ? 0
         : heelWiden
@@ -1104,7 +1108,7 @@ export function reconstructProceduralWalls(
         const minX = model.bounds.minX;
         patternLoop = shiftPatternByRimFollow(patternLoop, patternRim, liveRimPlan, (p) => {
             const u = Math.max(0, Math.min(1, (p.x - minX) / length));
-            return followFactor * heelCupWidthLongitudinalEnvelope(u);
+            return followFactor * widthCorrectionFollowEnvelope(u, heelW, foreW);
         });
         patternMoved = true;
     }
@@ -1116,7 +1120,7 @@ export function reconstructProceduralWalls(
             r2,
             bounds: model.bounds,
             medialYSign,
-            mode: wholeWidth ? "width" : "heel",
+            mode: patternFairMode,
         });
     }
     const clearance = adjustPatternForClearance({
@@ -1141,7 +1145,7 @@ export function reconstructProceduralWalls(
     const patternMovedAt = wholeWidth
         ? () => true
         : heelWiden
-          ? (u: number) => heelCupWidthLongitudinalEnvelope(u) > 1e-6 || u <= 0.42
+          ? (u: number) => widthCorrectionFollowEnvelope(u, heelW, foreW) > 1e-6 || (heelW !== 0 && u <= 0.42)
           : undefined;
     if (patternMoved) {
         const movedHy = movedPatternHygiene(hygiened.loop, model.bounds, medialYSign, {
@@ -1158,7 +1162,7 @@ export function reconstructProceduralWalls(
                     r2,
                     bounds: model.bounds,
                     medialYSign,
-                    mode: wholeWidth ? "width" : "heel",
+                    mode: patternFairMode,
                 }),
             };
             medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);

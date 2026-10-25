@@ -5,7 +5,7 @@ import type { BufferGeometry } from "three";
 import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import { heelCupWidthLongitudinalEnvelope, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import { combineLateralWidthScaleFactors, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -94,7 +94,8 @@ export function followViewerPattern(
     corrections?: Partial<SideCorrections>,
 ): PolyPoint[] {
     const heel = corrections?.heelCupWidthMm ?? 0;
-    if (!heel || pattern.length < 3) return pattern;
+    const fore = corrections?.forefootWidthMm ?? 0;
+    if ((!heel && !fore) || pattern.length < 3) return pattern;
     const pos = model.top.meshPositions;
     const rimLocal = model.top.rimLocal ?? [];
     if (!pos || rimLocal.length < 8) return pattern;
@@ -107,12 +108,12 @@ export function followViewerPattern(
     const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
     const live = rim.map((p) => {
         const u = Math.max(0, Math.min(1, (p.x - model.bounds.minX) / length));
-        const s = heelCupWidthScaleFactor(u, heel);
+        const s = combineLateralWidthScaleFactors(u, heel, fore);
         return { x: p.x, y: yMid + (p.y - yMid) * s, z: 0 };
     });
     return shiftPatternByRimFollow(pattern, rim, live, (p) => {
         const u = Math.max(0, Math.min(1, (p.x - model.bounds.minX) / length));
-        return heelCupWidthLongitudinalEnvelope(u);
+        return widthCorrectionFollowEnvelope(u, heel, fore);
     });
 }
 

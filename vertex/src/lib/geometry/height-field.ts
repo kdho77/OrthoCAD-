@@ -101,6 +101,64 @@ export function heelCupWidthScaleFactor(u: number, heelCupWidthMm: number): numb
     return 1 + env * (targetScale - 1);
 }
 
+/** Forefoot planform widen/narrow envelope stations — pending CAD expert sign-off. */
+export const FOREFOOT_WIDTH_ENVELOPE = {
+    rampStartU: 0.45,
+    rampEndU: 0.65,
+    holdEndU: 0.95,
+    toeTipU: 1.0,
+    toeTipEnvelope: 0.5,
+} as const;
+
+/**
+ * Max |fractional| lateral scale at |forefootWidthMm| = 10 on a 95 mm ball width
+ * (total width delta ≈ forefootWidthMm at full envelope). Pending CAD sign-off.
+ */
+/** Tuned so +10 mm ≈ +10 mm total width at u≈0.75 on Default.glb (pending CAD sign-off). */
+export const FOREFOOT_WIDTH_MAX_LATERAL_SCALE = 10 / 89.5;
+
+/** C1-smooth longitudinal mask for forefoot width (heel 0 → toe 1). */
+export function forefootWidthLongitudinalEnvelope(u: number): number {
+    const { rampStartU, rampEndU, holdEndU, toeTipU, toeTipEnvelope } = FOREFOOT_WIDTH_ENVELOPE;
+    if (u < rampStartU) return 0;
+    if (u <= holdEndU) {
+        if (u <= rampEndU) return smoothstep(rampStartU, rampEndU, u);
+        return 1;
+    }
+    if (u >= toeTipU) return toeTipEnvelope;
+    const t = smoothstep(holdEndU, toeTipU, u);
+    return 1 + t * (toeTipEnvelope - 1);
+}
+
+/** Per-vertex lateral scale for forefoot width (positive widens, negative narrows). */
+export function forefootWidthScaleFactor(u: number, forefootWidthMm: number): number {
+    if (forefootWidthMm === 0) return 1;
+    const targetScale = 1 + (forefootWidthMm / 10) * FOREFOOT_WIDTH_MAX_LATERAL_SCALE;
+    const env = forefootWidthLongitudinalEnvelope(u);
+    return 1 + env * (targetScale - 1);
+}
+
+/** Compose heel-cup and forefoot width corrections (multiply lateral scales). */
+export function combineLateralWidthScaleFactors(
+    u: number,
+    heelCupWidthMm: number,
+    forefootWidthMm: number,
+): number {
+    return heelCupWidthScaleFactor(u, heelCupWidthMm) * forefootWidthScaleFactor(u, forefootWidthMm);
+}
+
+/** Pattern / rim follow weight when either width correction is active. */
+export function widthCorrectionFollowEnvelope(
+    u: number,
+    heelCupWidthMm: number,
+    forefootWidthMm: number,
+): number {
+    let w = 0;
+    if (heelCupWidthMm !== 0) w = Math.max(w, heelCupWidthLongitudinalEnvelope(u));
+    if (forefootWidthMm !== 0) w = Math.max(w, forefootWidthLongitudinalEnvelope(u));
+    return w;
+}
+
 export const HEEL_CUP_DEPTH_RIM_LATERAL_GAIN = 0.65;
 export const HEEL_CUP_DEPTH_RIM_POSTERIOR_GAIN = 0.85;
 export const HEEL_CUP_DEPTH_SEAT_GAIN = 0.35;

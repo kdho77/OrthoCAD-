@@ -36,6 +36,7 @@ const sideCorrection = z.object({
     heelCupHeightMm: z.number(),
     // Newer fields are optional so previously-saved designs still validate.
     heelCupWidthMm: z.number().optional(),
+    forefootWidthMm: z.number().optional(),
     heelLiftMm: z.number().optional(),
     apexMoveMm: z.number(),
     medialFlangeMm: z.number(),

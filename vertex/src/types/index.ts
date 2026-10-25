@@ -173,6 +173,11 @@ export interface SideCorrections {
      */
     heelCupWidthMm: number;
     /**
+     * Medial/lateral forefoot planform width. Positive widens the forefoot;
+     * negative narrows. 0 = baseline outline.
+     */
+    forefootWidthMm?: number;
+    /**
      * Heel lift (longitudinal raise). A value of N mm raises the plantar surface
      * under the center/back of the heel by N mm and tapers linearly to 0 under
      * the metatarsal heads (~75% of insole length). Bottom surface stays flat
