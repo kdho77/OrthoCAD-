@@ -835,12 +835,15 @@ export interface StyloidWallReliefInput {
 
 const INBOARD_MIN_MM = 1.5;
 const INBOARD_MAX_MM = 40;
+/** Vertices this close to the crest are the rim shoulder, not the local footbed. */
+const RIM_SHOULDER_MM = 2;
 
-/** Nearest inboard top-sheet vertex. That is the local footbed, not the wall below the rim. */
+/** Nearest inboard top-sheet vertex that sits on the footbed, not the rim flare. */
 function sampleInboardFootbed(
     positions: number[],
     rimX: number,
     rimY: number,
+    rimZ: number,
     centerY: number,
     searchCount: number,
 ): { x: number; y: number; z: number } | null {
@@ -849,8 +852,10 @@ function sampleInboardFootbed(
     const min2 = INBOARD_MIN_MM * INBOARD_MIN_MM;
     const max2 = INBOARD_MAX_MM * INBOARD_MAX_MM;
     const n = Math.min(searchCount, Math.floor(positions.length / 3));
-    let best = max2;
-    let found: { x: number; y: number; z: number } | null = null;
+    let bestFoot = max2;
+    let bestAny = max2;
+    let foot: { x: number; y: number; z: number } | null = null;
+    let any: { x: number; y: number; z: number } | null = null;
     for (let i = 0; i < n; i++) {
         const x = positions[i * 3]!;
         const y = positions[i * 3 + 1]!;
@@ -858,11 +863,19 @@ function sampleInboardFootbed(
         if (dy * toward <= 0) continue;
         const dx = x - rimX;
         const d2 = dx * dx + dy * dy;
-        if (d2 < min2 || d2 >= best) continue;
-        best = d2;
-        found = { x, y, z: positions[i * 3 + 2]! };
+        if (d2 < min2 || d2 >= max2) continue;
+        const z = positions[i * 3 + 2]!;
+        if (d2 < bestAny) {
+            bestAny = d2;
+            any = { x, y, z };
+        }
+        if (z > rimZ - RIM_SHOULDER_MM) continue;
+        if (d2 < bestFoot) {
+            bestFoot = d2;
+            foot = { x, y, z };
+        }
     }
-    return found;
+    return foot ?? any;
 }
 
 /**
@@ -874,6 +887,7 @@ function localTopSurfaceZ(
     searchCount: number,
     rimX: number,
     rimY: number,
+    rimZ: number,
     centerY: number,
     bounds: { minX: number; maxX: number; minY: number; maxY: number },
     medialYSign: 1 | -1,
@@ -881,7 +895,7 @@ function localTopSurfaceZ(
     ctx: SinkSurfaceContext,
     alreadyDisplaced: boolean,
 ): number {
-    const foot = sampleInboardFootbed(positions, rimX, rimY, centerY, searchCount);
+    const foot = sampleInboardFootbed(positions, rimX, rimY, rimZ, centerY, searchCount);
     if (!foot) return 0;
     if (alreadyDisplaced) return foot.z;
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
@@ -935,6 +949,7 @@ export function applyStyloidWallRelief(input: StyloidWallReliefInput): SinkWarni
             input.positions.length / 3,
             rim.x,
             rim.y,
+            H,
             widCenter,
             input.bounds,
             input.medialYSign,
@@ -1026,6 +1041,7 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
             topCount,
             x,
             y,
+            rimH[s]!,
             widCenter,
             input.bounds,
             input.medialYSign,
@@ -1033,7 +1049,8 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
             ctx,
             false,
         );
-        rimR[s] = guardedRimLowering(rimH[s]! + rimT[s]!, floor.cutMm, localTop).lowering;
+        const lowering = guardedRimLowering(rimH[s]! + rimT[s]!, floor.cutMm, localTop).lowering;
+        rimR[s] = lowering;
     }
     const warnings: SinkWarning[] = [];
     const seen = new Set<string>();

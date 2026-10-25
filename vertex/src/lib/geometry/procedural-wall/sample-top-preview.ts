@@ -19,7 +19,7 @@ import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern 
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
 import { forefootFeatureBoxes, offsetPlanLoopForefootWidthMm } from "./modifiers";
-import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
+import { composePrintSolidTop, fieldWithoutSinks, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
@@ -228,13 +228,15 @@ export async function reconstructProceduralPreview(
         const fore = options.sourceField.corrections?.forefootWidthMm ?? 0;
         // Pair and loft the zero-forefoot sheet. The wall applies one lateral
         // normal offset after main's stations exist.
-        const sourceField =
+        const widthFree =
             fore !== 0
                 ? {
                       ...options.sourceField,
                       corrections: { ...options.sourceField.corrections, forefootWidthMm: 0 },
                   }
                 : options.sourceField;
+        // The loft pairs the unsunk sheet. T and S are applied to the wall after.
+        const sourceField = fieldWithoutSinks(widthFree);
         source = await composePrintSolidTop(topGeo, {
             sourceField,
             shoeWidth: options.shoeWidth,

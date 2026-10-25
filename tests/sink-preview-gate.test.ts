@@ -8,10 +8,20 @@ import { describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { foldReport } from "@/lib/geometry/procedural-wall/metrics";
+import { footprintVSignedFromMeshY } from "@/lib/geometry/procedural-wall/modifiers";
 import {
     reconstructProceduralPreview,
     sampleTopFromArrayBuffer,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import {
+    FOREFOOT_THICKNESS_CLEARANCE_MM,
+    SINK_DEFAULT_DEPTH_MM,
+    SINK_KIND_ORDER,
+    SINK_PROFILES,
+    sinkCutAt,
+    specVFromVSigned,
+} from "@/lib/geometry/sink";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import type { PlacedSink, SideCorrections } from "@/types";
 
@@ -84,6 +94,7 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
     test("no-sink identity and 1st MPJ at 4 mm stay z-only on the fixed wall", async () => {
         const raw = await sampleTop();
         const hashes: Record<string, { stl: string; pos: string; count: number }> = {};
+        const plains: Record<string, BufferGeometry> = {};
         let plain: BufferGeometry | null = null;
         for (const wallStyle of ["straight", "round", "hybrid"] as const) {
             const preview = await reconstructProceduralPreview(raw, { wallStyle, side: "left" });
@@ -92,8 +103,8 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
             const count = preview.geometry.getAttribute("position").count;
             hashes[wallStyle] = { stl, pos, count };
             console.log("[SINK-PREVIEW-SHA]", wallStyle, hashes[wallStyle]);
+            plains[wallStyle] = preview.geometry;
             if (wallStyle === "straight") plain = preview.geometry;
-            else preview.geometry.dispose();
         }
         expect(hashes.straight?.count).toBe(37472);
         expect(hashes.straight?.stl).toBe(STL_SHA256.straight);
@@ -129,12 +140,70 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         expect(composed.rearfootDzMm).toBeLessThanOrEqual(1e-6);
         expect(Math.abs(analytic.floorDzMm - 0.5)).toBeLessThanOrEqual(0.05);
         expect(Math.abs(composed.floorDzMm - 0.5)).toBeLessThanOrEqual(0.05);
-        plain!.dispose();
+
+        const six = SINK_KIND_ORDER.map((kind) => ({ id: kind, kind, depthMm: SINK_DEFAULT_DEPTH_MM }));
+        const floors: Record<string, Record<string, { dz: number; weight: number }>> = {};
+        for (const wallStyle of ["straight", "round", "hybrid"] as const) {
+            const all = await reconstructProceduralPreview(raw, {
+                wallStyle,
+                side: "left",
+                sinks: six,
+            });
+            const solid = compareSolids(plains[wallStyle]!, all.geometry);
+            const perSink = deepestFloor(plains[wallStyle]!, all.geometry, six);
+            floors[wallStyle] = perSink;
+            console.log(
+                "[SINK-F4-FLOOR]",
+                wallStyle,
+                JSON.stringify({ perSink, outlineMm: solid.outlineMm }),
+            );
+            expect(solid.vertexCount).toBe(solid.baseVertexCount);
+            expect(solid.outlineMm).toBeLessThanOrEqual(0.02);
+            for (const kind of SINK_KIND_ORDER) {
+                if (!SINK_PROFILES[kind].forefoot) continue;
+                const hit = perSink[kind];
+                expect(hit, `${wallStyle} ${kind}`).toBeTruthy();
+                expect(Math.abs(hit!.dz - FOREFOOT_THICKNESS_CLEARANCE_MM)).toBeLessThanOrEqual(0.05);
+            }
+            all.geometry.dispose();
+        }
+
+        const styloid2 = await reconstructProceduralPreview(raw, {
+            wallStyle: "straight",
+            side: "left",
+            sinks: [{ id: "styloid", kind: "styloid", depthMm: SINK_DEFAULT_DEPTH_MM }],
+        });
+        const styloid3 = await reconstructProceduralPreview(raw, {
+            wallStyle: "straight",
+            side: "left",
+            sinks: [{ id: "styloid", kind: "styloid", depthMm: 3 }],
+        });
+        const drop2 = wallTopDropMm(plains.straight!, styloid2.geometry);
+        const drop3 = wallTopDropMm(plains.straight!, styloid3.geometry);
+        const angled = await reconstructProceduralPreview(raw, {
+            wallStyle: "straight",
+            side: "left",
+            sinks: [MPJ1, { id: "styloid", kind: "styloid", depthMm: 3 }],
+        });
+        const wallAngleDeg = wallFoldDeg(angled.geometry);
+        const plainWallDeg = wallFoldDeg(plains.straight!);
+        console.log("[SINK-F4]", JSON.stringify({ floors, drop2, drop3, wallAngleDeg, plainWallDeg }));
+        // Depth 2 used to drop 0.000 while ~1.3 mm of clearance remained above the 3 mm wall minimum.
+        expect(drop2).toBeGreaterThan(0.5);
+        expect(drop2).toBeLessThan(1.95);
+        expect(drop3).toBeGreaterThan(drop2);
+        expect(drop3).toBeLessThan(2.95);
+        expect(wallAngleDeg).toBeLessThanOrEqual(60);
+
+        for (const geo of Object.values(plains)) geo.dispose();
         sunk.geometry.dispose();
         composedPlain.geometry.dispose();
         composedSunk.geometry.dispose();
+        styloid2.geometry.dispose();
+        styloid3.geometry.dispose();
+        angled.geometry.dispose();
         raw.dispose();
-    }, 600_000);
+    }, 900_000);
 });
 
 function compareSolids(base: BufferGeometry, sunk: BufferGeometry) {
@@ -171,4 +240,90 @@ function compareSolids(base: BufferGeometry, sunk: BufferGeometry) {
         floorDzMm = Math.min(floorDzMm, b[i + 2]! - a[i + 2]!);
     }
     return { baseVertexCount: baseCount, vertexCount: count, outlineMm, rearfootDzMm, heelDzMm, floorDzMm };
+}
+
+/** dz at the top-sheet vertex where each sink's cut weight is highest. */
+function deepestFloor(
+    base: BufferGeometry,
+    sunk: BufferGeometry,
+    sinks: PlacedSink[],
+): Record<string, { dz: number; weight: number }> {
+    const a = base.getAttribute("position");
+    const b = sunk.getAttribute("position");
+    const topN = (base.userData as { topVertexCount?: number }).topVertexCount ?? a.count;
+    const medialYSign = ((base.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) as 1 | -1;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    const limit = Math.min(topN, a.count, b.count);
+    for (let i = 0; i < limit; i++) {
+        minX = Math.min(minX, a.getX(i));
+        maxX = Math.max(maxX, a.getX(i));
+        minY = Math.min(minY, a.getY(i));
+        maxY = Math.max(maxY, a.getY(i));
+    }
+    const lengthMm = Math.max(1e-3, maxX - minX);
+    const widthMm = Math.max(1e-3, maxY - minY);
+    const ctx = { side: "left" as const, lengthMm, widthMm, sinks };
+    const bounds = { minY, maxY };
+    const best: Record<string, { dz: number; weight: number }> = {};
+    for (let i = 0; i < limit; i++) {
+        const u = Math.max(0, Math.min(1, (a.getX(i) - minX) / lengthMm));
+        const vSigned = footprintVSignedFromMeshY(a.getY(i), bounds, "left", medialYSign);
+        const sample = sinkCutAt(u, vSigned, ctx);
+        if (!sample.sinkId || sample.weight <= 0) continue;
+        const prev = best[sample.sinkId];
+        if (prev && sample.weight <= prev.weight) continue;
+        best[sample.sinkId] = { dz: b.getZ(i) - a.getZ(i), weight: sample.weight };
+    }
+    return best;
+}
+
+/** Drop of the lateral crest beside the styloid. Inboard of v 0.936 the top sheet takes the full cut. */
+function wallTopDropMm(base: BufferGeometry, sunk: BufferGeometry): number {
+    const a = base.getAttribute("position");
+    const b = sunk.getAttribute("position");
+    const medialYSign = ((base.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) as 1 | -1;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    const n = Math.min(a.count, b.count);
+    for (let i = 0; i < n; i++) {
+        minX = Math.min(minX, a.getX(i));
+        maxX = Math.max(maxX, a.getX(i));
+        minY = Math.min(minY, a.getY(i));
+        maxY = Math.max(maxY, a.getY(i));
+    }
+    const length = Math.max(1e-3, maxX - minX);
+    const bounds = { minY, maxY };
+    let drop = 0;
+    for (let i = 0; i < n; i++) {
+        const u = (a.getX(i) - minX) / length;
+        if (u < 0.43 || u > 0.49) continue;
+        const v = specVFromVSigned(footprintVSignedFromMeshY(a.getY(i), bounds, "left", medialYSign), "left");
+        if (v < 0.937 || v > 0.955) continue;
+        drop = Math.max(drop, a.getZ(i) - b.getZ(i));
+    }
+    return drop;
+}
+
+/** Sharpest wall fold, ignoring stock top-sheet creases. */
+function wallFoldDeg(geo: BufferGeometry): number {
+    const ud = geo.userData as {
+        topVertexCount?: number;
+        outlineVertexCount?: number;
+        outlineVertexStart?: number;
+        plantarStart?: number;
+        plantarEnd?: number;
+    };
+    return foldReport(geo, {
+        wholeInsole: true,
+        topVertexCount: ud.topVertexCount,
+        outlineVertexCount: ud.outlineVertexCount,
+        outlineVertexStart: ud.outlineVertexStart,
+        plantarVertexStart: ud.plantarStart,
+        plantarVertexEnd: ud.plantarEnd,
+    }).worstDeg;
 }
