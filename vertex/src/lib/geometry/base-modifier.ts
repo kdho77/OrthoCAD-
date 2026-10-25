@@ -11,8 +11,6 @@ import {
     type HeightFieldParams,
     heelCupWidthScaleFactor,
     heightAt,
-    localLateralV,
-    makeSilhouetteHalfWidth,
     quinticSmoothstep,
     smoothstep,
 } from "@/lib/geometry/height-field";
@@ -764,7 +762,7 @@ function buildHeelCupWidthLateralDelta(
     crossMeshCoincidenceGroupCount: number;
     coincidentGroupCount: number;
 } {
-    const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, widSize, widthSign, array } = ctx;
+    const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
     const syncIndexCount = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
 
     const heelW = field.corrections.heelCupWidthMm ?? 0;
@@ -781,30 +779,13 @@ function buildHeelCupWidthLateralDelta(
     }
 
     const raw = new Float32Array(count);
-    const foreHalf =
-        foreW !== 0
-            ? makeSilhouetteHalfWidth(
-                  Array.from({ length: count }, (_, i) => {
-                      const lenCoord = array[i * 3 + lengthAxis]!;
-                      const widCoord = array[i * 3 + widthAxis]!;
-                      return {
-                          u: Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize)),
-                          offset: widCoord - widCenter,
-                      };
-                  }),
-              )
-            : null;
     for (let i = 0; i < count; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const offset = widCoord - widCenter;
-        const halfW = widSize / 2 || 1;
-        const vGeom = Math.max(-1, Math.min(1, offset / halfW));
-        const vSigned = Math.max(-1, Math.min(1, (widthSign * offset) / halfW));
         const heelDelta = offset * (heelCupWidthScaleFactor(u, heelW) - 1);
-        const vFore = foreHalf ? localLateralV(offset, foreHalf(u)) : vGeom;
-        const foreDelta = forefootWidthPerSideDeltaMm(u, vFore, foreW);
+        const foreDelta = forefootWidthPerSideDeltaMm(u, offset, foreW);
         raw[i] = heelDelta + foreDelta;
     }
 
@@ -871,9 +852,7 @@ function buildHeelCupWidthLateralDelta(
         allowN,
         HEEL_CUP_WIDTH_LAPLACIAN_ITERS,
     );
-    const lateralDevLimitMm =
-        foreW !== 0 ? Math.max(SMOOTH_INWARD_LIMIT_MM, Math.abs(foreW) * 1.15) : SMOOTH_INWARD_LIMIT_MM;
-    clampLateralDeviation(raw, smoothed, lateralDevLimitMm);
+    clampLateralDeviation(raw, smoothed, SMOOTH_INWARD_LIMIT_MM);
     // Clamp can in principle introduce tiny float divergence within a group —
     // re-sync so rim extract still sees welded positions.
     syncCoincidentDeltas(smoothed, groups);

@@ -27,7 +27,9 @@ const M9_BASELINE_STL_MD5_PREFIX: Record<"straight" | "round" | "hybrid", string
 
 const CREASE_BASE_MAX_DEG = 8;
 const CREASE_JUMP_MIN_DEG = 12;
-const HYBRID_CREASE_CAP = 42;
+/** Main hybrid folds sit in this mesh-X band. New hybrid folds outside it fail. */
+const HYBRID_CREASE_X0 = 72;
+const HYBRID_CREASE_X1 = 77;
 
 type WallStyle = "straight" | "round" | "hybrid";
 
@@ -122,10 +124,10 @@ function resolveFrame(geo: BufferGeometry): Frame {
 function sampleExtentsAtU(
     geo: BufferGeometry,
     uTarget: number,
-    uBand = 0.02,
+    frame: Frame,
+    uBand = 0.008,
     topOnly = true,
-): { medial: number; lateral: number } {
-    const frame = resolveFrame(geo);
+): { minW: number; maxW: number } {
     const pos = geo.getAttribute("position")!.array as Float32Array;
     const n = topOnly ? frame.topVertexCount : pos.length / 3;
     let minW = Infinity;
@@ -138,37 +140,42 @@ function sampleExtentsAtU(
         minW = Math.min(minW, w);
         maxW = Math.max(maxW, w);
     }
-    const center = 0.5 * (minW + maxW);
-    return { medial: center - minW, lateral: maxW - center };
+    return { minW, maxW };
 }
 
+/** Each side vs the base band's own center, so a one-sided move does not hide in the average. */
 function sideShiftMm(
-    base: { medial: number; lateral: number },
-    mod: { medial: number; lateral: number },
+    base: { minW: number; maxW: number },
+    mod: { minW: number; maxW: number },
 ): { medial: number; lateral: number } {
-    return { medial: mod.medial - base.medial, lateral: mod.lateral - base.lateral };
+    const center = 0.5 * (base.minW + base.maxW);
+    return {
+        medial: center - mod.minW - (center - base.minW),
+        lateral: mod.maxW - center - (base.maxW - center),
+    };
 }
 
 function outlineRingAtU(
     geo: BufferGeometry,
     uTarget: number,
-    uBand = 0.02,
-): { medial: number; lateral: number } | null {
+    frame: Frame,
+    uBand = 0.008,
+): { minW: number; maxW: number } | null {
     const ring =
         (geo.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> }).outlineRing ?? [];
     if (ring.length < 8) return null;
-    const frame = resolveFrame(geo);
     let minW = Infinity;
     let maxW = -Infinity;
     for (const p of ring) {
-        const u = (p.x - frame.lenMin) / frame.lenSize;
+        const len = frame.lengthAxis === 0 ? p.x : frame.lengthAxis === 1 ? p.y : p.z;
+        const wid = frame.widthAxis === 0 ? p.x : frame.widthAxis === 1 ? p.y : p.z;
+        const u = (len - frame.lenMin) / frame.lenSize;
         if (u < uTarget - uBand || u > uTarget + uBand) continue;
-        minW = Math.min(minW, p.y);
-        maxW = Math.max(maxW, p.y);
+        minW = Math.min(minW, wid);
+        maxW = Math.max(maxW, wid);
     }
     if (!Number.isFinite(minW)) return null;
-    const center = 0.5 * (minW + maxW);
-    return { medial: center - minW, lateral: maxW - center };
+    return { minW, maxW };
 }
 
 function faceNormalOf(pos: Float32Array, idx: ArrayLike<number>, f: number): [number, number, number] {
@@ -193,7 +200,10 @@ function angleDeg(a: [number, number, number], b: [number, number, number]): num
     return (Math.acos(d) * 180) / Math.PI;
 }
 
-function countNewHardCreases(geoMod: BufferGeometry, baseArr: Float32Array, frame: Frame): number {
+type CreaseHit = { x: number };
+
+/** Mesh X of each new top-sheet crease (base dihedral < 8°, jump > 12°). */
+function newCreaseXs(geoMod: BufferGeometry, baseArr: Float32Array, frame: Frame): CreaseHit[] {
     const idx = geoMod.index!.array as ArrayLike<number>;
     const modArr = geoMod.getAttribute("position")!.array as Float32Array;
     const { topVertexCount } = frame;
@@ -211,7 +221,7 @@ function countNewHardCreases(geoMod: BufferGeometry, baseArr: Float32Array, fram
     }
     const faceCount = idx.length / 3;
     const edgeToFace = new Map<string, number>();
-    let creases = 0;
+    const xs: CreaseHit[] = [];
     for (let f = 0; f < faceCount; f++) {
         if (idx[f * 3]! >= topVertexCount) continue;
         for (let e = 0; e < 3; e++) {
@@ -229,10 +239,12 @@ function countNewHardCreases(geoMod: BufferGeometry, baseArr: Float32Array, fram
             }
             const baseDeg = angleDeg(faceNormalOf(baseArr, idx, other), faceNormalOf(baseArr, idx, f));
             const modDeg = angleDeg(faceNormalOf(modArr, idx, other), faceNormalOf(modArr, idx, f));
-            if (baseDeg < CREASE_BASE_MAX_DEG && modDeg > baseDeg + CREASE_JUMP_MIN_DEG) creases++;
+            if (baseDeg < CREASE_BASE_MAX_DEG && modDeg > baseDeg + CREASE_JUMP_MIN_DEG) {
+                xs.push({ x: 0.5 * (baseArr[v0 * 3]! + baseArr[v1 * 3]!) });
+            }
         }
     }
-    return creases;
+    return xs;
 }
 
 describe("forefoot width — SAMPLE_Top M9 procedural export", () => {
@@ -245,89 +257,144 @@ describe("forefoot width — SAMPLE_Top M9 procedural export", () => {
         }
     });
 
-    test("±5 and ±10 mm per-side targets, balance, heel idle, top/bottom parity", async () => {
-        const style: WallStyle = "straight";
-        const baseGeo = await buildM9ExportSolid(0, style);
-        const baseArr = (baseGeo.getAttribute("position")!.array as Float32Array).slice();
-        const frame = resolveFrame(baseGeo);
+    const styles = ["straight", "round", "hybrid"] as const;
+    const magnitudes = [-10, -5, 5, 10] as const;
+    for (const style of styles) {
+        test(`${style} ±5/±10 hard gates`, async () => {
+            const baseGeo = await buildM9ExportSolid(0, style);
+            const baseArr = (baseGeo.getAttribute("position")!.array as Float32Array).slice();
+            const frame = resolveFrame(baseGeo);
+            baseGeo.computeBoundingBox();
+            const baseBox = baseGeo.boundingBox!;
+            const rows: Array<Record<string, number | string | boolean>> = [];
 
-        const uStations = [0.65, 0.75, 0.9] as const;
-        const magnitudes = [5, 10, -5, -10] as const;
-
-        for (const mm of magnitudes) {
-            const geo = await buildM9ExportSolid(mm, style);
-            // Signed target: positive mm widens, negative mm narrows by the same envelope.
-            const envAt = (u: number) => mm * forefootWidthLongitudinalEnvelope(u);
-            for (const u of uStations) {
-                const target = envAt(u);
-                const bTop = sampleExtentsAtU(baseGeo, u, 0.025, true);
-                const mTop = sampleExtentsAtU(geo, u, 0.025, true);
-                const shift = sideShiftMm(bTop, mTop);
-                expect(Math.abs(shift.medial - target)).toBeLessThan(0.3);
-                expect(Math.abs(shift.lateral - target)).toBeLessThan(0.3);
-                expect(Math.abs(shift.medial - shift.lateral)).toBeLessThan(0.3);
-            }
-
-            const heelTop = sampleExtentsAtU(baseGeo, 0.2, 0.02, true);
-            const heelTopM = sampleExtentsAtU(geo, 0.2, 0.02, true);
-            expect(Math.abs(heelTopM.medial - heelTop.medial)).toBeLessThan(0.05);
-            expect(Math.abs(heelTopM.lateral - heelTop.lateral)).toBeLessThan(0.05);
-
-            const heelBot = outlineRingAtU(baseGeo, 0.2, 0.02);
-            const heelBotM = outlineRingAtU(geo, 0.2, 0.02);
-            if (heelBot && heelBotM) {
-                expect(Math.abs(heelBotM.medial - heelBot.medial)).toBeLessThan(0.05);
-                expect(Math.abs(heelBotM.lateral - heelBot.lateral)).toBeLessThan(0.05);
-            }
-
-            for (let u = 0.55; u <= 0.98; u += 0.05) {
-                const t0 = sampleExtentsAtU(baseGeo, u, 0.015, true);
-                const t1 = sampleExtentsAtU(geo, u, 0.015, true);
-                const b0 = outlineRingAtU(baseGeo, u, 0.015);
-                const b1 = outlineRingAtU(geo, u, 0.015);
-                if (!b0 || !b1) continue;
-                const dTop = sideShiftMm(t0, t1);
-                const dBot = sideShiftMm(b0, b1);
-                expect(Math.abs(dTop.medial - dBot.medial)).toBeLessThan(0.3);
-                expect(Math.abs(dTop.lateral - dBot.lateral)).toBeLessThan(0.3);
-            }
-
-            const creases = countNewHardCreases(geo, baseArr, frame);
-            expect(creases).toBe(0);
-
-            const man = reconstructionManifold(geo);
-            expect(man.watertight).toBe(true);
-            expect(countSelfIntersections(geo).real).toBe(0);
-
-            geo.dispose();
-        }
-        baseGeo.dispose();
-    });
-
-    test("all wall styles ±10 watertight; crease caps", async () => {
-        for (const style of ["straight", "round", "hybrid"] as const) {
-            for (const mm of [-10, 10] as const) {
-                const baseGeo = await buildM9ExportSolid(0, style);
-                const baseArr = (baseGeo.getAttribute("position")!.array as Float32Array).slice();
-                const frame = resolveFrame(baseGeo);
+            for (const mm of magnitudes) {
                 const geo = await buildM9ExportSolid(mm, style);
-                const creases = countNewHardCreases(geo, baseArr, frame);
-                const cap = style === "hybrid" ? HYBRID_CREASE_CAP : 0;
-                expect(creases).toBeLessThanOrEqual(cap);
+                const modArr = geo.getAttribute("position")!.array as Float32Array;
+                const creaseXs = newCreaseXs(geo, baseArr, frame);
+                const envAt = (u: number) => mm * forefootWidthLongitudinalEnvelope(u);
+                let perSide = 0;
+                let balance = 0;
+                let past = 0;
+                for (const u of [0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]) {
+                    const target = envAt(u);
+                    const shift = sideShiftMm(
+                        sampleExtentsAtU(baseGeo, u, frame, 0.003),
+                        sampleExtentsAtU(geo, u, frame, 0.003),
+                    );
+                    perSide = Math.max(
+                        perSide,
+                        Math.abs(shift.medial - target),
+                        Math.abs(shift.lateral - target),
+                    );
+                    expect(Math.abs(shift.medial - target)).toBeLessThanOrEqual(0.3);
+                    expect(Math.abs(shift.lateral - target)).toBeLessThanOrEqual(0.3);
+                    if (mm < 0) {
+                        past = Math.max(past, target - shift.medial, target - shift.lateral);
+                        expect(shift.medial).toBeGreaterThanOrEqual(target - 0.02);
+                        expect(shift.lateral).toBeGreaterThanOrEqual(target - 0.02);
+                    }
+                }
+                for (let u = 0.05; u <= 0.98; u += 0.05) {
+                    const shift = sideShiftMm(
+                        sampleExtentsAtU(baseGeo, u, frame, 0.003),
+                        sampleExtentsAtU(geo, u, frame, 0.003),
+                    );
+                    balance = Math.max(balance, Math.abs(shift.medial - shift.lateral));
+                    expect(Math.abs(shift.medial - shift.lateral)).toBeLessThanOrEqual(0.3);
+                }
+                let parity = 0;
+                for (let u = 0.05; u <= 0.98; u += 0.05) {
+                    const dTop = sideShiftMm(
+                        sampleExtentsAtU(baseGeo, u, frame, 0.003),
+                        sampleExtentsAtU(geo, u, frame, 0.003),
+                    );
+                    const b0 = outlineRingAtU(baseGeo, u, frame, 0.003);
+                    const b1 = outlineRingAtU(geo, u, frame, 0.003);
+                    expect(b0).not.toBeNull();
+                    expect(b1).not.toBeNull();
+                    const dBot = sideShiftMm(b0!, b1!);
+                    parity = Math.max(
+                        parity,
+                        Math.abs(dTop.medial - dBot.medial),
+                        Math.abs(dTop.lateral - dBot.lateral),
+                    );
+                    expect(Math.abs(dTop.medial - dBot.medial)).toBeLessThanOrEqual(0.3);
+                    expect(Math.abs(dTop.lateral - dBot.lateral)).toBeLessThanOrEqual(0.3);
+                }
+                const heelTop = sideShiftMm(
+                    sampleExtentsAtU(baseGeo, 0.2, frame, 0.02),
+                    sampleExtentsAtU(geo, 0.2, frame, 0.02),
+                );
+                const heelBotPair = [
+                    outlineRingAtU(baseGeo, 0.2, frame, 0.02),
+                    outlineRingAtU(geo, 0.2, frame, 0.02),
+                ] as const;
+                expect(heelBotPair[0]).not.toBeNull();
+                expect(heelBotPair[1]).not.toBeNull();
+                const heelBot = sideShiftMm(heelBotPair[0]!, heelBotPair[1]!);
+                expect(Math.abs(heelTop.medial)).toBeLessThanOrEqual(0.05);
+                expect(Math.abs(heelTop.lateral)).toBeLessThanOrEqual(0.05);
+                expect(Math.abs(heelBot.medial)).toBeLessThanOrEqual(0.05);
+                expect(Math.abs(heelBot.lateral)).toBeLessThanOrEqual(0.05);
 
-                expect(reconstructionManifold(geo).watertight).toBe(true);
+                geo.computeBoundingBox();
+                const box = geo.boundingBox!;
+                const len0 = baseBox.max.x - baseBox.min.x;
+                const len1 = box.max.x - box.min.x;
+                const dLen = Math.abs(len1 - len0);
+                const dHeelX = Math.abs(box.min.x - baseBox.min.x);
+                expect(dLen).toBeLessThanOrEqual(0.02);
+                expect(dHeelX).toBeLessThanOrEqual(0.02);
+
+                let heelOutline = 0;
+                const nTop = Math.min(frame.topVertexCount, modArr.length / 3, baseArr.length / 3);
+                for (let i = 0; i < nTop; i++) {
+                    const u = (baseArr[i * 3 + frame.lengthAxis]! - frame.lenMin) / frame.lenSize;
+                    if (u >= 0.45) continue;
+                    const dx = modArr[i * 3]! - baseArr[i * 3]!;
+                    const dy = modArr[i * 3 + 1]! - baseArr[i * 3 + 1]!;
+                    const dz = modArr[i * 3 + 2]! - baseArr[i * 3 + 2]!;
+                    heelOutline = Math.max(heelOutline, Math.hypot(dx, dy, dz));
+                }
+                expect(heelOutline).toBeLessThanOrEqual(0.05);
+
+                const creaseOutside =
+                    style === "hybrid"
+                        ? creaseXs.filter((c) => c.x < HYBRID_CREASE_X0 || c.x > HYBRID_CREASE_X1).length
+                        : creaseXs.length;
+                expect(creaseOutside).toBe(0);
+
+                const man = reconstructionManifold(geo);
+                expect(man.watertight).toBe(true);
                 expect(countSelfIntersections(geo).real).toBe(0);
-
                 const dir = mkdtempSync(join(tmpdir(), "forefoot-stl-"));
                 const stlPath = join(dir, `${style}-${mm}.stl`);
                 writeFileSync(stlPath, Buffer.from(geometryToBinarySTL(geo)));
-                expect(stlGates(stlPath).watertight).toBe(true);
+                const pyTight = stlGates(stlPath).watertight;
+                expect(pyTight).toBe(true);
 
-                console.log("[FOREFOOT-WIDTH]", { style, mm, creases });
-
+                const row = {
+                    style,
+                    mm,
+                    perSide: Number(perSide.toFixed(3)),
+                    balance: Number(balance.toFixed(3)),
+                    past: Number(past.toFixed(3)),
+                    parity: Number(parity.toFixed(3)),
+                    heelTop: Number(Math.max(Math.abs(heelTop.medial), Math.abs(heelTop.lateral)).toFixed(3)),
+                    heelBot: Number(Math.max(Math.abs(heelBot.medial), Math.abs(heelBot.lateral)).toFixed(3)),
+                    dLen: Number(dLen.toFixed(4)),
+                    dHeelX: Number(dHeelX.toFixed(4)),
+                    uLt045: Number(heelOutline.toFixed(4)),
+                    creases: creaseXs.length,
+                    creaseOutside,
+                    watertight: man.watertight && pyTight,
+                };
+                rows.push(row);
                 geo.dispose();
-                baseGeo.dispose();
             }
-        }
-    });
+            baseGeo.dispose();
+            expect(rows).toHaveLength(magnitudes.length);
+        });
+    }
 });

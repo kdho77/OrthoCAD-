@@ -5,11 +5,7 @@ import type { BufferGeometry } from "three";
 import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import {
-    forefootWidthPerSideDeltaMm,
-    heelCupWidthScaleFactor,
-    widthCorrectionFollowEnvelope,
-} from "@/lib/geometry/height-field";
+import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -20,8 +16,9 @@ import {
 } from "@/lib/library/loaders";
 import type { ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
-import { ensureCcw, type PolyPoint, startAtLowCurvature } from "./curves";
+import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
+import { offsetPlanLoopForefootWidthMm } from "./modifiers";
 import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
@@ -110,20 +107,16 @@ export function followViewerPattern(
     }));
     const yMid = rim.reduce((s, p) => s + p.y, 0) / rim.length;
     const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
-    const halfW = Math.max(1e-3, (model.bounds.maxY - model.bounds.minY) * 0.5);
-    const live = rim.map((p) => {
+    const scaled = rim.map((p) => {
         const u = Math.max(0, Math.min(1, (p.x - model.bounds.minX) / length));
         let y = p.y;
         if (heel) {
             const s = heelCupWidthScaleFactor(u, heel);
             y = yMid + (y - yMid) * s;
         }
-        if (fore) {
-            const v = Math.max(-1, Math.min(1, (y - yMid) / halfW));
-            y += forefootWidthPerSideDeltaMm(u, v, fore);
-        }
         return { x: p.x, y, z: 0 };
     });
+    const live = fore ? offsetPlanLoopForefootWidthMm(scaled, model.bounds, fore) : scaled;
     return shiftPatternByRimFollow(pattern, rim, live, (p) => {
         const u = Math.max(0, Math.min(1, (p.x - model.bounds.minX) / length));
         return widthCorrectionFollowEnvelope(u, heel, fore);
@@ -239,8 +232,18 @@ export async function reconstructProceduralPreview(
     let source = topGeo;
     let owned = false;
     if (options.sourceField) {
+        const fore = options.sourceField.corrections?.forefootWidthMm ?? 0;
+        // Pair and loft the zero-forefoot sheet. The wall applies one lateral
+        // normal offset after main's stations exist.
+        const sourceField =
+            fore !== 0
+                ? {
+                      ...options.sourceField,
+                      corrections: { ...options.sourceField.corrections, forefootWidthMm: 0 },
+                  }
+                : options.sourceField;
         source = await composePrintSolidTop(topGeo, {
-            sourceField: options.sourceField,
+            sourceField,
             shoeWidth: options.shoeWidth,
             trimline: options.trimline,
         });
@@ -248,40 +251,9 @@ export async function reconstructProceduralPreview(
     }
     const model = extractTopOnlyModel(source, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
     if (owned) source.dispose();
-    const foreW =
-        options.sourceField?.corrections?.forefootWidthMm ?? options.corrections?.forefootWidthMm ?? 0;
-    // Same faired bottom as forefootWidthMm=0, then one per-side offset. A pattern
-    // taken from the already-widened top (or from the uncomposed mesh) does not
-    // share the baseline heel.
-    let patternModel = model;
-    let forefootClearanceRim: PolyPoint[] | undefined;
-    if (useComposed && foreW !== 0 && options.sourceField) {
-        const baseline = await composePrintSolidTop(topGeo, {
-            sourceField: {
-                ...options.sourceField,
-                corrections: { ...options.sourceField.corrections, forefootWidthMm: 0 },
-            },
-            shoeWidth: options.shoeWidth,
-            trimline: options.trimline,
-        });
-        patternModel = extractTopOnlyModel(baseline, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
-        const pos = patternModel.top.meshPositions;
-        const rimIdx = patternModel.top.rimLocal ?? [];
-        if (pos && rimIdx.length >= 8) {
-            const rim = rimIdx.map((i) => ({
-                x: pos[i * 3] ?? 0,
-                y: pos[i * 3 + 1] ?? 0,
-                z: 0,
-            }));
-            forefootClearanceRim = startAtLowCurvature(ensureCcw(rim)).map((p) => ({ x: p.x, y: p.y, z: 0 }));
-        }
-        if (baseline !== topGeo) baseline.dispose();
-    } else if (useComposed && foreW !== 0) {
-        patternModel = extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
-    }
     const requested = options.bottomPattern?.length
         ? options.bottomPattern
-        : buildFairedPatternFromTop(patternModel, options.scanPattern);
+        : buildFairedPatternFromTop(model, options.scanPattern);
     const loft = (pattern: PolyPoint[]) => {
         const thicknessMm =
             options.thicknessMm ?? options.sourceField?.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
@@ -302,7 +274,6 @@ export async function reconstructProceduralPreview(
             sourceField: options.sourceField,
             composedTop: useComposed,
             patternRimBaseline,
-            forefootClearanceRim,
         });
         return { model, pattern, geometry };
     };

@@ -1,7 +1,6 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import { forefootWidthLongitudinalEnvelope } from "@/lib/geometry/height-field";
 import {
     fitClosedC2Spline,
     type PolyPoint,
@@ -16,18 +15,6 @@ import { outwardNormal } from "./measure";
 export interface ForefootSkewExempt {
     forefootWidthMm?: number;
     bounds?: { minX: number; maxX: number };
-}
-
-function stationU(x: number, opts?: ForefootSkewExempt): number {
-    if (!opts?.bounds) return 0;
-    const length = Math.max(1e-3, opts.bounds.maxX - opts.bounds.minX);
-    return Math.max(0, Math.min(1, (x - opts.bounds.minX) / length));
-}
-
-function forefootSkewCapMm(u: number, forefootWidthMm: number): number {
-    const env = forefootWidthLongitudinalEnvelope(u);
-    if (env <= 0) return 0;
-    return Math.abs(forefootWidthMm) * env * 2.05;
 }
 
 /** ±25° applies only to per-station deviation from the region default. */
@@ -153,43 +140,6 @@ export function nearestRayHitOnLoop(
         };
     }
     return best;
-}
-
-/** Nearest rim-normal hit whose loop parameter stays within `window` of `targetS`. */
-function nearestForwardRayHit(
-    origin: PolyPoint,
-    nrm: { x: number; y: number },
-    loop: PolyPoint[],
-    cum: number[],
-    total: number,
-    targetS: number,
-    window: number,
-    maxT: number,
-): number | null {
-    const denom = Math.max(total, 1e-12);
-    let bestT = Infinity;
-    let bestS = 0;
-    let found = false;
-    for (const sign of [1, -1] as const) {
-        const dx = nrm.x * sign;
-        const dy = nrm.y * sign;
-        for (let i = 0; i < loop.length; i++) {
-            const a = loop[i]!;
-            const b = loop[(i + 1) % loop.length]!;
-            const hit = raySegHit2D(origin.x, origin.y, dx, dy, a.x, a.y, b.x, b.y);
-            if (!hit || hit.t > maxT || hit.t >= bestT) continue;
-            const seg = cum[i + 1]! - cum[i]!;
-            const s01 = ((((cum[i]! + hit.u * seg) / denom) % 1) + 1) % 1;
-            let ds = s01 - targetS;
-            while (ds > 0.5) ds -= 1;
-            while (ds < -0.5) ds += 1;
-            if (Math.abs(ds) > window) continue;
-            bestT = hit.t;
-            bestS = s01;
-            found = true;
-        }
-    }
-    return found ? bestS : null;
 }
 
 /**
@@ -659,13 +609,7 @@ export function limitPairingSkew(
             const vy = B.y - R.y;
             const inset = Math.hypot(vx, vy);
             const skew = Math.abs(vx * oy - vy * ox);
-            let cap = Math.min(SKEW_LIMIT_MM, SKEW_INSET_RATIO * Math.max(inset, 1e-6));
-            const fore = opts?.forefootWidthMm ?? 0;
-            if (fore !== 0) {
-                const u = stationU(R.x, opts);
-                const foreCap = forefootSkewCapMm(u, fore);
-                if (foreCap > 0) cap = Math.max(cap, foreCap);
-            }
+            const cap = Math.min(SKEW_LIMIT_MM, SKEW_INSET_RATIO * Math.max(inset, 1e-6));
             if (skew <= cap + 1e-3) continue;
             const along = vx * ox + vy * oy;
             const target = { x: R.x + ox * along, y: R.y + oy * along, z: 0 };
@@ -1093,233 +1037,6 @@ function commitTB(
         stations[i]!.tB = ((next[i]! % 1) + 1) % 1;
     }
     return true;
-}
-
-type ForefootStation = {
-    outline: PolyPoint;
-    rim: PolyPoint;
-    n: { x: number; y: number };
-    u: number;
-    tB?: number;
-};
-
-function ringSelfIntersects(pts: PolyPoint[]): boolean {
-    const n = pts.length;
-    for (let i = 0; i < n; i++) {
-        const a0 = pts[i]!;
-        const a1 = pts[(i + 1) % n]!;
-        for (let j = i + 2; j < n; j++) {
-            if (i === 0 && j === n - 1) continue;
-            const b0 = pts[j]!;
-            const b1 = pts[(j + 1) % n]!;
-            if (Math.max(a0.x, a1.x) < Math.min(b0.x, b1.x)) continue;
-            if (Math.max(b0.x, b1.x) < Math.min(a0.x, a1.x)) continue;
-            if (Math.max(a0.y, a1.y) < Math.min(b0.y, b1.y)) continue;
-            if (Math.max(b0.y, b1.y) < Math.min(a0.y, a1.y)) continue;
-            if (segmentsCrossXY(a0, a1, b0, b1)) return true;
-        }
-    }
-    return false;
-}
-
-/**
- * Equal-arc index pairing shears once the forefoot blend stretches the rim,
- * and those oblique columns cross after the loft. Put each B on the near
- * rim-normal hit of the widened pattern so the column stays square to the
- * wall and the ring stays an ordered sample of that loop. Heel vertices stay
- * on the pipeline sample when that mixed ring is still simple.
- */
-export function retargetForefootByInwardRay(
-    stations: ForefootStation[],
-    loop: PolyPoint[],
-    opts: { minX: number; lengthMm: number; centerY: number },
-): void {
-    const n = stations.length;
-    if (n < 8 || loop.length < 8 || !(opts.lengthMm > 1e-3)) return;
-    const rim = stations.map((s) => s.rim);
-    const active = rim.map(
-        (R) =>
-            forefootWidthLongitudinalEnvelope(Math.max(0, Math.min(1, (R.x - opts.minX) / opts.lengthMm))) >
-            1e-3,
-    );
-    if (active.filter(Boolean).length < 4) return;
-    const center = centroidOf(rim);
-    const MAX_HIT_MM = 22;
-    const { cum: loopCum, total: loopTotal } = polylineArcLengths(loop);
-    const rawS = new Array<number>(n);
-    const seedNormal = outwardNormal(rim, 0, center);
-    const seedIn = nearestRayHitOnLoop(rim[0]!, seedNormal, loop, -1);
-    const seedOut = nearestRayHitOnLoop(rim[0]!, seedNormal, loop, 1);
-    let seed: { s01: number; t: number } | null = null;
-    for (const hit of [seedIn, seedOut]) {
-        if (!hit || hit.t > MAX_HIT_MM) continue;
-        if (!seed || hit.t < seed.t) seed = hit;
-    }
-    rawS[0] = seed?.s01 ?? stations[0]!.tB ?? parameterOnClosedLoop(stations[0]!.outline, loop);
-    const minStep = 0.55 / Math.max(loopTotal, 1e-6);
-    let cursor = rawS[0]!;
-    for (let i = 1; i < n; i++) {
-        const target = cursor + 1 / n;
-        const hit = nearestForwardRayHit(
-            rim[i]!,
-            outwardNormal(rim, i, center),
-            loop,
-            loopCum,
-            loopTotal,
-            ((target % 1) + 1) % 1,
-            0.02,
-            MAX_HIT_MM,
-        );
-        let chosen = target;
-        if (hit != null) {
-            let h = hit;
-            while (h < target - 0.5) h += 1;
-            while (h > target + 0.5) h -= 1;
-            chosen = h;
-        }
-        if (chosen < cursor + minStep) chosen = cursor + minStep;
-        cursor = chosen;
-        rawS[i] = ((chosen % 1) + 1) % 1;
-    }
-    const current = unwrapAllowPlateau(stations.map((s) => s.tB ?? parameterOnClosedLoop(s.outline, loop)));
-    for (let i = 1; i < n; i++) if (current[i]! < current[i - 1]!) current[i] = current[i - 1]! + 1e-6;
-    const near = (s: number, ref: number) => {
-        let t = s;
-        while (t < ref - 0.5) t += 1;
-        while (t > ref + 0.5) t -= 1;
-        return t;
-    };
-    const write = (pts: PolyPoint[], s01: number[], onlyActive: boolean): void => {
-        for (let i = 0; i < n; i++) {
-            if (onlyActive && !active[i]) continue;
-            stations[i]!.outline = pts[i]!;
-            stations[i]!.tB = ((s01[i]! % 1) + 1) % 1;
-            const dx = pts[i]!.x - rim[i]!.x;
-            const dy = pts[i]!.y - rim[i]!.y;
-            const hl = Math.hypot(dx, dy);
-            if (hl > 1e-6) stations[i]!.n = { x: dx / hl, y: dy / hl };
-            stations[i]!.u = Math.max(0, Math.min(1, (pts[i]!.x - opts.minX) / opts.lengthMm));
-        }
-    };
-    const accept = (pts: PolyPoint[]): boolean => {
-        let chord = 0;
-        for (let i = 0; i < n; i++) {
-            const a = pts[i]!;
-            const b = pts[(i + 1) % n]!;
-            chord = Math.max(chord, Math.hypot(b.x - a.x, b.y - a.y));
-        }
-        return chord <= 12 && countPlanViewChordCrossings(pts, rim) === 0 && !ringSelfIntersects(pts);
-    };
-
-    const loopLen = polylineArcLengths(loop).total;
-    const minS = 0.55 / Math.max(loopLen, 1e-6);
-    const sampleAt = (s: number[]): PolyPoint[] =>
-        s.map((t) => {
-            const p = sampleClosedAtArc01(loop, ((t % 1) + 1) % 1);
-            return { x: p.x, y: p.y, z: 0 };
-        });
-    const chordAt = (pts: PolyPoint[], i: number): number => {
-        const a = pts[i]!;
-        const b = pts[(i + 1) % n]!;
-        return Math.hypot(b.x - a.x, b.y - a.y);
-    };
-    // Rim-normal hits leave a few multi-millimetre chords. A flat vertex on
-    // one of those chords is where the plantar CDT builds a Steiner needle.
-    // Slide the short-side neighbour into the gap, staying on the loop.
-    const relaxLongChords = (src: number[]): number[] => {
-        const s = src.slice();
-        const cap = 3.2;
-        for (let pass = 0; pass < 16; pass++) {
-            const pts = sampleAt(s);
-            let worst = 0;
-            let worstI = -1;
-            for (let i = 1; i < n - 1; i++) {
-                const envA = forefootWidthLongitudinalEnvelope(
-                    Math.max(0, Math.min(1, (pts[i]!.x - opts.minX) / opts.lengthMm)),
-                );
-                const envB = forefootWidthLongitudinalEnvelope(
-                    Math.max(0, Math.min(1, (pts[i + 1]!.x - opts.minX) / opts.lengthMm)),
-                );
-                if (envA > 1e-3 || envB > 1e-3) continue;
-                const d = chordAt(pts, i);
-                if (d > worst) {
-                    worst = d;
-                    worstI = i;
-                }
-            }
-            if (worstI < 0 || worst <= cap) break;
-            const i = worstI;
-            const j = i + 1;
-            const prev = chordAt(pts, i - 1);
-            const next = chordAt(pts, (j + 1) % n);
-            const moveStart = prev <= next && i > 0;
-            const k = moveStart ? i : j;
-            if (k <= 0 || k >= n - 1) break;
-            const span = s[j]! - s[i]!;
-            const nudged = moveStart ? s[i]! + 0.35 * span : s[j]! - 0.35 * span;
-            const floor = s[k - 1]! + minS;
-            const ceiling = s[k + 1]! - minS;
-            const placed = Math.min(ceiling, Math.max(floor, nudged));
-            if (!(placed > floor - 1e-9) || !(placed < ceiling + 1e-9) || placed === s[k]) break;
-            s[k] = placed;
-        }
-        return s;
-    };
-    const separate = (src: number[]): number[] | null => {
-        const s = src.slice();
-        for (let i = 1; i < n; i++) {
-            if (s[i]! < s[i - 1]! + minS) s[i] = s[i - 1]! + minS;
-        }
-        const span = s[n - 1]! - s[0]!;
-        const room = 1 - minS;
-        if (span > room && span > 1e-9) {
-            const t0 = s[0]!;
-            for (let i = 1; i < n; i++) s[i] = t0 + ((s[i]! - t0) / span) * room;
-        }
-        for (let i = 1; i < n; i++) if (!(s[i]! > s[i - 1]!)) return null;
-        if (!(s[n - 1]! < s[0]! + 1 - minS * 0.25)) return null;
-        return s;
-    };
-    const realize = (src: number[]): { pts: PolyPoint[]; s: number[] } | null => {
-        const s = separate(src);
-        if (!s) return null;
-        const pts = sampleAt(s);
-        let minChord = Infinity;
-        for (let i = 0; i < n; i++) minChord = Math.min(minChord, chordAt(pts, i));
-        if (minChord < 0.4) return null;
-        return accept(pts) ? { pts, s } : null;
-    };
-    const publish = (s: number[]): boolean => {
-        const relaxed = relaxLongChords(s);
-        for (let i = 1; i < n; i++) if (!(relaxed[i]! > relaxed[i - 1]!)) return false;
-        const pts = sampleAt(relaxed);
-        let minChord = Infinity;
-        for (let i = 0; i < n; i++) minChord = Math.min(minChord, chordAt(pts, i));
-        if (minChord < 0.4 || !accept(pts)) {
-            const plain = sampleAt(s);
-            if (!accept(plain)) return false;
-            write(plain, s, false);
-            return true;
-        }
-        write(pts, relaxed, false);
-        return true;
-    };
-    const radial = unwrapStrictlyIncreasing(rawS);
-    if (radial.ok) {
-        const full = realize(radial.unwrapped);
-        if (full && publish(full.s)) return;
-    }
-    const commit = (alpha: number): boolean => {
-        const desired = current.map((cur, i) => cur + alpha * (near(rawS[i]!, cur) - cur));
-        const fitted = separate(desired);
-        if (!fitted) return false;
-        const pts = sampleAt(fitted);
-        let minChord = Infinity;
-        for (let i = 0; i < n; i++) minChord = Math.min(minChord, chordAt(pts, i));
-        if (minChord < 0.4 || !accept(pts)) return false;
-        return publish(fitted);
-    };
-    for (const alpha of [1, 0.75, 0.5, 0.25]) if (commit(alpha)) return;
 }
 
 export function applyStoredTB(stations: Array<{ outline: PolyPoint; tB?: number }>, loop: PolyPoint[]): void {
