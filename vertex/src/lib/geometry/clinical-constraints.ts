@@ -63,7 +63,7 @@ export const CLINICAL_LIMITS = {
     heelCupDepthMm: { min: 12, max: 18.0 },
     /** Signed: + widens heel cup, − narrows (same |scale| budget as widen). */
     heelCupWidthMm: { min: -10.0, max: 10.0 },
-    /** Signed forefoot planform width delta (mm total at full envelope). */
+    /** Signed per-side forefoot outline offset (mm at full envelope, each side). */
     forefootWidthMm: { min: -10.0, max: 10.0 },
     // Heel lift raises the heel region; Biomechanics hard cap 12 mm (2026-09-20).
     heelLiftMm: { min: 0, max: 12.0 },

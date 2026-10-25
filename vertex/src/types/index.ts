@@ -173,8 +173,8 @@ export interface SideCorrections {
      */
     heelCupWidthMm: number;
     /**
-     * Medial/lateral forefoot planform width. Positive widens the forefoot;
-     * negative narrows. 0 = baseline outline.
+     * Per-side forefoot outline offset (mm at full envelope). Positive moves each
+     * side outward; negative narrows. 0 = baseline outline.
      */
     forefootWidthMm?: number;
     /**

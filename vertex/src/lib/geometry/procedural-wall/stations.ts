@@ -1,6 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { forefootWidthLongitudinalEnvelope } from "@/lib/geometry/height-field";
 import {
     fitClosedC2Spline,
     type PolyPoint,
@@ -11,6 +12,23 @@ import {
     startAtLowCurvature,
 } from "./curves";
 import { outwardNormal } from "./measure";
+
+export interface ForefootSkewExempt {
+    forefootWidthMm?: number;
+    bounds?: { minX: number; maxX: number };
+}
+
+function stationU(x: number, opts?: ForefootSkewExempt): number {
+    if (!opts?.bounds) return 0;
+    const length = Math.max(1e-3, opts.bounds.maxX - opts.bounds.minX);
+    return Math.max(0, Math.min(1, (x - opts.bounds.minX) / length));
+}
+
+function forefootSkewCapMm(u: number, forefootWidthMm: number): number {
+    const env = forefootWidthLongitudinalEnvelope(u);
+    if (env <= 0) return 0;
+    return Math.abs(forefootWidthMm) * env * 2.05;
+}
 
 /** ±25° applies only to per-station deviation from the region default. */
 export const FLARE_DEV_CAP_DEG = 25;
@@ -581,7 +599,11 @@ export function pairAtNativeTop(plantarLoop: PolyPoint[], topLoop: PolyPoint[]):
 /** Slide B onto the pairing normal through R so |skew| ≤ min(2 mm, 0.5 × plan inset).
  * Keep a candidate only when it does not add plan-view chord crossings.
  */
-export function limitPairingSkew(pairing: StationPairing, loop: PolyPoint[]): StationPairing {
+export function limitPairingSkew(
+    pairing: StationPairing,
+    loop: PolyPoint[],
+    opts?: ForefootSkewExempt,
+): StationPairing {
     const n = Math.min(pairing.top.length, pairing.plantar.length, pairing.normals.length);
     if (n < 3 || loop.length < 3) return pairing;
     const plantar = pairing.plantar.map((p) => ({ ...p }));
@@ -600,7 +622,13 @@ export function limitPairingSkew(pairing: StationPairing, loop: PolyPoint[]): St
             const vy = B.y - R.y;
             const inset = Math.hypot(vx, vy);
             const skew = Math.abs(vx * oy - vy * ox);
-            const cap = Math.min(SKEW_LIMIT_MM, SKEW_INSET_RATIO * Math.max(inset, 1e-6));
+            let cap = Math.min(SKEW_LIMIT_MM, SKEW_INSET_RATIO * Math.max(inset, 1e-6));
+            const fore = opts?.forefootWidthMm ?? 0;
+            if (fore !== 0) {
+                const u = stationU(R.x, opts);
+                const foreCap = forefootSkewCapMm(u, fore);
+                if (foreCap > 0) cap = Math.max(cap, foreCap);
+            }
             if (skew <= cap + 1e-3) continue;
             const along = vx * ox + vy * oy;
             const target = { x: R.x + ox * along, y: R.y + oy * along, z: 0 };

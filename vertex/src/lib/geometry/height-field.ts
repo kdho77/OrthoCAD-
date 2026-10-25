@@ -110,13 +110,6 @@ export const FOREFOOT_WIDTH_ENVELOPE = {
     toeTipEnvelope: 0.5,
 } as const;
 
-/**
- * Max |fractional| lateral scale at |forefootWidthMm| = 10 on a 95 mm ball width
- * (total width delta ≈ forefootWidthMm at full envelope). Pending CAD sign-off.
- */
-/** Tuned so +10 mm ≈ +10 mm total width at u≈0.75 on Default.glb (pending CAD sign-off). */
-export const FOREFOOT_WIDTH_MAX_LATERAL_SCALE = 10 / 89.5;
-
 /** C1-smooth longitudinal mask for forefoot width (heel 0 → toe 1). */
 export function forefootWidthLongitudinalEnvelope(u: number): number {
     const { rampStartU, rampEndU, holdEndU, toeTipU, toeTipEnvelope } = FOREFOOT_WIDTH_ENVELOPE;
@@ -130,33 +123,54 @@ export function forefootWidthLongitudinalEnvelope(u: number): number {
     return 1 + t * (toeTipEnvelope - 1);
 }
 
-/** Per-vertex lateral scale for forefoot width (positive widens, negative narrows). */
-export function forefootWidthScaleFactor(u: number, forefootWidthMm: number): number {
-    if (forefootWidthMm === 0) return 1;
-    const targetScale = 1 + (forefootWidthMm / 10) * FOREFOOT_WIDTH_MAX_LATERAL_SCALE;
+/**
+ * Per-side normal offset (mm) along the local lateral axis. Positive `forefootWidthMm`
+ * moves each outline side outward by `|mm| × envelope(u)` at the edge; 0 on the centerline.
+ */
+export function forefootWidthPerSideDeltaMm(u: number, vSigned: number, forefootWidthMm: number): number {
+    if (forefootWidthMm === 0 || Math.abs(vSigned) < 1e-6) return 0;
     const env = forefootWidthLongitudinalEnvelope(u);
-    return 1 + env * (targetScale - 1);
+    if (env <= 0) return 0;
+    const edge = smoothstep(0.04, 0.98, Math.abs(vSigned));
+    return Math.sign(vSigned) * forefootWidthMm * env * edge;
 }
 
-/** Compose heel-cup and forefoot width corrections (multiply lateral scales). */
-export function combineLateralWidthScaleFactors(
+/** Heel cup scale delta + forefoot per-side offset (mm) at a lateral sample. */
+export function lateralWidthCorrectionDeltaMm(
     u: number,
+    vSigned: number,
+    offsetFromCenterMm: number,
     heelCupWidthMm: number,
     forefootWidthMm: number,
 ): number {
-    return heelCupWidthScaleFactor(u, heelCupWidthMm) * forefootWidthScaleFactor(u, forefootWidthMm);
+    const heelScale = heelCupWidthScaleFactor(u, heelCupWidthMm);
+    const heelDelta = offsetFromCenterMm * (heelScale - 1);
+    const foreDelta = forefootWidthPerSideDeltaMm(u, vSigned, forefootWidthMm);
+    return heelDelta + foreDelta;
 }
 
-/** Pattern / rim follow weight when either width correction is active. */
+/** Pattern / rim follow weight for heel cup width only. */
+export function heelWidthCorrectionFollowEnvelope(u: number, heelCupWidthMm: number): number {
+    if (heelCupWidthMm === 0) return 0;
+    return heelCupWidthLongitudinalEnvelope(u);
+}
+
+/** Pattern / rim follow weight for forefoot width only. */
+export function forefootWidthCorrectionFollowEnvelope(u: number, forefootWidthMm: number): number {
+    if (forefootWidthMm === 0) return 0;
+    return forefootWidthLongitudinalEnvelope(u);
+}
+
+/** Combined follow weight when both corrections may be active. */
 export function widthCorrectionFollowEnvelope(
     u: number,
     heelCupWidthMm: number,
     forefootWidthMm: number,
 ): number {
-    let w = 0;
-    if (heelCupWidthMm !== 0) w = Math.max(w, heelCupWidthLongitudinalEnvelope(u));
-    if (forefootWidthMm !== 0) w = Math.max(w, forefootWidthLongitudinalEnvelope(u));
-    return w;
+    return Math.max(
+        heelWidthCorrectionFollowEnvelope(u, heelCupWidthMm),
+        forefootWidthCorrectionFollowEnvelope(u, forefootWidthMm),
+    );
 }
 
 export const HEEL_CUP_DEPTH_RIM_LATERAL_GAIN = 0.65;

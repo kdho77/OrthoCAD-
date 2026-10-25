@@ -5,7 +5,11 @@ import type { BufferGeometry } from "three";
 import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import { combineLateralWidthScaleFactors, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
+import {
+    forefootWidthPerSideDeltaMm,
+    heelCupWidthScaleFactor,
+    widthCorrectionFollowEnvelope,
+} from "@/lib/geometry/height-field";
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -106,10 +110,19 @@ export function followViewerPattern(
     }));
     const yMid = rim.reduce((s, p) => s + p.y, 0) / rim.length;
     const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+    const halfW = Math.max(1e-3, (model.bounds.maxY - model.bounds.minY) * 0.5);
     const live = rim.map((p) => {
         const u = Math.max(0, Math.min(1, (p.x - model.bounds.minX) / length));
-        const s = combineLateralWidthScaleFactors(u, heel, fore);
-        return { x: p.x, y: yMid + (p.y - yMid) * s, z: 0 };
+        let y = p.y;
+        if (heel) {
+            const s = heelCupWidthScaleFactor(u, heel);
+            y = yMid + (y - yMid) * s;
+        }
+        if (fore) {
+            const v = Math.max(-1, Math.min(1, (y - yMid) / halfW));
+            y += forefootWidthPerSideDeltaMm(u, v, fore);
+        }
+        return { x: p.x, y, z: 0 };
     });
     return shiftPatternByRimFollow(pattern, rim, live, (p) => {
         const u = Math.max(0, Math.min(1, (p.x - model.bounds.minX) / length));
@@ -210,6 +223,19 @@ export async function reconstructProceduralPreview(
         throw new Error("[S1-PROCEDURAL] combined/stock GLB is not a procedural input — use legacy");
     }
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
+    let patternRimBaseline: PolyPoint[] | undefined;
+    if (useComposed) {
+        const pristine = extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+        const pos = pristine.top.meshPositions;
+        const rimIdx = pristine.top.rimLocal ?? [];
+        if (pos && rimIdx.length >= 8) {
+            patternRimBaseline = rimIdx.map((i) => ({
+                x: pos[i * 3] ?? 0,
+                y: pos[i * 3 + 1] ?? 0,
+                z: 0,
+            }));
+        }
+    }
     let source = topGeo;
     let owned = false;
     if (options.sourceField) {
@@ -244,6 +270,7 @@ export async function reconstructProceduralPreview(
             archGrindDepthMm: options.archGrindDepthMm,
             sourceField: options.sourceField,
             composedTop: useComposed,
+            patternRimBaseline,
         });
         return { model, pattern, geometry };
     };

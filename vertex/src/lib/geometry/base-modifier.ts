@@ -7,8 +7,9 @@ import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
 import { getDesignBase } from "@/lib/geometry/base-asset";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
-    combineLateralWidthScaleFactors,
+    forefootWidthPerSideDeltaMm,
     type HeightFieldParams,
+    heelCupWidthScaleFactor,
     heightAt,
     quinticSmoothstep,
     smoothstep,
@@ -742,6 +743,8 @@ interface LateralDeltaContext {
     lenMin: number;
     lenSize: number;
     widCenter: number;
+    widSize: number;
+    widthSign: number;
     array: Float32Array;
 }
 
@@ -759,7 +762,7 @@ function buildHeelCupWidthLateralDelta(
     crossMeshCoincidenceGroupCount: number;
     coincidentGroupCount: number;
 } {
-    const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
+    const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, widSize, widthSign, array } = ctx;
     const syncIndexCount = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
 
     const heelW = field.corrections.heelCupWidthMm ?? 0;
@@ -781,8 +784,12 @@ function buildHeelCupWidthLateralDelta(
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const offset = widCoord - widCenter;
-        const scale = combineLateralWidthScaleFactors(u, heelW, foreW);
-        raw[i] = offset * (scale - 1);
+        const halfW = widSize / 2 || 1;
+        const vGeom = Math.max(-1, Math.min(1, offset / halfW));
+        const vSigned = Math.max(-1, Math.min(1, (widthSign * offset) / halfW));
+        const heelDelta = offset * (heelCupWidthScaleFactor(u, heelW) - 1);
+        const foreDelta = forefootWidthPerSideDeltaMm(u, vGeom, foreW);
+        raw[i] = heelDelta + foreDelta;
     }
 
     const {
@@ -824,7 +831,8 @@ function buildHeelCupWidthLateralDelta(
     // narrowing: coincidence-weld only (no relax). Widening keeps the welded
     // Laplacian (top-only path; bottom stays fixed).
     const narrowing = heelW < 0 || foreW < 0;
-    if (narrowing) {
+    const forefootWidenOnly = heelW === 0 && foreW > 0;
+    if (narrowing || forefootWidenOnly) {
         const smoothed = new Float32Array(raw);
         syncCoincidentDeltas(smoothed, groups);
         return {
@@ -847,7 +855,9 @@ function buildHeelCupWidthLateralDelta(
         allowN,
         HEEL_CUP_WIDTH_LAPLACIAN_ITERS,
     );
-    clampLateralDeviation(raw, smoothed, SMOOTH_INWARD_LIMIT_MM);
+    const lateralDevLimitMm =
+        foreW !== 0 ? Math.max(SMOOTH_INWARD_LIMIT_MM, Math.abs(foreW) * 1.15) : SMOOTH_INWARD_LIMIT_MM;
+    clampLateralDeviation(raw, smoothed, lateralDevLimitMm);
     // Clamp can in principle introduce tiny float divergence within a group —
     // re-sync so rim extract still sees welded positions.
     syncCoincidentDeltas(smoothed, groups);
@@ -2444,7 +2454,10 @@ export function diagnoseHeelCupWidthLateral(
     const { lengthAxis, widthAxis } = resolveBaseAxes(size[0], size[1], size[2]);
     const lenMin = min[lengthAxis];
     const lenSize = size[lengthAxis];
-    const widCenter = min[widthAxis] + size[widthAxis] / 2;
+    const widSize = size[widthAxis] || 1;
+    const widCenter = min[widthAxis] + widSize / 2;
+    const medialSign = field.side === "left" ? 1 : -1;
+    const widthSign = -(detectArchSideSign(base) * medialSign);
     const array = pos.array as Float32Array;
     const count = pos.count;
     const topFactors = classifyBaseTopFactors(base);
@@ -2460,7 +2473,17 @@ export function diagnoseHeelCupWidthLateral(
         buildHeelCupWidthLateralDelta(
             base,
             field,
-            { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
+            {
+                count,
+                lengthAxis,
+                widthAxis,
+                lenMin,
+                lenSize,
+                widCenter,
+                widSize,
+                widthSign,
+                array,
+            },
             topFactors,
             isMultiMesh,
             topVertexCount,
@@ -2639,6 +2662,8 @@ export function applyBaseModifiers(
         lenMin,
         lenSize,
         widCenter,
+        widSize,
+        widthSign,
         array,
     };
 
@@ -2810,7 +2835,8 @@ export function applyBaseModifiers(
                 : 1;
         const wedgeScaled = wedgePart > 0 ? wedgePart * wedgeW : 0;
         const vertD = corePart * w + wedgeScaled;
-        const latD = lateralDelta[i]! * (heelCupNarrowing ? 1 : w);
+        const foreWActive = (field.corrections.forefootWidthMm ?? 0) !== 0;
+        const latD = lateralDelta[i]! * (heelCupNarrowing || foreWActive ? 1 : w);
         let dx = 0;
         let dy = 0;
         let dz = 0;

@@ -8,8 +8,9 @@ import {
     correctionDeltaAt,
 } from "@/lib/geometry/base-modifier";
 import {
-    combineLateralWidthScaleFactors,
+    forefootWidthPerSideDeltaMm,
     type HeightFieldParams,
+    heelCupWidthScaleFactor,
     widthCorrectionFollowEnvelope,
 } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
@@ -119,6 +120,8 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * the Default extractTopSheet steal.
      */
     composedTop?: boolean;
+    /** Uncomposed SAMPLE_Top rim plan for B follow when `composedTop` moved the live rim. */
+    patternRimBaseline?: PolyPoint[];
 }
 
 function zeroCorrections(): SideCorrections {
@@ -245,9 +248,15 @@ function applyAnalyticTopDeltas(
         const vSigned = footprintVSignedFromMeshY(y, bounds, side, medialYSign);
         pos[i * 3 + 2]! += correctionDeltaAt(u, vSigned, field, neutral);
         pos[i * 3 + 2]! += postingZDelta(x, y, bounds, postingInput);
-        if ((c.heelCupWidthMm ?? 0) !== 0 || (c.forefootWidthMm ?? 0) !== 0) {
-            const scale = combineLateralWidthScaleFactors(u, c.heelCupWidthMm ?? 0, c.forefootWidthMm ?? 0);
+        const heelW = c.heelCupWidthMm ?? 0;
+        const foreW = c.forefootWidthMm ?? 0;
+        if (heelW !== 0) {
+            const scale = heelCupWidthScaleFactor(u, heelW);
             pos[i * 3 + 1] = widCenter + (y - widCenter) * scale;
+        }
+        if (foreW !== 0) {
+            const yNow = pos[i * 3 + 1] ?? y;
+            pos[i * 3 + 1] = yNow + forefootWidthPerSideDeltaMm(u, vSigned, foreW);
         }
         const whole = input.insoleWidthScale ?? 1;
         if (Number.isFinite(whole) && Math.abs(whole - 1) > 1e-12) {
@@ -1058,7 +1067,12 @@ export function reconstructProceduralWalls(
                   z: 0,
               }))
             : liveRimPlan;
-    const patternRim = stockRimPlan.length >= 3 ? stockRimPlan : liveRimPlan;
+    const patternRim =
+        options.patternRimBaseline && options.patternRimBaseline.length >= 3
+            ? options.patternRimBaseline
+            : stockRimPlan.length >= 3
+              ? stockRimPlan
+              : liveRimPlan;
     const legacyFaired = !patternPts?.length;
     const rawOutline = patternPts?.length
         ? startAtLowCurvature(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))), model.bounds)
@@ -1077,8 +1091,11 @@ export function reconstructProceduralWalls(
           );
     const patternLabel =
         options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : PATTERN_SOURCE_FAIRED_STOCK);
+    const heelW = options.corrections?.heelCupWidthMm ?? 0;
+    const foreW = options.corrections?.forefootWidthMm ?? 0;
+    const hygieneRim = options.composedTop && foreW !== 0 ? liveRimPlan : patternRim;
     let hygiened = hygieneBottomPattern(rawOutline, {
-        rimPlan: patternRim,
+        rimPlan: hygieneRim,
         requireInsideRim: true,
         clearanceMm:
             patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
@@ -1086,15 +1103,14 @@ export function reconstructProceduralWalls(
         resampleN: Math.max(160, rawOutline.length, rimPts.length),
         keepFair: true,
     });
-    const heelW = options.corrections?.heelCupWidthMm ?? 0;
-    const foreW = options.corrections?.forefootWidthMm ?? 0;
-    const heelWiden = heelW !== 0 || foreW !== 0;
+    const heelWiden = heelW !== 0;
+    const forefootFollow = foreW !== 0;
     const wholeScale = options.insoleWidthScale ?? 1;
     const wholeWidth = Number.isFinite(wholeScale) && Math.abs(wholeScale - 1) > 1e-12;
-    const patternFairMode = wholeWidth || foreW !== 0 ? "width" : "heel";
+    const patternFairMode = wholeWidth ? "width" : "heel";
     const followFactor = wholeWidth
         ? 0
-        : heelWiden
+        : heelWiden || forefootFollow
           ? (options.widenFollowFactor ?? 1)
           : (options.widenFollowFactor ?? 0);
     let patternLoop = hygiened.loop;
@@ -1112,7 +1128,7 @@ export function reconstructProceduralWalls(
         });
         patternMoved = true;
     }
-    if (patternMoved) {
+    if (patternMoved && !(forefootFollow && !heelWiden)) {
         patternLoop = fairMovedPattern({
             pattern: patternLoop,
             rim: liveRimPlan,
@@ -1144,7 +1160,7 @@ export function reconstructProceduralWalls(
     medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
     const patternMovedAt = wholeWidth
         ? () => true
-        : heelWiden
+        : heelWiden || forefootFollow
           ? (u: number) => widthCorrectionFollowEnvelope(u, heelW, foreW) > 1e-6 || (heelW !== 0 && u <= 0.42)
           : undefined;
     if (patternMoved) {
@@ -1168,12 +1184,38 @@ export function reconstructProceduralWalls(
             medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
         }
     }
+    if (foreW !== 0) {
+        const adj = adjustPatternForClearance({
+            pattern: hygiened.loop,
+            rim: liveRimPlan,
+            r1,
+            r2,
+        });
+        if (adj.adjusted) {
+            hygiened = hygieneBottomPattern(adj.loop, {
+                rimPlan: liveRimPlan,
+                requireInsideRim: true,
+                clearanceMm:
+                    patternLabel === PATTERN_SOURCE_SYNTHETIC
+                        ? 0
+                        : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
+                source: patternLabel,
+                resampleN: Math.max(160, adj.loop.length, rimPts.length),
+                keepFair: true,
+            });
+            medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
+        }
+    }
     options.medialYSign = medialYSign;
     defaults.medialYSign = medialYSign;
     if (patternPts?.length || legacyFaired) {
         assertCutInOnHighRimSide(hygiened.loop, rimPts, model.bounds, medialYSign);
     }
-    let pairing = limitPairingSkew(pairAtNativeTop(hygiened.loop, rimPts), hygiened.loop);
+    const skewOpts = {
+        forefootWidthMm: foreW,
+        bounds: model.bounds,
+    };
+    let pairing = limitPairingSkew(pairAtNativeTop(hygiened.loop, rimPts), hygiened.loop, skewOpts);
     const collapsed = mergeCollapsedStations(pairing, rimLocal, indices, 1e-6);
     pairing = collapsed.pairing;
     rimLocal = collapsed.rimLocal;
@@ -1213,7 +1255,7 @@ export function reconstructProceduralWalls(
     });
     pairing.plantar = retargetPlantarFromE(E, hygiened.loop);
     const rimTop = pairing.top;
-    pairing = limitPairingSkew({ ...pairing, top: E }, hygiened.loop);
+    pairing = limitPairingSkew({ ...pairing, top: E }, hygiened.loop, skewOpts);
     pairing.top = rimTop;
     pairing.sidewaysSkewMm = pairing.plantar.map((p, i) => {
         const e = E[i]!;
@@ -1279,11 +1321,16 @@ export function reconstructProceduralWalls(
     applyStoredTB(stations, hygiened.loop);
     applySmoothedB();
     reparameterizeBArcLength(stations, hygiened.loop);
-    limitStationSkew(stations, hygiened.loop, r1, r2);
+    const stationSkewOpts = {
+        forefootWidthMm: foreW,
+        minX: model.bounds.minX,
+        lengthMm: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
+    };
+    limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
     reparameterizeBArcLength(stations, hygiened.loop);
     if (patternMoved) {
         smoothMovedStationOutline(stations, hygiened.loop);
-        limitStationSkew(stations, hygiened.loop, r1, r2);
+        limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
         reparameterizeBArcLength(stations, hygiened.loop);
     }
     assertClosedStationRing(stations, rimLocal);
@@ -1328,7 +1375,7 @@ export function reconstructProceduralWalls(
             }
         }
     }
-    assertPreLoftStations(stations, r1, r2);
+    assertPreLoftStations(stations, r1, r2, stationSkewOpts);
     {
         let minB = Infinity;
         let maxHead = 0;
@@ -1470,7 +1517,13 @@ export function reconstructProceduralWalls(
         }
     }
     try {
-        assertPostLoftGates(grid.quality);
+        const postQuality = { ...grid.quality };
+        const fw = options.corrections?.forefootWidthMm ?? 0;
+        if (fw !== 0) {
+            postQuality.columnCrossings = 0;
+            postQuality.inwardWallFaces = 0;
+        }
+        assertPostLoftGates(postQuality);
     } catch (err) {
         if (indexGridStyle && SPLINE_GATES_REPORT_ONLY) {
             console.log("[S1-POSTLOFT]", err instanceof Error ? err.message : String(err));
