@@ -248,9 +248,15 @@ export async function reconstructProceduralPreview(
     }
     const model = extractTopOnlyModel(source, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
     if (owned) source.dispose();
+    const foreW =
+        options.sourceField?.corrections?.forefootWidthMm ?? options.corrections?.forefootWidthMm ?? 0;
+    const patternModel =
+        useComposed && foreW !== 0
+            ? extractTopOnlyModel(topGeo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME })
+            : model;
     const requested = options.bottomPattern?.length
         ? options.bottomPattern
-        : buildFairedPatternFromTop(model, options.scanPattern);
+        : buildFairedPatternFromTop(patternModel, options.scanPattern);
     const loft = (pattern: PolyPoint[]) => {
         const thicknessMm =
             options.thicknessMm ?? options.sourceField?.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;

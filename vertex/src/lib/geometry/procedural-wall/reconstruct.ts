@@ -8,6 +8,7 @@ import {
     correctionDeltaAt,
 } from "@/lib/geometry/base-modifier";
 import {
+    forefootWidthLongitudinalEnvelope,
     forefootWidthPerSideDeltaMm,
     type HeightFieldParams,
     heelCupWidthScaleFactor,
@@ -1074,7 +1075,7 @@ export function reconstructProceduralWalls(
               ? stockRimPlan
               : liveRimPlan;
     const legacyFaired = !patternPts?.length;
-    const rawOutline = patternPts?.length
+    let rawOutline = patternPts?.length
         ? startAtLowCurvature(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))), model.bounds)
         : startAtLowCurvature(
               ensureCcw(
@@ -1093,9 +1094,12 @@ export function reconstructProceduralWalls(
         options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : PATTERN_SOURCE_FAIRED_STOCK);
     const heelW = options.corrections?.heelCupWidthMm ?? 0;
     const foreW = options.corrections?.forefootWidthMm ?? 0;
-    const hygieneRim = options.composedTop && foreW !== 0 ? liveRimPlan : patternRim;
+    const forefootOnComposed = Boolean(options.composedTop && foreW !== 0);
+    if (forefootOnComposed) {
+        rawOutline = shiftPatternByRimFollow(rawOutline, patternRim, liveRimPlan, 1);
+    }
     let hygiened = hygieneBottomPattern(rawOutline, {
-        rimPlan: hygieneRim,
+        rimPlan: forefootOnComposed ? liveRimPlan : patternRim,
         requireInsideRim: true,
         clearanceMm:
             patternLabel === PATTERN_SOURCE_SYNTHETIC ? 0 : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
@@ -1103,18 +1107,18 @@ export function reconstructProceduralWalls(
         resampleN: Math.max(160, rawOutline.length, rimPts.length),
         keepFair: true,
     });
+    let patternMoved = forefootOnComposed;
     const heelWiden = heelW !== 0;
-    const forefootFollow = foreW !== 0;
+    const forefootFollowRim = foreW !== 0 && !forefootOnComposed;
     const wholeScale = options.insoleWidthScale ?? 1;
     const wholeWidth = Number.isFinite(wholeScale) && Math.abs(wholeScale - 1) > 1e-12;
     const patternFairMode = wholeWidth ? "width" : "heel";
     const followFactor = wholeWidth
         ? 0
-        : heelWiden || forefootFollow
+        : heelWiden || forefootFollowRim
           ? (options.widenFollowFactor ?? 1)
           : (options.widenFollowFactor ?? 0);
     let patternLoop = hygiened.loop;
-    let patternMoved = false;
     if (wholeWidth) {
         const cy = 0.5 * (model.bounds.minY + model.bounds.maxY);
         patternLoop = scalePatternWidth(patternLoop, wholeScale, cy);
@@ -1122,13 +1126,14 @@ export function reconstructProceduralWalls(
     } else if (followFactor !== 0) {
         const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
         const minX = model.bounds.minX;
+        const followForeW = forefootFollowRim ? foreW : 0;
         patternLoop = shiftPatternByRimFollow(patternLoop, patternRim, liveRimPlan, (p) => {
             const u = Math.max(0, Math.min(1, (p.x - minX) / length));
-            return followFactor * widthCorrectionFollowEnvelope(u, heelW, foreW);
+            return followFactor * widthCorrectionFollowEnvelope(u, heelW, followForeW);
         });
         patternMoved = true;
     }
-    if (patternMoved && !(forefootFollow && !heelWiden)) {
+    if (patternMoved && !(forefootOnComposed && !heelWiden)) {
         patternLoop = fairMovedPattern({
             pattern: patternLoop,
             rim: liveRimPlan,
@@ -1160,8 +1165,11 @@ export function reconstructProceduralWalls(
     medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
     const patternMovedAt = wholeWidth
         ? () => true
-        : heelWiden || forefootFollow
-          ? (u: number) => widthCorrectionFollowEnvelope(u, heelW, foreW) > 1e-6 || (heelW !== 0 && u <= 0.42)
+        : heelWiden || forefootFollowRim || forefootOnComposed
+          ? (u: number) =>
+                widthCorrectionFollowEnvelope(u, heelW, forefootFollowRim ? foreW : 0) > 1e-6 ||
+                (forefootOnComposed && forefootWidthLongitudinalEnvelope(u) > 1e-6) ||
+                (heelW !== 0 && u <= 0.42)
           : undefined;
     if (patternMoved) {
         const movedHy = movedPatternHygiene(hygiened.loop, model.bounds, medialYSign, {
@@ -1181,28 +1189,6 @@ export function reconstructProceduralWalls(
                     mode: patternFairMode,
                 }),
             };
-            medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
-        }
-    }
-    if (foreW !== 0) {
-        const adj = adjustPatternForClearance({
-            pattern: hygiened.loop,
-            rim: liveRimPlan,
-            r1,
-            r2,
-        });
-        if (adj.adjusted) {
-            hygiened = hygieneBottomPattern(adj.loop, {
-                rimPlan: liveRimPlan,
-                requireInsideRim: true,
-                clearanceMm:
-                    patternLabel === PATTERN_SOURCE_SYNTHETIC
-                        ? 0
-                        : Math.max(0.5, minInsetForLeanMm(r1, r2, 0)),
-                source: patternLabel,
-                resampleN: Math.max(160, adj.loop.length, rimPts.length),
-                keepFair: true,
-            });
             medialYSign = medialYSignFromPattern(hygiened.loop, rimPts, model.bounds);
         }
     }
@@ -1517,13 +1503,7 @@ export function reconstructProceduralWalls(
         }
     }
     try {
-        const postQuality = { ...grid.quality };
-        const fw = options.corrections?.forefootWidthMm ?? 0;
-        if (fw !== 0) {
-            postQuality.columnCrossings = 0;
-            postQuality.inwardWallFaces = 0;
-        }
-        assertPostLoftGates(postQuality);
+        assertPostLoftGates(grid.quality);
     } catch (err) {
         if (indexGridStyle && SPLINE_GATES_REPORT_ONLY) {
             console.log("[S1-POSTLOFT]", err instanceof Error ? err.message : String(err));

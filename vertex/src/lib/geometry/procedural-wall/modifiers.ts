@@ -14,6 +14,28 @@ import type { PolyPoint } from "./curves";
 import type { HermiteStation } from "./loft";
 import type { DeviceTypePreset, LateralFlangeParams, StockWallModel } from "./types";
 
+/** Same per-side forefoot offset as the composed top sheet (plan-view Y). */
+export function offsetPlanLoopForefootWidthMm(
+    loop: PolyPoint[],
+    bounds: { minX: number; maxX: number; minY: number; maxY: number },
+    forefootWidthMm: number,
+): PolyPoint[] {
+    if (!forefootWidthMm || loop.length < 3) return loop;
+    const minX = bounds.minX;
+    const length = Math.max(1e-3, bounds.maxX - minX);
+    const widCenter = 0.5 * (bounds.minY + bounds.maxY);
+    const halfW = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
+    return loop.map((p) => {
+        const u = Math.max(0, Math.min(1, (p.x - minX) / length));
+        const v = Math.max(-1, Math.min(1, (p.y - widCenter) / halfW));
+        return {
+            x: p.x,
+            y: p.y + forefootWidthPerSideDeltaMm(u, v, forefootWidthMm),
+            z: p.z,
+        };
+    });
+}
+
 /** Print-step grinding dropdown → wall mid-style. */
 export type ProceduralWallStyle = "straight" | "round" | "hybrid";
 
