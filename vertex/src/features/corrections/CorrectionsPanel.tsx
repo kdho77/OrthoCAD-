@@ -547,10 +547,8 @@ export function CorrectionsPanel() {
 
     const showPostingAngleWarning = useMemo(
         () =>
-            hasPostingAngleWarning(sideValues.left) ||
-            hasPostingAngleWarning(sideValues.right) ||
-            fullLengthRise.left.thetaDeg > 8 ||
-            fullLengthRise.right.thetaDeg > 8,
+            hasPostingAngleWarning(sideValues.left, fullLengthRise.left.thetaDeg) ||
+            hasPostingAngleWarning(sideValues.right, fullLengthRise.right.thetaDeg),
         [sideValues, fullLengthRise],
     );
     const showMaxRiseWarning = useMemo(

@@ -413,8 +413,12 @@ export const MAX_RISE_WARN_MM = 12;
 export const STOCK_HEEL_CUP_MM = 12;
 export const SHOE_COUNTER_HEIGHT_WARN_MM = 20;
 
-/** Soft UI warning when posting wedge angle exceeds 8° (still allowed up to 10°). */
-export function hasPostingAngleWarning(c: SideCorrections): boolean {
+/**
+ * Soft UI warning when a posting angle exceeds 8° (still allowed up to 10°).
+ * `resolvedFullLengthDeg` is the angle an mm full-length entry works out to.
+ */
+export function hasPostingAngleWarning(c: SideCorrections, resolvedFullLengthDeg = 0): boolean {
+    if (resolvedFullLengthDeg > 8) return true;
     for (const w of [c.rearfootWedge, c.forefootWedge, c.fullLengthWedge]) {
         if (w?.unit === "deg" && (w.value ?? 0) > 8) return true;
     }

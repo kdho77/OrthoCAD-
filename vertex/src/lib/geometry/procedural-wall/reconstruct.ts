@@ -1607,6 +1607,8 @@ export function reconstructProceduralWalls(
         footLengthMm,
         flatPlantar,
         movedAt: patternMovedAt,
+        fairRoundTangent:
+            (options.wallStyle ?? "straight") === "round" && fullLengthWedgeActive(options.corrections),
         wallStyle,
     });
     const indexGridStyle = (options.wallStyle ?? "straight") !== "straight";

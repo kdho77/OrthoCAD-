@@ -363,6 +363,13 @@ describe("full-length wedge", () => {
         const regional = blank({ rearfootWedge: { side: "lateral", value: 9, unit: "deg" } });
         expect(hasPostingAngleWarning(regional)).toBe(true);
         expect(hasPostingAngleWarning(blank())).toBe(false);
+        // 16 mm across a 100 mm width is atan(0.16) ≈ 9.09°. The stored unit stays mm.
+        const mmSteep = blank({ fullLengthWedge: { side: "lateral", value: 16, unit: "mm" } });
+        const mmDeg = fullLengthDegFromMm(16, 100);
+        expect(mmDeg).toBeGreaterThan(8);
+        expect(hasPostingAngleWarning(mmSteep)).toBe(false);
+        expect(hasPostingAngleWarning(mmSteep, mmDeg)).toBe(true);
+        expect(hasPostingAngleWarning(mmSteep, 7)).toBe(false);
 
         expect(hasShoeCounterHeightWarning(steep, 9)).toBe(true);
         expect(hasShoeCounterHeightWarning(steep, 7)).toBe(false);
@@ -405,10 +412,14 @@ function eulerOf(geo: BufferGeometry): number {
     return map.size - edges.size + faces;
 }
 
-function wallCreases(geo: BufferGeometry): { count: number; minX: number; maxX: number } {
+/** Position-welded wall dihedral. Both faces |nz|<0.7; creases are edges longer than 0.25 mm. */
+function wallCreases(
+    geo: BufferGeometry,
+    minDeg = 60,
+): { count: number; minX: number; maxX: number; maxDeg: number; heelMaxDeg: number } {
     const pos = geo.getAttribute("position");
     const index = geo.getIndex();
-    if (!index) return { count: 0, minX: 0, maxX: 0 };
+    if (!index) return { count: 0, minX: 0, maxX: 0, maxDeg: 0, heelMaxDeg: 0 };
     const q = 1e4;
     const idOf = (i: number) =>
         `${Math.round(pos.getX(i) * q)},${Math.round(pos.getY(i) * q)},${Math.round(pos.getZ(i) * q)}`;
@@ -452,6 +463,8 @@ function wallCreases(geo: BufferGeometry): { count: number; minX: number; maxX: 
     let count = 0;
     let minX = Infinity;
     let maxX = -Infinity;
+    let maxDeg = 0;
+    let heelMaxDeg = 0;
     for (const [k, ts] of edgeFaces) {
         if (ts.length !== 2) continue;
         const t0 = ts[0]!;
@@ -461,7 +474,11 @@ function wallCreases(geo: BufferGeometry): { count: number; minX: number; maxX: 
         const n1 = normals[t1]!;
         const dot = Math.max(-1, Math.min(1, n0.x * n1.x + n0.y * n1.y + n0.z * n1.z));
         const deg = (Math.acos(dot) * 180) / Math.PI;
-        if (deg <= 60) continue;
+        if (deg > maxDeg) maxDeg = deg;
+        const [ka0] = k.split("|");
+        const xa = Number(ka0!.split(",")[0]) / q;
+        if (xa < 45 && deg > heelMaxDeg) heelMaxDeg = deg;
+        if (deg <= minDeg) continue;
         const [ka, kb] = k.split("|");
         const pa = ka!.split(",").map(Number);
         const pb = kb!.split(",").map(Number);
@@ -472,7 +489,7 @@ function wallCreases(geo: BufferGeometry): { count: number; minX: number; maxX: 
         minX = Math.min(minX, x);
         maxX = Math.max(maxX, x);
     }
-    return { count, minX: count ? minX : 0, maxX: count ? maxX : 0 };
+    return { count, minX: count ? minX : 0, maxX: count ? maxX : 0, maxDeg, heelMaxDeg };
 }
 
 function assertBottomFlat(geo: BufferGeometry): void {
@@ -576,12 +593,16 @@ interface MeshCase {
     size: number;
     side: Side;
     style: ProceduralWallStyle;
+    edge?: "medial" | "lateral";
 }
 
 function prGateCases(): MeshCase[] {
     return [
         { deg: 5, size: 9, side: "right", style: "straight" },
-        { deg: 5, size: 9, side: "right", style: "round" },
+        { deg: 5, size: 9, side: "right", style: "round", edge: "lateral" },
+        { deg: 5, size: 9, side: "right", style: "round", edge: "medial" },
+        { deg: 10, size: 9, side: "right", style: "round", edge: "lateral" },
+        { deg: 10, size: 9, side: "right", style: "round", edge: "medial" },
         { deg: 5, size: 9, side: "right", style: "hybrid" },
         { deg: 5, size: 1, side: "right", style: "straight" }, // scaled Men's 1
     ];
@@ -663,7 +684,11 @@ describe("full-length wedge export", () => {
                     neutralByKey.set(key, neutral);
                 }
                 const corrections = blank({
-                    fullLengthWedge: { side: "lateral", value: meshCase.deg, unit: "deg" },
+                    fullLengthWedge: {
+                        side: meshCase.edge ?? "lateral",
+                        value: meshCase.deg,
+                        unit: "deg",
+                    },
                 });
                 const posted = await preview(corrections, meshCase);
                 const report = analyzeManifold(posted);
@@ -745,6 +770,11 @@ describe("full-length wedge export", () => {
                     expect(creases.minX).toBeGreaterThanOrEqual(baseCreases.minX - 0.5);
                     expect(creases.maxX).toBeLessThanOrEqual(baseCreases.maxX + 0.5);
                     expect(creases.count).toBeLessThanOrEqual(baseCreases.count + 10);
+                } else if (meshCase.style === "round") {
+                    const baseCreases = wallCreases(neutral);
+                    expect(creases.count).toBe(0);
+                    // Heel wall under the tilted rim stays with the neutral Round lip.
+                    expect(creases.heelMaxDeg).toBeLessThanOrEqual(baseCreases.heelMaxDeg + 4);
                 } else {
                     expect(creases.count).toBe(0);
                 }
@@ -753,5 +783,5 @@ describe("full-length wedge export", () => {
         } finally {
             for (const geo of neutralByKey.values()) geo.dispose();
         }
-    });
+    }, 1_200_000);
 });
