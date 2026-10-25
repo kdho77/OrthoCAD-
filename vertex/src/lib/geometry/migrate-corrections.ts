@@ -1,7 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
-import type { Corrections, SideCorrections, WedgeCorrection } from "@/types";
+import type { Corrections, DesignState, SideCorrections, WedgeCorrection } from "@/types";
 
 function postingDegToWedge(deg: number): WedgeCorrection | undefined {
     if (!Number.isFinite(deg) || Math.abs(deg) < 1e-9) return undefined;
@@ -49,6 +49,16 @@ export function migrateSideCorrections(c: SideCorrections): SideCorrections {
     }
 
     return next;
+}
+
+/**
+ * Fills a missing sink list. Not applied by defaultDesign — an absent list
+ * and an empty list are the same geometry, and writing `sinks: []` into every
+ * saved design would change persisted JSON.
+ */
+export function migrateDesignSinks(design: DesignState): DesignState {
+    if (design.sinks) return design;
+    return { ...design, sinks: [] };
 }
 
 export function migrateCorrections(corrections: Corrections): Corrections {

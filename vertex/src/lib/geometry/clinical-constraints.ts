@@ -2,7 +2,16 @@
 // See LICENSE file in the project root for full license information.
 
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
-import type { SideCorrections, WedgeCorrection } from "@/types";
+import {
+    FLOOR_MIN_MM,
+    LATERAL_WALL_MIN_MM,
+    mergeSinkWarnings,
+    type SinkSurfaceContext,
+    type SinkWarning,
+    sinkDepthWarnings,
+    sinkOverlapWarnings,
+} from "@/lib/geometry/sink";
+import type { PlacedElement, SideCorrections, TextMarking, WedgeCorrection } from "@/types";
 
 /**
  * ClinicalSpec for structured clinical rules (added for wedge system completeness).
@@ -349,6 +358,24 @@ export function hasCriticalViolations(violations: ConstraintViolation[]): boolea
 export function hasWedgeViolations(violations: ConstraintViolation[]): boolean {
     return violations.some((vi) => vi.field === "rearfootWedge" || vi.field === "forefootWedge");
 }
+
+/**
+ * Sink depth, element overlap, and text overlap. Floor and lateral-wall limits
+ * are the named constants the mesh guards use; those warnings are attached on
+ * the geometry when a guard actually reduces a cut.
+ */
+export function evaluateSinkConstraints(
+    ctx: SinkSurfaceContext,
+    elements?: PlacedElement[] | null,
+    text?: TextMarking | null,
+): SinkWarning[] {
+    return mergeSinkWarnings(sinkDepthWarnings(ctx.sinks), sinkOverlapWarnings(ctx, elements, text));
+}
+
+export const SINK_CLINICAL_FLOORS = {
+    floorMinMm: FLOOR_MIN_MM,
+    lateralWallMinMm: LATERAL_WALL_MIN_MM,
+} as const;
 
 /** Soft UI warning when posting wedge angle exceeds 8° (still allowed up to 10°). */
 export function hasPostingAngleWarning(c: SideCorrections): boolean {

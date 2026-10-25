@@ -15,6 +15,7 @@ import {
 } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
+import { applyAnalyticSinkToLoftedSolid, applyStyloidWallRelief, sinksActive } from "@/lib/geometry/sink";
 import type { SideCorrections } from "@/types";
 import {
     columnHeading,
@@ -227,6 +228,8 @@ function applyAnalyticTopDeltas(
         rearfootWedge: undefined,
         forefootWedge: undefined,
     };
+    // Corrections-no-sink. T and S are a pure z pass after the loft so station
+    // pairing stays the same as a sink-free wall.
     const field: HeightFieldParams = {
         side,
         lengthMm: length,
@@ -234,6 +237,8 @@ function applyAnalyticTopDeltas(
         thicknessMm: requested ?? stock,
         corrections: correctionsNoWedge,
         elements: [],
+        sinks: undefined,
+        sinkStyloidThicken: undefined,
         includeSkives: false,
         includeElements: false,
         trimline: input.sourceField?.trimline ?? input.trimline ?? null,
@@ -1756,6 +1761,45 @@ export function reconstructProceduralWalls(
         );
         for (const p of grid.outlineRing) {
             p.y += forefootWidthPlanDy(p.x, p.y, model.bounds, forefootMm, roomAt);
+        }
+    }
+    // z-only. The loft above is the sink-free wall, so station pairing is unchanged.
+    // Composed tops already carry T and S on the rim; only the styloid notch remains.
+    const reliefSinks = options.sourceField?.sinks ?? options.sinks;
+    if (sinksActive(reliefSinks)) {
+        const sinkSide = options.sourceField?.side ?? options.side ?? (medialYSign < 0 ? "right" : "left");
+        const vertAt = (row: number, station: number) => gridVert(row, station);
+        if (options.composedTop) {
+            applyStyloidWallRelief({
+                positions,
+                nS,
+                nJ,
+                vertAt,
+                rimZ: (s) => positions[gridVert(0, s) * 3 + 2]!,
+                rimXY: (s) => ({
+                    x: positions[gridVert(0, s) * 3]!,
+                    y: positions[gridVert(0, s) * 3 + 1]!,
+                }),
+                bounds: model.bounds,
+                medialYSign,
+                side: sinkSide,
+                sinks: reliefSinks,
+                sinkStyloidThicken: options.sourceField?.sinkStyloidThicken ?? options.sinkStyloidThicken,
+                rimAlreadyLowered: true,
+            });
+        } else {
+            applyAnalyticSinkToLoftedSolid({
+                positions,
+                topCount: topPos.length / 3,
+                nS,
+                nJ,
+                vertAt,
+                bounds: model.bounds,
+                medialYSign,
+                side: sinkSide,
+                sinks: reliefSinks,
+                sinkStyloidThicken: options.sourceField?.sinkStyloidThicken ?? options.sinkStyloidThicken,
+            });
         }
     }
     const geo = new BufferGeometry();

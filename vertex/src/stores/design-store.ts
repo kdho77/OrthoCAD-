@@ -42,6 +42,7 @@ import {
     usMenToUk,
 } from "@/lib/geometry/shoe-size";
 import { normalizeShoeWidth } from "@/lib/geometry/shoe-width";
+import { SINK_DEFAULT_DEPTH_MM } from "@/lib/geometry/sink";
 import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
 import { normalizeTextMarking } from "@/lib/geometry/text-marking/validate";
@@ -60,6 +61,7 @@ import type {
     DesignState,
     ElementKind,
     PlacedElement,
+    PlacedSink,
     PrescriptionParseResult,
     ProductionMethod,
     ScanPattern,
@@ -67,6 +69,7 @@ import type {
     Side,
     SideCorrections,
     SideShapeFinish,
+    SinkKind,
     TextMarking,
     TrimPresetId,
     Unit,
@@ -473,6 +476,10 @@ export interface DesignStore {
     updateElement: (id: string, patch: Partial<PlacedElement>) => void;
     setElementHardness: (id: string, hardness: NamedHardnessClass) => void;
     removeElement: (id: string) => void;
+    addSink: (kind: SinkKind) => void;
+    updateSink: (id: string, patch: Partial<Pick<PlacedSink, "depthMm" | "u" | "v" | "markerId">>) => void;
+    removeSink: (id: string) => void;
+    setSinkStyloidThicken: (on: boolean) => void;
     selectElement: (id: string | null) => void;
     setTransformMode: (mode: TransformMode) => void;
     setCustomPrefab: (customPrefabId: string, customPrefabName: string) => void;
@@ -1114,6 +1121,58 @@ export const useDesignStore = create<DesignStore>()(
                         design: next,
                         selectedElementId: s.selectedElementId === id ? null : s.selectedElementId,
                     };
+                });
+            },
+
+            addSink: (kind) => {
+                if (get().design.sinks?.some((s) => s.kind === kind)) return;
+                get().checkpoint("add-sink");
+                set((s) => {
+                    const sink: PlacedSink = {
+                        id: crypto.randomUUID(),
+                        kind,
+                        depthMm: SINK_DEFAULT_DEPTH_MM,
+                    };
+                    const next = { ...s.design, sinks: [...(s.design.sinks ?? []), sink] };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
+                });
+            },
+
+            updateSink: (id, patch) => {
+                get().checkpoint("update-sink");
+                set((s) => {
+                    const next = {
+                        ...s.design,
+                        sinks: (s.design.sinks ?? []).map((sink) =>
+                            sink.id === id ? { ...sink, ...patch } : sink,
+                        ),
+                    };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
+                });
+            },
+
+            removeSink: (id) => {
+                get().checkpoint("remove-sink");
+                set((s) => {
+                    const sinks = (s.design.sinks ?? []).filter((sink) => sink.id !== id);
+                    const next = { ...s.design, sinks };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
+                });
+            },
+
+            setSinkStyloidThicken: (on) => {
+                get().checkpoint("sink-styloid-thicken");
+                set((s) => {
+                    const next = { ...s.design, sinkStyloidThicken: on };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
                 });
             },
 

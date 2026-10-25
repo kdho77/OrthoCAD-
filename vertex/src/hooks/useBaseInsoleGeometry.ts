@@ -12,7 +12,12 @@ import {
     stockBaseNeedsServerResolution,
 } from "@/lib/geometry/base-asset";
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
-import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import {
+    applyBaseModifiers,
+    BASE_REFERENCE_THICKNESS_MM,
+    classifyBaseTopFactors,
+    getBaseFootprintFrame,
+} from "@/lib/geometry/base-modifier";
 import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
 import { elementGeometryKey } from "@/lib/geometry/element-geometry-key";
 import { type HeightFieldParams, heightAt } from "@/lib/geometry/height-field";
@@ -53,6 +58,7 @@ import {
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
+import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { textMarkingHash } from "@/lib/geometry/text-marking/hash";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
@@ -415,16 +421,22 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 clinicalStep === "corrections"
             ) {
                 const u = 0.1;
-                const neutral = {
+                const wedgeOnly = {
                     ...field,
-                    corrections: { ...field.corrections!, rearfootWedge: undefined },
+                    sinks: undefined,
+                    sinkStyloidThicken: undefined,
+                    sinkMarkers: undefined,
+                };
+                const neutral = {
+                    ...wedgeOnly,
+                    corrections: { ...wedgeOnly.corrections!, rearfootWedge: undefined },
                 };
                 stockDebug("STEP0 design viewer top-sheet z delta (mm)", {
                     side,
-                    border: heightAt(u, 0.98, field) - heightAt(u, 0.98, neutral),
-                    lateralHeelCenter: heightAt(u, 0.5, field) - heightAt(u, 0.5, neutral),
-                    medialHeel: heightAt(u, -0.5, field) - heightAt(u, -0.5, neutral),
-                    medialEdge: heightAt(u, -0.98, field) - heightAt(u, -0.98, neutral),
+                    border: heightAt(u, 0.98, wedgeOnly) - heightAt(u, 0.98, neutral),
+                    lateralHeelCenter: heightAt(u, 0.5, wedgeOnly) - heightAt(u, 0.5, neutral),
+                    medialHeel: heightAt(u, -0.5, wedgeOnly) - heightAt(u, -0.5, neutral),
+                    medialEdge: heightAt(u, -0.98, wedgeOnly) - heightAt(u, -0.98, neutral),
                 });
             }
             const fw = field.corrections?.forefootWedge;
@@ -435,17 +447,23 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 clinicalStep === "corrections"
             ) {
                 const u = 0.88;
-                const neutral = {
+                const wedgeOnly = {
                     ...field,
-                    corrections: { ...field.corrections!, forefootWedge: undefined },
+                    sinks: undefined,
+                    sinkStyloidThicken: undefined,
+                    sinkMarkers: undefined,
+                };
+                const neutral = {
+                    ...wedgeOnly,
+                    corrections: { ...wedgeOnly.corrections!, forefootWedge: undefined },
                 };
                 stockDebug("STEP corrections forefoot lateral mm top z delta (heightAt + mesh)", {
                     side,
                     mm: fw.value,
                     composedPath: true,
-                    lateralBorder: heightAt(u, 0.98, field) - heightAt(u, 0.98, neutral),
-                    medialEdge: heightAt(u, -0.98, field) - heightAt(u, -0.98, neutral),
-                    lateralMet: heightAt(u, 0.5, field) - heightAt(u, 0.5, neutral),
+                    lateralBorder: heightAt(u, 0.98, wedgeOnly) - heightAt(u, 0.98, neutral),
+                    medialEdge: heightAt(u, -0.98, wedgeOnly) - heightAt(u, -0.98, neutral),
+                    lateralMet: heightAt(u, 0.5, wedgeOnly) - heightAt(u, 0.5, neutral),
                 });
             }
             const draft = useMeshEditStore.getState().getActiveDraftBottomPattern(side);
@@ -628,10 +646,27 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             clinicalStep === "corrections" &&
                             modified !== raw
                         ) {
-                            const neutralField = {
+                            const wedgeField = {
                                 ...field,
-                                corrections: { ...(field.corrections ?? {}), forefootWedge: undefined },
+                                sinks: undefined,
+                                sinkStyloidThicken: undefined,
+                                sinkMarkers: undefined,
                             };
+                            const neutralField = {
+                                ...wedgeField,
+                                corrections: { ...(wedgeField.corrections ?? {}), forefootWedge: undefined },
+                            };
+                            const wedgeGeo = await composeViewerPrintSolidTop({
+                                raw,
+                                sourceField: wedgeField,
+                                shoeWidth: {
+                                    width: widthId,
+                                    ballWidthMm: layout.widthMm,
+                                    heelWidthMm: layout.widthMm * 0.62,
+                                    heelOverrideMm: heelW,
+                                },
+                                trimline: printTrim,
+                            });
                             const neutralGeo = await composeViewerPrintSolidTop({
                                 raw,
                                 sourceField: neutralField,
@@ -643,7 +678,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 },
                                 trimline: printTrim,
                             });
-                            const posAttr = modified.getAttribute("position");
+                            const posAttr = wedgeGeo.getAttribute("position");
                             const neuAttr = neutralGeo.getAttribute("position");
                             let maxMeshLiftMm = 0;
                             if (posAttr && neuAttr) {
@@ -653,6 +688,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                     maxMeshLiftMm = Math.max(maxMeshLiftMm, pos[vi] - neu[vi]);
                                 }
                             }
+                            wedgeGeo.dispose();
                             neutralGeo.dispose();
                             stockDebug("STEP corrections forefoot lateral composed mesh maxZ lift (mm)", {
                                 side,
@@ -712,6 +748,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         thicknessMm: field.thicknessMm,
                         includeSkives: field.includeSkives ?? false,
                         includeElements: field.includeElements ?? true,
+                        ...(field.sinks && field.sinks.length > 0
+                            ? { sinks: field.sinks, sinkStyloidThicken: field.sinkStyloidThicken === true }
+                            : {}),
                     }),
                     shapeFinishJson: JSON.stringify(field.shapeFinish ?? null),
                     elementsJson: elementGeometryKey(field.elements ?? []),
@@ -869,6 +908,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             skipNormals: fastPreview,
             skipBottomSync: fastPreview,
         });
+        if (field.sinks && field.sinks.length > 0) {
+            const frame = getBaseFootprintFrame(raw, field.side);
+            const factors = classifyBaseTopFactors(raw);
+            applySinkCutToGeometry(modified, raw, field, frame, factors);
+        }
         if (workRef.current && workRef.current !== modified) {
             workRef.current.dispose();
         }
@@ -906,6 +950,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.shapeFinish,
         design.trimlines,
         design.textMarking,
+        design.sinks,
+        design.sinkStyloidThicken,
         correctionPreview,
         thicknessPreview,
         elementPreviews,

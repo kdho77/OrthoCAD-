@@ -2,9 +2,17 @@ import { elementHeightAt } from "@/lib/geometry/elements";
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
 import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
+import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
-import type { PlacedElement, Side, SideCorrections, SideShapeFinish } from "@/types";
+import type {
+    PlacedElement,
+    PlacedSink,
+    Side,
+    SideCorrections,
+    SideShapeFinish,
+    SinkMarkerRef,
+} from "@/types";
 
 // Shared parametric height field for insole surfaces. Used by both the procedural
 // Three.js mesher and the OpenCascade solid builder so corrections stay aligned.
@@ -16,6 +24,12 @@ export interface HeightFieldParams {
     thicknessMm: number;
     corrections: SideCorrections;
     elements?: PlacedElement[];
+    /** MPJ / styloid sinks. Absent or empty ⇒ sinkThicknessAt is not called. */
+    sinks?: PlacedSink[];
+    /** Styloid midfoot thickness. Default off. Ignored when `sinks` is empty. */
+    sinkStyloidThicken?: boolean;
+    /** Scan markers that override PlacedSink u, v. */
+    sinkMarkers?: SinkMarkerRef[];
     /** When false, skives are omitted (applied later as OCCT boolean cuts). */
     includeSkives?: boolean;
     /** When false, elements are omitted (applied later as OCCT booleans). */
@@ -418,6 +432,13 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const heelLift = heelLiftDeltaAt(u, c.heelLiftMm);
 
     let h = softFloor(thicknessMm + baseline + shaped + archEase + wedge + heelLift, 0.8);
+
+    // Forefoot / styloid thickness T. After posting, before skive. The cut S is
+    // not applied here — it is the last subtraction on the composed top.
+    // Absent sinks skip the call so this sum stays bit-identical.
+    if (sinksActive(params.sinks)) {
+        h += sinkThicknessAt(u, vSigned, params);
+    }
 
     // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).
     // The graph is the new clinical source of truth when present; the flat

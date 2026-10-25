@@ -14,7 +14,7 @@ import {
     mirrorGeometry,
     reorientToFootprintFrame,
 } from "@/lib/library/loaders";
-import type { ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
+import type { PlacedSink, ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
@@ -200,6 +200,12 @@ export interface ProceduralPreviewOptions {
     textMarking?: TextMarking | null;
     /** Foot side for left/right placement (wall text is never glyph-mirrored). */
     side?: Side;
+    /**
+     * Analytic-top sinks. Passed through without sourceField so a sink-free
+     * export stays on the same loft path as main.
+     */
+    sinks?: PlacedSink[];
+    sinkStyloidThicken?: boolean;
 }
 
 /**
@@ -265,6 +271,10 @@ export async function reconstructProceduralPreview(
                 elements: options.sourceField?.elements,
                 text: options.textMarking,
             }),
+            // Do not set sourceField just to carry sinks — that flips composedTop.
+            ...(options.sinks && options.sinks.length > 0
+                ? { sinks: options.sinks, sinkStyloidThicken: options.sinkStyloidThicken }
+                : {}),
         });
         return { model, pattern, geometry };
     };

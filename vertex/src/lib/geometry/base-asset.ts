@@ -917,6 +917,13 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         includeElements: true,
         trimline: null,
         shapeFinish: getSideShapeFinish(design, side),
+        // Omit the keys when there is no sink so the field shape matches main.
+        ...(design.sinks && design.sinks.length > 0
+            ? {
+                  sinks: design.sinks,
+                  sinkStyloidThicken: design.sinkStyloidThicken === true,
+              }
+            : {}),
     };
 }
 
